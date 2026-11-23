@@ -15,11 +15,12 @@
 //!
 //! The rules are pure functions over a [`Body`], the scan's spots and a
 //! [`Ground`] (the map's collision, the HUD's mark and the last read's
-//! strip): [`fall_time`], [`predicted_landing`], [`judge`] (the gate, with
-//! the point of the strip to land on, [`stand_near`]), [`choose`] (which
-//! strip, and why), [`steer`] (the PD controller), [`world_to_stick`] and
-//! [`apply`] (the stick and the button). `superbounce.assist` shows every
-//! strip judged and the reason ([`Report`]).
+//! strip), on the shared flight model (`superbounce_flight`): [`judge`]
+//! (the gate, with the point of the strip to land on, [`stand_near`]),
+//! [`choose`] (which strip, and why), the stick (the flight model's
+//! pursuit of the aim, `superbounce_flight::pursue`), [`world_to_stick`]
+//! and [`apply`] (the stick and the button). `superbounce.assist` shows
+//! every strip judged and the reason ([`Report`]).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -30,6 +31,7 @@ use input::gamepad::{AnalogButton, Gamepad};
 use superbounce::{Kind, Spot, Vec3};
 use xapi::tap::{InputTap, PACKET};
 
+use crate::superbounce_flight as flight;
 use crate::superbounce_mode;
 
 /// The feature's name (`H2_FEATURES` switches it).
@@ -59,17 +61,16 @@ pub const AIM_BACK: f32 = 0.1;
 /// slowest of the recorded bounces, which all came down moving across the
 /// seam along the drift at 0.3 to 1.3 ([`wants_drift`]).
 pub const DRIFT_MIN: f32 = 0.3;
-/// Cross the strip at this speed along the drift (units/s).
+/// A walking approach's speed (units/s): the run a takeoff is solved for
+/// when no run measured its own (`superbounce_guide::WALK_UP`).
 pub const ARRIVE_SPEED: f32 = 0.8;
 /// Gravity (units/s²): the 4.15 that fits the traced jump, the speed
-/// model's (`superbounce::speed::GRAVITY`).
+/// model's (`superbounce::speed::GRAVITY`). The landings themselves are
+/// flown on `superbounce_flight`'s.
 pub const GRAVITY: f32 = superbounce::speed::GRAVITY;
-/// What a full stick pushes a biped sideways in the air (units/s²). An
-/// estimate: the stick is this scaled, and the lab is where it is measured.
-pub const AIR_ACCEL: f32 = 3.0;
-/// Slack on the reach gate (units): a good approach whose stick is weaker
-/// or stronger than [`AIR_ACCEL`] says wanders from the coasting line and
-/// must not drop out.
+/// Slack on the reach gate (units): the assist steers onto a strip whose
+/// aim its pursuit (`superbounce_flight::pursue`) ends within this of, so
+/// a stick a little weaker than the model's still gets the steering.
 pub const HOLD_SLACK: f32 = 0.4;
 /// The assist only works on a player falling, not one still rising
 /// (units/s of vertical speed).
@@ -96,10 +97,6 @@ pub const SIGHT_TO: f32 = 0.25;
 pub const CONSIDER: f32 = 6.0;
 /// `superbounce.assist` lists at most this many of them.
 pub const REPORTED: usize = 12;
-/// The PD controller's gains: 5 rad/s, damping 0.8. Higher ones overshoot
-/// into the gate's slack when the stick is stronger than [`AIR_ACCEL`].
-pub const KP: f32 = 25.0;
-pub const KD: f32 = 8.0;
 /// The aim vector's horizontal length below which a yaw means nothing
 /// (looking straight up or down).
 const MIN_AIM: f32 = 0.05;
@@ -113,6 +110,7 @@ const BIPED_KIND: u8 = 0;
 /// What the assist needs of the player.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Body {
+    /// The origin (object `+0x64`), the frame of the spots' heights.
     pub position: Vec3,
     /// World units a second.
     pub velocity: Vec3,
@@ -120,23 +118,29 @@ pub struct Body {
     /// forward.
     pub yaw: f32,
     pub airborne: bool,
+    /// The stick the player holds, world axes, 0 to 1
+    /// (`superbounce_flight::held`): the tap's is the pad's turned by the
+    /// yaw, the mode's the unit's throttle.
+    pub stick: [f32; 2],
 }
 
-/// Seconds until a body `height` above a floor, moving `vz` up, reaches it
-/// under [`GRAVITY`]; `None` when it never does (it stays above or is
-/// below).
-pub fn fall_time(height: f32, vz: f32) -> Option<f32> {
-    let d = vz * vz + 2.0 * GRAVITY * height;
-    if !d.is_finite() || d < 0.0 {
-        return None;
-    }
-    let t = (vz + d.sqrt()) / GRAVITY;
-    (t.is_finite() && t >= 0.0).then_some(t)
+/// The flight of `body` onto the flat height `z` with its stick held as
+/// it is (`superbounce_flight::hold`).
+fn held_onto(body: &Body, z: f32) -> Option<flight::Landing> {
+    flight::hold(body.position, body.velocity, body.stick, |_| z)
 }
 
-/// Where a body at `p` moving `v` is after `t` seconds, coasting.
-pub fn predicted_landing(p: [f32; 2], v: [f32; 2], t: f32) -> [f32; 2] {
-    [p[0] + v[0] * t, p[1] + v[1] * t]
+/// The touchdown speed (units/s down) of `body`'s flight onto the height
+/// `z`, on the flight model; 0 when it never comes down there.
+pub fn touchdown_speed(body: &Body, z: f32) -> f32 {
+    flight::fall(body.position[2], body.velocity[2], z).map_or(0.0, |l| l.speed)
+}
+
+/// The highest the flight gets: the body's height, and while it rises
+/// the apex.
+pub fn apex(body: &Body) -> f32 {
+    let vz = body.velocity[2].max(0.0);
+    body.position[2] + vz * vz / (2.0 * flight::GRAVITY)
 }
 
 /// A drift as a unit vector; zero stays zero.
@@ -152,18 +156,22 @@ pub fn drift_unit(drift: [f32; 2]) -> [f32; 2] {
 /// Why a strip can be steered onto, and where to.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Reach {
-    /// Seconds to touchdown on the strip's height.
+    /// Seconds to the last free row over the strip's height.
     pub time: f32,
     /// The point to cross ([`aim_at`]): the strip's point
     /// ([`stand_near`]) when it is a measured landing, else [`AIM_BACK`]
     /// before it along the drift.
     pub aim: [f32; 2],
-    /// The velocity to cross it at: [`ARRIVE_SPEED`] along the drift.
-    pub arrive: [f32; 2],
-    /// Where the player lands if the stick is let go.
+    /// Where the player lands with the stick held as it is.
     pub landing: [f32; 2],
     /// How far that is from [`Reach::aim`].
     pub miss: f32,
+    /// The stick (world axes) the pursuit of the aim holds now
+    /// (`superbounce_flight::pursue`).
+    pub stick: [f32; 2],
+    /// How far from the aim the pursuit comes down: what the stick can
+    /// not make up.
+    pub short: f32,
 }
 
 /// What the choice knows besides the spots: the map's collision, the strip
@@ -208,12 +216,12 @@ impl Ground<'static> {
 pub enum Refusal {
     /// It is not below the player ([`MIN_DROP`]).
     Above,
-    /// The fall to its height takes longer than [`MAX_TIME`].
+    /// The flight does not come down to its height within [`MAX_TIME`].
     Long,
     /// Its nearest point is further sideways than [`REACH_RADIUS`].
     Far,
-    /// The stick cannot bring the coasting landing onto it in the time
-    /// left.
+    /// The stick cannot bring the landing onto it in the time left
+    /// (the pursuit ends more than [`HOLD_SLACK`] from the aim).
     OutOfReach,
     /// A floor is between the player and it ([`COVER`]): it is under a
     /// slab, a bridge or the ledge the player left.
@@ -304,40 +312,41 @@ pub fn wants_drift(drift: [f32; 2], across: f32) -> bool {
 /// The reach cone for a falling `body` ([`falling`]) and a bounce spot:
 /// the point of the strip to land on and how to get there, or why not.
 ///
-/// - the strip is below the player, and the fall to it takes at most
-///   [`MAX_TIME`];
-/// - the strip's point nearest the coasting landing ([`stand_near`]) is
-///   within [`REACH_RADIUS`] sideways;
-/// - the coasting landing is within what the stick can move in the time left
-///   (half [`AIR_ACCEL`] times the fall time squared, plus
-///   [`HOLD_SLACK`]), which makes the cone wider the longer the fall;
+/// Each is flown on the flight model (`superbounce_flight`):
+///
+/// - the strip is below the player, and the flight comes down to it
+///   within [`MAX_TIME`];
+/// - the strip's point nearest the landing with the stick held as it is
+///   ([`stand_near`]) is within [`REACH_RADIUS`] sideways;
+/// - the pursuit of the aim (`superbounce_flight::pursue`: the air stick
+///   at its measured 1.05 units/s² toward at most 1.2 units/s) ends
+///   within [`HOLD_SLACK`] of it;
 /// - no floor is between the player and that point ([`covered`]), and
 ///   nothing solid stands between them.
 pub fn judge(body: &Body, spot: &Spot, ground: &Ground<'_>) -> Result<(Vec3, Reach), Refusal> {
-    let drop = body.position[2] - spot.stand[2];
-    if drop < MIN_DROP {
+    let z = spot.stand[2];
+    let drop = body.position[2] - z;
+    if drop.is_nan() || drop < MIN_DROP {
         return Err(Refusal::Above);
     }
-    let Some(time) = fall_time(drop, body.velocity[2]).filter(|&t| t <= MAX_TIME) else {
+    let Some(held) = held_onto(body, z).filter(|l| l.ticks as f32 * flight::TICK <= MAX_TIME)
+    else {
         return Err(Refusal::Long);
     };
-    let landing = predicted_landing(
-        [body.position[0], body.position[1]],
-        [body.velocity[0], body.velocity[1]],
-        time,
-    );
+    let time = held.ticks as f32 * flight::TICK;
+    let landing = [held.row[0], held.row[1]];
     let point = stand_near(spot, landing);
     let side = (point[0] - body.position[0]).hypot(point[1] - body.position[1]);
     if side.is_nan() || side > REACH_RADIUS {
         return Err(Refusal::Far);
     }
-    let dir = drift_unit(spot.drift);
     let aim = aim_at(spot, point);
-    let arrive = [ARRIVE_SPEED * dir[0], ARRIVE_SPEED * dir[1]];
     let miss = (aim[0] - landing[0]).hypot(aim[1] - landing[1]);
-    if miss.is_nan() || miss > 0.5 * AIR_ACCEL * time * time + HOLD_SLACK {
+    let Some(pursuit) = flight::pursue(body.position, body.velocity, aim, |_| z)
+        .filter(|p| !p.miss.is_nan() && p.miss <= HOLD_SLACK)
+    else {
         return Err(Refusal::OutOfReach);
-    }
+    };
     if covered(body.position[2], point, ground) {
         return Err(Refusal::Covered);
     }
@@ -350,9 +359,10 @@ pub fn judge(body: &Body, spot: &Spot, ground: &Ground<'_>) -> Result<(Vec3, Rea
         Reach {
             time,
             aim,
-            arrive,
             landing,
             miss,
+            stick: pursuit.stick_now,
+            short: pursuit.miss,
         },
     ))
 }
@@ -418,7 +428,7 @@ pub struct Candidate {
     pub speed: f32,
     pub need: f32,
     /// In reach: the point of the strip to land on, the seconds to it and
-    /// how far the coasting landing misses the aim.
+    /// how far the landing with the stick held misses the aim.
     pub point: Option<Vec3>,
     pub time: Option<f32>,
     pub miss: Option<f32>,
@@ -433,7 +443,7 @@ pub enum Reason {
     Kept,
     /// The strip the HUD marks is in reach.
     Marked,
-    /// Neither: the strip the fall is fast enough for that the coasting
+    /// Neither: the strip the fall is fast enough for that the held
     /// landing misses by least, else the slow one it misses by least.
     Nearest,
     /// The player is on the ground or rising.
@@ -482,7 +492,7 @@ pub struct Choice {
 ///    never changes in the middle of a fall;
 /// 2. else the strip the HUD marks (`ground.marked`), so the pull is toward
 ///    the mark the player sees;
-/// 3. else the strip the coasting landing misses by least, one the fall is
+/// 3. else the strip the held landing misses by least, one the fall is
 ///    fast enough for before one it is too slow for.
 pub fn choose(spots: &[Spot], body: &Body, ground: &Ground<'_>) -> Choice {
     let none = |reason, candidates| Choice {
@@ -495,7 +505,6 @@ pub fn choose(spots: &[Spot], body: &Body, ground: &Ground<'_>) -> Choice {
         return none(Reason::NotFalling, Vec::new());
     }
     let at = [body.position[0], body.position[1]];
-    let vz = body.velocity[2];
     let mut candidates: Vec<Candidate> = Vec::new();
     // Each strip in reach: its place in `candidates` and its reach.
     let mut passed: Vec<(usize, Reach)> = Vec::new();
@@ -507,12 +516,11 @@ pub fn choose(spots: &[Spot], body: &Body, ground: &Ground<'_>) -> Choice {
         if distance > CONSIDER {
             continue;
         }
-        let height = (body.position[2] - spot.stand[2]).max(0.0);
         let mut c = Candidate {
             index,
             stand: spot.stand,
             distance,
-            speed: (vz * vz + 2.0 * GRAVITY * height).sqrt(),
+            speed: touchdown_speed(body, spot.stand[2]),
             need: crate::superbounce_charge::need_of(spot),
             point: None,
             time: None,
@@ -565,7 +573,7 @@ pub fn choose(spots: &[Spot], body: &Body, ground: &Ground<'_>) -> Choice {
     let plan = Plan {
         target: candidates[i].stand,
         point: candidates[i].point.unwrap_or(candidates[i].stand),
-        stick: world_to_stick(steer(body, &reach), body.yaw),
+        stick: world_to_stick(reach.stick, body.yaw),
         reach,
     };
     Choice {
@@ -577,7 +585,7 @@ pub fn choose(spots: &[Spot], body: &Body, ground: &Ground<'_>) -> Choice {
 }
 
 /// The strip to steer onto with the spots alone ([`Ground::open`]): of the
-/// reachable bounce spots, the one the coasting landing misses by least
+/// reachable bounce spots, the one the held landing misses by least
 /// ([`choose`]'s third rule).
 pub fn pick<'a>(spots: &'a [Spot], body: &Body) -> Option<(&'a Spot, Reach)> {
     let c = choose(spots, body, &Ground::open());
@@ -585,43 +593,27 @@ pub fn pick<'a>(spots: &'a [Spot], body: &Body) -> Option<(&'a Spot, Reach)> {
     Some((spot, c.plan?.reach))
 }
 
-/// The horizontal acceleration to ask for (units/s², world axes): a PD
-/// controller on the track that lands on [`Reach::aim`] at [`Reach::arrive`]
-/// (the point the player would be at, `time` before touchdown, moving at the
-/// arrival velocity all the way). Its error is the predicted landing's miss
-/// when the velocities match.
-pub fn steer(body: &Body, r: &Reach) -> [f32; 2] {
-    let mut a = [0.0; 2];
-    for i in 0..2 {
-        let track = r.aim[i] - r.arrive[i] * r.time;
-        a[i] = KP * (track - body.position[i]) + KD * (r.arrive[i] - body.velocity[i]);
-    }
-    a
-}
-
-/// A world acceleration as the left stick `[x (right), y (forward)]`, in
-/// -1..1: scaled by [`AIR_ACCEL`], turned into the aim's frame, and cut
-/// back to the unit disc keeping its direction.
-pub fn world_to_stick(accel: [f32; 2], yaw: f32) -> [f32; 2] {
-    if !accel.iter().chain(&[yaw]).all(|v| v.is_finite()) {
+/// A world-axes stick as the left stick `[x (right), y (forward)]`, in
+/// -1..1, for a body facing `yaw`: turned into the aim's frame and cut
+/// back to the unit disc keeping its direction. In the air the stick is a
+/// velocity command (`superbounce_flight::air_step`), so the assist sends
+/// the pursuit's stick as it is.
+pub fn world_to_stick(world: [f32; 2], yaw: f32) -> [f32; 2] {
+    if !world.iter().chain(&[yaw]).all(|v| v.is_finite()) {
         return [0.0; 2];
     }
     let (s, c) = yaw.sin_cos();
     // Forward is (cos, sin); right, with Z up, is (sin, -cos).
-    let x = (accel[0] * s - accel[1] * c) / AIR_ACCEL;
-    let y = (accel[0] * c + accel[1] * s) / AIR_ACCEL;
+    let x = world[0] * s - world[1] * c;
+    let y = world[0] * c + world[1] * s;
     let n = x.hypot(y);
     if n > 1.0 { [x / n, y / n] } else { [x, y] }
 }
 
-/// The reverse of [`world_to_stick`] below saturation: the world
-/// acceleration a stick asks for.
+/// The reverse of [`world_to_stick`]: the world-axes stick of a pad's
+/// left stick (`superbounce_flight::held` of `[y, −x]`).
 pub fn stick_to_world(stick: [f32; 2], yaw: f32) -> [f32; 2] {
-    let (s, c) = yaw.sin_cos();
-    [
-        (stick[0] * s + stick[1] * c) * AIR_ACCEL,
-        (-stick[0] * c + stick[1] * s) * AIR_ACCEL,
-    ]
+    flight::held([stick[1], -stick[0]], yaw)
 }
 
 /// A stick as the pad's signed 16-bit axes.
@@ -648,14 +640,23 @@ pub fn plan(spots: &[Spot], body: &Body) -> Option<Plan> {
     choose(spots, body, &Ground::open()).plan
 }
 
-/// The landing a falling `body` is headed for, for the HUD and the world
-/// marker (docs/game/superbounce.md, "Landings"): of the bounce strips
-/// below it with no floor between ([`covered`]) and a point
-/// ([`stand_near`]) within [`REACH_RADIUS`] of the coasting landing
-/// ([`predicted_landing`] at [`fall_time`]), the one it lands nearest the
-/// slot of. `on_slot` when it lands inside the slot, `fixable` when it does
-/// not and [`judge`] says the assist can still bring it in, else `miss`.
-/// `None` on the ground, rising, or with no such strip.
+/// The landing an airborne `body` is headed for, for the HUD and the
+/// world marker (docs/game/superbounce.md, "Landings"), rising or
+/// falling: of the bounce strips its flight comes down onto (at or under
+/// its apex, within [`MAX_TIME`], on the flight model with the stick held
+/// as it is, `superbounce_flight::hold`) with no floor between
+/// ([`covered`]) and a point ([`stand_near`]) within [`REACH_RADIUS`] of
+/// that landing, the one it lands nearest the slot of.
+///
+/// - `at` is that landing, `speed` its stepped touchdown speed, `across`
+///   the speed along the drift it comes down with.
+/// - `verdict`: `on_slot` when it lands inside the slot; `fixable` when
+///   the flight model's pursuit of the aim (`superbounce_flight::pursue`)
+///   ends inside it; else `miss`, out of the stick's reach.
+/// - `steer`: the pursuit's stick to hold now (world axes); zero on the
+///   slot.
+///
+/// `None` on the ground, or with no such strip.
 pub fn predict_on(
     spots: &[Spot],
     body: &Body,
@@ -663,46 +664,48 @@ pub fn predict_on(
 ) -> Option<superbounce_mode::Predicted> {
     use crate::superbounce_charge::{edge_distance_xy, need_of, slot_miss};
     use superbounce_mode::{Course, Predicted};
-    let vz = body.velocity[2];
-    if !body.airborne || !vz.is_finite() || vz >= 0.0 {
+    if !body.airborne {
         return None;
     }
-    let p = [body.position[0], body.position[1]];
-    let v = [body.velocity[0], body.velocity[1]];
-    let (spot, landing, height, _) = spots
+    let top = apex(body);
+    let (spot, landing, _) = spots
         .iter()
         .filter(|s| s.kind == Kind::Bounce)
         .filter_map(|s| {
-            let height = body.position[2] - s.stand[2];
-            if height < MIN_DROP {
-                return None;
-            }
-            let time = fall_time(height, vz).filter(|&t| t <= MAX_TIME)?;
-            let landing = predicted_landing(p, v, time);
-            let point = stand_near(s, landing);
-            let side = (point[0] - landing[0]).hypot(point[1] - landing[1]);
-            (side <= REACH_RADIUS && !covered(body.position[2], point, ground))
-                .then(|| (s, landing, height, edge_distance_xy(s, landing)))
+            let l = held_onto(body, s.stand[2])
+                .filter(|l| l.ticks as f32 * flight::TICK <= MAX_TIME)?;
+            let xy = [l.row[0], l.row[1]];
+            let point = stand_near(s, xy);
+            let side = (point[0] - xy[0]).hypot(point[1] - xy[1]);
+            (side <= REACH_RADIUS && !covered(top, point, ground))
+                .then(|| (s, l, edge_distance_xy(s, xy)))
         })
-        .min_by(|a, b| a.3.total_cmp(&b.3))?;
-    let verdict = if slot_miss(spot, landing) <= 0.0 {
-        Course::OnSlot
-    } else if judge(body, spot, ground).is_ok() {
-        Course::Fixable
+        .min_by(|a, b| a.2.total_cmp(&b.2))?;
+    let xy = [landing.row[0], landing.row[1]];
+    let aim = aim_at(spot, stand_near(spot, xy));
+    let (verdict, steer) = if slot_miss(spot, xy) <= 0.0 {
+        (Course::OnSlot, [0.0; 2])
     } else {
-        Course::Miss
+        match flight::pursue(body.position, body.velocity, aim, |_| spot.stand[2]) {
+            Some(p) if slot_miss(spot, [p.landing.row[0], p.landing.row[1]]) <= 0.0 => {
+                (Course::Fixable, p.stick_now)
+            }
+            Some(p) => (Course::Miss, p.stick_now),
+            None => (Course::Miss, [0.0; 2]),
+        }
     };
     Some(Predicted {
-        at: [landing[0], landing[1], spot.stand[2]],
-        aim: aim_at(spot, stand_near(spot, landing)),
+        at: [xy[0], xy[1], spot.stand[2]],
+        aim,
         drift: drift_unit(spot.drift),
-        across: across(spot, v),
+        across: across(spot, landing.velocity),
         verdict,
-        speed: (vz * vz + 2.0 * GRAVITY * height).sqrt(),
+        speed: landing.speed,
         need: need_of(spot),
         edge: spot.edge,
         stand: spot.stand,
         fall: spot.fall,
+        steer,
     })
 }
 
@@ -748,9 +751,9 @@ pub struct Report {
     pub point: Option<Vec3>,
     /// The point being aimed at.
     pub aim: Option<[f32; 2]>,
-    /// Where the player lands if the stick is let go.
+    /// Where the player lands with their own stick held as it is.
     pub landing: Option<[f32; 2]>,
-    /// Seconds to touchdown.
+    /// Seconds to the last free row.
     pub time: Option<f32>,
     /// The left stick sent, `[x (right), y (forward)]`.
     pub stick: Option<[f32; 2]>,
@@ -1100,7 +1103,8 @@ impl GuestMemory for Mem<'_> {
     }
 }
 
-/// The body of the local player on controller `port`, for the prompts too.
+/// The body of the local player on controller `port`, its stick none
+/// (the tap sets the pad's, [`pad_stick`]).
 pub(crate) fn read_body(m: &dyn GuestMemory, port: u32) -> Option<Body> {
     use crate::telemetry::layout;
     let unit = crate::skulls_custom::local_units(m)
@@ -1126,7 +1130,16 @@ pub(crate) fn read_body(m: &dyn GuestMemory, port: u32) -> Option<Body> {
         velocity,
         yaw: aim[1].atan2(aim[0]),
         airborne: flags & 1 != 0,
+        stick: [0.0; 2],
     })
+}
+
+/// The left stick of `pad` in world axes for a body facing `yaw`
+/// ([`stick_to_world`]): the stick the player holds, before the assist
+/// replaces it.
+pub fn pad_stick(pad: &Gamepad, yaw: f32) -> [f32; 2] {
+    let axis = |v: i16| f32::from(v) / f32::from(i16::MAX);
+    stick_to_world([axis(pad.thumb_lx), axis(pad.thumb_ly)], yaw)
 }
 
 // ---- the tap ----
@@ -1226,6 +1239,10 @@ impl AssistTap {
         let read = held.then(|| {
             memory
                 .and_then(|m| read_body(&Mem(m), PORT))
+                .map(|b| Body {
+                    stick: pad_stick(&pad, b.yaw),
+                    ..b
+                })
                 .map(|b| (b, choose_now(&b, self.kept)))
         });
         let plan = read.as_ref().and_then(|r| r.as_ref()?.1.plan);
@@ -1410,12 +1427,15 @@ mod tests {
         }
     }
 
+    /// An airborne body holding the stick that keeps it going
+    /// (`superbounce_flight::keep`).
     fn falling(at: Vec3, v: Vec3) -> Body {
         Body {
             position: at,
             velocity: v,
             yaw: 0.0,
             airborne: true,
+            stick: flight::keep([v[0], v[1]]),
         }
     }
 
@@ -1425,28 +1445,25 @@ mod tests {
 
     // ---- the landing prediction ----
 
+    /// The landing is flown on the flight model: a drop of 2.4 from rest
+    /// comes down from its 31st row at 4.31 units/s (31 × 0.13903), where
+    /// it started across.
     #[test]
-    fn a_drop_from_rest_takes_the_free_fall_time() {
-        // 2.43 units at 4.15 units/s² lands at sqrt(2gh) = 4.49 units/s.
-        // (The lab's drop from 3.5 above the strip landed at 5.24 after a
-        // 0.23 start, which fits the same gravity.)
-        let t = fall_time(2.43, 0.0).unwrap();
-        near(t, (2.0 * 2.43 / GRAVITY).sqrt(), 1e-5);
-        near(GRAVITY * t, (2.0 * GRAVITY * 2.43).sqrt(), 1e-4);
-        near(fall_time(0.0, -5.4).unwrap(), 0.0, 1e-5);
-    }
-
-    #[test]
-    fn a_rising_body_lands_later_and_one_below_the_floor_never_does() {
-        near(fall_time(0.0, 3.0).unwrap(), 2.0 * 3.0 / GRAVITY, 1e-5);
-        assert_eq!(fall_time(-1.0, 0.0), None);
-        assert_eq!(fall_time(f32::NAN, 0.0), None);
-    }
-
-    #[test]
-    fn the_landing_is_where_coasting_leads() {
-        assert_eq!(predicted_landing([1.0, 2.0], [0.5, -1.0], 2.0), [2.0, 0.0]);
-        assert_eq!(predicted_landing([1.0, 2.0], [0.0, 0.0], 5.0), [1.0, 2.0]);
+    fn the_landing_is_flown_on_the_flight_model() {
+        let body = falling([0.3, 0.2, 2.4], [0.0; 3]);
+        let l = held_onto(&body, 0.0).unwrap();
+        assert_eq!((l.ticks, l.row[0], l.row[1]), (31, 0.3, 0.2));
+        near(l.speed, 4.310, 1e-3);
+        near(touchdown_speed(&body, 0.0), l.speed, 1e-6);
+        // Under the floor, nothing.
+        assert_eq!(touchdown_speed(&falling([0.0, 0.0, -1.0], [0.0; 3]), 0.0), 0.0);
+        // The apex: where it is when falling, over it when rising.
+        assert_eq!(apex(&body), 2.4);
+        near(
+            apex(&falling([0.0, 0.0, 1.0], [0.0, 0.0, 3.0])),
+            1.0 + 9.0 / (2.0 * flight::GRAVITY),
+            1e-5,
+        );
     }
 
     // ---- the reach cone ----
@@ -1460,9 +1477,10 @@ mod tests {
         let spot = spot_at([0.0, 0.0, 0.0], [1.0, 0.0]);
         let r = reach(&falling([0.3, 0.2, 2.4], [0.0; 3]), &spot).unwrap();
         near(r.aim[0], -AIM_BACK, 1e-6);
-        near(r.arrive[0], ARRIVE_SPEED, 1e-6);
-        near(r.time, fall_time(2.4, 0.0).unwrap(), 1e-6);
+        near(r.time, 31.0 / 30.0, 1e-5);
         assert_eq!(r.landing, [0.3, 0.2]);
+        // The stick gets there: it points at the aim.
+        assert!(r.short < 0.02 && r.stick[0] < 0.0, "{r:?}");
     }
 
     #[test]
@@ -1494,13 +1512,17 @@ mod tests {
         ));
     }
 
+    /// The cone is the air stick's: 1.05 units/s² toward at most 1.2
+    /// units/s. The aim 2.4 away takes a long fall: 82 ticks from 16.0
+    /// reach it, the 10 from 0.3 do not.
     #[test]
     fn the_cone_widens_with_the_time_left_to_steer() {
         let spot = spot_at([2.5, 0.0, 0.0], [1.0, 0.0]);
         // 2.5 sideways: out of reach from a short fall, within it from a
         // long one.
         assert!(!gate(falling([0.0, 0.0, 0.3], [0.0; 3]), spot));
-        assert!(gate(falling([0.0, 0.0, 4.0], [0.0; 3]), spot));
+        assert!(!gate(falling([0.0, 0.0, 4.0], [0.0; 3]), spot));
+        assert!(gate(falling([0.0, 0.0, 16.0], [0.0; 3]), spot));
         // Coasting the wrong way takes it out of reach again.
         assert!(!gate(falling([0.0, 0.0, 1.0], [-3.0, 0.0, 0.0]), spot));
     }
@@ -1510,11 +1532,11 @@ mod tests {
         let spot = spot_at([1.0, 1.0, 0.0], [0.0, 0.0]);
         let r = reach(&falling([1.0, 1.0, 2.0], [0.0; 3]), &spot).unwrap();
         assert_eq!(r.aim, [1.0, 1.0]);
-        assert_eq!(r.arrive, [0.0, 0.0]);
+        assert_eq!((r.miss, r.stick), (0.0, [0.0, 0.0]));
     }
 
     #[test]
-    fn the_spot_that_coasting_misses_by_least_is_picked() {
+    fn the_spot_the_held_landing_misses_by_least_is_picked() {
         let a = spot_at([1.5, 0.0, 0.0], [1.0, 0.0]);
         let b = spot_at([-0.4, 0.2, 0.0], [1.0, 0.0]);
         let body = falling([0.0, 0.0, 2.0], [0.0; 3]);
@@ -1528,7 +1550,7 @@ mod tests {
 
     #[test]
     fn the_stick_is_in_the_aims_frame() {
-        let a = AIR_ACCEL;
+        let a = 1.0;
         let at = |accel: [f32; 2], yaw: f32| world_to_stick(accel, yaw);
         let same = |s: [f32; 2], x: f32, y: f32| {
             near(s[0], x, 1e-5);
@@ -1552,7 +1574,7 @@ mod tests {
     #[test]
     fn the_stick_round_trips_and_saturates_keeping_its_direction() {
         for yaw in [0.0f32, 0.7, 2.0, -1.2, 3.0, -3.0] {
-            let want = [0.9, -1.1];
+            let want = [0.5, -0.6];
             let back = stick_to_world(world_to_stick(want, yaw), yaw);
             near(back[0], want[0], 1e-4);
             near(back[1], want[1], 1e-4);
@@ -1567,9 +1589,11 @@ mod tests {
     }
 
     /// Falls from `height` onto a strip at the origin with drift +X, the
-    /// controller steering at 30 Hz; the plant moves `gain` times as much as
-    /// the controller thinks. Returns the player's position and velocity at
-    /// touchdown, relative to the aim point.
+    /// assist steering at 30 Hz. The plant is the engine's air: the stick
+    /// drives the sideways velocity toward it times the top at `gain`
+    /// times the measured 0.035 units/s a tick (`superbounce_flight`),
+    /// and the fall gains its speed, then moves. Returns the last free
+    /// row's place, relative to the aim point, and the velocity there.
     fn simulate(
         start: [f32; 2],
         v0: [f32; 2],
@@ -1577,55 +1601,58 @@ mod tests {
         yaw: f32,
         gain: f32,
     ) -> ([f32; 2], [f32; 2]) {
-        const DT: f32 = 1.0 / 30.0;
+        const DT: f32 = flight::TICK;
         let spot = spot_at([0.0, 0.0, 0.0], [1.0, 0.0]);
         let (mut p, mut v) = (start, v0);
-        let (mut z, mut vz) = (height, 0.0f32);
-        while z > 0.0 {
+        let (mut z, mut down) = (height, 0.0f32);
+        loop {
             let body = Body {
                 position: [p[0], p[1], z],
-                velocity: [v[0], v[1], vz],
+                velocity: [v[0], v[1], -down],
                 yaw,
                 airborne: true,
+                stick: [0.0; 2],
             };
-            let stick = plan(&[spot], &body).map_or([0.0; 2], |pl| pl.stick);
-            let a = stick_to_world(stick, yaw);
-            for i in 0..2 {
-                v[i] += a[i] * gain * DT;
-                p[i] += v[i] * DT;
+            let pad = plan(&[spot], &body).map_or([0.0; 2], |pl| pl.stick);
+            let s = flight::effective(stick_to_world(pad, yaw));
+            let want = [s[0] * flight::AIR_TOP, s[1] * flight::AIR_TOP];
+            let d = [want[0] - v[0], want[1] - v[1]];
+            let n = d[0].hypot(d[1]);
+            let most = gain * flight::AIR_ACCEL * DT;
+            let next_v = if n > most {
+                [v[0] + d[0] * most / n, v[1] + d[1] * most / n]
+            } else {
+                want
+            };
+            let next_down = down + flight::GRAVITY * DT;
+            if z - next_down * DT <= 0.0 {
+                break;
             }
-            vz -= GRAVITY * DT;
-            z += vz * DT;
+            v = next_v;
+            p = [p[0] + v[0] * DT, p[1] + v[1] * DT];
+            (z, down) = (z - next_down * DT, next_down);
         }
         let aim = [-AIM_BACK, 0.0];
         ([p[0] - aim[0], p[1] - aim[1]], v)
     }
 
+    /// With the measured stick the assist lands each fall within the
+    /// catch of the aim, from offsets the stick can make up in the fall
+    /// (6.0 is 51 ticks: 1.35 from rest), at any facing.
     #[test]
-    fn the_controller_lands_a_fall_on_the_aim_point_at_the_arrival_speed() {
+    fn the_controller_lands_a_fall_on_the_aim_point() {
         // Each: where it starts (from the aim point), its drift, the drop.
         let cases = [
-            ([0.5, 0.3], [0.0, 0.0], 2.4),
-            ([-0.8, 0.6], [0.5, 0.0], 2.4),
-            ([-0.4, -0.6], [-0.5, 0.3], 2.4),
+            ([0.5, 0.3], [0.0, 0.0], 6.0),
+            ([-0.8, 0.6], [0.5, 0.0], 6.0),
+            ([-0.4, -0.6], [-0.5, 0.3], 6.0),
         ];
         for yaw in [0.0f32, 1.1, -2.5] {
             for (off, v0, h) in cases {
                 let start = [off[0] - AIM_BACK, off[1]];
-                let miss0 = off[0].hypot(off[1]);
-                let (p, v) = simulate(start, v0, h, yaw, 1.0);
+                let (p, _) = simulate(start, v0, h, yaw, 1.0);
                 let err = p[0].hypot(p[1]);
-                assert!(
-                    err < 0.2 && err < miss0 / 2.0,
-                    "yaw {yaw} {off:?}: error {err}"
-                );
-                // Along the drift at the landing speed, little across it.
-                assert!(
-                    v[0] > 0.2 && v[0] < 1.4,
-                    "yaw {yaw} {off:?}: along {}",
-                    v[0]
-                );
-                assert!(v[1].abs() < 0.5, "yaw {yaw} {off:?}: across {}", v[1]);
+                assert!(err < 0.05, "yaw {yaw} {off:?}: error {err}");
             }
         }
     }
@@ -1633,8 +1660,8 @@ mod tests {
     #[test]
     fn the_controller_still_lands_close_when_the_stick_is_weaker_or_stronger_than_thought() {
         for gain in [0.7f32, 1.4] {
-            let (p, _) = simulate([0.4 - AIM_BACK, 0.3], [0.0; 2], 2.4, 0.5, gain);
-            assert!(p[0].hypot(p[1]) < 0.3, "gain {gain}: {p:?}");
+            let (p, _) = simulate([0.4 - AIM_BACK, 0.3], [0.0; 2], 6.0, 0.5, gain);
+            assert!(p[0].hypot(p[1]) < 0.1, "gain {gain}: {p:?}");
         }
     }
 
@@ -1753,26 +1780,32 @@ mod tests {
         assert!(no_params(&serde_json::json!({"hold": true})).is_err());
     }
 
+    /// The prediction: on the slot, fixable when the flight model's
+    /// pursuit gets into the slot, else a miss; rising too.
     #[test]
     fn the_predicted_landing_says_on_the_slot_fixable_or_a_miss() {
         use superbounce_mode::Course;
         let spots = [spot_at([0.0, 0.0, 0.0], [0.0, 0.0])];
         let on = predict(&spots, &falling([0.0, 0.0, 2.0], [0.0, 0.0, -1.0])).unwrap();
-        assert_eq!(on.verdict, Course::OnSlot);
+        assert_eq!((on.verdict, on.steer), (Course::OnSlot, [0.0; 2]));
         assert_eq!(on.at, [0.0, 0.0, 0.0]);
-        near(on.speed, (1.0 + 2.0 * GRAVITY * 2.0).sqrt(), 1e-5);
+        // Stepped: the 22nd row's 1 + 22 × 0.13903.
+        near(on.speed, 4.0587, 1e-3);
         near(on.need, (9.0 + 2.0 * GRAVITY * 1.0).sqrt(), 1e-5);
-        // A metre off: the assist can still bring it in.
-        let off = predict(&spots, &falling([1.0, 0.0, 2.0], [0.0, 0.0, -1.0])).unwrap();
+        // Half a unit off with 34 ticks to go: the stick brings it in,
+        // pushed back toward the strip.
+        let off = predict(&spots, &falling([0.5, 0.0, 4.0], [0.0, 0.0, -1.0])).unwrap();
         assert_eq!(off.verdict, Course::Fixable);
+        assert!(off.steer[0] < -0.3 && off.steer[1] == 0.0, "{:?}", off.steer);
         // Nearly 3 off with a short fall left: it cannot.
         let far = predict(&spots, &falling([2.8, 0.0, 0.3], [0.0, 0.0, -1.0])).unwrap();
         assert_eq!(far.verdict, Course::Miss);
-        // Rising, on the ground, under the strip or past its reach: none.
-        assert_eq!(
-            predict(&spots, &falling([0.0, 0.0, 2.0], [0.0, 0.0, 1.0])),
-            None
-        );
+        // Rising, it comes down on the strip all the same.
+        let up = predict(&spots, &falling([0.0, 0.0, 2.0], [0.0, 0.0, 1.0])).unwrap();
+        assert_eq!(up.verdict, Course::OnSlot);
+        near(up.speed, 4.0052, 1e-3);
+        // On the ground, under the strip and never over it, or past its
+        // reach: none.
         let ground = Body {
             airborne: false,
             ..falling([0.0, 0.0, 2.0], [0.0, 0.0, -1.0])
@@ -1783,8 +1816,73 @@ mod tests {
             None
         );
         assert_eq!(
+            predict(&spots, &falling([0.0, 0.0, -1.0], [0.0, 0.0, 1.0])),
+            None
+        );
+        assert_eq!(
             predict(&spots, &falling([5.0, 0.0, 2.0], [0.0, 0.0, -1.0])),
             None
+        );
+    }
+
+    /// The video's run-jump: off a floor at 2.0 units/s, jumping, onto a
+    /// seam on the same floor 2.0115 on. With the stick held forward the
+    /// air brakes it to 1.2 and it lands on the seam (the flight model's
+    /// test, `superbounce_flight`); coasting would put it 2.867 out, 0.86
+    /// past, and a coasting prediction told the player to pull back. Let
+    /// go, it brakes to 1.763, short: fixable, by pushing on.
+    #[test]
+    fn a_braking_run_jump_is_on_the_slot_not_past_it() {
+        use superbounce_mode::Course;
+        let x = 2.0115;
+        let seam = Spot {
+            edge: [[x, -1.0, 0.0], [x, 1.0, 0.0]],
+            landed: true,
+            ..spot_at([x, 0.0, 0.0], [1.0, 0.0])
+        };
+        let jump = Body {
+            stick: [1.0, 0.0],
+            ..falling([0.0; 3], [2.0, 0.0, bots::bounce_route::JUMP_VZ])
+        };
+        let p = predict(&[seam], &jump).unwrap();
+        assert_eq!(p.verdict, Course::OnSlot);
+        near(p.at[0], x, 2e-3);
+        near(p.across, flight::AIR_TOP, 1e-4);
+        // The coasting landing is well past the catch.
+        assert!(superbounce::catch_miss(seam.edge, [2.0 * 43.0 / 30.0, 0.0]) > 0.7);
+        let let_go = predict(
+            &[seam],
+            &Body {
+                stick: [0.0; 2],
+                ..jump
+            },
+        )
+        .unwrap();
+        near(let_go.at[0], 1.763, 2e-3);
+        assert_eq!(let_go.verdict, Course::Fixable);
+        assert!(let_go.steer[0] > 0.99 && let_go.steer[1].abs() < 1e-4, "{:?}", let_go.steer);
+    }
+
+    /// A seam further than the measured stick can make up is a miss,
+    /// whatever a guessed acceleration says: from rest, 31 ticks over the
+    /// floor, a full stick covers 0.579, short of a seam 1.2 off (the
+    /// old gate, half of 3 units/s² times the time squared plus 0.4, said
+    /// 2.1).
+    #[test]
+    fn a_seam_beyond_the_sticks_reach_is_a_miss() {
+        use superbounce_mode::Course;
+        let seam = Spot {
+            edge: [[1.2, -1.0, 0.0], [1.2, 1.0, 0.0]],
+            ..spot_at([1.2, 0.0, 0.0], [0.0, 0.0])
+        };
+        let body = falling([0.0, 0.0, 2.4], [0.0; 3]);
+        let p = predict(&[seam], &body).unwrap();
+        assert_eq!(p.verdict, Course::Miss);
+        // The stick to hold is still toward it, all but full.
+        assert!(p.steer[0] > 0.9 && p.steer[1] == 0.0, "{:?}", p.steer);
+        assert_eq!(
+            judge(&body, &seam, &Ground::open()).map(|_| ()),
+            Err(Refusal::OutOfReach)
         );
     }
 
@@ -1867,7 +1965,6 @@ mod tests {
         let r = reach(&body, &proven).unwrap();
         near(r.aim[0], -10.457, 1e-5);
         near(r.aim[1], 3.976, 1e-5);
-        near(r.arrive[1], ARRIVE_SPEED, 1e-6);
         near(reach(&body, &scan).unwrap().aim[1], 3.9, 1e-5);
         // Along the strip the measured place across it is kept.
         let along = aim_at(&proven, stand_near(&proven, [-10.0, 3.0]));
@@ -1912,9 +2009,10 @@ mod tests {
         near(p.point[0], 1.5, 1e-5);
         near(p.reach.aim[0], 1.5, 1e-5);
         near(p.reach.aim[1], -0.02 - AIM_BACK, 1e-5);
-        // Nothing along the strip: only across it, onto it (-Y is right).
+        // Nothing along the strip: only across it, onto it (-Y is right):
+        // the 0.42 over the 29 ticks left, 0.43 units/s, a stick of 0.36.
         near(p.stick[1], 0.0, 1e-4);
-        assert!(p.stick[0] > 0.5, "{:?}", p.stick);
+        assert!(p.stick[0] > 0.3, "{:?}", p.stick);
     }
 
     #[test]
@@ -1925,7 +2023,7 @@ mod tests {
         let on = spot_at([1.0, 0.0, 0.0], [1.0, 0.0]);
         let under = spot_at([0.1, 0.0, -1.5], [1.0, 0.0]);
         let spots = [on, under];
-        let body = falling([0.1, 0.0, 2.0], [0.0; 3]);
+        let body = falling([0.1, 0.0, 4.0], [0.0; 3]);
         // With the spots alone the one right below wins.
         assert_eq!(pick(&spots, &body).unwrap().0.stand, under.stand);
         let floor = |_: [f32; 2], top: f32| (top >= 0.0).then_some(0.0);
@@ -1967,7 +2065,7 @@ mod tests {
     #[test]
     fn a_strip_behind_a_wall_is_refused() {
         let spot = spot_at([1.0, 0.0, 0.0], [1.0, 0.0]);
-        let body = falling([0.0, 0.0, 2.0], [0.0; 3]);
+        let body = falling([0.0, 0.0, 4.0], [0.0; 3]);
         // A wall at x 0.5.
         let wall = |a: Vec3, b: Vec3| (a[0] < 0.5) == (b[0] < 0.5);
         let ground = Ground {
@@ -1982,7 +2080,7 @@ mod tests {
             Verdict::Refused(Refusal::Walled)
         );
         // From the strip's side of it, it is in reach.
-        let c = choose(&[spot], &falling([0.8, 0.0, 2.0], [0.0; 3]), &ground);
+        let c = choose(&[spot], &falling([0.8, 0.0, 4.0], [0.0; 3]), &ground);
         assert_eq!(c.reason, Reason::Nearest);
     }
 
@@ -1991,7 +2089,7 @@ mod tests {
         let nearer = spot_at([0.3, 0.0, 0.0], [1.0, 0.0]);
         let marked = spot_at([-0.8, 0.0, 0.0], [1.0, 0.0]);
         let spots = [nearer, marked];
-        let body = falling([0.0, 0.0, 2.0], [0.0; 3]);
+        let body = falling([0.0, 0.0, 4.0], [0.0; 3]);
         let c = choose(&spots, &body, &Ground::open());
         assert_eq!(
             (c.plan.unwrap().target, c.reason),
@@ -2031,7 +2129,7 @@ mod tests {
             kept: Some(b.stand),
             ..Ground::open()
         };
-        let c = choose(&spots, &falling([0.0, 0.0, 2.0], [0.0; 3]), &ground);
+        let c = choose(&spots, &falling([0.0, 0.0, 4.0], [0.0; 3]), &ground);
         assert_eq!((c.plan.unwrap().target, c.reason), (b.stand, Reason::Kept));
         // Once b is out of reach (too little fall left) the mark is taken.
         let c = choose(&spots, &falling([0.25, 0.0, 0.1], [0.0; 3]), &ground);
@@ -2108,7 +2206,7 @@ mod tests {
         let passed = spot_at([-0.9, 0.0, 0.0], [1.0, 0.0]);
         let far = spot_at([0.0, 4.0, 0.0], [1.0, 0.0]);
         let above = spot_at([0.1, 0.0, 5.0], [1.0, 0.0]);
-        let body = falling([0.0, 0.0, 2.0], [0.0; 3]);
+        let body = falling([0.0, 0.0, 4.0], [0.0; 3]);
         let spots = [above, far, passed, chosen];
         let c = choose(&spots, &body, &Ground::open());
         let r = Report::of_choice(&body, &c, true);

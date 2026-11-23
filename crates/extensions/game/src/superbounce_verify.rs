@@ -43,8 +43,10 @@ use trial::{Pad, Read, Run};
 
 /// The ticker's name.
 pub const TICKER: &str = "superbounce.verify";
-/// Where an object's position is in its body.
-const OBJECT_POSITION: u32 = 0x30;
+/// Where an object's origin is in its body: the point a teleport places
+/// and the frame of every spot's heights
+/// ([`crate::superbounce_mode::OBJECT_POSITION`]).
+const OBJECT_POSITION: u32 = crate::superbounce_mode::OBJECT_POSITION;
 /// The most trace rows kept.
 pub const MAX_TRACE: usize = 2_000;
 

@@ -175,7 +175,7 @@ pub struct NavTarget {
 /// Whether a predicted landing is on the slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Course {
-    /// The coasting landing is inside the slot.
+    /// The landing, with the stick held as it is, is inside the slot.
     OnSlot,
     /// It is not, and the assist can still bring it in (its reach gate).
     Fixable,
@@ -187,14 +187,15 @@ pub enum Course {
 /// is falling toward.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Predicted {
-    /// Where the player lands coasting, at the strip's floor height.
+    /// Where the player lands with the stick held as it is
+    /// (`superbounce_flight::hold`), at the strip's floor height.
     pub at: Vec3,
     /// The point to come down on, X and Y: the strip's landing point
     /// nearest `at` (`superbounce_assist::aim_at`), what the line-up
     /// points at.
     pub aim: [f32; 2],
     /// The strip's drift, a unit vector (zero for none), and the speed
-    /// along it the coasting landing has (units/s).
+    /// along it the landing has (units/s).
     pub drift: [f32; 2],
     pub across: f32,
     pub verdict: Course,
@@ -208,6 +209,10 @@ pub struct Predicted {
     pub edge: [Vec3; 2],
     pub stand: Vec3,
     pub fall: f32,
+    /// The stick to hold now (world axes, 0 to 1) to bring the landing
+    /// onto `aim`, as the flight model's pursuit has it
+    /// (`superbounce_flight::pursue`); zero on the slot.
+    pub steer: [f32; 2],
 }
 
 impl Predicted {
@@ -1320,6 +1325,7 @@ mod tests {
             edge: [[0.0, -1.0, 0.0], [0.0, 1.0, 0.0]],
             stand: [0.0; 3],
             fall: 1.0,
+            steer: [0.0; 2],
         }
     }
 

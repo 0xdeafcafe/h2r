@@ -30,12 +30,25 @@ fn flat(_: [f32; 2]) -> f32 {
     CLEARANCE
 }
 
+/// A row in the centre's frame: no lift, the origin is the centre.
 fn row(y: f32, z: f32) -> Impact {
     Impact {
         row: [-10.457, y, z],
         ticks: 0,
         speed: 5.3,
+        lift: 0.0,
     }
+}
+
+/// The keeping stick of a velocity (`superbounce_flight::keep`).
+fn keep2(v: Vec3) -> [f32; 2] {
+    flight::keep([v[0], v[1]])
+}
+
+/// The impact of a body with no lift holding the keeping stick: at or
+/// under the air stick's top it keeps its sideways speed.
+fn coast(position: Vec3, velocity: Vec3, contact: impl Fn([f32; 2]) -> f32) -> Option<Impact> {
+    impact(position, velocity, keep2(velocity), 0.0, contact)
 }
 
 fn near(a: f32, b: f32, eps: f32) {
@@ -55,7 +68,7 @@ fn near3(a: Vec3, b: Vec3) {
 fn the_impact_is_the_sims_fall_model() {
     for height in [2.43, 3.45, 3.65, 3.82, 4.5, 5.5] {
         let (n, v) = fall_model(height);
-        let i = impact([0.0, 0.0, height + FALL_OFFSET], [0.0, 0.0, -FALL_V0], flat).unwrap();
+        let i = coast([0.0, 0.0, height + FALL_OFFSET], [0.0, 0.0, -FALL_V0], flat).unwrap();
         assert_eq!(i.ticks, n - FALL_STILL_ROWS, "{height}");
         near(i.speed, v, 1e-3);
         // The last free row is over the floor, and the next would not be.
@@ -66,19 +79,35 @@ fn the_impact_is_the_sims_fall_model() {
 }
 
 /// The pipper for a known velocity and height: a 3.65 drop carried at
-/// (0.3, −0.6) comes down 37 ticks on, that carry times 37 ticks from
-/// where it is, at 5.378 units/s.
+/// (0.3, −0.6) with the stick keeping it comes down 37 ticks on, that
+/// carry times 37 ticks from where it is, at 5.378 units/s.
 #[test]
 fn the_pipper_is_the_carry_over_the_falls_ticks() {
-    let i = impact([1.0, 2.0, 3.65 + FALL_OFFSET], [0.3, -0.6, -FALL_V0], flat).unwrap();
+    let i = coast([1.0, 2.0, 3.65 + FALL_OFFSET], [0.3, -0.6, -FALL_V0], flat).unwrap();
     assert_eq!(i.ticks, 37);
     near(i.row[0], 1.0 + 0.3 * 37.0 / 30.0, 1e-4);
     near(i.row[1], 2.0 - 0.6 * 37.0 / 30.0, 1e-4);
     near(i.speed, 5.378, 1e-3);
-    // Twice the carry, twice as far.
-    let fast = impact([1.0, 2.0, 3.65 + FALL_OFFSET], [0.6, -1.2, -FALL_V0], flat).unwrap();
+    // Half as much again, half as far again: still under the air
+    // stick's top (1.2), so the stick keeps it.
+    let fast = coast([1.0, 2.0, 3.65 + FALL_OFFSET], [0.45, -0.9, -FALL_V0], flat).unwrap();
     assert_eq!(fast.ticks, 37);
-    near(fast.row[0] - 1.0, 2.0 * (i.row[0] - 1.0), 1e-4);
+    near(fast.row[0] - 1.0, 1.5 * (i.row[0] - 1.0), 1e-4);
+    // A run faster than the top does not keep it: at 2.0 the stick that
+    // keeps it slows it 0.035 a tick to 1.2, short of the coasting line.
+    let run = coast([1.0, 2.0, 3.65 + FALL_OFFSET], [2.0, 0.0, -FALL_V0], flat).unwrap();
+    assert!(run.row[0] - 1.0 < 2.0 * 37.0 / 30.0 - 0.3, "{run:?}");
+    // Let go, the body brakes: a drift of 0.3 moves 0.265, 0.23, ...,
+    // 0.02 over 8 ticks (1.14 / 30) and stops on the 9th.
+    let let_go = impact(
+        [1.0, 2.0, 3.65 + FALL_OFFSET],
+        [0.3, 0.0, -FALL_V0],
+        [0.0; 2],
+        0.0,
+        flat,
+    )
+    .unwrap();
+    near(let_go.row[0] - 1.0, 1.14 / 30.0, 1e-4);
 }
 
 /// On the ground the flight is a jump from here: up at the jump's speed,
@@ -88,12 +117,12 @@ fn the_pipper_is_the_carry_over_the_falls_ticks() {
 fn a_jump_now_lands_where_the_run_carries_it() {
     let v = jump([1.2, 0.0, 0.0]);
     assert_eq!(v, [1.2, 0.0, JUMP_VZ]);
-    let i = impact([0.0, 0.0, CLEARANCE], v, flat).unwrap();
+    let i = coast([0.0, 0.0, CLEARANCE], v, flat).unwrap();
     assert_eq!(i.ticks, 43);
     near(i.row[0], 1.2 * 43.0 / 30.0, 1e-3);
     near(i.speed, 2.9, 0.05);
     // Standing still, it comes down where it went up.
-    let still = impact([3.0, 4.0, CLEARANCE], jump([0.0; 3]), flat).unwrap();
+    let still = coast([3.0, 4.0, CLEARANCE], jump([0.0; 3]), flat).unwrap();
     assert_eq!((still.row[0], still.row[1], still.ticks), (3.0, 4.0, 43));
 }
 
@@ -101,15 +130,15 @@ fn a_jump_now_lands_where_the_run_carries_it() {
 /// never comes down in time, or with a number that is not one.
 #[test]
 fn a_flight_that_never_lands_has_no_impact() {
-    assert_eq!(impact([0.0, 0.0, -2.0], jump([0.0; 3]), flat), None);
-    assert_eq!(impact([0.0, 0.0, 5.0], [0.0, 0.0, 200.0], flat), None);
-    assert_eq!(impact([f32::NAN, 0.0, 5.0], [0.0; 3], flat), None);
+    assert_eq!(coast([0.0, 0.0, -2.0], jump([0.0; 3]), flat), None);
+    assert_eq!(coast([0.0, 0.0, 5.0], [0.0, 0.0, 200.0], flat), None);
+    assert_eq!(coast([f32::NAN, 0.0, 5.0], [0.0; 3], flat), None);
     assert_eq!(
-        impact([0.0, 0.0, 5.0], [0.0, f32::INFINITY, 0.0], flat),
+        coast([0.0, 0.0, 5.0], [0.0, f32::INFINITY, 0.0], flat),
         None
     );
     // From a little under a floor a jump clears, there is one.
-    assert!(impact([0.0, 0.0, -0.5], jump([0.0; 3]), flat).is_some());
+    assert!(coast([0.0, 0.0, -0.5], jump([0.0; 3]), flat).is_some());
 }
 
 /// The seam's frame and surface: past the edge along the drift, and
@@ -125,22 +154,74 @@ fn the_seam_stops_the_body_on_its_floor_or_its_far_face() {
     near(over, 0.4, 1e-5);
     // Past the edge's end the nearest point is the end.
     assert_eq!(s.edge_point([-20.0, 4.0]), [-11.10, 4.0, -3.2]);
-    near(s.contact([-10.4, 3.0]), -3.2 + CLEARANCE, 1e-6);
-    near(s.contact([-10.4, 4.0]), -3.2 + DEPTH_CUT - DEPTH_BAND, 1e-5);
+    near(s.contact([-10.4, 3.0], 0.0), -3.2 + CLEARANCE, 1e-6);
+    near(s.contact([-10.4, 4.0], 0.0), -3.2 + DEPTH_CUT - DEPTH_BAND, 1e-5);
     near(
-        s.contact([-10.4, 3.96]),
+        s.contact([-10.4, 3.96], 0.0),
         -3.2 + DEPTH_CUT - DEPTH_BAND - SEAM_SLOPE * 0.04,
         1e-5,
     );
-    assert!(s.contact([-10.4, 4.1]) > s.contact([-10.4, 4.0]));
+    assert!(s.contact([-10.4, 4.1], 0.0) > s.contact([-10.4, 4.0], 0.0));
     // A seam with no drift has its floor alone.
     let plain = Seam {
         drift: [0.0; 2],
         ..s
     };
     assert!(!plain.drifts());
-    near(plain.contact([-10.4, 4.0]), -3.2 + CLEARANCE, 1e-6);
+    near(plain.contact([-10.4, 4.0], 0.0), -3.2 + CLEARANCE, 1e-6);
     assert_eq!(plain.frame([-10.3, 3.9, -2.8])[0], 0.0);
+    // The surface is the centre's: off the catch it is the floor in the
+    // centre's frame, the lift over the origin's; in the catch it is the
+    // measured rule, whatever the lift.
+    near(s.contact([-10.4, 3.0], 0.4), -3.2 + CLEARANCE + 0.4, 1e-6);
+    near(s.contact([-10.4, 4.5], 0.4), -3.2 + CLEARANCE + 0.4, 1e-6);
+    for y in [3.92, 3.96, 4.0, 4.05] {
+        assert_eq!(s.contact([-10.4, y], 0.4), s.contact([-10.4, y], 0.0), "{y}");
+    }
+}
+
+/// A body whose bounding-sphere centre is 0.4 over its origin (the
+/// mode's lift) lands on the tick its origin does: a fall of 2.43 from
+/// rest onto the seam's floor, off its catch, takes the origin's 31
+/// ticks. Flown as though the centre were the origin (the 0.4 more to
+/// fall a sphere-centre position gave) it came down 2 or 3 ticks late.
+#[test]
+fn the_origin_lands_on_its_own_tick_whatever_the_lift() {
+    let floor = -3.2 + CLEARANCE;
+    let origin = [-10.457, 3.0, floor + 2.43];
+    let body = Body {
+        position: origin,
+        velocity: [0.0; 3],
+        airborne: true,
+        primed: true,
+        lift: 0.4,
+        stick: [0.0; 2],
+    };
+    let g = guide(&body, &ascension()).unwrap();
+    let i = g.impact.unwrap();
+    let own = coast(origin, [0.0; 3], |_| floor).unwrap();
+    assert_eq!(i.ticks, own.ticks);
+    assert_eq!(i.row, own.row);
+    near(i.centre()[2], i.row[2] + 0.4, 1e-6);
+    // The sphere centre read as the origin: late.
+    let centre = Body {
+        position: [origin[0], origin[1], origin[2] + 0.4],
+        lift: 0.0,
+        ..body
+    };
+    let late = guide(&centre, &ascension()).unwrap().impact.unwrap();
+    assert!((2..=3).contains(&(late.ticks - i.ticks)), "{late:?} {i:?}");
+    // Over the seam the depth rule reads the centre: the same origin row
+    // with a lift is the row a lift higher, shallower by it.
+    let r = Impact {
+        lift: 0.1,
+        ..row(3.95, -2.9)
+    };
+    near(
+        depth(&seam(), &r).unwrap().margin,
+        depth(&seam(), &row(3.95, -2.8)).unwrap().margin,
+        1e-5,
+    );
 }
 
 /// The depth rule is the note's cut: at y 3.94 a last free row bounces
@@ -178,7 +259,7 @@ fn the_depth_rule_is_the_notes_cut() {
     );
     // Every measured last free row is over where the seam stops the body.
     for (y, z) in [(3.97, -2.875), (3.99, -2.875), (3.93, -2.875)] {
-        assert!(z > s.contact([-10.457, y]), "y {y}");
+        assert!(z > s.contact([-10.457, y], 0.0), "y {y}");
     }
 }
 
@@ -256,6 +337,8 @@ fn the_guide_shows_while_primed_only() {
         velocity: [0.0, 0.3, -5.3],
         airborne: true,
         primed: false,
+        lift: 0.0,
+        stick: keep2([0.0, 0.3, -5.3]),
     };
     assert_eq!(guide(&falling, &ascension()), None);
     let standing = Body {
@@ -263,6 +346,8 @@ fn the_guide_shows_while_primed_only() {
         velocity: [0.0; 3],
         airborne: false,
         primed: false,
+        lift: 0.0,
+        stick: [0.0; 2],
     };
     assert_eq!(guide(&standing, &ascension()), None);
     assert_eq!(
@@ -338,6 +423,8 @@ fn a_primed_fall_is_called_before_it_lands() {
         velocity: [0.0, drift, -5.3],
         airborne: true,
         primed: true,
+        lift: 0.0,
+        stick: keep2([0.0, drift, -5.3]),
     };
     // One tick from the seam: this row is the last free one.
     let g = guide(&body(-2.83, 0.3), &spot).unwrap();
@@ -353,7 +440,8 @@ fn a_primed_fall_is_called_before_it_lands() {
         (Call::WillBounce, true, false, Some(true))
     );
     let l = g.layout();
-    near3(l.seam, [-10.457, 3.976, -3.2]);
+    // The box is on the edge (y 4.0), beside the landing point (3.976).
+    near3(l.seam, [-10.457, 4.0, -3.2]);
     assert_eq!((l.along, l.drift), ([1.0, 0.0], [0.0, 1.0]));
     assert_eq!(
         (l.half_along, l.impact, l.strength),
@@ -370,7 +458,7 @@ fn a_primed_fall_is_called_before_it_lands() {
     let high = guide(&body(0.4, 0.0), &spot).unwrap();
     let i = high.impact.unwrap();
     assert!(i.ticks > 10 && i.speed > 6.0, "{i:?}");
-    let over = i.row[2] - high.seam.contact([i.row[0], i.row[1]]);
+    let over = i.row[2] - high.seam.contact([i.row[0], i.row[1]], 0.0);
     assert!(
         over > 0.0 && over <= (i.speed + GRAVITY * TICK) * TICK + 1e-4,
         "{over}"
@@ -392,6 +480,8 @@ fn on_the_ground_there_is_no_pipper_without_a_count() {
         velocity: [0.0, vy, 0.0],
         airborne: false,
         primed: true,
+        lift: 0.0,
+        stick: keep2([0.0, vy, 0.0]),
     };
     for (y, vy) in [(3.95, 0.0), (2.95, 0.0), (2.95, 0.5), (-40.0, 0.0)] {
         let g = guide(&standing(y, vy), &spot).unwrap();
@@ -416,6 +506,8 @@ fn the_box_fits_the_edge() {
         velocity: [0.0; 3],
         airborne: false,
         primed: true,
+        lift: 0.0,
+        stick: [0.0; 2],
     };
     let short = Spot {
         kind: Kind::Bounce,
@@ -450,6 +542,8 @@ fn the_agent_reply_carries_the_call_and_the_depth() {
         velocity: [0.0, 0.3, -5.3],
         airborne: true,
         primed: true,
+        lift: 0.0,
+        stick: keep2([0.0, 0.3, -5.3]),
     };
     let g = guide(&body, &ascension()).unwrap();
     let r = guide_reply(&g);
@@ -582,13 +676,13 @@ fn flight(s: &Seam, t: &Takeoff) -> Option<Impact> {
         t.at[1] + h[1] * from,
         t.at[2] + CLEARANCE,
     ];
-    impact(at, [h[0] * t.speed, h[1] * t.speed, vz], |xy| s.contact(xy))
+    coast(at, [h[0] * t.speed, h[1] * t.speed, vz], |xy| s.contact(xy, 0.0))
 }
 
 /// A jump's takeoff on a ledge whose lip is at y 2.6: a walk-off from
 /// the lip comes down 0.4 short of the seam, so the jump is kept.
 fn jump_line() -> Takeoff {
-    place(&seam(), NEED, &lip_at(2.6), ledge(-20.0, 2.6)).unwrap()
+    place(&seam(), NEED, &lip_at(2.6), 0.0, ledge(-20.0, 2.6)).unwrap()
 }
 
 /// The takeoff is placed on the lip's real floor and kept for the flight
@@ -630,7 +724,7 @@ fn a_jump_is_kept_where_the_walk_off_falls_short() {
 #[test]
 fn a_walk_off_is_kept_where_it_lands_and_no_jump_does() {
     let s = seam();
-    let t = place(&s, NEED, &lip_at(2.97), ledge(2.67, 2.97)).unwrap();
+    let t = place(&s, NEED, &lip_at(2.97), 0.0, ledge(2.67, 2.97)).unwrap();
     assert_eq!((t.leave, t.checked), (Leave::Drop, true));
     assert_eq!(t.at, [-10.457, 2.97, LEDGE]);
     assert_eq!(t.half, DROP_HALF);
@@ -645,41 +739,41 @@ fn a_walk_off_is_kept_where_it_lands_and_no_jump_does() {
 fn a_lip_nothing_lands_from_is_still_where_to_go() {
     let s = seam();
     let far = ledge(-20.0, 0.5);
-    let t = place(&s, NEED, &lip_at(0.5), far).unwrap();
+    let t = place(&s, NEED, &lip_at(0.5), 0.0, far).unwrap();
     assert_eq!(
         (t.leave, t.checked, t.at),
         (Leave::Drop, false, [-10.457, 0.5, LEDGE])
     );
     // Inside the ledge, not at its edge: a jump, or the run's own way.
     let inside = lip_at(0.0);
-    assert_eq!(place(&s, NEED, &inside, far).unwrap().leave, Leave::Jump);
+    assert_eq!(place(&s, NEED, &inside, 0.0, far).unwrap().leave, Leave::Jump);
     let run = Lip {
         run: Some(Leave::Drop),
         ..inside
     };
-    assert_eq!(place(&s, NEED, &run, far).unwrap().leave, Leave::Drop);
+    assert_eq!(place(&s, NEED, &run, 0.0, far).unwrap().leave, Leave::Drop);
     // A run's speed is the one its takeoff is for.
     let quick = Lip {
         speed: Some(1.2),
         ..inside
     };
-    assert_eq!(place(&s, NEED, &quick, far).unwrap().speed, 1.2);
+    assert_eq!(place(&s, NEED, &quick, 0.0, far).unwrap().speed, 1.2);
     // Off the floor: none; nor with no heading, or a bad point.
     let floating = Lip {
         at: [-10.457, 0.0, 5.0],
         ..inside
     };
-    assert_eq!(place(&s, NEED, &floating, far), None);
+    assert_eq!(place(&s, NEED, &floating, 0.0, far), None);
     let lost = Lip {
         heading: [0.0; 2],
         ..inside
     };
-    assert_eq!(place(&s, NEED, &lost, far), None);
+    assert_eq!(place(&s, NEED, &lost, 0.0, far), None);
     let bad = Lip {
         at: [f32::NAN, 0.0, LEDGE],
         ..inside
     };
-    assert_eq!(place(&s, NEED, &bad, far), None);
+    assert_eq!(place(&s, NEED, &bad, 0.0, far), None);
 }
 
 /// The coarse pass, which tries every step only near the landing
@@ -700,9 +794,9 @@ fn the_coarse_pass_finds_the_same_band() {
         let speed = f32::hypot(v[0], v[1]);
         let dir = [v[0] / speed, v[1] / speed];
         let range = [-0.3, speed * 3.0 + 0.3];
-        let fine = band_by(&s, from, dir, jump(v), range, false, &good);
+        let fine = band_by(&s, from, dir, jump(v), 0.0, range, false, &good);
         assert_eq!(
-            band_by(&s, from, dir, jump(v), range, true, &good),
+            band_by(&s, from, dir, jump(v), 0.0, range, true, &good),
             fine,
             "{from:?} {v:?}"
         );
@@ -911,6 +1005,8 @@ fn running(t: &Takeoff, back: f32) -> Body {
         velocity: [0.0, t.speed, 0.0],
         airborne: false,
         primed: true,
+        lift: 0.0,
+        stick: keep2([0.0, t.speed, 0.0]),
     }
 }
 
@@ -1007,6 +1103,8 @@ fn the_guide_carries_the_cue_on_the_ground() {
         velocity: [0.0, 0.3, -5.3],
         airborne: true,
         primed: true,
+        lift: 0.0,
+        stick: keep2([0.0, 0.3, -5.3]),
     };
     let f = guide_from(&falling, &spot, Some(t))
         .unwrap()
@@ -1143,6 +1241,8 @@ fn a_scan_only_seam_is_capped() {
         velocity: [0.0, 0.3, -5.3],
         airborne: true,
         primed: true,
+        lift: 0.0,
+        stick: keep2([0.0, 0.3, -5.3]),
     };
     let (m, s) = (
         guide(&body(-2.83), &ascension()).unwrap(),

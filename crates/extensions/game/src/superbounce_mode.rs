@@ -66,8 +66,16 @@ pub const FEATURE: &str = "superbounce";
 pub const PRIMED_WORD: i32 = -3;
 /// Metres in a world unit (10 feet).
 pub const METRES_PER_UNIT: f32 = 3.048;
-/// Where an object's position is, in its body.
-pub const OBJECT_POSITION: u32 = 0x30;
+/// Where an object's origin is in its body (`+0x64`): the point a
+/// teleport places and the frame every spot's `stand` and `edge` heights
+/// are in (the floor plus 0.01). Not the bounding sphere's centre at
+/// `+0x30`, which a biped's bounds update keeps about 0.4 units over the
+/// origin and which moves with its pose and facing.
+pub const OBJECT_POSITION: u32 = guest_layout::Object::POSITION.offset;
+/// Where the bounding sphere's centre is in an object's body (`+0x30`):
+/// the frame the approach guide's depth rule was measured in
+/// (`superbounce_guide::depth`). The mode reads it only for the lift.
+pub const OBJECT_CENTRE: u32 = guest_layout::Object::BOUND_CENTER.offset;
 /// The most spot lines drawn: the nearest ones.
 pub const MAX_LINES: usize = 40;
 /// A bounce line's brightness while the player is not primed.
@@ -116,7 +124,13 @@ pub struct State {
     pub active: bool,
     /// The level pair's word; `None` without a pair (between lives).
     pub word: Option<u32>,
+    /// The body's origin (object `+0x64`, [`OBJECT_POSITION`]), the frame
+    /// of every spot's heights; not the bounding sphere's centre.
     pub position: Option<Vec3>,
+    /// The stick the player holds, in world axes (the unit's throttle at
+    /// `+0x1b0` turned by the aim's yaw, `superbounce_flight::held`);
+    /// `None` without a unit or a yaw.
+    pub stick: Option<[f32; 2]>,
     pub nearest: Option<Near>,
     pub scan: ScanState,
     pub map: Option<String>,
@@ -197,6 +211,7 @@ impl State {
         active: false,
         word: None,
         position: None,
+        stick: None,
         nearest: None,
         scan: ScanState::Idle,
         map: None,
@@ -492,7 +507,8 @@ pub fn primed_marks(marks: Marks, primed: bool) -> Marks {
 /// The takeoff for the strip `spot` for a player whose feet are at
 /// `player` (docs/game/superbounce.md, "The takeoff"), with `floor(xy,
 /// top)` the map's floor (`superbounce_capsule::Room::floor_at`): placed
-/// (`superbounce_guide::place`) from `run`, a ghost or verified run's lip
+/// (`superbounce_guide::place`, flown at `superbounce_guide::CENTRE_LIFT`)
+/// from `run`, a ghost or verified run's lip
 /// (`superbounce_ghost::lip_for`), when it has one on a real floor; else
 /// from the map's lip search (`superbounce_world::lip`).
 pub fn takeoff_for(
@@ -501,13 +517,15 @@ pub fn takeoff_for(
     run: Option<crate::superbounce_guide::Lip>,
     floor: impl Fn([f32; 2], f32) -> Option<f32>,
 ) -> Option<crate::superbounce_guide::Takeoff> {
-    use crate::superbounce_guide::{Seam, place};
+    use crate::superbounce_guide::{CENTRE_LIFT, Seam, place};
     let seam = Seam::of(spot, [spot.stand[0], spot.stand[1]]);
     let need = crate::superbounce_charge::need_of(spot);
-    run.and_then(|l| place(&seam, need, &l, &floor))
+    // A fixed lift: the takeoff is a place on the floor, and must not
+    // move with the pose.
+    run.and_then(|l| place(&seam, need, &l, CENTRE_LIFT, &floor))
         .or_else(|| {
             crate::superbounce_world::lip(spot.stand, spot.fall, spot.drift, player, &floor)
-                .and_then(|l| place(&seam, need, &l, &floor))
+                .and_then(|l| place(&seam, need, &l, CENTRE_LIFT, &floor))
         })
 }
 
@@ -964,7 +982,14 @@ fn on_now(m: &dyn GuestMemory) -> bool {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Live {
     word: Option<u32>,
+    /// The origin ([`OBJECT_POSITION`]).
     position: Option<Vec3>,
+    /// The bounding sphere's centre over the origin
+    /// ([`superbounce_guide::CENTRE_LIFT`](crate::superbounce_guide::CENTRE_LIFT)
+    /// when either is not read).
+    lift: f32,
+    /// The held stick in world axes ([`State::stick`]).
+    stick: Option<[f32; 2]>,
     airborne: bool,
     vz: Option<f32>,
     yaw: Option<f32>,
@@ -978,6 +1003,37 @@ struct Live {
     request: bool,
     /// The game tick.
     tick: Option<u32>,
+}
+
+/// The seam the local player faces, tick to tick.
+static FACING: Mutex<crate::superbounce_seams::Facing> =
+    Mutex::new(crate::superbounce_seams::Facing::new());
+
+/// The chosen strip with the faced seam: while `nav` is on a strip (the
+/// player is primed), the seam of `shown` whose landing point is `faced`
+/// is the chosen strip. Otherwise, and with no position, `nav` as it is.
+pub fn faced_target(
+    nav: Option<NavTarget>,
+    faced: Option<Vec3>,
+    shown: &[crate::superbounce_targets::Target],
+    at: Option<Vec3>,
+) -> Option<NavTarget> {
+    let strip = nav.is_none_or(|n| n.kind == NavKind::Strip);
+    let seam = faced
+        .filter(|_| strip)
+        .and_then(|f| shown.iter().find(|t| t.at() == f));
+    match (seam, at) {
+        (Some(t), Some(at)) => {
+            let d = [t.at()[0] - at[0], t.at()[1] - at[1], t.at()[2] - at[2]];
+            Some(NavTarget {
+                at: t.at(),
+                kind: NavKind::Strip,
+                distance: (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt(),
+                fall: t.spot.fall,
+            })
+        }
+        _ => nav,
+    }
 }
 
 /// The game tick, from the game-time record.
@@ -1001,11 +1057,16 @@ fn read_live(m: &dyn GuestMemory) -> Live {
             ..Live::default()
         };
     };
-    let position = (|| {
-        let at = u.body.wrapping_add(OBJECT_POSITION);
+    let read3 = |offset: u32| {
+        let at = u.body.wrapping_add(offset);
         let f = |i: u32| m.u32(at.wrapping_add(4 * i)).ok().map(f32::from_bits);
         Some([f(0)?, f(1)?, f(2)?])
-    })();
+    };
+    let position = read3(OBJECT_POSITION);
+    let lift = match (position, read3(OBJECT_CENTRE)) {
+        (Some(o), Some(c)) if (c[2] - o[2]).is_finite() => c[2] - o[2],
+        _ => crate::superbounce_guide::CENTRE_LIFT,
+    };
     let word = live_telemetry::havok_agents::fixed_pair_word(m, u.unit)
         .ok()
         .flatten();
@@ -1029,6 +1090,15 @@ fn read_live(m: &dyn GuestMemory) -> Live {
     };
     let aim = (|| Some([f(UNIT_AIM)?, f(UNIT_AIM + 4)?, f(UNIT_AIM + 8)?]))()
         .filter(|a: &Vec3| (a[0] * a[0] + a[1] * a[1] + a[2] * a[2] - 1.0).abs() < 0.1);
+    // The unit's throttle (forward, left; `cheats::flight::UNIT_THROTTLE`)
+    // in world axes.
+    let throttle = guest_layout::Unit::THROTTLE.offset;
+    let stick = match (f(throttle), f(throttle + 4), yaw) {
+        (Some(forward), Some(left), Some(yaw)) => {
+            Some(crate::superbounce_flight::held([forward, left], yaw))
+        }
+        _ => None,
+    };
     let flashlight = m
         .u32(
             u.body
@@ -1042,6 +1112,8 @@ fn read_live(m: &dyn GuestMemory) -> Live {
     Live {
         word,
         position,
+        lift,
+        stick,
         airborne,
         vz,
         yaw,
@@ -1210,6 +1282,7 @@ fn decide(o: &hooks::Obs) {
         crate::pogo_ride::reset();
         crate::superbounce_ghost::reset();
         crate::superbounce_targets::reset();
+        *lock(&FACING) = crate::superbounce_seams::Facing::new();
     }
 }
 
@@ -1268,6 +1341,12 @@ fn on_tick(o: &hooks::Obs) {
         Some(o) => keep_off_spot(o, &scanned_spots().1),
         None => lock(&OFF_SPOT).clone(),
     };
+    // The stick the player holds; where it was not read, the one that
+    // keeps the body going (superbounce_flight::keep).
+    let stick_of = |v: Vec3| {
+        live.stick
+            .unwrap_or_else(|| crate::superbounce_flight::keep([v[0], v[1]]))
+    };
     let landing = match (live.position, live.velocity) {
         (Some(position), Some(velocity)) => crate::superbounce_assist::predict_on(
             &spots,
@@ -1276,6 +1355,7 @@ fn on_tick(o: &hooks::Obs) {
                 velocity,
                 yaw: live.yaw.unwrap_or(0.0),
                 airborne: live.airborne,
+                stick: stick_of(velocity),
             },
             // A strip under a floor is not one the fall lands on.
             &crate::superbounce_assist::Ground {
@@ -1313,7 +1393,29 @@ fn on_tick(o: &hooks::Obs) {
         live.position,
     );
     let is_primed = live.word.is_some_and(primed);
-    let marks = primed_marks(
+    // The seams the targets' mode shows: the faced seam is one of them,
+    // and each has its line on the map (superbounce_seams).
+    let shown = crate::superbounce_targets::current();
+    // Primed, with no tag and no strip being fallen onto, the chosen
+    // strip is the seam the player faces (docs/game/superbounce.md, "The
+    // faced seam"), so the navpoint, the takeoff, the guide and the
+    // assist follow where the player is going.
+    let faced = match live.position {
+        Some(p) if is_primed => {
+            lock(&FACING).step(&shown, p, live.yaw, live.velocity, live.airborne)
+        }
+        _ => {
+            *lock(&FACING) = crate::superbounce_seams::Facing::new();
+            None
+        }
+    };
+    let nav_target = faced_target(
+        nav_target,
+        faced.filter(|_| landing.is_none() && tag.is_none()),
+        &shown,
+        live.position,
+    );
+    let mut marks = primed_marks(
         crate::superbounce_targets::marks(
             live.position,
             tag,
@@ -1321,6 +1423,10 @@ fn on_tick(o: &hooks::Obs) {
         ),
         is_primed,
     );
+    // The set's seams are lines on their edges, not navpoints: the
+    // chosen strip's and the tag's are the only ones. The flight after a
+    // bounce puts its ranked seams on them (superbounce_second::over).
+    marks.targets = [None; crate::superbounce_targets::NEAREST];
     // The assist steers onto the strip that is marked
     // (superbounce_assist::choose).
     crate::superbounce_assist::set_marked(
@@ -1336,6 +1442,7 @@ fn on_tick(o: &hooks::Obs) {
         .and_then(|n| {
             spots
                 .iter()
+                .chain(shown.iter().map(|t| &t.spot))
                 .find(|s| s.kind == Kind::Bounce && s.stand == n.at)
         });
     let takeoff = match (strip, live.position) {
@@ -1387,6 +1494,7 @@ fn on_tick(o: &hooks::Obs) {
                     velocity,
                     yaw: live.yaw.unwrap_or(0.0),
                     airborne: live.airborne,
+                    stick: stick_of(velocity),
                 },
                 &crate::superbounce_assist::Ground {
                     floor: &|xy: [f32; 2], top: f32| room.floor_at(xy, top),
@@ -1432,6 +1540,8 @@ fn on_tick(o: &hooks::Obs) {
                         velocity,
                         airborne: live.airborne,
                         primed: is_primed,
+                        lift: live.lift,
+                        stick: stick_of(velocity),
                     },
                     spot,
                     // The takeoff is the chosen strip's: on another seam
@@ -1485,6 +1595,7 @@ fn on_tick(o: &hooks::Obs) {
         active: true,
         word: live.word,
         position: live.position,
+        stick: live.stick,
         nearest,
         scan,
         map,
@@ -1654,6 +1765,66 @@ mod gpu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The faced seam of the targets' set is the chosen strip while the
+    /// navpoint is a strip's; a crouch spot's navpoint, no faced seam and
+    /// a seam that left the set leave it as it is.
+    #[test]
+    fn the_faced_seam_is_the_chosen_strip() {
+        use crate::superbounce_targets::{Class, Target};
+        let seam = |x: f32, fall: f32| Target {
+            spot: Spot {
+                kind: Kind::Bounce,
+                edge: [[x, -1.0, 0.0], [x, 1.0, 0.0]],
+                stand: [x, 0.0, 0.01],
+                fall,
+                ..Spot::default()
+            },
+            class: Class::Slot,
+        };
+        let shown = [seam(4.0, 0.0), seam(12.0, 2.43)];
+        let nav = |at: Vec3, kind| NavTarget {
+            at,
+            kind,
+            distance: 4.0,
+            fall: 0.0,
+        };
+        let me = Some([0.0, 0.0, 0.01]);
+        let near = Some(nav(shown[0].at(), NavKind::Strip));
+        // Facing the far seam: it is the strip, with its own drop.
+        let got = faced_target(near, Some(shown[1].at()), &shown, me).unwrap();
+        assert_eq!((got.at, got.kind, got.fall), (shown[1].at(), NavKind::Strip, 2.43));
+        assert!((got.distance - 12.0).abs() < 1e-5);
+        // A seam the mode marks nothing of still gets a strip.
+        assert_eq!(
+            faced_target(None, Some(shown[1].at()), &shown, me).map(|n| n.at),
+            Some(shown[1].at())
+        );
+        // No faced seam, one not in the set, no position, and a crouch
+        // spot's navpoint: as it was.
+        assert_eq!(faced_target(near, None, &shown, me), near);
+        assert_eq!(faced_target(near, Some([99.0, 0.0, 0.0]), &shown, me), near);
+        assert_eq!(faced_target(near, Some(shown[1].at()), &shown, None), near);
+        let crouch = Some(nav([1.0, 0.0, 0.0], NavKind::Crouch));
+        assert_eq!(faced_target(crouch, Some(shown[1].at()), &shown, me), crouch);
+    }
+
+    /// The mode reads the origin a teleport places, the frame of every
+    /// spot's heights: read from the bounding sphere's centre, every
+    /// height over a seam was about 0.4 too big (fall times 2 to 3 ticks
+    /// long, touchdowns too fast, landings by a strip missed by the 0.5
+    /// radius). The centre is read for the lift alone.
+    #[test]
+    fn the_mode_reads_the_origin_a_teleport_places() {
+        use guest_layout::Object;
+        assert_eq!(OBJECT_POSITION, Object::POSITION.offset);
+        assert_eq!(OBJECT_POSITION, 0x64);
+        assert_ne!(OBJECT_POSITION, Object::BOUND_CENTER.offset);
+        assert_eq!(OBJECT_POSITION, crate::telemetry::layout::BODY_POSITION);
+        assert_eq!(OBJECT_CENTRE, 0x30);
+        assert_eq!(guest_layout::Unit::THROTTLE.offset, 0x1b0);
+        assert_eq!(State::EMPTY.stick, None);
+    }
 
     #[test]
     fn the_agent_override_names_itself_and_can_be_undone() {
@@ -1899,6 +2070,7 @@ mod tests {
                 edge: [[0.0, 2.0, -3.0], [2.0, 2.0, -3.0]],
                 stand: [1.0, 2.0, -3.0],
                 fall: 1.0,
+                steer: [0.0, 1.0],
             }),
             last_landing: Some(Landing {
                 result: LandingResult::TooSlow,
@@ -2152,7 +2324,7 @@ mod tests {
     /// `PRESS_LEAD` ticks on from the line.
     fn lands(spot: &Spot, t: &crate::superbounce_guide::Takeoff) -> bool {
         use crate::superbounce_guide::{
-            CLEARANCE, JUMP_VZ, Leave, PRESS_LEAD, Seam, TICK, caught, impact,
+            CENTRE_LIFT, CLEARANCE, JUMP_VZ, Leave, PRESS_LEAD, Seam, TICK, caught, impact,
         };
         let seam = Seam::of(spot, [spot.stand[0], spot.stand[1]]);
         let h = t.heading;
@@ -2165,9 +2337,9 @@ mod tests {
             t.at[1] + h[1] * from,
             t.at[2] + CLEARANCE,
         ];
-        impact(at, [h[0] * t.speed, h[1] * t.speed, vz], |xy| {
-            seam.contact(xy)
-        })
+        let v = [h[0] * t.speed, h[1] * t.speed, vz];
+        let stick = crate::superbounce_flight::keep([v[0], v[1]]);
+        impact(at, v, stick, CENTRE_LIFT, |xy| seam.contact(xy, CENTRE_LIFT))
         .is_some_and(|i| caught(&seam, &i) && i.speed >= spot.need)
     }
 
