@@ -19,6 +19,9 @@ use super::tag_doc::{Access, BlockOp, TagAction, TagDoc, TagWrite};
 
 mod chain;
 pub use chain::{Chain, DEFAULT_DEPTH, MAX_DEPTH, Node, chain, placement_root};
+mod uses;
+pub use uses::{Uses, uses};
+pub(crate) use uses::{Index as UsesIndex, build as build_uses_index};
 
 /// Elements of a block [`read_tag`] lists at most.
 pub const ELEMENTS: u32 = 64;

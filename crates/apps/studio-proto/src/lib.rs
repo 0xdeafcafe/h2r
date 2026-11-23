@@ -90,6 +90,7 @@ pub mod method {
     pub const TAG_REFS: &str = "tag.refs";
     pub const TAG_KINDS: &str = "tag.kinds";
     pub const TAG_CHAIN: &str = "tag.chain";
+    pub const TAG_USES: &str = "tag.uses";
     pub const TAG_FOLLOW: &str = "tag.follow";
     pub const TAG_SET: &str = "tag.set";
     pub const TAG_BLOCK_ADD: &str = "tag.block.add";

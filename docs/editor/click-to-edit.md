@@ -1,7 +1,7 @@
 # Click to edit: one editor for placements, tags and Halo 1 tags
 
-Status: C1 and C2 are implemented. The remaining slices are design.
-Code: C1 lives in studio's `app.rs`, `app/tag_api/chain.rs`, `ui/inspector.rs` and `api/tag_fields.rs`. C2 lives in `app/navigation.rs`, `fields.rs` and `api/nav.rs`. The full design changes `crates/apps/studio/src` (`app.rs`, `app/tag_doc.rs`, `fields.rs`, `ui/inspector.rs`, `ui/tags.rs`, `api`), `crates/tools/editor-core`, `crates/tools/scenario-edit`, `crates/tools/h1map`, `crates/tools/h1objects` and `crates/tools/h1convert`; each slice names its files and tests.
+Status: C1, C2 and C3 are implemented. The remaining slices are design.
+Code: C1 lives in studio's `app.rs`, `app/tag_api/chain.rs`, `ui/inspector.rs` and `api/tag_fields.rs`. C2 lives in `app/navigation.rs`, `fields.rs` and `api/nav.rs`. C3 lives in `app/tag_api/uses.rs` (the reverse index, cached in `app/tag_doc.rs` by the document's revision), `app.rs` and `viewport.rs` (`highlight`), `ui/inspector.rs` (the shared count and the Where this is used list) and `api/tag_fields.rs` (`tag.uses`, the chain nodes' counts). The full design changes `crates/apps/studio/src` (`app.rs`, `app/tag_doc.rs`, `fields.rs`, `ui/inspector.rs`, `ui/tags.rs`, `api`), `crates/tools/editor-core`, `crates/tools/scenario-edit`, `crates/tools/h1map`, `crates/tools/h1objects` and `crates/tools/h1convert`; each slice names its files and tests.
 Switch: none.
 
 The Scenario and Tags tools become one Map tool. Clicking anything in the
@@ -89,7 +89,9 @@ clicking a projectile in flight opens its `proj` tag.
 ### Where is this used
 
 `tag_api::uses(doc, tag)` answers from a reverse index of the map's
-references, built once per document shape (`TagDoc::shape_rev`):
+references, cached in the document by its revision (`TagDoc::rev`: a
+reference edit changes the index without changing the document's
+shape):
 
 - the tags that refer to it, and up through them to object tags;
 - the placements whose palette entry reaches it;

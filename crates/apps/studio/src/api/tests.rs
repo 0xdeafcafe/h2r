@@ -929,8 +929,7 @@ fn tag_find_matches_words_and_changed_follows_edits() {
 /// answers `truncated` with the sentence, and `tag.view`'s `header`
 /// carries it over the cut rows.
 #[test]
-fn the_field_search_stops_at_its_budget() {
-    use crate::app::tag_tests;
+fn the_field_search_stops_at_its_budget() {    use crate::app::tag_tests;
     use scenario_edit::fixture::{META, META_FILE, put};
     let t = Temp::new("tag-find-budget");
     // The weapon's parts grown to 6,000 elements of invented data: the
@@ -968,6 +967,88 @@ fn the_field_search_stops_at_its_budget() {
         view["header"].as_array().unwrap().last(),
         Some(&json!("Search stopped after 5,000 list items. Open a list and search there."))
     );
+}
+
+/// `tag.uses` answers from the reverse index: the two placements on one
+/// palette entry are both listed (and `highlight` outlines them), the
+/// item collection is reached through the weapon and placed by the
+/// netgame item, and the index rebuilds after a block edit and after a
+/// reference edit. `tag.chain`'s nodes count their uses.
+#[test]
+fn tag_uses_lists_the_placements_and_tags_that_reach_a_tag() {
+    use crate::app::tag_tests;
+    let t = Temp::new("tag-uses");
+    let (mut app, ..) = tag_tests::app(&t.0);
+    let mut api = Api::new();
+    let weap = format!("{:#010x}", tag_tests::weap_id().0);
+    let itmc = format!("{:#010x}", fixture::id(3).0);
+    let blocks = |v: &Value| -> Vec<(String, usize)> {
+        v["placements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| (p["block"].as_str().unwrap().to_owned(), p["index"].as_usize().unwrap()))
+            .collect()
+    };
+    let tags = |v: &Value| -> Vec<String> {
+        v["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|u| u["tag"].as_str().unwrap().to_owned())
+            .collect()
+    };
+
+    // Two placements share one palette entry: both listed, and nothing
+    // refers to the weapon itself (the scenario's reference is the
+    // placements', not a tag's).
+    let weapon = call(&mut api, &mut app, m::TAG_USES, json!({ "tag": weap }));
+    assert_eq!(blocks(&weapon), [("weapons".to_owned(), 0), ("weapons".to_owned(), 1)]);
+    assert!(tags(&weapon).is_empty());
+    assert_eq!(weapon["objects"], json!([]));
+
+    // The item collection is referred to by the weapon's first part and
+    // placed by the netgame item; the placements whose palette chain
+    // runs through the weapon are named too.
+    let kit = call(&mut api, &mut app, m::TAG_USES, json!({ "tag": itmc }));
+    assert_eq!(tags(&kit), [weap.clone()]);
+    assert_eq!(kit["tags"][0]["via"], "parts[0].item");
+    assert_eq!(
+        blocks(&kit),
+        [
+            ("netgame_items".to_owned(), 0),
+            ("weapons".to_owned(), 0),
+            ("weapons".to_owned(), 1),
+        ]
+    );
+
+    // highlight outlines the placements; the next highlight clears them.
+    call(&mut api, &mut app, m::TAG_USES, json!({ "tag": weap, "highlight": true }));
+    assert_eq!(app.highlighted.len(), 2);
+    call(&mut api, &mut app, m::TAG_USES, json!({ "tag": weap, "highlight": false }));
+    assert!(app.highlighted.is_empty());
+
+    // The chain's nodes carry the count.
+    let chain = call(&mut api, &mut app, m::TAG_CHAIN, json!({ "block": "weapons", "index": 0 }));
+    assert_eq!(
+        chain["root"]["uses"],
+        json!({ "placements": 2, "tags": 0 }),
+        "the weapon node counts its two placements"
+    );
+
+    // The index rebuilds after a block edit (a placement removed) and
+    // after a reference edit (the part no longer names the collection);
+    // undo restores both.
+    call(&mut api, &mut app, m::SCENARIO_DELETE, json!({ "block": "weapons", "index": 1 }));
+    let after = call(&mut api, &mut app, m::TAG_USES, json!({ "tag": weap }));
+    assert_eq!(blocks(&after), [("weapons".to_owned(), 0)]);
+    call(&mut api, &mut app, m::TAG_SET, json!({ "tag": weap, "path": "parts[0].item", "value": null }));
+    let cut = call(&mut api, &mut app, m::TAG_USES, json!({ "tag": itmc }));
+    assert!(tags(&cut).is_empty());
+    assert_eq!(blocks(&cut), [("netgame_items".to_owned(), 0)]);
+    app.dispatch(Action::Undo);
+    let back = call(&mut api, &mut app, m::TAG_USES, json!({ "tag": itmc }));
+    assert_eq!(tags(&back), [weap.clone()]);
 }
 
 #[test]

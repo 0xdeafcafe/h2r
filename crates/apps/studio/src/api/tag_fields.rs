@@ -549,12 +549,41 @@ fn elements(app: &mut App, p: &P) -> Reply {
 
 const CHAIN: MethodDef = MethodDef {
     name: m::TAG_CHAIN,
-    summary: "The inspector's tag tree for a placement or tag, including in-memory tag edits",
+    summary: "The inspector's tag tree for a placement or tag, including in-memory tag edits; each node's `uses` counts the placements and tags that use it — what an edit to it changes (tag.uses lists them)",
     params: r#"{"block?":"string","index?":"integer","tag?":"string|integer","depth?":"integer (default 3, max 8)"}"#,
-    result: r#"{"root":"{tag,group,name,via,label,where,cache,variant,cycle,children:[node]}|null","truncated":"boolean"}"#,
+    result: r#"{"root":"{tag,group,name,via,label,where,cache,variant,cycle,uses:{placements,tags},children:[node]}|null","truncated":"boolean"}"#,
     example: r#"{"block":"weapons","index":0}"#,
     planned: None,
 };
+
+const USES: MethodDef = def(
+    m::TAG_USES,
+    "Where a tag is used (tag_api::uses): the tags that refer to it — transitively, so the object tags whose chains run through it are named, each entry with the field path one step closer to it — and the placements whose palette entry reaches it, from the reverse reference index cached in the document (a reference edit rebuilds it; a block edit changes the placements). `highlight: true` outlines the placements in the viewport until the next highlight or selection. The live objects whose definition reaches it are read when a game is paired",
+    r#"{"tag":"string|integer","highlight?":"boolean"}"#,
+    r#"{"tags":"[{tag, group, name, via}]","placements":"[{block, index}]","objects":"[]"}"#,
+    r#"{"tag":"itmc"}"#,
+);
+
+fn uses(app: &mut App, p: &P) -> Reply {
+    let tag = resolve(app, p)?;
+    let highlight = match p.get("highlight") {
+        None => None,
+        Some(v) => Some(
+            v.as_bool()
+                .ok_or_else(|| err(code::INVALID_PARAMS, "highlight: a boolean"))?,
+        ),
+    };
+    let scenario = app.session.scenario();
+    let found = tag_api::uses(app.shown_tags(), scenario, tag);
+    let answer = found.json(app.shown_tags());
+    if let Some(on) = highlight {
+        let placements = on
+            .then(|| found.placements.iter().map(|p| (p.kind, p.index)).collect())
+            .unwrap_or_default();
+        app.set_highlighted_uses(placements);
+    }
+    Ok(answer)
+}
 
 fn chain(app: &mut App, p: &P) -> Reply {
     let depth = p.opt_u64("depth")?.unwrap_or(tag_api::DEFAULT_DEPTH as u64);
@@ -578,7 +607,7 @@ fn chain(app: &mut App, p: &P) -> Reply {
         }
         _ => return Err(err(code::INVALID_PARAMS, "supply block and index, or tag")),
     };
-    Ok(tag_api::chain(doc, root, depth as usize).json(doc))
+    Ok(tag_api::chain(doc, root, depth as usize).json(doc, app.session.scenario()))
 }
 
 pub(super) fn sync_open_tags(app: &mut App) -> Result<(), agent_proto::RpcError> {
@@ -615,6 +644,7 @@ impl Provider for TagFields {
             RESET,
             ELEMENTS,
             FIND,
+            USES,
             block_def(
                 m::TAG_BLOCK_ADD,
                 "Add an element to a tag block (path from the root, `parts` or `parts[0].bones`), where the block has room in its source; refused with the reason otherwise",
@@ -644,6 +674,7 @@ impl Provider for TagFields {
             m::TAG_ELEMENTS => return Some(elements(app, &p)),
             m::TAG_FIND => return Some(find(app, &p)),
             m::TAG_CHAIN => return Some(chain(app, &p)),
+            m::TAG_USES => return Some(uses(app, &p)),
             _ => {}
         }
         if ![

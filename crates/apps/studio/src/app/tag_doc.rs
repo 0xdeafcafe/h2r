@@ -304,6 +304,9 @@ pub struct TagDoc {
     /// (`shared_refs::TagDoc::homes`).
     pub(super) homes_cache:
         std::cell::RefCell<(u64, HashMap<TagId, Option<super::shared_refs::Homes>>)>,
+    /// The reverse reference index over the map's tags, as built for
+    /// `rev` ([`Self::reverse_index`], read by `tag_api::uses`).
+    pub(super) uses_cache: std::cell::RefCell<(u64, std::sync::Arc<super::tag_api::UsesIndex>)>,
     /// Writes not yet taken by the fan-out ([`Self::take_changes`]).
     changes: Vec<Change>,
 }
@@ -345,6 +348,7 @@ impl TagDoc {
             allow_growth: false,
             shape_rev: 0,
             homes_cache: Default::default(),
+            uses_cache: Default::default(),
             changes: Vec::new(),
         }
     }
@@ -540,6 +544,25 @@ impl TagDoc {
     /// writes).
     pub fn shape_rev(&self) -> u64 {
         self.shape_rev
+    }
+    /// The reverse reference index over the map's tags, cached by the
+    /// document's revision: what `tag_api::uses` walks up from a tag.
+    /// `skip` leaves a tag out of it (the scenario's, whose references
+    /// are the placements').
+    pub(crate) fn reverse_index(
+        &self,
+        skip: Option<TagId>,
+    ) -> std::sync::Arc<super::tag_api::UsesIndex> {
+        let rev = self.rev();
+        {
+            let cache = self.uses_cache.borrow();
+            if cache.0 == rev {
+                return cache.1.clone();
+            }
+        }
+        let index = std::sync::Arc::new(super::tag_api::build_uses_index(self, skip));
+        *self.uses_cache.borrow_mut() = (rev, index.clone());
+        index
     }
     pub fn tags(&self) -> &[TagEntry] {
         self.loaded.as_ref().map_or(&[], |l| &l.tags)

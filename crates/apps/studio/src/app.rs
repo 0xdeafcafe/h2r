@@ -4,7 +4,7 @@
 //! guard. The Dear ImGui layer (`ui`) turns
 //! clicks and shortcuts into [`Action`]s and draws this state; tests drive
 //! it directly.
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 pub mod announcer;
@@ -535,6 +535,10 @@ pub struct App {
     pub layers: Layers,
     /// What the viewport's level shows: the Lighting menu's mode.
     pub lighting: scenario_edit::native_view::Lighting,
+    /// The placements `tag.uses highlight` outlines in the viewport
+    /// (a square on the ground each), until the next highlight or
+    /// selection.
+    pub highlighted: BTreeSet<(BlockKind, usize)>,
     overlay_rev: u64,
     /// The conversion running, why the last one wrote nothing, and what
     /// runs it.
@@ -638,6 +642,7 @@ impl App {
             compare: None,
             layers: Layers::default(),
             lighting: Default::default(),
+            highlighted: BTreeSet::new(),
             overlay_rev: 0,
             convert: None,
             convert_error: None,
@@ -675,6 +680,16 @@ impl App {
         self.data_root = Some(root);
         self.variants_for = None;
         self.refresh_packages();
+    }
+
+    /// The placements `tag.uses highlight` outlines in the viewport; an
+    /// empty list clears them. A new selection clears them too.
+    pub fn set_highlighted_uses(&mut self, placements: Vec<(BlockKind, usize)>) {
+        let next: BTreeSet<_> = placements.into_iter().collect();
+        if next != self.highlighted {
+            self.highlighted = next;
+            self.overlay_rev += 1;
+        }
     }
 
     /// The runtime data root: `--data`, else the default one.
@@ -1060,6 +1075,7 @@ impl App {
                 let before = self.nav_location();
                 self.session.select(sel);
                 self.record_placement_selection(before);
+                self.set_highlighted_uses(Vec::new());
             }
             Action::SelectVolume(index) => {
                 let count = self.session.volumes().map_or(0, |v| v.triggers.len());

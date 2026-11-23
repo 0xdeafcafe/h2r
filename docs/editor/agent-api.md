@@ -546,10 +546,26 @@ Notes on some:
   Each node has `tag` (ID), `group`, `name`, `via` (the field path),
   `label` (a named shortcut, or null), `where` (`here` or `shared`),
   `cache` (the shared cache name, or null), `variant` (model variant
-  name or ID, if known), `cycle` and `children`. A missing target keeps
-  its ID and path with null tag metadata. Cycles stop the current branch.
+  name or ID, if known), `cycle`, `uses` (the placements and tags that
+  use it, as `tag.uses` counts them) and `children`. A missing target
+  keeps its ID and path with null tag metadata. Cycles stop the current
+  branch.
   `truncated` means a traversal limit beyond the requested depth cuts
   the result short. Live handles belong to the [click-to-edit design](click-to-edit.md).
+- **Where a tag is used.** `tag.uses {tag, highlight?}` answers from the
+  reverse reference index of the open map's tags, cached in the document
+  (a reference edit rebuilds it): `{tags, placements, objects}`. `tags`
+  are the tags that refer to it, transitively, so the object tags whose
+  chains run through it are named, in the map's tag order, each with
+  `via`, the field path one step closer to it (the scenario's own
+  references are not a tag's; they are the placements'). `placements`
+  are the placements whose palette entry reaches it, in block-name order
+  then index. `objects`, the live objects whose definition reaches it,
+  is empty until a game is paired (the click-to-edit design, C5).
+  `highlight: true` outlines the placements in the viewport (a square on
+  the ground each) until the next highlight or selection;
+  `highlight: false` clears them. `tag.chain`'s nodes carry the count as
+  `uses: {placements, tags}`.
 - **Inspector navigation.** `scenario.select {"tag":"weap"}` makes
   a tag the inspector's selection and clears the placement selection.
   `nav.go {"tag":"hlmt","path":"render_model"}` focuses a tag and,

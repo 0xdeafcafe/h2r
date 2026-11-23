@@ -53,9 +53,9 @@ pub struct Node {
 }
 
 impl Chain {
-    pub fn json(&self, doc: &TagDoc) -> Value {
+    pub fn json(&self, doc: &TagDoc, scenario: Option<&Scenario>) -> Value {
         json!({
-            "root": self.root.as_ref().map(|n| n.json(doc)),
+            "root": self.root.as_ref().map(|n| n.json(doc, scenario)),
             "truncated": self.truncated,
         })
     }
@@ -71,8 +71,10 @@ impl Node {
         false
     }
 
-    fn json(&self, doc: &TagDoc) -> Value {
+    fn json(&self, doc: &TagDoc, scenario: Option<&Scenario>) -> Value {
         let entry = doc.tag(self.tag);
+        // What an edit to this tag changes: how many uses it has.
+        let uses = super::uses(doc, scenario, self.tag);
         json!({
             "tag": format!("{:#010x}", self.tag.0),
             "group": entry.map(|t| tags::defs::fourcc_text(t.group)),
@@ -83,7 +85,11 @@ impl Node {
             "cache": entry.and_then(|t| t.elsewhere.as_deref()),
             "variant": self.variant,
             "cycle": self.cycle,
-            "children": self.children.iter().map(|child| child.json(doc)).collect::<Vec<_>>(),
+            "uses": {
+                "placements": uses.placements.len(),
+                "tags": uses.tags.len(),
+            },
+            "children": self.children.iter().map(|child| child.json(doc, scenario)).collect::<Vec<_>>(),
         })
     }
 }
