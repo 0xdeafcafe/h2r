@@ -3389,6 +3389,92 @@ fn friend_pair(server: &Server, a: &Account, b: &Account) {
             .unwrap();
     }
 }
+fn friend_event(server: &Server, signer: &Account, kind: &str, data: serde_json::Value) {
+    let author = format!("acct:{}@{}", signer.xuid, server.discovery.id);
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let event = live_proto::sign::EventBody::at_unix(
+        &signer.key,
+        &author,
+        &live_proto::streams::account(signer.xuid),
+        kind,
+        data,
+        now,
+    )
+    .sign(&signer.key);
+    let token = sign::issue_token(
+        &signer.key,
+        &author,
+        &server.discovery.id,
+        lxm::EVENTS_WRITE,
+        now,
+    );
+    server
+        .agent
+        .post(&server.url("/v1/events"))
+        .set("authorization", &format!("Bearer {token}"))
+        .set("content-type", "application/jose")
+        .send_string(&event)
+        .unwrap();
+}
+fn friend_record(w: &World, xuid: Xuid) {
+    let mut f = [0; 86];
+    f[..8].copy_from_slice(&xuid.0.to_le_bytes());
+    w.put(INV_FRIEND, &f);
+}
+fn friend_events(s: &Server, kind: &str, from: Xuid, to: Xuid) -> bool {
+    s.events().iter().any(|e| {
+        e.kind == kind
+            && e.data["from"] == from.to_string()
+            && e.data["to"] == to.to_string()
+    })
+}
+#[test]
+fn friend_request_answers_and_removals_are_signed_events() {
+    let s = Server::new();
+    let a = s.account("Asker");
+    let b = s.account("Answerer");
+    let c = s.account("Decliner");
+    let mut asker = World::new(&s.embedded.url, &[&a]);
+    let mut answerer = World::new(&s.embedded.url, &[&b]);
+    asker.logon();
+    answerer.logon();
+    friend_event(&s, &a, types::FRIEND_REQUESTED, json!({"from":a.xuid,"to":b.xuid}));
+    friend_event(&s, &c, types::FRIEND_REQUESTED, json!({"from":c.xuid,"to":b.xuid}));
+
+    // Yes accepts and returns at once; the request is the answerer's.
+    friend_record(&answerer, a.xuid);
+    assert_eq!(answerer.call("XOnlineFriendsAnswerRequest", &[0, INV_FRIEND, 0]), 0);
+    guest_until(&mut answerer, |_| {
+        friend_events(&s, types::FRIEND_ACCEPTED, a.xuid, b.xuid)
+    });
+    // No declines; the friends list then shows the first as a friend.
+    friend_record(&answerer, c.xuid);
+    assert_eq!(answerer.call("XOnlineFriendsAnswerRequest", &[0, INV_FRIEND, 1]), 0);
+    guest_until(&mut answerer, |_| {
+        friend_events(&s, types::FRIEND_DECLINED, c.xuid, b.xuid)
+    });
+    guest_until(&mut answerer, |w| {
+        let n = w.call("XOnlineFriendsGetLatest", &[0, 100, INV_RECORD]);
+        (0..n).any(|i| w.rt.memory().u64(INV_RECORD + i * 86).unwrap() == a.xuid.0)
+    });
+    // An answer outside the enum is refused.
+    assert_ne!(answerer.call("XOnlineFriendsAnswerRequest", &[0, INV_FRIEND, 3]), 0);
+
+    // Remove ends the friendship.
+    friend_record(&answerer, a.xuid);
+    assert_eq!(answerer.call("XOnlineFriendsRemove", &[0, INV_FRIEND]), 0);
+    guest_until(&mut answerer, |_| {
+        s.events().iter().any(|e| {
+            e.kind == types::FRIEND_REMOVED
+                && e.data["by"] == b.xuid.to_string()
+                && e.data["friend"] == a.xuid.to_string()
+        })
+    });
+    guest_until(&mut answerer, |w| {
+        let n = w.call("XOnlineFriendsGetLatest", &[0, 100, INV_RECORD]);
+        (0..n).all(|i| w.rt.memory().u64(INV_RECORD + i * 86).unwrap() != a.xuid.0)
+    });
+}
 fn guest_until(w: &mut World, mut condition: impl FnMut(&mut World) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(6);
     while !condition(w) {

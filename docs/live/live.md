@@ -1099,6 +1099,7 @@ through synthetic guest stacks; browsing every screen has not been run here.
 | `0x0008cc40`, `0x0008cd27`, `0x0008cddb`, disposer `0x0006b6a5` | FriendsStartup completes then idles, reporting RESULTS_AVAIL (`0x001500f1`) when its cached server snapshot changes. GetLatest returns 86-byte friend/request/invite records. EnumerateFinish lets the enumeration task finish before TaskClose. |
 | `0x0006d080` / `0x0006d0d3` | GetNotificationEx emits one packed type-3 notification per received game invite, then BOOL FALSE with cleared info/state. Title files are never notifications. No HRESULT is returned in this BOOL slot. |
 | `0x00058ab8`, `0x00058bd1` | MutelistStartup/Get complete; Get writes count 0. |
+| `0x0008ce2f`, `0x0008ce97` | FriendsAnswerRequest (answer 0 yes, 1 no, 2 never) and FriendsRemove read the friend's XUID from the first eight bytes of the 86-byte record, queue a signed `FriendAccepted`, `FriendDeclined` or `FriendRemoved` event on the player's account stream and return S_OK. Never is a decline: the server has no block event. The cached friends snapshot is re-read as soon as the event is sent. |
 | `0x0008d4d0` | OfferingIsNewContentAvailable reports NO_NEW_CONTENT. |
 | `0x0008c320` through `0x0008c59b` | PresenceInit/Add/Submit/Clear retain the bounded watch groups; GetLatest writes 61-byte records carrying the watched XUIDs and overlays cached friend/invite presence when available. |
 | `0x0006b59d`, `0x0008d1da`, title checks `0x0008c28e` / `0x0008d27a` | FriendsGetTitleName writes UTF-16 “Halo 2” for this title and an empty terminated name for uncached titles. SameTitle/SamePublisher return BOOL comparisons. |
@@ -1110,7 +1111,7 @@ through synthetic guest stacks; browsing every screen has not been run here.
 | `0x0022387b` | SaveLogonState writes the public 516-byte launch-state layout with users and service IDs; it contains no signing key. |
 | `0x0008e750`, manager `0x002c7410` | Message polling exposes pending game invitations. Title files use storage and never enter the player inbox. |
 
-These 4 entries still stop by API name because their backend behavior is not
+These 2 entries still stop by API name because their backend behavior is not
 implemented. Their menu/game fallbacks are a separate follow-up slice; the
 storage entries below no longer stop. Prefixes in the table are part of each
 listed API name.
@@ -1118,12 +1119,10 @@ listed API name.
 | Prefix | Remaining suffixes |
 |---|---|
 | `XOnline` | `TitleUpdate` |
-| `XOnlineFriends` | `Remove`, `AnswerRequest` |
 | `XNet` | `TsAddrToInAddr` |
 
 Server-backed sessions, invitation delivery, clans and cached friend presence are
-implemented in the Client HLE sections below. Friend mutations
-outside the existing capture path, comparing ranked arbitration reports
+implemented in the Client HLE sections below. Comparing ranked arbitration reports
 ([live-matchmaking.md](live-matchmaking.md) §8.4) and NAT traversal
 remain unfinished. Synthetic tests prove invitation discovery through bidirectional
 host UDP traffic; actual menu transitions and a full retail match are unconfirmed.

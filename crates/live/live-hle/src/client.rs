@@ -282,6 +282,11 @@ pub(crate) enum SocialRequest {
     Refresh,
     Send { to: Vec<Xuid>, session_id: String },
     Answer(live_proto::mailbox::Answered),
+    /// The signed-in player answers a pending friend request: accepted, or
+    /// declined (also for XDK's "never", which the server has no event for).
+    FriendAnswer { from: Xuid, accept: bool },
+    /// The signed-in player removes a friend, or withdraws a pending request.
+    FriendRemove { friend: Xuid },
     Join { from: Xuid, session_id: String },
     JoinLink(String),
 }
@@ -1741,10 +1746,28 @@ impl Worker {
         kind: &str,
         data: serde_json::Value,
     ) -> Result<(), Error> {
+        self.signed_event(user, &live_proto::mailbox::stream(recipient), kind, data)
+    }
+    /// A friend event on the player's own account stream.
+    fn account_event(
+        &self,
+        user: &Identity,
+        kind: &str,
+        data: serde_json::Value,
+    ) -> Result<(), Error> {
+        self.signed_event(user, &streams::account(Xuid(user.xuid)), kind, data)
+    }
+    fn signed_event(
+        &self,
+        user: &Identity,
+        stream: &str,
+        kind: &str,
+        data: serde_json::Value,
+    ) -> Result<(), Error> {
         let body = EventBody::new(
             &user.key,
             &self.author(user),
-            &live_proto::mailbox::stream(recipient),
+            stream,
             kind,
             data,
             time::OffsetDateTime::now_utc(),
@@ -1834,6 +1857,34 @@ impl Worker {
                 } else {
                     Reply::Done
                 })
+            }
+            SocialRequest::FriendAnswer { from, accept } => {
+                self.account_event(
+                    user,
+                    if *accept {
+                        types::FRIEND_ACCEPTED
+                    } else {
+                        types::FRIEND_DECLINED
+                    },
+                    serde_json::to_value(live_proto::FriendEventData {
+                        from: *from,
+                        to: Xuid(user.xuid),
+                    })
+                    .map_err(|_| Error::Protocol)?,
+                )?;
+                Ok(Reply::Done)
+            }
+            SocialRequest::FriendRemove { friend } => {
+                self.account_event(
+                    user,
+                    types::FRIEND_REMOVED,
+                    serde_json::to_value(live_proto::FriendRemovedData {
+                        by: Xuid(user.xuid),
+                        friend: *friend,
+                    })
+                    .map_err(|_| Error::Protocol)?,
+                )?;
+                Ok(Reply::Done)
             }
             SocialRequest::Join { from, session_id } => {
                 let friends = self.friends_for(user)?;

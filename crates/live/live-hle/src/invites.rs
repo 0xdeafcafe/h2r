@@ -19,6 +19,10 @@ pub const ACCEPTED_SIZE: usize = 156;
 pub(crate) enum Op {
     FriendSend,
     FriendAnswer,
+    /// XOnlineFriendsAnswerRequest: answer a pending friend request.
+    FriendRequestAnswer,
+    /// XOnlineFriendsRemove.
+    FriendRemove,
     Join,
     Answer,
 }
@@ -144,7 +148,11 @@ impl Invites {
                     self.queue_accepted(invite, task.controller, *users, *flags, None);
                     TASK_SUCCESS
                 }
-                Ok(Reply::Done) => TASK_SUCCESS,
+                Ok(Reply::Done) => {
+                    // The friends list or mailbox changed: read it again now.
+                    self.cache[task.controller].next = None;
+                    TASK_SUCCESS
+                }
                 Err(e) => {
                     if let Some(id) = task.invite {
                         self.cache[task.controller].hidden.remove(&id);
@@ -509,6 +517,26 @@ impl Invites {
                         _ => Answer::Decline,
                     },
                 })
+            }
+            Op::FriendRequestAnswer | Op::FriendRemove => {
+                // The XONLINE_FRIEND record starts with the friend's xuid.
+                m.check(a[1], FRIEND_SIZE, Access::Read, 1)?;
+                let uid = m.u64(a[1])?;
+                if uid == 0 || live_proto::bots::is_bot_xuid(Xuid(uid)) {
+                    return Ok(INVALID_ARGUMENT);
+                }
+                if op == Op::FriendRemove {
+                    SocialRequest::FriendRemove { friend: Xuid(uid) }
+                } else {
+                    // XONLINE_REQUEST_ANSWER_TYPE: 0 yes, 1 no, 2 never.
+                    if a[2] > 2 {
+                        return Ok(INVALID_ARGUMENT);
+                    }
+                    SocialRequest::FriendAnswer {
+                        from: Xuid(uid),
+                        accept: a[2] == 0,
+                    }
+                }
             }
             Op::Join => {
                 m.check(a[1], FRIEND_SIZE, Access::Read, 1)?;
