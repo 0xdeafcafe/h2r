@@ -514,7 +514,7 @@ window and performed by the API, so both make the same document
 ([agent-api.md](agent-api.md), "The command layer"). Two providers
 (`api/geometry.rs`, `api/bitmaps.rs`) register in `api::seams`. Two
 documents join `doc.*`: `geometry` and `bitmaps`, each with its own undo
-stack, saved and diffed with the map as `tags` is. The planned `model.*`
+stack, saved and diffed with the map as `tags` is. The `model.*`
 namespace (player models and looks) is separate and unchanged.
 
 | Method | Does |

@@ -40,8 +40,11 @@
 //! - **content checks**: `sound.measure` ([`super::sound_measure`]),
 //!   `ui.check` ([`super::ui_check`]) and `check.run`, whose checks are
 //!   the rows of [`super::checks::CHECKS`].
-//! - **player models** and **customisation**: `model.*` and `custom.*`
-//!   are planned the same way (docs/editor/agent-api.md).
+//! - **models**: `model.list`, `read`, `render` and `check` over the map
+//!   the scenario tool has open, or a named one, with the Pogo Stick's kit
+//!   when asked ([`super::models`]); read-only, so no actions.
+//!   `model.colors`, `model.emblem` and `custom.*` are planned
+//!   (docs/editor/agent-api.md).
 //!
 //! [`Action`]: crate::app::Action
 //! [`App::perform`]: crate::App::perform
@@ -104,4 +107,7 @@ pub fn register(api: &mut Api) {
     api.register(Box::new(super::sound_measure::SoundMeasure));
     api.register(Box::new(super::ui_check::UiCheck));
     api.register(Box::new(super::checks::Checks));
+    // model.*: objects' models read, rendered (ground, third and first
+    // person) and checked as content, Pogo kit maps included.
+    api.register(Box::new(super::models::Models::default()));
 }

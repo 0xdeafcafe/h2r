@@ -21,6 +21,10 @@ pub mod rewrite;
 pub mod source;
 pub mod texture;
 
+/// An invented map for other crates' tests (feature `fixture`).
+#[cfg(any(test, feature = "fixture"))]
+pub mod fixture;
+
 #[cfg(test)]
 mod inject_tests;
 #[cfg(test)]

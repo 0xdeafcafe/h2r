@@ -11,10 +11,10 @@ object per line, short forms on the command line, scripts on stdin, and a
 `session.methods` call that lists every method with its params and result.
 
 Status: first slice built (`crates/apps/studio/src/api`, `crates/apps/studio-proto`).
-The Tags tool (`tag.*`) and the HUD tool (`hud.*`) answer through
-providers. `model.*` and `custom.*` are planned namespaces: listed by
-`session.methods` as `planned` and answering `NOT_YET` until their tools
-register.
+The Tags tool (`tag.*`), the HUD tool (`hud.*`) and the models provider
+(`model.*`) answer through providers. `model.colors`, `model.emblem` and
+`custom.*` are planned: listed by `session.methods` as `planned` and
+answering `NOT_YET` until their tools register.
 
 ## Running it
 
@@ -270,7 +270,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `geometry` | `list {model?}`, `open {target}`, `close {target?}`, `read {target?}`, `check {target?}` |
 | `check` | `run {what?, target?}`: every content check in one list ([Content checks](#content-checks)) |
 | `mesh` | `mode {mode}`, `select {ids, op \| all \| none \| invert}`, `transform {translate \| matrix, pivot?, merge?}`, `ops`, `apply {ops}`; each with `target?` |
-| `model` (planned) | `list`, `read`, `render`, `colors`, `emblem` |
+| `model` | `list {group?}`, `read {tag, variant?}`, `render {tag, view?, variant?, character?, biped?, hands?, size?, camera?, out?}`, `check {tag, variant?}`, each with `map?` and `pogo?` ([Models and customisation](#models-and-customisation)); `colors`, `emblem` (planned) |
 | `custom` (planned) | `list`, `set` |
 
 `view.camera` returns `fly_speed` in world units per second. Its optional
@@ -1064,6 +1064,7 @@ thing; a check it does not fit is skipped. The checks:
 
 | Area | Check | What it checks |
 |---|---|---|
+| `models` | `model.check` | every biped, vehicle and weapon of the scenario tool's map (or the source's only map), or the tag `target` names, read without the Pogo kit: `model.<code>` for each `model.check` finding (`model.no_first_person`, ...), the tag as `target` and the `tag.set` path in the message; `model.tag_memory` once (`api/models.rs`, `check`) |
 | `sounds` | `sound.measure` | each of our clips (or the clip id, id prefix such as `pogo`, or `snd!` tag `target` names) against the open map's sounds: `sound.loud` (a warning, an error past 6 dB over the p90), `sound.clipping`, `sound.unreadable`, `sound.no_reference` (a note) |
 | `ui` | `ui.check` | every state of our screens, or `target` (`screen` or `screen/state`) |
 | `hud` | `hud.check` | the HUD the HUD tool shows, at its state (`hud.<code>`); skipped with no map open there |
@@ -1071,8 +1072,7 @@ thing; a check it does not fit is skipped. The checks:
 
 A check is a row of `CHECKS`: `ContentCheck { area, name, run }`,
 `run` being `fn(&mut App, Option<&str>) -> Result<Vec<Finding>,
-String>`. The `models` area has no row yet; `check.run` lists it under
-`skipped`.
+String>`.
 
 ## Extension points
 
@@ -1205,67 +1205,133 @@ the window and the API stay one path.
   `dirty` until its edits have been saved. `doc.undo`, `doc.redo` work on
   that doc (a reshape is not an undo step; `doc.close` with `discard`
   drops it). docs/editor/modeling.md, "Texture editing" and "Interfaces".
-- **Player models (planned, not started).** See "Planned: player
-  models and customisation" below.
-- **Customisation (later).** Same section.
+- **Models.** `api/models.rs`: `model.list`, `model.read`,
+  `model.render` and `model.check`, read-only over a map of their own
+  (no actions, no undo); see "Models and customisation" below.
+  `model.colors`, `model.emblem` and `custom.*` are planned there.
 
-## Planned: player models and customisation
+## Models and customisation
 
-Design notes for the `model.*` and `custom.*` providers. Nothing here is
-built; the table's stubs answer `NOT_YET`. Each part
-says what it reads, what it edits, through which action, and what is
-still to establish.
-
-### What there is to build on
-
-- `tags::object` resolves an object to its model: `Context::resolve_object`
-  gives the object's `hlmt` and `Context::resolve_model(id, variant)` a
-  variant's regions and the permutations each picks (`RegionChoice`,
-  `PermutationChoice`), with the render, collision, physics and animation
-  tags linked.
-- `native-render::model_load` loads a `mode` and picks a variant's
-  sections (`pick_sections`): what a preview draws.
-- `bots::guest::bot_look` builds the eight player look bytes the game
-  checks (`0x153750`; `crates/live/bots/src/phantom/session.rs`): four colour indices (armour primary and secondary,
-  emblem primary and secondary, each below 18), the model (below 4), the
-  emblem foreground (below 0x40), background (below 0x20) and flags.
-- The Tags tool (`app::tag_doc`) writes any tag field with undo and saves
-  with the map; the scenario viewport renders offscreen (`view.snapshot`).
+`model.*` is where a content author (an agent building a weapon, an
+object or a player model) sees and checks the content before handing it
+back: the objects of a map and their models, the model drawn the ways
+the game draws it, and the checks that find what would break in play.
+`custom.*` and `model.colors`/`model.emblem` are planned: their stubs
+answer `NOT_YET`.
 
 ### `model.*`
 
-A Models tool (`ToolKind::Models`, its state beside the HUD tool's) over
-the map open in the scenario tool, and a provider in `api/models.rs`:
+The provider (`api/models.rs`) reads one map, read-only, and keeps it
+between calls:
 
-- `model.list {group?}`: bipeds (and with `group`, any object group)
-  with their `hlmt`, variant names and region count, from
-  `Catalog::from_map` and `resolve_object`. Read-only.
-- `model.read {tag, variant?}`: the variant's regions, each with its
-  permutations and probabilities, the change colours the object's
-  shaders take, and the render model's node count. Read-only.
-- `model.render {tag, variant?, colors?, camera?, out?}`: the variant
-  drawn offscreen with the scenario viewport's renderer (wgpu headless,
-  `NO_GPU` where there is none) at the player colours given, to a PNG
-  under `studio/model/`, never into a Git checkout. The preview state
-  (variant, colours, camera) is an action (`ModelPreview`), not an edit:
-  no undo, no dirty mark.
-- `model.colors {player?, colors?}` and `model.emblem {player?, emblem?}`:
-  read or set a player's four colour indices and emblem. These are not
-  tag edits: they are the profile's look bytes, so they edit a profile
-  document (`doc: "profile"`) with its own undo and a save into the
-  user's save storage under the data root, never the map. The bounds are
-  `0x153750`'s, refused with `INVALID_PARAMS` and the range.
+- With no `map`, the map the scenario tool has open (followed when the
+  scenario tool opens another).
+- `map: "<name>"`: that map of the source (`source.maps` lists them),
+  opened as the HUD tool opens one.
+- `pogo: true`: that map with the Pogo Stick's kit added as the game
+  serves it (`pogo_kit::rewrite::PogoRewrite`, cached under
+  `<data>/cache/pogo/`). A map the kit cannot go into is `REFUSED` with
+  `data.reason: "pogo_refused"` and the kit's reason. A map that already
+  holds the kit (its `pogo_kit_v<n>` string) is read as it is. `pogo`
+  left out keeps the open map's choice.
 
-To establish first: where the profile's look bytes live in a save (the
-variant store's save layout covers game variants only), and which
-shader parameters take the change colours (so a render matches the
-game).
+Every method takes `map?` and `pogo?`. `tag` is a `0x...` id,
+`group:name`, a tag's name, a lone group with one object tag, or a
+unique part of an object tag's name (`pogo_unsc`). A name that fits
+several tags is `INVALID_PARAMS` with the candidates.
+
+- `model.list {group?}`: the object tags of `group` (`bipd` by default;
+  `weap`, `vehi`, ... or `all`) with each one's `hlmt`, render model,
+  variant names, region count and, for a `weap`, how many first-person
+  entries it has. With it: `pogo` (the kit's three `weap` tags, and what
+  adding the kit cost when Studio added it) and `tag_memory` (`used`,
+  `limit`, `free` bytes: the map header's `+0x1c` against
+  `map::writer::max_metadata_size` for its cache type).
+- `model.read {tag, variant?}`: the object's `hlmt` and its linked
+  render, collision, physics and animation tags; the variant drawn (the
+  object's `default_variant` unless `variant` names one) and every
+  variant's name; the variant's regions with each permutation, its
+  probability, whether the render model has it, and its `tag.set` path
+  on the `hlmt` (`variants[v].regions[r].permutations[p].probability`);
+  the node count; the render model's markers (`mode +0x58`, name and
+  node); the object's change-colour count; and for a `weap` its
+  `first_person` entries with their `model` and `animations` and paths.
+- `model.render {tag, view?, variant?, character?, biped?, hands?,
+  size?, camera?, out?}`: the model drawn offscreen through the
+  viewport's native object renderer
+  (`scenario_edit::native_view::preview`, wgpu headless) to a PNG under
+  the cache directory's `studio/model/`, never into a Git checkout
+  (`REFUSED`). `NO_GPU` where there is no adapter. `view` is one of:
+  - `ground` (the default): the object's world model at its variant,
+    orbited to fit (`camera` takes `yaw`, `pitch` in degrees, `distance`,
+    `target`).
+  - `third_person`: on a player biped (the globals' player
+    representation `character`, default 0, or `biped`), the weapon at the
+    biped's right-hand marker (`unit right_hand_node`), both in their
+    rest pose.
+  - `first_person`: the `weap`'s `first_person[character].model` and the
+    globals' first-person hands for that character (`hands: false` leaves
+    them out), seen from the first-person camera: the eye at the
+    first-person models' origin looking along +x, +z up, at the game's
+    default 70 degrees across (`camera.fov`), the models in their rest
+    pose (no first-person animation).
+
+  A view that cannot be drawn is `REFUSED` with `data.reason` and no
+  picture: `no_first_person` (the `weap` has no `first_person` entry,
+  `data.path: "first_person"`), `first_person_no_model` (the entry's
+  model is null), `first_person_model_fails`, `not_a_weapon`,
+  `no_player_biped`, `biped_fails`, `hand_marker_missing`, `model_fails`.
+  A material whose shader names no base map the renderer decodes is drawn
+  grey (`untextured` in the piece). The answer gives `covered`, how many
+  pixels differ from the background, and `notes`; a first-person picture
+  with nothing in view says so.
+- `model.check {tag, variant?}`: the content's findings, each
+  `{code, severity, message, tag, path}`: `severity` is `error`,
+  `warning` or `note`, `tag` the tag to edit as `group:name`, and `path`
+  its `tag.set` path when one field is the fix (null otherwise). The
+  answer also gives `counts`, `tag_memory`, `pogo` and `editable` (false
+  when Studio added the kit: the kit's tags are fixed in
+  `crates/tools/pogo-kit`, not with `tag.set`). The codes:
+
+  | Code | Severity | Finding |
+  |---|---|---|
+  | `no_first_person` | error | the `weap` has no `first_person` entry (`path: first_person`): the first-person view has no weapon model |
+  | `first_person_no_model` | error | `first_person[i].model` is null |
+  | `first_person_model_fails` | error | the first-person `mode` does not load |
+  | `first_person_no_animations` | warning | `first_person[i].animations` is null: the model is not posed |
+  | `first_person_missing_character` | warning | fewer `first_person` entries than the globals have player characters |
+  | `unresolved_link` | error, warning | a reference names a tag the map does not have (the object's own references, the `hlmt`'s, `first_person`, `hud`) |
+  | `wrong_group` | error | a first-person model that is not a `mode` |
+  | `no_model`, `no_render_model` | error | the object names no `hlmt`, or the `hlmt` no `mode` |
+  | `variant_missing` | error | the variant asked for, or the object's `default_variant`, is not in the `hlmt` |
+  | `no_sections` | error, warning | a permutation the variant picks has no section in the render model (`path` on the `hlmt`), or a render-model region has none at all |
+  | `node_count_mismatch` | error | the `hlmt` and its `mode` disagree on the node count |
+  | `missing_marker` | error, warning | a barrel's `optional_barrel_marker_name` the weapon's model lacks; a player unit's `right_hand_node` its model lacks |
+  | `untextured` | warning | materials with no decodable base map |
+  | `model_fails`, `render_model_unreadable`, `model_invalid`, `unreadable` | error | the model, its geometry or the tag does not read |
+  | `tag_memory` | note, warning, error | the map's tag memory used and free (with the kit in it, when added); a warning under 64 KiB free, an error over the limit |
 
 Edits to a model's tags (a variant's permutation pick, a region's
-probability) are not new methods: they are `tag.set` on the `hlmt`
-through the Tags tool, so they share its undo and save. `model.read`
-returns the `tag.set` path of each editable value so an agent can go
-straight there.
+probability, a weapon's first-person entry) are `tag.set` and
+`tag.block.add` on the map the Tags tool edits, so they share its undo
+and save; each `path` above is that call's. The provider re-reads its
+map when the scenario tool opens another; after a save, `model.list`
+with the saved map's name reads the edit.
+
+### `model.colors` and `model.emblem` (planned)
+
+`model.colors {player?, colors?}` and `model.emblem {player?, emblem?}`
+read or set a player's four colour indices and emblem. These are not
+tag edits: they are the profile's look bytes (`bots::guest::bot_look`
+builds the eight bytes the game checks at `0x153750`: four colour
+indices below 18, the model below 4, the emblem foreground below 0x40,
+background below 0x20, and flags), so they edit a profile document
+(`doc: "profile"`) with its own undo and a save into the user's save
+storage under the data root, never the map. The bounds are `0x153750`'s,
+refused with `INVALID_PARAMS` and the range. To establish first: where
+the profile's look bytes live in a save (the variant store's save layout
+covers game variants only), and which shader parameters take the change
+colours (so a render matches the game).
 
 ### `custom.*`
 
@@ -1286,14 +1352,20 @@ permutation from the profile instead of by probability, and the network
 carrying the choice. Until that lands the methods stay planned; the
 editor side is small once the profile document exists.
 
-### Tests the providers need
+### Tests
 
-As the HUD provider's: every method runs its example in
-`every_method_in_methods_has_a_test` (on an invented map with a biped,
-`hlmt` and `mode`, no game data); `model.render` refused in a Git
-checkout; colour and emblem bounds refused; profile edits undone and
-redone as their document; and the window's actions and the API's make
-identical profiles.
+`model.*` runs its examples in `every_method_in_methods_has_a_test` on
+the Pogo kit's invented map with the kit in it (`pogo_kit::fixture`, no
+game data). `api/models/tests.rs` checks the kit's weapons listed, a
+look with its first-person block taken out found by `model.check` and
+refused by a first-person render, the first-person view the kit copies
+from the fixture pistol checked (its invented models do not load:
+`first_person_model_fails`), a weapon held in its own model checked and
+drawn (the picture only where there is a GPU), a render refused in a
+Git checkout, and `pogo: true` refused by name on a map the kit cannot
+go into. The planned methods need: colour and emblem bounds refused;
+profile edits undone and redone as their document; and the window's
+actions and the API's make identical profiles.
 
 ## Code
 
@@ -1312,6 +1384,8 @@ identical profiles.
   `api/preview/tests.rs` against the agent's real server with invented
   host methods). `api/sound_measure.rs` (with `sound_measure/meter.rs`),
   `api/ui_check.rs` and `api/checks.rs`: the content checks.
+  `api/models.rs`
+  `model.*` (its renders through `scenario_edit::native_view::preview`).
 - `app/commands.rs`: the actions added for the API and the window
   (`SetField`, `EditSelection`, `MovePlacement`, `EditPlaylist`,
   `UndoIn`), `PlaylistEdit`, and `App::perform`. The viewport gizmo
