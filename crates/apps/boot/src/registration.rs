@@ -154,6 +154,7 @@ pub(crate) fn register_core_film(
     let link = Arc::new(crate::actor_net_link::HostLink::default());
     let reset = Arc::clone(&link);
     let live = i.live.clone();
+    let inbox = i.live.clone();
     let capture = crate::actor_net::Capture::new(
         move |_, tick, host| {
             let result = link.post_tick(live.as_deref(), tick, |peer, budget, request_key| {
@@ -171,7 +172,18 @@ pub(crate) fn register_core_film(
             }
         },
         move || reset.reset(),
-    );
+    )
+    // A distributed client's half: drain the tunnel's actor inbox before
+    // the tick and ask the host for a key when the replica needs one
+    // (docs/game/ai-networking.md, "On a client, each tick").
+    .with_client(move |client, tick| {
+        crate::actor_net_link::pre_tick(inbox.as_deref(), |packet| {
+            client.receive(&packet, tick);
+        });
+        if client.take_key_request() && !crate::actor_net_link::request_key(inbox.as_deref()) {
+            eprintln!("actor-net: tick {tick}: no actor tunnel to ask the host for a key");
+        }
+    });
     features
         .add(&capture)
         .map_err(|e| anyhow::anyhow!("actor channel host capture: {e}"))?;

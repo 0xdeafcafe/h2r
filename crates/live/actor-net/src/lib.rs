@@ -3,10 +3,12 @@
 //! has no guest, game-mode or transport dependency.
 
 pub mod budget;
+pub mod digest;
 pub mod set;
 pub mod wire;
 
 pub use budget::{Budget, BudgetError};
+pub use digest::{Check, Verdict};
 pub use set::{ActorSet, Replica, SetError};
 pub use wire::{Actor, ActorChange, Control, Packet, Record, WireError, decode, encode};
 

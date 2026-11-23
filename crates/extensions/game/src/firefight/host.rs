@@ -8,8 +8,8 @@
 //! due entries in sequence order, and [`Host::post_tick`] after it, which
 //! builds [`Observed`], steps the director and appends its commands for the
 //! next tick. Only machines that run the simulation of record apply
-//! entries: a distributed client keeps the log for its digest and applies
-//! none. The director never touches the game; every change goes through a
+//! entries: a distributed client applies none and checks the actor
+//! channel's digest instead (`crate::actor_net::client`). The director never touches the game; every change goes through a
 //! [`Game`] entry.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -41,8 +41,9 @@ pub enum Role {
     /// A synchronous peer, or a film's playback: applies the entries it
     /// receives and never runs the director.
     Replica,
-    /// A distributed client: keeps the log for the digest and applies
-    /// nothing. Its bodies come from replication.
+    /// A distributed client: runs no director and applies nothing. Its
+    /// bodies come from replication, the mode state and the host's log
+    /// head from the actor channel.
     Client,
 }
 

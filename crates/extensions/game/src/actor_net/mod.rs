@@ -33,6 +33,20 @@ fn clear_show_cues() {
     crate::rules::world::show::clear_cues();
 }
 
+/// The host log head of the mode running on this machine, for the
+/// channel's `Digest`: set by the writer of the log (the Firefight host
+/// runtime after each tick), none when no mode keeps one.
+static LOG_HEAD: Mutex<Option<[u8; 32]>> = Mutex::new(None);
+
+/// Publish the running mode's host log head; none when no mode runs.
+pub fn publish_log_head(head: Option<[u8; 32]>) {
+    *LOG_HEAD.lock().unwrap_or_else(|e| e.into_inner()) = head;
+}
+
+fn log_head() -> Option<[u8; 32]> {
+    *LOG_HEAD.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// The capture and the enqueue observer use the simulation world's mode.
 /// The game options use a different numbering for the client and server.
 fn host_tick(m: &dyn GuestMemory) -> Option<u32> {
@@ -43,12 +57,16 @@ fn host_tick(m: &dyn GuestMemory) -> Option<u32> {
 }
 
 type AfterCapture = dyn Fn(&dyn GuestMemory, u32, &host::Host) + Send + Sync;
+type Receive = dyn Fn(&mut client::Client, u32) + Send + Sync;
 
-/// One feature per runtime. The transport can schedule for all connected
-/// peers from the same capture before the next tick replaces its deltas.
+/// One feature per runtime: the distributed host's capture and, with
+/// [`Capture::with_client`], the distributed client's puppets. The
+/// transport can schedule for all connected peers from the same capture
+/// before the next tick replaces its deltas.
 pub struct Capture {
     after_capture: Arc<AfterCapture>,
     reset_peers: Arc<dyn Fn() + Send + Sync>,
+    receive: Option<Arc<Receive>>,
 }
 
 impl Capture {
@@ -59,7 +77,20 @@ impl Capture {
         Self {
             after_capture: Arc::new(after_capture),
             reset_peers: Arc::new(reset_peers),
+            receive: None,
         }
+    }
+
+    /// Add the client half (`client::install`). `receive` runs on the
+    /// game thread before each distributed client tick: it hands the
+    /// drained packets to [`client::Client::receive`] and asks the host
+    /// for a key when [`client::Client::take_key_request`] says so.
+    pub fn with_client(
+        mut self,
+        receive: impl Fn(&mut client::Client, u32) + Send + Sync + 'static,
+    ) -> Self {
+        self.receive = Some(Arc::new(receive));
+        self
     }
 }
 
@@ -72,8 +103,11 @@ struct State {
 
 impl Feature for Capture {
     fn manifest(&self) -> Manifest {
-        Manifest::new("actor-net", "Capture distributed host actor presentation")
-            .doc("docs/game/ai-networking.md")
+        Manifest::new(
+            "actor-net",
+            "Capture distributed host actor presentation and apply it on clients",
+        )
+        .doc("docs/game/ai-networking.md")
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
@@ -122,15 +156,24 @@ impl Feature for Capture {
                     // The running rules script's show cues (`message`
                     // calls); empty when no script runs.
                     state.host.set_cues(show_cues());
+                    state.host.set_log_head(log_head());
                     after_capture(&*memory, tick, &state.host)
                 }
                 Err(error) => eprintln!("actor-net: host capture at tick {tick}: {error}"),
             }
         });
 
+        let client = self.receive.as_ref().map(|receive| {
+            let receive = Arc::clone(receive);
+            client::install(b, move |client, tick| receive(client, tick))
+        });
+
         let reset_peers = Arc::clone(&self.reset_peers);
         let reset = move || {
             *state.lock().unwrap() = State::default();
+            if let Some(client) = &client {
+                *client.lock().unwrap() = client::Client::default();
+            }
             pending.clear();
             clear_show_cues();
             reset_peers();
