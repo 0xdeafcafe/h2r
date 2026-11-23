@@ -154,6 +154,7 @@ impl Driver {
         self.reason = "Waiting for a local multiplayer map.".into();
         controls::publish(controls::State::default());
         crate::forge_screens::publish(crate::forge_screens::Facts::default());
+        crate::forge_readout::clear();
     }
 
     fn open(&mut self, loaded: &Loaded) -> Result<(), String> {
@@ -282,6 +283,7 @@ impl Driver {
                 .and_then(|g| g.options().variant().engine(m).ok());
             e.tick(tick, bsp, crate::forge_screens::ui_up(m), game);
             let now = tick as f32 / 30.;
+            crate::forge_readout::publish(e.readout_scene(game));
             self.markers = e.monitor_markers(now);
             self.bodies = e.monitor_draws(now, now);
         }
@@ -315,6 +317,7 @@ impl Feature for Hooks {
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         controls::camera_hooks(b)?;
+        crate::forge_readout::hook(b)?;
         let driver = self.0.clone();
         b.game().on_start("reset the Forge document", move |_| {
             controls::forget_park();
