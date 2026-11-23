@@ -39,6 +39,9 @@ bitmap-edit = { path = "../../tools/bitmap-edit" }
 hud-edit = { path = "../../tools/hud-edit" }
 # The HUD kit's checks over our kit HUDs (check.run; docs/game/hud-kit.md).
 hud-kit = { path = "../../tools/hud-kit" }
+# model.* on a map with the Pogo Stick's kit added as the game serves it
+# (api/models.rs). `boot` already depends on it.
+pogo-kit = { path = "../../tools/pogo-kit" }
 variants = { path = "../../formats/variants" }
 # The game type script editor: the language intelligence (`rules::ide`),
 # the check report and the compiler (src/app/rules_edit.rs).
@@ -91,6 +94,8 @@ libc = { workspace = true }
 [dev-dependencies]
 # The HUD tool's tests draw the invented HUD map.
 hud-edit = { path = "../../tools/hud-edit", features = ["fixture"] }
+# model.*'s tests put the kit into the kit's invented map.
+pogo-kit = { path = "../../tools/pogo-kit", features = ["fixture"] }
 # The agent's real server behind an invented game (src/play/tests.rs).
 agent = { path = "../../extensions/agent" }
 # Invented script tables and an invented executable for the Scripts tool.

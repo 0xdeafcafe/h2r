@@ -258,6 +258,7 @@ pub mod method {
     pub const MODEL_LIST: &str = "model.list";
     pub const MODEL_READ: &str = "model.read";
     pub const MODEL_RENDER: &str = "model.render";
+    pub const MODEL_CHECK: &str = "model.check";
     pub const MODEL_COLORS: &str = "model.colors";
     pub const MODEL_EMBLEM: &str = "model.emblem";
     pub const CUSTOM_LIST: &str = "custom.list";

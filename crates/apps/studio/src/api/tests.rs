@@ -323,6 +323,10 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         n if n.starts_with("pair.") => {
             crate::play::Play::new().update(app);
         }
+        // The Pogo kit's invented map with the kit in it, as court.map.
+        m::MODEL_LIST | m::MODEL_READ | m::MODEL_RENDER | m::MODEL_CHECK => {
+            super::models::tests::open_court(app, &t.path("court.map"), &pogo_kit::fixture::kitted().bytes);
+        }
         n if n.starts_with("hud.") => {
             // The HUD fixture's map as the source (it has no scenario).
             let map = t.path("hudtest.map");
@@ -805,7 +809,8 @@ fn every_method_in_methods_has_a_test() {
             }
             (Some(_), Ok(v)) => panic!("{} is planned but answered {v}", d.name),
             // No renderer on this machine: the snapshot says so.
-            (None, Err(e)) if d.name == m::VIEW_SNAPSHOT && e.code == code::NO_GPU => {}
+            (None, Err(e))
+                if matches!(d.name, m::VIEW_SNAPSHOT | m::MODEL_RENDER) && e.code == code::NO_GPU => {}
             // These reads need an active watchdog, recorded samples or sampling.
             (None, Err(e))
                 if matches!(d.name, mem::HISTORY | mem::HEAP | mem::DIFF | mem::POSTMORTEM)
@@ -1912,6 +1917,10 @@ fn methods_describe_their_params_results_and_examples() {
     for name in [m::HUD_LIST, m::HUD_READ, m::HUD_SET, m::HUD_MOVE, m::HUD_RENDER, m::HUD_CHECK, m::HUD_SAVE_AS] {
         assert!(list.iter().any(|v| v["name"] == name && v["status"] == "ready"), "{name}");
     }
+    // The models provider answers its four; colours and emblem stay planned.
+    for name in [m::MODEL_LIST, m::MODEL_READ, m::MODEL_RENDER, m::MODEL_CHECK] {
+        assert!(list.iter().any(|v| v["name"] == name && v["status"] == "ready"), "{name}");
+    }
 }
 
 #[test]
@@ -2379,20 +2388,20 @@ fn tags_browse_a_shared_cache_and_round_trip_through_a_bundle() {
     assert_eq!(e.code, code::REFUSED);
 }
 
-struct Models;
-impl Provider for Models {
+struct Colors;
+impl Provider for Colors {
     fn methods(&self) -> Vec<MethodDef> {
         vec![MethodDef {
-            name: m::MODEL_LIST,
-            summary: "test models",
+            name: m::MODEL_COLORS,
+            summary: "test colours",
             params: "{}",
-            result: "[string]",
+            result: "object",
             example: "null",
             planned: None,
         }]
     }
     fn call(&mut self, _: &mut App, method: &str, _: &Value) -> Option<Reply> {
-        (method == m::MODEL_LIST).then(|| Ok(json!(["masterchief"])))
+        (method == m::MODEL_COLORS).then(|| Ok(json!({"colors": [0, 1, 2, 3]})))
     }
 }
 
@@ -2402,25 +2411,25 @@ fn a_registered_provider_answers_a_planned_method() {
     let mut app = app(&t);
     let mut api = Api::new();
     assert_eq!(
-        code_of(api.call(&mut app, m::MODEL_LIST, Value::Null)),
+        code_of(api.call(&mut app, m::MODEL_COLORS, Value::Null)),
         code::NOT_YET
     );
-    api.register(Box::new(Models));
+    api.register(Box::new(Colors));
     assert_eq!(
-        call(&mut api, &mut app, m::MODEL_LIST, Value::Null),
-        json!(["masterchief"])
+        call(&mut api, &mut app, m::MODEL_COLORS, Value::Null),
+        json!({"colors": [0, 1, 2, 3]})
     );
     let listed = call(&mut api, &mut app, m::METHODS, Value::Null);
     let model = listed
         .as_array()
         .unwrap()
         .iter()
-        .find(|v| v["name"] == m::MODEL_LIST)
+        .find(|v| v["name"] == m::MODEL_COLORS)
         .unwrap();
     assert_eq!(model["status"], "ready");
     // The rest of the namespace stays planned.
     assert_eq!(
-        code_of(api.call(&mut app, m::MODEL_READ, json!({"tag": "x"}))),
+        code_of(api.call(&mut app, m::MODEL_EMBLEM, Value::Null)),
         code::NOT_YET
     );
 }

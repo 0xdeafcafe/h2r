@@ -35,7 +35,9 @@ workspace_library(
     crate = "pogo_kit",
     crate_root = "crates/tools/pogo-kit/src/lib.rs",
     description = "The Pogo Stick's models, built from art/pogo into each multiplayer map",
-    features = [],
+    features = [
+        "fixture",
+    ],
     manifest = "crates/tools/pogo-kit",
     package = "pogo-kit",
     tree = ":lib-tree",
@@ -63,7 +65,9 @@ workspace_test(
     crate = "pogo_kit",
     crate_root = "crates/tools/pogo-kit/src/lib.rs",
     description = "The Pogo Stick's models, built from art/pogo into each multiplayer map",
-    features = [],
+    features = [
+        "fixture",
+    ],
     manifest = "crates/tools/pogo-kit",
     package = "pogo-kit",
     tree = ":test-tree",
