@@ -242,7 +242,7 @@ fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> hooks::Regis
             rt: &rt,
             lockstep,
             agent: if case.agent {
-                AgentSource::Local
+                AgentSource::Recording
             } else {
                 AgentSource::None
             },

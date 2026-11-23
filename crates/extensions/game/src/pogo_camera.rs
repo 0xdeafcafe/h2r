@@ -273,8 +273,10 @@ pub fn install_hooks(b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
                 Ok(Flow::Continue)
             },
         )
-        // After Forge's (first) and Theater's, which this one yields to.
+        // After Forge's (first), Theater's and the agent spawn view's, which
+        // this one yields to.
         .after_feature("theater-camera")
+        .after_feature("agent-frames")
         .context_only();
     Ok(())
 }
