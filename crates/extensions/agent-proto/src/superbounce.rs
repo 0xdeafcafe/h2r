@@ -161,6 +161,22 @@ pub struct Guide {
     /// absent on a seam with none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub across: Option<f64>,
+    /// The bounce's predicted chance, 0 to 1, as the box and the fall
+    /// row show it in whole percent. On the ground (`jump`) it is the
+    /// share of the next 16 ticks a jump on which would bounce; in the
+    /// air, how sure the call is: 0.5 on the depth cut or an end of the
+    /// landing window, 0.95 deep and centred. Absent while not primed,
+    /// on a seam with no drift, with no landing by the seam, and in a
+    /// fall slower than the depth rule is measured at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chance: Option<f64>,
+    /// On the ground: how many of the next 16 ticks' jumps would bounce.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chance_jumps: Option<u32>,
+    /// The seam has no measured landing and `chance` was cut to the
+    /// scan-only cap, 0.6.
+    #[serde(default)]
+    pub chance_capped: bool,
     /// 0 to 1: the guide's fade with distance.
     pub strength: f64,
 }
@@ -1412,6 +1428,9 @@ mod tests {
                 depth: Some(0.04),
                 past: Some(-0.05),
                 across: None,
+                chance: Some(0.82),
+                chance_jumps: None,
+                chance_capped: false,
                 strength: 1.0,
             }),
             last_landing: Some(Landing {
@@ -1466,6 +1485,16 @@ mod tests {
         assert_eq!(v["guide"]["call"], "will_bounce");
         assert_eq!(v["guide"]["deep"], true);
         assert!(v["guide"].get("across").is_none());
+        assert_eq!(v["guide"]["chance"], 0.82);
+        assert_eq!(v["guide"]["chance_capped"], false);
+        assert!(v["guide"].get("chance_jumps").is_none());
+        // An older reply without the chance reads as none.
+        let mut old = v["guide"].clone();
+        for k in ["chance", "chance_capped"] {
+            old.as_object_mut().unwrap().remove(k);
+        }
+        let back: Guide = serde_json::from_value(old).unwrap();
+        assert_eq!((back.chance, back.chance_jumps, back.chance_capped), (None, None, false));
         assert_eq!(v["options"]["approach_guide"], true);
         assert_eq!(v["nav_target"]["fall"], 0.0);
         assert_eq!(v["last_landing"]["result"], "not_primed");

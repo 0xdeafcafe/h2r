@@ -20,6 +20,11 @@
 //!   into it. Its constants are measured on one seam
 //!   (docs/game/notes/2026-11-22-seam-drop-depth.md).
 //! - **The call** ([`call`]): what the box says of the landing.
+//! - **The chance** ([`chance`]): the bounce's predicted percentage. On
+//!   the ground, the share of the next [`CHANCE_TICKS`] ticks a jump on
+//!   which would bounce ([`jump_hits`]); in the air, how sure the call is
+//!   ([`confidence`]). A seam with no measured landing is capped
+//!   ([`SCAN_ONLY_CAP`]).
 //! - **Visibility** ([`strength`]): full while primed or within
 //!   [`NEAR`] of the seam, fading out to [`FAR`].
 
@@ -87,6 +92,32 @@ pub const DEPTH_SPEED: f32 = 5.2;
 /// way, at any speed, is all the hint asks.
 pub const DRIFT_HINT: f32 = 0.0;
 
+/// On the ground the chance is taken over a jump on each of this many
+/// ticks, this one and the 15 after: about half a second of the run.
+pub const CHANCE_TICKS: u32 = 16;
+/// The most a fall is promised, and one minus this the least: no number
+/// of the depth rule's is sure enough for 100 or for 0.
+pub const CONFIDENCE_TOP: f32 = 0.95;
+/// How soft the depth cut is to the confidence: a last free row this far
+/// under the cut reads 84%, as far over it 16%, on it 50%. Inferred, not
+/// measured: the cut itself is found to ±0.003
+/// (docs/game/notes/2026-11-22-seam-drop-depth.md), and the rest is the
+/// predicted row's own error, which no run has measured. At this width
+/// the middle of the note's bounce band, 0.04 to 0.05 under the cut,
+/// reads 93 to 94%.
+pub const DEPTH_SOFT: f32 = 0.02;
+/// How soft the landing window's ends are to the confidence: a row this
+/// far inside an end reads 84%, on it 50%. Inferred from the note's
+/// spacing: y 3.93 bounced and 3.92 did not, so an end is known to about
+/// 0.01. The window's middle, 0.03 from each end, reads 95%.
+pub const WINDOW_SOFT: f32 = 0.01;
+/// The most the chance says on a seam with no measured landing (a
+/// scan's `stand`, `Spot::landed` clear). The depth rule's cut and
+/// window are Ascension's proven seam's and are measured nowhere else
+/// (docs/game/notes/2026-11-22-seam-drop-depth.md), so on a seam no run
+/// has landed on, the rule itself is a guess.
+pub const SCAN_ONLY_CAP: f32 = 0.6;
+
 /// The seam the guide is on.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Seam {
@@ -97,6 +128,9 @@ pub struct Seam {
     pub point: Vec3,
     /// The drift, a unit vector; zero for a seam with none.
     pub drift: [f32; 2],
+    /// A run has measured a landing on it (`Spot::landed`): the chance
+    /// is not capped at [`SCAN_ONLY_CAP`].
+    pub measured: bool,
 }
 
 impl Seam {
@@ -107,6 +141,7 @@ impl Seam {
             edge: spot.edge,
             point: stand_near(spot, xy),
             drift: drift_unit(spot.drift),
+            measured: spot.landed,
         }
     }
 
@@ -225,6 +260,11 @@ impl Depth {
     pub fn in_window(&self) -> bool {
         (LANDING_WINDOW[0]..=LANDING_WINDOW[1]).contains(&self.past)
     }
+    /// How far inside the landing window the row is, from its nearer
+    /// end (negative: outside).
+    pub fn window_margin(&self) -> f32 {
+        (self.past - LANDING_WINDOW[0]).min(LANDING_WINDOW[1] - self.past)
+    }
 }
 
 /// The depth rule: for a landing on `seam` whose last free row is
@@ -278,6 +318,103 @@ pub fn call(seam: &Seam, impact: Option<&Impact>, airborne: bool, primed: bool) 
         Some(d) if d.in_window() => Call::WillBounce,
         _ => Call::LinedUp,
     }
+}
+
+/// How sure a fall's call is, before the seam's cap ([`cap`]): 0.5 on
+/// the depth cut or on an end of the landing window, rising smoothly to
+/// [`CONFIDENCE_TOP`] deep and in the window's middle, falling to one
+/// minus it shallow or outside. The nearer of the two margins counts,
+/// each over its own softness ([`DEPTH_SOFT`], [`WINDOW_SOFT`]), through
+/// `tanh`. A landing outside the catch (`caught` false) is at the
+/// bottom.
+///
+/// A fall is near-deterministic, so this is not a share of anything: it
+/// is how far the predicted last free row is from the lines that decide
+/// it, against how well those lines are known.
+pub fn confidence(depth: &Depth, caught: bool) -> f32 {
+    let low = 1.0 - CONFIDENCE_TOP;
+    if !caught || depth.margin.is_nan() || depth.past.is_nan() {
+        return low;
+    }
+    let m = (depth.margin / DEPTH_SOFT).min(depth.window_margin() / WINDOW_SOFT);
+    0.5 + (CONFIDENCE_TOP - 0.5) * m.tanh()
+}
+
+/// How many of the next [`CHANCE_TICKS`] ticks a jump on which would
+/// bounce, for a body on the ground at `position` moving `velocity`:
+/// each tick's jump is from where the run has carried the body by then
+/// (its height kept), flown as [`impact`] has it, and counts when
+/// [`call`] would say it will bounce: in the catch, at [`DEPTH_SPEED`]
+/// or faster, in the landing window and deep. `None` when no tick's jump
+/// comes down within [`PIPPER_RANGE`] of the seam's landing point, and
+/// for a seam with no drift.
+pub fn jump_hits(seam: &Seam, position: Vec3, velocity: Vec3) -> Option<u32> {
+    if !seam.drifts() {
+        return None;
+    }
+    let up = jump(velocity);
+    let (mut near, mut hits) = (false, 0);
+    for k in 0..CHANCE_TICKS {
+        let from = [
+            position[0] + velocity[0] * k as f32 * TICK,
+            position[1] + velocity[1] * k as f32 * TICK,
+            position[2],
+        ];
+        let Some(i) = impact(from, up, |xy| seam.contact(xy)) else {
+            continue;
+        };
+        near |= (i.row[0] - seam.point[0]).hypot(i.row[1] - seam.point[1]) <= PIPPER_RANGE;
+        hits += u32::from(call(seam, Some(&i), true, true) == Call::WillBounce);
+    }
+    near.then_some(hits)
+}
+
+/// The bounce's predicted chance.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Chance {
+    /// 0 to 1, after the seam's cap.
+    pub value: f32,
+    /// On the ground: how many of [`CHANCE_TICKS`] jumps bounce. `None`
+    /// in the air, where the value is a confidence.
+    pub jumps: Option<u32>,
+    /// The seam has no measured landing and the value was over
+    /// [`SCAN_ONLY_CAP`].
+    pub capped: bool,
+}
+
+/// `value` under the seam's evidence: as it is on a seam with a measured
+/// landing, at most [`SCAN_ONLY_CAP`] on one without; and whether that
+/// cut it.
+pub fn cap(value: f32, measured: bool) -> (f32, bool) {
+    let capped = !measured && value > SCAN_ONLY_CAP;
+    (if capped { SCAN_ONLY_CAP } else { value }, capped)
+}
+
+/// The chance that `body` bounces on `seam`, with `impact` the guide's
+/// touchdown (the fall's in the air).
+///
+/// - On the ground: the share of the next [`CHANCE_TICKS`] ticks' jumps
+///   that bounce ([`jump_hits`]).
+/// - In the air, touching down at [`DEPTH_SPEED`] or faster:
+///   [`confidence`] of the landing's depth.
+/// - Capped by the seam's evidence ([`cap`]).
+///
+/// `None` where nothing bounces or nothing is measured: not primed, a
+/// seam with no drift, no landing by the seam, a fall slower than the
+/// depth rule is measured at.
+pub fn chance(seam: &Seam, body: &Body, impact: Option<&Impact>) -> Option<Chance> {
+    if !body.primed {
+        return None;
+    }
+    let (value, jumps) = if body.airborne {
+        let i = impact.filter(|i| i.speed >= DEPTH_SPEED)?;
+        (confidence(&depth(seam, i)?, caught(seam, i)), None)
+    } else {
+        let hits = jump_hits(seam, body.position, body.velocity)?;
+        (hits as f32 / CHANCE_TICKS as f32, Some(hits))
+    };
+    let (value, capped) = cap(value, seam.measured);
+    Some(Chance { value, jumps, capped })
 }
 
 /// How strongly the guide draws for a player `distance` from the seam's
@@ -354,6 +491,8 @@ pub struct Guide {
     /// The body's speed along the seam's drift (units/s); `None` for a
     /// seam with none.
     pub across: Option<f32>,
+    /// The bounce's predicted chance ([`chance`]).
+    pub chance: Option<Chance>,
     /// The fade ([`strength`]).
     pub strength: f32,
 }
@@ -377,6 +516,7 @@ impl Guide {
             pipper: self.impact.is_some(),
             ticks: self.impact.is_some() && !self.caught(),
             drift: self.across.map(drift_lit),
+            chance: self.chance.map(|c| marks::percent(c.value)),
         }
     }
 
@@ -424,6 +564,7 @@ pub fn guide(body: &Body, spot: &Spot) -> Option<Guide> {
     Some(Guide {
         seam,
         impact,
+        chance: chance(&seam, body, impact.as_ref()),
         jump: !body.airborne,
         call: call(&seam, impact.as_ref(), body.airborne, body.primed),
         depth: impact.and_then(|i| depth(&seam, &i)),

@@ -11,7 +11,8 @@
 //! - `sbr.fall` and `sbr.steer`, on a fall toward a seam: a bar that
 //!   fills with the touchdown speed over the speed the seam needs, and
 //!   beside it `On seam`, or an arrow for the way to push and how far the
-//!   landing is off the seam.
+//!   landing is off the seam, and after either the approach guide's
+//!   predicted percentage ([`steer_line`]).
 //! - `sbr.info`: why the last landing by a seam did not bounce, for a few
 //!   seconds ([`Miss`]); in the flight after a bounce, the seams it can
 //!   reach, the best first, each a rank, an arrow for where it is against
@@ -93,7 +94,7 @@ pub const STEER_LEFT: i16 = LEFT + FALL_COLUMNS as i16 + 6;
 
 /// The widest texts: the most characters, the widest digits.
 pub const SPEED_LONGEST: &str = "\u{e2b1} 88.8  \u{e2b4} 88.8 m/s";
-pub const STEER_LONGEST: &str = "\u{e2b0} 88.88 m";
+pub const STEER_LONGEST: &str = "\u{e2b0} 88.88 m 100%";
 pub const INFO_LONGEST: &str = "No bounce: on seam at 88.8 m/s";
 /// The widest ranked line: [`NEXT`] seams, three digits each. Shorter
 /// than [`INFO_LONGEST`], whose row it shares.
@@ -257,6 +258,24 @@ pub fn steer_text(s: &Steer) -> String {
     }
 }
 
+/// The fall row's text: the steer line ([`steer_text`]) and, with the
+/// approach guide's chance, its percentage after it, `On seam 82%`.
+pub fn steer_line(s: &Steer, chance: Option<u8>) -> String {
+    match chance {
+        Some(c) => format!("{} {}%", steer_text(s), c.min(100)),
+        None => steer_text(s),
+    }
+}
+
+/// The chance the fall row carries for `v`: the approach guide's, on a
+/// fall toward the seam the guide is on. In the flight after a bounce
+/// the row is the best ranked seam's, which the guide may not be on: no
+/// percentage.
+pub fn fall_chance(v: &View) -> Option<u8> {
+    let ranked = v.next.iter().any(|n| n.is_some());
+    v.guide.filter(|_| !ranked).and_then(|g| g.chance)
+}
+
 /// The miss line.
 pub fn miss_text(m: &Miss) -> String {
     match m {
@@ -332,7 +351,7 @@ pub fn values(v: &View) -> Values {
         },
     );
     out.set(SPEED, text(v.speed.as_ref().and_then(speed_text)));
-    out.set(STEER, text(v.fall.map(|f| steer_text(&f.steer))));
+    out.set(STEER, text(v.fall.map(|f| steer_line(&f.steer, fall_chance(v)))));
     out.set(
         INFO,
         text(
@@ -771,9 +790,48 @@ mod tests {
             }
         }
         assert_eq!(moments, guide::samples().len());
-        assert_eq!(shown("guide-falling-caught", guide::BOX).unwrap(), guide::WILL_BOUNCE);
-        assert_eq!(shown("guide-too-shallow", guide::BOX).unwrap(), guide::TOO_SHALLOW);
-        assert_eq!(shown("guide-falling-caught", STEER).unwrap(), ON_SEAM);
+        assert_eq!(shown("guide-falling-caught", guide::BOX).unwrap(), "Will bounce 82%");
+        assert_eq!(shown("guide-too-shallow", guide::BOX).unwrap(), "Too shallow 30%");
+        // Before the jump the box has the percentage alone.
+        assert_eq!(shown("guide-lined-up", guide::BOX).unwrap(), "62%");
+        assert_eq!(shown("guide-approach", guide::BOX).unwrap(), "13%");
+        assert_eq!(shown("guide-scan-only", guide::BOX).unwrap(), "Will bounce 60%");
+    }
+
+    /// The fall row ends with the guide's percentage on a fall toward
+    /// its seam: after `On seam`, the drift's word or the distance; not
+    /// with no guide, not on the ground (no row), and not in the flight
+    /// after a bounce, where the row is the best ranked seam's.
+    #[test]
+    fn the_fall_row_ends_with_the_guides_percentage() {
+        assert_eq!(shown("guide-falling-caught", STEER).unwrap(), "On seam 82%");
+        assert_eq!(shown("guide-too-shallow", STEER).unwrap(), "On seam 30%");
+        assert_eq!(shown("guide-on-the-cut", STEER).unwrap(), "On seam 52%");
+        assert_eq!(shown("guide-off-line", STEER).unwrap(), "\u{e2b3} 1.40 m 5%");
+        assert_eq!(shown("guide-lined-up", STEER), None);
+        assert_eq!(shown("falling-on-seam", STEER).unwrap(), ON_SEAM);
+        let on = Steer::OnSeam;
+        assert_eq!(steer_line(&on, None), ON_SEAM);
+        assert_eq!(steer_line(&on, Some(95)), "On seam 95%");
+        assert_eq!(steer_line(&on, Some(200)), "On seam 100%");
+        let drift = Steer::Drift { heading: FRAC_PI_2 };
+        assert_eq!(steer_line(&drift, Some(40)), "\u{e2b2} Drift 40%");
+        // The widest: the furthest landing at the widest percentage.
+        let off = Steer::Off { heading: 1.0, metres: 1e9 };
+        let h = hud();
+        let longest = h.element(STEER).unwrap().kind.longest().unwrap().chars().count();
+        assert_eq!(steer_line(&off, Some(100)).chars().count(), longest);
+        // After a bounce the row is the ranked seam's: the guide's
+        // percentage is left off it.
+        let (_, falling) = views().into_iter().find(|(n, _)| *n == "guide-falling-caught").unwrap();
+        assert_eq!(fall_chance(&falling), Some(82));
+        let ranked = View {
+            next: [Some(Next { heading: 0.0, metres: 4.0 }), None],
+            ..falling
+        };
+        assert_eq!(fall_chance(&ranked), None);
+        assert_eq!(values(&ranked).get(STEER).unwrap().text, ON_SEAM);
+        assert_eq!(fall_chance(&View { guide: None, ..falling }), None);
     }
 
     /// The charge segments are nine meters after the bar: the empty ring
@@ -836,7 +894,7 @@ mod tests {
             heading: 1.0,
             metres: 1e9,
         };
-        assert_eq!(steer_text(&off).chars().count(), longest(STEER));
+        assert_eq!(steer_line(&off, Some(100)).chars().count(), longest(STEER));
         assert!(ON_SEAM.chars().count() <= longest(STEER));
         let drift = steer_text(&Steer::Drift { heading: FRAC_PI_2 });
         assert_eq!(drift, "\u{e2b2} Drift");

@@ -1365,7 +1365,7 @@ same screen modes.
 | `sbr.seg.1` to `sbr.seg.9` | meter, the battery strip's last 9 columns | round the tracker ("The charge segments") | how far the player is through priming, and how long the charge has left |
 | `sbr.speed` | text, font 6 | (101, −68) | moving: an arrow for the way of travel against the aim ([Direction arrows](#direction-arrows)) and the horizontal speed, `(arrow) 7.2 m/s`; falling, the fall speed after it, `(arrow) 2.1  (down) 12.4 m/s`. Hidden under 0.2 m/s |
 | `sbr.fall` | meter, the battery strip's last 64 columns | (101, −41) | on a fall toward a seam: the touchdown speed the fall gives over the speed the seam needs; full is fast enough |
-| `sbr.steer` | text, font 6 | (171, −47) | beside the bar: `On seam` when the coasting landing is caught and drifting the seam's way, `(arrow) Drift` when it is caught and is not, else an arrow for the way from the landing to the seam's landing point against the aim and how far, `(arrow) 0.40 m` ([superbounce.md](superbounce.md#the-landing-point)) |
+| `sbr.steer` | text, font 6 | (171, −47) | beside the bar: `On seam` when the coasting landing is caught and drifting the seam's way, `(arrow) Drift` when it is caught and is not, else an arrow for the way from the landing to the seam's landing point against the aim and how far, `(arrow) 0.40 m` ([superbounce.md](superbounce.md#the-landing-point)). On a fall toward the approach guide's seam, the guide's percentage after it, `On seam 82%` (`steer_line`, `fall_chance`; "The approach guide") |
 | `sbr.info` | text, font 6 | (101, −26) | why the last landing by a seam did not bounce, for four seconds: `Not primed`, `Missed seam by 0.31 m`, `Too slow: 12.4 of 16.5 m/s`, `No bounce: on seam at 17.2 m/s`. In the flight after a bounce, the seams it can reach, the best first: `1 (arrow) 12 m  2 (arrow) 30 m`, a rank, an arrow for where the seam is against the aim and its distance ([superbounce.md](superbounce.md#the-second-bounce)). For two seconds after the player switches the kinds of seam shown, `Targets: common`, `Targets: likely` or `Targets: all` in place of either ([superbounce.md](superbounce.md#targets)) |
 | `sbr.tag` | navpoint | the tagged seam's aim point | the tagged seam ([superbounce.md](superbounce.md#targets)) |
 | `sbr.target.1`, `sbr.target.2` | navpoint | a seam's aim point | the two nearest seams the player can reach from their height |
@@ -1383,8 +1383,9 @@ h2 hud preview superbounce-readout --state all --out DIR
 The preview's states are `idle`, `moving`, `falling-off-seam`,
 `falling-on-seam`, `falling-wants-drift`, the four `miss-` lines, `targets`, `second-bounce`,
 `second-bounce-lined-up`, `targets-switched`, `tagged`, the guide's
-five (`guide-approach`, `guide-lined-up`, `guide-falling-caught`,
-`guide-too-shallow` and `guide-off-line`) and the segments' eight:
+seven (`guide-approach`, `guide-lined-up`, `guide-falling-caught`,
+`guide-too-shallow`, `guide-off-line`, `guide-on-the-cut` and
+`guide-scan-only`) and the segments' eight:
 `segments-idle`, `segments-near`, `segments-under`, `segments-held`,
 `segments-primed`, `segments-draining`, `segments-warning` and
 `segments-lost`. `idle` has no ring, as with the variant's
@@ -1392,13 +1393,16 @@ five (`guide-approach`, `guide-lined-up`, `guide-falling-caught`,
 
 `h2 hud preview superbounce-all` draws both HUDs in one frame, for the
 preview only and fullscreen only, as the readout is
-(`huds::superbounce_all`, `huds::previews`): twenty-five moments of a run, each a state of the superbounce HUD beside one of the
+(`huds::superbounce_all`, `huds::previews`): twenty-seven moments of a run, each a state of the superbounce HUD beside one of the
 readout's (`MOMENTS`), the thirteenth to the fifteenth the second
 bounce's ranked seams, its line-up and the line after a switch of the
 kinds of seam shown, the sixteenth to the twentieth the approach
 guide's (the walk up, lined up, falling and caught, falling too shallow,
-and off the line), and the last five the priming states the others
-lack: near, held, the primed ending, the warning and the loss. A
+and off the line), the twenty-first to the twenty-fifth the priming
+states the others lack (near, held, the primed ending, the warning and
+the loss), and the last two the guide's percentage at its two marked
+values: a fall just under the depth cut, and one onto a seam no run has
+landed on, at the scan-only cap. A
 moment's segments are its superbounce state's charge
 (`superbounce_all::moment_segments`), so every moment shows the ring as
 the game would, but the primed ending: its state is the arm's ending at
@@ -1418,7 +1422,7 @@ through `superbounce_readout::view`:
 | `marks` (`superbounce_targets::Marks`) | the three navpoints' points (`Handle::navpoint_at`) and their distances |
 | `switched` (`superbounce_targets::Switch`, for 60 ticks after a double tap of the flashlight) | the switch's line (`kinds`), over the ranked line and the miss line |
 | `second` (`superbounce_second::Ranked`, in the flight after a bounce) | the ranked line (`next`), and the fall row as the best seam's line-up (`line_up`) in place of the assist's prediction; the mode has put the ranked seams on the two target navpoints |
-| `guide` (`superbounce_guide::Guide`) | the approach guide's values (`Guide::view`) and its marks' poses (`guide_poses`, `Handle::world_mark`) |
+| `guide` (`superbounce_guide::Guide`) | the approach guide's values (`Guide::view`), its chance as a whole percentage on the box and, on a fall toward its seam, after the steer line; and its marks' poses (`guide_poses`, `Handle::world_mark`) |
 | `charge`, `scan`, the spot counts | the charge segments (`superbounce_readout::segments`): the charge's stage, once the scan is ready and the map has a spot |
 
 The miss line's numbers are worked out beside the tracker's verdict:
@@ -1527,17 +1531,25 @@ are built.
 
 | Element | Shape | Pose | Values |
 |---|---|---|---|
-| `sbr.guide.box` | `Bracket` | at the seam's landing point, heading along its edge; half 0.3 along (at most half the edge) and 0.1 across, the catch, so a pipper inside the box is a caught landing | `Dim` off the line; `Normal` lined up; `Normal` with `Too shallow`; `Go` with `Will bounce` (`box_value`, `Call`) |
+| `sbr.guide.box` | `Bracket` | at the seam's landing point, heading along its edge; half 0.3 along (at most half the edge) and 0.1 across, the catch, so a pipper inside the box is a caught landing | `Dim` off the line; `Normal` lined up; `Normal` with `Too shallow`; `Go` with `Will bounce` (`box_value`, `Call`). The label ends with the guide's percentage, `Will bounce 82%` or `Too shallow 30%`, and with no call is the percentage alone, `62%` (`box_text`); the widest is `Too shallow 100%` |
 | `sbr.guide.pipper` | `Pipper` | at the predicted landing on the seam's floor, radius 0.06 | shown while a landing is predicted by the seam; `Go` with the box |
 | `sbr.guide.ticks` | `Ticks` | from the pipper's ring toward the box's centre, over the distance between them, 0.6 at most (`ticks_run`) | shown while the landing is not caught; under a run of 0.02 it has no pose |
 | `sbr.guide.drift` | `Arrow` | 0.06 outside the box on the drift's side, pointing along the drift | `Normal` while the player moves the drift's way, `Dim` when not; hidden on a seam with no drift |
 
 `Guide` is what the marks show and `Layout` where they lie;
 `poses(&Layout)` gives each mark's pose, for the runtime and for the
-preview's five samples alike (`samples`: the seam's point at the scene's
+preview's seven samples alike (`samples`: the seam's point at the scene's
 origin, its edge along +X, its drift away from the viewer). Every pose
 carries the guide's fade as its strength. The marks are fullscreen only,
 as the readout is.
+
+`Guide::chance` is the bounce's predicted chance as a whole percentage
+(`percent`, 0 to 100), or none where the rules give none
+([superbounce.md](superbounce.md#the-chance)). The kit only writes it:
+on the box's label, and on the readout's steer line
+(`superbounce_readout::steer_line`) while the fall row is the guide's
+seam's, which it is not in the flight after a bounce
+(`fall_chance`).
 
 ## Interfaces
 

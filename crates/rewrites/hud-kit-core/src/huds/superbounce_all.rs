@@ -15,7 +15,7 @@ use super::superbounce_segments as segs;
 pub const NAME: &str = "superbounce-all";
 
 /// The moments: a name, the superbounce HUD's state, the readout's.
-pub const MOMENTS: [(&str, &str, &str); 25] = [
+pub const MOMENTS: [(&str, &str, &str); 27] = [
     ("1-walking", "not-primed", "moving"),
     ("2-arming", "under", "idle"),
     ("3-primed-targets", "primed-full", "targets"),
@@ -41,6 +41,8 @@ pub const MOMENTS: [(&str, &str, &str); 25] = [
     ("23-primed-ending", "primed-ending", "segments-primed"),
     ("24-charge-warning", "primed-still-warning", "segments-warning"),
     ("25-charge-lost", "lost-stood-still", "segments-lost"),
+    ("26-guide-on-the-cut", "primed-full", "guide-on-the-cut"),
+    ("27-guide-scan-only", "primed-full", "guide-scan-only"),
 ];
 
 /// The charge segments at a moment: the superbounce state's charge, as
@@ -142,8 +144,9 @@ mod tests {
         }
     }
 
-    /// The approach guide's five moments pose the marks they show; the
-    /// others have none.
+    /// The approach guide's seven moments pose the marks they show; the
+    /// others have none. Each has the guide's percentage on its box:
+    /// alone before the jump, after the call in a fall.
     #[test]
     fn the_guides_moments_pose_their_marks() {
         use crate::huds::superbounce_guide as guide;
@@ -159,9 +162,23 @@ mod tests {
                 "17-guide-lined-up",
                 "18-guide-falling-caught",
                 "19-guide-too-shallow",
-                "20-guide-off-line"
+                "20-guide-off-line",
+                "26-guide-on-the-cut",
+                "27-guide-scan-only"
             ]
         );
+        let states = All.states();
+        let label = |moment: &str| {
+            let (_, v) = states.iter().find(|(n, _)| *n == moment).unwrap();
+            v.get(guide::BOX).unwrap().text.clone()
+        };
+        assert_eq!(label("16-guide-approach"), "13%");
+        assert_eq!(label("17-guide-lined-up"), "62%");
+        assert_eq!(label("18-guide-falling-caught"), "Will bounce 82%");
+        assert_eq!(label("19-guide-too-shallow"), "Too shallow 30%");
+        assert_eq!(label("20-guide-off-line"), "5%");
+        assert_eq!(label("26-guide-on-the-cut"), "Will bounce 52%");
+        assert_eq!(label("27-guide-scan-only"), "Will bounce 60%");
         for (name, v) in All.states() {
             let poses = All.world(name);
             for id in guide::MARKS {

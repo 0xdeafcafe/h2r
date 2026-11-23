@@ -155,7 +155,9 @@ pub fn kinds(m: crate::superbounce_options::TargetMode) -> rd::Kinds {
 ///   targets to (`superbounce_targets::Switch`), over the other lines.
 /// - The navpoints: the mode's marks (`superbounce_targets::Marks`), each
 ///   with its distance in metres.
-/// - The approach guide: the state's `guide`, with `approach_guide`.
+/// - The approach guide: the state's `guide`, with `approach_guide`. Its
+///   chance is the box's percentage and, on a fall toward its seam, the
+///   fall row's (`rd::fall_chance`).
 /// - The charge segments: [`segments`], with `charge_segments`.
 pub fn view(s: &State, o: Options, info: Option<Miss>) -> View {
     let metres =

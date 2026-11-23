@@ -518,9 +518,12 @@ fn the_approach_guide_is_the_states_with_its_option() {
     s.guide = guide(&body, &spot);
     let v = view(&s, Options::DEFAULT, None).guide.unwrap();
     assert_eq!((v.call, v.pipper, v.ticks, v.drift), (Call::OffLine, true, true, Some(false)));
+    // From the seam's own floor no jump comes down fast enough: 0%.
+    assert_eq!(v.chance, Some(0));
     let values = rd::values(&view(&s, Options::DEFAULT, None));
     assert_eq!(MARKS.map(|id| values.get(id).unwrap().shown), [true; 4]);
     assert_eq!(values.get(BOX).unwrap().style, Style::Dim);
+    assert_eq!(values.get(BOX).unwrap().text, "0%");
     let poses = guide_poses(&s, Options::DEFAULT);
     assert_eq!(poses.map(|(id, _)| id), MARKS);
     assert!(poses.iter().all(|(_, p)| p.is_some()));
@@ -537,6 +540,54 @@ fn the_approach_guide_is_the_states_with_its_option() {
     assert!(guide_poses(&s, off).iter().all(|(_, p)| p.is_none()));
     let values = rd::values(&view(&s, off, None));
     assert_eq!(MARKS.map(|id| values.get(id).unwrap().shown), [false; 4]);
+}
+
+/// In a primed fall the guide's percentage is on the box after its call
+/// and on the fall row after the steer line; a seam with no measured
+/// landing is capped at 60%; the variant's option takes it off both.
+#[test]
+fn the_guides_percentage_is_on_the_box_and_the_fall_row() {
+    use crate::superbounce_guide::{Body, guide};
+    use hud_kit_core::huds::superbounce_guide::{BOX, Call};
+    let scan = Spot {
+        drift: [1.0, 0.0],
+        ..seam()
+    };
+    let measured = Spot { landed: true, ..scan };
+    // One tick over the seam, 0.05 before its edge, 0.0375 under the cut.
+    let body = Body {
+        position: [9.95, 0.0, 2.37],
+        velocity: [0.3, 0.0, -5.3],
+        airborne: true,
+        primed: true,
+    };
+    let mut s = on();
+    s.airborne = true;
+    s.landing = Some(predicted([9.95, 0.0, 2.0], 6.0));
+    let texts = |s: &State, o: Options| {
+        let values = rd::values(&view(s, o, None));
+        (values.get(BOX).unwrap().text.clone(), values.get(STEER).unwrap().text.clone())
+    };
+    s.guide = guide(&body, &measured);
+    assert_eq!(s.guide.unwrap().call, Call::WillBounce);
+    assert_eq!(view(&s, Options::DEFAULT, None).guide.unwrap().chance, Some(93));
+    let (on_box, row) = texts(&s, Options::DEFAULT);
+    assert_eq!((on_box.as_str(), row.as_str()), ("Will bounce 93%", "On seam 93%"));
+    // The scan's seam: the cap.
+    s.guide = guide(&body, &scan);
+    let (on_box, row) = texts(&s, Options::DEFAULT);
+    assert_eq!((on_box.as_str(), row.as_str()), ("Will bounce 60%", "On seam 60%"));
+    // Too shallow.
+    s.guide = guide(&Body { position: [9.95, 0.0, 2.43], ..body }, &measured);
+    let (on_box, row) = texts(&s, Options::DEFAULT);
+    assert_eq!((on_box.as_str(), row.as_str()), ("Too shallow 14%", "On seam 14%"));
+    // With the guide off the row is as it was, and the box is hidden.
+    let off = Options {
+        approach_guide: false,
+        ..Options::DEFAULT
+    };
+    let (on_box, row) = texts(&s, off);
+    assert_eq!((on_box.as_str(), row.as_str()), ("", rd::ON_SEAM));
 }
 
 /// The charge segments are the mode's charge, stage for stage, once the

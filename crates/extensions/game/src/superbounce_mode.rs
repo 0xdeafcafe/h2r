@@ -452,6 +452,9 @@ pub fn guide_reply(g: &crate::superbounce_guide::Guide) -> agent_proto::superbou
         depth: g.depth.map(|d| f64::from(d.margin)),
         past: g.depth.map(|d| f64::from(d.past)),
         across: g.across.map(f64::from),
+        chance: g.chance.map(|c| f64::from(c.value)),
+        chance_jumps: g.chance.and_then(|c| c.jumps),
+        chance_capped: g.chance.is_some_and(|c| c.capped),
         strength: f64::from(g.strength),
     }
 }

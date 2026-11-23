@@ -1,6 +1,7 @@
 //! The approach guide's rules: the impact against the sim's fall model,
-//! the depth rule against the note's cut, the call, the fade and the
-//! seam it is on (docs/game/superbounce.md, "The approach guide").
+//! the depth rule against the note's cut, the call, the chance, the fade
+//! and the seam it is on (docs/game/superbounce.md, "The approach
+//! guide").
 
 use sim_bench::drops::{FALL_OFFSET, FALL_STILL_ROWS, FALL_V0, fall_model};
 
@@ -387,6 +388,28 @@ fn the_agent_reply_carries_the_call_and_the_depth() {
     near(r.row.unwrap()[2] as f32, -2.83, 1e-6);
     near(r.impact.unwrap()[2] as f32, -3.2, 1e-6);
     near(r.seam[1] as f32, 3.976, 1e-4);
+    // The chance: a fall's confidence, with no count of jumps; on this
+    // measured seam it is not capped.
+    near(r.chance.unwrap() as f32, 0.929, 2e-3);
+    assert_eq!((r.chance_jumps, r.chance_capped), (None, false));
+    let scan = Spot { landed: false, ..ascension() };
+    let capped = guide_reply(&guide(&body, &scan).unwrap());
+    near(capped.chance.unwrap() as f32, SCAN_ONLY_CAP, 1e-6);
+    assert!(capped.chance_capped);
+    // On the ground it is the jumps' share, with their count.
+    let walking = Body {
+        position: [-10.457, 3.205, 0.25],
+        velocity: [0.0, 0.3, 0.0],
+        airborne: false,
+        primed: true,
+    };
+    let w = guide_reply(&guide(&walking, &ascension()).unwrap());
+    assert!(w.jump);
+    near(w.chance.unwrap() as f32, 0.375, 1e-6);
+    assert_eq!((w.chance_jumps, w.chance_capped), (Some(6), false));
+    // Not primed there is none.
+    let idle = guide_reply(&guide(&Body { primed: false, ..body }, &ascension()).unwrap());
+    assert_eq!((idle.chance, idle.chance_jumps, idle.chance_capped), (None, None, false));
     let shallow = guide(&Body { position: [-10.457, 3.95, -2.77], ..body }, &ascension()).unwrap();
     assert_eq!(guide_reply(&shallow).call, "too_shallow");
     assert_eq!(guide_reply(&shallow).deep, Some(false));
@@ -401,4 +424,212 @@ fn the_agent_reply_carries_the_call_and_the_depth() {
     // The lock-on has no landing here to bracket either way.
     assert_eq!(crate::superbounce_world::lock_shown(&s, true), None);
     assert_eq!(crate::superbounce_world::lock_shown(&s, false), None);
+}
+
+/// A body on a ledge 3.45 over Ascension's seam, walking at 0.3 units/s
+/// along its drift from `y`: each tick's jump lands 0.01 further on, 64
+/// ticks later at 5.82 units/s.
+fn walking(y: f32) -> Body {
+    Body {
+        position: [-10.457, y, 0.25],
+        velocity: [0.0, 0.3, 0.0],
+        airborne: false,
+        primed: true,
+    }
+}
+
+/// Before the jump the chance is the share of the next 16 ticks a jump
+/// on which would bounce: a known line gives a known share.
+#[test]
+fn the_ground_chance_is_the_share_of_the_jumps_that_bounce() {
+    assert_eq!(CHANCE_TICKS, 16);
+    let s = seam();
+    let hits = |b: &Body| jump_hits(&s, b.position, b.velocity);
+    // From y 3.205 a jump now lands 0.155 before the edge, and the jumps
+    // of ticks 9 to 14 land 0.065 to 0.015 before it: in the landing
+    // window, their last free rows 0.015 to 0.053 under the cut. The
+    // next is 0.005 before the edge, past the window. Six of 16.
+    assert_eq!(hits(&walking(3.205)), Some(6));
+    // Twice as fast from a ledge 3.0 over the seam the landings are
+    // 0.02 apart: three of them in the window, all deep.
+    let brisk = Body {
+        position: [-10.457, 2.505, -0.2],
+        velocity: [0.0, 0.6, 0.0],
+        ..walking(0.0)
+    };
+    assert_eq!(hits(&brisk), Some(3));
+    // Standing still every tick's jump is the same one: all or none.
+    let still = |y: f32, z: f32| Body {
+        position: [-10.457, y, z],
+        velocity: [0.0; 3],
+        ..walking(0.0)
+    };
+    assert_eq!(hits(&still(3.955, -0.2)), Some(16));
+    assert_eq!(hits(&still(3.7, -0.2)), Some(0), "short of the catch");
+    // From the seam's own floor a jump comes down too slow to bounce.
+    assert_eq!(hits(&still(3.955, -3.2 + CLEARANCE)), Some(0));
+    // Nowhere near the seam there is nothing to say, nor on a seam with
+    // no drift.
+    assert_eq!(hits(&still(-40.0, -0.2)), None);
+    assert_eq!(jump_hits(&Seam { drift: [0.0; 2], ..s }, [-10.457, 3.955, -0.2], [0.0; 3]), None);
+    // Wide of the edge's end the same line bounces nothing.
+    let wide = Body {
+        position: [-9.5, 3.205, 0.25],
+        ..walking(3.205)
+    };
+    assert_eq!(hits(&wide), Some(0));
+}
+
+/// The guide carries the ground chance, it climbs as the run closes on
+/// a good line, and the marks show it as a whole percentage.
+#[test]
+fn the_ground_chance_climbs_on_the_run_in() {
+    let spot = ascension();
+    let at = |y: f32| guide(&walking(y), &spot).unwrap();
+    let chances: Vec<_> = [3.105, 3.155, 3.205].map(|y| at(y).chance.unwrap()).to_vec();
+    assert_eq!(
+        chances.iter().map(|c| c.jumps).collect::<Vec<_>>(),
+        [Some(0), Some(2), Some(6)]
+    );
+    for (c, want) in chances.iter().zip([0.0, 0.125, 0.375]) {
+        near(c.value, want, 1e-6);
+        assert!(!c.capped);
+    }
+    let g = at(3.205);
+    // A jump now is short of the catch: off the line, with the share on
+    // the box all the same.
+    assert_eq!((g.call, g.jump), (Call::OffLine, true));
+    assert_eq!(g.view().chance, Some(38));
+    assert_eq!(at(3.155).view().chance, Some(13));
+    // Standing in the right place over a measured seam: every jump.
+    let still = |spot: &Spot, primed: bool| {
+        let body = Body {
+            position: [-10.457, 3.955, -0.2],
+            velocity: [0.0; 3],
+            airborne: false,
+            primed,
+        };
+        guide(&body, spot).unwrap()
+    };
+    let sure = still(&spot, true).chance.unwrap();
+    assert_eq!((sure.value, sure.jumps, sure.capped), (1.0, Some(16), false));
+    assert_eq!(still(&spot, true).view().chance, Some(100));
+    // A seam no run has landed on is capped, and says so.
+    let scan = Spot { landed: false, ..spot };
+    let capped = still(&scan, true).chance.unwrap();
+    assert_eq!((capped.value, capped.jumps, capped.capped), (SCAN_ONLY_CAP, Some(16), true));
+    assert_eq!(still(&scan, true).view().chance, Some(60));
+    // Not primed nothing bounces: no chance.
+    assert_eq!(still(&spot, false).chance, None);
+    assert_eq!(still(&spot, false).view().chance, None);
+    // A seam with no drift has no depth rule, and so none.
+    let plain = Spot { drift: [0.0; 2], ..spot };
+    assert_eq!(still(&plain, true).chance, None);
+}
+
+/// In the air the chance is a confidence: 50% on the depth cut and on
+/// either end of the landing window, about 95% deep and centred, low
+/// when clearly shallow or off the window, rising all the way between.
+#[test]
+fn the_air_confidence_is_half_on_the_cut_and_rises_with_the_margin() {
+    let at = |margin: f32, past: f32| confidence(&Depth { margin, past }, true);
+    let low = 1.0 - CONFIDENCE_TOP;
+    // On the cut in the window's middle, and deep on either end of the
+    // window.
+    near(at(0.0, -0.04), 0.5, 1e-6);
+    near(at(0.08, LANDING_WINDOW[0]), 0.5, 1e-6);
+    near(at(0.08, LANDING_WINDOW[1]), 0.5, 1e-6);
+    // Deep and centred.
+    let top = at(0.07, -0.04);
+    assert!(top > 0.94 && top <= CONFIDENCE_TOP, "{top}");
+    // The cut is measured to 0.003: that far either side of it is just
+    // either side of half, the same distance from it.
+    let (under, over) = (at(0.003, -0.04), at(-0.003, -0.04));
+    assert!(under > 0.5 && under < 0.6 && over < 0.5 && over > 0.4, "{under} {over}");
+    near(under + over, 1.0, 1e-6);
+    // One softness under the cut, and one inside an end.
+    near(at(DEPTH_SOFT, -0.04), 0.5 + 0.45 * 1f32.tanh(), 1e-5);
+    near(at(0.2, LANDING_WINDOW[0] + WINDOW_SOFT), 0.5 + 0.45 * 1f32.tanh(), 1e-4);
+    // Clearly shallow, and clearly off the window: low.
+    assert!(at(-0.05, -0.04) < 0.06 && at(0.08, -0.10) < 0.06 && at(0.08, 0.03) < 0.06);
+    // Outside the catch: the bottom, whatever the depth.
+    near(confidence(&Depth { margin: 0.08, past: -0.04 }, false), low, 1e-6);
+    near(confidence(&Depth { margin: f32::NAN, past: -0.04 }, true), low, 1e-6);
+    near(confidence(&Depth { margin: 0.08, past: f32::NAN }, true), low, 1e-6);
+    // It never falls as the row goes deeper, rises through the cut, and
+    // stays inside the bottom and the top.
+    let margins: Vec<f32> = (-20..=27).map(|k| k as f32 * 0.005).collect();
+    for pair in margins.windows(2) {
+        let (a, b) = (at(pair[0], -0.04), at(pair[1], -0.04));
+        assert!(b >= a, "{pair:?}: {a} {b}");
+        if pair[0].abs() <= 0.045 && pair[1].abs() <= 0.045 {
+            assert!(b > a, "{pair:?}: {a} {b}");
+        }
+        assert!((low..=CONFIDENCE_TOP).contains(&a) && (low..=CONFIDENCE_TOP).contains(&b));
+    }
+    // Nor as the row moves from an end of the window to its middle.
+    for end in [0usize, 1] {
+        let sign = if end == 0 { 1.0 } else { -1.0 };
+        let mut last = at(0.08, LANDING_WINDOW[end] - sign * 0.04);
+        for k in -7..=6 {
+            let c = at(0.08, LANDING_WINDOW[end] + sign * k as f32 * 0.005);
+            assert!(c >= last, "end {end} step {k}: {last} {c}");
+            last = c;
+        }
+    }
+    // The call and the confidence agree: will bounce is half or over,
+    // too shallow half or under.
+    for (margin, past) in [(0.001, -0.069), (0.05, -0.011), (0.12, -0.04)] {
+        let d = Depth { margin, past };
+        assert!(d.deep() && d.in_window() && confidence(&d, true) >= 0.5, "{d:?}");
+    }
+    for (margin, past) in [(-0.001, -0.04), (-0.05, -0.02), (-0.001, -0.09)] {
+        assert!(confidence(&Depth { margin, past }, true) <= 0.5);
+    }
+}
+
+/// The seam's evidence caps the chance: as it is on a seam with a
+/// measured landing, 60% at most on a scan's.
+#[test]
+fn a_scan_only_seam_is_capped() {
+    assert_eq!(SCAN_ONLY_CAP, 0.6);
+    assert_eq!(cap(0.95, true), (0.95, false));
+    assert_eq!(cap(1.0, true), (1.0, false));
+    assert_eq!(cap(0.95, false), (SCAN_ONLY_CAP, true));
+    assert_eq!(cap(0.61, false), (SCAN_ONLY_CAP, true));
+    // At or under the cap nothing is cut.
+    assert_eq!(cap(SCAN_ONLY_CAP, false), (SCAN_ONLY_CAP, false));
+    assert_eq!(cap(0.3, false), (0.3, false));
+    assert_eq!(cap(0.0, false), (0.0, false));
+    // The seam takes its evidence from the spot.
+    assert!(seam().measured);
+    let scan = Spot { landed: false, ..ascension() };
+    assert!(!Seam::of(&scan, [-10.457, 3.976]).measured);
+    // A primed fall, deep in the window: 93% on the measured seam, the
+    // cap on the scan's. The call is the same on both.
+    let body = |z: f32| Body {
+        position: [-10.457, 3.95, z],
+        velocity: [0.0, 0.3, -5.3],
+        airborne: true,
+        primed: true,
+    };
+    let (m, s) = (guide(&body(-2.83), &ascension()).unwrap(), guide(&body(-2.83), &scan).unwrap());
+    assert_eq!((m.call, s.call), (Call::WillBounce, Call::WillBounce));
+    let (mc, sc) = (m.chance.unwrap(), s.chance.unwrap());
+    near(mc.value, 0.929, 2e-3);
+    assert_eq!((mc.jumps, mc.capped), (None, false));
+    assert_eq!((sc.value, sc.jumps, sc.capped), (SCAN_ONLY_CAP, None, true));
+    assert_eq!((m.view().chance, s.view().chance), (Some(93), Some(60)));
+    // Too shallow is under the cap on either: the same on both.
+    let (m, s) = (guide(&body(-2.77), &ascension()).unwrap(), guide(&body(-2.77), &scan).unwrap());
+    assert_eq!(m.call, Call::TooShallow);
+    near(m.chance.unwrap().value, 0.136, 2e-3);
+    assert_eq!(m.chance, s.chance);
+    assert_eq!(m.view().chance, Some(14));
+    // A fall slower than the depth rule is measured at, and one not
+    // primed, have no chance.
+    let slow = Body { velocity: [0.0, 0.3, -3.0], ..body(-2.83) };
+    assert_eq!(guide(&slow, &ascension()).unwrap().chance, None);
+    let idle = Body { primed: false, ..body(-2.83) };
+    assert_eq!(guide(&idle, &ascension()).unwrap().chance, None);
 }

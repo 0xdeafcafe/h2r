@@ -1020,7 +1020,7 @@ the kit ([hud-kit.md](hud-kit.md#the-superbounce-readout);
 | Row | Shows when | Says |
 |---|---|---|
 | speed | moving | an arrow for the way of travel against the aim and the horizontal speed in metres a second, `(arrow) 7.2 m/s`; while falling, the fall speed after it |
-| fall | airborne and falling toward a strip (the state's `landing`) | a bar, the touchdown speed the fall gives over the speed the strip needs, full when fast enough; beside it `On seam` when the coasting landing is caught and drifting the seam's way, `(arrow) Drift` when it is caught and is not, else an arrow for the way to push and how far the landing is from the seam's [landing point](#the-landing-point), `(arrow) 0.40 m` |
+| fall | airborne and falling toward a strip (the state's `landing`) | a bar, the touchdown speed the fall gives over the speed the strip needs, full when fast enough; beside it `On seam` when the coasting landing is caught and drifting the seam's way, `(arrow) Drift` when it is caught and is not, else an arrow for the way to push and how far the landing is from the seam's [landing point](#the-landing-point), `(arrow) 0.40 m`; after either, the approach guide's [percentage](#the-chance), `On seam 82%` |
 | miss | for four seconds after a landing by a strip that did not bounce, until the next fall toward a strip | `Not primed`, `Missed seam by 0.31 m` (the origin's distance to the edge), `Too slow: 12.4 of 16.5 m/s` (the speed in and the strip's need) or `No bounce: on seam at 17.2 m/s` |
 
 Nothing of the mode's HUD is in the middle of the screen but the arming
@@ -1269,7 +1269,7 @@ each tick (`superbounce_guide::guide`, into the state's `guide`).
 | Mark | Where | Says |
 |---|---|---|
 | the pipper, a small ring with a cross | where the player's path touches down, on the seam's floor | on the ground, where a jump now would land; in the air, the landing itself |
-| the box, four corner brackets | on the seam's landing point ([The landing point](#the-landing-point)), turned along the seam's edge, 0.6 long and as wide as the catch (0.2) | dim while the landing is off the seam, lit when it is lined up, and in a fall `Too shallow` or, red, `Will bounce` |
+| the box, four corner brackets | on the seam's landing point ([The landing point](#the-landing-point)), turned along the seam's edge, 0.6 long and as wide as the catch (0.2) | dim while the landing is off the seam, lit when it is lined up, and in a fall `Too shallow` or, green, `Will bounce`; under it the bounce's predicted [percentage](#the-chance), alone before the jump (`62%`) and after the call in a fall (`Will bounce 82%`) |
 | the ticks, three dashes | from the pipper toward the box | how far off the landing is: they shorten as the two close and go when the landing is caught |
 | the drift arrow | outside the box on the side the seam drifts to | the way to be moving at the landing; lit while the player moves that way |
 
@@ -1337,7 +1337,7 @@ note's lowest and highest last free rows, not measured on its own.
 | off line | no landing by the seam, or one outside the catch | dim |
 | lined up | the landing is in the catch, and nothing below applies | lit |
 | too shallow | airborne, primed, touching down at 5.2 units/s or faster, in the catch, and not deep | lit, `Too shallow` |
-| will bounce | the same, deep, and in the landing window | red, `Will bounce`, the pipper red with it |
+| will bounce | the same, deep, and in the landing window | green, `Will bounce`, the pipper green with it |
 
 On the ground the call stops at lined up: the landing is a jump's from
 this very place, and its phase moves with every step. Under 5.2 units/s
@@ -1355,16 +1355,77 @@ split screen the lock-on's brackets are drawn.
 `superbounce.state` returns the guide as `guide`: the seam's point, the
 call, the pipper, the last free row with its ticks and speed, `caught`,
 `deep` with the margin under the cut and the row's place past the edge,
-the speed along the drift and the fade. On the ground `deep` is the
-depth of a jump from where the player stands, an estimate that is not
-on the box.
+the speed along the drift, the fade, and the [chance](#the-chance):
+`chance` (0 to 1), on the ground `chance_jumps` (how many of the 16
+jumps bounce) and `chance_capped` (the scan-only cap cut it). On the
+ground `deep` is the depth of a jump from where the player stands, an
+estimate that is not on the box.
 
 Supposed, until a lab run: that the cut and the window hold on seams
 other than Ascension's and above 5.39 units/s, the fastest drop
 measured; that a jump leaves the ground at 3.08 units/s with the run's
-speed kept; and where the seam stops the body (`DEPTH_BAND`). A
+speed kept; where the seam stops the body (`DEPTH_BAND`); and the
+chance's two softnesses and its cap. A
 `superbounce.state` poll through a fall beside `sim.drops`' last free
 row for the same drop checks the row and the call.
+
+#### The chance
+
+A percentage on the box and on the readout's fall row
+(`superbounce_guide::chance`), shown while primed on a seam with a
+drift. It means one thing on the ground and another in the air.
+
+**Before the jump** it is a share (`jump_hits`): of the next 16 ticks
+(`CHANCE_TICKS`, about half a second), how many would bounce if the
+player jumped on that tick. Each tick's jump starts where the run has
+carried the body by then, at the height it is at, and is flown as the
+impact is; it counts when the box would call it: in the catch, touching
+down at 5.2 units/s or faster, in the landing window and deep. Standing
+still every tick's jump is the same one, so the share is all or none.
+Walking at 0.3 units/s along the drift the landings are 0.01 apart and
+six of them are in the window; at 0.6, three. From a ledge 3.45 over Ascension's
+seam, walking in at 0.3 from 0.895, 0.845 and 0.795 before the edge,
+the share is 0, 2 and 6 of 16: it climbs as the run closes on a good
+line. From the seam's own floor it is 0: a jump comes down at 2.9
+units/s. With no tick's jump coming down within 3 units of the seam's
+point there is no percentage.
+
+**In the air** the fall is all but decided, so it is a confidence
+(`confidence`): how far the predicted last free row is from the two
+lines that decide the bounce, against how well those lines are known.
+With `margin` the row's depth under the cut over 0.02 (`DEPTH_SOFT`)
+and `inside` its distance inside the nearer end of the landing window
+over 0.01 (`WINDOW_SOFT`):
+
+```text
+confidence = 0.5 + 0.45 × tanh(min(margin, inside))
+```
+
+| The last free row | Confidence |
+|---|---|
+| deep and in the window's middle | 95% (`CONFIDENCE_TOP`) |
+| 0.02 under the cut, or 0.01 inside an end of the window | 84% |
+| on the cut, or on an end of the window | 50% |
+| 0.003 under or over the cut, the width the cut is measured to | 57%, 43% |
+| 0.05 over the cut, or 0.03 outside the window | 5 to 6% |
+| outside the catch | 5% |
+
+So `Will bounce` is 50% or over and `Too shallow` 50% or under. A fall
+slower than 5.2 units/s has no percentage, as it has no call.
+
+**Capped by evidence** (`cap`). On a seam with a measured landing
+(`Spot::landed`: a verified entry's or a learned line's, [The landing
+point](#the-landing-point)) the percentage is as worked out. On a seam
+that is the scan's alone it is 60% at most (`SCAN_ONLY_CAP`): the cut
+and the window are Ascension's proven seam's and are measured nowhere
+else
+([notes/2026-11-22-seam-drop-depth.md](notes/2026-11-22-seam-drop-depth.md)),
+so there the rule itself is a guess.
+
+The two softnesses are inferred, not measured. The cut is found to
+±0.003 and the window's low end to 0.01 (y 3.93 bounced, 3.92 did
+not); how far the predicted row is from the row the game takes is not
+measured, and `DEPTH_SOFT` stands in for it.
 
 ### The HUD's options
 
@@ -1383,7 +1444,7 @@ unless a variant turns it off:
 | `miss_info` | bool, on | no miss row |
 | `medals` | bool, on | no medal line in the notification list and no announcer line; the chain, the score and the recorded events are unchanged ([Medals](#medals)) |
 | `second_bounce` | bool, on | no ranked seams after a bounce ([The second bounce](#the-second-bounce)): the navpoints, the last row and the fall row are as on any other fall |
-| `approach_guide` | bool, on | no pipper, box, ticks or drift arrow on the seam ([The approach guide](#the-approach-guide)); the lock-on's brackets are drawn on a fall as in split screen |
+| `approach_guide` | bool, on | no pipper, box, ticks or drift arrow on the seam, and no percentage on the box or the fall row ([The approach guide](#the-approach-guide)); the lock-on's brackets are drawn on a fall as in split screen |
 | `charge_segments` | bool, on | no segments round the motion tracker ([hud-kit.md](hud-kit.md), "The charge segments"); priming is the arming bar, the prompt line and the notifications |
 
 The host reads them by name where it decides the mode is on, at a game's
