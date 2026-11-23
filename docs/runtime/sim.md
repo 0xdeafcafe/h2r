@@ -1179,10 +1179,12 @@ along = 5             # points along each edge
 repeats = 1
 approach = { stick = 0.3, lead = 0.2, from = ["+", "-"] }  # optional
 # carry = [[0.0, 0.0], [1.5, 0.0]]  # or touchdown velocities, not with approach
+# carry_along = [0.1, 0.3, 0.6]     # or speeds along each target's drift
 ```
 
 - **The table.** Every key is optional. `heights` (world units of the
-  origin over the floor) default to `[0.5, 1, 2, 3.5, 5, 8]`; `across`
+  origin over the floor, a list or `{ from, to, step }` like `across`)
+  default to `[0.5, 1, 2, 3.5, 5, 8]`; `across`
   (offset from the edge toward its drift side) to -0.12 to 0.12 in steps
   of 0.02; `along` to 5 points an edge (a point target has one);
   `repeats` to 1. `approach` pushes the stick at `stick` of full through
@@ -1191,7 +1193,12 @@ approach = { stick = 0.3, lead = 0.2, from = ["+", "-"] }  # optional
   is a list of horizontal velocities (world X and Y, units/s, each finite
   and at most 3 long) a straight drop touches down with, each drop once
   with each; it defaults to `[[0, 0]]`, the plumb drop, and is refused
-  beside `approach` (`drops: carry and approach: one or the other`). `seats`
+  beside `approach` (`drops: carry and approach: one or the other`).
+  `carry_along` is a list of speeds (units/s, each finite and at most 3
+  either way) along each target's own drift direction, for a scan whose
+  seams drift different ways; it is refused beside `carry` or `approach`
+  (`drops: carry_along and carry: one or the other`, `drops: carry_along
+  and approach: one or the other`). `seats`
   (1 to 15, default 15) is the seat count when the file lists no
   `[[bot]]`, `bounce_vz` (default 3.5, `sim::drops::BOUNCE_VZ`, the
   game's landing classifier's too) the launch that counts as a bounce,
@@ -1255,6 +1262,15 @@ approach = { stick = 0.3, lead = 0.2, from = ["+", "-"] }  # optional
   far off the carry it was; a carried drop's `drift_fixed` counts the
   rows from falling on. `[drops.control]` takes one `carry` (default
   `[0, 0]`).
+- **Carrying along.** `carry_along` plans like `carry`, with each drop's
+  carry the speed times the target's unit drift vector
+  (`sim::drops::Target::drift`, the `drift` a listed target gave or the
+  scan spot's, normalised): the fall model's travel, the start, the
+  contact gate and the records are the carry's. The record's `carry` is
+  that resolved world vector and `carry_along` the speed. A target with no
+  drift (a scan spot whose drift is zero, a listed target with none) gets
+  no drops, and a note in the report names the targets skipped. The
+  control keeps its own `carry`.
 - **Outcomes.** A touchdown is the vertical speed coming back over -0.5
   after falling faster than -1. `bounced`: the best vertical speed of the
   touchdown tick and the 3 after (`sim::drops::LAUNCH_TICKS`, the game's
@@ -1295,7 +1311,8 @@ approach = { stick = 0.3, lead = 0.2, from = ["+", "-"] }  # optional
   touchdown from the edge that bounced), slowest bounced touchdown, best
   launch, its own launch fit, its largest `drift_fixed` and a cell a
   height, across offset and carry (`drops.md`'s columns name a non-zero
-  carry as `c x,y`); the drop with the largest `drift_fixed`
+  carry as `c x,y`, and a `carry_along` drop by its speed instead, as
+  `+0.00 a 0.30`); the drop with the largest `drift_fixed`
   over every run; and the three model numbers. `catch` is the catch half-width over every
   target (`superbounce::CATCH`). `bounce_speed` is the slowest touchdown
   that bounced beside the fastest that didn't (`BOUNCE_SPEED`). `gain` is

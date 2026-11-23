@@ -846,6 +846,7 @@ fn run_of(records: Vec<Record>, shard: u32) -> DropsRun {
         shape: "slot".into(),
         edge: [[0.0; 3], [1.0, 0.0, 0.0]],
         normal: [0.0, 1.0],
+        drift: None,
         stand: [0.5, 0.0, 0.01],
         control: false,
     };
@@ -1221,4 +1222,121 @@ fn the_report_keeps_each_carry_its_own_cell() {
     let md = markdown(&r);
     assert!(md.contains("| height | +0.00 | +0.00 c +1.00,+0.00 |"), "{md}");
     assert!(md.contains("| 2.00 | 0/1 | 1/1 |"), "{md}");
+}
+
+// ---- carry_along and a heights range ----
+
+#[test]
+fn carry_along_reads_and_is_refused_beside_carry_an_approach_or_out_of_range() {
+    let d = table("map = \"ascension\"\n[drops]\ncarry_along = [0.1, 0.3, -0.6]\n");
+    assert_eq!(d.carry_along, Some(vec![0.1, 0.3, -0.6]));
+    assert!(d.settings("ascension").is_ok());
+    let mut d = bare(vec![edge_spec()]);
+    d.carry_along = Some(vec![0.1]);
+    assert!(d.settings("x").is_ok());
+    let mut c = d.clone();
+    c.carry = Some(vec![[1.0, 0.0]]);
+    let p = c.settings("x").unwrap_err().join("\n");
+    assert!(p.contains("drops: carry_along and carry: one or the other"), "{p}");
+    let mut a = d.clone();
+    a.approach = Some(Approach {
+        stick: 0.3,
+        lead: None,
+        from: Vec::new(),
+    });
+    let p = a.settings("x").unwrap_err().join("\n");
+    assert!(p.contains("drops: carry_along and approach: one or the other"), "{p}");
+    for bad in [vec![], vec![f32::NAN], vec![3.1], vec![-3.1], vec![f32::INFINITY]] {
+        let mut b = d.clone();
+        b.carry_along = Some(bad.clone());
+        let p = b.settings("x").unwrap_err().join("\n");
+        assert!(p.contains("drops: carry_along:"), "{bad:?}: {p}");
+    }
+    let mut ok = d.clone();
+    ok.carry_along = Some(vec![3.0, 0.0]);
+    assert!(ok.settings("x").is_ok());
+}
+
+#[test]
+fn carry_along_makes_each_targets_world_carry_from_its_drift() {
+    let mut d = bare(vec![edge_spec()]);
+    d.carry_along = Some(vec![0.1, 0.5]);
+    let s = d.settings("x").unwrap();
+    // The edge's drift is -y, a unit vector.
+    let t = Target::from_spec(0, &edge_spec()).unwrap();
+    assert_eq!(t.drift, Some([0.0, -1.0]));
+    // A diagonal drift is normalised: the speed is along it, not per axis.
+    let diag = TargetSpec {
+        drift: Some([3.0, -4.0]),
+        ..edge_spec()
+    };
+    let td = Target::from_spec(0, &diag).unwrap();
+    let drops = plan(&s, std::slice::from_ref(&td));
+    assert_eq!(drops.len(), 2);
+    assert_eq!(drops_per_target(&td, &s), 2);
+    assert_eq!(drops[0].carry_along, Some(0.1));
+    assert!((drops[0].carry[0] - 0.06).abs() < 1e-6, "{:?}", drops[0]);
+    assert!((drops[0].carry[1] + 0.08).abs() < 1e-6, "{:?}", drops[0]);
+    assert!((drops[1].carry[0].hypot(drops[1].carry[1]) - 0.5).abs() < 1e-6);
+}
+
+#[test]
+fn a_carry_along_drop_starts_back_by_its_travel_and_a_target_with_no_drift_is_skipped() {
+    let mut d = bare(vec![edge_spec()]);
+    d.heights = vec![4.5];
+    d.carry_along = Some(vec![0.6]);
+    let s = d.settings("x").unwrap();
+    let t = Target::from_spec(0, &edge_spec()).unwrap();
+    let x = plan(&s, std::slice::from_ref(&t))[0];
+    // Along -y at 0.6, 42 rows of travel at 4.5 (see the carried test).
+    let secs = 42.0 / 30.0;
+    assert_eq!(x.carry, [0.0, -0.6]);
+    assert!((x.start[0] - x.point[0]).abs() < 1e-5);
+    assert!((x.start[1] - (x.point[1] + 0.6 * secs)).abs() < 1e-4, "{x:?}");
+    assert!((x.rest[2] - (x.point[2] + REST_LIFT + 0.6 * secs)).abs() < 1e-4);
+    // A target with no drift gets none, and the run says so.
+    let nodrift = TargetSpec {
+        id: Some("flat".into()),
+        drift: None,
+        ..edge_spec()
+    };
+    let tn = Target::from_spec(1, &nodrift).unwrap();
+    assert_eq!(tn.drift, None);
+    assert_eq!(drops_per_target(&tn, &s), 0);
+    assert!(plan(&s, std::slice::from_ref(&tn)).is_empty());
+    let mut cfg = d.clone();
+    cfg.targets = Targets::List(vec![edge_spec(), nodrift]);
+    let job = Job::new(&cfg, "x", 15).unwrap();
+    assert_eq!(job.planned(), 1);
+}
+
+#[test]
+fn the_report_keys_a_carry_along_cell_by_its_speed() {
+    let mut a = rec("a", Outcome::Bounced, 6.0, 0.0, 14.0);
+    let mut b = rec("a", Outcome::NoBounce, 6.0, 0.0, 0.2);
+    a.carry = [0.0, 0.3];
+    a.carry_along = Some(0.3);
+    b.carry = [0.0, 0.1];
+    b.carry_along = Some(0.1);
+    let r = summarize(&[run_of(vec![a, b], 0)]);
+    let ta = r.targets.iter().find(|t| t.id == "a").unwrap();
+    assert_eq!(ta.cells.len(), 2);
+    assert_eq!(ta.cells[0].carry_along, Some(0.1));
+    let md = markdown(&r);
+    assert!(md.contains("| height | +0.00 a 0.10 | +0.00 a 0.30 |"), "{md}");
+}
+
+#[test]
+fn heights_read_as_a_list_or_a_range() {
+    let d = table("map = \"ascension\"\n[drops]\nheights = { from = 3.36, to = 3.56, step = 0.04 }\n");
+    assert_eq!(d.heights, vec![3.36, 3.4, 3.44, 3.48, 3.52, 3.56]);
+    let l = table("map = \"ascension\"\n[drops]\nheights = [1.0, 2.0]\n");
+    assert_eq!(l.heights, vec![1.0, 2.0]);
+    assert!(
+        parse_match(
+            "map = \"ascension\"\n[drops]\nheights = { from = 3.0, to = 2.0, step = 0.1 }\n",
+            false
+        )
+        .is_err()
+    );
 }
