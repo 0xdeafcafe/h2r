@@ -207,7 +207,7 @@ the cached pipelines with their own uniforms and sampled textures.
 
 - The fog pass applies the layer draw's own gate (`[0x0048574c] == 3` or a fog byte set); otherwise it would fog views the game left clear.
 - Water: the shared fog and water mask walk requires the accepted items to form a prefix of the layer's list; a later accepted item leaves the whole layer on D3D. Placements keep their D3D draws until the water path has their rigid programs. Objects' layer-16 items are never cleared: their fog belongs to the objects stage.
-- Any engine texture id that is run-time chosen, the light's, a rasterizer bitmap or a cleared stage refuses the material at load (`FogRefusal::Unsupplied`). The load line names the materials left on D3D and why, and every 1,800 layer-16 views a line gives the skip counts.
+- Any engine texture id that is run-time chosen, the light's, a rasterizer bitmap other than 14 and 15 (which resolve) or a cleared stage refuses the material at load (`FogRefusal::Unsupplied`). The load line names the materials left on D3D and why, and every 1,800 layer-16 views a line gives the skip counts.
 - Layers 18, 19 and 21 are refused outright: no lifted port names their caller, so their wrappers and state are not established.
 
 ## Not verified

@@ -3,7 +3,9 @@ use crate::native_particles::{LOG_LIMIT, Producer, HOST};
 use engine::points::scene_effects::*;
 use engine::points::{Point, Sig};
 use native_render::effect_immediate::Site;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 const DOC: &str = "docs/graphics/native-particles.md";
 static CALLS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
@@ -26,6 +28,34 @@ static REFUSALS: [(Point, &str); 3] = [
 static CALLBACK_QUEUE: Point = Point::new("EFFECT_CALLBACK_QUEUE", 0x0004_1490, Sig::Site, DOC);
 static CALLBACK_WRAPPER: Point =
     Point::new("EFFECT_CALLBACK_WRAPPER", 0x0004_8e40, Sig::Site, DOC);
+
+/// A handler refusal's line: printed on the first call and then at most
+/// every [`REFUSAL_EVERY`], with the calls so far, however often the
+/// handler runs (a handler that refuses on every frame logs once per
+/// window, not per frame).
+pub(crate) struct RefusalLog {
+    calls: AtomicU64,
+    last: Mutex<Option<Instant>>,
+}
+
+pub(crate) const REFUSAL_EVERY: Duration = Duration::from_secs(10);
+
+impl RefusalLog {
+    pub(crate) const fn new() -> Self {
+        Self { calls: AtomicU64::new(0), last: Mutex::new(None) }
+    }
+
+    /// Counts a call; the call count when this one should print.
+    pub(crate) fn note(&self, now: Instant) -> Option<u64> {
+        let calls = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
+        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        if last.is_some_and(|t| now.duration_since(t) < REFUSAL_EVERY) {
+            return None;
+        }
+        *last = Some(now);
+        Some(calls)
+    }
+}
 
 pub(crate) fn build(b: &mut hooks::Builder) {
     for (index, (site, start, end)) in BOUNDARIES.iter().enumerate() {
@@ -56,11 +86,11 @@ pub(crate) fn build(b: &mut hooks::Builder) {
     // Explicit refusal diagnostics, never drawing or skipping these bodies.
     for (point, reason) in &REFUSALS {
         let address = point.base;
-        let count = AtomicU64::new(0);
+        let log = RefusalLog::new();
         b.raw()
             .observe_before(point, "native_particles_effect_refused", move |_| {
-                if count.fetch_add(1, Ordering::Relaxed) < LOG_LIMIT {
-                    eprintln!("native-particles-refused: handler={address:#010x} reason={reason}");
+                if let Some(calls) = log.note(Instant::now()) {
+                    eprintln!("native-particles-refused: handler={address:#010x} reason={reason} ({calls} calls so far)");
                 }
             })
             .context_only();
@@ -82,4 +112,22 @@ pub(crate) fn build(b: &mut hooks::Builder) {
             eprintln!("native-particles-refused: handler=0x00048e40 callback={callback:?} reason={reason}");
         }
     }).context_only().optional();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refusal_prints_first_then_once_per_window_with_its_count() {
+        let log = RefusalLog::new();
+        let t = Instant::now();
+        assert_eq!(log.note(t), Some(1), "the first call prints");
+        // A handler that refuses every frame for nine seconds prints nothing more.
+        for frame in 1..=540 {
+            assert_eq!(log.note(t + Duration::from_millis(frame * 16)), None, "frame {frame}");
+        }
+        assert_eq!(log.note(t + REFUSAL_EVERY), Some(542), "the window's end prints the total");
+        assert_eq!(log.note(t + REFUSAL_EVERY + Duration::from_secs(1)), None);
+    }
 }
