@@ -697,6 +697,11 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
                     let fade = fade_factor(style.fade, point[3]);
                     if fade > 0.0
                         && let Some(point) = project_point(camera, area, mark.anchor)
+                        && !(style.label_face == LabelFace::Hud
+                            && gfx::world_lines::label_under_hud([
+                                (point[0] - area.x as f32) / area.width as f32,
+                                (point[1] - area.y as f32) / area.height as f32,
+                            ]))
                     {
                         let a = style.alpha.clamp(0.0, 1.0)
                             * fade

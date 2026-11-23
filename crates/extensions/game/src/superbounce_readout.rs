@@ -178,9 +178,8 @@ pub fn ahead(s: &State) -> [Option<crate::superbounce_targets::Mark>; 2] {
 /// - The navpoints: the mode's marks (`superbounce_targets::Marks`), each
 ///   with its distance in metres.
 /// - The approach guide: the state's `guide`, with `approach_guide`. On
-///   the ground its jump cue is the box's label; in a fall its chance is
-///   the box's percentage and, on a fall toward its seam, the fall row's
-///   (`rd::fall_chance`).
+///   the ground its jump cue is the box's label; in a fall its verdict is.
+///   No label shows its chance.
 /// - The charge segments: [`segments`], with `charge_segments`.
 pub fn view(s: &State, o: Options, info: Option<Miss>) -> View {
     let metres =

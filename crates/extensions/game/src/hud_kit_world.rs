@@ -34,24 +34,7 @@ pub const LABEL_DROP: f32 = 0.25;
 /// one seam's: only the first of them with a label keeps it.
 pub const SEAM_RADIUS: f32 = 0.75;
 
-/// A block of the screen the HUD's text lies in, as fractions of the
-/// frame (0 to 1, y down): `[left, top, right, bottom]`.
-pub type Block = [f32; 4];
-/// The HUD's top-left block (notifications, the loss line) and
-/// bottom-left block (the superbounce readout): a world label that
-/// projects into one is left out, as it would run under HUD text.
-pub const HUD_BLOCKS: [Block; 2] = [[0.0, 0.0, 0.42, 0.22], [0.0, 0.70, 0.42, 1.0]];
-
-/// Whether a label centred at `screen` (fractions of the frame, y down)
-/// would lie under the HUD's text ([`HUD_BLOCKS`]). The window's world-line
-/// pass, which projects the anchors, asks it for each label; a label
-/// off the frame is not under anything.
-pub fn label_under_hud(screen: [f32; 2]) -> bool {
-    screen.iter().all(|v| v.is_finite())
-        && HUD_BLOCKS.iter().any(|b| {
-            screen[0] >= b[0] && screen[0] <= b[2] && screen[1] >= b[1] && screen[1] <= b[3]
-        })
-}
+pub use gfx::world_lines::{Block, HUD_BLOCKS, label_under_hud};
 /// The labels' size: a font pixel is a HUD pixel (`LabelFace::Hud` at 2).
 pub const LABEL_SCALE: f32 = 2.0;
 

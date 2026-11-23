@@ -1273,7 +1273,7 @@ target.
 | State | Arming bar | Prompt, message | Navpoint | Tutorial |
 |---|---|---|---|---|
 | `not-primed` | hidden | | crouch spot, "12" | |
-| `near` | 0, ease | Hold (crouch) and walk under; Charging... | crouch spot, "1" | |
+| `near` | 0, ease | Hold (crouch) and walk under | crouch spot, "1" | |
 | `under` | 1/3, ease | Let go of (crouch) | crouch spot, "1" | |
 | `held` | 2/3, ease | Walk out to stand up | crouch spot, "1" | |
 | `primed-ending` | 1, ending | Primed! | strip, "3" | |

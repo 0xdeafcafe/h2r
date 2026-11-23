@@ -446,12 +446,10 @@ impl Hud {
         let v = after_reason(v, &s, self.lost);
         let v = if s.airborne { in_air(v) } else { v };
         self.handle.publish(sb::values(&v));
-        self.handle.navpoint(
-            s.nav_target
-                .as_ref()
-                .filter(|_| v.nav.is_some())
-                .map(|n| n.at),
-        );
+        // The takeoff while the floor is too low for the strip, else the
+        // target's spot (`State::navpoint`).
+        self.handle
+            .navpoint(s.navpoint.filter(|_| v.nav.is_some() && s.nav_target.is_some()));
     }
 
     fn mark_seen(&self) {

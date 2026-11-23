@@ -1016,7 +1016,7 @@ the kit ([hud-kit.md](hud-kit.md#the-superbounce-readout);
 | Row | Shows when | Says |
 |---|---|---|
 | speed | moving | an arrow for the way of travel against the aim and the horizontal speed in metres a second, `(arrow) 7.2 m/s`; while falling, the fall speed after it |
-| fall | airborne and falling toward a strip (the state's `landing`) | a bar, the touchdown speed the fall gives over the speed the strip needs, full when fast enough; beside it `On seam` when the coasting landing is caught and drifting the seam's way, `(arrow) Drift` when it is caught and is not, else an arrow for the way to push and how far the landing is from the seam's [landing point](#the-landing-point), `(arrow) 0.40 m`; after either, the approach guide's [percentage](#the-chance), `On seam 82%` |
+| fall | airborne and falling toward a strip (the state's `landing`) | a bar, the touchdown speed the fall gives over the speed the strip needs, full when fast enough; beside it `On seam` when the coasting landing is caught and drifting the seam's way, `(arrow) Drift` when it is caught and is not, else an arrow for the way to push and how far the landing is from the seam's [landing point](#the-landing-point), `(arrow) 0.40 m`; no percentage follows |
 | miss | for four seconds after a landing by a strip that did not bounce, until the next fall toward a strip | `Not primed`, `Missed seam by 0.31 m` (the origin's distance to the edge), `Too slow: 12.4 of 16.5 m/s` (the speed in and the strip's need) or `No bounce: on seam at 17.2 m/s` |
 
 Nothing of the mode's HUD is in the middle of the screen but the arming
@@ -1271,7 +1271,7 @@ Where to leave from is a bar on the floor, the world's
 | Mark | Where | Says |
 |---|---|---|
 | the pipper, a small ring with a cross | where the player's path touches down, on the seam's floor | in the air, the landing itself; on the ground, only while the cue counts to a jump's line, where that jump lands |
-| the box, four corner brackets | on the seam's landing point ([The landing point](#the-landing-point)), turned along the seam's edge, 0.6 long and as wide as the catch (0.2) | dim while the landing is off the seam, lit when it is lined up, and in a fall `Too shallow` or, green, `Will bounce`; under it, before the jump, the [jump cue](#the-jump-cue) (`Climb up`, `Walk to line`, `Jump in 0.7 s`, green `Jump now`, `Walk off`), and in a fall the bounce's predicted [percentage](#the-chance) after the call (`Will bounce 82%`) |
+| the box, four corner brackets | on the seam's landing point ([The landing point](#the-landing-point)), turned along the seam's edge, 0.6 long and as wide as the catch (0.2) | dim while the landing is off the seam, lit when it is lined up, and in a fall `Too shallow` or, green, `Will bounce`; under it, before the jump, the [jump cue](#the-jump-cue) (`Climb up`, `Walk to line`, `Jump in 0.7 s`, green `Jump now`, `Walk off`) |
 | the ticks, three dashes | from the pipper toward the box | how far off the landing is: they shorten as the two close and go when the landing is caught |
 | the drift arrow | outside the box on the side the seam drifts to | the way to be moving at the landing; lit while the player moves that way |
 
@@ -1474,10 +1474,10 @@ now` show at once; `Jump now` never outlasts its band.
 
 #### The chance
 
-A percentage on the box and on the readout's fall row
-(`superbounce_guide::chance`), shown in a fall while primed on a seam
-with a drift. On the ground there is none: the [jump cue](#the-jump-cue)
-is on the box instead.
+How sure the guide's call is in a fall while primed on a seam with a
+drift (`superbounce_guide::chance`). No label shows it: the box carries
+the verdict alone and the readout's fall row the steer text alone. The
+agent API reports it as a whole percentage.
 
 **In the air** the fall is all but decided, so it is a confidence
 (`confidence`): how far the predicted last free row is from the two
