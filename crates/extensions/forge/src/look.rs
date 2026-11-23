@@ -6,6 +6,7 @@
 //! value, its bounds and its canonical bytes; [`Refusal`] names every way a
 //! look is turned down; [`census`] lists the models a machine can draw;
 //! [`saved`] keeps a look in the profile's settings.
+pub mod body;
 pub mod census;
 pub mod monitors;
 mod refusal;
