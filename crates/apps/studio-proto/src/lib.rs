@@ -238,6 +238,13 @@ pub mod method {
     pub const BITMAP_RESHAPE: &str = "bitmap.reshape";
     pub const BITMAP_SPANS: &str = "bitmap.spans";
 
+    // Image generation (docs/editor/agent-api.md, "Generating images").
+    pub const IMAGE_GENERATE: &str = "image.generate";
+    pub const IMAGE_RESULT: &str = "image.result";
+    pub const IMAGE_APPLY: &str = "image.apply";
+    pub const IMAGE_ACCEPT: &str = "image.accept";
+    pub const IMAGE_DISCARD: &str = "image.discard";
+
     // The Scripts tool (docs/editor/rich-editors.md, "Scripts").
     pub const SCRIPT_LIST: &str = "script.list";
     pub const SCRIPT_SOURCE: &str = "script.source";

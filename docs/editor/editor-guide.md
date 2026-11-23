@@ -1231,7 +1231,9 @@ move, resize or retype its widgets.
     outside a checkout Save is refused. When a file changes on disk the
     screen reloads it, unless you have unsaved edits to it, in which
     case it says so. A retail screen's edits are changes to your
-    `mainmenu` map (open it first), saved with the map. Some widgets
+    `mainmenu` map (open it first), saved with the map. A picture has
+    **Generate image...** ([Generating an image](#generating-an-image)).
+    Some widgets
     can't be edited here and say why: a row's value comes from its
     setting, rows sit where the list puts them, and a retail screen's
     texts and title belong to the disc's string table and shared header.
@@ -1245,6 +1247,45 @@ move, resize or retype its widgets.
 
 To open the editor straight on a screen: `h2-editor --ui-screen
 signin-code/code-wrong --ui-press up,right`.
+
+### Generating an image
+
+**Generate image...** makes a new picture for an image of a bitmap: a
+menu icon, a screen's art, a HUD widget's picture or any texture. It is
+on a selected picture in **Selected** here, on a bitmap widget in the
+HUD tool, and as **Generate...** in the Textures tool's PNG panel. Each
+opens the **Generate image** window on that image of the map open in
+Studio (for a menu, open your `mainmenu` map first).
+
+1. **Image** is the image the picture goes into; the line under it gives
+   its size and format. The picture is made to fit both.
+2. Write the **Prompt**: what the picture shows ("a radar dish").
+3. Pick the **References**: the images whose style the new one should
+   match. For a menu icon, tick the other icons of the same bitmap; they
+   are listed as **Image N of this bitmap**. **Add PNG...** adds a file.
+   The references are your choice: they go to the generator as they are,
+   and the editor never picks any for you.
+4. **Alpha** is where transparency comes from. **Auto** keeps the
+   picture's own, except that a picture with no transparency going into
+   a mask-only image takes it from brightness.
+5. Press **Generate**. It takes a minute or more; the window counts the
+   seconds and the editor stays usable.
+6. **Apply (preview in place)** puts the picture into the image. The
+   Textures canvas, this tool's picture and a paired game show it where
+   it is used. Not right? **Discard** takes it out, or change the prompt
+   or the references and press **Regenerate**.
+7. **Accept** keeps it: it is an edit of the bitmap like any other and is
+   written when you save the map. **Accept and save art to...** also
+   copies the picture and a provenance file (the prompt, the
+   references and the generator) into a folder you pick, such as one in
+   the repository's `art/`.
+
+The generator is ChatGPT's image generation through the Codex CLI,
+signed in with your ChatGPT account. It needs `codex` installed and
+`codex login` done once. When it is missing, signed out or out of
+allowance the window says so in red, with what to do. Generated pictures
+are original AI-made art. The agent API's `image.*` methods do the same
+([agent-api.md](agent-api.md#generating-images)).
 
 ## 8. HUD
 

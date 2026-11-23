@@ -31,6 +31,10 @@
 //! - **Textures** (the open map's bitmaps): `bitmap.list`, `read`,
 //!   `export`, `import`, `paint`, `fill`, `adjust`, `pixels` through
 //!   `Action::Bitmap` ([`super::bitmaps`]).
+//! - **Image generation**: `image.generate`, `image.result`,
+//!   `image.apply`, `image.accept` and `image.discard` over the app's jobs
+//!   (`crate::imagegen`), written through `Action::Bitmap`'s commands
+//!   ([`super::image_gen`]).
 //! - **Scripts** (the open map's scripts, read): `script.list`,
 //!   `script.source`, `script.follow`, `script.uses`, `script.builtins` and
 //!   `script.doc` through `Action::Script` ([`super::scripts`]).
@@ -86,6 +90,9 @@ pub fn register(api: &mut Api) {
     api.register(Box::new(super::geometry::Geometry));
     // The Textures tool: the open map's bitmaps, paint, import and export.
     api.register(Box::new(super::bitmaps::Bitmaps));
+    // Image generation: a picture made for a bitmap slot, applied,
+    // accepted or discarded through the Textures tool (app::image_gen).
+    api.register(Box::new(super::image_gen::ImageGenApi));
     // The Scripts tool: the open map's scripts read, links and builtins.
     api.register(Box::new(super::scripts::Scripts));
     // pair.*: the window's pairing with a running game (play::pair).

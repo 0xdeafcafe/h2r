@@ -20,6 +20,7 @@ pub mod scripts;
 pub mod tags;
 mod ui_screens;
 mod hud;
+mod image_gen;
 mod textures;
 mod variants;
 /// The game type script window (`app::rules_edit`).
@@ -239,6 +240,9 @@ impl Studio {
         // (docs/editor/rich-editors.md, "One seam for every rich view").
         sound::window(ui, app, &mut self.sound);
         announcer::window(ui, app, &mut self.announcer);
+        // Image generation: the Generate window over any tool, opened from
+        // a bitmap's slot (app::image_gen).
+        image_gen::window(ui, app, self.dialogs, &mut actions);
         // After the Map tab: Game in the same frame would take its focus.
         if focus_game && self.want_tab.is_none() {
             self.focus_game = false;

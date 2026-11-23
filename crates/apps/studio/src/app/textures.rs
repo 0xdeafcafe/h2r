@@ -237,6 +237,11 @@ impl Textures {
         self.stroke.is_none() && !self.redo.is_empty()
     }
 
+    /// The bitmap the newest undo step belongs to.
+    pub fn last_step(&self) -> Option<TagId> {
+        self.history.last().copied()
+    }
+
     /// The brush a stroke paints with: the settings, the foreground colour
     /// and the eraser when that tool is active.
     pub fn paint_brush(&self) -> Brush {
@@ -624,7 +629,7 @@ impl App {
         self.textures.last = Some((tag, applied));
     }
 
-    fn bitmap_action(&mut self, action: BitmapAction) -> Result<(), String> {
+    pub(crate) fn bitmap_action(&mut self, action: BitmapAction) -> Result<(), String> {
         match action {
             BitmapAction::Select { tag, image } => {
                 self.ensure_bitmap(tag)?;
