@@ -339,3 +339,46 @@ fn a_broken_shield_switches_to_a_loaded_headshot_weapon_and_raises_the_aim() {
     c.combo_chance = Some(1.0);
     assert!(!Combo::new(9).step(&c, Skill::Normal).busy);
 }
+
+#[test]
+fn plasma_bolts_keep_their_target_close_and_stop_firing_past_their_reach() {
+    // Round 1 on Midship: the plasma rifle hit 0.42 of its shots under 3
+    // units, 0.17 from 3 to 12 and almost none beyond.
+    let mut rifle = gun(profile(Trigger::Automatic, 0, 1, 400.0, 12.0), Ammo::Battery(1.0));
+    let fast = rifle.reach();
+    assert!(fast.band.1 > SLOW_BOLT_BAND && fast.fire.1 > SLOW_BOLT_FIRE);
+    rifle.profile.dual = Some(crate::arms::DualGun::PlasmaRifle);
+    assert_eq!(rifle.reach().band, (Role::Spray.band().0, SLOW_BOLT_BAND));
+    assert_eq!(rifle.reach().fire, (0.0, SLOW_BOLT_FIRE));
+    // Any automatic with a slow projectile, identified or not.
+    let slow = gun(profile(Trigger::Automatic, 0, 1, 70.0, 12.0), Ammo::Battery(1.0));
+    assert_eq!(slow.reach().fire.1, SLOW_BOLT_FIRE);
+    // An SMG's bullets and a rifle's are not bolts.
+    assert_eq!(smg().reach().band, (1.5, 8.0));
+    assert_eq!(br().reach().band, (5.0, 20.0));
+    assert_eq!(class(&rifle), Class::Short);
+}
+
+#[test]
+fn a_long_burst_on_one_target_counts_as_its_shield_being_down() {
+    let skill = Skill::Legendary;
+    let k = ComboSkill::of(skill);
+    let mut c = Combo::new(3);
+    let step = |c: &mut Combo, t: u32, target: u32| {
+        let mut i = input(t, smg(), br(), 4.0, true);
+        i.target = Some(target);
+        i.other = None;
+        c.step(&i, skill);
+    };
+    let needed = k.finish_pulls * 2 * SPRAY_PULLS;
+    for t in 0..needed {
+        step(&mut c, t, 7);
+        assert!(!c.softened(skill), "tick {t}");
+    }
+    step(&mut c, needed, 7);
+    assert!(c.softened(skill));
+    // A new target starts over; Easy never finishes.
+    step(&mut c, needed + 1, 8);
+    assert!(!c.softened(skill));
+    assert!(!c.softened(Skill::Easy));
+}

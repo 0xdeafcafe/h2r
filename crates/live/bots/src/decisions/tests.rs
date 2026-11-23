@@ -497,10 +497,13 @@ fn the_hill_is_contested_while_firing_and_a_defender_stays_inside() {
         heading(pad.left_stick).1 < -0.8,
         "toward the hill behind the bot"
     );
-    p.me.as_mut().unwrap().position = [-4.0, 0.0, 0.0];
+    // Inside, near the hill's edge facing the enemy beyond it: it fights
+    // on with its footwork, but no step of it leads out of the hill.
+    p.me.as_mut().unwrap().position = [-2.8, 0.0, 0.0];
     p.tick += 1;
     let pad = m.step(&p, None);
-    assert_eq!(pad.left_stick, (0.0, 0.0));
+    assert!(matches!(m.doing, Doing::Fight(1)));
+    assert!(pad.left_stick.1 <= 1e-3, "no step out: {pad:?}");
     assert_eq!(pad.right_trigger, 1.0);
 }
 
@@ -970,4 +973,103 @@ fn an_outside_order_is_the_goal_until_freed() {
     d.set_order(None);
     assert_eq!(d.order(), None);
     assert_eq!(d.ordered_goal(&scene), None);
+}
+
+#[test]
+fn its_own_lost_target_comes_before_a_call_and_trailing_comes_last() {
+    let ps = [
+        player(0, 0, -30.0, 0.0),
+        player(1, 0, 0.0, 0.0),
+        player(2, 1, 6.0, 0.0),
+    ];
+    let mut m = Mind::new(Skill::Legendary, 7);
+    let mut p = scene(1, 0, &ps);
+    m.step(&p, None);
+    assert_eq!(m.doing, Doing::Fight(2));
+    // Turned away: the target is out of view, and a teammate calls a
+    // contact elsewhere. The bot finishes its own business first.
+    let call = |tick| radio::Call {
+        sender: 0,
+        team: 0,
+        target: 3,
+        at: [0.0, 12.0, 0.0],
+        tick,
+        help: false,
+    };
+    p.tick = 10;
+    p.me.as_mut().unwrap().aim = [-1.0, 0.0, 0.0];
+    m.decisions.inbox = vec![call(9)];
+    m.step(&p, None);
+    assert!(
+        matches!(m.doing, Doing::HoldAngle(at) | Doing::Chase(at) if at == ps[2].position),
+        "{:?}",
+        m.doing
+    );
+    // The lead gone stale: the call.
+    p.tick += crate::mind::MEMORY_TICKS + 1;
+    m.decisions.inbox = vec![call(p.tick - 1)];
+    m.step(&p, None);
+    assert_eq!(m.doing, Doing::Support([0.0, 12.0, 0.0]));
+    // Nothing at all of its own: it moves up with the lower slot.
+    p.tick += 1;
+    m.decisions.inbox.clear();
+    m.step(&p, None);
+    assert_eq!(m.doing, Doing::Support(ps[0].position));
+}
+
+#[test]
+fn a_softened_target_is_finished_rather_than_left_one_enemy_short() {
+    let ps = [
+        player(1, 0, 0.0, 0.0),
+        player(2, 1, 8.0, 0.0),
+        player(3, 1, 9.0, 1.0),
+    ];
+    let mut p = scene(1, 0, &ps);
+    let mut m = Mind::new(Skill::Legendary, 42);
+    m.step(&p, None);
+    p.tick = 12;
+    m.step(&p, None);
+    assert_eq!(m.decisions.posture, Posture::Withdraw, "two full shields");
+    let mut soft = Mind::new(Skill::Legendary, 42);
+    p.observations
+        .contacts
+        .push(cue(2, [-1.0, 0.0, 0.0], 0.05, false));
+    p.tick = 0;
+    soft.step(&p, None);
+    p.tick = 12;
+    soft.step(&p, None);
+    assert_eq!(soft.doing, Doing::Fight(2));
+    assert_ne!(soft.decisions.posture, Posture::Withdraw);
+    // Its own shield low: it backs off after all.
+    p.me.as_mut().unwrap().shield = 0.3;
+    p.tick = 13;
+    soft.step(&p, None);
+    assert_eq!(soft.decisions.posture, Posture::Withdraw);
+}
+
+#[test]
+fn the_juggernaut_never_backs_off() {
+    let ps = [
+        player(1, 0, 0.0, 0.0),
+        player(2, 1, 8.0, 0.0),
+        player(3, 2, 9.0, 1.0),
+    ];
+    let mut p = scene(1, 0, &ps);
+    p.teams = false;
+    let mut m = Mind::new(Skill::Legendary, 42);
+    m.step(&p, None);
+    p.tick = 12;
+    m.step(&p, None);
+    assert_eq!(m.decisions.posture, Posture::Withdraw, "outnumbered, unmarked");
+    p.objective = Some(Objective {
+        game: Game::Juggernaut,
+        state: crate::objective::State::Juggernauts(1 << 1),
+        me: 1,
+        items: vec![],
+        spots: vec![],
+        hill: None,
+    });
+    p.tick = 13;
+    m.step(&p, None);
+    assert_eq!(m.decisions.posture, Posture::Press);
 }

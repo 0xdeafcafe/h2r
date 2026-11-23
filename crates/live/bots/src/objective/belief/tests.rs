@@ -1,5 +1,5 @@
 use super::*;
-use crate::objective::{Role, Spot, State, plan_with, role_of};
+use crate::objective::{Role, Spot, State, Temper, plan_with, role_of};
 
 const RED_HOME: Vec3 = [0.0, 0.0, 0.0];
 const BLUE_HOME: Vec3 = [100.0, 0.0, 0.0];
@@ -74,7 +74,7 @@ fn flags_never_seen_are_at_their_spawns_and_the_attacker_goes_for_theirs() {
     };
     assert_eq!(role_of(1, &[4]), Role::Attack);
     assert_eq!(
-        plan_with(&o, &bot, &[mate], true, &outlook),
+        plan_with(&o, &bot, &[mate], true, &outlook, Temper::default()),
         Some(Goal::Go(BLUE_HOME))
     );
 }
@@ -127,7 +127,7 @@ fn a_spawn_seen_empty_marks_the_flag_missing_until_it_turns_up() {
     assert!(outlook.missing(1) && !outlook.missing(0));
     assert!(o.items.iter().all(|i| i.team != 1));
     // An attacker with their flag missing plays as in Slayer.
-    assert_eq!(plan_with(&o, &at_their_base, &[], true, &outlook), None);
+    assert_eq!(plan_with(&o, &at_their_base, &[], true, &outlook, Temper::default()), None);
     // Walking away, it stays missing...
     let mid = me([50.0, 0.0, 0.0], 0);
     let (_, outlook) = b
@@ -141,7 +141,7 @@ fn a_spawn_seen_empty_marks_the_flag_missing_until_it_turns_up() {
         .unwrap();
     assert!(!outlook.missing(1));
     assert_eq!(
-        plan_with(&o, &mid, &[], true, &outlook),
+        plan_with(&o, &mid, &[], true, &outlook, Temper::default()),
         Some(Goal::Go(seen.position))
     );
     // ...or long enough passes for a return or a capture.
@@ -177,7 +177,7 @@ fn our_flag_taken_out_of_sight_sends_the_defender_to_cut_off_the_carrier() {
         .know(&ctf(9, vec![taken]), &bot, 10, Lean::default(), &blind)
         .unwrap();
     assert_eq!(
-        plan_with(&o, &bot, &mates, true, &outlook),
+        plan_with(&o, &bot, &mates, true, &outlook, Temper::default()),
         Some(Goal::Hunt(7, taken.position))
     );
     // Out of view, it is chased to where it was, briefly...
@@ -185,7 +185,7 @@ fn our_flag_taken_out_of_sight_sends_the_defender_to_cut_off_the_carrier() {
         .know(&ctf(9, vec![]), &bot, 20, Lean::default(), &blind)
         .unwrap();
     assert_eq!(
-        plan_with(&o, &bot, &mates, true, &outlook),
+        plan_with(&o, &bot, &mates, true, &outlook, Temper::default()),
         Some(Goal::Hunt(7, taken.position))
     );
     // ...then the trail is cold: our flag is missing, not home, and the
@@ -201,7 +201,7 @@ fn our_flag_taken_out_of_sight_sends_the_defender_to_cut_off_the_carrier() {
         .unwrap();
     assert!(outlook.missing(0));
     assert_eq!(
-        plan_with(&o, &bot, &mates, true, &outlook),
+        plan_with(&o, &bot, &mates, true, &outlook, Temper::default()),
         Some(Goal::Go(BLUE_HOME))
     );
 }
@@ -248,7 +248,7 @@ fn an_unreachable_destination_is_given_up_and_another_plate_used() {
     let bot = me([10.0, 0.0, 0.0], 0);
     let plan = |b: &mut Belief, tick| {
         let (k, outlook) = b.know(&o, &bot, tick, Lean::default(), &blind).unwrap();
-        plan_with(&k, &bot, &[], true, &outlook)
+        plan_with(&k, &bot, &[], true, &outlook, Temper::default())
     };
     let goal = plan(&mut b, 1);
     assert_eq!(goal, Some(Goal::Carry(near_plate)));
@@ -295,7 +295,7 @@ fn standing_on_a_flag_it_cannot_take_gives_it_up_for_a_while() {
         )
         .unwrap();
     assert!(o.items.iter().all(|i| i.position != ledge));
-    assert_eq!(plan_with(&o, &bot, &[], true, &outlook), None);
+    assert_eq!(plan_with(&o, &bot, &[], true, &outlook, Temper::default()), None);
     // An arming carrier standing on the plate is not "stuck".
     let mut b = Belief::default();
     let carry = Some(Goal::Carry(bot.position));
@@ -346,7 +346,7 @@ fn assault_presumes_a_neutral_bomb_at_its_spawn() {
     let (k, outlook) = b.know(&o, &bot, 1, Lean::default(), &blind).unwrap();
     assert_eq!(teams(&k.items), [(8, [50.0, 0.0, 0.0], None)]);
     assert_eq!(
-        plan_with(&k, &bot, &[], true, &outlook),
+        plan_with(&k, &bot, &[], true, &outlook, Temper::default()),
         Some(Goal::Go([50.0, 0.0, 0.0]))
     );
 }

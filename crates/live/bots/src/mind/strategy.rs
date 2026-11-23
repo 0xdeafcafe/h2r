@@ -17,25 +17,35 @@ impl Mind {
         let ordered = self.decisions.ordered_goal(p);
         let goal = ordered.or_else(|| {
             let o = p.objective.as_ref()?;
-            let others: &[Seen] = if o.game == objective::Game::Juggernaut {
-                seen
-            } else {
-                &p.others
-            };
+            let others = juggernaut_quarry(o, seen, &p.others);
             // Flags and bombs out of view are remembered or presumed at
             // their spawn (objective::belief): the plan works from that.
             let lean = objective::Lean::of(&self.decisions.personality);
             let sees = |at: Vec3| crate::perceive::in_view(me, at, CHEST, map);
             match self.objective_belief.know(o, &me, p.tick, lean, &sees) {
                 Some((known, outlook)) => {
-                    let goal = objective::plan_with(&known, &me, others, p.teams, &outlook);
+                    let goal = objective::plan_with(
+                        &known,
+                        &me,
+                        others,
+                        p.teams,
+                        &outlook,
+                        objective::Temper::from(self.decisions.personality),
+                    );
                     let take = matches!(goal, Some(Goal::Go(at))
                         if known.items.iter().any(|i| i.carrier.is_none() && i.position == at));
                     self.objective_belief
                         .pursue(goal, take, me.position, self.stuck.repaths, p.tick);
                     goal
                 }
-                None => objective::plan(o, &me, others, p.teams),
+                None => objective::plan_with(
+                    o,
+                    &me,
+                    others,
+                    p.teams,
+                    &objective::Outlook::default(),
+                    objective::Temper::from(self.decisions.personality),
+                ),
             }
         });
         // Once a tick: a repeated frame returns the last pad before this.
@@ -90,15 +100,20 @@ impl Mind {
             (_, Kit::Seek(pk) | Kit::Dual(pk), _) => Doing::Rearm(pk.position),
             (Some(o), _, _) => Doing::Fight(o.id),
             (None, _, Some(g)) => Doing::Play(g),
-            _ => self.between_fights(p, me, intent.support, calm, map),
+            _ => self.between_fights(p, me, intent.support, intent.trail, calm, map),
         };
     }
 
+    /// With no one to fight and no objective: in order, recover shields,
+    /// regroup after backing off, the bot's own lead (hold the angle, then
+    /// chase), a teammate's fight, supplies, a sound or a guess, moving
+    /// with a teammate, a firing position, roaming.
     fn between_fights(
         &self,
         p: &Perception,
         me: Me,
         support: Option<Vec3>,
+        trail: Option<Vec3>,
         calm: bool,
         map: Option<&MapData>,
     ) -> Doing {
@@ -108,14 +123,39 @@ impl Mind {
         {
             return Doing::Recover(at);
         }
-        if let Some(at) = support.filter(|at| !self.stuck.blocked(*at, p.tick)) {
-            return Doing::Support(at);
-        }
+        let support = support.filter(|at| !self.stuck.blocked(*at, p.tick));
         let behavior = self.decisions.behavior();
-        if (self.decisions.disengaging(p.tick) || behavior.fear() > 0.28)
-            && let Some(at) = last
+        let disengaging = self.decisions.disengaging(p.tick);
+        // Fear alone sends a bot off only while its shield is not back.
+        let afraid = behavior.fear() > 0.28;
+        if disengaging || afraid {
+            if let Some(at) = support {
+                return Doing::Support(at);
+            }
+            if let Some(at) = last
+                && (disengaging || me.shield < SHIELD_BACK)
+            {
+                return Doing::Recover(at);
+            }
+        }
+        // Its own fight first: the corner it lost the target round, then
+        // the chase. A teammate's call does not pull it off a fresh lead.
+        if let Some((id, at, tick)) = self.last_seen
+            && !behavior.wants_revenge(id)
+            && p.tick.wrapping_sub(tick) < behavior.hold_ticks()
         {
-            return Doing::Recover(at);
+            return Doing::HoldAngle(at);
+        }
+        if let Some((_, at, seen)) = self.last_seen {
+            // A distant, old sighting is less likely to pay for a long chase.
+            let confidence = 1.0 - p.tick.wrapping_sub(seen) as f32 / MEMORY_TICKS as f32;
+            let travel = len(sub(at, me.position)) * 6.0 / MEMORY_TICKS as f32;
+            if confidence > travel.min(0.65) {
+                return Doing::Chase(at);
+            }
+        }
+        if let Some(at) = support {
+            return Doing::Support(at);
         }
         if calm
             && self.kit == Kit::Fine
@@ -138,20 +178,6 @@ impl Mind {
         {
             return Doing::Supply(*at);
         }
-        if let Some((id, at, tick)) = self.last_seen
-            && !behavior.wants_revenge(id)
-            && p.tick.wrapping_sub(tick) < behavior.hold_ticks()
-        {
-            return Doing::HoldAngle(at);
-        }
-        if let Some((_, at, seen)) = self.last_seen {
-            // A distant, old sighting is less likely to pay for a long chase.
-            let confidence = 1.0 - p.tick.wrapping_sub(seen) as f32 / MEMORY_TICKS as f32;
-            let travel = len(sub(at, me.position)) * 6.0 / MEMORY_TICKS as f32;
-            if confidence > travel.min(0.65) {
-                return Doing::Chase(at);
-            }
-        }
         if let Some((at, heard)) = self.search {
             let confidence = 1.0 - p.tick.wrapping_sub(heard) as f32 / MEMORY_TICKS as f32;
             if confidence > 0.35
@@ -160,6 +186,11 @@ impl Mind {
             {
                 return Doing::Support(at);
             }
+        }
+        // Moving with the team: only when the teammate has got well ahead,
+        // and only once nothing of its own is left to do.
+        if let Some(at) = trail.filter(|at| !self.stuck.blocked(*at, p.tick)) {
+            return Doing::Support(at);
         }
         if calm && let Some(map) = map {
             let range = me
@@ -311,5 +342,20 @@ impl Mind {
                 .and_then(|(foe, _)| self.away(at, foe.position, map, bodies))
         };
         (None, walk, None)
+    }
+}
+
+/// Whom a Juggernaut plan may pick from. Everyone else sees the Juggernaut
+/// by its waypoint, so a hunter goes for it wherever it is; the Juggernaut
+/// itself has no marks on the others and hunts only those in its view.
+fn juggernaut_quarry<'a>(
+    o: &objective::Objective,
+    seen: &'a [Seen],
+    others: &'a [Seen],
+) -> &'a [Seen] {
+    if o.game == objective::Game::Juggernaut && o.am_juggernaut() {
+        seen
+    } else {
+        others
     }
 }

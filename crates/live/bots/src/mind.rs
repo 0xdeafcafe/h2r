@@ -20,6 +20,7 @@ use crate::sound::ShotSound;
 use crate::stuck::Stuck;
 use crate::tactics::{self, Shot, Style, Tactics};
 
+mod errand;
 pub(crate) mod feel;
 mod look;
 mod order;
@@ -178,6 +179,9 @@ pub const TAKE_RANGE: f32 = 0.5;
 pub const TAKE_TICKS: u32 = 30;
 /// Another enemy this close to the target makes a cluster worth a grenade.
 pub const CLUSTER: f32 = 2.5;
+/// Recovering shields, it backs away from where it last saw the enemy
+/// for this long after losing sight, then stands and watches that way.
+pub const RECOVER_BACK_TICKS: u32 = 45;
 /// Lobs one where an enemy went out of view this recently.
 pub const COVER_GRENADE_TICKS: u32 = 60;
 /// An escort keeps this far from the carrier.
@@ -296,6 +300,8 @@ pub struct Mind {
     /// Flags and bombs out of view, and objective destinations given up
     /// (section 3.7, `objective::belief`).
     pub(crate) objective_belief: objective::Belief,
+    /// The walk to a weapon under way, and those given up (`mind::errand`).
+    errands: errand::Errands,
     /// Shields went under [`LOW_SHIELD`] and are not back.
     recovering: bool,
     /// [`Mind::go`] gave up on the goal this tick.
@@ -453,6 +459,7 @@ impl Mind {
             last_threat: None,
             take: None,
             objective_belief: Default::default(),
+            errands: Default::default(),
             recovering: false,
             gave_up: false,
             navigated: false,
@@ -531,6 +538,7 @@ impl Mind {
         self.doing = Doing::Idle;
         self.stuck.reset();
         self.take = None;
+        self.errands.idle();
         self.recovering = false;
         self.fight.reset();
         self.hand.release();
@@ -765,7 +773,7 @@ impl Mind {
         let enemy_dist = chosen.map(|(o, _)| len(sub(up(o.position, CHEST), eye)));
         self.kit = match me.arms {
             Some(a) => {
-                let (st, tick) = (&self.stuck, p.tick);
+                let (st, errands, tick) = (&self.stuck, &self.errands, p.tick);
                 arms::plan_with_personality(
                     &Situation {
                         arms: &a,
@@ -789,6 +797,7 @@ impl Mind {
                     },
                     |pk| {
                         st.blocked(pk.position, tick)
+                            || errands.refused(pk.id, tick)
                             || p.objective
                                 .as_ref()
                                 .and_then(|o| o.hill.as_ref())
@@ -859,6 +868,7 @@ impl Mind {
         bodies.clear();
         if !matches!(self.doing, Doing::Rearm(_)) {
             self.take = None;
+            self.errands.idle();
         }
         // Glitches only fighting or roaming on foot, with the setting on;
         // a show-off only roaming.
@@ -943,6 +953,9 @@ impl Mind {
                 let blade = shot.role == arms::Role::Blade;
                 let juggernaut = p.objective.as_ref().is_some_and(|o| o.am_juggernaut());
                 let melee = self.kit == Kit::Melee || blade;
+                // Running a softened target down for the beatdown
+                // (tactics::finish_push).
+                let mut finishing = false;
                 if reacted {
                     let off = angle_between(sub(led, eye), me.aim);
                     let cone = aim.fire_cone + (0.4 / dist.max(0.5)).min(0.3);
@@ -973,6 +986,16 @@ impl Mind {
                     let risky = behavior.melee_risk()
                         && !carrying
                         && self.decisions.posture != Posture::Withdraw;
+                    // A target whose shield is down (seen, or after a long
+                    // burst) is run down and beaten, not strafed at while
+                    // its shield comes back.
+                    finishing = !carrying
+                        && self.decisions.posture != Posture::Withdraw
+                        && tactics::finish_push(
+                            held,
+                            dist,
+                            shield_down || self.combo.softened(self.skill),
+                        );
                     let chest = sub(up(o.position, CHEST), eye);
                     // Name preference changes the margin at which it attempts
                     // a beatdown. Every bot strikes within normal arm's reach.
@@ -987,7 +1010,7 @@ impl Mind {
                         angle,
                         held,
                         shield_down,
-                        melee || risky || juggernaut,
+                        melee || risky || juggernaut || finishing,
                     );
                     // Glitches (crate::glitches) only where the fight is not
                     // obviously lost: not low, not withdrawing, nobody else
@@ -1084,7 +1107,15 @@ impl Mind {
                     self.hand.lose_target();
                     self.fight.stop_trigger(p.tick);
                 }
-                if let Some((at, radius)) = intent.anchor {
+                // Inside a held zone with room to move (the ball, the hill,
+                // a territory: objective::within), the footwork goes on and
+                // only its step out of the zone is taken away.
+                let room = intent.anchor.filter(|&(at, radius)| {
+                    radius >= objective::FOOTWORK_ROOM
+                        && len(sub(me.position, at)) <= radius
+                        && p.objective.as_ref().is_some_and(|o| o.zone_footwork())
+                });
+                if let Some((at, radius)) = intent.anchor.filter(|_| room.is_none()) {
                     if len(sub(me.position, at)) > radius {
                         walk = self.go(me.position, at, p.tick, map, &mut pad, bodies);
                     }
@@ -1099,7 +1130,8 @@ impl Mind {
                         at: me.position,
                         foe: o.position,
                         shield: me.shield,
-                        rush: (melee || juggernaut) && self.decisions.posture != Posture::Withdraw,
+                        rush: (melee || juggernaut || finishing)
+                            && self.decisions.posture != Posture::Withdraw,
                         retreat: self.recovering || self.decisions.posture == Posture::Withdraw,
                         // The combat side's signals (tactics): cover while
                         // reloading or switching in range, and its range band.
@@ -1118,7 +1150,9 @@ impl Mind {
                         pad.buttons.set(CROUCH, true);
                     }
                     walk = Some(Walk {
-                        walk: mv.walk,
+                        walk: room.map_or(mv.walk, |(at, radius)| {
+                            objective::within(mv.walk, me.position, at, radius)
+                        }),
                         face: [to[0] / flat, to[1] / flat],
                     });
                     self.follower = None;
@@ -1159,9 +1193,16 @@ impl Mind {
                 self.follower = None;
             }
             Doing::Recover(from) => {
-                // Back away from it, facing it, while the shields come back.
+                // Back away from it, facing it, while the shields come back;
+                // once it has been out of sight a moment, stand and watch
+                // that way instead of walking off across the map.
                 look = Some(up(from, CHEST));
-                walk = self.away(me.position, from, map, bodies);
+                let gone = self
+                    .last_seen
+                    .map_or(u32::MAX, |(_, _, t)| p.tick.wrapping_sub(t));
+                if gone < RECOVER_BACK_TICKS {
+                    walk = self.away(me.position, from, map, bodies);
+                }
                 self.follower = None;
             }
             Doing::Rearm(at) => {
@@ -1170,10 +1211,18 @@ impl Mind {
                     _ => None,
                 };
                 let near = dist_xy(me.position, at) < TAKE_RANGE;
+                // A trip over its budget, or standing on one that does
+                // not come: given up for a while (mind::errand).
+                let on_trip = pk.is_none_or(|pk| {
+                    self.errands.step(pk.id, p.tick, dist_xy(me.position, at))
+                });
                 let other_kind =
                     pk.is_some_and(|pk| me.arms.is_some_and(|a| !a.carries(pk.gun.def)));
                 let dual = matches!(self.kit, Kit::Dual(_));
-                if near && (other_kind || dual) {
+                if !on_trip {
+                    self.stuck.blacklist(at, p.tick);
+                    self.take = None;
+                } else if near && (other_kind || dual) {
                     // On it: hold the action button to take it. Walking over
                     // one of the same kind takes its ammunition by itself.
                     let id = pk.map_or(0, |pk| pk.id);
@@ -1188,6 +1237,7 @@ impl Mind {
                         // It will not come: out of reach (on a ledge, in
                         // a wall). Some other one.
                         self.stuck.blacklist(at, p.tick);
+                        self.errands.refuse(id, p.tick);
                         self.take = None;
                     }
                 } else {

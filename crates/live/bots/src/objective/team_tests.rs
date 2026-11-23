@@ -86,7 +86,7 @@ fn the_nearest_attacker_grabs_and_an_escorting_name_covers_it() {
             &me(at, 0),
             &others(id),
             true,
-            &leaning(lean),
+            &leaning(lean), Temper::default(),
         )
     };
     // The nearest goes whatever its name.
@@ -102,7 +102,7 @@ fn the_nearest_attacker_grabs_and_an_escorting_name_covers_it() {
 fn bold_defenders_patrol_wider_than_careful_ones() {
     let o = ctf(4, home_flags());
     let mate = [seen(1, [50.0, 0.0, 0.0], 0)];
-    let radius = |lean| match plan_with(&o, &me([1.0, 0.0, 0.0], 0), &mate, true, &leaning(lean)) {
+    let radius = |lean| match plan_with(&o, &me([1.0, 0.0, 0.0], 0), &mate, true, &leaning(lean), Temper::default()) {
         Some(Goal::Hold(at, r)) if at == RED_HOME => r,
         g => panic!("{g:?}"),
     };
@@ -118,14 +118,14 @@ fn a_focused_attacker_keeps_on_for_their_flag_past_a_nearer_carrier() {
     let mates = [seen(4, [2.0, 0.0, 0.0], 0)];
     // The carrier is 25 away, their flag 35.
     let bot = me([65.0, 0.0, 0.0], 0);
-    let neutral = plan_with(&o, &bot, &mates, true, &Outlook::default());
+    let neutral = plan_with(&o, &bot, &mates, true, &Outlook::default(), Temper::default());
     assert_eq!(neutral, Some(Goal::Hunt(7, [40.0, 0.0, 0.0])));
     let focused = Lean {
         focus: 0.9,
         ..Lean::default()
     };
     assert_eq!(
-        plan_with(&o, &bot, &mates, true, &leaning(focused)),
+        plan_with(&o, &bot, &mates, true, &leaning(focused), Temper::default()),
         Some(Goal::Go(BLUE_HOME))
     );
 }
@@ -138,11 +138,11 @@ fn a_team_minded_attacker_turns_back_further_for_our_dropped_flag() {
     let mates = [seen(4, [2.0, 0.0, 0.0], 0)];
     let bot = me([50.0, 0.0, 0.0], 0);
     assert_eq!(
-        plan_with(&o, &bot, &mates, true, &Outlook::default()),
+        plan_with(&o, &bot, &mates, true, &Outlook::default(), Temper::default()),
         Some(Goal::Go(BLUE_HOME))
     );
     assert_eq!(
-        plan_with(&o, &bot, &mates, true, &leaning(ESCORT)),
+        plan_with(&o, &bot, &mates, true, &leaning(ESCORT), Temper::default()),
         Some(Goal::Go([20.0, 0.0, 0.0]))
     );
 }
@@ -210,11 +210,11 @@ fn an_escorting_name_covers_the_nearer_bomb_runner() {
     let others = [runner, seen(5, [1.0, 0.0, 0.0], 0)];
     let bot = me([30.0, 0.0, 0.0], 0);
     assert_eq!(
-        plan_with(&o, &bot, &others, true, &leaning(ESCORT)),
+        plan_with(&o, &bot, &others, true, &leaning(ESCORT), Temper::default()),
         Some(Goal::Escort(runner.position))
     );
     assert_eq!(
-        plan_with(&o, &bot, &others, true, &leaning(RUNNER)),
+        plan_with(&o, &bot, &others, true, &leaning(RUNNER), Temper::default()),
         Some(Goal::Go(bomb.position))
     );
 }

@@ -32,6 +32,23 @@ pub const LUNGE_LIMITS: (f32, f32) = (1.0, 3.0);
 /// A gun's fire range reaches this far past its band's far end.
 pub const FIRE_PAST_BAND: f32 = 1.6;
 
+/// An automatic whose projectile is slower than this (world units a
+/// second) fires bolts a strafing target can step out of.
+pub const SLOW_BOLT: f32 = 150.0;
+/// A slow-bolt automatic keeps its target within this...
+pub const SLOW_BOLT_BAND: f32 = 6.0;
+/// ...and fires at it no further than this (world units).
+pub const SLOW_BOLT_FIRE: f32 = 10.0;
+
+/// The plasma rifle and plasma pistol by identity, or any automatic whose
+/// projectile speed reads slow.
+fn slow_bolts(p: &Profile) -> bool {
+    matches!(
+        p.dual,
+        Some(crate::arms::DualGun::PlasmaRifle | crate::arms::DualGun::PlasmaPistol)
+    ) || (p.shot_speed > 0.0 && p.shot_speed < SLOW_BOLT)
+}
+
 /// A favorite can win a close pickup decision or justify a short detour.
 pub(crate) fn pickup_bias(personality: Option<crate::decisions::Personality>, role: Role) -> f32 {
     6.0 * personality.map_or(0.0, |p| p.weapon_interest(role))
@@ -87,6 +104,15 @@ pub fn reach(p: &Profile) -> Reach {
             lunge: 0.0,
         },
     };
+    // Plasma bolts are slow: past a few metres a strafing target walks
+    // out of their path (docs/game/notes/2026-11-23-bots-natural-round1.md:
+    // 0.42 of plasma rifle shots hit under 3 units, 0.17 from 3 to 12,
+    // almost none beyond).
+    if role == Role::Spray && slow_bolts(p) {
+        reach.band.1 = reach.band.1.min(SLOW_BOLT_BAND);
+        reach.band.0 = reach.band.0.min(reach.band.1);
+        reach.fire.1 = reach.fire.1.min(SLOW_BOLT_FIRE);
+    }
     if p.damage_reach > 0.0 && p.damage_reach < reach.fire.1 {
         reach.fire.1 = p.damage_reach;
         let far = reach.band.1.min(p.damage_reach / FIRE_PAST_BAND);
@@ -353,6 +379,13 @@ impl Combo {
         });
         self.reset();
         self.attempted = attempted;
+    }
+
+    /// It has kept its fire on this target long enough (twice the melee
+    /// finish's pulls) that the shield is likely down, read or not.
+    pub fn softened(&self, skill: Skill) -> bool {
+        let k = ComboSkill::of(skill);
+        k.finish && self.hits >= k.finish_pulls.saturating_mul(2)
     }
 
     /// A combo or a glitch is under way.
