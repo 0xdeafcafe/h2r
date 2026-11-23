@@ -42,7 +42,7 @@ pub struct Switch {
 
 /// The most rows the table may hold. Raise it only with a reason in the
 /// commit; lower it when a switch goes.
-pub const BUDGET: usize = 43;
+pub const BUDGET: usize = 44;
 
 use Initial::{Group, Off, On};
 
@@ -92,6 +92,8 @@ pub const TABLE: &[Switch] = &[
         "the parent of the subsystem rewrites (lane rules): each child goes when its subsystem defaults on"),
     sw("impl.sim.native.anim", Off, "sim", "2026-11-20",
         "animation sampling (sim-anim): on in the lane that lands it, then deleted"),
+    sw("impl.sim.native.anim.skeleton", On, "sim", "2026-11-23",
+        "the skeleton walk of bd090 in one Rust call (docs/engine/skeleton-walk.md): deleted when phase 1b's run ladder is clean"),
     sw("impl.sim.native.collision", Off, "sim", "2026-11-20",
         "collision queries (sim-collision): on in the lane that lands it, then deleted"),
     sw("impl.sim.native.objects", Off, "sim", "2026-11-20",

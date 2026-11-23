@@ -10,10 +10,11 @@
 //! `bfe80`, `bfed0`, `bdb60`, `bfe20`, `b6780`, `1c6440`, `a98b0`,
 //! `a9940`), builds the root matrix, calls the after-root dispatcher
 //! `1090d0` (a slice 1 body, so [`super::drive`] fuses it), and walks the
-//! skeleton. The pose matrix `1421f0`, the composition `142a60` and the
-//! root transform `bdc40` run inline through `sim_native`'s exact bodies:
-//! they are phase 1b's leaves until `sim-anim` offers `build_matrices`
-//! for the whole skeleton walk, which then replaces them here.
+//! skeleton. The root transform `bdc40` and the root's pose and
+//! composition run inline through `sim_native`'s exact bodies. The
+//! skeleton walk is phase 1b's: `sim_anim::build_matrices` through
+//! `crate::sim_anim::skeleton` (`impl.sim.native.anim.skeleton`), with the
+//! port's per-node loop as its fallback (docs/engine/skeleton-walk.md).
 //!
 //! The port makes its transfers through the runtime's stack helpers
 //! (`Guest::call` pushes the return address, `Guest::ret` pops it and the

@@ -18,6 +18,12 @@
 //! original. The family's scratch globals (`0x504410..0x5044c4`,
 //! `0x55e530..0x55e590`, `0x55ebb8..0x55ebe8`) and the dead stack slots
 //! are left unwritten: nothing outside the family reads them.
+//!
+//! [`skeleton`] is phase 1b: the skeleton walk of `bd090`, the node records
+//! turned into node matrices by `sim_anim::build_matrices`
+//! (docs/engine/skeleton-walk.md).
+pub mod skeleton;
+
 use crate::function_eval::constant::{ONE, SMALL};
 use crate::sim_native::Memory;
 use ::sim_anim::{

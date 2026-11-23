@@ -22,6 +22,7 @@ evidence. No disassembly listings or game data.
 | [sim-tier-experiment.md](sim-tier-experiment.md) | compose `0x142a60`, pose `0x1421f0`, MOPP box `0x2ff8b0`, BSP segment `0x1de6d0`, solver `0x31c940` | experiment: `emit::sim` against the reference tier and the hand ports |
 | [sim-tier-writes.md](sim-tier-writes.md) | everything `game_tick` `0x137fe0` reaches | method: static census of the tick's stores |
 | [anim-sampling.md](anim-sampling.md) | animation sampling `0x2798a0` and everything below it | Rust (`sim-anim`) + adapter behind `impl.sim.native.anim`, default off |
+| [skeleton-walk.md](skeleton-walk.md) | `bd090`'s node loop over the pose matrix `0x1421f0` and the composition `0x142a60` | Rust (`sim-anim`) + adapter behind `impl.sim.native.anim.skeleton`, default on wherever `bd090` runs natively |
 
 ## Fault behaviour
 

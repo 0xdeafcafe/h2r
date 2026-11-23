@@ -7,7 +7,9 @@
 //! Both leaves run here through the exact `sim_native` bodies, with the
 //! same pushes, frame and return address the guest call would write, so
 //! the skeleton walk makes no guest calls at all. Every other callee stays
-//! a guest call that resumes here at its return site.
+//! a guest call that resumes here at its return site. The walk itself goes
+//! to `crate::sim_anim::skeleton` (phase 1b, `impl.sim.native.anim.skeleton`)
+//! first; [`nodes`] runs it when that declines.
 use super::*;
 use crate::sim_native;
 
@@ -589,7 +591,11 @@ pub(crate) fn update(c: &mut CpuAbi, g: &mut Guest, mut pc: u32) -> Result<Trans
                     if c.eax as i32 <= 1 {
                         0xbd5f5
                     } else {
-                        nodes(c, g)?;
+                        // Phase 1b: the whole walk in one Rust call,
+                        // or this loop when it declines or is off.
+                        if !crate::sim_anim::skeleton::run(c, g)? {
+                            nodes(c, g)?;
+                        }
                         return leave(c, g);
                     }
                 }
@@ -632,10 +638,12 @@ pub(crate) fn update(c: &mut CpuAbi, g: &mut Guest, mut pc: u32) -> Result<Trans
     }
 }
 
-/// The skeleton walk from node 1. A set bit in the stack mask keeps the
-/// node's previous matrix. Flags inside the loop are never observed: the
-/// epilogue's `add esp` replaces them.
-fn nodes(c: &mut CpuAbi, g: &mut Guest) -> Result<()> {
+/// The skeleton walk from node 1, one node at a time through the inline
+/// leaves. A set bit in the stack mask keeps the node's previous matrix.
+/// Flags inside the loop are never observed: the epilogue's `add esp`
+/// replaces them. `crate::sim_anim::skeleton` runs the same walk as one
+/// kernel call and falls back to this loop; its tests hold the two equal.
+pub(crate) fn nodes(c: &mut CpuAbi, g: &mut Guest) -> Result<()> {
     c.edx = at(ld(g, c.esp, 0x1c)?, MATRIX_BYTES);
     c.ebp = at(ld(g, c.esp, 0x18)?, ORIENTATION_BYTES);
     c.ebx = NODE_BYTES;
