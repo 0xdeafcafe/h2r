@@ -1,7 +1,7 @@
 # Native renderer stage 4b: water, fog and camouflage
 
-Status: Partly built. Planar fog (layer 16) and the water edge blend (layer 6) are drawn natively; camouflage (layers 18 and 19) and the hologram (layer 21) are not, and parity with D3D is not verified.
-Code: `crates/rewrites/render-bridge/src/native_fog.rs`, `native_water.rs`, `crates/extensions/game/src/native_fog_glue.rs`, `native_water_glue.rs`, `crates/rewrites/native-render/src/fog.rs`, `fog_gpu.rs`, `water_gpu.rs`. Tests: `crates/rewrites/render-bridge/tests/native_fog.rs`.
+Status: Partly built. Planar fog (layer 16), the water edge blend (layer 6) and active camouflage's layers 18 and 19 and the hologram's layer 21 are drawn natively, and parity with D3D is not verified.
+Code: `crates/rewrites/render-bridge/src/native_fog.rs`, `native_water.rs`, `native_layers.rs`, `crates/extensions/game/src/native_fog_glue.rs`, `native_water_glue.rs`, `native_layers_glue.rs`, `native_objects_glue.rs`, `crates/rewrites/native-render/src/fog.rs`, `fog_gpu.rs`, `water_gpu.rs`, `object_program_gpu.rs`, `crates/rewrites/scene-extract/src/layout/world_layers.rs` (`sorted_site`). Tests: `crates/rewrites/render-bridge/tests/native_fog.rs`, the unit tests of `render_bridge::native_layers`, `native_render::object_program` and `object_program_gpu`, `scene_extract::layout::world_layers`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Part of [native-renderer.md](native-renderer.md).
@@ -185,37 +185,92 @@ the cached pipelines with their own uniforms and sampled textures.
   engine id — run-time chosen, the light's, a rasterizer bitmap, a
   cleared stage — refuses the material at the load
   (`FogRefusal::Unsupplied`).
-- **Layers 18/19 (camouflage) and 21 (hologram)**, not drawn. What
-  the repo establishes (Code, the lifted ports; the disc census,
-  e3-lighting.md "Pass taxonomy"; `engine::render::Role`): the two
-  camo layers are named ActiveCamo and ActiveCamoModulate (111 and 30
-  passes on the disc's 30 maps) and the hologram's 6; all three draw
-  through the same scene-list layer draw (`DRAWN_LAYERS` holds their
-  bits) — but **no lifted port names their caller**: the scene passes
-  (`0x0002bcd0`) begin and draw layers 1, 3, 5, 8, 20, 7, 2, 16, 6
-  and 15 only, the first-person render (`0x0003fdf0`) 1, 3, 8, 20 and
-  7, and the light passes 10 to 14. The caller is therefore some
-  function no port covers — most plausibly in the object-render chain
-  the camo wraps (`0x00133790`'s; the camo fades with the parent's
-  `+0x2b0`, e3-lighting's table), an S. Finding the caller needs a new trace. Drawing them is
-  refused outright: nothing about their wrapper (whether, like water,
-  a setup and a teardown bracket the layer, or whether the draw is
-  per-object) or their passes' state is established, so there is
-  nothing to admit against the handoff's contract.
+- **The caller** (Code, `h2 disasm`). Layers 18, 19 and 21 are drawn by
+  the sorted transparent list's object-layer handlers, not by the scene
+  passes (`0x0002bcd0` draws 1, 3, 5, 8, 20, 7, 2, 16, 6 and 15) or the
+  first-person render (`0x0003fdf0`). The list calls an entry's handler
+  at `+0x20` with `entry+0x24` (native-decals-research.md, "The
+  sorted-list handlers are not decals"):
+  - `0x00041cc0`, added by `0x000420a0` for the render records whose
+    `+0x1c` is 1, the active camouflage. It starts a list of its own
+    (`0x000352e0`), adds the records' items through `0x00044c90` (its
+    layer mask `0x0011818e`, layers 1, 2, 3, 7, 8, 15, 16 and 20, and the
+    camouflage mask: `0x40000`, layer 18, or `0xc0000`, 18 and 19, when
+    the modulate state below holds), replays layers 1, 3, 8, 20, 7, 2
+    and 16, then 18 (the draw at `0x00042010`, returning `0x00042015`),
+    then 19 when `[0x004b9f5c] != -1`, `[0x004b9f88] == 0` and the larger
+    of `[0x004b9f78]` and `[0x004b9f7c]` exceeds `[0x0045dbd8]` (the
+    draw at `0x0004205a`, returning `0x0004205f`), then 15.
+  - `0x000423c0`, added by `0x00042760` for the records whose `+0x1c`
+    is 3, the hologram: one `0x00044c90` call over every layer, then
+    layers 1, 3, 8, 7, 2, 16, 15 and 21 (the draw at `0x0004271c`,
+    returning `0x00042721`).
 
+  Every layer goes through the layer begin `0x00044370`, the layer draw
+  `0x00044550` and the end `0x000445d0` with no wrapper of its own. The
+  begin's descriptor (`0x0043fa1c`, `0x24` bytes a layer) gives 18 and
+  21 the bound target (`+0`: -1) and 19 render target 3; its per-layer
+  jump table covers layers 3 to 17 only, so 18, 19 and 21 have no setup
+  but the target and the state call `0x00015680` (descriptor `+0x18`: 1
+  for 18, 0 for 19 and 21). The end's table also stops at 17.
+- **The shader a record draws** (Code). The record producer
+  `0x0002cbf0` takes a shader argument from the object render
+  (`0x001341d0`); when it is not -1 it stores it in the table at
+  `0x004c1228`, its index byte at `0x004c0ed6 + record` (-1 for none; at
+  most `0xc0` a frame, counted at `0x004c1528`). `0x00044c90` hands it
+  to the item build `0x00041040`, which draws the item with that shader
+  in place of its part's material (`[esp+0x3c]` there): for the
+  camouflage handler when the record's `+0` bit 15 is set, for the
+  hologram's always (its last argument 1). The record's fade byte `+0x1a`
+  below `0xff` sets the polygon stipple in the geometry draw's prologue
+  (`0x0004d640`, `SetStipple` `0x003f8cc0`).
+- **Layers 18 and 19 (active camouflage) and 21 (hologram), built.**
+  `frame-scene.layers` takes them (`render_bridge::native_layers`,
+  `LayerCaller::Sorted`; `sorted_site` names the handler from the layer
+  draw's return): the
+  items are object records only and draw from the scene's resident
+  models, with the plan, skip and restore of the other object layers
+  (framescene.md, slice 4). The bit goes back at the next layer draw
+  only on an item that still holds the mask, shader and argument it
+  left: 18, 19 or 21 can be the handler's last taken layer, and the next
+  entry's handler rebuilds the same items. The begin runs before the
+  layer draw, so the stage's pass draws on what it bound: the view's
+  target for 18 and 21, render target 3 for 19. A hologram item always
+  draws the shader its record names, a camouflage item when the
+  record's `+0` bit 15 is set; either way the item's shader is the one
+  its passes are looked up by.
+  - **Override shaders** (`object_program_gpu::override_sections`,
+    `native_objects_glue::override_materials`). The map's shaders with
+    passes in layer 18, 19 or 21 (`OVERRIDE_LAYERS`) are read once per map;
+    each model compiles their passes over every drawn part, after its
+    own (`LitModelInput::append`), keyed by part and shader, so an item
+    draws the passes of the shader its record names. One whose passes
+    do not compile keeps its D3D draws; the first reason per shader and
+    layer is logged.
+  - **The view's own target** (engine texture 5,
+    `object_program::VIEW_TEXTURE`). A stage of layer 18, 19 or 21 that
+    samples it binds a copy of the bound colour (`LitObjects::view_copy`,
+    one scratch texture per target copy): the pass is recorded as
+    commands (`record_encoded`), the copy first, then a render pass of
+    its own on the bound attachments with the draws
+    (`gfx::renderer::encode_in_pass`). The coordinates are texels of the
+    target's guest size, as a linear render target is read
+    (`texaccum_dimensions`, `texaccum_scale`). In any other layer a stage
+    sampling the view refuses at load.
 ## Rules and limits
 
 - The fog pass applies the layer draw's own gate (`[0x0048574c] == 3` or a fog byte set); otherwise it would fog views the game left clear.
 - Water: the shared fog and water mask walk requires the accepted items to form a prefix of the layer's list; a later accepted item leaves the whole layer on D3D. Placements keep their D3D draws until the water path has their rigid programs. Objects' layer-16 items are never cleared: their fog belongs to the objects stage.
 - Any engine texture id that is run-time chosen, the light's, a rasterizer bitmap other than 14 and 15 (which resolve) or a cleared stage refuses the material at load (`FogRefusal::Unsupplied`). The load line names the materials left on D3D and why, and every 1,800 layer-16 views a line gives the skip counts.
-- Layers 18, 19 and 21 are refused outright: no lifted port names their caller, so their wrappers and state are not established.
+- Layers 18 and 19 are taken only from the camouflage handler's calls (returns `0x00042015` and `0x0004205f`), 21 only from the hologram handler's (`0x00042721`); the handlers' replays of the scene's layers stay on D3D. An item extraction refuses (a fade byte below `0xff`, which sets the stipple, and the rest of `LayerObjectRefusal`), whose model is not resident, or whose shader's passes in the layer did not compile keeps its D3D draw, and so does every item after it.
 
 ## Not verified
 
 - The meaning of the render record's `+0` bits 7 and 8 and of `[0x004ba004]` (only their use in layer 16's build is read), the fog implementations 0 and 1 (views with a fog byte set stay on D3D), and that no draw between a layer's setup and the native passes changes the cull (read from the layer draw's order, not a captured trace).
 - Pixel parity of fog and the water edge blend against D3D, including the alpha channel the teardown clears.
 - The content of `0x00025d50` (what the fog render states and per-view constants it pushes).
-- The caller, wrapper and pass state of layers 18, 19 and 21.
+- Pixel parity of layers 18, 19 and 21 against D3D (19 drawn into render target 3): the view copy is made once before the layer, so a later item reads the target as it was before the earlier items drew, where the D3D path samples the target it draws into; and that the camouflage and hologram shaders' engine inputs are ones the object path supplies (their refusals are logged at load).
+- What `0x00015680` sets from the layer descriptor's `+0x18` (read from the device at the call, not from the descriptor).
 
 ## Related
 

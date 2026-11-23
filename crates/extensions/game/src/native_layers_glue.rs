@@ -1,6 +1,8 @@
 //! The host of `frame-scene.layers` (docs/graphics/framescene.md, slice 4):
-//! the scene's world layers 1, 5, 7, 8 and 20, and the first person's
-//! layers 1, 7, 8 and 20, drawn from the scene's plan
+//! the scene's world layers 1, 5, 7, 8 and 20, the first person's
+//! layers 1, 7, 8 and 20, and the sorted handlers' layers 18 and 19
+//! (camouflage) and 21 (hologram) (docs/graphics/native-water-fog.md),
+//! drawn from the scene's plan
 //! (`native_render::layer_pass`, `LitObjects::plan_layer_item`) over the
 //! native world's loaded BSP and the object models layer 3 draws from,
 //! not from the draws the guest resolves under the layer call.
@@ -50,7 +52,16 @@
 //! - **The pass** ([`LayerViewPass`]): the device's view constants and W
 //!   clip at the issue, then per run of the list `GpuWorld::layer_draws`
 //!   or `LitObjects::draws` in the D3D pass open on the bound
-//!   attachments.
+//!   attachments. A sorted handler's layer whose passes sample the view's
+//!   own target (engine texture 5) is recorded as commands instead: the
+//!   bound colour copied (`LitObjects::view_copy`), then a render pass of
+//!   its own on the same attachments with the draws binding the copy
+//!   (`LitObjects::draws_with_view`).
+//! - **Sorted handlers** (`LayerCaller::Sorted`): their items are object
+//!   records only, drawn from the scene's models; a record the game gives
+//!   a shader in place of its part's material draws that shader's passes,
+//!   which the models compile for every part
+//!   (`native_objects_glue::load_model`, `object_program_gpu::override_sections`).
 //!
 //! Each ask's outcomes are counted by layer and cause
 //! (`render_bridge::native_layers::count_for`) for `render.scene`.
@@ -111,7 +122,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
                 Some(Arc::clone(current_ready(&state, mem)?))
             }
-            LayerCaller::FirstPerson => None,
+            LayerCaller::FirstPerson | LayerCaller::Sorted(_) => None,
         };
         let world = ready.as_deref().and_then(|r| r.layers.get());
         let data = world.and_then(|(view, _)| view.layers.get(&l));
@@ -142,7 +153,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             }
             None => {
                 let structure = scene.items_of(pass).iter().filter(|i| !matches!(i.owner, LayerOwner::Object(_))).count();
-                let why = if caller == LayerCaller::FirstPerson { "first_person_structure" } else { "program" };
+                let why = match caller {
+                    LayerCaller::FirstPerson => "first_person_structure",
+                    LayerCaller::Sorted(_) => "sorted_structure",
+                    LayerCaller::Scene => "program",
+                };
                 *outcomes.entry(why).or_default() += structure as u64;
             }
         }
@@ -324,6 +339,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let stage = match caller {
             LayerCaller::Scene => timeline::native::Stage::World,
             LayerCaller::FirstPerson => timeline::native::Stage::FirstPerson,
+            LayerCaller::Sorted(_) => timeline::native::Stage::Objects,
         };
         let plan = d3d::ExternalPlan { stage, view: view_index, ranges, slots: Vec::new() };
         let pass = Box::new(LayerViewPass {
@@ -369,7 +385,7 @@ fn plan_objects<B: d3d::backend::Backend>(
         None
     };
     let models = match caller {
-        LayerCaller::Scene => crate::native_objects_glue::layer_models(d, mem),
+        LayerCaller::Scene | LayerCaller::Sorted(_) => crate::native_objects_glue::layer_models(d, mem),
         LayerCaller::FirstPerson => crate::native_first_person_glue::layer_models(d, mem),
     };
     let Some(models) = models else { return all("object_models") };
@@ -525,6 +541,13 @@ impl LayerViewPass {
             LayerRun::World(_) => &[][..],
         }).map(|(_, d)| d)
     }
+
+    /// Whether a draw samples the view's own target: the pass is then
+    /// recorded as commands with a copy of the bound colour
+    /// ([`LayerViewPass::encoded`]).
+    fn samples_view(&self) -> bool {
+        self.object_draws().any(|d| d.view)
+    }
 }
 
 impl d3d::ExternalPass for LayerViewPass {
@@ -540,9 +563,17 @@ impl d3d::ExternalPass for LayerViewPass {
         self.w_clip = (clip.w_buffered == Some(true)).then_some((clip.range, clip.clamp));
     }
 
-    fn prepare_copy(&mut self, _t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
+    fn prepare_copy(&mut self, t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
         if self.view.is_none() || self.w_clip.is_none() {
             return Err("layer view constants or W-buffer clip unavailable");
+        }
+        if self.samples_view() {
+            if self.world_runs().next().is_some() {
+                return Err("structure items in a layer whose objects sample the view");
+            }
+            if t.color.texture().format() != t.color_format || !LitObjects::can_copy_view(t.color, t.size) {
+                return Err("the bound colour cannot be copied for the view stages");
+            }
         }
         if self.world_runs().next().is_some() {
             let ready = self.ready.as_ref().ok_or("world geometry unavailable")?;
@@ -567,15 +598,126 @@ impl d3d::ExternalPass for LayerViewPass {
 
     /// The layer's draws join the D3D render pass already open on these
     /// attachments, run by run in the list's order. A refusal here leaves
-    /// the D3D draws.
+    /// the D3D draws. A layer that samples the view is recorded by
+    /// [`d3d::ExternalPass::record_encoded`] instead.
     fn record_draws(
         &mut self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
     ) -> Option<Result<d3d::backend::ExternalDraws, &'static str>> {
+        if self.samples_view() {
+            return None;
+        }
         Some(self.record(t, request))
+    }
+
+    /// The copy of the bound colour and the pass that samples it, as
+    /// commands in the frame's open encoder ([`LayerViewPass::encoded`]).
+    fn record_encoded(
+        &mut self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
+    ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
+        if !self.samples_view() {
+            return None;
+        }
+        Some(self.encoded(t, request))
     }
 }
 
 impl LayerViewPass {
+    /// The view inputs of this recording.
+    fn view_inputs(&self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest) -> Result<ViewInputs, &'static str> {
+        let constants = self.view.ok_or("layer view constants unavailable")?;
+        if self.w_clip.is_none() {
+            return Err("layer W-buffer clip unavailable");
+        }
+        Ok(ViewInputs {
+            constants: request.view_constants(t.copy, constants),
+            guest_size: request.surface_size,
+            size: t.size,
+            z_scale: request.z_scale,
+            w_clip: self.w_clip,
+        })
+    }
+
+    /// The object runs as commands: their uniforms' writes, the bound
+    /// colour copied into this target copy's scratch texture, then one
+    /// render pass on the bound attachments (loaded and stored) with the
+    /// draws in the list's order, each view stage binding the copy, its
+    /// coordinates texels of the target's guest size. The copy holds the
+    /// target as the draws before the layer left it, as the D3D path's
+    /// first item reads it.
+    fn encoded(
+        &self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
+    ) -> Result<d3d::backend::ExternalEncoded, &'static str> {
+        if self.world_runs().next().is_some() {
+            return Err("structure items in a layer whose objects sample the view");
+        }
+        if t.color.texture().format() != t.color_format || !LitObjects::can_copy_view(&t.color, t.size) {
+            return Err("the bound colour cannot be copied for the view stages");
+        }
+        let view = self.view_inputs(t, request)?;
+        let draws: Vec<(u32, PlannedDraw)> = self
+            .runs
+            .iter()
+            .flat_map(|r| match r {
+                LayerRun::Objects(draws) => draws.as_slice(),
+                LayerRun::World(_) => &[][..],
+            })
+            .cloned()
+            .collect();
+        let models = self.objects.as_ref().ok_or("layer object geometry unavailable")?;
+        let mut lit = models.lit().lock().unwrap_or_else(|e| e.into_inner());
+        let lit = lit.as_mut().ok_or("layer object geometry unavailable")?;
+        if draws.iter().any(|(model, d)| !lit.has_draw_assets(*model, d) || d.indices.is_empty()) {
+            return Err("layer object geometry or material unavailable");
+        }
+        let copy = lit.view_copy(&t.device, &t.color, t.copy);
+        let sampled = native_render::object_program_gpu::Texaccum { view: &copy.view, guest_size: request.surface_size };
+        let out = lit.draws_with_view(
+            &t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, &view,
+            request.projection_factor(t.copy), &draws, None, Some(sampled),
+        )?;
+        let writes: Vec<(wgpu::Buffer, u64, wgpu::Buffer, u64, u64)> = out
+            .writes
+            .into_iter()
+            .map(|(dst, offset, bytes)| {
+                let (src, at) = t.uploads.stage(&t.device, &t.queue, &bytes);
+                (src, at, dst, offset, bytes.len() as u64)
+            })
+            .collect();
+        let packets = out.packets;
+        let (ranges, count) = (out.ranges, packets.len());
+        let (color, depth) = (t.color.clone(), t.depth.clone());
+        let has_stencil = t.depth_format.has_stencil_aspect();
+        let native_render::object_program_gpu::ViewCopy { from, to, extent, .. } = copy;
+        let commands = move |encoder: &mut wgpu::CommandEncoder| {
+            for (src, at, dst, offset, len) in &writes {
+                encoder.copy_buffer_to_buffer(src, *at, dst, *offset, *len);
+            }
+            encoder.copy_texture_to_texture(from.as_image_copy(), to.as_image_copy(), extent);
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("native layer with view copy"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
+                    stencil_ops: has_stencil
+                        .then_some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            // Checked when the packets were made: every pipeline built, no
+            // counted draw.
+            let _ = gfx::renderer::encode_in_pass(&mut pass, &packets);
+        };
+        Ok(d3d::backend::ExternalEncoded { ranges, draws: count, passes: 1, commands: Box::new(commands) })
+    }
+
     fn record(
         &self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
     ) -> Result<d3d::backend::ExternalDraws, &'static str> {

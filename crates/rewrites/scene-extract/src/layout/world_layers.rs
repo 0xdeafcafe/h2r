@@ -52,6 +52,48 @@ pub fn layer_site(layer: u32, return_address: u32) -> Site {
     }
 }
 
+/// The sorted transparent list's object-layer handler a layer draw runs
+/// under (docs/graphics/native-water-fog.md, "The caller"). The list calls
+/// an entry's handler at `+0x20` with `entry+0x24`; its producer
+/// `0x000420a0` adds class-3 entries whose handler is `0x00041cc0` for the
+/// render records whose `+0x1c` is 1. That handler starts a list of its own
+/// (`0x000352e0`), adds the records' items through `0x00044c90` with the
+/// camouflage layers' mask (layer 18, or 18 and 19 while the modulate state
+/// below holds), then replays layers 1, 3, 8, 20, 7, 2 and 16, then 18 and,
+/// when `[0x004b9f5c] != -1`, `[0x004b9f88] == 0` and the larger of
+/// `[0x004b9f78]` and `[0x004b9f7c]` exceeds `[0x0045dbd8]`, 19, then 15.
+/// Each layer goes through the layer begin `0x00044370`, the draw
+/// `0x00044550` and the end `0x000445d0` with no wrapper of its own; the
+/// begin binds the layer's target before the draw (the descriptor at
+/// `0x0043fa1c`: 18 and 21 the bound target, 19 render target 3). The
+/// producer `0x00042760` adds class-3 entries whose handler is
+/// `0x000423c0` for the records whose `+0x1c` is 3: it adds their items
+/// through `0x00044c90` over every layer, replays layers 1, 3, 8, 7, 2,
+/// 16 and 15, then draws 21.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SortedHandler {
+    /// `0x00041cc0`: active camouflage.
+    Camouflage,
+    /// `0x000423c0`: the hologram.
+    Hologram,
+}
+
+/// The sorted handler whose call of `layer` returns to `return_address`,
+/// or `None` for any other caller.
+pub fn sorted_site(layer: u32, return_address: u32) -> Option<SortedHandler> {
+    match (layer, return_address) {
+        // `call 0x00044550` at `0x00042010`.
+        (18, 0x0004_2015) => Some(SortedHandler::Camouflage),
+        // `call 0x00044550` at `0x0004205a`, after the begin at
+        // `0x00042051` returned true.
+        (19, 0x0004_205f) => Some(SortedHandler::Camouflage),
+        // `call 0x00044550` at `0x0004271c`, after the begin at
+        // `0x00042713` returned true.
+        (21, 0x0004_2721) => Some(SortedHandler::Hologram),
+        _ => None,
+    }
+}
+
 /// Scene layers whose indexed draws can be compared.
 pub fn opaque_layer(layer: u32) -> bool {
     matches!(layer, 1 | 2 | 3 | 5 | 7 | 8)
@@ -227,6 +269,18 @@ mod tests {
         assert_eq!(layer_site(2, 0x0002_c060), Site::Scene);
         assert_eq!(layer_site(20, 0x0002_c010), Site::Scene, "after layer 8, before the object shadows");
         assert_eq!(layer_site(20, 0x0004_020b), Site::FirstPerson, "the first person's, after its layer 8");
+    }
+
+    #[test]
+    fn the_sorted_handlers_layers_are_named_by_their_return() {
+        assert_eq!(sorted_site(18, 0x0004_2015), Some(SortedHandler::Camouflage));
+        assert_eq!(sorted_site(19, 0x0004_205f), Some(SortedHandler::Camouflage), "the modulate layer");
+        assert_eq!(sorted_site(19, 0x0004_2015), None, "18's return names only 18");
+        assert_eq!(sorted_site(21, 0x0004_2721), Some(SortedHandler::Hologram));
+        assert_eq!(sorted_site(15, 0x0004_2709), None, "the hologram's replays are not taken");
+        assert_eq!(sorted_site(18, 0x0002_c0e9), None, "another caller's");
+        assert_eq!(sorted_site(16, 0x0004_1ffd), None, "the handler's replay of layer 16 is not taken");
+        assert_eq!(layer_site(18, 0x0004_2015), Site::Other, "no scene site");
     }
 
     #[test]

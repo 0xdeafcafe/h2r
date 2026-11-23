@@ -600,8 +600,11 @@ fn lit_parts(
             .ok()?;
         opened.images.get(&(bitmap, image)).cloned()
     };
+    // The first person's layers draw under no sorted handler: nothing
+    // copies the view for them.
     let engine = EngineStages {
         texaccum: false,
+        view: false,
         normalization: opened.normalization.as_ref().is_some_and(Option::is_some),
         lightmap: opened.lightmap.clone().and_then(Result::ok),
     };

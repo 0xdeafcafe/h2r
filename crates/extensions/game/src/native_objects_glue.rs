@@ -20,8 +20,8 @@ use native_render::look;
 use native_render::object_lighting::ShaderValues;
 use native_render::object_nodes::{Compression, decompression_rows};
 use native_render::object_program_gpu::{
-    EngineStages, LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, PlannedDraw, Texaccum, lit_listed, lit_model, lit_subparts,
-    uniform,
+    EngineStages, LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, OVERRIDE_LAYERS, OVERRIDE_MATERIAL, PlannedDraw, Texaccum,
+    lit_listed, lit_model, lit_subparts, override_sections, uniform,
 };
 use native_render::object_state::EntryStates;
 use native_render::object_streams::{self, StreamData, StreamFormats};
@@ -1107,6 +1107,10 @@ struct Opened {
     /// rasterizer bitmap at `+0x64`, `object_program::OBJECT_LIGHTMAP`),
     /// read at the first lit model: the image when uniform, else why not.
     lightmap: Option<Result<Image, String>>,
+    /// The map's shaders with passes in the sorted handlers' layers
+    /// ([`override_materials`]), each as the materials map of its own
+    /// build, read at the first lit model.
+    overrides: Option<Vec<HashMap<u16, LitMaterial>>>,
 }
 
 fn open(name: &str, palettes: StagePalettes, formats: Option<StreamFormats>) -> Result<Opened, load::Error> {
@@ -1121,8 +1125,56 @@ fn open(name: &str, palettes: StagePalettes, formats: Option<StreamFormats>) -> 
         lib: None,
         normalization: None,
         lightmap: None,
+        overrides: None,
         formats,
     })
+}
+
+const SHAD: map::FourCC = map::FourCC(*b"shad");
+
+/// The shaders the game may put on an object's record in place of its
+/// part's material: every shader of the map with passes (first level of
+/// detail) in the sorted handlers' layers (`OVERRIDE_LAYERS`), the
+/// camouflage's. The record producer takes the shader from the object's
+/// render state at run time (`object_program_gpu::override_sections`), so
+/// each model compiles their passes over all of its parts; a record names
+/// the one it draws. Read once per map, each as the materials map
+/// `{OVERRIDE_MATERIAL: shader}` of its own build, taken out of `o`
+/// (put back by [`lit_parts`]).
+fn override_materials(o: &mut Opened) -> Vec<HashMap<u16, LitMaterial>> {
+    if let Some(found) = o.overrides.take() {
+        return found;
+    }
+    let ids: Vec<TagId> = o.map.tags().iter().filter(|t| t.group == SHAD).map(|t| t.id).collect();
+    let mut found = Vec::new();
+    for id in ids {
+        let Some(m) = material(o, id) else { continue };
+        let drawn = m.layers.iter().any(|l| {
+            l.lod == 0 && !l.passes.is_empty() && OVERRIDE_LAYERS.iter().any(|&x| usize::from(x) == l.layer)
+        });
+        if !drawn {
+            continue;
+        }
+        match lit_material(o, id) {
+            Ok(lit) => found.push(HashMap::from([(OVERRIDE_MATERIAL, lit)])),
+            Err(why) => eprintln!("native-objects: shader {:#010x}'s camouflage passes stay on D3D: {why}", id.0),
+        }
+    }
+    if hooks::native_verbose() {
+        eprintln!("native-objects: {} shaders with camouflage passes compile over every model's parts", found.len());
+    }
+    found
+}
+
+/// Logs, once per shader and layer, why an override shader's passes
+/// ([`override_materials`]) did not compile: its records keep their D3D
+/// draws there.
+fn log_override_refusal(shader: u32, layer: u8, why: &str) {
+    static SEEN: Mutex<Option<HashSet<(u32, u8)>>> = Mutex::new(None);
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if seen.get_or_insert_with(HashSet::new).insert((shader, layer)) {
+        eprintln!("native-objects: shader {shader:#010x}'s layer {layer} stays on D3D: {why} (each shader and layer logged once)");
+    }
 }
 
 fn material(o: &mut Opened, shader: TagId) -> Option<tags::material::Material> {
@@ -1254,6 +1306,7 @@ pub fn drawn_layer(layer: usize) -> bool {
 /// ([`lit_model`]): its vertex programs per section classification read
 /// from the shader tags, its stage bitmaps through the stage decoder.
 fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16, LitMaterial>) -> LitBuild {
+    let overrides = override_materials(o);
     let mut sections = Vec::new();
     // Every detail level: a distant object's records draw a lower one.
     for (si, s) in geo.sections.iter().enumerate() {
@@ -1305,7 +1358,7 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
     // The programs each section's classification takes, read first (the
     // stage decoder borrows the map after).
     let mut programs: HashMap<(TagId, u16, u8), Result<(Vec<u8>, Vec<u16>), String>> = HashMap::new();
-    for lit in materials.values() {
+    for lit in materials.values().chain(overrides.iter().flat_map(|m| m.values())) {
         let vertex_shaders = lit
             .material
             .layers
@@ -1344,6 +1397,7 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
         o.lightmap = Some(l);
     }
     let Some(formats) = o.formats.clone() else {
+        o.overrides = Some(overrides);
         return LitBuild {
             refused: materials.keys().map(|&m| (m, "the game's stream formats do not read".to_string())).collect(),
             ..LitBuild::default()
@@ -1358,10 +1412,28 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
     };
     let engine = EngineStages {
         texaccum: true,
+        // The camouflage handler's layer copies the view
+        // (`native_layers_glue`).
+        view: true,
         normalization: o.normalization.as_ref().is_some_and(Option::is_some),
         lightmap: o.lightmap.clone().and_then(Result::ok),
     };
-    lit_model(&sections, materials, &formats, &engine, &mut vertex, &mut image)
+    let mut build = lit_model(&sections, materials, &formats, &engine, &mut vertex, &mut image);
+    // The override shaders' passes over every part, after the model's own
+    // (a model without a layer-3 part is not loaded, so takes none).
+    if !build.input.parts.is_empty() && !overrides.is_empty() {
+        let every_part = override_sections(&sections);
+        for m in &overrides {
+            let theirs = lit_model(&every_part, m, &formats, &engine, &mut vertex, &mut image);
+            let shader = m[&OVERRIDE_MATERIAL].material.shader.0;
+            for (_, layer, why) in &theirs.layer_refused {
+                log_override_refusal(shader, *layer, why);
+            }
+            build.input.append(theirs.input);
+        }
+    }
+    o.overrides = Some(overrides);
+    build
 }
 
 /// What an object's layer-3 draw samples where its pass reads the
