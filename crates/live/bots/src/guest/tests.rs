@@ -92,6 +92,7 @@ fn perception_finds_the_bot_and_the_living_others() {
             team: 1,
             shield: 0.0,
             health: 0.0,
+            shield_full: 1.0,
             arms: Some(Default::default()),
         })
     );
@@ -107,6 +108,29 @@ fn perception_finds_the_bot_and_the_living_others() {
     // The bot dead: no `me`.
     ps[1].3 = true;
     assert_eq!(perceive(&game(&ps, true), machine(1)).unwrap().me, None);
+}
+
+/// The full shield is `0x1588b0`'s: the variant's shields times the
+/// handicap's factor, so a bot's shield thresholds can read a fraction of it.
+#[test]
+fn the_full_shield_follows_the_variant_and_the_handicap() {
+    let ps = vec![(0, [0.0; 3], X, false), (1, [5.0, 0.0, 0.0], X, false)];
+    let full = |shields: u32, handicap: u8| {
+        let mut g = game(&ps, false);
+        g.put_u32(GAME + GAME_SHIELDS, shields)
+            .put_u8(PLAYERS_DATA + 0x21c + PLAYER_HANDICAP, handicap);
+        g.map(OVERSHIELD_SCALE & !0xfff, 0x1000)
+            .put_f32(OVERSHIELD_SCALE, 3.0);
+        perceive(&g, machine(1)).unwrap().me.unwrap().shield_full
+    };
+    assert_eq!(full(0, 0), 1.0);
+    assert_eq!(full(0, 1), 0.75);
+    assert_eq!(full(0, 2), 0.5);
+    assert_eq!(full(0, 3), 0.25);
+    assert_eq!(full(1, 0), 0.0, "no shields");
+    assert_eq!(full(1, 3), 0.0);
+    assert_eq!(full(2, 0), 3.0, "overshields: the image's scale");
+    assert_eq!(full(2, 3), 0.75);
 }
 
 #[test]

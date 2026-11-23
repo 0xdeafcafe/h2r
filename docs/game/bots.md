@@ -994,6 +994,27 @@ way until the shield is back. Fear sends a bot off on its own only while
 its shield is under the recovery line (0.9); with a full shield a fearful
 bot regroups with a teammate if there is one, else follows its own lead.
 
+**Full shield.** Every shield line in the brain (the recovery lines,
+the fight's back-off and the decision layer's 0.4 to 0.86) reads the
+shield as a fraction of the bot's full shield. The perception reads that
+full shield as `0x1588b0` computes it for a spawn
+(`guest::full_shield`, `Me::shield_full`): the variant's shields (1, 0,
+or `[0x45dbd4]` for overshields) times the handicap's factor (1, 0.75,
+0.5, 0.25). `mind::relative_shield` divides by it, capped at 1, so an
+overshield still reads above 1. In a variant without shields the body's
+vitality stands in for the shield, so the bot still backs off when hurt
+and comes back when healed. With absolute lines, a bot whose full shield
+was under 0.25 was always "shields down". In game
+`09af571f9fec7f1a33ed37edb397a140` the bots carried a handicap of 3 and
+spent the match recovering. The median angle between their walk and their
+aim while firing was 178–180°, so they backpedalled through every fight.
+In game `c9a3aa1a3f867c298a6ae32b56e50399`, with full shields, it was 90°,
+a strafe. `bots.stats` `combat.standing_decisions.recover` shows the time
+spent recovering. The tests are
+`mind::tests::shields_down_is_a_fraction_of_the_full_shield`,
+`without_shields_it_backs_off_on_health_alone` and
+`guest::tests::the_full_shield_follows_the_variant_and_the_handicap`.
+
 Reload (X) and switch weapons (Y) take 5–13 ticks of stable intent,
 depending on skill, then hold 2–4 ticks. Retries are at least 2 s apart
 for reload and 1.3 s for switch. Melee also needs a target in reach and
