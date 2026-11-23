@@ -1105,6 +1105,8 @@ fn a_base_call_the_layout_does_not_allow_is_refused_while_staging() {
 }
 
 #[test]
+// Each block lists its 0xff ranges; most have one.
+#[allow(clippy::single_range_in_vec_init)]
 fn the_inert_row_is_the_kits_spare_form_for_every_block() {
     use ::forge::BlockKind::*;
     // The marks `forge-build`'s `kit.rs` (`Block::entry`) gives a reserved

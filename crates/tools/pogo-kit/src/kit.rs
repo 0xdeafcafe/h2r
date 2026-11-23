@@ -153,7 +153,7 @@ pub fn choose_class(graphs: &[BTreeSet<(String, String)>]) -> Option<(String, St
     }
     first
         .iter()
-        .find(|p| !p.0.is_empty() && !p.1.is_empty() && common(*p))
+        .find(|p| !p.0.is_empty() && !p.1.is_empty() && common(p))
         .cloned()
 }
 
@@ -224,7 +224,7 @@ impl Facts {
         let library = Library::read(map);
         let layout = LAYOUTS
             .into_iter()
-            .find(|l| library.has(*l))
+            .find(|l| library.has(l))
             .with_context(|| {
                 format!(
                     "the map has no shader template the stick draws with ({} or {}, and their default bitmaps)",

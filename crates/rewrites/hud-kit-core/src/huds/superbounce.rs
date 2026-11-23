@@ -903,7 +903,8 @@ mod tests {
         }
         assert_eq!(msg("bounced"), None);
         assert_eq!(msg("under"), None);
-        for m in [MESSAGE_PRIMED] {
+        {
+            let m = MESSAGE_PRIMED;
             assert!(crate::model::message_fault(m).is_none(), "{m}");
             assert!(m.len() <= MESSAGE_LONGEST.len(), "{m}");
         }
