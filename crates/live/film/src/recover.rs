@@ -28,7 +28,7 @@ use crate::{
     Entry, HEAD, HASH, KEYF, MARK, Reader, Tag, Writer,
     blam::{self, MatchHeader, Summary, TidxBlock, TidxDirectory},
     range,
-    tape::{Call, Check, Mark},
+    tape::{Check, Mark},
     xbe_digest,
 };
 use anyhow::{Context, Result, ensure};
@@ -130,7 +130,7 @@ pub fn recover_tape(path: &Path) -> Result<bool> {
                 Ok(Mark::Lobby { .. }) => entry.offset < mark_offset,
                 _ => false,
             },
-            t if crate::tape::CALL_STREAMS.contains(&t) => entry.offset < mark_offset,
+            crate::tape::TAPE => entry.offset < mark_offset,
             KEYF => crate::read_bytes(&mut source, entry, crate::MAX_CHUNK)
                 .ok()
                 .and_then(|raw| range::key_tick(&raw).ok())
@@ -149,15 +149,16 @@ pub fn recover_tape(path: &Path) -> Result<bool> {
     // first taped call after the mark names the call count at the end.
     let mut calls = 0;
     for entry in rest.iter().filter(|e| e.offset > mark_offset) {
-        if crate::tape::CALL_STREAMS.contains(&entry.tag) {
-            let batch: Vec<Call> = crate::decode(&mut source, entry)?;
+        if entry.tag == crate::tape::TAPE {
+            let batch = crate::tape::decode_batch(&crate::read_bytes(&mut source, entry, crate::MAX_CHUNK)?)?;
             calls = batch.first().context("an empty film call batch")?.index;
             break;
         }
     }
     if calls == 0 {
-        for entry in kept.iter().filter(|e| crate::tape::CALL_STREAMS.contains(&e.tag)) {
-            if let Some(last) = crate::decode::<_, Vec<Call>>(&mut source, entry)?.last() {
+        for entry in kept.iter().filter(|e| e.tag == crate::tape::TAPE) {
+            let batch = crate::tape::decode_batch(&crate::read_bytes(&mut source, entry, crate::MAX_CHUNK)?)?;
+            if let Some(last) = batch.last() {
                 calls = last.index + 1;
             }
         }

@@ -1,7 +1,7 @@
 //! `h2 film stat FILE`: the keyframes and capture points a seeking player
 //! has, plus the size and operation mix of its HLE tape.
 use anyhow::{Context, Result, ensure};
-use film::tape::{BOTR, CALL_STREAMS, Call, Mark, PDEV};
+use film::tape::{BOTR, CALL_STREAMS, Call, Mark, PDEV, TAPE, decode_batch, encode_batch, stream_of};
 use std::{
     collections::BTreeMap,
     fmt::Write as _,
@@ -82,6 +82,7 @@ pub fn stat(path: &Path) -> Result<String> {
 
     let mut barriers = Vec::new();
     let mut streams = BTreeMap::<film::Tag, StreamStat>::new();
+    let mut tape = StreamStat::default();
     let entries: Vec<_> = reader.machine_section().entries().cloned().collect();
     for entry in entries {
         match entry.tag {
@@ -95,23 +96,34 @@ pub fn stat(path: &Path) -> Result<String> {
                     barriers.push((tick, slices, saved));
                 }
             }
-            tag if CALL_STREAMS.contains(&tag) || matches!(tag, PDEV | BOTR) => {
+            TAPE => {
                 let raw = reader.read_bytes(&entry)?;
-                let stream = streams.entry(tag).or_default();
+                tape.chunks += 1;
+                tape.stored += u64::from(entry.size) + 8;
+                tape.inflated += raw.len() as u64;
+                // Decode one batch at a time and retain only the operation
+                // names, counts and sizes. The report contains no call
+                // arguments or outputs.
+                for call in decode_batch(&raw)
+                    .with_context(|| format!("invalid tape batch at {}", entry.offset))?
+                {
+                    tape.calls += 1;
+                    let stream = streams.entry(stream_of(&call.op)).or_default();
+                    stream.calls += 1;
+                    stream.json += serde_json::to_vec(&call)?.len() as u64 + 1;
+                    *stream.ops.entry(call.op.clone()).or_default() += 1;
+                    stream.pending.push(call);
+                    if stream.pending.len() == 128 {
+                        stream.flush()?;
+                    }
+                }
+            }
+            PDEV | BOTR => {
+                let raw = reader.read_bytes(&entry)?;
+                let stream = streams.entry(entry.tag).or_default();
                 stream.chunks += 1;
                 stream.stored += u64::from(entry.size) + 8;
                 stream.inflated += raw.len() as u64;
-                if CALL_STREAMS.contains(&tag) {
-                    // Decode one batch at a time and retain only the operation
-                    // names and counts. The report contains no call arguments
-                    // or outputs.
-                    for call in serde_json::from_slice::<Vec<Call>>(&raw)
-                        .with_context(|| format!("invalid tape batch at {}", entry.offset))?
-                    {
-                        stream.calls += 1;
-                        *stream.ops.entry(call.op).or_default() += 1;
-                    }
-                }
             }
             _ => {}
         }
@@ -127,17 +139,37 @@ pub fn stat(path: &Path) -> Result<String> {
         writeln!(out, "d3d_barrier tick={tick} slices={slices} saved={saved}")?;
     }
     writeln!(out, "tape: stored bytes include the 8-byte chunk prefix")?;
-    for tag in CALL_STREAMS.into_iter().chain([PDEV, BOTR]) {
-        let stream = streams.remove(&tag).unwrap_or_default();
+    writeln!(
+        out,
+        "TAPE calls={} inflated={} stored={} chunks={}",
+        tape.calls, tape.inflated, tape.stored, tape.chunks,
+    )?;
+    writeln!(
+        out,
+        "streams: json is the bytes of the stream's calls in the JSON encoding, \
+         binary the same calls in the binary one, in batches of 128"
+    )?;
+    for tag in CALL_STREAMS {
+        let mut stream = streams.remove(&tag).unwrap_or_default();
+        stream.flush()?;
         let name = std::str::from_utf8(&tag)?;
         writeln!(
             out,
-            "{name} calls={} inflated={} stored={} chunks={}",
-            stream.calls, stream.inflated, stream.stored, stream.chunks,
+            "{name} calls={} json={} binary={}",
+            stream.calls, stream.json, stream.binary,
         )?;
         for (op, count) in stream.ops {
             writeln!(out, "  {} calls={count}", serde_json::to_string(&op)?)?;
         }
+    }
+    for tag in [PDEV, BOTR] {
+        let stream = streams.remove(&tag).unwrap_or_default();
+        let name = std::str::from_utf8(&tag)?;
+        writeln!(
+            out,
+            "{name} calls=0 inflated={} stored={} chunks={}",
+            stream.inflated, stream.stored, stream.chunks,
+        )?;
     }
     Ok(out)
 }
@@ -148,7 +180,21 @@ struct StreamStat {
     stored: u64,
     inflated: u64,
     calls: u64,
+    json: u64,
+    binary: u64,
+    pending: Vec<Call>,
     ops: BTreeMap<String, u64>,
+}
+
+impl StreamStat {
+    /// Count the pending calls as one binary batch.
+    fn flush(&mut self) -> Result<()> {
+        if !self.pending.is_empty() {
+            self.binary += encode_batch(&self.pending)?.len() as u64;
+            self.pending.clear();
+        }
+        Ok(())
+    }
 }
 
 /// An unfinished film has no TIDX yet: read each KEYF's tick from its

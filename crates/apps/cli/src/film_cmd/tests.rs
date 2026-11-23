@@ -215,9 +215,10 @@ fn film_stat_counts_tape_batches_bytes_and_operations() {
     let first = vec![call(1, "Select"), call(2, "Htonl")];
     let pad = vec![call(3, "XInputGetState")];
     let second = vec![call(4, "Select")];
-    out.chunk(film::NETR, &first).unwrap();
-    out.chunk(film::tape::PADR, &pad).unwrap();
-    out.chunk(film::NETR, &second).unwrap();
+    // One batch holds pad and socket calls in call order.
+    let all: Vec<Call> = first.iter().chain(&pad).chain(&second).cloned().collect();
+    out.chunk_bytes(film::tape::TAPE, &film::tape::encode_batch(&all).unwrap())
+        .unwrap();
     out.chunk(
         PDEV,
         &film::tape::PortChange {
@@ -228,33 +229,41 @@ fn film_stat_counts_tape_batches_bytes_and_operations() {
     .unwrap();
     let bytes = out.finish().unwrap().into_inner();
     let reader = film::Reader::new(Cursor::new(&bytes)).unwrap();
-    let stored = |tag| {
-        reader
-            .entries
+    let stored: u64 = reader
+        .entries
+        .iter()
+        .filter(|e| e.tag == film::tape::TAPE)
+        .map(|e| u64::from(e.size) + 8)
+        .sum();
+    let json = |batch: &[Call]| -> u64 {
+        batch
             .iter()
-            .filter(|e| e.tag == tag)
-            .map(|e| u64::from(e.size) + 8)
-            .sum::<u64>()
+            .map(|c| serde_json::to_vec(c).unwrap().len() as u64 + 1)
+            .sum()
     };
-    let inflated = |batch: &[Call]| serde_json::to_vec(batch).unwrap().len();
+    let binary = |batch: &[Call]| film::tape::encode_batch(batch).unwrap().len();
     let net = format!(
-        "NETR calls=3 inflated={} stored={} chunks=2\n  \"Htonl\" calls=1\n  \"Select\" calls=2\n",
-        inflated(&first) + inflated(&second),
-        stored(film::NETR),
+        "NETR calls=3 json={} binary={}\n  \"Htonl\" calls=1\n  \"Select\" calls=2\n",
+        json(&first) + json(&second),
+        binary(&[first.clone(), second.clone()].concat()),
     );
     let pad = format!(
-        "PADR calls=1 inflated={} stored={} chunks=1\n  \"XInputGetState\" calls=1\n",
-        inflated(&pad),
-        stored(film::tape::PADR),
+        "PADR calls=1 json={} binary={}\n  \"XInputGetState\" calls=1\n",
+        json(&pad),
+        binary(&pad),
     );
     let report = stat_bytes(bytes);
     assert!(report.contains("source: local"), "{report}");
-    assert!(report.contains(&net), "{report}");
-    assert!(report.contains(&pad), "{report}");
     assert!(
-        report.contains("RAND calls=0 inflated=0 stored=0 chunks=0"),
+        report.contains(&format!(
+            "TAPE calls=4 inflated={} stored={stored} chunks=1\n",
+            binary(&all)
+        )),
         "{report}"
     );
+    assert!(report.contains(&net), "{report}");
+    assert!(report.contains(&pad), "{report}");
+    assert!(report.contains("RAND calls=0 json=0 binary=0"), "{report}");
     assert!(report.contains("PDEV calls=0 inflated="), "{report}");
     assert!(!report.contains("outputs"), "{report}");
 }
