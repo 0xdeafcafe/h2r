@@ -27,8 +27,31 @@ pub const GLOW: Glow = Glow {
 /// `INACTIVE_ALPHA`).
 pub const DIM_ALPHA: f32 = 0.5;
 pub const INACTIVE_ALPHA: f32 = 0.7;
-/// A label sits this far over its mark's point.
-pub const LABEL_RAISE: f32 = 0.25;
+/// A label sits this far under its mark's point: below the box, not
+/// over the ring and chevron the game's navpoint draws above the seam.
+pub const LABEL_DROP: f32 = 0.25;
+/// Marks whose points lie within this of each other (world units) are
+/// one seam's: only the first of them with a label keeps it.
+pub const SEAM_RADIUS: f32 = 0.75;
+
+/// A block of the screen the HUD's text lies in, as fractions of the
+/// frame (0 to 1, y down): `[left, top, right, bottom]`.
+pub type Block = [f32; 4];
+/// The HUD's top-left block (notifications, the loss line) and
+/// bottom-left block (the superbounce readout): a world label that
+/// projects into one is left out, as it would run under HUD text.
+pub const HUD_BLOCKS: [Block; 2] = [[0.0, 0.0, 0.42, 0.22], [0.0, 0.70, 0.42, 1.0]];
+
+/// Whether a label centred at `screen` (fractions of the frame, y down)
+/// would lie under the HUD's text ([`HUD_BLOCKS`]). The window's world-line
+/// pass, which projects the anchors, asks it for each label; a label
+/// off the frame is not under anything.
+pub fn label_under_hud(screen: [f32; 2]) -> bool {
+    screen.iter().all(|v| v.is_finite())
+        && HUD_BLOCKS.iter().any(|b| {
+            screen[0] >= b[0] && screen[0] <= b[2] && screen[1] >= b[1] && screen[1] <= b[3]
+        })
+}
 /// The labels' size: a font pixel is a HUD pixel (`LabelFace::Hud` at 2).
 pub const LABEL_SCALE: f32 = 2.0;
 
@@ -71,8 +94,11 @@ pub fn colour(style: Style, hud: [f32; 3], teams: &Teams) -> ([f32; 3], f32) {
 /// The lines of `marks` in the HUD colour `hud` and the team colours
 /// `teams`, labels in `face`. A mark
 /// whose shape gives no lines at its pose, or whose strength is 0, is
-/// left out.
+/// left out. A seam has one label: of the marks within [`SEAM_RADIUS`]
+/// of each other only the first with a label keeps it, below its point
+/// ([`LABEL_DROP`]).
 pub fn lines(marks: &[MarkNow], hud: [f32; 3], teams: &Teams, face: LabelFace) -> Vec<MarkLines> {
+    let mut labelled: Vec<Vec3> = Vec::new();
     marks
         .iter()
         .filter_map(|m| {
@@ -83,12 +109,20 @@ pub fn lines(marks: &[MarkNow], hud: [f32; 3], teams: &Teams, face: LabelFace) -
             }
             let (color, alpha) = colour(m.style, hud, teams);
             let at = m.pose.at;
+            let mut label = Some(m.label.clone()).filter(|l| !l.is_empty());
+            if label.is_some() {
+                if labelled.iter().any(|p| near(*p, at)) {
+                    label = None;
+                } else {
+                    labelled.push(at);
+                }
+            }
             Some(MarkLines {
                 id: m.id,
                 edges,
-                anchor: [at[0], at[1], at[2] + LABEL_RAISE],
+                anchor: [at[0], at[1], at[2] - LABEL_DROP],
                 color,
-                label: Some(m.label.clone()).filter(|l| !l.is_empty()),
+                label,
                 style: LineStyle {
                     width: WIDTH,
                     alpha: alpha * strength,
@@ -101,6 +135,12 @@ pub fn lines(marks: &[MarkNow], hud: [f32; 3], teams: &Teams, face: LabelFace) -
             })
         })
         .collect()
+}
+
+/// Whether two points are one seam's.
+fn near(a: Vec3, b: Vec3) -> bool {
+    let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= SEAM_RADIUS * SEAM_RADIUS
 }
 
 /// Registers the kit's world-line source before boot (windowed hosts).
@@ -213,7 +253,7 @@ mod tests {
         assert_eq!(out[1].color, GO_GREEN);
         assert_eq!(out[1].style.alpha, 0.5);
         assert_eq!(out[1].label.as_deref(), Some("Will bounce"));
-        assert_eq!(out[1].anchor, [1.0, 2.0, 3.0 + LABEL_RAISE]);
+        assert_eq!(out[1].anchor, [1.0, 2.0, 3.0 - LABEL_DROP]);
         assert_eq!((out[2].color, out[2].style.alpha), (HUD, DIM_ALPHA));
         assert_eq!(out[2].edges.len(), 3);
     }
@@ -234,6 +274,57 @@ mod tests {
         assert!(none.is_empty());
         let (grey, alpha) = colour(Style::Inactive, HUD, &NO_TEAMS);
         assert!(grey[0] == grey[1] && grey[1] == grey[2] && alpha == INACTIVE_ALPHA);
+    }
+
+    /// A seam has one label, below its point: of marks on one seam the
+    /// first with a label keeps it, the others' are left off; a mark
+    /// on another seam keeps its own.
+    #[test]
+    fn a_seam_has_one_label_below_the_box() {
+        let seam = Pose::at([0.0, 0.0, 1.0], [0.3, 0.1]).heading([1.0, 0.0]);
+        let near_by = Pose::at([0.2, 0.1, 1.0], [0.06, 0.0]);
+        let far = Pose::at([5.0, 0.0, 1.0], [0.3, 0.1]).heading([1.0, 0.0]);
+        let out = lines(
+            &[
+                mark(Shape::Bracket, Style::Normal, "Jump now", seam),
+                mark(Shape::Pipper, Style::Normal, "Land, 7 m", near_by),
+                mark(Shape::Bracket, Style::Normal, "Too shallow", far),
+            ],
+            HUD,
+            &NO_TEAMS,
+            LabelFace::Hud,
+        );
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].label.as_deref(), Some("Jump now"));
+        assert_eq!(out[0].anchor[2], 1.0 - LABEL_DROP, "below the box");
+        assert_eq!(out[1].label, None, "the seam's second label is left off");
+        assert_eq!(out[2].label.as_deref(), Some("Too shallow"));
+        // A labelless mark does not take the seam's label.
+        let out = lines(
+            &[
+                mark(Shape::Pipper, Style::Normal, "", near_by),
+                mark(Shape::Bracket, Style::Normal, "Walk to line", seam),
+            ],
+            HUD,
+            &NO_TEAMS,
+            LabelFace::Hud,
+        );
+        assert_eq!(out[1].label.as_deref(), Some("Walk to line"));
+    }
+
+    /// A label that projects into the HUD's top-left or bottom-left block
+    /// is left out; the middle, the right and a label off the frame are
+    /// not under it.
+    #[test]
+    fn a_label_under_the_huds_corners_is_left_out() {
+        assert!(label_under_hud([0.1, 0.05]), "top left");
+        assert!(label_under_hud([0.3, 0.9]), "bottom left");
+        assert!(!label_under_hud([0.5, 0.5]));
+        assert!(!label_under_hud([0.9, 0.9]), "bottom right");
+        assert!(!label_under_hud([0.9, 0.05]), "top right");
+        assert!(!label_under_hud([0.1, 0.45]), "left, between the blocks");
+        assert!(!label_under_hud([-0.5, 0.9]), "off the frame");
+        assert!(!label_under_hud([f32::NAN, 0.9]));
     }
 
     // ---- K5: team colours and lines ----
