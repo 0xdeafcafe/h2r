@@ -138,7 +138,9 @@ impl MapHeader {
         if name.is_empty() {
             return Err("the map has no name".into());
         }
-        let kind = map::CacheType::from(u32::from_le_bytes(h[0x140..0x144].try_into().unwrap_or_default()));
+        let kind = map::CacheType::from(u32::from_le_bytes(
+            h[0x140..0x144].try_into().unwrap_or_default(),
+        ));
         Ok(MapHeader {
             name,
             kind,
@@ -246,10 +248,20 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// `dir/<map>.<bsp>.bots`, BSP 0 last: once it is there, so are the rest.
 /// Each BSP's visibility grid, when it has one, goes first, to
 /// `dir/<map>.<bsp>.vis` (`crate::vis`). Returns the `.bots` paths.
-pub fn write_map(dir: &Path, map: &str, fingerprint: u64, bsps: &[MapData]) -> std::io::Result<Vec<PathBuf>> {
+pub fn write_map(
+    dir: &Path,
+    map: &str,
+    fingerprint: u64,
+    bsps: &[MapData],
+) -> std::io::Result<Vec<PathBuf>> {
     std::fs::create_dir_all(dir)?;
     let stamp = Stamp::now(fingerprint);
-    let order = || bsps.iter().enumerate().skip(1).chain(bsps.iter().enumerate().take(1));
+    let order = || {
+        bsps.iter()
+            .enumerate()
+            .skip(1)
+            .chain(bsps.iter().enumerate().take(1))
+    };
     for (k, d) in order() {
         if let Some(v) = d.walls.vis() {
             write_atomic(&dir.join(crate::vis::file_name(map, k)), &v.to_bytes(stamp))?;
@@ -312,9 +324,14 @@ fn build_map_with<R: Read + Seek>(
         let v = TagView::new(&b, loc.address);
         let h = v.at(0, 0x200).map_err(|x| e(&x))?;
         let coll = v
-            .block(h, tags::pathfinding::SBSP_COLLISION_FIELD, tags::collision::Bsp::STRUCTURE_SIZE)
+            .block(
+                h,
+                tags::pathfinding::SBSP_COLLISION_FIELD,
+                tags::collision::Bsp::STRUCTURE_SIZE,
+            )
             .map_err(|x| e(&x))?;
-        let at = coll.first().ok_or("a BSP has no collision")?.as_ptr() as usize - b.as_ptr() as usize;
+        let at =
+            coll.first().ok_or("a BSP has no collision")?.as_ptr() as usize - b.as_ptr() as usize;
         let bsp = tags::collision::Bsp::decode_structure(&b, loc.address, at).map_err(|x| e(&x))?;
         let mut data = cache::build_with(&bsp, threads)?;
         link_and_mark(&mut data, &placements, &starts, &pads);
@@ -405,6 +422,12 @@ pub trait Source: Send {
     fn spots(&mut self) -> Option<Result<Vec<superbounce::Spot>, String>> {
         None
     }
+    /// The map's floor polygons ([`crate::spots::read_floors`]), read on
+    /// every visit: the scan's file does not keep them. `None` for a
+    /// source that does not read them.
+    fn floors(&mut self) -> Option<Result<Vec<superbounce::Poly>, String>> {
+        None
+    }
 }
 
 /// A readable, seekable map stream.
@@ -445,7 +468,11 @@ impl Region {
             key,
             0,
             len,
-            Box::new(move || Ok(Box::new(std::io::BufReader::new(std::fs::File::open(&path)?)))),
+            Box::new(move || {
+                Ok(Box::new(std::io::BufReader::new(std::fs::File::open(
+                    &path,
+                )?)))
+            }),
         )
     }
 }
@@ -461,9 +488,11 @@ impl Source for Region {
             return Err("the map region has no complete header".into());
         }
         let mut r = (self.open)().map_err(|e| e.to_string())?;
-        r.seek(SeekFrom::Start(self.base)).map_err(|e| e.to_string())?;
+        r.seek(SeekFrom::Start(self.base))
+            .map_err(|e| e.to_string())?;
         let mut h = vec![0u8; MAP_HEADER_LEN];
-        r.read_exact(&mut h).map_err(|e| format!("reading the header: {e}"))?;
+        r.read_exact(&mut h)
+            .map_err(|e| format!("reading the header: {e}"))?;
         // Keep the opened source for both digest and build. Replacing a
         // map's directory entry cannot change which bytes this job uses.
         self.reader = Some(r);
@@ -507,9 +536,20 @@ impl Source for Region {
                 Some(r) => r,
                 None => (self.open)().map_err(|e| e.to_string())?,
             };
-            let mut map = map::Map::from_region(r, self.base, self.len).map_err(|e| e.to_string())?;
+            let mut map =
+                map::Map::from_region(r, self.base, self.len).map_err(|e| e.to_string())?;
             let bsps = bsp_count(&mut map)?;
             crate::spots::scan(&mut map, bsps)
+        })())
+    }
+
+    fn floors(&mut self) -> Option<Result<Vec<superbounce::Poly>, String>> {
+        Some((|| {
+            let r = (self.open)().map_err(|e| e.to_string())?;
+            let mut map =
+                map::Map::from_region(r, self.base, self.len).map_err(|e| e.to_string())?;
+            let bsps = bsp_count(&mut map)?;
+            crate::spots::read_floors(&mut map, bsps)
         })())
     }
 }
@@ -546,19 +586,24 @@ impl Queue {
     }
 
     fn push_for(&mut self, source: Box<dyn Source>, generation: Option<u64>) {
-        if generation.is_none() && self.jobs.iter().any(|job| {
-            job.generation.is_some() && job.source.key().eq_ignore_ascii_case(source.key())
-        }) {
+        if generation.is_none()
+            && self.jobs.iter().any(|job| {
+                job.generation.is_some() && job.source.key().eq_ignore_ascii_case(source.key())
+            })
+        {
             return;
         }
-        self.jobs.retain(|job| !job.source.key().eq_ignore_ascii_case(source.key()));
+        self.jobs
+            .retain(|job| !job.source.key().eq_ignore_ascii_case(source.key()));
         self.jobs.push_back(Job { source, generation });
     }
 
     /// Moves the sources keyed `name` to the front.
     pub fn prioritise(&mut self, name: &str) {
-        let (mut front, back): (VecDeque<_>, VecDeque<_>) =
-            self.jobs.drain(..).partition(|job| job.source.key().eq_ignore_ascii_case(name));
+        let (mut front, back): (VecDeque<_>, VecDeque<_>) = self
+            .jobs
+            .drain(..)
+            .partition(|job| job.source.key().eq_ignore_ascii_case(name));
         front.extend(back);
         self.jobs = front;
     }
@@ -568,7 +613,10 @@ impl Queue {
     }
 
     pub fn keys(&self) -> Vec<String> {
-        self.jobs.iter().map(|job| job.source.key().to_owned()).collect()
+        self.jobs
+            .iter()
+            .map(|job| job.source.key().to_owned())
+            .collect()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -624,7 +672,11 @@ impl Handle {
                 queued.generation = generation;
             }
         } else {
-            w.maps.push_back(Request { name: map.to_owned(), path, generation });
+            w.maps.push_back(Request {
+                name: map.to_owned(),
+                path,
+                generation,
+            });
         }
         self.0.wake.notify_all();
     }
@@ -792,12 +844,18 @@ impl Worker {
                         q.push(s);
                     }
                 }
-                if let Some(src) = self.lookup.as_mut().and_then(|lookup| lookup(&w.name, w.path.as_deref()))
+                if let Some(src) = self
+                    .lookup
+                    .as_mut()
+                    .and_then(|lookup| lookup(&w.name, w.path.as_deref()))
                     && played(src.as_ref())
                 {
                     q.push_for(src, w.generation);
                 } else if w.generation.is_some() {
-                    (self.log)(&format!("bots: {}: active map source unavailable; walking without a mesh", w.name));
+                    (self.log)(&format!(
+                        "bots: {}: active map source unavailable; walking without a mesh",
+                        w.name
+                    ));
                 }
                 q.prioritise(&w.name);
             }
@@ -832,7 +890,10 @@ impl Worker {
     }
 
     fn one(&mut self, job: Job, sum: &mut Summary) {
-        let Job { source: mut src, generation } = job;
+        let Job {
+            source: mut src,
+            generation,
+        } = job;
         let read_header = timeline::setup::Stage::Nav.worker();
         let key = src.key().to_owned();
         let header = match src.header().and_then(|h| MapHeader::parse(&h)) {
@@ -857,7 +918,8 @@ impl Worker {
         let stamp = Stamp::now(header.fingerprint);
         let mut status = status(&self.dir, &header.name, header.fingerprint);
         drop(read_header);
-        if !status.stale() && !self.force
+        if !status.stale()
+            && !self.force
             && let Some(generation) = generation
             && let Err(found) = load_cached(&self.dir, &header.name, generation, Some(stamp))
         {
@@ -911,7 +973,11 @@ impl Worker {
                     d.nav.out_of_map_count(),
                     d.nav.edges.len(),
                     d.walls.tris.len(),
-                    if bsps.len() > 1 { format!(", {} BSPs", bsps.len()) } else { String::new() },
+                    if bsps.len() > 1 {
+                        format!(", {} BSPs", bsps.len())
+                    } else {
+                        String::new()
+                    },
                     t.elapsed().as_secs_f32()
                 ));
                 self.publish_build(&header.name, d, generation);
@@ -924,7 +990,10 @@ impl Worker {
                 self.grids(&header.name, crate::vis::Status::Missing, sum, false, None);
             }
             Err(e) => {
-                (self.log)(&format!("bots: nav mesh for {} not built: {e}", header.name));
+                (self.log)(&format!(
+                    "bots: nav mesh for {} not built: {e}",
+                    header.name
+                ));
                 sum.failed.push(header.name);
             }
         }
@@ -936,6 +1005,7 @@ impl Worker {
     /// data when that is the scan the map and scanner are at, else
     /// scanned and saved ([`crate::spots`]). Published either way.
     fn keep_spots(&mut self, src: &mut dyn Source, name: &str, fingerprint: u64) {
+        self.keep_floors(src, name);
         let stamp = crate::spots::stamp(fingerprint);
         if !self.force
             && let Some(found) = crate::spots::read(&self.dir, name, stamp)
@@ -962,6 +1032,18 @@ impl Worker {
                 self.save_spots(name, stamp, &[]);
                 crate::spots::publish(name, Vec::new());
             }
+        }
+    }
+
+    /// The map's floor polygons, read and published
+    /// ([`crate::spots::publish_floors`]) on every visit.
+    fn keep_floors(&mut self, src: &mut dyn Source, name: &str) {
+        let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| src.floors()))
+            .unwrap_or_else(|_| Some(Err("reading the floors panicked".into())));
+        match read {
+            None => {}
+            Some(Ok(floors)) => crate::spots::publish_floors(name, floors),
+            Some(Err(e)) => (self.log)(&format!("bots: floors of {name} not read: {e}")),
         }
     }
 
@@ -1008,7 +1090,10 @@ impl Worker {
             let w = shared.wants.lock().unwrap_or_else(|e| e.into_inner());
             // A pick for this same map can wait. A real load also needs
             // its mesh published, even when a speculative grid is running.
-            w.stop || w.maps.iter().any(|r| r.generation.is_some() || !r.name.eq_ignore_ascii_case(map))
+            w.stop
+                || w.maps
+                    .iter()
+                    .any(|r| r.generation.is_some() || !r.name.eq_ignore_ascii_case(map))
         };
         let cache = self.shared_dir();
         let result = match prepared {
@@ -1089,14 +1174,22 @@ impl Loaded {
     }
 
     pub fn accepts(&self, map: &str, generation: u64) -> bool {
-        !self.name.is_empty() && self.generation == generation && self.name.eq_ignore_ascii_case(map)
+        !self.name.is_empty()
+            && self.generation == generation
+            && self.name.eq_ignore_ascii_case(map)
     }
 }
 
-static LOADED: Mutex<Loaded> = Mutex::new(Loaded { name: String::new(), generation: 0 });
+static LOADED: Mutex<Loaded> = Mutex::new(Loaded {
+    name: String::new(),
+    generation: 0,
+});
 
 fn current_load(map: &str, generation: u64) -> bool {
-    LOADED.lock().unwrap_or_else(|e| e.into_inner()).accepts(map, generation)
+    LOADED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .accepts(map, generation)
 }
 
 /// Clear the active map and return the load generation and retired data.
@@ -1113,7 +1206,11 @@ pub fn map_loaded(map: &str) -> (u64, Option<Arc<MapData>>) {
 
 /// The loaded map's short name (empty: none).
 pub fn loaded() -> String {
-    LOADED.lock().unwrap_or_else(|e| e.into_inner()).name.clone()
+    LOADED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .name
+        .clone()
 }
 
 /// Clone the loaded name only when the caller has a different name.
@@ -1192,7 +1289,11 @@ pub fn load_cached(
     let (data, stamp) = {
         let _stage = timeline::setup::Stage::Nav.worker();
         let bytes = std::fs::read(dir.join(cache::file_name(map, 0))).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound { Status::Missing } else { Status::Damaged }
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Status::Missing
+            } else {
+                Status::Damaged
+            }
         })?;
         let (data, stamp) = decode_cached(&bytes, expected)?;
         (Arc::new(data), stamp)
@@ -1200,7 +1301,9 @@ pub fn load_cached(
     if offer(map, Arc::clone(&data), generation) {
         eprintln!(
             "bots: {map}: {} polygons, {} links, {} wall triangles",
-            data.nav.polys.len(), data.nav.edges.len(), data.walls.tris.len(),
+            data.nav.polys.len(),
+            data.nav.edges.len(),
+            data.walls.tris.len(),
         );
         let _stage = timeline::setup::Stage::Visibility.worker();
         eprintln!("{}", crate::vis::load(dir, map, 0, stamp, &data.walls));
@@ -1208,9 +1311,14 @@ pub fn load_cached(
         // worker to restore them (sim mode never starts one): published
         // when the file is this map's and this scanner's.
         if !crate::spots::has_scan(map)
-            && let Some(found) = crate::spots::read(dir, map, crate::spots::stamp(stamp.fingerprint))
+            && let Some(found) =
+                crate::spots::read(dir, map, crate::spots::stamp(stamp.fingerprint))
         {
-            eprintln!("bots: {map}: {} superbounce spots from {}", found.len(), crate::spots::file_name(map));
+            eprintln!(
+                "bots: {map}: {} superbounce spots from {}",
+                found.len(),
+                crate::spots::file_name(map)
+            );
             crate::spots::publish(map, found);
         }
     }
@@ -1241,11 +1349,16 @@ pub fn offer_vis(map: &str, vis: Arc<crate::vis::Vis>) -> bool {
         if loaded.name.is_empty() || !loaded.name.eq_ignore_ascii_case(map) {
             return false;
         }
-        let Some(data) = cache::current() else { return false };
+        let Some(data) = cache::current() else {
+            return false;
+        };
         drop(loaded);
         let fits = vis.fits(&data.walls);
         loaded = LOADED.lock().unwrap_or_else(|e| e.into_inner());
-        if cache::current().as_ref().is_some_and(|active| Arc::ptr_eq(active, &data)) {
+        if cache::current()
+            .as_ref()
+            .is_some_and(|active| Arc::ptr_eq(active, &data))
+        {
             let installed = fits && data.walls.set_vis(vis);
             drop(loaded);
             return installed;
@@ -1266,7 +1379,10 @@ pub struct RunningWorker(Handle);
 impl Drop for RunningWorker {
     fn drop(&mut self) {
         let mut active = HANDLE.lock().unwrap_or_else(|e| e.into_inner());
-        if active.as_ref().is_some_and(|h| Arc::ptr_eq(&h.0, &self.0.0)) {
+        if active
+            .as_ref()
+            .is_some_and(|h| Arc::ptr_eq(&h.0, &self.0.0))
+        {
             active.take();
         }
         self.0.stop();
@@ -1275,7 +1391,11 @@ impl Drop for RunningWorker {
 
 /// Publishes the worker of the current boot.
 pub fn set_handle(h: Handle) -> RunningWorker {
-    if let Some(old) = HANDLE.lock().unwrap_or_else(|e| e.into_inner()).replace(h.clone()) {
+    if let Some(old) = HANDLE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .replace(h.clone())
+    {
         old.stop();
     }
     RunningWorker(h)

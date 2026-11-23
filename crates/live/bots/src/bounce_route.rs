@@ -29,41 +29,66 @@ use crate::mind::RouteMotion;
 use crate::nav::RouteWalk;
 use crate::spots::{Crouch, Known, Site, dist_xy};
 use crate::tuning::BounceTuning;
-use superbounce::flight;
+use std::sync::Arc;
+
 use superbounce::learned::{How, Knobs};
+use superbounce::{Poly, flight, rule};
 
 pub mod chain;
 
 // ---- the map's walks and launch floors ----
 
 /// How far sideways (world units) a launch floor may be from the slot it
-/// drops onto. **[guess]**: a 2.4-unit drop takes about a second, and the
-/// stick moves a bot about 2.5 units a second in the air.
+/// drops onto: room for the air stick to bring the fall back to the edge.
 pub const LEDGE_REACH: f32 = 3.0;
-/// A launch floor is at most this much (world units) under the drop
-/// height, and at most [`LEDGE_OVER`] over it.
-pub const LEDGE_UNDER: f32 = 0.2;
-pub const LEDGE_OVER: f32 = 2.5;
+
+/// The drop every takeoff aims for: from the flight's apex to the target,
+/// origin to origin
+/// (`superbounce::rule::DROP_BEST`). The sweep's one tick then comes as
+/// the body reaches the floor (docs/game/superbounce.md, "The bounce
+/// rule").
+pub const DROP_AIM: f32 = rule::DROP_BEST;
+/// The landing aims this near (world units) a floor-polygon edge, or
+/// nearer.
+pub const EDGE_AIM: f32 = 0.05;
+/// A target farther than [`EDGE_AIM`] from its floor's nearest edge is
+/// moved toward the edge to this far from it.
+pub const EDGE_HOLD: f32 = 0.02;
+/// The drift (world units a second) a takeoff holds across the edge it
+/// lands by: 0.30 leaves +13.0, a full launch (`rule::DRIFT_FULL`, 0.15,
+/// is the least that launches fully).
+pub const DRIFT_ACROSS: f32 = 0.3;
+/// The floor polygons within this (world units, sideways) of a target
+/// are the ones [`judge_takeoff`] steps over.
+pub const FLOOR_REACH: f32 = 3.0;
+/// [`judge_takeoff`] flies the takeoff on the flight model to the row
+/// this far (world units) over the target, then hands the rest of the
+/// fall to the bounce rule.
+pub const JUDGE_OVER: f32 = 0.6;
+
+/// How far a running jump's apex is over the floor it leaves: the
+/// flight model's top for [`JUMP_VZ`], about 1.1.
+pub fn jump_rise() -> f32 {
+    flight::apex(0.0, JUMP_VZ)
+}
 
 /// A launch floor for a site that needs a drop: the nav mesh's point
-/// nearest the site's target sideways, within [`LEDGE_REACH`], whose floor
-/// is the drop height over the target, to [`LEDGE_UNDER`] below and
-/// [`LEDGE_OVER`] above it. A site with no measured drop
-/// ([`Site::drop_known`]) takes the speed model's drop instead, the one
-/// that touches down at the threshold every seam shares
-/// (`superbounce::speed::fall`), for the training's drops to try. A V's
-/// arm ([`Site::arm`]) is dropped onto from the side it is approached
-/// from: the search is moved half its reach that way, with half the
-/// reach, and a floor on the arm's own side is none (docs/game/
+/// nearest the site's target sideways, within [`LEDGE_REACH`], at the
+/// height a drop wants over the target.
+///
+/// The floor's takeoff puts the apex [`DROP_AIM`] over the target, within
+/// the drop window (`rule::DROP_MIN` to `rule::DROP_MAX`): a floor that
+/// high to run off its edge, else one [`jump_rise`] lower for a running
+/// jump. A measured recipe's explicit takeoff still wins in
+/// [`launch_from`]; its old fall height does not choose this floor.
+///
+/// A V's arm ([`Site::arm`]) is dropped onto from the side it is
+/// approached from: the search is moved half its reach that way, with
+/// half the reach, and a floor on the arm's own side is none (docs/game/
 /// bounce-search.md, "Vs: the mirror and its control"). The [`Ledge`] a
 /// plan is made with.
 pub fn launch_floor(m: &MapData, s: &Site) -> Option<Vec3> {
     let t = s.target();
-    let height = if s.drop_known() {
-        s.drop_height()
-    } else {
-        superbounce::speed::fall()
-    };
     let (shift, reach) = match s.arm {
         Some(a) => (
             [a.from[0] * LEDGE_REACH / 2.0, a.from[1] * LEDGE_REACH / 2.0],
@@ -71,11 +96,15 @@ pub fn launch_floor(m: &MapData, s: &Site) -> Option<Vec3> {
         ),
         None => ([0.0, 0.0], LEDGE_REACH),
     };
-    let over = [t[0] + shift[0], t[1] + shift[1], t[2] + height];
-    m.nav
-        .nearest(over, reach, LEDGE_OVER, LEDGE_UNDER)
-        .map(|(_, p)| p)
-        .filter(|p| s.approached_from([p[0], p[1]]))
+    let find = |height: f32, up: f32, down: f32| {
+        let over = [t[0] + shift[0], t[1] + shift[1], t[2] + height];
+        m.nav
+            .nearest(over, reach, up, down)
+            .map(|(_, p)| p)
+            .filter(|p| s.approached_from([p[0], p[1]]))
+    };
+    let (up, down) = (rule::DROP_MAX - DROP_AIM, DROP_AIM - rule::DROP_MIN);
+    find(DROP_AIM, up, down).or_else(|| find(DROP_AIM - jump_rise(), up, down))
 }
 
 /// Where a drop onto `s` is taken from: the learned launch point
@@ -961,7 +990,8 @@ pub fn takeoff(from: Vec3, site: &Site, stick: f32, jump: bool) -> Option<Takeof
     let floor = |_: [f32; 2]| target[2];
     let braked = flight::hold(from, v, [0.0; 2], floor)?;
     let pushed = flight::hold(from, v, line, floor)?;
-    let along = |l: &flight::Landing| (l.row[0] - from[0]) * line[0] + (l.row[1] - from[1]) * line[1];
+    let along =
+        |l: &flight::Landing| (l.row[0] - from[0]) * line[0] + (l.row[1] - from[1]) * line[1];
     Some(Takeoff {
         jump,
         stick,
@@ -1010,6 +1040,96 @@ pub fn drop_takeoff(from: Vec3, site: &Site, slow: f32) -> Takeoff {
             far: 0.0,
             gap: dist_xy(from, site.target()),
         })
+}
+
+/// Where a drop onto `target` aims, and the way across the edge it lands
+/// by (unit, X and Y): the target itself when its floor's nearest edge
+/// (`rule::edge_under`) is within [`EDGE_AIM`], else the point
+/// [`EDGE_HOLD`] from that edge on the way to it. With no floor under
+/// the target: the target, and no way across.
+pub fn edge_aim(target: Vec3, floors: &[Poly]) -> (Vec3, [f32; 2]) {
+    // The target is an origin; its floor is a centimetre under it.
+    let Some(e) = rule::edge_under(floors, [target[0], target[1], target[2] + 0.05]) else {
+        return (target, [0.0; 2]);
+    };
+    if e.distance <= EDGE_AIM {
+        return (target, e.across);
+    }
+    let [a, b] = e.line;
+    let ab = [b[0] - a[0], b[1] - a[1]];
+    let l2 = ab[0] * ab[0] + ab[1] * ab[1];
+    let k = if l2 > 1e-12 {
+        (((target[0] - a[0]) * ab[0] + (target[1] - a[1]) * ab[1]) / l2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let foot = [a[0] + ab[0] * k, a[1] + ab[1] * k];
+    let (to, gap) = norm([foot[0] - target[0], foot[1] - target[1]]);
+    let go = (gap - EDGE_HOLD).max(0.0);
+    (
+        [target[0] + to[0] * go, target[1] + to[1] * go, target[2]],
+        e.across,
+    )
+}
+
+/// The sideways velocity `v` with at least [`DRIFT_ACROSS`] of it across
+/// the edge whose way across is `across` (unit), the way `v` already
+/// goes across it (or along `across` for none): the drift a takeoff
+/// holds into the landing.
+pub fn drift_across(v: [f32; 2], across: [f32; 2]) -> [f32; 2] {
+    if across == [0.0; 2] {
+        return v;
+    }
+    let a = v[0] * across[0] + v[1] * across[1];
+    let s = if a < 0.0 { -1.0 } else { 1.0 };
+    let want = s * a.abs().max(DRIFT_ACROSS);
+    [v[0] + across[0] * (want - a), v[1] + across[1] * (want - a)]
+}
+
+/// What the bounce rule (`superbounce::rule::predict`) makes of a drop
+/// from `from` onto `site` taken as `t`, over `floors` (the map's floor
+/// polygons; those within [`FLOOR_REACH`] of the target are stepped).
+/// The flight model flies the takeoff, steered at the aim
+/// ([`edge_aim`]), down to the row [`JUDGE_OVER`] over the target, led
+/// by the sideways ground the rest of the fall covers; from that row the
+/// rule steps the fall with the drift held [`DRIFT_ACROSS`] across the
+/// edge ([`drift_across`]). The drop's apex sets the phase the body
+/// reaches the floor in, so a takeoff whose apex is out of the drop
+/// window comes back caught, stopped or landed. `None` when the flight
+/// does not come down there.
+pub fn judge_takeoff(
+    from: Vec3,
+    site: &Site,
+    t: &Takeoff,
+    floors: &[Poly],
+) -> Option<rule::Verdict> {
+    let target = site.target();
+    let near = rule::floors_near(floors, [target[0], target[1]], FLOOR_REACH);
+    let (aim, across) = edge_aim(target, &near);
+    let (line, gap) = norm([aim[0] - from[0], aim[1] - from[1]]);
+    let line = if gap > 1e-6 { line } else { [1.0, 0.0] };
+    let vz = if t.jump { JUMP_VZ } else { 0.0 };
+    let v = [line[0] * t.speed, line[1] * t.speed, vz];
+    let raised = |_: [f32; 2]| target[2] + JUDGE_OVER;
+    let first = flight::pursue(from, v, [aim[0], aim[1]], raised)?.landing;
+    // The rest of the fall carries the body on: aim that much short.
+    let rest = if first.speed > 0.1 {
+        JUDGE_OVER / first.speed
+    } else {
+        0.0
+    };
+    let lead = [
+        aim[0] - first.velocity[0] * rest,
+        aim[1] - first.velocity[1] * rest,
+    ];
+    let l = flight::pursue(from, v, lead, raised).map_or(first, |p| p.landing);
+    let drift = drift_across(l.velocity, across);
+    Some(rule::predict(
+        l.row,
+        [l.velocity[0], l.velocity[1], -l.speed],
+        drift,
+        &near,
+    ))
 }
 
 /// The air stick (world axes, 0..1) for a flight at sideways speed `v`
@@ -1250,7 +1370,11 @@ pub const BREAK_TICKS: u32 = 150;
 /// (`crate::glass::in_the_way`, from its prime's start to its stand) that
 /// `mask` says are whole, lowest first. None when its way out isn't known
 /// (it primes in place) or the mask can't be read.
-pub fn glass_in_the_way(map: &MapData, c: &Crouch, mask: Option<&crate::glass::Mask>) -> Vec<(u8, Vec3)> {
+pub fn glass_in_the_way(
+    map: &MapData,
+    c: &Crouch,
+    mask: Option<&crate::glass::Mask>,
+) -> Vec<(u8, Vec3)> {
     let (Some(mask), Some(_)) = (mask, geo(c)) else {
         return Vec::new();
     };
@@ -1283,7 +1407,11 @@ fn break_glass(
     let Some(mask) = mask else {
         return Err("glass_whole");
     };
-    let Some(&(_, aim)) = b.pieces.iter().find(|(i, _)| crate::glass::intact(mask, *i)) else {
+    let Some(&(_, aim)) = b
+        .pieces
+        .iter()
+        .find(|(i, _)| crate::glass::intact(mask, *i))
+    else {
         b.aim = None;
         return Ok(None);
     };
@@ -1571,6 +1699,10 @@ pub struct OrderRun {
     /// came down without launching (the rest are passed over).
     chain: (u32, u32),
     chain_broken: bool,
+    /// The map's floor polygons ([`OrderRun::see_floors`]): a drop's takeoff
+    /// is judged on them before it is taken ([`judge_takeoff`]). Empty:
+    /// not judged.
+    floors: Arc<Vec<Poly>>,
 }
 
 fn norm(d: [f32; 2]) -> ([f32; 2], f32) {
@@ -1610,6 +1742,7 @@ impl OrderRun {
             glass: None,
             chain: (0, 0),
             chain_broken: false,
+            floors: Arc::default(),
         }
     }
 
@@ -1617,6 +1750,15 @@ impl OrderRun {
     /// before [`OrderRun::step`]: which pieces of glass are whole.
     pub fn see_glass(&mut self, mask: Option<crate::glass::Mask>) {
         self.glass = mask;
+    }
+
+    /// The map's floor polygons (`crate::spots::floors`), when it is
+    /// played for real: a drop's takeoff is judged on them
+    /// ([`judge_takeoff`]) before the run at the launch point, and one
+    /// the bounce rule says will not bounce ends the run
+    /// (`takeoff_rejected`). A training run's search is left unjudged.
+    pub fn see_floors(&mut self, floors: Arc<Vec<Poly>>) {
+        self.floors = floors;
     }
 
     /// While breaking the glass before a prime: the point the bot shoots
@@ -2083,6 +2225,19 @@ impl OrderRun {
     /// in [`INPUT_LAG`], holding the run until the body leaves the floor.
     /// In the air steer the landing onto the target
     /// ([`OrderRun::drop_air`]). Then see whether it launched.
+    /// Why the drop from `from` onto `site`, flown as `f`, is not taken:
+    /// `takeoff_rejected` when the bounce rule ([`judge_takeoff`], on the
+    /// map's floors) says it will not bounce. `None` with no floors seen,
+    /// or when the flight model has no takeoff for it (the run finds out).
+    fn takeoff_rejected(&self, from: Vec3, site: &Site, f: &Flown) -> Option<&'static str> {
+        if self.floors.is_empty() {
+            return None;
+        }
+        let t = takeoff(from, site, f.stick, f.jump())?;
+        let v = judge_takeoff(from, site, &t, &self.floors)?;
+        (!v.outcome.bounces()).then_some("takeoff_rejected")
+    }
+
     fn drop(
         &mut self,
         from: Vec3,
@@ -2094,11 +2249,19 @@ impl OrderRun {
         if matches!(self.state, State::Fresh) {
             self.state = State::Drop(Dropping::Line(tick));
         }
+        let t = self.tune;
+        let f = flown(&site, from, &t);
+        // Lined up: the bounce rule judges the takeoff before the run.
+        if let State::Drop(Dropping::Line(since)) = self.state {
+            let lined_up = dist_xy(f.run_up(from), at) <= t.line_up
+                || tick.wrapping_sub(since) > t.line_up_ticks;
+            if lined_up && let Some(why) = self.takeoff_rejected(from, &site, &f) {
+                return Err(why);
+            }
+        }
         let State::Drop(d) = &mut self.state else {
             return Err("state");
         };
-        let t = self.tune;
-        let f = flown(&site, from, &t);
         let heading = f.heading;
         let face = Some(heading[1].atan2(heading[0]));
         let motion = |dir: [f32; 2], speed: f32, jump: bool| RouteMotion {
@@ -2289,9 +2452,7 @@ impl OrderRun {
             self.chain.1 += 1;
             return Ok(None);
         }
-        let landed = self
-            .landing
-            .is_some_and(|t| t.tick > since && !t.bounced());
+        let landed = self.landing.is_some_and(|t| t.tick > since && !t.bounced());
         if landed || tick.wrapping_sub(since) > FLY_TICKS {
             self.chain_broken = true;
             return Ok(None);

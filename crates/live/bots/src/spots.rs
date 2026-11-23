@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 
 use superbounce::learned::{self, Knobs};
 use superbounce::verified::{self, Entry};
-use superbounce::{Arm, Kind, Lip, MAX_LIP, Shape, Spot, Status};
+use superbounce::{Arm, Kind, Lip, MAX_LIP, Poly, Shape, Spot, Status};
 
 use crate::brain::Vec3;
 use crate::cache::Stamp;
@@ -515,6 +515,8 @@ pub fn has_scan(map: &str) -> bool {
 #[derive(Default)]
 struct Table {
     maps: HashMap<String, Arc<Vec<Spot>>>,
+    /// Each map's floor polygons ([`publish_floors`]).
+    floors: HashMap<String, Arc<Vec<Poly>>>,
 }
 
 static TABLE: Mutex<Option<Table>> = Mutex::new(None);
@@ -542,6 +544,26 @@ pub fn scanned(map: &str) -> Arc<Vec<Spot>> {
     let t = TABLE.lock().unwrap_or_else(|e| e.into_inner());
     t.as_ref()
         .and_then(|t| t.maps.get(&map.to_ascii_lowercase()))
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Stores `map`'s floor polygons (any case), replacing the last: what a
+/// drop's takeoff is judged on (`bounce_route::judge_takeoff`).
+pub fn publish_floors(map: &str, floors: Vec<Poly>) {
+    let mut t = TABLE.lock().unwrap_or_else(|e| e.into_inner());
+    t.get_or_insert_with(Table::default)
+        .floors
+        .insert(map.to_ascii_lowercase(), Arc::new(floors));
+    GENERATION.fetch_add(1, Ordering::Release);
+}
+
+/// The floor polygons of `map` (any case); empty until the worker has
+/// read them ([`read_floors`]).
+pub fn floors(map: &str) -> Arc<Vec<Poly>> {
+    let t = TABLE.lock().unwrap_or_else(|e| e.into_inner());
+    t.as_ref()
+        .and_then(|t| t.floors.get(&map.to_ascii_lowercase()))
         .cloned()
         .unwrap_or_default()
 }
@@ -613,7 +635,10 @@ fn load_verified(dir: &Path, map: &str) -> (Vec<Entry>, Option<String>) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Vec::new(), None),
         Err(e) => {
-            eprintln!("bots: {} not read, and not written over: {e}", path.display());
+            eprintln!(
+                "bots: {} not read, and not written over: {e}",
+                path.display()
+            );
             return (Vec::new(), Some(e.to_string()));
         }
     };
@@ -628,7 +653,10 @@ fn load_verified(dir: &Path, map: &str) -> (Vec<Entry>, Option<String>) {
             (Vec::new(), None)
         }
         (Err(why), None) => {
-            eprintln!("bots: {} not read, and not written over: {why}", path.display());
+            eprintln!(
+                "bots: {} not read, and not written over: {why}",
+                path.display()
+            );
             (Vec::new(), Some(why))
         }
     }
@@ -1043,6 +1071,26 @@ pub fn scan<R: std::io::Read + std::io::Seek>(
     let mut out = Vec::new();
     for k in 0..bsps {
         out.extend(superbounce::scan_map(map, k).map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+/// The floor polygons (normal Z over `superbounce::rule::FLOOR_NZ`) of
+/// every structure BSP of `map`, with their instanced geometry, at the
+/// collision's own precision (`superbounce::map_polys`): what the bounce
+/// rule steps a drop over ([`publish_floors`]).
+pub fn read_floors<R: std::io::Read + std::io::Seek>(
+    map: &mut map::Map<R>,
+    bsps: usize,
+) -> Result<Vec<Poly>, String> {
+    let mut out = Vec::new();
+    for k in 0..bsps {
+        let polys = superbounce::map_polys(map, k).map_err(|e| e.to_string())?;
+        out.extend(
+            polys
+                .into_iter()
+                .filter(|p| p.normal[2] > superbounce::rule::FLOOR_NZ),
+        );
     }
     Ok(out)
 }
