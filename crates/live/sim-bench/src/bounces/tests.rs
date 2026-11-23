@@ -718,7 +718,7 @@ const BAND: [f32; 2] = [-0.06, -0.01];
 const DEEP: f32 = 0.15;
 
 fn bounces(y: f32, z: f32) -> bool {
-    y >= BAND[0] && y <= BAND[1] && z < DEEP
+    (BAND[0]..=BAND[1]).contains(&y) && z < DEEP
 }
 
 #[derive(Clone, Debug)]

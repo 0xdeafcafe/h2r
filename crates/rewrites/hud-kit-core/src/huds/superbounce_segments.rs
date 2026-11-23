@@ -224,7 +224,7 @@ pub fn elements() -> Vec<Element> {
         .enumerate()
         .map(|(i, (id, (x, y)))| {
             Element::gauge(
-                *id,
+                id,
                 glyphs(i),
                 Place::new(Anchor::BottomLeft, (x - CORNER.0, y - CORNER.1)),
             )
@@ -236,7 +236,7 @@ pub fn elements() -> Vec<Element> {
 /// Sets the nine segments' values for `s` (`None`: all hidden).
 pub fn set_values(out: &mut Values, s: Option<&Segments>) {
     for (i, id) in IDS.iter().enumerate() {
-        out.set(*id, s.map_or_else(Value::hidden, |s| value(i, s)));
+        out.set(id, s.map_or_else(Value::hidden, |s| value(i, s)));
     }
 }
 

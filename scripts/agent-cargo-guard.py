@@ -9,7 +9,7 @@ machine-wide caches:
   which tests only the affected packages and records passes in the shared
   ledger, so a package whose inputs already passed anywhere is skipped.
 - `cargo install`: a fresh throwaway target every time. Run `cargo h2 ...`
-  from the worktree instead.
+  (or `cargo h2-tools ...`) from the worktree instead.
 - Setting RUSTC_WRAPPER, CARGO_BUILD_RUSTC_WRAPPER, SCCACHE_DIR or
   CARGO_TARGET_DIR on the command: kache is the machine-wide rustc wrapper
   (~/.cargo/config.toml) and each worktree's target is its own.
@@ -42,8 +42,9 @@ RULES = [
     (
         re.compile(r"(?:^|[\s;&|(])cargo\s+(?:\+\S+\s+)?install\b"),
         "don't `cargo install`: it rebuilds everything in a throwaway target; "
-        "run `cargo h2 <command>` from the worktree, which builds h2 "
-        "incrementally in the worktree's own target",
+        "run `cargo h2 <command>` (or `cargo h2-tools <tool>` for the map, "
+        "tag and script tools) from the worktree, which builds incrementally "
+        "in the worktree's own target",
     ),
     (
         re.compile(

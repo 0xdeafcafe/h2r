@@ -863,8 +863,8 @@ fn each_multiplayer_start_names_its_match_for_the_session() {
         let (mut m, _) = guest(kit, 1);
         options_block(&mut m, MODE_MULTIPLAYER, 1);
         it.lock().activate(&mut m, OPTIONS, film);
-        let out = sent.lock().unwrap().clone();
-        out
+        
+        sent.lock().unwrap().clone()
     };
     let crossfire = Options {
         wave_set: 3,

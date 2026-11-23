@@ -51,6 +51,8 @@ pub(super) enum Outcome {
 
 pub(super) struct Gate {
     config: Config,
+    /// The player's published game sockets.
+    agents: PathBuf,
     lab_sockets: PathBuf,
     current_h2: PathBuf,
     declined_until_file: PathBuf,
@@ -59,7 +61,7 @@ pub(super) struct Gate {
 }
 
 impl Gate {
-    pub(super) fn new(config: Config, root: &Path, current_h2: &Path) -> Self {
+    pub(super) fn new(config: Config, root: &Path, current_h2: &Path, agents: &Path) -> Self {
         let declined_until_file = root.join("takeover-declined-until");
         let declined_until = fs::read_to_string(&declined_until_file)
             .ok()
@@ -67,6 +69,7 @@ impl Gate {
             .unwrap_or(0);
         Self {
             config,
+            agents: agents.to_owned(),
             lab_sockets: root.join("a"),
             current_h2: current_h2.to_owned(),
             declined_until_file,
@@ -248,11 +251,11 @@ impl Gate {
         &self,
         owns_game: &impl Fn(Option<&Path>, Option<u32>) -> bool,
     ) -> Result<Vec<Game>> {
-        let agents = discover::dir();
+        let agents = &self.agents;
         let mut games = Vec::new();
         let mut known = BTreeSet::new();
         let deadline = Instant::now() + SCAN_TIMEOUT;
-        for (dir, published) in [(&agents, true), (&self.lab_sockets, false)] {
+        for (dir, published) in [(agents, true), (&self.lab_sockets, false)] {
             let paths = match fs::read_dir(dir) {
                 Ok(entries) => entries
                     .collect::<std::io::Result<Vec<_>>>()?
@@ -1144,5 +1147,44 @@ mod tests {
         // Closed: the queue goes on.
         assert!(games.refresh(&[], now, TIMEOUT, no_poll).is_empty());
         assert!(!games.holds());
+    }
+
+    /// A gate looks only at the agents directory it was given: a socket in
+    /// the real one (a game the user is playing) is never discovered.
+    #[cfg(unix)]
+    #[test]
+    fn gate_scans_only_its_own_agents_directory() {
+        use std::os::unix::net::UnixListener;
+
+        let base = std::env::temp_dir().join(format!("h2lab-gate-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let (root, mine, other) = (base.join("root"), base.join("mine"), base.join("other"));
+        for dir in [&root, &mine, &other] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        // Stands for the real agents directory, holding a live socket.
+        let other_sock = other.join("player.sock");
+        let _held = UnixListener::bind(&other_sock).unwrap();
+
+        // Claims every process, so only socket discovery can find a game.
+        let owns = |socket: Option<&Path>, _: Option<u32>| socket.is_none();
+        let h2 = Path::new("/bin/true");
+
+        let isolated = Gate::new(Config::default(), &root, h2, &mine);
+        let seen = isolated.player_games(&owns).unwrap();
+        assert!(
+            seen.iter().all(|game| game.key != GameKey::Socket(other_sock.clone())),
+            "{seen:?}"
+        );
+        assert!(seen.is_empty(), "{seen:?}");
+
+        // Control: pointed at the directory, the same gate does see it.
+        let pointed = Gate::new(Config::default(), &root, h2, &other);
+        let seen = pointed.player_games(&owns).unwrap();
+        assert!(
+            seen.iter().any(|game| game.key == GameKey::Socket(other_sock.clone())),
+            "{seen:?}"
+        );
+        let _ = fs::remove_dir_all(&base);
     }
 }

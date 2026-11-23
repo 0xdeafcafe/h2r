@@ -760,6 +760,7 @@ mod tests {
             explicit_h2: true,
             grace: Duration::from_secs(1),
             takeover: Default::default(),
+            agents: root.join("agents"),
         }
     }
 

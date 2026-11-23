@@ -13,7 +13,7 @@
 about = "Disc, tag and file formats, ours and the game's: plain data, no guest, no host"
 uses = []
 crates = [
-    "asf", "content", "firefight", "font", "forge-doc", "h1-contract", "host-dirs", "host-log", "hs", "map",
+    "asf", "content", "firefight", "font", "forge-doc", "h1-contract", "host-dirs", "host-log", "hs", "map", "pogo",
     "mopp", "movies", "pathfind", "rules", "settings", "shaders", "tags", "variants", "xbe", "xiso",
 ]
 
@@ -97,9 +97,9 @@ live_owned = ["live-art"]
 about = "What links a binary: the composition root, the desktop shell, the command line and its command crates, the editor, the embedded hosts"
 uses = ["formats", "recompiler", "runtime", "platform", "hooking", "rewrites", "live", "extensions", "tools"]
 crates = [
-    "app", "app-icon", "boot", "cli", "cmd", "cmd-dev",
+    "app", "app-icon", "boot", "cli", "cli-common", "cmd", "cmd-dev",
     "cmd-drive", "cmd-h1", "cmd-host", "cmd-live", "cmd-play", "cmd-recomp",
-    "cmd-tags", "h2host", "live-mirror", "studio", "studio-proto", "uwp-host",
+    "cmd-tags", "h2-tools", "h2host", "live-mirror", "studio", "studio-proto", "uwp-host",
 ]
 live_owned = ["cmd-drive", "cmd-live"]
 

@@ -225,7 +225,7 @@ mod tests {
             let (_, v) = states.iter().find(|(n, _)| *n == moment).unwrap();
             segs::IDS
                 .iter()
-                .filter(|id| v.get(**id).is_some_and(|x| x.shown && x.fill == 1.0))
+                .filter(|id| v.get(id).is_some_and(|x| x.shown && x.fill == 1.0))
                 .count()
         };
         assert_eq!(

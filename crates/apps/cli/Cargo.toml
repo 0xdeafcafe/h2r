@@ -12,6 +12,8 @@ required-features = ["host"]
 [dependencies]
 mem-watch.workspace = true
 film = { path = "../../live/film" }
+# The disc and output helpers h2-tools shares (docs/runtime/cli-tools.md).
+cli-common = { path = "../cli-common", optional = true }
 # The default data root (`content::store::default_data_root`).
 content.workspace = true
 # The app data, cache and config directories (coop, Live, lab, follow).
@@ -30,20 +32,15 @@ h1convert = { path = "../../tools/h1convert", optional = true }
 # `h2 lighting split`: the solver's shadow mask uses the state tables (CPU only).
 gfx = { path = "../../platform/gfx", default-features = false, optional = true }
 scenario-edit = { path = "../../tools/scenario-edit", optional = true }
-firefight-kit = { path = "../../tools/firefight-kit", optional = true }
 pogo-kit = { path = "../../tools/pogo-kit", optional = true }
 forge = { workspace = true, optional = true }
 # `h2 live maps census`: the start gate's census of a map file.
 forge-doc = { workspace = true, optional = true }
-forge-build = { workspace = true, optional = true }
 # Halo 1 campaign levels converted (`h2 h1 convert <iso> a30`).
 h1campaign = { path = "../../tools/h1campaign", optional = true }
 h1-assets = { path = "../../tools/h1-assets", optional = true }
 # Halo 1 objects for the Halo 1 sandbox (`h2 h1 convert --sandbox h1`).
 h1objects = { path = "../../tools/h1objects", optional = true }
-# `h2 hud preview` and `h2 hud sheet`: the HUD kit's preview and checks
-# (docs/game/hud-kit.md).
-hud-kit = { path = "../../tools/hud-kit", optional = true }
 movies = { workspace = true, optional = true }
 xbe = { workspace = true, optional = true }
 analyze = { workspace = true, optional = true }
@@ -60,9 +57,6 @@ boot = { path = "../boot", default-features = false }
 host-data = { path = "../../live/host-data" }
 # Bots for sim runs and `h2 bots nav` (docs/game/bots.md).
 bots = { path = "../../live/bots" }
-# `h2 superbounce scan`: bounce and forced-crouch spots in a map's
-# collision (docs/game/superbounce.md, "Spots in the geometry").
-superbounce = { path = "../../live/superbounce", optional = true }
 # h2 sim: match, batch and report files, the comparison (docs/runtime/sim.md).
 sim-bench = { path = "../../live/sim-bench" }
 # `h2 agent` and `h2 serve` (docs/runtime/agent-api.md).
@@ -71,13 +65,8 @@ agent-proto = { path = "../../extensions/agent-proto" }
 agent = { path = "../../extensions/agent", default-features = false }
 # h2 studio: the editor's agent API client (docs/editor/agent-api.md).
 studio-proto = { path = "../studio-proto", optional = true }
-# `h2 rules`: the scripted game types' tooling (docs/game/rules-engine.md).
+# Scripts in Live's map details and `h2 play --watch` (docs/game/rules-engine.md).
 rules.workspace = true
-# `h2 variants port`: self-contained .h2variant files (variants_cmd.rs).
-variants = { path = "../../formats/variants" }
-# `h2 rules lsp`: the stdio language server over `rules::ide`.
-lsp-server.workspace = true
-lsp-types.workspace = true
 # Our settings (play --set, h2 settings).
 settings = { path = "../../formats/settings" }
 timeline = { path = "../../runtime/timeline" }
@@ -160,27 +149,24 @@ desktop = [
     "boot/movie-playback",
     "boot/local-io",
     "boot/test-maps",
+    "dep:cli-common",
     "dep:hs",
     "dep:tags",
     "dep:shaders",
     "dep:font",
     "dep:assets",
     "dep:map",
-    "dep:superbounce",
     "dep:xiso",
     "dep:h1map",
     "dep:h1convert",
     "dep:scenario-edit",
-    "dep:firefight-kit",
     "dep:pogo-kit",
     "dep:forge",
     "dep:forge-doc",
-    "dep:forge-build",
     "dep:gfx",
     "dep:h1campaign",
     "dep:h1-assets",
     "dep:h1objects",
-    "dep:hud-kit",
     "dep:movies",
     "dep:xbe",
     "dep:analyze",
@@ -226,10 +212,6 @@ required-features = ["desktop"]
 
 [[test]]
 name = "lab"
-required-features = ["desktop"]
-
-[[test]]
-name = "shader_all"
 required-features = ["desktop"]
 
 [lints]

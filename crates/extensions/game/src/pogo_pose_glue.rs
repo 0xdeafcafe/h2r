@@ -27,7 +27,7 @@ use engine::view::objects;
 use engine::{DatumHandle, points};
 use frame_scene::NodeMatrix;
 use hooks::Flow;
-use pogo_kit::RIG;
+use pogo::RIG;
 
 use crate::pogo_pose::{Keys, STICK_NODES, Skeleton, pose};
 use crate::pogo_ride::Ridden;
@@ -230,6 +230,9 @@ pub fn install_hooks(b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
                 Ok(Flow::Continue)
             },
         )
+        // The rows are posed before any view of the frame is drawn,
+        // including the agent spawn view's.
+        .after_feature("agent-frames")
         .context_only();
     b.raw()
         .after(

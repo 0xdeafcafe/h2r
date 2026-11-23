@@ -85,15 +85,14 @@ pub fn resolve(ops: &[Op], base_counts: &BTreeMap<BlockKind, u32>) -> Result<Res
     for op in ops {
         if let Edit::Entry(edit) = &op.edit {
             let block = block_of(edit.target(), edit.what())?;
-            if !resolved.rows.contains_key(&block) {
+            if let std::collections::btree_map::Entry::Vacant(slot) = resolved.rows.entry(block) {
                 let count = *base_counts.get(&block).ok_or_else(|| {
                     Refusal::invalid(
                         edit.what(),
                         format!("the map's {} count is needed", block.name()),
                     )
                 })?;
-                let rows = (0..count).map(|i| Endpoint::base(block, i)).collect();
-                resolved.rows.insert(block, rows);
+                slot.insert((0..count).map(|i| Endpoint::base(block, i)).collect());
             }
         }
     }

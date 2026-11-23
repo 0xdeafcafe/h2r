@@ -120,7 +120,7 @@ mod tests {
         let (low, high) = (hops(0.2, true), hops(0.9, true));
         assert!(low < high, "{low} {high}");
         // A roll every 30 to 90 ticks: at most 100 in 3000 ticks.
-        assert!(high <= 100 && high >= 15, "{high}");
+        assert!((15..=100).contains(&high), "{high}");
         let mut s = Stride::new(9);
         assert!((0..3000).all(|t| !s.hop(None, true, t)));
     }

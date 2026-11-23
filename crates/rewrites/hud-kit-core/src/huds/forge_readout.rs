@@ -419,7 +419,7 @@ pub fn values(v: &View) -> Values {
     );
     for (i, id) in NEARS.iter().enumerate() {
         out.set(
-            *id,
+            id,
             match v.near.get(i) {
                 Some(n) => Value::text(near_text(n)).styled(if n.in_game_type {
                     Style::Normal

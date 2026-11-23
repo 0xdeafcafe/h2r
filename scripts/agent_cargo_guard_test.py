@@ -30,6 +30,8 @@ class Guard(unittest.TestCase):
     def test_install_is_refused(self):
         self.blocked("cargo install -q --path crates/apps/cli --locked")
         self.allowed("cargo h2 play disc/halo2.iso")
+        self.blocked("cargo install --locked --path crates/apps/h2-tools")
+        self.allowed("cargo h2-tools firefight kit beavercreek")
 
     def test_cache_overrides_are_refused(self):
         self.blocked("RUSTC_WRAPPER= cargo build")

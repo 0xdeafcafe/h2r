@@ -14,7 +14,7 @@ h2 font --all <iso>      # parse + fully validate every font; non-zero exit on f
 
 No glyph sheet, dump or render is stored in the repo. Output PNGs go wherever
 `--out` says (the exporter refuses to follow symlinks and will not overwrite
-without `--force`, via `crates/apps/cli/src/safe_out.rs`).
+without `--force`, via `crates/apps/cli-common/src/safe_out.rs`).
 
 ## Provenance
 

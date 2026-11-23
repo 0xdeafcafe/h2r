@@ -1309,7 +1309,7 @@ fn disc_item_game_types_and_respawn_modes_census() {
     eprintln!("entries in a game per engine code: {per_engine:?}");
     eprintln!("entries with no engine object: {in_no_engine}; in no engine's game: {never}");
     let mut sets: Vec<_> = slot_sets.into_iter().collect();
-    sets.sort_by(|a, b| b.1.cmp(&a.1));
+    sets.sort_by_key(|s| std::cmp::Reverse(s.1));
     eprintln!("slot sets, most used first: {sets:?}");
     eprintln!("{starts} starting locations; (offset, value): count");
     for ((at, v), n) in start_words {

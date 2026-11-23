@@ -278,21 +278,14 @@ fn port_cmd(words: &[String]) -> Result<()> {
 
 /// The retail built-in variants, built as the game builds them at load
 /// (`variants::Schema::build`) from the disc's `goof` tag.
-#[cfg(feature = "desktop")]
 fn retail_builtins(disc: Option<&Path>) -> Result<Vec<(String, GameVariant)>> {
     let disc = match disc {
         Some(d) => d.to_path_buf(),
         None => crate::default_disc()
             .context("--all-builtins needs the disc: the retail built-ins are in mainmenu.map")?,
     };
-    let disc = disc.as_path();
-    let d = crate::live_art::Disc::scan(disc)
-        .with_context(|| format!("reading the disc {}", disc.display()))?;
-    let m = d
-        .maps_of(map::CacheType::MainMenu)
-        .next()
-        .context("no main menu map on the disc")?;
-    let (mut map, _) = d.open(m)?;
+    let mut map = crate::maps::load_map("mainmenu", Some(disc.clone()))
+        .with_context(|| format!("reading mainmenu.map from the disc {}", disc.display()))?;
     let schema = variants::Schema::from_map(&mut map, tags::Language::English)
         .context("reading the built-in variants from mainmenu.map")?;
     schema
@@ -305,11 +298,6 @@ fn retail_builtins(disc: Option<&Path>) -> Result<Vec<(String, GameVariant)>> {
             Ok((b.name.clone(), v))
         })
         .collect()
-}
-
-#[cfg(not(feature = "desktop"))]
-fn retail_builtins(_disc: Option<&Path>) -> Result<Vec<(String, GameVariant)>> {
-    bail!("--all-builtins reads the disc, which this build of h2 cannot (it needs the desktop feature)")
 }
 
 #[cfg(test)]

@@ -6,8 +6,9 @@ name: Buck
 #
 #   rules   scripts/update-buck.py --check: the generated BUCK files and
 #           third-party/rust match Cargo.toml and Cargo.lock.
-#   build   the Linux and SteamOS desktop binary, //crates/apps/cli:h2, in
-#           release mode, as docs/runtime/linux.md builds it.
+#   build   the Linux and SteamOS desktop binary, //crates/apps/cli:h2, and
+#           the tools beside it, //crates/apps/h2-tools:h2-tools, in release
+#           mode, as docs/runtime/linux.md builds them.
 #
 # Public code only. The game module (//platform/linux:module) and the
 # SteamOS package (//platform/steamos:run) read the owner's disc, so CI never
@@ -96,5 +97,5 @@ jobs:
         run: scripts/ci/install-buck2.sh
       - name: Check the toolchain
         run: devenv shell -- buck2 audit config host_toolchain.steamos_sysroot
-      - name: Build h2
-        run: devenv shell -- buck2 build -c build_mode.mode=release //crates/apps/cli:h2 --show-output
+      - name: Build h2 and h2-tools
+        run: devenv shell -- buck2 build -c build_mode.mode=release //crates/apps/cli:h2 //crates/apps/h2-tools:h2-tools --show-output

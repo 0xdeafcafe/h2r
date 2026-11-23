@@ -291,6 +291,7 @@ mod tests {
             explicit_h2: false,
             grace: Duration::from_secs(5),
             takeover: super::super::takeover::Config::default(),
+            agents: std::path::PathBuf::from("/nonexistent/agents"),
         }
     }
 

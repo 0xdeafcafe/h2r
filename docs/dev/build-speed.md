@@ -165,6 +165,25 @@ protection regions per process. Merging those needs a test run to
 settle which files can share a process (follow-up 2). `live-server`
 (40 files, the largest saving) belongs to another session.
 
+### The offline tools in their own binary (`h2-tools`)
+
+The map, tag and script tools (`firefight kit`, `forge build`, `rules`,
+`variants`, `tags`, `hud`, `shader` and the rest) are a second binary,
+`crates/apps/h2-tools`, which depends on format and tool crates only: no
+runtime, renderer, audio or agent server
+([cli-tools.md](../runtime/cli-tools.md)). `h2 <tool>` runs it with the
+same words. A change to a tool, or to a crate only the tools use
+(`firefight-kit`, `forge-build`, `hud-kit`, `superbounce`, `lsp-server`),
+relinks `h2-tools` and leaves `h2` alone.
+
+`cargo h2-tools <tool>` builds and runs that binary only. `cargo h2 <tool>`
+builds `h2` first, then runs `cargo run -p h2-tools`: cheap when nothing
+`h2` links changed, the whole `h2` link when something did. `firefight-kit`
+and `scenario-edit` are still under `h2` through `boot`'s `test-maps`
+feature (the agent's `maps.test.*`), so after a change to either, `cargo
+h2-tools firefight kit <map>` is the command that skips the game's link.
+The saving is not measured.
+
 ### nextest (`.config/nextest.toml`)
 
 `cargo nextest run` runs each test in its own process and spreads the
@@ -531,12 +550,13 @@ runs in any worktree, and it refuses:
   (with `-p` for named packages, or none for what the branch changed), so
   they use the affected set and the shared ledger above;
 - `cargo install`: it builds in a throwaway target. `cargo h2 <command>`
-  builds `h2` incrementally in the worktree's own target instead;
+  (and `cargo h2-tools <tool>` for the map, tag and script tools) builds
+  incrementally in the worktree's own target instead;
 - setting `RUSTC_WRAPPER`, `CARGO_BUILD_RUSTC_WRAPPER`, `SCCACHE_DIR` or
   `CARGO_TARGET_DIR` on a command: kache is the machine-wide wrapper
   (`~/.cargo/config.toml`) and each worktree keeps its own target.
 
-`cargo check`, `cargo clippy` and `cargo h2` pass. Before one runs in a
+`cargo check`, `cargo clippy`, `cargo h2` and `cargo h2-tools` pass. Before one runs in a
 worktree with no `target` yet, the guard links and seeds it with the
 hooks directory's `target-on-builds.sh` and `seed-target.py` (section 2):
 an agent harness that makes its worktrees without the post-checkout hook

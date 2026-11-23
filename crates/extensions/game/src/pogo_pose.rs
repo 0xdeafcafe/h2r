@@ -39,7 +39,7 @@
 use std::sync::OnceLock;
 
 use frame_scene::NodeMatrix;
-use pogo_kit::Rig;
+use pogo::Rig;
 use serde::Deserialize;
 
 use crate::pogo::{Sample, Trick};

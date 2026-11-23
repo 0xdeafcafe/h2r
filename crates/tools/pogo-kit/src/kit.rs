@@ -81,7 +81,7 @@ pub const PHYSICS_RADIUS: f32 = 0.03;
 pub const PHYSICS_MASS: f32 = 8.0;
 
 /// The folder the kit's tags are named under.
-pub const FOLDER: &str = r"objects\weapons\multiplayer\pogo";
+pub use pogo::FOLDER;
 
 /// The tag every look shares, by group.
 pub fn shared_path() -> String {
@@ -153,7 +153,7 @@ pub fn choose_class(graphs: &[BTreeSet<(String, String)>]) -> Option<(String, St
     }
     first
         .iter()
-        .find(|p| !p.0.is_empty() && !p.1.is_empty() && common(*p))
+        .find(|p| !p.0.is_empty() && !p.1.is_empty() && common(p))
         .cloned()
 }
 
@@ -224,7 +224,7 @@ impl Facts {
         let library = Library::read(map);
         let layout = LAYOUTS
             .into_iter()
-            .find(|l| library.has(*l))
+            .find(|l| library.has(l))
             .with_context(|| {
                 format!(
                     "the map has no shader template the stick draws with ({} or {}, and their default bitmaps)",
