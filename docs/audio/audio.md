@@ -61,9 +61,12 @@ loop {                                               // once per game frame
   The callback period must fit inside the target (see measurements).
 - **Sample rate and device change.** The sink opens the system default output
   at its native rate and the mixer renders at that rate (voices resample
-  per render). A stream error or a change of the default device id (polled
-  every 500 ms in `maintain`, which `pump` calls) rebuilds the stream; if it
-  has a new rate `Pump` calls `Mixer::set_sample_rate` before rendering, and
+  per render). A fatal stream error (the device went away) or a change of
+  the default device id or rate (polled every 500 ms in `maintain`, which
+  `pump` calls) rebuilds the stream; a route change cpal's backend already
+  followed (`DeviceChanged`) and transient overloads (`Xrun`) do not. If the
+  new stream has a new rate `Pump` calls `Mixer::set_sample_rate` before
+  rendering, and
   the old ring (a few ms) is dropped. With no device, reopening is retried
   once a second and `pump` keeps going into a ring nobody drains, so the game
   does not stall. `DeviceSink::reopen_count()` shows how often this happened.
