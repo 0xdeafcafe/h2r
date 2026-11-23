@@ -14,7 +14,9 @@
 //! - then, at the scene's layer 3 (`world_layers::layer_site`), it asks
 //!   the [`Host`] (boot's glue) to have each material of the open view's
 //!   decorator draws ready ([`Host::prepare`]: the set's geometry and the
-//!   pass's program), plans the view over the ready ones
+//!   pass's program), keeps those whose guest draws a skip leaves out
+//!   without changing a render state the device holds ([`Host::holds`]),
+//!   plans the view over them
 //!   (`native_render::decorators::plan`) and asks the host to reserve the
 //!   native pass and clear layer 3's bit on the planned items
 //!   ([`Host::ask`]): the layer then builds no entry for them.
@@ -49,6 +51,12 @@ pub trait Host: Send + Sync {
     /// geometry read and the pass compiled, once per loaded world. Returns
     /// those that are.
     fn prepare(&self, mem: &dyn GuestMemory, materials: &[Material]) -> HashSet<Material>;
+    /// Of the `ready` materials, those whose guest draws can be skipped:
+    /// every render state their pass's draw leaves set already holds on
+    /// the device at the layer-3 call
+    /// (`native_render::decorators_load::skip_holds`). The rest stay the
+    /// guest's.
+    fn holds(&self, mem: &dyn GuestMemory, ready: &HashSet<Material>) -> HashSet<Material>;
     /// Reserves the native pass for `plan` (the handoff's ordered
     /// reservation, recording on every copy before anything is
     /// surrendered), then clears layer 3's bit on the plan's items and
@@ -73,6 +81,7 @@ static VIEWS: AtomicU64 = AtomicU64::new(0);
 static DRAWN: AtomicU64 = AtomicU64::new(0);
 static ITEMS: AtomicU64 = AtomicU64::new(0);
 static REFUSED: AtomicU64 = AtomicU64::new(0);
+static STATE: AtomicU64 = AtomicU64::new(0);
 static DECLINED: AtomicU64 = AtomicU64::new(0);
 
 /// Installs the host (boot). Without one nothing is skipped.
@@ -82,15 +91,32 @@ pub fn set_host(host: Arc<dyn Host>) {
 
 /// The stage's counters, for `render.scene`: views with decorators,
 /// views drawn natively, items skipped, draws left to the guest because
-/// their material is not ready, views the host declined.
-pub fn counters() -> [(&'static str, u64); 5] {
+/// their material is not ready or because skipping them would change a
+/// render state the device holds, views the host declined.
+pub fn counters() -> [(&'static str, u64); 6] {
     [
         ("scene_decorator_views", VIEWS.load(Ordering::Relaxed)),
         ("scene_decorator_views_native", DRAWN.load(Ordering::Relaxed)),
         ("scene_decorator_items_skipped", ITEMS.load(Ordering::Relaxed)),
         ("scene_decorator_draws_unready", REFUSED.load(Ordering::Relaxed)),
+        ("scene_decorator_draws_state", STATE.load(Ordering::Relaxed)),
         ("scene_decorator_views_declined", DECLINED.load(Ordering::Relaxed)),
     ]
+}
+
+/// A view's decorators planned over the materials that are `ready` and
+/// whose skip `held`, and how many of its draws are left to the guest
+/// only because their skip would change a render state.
+pub fn plan_held(
+    scene: &frame_scene::FrameScene, view: &frame_scene::View, ready: &HashSet<Material>, held: &HashSet<Material>,
+) -> (Plan, u32) {
+    let state = scene
+        .decorators_of(view)
+        .iter()
+        .map(Material::of)
+        .filter(|m| ready.contains(m) && !held.contains(m))
+        .count() as u32;
+    (plan(scene, view, |m| ready.contains(m) && held.contains(m)), state)
 }
 
 /// The guest's memory as `native_render` reads and writes it.
@@ -137,9 +163,11 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     }
     VIEWS.fetch_add(1, Ordering::Relaxed);
     let ready = host.prepare(&*mem, &materials);
-    let planned = crate::scene_step::with_open(|open| open.map(|(scene, view)| plan(scene, view, |m| ready.contains(m))));
-    let Some(planned) = planned else { return };
-    REFUSED.fetch_add(u64::from(planned.refused), Ordering::Relaxed);
+    let held = host.holds(&*mem, &ready);
+    let planned = crate::scene_step::with_open(|open| open.map(|(scene, view)| plan_held(scene, view, &ready, &held)));
+    let Some((planned, state)) = planned else { return };
+    REFUSED.fetch_add(u64::from(planned.refused - state), Ordering::Relaxed);
+    STATE.fetch_add(u64::from(state), Ordering::Relaxed);
     if planned.slots.is_empty() {
         return;
     }
@@ -202,5 +230,60 @@ impl Feature for NativeDecorators {
             .after_feature(crate::native_world::ID)
             .context_only();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use frame_scene::decorator::REGISTERS;
+    use frame_scene::{DecoratorDraw, DecoratorInstance, RenderCamera, SceneBuilder, SceneId, Stamp, ViewKey, ViewKind};
+
+    fn draw(slot: u32, set: u32) -> DecoratorDraw {
+        DecoratorDraw {
+            slot,
+            layer: LIGHTMAP_LAYER as u8,
+            set,
+            shader: 0xe500_0000 | set,
+            variant: 0,
+            pass: 0,
+            argument: slot << 8,
+            lod_constant: [1.0, 1.0, 0.0, 1.0],
+            instances: 0..0,
+        }
+    }
+
+    /// A draw whose material is ready but whose skip would change a
+    /// render state stays the guest's and counts apart from one whose
+    /// material is not ready.
+    #[test]
+    fn a_draw_whose_skip_would_change_a_state_stays_the_guests_and_counts_apart() {
+        let camera = RenderCamera {
+            position: [0.0; 3],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            fov: 1.0,
+            projection_xy: None,
+            viewport: [0, 0, 480, 640],
+            near: 0.1,
+            far: 100.0,
+        };
+        let instance = DecoratorInstance { index: 0, model: 0, first_index: 0, index_count: 3, registers: [[1.0; 4]; REGISTERS] };
+        let mut b = SceneBuilder::default();
+        b.begin(SceneId::default());
+        b.open_view(ViewKey { kind: ViewKind::Game, player: 0, view: 0 }, camera).unwrap();
+        // Set 1 ready and held, set 2 ready only (twice), set 3 not ready.
+        for (slot, set) in [(4, 1), (5, 2), (6, 2), (7, 3)] {
+            b.push_decorator(draw(slot, set), &[instance]).unwrap();
+        }
+        let s = b.seal(Stamp::default()).unwrap();
+        let material = |set: u32| Material::of(&draw(0, set));
+        let ready: HashSet<Material> = [material(1), material(2)].into();
+        let held: HashSet<Material> = [material(1)].into();
+        let (p, state) = plan_held(&s, &s.views[0], &ready, &held);
+        assert_eq!(p.slots, [4]);
+        assert_eq!((p.refused, state), (3, 2), "two draws left for their state, one unready");
+        let (all, none) = plan_held(&s, &s.views[0], &ready, &ready);
+        assert_eq!((all.slots, none), (vec![4, 5, 6], 0));
     }
 }
