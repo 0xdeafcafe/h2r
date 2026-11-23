@@ -374,6 +374,7 @@ impl AdminHostStart {
             map: self.map.clone(),
             map_id: None,
             variant: self.variant.clone().filter(|v| !v.is_empty()),
+            firefight: None,
             hopper: None,
             max_players: self.max_players,
             roster: Vec::new(),

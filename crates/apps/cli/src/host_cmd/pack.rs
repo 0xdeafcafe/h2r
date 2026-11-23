@@ -6,8 +6,10 @@
 //! its own process group, with its own slot of ports and writable data, so
 //! guest state stays isolated while the module and maps stay shared through
 //! the page cache. A new match is admitted only when the measured cost of
-//! the running ones leaves room ([`live_proto::host_pack::admit`]). The pack
-//! exits after it has run nothing for `--linger-s`.
+//! the running ones leaves room ([`live_proto::host_pack::admit`]). A
+//! Firefight lease takes the whole pack: it starts only in an empty one, and
+//! the pack takes nothing beside it ([`live_proto::host_pack::SlotClass`]).
+//! The pack exits after it has run nothing for `--linger-s`.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, Read, Write};
@@ -21,7 +23,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
 use live_proto::host_pack::{
-    self, AddMatch, Added, Limits, MatchLoad, MatchStatus, PackStatus, Refusal, SlotPorts, http,
+    self, AddMatch, Added, Limits, MatchLoad, MatchStatus, PackStatus, Refusal, SlotClass,
+    SlotPorts, http,
 };
 use serde_json::json;
 
@@ -182,6 +185,8 @@ struct Slot {
     share_at_start: Duration,
     charge_start: bool,
     lease: String,
+    /// A Firefight match holds the whole pack.
+    class: SlotClass,
     ports: SlotPorts,
     map: Option<String>,
     child: Child,
@@ -321,13 +326,15 @@ impl Pack {
                 reserved_mib = reserved_mib.saturating_add(outstanding);
                 load.rss_mib = Some(observed.max(estimate.new_rss_mib));
             }
-            running.push(load);
+            running.push((slot.class, load));
         }
         // Packaged maps are identified by content even if the scenario name matches.
         let map = lease["map_id"].as_str().or_else(|| lease["map"].as_str());
         let estimate = self.history.estimate(map, self.limits);
         let committed_mib = self.container_mib.map(|used| used.saturating_add(reserved_mib));
-        host_pack::admit(&estimate, &running, committed_mib).map_err(AddError::Refused)?;
+        let class = SlotClass::of_lease_json(&lease);
+        host_pack::admit_class(&estimate, &running, class, committed_mib)
+            .map_err(AddError::Refused)?;
         let slot = self
             .slots
             .iter()
@@ -350,6 +357,7 @@ impl Pack {
             share_at_start: self.occupancy.per_slot,
             charge_start: !self.start_claimed,
             lease: add.lease.clone(),
+            class,
             map: map.map(str::to_owned),
             ports,
             child,

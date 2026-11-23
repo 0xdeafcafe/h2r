@@ -338,6 +338,64 @@ fn removing_frees_the_slot_once_reaped_and_the_pack_lingers_then_exits() {
     pack.remove("hl-zz", Instant::now());
 }
 
+/// A Firefight lease: its lease JSON names the match the host plays.
+fn firefight(lease: &str) -> AddMatch {
+    let mut add = add(lease);
+    add.lease_json = json!({
+        "id": lease,
+        "map": "fixture-a",
+        "firefight": { "set": "Arcade", "id": "ab".repeat(32), "teams": 1, "difficulty": 1, "kit": 3 },
+    })
+    .to_string();
+    add
+}
+
+fn reap(pack: &mut Pack, lease: &str) {
+    for _ in 0..100 {
+        pack.tick(Instant::now(), &|_| None, None);
+        if pack.find(lease).is_none() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    panic!("{lease} kept its slot");
+}
+
+#[test]
+fn a_firefight_match_takes_a_whole_slot_class() {
+    // On a small pack (five slots, one vCPU) the Firefight match is alone:
+    // the whole vCPU is its.
+    let (mut pack, launched) = pack(host_pack::class_limits(&live_proto::hosts::HostClass::Small, None));
+    pack.add(&add("hl-a")).unwrap();
+    assert!(matches!(
+        pack.add(&firefight("hl-f")),
+        Err(AddError::Refused(Refusal::WholeNeedsEmpty { running: 1 }))
+    ));
+    pack.remove("hl-a", Instant::now());
+    // A stopping match still holds its slot.
+    assert!(matches!(
+        pack.add(&firefight("hl-f")),
+        Err(AddError::Refused(Refusal::WholeNeedsEmpty { running: 1 }))
+    ));
+    reap(&mut pack, "hl-a");
+    let added = pack.add(&firefight("hl-f")).unwrap();
+    assert_eq!(added.slot, 0);
+    // Four slots are free, but the pack takes nothing beside it.
+    for other in [add("hl-b"), firefight("hl-g")] {
+        assert!(matches!(pack.add(&other), Err(AddError::Refused(Refusal::TakenWhole))));
+    }
+    // Adding the running lease again is idempotent.
+    assert_eq!(pack.add(&firefight("hl-f")).unwrap(), added);
+    pack.remove("hl-f", Instant::now());
+    reap(&mut pack, "hl-f");
+    // Once it ends the pack shares its slots again.
+    pack.add(&add("hl-b")).unwrap();
+    pack.add(&add("hl-c")).unwrap();
+    let names: Vec<_> = launched.lock().unwrap().iter().map(|(lease, ..)| lease.clone()).collect();
+    assert_eq!(names, ["hl-a", "hl-f", "hl-b", "hl-c"]);
+    pack.shutdown();
+}
+
 #[test]
 fn a_match_that_ends_by_itself_frees_its_slot() {
     let launch: Launch = Box::new(|_: &AddMatch, _: u16, _: SlotPorts| {

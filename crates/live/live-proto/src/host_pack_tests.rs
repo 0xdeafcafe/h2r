@@ -112,6 +112,59 @@ fn refusal_round_trips_as_tagged_json() {
 }
 
 #[test]
+fn a_whole_slot_class_needs_an_empty_pack_and_keeps_it() {
+    let shared = (SlotClass::Shared, measured(5.0, 170));
+    let whole = (SlotClass::Whole, measured(5.0, 170));
+    assert_eq!(admit_class(&small(), &[], SlotClass::Whole, None), Ok(()));
+    assert_eq!(
+        admit_class(&small(), &[shared], SlotClass::Whole, None),
+        Err(Refusal::WholeNeedsEmpty { running: 1 })
+    );
+    for class in [SlotClass::Shared, SlotClass::Whole] {
+        assert_eq!(admit_class(&small(), &[whole], class, None), Err(Refusal::TakenWhole));
+    }
+    // Shared matches still meet the measured-load check.
+    assert_eq!(admit_class(&small(), &[shared; 2], SlotClass::Shared, None), Ok(()));
+    assert!(matches!(
+        admit_class(&small(), &[(SlotClass::Shared, measured(20.0, 170))], SlotClass::Shared, None),
+        Err(Refusal::Cpu { .. })
+    ));
+    let json = serde_json::to_value(Refusal::WholeNeedsEmpty { running: 2 }).unwrap();
+    assert_eq!(json["refused"], "whole_needs_empty");
+    assert_eq!(serde_json::to_value(Refusal::TakenWhole).unwrap()["refused"], "taken_whole");
+}
+
+#[test]
+fn a_firefight_lease_takes_the_whole_slot_class() {
+    let mut lease: crate::hosts::HostLease = serde_json::from_value(serde_json::json!({
+        "id": "hl-a", "assignment_id": "custom-a", "provider": "local", "region": null,
+        "class": "small", "map": "beavercreek", "map_id": null, "variant": null,
+        "hopper": null, "max_players": 4, "roster": [], "bots": [], "transport": "udp",
+        "created_ms": 0,
+    }))
+    .unwrap();
+    assert_eq!(SlotClass::of(&lease), SlotClass::Shared);
+    let shared = serde_json::to_value(&lease).unwrap();
+    assert!(shared.get("firefight").is_none(), "{shared}");
+    assert_eq!(SlotClass::of_lease_json(&shared), SlotClass::Shared);
+    lease.firefight = Some(crate::session::Firefight {
+        set: "Arcade".into(),
+        id: "ab".repeat(32),
+        teams: 1,
+        difficulty: 1,
+        kit: 3,
+    });
+    assert_eq!(SlotClass::of(&lease), SlotClass::Whole);
+    let whole = serde_json::to_value(&lease).unwrap();
+    assert_eq!(SlotClass::of_lease_json(&whole), SlotClass::Whole);
+    assert_eq!(serde_json::from_value::<crate::hosts::HostLease>(whole).unwrap(), lease);
+    assert_eq!(
+        SlotClass::of_lease_json(&serde_json::json!({ "firefight": null })),
+        SlotClass::Shared
+    );
+}
+
+#[test]
 fn slot_ports_do_not_overlap() {
     let a = SlotPorts::for_slot(BASE_PORT, TUNNEL_PORT, AGENT_PORT, 0).unwrap();
     let b = SlotPorts::for_slot(BASE_PORT, TUNNEL_PORT, AGENT_PORT, 1).unwrap();

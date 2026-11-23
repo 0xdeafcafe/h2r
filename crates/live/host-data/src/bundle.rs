@@ -2,9 +2,12 @@
 //! the original XBE and retail menu, including its packed fonts, and uses
 //! the shared caches and multiplayer maps for matches, and the bots play
 //! them with the nav meshes and visibility grids it carries. A dedicated
-//! host also runs the Linux game module the owner bundles with them.
+//! host also runs the Linux game module the owner bundles with them, and
+//! plays Firefight on the kits built here from the same disc.
 
 mod image;
+#[cfg(feature = "firefight")]
+mod kits;
 mod nav;
 mod stores;
 
@@ -51,6 +54,11 @@ pub struct BundleSpec {
     /// ([`crate::IMAGE_FILES`]), carried as `image/`; `None` leaves the
     /// module out.
     pub image: Option<PathBuf>,
+    /// Build the Firefight kit of every multiplayer map that takes one,
+    /// carried as `firefight/` (needs the `firefight` feature). A kit's
+    /// base map comes from the disc even when a stripped copy is given:
+    /// the kit's patch is bound to the disc map's hash.
+    pub firefight: bool,
     /// Replace existing bundle files.
     pub force: bool,
     /// zstd compression level, 1..=21.
@@ -78,6 +86,13 @@ pub struct BundleOut {
     pub nav_maps: usize,
     /// Whether the bundle carries the game module (`image/`).
     pub image: bool,
+    /// Multiplayer maps whose Firefight kit the bundle carries.
+    pub kits: usize,
+    /// Maps the kit refuses, with the builder's reason.
+    pub kits_refused: Vec<(String, String)>,
+    /// Maps carried from the disc instead of the stripped directory because
+    /// their kit's patch is bound to the disc map.
+    pub kit_bases_unstripped: usize,
     /// Payload bytes before compression.
     pub raw_bytes: u64,
     /// Bytes of the written archive.
@@ -90,6 +105,9 @@ pub fn build(spec: &BundleSpec) -> Result<BundleOut, Error> {
     let bundle = Error::Bundle;
     if !(1..=21).contains(&spec.zstd_level) {
         return Err(bundle(format!("zstd level {} is outside 1..=21", spec.zstd_level)));
+    }
+    if spec.firefight && !cfg!(feature = "firefight") {
+        return Err(bundle("this h2 was built without the Firefight kit builder".into()));
     }
     let mut disc = Disc::open(&spec.disc)?;
 
@@ -110,6 +128,9 @@ pub fn build(spec: &BundleSpec) -> Result<BundleOut, Error> {
     let (mut multiplayer, mut shared, mut campaign_skipped, mut unknown_skipped, mut stripped_used) =
         (0, 0, 0, 0, 0);
     let mut nav_maps = Vec::new();
+    // Each multiplayer map's disc copy, its size and whether a stripped
+    // copy replaces it in the payload: the kits' bases.
+    let mut kit_bases: Vec<(String, Source, u64, bool)> = Vec::new();
     for map in disc.files(&["maps"])? {
         if !map.name.to_ascii_lowercase().ends_with(".map") {
             continue;
@@ -135,6 +156,8 @@ pub fn build(spec: &BundleSpec) -> Result<BundleOut, Error> {
             // has the same header (so the same fingerprint) but not the
             // collision the build reads.
             let key = map.name[..map.name.len() - ".map".len()].to_owned();
+            let stripped = stripped_index.contains_key(&map.name.to_ascii_lowercase());
+            kit_bases.push((key.to_ascii_lowercase(), map.source.clone(), map.size, stripped));
             nav_maps.push(nav::NavMap { key, header, size: map.size, source: map.source.clone() });
         }
         let (source, size) = match stripped_index.get(&map.name.to_ascii_lowercase()) {
@@ -216,6 +239,11 @@ pub fn build(spec: &BundleSpec) -> Result<BundleOut, Error> {
         if let Some(dir) = &spec.image {
             image::stage(dir, &mut payload)?;
         }
+        let kits = if spec.firefight {
+            stage_kits(&kit_bases, &staging, &mut payload)?
+        } else {
+            KitsOut::default()
+        };
         let archive = staging.join(ARCHIVE_NAME);
         let metadata = staging.join(MANIFEST_NAME);
         let manifest = write_archive(&archive, spec.zstd_level, &mut payload)?;
@@ -238,10 +266,10 @@ pub fn build(spec: &BundleSpec) -> Result<BundleOut, Error> {
                 return Err(error.into());
             }
         }
-        Ok((manifest, archive_bytes, stores_used, nav_count))
+        Ok((manifest, archive_bytes, stores_used, nav_count, kits))
     })();
     let _ = fs::remove_dir_all(staging);
-    let (manifest, archive_bytes, stores_used, nav_count) = result?;
+    let (manifest, archive_bytes, stores_used, nav_count, kits) = result?;
     let raw_bytes = manifest.files.iter().map(|file| file.size).sum();
 
     Ok(BundleOut {
@@ -250,13 +278,71 @@ pub fn build(spec: &BundleSpec) -> Result<BundleOut, Error> {
         shared,
         campaign_skipped,
         unknown_skipped,
-        stripped_used,
+        stripped_used: stripped_used - kits.unstripped,
         stores_used,
         nav_maps: nav_count,
         image: spec.image.is_some(),
+        kits: kits.built,
+        kits_refused: kits.refused,
+        kit_bases_unstripped: kits.unstripped,
         raw_bytes,
         archive_bytes,
     })
+}
+
+/// What the kits added to the bundle.
+#[derive(Default)]
+struct KitsOut {
+    built: usize,
+    refused: Vec<(String, String)>,
+    unstripped: usize,
+}
+
+/// Build the kits on the disc's maps. A map given as a stripped copy is
+/// carried from the disc again when its kit is built: the kit's patch
+/// checks the disc map's hash before the host can load it.
+#[cfg(feature = "firefight")]
+fn stage_kits(
+    bases: &[(String, Source, u64, bool)],
+    staging: &Path,
+    payload: &mut Vec<Payload>,
+) -> Result<KitsOut, Error> {
+    let maps: Vec<kits::KitMap> = bases
+        .iter()
+        .map(|(key, source, _, _)| kits::KitMap { key: key.clone(), source: source.clone() })
+        .collect();
+    let staged = kits::stage(&maps, staging, payload)?;
+    let mut unstripped = 0;
+    for (key, source, size, stripped) in bases {
+        if !stripped || !staged.index.maps.contains_key(key) {
+            continue;
+        }
+        let file = payload
+            .iter_mut()
+            .find(|p| {
+                p.path.strip_prefix("maps/").is_some_and(|name| {
+                    name.get(..key.len()).is_some_and(|stem| stem.eq_ignore_ascii_case(key))
+                        && name.get(key.len()..).is_some_and(|ext| ext.eq_ignore_ascii_case(".map"))
+                })
+            })
+            .ok_or_else(|| Error::Bundle(format!("maps/{key}.map left the payload")))?;
+        eprintln!(
+            "host-data: maps/{key}.map comes from the disc, not the stripped copy: its Firefight kit is bound to the disc map"
+        );
+        file.source = source.clone();
+        file.size = *size;
+        unstripped += 1;
+    }
+    Ok(KitsOut { built: staged.index.maps.len(), refused: staged.refused, unstripped })
+}
+
+#[cfg(not(feature = "firefight"))]
+fn stage_kits(
+    _: &[(String, Source, u64, bool)],
+    _: &Path,
+    _: &mut Vec<Payload>,
+) -> Result<KitsOut, Error> {
+    unreachable!("build refuses spec.firefight without the feature")
 }
 
 /// One file on the way into the archive.
@@ -566,6 +652,7 @@ mod tests {
             sim_stores: None,
             bots: None,
             image: None,
+            firefight: false,
             force: false,
             zstd_level: 3,
         }

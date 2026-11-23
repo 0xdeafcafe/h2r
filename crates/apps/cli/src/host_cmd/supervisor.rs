@@ -672,6 +672,7 @@ mod tests {
             sim_stores: None,
             bots: None,
             image,
+            firefight: false,
             force: true,
             zstd_level: 1,
         })

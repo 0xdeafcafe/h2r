@@ -1,5 +1,8 @@
 //! Offset-preserving, sparse server copies. The guest and network layer can
 //! keep their original header, resource descriptors and copy-time checksum.
+//! Only bitmap and sample payloads are blanked: tag metadata, BSPs and the
+//! index stay whole, so a Firefight kit map keeps its squads, zones, orders,
+//! sectors and moved group table (`strip_keeps_squads_and_sectors`).
 use anyhow::{Context, Result, bail, ensure};
 use map::{FourCC, Map, ResourceFile};
 use sha2::{Digest, Sha256};
@@ -51,6 +54,10 @@ struct Plan {
     size: u64,
     /// Disjoint ranges of sample/pixel bytes, in file order.
     holes: Vec<Range<u64>>,
+    /// What is never blanked: the header, the index and metadata, every
+    /// tag's payload and the string tables, merged, in file order.
+    #[cfg(test)]
+    kept: Vec<Range<u64>>,
 }
 
 impl Plan {
@@ -131,9 +138,12 @@ impl Plan {
             }
         }
 
+        let kept = union(keep);
         Ok(Self {
             size: map.storage_length(),
-            holes: subtract(union(holes), &union(keep)),
+            holes: subtract(union(holes), &kept),
+            #[cfg(test)]
+            kept,
         })
     }
 
@@ -289,6 +299,69 @@ mod tests {
         let holes = union(vec![18..36, 7..20, 12..16]);
         let keep = union(vec![0..8, 9..14, 14..16, 22..28, 30..42]);
         assert_eq!(subtract(holes, &keep), vec![8..9, 16..22, 28..30]);
+    }
+
+    #[test]
+    fn strip_keeps_squads_and_sectors() {
+        // A Firefight kit map: squads, zones and orders in the scenario,
+        // trimmed sectors in each BSP, the group table moved to the end of
+        // the metadata (docs/game/firefight.md, "The kit").
+        let kit = firefight_kit::testkit::court_kit();
+        let dir = std::env::temp_dir().join(format!(
+            "server-map-kit-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let original = dir.join("court.map");
+        std::fs::write(&original, &kit).unwrap();
+        let mut source = Map::open(&original).unwrap();
+        source.validate_checksum().unwrap();
+        let plan = Plan::read(&mut source).unwrap();
+
+        // Everything the AI reads is in what the plan keeps.
+        let covered = |r: &Range<u64>| {
+            plan.kept.iter().any(|k| k.start <= r.start && r.end <= k.end)
+                && !plan.holes.iter().any(|h| h.start < r.end && r.start < h.end)
+        };
+        let h = source.header();
+        assert!(covered(&(u64::from(h.index_offset)..u64::from(h.file_size))));
+        let ai_tags: Vec<_> = source
+            .tags()
+            .iter()
+            .filter(|t| [*b"scnr", *b"sbsp", *b"char"].contains(&t.group.0))
+            .map(|t| (t.id, t.location.expect("a local tag")))
+            .collect();
+        assert_eq!(ai_tags.len(), 4, "the scenario, two BSPs and the kit's character");
+        for (id, loc) in &ai_tags {
+            let at = loc.space.file_offset + u64::from(loc.address - loc.space.virtual_base);
+            assert!(covered(&(at..at + u64::from(loc.size))), "{id}");
+        }
+
+        let stripped = dir.join("court.server.map");
+        let mut out = OpenOptions::new().write(true).create_new(true).open(&stripped).unwrap();
+        strip(File::open(&original).unwrap(), &mut out, &plan).unwrap();
+        drop(out);
+        verify(&original, &stripped, &plan).unwrap();
+        let mut server = Map::open(&stripped).unwrap();
+        server.validate_checksum().unwrap();
+        assert_eq!(server.groups(), source.groups());
+        let ai = h1campaign::ai::h2::ScenarioAi::read_map(&mut server).unwrap();
+        assert_eq!(ai, h1campaign::ai::h2::ScenarioAi::read_map(&mut source).unwrap());
+        assert_eq!(ai.squads.len(), 16);
+        assert!(ai.zones.iter().any(|z| z.name == "ff_base_00"));
+        let orders: Vec<_> = ai.orders.iter().map(|o| o.name.as_str()).collect();
+        assert_eq!(orders, ["ff_hunt_00", "ff_hunt_01"]);
+        for bsp in ["court_0", "court_1"] {
+            let id = server.tag(bsp).unwrap().id;
+            let sectors = tags::pathfinding::PathfindingData::read(&mut server, id).unwrap();
+            assert!(sectors.as_ref().is_some_and(|s| !s.sectors.is_empty()), "{bsp}");
+            assert_eq!(sectors, tags::pathfinding::PathfindingData::read(&mut source, id).unwrap());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

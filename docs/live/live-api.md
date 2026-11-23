@@ -1516,6 +1516,11 @@ for 1 vCPU and 2 GiB, `large` for 2 vCPUs and 4 GiB), `map`, `map_id`,
 `variant`, `hopper`, `max_players` (1–16), `roster` (XUIDs), `bots`
 (seat names), `transport` (`udp` or `tunnel`) and `created_ms` (Unix
 milliseconds). `idle_timeout_s` defaults to 120 and `max_match_s` to 1800.
+A Firefight match's lease also carries `firefight`, the match as a
+session advertises it (`set`, `id`, `teams`, `difficulty`, `kit`); it is
+left out otherwise. Its pack runs nothing beside it, and the host plays
+the map's kit from its game data
+([Packed hosts](dedicated-host.md#packed-hosts)).
 
 A `HostEndpoint` contains `transport`, `udp` (address and base port),
 `tunnel_url`, `xnaddr` (hex of the advertised XNADDR) and `session_id`.
