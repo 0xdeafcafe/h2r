@@ -1308,12 +1308,12 @@ mod selection_tests {
         let m = material(16, vec![four(&[state(CULL_MODE, CW)])]);
         assert_eq!(layer_passes(&m, 16).unwrap_err(), FogRefusal::Implementations { pass: 0, count: 4 });
         for wanted in 0..4 {
-            let sel = Selection { implementation: Some(wanted), layer_cull: false };
+            let sel = Selection { implementation: Some(wanted), layer_cull: false, rasterizer: None };
             let passes = layer_passes_selected(&m, 16, sel).expect("the selected implementation fits");
             assert_eq!(passes.len(), 1);
             assert_eq!(passes[0].look.implementation, wanted, "the look is the selected implementation's");
         }
-        let past = Selection { implementation: Some(4), layer_cull: false };
+        let past = Selection { implementation: Some(4), layer_cull: false, rasterizer: None };
         assert_eq!(layer_passes_selected(&m, 16, past).unwrap_err(), FogRefusal::Implementations { pass: 0, count: 4 });
         assert!(layer_has_choice(&m, 16));
         assert!(!layer_has_choice(&m, 7), "another layer has no pass");
@@ -1322,7 +1322,7 @@ mod selection_tests {
     #[test]
     fn a_pass_with_one_implementation_ignores_the_selection() {
         let m = material(16, vec![vec![imp(0, &[state(CULL_MODE, CW)])], four(&[state(CULL_MODE, CW)])]);
-        let sel = Selection { implementation: Some(2), layer_cull: false };
+        let sel = Selection { implementation: Some(2), layer_cull: false, rasterizer: None };
         let passes = layer_passes_selected(&m, 16, sel).unwrap();
         let chosen: Vec<_> = passes.iter().map(|p| p.look.implementation).collect();
         assert_eq!(chosen, vec![0, 2], "the single takes 0, the other the selection");
@@ -1335,9 +1335,9 @@ mod selection_tests {
     fn an_unset_cull_takes_the_layers_start_only_when_the_layer_allows_it() {
         let m = material(1, vec![vec![imp(0, &[])]]);
         assert_eq!(layer_passes(&m, 1).unwrap_err(), FogRefusal::InheritsCull { pass: 0 });
-        let refused = Selection { implementation: None, layer_cull: false };
+        let refused = Selection { implementation: None, layer_cull: false, rasterizer: None };
         assert_eq!(layer_passes_selected(&m, 1, refused).unwrap_err(), FogRefusal::InheritsCull { pass: 0 });
-        let allowed = Selection { implementation: None, layer_cull: true };
+        let allowed = Selection { implementation: None, layer_cull: true, rasterizer: None };
         let passes = layer_passes_selected(&m, 1, allowed).unwrap();
         // `CULLMODE` CW with `FRONTFACE` CW culls the front face of the
         // primitive state (`gfx::translate::primitive_state`), where
