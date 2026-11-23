@@ -27,6 +27,12 @@
 //! `MapEditor::append_metadata`. See docs/editor/rich-editors.md, "Data
 //! that changes length".
 //!
+//! Every write, block change, resize, string add, undo and redo reports a
+//! [`Change`] with its class (Field, or Shape where the layout or the
+//! strings change), which the fan-out takes each frame
+//! ([`TagDoc::take_changes`], docs/editor/live-editors.md, "One write,
+//! three deliveries").
+//!
 //! [`App`]: crate::App
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Seek};
@@ -38,6 +44,8 @@ use scenario_edit::{
     layout::{BLOCKS, BlockDef},
 };
 use tags::registry::{Kind, Layout, Registry};
+
+use super::live::{Change, Class};
 
 /// Why a tag's bytes can be read but not written.
 pub const SCENARIO_OWNED: &str = "the scenario tag's bytes belong to the Scenario tool (edit \
@@ -195,6 +203,27 @@ struct Step {
     reload: Vec<(String, Vec<(u32, u32)>)>,
     /// String IDs this step added (the last of the document's).
     strings: Vec<String>,
+    /// The step changed a block's count or a data reference's length.
+    shape: bool,
+}
+
+impl Step {
+    /// The fan-out's class of the step: Shape when it changed a layout or
+    /// added strings, else Field.
+    fn class(&self) -> Class {
+        if self.shape || !self.reload.is_empty() || !self.strings.is_empty() {
+            Class::Shape
+        } else {
+            Class::Field
+        }
+    }
+
+    fn ranges(&self) -> Vec<(u32, u32)> {
+        self.writes
+            .iter()
+            .map(|((_, a), _, after)| (*a, after.len() as u32))
+            .collect()
+    }
 }
 
 /// The open map's tags and the edits over them.
@@ -275,6 +304,8 @@ pub struct TagDoc {
     /// (`shared_refs::TagDoc::homes`).
     pub(super) homes_cache:
         std::cell::RefCell<(u64, HashMap<TagId, Option<super::shared_refs::Homes>>)>,
+    /// Writes not yet taken by the fan-out ([`Self::take_changes`]).
+    changes: Vec<Change>,
 }
 
 impl Default for TagDoc {
@@ -314,7 +345,64 @@ impl TagDoc {
             allow_growth: false,
             shape_rev: 0,
             homes_cache: Default::default(),
+            changes: Vec::new(),
         }
+    }
+
+    /// The writes since the last call, oldest first, each with its class.
+    pub fn take_changes(&mut self) -> Vec<Change> {
+        std::mem::take(&mut self.changes)
+    }
+
+    /// Reports a write of `ranges` to `tag`. Consecutive writes of one
+    /// tag, class and label (every frame of a drag) are one change, and
+    /// a document nobody drains keeps the last [`super::live::KEEP`].
+    fn changed(
+        &mut self,
+        class: Class,
+        tag: Option<TagId>,
+        ranges: Vec<(u32, u32)>,
+        label: &str,
+    ) {
+        if let Some(last) = self.changes.last_mut()
+            && last.class == class
+            && last.tag == tag
+            && last.label == label
+        {
+            for r in ranges {
+                if !last.ranges.contains(&r) {
+                    last.ranges.push(r);
+                }
+            }
+            return;
+        }
+        if self.changes.len() >= super::live::KEEP {
+            self.changes.remove(0);
+        }
+        self.changes.push(Change::new(class, tag, ranges, label));
+    }
+
+    /// Reports an undone or redone step's writes, in its class. The tag is
+    /// the one owning its last write (a block's pair, in its tag's root
+    /// or elements; a grown block's copy lies past the metadata).
+    fn changed_step(&mut self, step: &Step) {
+        let tag = step.writes.iter().rev().find_map(|(at, _, _)| self.owner(*at));
+        self.changed(step.class(), tag, step.ranges(), &step.label);
+    }
+
+    /// Reports a new step of `tag`'s, in its class.
+    fn changed_tag_step(&mut self, tag: TagId, step: &Step) {
+        self.changed(step.class(), Some(tag), step.ranges(), &step.label);
+    }
+
+    /// The loaded tag whose payload holds `address` in `region`.
+    fn owner(&self, (region, address): (Region, u32)) -> Option<TagId> {
+        self.tags()
+            .iter()
+            .find(|t| {
+                t.region() == region && address.checked_sub(t.address).is_some_and(|o| o < t.size)
+            })
+            .map(|t| t.id)
     }
 
     pub fn registry(&self) -> &'static Registry {
@@ -665,6 +753,8 @@ impl TagDoc {
             return Ok(());
         }
         self.put(at, &w.bytes);
+        let label = format!("set {}", w.label);
+        self.changed(Class::Field, Some(w.tag), vec![(w.address, len)], &label);
         self.redo.clear();
         if let Some(last) = self.undo.last_mut()
             && !self.sealed
@@ -718,6 +808,7 @@ impl TagDoc {
                 BlockOp::Duplicate(i) => format!("duplicate {} {i}", layout.name),
                 BlockOp::Remove(i) => format!("remove {} {i}", layout.name),
             },
+            shape: true,
             ..Step::default()
         };
         let (from, bytes, count) = match *op {
@@ -767,6 +858,7 @@ impl TagDoc {
                     .collect(),
             ));
         }
+        self.changed_tag_step(tag, &step);
         self.undo.push(step);
         self.redo.clear();
         self.sealed = true;
@@ -821,6 +913,7 @@ impl TagDoc {
         pair_bytes.extend(at.to_le_bytes());
         let mut step = Step {
             label,
+            shape: true,
             ..Step::default()
         };
         for (to, after) in [(at, bytes), (pair, pair_bytes)] {
@@ -840,6 +933,7 @@ impl TagDoc {
                 .map(|((_, a), _, b)| (*a, b.len() as u32))
                 .collect(),
         ));
+        self.changed_tag_step(tag, &step);
         self.undo.push(step);
         self.redo.clear();
         self.sealed = true;
@@ -955,6 +1049,7 @@ impl TagDoc {
                     label
                 }
             ),
+            shape: true,
             ..Step::default()
         };
         let mut writes: Vec<(u32, Vec<u8>)> = Vec::new();
@@ -1000,6 +1095,7 @@ impl TagDoc {
                 .map(|((_, a), _, b)| (*a, b.len() as u32))
                 .collect(),
         ));
+        self.changed_tag_step(tag, &step);
         self.undo.push(step);
         self.redo.clear();
         self.sealed = true;
@@ -1032,6 +1128,7 @@ impl TagDoc {
         for (at, before, _) in step.writes.iter().rev() {
             self.put(*at, before);
         }
+        self.changed_step(&step);
         if let Some(l) = self.loaded.as_mut() {
             let keep = l.new_strings.len().saturating_sub(step.strings.len());
             l.new_strings.truncate(keep);
@@ -1047,6 +1144,7 @@ impl TagDoc {
         for (at, _, after) in &step.writes {
             self.put(*at, after);
         }
+        self.changed_step(&step);
         if let Some(l) = self.loaded.as_mut() {
             l.new_strings.extend(step.strings.iter().cloned());
         }
@@ -1089,6 +1187,7 @@ impl TagDoc {
             ..Step::default()
         };
         for s in steps {
+            one.shape |= s.shape;
             one.reload.extend(s.reload);
             one.writes.extend(s.writes);
             one.strings.extend(s.strings);
@@ -1311,6 +1410,7 @@ impl TagDoc {
             }
             self.rev += 1;
         }
+        self.changed_tag_step(tag, &step);
         self.undo.push(step);
         self.redo.clear();
         self.sealed = true;

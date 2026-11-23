@@ -1,7 +1,16 @@
 //! Compare whole fields against the loaded file plus acknowledged game writes.
 //! The sparse baseline keeps addresses after undo removes a document patch.
-use super::sync;
-use crate::app::TagDoc;
+//!
+//! Also the game side of the fan-out ([`super::Play::fan_out`],
+//! docs/editor/live-editors.md): each frame it takes the document's
+//! changes, has `app::live` route them, and carries out each delivery
+//! over the link. A Pending row says its fan-out class (`class`) beside
+//! its effect.
+use super::link::Purpose;
+use super::playtest::{self, Waiting};
+use super::{raw_sync, sync};
+use crate::app::live::{Change, Class, Host, Route, Target};
+use crate::app::{App, TagDoc};
 use map::TagId;
 use scenario_edit::BspPatch;
 use serde_json::{Value, json};
@@ -142,17 +151,24 @@ pub struct Write {
     pub effect: Effect,
 }
 
-/// A pending row: what changed (`doc`, `tag`, `path`), when it takes
+/// A pending row: what changed (`doc`, `tag`, `path`), its fan-out class
+/// (`class`, by `doc` until [`set_class`] says otherwise), when it takes
 /// effect (`effect`, the id, and `text`, its sentence) and why.
 pub fn row(doc: &str, tag: Value, path: &str, effect: Effect, why: &str) -> Value {
     json!({
         "doc": doc,
         "tag": tag,
         "path": path,
+        "class": Class::of_doc(doc).id(),
         "effect": effect.id(),
         "text": effect.sentence(),
         "why": why,
     })
+}
+
+/// Sets `row`'s fan-out class.
+pub fn set_class(row: &mut Value, class: Class) {
+    row["class"] = json!(class.id());
 }
 
 /// Sets `row`'s effect and its sentence.
@@ -313,13 +329,15 @@ pub fn diff(base: &TagBaseline, doc: &TagDoc) -> (Vec<Write>, Vec<Value>) {
                 .enumerate()
                 .any(|(i, (b, original))| b != base.bytes.get(&(at + i as u32)).unwrap_or(original))
         }) {
-            rows.push(row(
+            let mut layout = row(
                 "tags",
                 Value::Null,
                 label,
                 Effect::Reload,
                 "the block layout changed",
-            ));
+            );
+            set_class(&mut layout, Class::Shape);
+            rows.push(layout);
         }
     }
     for string in doc
@@ -327,26 +345,24 @@ pub fn diff(base: &TagBaseline, doc: &TagDoc) -> (Vec<Write>, Vec<Value>) {
         .iter()
         .filter(|s| !base.strings.contains(s))
     {
-        rows.push(row(
-            "tags",
-            Value::Null,
-            string,
-            Effect::Reload,
-            "new map string",
-        ));
+        let mut added = row("tags", Value::Null, string, Effect::Reload, "new map string");
+        set_class(&mut added, Class::Shape);
+        rows.push(added);
     }
     for string in base
         .strings
         .iter()
         .filter(|s| !doc.new_strings().contains(s))
     {
-        rows.push(row(
+        let mut removed = row(
             "tags",
             Value::Null,
             string,
             Effect::Reload,
             "remove string from the play copy",
-        ));
+        );
+        set_class(&mut removed, Class::Shape);
+        rows.push(removed);
     }
     let mut writes = Vec::new();
     let mut covered = 0u64;
@@ -451,6 +467,145 @@ impl Write {
     }
 }
 
+/// The scenario session's revisions, as the fan-out compares them: the
+/// open document, its edits (and selection), and each block's layout.
+fn scenario_seen(app: &App) -> (u64, u64, u64) {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    if let Some(s) = app.session.scenario() {
+        for b in &s.blocks {
+            b.layout_rev().hash(&mut h);
+        }
+    }
+    (app.session.world_rev(), app.session.markers_rev(), h.finish())
+}
+
+impl super::Play {
+    /// Where the game view's changes go: Studio's own game, an attached
+    /// one (in Edit or not), or none.
+    pub(crate) fn live_target(&self) -> Target {
+        if !self.is_paired() {
+            Target::Off
+        } else if self.own_game() {
+            Target::Own
+        } else {
+            Target::Attached {
+                edit: self.live_edits,
+            }
+        }
+    }
+
+    /// Once a frame, after the edits are pushed: takes every write path's
+    /// changes (the tag document's own; the scenario session's and the raw
+    /// documents' by their revisions), routes them by class
+    /// (`app::live::route`) and carries out the game's deliveries. Field
+    /// and Raw deliveries are one send of what the documents hold
+    /// (`edit.batch`, the raw edits); a Shape delivery is that send and,
+    /// for what it leaves under After reload, one play-copy reload; a
+    /// Host delivery is the source's reload method. A delivery the game
+    /// cannot take stays a Pending row.
+    pub(crate) fn fan_out(&mut self, app: &mut App) {
+        let target = self.live_target();
+        app.live.set_target(target);
+        for change in app.tags.take_changes() {
+            app.live.emit(change);
+        }
+        see_documents(app);
+        if target == Target::Off {
+            app.live.owed = Default::default();
+        }
+        for d in app.live.flush() {
+            match d.route {
+                Route::Reread | Route::Pending => {}
+                // An attached game in Edit takes these by its own push.
+                Route::EditBatch | Route::RawEdit if target == Target::Own => {
+                    app.live.owed.send = true;
+                }
+                Route::EditBatch | Route::RawEdit => {}
+                Route::BuildLoad => {
+                    app.live.owed.send = true;
+                    app.live.owed.build = true;
+                }
+                Route::HostReload(host) => match host.method() {
+                    Some(method) if self.has_method(method) => {
+                        let purpose = if host == Host::Rules {
+                            Purpose::Rules
+                        } else {
+                            Purpose::Other
+                        };
+                        self.call(method, d.change.params.clone(), purpose);
+                    }
+                    _ => app.live.hold_refused(d.change),
+                },
+            }
+        }
+        if app.live.owed.send && !self.edits.interrupted_write() {
+            app.live.owed.send = false;
+            self.refresh_pending(app, true);
+        }
+        if app.live.owed.build && !app.live.owed.send && !self.edits.interrupted_write() {
+            app.live.owed.build = false;
+            let after_reload = app.pairing.pending.iter().any(|r| {
+                Class::of_row(r) == Class::Shape && Effect::is_reload(r)
+            });
+            if after_reload
+                && target == Target::Own
+                && self.waiting == Waiting::Idle
+                && self.reload_copy.is_none()
+                && let Err(why) = self.reload_for_play(app, playtest::Reload::Method)
+            {
+                app.error(format!("the layout change stays in Pending: {why}"));
+            }
+        }
+        publish_held(app);
+    }
+}
+
+/// Reports the scenario session's and the raw documents' writes as
+/// changes, by their revisions: a block's layout is Shape, other scenario
+/// edits Field, geometry and pixels Raw. A new document is not a write.
+fn see_documents(app: &mut App) {
+    let raw = raw_sync::doc_rev(app);
+    if app.live.seen.raw.replace(raw).is_some_and(|r| r != raw) {
+        let change = Change::new(Class::Raw, None, Vec::new(), "geometry and pixels");
+        app.live.emit(change);
+    }
+    let now = scenario_seen(app);
+    let before = app.live.seen.scenario.replace(now);
+    if let Some((world, markers, layouts)) = before
+        && world == now.0
+    {
+        let tag = app.session.scenario().map(|s| s.tag);
+        if layouts != now.2 {
+            app.live
+                .emit(Change::new(Class::Shape, tag, Vec::new(), "placement layout"));
+        } else if markers != now.1 {
+            app.live
+                .emit(Change::new(Class::Field, tag, Vec::new(), "placements"));
+        }
+    }
+}
+
+/// Puts the held Host changes in Pending, as rows of class `host`, and
+/// takes out the rows of those that went.
+fn publish_held(app: &mut App) {
+    let rows = app.live.held_rows(|c| match c.host.and_then(Host::method) {
+        None => Host::NO_RELOAD,
+        Some(_) => "reloaded in the game once the pairing is in Edit",
+    });
+    let shown: Vec<&Value> = app
+        .pairing
+        .pending
+        .iter()
+        .filter(|r| r["doc"] == "host")
+        .collect();
+    if shown.len() == rows.len() && shown.iter().zip(&rows).all(|(a, b)| *a == b) {
+        return;
+    }
+    app.pairing.pending.retain(|r| r["doc"] != "host");
+    app.pairing.pending.extend(rows);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -518,7 +673,204 @@ mod tests {
         let pending = row("tags", Value::Null, "x", Effect::NextUse, "why");
         assert_eq!(pending["effect"], "next_use");
         assert_eq!(pending["text"], "Applies the next time the game uses it.");
-        assert!(pending.get("class").is_none());
+        assert_eq!(pending["class"], "field");
         assert_eq!(Effect::of_row(&pending), Some(Effect::NextUse));
+    }
+}
+
+/// The fan-out on the invented game (docs/editor/live-editors.md, LE1).
+#[cfg(all(test, unix))]
+mod fan_out_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use agent::Access;
+    use agent_proto::Endpoint;
+    use agent_proto::sim::SessionKind;
+    use agent_proto::sim::method::MAP_RELOAD;
+    use serde_json::{Value, json};
+
+    use crate::app::live::{Change, Class, Host, Route, View};
+    use crate::app::{Action, App, BlockOp, TagAction, tag_tests};
+    use crate::play::Play;
+    use crate::play::testing::Temp;
+    use crate::play::testing::fake::{Game, until};
+
+    /// The invented game with `render.reload` counted, and the editor
+    /// paired with it over the tag fixture; `own` makes it Studio's own.
+    fn paired(name: &str, own: bool) -> (Temp, Game, App, Play, Arc<AtomicU32>) {
+        let t = Temp::new(name);
+        let game = Game::start(name, "example", SessionKind::Local);
+        let reloads = Arc::new(AtomicU32::new(0));
+        let counted = Arc::clone(&reloads);
+        game.agent.add_method(
+            agent_proto::hot::method::RENDER_RELOAD,
+            Access::Act,
+            move |_| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                Ok(json!({}))
+            },
+        );
+        let (mut app, _, _) = tag_tests::app(&t.0);
+        app.pairing.auto_pair = false;
+        let mut play = Play::new();
+        play.pair(&mut app, Endpoint::Unix(game.path.clone()));
+        until(&mut play, &mut app, "game identity and journal", |p, a| {
+            p.edits.journal_ready && p.edit_refusal(a).is_none()
+        });
+        if own {
+            play.child_endpoint = play.endpoint().cloned();
+        }
+        (t, game, app, play, reloads)
+    }
+
+    fn speed(app: &mut App) {
+        let action =
+            crate::app::tag_api::set_field(&app.tags, tag_tests::weap_id(), "speed", &json!(4.5))
+                .unwrap();
+        app.dispatch(Action::Tag(action));
+    }
+
+    fn remove_part(app: &mut App) {
+        let field = app
+            .tags
+            .layout(tag_tests::weap_id())
+            .unwrap()
+            .field_at(8)
+            .unwrap()
+            .clone();
+        let tags::registry::Kind::Block(layout) = &field.kind else {
+            panic!("the weapon's parts are a block")
+        };
+        app.dispatch(Action::Tag(TagAction::Block {
+            tag: tag_tests::weap_id(),
+            pair: tag_tests::WEAP + 8,
+            layout: layout.clone(),
+            op: BlockOp::Remove(1),
+        }));
+    }
+
+    fn frames(play: &mut Play, app: &mut App, n: usize) {
+        for _ in 0..n {
+            play.update(app);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    fn delivered(app: &App, view: View, class: Class) -> Vec<Route> {
+        app.live
+            .delivered()
+            .iter()
+            .filter(|(v, _, c)| *v == view && *c == class)
+            .map(|(_, r, _)| *r)
+            .collect()
+    }
+
+    /// A field write to the own game is one `edit.batch`, sent with no
+    /// click, and one Preview re-read.
+    #[test]
+    fn a_field_write_is_one_batch_in_the_own_game() {
+        let (_t, game, mut app, mut play, _) = paired("fan-field-own", true);
+        speed(&mut app);
+        until(&mut play, &mut app, "the field's batch", |p, _| {
+            game.calls("edit.batch").len() == 1 && p.edits.sent.is_none()
+        });
+        frames(&mut play, &mut app, 20);
+        assert_eq!(game.calls("edit.batch").len(), 1);
+        assert_eq!(game.calls("edit.batch")[0]["writes"].as_array().unwrap().len(), 1);
+        assert_eq!(delivered(&app, View::Game, Class::Field), vec![Route::EditBatch]);
+        assert_eq!(delivered(&app, View::Preview, Class::Field), vec![Route::Reread]);
+    }
+
+    /// The same write to an attached game in View is a Pending row of
+    /// class `field`, and nothing is sent.
+    #[test]
+    fn a_field_write_is_a_pending_row_in_an_attached_game() {
+        let (_t, game, mut app, mut play, _) = paired("fan-field-attached", false);
+        speed(&mut app);
+        until(&mut play, &mut app, "the pending field", |_, a| {
+            a.pairing.pending.iter().any(|r| r["doc"] == "tags")
+        });
+        frames(&mut play, &mut app, 20);
+        assert!(game.calls("edit.batch").is_empty());
+        let row = app.pairing.pending.iter().find(|r| r["doc"] == "tags").unwrap();
+        assert_eq!(row["class"], "field");
+        assert_eq!(delivered(&app, View::Attached, Class::Field), vec![Route::Pending]);
+        assert!(delivered(&app, View::Game, Class::Field).is_empty());
+    }
+
+    /// A Host change is one reload call in the own game; in an attached
+    /// game in View it is one Pending row of class `host` and no call,
+    /// and it goes once the pairing is in Edit.
+    #[test]
+    fn a_host_change_is_one_reload_or_one_pending_row() {
+        let (_t, _game, mut app, mut play, reloads) = paired("fan-host-own", true);
+        app.live
+            .emit(Change::host(Host::Shader, json!({}), "shader override"));
+        until(&mut play, &mut app, "the reload", |_, _| {
+            reloads.load(Ordering::SeqCst) == 1
+        });
+        frames(&mut play, &mut app, 20);
+        assert_eq!(reloads.load(Ordering::SeqCst), 1);
+        assert!(app.pairing.pending.iter().all(|r| r["doc"] != "host"));
+
+        let (_t, _game, mut app, mut play, reloads) = paired("fan-host-attached", false);
+        app.live
+            .emit(Change::host(Host::Shader, json!({}), "shader override"));
+        frames(&mut play, &mut app, 20);
+        assert_eq!(reloads.load(Ordering::SeqCst), 0);
+        let rows: Vec<&Value> = app
+            .pairing
+            .pending
+            .iter()
+            .filter(|r| r["doc"] == "host")
+            .collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            (rows[0]["class"].clone(), rows[0]["host"].clone()),
+            (json!("host"), json!("shader"))
+        );
+        play.live_edits = true;
+        until(&mut play, &mut app, "the held reload", |_, _| {
+            reloads.load(Ordering::SeqCst) == 1
+        });
+        frames(&mut play, &mut app, 20);
+        assert_eq!(reloads.load(Ordering::SeqCst), 1);
+        assert!(app.pairing.pending.iter().all(|r| r["doc"] != "host"));
+    }
+
+    /// A Host source the game has no reload for waits in Pending in the
+    /// own game too, saying so.
+    #[test]
+    fn a_host_source_without_a_reload_waits_in_pending() {
+        let (_t, _game, mut app, mut play, reloads) = paired("fan-host-none", true);
+        app.live.emit(Change::host(Host::HudKit, json!({}), "HUD kit"));
+        frames(&mut play, &mut app, 20);
+        let row = app.pairing.pending.iter().find(|r| r["doc"] == "host").unwrap();
+        assert_eq!(row["why"], Host::NO_RELOAD);
+        assert_eq!(reloads.load(Ordering::SeqCst), 0);
+    }
+
+    /// A block element removed is a Shape change: one play-copy reload in
+    /// the own game, a Pending row of class `shape` in an attached one.
+    #[test]
+    fn a_shape_change_is_one_reload_or_one_pending_row() {
+        let (_t, game, mut app, mut play, _) = paired("fan-shape-attached", false);
+        remove_part(&mut app);
+        until(&mut play, &mut app, "the layout row", |_, a| {
+            a.pairing.pending.iter().any(|r| r["class"] == "shape")
+        });
+        frames(&mut play, &mut app, 20);
+        assert!(game.calls(MAP_RELOAD).is_empty());
+        assert_eq!(delivered(&app, View::Attached, Class::Shape), vec![Route::Pending]);
+
+        let (_t, game, mut app, mut play, _) = paired("fan-shape-own", true);
+        remove_part(&mut app);
+        until(&mut play, &mut app, "the play-copy reload", |_, _| {
+            game.calls(MAP_RELOAD).len() == 1
+        });
+        frames(&mut play, &mut app, 20);
+        assert_eq!(game.calls(MAP_RELOAD).len(), 1);
+        assert_eq!(delivered(&app, View::Game, Class::Shape), vec![Route::BuildLoad]);
     }
 }

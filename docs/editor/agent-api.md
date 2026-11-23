@@ -252,7 +252,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `host` | `memory {report?}`, `memory.history {since_ms?}`, `memory.heap {top?}`, `memory.gpu`, `memory.diff {from_ms}`, `memory.postmortem {pid?}`: the editor process's watchdog and flight recorder, answered on the connection thread as the game answers them ([Finding a leak after the fact](../runtime/agent-api.md#finding-a-leak-after-the-fact)) |
 | `source` | `open {path}`, `maps` |
 | `doc` | `list`, `open {map \| path \| package \| variant \| playlists}` (`variant` is `{builtin}`, `{saved}`, `{new}` or `{script}`), `save`, `save_as {path}`, `diff`, `undo`, `redo`, `close` |
-| `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `fields {tag, path?}`, `tree {root?, depth?}`, `refs {tag, limit?}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
+| `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `fields {tag, path?}`, `tree {root?, depth?}`, `refs {tag, limit?}`, `kinds {group?}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
 | `sound` | `read {tag, range?, permutation?, bins?}`, `play {tag, range?, permutation?, from_ms?}`, `stop`, `measure {tag \| clip \| path, range?, permutation?, class?, limit?}` ([Content checks](#content-checks)) |
 | `scenario` | `blocks`, `list {block}`, `get`, `set {block, index, field, value}`, `add {block, like, position}`, `move {block, index, position, ypr}`, `delete`, `duplicate`, `select` |
 | `volume` | `list {kind?}` (short form `volumes [kind]`), `select {index?, focus?}`, `set {index, origin?, center?, forward?, up?, size?}`, `add {kill?, center?, origin?, forward?, up?, size?}`, `remove {kind?, index}` |
@@ -453,6 +453,23 @@ Notes on some:
   scenario reference edits. `incomplete` marks a partial reachability
   walk and leaves `unreachable` empty. `truncated` indicates that an
   object chain hit its display walk budget.
+- **Kinds.** `tag.kinds {group?}` reads the kind registry
+  ([live-editors.md](live-editors.md), "The registry";
+  `app::kinds::KINDS`). It returns `{kinds, default, groups, target}`:
+  `kinds` has one row per kind with `label`, `groups`, `editor`
+  (`field_panel`, `scenario`, `modeling`, `textures`, `audition`,
+  `hud`, `ui_screens`, `scripts`), `preview` (`none`, `viewport`,
+  `model_render`, `thumbnails`, `waveform`, `tool`, `reports`),
+  `subject` (`none`, `level`, `placement`, `swatch`, `loop`, `play`),
+  `classes` (`field`, `raw`, `shape`, `host`) and `missing`; `default`
+  is the row a group without one gets (the field panel, no preview,
+  `field` and `shape`); `groups` lists every group the registry or the
+  open map has, each with `group`, `kind`, `default`, `editor`,
+  `preview`, `subject` and `classes`; `target` is where the game view's
+  changes go now (`off`, `own`, `attached`, `attached_edit`). With
+  `group` (up to four characters, as `tag.list` writes it) the reply is
+  that group's line alone; a group no row names gets the default. It
+  needs no open map.
 - **References.** `tag.refs {tag, limit?}` lists direct links in the
   open map, including in-memory tag edits and current scenario-owned
   reference fields. Each result has `to` (the target ID),
@@ -600,8 +617,13 @@ Notes on some:
   together in one `edit.batch`, each with its expected `was` value. Tags use
   the `at` form with hex bytes. The optional `known_epoch` on `edit.map`
   refreshes the loaded datum table used to check reference targets. Undo and redo use the same check.
-  `mirror.pending` returns `pending` rows with `doc,path,effect,text,why` and an optional
-  `tag` and `label`: `effect` is when the change takes effect (`now`, `next_use`,
+  `mirror.pending` returns `pending` rows with `doc,path,class,effect,text,why` and an optional
+  `tag` and `label`: `class` is the change's fan-out class (`field`, `raw`, `shape` or
+  `host`, `app::live::Class`, [live-editors.md](live-editors.md)): `raw` for `geometry`,
+  `bitmaps` and `collision` rows, `shape` for a block layout or a new map string, `host`
+  for a `host` row (a Host change the game has no reload for, or one an attached game
+  in View waits to take, with `host` naming its source), else `field`;
+  `effect` is when the change takes effect (`now`, `next_use`,
   `next_spawn`, `reload` or `not_known`, `play::tag_sync::Effect`) and `text` its sentence,
   the game’s existing `journal` from `edit.changes`, and `leaving`.
   A placement block with a different layout revision from the loaded copy
@@ -1128,7 +1150,8 @@ the window and the API stay one path.
   (`TagIo`, after it) answers `tag.list` (replacing the built-in one),
   `tag.browse`, `tag.resources`, `tag.export` and `tag.import` through
   `Action::BrowseTags`, `Action::TagExport` and `Action::TagImport`.
-  `api/tags.rs` registers `TagGraph` for `tag.tree` and `tag.refs`.
+  `api/tags.rs` registers `TagGraph` for `tag.tree`, `tag.refs` and
+  `tag.kinds` (over `app/kinds.rs`).
   The tree and `tag.follow` share the reference reader with `tag.refs`.
 - **Scripts (rich editors H1).** `api/scripts.rs` registers `Scripts`
   for `script.*`, over `app/scripts.rs`'s `Loaded`; `script.source`,

@@ -1025,7 +1025,7 @@ mod paired_socket {
             assert!(rows[0]["path"].as_str().unwrap().contains("speed"));
             assert_eq!(rows[0]["effect"], "not_known");
             assert_eq!(rows[0]["text"], "Not known; reload to be sure.");
-            assert!(rows[0].get("class").is_none());
+            assert_eq!(rows[0]["class"], "field");
             assert_eq!(
                 self.call(m::MIRROR_APPLY, json!({"what":"send"})),
                 json!({"queued":"send"})

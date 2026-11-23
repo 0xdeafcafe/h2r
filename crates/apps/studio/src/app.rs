@@ -12,6 +12,8 @@ pub mod bot_nav;
 pub mod commands;
 pub(crate) mod convert;
 pub mod hud;
+pub mod kinds;
+pub mod live;
 mod editing;
 mod library;
 mod navigation;
@@ -545,6 +547,9 @@ pub struct App {
     pub pairing: crate::play::pair::Bridge,
     /// The tag editor's document over the open map.
     pub tags: TagDoc,
+    /// The fan-out of every write to the Preview, the own game and an
+    /// attached game (docs/editor/live-editors.md).
+    pub live: live::Fanout,
     /// The Modeling tool: the open map's geometry session.
     pub modeling: modeling::Modeling,
     /// The Textures tool: the open map's bitmaps and their edits.
@@ -628,6 +633,7 @@ impl App {
             scripts: ScriptsTool::default(),
             pairing: Default::default(),
             tags: TagDoc::default(),
+            live: Default::default(),
             modeling: Default::default(),
             textures: Default::default(),
             tag_fields: Default::default(),

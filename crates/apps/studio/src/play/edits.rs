@@ -510,6 +510,7 @@ impl Play {
                 Effect::Reload,
                 "placement layout changed",
             );
+            tag_sync::set_class(&mut row, crate::app::live::Class::Shape);
             row["target"] = json!({"panel": "pending"});
             pending.push(row);
         }
