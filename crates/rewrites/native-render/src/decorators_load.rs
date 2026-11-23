@@ -11,7 +11,7 @@ use map::TagId;
 use shaders::psh::{self, PixelOptions, PixelShaderDef, PixelUniforms, TextureDim};
 use shaders::vsh::{self, VertexUniforms};
 use tags::material::Material as TagMaterial;
-use tags::shader::StageStates;
+use tags::shader::{RenderStateValue, StageStates};
 
 use crate::decorators::PROVIDED_INPUTS;
 use crate::engine_states::apply_static;
@@ -43,6 +43,50 @@ pub struct DecoratorLook {
     /// the device holds at the layer-3 call
     /// (`decorators_gpu::DrawKey::cull`).
     pub inherits_cull: bool,
+    /// The render states (guest slots) the guest's draw of the pass
+    /// leaves set: each state of the implementation's list at the last
+    /// value the draw sets it to (its engine-driven values after the
+    /// list), then the implementation's restore list ([`skip_holds`]).
+    pub leaves: Vec<RenderStateValue>,
+}
+
+/// D3D's `TWOSIDEDLIGHTING` (canonical state), which the draw `0x0004e260`
+/// turns on before its placements (`0x0004e2da`) and off after them
+/// (`0x0004ebb4`).
+pub const TWO_SIDED_LIGHTING: u32 = 141;
+
+static STATE_TABLE: std::sync::LazyLock<gfx::xdk::RenderStateTable> =
+    std::sync::LazyLock::new(|| gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD));
+
+/// Each state `states` sets, at the last value it sets it to, in the
+/// order of those last values.
+fn last_values(states: &[RenderStateValue]) -> Vec<RenderStateValue> {
+    let mut out: Vec<RenderStateValue> = Vec::with_capacity(states.len());
+    for s in states.iter().rev() {
+        if !out.iter().any(|o| o.state == s.state) {
+            out.push(*s);
+        }
+    }
+    out.reverse();
+    out
+}
+
+/// Whether skipping the guest's draw of a placement whose pass is `look`
+/// leaves the device's render states as drawing it would (`read`: the
+/// device's render state at a guest slot, at the layer-3 call), the rule
+/// `crate::layer_pass::skip_holds` applies to a world layer's items
+/// (docs/graphics/native-decorators.md, "The glue"; **Code**, `h2
+/// disasm`): the draw's shader begin `0x0001bbf0` sets the pass's list
+/// and its engine-driven values without comparing them with the device
+/// (`0x0001a170`; those values come from the shader instance's own inputs,
+/// [`decorator_look`]), the next pass switch or layer setup restores the
+/// implementation's restore list (`0x00018900`), and the draw leaves
+/// `TwoSidedLighting` off. Skipped, none of it runs. The two agree exactly
+/// when every state of [`DecoratorLook::leaves`] and `TwoSidedLighting`
+/// off already hold; a state that does not read refuses.
+pub fn skip_holds(look: &DecoratorLook, read: &dyn Fn(u32) -> Option<u32>) -> bool {
+    let two_sided = STATE_TABLE.canonical_to_guest(TWO_SIDED_LIGHTING);
+    two_sided.and_then(read) == Some(0) && look.leaves.iter().all(|s| read(u32::from(s.state)) == Some(s.value))
 }
 
 /// The pass of `material` at detail level `lod`, layer `layer`, pass
@@ -72,7 +116,9 @@ pub fn decorator_look(
     let state = pass_state(&applied.render_states).map_err(|r| format!("render states: {r:?}"))?;
     let (microcode, semantics) =
         program(look.vertex_shader).ok_or("the vrtx has no classification-1 program")?;
-    Ok(DecoratorLook { look, state, microcode, semantics, inherits_cull })
+    let mut leaves = last_values(&applied.render_states);
+    leaves.extend_from_slice(&imp.restore_states);
+    Ok(DecoratorLook { look, state, microcode, semantics, inherits_cull, leaves })
 }
 
 /// A decorator pass translated for one set's stream.
@@ -302,7 +348,14 @@ pub(crate) mod tests {
 
     /// Semantic 0 (a three-float position) in `v0`.
     pub(crate) fn decorator(extra: Option<O>) -> DecoratorLook {
-        DecoratorLook { look: look(), state: state(), microcode: code(extra), semantics: vec![0], inherits_cull: false }
+        DecoratorLook {
+            look: look(),
+            state: state(),
+            microcode: code(extra),
+            semantics: vec![0],
+            inherits_cull: false,
+            leaves: Vec::new(),
+        }
     }
 
     pub(crate) fn stream() -> Vec<StreamElement> {
@@ -395,6 +448,67 @@ pub(crate) mod tests {
         material.layers[0].passes[0].implementations[0].engine_render_states = vec![ExternalBinding { bytes: [0, 1, 0, 3] }];
         let e = decorator_look(&material, 0, 3, 0, &mut program).unwrap_err();
         assert!(e.contains("engine-driven states") && e.contains("PerDraw"), "{e}");
+    }
+
+    /// A placement's guest draw is skipped only where what it leaves set
+    /// already holds: its list at the values it sets (an engine-driven
+    /// value over the list's own), its restore list, and `TwoSidedLighting`
+    /// off.
+    #[test]
+    fn a_skipped_placement_holds_only_when_what_its_draw_leaves_already_holds() {
+        use gfx::state::RenderStateType as R;
+        use std::collections::HashMap;
+        use tags::material::{EngineInputs, ResolvedLayer, ResolvedPass};
+        use tags::shader::ExternalBinding;
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let slot = |t| (0..=255u8).find(|&s| R::from_guest_index(&table, u32::from(s)) == Some(t)).expect("a 5849 slot");
+        let rs = |t, value| RenderStateValue { state: slot(t), value };
+        let mut imp = crate::engine_states::tests::implementation(
+            vec![rs(R::AlphaBlendEnable, 0), rs(R::ZWriteEnable, 1), rs(R::BlendColor, 0x00ff_ffff)],
+            0,
+        );
+        imp.restore_states = vec![rs(R::AlphaTestEnable, 0)];
+        // The blend colour's alpha from the instance's scalar 21 (1.0).
+        imp.input_reads.scalars = 1 << 21;
+        imp.engine_render_states = vec![ExternalBinding { bytes: [0, 1, 0, 21] }];
+        let mut material = TagMaterial {
+            shader: TagId(0xe000_0100),
+            template: TagId(0xe000_0101),
+            inputs: EngineInputs::default(),
+            layers: vec![ResolvedLayer {
+                lod: 0,
+                layer: 3,
+                passes: vec![ResolvedPass { index: 0, pass: TagId(0xe000_0200), implementations: vec![imp] }],
+            }],
+        };
+        material.inputs.scalars[21] = 1.0;
+        let mut program = |_: TagId| Some((code(None), vec![0]));
+        let look = decorator_look(&material, 0, 3, 0, &mut program).unwrap();
+        let blend = rs(R::BlendColor, 0xffff_ffff);
+        assert_eq!(
+            look.leaves,
+            [rs(R::AlphaBlendEnable, 0), rs(R::ZWriteEnable, 1), blend, rs(R::AlphaTestEnable, 0)],
+            "the driven value in place of the list's"
+        );
+        let two_sided = table.canonical_to_guest(TWO_SIDED_LIGHTING).expect("a 5849 slot");
+        let mut device: HashMap<u32, u32> = look.leaves.iter().map(|s| (u32::from(s.state), s.value)).collect();
+        device.insert(two_sided, 0);
+        let holds = |device: &HashMap<u32, u32>| skip_holds(&look, &|slot| device.get(&slot).copied());
+        assert!(holds(&device));
+        let with = |slot: u8, value: u32| {
+            let mut d = device.clone();
+            d.insert(u32::from(slot), value);
+            d
+        };
+        assert!(!holds(&with(blend.state, 0x00ff_ffff)), "the draw would set the driven value");
+        assert!(!holds(&with(slot(R::AlphaTestEnable), 1)), "the switch after it would restore AlphaTestEnable");
+        assert!(!holds(&with(slot(R::ZWriteEnable), 0)), "the draw would set ZWriteEnable");
+        let mut lit = device.clone();
+        lit.insert(two_sided, 1);
+        assert!(!holds(&lit), "the draw leaves two-sided lighting off");
+        let mut unread = device.clone();
+        unread.remove(&u32::from(slot(R::AlphaBlendEnable)));
+        assert!(!holds(&unread), "a state that does not read");
     }
 
     /// A lightmap stage binds the globals' bitmap when it is uniform, as

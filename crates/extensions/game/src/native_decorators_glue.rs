@@ -20,6 +20,11 @@
 //!   uploads its buffers and images. The first view of each frame takes
 //!   finished materials from this load. A set that is not resident is
 //!   tried again at the next view.
+//! - **Per view** ([`Host::holds`]): the ready materials whose guest
+//!   draws a skip leaves out without changing a render state the device
+//!   holds at the layer-3 call (`decorators_load::skip_holds`: what the
+//!   pass's draw sets and restores, and `TwoSidedLighting` off, already
+//!   hold).
 //! - **Per view** ([`Host::ask`]): the device's checks (W-buffered, the
 //!   palettes the load expanded still bound, the cull read when a pass
 //!   inherits it), the device's stencil and cull for the pipelines
@@ -44,7 +49,7 @@ use native_render::decorators::{Material, Plan, clear_slots};
 use native_render::decorators_gpu::{DecoratorTarget, DrawKey, MaterialGpu, bind, encode};
 use native_render::decorators_load::{
     DECORATOR_CLASSIFICATION, DecoratorLook, SetGeometry, SetRefusal, buffers, compile, decorator_look, set_geometry_with,
-    stage_images,
+    skip_holds, stage_images,
 };
 use native_render::gpu::Image;
 use native_render::look::{self, Stage};
@@ -386,6 +391,24 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 Err(mpsc::TrySendError::Disconnected(_)) => {
                     p.depth.insert(*m, None);
                 }
+            }
+        }
+        out
+    }
+
+    fn holds(&self, mem: &dyn GuestMemory, ready: &HashSet<Material>) -> HashSet<Material> {
+        let mut out = HashSet::new();
+        if ready.is_empty() {
+            return out;
+        }
+        let Some(load) = self.ready(mem) else { return out };
+        let Some(looks) = load.decorators.get() else { return out };
+        let Ok(d) = self.device.lock() else { return out };
+        let read = ReadMemory(mem);
+        let device_state = |slot: u32| d.render_state(&read, slot);
+        for m in ready {
+            if matches!(looks.look(m), Some(Ok(look)) if skip_holds(look, &device_state)) {
+                out.insert(*m);
             }
         }
         out

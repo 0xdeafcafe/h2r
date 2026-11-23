@@ -1161,9 +1161,16 @@ to the guest's draws (**Code**):
 - **Layer 3.** The decorators (build `0x0004de20`) are in the scene
   (`View::decorators`, each placement's draw with its instances'
   `v11..v15`), and the decorator stage draws a view's ready ones
-  instanced and skips their items; a draw whose material is not ready,
-  and a view the stage declines, stays the guest's
-  ([native-decorators.md](native-decorators.md)).
+  instanced and skips their items where skipping leaves the device's
+  render states as drawing them would (`decorators_load::skip_holds`,
+  the rule of `layer_pass::skip_holds` with the draw's
+  `TwoSidedLighting`); a draw whose material is not ready or whose skip
+  would change a state, and a view the stage declines, stays the guest's
+  ([native-decorators.md](native-decorators.md)). Tests:
+  `a_skipped_placement_holds_only_when_what_its_draw_leaves_already_holds`
+  (`native_render::decorators_load`) and
+  `a_draw_whose_skip_would_change_a_state_stays_the_guests_and_counts_apart`
+  (`render_bridge::native_decorators`).
   The world keeps the draws of materials it does not translate and of
   parts that lack an input of their program ([native-world.md](native-world.md)),
   and the object walk the parts it refuses (`walk_unsupported`).
