@@ -31,6 +31,7 @@ const USAGE: &str = "usage:
           [--level MAP [--difficulty easy|normal|heroic|legendary]] [--set KEY=VALUE]...
   h2 play --follow [--repo PATH] [--branch B] [--remote R] [--no-fetch] [--poll SECS]
           [--fresh-data] [--cache DIR] <the arguments above>
+  h2 play --watch [--repo PATH] [--quiet MS] [--fresh-data] [--cache DIR] <the arguments above>
 
 Opens a window and runs the recompiled game live (builds the dylib first when
 --out has none, or one built from another image or generator). --out and
@@ -85,7 +86,10 @@ disc: a campaign level (03a_oldmombasa) at --difficulty (or H2_DIFFICULTY;
 normal by default), or a multiplayer map (ascension) as a local Slayer game
 with the default variant. A name the disc lacks lists them (docs/runtime/level-boot.md).
 --follow keeps the game running while it builds each new commit of the
-branch, then offers a restart (`h2 play --follow --help`).
+branch, then offers a restart (`h2 play --follow --help`). --watch watches your
+checkout instead: once a burst of edits or a git pull settles it reloads rules
+scripts into the game, rebuilds h2 (and the game code when it must), then
+offers the same restart (`h2 play --watch --help`).
 
 With no Live flag it plays offline and contacts nothing (--offline or
 --no-live says so explicitly). --live signs the game in to Xbox Live at
@@ -127,7 +131,7 @@ arrows d-pad, WASD left stick, mouse look (click to capture). Cmd+Q quits,
 Cmd+F fullscreen, Cmd+P pause, F3 the watermark, ` (backquote) the debug menu
 (a touchpad click on a DualSense or DualShock 4; H2_DEBUG_MENU=0 turns it off;
 `h2 agent hostpads` shows what the pads report;
-docs/runtime/debug-menu.md). With --follow, F5 restarts into a ready update
+docs/runtime/debug-menu.md). With --follow or --watch, F5 restarts into a ready update
 and F6 hides the banner. --bindings reads a TOML table (docs/input/input.md).
 --icons (or H2_ICONS) picks the button pictures in prompts: auto, the default,
 follows the device last used (docs/input/button-icons.md).";
@@ -514,6 +518,10 @@ pub(crate) fn run_with_theater(
     args: Vec<String>,
     open_library: Option<boot::theater_ui::adapter::OpenLibrary>,
 ) -> Result<()> {
+    #[cfg(unix)]
+    if args.iter().any(|a| a == "--watch") {
+        return crate::watch::run(args);
+    }
     #[cfg(unix)]
     if args.iter().any(|a| a == "--follow") {
         return crate::follow::run(args);

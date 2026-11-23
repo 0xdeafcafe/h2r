@@ -70,6 +70,8 @@ mod extract_shaders;
 mod firefight_cmd;
 #[cfg(all(unix, feature = "desktop"))]
 mod follow;
+#[cfg(all(unix, feature = "desktop"))]
+mod watch;
 #[cfg(feature = "desktop")]
 mod fonts;
 #[cfg(feature = "desktop")]

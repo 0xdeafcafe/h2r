@@ -13,14 +13,37 @@ pub const KING: &str = include_str!("koth.rules");
 pub const JUGGERNAUT: &str = include_str!("juggernaut.rules");
 /// Territories (engine index 8): held territories score.
 pub const TERRITORIES: &str = include_str!("territories.rules");
+// The headers `ctf.rules` gets for CTF and Assault: macros, so `concat!`
+// takes them and [`sources_of`] uses the same text.
+macro_rules! ctf_header {
+    () => {
+        "rules \"Capture the Flag\" 1\ncarrier ctf\n"
+    };
+}
+macro_rules! assault_header {
+    () => {
+        "rules \"Assault\" 1\ncarrier assault\n"
+    };
+}
+
 /// Capture the Flag (engine index 1). `ctf.rules` serves CTF and Assault;
 /// each gets its own header, so each rides its own engine index.
-pub const CTF: &str = concat!(
-    "rules \"Capture the Flag\" 1\ncarrier ctf\n",
-    include_str!("ctf.rules")
-);
+pub const CTF: &str = concat!(ctf_header!(), include_str!("ctf.rules"));
 /// Assault (engine index 9), from the same body as [`CTF`].
-pub const ASSAULT: &str = concat!("rules \"Assault\" 1\ncarrier assault\n", include_str!("ctf.rules"));
+pub const ASSAULT: &str = concat!(assault_header!(), include_str!("ctf.rules"));
+
+/// The script sources a file of this directory makes, given its name and
+/// its text now (an edited checkout's, not the baked one): `ctf.rules`
+/// makes [`CTF`] and [`ASSAULT`], any other file itself. `h2 play --watch`
+/// reloads these into a running game (docs/runtime/app.md, "Watching the
+/// checkout").
+pub fn sources_of(file_name: &str, text: &str) -> Vec<String> {
+    if file_name == "ctf.rules" {
+        vec![format!("{}{text}", ctf_header!()), format!("{}{text}", assault_header!())]
+    } else {
+        vec![text.to_string()]
+    }
+}
 
 /// Infection: a kill switches the victim to the zombies' team.
 pub const INFECTION: &str = include_str!("infection.rules");
@@ -176,6 +199,13 @@ mod tests {
             assert_eq!(a.encode(), b.encode());
             assert_eq!(a.id(), b.id());
         }
+    }
+
+    #[test]
+    fn sources_of_a_file_are_the_baked_scripts() {
+        let ctf = include_str!("ctf.rules");
+        assert_eq!(sources_of("ctf.rules", ctf), vec![CTF.to_string(), ASSAULT.to_string()]);
+        assert_eq!(sources_of("slayer.rules", SLAYER), vec![SLAYER.to_string()]);
     }
 
     #[test]
