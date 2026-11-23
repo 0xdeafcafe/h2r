@@ -1,7 +1,7 @@
 # Forge map variants: the editor's HUD, world marks and screens
 
-Status: Design, slices K5, H1 and H3 built. The Forge screens in the game (slice U4), the HUD kit, its world marks and the superbounce readout this page copies are built, and so are `Shape::Line`, `Style::Team` and `Describe::never_with` (K5) and the readout's description with its fourteen states (H1), including the `fgr.zone` marks, the readout's `never_with` declaration and the team-coloured near marks. The runtime (H3, `forge_readout.rs`) registers the HUD, feeds it each tick from the session's aimed or held thing and its bodiless things, chooses the near pool and poses the marks; it has no ring, hold, zone, refusal or budget feed yet (below). Everything else named here as new is not built.
-Code: `crates/extensions/game/src/forge_screens/` (the screens), `assets/ui/screens/forge.*.yaml` (their docs), `crates/rewrites/hud-kit-core/src/{world.rs, huds/}` (the HUD kit's model), `crates/extensions/game/src/hud_kit_world.rs` (the world-line source), `crates/extensions/game/src/forge_readout.rs` (the readout's runtime). Tests: named per slice below.
+Status: Design, slices K5, H1, H3 and S1 built. The Forge screens in the game (slice U4), the HUD kit, its world marks and the superbounce readout this page copies are built, and so are `Shape::Line`, `Style::Team` and `Describe::never_with` (K5) and the readout's description with its fourteen states (H1), including the `fgr.zone` marks, the readout's `never_with` declaration and the team-coloured near marks. The runtime (H3, `forge_readout.rs`) registers the HUD, feeds it each tick from the session's aimed or held thing and its bodiless things, chooses the near pool and poses the marks; it has no ring, hold, zone, refusal or budget feed yet (below). The Properties page's rows are the doc's `props:` block (S1); the rows of the other slices are not built. Everything else named here as new is not built.
+Code: `crates/extensions/game/src/forge_screens/` (the screens), `assets/ui/screens/forge.*.yaml` (their docs), `crates/rewrites/hud-kit-core/src/{world.rs, huds/}` (the HUD kit's model), `crates/extensions/game/src/hud_kit_world.rs` (the world-line source), `crates/extensions/game/src/forge_readout.rs` (the readout's runtime), `crates/extensions/game/src/forge_screens/props.rs` (the Properties rows). Tests: named per slice below.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
 How a monitor sees and edits the things of
@@ -49,27 +49,33 @@ Evidence labels are those of [docs-style.md](../meta/docs-style.md).
 
 X on the thing aimed at or held opens `forge.properties`: the thing's
 name as the header, then the rows its kind has. The rows are the doc's
-(`assets/ui/screens/forge.properties.yaml`), in place of the
-`sheet::PROPERTIES` table:
+`props:` block (`assets/ui/screens/forge.properties.yaml`), bound to the
+thing by `forge_screens::props::rows` and used by
+`sheet::properties_sheet`:
 
 ```yaml
-rows:
-  row.4:
-    kind: value
+props:
+  prop.6:
     text: "Respawn time"
-    help: "How long after it is taken before the item comes back."
+    help: "Seconds before the item comes back."
     on: [spawner]
-    prop: respawn_time
-    open: picker
-    values: [[0, "Map default"], [5, "5 seconds"], [10, "10 seconds"]]
+    prop: "respawn time"
+    open: keyboard
 ```
 
-`on` is the kinds the row is for, `prop` a name in `forge::props`,
-`open` what A does (`picker`, `keyboard`, a screen's name, or `act`),
-and `values` a picker's choices with the number written. A doc that
-names a property `forge::props` lacks is a `DataError`. A property
-whose field is not decoded is not in `forge::props`' answer for the
-map, and its row is then absent, not greyed.
+`on` is the kinds the row is for (`any` when none: `object`, `spawner`,
+`starting-point`, `goal`, `teleporter`), `prop` a name in
+`forge::props` (or `coordinates` and `heading`, which are not fields),
+`open` what A does (`picker`, `keyboard`, or a Forge screen's name), and
+`values` a picker's choices, in order: the choice sent is the index. A
+doc that names a property `forge::props` lacks, a kind or an `open` it
+does not know, or a picker without values is a `DataError` naming the
+row's field (`ScreenDoc::parse`). A property the thing does not have
+(its block lacks the field, or the layout does not let it be edited) has
+no row, and neither does one the binder cannot make, not greyed. The
+rows read their value through `forge::props`; a write is still the
+page's `Choice::Set` and typed number, which the editor turns into the
+op.
 
 A value row shows its value in the skin's value column. No row has
 arrows; left and right on a number row are the Coordinates page's
@@ -198,10 +204,11 @@ set each tick (`Handle::world_mark`).
   marks are the nearest things with no body within 12 world units, by
   distance then identity, without the thing aimed at (`choose_near`).
   A held thing's `under` is on the ground its height below it, its
-  `from` where it was picked up. Not fed yet, so absent: a hold (the
-  ground's height needs a ray the tool does not keep), a ring (no kind's
-  radius is traced), the zone, a refusal's sentence and the budget by kind
-  (S6).
+  `from` where it was picked up. The zone is the aimed hill corner's hill: the goals of type 11 to 18
+  sharing its identifier, in corner order, closed (`zone_of`). Not fed
+  yet, so absent: a hold (the ground's height needs a ray the tool does
+  not keep), a ring (no kind's radius is traced), a refusal's sentence
+  and the budget by kind (S6).
 - **A pool, not a mark a thing.** One layout means a fixed set of
   elements: twelve near marks and eight zone lines. The runtime gives
   the nearest things the poses and leaves the rest without one; a

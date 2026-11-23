@@ -13,3 +13,48 @@ widgets:
   legend:
     component: legend
     prompts: [[A, "SELECT"], [B, "BACK"]]
+props:
+  prop.0:
+    text: "Coordinates..."
+    help: "Type or nudge the position and rotation."
+    prop: coordinates
+    open: forge.coordinates
+  prop.1:
+    text: "Heading"
+    help: "Which way the object faces, about the vertical."
+    prop: heading
+    open: picker
+  prop.2:
+    text: "Team"
+    help: "Which team starts here."
+    on: [starting-point]
+    prop: team
+    open: picker
+    values: ["None", "Red", "Blue", "Green", "Yellow", "Purple", "Orange", "Brown", "Pink", "Neutral"]
+  prop.3:
+    text: "Team"
+    help: "Which team this goal belongs to."
+    on: [goal]
+    prop: team
+    open: picker
+    values: ["None", "Red", "Blue", "Green", "Yellow", "Purple", "Orange", "Brown", "Pink", "Neutral"]
+  prop.4:
+    text: "Role"
+    help: "The netgame flag's type."
+    on: [goal]
+    prop: role
+    open: picker
+    values: ["CTF flag spawn", "CTF flag return", "Assault bomb spawn", "Assault bomb return", "Oddball spawn", "Role 5", "Role 6", "Teleporter sender", "Teleporter receiver", "Role 9", "Territory", "Hill 1", "Hill 2", "Hill 3", "Hill 4", "Hill 5", "Hill 6", "Hill 7", "Hill 8"]
+  prop.5:
+    text: "Order"
+    help: "The flag's identifier, for hills and territories."
+    on: [goal]
+    prop: order
+    open: picker
+    values: ["0", "1", "2", "3", "4", "5", "6", "7"]
+  prop.6:
+    text: "Respawn time"
+    help: "Seconds before the item comes back."
+    on: [spawner]
+    prop: "respawn time"
+    open: keyboard

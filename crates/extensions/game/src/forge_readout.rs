@@ -21,8 +21,8 @@
 //! The readout is presentation: it reads the session and never writes it.
 //! A fact the session does not give yet is absent: a hold needs the
 //! ground's height (no ray is kept for it yet), a refusal's sentence and the
-//! budget by kind wait for S6, a zone for the goal's hill, and no kind has a
-//! ring (its radius is not traced).
+//! budget by kind wait for S6, and no kind has a ring (its radius is not
+//! traced). The zone is the aimed hill corner's hill ([`zone_of`]).
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -305,6 +305,35 @@ pub fn aimed(
         },
         at,
     }
+}
+
+/// The outline of the hill `goal` is a corner of: the positions of the
+/// hill's corners in order (type 11 to 18, the corner's number) with the
+/// first again at the end, or none for a goal that is not a hill corner or
+/// the only corner there is. A hill is the corners that share an
+/// identifier.
+pub fn zone_of(goal: &Entry, all: &[Entry]) -> Vec<[f32; 3]> {
+    let corner = |t: &Entry| {
+        (t.kind == ThingKind::Goal)
+            .then(|| int(t, "type"))
+            .flatten()
+            .filter(|ty| (11..=18).contains(ty))
+    };
+    let (Some(_), Some(hill)) = (corner(goal), int(goal, "identifier")) else {
+        return Vec::new();
+    };
+    let mut corners: Vec<(i64, [f32; 3])> = all
+        .iter()
+        .filter(|t| int(t, "identifier") == Some(hill))
+        .filter_map(|t| corner(t).map(|ty| (ty, t.frame.position)))
+        .collect();
+    corners.sort_by_key(|(ty, _)| *ty);
+    if corners.len() < 2 {
+        return Vec::new();
+    }
+    let mut out: Vec<[f32; 3]> = corners.into_iter().map(|(_, at)| at).collect();
+    out.push(out[0]);
+    out
 }
 
 static SCENE: Mutex<Option<Scene>> = Mutex::new(None);

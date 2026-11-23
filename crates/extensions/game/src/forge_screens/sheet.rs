@@ -2,12 +2,12 @@
 //! "The screens", docs/game/forge-editing.md "The object menu" and
 //! "Properties"). A [`Sheet`] is a screen's title, body, rows and focus.
 //! The builders here make one from the session's facts, and tables decide
-//! the rows: the object menu's groups ([`GROUPS`]), the Properties rows by
-//! kind ([`properties`]), the tools ([`TOOLS`]), the settings
+//! the rows: the object menu's groups ([`GROUPS`]), the Properties rows
+//! (the doc's, [`super::props`]), the tools ([`TOOLS`]), the settings
 //! ([`SETTINGS`]), Forge options ([`OPTIONS`]) and the controls (the
 //! bindings table). A change of design is a change of table.
 
-use forge::{BlockKind, Thing, ThingKind, Value};
+use forge::{BlockKind, Thing, Value};
 
 use crate::ui_kit::forge::{ANGLE_STEPS, HEADINGS};
 use crate::ui_kit::ids::{self, Family};
@@ -309,7 +309,7 @@ pub struct SheetRow {
 }
 
 impl SheetRow {
-    fn new(label: &str, act: Act) -> Self {
+    pub(super) fn new(label: &str, act: Act) -> Self {
         SheetRow {
             label: label.into(),
             value: None,
@@ -317,11 +317,11 @@ impl SheetRow {
             act,
         }
     }
-    fn value(mut self, v: &str) -> Self {
+    pub(super) fn value(mut self, v: &str) -> Self {
         self.value = Some(v.into());
         self
     }
-    fn describe(mut self, d: &str) -> Self {
+    pub(super) fn describe(mut self, d: &str) -> Self {
         self.description = Some(d.into());
         self
     }
@@ -522,90 +522,6 @@ pub fn objects(items: &[Item], selected: usize) -> Option<Sheet> {
     })
 }
 
-/// Which objects a Properties row is for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum For {
-    /// Any placed object.
-    Any,
-    /// The objects of these groups.
-    Groups(&'static [Group]),
-    /// The entries of this kind.
-    Kind(ThingKind),
-}
-
-impl For {
-    pub fn has(self, g: Group, kind: ThingKind) -> bool {
-        match self {
-            For::Any => true,
-            For::Groups(gs) => gs.contains(&g),
-            For::Kind(want) => want == kind,
-        }
-    }
-}
-
-/// A Properties row: which objects it is for, its value, its label and what
-/// it does.
-pub struct PropDef {
-    pub on: For,
-    pub prop: Prop,
-    pub label: &'static str,
-    pub description: &'static str,
-}
-
-/// The Properties rows by kind, in order (docs/game/forge-editing.md
-/// "Properties"). A row is here only where its field is decoded and its
-/// write proven: Coordinates, Reset orientation and Duplicate join in P1,
-/// the item entries' rows in P3, a goal's and a spawn's in P2.
-pub const PROPERTIES: &[PropDef] = &[
-    PropDef {
-        on: For::Any,
-        prop: Prop::Coordinates,
-        label: "Coordinates...",
-        description: "Type or nudge the position and rotation.",
-    },
-    PropDef {
-        on: For::Any,
-        prop: Prop::Heading,
-        label: "Heading",
-        description: "Which way the object faces, about the vertical.",
-    },
-    PropDef {
-        on: For::Kind(ThingKind::StartingPoint),
-        prop: Prop::Team,
-        label: "Team",
-        description: "Which team starts here.",
-    },
-    PropDef {
-        on: For::Kind(ThingKind::Goal),
-        prop: Prop::Team,
-        label: "Team",
-        description: "Which team this goal belongs to.",
-    },
-    PropDef {
-        on: For::Kind(ThingKind::Goal),
-        prop: Prop::Role,
-        label: "Role",
-        description: "The netgame flag's type.",
-    },
-    PropDef {
-        on: For::Kind(ThingKind::Goal),
-        prop: Prop::Order,
-        label: "Order",
-        description: "The flag's identifier, for hills and territories.",
-    },
-    PropDef {
-        on: For::Kind(ThingKind::ItemSpawner),
-        prop: Prop::RespawnTime,
-        label: "Respawn time",
-        description: "Seconds before the item comes back.",
-    },
-];
-
-/// The Properties rows for an object of `group` and `kind`.
-pub fn properties(group: Group, kind: ThingKind) -> impl Iterator<Item = &'static PropDef> {
-    PROPERTIES.iter().filter(move |d| d.on.has(group, kind))
-}
-
 /// `angle` in degrees as the rows write it: "45 degrees", "1 degree",
 /// "17.5 degrees".
 pub fn degrees(angle: f32) -> String {
@@ -615,7 +531,7 @@ pub fn degrees(angle: f32) -> String {
 }
 
 /// The heading of [`HEADINGS`] nearest `degrees` (0 to 360).
-fn nearest_heading(deg: f32) -> usize {
+pub(super) fn nearest_heading(deg: f32) -> usize {
     let d = deg.rem_euclid(360.);
     (0..HEADINGS.len())
         .min_by(|&a, &b| {
@@ -629,7 +545,7 @@ fn nearest_heading(deg: f32) -> usize {
 }
 
 /// A value row: its value shown, A opening the picker on its values.
-fn value_row(
+pub(super) fn value_row(
     label: &str,
     description: &str,
     prop: Prop,
@@ -651,7 +567,7 @@ fn value_row(
         .describe(description)
 }
 
-fn int_of(thing: &Thing, name: &str) -> i64 {
+pub(super) fn int_of(thing: &Thing, name: &str) -> i64 {
     thing
         .fields
         .iter()
@@ -663,94 +579,13 @@ fn int_of(thing: &Thing, name: &str) -> i64 {
         .unwrap_or(0)
 }
 
-fn role_name(role: i64) -> String {
-    match role {
-        0 => "CTF flag spawn".into(),
-        1 => "CTF flag return".into(),
-        2 => "Assault bomb spawn".into(),
-        3 => "Assault bomb return".into(),
-        4 => "Oddball spawn".into(),
-        7 => "Teleporter sender".into(),
-        8 => "Teleporter receiver".into(),
-        10 => "Territory".into(),
-        11..=18 => format!("Hill {}", role - 10),
-        _ => format!("Role {role}"),
-    }
-}
-
-/// Properties of `object` (its name, the header) of `group`, heading
-/// `heading` in degrees: [`properties`]'s rows, each showing its value.
-/// `None` when no row is for its kind.
+/// Properties of `object` (its name, the header), heading `heading` in
+/// degrees: the rows of `forge.properties`' doc for the thing's kind, each
+/// showing its value ([`super::props::rows`]). `None` when no row is for
+/// it or the page has no doc.
 pub fn properties_sheet(object: &str, thing: &Thing, heading: f32) -> Option<Sheet> {
-    let group = Group::of_block(thing.block);
-    let rows: Vec<SheetRow> = properties(group, thing.kind)
-        .map(|d| match d.prop {
-            Prop::Coordinates => {
-                SheetRow::new(d.label, Act::Open(Kind::Coordinates)).describe(d.description)
-            }
-            Prop::Heading => value_row(
-                d.label,
-                d.description,
-                d.prop,
-                &HEADINGS,
-                degrees(heading.rem_euclid(360.)),
-                nearest_heading(heading),
-            ),
-            Prop::Team => {
-                let values: Vec<String> = [
-                    "None", "Red", "Blue", "Green", "Yellow", "Purple", "Orange", "Brown", "Pink",
-                    "Neutral",
-                ]
-                .into_iter()
-                .map(String::from)
-                .collect();
-                let team = int_of(thing, "team");
-                let current = if team < 0 { 0 } else { (team + 1) as usize };
-                text_value_row(
-                    d.label,
-                    d.description,
-                    d.prop,
-                    &values,
-                    current.min(values.len() - 1),
-                )
-            }
-            Prop::Role => {
-                let values: Vec<String> = (0..=18).map(role_name).collect();
-                text_value_row(
-                    d.label,
-                    d.description,
-                    d.prop,
-                    &values,
-                    int_of(thing, "type").clamp(0, 18) as usize,
-                )
-            }
-            Prop::Order => {
-                let values: Vec<String> = (0..8).map(|v| v.to_string()).collect();
-                text_value_row(
-                    d.label,
-                    d.description,
-                    d.prop,
-                    &values,
-                    int_of(thing, "identifier").clamp(0, 7) as usize,
-                )
-            }
-            Prop::RespawnTime => {
-                let value = int_of(thing, "respawn time");
-                SheetRow::new(
-                    d.label,
-                    Act::Type(TypeSpec {
-                        field: NumberField::RespawnTime,
-                        initial: value.to_string(),
-                    }),
-                )
-                .value(&value.to_string())
-                .describe(d.description)
-            }
-            Prop::RotationSnap | Prop::MovementSnap | Prop::Axes => {
-                unreachable!("a tool setting, not a property")
-            }
-        })
-        .collect();
+    let doc = crate::ui_kit::data::screen(Kind::Properties.screen())?;
+    let rows = super::props::rows(&doc, thing, heading);
     (!rows.is_empty()).then(|| Sheet {
         kind: Kind::Properties,
         title: object.to_uppercase(),
@@ -871,7 +706,7 @@ fn snap_text(v: f32, unit: &str) -> String {
     }
 }
 
-fn text_value_row(
+pub(super) fn text_value_row(
     label: &str,
     description: &str,
     prop: Prop,
