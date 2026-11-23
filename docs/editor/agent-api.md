@@ -1064,6 +1064,7 @@ thing; a check it does not fit is skipped. The checks:
 
 | Area | Check | What it checks |
 |---|---|---|
+| `models` | `model.check` | every biped, vehicle and weapon of the scenario tool's map (or the source's only map), or the tag `target` names, read without the Pogo kit: `model.<code>` for each `model.check` finding (`model.no_first_person`, ...), the tag as `target` and the `tag.set` path in the message; `model.tag_memory` once (`api/models.rs`, `check`) |
 | `sounds` | `sound.measure` | each of our clips (or the clip id, id prefix such as `pogo`, or `snd!` tag `target` names) against the open map's sounds: `sound.loud` (a warning, an error past 6 dB over the p90), `sound.clipping`, `sound.unreadable`, `sound.no_reference` (a note) |
 | `ui` | `ui.check` | every state of our screens, or `target` (`screen` or `screen/state`) |
 | `hud` | `hud.check` | the HUD the HUD tool shows, at its state (`hud.<code>`); skipped with no map open there |
@@ -1071,8 +1072,7 @@ thing; a check it does not fit is skipped. The checks:
 
 A check is a row of `CHECKS`: `ContentCheck { area, name, run }`,
 `run` being `fn(&mut App, Option<&str>) -> Result<Vec<Finding>,
-String>`. The `models` area has no row yet; `check.run` lists it under
-`skipped`.
+String>`.
 
 ## Extension points
 

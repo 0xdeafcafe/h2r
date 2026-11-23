@@ -1061,6 +1061,82 @@ fn player_count(ctx: &Context) -> usize {
         .count()
 }
 
+/// The groups `check.run`'s models row checks when no `target` is given:
+/// what a player holds, rides or is.
+const CHECKED_GROUPS: [&[u8; 4]; 3] = [b"bipd", b"vehi", b"weap"];
+
+/// `check.run`'s models row ([`super::checks::CHECKS`]): `model.check`'s
+/// findings for every biped, vehicle and weapon of the scenario tool's map
+/// (or the source's only map), or for the one `target` names, and the
+/// map's tag-memory headroom once. Each code is `model.<code>`; the
+/// tag.set path that fixes it is in the message (the row's `path` is a
+/// checkout file, which a map tag is not). The map is read as it is,
+/// without the Pogo kit: `model.check {pogo: true}` checks the kit.
+pub fn check(app: &mut App, target: Option<&str>) -> Result<Vec<super::checks::Finding>, String> {
+    use super::checks::{Finding as Row, Severity};
+    let scenario = app
+        .loaded_map()
+        .zip(app.session.source())
+        .map(|(n, s)| (n.to_owned(), s.clone()));
+    let (name, source, auto) = match scenario {
+        Some((name, source)) => (name, source, true),
+        None => match (app.source(), app.maps()) {
+            (Some(src), [only]) => {
+                let (path, region) = src.location(only).map_err(|e| format!("{only}: {e:#}"))?;
+                (only.clone(), EditSource::region(path, region), false)
+            }
+            (Some(_), _) => {
+                return Err("no scenario is open, and the source has more than one map: open one, or model.check {map} names it".into());
+            }
+            (None, _) => return Err("no map is open".into()),
+        },
+    };
+    let o = open_map(app, name, source, auto, false).map_err(|e| e.to_string())?;
+    let ctx = &o.ctx;
+    let objects: Vec<TagId> = match target {
+        Some(t) => {
+            let object = find_tag(ctx, t).map_err(|e| e.to_string())?;
+            vec![scenario_edit::object_collision::resolve(ctx, object).map_err(|e| e.to_string())?.0]
+        }
+        None => {
+            let mut all: Vec<_> = ctx
+                .catalog
+                .tags
+                .values()
+                .filter(|t| CHECKED_GROUPS.iter().any(|g| t.group == FourCC(**g)))
+                .map(|t| t.id)
+                .collect();
+            all.sort_by_key(|id| id.0);
+            all
+        }
+    };
+    let mut map = o.source.open().map_err(|e| e.to_string())?;
+    let mut files = scenario_edit::scene::resource_files(&o.source);
+    let mut found = Vec::new();
+    for object in objects {
+        found.extend(checks::run(ctx, &mut map, &mut files, object, None));
+    }
+    found.push(o.tag_memory_finding());
+    Ok(found
+        .into_iter()
+        .map(|f| Row {
+            area: "models",
+            code: format!("model.{}", f.code),
+            severity: match f.severity {
+                "error" => Severity::Error,
+                "warning" => Severity::Warning,
+                _ => Severity::Note,
+            },
+            message: match &f.path {
+                Some(p) => format!("{} (tag.set path {p})", f.message),
+                None => f.message,
+            },
+            target: f.tag.unwrap_or_else(|| o.name.clone()),
+            path: None,
+        })
+        .collect())
+}
+
 /// `model.check`'s findings.
 mod checks {
     use super::*;

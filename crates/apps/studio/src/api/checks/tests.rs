@@ -147,9 +147,8 @@ fn what_and_target_narrow_the_run() {
 }
 
 #[test]
-fn the_registry_covers_the_sounds_ui_and_hud() {
-    // The models row is the model check's (one line in CHECKS).
-    for area in ["sounds", "ui", "hud"] {
+fn the_registry_covers_every_area() {
+    for area in AREAS {
         assert!(CHECKS.iter().any(|c| c.area == area), "{area}");
     }
     assert!(CHECKS.iter().all(|c| AREAS.contains(&c.area)));
@@ -193,6 +192,60 @@ fn check_run_answers_through_the_api() {
             .unwrap()
             .iter()
             .any(|s| s["check"] == "hud.kit"),
+        "{r}"
+    );
+}
+
+/// The models row is `model.check`'s: on the Pogo kit's invented map with
+/// one look's first-person block taken out, `check.run` names it.
+#[test]
+fn check_run_reports_a_weapon_without_a_first_person_view() {
+    let t = Temp::new("models");
+    let mut app = App::new();
+    app.set_data_root(t.0.join("data"));
+    crate::api::models::tests::open_court(
+        &mut app,
+        &t.0.join("court.map"),
+        &crate::api::models::tests::without_first_person(),
+    );
+    let mut api = Api::new();
+    let r: Value = api
+        .call(&mut app, m::CHECK_RUN, json!({"what": "models"}))
+        .unwrap();
+    assert_eq!(r["skipped"], json!([]), "{r}");
+    assert_eq!(r["ran"][0]["check"], m::MODEL_CHECK);
+    let findings = r["findings"].as_array().unwrap();
+    assert!(findings.iter().all(|x| x["area"] == "models"), "{r}");
+    let missing = findings
+        .iter()
+        .find(|x| x["code"] == "model.no_first_person")
+        .unwrap_or_else(|| panic!("{r}"));
+    assert_eq!(missing["severity"], "error");
+    assert!(
+        missing["target"].as_str().is_some_and(|t| t.ends_with("pogo_unsc")),
+        "{missing}"
+    );
+    // The headroom once, against the map.
+    let memory: Vec<_> = findings
+        .iter()
+        .filter(|x| x["code"] == "model.tag_memory")
+        .collect();
+    assert_eq!(memory.len(), 1, "{r}");
+    // `target` narrows the row to one weapon: the look that keeps the
+    // fixture pistol's view has no such finding.
+    let r: Value = api
+        .call(
+            &mut app,
+            m::CHECK_RUN,
+            json!({"what": "models", "target": "pogo_covenant"}),
+        )
+        .unwrap();
+    assert!(
+        r["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|x| x["code"] != "model.no_first_person"),
         "{r}"
     );
 }

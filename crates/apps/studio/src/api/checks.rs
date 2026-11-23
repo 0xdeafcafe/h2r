@@ -83,8 +83,11 @@ pub const AREAS: [&str; 4] = ["models", "sounds", "ui", "hud"];
 
 /// Every content check, in the order they run. One row each.
 pub const CHECKS: &[ContentCheck] = &[
-    // models: the model check registers here, e.g.
-    // ContentCheck { area: "models", name: m::MODEL_CHECK, run: super::model::check },
+    ContentCheck {
+        area: "models",
+        name: m::MODEL_CHECK,
+        run: super::models::check,
+    },
     ContentCheck {
         area: "sounds",
         name: m::SOUND_MEASURE,
@@ -113,7 +116,7 @@ pub struct Checks;
 
 const RUN: MethodDef = def(
     m::CHECK_RUN,
-    "Run every registered content check (or one area's: models, sounds, ui, hud) over the open map and document and our own content, in one list: each finding's area, code, severity (error, warning, note), message, target and file. `target` narrows each check to one thing (a clip id or prefix, a snd! tag, a screen, a HUD). A check that cannot run says why under `skipped`",
+    "Run every registered content check (or one area's: models, sounds, ui, hud) over the open map and document and our own content, in one list: each finding's area, code, severity (error, warning, note), message, target and file. `target` narrows each check to one thing (an object tag, a clip id or prefix, a snd! tag, a screen, a HUD). A check that cannot run says why under `skipped`",
     r#"{"what?":"all|models|sounds|ui|hud","target?":"string"}"#,
     r#"{"findings":"[{area,code,severity,message,target,path?}]","counts":"{error,warning,note,total,by_area:{area:integer}}","ran":"[{area,check,findings}]","skipped":"[{area,check?,why}]"}"#,
     r#"{"what":"ui","target":"$SCREEN"}"#,

@@ -99,7 +99,7 @@ fn with_first_person() -> Vec<u8> {
 /// The UNSC look with no first-person block: the black first-person
 /// screen. (The kit itself copies the fixture pistol's view onto the
 /// stick.)
-fn without_first_person() -> Vec<u8> {
+pub(crate) fn without_first_person() -> Vec<u8> {
     unsc_first_person(|_| Vec::new())
 }
 
