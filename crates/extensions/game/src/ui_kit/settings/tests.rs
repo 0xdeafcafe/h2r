@@ -181,6 +181,132 @@ fn what_does_not_attach_is_a_named_error() {
     assert_eq!(error_at(actions, COUNT, store(), Bindings::new()), "settings.actions.0.bind");
 }
 
+/// A slot row (its doc text and help lone slots) is its binding's
+/// label, value and help, read as the page shows them; A opens the
+/// binding's pick titled by that label and saying that help, and left
+/// and right do nothing. A slot the binding leaves empty is not drawn:
+/// the rows after it move up, and the list's count is the rows drawn.
+#[test]
+fn a_slot_row_is_its_bindings_and_an_empty_slot_is_not_drawn() {
+    use crate::ui_kit::screen::Filled;
+    let fills: Arc<std::sync::Mutex<Vec<Option<Filled>>>> = Arc::new(std::sync::Mutex::new(vec![
+        Some(Filled {
+            label: "Bounce points".into(),
+            shown: "3".into(),
+            help: Some("Points for each superbounce".into()),
+        }),
+        Some(Filled {
+            label: "Respawn Time".into(),
+            shown: "5 seconds".into(),
+            help: None,
+        }),
+    ]));
+    let picked = Arc::new(AtomicUsize::new(usize::MAX));
+    let slot = |n: usize| {
+        let (f, p) = (Arc::clone(&fills), Arc::clone(&picked));
+        move |b: Bindings| {
+            b.slot(
+                ["q.0", "q.1", "q.2"][n],
+                move || f.lock().unwrap().get(n).cloned().flatten(),
+                move || {
+                    let p = Arc::clone(&p);
+                    Ok(picker::Pick::new(
+                        "ignored",
+                        vec!["1".into(), "2".into(), "3".into()],
+                        2,
+                        "ignored",
+                        Arc::new(move |i| {
+                            p.store(i, Ordering::SeqCst);
+                            format!("q.{n} -> {i}")
+                        }),
+                    ))
+                },
+            )
+        }
+    };
+    let rows = (0..3)
+        .map(|n| format!(r#"  row.{n}:
+    kind: pick
+    text: "{{label}}"
+    help: "{{help}}"
+    bind: q.{n}
+"#))
+        .collect::<String>();
+    let binds = slot(2)(slot(1)(slot(0)(Bindings::new())));
+    let p = built("", &rows, None, binds);
+    // Two of three slots filled: two rows, the binding's.
+    assert_eq!(Rows::count(&p), 2);
+    let s = p.spec();
+    let labels: Vec<&str> = s.rows.iter().map(|r| r.label.as_str()).collect();
+    assert_eq!(labels, ["Bounce points", "Respawn Time"]);
+    assert_eq!(s.rows[0].cells(crate::ui_kit::spec::ValueStyle::Column).1.as_deref(), Some("3"));
+    assert_eq!(s.rows[0].description.as_deref(), Some("Points for each superbounce"));
+    assert_eq!(s.rows[1].description, None, "a setting has no help");
+    assert_eq!(ScreenSpec { focus: 1, ..s.clone() }.description_text(), None);
+    // A opens the binding's pick, titled and described by the fill.
+    assert_eq!(Rows::press(&p, 0), Chosen::Open(picker::NAME));
+    let pick = picker::current().expect("a pick");
+    assert_eq!(pick.title, picker::title("Bounce points"));
+    assert_eq!(pick.description, "Points for each superbounce");
+    assert_eq!(pick.values, ["1", "2", "3"]);
+    assert_eq!((pick.set)(0), "q.0 -> 0");
+    assert_eq!(picked.load(Ordering::SeqCst), 0);
+    assert_eq!(Rows::sideways(&p, 0, true), None, "no arrows on a slot");
+    assert_eq!(Rows::press(&p, 2), Chosen::Nothing, "no third row");
+    // The first slot emptied: the second moves up; its fill changing
+    // redraws the help.
+    let _ = Rows::live_text(&p);
+    fills.lock().unwrap()[0] = None;
+    assert!(Rows::live_text(&p).redraw);
+    assert!(!Rows::live_text(&p).redraw, "once");
+    assert_eq!(Rows::count(&p), 1);
+    assert_eq!(p.spec().rows[0].label, "Respawn Time");
+    assert_eq!(Rows::texts(&p, 1), Vec::new());
+    // The legend: a slot is a pick row, so no CHANGE.
+    let words: Vec<String> = p.spec().prompts.iter().map(|p| p.text.clone()).collect();
+    assert_eq!(words, ["SELECT", "BACK"]);
+}
+
+/// A slot's doc and its binding must agree, and a header name that is a
+/// lone slot is the name binding's, read as it is drawn.
+#[test]
+fn a_slot_and_a_bound_name_attach_or_name_their_field() {
+    let slot_row = r#"  row.0:
+    kind: pick
+    text: "{label}"
+    help: "{help}"
+    bind: q.0
+"#;
+    let empty = || Bindings::new().slot("q.0", || None, || Err("none".into()));
+    assert_eq!(error_at("", slot_row, None, Bindings::new().pick("q.0", String::new, || Err("x".into()))), "rows.row.0.bind");
+    let half = slot_row.replace(r#""{help}""#, r#""What it does.""#);
+    assert_eq!(error_at("", &half, None, empty()), "rows.row.0.help");
+    let fixed = slot_row.replace(r#""{label}""#, r#""Fixed""#).replace(r#""{help}""#, r#""What it does.""#);
+    assert_eq!(error_at("", &fixed, None, empty()), "rows.row.0.bind", "a slot binding on a fixed row");
+    // The name.
+    let named = |binds: Bindings| {
+        let yaml = format!("{}{slot_row}", head("")).replace(r#"name: "Name""#, r#"name: "{variant}""#);
+        let d = ScreenDoc::parse("kit.dialog", &yaml, design()).unwrap_or_else(|e| panic!("{e}\n{yaml}"));
+        from_doc("kit-dialog", "kit.dialog", ids::family("kit.dialog"), &d, None, binds)
+    };
+    match named(empty()) {
+        Ok(_) => panic!("a lone slot name with no binding"),
+        Err(e) => assert_eq!(e.at, "settings.name"),
+    }
+    let shown = Arc::new(std::sync::Mutex::new("Superbounce".to_string()));
+    let s2 = Arc::clone(&shown);
+    let p = named(empty().name(move || s2.lock().unwrap().clone())).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(Rows::count(&p), 0, "an empty slot");
+    let texts = |p: &KitScreen| -> Vec<String> { p.spec().texts.iter().map(|t| t.text.clone()).collect() };
+    assert_eq!(texts(&p), ["Superbounce", "What this window is for."]);
+    *shown.lock().unwrap() = "Bounce Hunt".into();
+    assert_eq!(texts(&p)[0], "Bounce Hunt");
+    match from_doc("kit-dialog", "kit.dialog", ids::family("kit.dialog"), &doc("", slot_row), None, empty().name(String::new)) {
+        Ok(_) => panic!("a name binding for a fixed name"),
+        Err(e) => assert_eq!(e.at, "settings.name"),
+    }
+}
+
 /// Every settings doc's picker copy fits the picker's description
 /// block: a row's explain, else its help, is at most [`EXPLAIN_UNITS`].
 #[test]
@@ -206,7 +332,7 @@ fn every_rows_picker_copy_fits() {
 
 /// The settings dialogs that are screens of the game; every other
 /// settings doc is a component's specimen (`design.*`, `layout.*`).
-const PAGES: [&str; 5] = ["clankers", "firefight", "h1-options", "browser.filters", "kit.dialog"];
+const PAGES: [&str; 6] = ["clankers", "firefight", "h1-options", "browser.filters", "kit.dialog", "variant-quick"];
 
 /// Every screen's doc with a `settings:` block.
 fn settings_docs() -> Vec<(&'static str, Arc<ScreenDoc>)> {
@@ -219,6 +345,16 @@ fn settings_docs() -> Vec<(&'static str, Arc<ScreenDoc>)> {
 /// A doc's rows in order.
 fn rows_of(d: &ScreenDoc) -> Vec<&RowDoc> {
     (0..d.rows.len()).map_while(|i| d.rows.get(&format!("row.{i}"))).collect()
+}
+
+/// Doc row `i` (`r`) of a screen whose spec is `s`, as drawn: its label
+/// and help, the spec's for a slot (`{label}`, `{help}`); `None` for a
+/// slot the spec does not draw.
+fn as_drawn(r: &RowDoc, s: &ScreenSpec, i: usize) -> Option<(String, Option<String>)> {
+    if !data::lone_slot(&r.text) {
+        return Some((r.text.clone(), r.help.clone()));
+    }
+    s.rows.get(i).map(|row| (row.label.clone(), row.description.clone()))
 }
 
 /// A screen's first state.
@@ -282,6 +418,11 @@ fn the_top_is_the_same_under_every_focus() {
         let s = first_spec(name);
         let texts: Vec<(&str, &str)> = s.texts.iter().map(|t| (t.id.as_str(), t.text.as_str())).collect();
         let name_line = st.name.as_deref().unwrap_or_default();
+        // A bound name (`{variant}`) is the binding's: the sample's.
+        let name_line = match s.texts.first() {
+            Some(t) if data::lone_slot(name_line) => t.text.as_str(),
+            _ => name_line,
+        };
         assert_eq!(texts, [("header.name", name_line), ("header.about", st.about())], "{name}");
         assert_eq!(s.art.len(), 1, "{name}: the header's icon");
         for i in 0..rows_of(d).len() {
@@ -306,11 +447,12 @@ fn the_bottom_is_the_focused_rows_help() {
     for (name, d) in settings_docs() {
         let s = first_spec(name);
         for (i, r) in rows_of(&d).iter().enumerate() {
+            let Some((_, help)) = as_drawn(r, &s, i) else { continue };
             let f = ScreenSpec {
                 focus: i,
                 ..s.clone()
             };
-            assert_eq!(f.description_text(), r.help.clone(), "{name} focus {i}");
+            assert_eq!(f.description_text(), help, "{name} focus {i}");
         }
         let bottom: Vec<_> = crate::ui_kit::consistency::settings_check(name)
             .into_iter()
@@ -322,7 +464,8 @@ fn the_bottom_is_the_focused_rows_help() {
         let page = screens::list_page(name).unwrap_or_else(|| panic!("{name}: no page"));
         let d = data::require(name).unwrap();
         for (i, r) in rows_of(&d).iter().enumerate() {
-            assert_eq!(page.spec(&Focus(i)).description_text(), r.help.clone(), "{name} row {i}");
+            let Some((_, help)) = as_drawn(r, &page.spec(&Focus(0)), i) else { continue };
+            assert_eq!(page.spec(&Focus(i)).description_text(), help, "{name} row {i}");
         }
     }
 }
@@ -339,12 +482,13 @@ fn a_rows_picker_carries_its_help() {
             if !matches!(r.kind.as_str(), "value" | "pick") {
                 continue;
             }
+            let Some((label, help)) = as_drawn(r, &page.spec(&Focus(0)), i) else { continue };
             pickers += 1;
             let mut focus = Focus(i);
             assert_eq!(page.step(&mut focus, Input::A), ListEffect::Open(picker::NAME), "{name} row {i}");
             let pick = picker::current().expect("a pick");
-            assert_eq!(pick.title, picker::title(&r.text), "{name} row {i}");
-            let says = r.explain.as_deref().or(r.help.as_deref()).unwrap_or_default();
+            assert_eq!(pick.title, picker::title(&label), "{name} row {i}");
+            let says = r.explain.clone().or(help).unwrap_or_default();
             assert_eq!(pick.description, says, "{name} row {i}");
             assert!(!pick.values.is_empty(), "{name} row {i}");
         }

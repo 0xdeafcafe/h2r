@@ -252,7 +252,7 @@ pub fn all_settings() -> impl Iterator<Item = SettingId> {
 }
 
 /// Our names for the settings we can identify (from the community variant
-/// model in `crates/extensions/game/src/community_variants.rs` and the engine fields
+/// settings table in `crates/formats/rules/src/settings.rs` and the engine fields
 /// in docs/live/live-gamestate.md; the CTF, Assault, Oddball and
 /// Territories type-area names are the editor's page labels against
 /// [`field`], as `rules::caps::VARIANT_FIELDS` notes them). The editor

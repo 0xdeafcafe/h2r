@@ -35,7 +35,8 @@ pub const ICON: char = '\u{e007}';
 pub const MAX_LISTED: usize = 0x7f;
 /// Description numbers: 94 to 99 name the first six variants' own
 /// descriptions; 100 (the game's highest) a shared line for the rest.
-/// Retail uses 0 to 38 and the community variants 80 to 93.
+/// Retail uses 0 to 38 and the listed scripts from 40
+/// (`crate::community_variants::DESCRIPTION_BASE`).
 pub const DESCRIPTION_BASE: u32 = 94;
 pub const DESCRIBED: usize = 6;
 pub const SHARED_DESCRIPTION: u32 = 100;

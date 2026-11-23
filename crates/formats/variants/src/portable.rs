@@ -486,9 +486,21 @@ pub fn record_for(
     ir: &rules::Ir,
     options: &[(String, rules::ir::OptionValue)],
 ) -> Result<GameVariant, PortableError> {
+    record_for_named(ir, &ir.header.name, options)
+}
+
+/// [`record_for`] with the variant named `name` in place of the script's
+/// name: Live's `from-script` names the variant from its request, so a
+/// script whose own name is longer than a record's 31 characters still
+/// makes a variant there.
+pub fn record_for_named(
+    ir: &rules::Ir,
+    name: &str,
+    options: &[(String, rules::ir::OptionValue)],
+) -> Result<GameVariant, PortableError> {
     let mut v = settings_record(ir)?;
-    check_name(&ir.header.name)?;
-    v.set_name(&ir.header.name)
+    check_name(name)?;
+    v.set_name(name)
         .map_err(|e| PortableError::Edit(e.to_string()))?;
     let bits = ir
         .pack_options(options)
@@ -1185,6 +1197,18 @@ settings {
     /// A settings-only script of `carrier` named V.
     fn carried(carrier: &str, lines: &str) -> String {
         format!("rules \"V\" 1\ncarrier {carrier}\nscoring carrier\nsettings {{\n{lines}}}\n")
+    }
+
+    #[test]
+    fn a_named_record_takes_its_name_not_the_scripts() {
+        let long = "A script name far longer than any record's thirty-one";
+        let src = format!("rules \"{long}\" 1\ncarrier slayer\nscoring carrier\nsettings {{\nscore_limit = 10\n}}\n");
+        let ir = compiled(&src);
+        assert!(record_for(&ir, &[]).is_err(), "the script's own name is too long");
+        let v = record_for_named(&ir, "Short", &[]).unwrap();
+        assert_eq!(v.name(), "Short");
+        assert_eq!(v.ext().script.prefix[..], ir.id().0[..8]);
+        assert!(record_for_named(&ir, "", &[]).is_err());
     }
 
     #[test]

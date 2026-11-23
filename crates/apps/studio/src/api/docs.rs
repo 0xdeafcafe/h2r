@@ -320,10 +320,26 @@ fn open(app: &mut App, p: &P) -> Reply {
                 Action::OpenVariant(Origin::Saved(dir))
             } else if let Some(t) = q.opt_str("new")? {
                 Action::NewVariant(game_type(t)?)
+            } else if let Some(s) = q.opt_str("script")? {
+                // A starter by name, or "open" for the script open in the
+                // script editor: a new variant of it (`record_for`).
+                let source = if s == "open" {
+                    app.rules.text.clone()
+                } else {
+                    crate::app::rules_edit::find_starter(s)
+                        .map(|(_, src)| src.to_string())
+                        .ok_or_else(|| {
+                            err(
+                                code::INVALID_PARAMS,
+                                format!("no built-in or example script named {s} (rules.get's starters), or \"open\""),
+                            )
+                        })?
+                };
+                Action::NewVariantFromScript(source)
             } else {
                 return Err(err(
                     code::INVALID_PARAMS,
-                    "variant: one of builtin, saved, new",
+                    "variant: one of builtin, saved, new, script",
                 ));
             };
             (ToolKind::Variants, run(app, action, discard)?)

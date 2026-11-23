@@ -709,6 +709,15 @@ pub fn lock_target(s: &State) -> Option<LockBox> {
     contract::landing(s).map(|l| lock_box(&l))
 }
 
+/// The lock-on's target box as drawn: [`lock_target`], and none while the
+/// approach guide is on a seam and the screen is `full` (the guide's
+/// marks are fullscreen's): its box is on the seam then, and red for a
+/// landing that will bounce (docs/game/superbounce.md, "The approach
+/// guide").
+pub fn lock_shown(s: &State, full: bool) -> Option<LockBox> {
+    lock_target(s).filter(|_| !(full && s.guide.is_some()))
+}
+
 /// The lock-on's ease, kept between captures: each capture eases from what
 /// was shown at that moment.
 static EASE: Mutex<Option<Ease>> = Mutex::new(None);
@@ -730,9 +739,15 @@ pub struct LockMarks {
 }
 
 impl LockMarks {
-    /// The lock-on for a capture of `s` at `now`.
-    pub fn capture(guest: &dyn GuestMemory, s: &State, now: Instant) -> Option<LockMarks> {
-        let ease = ease_lock(lock_target(s), now)?;
+    /// The lock-on for a capture of `s` at `now`, on a screen that is
+    /// `full` or split ([`lock_shown`]).
+    pub fn capture(
+        guest: &dyn GuestMemory,
+        s: &State,
+        full: bool,
+        now: Instant,
+    ) -> Option<LockMarks> {
+        let ease = ease_lock(lock_shown(s, full), now)?;
         Some(LockMarks {
             ease,
             look: hud::look(guest),

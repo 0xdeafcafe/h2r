@@ -232,7 +232,16 @@ fn store_of(names: &[&str]) -> Store {
 /// The listing is process-wide, so everything that reads it is here.
 #[test]
 fn the_merged_block_holds_retail_community_and_store_entries() {
-    let community: Vec<NewEntry> = (0..cv::VARIANTS.len()).map(NewEntry::community).collect();
+    // A community entry for each listed script, as `cv::entries` makes them.
+    let listed = ::rules::builtin::LISTED.len();
+    let community: Vec<NewEntry> = (0..listed)
+        .map(|i| NewEntry {
+            name_id: cv::name_id(i),
+            list_type: 0,
+            pairs: vec![(2, 25)],
+            description: cv::DESCRIPTION_BASE + i as u32,
+        })
+        .collect();
     let offered: HashMap<u32, Vec<i32>> = [(2, vec![10, 25])].into_iter().collect();
 
     // A value the editor does not offer leaves the variant out, by name.
@@ -261,15 +270,15 @@ fn the_merged_block_holds_retail_community_and_store_entries() {
         },
     ];
     let merged = cv::extend_with(&mut m, GOOF, &groups, ENTRIES).unwrap();
-    assert_eq!(merged.added, [cv::VARIANTS.len(), 2]);
+    assert_eq!(merged.added, [listed, 2]);
     assert_eq!(merged.over, 0);
     let n = m.u32(GOOF + BUILTINS).unwrap() as usize;
-    assert_eq!(n, 39 + cv::VARIANTS.len() + 2);
+    assert_eq!(n, 39 + listed + 2);
     assert_eq!(m.u32(GOOF + BUILTINS + 4), Some(ENTRIES));
     let at = |i: usize| ENTRIES + i as u32 * 0x14;
     assert_eq!(m.u32(at(0)), Some(0x0100_0000), "retail first, unchanged");
     assert_eq!(m.u32(at(39)), Some(cv::name_id(0)), "then the community's");
-    let first = at(39 + cv::VARIANTS.len());
+    let first = at(39 + listed);
     assert_eq!(m.u32(first), Some(inject::name_id(0)), "then the store's");
     assert_eq!(m.u32(first + 12), Some(super::PAIRS_BASE));
     assert_eq!(m.u32(super::PAIRS_BASE), Some(2));
@@ -329,8 +338,8 @@ fn the_merged_block_holds_retail_community_and_store_entries() {
         },
     ];
     let merged = cv::extend_with(&mut m, GOOF, &groups, ENTRIES).unwrap();
-    assert_eq!(merged.added, [cv::VARIANTS.len(), 101 - 39 - cv::VARIANTS.len()]);
-    assert_eq!(merged.over, 60 - (101 - 39 - cv::VARIANTS.len()));
+    assert_eq!(merged.added, [listed, 101 - 39 - listed]);
+    assert_eq!(merged.over, 60 - (101 - 39 - listed));
     assert_eq!(m.u32(GOOF + BUILTINS), Some(101));
 }
 

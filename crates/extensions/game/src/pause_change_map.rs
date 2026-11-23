@@ -826,7 +826,7 @@ async fn drive(cx: &Cx, next: Next) -> Result<(), EntryError> {
             }
             cx.write(|m| m.write(at, record.as_slice()))?;
             let set = cx
-                .call(GuestCall::new(crate::host_lobby::SET_VARIANT).args([at]))
+                .call(GuestCall::new(crate::host_lobby::SET_VARIANT.base).args([at]))
                 .await?
                 .eax as u8
                 != 0;

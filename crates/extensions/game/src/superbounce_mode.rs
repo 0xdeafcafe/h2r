@@ -5,12 +5,13 @@
 //!
 //! **When it is on.** The active variant carries the extension block's
 //! superbounce flag ([`variants::ext::Ext::superbounce`], through
-//! [`crate::variant_ext::Decision::superbounce`]), or is the built-in
-//! "Superbounce" variant ([`crate::community_variants`], which has no field
-//! for the flag, so it is told by name), or the rules script the block
-//! names requires `hud.superbounce` (through the same decision,
+//! [`crate::variant_ext::Decision::superbounce`]), or the rules script the
+//! block names requires `hud.superbounce` (through the same decision,
 //! [`crate::rules::header::script_asks_superbounce`]), or
-//! `H2_SUPERBOUNCE=1` forces it.
+//! `H2_SUPERBOUNCE=1` forces it. The built-in "Superbounce" variant's
+//! record names the Superbounce script from the list's load
+//! (`crate::community_variants::write_blocks`), so a game on it, or on a
+//! copy of it, turns the mode on through the script.
 //!
 //! **Each tick** (a tick observer, only while on) it reads the first local
 //! player's unit, its position, whether it is airborne, its vertical
@@ -61,8 +62,6 @@ use crate::superbounce_targets::Marks;
 pub const FEATURE: &str = "superbounce";
 /// `H2_SUPERBOUNCE=1` forces the mode on in any game.
 pub const ENV: &str = "H2_SUPERBOUNCE";
-/// The built-in variant's name ([`crate::community_variants::VARIANTS`]).
-pub const VARIANT_NAME: &str = "Superbounce";
 /// The pair word of a primed player, as a signed number.
 pub const PRIMED_WORD: i32 = -3;
 /// Metres in a world unit (10 feet).
@@ -85,13 +84,6 @@ pub const FADE_FAR: f32 = 45.0;
 /// Whether a level pair word is the primed one (-3).
 pub fn primed(word: u32) -> bool {
     word as i32 == PRIMED_WORD
-}
-
-/// A variant name (as the record or the list holds it, with the list's
-/// trailing icon) that is the built-in Superbounce.
-pub fn is_superbounce_name(name: &str) -> bool {
-    name.trim_end_matches(|c: char| c.is_whitespace() || ('\u{e000}'..='\u{f8ff}').contains(&c))
-        == VARIANT_NAME
 }
 
 // ---- the published state ----
@@ -172,6 +164,10 @@ pub struct State {
     /// The landing the assist predicts, while airborne and falling toward
     /// a strip.
     pub landing: Option<Predicted>,
+    /// The approach guide on the seam the player is going for
+    /// ([`crate::superbounce_guide`]); `None` when it is not shown, and
+    /// with the variant's `approach_guide` option off.
+    pub guide: Option<crate::superbounce_guide::Guide>,
     /// The last landing within 0.5 of a strip, or primed bounce anywhere,
     /// filed when its launch window closes; kept until the next one or the
     /// game's end.
@@ -216,6 +212,7 @@ impl State {
         nav_target: None,
         takeoff: None,
         landing: None,
+        guide: None,
         last_landing: None,
         off_spot: Vec::new(),
         still_ticks: 0,
@@ -390,6 +387,7 @@ pub fn reply(s: &State) -> agent_proto::superbounce::State {
             miss: f64::from(p.miss()),
             locked: p.locked(),
         }),
+        guide: s.guide.as_ref().map(guide_reply),
         last_landing: s.last_landing.map(|l| wire::Landing {
             result: match l.result {
                 LandingResult::Bounce => wire::LandingResult::Bounce,
@@ -426,6 +424,35 @@ pub fn options_reply(o: crate::superbounce_options::Options) -> agent_proto::sup
         miss_info: o.miss_info,
         medals: o.medals,
         second_bounce: o.second_bounce,
+        approach_guide: o.approach_guide,
+        charge_segments: o.charge_segments,
+    }
+}
+
+/// `superbounce.state`'s `guide` for `g`.
+pub fn guide_reply(g: &crate::superbounce_guide::Guide) -> agent_proto::superbounce::Guide {
+    use hud_kit_core::huds::superbounce_guide::Call;
+    let v3 = |v: Vec3| v.map(f64::from);
+    agent_proto::superbounce::Guide {
+        seam: v3(g.seam.point),
+        call: match g.call {
+            Call::OffLine => "off_line",
+            Call::LinedUp => "lined_up",
+            Call::TooShallow => "too_shallow",
+            Call::WillBounce => "will_bounce",
+        }
+        .into(),
+        jump: g.jump,
+        impact: g.pipper().map(v3),
+        row: g.impact.map(|i| v3(i.row)),
+        ticks: g.impact.map(|i| i.ticks),
+        speed: g.impact.map(|i| f64::from(i.speed)),
+        caught: g.caught(),
+        deep: g.depth.map(|d| d.deep()),
+        depth: g.depth.map(|d| f64::from(d.margin)),
+        past: g.depth.map(|d| f64::from(d.past)),
+        across: g.across.map(f64::from),
+        strength: f64::from(g.strength),
     }
 }
 
@@ -826,27 +853,6 @@ fn forced() -> bool {
     *F.get_or_init(|| std::env::var(ENV).is_ok_and(|v| v == "1"))
 }
 
-/// The active variant's name in the game globals, in a multiplayer game.
-fn variant_name(m: &dyn GuestMemory) -> Option<String> {
-    use crate::skulls_custom::{GAME_GLOBALS, GLOBALS_MODE};
-    let g = m.u32(GAME_GLOBALS).ok().filter(|&g| g != 0)?;
-    if m.u32(g.wrapping_add(GLOBALS_MODE)).ok()? != crate::skulls_mp::MODE_MULTIPLAYER {
-        return None;
-    }
-    let mut b = [0u8; 2 * variants::record::NAME_UNITS];
-    m.read(
-        g.wrapping_add(crate::variant_ext::ACTIVE_VARIANT + variants::record::NAME_AT as u32),
-        &mut b,
-    )
-    .ok()?;
-    let units: Vec<u16> = b
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .take_while(|&u| u != 0)
-        .collect();
-    Some(String::from_utf16_lossy(&units))
-}
-
 /// The agent's override (`superbounce.set`): [`FOLLOW`], [`FORCE_ON`] or
 /// [`FORCE_OFF`].
 static OVERRIDE: AtomicU8 = AtomicU8::new(FOLLOW);
@@ -874,9 +880,7 @@ fn on_now(m: &dyn GuestMemory) -> bool {
         FORCE_OFF => return false,
         _ => {}
     }
-    forced()
-        || crate::variant_ext::in_game(&crate::layout_glue::ReadGm(m)).superbounce()
-        || variant_name(m).is_some_and(|n| is_superbounce_name(&n))
+    forced() || crate::variant_ext::in_game(&crate::layout_glue::ReadGm(m)).superbounce()
 }
 
 /// The local player's word, position and motion.
@@ -1287,6 +1291,47 @@ fn on_tick(o: &hooks::Obs) {
         _ => [None; RANKED],
     };
     let marks = crate::superbounce_second::over(marks, &second);
+    // The approach guide, on the seam the player is going for
+    // (docs/game/superbounce.md, "The approach guide").
+    let guide = match (live.position, live.velocity) {
+        (Some(position), Some(velocity))
+            if crate::superbounce_options::current().approach_guide =>
+        {
+            let is_primed = live.word.is_some_and(primed);
+            let seams: Vec<Vec3> = marks
+                .tagged
+                .into_iter()
+                .chain(marks.tag.map(|m| m.at))
+                .chain(marks.targets.iter().flatten().map(|m| m.at))
+                .collect();
+            crate::superbounce_guide::target(
+                position,
+                is_primed,
+                landing.map(|l| l.stand),
+                nav_target
+                    .filter(|n| n.kind == NavKind::Strip)
+                    .map(|n| n.at),
+                &seams,
+            )
+            .and_then(|at| {
+                let shown = crate::superbounce_targets::current();
+                let spot = crate::superbounce_guide::spot_at(
+                    spots.iter().chain(shown.iter().map(|t| &t.spot)),
+                    at,
+                )?;
+                crate::superbounce_guide::guide(
+                    &crate::superbounce_guide::Body {
+                        position,
+                        velocity,
+                        airborne: live.airborne,
+                        primed: is_primed,
+                    },
+                    spot,
+                )
+            })
+        }
+        _ => None,
+    };
     // The bots' and the verifier's bounces kept as ghost runs, and the
     // ghost the player asks for (docs/game/superbounce.md, "Ghost runs").
     {
@@ -1330,6 +1375,7 @@ fn on_tick(o: &hooks::Obs) {
         nav_target,
         takeoff,
         landing,
+        guide,
         last_landing: step.last_landing,
         off_spot,
         still_ticks: step.still_ticks,
@@ -1407,6 +1453,8 @@ mod gpu {
         host.add_world_line_source(Arc::new(Lines));
         host.add_world_line_source(Arc::new(crate::superbounce_view::Source));
         crate::superbounce_ghost::register(host);
+        // The approach guide's marks are the HUD kit's.
+        crate::hud_kit_world::register(host);
     }
 
     impl WorldLineSource for Lines {
@@ -1420,7 +1468,10 @@ mod gpu {
             let callouts = crate::superbounce_world::frame(guest, &s, &spots);
             // The lock-on eases by the wall clock between this tick's
             // capture and the next (docs/game/superbounce.md, "Lock-on").
-            let lock = LockMarks::capture(guest, &s, Instant::now());
+            // Fullscreen the approach guide's box is on the seam in its
+            // place.
+            let full = matches!(crate::hud_kit::mode(guest), Ok(hud_kit_core::Mode::Full));
+            let lock = LockMarks::capture(guest, &s, full, Instant::now());
             (!callouts.is_empty() || lock.is_some())
                 .then(|| Arc::new(Sample { callouts, lock }) as Arc<dyn ImageMarks>)
         }
@@ -1644,16 +1695,6 @@ mod tests {
         assert!(no_params(&json!({})).is_ok());
         assert!(no_params(&json!({"x": 1})).is_err());
         assert!(no_params(&json!([1])).is_err());
-    }
-
-    #[test]
-    fn the_variant_is_told_by_its_name_with_or_without_the_icon() {
-        assert!(is_superbounce_name("Superbounce"));
-        assert!(is_superbounce_name("Superbounce \u{e006}"));
-        assert!(is_superbounce_name("Superbounce \u{e008}"));
-        assert!(!is_superbounce_name("Bounce Practice \u{e006}"));
-        assert!(!is_superbounce_name("Superbounce 2"));
-        assert!(!is_superbounce_name(""));
     }
 
     #[test]

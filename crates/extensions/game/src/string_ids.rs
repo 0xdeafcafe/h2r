@@ -76,7 +76,7 @@ fn game_variant_ids() -> Vec<u32> {
 }
 
 fn families() -> Vec<Family> {
-    let community = (0..community_variants::VARIANTS.len())
+    let community = (0..::rules::builtin::LISTED.len())
         .flat_map(|i| {
             [
                 community_variants::name_id(i),
@@ -229,7 +229,7 @@ fn every_served_id_is_in_its_registered_family() {
         ),
         (
             "community variants",
-            (0..community_variants::VARIANTS.len())
+            (0..::rules::builtin::LISTED.len())
                 .flat_map(|i| {
                     [
                         community_variants::name_id(i),

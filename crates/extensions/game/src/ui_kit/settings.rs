@@ -19,6 +19,14 @@
 //! ([`Bindings`]). The legend is derived from the rows and the doc's
 //! extra buttons ([`legend`]).
 //!
+//! A page whose rows are not known until it opens (Quick Options for a
+//! script variant, `crate::variant_quick::page`) writes a row's `text`
+//! and `help` as lone slots (`"{label}"`, `"{help}"`) and binds it as a
+//! slot ([`Bindings::slot`]): its label, value and help are the
+//! binding's, and a slot the binding leaves empty is not drawn. A
+//! `settings.name` that is a lone slot (`"{variant}"`) is the binding
+//! [`Bindings::name`]'s.
+//!
 //! ```ignore
 //! pub fn page(store: Arc<Store>) -> KitScreen {
 //!     settings::screen(FEATURE, SCREEN, IDS, Some(store), Bindings::new())
@@ -37,7 +45,7 @@ use crate::ui_kit::data::{self, DataError, RowDoc, ScreenDoc};
 use crate::ui_kit::ids::Family;
 use crate::ui_kit::input::{Glyph, Input, Prompt};
 use crate::ui_kit::picker::Pick;
-use crate::ui_kit::screen::{KitScreen, Row, Then};
+use crate::ui_kit::screen::{Filled, KitScreen, Row, Then};
 
 /// The longest picker text a settings row's `explain` may be: about
 /// seven lines of the picker's description block (235 units wide in
@@ -82,6 +90,12 @@ pub enum Bound {
     },
     /// An action row, an open row's work first, or an extra button.
     Action(Get<Then>),
+    /// A pick row filled as the page shows it: its label, value and help,
+    /// or none (not drawn); and the pick made as A is pressed.
+    Slot {
+        fill: Get<Option<Filled>>,
+        offer: Get<Result<Pick, String>>,
+    },
 }
 
 /// The behaviours a settings dialog's `bind:` rows and extra buttons
@@ -90,6 +104,9 @@ pub enum Bound {
 #[derive(Default)]
 pub struct Bindings {
     binds: Vec<(&'static str, Bound)>,
+    /// The header's name line, for a doc whose `settings.name` is a lone
+    /// slot.
+    name: Option<Get<String>>,
 }
 
 impl Bindings {
@@ -137,6 +154,30 @@ impl Bindings {
         press: impl Fn() -> Then + Send + Sync + 'static,
     ) -> Self {
         self.binds.push((name, Bound::Action(Arc::new(press))));
+        self
+    }
+    /// A slot row (its doc text and help lone slots): `fill` gives its
+    /// label, value and help as the page shows it, `None` for an empty
+    /// slot, which is not drawn; `offer` the pick A opens.
+    pub fn slot(
+        mut self,
+        name: &'static str,
+        fill: impl Fn() -> Option<Filled> + Send + Sync + 'static,
+        offer: impl Fn() -> Result<Pick, String> + Send + Sync + 'static,
+    ) -> Self {
+        self.binds.push((
+            name,
+            Bound::Slot {
+                fill: Arc::new(fill),
+                offer: Arc::new(offer),
+            },
+        ));
+        self
+    }
+    /// The header's name line, for a doc whose `settings.name` is a lone
+    /// slot: read each time it is drawn, the same at every focus.
+    pub fn name(mut self, name: impl Fn() -> String + Send + Sync + 'static) -> Self {
+        self.name = Some(Arc::new(name));
         self
     }
     fn take(&mut self, name: &str) -> Option<Bound> {
@@ -226,6 +267,16 @@ pub fn from_doc(
         return Err(bad("settings".into(), "a settings dialog's doc has a settings: block".into()));
     };
     let mut s = KitScreen::from_doc(feature, name, ids, doc)?;
+    match (st.name.as_deref().is_some_and(data::lone_slot), binds.name.take()) {
+        (true, Some(get)) => s = s.header_name(move || get()),
+        (true, None) => {
+            return Err(bad("settings.name".into(), "a lone slot names the header's name binding (Bindings::name)".into()));
+        }
+        (false, Some(_)) => {
+            return Err(bad("settings.name".into(), "a name binding fills a settings.name that is a lone slot".into()));
+        }
+        (false, None) => {}
+    }
     let mut n = 0;
     while let Some(r) = doc.rows.get(&format!("row.{n}")) {
         let id = format!("row.{n}");
@@ -264,6 +315,21 @@ fn row(
     let at = |f: &str| format!("rows.{id}.{f}");
     let label = r.text.as_str();
     let help = r.help.clone().unwrap_or_default();
+    // A slot: its text and help are its binding's, as the page shows it.
+    let slot = data::lone_slot(label);
+    if slot != data::lone_slot(&help) {
+        return Err((at("help"), "a slot row's text and help are both lone slots".into()));
+    }
+    if slot {
+        return match (r.kind.as_str(), &r.bind, r.explain.is_some()) {
+            (_, _, true) => Err((at("explain"), "a slot row's picker says its binding's help".into())),
+            ("pick", Some(b), false) => match binds.take(b) {
+                Some(Bound::Slot { fill, offer }) => Ok(Row::slot(move || fill(), move || offer())),
+                _ => Err((at("bind"), format!("no slot binding {b:?}"))),
+            },
+            _ => Err((at("kind"), "a row whose text is a lone slot is a pick row bound to a slot".into())),
+        };
+    }
     let row = match (r.kind.as_str(), &r.setting, &r.bind) {
         ("value", Some(key), _) => {
             let store = store.ok_or_else(|| (at("setting"), format!("{key}: the screen has no store")))?;

@@ -25,7 +25,7 @@ pub mod export;
 mod present;
 
 pub use emit::to_yaml;
-pub use present::present;
+pub use present::{lone_slot, present};
 
 /// What is wrong with a doc, by name.
 #[derive(Clone, Debug, PartialEq, Eq)]

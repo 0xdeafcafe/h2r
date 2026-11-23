@@ -1,7 +1,7 @@
 // Hide and Seek: everyone hides with active camo; the Juggernaut seeks.
-// `list party` files it under Party Games (slice 12 of
-// docs/game/rules-variants.md filters a row's list to Slayer and
-// Juggernaut). docs/game/community-gametypes.md.
+// `list party` files it under Party Games: a row's list holds Slayer's and
+// Juggernaut's variants (docs/game/rules-variants.md).
+// docs/game/community-gametypes.md.
 rules "Hide and Seek" 1
 carrier juggernaut
 list party

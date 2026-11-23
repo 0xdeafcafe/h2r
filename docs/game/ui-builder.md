@@ -785,7 +785,10 @@ rows:
   schema names `game`, the in-game host; the kit has no game host and
   refuses it by name (`settings.host`).
 - `icon`: one of `dialog::icon::NAMES`.
-- `name`: what the window changes.
+- `name`: what the window changes. A lone slot (`name: "{variant}"`)
+  is the page's name binding (`Bindings::name`), read each time the
+  header is drawn; a doc with one needs that binding, and a binding
+  needs one.
 - `about`: what the window is for. A page opened from a row elsewhere
   (Game Setup's) gives `caller` instead, the opening row's `label` and
   `help`; the about line is that help, so the row and the window say the
@@ -798,6 +801,14 @@ rows:
   binding (`bind:`); a `pick` or `action` row names a binding; an `open`
   row names the screen it opens. `explain` is the picker's text; the
   help is when it is unset.
+- Slot rows: a `pick` row whose `text` and `help` are both lone slots
+  (`text: "{label}"`, `help: "{help}"`) and whose `bind` names a slot
+  binding (`Bindings::slot`) takes its label, its value and its help
+  from that binding each time it is drawn (`screen::Filled`), and has no
+  `explain`. A slot its binding leaves empty is not drawn: the rows
+  after it move up and the list's count is the rows drawn. A is the
+  binding's pick, titled by the label and saying the help; left and
+  right do nothing.
 
 `data::ScreenDoc::validate` makes each rule a named error at its field.
 
@@ -811,7 +822,7 @@ pub fn page(store: Arc<Store>) -> KitScreen {
 ```
 
 `settings::Bindings` registers a row's behaviour by name (`value`,
-`pick`, `action`). A binding no row names, a row naming no registered
+`pick`, `action`, `slot`) and the header's name (`name`). A binding no row names, a row naming no registered
 binding, an unknown setting and a `values` list of the wrong length are
 named errors. `settings::legend` derives the legend: `CHANGE` when a row
 is a value row, then `SELECT` and `BACK`, then the extra buttons
@@ -826,7 +837,9 @@ Nothing row-indexed reaches them: a focus move names the same panel ids
 with the same strings, and the focused row's help goes through
 `Rows::description`.
 
-**The pages.** `clankers`, `firefight`, `h1-options`, `browser.filters`
+**The pages.** `clankers`, `firefight`, `h1-options`, `browser.filters`,
+`variant-quick` (Quick Options for a script variant, five slot rows and a
+bound name; [rules-variants.md](rules-variants.md#quick-options-in-the-lobby))
 and the kit's `kit.dialog`, with the specimens `layout.dialog.settings`
 and `design.row.setting`. `settings::NOT_SHARED` lists the screens with
 settings rows that are not the shared dialog, each with why:
@@ -841,7 +854,9 @@ The tests are `ui_kit::settings::tests`
 (`every_settings_list_is_the_shared_dialog_or_says_why`,
 `the_top_is_the_same_under_every_focus`,
 `the_bottom_is_the_focused_rows_help`, `a_rows_picker_carries_its_help`,
-`a_setting_row_reads_and_writes_its_def`, `the_legend_follows_the_rows`),
+`a_setting_row_reads_and_writes_its_def`, `the_legend_follows_the_rows`,
+`a_slot_row_is_its_bindings_and_an_empty_slot_is_not_drawn`,
+`a_slot_and_a_bound_name_attach_or_name_their_field`),
 the consistency rule `settings` ("Consistency") and
 `data::tests::a_settings_doc_round_trips_and_its_rules_name_their_field`.
 The retail measurements behind the places are in
@@ -1100,8 +1115,21 @@ Halo 1 on a converted map, and the multiplayer skull count. Hosted games
 use the signed-in profiles' skull choices. Xbox Live guests read the last
 cached host advertisement for skulls.
 
-The enabled lines follow the retail options that fit. When all five
-rows are filled, each enabled line replaces a bottom retail option. The hook sets each extra
+For a variant whose record names a rules script this machine has, the
+formatter's rows give way to the script's Quick Options marks
+(`crate::variant_quick`, switch `variant-quick`;
+[rules-variants.md](rules-variants.md#quick-options-in-the-lobby)): one
+"Label: value" line a mark, in the script's order, from the top, and the
+slots past the last mark hidden. A script with no `quick` line shows no
+rows. A variant with no script, or naming one this machine lacks, keeps
+the formatter's rows. The labels and value texts are ours, from
+`rules::settings::TABLE` and the script's options. The lines are five
+ids of the `variant quick` family (`ui_kit::ids`), written to their
+slots at each panel update (`variant_quick::panel_ids`).
+
+The enabled lines follow the retail options, or the marked rows, that
+fit. When all five rows are filled, each enabled line replaces a bottom
+row (`lobby_options::plan`). The hook sets each extra
 text widget through `TEXT_SET` and the shared locale table
 (`layout_glue::StringsFeature`, IDs from `ui_kit::ids`). The read-only
 [`ui.lobby_options` agent method](../runtime/agent-api.md#ui-what-the-menus-show)

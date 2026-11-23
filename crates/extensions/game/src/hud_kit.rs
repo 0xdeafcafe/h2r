@@ -46,7 +46,7 @@
 //! The draw hooks are `context_only` and read one shared table, so they
 //! run on the render thread.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard};
 use std::time::Instant;
 
@@ -62,6 +62,7 @@ use hud_kit_core::model::{
 };
 use hud_kit_core::motion::{self, Motion};
 use hud_kit_core::records::{self, Compiled, WidgetKind};
+use hud_kit_core::world::{Pose, Shape};
 
 use crate::h1_particle_physics::fault;
 use crate::ui_kit::ids::{Family, family};
@@ -176,6 +177,23 @@ struct Registered {
     stamps: Stamps,
     /// The world point of each navpoint element that has one, by its id.
     navs: Vec<(&'static str, [f32; 3])>,
+    /// The pose of each world mark element that has one, by its id.
+    marks: Vec<(&'static str, Pose)>,
+}
+
+/// How many world marks have a pose, over every registered HUD: what the
+/// world-line source polls ([`crate::hud_kit_world`]).
+static MARKS_POSED: AtomicUsize = AtomicUsize::new(0);
+
+/// A world mark as it draws now: its element's shape, its pose, and its
+/// value's style and label.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MarkNow {
+    pub id: &'static str,
+    pub shape: Shape,
+    pub pose: Pose,
+    pub style: Style,
+    pub label: String,
 }
 
 /// Per element, the wall time its value's motion started.
@@ -287,6 +305,7 @@ pub fn register(describe: Arc<dyn Describe + Send + Sync>) -> Handle {
         values,
         stamps: Stamps::new(),
         navs: Vec::new(),
+        marks: Vec::new(),
     });
     Handle(r.len() - 1)
 }
@@ -351,6 +370,76 @@ impl Handle {
             x.navs.push((id, at));
         }
     }
+    /// Where world mark element `id` lies; `None` takes it away. The
+    /// window's world-line pass draws it while the element's value is
+    /// shown too ([`world_marks_now`]). An id that is not a world mark of
+    /// this HUD, and a pose with a fault (`Pose::fault`), are ignored.
+    pub fn world_mark(&self, id: &str, pose: Option<Pose>) {
+        let mut r = REGISTRY.write().unwrap_or_else(|e| e.into_inner());
+        let Some(x) = r.get_mut(self.0) else {
+            return;
+        };
+        let Some(e) = x
+            .hud
+            .elements
+            .iter()
+            .find(|e| e.id == id && e.kind.world().is_some())
+        else {
+            return;
+        };
+        let id = e.id;
+        x.marks.retain(|(i, _)| *i != id);
+        if let Some(pose) = pose.filter(|p| p.fault().is_none()) {
+            x.marks.push((id, pose));
+        }
+        MARKS_POSED.store(r.iter().map(|x| x.marks.len()).sum(), Ordering::Relaxed);
+    }
+}
+
+/// Whether any world mark has a pose: one atomic load.
+pub fn any_world_marks() -> bool {
+    MARKS_POSED.load(Ordering::Relaxed) != 0
+}
+
+/// The world marks to draw now in screen mode `mode`: the world mark
+/// elements of the registered HUDs, in their order, whose value is shown,
+/// that have a pose and whose place has the mode (a channel shows only
+/// in the screen modes its place has).
+pub fn world_marks_now(mode: Mode) -> Vec<MarkNow> {
+    let r = read(&REGISTRY);
+    r.iter()
+        .flat_map(|x| world_marks_of(&x.hud, &x.values, &x.marks, mode))
+        .collect()
+}
+
+/// [`world_marks_now`] for one HUD at `values` with the poses `marks`.
+pub fn world_marks_of(
+    hud: &Hud,
+    values: &Values,
+    marks: &[(&'static str, Pose)],
+    mode: Mode,
+) -> Vec<MarkNow> {
+    let mut out = Vec::new();
+    for e in &hud.elements {
+        let Some(shape) = e.kind.world() else { continue };
+        let Some(v) = values.get(e.id).filter(|v| v.shown) else {
+            continue;
+        };
+        let Some((_, pose)) = marks.iter().find(|(i, _)| *i == e.id) else {
+            continue;
+        };
+        if e.at.offset(mode).is_none() {
+            continue;
+        }
+        out.push(MarkNow {
+            id: e.id,
+            shape,
+            pose: *pose,
+            style: v.style,
+            label: v.text.clone(),
+        });
+    }
+    out
 }
 
 /// Why a notification for `user` with `text` is refused, if it is.

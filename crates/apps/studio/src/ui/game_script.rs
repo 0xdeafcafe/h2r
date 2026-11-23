@@ -170,6 +170,15 @@ fn toolbar(ui: &Ui, app: &mut App, dialogs: bool) {
         save(app, dialogs, true);
     }
     ui.same_line();
+    if ui.button("Save as game variant") {
+        save_game_variant(app, dialogs);
+    }
+    if ui.is_item_hovered() {
+        ui.tooltip_text(
+            "Write the script's own variant as a .h2variant file: its settings, its\noption defaults and the script itself, as `h2 variants from-script` does.",
+        );
+    }
+    ui.same_line();
     if ui.button("Open in editor") {
         open_in_editor(app);
     }
@@ -377,6 +386,29 @@ fn save(app: &mut App, dialogs: bool, as_new: bool) {
                 reload(app);
             }
         }
+        Err(why) => app.error(why),
+    }
+}
+
+/// Writes the script's own variant to a `.h2variant` file the user picks.
+fn save_game_variant(app: &mut App, dialogs: bool) {
+    let (name, _) = match rules_edit::game_variant_file(&app.rules.text) {
+        Ok(f) => f,
+        Err(why) => return app.error(format!("Not saved as a game variant: {why}")),
+    };
+    if !dialogs {
+        return;
+    }
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("Save the script as a game variant")
+        .add_filter("Game variant", &[variants::portable::EXTENSION])
+        .set_file_name(name)
+        .save_file()
+    else {
+        return;
+    };
+    match app.rules.save_game_variant(&path) {
+        Ok(path) => app.info(format!("Saved {}", path.display())),
         Err(why) => app.error(why),
     }
 }
@@ -939,6 +971,22 @@ fn report(ui: &Ui, r: &RulesEditor) {
             theme::WARN,
             format!("No host runs these yet: {}", rep.unhostable.join(", ")),
         );
+    }
+    if let Some(section) = rules_edit::script_section(check)
+        && ui.collapsing_header("Settings and Quick Options", TreeNodeFlags::DEFAULT_OPEN)
+    {
+        if !section.settings.is_empty() {
+            ui.text_disabled("Settings (a new variant starts with these)");
+            for line in &section.settings {
+                ui.bullet_text(line);
+            }
+        }
+        if !section.quick.is_empty() {
+            ui.text_disabled("Quick Options rows, in order");
+            for line in &section.quick {
+                ui.bullet_text(line);
+            }
+        }
     }
     if let Some(hash) = &check.hash {
         ui.text_disabled(format!("SHA-256 {hash}"));

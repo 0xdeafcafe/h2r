@@ -1,8 +1,8 @@
 # Game variants defined by their rules script
 
-Status: Design. Nothing here is built; the code it replaces is the hand-written table `community_variants::VARIANTS`.
-Code: `crates/formats/rules/src/settings.rs` (new, the settings a script may name), `crates/formats/rules/src/ir.rs` (the IR's settings and quick marks), `crates/formats/variants/src/portable.rs` (`record_for`, a script's record), `crates/extensions/game/src/community_variants.rs` (the built-in entries), `crates/extensions/game/src/variant_quick.rs` (new, the lobby's Quick Options). Tests: named per slice under "Slices".
-Switch: `variant-quick` (on by default), to be listed in [switches.md](../runtime/switches.md). The built-in entries stay under the existing features (`tweakers`, `rules`, `lobby-options`).
+Status: Built. Every slice, 1 to 12, is in.
+Code: `crates/formats/rules/src/settings.rs` (new, the settings a script may name), `crates/formats/rules/src/ir.rs` (the IR's settings and quick marks), `crates/formats/variants/src/portable.rs` (`record_for`, a script's record), `crates/extensions/game/src/community_variants.rs` (the built-in entries), `crates/extensions/game/src/variant_quick.rs` (new, the lobby's Quick Options), `crates/extensions/game/src/variant_quick/page.rs` (new, the Quick Options dialog), `assets/ui/screens/variant-quick.yaml` (new, its doc). Tests: named per slice under "Slices".
+Switch: `variant-quick` (on by default, with `lobby-options`), listed in [switches.md](../runtime/switches.md). The built-in entries stay under the existing features (`tweakers`, `rules`, `lobby-options`).
 
 A game variant is one `.rules` file: its rules, its own options, and
 every record setting it changes (starting weapon, shields, score limit,
@@ -346,24 +346,37 @@ the page `variant-quick` in place of retail's screen 222. It is the
 shared settings dialog ([ui-builder.md](ui-builder.md#the-settings-dialog))
 from `assets/ui/screens/variant-quick.yaml`: Quick Options' own panel,
 the variant's name, five row slots bound `quick.0` to `quick.4`, the
-focused row's help under the rows (an option's description; a setting
-has none) and the value picker on A. Its Rust is its bindings. The kit
-gains what the page needs and no other page has: a row whose label and
-values come from its binding when the page opens, and a slot that is not
-drawn when its binding has no row. For a script with no marks the
-"Quick Options..." row is greyed out and its press does nothing; Change
-Rules edits everything.
+focused row's help under the rows (an option's description; for a
+setting, what it sets: `page::help`) and the value picker on A. Its Rust
+is its bindings (`variant_quick::page`). The kit gains what the page
+needs and no other page has: a slot row (its doc text `{label}` and help
+`{help}`, bound with `Bindings::slot`) whose label, value and help come
+from its binding each time it is drawn, a slot that is not drawn when
+its binding has no row, and a header name bound with `Bindings::name`
+(the doc's `name: "{variant}"`). For a script with no marks the
+"Quick Options..." row is greyed out: the row keeps retail's text and
+its press is taken and does nothing (`page::Entry::Greyed`). Change
+Rules edits everything. With the page off (`variant-quick`) every
+variant keeps retail's screen 222.
 
 A change writes the lobby's variant through the game's own setter: read
 the lobby's record, change the one setting (`GameVariant::set`) or the
 option bits (`Ext::encode`, which keeps the CRC), and call the lobby
-variant setter with the new record (`0x19a728`, stack: the record; AL
-nonzero when taken; the call the dedicated host makes,
-`host_lobby::retail::SET_VARIANT`, **Code**). It becomes the named point
-`LOBBY_SET_VARIANT`. The record is checked with `record::refused` first,
-and a refusal by either is shown in the dialog and changes nothing. The
-change lasts as retail's Quick Options changes do: it is the lobby's
-variant, not a save.
+variant setter with the new record (the named point
+`LOBBY_SET_VARIANT`, `0x19a728`, stack: the record; AL nonzero when
+taken; the call the dedicated host makes, `host_lobby::retail::SET_VARIANT`,
+**Code**). The record is checked with `record::refused` first, and a
+refusal by either is shown in the row's help and changes nothing: a
+refusal by the setter shows the lobby's record again. The dialog shows
+the change at once and queues it (`page::Changes`); the next UI update
+writes the record to guest memory and calls the setter, as
+`pause_change_map`'s driver does, and no snapshot is taken while a
+change waits. An option change on one of our listed entries also
+retargets the entry's block in the store bundle
+(`game_variants::inject::retarget`), so the game's start gate applies
+the changed bits; it lasts until the list loads again. The change lasts
+as retail's Quick Options changes do: it is the lobby's variant, not a
+save.
 
 Only the machine that owns the lobby's Game Setup can open the dialog,
 as in retail.
@@ -407,7 +420,7 @@ writes the `.h2variant` of `from_script`.
 - `rules::builtin::LISTED`, and `by_prefix` (the lookup
   `runtime::compiled_in` makes today, for Studio and the CLI).
 - `variants::record::GameVariant::stock`, `variants::portable::{record_for, from_script}`.
-- Guest points: `LOBBY_SET_VARIANT` (new name for `0x19a728`),
+- Guest points: `LOBBY_SET_VARIANT` (`0x19a728`),
   `LOBBY_VARIANT_PANEL`, `BUILTINS_LOAD`.
 - Agent API: `variants.quick` (read: the lobby variant's script, its
   rows and values) and `variants.quick.set` (act: one row's value), in
@@ -426,7 +439,7 @@ writes the `.h2variant` of `from_script`.
   stock value; naming it is adding a row.
 - A `scoring carrier` script cannot add handlers on top of its carrier's
   scoring. A mode that needs both is a full script.
-- Our rows hold Slayer variants only.
+- Our rows hold Slayer and Juggernaut variants.
 - Names: a listed script's name is at most 16 characters, the game's
   keyboard limit (the test the table has today).
 - Text is English in every language.
@@ -494,6 +507,10 @@ settings` prints the whole record; Hide and Seek moves under Party Games
 - That `0x19a728` keeps the `hx` block of the record it is given, and
   that a change made through it reaches guests as retail's Quick Options
   changes do.
+- That `0x19a728` pops its one argument (`ret 4`, as `LOBBY_SET_VARIANT`
+  declares); the dedicated host's call reads only AL.
+- How retail draws a disabled Game Setup row: the greyed row keeps
+  retail's text and only its press does nothing.
 - That the content list's records are all filed when `BUILTINS_LOAD`
   returns, so the block can be written there and not at the first fill.
 - That retail's formatter leaves the five rows alone when ours are set

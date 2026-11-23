@@ -1,17 +1,9 @@
 //! The superbounce HUD on the kit (docs/game/hud-kit.md, "The superbounce
 //! HUD on the kit"), made of things Halo 2 already draws:
 //!
-//! - a pill at the bottom left, right of the motion tracker, in one
-//!   block with the arming bar over it and the readout's rows beside it:
-//!   a short pill cut from the frag pill's own art (its body and
-//!   its right end, without the frag "x" and picture), with a chevron
-//!   where a pill's count sits: lit while primed, inactive while not, dim
-//!   while the map is scanned, hidden on a map with no strips;
-//! - the charge meter under the pill, the energy sword's battery strip
-//!   cropped to the pill's width: how long the charge has left;
 //! - the arming bar, Assault's own (`ui\hud\scoreboard`'s
-//!   `bomb_defusal`, red, over the pill): how far the player is
-//!   through the recipe, with the primed ending, the run out when the
+//!   `bomb_defusal`, red, at the bottom left over the readout's rows):
+//!   how far the player is through the recipe, with the primed ending, the run out when the
 //!   player leaves early and the blink when a charge is lost, moved on
 //!   wall time (`crate::motion`; [`ArmTrack`]);
 //! - the recipe's verbs on the game's prompt line, the bound button drawn
@@ -31,19 +23,17 @@
 //! game's runtime (`game::superbounce_hud`) fills it from `State` each
 //! tick. Launch and drop are not on the HUD: they are on the strips'
 //! labels in the world and in the agent API.
+//!
+//! Whether the player is primed and how long the charge has left are the
+//! charge segments round the motion tracker, elements of the readout HUD
+//! ([`super::superbounce_segments`]); [`Charge`] and [`Phase`] are what
+//! they read.
 
-use crate::model::{
-    self, Anchor, Art, Describe, Element, Font, Hud, HudRef, Justify, Kind, Origin, PILL_BODY,
-    PillPart, Place, Pulse, Style, Value, Values,
-};
+use crate::model::{Anchor, Art, Describe, Element, Hud, HudRef, Kind, Place, Value, Values};
 use crate::motion::Motion;
 
 pub const NAME: &str = "superbounce";
 
-pub const PILL: &str = "sb.pill";
-pub const PILL_END: &str = "sb.pill.end";
-pub const PILL_ICON: &str = "sb.pill.icon";
-pub const CHARGE: &str = "sb.charge";
 pub const ARM: &str = "sb.arm";
 pub const PROMPT: &str = "sb.prompt";
 pub const MESSAGE: &str = "sb.message";
@@ -51,11 +41,6 @@ pub const MEDAL: &str = "sb.medal";
 pub const NAVPOINT: &str = "sb.navpoint";
 pub const TUTORIAL: &str = "sb.tutorial";
 
-/// The pill's icon: the HUD font's chevron (`^` in `conduit-13`, the font
-/// of the grenade counts; its arrow characters U+2191 and U+25B2 are the
-/// missing box, and its d-pad glyph U+E108 is swapped for the bound key's
-/// picture on the other input sets, docs/input/button-icons.md).
-pub const ICON_TEXT: &str = "^";
 /// The widest navpoint number: whole metres under 1000.
 pub const DISTANCE_LONGEST: &str = "999";
 /// The distance the preview's crouch-spot navpoints show.
@@ -63,14 +48,9 @@ pub const SAMPLE_DISTANCE_M: f32 = 12.0;
 /// The drop the preview's strip navpoints show.
 pub const SAMPLE_DROP_M: f32 = 3.0;
 
-/// The charge meter's width: the strip's last columns, as wide as the
-/// pill ([`PILL_BODY`] and [`model::PILL_END`]).
-pub const CHARGE_COLUMNS: u8 = (PILL_BODY + model::PILL_END) as u8;
-/// The meter's top below the pill's: the pill's 19 rows (V: `grenade_bkd`,
-/// 103 by 19) and 2 more.
-pub const CHARGE_DOWN: i16 = 21;
-/// At this fill or under the charge is about to go: the icon flashes the
-/// timer's warning record. Half: 19 still ticks of the 38 a body has
+/// At this fill or under the charge is about to go: the charge segments
+/// flash the timer's warning record
+/// ([`super::superbounce_segments::Stage::Warning`]). Half: 19 still ticks of the 38 a body has
 /// before it sleeps, where the prompt line warns ([`PROMPT_KEEP_MOVING`]).
 pub const LOW_CHARGE: f32 = 0.5;
 /// The arming bar's fill at each recipe step before the word is -3
@@ -88,9 +68,9 @@ pub const ARM_WIDGET: &str = "bomb_defusal";
 /// The fullscreen HUD frame's height, 36 to 444: a point this far under
 /// the top-left anchor is on the bottom-left one.
 pub const FRAME_HEIGHT: i16 = 408;
-/// The bar's centre fullscreen, from the top-left anchor: the top of the
-/// block right of the motion tracker (x 138 to 278, y 355 to 368), over
-/// the pill and the readout's rows. The retail widget's own place is
+/// The bar's centre fullscreen, from the top-left anchor: right of the
+/// motion tracker (x 138 to 278, y 355 to 368), 8 over the readout's
+/// rows and 16 over the charge segments' right side. The retail widget's own place is
 /// [`RETAIL_ARM_FULL`], from the centre: a centre-anchored widget stays
 /// mid-screen when the host pins the HUD's corners to a wide window's
 /// edges, and the tracker does not
@@ -115,20 +95,6 @@ pub const ARM_SPLIT: (i16, i16) = (272, 67);
 /// the bar's right end meets the arrow (x 198 to 203, the `overlap`
 /// check); 7 left clears it.
 pub const ARM_QUARTER: (i16, i16) = (129, 67);
-/// The pill's top left fullscreen, from the top-left anchor: screen
-/// (138, 376), 8 right of the motion tracker and 8 under the arming bar,
-/// its top in line with the readout's speed row
-/// (`superbounce_readout::SPEED_UP`). In half and quarter screen the pill
-/// is the grenade row's next (`Origin::NextGrenadePill`), and the row's
-/// anchor is the top left: the one anchor the widget has.
-pub const PILL_FULL: (i16, i16) = (90, 340);
-/// The icon's point from the pill's top left: where a grenade pill's
-/// count is in its pill (V: the plasma count at (12, -1), its pill at
-/// (0, 0)).
-pub const ICON_AT: (i16, i16) = (12, -1);
-/// The readout's rows start this far right of the pill's left edge: the
-/// pill's width and a gap of 6.
-pub const PILL_COLUMN: i16 = PILL_BODY + model::PILL_END + 6;
 /// The game's word D bit that shows the retail bar: Assault arming (V:
 /// the widget's only show bit). Ours hides while it is set.
 pub const ASSAULT_ARMING_D: u16 = 0x400;
@@ -458,8 +424,9 @@ impl ArmTrack {
 pub struct View {
     pub primed: bool,
     pub scan: Scan,
-    /// The charge: the strip under the pill shows it primed and lost;
-    /// `None` hides it.
+    /// The charge; `None` is no charge and no recipe step. Nothing of this
+    /// HUD draws it: the readout's charge segments do
+    /// ([`super::superbounce_segments::segments`]).
     pub charge: Option<Charge>,
     /// The arming bar; `None` hides it.
     pub arm: Option<Arm>,
@@ -504,40 +471,14 @@ pub fn distance_text(m: f32) -> String {
     format!("{:.0}", m.clamp(0.0, 999.0))
 }
 
-/// A place of the pill's block: fullscreen `by` from the pill's top left
-/// beside the motion tracker ([`PILL_FULL`]); in half and quarter screen
-/// `split` from `origin` in the grenade row.
-const fn pill_place(by: (i16, i16), split: (i16, i16), origin: Origin) -> Place {
-    Place::new(Anchor::TopLeft, (PILL_FULL.0 + by.0, PILL_FULL.1 + by.1))
-        .split(split, split)
-        .split_from(origin)
-}
-
 /// The elements, in draw order.
 pub fn hud() -> Hud {
     Hud {
         name: NAME,
         elements: vec![
-            Element::icon(
-                PILL,
-                Art::GrenadePill(PillPart::Body),
-                pill_place((0, 0), (0, 0), Origin::NextGrenadePill),
-            ),
-            // The right end, against the body's right edge.
-            Element::icon(
-                PILL_END,
-                Art::GrenadePill(PillPart::End),
-                pill_place((PILL_BODY, 0), (PILL_BODY, 0), Origin::NextGrenadePill),
-            ),
-            // Under the pill, as wide as it, in every mode the pill has.
-            Element::meter(
-                CHARGE,
-                Art::StripMeterEnd(CHARGE_COLUMNS),
-                pill_place((0, CHARGE_DOWN), (0, CHARGE_DOWN), Origin::NextGrenadePill),
-            ),
-            // Assault's arming bar, over the pill fullscreen and where
-            // split screen has room; it gives way to retail's own in an
-            // Assault game.
+            // Assault's arming bar, at the bottom left fullscreen and
+            // where split screen has room; it gives way to retail's own
+            // in an Assault game.
             Element::meter(
                 ARM,
                 Art::Widget {
@@ -549,15 +490,6 @@ pub fn hud() -> Hud {
                     .registered([0.5, 0.5]),
             )
             .hidden_on_d(ASSAULT_ARMING_D),
-            // Centred where a pill's count is, as the counts are.
-            Element::text(
-                PILL_ICON,
-                Font::Hud,
-                Justify::Centre,
-                ICON_TEXT,
-                pill_place(ICON_AT, (0, 0), Origin::NextGrenadeCount),
-            )
-            .over(PILL),
             Element::channel(
                 PROMPT,
                 Kind::Prompt {
@@ -599,41 +531,6 @@ pub fn hud() -> Hud {
 pub fn values(v: &View) -> Values {
     let mut out = Values::default();
     let ready = v.scan == Scan::Ready;
-    let pill = match v.scan {
-        Scan::NoStrips | Scan::Failed => None,
-        Scan::Scanning => Some(Style::Dim),
-        Scan::Ready if v.primed => Some(Style::Normal),
-        Scan::Ready => Some(Style::Inactive),
-    };
-    let charge = v.charge.filter(|_| ready);
-    // The strip under the pill is the charge's time left: primed, and the
-    // empty strip of a loss. The recipe is the arming bar's.
-    let strip = charge.filter(|c| matches!(c.phase, Phase::Primed | Phase::Lost));
-    // The icon flashes while the charge is about to go, and in the held
-    // step (the next is to walk out).
-    let icon_style = |style: Style| match charge {
-        Some(c) if v.primed && c.phase == Phase::Primed && c.fill <= LOW_CHARGE => {
-            Style::Flash(Pulse::TimeWarning)
-        }
-        Some(c) if !v.primed && c.phase == Phase::Held => Style::Flash(Pulse::Help),
-        _ => style,
-    };
-    let (p, icon) = match pill {
-        Some(style) => (
-            Value::shown().styled(style),
-            Value::text(ICON_TEXT).styled(icon_style(style)),
-        ),
-        None => (Value::hidden(), Value::hidden()),
-    };
-    out.set(PILL, p.clone());
-    out.set(PILL_END, p);
-    out.set(
-        CHARGE,
-        match strip {
-            Some(c) => Value::fill(c.fill.clamp(0.0, 1.0)),
-            None => Value::hidden(),
-        },
-    );
     out.set(
         ARM,
         match v.arm.filter(|_| ready) {
@@ -641,7 +538,6 @@ pub fn values(v: &View) -> Values {
             None => Value::hidden(),
         },
     );
-    out.set(PILL_ICON, icon);
     out.set(
         PROMPT,
         match v.verb.filter(|_| ready) {
@@ -917,6 +813,7 @@ impl Tutorial {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Style;
 
     fn state(name: &str) -> Values {
         Superbounce
@@ -942,60 +839,33 @@ mod tests {
         assert!(!distance_text(3.4).contains('.'));
     }
 
-    /// The pill is lit primed, inactive not primed, dim scanning, hidden
-    /// with no strips; the navpoint shows over either target, hidden
-    /// while scanning and without one.
+    /// The navpoint shows over either target, hidden while scanning and
+    /// without one.
     #[test]
-    fn the_pill_and_the_navpoint_follow_the_state() {
-        assert_eq!(style("primed-full", PILL), Some(Style::Normal));
-        assert_eq!(style("not-primed", PILL_END), Some(Style::Inactive));
-        assert_eq!(style("no-strips", PILL_END), None);
-        assert_eq!(style("primed-full", PILL_ICON), Some(Style::Normal));
-        assert_eq!(style("not-primed", PILL), Some(Style::Inactive));
-        assert_eq!(style("scanning", PILL), Some(Style::Dim));
-        assert_eq!(style("no-strips", PILL), None);
-        assert_eq!(style("no-strips", PILL_ICON), None);
+    fn the_navpoint_follows_the_state() {
         assert_eq!(style("primed-full", NAVPOINT), Some(Style::Normal));
         assert_eq!(style("not-primed", NAVPOINT), Some(Style::Normal));
         assert_eq!(style("scanning", NAVPOINT), None);
         assert_eq!(style("no-strips", NAVPOINT), None);
         assert_eq!(state("primed-full").get(NAVPOINT).unwrap().text, "3");
         assert_eq!(state("under").get(NAVPOINT).unwrap().text, "1");
-        assert_eq!(state("primed-full").get(PILL_ICON).unwrap().text, ICON_TEXT);
     }
 
-    /// The strip's fill by phase (docs/game/hud-kit.md, "The charge
-    /// meter"): primed and lost only, the recipe being the arming bar's;
-    /// the icon's two flashes, and the verbs on the prompt line.
+    /// The verbs on the prompt line by phase (docs/game/hud-kit.md, "The
+    /// charge meter"); the charge itself is the readout's segments'.
     #[test]
-    fn the_charge_meter_and_the_prompts_follow_the_recipe() {
-        let fill = |s: &str| {
-            let v = state(s);
-            let c = v.get(CHARGE).unwrap();
-            c.shown.then_some(c.fill)
-        };
-        assert_eq!(fill("not-primed"), None);
-        assert_eq!(fill("near"), None);
-        assert_eq!(fill("under"), None);
-        assert_eq!(fill("held"), None);
-        assert_eq!(fill("primed-full"), Some(1.0));
-        assert_eq!(fill("primed-draining"), Some(0.25));
-        assert_eq!(fill("lost"), Some(0.0));
-        assert_eq!(fill("lost-stood-still"), Some(0.0));
-        assert_eq!(fill("primed-still-warning"), Some(LOW_CHARGE));
-        assert_eq!(fill("scanning"), None);
+    fn the_prompts_follow_the_recipe() {
+        let charge = |s: &str| views().into_iter().find(|(n, _)| *n == s).unwrap().1.charge;
+        assert_eq!(charge("not-primed"), None);
+        assert_eq!(charge("held").map(|c| c.phase), Some(Phase::Held));
         assert_eq!(
-            style("primed-draining", PILL_ICON),
-            Some(Style::Flash(Pulse::TimeWarning))
+            charge("primed-still-warning"),
+            Some(Charge {
+                phase: Phase::Primed,
+                fill: LOW_CHARGE
+            })
         );
-        // The warning and the flash start together, at half.
-        assert_eq!(
-            style("primed-still-warning", PILL_ICON),
-            Some(Style::Flash(Pulse::TimeWarning))
-        );
-        assert_eq!(style("held", PILL_ICON), Some(Style::Flash(Pulse::Help)));
-        assert_eq!(style("under", PILL_ICON), Some(Style::Inactive));
-        assert_eq!(style("primed-draining", PILL), Some(Style::Normal));
+        assert_eq!(charge("lost").map(|c| c.phase), Some(Phase::Lost));
         let prompt = |s: &str| {
             let v = state(s);
             let p = v.get(PROMPT).unwrap();
@@ -1114,9 +984,7 @@ mod tests {
         let ids: Vec<_> = h.elements.iter().map(|e| e.id).collect();
         assert_eq!(
             ids,
-            [
-                PILL, PILL_END, CHARGE, ARM, PILL_ICON, PROMPT, MESSAGE, MEDAL, NAVPOINT, TUTORIAL
-            ]
+            [ARM, PROMPT, MESSAGE, MEDAL, NAVPOINT, TUTORIAL]
         );
         for (name, v) in Superbounce.states() {
             for (id, val) in &v.0 {
@@ -1187,40 +1055,26 @@ mod tests {
         assert!(Superbounce.multiplayer_only().is_some());
     }
 
-    /// Fullscreen the pill, its end, the strip and the icon are one block
-    /// beside the motion tracker, under the arming bar, placed from the
-    /// top-left anchor at the bottom left's points; in split screen they
-    /// are the grenade row's next pill, as its count.
+    /// The arming bar is the HUD's one widget: placed from the top-left
+    /// anchor, right of the motion tracker, over the readout's rows and
+    /// over the charge segments' right side; nothing is in the grenade
+    /// row.
     #[test]
-    fn the_pill_is_beside_the_tracker_fullscreen_and_in_the_grenade_row_in_split_screen() {
+    fn the_arming_bar_is_over_the_readouts_rows_and_the_segments() {
+        use crate::huds::superbounce_readout::SPEED_UP;
+        use crate::huds::superbounce_segments as segs;
         let h = hud();
-        let at = |id: &str| {
-            let p = h.element(id).unwrap().at;
-            assert_eq!((p.anchor, p.origin), (Anchor::TopLeft, Origin::Anchor), "{id}");
-            assert_eq!(p.half, p.quarter, "{id}");
-            // From the bottom-left corner, as the readout's rows are.
-            ((p.full.0, p.full.1 - FRAME_HEIGHT), p.half.unwrap(), p.split_origin)
-        };
-        let pill = Some(Origin::NextGrenadePill);
-        assert_eq!(at(PILL), ((90, -68), (0, 0), pill));
-        assert_eq!(at(PILL_END), ((110, -68), (20, 0), pill));
-        assert_eq!(at(CHARGE), ((90, -47), (0, 21), pill));
-        assert_eq!(
-            at(PILL_ICON),
-            ((102, -69), (0, 0), Some(Origin::NextGrenadeCount))
-        );
-        assert!(h.uses_grenade_row());
-        let p = h.element(PILL).unwrap().at;
-        assert_eq!(p.origin_in(crate::Mode::Full), Origin::Anchor);
-        assert_eq!(p.origin_in(crate::Mode::Half), Origin::NextGrenadePill);
-        assert_eq!(p.origin_in(crate::Mode::Quarter), Origin::NextGrenadePill);
-        // The bar's bottom (its centre plus half of 13) is above the
-        // pill's top, and its left edge the pill's.
+        assert!(!h.uses_grenade_row());
+        let widgets: Vec<_> = h.elements.iter().filter(|e| !e.kind.is_channel()).map(|e| e.id).collect();
+        assert_eq!(widgets, [ARM]);
         let arm = h.element(ARM).unwrap().at;
-        assert_eq!(arm.split_origin, None);
-        assert!(arm.full.1 + 7 < PILL_FULL.1);
-        assert_eq!(arm.full.0 - 70, PILL_FULL.0);
-        assert_eq!(PILL_COLUMN, 33);
+        assert_eq!((arm.anchor, arm.split_origin), (Anchor::TopLeft, None));
+        // Its box on the screen: the centre less half of 140 by 13.
+        let (left, bottom) = (48 + arm.full.0 - 70, 36 + arm.full.1 + 7);
+        assert_eq!((left, bottom), (138, 368));
+        assert!(bottom + 8 <= 36 + FRAME_HEIGHT + SPEED_UP, "over the speed row");
+        let top_right = segs::AT[segs::SEGMENTS - 1];
+        assert!(bottom + 16 <= top_right.1, "over the segments' right side");
     }
 
     /// The arming bar: Assault's widget where retail draws it, giving way

@@ -343,7 +343,7 @@ fn a_frame_copy_in_a_fitted_ui_scope_keeps_the_whole_frame() {
     frame_texture(&mut m, back, 0x12, 640, 480);
     d.set_texture(&mut m, 0, FRAME_TEX).unwrap();
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
-    let copy = d.backend.draws().last().unwrap().clone();
+    let copy = (*d.backend.draws().last().unwrap()).clone();
     assert_eq!(copy.texture_info[0].map(|i| (i.width, i.height)), Some((640, 480)));
     assert_eq!(copy.ui_fit, None);
 

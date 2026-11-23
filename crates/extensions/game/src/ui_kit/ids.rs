@@ -86,6 +86,7 @@ pub const FAMILIES: &[Family] = &[
     Family::new("hud kit", 0x20ff_c350, 0x10),
     Family::new("h1-options", 0x20ff_c360, 0x20),
     Family::new("browser chrome", 0x20ff_c380, 0x10),
+    Family::new("variant-quick", 0x20ff_c3c0, 0x40),
     Family::new("co-op texts", 0x20ff_d000, 128),
     Family::new("mod texts", 0x20ff_d100, 0x100),
     Family::new("theater", 0x20ff_d200, 0x100),
@@ -104,7 +105,7 @@ pub const FAMILIES: &[Family] = &[
     Family::new("ui model more", TABLE + 0x0700_0000, 0x100),
     Family::new("map select", TABLE + 0x0800_0000, 0x40),
     Family::new("campaign picker info", TABLE + 0x0900_0000, 0x40),
-    Family::new("variant page", TABLE + 0x0a00_0000, 0x40),
+    Family::new("variant page", TABLE + 0x0a00_0000, 0x80),
     Family::new("ui lines", TABLE + 0x0b00_0000, 0x100),
     Family::new("clanker card", TABLE + 0x0c00_0000, 0x40),
     Family::new("theater menu", TABLE + 0x0d00_0000, 1),
@@ -116,6 +117,7 @@ pub const FAMILIES: &[Family] = &[
     Family::new("lobby tabs", TABLE + 0x1400_0000, 0x40),
     Family::new("pause change map", TABLE + 0x1500_0000, 0x40),
     Family::new("live menu modes", TABLE + 0x1600_0000, 0x10),
+    Family::new("variant quick", TABLE + 0x1700_0000, 8),
 ];
 
 const fn same(a: &str, b: &str) -> bool {

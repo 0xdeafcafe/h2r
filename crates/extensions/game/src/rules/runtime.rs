@@ -233,12 +233,39 @@ pub fn examples() -> &'static [Builtin] {
     })
 }
 
+/// Every listed script (`rules::builtin::LISTED`, the built-in list's
+/// community variants), compiled once, each with its carrier as
+/// `engine`. A built-in entry's record names one by its prefix
+/// (`crate::community_variants::write_blocks`), so a game on it, or on a
+/// copy of it, runs it (docs/game/rules-variants.md, "Built-in list
+/// entries"). Superbounce is an example too; [`compiled_in`] finds it
+/// there first.
+pub fn listed() -> &'static [Builtin] {
+    static BUILT: OnceLock<Vec<Builtin>> = OnceLock::new();
+    BUILT.get_or_init(|| {
+        let mut out = Vec::new();
+        for b in ::rules::builtin::LISTED {
+            match ::rules::compile(b.source) {
+                Ok(ir) => out.push(Builtin {
+                    engine: ir.header.carrier,
+                    blob: ir.encode(),
+                    id: ir.id(),
+                }),
+                Err(e) => eprintln!("rules: the listed {} script does not compile: {e}", b.name),
+            }
+        }
+        out
+    })
+}
+
 /// The compiled-in script whose hash starts with `prefix`: a port
-/// ([`builtins`]) or an example ([`examples`]).
+/// ([`builtins`]), an example ([`examples`]) or a listed script
+/// ([`listed`]).
 pub fn compiled_in(prefix: [u8; 8]) -> Option<&'static Builtin> {
     builtins()
         .iter()
         .chain(examples())
+        .chain(listed())
         .find(|b| b.id.0[..8] == prefix)
 }
 

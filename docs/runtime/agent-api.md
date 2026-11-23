@@ -103,6 +103,7 @@ connection to hold `session.claim`.
 | `firefight.state`, `firefight.kit` | read | [Firefight](#firefight) |
 | `firefight.command` | act | [Firefight](#firefight) |
 | `rules.state`, `rules.reload` | read, act | [Rules scripts](#rules-scripts) |
+| `variants.quick`, `variants.quick.set` | read, act | [Game variants](#game-variants) |
 | `match.status`, `match.report`, `match.stop`, `sim.guest_census` | read, read, act, read | [Sim matches](#sim-matches) |
 | `debug.views`, `debug.view` | read, act | [World debug views](#world-debug-views) |
 | `settings.list`, `settings.set`, `perf.overlay`, `cheat.list`, `cheat.set` | read or act | [Menu methods](#menu-methods-settings-perf-overlay-cheats) |
@@ -846,13 +847,14 @@ with `INVALID_PARAMS`) answers from the state the
 | `vz` | the local player's vertical velocity, world units a second, up positive |
 | `yaw` | the way the local player's unit aims, radians from +X toward +Y: the first-person camera's yaw |
 | `velocity` | the local player's velocity, world units a second; absent without a player |
-| `options` | the HUD's pieces this game, the Superbounce script's options as the variant set them: `targets` (`common`, `likely`, `all`) and the bools `velocity`, `alignment`, `miss_info`, `medals`, `second_bounce` ([superbounce.md](../game/superbounce.md#the-huds-options)) |
+| `options` | the HUD's pieces this game, the Superbounce script's options as the variant set them: `targets` (`common`, `likely`, `all`) and the bools `velocity`, `alignment`, `miss_info`, `medals`, `second_bounce`, `approach_guide`, `charge_segments` ([superbounce.md](../game/superbounce.md#the-huds-options)) |
 | `targets` | the seam targets ([superbounce.md](../game/superbounce.md#targets)): `mode` (`common`, `likely` or `all`: the option's value, or the kinds the player switched to with a double tap of the flashlight), `count` (the seams `mode` shows on this map), `tag` (the tagged seam's point; absent with none) `marked` (the seams with a target navpoint, two at most: the reachable ones, nearest first, or `second`'s in the flight after a bounce) and `second` (absent when empty: in the flight after a bounce, the seams it can reach, the best first, each with `at`, `time`, `steer`, `reach`, `speed`, `need`, `cost` and `caught`; [superbounce.md](../game/superbounce.md#the-second-bounce)) |
 | `charge` | the charge meter: `phase` (`near`, `under`, `held`, `primed`, `lost`), `fill` (0, 1/3, 2/3, then 1 less `still_ticks` over 38 while primed, 0 while lost) and `still_ticks`; absent while hidden ([superbounce.md](../game/superbounce.md#charge)) |
 | `verb` | the prompt line's verb: `let_go_of_crouch` while `under`, `walk_out_to_stand` while `held`, `keep_moving` while primed and still for 19 ticks or more, `charge_again` for 150 ticks after a loss while no crouch step has begun |
 | `lost_reason` | why the charge went, while `lost` and while the verb is `charge_again`: `stood_still` (the word left −3 after 30 still ticks or more), `crouched` (a crouch while primed), `unknown` (the word left −3 for another reason); absent otherwise ([superbounce.md](../game/superbounce.md#charge)) |
 | `nav_target` | the navpoint's target: `at` (the spot's stand point), `kind` (`crouch` while not primed, `strip` while primed: the chosen strip, [superbounce.md](../game/superbounce.md#floor-marks)), `distance` (world units), `fall` (a strip's drop, world units; 0 for a crouch spot) |
 | `takeoff` | while primed on the ground, where to jump from for the chosen strip; absent when none is found. Nothing is drawn there |
+| `guide` | the [approach guide](../game/superbounce.md#the-approach-guide) on the seam the player is going for, absent while it is not shown: `seam` (its landing point), `call` (`off_line`, `lined_up`, `too_shallow`, `will_bounce`), `jump` (the landing is a jump's from where the player stands), `impact` (the pipper), `row` (the last free row), `ticks` to it and `speed` on it (units/s down), `caught` (within the catch), `deep` with `depth` (the margin under the depth cut; negative is too shallow) and `past` (the row's place past the edge along the drift), `across` (the speed along the drift) and `strength` (the fade, 0 to 1). The fields from `impact` to `speed` are absent with no landing by the seam, `deep`, `depth`, `past` and `across` on a seam with no drift |
 | `landing` | while airborne and falling toward a strip, the landing the assist predicts: `at` (at the strip's floor height), `verdict` (`on_slot`, `fixable`, `miss`), `speed` (the touchdown speed, units/s), the strip's `need`, `miss` (world units outside the slot, 0 inside) and `locked` (in the slot at `need` or faster: the [lock-on](../game/superbounce.md#lock-on) is red) |
 | `last_landing` | the last touchdown within 0.5 of a strip, or primed bounce anywhere, filed when its launch window (the touchdown tick and the 3 after) closes: `result` (`bounce`, `not_primed`, `missed`, `too_slow`, `no_bounce`), the touchdown's game `tick` and the origin `at` on the tick before ([superbounce.md](../game/superbounce.md#landings)) |
 | `off_spot` | the local player's last 16 bounces no marked strip accounts for (none within 0.5, or outside the catch of the one there is), oldest first; absent when none: the touchdown's `tick`, the origin `at`, the `edge` of the scanned bounce spot within 0.5 (absent with none), `speed_in` and `launch` ([superbounce.md](../game/superbounce.md#landings)) |
@@ -4333,6 +4335,58 @@ that this host cannot run; a Live custom game reloads in place only.
 h2 agent rules.state
 h2 agent rules.reload '{"source":"rules \"Mine\" 1\ncarrier slayer\n..."}'
 h2 agent rules.reload '{"ir_b64":"...","mode":"in_place"}'
+```
+
+## Game variants
+
+The lobby variant's Quick Options as its rules script marks them
+([rules-variants.md](../game/rules-variants.md#quick-options-in-the-lobby)),
+read at a tick boundary, and one row changed through the lobby variant
+setter as the Quick Options dialog changes it.
+`crates/extensions/agent/src/variants.rs` checks the params, holds the
+wire types and calls the game's rows and changes
+(`game::variant_quick::AgentSource`, over
+`crates/extensions/game/src/variant_quick.rs` and
+`variant_quick/page.rs`).
+
+| Method and access | Parameters | Result |
+|---|---|---|
+| `variants.quick` (read) | `{}` or omitted | `{variant, engine, script?: {name, hash}, shown, rows: [{slot, kind: setting \| option, name, label, value, text, line, help?, values: [{value, text}]}]}` |
+| `variants.quick.set` (act) | `{slot, value}` | `variants.quick`'s result, read after the change |
+
+The variant is the lobby's (the squad session's record, else the game's
+own copy); with neither it is `UNAVAILABLE`. `script` is the script the
+record's block names, when this machine has it (a store variant's
+bundle block counts, as at the start gate), and `hash` its SHA-256 in
+hex; absent for a variant with no script, whose panel keeps retail's
+rows. `shown` is true when the panel shows these rows: the
+`variant-quick` switch is on ([switches.md](switches.md)) and the script
+was found. `rows` are the script's `quick` marks in its order, at most
+five, empty for a script with no marks: `slot` is the row's place, `kind`
+a record setting of `rules::settings::TABLE` or one of the script's
+options, `value` the record's value (an option's from the block's option
+bits), `text` its text and `line` the panel's "Label: value". `help` is
+an option's description. `values` are what the row may take: for a
+setting, the values the editor offered at the last variant list load
+(none before one); for an option, its range. The panel's lines
+themselves are in [`ui.lobby_options`](#ui-what-the-menus-show).
+
+`variants.quick.set` sets row `slot` of the lobby variant to `value`,
+one of that row's `values`: a record setting, or the option's bits in
+the block in effect (the block's CRC made again). The record is checked
+with `record::refused`, then queued; the next UI update writes it and
+calls the lobby variant setter (`LOBBY_SET_VARIANT`), and the answer
+waits for that (`TIMEOUT` past the deferred limit). It answers with the
+rows as they are then. A variant with no script this machine has is
+`UNAVAILABLE`, as is a record the setter refuses ("the game refused the
+variant"); a slot past the script's marks, a value the row does not
+offer and a record `record::refused` refuses are `INVALID_PARAMS`, with
+the reason. It changes the lobby's variant, not a save, as the dialog
+does ([rules-variants.md](../game/rules-variants.md#quick-options-in-the-lobby)).
+
+```sh
+h2 agent variants.quick
+h2 agent variants.quick.set '{"slot":0,"value":10}'
 ```
 
 ## Sim matches

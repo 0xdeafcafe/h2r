@@ -29,7 +29,7 @@ import {
   buildScenario, carrierOf, checkRules, explainFailure, fetchBuiltins, fetchScript, fetchScripts, loadDraft, meter, meterText,
   problemCount, problemPlace, runBlocked, runFailed, runRules, saveBlocked, saveDraft, saveRules, scenarioProblems, simFailed,
   simulateRules, toolsAfter, variantBlocked, whyOff, SIM_MATCHES,
-  type CheckResult, type Gate, type Problem, type ScenarioDraft, type ScriptOption, type SimMatch, type SimResult, type SimSetup,
+  type CheckResult, quickRows, type Gate, type Problem, type ScenarioDraft, type ScriptOption, type SimMatch, type SimResult, type SimSetup,
   type Tools, type Trouble,
 } from "../lib/rules";
 import {
@@ -192,6 +192,40 @@ function BudgetPanel(props: { check: CheckResult | null; tools: Tools }) {
   );
 }
 
+/** What a variant of the script starts from: who scores, the `settings`
+ *  block in words, and the Quick Options marks. */
+function SettingsPanel(props: { check: CheckResult | null; tools: Tools }) {
+  return (
+    <Panel title="Settings" sub="what a new variant of this script starts from">
+      <Show when={props.check?.ok ? props.check : null} fallback={<Waiting tools={props.tools}>{props.check ? "A script with problems has none to show." : "Shows once the script is checked."}</Waiting>}>
+        {(c) => (
+          <>
+            <Show when={c().about}><p class="s-pad s-rules-note">{c().about}</p></Show>
+            <Show when={c().scoring}>
+              {(s) => <p class="s-pad s-rules-muted">{s() === "carrier" ? `${c().carrier?.label ?? "The base game type"} scores the game; the script holds settings.` : "The script scores the game."}</p>}
+            </Show>
+            <Show when={c().settings.length} fallback={<p class="s-pad s-rules-muted">The script has no settings block: a variant starts from the base game type's stock settings.</p>}>
+              <table class="s-rules-handlers" aria-label="The script's settings">
+                <tbody>
+                  <For each={c().settings}>{(s) => <tr><td>{s.label}</td><td>{s.value}</td></tr>}</For>
+                </tbody>
+              </table>
+            </Show>
+            <Show when={c().quick.length}>
+              <h4 class="s-pad">Quick Options</h4>
+              <table class="s-rules-handlers" aria-label="The script's Quick Options">
+                <tbody>
+                  <For each={quickRows(c())}>{(q) => <tr><td>{q.label}</td><td>{q.value ?? "chosen per variant"}</td></tr>}</For>
+                </tbody>
+              </table>
+            </Show>
+          </>
+        )}
+      </Show>
+    </Panel>
+  );
+}
+
 function CapabilityPanel(props: { check: CheckResult | null; tools: Tools }) {
   return (
     <Panel title="Capabilities" sub="what the script may do, as the lobby says it">
@@ -312,7 +346,7 @@ export default function RulesPage() {
       if (t.fault === "script") {
         // The server answered and refused this script (too long, say):
         // that is a problem of the whole script, listed with the others.
-        setCheck({ ok: false, hash: null, name: null, version: null, errors: [{ line: 0, col: 0, message: t.text }], warnings: [], report: null, options: [], carrier: null });
+        setCheck({ ok: false, hash: null, name: null, version: null, errors: [{ line: 0, col: 0, message: t.text }], warnings: [], report: null, options: [], carrier: null, scoring: null, about: "", settings: [], quick: [] });
         setCheckTrouble(null);
         setTools("ok");
         return;
@@ -739,6 +773,7 @@ export default function RulesPage() {
                 <ProblemsPanel check={check()} busy={checking()} tools={tools()} trouble={checkTrouble()} onJump={jumpTo} onRetry={recheck} />
                 <MapNeedsPanel check={check()} tools={tools()} />
                 <BudgetPanel check={check()} tools={tools()} />
+                <SettingsPanel check={check()} tools={tools()} />
                 <CapabilityPanel check={check()} tools={tools()} />
               </aside>
             </div>
@@ -869,7 +904,7 @@ export default function RulesPage() {
           <Show when={nameErr()}>{(m) => <p class="s-rules-bad s-rules-hint">{m()}</p>}</Show>
           <label class="s-rules-row">
             <span>Description</span>
-            <textarea rows={3} maxLength={VARIANT_DESCRIPTION_MAX} value={vDesc()} onInput={(e) => setVDesc(e.currentTarget.value)} aria-invalid={!!descErr()} />
+            <textarea rows={3} maxLength={VARIANT_DESCRIPTION_MAX} placeholder={check()?.about ? `Left empty, the script's: ${check()?.about}` : undefined} value={vDesc()} onInput={(e) => setVDesc(e.currentTarget.value)} aria-invalid={!!descErr()} />
           </label>
           <Show when={descErr()}>{(m) => <p class="s-rules-bad s-rules-hint">{m()}</p>}</Show>
           <Show when={identity.me()}>

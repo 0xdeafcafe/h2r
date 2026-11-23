@@ -1,10 +1,12 @@
 //! The core without a map: the record bytes at the draw's offsets, the
-//! superbounce HUD compiled against templates resolved from an invented
-//! `nhdt` through a [`MapView`], and the cropped meter's ramp.
+//! superbounce HUD's arming bar and the kit's pill block
+//! (`huds::pill_block`) compiled against templates resolved from an
+//! invented `nhdt` through a [`MapView`], and the cropped meter's ramp.
 
 use map::{FourCC, TagId};
 
-use crate::huds::superbounce::{self, CHARGE, CHARGE_COLUMNS, CHARGE_DOWN};
+use crate::huds::pill_block::{self, CHARGE, CHARGE_COLUMNS, CHARGE_DOWN};
+use crate::huds::superbounce;
 use crate::model::*;
 use crate::records::{
     self, BITMAP_SIZE, KIT_INPUT, NO_FONT, TEXT_SIZE, WidgetKind, bitmap as bf, text as tf,
@@ -320,13 +322,29 @@ impl MapView for Invented {
     }
 }
 
-/// The superbounce HUD resolved and compiled: the pill one count step past
-/// the frag pill, its end 20 on, the meter 21 under it, the strip's last
-/// 27 columns with their ramp; bitmaps first, then the icon; the four
-/// channels.
+/// The pill block's elements with the superbounce HUD's: the pill, its
+/// end, the strip, the arming bar, the icon, then the channels.
+fn block_and_bar() -> Hud {
+    let mut block = pill_block::hud().elements;
+    let mut sb = superbounce::hud().elements;
+    let icon = block.pop().expect("the icon");
+    block.push(sb.remove(0));
+    block.push(icon);
+    block.extend(sb);
+    Hud {
+        name: "block-and-bar",
+        elements: block,
+    }
+}
+
+/// The pill block and the superbounce HUD resolved and compiled: the
+/// pill one count step past the frag pill, its end 20 on, the meter 21
+/// under it, the strip's last 27 columns with their ramp; bitmaps first,
+/// then the icon; the five channels.
 #[test]
-fn the_superbounce_hud_compiles_against_an_invented_row() {
-    let hud = superbounce::hud();
+fn the_pill_block_and_the_bar_compile_against_an_invented_row() {
+    let hud = block_and_bar();
+    assert_eq!(hud.elements[3].id, superbounce::ARM);
     let t = templates::resolve(&mut Invented, TagId(0xe000_0001), &hud);
     assert_eq!(t.missing(&hud), Vec::<String>::new());
     let row = t.row.as_ref().unwrap();
@@ -337,11 +355,11 @@ fn the_superbounce_hud_compiles_against_an_invented_row() {
     assert_eq!(
         ids,
         [
-            (superbounce::PILL, WidgetKind::Bitmap),
-            (superbounce::PILL_END, WidgetKind::Bitmap),
+            (pill_block::PILL, WidgetKind::Bitmap),
+            (pill_block::PILL_END, WidgetKind::Bitmap),
             (CHARGE, WidgetKind::Bitmap),
             (superbounce::ARM, WidgetKind::Bitmap),
-            (superbounce::PILL_ICON, WidgetKind::Text),
+            (pill_block::PILL_ICON, WidgetKind::Text),
         ]
     );
     assert_eq!(
@@ -364,16 +382,16 @@ fn the_superbounce_hud_compiles_against_an_invented_row() {
     // Fullscreen, one block from the top-left anchor (the grenade row's,
     // which split screen places them from): the pill, its end against
     // it, the strip under it, the arming bar over it.
-    let (px, py) = superbounce::PILL_FULL;
-    assert_eq!(off(superbounce::PILL), (px, py));
-    assert_eq!(off(superbounce::PILL_END), (px + PILL_BODY, py));
+    let (px, py) = pill_block::PILL_FULL;
+    assert_eq!(off(pill_block::PILL), (px, py));
+    assert_eq!(off(pill_block::PILL_END), (px + PILL_BODY, py));
     assert_eq!(off(CHARGE), (px, py + CHARGE_DOWN));
-    for id in [superbounce::PILL, superbounce::PILL_END, CHARGE, superbounce::ARM] {
+    for id in [pill_block::PILL, pill_block::PILL_END, CHARGE, superbounce::ARM] {
         let b = &c.widget(id).unwrap().bytes;
         assert_eq!(u16_at(b, bf::ANCHOR), Anchor::TopLeft as u16, "{id}");
     }
     // In half and quarter screen the pill is the grenade row's next.
-    let pill = &c.widget(superbounce::PILL).unwrap().bytes;
+    let pill = &c.widget(pill_block::PILL).unwrap().bytes;
     for m in 1..3 {
         assert_eq!(
             (
@@ -402,10 +420,10 @@ fn the_superbounce_hud_compiles_against_an_invented_row() {
     assert!((charge.input(0.5) - (b0 + b1) / 2.0).abs() < 1e-6);
     assert_eq!(charge.input(f32::NAN), b0);
     // The pill and its icon take no ramp: their input is the fill.
-    let pill = c.widget(superbounce::PILL).unwrap();
+    let pill = c.widget(pill_block::PILL).unwrap();
     assert_eq!((pill.ramp, pill.input(0.4)), (None, 0.4));
     assert_eq!(pill.crop, Some(row.crop(PillPart::Body)));
-    let icon = &c.widget(superbounce::PILL_ICON).unwrap().bytes;
+    let icon = &c.widget(pill_block::PILL_ICON).unwrap().bytes;
     assert_eq!(
         (
             u16_at(icon, tf::OFFSETS[0]) as i16,
@@ -413,8 +431,8 @@ fn the_superbounce_hud_compiles_against_an_invented_row() {
         ),
         // Fullscreen, the icon is beside the tracker with the pill.
         (
-            superbounce::PILL_FULL.0 + superbounce::ICON_AT.0,
-            superbounce::PILL_FULL.1 + superbounce::ICON_AT.1
+            pill_block::PILL_FULL.0 + pill_block::ICON_AT.0,
+            pill_block::PILL_FULL.1 + pill_block::ICON_AT.1
         )
     );
     assert_eq!(u32_at(icon, tf::STRING), 7, "the frag count's string");
@@ -431,7 +449,7 @@ fn the_superbounce_hud_compiles_against_an_invented_row() {
 /// What is missing is named, and the compiler refuses it.
 #[test]
 fn a_missing_template_is_named_and_refused() {
-    let hud = superbounce::hud();
+    let hud = block_and_bar();
     let mut t = templates::resolve(&mut Invented, TagId(0xe000_0001), &hud);
     t.row = Err("no row".into());
     let m = t.missing_widgets(&hud);

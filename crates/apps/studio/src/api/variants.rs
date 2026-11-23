@@ -6,12 +6,12 @@ use serde_json::{Value, json};
 use studio_proto::{code, method as m};
 use variants::SettingId;
 use variants::VariantEditor;
-use variants::panel::{Origin, strip_icon};
+use variants::panel::{OptionKind, Origin, script_view, strip_icon};
 
 use super::scenario::refused;
 use super::{P, Reply, err};
 use crate::App;
-use crate::app::Action;
+use crate::app::{Action, rules_edit};
 
 fn editor(app: &mut App) -> &VariantEditor {
     app.ensure_variants();
@@ -46,6 +46,90 @@ fn run(app: &mut App, a: Action) -> Result<Vec<String>, RpcError> {
     })
 }
 
+/// The Script section of the open variant, as `variant.get` reports it:
+/// `null` when the record names no script, `{prefix, found: false}` when
+/// this editor lacks it, else its name, description, options with their
+/// values and the Quick Options rows (`variants::panel::script_view`).
+fn script_json(app: &App) -> Value {
+    let Some(e) = app.variants.as_ref() else {
+        return Value::Null;
+    };
+    let (Some(prefix), Some(v)) = (e.script_prefix(), e.current()) else {
+        return Value::Null;
+    };
+    let Some(ir) = rules_edit::find_script(prefix, &app.rules) else {
+        return json!({ "prefix": rules_edit::hex_prefix(prefix), "found": false });
+    };
+    let view = script_view(&ir, v);
+    json!({
+        "prefix": rules_edit::hex_prefix(prefix),
+        "found": true,
+        "name": view.name,
+        "about": view.about,
+        "scoring_carrier": view.carrier_scoring,
+        "options": view.options.iter().map(|o| json!({
+            "index": o.index,
+            "name": o.name,
+            "label": o.label,
+            "description": o.description,
+            "kind": match o.kind {
+                OptionKind::Bool => "bool",
+                OptionKind::Int { .. } => "int",
+                OptionKind::Enum { .. } => "enum",
+            },
+            "value": o.value,
+            "text": o.text(o.value),
+            "default": o.default,
+            "quick": o.quick,
+        })).collect::<Vec<_>>(),
+        "quick": view.marks.iter().map(|m| json!({
+            "label": m.label, "option": m.option, "text": m.text,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+/// `variant.set {option, value}`: one option of the script the open
+/// variant names, by its name in the script, as one undo step.
+fn set_option(app: &mut App, name: &str, value: i32) -> Reply {
+    let (read_only, prefix) = {
+        let e = editor(app);
+        (e.is_read_only(), e.script_prefix())
+    };
+    if read_only {
+        return Err(err(
+            code::REFUSED,
+            "built-in variants cannot be edited: variant.copy {\"name\": ...} first",
+        ));
+    }
+    let Some(prefix) = prefix else {
+        return Err(err(
+            code::INVALID_PARAMS,
+            "the open variant names no script (variant.get's script is null)",
+        ));
+    };
+    let Some(ir) = rules_edit::find_script(prefix, &app.rules) else {
+        return Err(err(
+            code::INVALID_PARAMS,
+            format!(
+                "this editor does not have the script {} (open it with rules.open)",
+                rules_edit::hex_prefix(prefix)
+            ),
+        ));
+    };
+    let Some(index) = (0..ir.options.len()).find(|&i| ir.option_name(i) == name) else {
+        let names: Vec<&str> = (0..ir.options.len()).map(|i| ir.option_name(i)).collect();
+        return Err(err(
+            code::INVALID_PARAMS,
+            format!("no option {name} (the script has: {})", names.join(", ")),
+        ));
+    };
+    run(app, Action::SetScriptOption(index, value))?;
+    let v = editor(app).current().expect("open");
+    let view = script_view(&ir, v);
+    let o = &view.options[index];
+    Ok(json!({ "option": name, "value": o.value, "text": o.text(o.value) }))
+}
+
 pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
     match method {
         m::VARIANT_LIST => {
@@ -64,6 +148,7 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
         m::VARIANT_GET => {
             need_open(app)?;
             let dirty = app.tool_dirty(crate::ToolKind::Variants);
+            let script = script_json(app);
             let e = editor(app);
             let v = e.current().expect("open");
             let schema = e.schema();
@@ -89,10 +174,16 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 "dirty": dirty,
                 "settings": settings,
                 "issues": e.issues().iter().map(|i| i.to_string()).collect::<Vec<_>>(),
+                "script": script,
             }))
         }
         m::VARIANT_SET => {
             need_open(app)?;
+            if let Some(name) = p.opt_str("option")? {
+                let value = i32::try_from(p.i64("value")?)
+                    .map_err(|_| err(code::INVALID_PARAMS, "value: out of range"))?;
+                return set_option(app, name, value);
+            }
             let id = SettingId(
                 u32::try_from(p.u64("setting")?)
                     .map_err(|_| err(code::INVALID_PARAMS, "setting: a setting id"))?,
