@@ -1040,16 +1040,21 @@ to the guest's draws (**Code**):
     the submission's uploads.
     Skipping an item's guest draw must leave the device as drawing it
     would, as layer 3's walk requires of the parts it skips
-    (`layer_pass::skip_holds`): each draw sets its pass's render-state
-    list without comparing (`0x0001a170`), and a pass switch and the
-    next layer's setup (`0x00016b10`) restore the cached
-    implementation's restore list, so a structure or object item is
-    taken only when every state of both lists already holds at the call.
-    A structure item's engine-driven render values must hold too,
-    evaluated from the item's inputs (`layer_pass::skip_holds_with`;
-    refused when a source slot is outside the implementation's input
-    masks or its inputs change per draw); an object item with any
-    refuses. The first shader
+    (`layer_pass::skip_holds`): a draw of another implementation than
+    the cached one (`0x00016b90`) restores the cached one's restore list
+    and sets its own render-state list without comparing (`0x00018900`),
+    every draw sets the engine-driven values (`0x0001a170`), and the next
+    layer's setup (`0x00016b10`) restores the cached implementation's
+    list. So a structure or object item is taken only when every state
+    of its passes' restore lists already holds at the call and every
+    state of their render-state lists already holds or is one the
+    restore list writes back (a blended pass that turns its blend on and
+    its restore list off again, over a device with it off, is taken).
+    A structure item's engine-driven render values the restore list does
+    not write back must hold too, evaluated from the item's inputs over
+    what its list leaves (`layer_pass::skip_holds_with`; refused when a
+    source slot is outside the implementation's input masks or its
+    inputs change per draw); an object item with any refuses. The first shader
     begin's fixed states and cleared texture caches (`0x0001bbf0`) are
     redone by the first one the guest keeps, or by the next layer's.
     `layer_pass::clear_layer_prefix` clears the layer's bit on the run of
@@ -1083,7 +1088,8 @@ to the guest's draws (**Code**):
     does not read or is of a format the variant was not compiled for),
     `object_layer` (a layer outside `object_program_gpu::OBJECT_LAYERS`),
     `object_state` and `state` (an object or a structure item whose pass
-    would change a render state the device holds: `skip_holds`),
+    would leave a render state other than the device holds:
+    `skip_holds`),
     `object_models` (the caller's models are not resident or their
     palettes changed), `object_viewport`, `object_w_buffer`,
     `object_model` (the item's model is not uploaded), `object_plan`
@@ -1135,7 +1141,8 @@ to the guest's draws (**Code**):
     `a_model_without_a_prt_block_adds_nothing` and
     `a_draw_that_leaves_its_stream_or_constants_as_they_were_is_named`
     (`scene_extract::layout::prt`),
-    `a_skipped_pass_holds_only_when_every_state_it_sets_and_restores_already_holds`
+    `a_skipped_pass_holds_when_what_it_sets_is_already_held_or_restored`,
+    `a_pass_whose_restore_list_writes_back_what_it_sets_holds`
     (`native_render::layer_pass`),
     `a_world_layers_draw_keeps_its_blend_and_inherits_what_it_leaves`
     (`native_render::object_state`),

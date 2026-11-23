@@ -539,57 +539,82 @@ pub fn item_stencil(layer: u8, stencil_off: bool, device: gfx::state::StencilSta
 /// of the parts it skips (docs/graphics/framescene.md, slice 4, "The
 /// stage"; **Code**, `h2 disasm`, docs/graphics/layer-draw.md):
 ///
-/// - each draw sets the pass's render-state list (`0x0001a170`), with
-///   no comparison against the device;
-/// - a pass switch restores the cached implementation's restore list
-///   (`0x00018900` on `[0x00485b48 + 0x24] + 0x11c`), and the layer setup
-///   `0x00016b10` restores it and clears the cache at the next layer
-///   draw (and at each layer's first shader begin, `0x0001bbf0`).
+/// - the shader draw `0x00016b90` compares the draw's implementation and
+///   template with the cached ones (`[0x00485b48 + 0x24]`, `+0x20`). On
+///   a change it restores the cached implementation's restore list
+///   (`0x00018900` on its `+0x11c`, when one is cached), caches the new
+///   one and sets its render-state list (`0x00018900` on its `+2`), with
+///   no comparison against the device. Draws of the cached
+///   implementation set nothing more;
+/// - every draw then sets the engine-driven values (`0x0001a170`, from
+///   the inputs `0x0001ae70` evaluates);
+/// - the layer setup `0x00016b10` restores the cached implementation's
+///   list and clears the cache at the next layer draw (and at each
+///   layer's first shader begin, `0x0001bbf0`).
 ///
 /// The layer draw runs the setup before any item, so a skipped run from
 /// the list's first begins on a cleared cache, and the first item the
-/// guest keeps begins on one too. Skipped, the run leaves the device
-/// unchanged; drawn, it would leave every state of the lists it set and
-/// restored. Both agree exactly when every state of both lists already
-/// holds. A pass with engine-driven render states sets values decided
-/// per draw, and refuses here ([`skip_holds_with`] takes the draw's
-/// inputs). The first shader begin's fixed states and its cleared texture
-/// caches are redone by the first shader begin the guest keeps (the byte
-/// `0x004670bc` stays set), or by the next layer draw's.
+/// guest keeps begins on one too: its draw switches, and sets its own
+/// list. Skipped, the run leaves the device unchanged. Drawn, each
+/// implementation's list is restored before another's is set, and the
+/// last one's when the first kept item's draw switches or the next layer
+/// begins; a kept item of the same implementation switches nothing, but
+/// sets the same list and draws over it either way. So both agree exactly
+/// when every state of the restore list already holds and every state of
+/// the render-state list either already holds or is one the restore list
+/// writes back. A state that does not read refuses. A pass with
+/// engine-driven render values the restore list does not write back sets
+/// values decided per draw, and refuses here ([`skip_holds_with`] takes
+/// the draw's inputs). The first shader begin's fixed states and its
+/// cleared texture caches are redone by the first shader begin the guest
+/// keeps (the byte `0x004670bc` stays set), or by the next layer draw's.
 pub fn skip_holds(imp: &ResolvedImplementation, read: &dyn Fn(u32) -> Option<u32>) -> bool {
     skip_holds_with(imp, None, read)
 }
 
 /// [`skip_holds`] for a draw whose engine inputs are `inputs`: the draw
 /// also sets each engine-driven render value (`0x0001a170`, after the
-/// static list), so each must hold too, computed over the value the
-/// device holds (`EngineState::value`; with every static state holding,
-/// that is the value the guest's draw starts from). A value whose source
-/// slot is not one of the inputs `0x0001ae70` evaluates (the
+/// static list), so each the restore list does not write back must hold
+/// too, computed over the value the static list leaves (its own where it
+/// sets the state, else the device's: `EngineState::value`). A value
+/// whose source slot is not one of the inputs `0x0001ae70` evaluates (the
 /// implementation's input masks, `ResolvedImplementation::input_reads`)
 /// is whatever the context last held, and refuses, as does a pass whose
 /// inputs change per draw (`per_draw_inputs`: `inputs` would not be the
-/// guest's) and any engine-driven pass without `inputs`.
+/// guest's) and any such pass without `inputs`.
 pub fn skip_holds_with(imp: &ResolvedImplementation, inputs: Option<&EngineInputs>, read: &dyn Fn(u32) -> Option<u32>) -> bool {
-    if !imp.render_states.iter().chain(&imp.restore_states).all(|s| read(u32::from(s.state)) == Some(s.value)) {
+    if !imp.restore_states.iter().all(|s| read(u32::from(s.state)) == Some(s.value)) {
+        return false;
+    }
+    let restored = |state: u8| imp.restore_states.iter().any(|r| r.state == state);
+    let leaves = |s: &tags::shader::RenderStateValue| {
+        let held = read(u32::from(s.state));
+        held.is_some() && (held == Some(s.value) || restored(s.state))
+    };
+    if !imp.render_states.iter().all(leaves) {
         return false;
     }
     if imp.engine_render_states.is_empty() {
         return true;
     }
-    let Some(inputs) = inputs.filter(|_| !imp.per_draw_inputs) else {
+    let Some((render, _)) = tags::material::engine_states(imp) else {
         return false;
     };
-    let Some((render, _)) = tags::material::engine_states(imp) else {
+    let mut kept = render.iter().filter(|s| !restored(s.state)).peekable();
+    if kept.peek().is_none() {
+        return render.iter().all(|s| read(u32::from(s.state)).is_some());
+    }
+    let Some(inputs) = inputs.filter(|_| !imp.per_draw_inputs) else {
         return false;
     };
     let evaluated = |s: &tags::material::EngineState| match s.source {
         tags::material::EngineStateSource::Scalar(n) => n < 64 && imp.input_reads.scalars & (1u64 << n) != 0,
         tags::material::EngineStateSource::Colour(n) => n < 64 && imp.input_reads.vectors & (1u64 << n) != 0,
     };
-    render.iter().all(|s| {
+    kept.all(|s| {
         let held = read(u32::from(s.state));
-        evaluated(s) && held.is_some() && held.and_then(|h| s.value(inputs, h)) == held
+        let base = imp.render_states.iter().rev().find(|r| r.state == s.state).map(|r| r.value).or(held);
+        evaluated(s) && held.is_some() && base.and_then(|b| s.value(inputs, b)) == held
     })
 }
 
@@ -950,7 +975,7 @@ mod tests {
     }
 
     #[test]
-    fn a_skipped_pass_holds_only_when_every_state_it_sets_and_restores_already_holds() {
+    fn a_skipped_pass_holds_when_what_it_sets_is_already_held_or_restored() {
         use tags::shader::RenderStateValue;
         let mut imp = implementation(0, InputReads::default(), Vec::new());
         imp.render_states = vec![RenderStateValue { state: 11, value: 13 }];
@@ -963,8 +988,46 @@ mod tests {
         assert!(skip_holds(&imp, &device));
         assert!(!skip_holds(&imp, &|slot| if slot == 19 { Some(21) } else { device(slot) }), "a restore that would change the device");
         assert!(!skip_holds(&imp, &|slot| if slot == 11 { None } else { device(slot) }), "a state that does not read");
+        assert!(!skip_holds(&imp, &|slot| if slot == 11 { Some(12) } else { device(slot) }), "a set the restore list does not write back");
         imp.engine_render_states = vec![tags::shader::ExternalBinding { bytes: [0; 4] }];
         assert!(!skip_holds(&imp, &device), "per-draw states");
+    }
+
+    /// A blended pass sets its blend and the restore list writes it back:
+    /// drawn, the switch away from it (the next implementation's draw or
+    /// the next layer's setup) leaves the device as it was, as skipping
+    /// it does.
+    #[test]
+    fn a_pass_whose_restore_list_writes_back_what_it_sets_holds() {
+        use tags::shader::{ExternalBinding, RenderStateValue};
+        // ALPHABLENDENABLE on, ZWRITEENABLE off; the restore list turns
+        // them back and the device holds them back.
+        let mut imp = implementation(0, InputReads::default(), Vec::new());
+        imp.per_draw_inputs = false;
+        imp.render_states = vec![RenderStateValue { state: 0x0e, value: 1 }, RenderStateValue { state: 0x15, value: 0 }];
+        imp.restore_states = vec![RenderStateValue { state: 0x0e, value: 0 }, RenderStateValue { state: 0x15, value: 1 }];
+        let device = |slot: u32| match slot {
+            0x15 => Some(1),
+            _ => Some(0),
+        };
+        assert!(skip_holds(&imp, &device), "set, then written back to what the device holds");
+        let blending = |slot: u32| if slot == 0x0e { Some(1) } else { device(slot) };
+        assert!(!skip_holds(&imp, &blending), "the restore would turn off a blend the device holds");
+        let unread = |slot: u32| if slot == 0x0e { None } else { device(slot) };
+        assert!(!skip_holds(&imp, &unread), "a restored state that does not read");
+        // A state set and not restored must already hold.
+        let mut unrestored = imp.clone();
+        unrestored.restore_states.truncate(1);
+        assert!(!skip_holds(&unrestored, &device), "ZWRITEENABLE stays off after the draw");
+        // An engine-driven value the restore list writes back needs no
+        // inputs; one it does not, as before.
+        let mut driven = imp.clone();
+        // ALPHAREF (0x3d) from scalar 3.
+        driven.engine_render_states = vec![ExternalBinding { bytes: [2, 1, 0, 3] }];
+        assert!(!skip_holds(&driven, &device), "ALPHAREF is not written back and no inputs give it");
+        driven.restore_states.push(RenderStateValue { state: 0x3d, value: 0 });
+        assert!(skip_holds(&driven, &device), "written back to the device's ALPHAREF");
+        assert!(!skip_holds(&driven, &|slot| if slot == 0x3d { Some(7) } else { device(slot) }), "a restore to another ALPHAREF");
     }
 
     /// With the draw's inputs, an engine-driven render value holds when
