@@ -9,7 +9,7 @@
 use std::fs::{self, File};
 use std::io::Write;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -291,6 +291,7 @@ mod tests {
             explicit_h2: false,
             grace: Duration::from_secs(5),
             takeover: super::super::takeover::Config::default(),
+            agents: PathBuf::from("/nonexistent/agents"),
         }
     }
 

@@ -314,6 +314,7 @@ fn parse_host_config(
         managed: false,
         grace: Duration::from_secs(5),
         takeover,
+        agents: agent_proto::discover::dir(),
     })
 }
 

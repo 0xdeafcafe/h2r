@@ -57,6 +57,10 @@ pub struct HostConfig {
     /// SIGTERM to SIGKILL on stop.
     pub grace: Duration,
     pub takeover: takeover::Config,
+    /// Where the player's games publish their sockets
+    /// ([`agent_proto::discover::dir`] in production). Tests point it at a
+    /// temp directory so they never see a real game.
+    pub agents: PathBuf,
 }
 
 impl HostConfig {
@@ -198,7 +202,7 @@ pub fn serve(cfg: HostConfig) -> Result<()> {
         (Some(name), Some(addr)) => Some(discovery::advertise(name, addr.port())?),
         _ => None,
     };
-    let takeover = takeover::Gate::new(cfg.takeover, &cfg.root, &cfg.h2);
+    let takeover = takeover::Gate::new(cfg.takeover, &cfg.root, &cfg.h2, &cfg.agents);
     let shared = Arc::new(Shared {
         cfg,
         listen_addr,
@@ -2462,6 +2466,7 @@ mod tests {
             explicit_h2: true,
             grace: Duration::from_secs(1),
             takeover: takeover::Config::default(),
+            agents: root.join("agents"),
         }
     }
 
