@@ -75,7 +75,7 @@ impl Entry {
         let mut out = BTreeMap::new();
         if !self.change_colours {
             for field in ["primary", "secondary"] {
-                out.insert(field, "This model has no colour areas".to_owned());
+                out.insert(field, "No colour areas".to_owned());
             }
         }
         if self.variants.len() < 2 {

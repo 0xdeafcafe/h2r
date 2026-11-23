@@ -156,7 +156,7 @@ the camera is inside it.
 
 | Part | Marker | Disc model |
 |---|---|---|
-| Primary, secondary | the ring and the name | the model's change colours, where the census found a change-colour map; otherwise the rows are locked with "This model has no colour areas" |
+| Primary, secondary | the ring and the name | the model's change colours, where the census found a change-colour map; otherwise the rows are locked with "No colour areas" |
 | Tint | none | the lit colour mixed towards primary by a fixed alpha a step (`ObjectInput::highlight`, the editor's selection mix, **Code**) |
 | Light | none | a host light at the body's origin: the palette colour, one of two fixed radii, no shadow |
 
