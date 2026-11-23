@@ -317,6 +317,34 @@ fn first_person_fixture(m:&mut FlatMemory,case:u32) {
     }
 }
 
+/// The first-person fixture with the palette step fed: a fill count in
+/// the frame slot the skipped `0x1cbd30` call leaves in `eax`, and model
+/// node counts and palette indices that vary per case.
+fn palette_fixture(m:&mut FlatMemory,case:u32) {
+    first_person_fixture(m,case);
+    let slot=RECORDS+12;
+    let fill=[0u32,1,3,5,17,2][case as usize%6];
+    word(m,STACK-12,fill);
+    for i in 0..2u32 {
+        let model=[DATA+0xa000,DATA+0xb000][i as usize];
+        let count=[case%4,(case+1)%4][i as usize];
+        let nodes=DATA+0xf000+i*512;
+        word(m,model+72,count);
+        word(m,model+76,nodes);
+        for j in 0..count {
+            let index:u16=match (case+j)%5 {
+                0=>0xffff,
+                1=>0,
+                _=>(6+3*j+i) as u16,
+            };
+            assert!(m.load(slot+252+256*i+4*j,&index.to_le_bytes()));
+            for k in 0..24u32 {
+                word(m,nodes+96*j+4*k,0x3f00_0000+0x100*j+k+i*7);
+            }
+        }
+    }
+}
+
 const WELD_SHAPE: u32 = 0x6e0100;
 const WELD_TYPE: u32 = 0x6e0110;
 const WELD_ACCEPT: u32 = 0x6e0120;
@@ -888,3 +916,16 @@ differential!(light_record_update, LIGHT_RECORD_UPDATE, true, 6, |m,_,n| light_f
 differential!(first_person_pose_update, FIRST_PERSON_POSE_UPDATE, true, 6, |m,_,n| first_person_fixture(m,n));
 differential!(first_person_filter_update, FIRST_PERSON_FILTER_UPDATE, true, 6, |m,_,n| first_person_fixture(m,n));
 differential!(observer_camera, OBSERVER_RESULT, false, 6, observer_fixture);
+
+/// The palette step with the phase 1c kernel on: the port runs it as one
+/// Rust call, and every boundary must still match the lifted guest.
+#[test]
+fn first_person_pose_palette_kernel() {
+    let before=engine::sim_anim::palette::stats().native;
+    engine::sim_anim::palette::set_enabled(true);
+    matches_guest(&points::FIRST_PERSON_POSE_UPDATE,true,12,|m,_,n| palette_fixture(m,n));
+    engine::sim_anim::palette::set_enabled(false);
+    let after=engine::sim_anim::palette::stats().native;
+    assert!(after>before,"the palette kernel never ran");
+}
+

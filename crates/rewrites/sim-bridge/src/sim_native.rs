@@ -104,6 +104,7 @@ impl Feature for SimNative {
         engine::sim_anim::skeleton::set_enabled(skeleton_on(b.switches()));
         let anim = anim_on(b.switches());
         engine::sim_anim::markers::set_enabled(anim);
+        engine::sim_anim::palette::set_enabled(anim);
         let query_on = b
             .switches()
             .implementation("sim.native_collision_query", false);
@@ -200,11 +201,14 @@ fn original(cpu: &mut CpuAbi, ctx: &mut ExecCtx, addr: u32) -> Result<TransferAb
 
 /// `impl.sim.native.anim`: animation sampling, phase 1a of the simulation
 /// rewrite (docs/engine/anim-sampling.md), and phase 1c's marker lookup
-/// (docs/engine/markers.md). It replaces the stream call `0x2798a0` and
-/// everything under it, and takes over `b8d30` (the marker port
+/// and first-person palette (docs/engine/markers.md,
+/// docs/engine/palette.md). It replaces the stream call `0x2798a0` and
+/// everything under it, takes over `b8d30` (the marker port
 /// `sim.native_marker_transforms` with `sim_anim::model_markers` inside),
-/// so the per-function codec, evaluator, stream and marker ports it
-/// covers are test oracles only.
+/// and runs `16760c`'s palette step through `sim_anim::palette` inside
+/// the first-person pose port, so the per-function codec, evaluator,
+/// stream, marker and first-person ports it covers are test oracles
+/// only.
 pub const ANIM: &str = "sim.native.anim";
 
 fn anim_on(switches: &hooks::Switches) -> bool {
