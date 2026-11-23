@@ -448,6 +448,7 @@ impl Mind {
             go.map(|d| [d[0] * throttle, d[1] * throttle]),
             dt,
             1.0,
+            0.0,
             false,
             |_| true,
         );
