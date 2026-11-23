@@ -73,6 +73,9 @@ position, rotation and bounding-sphere outline until A confirms
 placement. Properties changes the heading or the rotation step.
 The wider properties design includes respawn time, team, game types,
 placed at start, physics (fixed or normal) and additional snapping modes.
+The design for editing the placements the map itself has (its objects,
+item spawners, starting points and goals), and for saving the result as
+a map variant, is [forge-map-variants.md](forge-map-variants.md).
 
 Budget: the object pool, each block's limit, the tag headroom and a
 Forge cost per item (**Design**; the limits are the engine's, the cost

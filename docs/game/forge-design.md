@@ -31,6 +31,9 @@ page is the architecture, the features and the slice plan.
 [forge-editing.md](forge-editing.md) is what a monitor can do, after
 Halo 3, Reach and Infinite, and
 [forge-firefight-ui.md](forge-firefight-ui.md) is how it is drawn.
+[forge-map-variants.md](forge-map-variants.md) is the design for editing
+the map's own placements and for the map variant, the saved form a
+custom game and a playlist entry pick beside a game variant.
 
 Evidence labels are those of [docs-style.md](../meta/docs-style.md):
 **E**, **V**, **Code**, **Test**, **Run**, **S** (supposed, with what
@@ -126,6 +129,7 @@ An `Op` is one of the editor's own commands or a Forge one:
 | Family | Ops | Source of the vocabulary |
 |---|---|---|
 | Placement | set, add, remove on a scenario block | `scenario_edit::Command` (scenario-editor.md section 3) |
+| Entry (design) | set a field of, remove or reset an entry named by identity: a base entry by its index in the base map with a print of its fields, or an added one by its op | [forge-map-variants.md](forge-map-variants.md), "Naming an entry" and "The ops" |
 | Tag field | set a field by tag key and path | `edit.batch`'s write, with a digest of the prior typed value in `was` |
 | Mesh | a `MeshOp` on a target | modeling.md, "Operations" |
 | Bitmap | a `BitmapOp` (strokes, fills, adjusts) | modeling.md, "Texture editing" |
@@ -577,7 +581,12 @@ F13 then F16. F17 follows F12 and F14. P1 and P4 follow the screens of
 slice U4 and can run beside each other; P2 waits for F3's measurements;
 P5 is the only slice that changes the document's format before F7. The
 UI slices (U1 to U7, K1 to K4) are in
-[forge-firefight-ui.md](forge-firefight-ui.md), "Slices".
+[forge-firefight-ui.md](forge-firefight-ui.md), "Slices". The slices
+that edit the map's own entries and build map variants (M1 to M10, D1
+to D5, V1 to V9, G1) are in
+[forge-map-variants.md](forge-map-variants.md), "Slices", and their UI
+(K5, H1 to H3, S1 to S6) in
+[forge-map-variants-ui.md](forge-map-variants-ui.md), "Slices".
 
 **F1 in detail.** `crates/formats/forge-doc` defines `ForgeDoc`, `Op`,
 `OpId`, `Recipe`, `ImportSlot`, `Entry`, `Proposal` and `Refusal`.
@@ -801,6 +810,10 @@ The owner's choices, which the sections above follow.
 - [forge-editing.md](forge-editing.md): the monitor's controls, tools
   and properties.
 - [forge-firefight-ui.md](forge-firefight-ui.md): the screens and HUD.
+- [forge-map-variants.md](forge-map-variants.md),
+  [forge-map-variants-ui.md](forge-map-variants-ui.md): editing the
+  map's own placements, the map variant file, the lobby and Live, and
+  the editor's readout, world marks and screens.
 - [notes/forge-prior-art.md](notes/forge-prior-art.md): Halo 3, Reach
   and Infinite Forge, with sources.
 - [forge.md](forge.md): retail evidence.

@@ -603,6 +603,7 @@ The owner's choices, which the sections above follow.
 
 ## Related
 
+- [forge-map-variants-ui.md](forge-map-variants-ui.md): the readout, world marks, Properties rows by kind and the map variant screens.
 - [party-lobby.md](party-lobby.md): the lobby's modes and the GAME MODE picker.
 - [ui-builder.md](ui-builder.md), [ui-screens.md](ui-screens.md): the UI kit.
 - [forge-editing.md](forge-editing.md): what the Forge screens do.
