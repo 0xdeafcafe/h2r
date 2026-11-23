@@ -270,6 +270,7 @@ pub fn recover_tape(path: &Path) -> Result<bool> {
         failed: false,
         version: 3,
         ranges: Some(Box::new(ranges)),
+        mirror: None,
     };
     writer.chunk(HEAD, &header)?;
     writer.chunk(blam::DESC, &MatchHeader::default())?;

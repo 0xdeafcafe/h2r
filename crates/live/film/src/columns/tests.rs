@@ -276,9 +276,20 @@ fn a_steady_turn_costs_almost_nothing_under_the_linear_predictor() {
             row
         })
         .collect();
-    let frames = encode(&rows);
-    check(&rows, &frames);
-    assert!(frames[0].len() < 140, "{}", frames[0].len());
+    // Flags and digests that do not change, so the frame is the turn's cost.
+    let mut encoder = ChunkEncoder::new().unwrap();
+    for row in &rows {
+        encoder.push_tick(0, 0, row).unwrap();
+    }
+    let frame = encoder.finish(0).unwrap().to_vec();
+    let mut decoder = ChunkDecoder::new().unwrap();
+    decoder.load(1, &frame).unwrap();
+    for (t, row) in rows.iter().enumerate() {
+        let mut out = [0u8; ACTION_BYTES];
+        assert!(decoder.action(t, 0, &mut out));
+        assert_eq!(Some(out), row[0]);
+    }
+    assert!(frame.len() < 140, "{}", frame.len());
 }
 
 #[test]

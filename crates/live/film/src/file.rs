@@ -27,8 +27,8 @@
 //! tick's whole digest.
 use crate::{
     Entry, Header, Reader, Tag,
-    blam::{self, Event, MatchHeader, TrackReader},
-    columns::{ACTION_BYTES, CHUNK_TICKS, ChunkDecoder, ChunkEncoder, FRAME_CAP, SEATS},
+    blam::{self, Event, MatchHeader, SeatInput, TrackReader},
+    columns::{ACTION_BYTES, CHUNK_TICKS, ChunkDecoder, ChunkEncoder, FRAME_CAP, SEATS, WORDS},
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -36,6 +36,7 @@ use std::{
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 pub const MAGIC: &[u8; 8] = b"H2FILM4!";
@@ -137,6 +138,11 @@ pub struct FilmWriter<W: Write + Seek> {
     ticks: u64,
     last_digest: u64,
     head: Head,
+    /// Where the blocks start, after the seed.
+    body: u64,
+    seed_id: String,
+    /// A cut: its last chunk is written, and no tick follows.
+    closed: bool,
 }
 
 impl<W: Write + Seek> FilmWriter<W> {
@@ -161,6 +167,9 @@ impl<W: Write + Seek> FilmWriter<W> {
             ticks: 0,
             last_digest: 0,
             head,
+            body: (HEADER_BYTES + frame.len()) as u64,
+            seed_id: seed.header.meta.id.clone(),
+            closed: false,
         })
     }
 
@@ -176,19 +185,22 @@ impl<W: Write + Seek> FilmWriter<W> {
         digest: u64,
         seats: &[Option<[u8; ACTION_BYTES]>; SEATS],
     ) -> Result<()> {
-        self.encoder.push_tick(flags, digest, seats)?;
-        self.ticks += 1;
-        self.last_digest = digest;
+        ensure!(!self.closed, "a cut film takes no more ticks");
+        // A full chunk stays open until the next tick, so a seat record can
+        // still follow the 256th.
         if self.encoder.ticks() == CHUNK_TICKS {
             self.close_chunk()?;
         }
+        self.encoder.push_tick(flags, digest, seats)?;
+        self.ticks += 1;
+        self.last_digest = digest;
         Ok(())
     }
 
-    /// A seat record on the tick just pushed.
+    /// A seat record on the tick just pushed, even the last of a chunk.
     pub fn seat_record(&mut self, seat: u8, kind: u8, bytes: &[u8]) -> Result<()> {
         let n = self.encoder.ticks();
-        ensure!(n > 0, "a seat record needs a tick");
+        ensure!(n > 0 && !self.closed, "a seat record needs a tick");
         self.encoder.seat_record(n - 1, seat, kind, bytes)
     }
 
@@ -247,6 +259,76 @@ impl<W: Write + Seek> FilmWriter<W> {
         self.out.flush()?;
         Ok(self.out)
     }
+}
+
+impl<W: Read + Write + Seek> FilmWriter<W> {
+    /// Cut a film of its own from this one as it stands, into `out`: the
+    /// `seed`'s film (a new ID), every block written so far, and a copy of
+    /// the chunk still open. This film keeps recording, untouched. The cut
+    /// takes machine envelopes ([`FilmWriter::machine`]) and
+    /// [`FilmWriter::finish`], but no more ticks.
+    pub fn fork<V: Write + Seek>(&mut self, mut out: V, seed: &Seed) -> Result<FilmWriter<V>> {
+        ensure!(
+            seed.header.meta.id != self.seed_id,
+            "a cut has an ID of its own"
+        );
+        let json = serde_json::to_vec(seed)?;
+        ensure!(json.len() <= MAX_SEED, "film seed is too large");
+        let frame = zstd::bulk::compress(&json, 3)?;
+        let mut head = Head {
+            flags: self.head.flags,
+            ticks_per_second: self.head.ticks_per_second,
+            id: film_id(&seed.header.meta.id),
+            length: 0,
+            seed_len: u32::try_from(frame.len())?,
+            trailer: 0,
+        };
+        head.flags &= !FLAG_SEALED;
+        out.write_all(&head.encode())?;
+        out.write_all(&frame)?;
+        let shift = (HEADER_BYTES + frame.len()) as u64;
+        let end = self.out.stream_position()?;
+        self.out.seek(SeekFrom::Start(self.body))?;
+        let copied = std::io::copy(&mut (&mut self.out).take(end - self.body), &mut out)?;
+        self.out.seek(SeekFrom::Start(end))?;
+        ensure!(copied == end - self.body, "film file is shorter than written");
+        let mut chunks: Vec<u64> = self.chunks.iter().map(|&at| at - self.body + shift).collect();
+        if self.encoder.ticks() > 0 {
+            let at = out.stream_position()?;
+            let frame = self.encoder.finish_copy(self.last_digest)?;
+            out.write_all(&[KIND_TICKS])?;
+            out.write_all(&u32::try_from(frame.len())?.to_le_bytes())?;
+            out.write_all(&frame)?;
+            chunks.push(at);
+        }
+        Ok(FilmWriter {
+            out,
+            encoder: ChunkEncoder::new()?,
+            chunks,
+            ticks: self.ticks,
+            last_digest: self.last_digest,
+            head,
+            body: shift,
+            seed_id: seed.header.meta.id.clone(),
+            closed: true,
+        })
+    }
+}
+
+/// The machine envelopes of a container being written, as a [`crate::Mirror`]
+/// into `film`: each chunk the film carries ([`carried`]) is stored in the
+/// film file as the container stores it.
+pub fn machine_mirror<W: Write + Seek + Send + 'static>(
+    film: Arc<Mutex<FilmWriter<W>>>,
+) -> crate::Mirror {
+    Box::new(move |tag, frame| {
+        if carried(tag) {
+            film.lock()
+                .map_err(|_| anyhow::anyhow!("film file writer is poisoned"))?
+                .machine(tag, frame)?;
+        }
+        Ok(())
+    })
 }
 
 /// A machine envelope in the file.
@@ -434,11 +516,129 @@ impl<R: Read + Seek> FilmReader<R> {
 /// facts, startup decisions, initial disk, call tape, controller ports,
 /// bot roster, hash checks and marks. A film holds no keyframe, and its
 /// header goes in the seed.
-fn carried(tag: Tag) -> bool {
+pub fn carried(tag: Tag) -> bool {
     matches!(
         &tag,
         b"DATA" | b"BOOT" | b"MOVI" | b"TAPE" | b"PDEV" | b"BOTR" | b"HASH" | b"MARK"
     )
+}
+
+/// What a film file is read from.
+pub trait Source: Read + Seek + Send {}
+impl<T: Read + Seek + Send> Source for T {}
+
+type Rows = ([[u32; WORDS]; SEATS], [[u32; WORDS]; SEATS]);
+
+/// A film file's actions by tick, for a [`TrackReader`] that takes its
+/// inputs from the film ([`TrackReader::attach_film`]). Ticks are asked for
+/// in any order: a chunk is decoded from the nearest predictor state seen,
+/// and each chunk's closing state is kept as chunks are decoded.
+pub struct FilmActions {
+    reader: FilmReader<Box<dyn Source>>,
+    decoder: ChunkDecoder,
+    buf: Vec<u8>,
+    loaded: Option<usize>,
+    /// The decoder state before chunk i, once chunk i - 1 has been decoded.
+    starts: Vec<Option<Rows>>,
+}
+
+impl FilmActions {
+    pub fn open(path: &Path) -> Result<Self> {
+        let file = File::open(path).with_context(|| path.display().to_string())?;
+        Self::new(Box::new(file))
+    }
+
+    pub fn new(input: Box<dyn Source>) -> Result<Self> {
+        let reader = FilmReader::open(input)?;
+        let starts = vec![None; reader.chunk_count() + 1];
+        Ok(Self {
+            reader,
+            decoder: ChunkDecoder::new()?,
+            buf: Vec::new(),
+            loaded: None,
+            starts,
+        })
+    }
+
+    pub fn seed(&self) -> &Seed {
+        &self.reader.seed
+    }
+
+    pub fn length_ticks(&self) -> u64 {
+        self.reader.length_ticks
+    }
+
+    fn load(&mut self, k: usize) -> Result<()> {
+        if self.loaded == Some(k) {
+            return Ok(());
+        }
+        let from = if self.loaded.map(|l| l + 1) == Some(k) {
+            k
+        } else {
+            let j = (1..=k)
+                .rev()
+                .find(|&j| self.starts.get(j).is_some_and(Option::is_some))
+                .unwrap_or(0);
+            match self.starts.get(j).copied().flatten() {
+                Some((p1, p2)) if j > 0 => self.decoder.set_seat_rows(p1, p2),
+                _ => self.decoder.reset(),
+            }
+            j
+        };
+        self.loaded = None;
+        for i in from..=k {
+            self.reader.read_chunk(i, &mut self.decoder, &mut self.buf)?;
+            self.starts[i + 1] = Some(self.decoder.seat_rows());
+        }
+        self.loaded = Some(k);
+        Ok(())
+    }
+
+    /// Put the film's actions on `tick` in `inputs`. A seat's pad, which
+    /// the film does not carry, stays as `inputs` had it. If the stats
+    /// stream has the tick's gameplay digest, the film's low 16 bits must
+    /// agree with it.
+    pub fn fill(
+        &mut self,
+        tick: u64,
+        inputs: &mut Vec<SeatInput>,
+        digest: Option<u64>,
+    ) -> Result<()> {
+        ensure!(tick >= 1, "film ticks start at 1");
+        let k = ((tick - 1) / CHUNK_TICKS as u64) as usize;
+        let t = ((tick - 1) % CHUNK_TICKS as u64) as usize;
+        self.load(k)
+            .with_context(|| format!("film file has no chunk for tick {tick}"))?;
+        ensure!(
+            t < self.decoder.ticks(),
+            "film file ends before tick {tick}"
+        );
+        if let Some(digest) = digest
+            && self.decoder.flags(t) & TICK_DIGEST != 0
+        {
+            ensure!(
+                self.decoder.digest(t) == digest as u16,
+                "film file and stats stream disagree at tick {tick}"
+            );
+        }
+        let old = std::mem::take(inputs);
+        for seat in 0..SEATS {
+            let mut action = [0u8; ACTION_BYTES];
+            let present = self.decoder.action(t, seat, &mut action);
+            let pad = old
+                .iter()
+                .find(|input| usize::from(input.seat) == seat)
+                .and_then(|input| input.pad);
+            if present || pad.is_some() {
+                inputs.push(SeatInput {
+                    seat: seat as u8,
+                    pad,
+                    action: present.then_some(action),
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 fn seats_of(tick: &blam::Tick) -> [Option<[u8; ACTION_BYTES]>; SEATS] {
