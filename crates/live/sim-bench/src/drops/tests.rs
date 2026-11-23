@@ -260,6 +260,7 @@ fn the_queue_hands_out_the_first_drop_clear_of_the_others() {
         side: Side::None,
         repeat: 0,
         carry: [0.0, 0.0],
+        carry_along: None,
         point: [x, 0.0, 0.0],
         start: [x, 0.0, 1.0],
         rest: [x, 0.0, 0.05],
