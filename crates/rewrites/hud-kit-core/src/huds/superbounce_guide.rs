@@ -8,10 +8,9 @@
 //!   the seam's edge: the catch across it, [`BOX_ALONG`] along it. Dim
 //!   while the predicted landing is off the seam, lit when it is lined
 //!   up, and during a fall `Too shallow` or, green, `Will bounce`
-//!   ([`Call`]). In a fall its label ends with the bounce's predicted
-//!   percentage; before the jump it is the jump cue ([`Cue`]):
-//!   `Walk to line`, `Jump in 0.7 s` or, green, `Jump now`
-//!   ([`box_text`]).
+//!   ([`Call`]). Its label is the one verdict, with no percentage: in a
+//!   fall the call; before the jump the jump cue ([`Cue`]): `Walk to
+//!   line`, `Jump in 0.7 s` or, green, `Jump now` ([`box_text`]).
 //! - `sbr.guide.pipper`: where the player's path touches down: on the
 //!   ground where a jump now would land, in the air the landing itself.
 //! - `sbr.guide.ticks`: closure cues, short dashes from the pipper toward
@@ -45,9 +44,9 @@ pub const TOO_SHALLOW: &str = "Too shallow";
 /// The box's labels before the jump ([`Cue`]).
 pub const WALK_TO_LINE: &str = "Walk to line";
 pub const JUMP_NOW: &str = "Jump now";
-/// The widest label: the wider of the two calls with the widest
-/// percentage, wider than any cue (`Jump in 9.9 s`).
-pub const BOX_LONGEST: &str = "Too shallow 100%";
+/// The widest label: the widest cue, `Jump in 9.9 s`, wider than either
+/// call.
+pub const BOX_LONGEST: &str = "Jump in 9.9 s";
 /// The most the count says, in tenths of a second: `Jump in 9.9 s`.
 pub const CUE_MAX: u8 = 99;
 
@@ -100,6 +99,10 @@ pub enum Cue {
     In(u8),
     /// On the line: press jump now.
     Now,
+    /// Any other cue as the game words it (`Climb up`, `Jump in`,
+    /// `Walk off`): shown as it is, never green. At most
+    /// [`BOX_LONGEST`] wide.
+    Label(&'static str),
 }
 
 /// The count's tenths of a second for `ticks` game ticks (30 a
@@ -118,6 +121,7 @@ pub fn cue_text(c: Cue) -> String {
             format!("Jump in {}.{} s", t / 10, t % 10)
         }
         Cue::Now => JUMP_NOW.to_owned(),
+        Cue::Label(l) => l.to_owned(),
     }
 }
 
@@ -132,8 +136,9 @@ pub struct Guide {
     /// The seam has a drift: `Some(true)` while the player moves its way.
     pub drift: Option<bool>,
     /// The bounce's predicted chance in a fall, a whole percentage
-    /// ([`percent`]): how sure the call is. `None` on the ground, and
-    /// where there is none to give (not primed, a seam with no drift).
+    /// ([`percent`]). Carried for the game's checks; no label shows it
+    /// (the call is the one verdict). `None` on the ground, and where
+    /// there is none to give (not primed, a seam with no drift).
     pub chance: Option<u8>,
     /// Before the jump, when to press it; `None` in the air and where no
     /// takeoff bounces.
@@ -236,26 +241,18 @@ pub fn elements() -> Vec<Element> {
     ]
 }
 
-/// The box's label: before the jump the cue (`cue`, [`cue_text`]),
-/// `Jump in 0.7 s`; in a fall the call and its chance `chance`,
-/// `Will bounce 82%` or `Too shallow 30%`, with no call (off the line)
-/// the percentage alone, `5%`; with no chance the call alone, and with
-/// neither no label.
-pub fn box_text(call: Call, chance: Option<u8>, cue: Option<Cue>) -> Option<String> {
+/// The box's label, the one verdict: before the jump the cue (`cue`,
+/// [`cue_text`]), `Jump in 0.7 s`; in a fall the call, `Will bounce` or
+/// `Too shallow`; with neither no label. No percentage: the call and the
+/// lock are not shown beside a second predictor.
+pub fn box_text(call: Call, cue: Option<Cue>) -> Option<String> {
     if let Some(c) = cue {
         return Some(cue_text(c));
     }
-    let word = match call {
-        Call::TooShallow => Some(TOO_SHALLOW),
-        Call::WillBounce => Some(WILL_BOUNCE),
+    match call {
+        Call::TooShallow => Some(TOO_SHALLOW.to_owned()),
+        Call::WillBounce => Some(WILL_BOUNCE.to_owned()),
         Call::OffLine | Call::LinedUp => None,
-    };
-    let chance = chance.map(|c| c.min(100));
-    match (word, chance) {
-        (Some(w), Some(c)) => Some(format!("{w} {c}%")),
-        (Some(w), None) => Some(w.to_owned()),
-        (None, Some(c)) => Some(format!("{c}%")),
-        (None, None) => None,
     }
 }
 
@@ -266,7 +263,7 @@ pub fn go(call: Call, cue: Option<Cue>) -> bool {
 
 /// The box's value: its label ([`box_text`]), in the go green when the
 /// guide says go ([`go`]), else dim off the line.
-pub fn box_value(call: Call, chance: Option<u8>, cue: Option<Cue>) -> Value {
+pub fn box_value(call: Call, cue: Option<Cue>) -> Value {
     let style = if go(call, cue) {
         Style::Go
     } else if call == Call::OffLine {
@@ -274,7 +271,7 @@ pub fn box_value(call: Call, chance: Option<u8>, cue: Option<Cue>) -> Value {
     } else {
         Style::Normal
     };
-    box_text(call, chance, cue)
+    box_text(call, cue)
         .map_or_else(Value::shown, Value::text)
         .styled(style)
 }
@@ -291,7 +288,7 @@ pub fn set_values(out: &mut Values, g: Option<&Guide>) {
         if on { Value::shown().styled(style) } else { Value::hidden() }
     };
     let lit = if go(g.call, g.cue) { Style::Go } else { Style::Normal };
-    out.set(BOX, box_value(g.call, g.chance, g.cue));
+    out.set(BOX, box_value(g.call, g.cue));
     out.set(PIPPER, shown(g.pipper, lit));
     out.set(TICKS, shown(g.ticks && g.pipper, Style::Normal));
     out.set(
@@ -562,37 +559,31 @@ mod tests {
         }
     }
 
-    /// The box's label: in a fall the call with its percentage; before
-    /// the jump the cue in its place, whatever the call; no label with
-    /// neither; and none wider than the longest.
+    /// The box's label is the one verdict: in a fall the call alone, with
+    /// no percentage; before the jump the cue in its place, whatever the
+    /// call; no label with neither; and none wider than the longest.
     #[test]
     fn the_label_is_the_call_or_the_cue() {
-        let text = |call, chance| box_text(call, chance, None);
-        assert_eq!(text(Call::WillBounce, Some(82)).as_deref(), Some("Will bounce 82%"));
-        assert_eq!(text(Call::TooShallow, Some(30)).as_deref(), Some("Too shallow 30%"));
-        assert_eq!(text(Call::WillBounce, None).as_deref(), Some(WILL_BOUNCE));
-        assert_eq!(text(Call::TooShallow, None).as_deref(), Some(TOO_SHALLOW));
-        // A fall off the line: the percentage alone.
-        assert_eq!(text(Call::OffLine, Some(5)).as_deref(), Some("5%"));
-        assert_eq!(text(Call::LinedUp, None), None);
-        assert_eq!(text(Call::OffLine, None), None);
-        // A percentage over 100 is 100, and nothing is wider than the
-        // longest.
-        assert_eq!(text(Call::TooShallow, Some(250)).as_deref(), Some(BOX_LONGEST));
+        let text = |call| box_text(call, None);
+        assert_eq!(text(Call::WillBounce).as_deref(), Some(WILL_BOUNCE));
+        assert_eq!(text(Call::TooShallow).as_deref(), Some(TOO_SHALLOW));
+        // Off the line in a fall: no label, not a bare percentage.
+        assert_eq!(text(Call::OffLine), None);
+        assert_eq!(text(Call::LinedUp), None);
         for call in [Call::OffLine, Call::LinedUp, Call::TooShallow, Call::WillBounce] {
-            for c in [0, 5, 50, 100, 255] {
-                let t = text(call, Some(c)).unwrap();
+            if let Some(t) = text(call) {
+                assert!(!t.contains('%'), "{t}");
                 assert!(t.chars().count() <= BOX_LONGEST.chars().count(), "{t}");
-                assert!(t.ends_with('%'), "{t}");
             }
         }
         // Before the jump the cue is the label, whatever the call.
         for call in [Call::OffLine, Call::LinedUp] {
-            let cue = |c| box_text(call, None, Some(c));
+            let cue = |c| box_text(call, Some(c));
             assert_eq!(cue(Cue::Walk).as_deref(), Some("Walk to line"));
             assert_eq!(cue(Cue::In(7)).as_deref(), Some("Jump in 0.7 s"));
             assert_eq!(cue(Cue::In(30)).as_deref(), Some("Jump in 3.0 s"));
             assert_eq!(cue(Cue::Now).as_deref(), Some("Jump now"));
+            assert_eq!(cue(Cue::Label("Climb up")).as_deref(), Some("Climb up"));
         }
         for t in [0, 1, 9, 10, 30, 99, 200] {
             let s = cue_text(Cue::In(t));
@@ -600,19 +591,21 @@ mod tests {
         }
         assert_eq!(cue_text(Cue::In(200)), "Jump in 9.9 s");
         // The value: the label in the call's style, green for `Jump now`.
-        let v = box_value(Call::WillBounce, Some(82), None);
-        assert_eq!((v.text.as_str(), v.style, v.shown), ("Will bounce 82%", Style::Go, true));
-        let v = box_value(Call::TooShallow, Some(30), None);
-        assert_eq!((v.text.as_str(), v.style), ("Too shallow 30%", Style::Normal));
-        let v = box_value(Call::LinedUp, None, Some(Cue::In(4)));
+        let v = box_value(Call::WillBounce, None);
+        assert_eq!((v.text.as_str(), v.style, v.shown), ("Will bounce", Style::Go, true));
+        let v = box_value(Call::TooShallow, None);
+        assert_eq!((v.text.as_str(), v.style), ("Too shallow", Style::Normal));
+        let v = box_value(Call::LinedUp, Some(Cue::In(4)));
         assert_eq!((v.text.as_str(), v.style), ("Jump in 0.4 s", Style::Normal));
-        let v = box_value(Call::OffLine, None, Some(Cue::Walk));
+        let v = box_value(Call::OffLine, Some(Cue::Walk));
         assert_eq!((v.text.as_str(), v.style, v.shown), ("Walk to line", Style::Dim, true));
-        let v = box_value(Call::OffLine, None, Some(Cue::Now));
+        let v = box_value(Call::OffLine, Some(Cue::Now));
         assert_eq!((v.text.as_str(), v.style), ("Jump now", Style::Go));
-        let v = box_value(Call::OffLine, None, None);
+        let v = box_value(Call::OffLine, Some(Cue::Label("Walk off")));
+        assert_eq!((v.text.as_str(), v.style), ("Walk off", Style::Dim));
+        let v = box_value(Call::OffLine, None);
         assert!(v.shown && v.text.is_empty() && v.style == Style::Dim);
-        // Through the values, with the guide's chance.
+        // Through the values: the guide's chance is not on the label.
         let mut out = Values::default();
         let g = Guide {
             call: Call::WillBounce,
@@ -624,7 +617,7 @@ mod tests {
             takeoff: false,
         };
         set_values(&mut out, Some(&g));
-        assert_eq!(out.get(BOX).unwrap().text, "Will bounce 60%");
+        assert_eq!(out.get(BOX).unwrap().text, "Will bounce");
         assert_eq!(out.get(PIPPER).unwrap().style, Style::Go);
     }
 
