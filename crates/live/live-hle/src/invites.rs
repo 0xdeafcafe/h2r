@@ -528,13 +528,14 @@ impl Invites {
                 if op == Op::FriendRemove {
                     SocialRequest::FriendRemove { friend: Xuid(uid) }
                 } else {
-                    // XONLINE_REQUEST_ANSWER_TYPE: 0 yes, 1 no, 2 never.
+                    // XONLINE_REQUEST_ANSWER_TYPE: 0 no, 1 yes, 2 never (block),
+                    // the same order as the game-invite answer above.
                     if a[2] > 2 {
                         return Ok(INVALID_ARGUMENT);
                     }
                     SocialRequest::FriendAnswer {
                         from: Xuid(uid),
-                        accept: a[2] == 0,
+                        accept: a[2] == 1,
                     }
                 }
             }

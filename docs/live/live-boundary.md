@@ -54,7 +54,7 @@ There is another verified tail jump at `0x0008d9de` to the already-listed `XNetC
 | `0x003a07cf` | XONLINE | 2 | `XOnlineFriendsGetTitleName` | likely | 4 / 4 | 0x0006b590/0x0008d1a0 supply title ID, language, character limit, wide buffer. |
 | `0x003a07da` | XONLINE | 1 | `XOnlineFriendsRemove` | likely | 2 / 2 | 0x0008cdf0 supplies controller plus copied friend record. Implemented: signs a `FriendRemoved` event on the player's account stream (`invites::Op::FriendRemove`); returns S_OK at once. |
 | `0x003a07e5` | XONLINE | 1 | `XOnlineFriendsGameInvite` | likely | 4 / 5 | 0x0008cfe0 passes controller, by-value session ID, one recipient and friend record. |
-| `0x003a0806` | XONLINE | 1 | `XOnlineFriendsAnswerRequest` | likely | 3 / 3 | 0x0008ce40 maps UI answer to request-answer enum and passes friend/controller. Implemented: Yes signs `FriendAccepted`, No and Never sign `FriendDeclined` (`invites::Op::FriendRequestAnswer`); returns S_OK at once. |
+| `0x003a0806` | XONLINE | 1 | `XOnlineFriendsAnswerRequest` | likely | 3 / 3 | 0x0008ce40 maps UI answer to request-answer enum and passes friend/controller. Implemented: Yes (1) signs `FriendAccepted`, No (0) and Never (2) sign `FriendDeclined` (`invites::Op::FriendRequestAnswer`); returns S_OK at once. |
 | `0x003a0811` | XONLINE | 1 | `XOnlineFriendsAnswerGameInvite` | likely | 3 / 3 | 0x0008d050 maps UI invite answer and supplies friend/controller. |
 | `0x003a081c` | XONLINE | 1 | `XOnlineFriendsJoinGame` | likely | 2 / 2 | UI function 0x002395dc passes controller/friend; two-word join-game entry. |
 | `0x003a0827` | XONLINE | 1 | `XOnlineFriendsGetAcceptedGameInvite` | likely | 1 / 1 | 0x0006d210 passes accepted-invite output record; one-word result getter. |

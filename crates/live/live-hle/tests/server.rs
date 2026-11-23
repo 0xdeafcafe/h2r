@@ -3441,15 +3441,15 @@ fn friend_request_answers_and_removals_are_signed_events() {
     friend_event(&s, &a, types::FRIEND_REQUESTED, json!({"from":a.xuid,"to":b.xuid}));
     friend_event(&s, &c, types::FRIEND_REQUESTED, json!({"from":c.xuid,"to":b.xuid}));
 
-    // Yes accepts and returns at once; the request is the answerer's.
+    // Yes (1) accepts and returns at once; the request is the answerer's.
     friend_record(&answerer, a.xuid);
-    assert_eq!(answerer.call("XOnlineFriendsAnswerRequest", &[0, INV_FRIEND, 0]), 0);
+    assert_eq!(answerer.call("XOnlineFriendsAnswerRequest", &[0, INV_FRIEND, 1]), 0);
     guest_until(&mut answerer, |_| {
         friend_events(&s, types::FRIEND_ACCEPTED, a.xuid, b.xuid)
     });
-    // No declines; the friends list then shows the first as a friend.
+    // No (0) declines; the friends list then shows the first as a friend.
     friend_record(&answerer, c.xuid);
-    assert_eq!(answerer.call("XOnlineFriendsAnswerRequest", &[0, INV_FRIEND, 1]), 0);
+    assert_eq!(answerer.call("XOnlineFriendsAnswerRequest", &[0, INV_FRIEND, 0]), 0);
     guest_until(&mut answerer, |_| {
         friend_events(&s, types::FRIEND_DECLINED, c.xuid, b.xuid)
     });
@@ -3527,7 +3527,7 @@ fn friend_requests_made_in_the_game_reach_the_server_and_can_be_answered() {
     });
     friend_record(&answerer, a.xuid);
     assert_eq!(
-        answerer.call("XOnlineFriendsAnswerRequest", &[0, INV_FRIEND, 0]),
+        answerer.call("XOnlineFriendsAnswerRequest", &[0, INV_FRIEND, 1]),
         0
     );
     guest_until(&mut answerer, |_| {
