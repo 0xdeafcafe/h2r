@@ -602,6 +602,7 @@ fn a_cut_of_a_running_tape_reads_as_a_film_of_its_own() {
         events: vec![],
         closing_events: vec![],
         post_hash: None,
+        forge: vec![],
     };
     let mut tape_header = header(7);
     tape_header.version = 3;
@@ -678,6 +679,7 @@ fn a_film_whose_boot_header_differs_without_naming_its_tape_is_refused() {
                 events: vec![],
                 closing_events: vec![],
                 post_hash: None,
+                forge: vec![],
             },
         )
         .unwrap();

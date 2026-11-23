@@ -376,7 +376,7 @@ impl Editor {
         op: Op,
         was: Option<Sha256>,
     ) -> Result<ProposalReply, String> {
-        if let Some(reply) = self.propose_shared(op.clone(), was.clone()) {
+        if let Some(reply) = self.propose_shared(op.clone(), was) {
             return reply;
         }
         let (tx, rx) = mpsc::channel();
