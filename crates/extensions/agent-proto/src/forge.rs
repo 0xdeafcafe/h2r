@@ -49,7 +49,59 @@ pub mod refusal {
     pub const WAS: &str = "forge_was";
     /// Any other refusal: the message says why.
     pub const REFUSED: &str = "forge_refused";
+
+    // The host's refusals in a shared session (`forge::net::NetRefusal::code`).
+    // Their messages begin with the name and a colon, as the game calls' do.
+    /// This machine has not joined the session.
+    pub const NOT_JOINED: &str = "forge_not_joined";
+    /// The seat's role cannot edit.
+    pub const ROLE: &str = "forge_role";
+    /// Another seat holds the thing.
+    pub const HELD: &str = "forge_held";
+    /// The seat holds nothing, or not that thing.
+    pub const NOT_HOLDING: &str = "forge_not_holding";
+    /// The edit names an entry by index, and an add or a remove came first.
+    pub const STALE: &str = "forge_stale";
+    /// The edit was made at a log position the host has not reached.
+    pub const AHEAD: &str = "forge_ahead";
+    /// A new op's ID is outside the seat's lane.
+    pub const LANE: &str = "forge_lane";
+    /// The loaded map refuses the edit: palette, budget or bounds.
+    pub const MAP: &str = "forge_map";
+    /// The seat is out of range or taken.
+    pub const SEAT: &str = "forge_seat";
+    /// The name is taken or is not a name.
+    pub const NAME: &str = "forge_name";
+    /// This machine's log head is not the host's.
+    pub const HEAD_DIFFERS: &str = "forge_head_differs";
+    /// The host's clock went backwards.
+    pub const CLOCK: &str = "forge_clock";
+
+    /// Every name a shared session adds, with the three it shares with the
+    /// local session ([`WAS`], [`PRINT`], [`REFUSED`]).
+    pub const SHARED: [&str; 15] = [
+        NOT_JOINED,
+        ROLE,
+        HELD,
+        NOT_HOLDING,
+        STALE,
+        AHEAD,
+        LANE,
+        MAP,
+        SEAT,
+        NAME,
+        HEAD_DIFFERS,
+        CLOCK,
+        WAS,
+        PRINT,
+        REFUSED,
+    ];
 }
+
+/// `forge.status`'s `session` for a synchronous network game: the same
+/// reply as a local session's, with a `net` object
+/// (docs/runtime/agent-api.md, "Shared Forge session").
+pub const SHARED_SESSION: &str = "shared";
 
 /// `forge.things`: every thing of the session, or those of one kind, or
 /// only those the document changes.

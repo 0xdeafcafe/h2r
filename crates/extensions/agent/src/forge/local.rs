@@ -61,6 +61,12 @@ pub const OBJECT_HELD: &str = refusal::OBJECT_HELD;
 /// [`refusal::REFUSED`]. The print and `was` sentences are forge-doc's own
 /// `Refusal`s, so they are matched against those.
 pub fn refusal_name(message: &str) -> &'static str {
+    // A shared session's refusals lead with their name and a colon.
+    if let Some((head, _)) = message.split_once(": ")
+        && let Some(name) = refusal::SHARED.into_iter().find(|name| *name == head)
+    {
+        return name;
+    }
     if let Some(name) = [OBJECT_GONE, OBJECT_KIND, OBJECT_HELD]
         .into_iter()
         .find(|name| message.starts_with(name))
@@ -464,6 +470,12 @@ pub trait LocalApi: Send + Sync + 'static {
     fn log(&self, since: u32) -> Result<Vec<Entry>, String>;
     fn input(&self, m: &dyn GuestMemory, input: ::forge::tool::Input) -> Result<(), String>;
     fn propose(&self, tick: u32, op: Op, was: Option<Sha256>) -> Result<ProposalReply, String>;
+    /// How many game ticks `forge.propose` waits for its answer. A shared
+    /// session's goes to the host and back, and waits for the tick the
+    /// stream applies the entry at.
+    fn wait_ticks(&self) -> u64 {
+        30
+    }
 }
 
 #[derive(Deserialize)]
@@ -633,7 +645,7 @@ pub fn install(agent: &Agent, backend: impl LocalApi) {
         let p: Propose = serde_json::from_value(v).map_err(|e| super::invalid(e.to_string()))?;
         let reply = backend.propose(tick, p.op, p.was).map_err(refused)?;
         ctx.defer(
-            30,
+            backend.wait_ticks(),
             Box::new(move |_| match reply.try_recv() {
                 Ok(result) => Some(result.map(|entry| json!({"entry":entry})).map_err(refused)),
                 Err(mpsc::TryRecvError::Empty) => None,

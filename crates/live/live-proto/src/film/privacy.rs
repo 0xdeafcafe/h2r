@@ -276,6 +276,14 @@ mod tests {
     }
 
     #[test]
+    fn a_forge_record_is_never_public() {
+        // A Forge session's welcome holds the map's document and its members.
+        for subtype in [stream::FORGE_WELCOME, stream::FORGE_ITEM] {
+            assert!(!is_public_tick(&block(&[&[subtype, 1, 2, 3]], stream::FORGE)));
+        }
+    }
+
+    #[test]
     fn unrecognised_fields_never_pass_through_a_known_event() {
         let mut join = vec![stream::LIFECYCLE_EVENT];
         join.extend(br#"[{"kind":"join","player":{"seat":1,"team":2,"kind":"remote","name":"Guest","future":{"endpoint":"198.51.100.17"}}}]"#);

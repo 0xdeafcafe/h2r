@@ -252,6 +252,7 @@ impl Recording {
                 events,
                 closing_events: Vec::new(),
                 post_hash,
+                forge: Vec::new(),
             },
             records,
             clock,

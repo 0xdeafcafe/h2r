@@ -52,6 +52,29 @@ pub(crate) fn admitted(m: &dyn GuestMemory) -> bool {
     }) && offline() == Some(true)
 }
 
+/// A synchronous network game (co-op host or guest) on a multiplayer map,
+/// in which a shared Forge session may run
+/// (docs/game/forge-design.md, F5).
+pub(crate) fn admitted_shared(m: &dyn GuestMemory) -> bool {
+    GameGlobals::current(m).ok().flatten().is_some_and(|g| {
+        g.map_active(m) == Ok(1)
+            && g.game_ended(m) == Ok(0)
+            && g.options().mode(m) == Ok(MODE_MULTIPLAYER)
+    }) && crate::coop_probe::read_sim(&ReadGm(m)).is_some_and(|sim| {
+        matches!(
+            agent_proto::sim::SessionKind::from_sim_mode(sim.mode),
+            agent_proto::sim::SessionKind::CoopHost | agent_proto::sim::SessionKind::CoopGuest
+        )
+    })
+}
+
+/// Where Forge may run: an offline local game, or a synchronous network
+/// game whose machines have a Forge channel
+/// ([`crate::forge_glue::net::offered`]).
+pub(crate) fn admitted_session(m: &dyn GuestMemory) -> bool {
+    admitted(m) || (admitted_shared(m) && crate::forge_glue::net::offered())
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Loaded {
     pub scenario: u32,
@@ -68,7 +91,7 @@ impl Loaded {
         if replaying {
             return Err("Forge is unavailable during Theater playback.".into());
         }
-        if !admitted(m) {
+        if !admitted_session(m) {
             return Err("Forge requires an active, offline local multiplayer game.".into());
         }
         let slot = map_slots::current_source(&ReadGm(m))
@@ -99,7 +122,7 @@ impl Loaded {
     }
 
     pub(crate) fn matches(&self, m: &dyn GuestMemory) -> bool {
-        admitted(m)
+        admitted_session(m)
             && global::SCENARIO.pointer(m) == Ok(Some(self.scenario))
             && cache_checksum(m) == Ok(self.checksum)
     }

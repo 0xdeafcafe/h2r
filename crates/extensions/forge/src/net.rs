@@ -27,13 +27,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::Frame;
 
+pub mod film;
 mod host;
+mod node;
 mod peer;
 mod state;
+mod wire;
 
 pub use host::{Host, Out};
+pub use node::{HOST_SEAT, HoldRow, Lane, MemberRow, Node, NodeError, Report, Settled, Step};
 pub use peer::{Peer, PeerError};
 pub use state::State;
+pub use wire::{BEAT_BYTES, Down, Framer, MAX_FRAME_BYTES, ToHost, frame};
 
 /// Seats in a session: `coop.max_players` is at most 16.
 pub const SEATS: u8 = 16;
@@ -290,6 +295,36 @@ pub enum NetRefusal {
     Clock { now: u32, was: u32 },
 }
 
+impl NetRefusal {
+    /// The name the agent API gives the refusal in its error's `data.code`
+    /// (`agent_proto::forge::refusal`).
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::NotJoined => "forge_not_joined",
+            Self::Role { .. } => "forge_role",
+            Self::Held { .. } => "forge_held",
+            Self::NotHolding => "forge_not_holding",
+            Self::Stale { .. } => "forge_stale",
+            Self::Ahead { .. } => "forge_ahead",
+            Self::Lane { .. } => "forge_lane",
+            Self::Doc(Refusal::Mismatch) => "forge_was",
+            Self::Doc(Refusal::Print { .. }) => "forge_print",
+            Self::Doc(_) => "forge_refused",
+            Self::Map(_) => "forge_map",
+            Self::Seat => "forge_seat",
+            Self::Name => "forge_name",
+            Self::HeadDiffers { .. } => "forge_head_differs",
+            Self::Clock { .. } => "forge_clock",
+        }
+    }
+
+    /// The sentence a caller of the agent API gets: the code, then the
+    /// refusal's own words.
+    pub fn named(&self) -> String {
+        format!("{}: {self}", self.code())
+    }
+}
+
 impl fmt::Display for NetRefusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -417,5 +452,7 @@ fn encode(value: &impl Serialize, what: &str, max: usize) -> Result<Vec<u8>, Ref
     Ok(bytes)
 }
 
+#[cfg(test)]
+mod node_tests;
 #[cfg(test)]
 mod tests;

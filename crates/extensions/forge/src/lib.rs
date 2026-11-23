@@ -17,7 +17,7 @@ pub mod tool;
 pub use files::{load_saved, saved_names};
 pub use forge_doc::{BlockKind, Endpoint, OpId, TagKey, Value};
 pub use links::{Linkable, Teleporter};
-pub use session::Session;
+pub use session::{Outgoing, SHARED_PROPOSE, SHARED_REDO, Session, SessionAdmit};
 pub use things::{BaseRow, BaseRows, LEFT_OUT_SENTENCE, Thing, ThingKind};
 
 /// Position in world units, and yaw, pitch and roll in radians, in scenario order.

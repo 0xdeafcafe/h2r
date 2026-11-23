@@ -138,6 +138,12 @@ impl Capture {
             self.count_drops("frame", u64::from(dropped));
             out.push(RecordData::pose(checkpoint));
         }
+        // The shared Forge session's welcome and the items it applied.
+        out.extend(
+            crate::forge_glue::net::take_film()
+                .into_iter()
+                .map(RecordData::forge_payload),
+        );
         let mut pending = std::mem::take(&mut self.pending);
         for item in pending.drain(..) {
             let (source, result) = match item {
