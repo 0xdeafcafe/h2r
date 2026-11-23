@@ -25,6 +25,8 @@ use crate::bases::{self, Bases, Config};
 pub(crate) struct Navigation {
     /// Elements for the pathfinding block of each structure BSP, in scenario order.
     pub bsps: Vec<(TagId, Block)>,
+    /// Sectors generated and kept, summed over the BSPs.
+    pub trim: Trim,
     /// The drop zones, `ff_drop_NN`.
     pub zones: Vec<Zone>,
     /// One zone per base, `ff_base_NN`, in base order.
@@ -84,7 +86,7 @@ pub(crate) fn prepare<R: Read + Seek>(map: &mut Map<R>, config: &Config) -> Resu
         })
         .collect();
 
-    let mut bsps = Vec::new();
+    let mut generated = Vec::new();
     let mut best = None;
     let mut why = Vec::new();
     for (index, row) in metadata_block(map, &scnr, BSPS as usize, BSP)?
@@ -133,11 +135,10 @@ pub(crate) fn prepare<R: Read + Seek>(map: &mut Map<R>, config: &Config) -> Resu
         {
             best = Some(arena);
         }
-        let element = pathfind::build::element(&pf).map_err(anyhow::Error::msg)?;
-        bsps.push((id, element));
+        generated.push((id, pf, data));
     }
-    ensure!(!bsps.is_empty(), "scenario has no structure BSP");
-    let arena = best.with_context(|| {
+    ensure!(!generated.is_empty(), "scenario has no structure BSP");
+    let mut arena = best.with_context(|| {
         format!(
             "need six distinct drop zones off the player starts and both bases ({:?} and {:?}, from {:?}), with a walkable path to each base: {}",
             found.points[0],
@@ -146,8 +147,33 @@ pub(crate) fn prepare<R: Read + Seek>(map: &mut Map<R>, config: &Config) -> Resu
             if why.is_empty() { "no walkable component holds a player start".into() } else { why.join("; ") }
         )
     })?;
+    // Keep only the sectors the AI can use, then encode each BSP's.
+    let mut bsps = Vec::with_capacity(generated.len());
+    let mut trim = Trim::default();
+    for (index, (id, pf, mut data)) in generated.into_iter().enumerate() {
+        bots::autonav::mark_in_map(map, &mut data)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("marking BSP {index}'s walkable area"))?;
+        let on_arena = usize::try_from(arena.bsp).ok() == Some(index);
+        let seeds = if on_arena {
+            arena.sectors()
+        } else {
+            Vec::new()
+        };
+        let keep = usable_sectors(&pf, &data.nav, &seeds);
+        let (kept, sector_of) =
+            pathfind::trim::keep_sectors(&pf, &keep).map_err(anyhow::Error::msg)?;
+        if on_arena {
+            arena.renumber(&sector_of)?;
+        }
+        trim.generated += pf.sectors.len();
+        trim.kept += kept.sectors.len();
+        let element = pathfind::build::element(&kept).map_err(anyhow::Error::msg)?;
+        bsps.push((id, element));
+    }
     Ok(Navigation {
         bsps,
+        trim,
         zones: arena.zones,
         base_zones: arena.bases,
         bases: found,
@@ -161,6 +187,8 @@ fn distance2(a: V3, b: V3) -> f32 {
 }
 
 struct Arena {
+    /// The structure BSP the zones are on.
+    bsp: i16,
     starts: usize,
     sectors: usize,
     zones: Vec<Zone>,
@@ -171,6 +199,82 @@ impl Arena {
     fn rank(&self) -> (usize, usize) {
         (self.starts, self.sectors)
     }
+
+    fn firing_positions(&mut self) -> impl Iterator<Item = &mut FiringPosition> {
+        self.zones
+            .iter_mut()
+            .chain(&mut self.bases)
+            .flat_map(|z| z.firing_positions.iter_mut())
+    }
+
+    /// Every sector a firing position is on.
+    fn sectors(&mut self) -> Vec<usize> {
+        let mut sectors: Vec<usize> = self.firing_positions().map(|p| p.sector as usize).collect();
+        sectors.sort_unstable();
+        sectors.dedup();
+        sectors
+    }
+
+    /// Give each firing position its sector's index after trimming.
+    fn renumber(&mut self, sector_of: &[u16]) -> Result<()> {
+        for p in self.firing_positions() {
+            let new = sector_of
+                .get(p.sector as usize)
+                .copied()
+                .filter(|&k| k != pathfind::trim::NONE)
+                .context("a firing position's sector was trimmed")?;
+            p.sector = u32::from(new);
+        }
+        Ok(())
+    }
+}
+
+/// Sectors generated and kept for the AI ([`usable_sectors`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Trim {
+    pub generated: usize,
+    pub kept: usize,
+}
+
+/// The sectors the AI can use on one BSP: those the arena's sectors reach
+/// over two-sided links (the only links the engine's path search follows)
+/// without leaving the map, where the map is what the player starts and
+/// weapon pads reach (`bots::autonav::mark_in_map`). Floors the players
+/// never reach, decorative islands, sky and terrain past the boundary are
+/// out of the map; in-map floors with no engine link to the arena are
+/// never on an AI path. With no arena on this BSP, every in-map sector.
+/// The arena's own sectors are always kept.
+fn usable_sectors(pf: &PathfindingData, nav: &NavMesh, arena: &[usize]) -> Vec<bool> {
+    let n = pf.sectors.len();
+    let in_map = |k: usize| nav.in_map(k as u32);
+    if arena.is_empty() {
+        return (0..n).map(in_map).collect();
+    }
+    let mut graph = vec![vec![]; n];
+    for link in &pf.links {
+        let (a, b) = (
+            usize::from(link.left_sector),
+            usize::from(link.right_sector),
+        );
+        if a < n && b < n && in_map(a) && in_map(b) {
+            graph[a].push(b);
+            graph[b].push(a);
+        }
+    }
+    let mut keep = vec![false; n];
+    let mut stack: Vec<usize> = arena.iter().copied().filter(|&k| k < n).collect();
+    for &k in &stack {
+        keep[k] = true;
+    }
+    while let Some(k) = stack.pop() {
+        for &next in &graph[k] {
+            if !keep[next] {
+                keep[next] = true;
+                stack.push(next);
+            }
+        }
+    }
+    keep
 }
 
 /// The retail AI graph has no step, jump or drop links across seams. Keep
@@ -397,6 +501,7 @@ fn choose_zones(
             ));
         } else {
             best = Some(Arena {
+                bsp,
                 starts: players,
                 sectors: component.len(),
                 zones,

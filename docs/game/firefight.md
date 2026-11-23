@@ -473,7 +473,7 @@ that id, and each machine loads its own build.
 
 | Part | Built with | Notes |
 |---|---|---|
-| Sectors in each `sbsp` | `pathfind::generate` | the generator the bots' mesh starts from, which has run on every retail multiplayer map (**Code**, `crates/live/bots/src/cache.rs`); the engine has not yet loaded its output (**S**) |
+| Sectors in each `sbsp` | `pathfind::generate`, then `pathfind::trim` to the sectors the AI can use ("Sectors the AI can use", below) | the generator the bots' mesh starts from, which has run on every retail multiplayer map (**Code**, `crates/live/bots/src/cache.rs`); the engine has not yet loaded its output (**S**) |
 | Drop zones | the bots' nav mesh (`bots::autonav`): sectors near the map's edge, off the players' spawn clusters, with a path to the middle | 6 to 12 a map; written as zones and areas |
 | Zones, areas, firing positions | sampled from the sectors: cover is a position with a wall toward the middle | the block writers of `h1campaign::ai` (`ScenarioBlocks`) |
 | Squad slots | 16 empty squads the director fills (class, count and zone are set at place time) | the same writers |
@@ -522,20 +522,55 @@ drops come `ff_base_00` and `ff_base_01`, each one area with up to 8
 firing positions around its base, and the orders `ff_hunt_00` and
 `ff_hunt_01`, whose primary areas are that base's area only, so a squad
 hunted at team N pushes into base N. The kit refuses maps without six
-suitable drops or without the required local tags. `KIT_VERSION` is 2.
+suitable drops or without the required local tags. `KIT_VERSION` is 3.
+
+**Sectors the AI can use.** The generator gives every walkable collision
+surface a sector, including floors no player reaches: decorative
+islands, rooftops, ledges and terrain past the boundary walls. Their
+links and vertices are most of the pathfinding bytes. After choosing the
+zones, `nav.rs` (`usable_sectors`) keeps, on the arena's BSP, the sectors
+the arena's firing positions reach over two-sided links between sectors
+in the map. Two-sided links are the only links the engine's path search
+has in generated data, so no AI path leaves that set. In the map is the
+bots' classification (`bots::autonav::mark_in_map`, bots.md §3.2, "In the
+map"): what the player starts and weapon pads reach with walks, steps,
+drops, jumps and the scenario's teleporters and lifts. A BSP with no
+arena keeps its in-map sectors. `pathfind::trim` drops the rest with
+their links and vertices and gives their surfaces' refs `ffffffff`, as
+retail data leaves surfaces with no sector
+([pathfinding.md](../formats/pathfinding.md), "Trimming"); firing
+positions take their sectors' new indices.
 
 The pinned map writer keeps existing datums, BSP load addresses and raw
 resources in place. The scenario and each BSP point to their new arrays
-in ordinary tag memory. The package has one deterministic file patch,
-bound to the base hash. It carries the kit version in the map's string
-table, so the standard package `MapId` includes it through the patch hash.
-The cost report counts each part's bytes and compares the final growth
-in tag memory (including the index and page rounding) with the available
-space before anything is installed.
+in ordinary tag memory. The new `char` tag's entry does not fit before a
+retail index's tail, so the builder moves the group table (1.4 KB) to
+the end of the metadata, not the entry table (16 bytes a tag, 80 KB on
+Zanzibar; `TagSet::relocate_groups`,
+[map-builder.md](../formats/map-builder.md), "Adding tags to a pinned
+map"). The package has one deterministic file patch, bound to the base
+hash. It carries the kit version in the map's string table, so the
+standard package `MapId` includes it through the patch hash.
 
-Tag headroom on multiplayer maps is 0.1 to 1.5 MiB and one map has none
-(**S**, forge-design.md, "The kit"). The kit builder prints what each
-part costs, and a map with no room for stage 1 is not offered.
+The cost report counts each part's bytes, the sectors generated and
+kept, the tag index bytes moved to the metadata, and the padding
+(alignment and the page rounding of `+0x1c`), which together make the
+growth in tag memory. It compares the growth with the available space
+before anything is installed. A refusal says by how much the kit is over
+and names its biggest part.
+
+Available is `writer::max_metadata_size(Multiplayer)` (`0x62c000`)
+minus the map's `+0x1c`. That bound is the largest retail multiplayer
+map, not a loader constant: the loader takes `+0x1c` from the physical
+arena, and growth comes out of the pool that gets the arena's free pages
+after the load (map-format.md, "Growing the metadata"). How much that
+pool can lose is not measured, so the kit does not go past it. Before
+the kit, on the owner's disc (**V**, docs/halo1/notes/shared-map.md):
+Waterworks has no room, Zanzibar 132 KiB, Headlong 340 KiB, Coagulation
+876 KiB, the others 0.9 to 1.5 MiB. The Map Pack maps' room is not
+measured. Zanzibar's sectors before trimming are 158 KiB; the numbers,
+and what a map needs, are in
+[notes/2026-11-23-firefight-kit-headroom.md](notes/2026-11-23-firefight-kit-headroom.md).
 
 Every machine in a session loads the kit map: the host's entities name
 tags by index, so the indices must agree (ai-networking.md, "Rules and
@@ -851,7 +886,7 @@ are slices of [ai-networking.md](ai-networking.md); P numbers its probes.
 |---|---|---|---|---|---|---|
 | **FF1** | `firefight`: `Def`, canonical form and hash, `validate`, three built-in definitions | S | nothing | `crates/formats/firefight/src/{def,validate,builtin}.rs` | `golden_hash_for_the_builtin_defs`, `a_wave_over_the_cap_is_refused`, `an_unknown_class_is_refused`, `canonical_form_is_stable_under_key_order` | every validator rule has a refusing case; built-ins validate |
 | **FF2** | The director: states, the reserve and cap, zone choice, lives, scoring, commands | M | FF1, AN1 | `crates/formats/firefight/src/{director,scoring}.rs` | `a_scripted_match_issues_the_golden_command_list`, `live_actors_never_exceed_the_cap`, `no_zone_in_sight_is_chosen_while_another_exists`, `same_seed_same_commands`, `the_pool_at_zero_holds_respawns_until_the_wave_ends`, `everyone_dead_and_no_lives_finishes_lost`, `a_replay_of_the_observed_sequence_issues_the_same_commands`, `a_resumed_mode_blob_issues_the_same_commands` | 1,000 seeded matches against a scripted `Observed` never break the cap and always end |
-| **FF3** | The kit, stage 1: sectors, drop zones, zones and firing positions, squad slots, authored Elite characters, the package and its id; the `firefight-probe` test map recipe (one squad of two) | L | nothing | `crates/tools/firefight-kit/`, `crates/apps/cli/` (`h2 firefight kit`), the test-map recipe list ([test-maps.md](test-maps.md)) | `two_builds_of_one_map_are_byte_equal`, `squad_blocks_read_back_through_h1campaign`, `every_drop_zone_has_a_path_to_the_middle`, `a_map_without_headroom_is_refused_with_the_cost`, `the_probe_recipe_places_one_squad`, `the_kit_authors_one_named_hunt_order_over_every_area`, `hunt_spans_every_zone_and_refuses_an_arena_without_areas` | on invented maps the kit's blocks read back; the coordinator's build on a retail map and probe P2 go in notes |
+| **FF3** | The kit, stage 1: sectors, drop zones, zones and firing positions, squad slots, authored Elite characters, the package and its id; the `firefight-probe` test map recipe (one squad of two) | L | nothing | `crates/tools/firefight-kit/`, `crates/apps/cli/` (`h2 firefight kit`), the test-map recipe list ([test-maps.md](test-maps.md)) | `two_builds_of_one_map_are_byte_equal`, `squad_blocks_read_back_through_h1campaign`, `every_drop_zone_has_a_path_to_the_middle`, `a_map_without_headroom_is_refused_with_the_cost`, `only_the_arenas_walkable_area_keeps_sectors`, `a_live_index_tail_moves_only_the_group_table`, `the_probe_recipe_places_one_squad`, `the_kit_authors_one_named_hunt_order_over_every_area`, `hunt_spans_every_zone_and_refuses_an_arena_without_areas` | on invented maps the kit's blocks read back; the coordinator's build on a retail map and probe P2 go in notes |
 | **FF4** | The host runtime over the `Game` interface: the AI switch, team setup, `Observed`, applying commands; then the squad, score and game-end entries behind it ("Guest boundary" gives each one's state); the `Game` over the guest bodies and the `firefight` feature at the tick boundary | M | FF2, FF3, AN6, P2 | `crates/extensions/game/src/firefight/{host,guest,runtime,feature}.rs`, `crates/extensions/game/src/actor_net/squads.rs`, `points.rs`, `crates/apps/boot/src/registration.rs` | `place_calls_the_squad_entry_with_class_and_count`, `a_client_applies_no_command`, `score_credits_the_killer`, `entries_apply_at_their_tick_in_seq_order`, `a_map_without_the_kit_refuses_the_mode`, `a_scripted_match_makes_the_expected_engine_calls_in_order`, `a_map_without_the_kit_is_refused_with_its_reason`, `an_operator_command_is_the_engine_call_before_the_next_tick`, `a_kit_map_starts_the_host_switches_ai_on_and_looks_at_each_zone`, `the_plan_builds_with_every_hook_switch_on` | over a fake game, a scripted match produces the expected engine calls in order; over invented guest memory, the runtime makes them through the guest bodies before the tick; boot's plan builds with the feature on |
 | **FF5** | Agent API: `firefight.state`, `firefight.command`, `firefight.kit`; `lives` and `score` on `sim.view`'s `player` root | S | FF4 | `crates/extensions/agent/src/firefight.rs`, `crates/extensions/agent-proto/src/firefight.rs`, `crates/extensions/agent/src/sim/state.rs`, [agent-api.md](../runtime/agent-api.md#firefight) | `state_reports_the_director`, `command_is_refused_on_a_client_and_in_playback`, `kit_reads_the_loaded_scenario`, `the_view_reports_each_players_lives`, `the_view_reports_each_players_score` | the methods answer over a fake game |
 | **FF6** | Stats: `Score` and `ActorKilled` to film events, the Live projection's Firefight summary, the web stats page | M | FF2, AN6 | `crates/live/live-proto/src/{film/events,firefight}.rs`, `crates/live/live-server/`, `crates/live/live-worker/`, `web/` | `a_scripted_match_projects_to_the_golden_summary`, `the_firefight_summary_is_the_golden_one_and_players_cannot_write_it`, `the_firefight_summary_is_the_same_on_the_worker`, `firefight_scores_do_not_touch_ranks`, `a_two_team_match_projects_wins_by_team`, `credits_pair_each_kill_with_its_class_and_assist`, `a_firefight_score_is_a_game_event_and_a_running_objective_score_in_the_film`, `firefight_scores_become_running_objective_scores`, `reads the server's golden summary as it is` (web) | both homes give the same summary |

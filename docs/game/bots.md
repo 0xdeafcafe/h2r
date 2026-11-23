@@ -560,7 +560,9 @@ a map's boundary walls and cliffs (Coagulation's snowfields) is out.
 Reachability is directed: a plateau that drops back into the map is out,
 a pit one drops into and cannot leave is in. A BSP no start or pad is on
 gets no flags. Every polygon is in until a classification marks some
-out.
+out. `autonav::mark_in_map` runs the same classification on one BSP's
+mesh for another caller: the Firefight kit keeps only in-map sectors
+([firefight.md](firefight.md), "Sectors the AI can use").
 
 Out-of-map polygons are kept, flagged, because a bot can still end up
 there: a superbounce route (§3.8, "Superbounce routes") lands it there

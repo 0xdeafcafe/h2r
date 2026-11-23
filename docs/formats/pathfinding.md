@@ -174,6 +174,35 @@ not know how to relocate. A synthetic test builds a whole map with it and
 reads the BSP back through `map::Map` to the same data; the disc test does
 the same for every generated BSP of three levels.
 
+## Trimming (`pathfind::trim`)
+
+`trim::keep_sectors(pf, keep)` keeps the sectors whose flag is set, in
+their old order, and returns each old sector's new index (`trim::NONE`
+when dropped). A link survives when a kept sector borders it; a side
+whose sector went becomes `ffff` and its next-link field points at the
+link itself, as the generator writes an unused side. Vertices are kept
+only for surviving links, one per position. Refs keep one entry per
+collision surface (the count the engine and the validator expect); a
+surface whose sector went gets `ffffffff`, as every non-walkable surface
+has. It refuses data with 2D BSP nodes, object refs or compiled hints,
+which name sectors in ways it does not rewrite, so it is for generated
+data.
+
+A surface with no sector is normal in retail data: walkable surfaces on
+instanced geometry and objects have no ref from the structure, and
+`06b_floodzone` BSP 4 leaves 40 % of its walkable area uncovered
+("Comparison on retail levels"). The game's actor sector cache is null
+for an actor off every sector (`world.ai`'s `sector`,
+[agent-api.md](../runtime/agent-api.md)); what the AI then does was not
+read from the engine (S: it has no path to plan). The
+[Firefight kit](../game/firefight.md) uses the trim to keep the sectors
+its AI can use.
+
+The encoded size of generated data, per BSP: 8 bytes a sector, 16 a
+link, 12 a vertex, 4 a collision surface (refs, whatever is kept), 4 an
+instanced-geometry placement, `0x74` for the element and `0x48` for the
+user-hints element.
+
 ## Comparison on retail levels
 
 `cargo run --release -p pathfind --example compare [map ...]` (needs
