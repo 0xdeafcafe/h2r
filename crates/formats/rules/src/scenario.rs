@@ -346,9 +346,10 @@ fn due_timers(vm: &Vm) -> Vec<String> {
 /// One tick of a run over the fake game, as every scenario runner steps
 /// it: the VM's tick begins and the round clock counts down, the queued
 /// calls are made, `init` and `round_start` fire on tick 0 when `start`,
-/// each event is applied to the game ([`FakeGame::apply`]) and its handler
-/// runs ([`FakeGame::after`] then removes a player who quit), and last the
-/// per-tick group runs.
+/// each event is applied to the game ([`FakeGame::apply`]) and, when the
+/// game took it, its handler runs ([`FakeGame::after`] then removes a
+/// player who quit; a spawn the engine holds, out of lives, runs
+/// nothing), and last the per-tick group runs.
 pub fn step(vm: &mut Vm, game: &mut FakeGame, tick: u32, start: bool, inputs: &[Input]) -> Stepped {
     vm.begin_tick(tick);
     game.begin_tick(tick);
@@ -361,9 +362,10 @@ pub fn step(vm: &mut Vm, game: &mut FakeGame, tick: u32, start: bool, inputs: &[
         }
     }
     for input in inputs {
-        game.apply(input);
-        let fired = vm.fire(game, input.clone());
-        out.fired.push((input.event().name(), fired));
+        if game.apply(input) {
+            let fired = vm.fire(game, input.clone());
+            out.fired.push((input.event().name(), fired));
+        }
         game.after(input);
     }
     if vm.ext().stopped.is_none() {
