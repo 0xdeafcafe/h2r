@@ -3,9 +3,9 @@ use crate::ui_kit::{
     dialog::{DialogBase, DialogSpec},
     input::{Glyph, Input, Prompt},
     picker,
-    spec::{ListPlace, Press, RowSpec, ScreenSpec, ValueStyle},
+    spec::{ListPlace, PaneText, Press, RowSpec, ScreenSpec, ValueStyle},
     text_fit,
-    view::{Art, Kind, Layer, Opener, PaneArt, Widget},
+    view::{Art, Opener, PaneArt},
 };
 
 /// The tint steps, by the look's `tint`.
@@ -410,14 +410,26 @@ impl Dialogs {
                     visible: look.len() as i16,
                 };
                 s.style = ValueStyle::Setting;
-                s.widgets.push(Widget {
+                // The preview: a Scene3d widget the compositor places in
+                // the game (the look drawn by the native renderer); the
+                // spec carries its frame and its model's name, which the
+                // dialog draws as its pane text.
+                let name = previewed.unwrap_or_else(|| look[0].value.clone());
+                s.art.push(PaneArt {
+                    art: Art::Solid {
+                        rgba: [16, 24, 36, 255],
+                    },
+                    at: [100, 40],
+                    size: [160, 120],
+                    depth: 0,
+                });
+                s.texts.push(PaneText {
                     id: "preview".into(),
                     rect: [40, 100, 160, 260],
-                    layer: Layer::Content,
-                    alpha: 255,
-                    kind: Kind::Scene3d {
-                        name: previewed.unwrap_or_else(|| look[0].value.clone()),
-                    },
+                    font: 1,
+                    colour: [0.78, 0.84, 0.89],
+                    right: false,
+                    text: name,
                 });
                 s
             }

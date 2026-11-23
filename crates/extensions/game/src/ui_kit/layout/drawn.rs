@@ -150,6 +150,7 @@ fn on_drawn(
             let eligible = match o.kind {
                 Kind::Text { .. } => true,
                 Kind::Art { .. } => o.layer == Layer::Under || is_picture(o),
+                Kind::Scene3d { .. } => true,
             };
             if !eligible || reported(already, &t.id, &o.id) {
                 continue;

@@ -630,6 +630,7 @@ fn pattern_rules(design: &DesignDoc, s: &ScreenSpec, v: &View, out: &mut Vec<Fin
                     view::Kind::Art { art, .. } => {
                         matches!(art, view::Art::Skin { .. }) || a.layer == view::Layer::Under
                     }
+                    view::Kind::Scene3d { .. } => true,
                     view::Kind::Text { .. } => false,
                 }
                 && crate::ui_kit::layout::area(crate::ui_kit::layout::intersect(ink, a.rect())) * 2

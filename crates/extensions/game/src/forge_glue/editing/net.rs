@@ -191,12 +191,13 @@ impl Editor {
     /// run the node, and apply what it released. Called before the
     /// editor's own work.
     pub(super) fn net_tick(&mut self, tick: u32) {
+        // The monitor channel beside the edit log: poses and looks, first
+        // (it ends nothing, so a dead session still drains its lane).
+        self.monitor_tick(tick);
         let Some(net) = self.net.as_mut() else { return };
         if net.dead {
             return;
         }
-        // The monitor channel beside the edit log: poses and looks.
-        self.monitor_tick(tick);
         // What the co-op link changed since the last tick: a seat joined,
         // one left, or the link closed.
         for change in glue::take_changes() {
@@ -283,11 +284,11 @@ impl Editor {
         let Some(net) = self.net.as_mut() else {
             return;
         };
-        match &net.monitors.table {
+        match net.monitors.table.as_mut() {
             Some(table) => {
-                if let Ok(accepted) = table.propose(HOST_SEAT, look, base.as_deref()) {
+                if let Ok(accepted) = table.propose(HOST_SEAT.0, look, base.as_deref()) {
                     let accepted = accepted.clone();
-                    net.seats.look(HOST_SEAT.0, accepted.clone());
+                    net.monitors.seats.look(HOST_SEAT.0, accepted.clone());
                     net.node.send_look(accepted, None);
                 }
             }
@@ -304,12 +305,12 @@ impl Editor {
         };
         let local = net.node.seat().unwrap_or(HOST_SEAT);
         let rgb = rgb_of(&net.palette);
-        net.seats
+        net.monitors.seats
             .looks()
             .filter(|(seat, _)| *seat != local.0)
             .filter_map(|(seat, look)| {
-                let (pose, _) = net.seats.body(seat, now)?;
-                Some(net.bodies.draw(seat, look, pose, seconds, rgb))
+                let (pose, _) = net.monitors.seats.body(seat, now)?;
+                Some(net.bodies.draw(seat, look, pose, seconds, |index| rgb(index)))
             })
             .collect()
     }
@@ -323,11 +324,11 @@ impl Editor {
         };
         let local = net.node.seat().unwrap_or(HOST_SEAT);
         let rgb = rgb_of(&net.palette);
-        net.seats
+        net.monitors.seats
             .looks()
             .filter(|(seat, _)| *seat != local.0)
             .filter_map(|(seat, look)| {
-                let (pose, _) = net.seats.body(seat, now)?;
+                let (pose, _) = net.monitors.seats.body(seat, now)?;
                 // A look this machine draws no model for is the marker.
                 (look.is_marker() || net.bodies.find(look).is_none()).then(|| {
                     (
@@ -391,7 +392,7 @@ impl Editor {
                                 notice,
                             } in table.join_reset(seat.0, &name, &can)
                             {
-                                net.seats.look(reset, look.clone());
+                                net.monitors.seats.look(reset, look.clone());
                                 net.node.send_look(look, None);
                                 net.node.send_notice(seat, notice);
                             }
@@ -407,14 +408,14 @@ impl Editor {
                     };
                     match table.propose(seat.0, look, base.as_deref()) {
                         Ok(accepted) => {
-                            net.seats.look(seat.0, accepted.clone());
+                            net.monitors.seats.look(seat.0, accepted.clone());
                             net.node.send_look(accepted, None);
                         }
                         Err(refusal) => net.node.send_look_refused(seat, refusal),
                     }
                 }
                 Monitor::Accepted { seat, look } => {
-                    net.seats.look(seat.0, look);
+                    net.monitors.seats.look(seat.0, look);
                 }
                 Monitor::LookRefused { refusal, .. } => {
                     self.notice = Some((refusal.sentence(), tick));
@@ -426,7 +427,7 @@ impl Editor {
                     monitor,
                     ..
                 } => {
-                    net.seats.pose(seat.0, at, pose, monitor);
+                    net.monitors.seats.pose(seat.0, at, pose, monitor);
                     if net.monitors.table.is_some() {
                         net.node.send_pose(seat, at, pose, monitor, None, Some(seat));
                     }

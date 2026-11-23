@@ -140,7 +140,7 @@ impl Bodies {
         let position = [pose.position[0], pose.position[1], pose.position[2] + bob(seconds)];
         // The body sits at the camera and turns to its yaw and pitch; the
         // model's rest pose is the renderer's.
-        let frame = forge::Frame {
+        let frame = crate::Frame {
             position,
             rotation: [pose.yaw, pose.pitch, 0.],
         };

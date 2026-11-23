@@ -41,8 +41,8 @@ fn dialog_page_tables() {
 
     // The monitor look page: every row and lock, the picker open, and
     // the preview following the focus (ML6).
-    for (name, s) in Look.states() {
-        let spec = Look.spec(&s);
+    for (name, s) in DialogPage::Look.states() {
+        let spec = DialogPage::Look.spec(&s);
         let v = preview::From::Synthetic.view(&spec, &name).unwrap();
         assert_eq!(v.widget("preview").is_some(), true, "{name}");
         let content = content::check(&spec, &v, preview::From::Synthetic.source());
@@ -51,9 +51,9 @@ fn dialog_page_tables() {
         assert!(report.issues.is_empty(), "{name}: {:?}", report.issues);
         assert!(spec::check_fallback(&spec).is_empty(), "{name}");
     }
-    let (_, mut locked) = Look.states().remove(2);
+    let (_, mut locked) = DialogPage::Look.states().remove(2);
     assert_eq!(locked.click(2), Action::None, "a locked row offers no picker");
-    let (_, mut picker) = Look.states().remove(1);
+    let (_, mut picker) = DialogPage::Look.states().remove(1);
     assert_eq!(picker.click(0), Action::LookSet(0, 0));
 
     use Effect::{Action as Command, Changed, Ignored};

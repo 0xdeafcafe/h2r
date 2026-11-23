@@ -267,7 +267,7 @@ impl Widget {
     pub fn text(&self) -> Option<&str> {
         match &self.kind {
             Kind::Text { text, .. } => Some(text),
-            Kind::Art { .. } => None,
+            Kind::Art { .. } | Kind::Scene3d { .. } => None,
         }
     }
 }

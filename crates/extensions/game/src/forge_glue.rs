@@ -70,7 +70,9 @@ pub fn page() -> Option<ScreenSpec> {
 /// last frame's world view: the play window's overlay paints them beside
 /// the gizmo. A monitor's own marker is never drawn.
 pub fn markers() -> Vec<marker::Marker> {
-    let driver = current()?;
+    let Some(driver) = current() else {
+        return Vec::new();
+    };
     let driver = driver.lock().unwrap_or_else(|e| e.into_inner());
     driver
         .markers
@@ -263,7 +265,7 @@ impl Driver {
                 .flatten()
                 .and_then(|g| g.options().variant().engine(m).ok());
             e.tick(tick, bsp, crate::forge_screens::ui_up(m), game);
-            self.markers = e.monitor_markers(f32::from(tick) / 30.);
+            self.markers = e.monitor_markers(tick as f32 / 30.);
         }
     }
 }
