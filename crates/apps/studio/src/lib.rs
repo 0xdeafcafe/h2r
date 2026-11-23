@@ -32,6 +32,7 @@ pub mod script;
 pub mod theme;
 pub mod ui;
 pub mod viewport;
+pub mod voice;
 
 pub use app::{Action, Answer, App, ToolKind};
 

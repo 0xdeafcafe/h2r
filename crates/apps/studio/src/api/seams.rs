@@ -40,6 +40,8 @@
 //! - **content checks**: `sound.measure` ([`super::sound_measure`]),
 //!   `ui.check` ([`super::ui_check`]) and `check.run`, whose checks are
 //!   the rows of [`super::checks::CHECKS`].
+//! - **the Announcer**: `voice.say`, `voice.list` and `voice.commit`
+//!   ([`super::voice`]) over `app::announcer`.
 //! - **player models** and **customisation**: `model.*` and `custom.*`
 //!   are planned the same way (docs/editor/agent-api.md).
 //!
@@ -104,4 +106,7 @@ pub fn register(api: &mut Api) {
     api.register(Box::new(super::sound_measure::SoundMeasure));
     api.register(Box::new(super::ui_check::UiCheck));
     api.register(Box::new(super::checks::Checks));
+    // The Announcer: a line said by a voice, made a clip and kept
+    // (app::announcer).
+    api.register(Box::new(super::voice::Voice));
 }

@@ -169,6 +169,15 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
             app.audition.headless = true;
         }
+        m::VOICE_SAY | m::VOICE_LIST => {
+            // The fake voice (never the service), a headless output.
+            app.audition.headless = true;
+        }
+        m::VOICE_COMMIT => {
+            // A line to copy, and a checkout to copy it into.
+            c(m::VOICE_SAY, json!({"text": "Superbounce", "play": false}));
+            std::fs::create_dir_all(t.path("out/art/announcer")).unwrap();
+        }
         m::VOLUME_LIST | m::VOLUME_SELECT | m::VOLUME_SET | m::VOLUME_REMOVE | m::VOLUME_ADD => {
             let map = t.path("volumes.map");
             std::fs::write(&map, fixture::fixture_with_volumes()).unwrap();

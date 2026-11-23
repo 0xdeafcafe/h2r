@@ -81,6 +81,7 @@ workspace_library(
         "//third-party/rust:pollster",
         "//third-party/rust:rfd",
         "//third-party/rust:serde_json",
+        "//third-party/rust:ureq",
         "//third-party/rust:wgpu",
         "//third-party/rust:winit",
     ] + select({
@@ -148,6 +149,7 @@ workspace_test(
         "//third-party/rust:pollster",
         "//third-party/rust:rfd",
         "//third-party/rust:serde_json",
+        "//third-party/rust:ureq",
         "//third-party/rust:wgpu",
         "//third-party/rust:winit",
     ] + select({
@@ -214,6 +216,7 @@ workspace_binary(
         "//third-party/rust:pollster",
         "//third-party/rust:rfd",
         "//third-party/rust:serde_json",
+        "//third-party/rust:ureq",
         "//third-party/rust:wgpu",
         "//third-party/rust:winit",
         ":studio",
@@ -282,6 +285,7 @@ workspace_test(
         "//third-party/rust:pollster",
         "//third-party/rust:rfd",
         "//third-party/rust:serde_json",
+        "//third-party/rust:ureq",
         "//third-party/rust:wgpu",
         "//third-party/rust:winit",
         ":studio",

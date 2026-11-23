@@ -7058,6 +7058,7 @@ dependencies = [
  "studio-proto",
  "superbounce",
  "tags",
+ "ureq",
  "variants",
  "vfs",
  "wgpu",
