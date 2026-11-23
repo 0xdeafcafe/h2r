@@ -751,6 +751,10 @@ pub struct Report {
     /// ([`crate::drops`]; docs/runtime/sim.md, "Seam drops").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drops: Option<crate::drops::DropsRun>,
+    /// The bounce search's records, in a match with a `[bounces]` table
+    /// ([`crate::bounces`]; docs/runtime/bounce-search.md).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bounces: Option<crate::bounces::BouncesRun>,
     /// The flat RAM window's fixups per tick; `None` without a window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flat: Option<FlatReport>,
@@ -1419,6 +1423,7 @@ impl Tally {
                 self.bounce.report(self.started, &who)
             }),
             drops: None,
+            bounces: None,
             flat: None,
             guest_census: self.census(),
             notes,

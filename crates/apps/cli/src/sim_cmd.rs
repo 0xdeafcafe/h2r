@@ -12,6 +12,9 @@
 //!   batch's runs kept, merged into the shared bots directory.
 //! - `drops <file>`: seam drops, the targets split over match processes,
 //!   then the pooled report (`drops.json`, `drops.md`).
+//! - `bounces <file>`: the forked bounce search, the sites split over
+//!   match processes, then the ranked report (`bounces.json`,
+//!   `bounces.md`, `bounces.verified`).
 //! - `diff <a.json> <b.json>`: the first differing state of two reports.
 
 use std::fs::{File, OpenOptions, TryLockError};
@@ -45,6 +48,8 @@ const USAGE: &str = "usage:
                           [--reopen] [--no-merge] [--keep-data] [--parallel N]
                           [--disc ISO] [--out DIR] [--data DIR] [--tier ...] [--pace PACE]
   h2 sim drops <drops.toml> [--parallel N] [--dry-run] [--merge] [--keep-data]
+                          [--disc ISO] [--out DIR] [--data DIR] [--tier ...] [--pace PACE]
+  h2 sim bounces <bounces.toml> [--parallel N] [--dry-run] [--merge] [--keep-data]
                           [--disc ISO] [--out DIR] [--data DIR] [--tier ...] [--pace PACE]
   h2 sim diff <report a.json> <report b.json>
   h2 sim audit-merge OUTPUT INPUT [INPUT ...]
@@ -110,6 +115,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         Some("harvest") => harvest(it.collect()),
         Some("train") => train(it.collect()),
         Some("drops") => drops(it.collect()),
+        Some("bounces") => bounces(it.collect()),
         Some("compare") => {
             let dir = it.next().context(USAGE)?;
             let c = compare_dir(Path::new(&dir))?;
@@ -1000,7 +1006,9 @@ fn play_runs(
                     let Some(r) = b.runs.get(n) else { break };
                     let rd = RunDir::new(&b.out, &r.id);
                     let bounce =
-                        r.config.superbounce == Some(true) || r.config.drops.is_some();
+                        r.config.superbounce == Some(true)
+                            || r.config.drops.is_some()
+                            || r.config.bounces.is_some();
                     let data = if bounce {
                         make_bounce_data(&rd, &shared)
                     } else {
@@ -1694,6 +1702,193 @@ fn drops(args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
+/// `h2 sim bounces`: the search file's sites split over match processes,
+/// then the ranked report (docs/runtime/bounce-search.md).
+fn bounces(args: Vec<String>) -> Result<()> {
+    use sim_bench::bounces::Site;
+    use sim_bench::drops::{Target, Targets, shard_targets};
+    let mut a = parse_drops_args(args)?;
+    let file = std::path::absolute(a.file.take().context(USAGE)?)?;
+    let m = sim_bench::config::load_match(&file)
+        .map_err(|e| anyhow::anyhow!("{}:\n{e}", file.display()))?;
+    let Some(table) = m.config.bounces.clone() else {
+        bail!("{}: no [bounces] table", file.display());
+    };
+    let map = m.config.map.clone();
+    let settings = table
+        .settings()
+        .map_err(|p| anyhow::anyhow!("{}:\n{}", file.display(), p.join("\n")))?;
+    let shared = a.common.data();
+    let specs = match &table.targets {
+        Targets::List(l) => l.clone(),
+        Targets::Word(_) => scan_targets(&shared, &map, table.max_targets)?,
+    };
+    anyhow::ensure!(!specs.is_empty(), "{map}: no bounce targets to search");
+    let resolved = specs
+        .iter()
+        .enumerate()
+        .map(|(i, t)| Target::from_spec(i, t))
+        .collect::<std::result::Result<Vec<Target>, String>>()
+        .map_err(anyhow::Error::msg)?;
+    let per_site = settings.trials_per_site();
+    // A target's weight: its sites' trials.
+    let weights: Vec<usize> = resolved
+        .iter()
+        .map(|t| Site::of(std::slice::from_ref(t), settings.along).len() * per_site)
+        .collect();
+    let sites: usize = weights.iter().map(|w| w / per_site.max(1)).sum();
+    let parallel = a
+        .parallel
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(2, |n| (n.get() / 2).max(1)))
+        .max(1);
+    let shards = shard_targets(&specs, &weights, parallel);
+    let n = shards.len();
+    let base = file.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("bounces");
+    let out = match &table.out {
+        Some(o) => base.join(o),
+        None => base.join("results").join(sim_bench::config::safe(stem)),
+    };
+    // Each run's match: the file's, its bots' tunings inline, its share
+    // of the targets explicit.
+    let bots: Vec<sim_bench::config::BotSpec> = m
+        .bots
+        .iter()
+        .map(|b| sim_bench::config::BotSpec {
+            name: Some(b.name.clone()),
+            skill: Some(b.skill.name().into()),
+            team: b.team,
+            tuning: Some(b.params.clone()),
+            ..sim_bench::config::BotSpec::default()
+        })
+        .collect();
+    let mut runs = Vec::new();
+    let mut counts = Vec::new();
+    for (i, targets) in shards.into_iter().enumerate() {
+        let mut config = m.config.clone();
+        config.bots = bots.clone();
+        let count: usize = targets
+            .iter()
+            .filter_map(|t| specs.iter().position(|s| s == t))
+            .map(|k| weights[k])
+            .sum();
+        counts.push((targets.len(), count));
+        if let Some(b) = config.bounces.as_mut() {
+            b.targets = Targets::List(targets);
+            b.shard = i as u32;
+            b.shards = n as u32;
+            b.max_targets = None;
+            b.out = None;
+            b.map = None;
+        }
+        runs.push(sim_bench::config::Run {
+            id: format!("{}-bounces{i}", sim_bench::config::safe(&map)),
+            map: map.clone(),
+            seed: config.seed,
+            config,
+        });
+    }
+    let batch = sim_bench::config::Batch {
+        config: sim_bench::config::BatchConfig {
+            out: out.clone(),
+            match_file: file.clone(),
+            ..sim_bench::config::BatchConfig::default()
+        },
+        out: out.clone(),
+        mode: sim_bench::config::Mode::default(),
+        arms: Vec::new(),
+        runs,
+    };
+    println!(
+        "{} targets on {map}, {sites} sites, at most {} trials ({per_site} a site on {} variants), {} runs of {} seats, into {}",
+        specs.len(),
+        weights.iter().sum::<usize>(),
+        settings.variants.len(),
+        n,
+        settings.seats,
+        out.display()
+    );
+    for (r, (t, c)) in batch.runs.iter().zip(&counts) {
+        println!("  {:<28} {t} targets, at most {c} trials", r.id);
+    }
+    if a.dry {
+        return Ok(());
+    }
+    let image = check_image(&mut a.common, "bounces")?;
+    let disc = a.common.disc()?;
+    prepare_output(&batch, &file, &[], None)?;
+    let started = Instant::now();
+    let failed = play_runs(
+        &a.common,
+        &batch,
+        (&image.dylib, &disc),
+        None,
+        false,
+        a.keep,
+        n,
+    );
+    let mut blocks = Vec::new();
+    let mut missing = Vec::new();
+    for r in &batch.runs {
+        let path = RunDir::new(&out, &r.id).report();
+        let block = File::open(&path)
+            .ok()
+            .and_then(|f| {
+                serde_json::from_reader::<_, sim_bench::metrics::Report>(std::io::BufReader::new(f))
+                    .ok()
+            })
+            .and_then(|rep| rep.bounces);
+        match block {
+            Some(b) => blocks.push(b),
+            None => missing.push(r.id.clone()),
+        }
+    }
+    let mut report = sim_bench::bounces::summarize(&blocks);
+    if report.map.is_empty() {
+        report.map = map.clone();
+    }
+    for id in &missing {
+        report.notes.push(format!("{id}: no report with a bounces block"));
+    }
+    std::fs::write(out.join("bounces.json"), serde_json::to_string_pretty(&report)?)?;
+    let md = sim_bench::bounces::markdown(&report);
+    std::fs::write(out.join("bounces.md"), &md)?;
+    let proven = sim_bench::bounces::proven(&report);
+    std::fs::write(
+        out.join("bounces.verified"),
+        sim_bench::bounces::verified_text(&proven),
+    )?;
+    println!(
+        "\n{} runs in {:.0} s\n",
+        batch.runs.len(),
+        started.elapsed().as_secs_f64()
+    );
+    print!("{md}");
+    let kept: Vec<PathBuf> = batch
+        .runs
+        .iter()
+        .map(|r| RunDir::new(&out, &r.id).dir)
+        .filter(|d| d.join("harvest").join("end").is_dir())
+        .collect();
+    if a.merge && !kept.is_empty() {
+        println!();
+        harvest_into(&kept, &bots::cache::dir(&shared), true)?;
+    } else if !kept.is_empty() {
+        println!(
+            "\nthe provable sites are in each run's verified file: `h2 sim harvest {}`",
+            out.display()
+        );
+    }
+    println!("\n{}", out.join("bounces.json").display());
+    if !report.errors.is_empty() {
+        bail!("{}", report.errors.join("\n"));
+    }
+    if failed > 0 {
+        bail!("{failed} sim runs failed; see the run logs");
+    }
+    Ok(())
+}
+
 /// `h2 sim harvest`: every run's `harvest/` of a results directory
 /// merged into the shared bots directory.
 fn harvest(args: Vec<String>) -> Result<()> {
@@ -1977,6 +2172,7 @@ mod tests {
             notes: vec![],
             bounce: None,
             drops: None,
+            bounces: None,
         }
     }
 

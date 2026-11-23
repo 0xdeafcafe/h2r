@@ -47,6 +47,7 @@ are under [Reviews](#reviews).
 - The [agent API skill](../.claude/skills/h2-agent-api/SKILL.md) and [lab skill](../.claude/skills/h2-lab/SKILL.md) guide coding agents through live checks and remote runs.
 - [checkpoints.md](runtime/checkpoints.md): the checkpoint save and revert acceptance test
 - [sim.md](runtime/sim.md): headless bot matches, tuning comparisons and uploads to Clanker Training in Uplink
+- [bounce-search.md](runtime/bounce-search.md): the forked bounce search: superbounce trials from a saved machine, the region that bounces on each seam and the seams ranked by ease
 - [snapshots.md](runtime/snapshots.md): machine snapshots for `state.save`/`state.load`: what state lives outside guest RAM, the file format, the quiescence rule
 - [cache-slots.md](runtime/cache-slots.md): the campaign cache-slot integration test
 - [tvos.md](runtime/tvos.md): building and deploying to Apple TV (`platform/tvos`, `H2_EMIT_TARGET=tvos`)

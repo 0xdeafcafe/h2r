@@ -1700,7 +1700,12 @@ fn run_configured(
     if let Some(tr) = &tr {
         rebuilders.add(trace::KERNEL_CALL_RETURN, trace::rebuilder(tr));
     }
-    let shelf = if agent.is_some() || film.is_some() {
+    // The bounce search forks the machine in memory, and its sections
+    // carry the build key (docs/runtime/bounce-search.md, "The fork").
+    let bounce_fork = sim_mode
+        .as_ref()
+        .is_some_and(|s| s.matched().config.bounces.is_some());
+    let shelf = if agent.is_some() || film.is_some() || bounce_fork {
         let key = snapshot_glue::build_key(running_stamp(), &switch_spec, &plan, &snap_host.names());
         if let Some(session) = &film {
             let (dir, cap) = viewer_cache.unwrap_or_else(|| {
@@ -1717,7 +1722,8 @@ fn run_configured(
         }
         // Film keyframes also need a build key without a standalone snapshot directory.
         let shelf = snapshot_glue::Shelf::from_env(key.clone()).or_else(|| {
-            film.as_ref().map(|_| snapshot_glue::Shelf::new(&opts.data_root, key))
+            (film.is_some() || bounce_fork)
+                .then(|| snapshot_glue::Shelf::new(&opts.data_root, key))
         });
         if let (Some(a), Some(shelf)) = (&agent, &shelf) {
             a.agent.set_snapshots(Box::new(shelf.clone()));
@@ -1936,6 +1942,28 @@ fn run_configured(
             let mut machine =
                 snap_host.machine(&mut m, &plan, &rebuilders, shelf, d3d_diag::presents());
             a.agent.run_snapshots(&mut machine);
+        }
+        // The bounce search asked for a fork at this tick: save the
+        // machine, or put it back as a variant's capture left it.
+        if let Some(shelf) = &shelf
+            && sim_bounces::fork_pending()
+        {
+            let forked = {
+                let mut machine =
+                    snap_host.machine(&mut m, &plan, &rebuilders, shelf, d3d_diag::presents());
+                sim_bounces::between_slices(&mut machine)
+            };
+            match forked {
+                sim_bounces::Forked::Restored => {
+                    plan.restore_presentation_pages(&loaded.runtime, &installed)?;
+                    audio_idle = 0;
+                }
+                sim_bounces::Forked::Broken => {
+                    host_stop = true;
+                    break;
+                }
+                sim_bounces::Forked::Nothing | sim_bounces::Forked::Captured => {}
+            }
         }
         if let Some(p) = &mut snapshot_probe {
             p.after_slice(&m, &plan, || snap_host.blockers());

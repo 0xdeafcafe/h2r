@@ -1,0 +1,28 @@
+# The forked bounce search (docs/runtime/bounce-search.md): `h2 sim
+# bounces` this file. Ascension's first 60 scanned seams, one site each.
+# A variant's base drop is run to four rows before its touchdown and the
+# whole machine saved; every trial then starts from that save, is put on
+# its own last airborne row (position, depth, velocity, facing), runs to
+# the touchdown and three rows on, and the machine is put back. Three
+# variants, 400 sampled points a site and three refinement rounds of at
+# most 200: at most 3,046 trials a site, 182,760 in all.
+# The report (results/ascension-bounces/bounces.json, bounces.md and
+# bounces.verified) ranks the sites by verdict, then ease.
+map = "ascension"
+game_type = "slayer"
+score_limit = 50      # nobody scores: a driven seat never fights
+seed = 1
+max_wall_s = 3600     # the run ends when its trials are done
+render_every = 0
+pace = "unpaced"
+# Unset here and filled by the table: 15 "Bouncer" seats, no time limit,
+# team play and a training report.
+
+[bounces]
+targets = "scan"      # every bounce candidate of ascension.spots
+max_targets = 60      # the first 60 in the scan's order
+points = 400          # a Latin hypercube over the seven axes
+rounds = 3            # refinement rounds
+refine = 200          # points a round adds at most
+# The axes' ranges and the variants are the defaults
+# (docs/runtime/bounce-search.md, "The table").

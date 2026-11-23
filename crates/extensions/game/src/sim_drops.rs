@@ -113,16 +113,16 @@ pub fn error() -> Option<String> {
 }
 
 /// What a seat's unit reads.
-struct Body {
-    unit: u32,
-    base: u32,
-    pos: Option<[f32; 3]>,
-    vel: Option<[f32; 3]>,
-    yaw: Option<f32>,
-    airborne: bool,
+pub(crate) struct Body {
+    pub(crate) unit: u32,
+    pub(crate) base: u32,
+    pub(crate) pos: Option<[f32; 3]>,
+    pub(crate) vel: Option<[f32; 3]>,
+    pub(crate) yaw: Option<f32>,
+    pub(crate) airborne: bool,
 }
 
-fn body(m: &dyn GuestMemory, index: u32) -> Option<Body> {
+pub(crate) fn body(m: &dyn GuestMemory, index: u32) -> Option<Body> {
     use live_telemetry::layout::{BIPED_FLAGS, BODY_VELOCITY, UNIT_AIM};
     let unit = agent::sim::state::unit_handle(m, index).ok()?;
     let p = agent::sim::state::player(m, index).ok()?;
@@ -151,7 +151,7 @@ fn body(m: &dyn GuestMemory, index: u32) -> Option<Body> {
 }
 
 /// Zeroes the object's velocity and each of its Havok motions'.
-fn stop(m: &mut dyn GuestMemory, b: &Body) {
+pub(crate) fn stop(m: &mut dyn GuestMemory, b: &Body) {
     use live_telemetry::layout::{BODY_VELOCITY, MOTION_VELOCITY, RIGID_MOTION};
     let zero = [0u8; 12];
     let _ = m.write(b.base.wrapping_add(BODY_VELOCITY), &zero);
@@ -169,7 +169,7 @@ fn stop(m: &mut dyn GuestMemory, b: &Body) {
 
 /// Writes the object's horizontal velocity and each of its Havok
 /// motions' to `xy`, the vertical (the third float) left as it is.
-fn level(m: &mut dyn GuestMemory, b: &Body, xy: [f32; 2]) {
+pub(crate) fn level(m: &mut dyn GuestMemory, b: &Body, xy: [f32; 2]) {
     use live_telemetry::layout::{BODY_VELOCITY, MOTION_VELOCITY, RIGID_MOTION};
     let mut v = [0u8; 8];
     v[..4].copy_from_slice(&xy[0].to_bits().to_le_bytes());
@@ -209,7 +209,7 @@ fn contacts(m: &dyn GuestMemory, unit: u32) -> Vec<ContactPoint> {
         .collect()
 }
 
-fn pad(walk: [f32; 2], yaw: Option<f32>) -> input::host::HostPadState {
+pub(crate) fn pad(walk: [f32; 2], yaw: Option<f32>) -> input::host::HostPadState {
     let stick = crate::superbounce_verify::stick_for(walk, yaw.unwrap_or(0.0));
     let mut h = input::host::HostPadState::default();
     h.left_stick = (stick[0], stick[1]);

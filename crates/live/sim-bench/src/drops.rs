@@ -726,19 +726,19 @@ impl DropsConfig {
 
 // ---- targets ----
 
-fn sub2(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
+pub(crate) fn sub2(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
     [a[0] - b[0], a[1] - b[1]]
 }
 
-fn dot2(a: [f32; 2], b: [f32; 2]) -> f32 {
+pub(crate) fn dot2(a: [f32; 2], b: [f32; 2]) -> f32 {
     a[0] * b[0] + a[1] * b[1]
 }
 
-fn xy(p: [f32; 3]) -> [f32; 2] {
+pub(crate) fn xy(p: [f32; 3]) -> [f32; 2] {
     [p[0], p[1]]
 }
 
-fn unit2(v: [f32; 2]) -> Option<[f32; 2]> {
+pub(crate) fn unit2(v: [f32; 2]) -> Option<[f32; 2]> {
     let l = v[0].hypot(v[1]);
     (l.is_finite() && l > 1e-4).then(|| [v[0] / l, v[1] / l])
 }
@@ -1038,6 +1038,23 @@ fn push_drop(
         ],
         control: t.control,
     });
+}
+
+/// One straight drop on `t` at `point`, outside any plan (id 0, repeat 0):
+/// the bounce search's base drops (`crate::bounces`).
+pub(crate) fn single_drop(
+    s: &Settings,
+    t: &Target,
+    point: [f32; 3],
+    along: f32,
+    across: f32,
+    height: f32,
+    carry: [f32; 2],
+    carry_along: Option<f32>,
+) -> Drop {
+    let mut out = Vec::with_capacity(1);
+    push_drop(&mut out, s, 0, t, point, along, across, height, carry, carry_along, Side::None, 0);
+    out.remove(0)
 }
 
 /// The run's drops over `targets`: a control target's heights at its
@@ -1491,6 +1508,9 @@ pub struct DropRun {
     carry_cut: Option<u32>,
     drift_fixed: Option<f32>,
     facing: [f32; 2],
+    /// Settled, it waits: the arm and the lift come when the hold is let
+    /// go ([`DropRun::set_hold`]).
+    hold: bool,
     phase: Phase,
     first_tick: Option<u64>,
     release: Option<u64>,
@@ -1530,6 +1550,7 @@ impl DropRun {
             carry_cut: None,
             drift_fixed: None,
             facing,
+            hold: false,
             phase: Phase::Place(false, 0),
             first_tick: None,
             release: None,
@@ -1553,6 +1574,30 @@ impl DropRun {
 
     pub fn done(&self) -> bool {
         self.phase == Phase::Done
+    }
+
+    /// Holds the drop on its rest point once it has settled (`true`), or
+    /// lets it arm and lift on its next still row (`false`). A held drop
+    /// keeps writing the word 0 and never runs out of settle rows while
+    /// it is still. The bounce search starts several seats' falls on
+    /// chosen ticks with it (`crate::bounces`).
+    pub fn set_hold(&mut self, hold: bool) {
+        self.hold = hold;
+    }
+
+    /// Settled: still for [`SETTLE_STILL`] rows, the arm next (held: when
+    /// the hold is let go).
+    pub fn ready(&self) -> bool {
+        matches!(self.phase, Phase::Settle(_, still) if still >= SETTLE_STILL)
+    }
+
+    /// The fall row the next step reads, from the release (0); `None`
+    /// outside the fall.
+    pub fn fall_row(&self) -> Option<u32> {
+        match self.phase {
+            Phase::Fall(n) => Some(n),
+            _ => None,
+        }
     }
 
     /// The phase's name.
@@ -1663,7 +1708,10 @@ impl DropRun {
         } else {
             0
         };
-        if still >= SETTLE_STILL {
+        if still >= SETTLE_STILL && self.hold {
+            // Settled and held: the rows count on, the arm waits.
+            self.phase = Phase::Settle(n.saturating_add(1), still);
+        } else if still >= SETTLE_STILL {
             // Armed on the still body, then lifted straight up: the lift
             // keeps the word and the (zero) velocity.
             act.word = Some(PRIMED);

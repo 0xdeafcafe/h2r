@@ -1338,6 +1338,10 @@ first 60 targets of the Ascension scan at the default heights and offsets.
 `match.status` gives a drops run's progress (`drops`: planned, done, the
 control's state and the error; [agent-api.md](agent-api.md)).
 
+`h2 sim bounces` runs trials on the same targets from a saved machine,
+seven ticks a wave, and ranks the seams by the error a player may make
+([bounce-search.md](bounce-search.md)).
+
 ## 8. Determinism
 
 What a sim run's result depends on, and what breaks reproducibility:
