@@ -1,5 +1,6 @@
 use super::*;
 
+use engine::GuestMemory as _;
 use engine::datum::DatumArray;
 use engine::testing::FakeGuest;
 
@@ -44,13 +45,13 @@ fn page_tables() {
             after: "OBJECTS | focus 2 Machines",
         },
         // No row draws arrows: a sideways step does nothing, A opens the
-        // picker.
+        // picker on the second row.
         Case {
             kind: Kind::Properties,
             from: "beacon",
-            inputs: &[Left, Right, A],
-            effects: vec![Nothing, Nothing, Open(picker)],
-            after: "BEACON | focus 0 Heading = 17.5 degrees",
+            inputs: &[Left, Right, Down, A],
+            effects: vec![Nothing, Nothing, Focus(1), Open(picker)],
+            after: "BEACON | focus 1 Heading = 17.5 degrees",
         },
         Case {
             kind: Kind::Tools,
@@ -222,16 +223,98 @@ fn the_object_menu_lists_groups_by_the_table_and_leaves_empty_ones_out() {
 
 #[test]
 fn properties_come_from_the_table_by_kind() {
-    let rows: Vec<&str> = sheet::properties(Group::Scenery).map(|d| d.label).collect();
-    assert_eq!(rows, ["Heading"]);
-    let s = sheet::properties_sheet("Beacon", Group::Machines, 90.).unwrap();
+    let labels = |group, kind| {
+        sheet::properties(group, kind)
+            .map(|d| d.label)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        labels(Group::Scenery, forge::ThingKind::Object),
+        ["Coordinates...", "Heading"]
+    );
+    assert_eq!(
+        labels(Group::Spawns, forge::ThingKind::StartingPoint),
+        ["Coordinates...", "Heading", "Team"]
+    );
+    assert_eq!(
+        labels(Group::Goals, forge::ThingKind::Goal),
+        ["Coordinates...", "Heading", "Team", "Role", "Order"]
+    );
+    assert_eq!(
+        labels(Group::Equipment, forge::ThingKind::ItemSpawner),
+        ["Coordinates...", "Heading", "Respawn time"]
+    );
+    let thing = pages::sample_thing(forge::BlockKind::NetgameFlags, forge::ThingKind::Goal);
+    let s = sheet::properties_sheet("Beacon", &thing, 90.).unwrap();
     assert_eq!(s.title, "BEACON");
-    assert_eq!(s.rows[0].value.as_deref(), Some("90 degrees"));
-    let Act::Pick(p) = &s.rows[0].act else {
+    assert!(matches!(s.rows[0].act, Act::Open(Kind::Coordinates)));
+    assert_eq!(s.rows[1].value.as_deref(), Some("90 degrees"));
+    let Act::Pick(p) = &s.rows[1].act else {
         panic!("a value row opens the picker")
     };
     assert_eq!(p.choices[p.current], Choice::Set(Prop::Heading, 2));
     assert!(!p.closes, "Properties stays up after a value is chosen");
+    assert_eq!(s.rows[2].value.as_deref(), Some("Red"));
+    assert_eq!(s.rows[3].value.as_deref(), Some("CTF flag spawn"));
+    assert_eq!(s.rows[4].value.as_deref(), Some("0"));
+}
+
+#[test]
+fn coordinates_nudge_and_type_numbers() {
+    let s = ForgeScreen::new(Kind::Coordinates);
+    s.show(sheet::coordinates_sheet(
+        "Beacon",
+        forge::Frame {
+            position: [1.25, -2.5, 3.75],
+            rotation: [0.5, 0.25, -0.5],
+        },
+    ))
+    .unwrap();
+    publish(Facts {
+        active: true,
+        movement_snap: 2,
+        rotation_snap: 3,
+        ..Facts::default()
+    });
+    assert_eq!(s.sideways(0, true).as_deref(), Some("X: 1.35"));
+    assert_eq!(
+        s.take_choices(),
+        [Choice::Nudge(sheet::Coordinate::X, true)]
+    );
+    assert_eq!(s.sheet().rows[0].value.as_deref(), Some("1.35"));
+    assert_eq!(
+        s.sideways(3, false)
+            .map(|v| v.contains('-') && v.contains("45")),
+        Some(true)
+    );
+    assert_eq!(
+        s.take_choices(),
+        [Choice::Nudge(sheet::Coordinate::Yaw, false)]
+    );
+
+    let spec = sheet::TypeSpec {
+        field: sheet::NumberField::Coordinate(sheet::Coordinate::Z),
+        initial: "3.75".into(),
+    };
+    assert_eq!(ask_keyboard(spec.clone()), Chosen::Act);
+    let mut guest = FakeGuest::new();
+    assert!(matches!(step(&guest), Some(Step::Keyboard(_))));
+    let buffer = 0x5000;
+    hub().keyboard.store(buffer, Ordering::SeqCst);
+    *lock(&hub().keyboard_field) = Some(spec.field);
+    hub().typing.store(true, Ordering::SeqCst);
+    guest
+        .write(buffer, &crate::signin_keyboard::units("4.25"))
+        .unwrap();
+    poll_keyboard(&guest).unwrap();
+    assert_eq!(
+        take_choices(),
+        [Choice::Number(
+            sheet::NumberField::Coordinate(sheet::Coordinate::Z),
+            "4.25".into()
+        )]
+    );
+    publish(Facts::default());
 }
 
 /// A on a group in a game: the value picker opens on the game's path
@@ -421,7 +504,11 @@ fn every_forge_option_has_its_help() {
         let help = r.description.as_deref().unwrap_or_default();
         assert!(!help.trim().is_empty(), "{}: no help", r.label);
         let lines = wrap(help, width, &fallback::width).len() as i32;
-        assert!(lines <= 2 && lines * fallback::LINE <= height, "{}: {lines} lines", r.label);
+        assert!(
+            lines <= 2 && lines * fallback::LINE <= height,
+            "{}: {lines} lines",
+            r.label
+        );
         let lower = help.to_lowercase();
         for bad in ["docs/", "todo", "placeholder", "tbd"] {
             assert!(!lower.contains(bad), "{}: {help}", r.label);

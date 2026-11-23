@@ -48,7 +48,7 @@ use crate::ui_kit::picker::{self, Pick};
 use crate::ui_kit::screen::{SLOT_LEN, SlotTexts};
 use game_menu::MenuRow;
 use screen::ForgeScreen;
-use sheet::{Ask, Choice, Kind, Look, Sheet};
+use sheet::{Ask, Choice, Kind, Look, NumberField, Sheet, TypeSpec};
 
 /// What the session tells the screens it does not build each tick.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -86,6 +86,10 @@ struct Hub {
     menu_texts: SlotTexts,
     /// Save as's UTF-16 buffer, and whether the keyboard is on it.
     keyboard: AtomicU32,
+    /// A typed-number keyboard asked for and not yet opened.
+    keyboard_request: Mutex<Option<TypeSpec>>,
+    /// Which number a keyboard edits; Save as has none.
+    keyboard_field: Mutex<Option<NumberField>>,
     typing: AtomicBool,
     /// Yes to Leave Game: leave at the next UI update.
     leave: AtomicBool,
@@ -109,6 +113,8 @@ impl Hub {
             facts: Mutex::new(Facts::default()),
             menu_texts: SlotTexts::new(crate::ui_kit::ids::family("forge game menu")),
             keyboard: AtomicU32::new(0),
+            keyboard_request: Mutex::new(None),
+            keyboard_field: Mutex::new(None),
             typing: AtomicBool::new(false),
             leave: AtomicBool::new(false),
             passing_update: AtomicBool::new(false),
@@ -212,6 +218,15 @@ pub fn open(sheet: Sheet) -> Result<(), String> {
     Ok(())
 }
 
+/// Shows `sheet` above the screen beneath: B comes back to it.
+pub(crate) fn push(sheet: Sheet) -> Result<crate::ui::Chosen, String> {
+    usable()?;
+    let kind = sheet.kind;
+    screen(kind).show(sheet)?;
+    *lock(&hub().request) = Some(kind);
+    Ok(crate::ui::Chosen::Push(kind.screen()))
+}
+
 /// Refused by name when nothing would open a screen: the driver is off.
 fn usable() -> Result<(), String> {
     if hub().built.load(Ordering::SeqCst) {
@@ -241,7 +256,7 @@ pub(crate) fn prepare(kind: Kind) -> Result<(), String> {
         Kind::Settings => sheet::settings(f.rotation_snap, f.movement_snap, f.local_axes),
         Kind::Options => sheet::options(),
         Kind::Controls => sheet::controls(),
-        Kind::Objects | Kind::Properties | Kind::Link | Kind::Question => {
+        Kind::Objects | Kind::Properties | Kind::Coordinates | Kind::Link | Kind::Question => {
             return Err(format!(
                 "{} shows the session's objects; the session opens it",
                 kind.screen()
@@ -315,6 +330,16 @@ enum Step {
     Leave,
     Close(u32),
     Open(Kind),
+    Keyboard(TypeSpec),
+}
+
+/// A Coordinates or item-property row asks for the game's keyboard.
+fn ask_keyboard(spec: TypeSpec) -> crate::ui::Chosen {
+    if hub().typing.load(Ordering::SeqCst) {
+        return crate::ui::Chosen::Stepped("A keyboard is already open.".into());
+    }
+    *lock(&hub().keyboard_request) = Some(spec);
+    crate::ui::Chosen::Act
 }
 
 fn step(m: &dyn GuestMemory) -> Option<Step> {
@@ -337,10 +362,13 @@ fn step(m: &dyn GuestMemory) -> Option<Step> {
     if pending {
         return None;
     }
+    if let Some(spec) = lock(&hub().keyboard_request).take() {
+        return Some(Step::Keyboard(spec));
+    }
     lock(&hub().request).take().map(Step::Open)
 }
 
-/// Save as's keyboard, once it closed: its name for the session.
+/// A keyboard, once it closed: Save as's name or the typed number.
 fn poll_keyboard(m: &dyn GuestMemory) -> Result<(), MemFault> {
     let buffer = hub().keyboard.load(Ordering::SeqCst);
     if buffer == 0
@@ -350,23 +378,33 @@ fn poll_keyboard(m: &dyn GuestMemory) -> Result<(), MemFault> {
         return Ok(());
     }
     hub().typing.store(false, Ordering::SeqCst);
-    let name = crate::signin_keyboard::read_text(m, buffer, NAME_CHARS + 1)?;
-    let name = name.trim();
-    send(if name.is_empty() {
-        Choice::Notice("Not saved: the name was empty.".into())
+    let text = crate::signin_keyboard::read_text(m, buffer, NAME_CHARS + 1)?;
+    let text = text.trim();
+    if let Some(field) = lock(&hub().keyboard_field).take() {
+        send(Choice::Number(field, text.into()));
     } else {
-        Choice::SaveAs(name.to_string())
-    });
+        send(if text.is_empty() {
+            Choice::Notice("Not saved: the name was empty.".into())
+        } else {
+            Choice::SaveAs(text.to_string())
+        });
+    }
     Ok(())
 }
 
-async fn open_keyboard(cx: &Cx) -> Result<(), EntryError> {
+async fn open_keyboard(cx: &Cx, spec: Option<TypeSpec>) -> Result<(), EntryError> {
     let buffer = hub().keyboard.load(Ordering::SeqCst);
     if buffer == 0 {
-        send(Choice::Notice("Save as has no keyboard memory.".into()));
+        send(Choice::Notice("The keyboard has no memory.".into()));
         return Ok(());
     }
-    let start = facts().filename.unwrap_or_default();
+    let start = match spec {
+        Some(spec) => {
+            *lock(&hub().keyboard_field) = Some(spec.field);
+            spec.initial
+        }
+        None => facts().filename.unwrap_or_default(),
+    };
     cx.write(|m| m.write(buffer, &crate::signin_keyboard::units(&start)))?;
     hub().typing.store(true, Ordering::SeqCst);
     cx.call(GuestCall::new(crate::signin_keyboard::OPEN).ecx(0).args([
@@ -384,7 +422,7 @@ async fn menu_press(cx: &Cx, row: MenuRow, chain: u32, list: u32) -> Result<(), 
     let f = facts();
     match row {
         MenuRow::Save => send(Choice::Save),
-        MenuRow::SaveAs => open_keyboard(cx).await?,
+        MenuRow::SaveAs => open_keyboard(cx, None).await?,
         MenuRow::Load if f.saved.is_empty() => {
             send(Choice::Notice("No Forge maps are saved.".into()))
         }
@@ -525,6 +563,7 @@ impl Feature for Driver {
                             }
                             Step::Close(s) => dialog_tag::close(&cx, s).await,
                             Step::Open(kind) => open_screen(&cx, kind).await,
+                            Step::Keyboard(spec) => open_keyboard(&cx, Some(spec)).await,
                         };
                         if let Err(e) = done {
                             eprintln!("forge screens: {e}");

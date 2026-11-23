@@ -34,6 +34,30 @@ pub fn sample_items() -> Vec<Item> {
     .collect()
 }
 
+pub(super) fn sample_thing(block: forge::BlockKind, kind: forge::ThingKind) -> forge::Thing {
+    forge::Thing {
+        id: forge::Endpoint::Base {
+            block,
+            index: 0,
+            print: None,
+        },
+        block,
+        kind,
+        own: true,
+        frame: forge::Frame::default(),
+        fields: if kind == forge::ThingKind::Goal {
+            vec![
+                ("type", forge::Value::Int(0)),
+                ("team", forge::Value::Int(0)),
+                ("identifier", forge::Value::Int(0)),
+            ]
+        } else {
+            Vec::new()
+        },
+        changed: false,
+    }
+}
+
 /// Each screen's named sample sheets.
 pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
     let at = |sheet: &Sheet, focus: usize| Sheet {
@@ -51,13 +75,33 @@ pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
         Kind::Properties => vec![
             (
                 "beacon",
-                sheet::properties_sheet("Beacon", Group::Scenery, 17.5).expect("rows"),
+                sheet::properties_sheet(
+                    "Beacon",
+                    &sample_thing(forge::BlockKind::Scenery, forge::ThingKind::Object),
+                    17.5,
+                )
+                .expect("rows"),
             ),
             (
                 "gate",
-                sheet::properties_sheet("Gate", Group::Machines, 90.).expect("rows"),
+                sheet::properties_sheet(
+                    "Gate",
+                    &sample_thing(forge::BlockKind::NetgameFlags, forge::ThingKind::Goal),
+                    90.,
+                )
+                .expect("rows"),
             ),
         ],
+        Kind::Coordinates => vec![(
+            "beacon",
+            sheet::coordinates_sheet(
+                "Beacon",
+                forge::Frame {
+                    position: [1.25, -2.5, 3.75],
+                    rotation: [0.5, 0.25, -0.5],
+                },
+            ),
+        )],
         Kind::Tools => vec![
             ("objects", sheet::tools(Tool::Objects)),
             ("links", sheet::tools(Tool::Links)),

@@ -244,13 +244,42 @@ pub struct Input {
 /// `Remove` (`Session::remove`) a thing of the map's own.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
-    Place { item: usize, frame: Frame },
-    Move { id: OpId, frame: Frame },
-    Delete { id: OpId },
-    MoveThing { id: Endpoint, frame: Frame },
-    Remove { id: Endpoint },
-    Link { from: Linkable, to: Linkable },
-    Unlink { link: OpId },
+    Place {
+        item: usize,
+        frame: Frame,
+    },
+    Move {
+        id: OpId,
+        frame: Frame,
+    },
+    Delete {
+        id: OpId,
+    },
+    MoveThing {
+        id: Endpoint,
+        frame: Frame,
+    },
+    /// Carry an existing thing without changing the document until the drop.
+    HoldThing {
+        id: Endpoint,
+        frame: Frame,
+    },
+    /// Set a decoded property by name.
+    SetField {
+        id: Endpoint,
+        name: &'static str,
+        value: Value,
+    },
+    Remove {
+        id: Endpoint,
+    },
+    Link {
+        from: Linkable,
+        to: Linkable,
+    },
+    Unlink {
+        link: OpId,
+    },
     Undo,
     Redo,
     Palette,

@@ -6,7 +6,7 @@ use super::{GENERATION, admitted, controls};
 use agent::forge::local::{self as local_api, ForgeEdit, ForgeWorld, Guard, ProposalReply};
 use agent::sim::calls;
 use forge::tool::{Axes, Command, Extent, Tool};
-use forge::{BlockKind, Linkable, OpId, PaletteItem, Session, Thing};
+use forge::{BlockKind, Linkable, OpId, PaletteItem, Session, Thing, ThingKind};
 use forge_doc::{ActiveLink, Endpoint, Entry, Link as DocLink, LogHead, Op, Sha256};
 use serde_json::{Value, json};
 use std::{
@@ -47,6 +47,12 @@ enum FileResult {
     Loaded(Pending),
 }
 
+#[derive(Clone, Copy)]
+enum CoordinateTarget {
+    New(usize),
+    Existing(Endpoint),
+}
+
 pub(super) struct Editor {
     pub session: Arc<Session>,
     tags: Arc<[u32]>,
@@ -62,6 +68,8 @@ pub(super) struct Editor {
     rotation_step: usize,
     movement_step: usize,
     local_axes: bool,
+    /// The Coordinates target and its current frame, while its screen is up.
+    coordinates: Option<(CoordinateTarget, forge::Frame)>,
     notice: Option<(String, u32)>,
     /// The link the Link dialog shows.
     link_dialog: Option<OpId>,
@@ -105,6 +113,7 @@ impl Editor {
             rotation_step: 2,
             movement_step: 0,
             local_axes: false,
+            coordinates: None,
             notice: None,
             link_dialog: None,
             delete_asked: None,
@@ -583,12 +592,38 @@ impl Editor {
             }
             Properties => {
                 let (name, block, frame) = self.target().ok_or("Aim at a thing of the map.")?;
-                let sheet = sheet::properties_sheet(
-                    &name,
-                    Group::of_block(block),
-                    frame.rotation[0].to_degrees(),
-                )
-                .ok_or_else(|| format!("{name} has no properties to set."))?;
+                let thing = if self.tool.placing.is_some() {
+                    Thing {
+                        id: Endpoint::Added(0),
+                        block,
+                        kind: ThingKind::Object,
+                        own: false,
+                        frame,
+                        fields: Vec::new(),
+                        changed: false,
+                    }
+                } else {
+                    let id = self
+                        .tool
+                        .held_thing
+                        .or(self.tool.aimed_thing)
+                        .ok_or("Aim at a thing of the map.")?;
+                    self.session.thing(id).ok_or("The thing is gone.")?
+                };
+                let sheet = sheet::properties_sheet(&name, &thing, frame.rotation[0].to_degrees())
+                    .ok_or_else(|| format!("{name} has no properties to set."))?;
+                let target = if let Some(item) = self.tool.placing {
+                    CoordinateTarget::New(item)
+                } else {
+                    CoordinateTarget::Existing(
+                        self.tool
+                            .held_thing
+                            .or(self.tool.aimed_thing)
+                            .ok_or("Aim at a thing of the map.")?,
+                    )
+                };
+                self.coordinates = Some((target, frame));
+                screens::screen(Kind::Coordinates).show(sheet::coordinates_sheet(&name, frame))?;
                 screens::open(sheet)?;
             }
             Tools => screens::request(Kind::Tools)?,
@@ -622,6 +657,74 @@ impl Editor {
             _ => return false,
         };
         !self.session.links_of(thing).is_empty()
+    }
+
+    /// Carry the Coordinates frame: a new object only changes its ghost;
+    /// an existing one moves in the world with no document edit yet.
+    fn hold_coordinates(&mut self, tick: u32) -> Result<(), String> {
+        let (target, frame) = self.coordinates.ok_or("Coordinates is not open.")?;
+        match target {
+            CoordinateTarget::New(_) => {
+                self.tool.ghost = Some(frame);
+                Ok(())
+            }
+            CoordinateTarget::Existing(id) => {
+                let cmd = Command::HoldThing { id, frame };
+                self.stage(After::Tool(cmd.clone()), move |s, w| run(s, w, tick, cmd))
+            }
+        }
+    }
+
+    fn coordinate_number(
+        &mut self,
+        tick: u32,
+        axis: sheet::Coordinate,
+        text: &str,
+    ) -> Result<(), String> {
+        let value = text
+            .parse::<f32>()
+            .map_err(|_| "Type a number.".to_string())?;
+        let Some((_, frame)) = &mut self.coordinates else {
+            return Err("Coordinates is not open.".into());
+        };
+        if axis.is_angle() {
+            frame.rotation[axis.index()] = value.to_radians();
+        } else {
+            frame.position[axis.index()] = value;
+        }
+        self.hold_coordinates(tick)
+    }
+
+    fn nudge_coordinates(
+        &mut self,
+        tick: u32,
+        axis: sheet::Coordinate,
+        right: bool,
+    ) -> Result<(), String> {
+        let step = if axis.is_angle() {
+            ANGLE_STEPS[self.rotation_step].max(1.0).to_radians()
+        } else {
+            sheet::MOVE_STEPS[self.movement_step].max(0.01)
+        };
+        let step = if right { step } else { -step };
+        let Some((_, frame)) = &mut self.coordinates else {
+            return Err("Coordinates is not open.".into());
+        };
+        if axis.is_angle() {
+            frame.rotation[axis.index()] += step;
+        } else {
+            frame.position[axis.index()] += step;
+        }
+        self.hold_coordinates(tick)
+    }
+
+    fn finish_coordinates(&mut self, tick: u32) -> Result<(), String> {
+        let (target, frame) = self.coordinates.take().ok_or("Coordinates is not open.")?;
+        let cmd = match target {
+            CoordinateTarget::New(item) => Command::Place { item, frame },
+            CoordinateTarget::Existing(id) => Command::MoveThing { id, frame },
+        };
+        self.command(tick, cmd)
     }
 
     /// The palette as the object menu lists it: each object's group, name,
@@ -698,6 +801,62 @@ impl Editor {
                     return self.command(tick, cmd);
                 }
             }
+            Choice::Set(Prop::Team, i) => {
+                let id = self.tool.aimed_thing.ok_or("Aim at a spawn or goal.")?;
+                return self.command(
+                    tick,
+                    Command::SetField {
+                        id,
+                        name: "team",
+                        value: forge_doc::Value::Int(i as i64),
+                    },
+                );
+            }
+            Choice::Set(Prop::Role, i) => {
+                let id = self.tool.aimed_thing.ok_or("Aim at a goal.")?;
+                return self.command(
+                    tick,
+                    Command::SetField {
+                        id,
+                        name: "type",
+                        value: forge_doc::Value::Int(i as i64),
+                    },
+                );
+            }
+            Choice::Set(Prop::Order, i) => {
+                let id = self.tool.aimed_thing.ok_or("Aim at a goal.")?;
+                return self.command(
+                    tick,
+                    Command::SetField {
+                        id,
+                        name: "identifier",
+                        value: forge_doc::Value::Int(i as i64),
+                    },
+                );
+            }
+            Choice::Number(field, text) => match field {
+                sheet::NumberField::Coordinate(axis) => {
+                    return self.coordinate_number(tick, axis, &text);
+                }
+                sheet::NumberField::RespawnTime => {
+                    let value = text
+                        .parse::<i64>()
+                        .map_err(|_| "Type a whole number.".to_string())?;
+                    let id = self.tool.aimed_thing.ok_or("Aim at an item entry.")?;
+                    return self.command(
+                        tick,
+                        Command::SetField {
+                            id,
+                            name: "respawn time",
+                            value: forge_doc::Value::Int(value),
+                        },
+                    );
+                }
+            },
+            Choice::Nudge(axis, right) => {
+                return self.nudge_coordinates(tick, axis, right);
+            }
+            Choice::CoordinatesDone => return self.finish_coordinates(tick),
             Choice::Unlink => {
                 let link = self.link_dialog.take().ok_or("The link is gone.")?;
                 return self.command(tick, Command::Unlink { link });
@@ -785,6 +944,8 @@ fn run(s: &mut Session, w: &mut ForgeWorld, tick: u32, cmd: Command) -> Result<(
         Move { id, frame } => s.move_object(w, tick, id, frame),
         Delete { id } => s.delete(w, tick, id),
         MoveThing { id, frame } => s.move_thing(w, tick, id, frame),
+        HoldThing { id, frame } => s.hold(w, tick, id, frame),
+        SetField { id, name, value } => s.set_field(w, tick, id, name, value),
         Remove { id } => s.remove(w, tick, id),
         Link { from, to } => s.link(w, tick, from, to).map(|_| ()),
         Unlink { link } => s.unlink(w, tick, link),

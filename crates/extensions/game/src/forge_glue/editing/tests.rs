@@ -362,3 +362,175 @@ fn shared_names_are_told_apart_by_their_folder_then_their_path() {
         "light post (objects)"
     );
 }
+
+fn property_session() -> Session {
+    let float = |v: f32| forge_doc::F32::new(v).unwrap();
+    let vec3 = |v: [f32; 3]| forge_doc::Value::Vec3(v.map(float));
+    let row = |block: BlockKind, fields: Vec<forge_doc::Value>| forge::BaseRow {
+        block,
+        index: 0,
+        raw: vec![1; map::scenario_layout::block(block).stride as usize],
+        print: forge_doc::print(block, &fields).unwrap(),
+        fields,
+    };
+    let start = row(
+        BlockKind::StartingLocations,
+        vec![
+            vec3([0.0, 3.0, 0.0]),
+            float(0.0),
+            forge_doc::Value::Int(0),
+            forge_doc::Value::Int(-1),
+        ],
+    );
+    let goal = row(
+        BlockKind::NetgameFlags,
+        vec![
+            vec3([1.0, 5.0, 0.0]),
+            float(0.0),
+            forge_doc::Value::Int(0),
+            forge_doc::Value::Int(0),
+            forge_doc::Value::Int(0),
+        ],
+    );
+    let mut spawner_fields = vec![forge_doc::Value::Int(0)];
+    spawner_fields.extend([12, 12, 12, 12, 0, 30, 0].map(forge_doc::Value::Int));
+    spawner_fields.extend([
+        forge_doc::Value::Int(0),
+        vec3([0.0, 6.0, 0.0]),
+        vec3([0.0; 3]),
+        forge_doc::Value::Tag(Some(TagKey {
+            group: "itmc".into(),
+            path: r"test\rifles".into(),
+        })),
+    ]);
+    let spawner = row(BlockKind::NetgameEquipment, spawner_fields);
+    let limits = Limits {
+        world: Some(WorldBounds {
+            min: [-10.0; 3],
+            max: [10.0; 3],
+        }),
+        base_counts: [
+            (BlockKind::StartingLocations, 1),
+            (BlockKind::NetgameFlags, 1),
+            (BlockKind::NetgameEquipment, 1),
+        ]
+        .into_iter()
+        .collect(),
+        ..Limits::default()
+    };
+    let base = ForgeDoc {
+        format: forge_doc::FORMAT,
+        builder: BuilderVersions::CURRENT,
+        base: MapRef {
+            map: "testroom".into(),
+            sha256: Sha256::of(b"test room"),
+        },
+        sources: vec![],
+        recipes: vec![],
+        imports: vec![],
+        ops: vec![],
+        expect: None,
+        title: "Test room".into(),
+        author: "Builder".into(),
+        description: String::new(),
+    };
+    Session::new(base, limits, vec![], 8)
+        .unwrap()
+        .with_base(forge::BaseRows {
+            rows: vec![start, goal, spawner],
+            left_out: vec![],
+        })
+}
+
+#[test]
+fn coordinates_change_the_ghost_then_drop_once() {
+    let mut e = editor();
+    e.tool.monitor = true;
+    e.tool.select(0);
+    e.tool.ghost = Some(Frame {
+        position: [3.0, 0.0, 0.0],
+        rotation: [0.0; 3],
+    });
+    e.command(1, Command::Properties).unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    e.movement_step = 2;
+    e.coordinate_number(2, sheet::Coordinate::X, "2.5").unwrap();
+    e.choose(3, Choice::Nudge(sheet::Coordinate::X, true))
+        .unwrap();
+    assert_eq!(e.tool.ghost.unwrap().position, [2.6, 0.0, 0.0]);
+    e.choose(4, Choice::CoordinatesDone).unwrap();
+    let (ticket, _) = calls::lock(&e.calls).drain().pop().unwrap();
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles": [51]})));
+    e.poll(5);
+    let placed = &e.session.objects()[0];
+    assert_eq!(placed.handle, 51);
+    assert_eq!(placed.frame.position, [2.6, 0.0, 0.0]);
+    assert_eq!(e.session.log().len(), 1, "one placement, one undo step");
+
+    // An existing thing moves live first, then the close writes its op.
+    e.tool.held_thing = Some(Endpoint::Added(placed.id));
+    e.command(6, Command::Properties).unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    e.coordinate_number(7, sheet::Coordinate::Y, "1.5").unwrap();
+    let (ticket, _) = calls::lock(&e.calls).drain().pop().unwrap();
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles": []})));
+    e.poll(8);
+    assert_eq!(e.session.log().len(), 1, "holding writes no op");
+    e.choose(9, Choice::CoordinatesDone).unwrap();
+    let (ticket, _) = calls::lock(&e.calls).drain().pop().unwrap();
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles": []})));
+    e.poll(10);
+    assert_eq!(e.session.log().len(), 2, "the drop is the second op");
+    assert_eq!(e.session.objects()[0].frame.position, [2.6, 1.5, 0.0]);
+}
+
+#[test]
+fn spawn_goal_and_item_properties_write_their_fields() {
+    let mut e = editor();
+    e.session = Arc::new(property_session());
+    calls::lock(&e.calls).arm();
+    let mut finish = |e: &mut Editor, tick| {
+        let (ticket, _) = calls::lock(&e.calls).drain().pop().unwrap();
+        calls::lock(&e.calls).finish(ticket, Ok(json!({"handles": []})));
+        e.poll(tick);
+    };
+    let start = Endpoint::base(BlockKind::StartingLocations, 0);
+    e.tool.aimed_thing = Some(start);
+    e.choose(1, Choice::Set(Prop::Team, 1)).unwrap();
+    finish(&mut e, 2);
+    let field = |thing: &forge::Thing, name: &str| {
+        thing
+            .fields
+            .iter()
+            .find(|(field, _)| *field == name)
+            .map(|(_, value)| value.clone())
+            .unwrap()
+    };
+    assert_eq!(
+        field(&e.session.thing(start).unwrap(), "team"),
+        forge_doc::Value::Int(1)
+    );
+
+    let goal = Endpoint::base(BlockKind::NetgameFlags, 1);
+    e.tool.aimed_thing = Some(goal);
+    e.choose(3, Choice::Set(Prop::Role, 4)).unwrap();
+    finish(&mut e, 4);
+    e.choose(5, Choice::Set(Prop::Order, 7)).unwrap();
+    finish(&mut e, 6);
+    let goal_thing = e.session.thing(goal).unwrap();
+    assert_eq!(field(&goal_thing, "type"), forge_doc::Value::Int(4));
+    assert_eq!(field(&goal_thing, "identifier"), forge_doc::Value::Int(7));
+
+    let spawner = Endpoint::base(BlockKind::NetgameEquipment, 0);
+    e.tool.aimed_thing = Some(spawner);
+    e.choose(
+        7,
+        Choice::Number(sheet::NumberField::RespawnTime, "45".into()),
+    )
+    .unwrap();
+    finish(&mut e, 8);
+    assert_eq!(
+        field(&e.session.thing(spawner).unwrap(), "respawn time"),
+        forge_doc::Value::Int(45)
+    );
+}

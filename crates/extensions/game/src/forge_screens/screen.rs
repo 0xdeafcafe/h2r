@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use engine::entry::GuestCall;
 use engine::memory::{GuestMemory, MemFault};
 
-use super::sheet::{Act, Choice, Kind, Look, PickSpec, Sheet};
+use super::sheet::{Act, Choice, Kind, Look, NumberField, PickSpec, Sheet};
 use crate::list_class::{Action, ListClass, ListLayout, OnFree, Panel, PanelText, Rows, TextBlock};
 use crate::ui::{Chosen, LABEL_SLOT, VALUE_SLOT};
 use crate::ui_kit::dialog::{
@@ -300,6 +300,9 @@ impl ForgeScreen {
                 me.screen.store(0, Ordering::SeqCst);
                 me.up.store(false, Ordering::SeqCst);
             }
+            if me.kind == Kind::Coordinates {
+                super::send(super::sheet::Choice::CoordinatesDone);
+            }
             eprintln!("{}: {screen:#x} is freed", me.kind.screen());
             Box::pin(async { Ok(()) })
         });
@@ -329,6 +332,7 @@ impl ForgeScreen {
                     art: Vec::new(),
                     texts: vec![body_block()],
                 }),
+            Look::List if self.kind == Kind::Coordinates => c.lines().sideways(),
             Look::List => c.lines(),
         }
     }
@@ -395,13 +399,43 @@ impl Rows for ForgeScreen {
                 Chosen::Act
             }
             Act::Pick(p) => self.press_pick(i, &r.label, p),
+            Act::Type(spec) => super::ask_keyboard(spec.clone()),
             // Above this screen on its window and slot, so B comes back.
+            Act::Open(k) if *k == Kind::Coordinates => {
+                match super::push(super::screen(*k).sheet()) {
+                    Ok(chosen) => chosen,
+                    Err(why) => Chosen::Stepped(format!("{}: not opened: {why}", k.screen())),
+                }
+            }
             Act::Open(k) => match super::prepare(*k) {
                 Ok(()) => Chosen::Push(k.screen()),
                 Err(why) => Chosen::Stepped(format!("{}: not opened: {why}", k.screen())),
             },
         }
     }
+
+    fn sideways(&self, row: i16, right: bool) -> Option<String> {
+        let s = self.sheet();
+        let r = s.rows.get(usize::try_from(row).ok()?)?;
+        let Act::Type(spec) = &r.act else {
+            return None;
+        };
+        let NumberField::Coordinate(axis) = spec.field else {
+            return None;
+        };
+        let current = r.value.as_ref()?.parse::<f32>().ok()?;
+        let facts = super::facts();
+        let step = if axis.is_angle() {
+            crate::ui_kit::forge::ANGLE_STEPS[facts.rotation_snap].max(1.0)
+        } else {
+            super::sheet::MOVE_STEPS[facts.movement_snap].max(0.01)
+        };
+        let value = current + if right { step } else { -step };
+        lock(&self.sheet).rows.get_mut(row)?.value = Some(super::sheet::number(value));
+        super::send(Choice::Nudge(axis, right));
+        Some(format!("{}: {value}", axis.label()))
+    }
+
     fn description(&self, row: i16) -> Option<u32> {
         let s = lock(&self.sheet);
         let r = s.rows.get(usize::try_from(row).ok()?)?;
@@ -442,6 +476,10 @@ fn row_spec(r: &super::sheet::SheetRow, described: bool) -> RowSpec {
             RowSpec::value(&r.label, &[value.as_str()], 0).press(Press::Open(picker::NAME.into()))
         }
         Act::Pick(_) => RowSpec::action(&r.label).press(Press::Open(picker::NAME.into())),
+        Act::Type(_) if r.value.is_some() => {
+            RowSpec::value(&r.label, &[value.as_str()], 0).press(Press::Act)
+        }
+        Act::Type(_) => RowSpec::action(&r.label).press(Press::Act),
         Act::Open(k) => RowSpec::action(&r.label).press(Press::Open(k.screen().into())),
         Act::Info => RowSpec::info(&r.label, &value),
         Act::Choose(_) | Act::Close => RowSpec::action(&r.label).press(Press::Act),

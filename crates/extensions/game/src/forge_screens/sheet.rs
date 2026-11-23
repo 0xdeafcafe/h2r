@@ -7,7 +7,7 @@
 //! ([`SETTINGS`]), Forge options ([`OPTIONS`]) and the controls (the
 //! bindings table). A change of design is a change of table.
 
-use forge::BlockKind;
+use forge::{BlockKind, Thing, ThingKind, Value};
 
 use crate::ui_kit::forge::{ANGLE_STEPS, HEADINGS};
 use crate::ui_kit::ids::{self, Family};
@@ -20,6 +20,8 @@ pub enum Kind {
     Objects,
     /// The aimed or held object's settings.
     Properties,
+    /// Typed position and rotation, with nudges.
+    Coordinates,
     /// The tools that are built.
     Tools,
     /// The tool settings, a row each.
@@ -50,9 +52,10 @@ pub enum Look {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 8] = [
+    pub const ALL: [Kind; 9] = [
         Kind::Objects,
         Kind::Properties,
+        Kind::Coordinates,
         Kind::Tools,
         Kind::Settings,
         Kind::Link,
@@ -66,6 +69,7 @@ impl Kind {
         match self {
             Kind::Objects => "forge.objects",
             Kind::Properties => "forge.properties",
+            Kind::Coordinates => "forge.coordinates",
             Kind::Tools => "forge.tools",
             Kind::Settings => "forge.settings",
             Kind::Link => "forge.link",
@@ -80,6 +84,7 @@ impl Kind {
         match self {
             Kind::Objects => "forge-objects",
             Kind::Properties => "forge-properties",
+            Kind::Coordinates => "forge-coordinates",
             Kind::Tools => "forge-tools",
             Kind::Settings => "forge-settings",
             Kind::Link => "forge-link",
@@ -93,6 +98,7 @@ impl Kind {
         match self {
             Kind::Objects => ids::family("forge objects"),
             Kind::Properties => ids::family("forge properties"),
+            Kind::Coordinates => ids::family("forge coordinates"),
             Kind::Tools => ids::family("forge tools"),
             Kind::Settings => ids::family("forge settings"),
             Kind::Link => ids::family("forge link"),
@@ -105,7 +111,11 @@ impl Kind {
     pub const fn look(self) -> Look {
         match self {
             Kind::Objects | Kind::Tools => Look::Picker,
-            Kind::Properties | Kind::Settings | Kind::Options | Kind::Controls => Look::List,
+            Kind::Properties
+            | Kind::Coordinates
+            | Kind::Settings
+            | Kind::Options
+            | Kind::Controls => Look::List,
             Kind::Link | Kind::Question => Look::Question,
         }
     }
@@ -167,6 +177,65 @@ pub enum Tool {
     Links,
 }
 
+/// One row of the Coordinates editor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Coordinate {
+    X,
+    Y,
+    Z,
+    Yaw,
+    Pitch,
+    Roll,
+}
+
+impl Coordinate {
+    pub const ALL: [Coordinate; 6] = [
+        Coordinate::X,
+        Coordinate::Y,
+        Coordinate::Z,
+        Coordinate::Yaw,
+        Coordinate::Pitch,
+        Coordinate::Roll,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Coordinate::X => "X",
+            Coordinate::Y => "Y",
+            Coordinate::Z => "Z",
+            Coordinate::Yaw => "Yaw",
+            Coordinate::Pitch => "Pitch",
+            Coordinate::Roll => "Roll",
+        }
+    }
+
+    pub const fn index(self) -> usize {
+        match self {
+            Coordinate::X | Coordinate::Yaw => 0,
+            Coordinate::Y | Coordinate::Pitch => 1,
+            Coordinate::Z | Coordinate::Roll => 2,
+        }
+    }
+
+    pub const fn is_angle(self) -> bool {
+        matches!(self, Coordinate::Yaw | Coordinate::Pitch | Coordinate::Roll)
+    }
+}
+
+/// A typed number's destination.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NumberField {
+    Coordinate(Coordinate),
+    RespawnTime,
+}
+
+/// A row that opens the game's keyboard for a number.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypeSpec {
+    pub field: NumberField,
+    pub initial: String,
+}
+
 /// What a screen sends the session.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Choice {
@@ -174,6 +243,12 @@ pub enum Choice {
     Select(usize),
     /// Set a value to value `i` of its row's values.
     Set(Prop, usize),
+    /// A number typed on the game's keyboard.
+    Number(NumberField, String),
+    /// Nudge a coordinate left (false) or right (true).
+    Nudge(Coordinate, bool),
+    /// Coordinates closed: drop once.
+    CoordinatesDone,
     /// Use a tool.
     Tool(Tool),
     /// Remove the link the Link dialog shows.
@@ -199,6 +274,8 @@ pub enum Act {
     Pick(PickSpec),
     /// Open another Forge screen above this one; B comes back.
     Open(Kind),
+    /// Open the game's keyboard for a typed number.
+    Type(TypeSpec),
     /// A fact: A does nothing.
     Info,
     /// Close the screen, choosing nothing (Done).
@@ -452,13 +529,16 @@ pub enum For {
     Any,
     /// The objects of these groups.
     Groups(&'static [Group]),
+    /// The entries of this kind.
+    Kind(ThingKind),
 }
 
 impl For {
-    pub fn has(self, g: Group) -> bool {
+    pub fn has(self, g: Group, kind: ThingKind) -> bool {
         match self {
             For::Any => true,
             For::Groups(gs) => gs.contains(&g),
+            For::Kind(want) => want == kind,
         }
     }
 }
@@ -476,16 +556,54 @@ pub struct PropDef {
 /// "Properties"). A row is here only where its field is decoded and its
 /// write proven: Coordinates, Reset orientation and Duplicate join in P1,
 /// the item entries' rows in P3, a goal's and a spawn's in P2.
-pub const PROPERTIES: &[PropDef] = &[PropDef {
-    on: For::Any,
-    prop: Prop::Heading,
-    label: "Heading",
-    description: "Which way the object faces, about the vertical.",
-}];
+pub const PROPERTIES: &[PropDef] = &[
+    PropDef {
+        on: For::Any,
+        prop: Prop::Coordinates,
+        label: "Coordinates...",
+        description: "Type or nudge the position and rotation.",
+    },
+    PropDef {
+        on: For::Any,
+        prop: Prop::Heading,
+        label: "Heading",
+        description: "Which way the object faces, about the vertical.",
+    },
+    PropDef {
+        on: For::Kind(ThingKind::StartingPoint),
+        prop: Prop::Team,
+        label: "Team",
+        description: "Which team starts here.",
+    },
+    PropDef {
+        on: For::Kind(ThingKind::Goal),
+        prop: Prop::Team,
+        label: "Team",
+        description: "Which team this goal belongs to.",
+    },
+    PropDef {
+        on: For::Kind(ThingKind::Goal),
+        prop: Prop::Role,
+        label: "Role",
+        description: "The netgame flag's type.",
+    },
+    PropDef {
+        on: For::Kind(ThingKind::Goal),
+        prop: Prop::Order,
+        label: "Order",
+        description: "The flag's identifier, for hills and territories.",
+    },
+    PropDef {
+        on: For::Kind(ThingKind::ItemSpawner),
+        prop: Prop::RespawnTime,
+        label: "Respawn time",
+        description: "Seconds before the item comes back.",
+    },
+];
 
-/// The Properties rows for an object of `group`.
-pub fn properties(group: Group) -> impl Iterator<Item = &'static PropDef> {
-    PROPERTIES.iter().filter(move |d| d.on.has(group))
+/// The Properties rows for an object of `group` and `kind`.
+pub fn properties(group: Group, kind: ThingKind) -> impl Iterator<Item = &'static PropDef> {
+    PROPERTIES.iter().filter(move |d| d.on.has(group, kind))
 }
 
 /// `angle` in degrees as the rows write it: "45 degrees", "1 degree",
@@ -533,12 +651,43 @@ fn value_row(
         .describe(description)
 }
 
+fn int_of(thing: &Thing, name: &str) -> i64 {
+    thing
+        .fields
+        .iter()
+        .find(|(field, _)| *field == name)
+        .and_then(|(_, value)| match value {
+            Value::Int(v) => Some(*v),
+            _ => None,
+        })
+        .unwrap_or(0)
+}
+
+fn role_name(role: i64) -> String {
+    match role {
+        0 => "CTF flag spawn".into(),
+        1 => "CTF flag return".into(),
+        2 => "Assault bomb spawn".into(),
+        3 => "Assault bomb return".into(),
+        4 => "Oddball spawn".into(),
+        7 => "Teleporter sender".into(),
+        8 => "Teleporter receiver".into(),
+        10 => "Territory".into(),
+        11..=18 => format!("Hill {}", role - 10),
+        _ => format!("Role {role}"),
+    }
+}
+
 /// Properties of `object` (its name, the header) of `group`, heading
 /// `heading` in degrees: [`properties`]'s rows, each showing its value.
 /// `None` when no row is for its kind.
-pub fn properties_sheet(object: &str, group: Group, heading: f32) -> Option<Sheet> {
-    let rows: Vec<SheetRow> = properties(group)
+pub fn properties_sheet(object: &str, thing: &Thing, heading: f32) -> Option<Sheet> {
+    let group = Group::of_block(thing.block);
+    let rows: Vec<SheetRow> = properties(group, thing.kind)
         .map(|d| match d.prop {
+            Prop::Coordinates => {
+                SheetRow::new(d.label, Act::Open(Kind::Coordinates)).describe(d.description)
+            }
             Prop::Heading => value_row(
                 d.label,
                 d.description,
@@ -547,7 +696,59 @@ pub fn properties_sheet(object: &str, group: Group, heading: f32) -> Option<Shee
                 degrees(heading.rem_euclid(360.)),
                 nearest_heading(heading),
             ),
-            Prop::RotationSnap => unreachable!("a tool setting, not a property"),
+            Prop::Team => {
+                let values: Vec<String> = [
+                    "None", "Red", "Blue", "Green", "Yellow", "Purple", "Orange", "Brown", "Pink",
+                    "Neutral",
+                ]
+                .into_iter()
+                .map(String::from)
+                .collect();
+                let team = int_of(thing, "team");
+                let current = if team < 0 { 0 } else { (team + 1) as usize };
+                text_value_row(
+                    d.label,
+                    d.description,
+                    d.prop,
+                    &values,
+                    current.min(values.len() - 1),
+                )
+            }
+            Prop::Role => {
+                let values: Vec<String> = (0..=18).map(role_name).collect();
+                text_value_row(
+                    d.label,
+                    d.description,
+                    d.prop,
+                    &values,
+                    int_of(thing, "type").clamp(0, 18) as usize,
+                )
+            }
+            Prop::Order => {
+                let values: Vec<String> = (0..8).map(|v| v.to_string()).collect();
+                text_value_row(
+                    d.label,
+                    d.description,
+                    d.prop,
+                    &values,
+                    int_of(thing, "identifier").clamp(0, 7) as usize,
+                )
+            }
+            Prop::RespawnTime => {
+                let value = int_of(thing, "respawn time");
+                SheetRow::new(
+                    d.label,
+                    Act::Type(TypeSpec {
+                        field: NumberField::RespawnTime,
+                        initial: value.to_string(),
+                    }),
+                )
+                .value(&value.to_string())
+                .describe(d.description)
+            }
+            Prop::RotationSnap | Prop::MovementSnap | Prop::Axes => {
+                unreachable!("a tool setting, not a property")
+            }
         })
         .collect();
     (!rows.is_empty()).then(|| Sheet {
@@ -557,6 +758,40 @@ pub fn properties_sheet(object: &str, group: Group, heading: f32) -> Option<Shee
         rows,
         focus: 0,
     })
+}
+
+pub(super) fn number(v: f32) -> String {
+    let text = format!("{v:.4}");
+    text.trim_end_matches('0').trim_end_matches('.').into()
+}
+
+/// The six coordinates, position in world units and turn in degrees.
+/// A opens the keyboard; left and right nudge.
+pub fn coordinates_sheet(object: &str, frame: forge::Frame) -> Sheet {
+    let rows = Coordinate::ALL.iter().map(|c| {
+        let (label, value) = if c.is_angle() {
+            (c.label(), number(frame.rotation[c.index()].to_degrees()))
+        } else {
+            (c.label(), number(frame.position[c.index()]))
+        };
+        SheetRow::new(
+            label,
+            Act::Type(TypeSpec {
+                field: NumberField::Coordinate(*c),
+                initial: value.clone(),
+            }),
+        )
+        .value(&value)
+        .describe("Type a number, or nudge with Left and Right.")
+        .clone()
+    });
+    Sheet {
+        kind: Kind::Coordinates,
+        title: object.to_uppercase(),
+        body: String::new(),
+        rows: rows.collect(),
+        focus: 0,
+    }
 }
 
 /// A tool of the Tools picker: its name and what it aims at.
