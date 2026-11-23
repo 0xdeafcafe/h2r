@@ -1,6 +1,6 @@
 # Playtest: headless matches on the map being edited
 
-Status: Design. `h2 sim`, its match and batch files, its reports and the bots are built ([sim.md](../runtime/sim.md), [bots.md](../game/bots.md)), and so are the static checks and `playtest.static`; the spatial trace, Studio's runner and the overlays are not.
+Status: Design. `h2 sim`, its match and batch files, its reports, the spatial trace and its measures, and the bots are built ([sim.md](../runtime/sim.md), "The spatial trace"; [bots.md](../game/bots.md)), and so are the static checks and `playtest.static`; Studio's runner and the overlays are not.
 Code: `crates/apps/studio/src/app/playtest_static.rs` (the static checks), `crates/apps/studio/src/api/playtest.rs`, `crates/live/sim-bench/src/spatial.rs` (the trace and its measures), `crates/extensions/game/src/sim_glue.rs` (the observers), `crates/apps/studio/src/app/playtest.rs` (the runner), `crates/apps/studio/src/viewport/playtest.rs` (the overlays). Tests: `app::playtest_static::tests`, `api::tests::playtest_tests`, `sim::spatial::tests`, `app::playtest::tests`.
 Switch: none.
 
@@ -211,7 +211,8 @@ and the stuck-spot measure to be tested against.
 | `view.layers` | act | the playtest layers by name, and `diff` | as now |
 | `match.start` | act (the sim) | `{file}` on a sim whose match is over | `{queued}` |
 
-`h2 sim` gains `detail = "spatial"` and the `spatial.bin` it writes.
+`h2 sim` takes `detail = "spatial"` and writes `spatial.bin` beside the
+report ([sim.md](../runtime/sim.md), "The spatial trace").
 A match in the pool can be watched: the viewport's live mirror takes a
 child's world stream as it takes a paired game's.
 

@@ -980,7 +980,11 @@ fn the_detail_key_is_full_or_training() {
     // The run's own report says which it was, by name.
     assert_eq!(m.resolved_json()["detail"], "training");
     assert!(ok("").unwrap().resolved_json().get("detail").is_none());
-    assert!(ok("detail = \"sparse\"").unwrap_err().contains("\"full\" or \"training\""));
+    assert!(
+        ok("detail = \"sparse\"")
+            .unwrap_err()
+            .contains("\"full\", \"training\" or \"spatial\"")
+    );
     // A training report has no components to ask for.
     assert!(
         ok("detail = \"training\"\ncomponents = true")
@@ -989,6 +993,33 @@ fn the_detail_key_is_full_or_training() {
     );
     assert!(ok("detail = \"training\"\ncomponents = false").is_ok());
     assert_eq!(Detail::parse(" TRAINING ").unwrap().name(), "training");
+}
+
+#[test]
+fn a_spatial_run_keeps_the_training_tally_and_traces() {
+    let ok = |extra: &str| {
+        let text = format!("map = \"lockout\"\n{extra}\n[[bot]]\n");
+        resolve(parse_match(&text, false).unwrap(), &no_files)
+    };
+    let m = ok("detail = \"spatial\"").unwrap();
+    assert_eq!(m.config.detail(), Detail::Spatial);
+    assert_eq!(m.resolved_json()["detail"], "spatial");
+    assert_eq!(Detail::Spatial.tally(), Detail::Training);
+    assert_eq!(Detail::Full.tally(), Detail::Full);
+    assert!(Detail::Spatial.traces());
+    assert!(!Detail::Training.traces() && !Detail::Full.traces());
+    // Its tally is a training one: no components to ask for.
+    assert!(
+        ok("detail = \"spatial\"\ncomponents = true")
+            .unwrap_err()
+            .contains("no components")
+    );
+    let b = batch(
+        &format!("detail = \"spatial\"\n{BATCH}"),
+        "map = 'lockout'\n[[bot]]\n[[bot]]\n",
+    )
+    .unwrap();
+    assert!(b.runs.iter().all(|r| r.config.detail() == Detail::Spatial));
 }
 
 #[test]

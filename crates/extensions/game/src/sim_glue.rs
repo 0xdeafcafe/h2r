@@ -19,6 +19,9 @@
 //!   tick's player snapshot and guest census ([`crate::sim_census`]), the
 //!   shots, the damage reports, the kills and the end latch, into a
 //!   [`sim_bench::metrics::Tally`].
+//! - **The spatial trace** (`detail = "spatial"`): the same observers
+//!   feed a [`sim_bench::spatial::Recorder`] beside the tally
+//!   ([`spatial`]), and [`Sim::finish`] writes it beside the report.
 //! - **The RNG seed** is written once, before the match's
 //!   first tick ([`SimMetrics`]'s one writing hook).
 //! - **The end**: the game's end latch, the match's tick limit, its wall
@@ -54,6 +57,7 @@ use crate::level_boot;
 use std::collections::BTreeMap;
 mod film_state;
 pub mod hosted;
+pub mod spatial;
 mod state_hash;
 
 /// The engine's shared random seed: a pointer to the struct whose first
@@ -151,6 +155,66 @@ struct State {
     pages: Pages,
     /// The end-of-run census and lean fields ([`Sim::note_lean`]).
     lean: WallLean,
+    /// The spatial trace, with `detail = "spatial"`; taken by
+    /// [`Sim::finish`].
+    spatial: Option<sim_bench::spatial::Recorder>,
+}
+
+impl State {
+    /// A kill, into the tally and the trace alike.
+    fn kill(
+        &mut self,
+        tick: u32,
+        killer: Option<u8>,
+        victim: u8,
+        betrayal: bool,
+        ground: &dyn sim_bench::spatial::Ground,
+    ) {
+        self.tally.kill(tick, killer, victim, betrayal);
+        if let Some(r) = self.spatial.as_mut() {
+            r.kill(tick, killer, victim, betrayal, ground);
+        }
+    }
+
+    /// A damage report, into the tally and, against a player, the trace;
+    /// `tick` is the hook's, else the tick after the last sample.
+    fn hit(
+        &mut self,
+        tick: Option<u64>,
+        attacker: Option<u8>,
+        victim: Option<u8>,
+        damage: f32,
+        team_play: bool,
+        ground: &dyn sim_bench::spatial::Ground,
+    ) {
+        self.tally.hit(attacker, victim, damage, team_play);
+        let tick = tick
+            .map(|t| (t & 0xffff_ffff) as u32)
+            .or_else(|| self.tally.last().map(|l| l.tick.wrapping_add(1)))
+            .unwrap_or(0);
+        if let (Some(r), Some(v)) = (self.spatial.as_mut(), victim) {
+            r.damage(tick, attacker, v, damage, ground);
+        }
+    }
+
+    /// The trace's side of a tick: spawns, pickups and the samples.
+    fn trace_tick(
+        &mut self,
+        tick: u32,
+        snap: &telemetry::Snapshot,
+        ground: &dyn sim_bench::spatial::Ground,
+    ) {
+        if let Some(r) = self.spatial.as_mut() {
+            r.tick(tick, &spatial::poses(snap), ground);
+        }
+    }
+
+    /// The match (re)starts for the tally's sake: so does the trace.
+    fn trace_start(&mut self, tick: u32) {
+        if let Some(r) = self.spatial.as_mut() {
+            r.start(tick);
+        }
+    }
 }
 
 /// The page census's state: the page hashes of the first counted tick.
@@ -560,7 +624,17 @@ impl Sim {
             .on_skip(crate::d3d_diag::note_skipped_present);
         let created = Instant::now();
         let mut tally = Tally::new();
-        tally.set_detail(matched.config.detail());
+        let detail = matched.config.detail();
+        tally.set_detail(detail.tally());
+        let spatial = detail.traces().then(|| {
+            sim_bench::spatial::Recorder::new(sim_bench::spatial::Header {
+                map: matched.config.map.clone(),
+                game_type: matched.game_type_name().into(),
+                seed: matched.config.seed,
+                team_play: matched.team_play,
+                ..Default::default()
+            })
+        });
         Sim(Arc::new(Inner {
             path,
             hosted_map: Default::default(),
@@ -588,6 +662,7 @@ impl Sim {
                 setup: SetupClock::new(created),
                 pages: Pages::default(),
                 lean: WallLean::default(),
+                spatial,
             }),
             stop: AtomicBool::new(false),
             created,
@@ -931,7 +1006,11 @@ impl Sim {
             eprintln!("sim: {note}");
             self.0.lock().notes.push(note);
         }
-        let r = self.report();
+        let mut r = self.report();
+        if let Some(note) = self.write_trace(&r) {
+            eprintln!("sim: {note}");
+            r.notes.push(note);
+        }
         eprintln!(
             "sim: {} after {} ticks ({:.0} game s) in {:.1} s: {:.2}x real time ({:.2}x with the boot)",
             r.result.end.name(),
@@ -976,6 +1055,31 @@ impl Sim {
             );
         }
         Ok(r)
+    }
+
+    /// The spatial trace, written beside the report
+    /// ([`sim_bench::spatial::trace_path`]) and checked against its kills;
+    /// what happened, as a note. `None` when the run does not trace.
+    fn write_trace(&self, report: &Report) -> Option<String> {
+        let recorder = self.0.lock().spatial.take()?;
+        let Some(report_path) = &self.0.report_path else {
+            return Some("spatial: no report path, so no trace was written".into());
+        };
+        let ground = spatial::MapGround::current();
+        let trace = recorder.finish(&ground, ground.mesh());
+        let path = sim_bench::spatial::trace_path(report_path);
+        if let Err(e) = trace.write(&path) {
+            return Some(format!("spatial: {e}"));
+        }
+        Some(match trace.agrees_with(&report.kills) {
+            Ok(()) => format!(
+                "spatial trace {} ({} events; its {} kills are the report's)",
+                path.display(),
+                trace.events.len(),
+                report.kills.len()
+            ),
+            Err(e) => format!("spatial trace {}: {e}", path.display()),
+        })
     }
 
     /// `match.status`, `match.report`, `match.stop` and `sim.guest_census`
@@ -1380,11 +1484,17 @@ impl Metered {
             } else {
                 Vec::new()
             };
+            let traces = self.sim.matched.config.detail().traces();
+            let toward = self.brain.mind.stuck.goal();
+            let ground = spatial::MapGround::when(traces);
             let mut s = self.sim.lock();
             if s.phase == Phase::Playing
                 && let Some(&player) = s.bindings.get(&self.seat)
             {
                 s.tally.brain_for_player(player, b);
+                if let Some(r) = s.spatial.as_mut() {
+                    r.brain(player, b.stuck, b.repaths, toward, &ground);
+                }
                 for e in &events {
                     let (tick, e) = practice_event(e);
                     s.tally.bounce_event(player, tick, e);
@@ -1429,10 +1539,28 @@ impl hooks::Feature for SimMetrics {
                     return;
                 }
             }
+            // The scenario's places, for the trace's spawns and pickups.
+            let places = me
+                .matched
+                .config
+                .detail()
+                .traces()
+                .then(|| spatial::places(&*g));
             drop(g);
             let mut s = me.lock();
             s.bindings.clear();
             s.tally.start((tick & 0xffff_ffff) as u32);
+            s.trace_start((tick & 0xffff_ffff) as u32);
+            if let Some(r) = s.spatial.as_mut() {
+                match places {
+                    Some(Ok((starts, items))) => r.set_places(starts, items),
+                    Some(Err(e)) => eprintln!(
+                        "sim: spatial: the scenario's places faulted at {:#x}",
+                        e.addr
+                    ),
+                    None => {}
+                }
+            }
             s.phase = Phase::Binding;
             s.set_up = false;
             s.fired.clear();
@@ -1453,7 +1581,8 @@ impl hooks::Feature for SimMetrics {
         let projected = b.switches().implementation("sim.metrics-projection", true);
         let page_census = b.switches().implementation("sim.page-census", true);
         me.lock().pages.enabled = page_census;
-        let full_detail = me.matched.config.detail() == Detail::Full;
+        let full_detail = me.matched.config.detail().tally() == Detail::Full;
+        let traces = me.matched.config.detail().traces();
         b.frame().on_tick("sim: tick sample", move |o| {
             if !matches!(me.lock().phase, Phase::Playing | Phase::Binding) {
                 return;
@@ -1504,6 +1633,7 @@ impl hooks::Feature for SimMetrics {
             // A handful of reads (docs/runtime/sim.md §6, `guest_census`).
             let census = crate::sim_census::read(&*g);
             drop(g);
+            let ground = spatial::MapGround::when(traces);
             let mut s = me.lock();
             if let Some(hashes) = page_base {
                 s.pages.base = Some(hashes);
@@ -1527,6 +1657,7 @@ impl hooks::Feature for SimMetrics {
                         s.setup.enter(SetupStage::Done, now);
                         s.pages.wanted = s.pages.enabled;
                         s.tally.start(sample.tick);
+                        s.trace_start(sample.tick);
                         s.dispatch_start = o.runtime.dispatch_counts();
                         s.costs_start = Some(costs_now());
                     }
@@ -1537,8 +1668,8 @@ impl hooks::Feature for SimMetrics {
                     s.tally.tick_census(tick, &census);
                     // `components = false` in the match file leaves the
                     // breakdown out (a timing arm); the digests above stay.
-                    // `detail = "training"` leaves it out too, with all but a
-                    // sparse few of the digests.
+                    // `detail = "training"` or "spatial" leaves it out too,
+                    // with all but a sparse few of the digests.
                     if full_detail && me.matched.config.components != Some(false) {
                         let components = state_hash::components(&snap, rng);
                         s.tally
@@ -1560,6 +1691,7 @@ impl hooks::Feature for SimMetrics {
                         s.set_up = false;
                         s.pages.base = None;
                         s.pages.wanted = s.pages.enabled;
+                        s.trace_start(tick);
                         eprintln!(
                             "sim: the tick jumped to {tick} (a snapshot load); counting from here"
                         );
@@ -1567,6 +1699,7 @@ impl hooks::Feature for SimMetrics {
                     for p in shooters(&snap, &fired) {
                         s.tally.shot(p);
                     }
+                    s.trace_tick(tick, &snap, &ground);
                     if me.matched.superbounce {
                         for (index, z) in heights(&snap) {
                             s.tally.bounce_height(index, tick, z);
@@ -1657,16 +1790,19 @@ impl hooks::Feature for SimMetrics {
                 let Ok(hit) = telemetry::hit(&o.guest(), report, victim) else {
                     return;
                 };
+                let ground = spatial::MapGround::when(traces);
                 let mut s = me.lock();
                 if s.phase != Phase::Playing {
                     return;
                 }
                 let target = player_of_unit(s.tally.last(), hit.victim);
-                s.tally.hit(
+                s.hit(
+                    hit.tick,
                     player_of_datum(hit.owner_player),
                     target,
                     hit.body + hit.shield,
                     me.matched.team_play,
+                    &ground,
                 );
             })
             .optional();
@@ -1695,13 +1831,15 @@ impl hooks::Feature for SimMetrics {
                 let Some(v) = player_of_datum(victim) else {
                     return;
                 };
+                let ground = spatial::MapGround::when(traces);
                 let mut s = me.lock();
                 if s.phase == Phase::Playing {
-                    s.tally.kill(
+                    s.kill(
                         (tick & 0xffff_ffff) as u32,
                         player_of_datum(attacker),
                         v,
                         betrayal,
+                        &ground,
                     );
                 }
             });
@@ -2465,9 +2603,119 @@ mod tests {
     }
 
     fn sim_with(text: &str) -> Sim {
+        sim_reporting(text, None)
+    }
+
+    fn sim_reporting(text: &str, report: Option<PathBuf>) -> Sim {
         let c = sim_bench::config::parse_match(text, false).unwrap();
         let m = sim_bench::config::resolve(c, &|_| Err("no files".into())).unwrap();
-        Sim::new(PathBuf::from("/tmp/m.toml"), m, None)
+        Sim::new(PathBuf::from("/tmp/m.toml"), m, report)
+    }
+
+    /// Forty ticks of a two-player match through the observers' state
+    /// helpers: inside tick 19 player 0 hits and kills player 1, who is
+    /// back at 25.
+    fn play_forty(s: &Sim) {
+        let ground = sim_bench::spatial::NoGround;
+        let mut st = s.0.lock();
+        st.phase = Phase::Playing;
+        st.tally.start(0);
+        st.trace_start(0);
+        for tick in 0..40u32 {
+            let mut a = object(Some(0xa1), None, 1.0, 2);
+            a.pos = [f64::from(tick) * 0.5, 0.0, 0.0];
+            let down = (19..25).contains(&tick);
+            let mut b = object(Some(0xa2), None, if down { 0.0 } else { 1.0 }, 2);
+            b.pos = [8.0, 0.0, 0.0];
+            let snap = telemetry::Snapshot {
+                tick: u64::from(tick),
+                players: vec![player(0, None, 0xe001), player(1, None, 0xe002)],
+                objects: vec![Some(a), Some(b)],
+                ..Default::default()
+            };
+            st.tally.tick_hashed(
+                tick_sample(&snap),
+                state_hash::gameplay(&snap, Some(7)),
+                None,
+            );
+            st.trace_tick(tick, &snap, &ground);
+            if tick == 18 {
+                st.hit(Some(19), Some(0), Some(1), 0.6, true, &ground);
+                st.kill(19, Some(0), 1, false, &ground);
+            }
+        }
+    }
+
+    #[test]
+    fn the_tally_is_unchanged_with_the_trace_on() {
+        let text = |detail: &str| {
+            format!(
+                "map = \"lockout\"\nteam_play = true\ndetail = \"{detail}\"\n\
+                 [[bot]]\nteam = 0\n[[bot]]\nteam = 1\n"
+            )
+        };
+        let off = sim_with(&text("training"));
+        let on = sim_with(&text("spatial"));
+        assert!(off.0.lock().spatial.is_none());
+        assert!(on.0.lock().spatial.is_some());
+        play_forty(&off);
+        play_forty(&on);
+        let (a, b) = (off.report(), on.report());
+        let strip = |r: &Report| {
+            let mut v = serde_json::to_value(r).unwrap();
+            let o = v.as_object_mut().unwrap();
+            o.remove("wall");
+            o.remove("match");
+            v
+        };
+        assert_eq!(strip(&a), strip(&b));
+        assert_eq!(b.kills.len(), 1);
+        assert_eq!(a.match_["detail"], "training");
+        assert_eq!(b.match_["detail"], "spatial");
+        // The trace's kill is the report's, with both places.
+        let t = on
+            .0
+            .lock()
+            .spatial
+            .take()
+            .unwrap()
+            .finish(&sim_bench::spatial::NoGround, None);
+        t.agrees_with(&b.kills).unwrap();
+        use sim_bench::spatial::Event;
+        assert_eq!(t.count(|e| matches!(e, Event::Spawn { .. })), 3);
+        assert_eq!(t.count(|e| matches!(e, Event::Damage { .. })), 1);
+        let Some(Event::Kill {
+            killer: Some(k),
+            victim,
+            ..
+        }) = t.events.iter().find(|e| matches!(e, Event::Kill { .. }))
+        else {
+            panic!("no kill");
+        };
+        assert_eq!(k.at.unwrap().pos, [9.0, 0.0, 0.0]);
+        assert_eq!(victim.at.unwrap().pos, [8.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_spatial_match_writes_a_trace_whose_kills_are_the_reports() {
+        let dir = std::env::temp_dir().join(format!("h2-sim-spatial-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let report = dir.join("report.json");
+        let s = sim_reporting(
+            "map = \"lockout\"\ndetail = \"spatial\"\n[[bot]]\n[[bot]]\n",
+            Some(report),
+        );
+        play_forty(&s);
+        let r = s.report();
+        let note = s.write_trace(&r).unwrap();
+        assert!(note.contains("are the report's"), "{note}");
+        let t = sim_bench::spatial::Trace::read(&dir.join("spatial.bin")).unwrap();
+        t.agrees_with(&r.kills).unwrap();
+        assert_eq!(t.kills().len(), 1);
+        assert_eq!(t.header.map, "lockout");
+        // Taken: a second call has nothing to write.
+        assert!(s.write_trace(&r).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
