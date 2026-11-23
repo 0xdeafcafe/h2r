@@ -400,6 +400,7 @@ pub fn reply(s: &State) -> agent_proto::superbounce::State {
                 LandingResult::Missed => wire::LandingResult::Missed,
                 LandingResult::TooSlow => wire::LandingResult::TooSlow,
                 LandingResult::NoBounce => wire::LandingResult::NoBounce,
+                LandingResult::Through => wire::LandingResult::Through,
             },
             tick: l.tick,
             at: v3(l.at),

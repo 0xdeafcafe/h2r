@@ -1,6 +1,7 @@
 //! Superbounce medals (docs/game/superbounce.md, "Medals"): the chain of
 //! bounces each player makes with no ground between them, the medals each
-//! bounce earns, and Bounced, a fall out of the map during a bounce.
+//! bounce earns, and Bounced, a fall out of the map or through a strip's
+//! floor during a bounce.
 //!
 //! [`Chain`] is one player's, stepped once a tick with that player's
 //! reads ([`PlayerTick`]); [`Medals`] keeps one per player slot, the
@@ -24,7 +25,8 @@ use hud_kit_core::huds::superbounce::{MEDALS, Medal};
 use superbounce::{Spot, Vec3};
 
 use crate::superbounce_charge::{
-    LAUNCH_TICKS, LandingResult, Pending, TOUCHDOWN_VZ, judge, strips_near, touchdown,
+    LAUNCH_TICKS, LandingResult, Pending, TOUCHDOWN_VZ, Through, judge, strips_near, through,
+    touchdown,
 };
 use crate::superbounce_mode::primed;
 
@@ -47,6 +49,12 @@ pub const RECENT: usize = 8;
 /// docs/game/superbounce.md, "Traces"), by about a fifth. Reasoned from
 /// those, not measured: no Monster has been traced.
 pub const MONSTER_VZ: f32 = 16.0;
+/// Game ticks a fall through a strip's floor keeps its Bounced armed
+/// (`superbounce_charge::through`): 10 s. The Guardians take a second or
+/// more to kill a player under the map, and a kill barrier or a fatal
+/// landing below can take longer; a player still alive after it dropped
+/// through to a floor below and lived.
+pub const BOUNCED_TICKS: u32 = 300;
 
 /// The medals a bounce earns at chain count `chain`, lowest first: every
 /// bounce is a Superbounce, and the second to the sixth of a chain earn
@@ -129,8 +137,10 @@ pub enum Event {
     },
     /// The unit went (a death) on the tick after one that was airborne,
     /// falling at [`TOUCHDOWN_VZ`] or faster, and either in a chain or
-    /// primed: a fall out of the map during a bounce. `chain` is the count
-    /// of the chain it was in, 0 if none.
+    /// primed: a fall out of the map during a bounce. Or it went within
+    /// [`BOUNCED_TICKS`] of a fall through a strip's floor
+    /// (`superbounce_charge::through`) with no bounce since. `chain` is the
+    /// count of the chain it was in, 0 if none.
     Bounced { chain: u32 },
 }
 
@@ -175,6 +185,18 @@ struct Prev {
     word: Option<u32>,
 }
 
+/// A Bounced waiting on the unit going: a fall through a strip's floor.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Armed {
+    /// The chain's count when it fell through, 0 if none was live.
+    chain: u32,
+    /// Ticks since the fall through (0 on its tick).
+    ticks: u32,
+    /// The fall through: a touchdown under its floor by its edge is the
+    /// same fall ([`Through::under`]).
+    through: Through,
+}
+
 /// One player's chain.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Chain {
@@ -185,6 +207,9 @@ pub struct Chain {
     prev: Option<Prev>,
     /// A touchdown whose launch is being read.
     pending: Option<Pending>,
+    /// A fall through a strip's floor, awarding a Bounced when the unit
+    /// goes.
+    armed: Option<Armed>,
 }
 
 impl Chain {
@@ -196,6 +221,12 @@ impl Chain {
     /// Whether the next bounce adds to the count.
     pub fn live(&self) -> bool {
         self.live
+    }
+
+    /// Whether a fall through a strip's floor has armed a Bounced: the
+    /// unit going within [`BOUNCED_TICKS`] earns it.
+    pub fn armed(&self) -> bool {
+        self.armed.is_some()
     }
 
     /// Ends the chain (the count stays, for the record).
@@ -237,18 +268,33 @@ impl Chain {
         })
     }
 
+    /// The unit went (or was replaced) after the tick `prev`: what was
+    /// pending settles, and a Bounced is earned once, by an armed fall
+    /// through (its chain) or by `prev` being a fall during a bounce. A
+    /// bounce settled here is the event instead. The chain ends.
+    fn gone(&mut self, prev: Option<Prev>, spots: &[Spot]) -> Option<Event> {
+        let settled = self.settle(spots);
+        let fell = prev.is_some_and(|p| self.falling(&p));
+        let chain = if self.live { self.count } else { 0 };
+        let armed = self.armed.take();
+        self.live = false;
+        settled.or(match armed {
+            Some(a) => Some(Event::Bounced { chain: a.chain }),
+            None => fell.then_some(Event::Bounced { chain }),
+        })
+    }
+
     /// One tick: `t` is the player's unit, `None` when it has none (dead,
     /// or not in the game). A touchdown is judged when its launch window
     /// closes ([`Pending`]), [`LAUNCH_TICKS`] after it; a window cut short
     /// (the unit gone, a new one, a teleport) is judged on what was seen.
+    /// A fall through a strip's floor (`superbounce_charge::through`) drops
+    /// the touchdown it follows, ends the chain and arms a Bounced for
+    /// [`BOUNCED_TICKS`]; a bounce or a teleport disarms it.
     pub fn step(&mut self, t: Option<&PlayerTick>, spots: &[Spot]) -> Option<Event> {
         let Some(t) = t else {
-            let settled = self.settle(spots);
-            let fell = self.prev.is_some_and(|p| self.falling(&p));
-            let chain = if self.live { self.count } else { 0 };
-            self.live = false;
-            self.prev = None;
-            return settled.or(fell.then_some(Event::Bounced { chain }));
+            let prev = self.prev.take();
+            return self.gone(prev, spots);
         };
         let now = Prev {
             unit: t.unit,
@@ -261,24 +307,56 @@ impl Chain {
         if p.unit != t.unit {
             // A new unit on the same tick the old one went: a death and a
             // respawn, or a vehicle.
-            let settled = self.settle(spots);
-            let fell = self.falling(&p);
-            let chain = if self.live { self.count } else { 0 };
-            self.live = false;
-            return settled.or(fell.then_some(Event::Bounced { chain }));
+            return self.gone(Some(p), spots);
         }
         if distance(p.position, t.position) > TELEPORT || !t.velocity[2].is_finite() {
             let settled = self.settle(spots);
             self.live = false;
+            self.armed = None;
             return settled;
         }
+        if let Some(a) = self.armed.as_mut() {
+            a.ticks += 1;
+            if a.ticks >= BOUNCED_TICKS {
+                // Alive 10 s after it: it dropped to a floor below.
+                self.armed = None;
+            }
+        }
+        let went = through(
+            spots,
+            p.position,
+            p.vz,
+            p.word,
+            t.position,
+            self.pending.as_ref(),
+            self.live,
+        );
+        if let Some(th) = went {
+            // The touchdown it follows was the seam hit: dropped, not
+            // judged.
+            self.pending = None;
+            let chain = if self.live { self.count } else { 0 };
+            self.live = false;
+            if self.armed.is_none() {
+                self.armed = Some(Armed {
+                    chain,
+                    ticks: 0,
+                    through: th,
+                });
+            }
+            return None;
+        }
+        let sunk = self.armed.is_some_and(|a| a.through.under(p.position));
         let mut event = None;
         if let Some(pending) = self.pending.as_mut() {
             if !pending.see(now.vz) {
                 return None;
             }
             event = self.settle(spots);
-        } else if touchdown(p.airborne, p.vz, t.airborne, now.vz) {
+            if matches!(event, Some(Event::Bounce { .. })) {
+                self.armed = None;
+            }
+        } else if !sunk && touchdown(p.airborne, p.vz, t.airborne, now.vz) {
             if self.live || p.word.is_some_and(primed) {
                 self.pending = Some(Pending::new(p.word, p.position, p.vz, 0, now.vz));
             } else {

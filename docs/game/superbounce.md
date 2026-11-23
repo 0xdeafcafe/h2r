@@ -1905,6 +1905,28 @@ under them.
   ([Covered seams](#covered-seams)). The HUD says it in the notification list, and
   `superbounce.state` returns the last landing as `last_landing`: the
   outcome, the touchdown's game tick and the origin.
+- **Through the floor.** A primed fall can go through a seam's floor
+  instead of bouncing (Zanzibar's crack, [Zanzibar's
+  window](#zanzibars-window-trace-lab-play); a seam on Ascension). It
+  never stops falling, or stops for a tick and sinks on, so no window
+  closes on it; it is filed at once as `through`
+  (`superbounce_charge::through`, `LandingResult::Through`), on the
+  tick the origin crosses from at or above the edge's height less 0.3
+  (`SINK`) to below it, within 0.3 of the edge horizontally
+  (`THROUGH_RADIUS`), moving down (the tick before falling at 1 unit/s
+  or more, or a touchdown by the strip open) and primed (the word −3 on
+  the tick before or on that touchdown's tick before). The height is
+  the edge's at its point nearest the origin. 0.3 is deeper than any
+  measured bounce's sink (0.07 to 0.23 under the floor, [Traces](#traces-trace)
+  and [the touchdown tick](#the-touchdown-tick-trace-stepped)), so a
+  bounce's dip is never one; the radius is the catch (0.1) and the
+  capsule's radius (0.175), rounded, and the Zanzibar fall came down
+  0.048 off its crease. A touchdown the fall follows was the seam hit:
+  `through` replaces its verdict, with its tick and origin; otherwise
+  the tick is the crossing's and the origin the tick before's. A
+  touchdown under that floor within 0.5 of the edge after it is the
+  same fall, not a landing. The speed in, the fall carried down to the
+  edge's height, is on `Through::speed_in` (`Tracker::last_through`).
 - **Off-spot bounces.** A primed bounce no marked strip accounts for
   (none within 0.5, or the origin outside the catch of the one there
   is) is a seam the marks don't know yet. The mode keeps the first local
@@ -2292,8 +2314,8 @@ Eight medals: **Superbounce** for every bounce; **Double Bounce**,
 **Triple Bounce**, **Quad Bounce**, **Chain Bounce** and
 **Bouncetacular** for the second to the sixth bounce with no ground
 between them; **Monster Bounce**, for a bounce that launches well above
-a normal one; and **Bounced**, for a fall out of the map during a
-bounce. They are awarded to every player in the game, bots included,
+a normal one; and **Bounced**, for a fall out of the map, or through a
+strip's floor, during a bounce. They are awarded to every player in the game, bots included,
 while the mode is on. The player sees a medal as Halo 2 shows its own, a
 line of the notification list with a medal glyph ([hud-kit.md](hud-kit.md),
 "The medals"); the film and Live count them. The announcer speaks each
@@ -2365,6 +2387,8 @@ Sixteen pair reads a tick at most, only while the mode is on.
   - a tick with the airborne bit clear, from the third tick after the
     bounce's touchdown on, the tick its window closes (`CLEAR_FROM`; a
     soft landing at the top of the flight is no touchdown);
+  - a fall through a strip's floor (`through`, [Landings](#landings)),
+    which arms a Bounced (below);
   - the player's unit changing or going (a death, a respawn, a
     vehicle), or its origin moving more than 3 units in a tick
     (`TELEPORT`: a teleporter, `sim.state.set`);
@@ -2411,8 +2435,9 @@ live and site lists of the eight ids are `BOUNCE_MEDALS` (`medals.rs`,
 **Bounced** (`bounced`) is not on the chain's table: it is its own
 event, `Event::Bounced`. It is earned when, for a player who was
 attempting a bounce, the unit goes (the player's unit reads none) or is
-replaced by another (a death and a respawn on one tick), and on the
-tick before that:
+replaced by another (a death and a respawn on one tick), and either of
+two things led to it. The first is a fall off the map: on the tick
+before the unit went,
 
 - the unit was airborne, and
 - falling at 1 unit/s or more (`TOUCHDOWN_VZ`, the touchdown's own
@@ -2420,12 +2445,32 @@ tick before that:
 - the chain was live, or the word was −3 (primed: the player was going
   for a bounce).
 
-So the window is one tick: the last tick the unit was read, which must
-be a primed or chained fall. A fall out of the map is a death in the
-air, with no touchdown before it; a death on the ground, a death
+The second is a fall through a strip's floor: the `through` of
+[Landings](#landings) (`superbounce_charge::through`: the origin crosses
+0.3 under the edge within 0.3 of it, moving down, primed or in a live
+chain) arms a Bounced, and the unit going within 300 game ticks
+(`superbounce_chain::BOUNCED_TICKS`, 10 s) earns it, whatever the
+airborne bit, the word or the vertical speed read by then. A body that
+goes through a seam ends up under the world: the level pair is gone or
+rebuilt, the body slides or rests on something there with no fall
+speed, and the Guardians kill it a second or more later, so the
+first rule never holds on its last tick. The 10 s covers the Guardians,
+a kill barrier and a fatal landing below. A bounce disarms it, as does
+a teleport (`TELEPORT`), and so does living past the 300 ticks: the
+player dropped through to a floor below and survived. A touchdown under
+that floor within 0.5 of the edge is the same fall and is not judged.
+The touchdown the fall through follows, if one was open, was the seam
+hit: it is dropped, not judged. The fall through ends the chain, and the
+award's `chain` is the count of the chain it ended, 0 if none was live.
+
+So the first rule's window is one tick: the last tick the unit was read,
+which must be a primed or chained fall. A fall out of the map is a death
+in the air, with no touchdown before it; a death on the ground, a death
 climbing off a bounce, or a death of an unprimed player falling earns
-none. The award's `chain` is the live chain's count, 0 if there was
-none, and the chain ends. What killed the player is not read: a primed
+none, unless a fall through armed it. Its award's `chain` is the live
+chain's count, 0 if there was none, and the chain ends. One death earns
+one Bounced: where both rules hold, the armed one gives it, with the
+chain it ended. What killed the player is not read: a primed
 player shot dead in a fall earns it too, as does one who drops off a
 ledge while primed (supposed: that falling out of the map kills the
 unit and clears the player's unit before the next tick, rather than
