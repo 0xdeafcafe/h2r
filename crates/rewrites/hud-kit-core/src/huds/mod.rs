@@ -3,6 +3,7 @@
 
 use crate::model::Describe;
 
+pub mod firefight;
 pub mod forge_readout;
 pub mod pill_block;
 pub mod superbounce;
@@ -17,6 +18,7 @@ pub fn all() -> Vec<Box<dyn Describe>> {
         Box::new(superbounce::Superbounce),
         Box::new(superbounce_readout::Readout),
         Box::new(forge_readout::Readout),
+        Box::new(firefight::Firefight),
     ]
 }
 

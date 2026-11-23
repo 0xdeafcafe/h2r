@@ -4,8 +4,8 @@ Status: Partly built. The definition format, validator, three built-in wave
 sets, director (FF2), stage-one offline kit, probe recipe, the host
 runtime (FF4) with its `Game` over the guest bodies of the engine
 entries and the `firefight` feature that runs it, the agent API
-(FF5), the Game Setup row and options page, the HUD's mode blob and
-view (FF8, without the drawing), and the dedicated host's whole-pack
+(FF5), the Game Setup row and options page, the HUD's mode blob, view and
+its HUD kit HUD (FF8), and the dedicated host's whole-pack
 admission and bundled kits (FF10) are implemented, tests only. "Guest boundary" lists the runs that
 settle what the disassembly leaves open. Retail play and the network probes await verification.
 Code: `crates/formats/firefight` defines and validates wave sets, compiles
@@ -17,7 +17,9 @@ in `crates/apps/h2-tools/src/firefight_cmd.rs`. The host runtime is
 `crates/extensions/game/src/firefight/` with the shared squad entry in
 `crates/extensions/game/src/actor_net/squads.rs`; the agent API's
 methods are `crates/extensions/agent/src/firefight.rs`. The HUD is
-`firefight/hud.rs`, the Game Setup row and options page `firefight/options.rs`.
+`firefight/hud.rs` (the blob, the view and the feed) and
+`crates/rewrites/hud-kit-core/src/huds/firefight.rs` (its kit elements),
+the Game Setup row and options page `firefight/options.rs`.
 Live carries the match in the session data, seats Clankers on player
 teams and takes the built-in sets in hoppers ("Live"); the slice table
 lists the rest of the planned Live code. Tests use invented data.
@@ -759,9 +761,9 @@ game itself starts as the lobby's Start Game starts any custom game.
 
 ### The HUD
 
-The HUD shows the round and wave, a banner for the stage, the enemies left
-and the lives (`firefight/hud.rs`). All of it is a function of the **mode
-blob**, `hud::Mode`: the stage (warmup, spawning, fighting, cleanup,
+The HUD shows a banner for the stage, the enemies left, the lives and a
+notification for a new round or a lost life (`firefight/hud.rs`). All of
+it is a function of the **mode blob**, `hud::Mode`: the stage (warmup, spawning, fighting, cleanup,
 intermission, won, lost, team 0 won, team 1 won, draw), the round and
 wave with their totals, whether the wave is a boss wave, the actors
 alive plus those still in the reserve while a wave is on, the team
@@ -772,8 +774,8 @@ pool. Version 2 encodes to 13 bytes with one shared pool, 36 with eight
 players' own lives, 25 with two team pools and 46 with two teams and
 eight players' own lives, inside the actor channel's 63-byte mode
 state. The banners for the end are "RED TEAM WINS", "BLUE TEAM WINS"
-and "DRAW"; a two-team score line, "RED a BLUE b", stays up after the
-end.
+and "DRAW". The points are the game's own score display's and
+scoreboard's; the HUD draws none of its own.
 
 - **The host** builds the blob after each tick from the director and its
   log (`Mode::of`; the outcome is the last `Finish` in the log) and
@@ -784,26 +786,38 @@ end.
   (`actor_net::client::Client::mode_state`) and publishes it
   (`hud::received`) at each tick boundary.
 - **Either machine** draws `hud::current(local_slot)`: the blob, decoded
-  and viewed by `view`, a pure function of the bytes and the roster slot.
+  and viewed by `view_of`, a pure function of the bytes and the roster slot.
   A blob the build cannot read (wrong version, wrong length, a field out
   of range) is an error, not a guess. `the_hud_reads_only_the_mode_blob`
   plays a whole match and requires the client's view to equal the host's
   at every tick.
 
-The layout is one fixed list of six elements (banner, round, wave,
-enemies, lives, and the score, hidden with one team) in the HUD kit's terms (the kit's one layout per HUD, with its `Element`,
-`Place` and `Values`), and `hud::check` runs its rules over
-every state: the same elements in each, each text within its element's
-widest, HUD copy in capitals, digits and single spaces, no two elements
-overlapping and none off the screen in the whole, half and quarter screen
-modes.
+The HUD is the HUD kit's `firefight` HUD
+([forge-firefight-ui.md](forge-firefight-ui.md), "The Firefight HUD";
+`hud_kit_core::huds::firefight`), drawn by Halo 2's own HUD code
+([hud-kit.md](hud-kit.md)). `hud::view_of` turns the blob into the kit's
+`View` for one roster slot and `hud::view` into its `Values`:
 
-The kit's runtime is what draws an element on Halo 2's own HUD, and it is
-not built, so the view is published and checked but not drawn. When it is,
-`hud::LAYOUT` and `hud::view` register as the kit's `Hud` and `Values`,
-and the placements take the kit's retail rectangles. Replicas and films
-have no director and so no blob until the host log carries the mode state
-(AN14). A distributed client gets the blob over the actor channel.
+| Element | Shows |
+|---|---|
+| `ff.banner` (`Banner`) | GET READY, WAVE n, BOSS WAVE, FINISH THEM, WAVE COMPLETE, ROUND COMPLETE, VICTORY, GAME OVER, and the two-team ends; none while the wave is fought. The game shows it for three seconds from when it changes |
+| `ff.lives.pill`, `.end`, `.count` | the viewer's lives while the match is on, in a pill cut from the frag pill at the grenade row's next place, the count in the LCD font (99 at most); the time warning's flash at 1 and 0 |
+| `ff.enemies.pill`, `.end`, `.count` | the enemies left while a wave is on, in the same pill 30 pixels on |
+| `ff.note` (`Message`) | "Round 2 of 3" when a round starts, "A life lost" or "n lives lost" (`huds::firefight::notes`) |
+
+The kit's checks (`h2 hud preview firefight --state all --mode all`)
+hold it in every state and screen mode, and the kit's runtime draws it.
+The feed (`hud::install`, the feature `firefight-hud`, added with the
+`firefight` feature) registers it with the kit and, each tick, publishes
+`hud::current` for the roster slot of local user 0's player
+(`hud::first_local_slot`) and sends each note to every local user
+(`hud::Feed`). With no match, no local player or a blob it cannot read
+every element is hidden; the reason for an unreadable blob is logged
+once. The kit keeps one set of values per HUD, so a split-screen
+player's lives pill shows the first local player's count. Replicas and
+films have no director and so no blob until the host log carries the
+mode state (AN14). A distributed client gets the blob over the actor
+channel.
 
 ### Live
 
@@ -955,7 +969,7 @@ are slices of [ai-networking.md](ai-networking.md); P numbers its probes.
 | **FF5** | Agent API: `firefight.state`, `firefight.command`, `firefight.kit`; `lives` and `score` on `sim.view`'s `player` root | S | FF4 | `crates/extensions/agent/src/firefight.rs`, `crates/extensions/agent-proto/src/firefight.rs`, `crates/extensions/agent/src/sim/state.rs`, [agent-api.md](../runtime/agent-api.md#firefight) | `state_reports_the_director`, `command_is_refused_on_a_client_and_in_playback`, `kit_reads_the_loaded_scenario`, `the_view_reports_each_players_lives`, `the_view_reports_each_players_score` | the methods answer over a fake game |
 | **FF6** | Stats: `Score` and `ActorKilled` to film events, the Live projection's Firefight summary, the web stats page | M | FF2, AN6 | `crates/live/live-proto/src/{film/events,firefight}.rs`, `crates/live/live-server/`, `crates/live/live-worker/`, `web/` | `a_scripted_match_projects_to_the_golden_summary`, `the_firefight_summary_is_the_golden_one_and_players_cannot_write_it`, `the_firefight_summary_is_the_same_on_the_worker`, `firefight_scores_do_not_touch_ranks`, `a_two_team_match_projects_wins_by_team`, `credits_pair_each_kill_with_its_class_and_assist`, `a_firefight_score_is_a_game_event_and_a_running_objective_score_in_the_film`, `firefight_scores_become_running_objective_scores`, `reads the server's golden summary as it is` (web) | both homes give the same summary |
 | **FF7** | Skulls: the host-only AI set, the round schedule, multipliers | S | FF4 | `crates/extensions/game/src/skulls_mp.rs`, `crates/formats/firefight/tests/skulls.rs` | `ai_skulls_apply_on_the_host_only`, `a_round_switches_its_skulls_on`, `multipliers_multiply` | skulls.md's table gains a Firefight column, each cell with a test |
-| **FF8** | HUD and screens: wave banner, enemies left, lives, the Game Setup row and its options page | M | FF2, AN4, AN5 | `crates/extensions/game/src/firefight/{hud,options}.rs`, `crates/extensions/game/src/ui_kit/` | `Page` tables for the options page (`the_options_page_steps_and_opens_pickers`); `the_hud_reads_only_the_mode_blob`; the kit's layout checks in every state (`every_state_passes_the_layout_checks`) | a client with only the mode blob draws the same HUD as the host |
+| **FF8** | HUD and screens: wave banner, enemies left, lives, the Game Setup row and its options page | M | FF2, AN4, AN5 | `crates/extensions/game/src/firefight/{hud,options}.rs`, `crates/rewrites/hud-kit-core/src/huds/firefight.rs`, `crates/extensions/game/src/ui_kit/` | `Page` tables for the options page (`the_options_page_steps_and_opens_pickers`); `the_hud_reads_only_the_mode_blob`; the kit's checks in every state and mode (`the_firefight_hud_draws_and_passes_on_the_synthetic_sheet`, `every_blob_gives_the_kits_one_layout`) | a client with only the mode blob draws the same HUD as the host |
 | **FF9** | Live: the variant bytes, `NewSession.firefight`, 1-to-4-player hopper entries, the lobby's local kit check | M | FF1 | `crates/formats/variants/src/ext.rs`, `crates/live/live-proto/`, `crates/live/live-server/`, `crates/live/live-worker/`, `crates/tools/hopper-edit/` | `the_mode_bytes_round_trip_and_leave_the_crc_valid`, `a_joiner_without_the_kit_map_is_refused_before_load`, `first_playlist_accepts_one_to_four_players`, `an_oversize_def_is_refused`, the parity suite; built: `firefight_match_round_trips_and_is_left_out_when_none`, `firefight_match_is_validated`, `sessions_carry_the_hosts_firefight_match`, `guests_read_the_firefight_match_their_host_advertises`, `each_multiplayer_start_names_its_match_for_the_session`, `each_builtin_is_found_by_its_hash_prefix`, `a_hopper_takes_the_builtin_firefight_sets`, `a_crossfire_variant_is_accepted_by_its_hash_prefix`, `the_builtin_firefight_sets_are_offered_crossfire_with_teams`, `firefight_seats_balance_two_teams_and_fill_one`, `firefight_sessions_seat_clankers_on_player_teams_only`, `a_firefight_session_seats_balanced_clankers_on_the_worker` | both homes offer 1 to 4 players and refuse unsupported sizes and missing local kits. A retail variant is unchanged |
 | **FF10** | Dedicated host: the Firefight host class and admission, the kit in the host's map set, the strip keeping AI data | S | FF3, FF4, P5 | `crates/live/live-proto/src/{hosts,host_pack}.rs`, `crates/apps/cli/src/host_cmd/{pack,process}.rs`, `crates/apps/cli/src/server_map.rs`, `crates/live/host-data/`, [dedicated-host.md](../live/dedicated-host.md) | `a_firefight_match_takes_a_whole_slot_class`, `strip_keeps_squads_and_sectors`; built: `a_whole_slot_class_needs_an_empty_pack_and_keeps_it`, `a_firefight_lease_takes_the_whole_slot_class`, `the_bundle_carries_each_maps_firefight_kit_and_the_host_places_it`, `only_kit_packages_and_their_index_are_firefight_payload` | admission tests; the coordinator's host run in notes |
 | **FF11** | `h2 sim run` Firefight matches: Clankers as the players, on one team or balanced across two (the `[firefight]` table: `set`, `difficulty`, `teams`, `lives`, `skulls`; examples `docs/runtime/sim-examples/firefight-beavercreek.toml` and `firefight-beavercreek-crossfire.toml`), a report with rounds, score and tick times. `host.metrics` reports `game_cpu_ms_per_tick_p99` over the last 30 steady gameplay seconds from per-tick game-thread CPU deltas | M | FF4 | `crates/live/sim-bench/`, `crates/extensions/game/src/host_metrics.rs`, [sim.md](../runtime/sim.md), [agent-api.md](../runtime/agent-api.md#hostmetrics) | `a_firefight_match_toml_parses`, `firefight_bots_are_on_player_teams_only`, `two_team_firefight_balances_omitted_teams`, `the_report_has_rounds_and_score`, `a_firefight_match_finds_its_kit_package`, `a_firefight_table_becomes_the_pages_choices`, `the_firefight_examples_load`, `rolling_p99_counts_individual_gameplay_intervals_and_expires_at_30s` | a match file runs headless (coordinator) and feeds P5. The p99 comes from individual gameplay samples and resets between matches |
@@ -964,7 +978,7 @@ are slices of [ai-networking.md](ai-networking.md); P numbers its probes.
 | **FF14** | Home bases in the kit: bases from flag stands, team starts or clusters; drops away from both with a path to each; firing positions facing the nearer base; `ff_base_NN` zones and `ff_hunt_NN` orders; starts rewritten to their base's team; `--home`; Beaver Creek's kit | M | FF3 | `crates/tools/firefight-kit/src/{bases,nav,ai,lib}.rs`, `crates/apps/h2-tools/src/firefight_cmd.rs`, `crates/extensions/game/src/firefight/guest.rs` | `home_base_is_read_from_team_starting_points`, `home_base_prefers_the_ctf_flag_stand`, `the_home_option_swaps_the_bases`, `bases_split_untagged_starts_into_two_clusters`, `starting_locations_take_their_base_team`, `drops_are_chosen_away_from_the_home_base`, `every_drop_zone_has_a_path_to_each_base`, `firing_positions_face_the_nearer_base`, `each_base_has_a_hunt_order_over_its_area`, `the_kit_writes_each_start_its_base_team`, `read_kit_finds_the_bases_and_hunt_orders` | on invented maps the bases, drops and orders read back; the coordinator's Beaver Creek build goes in notes |
 | **FF15** | Two player teams: `Def::teams` and `player_kill` (format 2), validation, Crossfire, per-team pools and scores, targets, team-side zones, two-team ends, the rules-script form and its entries | M | FF2 | `crates/formats/firefight/src/{def,validate,builtin,director,script}.rs`, `crates/formats/rules/src/{caps.rs,lang/sig.rs}`, `crates/formats/firefight/tests/teams.rs` | `two_teams_start_with_a_pool_each_and_spend_their_own`, `a_team_out_of_lives_loses_to_the_other`, `both_teams_out_at_once_go_to_the_higher_score`, `both_teams_out_level_on_score_and_lives_is_a_draw`, `the_last_round_goes_to_the_higher_score_then_lives_then_a_draw`, `player_kills_score_across_the_teams_only`, `squads_are_sent_at_both_teams`, `the_team_fewer_actors_press_gets_the_next_squad`, `a_squad_drops_on_its_target_teams_side`, `a_players_team_is_fixed_when_first_seen`, `two_team_matches_always_end_with_a_team_result`, `team_counts_and_player_kill_points_are_refused_out_of_range`, `two_team_matches_give_the_same_commands`, `two_team_ends_give_the_same_commands`, `a_team_pool_set_from_outside_is_the_one_its_respawns_spend`, `pools_set_from_outside_are_refused_where_the_match_keeps_none` | the director and the script give the same commands over two-team scenarios; every two-team match ends with a team result |
 | **FF16** | Clankers in Firefight: player-team seats only, balanced with two teams; actors as enemies; home-base hold, fall back, rearm, no lone drop-zone trips, regroup on low lives | M | FF4, FF15 | `crates/live/bots/src/firefight.rs` (new), hooks in `crates/live/bots/src/{lib,mind,mind/strategy,perceive,phantom/session}.rs`, [bots.md](bots.md#310-firefight) | `firefight_seats_are_player_teams_only`, `actors_are_seen_as_targets`, `teammates_are_never_targeted`, `two_team_bots_target_the_other_team_and_actors`, `bots_hold_near_their_home_base`, `bots_regroup_when_the_pool_runs_low`, `bots_do_not_wander_to_a_drop_zone_alone`, `actors_are_read_from_the_pool` | on invented perception, bots never take the AI's team and never target a teammate |
-| **FF17** | Two teams in the game: the host's team checks and third AI team, `Observed` per team and player kills, `Target`/`TeamLives`/hunt by base, HUD blob v2 with both scores, the Teams row, Clanker seats, the bots' context, the agent API's two-team state and commands | M | FF4, FF5, FF8, FF15, FF16 | `crates/extensions/game/src/firefight/{host,runtime,hud,options}.rs`, `crates/extensions/game/src/{clankers,lobby_mode,actor_net/squads}.rs`, `crates/extensions/agent-proto/src/firefight.rs`, [agent-api.md](../runtime/agent-api.md#firefight) | `observed_carries_each_players_team_and_player_kills`, `zone_team_distance_is_from_each_teams_centre`, `hunt_goes_to_the_targets_base`, `the_actors_take_a_third_team_with_two_player_teams`, `two_teams_need_a_base_each`, `two_teams_need_team_play_and_a_base_each`, `the_clankers_are_told_the_teams_bases_and_lives`, `the_end_report_carries_each_teams_score_and_the_winner`, `two_teams_show_both_scores_and_each_viewer_its_teams_lives`, `the_teams_choice_reaches_the_definition`, `clankers_never_take_the_ai_team`, `two_team_firefight_balances_clankers`, `state_reports_each_teams_pool_and_score`, `command_takes_the_two_team_commands`, `an_operator_team_pool_is_the_one_the_director_spends`, `two_teams_turn_team_play_on_before_the_game_starts`, `only_two_firefight_teams_on_a_kit_map_turn_team_play_on` | over a fake game a two-team match makes the expected calls; a client's HUD equals the host's in a two-team match |
+| **FF17** | Two teams in the game: the host's team checks and third AI team, `Observed` per team and player kills, `Target`/`TeamLives`/hunt by base, HUD blob v2 with both scores, the Teams row, Clanker seats, the bots' context, the agent API's two-team state and commands | M | FF4, FF5, FF8, FF15, FF16 | `crates/extensions/game/src/firefight/{host,runtime,hud,options}.rs`, `crates/extensions/game/src/{clankers,lobby_mode,actor_net/squads}.rs`, `crates/extensions/agent-proto/src/firefight.rs`, [agent-api.md](../runtime/agent-api.md#firefight) | `observed_carries_each_players_team_and_player_kills`, `zone_team_distance_is_from_each_teams_centre`, `hunt_goes_to_the_targets_base`, `the_actors_take_a_third_team_with_two_player_teams`, `two_teams_need_a_base_each`, `two_teams_need_team_play_and_a_base_each`, `the_clankers_are_told_the_teams_bases_and_lives`, `the_end_report_carries_each_teams_score_and_the_winner`, `two_teams_show_each_viewer_its_teams_lives`, `the_teams_choice_reaches_the_definition`, `clankers_never_take_the_ai_team`, `two_team_firefight_balances_clankers`, `state_reports_each_teams_pool_and_score`, `command_takes_the_two_team_commands`, `an_operator_team_pool_is_the_one_the_director_spends`, `two_teams_turn_team_play_on_before_the_game_starts`, `only_two_firefight_teams_on_a_kit_map_turn_team_play_on` | over a fake game a two-team match makes the expected calls; a client's HUD equals the host's in a two-team match |
 
 FF1 and FF3 start at once, beside AN0, AN1, AN2 and AN6. FF2 follows
 FF1 and AN1. FF9's format half can run beside FF2. FF4 is the join
@@ -997,6 +1011,10 @@ point: it needs the kit, the director and probe P2.
   names on retail maps.
 - That Beaver Creek yields six drops away from both bases.
 - Whether team 1 reads as blue in the game, as the HUD's "BLUE" assumes.
+- The HUD in a game: the banner, the pills and the notes through
+  `hud.render` and a live match on the lab Mac, the pills clear of the
+  retail grenade panel in every screen mode, and the LCD count inside
+  its pill.
 - That team play turned on at `GAME_ACTIVATE` (the scenario is loaded
   then, so the kit reads) makes a team game of a lobby that was free for
   all, which team each person then plays on, and that a guest's game
