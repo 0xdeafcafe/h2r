@@ -1003,6 +1003,7 @@ dependencies = [
  "audio",
  "boot",
  "bots",
+ "cli-common",
  "cloud-saves",
  "content",
  "d3d",
@@ -1011,11 +1012,9 @@ dependencies = [
  "dsound",
  "emit",
  "film",
- "firefight-kit",
  "flate2",
  "font",
  "forge",
- "forge-build",
  "forge-doc",
  "gfx",
  "gltf",
@@ -1027,7 +1026,6 @@ dependencies = [
  "host-data",
  "host-dirs",
  "hs",
- "hud-kit",
  "iced-x86",
  "image",
  "input",
@@ -1039,8 +1037,6 @@ dependencies = [
  "live-proto",
  "live-server",
  "lockstep",
- "lsp-server",
- "lsp-types",
  "map",
  "mem-watch",
  "movies",
@@ -1063,7 +1059,6 @@ dependencies = [
  "sim-bench",
  "studio-proto",
  "subtle",
- "superbounce",
  "symbols",
  "tags",
  "time",
@@ -1072,12 +1067,22 @@ dependencies = [
  "toml",
  "tungstenite 0.26.2",
  "ureq",
- "variants",
  "vfs",
  "voice",
  "windows-sys 0.61.2",
  "wma",
  "xbe",
+ "xiso",
+]
+
+[[package]]
+name = "cli-common"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "map",
+ "windows-sys 0.61.2",
  "xiso",
 ]
 
@@ -2855,6 +2860,36 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "h2-tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cli-common",
+ "content",
+ "firefight-kit",
+ "forge-build",
+ "forge-doc",
+ "hs",
+ "hud-kit",
+ "lsp-server",
+ "lsp-types",
+ "map",
+ "rules",
+ "scenario-edit",
+ "serde_json",
+ "settings",
+ "sha2 0.10.9",
+ "shaders",
+ "superbounce",
+ "tags",
+ "ureq",
+ "variants",
+ "vfs",
+ "xbe",
+ "xiso",
 ]
 
 [[package]]

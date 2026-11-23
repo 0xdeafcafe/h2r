@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use boot::new_maps::{Disc, IsoDisc};
+use vfs::Backend;
 use firefight_kit::{Config, Mode, Team};
 use scenario_edit::{MapSource, recipe};
 
@@ -86,8 +86,9 @@ pub fn run(words: Vec<String>) -> Result<()> {
         (Mode::Kit, format!("firefight-{}", args.base))
     };
     let disc = args.disc.map(Ok).unwrap_or_else(crate::default_disc)?;
-    let file = IsoDisc::new(&disc)
-        .map_file(&args.base)?
+    let file = vfs::open_disc(&disc)
+        .with_context(|| format!("opening the disc {}", disc.display()))?
+        .host_file(&format!("maps\\{}.map", args.base))
         .with_context(|| format!("{} has no maps/{}.map", disc.display(), args.base))?;
     let bytes = MapSource::region(file.path, Some((file.offset, file.len))).read_base()?;
     let data = args.data.unwrap_or_else(content::store::default_data_root);

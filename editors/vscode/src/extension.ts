@@ -1,5 +1,5 @@
 // The H2 Rules extension: starts `h2 rules lsp` over stdio for `.rules`
-// files. The server is crates/apps/cli/src/rules_lsp.rs.
+// files. The server is crates/apps/h2-tools/src/rules_lsp.rs.
 
 import * as fs from 'fs';
 import * as os from 'os';

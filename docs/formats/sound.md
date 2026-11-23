@@ -98,7 +98,7 @@ Verdict: 64 samples per block per channel; `SamplesPerBlock::Hardware64` is righ
 - Files are never overwritten unless `--force`; only regular files are replaced.
   Directories below `--out` are created one level at a time and refused if they
   are symlinks, and files use exclusive creation, so output cannot leave `--out`
-  through a symlink (`crates/apps/cli/src/safe_out.rs`; it cannot defend against a
+  through a symlink (`crates/apps/cli-common/src/safe_out.rs`; it cannot defend against a
   concurrent process rewriting the tree).
 - `--all` exits non-zero if any sound fails, including an ASF/WMAv2 decoding
   failure or a missing/unrecognized XBE needed for the runtime tables.

@@ -4,8 +4,8 @@ Status: Built. The extensions have not been through a person's install
 on a clean machine; see "Not verified".
 Code: `editors/vscode/` (the VS Code extension), `editors/zed/` (the Zed
 extension), `editors/tree-sitter-rules/` (the grammar Zed highlights with),
-`crates/apps/cli/src/rules_lsp.rs` (`h2 rules lsp`),
-`crates/apps/cli/src/rules_editors.rs` (`h2 rules editors`). Tests: each
+`crates/apps/h2-tools/src/rules_lsp.rs` (`h2 rules lsp`),
+`crates/apps/h2-tools/src/rules_editors.rs` (`h2 rules editors`). Tests: each
 module's `tests`, `crates/formats/rules/src/ide/tests.rs`,
 `editors/vscode/test/`, `editors/tree-sitter-rules/test/corpus/`.
 Switch: none.

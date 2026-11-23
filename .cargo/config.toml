@@ -1,6 +1,10 @@
 [alias]
 # `cargo h2 analyze` etc. Uses the disc in disc/ unless given a path.
 h2 = "run --release -q -p cli --"
+# `cargo h2-tools firefight kit beavercreek` etc.: the offline map, tag and
+# script tools, built without the game (docs/runtime/cli-tools.md). `cargo h2
+# <tool>` runs the same, after building h2 too.
+h2-tools = "run --release -q -p h2-tools --"
 # `cargo xtask test|check|affected`: the test and check runner
 # (crates/tools/xtask/README.md).
 xtask = "run -q -p xtask --"

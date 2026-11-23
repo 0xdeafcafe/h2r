@@ -4,7 +4,7 @@ Status: Built. Code: `crates/formats/tags/src/effects/`. Switch: none.
 
 Implementation: `crates/formats/tags/src/effects/` (hand-written fixed codecs, not in
 `schema.rs`, like [sound.md](sound.md)). Tool: `h2 effect` in
-`crates/apps/cli/src/effects.rs`. Evidence labels as in [map-format.md](map-format.md):
+`crates/apps/h2-tools/src/effects.rs`. Evidence labels as in [map-format.md](map-format.md):
 **V** verified on the owner's retail disc, **E** corroborated by the engine's own
 code (XBE disassembly, addresses in [engine-map.md](../engine/engine-map.md)), **S** a name only,
 unverified. No map bytes, tag names, tag dumps or extracted assets are

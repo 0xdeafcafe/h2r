@@ -4,7 +4,7 @@ Status: Built. Code: `crates/formats/tags/src/collision.rs`. Tests: `crates/form
 
 Implementation: `crates/formats/tags/src/collision.rs` (hand-written codecs, not in
 `schema.rs`; synthetic tests in `collision_tests.rs`). CLI: `h2 collision`
-in `crates/apps/cli/src/collision.rs`. Engine addresses are in
+in `crates/apps/h2-tools/src/collision.rs`. Engine addresses are in
 [engine-map.md](../engine/engine-map.md) ("Collision and physics model layouts").
 No game data, tag names or dumps are committed; tests build invented payloads.
 

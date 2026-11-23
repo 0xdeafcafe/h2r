@@ -73,7 +73,7 @@ fn run_all(name: &str, bytes: &[u8]) -> std::process::Output {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
     let path = dir.join(format!("shader-all-{name}-{}.map", std::process::id()));
     std::fs::write(&path, bytes).unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_h2"))
+    let out = Command::new(env!("CARGO_BIN_EXE_h2-tools"))
         .args(["shader", "--all"])
         .arg(&path)
         .env_remove("H2_DISC")

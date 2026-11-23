@@ -999,7 +999,7 @@ pub fn find_program(name: &str, dirs: &[PathBuf], is_file: impl Fn(&Path) -> boo
 /// The rules extension's id in VS Code (`publisher.name` of
 /// `editors/vscode/package.json`) and in Zed (`editors/zed/extension.toml`).
 /// `h2 rules editors` reads the same places
-/// (`crates/apps/cli/src/rules_editors.rs`).
+/// (`crates/apps/h2-tools/src/rules_editors.rs`).
 pub const VSCODE_EXTENSION: &str = "h2recomp.h2-rules";
 pub const ZED_EXTENSION: &str = "h2-rules";
 

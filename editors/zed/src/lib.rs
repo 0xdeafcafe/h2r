@@ -2,7 +2,8 @@
 //!
 //! The binary is, in order: the `lsp.h2-rules-lsp.binary.path` setting,
 //! `h2` on the worktree's `PATH`, then `$HOME/.cargo/bin/h2` (where
-//! `cargo install --locked --path crates/apps/cli` puts it). The extension
+//! `cargo install --locked --path crates/apps/cli` puts it; `h2` runs the
+//! server from the `h2-tools` installed beside it). The extension
 //! runs in a WebAssembly sandbox that cannot see the host's files, so the
 //! last path is returned without a check; if it is missing, Zed's log
 //! ("zed: open log") says the server failed to start.
@@ -49,9 +50,10 @@ impl zed::Extension for H2Rules {
                     match home {
                         Some(home) => format!("{home}/.cargo/bin/h2"),
                         None => {
-                            return Err("h2 is not on PATH. Install it with \
-                                `cargo install --locked --path crates/apps/cli` \
-                                from an h2recomp checkout, or set \
+                            return Err("h2 is not on PATH. Install it and the \
+                                h2-tools it runs with `cargo install --locked --path \
+                                crates/apps/cli` and `cargo install --locked --path \
+                                crates/apps/h2-tools` from an h2recomp checkout, or set \
                                 lsp.h2-rules-lsp.binary.path in Zed's settings."
                                 .to_string())
                         }

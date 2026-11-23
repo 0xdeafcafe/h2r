@@ -29,10 +29,8 @@ pub fn keep_sectors(
         return Err("only generated data (no 2D BSP nodes, object refs or hints) is trimmed");
     }
     let mut sector_of = vec![NONE; pf.sectors.len()];
-    let mut kept = 0u16;
-    for (slot, _) in sector_of.iter_mut().zip(keep).filter(|(_, k)| **k) {
+    for (kept, (slot, _)) in (0u16..).zip(sector_of.iter_mut().zip(keep).filter(|(_, k)| **k)) {
         *slot = kept;
-        kept += 1;
     }
     let side = |s: u16| sector_of.get(usize::from(s)).copied().unwrap_or(NONE);
     let mut link_of = vec![NONE; pf.links.len()];

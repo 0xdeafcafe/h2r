@@ -4907,7 +4907,7 @@ verbs work in `h2 agent -` and `h2 agent run` scripts.
 ### Test maps on disk
 
 `h2 testmap <source.map> <script.json | -> --out <new.map> [--force]`
-(`crates/apps/cli/src/testmap_cmd.rs`) is a host-only tool for a repro that
+(`crates/apps/h2-tools/src/testmap_cmd.rs`) is a host-only tool for a repro that
 needs one thing in an empty room. It runs a JSON edit script
 (`scenario_edit::script`, `crates/tools/scenario-edit/src/script.rs`) over the
 source's placement blocks through the editor's own `Session`, so every

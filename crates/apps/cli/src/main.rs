@@ -1,7 +1,7 @@
 #[cfg(feature = "desktop")]
-use std::fs::{self, File};
+use std::fs;
 #[cfg(feature = "desktop")]
-use std::io::{BufReader, Read};
+use std::io::Read;
 #[cfg(feature = "desktop")]
 use std::path::{Path, PathBuf};
 
@@ -10,6 +10,9 @@ use anyhow::Context;
 use anyhow::{Result, bail};
 #[cfg(feature = "desktop")]
 use xiso::Xiso;
+// The disc and output helpers h2-tools shares (crates/apps/cli-common).
+#[cfg(feature = "desktop")]
+use cli_common::{default_disc, is_disc, load_xbe, open_iso, repo_root, safe_out};
 
 // mem-watch tags allocations, except under dhat, which needs the allocator.
 #[cfg(not(feature = "dhat-heap"))]
@@ -24,14 +27,11 @@ mod agent_hot_cmd;
 mod agent_raw;
 mod agent_run;
 mod agent_sim;
-mod rules_cmd;
-mod variants_cmd;
-mod rules_lsp;
-mod rules_editors;
 mod sim_cmd;
 mod sim_store_cmd;
 mod film_cmd;
 mod theater_cmd;
+mod tools;
 #[cfg(feature = "desktop")]
 mod anim;
 #[cfg(feature = "desktop")]
@@ -49,8 +49,6 @@ mod bots_test_cmd;
 #[cfg(feature = "desktop")]
 mod bots_verdict;
 #[cfg(feature = "desktop")]
-mod collision;
-#[cfg(feature = "desktop")]
 mod coop_drive;
 #[cfg(feature = "desktop")]
 mod coop_probe_cmd;
@@ -59,15 +57,9 @@ mod coop_test_cmd;
 #[cfg(feature = "desktop")]
 mod coop_verdict;
 #[cfg(feature = "desktop")]
-mod effects;
-#[cfg(feature = "desktop")]
 mod emit_cache;
 #[cfg(feature = "desktop")]
 mod emit_output;
-#[cfg(feature = "desktop")]
-mod extract_shaders;
-#[cfg(feature = "desktop")]
-mod firefight_cmd;
 #[cfg(feature = "desktop")]
 mod pogo_cmd;
 #[cfg(all(unix, feature = "desktop"))]
@@ -87,8 +79,6 @@ mod host_cmd;
 mod lab;
 #[cfg(feature = "desktop")]
 mod lighting;
-#[cfg(feature = "desktop")]
-mod lights;
 mod live_accounts;
 #[cfg(feature = "desktop")]
 mod live_admin;
@@ -155,8 +145,6 @@ mod live_weather;
 #[cfg(feature = "desktop")]
 mod lockstep_cmd;
 #[cfg(feature = "desktop")]
-mod map_testbuild;
-#[cfg(feature = "desktop")]
 mod mappack_cmd;
 #[cfg(feature = "desktop")]
 mod maps;
@@ -164,8 +152,6 @@ mod maps;
 mod server_map;
 #[cfg(feature = "desktop")]
 mod movies_cmd;
-#[cfg(feature = "desktop")]
-mod object;
 #[cfg(feature = "desktop")]
 mod play_cloud;
 #[cfg(feature = "desktop")]
@@ -175,27 +161,9 @@ mod mac_app;
 #[cfg(feature = "desktop")]
 mod play_live;
 #[cfg(feature = "desktop")]
-mod safe_out;
-#[cfg(feature = "desktop")]
-mod scripts;
-#[cfg(feature = "desktop")]
 mod settings_cmd;
 #[cfg(feature = "desktop")]
-mod shader;
-#[cfg(feature = "desktop")]
 mod sound;
-#[cfg(feature = "desktop")]
-mod strings;
-#[cfg(feature = "desktop")]
-mod hud_cmd;
-#[cfg(feature = "desktop")]
-mod superbounce_cmd;
-#[cfg(feature = "desktop")]
-mod tag_repo_cmd;
-#[cfg(feature = "desktop")]
-mod testmap_cmd;
-#[cfg(feature = "desktop")]
-mod forge_cmd;
 #[cfg(feature = "desktop")]
 mod forge_looks;
 #[cfg(feature = "desktop")]
@@ -219,7 +187,9 @@ const USAGE: &str = "usage: h2 <command>
   theater prepare FILM    verify a film headlessly and build its seek cache
   mem postmortem [--pid N | FILE]  explain a recorded process memory increase
   sim <run|batch|compare> run or compare bot matches
-  agent <call>            call a running game's agent API";
+  agent <call>            call a running game's agent API
+  rules, variants, ...    the offline tools, run in h2-tools beside h2
+                          (docs/runtime/cli-tools.md)";
 
 #[cfg(feature = "desktop")]
 const USAGE: &str = "usage: h2 <command> [disc]
@@ -247,18 +217,6 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           ending in a JSON report (docs/runtime/sim.md)
   sim batch <batch.toml>  many matches in parallel, A/B tuning compared;
                           sim compare <dir> prints the comparison again
-  rules check|build|run|sim|caps|builtin|settings|lsp|editors
-                          the scripted game types' compiler, verifier,
-                          scenario runner, the record a script makes,
-                          language server and editor extensions
-                          (docs/game/rules-engine.md)
-  variants port <input>... [--script builtin|FILE] [-o DIR]
-                          self-contained .h2variant files from records, saves,
-                          hopper slots or old files; --all-builtins from the
-                          disc (docs/editor/variants.md)
-  variants from-script <file.rules> [--option K=V]... [-o DIR]
-                          a script's own .h2variant: the stock record with
-                          its settings (docs/editor/variants.md)
   lockstep <a> <b>        compare two H2_LOCKSTEP traces; exit 1 if they differ
                           (docs/game/high-framerate.md)
   film stat FILE          report keyframes, capture points and tape usage
@@ -270,30 +228,22 @@ const USAGE: &str = "usage: h2 <command> [disc]
   play <disc> --live      play signed in to Xbox Live at live.forbes.red (or
                           --live-server URL, or --live-local for a service in
                           the process; offline without one; docs/live/live.md)
+  rules, variants, maps, tags, tag, firefight, map testbuild, testmap,
+  forge build|check, collision, superbounce, hud, object, strings, effect,
+  lights, shader, hs, extract-shaders
+                          the offline map, tag and script tools: h2 runs
+                          h2-tools beside it with the same words (`h2-tools
+                          --help` lists them; docs/runtime/cli-tools.md)
+  maps install [--data DIR] [--disc disc.iso]
+                          write the content offers for installed map packages
   info                    title, sections, libraries
   ls                      files on the disc
-  maps [disc.iso]         map headers and tag counts on the disc
-  tags <map> [group]      tags in a disc map or local .map; optional --disc <iso>
-  firefight kit MAP [--home red|blue] [--probe]  build a Firefight package
-                          from a disc map (docs/game/firefight.md)
   pogo kit MAP [--out FILE]  add the pogo stick to a disc multiplayer map and
                           say what it took; pogo models [--out DIR] writes
                           the three looks as OBJ files (art/pogo/README.md)
-  map testbuild --out DIR builder load-test maps for H2_MAP_DIR (docs/formats/map-builder.md)
-  testmap <map> <script> --out <new.map>  a test map: a JSON edit script over the
-                          placements (docs/runtime/agent-api.md, phase 5)
-  forge build|check <doc.h2forge> [--disc <iso>]  materialise or verify a local Forge map
   forge looks [--disc <iso>] [--json]  the models a Forge monitor can look like
-  tag <map> <tag name>    decode one tag; optional group and --disc <iso>
   bitmap <map> <tag>      decode a bitmap tag to PNG (--image N --out DIR --mips)
   bitmap --all <map>      bulk decode check of every bitmap in a map
-  collision <map> <tag>   summarise a coll/phmo tag; --obj FILE exports geometry
-  collision --all <map|all>  validate every coll/phmo tag (all = every disc map)
-  superbounce scan <map>  bounce strips and forced-crouch spots in a map's
-                          collision; --bsp N, --json (docs/game/superbounce.md)
-  hud preview <hud> --out DIR  a HUD kit HUD drawn over the retail player HUD,
-                          PNG and JSON per state, and its checks; hud sheet
-                          for every HUD (docs/game/hud-kit.md)
   bots nav <map|all>      build the bots' nav mesh and walls into <data>/bots
                           (docs/game/bots.md)
   bots test               Clankers in a Live custom game, unattended: a local
@@ -306,9 +256,6 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           (optional <map> for one map)
   sound <map> <tag>       export a snd! tag to WAV; --all <map> validates every sound
                           (options --out DIR, --disc <iso>)
-  object <map> <tag>      object-family tag, its hlmt and default variant;
-                          --all <map|all> validates every object-family tag
-  strings <map>           localized text; --lang en, --tag name, --all, --disc iso
   font <font> <text> --out <png>
                           render text with a /maps/fonts file; --all validates every font
                           (options --color RRGGBB[AA], --force, --disc <iso>)
@@ -329,26 +276,12 @@ const USAGE: &str = "usage: h2 <command> [disc]
   movies <iso> [--out DIR] [--ffmpeg PATH] [--force]
                           convert the Bink movies to MP4 with your own ffmpeg
                           (optional; exit 3 if ffmpeg is missing, 4 if unusable)
-  effect <map> <tag>      print an effects-family tag (effe tree); --all <map|all> validates the family
-                          (option --disc <iso>)
-  lights <map>            the ligh tags a map defines (shape, colour, shadow flag)
-                          and where each comes from; --all <map|all> checks the layout
-                          (option --disc <iso>)
-  shader <map> <tag>      print the material a shad resolves to (passes, textures,
-                          constants, render state); --all <map|all> validates
-                          every shad/stem/spas (options --disc <iso>)
-  hs <map> [--script name] [--builtins] [--disc iso]
-  hs --all [--disc iso]   verify all disc maps (codec symmetry and node counts)
   ui <map> <screen tag>   print a wgit screen's widget tree (no localized text);
                           --all <map|all> validates every UI tag (option --disc <iso>)
   anim <map> <jmad tag>   animation graph summary; --anim NAME for one animation,
                           --json PATH to dump sampled transforms; --all validates the disc
   extract [disc] [out-dir] [--force]
                           copy every file off the disc (default disc/extracted)
-  extract-shaders --out DIR [--disc iso] [--force]
-                          write every distinct vertex program (*.xvu) and pixel shader
-                          definition (*.psdef) from the disc's maps to DIR, the corpus
-                          for the shaders and d3d ignored tests (keep it out of the repo)
   extract-xbe [disc] [out] [--force]
                           just default.xbe (default disc/default.xbe). With two
                           arguments it is <disc> <out>: the output comes LAST
@@ -446,11 +379,15 @@ fn main() -> Result<()> {
     let Some(cmd) = command else {
         bail!("{USAGE}")
     };
+    let rest: Vec<String> = args.collect();
+    // The offline map, tag and script tools run in h2-tools (tools.rs).
+    if tools::forwards(&cmd, &rest) {
+        return tools::run(cmd, rest);
+    }
+    let args = rest.into_iter();
     match cmd.as_str() {
         "mem" => mem_cmd::run(&args.collect::<Vec<_>>()),
         "serve" => boot_cmd::run(&cmd, args.collect()),
-        "rules" => rules_cmd::run(args.collect()),
-        "variants" => variants_cmd::run(args.collect()),
         "sim" => sim_cmd::run(args.collect()),
         "host" => host_cmd::run(args.collect()),
         "theater" => theater_cmd::run(args.collect()),
@@ -471,33 +408,15 @@ fn desktop_command(cmd: String, mut args: impl Iterator<Item = String>) -> Resul
     if cmd == "sound" {
         return sound::run(args.collect());
     }
-    if cmd == "object" {
-        return object::run(args.collect());
-    }
-    if cmd == "strings" {
-        return strings::run(args.collect());
-    }
     if cmd == "server-map" {
         return server_map::run(args.collect());
     }
-    if cmd == "firefight" {
-        return firefight_cmd::run(args.collect());
-    }
+    // The other `maps` commands run in h2-tools (tools::forwards).
     if cmd == "pogo" {
         return pogo_cmd::run(args.collect());
     }
-    if cmd == "map" {
-        return map_testbuild::run(args.collect());
-    }
-    if cmd == "tags" {
-        let rest: Vec<String> = args.collect();
-        if tag_repo_cmd::handles(&rest) {
-            return tag_repo_cmd::run(rest);
-        }
-        return maps::run(&cmd, rest);
-    }
-    if matches!(cmd.as_str(), "maps" | "tags" | "tag") {
-        return maps::run(&cmd, args.collect());
+    if cmd == "maps" {
+        return maps::install(&args.skip(1).collect::<Vec<_>>());
     }
     if cmd == "font" {
         return fonts::run(args.collect());
@@ -516,15 +435,6 @@ fn desktop_command(cmd: String, mut args: impl Iterator<Item = String>) -> Resul
     }
     if cmd == "import-mappack" {
         return mappack_cmd::run(args.collect());
-    }
-    if cmd == "collision" {
-        return collision::run(args.collect());
-    }
-    if cmd == "superbounce" {
-        return superbounce_cmd::run(args.collect());
-    }
-    if cmd == "hud" {
-        return hud_cmd::run(args.collect());
     }
     if cmd == "bots" {
         let args: Vec<String> = args.collect();
@@ -563,32 +473,15 @@ fn desktop_command(cmd: String, mut args: impl Iterator<Item = String>) -> Resul
     if cmd == "studio" {
         return studio_proto::cli::run("h2 studio", args.collect());
     }
+    // `forge build|check` run in h2-tools (tools::forwards).
     if cmd == "forge" {
-        return forge_cmd::run(args.collect());
-    }
-    if cmd == "testmap" {
-        return testmap_cmd::run(args.collect());
+        return forge_looks::run(args.skip(1).collect());
     }
     if matches!(cmd.as_str(), "build" | "run") {
         return boot_cmd::run(&cmd, args.collect());
     }
     if cmd == "bitmap" {
         return bitmap::run(args.collect());
-    }
-    if cmd == "lights" {
-        return lights::run(args.collect());
-    }
-    if cmd == "effect" {
-        return effects::run(args.collect());
-    }
-    if cmd == "shader" {
-        return shader::run(args.collect());
-    }
-    if cmd == "extract-shaders" {
-        return extract_shaders::run(args.collect());
-    }
-    if cmd == "hs" {
-        return scripts::run(args.collect());
     }
     if cmd == "ui" {
         return ui::run(args.collect());
@@ -695,85 +588,6 @@ fn desktop_command(cmd: String, mut args: impl Iterator<Item = String>) -> Resul
         ("disasm", [addr, n]) => disasm(&disc, addr, Some(n)),
         _ => bail!("{USAGE}"),
     }
-}
-
-#[cfg(feature = "desktop")]
-fn is_disc(p: &Path) -> bool {
-    let ext = p
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(str::to_ascii_lowercase);
-    p.is_file() && matches!(ext.as_deref(), Some("iso" | "xbe"))
-}
-
-#[cfg(feature = "desktop")]
-fn repo_root() -> PathBuf {
-    // crates/apps/cli -> repo root
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
-}
-
-#[cfg(feature = "desktop")]
-fn default_disc() -> Result<PathBuf> {
-    if let Some(p) = std::env::var_os("H2_DISC") {
-        return Ok(p.into());
-    }
-    let dir = repo_root().join("disc");
-    let isos: Vec<PathBuf> = fs::read_dir(&dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| is_disc(p) && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("iso")))
-        .collect();
-    pick_default_disc(isos).with_context(|| {
-        format!(
-            "no disc given and none found in {} (put your .iso there or set H2_DISC)",
-            dir.display()
-        )
-    })
-}
-
-/// The Halo 2 disc among `isos`: `halo2.iso` when present, else the first
-/// by name that isn't another game's disc this repo also reads (`halo1.iso`,
-/// the Map Pack's `mappack.iso`).
-#[cfg(feature = "desktop")]
-fn pick_default_disc(mut isos: Vec<PathBuf>) -> Option<PathBuf> {
-    const OTHER_DISCS: [&str; 2] = ["halo1.iso", "mappack.iso"];
-    let name = |p: &PathBuf| {
-        p.file_name()
-            .and_then(|n| n.to_str())
-            .map(str::to_ascii_lowercase)
-            .unwrap_or_default()
-    };
-    if let Some(p) = isos.iter().find(|p| name(p) == "halo2.iso") {
-        return Some(p.clone());
-    }
-    isos.sort();
-    isos.into_iter()
-        .find(|p| !OTHER_DISCS.contains(&name(p).as_str()))
-}
-
-#[cfg(feature = "desktop")]
-fn open_iso(path: &Path) -> Result<Xiso<BufReader<File>>> {
-    safe_out::protect(path);
-    let f = File::open(path).with_context(|| format!("opening {}", path.display()))?;
-    Ok(Xiso::open(BufReader::new(f))?)
-}
-
-/// Accepts a raw XBE or a disc image, returning the XBE bytes.
-#[cfg(feature = "desktop")]
-fn load_xbe(path: &Path) -> Result<Vec<u8>> {
-    safe_out::protect(path);
-    let mut magic = [0u8; 4];
-    File::open(path)
-        .with_context(|| format!("opening {}", path.display()))?
-        .read_exact(&mut magic)?;
-    if &magic == b"XBEH" {
-        return Ok(fs::read(path)?);
-    }
-    let mut iso = open_iso(path)?;
-    let entry = iso.find("default.xbe")?;
-    Ok(iso.read(&entry)?)
 }
 
 #[cfg(feature = "desktop")]
@@ -1391,37 +1205,6 @@ fn emit_run_entry(
 mod tests {
     use super::*;
 
-    #[test]
-    fn default_disc_prefers_halo2_and_skips_other_games() {
-        let p = |n: &str| PathBuf::from("disc").join(n);
-        let all = vec![p("halo1.iso"), p("halo2.iso"), p("mappack.iso")];
-        assert_eq!(pick_default_disc(all), Some(p("halo2.iso")));
-        let renamed = vec![p("halo1.iso"), p("my halo 2.iso"), p("mappack.iso")];
-        assert_eq!(pick_default_disc(renamed), Some(p("my halo 2.iso")));
-        assert_eq!(pick_default_disc(vec![p("halo1.iso")]), None);
-    }
-
-    /// Opening a disc registers it, so any exporter's `OutDir` refuses it even
-    /// under `--force` and even when the file has an innocent name.
-    #[test]
-    fn opened_discs_are_protected_from_every_exporter() {
-        use std::io::{Seek, SeekFrom, Write};
-        let d = std::env::temp_dir().join(format!("h2-main-test-{}", std::process::id()));
-        fs::create_dir_all(&d).unwrap();
-        let disc = d.join("pretty.png");
-        let mut f = File::create(&disc).unwrap();
-        f.seek(SeekFrom::Start(0x10000)).unwrap();
-        f.write_all(b"MICROSOFT*XBOX*MEDIA").unwrap();
-        f.write_all(&[0u8; 8]).unwrap();
-        drop(f);
-        let before = fs::read(&disc).unwrap();
-        open_iso(&disc).unwrap();
-        let out = safe_out::OutDir::new(&d, true).unwrap();
-        assert!(out.write(&["pretty.png".to_string()], b"png").is_err());
-        assert_eq!(fs::read(&disc).unwrap(), before);
-        fs::remove_dir_all(d).unwrap();
-    }
-
     /// Read + Seek over an image that records its largest single read.
     struct Spy {
         inner: std::io::Cursor<Vec<u8>>,
@@ -1507,29 +1290,6 @@ mod tests {
         // Re-extracting over existing files needs --force.
         assert!(extract_to(&mut iso, &d.join("disc.xiso"), &out, false).is_err());
         extract_to(&mut iso, &d.join("disc.xiso"), &out, true).unwrap();
-        fs::remove_dir_all(d).unwrap();
-    }
-
-    /// Registration must not depend on the disc-magic fallback: a file that is
-    /// not a disc at all is still protected once a loader has seen it.
-    #[test]
-    fn loaders_register_their_input_even_without_disc_magic() {
-        let d = scratch("register");
-        let junk = d.join("junk.dat");
-        fs::write(&junk, b"not a disc at all").unwrap();
-        assert!(open_iso(&junk).is_err());
-        let xbe = d.join("x.dat");
-        fs::write(&xbe, b"XBEH synthetic").unwrap();
-        load_xbe(&xbe).unwrap();
-        let out = safe_out::OutDir::new(&d, true).unwrap();
-        for n in ["junk.dat", "x.dat"] {
-            assert!(
-                out.write(&[n.to_string()], b"x").is_err(),
-                "{n} was overwritten"
-            );
-        }
-        assert_eq!(fs::read(&junk).unwrap(), b"not a disc at all");
-        assert_eq!(fs::read(&xbe).unwrap(), b"XBEH synthetic");
         fs::remove_dir_all(d).unwrap();
     }
 }

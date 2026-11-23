@@ -265,7 +265,7 @@ file, so it carries no signature.
   `Bundle::check` refuses a script over the tick budget or the IR cap
   (`rules::fits`). `h2 variants port <input>... [--script
   builtin|FILE] [--name NAME] [--description TEXT] [--option
-  KEY=VALUE]... [-o DIR]` (`crates/apps/cli/src/variants_cmd.rs`) writes
+  KEY=VALUE]... [-o DIR]` (`crates/apps/h2-tools/src/variants_cmd.rs`) writes
   one file per input, named by the variant (`portable::file_name`), and
   prints each id. `--name` and `--description` take one input; each
   `--option` is an int, `true` or `false`, or an enum value's name, and

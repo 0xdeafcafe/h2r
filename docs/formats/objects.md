@@ -4,7 +4,7 @@ Status: Built. Code: `crates/formats/tags/src/object/`. Switch: none.
 
 Implementation: `crates/formats/tags/src/object/` (self-contained, table-driven
 decoder; not in `schema.rs`). Command: `h2 object` in
-`crates/apps/cli/src/object.rs`. Evidence labels:
+`crates/apps/h2-tools/src/object.rs`. Evidence labels:
 
 - **E**: engine code reads the field this way. The field note in
   `layouts.rs` gives the XBE address.

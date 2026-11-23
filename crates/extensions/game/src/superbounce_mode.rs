@@ -952,10 +952,7 @@ pub fn set_override(on: Option<bool>) -> Result<&'static str, &'static str> {
 
 /// Whether the mode is on in the game running now.
 fn on_now(m: &dyn GuestMemory) -> bool {
-    match OVERRIDE.load(Ordering::Relaxed) {
-        FORCE_OFF => return false,
-        _ => {}
-    }
+    if OVERRIDE.load(Ordering::Relaxed) == FORCE_OFF { return false }
     crate::variant_ext::in_game(&crate::layout_glue::ReadGm(m)).superbounce()
 }
 
