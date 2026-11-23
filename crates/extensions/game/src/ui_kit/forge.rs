@@ -16,6 +16,7 @@ const PALETTE: &str = "forge.palette";
 const PROPERTIES: &str = "forge.properties";
 const MENU: &str = "forge.menu";
 const LINK: &str = "forge.link";
+const LOOK: &str = "forge.look";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Mode {

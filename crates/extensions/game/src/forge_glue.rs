@@ -66,6 +66,21 @@ pub fn page() -> Option<ScreenSpec> {
     driver.editor.as_ref()?.page()
 }
 
+/// The markers of the session's other monitors, projected through the
+/// last frame's world view: the play window's overlay paints them beside
+/// the gizmo. A monitor's own marker is never drawn.
+pub fn markers() -> Vec<marker::Marker> {
+    let Some(driver) = current() else {
+        return Vec::new();
+    };
+    let driver = driver.lock().unwrap_or_else(|e| e.into_inner());
+    driver
+        .markers
+        .iter()
+        .filter_map(|(frame, colour)| marker::project(*frame, *colour))
+        .collect()
+}
+
 /// World-space axes and the held object's outline, projected through the
 /// render frame's camera.
 pub fn gizmo() -> Option<gizmo::Axes> {
@@ -104,6 +119,9 @@ struct Driver {
     editor: Option<Editor>,
     /// The saved map the editor loads at its first tick.
     draft: Option<String>,
+    /// The other seats' markers as the last tick left them, for the play
+    /// window's overlay ([`markers`]).
+    markers: Vec<(forge::Frame, [u8; 3])>,
     reason: String,
 }
 
@@ -115,6 +133,7 @@ impl Driver {
         self.looks.close();
         self.opening = None;
         self.loaded = None;
+        self.markers.clear();
         self.link.reset();
         self.reason = "Waiting for a local multiplayer map.".into();
         controls::publish(controls::State::default());
@@ -210,7 +229,8 @@ impl Driver {
                             return;
                         };
                         let name = who_of(Some(m)).profile;
-                        if let Err(e) = editor.open_shared(offer, tick, &name) {
+                        let monitor = monitor_start(m, &self.looks);
+                        if let Err(e) = editor.open_shared(offer, tick, &name, &monitor) {
                             self.reason = e;
                             return;
                         }
@@ -245,6 +265,7 @@ impl Driver {
                 .flatten()
                 .and_then(|g| g.options().variant().engine(m).ok());
             e.tick(tick, bsp, crate::forge_screens::ui_up(m), game);
+            self.markers = e.monitor_markers(tick as f32 / 30.);
         }
     }
 }
@@ -312,6 +333,40 @@ impl Feature for Hooks {
     }
 }
 
+/// What the session's monitor channel starts with (docs/game/
+/// forge-monitor-appearance.md, ML7): the local seat's look, what this
+/// machine can draw as its hello says, the host model list's catalogue
+/// and the palette's RGB.
+fn monitor_start(
+    m: &dyn engine::GuestMemory,
+    looks: &Looks,
+) -> editing::MonitorStart {
+    let colour = crate::pad_lightbar::seat_colour(m, 0).unwrap_or(0);
+    let resolved = looks.session().cloned().unwrap_or_else(|| {
+        forge::look::MonitorLook::default_for(colour)
+    });
+    let catalogue = looks.catalogue().to_vec();
+    let base = catalogue
+        .iter()
+        .find(|e| e.key == resolved.model)
+        .filter(|_| !resolved.is_marker())
+        .map(|e| e.sha256.clone());
+    editing::MonitorStart {
+        base,
+        can: forge::look::session::CanDraw::ours(
+            forge::look::BODIES_DRAWN,
+            catalogue.iter().map(|e| e.sha256.clone()).collect(),
+        ),
+        look: resolved,
+        catalogue,
+        palette: (0..forge::look::PALETTE)
+            .map(|index| {
+                crate::pad_lightbar::palette_rgb(m, index).unwrap_or([0; 3])
+            })
+            .collect(),
+    }
+}
+
 /// The profile of local slot 0 and its colour: whose monitor look this is.
 /// Without a signed-in profile it is the default profile
 /// ([`crate::skulls::DEFAULT_PROFILE`]) and palette colour 0.
@@ -365,6 +420,7 @@ pub fn install(
         opening: None,
         editor: None,
         draft: None,
+        markers: Vec::new(),
         reason: "Waiting for a local multiplayer map.".into(),
     }));
     if registry

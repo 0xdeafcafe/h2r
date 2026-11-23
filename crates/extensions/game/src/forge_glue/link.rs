@@ -506,6 +506,7 @@ impl CoopLink {
 mod tests {
     use super::*;
     use crate::forge_glue::net::{self as glue, Change, Offer};
+    use forge::look::session::CanDraw;
     use engine::points;
     use engine::testing::FakeGuest;
     use forge::net::{Node, Role};
@@ -837,7 +838,7 @@ mod tests {
             panic!("the guest's link offered no lane");
         };
         Joined {
-            node: Node::guest(limits(), name, lane).unwrap(),
+            node: Node::guest(limits(), name, CanDraw::default(), lane).unwrap(),
             session: session(),
             world: FakeWorld::default(),
         }

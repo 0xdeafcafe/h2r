@@ -1616,7 +1616,7 @@ mod things {
                 let (to_host, to_guest) = wires();
                 host.node.accept(Seat(1), to_guest, Role::Editor).unwrap();
                 let guest = Mach {
-                    node: Node::guest(limits(), "Guest", to_host).unwrap(),
+                    node: Node::guest(limits(), "Guest", forge::look::session::CanDraw::default(), to_host).unwrap(),
                     session: session(),
                     world: Takes::default(),
                     name: "Guest",

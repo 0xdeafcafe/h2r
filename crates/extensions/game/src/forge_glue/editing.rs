@@ -26,6 +26,8 @@ use crate::ui_kit::{
 
 mod net;
 
+pub(crate) use net::MonitorStart;
+
 enum After {
     Tool(Command),
     /// Items of a shared session's stream.

@@ -78,6 +78,12 @@ pub fn eye() -> Option<Camera> {
     lock().eye
 }
 
+/// Whether the local player is a monitor, for the session's monitor
+/// channel and `forge.status`.
+pub fn monitor() -> bool {
+    lock().state.monitor
+}
+
 /// Whether fine movement is on, for the HUD and `forge.status`.
 pub fn fine() -> bool {
     lock().fine

@@ -138,7 +138,7 @@ pub fn pieces(v: &View) -> Pieces {
                 },
                 alpha: w.alpha,
             }),
-            Kind::Art { .. } => {}
+            Kind::Art { .. } | Kind::Scene3d { .. } => {}
             Kind::Text {
                 font,
                 justify,
