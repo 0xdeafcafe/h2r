@@ -3,6 +3,13 @@
 use crate::Tag;
 use serde::{Deserialize, Serialize};
 
+mod codec;
+pub use codec::{decode_batch, encode_batch};
+
+/// The chunk tag of a call batch: the binary stream of
+/// [`codec`](encode_batch), every stream interleaved in call order.
+pub const TAPE: Tag = *b"TAPE";
+
 /// XAPI reads share the HLE call cursor; topology changes are sparse and
 /// indexed by the XAPI pump (the guest also sees its device-change globals).
 pub const PADR: Tag = *b"PADR";
@@ -17,9 +24,44 @@ pub const VSIZ: Tag = *b"VSIZ";
 pub const VIDEO_MENU_SIZE: &str = "Video.MenuSize";
 pub const PDEV: Tag = *b"PDEV";
 
-/// Streams of indexed HLE calls, in report order. PDEV and BOTR carry
-/// separate boundary records and do not advance the call cursor.
+/// Streams of indexed HLE calls, in report order. A stream is a way to
+/// count calls ([`stream_of`]); the film stores them interleaved in
+/// [`TAPE`] batches. PDEV and BOTR carry separate boundary records and do
+/// not advance the call cursor.
 pub const CALL_STREAMS: [Tag; 6] = [crate::NETR, crate::RAND, PADR, TEXT, BTAP, VSIZ];
+
+/// Whether any call on the tape is `op`. Reads every batch.
+pub fn holds_op(reader: &mut Reader<File>, op: &str) -> FilmResult<bool> {
+    let entries: Vec<Entry> = reader
+        .machine_section()
+        .entries()
+        .filter(|e| e.tag == TAPE)
+        .cloned()
+        .collect();
+    for entry in entries {
+        if decode_batch(&reader.read_bytes(&entry)?)?.iter().any(|c| c.op == op) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The stream an operation belongs to.
+pub fn stream_of(op: &str) -> Tag {
+    if op == VIDEO_MENU_SIZE {
+        VSIZ
+    } else if op == "Bot.BuildAction" {
+        BTAP
+    } else if op == "VirtualKeyboard" {
+        TEXT
+    } else if op == "XInputGetState" {
+        PADR
+    } else if matches!(op, "Random" | "CreateKey") || op.starts_with("Entropy.") {
+        crate::RAND
+    } else {
+        crate::NETR
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PortChange {
@@ -109,26 +151,26 @@ use crate::{Entry, Reader, Writer};
 use anyhow::{Context, Result as FilmResult, ensure};
 use std::{collections::VecDeque, fs::File};
 
-/// Flush before a checkpoint, a stream change, or 128 calls / 64 KiB.
+/// Flush before a checkpoint, an arena hash, or 128 calls / 64 KiB. A
+/// change of stream does not flush: pad reads and socket calls share one
+/// batch in call order.
 #[derive(Default)]
 pub struct Batch {
-    tag: Tag,
     pending: Vec<Call>,
     bytes: usize,
 }
 impl Batch {
-    pub fn append(&mut self, out: &mut Writer<File>, tag: Tag, call: Call) -> FilmResult<()> {
-        if self.tag != tag || self.pending.len() >= 128 || self.bytes >= 65536 {
+    pub fn append(&mut self, out: &mut Writer<File>, call: Call) -> FilmResult<()> {
+        if self.pending.len() >= 128 || self.bytes >= 65536 {
             self.flush(out)?;
         }
-        self.tag = tag;
         self.bytes += call.outputs.iter().map(Vec::len).sum::<usize>();
         self.pending.push(call);
         Ok(())
     }
     pub fn flush(&mut self, out: &mut Writer<File>) -> FilmResult<()> {
         if !self.pending.is_empty() {
-            out.chunk(self.tag, &self.pending)?;
+            out.chunk_bytes(TAPE, &encode_batch(&self.pending)?)?;
             self.pending.clear();
             self.bytes = 0;
         }
@@ -199,7 +241,7 @@ impl Playback {
                 "unexpected data after film end"
             );
             match e.tag {
-                tag if CALL_STREAMS.contains(&tag) => streams.push(e),
+                TAPE => streams.push(e),
                 crate::DATA => data += 1,
                 crate::HASH => {
                     let check: Check = reader.read(&e)?;
@@ -460,33 +502,9 @@ impl Playback {
     }
 
     fn read_call_batch(reader: &mut Reader<File>, entry: &Entry) -> FilmResult<VecDeque<Call>> {
-        let batch: VecDeque<Call> = reader.read(entry)?;
-        ensure!(
-            !batch.is_empty() && batch.len() <= 128,
-            "invalid film call batch"
-        );
-        ensure!(
-            batch.iter().all(|call| {
-                let tag = if call.op == VIDEO_MENU_SIZE {
-                    VSIZ
-                } else if call.op == "Bot.BuildAction" {
-                    BTAP
-                } else if call.op == "VirtualKeyboard" {
-                    TEXT
-                } else if call.op == "XInputGetState" {
-                    PADR
-                } else if matches!(call.op.as_str(), "Random" | "CreateKey")
-                    || call.op.starts_with("Entropy.")
-                {
-                    crate::RAND
-                } else {
-                    crate::NETR
-                };
-                tag == entry.tag
-            }),
-            "wrong film stream"
-        );
-        Ok(batch)
+        let batch = decode_batch(&reader.read_bytes(entry)?)?;
+        ensure!(batch.len() <= 128, "invalid film call batch");
+        Ok(batch.into())
     }
 
     pub fn exhausted(&self) -> bool {

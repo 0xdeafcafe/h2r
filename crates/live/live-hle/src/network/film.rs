@@ -13,6 +13,9 @@ impl Network {
         rt: &Runtime,
     ) -> Result<u32> {
         let name = format!("{op:?}");
+        if op == Op::Socket {
+            lock(&self.state).opened = true;
+        }
         if tap.replaying() {
             let call = tap.next(&name, a, thread).ok_or(10022u32)?;
             if let Err(e) = self.restore(op, a, rt, &call) {
@@ -334,6 +337,7 @@ pub(crate) fn service_qos(
 struct FilmState {
     claims: Vec<(u32, u32)>,
     view: crate::film_service::View,
+    opened: bool,
     net: u32,
     wsa: u32,
     key_ids: Vec<[u8; 8]>,
@@ -357,6 +361,7 @@ impl crate::Hle {
         let saved = FilmState {
             claims: crate::film_service::claims(g),
             view: side.view.clone(),
+            opened: net.opened,
             net: net.net,
             wsa: net.wsa,
             key_ids: net.keys.keys().copied().collect(),
@@ -398,6 +403,7 @@ impl crate::Hle {
             .unwrap_or_else(|e| e.into_inner())
             .view = saved.view;
         let mut net = lock(&self.network.state);
+        net.opened = saved.opened;
         net.net = saved.net;
         net.wsa = saved.wsa;
         net.keys = saved.key_ids.into_iter().map(|id| (id, [0; 16])).collect();

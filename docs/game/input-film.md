@@ -1,7 +1,7 @@
 # The input film
 
-Status: Design. The per-tick input capture, the HLE tape and the container that holds them are built; the film file, its encoding and the engine film are not.
-Code: `crates/extensions/game/src/theater/actions.rs` (`capture`, `apply`), `crates/live/film/src/tape.rs` (`Call`, `Batch`, `Playback`), `crates/live/film/src/blam` (the tick track). Tests: `crates/extensions/game/src/theater/actions.rs` (`gathered_actions_follow_sparse_player_slots_and_replay_ignores_pad_only_rows`), `crates/live/film/src/blam/tests.rs`.
+Status: Design. The per-tick input capture, the binary HLE tape, the container that holds them and the action-column codec are built; the film file that carries the columns and the engine film are not.
+Code: `crates/extensions/game/src/theater/actions.rs` (`capture`, `apply`), `crates/live/film/src/tape.rs` (`Call`, `Batch`, `Playback`), `crates/live/film/src/columns.rs` (`ChunkEncoder`, `ChunkDecoder`, `FieldStats`), `crates/live/film/src/blam` (the tick track). Tests: `crates/extensions/game/src/theater/actions.rs` (`gathered_actions_follow_sparse_player_slots_and_replay_ignores_pad_only_rows`), `crates/live/film/src/blam/tests.rs`.
 Switch: none.
 
 A film is how to make a game happen again: a seed, every seat's input on
@@ -72,7 +72,7 @@ code:
 
 | Dependency | What is recorded | Where | Why | Machine film | Engine film |
 |---|---|---|---|---|---|
-| Pad reads (`PADR`) | every `XInputGetState` status and 22-byte packet, by call index | `FilmPads::read_with_memory` in `theater/local_pads.rs` | the only way input and menu presses reach the guest | needed; binary encoding (slice 14) | cut: the inputs replace it, menus are not replayed |
+| Pad reads (`PADR`) | every `XInputGetState` status and 22-byte packet, by call index | `FilmPads::read_with_memory` in `theater/local_pads.rs` | the only way input and menu presses reach the guest | needed; binary encoding | cut: the inputs replace it, menus are not replayed |
 | Controller ports (`PDEV`) | port topology at each input pump | `record_ports`, same file | the guest sees device changes without reading a pad; a controller arriving is how a split-screen seat joins | needed; sparse | cut: seat records |
 | Keyboard (`TEXT`) | virtual-keyboard edits | `crates/extensions/game/src/keyboard_glue.rs` | profile-name entry | needed; rare | cut |
 | Host randomness (`RAND`) | `XNetRandom`, `XNetCreateKey` and `Entropy.*` outputs | `Network::filmed`, `state_random` in `crates/live/live-hle/src/network/film.rs` | host entropy written into guest memory | needed; a few calls a session | cut: the game's own random state is guest memory, seeded from the descriptor |
@@ -94,17 +94,41 @@ the pad stream, port changes, keyboard edits and a few entropy and
 service calls. The network tape is the large stream and exists only for
 Live and system-link games.
 
-**The tape's cost.** Calls are JSON (`Writer::chunk` in
-`crates/live/film/src/lib.rs`): a `Call` with its operation name and each
-output byte as a decimal number. A batch is closed at 128 calls or 64 KiB,
-at every arena hash, and whenever the stream tag changes (`Batch::append`),
-so interleaved pad and socket calls make a zstd frame, an envelope and an
-`INDX` row each time they alternate. **Estimate**: a pad read is about
-165 bytes inflated, an empty socket poll about 100, a received datagram
-of N bytes about 90 + 3.6 N. One pad read a frame at 30 Hz is 297 KB a
-pad-minute inflated; stored size depends on the alternation and is not
-measured. [Theater seek measurements](notes/theater-seek.md) records
-calls and bytes per stream. Slice 14 replaces the encoding.
+**The tape.** The call tape is one binary stream in call order
+(`crates/live/film/src/tape/codec.rs`; the chunk tag is `TAPE`). A batch
+is one chunk: a table of the operation names it uses, then each call as
+a ULEB operation code, thread, call index (zigzag delta), result,
+arguments and outputs. An output is raw, a repeat of the last output of
+the same operation, first argument and slot, or the bytes that differ
+from it, so a pad read is the bytes that differ from its handle's last
+packet. State starts empty in each batch, which is what lets a seek read
+one chunk. Batches close at 128 calls, 64 KiB, a checkpoint or an arena
+hash, never on a change of stream, so pad reads and socket calls share
+one zstd frame and one `INDX` row. A decoder checks every count and
+length against the bytes left and refuses a batch that begins with `[`,
+which is the JSON encoding the tape no longer has (the simulation ABI
+is `h2-sim/2`).
+
+Calls that need no tape:
+
+- `Htonl`, `Htons` and `FdIsSet` are pure functions of their arguments
+  and guest memory; `Network::invoke` computes them in recording and in
+  playback, and they take no call index.
+- The null network. A game that has made no socket has none for an
+  operation on a socket (`Bind`, `Send`, `Recv`, `Close` and the like) to
+  name, so those operations are answered from the guest's own state in
+  both runs and are not taped. The first `Socket` call ends it
+  (`Network::dark`, `State::opened`, saved in the film state), and every
+  call after is taped. A dedicated host's tunnel answers before the
+  socket table and is never dark. `h2 film stat` lists the operations an
+  offline game makes; an operation it still makes that needs no socket
+  is a candidate for the same treatment.
+
+**Estimate**: a pad read that changes two packet bytes is about 15 bytes
+inflated; before, about 165. `h2 film stat FILE` prints each stream's
+bytes in both encodings from the same calls, and the tape's stored bytes.
+[Theater seek measurements](notes/theater-seek.md) records calls and
+bytes per stream.
 
 ### Joins and leaves
 
@@ -227,29 +251,54 @@ trailer         u32 chunk count, then a u64 offset per tick chunk
 The length, the trailer offset and the sealed flag are zero while a film
 is being written or streamed; a reader of such a file walks the blocks.
 Chunk i covers ticks 256 i + 1 to 256 i + 256, so a tick's chunk is found
-without a search. A tick chunk, inflated:
+without a search. A tick chunk, inflated (`film::columns`; the whole chunk is one zstd frame
+with a checksum, and a frame without one is refused):
 
 ```text
-u16 ticks in the chunk, u16 mask of seats with any column
-tick flags      one byte a tick: update applied, paused, seat record
+u16 ticks in the chunk (1 to 256), u16 mask of seats that are in the
+                game on at least one of them
+tick flags      one byte a tick
 digests         two planes of one byte a tick: the low 16 bits of the
                 gameplay digest
 per seat in the mask, ascending:
-   u16 field mask (the 14 fields above)
+   u16 field mask: bit 0 the seat's presence (absent: in the game on
+      every tick), bit i + 1 action field i of the 13 above
+   presence plane if bit 0: one byte a tick
    per field in the mask: u8 predictor (none, previous, linear, grid),
-      the grid's parameters if any, then the residuals plane by plane,
-      zigzag-coded, one byte a tick in each plane
+      the grid's denominator (u32) if a grid, then four residual planes
+      for each 32-bit word of the field, lowest byte first, one byte a
+      tick in each plane; a grid is followed by its exceptions (u8
+      count, then a u8 tick and the u32 bits of each value that is off
+      the grid)
 seat records    u8 count; each: u8 tick offset, u8 seat, u8 kind,
-                u16 length, bytes
+                u16 length, bytes (8,192 in all, 255 at most)
 u64             the arena hash after the chunk's last tick
 ```
 
+The 13 action fields are the rows 1 to 13 of the table above; the first
+is the one row of 14 that the update's mask makes, which the seat mask
+and presence bit say.
+
+- A residual is the value's 32-bit pattern minus its prediction,
+  zigzag-coded (none: the pattern itself). Linear predicts twice the last
+  tick's value minus the one before. A grid is for a one-word field of
+  `f32` that sits on 1/den for one of 63, 64, 127, 128, 255, 256, 1023,
+  1024, 4095, 4096, 32767 and 65535: the residual is the step from the
+  last value's nearest step, and a value that is not exactly its step's
+  float (a stray, a NaN, negative zero) is listed whole. The encoder
+  tries every predictor for each field of each seat in each chunk and
+  keeps the one with the fewest non-zero and changing bytes; a grid with
+  more than a quarter of its ticks as exceptions is not tried.
 - A field absent from the mask holds its value from the chunk before for
-  every tick of the chunk. A seat absent from the seat mask is idle or
-  empty for the whole chunk.
-- Predictor state runs across chunks. The decoder starts at tick 1 or
-  from the seat rows a sidecar keyframe stores, which is every place
-  playback can start. A film has no seek point of its own.
+  every tick of the chunk. A seat absent from the seat mask is in the
+  game on no tick of the chunk and holds its rows. A seat that is not in
+  the game on a tick keeps its last value, so its columns see no change
+  there.
+- Predictor state runs across chunks: the last two values of each word of
+  each seat, 188 bytes a seat. The decoder starts at tick 1 or from the
+  seat rows a sidecar keyframe stores (`ChunkDecoder::seat_rows`,
+  `set_seat_rows`), which is every place playback can start. A film has no
+  seek point of its own.
 - Columns run seat by seat and plane by plane, so the encoder's and the
   decoder's inner loops are straight runs over one byte stream each, and
   the coder sees a seat's idle fields as one run of zeros.
@@ -300,35 +349,47 @@ into the library by range requests and kept. Playback reads and inflates
 one chunk at a time and never holds more of the film than that. Nothing
 below grows with the length of the game. For 16 seats:
 
-| Recording | Bytes | |
+| Recording (`ChunkEncoder`) | Bytes | |
 |---|---:|---|
-| Two chunk buffers, columns in place: 256 ticks × 16 seats × 93 bytes | 761,856 | one fills on the game thread while the writer thread compresses the other |
-| Tick flags and digests, twice | 1,536 | 3 bytes a tick |
-| Seat records, twice | 8,192 | room for 16 joins with their configurations |
-| The seats' last rows | 1,472 | 16 × 92 |
-| zstd compression context | about 840,000 | **Estimate** for a 512 KiB window at the recording level; `ZSTD_estimateCCtxSize` gives the figure |
-| Output buffer | 65,536 | written to the file as it fills |
-| **Total** | **about 1.6 MiB** | |
+| The chunk's words: 256 ticks × 16 seats × 23 words | 376,832 | rows as `u32`, seat by seat |
+| Presence, flags and digests | 5,376 | |
+| Seat records | 9,722 | 8,192 of payload and the 255 headers |
+| The inflated chunk, with every column present | 459,271 | the most a chunk can be |
+| Candidate planes and exceptions | about 22,000 | |
+| The frame | 196,608 | a chunk that does not compress to this is refused |
+| The seats' last two rows | 2,944 | 16 × 2 × 23 words |
+| zstd compression context | **Estimate** | `ZSTD_estimateCCtxSize` at level 3 for a chunk-sized source gives the figure |
+| **Total, without the zstd context** | **about 1.0 MiB** | |
 
-The game thread writes one byte into each column a tick and never
-compresses or waits. If the second buffer fills before the first is
-written, 8.5 s later, the recording stops with that reason; it does not
-allocate.
+The encoder takes a tick's rows with `push_tick` and compresses in
+`finish`, on the caller's thread. The recorder (slice 12) hands each
+closed chunk's frame to a writer thread, and keeps a second encoder so
+the game thread never compresses or waits; if the second fills before the
+first is written, 8.5 s later, the recording stops with that reason. The
+encoder allocates nothing after `new`; its test counts allocations with a
+global counting allocator over the second and third chunks.
 
-| Playback | Bytes | |
+| Playback (`ChunkDecoder`) | Bytes | |
 |---|---:|---|
-| File read buffer | 65,536 | |
-| One inflated chunk, every column present | 386,568 | typically a tenth of that |
-| zstd decompression context | about 98,000 | **Estimate**; it inflates straight into the chunk buffer |
+| File read buffer | 65,536 | the reader's |
+| The inflated chunk | 459,271 | the most a chunk can be; typically a tenth of that is used |
+| The chunk's words, undone | 376,832 | one pass per column undoes its predictor into the rows |
+| Presence, flags, digests and the residual scratch | 6,400 | |
+| Seat records | 3,060 | |
+| The seats' last two rows | 2,944 | 188 bytes a seat |
+| zstd decompression context | about 98,000 | **Estimate** |
 | Dictionary and its tables, if adopted | about 93,000 | |
-| Seat state: `[SeatState; 16]`, each the 23 current words, the 23 last deltas and the occupied flag | 3,008 | 188 bytes a seat |
 | Trailer: 8 bytes a chunk | 568 | for 10 minutes; 3,400 for an hour |
-| **Total** | **about 0.62 MiB** | |
+| **Total** | **about 1.0 MiB** | |
 
 After inflating a chunk the decoder undoes each column's predictor in one
-forward pass over that column, then serves ticks by reading one byte from
-each present column into the seat's row. `apply` in `actions.rs` writes
-the rows into the update.
+forward pass over that column, then serves a tick by writing a seat's
+words as the 92 bytes into a buffer the caller owns (`ChunkDecoder::action`).
+`apply` in `actions.rs` writes the rows into the update. A chunk that is
+refused (a zstd checksum, a tick count, a field, a grid, a seat record or
+a length that does not hold, or bytes after the end) is refused with its
+tick range and leaves the seat rows as they were; its tests cut the chunk
+at every length and corrupt it at random.
 
 ### The action side stream
 

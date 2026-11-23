@@ -302,7 +302,7 @@ mod tests {
             }),
             ticks_per_second: Some(60),
             version: 3,
-            runtime_stamp: "h2-sim/1".into(),
+            runtime_stamp: "h2-sim/2".into(),
             simulation_hooks: Some("fixture".into()),
             xbe_sha256: String::new(),
             guest_image: None,

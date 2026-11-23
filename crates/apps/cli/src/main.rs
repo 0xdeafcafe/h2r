@@ -186,6 +186,8 @@ const USAGE: &str = "usage: h2 <command>
   theater play FILM --render-every 0
                           replay a host film headlessly
   film stat FILE          report keyframes, capture points and tape usage
+  film stat --fields FILE...
+                          report each action field's change rate and stored bytes
   theater prepare FILM    verify a film headlessly and build its seek cache
   mem postmortem [--pid N | FILE]  explain a recorded process memory increase
   sim <run|batch|compare> run or compare bot matches
@@ -222,6 +224,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
   lockstep <a> <b>        compare two H2_LOCKSTEP traces; exit 1 if they differ
                           (docs/game/high-framerate.md)
   film stat FILE          report keyframes, capture points and tape usage
+  film stat --fields FILE...
+                          report each action field's change rate and stored bytes
   coop-probe diff <a> <b> compare two H2_COOP_PROBE hash logs: first tick and pool
                           that differ (docs/live/live-coop.md section 9)
   coop test [--auto]      co-op over Live on this Mac: a Live server, two

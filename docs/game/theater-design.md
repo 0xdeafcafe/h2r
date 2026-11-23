@@ -105,7 +105,7 @@ The same container also holds the film: the inputs (tag 1) and digests
 |---|---|---|
 | The `.h2film` container: time chunks, the private machine section, per-tick gameplay digests, arena hashes every 30 ticks | Built | [film-format.md](film-format.md), `crates/live/film` |
 | Per-tick inputs: the 92-byte retail action of every seat, read at the simulation-update boundary after pads, remote arrivals and phantom actions are resolved, and written back there in playback | Built | `capture` and `apply` in `crates/extensions/game/src/theater/actions.rs`; `SIM_UPDATE_APPLY` in `crates/hooking/guest-layout/src/points.rs` |
-| The HLE tape: every host answer the guest received, on one call index | Built | `crates/live/film/src/tape.rs` (`Call`, `Playback::call`); `impl Tap for Session` in `theater.rs` |
+| The HLE tape: every host answer the guest received, on one call index, in the binary encoding with pad deltas, pure operations computed in playback and a null network for a game with no socket | Built | `crates/live/film/src/tape.rs` (`Call`, `Playback::call`), `tape/codec.rs`; `Network::dark` in `crates/live/live-hle/src/network.rs`; `impl Tap for Session` in `theater.rs` |
 | Capture points every 150 ticks and local sidecar snapshots every sixth point | Recorder and player use the snapshot build key and recorded device boundaries | `crates/extensions/game/src/theater/record.rs`, `crates/live/film/src/sidecar.rs` |
 | Machine snapshots: guest RAM, kernel, D3D, audio, XAPI, feature sections, a RAM hash | Built, tested on synthetic machines | [snapshots.md](../runtime/snapshots.md) |
 | The player: an isolated child process per film with a warm rewind ring | Built | `crates/apps/cli/src/theater_cmd.rs` (`run`, the restart loop) |
@@ -113,8 +113,9 @@ The same container also holds the film: the inputs (tag 1) and digests
 | Transport over the agent API: `theater.play`, `state`, `pause`, `speed`, `seek`, `step`, `keyframes`, `camera`, `hud` | Built | `crates/extensions/agent-proto/src/theater.rs` |
 | Cameras: a view replaced in the guest's renderer with a private random seed; a separate GPU view for a playerless host film | Built | `crates/extensions/game/src/theater/camera.rs` (`Seeds`), `host_view.rs` |
 | The film selector and film page in the game's own menus | Built | [theater.md](theater.md#in-game-theater) |
-| Compatibility: XBE digest, guest image contract, `h2-sim/1`, the hook digest | Built | `crates/extensions/game/src/theater/compatibility.rs` (`hook_digest`), [film-format.md](film-format.md#determinism-and-verification) |
+| Compatibility: XBE digest, guest image contract, `h2-sim/2`, the hook digest | Built | `crates/extensions/game/src/theater/compatibility.rs` (`hook_digest`), [film-format.md](film-format.md#determinism-and-verification) |
 | Live: host film upload, film lists, pins, clips as tick ranges, public range reads for the web viewer | Built | [live-api.md](../live/live-api.md#theater) |
+| The action-column codec: `ChunkEncoder`, `ChunkDecoder` and `h2 film stat --fields`, a chunk of 256 ticks of 92-byte actions as predicted, grid-modelled planes under one zstd frame | Built; the film file that carries it (slice 12) is not | `crates/live/film/src/columns.rs`, [input-film.md](input-film.md#the-encoding) |
 | Engine-level playback (a film played without its machine section) and arena keyframes | Not built | "Before and after the sim rewrite"; [sim-rewrite.md](../engine/sim-rewrite.md) section 7 (`sim_state::Keyframe`) |
 
 Three gaps remain:
@@ -124,7 +125,7 @@ Three gaps remain:
    keyframes live in a local cache.
 2. **The replay depends on more than inputs.** Playback answers every HLE
    call from the tape, so a film carries received packets, account
-   observations and pad reads encoded as JSON.
+   observations and pad reads.
 3. **Only a leased dedicated host can upload a film**, and only a
    participant can download the exact recording.
 
@@ -393,7 +394,7 @@ before entering the guest.
 
 | State | Condition | Playback |
 |---|---|---|
-| **Playable** | XBE digest, guest image contract, `h2-sim/1` and hook digest equal; the map and initial files present | from the seed with every digest checked; sidecar keyframes for this build |
+| **Playable** | XBE digest, guest image contract, `h2-sim/2` and hook digest equal; the map and initial files present | from the seed with every digest checked; sidecar keyframes for this build |
 | **Unavailable** | a different simulation contract or XBE, or a missing map or initial file | the reason: the film predates a breaking change to the simulation, or what to install |
 
 An equal native stamp earns no faster path, because no film carries
@@ -614,15 +615,19 @@ described in [film-format.md](film-format.md) when built:
   in the indexed input block. The column decoder in slice 13 extends this
   cursor with its film chunk and seat rows. A recorder's sidecar gets the
   digest when the film is sealed.
-- The machine part's call tape is one binary stream in call order: a
-  ULEB operation code from a table in the header, the thread, the
-  arguments and the result as ULEBs, and each output as a length and
-  bytes. A pad read is the bytes that differ from the handle's last
-  packet. Batches close at 128 calls, 64 KiB or an arena hash, never on
-  a change of stream.
+- The machine part's call tape is one binary stream in call order
+  (`film::tape::encode_batch`): per batch a table of operation names,
+  then for each call a ULEB operation code, the thread, the call index,
+  the result, the arguments and the outputs. An output is raw, a repeat,
+  or the bytes that differ from the last output of the same operation,
+  handle and slot, so a pad read is the bytes that differ from the
+  handle's last packet. Batches close at 128 calls, 64 KiB or an arena
+  hash, never on a change of stream.
 - The pure operations `Htonl`, `Htons` and `FdIsSet` are computed in
-  playback and take no call index. This changes the call cursor, so it
-  raises the simulation ABI.
+  playback and take no call index, and a game that has made no socket
+  holds no socket call (the null network). This changes the call cursor,
+  so the simulation ABI is `h2-sim/2`, and a film in the JSON encoding is
+  refused.
 
 ## Slices
 

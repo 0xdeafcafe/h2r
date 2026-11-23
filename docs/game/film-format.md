@@ -325,7 +325,7 @@ The private `INDX` is a JSON array in physical envelope order. Each row
 stores `tag` (four byte values), `offset` (u64) and `size` (u32).
 The first row of each contiguous machine run also stores `machine_span`
 (u32), the number of rows in that run, including itself. All other rows
-omit the field. For example, `HEAD DATA NETR TICK KEYF NETR TICK` has a
+omit the field. For example, `HEAD DATA TAPE TICK KEYF TAPE TICK` has a
 span of three at `HEAD` and two at `KEYF`. The writer can append a
 public time chunk as soon as it fills, so the machine section can occupy
 several disjoint byte ranges. All runs together form one section, and
@@ -470,13 +470,10 @@ million entries. JSON payloads are UTF-8.
 | `DATA` | Initial guest file manifest. Entries identify a directory, an embedded file or a file to obtain locally by path and SHA-256. Installed content and converted campaign files are identified by digest. |
 | `DESC` | Match header, including first match tick, mounted map identity and SHA-256, package/cache source if present, retail variant bytes, game type, mode, difficulty, skulls, seed and host identity. The initial roster uses absolute seats, names, optional XUIDs, teams, local/remote/phantom/bot kinds and available bot parameters. The bot kind remains readable in older descriptors. Current hosts use phantom seats for bots. Late arrivals have a join event. |
 | `INPT` | Binary block of consecutive completed ticks, including actions, events and post-tick hashes. |
-| `PADR` | Indexed local XInput calls. Records the actual guest result and returned state, including packet number. Covers menu input and reads between ticks. Phantom actions use `BTAP`. |
-| `VSIZ` | Physical width and height observed by the local guest when it draws the Resolution row or opens its picker. |
-| `TEXT` | Virtual keyboard edit at the focused guest keyboard, including profile-name entry. Uses the common call cursor and the UI thread ID. |
-| `BTAP` | Call-indexed results of the phantom bot action builder, including guest cold-animation requests. |
+| `TAPE` | The call tape: batches of indexed calls in call order, every stream interleaved, in the binary encoding of `crates/live/film/src/tape/codec.rs` ([input-film.md](input-film.md#what-the-replay-depends-on)). A stream is told by its operation (`tape::stream_of`): `PADR` is the local XInput calls (the actual guest result and returned state, including packet number; menu input and reads between ticks), `VSIZ` the physical width and height the guest observes when it draws the Resolution row or opens its picker, `TEXT` a virtual keyboard edit at the focused guest keyboard (profile-name entry), `BTAP` the results of the phantom bot action builder including guest cold-animation requests, `NETR` and `RAND` the host boundary calls below. |
 | `BOTR` | Sparse bot roster changes at management boundaries. Current hosts record phantom seats. |
 | `PDEV` | Sparse controller connection changes by input-pump ordinal, including port, generation and rumble capability. |
-| `NETR`, `RAND` | Batches of host boundary calls interleaved by a common call index with `PADR`, `TEXT`, `BTAP` and `VSIZ`. Records operation, arguments, thread, return/error and output slots. Socket delivery, send results and random draws retain their original ordering. |
+| `NETR`, `RAND` | The streams of `TAPE` that hold host boundary calls, on a common call index with the others. Records operation, arguments, thread, return/error and output slots. Socket delivery, send results and random draws retain their original ordering. The pure operations `Htonl`, `Htons` and `FdIsSet` are computed in playback and are not on the tape; nor is an operation on a socket while the guest has made none. |
 | `MARK` | Accepted lobby operations by executor boundary, D3D snapshot boundaries, bookmarks or the final mark with slice, tick and call count. |
 | `HASH` | Every 30 completed ticks, the arena digest if available and the HLE call cursor. The arena digest folds in the `SimExt` records when there are any ([sim-rewrite.md](../engine/sim-rewrite.md), "The `SimExt` blob"). Additional per-tick gameplay digests live in `INPT`. |
 | `KEYF` | Scheduler-boundary snapshot and cursors, described below. |
@@ -661,7 +658,7 @@ and the ordering of HLE and lobby calls all affect replay. A film carries
 the host inputs; their apparent effects in telemetry are insufficient to
 reconstruct the simulation.
 
-Current writers put `h2-sim/1` in `HEAD.runtime_stamp`. This ABI covers
+Current writers put `h2-sim/2` in `HEAD.runtime_stamp`. This ABI covers
 the host scheduler, consumed input and guest-facing HLE semantics. A change
 that breaks those contracts must bump the ABI. The sealed header also stores
 `simulation_hooks`, a SHA-256 of the installed simulation hook chains in
