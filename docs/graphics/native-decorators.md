@@ -133,12 +133,14 @@ same reads, in the same order.
    materials are made ready, and of those the host keeps the ones whose
    guest draws a skip leaves out without changing a render state the
    device holds (`Host::holds`, `decorators_load::skip_holds`): the
-   draw's shader begin sets its pass's list and its engine-driven values
-   without comparing them with the device (`0x0001a170`), the next pass
-   switch or layer setup restores the implementation's restore list
-   (`0x00018900`), and the draw leaves `TwoSidedLighting` off
-   (`0x0004ebb4`), so a material is kept only when every state of both
-   lists, at the values the draw sets (`DecoratorLook::leaves`), and
+   draw's shader begin sets its pass's list (`0x00018900`) and its
+   engine-driven values (`0x0001a170`) without comparing them with the
+   device, the next switch to another implementation (`0x00016b90`) or
+   layer setup restores the implementation's restore list
+   (`0x00018900`) first, and the draw leaves `TwoSidedLighting` off
+   (`0x0004ebb4`), so a material is kept only when the restore list,
+   every state of the pass's list the restore list does not write back,
+   at the value the draw sets (`DecoratorLook::leaves`), and
    `TwoSidedLighting` off already hold at the call, the rule the world
    layers' items follow (`layer_pass::skip_holds`). The view is planned
    over the kept ones (`render_bridge::native_decorators::plan_held`),

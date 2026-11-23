@@ -44,8 +44,9 @@ pub struct DecoratorLook {
     /// (`decorators_gpu::DrawKey::cull`).
     pub inherits_cull: bool,
     /// The render states (guest slots) the guest's draw of the pass
-    /// leaves set: each state of the implementation's list at the last
-    /// value the draw sets it to (its engine-driven values after the
+    /// leaves set once the next switch has restored it: each state of the
+    /// implementation's list the restore list does not write back, at the
+    /// last value the draw sets it to (its engine-driven values after the
     /// list), then the implementation's restore list ([`skip_holds`]).
     pub leaves: Vec<RenderStateValue>,
 }
@@ -80,10 +81,13 @@ fn last_values(states: &[RenderStateValue]) -> Vec<RenderStateValue> {
 /// and its engine-driven values without comparing them with the device
 /// (`0x0001a170`; those values come from the shader instance's own inputs,
 /// [`decorator_look`]), the next pass switch or layer setup restores the
-/// implementation's restore list (`0x00018900`), and the draw leaves
-/// `TwoSidedLighting` off. Skipped, none of it runs. The two agree exactly
-/// when every state of [`DecoratorLook::leaves`] and `TwoSidedLighting`
-/// off already hold; a state that does not read refuses.
+/// implementation's restore list (`0x00018900`) before another
+/// implementation's list is set (`0x00016b90`), so a state the list sets
+/// and the restore list writes back is left at the restore's value, and
+/// the draw leaves `TwoSidedLighting` off. Skipped, none of it runs. The
+/// two agree exactly when every state of [`DecoratorLook::leaves`] and
+/// `TwoSidedLighting` off already hold; a state that does not read
+/// refuses.
 pub fn skip_holds(look: &DecoratorLook, read: &dyn Fn(u32) -> Option<u32>) -> bool {
     let two_sided = STATE_TABLE.canonical_to_guest(TWO_SIDED_LIGHTING);
     two_sided.and_then(read) == Some(0) && look.leaves.iter().all(|s| read(u32::from(s.state)) == Some(s.value))
@@ -116,7 +120,10 @@ pub fn decorator_look(
     let state = pass_state(&applied.render_states).map_err(|r| format!("render states: {r:?}"))?;
     let (microcode, semantics) =
         program(look.vertex_shader).ok_or("the vrtx has no classification-1 program")?;
-    let mut leaves = last_values(&applied.render_states);
+    // A state the restore list writes back is left at the restore's
+    // value, whatever the list set it to.
+    let restored = |s: &RenderStateValue| imp.restore_states.iter().any(|r| r.state == s.state);
+    let mut leaves: Vec<RenderStateValue> = last_values(&applied.render_states).into_iter().filter(|s| !restored(s)).collect();
     leaves.extend_from_slice(&imp.restore_states);
     Ok(DecoratorLook { look, state, microcode, semantics, inherits_cull, leaves })
 }
@@ -509,6 +516,41 @@ pub(crate) mod tests {
         let mut unread = device.clone();
         unread.remove(&u32::from(slot(R::AlphaBlendEnable)));
         assert!(!holds(&unread), "a state that does not read");
+    }
+
+    /// A pass that turns depth writes off and its restore list back on is
+    /// skipped over a device that holds them on: the switch after the
+    /// guest's draw would leave them on, as skipping it does.
+    #[test]
+    fn a_placement_whose_restore_list_writes_back_what_it_sets_holds() {
+        use gfx::state::RenderStateType as R;
+        use std::collections::HashMap;
+        use tags::material::{EngineInputs, ResolvedLayer, ResolvedPass};
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let slot = |t| (0..=255u8).find(|&s| R::from_guest_index(&table, u32::from(s)) == Some(t)).expect("a 5849 slot");
+        let rs = |t, value| RenderStateValue { state: slot(t), value };
+        let mut imp = crate::engine_states::tests::implementation(vec![rs(R::AlphaBlendEnable, 0), rs(R::ZWriteEnable, 0)], 0);
+        imp.restore_states = vec![rs(R::ZWriteEnable, 1)];
+        let material = TagMaterial {
+            shader: TagId(0xe000_0100),
+            template: TagId(0xe000_0101),
+            inputs: EngineInputs::default(),
+            layers: vec![ResolvedLayer {
+                lod: 0,
+                layer: 3,
+                passes: vec![ResolvedPass { index: 0, pass: TagId(0xe000_0200), implementations: vec![imp] }],
+            }],
+        };
+        let mut program = |_: TagId| Some((code(None), vec![0]));
+        let look = decorator_look(&material, 0, 3, 0, &mut program).unwrap();
+        assert_eq!(look.leaves, [rs(R::AlphaBlendEnable, 0), rs(R::ZWriteEnable, 1)], "the restore's value, not the list's");
+        let two_sided = table.canonical_to_guest(TWO_SIDED_LIGHTING).expect("a 5849 slot");
+        let device = |z: u32| -> HashMap<u32, u32> {
+            [(u32::from(slot(R::AlphaBlendEnable)), 0), (u32::from(slot(R::ZWriteEnable)), z), (two_sided, 0)].into_iter().collect()
+        };
+        let holds = |device: &HashMap<u32, u32>| skip_holds(&look, &|slot| device.get(&slot).copied());
+        assert!(holds(&device(1)), "depth writes off for the draw, back on after it");
+        assert!(!holds(&device(0)), "the restore would turn on depth writes the device holds off");
     }
 
     /// A lightmap stage binds the globals' bitmap when it is uniform, as

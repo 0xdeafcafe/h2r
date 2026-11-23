@@ -27,9 +27,10 @@
 //!   it (layer 5, `frame_scene::PrtStream`) reads from guest memory in
 //!   the format its pass's PRT variant was compiled for
 //!   (`LitObjects::fill_prt`; else `object_prt`), every
-//!   state its passes set and restore already holds
-//!   (`layer_pass::skip_holds`: `object_state`; `state` for a structure
-//!   item), its model is resident in the
+//!   state its passes restore already holds and every state they set
+//!   already holds or is restored (`layer_pass::skip_holds`:
+//!   `object_state`; `state` for a structure item), its model is
+//!   resident in the
 //!   caller's set (the scene's, `native_objects_glue::layer_models`, or
 //!   the first person's, `native_first_person_glue::layer_models`), and
 //!   each of its material's passes in the layer plans
@@ -195,7 +196,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             taken.clear();
         }
         // Skipping an item's draws must leave the device as drawing them
-        // would: every state its passes set and restore already holds
+        // would: every state its passes restore already holds, and every
+        // state they set already holds or is restored
         // (`layer_pass::skip_holds`, as layer 3's walk requires).
         if let Some(plan) = &plan {
             let device_state = |slot: u32| d.render_state(&read, slot);

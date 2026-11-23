@@ -849,7 +849,7 @@ pub struct ResidualTotals {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ResidualProducer {
     pub producer: String,
-    /// `native`, `d3d` or `unknown`.
+    /// `native`, `partial`, `d3d` or `unknown`.
     pub status: String,
     /// The carried slot its work lands in.
     pub slot: String,

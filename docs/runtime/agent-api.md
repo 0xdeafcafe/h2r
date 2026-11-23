@@ -2007,7 +2007,11 @@ h2 agent render.residual '{"top": 500}'        # the last finished window
   frame it is `outside_render`. At each boundary the device first decodes
   the push buffer, so an inline draw is charged to the producer open when
   its words were written. `status` is `native` or `d3d` from the
-  registry; `slot` is the carried slot the work lands in. `guest_ms` is
+  registry, and `partial` for a layer draw a native stage draws some
+  items of from the scene, skipping their guest draws
+  (`residual_census::PARTIAL_LAYERS`: the scene's layers 1, 3, 5, 7, 8
+  and 20 and the first person's 1, 3, 7, 8 and 20); its `residual` is
+  what the stages left. `slot` is the carried slot the work lands in. `guest_ms` is
   the producer's exclusive time less its D3D time, `null` without
   `render-timing`; it ranks producers and is not a frame time.
   `unbalanced` counts producer exits with nothing to end and producers
