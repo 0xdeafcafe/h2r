@@ -529,6 +529,18 @@ mod tests {
         assert_eq!(a.recv(), None, "the stranger's datagram was dropped");
     }
 
+    /// The next datagram `recv` yields within a second (loopback UDP is
+    /// not there the instant it is sent).
+    fn await_recv(recv: &mut dyn FnMut() -> Option<Vec<u8>>) -> Option<Vec<u8>> {
+        for _ in 0..200 {
+            if let Some(d) = recv() {
+                return Some(d);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        None
+    }
+
     #[test]
     fn a_port_files_datagrams_by_their_source_and_drops_strangers() {
         let any: SocketAddr = "127.0.0.1:0".parse().unwrap();
@@ -544,14 +556,14 @@ mod tests {
         second.send(b"two");
         let stranger = UdpSocket::bind(any).unwrap();
         stranger.send_to(b"who", port.local_addr().unwrap()).unwrap();
-        let drain = |l: &mut UdpPortLink| std::iter::from_fn(|| l.recv()).collect::<Vec<_>>();
-        assert_eq!(drain(&mut to_second), [b"two".to_vec()]);
-        assert_eq!(drain(&mut to_first), [b"one".to_vec()]);
+        assert_eq!(await_recv(&mut || to_second.recv()), Some(b"two".to_vec()));
+        assert_eq!(await_recv(&mut || to_first.recv()), Some(b"one".to_vec()));
+        assert_eq!(to_second.recv(), None);
         // A link's send goes to its own peer, from the one shared socket.
         to_first.send(b"back one");
         to_second.send(b"back two");
-        assert_eq!(first.recv().as_deref(), Some(&b"back one"[..]));
-        assert_eq!(second.recv().as_deref(), Some(&b"back two"[..]));
+        assert_eq!(await_recv(&mut || first.recv()), Some(b"back one".to_vec()));
+        assert_eq!(await_recv(&mut || second.recv()), Some(b"back two".to_vec()));
         assert_eq!(first.recv(), None);
         assert_eq!(to_first.recv(), None, "the stranger's datagram was dropped");
     }
@@ -566,7 +578,7 @@ mod tests {
         link.peer = peer.local_addr().unwrap();
         let datagram = vec![0xabu8; crate::wire::MAX_DATAGRAM];
         link.send(&datagram);
-        assert_eq!(peer.recv(), Some(datagram));
+        assert_eq!(await_recv(&mut || peer.recv()), Some(datagram));
     }
 
     #[test]
