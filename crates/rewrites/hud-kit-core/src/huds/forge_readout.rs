@@ -257,12 +257,17 @@ pub fn fit_facts(parts: &[String], longest: &str) -> String {
 /// `longest` characters or one word is left; never cut with an
 /// ellipsis.
 pub fn fit_words(text: &str, longest: &str) -> String {
+    // The text's own spacing is kept (the hold line's groups are two
+    // spaces apart): only its last word goes, with the gap before it.
     let max = longest.chars().count();
-    let mut words: Vec<&str> = text.split_whitespace().collect();
-    while words.len() > 1 && words.join(" ").chars().count() > max {
-        words.pop();
+    let mut out = text.trim();
+    while out.chars().count() > max {
+        match out.rfind(char::is_whitespace) {
+            Some(at) => out = out[..at].trim_end(),
+            None => break,
+        }
     }
-    words.join(" ")
+    out.to_owned()
 }
 
 /// The facts row for `v`: held, the position and heading; aimed, the
