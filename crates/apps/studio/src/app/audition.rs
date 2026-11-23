@@ -508,6 +508,15 @@ pub struct PlayState {
     pub output: Option<&'static str>,
 }
 
+/// One `snd!` of the shown map and its header's class byte (`+2`, not
+/// named: docs/formats/sound.md), for `sound.measure`'s reference set.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SoundTag {
+    pub id: TagId,
+    pub name: String,
+    pub class: u8,
+}
+
 /// A started play.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Started {
@@ -610,7 +619,13 @@ impl App {
         let mut map = self.open_shown_map()?;
         let failed = |e: tags::Error| SoundError::Failed(e.to_string());
         let header = tags::sound::read_header(&mut map, id).map_err(failed)?;
-        let gestalt = Gestalt::read(&mut map).map_err(failed)?;
+        // Another sound of the same map shares its gestalt: keep it, so a
+        // run over many sounds (sound.measure's reference set) reads it
+        // once.
+        let gestalt = match self.audition.loaded.take() {
+            Some(l) if l.key.0 == key.0 => l.gestalt,
+            _ => Gestalt::read(&mut map).map_err(failed)?,
+        };
         let sound = gestalt.resolve(&header).map_err(failed)?;
         self.audition.loaded = Some(Loaded {
             key,
@@ -743,6 +758,30 @@ impl App {
             from_ms,
             output,
         })
+    }
+
+    /// Every `snd!` of the shown map, in tag order, with its class: one
+    /// pass over the map's headers (20 bytes each), nothing decoded. A
+    /// header that does not read is left out.
+    pub fn sound_tags(&self) -> Result<Vec<SoundTag>, SoundError> {
+        let mut map = self.open_shown_map()?;
+        let ids: Vec<(TagId, String)> = map
+            .tags()
+            .iter()
+            .filter(|t| t.group.0 == *b"snd!")
+            .map(|t| (t.id, t.name.clone().unwrap_or_default()))
+            .collect();
+        Ok(ids
+            .into_iter()
+            .filter_map(|(id, name)| {
+                let h = tags::sound::read_header(&mut map, id).ok()?;
+                Some(SoundTag {
+                    id,
+                    name,
+                    class: h.class,
+                })
+            })
+            .collect())
     }
 
     /// Stop what plays; whether anything did.

@@ -101,6 +101,10 @@ pub mod method {
     pub const SOUND_READ: &str = "sound.read";
     pub const SOUND_PLAY: &str = "sound.play";
     pub const SOUND_STOP: &str = "sound.stop";
+    pub const SOUND_MEASURE: &str = "sound.measure";
+
+    // Every content check in one list (api/checks.rs).
+    pub const CHECK_RUN: &str = "check.run";
 
     pub const SCENARIO_BLOCKS: &str = "scenario.blocks";
     pub const SCENARIO_LIST: &str = "scenario.list";
@@ -154,6 +158,7 @@ pub mod method {
     pub const UI_WIDGETS: &str = "ui.widgets";
     pub const UI_RENDER: &str = "ui.render";
     pub const UI_CONSISTENCY: &str = "ui.consistency";
+    pub const UI_CHECK: &str = "ui.check";
     pub const UI_COMPONENTS: &str = "ui.components";
     pub const UI_SELECT_FOLDER: &str = "ui.select_folder";
     pub const UI_SHEET: &str = "ui.sheet";

@@ -162,7 +162,7 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
                 json!({"block": "starting_locations", "index": 1}),
             );
         }
-        m::SOUND_READ | m::SOUND_PLAY | m::SOUND_STOP => {
+        m::SOUND_READ | m::SOUND_PLAY | m::SOUND_STOP | m::SOUND_MEASURE => {
             // A map with a sound, played to the headless output.
             let map = t.path("sound.map");
             std::fs::write(&map, super::sound::tests::sound_map()).unwrap();
