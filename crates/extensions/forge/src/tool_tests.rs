@@ -342,8 +342,8 @@ fn movement_snap_uses_the_world_grid_or_the_pickups_own_grid() {
     tool.monitor = true;
     tool.camera = Some(eye());
     tool.select(0);
-    tool.distance = 1.3;
-    tool.offset = [0.0, 0.29, 0.12];
+    tool.distance = 1.37;
+    tool.offset = [0.0, -0.29, 0.12];
     tool.set_movement_step(0.5);
     tool.update(&session, 1, Input::default()).unwrap();
     let world = tool.ghost.unwrap();
@@ -356,7 +356,7 @@ fn movement_snap_uses_the_world_grid_or_the_pickups_own_grid() {
     let local = tool.ghost.unwrap();
     assert_eq!(local.position, [1.2, 0.5, 0.0]);
 
-    // Turning about the pickup's own axes is initial * delta, not a
+    // Turning about the pickup's own axes is delta * initial, not a
     // component-wise addition: a quarter pitch after a quarter yaw.
     tool.rotation = [0.0, std::f32::consts::FRAC_PI_2, 0.0];
     tool.update(&session, 3, Input::default()).unwrap();

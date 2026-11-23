@@ -435,7 +435,7 @@ impl Rows for ForgeScreen {
             .rows
             .get_mut(usize::try_from(row).ok()?)?
             .value = Some(super::sheet::number(value));
-        super::send(Choice::Nudge(axis, right));
+        lock(&self.outbox).push_back(Choice::Nudge(axis, right));
         Some(format!("{}: {value}", axis.label()))
     }
 
