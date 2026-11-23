@@ -1694,3 +1694,55 @@ fn the_banner_is_drawn_centred_above_the_frames_bottom() {
     let d = r.shots[0].element("b").unwrap();
     assert!(!d.drawn && d.reserved.is_none());
 }
+
+/// The Firefight HUD on the synthetic sheet (`h2 hud preview firefight
+/// --state all --mode all --synthetic`): every state and mode passes every
+/// check but the glyphs (no fonts); in a wave's placing the banner, both
+/// pills and their counts draw in every mode, the enemies pill right of
+/// the lives pill, and the banner is the wave's.
+#[test]
+fn the_firefight_hud_draws_and_passes_on_the_synthetic_sheet() {
+    use crate::huds::firefight::{self as ff, Firefight};
+    let mut src = synthetic();
+    let r = check::all(&mut src, &[&Firefight], &Mode::ALL).unwrap();
+    assert!(r.findings.is_empty(), "{:#?}", r.findings);
+    assert_eq!(r.shots.len(), Firefight.states().len() * 3);
+    for mode in Mode::ALL {
+        let s = r
+            .shots
+            .iter()
+            .find(|s| s.state == "spawning" && s.mode == mode)
+            .unwrap();
+        for id in [
+            ff::BANNER,
+            ff::LIVES_PILL,
+            ff::LIVES_END,
+            ff::LIVES_COUNT,
+            ff::ENEMIES_PILL,
+            ff::ENEMIES_END,
+            ff::ENEMIES_COUNT,
+        ] {
+            assert!(s.element(id).unwrap().drawn, "{mode:?} {id}");
+        }
+        let rect = |id: &str| s.element(id).unwrap().rect.unwrap();
+        assert!(
+            rect(ff::LIVES_END).x1 <= rect(ff::ENEMIES_PILL).x0,
+            "{mode:?}: {:?} {:?}",
+            rect(ff::LIVES_END),
+            rect(ff::ENEMIES_PILL)
+        );
+        assert_eq!(
+            s.element(ff::BANNER).unwrap().text.as_deref(),
+            Some("WAVE 2")
+        );
+        assert!(!s.element(ff::NOTE).unwrap().drawn, "{mode:?}: no note");
+    }
+    // Between waves the enemies pill is gone and the lives pill stays.
+    let between = r
+        .shots
+        .iter()
+        .find(|s| s.state == "wave-complete" && s.mode == Mode::Full)
+        .unwrap();
+    assert!(between.element(ff::LIVES_PILL).unwrap().drawn);
+    assert!(!between.element(ff::ENEMIES_PILL).unwrap().drawn);
+}

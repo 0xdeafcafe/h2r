@@ -530,6 +530,11 @@ pub(crate) fn register_core_film(
     crate::hud_kit::install(features).context("installing the HUD kit")?;
     crate::superbounce_hud::install(features, i.settings.clone())
         .context("installing the superbounce HUD")?;
+    // The Firefight HUD on the kit, fed from the mode blob
+    // (docs/game/firefight.md, "The HUD").
+    if firefight_on {
+        crate::firefight::hud::install(features).context("installing the Firefight HUD")?;
+    }
     // The announcer speaks the HUD's medal lines (medal_announcer.rs,
     // docs/audio/audio.md, "Our medals' announcer lines"); boot gives it
     // the mixer once the audio is up.

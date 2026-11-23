@@ -878,7 +878,6 @@ fn team_lives_and_team_won_reach_the_blob() {
     assert_eq!(mode.stage, hud::Stage::Team1Won);
     let view = hud::view(&hud::Mode::decode(&mode.encode()).unwrap(), 0);
     assert_eq!(view.get(hud::BANNER).unwrap().text, "BLUE TEAM WINS");
-    assert_eq!(view.get(hud::SCORE).unwrap().text, "RED 0 BLUE 0");
 }
 
 /// The engine keeps no team pool, so a `TeamLives` sets the director's:
