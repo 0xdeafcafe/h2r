@@ -46,13 +46,16 @@ fn dialog_page_tables() {
         let v = preview::From::Synthetic.view(&spec, &name).unwrap();
         // With a picker open the page is the picker's underlay, and its
         // preview follows the picker's focus.
-        let page = v.underlay.as_deref().unwrap_or(&v);
-        assert!(page.widget("preview").is_some(), "{name}");
+        let preview = v
+            .widget("preview")
+            .or_else(|| v.underlay.as_deref().and_then(|u| u.widget("preview")));
+        assert!(preview.is_some(), "{name}");
         let content = content::check(&spec, &v, preview::From::Synthetic.source());
         assert!(content.is_empty(), "{name}: {content:?}");
         let report = layout::check(&v, preview::From::Synthetic.source(), &layout::Rules::for_spec(&spec));
         assert!(report.issues.is_empty(), "{name}: {:?}", report.issues);
-        assert!(spec::check_fallback(&spec).is_empty(), "{name}");
+        let fallback = spec::check_fallback(&spec);
+        assert!(fallback.is_empty(), "{name}: {fallback:?}");
     }
     let (_, mut locked) = DialogPage::Look.states().remove(2);
     assert_eq!(locked.click(2), Action::None, "a locked row offers no picker");
