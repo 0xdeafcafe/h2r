@@ -618,7 +618,7 @@ and the game. Sizes as under Features.
 | **F2** | `forge-build`: document to package, the `[[forge]]` layer, `MapId` format 2, `h2 forge build` and `check`, the kit's spare entries | M | F1 | two builds of one document are byte-equal; an empty document on a kit map differs from its base only in the kit's blocks; a stale base hash is a named error; `MapId` golden vectors, format 1 ids unchanged; the package resolves through `content::resolve` to the built map |
 | **F3** | Probes: `forge.capacity`, `forge.probe` (replication of a host-made object by group, the synchronous protocol on a multiplayer map, the AI flag in multiplayer, kit entries inert) | S | nothing | each method answers over a fake game with a test; the coordinator's runs go in `docs/game/notes/forge-probes.md` |
 | **F4** | Local session, its edits applied to the live objects through M8's calls: the camera body, the Objects tool, the object menu and Properties, save and load. **Built**, with its screens in the game (U4) and its HUD on the compositor until U3 | L | F1, F2, live-mirror M8 | `Page` tables for each dialog; the `Hud` view passes the kit's checks in every state; over a fake game, place, move and delete produce the expected proposals and engine calls, undo restores, a stale object is a named refusal that leaves the document alone, a saved file folds to the same document |
-| **F5** | Synchronous mode: the log on the network, roles, holding, join in progress, the film record | M | F3's results, F4 | two fake peers and a host converge to one head under reordered proposals; a second hold is refused; a late joiner's document equals the host's; a film with entries replays to the same `ForgeExt` hash. **Built** (below), except the `ForgeExt` hash, which waits for F7; the co-op link's offer of the lanes and holding the tick are not wired and the game's run of it is unproven |
+| **F5** | Synchronous mode: the log on the network, roles, holding, join in progress, the film record | M | F3's results, F4 | two fake peers and a host converge to one head under reordered proposals; a second hold is refused; a late joiner's document equals the host's; a film with entries replays to the same `ForgeExt` hash. **Built** (below), except the `ForgeExt` hash, which waits for F7; the co-op link offers its lanes (`game/src/forge_glue/link.rs`) and the game's run of it is unproven |
 | **F6** | Teleporters and retail links: the Links tool, channels, device groups | M | F4 | a linked pair writes two flags with one identifier on a fixture; the bots' generator finds the link; unlink restores the bytes. **Built**, except the generator half: `bots::autonav`'s teleporter reader is private, so the test checks the bytes it reads (below) |
 | **F7** | `SimExt` and `ForgeExt`: volumes, the graph, emitters | L | F4; sim-rewrite's blob hooks | the blob round-trips and enters the hash; a graph fixture's outputs per tick match a table; one, two and eight workers give the same bits; an emitter fires on the scheduled ticks and stops at its limit |
 | **F8** | Barriers and block-out: the kit's generated tags, the Volumes and Shape tools' object tier | M | F2, modeling slice 8 | each generated `coll` passes `Bsp::validate` and random segment tests against brute force; a barrier's enable input switches it over a fake game |
@@ -798,6 +798,24 @@ over a fake lane that reorders and chops what it carries and a fake
 world: edits made on every machine end at one document, a late joiner
 and a film replay equal the live state, a head that differs ends one
 seat, and a full lane is refused.
+
+The co-op link that offers the lanes is `game/src/forge_glue/link.rs`:
+in a synchronous network game (a co-op host or guest, by the simulation
+world's mode) whose lobby is in Forge mode, it runs one `coop::Peer` per
+other machine over the co-op channel — the XNet base port + 4, served
+from one bound socket (`coop::link::UdpPort`) whose peers the Live
+transport names (`Hle::coop_endpoints`; a guest's host from its joined
+session) — pumps each peer every tick, and offers the lanes
+(`forge_glue::net::offer_host`, one per guest seat, or `offer_guest`),
+re-made each tick so a session that opens finds them. A seat that joins
+after the offer is added (`net::add_seat`) and one that leaves is
+dropped (`net::drop_seat`), the running session taking the changes each
+tick; the link closing ends the session (`net::end`). The Forge lane is
+the datagram's own section, so beside it the channel carries nothing of
+the game's. `forge_glue/link.rs`'s tests run the whole of it over a
+fake co-op link: the session opens on both sides, a placement on the
+host reaches the guest, a late guest gets a lane and a leaving one
+loses it, and a closing link ends the session.
 
 A shared `forge::Session` (`Session::share`) queues each edit as a
 proposal (`Session::take_outgoing`) rather than applying it, stamps ids

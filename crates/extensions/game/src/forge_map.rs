@@ -69,10 +69,10 @@ pub(crate) fn admitted_shared(m: &dyn GuestMemory) -> bool {
 }
 
 /// Where Forge may run: an offline local game, or a synchronous network
-/// game whose machines have a Forge channel
-/// ([`crate::forge_glue::net::offered`]).
+/// game whose link has a Forge channel waiting
+/// ([`crate::forge_glue::net::pending`], re-offered each tick).
 pub(crate) fn admitted_session(m: &dyn GuestMemory) -> bool {
-    admitted(m) || (admitted_shared(m) && crate::forge_glue::net::offered())
+    admitted(m) || (admitted_shared(m) && crate::forge_glue::net::pending())
 }
 
 #[derive(Clone, Debug)]

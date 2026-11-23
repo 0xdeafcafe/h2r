@@ -9,7 +9,7 @@ use serde_json::Value;
 use std::sync::{Arc, mpsc};
 
 use super::{After, Editor};
-use crate::forge_glue::net::{self as glue, Offer};
+use crate::forge_glue::net::{self as glue, Change, Offer};
 
 type Wire = Box<dyn Lane + Send>;
 
@@ -120,6 +120,31 @@ impl Editor {
         let Some(net) = self.net.as_mut() else { return };
         if net.dead {
             return;
+        }
+        // What the co-op link changed since the last tick: a seat joined,
+        // one left, or the link closed.
+        for change in glue::take_changes() {
+            match change {
+                Change::Add(seat, lane) => {
+                    if let Err(e) = net.node.accept(seat, lane, forge::net::Role::Editor) {
+                        net.dead = true;
+                        net.replies.end(&e.to_string());
+                        self.notice = Some((format!("The Forge session ended: {e}"), tick));
+                        return;
+                    }
+                }
+                // A seat that never joined, or this machine is not the
+                // host: the lane is already gone either way.
+                Change::Drop(seat) => {
+                    let _ = net.node.disconnect(seat);
+                }
+                Change::End(why) => {
+                    net.dead = true;
+                    net.replies.end(why);
+                    self.notice = Some((format!("The Forge session ended: {why}"), tick));
+                    return;
+                }
+            }
         }
         let outgoing = Arc::make_mut(&mut self.session).take_outgoing();
         if !outgoing.is_empty()

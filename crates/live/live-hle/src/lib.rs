@@ -1061,6 +1061,18 @@ impl Hle {
             .unwrap_or_else(|e| e.into_inner())
             .set_coop_ping(ms)
     }
+    /// This console's own co-op channel endpoint: the XNet base port plus
+    /// `coop::link::COOP_PORT_OFFSET` (`live_hle::NetworkConfig`). The
+    /// co-op transport binds it itself; no guest memory access.
+    pub fn coop_endpoint(&self) -> std::net::SocketAddrV4 {
+        self.network.config.coop_endpoint()
+    }
+    /// The co-op channel endpoints of the other machines in this console's
+    /// XNet ([`Network::coop_endpoints`]): the guests of a co-op host, the
+    /// host of a guest. No guest memory access.
+    pub fn coop_endpoints(&self) -> Vec<std::net::SocketAddrV4> {
+        self.network.coop_endpoints()
+    }
     /// The co-op campaign armed with [`Hle::set_coop`], if any.
     pub fn coop(&self) -> Option<live_proto::session::Campaign> {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).coop()

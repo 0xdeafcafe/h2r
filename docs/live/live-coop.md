@@ -750,7 +750,11 @@ that does not need the settings layer.
 - `link`: `Link` is an unreliable datagram path. `UdpLink` is the direct
   one, on the XNet base port + 4 (`live_hle::NetworkConfig::coop_endpoint`;
   base+0, +1, +5, +6 are the title's channels and +2 is QoS, so a host
-  that opens base..base+6 for System Link already opens it). `Fallback`
+  that opens base..base+6 for System Link already opens it). `UdpPort` is
+  the many-peer form of it: one socket bound at the machine's own channel,
+  a `Link` to each peer, datagrams filed by their source address — the
+  form the game's Forge link serves a host's guests and a guest's host
+  through (`Hle::coop_endpoints` names them from XNet). `Fallback`
   sends on the direct path always and on the relay too while nothing has
   been heard on direct for a timeout. `sim_pair` is a simulated link on a
   fake clock: latency, jitter, loss, reordering, a switch to take it down,
@@ -799,10 +803,15 @@ bearer token. The relay caps messages at 1200 bytes and rate-limits each socket
 
 **Left for the rest of phase 0 and after**
 
-- Wiring into `boot` and `app`: nothing calls `Peer` yet. The runner
-  needs the hold at the scheduler point after a present, the tap needs a
-  handle-to-port map from `xapi` (the tap is given a handle only), and
-  the tick observer has to feed `report_hash`.
+- Wiring into `boot` and `app`: the game's Forge co-op link runs a `Peer`
+  per other machine of a synchronous network game
+  (`game/src/forge_glue/link.rs`, pumping it each tick and offering its
+  Forge lane to a shared Forge session,
+  [forge-design.md](../game/forge-design.md) "F5 in detail"), but no
+  runner holds a game's frames on a `Peer` yet: the hold at the scheduler
+  point after a present, the tap's handle-to-port map from `xapi` (the
+  tap is given a handle only), and the tick observer feeding
+  `report_hash` are all still to come.
 - The tap covers `XInputGetState` only. Device arrival and capabilities
   still come from the local backend (2.9).
 - The handshake of 2.3 (build, fingerprint, disc, epoch, start-state

@@ -294,8 +294,15 @@ fn registry_with_film(
     }
     // What `run_hosted_with_live` adds after `register_late`, in its order.
     if local_forge {
-        crate::forge_glue::install(&mut features, late.agent.as_ref(), None, nowhere, None)
-            .unwrap();
+        crate::forge_glue::install(
+            &mut features,
+            late.agent.as_ref(),
+            None,
+            nowhere,
+            None,
+            live.cloned(),
+        )
+        .unwrap();
     }
     if let Some(a) = &mut late.agent {
         a.configure_takeover(

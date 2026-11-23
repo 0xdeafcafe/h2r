@@ -3,6 +3,7 @@
 //! any map file still being read by the background worker.
 mod editing;
 pub mod gizmo;
+mod link;
 pub mod marker;
 pub mod net;
 
@@ -95,6 +96,9 @@ struct Driver {
     calls: calls::Shared,
     vfs: Option<Arc<Mutex<vfs::Vfs>>>,
     data: PathBuf,
+    /// The co-op link a shared session's lanes run over, offered each
+    /// tick before anything else the driver does.
+    link: link::CoopLink,
     loaded: Option<Loaded>,
     opening: Option<Receiver<MapResult>>,
     editor: Option<Editor>,
@@ -111,6 +115,7 @@ impl Driver {
         self.looks.close();
         self.opening = None;
         self.loaded = None;
+        self.link.reset();
         self.reason = "Waiting for a local multiplayer map.".into();
         controls::publish(controls::State::default());
         crate::forge_screens::publish(crate::forge_screens::Facts::default());
@@ -133,6 +138,9 @@ impl Driver {
     }
 
     fn tick(&mut self, m: &dyn engine::GuestMemory) {
+        // The co-op link offers its lanes before anything else, so a
+        // session that opens this tick finds them.
+        self.link.tick(m);
         if self
             .loaded
             .as_ref()
@@ -342,6 +350,7 @@ pub fn install(
     vfs: Option<Arc<Mutex<vfs::Vfs>>>,
     data: &Path,
     store: Option<Arc<settings::Store>>,
+    live: Option<Arc<live_hle::Hle>>,
 ) -> anyhow::Result<()> {
     let calls = crate::lobby_start::install_queue(registry, agent)?;
     let (models, note) = catalogue(data);
@@ -351,6 +360,7 @@ pub fn install(
         calls,
         vfs,
         data: data.into(),
+        link: link::CoopLink::new(Box::new(link::HleTransport::new(live))),
         loaded: None,
         opening: None,
         editor: None,
