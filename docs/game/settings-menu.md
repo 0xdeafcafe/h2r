@@ -295,7 +295,9 @@ Code: `game::pause_menu` and `layout_glue::install`. The
 `features.pause-rows` and `features.pause-mp-rows` switches control the
 campaign and multiplayer extensions. Each list includes the Video and
 Voice pages whose classes are enabled. When neither page is enabled, the
-game handles its original Settings row directly.
+game handles its original Settings row directly. Both features are
+stateless for snapshots: they draw their rows from guest memory and hold
+no host state, so they never forbid a machine keyframe.
 
 **Game Setup** shows above End Game for the party leader of a custom
 game ("Game Setup from the pause menu" below).
