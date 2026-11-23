@@ -80,10 +80,26 @@ replay parity on its invented cache.
   BSP bounds, a target an earlier op removed, the removal of a linked
   or labelled entry, a reset of an added entry or of an entry with no
   entry op since its last reset, and one entry named with two prints.
-  `replay` refuses entry ops as unsupported until they lower to
-  placement edits by running index (docs/game/forge-map-variants.md,
-  slice M2); `ForgeDoc::links` and `labels` already follow them, and
-  leave out a removal a later reset covers.
+  `resolve` lowers each entry op to the placement op of its target's
+  running index, following identities through appends and
+  swap-removes; a reset, and every entry op a later reset of the same
+  entry covers, lower to nothing. It also lists every base entry an
+  entry op, link or label names with a print (`Resolved::prints`).
+  `replay` hands the prints to `Apply::prints` before the first edit,
+  then the lowered ops to `Apply::placement` in op order; an adapter
+  without `prints` refuses a document with a print by name.
+  `ForgeDoc::links` and `labels` follow entry removals the same way,
+  and leave out a removal a later reset covers. `inverse` retracts an
+  entry op as it does any other.
+- `ForgeDoc::tier` is `Tier::Variant` when the document holds scenario
+  edits only (placement adds, entry ops, links, unlinks and labels, no
+  recipe but the session kit's `forge_kit`, no import slot or source
+  map), else `Tier::Map`. `play_form` drops the kit recipe and
+  `session_form` appends it, each dropping `expect` when it changes the
+  recipes; the play form of the session form is the document.
+  `variant_name` holds a map variant's name to 1 to 16 characters, not
+  blank and without control characters, and `ForgeDoc::check_variant`
+  refuses a document of the map tier as `Refusal::Tier`.
 - The `format` is the highest any op needs: 3 when any op is an entry
   op or any endpoint has a print, else 2 when any op is a label op,
   else 1. `validate` refuses any other number, so a document has one
@@ -118,7 +134,14 @@ vectors, chain integrity and inverses, validator refusals, a seeded
 parity against `scenario_edit::Session`. `src/tests/entry.rs` covers
 print and format 3 golden vectors, each entry op rule's refusal, final
 indices after an entry removal and a reset, a fold and undo of entry
-ops, and a seeded fuzz of entry documents. All inputs are invented.
+ops, replay's prints and lowered ops, and a seeded fuzz of entry
+documents. `tests/resolve.rs` checks `resolve` against hand replays of
+add, remove, set and reset orders, entry-op replay against the editor's
+session on its invented cache, a wrong print refused before any write,
+a reset giving the fixture's bytes back, and a fold then undo of entry
+ops giving the start. `tests/variant.rs` covers a table of documents and
+their tiers, the forms' round trip and `expect`, and the variant name
+rule. All inputs are invented.
 
 ## Docs
 

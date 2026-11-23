@@ -217,9 +217,6 @@ impl Edit {
         let name = match self {
             Self::Mesh => "mesh",
             Self::Bitmap => "bitmap",
-            // `replay` lowers entry ops once `resolve` gives their running
-            // indices (docs/game/forge-map-variants.md, slice M2).
-            Self::Entry(_) => "entry",
             _ => return Refusal::invalid("document op", "undo belongs in the edit log"),
         };
         Refusal::Unsupported(name.into())

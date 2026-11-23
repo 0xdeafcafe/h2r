@@ -331,7 +331,7 @@ impl<'a> Before<'a> {
 /// latest active edit, so later index-based commands cannot be reordered.
 pub fn inverse(op: &Op, before: &Before<'_>) -> Result<Op> {
     match &op.edit {
-        Edit::Placement(_) | Edit::TagField(_) | Edit::Forge(_) => Ok(Op {
+        Edit::Placement(_) | Edit::TagField(_) | Edit::Forge(_) | Edit::Entry(_) => Ok(Op {
             id: op.id,
             edit: Edit::Undo,
         }),

@@ -1,5 +1,7 @@
 //! `h2 forge build` and `h2 forge check`. Both materialise the document
-//! against the user's disc. Check stops before writing the local package.
+//! against the user's disc and print its tier (map variant or Forge map)
+//! and each entry print they compared with the disc's row. Check stops
+//! before writing the local package.
 
 use std::{fs::File, path::PathBuf};
 
@@ -78,7 +80,11 @@ pub fn run(args: Vec<String>) -> Result<()> {
             .find(|(map, _)| map.eq_ignore_ascii_case(name))
             .map(|(_, source)| source.clone())
     })?;
+    println!("Tier {}", document.tier().name());
     println!("MapId {}", built.manifest().map_id());
+    for line in print_lines(&built.prints) {
+        println!("{line}");
+    }
     for block in &built.reserves {
         println!(
             "{}: {} active, {} reserved",
@@ -93,6 +99,15 @@ pub fn run(args: Vec<String>) -> Result<()> {
         println!("{}", path.display());
     }
     Ok(())
+}
+
+/// One line for each print compared: a print that differs stops the build
+/// as `variant_print` before this is reached.
+fn print_lines(prints: &[forge_build::Printed]) -> Vec<String> {
+    prints
+        .iter()
+        .map(|p| format!("print {} {} {}: matches", p.block.name(), p.index, p.print))
+        .collect()
 }
 
 #[cfg(test)]
@@ -124,5 +139,29 @@ mod tests {
         ] {
             assert!(parse(args(invalid)).is_err(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn each_compared_print_is_one_line() {
+        let prints = [
+            forge_build::Printed {
+                block: forge_doc::BlockKind::Weapons,
+                index: 1,
+                print: forge_doc::Print([0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef]),
+            },
+            forge_build::Printed {
+                block: forge_doc::BlockKind::NetgameFlags,
+                index: 0,
+                print: forge_doc::Print([0; 8]),
+            },
+        ];
+        assert_eq!(
+            print_lines(&prints),
+            vec![
+                "print weapons 1 0123456789abcdef: matches",
+                "print netgame_flags 0 0000000000000000: matches",
+            ]
+        );
+        assert!(print_lines(&[]).is_empty());
     }
 }

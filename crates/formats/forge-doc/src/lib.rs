@@ -10,7 +10,9 @@ mod entry;
 mod labels;
 mod links;
 mod log;
+mod resolve;
 mod validate;
+mod variant;
 mod wire;
 
 pub use content::{MapId, Sha256};
@@ -20,7 +22,9 @@ pub use labels::*;
 pub use links::*;
 pub use log::*;
 pub use map::scenario_layout::BlockKind;
+pub use resolve::{Printed, Resolved, resolve};
 pub use validate::{Limits, WorldBounds, validate};
+pub use variant::{KIT_RECIPE, MAX_VARIANT_NAME, Tier, kit, play_form, session_form, variant_name};
 
 use serde::{Deserialize, Serialize};
 
@@ -45,6 +49,11 @@ pub enum Refusal {
         block: BlockKind,
         index: u32,
     },
+    /// A document offered as a map variant holds more than one may: a
+    /// recipe other than the kit's, an import slot, a source map, a tag
+    /// write or a placement op by running index other than an add.
+    #[error("the document is a Forge map, not a map variant")]
+    Tier,
     #[error("invalid JSON: {0}")]
     Json(String),
     #[error("{what} exceeds its limit of {max}")]
@@ -111,17 +120,39 @@ pub trait Apply {
             Err(Refusal::Unsupported("label".into()))
         }
     }
+
+    /// Check every base entry the document names with a print, before the
+    /// first edit: the entry as the base map has it must give the print
+    /// (`check_print`), or the refusal is `Refusal::Print` and nothing is
+    /// written. An adapter that cannot read its entries' fields refuses a
+    /// document with prints.
+    fn prints(&mut self, prints: &[Printed]) -> Result<()> {
+        if prints.is_empty() {
+            Ok(())
+        } else {
+            Err(Refusal::Unsupported("print".into()))
+        }
+    }
 }
 
 /// Validate the entire document before handing its edits to the adapter.
-/// If the adapter refuses an edit, replay stops there.
+/// The adapter checks the prints first, then takes the edits in op order,
+/// each entry op as the placement op [`resolve`] lowers it to. If the
+/// adapter refuses an edit, replay stops there.
 pub fn replay(doc: &ForgeDoc, limits: &Limits, target: &mut impl Apply) -> Result<()> {
     validate(doc, limits)?;
+    let resolved = resolve(&doc.ops, &limits.base_counts)?;
+    target.prints(&resolved.prints)?;
     let mut linked = false;
     let mut labelled = false;
     for op in &doc.ops {
         match &op.edit {
             Edit::Placement(edit) => target.placement(edit)?,
+            Edit::Entry(_) => {
+                if let Some(edit) = resolved.lowered.get(&op.id) {
+                    target.placement(edit)?;
+                }
+            }
             Edit::TagField(write) => target.tag_field(write)?,
             Edit::Forge(Forge::Label { .. }) => labelled = true,
             Edit::Forge(_) => linked = true,

@@ -692,9 +692,28 @@ fn a_fold_of_entry_ops_sets_the_format_and_undo_restores_it() {
 }
 
 #[test]
-fn replay_refuses_entry_ops_until_they_lower() {
-    struct Nothing;
-    impl Apply for Nothing {
+fn replay_hands_the_prints_then_the_lowered_ops() {
+    #[derive(Default)]
+    struct Recorder {
+        prints: Vec<Printed>,
+        placements: Vec<Placement>,
+    }
+    impl Apply for Recorder {
+        fn placement(&mut self, edit: &Placement) -> Result<()> {
+            self.placements.push(edit.clone());
+            Ok(())
+        }
+        fn tag_field(&mut self, _: &TagWrite) -> Result<()> {
+            Ok(())
+        }
+        fn prints(&mut self, prints: &[Printed]) -> Result<()> {
+            assert!(self.placements.is_empty(), "prints come first");
+            self.prints = prints.to_vec();
+            Ok(())
+        }
+    }
+    struct Plain;
+    impl Apply for Plain {
         fn placement(&mut self, _: &Placement) -> Result<()> {
             Ok(())
         }
@@ -702,11 +721,57 @@ fn replay_refuses_entry_ops_until_they_lower() {
             Ok(())
         }
     }
-    let doc = with(vec![set_entry(1, flag(0), "team", Value::Int(1))]);
+
+    let limits = flags(3);
+    let team = |n| FieldWrite {
+        field: "team".into(),
+        value: Value::Int(n),
+    };
+    let doc = with(vec![
+        remove_entry(1, flag(0)),
+        set_entry(2, flag(1), "team", Value::Int(1)),
+        set_entry(3, flag(2), "team", Value::Int(2)),
+    ]);
+    let mut recorder = Recorder::default();
+    replay(&doc, &limits, &mut recorder).unwrap();
+    // Removing flag 0 swaps flag 2 into its slot.
     assert_eq!(
-        replay(&doc, &Limits::default(), &mut Nothing),
-        Err(Refusal::Unsupported("entry".into()))
+        recorder.placements,
+        vec![
+            Placement::Remove {
+                block: FLAGS,
+                index: 0
+            },
+            Placement::Set {
+                block: FLAGS,
+                index: 1,
+                write: team(1)
+            },
+            Placement::Set {
+                block: FLAGS,
+                index: 0,
+                write: team(2)
+            },
+        ]
     );
+    assert_eq!(
+        recorder.prints,
+        (0..3)
+            .map(|index| Printed {
+                block: FLAGS,
+                index,
+                print: flag(index).print().unwrap(),
+            })
+            .collect::<Vec<_>>()
+    );
+
+    // An adapter that cannot read its entries refuses a print by name, and
+    // takes a document without one.
+    assert_eq!(
+        replay(&doc, &limits, &mut Plain),
+        Err(Refusal::Unsupported("print".into()))
+    );
+    replay(&with(vec![add(1, FLAGS)]), &limits, &mut Plain).unwrap();
 }
 
 #[test]

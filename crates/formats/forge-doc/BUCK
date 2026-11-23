@@ -92,9 +92,53 @@ workspace_test(
 )
 
 workspace_test(
+    name = "resolve",
+    crate = "resolve",
+    crate_root = "crates/formats/forge-doc/tests/resolve.rs",
+    description = "Forge documents: portable map edits, bounded canonical JSON and the host edit log",
+    features = [],
+    manifest = "crates/formats/forge-doc",
+    package = "forge-doc",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/content:content",
+        "//crates/formats/map:map",
+        "//crates/formats/rules:rules",
+        "//crates/tools/scenario-edit:scenario-edit",
+        "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
+        "//third-party/rust:thiserror",
+        ":forge-doc",
+    ],
+)
+
+workspace_test(
     name = "scenario",
     crate = "scenario",
     crate_root = "crates/formats/forge-doc/tests/scenario.rs",
+    description = "Forge documents: portable map edits, bounded canonical JSON and the host edit log",
+    features = [],
+    manifest = "crates/formats/forge-doc",
+    package = "forge-doc",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/content:content",
+        "//crates/formats/map:map",
+        "//crates/formats/rules:rules",
+        "//crates/tools/scenario-edit:scenario-edit",
+        "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
+        "//third-party/rust:thiserror",
+        ":forge-doc",
+    ],
+)
+
+workspace_test(
+    name = "variant",
+    crate = "variant",
+    crate_root = "crates/formats/forge-doc/tests/variant.rs",
     description = "Forge documents: portable map edits, bounded canonical JSON and the host edit log",
     features = [],
     manifest = "crates/formats/forge-doc",

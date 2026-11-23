@@ -485,7 +485,8 @@ for bundles, a provider in the studio's `api`.
 
 **CLI.** `h2 forge build <doc> [--disc <iso>] [--maps <dir>]`
 materialises and writes the package. `h2 forge check <doc> [--disc <iso>]`
-runs the same checks in memory. `h2 forge looks [--disc <iso>] [--json]`
+runs the same checks in memory and prints each entry print it compared
+([forge-map-variants.md](forge-map-variants.md), "Naming an entry"). `h2 forge looks [--disc <iso>] [--json]`
 lists the models a monitor can look like
 ([forge-monitor-appearance.md](forge-monitor-appearance.md)).
 `h2 import-asset <file> --chassis <key>`
