@@ -174,21 +174,25 @@ impl SubpartRanges {
 
 /// The world layers besides 3 whose passes an object item draws natively
 /// from the scene (docs/graphics/framescene.md, slice 4): 1, 5, 7, 8 and
-/// 20, and from the sorted list's camouflage handler 18
+/// 20, and from the sorted list's camouflage handler 18 and 19
 /// (docs/graphics/native-water-fog.md). In layer 5 an item whose model has
 /// a PRT block draws its pass's PRT variant ([`LitLayerPass::prt`]) with
 /// the stream and constants the geometry draw adds
 /// (`frame_scene::PrtStream`).
-pub const OBJECT_LAYERS: [u8; 6] = [1, PRT_LAYER, 7, 8, 20, CAMO_LAYER];
+pub const OBJECT_LAYERS: [u8; 7] = [1, PRT_LAYER, 7, 8, 20, CAMO_LAYER, CAMO_MODULATE_LAYER];
 
 /// Active camouflage, the layer the sorted handler `0x00041cc0` draws its
 /// records' camouflage passes in (`scene_extract::layout::world_layers::sorted_site`).
 pub const CAMO_LAYER: u8 = 18;
 
+/// The camouflage's second layer, which the same handler draws after 18
+/// into render target 3 while its modulate state holds.
+pub const CAMO_MODULATE_LAYER: u8 = 19;
+
 /// The layers whose passes a shader the game puts on a record in place of
 /// its part's material draws ([`LitModelInput::append`] with
 /// [`override_sections`]): the sorted handlers'.
-pub const OVERRIDE_LAYERS: [u8; 1] = [CAMO_LAYER];
+pub const OVERRIDE_LAYERS: [u8; 2] = [CAMO_LAYER, CAMO_MODULATE_LAYER];
 
 /// The world layer whose geometry draw adds an object's PRT stream
 /// (`scene_extract::layout::prt`).
@@ -3071,7 +3075,7 @@ mod tests {
         let mut model = lit_model(std::slice::from_ref(&section), &materials, &formats(), &engine, &mut vertex, &mut image);
         assert_eq!(model.taken, vec![0], "{:?}", model.refused);
         // A camouflage shader: one additive pass sampling the view at
-        // stage 1, in layer 18 and again in layer 7.
+        // stage 1, in layers 18 and 19 and again in layer 7.
         let mut camo = additive(0);
         camo.textures[1] = Some(StageTexture { source: TextureSource::Engine(VIEW_TEXTURE), size: None, stage_size: None });
         camo.pixel_shader = shaders::PixelShaderDef { texture_modes: 1 << 5, ..Default::default() }.to_bytes();
@@ -3083,6 +3087,7 @@ mod tests {
             inputs: Default::default(),
             layers: vec![
                 ResolvedLayer { lod: 0, layer: usize::from(CAMO_LAYER), passes: vec![pass(vec![camo.clone()])] },
+                ResolvedLayer { lod: 0, layer: usize::from(CAMO_MODULATE_LAYER), passes: vec![pass(vec![camo.clone()])] },
                 ResolvedLayer { lod: 0, layer: 7, passes: vec![pass(vec![camo])] },
             ],
         };
@@ -3091,9 +3096,12 @@ mod tests {
         assert!(sections[0].parts.iter().all(|(_, m, _)| *m == OVERRIDE_MATERIAL));
         let built = lit_model(&sections, &overrides, &formats(), &engine, &mut vertex, &mut image);
         assert!(built.taken.is_empty(), "it has no layer 3");
-        assert_eq!(built.input.layers.len(), 2, "layer 18 over both parts");
-        assert!(built.input.layers.iter().all(|p| p.layer == CAMO_LAYER && p.shader_tag == shader.0));
-        assert_eq!(built.input.layers.iter().map(|p| p.part).collect::<Vec<_>>(), [0, 1]);
+        assert_eq!(built.input.layers.len(), 4, "layers 18 and 19 over both parts");
+        assert!(built.input.layers.iter().all(|p| p.shader_tag == shader.0));
+        for layer in OVERRIDE_LAYERS {
+            let parts: Vec<u8> = built.input.layers.iter().filter(|p| p.layer == layer).map(|p| p.part).collect();
+            assert_eq!(parts, [0, 1], "layer {layer}");
+        }
         let refused: Vec<(u8, &str)> = built.layer_refused.iter().map(|(_, l, why)| (*l, why.as_str())).collect();
         assert_eq!(refused.len(), 1, "{refused:?}");
         assert_eq!(refused[0].0, 7, "the view is copied only for the sorted handlers' layers");
@@ -3104,7 +3112,7 @@ mod tests {
         let (programs, buffers) = (model.input.programs.len(), model.input.buffers.len());
         let theirs = built.input.layers[0].passes[0].implementations[0].unwrap();
         model.input.append(built.input);
-        assert_eq!(model.input.layers.len(), 2);
+        assert_eq!(model.input.layers.len(), 4);
         assert_eq!(model.input.parts.len(), 1, "the model's layer-3 part alone");
         assert_eq!(
             model.input.layers[0].passes[0].implementations[0],
@@ -3116,6 +3124,7 @@ mod tests {
         let without = lit_model(&sections, &overrides, &formats(), &EngineStages::default(), &mut vertex, &mut image);
         assert!(without.input.layers.is_empty());
         assert!(without.layer_refused.iter().any(|(_, l, _)| *l == CAMO_LAYER));
+        assert!(without.layer_refused.iter().any(|(_, l, _)| *l == CAMO_MODULATE_LAYER));
     }
 
     /// [`formats`] with a PRT stream record: semantic 2 (the normal) as

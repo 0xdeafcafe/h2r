@@ -63,7 +63,9 @@ pub fn layer_site(layer: u32, return_address: u32) -> Site {
 /// when `[0x004b9f5c] != -1`, `[0x004b9f88] == 0` and the larger of
 /// `[0x004b9f78]` and `[0x004b9f7c]` exceeds `[0x0045dbd8]`, 19, then 15.
 /// Each layer goes through the layer begin `0x00044370`, the draw
-/// `0x00044550` and the end `0x000445d0` with no wrapper of its own.
+/// `0x00044550` and the end `0x000445d0` with no wrapper of its own; the
+/// begin binds the layer's target before the draw (the descriptor at
+/// `0x0043fa1c`: 18 the bound target, 19 render target 3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SortedHandler {
     /// `0x00041cc0`: active camouflage.
@@ -76,6 +78,9 @@ pub fn sorted_site(layer: u32, return_address: u32) -> Option<SortedHandler> {
     match (layer, return_address) {
         // `call 0x00044550` at `0x00042010`.
         (18, 0x0004_2015) => Some(SortedHandler::Camouflage),
+        // `call 0x00044550` at `0x0004205a`, after the begin at
+        // `0x00042051` returned true.
+        (19, 0x0004_205f) => Some(SortedHandler::Camouflage),
         _ => None,
     }
 }
@@ -260,6 +265,8 @@ mod tests {
     #[test]
     fn the_sorted_handlers_layers_are_named_by_their_return() {
         assert_eq!(sorted_site(18, 0x0004_2015), Some(SortedHandler::Camouflage));
+        assert_eq!(sorted_site(19, 0x0004_205f), Some(SortedHandler::Camouflage), "the modulate layer");
+        assert_eq!(sorted_site(19, 0x0004_2015), None, "18's return names only 18");
         assert_eq!(sorted_site(18, 0x0002_c0e9), None, "another caller's");
         assert_eq!(sorted_site(16, 0x0004_1ffd), None, "the handler's replay of layer 16 is not taken");
         assert_eq!(layer_site(18, 0x0004_2015), Site::Other, "no scene site");

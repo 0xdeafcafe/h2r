@@ -1,6 +1,6 @@
 //! The host of `frame-scene.layers` (docs/graphics/framescene.md, slice 4):
 //! the scene's world layers 1, 5, 7, 8 and 20, the first person's
-//! layers 1, 7, 8 and 20, and the sorted camouflage handler's layer 18
+//! layers 1, 7, 8 and 20, and the sorted camouflage handler's layers 18 and 19
 //! (docs/graphics/native-water-fog.md), drawn from the scene's plan
 //! (`native_render::layer_pass`, `LitObjects::plan_layer_item`) over the
 //! native world's loaded BSP and the object models layer 3 draws from,
