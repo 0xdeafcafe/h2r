@@ -253,10 +253,7 @@ pub fn hover(src: &str, pos: Position, ctx: &Context) -> Option<Hover> {
             _ => "`(script <kind> <name> <expression>...)`: a scenario script.".to_owned(),
         },
         Role::CallUnknown => format!("No builtin or script is named `{text}`."),
-        Role::Number | Role::Constant | Role::Symbol => match &o.param {
-            Some(p) => format!("`{text}` as a `{p}`."),
-            None => return None,
-        },
+        Role::Number | Role::Constant | Role::Symbol => format!("`{text}` as a `{}`.", o.param.as_ref()?),
     };
     Some(Hover {
         contents: Markup::markdown(value),

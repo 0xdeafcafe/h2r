@@ -269,12 +269,4 @@ impl<'a> Lines<'a> {
             end: self.position(end),
         }
     }
-
-    pub fn line_count(&self) -> usize {
-        self.starts.len()
-    }
-
-    pub fn line_start(&self, line: usize) -> usize {
-        self.starts.get(line).copied().unwrap_or(self.src.len())
-    }
 }
