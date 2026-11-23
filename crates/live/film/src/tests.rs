@@ -51,6 +51,7 @@ pub(super) fn header(id: u64) -> Header {
         live_service: false,
         features: String::new(),
         player_features: false,
+        tape_id: None,
     }
 }
 #[test]
@@ -587,4 +588,106 @@ fn a_single_chunk_cannot_hide_a_second_zstd_frame() {
     data.extend_from_slice(&packed);
     let e = Entry { tag: *b"TICK", offset: 0, size };
     assert!(read_bytes(&mut Cursor::new(data), &e, 256).is_err());
+}
+
+/// One game cut from a running v3 tape (docs/game/film-format.md, "One film
+/// per game"): the copy of the tape so far, closed as a film of its own,
+/// while the tape records on and seals as itself.
+#[test]
+fn a_cut_of_a_running_tape_reads_as_a_film_of_its_own() {
+    use blam::{MatchHeader, Summary, Tick, TrackWriter};
+    let tick = |n| Tick {
+        tick: n,
+        inputs: vec![],
+        events: vec![],
+        closing_events: vec![],
+        post_hash: None,
+    };
+    let mut tape_header = header(7);
+    tape_header.version = 3;
+    tape_header.meta.source = Source::Local;
+    tape_header.player_features = true;
+    let mut tape = Writer::new(Cursor::new(Vec::new()), &tape_header).unwrap();
+    tape.chunk(DATA, &manifest::Manifest::default()).unwrap();
+    let mut track = TrackWriter::default();
+    for n in 1..=40 {
+        track.push(&mut tape, tick(n)).unwrap();
+    }
+
+    let mut cut_header = tape_header.clone();
+    cut_header.meta.id = "8".into();
+    cut_header.meta.started_ms = 9_000;
+    cut_header.meta.length_ticks = 40;
+    cut_header.tape_id = Some("7".into());
+    // A cut names its tape, has an ID of its own and starts from the
+    // tape's every byte.
+    let so_far = tape.out.get_ref().clone();
+    let mut stranger = cut_header.clone();
+    stranger.tape_id = Some("other".into());
+    assert!(tape.fork(Cursor::new(so_far.clone()), &stranger).is_err());
+    let mut same_id = cut_header.clone();
+    same_id.meta.id = "7".into();
+    assert!(tape.fork(Cursor::new(so_far.clone()), &same_id).is_err());
+    assert!(tape.fork(Cursor::new(so_far[..so_far.len() - 1].to_vec()), &cut_header).is_err());
+
+    let mut cut = tape.fork(Cursor::new(so_far), &cut_header).unwrap();
+    let mut cut_track = track.clone();
+    cut.chunk(HEAD, &cut_header).unwrap();
+    let game = MatchHeader {
+        match_start_tick: Some(10),
+        ..Default::default()
+    };
+    cut_track.finish(&mut cut, &game, &Summary::default()).unwrap();
+    cut.chunk(MARK, &Mark::End { slices: 80, tick: 40, calls: 0 }).unwrap();
+    let bytes = cut.finish().unwrap().into_inner();
+    let reader = Reader::new(Cursor::new(bytes)).unwrap();
+    assert_eq!(reader.header.meta.id, "8");
+    assert_eq!(reader.header.tape_id.as_deref(), Some("7"));
+    let front = reader.front.as_ref().unwrap();
+    assert_eq!((front.id.as_str(), front.started_ms), ("8", 9_000));
+    assert_eq!(front.match_start_tick, Some(10));
+    assert_eq!(reader.ranges.as_ref().unwrap().chunks.last().unwrap().last, 40);
+
+    // The tape records on past the cut and is a film of its own when sealed.
+    for n in 41..=50 {
+        track.push(&mut tape, tick(n)).unwrap();
+    }
+    tape.chunk(HEAD, &tape_header).unwrap();
+    track.finish(&mut tape, &MatchHeader::default(), &Summary::default()).unwrap();
+    let bytes = tape.finish().unwrap().into_inner();
+    let reader = Reader::new(Cursor::new(bytes)).unwrap();
+    assert_eq!(reader.header.meta.id, "7");
+    assert_eq!(reader.ranges.as_ref().unwrap().chunks.last().unwrap().last, 50);
+}
+
+/// Only a cut's final header may name another boot header: a v3 film whose
+/// boot `HEAD` has another ID is still refused.
+#[test]
+fn a_film_whose_boot_header_differs_without_naming_its_tape_is_refused() {
+    use blam::{MatchHeader, Summary, Tick, TrackWriter};
+    let mut boot = header(7);
+    boot.version = 3;
+    let mut w = Writer::new(Cursor::new(Vec::new()), &boot).unwrap();
+    let mut track = TrackWriter::default();
+    track
+        .push(
+            &mut w,
+            Tick {
+                tick: 1,
+                inputs: vec![],
+                events: vec![],
+                closing_events: vec![],
+                post_hash: None,
+            },
+        )
+        .unwrap();
+    // Forge a final header with another ID, without `tape_id`.
+    let mut other = boot.clone();
+    other.meta.id = "8".into();
+    w.ranges.as_mut().unwrap().front.id = "8".into();
+    w.chunk(HEAD, &other).unwrap();
+    track.finish(&mut w, &MatchHeader::default(), &Summary::default()).unwrap();
+    let bytes = w.finish().unwrap().into_inner();
+    let error = Reader::new(Cursor::new(bytes)).err().unwrap().to_string();
+    assert!(error.contains("headers differ"), "{error}");
 }

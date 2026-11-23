@@ -176,7 +176,17 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let target = opts
         .seek
         .or_else(|| view.and_then(|v| v.tick.map(u64::from)))
-        .unwrap_or_else(|| opts.range.map_or(0, |[start, _]| start));
+        .unwrap_or_else(|| {
+            // A game cut from a session's tape opens at its game's start.
+            let opening = || {
+                if opts.prepare {
+                    0
+                } else {
+                    boot::theater::autorecord::opening_tick(&header, reader.front.as_ref())
+                }
+            };
+            opts.range.map_or_else(opening, |[start, _]| start)
+        });
     if let Some([start, end]) = opts.range {
         ensure!((start..end).contains(&target), "seek outside film clip");
     }

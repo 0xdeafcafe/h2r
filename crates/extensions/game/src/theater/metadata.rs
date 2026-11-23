@@ -30,10 +30,18 @@ pub(super) struct Capture {
     host_machine: Option<String>,
     pub(super) archived_on_live: bool,
     lease_mode: Option<Mode>,
+    /// A default recording cuts each game into a film of its own and keeps
+    /// recording ([`super::autorecord`]): it describes one game after another.
+    games: bool,
+    /// The last game ended and its film is cut; the next game starts once
+    /// the guest leaves it (a map unload, or a new game's globals).
+    between_games: bool,
+    left: bool,
 }
 
 impl Capture {
     pub(super) fn new(header: &film::Header) -> Self {
+        let games = header.player_features;
         let lease_mode = header.lease_id.as_ref().and_then(|id| {
             let json = std::env::var("H2_HOST_LEASE_JSON").ok()?;
             let lease: live_proto::hosts::HostLease = serde_json::from_str(&json).ok()?;
@@ -61,11 +69,57 @@ impl Capture {
             vfs: None,
             live: Weak::new(),
             sim_bots: vec![],
+            games,
+            between_games: false,
+            left: false,
         }
     }
 
     pub(super) fn descriptor(&self) -> &MatchHeader {
         &self.descriptor
+    }
+
+    /// Forget the game just cut (or left before its end) and describe the
+    /// next one from its start. The match sources stay.
+    pub(super) fn next_game(&mut self) {
+        self.descriptor = MatchHeader::default();
+        self.map_digest = None;
+        self.variant_name.clear();
+        self.active.clear();
+        self.results.clear();
+        self.quitting.clear();
+        self.result_order.clear();
+        self.host_machine = None;
+        self.archived_on_live = false;
+        self.between_games = true;
+    }
+
+    /// The guest still shows the game whose film was just cut.
+    pub(super) fn between_games(&self) -> bool {
+        self.between_games
+    }
+
+    /// Whether the player left a game before its end since the last call:
+    /// its observations are dropped with it.
+    pub(super) fn take_left(&mut self) -> bool {
+        std::mem::take(&mut self.left)
+    }
+
+    /// A default recording's multiplayer game the player left before its
+    /// end: the guest is out of the game with no game-over. Its ticks stay
+    /// on the tape; it is never a film of its own.
+    fn left_unfinished(&self) -> bool {
+        self.games
+            && self.descriptor.match_start_tick.is_some()
+            && !matches!(self.descriptor.mode, Mode::Campaign | Mode::CoopCampaign)
+    }
+
+    #[cfg(test)]
+    pub(super) fn start_for_test(&mut self, tick: u64, level: &str) {
+        self.descriptor.match_start_tick = Some(tick);
+        self.descriptor.map.name = level.into();
+        self.descriptor.mode = Mode::Custom;
+        self.variant_name = "Slayer".into();
     }
 
     pub(super) fn finish_map(&mut self) -> Result<()> {
@@ -102,8 +156,20 @@ impl Capture {
     ) -> Result<Vec<Event>> {
         let mut events = Vec::new();
         let Some(options) = active_options(g) else {
+            self.between_games = false;
+            if self.left_unfinished() {
+                self.next_game();
+                self.between_games = false;
+                self.left = true;
+            }
             return Ok(events);
         };
+        if self.between_games {
+            if game_ended(g) {
+                return Ok(events);
+            }
+            self.between_games = false;
+        }
         let s = bots::lobby::game_session(g).ok().filter(|&s| {
             s != 0
                 && g.u32(s.wrapping_add(net::STATE))
@@ -364,6 +430,16 @@ impl Capture {
     }
 }
 
+/// The retail game-over latch of the loaded game.
+pub(super) fn game_ended(g: &Guest) -> bool {
+    g.u32(layout::GAME_GLOBALS_PTR)
+        .ok()
+        .filter(|p| *p != 0)
+        .and_then(|p| p.checked_add(layout::GAME_ENDED))
+        .and_then(|p| g.u8(p).ok())
+        .is_some_and(|v| v != 0)
+}
+
 fn active_options(g: &Guest) -> Option<u32> {
     if !matches!(
         level_boot::active_mode(g),
@@ -606,7 +682,8 @@ pub(super) fn install(session: &Arc<super::Session>, b: &mut hooks::Builder) {
                 && rec.meta.descriptor.seed.is_none()
             {
                 let g = o.guest();
-                if active_options(&g).is_some() {
+                // After a cut, the next game's seed, not the ended game's.
+                if active_options(&g).is_some() && !(rec.meta.between_games() && game_ended(&g)) {
                     rec.meta.descriptor.seed = g
                         .u32(crate::sim_glue::RANDOM_SEED_PTR)
                         .ok()

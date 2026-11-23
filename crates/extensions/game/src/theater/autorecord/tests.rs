@@ -1,6 +1,6 @@
 use super::*;
 use crate::theater::tests::{host_facts, options};
-use crate::theater::{Facts, Session};
+use crate::theater::{Facts, Mode, Session};
 
 struct Temp(PathBuf);
 impl Temp {
@@ -174,15 +174,184 @@ fn a_join_or_an_editor_write_discards_only_a_default_recording() {
     assert!(stopper(None, "no film").is_none());
 }
 
+fn ticks(film: &Session, guest: &runtime::Guest, n: u64) {
+    for _ in 0..n {
+        film.checkpoint(guest);
+    }
+}
+
+/// A game on the tape from tick `start` to now, ended: the next slice's
+/// check cuts it, as boot's slice loop does.
+fn end_game(film: &Session, start: u64, slices: u64) {
+    {
+        let mut s = film.lock();
+        let Mode::Record(rec) = &mut s.mode else { panic!("a recording") };
+        rec.meta.start_for_test(start, "zanzibar");
+        rec.game_started_ms = Some(1_795_000_000_000 + start);
+        rec.match_over = true;
+    }
+    film.finish(slices, false).unwrap();
+}
+
+/// The sealed default films in `dir`, by their game's start tick.
+fn cut_films(dir: &Path) -> Vec<(PathBuf, film::Reader<fs::File>)> {
+    let mut films: Vec<_> = fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| is_auto(p))
+        .filter_map(|p| film::Reader::open(&p).ok().map(|r| (p, r)))
+        .collect();
+    films.sort_by_key(|(_, r)| r.front.as_ref().and_then(|f| f.match_start_tick));
+    films
+}
+
 #[test]
-fn a_sealed_default_film_survives_a_later_join() {
-    let dir = Temp::new("sealed");
-    let path = dir.0.join("auto.h2film");
-    let auto = local(&dir, &path, true);
-    // The first game's end sealed it; a join afterwards leaves it alone.
-    auto.lock().complete = true;
+fn each_game_is_cut_into_a_film_of_its_own_while_the_tape_records_on() {
+    let dir = Temp::new("cuts");
+    let tape = dir.0.join(file_name(UNIX_EPOCH + Duration::from_secs(1_795_000_000)));
+    let auto = local(&dir, &tape, true);
+    let tape_id = auto.lock().header.meta.id.clone();
+    let guest = crate::theater::tests::arena();
+    ticks(&auto, &guest, 40);
+    end_game(&auto, 10, 80);
+    {
+        let s = auto.lock();
+        let Mode::Record(rec) = &s.mode else { panic!("a recording") };
+        assert!(!s.complete && !rec.match_over, "the tape records on");
+        assert!(rec.meta.descriptor().match_start_tick.is_none() && rec.meta.between_games());
+    }
+    ticks(&auto, &guest, 30);
+    end_game(&auto, 50, 140);
+    // Menus after the last game.
+    ticks(&auto, &guest, 5);
+    assert!(film::LibraryEntry::read(&tape).is_err(), "the running tape is never listed");
+    auto.finish(150, true).unwrap();
+    assert!(!tape.exists(), "the tape goes at the session's end");
+
+    let films = cut_films(&dir.0);
+    assert_eq!(films.len(), 2, "one film per game");
+    let mut ids = Vec::new();
+    for ((path, reader), (start, length)) in films.iter().zip([(10, 40), (50, 70)]) {
+        let header = &reader.header;
+        assert_eq!(header.tape_id.as_deref(), Some(tape_id.as_str()));
+        assert!(header.player_features);
+        assert_eq!(header.meta.length_ticks, length);
+        assert_eq!(header.meta.started_ms, 1_795_000_000_000 + start);
+        assert_eq!(reader.front.as_ref().unwrap().match_start_tick, Some(start));
+        assert_eq!(opening_tick(header, reader.front.as_ref()), start);
+        let entry = film::LibraryEntry::read(path).unwrap();
+        assert_eq!(entry.meta.map, "zanzibar");
+        ids.push(header.meta.id.clone());
+    }
+    assert!(ids[0] != ids[1] && !ids.contains(&tape_id), "each film has its own ID");
+}
+
+#[test]
+fn a_cut_plays_back_with_the_recordings_player_features() {
+    let dir = Temp::new("replay");
+    let auto = local(&dir, &dir.0.join("auto-tape.h2film"), true);
+    ticks(&auto, &crate::theater::tests::arena(), 40);
+    end_game(&auto, 10, 80);
+    let (cut, _) = cut_films(&dir.0).pop().expect("the game's film");
+    let replay = Session::open(
+        None,
+        Some(crate::theater::Replay {
+            verification: None,
+            path: cut,
+            cache: None,
+            unpaced: false,
+            render_every: 0,
+            speed: 1.,
+            seek_tick: 0,
+            from_tick: None,
+            seek_source: None,
+            paused_at_target: false,
+            presentation: crate::theater::Presentation::default(),
+            restart: dir.0.join("restart"),
+            camera: Default::default(),
+            window_closed: None,
+        }),
+        // The viewer's own facts say nothing of the player features.
+        Facts { light: false, ..host_facts() },
+        b"xbe",
+        &options(&dir.data()),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(replay.plays_back());
+    assert!(replay.player_features(), "the replay plans the recording's player features");
+}
+
+#[test]
+fn a_join_after_a_game_discards_the_tape_and_keeps_the_games_film() {
+    let dir = Temp::new("join");
+    let tape = dir.0.join("auto-tape.h2film");
+    let auto = local(&dir, &tape, true);
+    ticks(&auto, &crate::theater::tests::arena(), 40);
+    end_game(&auto, 10, 80);
     auto.stop_auto("a Live session link was joined");
-    assert!(path.exists());
+    assert!(!tape.exists());
+    auto.finish(90, true).unwrap();
+    assert_eq!(cut_films(&dir.0).len(), 1, "the finished game's film stays");
+}
+
+#[test]
+fn a_game_left_in_play_at_exit_is_cut_at_exit() {
+    let dir = Temp::new("exit");
+    let tape = dir.0.join("auto-tape.h2film");
+    let auto = local(&dir, &tape, true);
+    ticks(&auto, &crate::theater::tests::arena(), 40);
+    {
+        let mut s = auto.lock();
+        let Mode::Record(rec) = &mut s.mode else { panic!("a recording") };
+        rec.meta.start_for_test(12, "zanzibar");
+    }
+    auto.finish(80, true).unwrap();
+    assert!(!tape.exists());
+    let films = cut_films(&dir.0);
+    assert_eq!(films.len(), 1);
+    assert_eq!(films[0].1.header.meta.length_ticks, 40);
+}
+
+#[test]
+fn each_cut_keeps_the_library_at_its_cap() {
+    let dir = Temp::new("cap");
+    let start = UNIX_EPOCH + Duration::from_secs(1_795_000_000);
+    let mut old = Vec::new();
+    for n in 0..KEEP as u64 {
+        let path = dir.0.join(file_name(start + Duration::from_secs(n)));
+        local(&dir, &path, false).finish(1, true).unwrap();
+        old.push(path);
+    }
+    let auto = local(&dir, &dir.0.join(file_name(start + Duration::from_secs(1_000))), true);
+    ticks(&auto, &crate::theater::tests::arena(), 40);
+    end_game(&auto, 10, 80);
+    let sealed = fs::read_dir(&dir.0)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| is_auto(p) && film::LibraryEntry::read(p).is_ok())
+        .count();
+    assert_eq!(sealed, KEEP);
+    assert!(!old[0].exists(), "the oldest default film made room");
+    assert!(old[1].exists());
+}
+
+#[test]
+fn only_a_cut_opens_at_its_games_start() {
+    let dir = Temp::new("open");
+    let path = dir.0.join("named.h2film");
+    local(&dir, &path, false).finish(1, true).unwrap();
+    let reader = film::Reader::open(&path).unwrap();
+    assert_eq!(opening_tick(&reader.header, reader.front.as_ref()), 0);
+    let mut cut = reader.header.clone();
+    cut.tape_id = Some("tape".into());
+    cut.meta.length_ticks = 10;
+    let mut front = reader.front.clone().unwrap();
+    front.match_start_tick = Some(4);
+    assert_eq!(opening_tick(&cut, Some(&front)), 4);
+    // A start past the film's end opens at boot.
+    front.match_start_tick = Some(11);
+    assert_eq!(opening_tick(&cut, Some(&front)), 0);
 }
 
 #[test]
