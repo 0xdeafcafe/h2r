@@ -11,9 +11,11 @@ pub mod census;
 pub mod monitors;
 mod refusal;
 pub mod saved;
+pub mod session;
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use census::Entry;
@@ -64,7 +66,7 @@ pub const BODIES_DRAWN: bool = false;
 
 /// One value per player, the same shape for every use: the picker, the
 /// profile, the network and the film.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MonitorLook {
     pub version: u32,
     /// [`MARKER`], or a census key.

@@ -35,7 +35,7 @@ mod state;
 mod wire;
 
 pub use host::{Host, Out};
-pub use node::{HOST_SEAT, HoldRow, Lane, MemberRow, Node, NodeError, Report, Settled, Step};
+pub use node::{HOST_SEAT, HoldRow, Lane, MemberRow, Monitor, Node, NodeError, Report, Settled, Step};
 pub use peer::{Peer, PeerError};
 pub use state::State;
 pub use wire::{BEAT_BYTES, Down, Framer, MAX_FRAME_BYTES, ToHost, frame};

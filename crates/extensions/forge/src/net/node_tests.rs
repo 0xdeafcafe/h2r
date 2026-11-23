@@ -258,7 +258,7 @@ fn joined(
 ) -> (Guest, FakeLane) {
     let (to_host, to_guest) = pair(chop);
     host.node.accept(seat, to_guest, role).unwrap();
-    let node = Node::guest(limits(), name, to_host.clone()).unwrap();
+    let node = Node::guest(limits(), name, CanDraw::default(), to_host.clone()).unwrap();
     (
         Machine {
             node,

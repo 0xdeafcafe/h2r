@@ -1,10 +1,14 @@
 //! The bytes a machine puts on the session's reliable ordered channel
 //! (docs/game/forge-design.md, F5): length-prefixed JSON messages, and the
-//! beat in the keep-alive.
-use forge_doc::{LogHead, Refusal, Sha256};
+//! beat in the keep-alive. The monitor looks and poses ride the same
+//! channel beside the edit log (docs/game/forge-monitor-appearance.md,
+//! "Other players"): they are not log entries, and a look edits no map.
+use forge_doc::{LogHead, OpId, Refusal, Sha256};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use super::{Beat, MAX_WELCOME_BYTES, NetRefusal, Reply, Stamped, Up, Welcome};
+use crate::look::session::{CanDraw, Pose};
+use crate::look::{MonitorLook, Refusal as LookRefusal};
 
 /// The beat as the keep-alive carries it: the log head's sequence, tick and
 /// hash, and the stream position (little endian).
@@ -40,8 +44,30 @@ impl Beat {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum ToHost {
-    /// First on the lane: the machine's name. The seat is the lane's.
-    Hello { name: String },
+    /// First on the lane: the machine's name and what it can draw (the
+    /// look version, whether the native renderer draws bodies, the
+    /// SHA-256 of each census source map it holds). The seat is the
+    /// lane's.
+    Hello {
+        name: String,
+        #[serde(default)]
+        can: CanDraw,
+    },
+    /// The seat proposes its monitor look; `base` is the source map the
+    /// model was read from, as this machine's catalogue names it.
+    Look {
+        look: MonitorLook,
+        base: Option<String>,
+    },
+    /// The seat's monitor pose, sampled on its render clock at `at`.
+    Pose {
+        at: f32,
+        #[serde(flatten)]
+        pose: Pose,
+        monitor: bool,
+        /// The thing the monitor carries, if any.
+        held: Option<OpId>,
+    },
     Up(Up),
 }
 
@@ -55,6 +81,23 @@ pub enum Down {
     Item(Stamped),
     /// The answer to a propose or hold.
     Reply(Reply),
+    /// The host accepted `seat`'s monitor look: the table as everyone
+    /// draws it.
+    Look { seat: u8, look: MonitorLook },
+    /// The host refused the seat's proposed look; the seat keeps its
+    /// previous one.
+    LookRefused { refusal: LookRefusal },
+    /// `seat`'s monitor pose, relayed.
+    Pose {
+        seat: u8,
+        at: f32,
+        #[serde(flatten)]
+        pose: Pose,
+        monitor: bool,
+        held: Option<OpId>,
+    },
+    /// One line for the HUD strip.
+    Notice(String),
     /// The host ends this machine's session, and says why.
     Ended(NetRefusal),
 }

@@ -9,6 +9,8 @@
 //! runs the same game. The glue hands the [`Draw`]s to the native
 //! renderer's object path and paints the markers (the looks this machine
 //! draws no model for) into the HUD canvas.
+use serde::{Deserialize, Serialize};
+
 use super::census::Entry;
 use super::{MonitorLook, PALETTE, TINT_MAX};
 
@@ -33,7 +35,7 @@ pub struct Model {
 
 /// A monitor's pose: the camera's position, yaw and pitch
 /// (`forge::camera::Camera`'s shape).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Pose {
     pub position: [f32; 3],
     pub yaw: f32,

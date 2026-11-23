@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use app::forge_overlay::{Controller, Frame, Overlay};
 use app::theater_overlay::Page;
 use boot::forge_glue::gizmo::Axes;
+use boot::forge_glue::marker::Marker;
 use boot::ui_kit::{preview, spec::ScreenSpec, view::View};
 use input::forge::Key;
 
@@ -88,7 +89,7 @@ fn clicked_row(rows: &[HitRow], x: i32, y: i32) -> Option<usize> {
 }
 
 impl Drawn {
-    fn frame(&mut self, axes: Option<Axes>) -> Frame {
+    fn frame(&mut self, axes: Option<Axes>, markers: Vec<Marker>) -> Frame {
         let page = match axes {
             None => self.page.clone(),
             Some(axes) => {
@@ -99,6 +100,9 @@ impl Drawn {
                 } else {
                     let mut rgba = self.page.rgba.clone();
                     axes.paint(&mut rgba, self.page.size);
+                    for marker in markers {
+                        marker.paint(&mut rgba, self.page.size);
+                    }
                     let page = Arc::new(Page {
                         rgba,
                         size: self.page.size,
@@ -117,11 +121,16 @@ impl Drawn {
 }
 
 impl Pages {
-    fn render(&mut self, spec: ScreenSpec, axes: Option<Axes>) -> anyhow::Result<Frame> {
+    fn render(
+        &mut self,
+        spec: ScreenSpec,
+        axes: Option<Axes>,
+        markers: Vec<Marker>,
+    ) -> anyhow::Result<Frame> {
         if let Some(last) = &mut self.last
             && last.spec == spec
         {
-            return Ok(last.frame(axes));
+            return Ok(last.frame(axes, markers));
         }
         let from = preview::From::Disc(&self.disc);
         let view = from.view(&spec, "session")?;
@@ -139,7 +148,7 @@ impl Pages {
                 rows: hit_rows(&view),
                 with_axes: None,
             })
-            .frame(axes))
+            .frame(axes, markers))
     }
 }
 
@@ -151,7 +160,11 @@ impl Controller for Window {
             return None;
         };
         pages
-            .render(spec, boot::forge_glue::gizmo())
+            .render(
+                spec,
+                boot::forge_glue::gizmo(),
+                boot::forge_glue::markers(),
+            )
             .map_err(|error| eprintln!("Forge page: {error:#}"))
             .ok()
     }

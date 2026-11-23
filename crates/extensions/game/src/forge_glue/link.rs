@@ -837,7 +837,7 @@ mod tests {
             panic!("the guest's link offered no lane");
         };
         Joined {
-            node: Node::guest(limits(), name, lane).unwrap(),
+            node: Node::guest(limits(), name, CanDraw::default(), lane).unwrap(),
             session: session(),
             world: FakeWorld::default(),
         }

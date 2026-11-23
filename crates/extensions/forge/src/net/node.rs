@@ -19,6 +19,8 @@ use super::{
     Admit, Beat, Carry, Down, Framer, Host, Item, NetRefusal, Peer, PeerError, Reply,
     Role, SEATS, Seat, Stamped, State, ToHost, Up, Welcome, frame,
 };
+use crate::look::session::{CanDraw, Pose};
+use crate::look::{MonitorLook, Refusal as LookRefusal};
 use crate::{Frame, Outgoing};
 
 /// The host's own seat.
@@ -164,6 +166,48 @@ pub struct Node<A: Admit, L: Lane> {
     /// Lanes to end, and why.
     dead: Vec<(Seat, NetRefusal)>,
     ended: Option<String>,
+    /// The look and pose messages off the session's channel, beside the
+    /// edit log, waiting for the game's monitor glue
+    /// ([`Node::take_monitors`]).
+    monitors: Vec<Monitor>,
+}
+
+/// A look or pose message off the session's channel, beside the edit log
+/// (docs/game/forge-monitor-appearance.md, "Other players"): what the
+/// game's monitor glue drains each tick ([`Node::take_monitors`]) and
+/// what it sends ([`Node::send_look`] and the rest). A look is never a
+/// log entry and edits no map.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Monitor {
+    /// A seat's hello, as the host reads it: what that machine can draw.
+    Hello {
+        seat: Seat,
+        name: String,
+        can: CanDraw,
+    },
+    /// A seat proposed its look (to the host), naming the source map it
+    /// read the model from.
+    Look {
+        seat: Seat,
+        look: MonitorLook,
+        base: Option<String>,
+    },
+    /// The host accepted a seat's look (to everyone): the table as
+    /// everyone draws it.
+    Accepted { seat: Seat, look: MonitorLook },
+    /// The host refused the seat's proposed look; the seat keeps its
+    /// previous one.
+    LookRefused { seat: Seat, refusal: LookRefusal },
+    /// A seat's monitor pose, sampled on its render clock at `at`.
+    Pose {
+        seat: Seat,
+        at: f32,
+        pose: Pose,
+        monitor: bool,
+        held: Option<forge_doc::OpId>,
+    },
+    /// One line for the HUD strip.
+    Notice { seat: Seat, text: String },
 }
 
 impl<A: Admit, L: Lane> Node<A, L> {
@@ -192,6 +236,7 @@ impl<A: Admit, L: Lane> Node<A, L> {
             uplink: None,
             peer: Some(peer),
             welcome: Some(welcome),
+            monitors: Vec::new(),
             nonce: 0,
             asked: BTreeMap::new(),
             recent: VecDeque::new(),
@@ -277,6 +322,104 @@ impl<A: Admit, L: Lane> Node<A, L> {
 
     /// The welcome this machine joined by: the film's first record. Taken
     /// once.
+    /// The look and pose messages that came off the channel since the
+    /// last call, in order. Not part of the edit log.
+    pub fn take_monitors(&mut self) -> Vec<Monitor> {
+        std::mem::take(&mut self.monitors)
+    }
+
+    /// A guest proposes its monitor look, naming the source map it read
+    /// the model from. The host's answer comes back as [`Monitor::Accepted`]
+    /// or [`Monitor::LookRefused`].
+    pub fn send_look_up(&mut self, look: MonitorLook, base: Option<String>) {
+        self.send_up(ToHost::Look { look, base });
+    }
+
+    /// A guest's monitor pose, sampled at `at` of its render clock.
+    pub fn send_pose_up(&mut self, at: f32, pose: Pose, monitor: bool, held: Option<forge_doc::OpId>) {
+        self.send_up(ToHost::Pose {
+            at,
+            pose,
+            monitor,
+            held,
+        });
+    }
+
+    /// The host sends the accepted look of `seat` to everyone (`None`) or
+    /// to one lane (a joiner learning the table).
+    pub fn send_look(&mut self, look: MonitorLook, seat: Option<Seat>) {
+        match seat {
+            Some(seat) => self.send_down(seat, Down::Look { seat: seat.0, look }),
+            None => self.broadcast_down(Down::Look { seat: 0, look }),
+        }
+    }
+
+    /// The host refuses `seat`'s proposed look, to that seat alone.
+    pub fn send_look_refused(&mut self, seat: Seat, refusal: LookRefusal) {
+        self.send_down(seat, Down::LookRefused { refusal });
+    }
+
+    /// The host relays `seat`'s pose to every lane but `except` (its
+    /// own), or the host's own pose to every lane.
+    pub fn send_pose(
+        &mut self,
+        seat: Seat,
+        at: f32,
+        pose: Pose,
+        monitor: bool,
+        held: Option<forge_doc::OpId>,
+        except: Option<Seat>,
+    ) {
+        self.broadcast_except(
+            Down::Pose {
+                seat: seat.0,
+                at,
+                pose,
+                monitor,
+                held,
+            },
+            except,
+        );
+    }
+
+    /// The host sends one line for the HUD strip to a seat.
+    pub fn send_notice(&mut self, seat: Seat, text: String) {
+        self.send_down(seat, Down::Notice(text));
+    }
+
+    fn send_up(&mut self, message: ToHost) {
+        let Some(uplink) = self.uplink.as_mut() else {
+            return;
+        };
+        if put(&mut uplink.lane, &message).is_err() {
+            self.ended = Some("the Forge channel's queue is full".into());
+        }
+    }
+
+    fn send_down(&mut self, seat: Seat, message: Down) {
+        let Some(remote) = self.remotes.get_mut(&seat) else {
+            return;
+        };
+        if remote.joined && put(&mut remote.lane, &message).is_err() {
+            self.dead.push((seat, lane_full()));
+        }
+    }
+
+    fn broadcast_down(&mut self, message: Down) {
+        self.broadcast_except(message, None);
+    }
+
+    fn broadcast_except(&mut self, message: Down, except: Option<Seat>) {
+        for (seat, remote) in &mut self.remotes {
+            if Some(*seat) == except || !remote.joined {
+                continue;
+            }
+            if put(&mut remote.lane, &message).is_err() {
+                self.dead.push((*seat, lane_full()));
+            }
+        }
+    }
+
     pub fn take_welcome(&mut self) -> Option<Welcome> {
         self.welcome.take()
     }
@@ -595,11 +738,16 @@ impl<A: Admit, L: Lane> Node<A, L> {
         };
         let host = self.host.as_mut().expect("a host");
         match message {
-            ToHost::Hello { name } => {
+            ToHost::Hello { name, can } => {
                 if remote.joined {
                     self.dead.push((seat, NetRefusal::Seat));
                     return Ok(());
                 }
+                self.monitors.push(Monitor::Hello {
+                    seat,
+                    name: name.clone(),
+                    can,
+                });
                 match host.join(seat, &name, remote.role) {
                     Ok((welcome, item)) => {
                         remote.joined = true;
@@ -611,6 +759,23 @@ impl<A: Admit, L: Lane> Node<A, L> {
                     }
                     Err(refusal) => self.dead.push((seat, refusal)),
                 }
+            }
+            ToHost::Look { look, base } => {
+                self.monitors.push(Monitor::Look { seat, look, base });
+            }
+            ToHost::Pose {
+                at,
+                pose,
+                monitor,
+                held,
+            } => {
+                self.monitors.push(Monitor::Pose {
+                    seat,
+                    at,
+                    pose,
+                    monitor,
+                    held,
+                });
             }
             ToHost::Up(up) => {
                 if !remote.joined {
@@ -681,6 +846,39 @@ impl<A: Admit, L: Lane> Node<A, L> {
                     .receive(item)
                     .map_err(NodeError::Peer)?,
                 Down::Reply(reply) => self.on_reply(reply),
+                Down::Look { seat, look } => {
+                    self.monitors.push(Monitor::Accepted {
+                        seat: Seat(seat),
+                        look,
+                    });
+                }
+                Down::LookRefused { refusal } => {
+                    self.monitors.push(Monitor::LookRefused {
+                        seat: HOST_SEAT,
+                        refusal,
+                    });
+                }
+                Down::Pose {
+                    seat,
+                    at,
+                    pose,
+                    monitor,
+                    held,
+                } => {
+                    self.monitors.push(Monitor::Pose {
+                        seat: Seat(seat),
+                        at,
+                        pose,
+                        monitor,
+                        held,
+                    });
+                }
+                Down::Notice(text) => {
+                    self.monitors.push(Monitor::Notice {
+                        seat: HOST_SEAT,
+                        text,
+                    });
+                }
                 Down::Ended(refusal) => return Err(NodeError::Refused(refusal)),
             }
         }
@@ -691,8 +889,14 @@ impl<A: Admit, L: Lane> Node<A, L> {
 impl<A: Admit, L: Lane> Node<A, L> {
     /// Join a session over `lane`: the hello goes first, the welcome
     /// comes back, and the node is joined from the tick it arrives.
-    pub fn guest(limits: Limits, name: &str, mut lane: L) -> Result<Self, NodeError> {
-        put(&mut lane, &ToHost::Hello { name: name.into() })?;
+    pub fn guest(limits: Limits, name: &str, can: CanDraw, mut lane: L) -> Result<Self, NodeError> {
+        put(
+            &mut lane,
+            &ToHost::Hello {
+                name: name.into(),
+                can,
+            },
+        )?;
         Ok(Self {
             name: name.into(),
             limits,
@@ -704,6 +908,7 @@ impl<A: Admit, L: Lane> Node<A, L> {
             }),
             peer: None,
             welcome: None,
+            monitors: Vec::new(),
             nonce: 0,
             asked: BTreeMap::new(),
             recent: VecDeque::new(),
