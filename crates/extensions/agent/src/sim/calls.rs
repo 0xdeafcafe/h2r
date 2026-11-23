@@ -19,7 +19,8 @@
 //!   (`PLAYER_PLACE_NEAR`, `0x14e970`, EBX the player, ESI the point, the
 //!   anchor -1, as `0x2a01ec..0x2a01f0` calls it), which takes the unit out
 //!   of a vehicle (`0xe68c0` action `0x1e`) and places it through
-//!   `0x14e200` a little above the point (`[0x4687b0]` times `[0x47f05c]`),
+//!   `0x14e200` a little above the point (`[0x4687b0]`, the up vector,
+//!   times `[0x47f05c]`, 0.0328),
 //!   so its physics hear of the move. A write of the body's position alone
 //!   (`+0x64`) is undone by the biped's physics at the next tick. The
 //!   facing: the unit's desired facing, aiming and looking vectors (`+0x150`,

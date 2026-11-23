@@ -34,8 +34,11 @@ use engine::GuestMemory;
 use live_telemetry::havok_agents::{self as hk, LevelPairs};
 use sim_bench::drops::{ContactPoint, DropsRun, Job, PairSense, SeatSense, Sense};
 
-/// Where an object's origin is in its body.
-const OBJECT_POSITION: u32 = 0x30;
+/// Where an object's origin is in its body (`+0x64`): the point a
+/// teleport places (`calls::Call::Teleport`). Not the bounding sphere's
+/// centre at `+0x30`, which a biped's bounds update keeps about 0.4 units
+/// over the origin and which moves with its pose and facing.
+const OBJECT_POSITION: u32 = guest_layout::Object::POSITION.offset;
 
 /// A bound seat: its logical seat, its player index and its phantom.
 #[derive(Clone, Copy, Debug)]
@@ -373,6 +376,22 @@ pub fn save() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// A seat's position is the origin the teleport writes, so a bounce
+    /// trial's start (read from an earlier row) and its teleport's
+    /// landing are the same point: read from the sphere centre, every
+    /// trial landed about 0.4 units off.
+    #[test]
+    fn a_seat_reads_the_origin_a_teleport_places() {
+        use guest_layout::Object;
+        assert_eq!(super::OBJECT_POSITION, Object::POSITION.offset);
+        assert_eq!(super::OBJECT_POSITION, 0x64);
+        assert_ne!(super::OBJECT_POSITION, Object::BOUND_CENTER.offset);
+        assert_eq!(
+            super::OBJECT_POSITION,
+            crate::telemetry::layout::BODY_POSITION
+        );
+    }
+
     #[test]
     fn the_drops_thresholds_are_the_huds_and_the_speed_models() {
         use sim_bench::drops as d;

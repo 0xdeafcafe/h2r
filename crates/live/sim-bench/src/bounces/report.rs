@@ -535,9 +535,15 @@ pub fn markdown(r: &BouncesReport) -> String {
     } else {
         0.0
     };
+    let last_busy = r
+        .fork
+        .last_busy
+        .as_ref()
+        .map(|why| format!(" (the last: {why})"))
+        .unwrap_or_default();
     let _ = writeln!(
         o,
-        "Forks: {} captures, {} restores, {} busy; {} waves of {:.1} rows. Replayed waves that ended in the same guest RAM: {} of {}. Restores checked against the capture: {} of {} equal.\n",
+        "Forks: {} captures, {} restores, {} busy{last_busy}; {} waves of {:.1} rows. Replayed waves that ended in the same guest RAM: {} of {}. Restores checked against the capture: {} of {} equal.\n",
         r.fork.captures,
         r.fork.restores,
         r.fork.busy,

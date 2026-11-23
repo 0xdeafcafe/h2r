@@ -1387,7 +1387,10 @@ approach = { stick = 0.3, lead = 0.2, from = ["+", "-"] }  # optional
   Y from the point), the launch, whether the prime held, `drift_fixed`,
   `carry_cut`, the words of the fall run-length, and the first
   tick of each event. The control's drops and the first drop of each outcome keep
-  every row from the arm on. They are the report's `drops` block.
+  every row from the arm on. They are the report's `drops` block. Every
+  position is the unit's origin (object `+0x64`, `sim_drops::body`),
+  the point a teleport places, not the bounding sphere's centre
+  (`+0x30`), which is about 0.4 units over it.
 - **Sharding.** Targets are split over the runs by their drop counts
   (largest first, onto the lightest run), `<map>-drops<i>`, each run's
   match with its targets listed and its bots' tunings inline.

@@ -155,6 +155,7 @@ pub fn status() -> Option<serde_json::Value> {
             "restores": f.restores,
             "waves": f.waves,
             "busy": f.busy,
+            "last_busy": f.last_busy,
             "error": s.job.error(),
         })
     })

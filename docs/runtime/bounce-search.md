@@ -43,8 +43,13 @@ real fall can touch down in is in the range.
 1. Row 0: a teleport to the start, through the agent's guest calls as a
    drop's lift is, and the pair word. The start is the last row moved back
    `flight` rows along a free fall (`bounces::back`, the drops' fall model).
-2. The row the teleport lands: the start's whole velocity is written (the
-   object's and each Havok motion's, `sim_bounces::velocity`).
+2. The row the teleport lands: the origin must be within
+   `PLACE_TOLERANCE` (0.005) of the start. A landing further off is asked
+   again once, aimed against the miss (`TrialRun::aimed`); a second miss
+   is `setup_failed` with the miss on each axis (`teleport: landed 0.012
+   off (x +0.000 y +0.000 z +0.012) with its aim corrected`). Then the
+   start's whole velocity is written (the object's and each Havok
+   motion's, `sim_bounces::velocity`).
 3. `flight` rows of fall (default 1), the horizontal velocity held; the
    last one writes the whole planned velocity, so the tick that follows
    runs from exactly the asked state.
@@ -55,6 +60,20 @@ real fall can touch down in is in the range.
 
 The word is -3 on every row up to the touchdown (0 for an unprimed
 control), and crouch is held on the pad when the point asks.
+
+Every position, the start included, is the unit's origin (object
+`+0x64`), the point the teleport places (`sim_drops::body`). The
+bounding sphere's centre (`+0x30`) is about 0.4 units over it and moves
+with the pose and facing, so a start read from it never lands. The
+game's placement puts the origin above the point asked for:
+`PLAYER_PLACE_NEAR` hands `0x14e200` the point plus the up vector
+(`[0x4687b0]`, (0, 0, 1)) times `[0x47f05c]`, 0.0328 (**E**
+`0x14e9ae..0x14ea02`). Each base drop's lift, a teleport into the air as
+a trial's is, measures the miss, and the site's trials ask against it
+(`SiteJob::aim`), so their first teleport lands. A trial that had to ask again keeps the aim it landed
+with for the site's next trials, is marked `reaimed` in its record, and
+its wave is no replay check's. The run's notes name a measured miss over
+the tolerance.
 
 ### The fork
 
@@ -117,9 +136,20 @@ running match, and nothing outside the machine is rewound.
 
 A part that is live answers `Busy`: a capture is asked again a row later
 while the lead allows, then that variant has no base on the batch's sites,
-by name. A restore is asked again up to `RESTORE_TRIES` times. A restore
-that fails part way stops the run (`Forked::Broken`): the machine is part
-loaded.
+by name. A restore is asked again up to `RESTORE_TRIES` times. The run's
+`fork.busy` counts the busy answers and `fork.last_busy` names the last
+one. A restore that fails part way stops the run (`Forked::Broken`): the
+machine is part loaded.
+
+A fork asked on a tick whose agent guest calls ran (a teleport answered)
+is busy once. The `agent-calls` hook answers that tick with an async body
+that runs the tick again inside itself
+(`agent::sim::calls::run_batch`), and a hook that returns early skips its
+observers, so the tick observer sees only the inner tick return and ends
+the slice while the async body is still live. The restore is then asked
+again on the next tick, one tick later. Only a wave that ends on its
+teleport's row asks then: every trial failed at its teleport. A wave
+whose trials fly ends on launch rows that make no calls.
 
 ### A batch, a variant, a wave
 

@@ -620,13 +620,33 @@ fn a_trial_names_its_setup_failures() {
     }
     assert!(run.done());
     assert_eq!(run.result().why.as_deref(), Some("teleport: never ran"));
-    // It lands somewhere else.
+    // It lands somewhere else, and again once asked against the miss:
+    // the failure names the miss on each axis.
     let mut run = TrialRun::new(p, 3.5);
     run.step(&sense([0.0; 3], -4.0, PRIMED));
-    let mut s = sense([0.0, 0.0, 9.0], -4.0, PRIMED);
-    s.teleported = Some(Ok(()));
-    run.step(&s);
-    assert!(run.result().why.unwrap().starts_with("teleport: landed"));
+    let at = |d: [f32; 3]| {
+        let mut s = sense(
+            [
+                p.start.pos[0] + d[0],
+                p.start.pos[1] + d[1],
+                p.start.pos[2] + d[2],
+            ],
+            -4.0,
+            PRIMED,
+        );
+        s.teleported = Some(Ok(()));
+        s
+    };
+    run.step(&at([0.0, 0.0, 9.0]));
+    assert!(!run.done());
+    run.step(&sense([0.0; 3], -4.0, PRIMED));
+    run.step(&at([0.03, 0.0, -0.4]));
+    assert!(run.done());
+    assert_eq!(
+        run.result().why.as_deref(),
+        Some("teleport: landed 0.401 off (x +0.030 y +0.000 z -0.400) with its aim corrected")
+    );
+    assert_eq!(run.result().aim, None);
     // The body never touches down.
     let mut run = TrialRun::new(p, 3.5);
     run.step(&sense([0.0; 3], -4.0, PRIMED));
@@ -640,6 +660,52 @@ fn a_trial_names_its_setup_failures() {
     let r = run.result();
     assert_eq!(r.outcome, Outcome::SetupFailed);
     assert!(r.why.unwrap().starts_with("no touchdown"));
+}
+
+/// A placement off by a steady amount: the trial asks again against the
+/// miss, lands on its start and carries on; the aim it landed with puts
+/// the next trial's first teleport on the start.
+#[test]
+fn a_steady_miss_is_asked_again_and_its_aim_kept() {
+    let p = plan(1);
+    let lift = [0.002, -0.001, 0.4];
+    let land = |asked: [f32; 3]| {
+        let mut s = sense(
+            [asked[0] + lift[0], asked[1] + lift[1], asked[2] + lift[2]],
+            -4.0,
+            PRIMED,
+        );
+        s.teleported = Some(Ok(()));
+        s
+    };
+    let mut run = TrialRun::new(p, 3.5);
+    let first = run.step(&sense([0.0; 3], -4.0, PRIMED));
+    let (asked, facing) = first.base.teleport.unwrap();
+    assert_eq!((asked, facing), (p.start.pos, p.start.facing));
+    // The miss: asked again, the miss taken off; no velocity yet.
+    let again = run.step(&land(asked));
+    assert!(again.velocity.is_none());
+    assert_eq!(again.base.word, Some(PRIMED));
+    let (asked, _) = again.base.teleport.expect("asked again");
+    for a in 0..3 {
+        assert!((asked[a] - (p.start.pos[a] - lift[a])).abs() < 1e-5, "{asked:?}");
+    }
+    // A row with no answer yet, then the landing on the start.
+    let waiting = run.step(&sense([0.0; 3], -4.0, PRIMED));
+    assert!(waiting.base.teleport.is_none() && waiting.velocity.is_none());
+    let landed = run.step(&land(asked));
+    assert_eq!(landed.velocity, Some(p.start.vel));
+    let aim = run.result().aim.expect("an aim that landed");
+    for a in 0..3 {
+        assert!((aim[a] + lift[a]).abs() < 1e-5, "{aim:?}");
+    }
+    // The next trial asks with it and lands first time.
+    let mut next = TrialRun::new(p, 3.5).aimed(aim);
+    let (asked, _) = next.step(&sense([0.0; 3], -4.0, PRIMED)).base.teleport.unwrap();
+    let landed = next.step(&land(asked));
+    assert!(landed.base.teleport.is_none());
+    assert_eq!(landed.velocity, Some(p.start.vel));
+    assert_eq!(next.result().aim, Some(aim));
 }
 
 // ---- the whole job over a made-up machine ----
@@ -689,16 +755,16 @@ impl World {
         }
     }
 
-    /// The start of a tick: last tick's teleports land, then every seat
-    /// is read.
-    fn senses(&mut self) -> Vec<SeatSense> {
+    /// The start of a tick: last tick's teleports land, `lift` over the
+    /// point asked for, then every seat is read.
+    fn senses(&mut self, lift: [f32; 3]) -> Vec<SeatSense> {
         self.bodies
             .iter_mut()
             .enumerate()
             .map(|(i, b)| {
                 if let Some(to) = b.teleport.take() {
-                    b.pos = to;
-                    b.airborne = to[2] > REST;
+                    b.pos = [to[0] + lift[0], to[1] + lift[1], to[2] + lift[2]];
+                    b.airborne = b.pos[2] > REST;
                     b.landed = true;
                 }
                 SeatSense {
@@ -791,6 +857,11 @@ struct Machine {
     busy: u32,
     /// Forks are never answered.
     deaf: bool,
+    /// Where a teleport puts the origin over the point asked for: the
+    /// game's placement, not the world's state, so no fork puts it back.
+    lift: [f32; 3],
+    /// What came of the last fork, for the next tick.
+    done: Option<ForkDone>,
 }
 
 impl Machine {
@@ -829,20 +900,28 @@ impl Machine {
 
     /// Runs `job` to its end, a hook and a tick at a time.
     fn drive(&mut self, job: &mut Job) {
-        let mut done: Option<ForkDone> = None;
+        self.drive_until(job, |_| false);
+    }
+
+    /// Runs `job` until it finishes (true) or, after a tick, `stop`
+    /// says so (false).
+    fn drive_until(&mut self, job: &mut Job, stop: impl Fn(&Job) -> bool) -> bool {
         for _ in 0..400_000 {
-            let senses = self.world.senses();
-            let step = job.tick(self.world.tick, &senses, done.take());
+            let senses = self.world.senses(self.lift);
+            let step = job.tick(self.world.tick, &senses, self.done.take());
             if job.finished() {
-                return;
+                return true;
             }
             self.world.apply(&step.acts);
             // The fork is between two slices, just after the hooks: the
             // acts are in the saved state, the tick is not.
             if let Some(ask) = step.fork {
-                done = self.fork(ask);
+                self.done = self.fork(ask);
             }
             self.world.run();
+            if stop(job) {
+                return false;
+            }
         }
         panic!("the job did not finish: {:?}", job.at());
     }
@@ -887,6 +966,8 @@ fn machine() -> Machine {
         saved: BTreeMap::new(),
         busy: 0,
         deaf: false,
+        lift: [0.0; 3],
+        done: None,
     }
 }
 
@@ -1004,6 +1085,55 @@ fn the_job_forks_once_a_variant_and_runs_every_trial_from_the_fork() {
     assert_eq!(again.report(), run);
 }
 
+/// The game's placement puts the origin a little off the point asked for
+/// (`calls::Call::Teleport`, "a little above the point"). The base drops'
+/// lifts measure it, so every trial asks against it and lands on its
+/// start first time: no trial fails its setup or asks twice, and the
+/// replay check still pairs the first two waves.
+#[test]
+fn a_placement_off_by_a_steady_amount_is_aimed_against() {
+    let mut job = Job::new(&job_config(), "testmap", 3).unwrap();
+    let mut m = machine();
+    m.lift = [0.002, -0.003, 0.03];
+    m.drive(&mut job);
+    assert_eq!(job.error(), None);
+    let run = job.report();
+    assert!(!run.trials.is_empty());
+    assert!(
+        run.trials
+            .iter()
+            .all(|t| t.outcome != Outcome::SetupFailed && !t.reaimed),
+        "{:?}",
+        run.trials.iter().find(|t| t.outcome == Outcome::SetupFailed || t.reaimed)
+    );
+    assert_eq!((run.fork.replay_checks, run.fork.replay_mismatches), (2, 0));
+    assert!(
+        run.notes
+            .iter()
+            .any(|n| n.starts_with("teleport: the placement put the origin 0.030 off (x +0.002 y -0.003 z +0.030)")),
+        "{:?}",
+        run.notes
+    );
+    // A miss the base drops did not see (it starts with the first
+    // batch's first wave): each of that batch's three sites asks its
+    // first trial again and lands, and its later trials ask with the aim
+    // that landed. The last batch's base drops see the miss.
+    let mut job = Job::new(&job_config(), "testmap", 3).unwrap();
+    let mut m = machine();
+    assert!(!m.drive_until(&mut job, |j| j.at().0 == "wave"));
+    m.lift = [0.0, 0.0, 0.03];
+    m.drive(&mut job);
+    assert_eq!(job.error(), None);
+    let run = job.report();
+    assert!(run.trials.iter().all(|t| t.outcome != Outcome::SetupFailed));
+    let reaimed: Vec<&Trial> = run.trials.iter().filter(|t| t.reaimed).collect();
+    assert_eq!(reaimed.len(), 3, "{reaimed:?}");
+    assert!(reaimed.iter().all(|t| t.site < 3 && t.kind == Kind::Anchor), "{reaimed:?}");
+    // The corrected wave is no replay check's: the other variant's pair
+    // still is.
+    assert_eq!((run.fork.replay_checks, run.fork.replay_mismatches), (1, 0));
+}
+
 #[test]
 fn a_busy_capture_is_asked_again_and_then_given_up_by_name() {
     // Busy twice: the capture is taken a row or two later in the fall.
@@ -1014,6 +1144,16 @@ fn a_busy_capture_is_asked_again_and_then_given_up_by_name() {
     assert_eq!(job.error(), None);
     let run = job.report();
     assert_eq!((run.fork.captures, run.fork.busy), (4, 2));
+    // The report names what was busy.
+    assert_eq!(
+        run.fork.last_busy.as_deref(),
+        Some("fake: a thread is in a callback")
+    );
+    let md = markdown(&summarize(std::slice::from_ref(&run)));
+    assert!(
+        md.contains("2 busy (the last: fake: a thread is in a callback);"),
+        "{md}"
+    );
     assert!(run.sites.iter().all(|x| x.bases.iter().all(|b| b.based)));
     // Busy for every row the lead allows: that variant has no base on
     // the batch's sites, by name, and the other still runs.
@@ -1098,6 +1238,7 @@ fn block(id: &str, x: f32, trials: &[(f32, [Outcome; 2])]) -> BouncesRun {
                 why: None,
                 launch: if *o == Outcome::Bounced { 11.5 } else { 0.0 },
                 last: Some([*a, 0.0, 0.0, 5.4]),
+                reaimed: false,
             });
         }
     }
@@ -1217,6 +1358,7 @@ fn the_report_counts_replays_anchors_and_the_forks_checks() {
         why: None,
         launch: 0.0,
         last: None,
+        reaimed: false,
     };
     // Point 5 (-0.05) bounced; a replay that didn't is a mismatch.
     b.trials.push(extra(Kind::Replay, Some(5), Outcome::Bounced));

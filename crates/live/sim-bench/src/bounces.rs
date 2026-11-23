@@ -30,7 +30,10 @@
 //! (degrees, the facing from the drift).
 //!
 //! **A trial.** Row 0 asks the teleport to the start: the last row moved
-//! back `flight` rows along the fall ([`back`]). The row the teleport
+//! back `flight` rows along the fall ([`back`]). The teleport must put
+//! the origin within [`PLACE_TOLERANCE`] of the start; a landing further
+//! off is asked again once, aimed against the miss, and the aim that
+//! lands is the site's for its next trials. The row the teleport
 //! lands writes the start's velocity. Each row after writes the
 //! horizontal velocity again, and the row `flight` after the landing the
 //! whole planned velocity. The touchdown is the drops': the vertical
@@ -112,7 +115,9 @@ pub const MAX_VARIANTS: usize = 8;
 pub const MIN_FALL_ROWS: u32 = 4;
 /// Rows a trial waits for its teleport.
 pub const TELEPORT_WAIT: u32 = 4;
-/// A trial's teleport must put the origin this near its start.
+/// A trial's teleport must put the origin this near its start. A landing
+/// further off is asked again once, aimed against the miss
+/// ([`TrialRun::aimed`]).
 pub const PLACE_TOLERANCE: f32 = 0.005;
 /// Rows past the planned last row a trial may still fall.
 pub const EXTRA_ROWS: u32 = 6;
@@ -811,6 +816,25 @@ pub struct TrialResult {
     pub last: Option<([f32; 3], [f32; 3])>,
     /// Rows from the teleport's landing to the last airborne row.
     pub rows: u32,
+    /// The aim (asked for minus the start) of the teleport that landed
+    /// on the start, if one did.
+    pub aim: Option<[f32; 3]>,
+}
+
+/// A teleport's miss, landed minus wanted, as a failure names it:
+/// `0.405 off (x +0.001 y -0.002 z +0.405)`.
+pub fn miss_text(off: [f32; 3]) -> String {
+    format!(
+        "{:.3} off (x {:+.3} y {:+.3} z {:+.3})",
+        len3(off),
+        off[0],
+        off[1],
+        off[2]
+    )
+}
+
+fn len3(v: [f32; 3]) -> f32 {
+    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
 
 /// One trial, a row a tick: teleport, velocity, fall, touchdown, launch.
@@ -825,6 +849,12 @@ pub struct TrialRun {
     prime: Option<Result<(), String>>,
     launch: f32,
     failed: Option<String>,
+    /// Added to the start in the teleport asked for.
+    aim: [f32; 3],
+    /// The teleport was asked again against a miss.
+    corrected: bool,
+    /// The aim that landed on the start.
+    landed_aim: Option<[f32; 3]>,
 }
 
 impl TrialRun {
@@ -839,11 +869,33 @@ impl TrialRun {
             prime: None,
             launch: 0.0,
             failed: None,
+            aim: [0.0; 3],
+            corrected: false,
+            landed_aim: None,
         }
+    }
+
+    /// Asks the teleport for the start plus `aim`: the aim an earlier
+    /// trial on the site landed with ([`TrialResult::aim`]), so a
+    /// placement that is off by a steady amount costs no second teleport.
+    pub fn aimed(mut self, aim: [f32; 3]) -> TrialRun {
+        self.aim = aim;
+        self
+    }
+
+    /// Where the teleport is asked to put the origin.
+    fn asked(&self) -> [f32; 3] {
+        let s = self.plan.start.pos;
+        [s[0] + self.aim[0], s[1] + self.aim[1], s[2] + self.aim[2]]
     }
 
     pub fn done(&self) -> bool {
         self.phase == TrialPhase::Done
+    }
+
+    /// Its teleport was asked again against a miss.
+    pub fn corrected(&self) -> bool {
+        self.corrected
     }
 
     fn fail(&mut self, why: impl Into<String>) {
@@ -861,7 +913,7 @@ impl TrialRun {
         match self.phase {
             TrialPhase::Done => {}
             TrialPhase::Ask => {
-                act.base.teleport = Some((self.plan.start.pos, self.plan.start.facing));
+                act.base.teleport = Some((self.asked(), self.plan.start.facing));
                 act.base.word = Some(word);
                 self.phase = TrialPhase::Wait(0);
             }
@@ -873,14 +925,27 @@ impl TrialRun {
                         return act;
                     };
                     let want = self.plan.start.pos;
-                    let off = ((pos[0] - want[0]).powi(2)
-                        + (pos[1] - want[1]).powi(2)
-                        + (pos[2] - want[2]).powi(2))
-                    .sqrt();
-                    if off > PLACE_TOLERANCE {
-                        self.fail(format!("teleport: landed {off:.3} off"));
+                    let off = [pos[0] - want[0], pos[1] - want[1], pos[2] - want[2]];
+                    if len3(off) > PLACE_TOLERANCE {
+                        if self.corrected {
+                            self.fail(format!(
+                                "teleport: landed {} with its aim corrected",
+                                miss_text(off)
+                            ));
+                            return act;
+                        }
+                        // Asked again against the miss: a placement off
+                        // by a steady amount lands on the start this time.
+                        self.corrected = true;
+                        for (aim, off) in self.aim.iter_mut().zip(off) {
+                            *aim -= off;
+                        }
+                        act.base.teleport = Some((self.asked(), self.plan.start.facing));
+                        act.base.word = Some(word);
+                        self.phase = TrialPhase::Wait(0);
                         return act;
                     }
+                    self.landed_aim = Some(self.aim);
                     act.velocity = Some(self.plan.start.vel);
                     act.base.word = Some(word);
                     self.prev = Some(Prev {
@@ -970,6 +1035,7 @@ impl TrialRun {
             launch: self.launch,
             last: self.last,
             rows: self.rows,
+            aim: self.landed_aim,
         }
     }
 }
@@ -1021,6 +1087,9 @@ pub struct ForkStats {
     pub restores: u32,
     /// Forks answered busy.
     pub busy: u32,
+    /// What the last busy answer named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_busy: Option<String>,
     /// Waves of trials, and the game ticks they ran.
     pub waves: u32,
     pub ticks: u64,
@@ -1039,6 +1108,9 @@ impl ForkStats {
         self.captures += o.captures;
         self.restores += o.restores;
         self.busy += o.busy;
+        if o.last_busy.is_some() {
+            self.last_busy.clone_from(&o.last_busy);
+        }
         self.waves += o.waves;
         self.ticks += o.ticks;
         self.replay_checks += o.replay_checks;
@@ -1084,6 +1156,10 @@ pub struct Trial {
     /// ([`Site::measured`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last: Option<[f32; 4]>,
+    /// Its teleport landed off its start and was asked again
+    /// ([`TrialRun::corrected`]).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub reaimed: bool,
 }
 
 /// One sampled point of a site.
@@ -1188,6 +1264,9 @@ struct SiteJob {
     outcomes: Vec<Vec<Option<Outcome>>>,
     /// One queue a variant.
     queue: Vec<VecDeque<Task>>,
+    /// The aim the site's last trial landed its teleport with
+    /// ([`TrialResult::aim`]); its next trials ask with it.
+    aim: [f32; 3],
 }
 
 impl SiteJob {
@@ -1210,11 +1289,27 @@ struct BaseDrop {
     attempt: u32,
     arm: Option<u64>,
     release: Option<u64>,
+    /// The lift's teleport as asked, until it lands.
+    lift_asked: Option<[f32; 3]>,
+    /// Where the lift's teleport put the origin, less where it was asked:
+    /// the placement's own offset, in the air as a trial's start is.
+    lift_miss: Option<[f32; 3]>,
 }
 
 impl BaseDrop {
     fn step(&mut self, tick: u64, sense: &Sense) -> drops::Act {
+        if let (Some(asked), Some(Ok(())), Some(pos)) =
+            (self.lift_asked, &sense.teleported, sense.pos)
+        {
+            self.lift_asked = None;
+            self.lift_miss = Some([pos[0] - asked[0], pos[1] - asked[1], pos[2] - asked[2]]);
+        }
         let act = self.run.step(tick, sense);
+        if let Some((to, _)) = act.teleport
+            && self.run.phase() == "lift"
+        {
+            self.lift_asked = Some(to);
+        }
         if self.arm.is_none() && self.run.phase() == "lift" {
             self.arm = Some(tick);
         }
@@ -1368,6 +1463,7 @@ impl Job {
                     points: Vec::new(),
                     outcomes: Vec::new(),
                     queue: vec![VecDeque::new(); variants],
+                    aim: [0.0; 3],
                 })
                 .collect(),
             batches,
@@ -1476,6 +1572,8 @@ impl Job {
             attempt,
             arm: None,
             release: None,
+            lift_asked: None,
+            lift_miss: None,
         }
     }
 
@@ -1507,6 +1605,19 @@ impl Job {
     fn calibrated(&mut self, site: usize, v: usize, b: &BaseDrop) {
         let rec = b.run.record(false);
         let lead = self.s.lead;
+        if let Some(miss) = b.lift_miss {
+            // The trials' teleports ask against the placement's own
+            // offset, so the first lands on its start.
+            self.sites[site].aim = [-miss[0], -miss[1], -miss[2]];
+            const PLACED: &str = "teleport: the placement put the origin";
+            if len3(miss) > PLACE_TOLERANCE && !self.notes.iter().any(|n| n.starts_with(PLACED)) {
+                self.note(format!(
+                    "{PLACED} {} from where it was asked (site {}); trials ask against it",
+                    miss_text(miss),
+                    self.sites[site].site.id
+                ));
+            }
+        }
         let x = &mut self.sites[site];
         let base = &mut x.bases[v];
         base.outcome = Some(rec.outcome);
@@ -1739,6 +1850,9 @@ impl Job {
         {
             o[v] = Some(r.outcome);
         }
+        if let Some(aim) = r.aim {
+            x.aim = aim;
+        }
         let last = match (r.last, x.anchor) {
             (Some((pos, vel)), Some(anchor)) => Some(x.site.measured(anchor, pos, vel)),
             _ => None,
@@ -1752,6 +1866,7 @@ impl Job {
             why: r.why,
             launch: r.launch,
             last,
+            reaimed: run.corrected(),
         });
     }
 
@@ -2004,6 +2119,7 @@ impl Job {
             }
             Some(ForkDone::Busy(why)) => {
                 self.stats.busy += 1;
+                self.stats.last_busy = Some(why.clone());
                 // Another row of the fall is spent. The trial's teleport
                 // needs two more before the base's touchdown tick.
                 if tries + 2 >= self.s.lead {
@@ -2149,7 +2265,11 @@ impl Job {
                         // its place.
                         while let Some(task) = self.sites[site].queue[v].pop_front() {
                             if let Some(plan) = self.plan_of(site, v, task) {
-                                run = Some((task, TrialRun::new(plan, self.s.bounce_vz)));
+                                let aim = self.sites[site].aim;
+                                run = Some((
+                                    task,
+                                    TrialRun::new(plan, self.s.bounce_vz).aimed(aim),
+                                ));
                                 break;
                             }
                         }
@@ -2165,6 +2285,7 @@ impl Job {
             }
             Some(ForkDone::Busy(why)) => {
                 self.stats.busy += 1;
+                self.stats.last_busy = Some(why.clone());
                 if tries + 1 >= RESTORE_TRIES {
                     self.fatal(format!("fork: restore: busy for {RESTORE_TRIES} ticks: {why}"));
                     return Some(Step::default());
@@ -2235,7 +2356,10 @@ impl Job {
                 self.record(site, v, *task, run);
             }
         }
-        self.last_wave = Some(self.wave);
+        // A wave whose teleport was asked again ran rows its replay may
+        // not: its end is no replay check's.
+        let corrected = runs.iter().flatten().any(|(_, run)| run.corrected());
+        self.last_wave = (!corrected).then_some(self.wave);
         self.phase = Phase::Pick;
         None
     }
