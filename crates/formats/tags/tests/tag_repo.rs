@@ -9,8 +9,9 @@
 
 use map::Map;
 use std::fs::File;
-use std::io::BufReader;
-use tags::repo::extract::{SharedFiles, compare, store_map};
+use std::io::{BufReader, Read, Seek, SeekFrom};
+use tags::repo::extract::{Layouts, MapWork, SharedFiles, compare, file_hash, update};
+use tags::repo::store::PutReport;
 use tags::repo::{MapSource, TagRepo, TagSource};
 use tags::schema::Schema;
 
@@ -73,8 +74,9 @@ fn dir_size(p: &std::path::Path) -> u64 {
     n
 }
 
-/// Extract maps into a repository (each file read back and decoded the
-/// same), then rebuild each non-shared map from the repository alone by
+/// Extract maps into a repository with the plan and update `h2 tags
+/// extract` runs (each file read back and decoded the same), check that a
+/// second plan (`--update`) has nothing to do, then rebuild each non-shared map from the repository alone by
 /// closure from its scenario, and compare every tag with the disc's.
 #[test]
 #[ignore = "needs the owner's disc"]
@@ -125,12 +127,29 @@ fn run(
     let dir = dir.to_path_buf();
     let mut sh = shared(schema, all)?;
     let started = std::time::Instant::now();
+    // The disc's identity: each map file's SHA-256.
+    let mut disc = Vec::new();
     for (stem, base, size) in maps.iter().copied() {
-        let t = std::time::Instant::now();
-        let mut src = MapSource::new(schema, open(*base, *size)?, &mut sh)?;
-        let r = store_map(repo, &mut src, stem, true)?;
+        let mut f = File::open(std::env::var_os("H2_DISC").ok_or("set H2_DISC")?)?;
+        f.seek(SeekFrom::Start(*base))?;
+        disc.push((stem.clone(), file_hash(f.take(*size))?));
+    }
+    println!("hashed {} map files in {:?}", disc.len(), started.elapsed());
+    let layouts = Layouts::new(schema);
+    let extract = tags::repo::plan(repo, &layouts, &disc, true)?;
+    let mut lossy = Vec::new();
+    let mut t = std::time::Instant::now();
+    let mut opener = |stem: &str| -> tags::repo::Result<DiscMap> {
+        let (_, base, size) = maps
+            .iter()
+            .find(|m| m.0 == stem)
+            .ok_or_else(|| tags::repo::Error::Invalid(format!("no {stem}")))?;
+        open(*base, *size).map_err(|e| tags::repo::Error::Invalid(e.to_string()))
+    };
+    let mut on_map = |w: &MapWork, r: &PutReport| {
         println!(
-            "{stem}: {} new, {} same, {} variants, {} lossy, {} refused, raw {} new ({} MB), {:?}",
+            "{}: {} new, {} same, {} variants, {} lossy, {} refused, raw {} new ({} MB), {:?}",
+            w.map,
             r.new,
             r.same,
             r.variants.len(),
@@ -144,10 +163,28 @@ fn run(
             println!("  refused {k}: {why}");
         }
         for k in r.lossy.iter().take(3) {
-            let tag = TagRepo::for_map(&dir, stem)?.read(k)?.ok_or("lossy tag")?;
-            println!("  lossy {k}: {:?}", tag.tree().map(|t| &t.losses));
+            lossy.push((w.map.clone(), k.clone()));
         }
+        t = std::time::Instant::now();
+    };
+    update(
+        repo,
+        &extract,
+        &layouts,
+        schema,
+        &mut sh,
+        &mut opener,
+        true,
+        &mut on_map,
+    )?;
+    for (stem, k) in &lossy {
+        let tag = TagRepo::for_map(&dir, stem)?.read(k)?.ok_or("lossy tag")?;
+        println!("  lossy {stem} {k}: {:?}", tag.tree().map(|t| &t.losses));
     }
+    // Acceptance for `h2 tags extract --update`: the same disc under the
+    // same build plans nothing.
+    let again = tags::repo::plan(repo, &layouts, &disc, false)?;
+    assert!(again.is_empty(), "--update after an extraction: {again:?}");
     let mut groups = std::collections::BTreeMap::<String, (usize, usize)>::new();
     for m in maps {
         let man = repo.manifest(&m.0)?;

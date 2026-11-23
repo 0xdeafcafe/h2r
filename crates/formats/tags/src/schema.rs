@@ -18,6 +18,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::{Read, Seek};
 
+pub mod hash;
 pub mod infer;
 pub mod transplant;
 

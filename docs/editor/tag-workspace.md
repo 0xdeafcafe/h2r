@@ -23,6 +23,7 @@ The [content stage](content-stage.md) is the first map built this way.
 |---|---|---|
 | A loose tag, position independent, one file per tag | `tags::repo::LooseTag`, `format::{encode, decode}` | built; deterministic bytes |
 | The tree on disk, raw resources by hash, per-map manifests and variants | `tags::repo::TagRepo`, `store_map`, `h2 tags extract` | built; the whole disc extracts with no tag refused ([tag-repo.md](../formats/tag-repo.md), "Proof") |
+| Extraction versions: re-extract only what a better layout or a changed disc moved, resumable per map | `extract.toml`, `tags::repo::extract::{plan, update}`, `TagRepo::settle`, `h2 tags extract --update` | built; tested on invented maps, not yet run on the disc ([tag-repo.md](../formats/tag-repo.md), "Versions") |
 | One trait over a map and a tree | `tags::repo::TagSource` (`MapSource`, `TagRepo`) | built |
 | A map from a set of tags, by closure from the globals and a scenario | `closure`, `build::to_tag_set`, `build::from_repo`, `map::build::TagSet::build`, `h2 tags build` | built; two retail maps rebuild with every reached tag identical in canonical form |
 | A retail map with only its movable tags rebuilt | `build::onto_retail` (`--onto`) | built; a map with its movable tags moved ran in the game ([tag-schema.md](../formats/tag-schema.md), "Load test") |
@@ -44,21 +45,23 @@ on every save, and Studio opening a project instead of a map.
 The tree is `tags::repo`'s repository at `<data>/tags/`, in the layout
 [tag-repo.md](../formats/tag-repo.md) records. It is read-only to every
 tool but the extractor: a cache that the disc and the extractor
-reproduce. Beside it the extractor keeps `extract.toml` (new):
+reproduce. Beside it the extractor keeps `extract.toml`
+([tag-repo.md](../formats/tag-repo.md), "Versions"):
 
+- `tags::repo::EXTRACT_VERSION` and the tag file format version the
+  tree was extracted under;
 - the disc's identity (the SHA-256 of each map file, as packages name a
   base) and which maps are extracted;
-- `tags::repo::EXTRACT_VERSION`, the tag file format version, and a
-  hash of each group's layout in `tags::schema`;
-- per map, the version and layout hashes it was extracted under, and
-  its count of lossy tags.
+- per map and group, the layout hash (`tags::schema::hash`) its tags
+  were extracted under, and its counts of tags, lossy tags and refused
+  tags.
 
-`workspace::extract::plan` compares that file with the running build and
-the disc and gives the work: a map never extracted, a map whose file
+`tags::repo::extract::plan` compares that file with the running build
+and the disc and gives the work: a map never extracted, a map whose file
 changed, and for a group whose layout hash moved, that group's tags
 only. A format or extractor version change re-extracts everything.
-Extraction is per map and resumable; a map's manifest is written last,
-so an interrupted run redoes one map. This is "the engine has new
+Extraction is per map and resumable; a map is recorded after its
+manifest, so an interrupted run redoes one map. This is "the engine has new
 things": a better `sbsp` layout, a newly described block or a new
 raw-size pairing shows up as a moved layout hash and the tags that gain
 from it are taken again.

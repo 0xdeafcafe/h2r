@@ -23,8 +23,10 @@ pub mod format;
 pub mod store;
 
 pub use build::{BuildOptions, to_tag_set};
-pub use extract::{MapSource, SharedFiles, compare, store_map};
-pub use store::TagRepo;
+pub use extract::{
+    EXTRACT_VERSION, Layouts, MapSource, Plan, SharedFiles, compare, plan, store_map, update,
+};
+pub use store::{ExtractRecord, TagRepo};
 
 /// What can go wrong reading, writing or building tags.
 #[derive(Debug, thiserror::Error)]
