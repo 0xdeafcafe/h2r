@@ -7,8 +7,10 @@
 //! already carried is a switch, the held weapon's loaded rounds going up
 //! while its reserve goes down is a reload, fewer grenades is a throw (more
 //! is a pickup), the biped's physics mode going from ground to flying while
-//! moving up is a jump, and entering the melee mode is a melee. A unit seen
-//! for the first time (a new game, a respawn) has no actions.
+//! moving up is a jump, and entering the melee mode is a melee (one mark a
+//! swing: dealing the swing's damage marks it only when no frame saw the
+//! entry). A unit seen for the first time (a new game, a respawn) has no
+//! actions.
 
 use live_proto::game::MAX_FRAME_ACTIONS;
 
@@ -22,6 +24,10 @@ pub struct UnitMemory {
     pub pos: [f64; 3],
     pub held: Option<u32>,
     pub motion: Motion,
+    /// The tick of the last `melee` action, so one swing is marked once:
+    /// its damage lands a few ticks after the entry into the melee mode,
+    /// and a hit that soon after a marked entry is the same swing.
+    pub melee_tick: Option<u64>,
 }
 
 /// A unit's motion fields for one frame.
@@ -38,10 +44,18 @@ pub struct Observed {
 const MAX_PLAUSIBLE_SPEED: f64 = 100.0;
 /// Frames further apart than this give no speed (game seconds).
 const MAX_SPEED_GAP: f64 = 1.0;
+/// A swing's damage lands within this many ticks of the entry into the
+/// melee mode (seen: at most 8 at the 15 Hz frame rate). Two swings are
+/// further apart than this (the melee recovery), so a hit this soon after a
+/// marked entry belongs to the swing already marked.
+const MELEE_HIT_MARK_TICKS: u64 = 15;
 
 /// The unit's motion fields this frame, and what to remember for the next.
 /// `melee_hit` is set when the unit dealt melee damage since its previous
-/// frame (a melee that missed shows up only through the physics mode).
+/// frame (a melee that missed shows up only through the physics mode). A
+/// landed swing is one `melee` action: the damage-dealt mark stands in for
+/// a swing whose entry into the melee mode no frame saw, and is skipped
+/// when the entry was already marked within `MELEE_HIT_MARK_TICKS`.
 pub fn observe(
     previous: Option<&UnitMemory>,
     object: &ObjectState,
@@ -73,7 +87,9 @@ pub fn observe(
         (speed.is_finite() && speed <= MAX_PLAUSIBLE_SPEED).then(|| (speed * 100.0).round() / 100.0)
     });
     let mut actions = Vec::new();
+    let mut melee_tick = None;
     if let Some(p) = previous.filter(|_| alive) {
+        melee_tick = p.melee_tick;
         let pm = &p.motion;
         let mut push = |a: &str| {
             if !actions.iter().any(|x| x == a) {
@@ -113,8 +129,12 @@ pub fn observe(
             }
         }
         let entered = |mode: u8| m.physics_mode == Some(mode) && pm.physics_mode != Some(mode);
-        if entered(layout::BIPED_MODE_MELEE) || melee_hit {
+        let marked_swing = p
+            .melee_tick
+            .is_some_and(|t| tick.saturating_sub(t) <= MELEE_HIT_MARK_TICKS);
+        if entered(layout::BIPED_MODE_MELEE) || (melee_hit && !marked_swing) {
             push("melee");
+            melee_tick = Some(tick);
         }
         if entered(layout::BIPED_MODE_FLYING)
             && pm.physics_mode == Some(layout::BIPED_MODE_GROUND)
@@ -135,6 +155,7 @@ pub fn observe(
         pos: object.pos,
         held,
         motion: m.clone(),
+        melee_tick,
     };
     (observed, memory)
 }
@@ -244,6 +265,34 @@ mod tests {
         let hit = observe(Some(&memory), &a, true, 12, 30, true).0;
         assert_eq!(actions(&hit), ["melee"]);
         assert_eq!(hit.grenade.as_deref(), Some("frag"));
+    }
+
+    #[test]
+    fn a_landed_swing_marks_melee_once() {
+        let a = unit(Some(RIFLE), [RIFLE, NONE, NONE, NONE]);
+        let mut swing = a.clone();
+        swing.motion.physics_mode = Some(layout::BIPED_MODE_MELEE);
+        let mut recovered = a.clone();
+        recovered.motion.physics_mode = Some(layout::BIPED_MODE_GROUND);
+        let (_, memory) = observe(None, &a, true, 10, 30, false);
+        // The entry into the melee mode marks the swing.
+        let (entered, memory) = observe(Some(&memory), &swing, true, 12, 30, false);
+        assert_eq!(actions(&entered), ["melee"]);
+        // Its damage landing a few ticks later is the same swing: no
+        // second action.
+        let hit = observe(Some(&memory), &recovered, true, 20, 30, true).0;
+        assert!(hit.actions.is_none(), "the hit is the swing already marked");
+        // A hit with no marked swing in reach still marks (the swing's
+        // entry went unseen), as does one long after the last mark.
+        let late = observe(Some(&memory), &recovered, true, 40, 30, true).0;
+        assert_eq!(actions(&late), ["melee"]);
+        let (_, memory) = observe(None, &a, true, 50, 30, false);
+        let unseen = observe(Some(&memory), &recovered, true, 52, 30, true).0;
+        assert_eq!(actions(&unseen), ["melee"]);
+        // A second swing after the first marks again at its own entry.
+        let (_, memory) = observe(Some(&memory), &recovered, true, 60, 30, false);
+        let second = observe(Some(&memory), &swing, true, 62, 30, false).0;
+        assert_eq!(actions(&second), ["melee"]);
     }
 
     #[test]
