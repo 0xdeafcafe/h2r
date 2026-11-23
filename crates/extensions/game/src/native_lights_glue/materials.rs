@@ -284,6 +284,46 @@ impl Resolver {
         self.request(key, &material.instance, None, None)
     }
 
+    /// A structure receiver pass, resolved with the instance's inputs only.
+    pub(super) fn world_receiver(
+        &self,
+        material: &LitMaterial,
+        layer: usize,
+        implementation: usize,
+    ) -> Result<Resolved, Keep> {
+        let key = Variant {
+            shader: material.shader,
+            inputs: None,
+            layer,
+            implementation,
+            model: None,
+        };
+        self.request(key, &material.instance, None, None)
+    }
+
+    /// A model receiver pass over the entry's resident section buffer.
+    pub(super) fn model_receiver(
+        &self,
+        shader: TagId,
+        instance: &EngineInputs,
+        lights: &Arc<ModelLights>,
+        entry: &LightEntry,
+        layer: usize,
+    ) -> Result<Resolved, Keep> {
+        let key = Variant {
+            shader,
+            inputs: None,
+            layer,
+            implementation: usize::from(entry.binding.implementation),
+            model: Some((
+                entry.model,
+                entry.stream.section,
+                u32::from(entry.stream.vertex_class),
+            )),
+        };
+        self.request(key, instance, None, Some(lights))
+    }
+
     pub(super) fn model(
         &self,
         shader: TagId,
@@ -363,6 +403,11 @@ impl Worker {
             .map_err(|error| Keep::Refused(format!("material: {error}")))?;
         let look = if key.layer == native_render::shadow_look::CASTER_LAYER {
             native_render::shadow_look::shadow_look(&material, key.implementation)
+        } else if matches!(
+            key.layer,
+            native_render::shadow_look::RECEIVER_LAYER | native_render::shadow_look::OPACITY_LAYER
+        ) {
+            native_render::shadow_look::receiver_look(&material, key.layer, key.implementation)
         } else {
             light_look(&material, key.layer, key.implementation)
         }
@@ -401,6 +446,17 @@ impl Worker {
                         buffer.provided(),
                         buffer.fetch(),
                     )
+                } else if matches!(
+                    key.layer,
+                    native_render::shadow_look::RECEIVER_LAYER
+                        | native_render::shadow_look::OPACITY_LAYER
+                ) {
+                    native_render::shadow_look::compile_receiver_model(
+                        &look,
+                        code,
+                        buffer.provided(),
+                        buffer.fetch(),
+                    )
                 } else {
                     compile_light_model(&look, code, buffer.provided(), buffer.fetch())
                 };
@@ -413,6 +469,12 @@ impl Worker {
                     .ok_or(Keep::Unsupported("no world-space vertex program"))?;
                 let program = if key.layer == native_render::shadow_look::CASTER_LAYER {
                     native_render::shadow_look::compile_shadow(&look, code)
+                } else if matches!(
+                    key.layer,
+                    native_render::shadow_look::RECEIVER_LAYER
+                        | native_render::shadow_look::OPACITY_LAYER
+                ) {
+                    native_render::shadow_look::compile_receiver(&look, code)
                 } else {
                     compile_light(&look, code)
                 };

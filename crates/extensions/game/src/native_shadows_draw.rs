@@ -14,6 +14,7 @@ pub struct Gpu {
     renderer: Renderer,
     shaders: d3d::Nv2aShaders,
     bits: gfx::depth_bits::DepthBits,
+    filter: native_render::glow::QuadDrawer,
     defer_uploads: bool,
 }
 
@@ -30,6 +31,7 @@ fn new(ctx: GfxContext, defer_uploads: bool) -> SharedGpu {
         renderer,
         shaders: d3d::Nv2aShaders::new(),
         bits,
+        filter: native_render::glow::QuadDrawer::new(),
         defer_uploads,
     }))
 }
@@ -38,16 +40,26 @@ pub fn for_backend(backend: &mut d3d::GfxBackend) -> SharedGpu {
     let gpu = new(crate::d3d_glue::share_context(&backend.ctx), true);
     let uploads = gpu.clone();
     backend.flush_external_uploads_with(move || {
-        uploads.lock().unwrap_or_else(|e| e.into_inner()).flush_uploads();
+        uploads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .flush_uploads();
     });
     let recycle = gpu.clone();
     backend.observe_submitted_frames(move || {
-        recycle.lock().unwrap_or_else(|e| e.into_inner()).presented();
+        recycle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .presented();
     });
     gpu
 }
 
 impl Gpu {
+    pub fn filter(&mut self) -> &mut native_render::glow::QuadDrawer {
+        &mut self.filter
+    }
+
     fn flush_uploads(&mut self) {
         self.renderer.flush_uploads(&self.ctx.queue);
         self.shaders.flush_uploads(&self.ctx);
@@ -123,7 +135,9 @@ impl Range {
             || target.size != guest_size
             || target.size != (draw.target.width, draw.target.height)
             || (draw.state.render.stencil.enable
-                && !target.depth_format.is_some_and(|format| format.has_stencil_aspect()))
+                && !target
+                    .depth_format
+                    .is_some_and(|format| format.has_stencil_aspect()))
         {
             return None;
         }
@@ -163,8 +177,13 @@ impl Range {
         }
         if stages.iter().flatten().any(|view| {
             view.texture() == target.color.texture()
-                || target.depth.is_some_and(|depth| view.texture() == depth.texture())
-                || !view.texture().usage().contains(wgpu::TextureUsages::TEXTURE_BINDING)
+                || target
+                    .depth
+                    .is_some_and(|depth| view.texture() == depth.texture())
+                || !view
+                    .texture()
+                    .usage()
+                    .contains(wgpu::TextureUsages::TEXTURE_BINDING)
                 || !gfx::program::filterable(view.texture().format(), device.features())
         }) {
             return None;
@@ -277,11 +296,20 @@ impl d3d::ExternalPass for Range {
             samples: 1,
         };
         let Some((packets, discards)) = self.prepare(
-            &t.device, t.copy, request.surface_size, target, t.stages.each_ref().map(Option::as_ref),
+            &t.device,
+            t.copy,
+            request.surface_size,
+            target,
+            t.stages.each_ref().map(Option::as_ref),
         ) else {
             return Some(Err("shadow resources or shader unavailable"));
         };
-        Some(Ok(ExternalDraws { ranges: packets.len(), packets, discards, writes: Vec::new() }))
+        Some(Ok(ExternalDraws {
+            ranges: packets.len(),
+            packets,
+            discards,
+            writes: Vec::new(),
+        }))
     }
 }
 

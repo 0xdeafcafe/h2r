@@ -92,10 +92,12 @@ pub struct Alone<'a> {
     pub group: &'a SceneGroup,
 }
 
-/// A caster layer 10 whose whole gathered group is in the scene.
+/// A shadow layer whose whole gathered group is in the scene.
 pub struct ShadowAlone<'a> {
     pub view: u32,
     pub group: &'a SceneGroup,
+    /// The running dynamic light's static gel, when it has one.
+    pub light: Option<LightConstants>,
 }
 
 pub trait Host: Send + Sync {
@@ -154,12 +156,14 @@ pub fn draw_shadow_alone(
     if Stage::Lights.standing_down() {
         return Err("device");
     }
+    let light =
+        CANDIDATE.with_borrow(|candidate| candidate.as_ref().and_then(|c| c.light.constants));
     let host = HOST
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone()
         .ok_or("device")?;
-    host.draw_shadow_alone(mem, ShadowAlone { view, group })
+    host.draw_shadow_alone(mem, ShadowAlone { view, group, light })
 }
 
 struct Ro<'a>(&'a dyn GuestMemory);

@@ -4,9 +4,12 @@
 //! projection in `c[40..48]`. Light-only inputs and engine textures keep
 //! the layer on its resolved-draw path.
 
-use tags::material::{InputReads, Material};
-
+use shaders::psh::{
+    AlphaFunc,
+    shadow::{DepthFormat, Shadow, ShadowAddress},
+};
 use shaders::vsh::VertexUniforms;
+use tags::material::{InputReads, Material, TextureSource};
 
 use crate::light_look::{self, LightLook, LightProgram, LightRefusal, LightStage};
 use crate::program::{PassParts, set_constants, translate_pass};
@@ -42,10 +45,100 @@ pub fn shadow_look(material: &Material, implementation: usize) -> Result<LightLo
             LightStage::Normalization => 1,
             LightStage::Attenuation => 9,
             LightStage::Gel => 10,
+            LightStage::DepthShadow => 13,
+            LightStage::ColourMask => 8,
         };
         return Err(LightRefusal::EngineTexture(id));
     }
     Ok(look)
+}
+
+pub const RECEIVER_LAYER: usize = 11;
+pub const OPACITY_LAYER: usize = 14;
+
+/// A receiver pass from the instance-resolved `material`. Layer 11 may
+/// sample the frozen depth map, filtered colour mask and light gel; layer
+/// 14 samples no shadow input.
+pub fn receiver_look(
+    material: &Material,
+    layer: usize,
+    implementation: usize,
+) -> Result<LightLook, LightRefusal> {
+    if !matches!(layer, RECEIVER_LAYER | OPACITY_LAYER) {
+        return Err(LightRefusal::NoLayer);
+    }
+    let resolved = material
+        .layers
+        .iter()
+        .find(|l| l.lod == 0 && l.layer == layer)
+        .filter(|l| !l.passes.is_empty())
+        .ok_or(LightRefusal::NoLayer)?;
+    let [pass] = resolved.passes.as_slice() else {
+        return Err(LightRefusal::Passes(resolved.passes.len()));
+    };
+    let imp = pass
+        .implementations
+        .iter()
+        .find(|i| i.index == implementation)
+        .ok_or(LightRefusal::NoImplementation(implementation))?;
+    let vertex_shader = imp.vertex_shader.ok_or(LightRefusal::NoVertexShader)?;
+    if !imp.animated.is_empty() {
+        return Err(LightRefusal::Animated);
+    }
+    let r = imp.input_reads;
+    let light_inputs = InputReads {
+        scalars: r.scalars & light_look::LIGHT_SCALARS,
+        vectors: r.vectors & light_look::LIGHT_VECTORS,
+        ints: r.ints & light_look::LIGHT_INTS,
+    };
+    if light_inputs != InputReads::default() {
+        return Err(LightRefusal::Reads(light_inputs));
+    }
+    let unsupplied = InputReads {
+        scalars: r.scalars & !(light_look::LIGHT_SCALARS | tags::material::INSTANCE_SCALARS),
+        vectors: r.vectors & !light_look::LIGHT_VECTORS,
+        ints: r.ints & !(light_look::LIGHT_INTS | tags::material::INSTANCE_INTS),
+    };
+    if unsupplied != InputReads::default() {
+        return Err(LightRefusal::Reads(unsupplied));
+    }
+    let applied = crate::engine_states::apply_static(imp, &material.inputs)
+        .map_err(LightRefusal::EngineStates)?;
+    let mut textures = [LightStage::Empty; 4];
+    for (stage, t) in textures.iter_mut().zip(&imp.textures) {
+        *stage = match t.map(|t| t.source) {
+            None | Some(TextureSource::None) => LightStage::Empty,
+            Some(TextureSource::Bitmap { bitmap, image, .. }) => {
+                LightStage::Bitmap { bitmap, image }
+            }
+            Some(TextureSource::Engine(13)) if layer == RECEIVER_LAYER => LightStage::DepthShadow,
+            Some(TextureSource::Engine(8)) if layer == RECEIVER_LAYER => LightStage::ColourMask,
+            Some(TextureSource::Engine(10)) if layer == RECEIVER_LAYER => LightStage::Gel,
+            Some(TextureSource::Engine(id)) => return Err(LightRefusal::EngineTexture(id)),
+            Some(TextureSource::UnsetSlot(s)) => return Err(LightRefusal::UnsetSlot(s)),
+            Some(TextureSource::Default) => return Err(LightRefusal::DefaultTexture),
+            Some(TextureSource::Lightmap) => return Err(LightRefusal::Lightmap),
+        };
+    }
+    let state =
+        crate::pass_state::pass_state(&applied.render_states).map_err(LightRefusal::State)?;
+    Ok(LightLook {
+        layer,
+        pass: pass.pass,
+        implementation,
+        vertex_shader,
+        textures,
+        stage_states: applied.stage_states,
+        pixel_shader: imp.pixel_shader,
+        vertex_constants: imp.vertex_constants.clone(),
+        vertex_defaults: imp.vertex_defaults.clone(),
+        vector_bindings: imp.vector_bindings.clone(),
+        inherits_cull: !crate::look::sets_state(
+            &imp.render_states,
+            gfx::state::RenderStateType::CullMode,
+        ),
+        state,
+    })
 }
 
 /// Translate a structure caster pass over the world's vertex streams.
@@ -57,6 +150,7 @@ pub fn compile_shadow(look: &LightLook, microcode: &[u8]) -> Result<LightProgram
         options.provided_inputs,
         options.input_fetch,
         false,
+        [None; 4],
     )
 }
 
@@ -68,7 +162,56 @@ pub fn compile_shadow_model(
     provided: u16,
     fetch: [shaders::vsh::InputFetch; 16],
 ) -> Result<LightProgram, String> {
-    compile(look, microcode, provided, fetch, true)
+    compile(look, microcode, provided, fetch, true, [None; 4])
+}
+
+/// The receiver's D24 compare for each engine-13 stage, with the stage's
+/// own filtering and addressing.
+pub fn shadow_stages(look: &LightLook) -> [Option<Shadow>; 4] {
+    std::array::from_fn(|n| {
+        (look.textures[n] == LightStage::DepthShadow).then(|| {
+            let state = look.stage_states.get(n);
+            let point = |filter: u8| matches!(filter, 0 | 1);
+            let address = |address: u8| match address {
+                1 => ShadowAddress::Wrap,
+                2 => ShadowAddress::Mirror,
+                _ => ShadowAddress::Clamp,
+            };
+            Shadow {
+                format: DepthFormat::D24,
+                func: AlphaFunc::Greater,
+                linear: state.is_some_and(|s| !point(s.min_filter) || !point(s.mag_filter)),
+                address: state.map_or([ShadowAddress::Clamp; 2], |s| {
+                    [address(s.address_u), address(s.address_v)]
+                }),
+            }
+        })
+    })
+}
+
+/// Translate a structure receiver pass with its D24 compare stages.
+pub fn compile_receiver(look: &LightLook, microcode: &[u8]) -> Result<LightProgram, String> {
+    let options = light_look::vertex_options();
+    let shadow = shadow_stages(look);
+    compile(
+        look,
+        microcode,
+        options.provided_inputs,
+        options.input_fetch,
+        false,
+        shadow,
+    )
+}
+
+/// Translate a model receiver pass over its resident declaration.
+pub fn compile_receiver_model(
+    look: &LightLook,
+    microcode: &[u8],
+    provided: u16,
+    fetch: [shaders::vsh::InputFetch; 16],
+) -> Result<LightProgram, String> {
+    let shadow = shadow_stages(look);
+    compile(look, microcode, provided, fetch, true, shadow)
 }
 
 fn compile(
@@ -77,6 +220,7 @@ fn compile(
     provided: u16,
     fetch: [shaders::vsh::InputFetch; 16],
     model: bool,
+    shadow: [Option<Shadow>; 4],
 ) -> Result<LightProgram, String> {
     let t = translate_pass(&PassParts {
         microcode,
@@ -92,6 +236,7 @@ fn compile(
         provided_inputs: provided,
         input_fetch: fetch,
         w_buffer: true,
+        shadow,
     })?;
     crate::program::pixel_parity(&t.def, &look.stage_states, t.dims.map(|d| d.is_some()))?;
     if look.vertex_constants.iter().any(|r| {
@@ -235,6 +380,21 @@ mod tests {
         assert_eq!(u.constants[48], [32.0, 33.0, 34.0, 35.0]);
         assert_eq!(u.constants[39], base.constants[39]);
         assert_eq!(u.constants[49], base.constants[49]);
+    }
+
+    #[test]
+    fn a_receiver_compiles_a_d24_compare_stage() {
+        let mut look = look();
+        look.layer = RECEIVER_LAYER;
+        look.textures[0] = LightStage::DepthShadow;
+        let p = compile_receiver(&look, &program()).expect("receiver program");
+        shaders::validate(&p.wgsl).expect("valid WGSL");
+        let shadow = p.pixel_options.shadow[0].expect("D24 stage");
+        assert_eq!(shadow.format, DepthFormat::D24);
+        assert_eq!(shadow.func, AlphaFunc::Greater);
+        assert!(!shadow.linear);
+        assert_eq!(shadow.address, [ShadowAddress::Clamp; 2]);
+        assert_eq!(p.dims[0], Some(shaders::psh::TextureDim::D2));
     }
 
     #[test]

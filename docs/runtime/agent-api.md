@@ -1884,11 +1884,14 @@ h2 agent render.parity '{"arm": true}'
   `scene_shadow_groups` and `scene_shadow_groups_whole` (the shadow
   groups and those with every sorted entry), also per layer as
   `scene_shadow_groups_<layer>` and `scene_shadow_groups_whole_<layer>`
-  for 10, 11 and 14, `scene_shadow_layers_alone_10` (caster groups drawn
-  from the scene with no handler), `scene_shadow_alone_refused_<cause>`
-  (`remainder`, `stream`, `pose`, `program`, `state`, `target`,
-  `callback`, `device`) and `scene_dropped_shadow_layers`
-  ([native-shadow-layers.md](../graphics/native-shadow-layers.md)),
+  for 10, 11 and 14, `scene_shadow_layers_alone_10`, `_11` and `_14`
+  (caster, receiver and opacity groups drawn from the scene with no
+  handler), `scene_shadow_alone_refused_<cause>` (`remainder`, `stream`,
+  `pose`, `program`, `state`, `target`, `callback`, `device`),
+  `scene_dropped_shadow_layers`, `scene_shadow_filters_native` (object
+  filters replaced by native quads) and
+  `scene_shadow_filter_refused_<cause>` (`program`, `state`, `target`,
+  `callback`, `device`) ([native-shadow-layers.md](../graphics/native-shadow-layers.md)),
   `scene_fog_views`, `scene_fog_gate_held`, `scene_fog_drawn`,
   `scene_fog_parts` and the same four for `scene_water_` (late layers
   written, of those whose gate held, those the native stage took, and

@@ -27,7 +27,7 @@ use native_render::lights::{Light, LightConstants};
 use native_render::look;
 use native_render::program::InheritedCull;
 use native_render::program::ViewInputs;
-use native_render::shadow_look::CASTER_LAYER;
+use native_render::shadow_look::{CASTER_LAYER, OPACITY_LAYER, RECEIVER_LAYER};
 use native_render::world::{Owner, World, WorldDraw};
 use render_bridge::native_lights::{Alone, Dispatch, Host, ShadowAlone};
 use tags::material::{EngineInputs, Material, ShaderLibrary, TextureSource};
@@ -344,6 +344,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             ready,
             constants,
             projection: None,
+            shadow_map: None,
             draws,
             cull,
             scissor,
@@ -480,17 +481,27 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         Ok(())
     }
 
-    /// A layer-10 group drawn from the scene with no caster handler. Its
-    /// own target and projection are checked after the drain, all material
-    /// and geometry resources are sealed, and only then may the guest loop
-    /// be emptied. The guest's begin, clear and end still run.
+    /// A shadow group drawn from the scene with no geometry handler. Its
+    /// own target, projection and frozen map are checked after the drain,
+    /// all material and geometry resources are sealed, and only then may
+    /// the guest loop be emptied. The guest's begin, clear and end still run.
     fn shadow_alone(&self, mem: &mut dyn GuestMemory, a: ShadowAlone<'_>) -> Result<(), Keep> {
         let group = a.group;
+        let layer = usize::from(group.group.layer);
+        if !matches!(layer, CASTER_LAYER | RECEIVER_LAYER | OPACITY_LAYER) {
+            return Err(Keep::Shadow("state"));
+        }
         let shadow = group.group.pass.ok_or(Keep::Shadow("state"))?;
-        let projection = group.group.projection.ok_or(Keep::Shadow("state"))?;
-        let colour_mask = shadow.colour_mask();
-        let expected = crate::native_shadows_glue::expected_targets(mem, shadow.target)
-            .ok_or(Keep::Shadow("target"))?;
+        let projection = group.group.projection;
+        let colour_mask = layer == CASTER_LAYER && shadow.colour_mask();
+        let expected = if layer == RECEIVER_LAYER {
+            None
+        } else {
+            Some(
+                crate::native_shadows_glue::expected_targets(mem, shadow.target)
+                    .ok_or(Keep::Shadow("target"))?,
+            )
+        };
         let mut d = self.device.lock().map_err(|_| Keep::Shadow("device"))?;
         if !d
             .begin_external_boundary(&mut DeviceMemory(mem))
@@ -498,10 +509,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         {
             return Err(Keep::Shadow("callback"));
         }
-        if !d.can_external_pass() || d.bound_target()[..2] != expected {
+        if !d.can_external_pass()
+            || expected.is_some_and(|expected| d.bound_target()[..2] != expected)
+        {
             return Err(Keep::Shadow("target"));
         }
-        if render_bridge::scene_step::shadow_pass(&ReadMemory(&*mem), 10) != Some(shadow) {
+        if render_bridge::scene_step::shadow_pass(&ReadMemory(&*mem), layer as u8) != Some(shadow) {
             return Err(Keep::Shadow("state"));
         }
         let ready = self.ready(mem)?;
@@ -550,31 +563,75 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 continue;
             }
             if !run.is_empty() {
-                draws.extend(world.resolve_shadow_parts(std::mem::take(&mut run))?);
+                if layer == CASTER_LAYER {
+                    draws.extend(world.resolve_shadow_parts(std::mem::take(&mut run))?);
+                } else {
+                    draws.extend(world.resolve_receiver_parts(layer, std::mem::take(&mut run))?);
+                }
             }
             let lights = model_lights.as_ref().ok_or(Keep::Unsupported(
                 "the map's model shadow parts are loading",
             ))?;
-            draws.push(world.resolve_shadow_model(lights, e, group.rows_of(e))?);
+            if layer == CASTER_LAYER {
+                draws.push(world.resolve_shadow_model(lights, e, group.rows_of(e))?);
+            } else {
+                draws.push(world.resolve_receiver_model(lights, e, group.rows_of(e), layer)?);
+            }
         }
         if !run.is_empty() {
-            draws.extend(world.resolve_shadow_parts(run)?);
+            if layer == CASTER_LAYER {
+                draws.extend(world.resolve_shadow_parts(run)?);
+            } else {
+                draws.extend(world.resolve_receiver_parts(layer, run)?);
+            }
         }
-        // Static caster materials have no light uniforms. This placeholder
-        // keeps the shared prepared-run storage; the projection below is
-        // what its vertex constants actually take.
-        let constants = LightConstants {
-            frame: [0; 36],
-            flags: shadow.flags,
-            colour_a: [0; 3],
-            colour_b: [0; 3],
-            mode: 0,
-            definition_flags: 0,
-            definition_8a: 0,
-            definition_80: 0,
-            falloff_0: 0,
-            gel: None,
-            animated_gel: false,
+        let constants = match a.light {
+            Some(constants) if constants.animated_gel => {
+                return Err(Keep::Unsupported(
+                    "an animated gel keeps the receiver on D3D",
+                ));
+            }
+            Some(constants) => constants,
+            None => LightConstants {
+                frame: [0; 36],
+                flags: shadow.flags,
+                colour_a: [0; 3],
+                colour_b: [0; 3],
+                mode: 0,
+                definition_flags: 0,
+                definition_8a: 0,
+                definition_80: 0,
+                falloff_0: 0,
+                gel: None,
+                animated_gel: false,
+            },
+        };
+        let needs_map = layer == RECEIVER_LAYER
+            && draws.iter().any(|draw| {
+                draw.compiled
+                    .program
+                    .stages
+                    .iter()
+                    .zip(draw.compiled.program.dims)
+                    .any(|(stage, dim)| {
+                        matches!(stage, LightStage::DepthShadow | LightStage::ColourMask)
+                            && dim.is_some()
+                    })
+            });
+        let shadow_map = if needs_map {
+            let projection = projection.ok_or(Keep::Shadow("state"))?;
+            let projection = std::array::from_fn(|n| projection[n / 4][n % 4]);
+            let kind = if shadow.colour_mask() {
+                native_render::shadow_gpu::MapKind::ColourMask
+            } else {
+                native_render::shadow_gpu::MapKind::Depth
+            };
+            Some(
+                crate::native_shadows_glue::latest_receiver(a.view, projection, kind)
+                    .ok_or(Keep::Shadow("target"))?,
+            )
+        } else {
+            None
         };
         let mut prepared = self.prepare_planned(
             &d,
@@ -585,9 +642,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             None,
             colour_mask,
         )?;
-        prepared.projection = Some(std::array::from_fn(|n| projection[n / 4][n % 4]));
-        if prepared.draws.iter().any(|p| p.layer != CASTER_LAYER) {
-            return Err(Keep::Unsupported("a non-caster pass is in the shadow run"));
+        prepared.projection =
+            projection.map(|projection| std::array::from_fn(|n| projection[n / 4][n % 4]));
+        prepared.shadow_map = shadow_map;
+        if prepared.draws.iter().any(|p| p.layer != layer) {
+            return Err(Keep::Unsupported(
+                "another layer's pass is in the shadow run",
+            ));
         }
         {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -1685,6 +1746,112 @@ impl LightsWorld {
         })
     }
 
+    /// Structure receiver parts resolved with their instance inputs alone.
+    fn resolve_receiver_parts(
+        &self,
+        layer: usize,
+        parts: Vec<(usize, WorldDraw)>,
+    ) -> Result<Vec<Planned>, Keep> {
+        let mut out: Vec<Planned> = Vec::new();
+        let mut pending = false;
+        for (imp, draw) in parts {
+            let m = draw.material;
+            let end = draw
+                .first_index
+                .checked_add(draw.index_count)
+                .ok_or(Keep::Unsupported("invalid receiver index range"))?;
+            let range = draw.first_index..end;
+            let lit = self.materials.get(&m).ok_or(Keep::NoMaterial)?;
+            let resolved = match self.resolver.world_receiver(lit, layer, imp) {
+                Err(Keep::MaterialPending) => {
+                    pending = true;
+                    continue;
+                }
+                other => other?,
+            };
+            let compiled = resolved.compiled;
+            if compiled.program.inputs & !draw.inputs != 0 {
+                return Err(Keep::Unsupported(
+                    "cluster lacks a vertex stream read by its receiver program",
+                ));
+            }
+            self.binds(&compiled.program, None, false, &self.images)?;
+            if let Some(previous) = out.last_mut()
+                && previous.material == m
+                && Arc::ptr_eq(&previous.compiled, &compiled)
+            {
+                previous.ranges.push(range);
+                continue;
+            }
+            out.push(Planned {
+                compiled,
+                material: m,
+                layer,
+                implementation: imp,
+                ranges: vec![range],
+                model: None,
+            });
+        }
+        if pending {
+            Err(Keep::MaterialPending)
+        } else {
+            Ok(out)
+        }
+    }
+
+    /// A model receiver part over its resident section's vertex buffer.
+    fn resolve_receiver_model(
+        &self,
+        lights: &Arc<models::ModelLights>,
+        entry: &LightEntry,
+        rows: &[Row],
+        layer: usize,
+    ) -> Result<Planned, Keep> {
+        let (section, part) = lights.models.part(entry).ok_or(Keep::Unsupported(
+            "scene receiver entry has no native stream",
+        ))?;
+        let (shader, instance) = lights
+            .instances
+            .get(&entry.binding.shader)
+            .ok_or(Keep::NoMaterial)?;
+        let resolved = self
+            .resolver
+            .model_receiver(*shader, instance, lights, entry, layer)?;
+        let buffer = resolved
+            .buffer
+            .ok_or(Keep::Unsupported("model receiver buffer unavailable"))?;
+        let b = section
+            .buffers
+            .get(buffer)
+            .ok_or(Keep::Unsupported("model receiver buffer unavailable"))?;
+        let compiled = resolved.compiled;
+        if compiled.program.inputs & !b.provided() != 0 {
+            return Err(Keep::Unsupported(
+                "model section lacks a vertex stream read by its receiver program",
+            ));
+        }
+        if rows.is_empty() || rows.len() > 3 * native_render::object_program::MAX_PALETTE {
+            return Err(Keep::Unsupported(
+                "receiver entry's node rows do not fit the palette",
+            ));
+        }
+        self.binds(&compiled.program, None, false, &lights.images)?;
+        Ok(Planned {
+            material: MODEL_MATERIAL,
+            layer,
+            implementation: usize::from(entry.binding.implementation),
+            compiled,
+            ranges: vec![part.indices.clone()],
+            model: Some(ModelDraw {
+                lights: Arc::clone(lights),
+                model: entry.model,
+                section: entry.stream.section,
+                buffer,
+                rows: rows.to_vec(),
+            }),
+        })
+    }
+
     /// Whether every texture `program` samples is loaded (its stage
     /// bitmaps in `images`), with `gel` the light's; the first that is
     /// not, when one is not.
@@ -1710,6 +1877,8 @@ impl LightsWorld {
                     produced_gel || gel.is_some_and(|g| self.gels.contains_key(&g)),
                     "gel",
                 ),
+                LightStage::DepthShadow => (true, "depth shadow"),
+                LightStage::ColourMask => (true, "colour mask"),
             };
             if !loaded {
                 return Err(Keep::Unloaded(what));
@@ -1719,12 +1888,15 @@ impl LightsWorld {
     }
 }
 
-/// Whether `material` draws anything in layer 10, 12 or 13 (first level
-/// of detail).
+/// Whether `material` draws anything in layers 10 to 14 (first level of
+/// detail).
 fn lit_layers(material: &Material) -> bool {
     material.layers.iter().any(|l| {
         l.lod == 0
-            && matches!(l.layer, CASTER_LAYER | DIFFUSE_LAYER | SPECULAR_LAYER)
+            && matches!(
+                l.layer,
+                CASTER_LAYER | RECEIVER_LAYER | OPACITY_LAYER | DIFFUSE_LAYER | SPECULAR_LAYER
+            )
             && !l.passes.is_empty()
     })
 }
@@ -1790,7 +1962,15 @@ pub fn load<R: std::io::Read + std::io::Seek>(
             .layers
             .iter()
             .filter(|l| {
-                l.lod == 0 && matches!(l.layer, CASTER_LAYER | DIFFUSE_LAYER | SPECULAR_LAYER)
+                l.lod == 0
+                    && matches!(
+                        l.layer,
+                        CASTER_LAYER
+                            | RECEIVER_LAYER
+                            | OPACITY_LAYER
+                            | DIFFUSE_LAYER
+                            | SPECULAR_LAYER
+                    )
             })
             .flat_map(|l| &l.passes)
             .flat_map(|p| &p.implementations)
@@ -1923,6 +2103,8 @@ struct PreparedLight {
     constants: native_render::lights::LightConstants,
     /// A scene caster group's projection; ordinary lit draws leave it out.
     projection: Option<[u32; native_render::shadow_look::PROJECTION_DWORDS]>,
+    /// A receiver group's frozen map; lit and caster draws leave it out.
+    shadow_map: Option<native_render::shadow_gpu::SampledMap>,
     draws: Vec<Planned>,
     cull: InheritedCull,
     scissor: [u32; 4],
@@ -1981,6 +2163,7 @@ impl PreparedLight {
             gel: c.gel,
             gel_view: None,
             gel_scale: self.binding.map(Binding::tex_scale),
+            shadow_map: self.shadow_map.as_ref(),
             ranges: &p.ranges,
             model: None,
         }

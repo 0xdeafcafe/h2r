@@ -153,6 +153,31 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
             h.word(u32::from(o.creature));
             h.word(o.weight_bits.unwrap_or(0));
             h.word(u32::from(o.weight_bits.is_some()));
+            if let Some(filter) = &o.filter {
+                h.word(1);
+                h.word(filter.signs[0]);
+                h.word(filter.signs[1]);
+                h.word(filter.size[0]);
+                h.word(filter.size[1]);
+                for word in filter.combiner {
+                    h.word(word);
+                }
+                h.word(filter.draws.len() as u32);
+                for draw in &filter.draws {
+                    h.word(draw.source);
+                    h.word(draw.dest);
+                    h.word(draw.spread);
+                }
+                if let Some((source, dest)) = filter.copy {
+                    h.word(1);
+                    h.word(source);
+                    h.word(dest);
+                } else {
+                    h.word(0);
+                }
+            } else {
+                h.word(0);
+            }
             light_groups(&mut h, scene, scene.shadow_groups_of(o));
         }
         let passes = scene.layers_of(v);
@@ -687,6 +712,7 @@ mod tests {
                 groups: 0..1,
                 creature: false,
                 weight_bits: None,
+                filter: None,
             });
         shadowed
             .shadow_groups
@@ -706,5 +732,18 @@ mod tests {
             shadow_hash,
             "a weight of zero is not no weight"
         );
+        let weight_hash = summary_hash(&shadowed);
+        shadowed.object_shadows[0].filter = Some(crate::ShadowFilter {
+            draws: vec![crate::ShadowFilterDraw {
+                source: 10,
+                dest: 11,
+                spread: 1,
+            }],
+            copy: Some((11, 10)),
+            combiner: [2; crate::SHADOW_COMBINER_WORDS],
+            signs: [3, 4],
+            size: [128, 128],
+        });
+        assert_ne!(summary_hash(&shadowed), weight_hash, "its filter");
     }
 }

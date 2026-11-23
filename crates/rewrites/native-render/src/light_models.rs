@@ -7,7 +7,7 @@
 //! raw range decoded in its own topology, as the object path decodes it,
 //! `tags::geometry::Geometry::part_triangles`), its decompression rows,
 //! and its vertices once per (vertex shader, classification) its parts'
-//! materials' layer-10, layer-12 and layer-13 implementations name,
+//! materials' shadow and light implementations name,
 //! gathered through the declaration that program's input semantics give
 //! over the section's streams ([`crate::object_streams::declaration`],
 //! [`crate::object_streams::gather`]). The pass itself is compiled with

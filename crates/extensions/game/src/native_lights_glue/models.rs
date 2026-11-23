@@ -3,7 +3,7 @@
 //! every `mode` tag's drawn opaque parts through
 //! [`native_render::light_models::light_model`], with the vertex
 //! programs of the classifications their sections take and the stage
-//! images of their materials' lit and caster passes. A light or shadow
+//! images of their materials' lit, caster and receiver passes. A light or shadow
 //! layer drawn from its scene group alone ([`super::Glue::alone`] and
 //! [`super::Glue::shadow_alone`]) draws an object entry from these; until
 //! the load is done, or for a part it does not hold, the layer keeps its
@@ -19,7 +19,7 @@ use native_render::light_models::{LightModels, ModelSection, SectionPart, light_
 use native_render::look;
 use native_render::object_nodes::{Compression, decompression_rows};
 use native_render::object_streams::{StreamData, StreamFormats, classification};
-use native_render::shadow_look::CASTER_LAYER;
+use native_render::shadow_look::{CASTER_LAYER, OPACITY_LAYER, RECEIVER_LAYER};
 use render_bridge::native_map_work;
 use tags::material::{EngineInputs, ShaderLibrary, TextureSource};
 use tags::model::RenderModelGeometry;
@@ -150,7 +150,13 @@ fn lit_passes(lib: &mut ShaderLibrary, shader: TagId) -> (Vec<TagId>, Vec<(usize
     for imp in material
         .layers
         .iter()
-        .filter(|l| l.lod == 0 && matches!(l.layer, CASTER_LAYER | DIFFUSE_LAYER | SPECULAR_LAYER))
+        .filter(|l| {
+            l.lod == 0
+                && matches!(
+                    l.layer,
+                    CASTER_LAYER | RECEIVER_LAYER | OPACITY_LAYER | DIFFUSE_LAYER | SPECULAR_LAYER
+                )
+        })
         .flat_map(|l| &l.passes)
         .flat_map(|p| &p.implementations)
     {

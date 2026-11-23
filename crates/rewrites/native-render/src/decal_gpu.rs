@@ -45,7 +45,12 @@ pub struct ClipRect {
 impl ClipRect {
     fn scaled(self, scale: d3d::scaled::RenderScale) -> ScissorRect {
         let [x, y, width, height] = scale.rect(self.x, self.y, self.width, self.height);
-        ScissorRect { x, y, width, height }
+        ScissorRect {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 }
 
@@ -293,6 +298,7 @@ fn pixel_options(mode: Mode, shader: &ShaderSnapshot) -> PixelOptions {
             .alpha_test_enable
             .then(|| alpha_func(shader.render.alpha_func)),
         w_buffer: mode.w_buffered(),
+        shadow: [None; 4],
         flat_shading: shader.render.shade_mode == gfx::state::ShadeMode::Flat,
         ..Default::default()
     }
@@ -814,8 +820,13 @@ impl DecalCache {
             .get_or_insert_with(|| crate::light_gpu::uniforms_layout(device))
             .clone();
         self.created.programs += 1;
-        let made = build_program(device, &key, &uniforms, ShaderId(u32::MAX - 2 - self.created.programs as u32))
-            .map(Arc::new);
+        let made = build_program(
+            device,
+            &key,
+            &uniforms,
+            ShaderId(u32::MAX - 2 - self.created.programs as u32),
+        )
+        .map(Arc::new);
         self.programs.insert(key, made.clone());
         made
     }
@@ -837,11 +848,13 @@ impl DecalCache {
     ) -> Result<Option<(Vec<RecordedDraw>, bool)>, &'static str> {
         let mode = prepared.mode;
         let shader = &prepared.shader;
-        if clip.w_buffered != Some(mode.w_buffered()) || t.guest_size.0 == 0 || t.guest_size.1 == 0 {
+        if clip.w_buffered != Some(mode.w_buffered()) || t.guest_size.0 == 0 || t.guest_size.1 == 0
+        {
             return Err("issue snapshot");
         }
         let caps = gfx::translate::Capabilities::from_features(device.features());
-        let scale = d3d::scaled::RenderScale::between(t.guest_size, t.size).ok_or("target scale")?;
+        let scale =
+            d3d::scaled::RenderScale::between(t.guest_size, t.size).ok_or("target scale")?;
         if prepared.clips.is_empty() {
             return Ok(None);
         }
@@ -886,7 +899,11 @@ impl DecalCache {
         let described = PipelineKey {
             shader: program.id,
             vertex_buffers: Vec::new(),
-            primitive: gfx::translate::primitive_state(&shader.render, wgpu::PrimitiveTopology::TriangleList, caps),
+            primitive: gfx::translate::primitive_state(
+                &shader.render,
+                wgpu::PrimitiveTopology::TriangleList,
+                caps,
+            ),
             depth_stencil: Some(depth),
             color_target,
             samples: 1,
@@ -984,7 +1001,11 @@ impl DecalCache {
                     (index_buffer.clone(), index_at, index_bytes.len() as u64),
                     indices.len() as u32,
                     vec![
-                        BoundGroup { index: 0, group: run.group.clone(), offsets: run.offsets(0).to_vec() },
+                        BoundGroup {
+                            index: 0,
+                            group: run.group.clone(),
+                            offsets: run.offsets(0).to_vec(),
+                        },
                         BoundGroup::new(1, textures.clone()),
                     ],
                     &render,
@@ -1016,7 +1037,11 @@ fn build_program(
     .map_err(|_| "vertex translation")?;
     let ps = psh::translate(&key.combiner, &key.options);
     if !ps.warnings.is_empty()
-        || ps.textures.iter().enumerate().any(|(n, d)| n != 0 && d.is_some())
+        || ps
+            .textures
+            .iter()
+            .enumerate()
+            .any(|(n, d)| n != 0 && d.is_some())
     {
         return Err("pixel translation");
     }
@@ -1068,7 +1093,15 @@ fn build_program(
             },
         )
     });
-    Ok(CachedProgram { id, module, layout, textures, unsampled, sampled, discards: ps.discards })
+    Ok(CachedProgram {
+        id,
+        module,
+        layout,
+        textures,
+        unsampled,
+        sampled,
+        discards: ps.discards,
+    })
 }
 
 fn decal_pipeline(
@@ -1118,7 +1151,10 @@ fn decal_pipeline(
             },
         )
     })?;
-    Some(CachedPipeline { described: key.clone(), pending: Pending::ready(Some(pipeline)) })
+    Some(CachedPipeline {
+        described: key.clone(),
+        pending: Pending::ready(Some(pipeline)),
+    })
 }
 
 #[cfg(test)]

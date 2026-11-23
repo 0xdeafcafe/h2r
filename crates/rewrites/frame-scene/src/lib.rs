@@ -46,7 +46,7 @@ pub use light::{
 };
 pub use light_group::{
     GroupSite, LightBinding, LightEntry, LightGroup, LightPose, LightStream, ObjectShadow,
-    PROJECTION_ROWS, ShadowPass, Topology,
+    PROJECTION_ROWS, SHADOW_COMBINER_WORDS, ShadowFilter, ShadowFilterDraw, ShadowPass, Topology,
 };
 pub use node::{NODE_MATRIX_SIZE, NodeMatrix};
 pub use object::{Defaults, ItemKey, LIGHTING_BYTES, LIGHTING_WORDS, Lighting, ObjectFrame, Owner};

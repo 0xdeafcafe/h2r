@@ -48,6 +48,22 @@ pub fn observe_receivers(observer: Option<Arc<dyn Fn(ReceiverTerm) + Send + Sync
     *RECEIVER.lock().unwrap_or_else(|e| e.into_inner()) = observer;
 }
 
+static LATEST: Mutex<Option<ReceiverTerm>> = Mutex::new(None);
+
+/// The frozen map of the receiver boundary that just ran, if it belongs
+/// to this view, projection and map kind.
+pub(crate) fn latest_receiver(
+    view: u32,
+    projection: [u32; engine::shadow_constants::BLOCK_WORDS],
+    kind: MapKind,
+) -> Option<native_render::shadow_gpu::SampledMap> {
+    let term = LATEST.lock().ok()?.clone()?;
+    if term.view != view || term.projection != projection || term.kind != kind {
+        return None;
+    }
+    term.sampled()
+}
+
 struct Glue<B: d3d::backend::Backend> {
     device: d3d::abi::SharedDevice<B>,
     gate: Arc<Gate>,
@@ -118,8 +134,117 @@ pub(crate) fn expected_targets(mem: &dyn GuestMemory, target: u32) -> Option<[u3
     }
 }
 
+/// The level-0 header of one filter target.
+pub(crate) fn target_header(mem: &dyn GuestMemory, index: u32) -> Option<u32> {
+    let descriptor = engine::shadow_constants::global::TARGETS
+        .checked_add(index.checked_mul(engine::shadow_constants::global::TARGET_STRIDE)?)?;
+    if mem.u32(descriptor + 0x88).ok()? == 0
+        || mem.u8(descriptor + 0x95).ok()? != 0
+        || mem.i32(descriptor + 0x78).ok()? <= 0
+    {
+        return None;
+    }
+    Some(descriptor + 0x18)
+}
+
+struct ShadowFilterPass {
+    filter: frame_scene::ShadowFilter,
+    gpu: SharedGpu,
+}
+
+impl ShadowFilterPass {
+    fn prepare(
+        &self,
+        t: &d3d::backend::ExternalAttachments,
+    ) -> Result<d3d::backend::ExternalEncoded, &'static str> {
+        let slots = [0, 1].map(|n| {
+            t.slots
+                .get(n)
+                .and_then(Option::as_ref)
+                .map(native_render::glow::PostSurface::from)
+        });
+        let [Some(mask), Some(other)] = slots else {
+            return Err("shadow filter target is unavailable");
+        };
+        let mut gpu = self.gpu.lock().map_err(|_| "shadow filter GPU poisoned")?;
+        native_render::shadow_filter_gpu::prepare(
+            &t.device,
+            &t.queue,
+            &t.uploads,
+            gpu.filter(),
+            &self.filter,
+            [mask, other],
+        )
+    }
+}
+
+impl d3d::ExternalPass for ShadowFilterPass {
+    fn colour_only(&self) -> bool {
+        true
+    }
+
+    fn uses_validated_resources(&self) -> bool {
+        true
+    }
+
+    fn writes(&self) -> d3d::ExternalWrites {
+        d3d::ExternalWrites {
+            color: true,
+            depth_stencil: false,
+        }
+    }
+
+    fn record_encoded(
+        &mut self,
+        t: &d3d::backend::ExternalAttachments,
+        _: d3d::ExternalPassRequest,
+    ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
+        Some(self.prepare(t))
+    }
+}
+
+impl d3d::SwallowPass for ShadowFilterPass {
+    fn validate(
+        &self,
+        originals: &[d3d::SwallowOriginal<'_>],
+        slots: &[Option<d3d::SwallowTarget>],
+    ) -> Result<(), String> {
+        if originals.len() != self.filter.draws.len() {
+            return Err("shadow filter draw count differs".into());
+        }
+        for (original, draw) in originals.iter().zip(&self.filter.draws) {
+            if !crate::native_post_glue::matches_colour_state(
+                original.draw,
+                None,
+                wgpu::ColorWrites::ALL,
+                None,
+            ) {
+                return Err("shadow filter colour state differs".into());
+            }
+            let slot = match draw.source {
+                10 => 0,
+                11 => 1,
+                _ => return Err("shadow filter source is not target 10 or 11".into()),
+            };
+            for stage in 0..4 {
+                if original.sampled[stage] {
+                    crate::native_post_glue::check_bound_source(
+                        original,
+                        stage,
+                        Some(slot),
+                        slots,
+                        false,
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 impl<B: d3d::backend::Backend + 'static> Host for Glue<B> {
     fn parent(&self, site: Option<Site>, identity: Option<[u32; 2]>) {
+        *LATEST.lock().unwrap_or_else(|e| e.into_inner()) = None;
         let mut state = self.gate.state.lock().unwrap_or_else(|e| e.into_inner());
         let identity = if site == Some(Site::AdditionalCaster) && state.owner == Some(Site::Light) {
             state.identity
@@ -152,6 +277,7 @@ impl<B: d3d::backend::Backend + 'static> Host for Glue<B> {
     }
 
     fn begin(&self, mem: &mut dyn GuestMemory, layer: Layer) {
+        *LATEST.lock().unwrap_or_else(|e| e.into_inner()) = None;
         let mut d = self.device.lock().unwrap_or_else(|e| e.into_inner());
         let drained = matches!(d.begin_external_boundary(&mut DeviceMemory(mem)), Ok(true));
         let frame = crate::d3d_diag::presents() + 1;
@@ -249,21 +375,82 @@ impl<B: d3d::backend::Backend + 'static> Host for Glue<B> {
                 }
             }
             drop(d);
+            let term = ReceiverTerm {
+                frame,
+                view: call.layer.view,
+                generation: source.seq,
+                site: source.layer.site,
+                identity: source.identity,
+                projection: source.layer.projection,
+                kind: source.kind,
+                texture_header: source.header,
+                output: source.output.clone(),
+            };
+            *LATEST.lock().unwrap_or_else(|e| e.into_inner()) = Some(term.clone());
             let observer = RECEIVER.lock().unwrap_or_else(|e| e.into_inner()).clone();
             if let Some(observe) = observer {
-                observe(ReceiverTerm {
-                    frame,
-                    view: call.layer.view,
-                    generation: source.seq,
-                    site: source.layer.site,
-                    identity: source.identity,
-                    projection: source.layer.projection,
-                    kind: source.kind,
-                    texture_header: source.header,
-                    output: source.output.clone(),
-                });
+                observe(term);
             }
         }
+    }
+
+    fn filter(
+        &self,
+        mem: &mut dyn GuestMemory,
+        esp: u32,
+        filter: frame_scene::ShadowFilter,
+    ) -> Result<(), &'static str> {
+        let gpu = self.gate.gpu.clone().ok_or("device")?;
+        let headers = vec![target_header(mem, 10), target_header(mem, 11)];
+        if headers.iter().any(Option::is_none) {
+            return Err("target");
+        }
+        let targets = filter
+            .draws
+            .iter()
+            .map(|draw| match draw.dest {
+                10 => 0,
+                11 => 1,
+                _ => u8::MAX,
+            })
+            .collect::<Vec<_>>();
+        if targets.contains(&u8::MAX) {
+            return Err("target");
+        }
+        let mut device = self.device.lock().map_err(|_| "device")?;
+        device
+            .swallow(
+                &mut DeviceMemory(mem),
+                d3d::Swallow {
+                    call: Some(d3d::SwallowCall {
+                        entry: engine::points::OBJECT_SHADOW_FILTER.base,
+                        esp,
+                        ret: 0x0003_29de,
+                    }),
+                    end_returns: Vec::new(),
+                    headers,
+                    targets,
+                    primitive: gfx::vertex::PrimitiveType::TriangleFan,
+                    vertices: 4,
+                    shapes: Vec::new(),
+                    drop: true,
+                    pass: Box::new(ShadowFilterPass { filter, gpu }),
+                },
+            )
+            .map_err(|_| "device")?
+            .then_some(())
+            .ok_or("device")
+    }
+
+    fn finish_filter(&self, mem: &mut dyn GuestMemory, esp: u32) -> Result<(), &'static str> {
+        let mut device = self.device.lock().map_err(|_| "device")?;
+        device
+            .finish_swallow(
+                &mut DeviceMemory(mem),
+                engine::points::OBJECT_SHADOW_FILTER.base,
+                esp,
+            )
+            .map_err(|_| "device")
     }
 
     fn draw_alone(
