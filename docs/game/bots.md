@@ -3678,9 +3678,10 @@ its class 4.
    the xuid, then the machine id's last four), peer, user 0, controller 0
    (never -1: the diff skips -1), both configurations, `+0x138` 0; the
    peer's slot and player count; mask and count; both counters + 1.
-3. **Configuration**: the host's own player's (`+0xd4`, `0x90` bytes)
-   with the phantom's name (UTF-16 at `+0`, up to 15) and its team at
-   `+0x7c` when it has one.
+3. **Configuration**: a fresh one with the phantom's name and look, its
+   team at `+0x7c` (the host's when it has none) and the host's level at
+   `+0x81`; no handicap and nothing else of the host's profile
+   (`bot_config`; "A phantom's player configuration" below).
 4. The game does the rest over the next frames: machine, player, slot.
 5. **Actions.** In a hosted game the simulation gather (`0x69137` →
    `0x84990(slot, out)`) samples the phantom's pad once per simulation
@@ -3698,6 +3699,61 @@ its class 4.
    indices (`+0x40`, `+0x72d8`, `+0x50`) down one, the peers and channel
    entries above it moved down, the last cleared, `S+0x54` - 1, counters
    + 1. Not done: its tail call `0x5a2e0`. Phantoms leave last first.
+
+**A phantom's player configuration** (traced 2026-11-23 from the
+disassembly, `h2 disasm`; tests only, no run yet). Each console builds
+its own players' requested configuration (`0x18fd94`, from slot
+`0x54e8e0 + 0xc70 * port`): `0x1537f0` clears the `0x90` bytes, then the
+profile fills its fields. A phantom's is built the same way from a fresh
+start (`bot_config`), so nothing of the host's profile reaches a bot.
+Live telemetry showed why: a host who set a handicap and then removed it
+left all seven Clankers with it (they copied the host's whole `0x90`
+bytes), and they finished with 2 kills to the host's 24.
+
+| Bytes | Field | Source on a console (`0x18fd94`) | A phantom's |
+|---|---|---|---|
+| `+0x00..+0x40` | name, 32 UTF-16 units | slot `+0xc1c` | the gear mark and its gamertag |
+| `+0x40..+0x48` | look: four colours, model (`+0x44`, -1..3), emblem foreground and background, emblem flags; checked by `0x153750` | profile appearance, slot `+0x130` | `guest::bot_look` |
+| `+0x48..+0x50` | the rest of the profile's 16-byte appearance block; no reader found | slot `+0x138` | 0 |
+| `+0x50..+0x70`, `+0x70..+0x7c` | the account's Xbox Live team (clan), likely: 32 bytes and 12 bytes of a record an XOnline task fills (slot `+0x4ec` and `+0x4e0`, read through `0xabdb0`); 0 without one | slot `+0x4ec`, `+0x4e0` | 0 |
+| `+0x7c` | team, -1 none (`0x14bc80` sets -1 for a team outside the game's team mask) | slot `+0x1fc`, clamped to 0..16 | its own, else the host's |
+| `+0x7d` | **handicap**, 0 none to 3 | slot `+0x200`, set by the handicap screen's handler `0x2b4c45` (items 0..3, then `0x18fe9e` rebuilds the configuration) | 0 |
+| `+0x7e`, `+0x7f` | host-side bytes, -1 unset, else clamped 0..0x7f | not set | -1 |
+| `+0x80` | a flag `0x225880` sets on the console's own player after repeated game events (a count against a threshold in the network configuration, `[0x4cf754]`) and `0x225730` clears as it decays | slot `+0x46c` | 0 |
+| `+0x81` | level, clamped to 0..7 (`0x14bc80`) | slot `+0x204` | the host's |
+| `+0x84..+0x90` | host-side fields (an index 0..15 at `+0x84`, two `i16` at `+0x88` and `+0x8a`, a dword at `+0x8c`), all -1 when `+0x84` is out of range (`0x14bc80`) | not set | -1 |
+
+- **The handicap.** `0x1588b0(player, mode)` returns, in a
+  multiplayer game (mode 2), the player's shield scale: the variant's
+  shield setting (game options `+0x1c4`: 1, 0 or 3) times the active
+  configuration's handicap factor (player `+0x44 + 0x7d` = `+0xc1`,
+  through the table at `0x15897c`): 1, 0.75 (`[0x45dc2c]`), 0.5
+  (`[0x45dbbc]`), 0.25 (`[0x45dc20]`). The spawn sets the unit's shield
+  vitality (`+0xf0`) to it (`0x14cc79`), the shield update compares the
+  unit's shields with it (`0xd60c5`, `0xbcec6`), and a change of handicap
+  in `0x14be90` calls `0x1583d0`, which clamps the shields down to a
+  higher handicap's scale at once or starts a recharge for a lower one.
+  These four are `0x1588b0`'s only callers; no reader of the handicap that
+  scales damage dealt was found.
+- **What stays the host's.** Only the level: the matchmaking start
+  (`0x66050`) refuses a player whose level byte is below the hopper's
+  (`+0x5e4`), and the host's passes it. The team is the host's only until
+  the lobby's balancing gives the phantom one. Everything a lobby or a
+  game checks of a joining player is otherwise in its peer properties,
+  which stay the host's (`sync_props`).
+- **Kept none.** Each frame a seated phantom whose requested or
+  effective handicap is not 0 (a seat taken back from an older run, a
+  reclaimed peer) has both put back to 0, nothing else of the record
+  touched (`write_no_handicap`); it is a repair like a name the host
+  rebuilt, counted in `bots.stats` as `handicap_writes`. The host
+  changing its own handicap later changes nothing of a phantom's.
+- **Telemetry.** Live telemetry and the match summary show no handicap
+  per player, so there is nothing of a bot's to hide there.
+
+Tests: `phantom::session::tests`
+(`a_hosts_handicap_and_profile_never_reach_a_bots_configuration`,
+`lobby::a_hosts_handicap_is_never_a_phantoms_then_or_later`,
+`lobby::a_seated_phantoms_handicap_goes_back_to_none`).
 
 **Phantoms in the pregame lobby** (traced 2026-11-19 from the
 disassembly, built; no run yet). The user's ask: "it won't let me add 7
@@ -3743,12 +3799,14 @@ ran. They now join the lobby as a real peer does.
   player's effective configuration from its requested one (`0x65cb0`,
   from `0x65770`) whenever the lobby's variant (`S+0x4db0`, a `0x130`-byte
   `variants::record`) or the membership number changes: the name stays the
-  effective one once set (made unique by `0x7f660` the first time), the
-  look (`+0x40..+0x7b`, `+0x7d..+0x81`) is the requested one, and the team
-  (`+0x7c`) is the requested one clamped to 0..7 in a team game
-  (`variant +0x48` bit 0) or the player's slot in free for all, when
-  `[S+0x14]` is 1; otherwise the effective team and handicap stay. So a
-  phantom's requested team is what the lobby shows; both are written.
+  effective one once set (made unique by `0x7f660` the first time),
+  `+0x40..+0x7b` and `+0x7d..+0x81` (look, Live team, handicap, level)
+  are the requested ones, and the team (`+0x7c`) is the requested one
+  clamped to 0..7 in a team game (`variant +0x48` bit 0) or the player's
+  slot in free for all, with `+0x84..+0x90` the requested ones, when
+  `[S+0x14]` is 1; otherwise the effective team and `+0x84..+0x90` stay.
+  So a phantom's requested team is what the lobby shows; both are
+  written.
 - **What the lobby's start reads of each peer.** The start state's map
   check (`0x652a0`) skips status 0, but the countdown's end (`0x6e410`,
   life-cycle state 1 via `0x6e1e0`'s table at `0x6e2e0`) wants every
@@ -3766,9 +3824,9 @@ ran. They now join the lobby as a real peer does.
   state 5, distributed (protocol 2: System Link or Xbox Live; Split
   Screen's session is protocol 0) and this console's (`+0x40` =
   `+0x72d8`), with no game running (`host_lobby`): steps 1 and 2 above,
-  with the configuration from this console's first session player's
-  requested one (`config_in`; no player datum exists before the first
-  game), then the properties (`sync_props`): this console's own `0xc8`
+  with the team and level read from this console's first session
+  player's requested configuration (`config_in`; no player datum exists
+  before the first game), then the properties (`sync_props`): this console's own `0xc8`
   bytes with the phantom's gamertag in both names, `+0x24` 1, both
   counters + 1, kept equal every frame (a map load on the host is the
   phantom's too). The join line is `bots: phantom G joins (peer N, in the
@@ -3782,7 +3840,7 @@ ran. They now join the lobby as a real peer does.
   datums only during a hosted game.
 - **One bump per frame.** A frame's repairs of seated phantoms (their
   properties following the host's, a name or look the host rebuilt, a
-  team move) move the membership counters once, after all of them, not
+  handicap put back to none, a team move) move the membership counters once, after all of them, not
   once per phantom, so the game rebuilds what depends on the membership
   once (`Phantoms::tick`, `Repairs`). `bots.stats` counts the frames that
   wrote and each kind of repair ([agent-api.md](../runtime/agent-api.md#bot-combat)).

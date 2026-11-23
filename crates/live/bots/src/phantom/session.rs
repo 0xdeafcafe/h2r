@@ -135,6 +135,17 @@ pub mod at {
     pub const CONFIG_NAME_UNITS: usize = engine::view::players::NAME_UNITS;
     /// The retail profile appearance inside a player configuration (0x18fd94).
     pub const CONFIG_LOOK: usize = 0x40;
+    /// The configuration's handicap: 0 none, 1 to 3 the shields scaled to
+    /// 0.75, 0.5 and 0.25 (`0x1588b0`'s table at `0x15897c`). The local
+    /// builder `0x18fd94` takes it from slot `+0x200`, which the handicap
+    /// screen sets (`0x2b4c45`); docs/game/bots.md §5.1, "A phantom's
+    /// player configuration".
+    pub const CONFIG_HANDICAP: usize = 0x7d;
+    pub const HANDICAP_NONE: u8 = 0;
+    /// The level byte (`0x18fd94` takes it from slot `+0x204`, `0x14bc80`
+    /// clamps it to 0..7); the matchmaking start (`0x66050`) wants each
+    /// player's at least the hopper's.
+    pub const CONFIG_LEVEL: usize = 0x81;
     /// Unit `+0x212`: the current weapon index.
     pub const UNIT_WEAPON: u32 = 0x212;
 }
@@ -661,10 +672,10 @@ fn local_player(m: &dyn GuestMemory, s: u32) -> R<Option<u32>> {
     Ok(None)
 }
 
-/// A phantom's configuration in session `s`: this console's first session
-/// player's requested one (there in the lobby, where no player datum may
-/// exist yet), else the player datum's ([`config`]), with the phantom's
-/// name and its team when it has one.
+/// A phantom's configuration in session `s`: [`bot_config`] with the team
+/// and level of this console's first session player's requested one
+/// (there in the lobby, where no player datum may exist yet), else of the
+/// player datum's ([`config`]). `team` overrides the host's.
 pub fn config_in(
     m: &dyn GuestMemory,
     s: u32,
@@ -674,22 +685,51 @@ pub fn config_in(
     let Some(slot) = local_player(m, s)? else {
         return config(m, name, team);
     };
-    let mut c = [0; CONFIG_SIZE];
-    m.read(player(s, slot) + P_REQUESTED, &mut c)?;
-    set_identity(&mut c, name);
-    if let Some(t) = team {
-        c[CONFIG_TEAM] = t;
-    }
-    Ok(Some(c))
+    let mut host = [0; CONFIG_SIZE];
+    m.read(player(s, slot) + P_REQUESTED, &mut host)?;
+    Ok(Some(from_host(&host, name, team)))
 }
 
 /// A sim with no local profile starts the requested configuration with its
 /// own marked name and appearance. Team −1 is unaffiliated in free-for-all.
 pub(super) fn playerless_config(name: &str, team: Option<u8>) -> [u8; CONFIG_SIZE] {
-    let mut config = [0; CONFIG_SIZE];
-    set_identity(&mut config, name);
-    config[CONFIG_TEAM] = team.unwrap_or(u8::MAX);
-    config
+    bot_config(name, team.unwrap_or(u8::MAX), 0)
+}
+
+/// A configuration as `0x1537f0` clears one before a console's profile
+/// fills it (`0x18fd94`): zero, and -1 in `+0x7e`, `+0x7f` and
+/// `+0x84..+0x90`, the fields the host's configuration pass (`0x65cb0`)
+/// keeps or assigns. A real client's requested configuration has these.
+pub fn fresh_config() -> [u8; CONFIG_SIZE] {
+    let mut c = [0; CONFIG_SIZE];
+    c[0x7e] = 0xff;
+    c[0x7f] = 0xff;
+    c[0x84..].fill(0xff);
+    c
+}
+
+/// A phantom's requested configuration, built as a console with a fresh
+/// profile builds its own (`0x18fd94`): [`fresh_config`], the phantom's
+/// name and look, `team`, no handicap, no Xbox Live team (`+0x50..+0x7c`
+/// zero), the rest of the appearance block (`+0x48..+0x50`) and `+0x80`
+/// zero. Only `level` (`+0x81`) is the host's: the matchmaking start
+/// (`0x66050`) refuses a player whose level is below the hopper's, and the
+/// host's passes it. Nothing else of the host's profile reaches a bot, so
+/// a host's handicap, then or later, is never a bot's
+/// (docs/game/bots.md §5.1, "A phantom's player configuration").
+pub fn bot_config(name: &str, team: u8, level: u8) -> [u8; CONFIG_SIZE] {
+    let mut c = fresh_config();
+    set_identity(&mut c, name);
+    c[CONFIG_TEAM] = team;
+    c[CONFIG_HANDICAP] = HANDICAP_NONE;
+    c[CONFIG_LEVEL] = level;
+    c
+}
+
+/// [`bot_config`] with the host configuration `host`'s team (unless
+/// `team` names one) and level.
+fn from_host(host: &[u8; CONFIG_SIZE], name: &str, team: Option<u8>) -> [u8; CONFIG_SIZE] {
+    bot_config(name, team.unwrap_or(host[CONFIG_TEAM]), host[CONFIG_LEVEL])
 }
 
 /// Whether the lobby's variant is a team game (`+0x4db0 + 0x48` bit 0).
@@ -991,23 +1031,20 @@ pub fn player_id(xuid: u64, mac: [u8; 6]) -> [u8; 12] {
     id
 }
 
-/// A phantom's configuration: the host's own player's (`+0xd4` of the
-/// first local player) with the phantom's name ([`marked_name`]: the bot
-/// mark, then `name`), and its team when it has one (else the host's:
-/// balancing waits for the lobby teams).
+/// A phantom's configuration in a running game: [`bot_config`] with the
+/// phantom's name ([`marked_name`]: the bot mark, then `name`), its team
+/// when it has one (else the host's: balancing waits for the lobby teams)
+/// and the host's level, both read from the host's own player (`+0xd4` of
+/// the first local player). `None` with no such player.
 pub fn config(m: &dyn GuestMemory, name: &str, team: Option<u8>) -> R<Option<[u8; CONFIG_SIZE]>> {
     let Some(array) = engine::view::players::array(m)? else {
         return Ok(None);
     };
     for (_, p) in array.live(m, 16)? {
         if p.listed(m)? && p.local_user(m)? >= 0 {
-            let mut c = [0; CONFIG_SIZE];
-            m.read(p.addr + PLAYER_CONFIG, &mut c)?;
-            set_identity(&mut c, name);
-            if let Some(t) = team {
-                c[CONFIG_TEAM] = t;
-            }
-            return Ok(Some(c));
+            let mut host = [0; CONFIG_SIZE];
+            m.read(p.addr + PLAYER_CONFIG, &mut host)?;
+            return Ok(Some(from_host(&host, name, team)));
         }
     }
     Ok(None)
@@ -1071,20 +1108,15 @@ fn set_identity(c: &mut [u8; CONFIG_SIZE], name: &str) {
 
 // The host can rebuild a player's effective configuration while the phantom
 // is seated. A reclaimed peer can also carry an earlier profile. Publish the
-// identity in both copies without disturbing team, handicap or ready state.
-// Returns whether it wrote; the caller bumps the membership once per frame
-// ([`bump`]).
+// identity in both copies without disturbing team or ready state; the
+// handicap has its own repair ([`write_no_handicap`]). Returns whether it
+// wrote; the caller bumps the membership once per frame ([`bump`]).
 pub(super) fn write_identity(
     m: &mut dyn GuestMemory, s: u32, p: u32, identity: &PeerIdentity,
 ) -> R<bool> {
-    let slot = m.u32(peer(s, p) + PEER_SLOTS)?;
-    if slot >= MAX || m.u32(s + PLAYER_MASK)? & (1 << slot) == 0 {
+    let Some(a) = seated_player(m, s, p)? else {
         return Ok(false);
-    }
-    let a = player(s, slot);
-    if m.u32(a + P_PEER)? != p {
-        return Ok(false);
-    }
+    };
     let want = &identity.player;
     let mut have = [0; CONFIG_LOOK + 8];
     let mut changed = false;
@@ -1092,6 +1124,38 @@ pub(super) fn write_identity(
         m.read(at, &mut have)?;
         if &have != want {
             m.write(at, want)?;
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
+/// Peer `p`'s first session player, when its slot is in use and the
+/// player names `p` as its peer.
+fn seated_player(m: &dyn GuestMemory, s: u32, p: u32) -> R<Option<u32>> {
+    let slot = m.u32(peer(s, p) + PEER_SLOTS)?;
+    if slot >= MAX || m.u32(s + PLAYER_MASK)? & (1 << slot) == 0 {
+        return Ok(None);
+    }
+    let a = player(s, slot);
+    Ok((m.u32(a + P_PEER)? == p).then_some(a))
+}
+
+// A seat taken back from an older run, or a reclaimed peer, can carry a
+// handicap a bot never asks for. Puts both copies back to none (the host's
+// pass `0x65cb0` copies the requested handicap into the effective one); the
+// team, the rest of the configuration and `+0x138` stay. Returns whether it
+// wrote; the caller bumps the membership once per frame ([`bump`]), and the
+// game then rescales the unit's shields (`0x14be90` → `0x1583d0`).
+pub(super) fn write_no_handicap(m: &mut dyn GuestMemory, s: u32, p: u32) -> R<bool> {
+    let Some(a) = seated_player(m, s, p)? else {
+        return Ok(false);
+    };
+    let mut changed = false;
+    for at in [a + P_REQUESTED, a + P_EFFECTIVE] {
+        let h = at + CONFIG_HANDICAP as u32;
+        if m.u8(h)? != HANDICAP_NONE {
+            m.set_u8(h, HANDICAP_NONE)?;
             changed = true;
         }
     }

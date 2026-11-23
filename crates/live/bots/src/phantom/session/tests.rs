@@ -331,7 +331,34 @@ fn removing_a_peer_moves_the_later_ones_down() {
 }
 
 #[test]
-fn the_configuration_is_the_hosts_with_a_name_and_team() {
+fn a_hosts_handicap_and_profile_never_reach_a_bots_configuration() {
+    let mut g = hosted();
+    let host = PLAYERS_DATA + PLAYER_CONFIG;
+    g.put_u8(host + CONFIG_HANDICAP as u32, 3)
+        .put_u8(host + CONFIG_LEVEL as u32, 5);
+    let c = config(&g, "Bolt", Some(2)).unwrap().unwrap();
+    assert_eq!(c[CONFIG_HANDICAP], HANDICAP_NONE, "the host's handicap is not the bot's");
+    assert_eq!(c[CONFIG_LEVEL], 5, "the host's level, which the matchmaking start checks");
+    assert_eq!(c[CONFIG_TEAM], 2);
+    assert!(
+        c[0x48..0x7c].iter().all(|&b| b == 0),
+        "none of the host's appearance block or Xbox Live team: {:x?}",
+        &c[0x48..0x7c]
+    );
+    assert_eq!(c[0x7e..0x84], [0xff, 0xff, 0, 5, 0, 0], "0x1537f0's fresh values");
+    assert!(c[0x84..].iter().all(|&b| b == 0xff), "the host-assigned fields unset");
+    assert_eq!(c, bot_config("Bolt", 2, 5));
+    // Whatever the host's handicap, the bot's is none.
+    for h in 0..4 {
+        g.put_u8(host + CONFIG_HANDICAP as u32, h);
+        assert_eq!(config(&g, "Bolt", None).unwrap().unwrap()[CONFIG_HANDICAP], 0);
+    }
+    assert_eq!(playerless_config("Bolt", Some(1))[CONFIG_HANDICAP], 0);
+    assert_eq!(fresh_config()[CONFIG_HANDICAP], HANDICAP_NONE);
+}
+
+#[test]
+fn the_configuration_has_the_bots_name_and_the_hosts_team() {
     let g = hosted();
     let c = config(&g, "Bolt", Some(2)).unwrap().unwrap();
     // The bot mark (U+2699), a space, the name.
@@ -986,6 +1013,96 @@ mod lobby {
         g.put_u32(S + PEERS + PEER_SLOTS, u32::MAX);
         let c = config_in(&g, S, "X", None).unwrap().unwrap();
         assert_eq!(c[0x40..0x48], crate::guest::bot_look("X"));
+    }
+
+    /// The session player of the phantom `handle`.
+    fn seat_of(g: &FakeGuest, handle: crate::phantom::PhantomHandle) -> u32 {
+        let p = find_peer(g, S, machine_id(handle)).unwrap().unwrap();
+        player(S, g.u32(peer(S, p) + PEER_SLOTS).unwrap())
+    }
+
+    fn both_configs(g: &FakeGuest, a: u32) -> [[u8; CONFIG_SIZE]; 2] {
+        let mut out = [[0; CONFIG_SIZE]; 2];
+        g.read(a + P_REQUESTED, &mut out[0]).unwrap();
+        g.read(a + P_EFFECTIVE, &mut out[1]).unwrap();
+        out
+    }
+
+    fn set_handicap(g: &mut FakeGuest, a: u32, h: u8) {
+        for copy in [P_REQUESTED, P_EFFECTIVE] {
+            g.put_u8(a + copy + CONFIG_HANDICAP as u32, h);
+        }
+    }
+
+    #[test]
+    fn a_hosts_handicap_is_never_a_phantoms_then_or_later() {
+        let ph = Phantoms::default();
+        let bot = ph.add(who(1, "Seat 1"), None, idle()).unwrap();
+        let mut g = lobby();
+        let host = S + PLAYERS;
+        set_handicap(&mut g, host, 3);
+        ph.tick(&mut g, 0).unwrap();
+        ph.tick(&mut g, 1).unwrap();
+        let a = seat_of(&g, bot);
+        let seated = both_configs(&g, a);
+        for c in &seated {
+            assert_eq!(c[CONFIG_HANDICAP], HANDICAP_NONE, "joined with the host's handicap");
+        }
+        let writes = ph.maintenance().handicap_writes;
+
+        // The host turns its handicap off, then picks another: the
+        // phantom's configuration never follows.
+        let mut frame = 2;
+        for h in [0, 2, 1] {
+            set_handicap(&mut g, host, h);
+            ph.tick(&mut g, frame).unwrap();
+            frame += 1;
+            assert_eq!(both_configs(&g, a), seated, "host handicap {h}");
+        }
+        assert_eq!(ph.maintenance().handicap_writes, writes, "nothing of the bot's to repair");
+    }
+
+    #[test]
+    fn a_seated_phantoms_handicap_goes_back_to_none() {
+        let ph = Phantoms::default();
+        let bot = ph.add(who(1, "Seat 1"), None, idle()).unwrap();
+        let mut g = lobby();
+        ph.tick(&mut g, 0).unwrap();
+        ph.tick(&mut g, 1).unwrap();
+        let a = seat_of(&g, bot);
+        // An older seat or a reclaimed peer carries a handicap, on a team
+        // and with its `+0x138` set.
+        set_handicap(&mut g, a, 3);
+        for copy in [P_REQUESTED, P_EFFECTIVE] {
+            g.put_u8(a + copy + CONFIG_TEAM as u32, 1);
+        }
+        g.put_u32(a + P_138, 1);
+        let mut want = both_configs(&g, a);
+        for c in &mut want {
+            c[CONFIG_HANDICAP] = HANDICAP_NONE;
+        }
+        let before = ph.maintenance();
+        let update = g.u32(S + UPDATE).unwrap();
+
+        ph.tick(&mut g, 2).unwrap();
+        assert_eq!(both_configs(&g, a), want, "only the handicap changes");
+        assert_eq!(g.u32(a + P_138).unwrap(), 1);
+        let after = ph.maintenance();
+        assert_eq!(after.handicap_writes - before.handicap_writes, 1);
+        assert_eq!(g.u32(S + UPDATE).unwrap(), update.wrapping_add(1), "one bump");
+
+        // Repaired: the next frames write nothing.
+        for frame in 3..6 {
+            assert!(ph.tick(&mut g, frame).unwrap().is_empty());
+        }
+        assert_eq!(g.u32(S + UPDATE).unwrap(), update.wrapping_add(1));
+        assert_eq!(ph.maintenance().handicap_writes, after.handicap_writes);
+
+        // Only the effective copy (the host's pass kept an old one): put
+        // back too.
+        g.put_u8(a + P_EFFECTIVE + CONFIG_HANDICAP as u32, 2);
+        ph.tick(&mut g, 6).unwrap();
+        assert_eq!(both_configs(&g, a), want);
     }
 
     #[test]

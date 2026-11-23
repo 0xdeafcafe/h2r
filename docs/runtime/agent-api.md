@@ -3453,7 +3453,9 @@ membership, which makes the game rebuild what depends on it.
 counters: a join, a removal, or a repair. One frame's repairs share one
 bump. `props_writes` counts phantom peer properties rewritten to follow
 this console's. `identity_writes` counts phantom names or looks written
-back into the session's player records. `team_moves` counts team
+back into the session's player records. `handicap_writes` counts phantom
+handicaps put back to none there ([bots.md](../game/bots.md), "A phantom's
+player configuration"). `team_moves` counts team
 rebalance moves. `props_diff_chunks` is a mask of the 8-byte chunks of
 the `0xc8`-byte peer properties that differed on any rewrite: bit `i`
 covers properties bytes `8i` to `8i + 7`, so bit 12 is the map status at
