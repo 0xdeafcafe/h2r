@@ -8,7 +8,12 @@
 //!   convex faces, each drawn with one of two surfaces; the same faces are
 //!   the render triangles and the collision polygons.
 //! - [`texture`]: the textures, drawn in code: the floor grid with its
-//!   distance labels and pads, and the ruler.
+//!   distance labels and pads, the ruler and the flat lightmap page.
+//! - [`kit`]: the stage's own tags added to a tag set (bitmaps, shaders,
+//!   the structure BSP and lightmap), and what they take from the base.
+//! - [`map`](self::map): the map: the base's scenario made the stage's, a `fresh`
+//!   build over a `TagSource` (the disc map or the tag tree), the report
+//!   and the package.
 //!
 //! No image, mesh or tag of the stage comes from a disc: the YAML is ours
 //! and the textures are drawn here. What the stage needs from the user's
@@ -16,10 +21,13 @@
 //! the map is built.
 #![forbid(unsafe_code)]
 
+pub mod kit;
 pub mod layout;
+pub mod map;
 pub mod mesh;
 pub mod texture;
 
+pub use self::map::{Base, Built, Project, build};
 pub use layout::{Layout, Player};
 
 /// The stage's build version: part of every build key. Bump it when the
@@ -28,6 +36,9 @@ pub const VERSION: u32 = 1;
 
 /// The layout shipped with the repository.
 pub const SOURCE: &str = include_str!("../../../../art/stage/stage.yaml");
+
+/// The stage's project shipped with the repository.
+pub const PROJECT: &str = include_str!("../../../../art/stage/project.toml");
 
 /// What can go wrong building the stage.
 #[derive(Debug, thiserror::Error)]
@@ -47,6 +58,19 @@ pub enum Error {
     /// A compiled collision BSP fails `collision_build::verify::check`.
     #[error("stage collision: {0}")]
     Verify(String),
+    /// The base map lacks something the stage takes from it, or holds it
+    /// in a form the stage cannot take.
+    #[error("stage base: {0}")]
+    Base(String),
+    /// A step of the map's build failed.
+    #[error("stage build: {0}")]
+    Build(String),
+    /// The project file is not as the stage needs it.
+    #[error("stage project: {0}")]
+    Project(String),
+    /// Reading the base's tags failed.
+    #[error("stage base: {0}")]
+    Repo(#[from] tags::repo::Error),
 }
 
 /// Result for the stage.

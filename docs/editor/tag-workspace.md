@@ -127,7 +127,7 @@ A project is a small file naming one map to build:
 name = "stage"
 mode = "fresh"                    # or "onto"
 base = "lockout"                  # the disc map: variants, globals, header template
-scenario = 'scenarios\h2recomp\stage\stage'
+scenario = 'scenarios\multi\stage\stage'
 kits = ["stage", "pogo"]          # ContentKit names, in order
 edits = ["assets/tag-edits/pogo-tuning.yaml"]
 output = "package"                # a map package under <data>/maps/

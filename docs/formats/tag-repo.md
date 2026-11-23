@@ -214,6 +214,12 @@ text, shared-cache pointers by place) and every local raw resource byte for
 byte (the disc's length, read at the new pointer). A tag with losses is
 compared without its loss lines (both sides lose the same fields).
 
+**A project** (`h2 tags build --project art/stage/project.toml [--disc
+ISO | --repo DIR] [--data DIR]`): the map a project file names, built
+`fresh` over its base map read from the disc or from an extracted tree,
+and written as a map package. The one project it builds is the content
+stage (`stage_kit::map`, [content-stage.md](../editor/content-stage.md)).
+
 ## Proof
 
 ```sh

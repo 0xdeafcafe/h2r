@@ -236,6 +236,9 @@ fn extract(args: &[String]) -> Result<()> {
 }
 
 fn build(args: &[String]) -> Result<()> {
+    if args.iter().any(|a| a == "--project") {
+        return build_project(args);
+    }
     let mut positional = Vec::new();
     let mut out = None;
     let mut map = None;
@@ -449,6 +452,117 @@ fn build_onto(
     }
     if !c.differ.is_empty() || !c.missing.is_empty() {
         bail!("the rebuilt map differs from the disc's");
+    }
+    Ok(())
+}
+
+const PROJECT_USAGE: &str = "usage:
+  h2 tags build --project FILE [--disc ISO | --repo DIR] [--data DIR] [--out FILE.map] [--report FILE.json] [--force]
+      the map a project file names (art/stage/project.toml: the content
+      stage, docs/editor/content-stage.md), built fresh over its base map,
+      read from the disc (default: the default disc) or from a tag tree
+      `h2 tags extract` wrote (--repo); written as the map package
+      <data>/maps/<name>/ (default <data>: the user's data directory),
+      with --out also as a lone map and --report the build report";
+
+/// `--project`: the content stage over its base (`stage_kit::map`).
+fn build_project(args: &[String]) -> Result<()> {
+    let mut project = None;
+    let mut disc = None;
+    let mut repo_dir = None;
+    let mut data = None;
+    let mut out = None;
+    let mut report = None;
+    let mut force = false;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut path = |what: &str| -> Result<PathBuf> {
+            Ok(PathBuf::from(
+                it.next().with_context(|| format!("{a} needs {what}"))?,
+            ))
+        };
+        match a.as_str() {
+            "--project" => project = Some(path("a project file")?),
+            "--disc" => disc = Some(path("a disc")?),
+            "--repo" => repo_dir = Some(path("a tag tree")?),
+            "--data" => data = Some(path("a data directory")?),
+            "--out" => out = Some(path("a file")?),
+            "--report" => report = Some(path("a file")?),
+            "--force" => force = true,
+            "-h" | "--help" => {
+                println!("{PROJECT_USAGE}");
+                return Ok(());
+            }
+            a => bail!("unknown argument {a}\n{PROJECT_USAGE}"),
+        }
+    }
+    let project_path = project.context(format!("--project needs a file\n{PROJECT_USAGE}"))?;
+    if disc.is_some() && repo_dir.is_some() {
+        bail!("give --disc or --repo, not both\n{PROJECT_USAGE}");
+    }
+    let text = std::fs::read_to_string(&project_path)
+        .with_context(|| format!("reading {}", project_path.display()))?;
+    let project = stage_kit::map::Project::parse(&text)?;
+    let started = std::time::Instant::now();
+    let (built, base) = match repo_dir {
+        Some(dir) => {
+            let (base, mut repo) = stage_kit::map::Base::from_repo(&dir, &project.base)?;
+            (stage_kit::map::build(&mut repo, &base, &project)?, base)
+        }
+        None => {
+            let disc = disc.map(Ok).unwrap_or_else(super::default_disc)?;
+            let all = sources(std::slice::from_ref(&disc))?;
+            let src = all
+                .iter()
+                .find(|s| s.stem == project.base)
+                .with_context(|| format!("{}.map is not on {}", project.base, disc.display()))?;
+            let schema = Schema::builtin();
+            let mut sh = shared(schema, &all)?;
+            let mut ms = MapSource::new(schema, src.open()?, &mut sh)?;
+            let base = stage_kit::map::Base::from_map(&mut ms, &project.base)?;
+            (stage_kit::map::build(&mut ms, &base, &project)?, base)
+        }
+    };
+    let data = data.unwrap_or_else(content::store::default_data_root);
+    let package = stage_kit::map::package(&built, &project, &base, &data)?;
+    let write = |path: &Path, bytes: &[u8]| -> Result<PathBuf> {
+        let name = path
+            .file_name()
+            .context("an output names a file")?
+            .to_string_lossy()
+            .into_owned();
+        let dir = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        Ok(OutDir::new(dir, force)?.write(&[name], bytes)?)
+    };
+    if let Some(out) = &out {
+        println!("{}", write(out, &built.bytes)?.display());
+    }
+    if let Some(path) = &report {
+        let json = serde_json::to_vec_pretty(&built.report)?;
+        println!("{}", write(path, &json)?.display());
+    }
+    let r = &built.report;
+    println!(
+        "{}: {} over {} ({} bytes, {} tags, {} BSP region, tag memory {:#x} of {:#x}, key {}), {:.1?}",
+        package.display(),
+        project.scenario,
+        base.map,
+        r.file_size,
+        r.tags,
+        r.bsps,
+        r.memory_size,
+        r.memory_max,
+        &r.key[..16],
+        started.elapsed()
+    );
+    if let Some(why) = &r.gestalt_whole {
+        println!("    sound gestalt kept whole: {why}");
+    }
+    for gap in &r.scenario_edit.gaps {
+        println!("    base scenario: {gap}");
     }
     Ok(())
 }

@@ -7,6 +7,8 @@ The sources of the content stage, Studio's test map
 - `stage.yaml`: the layout. It sets the bays, the floor, the spawn, the
   subject pad, the numbered pads, the scale and movement references and
   the cameras. `stage_kit::layout` reads it and refuses overlaps.
+- `project.toml`: the tag project that builds the stage as a `fresh` map
+  over a base (`h2 tags build --project art/stage/project.toml`).
 
 Only our own sources live here. The geometry is made from the YAML and
 the textures are drawn in code (`stage_kit::texture`). The player's size,
