@@ -255,7 +255,10 @@ is copied without being inflated: a container writer given a mirror
 (`film::Writer::set_mirror`, `film::file::machine_mirror`) hands each chunk
 it stores to the film file's writer. `FilmWriter::fork` cuts a film of its
 own from a running one, with a new ID, every block so far and a copy of the
-open chunk, while the running film goes on. A tick's digest in a chunk is the low 16
+open chunk, while the running film goes on. `FilmActions` reads a film
+file's actions by tick, in any order, and `TrackReader::attach_film` gives a
+stats container's reader the film's actions in place of its own, checking
+each tick's digest against the film's low 16 bits. A tick's digest in a chunk is the low 16
 bits of its gameplay digest and the chunk's closing hash is the last
 tick's whole digest. A seat that joins, leaves or quits is a seat record on
 its tick. The recorder writes the file beside each sealed game's container

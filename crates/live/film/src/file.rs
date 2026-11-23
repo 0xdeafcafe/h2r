@@ -27,8 +27,8 @@
 //! tick's whole digest.
 use crate::{
     Entry, Header, Reader, Tag,
-    blam::{self, Event, MatchHeader, TrackReader},
-    columns::{ACTION_BYTES, CHUNK_TICKS, ChunkDecoder, ChunkEncoder, FRAME_CAP, SEATS},
+    blam::{self, Event, MatchHeader, SeatInput, TrackReader},
+    columns::{ACTION_BYTES, CHUNK_TICKS, ChunkDecoder, ChunkEncoder, FRAME_CAP, SEATS, WORDS},
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -521,6 +521,124 @@ pub fn carried(tag: Tag) -> bool {
         &tag,
         b"DATA" | b"BOOT" | b"MOVI" | b"TAPE" | b"PDEV" | b"BOTR" | b"HASH" | b"MARK"
     )
+}
+
+/// What a film file is read from.
+pub trait Source: Read + Seek + Send {}
+impl<T: Read + Seek + Send> Source for T {}
+
+type Rows = ([[u32; WORDS]; SEATS], [[u32; WORDS]; SEATS]);
+
+/// A film file's actions by tick, for a [`TrackReader`] that takes its
+/// inputs from the film ([`TrackReader::attach_film`]). Ticks are asked for
+/// in any order: a chunk is decoded from the nearest predictor state seen,
+/// and each chunk's closing state is kept as chunks are decoded.
+pub struct FilmActions {
+    reader: FilmReader<Box<dyn Source>>,
+    decoder: ChunkDecoder,
+    buf: Vec<u8>,
+    loaded: Option<usize>,
+    /// The decoder state before chunk i, once chunk i - 1 has been decoded.
+    starts: Vec<Option<Rows>>,
+}
+
+impl FilmActions {
+    pub fn open(path: &Path) -> Result<Self> {
+        let file = File::open(path).with_context(|| path.display().to_string())?;
+        Self::new(Box::new(file))
+    }
+
+    pub fn new(input: Box<dyn Source>) -> Result<Self> {
+        let reader = FilmReader::open(input)?;
+        let starts = vec![None; reader.chunk_count() + 1];
+        Ok(Self {
+            reader,
+            decoder: ChunkDecoder::new()?,
+            buf: Vec::new(),
+            loaded: None,
+            starts,
+        })
+    }
+
+    pub fn seed(&self) -> &Seed {
+        &self.reader.seed
+    }
+
+    pub fn length_ticks(&self) -> u64 {
+        self.reader.length_ticks
+    }
+
+    fn load(&mut self, k: usize) -> Result<()> {
+        if self.loaded == Some(k) {
+            return Ok(());
+        }
+        let from = if self.loaded.map(|l| l + 1) == Some(k) {
+            k
+        } else {
+            let j = (1..=k)
+                .rev()
+                .find(|&j| self.starts.get(j).is_some_and(Option::is_some))
+                .unwrap_or(0);
+            match self.starts.get(j).copied().flatten() {
+                Some((p1, p2)) if j > 0 => self.decoder.set_seat_rows(p1, p2),
+                _ => self.decoder.reset(),
+            }
+            j
+        };
+        self.loaded = None;
+        for i in from..=k {
+            self.reader.read_chunk(i, &mut self.decoder, &mut self.buf)?;
+            self.starts[i + 1] = Some(self.decoder.seat_rows());
+        }
+        self.loaded = Some(k);
+        Ok(())
+    }
+
+    /// Put the film's actions on `tick` in `inputs`. A seat's pad, which
+    /// the film does not carry, stays as `inputs` had it. If the stats
+    /// stream has the tick's gameplay digest, the film's low 16 bits must
+    /// agree with it.
+    pub fn fill(
+        &mut self,
+        tick: u64,
+        inputs: &mut Vec<SeatInput>,
+        digest: Option<u64>,
+    ) -> Result<()> {
+        ensure!(tick >= 1, "film ticks start at 1");
+        let k = ((tick - 1) / CHUNK_TICKS as u64) as usize;
+        let t = ((tick - 1) % CHUNK_TICKS as u64) as usize;
+        self.load(k)
+            .with_context(|| format!("film file has no chunk for tick {tick}"))?;
+        ensure!(
+            t < self.decoder.ticks(),
+            "film file ends before tick {tick}"
+        );
+        if let Some(digest) = digest
+            && self.decoder.flags(t) & TICK_DIGEST != 0
+        {
+            ensure!(
+                self.decoder.digest(t) == digest as u16,
+                "film file and stats stream disagree at tick {tick}"
+            );
+        }
+        let old = std::mem::take(inputs);
+        for seat in 0..SEATS {
+            let mut action = [0u8; ACTION_BYTES];
+            let present = self.decoder.action(t, seat, &mut action);
+            let pad = old
+                .iter()
+                .find(|input| usize::from(input.seat) == seat)
+                .and_then(|input| input.pad);
+            if present || pad.is_some() {
+                inputs.push(SeatInput {
+                    seat: seat as u8,
+                    pad,
+                    action: present.then_some(action),
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 fn seats_of(tick: &blam::Tick) -> [Option<[u8; ACTION_BYTES]>; SEATS] {

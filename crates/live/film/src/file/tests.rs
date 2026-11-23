@@ -404,3 +404,72 @@ fn a_seat_record_follows_the_last_tick_of_a_full_chunk() {
     r.read_chunk(0, &mut decoder, &mut Vec::new()).unwrap();
     assert_eq!(decoder.seat_records().count(), 1);
 }
+
+fn steps(track: &mut TrackReader<File>) -> Vec<Tick> {
+    std::iter::from_fn(|| track.step().unwrap()).collect()
+}
+
+#[test]
+fn a_track_reader_takes_its_actions_from_the_film_file() {
+    let dir = Temp::new();
+    let path = dir.0.join("match.h2film");
+    container(&path, 700);
+    write_beside(&path).unwrap();
+    let plain = steps(&mut TrackReader::open(&path).unwrap());
+    assert_eq!(plain.len(), 700);
+
+    let mut merged = TrackReader::open(&path).unwrap();
+    merged
+        .attach_film(FilmActions::open(&beside(&path)).unwrap())
+        .unwrap();
+    assert_eq!(steps(&mut merged), plain);
+
+    // Out of order: forward across chunks, back to an earlier one, and on.
+    let mut merged = TrackReader::open(&path).unwrap();
+    merged
+        .attach_film(FilmActions::open(&beside(&path)).unwrap())
+        .unwrap();
+    let mut seek = TrackReader::open(&path).unwrap();
+    for tick in [450u64, 100, 599, 255, 0, 300] {
+        merged.resume_after_tick(tick).unwrap();
+        seek.resume_after_tick(tick).unwrap();
+        let (a, b) = (merged.step().unwrap(), seek.step().unwrap());
+        assert_eq!(a, b, "after tick {tick}");
+        assert_eq!(a.map(|t| t.tick), Some(tick + 1));
+    }
+}
+
+#[test]
+fn a_film_file_that_disagrees_with_its_stats_stream_is_refused() {
+    let dir = Temp::new();
+    let path = dir.0.join("match.h2film");
+    container(&path, 100);
+    // The right actions with a wrong digest on tick 30.
+    let mut w = FilmWriter::new(File::create(beside(&path)).unwrap(), &seed(), 30).unwrap();
+    for tick in 1..=100u64 {
+        let digest = if tick == 30 { 1 } else { tick * 1_000_003 };
+        let flags = if tick % 30 == 0 { TICK_DIGEST } else { 0 };
+        w.push_tick(flags, digest, &seats(tick)).unwrap();
+    }
+    w.finish().unwrap();
+    let mut track = TrackReader::open(&path).unwrap();
+    track
+        .attach_film(FilmActions::open(&beside(&path)).unwrap())
+        .unwrap();
+    // A block is checked as it is read, so the error comes at or before
+    // the block that holds tick 30.
+    assert!((0..100).any(|_| track.step().is_err()));
+
+    // A film file of another film, or a shorter one, does not attach.
+    let mut other = seed();
+    other.header = header(9);
+    let mut w = FilmWriter::new(Cursor::new(Vec::new()), &other, 30).unwrap();
+    w.push_tick(0, 0, &seats(1)).unwrap();
+    let bytes = w.finish().unwrap().into_inner();
+    let mut track = TrackReader::open(&path).unwrap();
+    assert!(
+        track
+            .attach_film(FilmActions::new(Box::new(Cursor::new(bytes))).unwrap())
+            .is_err()
+    );
+}

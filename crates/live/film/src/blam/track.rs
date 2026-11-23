@@ -2,7 +2,9 @@ use super::{
     DESC, INPT, Keyframe, MAX_SEATS, MatchHeader, RecordData, SUMM, Summary, TIDX, Tick, stream,
     ticks, unified,
 };
-use crate::{Entry, KEYF, Reader, Writer, sidecar::SidecarReader, tape::SidecarCursor};
+use crate::{
+    Entry, KEYF, Reader, Writer, file::FilmActions, sidecar::SidecarReader, tape::SidecarCursor,
+};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -514,6 +516,7 @@ pub struct TrackReader<R: Read + Seek> {
     embedded_enabled: bool,
     keyframe_offset: Option<u64>,
     sidecar_cursor: Option<SidecarCursor>,
+    film: Option<FilmActions>,
 }
 
 impl TrackReader<File> {
@@ -633,7 +636,26 @@ impl<R: Read + Seek> TrackReader<R> {
             embedded_enabled: true,
             keyframe_offset: None,
             sidecar_cursor: None,
+            film: None,
         })
+    }
+
+    /// Take every tick's actions from the film file instead of the stats
+    /// stream's own: events, digests, forge records and pads still come
+    /// from the stats stream, and the two must agree on each tick's digest.
+    /// Call before the first step or seek.
+    pub fn attach_film(&mut self, film: FilmActions) -> Result<()> {
+        ensure!(
+            film.seed().header.meta.id == self.reader.header.meta.id,
+            "film file belongs to another film"
+        );
+        ensure!(
+            film.length_ticks() >= self.reader.header.meta.length_ticks,
+            "film file is shorter than the stats stream"
+        );
+        self.pending.clear();
+        self.film = Some(film);
+        Ok(())
     }
 
     /// Last completed tick in the machine timeline, including lobby ticks.
@@ -857,6 +879,16 @@ impl<R: Read + Seek> TrackReader<R> {
     }
 
     fn decode_block(&mut self, index: usize) -> Result<VecDeque<Tick>> {
+        let mut ticks = self.decode_stats_block(index)?;
+        if let Some(film) = &mut self.film {
+            for frame in &mut ticks {
+                film.fill(frame.tick, &mut frame.inputs, frame.post_hash)?;
+            }
+        }
+        Ok(ticks)
+    }
+
+    fn decode_stats_block(&mut self, index: usize) -> Result<VecDeque<Tick>> {
         let block = &self.directory.blocks[index];
         let raw = read_block(&mut self.reader, block)?;
         if self.reader.header.version >= 3 {
