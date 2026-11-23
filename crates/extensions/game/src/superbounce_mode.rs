@@ -41,18 +41,18 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use engine::GuestMemory;
 use superbounce::{Kind, Spot, Vec3};
 
+use crate::superbounce_capsule::Room;
+use crate::superbounce_chain::{self as chain, Medals};
 pub use crate::superbounce_charge::{
     Charge, ChargePhase, Course, Landing, LandingResult, Lost, LostReason, NavKind, NavTarget,
     OffSpot, Predicted, Verb,
 };
-use crate::superbounce_capsule::Room;
-use crate::superbounce_chain::{self as chain, Medals};
 use crate::superbounce_charge::{Tick, Tracker};
 use crate::superbounce_second::{RANKED, Ranked};
 use crate::superbounce_targets::Marks;
@@ -155,9 +155,13 @@ pub struct State {
     /// (`superbounce_charge::nav_to_landing`). `None` without a position
     /// or a spot of that kind.
     pub nav_target: Option<NavTarget>,
-    /// Where to jump from for the chosen strip, while primed and on the
-    /// ground (`superbounce_world::takeoff`); `None` when none is found.
-    pub takeoff: Option<Vec3>,
+    /// Where the navpoint is drawn: the takeoff while the player's floor
+    /// is too low for the chosen strip ([`navpoint`]), else the target's
+    /// spot (`nav_target`'s `at`).
+    pub navpoint: Option<Vec3>,
+    /// Where to leave from for the chosen strip, while primed and on the
+    /// ground ([`takeoff_for`]); `None` when none is found.
+    pub takeoff: Option<crate::superbounce_guide::Takeoff>,
     /// The landing the assist predicts, while airborne and falling toward
     /// a strip.
     pub landing: Option<Predicted>,
@@ -207,6 +211,7 @@ impl State {
         charge: None,
         verb: None,
         nav_target: None,
+        navpoint: None,
         takeoff: None,
         landing: None,
         guide: None,
@@ -371,7 +376,7 @@ pub fn reply(s: &State) -> agent_proto::superbounce::State {
             distance: f64::from(n.distance),
             fall: f64::from(n.fall),
         }),
-        takeoff: s.takeoff.map(v3),
+        takeoff: s.takeoff.map(|t| v3(t.at)),
         landing: s.landing.map(|p| wire::Predicted {
             at: v3(p.at),
             verdict: match p.verdict {
@@ -451,16 +456,69 @@ pub fn guide_reply(g: &crate::superbounce_guide::Guide) -> agent_proto::superbou
         across: g.across.map(f64::from),
         chance: g.chance.map(|c| f64::from(c.value)),
         chance_capped: g.chance.is_some_and(|c| c.capped),
-        jump_in: g.takeoff.and_then(|t| t.jump_in()),
-        cue: g.cue.map(hud_kit_core::huds::superbounce_guide::cue_text),
+        jump_in: g.jump_in,
+        cue: g.cue.map(crate::superbounce_guide::Cue::text),
         takeoff: g.takeoff.map(|t| agent_proto::superbounce::TakeoffLine {
             at: v3(t.at),
             heading: t.heading.map(f64::from),
             half: f64::from(t.half),
             speed: f64::from(t.speed),
-            walk: t.walk(),
+            // Not counting to a jump's line: `Climb up`, `Walk to line`
+            // or `Walk off`.
+            walk: !g.cue.is_some_and(crate::superbounce_guide::Cue::counting),
         }),
         strength: f64::from(g.strength),
+    }
+}
+
+/// The seam marks a player is given (docs/game/superbounce.md,
+/// "Targets"): the target seams while primed only, as a seam is nothing
+/// to go for before then; the tag either way.
+pub fn primed_marks(marks: Marks, primed: bool) -> Marks {
+    if primed {
+        marks
+    } else {
+        Marks {
+            targets: Marks::NONE.targets,
+            ..marks
+        }
+    }
+}
+
+/// The takeoff for the strip `spot` for a player whose feet are at
+/// `player` (docs/game/superbounce.md, "The takeoff"), with `floor(xy,
+/// top)` the map's floor (`superbounce_capsule::Room::floor_at`): placed
+/// (`superbounce_guide::place`) from `run`, a ghost or verified run's lip
+/// (`superbounce_ghost::lip_for`), when it has one on a real floor; else
+/// from the map's lip search (`superbounce_world::lip`).
+pub fn takeoff_for(
+    spot: &Spot,
+    player: Vec3,
+    run: Option<crate::superbounce_guide::Lip>,
+    floor: impl Fn([f32; 2], f32) -> Option<f32>,
+) -> Option<crate::superbounce_guide::Takeoff> {
+    use crate::superbounce_guide::{Seam, place};
+    let seam = Seam::of(spot, [spot.stand[0], spot.stand[1]]);
+    let need = crate::superbounce_charge::need_of(spot);
+    run.and_then(|l| place(&seam, need, &l, &floor))
+        .or_else(|| {
+            crate::superbounce_world::lip(spot.stand, spot.fall, spot.drift, player, &floor)
+                .and_then(|l| place(&seam, need, &l, &floor))
+        })
+}
+
+/// Where the navpoint goes for `nav`: on a strip the player's floor is
+/// too low for (`high_enough` false), its `takeoff`, the place to climb
+/// to; else the target's own spot.
+pub fn navpoint(
+    nav: Option<NavTarget>,
+    takeoff: Option<&crate::superbounce_guide::Takeoff>,
+    high_enough: bool,
+) -> Option<Vec3> {
+    let n = nav?;
+    match takeoff {
+        Some(t) if n.kind == NavKind::Strip && !high_enough => Some(t.at),
+        _ => Some(n.at),
     }
 }
 
@@ -690,7 +748,11 @@ pub(crate) fn current_map() -> Option<String> {
 /// otherwise the tick does it on the generation change). Whether it did.
 pub(crate) fn refresh(map: &str) -> bool {
     let mut s = lock(scans());
-    let Some(key) = s.current.clone().filter(|k| k.map.eq_ignore_ascii_case(map)) else {
+    let Some(key) = s
+        .current
+        .clone()
+        .filter(|k| k.map.eq_ignore_ascii_case(map))
+    else {
         return false;
     };
     let Some((raw, _)) = s.cache.get(&key).cloned() else {
@@ -789,7 +851,8 @@ fn finish_scan(key: ScanKey, found: Result<Scanned, String>) {
                 bots::spots::publish(&key.map, spots.clone());
             }
             let (spots, room) = (Arc::new(spots), Arc::new(room));
-            s.cache.insert(key.clone(), (Arc::clone(&spots), Arc::clone(&room)));
+            s.cache
+                .insert(key.clone(), (Arc::clone(&spots), Arc::clone(&room)));
             if here {
                 let (all, shown) = with_verified(&key.map, &spots);
                 s.scanned = all;
@@ -800,7 +863,10 @@ fn finish_scan(key: ScanKey, found: Result<Scanned, String>) {
             }
         }
         Err(why) => {
-            eprintln!("superbounce: no spots on {} (BSP {}): {why}", key.map, key.bsp);
+            eprintln!(
+                "superbounce: no spots on {} (BSP {}): {why}",
+                key.map, key.bsp
+            );
             if here {
                 s.status = ScanState::Failed(why);
             }
@@ -960,7 +1026,10 @@ fn read_live(m: &dyn GuestMemory) -> Live {
     let aim = (|| Some([f(UNIT_AIM)?, f(UNIT_AIM + 4)?, f(UNIT_AIM + 8)?]))()
         .filter(|a: &Vec3| (a[0] * a[0] + a[1] * a[1] + a[2] * a[2] - 1.0).abs() < 0.1);
     let flashlight = m
-        .u32(u.body.wrapping_add(crate::superbounce_view::UNIT_CONTROL_FLAGS))
+        .u32(
+            u.body
+                .wrapping_add(crate::superbounce_view::UNIT_CONTROL_FLAGS),
+        )
         .is_ok_and(|flags| flags & crate::superbounce_view::CONTROL_FLASHLIGHT != 0);
     // Bit 0 of the biped flags, as `world.object` reads `physics.airborne`.
     let airborne = u.kind == engine::view::objects::BIPED
@@ -987,7 +1056,9 @@ const CACHE_CHECKSUM: u32 = live_telemetry::layout::CACHE_MAP_NAME - 0x198 + 0x2
 /// The scan key of the loaded map and its active structure BSP.
 fn scan_key(m: &dyn GuestMemory) -> Option<ScanKey> {
     use crate::skulls_custom::{GAME_GLOBALS, GLOBALS_ACTIVE_BSP};
-    let map = crate::health::loaded_map_name(m).ok().filter(|n| !n.is_empty())?;
+    let map = crate::health::loaded_map_name(m)
+        .ok()
+        .filter(|n| !n.is_empty())?;
     let g = m.u32(GAME_GLOBALS).ok().filter(|&g| g != 0)?;
     let bsp = m.u16(g.wrapping_add(GLOBALS_ACTIVE_BSP)).ok()? as i16;
     Some(ScanKey {
@@ -1234,10 +1305,14 @@ fn on_tick(o: &hooks::Obs) {
         &spots,
         live.position,
     );
-    let marks = crate::superbounce_targets::marks(
-        live.position,
-        tag,
-        nav_target.filter(|_| !live.airborne).map(|n| n.at),
+    let is_primed = live.word.is_some_and(primed);
+    let marks = primed_marks(
+        crate::superbounce_targets::marks(
+            live.position,
+            tag,
+            nav_target.filter(|_| !live.airborne).map(|n| n.at),
+        ),
+        is_primed,
     );
     // The assist steers onto the strip that is marked
     // (superbounce_assist::choose).
@@ -1246,17 +1321,34 @@ fn on_tick(o: &hooks::Obs) {
             .filter(|n| n.kind == NavKind::Strip)
             .map(|n| n.at),
     );
-    let takeoff = match (nav_target, live.position) {
-        (Some(n), Some(p)) if n.kind == NavKind::Strip && !live.airborne => spots
-            .iter()
-            .find(|s| s.kind == Kind::Bounce && s.stand == n.at)
-            .and_then(|s| {
-                crate::superbounce_world::takeoff(s.stand, s.fall, s.drift, p, |xy, top| {
-                    room.floor_at(xy, top)
-                })
-            }),
+    // The chosen strip's takeoff, from its run's lip or the map's
+    // (docs/game/superbounce.md, "The takeoff"), and the navpoint on it
+    // while the player is too low for the strip.
+    let strip = nav_target
+        .filter(|n| n.kind == NavKind::Strip)
+        .and_then(|n| {
+            spots
+                .iter()
+                .find(|s| s.kind == Kind::Bounce && s.stand == n.at)
+        });
+    let takeoff = match (strip, live.position) {
+        (Some(s), Some(p)) if is_primed && !live.airborne => takeoff_for(
+            s,
+            p,
+            map.as_deref()
+                .and_then(|m| crate::superbounce_ghost::lip_for(m, s.stand)),
+            |xy, top| room.floor_at(xy, top),
+        ),
         _ => None,
     };
+    let navpoint = navpoint(
+        nav_target,
+        takeoff.as_ref(),
+        match (strip, live.position) {
+            (Some(s), Some(p)) => crate::superbounce_charge::high_enough(p[2], s),
+            _ => true,
+        },
+    );
     *lock(&LOCAL) = players
         .iter()
         .filter(|p| p.tick.is_some())
@@ -1304,9 +1396,8 @@ fn on_tick(o: &hooks::Obs) {
     let last_guide = lock(&STATE).guide;
     let guide = match (live.position, live.velocity) {
         (Some(position), Some(velocity))
-            if crate::superbounce_options::current().approach_guide =>
+            if crate::superbounce_options::current().approach_guide && is_primed =>
         {
-            let is_primed = live.word.is_some_and(primed);
             let seams: Vec<Vec3> = marks
                 .tagged
                 .into_iter()
@@ -1328,7 +1419,7 @@ fn on_tick(o: &hooks::Obs) {
                     spots.iter().chain(shown.iter().map(|t| &t.spot)),
                     at,
                 )?;
-                crate::superbounce_guide::guide(
+                crate::superbounce_guide::guide_from(
                     &crate::superbounce_guide::Body {
                         position,
                         velocity,
@@ -1336,6 +1427,9 @@ fn on_tick(o: &hooks::Obs) {
                         primed: is_primed,
                     },
                     spot,
+                    // The takeoff is the chosen strip's: on another seam
+                    // there is none.
+                    takeoff.filter(|_| strip.is_some_and(|s| s.stand == spot.stand)),
                 )
                 .map(|g| g.settled(last_guide.as_ref()))
             })
@@ -1383,6 +1477,7 @@ fn on_tick(o: &hooks::Obs) {
         charge: step.charge,
         verb: step.verb,
         nav_target,
+        navpoint,
         takeoff,
         landing,
         guide,
@@ -1760,7 +1855,14 @@ mod tests {
                 distance: 4.0,
                 fall: 1.0,
             }),
-            takeoff: Some([1.0, 0.5, 4.0]),
+            takeoff: Some(crate::superbounce_guide::Takeoff {
+                at: [1.0, 0.5, 4.0],
+                heading: [0.0, 1.0],
+                half: 0.05,
+                speed: 0.8,
+                leave: crate::superbounce_guide::Leave::Drop,
+                checked: true,
+            }),
             landing: Some(Predicted {
                 at: [1.0, 2.0, -3.0],
                 aim: [1.0, 2.0],
@@ -1902,7 +2004,10 @@ mod tests {
             ..State::EMPTY
         };
         let r = reply(&warned);
-        assert_eq!((r.verb, r.lost_reason), (Some(wire::Verb::KeepMoving), None));
+        assert_eq!(
+            (r.verb, r.lost_reason),
+            (Some(wire::Verb::KeepMoving), None)
+        );
     }
 
     #[test]
@@ -1972,5 +2077,175 @@ mod tests {
         let bare = reply(&State::EMPTY);
         assert_eq!((bare.velocity, bare.targets.tag), (None, None));
         assert!(bare.targets.marked.is_empty());
+    }
+
+    /// Not primed, no target seam is marked: there is nothing to land
+    /// yet. The tag stays either way.
+    #[test]
+    fn the_target_seams_are_marked_while_primed_only() {
+        use crate::superbounce_targets::Mark;
+        let mark = |x: f32| {
+            Some(Mark {
+                at: [x, 0.0, 0.0],
+                distance: x,
+            })
+        };
+        let marks = Marks {
+            tag: mark(9.0),
+            targets: [mark(3.0), mark(5.0)],
+            tagged: Some([9.0, 0.0, 0.0]),
+        };
+        assert_eq!(primed_marks(marks, true), marks);
+        let idle = primed_marks(marks, false);
+        assert_eq!(idle.targets, [None, None]);
+        assert_eq!((idle.tag, idle.tagged), (marks.tag, marks.tagged));
+    }
+
+    /// A ledge `height` over a seam floor at z 0, its lip at y `lip`; the
+    /// seam's edge along X at y 4, drifting +Y, its landing point just
+    /// before the edge.
+    fn ledge_room(height: f32, lip: f32) -> (Room, Spot) {
+        let quad = |y0: f32, y1: f32, z: f32| superbounce::Poly {
+            verts: vec![[-5.0, y0, z], [5.0, y0, z], [5.0, y1, z], [-5.0, y1, z]],
+            normal: [0.0, 0.0, 1.0],
+        };
+        let room = Room::new(&[quad(-10.0, lip, height), quad(lip, 10.0, 0.0)]);
+        let spot = Spot {
+            kind: Kind::Bounce,
+            edge: [[-1.0, 4.0, 0.0], [1.0, 4.0, 0.0]],
+            stand: [0.0, 3.976, 0.0],
+            drift: [0.0, 1.0],
+            fall: height,
+            need: 5.0,
+            ..Spot::default()
+        };
+        (room, spot)
+    }
+
+    /// Whether the takeoff `t` sends a body into `spot`'s catch at its
+    /// need: a walk-off from the lip, a jump leaving the floor
+    /// `PRESS_LEAD` ticks on from the line.
+    fn lands(spot: &Spot, t: &crate::superbounce_guide::Takeoff) -> bool {
+        use crate::superbounce_guide::{
+            CLEARANCE, JUMP_VZ, Leave, PRESS_LEAD, Seam, TICK, caught, impact,
+        };
+        let seam = Seam::of(spot, [spot.stand[0], spot.stand[1]]);
+        let h = t.heading;
+        let (from, vz) = match t.leave {
+            Leave::Drop => (0.0, 0.0),
+            Leave::Jump => (t.speed * PRESS_LEAD as f32 * TICK, JUMP_VZ),
+        };
+        let at = [
+            t.at[0] + h[0] * from,
+            t.at[1] + h[1] * from,
+            t.at[2] + CLEARANCE,
+        ];
+        impact(at, [h[0] * t.speed, h[1] * t.speed, vz], |xy| {
+            seam.contact(xy)
+        })
+        .is_some_and(|i| caught(&seam, &i) && i.speed >= spot.need)
+    }
+
+    /// The takeoff is a place on the real floor of the ledge to come from,
+    /// found from the strip's floor below it all the same (the review's
+    /// frames 67 to 87: the player on the seam was told only `Land, 7 m`),
+    /// and a flight from it lands in the catch at the seam's need.
+    #[test]
+    fn the_takeoff_is_on_the_ledges_floor_and_lands_in_the_catch() {
+        let (room, spot) = ledge_room(3.45, 2.95);
+        let floor = |xy: [f32; 2], top: f32| room.floor_at(xy, top);
+        // The player stands on the seam's floor, under the ledge.
+        let t = takeoff_for(&spot, [0.0, 3.5, 0.0], None, floor).unwrap();
+        assert_eq!(t.at[2], 3.45);
+        assert!(t.at[1] <= 2.95, "{t:?}");
+        assert_eq!(t.heading, [0.0, 1.0]);
+        assert!(t.checked && lands(&spot, &t), "{t:?}");
+        // From the ledge itself, the same takeoff.
+        assert_eq!(takeoff_for(&spot, [0.0, 1.0, 3.45], None, floor), Some(t));
+    }
+
+    /// A run's lip comes first: from it the takeoff is a jump back along
+    /// its floor that lands in the catch. A run's lip that is on no floor
+    /// is passed over for the map's.
+    #[test]
+    fn a_runs_lip_comes_before_the_maps() {
+        use crate::superbounce_guide::{Leave, Lip};
+        let (room, spot) = ledge_room(3.45, 2.95);
+        let floor = |xy: [f32; 2], top: f32| room.floor_at(xy, top);
+        let run = Lip {
+            at: [0.0, 2.5, 3.45],
+            heading: [0.0, 1.0],
+            speed: Some(1.2),
+            run: Some(Leave::Jump),
+        };
+        let t = takeoff_for(&spot, [0.0, 3.5, 0.0], Some(run), floor).unwrap();
+        assert_eq!((t.leave, t.at[2], t.speed), (Leave::Jump, 3.45, 1.2));
+        assert!(t.at[1] < 2.5 && t.checked && lands(&spot, &t), "{t:?}");
+        let map = takeoff_for(&spot, [0.0, 3.5, 0.0], None, floor);
+        let lost = Lip {
+            at: [0.0, 2.5, 10.0],
+            ..run
+        };
+        assert_eq!(takeoff_for(&spot, [0.0, 3.5, 0.0], Some(lost), floor), map);
+    }
+
+    /// A ledge no modelled flight from reaches the catch still gives the
+    /// place to go: its lip, unchecked, a walk-off from its edge.
+    #[test]
+    fn a_ledge_too_far_back_is_still_where_to_go() {
+        use crate::superbounce_guide::Leave;
+        let (room, spot) = ledge_room(3.45, 0.5);
+        let t = takeoff_for(&spot, [0.0, 3.5, 0.0], None, |xy, top| {
+            room.floor_at(xy, top)
+        })
+        .unwrap();
+        assert_eq!((t.leave, t.checked, t.at[2]), (Leave::Drop, false, 3.45));
+        assert!(t.at[1] <= 0.5 && t.at[1] > 0.4, "{t:?}");
+        // No ledge high enough anywhere: no takeoff.
+        let (room, spot) = ledge_room(1.0, 0.5);
+        let deep = Spot { fall: 3.45, ..spot };
+        assert_eq!(
+            takeoff_for(&deep, [0.0; 3], None, |xy, top| room.floor_at(xy, top)),
+            None
+        );
+    }
+
+    /// The navpoint is on the takeoff while the player's floor is too low
+    /// for the chosen strip, and on the target's spot otherwise.
+    #[test]
+    fn the_navpoint_goes_to_the_takeoff_while_too_low() {
+        use crate::superbounce_guide::{Leave, Takeoff};
+        let strip = NavTarget {
+            at: [0.0, 4.0, 0.0],
+            kind: NavKind::Strip,
+            distance: 4.0,
+            fall: 3.45,
+        };
+        let t = Takeoff {
+            at: [0.0, 2.9, 3.45],
+            heading: [0.0, 1.0],
+            half: 0.05,
+            speed: 0.8,
+            leave: Leave::Drop,
+            checked: true,
+        };
+        assert_eq!(navpoint(Some(strip), Some(&t), false), Some(t.at));
+        assert_eq!(navpoint(Some(strip), Some(&t), true), Some(strip.at));
+        assert_eq!(navpoint(Some(strip), None, false), Some(strip.at));
+        let crouch = NavTarget {
+            kind: NavKind::Crouch,
+            ..strip
+        };
+        assert_eq!(navpoint(Some(crouch), Some(&t), false), Some(crouch.at));
+        assert_eq!(navpoint(None, Some(&t), false), None);
+        // The agent's state carries the takeoff's place.
+        let s = State {
+            takeoff: Some(t),
+            ..State::EMPTY
+        };
+        assert_eq!(
+            reply(&s).takeoff,
+            Some([0.0, 2.9f32 as f64, 3.45f32 as f64])
+        );
     }
 }
