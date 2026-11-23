@@ -11,7 +11,7 @@ light-list link, unlink and expire; the lists stay guest), slice 8's (the
 damage update, and the `Damage` and `Kill` events), slice 4's (the
 bounds, attachment refresh, node-matrix notify and component transform,
 the transform setters and getters, and `bd090` as the phase 1 port run
-as a body, without `sim-anim`'s skeleton walk yet), slice 6a's (the unit update's shell, movement, direction clamp, idle
+as a body, whose skeleton walk is phase 1b's `build_matrices`), slice 6a's (the unit update's shell, movement, direction clamp, idle
 test and aim update), slice 6b's (the unit update's control, state,
 powered seats and control refresh), slice 6c's (the unit update's timers, dialogue
 update, team with its seat iterator, active camouflage and integrated
@@ -583,18 +583,18 @@ functions this phase requires of `sim-anim`:
 
 ```rust
 pub fn sample(clip: &Clip, frame: Frame, mask: &[u32], out: &mut [LocalNode]);              // 1a
-pub fn build_matrices(root: &NodeMatrix, locals: &[LocalNode], parents: &[i16],
-                      out: &mut [NodeMatrix]);                                              // 1b
+pub fn build_matrices(k: &Constants, locals: &[Record], parents: &[i16], keep: &[u32],
+                      xmm: [Vec4; 8], out: &mut [NodeMatrix]) -> Result<Walk, Unsupported>; // 1b
 pub fn unit_pose(state: &UnitPoseIn, clips: &ClipStore, out: &mut [LocalNode]) -> UnitPoseEffects; // 1c
 ```
 
 `UnitPoseEffects` lists the guest effects `112070` has besides its output
 (resource requests through `1dd9d0` and `1236f0`, any RNG draw through
-`1dd630`), so the caller issues them in retail order on the game thread. If
-phase 1 lands `bd090` as a register-level port first (the `sim-anim` branch
-has one, `sim_physics/node_matrices.rs`), slice 4 adopts that body into
-`BODIES` unchanged and replaces its inlined leaf calls with
-`build_matrices`.
+`1dd630`), so the caller issues them in retail order on the game thread.
+`bd090` is the register-level port `sim_physics/node_matrices.rs`, adopted
+into `BODIES` unchanged; its skeleton walk calls `build_matrices` (the
+root in `out[0]`, the stack mask as `keep`), with the per-node inline
+leaves as the fallback ([skeleton-walk.md](skeleton-walk.md)).
 
 Attached objects compose with the parent's node matrix (`b8bd0`, `ba160`).
 The walks visit a parent before its children, so the parent's matrices in

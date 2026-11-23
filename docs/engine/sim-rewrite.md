@@ -1,7 +1,8 @@
 # Simulation rewrite: plan
 
 Status: plan, 2026-11-20. The `SimExt` blob (section 2) is partly built,
-with tests only. The plan replaces the verdict in
+with tests only. Phase 1b's skeleton walk in `bd090` is built, with tests
+only ([skeleton-walk.md](skeleton-walk.md)); `1dd1c0` is not. The plan replaces the verdict in
 [feature-engine.md](feature-engine.md) ("Subsystem map and ranking", rows
 15-18) that objects, AI and physics "stay recompiled". The user asked on
 2026-11-16 and 2026-11-17 for whole-subsystem rewrites, not per-function
@@ -449,7 +450,7 @@ still uses them.
 |---|---|---|---|
 | **0** (now, alongside 1) | Census A and B in [sim-attribution.md](../perf/sim-attribution.md): Waterworks with local and phantom rosters, with dispatch counts; co-op campaign on `03a_oldmombasa` and `05a_deltaapproach`. `sim-core` crate. Switch-tree change. Profiler `host` category. The map status poll and damage hook fixes. | none | Attribution tables for both rosters and one co-op level committed. Phase order after 3 decided. |
 | **1a** | Animation sampling (detailed below). 3.5% of the thread. | `impl.sim.native.anim` | Ladder steps 1-6 clean. Waterworks ≥ 0.3 ms/tick faster. Evaluator family self samples down ≥ 80%. Retires `native_rotation_codec` and `native_animation_stream`. This delta calibrates the model's *k*. |
-| **1b** | Node-matrix build (`1421f0`, `142a60`, `141e10`, the loop that drives them in `bd090`'s pose step, and `1dd1c0`). 2.9%. | same switch | Ladder clean. Cumulative ≥ 0.6 ms. Retires `native_transform_compose` and `native_pose_matrix`. |
+| **1b** | Node-matrix build (`1421f0`, `142a60`, `141e10`, the loop that drives them in `bd090`'s pose step, and `1dd1c0`). 2.9%. | same switch; the `bd090` walk also has `impl.sim.native.anim.skeleton` (on) | Ladder clean. Cumulative ≥ 0.6 ms. Retires `native_transform_compose` and `native_pose_matrix`. |
 | **1c** | Unit pose and overlays (`112070`, `111650`, aim grids), first-person pose (`16760c`, `166d75`), model nodes and marker transforms (`b8d30`, `1d8f00`, `1d8f50`). 3.9%. | same switch | Ladder clean. Cumulative ≥ 0.9 ms. Retires `native_unit_pose`, `native_marker_transforms`, `native_first_person_pose`, `native_first_person_filters` and `native_unit_aim`. |
 | **1d** | Animation manager and graph resolve (`1c66a0`, `1c6f60`, `1cd590`, `1daea0`, `1dd9d0`, `1ddb40`). 3.4%. | same switch | Ladder clean. Cumulative **≥ 1.2 ms**. Retires `native_graph_resolve`. |
 | **2** | Collision world and queries, with the Havok ray path | `impl.sim.native.collision` | Ladder clean. ≥ 0.45 ms more. Retires `native_point_to_leaf`, `native_geometry_test`, `native_bsp_segment`, `native_collision_query`, `native_mopp_ray`, `native_spatial_visit` and `native_spatial_portal`. |
@@ -591,12 +592,14 @@ bounding-sphere update and the renderer all read those matrices.
 
 It touches nothing owned by Live, bots, theater or film.
 
-**Phase 1b, 1c and 1d follow-on:** 1b's step 0 is to find the smallest
-function that contains the whole local-record-to-node-matrix loop under
-`bd090` (or `bdb60`), and override that, so one Rust call builds every
-matrix of an object. `1dd1c0` runs the same loop for the animation graph's
-own callers (219 and 182 visible samples into `1421f0` and `142a60`) and
-goes with it. 1d's step 0 is the write set of `1c66a0`, `1c6560` and
+**Phase 1b, 1c and 1d follow-on:** the local-record-to-node-matrix loop
+is inline in `bd090`, whose register-level port runs it; at the loop's
+entry the port calls `sim_anim::build_matrices` through
+`engine::sim_anim::skeleton`, so one Rust call builds every matrix of an
+object ([skeleton-walk.md](skeleton-walk.md)). `1dd1c0` runs the same loop
+for the animation graph's own callers (219 and 182 visible samples into
+`1421f0` and `142a60`) and is 1b's remaining part; `native_transform_compose`
+and `native_pose_matrix` retire with it. 1d's step 0 is the write set of `1c66a0`, `1c6560` and
 `1cd590` (channel state in object data) and the readers of the graph
 resolve results.
 
