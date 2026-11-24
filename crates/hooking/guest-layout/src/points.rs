@@ -1085,6 +1085,8 @@ points! { ALL;
     TRANSPARENT_SORT @ 0x0013_df80: [opaque]; "docs/graphics/render-loop.md";
     /// Build a potentially visible set's region records for a single frustum.
     VIEW_PVS_REGIONS @ 0x0017_33e0: [fn(start: eax, output: ebx, camera: stack 0) ret 4]; "docs/graphics/native-visibility.md";
+    /// Materialize one merged tangent-space portal window.
+    VIEW_WINDOW_BUILD @ 0x0016_3db0: [fn(rect: ecx, output: edi, frustum: stack 0, ordinal: stack 1) -> al ret 8]; "docs/graphics/native-visibility.md";
     /// The shader draw's render-state list: EBX the draw context, stack 0
     /// the list word's address (`count << 9 | first`), `ret 4`. Applies
     /// each entry through `SetRenderState_Simple`, the D3D shadow and

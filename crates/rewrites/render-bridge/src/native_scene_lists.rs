@@ -13,6 +13,7 @@ mod setup;
 pub use setup::{DisplaySection, display_model};
 mod regions;
 mod transparents;
+mod window;
 pub(crate) use transparents::bsp as transparent_bsp;
 
 use std::collections::HashMap;
@@ -107,6 +108,7 @@ impl Feature for ScaledSceneLists {
             Seam::Function(&points::SCENE_GEOMETRY_GATHER, 4),
             geometry::gather,
         );
+        window::install(b);
         let scale = self.0;
         install(
             b,

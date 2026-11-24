@@ -1,0 +1,329 @@
+//! The merged portal node's window at 0x00172f6c. Observe the whole slot
+//! and return registers on the original call, then let Rust materialize a
+//! window with the same input words. Verification belongs to this BSP.
+use super::*;
+use scene_extract::visibility::{
+    Decline, guest,
+    window_record::{SIZE, WindowInputs},
+};
+use std::sync::Mutex;
+
+const CALLER: u32 = 0x0017_2f71;
+const VALIDATE_PLANES: u32 = 0x0047_ff86;
+const WINDOWS: u32 = 0x1974;
+const COUNT: u32 = 0x1970;
+const LIMIT: u16 = 512;
+
+struct Read<'a>(&'a dyn GuestMemory);
+
+impl scene_extract::GuestRead for Read<'_> {
+    fn read_u32(&self, addr: u32) -> Option<u32> {
+        self.0.u32(addr).ok()
+    }
+}
+
+fn refusal(why: Decline) -> Refusal {
+    match why {
+        Decline::Unread => Refusal::Memory,
+        _ => Refusal::Layout,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Registers {
+    eax: u32,
+    ecx: u32,
+    edx: u32,
+}
+
+impl Registers {
+    fn read(cpu: &CpuAbi) -> Self {
+        Self {
+            eax: cpu.eax,
+            ecx: cpu.ecx,
+            edx: cpu.edx,
+        }
+    }
+    fn apply(self, cpu: &mut CpuAbi) {
+        cpu.eax = self.eax;
+        cpu.ecx = self.ecx;
+        cpu.edx = self.edx;
+    }
+}
+
+struct Window {
+    inputs: WindowInputs,
+    image: [u8; SIZE],
+    dest: u32,
+    registers: Registers,
+    // The writer uses its second argument word as scratch.
+    argument_addr: u32,
+    argument_after: u32,
+    accepted: bool,
+}
+
+impl Window {
+    fn read(mem: &dyn GuestMemory, cpu: &CpuAbi) -> Result<Self> {
+        fp_supported(cpu)?;
+        if cpu.x87.control != 0x027f || cpu.x87.tag != u16::MAX {
+            return Err(Refusal::Unsupported);
+        }
+        // The original can clear this flag if a corner fails one of its
+        // diagnostic plane tests. Preserve the diagnostic while it is armed.
+        if mem.u8(VALIDATE_PLANES)? != 0 {
+            return Err(Refusal::Unsupported);
+        }
+        let vis = ptr(mem, guest::ACTIVE_VIS)?;
+        if !matches!(vis, objects::MAIN_VIS | objects::LIGHT_VIS) {
+            return Err(Refusal::Unsupported);
+        }
+        let base = ptr(mem, vis)?;
+        let count = mem.u16(at(base, COUNT)?)?;
+        if !(1..=LIMIT).contains(&count) {
+            return Err(Refusal::Layout);
+        }
+        let dest = at(base, WINDOWS + u32::from(count - 1) * SIZE as u32)?;
+        if cpu.edi != dest {
+            return Err(Refusal::Layout);
+        }
+        let frustum = stack(mem, cpu, 4)?;
+        let argument_addr = at(cpu.esp, 8)?;
+        let ordinal = mem.u32(argument_addr)?;
+        // The original writes interleaved with its reads. Overlapping the
+        // input frustum, rectangle or call frame requires those writes.
+        let end = at(dest, SIZE as u32)?;
+        for (addr, size) in [(frustum, 0x1bc), (cpu.ecx, 16), (cpu.esp, 12)] {
+            if dest < at(addr, size)? && end > addr {
+                return Err(Refusal::Layout);
+            }
+        }
+        let inputs = WindowInputs::read(&Read(mem), frustum, cpu.ecx, ordinal).map_err(refusal)?;
+        let mut image = [0; SIZE];
+        mem.read(dest, &mut image)?;
+        let accepted = inputs.build(&mut image).map_err(refusal)?;
+        let (registers, argument_after) = if accepted {
+            (
+                Registers {
+                    eax: ((dest + 0xa8) & !0xff) | 1,
+                    ecx: dest + 0x54,
+                    edx: dest + 0x98,
+                },
+                dest + 0x98,
+            )
+        } else {
+            (
+                Registers {
+                    eax: cpu.eax & !0xff,
+                    ..Registers::read(cpu)
+                },
+                ordinal,
+            )
+        };
+        Ok(Self {
+            inputs,
+            image,
+            dest,
+            registers,
+            argument_addr,
+            argument_after,
+            accepted,
+        })
+    }
+
+    fn matches(&self, mem: &dyn GuestMemory, cpu: &CpuAbi) -> Result<bool> {
+        let mut actual = [0; SIZE];
+        mem.read(self.dest, &mut actual)?;
+        Ok(actual == self.image
+            && self.registers == Registers::read(cpu)
+            && cpu.edi == self.dest
+            && mem.u32(self.argument_addr)? == self.argument_after)
+    }
+}
+
+#[derive(Default)]
+struct State {
+    generation: Option<u64>,
+    pending: HashMap<(u32, u32), Window>,
+    verified: HashMap<u32, WindowInputs>,
+}
+
+impl State {
+    fn scope(&mut self) {
+        let generation = crate::native_map_work::bsp_generation();
+        if self.generation != Some(generation) {
+            self.pending.clear();
+            self.verified.clear();
+            self.generation = Some(generation);
+        }
+    }
+}
+
+pub(super) fn install(b: &mut Builder) {
+    let state = Arc::new(Mutex::new(State::default()));
+    let before = Arc::clone(&state);
+    let stage = SceneList::WindowRecord;
+    b.raw()
+        .before(
+            &points::VIEW_WINDOW_BUILD,
+            "materialize portal window",
+            move |c| {
+                if c.addr != points::VIEW_WINDOW_BUILD.base {
+                    return Ok(Flow::Continue);
+                }
+                let runtime = Arc::clone(c.ctx.runtime());
+                let mut mem = runtime.memory();
+                if mem.u32(c.cpu.esp).ok() != Some(CALLER) {
+                    return Ok(Flow::Continue);
+                }
+                let mut state = before.lock().unwrap_or_else(|e| e.into_inner());
+                state.scope();
+                let key = (c.ctx.thread_id, c.cpu.esp.wrapping_add(12));
+                state.pending.remove(&key);
+                let plan = match Window::read(&*mem, c.cpu) {
+                    Ok(window) => window,
+                    Err(why) => {
+                        stage.count(SceneListResult::Fallback);
+                        stage.count(match why {
+                            Refusal::Memory => SceneListResult::Memory,
+                            Refusal::Unsupported => SceneListResult::Unsupported,
+                            _ => SceneListResult::Layout,
+                        });
+                        return Ok(Flow::Continue);
+                    }
+                };
+                if state.verified.get(&plan.dest) != Some(&plan.inputs) {
+                    state.pending.insert(key, plan);
+                    stage.count(SceneListResult::Fallback);
+                    return Ok(Flow::Continue);
+                }
+                // Preflight before changing ESP, memory, or the return registers.
+                if plan.accepted
+                    && (mem.check(plan.dest, SIZE, Access::Write, 1).is_err()
+                        || mem.check(plan.argument_addr, 4, Access::Write, 1).is_err())
+                {
+                    stage.count(SceneListResult::Memory);
+                    stage.count(SceneListResult::Fallback);
+                    return Ok(Flow::Continue);
+                }
+                let ret = mem.ret(c.cpu, 8)?;
+                if plan.accepted {
+                    for (offset, bytes) in [
+                        (0u32, &plan.image[..4]),
+                        (0x10, &plan.image[0x10..0x20]),
+                        (0x24, &plan.image[0x24..]),
+                    ] {
+                        mem.write_bytes_from(c.addr, plan.dest + offset, bytes, 1)?;
+                    }
+                    mem.write_bytes_from(
+                        c.addr,
+                        plan.argument_addr,
+                        &plan.argument_after.to_le_bytes(),
+                        1,
+                    )?;
+                }
+                plan.registers.apply(c.cpu);
+                stage.count(SceneListResult::Native);
+                Ok(Flow::Return(ret))
+            },
+        )
+        .optional()
+        .context_only();
+    b.raw()
+        .observe_after(
+            &points::VIEW_WINDOW_BUILD,
+            "compare portal window",
+            move |o| {
+                let mem = o.guest();
+                let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+                state.scope();
+                if let Some(plan) = state.pending.remove(&(o.thread_id, o.cpu.esp)) {
+                    stage.count(SceneListResult::Compared);
+                    if plan.matches(&*mem, o.cpu) == Ok(true) {
+                        // Two visibility buffers, each with at most LIMIT windows.
+                        if state.verified.len() >= 2 * usize::from(LIMIT)
+                            && !state.verified.contains_key(&plan.dest)
+                        {
+                            state.verified.clear();
+                        }
+                        state.verified.insert(plan.dest, plan.inputs);
+                    } else {
+                        state.verified.remove(&plan.dest);
+                        stage.count(SceneListResult::Mismatch);
+                    }
+                }
+            },
+        )
+        .optional()
+        .context_only();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engine::testing::FakeGuest;
+
+    fn scene() -> (FakeGuest, CpuAbi) {
+        let mut m = FakeGuest::new();
+        let (regions, camera, stack, rect, bounds) = (0x10000, 0x3000, 0x4000, 0x5000, 0x6000);
+        m.put_u8(VALIDATE_PLANES, 0);
+        m.put_u32(guest::ACTIVE_VIS, objects::MAIN_VIS);
+        m.put_u32(objects::MAIN_VIS, regions);
+        m.put_u16(regions + COUNT, 1);
+        m.put(regions + WINDOWS, &[0x93; SIZE]);
+        m.put_u32(stack + 4, camera);
+        m.put_u32(stack + 8, 3);
+        m.put_u32(guest::FRUSTUM_BOUNDS, bounds);
+        m.map(bounds, 24);
+        m.put_f32(guest::FRUSTUM_UNIT, 1.);
+        m.put_f32(guest::FRUSTUM_NEGATIVE_UNIT, -1.);
+        m.put_f32(guest::NORMALIZE_EPSILON, 0.001);
+        for off in [0x38, 0x3c, 0x4c, 0x5c] {
+            m.put_f32(camera + off, 1.);
+        }
+        m.put_f32(camera + 0x88, 5.);
+        for (i, value) in [-1., 1., -1., 1.].into_iter().enumerate() {
+            m.put_f32(rect + 4 * i as u32, value);
+        }
+        (
+            m,
+            CpuAbi {
+                esp: stack,
+                ecx: rect,
+                edi: regions + WINDOWS,
+                ..CpuAbi::xbox_thread()
+            },
+        )
+    }
+
+    #[test]
+    fn compares_record_holes_scratch_and_registers_before_admission() {
+        let (mut mem, mut cpu) = scene();
+        let p = Window::read(&mem, &cpu).unwrap();
+        assert!(p.accepted);
+        assert_eq!(p.matches(&mem, &cpu), Ok(false));
+        mem.put(p.dest, &p.image);
+        mem.put_u32(p.argument_addr, p.dest + 0x98);
+        cpu.eax = ((p.dest + 0xa8) & !0xff) | 1;
+        cpu.ecx = p.dest + 0x54;
+        cpu.edx = p.dest + 0x98;
+        assert_eq!(p.matches(&mem, &cpu), Ok(true));
+        cpu.edx -= 4;
+        assert_eq!(p.matches(&mem, &cpu), Ok(false));
+        cpu.edx += 4;
+        mem.put_u8(p.dest + 9, 42);
+        assert_eq!(p.matches(&mem, &cpu), Ok(false));
+    }
+
+    #[test]
+    fn empty_window_keeps_callers_registers_and_diagnostic_uses_guest() {
+        let (mut m, mut cpu) = scene();
+        m.put_f32(cpu.ecx + 4, -1.);
+        cpu.eax = 0x785e;
+        let p = Window::read(&m, &cpu).unwrap();
+        assert!(!p.accepted);
+        cpu.eax = 0x7800;
+        assert_eq!(p.matches(&m, &cpu), Ok(true));
+        m.put_u8(VALIDATE_PLANES, 1);
+        assert!(matches!(Window::read(&m, &cpu), Err(Refusal::Unsupported)));
+    }
+}

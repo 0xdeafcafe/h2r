@@ -22,6 +22,7 @@ fn the_native_renderers_points_are_discovered_functions() {
     for p in [
         &points::LAYER_DRAW,
         &points::SCENE_TRANSPARENTS,
+        &points::VIEW_WINDOW_BUILD,
         &points::TRANSPARENT_GEOMETRY,
         &points::PORTAL_WINDOW_MERGE,
         &points::PORTAL_WINDOW_REGIONS,
