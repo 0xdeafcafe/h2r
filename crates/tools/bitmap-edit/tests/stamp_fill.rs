@@ -520,13 +520,13 @@ fn a_clone_stroke_reads_another_layer_and_leaves_it_alone() {
 #[test]
 fn a_clone_stroke_copies_and_never_erases() {
     let mut b = one(numbered(8, 4));
-    let op = BitmapOp::Clone {
-        brush: Brush {
+    let mut op = clone_dab([1.5, 1.5], [5.5, 1.5], 2.0);
+    if let BitmapOp::Clone { brush, .. } = &mut op {
+        *brush = Brush {
             erase: true,
             ..hard(2.0, WHITE)
-        },
-        ..clone_dab([1.5, 1.5], [5.5, 1.5], 2.0)
-    };
+        };
+    }
     let a = b.apply(&op).unwrap();
     assert_eq!(b.layer(L0).unwrap().canvas.pixel(5, 1), [1, 1, 7, 255]);
     assert!(!a.dirty.is_empty());
