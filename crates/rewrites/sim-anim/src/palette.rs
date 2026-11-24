@@ -71,7 +71,7 @@ pub fn build(
     }
     let mut bytes = vec![0u8; (last - first) as usize * NODE_BYTES];
     for slot in 0..slots {
-        let at = slot as usize * NODE_BYTES;
+        let at = (slot - first) as usize * NODE_BYTES;
         bytes[at..at + NODE_BYTES].copy_from_slice(identity);
     }
     for o in overlays {
