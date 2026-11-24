@@ -235,14 +235,18 @@ fn siege_with_no_flag_stands_leaves_those_lines_to_the_engine() {
 }
 
 /// A defender on the site holds the attackers off: the time counts only
-/// while one team is on it alone, and the phase clock runs out.
+/// while one team is on it alone, and the phase clock runs out. The attacker
+/// is still on the site then, so the phase runs on for the overtime, and a
+/// contested front does not hold it open past that: the defenders win when
+/// the overtime runs out (docs/game/rules-engine.md, "Phases: attack and
+/// defend").
 #[test]
 fn siege_defenders_hold_a_contested_site_until_the_clock_runs_out() {
     // A one-minute phase and a five-second capture.
     let (ir, options) = siege(&[("phase_time", 60), ("capture_time", 5)]);
     let mut s: Scenario = serde_json::from_str(SIEGE_ATTACKERS_WIN).unwrap();
     s.options = options;
-    s.ticks = vec![ScenarioTick::default(); 1900];
+    s.ticks = vec![ScenarioTick::default(); 2800];
     s.ticks[0].events = vec![
         ScenarioEvent::Spawn(0),
         ScenarioEvent::Spawn(1),
@@ -253,11 +257,15 @@ fn siege_defenders_hold_a_contested_site_until_the_clock_runs_out() {
     assert_eq!(r.script_error, None);
     assert_eq!(
         lines(&r),
-        ["Sites to take: 2. Then the defenders' flag", "The defenders held"]
+        [
+            "Sites to take: 2. Then the defenders' flag",
+            "Overtime: the attackers are still on the objective",
+            "The defenders held"
+        ]
     );
-    // The clock is 60 s from the round's start.
-    let end = r.ended_at.expect("the clock ends the round");
-    assert!((1795..=1801).contains(&end), "{end}");
+    // The clock is 60 s from the round's start, then the overtime's 30 s.
+    let end = r.ended_at.expect("the overtime ends the round");
+    assert!((2695..=2701).contains(&end), "{end}");
     assert_eq!(r.game.players[&1].score, 1);
     assert_eq!(r.game.players[&0].score, 0);
 }

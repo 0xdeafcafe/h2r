@@ -253,10 +253,11 @@ fn a_from_is_checked_against_the_tag_as_the_build_found_it() {
         &entry(None, &line("damage_lower_bound", Some(9.0), 2.0)),
     );
     let err = build(&mut base(), &[other], &target(), None).unwrap_err();
-    assert_eq!(err.line, Some(3), "{err}");
+    // The entry's line (its `-`), as for every line that does not resolve.
+    assert_eq!(err.line, Some(1), "{err}");
     assert!(
         err.why
-            .contains("`from` damage_lower_bound: is 9.0, but the field is 0"),
+            .contains("`from` damage_lower_bound: is 9, but the field is 0"),
         "{err}"
     );
     // A `from` on a path that does not resolve is the line's own error.
@@ -408,7 +409,7 @@ fn a_from_was_or_replaces_that_does_not_match_leaves_its_package_off_with_the_re
     assert_eq!(refused(&built.report), ["b-from", "c-was", "d-replaces"]);
     let why = off(&built.report);
     assert!(
-        why[0].contains("`from` damage_lower_bound: is 9.0, but the field is 0"),
+        why[0].contains("`from` damage_lower_bound: is 9, but the field is 0"),
         "{why:?}"
     );
     assert!(
@@ -425,12 +426,12 @@ fn a_from_was_or_replaces_that_does_not_match_leaves_its_package_off_with_the_re
     // Under `h2 package build` each stops the build with its item.
     let said = |p: &[Loaded]| build_map(&bytes, p, &target()).unwrap_err();
     assert!(
-        said(&[from.clone()]).contains("edits.yaml, line 3"),
+        said(&[from.clone()]).contains("edits.yaml, line 1"),
         "{}",
         said(&[from.clone()])
     );
     assert!(
-        said(&[was.clone()]).contains("edits.yaml, line 4"),
+        said(&[was.clone()]).contains("edits.yaml, line 1"),
         "{}",
         said(&[was.clone()])
     );
@@ -570,14 +571,16 @@ fn two_packages_that_override_one_asset_whole_or_add_one_key_leave_the_later_off
         "{said:?}"
     );
     // Two overrides of one asset for maps that cannot meet are no conflict.
-    let scoped = package(
-        &format!(
-            "{}[[item]]\nkind = \"tag\"\nsource = 'a.jpt!.yaml'\ntag = '{A}'\nreplaces = \"{a}\"\nmaps = \"campaign\"\n",
-            head("b-two")
-        ),
-        &[("a.jpt!.yaml", b"fields: {}\n")],
-    );
-    assert!(check_set(&[one, scoped]).is_empty());
+    let scoped = |id: &str, maps: &str| {
+        package(
+            &format!(
+                "{}[[item]]\nkind = \"tag\"\nsource = 'a.jpt!.yaml'\ntag = '{A}'\nreplaces = \"{a}\"\nmaps = \"{maps}\"\n",
+                head(id)
+            ),
+            &[("a.jpt!.yaml", b"fields: {}\n")],
+        )
+    };
+    assert!(check_set(&[scoped("a-one", "campaign"), scoped("b-two", "multiplayer")]).is_empty());
 }
 
 #[test]
@@ -595,7 +598,7 @@ fn a_patch_whose_key_is_missing_is_off_with_the_key_and_nothing_of_its_package_a
     // Never in part: its first item added a tag, its second is refused.
     let late = package(
         &format!(
-            "{}[[item]]\nkind = \"tag\"\nsource = \"c.jpt!.yaml\"\ntag = '{C}'\n\n[[item]]\nkind = \"edits\"\nsource = \"e.yaml\"\n",
+            "{}[[item]]\nkind = \"tag\"\nsource = \"{ADD_C_FILE}\"\ntag = '{C}'\n\n[[item]]\nkind = \"edits\"\nsource = \"e.yaml\"\n",
             head("b-late")
         ),
         &[
@@ -676,7 +679,7 @@ fn a_refusal_of_a_package_of_ours_stops_the_build() {
         )
         .unwrap_err();
         assert!(
-            err.contains("no_such_field") && err.contains("line 3"),
+            err.contains("no_such_field") && err.contains("line 1"),
             "{err}"
         );
     }
@@ -998,7 +1001,7 @@ fn a_from_line_applies_where_the_field_has_that_value_and_leaves_the_package_off
     assert!(
         variant.refused[0]
             .why
-            .contains("is 0.0, but the field is 1"),
+            .contains("is 0, but the field is 1"),
         "{:?}",
         variant.refused
     );
