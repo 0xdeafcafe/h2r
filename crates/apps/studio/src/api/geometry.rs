@@ -18,6 +18,8 @@ use crate::App;
 use crate::app::modeling::ModelAction;
 use crate::app::{Action, Refused};
 
+mod physics;
+
 /// The Modeling tool's provider.
 #[derive(Default)]
 pub struct Geometry;
@@ -42,6 +44,8 @@ const fn def(
 /// `target` is `kind:tag:index` (`cluster:e1000004:0`, `instance_def:…`,
 /// `mode_section:…`, `coll_bsp:…`); the target in edit mode otherwise.
 const METHODS: &[MethodDef] = &[
+    physics::SHAPES,
+    physics::SET,
     def(
         m::GEOMETRY_LIST,
         "The open map's editable geometry: every structure BSP's clusters and instanced definitions, and a render model's sections when `model` names one (its tag id), with counts, whether the raw data is the map's own and whether it is open",
@@ -220,6 +224,7 @@ fn summary(app: &App, t: Target) -> Value {
 fn call(app: &mut App, method: &str, p: &P) -> Reply {
     app.sync_modeling();
     match method {
+        m::MODEL_PHYSICS_SHAPES | m::MODEL_PHYSICS_SET => physics::call(app, method, p),
         m::GEOMETRY_LIST => {
             let model = match p.opt_str("model")? {
                 Some(s) => Some(parse_tag(s)?),

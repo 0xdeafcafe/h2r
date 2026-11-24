@@ -905,3 +905,88 @@ fn type6_shapes_take_part_in_cycle_detection() {
     });
     assert!(v.is_empty(), "{v:?}");
 }
+
+#[test]
+fn primitive_edits_write_only_the_requested_words() {
+    use shape_edit::{ShapeEdit, plan};
+
+    let mut p = Payload::new(PHMO_ROOT_SIZE);
+    let sphere = p.block(0x48, 1, &element(0x80, &[(0x2c, &f(2.0))]));
+    let pill = p.block(0x58, 1, &element(0x50, &[(0x2c, &f(2.0)), (0x3c, &f(2.0))]));
+    let bx = p.block(0x60, 1, &element(0x90, &[(0x30, &rec(&[&f(1.0), &f(1.0), &f(1.0)]))]));
+    assert_eq!(
+        plan(&p.buf, BASE, ShapeType::Sphere, 0, &ShapeEdit::Radius(3.0)).unwrap(),
+        vec![(sphere + 0x2c, f(3.0))]
+    );
+    assert_eq!(
+        plan(&p.buf, BASE, ShapeType::Pill, 0, &ShapeEdit::Radius(3.0)).unwrap(),
+        vec![(pill + 0x2c, f(3.0)), (pill + 0x3c, f(3.0))]
+    );
+    assert_eq!(
+        plan(&p.buf, BASE, ShapeType::Box, 0, &ShapeEdit::HalfExtents([1.0, 2.0, 1.0])).unwrap(),
+        vec![(bx + 0x34, f(2.0))]
+    );
+    assert!(plan(&p.buf, BASE, ShapeType::Box, 0, &ShapeEdit::HalfExtents([0.0, 2.0, 1.0])).is_err());
+}
+
+#[test]
+fn tetrahedron_vertex_edit_refits_bounds_and_planes_in_place() {
+    use shape_edit::{ShapeEdit, plan};
+
+    for external in [false, true] {
+        let mut p = Payload::new(PHMO_ROOT_SIZE);
+        p.block(0x40, 1, &[0; 12]);
+        // Tetrahedron with one corner at the origin and one on each axis.
+        let points = rec(&[
+            &f(0.0), &f(2.0), &f(0.0), &f(0.0),
+            &f(0.0), &f(0.0), &f(2.0), &f(0.0),
+            &f(0.0), &f(0.0), &f(0.0), &f(2.0),
+        ]);
+        let capacity = if external { 4u32 } else { 3 };
+        let poly = p.block(0x70, 1, &element(0x100, &[
+            (0x30, &rec(&[&f(1.0), &f(1.0), &f(1.0)])),
+            (0x40, &rec(&[&f(1.0), &f(1.0), &f(1.0)])),
+            (0x54, &1u32.to_le_bytes()), (0x58, &capacity.to_le_bytes()),
+            (0xf0, &4u32.to_le_bytes()), (0xf8, &4u32.to_le_bytes()),
+        ]));
+        let point_block = if external {
+            p.block(0x78, 1, &points)
+        } else {
+            p.buf[poly + 0x60..poly + 0x90].copy_from_slice(&points);
+            poly + 0x60
+        };
+        let n = 1.0f32 / 3.0f32.sqrt();
+        let planes: Vec<u8> = [
+            [-1.0, 0.0, 0.0, 0.0], [0.0, -1.0, 0.0, 0.0], [0.0, 0.0, -1.0, 0.0], [n, n, n, -2.0*n],
+        ].into_iter().flatten().flat_map(f).collect();
+        let plane_block = p.block(0x80, 4, &planes);
+
+        let move_tip = |position| ShapeEdit::Vertex { index: 3, position };
+        let writes = plan(&p.buf, BASE, ShapeType::Polyhedron, 0, &move_tip([0.0, 0.0, 3.0])).unwrap();
+        assert!(writes.iter().all(|(at, _)| [
+            point_block + 44, poly + 0x38, poly + 0x48,
+            plane_block + 48, plane_block + 52, plane_block + 56, plane_block + 60,
+        ].contains(at)));
+        for (at, word) in writes {
+            p.buf[at..at + 4].copy_from_slice(&word);
+        }
+        let model = pdecode(&p.buf);
+        assert!(model.validate().is_empty(), "{:?}", model.validate());
+        assert_eq!(model.polyhedra[0].vertices[3], [0.0, 0.0, 3.0]);
+        assert_eq!(model.polyhedra[0].aabb_half_extents, [1.0, 1.0, 1.5]);
+        assert!(plan(&p.buf, BASE, ShapeType::Polyhedron, 0, &move_tip([0.25, 0.25, -0.25])).is_err());
+    }
+}
+
+#[test]
+fn hull_edit_refuses_mopp_children_and_nonplanar_faces() {
+    use shape_edit::{ShapeEdit, plan};
+
+    let mut bytes = cube_phmo(false);
+    let edit = ShapeEdit::Vertex { index: 7, position: [0.5; 3] };
+    let err = plan(&bytes, BASE, ShapeType::Box, 0, &ShapeEdit::Radius(0.2)).unwrap_err();
+    assert!(err.to_string().contains("MOPP"));
+    bytes[0xa0..0xb0].fill(0);
+    let err = plan(&bytes, BASE, ShapeType::Polyhedron, 0, &edit).unwrap_err();
+    assert!(err.to_string().contains("convex hull"));
+}

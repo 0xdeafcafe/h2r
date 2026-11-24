@@ -1742,6 +1742,9 @@ impl App {
                 }
             }
             TagAction::Write(w) => self.tags.write(w),
+            TagAction::SetPhysicsShape { tag, kind, index, edit } => {
+                self.edit_physics_shape(tag, kind, index, &edit)
+            }
             TagAction::Block {
                 tag,
                 pair,

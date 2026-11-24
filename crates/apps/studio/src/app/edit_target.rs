@@ -105,6 +105,7 @@ fn changes_tag(action: &TagAction) -> bool {
     matches!(
         action,
         TagAction::Write(_)
+            | TagAction::SetPhysicsShape { .. }
             | TagAction::Block { .. }
             | TagAction::SetString { .. }
             | TagAction::ResizeData { .. }

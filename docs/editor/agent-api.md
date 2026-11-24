@@ -2586,6 +2586,7 @@ the window and the API stay one path.
   `model.render` and `model.check`, read-only over a map of their own
   (no actions, no undo); see "Models and customisation" below.
   `model.colors`, `model.emblem` and `custom.*` are planned there.
+  `api/geometry/physics.rs` serves the open map’s `model.physics.*`.
 - **Image generation.** `api/image_gen.rs` registers `ImageGenApi`:
   `image.generate`, `image.result`, `image.apply`, `image.accept` and
   `image.discard` over the jobs on the app (`App::imagegen`, shared with
@@ -2756,6 +2757,22 @@ several tags is `INVALID_PARAMS` with the candidates.
   Unusable geometry, missing material mappings and compiler failures are
   `REFUSED` and leave the mesh unchanged. The edit saves with the map
   when Allow unverified geometry writes is on.
+- `model.physics.shapes {tag}` reads a local `phmo` tag from the open
+  map with unsaved edits applied. The result has `spheres`, `pills`,
+  `boxes` and `polyhedra` arrays in tag block order. Entries give the
+  editable fields for each shape. Polyhedra also report their vertices,
+  plane equations and AABB centre and half extents.
+- `model.physics.set {tag, kind, index, field, value, vertex?}` edits one
+  shape in place. Use `sphere`, `pill`, `box` or `polyhedron` for
+  `kind` and the zero-based array index. Fields are `radius` for
+  primitives, `half_extents` for boxes, `bottom` and `top` for pills,
+  `translation` and `rotation` for spheres and boxes, and `vertex` for
+  polyhedra. Rotation takes three right-handed orthonormal rows. For a
+  vertex, pass its zero-based `vertex` index and a position as `value`.
+  The editor returns `REFUSED` for a shape under a MOPP or a vertex move
+  that breaks the convex faces. A change saves with the map and uses one
+  map undo step. The result's `warning` flags stale rigid-body bounds and
+  mass properties on a change and is null if the value matches.
 - `model.render {tag, view?, variant?, character?, biped?, hands?,
   size?, camera?, out?}`: the model drawn offscreen through the
   viewport's native object renderer
