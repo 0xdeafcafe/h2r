@@ -1342,12 +1342,12 @@ fn a_shadowed_chosen_light_reads_its_cone_in_e3_and_not_in_retail() {
     let mut floor = Vec::new();
     for j in 0..cells {
         for i in 0..cells {
-            let a = (j * (cells + 1) + i) as u32;
-            let c = a + cells as u32 + 1;
+            let a = (j * (cells + 1) + i) as u16;
+            let c = a + cells as u16 + 1;
             floor.extend([[a, a + 1, c + 1], [a, c + 1, c]]);
         }
     }
-    let board = positions.len() as u32;
+    let board = positions.len() as u16;
     positions.extend([
         [0.5 - h, -h, 0.45],
         [0.5 + h, -h, 0.45],
