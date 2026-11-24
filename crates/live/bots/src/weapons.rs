@@ -29,16 +29,18 @@ pub struct Reach {
 pub const BLADE_LUNGE: f32 = 1.5;
 /// A blade's lunge from its aim assist reach is kept within this.
 pub const LUNGE_LIMITS: (f32, f32) = (1.0, 3.0);
-/// A gun's fire range reaches this far past its band's far end.
-pub const FIRE_PAST_BAND: f32 = 1.6;
+/// Every gun's fire range ends this many times its band's far end: one
+/// rule for every class, from the band its own tag data gives it. A
+/// person sprays a little past where a gun is good, never across the map.
+pub const FIRE_PAST_BAND: f32 = 1.25;
 
 /// An automatic whose projectile is slower than this (world units a
 /// second) fires bolts a strafing target can step out of.
 pub const SLOW_BOLT: f32 = 150.0;
 /// A slow-bolt automatic keeps its target within this...
 pub const SLOW_BOLT_BAND: f32 = 6.0;
-/// ...and fires at it no further than this (world units).
-pub const SLOW_BOLT_FIRE: f32 = 10.0;
+/// ...and so fires at it no further than this (world units).
+pub const SLOW_BOLT_FIRE: f32 = SLOW_BOLT_BAND * FIRE_PAST_BAND;
 
 /// The plasma rifle and plasma pistol by identity, or any automatic whose
 /// projectile speed reads slow.
@@ -54,73 +56,55 @@ pub(crate) fn pickup_bias(personality: Option<crate::decisions::Personality>, ro
     6.0 * personality.map_or(0.0, |p| p.weapon_interest(role))
 }
 
-/// What `p` is good at. The role's band ([`Role::band`]) and fire range
-/// ([`Role::fire_range`]), refined by the tag's aim assist reach
-/// (`cone_range`, `pull_range`; `weap +0x20c`, `+0x214`) where Bungie set
-/// one. Snipers and splash weapons start with their role's range. A
-/// blade's lunge uses its aim assist reach. The projectile's damage reach
-/// caps both the firing range and the band.
+/// What `p` is good at. The band is the role's ([`Role::band`]), refined
+/// by the tag's aim assist reach (`cone_range`, `pull_range`; `weap
+/// +0x20c`, `+0x214`) where Bungie set one, shortened for slow bolts and
+/// to the projectile's damage reach. Snipers and splash weapons start with
+/// their role's band. Every gun then fires to [`FIRE_PAST_BAND`] times its
+/// band's far end, from its role's near limit (splash). A blade's lunge
+/// uses its aim assist reach.
 pub fn reach(p: &Profile) -> Reach {
     let role = p.role();
     let (lo, hi) = role.band();
-    let (flo, fhi) = role.fire_range();
     let r = p.cone_range.max(p.pull_range);
-    let mut reach = match role {
-        // A confirmed SMG is a short-range automatic: the movement closes
-        // to its band (its magnetism's reach, 4.5 to 9), and it fires past
-        // that as any gun does, in bursts (tactics::hold_pattern), to the
-        // role's fire range at most.
-        _ if p.dual == Some(crate::arms::DualGun::Smg) => {
-            let far = if r > 0.0 { r.clamp(4.5, 9.0) } else { 9.0 };
-            Reach {
-                band: (lo, far),
-                fire: (0.0, (far * FIRE_PAST_BAND).min(fhi)),
-                lunge: 0.0,
-            }
-        }
-        Role::Blade => {
-            let lunge = if r > 0.0 {
-                r.clamp(LUNGE_LIMITS.0, LUNGE_LIMITS.1)
-            } else {
-                BLADE_LUNGE
-            };
-            Reach {
-                band: (0.0, lunge),
-                fire: (0.0, 0.0),
-                lunge,
-            }
-        }
+    if role == Role::Blade {
+        let lunge = if r > 0.0 {
+            r.clamp(LUNGE_LIMITS.0, LUNGE_LIMITS.1)
+        } else {
+            BLADE_LUNGE
+        };
+        return Reach {
+            band: (0.0, lunge),
+            fire: (0.0, 0.0),
+            lunge,
+        };
+    }
+    let mut far = match role {
+        // Between half the role's band end and the role's own: a tag
+        // value far off is not trusted to throw the bot about, and no gun
+        // is good further than its class.
         Role::Scatter | Role::Spray | Role::Precise if r > 0.0 => {
-            // Within half and one and a half times the role's: a tag
-            // value far off is not trusted to throw the bot about.
-            let far = r.clamp((lo + 2.0).max(0.5 * hi), 1.5 * hi).min(fhi);
-            Reach {
-                band: (lo, far),
-                fire: (flo, (far * FIRE_PAST_BAND).clamp(far, fhi)),
-                lunge: 0.0,
-            }
+            r.clamp((lo + 2.0).max(0.5 * hi), hi)
         }
-        _ => Reach {
-            band: (lo, hi),
-            fire: (flo, fhi),
-            lunge: 0.0,
-        },
+        _ => hi,
     };
     // Plasma bolts are slow: past a few metres a strafing target walks
     // out of their path (docs/game/notes/2026-11-23-bots-natural-round1.md:
     // 0.42 of plasma rifle shots hit under 3 units, 0.17 from 3 to 12,
     // almost none beyond).
     if role == Role::Spray && slow_bolts(p) {
-        reach.band.1 = reach.band.1.min(SLOW_BOLT_BAND);
-        reach.band.0 = reach.band.0.min(reach.band.1);
-        reach.fire.1 = reach.fire.1.min(SLOW_BOLT_FIRE);
+        far = far.min(SLOW_BOLT_BAND);
     }
-    if p.damage_reach > 0.0 && p.damage_reach < reach.fire.1 {
-        reach.fire.1 = p.damage_reach;
-        let far = reach.band.1.min(p.damage_reach / FIRE_PAST_BAND);
-        reach.band = (reach.band.0.min(far), far);
+    // The projectile's damage reach caps where the fire stops, and so the
+    // band.
+    if p.damage_reach > 0.0 {
+        far = far.min(p.damage_reach / FIRE_PAST_BAND);
     }
-    reach
+    Reach {
+        band: (lo.min(far), far),
+        fire: (role.fire_range().0, far * FIRE_PAST_BAND),
+        lunge: 0.0,
+    }
 }
 
 /// How far `d` is outside `band`, relative to it: 0 inside.

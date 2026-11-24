@@ -298,10 +298,11 @@ fn the_shot_follows_the_gun_and_the_skill() {
         !Shot::of(None, true, &normal, None, 90.0).ready,
         "nothing in hand"
     );
-    // Arms not read: as before, held, ready, to 25.
+    // Arms not read: held, ready, to the weapon-blind band's fire range
+    // (the rule every gun fires by: 15 times FIRE_PAST_BAND).
     let blind = Shot::of(None, false, &normal, Some((24, 8)), 90.0);
     assert_eq!(blind.pull, Pull::Hold(Some((24, 8))));
-    assert!(blind.ready && blind.in_range(24.0) && !blind.in_range(25.0));
+    assert!(blind.ready && blind.in_range(18.0) && !blind.in_range(19.0));
 }
 
 #[test]

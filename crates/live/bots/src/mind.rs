@@ -162,8 +162,8 @@ pub const SHOT_SPEED: f32 = 90.0;
 pub const MELEE_RANGE: f32 = 0.9;
 /// With a blade in hand, swings (melee lunges) this close.
 pub const BLADE_RANGE: f32 = 1.5;
-/// The weapon-blind fire range (`arms::Role::Unknown`); a known weapon
-/// shoots to its own (`arms::Role::fire_range`).
+/// A vehicle's own guns (driver and gunner) fire within this; a carried
+/// weapon shoots to its own (`weapons::reach`, `arms::Role::fire_range`).
 pub const FIRE_RANGE: f32 = 25.0;
 pub const GRENADE_RANGE: (f32, f32) = crate::grenades::RANGE;
 pub const GRENADE_COOLDOWN: u32 = crate::grenades::COOLDOWN;

@@ -1566,19 +1566,23 @@ it shoots to (world units):
 
 | Role | Band (`arms::preferred_range`) | Shoots from, to | Rating |
 |---|---|---|---|
-| unknown (not read) | 2.5 to 15 | 0 to 25 | 1 |
+| unknown (not read) | 2.5 to 15 | 0 to 18.75 | 1 |
 | blade | 0 to 1.5 | (melee) | 4 |
-| scatter | 0 to 4 | 0 to 8 | 4 |
-| spray | 1.5 to 9 | 0 to 18 | 2 |
-| precise | 5 to 28 | 0 to 40 | 3 |
-| sniper | 12 to 60 | 0 to 80 | 5 |
-| blast | 5 to 25 | 2.5 to 35 | 5 |
+| scatter | 0 to 4 | 0 to 5 | 4 |
+| spray | 1.5 to 9 | 0 to 11.25 | 2 |
+| precise | 5 to 28 | 0 to 35 | 3 |
+| sniper | 12 to 60 | 0 to 75 | 5 |
+| blast | 5 to 25 | 2.5 to 31.25 | 5 |
 
-An identified SMG keeps its target within its aim-assist reach, bounded
-to 4.5–9 world units, and fires to 1.6 times that (14.4 at most), in
-bursts past the band from Normal up (§3.4). A plasma rifle or plasma pistol (by identity), or any
+One rule sets where every gun stops shooting: 1.25 times its own band's
+far end (`weapons::FIRE_PAST_BAND`), whatever its class. A person sprays
+a little past where a gun is good and never across the map, so an SMG
+with an 8-unit band fires to 10, a battle rifle with a 20-unit band to
+25. The band comes from the gun's own tag data (`weapons::reach`), and
+the role table above is the fallback when the tag has none. Past the
+band the trigger works in bursts from Normal up (§3.4). A plasma rifle or plasma pistol (by identity), or any
 automatic whose projectile is slower than 150 world units a second,
-keeps its target within 6 and fires to 10 at most
+keeps its target within 6 and so fires to 7.5 at most
 (`weapons::SLOW_BOLT_BAND`, `SLOW_BOLT_FIRE`): a strafing target steps out
 of slow bolts ([round 1 on Midship](notes/2026-11-23-bots-natural-round1.md):
 the plasma rifle hit 0.42 of its shots under 3 units, 0.17 from 3 to 12
@@ -5636,7 +5640,7 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
      | grenades a minute | 0.5 | 1 | 2 | 3 |
 
      Until its reaction time has passed the bot walks on and turns at
-     half gain, but does not fire (§3.4). It fires within 25 units, melees (B) within 0.9, and throws a
+     half gain, but does not fire (§3.4). It fires within its gun's range (§3.6), melees (B) within 0.9, and throws a
      grenade (left trigger) at a target 3 to 12 units away, at most once
      every 8 s. While fighting it strafes, kept on the nav mesh.
    - Tests (`cargo test -p bots`): the skills get better in order; a wall
@@ -6183,11 +6187,10 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
    - **Weapon ranges** (`weapons::reach`). A gun's band and fire range
      are its role's (§3.6) refined by its tag's aim assist reach
      (`cone_range`, `pull_range`): a magnum, shotgun, plasma or
-     rifle is good to its reach (kept within half and one and a half
-     times its role's band end) and fires to 1.6 times that. An identified
-     SMG closes to its effective band (4.5 to 9 units) and fires to 1.6
-     times it. A
-     sniper or splash weapon starts with its role's range. The first
+     rifle or SMG is good to its reach (kept between half its role's
+     band end and the role's band end). A sniper or splash weapon starts
+     with its role's band. Every gun fires to 1.25 times its band's end
+     (`weapons::FIRE_PAST_BAND`), one rule for all classes. The first
      barrel's projectile caps all firearm ranges at the nearer positive
      value of its air damage endpoint and maximum travel. With both
      fields unset, the role and aim assist decide. The movement band

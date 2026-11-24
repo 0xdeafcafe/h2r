@@ -310,6 +310,35 @@ fn the_preferred_range_is_the_held_guns_band() {
 }
 
 #[test]
+fn a_short_gun_out_of_its_range_draws_the_longer_one_or_holds_fire() {
+    // An SMG's band ends at 9; at three times that it does not shoot.
+    let far = 3.0 * smg_reach_band();
+    for by_range in [false, true] {
+        let a = arms(
+            Some(with(SMG, smg(), full())),
+            Some(with(BR, rifle(), full())),
+        );
+        let kit = if by_range {
+            decide_by_range(&a, Some(far), false, false, &[])
+        } else {
+            decide(&a, Some(far), false, &[])
+        };
+        assert_eq!(kit, Kit::Switch, "by range {by_range}");
+    }
+    // With only short guns it keeps them and closes in: the shot is out
+    // of range (tactics::Shot::in_range), the band pulls it nearer.
+    let a = arms(Some(with(SMG, smg(), full())), Some(with(SHOTGUN, shotgun(), full())));
+    assert_eq!(decide_by_range(&a, Some(far), false, false, &[]), Kit::Fine);
+    let held = a.held.unwrap();
+    assert!(!(held.reach().fire.0..held.reach().fire.1).contains(&far));
+    assert!(far > preferred_range(&a).1);
+}
+
+fn smg_reach_band() -> f32 {
+    with(SMG, smg(), full()).reach().band.1
+}
+
+#[test]
 fn by_range_it_switches_to_the_gun_that_suits_the_distance() {
     let a = arms(
         Some(with(SHOTGUN, shotgun(), full())),
