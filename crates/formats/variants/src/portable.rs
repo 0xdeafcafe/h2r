@@ -651,6 +651,71 @@ pub fn attach_builtin(v: &mut GameVariant) -> Result<bool, PortableError> {
     Ok(true)
 }
 
+/// The built-in options a retail record with no script plays with: each
+/// type-area row of [`rules::builtin::RETAIL_OPTIONS`] that applies to the
+/// record's engine and that `ir` has an option for, read from `v`; every
+/// other option takes its default. A value outside its option's range is
+/// refused by name; nothing is clamped.
+pub fn retail_options(ir: &rules::Ir, v: &GameVariant) -> Result<u32, PortableError> {
+    let engine = v.game_type().engine();
+    let carrier = u8::try_from(engine)
+        .map_err(|_| PortableError::Setting(format!("engine {engine} is no carrier")))?;
+    let mut given = Vec::new();
+    for &(row_name, option) in rules::builtin::RETAIL_OPTIONS {
+        let Some((_, row)) = rules::settings::named(row_name) else {
+            continue;
+        };
+        let Some(id) = row.setting(carrier) else {
+            continue;
+        };
+        if !(0..ir.options.len()).any(|i| ir.option_name(i) == option) {
+            continue;
+        }
+        let value = v
+            .get(SettingId(id))
+            .ok_or_else(|| PortableError::Setting(format!("{row_name} has no place in the record")))?;
+        given.push((option.to_string(), rules::ir::OptionValue::Int(i64::from(value))));
+    }
+    ir.pack_options(&given)
+        .map_err(|e| PortableError::Options(format!("{}: {e}", ir.header.name)))
+}
+
+/// The index-6 record a retail record with no script starts as: the
+/// built-in script of its type, with the common settings and extras kept,
+/// the type area mapped into the script's options ([`retail_options`]) and
+/// then zero. `None` for a record that names a script or has an ignored
+/// block, and for Slayer, the script index and an engine with no built-in.
+/// `v` is not changed: the stored record and the wire keep its bytes
+/// (docs/game/game-types-without-carriers.md, "Retail records").
+pub fn script_record_of_retail(v: &GameVariant) -> Result<Option<GameVariant>, PortableError> {
+    let ty = v.game_type();
+    if matches!(ty, GameType::Slayer | GameType::Script | GameType::Other(_)) {
+        return Ok(None);
+    }
+    let mut e = match v.ext_state() {
+        Block::None => ext::Ext::in_effect(v.ext_block()),
+        Block::Ext(e) if e.script.mode == Mode::None => e,
+        _ => return Ok(None),
+    };
+    let Some(src) = u8::try_from(ty.engine()).ok().and_then(rules::builtin::builtin) else {
+        return Ok(None);
+    };
+    let ir = rules::compile(src).map_err(|e| PortableError::ScriptRefused(e.to_string()))?;
+    let options = retail_options(&ir, v)?;
+    let mut raw = *v.bytes();
+    raw[record::TYPE_AREA].fill(0);
+    let mut out = GameVariant::from_bytes(&raw).map_err(|e| PortableError::Edit(e.to_string()))?;
+    out.set_game_type(GameType::Script);
+    e.script = ext::Script {
+        mode: Mode::Rules,
+        prefix: ir.id().0[..8].try_into().unwrap(),
+        options,
+    };
+    out.set_ext(&e)
+        .map_err(|e| PortableError::Edit(e.to_string()))?;
+    Ok(Some(out))
+}
+
 /// Writes one setting of a script into the record or the block.
 fn write_setting(
     v: &mut GameVariant,
@@ -1426,6 +1491,117 @@ settings {
         assert_eq!(v.bytes()[..ext::AT], stock.bytes()[..ext::AT]);
         assert_eq!(v.ext().script.options, slayer.pack_options(&given).unwrap());
         assert_eq!(v.ext().gravity, 100);
+    }
+
+    /// A retail record of `ty` with each `(row, value)` of its type area set.
+    fn retail(ty: GameType, rows: &[(&str, i32)]) -> GameVariant {
+        let mut v = GameVariant::stock(ty).unwrap();
+        for &(name, value) in rows {
+            let (_, row) = rules::settings::named(name).unwrap();
+            let id = row.setting(ty.engine() as u8).unwrap();
+            v.set(SettingId(id), value).unwrap();
+        }
+        v
+    }
+
+    #[test]
+    fn a_retail_record_with_no_script_maps_to_its_builtin_on_the_script_index() {
+        // (type, the type-area rows set, the option each reads back as).
+        let cases: &[(GameType, &[(&str, i32)], &[(&str, i32)])] = &[
+            (
+                GameType::King,
+                &[("king_moving_hill", 45)],
+                &[("move_time", 45)],
+            ),
+            (
+                GameType::Territories,
+                &[("territories_count", 5), ("territories_contest_time", 9)],
+                &[("in_play", 5), ("contest_time", 9)],
+            ),
+            (
+                GameType::Ctf,
+                &[
+                    ("ctf_flag_type", 1),
+                    ("ctf_reset_time", 12),
+                    ("ctf_touch_return", 1),
+                    ("ctf_flag_at_home", 1),
+                ],
+                &[("flag_type", 1), ("reset_time", 12), ("touch_return", 1), ("flag_at_home", 1)],
+            ),
+            (
+                GameType::Assault,
+                &[("ctf_flag_type", 1), ("ctf_reset_time", 20), ("ctf_touch_return", 1), ("assault_arm_time", 9)],
+                &[("flag_type", 1), ("reset_time", 20), ("touch_return", 1), ("arm_time", 9), ("flag_at_home", 0)],
+            ),
+            (
+                GameType::Oddball,
+                &[("oddball_ball_count", 3)],
+                &[("ball_count", 3), ("reset_time", 30)],
+            ),
+            (GameType::Juggernaut, &[], &[]),
+        ];
+        for &(ty, area, want) in cases {
+            let mut v = retail(ty, area);
+            v.set(SettingId(16), 3).unwrap();
+            let before = v.clone();
+            let out = script_record_of_retail(&v).unwrap().expect("a record that maps");
+            // The stored record is unchanged.
+            assert_eq!(v.bytes()[..], before.bytes()[..], "{ty:?}");
+            // The new record is on the script index with a zero type area.
+            assert_eq!(out.game_type(), GameType::Script, "{ty:?}");
+            assert!(out.bytes()[record::TYPE_AREA].iter().all(|&b| b == 0), "{ty:?}");
+            // The common settings and the name read back equal.
+            assert_eq!(out.name(), v.name(), "{ty:?}");
+            assert_eq!(out.team_play(), v.team_play(), "{ty:?}");
+            assert_eq!(out.get(SettingId(16)), Some(3), "{ty:?}");
+            for (at, size) in [(0x4c, 4), (0x50, 4), (0x54, 4), (0x78, 4), (0xac, 4)] {
+                assert_eq!(out.bytes()[at..at + size], v.bytes()[at..at + size], "{ty:?} +{at:#x}");
+            }
+            // The script is the type's built-in, and its options are the area.
+            let ir = rules::compile(rules::builtin::builtin(ty.engine() as u8).unwrap()).unwrap();
+            let script = out.ext().script;
+            assert_eq!((script.mode, script.prefix[..].to_vec()), (Mode::Rules, ir.id().0[..8].to_vec()), "{ty:?}");
+            for &(name, value) in want {
+                assert_eq!(ir.option_value(script.options, name), Some(value), "{ty:?} {name}");
+            }
+            assert_eq!(script.options, retail_options(&ir, &v).unwrap(), "{ty:?}");
+        }
+    }
+
+    #[test]
+    fn a_retail_record_that_does_not_map_is_left_alone_or_refused_by_name() {
+        // Slayer, a record that names a script and an engine with no built-in.
+        let slayer = GameVariant::stock(GameType::Slayer).unwrap();
+        assert_eq!(script_record_of_retail(&slayer), Ok(None));
+        let mut named = retail(GameType::Ctf, &[]);
+        assert!(attach_builtin(&mut named).unwrap());
+        assert_eq!(script_record_of_retail(&named), Ok(None));
+        assert_eq!(script_record_of_retail(&GameVariant::stock(GameType::Script).unwrap()), Ok(None));
+        // A flag reset time past the script's option is refused, not clamped.
+        let long = retail(GameType::Ctf, &[("ctf_reset_time", 301)]);
+        assert!(matches!(script_record_of_retail(&long), Err(PortableError::Options(_))));
+    }
+
+    #[test]
+    fn the_matchmaking_ctf_and_assault_records_map_their_type_area() {
+        for (key, src, engine, want) in [
+            (
+                "classic_ctf",
+                rules::builtin::CTF,
+                1,
+                &[("flag_at_home", 1), ("touch_return", 1)][..],
+            ),
+            ("assault", rules::builtin::ASSAULT, 9, &[("flag_type", 1)][..]),
+        ] {
+            let m = rules::builtin::MATCHMAKING.iter().find(|m| m.key == key).unwrap();
+            let record = record_for(&compiled(m.source), &[]).unwrap();
+            assert_eq!(record.game_type().engine(), engine, "{key}");
+            let ir = compiled(src);
+            let options = retail_options(&ir, &record).unwrap();
+            for &(name, value) in want {
+                assert_eq!(ir.option_value(options, name), Some(value), "{key} {name}");
+            }
+        }
     }
 
     #[test]

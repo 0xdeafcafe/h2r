@@ -444,9 +444,11 @@ fn king_moves_the_hill_on_its_own_option() {
     g.numbers.extend([(500, 0), (510, 1)]);
     let mut vm = start_scripted(builtin::KING, &mut g, 5, &[("move_time", 2)]);
     assert_eq!(vm.global("hill"), Some(0));
-    ticks(&mut vm, &mut g, 2, 119);
+    // Two seconds are 60 ticks at 30 ticks a second (`caps::TICKS_PER_SECOND`);
+    // the timer set at tick 1 runs out at tick 61.
+    ticks(&mut vm, &mut g, 2, 57);
     assert_eq!(vm.global("hill"), Some(0));
-    ticks(&mut vm, &mut g, 121, 2);
+    ticks(&mut vm, &mut g, 59, 5);
     assert_eq!(vm.global("hill"), Some(1));
 }
 

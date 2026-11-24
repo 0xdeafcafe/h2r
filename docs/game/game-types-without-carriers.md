@@ -1,6 +1,6 @@
 # Game types without carriers
 
-Status: Design, with GT0 (the reads, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md)), GT1 (the header), GT2 (eligible Slayer scripts on index 6 and script role traits), GT3 (King of the Hill and Territories own their zones), GT4 (the flag, bomb and ball as script objects), GT5 (filing and round-start lines), GE1 to GE4 (the record clean-up, the wire codec, the protocol map and the engine object for the script index), GM1 (`crates/tools/firefight-kit/src/ground.rs`) and GM4 (`siege.rules`'s labels, `rules::labels::reads`) built, and GM3's document, session and screens built (the builder hook is not wired, below); "What the carrier supplies" is the state of the code and the slices are the order to change the rest in.
+Status: Design, with GT0 (the reads, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md)), GT1 (the header), GT2 (eligible Slayer scripts on index 6 and script role traits), GT3 (King of the Hill and Territories own their zones), GT4 (the flag, bomb and ball as script objects), GT5 (filing and round-start lines), GT7's record mapping (the `GAME_ACTIVATE` swap is not wired, "Retail records"), GE1 to GE4 (the record clean-up, the wire codec, the protocol map and the engine object for the script index), GM1 (`crates/tools/firefight-kit/src/ground.rs`) and GM4 (`siege.rules`'s labels, `rules::labels::reads`) built, and GM3's document, session and screens built (the builder hook is not wired, below); "What the carrier supplies" is the state of the code and the slices are the order to change the rest in.
 Code: `crates/formats/rules/src` (`ir.rs` the header, `types.rs` the type table, `lang/check.rs`, `caps.rs`, `builtin/`), `crates/extensions/game/src/rules/` (`runtime.rs`, `scoring.rs`, `objectives.rs`, `roles.rs`), `crates/formats/variants/src/portable.rs` (`record_for`), `crates/formats/variants/src/record.rs` (`check`, `clean_up`, `protocol`), `crates/formats/variants/src/wire.rs` (the codec), `crates/extensions/game/src/rules/record.rs` (the record hooks), `crates/extensions/game/src/rules/engine_object.rs` (the engine object), `crates/hooking/guest-layout/src/points/game_types.rs` (its image entries), `crates/extensions/game/src/community_variants.rs`. Tests: `crates/formats/rules/tests/engines.rs`, `tests/modes.rs`, `crates/rewrites/engine/tests/variant_record_differential.rs`, `crates/extensions/game/src/rules/runtime/tests/script_index.rs`.
 Switch: none (the `rules` feature).
 
@@ -134,6 +134,24 @@ preserved and type-area settings mapped into script options. The swap belongs at
 subsystem start copies the engine pointer from the options
 (`0x1574c0`), and every machine makes the same swap (**E**, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md)). The record on disk and on the wire is not
 changed, so the clean-up and the codec see what they expect.
+
+The mapping is `variants::portable::script_record_of_retail`: the
+common settings, extras and name are kept, the type area becomes zero, and
+the record names the type's built-in with the options
+`rules::builtin::RETAIL_OPTIONS` pairs with the type area's rows
+(`flag_type`, `reset_time`, `touch_return`, `flag_at_home`, `arm_time`,
+`ball_count`, `move_time`, `in_play`, `contest_time`). A value the option's
+range lacks (a reset time over 300 seconds, no balls) is refused by name,
+not clamped. Slayer, a record that names a script and the script index are
+left as they are. Oddball's `reset_time` has no row and stays at its
+default.
+
+A built-in that runs under a retail record (a record with no script, or a
+`uses` script's record, as the matchmaking CTF and Assault) takes its
+options from the record's type area at game start
+(`rules::guest::retail_options`, in `Runtime::start`), so the settings the
+record holds still reach the script. The record itself stays on its retail
+index; moving it to index 6 at `GAME_ACTIVATE` is not wired.
 
 A script's options are 32 bits in the record
 (rules-engine.md, "Carrying a script"). CTF's and Assault's type areas
@@ -392,7 +410,7 @@ with tests, M under 2,500. Tests are headless on `rules::fake::FakeGame`.
 | GT4 (built) | **Carried objectives**: the flag, bomb and ball as script objects; CTF, Assault and Oddball | M | GT2, GT0 | a capture scores and the flag returns, by time and by touch; a bomb armed on the plate scores; time held scores; with no carrier slot delivered. `ctf.rules` and `oddball.rules` take the flag type, reset time, touch return, flag at home, arming time and ball count from script options, and return an object by `delete` and a new `spawn_objective` at its stand, so `reset_objective` is not called. The tests run them with `carrier` on the script index, whose type area is zero |
 | GT5 (built) | **Filing and the start line**: variants filed by type; the host plays the type's line; clips of ours for our types | S | GT1, GT0 | each built-in lands in its type's row on an invented `goof` block; the round start posts the type's line on the fake game |
 | GT6 | **The display**: a HUD kit HUD per objective type, the `points` label on the scoreboard and post-game | M | GT3, GT4, GT0; PK11 of studio-redesign | each HUD compiles and shows its state from an invented script state; the label reaches the fake scoreboard |
-| GT7 | **Retail records**: a no-script record of another engine starts as its type's built-in on index 6, type-area settings mapped | M | GT3, GT4, GT0 | each retail engine's invented record maps to a script record whose settings read back equal; the stored record's bytes are unchanged |
+| GT7 (mapping built, swap not wired) | **Retail records**: a no-script record of another engine starts as its type's built-in on index 6, type-area settings mapped | M | GT3, GT4, GT0 | each retail engine's invented record maps to a script record whose settings read back equal; the stored record's bytes are unchanged. `portable::script_record_of_retail` makes the record and `portable::retail_options` the options; the matchmaking `classic_ctf` and `assault` records map the same way |
 | GE0 | **The engine-object reads** (**E**), a note beside GT0's: the "E first" column of "No retail engine object"; the table's slots for the deprecated indexes; which number `SCRIPT_INDEX` is | S | nothing | the note lists every reader and caller with its address, the 51 slots marked own or shared, and the chosen index with its reason |
 | GE1 (built) | **The record**: `variants::record::check` and the native clean-up at `0x19d650` take the script index | M | GE0 | on invented records the native body equals `check` for every retail index; a script record keeps its index and reference; a non-zero type area on one is cleaned |
 | GE2 (built) | **The codec**: native encode and decode with an empty type area for the script index | M | GE1 | every invented record of a retail index encodes to the bytes the model in `crates/formats/variants` gives and decodes back; a script record round-trips; an out-of-range index fails the decode |

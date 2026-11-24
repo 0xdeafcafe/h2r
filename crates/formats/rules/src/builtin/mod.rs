@@ -132,6 +132,23 @@ pub struct Builtin {
     pub source: &'static str,
 }
 
+/// The type-area rows of the settings table a built-in takes as an option
+/// of its own, by the row's name and the option's. A retail record with no
+/// script plays its type's built-in with these options read from its type
+/// area (`variants::portable::retail_options`); a script-index record sets
+/// the options directly and has a zero type area.
+pub const RETAIL_OPTIONS: &[(&str, &str)] = &[
+    ("oddball_ball_count", "ball_count"),
+    ("ctf_flag_type", "flag_type"),
+    ("ctf_reset_time", "reset_time"),
+    ("ctf_touch_return", "touch_return"),
+    ("ctf_flag_at_home", "flag_at_home"),
+    ("assault_arm_time", "arm_time"),
+    ("king_moving_hill", "move_time"),
+    ("territories_count", "in_play"),
+    ("territories_contest_time", "contest_time"),
+];
+
 /// Every built-in script, by engine index.
 pub const ALL: &[Builtin] = &[
     Builtin { name: "Capture the Flag", engine: 1, source: CTF },
@@ -301,19 +318,8 @@ mod tests {
         // type-area row of the settings table, at the record's own range,
         // and the built-in's options must fit the record's 32 option bits
         // together (docs/game/notes/2026-11-24-game-type-engine-reads.md).
-        // A row a built-in has an option for (`own`, by the row's name and
+        // A row a built-in has an option for (`RETAIL_OPTIONS`, by the row's name and
         // the option's) is that option's bits, counted once.
-        let own = [
-            ("oddball_ball_count", "ball_count"),
-            ("ctf_flag_type", "flag_type"),
-            ("ctf_reset_time", "reset_time"),
-            ("ctf_touch_return", "touch_return"),
-            ("ctf_flag_at_home", "flag_at_home"),
-            ("assault_arm_time", "arm_time"),
-            ("king_moving_hill", "move_time"),
-            ("territories_count", "in_play"),
-            ("territories_contest_time", "contest_time"),
-        ];
         let width = |(lo, hi): (i32, i32)| 64 - ((hi - lo).max(0) as u64).leading_zeros();
         let mut counted = Vec::new();
         for b in ALL {
@@ -322,7 +328,7 @@ mod tests {
             let area: u32 = crate::settings::TABLE
                 .iter()
                 .filter(|r| !r.carriers.is_empty() && r.applies(b.engine))
-                .filter(|r| !own.iter().any(|&(row, option)| row == r.name && has(option)))
+                .filter(|r| !RETAIL_OPTIONS.iter().any(|&(row, option)| row == r.name && has(option)))
                 .map(|r| width(r.kind.range()))
                 .sum();
             let total = option_bits(&ir) + area;
