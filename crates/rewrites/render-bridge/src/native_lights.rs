@@ -4,12 +4,14 @@
 //! light's layers 12 and 13 its passes draw. At the passes' entry the
 //! light and its steps (`scene_extract::layout::light_passes`) go into
 //! the frame step's open view. The light frame body ([`frame`]) runs
-//! `RENDER_DYNAMIC_LIGHTS` itself. The first-person lights (`0x000404b0`)
+//! `RENDER_DYNAMIC_LIGHTS` itself, and [`items`] a light's item lists at
+//! `SCENE_ITEMS`. The first-person lights (`0x000404b0`)
 //! go into the first person's view at their first layer draw, and their
 //! layers 12 and 13 whose groups the scene holds whole are drawn from it
 //! alone ([`FIRST_PERSON_LAYERS`]). On with the native renderer
 //! (`impl.render.native`, on by default).
 mod frame;
+mod items;
 pub mod walk;
 
 use std::cell::{Cell, RefCell};
@@ -732,6 +734,7 @@ impl Feature for NativeLights {
             return Ok(());
         }
         frame::install(b);
+        items::install(b);
         b.raw()
             .observe_before(&points::RENDER_DYNAMIC_LIGHTS, "native_lights_view", |_| {
                 if !Stage::Lights.standing_down() {

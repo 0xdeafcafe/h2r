@@ -9,8 +9,13 @@
 //! guest's order, reading each value when the guest reads it. Steps 6,
 //! 12 and 13 are the Rust leaves of [`super`], and a leaf that refuses
 //! gives its step to its guest function; steps 7 to 9 are inline; steps
-//! 5, 10, 11, 14, 15 and 16 are guest calls. Once it has written, the
-//! body finishes the frame.
+//! 5, 10, 11, 15 and 16 are guest calls. Step 14 (slice L3) is the
+//! records reset `0x0002cb30` as a guest call (its hook sizes the
+//! structure records' detail for the world caller), the cluster and
+//! placement walks as [`world_walk::records`] in the light's kind, each
+//! given to its guest function when it refuses, and the object records
+//! `0x00133720` as a guest call. Once it has written, the body finishes
+//! the frame.
 //!
 //! The guest keeps its locals in the `0x1518` bytes below its entry
 //! `ESP` and hands its callees pointers into them; the body uses the
@@ -26,6 +31,7 @@ use super::{Refusal, Result, extra_caster, geometry, volume};
 use crate::entry::{Cx, EntryError, GuestCall, Regs, Ret};
 use crate::light_constants::Fpu;
 use crate::memory::{GuestMemory, MemFault};
+use crate::render_loop::world_walk::{self, Walk};
 
 /// The frame below the entry `ESP`: the probe's `0x1508` and the four
 /// saved registers.
@@ -168,6 +174,10 @@ pub struct Gathered {
     pub geometry: By,
     /// Step 13, for a definition with bit 22.
     pub extra_caster: Option<By>,
+    /// Step 14: the cluster walk `0x00133390` and the placement walk
+    /// `0x00133520` in the light's kind.
+    pub clusters: By,
+    pub placements: By,
 }
 
 /// One row of the visible list.
@@ -191,6 +201,8 @@ pub struct LightFrame {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Plan {
     pub entry_esp: u32,
+    /// The caller's float state, which the record walks compute under.
+    pub fpu: Fpu,
     /// Step 1, computed whole; its writes are the body's first.
     pub list: VisibleList,
 }
@@ -314,7 +326,11 @@ pub fn plan(m: &dyn GuestMemory, entry_esp: u32, fpu: Fpu) -> Result<Plan> {
             m.bytes(r.wrapping_add(offset), 12)?;
         }
     }
-    Ok(Plan { entry_esp, list })
+    Ok(Plan {
+        entry_esp,
+        fpu,
+        list,
+    })
 }
 
 /// Clears [`call_site`] when the call returns, or when the body is
@@ -369,7 +385,7 @@ pub async fn run(cx: &Cx, plan: Plan) -> Result<(Ret, LightFrame), EntryError> {
             });
             continue;
         }
-        let gathered = light(cx, bottom, row_at, row.light).await?;
+        let gathered = light(cx, bottom, plan.fpu, row_at, row.light).await?;
         frame.lights.push(FrameLight {
             row,
             drawn: true,
@@ -380,7 +396,13 @@ pub async fn run(cx: &Cx, plan: Plan) -> Result<(Ret, LightFrame), EntryError> {
 }
 
 /// Steps 3 to 16 for the drawn row at `row_at`.
-async fn light(cx: &Cx, bottom: u32, row_at: u32, datum: u32) -> Result<Gathered, EntryError> {
+async fn light(
+    cx: &Cx,
+    bottom: u32,
+    fpu: Fpu,
+    row_at: u32,
+    datum: u32,
+) -> Result<Gathered, EntryError> {
     let light = cx.read(|m| Light::read(m, datum))?;
     // The plan checked the chain; nothing the body has called since
     // writes object parents.
@@ -554,7 +576,10 @@ async fn light(cx: &Cx, bottom: u32, row_at: u32, datum: u32) -> Result<Gathered
         None
     };
 
-    // Steps 14 and 15: the records and their part visibility.
+    // Steps 14 and 15: the records and their part visibility. The reset
+    // stays the guest's: in the light's kind it is one write
+    // (`[0x4c0b78]` = `[0x4c0b7c]`, 0x0002cba7), and the hook on it sizes
+    // the walks' detail for the world caller (lod_distance).
     let records = cx.read(|m| m.u32(RECORDS_VIS))?;
     guest(
         cx,
@@ -562,16 +587,26 @@ async fn light(cx: &Cx, bottom: u32, row_at: u32, datum: u32) -> Result<Gathered
         GuestCall::new(call::RESET_RECORDS).ebx(records),
     )
     .await?;
-    guest(
+    let clusters = walk(
         cx,
+        records,
+        Walk::Clusters,
+        fpu,
         site::CLUSTER_RECORDS,
         GuestCall::new(call::CLUSTER_RECORDS).ebx(records),
     )
     .await?;
-    let request = GuestCall::new(call::PLACEMENT_RECORDS)
-        .ebx(records)
-        .args([records]);
-    guest(cx, site::PLACEMENT_RECORDS, request).await?;
+    let placements = walk(
+        cx,
+        records,
+        Walk::Placements,
+        fpu,
+        site::PLACEMENT_RECORDS,
+        GuestCall::new(call::PLACEMENT_RECORDS)
+            .ebx(records)
+            .args([records]),
+    )
+    .await?;
     let request = GuestCall::new(call::OBJECT_RECORDS)
         .eax(records)
         .ebx(records)
@@ -616,7 +651,35 @@ async fn light(cx: &Cx, bottom: u32, row_at: u32, datum: u32) -> Result<Gathered
         vis,
         geometry: geometry_by,
         extra_caster: extra_caster_by,
+        clusters,
+        placements,
     })
+}
+
+/// One record walk of step 14: Rust when [`world_walk::records`] takes
+/// it, which writes nothing when it refuses; else `request`, the guest
+/// function, whose own hooks retry it row by row.
+async fn walk(
+    cx: &Cx,
+    vis: u32,
+    walk: Walk,
+    fpu: Fpu,
+    site: u32,
+    request: GuestCall,
+) -> Result<By, EntryError> {
+    let made = cx.write(|m| world_walk::records(m, vis, walk, fpu.mxcsr, fpu.x87_control));
+    match made {
+        Ok(_) => Ok(By::Rust),
+        Err(why) => {
+            guest(cx, site, request).await?;
+            Ok(By::Guest(match why {
+                world_walk::Refused::Float => Refusal::Unsupported,
+                world_walk::Refused::Cold => Refusal::Residency,
+                world_walk::Refused::Layout => Refusal::Layout,
+                world_walk::Refused::Write => Refusal::Memory,
+            }))
+        }
+    }
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 //! Context-only admission inside the original light layers.
-use render_bridge::native_lights::{self, NativeLights};
 use hooks::plan::Base;
 use hooks::{Registry, Switches};
+use render_bridge::native_lights::{self, NativeLights};
 
 #[test]
 fn the_master_switch_off_places_nothing() {
@@ -23,15 +23,33 @@ fn its_chains_run_on_the_render_thread() {
     let Sig::Fn { args, ret, pop } = LIGHT_GEOMETRY_DRAW.sig else {
         panic!("geometry admission requires a returnable handler");
     };
-    assert_eq!(args.iter().map(|&(_, loc)| loc).collect::<Vec<_>>(), (0..7).map(Loc::Stack).collect::<Vec<_>>());
+    assert_eq!(
+        args.iter().map(|&(_, loc)| loc).collect::<Vec<_>>(),
+        (0..7).map(Loc::Stack).collect::<Vec<_>>()
+    );
     assert_eq!(u32::from(pop), engine::render_loop::layer::HANDLER_CLEANUP);
     assert_eq!(ret, None);
     let text = plan.text();
     assert!(text.contains("native_lights_geometry"), "{text}");
     assert!(text.contains("native_lights_view"), "{text}");
     // The light frame body is the implementation at RENDER_DYNAMIC_LIGHTS.
-    assert!(text.contains("implement native-lights:native_lights_frame"), "{text}");
-    for point in ["RENDER_LIGHT_PASSES", "RENDER_DYNAMIC_LIGHTS", "LAYER_DRAW", "LIGHT_GEOMETRY_DRAW", "LAYER_END"] {
+    assert!(
+        text.contains("implement native-lights:native_lights_frame"),
+        "{text}"
+    );
+    // And the light's item lists' at SCENE_ITEMS (slice L4).
+    assert!(
+        text.contains("implement native-lights:native_lights_items"),
+        "{text}"
+    );
+    for point in [
+        "RENDER_LIGHT_PASSES",
+        "RENDER_DYNAMIC_LIGHTS",
+        "SCENE_ITEMS",
+        "LAYER_DRAW",
+        "LIGHT_GEOMETRY_DRAW",
+        "LAYER_END",
+    ] {
         let chain = plan
             .chains
             .values()
@@ -72,13 +90,22 @@ fn placed_its_snapshot_policy_is_a_section() {
 #[test]
 fn light_walk_follows_the_master_switch_with_context_only_chains() {
     use native_lights::walk::{self, NativeLightWalk};
-    for (spec, enabled) in [("", true), ("impl.render.native=off", false), ("impl.render=off", true)] {
+    for (spec, enabled) in [
+        ("", true),
+        ("impl.render.native=off", false),
+        ("impl.render=off", true),
+    ] {
         let switches = Switches::parse(spec).unwrap();
         assert_eq!(walk::on(&switches), enabled);
         let mut r = Registry::new(switches);
         r.add(&NativeLightWalk).unwrap();
         let plan = r.build(&Base).unwrap();
-        assert_eq!(plan.text().contains("walk gathered light geometry"), enabled);
-        for chain in plan.chains.values() { assert!(chain.render_thread().is_ok()); }
+        assert_eq!(
+            plan.text().contains("walk gathered light geometry"),
+            enabled
+        );
+        for chain in plan.chains.values() {
+            assert!(chain.render_thread().is_ok());
+        }
     }
 }

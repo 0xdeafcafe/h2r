@@ -1,6 +1,6 @@
 //! `engine::render::light_gather` against the original, lifted and run on
 //! the IR interpreter from the same seeded 64 MB state
-//! (docs/graphics/native-light-gather.md, slices L1 and L2).
+//! (docs/graphics/native-light-gather.md, slices L1 to L4).
 //!
 //! **The leaves (L1).** Each root runs lifted with its whole tree (no
 //! stub) to its return; the port runs on a copy and its writes are
@@ -22,6 +22,12 @@
 //!
 //! **The frame (L2).** See [`frame_transcripts_match_the_lifted_original`].
 //!
+//! **A light's records (L3).** See
+//! [`light_record_walks_match_the_lifted_original`].
+//!
+//! **The item lists and the first-person table (L4).** See
+//! [`item_lists_match_the_lifted_original`].
+//!
 //! Needs the user's XBE (`H2_XBE`, or `disc/default.xbe`), pinned by hash;
 //! skips without it. Nothing is copied from it: thresholds and constants
 //! are the image's own words. `H2_DIFF_SEEDS=1,2,3` picks seeds.
@@ -42,7 +48,9 @@ use common::{IMAGE_SHA256, sha256, xbe_path};
 use engine::light_constants::Fpu;
 use engine::memory::{GuestMemory, MemFault};
 use engine::render::light_gather::frame::{self, LightFrame};
-use engine::render::light_gather::{self as gather, LIGHT_VIS, extra_caster, geometry, history, visible, volume};
+use engine::render::light_gather::{
+    self as gather, LIGHT_VIS, extra_caster, geometry, history, visible, volume,
+};
 use ir::IrInsn;
 use ir::interp::{self, Cpu, FlatMemory};
 
@@ -116,14 +124,21 @@ pub struct Ram(pub FlatMemory);
 impl GuestMemory for Ram {
     fn read(&self, addr: u32, buf: &mut [u8]) -> Result<(), MemFault> {
         let a = addr as usize;
-        let src = self.0.bytes.get(a..a + buf.len()).ok_or(MemFault { addr, len: buf.len() as u32, write: false })?;
+        let src = self.0.bytes.get(a..a + buf.len()).ok_or(MemFault {
+            addr,
+            len: buf.len() as u32,
+            write: false,
+        })?;
         buf.copy_from_slice(src);
         Ok(())
     }
     fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), MemFault> {
         let a = addr as usize;
-        let dst =
-            self.0.bytes.get_mut(a..a + data.len()).ok_or(MemFault { addr, len: data.len() as u32, write: true })?;
+        let dst = self.0.bytes.get_mut(a..a + data.len()).ok_or(MemFault {
+            addr,
+            len: data.len() as u32,
+            write: true,
+        })?;
         dst.copy_from_slice(data);
         Ok(())
     }
@@ -221,8 +236,13 @@ impl Lifted<'_> {
             if !self.cache.contains_key(&pc) {
                 self.lift(pc);
             }
-            let insn = self.cache.get(&pc).ok_or_else(|| format!("not lifted: {pc:#x}"))?;
-            pc = interp::step(cpu, mem, insn).map_err(|e| format!("{pc:#x}: {e:?}"))?.target();
+            let insn = self
+                .cache
+                .get(&pc)
+                .ok_or_else(|| format!("not lifted: {pc:#x}"))?;
+            pc = interp::step(cpu, mem, insn)
+                .map_err(|e| format!("{pc:#x}: {e:?}"))?
+                .target();
         }
         cpu.eip = pc;
         Ok(pc)
@@ -230,7 +250,14 @@ impl Lifted<'_> {
 
     /// Calls `entry` with `cpu`'s registers and `args` on the stack below
     /// `esp`, to its return.
-    pub fn call(&mut self, cpu: &mut Cpu, mem: &mut FlatMemory, entry: u32, esp: u32, args: &[u32]) -> Result<(), String> {
+    pub fn call(
+        &mut self,
+        cpu: &mut Cpu,
+        mem: &mut FlatMemory,
+        entry: u32,
+        esp: u32,
+        args: &[u32],
+    ) -> Result<(), String> {
         let mut sp = esp;
         for &a in args.iter().rev() {
             sp -= 4;
@@ -240,7 +267,8 @@ impl Lifted<'_> {
         put(mem, sp, HARNESS_EXIT);
         cpu.gpr[4] = sp;
         cpu.eip = entry;
-        self.run(cpu, mem, &[HARNESS_EXIT], |_, _, _| false).map(|_| ())
+        self.run(cpu, mem, &[HARNESS_EXIT], |_, _, _| false)
+            .map(|_| ())
     }
 }
 
@@ -255,7 +283,13 @@ pub fn with_image(f: impl FnOnce(&FlatMemory, Lifted<'_>)) -> bool {
     let analysis = analyze::analyze(&x).unwrap();
     let lifter = lift::Lifter::new(&analysis, &x).unwrap();
     let image = lift::harness::load_image(&x).unwrap();
-    f(&image, Lifted { lifter: &lifter, cache: BTreeMap::new() });
+    f(
+        &image,
+        Lifted {
+            lifter: &lifter,
+            cache: BTreeMap::new(),
+        },
+    );
     true
 }
 
@@ -268,7 +302,16 @@ pub fn seeds() -> Vec<u64> {
 /// A fresh CPU in the game's float state.
 pub fn cpu(r: &mut Rng) -> Cpu {
     let mut cpu = Cpu {
-        gpr: [r.u32(), r.u32(), r.u32(), r.u32(), STACK_TOP - 0x2000, r.u32(), r.u32(), r.u32()],
+        gpr: [
+            r.u32(),
+            r.u32(),
+            r.u32(),
+            r.u32(),
+            STACK_TOP - 0x2000,
+            r.u32(),
+            r.u32(),
+            r.u32(),
+        ],
         fs_base: RAM as u32,
         ..Cpu::default()
     };
@@ -277,7 +320,10 @@ pub fn cpu(r: &mut Rng) -> Cpu {
     cpu
 }
 
-pub const FPU: Fpu = Fpu { mxcsr: 0x1f80, x87_control: 0x027f };
+pub const FPU: Fpu = Fpu {
+    mxcsr: 0x1f80,
+    x87_control: 0x027f,
+};
 
 /// The first byte where `a` and `b` differ outside `[STACK_LOW, live)`.
 pub fn first_difference(a: &FlatMemory, b: &FlatMemory, live: u32) -> Option<usize> {
@@ -326,7 +372,12 @@ fn list_header(n: u32) -> u32 {
 /// Writes a list header at `header` with `capacity`, `count` rows of
 /// `handles` (and seeded flags, extras and masks).
 fn seed_list(m: &mut FlatMemory, r: &mut Rng, header: u32, capacity: u32, handles: &[u32]) {
-    let columns = [header + 0x100, header + 0x1100, header + 0x2100, header + 0x3100];
+    let columns = [
+        header + 0x100,
+        header + 0x1100,
+        header + 0x2100,
+        header + 0x3100,
+    ];
     put(m, header, capacity);
     put16(m, header + 4, handles.len() as u16);
     put(m, header + 8, columns[0]);
@@ -343,8 +394,10 @@ fn seed_list(m: &mut FlatMemory, r: &mut Rng, header: u32, capacity: u32, handle
 }
 
 /// The definition bits the gather and its leaves test.
-const DEFINITION_BITS: [u32; 15] =
-    [0x4, 0x8, 0x20, 0x40, 0x100, 0x400, 0x800, 0x1000, 0x2000, 0x1_0000, 0x2_0000, 0x4_0000, 0x10_0000, 0x40_0000, 0x1];
+const DEFINITION_BITS: [u32; 15] = [
+    0x4, 0x8, 0x20, 0x40, 0x100, 0x400, 0x800, 0x1000, 0x2000, 0x1_0000, 0x2_0000, 0x4_0000,
+    0x10_0000, 0x40_0000, 0x1,
+];
 
 /// The seeded pools: `lights` light records, the object pool with parent
 /// chains, the definitions with every tested bit, placements, the global
@@ -362,7 +415,11 @@ impl World {
 
         // The light array.
         put(&mut m, LIGHTS_POINTER, LIGHT_HEADER);
-        put(&mut m, LIGHT_HEADER + 0x20, engine::render::light::MAXIMUM_COUNT as u32);
+        put(
+            &mut m,
+            LIGHT_HEADER + 0x20,
+            engine::render::light::MAXIMUM_COUNT as u32,
+        );
         put(&mut m, LIGHT_HEADER + 0x24, 0x110);
         put(&mut m, LIGHT_HEADER + 0x38, lights);
         put(&mut m, LIGHT_HEADER + 0x44, LIGHT_DATA);
@@ -375,10 +432,18 @@ impl World {
         for j in 0..OBJECT_SLOTS {
             let slot = OBJECT_DATA + 12 * j;
             put16(&mut m, slot, (object_datum(j) >> 16) as u16);
-            put8(&mut m, slot + 3, if r.chance(3) { 2 } else { r.below(4) as u8 });
+            put8(
+                &mut m,
+                slot + 3,
+                if r.chance(3) { 2 } else { r.below(4) as u8 },
+            );
             put(&mut m, slot + 8, body(j));
             // Parents point to lower slots, so every chain ends.
-            let parent = if j == 0 || r.chance(2) { NONE } else { object_datum(r.below(j)) };
+            let parent = if j == 0 || r.chance(2) {
+                NONE
+            } else {
+                object_datum(r.below(j))
+            };
             put(&mut m, body(j) + 0x14, parent);
             put8(&mut m, body(j) + 0xaa, r.below(2) as u8);
             put(&mut m, body(j) + 0x13c, r.below(4));
@@ -398,15 +463,39 @@ impl World {
                 }
             }
             put(&mut m, d, flags | (r.u32() & 0x0080_0000));
-            put16(&mut m, d + 4, if r.chance(16) { 4 + r.below(3) as u16 } else { r.below(4) as u16 });
+            put16(
+                &mut m,
+                d + 4,
+                if r.chance(16) {
+                    4 + r.below(3) as u16
+                } else {
+                    r.below(4) as u16
+                },
+            );
             let near = r.float(0.5, 4.0);
             putf(&mut m, d + 0x18, near);
-            putf(&mut m, d + 0x1c, if r.chance(4) { 0.0 } else { near * r.float(1.0, 8.0) });
+            putf(
+                &mut m,
+                d + 0x1c,
+                if r.chance(4) {
+                    0.0
+                } else {
+                    near * r.float(1.0, 8.0)
+                },
+            );
             for o in [0x20, 0x24, 0x28, 0x2c, 0x30] {
                 putf(&mut m, d + o, r.float(0.05, 6.0));
             }
             putf(&mut m, d + 0x30, r.float(2.0, 40.0));
-            put(&mut m, d + 0x7c, if r.chance(3) { (0xe00b << 16) | (BITMAP_TAG + r.below(2)) } else { NONE });
+            put(
+                &mut m,
+                d + 0x7c,
+                if r.chance(3) {
+                    (0xe00b << 16) | (BITMAP_TAG + r.below(2))
+                } else {
+                    NONE
+                },
+            );
         }
         for b in 0..2 {
             let k = BITMAP_TAG + b;
@@ -439,16 +528,36 @@ impl World {
         put(&mut m, VIS_OPTIONS + 0xc14, r.below(4));
         put8(&mut m, VIS_OPTIONS, r.u32() as u8);
         for bsp in 0..4 {
-            put(&mut m, LIGHT_BSP_OVERRIDES + 4 * bsp, if r.chance(3) { 1 } else { 0 });
+            put(
+                &mut m,
+                LIGHT_BSP_OVERRIDES + 4 * bsp,
+                if r.chance(3) { 1 } else { 0 },
+            );
         }
         put16(&mut m, RENDER_MODE, if r.chance(2) { 2 } else { 1 });
         put(&mut m, OVERRIDE, 0);
         // The local player's camera.
-        put(&mut m, LOCAL_PLAYER, if r.chance(6) { NONE } else { r.below(4) });
+        put(
+            &mut m,
+            LOCAL_PLAYER,
+            if r.chance(6) { NONE } else { r.below(4) },
+        );
         for p in 0..4 {
             let camera = CAMERA_CONTROLLER + p * 320;
-            put(&mut m, camera + 4, if r.chance(4) { 0x3f00_0000 } else { word(image, ZERO) });
-            put(&mut m, camera + 0xc, if r.chance(4) { 0 } else { FIRST_PERSON_CAMERA });
+            put(
+                &mut m,
+                camera + 4,
+                if r.chance(4) {
+                    0x3f00_0000
+                } else {
+                    word(image, ZERO)
+                },
+            );
+            put(
+                &mut m,
+                camera + 0xc,
+                if r.chance(4) { 0 } else { FIRST_PERSON_CAMERA },
+            );
         }
         put(&mut m, PLAYER_IDENTITIES, IDENTITIES);
         for p in 0..4 {
@@ -456,27 +565,87 @@ impl World {
         }
         // The view.
         for (i, a) in PROJECTION_DEPTH.into_iter().enumerate() {
-            putf(&mut m, a, if i == 3 { r.float(-2.0, 2.0) } else { r.float(-1.0, 1.0) });
+            putf(
+                &mut m,
+                a,
+                if i == 3 {
+                    r.float(-2.0, 2.0)
+                } else {
+                    r.float(-1.0, 1.0)
+                },
+            );
         }
         putf(&mut m, PIXEL_SCALE, r.float(200.0, 900.0));
         put(&mut m, FRAME, 100 + r.below(1000));
-        put(&mut m, VIEW_INDEX, [0, 1, 2, 3, NONE, 5][r.below(6) as usize]);
+        put(
+            &mut m,
+            VIEW_INDEX,
+            [0, 1, 2, 3, NONE, 5][r.below(6) as usize],
+        );
 
         // The lights.
         for i in 0..lights {
             let l = light_record(i);
             put16(&mut m, l, (light_datum(i) >> 16) as u16);
-            put8(&mut m, l + 2, if r.chance(10) { 0 } else { 2 | (r.u32() as u8 & 0xfd) });
+            put8(
+                &mut m,
+                l + 2,
+                if r.chance(10) {
+                    0
+                } else {
+                    2 | (r.u32() as u8 & 0xfd)
+                },
+            );
             put(&mut m, l + 4, definition_datum(r.below(DEFINITION_COUNT)));
-            put(&mut m, l + 8, if r.chance(3) { r.below(PLACEMENT_COUNT) } else { NONE });
+            put(
+                &mut m,
+                l + 8,
+                if r.chance(3) {
+                    r.below(PLACEMENT_COUNT)
+                } else {
+                    NONE
+                },
+            );
             put(&mut m, l + 0xc, r.below(4));
             for o in 0..3 {
                 putf(&mut m, l + 0x18 + 4 * o, r.float(-50.0, 50.0));
             }
-            putf(&mut m, l + 0x24, if r.chance(12) { 0.0 } else { r.float(0.5, 20.0) });
-            put16(&mut m, l + 0x48, if r.chance(3) { 0xffff } else { r.below(8) as u16 });
-            put(&mut m, l + 0x4c, if r.chance(3) { NONE } else { object_datum(r.below(OBJECT_SLOTS)) });
-            put16(&mut m, l + 0x54, if r.chance(2) { 0xffff } else { r.below(4) as u16 });
+            putf(
+                &mut m,
+                l + 0x24,
+                if r.chance(12) {
+                    0.0
+                } else {
+                    r.float(0.5, 20.0)
+                },
+            );
+            put16(
+                &mut m,
+                l + 0x48,
+                if r.chance(3) {
+                    0xffff
+                } else {
+                    r.below(8) as u16
+                },
+            );
+            put(
+                &mut m,
+                l + 0x4c,
+                if r.chance(3) {
+                    NONE
+                } else {
+                    object_datum(r.below(OBJECT_SLOTS))
+                },
+            );
+            put16(
+                &mut m,
+                l + 0x54,
+                if r.chance(2) {
+                    0xffff
+                } else {
+                    r.below(4) as u16
+                },
+            );
             for o in [0x84, 0x90] {
                 for c in 0..3 {
                     putf(&mut m, l + o + 4 * c, r.float(-20.0, 20.0));
@@ -491,11 +660,31 @@ impl World {
             putf(&mut m, l + 0xc4, r.float(0.5, 2.0));
             for o in [0xd4, 0xe0] {
                 for c in 0..3 {
-                    putf(&mut m, l + o + 4 * c, if r.chance(5) { 0.0 } else { colour * r.float(0.5, 2.0) });
+                    putf(
+                        &mut m,
+                        l + o + 4 * c,
+                        if r.chance(5) {
+                            0.0
+                        } else {
+                            colour * r.float(0.5, 2.0)
+                        },
+                    );
                 }
             }
-            putf(&mut m, l + 0xf8, if r.chance(3) { 0.0 } else { r.float(0.1, 1.0) });
-            putf(&mut m, l + 0x100, if r.chance(10) { 0.0 } else { r.float(0.05, 1.0) });
+            putf(
+                &mut m,
+                l + 0xf8,
+                if r.chance(3) { 0.0 } else { r.float(0.1, 1.0) },
+            );
+            putf(
+                &mut m,
+                l + 0x100,
+                if r.chance(10) {
+                    0.0
+                } else {
+                    r.float(0.05, 1.0)
+                },
+            );
         }
         for w in 0..lights.div_ceil(32) {
             put(&mut m, LIGHT_BITMAP + 4 * w, r.u32() | 0x1111_1111);
@@ -528,8 +717,24 @@ impl World {
             for b in 0..4 {
                 put8(&mut self.mem, row + b, if r.chance(3) { 1 } else { 0 });
             }
-            put(&mut self.mem, row + 4, if r.chance(8) { r.u32() } else { light_datum(r.below(self.lights)) });
-            put(&mut self.mem, row + 8, if r.chance(2) { NONE } else { object_datum(r.below(OBJECT_SLOTS)) });
+            put(
+                &mut self.mem,
+                row + 4,
+                if r.chance(8) {
+                    r.u32()
+                } else {
+                    light_datum(r.below(self.lights))
+                },
+            );
+            put(
+                &mut self.mem,
+                row + 8,
+                if r.chance(2) {
+                    NONE
+                } else {
+                    object_datum(r.below(OBJECT_SLOTS))
+                },
+            );
             putf(&mut self.mem, row + 0xc, r.float(0.0, 1.0));
             putf(&mut self.mem, row + 0x10, r.float(0.0, 50.0));
             putf(&mut self.mem, row + 0x14, r.float(-0.05, 0.05));
@@ -549,9 +754,14 @@ impl World {
     pub fn light_vis(&mut self, r: &mut Rng) {
         let mut rr = Rng(r.next());
         let clusters: Vec<u32> = (0..r.below(5)).map(|_| r.below(64)).collect();
-        let objects: Vec<u32> = (0..r.below(8)).map(|_| object_datum(r.below(OBJECT_SLOTS))).collect();
+        let objects: Vec<u32> = (0..r.below(8))
+            .map(|_| object_datum(r.below(OBJECT_SLOTS)))
+            .collect();
         let placements: Vec<u32> = (0..r.below(4)).map(|_| r.below(64)).collect();
-        for (n, (offset, handles)) in [(0xc, &clusters), (0x14, &objects), (0x18, &placements)].into_iter().enumerate() {
+        for (n, (offset, handles)) in [(0xc, &clusters), (0x14, &objects), (0x18, &placements)]
+            .into_iter()
+            .enumerate()
+        {
             let header = list_header(n as u32);
             put(&mut self.mem, LIGHT_VIS + offset, header);
             let capacity = handles.len() as u32 + if rr.chance(4) { 1 } else { 1 + rr.below(6) };
@@ -577,7 +787,10 @@ impl Tally {
 
 fn compare(label: &str, lifted: &FlatMemory, port: &FlatMemory, live: u32) {
     if let Some(i) = first_difference(lifted, port, live) {
-        panic!("{label}: memory differs first at {i:#x}: {:#04x} (original) vs {:#04x} (port)", lifted.bytes[i], port.bytes[i]);
+        panic!(
+            "{label}: memory differs first at {i:#x}: {:#04x} (original) vs {:#04x} (port)",
+            lifted.bytes[i], port.bytes[i]
+        );
     }
 }
 
@@ -620,7 +833,9 @@ fn visible_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
             let mut a = w.mem;
             let mut c = cpu(&mut r);
             let esp = c.gpr[4];
-            lifted.call(&mut c, &mut a, VISIBLE_LIST, esp, &[output]).unwrap_or_else(|e| panic!("{label}: {e}"));
+            lifted
+                .call(&mut c, &mut a, VISIBLE_LIST, esp, &[output])
+                .unwrap_or_else(|e| panic!("{label}: {e}"));
             assert_eq!(c.gpr[0], list.count, "{label}: the count");
             assert_eq!(c.gpr[4], esp, "{label}: ret 4");
             compare(&label, &a, &port.0, esp);
@@ -634,8 +849,15 @@ fn visible_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
         }
     }
     eprintln!("visible list: {:#?}", tally.0);
-    assert!(tally.get("native") >= 48, "too few cases answered: {:#?}", tally.0);
-    assert!(tally.get("over 128 candidates") > 0, "never over 128 candidates");
+    assert!(
+        tally.get("native") >= 48,
+        "too few cases answered: {:#?}",
+        tally.0
+    );
+    assert!(
+        tally.get("over 128 candidates") > 0,
+        "never over 128 candidates"
+    );
 }
 
 #[test]
@@ -656,7 +878,11 @@ fn geometry_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
             let l = light_record(i);
             let def_datum = word(&w.mem, l + 4);
             let owner = word(&w.mem, l + 0x4c);
-            let root = if owner == NONE || r.chance(4) { NONE } else { owner };
+            let root = if owner == NONE || r.chance(4) {
+                NONE
+            } else {
+                owner
+            };
             let args = geometry::Arguments {
                 light: light_datum(i),
                 definition: def_datum,
@@ -685,13 +911,24 @@ fn geometry_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
             c.gpr[6] = args.vis;
             let esp = c.gpr[4];
             lifted
-                .call(&mut c, &mut a, GEOMETRY_FLAGS, esp, &[args.owner, args.root, args.point, args.shadow])
+                .call(
+                    &mut c,
+                    &mut a,
+                    GEOMETRY_FLAGS,
+                    esp,
+                    &[args.owner, args.root, args.point, args.shadow],
+                )
                 .unwrap_or_else(|e| panic!("{label}: {e}"));
             assert_eq!(c.gpr[4], esp, "{label}: ret 0x10");
             compare(&label, &a, &port.0, esp);
             tally.add("native");
             let flags = word(&a, definition(def_datum & 0xffff));
-            for (bit, name) in [(4, "force clusters"), (0x1_0000, "clusters"), (0x2_0000, "objects"), (0x3800, "owner")] {
+            for (bit, name) in [
+                (4, "force clusters"),
+                (0x1_0000, "clusters"),
+                (0x2_0000, "objects"),
+                (0x3800, "owner"),
+            ] {
                 if flags & bit != 0 {
                     tally.add(name);
                 }
@@ -699,7 +936,11 @@ fn geometry_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
         }
     }
     eprintln!("geometry flags: {:#?}", tally.0);
-    assert!(tally.get("native") >= 128, "too few cases answered: {:#?}", tally.0);
+    assert!(
+        tally.get("native") >= 128,
+        "too few cases answered: {:#?}",
+        tally.0
+    );
     for k in ["force clusters", "clusters", "objects", "owner"] {
         assert!(tally.get(k) > 0, "{k} never seen");
     }
@@ -719,7 +960,11 @@ fn extra_caster_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
             let mut r = Rng(seed.wrapping_mul(0x5851_f42d_4c95_7f2d) ^ u64::from(n));
             let mut w = World::new(image, &mut r, 4);
             w.light_vis(&mut r);
-            let owner = if r.chance(6) { NONE } else { object_datum(r.below(OBJECT_SLOTS)) };
+            let owner = if r.chance(6) {
+                NONE
+            } else {
+                object_datum(r.below(OBJECT_SLOTS))
+            };
             let shadow = if r.chance(2) { 0 } else { r.u32() as u8 | 1 };
             let label = format!("seed {seed} case {n}");
 
@@ -738,10 +983,16 @@ fn extra_caster_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
             c.gpr[0] = (r.u32() & !0xff) | u32::from(shadow);
             c.gpr[1] = owner;
             let esp = c.gpr[4];
-            lifted.call(&mut c, &mut a, EXTRA_CASTER, esp, &[LIGHT_VIS]).unwrap_or_else(|e| panic!("{label}: {e}"));
+            lifted
+                .call(&mut c, &mut a, EXTRA_CASTER, esp, &[LIGHT_VIS])
+                .unwrap_or_else(|e| panic!("{label}: {e}"));
             assert_eq!(c.gpr[4], esp, "{label}: ret 4");
             compare(&label, &a, &port.0, esp);
-            tally.add(if writes.is_empty() { "nothing appended" } else { "appended" });
+            tally.add(if writes.is_empty() {
+                "nothing appended"
+            } else {
+                "appended"
+            });
         }
     }
     eprintln!("extra caster: {:#?}", tally.0);
@@ -783,7 +1034,9 @@ fn volume_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
             c.gpr[0] = out;
             c.gpr[2] = light_datum(i);
             let esp = c.gpr[4];
-            lifted.call(&mut c, &mut a, LIGHT_VOLUME, esp, &[bsp_check]).unwrap_or_else(|e| panic!("{label}: {e}"));
+            lifted
+                .call(&mut c, &mut a, LIGHT_VOLUME, esp, &[bsp_check])
+                .unwrap_or_else(|e| panic!("{label}: {e}"));
             assert_eq!(c.gpr[4], esp, "{label}: ret 4");
             assert_eq!(c.gpr[0] as u8 != 0, call.al, "{label}: AL");
             compare(&label, &a, &port.0, esp);
@@ -803,8 +1056,22 @@ fn volume_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
 #[test]
 fn a_refused_leaf_names_its_reason() {
     let m = Ram(FlatMemory::new(0, 0x1000));
-    assert_eq!(visible::list(&m, 0, Fpu { mxcsr: 0x1f80, x87_control: 0x037f }).err(), Some(gather::Refusal::Unsupported));
-    assert_eq!(visible::list(&m, 0, FPU).err(), Some(gather::Refusal::Memory));
+    assert_eq!(
+        visible::list(
+            &m,
+            0,
+            Fpu {
+                mxcsr: 0x1f80,
+                x87_control: 0x037f
+            }
+        )
+        .err(),
+        Some(gather::Refusal::Unsupported)
+    );
+    assert_eq!(
+        visible::list(&m, 0, FPU).err(),
+        Some(gather::Refusal::Memory)
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -841,7 +1108,10 @@ const STUBS: [(u32, &[usize], u32, u32); 11] = [
 const LEAVES: [u32; 3] = [GEOMETRY_FLAGS, EXTRA_CASTER, LIGHT_VOLUME];
 
 fn stub(target: u32) -> Option<(&'static [usize], u32, u32)> {
-    STUBS.iter().find(|s| s.0 == target).map(|&(_, regs, args, pop)| (regs, args, pop))
+    STUBS
+        .iter()
+        .find(|s| s.0 == target)
+        .map(|&(_, regs, args, pop)| (regs, args, pop))
 }
 
 /// One call out of the frame: the target, its return site, the
@@ -917,7 +1187,10 @@ fn frame_difference(a: &FlatMemory, b: &FlatMemory, s: u32) -> Option<u32> {
     masked.sort_by_key(|r| r.start);
     let mut from = 0u32;
     let check = |lo: u32, hi: u32| {
-        let (x, y) = (&a.bytes[lo as usize..hi as usize], &b.bytes[lo as usize..hi as usize]);
+        let (x, y) = (
+            &a.bytes[lo as usize..hi as usize],
+            &b.bytes[lo as usize..hi as usize],
+        );
         (x != y).then(|| lo + x.iter().zip(y).position(|(p, q)| p != q).unwrap() as u32)
     };
     for range in masked {
@@ -967,7 +1240,13 @@ fn frame_globals(w: &mut World, r: &mut Rng) {
 
 /// `0x00031c80` lifted, its unported callees stubbed. Returns the
 /// transcript and EAX.
-fn original_frame(lifted: &mut Lifted<'_>, m: &mut FlatMemory, cpu: &mut Cpu, esp: u32, seed: u64) -> Result<(Vec<Callout>, u32), String> {
+fn original_frame(
+    lifted: &mut Lifted<'_>,
+    m: &mut FlatMemory,
+    cpu: &mut Cpu,
+    esp: u32,
+    seed: u64,
+) -> Result<(Vec<Callout>, u32), String> {
     put(m, esp, HARNESS_EXIT);
     cpu.gpr[4] = esp;
     cpu.eip = DYNAMIC_LIGHTS;
@@ -1006,10 +1285,21 @@ fn port_frame(
     esp: u32,
     plan: frame::Plan,
     seed: u64,
-) -> (Vec<Callout>, engine::entry::EntryResult, Option<LightFrame>, FlatMemory) {
+) -> (
+    Vec<Callout>,
+    engine::entry::EntryResult,
+    Option<LightFrame>,
+    FlatMemory,
+) {
     use engine::entry::{Cx, EntryFuture, GuestCall, Regs, Step, poll, resume};
     let mem = Arc::new(Mutex::new(Ram(m)));
-    let cx = Cx::new(Arc::clone(&mem), Regs { esp, ..Regs::default() });
+    let cx = Cx::new(
+        Arc::clone(&mem),
+        Regs {
+            esp,
+            ..Regs::default()
+        },
+    );
     let out = Arc::new(Mutex::new(None));
     let body = cx.clone();
     let kept = Arc::clone(&out);
@@ -1052,7 +1342,8 @@ fn port_frame(
                         .unwrap_or_else(|e| panic!("leaf {:#x}: {e}", c.target));
                     cpu.gpr
                 } else {
-                    let (declared, _, _) = stub(c.target).unwrap_or_else(|| panic!("an unknown callee {:#x}", c.target));
+                    let (declared, _, _) = stub(c.target)
+                        .unwrap_or_else(|| panic!("an unknown callee {:#x}", c.target));
                     for (i, &a) in c.args.iter().enumerate() {
                         put(m, sp + 4 + 4 * i as u32, a);
                     }
@@ -1060,7 +1351,10 @@ fn port_frame(
                     let callout = Callout {
                         target: c.target,
                         site: frame::call_site().unwrap_or(0),
-                        regs: declared.iter().map(|&i| set(&c, i).unwrap_or(0xdead_beef)).collect(),
+                        regs: declared
+                            .iter()
+                            .map(|&i| set(&c, i).unwrap_or(0xdead_beef))
+                            .collect(),
                         args: c.args.clone(),
                     };
                     let (eax, edx) = stub_effect(seed, transcript.len(), &callout, m);
@@ -1091,7 +1385,12 @@ fn port_frame(
     drop(fut);
     drop(cx);
     let light_frame = out.lock().unwrap().take();
-    let m = Arc::try_unwrap(mem).ok().expect("the body kept no memory").into_inner().unwrap().0;
+    let m = Arc::try_unwrap(mem)
+        .ok()
+        .expect("the body kept no memory")
+        .into_inner()
+        .unwrap()
+        .0;
     (transcript, result, light_frame, m)
 }
 
@@ -1125,7 +1424,13 @@ fn frame_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
             } else {
                 let rows = (drawn + r.below(4)).min(32);
                 let mut weights: Vec<f32> = (0..rows)
-                    .map(|i| if i < drawn { threshold + r.float(0.05, 1.0) } else { [threshold, f32::NAN, threshold - 0.5][r.below(3) as usize] })
+                    .map(|i| {
+                        if i < drawn {
+                            threshold + r.float(0.05, 1.0)
+                        } else {
+                            [threshold, f32::NAN, threshold - 0.5][r.below(3) as usize]
+                        }
+                    })
                     .collect();
                 // Drawn and undrawn rows interleave.
                 for i in (1..weights.len()).rev() {
@@ -1138,6 +1443,9 @@ fn frame_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
             let esp = c.gpr[4] - 4;
             let s = esp - frame::FRAME;
             let case_seed = r.next();
+            // The return address the original is entered with, in both
+            // runs: the port never writes it.
+            put(&mut w.mem, esp, HARNESS_EXIT);
 
             let plan = match frame::plan(&Ram(w.mem.clone()), esp, FPU) {
                 Ok(plan) => plan,
@@ -1147,16 +1455,25 @@ fn frame_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
                 }
             };
             let port_cpu = c.clone();
-            let (port_calls, result, light_frame, port) = port_frame(&mut lifted, w.mem.clone(), port_cpu, esp, plan, case_seed);
+            let (port_calls, result, light_frame, port) =
+                port_frame(&mut lifted, w.mem.clone(), port_cpu, esp, plan, case_seed);
 
             let mut a = w.mem;
-            let (calls, eax) =
-                original_frame(&mut lifted, &mut a, &mut c, esp, case_seed).unwrap_or_else(|e| panic!("{label}: {e}"));
+            let (calls, eax) = original_frame(&mut lifted, &mut a, &mut c, esp, case_seed)
+                .unwrap_or_else(|e| panic!("{label}: {e}"));
             for (i, (x, y)) in calls.iter().zip(&port_calls).enumerate() {
                 assert_eq!(x, y, "{label}: callout {i} (original, then port)");
             }
-            assert_eq!(calls.len(), port_calls.len(), "{label}: the number of callouts");
-            assert_eq!(result.map(|ret| (ret.eax, ret.pop)), Ok((eax, 0)), "{label}: the return");
+            assert_eq!(
+                calls.len(),
+                port_calls.len(),
+                "{label}: the number of callouts"
+            );
+            assert_eq!(
+                result.map(|ret| (ret.eax, ret.pop)),
+                Ok((eax, 0)),
+                "{label}: the return"
+            );
             if let Some(at) = frame_difference(&a, &port, s) {
                 panic!(
                     "{label}: memory differs first at {at:#x} (S{:+#x}): {:#04x} (original) vs {:#04x} (port)",
@@ -1169,20 +1486,36 @@ fn frame_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
             let light_frame = light_frame.expect("the frame");
             let drawn = light_frame.lights.iter().filter(|l| l.drawn).count();
             tally.add(format!("{drawn} drawn"));
-            for g in light_frame.lights.iter().filter_map(|l| l.gathered.as_ref()) {
+            for g in light_frame
+                .lights
+                .iter()
+                .filter_map(|l| l.gathered.as_ref())
+            {
                 tally.add(match g.repose {
                     frame::Repose::None => "no re-pose",
                     frame::Repose::Asked { .. } => "a re-pose",
                 });
                 tally.add(if g.shadow { "shadowed" } else { "unshadowed" });
-                tally.add(if g.source_vis { "the main view's clusters" } else { "no source visibility" });
-                if g.cluster == word(&a, VIEW_CLUSTER) as i32 && word(&a, g.record + 0x48) as i16 == -1 {
+                tally.add(if g.source_vis {
+                    "the main view's clusters"
+                } else {
+                    "no source visibility"
+                });
+                if g.cluster == word(&a, VIEW_CLUSTER) as i32
+                    && word(&a, g.record + 0x48) as i16 == -1
+                {
                     tally.add("the view's cluster");
                 }
                 if g.slot.is_none() {
                     tally.add("no first-person slot");
                 }
-                for (step, by) in [("volume", Some(g.volume)), ("geometry", Some(g.geometry)), ("extra caster", g.extra_caster)] {
+                for (step, by) in [
+                    ("volume", Some(g.volume)),
+                    ("geometry", Some(g.geometry)),
+                    ("extra caster", g.extra_caster),
+                    ("clusters", Some(g.clusters)),
+                    ("placements", Some(g.placements)),
+                ] {
                     if let Some(by) = by {
                         tally.add(format!("{step} {by:?}"));
                     }
@@ -1191,7 +1524,11 @@ fn frame_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
         }
     }
     eprintln!("frame: {:#?}", tally.0);
-    assert!(tally.get("native") >= 120, "too few frames answered: {:#?}", tally.0);
+    assert!(
+        tally.get("native") >= 120,
+        "too few frames answered: {:#?}",
+        tally.0
+    );
     for need in [
         "0 drawn",
         "1 drawn",
@@ -1208,5 +1545,755 @@ fn frame_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
         "no first-person slot",
     ] {
         assert!(tally.get(need) > 0, "never {need}: {:#?}", tally.0);
+    }
+}
+
+// ---------------------------------------------------------------------
+// L3: a light's records.
+
+const CLUSTER_WALK: u32 = 0x0013_3390;
+const PLACEMENT_WALK: u32 = 0x0013_3520;
+const RECORD_COUNT: u32 = 0x004c_0b78;
+const MAIN_RECORD_COUNT: u32 = 0x004c_0b7c;
+const SCENE_RECORDS: u32 = 0x004b_a138;
+const PIXEL_BYTES: u32 = 0x004c_0b84;
+const ATTACHMENT_BYTES: u32 = 0x004c_0ed6;
+const ACTIVE_BSP: u32 = 0x004e_0348;
+const LIGHTMAP: u32 = 0x004e_0344;
+const RESOURCE_CACHE: u32 = 0x004e_649c;
+const SCENE_MODE: u32 = 0x004b_9ef0;
+const VIEW_FOG_TAG: u32 = 0x004b_9f8c;
+const VIEW_FOG_AMOUNT: u32 = 0x004b_9ffc;
+const PLANAR_FOG: u32 = 0x004b_a004;
+const RECORD_SLOTS: u32 = 0x352;
+
+const BSP: u32 = 0x0320_0000;
+const CLUSTER_SECTIONS: u32 = 0x0321_0000;
+const DEF_SECTIONS: u32 = 0x0322_0000;
+const BSP_PLACEMENTS: u32 = 0x0323_0000;
+const CACHE: u32 = 0x0324_0000;
+const CACHE_POOL: u32 = 0x0324_1000;
+const CACHE_ENTRIES: u32 = 0x0324_2000;
+const GEOMETRIES: u32 = 0x0325_0000;
+const WALK_LISTS: u32 = 0x0326_0000;
+const BSP_CLUSTERS: u32 = 64;
+const BSP_DEFINITIONS: u32 = 8;
+const BSP_PLACEMENT_COUNT: u32 = 64;
+const GEOMETRY_COUNT: u32 = 16;
+
+fn fill(m: &mut FlatMemory, r: &mut Rng, at: u32, len: u32) {
+    for i in 0..len {
+        put8(m, at + i, r.u32() as u8);
+    }
+}
+
+/// One structure section: its geometry index, subparts, resource and
+/// geometry, and its cluster bounds.
+fn seed_section(m: &mut FlatMemory, r: &mut Rng, at: u32) {
+    put16(m, at + 0x14, r.below(8) as u16);
+    put16(
+        m,
+        at + 0x24,
+        if r.chance(3) { 0 } else { r.below(80) as u16 },
+    );
+    put8(m, at + 0x28 + 0x1e, u8::from(!r.chance(40)));
+    put16(m, at + 0x28 + 0x20, r.below(64) as u16);
+    put(
+        m,
+        at + 0x50,
+        if r.chance(30) {
+            0
+        } else {
+            GEOMETRIES + 0x100 * r.below(GEOMETRY_COUNT)
+        },
+    );
+    for i in 0..3 {
+        let lo = r.float(-50.0, 50.0);
+        putf(m, at + 0x54 + 8 * i, lo);
+        putf(m, at + 0x58 + 8 * i, lo + r.float(0.1, 30.0));
+    }
+}
+
+/// The structure the record walks read, and a light's struct of `kind`
+/// whose cluster and placement lists name it; the records cursor where
+/// the reset's light arm leaves it. Returns the cursor.
+fn walk_world(w: &mut World, r: &mut Rng, kind: u32) -> u32 {
+    let m = &mut w.mem;
+    put(m, ACTIVE_BSP, BSP);
+    put(m, BSP + 8, r.u32());
+    put(m, BSP + 0x9c, BSP_CLUSTERS);
+    put(m, BSP + 0xa0, CLUSTER_SECTIONS);
+    put(m, BSP + 0x138, BSP_DEFINITIONS);
+    put(m, BSP + 0x13c, DEF_SECTIONS);
+    put(m, BSP + 0x140, BSP_PLACEMENT_COUNT);
+    put(m, BSP + 0x144, BSP_PLACEMENTS);
+    put(m, LIGHTMAP, 0);
+    put(m, RESOURCE_CACHE, CACHE);
+    put(m, CACHE + 0x38, r.u32());
+    put(m, CACHE + 0x64, CACHE_POOL);
+    put(m, CACHE_POOL + 0x44, CACHE_ENTRIES);
+    for c in 0..BSP_CLUSTERS {
+        seed_section(m, r, CLUSTER_SECTIONS + 0xb0 * c);
+    }
+    for d in 0..BSP_DEFINITIONS {
+        seed_section(m, r, DEF_SECTIONS + 0xc8 * d);
+    }
+    for p in 0..BSP_PLACEMENT_COUNT {
+        let at = BSP_PLACEMENTS + 0x58 * p;
+        put16(m, at + 0x34, r.below(BSP_DEFINITIONS) as u16);
+        for c in 0..3 {
+            putf(m, at + 0x3c + 4 * c, r.float(-50.0, 50.0));
+        }
+        putf(
+            m,
+            at + 0x48,
+            if r.chance(4) {
+                r.float(0.01, 0.5)
+            } else {
+                r.float(0.5, 20.0)
+            },
+        );
+        put16(m, at + 0x56, r.below(2) as u16);
+    }
+    // The view the camera's depth plane and pixel scale are read from.
+    for (i, a) in PROJECTION_DEPTH.into_iter().enumerate() {
+        putf(
+            m,
+            a,
+            if i == 3 {
+                r.float(1.0, 4.0)
+            } else {
+                r.float(-0.1, 0.1)
+            },
+        );
+    }
+    putf(m, PIXEL_SCALE, r.float(100.0, 900.0));
+    put(m, SCENE_MODE, if r.chance(3) { 3 } else { r.below(3) });
+    put(
+        m,
+        VIEW_FOG_TAG,
+        if r.chance(3) {
+            NONE
+        } else {
+            definition_datum(r.below(DEFINITION_COUNT))
+        },
+    );
+    putf(
+        m,
+        VIEW_FOG_AMOUNT,
+        if r.chance(2) { 0.0 } else { r.float(0.0, 1.0) },
+    );
+    put8(m, PLANAR_FOG, r.below(2) as u8);
+    // The light's struct.
+    put(m, RECORDS_VIS, LIGHT_VIS);
+    put(m, LIGHT_VIS + 0x2a78, kind);
+    put8(m, LIGHT_VIS + 0x2a60, r.u32() as u8);
+    put16(
+        m,
+        LIGHT_VIS + 0xa5c,
+        [0, r.below(40) as u16, 500 + r.below(20) as u16][r.below(3) as usize],
+    );
+    fill(m, r, LIGHT_VIS + 0x1c, 512);
+    let clusters: Vec<u32> = (0..r.below(12)).map(|_| r.below(BSP_CLUSTERS)).collect();
+    let placements: Vec<u32> = (0..r.below(12))
+        .map(|_| r.below(BSP_PLACEMENT_COUNT))
+        .collect();
+    let mut rr = Rng(r.next());
+    seed_list(m, &mut rr, WALK_LISTS, clusters.len() as u32 + 1, &clusters);
+    seed_list(
+        m,
+        &mut rr,
+        WALK_LISTS + 0x4000,
+        placements.len() as u32 + 1,
+        &placements,
+    );
+    put(m, LIGHT_VIS + 0xc, WALK_LISTS);
+    put(m, LIGHT_VIS + 0x18, WALK_LISTS + 0x4000);
+    // What the records' bytes held before.
+    fill(m, r, SCENE_RECORDS, RECORD_SLOTS * 0x20);
+    fill(m, r, PIXEL_BYTES, RECORD_SLOTS);
+    fill(m, r, ATTACHMENT_BYTES, RECORD_SLOTS);
+    let cursor = [0, r.below(0x300), RECORD_SLOTS - 4 + r.below(4)][r.below(3) as usize];
+    put(m, RECORD_COUNT, cursor);
+    put(m, MAIN_RECORD_COUNT, cursor);
+    cursor
+}
+
+/// `world_walk::records` in a light's kind against the cluster walk
+/// `0x00133390` and the placement walk `0x00133520`, the record writer
+/// `0x0002cbf0` and its tree lifted: equal memory, and the main view's
+/// count left.
+#[test]
+fn light_record_walks_match_the_lifted_original() {
+    if !with_image(walk_cases) {
+        eprintln!("SKIPPED light_record_walks_match_the_lifted_original: no XBE (set H2_XBE)");
+    }
+}
+
+fn walk_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
+    use engine::render_loop::world_walk::{self, Walk};
+    let mut tally = Tally::default();
+    for seed in seeds() {
+        for n in 0..96u32 {
+            let mut r = Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) ^ u64::from(n) ^ 0x3390);
+            let mut w = World::new(image, &mut r, 4);
+            let kind = 1 + r.below(3);
+            let cursor = walk_world(&mut w, &mut r, kind);
+            let walk = if n % 2 == 0 {
+                Walk::Clusters
+            } else {
+                Walk::Placements
+            };
+            let label = format!("seed {seed} case {n} ({walk:?}, kind {kind}, cursor {cursor:#x})");
+
+            let mut port = Ram(w.mem.clone());
+            let records =
+                match world_walk::records(&mut port, LIGHT_VIS, walk, FPU.mxcsr, FPU.x87_control) {
+                    Ok(records) => records,
+                    Err(why) => {
+                        tally.add(format!("refused {why:?}"));
+                        continue;
+                    }
+                };
+
+            let mut a = w.mem;
+            let mut c = cpu(&mut r);
+            let esp = c.gpr[4];
+            match walk {
+                Walk::Clusters => {
+                    c.gpr[3] = LIGHT_VIS;
+                    lifted.call(&mut c, &mut a, CLUSTER_WALK, esp, &[])
+                }
+                Walk::Placements => lifted.call(&mut c, &mut a, PLACEMENT_WALK, esp, &[LIGHT_VIS]),
+            }
+            .unwrap_or_else(|e| panic!("{label}: {e}"));
+            assert_eq!(c.gpr[4], esp, "{label}: the walk's ret");
+            assert_eq!(
+                word(&a, MAIN_RECORD_COUNT),
+                cursor,
+                "{label}: the main view's count"
+            );
+            compare(&label, &a, &port.0, esp);
+            tally.add("native");
+            tally.add(format!("{walk:?}"));
+            if records > 0 {
+                tally.add("records written");
+            }
+            if word(&a, RECORD_COUNT) >= RECORD_SLOTS {
+                tally.add("at the cap");
+            }
+        }
+    }
+    eprintln!("light record walks: {:#?}", tally.0);
+    assert!(
+        tally.get("native") >= 96,
+        "too few walks answered: {:#?}",
+        tally.0
+    );
+    for k in ["Clusters", "Placements", "records written", "refused Cold"] {
+        assert!(tally.get(k) > 0, "{k} never seen: {:#?}", tally.0);
+    }
+}
+
+// ---------------------------------------------------------------------
+// L4: a light's item lists and the first-person table.
+
+use engine::render::light_gather::items::{self, FirstPerson, LightItems, Made};
+
+const SCENE_ITEMS: u32 = 0x0004_0e90;
+const ATTACHMENTS_SITE: u32 = 0x0004_0f09;
+const OVERRIDES: u32 = 0x004c_1228;
+const ACTIVE_BSP_INDEX: u32 = 0x0046_86c4;
+const MATERIAL_VIS: u32 = 0x004e_d280;
+const PART_PLANES: u32 = 0x0051_f400;
+const DOUBLE_LOD: u32 = 0x004b_a019;
+const FIRST_PERSON_TABLE: u32 = frame::FIRST_PERSON_TABLE;
+
+const ITEMS_ONE: u32 = 0x0330_0000;
+const ITEMS_TWO: u32 = 0x0331_0000;
+const MATERIALS: u32 = 0x0332_0000;
+const MATERIAL_MASKS: u32 = 0x0333_0000;
+const PLANES: u32 = 0x0334_0000;
+const PARTS: u32 = 0x0335_0000;
+const SUBPART_MASKS: u32 = 0x0336_0000;
+const SHADER_DATA: u32 = 0x0337_0000;
+const TEMPLATE_DATA: u32 = 0x0338_0000;
+const LEVEL_TABLES: u32 = 0x0339_0000;
+const INSTANCES: u32 = 0x033a_0000;
+const OBJECT_TAGS: u32 = 0x033b_0000;
+const OBJECT_REGIONS: u32 = 0x033c_0000;
+const MATERIAL_COUNT: u32 = 16;
+const SHADERS: u32 = 12;
+const SHADER_TAG: u32 = 64;
+const TEMPLATE_TAG: u32 = 96;
+const OBJECT_TAG: u32 = 128;
+
+fn shader_datum(k: u32) -> u32 {
+    (0xe110 << 16) | (SHADER_TAG + k)
+}
+
+/// The record walk's leaves in the port's guest calls: lifted in both
+/// runs, so not in the transcript. The attachment walk is the stub.
+const ITEM_LEAVES: [u32; 4] = [
+    items::call::RECORD_GEOMETRY,
+    items::call::PART_MATERIAL,
+    items::call::PART_VISIBLE,
+    items::call::PART_ITEMS,
+];
+
+/// Shaders with level tables, materials, part geometries and a light's
+/// records over the structure of [`walk_world`]: structure records of
+/// both kinds, first-person records, objects' records and overridden
+/// shaders. Returns the records' range.
+fn items_world(w: &mut World, r: &mut Rng, kind: u32) -> (u32, u32) {
+    walk_world(w, r, kind);
+    let m = &mut w.mem;
+    put(m, BSP + 0xa4, MATERIAL_COUNT);
+    put(m, BSP + 0xa8, MATERIALS);
+    for k in 0..MATERIAL_COUNT {
+        let at = MATERIALS + 32 * k;
+        put(
+            m,
+            at + 0xc,
+            if r.chance(8) {
+                NONE
+            } else {
+                shader_datum(r.below(SHADERS))
+            },
+        );
+        put8(
+            m,
+            at + 0x1c,
+            if r.chance(2) { 0xff } else { r.below(64) as u8 },
+        );
+    }
+    put(m, MATERIAL_VIS, MATERIAL_MASKS);
+    fill(m, r, MATERIAL_MASKS, 0x2000);
+    put16(m, ACTIVE_BSP_INDEX, r.below(4) as u16);
+    put(m, PART_PLANES, PLANES);
+    put(m, PLANES + 0x20, 16);
+    put(m, PLANES + 0x2c, 0x0001_e8c0);
+    put(m, PLANES + 0x30, 0x0001_e8f0);
+    put8(m, DOUBLE_LOD, r.below(2) as u8);
+    // The shaders, their templates and level tables.
+    for k in 0..SHADERS {
+        let entry = TAG_TABLE + 16 * (SHADER_TAG + k);
+        let data = SHADER_DATA + 0x100 * k;
+        put(m, entry, u32::from_be_bytes(*b"shad"));
+        put(m, entry + 4, shader_datum(k));
+        put(m, entry + 8, data);
+        put16(
+            m,
+            data + 0x3c,
+            [0, 1, 2, 3, 4, 5, 5, 7][r.below(8) as usize],
+        );
+        put(m, data + 0x24, INSTANCES + 16 * k);
+        put(
+            m,
+            INSTANCES + 16 * k,
+            (0xe120 << 16) | (TEMPLATE_TAG + r.below(SHADERS)),
+        );
+        let entry = TAG_TABLE + 16 * (TEMPLATE_TAG + k);
+        let template = TEMPLATE_DATA + 0x100 * k;
+        let header = LEVEL_TABLES + 0x100 * k;
+        put(m, entry, u32::from_be_bytes(*b"stem"));
+        put(m, entry + 4, (0xe120 << 16) | (TEMPLATE_TAG + k));
+        put(m, entry + 8, template);
+        put(m, template + 0x5c, header);
+        let levels = 1 + r.below(4);
+        put(m, header, levels);
+        put(m, header + 4, header + 0x10);
+        let mut threshold = r.float(100.0, 4000.0);
+        for row in 0..levels {
+            let at = header + 0x10 + 10 * row;
+            let mut layers = r.u32() & 0x0003_ffff;
+            match r.below(8) {
+                0 => layers = 0x8000,
+                1 => layers = 0,
+                2 => layers = 0x80 | (r.u32() & 0x10),
+                _ => {}
+            }
+            if r.chance(5) {
+                layers |= 1 << 21;
+            }
+            put16(m, at, r.u32() as u16);
+            put(m, at + 2, layers);
+            putf(m, at + 6, if r.chance(12) { f32::NAN } else { threshold });
+            threshold *= r.float(0.1, 0.9);
+        }
+    }
+    // An object's region table: no geometry.
+    let entry = TAG_TABLE + 16 * OBJECT_TAG;
+    put(m, entry, u32::from_be_bytes(*b"hlmt"));
+    put(m, entry + 4, (0xe130 << 16) | OBJECT_TAG);
+    put(m, entry + 8, OBJECT_TAGS);
+    put(m, OBJECT_TAGS + 0x28, OBJECT_REGIONS);
+    // The part geometries.
+    for g in 0..GEOMETRY_COUNT {
+        let at = GEOMETRIES + 0x100 * g;
+        let parts = PARTS + 0x400 * g;
+        put(m, at, if r.chance(6) { 0 } else { 1 + r.below(4) });
+        put(m, at + 4, parts);
+        for p in 0..5 {
+            let part = parts + 0x48 * p;
+            put16(m, part, r.below(7) as u16);
+            put16(m, part + 4, r.below(MATERIAL_COUNT) as u16);
+            put16(m, part + 0xa, r.below(64) as u16);
+            put16(
+                m,
+                part + 0xc,
+                if r.chance(8) {
+                    0
+                } else {
+                    1 + r.below(5) as u16
+                },
+            );
+            let size = match r.below(8) {
+                0 => 0.0,
+                1 => f32::NAN,
+                2 => -1.0,
+                _ => r.float(0.1, 4.0),
+            };
+            putf(m, part + 0x2c, size);
+        }
+    }
+    fill(m, r, SUBPART_MASKS, 0x400);
+    for k in 0..8 {
+        put(m, OVERRIDES + 4 * k, shader_datum(r.below(SHADERS)));
+    }
+    // The two lists.
+    for (header, items) in [
+        (items::LISTS + 0x18, ITEMS_ONE),
+        (items::LISTS + 0x30, ITEMS_TWO),
+    ] {
+        put(
+            m,
+            header,
+            if r.chance(5) {
+                r.below(2)
+            } else {
+                2 + r.below(12)
+            },
+        );
+        put(m, header + 4, r.u32());
+        put(m, header + 8, r.u32());
+        put(m, header + 0xc, r.u32());
+        put(m, header + 0x14, items);
+        fill(m, r, items, 16 * 0x18);
+    }
+    // The first-person table.
+    put(
+        m,
+        frame::FIRST_PERSON_COUNT,
+        [0, 1, 3, 8, 9][r.below(5) as usize],
+    );
+    for s in 0..8 {
+        put16(
+            m,
+            FIRST_PERSON_TABLE + 0x408 * s + 0x404,
+            [0, r.below(32), 31, 32][r.below(4) as usize] as u16,
+        );
+    }
+    // The light's records after the main view's.
+    let main = r.below(0x300);
+    let count = r.below(40);
+    put(m, MAIN_RECORD_COUNT, main);
+    put(m, RECORD_COUNT, main + count);
+    for i in main..main + count {
+        let at = SCENE_RECORDS + 0x20 * i;
+        let which = r.below(10);
+        let placement = which >= 6;
+        let mut flags = (r.u32() & !0x1447)
+            | u32::from(!r.chance(8))
+            | if r.chance(2) { 2 } else { 0 }
+            | if r.chance(2) { 4 } else { 0 }
+            | if r.chance(3) { 0x40 } else { 0 }
+            | if placement { 0x1000 } else { 0 };
+        if which == 0 {
+            flags |= 0x400;
+        }
+        put(m, at, flags);
+        put(
+            m,
+            at + 4,
+            if which == 1 {
+                (0xe130 << 16) | OBJECT_TAG
+            } else {
+                NONE
+            },
+        );
+        let selector = if r.chance(10) { r.below(31) } else { 0x1f };
+        let region = r.below(16);
+        let packed = if placement {
+            (r.below(8) << 29) | (r.below(BSP_PLACEMENT_COUNT) << 18) | (selector << 4) | region
+        } else {
+            (r.below(8) << 29)
+                | (0x7ff << 18)
+                | (r.below(BSP_CLUSTERS) << 9)
+                | (selector << 4)
+                | region
+        };
+        put(m, at + 0xc, packed);
+        put(
+            m,
+            at + 0x14,
+            if r.chance(6) {
+                0
+            } else {
+                SUBPART_MASKS + 0x10 * r.below(48)
+            },
+        );
+        put8(
+            m,
+            at + 0x1a,
+            if r.chance(8) { 0 } else { r.u32() as u8 | 1 },
+        );
+        put8(
+            m,
+            ATTACHMENT_BYTES + i,
+            if r.chance(6) { r.below(8) as u8 } else { 0xff },
+        );
+    }
+    (main, main + count)
+}
+
+/// `0x00040e90` lifted with the attachment walk stubbed. Returns the
+/// transcript and EAX.
+fn original_items(
+    lifted: &mut Lifted<'_>,
+    m: &mut FlatMemory,
+    cpu: &mut Cpu,
+    esp: u32,
+) -> Result<(Vec<Callout>, u32), String> {
+    put(m, esp, HARNESS_EXIT);
+    cpu.gpr[4] = esp;
+    cpu.gpr[0] = 0;
+    cpu.eip = SCENE_ITEMS;
+    let mut transcript = Vec::new();
+    lifted.run(cpu, m, &[HARNESS_EXIT], |pc, cpu, m| {
+        if pc != items::call::ATTACHMENTS {
+            return false;
+        }
+        let sp = cpu.gpr[4];
+        transcript.push(Callout {
+            target: pc,
+            site: word(m, sp),
+            regs: [0, 3, 6, 7].iter().map(|&i| cpu.gpr[i]).collect(),
+            args: Vec::new(),
+        });
+        cpu.gpr[4] = sp + 4;
+        cpu.eip = word(m, sp);
+        true
+    })?;
+    if cpu.gpr[4] != esp + 4 {
+        return Err(format!("esp {:#x} after the call", cpu.gpr[4]));
+    }
+    Ok((transcript, cpu.gpr[0]))
+}
+
+/// The body, driven as the runtime drives it: a leaf runs lifted, the
+/// attachment walk is the stub.
+fn port_items(
+    lifted: &mut Lifted<'_>,
+    m: FlatMemory,
+    mut cpu: Cpu,
+    esp: u32,
+    plan: items::Plan,
+) -> (
+    Vec<Callout>,
+    engine::entry::EntryResult,
+    Option<LightItems>,
+    FlatMemory,
+) {
+    use engine::entry::{Cx, EntryFuture, Regs, Step, poll, resume};
+    let mem = Arc::new(Mutex::new(Ram(m)));
+    let cx = Cx::new(
+        Arc::clone(&mem),
+        Regs {
+            esp,
+            ..Regs::default()
+        },
+    );
+    let out = Arc::new(Mutex::new(None));
+    let body = cx.clone();
+    let kept = Arc::clone(&out);
+    let mut fut: EntryFuture = Box::pin(async move {
+        let (ret, light_items) = items::run(&body, plan).await?;
+        *kept.lock().unwrap() = Some(light_items);
+        Ok::<_, engine::entry::EntryError>(ret)
+    });
+    let mut transcript = Vec::new();
+    let result = loop {
+        match poll(&mut fut, &cx) {
+            Step::Done(r) => break r,
+            Step::Call(c) => {
+                let mut g = mem.lock().unwrap();
+                let m = &mut g.0;
+                let sp = c.esp(esp);
+                let set = |i: usize| match i {
+                    0 => c.eax,
+                    1 => c.ecx,
+                    2 => c.edx,
+                    3 => c.ebx,
+                    6 => c.esi,
+                    7 => c.edi,
+                    _ => None,
+                };
+                for i in [0, 1, 2, 3, 6, 7] {
+                    if let Some(v) = set(i) {
+                        cpu.gpr[i] = v;
+                    }
+                }
+                if ITEM_LEAVES.contains(&c.target) {
+                    for (i, &a) in c.args.iter().enumerate() {
+                        put(m, sp + 4 + 4 * i as u32, a);
+                    }
+                    put(m, sp, HARNESS_EXIT);
+                    cpu.gpr[4] = sp;
+                    cpu.eip = c.target;
+                    lifted
+                        .run(&mut cpu, m, &[HARNESS_EXIT], |_, _, _| false)
+                        .unwrap_or_else(|e| panic!("leaf {:#x}: {e}", c.target));
+                } else {
+                    assert_eq!(c.target, items::call::ATTACHMENTS, "an unknown callee");
+                    transcript.push(Callout {
+                        target: c.target,
+                        site: ATTACHMENTS_SITE,
+                        regs: [0, 3, 6, 7]
+                            .iter()
+                            .map(|&i| set(i).unwrap_or(0xdead_beef))
+                            .collect(),
+                        args: c.args.clone(),
+                    });
+                }
+                let regs = cpu.gpr;
+                drop(g);
+                resume(
+                    &cx,
+                    Regs {
+                        eax: regs[0],
+                        ecx: regs[1],
+                        edx: regs[2],
+                        ebx: regs[3],
+                        esp,
+                        ebp: regs[5],
+                        esi: regs[6],
+                        edi: regs[7],
+                        xmm0: 0,
+                    },
+                );
+            }
+        }
+    };
+    drop(fut);
+    drop(cx);
+    let light_items = out.lock().unwrap().take();
+    let m = Arc::try_unwrap(mem)
+        .ok()
+        .expect("the body kept no memory")
+        .into_inner()
+        .unwrap()
+        .0;
+    (transcript, result, light_items, m)
+}
+
+/// `light_gather::items` against `0x00040e90` in a light's kind, its
+/// record walk `0x00044ac0` and the part calls (`0x000449e0`,
+/// `0x00045ce0`, `0x000460d0`, `0x00041040`, `0x00040de0`, `0x00040e30`,
+/// `0x0003b9d0`, the level query `0x0001bf50`, the material visibility
+/// `0x00184000` and the plane lookup) lifted, the attachment walk
+/// `0x00041c80` stubbed: equal transcripts, equal EAX and equal memory
+/// outside the dead stack, over receivers, casters and both, kind 3, a
+/// full list, first-person records into a slot, past the eighth light and
+/// into a full slot, objects' records and overridden shaders (the
+/// guest's part calls), and every skip of the part.
+#[test]
+fn item_lists_match_the_lifted_original() {
+    if !with_image(items_cases) {
+        eprintln!("SKIPPED item_lists_match_the_lifted_original: no XBE (set H2_XBE)");
+    }
+}
+
+fn items_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
+    let mut tally = Tally::default();
+    for seed in seeds() {
+        for n in 0..64u32 {
+            let mut r = Rng(seed.wrapping_mul(0x5851_f42d_4c95_7f2d) ^ u64::from(n) ^ 0x0e90);
+            let mut w = World::new(image, &mut r, 4);
+            let kind = [1, 1, 2, 3][r.below(4) as usize];
+            let (start, end) = items_world(&mut w, &mut r, kind);
+            let label = format!("seed {seed} case {n} (kind {kind}, records {start:#x}..{end:#x})");
+            let mut c = cpu(&mut r);
+            let esp = c.gpr[4] - 4;
+            put(&mut w.mem, esp, HARNESS_EXIT);
+
+            let plan = match items::plan(&Ram(w.mem.clone()), esp, 0) {
+                Ok(Some(plan)) => plan,
+                Ok(None) => panic!("{label}: a light's kind"),
+                Err(why) => {
+                    tally.add(format!("refused {why:?}"));
+                    continue;
+                }
+            };
+            let (port_calls, result, light_items, port) =
+                port_items(&mut lifted, w.mem.clone(), c.clone(), esp, plan);
+
+            let mut a = w.mem;
+            let (calls, eax) = original_items(&mut lifted, &mut a, &mut c, esp)
+                .unwrap_or_else(|e| panic!("{label}: {e}"));
+            assert_eq!(
+                calls, port_calls,
+                "{label}: the attachment walk (original, then port)"
+            );
+            assert_eq!(
+                result.map(|ret| (ret.eax, ret.pop)),
+                Ok((eax, 0)),
+                "{label}: the return"
+            );
+            compare(&label, &a, &port, esp);
+            tally.add("native");
+            let light_items = light_items.expect("the items");
+            for &(_, made) in &light_items.made {
+                tally.add(match made {
+                    Made::Rust => "a record in Rust".to_string(),
+                    Made::Guest(why) => format!("a record by the guest ({why:?})"),
+                });
+            }
+            for copied in &light_items.first_person {
+                tally.add(match copied {
+                    FirstPerson::Copied { slot: 7, .. } => "a first-person record in the last slot",
+                    FirstPerson::Copied { .. } => "a first-person record copied",
+                    FirstPerson::Full { .. } => "a full slot",
+                });
+            }
+            if light_items.receivers.count > 0 {
+                tally.add("receivers");
+            }
+            if light_items.casters.count > 0 {
+                tally.add("casters");
+            }
+            let capacity = word(&a, items::LISTS + 0x18) as i32;
+            if capacity >= 0 && light_items.receivers.count as i32 == capacity {
+                tally.add("a full list");
+            }
+        }
+    }
+    eprintln!("item lists: {:#?}", tally.0);
+    assert!(
+        tally.get("native") >= 64,
+        "too few calls answered: {:#?}",
+        tally.0
+    );
+    for k in [
+        "a record in Rust",
+        "a record by the guest (Unsupported)",
+        "a first-person record copied",
+        "a first-person record in the last slot",
+        "a full slot",
+        "receivers",
+        "casters",
+        "a full list",
+    ] {
+        assert!(tally.get(k) > 0, "never {k}: {:#?}", tally.0);
     }
 }

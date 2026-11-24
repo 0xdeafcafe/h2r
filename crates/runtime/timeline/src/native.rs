@@ -5,17 +5,73 @@ use std::sync::OnceLock;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(usize)]
-pub enum Stage { World, Objects, Transparents, Lights, Post, Particles, Decals, Hud, Gels, Fog, Water, Shadows, FirstPerson, Effects, Ui }
+pub enum Stage {
+    World,
+    Objects,
+    Transparents,
+    Lights,
+    Post,
+    Particles,
+    Decals,
+    Hud,
+    Gels,
+    Fog,
+    Water,
+    Shadows,
+    FirstPerson,
+    Effects,
+    Ui,
+}
 
-const STAGES: [&str; 15] = ["world", "objects", "transparents", "lights", "post", "particles", "decals", "hud", "gels", "fog", "water", "shadows", "first_person", "effects", "ui"];
+const STAGES: [&str; 15] = [
+    "world",
+    "objects",
+    "transparents",
+    "lights",
+    "post",
+    "particles",
+    "decals",
+    "hud",
+    "gels",
+    "fog",
+    "water",
+    "shadows",
+    "first_person",
+    "effects",
+    "ui",
+];
 #[derive(Clone, Copy, Debug)]
 #[repr(usize)]
 pub enum Metric {
-    Examined, Suppressed, RefusedOwnership, RefusedResources, RefusedRanges, RefusedMasks, RefusedInputs, RefusedValidation, RefusedReplay,
-    PrepareNs, EncodeNs, Buffers, BindGroups, UploadBytes, PipelineMisses,
-    WorkerRoundTrips, ReferencePasses, DisplayPasses,
-    WalkExamined, WalkSuppressed, WalkRefusedInputs, WalkRefusedReservation,
-    BuildsSkipped, WalkSections, EntryPassesSkipped, SectionsPrepared, StateCallsSkipped, CacheHits, CacheMisses,
+    Examined,
+    Suppressed,
+    RefusedOwnership,
+    RefusedResources,
+    RefusedRanges,
+    RefusedMasks,
+    RefusedInputs,
+    RefusedValidation,
+    RefusedReplay,
+    PrepareNs,
+    EncodeNs,
+    Buffers,
+    BindGroups,
+    UploadBytes,
+    PipelineMisses,
+    WorkerRoundTrips,
+    ReferencePasses,
+    DisplayPasses,
+    WalkExamined,
+    WalkSuppressed,
+    WalkRefusedInputs,
+    WalkRefusedReservation,
+    BuildsSkipped,
+    WalkSections,
+    EntryPassesSkipped,
+    SectionsPrepared,
+    StateCallsSkipped,
+    CacheHits,
+    CacheMisses,
     /// Committed recordings with a private command buffer (`record_ranges`):
     /// each also ends the open encoder and adds a render pass of its own.
     CommandBuffers,
@@ -32,30 +88,84 @@ pub enum Metric {
     /// was told to skip their items: a named error, not a fallback.
     SceneDropped,
 }
-const METRICS: [&str; 34] = ["examined", "suppressed", "refused_ownership", "refused_resources", "refused_ranges",
-    "refused_masks", "refused_inputs", "refused_validation", "refused_replay", "prepare_ns", "encode_ns", "buffers", "bind_groups", "upload_bytes", "pipeline_misses",
-    "worker_round_trips", "reference_passes", "display_passes",
-    "walk_examined", "walk_suppressed", "walk_refused_inputs", "walk_refused_reservation",
-    "builds_skipped", "walk_sections", "entry_passes_skipped", "sections_prepared", "state_calls_skipped", "cache_hits", "cache_misses",
-    "command_buffers", "extract_ns", "render_prepare_ns", "scene_stages", "scene_dropped"];
+const METRICS: [&str; 34] = [
+    "examined",
+    "suppressed",
+    "refused_ownership",
+    "refused_resources",
+    "refused_ranges",
+    "refused_masks",
+    "refused_inputs",
+    "refused_validation",
+    "refused_replay",
+    "prepare_ns",
+    "encode_ns",
+    "buffers",
+    "bind_groups",
+    "upload_bytes",
+    "pipeline_misses",
+    "worker_round_trips",
+    "reference_passes",
+    "display_passes",
+    "walk_examined",
+    "walk_suppressed",
+    "walk_refused_inputs",
+    "walk_refused_reservation",
+    "builds_skipped",
+    "walk_sections",
+    "entry_passes_skipped",
+    "sections_prepared",
+    "state_calls_skipped",
+    "cache_hits",
+    "cache_misses",
+    "command_buffers",
+    "extract_ns",
+    "render_prepare_ns",
+    "scene_stages",
+    "scene_dropped",
+];
 
 // Four Xbox player views and a bucket for non-player views.
 const VIEWS: usize = 5;
 const VIEW_METRICS: [&str; 9] = [
-    "reference_ranges", "display_ranges", "invariants", "reference_recorded", "display_recorded",
-    "reference_invariants", "display_invariants", "reference_refused", "display_refused",
+    "reference_ranges",
+    "display_ranges",
+    "invariants",
+    "reference_recorded",
+    "display_recorded",
+    "reference_invariants",
+    "display_invariants",
+    "reference_refused",
+    "display_refused",
 ];
 const STRIDE: usize = METRICS.len() + VIEWS * VIEW_METRICS.len();
 const STAGE_COLUMNS: usize = STAGES.len() * STRIDE;
 const OBJECT_WALK_COLUMNS: [&str; 12] = [
-    "walk_native", "walk_fallback", "walk_unsupported", "walk_order", "walk_unreadable",
-    "walk_model", "walk_inputs", "walk_state", "walk_reservation",
-    "walk_part_aux_state", "walk_part_subparts", "walk_unresident",
+    "walk_native",
+    "walk_fallback",
+    "walk_unsupported",
+    "walk_order",
+    "walk_unreadable",
+    "walk_model",
+    "walk_inputs",
+    "walk_state",
+    "walk_reservation",
+    "walk_part_aux_state",
+    "walk_part_subparts",
+    "walk_unresident",
 ];
 const WORLD_OPAQUE_COLUMNS: [&str; 11] = [
-    "prereserved_draws", "prereserved_sections", "guest_indexed_draws", "guest_indexed_sections",
-    "handlers_taken", "handlers_fallback", "handler_draws", "handlers_indexed", "handler_indexed_draws",
-    "gpu_draws", "backend_draws",
+    "prereserved_draws",
+    "prereserved_sections",
+    "guest_indexed_draws",
+    "guest_indexed_sections",
+    "handlers_taken",
+    "handlers_fallback",
+    "handler_draws",
+    "handlers_indexed",
+    "handler_indexed_draws",
+    "gpu_draws",
+    "backend_draws",
 ];
 const WORLD_OPAQUE_BASE: usize = STAGE_COLUMNS + OBJECT_WALK_COLUMNS.len();
 const WORLD_SECTION_COLUMNS: [&str; 2] = ["taken_sections", "fallback_sections"];
@@ -64,11 +174,17 @@ const WORLD_SECTION_BASE: usize = WORLD_OPAQUE_BASE + WORLD_OPAQUE_COLUMNS.len()
 /// Count at the front-end boundary, independently of which backend
 /// records the GPU draw. Section counts are deduplicated by the caller.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum WorldOpaque { Prereserved, GuestIndexed }
+pub enum WorldOpaque {
+    Prereserved,
+    GuestIndexed,
+}
 
 impl WorldOpaque {
     pub fn count(self, draws: u64, sections: u64) {
-        let offset = match self { Self::Prereserved => 0, Self::GuestIndexed => 2 };
+        let offset = match self {
+            Self::Prereserved => 0,
+            Self::GuestIndexed => 2,
+        };
         let start = phase::Counter::ALL.len() + WORLD_OPAQUE_BASE + offset;
         phase::count_index(start, draws);
         phase::count_index(start + 1, sections);
@@ -84,14 +200,20 @@ pub enum WorldSection {
 
 impl WorldSection {
     pub fn taken(self) {
-        phase::world_section(|frame, _| { frame.taken_sections.insert(self); });
+        phase::world_section(|frame, _| {
+            frame.taken_sections.insert(self);
+        });
     }
 
     pub fn fallback(self, shader: u32, reason: &'static str) {
         phase::world_section(|frame, details| {
             frame.fallback_sections.insert(self);
             if details {
-                frame.sections_by_refusal.entry((shader, reason)).or_default().insert(self);
+                frame
+                    .sections_by_refusal
+                    .entry((shader, reason))
+                    .or_default()
+                    .insert(self);
             }
         });
     }
@@ -110,7 +232,9 @@ pub fn world_handler_indexed(shader: u32, reason: &str, draws: usize) {
 }
 
 fn consumed_handler(shader: u32, draws: usize, indexed: Option<&str>) {
-    if !phase::enabled() { return; }
+    if !phase::enabled() {
+        return;
+    }
     let start = phase::Counter::ALL.len() + WORLD_OPAQUE_BASE;
     phase::count_index(start + 4, 1);
     phase::count_index(start + 6, draws as u64);
@@ -131,11 +255,15 @@ fn consumed_handler(shader: u32, draws: usize, indexed: Option<&str>) {
 
 /// Physical routing of packets produced by the native sorted handler.
 pub fn world_packet(shader: u32, fallback: Option<&str>) {
-    if !phase::enabled() { return; }
+    if !phase::enabled() {
+        return;
+    }
     let offset = if fallback.is_some() { 10 } else { 9 };
     phase::count_index(phase::Counter::ALL.len() + WORLD_OPAQUE_BASE + offset, 1);
     if let Some(reason) = fallback {
-        phase::world_material(|counts| count_reason(&mut counts.rows.entry(shader).or_default().backend, reason));
+        phase::world_material(|counts| {
+            count_reason(&mut counts.rows.entry(shader).or_default().backend, reason)
+        });
     }
 }
 
@@ -149,7 +277,9 @@ fn count_reason(reasons: &mut BTreeMap<String, u64>, reason: &str) {
 
 /// Charge the ordinary shader datum once, when its sorted handler goes to the guest.
 pub fn world_handler_fallback(shader: u32, reason: &str) {
-    if !phase::enabled() { return; }
+    if !phase::enabled() {
+        return;
+    }
     phase::count_index(phase::Counter::ALL.len() + WORLD_OPAQUE_BASE + 5, 1);
     phase::world_material(|counts| {
         count_reason(&mut counts.rows.entry(shader).or_default().refused, reason);
@@ -185,7 +315,9 @@ impl WorldMaterials {
         }
     }
 
-    pub(crate) fn is_empty(&self) -> bool { self.rows.is_empty() }
+    pub(crate) fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
 
     /// A worker may finish before its game sample. Union identities until
     /// all contributors have arrived at the same frame boundary.
@@ -193,7 +325,10 @@ impl WorldMaterials {
         self.taken_sections.append(&mut other.taken_sections);
         self.fallback_sections.append(&mut other.fallback_sections);
         for (key, mut sections) in other.sections_by_refusal {
-            self.sections_by_refusal.entry(key).or_default().append(&mut sections);
+            self.sections_by_refusal
+                .entry(key)
+                .or_default()
+                .append(&mut sections);
         }
         if self.rows.is_empty() {
             self.rows = other.rows;
@@ -204,8 +339,12 @@ impl WorldMaterials {
             dst.taken += src.taken;
             dst.draws += src.draws;
             dst.indexed_draws += src.indexed_draws;
-            for (target, reasons) in [(&mut dst.refused, src.refused), (&mut dst.indexed, src.indexed), (&mut dst.backend, src.backend),
-                (&mut dst.refused_sections, src.refused_sections)] {
+            for (target, reasons) in [
+                (&mut dst.refused, src.refused),
+                (&mut dst.indexed, src.indexed),
+                (&mut dst.backend, src.backend),
+                (&mut dst.refused_sections, src.refused_sections),
+            ] {
                 for (reason, n) in reasons {
                     *target.entry(reason).or_default() += n;
                 }
@@ -222,7 +361,11 @@ impl WorldMaterials {
         self.taken_sections.clear();
         self.fallback_sections.clear();
         for ((shader, why), sections) in std::mem::take(&mut self.sections_by_refusal) {
-            self.rows.entry(shader).or_default().refused_sections.insert(why.to_owned(), sections.len() as u64);
+            self.rows
+                .entry(shader)
+                .or_default()
+                .refused_sections
+                .insert(why.to_owned(), sections.len() as u64);
         }
     }
 }
@@ -230,8 +373,14 @@ impl WorldMaterials {
 impl std::fmt::Display for WorldMaterials {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (index, (shader, count)) in self.rows.iter().enumerate() {
-            if index > 0 { f.write_str("; ")?; }
-            write!(f, "{shader:#010x} taken={} draws={}", count.taken, count.draws)?;
+            if index > 0 {
+                f.write_str("; ")?;
+            }
+            write!(
+                f,
+                "{shader:#010x} taken={} draws={}",
+                count.taken, count.draws
+            )?;
             for (why, n) in &count.refused {
                 write!(f, " refused[{why:?}]={n}")?;
             }
@@ -253,17 +402,39 @@ impl std::fmt::Display for WorldMaterials {
 }
 
 const SCENE_LIST_START: usize = WORLD_SECTION_BASE + WORLD_SECTION_COLUMNS.len();
-const SCENE_LISTS: [&str; 16] = [
-    "view_objects", "light_objects", "object_order", "object_setup", "object_record",
-    "view_geometry", "light_geometry_gather", "visible_lights", "light_geometry",
-    "light_extra_caster", "transparent_effect", "transparent_polygon",
-    "transparent_geometry", "transparents", "light_frame", "light_volume",
+const SCENE_LISTS: [&str; 18] = [
+    "view_objects",
+    "light_objects",
+    "object_order",
+    "object_setup",
+    "object_record",
+    "view_geometry",
+    "light_geometry_gather",
+    "visible_lights",
+    "light_geometry",
+    "light_extra_caster",
+    "transparent_effect",
+    "transparent_polygon",
+    "transparent_geometry",
+    "transparents",
+    "light_frame",
+    "light_volume",
+    "light_records",
+    "light_items",
 ];
 const SCENE_LIST_RESULTS: [&str; 11] = [
-    "native", "fallback", "memory", "layout", "unsupported", "residency", "lighting",
-    "palette", "object_model", "compared", "mismatch",
+    "native",
+    "fallback",
+    "memory",
+    "layout",
+    "unsupported",
+    "residency",
+    "lighting",
+    "palette",
+    "object_model",
+    "compared",
+    "mismatch",
 ];
-
 
 #[derive(Clone, Copy)]
 #[repr(usize)]
@@ -287,6 +458,12 @@ pub enum SceneList {
     LightFrame,
     /// One light's volume (`0x000c17f0`) in the frame body.
     LightVolume,
+    /// One of a light's record walks (`0x00133390`, `0x00133520`) in the
+    /// frame body (slice L3).
+    LightRecords,
+    /// One record of a light's item lists (`0x00040e90` in the light's
+    /// kind, slice L4), or a call the body declines.
+    LightItems,
 }
 
 #[derive(Clone, Copy)]
@@ -308,7 +485,9 @@ pub enum SceneListResult {
 impl SceneList {
     pub fn count(self, result: SceneListResult) {
         phase::count_index(
-            phase::Counter::ALL.len() + SCENE_LIST_START + self as usize * SCENE_LIST_RESULTS.len()
+            phase::Counter::ALL.len()
+                + SCENE_LIST_START
+                + self as usize * SCENE_LIST_RESULTS.len()
                 + result as usize,
             1,
         );
@@ -316,15 +495,36 @@ impl SceneList {
 }
 
 const UI_COLUMNS: [&str; Ui::OutlineReservation as usize + 1] = [
-    "items", "item_refused", "fallback_geometry", "fallback_order", "fallback_target",
-    "fallback_state", "fallback_shader", "fallback_texture", "fallback_upload",
-    "fallback_reservation", "guest_builder_draw", "model_guest_builder_draw",
-    "backdrop_native", "backdrop_fallback_entry",
-    "backdrop_fallback_inputs", "backdrop_fallback_reservation", "model_idle",
-    "model_native_group", "model_fallback_widget", "model_fallback_entry",
-    "model_fallback_camera", "model_fallback_caller", "model_fallback_geometry",
-    "model_fallback_range_limit", "model_fallback_texture_commit", "model_fallback_reservation",
-    "outline_native", "outline_fallback_entry", "outline_fallback_inputs", "outline_fallback_reservation",
+    "items",
+    "item_refused",
+    "fallback_geometry",
+    "fallback_order",
+    "fallback_target",
+    "fallback_state",
+    "fallback_shader",
+    "fallback_texture",
+    "fallback_upload",
+    "fallback_reservation",
+    "guest_builder_draw",
+    "model_guest_builder_draw",
+    "backdrop_native",
+    "backdrop_fallback_entry",
+    "backdrop_fallback_inputs",
+    "backdrop_fallback_reservation",
+    "model_idle",
+    "model_native_group",
+    "model_fallback_widget",
+    "model_fallback_entry",
+    "model_fallback_camera",
+    "model_fallback_caller",
+    "model_fallback_geometry",
+    "model_fallback_range_limit",
+    "model_fallback_texture_commit",
+    "model_fallback_reservation",
+    "outline_native",
+    "outline_fallback_entry",
+    "outline_fallback_inputs",
+    "outline_fallback_reservation",
 ];
 const UI_OFFSET: usize = SCENE_LIST_START + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len();
 pub(crate) const COLUMNS: usize = UI_OFFSET + UI_COLUMNS.len();
@@ -395,7 +595,10 @@ pub enum ObjectWalk {
 
 impl ObjectWalk {
     pub fn count(self, n: usize) {
-        phase::count_index(phase::Counter::ALL.len() + STAGE_COLUMNS + self as usize, n as u64);
+        phase::count_index(
+            phase::Counter::ALL.len() + STAGE_COLUMNS + self as usize,
+            n as u64,
+        );
     }
 
     pub fn fallback(self, n: usize) {
@@ -408,7 +611,9 @@ pub(crate) fn labels() -> &'static [String] {
     LABELS.get_or_init(|| {
         let mut out = Vec::with_capacity(COLUMNS);
         for stage in STAGES {
-            for name in METRICS { out.push(format!("native_{stage}_{name}")); }
+            for name in METRICS {
+                out.push(format!("native_{stage}_{name}"));
+            }
             for view in ["0", "1", "2", "3", "other"] {
                 for name in VIEW_METRICS {
                     out.push(format!("native_{stage}_v{view}_{name}"));
@@ -435,11 +640,17 @@ impl Stage {
     }
 
     pub fn count(self, metric: Metric, n: u64) {
-        phase::count_index(phase::Counter::ALL.len() + self as usize * STRIDE + charged(metric) as usize, n);
+        phase::count_index(
+            phase::Counter::ALL.len() + self as usize * STRIDE + charged(metric) as usize,
+            n,
+        );
     }
 
     fn view_index(self, view: u32) -> usize {
-        phase::Counter::ALL.len() + self as usize * STRIDE + METRICS.len() + (view as usize).min(VIEWS - 1) * VIEW_METRICS.len()
+        phase::Counter::ALL.len()
+            + self as usize * STRIDE
+            + METRICS.len()
+            + (view as usize).min(VIEWS - 1) * VIEW_METRICS.len()
     }
 
     pub fn recorded(self, view: u32, display: bool, ranges: usize) {
@@ -447,7 +658,10 @@ impl Stage {
     }
 
     pub fn attempted(self, view: u32, display: bool, ranges: usize) {
-        phase::count_index(self.view_index(view) + 3 + usize::from(display), ranges as u64);
+        phase::count_index(
+            self.view_index(view) + 3 + usize::from(display),
+            ranges as u64,
+        );
     }
 
     pub fn copy_refused(self, view: u32, display: bool) {
@@ -490,7 +704,9 @@ pub fn on_render_thread() -> bool {
 /// on this thread. A shared device may serve more than one backend.
 #[inline]
 pub fn resource(metric: Metric, n: u64) {
-    if phase::enabled() && let Some(stage) = ACTIVE.with(std::cell::Cell::get) {
+    if phase::enabled()
+        && let Some(stage) = ACTIVE.with(std::cell::Cell::get)
+    {
         stage.count(metric, n);
     }
 }
@@ -499,7 +715,14 @@ pub struct Timer(Option<(Stage, Metric, std::time::Instant, Option<Stage>)>);
 
 impl Timer {
     pub fn start(stage: Stage, metric: Metric) -> Self {
-        Self(phase::enabled().then(|| (stage, metric, std::time::Instant::now(), ACTIVE.with(|a| a.replace(Some(stage))))))
+        Self(phase::enabled().then(|| {
+            (
+                stage,
+                metric,
+                std::time::Instant::now(),
+                ACTIVE.with(|a| a.replace(Some(stage))),
+            )
+        }))
     }
 }
 
@@ -519,10 +742,20 @@ mod tests {
     fn capture_columns_identify_each_view_and_copy() {
         let columns: Vec<_> = phase::counter_columns().collect();
         assert_eq!(columns.len(), phase::COUNTERS);
-        for (i, (slot, _)) in columns.iter().enumerate() { assert_eq!(*slot, i); }
-        for (metric, label) in [(Metric::WorkerRoundTrips, "native_lights_worker_round_trips"),
-            (Metric::ReferencePasses, "native_lights_reference_passes"), (Metric::DisplayPasses, "native_lights_display_passes")] {
-            assert_eq!(columns[phase::Counter::ALL.len() + Stage::Lights as usize * STRIDE + metric as usize].1, label);
+        for (i, (slot, _)) in columns.iter().enumerate() {
+            assert_eq!(*slot, i);
+        }
+        for (metric, label) in [
+            (Metric::WorkerRoundTrips, "native_lights_worker_round_trips"),
+            (Metric::ReferencePasses, "native_lights_reference_passes"),
+            (Metric::DisplayPasses, "native_lights_display_passes"),
+        ] {
+            assert_eq!(
+                columns
+                    [phase::Counter::ALL.len() + Stage::Lights as usize * STRIDE + metric as usize]
+                    .1,
+                label
+            );
         }
         let i = Stage::Objects.view_index(2);
         assert_eq!(columns[i].1, "native_objects_v2_reference_ranges");
@@ -532,21 +765,42 @@ mod tests {
         assert_eq!(columns[lists].1, "native_scene_lists_view_objects_native");
         let ui = phase::Counter::ALL.len() + UI_OFFSET;
         assert_eq!(ui, lists + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len());
-        assert_eq!(columns[ui - 1].1, "native_scene_lists_light_volume_mismatch");
+        assert_eq!(columns[ui - 1].1, "native_scene_lists_light_items_mismatch");
         let frame = lists + SceneList::LightFrame as usize * SCENE_LIST_RESULTS.len();
         assert_eq!(columns[frame].1, "native_scene_lists_light_frame_native");
         assert_eq!(columns[ui].1, "native_ui_items");
-        assert_eq!(columns[phase::Counter::ALL.len() + COLUMNS - 1].1, "native_ui_outline_fallback_reservation");
+        assert_eq!(
+            columns[phase::Counter::ALL.len() + COLUMNS - 1].1,
+            "native_ui_outline_fallback_reservation"
+        );
         let walk = phase::Counter::ALL.len() + STAGE_COLUMNS;
-        assert_eq!(columns[walk + ObjectWalk::Native as usize].1, "native_objects_walk_native");
-        assert_eq!(columns[walk + ObjectWalk::Reservation as usize].1, "native_objects_walk_reservation");
-        assert_eq!(columns[walk + ObjectWalk::PartAuxState as usize].1, "native_objects_walk_part_aux_state");
-        assert_eq!(columns[walk + ObjectWalk::Unresident as usize].1, "native_objects_walk_unresident");
-        assert_eq!(columns[walk + ObjectWalk::Unresident as usize + 1].1, "native_world_opaque_prereserved_draws");
+        assert_eq!(
+            columns[walk + ObjectWalk::Native as usize].1,
+            "native_objects_walk_native"
+        );
+        assert_eq!(
+            columns[walk + ObjectWalk::Reservation as usize].1,
+            "native_objects_walk_reservation"
+        );
+        assert_eq!(
+            columns[walk + ObjectWalk::PartAuxState as usize].1,
+            "native_objects_walk_part_aux_state"
+        );
+        assert_eq!(
+            columns[walk + ObjectWalk::Unresident as usize].1,
+            "native_objects_walk_unresident"
+        );
+        assert_eq!(
+            columns[walk + ObjectWalk::Unresident as usize + 1].1,
+            "native_world_opaque_prereserved_draws"
+        );
         let world = phase::Counter::ALL.len() + Stage::World as usize * STRIDE;
-        for (metric, label) in [(Metric::ExtractNs, "native_world_extract_ns"),
-            (Metric::RenderPrepareNs, "native_world_render_prepare_ns"), (Metric::SceneStages, "native_world_scene_stages"),
-            (Metric::SceneDropped, "native_world_scene_dropped")] {
+        for (metric, label) in [
+            (Metric::ExtractNs, "native_world_extract_ns"),
+            (Metric::RenderPrepareNs, "native_world_render_prepare_ns"),
+            (Metric::SceneStages, "native_world_scene_stages"),
+            (Metric::SceneDropped, "native_world_scene_dropped"),
+        ] {
             assert_eq!(columns[world + metric as usize].1, label);
         }
     }
@@ -557,7 +811,10 @@ mod tests {
         std::thread::spawn(|| {
             mark_render_thread();
             assert!(on_render_thread());
-            assert!(matches!(charged(Metric::PrepareNs), Metric::RenderPrepareNs));
+            assert!(matches!(
+                charged(Metric::PrepareNs),
+                Metric::RenderPrepareNs
+            ));
             assert!(matches!(charged(Metric::EncodeNs), Metric::EncodeNs));
         })
         .join()
