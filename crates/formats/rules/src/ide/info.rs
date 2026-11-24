@@ -117,6 +117,7 @@ const S: &[&str] = &["s"];
 const KILLER_CLASS: &[&str] = &["killer", "class"];
 const BOUNCE: &[&str] = &["p", "spot", "chain", "monster"];
 const KILLER_ASSIST_CLASS: &[&str] = &["killer", "assist", "class"];
+const DAMAGE: &[&str] = &["o", "by", "amount"];
 
 /// An event's argument names, as the docs write them, and what fires it.
 pub(crate) fn event_info(ev: Event) -> (&'static [&'static str], &'static str) {
@@ -154,6 +155,10 @@ pub(crate) fn event_info(ev: Event) -> (&'static [&'static str], &'static str) {
         Event::Quit => (P, "A player quit."),
         Event::RoundEnd => (NO_ARGS, "At the end of each round."),
         Event::Bounced => (P, "A player fell out of the map during a bounce: the Bounced medal."),
+        Event::Damage => (
+            DAMAGE,
+            "An object took damage. `by` is the player it is credited to, `none` for none; `amount` is body and shield damage together, as a fraction of full vitality. At most 16 a tick.",
+        ),
     }
 }
 

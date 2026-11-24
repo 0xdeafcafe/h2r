@@ -498,6 +498,7 @@ numbered.
 | `unit.mix`, `unit.literal` | "Time"; `0.01s is not a whole number of ticks (30 a second).` | Add `s`; Wrap in `seconds(...)` |
 | `tag.group` | "Zones and weapons" | Change the column to `weapon` |
 | `body.unknown` | `objects/characters/elite/elite is not a player body; set_body takes objects/characters/masterchief/masterchief_mp or objects/characters/elite/elite_mp` | none |
+| `field.path` | `"Vitals Grade" is not a field name: lower-case letters, digits and underscores, starting with a letter` | none |
 | `zone.delete` (warning) | `goal is a zone. A flag cannot be deleted, so on a map where goal is a flag this does nothing.` | none |
 | `match.missing` | "Enums and match" | Add the missing arms |
 | `const.range`, `const.zero` | "Constants" | none |

@@ -1,7 +1,7 @@
 # Rules world API: a synced world for scripts
 
 Status: Design, with the first slices landing. Messages as cues (W1) and the bot orders (W7) are built; the rest extends the rules engine of [rules-engine.md](rules-engine.md) and is built after that page's host runtime runs in a game.
-Code: slice W1: `crates/formats/rules/src/show.rs` (the cue and its codec), `crates/extensions/game/src/rules/world/show.rs` (the host and client halves), `crates/live/actor-net/src/wire.rs` and `budget.rs` (the `Cue` record and its three-packet repeat), `crates/extensions/game/src/actor_net/host.rs` and `client.rs` (offered to every peer; shown once). Slice W7: the `bot_*` entries of `crates/formats/rules/src/caps.rs`, the dispatch in `crates/extensions/game/src/rules/runtime.rs`, `crates/extensions/game/src/rules/world/bots.rs`, `crates/live/bots/src/brain.rs` and `decisions.rs`. The plan names `crates/formats/rules/src/caps.rs` (the entries), `crates/formats/rules/src/world/` and `crates/extensions/game/src/rules/world/` (one module per capability group; `bots` and `show` are built), and `crates/live/actor-net/src/wire.rs` (two records; `Cue` is built). Tests: named per slice in "Implementation plan".
+Code: slice W1: `crates/formats/rules/src/show.rs` (the cue and its codec), `crates/extensions/game/src/rules/world/show.rs` (the host and client halves), `crates/live/actor-net/src/wire.rs` and `budget.rs` (the `Cue` record and its three-packet repeat), `crates/extensions/game/src/actor_net/host.rs` and `client.rs` (offered to every peer; shown once). Slice W9: the entries `object_health` to `squad_strength` of `crates/formats/rules/src/caps.rs`, `on damage` (`ir::Event::Damage`), `crates/formats/rules/src/fields.rs` (the tag read's field paths and load check), `crates/extensions/game/src/rules/world/data.rs`. Slice W7: the `bot_*` entries of `crates/formats/rules/src/caps.rs`, the dispatch in `crates/extensions/game/src/rules/runtime.rs`, `crates/extensions/game/src/rules/world/bots.rs`, `crates/live/bots/src/brain.rs` and `decisions.rs`. The plan names `crates/formats/rules/src/caps.rs` (the entries), `crates/formats/rules/src/world/` and `crates/extensions/game/src/rules/world/` (one module per capability group; `bots` and `show` are built), and `crates/live/actor-net/src/wire.rs` (two records; `Cue` is built). Tests: named per slice in "Implementation plan".
 Switch: none of its own; the `rules` feature of `H2_FEATURES` ([switches.md](../runtime/switches.md)).
 
 A rules script moves objects, flies drop ships, orders AI squads and
@@ -355,7 +355,7 @@ and bounces").
 | `follow(s, p)` | `squad_follow` | an order's follow target, a field the kit writes empty; how the engine resolves it is not read | untraced | as above |
 | `attack(s, o)` | `squad_attack` | no entry; `AI_TARGET_SCORE` (`0x265d30`) is the point a preference would answer | traced | as above |
 | `set_squad_team(s, t)` | `squad_team` | `AI_SET_TEAM` (`0x275b60`) | named | unit team in the entity |
-| a map's own squads, by name: `label wardens: squad = "<squad name>"` | a label kind `squad` | the scenario's squad block (`scnr+0x160`), read by name as the kit's slots are | not built | none needed |
+| a map's own squads, by name: `label wardens: squad = "<squad name>"` | a label kind `squad` | the scenario's squad block (`scnr+0x160`), read by name as the kit's slots are | not built; see "Advanced data" |
 
 ### Bots
 
@@ -547,15 +547,18 @@ observed, never made.
 
 ### Advanced data
 
-Reads only, no capability.
+Reads and one event, no capability. Slice W9.
 
 | Script | Entry | From | Status |
 |---|---|---|---|
-| `o.tag`, `o.health`, `o.shield` (`fixed`, 0 to 1), `p.weapon` (`weapon?`) | reads | the object and unit datums (`guest-layout` `object.rs`, `unit.rs`); the held weapon as [bots.md](bots.md) section 3.6 reads it | named |
-| `tag_int(t, "field")`, `tag_fixed(t, "field")` | reads | the field path is resolved at load against our tag schema (`tags::schema`) to a group, offset and type, and refused by name when the schema lacks it; the value is read from the loaded map | not built |
-| `squad_alive(s)`; `squad_fighting(s)`, `squad_strength(s)` | exists; reads | `actor_net::squads::count_by_squad`; for the other two, actor state beyond what the agent API's `world.ai` snapshot reads (`crates/extensions/agent/src/ai.rs`) | named; untraced |
+| `o.health`, `o.shield` (`fixed`, 0 to 1) | `object_health`, `object_shield`, reads | the object's vitality fields (`guest-layout` `object.rs`), through `world::data::vitality` (**Code**, `crates/extensions/game/src/rules/world/data.rs`); an overshield reads 1, an object that is gone reads 0 | named |
+| `o.tag`, `p.weapon` (`weapon?`) | none | a tag value is a table index of the script's own blob, and a map's tag is not in it; the held weapon needs the same lookup. No entry names either, so a script that writes them is a compile error | not built |
+| `tag_int(t, "field")`, `tag_fixed(t, "field")` | `tag_int`, `tag_fixed`, reads | both arguments are constants written in the call (the verifier's `field_reads` holds each to the two `Const` ops before it). The field is a path of our own names (`vitals.maximum_shield`), resolved at load against the typed tag definitions (`tags::defs`) to an offset and a type by `world::data::DefsSchema`, and refused by name by `rules::fields::check` when they lack it | the rules half is built and tested on `FakeGame`; the host's read of a tag instance from the loaded map is not, so a host refuses a script that calls either (`not built`) |
+| `squad_alive(s)` | exists | `actor_net::squads::count_by_squad` | named |
+| `squad_fighting(s)`, `squad_strength(s)` (`fixed`, 0 to 1) | reads | actor state beyond what the agent API's `world.ai` snapshot reads (`crates/extensions/agent/src/ai.rs`); no engine field is traced | untraced: the fake answers, a host refuses a script that reads either |
 | `on actor_kill`, `on actor_assist`, `on squad_dead` | exist | `SimEvent::ActorKilled` (`crates/rewrites/sim-objects/src/events.rs`) | named |
-| `on damage(o, by, amount)` | an event | `SimEvent::Damage`, the same stream | named while the object update runs in Rust |
+| `on damage(o, by, amount)` | an event | `SimEvent::Damage`, the same stream: `o` the object, `by` the player it is credited to (`none` for none), `amount` the body and shield damage together as a fraction of full vitality. `world::data::damage_inputs` maps a tick's events to `Input::Damage`, the first 16 in the order the game applied them | the mapping is built; the runtime has no sim-event drain, so nothing fires it in a game yet |
+| a map's own squads, by name: `label wardens: squad = "<squad name>"` | none | the scenario's squad block (`scnr+0x160`) is not read, and a kit squad slot is `squad(n)`; no research row settles the name lookup | not built; no label kind `squad` exists, so the declaration is a compile error |
 
 Every machine in a game loads the same map, so a tag read is the same
 on each. A float field is rounded once to `fixed`. A script names a

@@ -630,6 +630,7 @@ fn validate(s: &Scenario) -> Result<(), String> {
             Input::ActorAssist { killer, assist, .. } => {
                 killer.is_none_or(player) && assist.is_none_or(player)
             }
+            Input::Damage { by, .. } => by.is_none_or(player),
             Input::SquadDead(s) => (*s as usize) < MAX_SQUADS,
             _ => true,
         };

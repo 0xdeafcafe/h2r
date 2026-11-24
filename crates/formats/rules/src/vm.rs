@@ -139,6 +139,13 @@ pub enum Input {
     Quit(u8),
     /// A fall out of the map during a bounce: the Bounced medal.
     Bounced(u8),
+    /// `object` took damage credited to `by`: `amount` as a `fixed` raw
+    /// value, a fraction of full vitality.
+    Damage {
+        object: u32,
+        by: Option<u8>,
+        amount: i32,
+    },
 }
 
 impl Input {
@@ -163,6 +170,7 @@ impl Input {
             Input::Join(_) => Event::Join,
             Input::Quit(_) => Event::Quit,
             Input::Bounced(_) => Event::Bounced,
+            Input::Damage { .. } => Event::Damage,
         }
     }
 }
@@ -1218,6 +1226,7 @@ impl Vm {
                 assist,
                 class,
             } => vec![op(*killer), op(*assist), self.class(class)],
+            Input::Damage { object, by, amount } => vec![o(*object), op(*by), *amount],
         }
     }
 

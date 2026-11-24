@@ -696,6 +696,13 @@ impl Game for GuestGame<'_> {
                     as i32,
                 _ => 0,
             },
+            // A fraction of full, 0 to 1; an object that is gone reads 0.
+            id::OBJECT_HEALTH | id::OBJECT_SHIELD => match call.args.first() {
+                Some(Arg::Object(Some(o))) => super::world::data::vitality(m, *o).map_or(0, |(health, shield)| {
+                    if call.entry.id == id::OBJECT_HEALTH { health } else { shield }
+                }),
+                _ => 0,
+            },
             id::PLAYER_OF => match call.args.first() {
                 Some(Arg::Object(Some(o))) => zones::player_of(m, *o).map_or(::rules::ty::NONE, i32::from),
                 _ => ::rules::ty::NONE,

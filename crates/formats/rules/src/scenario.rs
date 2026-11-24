@@ -258,6 +258,14 @@ pub enum ScenarioEvent {
         assist: Option<u8>,
         class: String,
     },
+    /// `object` took `amount` (a `fixed` raw value, 65536 is all of its
+    /// vitality) of damage, credited to `by`.
+    Damage {
+        object: u32,
+        #[serde(default)]
+        by: Option<u8>,
+        amount: i32,
+    },
     RoundEnd,
 }
 
@@ -298,6 +306,7 @@ impl ScenarioEvent {
                 assist,
                 class,
             },
+            ScenarioEvent::Damage { object, by, amount } => Input::Damage { object, by, amount },
             ScenarioEvent::RoundEnd => Input::RoundEnd,
         }
     }

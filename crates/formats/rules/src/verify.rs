@@ -143,6 +143,10 @@ pub enum Fault {
     Template,
     #[error("a jump or a loop lands inside a message's values")]
     IntoHoles,
+    #[error("{0} names its tag and its field as constants written directly before the call")]
+    FieldRead(&'static str),
+    #[error("{entry} names no valid field: {why}")]
+    FieldPath { entry: &'static str, why: String },
     #[error("string {0} is no message template")]
     NotTemplate(u32),
     #[error("the message's text has holes {want:?}, given values {got:?}")]
@@ -427,6 +431,11 @@ pub fn verify(ir: &Ir) -> Result<Report, Refusal> {
             pc,
             fault,
         })?;
+        field_reads(ir, hd).map_err(|(pc, fault)| Refusal::Op {
+            handler: hi,
+            pc,
+            fault,
+        })?;
         handler_ops.push(cost(&ir.labels, &hd.code, 0, hd.code.len()));
     }
 
@@ -548,6 +557,45 @@ fn message_runs(ir: &Ir, hd: &Handler) -> Result<(), (usize, Fault)> {
             Some(Ok(_)) => {}
         }
         pc += 1;
+    }
+    Ok(())
+}
+
+/// The tag read rule ("Advanced data" in `docs/game/rules-world-api.md`).
+/// A `tag_int` or `tag_fixed` call is directly after the two constants that
+/// write its tag and its field, nothing jumps or loops into them or onto
+/// the call, and the field is a valid path ([`crate::fields::valid_path`]),
+/// so a host resolves every read at load. Runs after the per-op checks, so
+/// every index here is valid.
+fn field_reads(ir: &Ir, hd: &Handler) -> Result<(), (usize, Fault)> {
+    let code = &hd.code;
+    let mut entered = vec![false; code.len() + 1];
+    for (pc, op) in code.iter().enumerate() {
+        let to = match *op {
+            Op::Jump { to } | Op::JumpIf { to, .. } | Op::JumpIfNot { to, .. } => to as usize,
+            Op::ForEach { body, .. } => pc + 1 + body as usize,
+            _ => continue,
+        };
+        if let Some(e) = entered.get_mut(to) {
+            *e = true;
+        }
+    }
+    for (pc, op) in code.iter().enumerate() {
+        let Op::Call { entry, .. } = *op else { continue };
+        if !crate::fields::is_read(entry) {
+            continue;
+        }
+        let name = caps::ENTRIES[entry as usize].name;
+        let Some((_, field)) = crate::fields::constants(code, pc) else {
+            return Err((pc, Fault::FieldRead(name)));
+        };
+        if pc < 2 || (pc - 1..=pc).any(|i| entered[i]) {
+            return Err((pc, Fault::FieldRead(name)));
+        }
+        let path = usize::try_from(field).ok().and_then(|i| ir.strings.get(i));
+        if let Err(why) = crate::fields::valid_path(path.map_or("", String::as_str)) {
+            return Err((pc, Fault::FieldPath { entry: name, why }));
+        }
     }
     Ok(())
 }

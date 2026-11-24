@@ -435,10 +435,13 @@ pub enum Event {
     /// A fall out of the map during a bounce: the superbounce medal chain's
     /// Bounced (`superbounce_chain::Event::Bounced`).
     Bounced,
+    /// An object took damage: the object, the player it is credited to and
+    /// the amount as a fraction of full vitality (`SimEvent::Damage`).
+    Damage,
 }
 
 impl Event {
-    pub const ALL: [Event; 21] = [
+    pub const ALL: [Event; 22] = [
         Event::Init,
         Event::RoundStart,
         Event::Tick,
@@ -460,6 +463,7 @@ impl Event {
         Event::RoundEnd,
         Event::ActorAssist,
         Event::Bounced,
+        Event::Damage,
     ];
 
     pub fn code(self) -> u8 {
@@ -494,6 +498,7 @@ impl Event {
             Event::RoundEnd => "round_end",
             Event::ActorAssist => "actor_assist",
             Event::Bounced => "bounced",
+            Event::Damage => "damage",
         }
     }
 
@@ -515,6 +520,7 @@ impl Event {
             Event::Bounce => &[Ty::Player, Ty::Object, Ty::Int, Ty::Bool],
             Event::Enter | Event::Leave => &[Ty::Object, Ty::Object],
             Event::SquadDead => &[Ty::Squad],
+            Event::Damage => &[Ty::Object, Ty::Player, Ty::Fixed],
             Event::ActorKill => &[Ty::Player, Ty::Class],
             Event::ActorAssist => &[Ty::Player, Ty::Player, Ty::Class],
             Event::Init | Event::RoundStart | Event::Tick | Event::Timer | Event::RoundEnd => &[],
@@ -539,7 +545,8 @@ impl Event {
             | Event::Join
             | Event::Quit
             | Event::ActorKill
-            | Event::ActorAssist => 16,
+            | Event::ActorAssist
+            | Event::Damage => 16,
             Event::Enter | Event::Leave => 64,
             Event::SquadDead => 16,
             _ => 1,
