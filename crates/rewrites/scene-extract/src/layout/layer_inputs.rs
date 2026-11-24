@@ -87,14 +87,19 @@ const fn mask(inputs: &[u32]) -> u64 {
     m
 }
 
+/// The render time ([`RENDER_TIME`], a double, seconds), or `None` when
+/// its words do not read.
+pub fn render_time(mem: &dyn GuestRead) -> Option<f64> {
+    mem.read_u32(RENDER_TIME)
+        .zip(mem.read_u32(RENDER_TIME + 4))
+        .map(|(lo, hi)| f64::from_bits(u64::from(lo) | u64::from(hi) << 32))
+}
+
 /// The inputs at the draw's begin. An input whose words do not read is
 /// not given; the stage refuses an item whose pass reads it.
 pub fn read(mem: &dyn GuestRead) -> LayerInputs {
     let mut out = LayerInputs {
-        time: mem
-            .read_u32(RENDER_TIME)
-            .zip(mem.read_u32(RENDER_TIME + 4))
-            .map(|(lo, hi)| f64::from_bits(u64::from(lo) | u64::from(hi) << 32)),
+        time: render_time(mem),
         defaults: Defaults::read(mem),
         ..LayerInputs::default()
     };

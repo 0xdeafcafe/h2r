@@ -214,6 +214,9 @@ pub struct WorldSelection {
     spans: Vec<(usize, usize, usize)>,
     pub(crate) materials: HashMap<u16, MaterialUse>,
     pub(crate) vertices: HashSet<(u16, Option<u32>)>,
+    /// The selected animated materials' constants at this frame's clock
+    /// ([`GpuWorld::animate_selection`]).
+    pub(crate) constants: HashMap<u16, crate::fog_gpu::LayerConstants>,
 }
 
 impl WorldSelection {
@@ -1396,6 +1399,16 @@ impl GpuWorld {
                 Some(n) => p.rigid(material, n, color, depth, state).is_some(),
                 None => p.cluster(material, color, depth, state).is_some(),
             })
+    }
+
+    /// Samples the selection's animated layer-3 materials at `time` (the
+    /// render clock, [`crate::layer_pass::render_time`]) into it: its
+    /// writes then upload their registers at that clock
+    /// ([`crate::program::MaterialProgram::animation`]). An error is how
+    /// many refused (the clock did not read); the view is then the D3D
+    /// path's.
+    pub fn animate_selection(&self, selection: &mut WorldSelection, time: Option<f64>) -> Result<(), usize> {
+        self.programs.as_ref().map_or(Ok(()), |p| p.animate(selection, time))
     }
 
     /// Both arms have bindings for all sampled layer-3 pages.
