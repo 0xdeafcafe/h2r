@@ -499,8 +499,9 @@ impl VariantEditor {
     /// ([`portable::Bundle::with_maps`]; at most [`portable::MAX_MAPS`]).
     /// With none it is [`Self::export_current`]'s version-1 text, so a
     /// variant that suggests nothing exports as it did. A record that names
-    /// a script is refused by name: this file carries no script
-    /// ([`portable::Bundle::new`]). `None` when no variant is open.
+    /// the engine's built-in script carries it
+    /// ([`portable::builtin_attach`]); one that names another is refused by
+    /// name ([`portable::Bundle::new`]). `None` when no variant is open.
     pub fn export_current_with(
         &self,
         maps: Vec<portable::MapSuggestion>,
@@ -510,7 +511,9 @@ impl VariantEditor {
         }
         let mut v = self.current()?.clone();
         v.set_builtin_flag(false);
-        let bundle = portable::Bundle::new(&v, &v.name(), "", None).and_then(|b| b.with_maps(maps));
+        let bundle = portable::builtin_attach(&v)
+            .and_then(|attach| portable::Bundle::new(&v, &v.name(), "", attach))
+            .and_then(|b| b.with_maps(maps));
         Some(match bundle {
             Ok(b) => Ok(serde_json::to_string_pretty(&b).expect("plain data serializes")),
             Err(e) => Err(e.into()),

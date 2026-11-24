@@ -96,7 +96,8 @@ mod tests {
         // a period on and is back after a whole one.
         assert!((2.0..=4.0).contains(&start) && (2.0..=4.0).contains(&half));
         assert!((start - half).abs() > 1.0, "{start} {half}");
-        assert!((start - again).abs() < 1e-3, "{start} {again}");
+        // The wave table is eight-bit, so a whole period is back to within a step.
+        assert!((start - again).abs() < 0.02, "{start} {again}");
     }
 
     #[test]

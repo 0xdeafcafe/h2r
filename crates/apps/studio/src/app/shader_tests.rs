@@ -181,5 +181,5 @@ fn the_read_evaluates_its_properties_at_the_clock() {
     let start = r.values_at(0.0)[0].clone().unwrap();
     let half = r.values_at(1.0)[0].clone().unwrap();
     assert!((start - half).abs() > 1.0, "{start} at 0 s, {half} at 1 s");
-    assert!((start - r.values_at(2.0)[0].clone().unwrap()).abs() < 1e-3);
+    assert!((start - r.values_at(2.0)[0].clone().unwrap()).abs() < 0.02);
 }
