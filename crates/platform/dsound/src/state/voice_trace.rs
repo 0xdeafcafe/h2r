@@ -42,7 +42,9 @@ impl DirectSound {
         Some(self.voice_trace.as_mut()?.sample(tick))
     }
 
-    pub(crate) fn voice_event(&mut self, what: Arguments<'_>) {
+    /// Record a guest scheduling observation on the same ordered timeline
+    /// as its mixer and completion callbacks.
+    pub fn voice_event(&mut self, what: Arguments<'_>) {
         if let Some(trace) = &mut self.voice_trace {
             trace.event(what);
         }

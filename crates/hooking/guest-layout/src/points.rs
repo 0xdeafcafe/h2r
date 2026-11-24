@@ -1690,6 +1690,12 @@ points! { ALL;
     SLOT_SIGN_OUT @ 0x0019_0d4b: [fn(slot: eax) ret 0]; "docs/game/bots.md";
     /// Allocates a one-shot sound after native playback admission.
     SOUND_IMPULSE_ALLOCATE @ 0x0012_6000: [fn(tag: stack 0, channel: stack 1, source: stack 2, rule: stack 3) -> eax ret 16]; "docs/halo1/sounds.md";
+    /// Chooses the channel for a due instance. The low word of EAX is -1 when no channel is available.
+    SOUND_CHOOSE_CHANNEL @ 0x0012_8700: [fn(instance: stack 0, reason: stack 1) -> eax ret 8]; "docs/audio/dsound.md";
+    /// Unbinds the channel and notifies the owner before freeing the instance.
+    SOUND_FINISH_INSTANCE @ 0x0012_7320: [fn(instance: eax, reason: stack 0) ret 4]; "docs/audio/dsound.md";
+    /// Drops the instance's companion and returns its salted slot to the sound pool.
+    SOUND_FREE_INSTANCE @ 0x0012_7390: [fn(instance: edi) ret 0]; "docs/audio/dsound.md";
     /// Walks a block of predicted resources in the requested prediction mode.
     PREDICT_RESOURCES @ 0x0016_e5e0: [fn(mode: edi, resources: stack 0) -> al ret 4], Optional; "docs/perf/sim-budget.md";
     /// Smooth a mix-in's position, obstruction and occlusion.
