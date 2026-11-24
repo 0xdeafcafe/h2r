@@ -6,5 +6,6 @@ pub mod bots;
 pub mod loadout;
 pub mod show;
 pub mod spawns;
+pub mod vehicles;
 pub mod walls;
 pub mod zones;

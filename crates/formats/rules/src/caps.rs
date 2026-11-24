@@ -482,9 +482,7 @@ pub const ENTRIES: &[Entry] = &[
     act(id::HIDE_AREA, "hide_area", &[Object], None, Now, Named),
     // Vehicles and drop ships (docs/game/rules-world-api.md, "Vehicles and
     // drop ships"). The vehicle is an `object` a host checks at the call:
-    // one that is no vehicle is a refused call. No entry here is named
-    // yet, so a host refuses a script that calls one, by name
-    // (`runtime::unhostable_refusal`); the fake models them all.
+    // one that is no vehicle is a refused call. The fake models the whole group.
     //
     // `fly(v, path, t)`: the vehicle moves along the `path` label's points
     // in number order in `t` ticks, facing the tangent of its segment
@@ -492,9 +490,8 @@ pub const ENTRIES: &[Entry] = &[
     // vehicle, which is not built, and whether a vehicle's Havok body
     // accepts a transform every tick without fighting it is not read (R7).
     act(id::FLY, "fly", &[Object, Label, Int], Some("vehicles.drive"), Queued, NotBuilt),
-    // `hover(v, on)`: holds the vehicle where it is. `vehicle_hover` is
-    // known by its evaluator number only (docs/halo1/scripts.md).
-    act(id::HOVER, "hover", &[Object, Bool], Some("vehicles.drive"), Queued, Untraced),
+    // `hover(v, on)`: holds the vehicle where it is. The retail body also refreshes its physics state.
+    act(id::HOVER, "hover", &[Object, Bool], Some("vehicles.drive"), Queued, Named),
     // `seat(p, v)` and `eject(p)`: the player's unit enters the vehicle's
     // first free seat (the driver's first) and leaves it. The vehicle
     // entry routine `0x11ade0` behind `unit_enter_vehicle` (`0x2a3ad0`) and
@@ -506,11 +503,10 @@ pub const ENTRIES: &[Entry] = &[
     // actors put in the vehicle's free seats, at most as many as there are
     // (loading is the vehicles capability's, not the squads').
     // `AI_SQUAD_PLACE` (`0x201520`) has a seat attempt behind its third
-    // stack word; which vehicle it tries is not read (R6).
+    // stack word, selected by the scenario start rather than a script datum.
     act(id::PLACE_SQUAD_IN, "place_squad_in", &[Squad, Class, Int, Object], Some("vehicles.drive"), Queued, Traced),
-    // `unload(v)`: everyone aboard leaves. `vehicle_unload` is not traced
-    // (R6).
-    act(id::UNLOAD, "unload", &[Object], Some("vehicles.drive"), Queued, Untraced),
+    // `unload(v)`: everyone aboard leaves. The retail unload body accepts -1 for all seats.
+    act(id::UNLOAD, "unload", &[Object], Some("vehicles.drive"), Queued, Named),
     // What is aboard (the driver and every rider, players and AI) and the
     // driver's player, or none: the unit's seat list (`UNIT_SEATS_BEGIN`
     // `0xd0620`, `UNIT_SEATS_NEXT` `0xd0690`). A non-vehicle has none.

@@ -3,7 +3,7 @@
 //! a ship flies a path in the stated ticks facing its tangent, and riders
 //! are placed and unloaded. The invented map is a line of points.
 
-use rules::caps::{self, API_VERSION, Status, id};
+use rules::caps::{self, API_VERSION, id};
 use rules::fake::FakeGame;
 use rules::labels::{self, Class, ProblemKind};
 use rules::scenario::{RunError, Scenario, ScenarioLabel, ScenarioPlayer, game_of, step};
@@ -409,17 +409,9 @@ fn the_vehicle_entries_are_refused_by_a_host_until_they_are_named() {
         "vehicle_driver",
     ] {
         let e = caps::entry_named(name).unwrap();
-        assert!(
-            matches!(
-                e.status,
-                Status::NotBuilt | Status::Untraced | Status::Traced
-            ),
-            "{name}"
-        );
-        assert!(
-            !e.status.hostable() && !e.hostable_on(rules::SCRIPT_INDEX),
-            "{name}"
-        );
+        let named = matches!(name, "hover" | "unload");
+        assert_eq!(e.status.hostable(), named, "{name}");
+        assert_eq!(e.hostable_on(rules::SCRIPT_INDEX), named, "{name}");
         if e.kind == caps::Kind::Action {
             assert_eq!(e.cap, Some("vehicles.drive"), "{name}");
             assert_eq!(e.order, caps::Order::Queued, "{name}");

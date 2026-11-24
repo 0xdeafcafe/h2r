@@ -290,15 +290,13 @@ fn a_script_naming_a_weapon_off_the_list_is_refused_by_its_path() {
     assert!(why.contains("set_loadout"), "{why}");
 }
 
-/// The vehicle entries are not named points yet: a host refuses a script
+/// For the remaining vehicle entries, a host refuses a script
 /// that calls one, by name and by why (docs/game/rules-world-api.md,
 /// "Vehicles and drop ships"), before its game starts.
 #[test]
 fn a_script_that_flies_a_ship_is_refused_by_the_entry_it_calls() {
     for (name, call, status) in [
         ("fly", "fly(ship, run_in, 10t)", "not built"),
-        ("unload", "unload(ship)", "untraced"),
-        ("hover", "hover(ship, true)", "untraced"),
         ("eject", "if let p = first(players q) { eject(p) }", "traced but not a named point"),
     ] {
         let src = format!(
@@ -308,6 +306,31 @@ fn a_script_that_flies_a_ship_is_refused_by_the_entry_it_calls() {
         let why = host_refusal(&ir).unwrap();
         assert!(why.contains(name) && why.contains(status), "{call}: {why}");
     }
+}
+
+#[test]
+fn vehicle_work_checks_the_live_type_and_salt_before_calling_retail() {
+    use crate::rules::world::vehicles::Action::{Hover, Unload};
+    let ir = ::rules::compile("rules \"Drop\" 1\ntype slayer\nrequires vehicles.drive\nlabel ship: object\non tick {\n hover(ship, true)\n unload(ship)\n }\n").unwrap();
+    assert_eq!(host_refusal(&ir), None);
+    let (mut m, s, units) = world(&ir, &[], [[0.0; 3]; 2]);
+    let v = units[0];
+    let array = Datums::<Header>::at(OBJECTS);
+    array.get_absolute(&m, 0).unwrap().unwrap().set_kind(&mut m, engine::view::objects::VEHICLE).unwrap();
+    let calls = vec![
+        Call::Vehicle(Hover(true), v),
+        Call::Vehicle(Unload, units[1]),
+        Call::Vehicle(Hover(true), v ^ (1 << 16)),
+        Call::Vehicle(Hover(false), v),
+        Call::Vehicle(Unload, v),
+    ];
+    let work = Work { tick: TICK, ask_authority: false, calls };
+    assert_eq!(run(&s, &m, work, false), [
+        GuestCall::new(points::VEHICLE_HOVER.base).eax(v).ecx(1),
+        GuestCall::new(points::VEHICLE_HOVER.base).eax(v).ecx(0),
+        GuestCall::new(points::VEHICLE_UNLOAD.base).edx(v).ecx(u32::MAX),
+        GuestCall::new(points::GAME_TICK.base),
+    ]);
 }
 
 /// Every listed script a host scores runs here: none is listed only to be
