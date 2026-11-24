@@ -1499,6 +1499,56 @@ h2 studio asset.copy '{"asset":"tag:weap:objects\\weapons\\rifle","package":"my-
 The tests (`api/tests/assets_tests.rs`) run over an invented tree of two
 maps and one package.
 
+### Packages
+
+`package.*` is the package document (docs/editor/studio-redesign.md,
+"Packages"; `app/package_doc.rs`, `api/packages.rs`). A package is a folder
+under `<data>/packages/<id>/` with `package.toml`, its files and
+`package.lock`; the built-in packages are listed and read but never written
+(`REFUSED`, "built in"). The load order and what is off are
+`<data>/packages/set.toml`; the edit target is `<data>/packages/target.txt`.
+
+| Method | Answers |
+|---|---|
+| `package.list` | the set in load order, then the packages that are off, each `{id, name, package_id, origin, dir?, on, why?, always_on, signed, features, items, scopes, target, editable}`, with `problems`, `content_hash` and `target` |
+| `package.read {id}` | the manifest as `package` and `credit`, each item with `index`, `asset`, `builder`, `builds`, `scope` and `changes_map`, the lock, and `problems` |
+| `package.new {id, name}` | an empty package with its manifest and lock; a taken, malformed or always-on id is refused |
+| `package.set {id, path, value?}` | a `[package]` field (`name`, `description`, `image`, `requires`, `after`, `features`) or `credit.<field>`; no value removes an optional one; `id` and `format` are not edited |
+| `package.item.add {id?, item, at?}` | an item in its manifest form; its files are in the folder already, with no `..` or absolute path |
+| `package.item.set {id?, index, path, value?}` | one field of an item (`kind`, `source`, `inputs`, `tag`, `maps`) |
+| `package.item.remove {id?, index}` | the item leaves the manifest; its files stay |
+| `package.target {id?, clear?}` | the edit target, read, set to a local package, or cleared |
+| `package.enable {id, on}` | `set.toml`'s `off`; `left_out` lists the packages that `require` the one switched off |
+| `package.order {ids}` | `set.toml`'s `order`; `loaded` is the resulting load order |
+| `package.check {id?}` | `{ok, count, findings: [{kind, message, item?, file?, line?}]}`: `lock` (missing or stale), `files` (a cache map, a `.h2tag` bundle, disc files, model weights or a dataset folder), `item` (no builder, a missing or oversize source, a source its builder refuses), `set` (a requirement missing or off), `conflict` (a tag path another package adds) |
+| `package.build {id?, map?, out?}` | for each map of the open source the package has an item for (or `map`), `{map, scope, touched, took_ms, tags, added, changed, overrides, bytes, problems}`; with `out`, each built map is written to `<out>/<map>.map` |
+| `package.play {id, map}` | the build for `map`, then `game.load` on the paired game |
+
+Each write puts the new manifest through the set before it keeps it: a
+manifest that does not read, a source that is not in the folder, a
+`requires` cycle or a set `content::package::Set` refuses leaves the old
+manifest in place and answers `REFUSED` with the reason. `package.enable`
+and `package.order` refuse by name: `core` and `ui` cannot be switched off
+(`SetError::AlwaysOn`), and an order that puts a package before one it
+`requires` or follows names both. A `set.toml` written by hand that turns
+`core` off is named in `package.list`'s `problems` and stops every write to
+the set file. The edit calls that default `id` to the edit target answer
+`NO_TARGET` when none is set. `package.build` needs a source (`NO_DOCUMENT`)
+and refuses a package that is off. `package.play` needs a pairing and
+refuses a game whose content hash (`packages.list`) differs from
+`package.list`'s: the game reads its set at boot.
+
+```sh
+h2 studio package.new '{"id":"my-pack","name":"My pack"}'
+h2 studio package.target '{"id":"my-pack"}'
+h2 studio package.order '{"ids":["my-pack","pogo"]}'
+h2 studio package.check '{"id":"my-pack"}'
+h2 studio package.build '{"map":"lockout"}'
+```
+
+The tests (`api/tests/packages_tests.rs`) run over invented packages under
+a temporary data root.
+
 ### Problems
 
 `problems.list {source?}` is the Problems panel's list
@@ -1572,6 +1622,7 @@ bad params), and ours (`studio_proto::code`):
 | 13 | `NOT_YET` | a planned method; `data.lane` says who builds it |
 | 14 | `FAILED` | it ran and failed (I/O, a map that doesn't read) |
 | 15 | `NO_GPU` | nothing renders here |
+| 16 | `NO_TARGET` | the call writes to the edit target and none is set (`package.target`) |
 
 ## Content checks
 

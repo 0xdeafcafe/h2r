@@ -46,6 +46,7 @@ mod nav;
 mod nav_mesh;
 mod pair;
 mod params;
+mod packages;
 mod preview;
 mod playlists;
 mod playtest;
@@ -231,6 +232,97 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"asset":"string (tag:<group>:<path>)","package":"string","to?":"string"}"#,
         r#"{"package":"string","from":"string","tag":"string","source":"string","item":"integer","dir":"string"}"#,
         r#"{"asset":"tag:weap:objects\\weapons\\rifle","package":"kit-test"}"#,
+    ),
+    def(
+        m::PACKAGE_LIST,
+        "The package set in load order, then the packages that are off: id, name, PackageId, origin (baked or local), dir, on or off and why, always_on, item counts by kind, scopes, whether it is the edit target and whether it is editable; the set's problems, its content hash and the edit target",
+        "{}",
+        r#"{"packages":"[{id,name,package_id,origin,dir?,on,why?,always_on,signed,features,items,scopes,target,editable}]","problems":"[string]","content_hash":"string|null","target":"string|null","dir":"string"}"#,
+        "null",
+    ),
+    def(
+        m::PACKAGE_READ,
+        "One package: its manifest (`package`, `credit`), each item with what it builds (`builder`, `builds`, `scope`, `changes_map`, `asset`), its lock and its findings (what package.check says)",
+        r#"{"id":"string"}"#,
+        r#"{"id":"string","package_id":"string","origin":"baked|local","dir":"string|null","editable":"boolean","on":"boolean","why":"string|null","target":"boolean","package":"object","credit":"object","items":"[{index,asset,kind,source?,inputs?,tag?,maps,builder,builds,scope,changes_map}]","lock":"[{file,sha256}]","problems":"[{kind,message,item?,file?,line?}]"}"#,
+        r#"{"id":"kit-test"}"#,
+    ),
+    def(
+        m::PACKAGE_NEW,
+        "A new empty package under <data>/packages/<id>/ with its manifest and lock. The id is lowercase letters, digits and '-', not taken (by a baked package too) and not always-on",
+        r#"{"id":"string","name":"string"}"#,
+        r#"{"id":"string","package_id":"string","items":"integer","dir":"string"}"#,
+        r#"{"id":"mine","name":"Mine"}"#,
+    ),
+    def(
+        m::PACKAGE_SET,
+        "Set a manifest field of a local package: name, description, image, requires, after, features, or credit.<field> (authors, notes, ...). A missing or null value removes an optional field. `id` and `format` are not edited. Refused when the manifest, its files or the set (a cycle, a missing always-on rule) would not read; the old manifest stays. The lock is rewritten",
+        r#"{"id":"string","path":"string","value?":"any"}"#,
+        r#"{"id":"string","package_id":"string","items":"integer","path":"string","value":"any"}"#,
+        r#"{"id":"kit-test","path":"description","value":"A kit for tests."}"#,
+    ),
+    def(
+        m::PACKAGE_ITEM_ADD,
+        "Add an item to a local package (`id`, else the edit target): `item` is its manifest form {kind, source?, inputs?, tag?, maps?}, put at `at` or last. Its files must already be in the package folder (no .. or absolute paths). Refused with the manifest's or the set's reason; the lock is rewritten",
+        r#"{"id?":"string","item":"object","at?":"integer"}"#,
+        r#"{"id":"string","package_id":"string","items":"integer","item":"integer","asset":"string"}"#,
+        r#"{"id":"kit-test","item":{"kind":"data","source":"data/note.txt"}}"#,
+    ),
+    def(
+        m::PACKAGE_ITEM_SET,
+        "Set one field of an item of a local package (`id`, else the edit target): kind, source, inputs, tag or maps; a missing or null value removes an optional one",
+        r#"{"id?":"string","index":"integer","path":"string","value?":"any"}"#,
+        r#"{"id":"string","package_id":"string","items":"integer","item":"integer","path":"string"}"#,
+        r#"{"id":"kit-test","index":0,"path":"maps","value":"all"}"#,
+    ),
+    def(
+        m::PACKAGE_ITEM_REMOVE,
+        "Remove an item from a local package's manifest (`id`, else the edit target); its files stay in the folder",
+        r#"{"id?":"string","index":"integer"}"#,
+        r#"{"id":"string","package_id":"string","items":"integer","index":"integer","removed":"object"}"#,
+        r#"{"id":"kit-test","index":0}"#,
+    ),
+    def(
+        m::PACKAGE_TARGET,
+        "Read the edit target (the package that receives every edit), set it to a local package, or clear it. A baked package is refused. With no target, the calls that write to it answer NO_TARGET",
+        r#"{"id?":"string","clear?":"boolean"}"#,
+        r#"{"target":"string|null","name?":"string","dir?":"string","stale?":"string","why?":"string"}"#,
+        r#"{"id":"kit-test"}"#,
+    ),
+    def(
+        m::PACKAGE_ENABLE,
+        "Switch a package on or off in <data>/packages/set.toml. `core` and `ui` are always on: turning one off is refused by name. The answer lists the packages the change leaves out because they require this one",
+        r#"{"id":"string","on":"boolean"}"#,
+        r#"{"id":"string","on":"boolean","off":"[string]","left_out":"[{package,why}]","order":"[string]"}"#,
+        r#"{"id":"kit-test","on":false}"#,
+    ),
+    def(
+        m::PACKAGE_ORDER,
+        "Write the user's load order to set.toml: package ids, first to load first (ties the dependencies leave). An order that puts a package before one it requires or follows is refused naming both; so is an unknown or repeated id or a set that cannot be ordered",
+        r#"{"ids":"[string]"}"#,
+        r#"{"order":"[string]","loaded":"[string]","left_out":"[{package,why}]"}"#,
+        r#"{"ids":["kit-test","pogo"]}"#,
+    ),
+    def(
+        m::PACKAGE_CHECK,
+        "What `h2 package check` says of one package (`id`, else the edit target): a missing or stale lock, a cache map, .h2tag bundle, disc file, voice dataset or model weights folder in its folder, an item with no builder, a missing or oversize source, a source its builder refuses, a requirement that is missing or off, and a tag path another package adds too",
+        r#"{"id?":"string"}"#,
+        r#"{"id":"string","ok":"boolean","count":"integer","findings":"[{kind: lock|files|item|set|conflict, message, item?, file?, line?}]"}"#,
+        r#"{"id":"kit-test"}"#,
+    ),
+    def(
+        m::PACKAGE_BUILD,
+        "Build what a package (`id`, else the edit target) and the packages it requires give a map of the open source, or every map it has an item for; nothing is written unless `out` (a folder) is given. A package that is off is refused",
+        r#"{"id?":"string","map?":"string","out?":"string"}"#,
+        r#"{"id":"string","maps":"[{map,scope,touched,took_ms,tags,added,changed,overrides,bytes,problems}]"}"#,
+        r#"{"id":"kit-test"}"#,
+    ),
+    def(
+        m::PACKAGE_PLAY,
+        "Build the package for a map of the open source, then have the paired game load that map. Refused when not paired, when the build fails or when the paired game read another package set at boot (restart it)",
+        r#"{"id":"string","map":"string"}"#,
+        r#"{"id":"string","map":"string","build":"object","game":"any"}"#,
+        r#"{"id":"kit-test","map":"example"}"#,
     ),
     def(
         m::PROBLEMS_LIST,
@@ -877,6 +969,7 @@ impl Api {
             "source" | "doc" => docs::call(app, method, &p),
             "shell" => shell::call(app, method, &p),
             "asset" => assets::call(app, method, &p),
+            "package" => packages::call(app, method, &p),
             "problems" => problems::call(app, method, &p),
             "tag" => tags::call(app, method, &p),
             "scenario" => scenario::call(app, method, &p),

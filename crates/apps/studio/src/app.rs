@@ -35,6 +35,7 @@ pub mod tag_browse;
 pub mod tag_bundle;
 pub mod tag_doc;
 pub mod assets;
+pub mod package_doc;
 pub mod preview_switch;
 pub mod problems;
 pub mod sound_import;

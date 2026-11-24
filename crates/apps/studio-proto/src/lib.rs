@@ -56,6 +56,8 @@ pub mod code {
     pub const FAILED: i64 = 14;
     /// Nothing renders here (no wgpu adapter).
     pub const NO_GPU: i64 = 15;
+    /// The call writes to the edit target and none is set (`package.target`).
+    pub const NO_TARGET: i64 = 16;
 }
 
 /// Method names, by namespace. `session.methods` lists them with their
@@ -87,6 +89,20 @@ pub mod method {
     pub const ASSET_LIST: &str = "asset.list";
     pub const ASSET_THUMB: &str = "asset.thumb";
     pub const ASSET_COPY: &str = "asset.copy";
+    // The package document (api/packages.rs).
+    pub const PACKAGE_LIST: &str = "package.list";
+    pub const PACKAGE_READ: &str = "package.read";
+    pub const PACKAGE_NEW: &str = "package.new";
+    pub const PACKAGE_SET: &str = "package.set";
+    pub const PACKAGE_ITEM_ADD: &str = "package.item.add";
+    pub const PACKAGE_ITEM_SET: &str = "package.item.set";
+    pub const PACKAGE_ITEM_REMOVE: &str = "package.item.remove";
+    pub const PACKAGE_TARGET: &str = "package.target";
+    pub const PACKAGE_ENABLE: &str = "package.enable";
+    pub const PACKAGE_ORDER: &str = "package.order";
+    pub const PACKAGE_CHECK: &str = "package.check";
+    pub const PACKAGE_BUILD: &str = "package.build";
+    pub const PACKAGE_PLAY: &str = "package.play";
     // The Problems panel (docs/editor/studio-redesign.md; api/problems.rs).
     pub const PROBLEMS_LIST: &str = "problems.list";
     // The preview switch (docs/editor/studio-redesign.md; api/preview.rs).

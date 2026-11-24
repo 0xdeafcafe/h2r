@@ -679,12 +679,12 @@ have no checkbox.
 |---|---|
 | `package.list` | the set in order: id, name, `PackageId`, on or off and why, item counts, scopes |
 | `package.read {id}` | the manifest, items with what each builds, the lock, problems |
-| `package.new {id, name}`, `package.set {id, path, value}`, `package.item.add`, `package.item.remove` | edits the manifest |
-| `package.target {id?}` | reads or sets the edit target |
-| `package.enable {id, on}`, `package.order {ids}` | writes `set.toml`; `core` and `ui` are refused (`ALWAYS_ON`) |
-| `package.check {id}` | the refusals above, missing sources, unknown builders, conflicts with the rest of the set |
-| `package.build {id?, map?}` | builds what the package gives a map, or every map it touches; `{maps: [{map, took_ms, tags, bytes, problems}]}` |
-| `package.play {id, map}` | builds, then loads the map in the paired game |
+| `package.new {id, name}`, `package.set {id, path, value}`, `package.item.add {id?, item, at?}`, `package.item.set {id?, index, path, value}`, `package.item.remove {id?, index}` | edits the manifest of a local package and rewrites its lock; a manifest the files or the set refuse is put back |
+| `package.target {id?, clear?}` | reads, sets or clears the edit target (`<data>/packages/target.txt`); `id` is optional on the item calls, `package.check` and `package.build`, which then use it, and answer `NO_TARGET` with none |
+| `package.enable {id, on}`, `package.order {ids}` | writes `set.toml`; `core` and `ui` are refused (`ALWAYS_ON`), as is an order that puts a package before one it `requires` or follows |
+| `package.check {id?}` | the refusals above, missing sources, unknown builders, conflicts with the rest of the set |
+| `package.build {id?, map?, out?}` | builds what the package and what it `requires` give a map of the open source, or every map it has an item for; `{maps: [{map, scope, touched, took_ms, tags, added, changed, overrides, bytes, problems}]}` |
+| `package.play {id, map}` | builds, then loads the map in the paired game; refused when the game read another package set at boot |
 | `package.publish {id}`, `package.install {id \| hash}`, `package.export {id, out}` | Live and a folder or archive |
 
 `h2 package check|build|prepare|publish` is the same crate from the
@@ -1007,7 +1007,7 @@ Rows are in build order.
 | PK11 (built) | **HUDs as data** (built: the builder, the YAML and `views/`; `hud_kit::install` still reads the first-party YAML that `data::BUILTIN` embeds, and `workspace::huds` lists a set's HUDs for it): the `hud` builder, HUD kit YAML for the superbounce, Forge readout and Firefight HUDs in `content/{superbounce,forge,modes}/huds/`; the element lists in `hud-kit-core/src/huds/*.rs` deleted, the states that stay in `views/` | M | PK3 | each YAML is the `Hud` its Rust list built (`hud-kit-core/src/{expected,data_tests}.rs`), so it compiles to the same records (`hud-kit-core/src/tests.rs`' fixtures run on the YAML) |
 | PK4 | **Pogo as a package** (built): `content/pogo/`, the `model` and `sound` builders, the weapon as a `tag` item; `PogoRewrite` deleted | M | PK3 | on `pogo_kit::fixture`'s map the package builds the tags `pogo_kit::inject::add_pogo` built, compared group by group |
 | PK5 | **Screens as a package** (built): the always-on `content/ui/` package serves `screens` and `screen-edits` through `PackageRewrite`; `ui.save` writes our screen YAML into the checkout’s UI package | M | PK3 | `workspace::screen_tests` compare the package with applying the retail edits and calling `ui_kit::inject::tag::add_screens` on each invented UI map; the Studio save test checks that only the package screen source changes |
-| PK6 | **The package document and `package.*`**: list, read, new, set, items, target, enable, order, check, build, play, over the always-on rule `content::package::Set` keeps | M | PK2, SH1 | every method's example runs; a `set.toml` or a call that turns `core` off is refused by name; a reorder that breaks `requires` is refused; `package.check` names a cache map, a bundle and a dataset folder put in an invented package |
+| PK6 (built: `app/package_doc.rs`, `api/packages.rs`) | **The package document and `package.*`**: list, read, new, set, items, target, enable, order, check, build, play, over the always-on rule `content::package::Set` keeps | M | PK2, SH1 | every method's example runs; a `set.toml` or a call that turns `core` off is refused by name; a reorder that breaks `requires` is refused; `package.check` names a cache map, a bundle and a dataset folder put in an invented package |
 | PK7 | **Edits go to the edit target**: the journal as edit lines, the first-edit picker, **Export map...**; the package form and `active.toml` deleted | M | PK6 | a field set in the window and by `tag.set` write the same line; undo across a save removes it; with no target the API answers `NO_TARGET` |
 | SH3 | **Problems** (built: `app/problems.rs`, `ui/problems.rs`, `problems.list`): one panel and `problems.list` over `check.run`, `ui.check`, `hud.check`, `package.check` and build errors, each row opening its asset | S | SH1 | findings from two invented sources list together; opening a row focuses the document and the field |
 | SH4 | **The preview switch** (built: `app/preview_switch.rs`, `ui/preview_switch.rs`, `api/preview.rs`; the Problems rows for a finished preview wait for the Game panel): `preview.target`, **Preview in game** by kind over `pair.preview` | S | SH1 | on the fake game each kind sends the calls its `what` lists; a paused game refuses with the built message |

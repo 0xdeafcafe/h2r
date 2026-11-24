@@ -19,6 +19,7 @@ mod image_gen_tests;
 mod markers_tests;
 mod script_variants_tests;
 mod assets_tests;
+mod packages_tests;
 mod problems_tests;
 mod import_tests;
 mod shell_tests;
@@ -184,6 +185,13 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             // An invented tags tree of two maps and a package `kit-test`.
             assets_tests::tree(&app.tags_root());
             assets_tests::package(&t.path("data/packages/kit-test"));
+        }
+        n if n.starts_with("package.") => {
+            // The invented package `kit-test`, and the file its example adds.
+            let dir = t.path("data/packages/kit-test");
+            assets_tests::package(&dir);
+            std::fs::create_dir_all(dir.join("data")).unwrap();
+            std::fs::write(dir.join("data/note.txt"), "a note\n").unwrap();
         }
         m::IMPORT_SOUND => {
             // An empty local package `mine` and a WAV of an invented tone.
@@ -1214,6 +1222,7 @@ fn every_method_in_methods_has_a_test() {
                         | m::PAIR_PREVIEW
                         | m::PAIR_AUDIO
                         | m::PAIR_RESULT
+                        | m::PACKAGE_PLAY
                         // No sim runner is wired to Studio's own API.
                         | m::PLAYTEST_RUN
                 ) && e.code == code::REFUSED => {}
