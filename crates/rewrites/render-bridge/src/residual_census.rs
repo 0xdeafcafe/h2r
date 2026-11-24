@@ -307,13 +307,13 @@ pub const REGISTRY: &[Row] = &[
     Row {
         name: "dynamic_lights",
         entry: 0x0003_1c80,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "after_opaque",
     },
     Row {
         name: "light_passes",
         entry: 0x0003_1170,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "after_opaque",
     },
     Row {
@@ -394,10 +394,14 @@ pub const LAYER_SITES: [&str; 6] = [
 /// 17 and 20 (`frame-scene.layers`) and 3 (`native_objects`,
 /// `native_world`, the decorators), 6 (water) and 16 (fog), the alternate
 /// view's 2, and the first person's 1, 2, 7, 8 and 20 (`frame-scene.layers`)
-/// and 3 (`native_first_person`). Each is
+/// and 3 (`native_first_person`), and the light passes’ 12 and 13. Each is
 /// [`Status::Partial`]: what its stages refuse stays the guest's.
-pub const PARTIAL_LAYERS: [(u8, &[u8]); 3] =
-    [(0, &[1, 2, 3, 5, 6, 7, 8, 16, 17, 20]), (1, &[2]), (2, &[1, 2, 3, 7, 8, 20])];
+pub const PARTIAL_LAYERS: [(u8, &[u8]); 4] = [
+    (0, &[1, 2, 3, 5, 6, 7, 8, 16, 17, 20]),
+    (1, &[2]),
+    (2, &[1, 2, 3, 7, 8, 20]),
+    (3, &[12, 13]),
+];
 
 /// The status of the layer draw at site `at` ([`LAYER_SITES`]) of `layer`.
 pub fn layer_status(at: u8, layer: u8) -> Status {
@@ -1376,7 +1380,9 @@ mod tests {
         }
         assert_eq!(status(1, 2), "partial", "an alternate view's layer 2");
         assert_eq!(status(1, 1), "d3d", "an alternate view's");
-        assert_eq!(status(3, 12), "d3d", "the light passes'");
+        for layer in [12, 13] {
+            assert_eq!(status(3, layer), "partial", "the light passes'");
+        }
         assert_eq!(status(4, 10), "d3d", "an object shadow's");
         for r in REGISTRY {
             assert_eq!(
@@ -1392,6 +1398,8 @@ mod tests {
                         | "colour_pass"
                         | "screen_effect"
                         | "fade"
+                        | "dynamic_lights"
+                        | "light_passes"
                 ) {
                     Status::Partial
                 } else {

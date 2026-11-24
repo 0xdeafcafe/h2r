@@ -340,10 +340,9 @@ candidate. The shadow word is step 2's: a set byte becomes the casters'
 layer 10 (`shadow_argument`). The scene reads no list mask back from
 guest memory for these lights. A light of the guest's own loop (a
 refused frame plan), and a hand-off whose item lists the guest makes,
-are read from memory at that point (`Source::observed`): the passes'
+are read from memory at the passes’ constants call (`Source::observed`): the passes'
 stack words, the scene flags and both masks. At the passes' entry the
-masks are the last light's, which is why the hand-off waits for the
-lists. The groups are still the layer builds' sorted entries
+masks are the last light's, so both paths wait for the completed lists. The groups are still the layer builds' sorted entries
 (`walk`, `scene_extract::light_groups`) and keep their type
 (`frame_scene::LightGroup`). A first-person light goes into the first
 person's view at its first layer draw, read from the loop's frame
