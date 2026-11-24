@@ -40,7 +40,11 @@ pub enum Refusal {
 }
 
 #[derive(Default)]
-pub struct UiGpu(HashMap<wgpu::Device, DeviceCache>);
+pub struct UiGpu(Option<(wgpu::Device, DeviceCache)>);
+
+const UI_SHADERS: usize = 256;
+const UI_PIPELINES: usize = 1024;
+const HUD_PIPELINES: usize = 256;
 
 struct DeviceCache {
     frame: u32,
@@ -65,13 +69,16 @@ impl UiGpu {
         draw: &ResolvedDraw,
         frame: u32,
     ) -> Result<ExternalDraws, Refusal> {
-        let cache = self.0.entry(target.device.clone()).or_insert_with(|| DeviceCache {
-            frame,
-            fetch: FetchMode::Gpu,
-            bindings: ProgramBindings::new(&target.device),
-            shaders: HashMap::new(),
-            pipelines: HashMap::new(),
-        });
+        if self.0.as_ref().is_none_or(|(device, _)| device != &target.device) {
+            self.0 = Some((target.device.clone(), DeviceCache {
+                frame,
+                fetch: FetchMode::Gpu,
+                bindings: ProgramBindings::new(&target.device),
+                shaders: HashMap::new(),
+                pipelines: HashMap::new(),
+            }));
+        }
+        let (_, cache) = self.0.as_mut().ok_or(Refusal::Target)?;
         if cache.frame != frame {
             cache.frame = frame;
             cache.bindings.end_frame();
@@ -134,6 +141,12 @@ impl DeviceCache {
             state.wireframe_offset_enable = false;
             state.point_offset_enable = false;
         }
+        if self.shaders.len() == UI_SHADERS && !self.shaders.contains_key(&program.key) {
+            // ShaderIds are reused after this clear, so retire the pipelines
+            // that key on them together with their shader modules.
+            self.shaders.clear();
+            self.pipelines.clear();
+        }
         let id = ShaderId(self.shaders.len().try_into().map_err(|_| Refusal::Shader)?);
         let shader = self.shaders.entry(program.key.clone()).or_insert_with(|| {
             let linked = program.key.translate().ok()?;
@@ -181,6 +194,9 @@ impl DeviceCache {
         );
         if matches!(key.primitive.topology, wgpu::PrimitiveTopology::TriangleStrip | wgpu::PrimitiveTopology::LineStrip) {
             key.primitive.strip_index_format = Some(wgpu::IndexFormat::Uint32);
+        }
+        if self.pipelines.len() == UI_PIPELINES && !self.pipelines.contains_key(&key) {
+            self.pipelines.clear();
         }
         let pipeline = self.pipelines.entry(key.clone()).or_insert_with(|| {
             Pending::ready(validated_resource(device, || {
@@ -771,6 +787,9 @@ impl OverlayGpu {
                         blend: batch.material.blend, alpha_kill: batch.alpha_kill,
                         alpha_func: batch.alpha_test.map(|(func, _)| func),
                     };
+                    if self.hud.len() == HUD_PIPELINES && !self.hud.contains_key(&key) {
+                        self.hud.clear();
+                    }
                     let entry = self.hud.entry(key);
                     let Some(program) = entry.or_insert_with_key(|key| HudPipeline::new(device, key, blend)) else {
                         stats.refused_material += batch.items;

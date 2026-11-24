@@ -283,9 +283,9 @@ the resource contract of `crates/formats/shaders` (docs/graphics/shaders.md): gr
 the vertex and pixel uniforms (dynamic offsets into one upload ring; bytes
 equal to the previous draw's reuse its copy), group 1 a texture and sampler
 per sampled stage (cached by views and sampler keys, dropped after four
-frames unused). It builds and caches the layouts per set of stage dimensions,
+frames unused, with a 4,096-group limit). It builds and caches the layouts per set of stage dimensions,
 wraps a linked module into a `ShaderProgram`, caches samplers by
-`SamplerKey`, and binds a 1x1 opaque-black stand-in for a stage with nothing
+`SamplerKey` (up to 256), and binds a 1x1 opaque-black stand-in for a stage with nothing
 usable bound. `d3d::nv2a::Nv2aShaders` is the user: it translates each draw's
 vertex program and combiner program (or the fixed-function texture stages)
 and registers one program per distinct translation.
@@ -565,6 +565,8 @@ The native world, object, light, fog, water and decorator programs use
 compile observed target formats, vertex layouts and render states against
 the current map's shader modules. The archive appends `.native-v1` to the
 configured cache filename and stores shader fingerprints and descriptors.
+The archive accepts up to 8,192 recipes through a nonblocking 256-message
+queue. A live program keeps up to 256 pipeline variants.
 The GPU loader reads it on a worker and starts matching variants when
 their programs load. A newly requested variant takes priority over those
 prewarms. D3D draws remain eligible until a later guest swap observes a

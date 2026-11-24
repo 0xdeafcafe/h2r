@@ -17,8 +17,9 @@ use gfx::repack::{FetchMode, RepackPlan, StreamPlan};
 use gfx::state::{DepthBufferMode, StencilOp};
 use gfx::texture::TextureKind;
 use gfx::translate::Capabilities;
-use gfx::{BoundGroup, RecordedDraw, ScissorRect};
-use gfx::vertex::PrimitiveType;
+use gfx::renderer::VertexBuffers;
+use gfx::{BoundGroup, RecordedDraw};
+use gfx::vertex::{PrimitiveType, VertexLayout};
 use shaders::{psh::PixelUniforms, vsh::VertexUniforms};
 
 use crate::pipelines::{self, Pipelines};
@@ -26,30 +27,65 @@ use crate::program::scaled_scissor;
 use crate::world_layers::{Geometry, Owner, Texaccum};
 
 const CACHE_BUDGET: u64 = 64 * 1024 * 1024;
+const SECTION_BYTES: u64 = 128 * 1024 * 1024;
+const SECTION_WINDOWS: u64 = 4096;
+const SECTION_FRAMES: u64 = 32;
+const LAYOUT_PLANS: usize = 256;
+const DRAW_SHADERS: usize = 1024;
 
 static BUFFER_BYTES: mem_watch::Counter = mem_watch::Counter::new("native.world_buffer_cache_bytes");
 static SECTIONS: mem_watch::Counter = mem_watch::Counter::new("native.world_section_windows");
+static SECTION_PAYLOAD: mem_watch::Counter = mem_watch::Counter::new("native.world_section_payload_bytes");
 
 pub struct Cache {
-    devices: Mutex<HashMap<wgpu::Device, DeviceCache>>,
+    device: Mutex<Option<(wgpu::Device, DeviceCache)>>,
     fetch: FetchMode,
 }
 
 impl Default for Cache {
     fn default() -> Self {
-        Self { devices: Mutex::default(), fetch: FetchMode::Gpu }
+        Self { device: Mutex::default(), fetch: FetchMode::Gpu }
     }
 }
 
 struct DeviceCache {
     bindings: ProgramBindings,
     shaders: HashMap<NativeDrawKey, Shader>,
+    layouts: LayoutPlans,
     buffers: HashMap<BufferKey, (wgpu::Buffer, u64)>,
     buffer_bytes: mem_watch::Gauge,
     section_count: mem_watch::Gauge,
+    section_bytes: mem_watch::Gauge,
+    trimmed_at: u64,
     frame: u64,
     scope: Option<(u64, u32)>,
     sections: HashMap<SectionKey, Vec<ResidentSection>>,
+}
+
+#[derive(Default)]
+struct LayoutPlans {
+    layouts: HashMap<VertexLayout, Vec<(Vec<u32>, Arc<RepackPlan>)>>,
+    count: usize,
+}
+
+impl LayoutPlans {
+    // A DeviceCache belongs to one fetch mode.
+    fn get(&mut self, layout: &VertexLayout, streams: &[d3d::StreamBytes], fetch: FetchMode) -> Arc<RepackPlan> {
+        if let Some((_, plan)) = self.layouts.get(layout).and_then(|plans| {
+            plans.iter().find(|(strides, _)| strides.iter().copied().eq(streams.iter().map(|s| s.stride)))
+        }) {
+            return Arc::clone(plan);
+        }
+        if self.count == LAYOUT_PLANS {
+            self.layouts.clear();
+            self.count = 0;
+        }
+        let strides: Vec<_> = streams.iter().map(|s| s.stride).collect();
+        let plan = Arc::new(RepackPlan::with_mode(layout, &strides, fetch));
+        self.layouts.entry(layout.clone()).or_default().push((strides, Arc::clone(&plan)));
+        self.count += 1;
+        plan
+    }
 }
 
 struct TranslatedShader {
@@ -115,10 +151,22 @@ struct ResidentSection {
     last_used: u64,
     source: Arc<ResolvedDraw>,
     fetch: FetchMode,
-    repack: RepackPlan,
-    streams: Vec<BufferRange>,
+    repack: Arc<RepackPlan>,
+    streams: VertexBuffers,
     indices: BufferRange,
     material: Option<ResidentMaterial>,
+    charged_bytes: u64,
+}
+
+fn retain_windows(windows: &mut Vec<ResidentSection>, oldest: u64, count: &mut u64, bytes: &mut u64) {
+    windows.retain(|section| {
+        if section.last_used >= oldest {
+            return true;
+        }
+        *count -= 1;
+        *bytes -= section.charged_bytes;
+        false
+    });
 }
 
 struct ResidentMaterial {
@@ -179,18 +227,24 @@ impl DeviceCache {
         Self {
             bindings: ProgramBindings::new(device),
             shaders: HashMap::new(),
+            layouts: LayoutPlans::default(),
             buffers: HashMap::new(),
             buffer_bytes: BUFFER_BYTES.track(0),
             section_count: SECTIONS.track(0),
+            section_bytes: SECTION_PAYLOAD.track(0),
+            trimmed_at: 0,
             frame: 0, scope: None, sections: HashMap::new(),
         }
     }
 
     fn resolve_shader(
         &mut self, device: &wgpu::Device, draw: &ResolvedDraw, present: [bool; 4],
-        fetch: FetchMode, caps: Capabilities,
+        plan: &RepackPlan, caps: Capabilities,
     ) -> Option<(Arc<NativeDrawMaterial>, Program)> {
-        let program = Arc::new(NativeDrawMaterial::resolve(draw, present, caps, fetch).ok()?);
+        let program = Arc::new(NativeDrawMaterial::resolve_with_plan(draw, present, caps, plan).ok()?);
+        if self.shaders.len() == DRAW_SHADERS && !self.shaders.contains_key(&program.key) {
+            self.shaders.clear();
+        }
         let new_id = ShaderId(self.shaders.len().try_into().ok()?);
         let shader = self.shaders.entry(program.key.clone()).or_insert_with_key(|key| {
             let key = key.clone();
@@ -224,11 +278,12 @@ impl DeviceCache {
 
     fn upload_section(
         &mut self, target: &ExternalAttachments, draw: &Arc<ResolvedDraw>,
-        fetch: FetchMode, repack: RepackPlan, resident: bool,
+        fetch: FetchMode, repack: Arc<RepackPlan>, charged_bytes: Option<u64>,
     ) -> Option<ResidentSection> {
+        let resident = charged_bytes.is_some();
         let indices = draw.indices.as_ref()?;
         if resident && indices.iter().any(|&index| index >= draw.vertex_count) { return None; }
-        let mut streams = Vec::with_capacity(draw.streams.len());
+        let mut streams = VertexBuffers::with_capacity(draw.streams.len());
         for (plan, stream) in repack.streams.iter().zip(&draw.streams) {
             if plan.identity {
                 plan.check(&stream.data, draw.vertex_count).ok()?;
@@ -241,8 +296,24 @@ impl DeviceCache {
         let indices = self.buffer(target, indices.cache_id().map(BufferKey::Indices),
             wgpu::BufferUsages::INDEX, resident, || Some(Cow::Borrowed(bytemuck::cast_slice(&indices[..]))))?;
         Some(ResidentSection {
-            last_used: self.frame, source: Arc::clone(draw), fetch, repack, streams, indices, material: None,
+            last_used: self.frame, source: Arc::clone(draw), fetch, repack, streams, indices,
+            material: None, charged_bytes: charged_bytes.unwrap_or(0),
         })
+    }
+
+    fn trim_sections(&mut self) {
+        let frame = self.frame;
+        if frame.saturating_sub(self.trimmed_at) < SECTION_FRAMES {
+            return;
+        }
+        self.trimmed_at = frame;
+        let (mut count, mut bytes) = (self.section_count.get(), self.section_bytes.get());
+        self.sections.retain(|_, windows| {
+            retain_windows(windows, frame.saturating_sub(SECTION_FRAMES), &mut count, &mut bytes);
+            !windows.is_empty()
+        });
+        self.section_count.set(count);
+        self.section_bytes.set(bytes);
     }
 
     fn buffer<'a>(
@@ -279,8 +350,8 @@ impl DeviceCache {
         if let Some(key) = key {
             let mut bytes = self.buffer_bytes.get() + buffer.size();
             if bytes > CACHE_BUDGET {
-                // Section entries retain their own buffers until the BSP changes.
-                // Trim only the shared snapshot index, oldest sightings first.
+                // Section windows are budgeted separately. Trim the shared
+                // snapshot index, oldest sightings first.
                 let mut age: Vec<_> = self.buffers.iter().map(|(k, (_, used))| (*used, k.clone())).collect();
                 age.sort_unstable_by_key(|(used, _)| *used);
                 for (_, old) in age {
@@ -293,6 +364,10 @@ impl DeviceCache {
         }
         Some((buffer, 0, len))
     }
+}
+
+fn section_charge(count: u64, used: u64, payload: u64) -> Option<u64> {
+    (count < SECTION_WINDOWS && payload <= SECTION_BYTES.saturating_sub(used)).then_some(payload)
 }
 
 /// Section node matrices in hardware register order, scoped to one sky draw.
@@ -478,13 +553,15 @@ impl IndexedPass {
             return None;
         }
         let caps = Capabilities::from_features(target.device.features());
-        let mut cache = self.cache.devices.lock().ok()?;
-        let cache = cache
-            .entry(target.device.clone())
-            .or_insert_with(|| DeviceCache::new(&target.device));
-        if cache.frame != self.frame {
+        let mut active = self.cache.device.lock().ok()?;
+        if active.as_ref().is_none_or(|(device, _)| device != &target.device) {
+            *active = Some((target.device.clone(), DeviceCache::new(&target.device)));
+        }
+        let (_, cache) = active.as_mut()?;
+        if cache.frame < self.frame {
             cache.frame = self.frame;
             cache.bindings.end_frame();
+            cache.trim_sections();
         }
 
         let section_key = self.section.map(|(scope, key)| {
@@ -493,6 +570,7 @@ impl IndexedPass {
                 cache.buffers.clear();
                 cache.buffer_bytes.set(0);
                 cache.section_count.set(0);
+                cache.section_bytes.set(0);
                 cache.scope = Some(scope);
             }
             key
@@ -510,10 +588,14 @@ impl IndexedPass {
         let material_hit = material.is_some();
         let formats = TargetFormats { color: target.color_format, depth: Some(target.depth_format), samples: 1 };
         let cached_pipeline = material.and_then(|m| m.pipelines.get(&formats)).cloned();
+        let repack = match previous {
+            Some((key, i)) => Arc::clone(&cache.sections[&key][i].repack),
+            None => cache.layouts.get(&draw.layout, &draw.streams, self.fetch),
+        };
         let (program, shader) = if let Some(material) = material {
             (Arc::clone(&material.program), material.shader.clone())
         } else {
-            cache.resolve_shader(&target.device, draw, present, self.fetch, caps)?
+            cache.resolve_shader(&target.device, draw, present, &repack, caps)?
         };
         let dims = shader.dims;
         for (n, dim) in dims.iter().enumerate() {
@@ -560,14 +642,6 @@ impl IndexedPass {
         }
         // An unresolved native variant leaves this exact indexed range on D3D.
         // Check it before allocating streams, bind groups or submission uploads.
-        let mut new_repack = None;
-        let repack = match previous {
-            Some((key, i)) => &cache.sections[&key][i].repack,
-            None => {
-                let strides: Vec<_> = draw.streams.iter().map(|s| s.stride).collect();
-                new_repack.insert(RepackPlan::with_mode(&draw.layout, &strides, self.fetch))
-            }
-        };
         let mut state = draw.state.render;
         if program.writes_depth {
             // The same offset is already in the translated W-depth uniforms.
@@ -581,7 +655,7 @@ impl IndexedPass {
         } else {
             let mut key = PipelineKey::from_plan(
                 shader.id,
-                repack,
+                &repack,
                 draw.primitive,
                 &state,
                 formats,
@@ -614,10 +688,32 @@ impl IndexedPass {
 
         let indices = draw.indices.as_ref()?;
         let index_count = indices.len().try_into().ok()?;
+        let frame = cache.frame;
+        let charged_bytes = section_key.filter(|_| previous.is_none()).and_then(|key| {
+            if let std::collections::hash_map::Entry::Occupied(mut entry) = cache.sections.entry(key) {
+                // A streaming part should not keep each historical version
+                // until the sweep for sections that disappeared entirely.
+                let (mut count, mut bytes) = (cache.section_count.get(), cache.section_bytes.get());
+                retain_windows(entry.get_mut(), frame.saturating_sub(1), &mut count, &mut bytes);
+                if entry.get().is_empty() {
+                    entry.remove();
+                }
+                cache.section_count.set(count);
+                cache.section_bytes.set(bytes);
+            }
+            // Charge both the pinned snapshot and its uploaded buffers. Shared
+            // streams can be counted twice, which keeps the budget conservative.
+            let payload = indices.len() as u64 * 8 + repack.streams.iter().zip(&draw.streams)
+                .map(|(plan, stream)| stream.data.len() as u64
+                    + (plan.host_bytes(draw.vertex_count) as u64).next_multiple_of(4))
+                .sum::<u64>();
+            section_charge(cache.section_count.get(), cache.section_bytes.get(), payload)
+        });
+        let resident = previous.is_some() || charged_bytes.is_some();
         let mut fresh;
         let section = if let Some((key, i)) = previous {
             let section = &mut cache.sections.get_mut(&key)?[i];
-            section.last_used = self.frame;
+            section.last_used = frame;
             // Promote the current snapshot IDs after an identical first-use copy.
             section.source = Arc::clone(draw);
             if material_hit {
@@ -625,20 +721,16 @@ impl IndexedPass {
             }
             section
         } else {
-            fresh = cache.upload_section(target, draw, self.fetch, new_repack?, section_key.is_some())?;
-            if let Some(key) = section_key {
+            fresh = cache.upload_section(target, draw, self.fetch, repack, charged_bytes)?;
+            if let Some((key, bytes)) = section_key.zip(charged_bytes) {
                 let windows = cache.sections.entry(key).or_default();
-                // A streaming part can change every frame. Keep its working set
-                // across swaps without retaining every retired resource version.
-                let previous_count = windows.len();
-                windows.retain(|s| self.frame.wrapping_sub(s.last_used) <= 1);
                 windows.push(fresh);
-                let retained = cache.section_count.get() - previous_count as u64 + windows.len() as u64;
-                cache.section_count.set(retained);
+                cache.section_count.set(cache.section_count.get() + 1);
+                cache.section_bytes.set(cache.section_bytes.get() + bytes);
                 windows.last_mut()?
             } else { &mut fresh }
         };
-        if section_key.is_some() {
+        if resident {
             if !material_hit {
                 section.material = Some(ResidentMaterial {
                     source: Arc::clone(draw), present, program: Arc::clone(&program),
@@ -649,7 +741,7 @@ impl IndexedPass {
                 section.material.as_mut()?.pipelines.insert(formats, (key.clone(), pipeline.clone()));
             }
         }
-        if section_key.is_some() && !bindings_hit {
+        if resident && !bindings_hit {
             let groups = &mut section.material.as_mut()?.groups;
             if groups.len() == 2 { groups.remove(0); }
             groups.push((views, textures.clone()));
@@ -664,10 +756,11 @@ impl IndexedPass {
         } else {
             &draw.clip_rects
         };
-        let clip: Vec<ScissorRect> = clip
-            .iter()
-            .map(|r| scaled_scissor(&draw.display_rect(*r), scale, target.size))
-            .collect::<Option<_>>()?;
+        let mut scissors = clip.iter().map(|r| scaled_scissor(&draw.display_rect(*r), scale, target.size));
+        let first_scissor = scissors.next()??;
+        if scissors.clone().any(|scissor| scissor.is_none()) {
+            return None;
+        }
         let streams = section.streams.clone();
         let indices = section.indices.clone();
         let (mut vertex, pixel) = program.uniforms(draw, scale);
@@ -678,23 +771,22 @@ impl IndexedPass {
             pixel.write_bytes(p);
         };
         let layout = cache.bindings.uniform_layout();
-        let params = if section_key.is_some() {
+        let params = if resident {
             gfx::churn::native_cache(pipeline_hit && bindings_hit);
             target.uploads.resident_uniform_run(&target.device, &target.queue, layout, sizes, 1, fill)
         } else {
             target.uploads.uniform_run(&target.device, &target.queue, layout, sizes, 1, fill)
         }?;
         let offsets = params.offsets(0);
-        let mut groups = vec![BoundGroup { index: 0, group: params.group, offsets: offsets.to_vec() }];
-        groups.extend(textures.map(|group| BoundGroup::new(1, group)));
-        let mut clip = clip.into_iter();
+        let groups = std::iter::once(BoundGroup { index: 0, group: params.group, offsets: offsets.to_vec() })
+            .chain(textures.map(|group| BoundGroup::new(1, group)));
         let first = RecordedDraw::prepared_indexed(
-            &key, pipeline, streams, indices, index_count, groups, &state, target.size, clip.next()?,
+            &key, pipeline, streams, indices, index_count, groups, &state, target.size, first_scissor,
         );
-        let mut packets = Vec::with_capacity(clip.len() + 1);
+        let mut packets = Vec::with_capacity(clip.len());
         packets.push(first);
-        for scissor in clip {
-            packets.push(packets[0].clone().with_scissor(scissor, target.size));
+        for scissor in scissors {
+            packets.push(packets[0].clone().with_scissor(scissor?, target.size));
         }
         Some(ExternalDraws { ranges: 1, packets, discards: shader.discards, writes: Vec::new() })
     }
@@ -781,6 +873,34 @@ impl ExternalPass for IndexedPass {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gfx::ScissorRect;
+
+    #[test]
+    fn indexed_layout_plans_reuse_exact_strides_and_bound_changing_draws() {
+        let layout = VertexLayout { streams: vec![Default::default()], pretransformed: false };
+        let mut cache = LayoutPlans::default();
+        let mut stream = [d3d::StreamBytes { stride: 4, data: vec![0; 4].into() }];
+        let reused = cache.get(&layout, &stream, FetchMode::Gpu);
+        assert!(Arc::ptr_eq(&reused, &cache.get(&layout, &stream, FetchMode::Gpu)));
+        stream[0].stride = 8;
+        let different = cache.get(&layout, &stream, FetchMode::Gpu);
+        assert!(!Arc::ptr_eq(&reused, &different));
+        assert_eq!(different.streams[0].guest_stride, 8);
+        for n in 3..=(LAYOUT_PLANS as u32 * 3) {
+            stream[0].stride = n * 4;
+            cache.get(&layout, &stream, FetchMode::Gpu);
+            assert!(cache.count <= LAYOUT_PLANS);
+        }
+        assert_eq!(cache.layouts.values().map(Vec::len).sum::<usize>(), cache.count);
+    }
+
+    #[test]
+    fn resident_windows_limit_both_geometry_bytes_and_snapshot_count() {
+        assert_eq!(section_charge(SECTION_WINDOWS - 1, SECTION_BYTES - 8, 8), Some(8));
+        assert_eq!(section_charge(0, SECTION_BYTES - 8, 9), None);
+        assert_eq!(section_charge(SECTION_WINDOWS, 0, 8), None);
+        assert_eq!(section_charge(0, 0, SECTION_BYTES + 1), None);
+    }
 
     #[test]
     fn water_quads_keep_the_indexed_corners_and_diagonal() {

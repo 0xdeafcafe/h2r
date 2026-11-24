@@ -27,6 +27,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use smallvec::SmallVec;
+
 use crate::clear::{Clearer, MaskedClear};
 use crate::compile::{Compiler, Pending, PendingPipeline, Priority};
 use crate::context::GfxContext;
@@ -404,11 +406,11 @@ pub struct RecordedDraw {
     /// Built on a compile worker if it was not cached; waited for (or built)
     /// when the draw is encoded.
     pipeline: Arc<PendingPipeline>,
-    vertex_buffers: Vec<(wgpu::Buffer, u64, u64)>,
+    vertex_buffers: VertexBuffers,
     indices: Option<(wgpu::Buffer, u64, u64)>,
     vertices: u32,
     builtin: Option<(wgpu::BindGroup, u32)>,
-    bind_groups: Vec<BoundGroup>,
+    bind_groups: SmallVec<[BoundGroup; 2]>,
     viewport: DrawViewport,
     scissor: ScissorRect,
     blend_constant: wgpu::Color,
@@ -430,6 +432,9 @@ pub struct RecordedDraw {
     )>,
 }
 
+/// Vertex buffers and ranges with inline room for the common indexed layouts.
+pub type VertexBuffers = SmallVec<[(wgpu::Buffer, u64, u64); 2]>;
+
 impl RecordedDraw {
     /// Build an ordered packet from an already validated indexed pipeline and
     /// its pinned bindings. The caller checks the target, buffer ranges and
@@ -437,21 +442,21 @@ impl RecordedDraw {
     pub fn prepared_indexed(
         key: &PipelineKey,
         pipeline: Arc<PendingPipeline>,
-        vertex_buffers: Vec<(wgpu::Buffer, u64, u64)>,
+        vertex_buffers: impl IntoIterator<Item = (wgpu::Buffer, u64, u64)>,
         indices: (wgpu::Buffer, u64, u64),
         vertices: u32,
-        bind_groups: Vec<BoundGroup>,
+        bind_groups: impl IntoIterator<Item = BoundGroup>,
         render: &crate::state::RenderState,
         size: (u32, u32),
         scissor: ScissorRect,
     ) -> Self {
         Self {
             pipeline,
-            vertex_buffers,
+            vertex_buffers: vertex_buffers.into_iter().collect(),
             indices: Some(indices),
             vertices,
             builtin: None,
-            bind_groups,
+            bind_groups: bind_groups.into_iter().collect(),
             viewport: DrawViewport::full(size.0, size.1),
             scissor: scissor.intersect(ScissorRect::full(size.0, size.1)),
             blend_constant: translate::blend_constant(render),
@@ -1021,7 +1026,7 @@ impl Renderer {
             indices,
             vertices,
             builtin,
-            bind_groups: d.bind_groups.to_vec(),
+            bind_groups: d.bind_groups.iter().cloned().collect(),
             viewport,
             scissor,
             blend_constant: translate::blend_constant(&d.state),

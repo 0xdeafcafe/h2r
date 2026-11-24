@@ -30,6 +30,7 @@
 //! into the live view and blur targets, retaining pixels outside the quads.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use shaders::psh::{self, PixelOptions, PixelShaderDef, PixelUniforms, TextureDim};
 
@@ -345,7 +346,7 @@ impl GridFrame {
 #[derive(Clone, Debug)]
 pub struct Program {
     /// `vs_main` and `fs_main`.
-    pub wgsl: String,
+    pub wgsl: Arc<str>,
     /// What each stage samples (`None`: nothing).
     pub dims: [Option<TextureDim>; 4],
     pub pixel: PixelUniforms,
@@ -395,7 +396,7 @@ fn translate(combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4], 
         }
     }
     Ok(Program {
-        wgsl: format!("{}{}", ps.module(), if grid { GRID_VERTEX } else { VERTEX }),
+        wgsl: format!("{}{}", ps.module(), if grid { GRID_VERTEX } else { VERTEX }).into(),
         dims: ps.textures,
         pixel,
         grid,
@@ -485,11 +486,14 @@ impl From<Option<Blend>> for QuadColour {
 #[derive(Default)]
 pub struct QuadDrawer {
     programs: HashMap<(ProgramKey, bool), Program>,
-    compiled: HashMap<String, Compiled>,
+    compiled: HashMap<Arc<str>, Compiled>,
     sampler: Option<wgpu::Sampler>,
 }
 
 impl QuadDrawer {
+    const PROGRAMS: usize = 256;
+    const PIPELINES_PER_PROGRAM: usize = 128;
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -511,7 +515,7 @@ impl QuadDrawer {
             return Ok(with_constants(p.clone(), combiner));
         }
         let p = translate(combiner, stages, grid)?;
-        if self.programs.len() >= 256 {
+        if self.programs.len() >= Self::PROGRAMS {
             self.programs.clear();
         }
         self.programs.insert(key, p.clone());
@@ -568,9 +572,16 @@ impl QuadDrawer {
         stages: [Option<&wgpu::TextureView>; 4],
     ) -> Result<Option<QuadCommand>, &'static str> {
         let sampler = self.sampler.get_or_insert_with(|| device.create_sampler(&sampler_descriptor())).clone();
-        let c = self.compiled.entry(program.wgsl.clone()).or_insert_with(|| compile(device, program));
+        if self.compiled.len() == Self::PROGRAMS && !self.compiled.contains_key(&program.wgsl) {
+            self.compiled.clear();
+        }
+        let c = self.compiled.entry(Arc::clone(&program.wgsl)).or_insert_with(|| compile(device, program));
+        let pipeline_key = (format, colour.blend, colour.writes);
+        if c.pipelines.len() == Self::PIPELINES_PER_PROGRAM && !c.pipelines.contains_key(&pipeline_key) {
+            c.pipelines.clear();
+        }
         let (module, layout) = (&c.module, &c.layout);
-        let pipeline = c.pipelines.entry((format, colour.blend, colour.writes)).or_insert_with(|| {
+        let pipeline = c.pipelines.entry(pipeline_key).or_insert_with(|| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("native glow"),
                 layout: Some(layout),
@@ -875,7 +886,7 @@ fn uniforms_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
 fn compile(device: &wgpu::Device, program: &Program) -> Compiled {
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("native glow"),
-        source: wgpu::ShaderSource::Wgsl(program.wgsl.clone().into()),
+        source: wgpu::ShaderSource::Wgsl(program.wgsl.as_ref().into()),
     });
     let mut entries = Vec::new();
     for (n, d) in program.dims.iter().enumerate() {

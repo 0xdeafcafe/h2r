@@ -1350,8 +1350,11 @@ pub(crate) fn input_fetch(draw: &ResolvedDraw, mode: FetchMode) -> [InputFetch; 
         return [InputFetch::Float; 16];
     }
     let strides: Vec<u32> = draw.streams.iter().map(|s| s.stride).collect();
-    RepackPlan::with_mode(&draw.layout, &strides, mode)
-        .input_fetch()
+    plan_input_fetch(&RepackPlan::with_mode(&draw.layout, &strides, mode))
+}
+
+fn plan_input_fetch(plan: &RepackPlan) -> [InputFetch; 16] {
+    plan.input_fetch()
         .map(|f| match f {
             AttributeFetch::Float => InputFetch::Float,
             AttributeFetch::Xyz1 => InputFetch::Xyz1,
@@ -1381,6 +1384,16 @@ fn program_key(
     draw: &ResolvedDraw,
     present: [bool; 4],
     fetch: FetchMode,
+) -> Result<KeyParts, String> {
+    program_key_with_fetch(table, caps, draw, present, || input_fetch(draw, fetch))
+}
+
+fn program_key_with_fetch(
+    table: &RenderStateTable,
+    caps: Capabilities,
+    draw: &ResolvedDraw,
+    present: [bool; 4],
+    input_fetch: impl FnOnce() -> [InputFetch; 16],
 ) -> Result<KeyParts, String> {
         let render = &draw.state.render;
         let flat = render.shade_mode == ShadeMode::Flat;
@@ -1450,7 +1463,7 @@ fn program_key(
         let vertex_options = VertexOptions {
             provided_inputs: draw.shader.provided_inputs,
             flat_shading: flat,
-            input_fetch: input_fetch(draw, fetch),
+            input_fetch: input_fetch(),
         };
         let signs: [u8; 4] = std::array::from_fn(|n| color_sign(draw.extras[n].color_sign));
         let border: [u8; 4] = std::array::from_fn(|n| {

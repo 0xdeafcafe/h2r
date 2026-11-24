@@ -25,6 +25,7 @@
 
 use std::collections::HashMap;
 
+use smallvec::SmallVec;
 use wgpu::util::DeviceExt;
 
 use crate::pipeline::ShaderProgram;
@@ -37,6 +38,8 @@ const UNIFORM_RING: u64 = 4 << 20;
 /// Frames a texture group may go unused before [`ProgramBindings::end_frame`]
 /// drops it (and the views it holds).
 const GROUP_FRAMES: u64 = 4;
+const TEXTURE_GROUPS: usize = 4096;
+const SAMPLERS: usize = 256;
 
 /// A texture group's dimensions and, per sampled stage, the view bound (a
 /// stand-in when `None`) and its sampler.
@@ -47,6 +50,25 @@ type TextureGroupKey = (
 
 /// Texture dimension per stage a program samples (`None`: not sampled).
 pub type StageDims = [Option<wgpu::TextureViewDimension>; 4];
+
+#[derive(Default)]
+struct LastUniform {
+    bytes: Vec<u8>,
+    location: Option<(u32, u64)>,
+}
+
+impl LastUniform {
+    fn offset(&self, bytes: &[u8], generation: u64) -> Option<u32> {
+        let (offset, stored) = self.location?;
+        (stored == generation && self.bytes.as_slice() == bytes).then_some(offset)
+    }
+
+    fn remember(&mut self, bytes: &[u8], offset: u32, generation: u64) {
+        self.bytes.clear();
+        self.bytes.extend_from_slice(bytes);
+        self.location = Some((offset, generation));
+    }
+}
 
 /// Layouts, samplers and stand-in textures for translated programs.
 pub struct ProgramBindings {
@@ -60,7 +82,7 @@ pub struct ProgramBindings {
     uniform_group: Option<(u64, u64, u64, wgpu::BindGroup)>,
     /// The last vertex and pixel uniforms staged (bytes, offset, ring
     /// generation) since the last submit, for draws that repeat them.
-    last: [Option<(Vec<u8>, u32, u64)>; 2],
+    last: [LastUniform; 2],
     uniform_align: u64,
     texture_groups: HashMap<TextureGroupKey, (Option<wgpu::BindGroup>, u64)>,
     frame: u64,
@@ -124,7 +146,7 @@ impl ProgramBindings {
             dummies: HashMap::new(),
             ring: None,
             uniform_group: None,
-            last: [None, None],
+            last: Default::default(),
             uniform_align: (device.limits().min_uniform_buffer_offset_alignment as u64)
                 .max(4)
                 .next_power_of_two(),
@@ -226,16 +248,13 @@ impl ProgramBindings {
         loop {
             let generation = ring.generation();
             for (n, bytes) in [vertex, pixel].into_iter().enumerate() {
-                if let Some((b, off, g)) = &self.last[n]
-                    && *g == generation
-                    && b.as_slice() == bytes
-                {
-                    offsets[n] = *off;
+                if let Some(off) = self.last[n].offset(bytes, generation) {
+                    offsets[n] = off;
                     continue;
                 }
                 let (_, off) = ring.push(device, queue, bytes, self.uniform_align);
                 offsets[n] = off as u32;
-                self.last[n] = Some((bytes.to_vec(), off as u32, ring.generation()));
+                self.last[n].remember(bytes, off as u32, ring.generation());
             }
             // A push that moved to a new buffer leaves the earlier offset in
             // the old one: stage both again.
@@ -286,7 +305,9 @@ impl ProgramBindings {
         if let Some(r) = &mut self.ring {
             r.reset();
         }
-        self.last = [None, None];
+        for uniform in &mut self.last {
+            uniform.location = None;
+        }
     }
 
     /// A frame ended: texture groups unused for a few frames are dropped,
@@ -300,10 +321,15 @@ impl ProgramBindings {
 
     /// The sampler for `key` (cached).
     pub fn sampler(&mut self, device: &wgpu::Device, key: SamplerKey) -> wgpu::Sampler {
-        self.samplers
-            .entry(key)
-            .or_insert_with(|| device.create_sampler(&key.descriptor()))
-            .clone()
+        if let Some(sampler) = self.samplers.get(&key) {
+            return sampler.clone();
+        }
+        if self.samplers.len() == SAMPLERS {
+            self.samplers.clear();
+        }
+        let sampler = device.create_sampler(&key.descriptor());
+        self.samplers.insert(key, sampler.clone());
+        sampler
     }
 
     /// A 1x1 opaque-black texture viewed as `dim`. `signed` (R, G, B, A)
@@ -380,7 +406,7 @@ impl ProgramBindings {
             *used = self.frame;
             return group.clone();
         }
-        let mut owned: Vec<(u32, wgpu::TextureView, wgpu::Sampler)> = Vec::new();
+        let mut owned = SmallVec::<[(u32, wgpu::TextureView, wgpu::Sampler); 4]>::new();
         for n in 0..4 {
             let Some(d) = dims[n] else { continue };
             let view = match views[n] {
@@ -391,7 +417,7 @@ impl ProgramBindings {
             owned.push((n as u32, view, sampler));
         }
         let layout = self.layout(device, dims).0.as_ref()?;
-        let mut entries = Vec::new();
+        let mut entries = SmallVec::<[wgpu::BindGroupEntry<'_>; 8]>::new();
         for (n, view, sampler) in &owned {
             entries.push(wgpu::BindGroupEntry {
                 binding: 2 * n,
@@ -407,7 +433,30 @@ impl ProgramBindings {
             layout,
             entries: &entries,
         }));
+        if self.texture_groups.len() == TEXTURE_GROUPS {
+            self.texture_groups.clear();
+        }
         self.texture_groups.insert(key, (group.clone(), self.frame));
         group
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn changed_uniforms_reuse_storage_and_old_offsets_expire() {
+        let mut last = LastUniform::default();
+        last.remember(&[1; 64], 256, 5);
+        let allocation = last.bytes.as_ptr();
+        assert_eq!(last.offset(&[1; 64], 5), Some(256));
+        assert_eq!(last.offset(&[1; 64], 6), None);
+        last.remember(&[2; 64], 512, 5);
+        assert_eq!(last.bytes.as_ptr(), allocation);
+        assert_eq!(last.offset(&[1; 64], 5), None);
+        assert_eq!(last.offset(&[2; 64], 5), Some(512));
+        last.location = None;
+        assert_eq!(last.offset(&[2; 64], 5), None);
     }
 }
