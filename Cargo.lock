@@ -6632,6 +6632,7 @@ dependencies = [
 name = "sim-collision"
 version = "0.1.0"
 dependencies = [
+ "mopp",
  "sim-core",
 ]
 
