@@ -23,6 +23,7 @@ use std::time::Instant;
 use d3d::gfx_backend::GuestDrawPass;
 use d3d::present_camera::{self, MarkShifts, Present};
 use d3d::scaled::ScaledBackend;
+use d3d::scaled::private_scene::MixedPrivatePass;
 use d3d::scene_sink::{ReplayFrame, Retarget, RetargetCounts};
 use d3d::threaded::owner::DisplayRate;
 use d3d::{GfxBackend, Lighting};
@@ -279,7 +280,9 @@ impl DisplayRate<Scaled> for OnScaled {
 
 /// `b`'s frame drawn on `gpu`'s own targets at `scale`: with each view's
 /// camera blended from `a` for [`Plan::Blend`], as `b` itself for
-/// [`Plan::Newest`].
+/// [`Plan::Newest`]. Above 1x a frame with fixed-size attachments beside
+/// the display grid draws them at their own size, as a private capture
+/// does (`MixedPrivatePass`), with no sun tile.
 pub fn draw_blend(
     gpu: &mut GfxBackend,
     a: &FrameScene,
@@ -289,9 +292,6 @@ pub fn draw_blend(
     lighting: Lighting,
     plan: Plan,
 ) -> Result<DisplayFrame, String> {
-    if scale > 1 && replay.has_mixed_target_sizes() {
-        return Err("fixed-size attachments beside the display grid".into());
-    }
     let blended = match plan {
         Plan::Blend(alpha) => Some(blend::blend(a, b, alpha)),
         Plan::Newest => None,
@@ -300,10 +300,16 @@ pub fn draw_blend(
         let to = b.views.iter().map(|v| v.key).zip(blended.cameras.iter());
         Retarget::new(b.view_cameras(), to)
     });
-    let sun_replay = sun_tiles(&gpu.ctx.device, b, replay, scale, lighting);
-    let mut pass = GuestDrawPass::new_lit(gpu, replay, scale, lighting)?;
-    record(&mut pass, b, replay, true, lighting, None, sun_replay, retarget.as_mut())?;
-    let image = pass.into_image()?;
+    let image = if scale > 1 && replay.has_mixed_target_sizes() {
+        let mut pass = MixedPrivatePass::new_lit(gpu, replay, scale, lighting)?;
+        record(&mut pass, b, replay, true, lighting, None, None, retarget.as_mut())?;
+        pass.into_image(replay.presented)?
+    } else {
+        let sun_replay = sun_tiles(&gpu.ctx.device, b, replay, scale, lighting);
+        let mut pass = GuestDrawPass::new_lit(gpu, replay, scale, lighting)?;
+        record(&mut pass, b, replay, true, lighting, None, sun_replay, retarget.as_mut())?;
+        pass.into_image()?
+    };
     let drawn = match &blended {
         Some(blended) => &blended.cameras[..],
         None => &[][..],
