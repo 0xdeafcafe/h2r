@@ -1,9 +1,10 @@
 //! Channel priority, outgoing motion, and the translation/rate blend.
 //! Every call uses the live guest stack; a callback can replace a channel.
 use super::*;
+use ::sim_anim::manager_channels::{ChannelMix, Mix};
 use crate::sim_objects::sse::{self, Ss};
 use crate::sim_physics::spatial::{finish_fpu, fp_error, load_fpu};
-use crate::sim_physics::{arithmetic, byte, logic};
+use crate::sim_physics::{ARITH, arithmetic, byte, logic};
 
 const SECONDARY_ENABLED: u32 = 0x46fbf4;
 const OVERRIDE_ENABLED: u32 = 0x46fbf5;
@@ -134,24 +135,22 @@ fn select_channel(c: &mut CpuAbi, g: &mut Bus<'_>, _: u32) -> sim_native::Result
     g.ret(c, 0)
 }
 
-// Both sampling and motion distinguish secondary-only, interpolated, and
-// primary-only from the same pair of thresholds, with ordered COMISSes.
-fn blended(
-    c: &mut CpuAbi,
-    g: &Bus<'_>,
-    channel: u32,
-    weight: u32,
-    sentinel: u32,
-) -> Result<bool, GuestFault> {
-    if !valid(c, g, channel, sentinel)? {
-        return Ok(false);
+// Both consumers have already loaded the full-weight threshold and checked
+// the graph handle. There are no writes or callbacks between the weight
+// comparisons, so one gathered secondary weight serves the whole decision.
+fn secondary_mix(c: &mut CpuAbi, g: &Bus<'_>, channel: u32, manager: u32, none: u32)
+    -> Result<Mix, GuestFault>
+{
+    if !clip_present(c, g, channel, none)? {
+        return Ok(Mix::Primary);
     }
-    sse::load(c, 1, g.u32(SMALL)?);
-    if sse::comiss(c, sse::lane0(c, 1), g.u32(weight)?) & 1 == 0 {
-        return Ok(false);
-    }
-    sse::load(c, 1, g.u32(weight)?);
-    Ok(sse::comiss(c, sse::lane0(c, 1), sse::lane0(c, 0)) & 1 != 0)
+    let decision = ChannelMix::select(
+        g.u32(at(manager, 0x80))?, sse::lane0(c, 0), || g.u32(SMALL), &mut c.mxcsr,
+    )?;
+    sse::load(c, 1, decision.compared);
+    c.eflags = (c.eflags & !ARITH) | decision.flags;
+    c.eflags_defined |= ARITH;
+    Ok(decision.channels)
 }
 fn sample_args(c: &mut CpuAbi, g: &mut Bus<'_>) -> Result<(), GuestFault> {
     c.ecx = g.u32(at(c.esp, 0x20))?;
@@ -193,14 +192,10 @@ fn sample_channels(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Resu
                 sse::load(c, 0, g.u32(FULL_WEIGHT)?);
                 c.edi = at(c.eax, 0x20);
                 if present {
-                    let weight = at(c.eax, 0x80);
-                    if clip_present(c, g, c.edi, c.ecx)? && {
-                        sse::load(c, 1, g.u32(weight)?);
-                        sse::comiss(c, sse::lane0(c, 1), sse::lane0(c, 0)) & 1 == 0
-                    } {
-                        chosen = c.edi;
-                    } else if blended(c, g, c.edi, weight, c.ecx)? {
-                        return g.call(c, 0x1cdf00, 0x1cd65a);
+                    match secondary_mix(c, g, c.edi, c.eax, c.ecx)? {
+                        Mix::Secondary => chosen = c.edi,
+                        Mix::Both => return g.call(c, 0x1cdf00, 0x1cd65a),
+                        Mix::Primary => {}
                     }
                 }
             }
@@ -322,16 +317,13 @@ fn channel_motion(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Resul
                     sse::load(c, 0, g.u32(FULL_WEIGHT)?);
                     c.ecx = at(c.ebx, 0x20);
                     if present {
-                        let weight = at(c.ebx, 0x80);
-                        if clip_present(c, g, c.ecx, c.edx)? {
-                            sse::load(c, 1, g.u32(weight)?);
-                            if sse::comiss(c, sse::lane0(c, 1), sse::lane0(c, 0)) & 1 == 0 {
-                                return motion_call(c, g, 0x1cd714);
+                        match secondary_mix(c, g, c.ecx, c.ebx, c.edx)? {
+                            Mix::Secondary => return motion_call(c, g, 0x1cd714),
+                            Mix::Both => {
+                                c.eax = c.ebx;
+                                return g.call(c, 0x1cdf00, 0x1cd791);
                             }
-                        }
-                        if blended(c, g, c.ecx, weight, c.edx)? {
-                            c.eax = c.ebx;
-                            return g.call(c, 0x1cdf00, 0x1cd791);
+                            Mix::Primary => {}
                         }
                     }
                 }

@@ -109,7 +109,6 @@ pub const TABLE: &[Switch] = &[
     sw("impl.sim.native_point_to_leaf", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_geometry_test", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_unit_pose", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_graph_resolve", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_marker_transforms", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_bsp_segment", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_collision_query", Off, "sim", "2026-11-20", SIM_PORT),

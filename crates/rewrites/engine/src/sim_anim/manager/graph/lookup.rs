@@ -1,11 +1,13 @@
-//! Index the first word of each record in a named graph block. A write
+//! Index graph names and clip dependencies by their source block. A write
 //! through any alias invalidates the tables sharing this subscription.
-use super::Bus;
+use super::{Bus, CLIPS};
+use crate::sim_native::Memory;
+use ::sim_anim::graph_resolve::{CLIP_BYTES, Dependencies};
 use runtime::{Guest, WatchId};
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
-const OWNER: &str = "animation-graph-names";
+const OWNER: &str = "animation-graph-blocks";
 const MAX_BLOCKS: usize = 128;
 const MAX_RECORDS: u32 = 16 * 1024;
 
@@ -34,15 +36,19 @@ struct Cache {
     sim_epoch: u64,
     watch: Option<((u64, u64), WatchId)>,
     tables: HashMap<Block, Option<HashMap<u32, u32>>>,
+    clips: HashMap<(u32, u32), Arc<Dependencies>>,
     records: u32,
 }
 
+static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(Mutex::default);
+
 impl Cache {
-    fn find(&mut self, ram: &mut Guest, block: Block, len: usize, key: u32) -> Option<u32> {
+    fn refresh(&mut self, ram: &mut Guest, additional: u32) {
         let epoch = ram.write_watch_epoch();
         let sim_epoch = sim_core::epoch::SIM.get();
-        let full = !self.tables.contains_key(&block)
-            && (self.tables.len() >= MAX_BLOCKS || self.records + block.count > MAX_RECORDS);
+        let full = additional != 0
+            && (self.tables.len() + self.clips.len() >= MAX_BLOCKS
+                || self.records + additional > MAX_RECORDS);
         if full
             || sim_epoch != self.sim_epoch
             || self
@@ -60,8 +66,13 @@ impl Cache {
             self.sim_epoch = sim_epoch;
             self.watch = Some((epoch, ram.subscribe_writes(OWNER)));
             self.tables.clear();
+            self.clips.clear();
             self.records = 0;
         }
+    }
+
+    fn find(&mut self, ram: &mut Guest, block: Block, len: usize, key: u32) -> Option<u32> {
+        self.refresh(ram, if self.tables.contains_key(&block) { 0 } else { block.count });
         if let std::collections::hash_map::Entry::Vacant(slot) = self.tables.entry(block) {
             let (_, id) = self.watch?;
             ram.watch_virtual_read(id, block.records, len).ok()?;
@@ -98,11 +109,43 @@ pub(super) fn find(
     // Never admit tag bytes supplied by the uncommitted stack journal.
     // The Guest guard excludes concurrent writes while checking/building.
     let ram = plan.unstaged_read(records, span)?;
-    static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(Mutex::default);
     CACHE
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .find(ram, block, span, key)
+}
+
+/// A return from a cache request can change the clip block, a link, or the
+/// resource table. Re-read the block header on each segment and use the live
+/// plan for resource residency. Only contiguous, unstaged clip bytes qualify.
+pub(super) fn dependencies(
+    plan: &mut Bus<'_>, graph: u32, clip: u32,
+) -> Option<(u32, usize, Arc<Dependencies>)> {
+    let count = plan.u32(graph.wrapping_add(CLIPS - 4)).ok()?;
+    if !(1..=MAX_RECORDS).contains(&count) {
+        return None;
+    }
+    let base = plan.u32(graph.wrapping_add(CLIPS)).ok()?;
+    let offset = clip.checked_sub(base)? as usize;
+    let len = count as usize * CLIP_BYTES;
+    if offset >= len || !offset.is_multiple_of(CLIP_BYTES) {
+        return None;
+    }
+    let ram = plan.unstaged_read(base, len)?;
+    let key = (base, count);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let additional = if cache.clips.contains_key(&key) { 0 } else { count };
+    cache.refresh(ram, additional);
+    if let Some(table) = cache.clips.get(&key) {
+        return Some((base, offset / CLIP_BYTES, Arc::clone(table)));
+    }
+    let (_, id) = cache.watch?;
+    let physical = ram.physical_read(base, len)? as usize;
+    ram.watch_virtual_read(id, base, len).ok()?;
+    let table = Arc::new(Dependencies::decode(&ram.physical_ram()[physical..physical + len])?);
+    cache.clips.insert(key, Arc::clone(&table));
+    cache.records += count;
+    Some((base, offset / CLIP_BYTES, table))
 }
 
 #[cfg(test)]
