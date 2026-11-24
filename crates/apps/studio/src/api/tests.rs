@@ -273,6 +273,7 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         | m::SCRIPT_EXTERNAL
         | m::RECORDING_LIST
         | m::RECORDING_READ
+        | m::RECORDING_PLAY
         | m::SCRIPT_WORKING => {
             // The invented map with scripts and the invented executable.
             let dir = t.path("scripts");
@@ -1260,6 +1261,7 @@ fn every_method_in_methods_has_a_test() {
                         | m::PAIR_AUDIO
                         | m::PAIR_RESULT
                         | m::PACKAGE_PLAY
+                        | m::RECORDING_PLAY
                         // No sim runner is wired to Studio's own API.
                         | m::PLAYTEST_RUN
                 ) && e.code == code::REFUSED => {}

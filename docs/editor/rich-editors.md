@@ -1,6 +1,6 @@
 # Rich editors: shaders, colours, curves, scripts, sounds and recordings
 
-Status: Design, except the seam (X1), "Data that changes length", sound audition (A1), mouth curves, read (A2), Scripts, read (H1), Recordings, read (K1), the curve editor, same length (F1), curve type changes (F2) and Model poses (M1), which are built; each section names the format code it stands on and the gaps in it.
+Status: Design, except the seam (X1), "Data that changes length", sound audition (A1), mouth curves, read (A2), Scripts, read (H1), Recordings, read (K1), Recordings, play (K2), the curve editor, same length (F1), curve type changes (F2) and Model poses (M1), which are built; each section names the format code it stands on and the gaps in it.
 Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/fields/rich.rs` (the seam), `crates/formats/tags/src/defs/attrs.rs` (`FieldView`), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/apps/studio/src/fields/curve.rs` and `crates/apps/studio/src/api/curves.rs` (F1), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/formats/hs/src/script_doc.rs`, `crates/formats/hs/src/recording.rs`, `crates/apps/studio/src/app/recordings.rs`, `crates/apps/studio/src/api/recordings.rs`, `crates/apps/studio/src/app/scripts.rs`, `crates/apps/studio/src/ui/scripts.rs`, `crates/apps/studio/src/api/scripts.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`. Tests: `defs/tests.rs`, `registry/tests.rs`, `fields::rich::tests` and `api/tests.rs` (X1), `effects::function::tests` and `api/curves/tests.rs` (F1), `app/tag_data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1), `app::scripts::tests`, `hs::script_doc::tests` and `hs::source::each_tests` (H1), `hs::recording::tests` and `app/recordings_tests.rs` (K1); each other slice names its own, `crates/apps/studio/src/app/anim.rs`, `crates/apps/studio/src/ui/anim.rs` (M1), `api/anim/tests.rs`, `anim_tests.rs`.
 Switch: none.
 
@@ -529,10 +529,11 @@ that play it, the unit control state it starts from, and every event as a
 line: tick, type name, values. A stream that does not read shows the
 reason with the offset of the event that broke it; a map with an empty
 block shows `This map has no recordings.`. Without the executable the
-list still shows and says that the scripts that play each need it. The
-lanes, the scrub bar and **Play on unit...** are not built (slice K2 adds
-the play); with a game connected the Scene viewport would draw the unit
-moving through the live mirror and keep the path as a line.
+list still shows and says that the scripts that play each need it. With
+a game paired, **Play on unit** plays the recording on the first
+player's unit (`recording.play`) and the Scene viewport draws the path
+that unit takes through the live mirror as a line, kept until the next
+play (`recording.path`). The lanes and the scrub bar are not built.
 
 **The data.** The element is `defs/recorded_animation.txt` (name,
 version, control version, ticks, the stream). `hs::recording` reads the
@@ -566,9 +567,17 @@ give the result.
 unit goes depends on the simulation. The editor does not integrate
 movement itself, because a path drawn from a private approximation would
 be wrong and look right. The timeline needs no game; the path on the map
-needs one. Playing needs a game method (`recording.play`, slice K2); the
-positions come back over the mirror's object stream
-([live-mirror.md](live-mirror.md), "Players, objects and poses").
+needs one. Playing is the game's `recording.play`: it finds the recording
+by name in the loaded scenario's block (`scnr +0x110`) and calls the
+engine's recording player (`0x1fb360`: EAX the unit, CX the index, the
+play flags on the stack, which the evaluators of `recording_play`,
+`_and_delete` and `_and_hover` push as 0, 8 and `0x10`). The editor
+(`api::recordings::play_on`) makes the call on a connection of its own,
+then `play::recording_path::RecordingPath` keeps the played player's
+unit position from each sample the object stream delivers
+([live-mirror.md](live-mirror.md), "Players, objects and poses"), one
+per new tick, to 20,000 points; a new epoch ends the path. A paused game
+is refused, because the call answers on the next tick.
 
 **Re-recording from input.** Feasible, as the inverse of playback: the
 game samples a player's unit control each tick and the editor encodes
@@ -653,7 +662,9 @@ already a namespace there (player models and looks), so poses use `anim.*`.
 | `recording.list` | none | `{recordings: [{name, ticks, version, control_version, stream_bytes, events, problem?, played_by}], note?}` |
 | `recording.read` | `{name, limit?, offset?}` | `{initial: {fields, trailer}, events: [{tick, at, delay, kind, name, fields, payload}], total, truncated, ...}`; a stream that does not read is `REFUSED` with the offset |
 | `recording.write` | `{name, initial?, events}` | the new `recording.read`; one undo step |
-| `recording.play`, `recording.capture` | `{name, unit}`; `{name, unit, start?, stop?}` | forwarded to the paired game; `NOT_PAIRED` without one |
+| `recording.play` | `{name, unit?: "player.<n>", mode?: play\|delete\|hover}` | the game's answer `{player, recording, index, unit}` and `path`; `REFUSED` without a paired, running game that lists it, with the game's reason when it refuses |
+| `recording.path` | `{clear?, limit?}` | `{recording, player, count, points, truncated}`: the unit positions kept since the last play |
+| `recording.capture` | `{name, unit, start?, stop?}` (K4) | forwarded to the paired game; `REFUSED` without one |
 
 ### The game's agent API
 
@@ -664,7 +675,7 @@ slice and by later tests, so each is an expansion, not a one-off:
 | Method | Class | Does | Needed by |
 |---|---|---|---|
 | `hs.eval` | act | evaluates one expression through the game's own script evaluator on the game thread; `{value, type}` or the evaluator's error | H4; any test that drives a scripted map |
-| `recording.play` | act | plays a named recording on a unit by the engine's own entry | K2 |
+| `recording.play` (built) | act | plays a named recording on a player's unit by the engine's own entry | K2 |
 | `recording.capture` | act | records a unit's control per tick into events until stopped | K4 |
 
 Shader, colour and curve edits use the built `edit.batch`; the WGSL path
@@ -736,7 +747,7 @@ the first one whose needs are met.
 | H3 | **Scripts, write**: Edit and Compile in the tool, the session ops, free-slot reuse, growth, strings, the three validations, `script.compile` | M | H2, X2 | one changed script changes only its nodes and new strings in the saved map; a compile past the node limit is refused with both counts; undo restores the table |
 | A4 | **Mouth curves, write**: drawing, **From the sound**, the in-place raw write | M | A2; modeling 3 | a redrawn invented curve changes only its bytes and the checksum; a shared-cache sound and a split chain are refused |
 | K1 (built) | **Recordings, read**: the stream crate, typed events, the tool and timeline, `recording.list`, `recording.read` | M | H1 | every Halo 2 event type decodes from an invented stream; a bad type or length is an error with its offset |
-| K2 | **Recordings, play**: the game's `recording.play`, the path in Scene | M | K1; live-mirror | on the fake game, **Play on unit...** sends the call and the streamed positions draw a path |
+| K2 (built) | **Recordings, play**: the game's `recording.play`, the path in Scene | M | K1; live-mirror | on the fake game, **Play on unit...** sends the call and the streamed positions draw a path |
 | H4 | **`hs.eval`** in the game, and an expression box in the Scripts tool | M | H1 | the agent crate's test evaluates an invented expression through the evaluator entry; a parse error returns the evaluator's text |
 | K3 | **Recordings, write**: the encoder, event edits, `recording.write`, the converted-map overlay | M | K1, X2 | `encode(decode(s)) == s`; an edited stream saves and walks clean; removing a played recording is refused |
 | S5 | **WGSL overrides from the editor** | S | S4, P12 | on the fake game, an edited file reaches `render.reload` and a compile error shows under the text |

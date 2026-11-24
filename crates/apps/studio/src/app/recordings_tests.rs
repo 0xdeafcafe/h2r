@@ -167,3 +167,171 @@ fn without_the_executable_recordings_list_and_played_by_says_why() {
     assert_eq!(v["recordings"][0]["played_by"], Value::Null);
     assert!(v["played_by_unavailable"].as_str().unwrap().contains("executable"), "{v}");
 }
+
+/// An invented game that answers `recording.play` and records what it was
+/// asked, for the play tests (no game, no game data).
+mod game {
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::Duration;
+
+    use agent::{Access, Agent, GameStatus, Reader, Server};
+    use agent_proto::{Object, RpcError};
+    use serde_json::{Value, json};
+
+    struct Level;
+
+    impl Reader for Level {
+        fn status(&mut self) -> GameStatus {
+            GameStatus {
+                tick: Some(100),
+                map: Some("example".into()),
+                mode: Some("multiplayer".into()),
+                bsp: Some(0),
+            }
+        }
+
+        fn objects(&mut self) -> Result<Vec<Object>, String> {
+            Ok(Vec::new())
+        }
+    }
+
+    pub struct Game {
+        pub path: PathBuf,
+        pub calls: Arc<Mutex<Vec<Value>>>,
+        agent: Agent,
+        _server: Server,
+        stop: Arc<AtomicBool>,
+        thread: Option<thread::JoinHandle<()>>,
+    }
+
+    impl Game {
+        /// `plays`: the game lists `recording.play`. `refuse`: it answers
+        /// that the unit is gone.
+        pub fn start(tag: &str, plays: bool, refuse: bool) -> Game {
+            let path = std::env::temp_dir()
+                .join(format!("h2e-rec-{tag}-{}.sock", std::process::id()));
+            let agent = Agent::new();
+            let calls: Arc<Mutex<Vec<Value>>> = Arc::default();
+            if plays {
+                let seen = Arc::clone(&calls);
+                agent.add_method("recording.play", Access::Act, move |p| {
+                    seen.lock().unwrap().push(p.clone());
+                    if refuse {
+                        return Err(RpcError::new(agent_proto::code::GONE, "player.0 has no unit"));
+                    }
+                    Ok(json!({
+                        "player": p["player"], "recording": p["recording"],
+                        "index": 0, "unit": "00010001",
+                    }))
+                });
+            }
+            let server = Server::listen(&path, agent.clone()).unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let (s, a) = (Arc::clone(&stop), agent.clone());
+            let thread = thread::spawn(move || {
+                let mut level = Level;
+                while !s.load(Ordering::Relaxed) {
+                    a.on_tick(&mut level);
+                    a.between_slices(&mut level, 0);
+                    thread::sleep(Duration::from_millis(2));
+                }
+            });
+            Game { path, calls, agent, _server: server, stop, thread: Some(thread) }
+        }
+    }
+
+    impl Drop for Game {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+            self.agent.shutdown();
+            if let Some(t) = self.thread.take() {
+                let _ = t.join();
+            }
+        }
+    }
+}
+
+fn pair(app: &mut App, game: &game::Game, paused: bool) {
+    app.pairing.published = Some(json!({
+        "state": "connected", "socket": game.path.display().to_string(),
+        "live_edits": false, "paused": paused, "edit_refusal": null,
+    }));
+}
+
+fn sample(tick: u64, at: [f32; 3]) -> live_mirror::Sample {
+    live_mirror::Sample {
+        tick,
+        epoch: 1,
+        stale: false,
+        objects: vec![agent_proto::live::Object { id: 7, position: at, ..Default::default() }],
+        players: vec![agent_proto::live::Player { index: 0, unit: Some(7), ..Default::default() }],
+        cameras: Vec::new(),
+    }
+}
+
+#[test]
+fn play_on_unit_sends_the_call_and_the_streamed_positions_make_a_path() {
+    let t = Temp::new("recordings-play");
+    let mut app = open(scripts::scripted_source(&t.0, true), &t);
+    let game = game::Game::start("play", true, false);
+    pair(&mut app, &game, false);
+    let mut api = Api::new();
+    let v = call(&mut api, &mut app, m::RECORDING_PLAY, json!({"name": "ARRIVE", "mode": "hover"}));
+    // The game is asked by the name as the map spells it.
+    assert_eq!(
+        *game.calls.lock().unwrap(),
+        [json!({"recording": "arrive", "player": "player.0", "mode": "hover"})]
+    );
+    assert_eq!(v["recording"], "arrive");
+    assert_eq!(v["path"]["points"], 0);
+    // The mirror's samples, as the window feeds them, make the path.
+    for (tick, x) in [(10, 1.0), (10, 5.0), (12, 2.0), (14, 3.0)] {
+        let s = sample(tick, [x, 0.0, 0.0]);
+        app.pairing.path.record(&s);
+    }
+    let v = call(&mut api, &mut app, m::RECORDING_PATH, json!({"limit": 2}));
+    assert_eq!(v["recording"], "arrive");
+    assert_eq!((v["count"].as_u64(), v["truncated"].as_bool()), (Some(3), Some(true)));
+    assert_eq!(v["points"], json!([[2.0, 0.0, 0.0], [3.0, 0.0, 0.0]]));
+    let v = call(&mut api, &mut app, m::RECORDING_PATH, json!({"clear": true}));
+    assert_eq!(v["count"], 3);
+    let v = call(&mut api, &mut app, m::RECORDING_PATH, json!({}));
+    assert_eq!((v["count"].clone(), v["recording"].clone()), (json!(0), Value::Null));
+}
+
+#[test]
+fn play_on_unit_is_refused_by_name_and_starts_no_path() {
+    let t = Temp::new("recordings-play-refused");
+    let mut app = open(scripts::scripted_source(&t.0, true), &t);
+    let mut api = Api::new();
+    // Not paired.
+    let e = api.call(&mut app, m::RECORDING_PLAY, json!({"name": "arrive"})).unwrap_err();
+    assert_eq!(e.code, code::REFUSED);
+    // Bad params: an unknown recording, a unit that is no player, a mode.
+    for params in [
+        json!({"name": "absent"}),
+        json!({"name": "arrive", "unit": "sim.1"}),
+        json!({"name": "arrive", "mode": "kill"}),
+    ] {
+        let e = api.call(&mut app, m::RECORDING_PLAY, params).unwrap_err();
+        assert_eq!(e.code, code::INVALID_PARAMS);
+    }
+    // A paused game would not answer; a game without the method; a game
+    // that refuses.
+    let game = game::Game::start("refused", true, true);
+    pair(&mut app, &game, true);
+    let e = api.call(&mut app, m::RECORDING_PLAY, json!({"name": "arrive"})).unwrap_err();
+    assert!(e.message.contains("paused"), "{}", e.message);
+    pair(&mut app, &game, false);
+    let e = api.call(&mut app, m::RECORDING_PLAY, json!({"name": "arrive"})).unwrap_err();
+    assert_eq!(e.code, code::REFUSED);
+    assert!(e.message.contains("has no unit"), "{}", e.message);
+    let old = game::Game::start("old", false, false);
+    pair(&mut app, &old, false);
+    let e = api.call(&mut app, m::RECORDING_PLAY, json!({"name": "arrive"})).unwrap_err();
+    assert!(e.message.contains("does not list recording.play"), "{}", e.message);
+    assert_eq!(app.pairing.path.recording, None);
+}

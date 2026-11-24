@@ -109,6 +109,12 @@ pub mod addr {
     pub const SOUND_START_AT_MARKER: u32 = engine::points::SOUND_START_AT_MARKER.base;
     /// The head marker's name id.
     pub const HEAD_MARKER: u32 = 0x0400_0095;
+    /// The recording player: EAX the unit, CX the recording's index in
+    /// `scnr +0x110`, one stack argument (the play flags: 0 play, 8 and
+    /// delete, `0x10` and hover, as the evaluators at `0x2a2d1c`,
+    /// `0x2a2d7c` and `0x2a2ddc` push them), `ret 4`, AL 0 when it starts
+    /// nothing.
+    pub const RECORDING_PLAYER: u32 = 0x001f_b360;
     pub const OBJECT_DELETE: u32 = 0x000b_8540;
     pub const UNIT_ADD_WEAPON: u32 = 0x000c_d0c0;
     pub const PLAYER_PLACE_NEAR: u32 = engine::points::PLAYER_PLACE_NEAR.base;
@@ -287,6 +293,9 @@ pub enum Call {
     /// Start the `snd!` tag `sound` at `unit`'s head marker
     /// (`audio.play`).
     Sound { unit: u32, sound: u32 },
+    /// Play recording `index` on `unit` with the player's `flags`
+    /// (`recording.play`).
+    Recording { unit: u32, index: u16, flags: u32 },
     /// Make an object from `tag` at `pos`.
     Spawn {
         tag: u32,
@@ -1394,6 +1403,27 @@ async fn run_call(
                 ))));
             }
             Ok(Ok(json!({ "instance": hex(instance), "unit": hex(unit) })))
+        }
+        Call::Recording { unit, index, flags } => {
+            if cx.read(|m| body_of(m, unit)).is_none() {
+                return Ok(Err(unavailable("the unit is gone (it died?)")));
+            }
+            let started = cx
+                .call(
+                    GuestCall::new(addr::RECORDING_PLAYER)
+                        .eax(unit)
+                        .ecx(u32::from(index))
+                        .args([flags]),
+                )
+                .await?
+                .eax
+                & 0xff;
+            if started == 0 {
+                return Ok(Err(unavailable(format!(
+                    "the game started no recording {index} (the recording player, 0x1fb360, answered no: the unit is already playing one, or the game has no free slot)"
+                ))));
+            }
+            Ok(Ok(json!({ "unit": hex(unit), "index": index })))
         }
         Call::Give { unit, weapon, mode } => {
             if cx.read(|m| body_of(m, unit)).is_none() {

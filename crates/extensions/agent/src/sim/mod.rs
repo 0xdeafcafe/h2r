@@ -38,6 +38,7 @@ pub mod events;
 pub mod hashes;
 pub mod objects;
 pub mod pause;
+pub mod recording;
 pub mod quit;
 pub mod shot;
 pub mod state;
@@ -225,6 +226,7 @@ pub fn install(agent: &Agent, bots: Box<dyn Bots>, probe: Option<SessionProbe>) 
     add(method::SPAWN, Access::Act, Sim::spawn);
     add(method::AUDIO_PLAY, Access::Act, Sim::audio_play);
     add(method::OBJECT_ANIMATE, Access::Act, Sim::object_animate);
+    add(method::RECORDING_PLAY, Access::Act, Sim::recording_play);
     add(method::OBJECTS, Access::Read, Sim::objects_method);
     add(method::EVENTS, Access::Read, Sim::events_method);
     add(method::PLAYER_MARK, Access::Act, Sim::player_mark);
@@ -729,6 +731,43 @@ impl Sim {
                     made["object"] = json!(id.to_string());
                     made["session"] = session.clone();
                     made
+                }))
+            }),
+        );
+        Ok(Value::Null)
+    }
+
+    /// `recording.play`: queue the engine's recording player for a named
+    /// recording on a player's unit. The unit moves as the recording's
+    /// control stream drives it, so a co-op session may not ask.
+    fn recording_play(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
+        let p: wire::RecordingPlayParams = params(v)?;
+        self.host_write(ctx)?;
+        let flags = recording::flags(p.mode.as_deref())?;
+        let index = self.target(p.player.as_deref().unwrap_or("player.0"))?;
+        let q = self.calls()?;
+        let (slot, name) = ctx.with_guest(|m| recording::find(m, &p.recording))?;
+        let unit = ctx.with_guest(|m| state::unit_handle(m, index))?;
+        let ticket = calls::submit(
+            &q,
+            Call::Recording {
+                unit,
+                index: slot,
+                flags,
+            },
+        )
+        .map_err(unavailable)?;
+        ctx.defer(
+            CALL_TICKS,
+            Box::new(move |_ctx: &mut GameCtx<'_>| {
+                let out = ticket.outcome()?;
+                Some(out.map(|started| {
+                    json!({
+                        "player": format!("player.{index}"),
+                        "recording": name,
+                        "index": slot,
+                        "unit": started["unit"],
+                    })
                 }))
             }),
         );

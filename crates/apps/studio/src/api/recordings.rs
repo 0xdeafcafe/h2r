@@ -29,6 +29,22 @@ const READ: MethodDef = def(
     r#"{"name":"arrive"}"#,
 );
 
+const PLAY: MethodDef = def(
+    m::RECORDING_PLAY,
+    "Play one of the open map's recordings on a player's unit in the paired game (the game's recording.play: the engine's own recording player), and start keeping the path that unit takes from the streamed positions (recording.path; the Scene viewport draws it). REFUSED without a paired, running (not paused) game that lists recording.play; the game must be on a map that has the recording",
+    r#"{"name":"string (case-insensitive)","unit?":"player.<n> (default player.0)","mode?":"play|delete|hover (how it ends; default play)"}"#,
+    r#"{"player":"string","recording":"string","index":"integer","unit":"string","path":"{recording,player,points}"}"#,
+    r#"{"name":"arrive"}"#,
+);
+
+const PATH: MethodDef = def(
+    m::RECORDING_PATH,
+    "The path the played recording's unit has taken: the unit's position from each streamed tick since recording.play, as the Scene viewport draws it. With clear, drops it",
+    r#"{"clear?":"boolean","limit?":"integer (points, default 1000, from the end)"}"#,
+    r#"{"recording":"string|null","player":"integer","count":"integer","points":"[[x,y,z]]","truncated":"boolean"}"#,
+    "{}",
+);
+
 const DEFAULT_LIMIT: usize = 1000;
 const MAX_LIMIT: usize = 20_000;
 
@@ -37,13 +53,15 @@ pub struct Recordings;
 
 impl Provider for Recordings {
     fn methods(&self) -> Vec<MethodDef> {
-        vec![LIST, READ]
+        vec![LIST, READ, PLAY, PATH]
     }
 
     fn call(&mut self, app: &mut App, method: &str, params: &Value) -> Option<Reply> {
         match method {
             m::RECORDING_LIST => Some(list(app)),
             m::RECORDING_READ => Some(read(app, &P(params))),
+            m::RECORDING_PLAY => Some(play(app, &P(params))),
+            m::RECORDING_PATH => Some(path(app, &P(params))),
             _ => None,
         }
     }
@@ -189,4 +207,108 @@ fn fields(f: &[Named]) -> Value {
 
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// `recording.play`: the paired game plays the recording on a player's
+/// unit. The call is made on a connection of its own, as the previews'
+/// are, and answers on the game's next tick.
+fn play(app: &mut App, p: &P) -> Reply {
+    let name = p.str("name")?;
+    let unit = p.opt_str("unit")?.unwrap_or("player.0");
+    let player = unit
+        .strip_prefix("player.")
+        .and_then(|n| n.parse::<u16>().ok())
+        .ok_or_else(|| err(code::INVALID_PARAMS, format!("unit: player.<n>, not {unit:?}")))?;
+    let mode = p.opt_str("mode")?;
+    if let Some(mode) = mode
+        && !matches!(mode, "play" | "delete" | "hover")
+    {
+        return Err(err(
+            code::INVALID_PARAMS,
+            format!("mode: play, delete or hover, not {mode:?}"),
+        ));
+    }
+    // The name must be one of this map's: the game reads its own block.
+    let rows = rows(app)?;
+    let row = rows
+        .iter()
+        .find(|r| r.recorded.name.eq_ignore_ascii_case(name))
+        .ok_or_else(|| {
+            err(
+                code::INVALID_PARAMS,
+                format!("name: no recording {name:?} (recording.list lists them)"),
+            )
+        })?;
+    let recording = row.recorded.name.clone();
+    play_on(app, &recording, player, mode)
+}
+
+/// The game's `recording.play` for `recording` (a name of this map's
+/// block) on `player`'s unit, then the path started: what the API and the
+/// Recordings section's button both do. The call is made on a connection
+/// of its own, as the previews' are, and answers on the game's next tick.
+pub(crate) fn play_on(app: &mut App, recording: &str, player: u16, mode: Option<&str>) -> Reply {
+    use agent_proto::{CallError, Client};
+    use std::time::Duration;
+
+    let unit = format!("player.{player}");
+    let (endpoint, paused) = super::preview::paired(app)?;
+    if paused {
+        return Err(err(
+            code::REFUSED,
+            "the game is paused: the call answers on its next tick (resume or step it)",
+        ));
+    }
+    let mut game_params = json!({"recording": recording, "player": unit});
+    if let Some(mode) = mode {
+        game_params["mode"] = json!(mode);
+    }
+    let refused = |why: String| err(code::REFUSED, why);
+    let mut client = Client::connect_with_timeout(&endpoint, Some(Duration::from_secs(5)))
+        .map_err(|e| refused(format!("connecting to the paired game at {endpoint}: {e}")))?;
+    client
+        .set_timeout(Some(Duration::from_secs(5)))
+        .map_err(|e| refused(format!("{endpoint}: {e}")))?;
+    let methods = client
+        .call(agent_proto::method::METHODS, Value::Null)
+        .map_err(|e| refused(format!("session.methods: {e}")))?;
+    if !methods
+        .as_array()
+        .is_some_and(|l| l.iter().any(|name| name == m::RECORDING_PLAY))
+    {
+        return Err(refused(
+            "the paired game does not list recording.play (a build before it)".into(),
+        ));
+    }
+    let mut answer = client.call(m::RECORDING_PLAY, game_params).map_err(|e| match e {
+        CallError::Rpc(e) => refused(format!("recording.play: {}", e.message)),
+        e => refused(format!("recording.play: {e}")),
+    })?;
+    app.pairing.path.start(recording, player);
+    answer["path"] = json!({"recording": recording, "player": player, "points": 0});
+    Ok(answer)
+}
+
+/// `recording.path`: the points kept since the last play.
+fn path(app: &mut App, p: &P) -> Reply {
+    let limit = p.opt_usize("limit")?.unwrap_or(DEFAULT_LIMIT);
+    if limit == 0 || limit > MAX_LIMIT {
+        return Err(err(
+            code::INVALID_PARAMS,
+            format!("limit: 1..{MAX_LIMIT}, not {limit}"),
+        ));
+    }
+    let clear = p.bool("clear")?;
+    let path = &mut app.pairing.path;
+    let out = json!({
+        "recording": path.recording,
+        "player": path.player,
+        "count": path.points.len(),
+        "points": path.points[path.points.len().saturating_sub(limit)..],
+        "truncated": path.points.len() > limit,
+    });
+    if clear {
+        path.clear();
+    }
+    Ok(out)
 }

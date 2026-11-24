@@ -277,6 +277,8 @@ pub struct Bridge {
     pub mirror: Option<Arc<super::stream::Stream>>,
     /// The sample shown this editor frame, shared by the viewport and API.
     pub shown: Option<live_mirror::Sample>,
+    /// The path a played recording's unit takes, from the streamed samples.
+    pub path: super::recording_path::RecordingPath,
     pub(crate) display: super::display::DisplayState,
     pub latest: bool,
     pub(crate) selection: super::select::LiveSelection,
@@ -323,6 +325,7 @@ impl Default for Bridge {
             leaving: false,
             mirror: None,
             shown: None,
+            path: Default::default(),
             display: Default::default(),
             latest: false,
             selection: Default::default(),

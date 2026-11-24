@@ -52,7 +52,7 @@ mod preview;
 mod playlists;
 mod playtest;
 mod scenario;
-mod recordings;
+pub(crate) mod recordings;
 mod scripts;
 pub mod seams;
 mod shell;

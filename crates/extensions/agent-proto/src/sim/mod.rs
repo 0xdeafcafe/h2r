@@ -61,6 +61,10 @@ pub mod method {
     /// start ([`super::PlayParams`]): presentation only, nothing is
     /// filed or sent.
     pub const AUDIO_PLAY: &str = "audio.play";
+    /// Play one of the scenario's recorded animations on a player's unit
+    /// through the engine's own recording player
+    /// ([`super::RecordingPlayParams`]).
+    pub const RECORDING_PLAY: &str = "recording.play";
     /// Every live object through the simulation's typed views
     /// ([`super::objects`]).
     pub const OBJECTS: &str = "sim.objects";
@@ -109,6 +113,7 @@ pub mod method {
         GIVE,
         SPAWN,
         AUDIO_PLAY,
+        RECORDING_PLAY,
         OBJECTS,
         EVENTS,
         PLAYER_MARK,
@@ -553,6 +558,26 @@ pub struct AnimateParams {
     /// The animation's name in the object's graph (`idle`), one the graph
     /// itself holds: an inherited one is refused.
     pub animation: String,
+}
+
+/// `recording.play`: a recorded animation of the loaded scenario
+/// (`scnr +0x110`) played on a player's unit by the recording player
+/// (`0x1fb360`), as the script call `recording_play` and its relatives do.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingPlayParams {
+    /// The recording's name (without case), as the scenario's block names
+    /// it.
+    pub recording: String,
+    /// `player.<index>`, or a simulated player's `sim.<n>`. Default
+    /// `player.0`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub player: Option<String>,
+    /// What happens at the end: `play` (the unit keeps what it was given;
+    /// default), `delete` (`recording_play_and_delete`: the unit is
+    /// deleted) or `hover` (`recording_play_and_hover`: a vehicle hovers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
 }
 
 /// `sim.spawn`: an object made from its tag at a position.

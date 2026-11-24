@@ -94,6 +94,7 @@ connection to hold `session.claim`.
 | `audio.voices`, `audio.listeners`, `audio.loops` | read | [`audio`](#audio-voice-routing) |
 | `audio.meter` | read | [`audio.meter`](#audiometer) |
 | `audio.play` | act | [`audio.play`](#audioplay) |
+| `recording.play` | act | [`recording.play`](#recordingplay) |
 | `hs.threads`, `hs.globals`, `hs.player_actions` | read | [HaloScript state](#haloscript-state) |
 | `input.pad`, `release`, `record`, `replay`, `stop` | act | [`input`](#input-act-like-a-player) |
 | `input.state`, `input.host` | read | [`input`](#input-act-like-a-player) |
@@ -3093,6 +3094,40 @@ h2 agent world.object.animate '{"id": "scenery.12340000", "animation": "idle"}'
   its channel as its names change, so the method is for scenery, machines,
   crates, creatures and vehicles; the answer's `frame` and a later
   `anim`/`world.object` read are how a run checks it plays.
+
+### `recording.play`
+
+Plays one of the loaded scenario's recorded animations on a player's
+unit, as the script call `recording_play` does: the unit's control
+follows the recording's stream. The editor's Recordings section calls it
+([rich-editors.md](../editor/rich-editors.md), "Recordings"). A game
+method of the sim provider (`crates/extensions/agent/src/sim/mod.rs`,
+`Sim::recording_play`, the block read in `sim/recording.rs`; types in
+`crates/extensions/agent-proto/src/sim/mod.rs`).
+
+```sh
+h2 agent recording.play '{"recording": "arrive", "mode": "hover"}'
+```
+
+| Params | Result |
+|---|---|
+| `{recording, player?, mode?}`: a name in the scenario's recorded animations (without case); `player.<n>` or `sim.<n>`, default `player.0`; `play` (default), `delete` or `hover` | `{player, recording, index, unit}` |
+
+- **The call.** The recording player (`0x1fb360`; EAX the unit, CX the
+  recording's index, the play flags as its one stack argument, `ret 4`,
+  AL 0 when it starts nothing), made at the start of the next tick like
+  `sim.give` ([`sim`](#sim-simulated-players-and-direct-state)). The
+  flags are the ones the three evaluators push (`0x2a2d1a`, `0x2a2d7a`,
+  `0x2a2dda`): 0 for `play`, 8 for `delete`
+  (`recording_play_and_delete`), `0x10` for `hover`
+  (`recording_play_and_hover`). The unit moves, so a co-op session may
+  not ask (`INVALID_REQUEST`, as for `sim.give`).
+- **Errors.** A name the scenario lacks, or a mode that is none, is
+  `INVALID_PARAMS` (the first lists the names the scenario has); a
+  player with no unit is `GONE`; a recording the player starts nothing
+  for (the unit already plays one, or no free slot) is `UNAVAILABLE`.
+  A disc multiplayer map has no recordings. A paused game answers when
+  it runs.
 
 ## HaloScript state
 

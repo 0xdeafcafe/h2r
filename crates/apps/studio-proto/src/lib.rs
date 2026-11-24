@@ -331,6 +331,8 @@ pub mod method {
     // The Recordings tool (docs/editor/rich-editors.md, "Recordings").
     pub const RECORDING_LIST: &str = "recording.list";
     pub const RECORDING_READ: &str = "recording.read";
+    pub const RECORDING_PLAY: &str = "recording.play";
+    pub const RECORDING_PATH: &str = "recording.path";
 
     pub const SCRIPT_LIST: &str = "script.list";
     pub const SCRIPT_SOURCE: &str = "script.source";
