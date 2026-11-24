@@ -324,14 +324,23 @@ impl<'a> Vm<'a> {
             }
         }
         self.pool.delete(t);
-        for (i, s) in self.scenario.scripts.iter().enumerate() {
-            if s.kind <= 2 {
-                self.pool
-                    .allocate(Category::Script, Some(i as u16), s.kind == 1)
-                    .ok_or(VmError::ThreadPoolFull)?;
+        for i in 0..self.scenario.scripts.len() {
+            if self.scenario.scripts[i].kind <= 2 {
+                self.create_script_thread(i as u16)?;
             }
         }
         Ok(())
+    }
+
+    /// Create an ordinary script thread at its root frame. Map initialization
+    /// does this for every scheduled definition; a VM checking one guest
+    /// thread can load its globals and create only that definition.
+    pub fn create_script_thread(&mut self, script: u16) -> VmResult<usize> {
+        let definition = self.scenario.scripts.get(usize::from(script))
+            .filter(|s| s.kind <= 2)
+            .ok_or_else(|| VmError::Node("expected an ordinary script definition".into()))?;
+        self.pool.allocate(Category::Script, Some(script), definition.kind == 1)
+            .ok_or(VmError::ThreadPoolFull)
     }
 
     fn initialize_global(&mut self, e: &mut dyn Engine, t: usize, i: usize) -> VmResult<()> {
@@ -695,7 +704,7 @@ impl<'a> Vm<'a> {
         let slot = self.global_slot(word)?;
         if word & 0x8000 != 0 {
             let ty = self.global_type(word)?;
-            if ty.size() != 0 && !(57..=61).contains(&ty.0) {
+            if ty.external_storage_width() != 0 {
                 let v = e
                     .external_global_read(word & 0x7fff, ty)
                     .unwrap_or(Cell(ty.unbound_external()));
