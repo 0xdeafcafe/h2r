@@ -442,3 +442,35 @@ fn a_set_the_slots_cannot_name_is_refused_with_its_sentence_and_nothing_is_writt
     assert!(s.document().ops.is_empty());
     assert!(w.calls.is_empty());
 }
+
+#[test]
+fn a_spawners_team_is_a_property_op_that_touches_nothing_in_the_world() {
+    let spawner = Endpoint::base(BlockKind::NetgameEquipment, 0);
+    let mut s = open(rows());
+    let mut w = Fake::default();
+    assert_eq!(s.team(spawner), None);
+    s.set_team(&mut w, 1, spawner, Some(3)).unwrap();
+    assert_eq!(s.team(spawner), Some(3));
+    assert_eq!(
+        entry_ops(&s),
+        [EntryOp::Property {
+            target: spawner_target(),
+            property: forge_doc::Property::Team(Some(3)),
+        }]
+    );
+    assert!(w.calls.is_empty(), "no scenario bytes: {:?}", w.calls);
+    // The same team writes nothing; a clear is one op; undo takes it back.
+    s.set_team(&mut w, 2, spawner, Some(3)).unwrap();
+    assert_eq!(s.document().ops.len(), 1);
+    s.set_team(&mut w, 3, spawner, None).unwrap();
+    assert_eq!((s.document().ops.len(), s.team(spawner)), (2, None));
+    s.undo(&mut w, 4).unwrap();
+    assert_eq!(s.team(spawner), Some(3));
+    // Another kind has none, and a team past 7 is refused.
+    assert_eq!(
+        s.set_team(&mut w, 5, weapon(0), Some(1)).unwrap_err(),
+        "This object has no team."
+    );
+    assert!(s.set_team(&mut w, 5, spawner, Some(8)).is_err());
+    assert_eq!(s.document().ops.len(), 1);
+}

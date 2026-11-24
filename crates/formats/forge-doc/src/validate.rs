@@ -487,7 +487,7 @@ impl Counts {
             },
         };
         let back = match edit {
-            EntryOp::Set { .. } => return,
+            EntryOp::Set { .. } | EntryOp::Property { .. } => return,
             EntryOp::Remove { .. } if self.removed.insert(target) => false,
             EntryOp::Reset { .. } if self.removed.remove(&target) => true,
             _ => return,
