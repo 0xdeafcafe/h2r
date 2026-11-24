@@ -1038,3 +1038,137 @@ fn the_overlays_page_turns_overlays_off() {
     assert!(e.overlay(Overlay::Markers));
     assert_eq!(e.session.head(), head, "no op was made");
 }
+
+// ---- Generate nav: the generation runs on a worker (docs/game/forge-nav.md) ----
+
+mod nav {
+    use super::*;
+    use crate::forge_glue::nav::{self as installed, NO_GENERATOR, TEST_GUARD};
+    use forge::tool::Overlay;
+    use forge::{NavBuilder, NavProblem, NavReport, NavState};
+
+    /// A generator with an invented report, or a refusal.
+    struct Gen {
+        refuse: bool,
+    }
+
+    impl NavBuilder for Gen {
+        fn generate(
+            &mut self,
+            _: &ForgeDoc,
+            _: &std::collections::BTreeMap<BlockKind, u32>,
+        ) -> Result<NavReport, String> {
+            if self.refuse {
+                return Err("The map does not build.".into());
+            }
+            Ok(NavReport {
+                sectors: 40,
+                out_of_map: 2,
+                problems: vec![NavProblem {
+                    kind: "start_off_mesh".into(),
+                    what: "start 1".into(),
+                    position: [1., 1., 3.],
+                    reason: "no floor under it".into(),
+                }],
+                ..Default::default()
+            })
+        }
+    }
+
+    fn nav_editor() -> Editor {
+        let mut e = editor();
+        let base = e.session.document().clone();
+        let limits = Limits {
+            world: Some(WorldBounds {
+                min: [-10.; 3],
+                max: [10.; 3],
+            }),
+            base_counts: [(BlockKind::Crates, 2), (BlockKind::NetgameFlags, 3)]
+                .into_iter()
+                .collect(),
+            ..Limits::default()
+        };
+        e.session = Arc::new(Session::new(base, limits, vec![], 8).unwrap());
+        e.tool.monitor = true;
+        e
+    }
+
+    fn finish(e: &mut Editor, tick: u32) {
+        for _ in 0..500 {
+            e.poll_file(tick);
+            if !e.busy() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the nav generation never finished");
+    }
+
+    #[test]
+    fn generate_nav_runs_on_a_worker_and_its_problems_are_marked() {
+        let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        installed::install(Box::new(Gen { refuse: false }));
+        let mut e = nav_editor();
+        assert_eq!(e.status()["nav"]["state"], "not_built");
+        assert_eq!(e.status()["nav"]["available"], true);
+
+        e.choose(1, Choice::GenerateNav).unwrap();
+        assert!(e.busy() && e.nav_generating);
+        assert_eq!(e.status()["nav"]["generating"], true);
+        assert_eq!(e.notice.as_ref().unwrap().0, "Generating nav...");
+        finish(&mut e, 2);
+        assert!(!e.nav_generating);
+        assert_eq!(e.session.nav_state(), NavState::Current);
+        assert_eq!(
+            e.notice,
+            Some((
+                "Nav generated: 40 sectors, 2 out of the map, 1 problem.".into(),
+                2
+            ))
+        );
+        assert_eq!(e.status()["nav"]["sectors"], 40);
+
+        // The problem is marked while the Nav overlay is on, even with the
+        // game type markers off.
+        let marked = |e: &Editor| {
+            e.marker_entries()
+                .into_iter()
+                .filter(|m| m.name == "nav:start 1")
+                .count()
+        };
+        assert_eq!(marked(&e), 1);
+        e.tool.overlays.set(Overlay::Markers, false);
+        assert_eq!(marked(&e), 1);
+        e.tool.overlays.set(Overlay::Nav, false);
+        assert_eq!(marked(&e), 0);
+        installed::uninstall();
+    }
+
+    #[test]
+    fn an_agent_asking_for_nav_is_answered_and_a_failure_changes_nothing() {
+        let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        installed::install(Box::new(Gen { refuse: false }));
+        let mut e = nav_editor();
+        let answer = e.nav_generate().unwrap();
+        finish(&mut e, 3);
+        let reply = answer.try_recv().unwrap().unwrap();
+        assert_eq!(reply["state"], "current");
+        assert_eq!(reply["counts"]["sectors"], 40);
+        assert_eq!(reply["problems"][0]["what"], "start 1");
+
+        installed::install(Box::new(Gen { refuse: true }));
+        let mut e = nav_editor();
+        let answer = e.nav_generate().unwrap();
+        finish(&mut e, 4);
+        assert_eq!(
+            answer.try_recv().unwrap(),
+            Err("The map does not build.".to_string())
+        );
+        assert!(!e.nav_generating);
+        assert_eq!(e.session.nav_state(), NavState::NotBuilt);
+
+        installed::uninstall();
+        assert_eq!(e.choose(5, Choice::GenerateNav), Err(NO_GENERATOR.into()));
+        assert!(!e.busy());
+    }
+}

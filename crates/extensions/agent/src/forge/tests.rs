@@ -2253,4 +2253,81 @@ mod ground {
         let bad = h.call(&mut game, method::GROUND_BUILD, json!({"unknown": true}));
         assert!(!bad["error"].is_null(), "{bad}");
     }
+
+    #[test]
+    fn nav_before_any_generation_is_not_built_and_generating_needs_a_generator() {
+        let h = Harness::new();
+        let mut game = game(1);
+        local::install(&h.agent, host(None, 0));
+        let methods = h.ok(&mut game, agent_proto::method::METHODS, Json::Null);
+        assert!(methods.as_array().unwrap().contains(&json!(method::NAV)));
+
+        let nav = h.ok(&mut game, method::NAV, Json::Null);
+        assert_eq!(nav["state"], "not_built");
+        assert_eq!(nav["available"], false);
+        assert_eq!(nav["counts"], Json::Null);
+        assert_eq!(nav["problems"], json!([]));
+        assert_eq!(nav["overlay"], json!([]));
+        let read = h.ok(&mut game, method::NAV, json!({"generate": false}));
+        assert_eq!(read, nav);
+
+        let none = h.call(&mut game, method::NAV, json!({"generate": true}));
+        assert_eq!(none["error"]["message"], crate::forge::nav::NO_GENERATOR);
+        let bad = h.call(&mut game, method::NAV, json!({"unknown": true}));
+        assert!(!bad["error"].is_null(), "{bad}");
+    }
+
+    #[test]
+    fn nav_reply_carries_the_counts_problems_and_overlay_of_the_last_generation() {
+        struct Gen;
+        impl ::forge::NavBuilder for Gen {
+            fn generate(
+                &mut self,
+                _: &ForgeDoc,
+                _: &std::collections::BTreeMap<BlockKind, u32>,
+            ) -> Result<::forge::NavReport, String> {
+                Ok(::forge::NavReport {
+                    sectors: 40,
+                    links: [("jump".to_string(), 3)].into(),
+                    out_of_map: 2,
+                    solids: 1,
+                    problems: vec![::forge::NavProblem {
+                        kind: "start_off_mesh".into(),
+                        what: "start 1".into(),
+                        position: [0., -5., 4.],
+                        reason: "no floor under it".into(),
+                    }],
+                    lines: vec![::forge::NavLine {
+                        kind: "jump".into(),
+                        a: [0., 0., 0.],
+                        b: [1., 0., 1.],
+                    }],
+                })
+            }
+        }
+        let host = host(None, 0);
+        let mut session = Session::clone(&host.session.lock().unwrap());
+        session.generate_nav(&mut Gen).unwrap();
+        let reply = crate::forge::nav::reply(
+            &session,
+            crate::forge::nav::Facts {
+                available: true,
+                generating: false,
+            },
+        );
+        assert_eq!(reply["state"], "current");
+        assert_eq!(
+            reply["counts"],
+            json!({"sectors": 40, "links": {"jump": 3}, "out_of_map": 2, "solids": 1})
+        );
+        assert_eq!(reply["problems"][0]["kind"], "start_off_mesh");
+        assert_eq!(reply["problems"][0]["what"], "start 1");
+        assert_eq!(
+            reply["overlay"][0],
+            json!({"kind": "jump", "a": [0., 0., 0.], "b": [1., 0., 1.]})
+        );
+        let status = crate::forge::nav::status(&session, Default::default());
+        assert_eq!(status["sectors"], 40);
+        assert_eq!(status["problems"], 1);
+    }
 }

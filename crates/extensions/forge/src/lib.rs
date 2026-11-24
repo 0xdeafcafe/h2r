@@ -24,7 +24,8 @@ pub use forge_doc::{GroundLabel, GroundRecipe, Label, MIN_GROUP_MEMBERS, Prefab}
 pub use links::{Linkable, Teleporter};
 pub use session::{
     Goal, GroundBuilder, GroundProblem, GroundReceipt, GroundReport, GroundState, GroupInfo,
-    Outgoing, PlacedMarker, SHARED_PROPOSE, SHARED_REDO, Session, SessionAdmit, flag_label,
+    NavBuilder, NavLine, NavProblem, NavReport, NavState, Outgoing, PlacedMarker, SHARED_PROPOSE,
+    SHARED_REDO, Session, SessionAdmit, flag_label,
 };
 pub use things::{BaseRow, BaseRows, LEFT_OUT_SENTENCE, Thing, ThingKind};
 
@@ -119,6 +120,9 @@ mod base_tests;
 
 #[cfg(test)]
 mod ground_tests;
+
+#[cfg(test)]
+mod nav_tests;
 
 #[cfg(test)]
 mod budget_tests;

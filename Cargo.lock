@@ -685,6 +685,7 @@ dependencies = [
  "forge",
  "forge-build",
  "forge-doc",
+ "forge-nav",
  "frame-scene",
  "game",
  "gfx",
@@ -2289,6 +2290,17 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "forge-nav"
+version = "0.1.0"
+dependencies = [
+ "bots",
+ "collision-build",
+ "map",
+ "scenario-edit",
+ "tags",
 ]
 
 [[package]]

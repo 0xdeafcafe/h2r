@@ -94,10 +94,17 @@ pub enum Overlay {
     Monitors,
     /// The axes and outline at the held or aimed object.
     Gizmo,
+    /// The last **Generate nav**'s problems (docs/game/forge-nav.md).
+    Nav,
 }
 
 impl Overlay {
-    pub const ALL: [Overlay; 3] = [Overlay::Markers, Overlay::Monitors, Overlay::Gizmo];
+    pub const ALL: [Overlay; 4] = [
+        Overlay::Markers,
+        Overlay::Monitors,
+        Overlay::Gizmo,
+        Overlay::Nav,
+    ];
 
     /// The overlay as `forge.status` names it.
     pub const fn name(self) -> &'static str {
@@ -105,6 +112,7 @@ impl Overlay {
             Self::Markers => "markers",
             Self::Monitors => "monitors",
             Self::Gizmo => "gizmo",
+            Self::Nav => "nav",
         }
     }
 

@@ -18,6 +18,7 @@ mod budget;
 mod ground;
 mod groups;
 mod prefabs;
+mod nav;
 mod shared;
 
 pub use area::{Goal, flag_label};
@@ -26,6 +27,7 @@ pub use ground::{
     GroundBuilder, GroundProblem, GroundReceipt, GroundReport, GroundState, PlacedMarker,
 };
 pub use groups::{GroupInfo, carried};
+pub use nav::{NavBuilder, NavLine, NavProblem, NavReport, NavState};
 pub use shared::{Outgoing, SHARED_PROPOSE, SHARED_REDO, SessionAdmit};
 
 #[derive(Clone, Debug)]
@@ -64,6 +66,8 @@ pub struct Session {
     shared: Option<shared::Shared>,
     /// The AI ground's recipe and last build, beside the document.
     ground: ground::Track,
+    /// The last **Generate nav**, beside the document.
+    nav: nav::Track,
 }
 
 impl Session {
@@ -109,6 +113,7 @@ impl Session {
             own_repair: None,
             shared: None,
             ground: ground::Track::default(),
+            nav: nav::Track::default(),
         })
     }
 
@@ -995,6 +1000,7 @@ impl Session {
         self.doc = doc;
         self.head = head;
         self.restart_ground(ground);
+        self.restart_nav();
         self.log.clear();
         self.log_bytes = 0;
         self.undo.clear();
