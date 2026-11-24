@@ -272,14 +272,23 @@ fn run_callbacks(
     let mut cpu = ir_cpu(c);
     let mut pc = c.eip;
     let mut out = Run::default();
+    let mut observation: Option<arm::RayObservation> = None;
     for _ in 0..4_000_000 {
         cpu.eip = pc;
         if pc == HARNESS_EXIT {
-            arm::end(1, &*m, world);
+            observation
+                .take()
+                .expect("missing ray entry")
+                .finish(&*m, world);
             return out;
         }
         if pc == points::COLLISION_MOPP_RAY.base {
-            arm::begin(1, &lifted::cpu::from_interp(&cpu), &mut *m, world);
+            observation = Some(arm::begin_observed(
+                1,
+                &lifted::cpu::from_interp(&cpu),
+                &mut *m,
+                world,
+            ));
         } else if pc == points::SIM_MOPP_RAY.base {
             out.enters += 1;
             arm::enter(1, &lifted::cpu::from_interp(&cpu), &*m);

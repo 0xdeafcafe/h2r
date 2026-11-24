@@ -2,9 +2,9 @@
 //! (docs/engine/collision-queries.md, "Entry I").
 //!
 //! The guest's query runs and stays the answer. Four observers feed one
-//! [`RayCheck`] per query: [`begin`] before the setup, [`enter`] at each
+//! [`RayCheck`] per query: [`begin_observed`] before the setup, [`enter`] at each
 //! call of the float interpreter `0x003009e0`, [`key`] at the instanced
-//! collection's child method and [`end`] after the setup returns. The
+//! collection's child method and [`RayObservation::finish`] on its matching return. The
 //! outcome goes to the world's `ray` counters with the first mismatch.
 //! Nothing here writes guest memory.
 //!
@@ -26,8 +26,8 @@ use sim_collision::mopp::ray::{
 };
 use sim_collision::{Bail, CollisionWorld, GuestRead};
 use sim_core::det;
-use std::sync::Arc;
-use std::{cell::RefCell, collections::HashMap};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 /// Queries retained per guest thread. Deeper calls count as depth declines.
 const MAX_SESSIONS: usize = 16;
@@ -62,13 +62,58 @@ enum Slot {
 }
 
 #[derive(Default)]
-struct Stack {
-    slots: Vec<Slot>,
-    overflow: usize,
+struct Sessions {
+    next: u64,
+    threads: HashMap<u32, Vec<(u64, Slot)>>,
 }
 
+// One game executor drives these observers. Its return callbacks can be
+// discarded elsewhere, so each token keeps the registry it came from.
 thread_local! {
-    static SESSIONS: RefCell<HashMap<u32, Stack>> = RefCell::default();
+    static SESSIONS: Arc<Mutex<Sessions>> = Arc::default();
+}
+
+/// A pending observation owned by the return watcher. Unwinding, replacing
+/// the execution context, or failing to arm a return drops just this query.
+#[must_use]
+pub struct RayObservation {
+    sessions: Arc<Mutex<Sessions>>,
+    thread: u32,
+    id: Option<u64>,
+}
+
+impl RayObservation {
+    fn take(&mut self) -> Option<Slot> {
+        let id = self.id.take()?;
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let stack = sessions.threads.get_mut(&self.thread)?;
+        let i = stack.iter().rposition(|(pending, _)| *pending == id)?;
+        let (_, slot) = stack.remove(i);
+        if stack.is_empty() {
+            sessions.threads.remove(&self.thread);
+        }
+        Some(slot)
+    }
+
+    /// Record the query only when its own guest return was observed.
+    pub fn finish(mut self, g: &impl CollisionMemory, world: &CollisionWorld) {
+        let Some(slot) = self.take() else { return };
+        let outcome = match slot {
+            Slot::Skip(why) => Outcome::Unverified(Unverified::Bail(why)),
+            Slot::Check(_) if g.trapped() => Outcome::Unverified(Unverified::Bail(Bail::Trap)),
+            Slot::Check(s) => match Read(g, (0, 0)).u32(s.vm.wrapping_add(l::FRACTION)) {
+                Ok(fraction) => s.check.finish(fraction),
+                Err(f) => Outcome::Unverified(Unverified::Bail(f.into())),
+            },
+        };
+        world.record_ray(&outcome);
+    }
+}
+
+impl Drop for RayObservation {
+    fn drop(&mut self) {
+        drop(self.take());
+    }
 }
 
 fn vec4(m: &impl GuestRead, at: u32) -> Result<Vec4, Bail> {
@@ -183,27 +228,41 @@ fn open(c: &CpuAbi, g: &mut impl CollisionMemory, world: &CollisionWorld) -> Res
     })
 }
 
-/// Before `0x00301800`: open a query.
-pub fn begin(thread: u32, c: &CpuAbi, g: &mut impl CollisionMemory, world: &CollisionWorld) {
-    SESSIONS.with_borrow_mut(|sessions| {
-        let stack = sessions.entry(thread).or_default();
-        if stack.slots.len() == MAX_SESSIONS {
-            stack.overflow += 1;
+/// Before `0x00301800`: attach the returned token to this call's return.
+pub fn begin_observed(
+    thread: u32,
+    c: &CpuAbi,
+    g: &mut impl CollisionMemory,
+    world: &CollisionWorld,
+) -> RayObservation {
+    SESSIONS.with(|owner| {
+        let mut sessions = owner.lock().unwrap_or_else(|e| e.into_inner());
+        let id = sessions.next;
+        sessions.next = sessions.next.wrapping_add(1);
+        let stack = sessions.threads.entry(thread).or_default();
+        let slot = if stack.len() >= MAX_SESSIONS {
+            Slot::Skip(Bail::Depth)
         } else {
-            stack.slots.push(match open(c, g, world) {
+            match open(c, g, world) {
                 Ok(session) => Slot::Check(Box::new(session)),
                 Err(why) => Slot::Skip(why),
-            });
+            }
+        };
+        stack.push((id, slot));
+        RayObservation {
+            sessions: Arc::clone(owner),
+            thread,
+            id: Some(id),
         }
-    });
+    })
 }
 
 /// The innermost query, while it is still being compared.
 fn with_open(thread: u32, f: impl FnOnce(&mut Session)) {
-    SESSIONS.with_borrow_mut(|open| {
-        if let Some(stack) = open.get_mut(&thread)
-            && stack.overflow == 0
-            && let Some(Slot::Check(session)) = stack.slots.last_mut()
+    SESSIONS.with(|owner| {
+        let mut sessions = owner.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(stack) = sessions.threads.get_mut(&thread)
+            && let Some((_, Slot::Check(session))) = stack.last_mut()
             && !session.check.decided()
         {
             f(session);
@@ -261,6 +320,20 @@ pub fn key(thread: u32, c: &CpuAbi, g: &impl CollisionMemory) {
             return;
         }
         let m = Read(g, (0, 0));
+        // The collection can be shared with another query or called by a
+        // callback itself. Identify this terminal by its return selector
+        // and the VM saved at interpreter ESP+40 (12 bytes above the
+        // lookup's return address and two words of arguments).
+        let caller = m.u32(c.esp);
+        let vm = m.u32(c.esp.wrapping_add(12 + 40));
+        match (caller, vm) {
+            (Ok(0x0030_15a7), Ok(vm)) if vm == s.vm => {}
+            (Err(f), _) | (_, Err(f)) => {
+                s.check.decline(f.into());
+                return;
+            }
+            _ => return,
+        }
         let key = m.u32(c.esp.wrapping_add(4));
         let fraction = m.u32(s.vm.wrapping_add(l::FRACTION));
         match (key, fraction) {
@@ -270,36 +343,16 @@ pub fn key(thread: u32, c: &CpuAbi, g: &impl CollisionMemory) {
     });
 }
 
-/// After `0x00301800` returns: close the innermost query and count it.
-pub fn end(thread: u32, g: &impl CollisionMemory, world: &CollisionWorld) {
-    let Some(slot) = SESSIONS.with_borrow_mut(|sessions| {
-        let stack = sessions.get_mut(&thread)?;
-        if stack.overflow != 0 {
-            stack.overflow -= 1;
-            return Some(Slot::Skip(Bail::Depth));
-        }
-        let slot = stack.slots.pop();
-        if stack.slots.is_empty() {
-            sessions.remove(&thread);
-        }
-        slot
-    }) else {
-        return;
-    };
-    let outcome = match slot {
-        Slot::Skip(why) => Outcome::Unverified(Unverified::Bail(why)),
-        Slot::Check(_) if g.trapped() => Outcome::Unverified(Unverified::Bail(Bail::Trap)),
-        Slot::Check(s) => match Read(g, (0, 0)).u32(s.vm.wrapping_add(l::FRACTION)) {
-            Ok(fraction) => s.check.finish(fraction),
-            Err(f) => Outcome::Unverified(Unverified::Bail(f.into())),
-        },
-    };
-    world.record_ray(&outcome);
-}
-
-/// Queries open on this thread.
+/// Queries open on this executor.
 pub fn open_queries() -> usize {
-    SESSIONS.with_borrow(|sessions| sessions.values().map(|s| s.slots.len() + s.overflow).sum())
+    SESSIONS.with(|s| {
+        s.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .threads
+            .values()
+            .map(Vec::len)
+            .sum()
+    })
 }
 
 #[cfg(test)]
@@ -319,15 +372,35 @@ mod tests {
         };
         let mut bad_env = cpu;
         bad_env.mxcsr = 0;
-        begin(10, &bad_env, &mut g, &a);
+        let first = begin_observed(10, &bad_env, &mut g, &a);
         let mut bad_stack = cpu;
         bad_stack.x87.control = 0x027f;
         bad_stack.x87.tag = 0xffff;
-        begin(20, &bad_stack, &mut g, &b);
-        end(10, &g, &a);
-        end(20, &g, &b);
+        let second = begin_observed(20, &bad_stack, &mut g, &b);
+        first.finish(&g, &a);
+        second.finish(&g, &b);
         assert_eq!(a.stats().ray.unverified[Bail::Env as usize], 1);
         assert_eq!(b.stats().ray.unverified[Bail::Fault as usize], 1);
         assert_eq!(open_queries(), 0);
+    }
+    #[test]
+    fn abandoning_one_return_cannot_remove_the_next_observation() {
+        static EPOCH: Epoch = Epoch::new();
+        let world = CollisionWorld::new(&EPOCH);
+        let mut g = Guest::new();
+        let cpu = CpuAbi {
+            mxcsr: 0,
+            ..Default::default()
+        };
+        let older = begin_observed(3, &cpu, &mut g, &world);
+        let later = begin_observed(3, &cpu, &mut g, &world);
+        // Dropping an ExecCtx on another thread must clean up the registry
+        // that opened its query, even after the thread ID has been reused.
+        std::thread::spawn(move || drop(older)).join().unwrap();
+        assert_eq!(open_queries(), 1);
+        assert_eq!(world.stats().ray, Default::default());
+        later.finish(&g, &world);
+        assert_eq!(open_queries(), 0);
+        assert_eq!(world.stats().ray.unverified[Bail::Env as usize], 1);
     }
 }
