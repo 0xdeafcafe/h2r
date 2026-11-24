@@ -1,5 +1,6 @@
 //! Select the object's active collision permutations and walk their BSPs.
-use super::transform::Matrix;
+use super::transform;
+use crate::instance::PlacementMatrix;
 use crate::{Bail, GuestRead, Hit, Outcome, Segment, bsp::NONE};
 use sim_core::det::{self, Fp};
 use std::cmp::Ordering;
@@ -23,7 +24,7 @@ pub struct PartRay {
 pub(super) struct PartHit {
     pub key: u32,
     pub bsp: u32,
-    pub matrix: Matrix,
+    pub matrix: PlacementMatrix,
     pub hit: Hit,
 }
 
@@ -102,11 +103,10 @@ impl Model {
             for i in 0..count as u32 {
                 let part = parts.wrapping_add(i * 0x44);
                 let node = g.u8(part)?;
-                let matrix = Matrix::read(g, self.matrices.wrapping_add(0x34 * u32::from(node)))?;
+                let matrix =
+                    transform::matrix(g, self.matrices.wrapping_add(0x34 * u32::from(node)))?;
                 let mut fp = Fp::new();
-                let inv = matrix.inverse(&mut fp, one);
-                let local_start = inv.local(&mut fp, start, one, true);
-                let local_delta = inv.local(&mut fp, delta, one, false);
+                let (local_start, local_delta) = transform::local_ray(matrix, one, start, delta)?;
                 fp.check(fraction);
                 if !fp.exact() {
                     return Err(Bail::Float);

@@ -136,16 +136,11 @@ fn result(g: &impl GuestRead, object: u32, hlmt: u32, part: PartHit) -> Result<O
             .wrapping_add(16),
     )?;
     let p = part.hit.plane_addr;
-    let mut fp = Fp::new();
-    let plane = part.matrix.world_plane(
-        &mut fp,
-        g.vec3(p)?,
-        g.u32(p.wrapping_add(12))?,
+    let [x, y, z] = g.vec3(p)?;
+    let plane = part.matrix.plane(
+        [x, y, z, g.u32(p.wrapping_add(12))?],
         part.hit.plane & 0x8000 != 0,
-    );
-    if !fp.exact() {
-        return Err(Bail::Float);
-    }
+    )?;
     Ok(ObjectHit {
         object,
         key: part.key,
