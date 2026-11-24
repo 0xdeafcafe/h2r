@@ -17,6 +17,7 @@ use studio_proto::{code, method as m};
 
 use crate::api::{Api, Reply};
 use crate::app::tag_tests;
+use crate::app::{Action, Doc};
 
 const GRAPH: &str = r"jmad:invented\stickman";
 const IDLE: &str = "combat:idle";
@@ -574,6 +575,75 @@ fn document_edits_drive_the_pose_and_a_duplicate_has_independent_keys() {
     assert_eq!(channel["key_count"], 1);
     assert!(channel.get("keys").is_none());
     assert_eq!(before, read(&mut api, &mut app, json!({"doc": doc})));
+}
+
+/// A graph's tab is one document (docs/editor/studio-flow.md, "Shared
+/// patterns"): the steps of its animation documents undo in the order they
+/// were made, across the documents, with Cmd+Z and the window's own Undo,
+/// and redo from the oldest.
+#[test]
+fn a_graphs_tab_undoes_its_documents_steps_in_the_order_made() {
+    let t = Temp::new("document-undo");
+    let (mut app, mut api) = open(&t);
+    app.dispatch(Action::OpenAsset {
+        asset: format!("tag:{GRAPH}"),
+        map: None,
+    });
+    let Some(tab @ Doc::Tag(graph)) = app.front_doc() else {
+        panic!("the graph has no tab: {:?}", app.tabs());
+    };
+    assert_eq!(app.doc_can(tab), (false, false));
+    let (first, second) = (
+        create_doc(&mut api, &mut app, "wave"),
+        create_doc(&mut api, &mut app, "wave 2"),
+    );
+    assert_ne!(first, second);
+    assert_eq!(app.anim_docs(graph).len(), 2);
+    let key = |api: &mut Api, app: &mut crate::App, doc: u64, x: i64| {
+        call(
+            api,
+            app,
+            m::ANIM_KEY,
+            json!({"doc": doc, "node": "arm", "channel": "translation", "frame": 0, "value": [x, 0, 0]}),
+        );
+    };
+    let keys = |app: &crate::App| {
+        (
+            app.anim_doc(first).unwrap().can_undo(),
+            app.anim_doc(second).unwrap().can_undo(),
+        )
+    };
+    key(&mut api, &mut app, first, 1);
+    key(&mut api, &mut app, second, 2);
+    assert_eq!(keys(&app), (true, true));
+    assert_eq!(app.doc_can(tab), (true, false));
+    assert_eq!((app.can_undo(), app.can_redo()), (true, false));
+
+    // The newest step first, whichever document made it.
+    app.dispatch(Action::Undo);
+    assert_eq!(keys(&app), (true, false));
+    assert_eq!(app.doc_can(tab), (true, true));
+    app.dispatch(Action::UndoDoc(tab));
+    assert_eq!(keys(&app), (false, false));
+    assert_eq!(app.doc_can(tab), (false, true));
+
+    // Redo takes the oldest: the first document's key, then the second's.
+    app.dispatch(Action::RedoDoc(tab));
+    assert_eq!(keys(&app), (true, false));
+    app.dispatch(Action::Redo);
+    assert_eq!(keys(&app), (true, true));
+    assert_eq!(app.doc_can(tab), (true, false));
+
+    // A step made after two undone ones leaves the older of them wrong.
+    app.dispatch(Action::UndoDoc(tab));
+    app.dispatch(Action::UndoDoc(tab));
+    assert_eq!(app.doc_can(tab), (false, true));
+    key(&mut api, &mut app, second, 3);
+    assert_eq!(
+        app.doc_can(tab),
+        (true, false),
+        "nothing older than the new step is redone"
+    );
 }
 
 #[test]

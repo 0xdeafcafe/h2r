@@ -205,7 +205,7 @@ Keyboard shortcuts (Cmd on macOS, Ctrl elsewhere):
 | Cmd+S | Save the map, variant, playlist file or HUD edits in the front editor |
 | Shift+Cmd+S | Choose a path for the map or playlist file |
 | Cmd+P | Open Go to anything |
-| Cmd+Z | Undo in the tool you're in |
+| Cmd+Z | Undo in the front document: the tool's, or the tag's tab in front |
 | Cmd+Shift+Z or Cmd+Y | Redo |
 | Cmd+Q | Quit |
 
@@ -356,7 +356,9 @@ its model tag or **Render model** for the mesh tag. For a netgame item,
 open the item collection and then a **Collection entry**. Other links
 appear under **All references**. A tag edit affects every placement
 and tag that uses it. **Undo tag edit** and **Redo tag edit** step
-through tag edits. Saving the map includes both tag and placement edits.
+through the tag's history: its fields, and what its editor changed, such
+as a sound's mouth curve. Saving the map includes both tag and placement
+edits.
 Use **Show in** on a shared tag to open its cache read-only.
 
 Use a reference field's **Show this tag** button or a node's **Focus
@@ -1695,11 +1697,17 @@ announcer line. [voice-cloning.md](voice-cloning.md) has the details.
 
 ## 10. Undo and redo
 
-Each tool has its own history; **Edit > Undo** and **Edit > Redo** (and
-Cmd+Z, Cmd+Shift+Z) act on the tool you're in. A tag you opened as a tab
-has a history of its own: while its tab is in front and **Tags** shows
-it, Undo takes back that tag's last edit even if you edited another tag
-since. Closing a tag's tab keeps its edits; they save with the map.
+Each document has its own history, and **Edit > Undo** and **Edit > Redo**
+(Cmd+Z, Cmd+Shift+Z) act on the one in front: the tool's, or a tag you
+opened as a tab while **Tags** shows it. A tag's history holds every step
+you made to it, in the order you made them: its fields, a sound's mouth
+curve, a bitmap's paint, an animation graph's keys. The **Undo** and
+**Redo** buttons in an editor take the same steps as Cmd+Z, so **Undo tag
+edit** and the Sound, Textures and Animation windows' **Undo** each step
+back through the tag's whole history, even if you edited another tag
+since. In Modeling, Undo steps through the geometry while the target is
+in edit mode; in the Scripts tab, through the compiles. Closing a tag's
+tab keeps its edits; they save with the map.
 
 - One drag of the gizmo is one step. Typing into one field, or dragging
   one number, is one step.

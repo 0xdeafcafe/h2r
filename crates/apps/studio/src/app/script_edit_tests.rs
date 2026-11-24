@@ -7,7 +7,7 @@ use studio_proto::{code, method as m};
 use crate::api::Api;
 use crate::app::map_cards_tests::Temp;
 use crate::app::scripts::tests as scripts;
-use crate::app::{Action, App};
+use crate::app::{Action, App, Doc, ToolKind};
 
 fn open(t: &Temp, executable: bool) -> App {
     let map = scripts::scripted_source(&t.0, executable);
@@ -268,4 +268,35 @@ fn the_tools_compile_action_reports_in_the_tab_and_undoes() {
     assert_eq!(app.scripts.compiles, 2);
     app.dispatch(Action::Script(crate::app::ScriptAction::CompileUndo { redo: false }));
     assert!(!app.session.is_dirty());
+
+    // The compiles are the map document's steps while the Scripts surface
+    // shows it (docs/editor/studio-flow.md, "Shared patterns"): the button's
+    // `UndoDoc` and the shortcut's `Undo` both take the compile.
+    app.dispatch(Action::Script(crate::app::ScriptAction::CompileUndo {
+        redo: true,
+    }));
+    assert!(app.session.is_dirty());
+    app.dispatch(Action::SetTool(ToolKind::Scripts));
+    assert_eq!(app.doc_can(Doc::Map), (true, false));
+    assert_eq!((app.can_undo(), app.can_redo()), (true, false));
+    app.dispatch(Action::UndoDoc(Doc::Map));
+    assert!(!app.session.is_dirty());
+    assert_eq!(app.doc_can(Doc::Map), (false, true));
+    // With nothing to undo, the button logs what the shortcut does.
+    app.dispatch(Action::UndoDoc(Doc::Map));
+    assert!(!app.session.is_dirty());
+    assert_eq!(app.doc_can(Doc::Map), (false, true));
+    assert!(
+        app.status()
+            .is_some_and(|s| s.text().contains("no compile to undo")),
+        "{:?}",
+        app.log()
+            .iter()
+            .map(|l| l.status.text())
+            .collect::<Vec<_>>()
+    );
+    // Cmd+Shift+Z in the surface redoes the compile.
+    app.dispatch(Action::Redo);
+    assert!(app.session.is_dirty());
+    assert_eq!(app.doc_can(Doc::Map), (true, false));
 }

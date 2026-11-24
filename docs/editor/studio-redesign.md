@@ -914,8 +914,11 @@ interpolation. Opening a retail clip reduces its dense frames with
 `tags::anim_keys::reduce`. Its Ramer-Douglas-Peucker reduction measures
 rotation as an angle, translation as a distance and scale as a
 difference. The timeline shows the source tolerance. Each document has
-its own undo and redo history. **Save to package** writes a named
-`animation` item for the current map. Opening a source clip gives a
+its own undo and redo history, its steps numbered with the graph tab's
+(`AnimDoc::share_steps`), so the window's Undo and Redo and the tab's take
+them all in the order they were made
+([studio-flow.md](studio-flow.md), "Shared patterns"). **Save to
+package** writes a named `animation` item for the current map. Opening a source clip gives a
 replacement item. A new or duplicated clip takes an action and can
 specify a mode, class and weapon type.
 

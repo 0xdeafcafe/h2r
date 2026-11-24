@@ -691,14 +691,18 @@ as the session's sound changes (`Scenario::set_sound_changes`, merged with
 the other tools' raw patches), so a saved map differs from its source in
 the curve's bytes and the checksum only. The edits are kept until the save,
 shown by every read (`sound.mouth`, `sound.read`, the track, the face
-preview), and each is one undo step (**Undo** in the window, `undo` in the
-API; `revert` gives the file's curve back, also one step). A curve drawn
-back to the file's values is no edit. Two permutations that share a
-descriptor share its bytes, so the last drawing wins for both. A refusal
-(`check_writable`) names the cause. On the Sound window, a drag along the
-track draws (one stroke is one write), **From the sound** fills the curve
-from the decoded audio at the window's **Gain** and **Smoothing**, and
-**Revert** and **Undo** sit beside it; the waveform keeps click-to-play.
+preview), and each is one step of the sound's document beside the sound's
+own writes: **Undo** in the window takes the document's newest step as
+Cmd+Z does (`doc.undo` on the sound's tab), while `undo` in the API takes
+the last redraw of the shown map; `revert` gives the file's curve back,
+also one step ([studio-flow.md](studio-flow.md), "Shared patterns"). A
+curve drawn back to the file's values is no edit. Two permutations that
+share a descriptor share its bytes, so the last drawing wins for both. A
+refusal (`check_writable`) names the cause. On the Sound window, a drag
+along the track draws (one stroke is one write), **From the sound** fills
+the curve from the decoded audio at the window's **Gain** and
+**Smoothing**, and **Revert** and **Undo** sit beside it; the waveform
+keeps click-to-play.
 **From the sound** is our own generator: the RMS of each 30 Hz tick,
 scaled so the loudest is the gain (0 to 4), then smoothed forward (0 to
 0.95); it needs the audio decoded, and keeps the stored length. The Halo 1 converter is the one existing writer of

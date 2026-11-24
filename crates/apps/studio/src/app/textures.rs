@@ -17,7 +17,10 @@
 //! rectangle for the live preview and the later live push), one undo step.
 //! The undo stack is across bitmaps: `history` names which bitmap each step
 //! belongs to, and whether it changed pixels or the bitmap's shape (an
-//! image added, an image resized, a sequence added).
+//! image added, an image resized, a sequence added). Each step is numbered
+//! among the steps of its bitmap's document (`TagDoc::next_step`), so a
+//! bitmap's tab undoes its own in the order they were made beside the
+//! bitmap's own writes (docs/editor/studio-flow.md, "Shared patterns").
 //!
 //! A bitmap that gained images or sequences no longer fits where it is
 //! stored: the save writes the whole tag again at the end of the metadata
@@ -233,9 +236,17 @@ impl OpenBitmap {
     }
 }
 
-/// One undo step of the Textures tool.
+/// One undo step of the Textures tool: the bitmap it belongs to, what it
+/// changed, and its number among the steps of the bitmap's document
+/// (`TagDoc::next_step`).
 #[derive(Clone, Debug)]
-enum Step {
+struct Step {
+    serial: u64,
+    kind: EditKind,
+}
+
+#[derive(Clone, Debug)]
+enum EditKind {
     /// A pixel edit, in the bitmap's own history.
     Pixels(TagId),
     /// A change to the bitmap's shape.
@@ -244,8 +255,8 @@ enum Step {
 
 impl Step {
     fn tag(&self) -> TagId {
-        match self {
-            Step::Pixels(t) | Step::Shape(t, _) => *t,
+        match &self.kind {
+            EditKind::Pixels(t) | EditKind::Shape(t, _) => *t,
         }
     }
 }
@@ -395,10 +406,30 @@ impl Textures {
     /// The bitmap the newest undo step belongs to, when that step changed
     /// pixels.
     pub fn last_step(&self) -> Option<TagId> {
-        match self.history.last()? {
-            Step::Pixels(t) => Some(*t),
-            Step::Shape(..) => None,
+        match &self.history.last()?.kind {
+            EditKind::Pixels(t) => Some(*t),
+            EditKind::Shape(..) => None,
         }
+    }
+
+    /// The number of bitmap `tag`'s newest step not undone. `None` while a
+    /// stroke is being drawn: it is a step when it ends.
+    pub fn step_serial(&self, tag: TagId) -> Option<u64> {
+        if self.stroke.is_some() {
+            return None;
+        }
+        let i = self.history.iter().rposition(|s| s.tag() == tag)?;
+        Some(self.history[i].serial)
+    }
+
+    /// The number of bitmap `tag`'s oldest undone step, the next a redo of
+    /// its tab takes.
+    pub fn redo_serial(&self, tag: TagId) -> Option<u64> {
+        if self.stroke.is_some() {
+            return None;
+        }
+        let i = self.redo.iter().rposition(|s| s.tag() == tag)?;
+        Some(self.redo[i].serial)
     }
 
     /// The brush a stroke paints with: the settings, the foreground colour
@@ -945,7 +976,10 @@ impl App {
 
     fn note_edit(&mut self, tag: TagId, applied: Applied) {
         if !applied.dirty.is_empty() {
-            self.textures.history.push(Step::Pixels(tag));
+            self.textures.history.push(Step {
+                serial: self.tags.next_step(),
+                kind: EditKind::Pixels(tag),
+            });
             self.textures.redo.clear();
         }
         self.textures.last = Some((tag, applied));
@@ -967,7 +1001,10 @@ impl App {
     /// Records a change to a bitmap's shape as an undo step. The redo
     /// steps, the Textures tool's and the bitmap's own, are dropped.
     fn note_shape(&mut self, tag: TagId, shape: Shape) {
-        self.textures.history.push(Step::Shape(tag, shape));
+        self.textures.history.push(Step {
+            serial: self.tags.next_step(),
+            kind: EditKind::Shape(tag, shape),
+        });
         self.textures.redo.clear();
         for o in self.textures.open.values_mut() {
             o.bitmap.clear_redo();
@@ -1599,38 +1636,68 @@ impl App {
         } else {
             self.textures.redo.pop()
         };
-        let tag = match step {
-            None => return false,
-            Some(Step::Pixels(tag)) => tag,
-            Some(Step::Shape(tag, shape)) => {
+        step.is_some_and(|step| self.textures_take(step, undo))
+    }
+
+    /// Undo (or redo) the last Textures edit of bitmap `tag`, a step of its
+    /// tab's document (docs/editor/studio-flow.md, "Shared patterns"): the
+    /// newest not undone, wherever it lies under other bitmaps' steps, or
+    /// the oldest undone. Whether one moved.
+    pub(super) fn textures_undo_in(&mut self, tag: TagId, undo: bool) -> bool {
+        self.sync_textures();
+        if self.textures.stroke.is_some() {
+            return false;
+        }
+        let list = if undo {
+            &mut self.textures.history
+        } else {
+            &mut self.textures.redo
+        };
+        let Some(i) = list.iter().rposition(|s| s.tag() == tag) else {
+            return false;
+        };
+        self.textures_take(list.remove(i), undo)
+    }
+
+    /// Move `step` to the other stack, taking the bitmap with it: a pixel
+    /// edit is undone (or redone) in the bitmap's own history, and a shape
+    /// step is swapped for its opposite. A step whose bitmap has lost its
+    /// side of it is dropped. Whether the step was taken.
+    fn textures_take(&mut self, step: Step, undo: bool) -> bool {
+        let tag = step.tag();
+        let moved = match step.kind {
+            EditKind::Shape(_, shape) => {
                 let Some(other) = self.swap_shape(tag, shape, undo) else {
                     return false;
                 };
-                let step = Step::Shape(tag, other);
-                if undo {
-                    self.textures.redo.push(step);
-                } else {
-                    self.textures.history.push(step);
+                Step {
+                    serial: step.serial,
+                    kind: EditKind::Shape(tag, other),
                 }
-                return true;
             }
-        };
-        let applied = self.textures.open.get_mut(&tag).and_then(|o| {
-            if undo {
-                o.bitmap.undo()
-            } else {
-                o.bitmap.redo()
+            EditKind::Pixels(_) => {
+                let applied = self.textures.open.get_mut(&tag).and_then(|o| {
+                    if undo {
+                        o.bitmap.undo()
+                    } else {
+                        o.bitmap.redo()
+                    }
+                });
+                let Some(applied) = applied else {
+                    return false;
+                };
+                self.textures.last = Some((tag, applied));
+                Step {
+                    serial: step.serial,
+                    kind: EditKind::Pixels(tag),
+                }
             }
-        });
-        let Some(applied) = applied else {
-            return false;
         };
         if undo {
-            self.textures.redo.push(Step::Pixels(tag));
+            self.textures.redo.push(moved);
         } else {
-            self.textures.history.push(Step::Pixels(tag));
+            self.textures.history.push(moved);
         }
-        self.textures.last = Some((tag, applied));
         true
     }
 }

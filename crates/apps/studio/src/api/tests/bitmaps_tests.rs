@@ -3,6 +3,7 @@
 //! bitmap is 4 by 4 pixels of one `A8R8G8B8` colour, (200, 60, 20, 255).
 
 use super::*;
+use crate::app::Doc;
 use crate::app::textures::{BitmapAction, PaintTool};
 
 /// The invented textured map open, for the bitmap methods.
@@ -203,6 +204,71 @@ fn a_drag_in_the_canvas_is_one_undo_step() {
         "c83c14ff".repeat(4)
     );
     assert!(!app.tool_dirty(crate::ToolKind::Textures));
+}
+
+/// A bitmap's tab is its document (docs/editor/studio-flow.md, "Shared
+/// patterns"): the Textures window's Undo and Redo, and Cmd+Z in the tool,
+/// take its own steps, the newest first, and the map's placements are
+/// another document's stack.
+#[test]
+fn a_bitmaps_tab_undoes_its_own_steps_and_the_map_keeps_its_own() {
+    let t = Temp::new("bitmaps-tab");
+    let (mut api, mut app) = bitmaps(&t);
+    app.dispatch(Action::OpenAsset {
+        asset: r"tag:bitm:levels\test\bitmaps\floor".into(),
+        map: None,
+    });
+    let Some(Doc::Tag(floor)) = app.front_doc() else {
+        panic!("the bitmap has no tab: {:?}", app.tabs());
+    };
+    let tab = Doc::Tag(floor);
+    assert_eq!(app.tool, crate::ToolKind::Textures);
+    assert_eq!(app.textures.selected, Some(floor));
+    assert_eq!(app.doc_can(tab), (false, false));
+
+    let layer = bitmap_edit::LayerId::new(0, 0, 0);
+    app.textures.fg = [0, 255, 0, 255];
+    app.textures.brush.size = 1.0;
+    app.textures.brush.hardness = 1.0;
+    // One dab at the left of the last row, then a stroke across it.
+    for x in [0.5, 3.5] {
+        app.dispatch(Action::Bitmap(BitmapAction::StrokeBegin {
+            tag: floor,
+            layer,
+        }));
+        app.dispatch(Action::Bitmap(BitmapAction::StrokeTo { x, y: 3.5 }));
+        app.dispatch(Action::Bitmap(BitmapAction::StrokeEnd));
+    }
+    let row = json!([0, 3, 4, 1]);
+    let green = "00ff00ff".repeat(4);
+    assert_eq!(pixels(&mut api, &mut app, row.clone()), green);
+    assert_eq!(app.doc_can(tab), (true, false));
+    assert_eq!((app.can_undo(), app.can_redo()), (true, false));
+    // The map's document takes a step after the bitmap's.
+    app.dispatch(Action::MovePlacement {
+        block: BlockKind::NetgameFlags,
+        index: 0,
+        position: [1.0, 2.0, 3.0],
+        ypr: None,
+    });
+
+    // The window's Undo takes the bitmap's newest step, and leaves the map's.
+    app.dispatch(Action::UndoDoc(tab));
+    assert_eq!(pixels(&mut api, &mut app, json!([3, 3, 1, 1])), "c83c14ff");
+    assert_eq!(pixels(&mut api, &mut app, json!([0, 3, 1, 1])), "00ff00ff");
+    assert!(app.session.can_undo(), "the map's step stays");
+    assert_eq!(app.doc_can(tab), (true, true));
+    // Cmd+Z in the tool takes the same stack.
+    app.dispatch(Action::Undo);
+    assert_eq!(pixels(&mut api, &mut app, row), "c83c14ff".repeat(4));
+    assert_eq!(app.doc_can(tab), (false, true));
+    app.dispatch(Action::RedoDoc(tab));
+    assert_eq!(pixels(&mut api, &mut app, json!([0, 3, 1, 1])), "00ff00ff");
+    assert_eq!(app.doc_can(tab), (true, true));
+    // The map's document undoes on its own; the bitmap keeps its redo.
+    app.dispatch(Action::UndoDoc(Doc::Map));
+    assert!(!app.session.can_undo() && app.session.can_redo());
+    assert_eq!(app.doc_can(tab), (true, true));
 }
 
 #[test]

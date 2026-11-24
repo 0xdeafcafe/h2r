@@ -1,7 +1,7 @@
 # Studio's flow: one way from any asset to its editors and to what it touches
 
-Status: Partly built. The ways to Voices (slice FL0) are built: Go to anything lists every editor and the Voices window, and a sound's editor starts a Voices line that replaces it. The link table and `asset.links` (slice FL1) are built. Go to anything searches the same rows the Browser lists (slice FL3): every tag of the tree, the set's packages and their items, with no map open. The rest is design.
-Code: `crates/apps/studio/src/app/links.rs` (`links`, `role_of`), `api/assets.rs` (`links`), `app/commands.rs` (`palette`, `palette_assets`), `app/voices.rs` (`Show`, `App::voices_line_for`), `ui/palette.rs`, `ui/sound.rs` (**New line in Voices**), `ui/announcer.rs` (`window`), `api/ui_screens.rs` (`ui.palette`). Tests: `api/tests/links_tests.rs`, `app/tests.rs` (`go_to_anything_opens_the_voices_window_and_every_editor`, `go_to_anything_finds_a_tag_a_package_an_item_and_a_command_with_no_map_open`, `go_to_anything_opens_a_tree_tag_by_opening_its_map_first`, `a_sound_starts_one_voices_row_that_replaces_it`).
+Status: Partly built. The ways to Voices (slice FL0) are built: Go to anything lists every editor and the Voices window, and a sound's editor starts a Voices line that replaces it. The link table and `asset.links` (slice FL1) are built. Go to anything searches the same rows the Browser lists (slice FL3): every tag of the tree, the set's packages and their items, with no map open. One undo (slice FL8) is built: every editor's Undo and Redo buttons run `Action::UndoDoc` on their document, and the mouth curve, Modeling, Textures and Animation steps are steps of their tab. The rest is design.
+Code: `crates/apps/studio/src/app/links.rs` (`links`, `role_of`), `api/assets.rs` (`links`), `app/commands.rs` (`palette`, `palette_assets`), `app/voices.rs` (`Show`, `App::voices_line_for`), `ui/palette.rs`, `ui/sound.rs` (**New line in Voices**), `ui/announcer.rs` (`window`), `api/ui_screens.rs` (`ui.palette`); `app/shell.rs` (`Stack`, `undo_redo_doc`, `doc_can`), `app/tag_doc.rs` (`next_step`), `app/sound_mouth.rs`, `app/textures.rs`, `app/anim/document.rs`, `ui/modeling.rs`, `ui/textures.rs`, `ui/anim/edit.rs`, `ui/inspector.rs`, `ui/scripts.rs`, `crates/tools/anim-edit/src/lib.rs` (`AnimDoc::share_steps`). Tests: `api/tests/links_tests.rs`, `app/tests.rs` (`go_to_anything_opens_the_voices_window_and_every_editor`, `go_to_anything_finds_a_tag_a_package_an_item_and_a_command_with_no_map_open`, `go_to_anything_opens_a_tree_tag_by_opening_its_map_first`, `a_sound_starts_one_voices_row_that_replaces_it`); `app/shell_tests.rs` (`a_mouth_redraw_and_a_field_edit_undo_in_the_order_made`, `a_sound_and_the_map_keep_two_stacks`, `every_undo_button_runs_undo_doc`), `api/tests/bitmaps_tests.rs` (`a_bitmaps_tab_undoes_its_own_steps_and_the_map_keeps_its_own`), `api/anim/read_tests.rs` (`a_graphs_tab_undoes_its_documents_steps_in_the_order_made`), `app/script_edit_tests.rs` (`the_tools_compile_action_reports_in_the_tab_and_undoes`).
 Switch: none.
 
 Studio's editors were built one at a time, and each brought its own way
@@ -147,6 +147,22 @@ one API method, whatever the kind.
 | **Apply** | an edit applies to the document at once. **Save** (Cmd/Ctrl+S) writes the document to the edit target ("into: pogo"), and only there | `app::edit_target`; a variant, a script and a playlist save as `variant`, `rules` and `playlist` items of the target; a voice line saves as a `sound` item | the animation editor's own package picker (`ui/anim/save.rs`), **Keep all done lines** and **Copy into the checkout** as separate destinations, the data folder's loose variants and scripts |
 | **Undo** | Cmd/Ctrl+Z, and **Undo**, **Redo** in the header, on the front document's stack (`Action::UndoDoc`, `App::doc_can`) | every editor's steps are steps of its document | the private **Undo** buttons of Modeling, Textures, Animation, the mouth curve and the script's compile |
 
+A tag's steps are kept in more than one place, and that is what one undo
+of it reads: the tag document numbers every step of the open map's tags as
+it is made (`TagDoc::next_step`), and the editor of a tag's kind that
+works outside its bytes numbers its own on the same counter: a sound's
+mouth curve, a bitmap's pixels and shape, an animation graph's documents
+(`AnimDoc::share_steps`). `App::doc_can` and `undo_redo_doc`
+(`app/shell.rs`) compare the numbers: Undo takes the newest step not
+undone, wherever it is, and Redo the oldest undone step that no newer step
+has made wrong. The map's scripts are the map document's while the
+Scripts surface shows them, so a compile is its step; a target in edit
+mode takes the map's undo, as [modeling.md](modeling.md) says. Until the
+header exists (FL2), the editors' own **Undo** and **Redo** buttons stay
+where they are and run `Action::UndoDoc` and `Action::RedoDoc` on their
+document, as Cmd+Z and Shift+Cmd+Z do: no editor has an undo that its
+document's does not take.
+
 **Revert** puts the document back to the edit target's saved state and
 is one undo step. **Export...** (a `.map`, a `.h2variant`, a WAV, a PNG)
 is the one way a file leaves the edit target, and is in the File menu
@@ -246,7 +262,7 @@ nothing unbuilt and run together.
 | FL5 | **Voices as documents**: `Doc::Voice`, the **Voices** kind, the voice document (Setup, Lines), the sound document's Lines pane with the two waveforms; the floating window and **View > Voices** removed | M | FL2, FL4 | `ui/announcer.rs` split into `ui/voices/{setup,lines}.rs`, `ui/sound.rs`, `app/shell.rs`, `app/assets.rs`, `app/voice_batch.rs`, `api/voice_clone.rs` | with the fake sidecar: the Voices kind lists every character with its dataset state; a line said from an invented sound's Lines pane is a row whose target is that sound and whose levels draw under the original's; a voice with no dataset opens on Setup |
 | FL6 | **One check**: `check.run {asset}`, **Check** in the header with the count, the editors' lists drawn from Problems | M | FL2 | `app/problems.rs`, `ui/problems.rs`, `api/checks.rs`, `ui/hud.rs`, `ui/ui_screens.rs`, `ui/game_script.rs` | a finding on an invented HUD shows once, in Problems and in the HUD document, with the same text; the header's count for an asset equals `problems.list` filtered to it; a script error is a Problems row that opens its line |
 | FL7 | **One save**: every document saves to the edit target; variants, scripts and playlists as items; voice lines as `sound` items only; the animation save picker removed | M | FL4 | `app/edit_target.rs`, `app/package_doc.rs`, `app/rules_edit.rs`, `app/voice_batch.rs`, `ui/anim/save.rs` (deleted), `ui/variants.rs`, `ui/playlists.rs` | with a target set, saving an invented variant, script, playlist, animation and voice line each adds or updates one item of the target and writes nothing outside `<data>/packages/`; with none, each asks through the one picker, and the API answers `NO_TARGET` |
-| FL8 | **One undo**: the editors' own Undo buttons run `Action::UndoDoc` on the front document; the mouth curve, Modeling, Textures and Animation steps are steps of their tab | S | nothing | `app/shell.rs` (`undo_redo_doc`, `doc_can`), `ui/sound.rs`, `ui/modeling.rs`, `ui/textures.rs`, `ui/anim/edit.rs`, `app/sound_mouth.rs` | a mouth redraw and a field edit on one invented sound undo in the order made with Cmd+Z; two documents keep two stacks; no `ui/` module holds an undo button that is not `UndoDoc` |
+| FL8 (built) | **One undo**: the editors' own Undo buttons run `Action::UndoDoc` on the front document; the mouth curve, Modeling, Textures and Animation steps are steps of their tab | S | nothing | `app/shell.rs` (`Stack`, `undo_redo_doc`, `doc_can`), `app/tag_doc.rs` (`next_step`), `app/sound_mouth.rs`, `app/textures.rs`, `app/anim/document.rs`, `ui/sound.rs`, `ui/modeling.rs`, `ui/textures.rs`, `ui/anim/edit.rs`, `ui/inspector.rs`, `ui/scripts.rs`, `crates/tools/anim-edit` (`AnimDoc::share_steps`) | a mouth redraw and a field edit on one invented sound undo in the order made with Cmd+Z; two documents keep two stacks; no `ui/` module holds an undo button that is not `UndoDoc` |
 | FL9 | **One preview**: the target switch and **In game** in the header; a variant or script in front starts or reloads Studio's own game with it and brings the Game panel forward | M | FL2 | `ui/preview_switch.rs`, `app/preview_switch.rs`, `api/preview.rs`, `play.rs`, `ui/game_script.rs` | on the fake game: **In game** on an invented variant sends the start with that variant, and on its script sends `rules.reload`; each kind's plan is the one `pair.preview` lists; the Preview menu and the header leave the same state |
 | FL10 | **The package document**: the manifest, the items, **Check**, **Build**, **Play**, **Publish...**, **Export...**, **Set as edit target**, **New package...**, and **Add to package** from any header | M | FL4 | `ui/package.rs` (new), `app/package_doc.rs`, `ui/browser.rs`, `ui.rs` | every button runs the `package.*` method studio-redesign's "Studio's side" names, shown by the same result; a new package made in the window is the edit target and is listed by `package.list` |
 | FL11 | **New from this**: **New from this...** on a Browser row and in the header (the window form of `asset.copy`), **Import sound...** (`import.sound`) and **Add model...** (a `model` item), each opening the new document | M | FL10 | `ui/browser.rs`, `ui/doc_header.rs`, `app/assets.rs`, `api/import.rs` | a weapon copied from an invented one opens as a tab marked **new in** the target and holds no bytes of its source; an imported WAV opens in the sound editor |
@@ -286,10 +302,31 @@ nothing unbuilt and run together.
   **Test** `go_to_anything_opens_a_tree_tag_by_opening_its_map_first`.
 - A sound's **New line in Voices** makes one row per sound and asks for
   the batch: **Test** `a_sound_starts_one_voices_row_that_replaces_it`.
+- One undo: a field edit and a mouth redraw on one invented sound undo in
+  the order made, with Cmd+Z and with the editor's Undo, and redo back in
+  order; a sound and the map keep two stacks; no window module holds an
+  Undo button that is not `UndoDoc`: **Test**
+  `a_mouth_redraw_and_a_field_edit_undo_in_the_order_made`,
+  `a_sound_and_the_map_keep_two_stacks`, `every_undo_button_runs_undo_doc`.
+- A bitmap's tab takes its own paint steps and leaves the map's, with the
+  window's Undo and with Cmd+Z in the tool; a graph's tab undoes its
+  documents' keys in the order made across the documents; the Scripts
+  surface's Undo, the button's and the shortcut's, takes a compile: **Test**
+  `a_bitmaps_tab_undoes_its_own_steps_and_the_map_keeps_its_own`,
+  `a_graphs_tab_undoes_its_documents_steps_in_the_order_made`,
+  `the_tools_compile_action_reports_in_the_tab_and_undoes`.
 - The header, the link roles, the four patterns and the voice document:
   **Design**.
 
 ## Not verified
+
+- That Modeling's steps and the map's placements should undo in the order
+  made: a target in edit mode takes the map's undo
+  ([modeling.md](modeling.md)), and the scenario and geometry sessions
+  number their steps each on its own.
+- That an undo gives a curve back as it was on both of two permutations
+  that share a descriptor: the last drawing wins for both, and the undo
+  gives back the one it replaced only where it was drawn.
 
 - That the Voices window comes to the front over a docked layout when
   asked for from the sound editor (the window is focused by
