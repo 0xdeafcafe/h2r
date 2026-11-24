@@ -11,6 +11,7 @@
 pub mod appearance;
 pub mod body;
 pub mod census;
+pub mod film;
 pub mod monitors;
 mod refusal;
 pub mod saved;
