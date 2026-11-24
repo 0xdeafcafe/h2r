@@ -141,6 +141,12 @@ pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
             let last = at(&open, open.rows.len() - 1);
             vec![("open", open), ("last", last)]
         }
+        Kind::MapLimits => {
+            let open = super::map_limits::sheet(&super::map_limits::Usage::sample());
+            let last = at(&open, open.rows.len() - 1);
+            let unavailable = super::map_limits::sheet(&super::map_limits::Usage::default());
+            vec![("open", open), ("last", last), ("unavailable", unavailable)]
+        }
         Kind::Controls => {
             let open = sheet::controls();
             let last = at(&open, open.rows.len() - 1);

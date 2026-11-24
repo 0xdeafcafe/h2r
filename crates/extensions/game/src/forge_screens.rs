@@ -24,6 +24,7 @@
 
 pub mod game_menu;
 pub mod games;
+pub(crate) mod map_limits;
 pub mod pages;
 pub mod props;
 pub mod screen;
@@ -79,6 +80,7 @@ pub struct Facts {
     /// The active groups, listed first by the browser
     /// ([`sheet::folder_rows`]).
     pub folders: Vec<sheet::Folder>,
+    pub(crate) map_limits: map_limits::Usage,
 }
 
 /// The longest name Save as takes: a map variant's.
@@ -271,6 +273,7 @@ pub(crate) fn prepare(kind: Kind) -> Result<(), String> {
         Kind::Options => sheet::options_with_groups(&f.folders, &f.placed),
         Kind::Variants => variants::list_sheet(&f.variants, f.filename.as_deref()),
         Kind::Controls => sheet::controls(),
+        Kind::MapLimits => map_limits::sheet(&f.map_limits),
         Kind::Objects
         | Kind::Properties
         | Kind::Coordinates

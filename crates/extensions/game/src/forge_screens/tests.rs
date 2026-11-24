@@ -98,6 +98,20 @@ fn page_tables() {
             ],
             after: "FORGE OPTIONS | focus 1 Controls",
         },
+        Case {
+            kind: Kind::Options,
+            from: "open",
+            inputs: &[Down, Down, Down, A],
+            effects: vec![Focus(1), Focus(2), Focus(3), Open(Kind::MapLimits.screen())],
+            after: "FORGE OPTIONS | focus 3 Map limits",
+        },
+        Case {
+            kind: Kind::MapLimits,
+            from: "open",
+            inputs: &[A, Down, A, B],
+            effects: vec![Nothing, Focus(1), Nothing, Close],
+            after: "MAP LIMITS | focus 1 Scenery = 4 / 16",
+        },
         // A variant's row opens its dialog.
         Case {
             kind: Kind::Variants,
