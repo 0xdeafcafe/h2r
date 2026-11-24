@@ -310,6 +310,9 @@ pub mod method {
     // and one posed on the model that uses it.
     pub const ANIM_LIST: &str = "anim.list";
     pub const ANIM_POSE: &str = "anim.pose";
+    // The animation editor, read (AN1 of docs/editor/studio-redesign.md):
+    // one animation's channels as keys, and the events it declares.
+    pub const ANIM_READ: &str = "anim.read";
 
     // Planned namespaces: listed by `session.methods` with status
     // "planned"; a call answers NOT_YET until its lane registers it.

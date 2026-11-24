@@ -33,6 +33,9 @@ pub enum Editor {
     UiScreens,
     /// The Scripts tool, read only.
     Scripts,
+    /// The animation editor: the Animation window's pick, pose and
+    /// timeline (docs/editor/studio-redesign.md, "The animation editor").
+    Animation,
 }
 
 impl Editor {
@@ -46,6 +49,7 @@ impl Editor {
             Self::Hud => "hud",
             Self::UiScreens => "ui_screens",
             Self::Scripts => "scripts",
+            Self::Animation => "animation",
         }
     }
 }
@@ -224,11 +228,11 @@ pub const KINDS: &[KindRow] = &[
     KindRow {
         label: "Animations",
         groups: &[b"jmad"],
-        editor: Editor::FieldPanel,
+        editor: Editor::Animation,
         preview: Preview::None,
         subject: Subject::None,
         classes: FIELD_SHAPE,
-        missing: "pick and scrub on the model; editing data is out of scope",
+        missing: "keys and curves, the write back (AN3 to AN6 of studio-redesign.md); events and root movement are counted, not decoded",
     },
     KindRow {
         label: "Sounds",

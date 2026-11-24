@@ -1,20 +1,28 @@
 //! The Animation window: the `jmad` tag selected in the Tags tool posed
 //! on the model that uses it (docs/editor/rich-editors.md, "Model poses",
-//! slice M1). A list of the graph's animations, a model picker when
-//! several use it, the posed model drawn in the native view, and a scrub
-//! bar with play and loop over the animation's frames at the game's 30
-//! Hz. Sampling is the app's ([`crate::app::anim`]); the agent API's
-//! `anim.list` and `anim.pose` use the same calls.
+//! slice M1), with its timeline (slice AN1 of
+//! docs/editor/studio-redesign.md). A list of the graph's animations, a
+//! model picker when several use it, the posed model drawn in the native
+//! view, a transport (play, step, loop, speed, a scrub bar) over the
+//! animation's frames at the game's 30 Hz, and under the picture the
+//! timeline: a ruler in frames, one row per node with a key marker for
+//! each key of its rotation, translation and scale, the scrub head over
+//! them, and the events the animation declares. A click or drag on the
+//! ruler or the rows scrubs. Sampling and the key reduction are the app's
+//! ([`crate::app::anim`]); the agent API's `anim.list`, `anim.pose` and
+//! `anim.read` use the same calls.
 //!
 //! The window is one scrolling body. The picture has a height of its own;
 //! it never takes the leftover height. Aim-grid clips (codec 8) are
 //! labelled and scrubbed as the cells they are, not played as time.
 
-use dear_imgui_rs::{Condition, Ui};
+use dear_imgui_rs::{Condition, MouseButton, Ui};
 use dear_imgui_wgpu::ExternalTextureId;
 use map::TagId;
 
-use crate::app::anim::{AnimError, AnimInfo};
+use tags::anim_keys::{Kind, Tolerance};
+
+use crate::app::anim::{AnimError, AnimInfo, AnimRead, HZ, Transport};
 use crate::app::{App, ToolKind};
 use crate::theme::{self, icon};
 use crate::viewport::Gpu;
@@ -22,8 +30,6 @@ use crate::viewport::Gpu;
 /// The map shown and the tag.
 type Key = (Option<String>, TagId);
 
-/// The animation's rate: the graph's own 30 Hz.
-const HZ: f32 = 30.0;
 /// The picture's size, pixels.
 const PICTURE: [u32; 2] = [480, 360];
 
@@ -35,10 +41,11 @@ pub struct AnimUi {
     info: Option<(Key, Result<AnimInfo, AnimError>)>,
     /// Animation and model picked (the model's index among the users).
     pick: (usize, usize),
-    /// Where on the timeline, in frames (fractional while playing).
-    frame: f32,
-    playing: bool,
-    looping: bool,
+    /// The scrub head and play state.
+    transport: Transport,
+    /// The timeline's rows for (the key shown, the animation): the clip
+    /// decoded and reduced once, not each frame.
+    read: Option<((Key, usize), Result<AnimRead, AnimError>)>,
     /// The picture last drawn, and the (animation, model, frame) it shows.
     picture: Option<(Picture, (usize, usize, u32))>,
 }
@@ -48,25 +55,6 @@ struct Picture {
     id: Option<ExternalTextureId>,
     /// Why there is no picture, or a note on the one drawn.
     note: Option<String>,
-}
-
-impl AnimUi {
-    /// Moves the timeline on by `dt` seconds of play.
-    fn advance(&mut self, dt: f32, frames: usize) {
-        if !self.playing {
-            return;
-        }
-        let last = frames.saturating_sub(1) as f32;
-        self.frame += dt * HZ;
-        if self.frame > last {
-            if self.looping {
-                self.frame %= last.max(1.0);
-            } else {
-                self.frame = last;
-                self.playing = false;
-            }
-        }
-    }
 }
 
 /// The window, when the Tags tool has an animation graph selected.
@@ -86,7 +74,7 @@ pub fn window(ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, st: &mut AnimUi) {
     let name = entry.name.clone();
     let key: Key = (app.shown_map_name().map(str::to_owned), id);
     ui.window("Animation###animation")
-        .size([440.0, 560.0], Condition::FirstUseEver)
+        .size([540.0, 680.0], Condition::FirstUseEver)
         .build(|| {
             ui.text(format!("{} {name}", icon::RUN));
             body(ui, app, gpu, st, id, key);
@@ -97,9 +85,9 @@ fn body(ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, st: &mut AnimUi, id: TagId, k
     if st.info.as_ref().map(|i| &i.0) != Some(&key) {
         st.info = Some((key.clone(), app.anim_info(id)));
         st.pick = (0, 0);
-        st.frame = 0.0;
-        st.playing = false;
+        st.transport.scrub(0.0, 0);
         st.picture = None;
+        st.read = None;
     }
     let info = match st.info.as_ref().map(|i| &i.1) {
         Some(Ok(info)) => info.clone(),
@@ -143,8 +131,7 @@ fn body(ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, st: &mut AnimUi, id: TagId, k
             .build()
         {
             st.pick.0 = a.index;
-            st.frame = 0.0;
-            st.playing = false;
+            st.transport.scrub(0.0, 0);
             st.picture = None;
         }
         if let Some(e) = &a.error {
@@ -177,28 +164,240 @@ fn body(ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, st: &mut AnimUi, id: TagId, k
     let last = frames.saturating_sub(1) as f32;
 
     // The transport, above the picture.
-    if ui.button(if st.playing {
-        "Pause##anim-play"
+    if animation.aim_grid {
+        ui.text_disabled("aim grid: scrub the cells");
     } else {
-        "Play##anim-play"
-    }) {
-        if !st.playing && st.frame >= last {
-            st.frame = 0.0;
+        if ui.button(if st.transport.playing {
+            "Pause##anim-play"
+        } else {
+            "Play##anim-play"
+        }) {
+            st.transport.toggle(frames);
         }
-        st.playing = !st.playing;
+        ui.same_line();
+        if ui.button("<##anim-step-back") {
+            st.transport.step(-1, frames);
+        }
+        ui.same_line();
+        if ui.button(">##anim-step-on") {
+            st.transport.step(1, frames);
+        }
+        ui.same_line();
+        ui.checkbox("Loop##anim-loop", &mut st.transport.looping);
+        ui.same_line();
+        ui.set_next_item_width(70.0);
+        if let Some(_combo) =
+            ui.begin_combo("##anim-speed", format!("{}x", st.transport.speed))
+        {
+            for speed in Transport::SPEEDS {
+                if ui
+                    .selectable_config(format!("{speed}x##anim-speed-{speed}"))
+                    .selected(st.transport.speed == speed)
+                    .build()
+                {
+                    st.transport.speed = speed;
+                }
+            }
+        }
     }
-    ui.same_line();
-    ui.checkbox("Loop##anim-loop", &mut st.looping);
-    ui.same_line();
+    let mut at = st.transport.frame;
     ui.set_next_item_width(-70.0);
-    if ui.slider_f32("##anim-scrub", &mut st.frame, 0.0, last) {
-        st.playing = false;
+    if ui.slider_f32("##anim-scrub", &mut at, 0.0, last) {
+        st.transport.scrub(at, frames);
     }
     ui.same_line();
-    ui.text_disabled(format!("{:.1}/{frames}  {:.2}s", st.frame, st.frame / HZ));
-    st.advance(ui.io().delta_time(), frames);
+    ui.text_disabled(format!(
+        "{:.1}/{frames}  {:.2}s",
+        st.transport.frame,
+        st.transport.frame / HZ
+    ));
+    st.transport.advance(ui.io().delta_time(), frames);
 
     picture(ui, app, gpu, st, id, &info);
+    if !animation.aim_grid {
+        timeline(ui, app, st, id, &key);
+    }
+}
+
+/// The width of the node names beside the timeline, pixels.
+const LABEL_WIDTH: f32 = 130.0;
+/// The height of a node's row and of the ruler, pixels.
+const ROW_HEIGHT: f32 = 18.0;
+/// A key marker's half-size, pixels.
+const MARKER: f32 = 2.5;
+
+/// The colour of a channel's keys: rotation, translation, scale.
+fn channel_colour(kind: Kind) -> [f32; 4] {
+    match kind {
+        Kind::Rotation => theme::ACCENT,
+        Kind::Translation => theme::OK,
+        Kind::Scale => theme::WARN,
+    }
+}
+
+/// How many levels below the root `node` is, through the rows' parents.
+fn depth(read: &AnimRead, node: usize) -> usize {
+    let mut depth = 0;
+    let mut at = node;
+    while let Some(parent) = read
+        .nodes
+        .get(at)
+        .and_then(|n| usize::try_from(n.parent).ok())
+    {
+        depth += 1;
+        at = parent;
+        if depth > 64 {
+            break;
+        }
+    }
+    depth
+}
+
+/// The ruler's step: the first of 1, 2, 5, 10... frames that leaves
+/// labels 40 pixels apart.
+fn ruler_step(frames: usize, width: f32) -> usize {
+    let per_frame = width / frames.saturating_sub(1).max(1) as f32;
+    let mut step = 1;
+    for scale in [1, 10, 100, 1000] {
+        for m in [1, 2, 5] {
+            step = m * scale;
+            if step as f32 * per_frame >= 40.0 {
+                return step;
+            }
+        }
+    }
+    step
+}
+
+/// The timeline under the picture: the animation read once into keys
+/// (`anim.read`'s own path), a ruler in frames, one row per node with a
+/// lane for each of its channels, the scrub head, and the events line.
+/// A click or drag on the ruler or the rows puts the head there.
+fn timeline(ui: &Ui, app: &mut App, st: &mut AnimUi, id: TagId, key: &Key) {
+    let want = (key.clone(), st.pick.0);
+    if st.read.as_ref().map(|r| &r.0) != Some(&want) {
+        let read = app.anim_read(id, st.pick.0, Tolerance::DEFAULT);
+        st.read = Some((want, read));
+    }
+    ui.separator();
+    ui.text(format!("{} Timeline", icon::RUN));
+    let read = match st.read.as_ref().map(|r| &r.1) {
+        Some(Ok(read)) => read,
+        Some(Err(e)) => {
+            ui.text_colored(theme::WARN, format!("{} {e}", icon::ALERT));
+            return;
+        }
+        None => return,
+    };
+    let frames = read.frames;
+    let last = frames.saturating_sub(1).max(1) as f32;
+    ui.same_line();
+    ui.text_disabled(format!(
+        "{} keys for {} values, within {:.2} degrees",
+        read.keys.key_count(),
+        read.dense_values,
+        read.keys.tolerance.rotation.to_degrees()
+    ));
+    for note in &read.notes {
+        ui.text_disabled(note);
+    }
+
+    let rows: Vec<_> = read
+        .nodes
+        .iter()
+        .filter(|n| !n.channels.is_empty())
+        .collect();
+    let width = ui.content_region_avail()[0].max(LABEL_WIDTH + 100.0);
+    let track = width - LABEL_WIDTH - 8.0;
+    let height = ROW_HEIGHT * (rows.len() + 2) as f32;
+    let origin = ui.cursor_screen_pos();
+    let x0 = origin[0] + LABEL_WIDTH;
+    let x_of = |frame: f32| x0 + frame / last * track;
+    ui.invisible_button("##anim-timeline", [width, height]);
+    if ui.is_item_active() && ui.is_mouse_down(MouseButton::Left) {
+        let frame = ((ui.io().mouse_pos()[0] - x0) / track * last).round();
+        st.transport.scrub(frame, frames);
+    }
+    let dl = ui.get_window_draw_list();
+    dl.add_rect(
+        origin,
+        [origin[0] + width, origin[1] + height],
+        theme::RAISED,
+    )
+    .filled(true)
+    .build();
+
+    // The ruler.
+    let step = ruler_step(frames, track);
+    for f in (0..frames).step_by(step) {
+        let x = x_of(f as f32);
+        dl.add_line(
+            [x, origin[1] + ROW_HEIGHT * 0.6],
+            [x, origin[1] + height],
+            theme::RULE,
+        )
+        .build();
+        dl.add_text([x + 2.0, origin[1] + 2.0], theme::DIM, &f.to_string());
+    }
+
+    // One row per node: its name, its keys in a lane per channel.
+    for (i, n) in rows.iter().enumerate() {
+        let top = origin[1] + ROW_HEIGHT * (i + 1) as f32;
+        let name = n
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("node {}", n.index));
+        let indent = 6.0 + 8.0 * depth(read, n.index).min(6) as f32;
+        dl.add_text([origin[0] + indent, top + 1.0], theme::TEXT, &name);
+        for c in &n.channels {
+            let lane = match c.kind {
+                Kind::Rotation => 0.0,
+                Kind::Translation => 1.0,
+                Kind::Scale => 2.0,
+            };
+            let y = top + ROW_HEIGHT * (lane + 0.5) / 3.0 + 0.5;
+            let mut colour = channel_colour(c.kind);
+            if !c.moves {
+                colour[3] = 0.45;
+            }
+            if let (true, Some(a), Some(b)) = (c.moves, c.keys.first(), c.keys.last()) {
+                let mut line = colour;
+                line[3] = 0.3;
+                dl.add_line([x_of(a.frame as f32), y], [x_of(b.frame as f32), y], line)
+                    .build();
+            }
+            for k in &c.keys {
+                let x = x_of(k.frame as f32);
+                dl.add_rect([x - MARKER, y - MARKER], [x + MARKER, y + MARKER], colour)
+                    .filled(true)
+                    .build();
+            }
+        }
+    }
+
+    // The events line.
+    let top = origin[1] + ROW_HEIGHT * (rows.len() + 1) as f32;
+    dl.add_text(
+        [origin[0] + 6.0, top + 1.0],
+        theme::DIM,
+        &format!(
+            "events: {} frame, {} sound, {} effect (counted, not decoded)",
+            read.events[0], read.events[1], read.events[2]
+        ),
+    );
+
+    // The scrub head, over everything.
+    let x = x_of(st.transport.frame.min(last));
+    dl.add_line([x, origin[1]], [x, origin[1] + height], theme::WIDGET_FOCUS)
+        .thickness(2.0)
+        .build();
+    ui.text_colored(channel_colour(Kind::Rotation), "R rotation");
+    ui.same_line();
+    ui.text_colored(channel_colour(Kind::Translation), "T translation");
+    ui.same_line();
+    ui.text_colored(channel_colour(Kind::Scale), "S scale");
+    ui.same_line();
+    ui.text_disabled("(a dim key does not change over the clip)");
 }
 
 /// The posed model, drawn offscreen through the viewport's native object
@@ -206,13 +405,13 @@ fn body(ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, st: &mut AnimUi, id: TagId, k
 /// changes. A refusal or a model that does not draw is named under it.
 fn picture(ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, st: &mut AnimUi, id: TagId, info: &AnimInfo) {
     let model = info.users.get(st.pick.1);
-    let at = st.frame.floor().max(0.0) as u32;
+    let at = st.transport.frame.floor().max(0.0) as u32;
     let key = (st.pick.0, st.pick.1, at);
     if st.picture.as_ref().map(|(_, k)| *k) != Some(key) {
         let built = app.anim_pose(
             id,
             st.pick.0,
-            st.frame,
+            st.transport.frame,
             None,
             model.map(|m| m.name.as_str()),
         );

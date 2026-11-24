@@ -692,7 +692,7 @@ graph, edits keys on a timeline and writes the graph back.
 retail codec. The native view takes node matrices from the pose in place
 of `rest_nodes` (`crates/tools/scenario-edit/src/native_view.rs`
 `posed_nodes`, drawn by `native_view/preview.rs`'s posed render; the
-Animation window and the `anim.list`/`anim.pose` API over it are
+Animation window and the `anim.list`/`anim.pose`/`anim.read` API over it are
 `crates/apps/studio/src/{app,ui,api}/anim.rs`). The frame a decoded
 rotation is in relative to the render model's skeleton was an open item
 of [animation.md](../formats/animation.md); M1 settled it against the
@@ -702,9 +702,14 @@ the sampled channels merge with the render model node's defaults and
 compose up its tree (animation.md, "Composing a pose"), an overlay
 applying with the engine's scaled-add rule.
 
-**Timeline.** One row per node with its rotation, translation and scale
-channels, a ruler in frames at the graph's 30 Hz, a scrub head, loop and
-speed. Overlays show their base beside them. An **events** row shows the
+**Timeline (slice AN1, built).** One row per node with its rotation,
+translation and scale channels as lanes of key markers, a ruler in
+frames at the graph's 30 Hz, a scrub head (a click or drag on the ruler
+or rows), play, step, loop and speed (`app::anim::Transport`, drawn by
+`ui/anim.rs`). The rows are `anim.read`'s: the decoded frames reduced to
+keys by `tags::anim_keys::reduce`, so the timeline shows the keys the
+document will hold. Overlays show their base beside them (with the
+document, AN3). An **events** row shows the
 animation's sound and effect events; their blocks are counted but not
 decoded ([animation.md](../formats/animation.md), "Open items"), so the
 row is **E first** and read-only until then. Root movement (the frame
@@ -713,7 +718,9 @@ info data) is the same: shown as a path once decoded, **E first**.
 **The document.** `AnimDoc` (`crates/tools/anim-edit`, new) holds a clip
 as sparse keys per channel with an interpolation per key (step, linear,
 smooth). Opening a retail animation decodes it to dense frames and
-reduces them to keys within a tolerance shown in the status line;
+reduces them (`tags::anim_keys::reduce`: Ramer-Douglas-Peucker over the
+frames, the error a turn's angle, a distance or a scale's difference)
+to keys within a tolerance shown on the timeline;
 nothing is stored until an edit. The source form is `.anim.yaml` in the
 package: the graph it joins, the mode, class and action it is filed
 under, the node names and the keys. It holds our numbers only.
@@ -771,7 +778,7 @@ which guest entry it calls is **E first**.
 |---|---|
 | `anim.list {graph}` | modes, classes, actions, animations with frames, codec and type |
 | `anim.pose {graph, animation, frame, model?, out?}` | node transforms, or a render |
-| `anim.read {graph, animation}` | channels as keys, events |
+| `anim.read {tag, animation, tolerance?, keys?}` (built) | channels as keys, the reduction's measured error, events counted |
 | `anim.key {doc, node, channel, frame, value?, interp?, remove?}` | sets or removes a key |
 | `anim.new`, `anim.duplicate`, `anim.retarget {from, to, map?}`, `anim.import {file}` | the commands above |
 | `anim.check {doc}` | quantisation error per node, feet under the ground plane, a loop's seam |
@@ -933,7 +940,7 @@ Rows are in build order.
 | PK13 | **Live, server**: `/v1/packages`, the signed manifest and lock, the upload checks, credit, the model flag, both homes | M | PK1 | the parity suite: a bad signature, a lock hash that does not match, a retail hash and a model item without the flag are each refused; an admin's credit outranks the manifest's |
 | PK14 | **Live, game and Studio**: install, the content set in a session, the join check, a session refused on `boot::packages::network_refusal`, the Mods screens, `package.publish` and `package.install`; `h2 live mods import` writes packages | M | PK13, PK3 | on the fake server: a joiner missing one package fetches it and joins; a blocked one fails before the map load with the reason; an imported pack holds patches and credit only |
 | M1 (built) | **Model poses** (rich-editors) | M | nothing | as there |
-| AN1 | **The animation editor, read**: `anim.read`, the timeline rows, scrub, loop, the key reduction | M | M1, SH1 | an invented two-bone clip lists its channels; reduce then bake is within the tolerance at every frame |
+| AN1 (built) | **The animation editor, read**: `anim.read`, the timeline rows, scrub, loop, the key reduction | M | M1, SH1 | an invented two-bone clip lists its channels; reduce then bake is within the tolerance at every frame |
 | AN2 | **The encoder** (built): `tags::anim_write` (codecs 1 and 3) lifted from `h1-assets`, which calls it | M | nothing | `decode(encode(c))` equals `c` within quantisation on invented clips; the converter's `jmad` tests pass unchanged |
 | AN3 | **Keys and curves**: `crates/tools/anim-edit`, `AnimDoc`, `anim.key`, gizmo keying, the Curves tab, `anim.new`, `anim.duplicate`, `anim.check` | M | AN1 | a key set by the gizmo and by `anim.key` make the same document; a drag is one undo step; a rotation survives the angle view unchanged |
 | AN4 | **Write back**: the `animation` builder, replace and add in a `jmad`, the refusals, the live flush | M | AN2, AN3, X2, PK2 | an invented graph with one animation replaced differs only in that record and stream; an added one is reachable by its action; an inheriting graph is refused by name |
