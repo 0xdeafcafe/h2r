@@ -206,6 +206,13 @@ impl Drop for RestorePool {
 
 pub(crate) fn pool_issue() -> Option<(u32, u32)> { POOL.get() }
 
+/// Run `f` as if inside the guest's sorted pool issue `(view, index count)`.
+#[cfg(test)]
+pub(crate) fn with_pool_issue<R>(issue: (u32, u32), f: impl FnOnce() -> R) -> R {
+    let _pool = RestorePool(POOL.replace(Some(issue)));
+    f()
+}
+
 struct RestoreSky(Option<Result<SkyItem, Refusal>>);
 
 impl Drop for RestoreSky {
