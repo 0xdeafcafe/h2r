@@ -173,6 +173,14 @@ pub enum Input {
     /// A player's biped touched down: the speed it fell at on the tick
     /// before and its vertical speed now, `fixed` world units a second.
     Touchdown { player: u8, down: i32, up: i32 },
+    /// A landing the host judged a superbounce, when its launch window
+    /// closed: the strip (`superbounce_chain::spot_id`, `None` off every
+    /// marked strip) and the launch, a `fixed` raw value in world units a
+    /// second, rounded up so a `>` against a constant is the host's own
+    /// comparison.
+    Launch { player: u8, spot: Option<u32>, speed: i32 },
+    /// The player's run of bounces with no ground between them ended.
+    Grounded(u8),
 }
 
 impl Input {
@@ -199,6 +207,8 @@ impl Input {
             Input::Bounced(_) => Event::Bounced,
             Input::Damage { .. } => Event::Damage,
             Input::Touchdown { .. } => Event::Touchdown,
+            Input::Launch { .. } => Event::Launch,
+            Input::Grounded(_) => Event::Grounded,
         }
     }
 }
@@ -1518,7 +1528,8 @@ impl Vm {
             | Input::Death(x)
             | Input::Join(x)
             | Input::Quit(x)
-            | Input::Bounced(x) => vec![p(*x)],
+            | Input::Bounced(x)
+            | Input::Grounded(x) => vec![p(*x)],
             Input::Pickup(x, ob) | Input::Drop(x, ob) | Input::Press(x, ob) | Input::Edit(x, ob) => {
                 vec![p(*x), o(*ob)]
             }
@@ -1545,6 +1556,7 @@ impl Vm {
             } => vec![op(*killer), op(*assist), self.class(class)],
             Input::Damage { object, by, amount } => vec![o(*object), op(*by), *amount],
             Input::Touchdown { player, down, up } => vec![p(*player), *down, *up],
+            Input::Launch { player, spot, speed } => vec![p(*player), spot.map_or(NONE, o), *speed],
         }
     }
 

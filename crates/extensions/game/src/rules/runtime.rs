@@ -30,9 +30,11 @@
 //!   (`ENGINE_ROUND_RESET`) as each later round begins: `on round_start`.
 //! - [`Runtime::quit`] at the engine's player-left notice
 //!   (`ENGINE_PLAYER_LEFT`): `on quit`.
-//! - [`Runtime::bounces`] after each game tick, from the superbounce
-//!   mode's medal chain: `on bounce` and `on bounced`, each bounce and
-//!   Bounced on the tick its chain files it.
+//! - [`Runtime::physics`] and then [`Runtime::bounces`] after each game
+//!   tick, from the superbounce mode's medal chain: `on touchdown`, `on
+//!   launch` and `on grounded` for what the chain saw of each player's
+//!   physics (`super::world::physics`), then `on bounce` and `on bounced`,
+//!   each bounce and Bounced on the tick its chain files it.
 //! - [`Runtime::post_tick`] after each game tick: the roster's and the
 //!   zones' changes (`on death`, `on spawn`, `on leave`, `on enter`;
 //!   `super::world::zones`), then timers, then `on tick`.
@@ -104,6 +106,11 @@ pub const DELIVERED: &[Event] = &[
     Event::Tick,
     Event::Bounce,
     Event::Bounced,
+    // From the superbounce mode's medal chain, while it runs
+    // (`super::world::physics`).
+    Event::Touchdown,
+    Event::Launch,
+    Event::Grounded,
     // From the roster and the zones at each tick's end
     // (`super::world::zones`).
     Event::Spawn,
@@ -1760,6 +1767,28 @@ impl Runtime {
     pub fn bounced(&mut self, m: &dyn GuestMemory, player: u8) {
         self.run(m, |vm, g| {
             vm.fire(g, Input::Bounced(player));
+        });
+    }
+
+    /// What one tick's medal chain saw of the players' physics
+    /// (`superbounce_chain::Medals::physics`), in order: `on touchdown`,
+    /// `on launch` and `on grounded` (`super::world::physics::inputs`),
+    /// with their calls kept for the next tick boundary.
+    pub fn physics(&mut self, m: &dyn GuestMemory, physics: &[(u8, crate::superbounce_chain::Physics)]) {
+        let wants = |r: &Running| {
+            r.vm.ir()
+                .handlers
+                .iter()
+                .any(|h| matches!(h.event, Event::Touchdown | Event::Launch | Event::Grounded))
+        };
+        if physics.is_empty() || !self.running().is_some_and(wants) {
+            return;
+        }
+        let inputs = super::world::physics::inputs(physics);
+        self.run(m, |vm, g| {
+            for input in inputs {
+                vm.fire(g, input);
+            }
         });
     }
 

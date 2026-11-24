@@ -627,6 +627,8 @@ fn validate(s: &Scenario) -> Result<(), String> {
             | Input::Bounced(p)
             | Input::Bounce { player: p, .. }
             | Input::Touchdown { player: p, .. }
+            | Input::Launch { player: p, .. }
+            | Input::Grounded(p)
             | Input::Edit(p, _) => player(*p),
             Input::ActorKill { killer, .. } => killer.is_none_or(player),
             Input::ActorAssist { killer, assist, .. } => {

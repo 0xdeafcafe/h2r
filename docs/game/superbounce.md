@@ -981,8 +981,15 @@ copy of it name the script. The script is
 game: `type research` files the variant under Research and Devolution and
 `requires hud.superbounce` turns the mode on
 ([rules-engine.md](rules-engine.md#firefight-ai-and-bounces)). It scores
-bounces alone, which the script works out from what the medal chain
-files ([Medals](#medals)); a kill scores nothing:
+bounces alone, and keeps their chain itself on what the medal chain
+([Medals](#medals)) saw: each landing judged a bounce (`on launch`, with
+its strip and its launch) and each end of a run (`on grounded`). A
+launch while the run is live adds one to the count, any other starts it
+at 1, and a launch over 16 world units a second (`MONSTER_VZ`) is a
+Monster, so the script's counts are the medals' (checked tick for tick
+on every chain scenario, `superbounce_chain_twin.rs`). Every bounce
+scores, a bounce off a seam no marked strip accounts for too. A kill
+scores nothing:
 
 | Event | Points, by default | Option |
 |---|---|---|
@@ -1013,7 +1020,11 @@ any game with `superbounce.set`; it cannot force it on
 ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type)). It is
 `crates/extensions/game/src/superbounce_mode.rs`.
 
-Each bounce the medal chain files goes to a running rules script as
+Each tick, what the medal chain saw of each player's physics goes to a
+running rules script first: `on touchdown(p, down, up)` for a landing,
+`on launch(p, spot, speed)` for a landing judged a bounce, `on
+grounded(p)` when a run ends ([rules-world-api.md](rules-world-api.md#physics)).
+Then each bounce the chain files off a marked strip goes as
 `on bounce(p, spot, chain, monster)`, `spot` the strip's id
 (`superbounce_chain::spot_id`), `chain` its count and `monster` whether
 it is a Monster Bounce; each Bounced goes as `on bounced(p)`.
@@ -2542,7 +2553,8 @@ Sixteen pair reads a tick at most, only while the mode is on.
   and a running rules script hears it as `on bounce`
   ([the game type](#the-superbounce-game-type)). A bounce off every
   strip earns its medals and is recorded with no strip (`Award::spot`
-  `None`); a script does not hear it, as it has no strip id to give.
+  `None`); `on bounce` does not hear it, as it has no strip id to give,
+  and `on launch` hears it with the strip `none`.
 - **A Monster Bounce** is a bounce whose launch comes out over
   16 units/s (`superbounce_chain::MONSTER_VZ`), the launch the landing
   classifier reads (`Pending::launch`). Every measured launch was

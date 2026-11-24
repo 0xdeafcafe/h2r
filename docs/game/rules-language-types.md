@@ -104,6 +104,7 @@ types. A test asserts each front-end signature erases to its entry's
 | `vec(x, y, z)`, `length(v)`, `distance(a, b)`, `v.x`, `o.position`, `o.velocity`, `o.speed` | `fixed, fixed, fixed -> vec`; `vec -> fixed`; `vec, vec -> fixed`; `vec -> fixed`; `-> vec`; `-> vec`; `-> fixed` |
 | `on arrive(o)` | `object` |
 | `on touchdown(p, down, up)` | `player, fixed, fixed` |
+| `on launch(p, spot, speed)`, `on grounded(p)` | `player, zone?, fixed`; `player` |
 | `airborne(p)`, `crouching(p)`, `primed(p)` (`p.airborne`, `p.crouching`, `p.primed`), `sees(a, b)` | `player -> bool`; `object, object -> bool` |
 | `place_squad(s, c, n, at)` | `squad, class, int, objects` |
 | `fly(v, p, t)` | `object, path, time`; the vehicle is an `object` the host checks, since `vehicle` is not a front-end type ([rules-world-api.md](rules-world-api.md#vehicles-and-drop-ships)) |
