@@ -9,6 +9,8 @@
 //!   the render triangles and the collision polygons.
 //! - [`texture`]: the textures, drawn in code: the floor grid with its
 //!   distance labels and pads, the ruler and the flat lightmap page.
+//! - [`fresh`]: the stage as a package's `map` item: `workspace::Fresh` over
+//!   [`map::build`](self::map::build).
 //! - [`kit`]: the stage's own tags added to a tag set (bitmaps, shaders,
 //!   the structure BSP and lightmap), and what they take from the base.
 //! - [`map`](self::map): the map: the base's scenario made the stage's, a `fresh`
@@ -21,6 +23,7 @@
 //! the map is built.
 #![forbid(unsafe_code)]
 
+pub mod fresh;
 pub mod kit;
 pub mod layout;
 pub mod map;

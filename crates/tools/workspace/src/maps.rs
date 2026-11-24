@@ -21,6 +21,11 @@
 //! when it serves that map ([`built_names`], [`restrict`]) so they are not
 //! applied twice.
 //!
+//! A map package a build wrote holds the key it was made for
+//! ([`MapPackage::key`], in `built-from.toml`): [`prepare`] builds a `map`
+//! item again only when the base map, the packages it takes, the builders
+//! or the `fresh` kit ([`Fresh::version`]) changed.
+//!
 //! A `map` item with a `ground` file (a map with AI) is deferred: its
 //! ground is built when the map is first picked, not here.
 use std::collections::{BTreeMap, BTreeSet};
@@ -209,6 +214,13 @@ pub(crate) fn patch_check(job: &Job<'_>) -> Result<(), Failure> {
 /// the kits live above it. The bytes are a whole map file.
 pub trait Fresh {
     fn build(&self, job: &FreshJob<'_>) -> Result<Vec<u8>, String>;
+
+    /// A word that changes when the same job would give other bytes (the
+    /// kit's version and the sources it reads): part of the key that lets
+    /// [`prepare`] leave a map it built before alone.
+    fn version(&self) -> String {
+        String::new()
+    }
 }
 
 /// What a [`Fresh`] builder is asked for.
@@ -251,6 +263,39 @@ pub struct MapPackage {
     /// The files the manifest names, and the image if any.
     pub files: Vec<(String, Vec<u8>)>,
     pub id: MapId,
+    /// What the build was made from (empty for a `map-patch` item, whose
+    /// output is a function of its files): [`prepare`] builds nothing
+    /// again for a directory that holds this key.
+    pub key: String,
+}
+
+/// A map package already in place for the key its item would build to:
+/// not built again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Held {
+    pub dir: String,
+    pub package: String,
+    pub item: usize,
+    pub id: MapId,
+}
+
+impl From<&MapPackage> for Held {
+    fn from(m: &MapPackage) -> Self {
+        Self {
+            dir: m.dir.clone(),
+            package: m.package.clone(),
+            item: m.item,
+            id: m.id,
+        }
+    }
+}
+
+/// What an item came to.
+enum Outcome {
+    Built(MapPackage),
+    Held(Held),
+    /// A map with a ground: built when first picked.
+    Ground,
 }
 
 /// An item left for later.
@@ -273,6 +318,8 @@ pub struct Failed {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MapsBuilt {
     pub maps: Vec<MapPackage>,
+    /// Items whose directory held their key already.
+    pub held: Vec<Held>,
     pub deferred: Vec<Deferred>,
     pub failed: Vec<Failed>,
 }
@@ -348,26 +395,41 @@ fn clip(mut dir: String) -> String {
     dir.trim_end_matches('-').to_owned()
 }
 
+/// Which directory holds which key: `(dir, package, item, key)` to the id
+/// of the package there, when a build for that key is in place.
+pub type HeldIn<'a> = dyn Fn(&str, &str, usize, &str) -> Option<MapId> + 'a;
+
 /// Build the map packages of every `map` and `map-patch` item of
 /// `packages`. An item that cannot build (no disc, a failing kit) is listed
 /// in `failed` and the others still build.
 pub fn build_maps(packages: &[Loaded], bases: &dyn BaseMaps, fresh: &dyn Fresh) -> MapsBuilt {
+    build_maps_held(packages, bases, fresh, &|_, _, _, _| None)
+}
+
+/// [`build_maps`], leaving out the `map` items `held` says are in place.
+pub fn build_maps_held(
+    packages: &[Loaded],
+    bases: &dyn BaseMaps,
+    fresh: &dyn Fresh,
+    held: &HeldIn<'_>,
+) -> MapsBuilt {
     let mut out = MapsBuilt::default();
     for p in packages {
         let package = p.package.manifest.package.id.clone();
         for (index, item) in p.package.manifest.items.iter().enumerate() {
             let built = match item.kind {
-                Kind::Map => build_map_item(packages, p, item, bases, fresh),
-                Kind::MapPatch => build_patch_item(p, item).map(Some),
+                Kind::Map => build_map_item(packages, p, index, item, bases, fresh, held),
+                Kind::MapPatch => build_patch_item(p, item).map(Outcome::Built),
                 _ => continue,
             };
             match built {
-                Ok(Some(mut m)) => {
+                Ok(Outcome::Built(mut m)) => {
                     m.package = package.clone();
                     m.item = index;
                     out.maps.push(m);
                 }
-                Ok(None) => out.deferred.push(Deferred {
+                Ok(Outcome::Held(h)) => out.held.push(h),
+                Ok(Outcome::Ground) => out.deferred.push(Deferred {
                     package: package.clone(),
                     item: index,
                     why: "the map has a ground, built when it is first picked".into(),
@@ -381,6 +443,9 @@ pub fn build_maps(packages: &[Loaded], bases: &dyn BaseMaps, fresh: &dyn Fresh) 
         }
     }
     let mut seen: BTreeMap<String, (String, usize)> = BTreeMap::new();
+    for h in &out.held {
+        seen.insert(h.dir.clone(), (h.package.clone(), h.item));
+    }
     let mut keep = Vec::new();
     for m in std::mem::take(&mut out.maps) {
         if let Some((by, item)) = seen.get(&m.dir) {
@@ -412,18 +477,47 @@ fn source_of<'a>(p: &'a Loaded, item: &Item) -> Result<&'a [u8], String> {
 fn build_map_item(
     all: &[Loaded],
     p: &Loaded,
+    index: usize,
     item: &Item,
     bases: &dyn BaseMaps,
     fresh: &dyn Fresh,
-) -> Result<Option<MapPackage>, String> {
+    held: &HeldIn<'_>,
+) -> Result<Outcome, String> {
     let spec = MapSpec::parse(source_of(p, item)?)?;
     if spec.ground.is_some() {
-        return Ok(None);
+        return Ok(Outcome::Ground);
     }
     let base = bases
         .read(&spec.base.to_ascii_lowercase())
         .map_err(|e| format!("the base map {}: {e}", spec.base))?;
     let name = spec.served();
+    let key = match scope_of_bytes(&base) {
+        Some(scope) => {
+            let target = Target { name: &name, scope };
+            let mut text = crate::cache_key(&Sha256::of(&base), all, &target).to_string();
+            text.push('\n');
+            text.push_str(&p.package.manifest.package.id.to_string());
+            text.push('\n');
+            text.push_str(&index.to_string());
+            text.push('\n');
+            if spec.mode == Mode::Fresh {
+                text.push_str(&fresh.version());
+            }
+            Sha256::of(text.as_bytes()).to_string()
+        }
+        None => String::new(),
+    };
+    let package = p.package.manifest.package.id.clone();
+    if !key.is_empty()
+        && let Some(id) = held(&name, &package, index, &key)
+    {
+        return Ok(Outcome::Held(Held {
+            dir: name,
+            package,
+            item: index,
+            id,
+        }));
+    }
     let mut bytes = match spec.mode {
         Mode::Onto => base.clone(),
         Mode::Fresh => fresh.build(&FreshJob {
@@ -462,13 +556,14 @@ fn build_map_item(
         ..ListInfo::default()
     });
     let id = manifest.map_id();
-    Ok(Some(MapPackage {
+    Ok(Outcome::Built(MapPackage {
         dir: name,
         package: String::new(),
         item: 0,
         manifest,
         files: vec![(file, bytes)],
         id,
+        key,
     }))
 }
 
@@ -520,6 +615,7 @@ fn build_patch_item(p: &Loaded, item: &Item) -> Result<MapPackage, String> {
         manifest,
         files: vec![(file, patch.to_vec())],
         id,
+        key: String::new(),
     })
 }
 
@@ -533,9 +629,27 @@ pub enum Wrote {
 
 fn marker(m: &MapPackage) -> String {
     format!(
-        "package = {:?}\nitem = {}\nid = \"{}\"\n",
-        m.package, m.item, m.id
+        "package = {:?}\nitem = {}\nid = \"{}\"\nkey = \"{}\"\n",
+        m.package, m.item, m.id, m.key
     )
+}
+
+/// The id of the package `<maps>/<dir>/` holds when it was built by item
+/// `item` of `package` for `key`, and its map file is there.
+pub fn held_in(maps: &Path, dir: &str, package: &str, item: usize, key: &str) -> Option<MapId> {
+    let text = std::fs::read_to_string(maps.join(dir).join(BUILT_FILE)).ok()?;
+    let lines: Vec<&str> = text.lines().collect();
+    let [p, i, id, k] = lines.as_slice() else {
+        return None;
+    };
+    let key_ok = *k == format!("key = \"{key}\"");
+    if *p != format!("package = {package:?}") || *i != format!("item = {item}") || !key_ok {
+        return None;
+    }
+    if !maps.join(dir).join(format!("{dir}.map")).is_file() {
+        return None;
+    }
+    id.strip_prefix("id = \"")?.strip_suffix('"')?.parse().ok()
 }
 
 /// Write `m` to `<maps>/<dir>/`: nothing when the directory holds the
@@ -581,12 +695,14 @@ pub fn write(maps: &Path, m: &MapPackage) -> Result<Wrote, String> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Prepared {
     pub written: Vec<MapPackage>,
-    pub unchanged: Vec<MapPackage>,
+    /// Packages already in place: left as they are.
+    pub unchanged: Vec<Held>,
     pub deferred: Vec<Deferred>,
     pub failed: Vec<Failed>,
 }
 
-/// [`build_maps`] and write each to `maps` (`<data>/maps/`). The map
+/// [`build_maps_held`] and write each to `maps` (`<data>/maps/`): a map
+/// already there for the same inputs is not built again. The map
 /// packages are the form the VFS loads and Live names; nothing else about
 /// them is new.
 pub fn prepare(
@@ -595,8 +711,11 @@ pub fn prepare(
     bases: &dyn BaseMaps,
     fresh: &dyn Fresh,
 ) -> Prepared {
-    let built = build_maps(packages, bases, fresh);
+    let built = build_maps_held(packages, bases, fresh, &|dir, package, item, key| {
+        held_in(maps, dir, package, item, key)
+    });
     let mut out = Prepared {
+        unchanged: built.held,
         deferred: built.deferred,
         failed: built.failed,
         ..Prepared::default()
@@ -604,7 +723,7 @@ pub fn prepare(
     for m in built.maps {
         match write(maps, &m) {
             Ok(Wrote::Written) => out.written.push(m),
-            Ok(Wrote::Unchanged) => out.unchanged.push(m),
+            Ok(Wrote::Unchanged) => out.unchanged.push(Held::from(&m)),
             Err(why) => out.failed.push(Failed {
                 package: m.package,
                 item: m.item,

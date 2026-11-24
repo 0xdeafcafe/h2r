@@ -69,6 +69,7 @@ impl BaseMaps for NoDisc {
 #[derive(Default)]
 struct Kit {
     asked: RefCell<Vec<(String, String, Vec<String>)>>,
+    version: String,
 }
 
 impl Fresh for Kit {
@@ -87,6 +88,10 @@ impl Fresh for Kit {
         )
         .map_err(|e| e.to_string())?;
         Ok(set.build().map_err(|e| e.to_string())?.0)
+    }
+
+    fn version(&self) -> String {
+        self.version.clone()
     }
 }
 
@@ -286,10 +291,42 @@ fn prepare_writes_the_packages_once_and_the_library_reads_them() {
     // The same inputs write nothing.
     let second = prepare(&maps, &packages, &Disc(base_map()), &kit);
     assert_eq!((second.written.len(), second.unchanged.len()), (0, 2));
+    // Nothing was built for them: the kit was asked once, by the first.
+    assert_eq!(kit.asked.borrow().len(), 1);
     // A directory the user made is not replaced.
     let _ = std::fs::remove_file(maps.join("fresh").join(BUILT_FILE));
     let third = prepare(&maps, &packages, &Disc(base_map()), &kit);
     assert!(third.failed[0].why.contains("was not built from a package"));
+    let _ = std::fs::remove_dir_all(&maps);
+}
+
+#[test]
+fn a_map_is_built_again_only_when_what_it_is_made_from_changed() {
+    let maps = temp("held");
+    let fresh = map_package("stage", FRESH_TOML, "fresh");
+    let onto = map_package("scratch", ONTO_TOML, "scratch");
+    let packages = [fresh, onto];
+    let v1 = Kit {
+        version: "1".into(),
+        ..Kit::default()
+    };
+    assert_eq!(
+        prepare(&maps, &packages, &Disc(base_map()), &v1).written.len(),
+        2
+    );
+    // The kit's version moves the fresh map and not the onto one.
+    let v2 = Kit {
+        version: "2".into(),
+        ..Kit::default()
+    };
+    let again = prepare(&maps, &packages, &Disc(base_map()), &v2);
+    assert_eq!(
+        (again.written.len(), again.unchanged.len()),
+        (1, 1),
+        "{again:?}"
+    );
+    assert_eq!(again.written[0].dir, "fresh");
+    assert_eq!(v2.asked.borrow().len(), 1);
     let _ = std::fs::remove_dir_all(&maps);
 }
 

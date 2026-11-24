@@ -721,6 +721,7 @@ dependencies = [
  "sim-bench",
  "sim-bridge",
  "snapshot",
+ "stage-kit",
  "tags",
  "timeline",
  "toml",
@@ -7006,6 +7007,7 @@ dependencies = [
  "tags",
  "thiserror 2.0.21",
  "toml",
+ "workspace",
  "xiso",
 ]
 

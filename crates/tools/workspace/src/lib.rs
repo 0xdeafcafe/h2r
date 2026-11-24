@@ -43,6 +43,7 @@ mod load;
 mod maps;
 mod model;
 mod onto;
+mod recipe;
 mod rewrite;
 mod sound;
 mod screens;
@@ -55,6 +56,8 @@ mod import_tests;
 mod maps_tests;
 #[cfg(test)]
 mod pogo_tests;
+#[cfg(test)]
+mod recipe_tests;
 #[cfg(test)]
 mod rewrite_tests;
 #[cfg(test)]
@@ -78,11 +81,13 @@ pub use load::{
     lock_findings, read_lock,
 };
 pub use maps::{
-    BUILT_FILE, BaseMaps, Deferred, Failed, Fresh, FreshJob, MapPackage, MapSpec, Mode, MapsBuilt,
-    NoFresh, PatchBase, Prepared, Wrote, build_maps, built_names, prepare, restrict, without_taken,
+    BUILT_FILE, BaseMaps, Deferred, Failed, Fresh, FreshJob, Held, HeldIn, MapPackage, MapSpec,
+    MapsBuilt, Mode, NoFresh, PatchBase, Prepared, Wrote, build_maps, build_maps_held, built_names,
+    held_in, prepare, restrict, without_taken,
     write as write_map_package,
 };
 pub use onto::{build_map, scope_of, scope_of_bytes};
+pub use recipe::{TestMap, records_edits, scenario_edits, test_map_package};
 pub use rewrite::{Observer, PackageRewrite, Rebuilt, Served, ServedMap, stem_of};
 pub use tagitem::group_of_source;
 pub use unpin::MapUnpin;

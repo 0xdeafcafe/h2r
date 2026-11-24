@@ -1,0 +1,9 @@
+# The content stage as a `map` item (docs/editor/content-stage.md). The same
+# map as art/stage/project.toml, which `h2 tags build --project` builds.
+mode = "fresh"
+base = "lockout"                     # the disc map: globals, variants, header template
+name = "stage"
+scenario = 'scenarios\multi\stage\stage'
+kits = ["stage"]
+title = "Content stage"
+description = "Studio's test map: a floor marked in world units, scale and movement references, fixed cameras."

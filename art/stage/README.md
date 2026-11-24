@@ -9,6 +9,8 @@ The sources of the content stage, Studio's test map
   the cameras. `stage_kit::layout` reads it and refuses overlaps.
 - `project.toml`: the tag project that builds the stage as a `fresh` map
   over a base (`h2 tags build --project art/stage/project.toml`).
+  `content/stage/map.toml` is the same project as the baked package the
+  game builds at boot.
 
 Only our own sources live here. The geometry is made from the YAML and
 the textures are drawn in code (`stage_kit::texture`). The player's size,
