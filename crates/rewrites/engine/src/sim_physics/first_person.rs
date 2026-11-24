@@ -272,7 +272,10 @@ pub(super) fn filters(c:&mut CpuAbi,g:&mut Guest,pc:u32)->Result<TransferAbi> {
     if index==0 || index==2 {c.edx &= !255;logic(c,0,128);}
     finish_fpu(c,g,x,[0x166ed3,0x166f16,0x166fc7,0x167004][index],c.esp)?;
     let next=FILTER_SITES[index+1];
-    g.call(c,0x11eed0,next)
+    // Phase 1c: the filter step `11eed0` as one Rust call
+    // (engine::sim_anim::filter); the guest call when it declines.
+    if crate::sim_anim::filter::run(c,g,next)? {return filters(c,g,next);}
+    g.call(c,crate::sim_anim::filter::FILTER,next)
 }
 
 #[cfg(test)]

@@ -105,6 +105,7 @@ impl Feature for SimNative {
         let anim = anim_on(b.switches());
         engine::sim_anim::markers::set_enabled(anim);
         engine::sim_anim::palette::set_enabled(anim);
+        engine::sim_anim::filter::set_enabled(anim);
         let query_on = b
             .switches()
             .implementation("sim.native_collision_query", false);
@@ -200,13 +201,15 @@ fn original(cpu: &mut CpuAbi, ctx: &mut ExecCtx, addr: u32) -> Result<TransferAb
 }
 
 /// `impl.sim.native.anim`: animation sampling, phase 1a of the simulation
-/// rewrite (docs/engine/anim-sampling.md), and phase 1c's marker lookup
-/// and first-person palette (docs/engine/markers.md,
-/// docs/engine/palette.md). It replaces the stream call `0x2798a0` and
-/// everything under it, takes over `b8d30` (the marker port
-/// `sim.native_marker_transforms` with `sim_anim::model_markers` inside),
-/// and runs `16760c`'s palette step through `sim_anim::palette` inside
-/// the first-person pose port, so the per-function codec, evaluator,
+/// rewrite (docs/engine/anim-sampling.md), and phase 1c's marker lookup,
+/// first-person palette and filter step (docs/engine/markers.md,
+/// docs/engine/palette.md, docs/engine/first-person-filters.md). It
+/// replaces the stream call `0x2798a0` and everything under it, takes
+/// over `b8d30` (the marker port `sim.native_marker_transforms` with
+/// `sim_anim::model_markers` inside), runs `16760c`'s palette step
+/// through `sim_anim::palette` inside the first-person pose port, and
+/// runs the filter step `11eed0` through `sim_anim::filter` inside the
+/// first-person filter port, so the per-function codec, evaluator,
 /// stream, marker and first-person ports it covers are test oracles
 /// only.
 pub const ANIM: &str = "sim.native.anim";

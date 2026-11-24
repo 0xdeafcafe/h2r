@@ -28,6 +28,10 @@
 //! `sim_anim::model_markers` (docs/engine/markers.md).
 //! [`palette`](palette) is phase 1c's first-person slice: the bone
 //! palette of `16760c` by `sim_anim::palette` (docs/engine/palette.md).
+//! [`filter`](filter) is its filter step: `11eed0`, which the
+//! first-person filter port `166d75` calls per axis
+//! (docs/engine/first-person-filters.md).
+pub mod filter;
 pub mod markers;
 pub mod palette;
 pub mod skeleton;

@@ -670,7 +670,7 @@ fn segment(code: &mut lifted::Original, inline: &[u32], cpu: &mut Cpu, mem: &mut
     panic!("did not reach a call or return");
 }
 
-fn compare(port: &Port, code: &mut lifted::Original, mut mem: FlatMemory, mut cpu: Cpu, case: u32) {
+fn compare(port: &Port, code: &mut lifted::Original, inline: &[u32], mut mem: FlatMemory, mut cpu: Cpu, case: u32) {
     let mut native = Guest::new();
     native.map_zeroed(0, RAM as u32, Permissions::RW).unwrap();
     native.write_bytes(0, &mem.bytes, 1).unwrap();
@@ -681,7 +681,7 @@ fn compare(port: &Port, code: &mut lifted::Original, mut mem: FlatMemory, mut cp
         assert!(engine::sim_physics::supported(port, &regs, &native), "fixture takes fallback at {at:#x}");
         let actual = port.invoke(&mut regs, &mut native, at).unwrap();
         assert_ne!(actual.route,abi::RESUME,"{} case {case} escaped to generated code",port.switch);
-        let expected = segment(code, inlined(port.point.base), &mut cpu, &mut mem);
+        let expected = segment(code, inline, &mut cpu, &mut mem);
         let why = || format!("{} case {case} boundary {n} from {at:#x}", port.switch);
         assert_eq!(actual, expected, "{}", why());
         regs.eip = actual.target_pc;
@@ -847,7 +847,7 @@ fn image() -> Option<(&'static lifted::image::Image, &'static FlatMemory)> {
 
 /// The lifted original for one port's test, its function lifted first so
 /// its instructions take that function's edges.
-fn original(image: &lifted::image::Image, point: &points::Point) -> lifted::Original {
+fn original(image: &lifted::image::Image, point: &points::Point, inline: &[u32]) -> lifted::Original {
     let mut code = image.original();
     code.prime(point.base);
     assert!(code.insn(point.base).is_some(), "{}", point.name);
@@ -857,7 +857,7 @@ fn original(image: &lifted::image::Image, point: &points::Point) -> lifted::Orig
         const CONTACT_TAIL: u32 = 0x002f_a64e;
         code.prime(CONTACT_TAIL);
     }
-    for &leaf in inlined(point.base) {
+    for &leaf in inline {
         code.prime(leaf);
     }
     code
@@ -866,9 +866,15 @@ fn original(image: &lifted::image::Image, point: &points::Point) -> lifted::Orig
 type Fixture = fn(&mut FlatMemory, &mut Cpu, u32);
 
 fn matches_guest(point: &points::Point, uses_objects: bool, cases: u32, prepare: Fixture) {
+    matches_guest_inlining(point, uses_objects, cases, prepare, inlined(point.base));
+}
+
+/// [`matches_guest`] with the lifted side running `inline` inside the
+/// segment, for a port that does those calls' work in Rust.
+fn matches_guest_inlining(point: &points::Point, uses_objects: bool, cases: u32, prepare: Fixture, inline: &[u32]) {
     let Some((image, ram)) = image() else { return };
     let port = PORTS.iter().chain(ORACLES).find(|p| p.point.base == point.base).unwrap();
-    let mut code = original(image, point);
+    let mut code = original(image, point, inline);
     for case in 0..cases {
         let mut memory = ram.clone();
         word(&mut memory, STACK, EXIT);
@@ -887,7 +893,7 @@ fn matches_guest(point: &points::Point, uses_objects: bool, cases: u32, prepare:
         cpu.x87.control = [0x007f,0x027f,0x037f][case as usize % 3];
         cpu.mxcsr |= (case % 4) << 13;
         prepare(&mut memory, &mut cpu, case);
-        compare(port, &mut code, memory, cpu, case);
+        compare(port, &mut code, inline, memory, cpu, case);
     }
 }
 
@@ -929,3 +935,20 @@ fn first_person_pose_palette_kernel() {
     assert!(after>before,"the palette kernel never ran");
 }
 
+
+/// The filter step `11eed0` with the phase 1c kernel on (on this thread
+/// only): the port does each call's work in Rust, so the lifted side
+/// runs `11eed0` inside the segment, and every boundary must still
+/// match.
+#[test]
+fn first_person_filter_kernel() {
+    let before=engine::sim_anim::filter::stats().native;
+    engine::sim_anim::filter::with(true,|| {
+        matches_guest_inlining(&points::FIRST_PERSON_FILTER_UPDATE,true,12,
+            |m,_,n| first_person_fixture(m,n%6),&[engine::sim_anim::filter::FILTER]);
+    });
+    if image().is_some() {
+        let after=engine::sim_anim::filter::stats().native;
+        assert!(after>before,"the filter kernel never ran");
+    }
+}

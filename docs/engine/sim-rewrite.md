@@ -6,8 +6,10 @@ only ([skeleton-walk.md](skeleton-walk.md)); `1dd1c0` is not. Phase 1c's
 marker lookup — `b8d30` with the scan `1d8f00` and the fill `1d8f50` —
 is built, with tests only ([markers.md](markers.md)), and so is 1c's
 first-person palette — `16760c`'s identity fill and model-node overlay
-([palette.md](palette.md)); the unit pose, aim and filter parts of 1c
-are not. The plan replaces the verdict in
+([palette.md](palette.md)) — and the first-person filter step `11eed0`
+inside the `166d75` port ([first-person-filters.md](first-person-filters.md));
+the unit pose `112070`, the unit aim update `c7840` and the rest of the
+`166d75` port are not. The plan replaces the verdict in
 [feature-engine.md](feature-engine.md) ("Subsystem map and ranking", rows
 15-18) that objects, AI and physics "stay recompiled". The user asked on
 2026-11-16 and 2026-11-17 for whole-subsystem rewrites, not per-function
@@ -457,7 +459,7 @@ still uses them.
 | **0** (now, alongside 1) | Census A and B in [sim-attribution.md](../perf/sim-attribution.md): Waterworks with local and phantom rosters, with dispatch counts; co-op campaign on `03a_oldmombasa` and `05a_deltaapproach`. `sim-core` crate. Switch-tree change. Profiler `host` category. The map status poll and damage hook fixes. | none | Attribution tables for both rosters and one co-op level committed. Phase order after 3 decided. |
 | **1a** | Animation sampling (detailed below). 3.5% of the thread. | `impl.sim.native.anim` | Ladder steps 1-6 clean. Waterworks ≥ 0.3 ms/tick faster. Evaluator family self samples down ≥ 80%. Retires `native_rotation_codec` and `native_animation_stream`. This delta calibrates the model's *k*. |
 | **1b** | Node-matrix build (`1421f0`, `142a60`, `141e10`, the loop that drives them in `bd090`'s pose step, and `1dd1c0`). 2.9%. | same switch; the `bd090` walk also has `impl.sim.native.anim.skeleton` (on) | Ladder clean. Cumulative ≥ 0.6 ms. Retires `native_transform_compose` and `native_pose_matrix`. |
-| **1c** | Unit pose and overlays (`112070`, `111650`, aim grids), first-person pose (`16760c`, `166d75`), model nodes and marker transforms (`b8d30`, `1d8f00`, `1d8f50`). 3.9%. | same switch | Ladder clean. Cumulative ≥ 0.9 ms. Retires `native_unit_pose`, `native_marker_transforms`, `native_first_person_pose`, `native_first_person_filters` and `native_unit_aim`. |
+| **1c** | Unit pose and overlays (`112070` with its aim channels and aim angles), the unit aim update `c7840`, first-person pose and filters (`16760c`, `166d75` with its filter step `11eed0`), model nodes and marker transforms (`b8d30`, `1d8f00`, `1d8f50`). 3.9%. | same switch | Ladder clean. Cumulative ≥ 0.9 ms. Retires `native_unit_pose`, `native_marker_transforms`, `native_first_person_pose`, `native_first_person_filters` and `native_unit_aim`. |
 | **1d** | Animation manager and graph resolve (`1c66a0`, `1c6f60`, `1cd590`, `1daea0`, `1dd9d0`, `1ddb40`). 3.4%. | same switch | Ladder clean. Cumulative **≥ 1.2 ms**. Retires `native_graph_resolve`. |
 | **2** | Collision world and queries, with the Havok ray path | `impl.sim.native.collision` | Ladder clean. ≥ 0.45 ms more. Retires `native_point_to_leaf`, `native_geometry_test`, `native_bsp_segment`, `native_collision_query`, `native_mopp_ray`, `native_spatial_visit` and `native_spatial_portal`. |
 | **3** | Object update walk, function evaluator, lights, per-type callbacks type by type (units, then bipeds, vehicles, weapons) | `impl.sim.native.objects` | Ladder clean. ≥ 1.5 ms more. Retires `native_object_import`, `native_object_value`, `native_base_object_import`, `native_object_pre_update`, `native_object_post_update`, `native_objects_pre_physics`, `native_objects_post_physics`, `native_object_change_colors`, `native_unit_update`, `native_light_record` and `static-light`. |
@@ -616,9 +618,18 @@ call `1d8f50` it calls `sim_anim::model_markers` through
 ([markers.md](markers.md)). The first-person palette follows it in the same shape: the
 first-person pose port (`sim_physics::first_person`, `16760c`) runs its
 palette step through `engine::sim_anim::palette` and
-`sim_anim::palette` ([palette.md](palette.md)). The unit pose `112070`,
-the aim update `111650` and the first-person filters `166d75` are 1c's
-remaining parts. 1d's step 0 is the write set of `1c66a0`, `1c6560` and
+`sim_anim::palette` ([palette.md](palette.md)), and the first-person
+filter port (`sim_physics::first_person::filters`, `166d75`) runs each of
+its five calls to the filter step `11eed0` through
+`engine::sim_anim::filter`, which does the call's work in Rust and
+carries on at the return site ([first-person-filters.md](first-person-filters.md)).
+1c's remaining parts are the unit pose `112070` — whose port
+(`sim_native::unit::pose`) covers only the layer selection up to the
+basis call `b9fc0`, leaving the aim channels (`1123db..1124a2`), the aim
+angles (`1124e6..112769`) and the overlay tail to the lifted code — the
+unit aim update `c7840` (the port `sim_physics::unit_aim`), and the rest
+of the `166d75` port. The unit animation state `111650` is not 1c's: it
+is a body of the object update (slice 6c, [object-update.md](object-update.md)). 1d's step 0 is the write set of `1c66a0`, `1c6560` and
 `1cd590` (channel state in object data) and the readers of the graph
 resolve results.
 
