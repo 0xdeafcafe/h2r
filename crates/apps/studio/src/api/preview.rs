@@ -114,7 +114,7 @@ impl Provider for Preview {
 }
 
 /// The paired game's socket, from what the window published.
-fn paired(app: &App) -> Result<(Endpoint, bool), RpcError> {
+pub(super) fn paired(app: &App) -> Result<(Endpoint, bool), RpcError> {
     let s = app.pairing.published.as_ref().ok_or_else(|| {
         err(
             code::REFUSED,
