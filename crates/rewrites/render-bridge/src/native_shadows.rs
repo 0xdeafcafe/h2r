@@ -185,6 +185,17 @@ fn filter_refused(why: &'static str) {
     FILTER_REFUSED[n].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// The filter wrapper pushes ten words and calls the blur at
+/// `0x000222c2`. Its physical return site identifies that call even
+/// after the pipelined renderer hands a native caster back to the game
+/// thread. D3D scopes the swallow to the enclosing wrapper's after hook.
+fn filter_entry(mem: &dyn GuestMemory, blur_esp: u32) -> Option<u32> {
+    if mem.u32(blur_esp).ok()? != 0x0002_22c7 {
+        return None;
+    }
+    blur_esp.checked_add(4 + 10 * 4)
+}
+
 /// Replace the current object shadow's filter with its scene's native
 /// quads. Refusal leaves every guest quad in place.
 pub fn filter(mem: &mut dyn GuestMemory, esp: u32, mxcsr: u32, x87_control: u16) -> bool {
@@ -392,11 +403,9 @@ impl Feature for NativeShadows {
             })
             .context_only();
         b.raw()
-            .observe_before(&points::OBJECT_SHADOW_FILTER, "object shadow filter", |o| {
-                let esp = o.cpu.esp;
+            .observe_before(&points::SCREEN_CONVOLUTION_BLUR, "object shadow filter", |o| {
                 let mut mem = o.guest();
-                use engine::render::light_gather::{object_shadows::caster::FILTER_RETURN, passes};
-                if passes::caller(&*mem, esp) == Some(FILTER_RETURN) {
+                if let Some(esp) = filter_entry(&*mem, o.cpu.esp) {
                     filter(&mut *mem, esp, o.cpu.mxcsr, o.cpu.x87.control);
                 }
             })
@@ -486,6 +495,18 @@ impl Feature for NativeShadows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_wrappers_blur_scopes_a_filter_to_its_after_hook() {
+        let mut mem = engine::FlatMemory::new(0x1000, 0x100);
+        let wrapper = 0x1080;
+        let blur = wrapper - 44;
+        mem.set_u32(wrapper, 0xbd00_0100).unwrap(); // synthetic after-hook token
+        mem.set_u32(blur, 0x0002_22c7).unwrap();
+        assert_eq!(filter_entry(&mem, blur), Some(wrapper));
+        mem.set_u32(blur, 0x1004).unwrap();
+        assert_eq!(filter_entry(&mem, blur), None);
+    }
 
     struct Stub(Result<(), &'static str>);
     impl Host for Stub {
