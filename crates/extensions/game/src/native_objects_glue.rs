@@ -1659,6 +1659,7 @@ mod tests {
     fn the_lit_parts_clip_w_as_the_device_draws_the_layer() {
         use d3d::ExternalPass;
         let mut pass = ObjectsPass {
+            display_only: false,
             models: Arc::new(Models::default()),
             draws: Vec::new(),
             texaccum: None,
