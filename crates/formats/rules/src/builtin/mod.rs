@@ -342,7 +342,13 @@ mod tests {
     fn ctf_and_assault_share_a_body_and_differ_by_header() {
         let ctf = crate::lang::compile(CTF).unwrap();
         let assault = crate::lang::compile(ASSAULT).unwrap();
-        assert_eq!(ctf.handlers, assault.handlers);
+        // One body, so the same handlers in the same order; the header's
+        // `const assault` is folded into their code, which is how they differ.
+        let events = |ir: &crate::ir::Ir| ir.handlers.iter().map(|h| h.event.clone()).collect::<Vec<_>>();
+        assert_eq!(events(&ctf), events(&assault));
+        assert_ne!(ctf.handlers, assault.handlers);
         assert_ne!(ctf.id(), assault.id());
+        let body = include_str!("ctf.rules");
+        assert!(CTF.ends_with(body) && ASSAULT.ends_with(body));
     }
 }

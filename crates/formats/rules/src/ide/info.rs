@@ -601,11 +601,12 @@ pub(crate) fn use_markdown(m: &Model, u: Use, s: usize, e: usize) -> String {
         Use::GameType(Some(t)) => {
             let row = t.row();
             format!(
-                "{}\nThe {} game type: its variants are filed in the {} row, and a point is called {}.",
+                "{}\nThe {} game type: its variants are filed in the {} row, and a point is called {}. A record of this type is on engine index {}.",
                 code_block(&format!("type {}", row.name)),
                 row.label,
                 row.label,
-                row.points
+                row.points,
+                row.engine
             )
         }
         Use::GameType(None) => format!("Unknown game type `{text}`."),

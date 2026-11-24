@@ -15,7 +15,7 @@ fn key(g: &[u8; 4], path: &str) -> TagKey {
 
 /// Two maps: `alpha` and `beta` share the rifle, hold different bitmaps
 /// named `objects\pixels`, and each has its scenario.
-fn tree(root: &std::path::Path) {
+pub(super) fn tree(root: &std::path::Path) {
     let mut repo = TagRepo::create(root).unwrap();
     let rifle = key(b"weap", "objects\\weapons\\rifle");
     let pixels = key(b"bitm", "objects\\pixels");
@@ -53,7 +53,7 @@ fn tree(root: &std::path::Path) {
 
 /// One local package: adds a weapon for `beta`, edits the rifle and adds
 /// a bitmap from a PNG.
-fn package(dir: &std::path::Path) {
+pub(super) fn package(dir: &std::path::Path) {
     std::fs::create_dir_all(dir.join("tags")).unwrap();
     std::fs::create_dir_all(dir.join("edits")).unwrap();
     std::fs::create_dir_all(dir.join("art")).unwrap();

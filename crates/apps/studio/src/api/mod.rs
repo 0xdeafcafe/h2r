@@ -226,7 +226,7 @@ pub const METHODS: &[MethodDef] = &[
         "Copy into a package: a new `tag` item `like:` the tag of the tree, in a package under <data>/packages/ (the source file holds no bytes of the disc's tag; the lock is rewritten). The new path is `to`, or the tag's path with _copy added",
         r#"{"asset":"string (tag:<group>:<path>)","package":"string","to?":"string"}"#,
         r#"{"package":"string","from":"string","tag":"string","source":"string","item":"integer","dir":"string"}"#,
-        r#"{"asset":"tag:weap:objects\weapons\rifle\battle_rifle\battle_rifle","package":"my-pack"}"#,
+        r#"{"asset":"tag:weap:objects\weapons\rifle","package":"pogo"}"#,
     ),
     def(
         m::WORKSPACE_STATUS,

@@ -6,7 +6,6 @@
 //! writers (`h1-assets`): what the decoders read is what a converted map
 //! holds.
 
-use std::io::Cursor;
 use std::path::PathBuf;
 
 use h1_assets::models::h1;
@@ -132,10 +131,27 @@ fn animation(name: &str, kind: h1::AnimType, arm: Vec<h1::Transform>) -> h1::Ani
 pub(crate) fn anim_map(link: bool) -> Vec<u8> {
     use h1_assets::models::{jmad, mode};
 
-    let base = scenario_edit::fixture::fixture();
-    let mut map = map::Map::from_reader(Cursor::new(base)).unwrap();
-    let mut set = TagSet::from_map(&mut map).unwrap();
-    h1_assets::sounds::convert::make_index_room(&mut set);
+    // A fresh multiplayer set (not a decomposed map, whose pinned index
+    // has no room for more tags): globals, a scenario, then the model.
+    let mut set = TagSet::new(map::CacheType::Multiplayer, "court", r"invented\court");
+    for group in [b"scnr", b"matg", b"mode", b"jmad", b"hlmt"] {
+        set.add_group(FourCC(*group), None, None);
+    }
+    set.add_group(FourCC(*b"bipd"), Some(FourCC(*b"unit")), Some(FourCC(*b"obje")));
+    let mut names = map::build::Block::zeroed(0xb4);
+    names.string_id(0, "soft_organic_flesh");
+    let mut globals = map::build::Block::zeroed(0x284);
+    globals.block(0x150, 1, names);
+    set.globals = set
+        .add_tag(FourCC(*b"matg"), r"globals\globals", TagPayload::Built(globals))
+        .unwrap();
+    set.scenario = set
+        .add_tag(
+            FourCC(*b"scnr"),
+            r"invented\court",
+            TagPayload::Built(map::build::Block::zeroed(0x3e0)),
+        )
+        .unwrap();
 
     let model = h1::Model {
         flags: 0,

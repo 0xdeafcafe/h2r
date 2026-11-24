@@ -643,6 +643,8 @@ impl<'s> Cx<'s> {
             self.err("decl", pos, "the version is 0 to 65535");
         }
         match &s.game_type {
+            // A retired `carrier` line names the type to write in its own error.
+            None if s.retired.iter().any(|(w, _, _)| w == "carrier") => {}
             None => self.err("decl", pos, "a script names its game type: type slayer"),
             Some((t, tpos)) => match game::Type::named(t) {
                 Some(t) => self.game_type = Some(t),
