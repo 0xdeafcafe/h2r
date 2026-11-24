@@ -523,6 +523,9 @@ impl super::App {
     /// that is on and carries it; the HUD of a package as the package.
     pub fn doc_asset(&self, doc: super::Doc) -> Option<String> {
         use super::Doc;
+        if let Some(item) = self.tab_item(doc) {
+            return Some(item.to_owned());
+        }
         let tag = |id| {
             self.tags
                 .tag(id)

@@ -500,7 +500,7 @@ pub(crate) fn palette_with(app: &App, query: &str, assets: &Palette) -> Palette 
 }
 
 /// The detail line of the palette's editor entries.
-const OPEN_DETAIL: &str = "View > Editors";
+const OPEN_DETAIL: &str = "Open an editor";
 
 /// One playlist edit, applied to the working copy as one undo step. The
 /// playlist table's row buttons and weight drags, and `playlist.*` calls,

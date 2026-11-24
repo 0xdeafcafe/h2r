@@ -1526,7 +1526,9 @@ impl App {
             | Action::ExportVariant(_)
             | Action::ExportVariantWith(..)
             | Action::ImportVariantFile(_)
-            | Action::ImportVariantText(_)) => self.run_variant(a),
+            | Action::ImportVariantText(_)) => {
+                self.run_variant(a);
+            }
             a => self.run_playlist(a),
         }
     }
@@ -1776,7 +1778,20 @@ impl App {
         }
     }
 
-    fn run_variant(&mut self, action: Action) {
+    fn run_variant(&mut self, action: Action) -> bool {
+        // The actions that replace the document: its tab loses the
+        // `item:` id it answered (`app::assets::open_item` sets it again
+        // when the item opened it).
+        let replaces = matches!(
+            action,
+            Action::OpenVariant(_)
+                | Action::NewVariant(_)
+                | Action::NewVariantFromScript(_)
+                | Action::CopyBuiltin(_)
+                | Action::ImportVariantFile(_)
+                | Action::ImportVariantText(_)
+                | Action::DeleteVariant
+        );
         self.ensure_variants();
         let e = self.variants.as_mut().expect("built");
         let r: Result<Option<String>, String> = match action {
@@ -1860,12 +1875,17 @@ impl App {
                 .map_err(|e| e.to_string()),
             _ => unreachable!("not a variant action"),
         };
+        let opened = r.is_ok();
+        if opened && replaces {
+            self.set_tab_item(Doc::Variant, None, None);
+        }
         match r {
             Ok(Some(msg)) => self.info(msg),
             Ok(None) => {}
             Err(msg) => self.error(msg),
         }
         self.variant_status();
+        opened
     }
 
     /// Read the playlist tool's map list and variant choices for the
@@ -1876,6 +1896,14 @@ impl App {
     }
 
     fn run_playlist(&mut self, action: Action) {
+        // A new file replaces the document: its tab loses the `item:` id
+        // it answered.
+        if matches!(
+            action,
+            Action::OpenHopper(_) | Action::NewHopper | Action::NewDefaultHopper
+        ) {
+            self.set_tab_item(Doc::Playlists, None, None);
+        }
         match action {
             Action::OpenHopper(path) => match self.hoppers.open_path(&path) {
                 Ok(format) => {
@@ -1930,6 +1958,7 @@ impl App {
                 match editor.import(&variants::portable::export(&v)) {
                     Ok(()) => {
                         self.tool = ToolKind::Variants;
+                        self.set_tab_item(Doc::Variant, None, None);
                         self.info(format!("editing a copy of {:?}", v.name()));
                     }
                     Err(err) => self.error(format!("cannot open the variant: {err}")),

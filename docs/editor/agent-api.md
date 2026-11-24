@@ -162,7 +162,7 @@ dropped with it.
 | Method | Does |
 |---|---|
 | `shell.tabs` | the tabs in order and the `front` one; per tab its `doc` id, `kind`, `title`, the `tool` it shows in, `dirty`, `can_undo`, `can_redo`, and for a tag its `editor`, `id`, `group` and `map` |
-| `shell.open {asset?, tag?, map?, discard?}` | opens a tag of the open map (with `map`, that map opens first; refused over unsaved edits unless `discard`), or brings a map's tab forward; `asset` takes an asset id: `voice:<id>` opens the voice document (tab `voice:<id>`, on Setup while the voice has no dataset); answers the `tab`, the `front` and the `log` |
+| `shell.open {asset?, tag?, map?, discard?}` | opens a tag of the open map (with `map`, that map opens first; refused over unsaved edits unless `discard`), or brings a map's tab forward; `asset` takes a `tag:`, `voice:` or `item:` id. A voice opens on Setup while it has no dataset. A package item opens the editor of what it builds, with `item:` tab IDs for scripts and variants. Playlist fragments are refused. The call answers the `tab`, the `front` and the `log` |
 | `shell.focus {doc}` | brings a tab forward: its document shows in its editor |
 | `shell.close {doc, discard?}` | closes a tab: a tool's document closes (`UNSAVED` over edits unless `discard`), a tag's tab closes keeping its edits; the nearest tab left open, to its left first, comes forward |
 
@@ -1745,7 +1745,9 @@ holds, with the tags a package adds for it; every word of `query` must
 match the path, group, kind or a package id; `package` keeps what that
 package adds or edits. `root` `packages` lists the set (baked, then
 `<data>/packages/`) with on or off and why; with `package` it lists that
-package's items. `root` `live` answers `offline: true`: the server's
+package's items. On item rows, `kind` is the Browser kind of what the
+item builds (including **Game types** and **Playlists**), and `item_kind`
+is its manifest kind. Use `kind` to filter those rows. `root` `live` answers `offline: true`: the server's
 offer is not held. A missing tree is refused with the way to make it
 (`workspace.extract`).
 
