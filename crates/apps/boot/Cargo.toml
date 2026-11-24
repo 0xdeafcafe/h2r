@@ -92,9 +92,14 @@ hot-tags = { path = "../../extensions/hot-tags" }
 serde_json.workspace = true
 # `H2_PERF_FROM`: a profiler/timeline session over part of a run.
 perf = { path = "../../tools/perf", optional = true }
+# The Forge session's trait for that builder, and the document it builds over.
+forge.workspace = true
+forge-doc.workspace = true
 # Test-map recipes built into packages (test_maps_recipes.rs).
 scenario-edit = { path = "../../tools/scenario-edit", optional = true }
 firefight-kit = { path = "../../tools/firefight-kit", optional = true }
+# The AI ground builder Forge's rows run (ground_builder.rs).
+forge-build = { path = "../../tools/forge-build", optional = true }
 
 [features]
 default = ["gpu", "movie-playback", "local-io", "test-maps", "rules"]
@@ -105,7 +110,7 @@ local-io = ["desktop-runtime", "dep:voice", "dsound/playback", "game/local-io"]
 perf = ["dep:perf", "game/perf"]
 # maps.test.* on the agent: test maps built from recipes (test_maps.rs,
 # docs/game/test-maps.md). The scenario editor's crate pulls in wgpu.
-test-maps = ["game/test-maps", "dep:scenario-edit", "dep:firefight-kit"]
+test-maps = ["game/test-maps", "dep:scenario-edit", "dep:firefight-kit", "dep:forge-build"]
 # The rules host runtime (docs/game/rules-engine.md); on at run time
 # unless H2_FEATURES=-rules.
 rules = ["game/rules"]
