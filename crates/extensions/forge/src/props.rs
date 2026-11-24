@@ -174,9 +174,8 @@ pub fn games(thing: &Thing) -> Option<GameSet> {
 /// one it has. A thing that has no editable game types, and a set the slots
 /// cannot name ([`games::encode`]), are refused by their sentence.
 pub fn games_ops(thing: &Thing, set: GameSet) -> Result<Vec<EntryOp>, String> {
-    let have = games(thing).ok_or_else(|| {
-        format!("This {} has no game types to edit.", thing.kind.name())
-    })?;
+    let have = games(thing)
+        .ok_or_else(|| format!("This {} has no game types to edit.", thing.kind.name()))?;
     let slots = games::encode(set).map_err(|e| e.to_string())?;
     if have == set {
         return Ok(Vec::new());
@@ -185,7 +184,10 @@ pub fn games_ops(thing: &Thing, set: GameSet) -> Result<Vec<EntryOp>, String> {
     let mut ops = Vec::new();
     for (name, slot) in GAME_SLOTS.iter().zip(slots) {
         if !def.field(name).is_some_and(|f| f.editable) {
-            return Err(format!("This {} has no game types to edit.", thing.kind.name()));
+            return Err(format!(
+                "This {} has no game types to edit.",
+                thing.kind.name()
+            ));
         }
         let value = Value::Int(i64::from(slot));
         let held = thing.fields.iter().find(|(f, _)| f == name).map(|(_, v)| v);

@@ -402,8 +402,13 @@ fn game_types_are_the_slots_read_and_a_set_change_is_one_op_a_changed_slot() {
     let before = s.document().ops.len();
     s.set_games(&mut w, 5, spawner, GameSet::of(&[2])).unwrap();
     assert_eq!(s.document().ops.len(), before);
-    s.set_games(&mut w, 6, spawner, GameSet::of(&[2, 3])).unwrap();
-    assert_eq!(s.document().ops.len(), before + 1, "only the second slot changes");
+    s.set_games(&mut w, 6, spawner, GameSet::of(&[2, 3]))
+        .unwrap();
+    assert_eq!(
+        s.document().ops.len(),
+        before + 1,
+        "only the second slot changes"
+    );
 }
 
 fn spawner_target() -> Endpoint {
@@ -426,7 +431,8 @@ fn a_set_the_slots_cannot_name_is_refused_with_its_sentence_and_nothing_is_writt
         "An item can name four game types at most."
     );
     assert_eq!(
-        s.set_games(&mut w, 1, spawner, GameSet::of(&[1])).unwrap_err(),
+        s.set_games(&mut w, 1, spawner, GameSet::of(&[1]))
+            .unwrap_err(),
         "Capture the Flag and Assault go together."
     );
     assert_eq!(
