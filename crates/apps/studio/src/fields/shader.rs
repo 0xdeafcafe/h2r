@@ -222,7 +222,7 @@ fn animation_row(
     time: f64,
     panel: &mut PanelState,
 ) {
-    let _id = ui.push_id(format!("shader-animation-{}", a.index));
+    let _id = ui.push_id(format!("shader-animation-{}", a.index).as_str());
     let input = match a.input {
         Some(s) => format!("driven by {}", doc.string(s).unwrap_or("an object function")),
         None => match a.period {
