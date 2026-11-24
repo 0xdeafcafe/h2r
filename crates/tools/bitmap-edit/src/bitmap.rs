@@ -568,13 +568,13 @@ impl Bitmap {
             else {
                 continue;
             };
-            let first = ((t0 * f32::from(stamps)).ceil() as u32).clamp(1, stamps);
-            let last = ((t1 * f32::from(stamps)).floor() as u32).min(stamps);
+            let first = ((t0 * (stamps as f32)).ceil() as u32).clamp(1, stamps);
+            let last = ((t1 * (stamps as f32)).floor() as u32).min(stamps);
             for k in first..=last {
                 let (cx, cy) = if k == stamps {
                     (to[0], to[1])
                 } else {
-                    let t = f32::from(k) / f32::from(stamps);
+                    let t = (k as f32) / (stamps as f32);
                     (
                         from[0] + (to[0] - from[0]) * t,
                         from[1] + (to[1] - from[1]) * t,
