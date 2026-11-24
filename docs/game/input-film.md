@@ -494,10 +494,25 @@ so the host gives them a start point.
   arena hash before it inflates, then inflates into exactly the stated
   sizes. The caller compares `lockstep::hash_sim` after loading with
   `StartPoint::check_loaded`.
-- **What it waits for.** Loading an arena into a running match, which is
-  the retail synchronous join for co-op
-  (`crates/extensions/game/src/coop_jip.rs`) and `sim_state::Keyframe`
-  otherwise.
+- **Capture and load.** `theater.start_point.capture` and
+  `theater.start_point.load` ([agent-api.md](../runtime/agent-api.md#theater-transport))
+  take a start point from a running game and put one back, through
+  `theater/start_point_state.rs`: the arena is the bytes behind
+  `SimRegion::HALO2`'s pointer word and the records go through the
+  `SimExt` checkpoint section. The load writes the arena whole and then
+  hashes it as `lockstep::hash_sim` does; `matches: false` means what
+  reads back is not what the tag names. Whether the arena is the whole
+  state is answered by the `sim.hashes` rows after the load. `theater/start_play.rs` reads the
+  film's start point block (header flag bit 2, exactly one block of kind
+  2), refuses a block the flag does not name, applies it with the same
+  load and returns the tick the film resumes at (the start tick plus one).
+- **What it waits for.** The player boots the film's map to its first
+  tick, calls `start_play::apply`, then reads tick chunks from the resume
+  tick; that wiring waits on the engine film reader and on the film
+  crate's start tick and arena hash (theater-design.md, slice 15). The
+  experiment answers whether the arena is the whole state to restore, or
+  whether the retail synchronous join (`crates/extensions/game/src/coop_jip.rs`)
+  or `sim_state::Keyframe` has to carry more.
 
 ### On Live
 

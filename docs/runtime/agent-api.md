@@ -4967,6 +4967,8 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 | `theater.camera` | `{"mode":"orbit","seat":3,"look":[0.2,-0.1],"zoom":-1,"fov":85}` | selects the view and returns transport state. An absolute film seat is 0 to 15 |
 | `theater.hud` | `{"game":false,"bar":true}` | changes game HUD and Theater bar visibility and returns transport state. Omitted fields keep their values |
 | `theater.keyframes` | `{}` | seek inventory `{film, sidecar, ring, capture_points, ring_bytes, ring_cap, sidecar_bytes}`; lists contain tick numbers |
+| `theater.start_point.capture` | `{"path":"/tmp/a.sp","key":"text","ids":"0a0b"}`; `ids` is optional hex, at most 64 bytes | on the game agent, at a tick boundary: writes the arena and the extension records as a tagged start point and returns `{path, tick, arena_hash, arena_bytes, ext_bytes, stored_bytes}`. Refused with no arena or no tick |
+| `theater.start_point.load` | `{"path":"/tmp/a.sp","key":"text","film_hash":"<16 hex>"}`; `film_hash` is optional | on the game agent: checks the tag, digest, size and hash before touching the game, writes the arena and records back, then returns `{tick, arena_hash, loaded_hash, matches, error?}`. `matches` is `StartPoint::check_loaded`; a file that loads but hashes differently reports `matches:false` and the game keeps the loaded state. A refused file changes nothing |
 | `theater.status` | `{}` | `{default_recording, tape, in_game, games_cut, last_discard, notes, failure}` on any game or playback agent: whether the session records every game by default, the running tape's path, whether a game is on it, the films cut so far (paths, oldest first), why the last game or tape went without a film, the outside changes the recording carried on through, and the failure that stopped it |
 | `theater.measurements` | `{}` | timings, keyframe attempts and page counts from the instrumented recorder or playback child |
 | `theater.verify` | `{"from":1,"to":900,"ring":true}`, all optional | replays in an isolated, unpaced player. Ring verification first records reference hashes in a linear pass, compares every successful marked capture, and returns `{ticks, digests_checked, arena_hashes_checked, ram_hashes_checked, first_divergence}` |
@@ -4974,6 +4976,16 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 | `theater.clip.mark` | `{"in":300}`, `{"out":900}`, or `{"clear":true}` | `{in, out}` with null for each unset mark |
 | `theater.clip.export` | `{"from":300,"to":900,"fps":60,"format":"mp4"}`. Optional `path`. Use 30 or 60 fps and `png` or `mp4` | `{job}` once the offline player starts |
 | `theater.clip.status` | `{"job":"<job>"}` | `{frames_done, frames_total, path, error, finished}` |
+
+The start point methods are in `crates/extensions/agent-proto/src/theater.rs`
+and `crates/extensions/game/src/theater/start_point_agent.rs`, over the
+envelope in `theater/start_point.rs` and the state read and write in
+`theater/start_point_state.rs`. They serve the experiments of slice 15 in
+[theater-design.md](../game/theater-design.md): capture at tick N, run on,
+load, and compare the `sim.hashes` rows that follow with the first run's.
+Use them on a local game; a load writes the arena of a running match, so a
+co-op or Live session would desync. Without `film_hash`, load takes the
+hash the file declares, so only the tag and digest are checked.
 
 Prepare accepts a local library ID or `live:<game-id>` for a host film
 downloaded into the library. It replays the entire film from boot in an

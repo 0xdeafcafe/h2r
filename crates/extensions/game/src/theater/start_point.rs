@@ -49,6 +49,18 @@ impl StartPoint {
         Ok(())
     }
 
+    /// The arena hash the tag declares, read before anything is checked. Use
+    /// it only to fill in a film hash the caller does not have (an
+    /// experiment loading its own capture); [`StartPoint::decode`] still
+    /// checks the tag, so a changed byte anywhere is refused.
+    pub fn declared_arena_hash(bytes: &[u8]) -> Result<u64> {
+        let mut at = Cursor { bytes, at: 0 };
+        ensure!(at.take(4)? == MAGIC, "not a start point");
+        ensure!(at.take(1)?[0] == VERSION, "start point version is not supported");
+        at.take(12)?;
+        at.u64()
+    }
+
     /// Tag and compress. The arena must be `arena_len` bytes, which the
     /// reader checks against its own.
     pub fn encode(&self, key: &[u8]) -> Result<Vec<u8>> {
@@ -226,6 +238,15 @@ mod tests {
         assert_eq!(back, p);
         back.check_loaded(p.arena_hash).unwrap();
         assert!(back.check_loaded(p.arena_hash ^ 1).is_err());
+    }
+
+    #[test]
+    fn the_declared_hash_is_the_encoded_one() {
+        let p = point();
+        let bytes = p.encode(KEY).unwrap();
+        assert_eq!(StartPoint::declared_arena_hash(&bytes).unwrap(), p.arena_hash);
+        assert!(StartPoint::declared_arena_hash(&bytes[..20]).is_err());
+        assert!(StartPoint::declared_arena_hash(b"nope nope nope nope nope nope").is_err());
     }
 
     #[test]
