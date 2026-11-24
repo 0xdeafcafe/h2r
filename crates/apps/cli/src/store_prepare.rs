@@ -121,7 +121,12 @@ fn plan_line(plan: &Plan, input: Input) -> String {
 /// Bring the store of `data` up to date with the game disc `disc`: the
 /// extraction (from the disc image when it is a file, else from the store),
 /// then the disc's other files. Lines for a person go to `say`.
-pub fn prepare(disc: &Path, data: &Path, verify: bool, say: &mut dyn FnMut(&str)) -> Result<Prepared> {
+pub fn prepare(
+    disc: &Path,
+    data: &Path,
+    verify: bool,
+    say: &mut dyn FnMut(&str),
+) -> Result<Prepared> {
     let maps = if disc.is_file() {
         Some(disc_maps(disc)?)
     } else {
@@ -167,7 +172,11 @@ pub fn prepare(disc: &Path, data: &Path, verify: bool, say: &mut dyn FnMut(&str)
         say(l);
     }
     let p = p?;
-    if p.input == Input::Disc && !disc.extension().is_some_and(|e| e.eq_ignore_ascii_case("map")) {
+    if p.input == Input::Disc
+        && !disc
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("map"))
+    {
         let n = copy_disc_files(disc, &disc_files_dir(data))?;
         if n > 0 {
             say(&format!(
@@ -260,8 +269,7 @@ pub fn copy_disc_files(iso: &Path, dest: &Path) -> Result<usize> {
             fs::create_dir_all(d)?;
         }
         let part = target.with_extension("part");
-        let mut out = File::create(&part)
-            .with_context(|| format!("writing {}", part.display()))?;
+        let mut out = File::create(&part).with_context(|| format!("writing {}", part.display()))?;
         image
             .copy_to(&e, &mut out)
             .with_context(|| format!("copying {}", e.path))?;

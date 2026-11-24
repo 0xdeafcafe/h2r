@@ -137,12 +137,9 @@ fn read_stamps(root: &Path) -> Stamps {
         let [stem, size, mtime, base, len, sha] = f.as_slice() else {
             continue;
         };
-        let (Ok(size), Ok(mtime), Ok(base), Ok(len)) = (
-            size.parse(),
-            mtime.parse(),
-            base.parse(),
-            len.parse(),
-        ) else {
+        let (Ok(size), Ok(mtime), Ok(base), Ok(len)) =
+            (size.parse(), mtime.parse(), base.parse(), len.parse())
+        else {
             continue;
         };
         out.insert(
@@ -250,7 +247,10 @@ fn open_store_file(root: &Path, stem: &str) -> Result<StoreFile> {
 /// stash's, then `maps/`'s extent tables.
 fn store_identity(root: &Path) -> Result<Vec<(String, String)>> {
     let mut stems = BTreeSet::new();
-    for (dir, ext) in [(root.join(STASH_DIR), ".extents"), (root.join("maps"), ".extents")] {
+    for (dir, ext) in [
+        (root.join(STASH_DIR), ".extents"),
+        (root.join("maps"), ".extents"),
+    ] {
         let Ok(rd) = fs::read_dir(&dir) else {
             continue;
         };
@@ -351,7 +351,11 @@ pub fn prepare(
     let _lock = Lock::acquire(root, say)?;
     let mut repo = TagRepo::create(root)?;
     let layouts = Layouts::new(schema);
-    let wanted = |stem: &str| opts.wanted.as_ref().is_none_or(|w| w.iter().any(|x| x == stem));
+    let wanted = |stem: &str| {
+        opts.wanted
+            .as_ref()
+            .is_none_or(|w| w.iter().any(|x| x == stem))
+    };
     let mut hashed = 0usize;
     let mut by_stem: BTreeMap<&str, &DiscMap> = BTreeMap::new();
     let (input, ident) = match disc {
@@ -407,8 +411,7 @@ pub fn prepare(
     }
     if input == Input::Store {
         for w in &plan.maps {
-            if !StoreFile::exists(root, &w.map) && !stash_path(root, &w.map, "extents").is_file()
-            {
+            if !StoreFile::exists(root, &w.map) && !stash_path(root, &w.map, "extents").is_file() {
                 return Err(Error::Invalid(format!(
                     "{} has no skeleton in the store; extracting it again needs the disc image",
                     w.map
