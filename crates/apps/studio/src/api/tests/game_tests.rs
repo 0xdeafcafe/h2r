@@ -123,3 +123,73 @@ fn snapshot_stays_out_of_a_git_checkout() {
         code::REFUSED
     );
 }
+
+fn own(running: bool) -> crate::play::OwnGame {
+    crate::play::OwnGame {
+        level: "example".into(),
+        socket: "/cache/editor-1-1.sock".into(),
+        editor: true,
+        running,
+    }
+}
+
+#[test]
+fn status_names_the_own_game_and_the_mode_follows_it() {
+    let t = Temp::new("game-own-status");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    // No own game: the panel cannot be switched to it.
+    assert_eq!(
+        code_of(api.call(&mut app, m::GAME_MODE, json!({"mode": "own"}))),
+        code::REFUSED
+    );
+    assert_eq!(
+        code_of(api.call(&mut app, m::GAME_MODE, json!({"mode": "both"}))),
+        code::INVALID_PARAMS
+    );
+    let view = {
+        let mut v = crate::play::Play::new().link_view(&app);
+        v.own = Some(own(false));
+        v
+    };
+    app.pairing.link = Some(std::sync::Arc::new(view.clone()));
+    let s = call(&mut api, &mut app, m::GAME_STATUS, Value::Null);
+    assert_eq!(s["own"]["state"], "starting");
+    assert_eq!(s["own"]["map"], "example");
+    assert_eq!(s["own"]["editor"], true);
+    assert_eq!(s["mode"], "attached");
+
+    app.pairing.link = Some(std::sync::Arc::new(crate::play::LinkView { own: Some(own(true)), ..view }));
+    assert_eq!(call(&mut api, &mut app, m::GAME_STATUS, Value::Null)["own"]["state"], "running");
+    assert_eq!(call(&mut api, &mut app, m::GAME_MODE, json!({"mode": "own"}))["mode"], "own");
+    assert_eq!(call(&mut api, &mut app, m::GAME_STATUS, Value::Null)["mode"], "own");
+    call(&mut api, &mut app, m::GAME_MODE, json!({"mode": "attached"}));
+    assert_eq!(app.pairing.panel, crate::play::pair::PanelMode::Attached);
+}
+
+#[test]
+fn start_and_stop_leave_requests_for_the_window() {
+    use crate::play::pair::Request;
+    let t = Temp::new("game-start-stop");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    // No window has published a link yet.
+    assert_eq!(code_of(api.call(&mut app, m::GAME_START, Value::Null)), code::REFUSED);
+
+    app.pairing.published = Some(json!({"state": "none"}));
+    let mut view = crate::play::Play::new().link_view(&app);
+    view.can_play = false;
+    view.can_stop = false;
+    app.pairing.link = Some(std::sync::Arc::new(view.clone()));
+    // No map to play, and no game of its own to stop.
+    assert_eq!(code_of(api.call(&mut app, m::GAME_START, Value::Null)), code::REFUSED);
+    assert_eq!(code_of(api.call(&mut app, m::GAME_STOP, Value::Null)), code::REFUSED);
+    assert!(app.pairing.requests.is_empty());
+
+    view.can_play = true;
+    view.can_stop = true;
+    app.pairing.link = Some(std::sync::Arc::new(view));
+    assert_eq!(call(&mut api, &mut app, m::GAME_START, Value::Null)["requested"], true);
+    assert_eq!(call(&mut api, &mut app, m::GAME_STOP, Value::Null)["requested"], true);
+    assert_eq!(app.pairing.requests, [Request::StartOwn, Request::Stop]);
+}

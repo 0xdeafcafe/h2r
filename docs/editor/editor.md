@@ -908,6 +908,10 @@ a foreign game. F5 leaves the Edit switch as set. A foreign game asks before rec
 maps. The other choice in the map prompt opens the game's map here.
 `play::playtest::decide` supplies the bar, Game menu and socket API.
 
+`game.start` ([agent-api.md](agent-api.md)) starts the same game with
+`--editor` added: no window of its own, shown in the Game panel
+([game-view.md](game-view.md), "Own mode"). F5 still opens the window.
+
 **Stop** (Shift+F5) closes the game the editor started. With no game,
 Play launches the copy in its own window:
 

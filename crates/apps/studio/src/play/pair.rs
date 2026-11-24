@@ -196,6 +196,25 @@ pub fn notice(games: &[&Found], app: &crate::App) -> Option<Notice> {
     }
 }
 
+/// Which game the Game panel shows (docs/editor/game-view.md).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PanelMode {
+    /// The game Studio started.
+    Own,
+    /// A game someone else started.
+    #[default]
+    Attached,
+}
+
+impl PanelMode {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Own => "own",
+            Self::Attached => "attached",
+        }
+    }
+}
+
 /// A request left for [`super::Play`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
@@ -206,6 +225,8 @@ pub enum Request {
     Play,
     PlayAnswer(super::playtest::Prompt, String),
     Stop,
+    /// `game.start`: the own game, in editor mode, on the open map.
+    StartOwn,
     Edit(bool),
     Pause,
     Resume,
@@ -230,6 +251,9 @@ impl Request {
                 Some("a playtest is already in progress")
             }
             Self::Play | Self::PlayAnswer(..) if !link.can_play => Some("open a map first"),
+            Self::StartOwn if !link.can_play => {
+                Some("open a map first, and wait for the game link and any playtest to finish")
+            }
             Self::Stop if !link.can_stop => Some("the editor has no game of its own to stop"),
             Self::Edit(_) if !link.state.can_edit() => Some("pair with a game first"),
             Self::Pause => link.controls.pause,
@@ -277,6 +301,8 @@ pub struct Bridge {
     pub mirror: Option<Arc<super::stream::Stream>>,
     /// The paired game's picture for the Game panel (`play::picture`).
     pub picture: Option<super::picture::Picture>,
+    /// Which game the Game panel and the mirror follow (`game.mode`).
+    pub panel: PanelMode,
     /// The sample shown this editor frame, shared by the viewport and API.
     pub shown: Option<live_mirror::Sample>,
     /// The path a played recording's unit takes, from the streamed samples.
@@ -327,6 +353,7 @@ impl Default for Bridge {
             leaving: false,
             mirror: None,
             picture: None,
+            panel: PanelMode::default(),
             shown: None,
             path: Default::default(),
             display: Default::default(),

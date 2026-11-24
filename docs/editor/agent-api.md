@@ -979,9 +979,11 @@ Notes on some:
 - **Game picture.** The Game panel shows the paired game's own frames,
   read from the game's `render.picture` ring ([game-view.md](game-view.md),
   `play/picture.rs`). `game.status` answers `{mode, camera, own, attached,
-  picture}`: `mode` is `attached` and `camera` is `player` (the editor's own
-  game, `game.start` and `game.camera` are not built, so `own` is
-  `{state: "none"}`); `attached` repeats `pair.status`'s socket, map, phase
+  picture}`: `mode` is `own` or `attached` (which game the panel follows,
+  `game.mode`) and `camera` is `player` (`game.camera` is not built); `own`
+  is `{state: "none"}`, or `{state: "starting" | "running", map, socket,
+  editor}` for the game this editor started (`running` once its link is up;
+  `editor` is whether it was started with `--editor`); `attached` repeats `pair.status`'s socket, map, phase
   and tick with the link plate's state and text, and is null before the
   window has run its game link; `picture` is null with no pairing. Its
   `state` is `connecting`, `open`, `stalled` (no new frame for two
@@ -1001,6 +1003,14 @@ Notes on some:
   picture, and for a path inside a Git checkout. The picture is opened when
   the pairing learns the game offers `render.picture.open`, and again when
   the game closed it; it ends with the pairing.
+  `game.start` leaves a request for the window (or `h2-editor --serve`) to
+  start the editor's own game on the open document, as `h2 play --editor`,
+  and answers `{requested: true}`; it replaces a game this editor started
+  before, and sets the panel to `own` when it starts. It is `REFUSED` with
+  no game link yet, with no map open, or while the link is connecting or a
+  playtest runs. `game.stop` asks the same for the end of that game
+  (`REFUSED` when the editor started none). `game.mode {mode}` is `own` or
+  `attached`; `own` is `REFUSED` while there is no own game.
 - **Live mirror.** The paired editor reads the game's `objects`,
   `players` and `camera` stream. `mirror.status.stream.refused.camera`
   says why a game has no camera layer. `mirror.status` reports the stream state, layers,

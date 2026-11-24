@@ -1290,6 +1290,9 @@ fn every_method_in_methods_has_a_test() {
                         | m::PAIR_RESULT
                         // No game, so no picture to save.
                         | m::GAME_SNAPSHOT
+                        | m::GAME_START
+                        | m::GAME_STOP
+                        | m::GAME_MODE
                         | m::PACKAGE_PLAY
                         | m::RECORDING_PLAY
                         // No sim runner is wired to Studio's own API.
