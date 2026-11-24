@@ -804,6 +804,16 @@ fn spawn_goal_and_item_properties_write_their_fields() {
         field(&e.session.thing(spawner).unwrap(), "respawn time"),
         forge_doc::Value::Int(45)
     );
+    e.tool.aimed_thing = Some(spawner);
+    e.choose(
+        9,
+        Choice::Number(sheet::NumberField::ReturnTime, "90".into()),
+    )
+    .unwrap();
+    finish(&mut e, 10);
+    let thing = e.session.thing(spawner).unwrap();
+    assert_eq!(field(&thing, "abandon limit"), forge_doc::Value::Int(90));
+    assert_eq!(field(&thing, "respawn time"), forge_doc::Value::Int(45));
 }
 
 // ---- AI ground: the build runs on a worker (docs/game/forge-map-variants.md, "AI ground") ----

@@ -94,7 +94,7 @@ nudge and nothing else.
 | Object the session placed | Save as prefab | the keyboard on the prefab's name; the row `prefab` | `<data>/forge/prefabs/<name>.h2prefab` ([forge-editing.md](forge-editing.md), "Selection, groups and prefabs") | built |
 | Item spawner | Item... | the object menu's item groups, as a picker | `item` | M6 |
 | Item spawner | Respawn time | a picker: Map default, then seconds | `respawn time` | M6 |
-| Item spawner | Return time | a picker of seconds | `abandon limit` | M6 |
+| Item spawner | Return time | the keyboard on a whole number, as Respawn time (`return time`, `open: keyboard`) | `abandon limit` | built (P3) |
 | Item spawner | Place at start | a picker: Yes, No | `respawn mode` | D3 |
 | Item spawner | Game types... | the Game types dialog | the game-type slots | D3 |
 | Item spawner | Team | a picker of teams | the `team` property | D4 |
