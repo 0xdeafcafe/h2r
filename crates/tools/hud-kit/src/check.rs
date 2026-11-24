@@ -340,6 +340,7 @@ pub fn hud(src: &mut Source, d: &dyn Describe, modes: &[Mode]) -> Result<Report>
             let colour = match x.style {
                 Style::Go => "the go green".to_owned(),
                 Style::Team(n) => format!("team {n}'s colour"),
+                Style::Axis(n) => format!("axis {n}'s colour"),
                 _ => continue,
             };
             r.push(finding(
@@ -352,6 +353,17 @@ pub fn hud(src: &mut Source, d: &dyn Describe, modes: &[Mode]) -> Result<Report>
         }
         // A world mark names a team the game has.
         for e in hud.elements.iter().filter(|e| e.kind.world().is_some()) {
+            if let Some(Style::Axis(n)) = v.get(e.id).map(|x| x.style)
+                && n >= hud_kit_core::world::AXES
+            {
+                r.push(finding(
+                    Check::World,
+                    Some(*s),
+                    None,
+                    vec![e.id.to_owned()],
+                    format!("{} is in axis {n}'s colour; a gizmo has {} axes", e.id, hud_kit_core::world::AXES),
+                ));
+            }
             if let Some(Style::Team(n)) = v.get(e.id).map(|x| x.style)
                 && n >= hud_kit_core::world::TEAMS
             {

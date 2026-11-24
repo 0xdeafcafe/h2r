@@ -1746,3 +1746,62 @@ fn the_firefight_hud_draws_and_passes_on_the_synthetic_sheet() {
     assert!(between.element(ff::LIVES_PILL).unwrap().drawn);
     assert!(!between.element(ff::ENEMIES_PILL).unwrap().drawn);
 }
+
+/// A gizmo axis is a segment in the axis' colour: the check refuses an
+/// axis off a world mark and a fourth axis, the preview draws the
+/// segment's middle in the axis' colour, and the three differ.
+#[test]
+fn the_preview_draws_a_gizmo_segment_in_its_axis_colour() {
+    use hud_kit_core::world::{AXES, AXIS_COLOURS, Pose, Shape};
+    let seg = |id| {
+        Element::channel(
+            id,
+            Kind::WorldMark {
+                shape: Shape::Segment,
+                longest: "",
+            },
+        )
+    };
+    let run = |element: Element, style: Style, pose: Option<Pose>| {
+        let id = element.id;
+        let c = WorldCase {
+            hud: Hud {
+                name: "world",
+                elements: vec![element],
+            },
+            states: vec![("s", Values(vec![(id, Value::shown().styled(style))]))],
+            poses: pose.map(|p| vec![(id, p)]).unwrap_or_default(),
+        };
+        check::hud(&mut synthetic(), &c, &[Mode::Full]).unwrap()
+    };
+    let pose = Pose::at([-0.2, 0.0, 0.0], [0.0, 0.0]).to([0.2, 0.0, 0.0]);
+    let pixel = |axis: u8| {
+        let r = run(seg("s"), Style::Axis(axis), Some(pose));
+        assert!(r.findings.is_empty(), "{:#?}", r.findings);
+        let s = r.shots.into_iter().next().unwrap();
+        let d = s.element("s").unwrap();
+        assert!(d.drawn);
+        assert_eq!(d.world.as_ref().unwrap().edges, 1);
+        let at = preview::project(&s.frame, [0.0, 0.0, 0.0]);
+        let i = ((at[1].round() as u32 * s.canvas.width + at[0].round() as u32) * 4) as usize;
+        s.canvas.rgba[i..i + 3].to_vec()
+    };
+    let colours: Vec<Vec<u8>> = (0..AXES).map(pixel).collect();
+    for (axis, got) in colours.iter().enumerate() {
+        let want = AXIS_COLOURS[axis].map(|v| (v * 255.0).round() as u8);
+        assert_eq!(got, &want.to_vec(), "axis {axis}");
+    }
+    let texts = |element, style, pose| -> Vec<String> {
+        run(element, style, pose)
+            .of(Check::World)
+            .map(|f| f.text.clone())
+            .collect()
+    };
+    assert_eq!(
+        texts(seg("s"), Style::Axis(AXES), Some(pose)),
+        [format!("s is in axis {AXES}'s colour; a gizmo has {AXES} axes")]
+    );
+    let text = Element::text("t", Font::Hud, Justify::Start, "AB", bl(10, -150));
+    assert!(texts(text, Style::Axis(1), None).iter().any(|t| t == "t is a text in axis 1's colour, a world mark's alone"));
+    assert_eq!(Style::Axis(2).name(), "axis 2");
+}

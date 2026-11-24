@@ -245,6 +245,13 @@ pub fn style_colour(base: [u8; 4], style: Style, colours: &Colours) -> [u8; 4] {
             let [r, g, b] = PREVIEW_TEAMS[usize::from(n) % PREVIEW_TEAMS.len()];
             [r, g, b, base[3]]
         }
+        // A gizmo axis' colour (`world::AXIS_COLOURS`), a world mark's
+        // alone.
+        Style::Axis(n) => {
+            let [r, g, b] = world::AXIS_COLOURS[usize::from(n) % world::AXIS_COLOURS.len()]
+                .map(|v| (v * 255.0).round() as u8);
+            [r, g, b, base[3]]
+        }
     }
 }
 
@@ -266,7 +273,7 @@ pub const PREVIEW_TEAMS: [[u8; 3]; world::TEAMS as usize] = [
 /// (`Normal`, `Flash`), faded (`Dim`), greyed (`Inactive`).
 pub fn style_look(style: Style) -> Option<Look> {
     match style {
-        Style::Normal | Style::Flash(_) | Style::Go | Style::Team(_) => None,
+        Style::Normal | Style::Flash(_) | Style::Go | Style::Team(_) | Style::Axis(_) => None,
         Style::Dim => Some(Look {
             alpha: DIM_ALPHA,
             grey: false,
@@ -1116,6 +1123,7 @@ pub fn shot_json(s: &Shot, src: &Source, findings: &[crate::check::Finding]) -> 
                 "at": w.pose.map(|p| p.at),
                 "along": w.pose.map(|p| p.along),
                 "half": w.pose.map(|p| p.half),
+                "to": w.pose.and_then(|p| p.to),
                 "strength": w.pose.map(|p| p.strength),
                 "edges": w.edges,
                 "bounds": rect_json(&w.bounds),

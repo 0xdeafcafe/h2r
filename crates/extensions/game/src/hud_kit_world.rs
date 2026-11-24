@@ -56,7 +56,8 @@ pub type Teams = [Option<[f32; 3]>; world::TEAMS as usize];
 
 /// A mark's colour and alpha for its style on the HUD colour `hud`:
 /// `Normal` and a flash as it is, `Dim` at [`DIM_ALPHA`], `Inactive` grey
-/// at [`INACTIVE_ALPHA`], `Go` the go green (`world::GO_GREEN`), `Team(n)`
+/// at [`INACTIVE_ALPHA`], `Go` the go green (`world::GO_GREEN`), `Axis(n)` axis `n`'s colour
+/// (`world::AXIS_COLOURS`), `Team(n)`
 /// team `n`'s colour in `teams`, or the HUD colour where there is none.
 pub fn colour(style: Style, hud: [f32; 3], teams: &Teams) -> ([f32; 3], f32) {
     match style {
@@ -67,6 +68,10 @@ pub fn colour(style: Style, hud: [f32; 3], teams: &Teams) -> ([f32; 3], f32) {
             ([luma; 3], INACTIVE_ALPHA)
         }
         Style::Go => (world::GO_GREEN, 1.0),
+        Style::Axis(n) => (
+            world::AXIS_COLOURS[usize::from(n) % world::AXIS_COLOURS.len()],
+            1.0,
+        ),
         Style::Team(n) => (
             teams.get(usize::from(n)).copied().flatten().unwrap_or(hud),
             1.0,
@@ -239,6 +244,39 @@ mod tests {
         assert_eq!(out[1].anchor, [1.0, 2.0, 3.0 - LABEL_DROP]);
         assert_eq!((out[2].color, out[2].style.alpha), (HUD, DIM_ALPHA));
         assert_eq!(out[2].edges.len(), 3);
+    }
+
+    /// A gizmo's three axes are segments between their two world points,
+    /// each in its axis' colour; one with no far end is left out.
+    #[test]
+    fn a_gizmo_axis_is_a_segment_in_its_colour() {
+        let from = [1.0, 2.0, 3.0];
+        let seg = |axis: u8, to: [f32; 3]| {
+            mark(
+                Shape::Segment,
+                Style::Axis(axis),
+                "",
+                Pose::at(from, [0.0, 0.0]).to(to),
+            )
+        };
+        let out = lines(
+            &[
+                seg(0, [1.5, 2.0, 3.0]),
+                seg(1, [1.0, 2.5, 3.0]),
+                seg(2, [1.0, 2.0, 3.5]),
+                mark(Shape::Segment, Style::Axis(0), "", Pose::at(from, [0.0, 0.0])),
+            ],
+            HUD,
+            &NO_TEAMS,
+            LabelFace::Hud,
+        );
+        assert_eq!(out.len(), 3);
+        for (i, m) in out.iter().enumerate() {
+            assert_eq!(m.color, world::AXIS_COLOURS[i]);
+            assert_eq!(m.edges.len(), 1);
+            assert_eq!(m.edges[0][0], from, "the lines are not lifted");
+        }
+        assert_eq!(out[2].edges[0][1], [1.0, 2.0, 3.5]);
     }
 
     /// A mark with nothing to draw is left out: no size, no strength.
