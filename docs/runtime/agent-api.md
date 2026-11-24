@@ -5119,7 +5119,7 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 | `theater.state` | `{}` | transport state, or `{id:null,active:false}` with no player |
 | `theater.state` | `{"id":"film-id"}` on the library agent | Prepare progress for that ID |
 | `theater.pause` | `{}` | holds playback and reports state. During a seek it arranges a hold at the destination |
-| `theater.compat` | `{"id":"film-id"}` | `{state, reasons, film: {xbe, contract, hooks, abi}, installed: [{stamp, state}]}` |
+| `theater.compat` | `{"id":"film-id"}` | `{state, reasons, film: {xbe, contract, hooks, abi}, installed: [{stamp, state}], monitor_looks?: [{seat, map, reason}]}` |
 | `theater.speed` | `{"speed":0.5}` | sets host pacing from 0.25 to 4 times realtime |
 | `theater.seek` | `{"tick":900}`, optionally `"clip_marks":[300,null]`, `"source":"boot"` or `"source":"keyframe"` | restores a frame or starts a fresh child, then fast-forwards to the target, carrying camera and timeline state. Forcing a keyframe requires a compatible frame at or before the target |
 | `theater.seek` | `{"cancel":true}` | returns to the tick the active seek left and holds there. An optional `tick` is ignored. If no seek is active, returns the current state |
@@ -5210,6 +5210,12 @@ to select a subject. On rendered films, first person selects the recorded
 viewport. If the subject has no viewport, state reports `camera: "follow"`
 and `camera_fallback: "no-recorded-viewport"` until one is drawn.
 On playerless films, first person uses the unit's eye.
+A Forge monitor seat that the film recorded can be named by its seat number
+in `follow`, `orbit` and `first-person` even when the roster does not list
+it; first person looks from the monitor's recorded pose. `theater.state`
+and `theater.compat` list `monitor_looks` (`{seat, map, reason:
+"monitor_look_source"}`) the machine draws as the marker; they never change
+`state`.
 
 `look` adjusts yaw and pitch in radians in free and orbit modes. In free
 mode, `movement` adjusts strafe, forward and rise in world units. In orbit

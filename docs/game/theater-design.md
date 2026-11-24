@@ -571,7 +571,7 @@ Existing methods keep their parameters.
 
 | Method | Parameters | Result |
 |---|---|---|
-| `theater.state` | `{}` | adds `speed_reached`, `compatibility` (`playable`, `unavailable`), `seek` (`{target, from_tick, source: "ring" \| "keyframe" \| "sidecar" \| "boot", warm, remaining_ticks, restore_ms}` or null), `verified_through` (the last tick whose digest matched), `divergence` (`{tick, kind}` or null), `camera_pose` (`{position, yaw, pitch, fov, radius}`), `hud`, `bar` |
+| `theater.state` | `{}` | adds `speed_reached`, `compatibility` (`playable`, `unavailable`), `seek` (`{target, from_tick, source: "ring" \| "keyframe" \| "sidecar" \| "boot", warm, remaining_ticks, restore_ms}` or null), `verified_through` (the last tick whose digest matched), `divergence` (`{tick, kind}` or null), `camera_pose` (`{position, yaw, pitch, fov, radius}`), `hud`, `bar`, `monitor_looks` (`[{seat, map, reason}]`, omitted when empty: recorded Forge monitor looks read so far that this machine draws as the marker) |
 | `theater.seek` | `{tick, source?: "boot" \| "keyframe"}` or `{cancel: true}` | transport state. A forced route selects boot or a compatible embedded keyframe. Cancel returns to the departure tick and holds |
 | `theater.step` | `{ticks: 1}` | runs that many ticks and holds |
 | `theater.keyframes` | `{}` | `{film: [tick], sidecar: [tick], ring: [tick], capture_points: [tick], ring_bytes, ring_cap, sidecar_bytes}` |

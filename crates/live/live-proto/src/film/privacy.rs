@@ -283,7 +283,12 @@ mod tests {
     #[test]
     fn a_forge_record_is_never_public() {
         // A Forge session's welcome holds the map's document and its members.
-        for subtype in [stream::FORGE_WELCOME, stream::FORGE_ITEM] {
+        for subtype in [
+            stream::FORGE_WELCOME,
+            stream::FORGE_ITEM,
+            stream::FORGE_LOOK,
+            stream::FORGE_POSE,
+        ] {
             assert!(!is_public_tick(&block(&[&[subtype, 1, 2, 3]], stream::FORGE)));
         }
     }
