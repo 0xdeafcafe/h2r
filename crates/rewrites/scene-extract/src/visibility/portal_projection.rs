@@ -27,7 +27,7 @@ pub struct Projection {
     near_tolerance: f32,
     edge_tolerance: f32,
     initial_depth: f32,
-    initial_rect: Rect,
+    pub(super) initial_rect: Rect,
     rows: Rows,
     pub rect: Rect,
     pub polygon: Vec<Point>,

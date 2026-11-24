@@ -26,8 +26,6 @@ pub struct Node {
 #[derive(Debug, PartialEq)]
 pub struct Walk {
     pub nodes: Vec<Node>,
-    /// The original walker clears AL if any requested projection is null.
-    pub complete: bool,
 }
 
 /// The bounds leaf grows the runtime empty rectangle with strict
@@ -78,7 +76,6 @@ fn build(
     let mut nodes = vec![root];
     let mut projected: Vec<Option<Option<(Projected, f32)>>> = vec![None; graph.portals.len()];
     let mut projected_corners = 0;
-    let mut complete = true;
     let mut cursor = 0;
     while cursor < nodes.len() {
         let cluster = nodes[cursor].cluster;
@@ -103,7 +100,6 @@ fn build(
                 *cached = Some(projection.projected);
             }
             let Some((view, depth)) = cached.as_ref().and_then(Option::as_ref) else {
-                complete = false;
                 continue;
             };
             let parent = &nodes[cursor];
@@ -143,7 +139,7 @@ fn build(
         }
         cursor += 1;
     }
-    Ok(Walk { nodes, complete })
+    Ok(Walk { nodes })
 }
 
 pub fn for_view(
@@ -159,16 +155,6 @@ pub fn for_view(
     let tuning = guest::tuning(mem)?;
     let projection = Projection::read(mem, frustum)?;
     let clip = Inputs::read(mem)?;
-    // Initial rectangle copied by the node builder before 0x0011f5f0.
-    let base = read::ptr_at(mem, 0x0046_87dc).ok_or(Decline::Unread)?;
-    let mut empty = [0.; 4];
-    for (i, coord) in empty.iter_mut().enumerate() {
-        *coord = read::f32_at(mem, read::at(base, i as u32 * 4).ok_or(Decline::Layout)?)
-            .ok_or(Decline::Unread)?;
-        if coord.is_nan() {
-            return Err(Decline::Layout);
-        }
-    }
     let root = Node {
         cluster: start,
         parent: None,
@@ -182,7 +168,7 @@ pub fn for_view(
         graph,
         &open,
         root,
-        Rect(empty),
+        projection.initial_rect,
         |p| projection.project(p, &tuning),
         |portal, parent| clip.clip(portal, parent),
     )
@@ -252,7 +238,6 @@ mod tests {
     #[test]
     fn parallel_portals_keep_separate_paths_in_queue_order() {
         let walk = walk(Facing::Straddle, OpenPortals::all(2));
-        assert!(walk.complete);
         let path = walk
             .nodes
             .iter()
