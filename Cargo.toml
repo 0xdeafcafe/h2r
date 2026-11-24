@@ -23,6 +23,7 @@ mem-watch = { path = "crates/platform/mem-watch" }
 hs = { path = "crates/formats/hs" }
 tags = { path = "crates/formats/tags" }
 anim-edit = { path = "crates/tools/anim-edit" }
+sound-edit = { path = "crates/tools/sound-edit" }
 map = { path = "crates/formats/map" }
 assets = { path = "crates/platform/assets" }
 xiso = { path = "crates/formats/xiso" }

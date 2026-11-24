@@ -954,20 +954,30 @@ decode keeps its row with the reason. The waveform and the mouth track
 sit under the rows on one time axis. `sound.read`, `sound.play`,
 `sound.stop`, `sound.mouth` and `sound.measure` are the API.
 
-**Waveform editing.** Edits apply to a package's source WAV and are kept
-as a list in `<name>.sound.yaml`: trim, fade in, fade out, gain,
-normalise to a target, silence a range. The WAV is never rewritten; the
-build renders the list, so every edit can be undone and reordered.
-`voice/audio.rs` has the trim and normalise the announcer uses; they
-move to `crates/tools/sound-edit` (new) with the rest. A disc sound is
-not edited in place: **Copy into** makes a `sound` item from a WAV the
-user supplies, and a disc sound's fields (gain, distances, class) change
-through `edits`.
+**Waveform editing (built).** Edits apply to a package's source WAV and are
+kept as a list in `<name>.sound.yaml`, the sidecar of the `sound` item
+(a `data` item of the package, added when the first edit is made): `trim`,
+`fade_in`, `fade_out`, `gain`, `normalise` to a loudness target under a peak
+ceiling, and `silence` of a range. The WAV is never rewritten; the edits
+apply in order to its decoded samples (`sound_edit::render`), and the build
+renders the list before it resamples and encodes
+(`workspace/src/sound.rs`). Removing an edit, moving it and undoing the last
+one are changes to the list, so the render before is the render after
+them. A list that does not render (a trim that leaves nothing, normalising
+silence) is refused by the place of the edit, and `package.check` names it
+the same way. `crates/tools/sound-edit` holds the edits, the sidecar
+document and a WAV reader and writer; the announcer's own trim and
+normalise (`voice/audio.rs`) are not moved onto it. A disc sound is not
+edited in place: **Copy
+into** makes a `sound` item from a WAV the user supplies, and a disc
+sound's fields (gain, distances, class) change through `edits`.
 
-**Permutations.** Add, remove and reorder permutations and pitch ranges,
-with weight, gain and skip fraction as rows. Each is a file in the
-`.sound.yaml`. The list shows each one's loudness beside the reference
-lines `sound.measure` compares against.
+**Permutations (built as a list).** Other WAV files of the package are
+listed after the source's own, each with a weight, a gain and a skip
+fraction, and each its own edit list (`permutations:` in the sidecar). The
+list shows each one's loudness after its edits, as `sound.measure` reads
+it. The build writes the source's own permutation; encoding the listed
+files into the `snd!` is not built.
 
 **Mouth curves (slices A2 to A4).** The track under the waveform is the
 permutation's mouth curve, one value per 30 Hz tick
@@ -1016,8 +1026,8 @@ engine's own sound start ([agent-api.md](../runtime/agent-api.md#audioplay)).
 |---|---|
 | `sound.read`, `sound.play`, `sound.stop`, `sound.measure` | built |
 | `sound.mouth {sound, permutation, set?}` | reads a curve (A2, built); the write is A4 |
-| `sound.edit {doc, op, ...}`, `sound.render {doc, out}` | the edit list and its result as a WAV |
-| `sound.permutation {doc, add \| remove \| set}` | the list |
+| `sound.edit {package, source, op, ...}`, `sound.render {package, source, out?}` | the edit list (built) and its result as numbers and a WAV (built) |
+| `sound.permutation {package, source, op: add \| remove \| set \| move \| list}` | the permutation list (built) |
 | `import.sound {file, package, tag, class?}` | a new `sound` item (built) |
 
 ## Other editors
@@ -1101,7 +1111,7 @@ Rows are in build order.
 | A2, A3, A4 | **Mouth curves** (rich-editors) | S, S, M | A1; M1 for A3 | as there |
 | SN1 (built) | **The sound editor as a document** (built: `ui/sound.rs` draws the front sound tab, `App::sound_rows`, `App::front_tag_doc`): the audition as a document, permutations with loudness, the mouth track row | S | SH1 | an invented sound opens as a tab; each permutation row carries `sound.measure`'s numbers |
 | SN2 | **Import and encode** (built): `import.sound`, the `sound` builder, resample, ADPCM, the gestalt merge moved to `workspace::import` | M | PK2 | an invented WAV builds to a `snd!` that `app/audition.rs` decodes to the same samples within the codec's error; the gestalt of an invented map gains its rows and keeps the others |
-| SN3 | **Waveform edits**: `crates/tools/sound-edit`, the edit list, `sound.edit`, `sound.render`, permutations as files | M | SN1, SN2 | each op on an invented wave gives the expected samples; the source file's bytes never change; reorder and undo give the earlier render |
+| SN3 (built) | **Waveform edits** (built: `crates/tools/sound-edit`, `app/sound_edit.rs`, `api/sound_edit.rs`): the edit list, `sound.edit`, `sound.render`, permutations as files | M | SN1, SN2 | each op on an invented wave gives the expected samples; the source file's bytes never change; reorder and undo give the earlier render |
 | SN4 | **Voices into packages**: `voice.commit` and cloned lines to the edit target | S | PK7 | a committed line is a `sound` item; a dataset or weights path is refused |
 | SN5 | **Sound in the game** (built: the game's `audio.play`, `pair.preview {what: "sound"}`): the game's `audio.play` (**E first**), `pair.preview {what: "sound"}` | S | SN2, SH4 | on the fake game the preview plays, samples `audio.voices` and returns both measures |
 | SH5 (built: no tool tabs; `ui.rs` and `ui/bar.rs` draw by `app::Surface`; `Doc::Rules`; the docs. `ToolKind` stands in `app` and the API; the screenshots list is not yet from documents) | **Old tools removed**: the tool tabs and floating windows; the script editor as the `.rules` document; [editor.md](editor.md) and [editor-guide.md](editor-guide.md) describe the tree and the editors | M | SH2, PK7, SN1 | `headless.rs`' screenshots list regenerates from documents; no `ToolKind` match is left in `ui.rs` |

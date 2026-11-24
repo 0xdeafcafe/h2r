@@ -1612,6 +1612,55 @@ The build is `workspace::build` (`h2 package build`); the tests
 (`api/tests/import_tests.rs`, `workspace/src/import_tests.rs`) run over
 invented tones and an invented map.
 
+### Sound edits
+
+`sound.edit`, `sound.render` and `sound.permutation` (`api/sound_edit.rs`,
+`app/sound_edit.rs`, the `sound-edit` crate) change what a package's `sound`
+item sounds like without touching its WAV. A sound is named by `package`
+(a local package's id) and `source` (the item's WAV, e.g.
+`sounds/boing.wav`, as `import.sound` answers it); a package that is built
+in is refused, and so is a `source` that is not a `sound` item of it.
+
+`sound.edit {package, source, op, ...}` changes the list of edits kept in
+`<source>.sound.yaml` (a `data` item of the package, added with the first
+edit, the lock rewritten). `op` is an edit to add (at `at`, the end by
+default): `trim {start_ms, end_ms?}`, `fade_in {ms}`, `fade_out {ms}`,
+`gain {db}`, `normalise {lufs, ceiling_dbfs?}` (the default ceiling is -1
+dBFS) or `silence {start_ms, end_ms}`; or `remove {index}`,
+`move {from, to}`, `undo` (drops the last edit and answers it as
+`removed`), `clear` or `list`. Times are milliseconds into what the edits
+before left. The list is rendered before it is written: an edit that does
+not apply (a trim that leaves nothing, normalising silence, a gain past 60
+dB) is refused by its place (`edit 1: ...`) and the package is left as it
+was; a param the edit does not take is `invalid params`. With
+`permutation: n` the edits are that permutation's. The answer is the list,
+`changed` and the levels of the render (as `sound.measure`'s).
+
+`sound.render {package, source, permutation?, upto?, out?, bins?}` renders
+the WAV through the first `upto` edits (all by default) and answers the
+levels `before` and in `render`, and the waveform `peaks`; with `out` it
+writes a 16-bit PCM WAV there. `out` is refused inside the package, whose
+WAVs are the sources, and nothing in the package is written.
+
+`sound.permutation {package, source, op}` keeps the sound's other
+permutations, `permutations:` of the same file: `add {file, weight?,
+gain_db?, skip_fraction?}` (the file must be a WAV of the package, and
+becomes a `sound` item of it), `remove {index}`, `set {index, weight?,
+gain_db?, skip_fraction?}`, `move {from, to}` or `list`. Each row carries
+the loudness of its file after its edits, or why it does not render, with
+`source_row` for the source's own. The build writes the source's own
+permutation; encoding the listed files into the `snd!` is not built.
+
+```sh
+h2 studio sound.edit '{"package":"my-pack","source":"sounds/boing.wav","op":"fade_out","ms":40}'
+h2 studio sound.render '{"package":"my-pack","source":"sounds/boing.wav","out":"/tmp/boing.wav"}'
+```
+
+The tests are `api/tests/sound_edit_tests.rs` (each op over an invented
+ramp, the source's bytes unchanged, undo and reorder, the refusals),
+`workspace/src/import_tests.rs` (the build renders the list) and the
+`sound-edit` crate's own.
+
 ### Errors
 
 The JSON-RPC codes (`-32700` parse, `-32601` no such method, `-32602`

@@ -149,6 +149,10 @@ pub mod method {
     pub const SOUND_STOP: &str = "sound.stop";
     pub const SOUND_MOUTH: &str = "sound.mouth";
     pub const SOUND_MEASURE: &str = "sound.measure";
+    // Waveform edits and permutations of a package sound (api/sound_edit.rs).
+    pub const SOUND_EDIT: &str = "sound.edit";
+    pub const SOUND_RENDER: &str = "sound.render";
+    pub const SOUND_PERMUTATION: &str = "sound.permutation";
     // A WAV imported into a package as a `sound` item (api/import.rs).
     pub const IMPORT_SOUND: &str = "import.sound";
 

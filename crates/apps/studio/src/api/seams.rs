@@ -135,6 +135,9 @@ pub fn register(api: &mut Api) {
     api.register(Box::new(super::sound_measure::SoundMeasure));
     // import.sound: a WAV added to a package as a `sound` item.
     api.register(Box::new(super::import::Import));
+    // sound.edit, sound.render and sound.permutation: a package sound's
+    // waveform edits and permutation files.
+    api.register(Box::new(super::sound_edit::SoundEdit));
     api.register(Box::new(super::ui_check::UiCheck));
     api.register(Box::new(super::checks::Checks));
     // model.*: objects' models read, rendered (ground, third and first

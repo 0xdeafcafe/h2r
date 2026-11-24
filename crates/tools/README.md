@@ -19,4 +19,5 @@ The tools domain is offline work on game data: the Halo 1 readers and converters
 | [mesh-edit](mesh-edit/README.md) | The modeling kernel: an editable radial-edge mesh, its operations and stable export. |
 | [collision-build](collision-build/README.md) | The collision compiler: polygons to a Halo 2 collision BSP; `coll` BSPs as meshes. |
 | [perf](perf/README.md) | Sampling profiler, timeline capture and the benchmark harness. |
+| [sound-edit](sound-edit/README.md) | Waveform edits of a package sound as a list, and its permutation files. |
 | [workspace](workspace/README.md) | The package build: builders, `Layered` tag sources and `build` onto a map's `TagSet`. |

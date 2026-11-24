@@ -68,6 +68,8 @@ wma = { path = "../../platform/wma" }
 tags.workspace = true
 # Sparse animation documents and edit history (docs/editor/studio-redesign.md).
 anim-edit.workspace = true
+# Waveform edits and the permutation list of a package sound (api/sound_edit.rs).
+sound-edit.workspace = true
 # The tag workspace's disc images (src/app/workspace.rs).
 xiso.workspace = true
 # The Scripts tool: the scenario's script tables, decompiled with the
