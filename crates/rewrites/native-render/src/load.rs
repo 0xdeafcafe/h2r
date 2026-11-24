@@ -111,6 +111,7 @@ pub fn section_input(s: &Section) -> Option<SectionInput> {
         binormals: v.binormals,
         tangents: v.tangents,
         lighting: lighting_vectors(s),
+        bucket_colors: false,
         baked_colors: s.vertex_buffers.iter().rev().find_map(|vb|
             baked_colors(vb.type_id, vb.stride, s.data(vb))).unwrap_or_default(),
     })
@@ -231,6 +232,7 @@ pub fn load_world<R: Read + Seek>(
                 let lightmap_uvs = bucket_slice(&b.lightmap_uvs, first, n).map(<[_]>::to_vec);
                 let lighting = bucket_slice(&b.lighting, first, n).map(<[_]>::to_vec);
                 with_own = SectionInput {
+                    bucket_colors: b.colors.is_some(),
                     baked_colors: match &b.colors {
                         Some(colors) => bucket_slice(colors, first, n).unwrap_or_default().to_vec(),
                         None => def.baked_colors.clone(),

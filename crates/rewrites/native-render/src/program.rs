@@ -5040,6 +5040,7 @@ mod tests {
             binormals: vec![[1.0, 0.0, 0.0]; 3],
             tangents: vec![[0.0, 1.0, 0.0]; 3],
             baked_colors: Vec::new(),
+            bucket_colors: false,
             lighting: if lighting {
                 vec![[0.0, 0.0, 1.0]; 3]
             } else {

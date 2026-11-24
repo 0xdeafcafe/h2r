@@ -126,7 +126,7 @@ pub struct WorldDraw {
     /// position always, `v1` the texture coordinate, `v2..v4` the
     /// normal, binormal and tangent, `v5` the lighting vector, `v6` the
     /// lightmap coordinate; each only when the section has it for every
-    /// vertex (the rest read zero, or the default normal).
+    /// vertex. [`BAKED_COLOR_INPUT`] marks the colour alternative for v6.
     pub inputs: u16,
 }
 
@@ -200,6 +200,8 @@ pub struct SectionInput {
     pub lighting: Vec<[f32; 3]>,
     /// A baked RGBA colour per vertex when this stream is bound.
     pub baked_colors: Vec<[u8; 4]>,
+    /// A bucket descriptor overrides the definition's colour stream.
+    pub bucket_colors: bool,
     pub parts: Vec<PartInput>,
 }
 
@@ -293,6 +295,8 @@ pub struct SectionRun {
     pub first_vertex: u32,
     pub vertex_count: u32,
     pub place: Placement,
+    bucket_colors: bool,
+    has_baked_colors: bool,
 }
 
 impl World {
@@ -356,6 +360,9 @@ impl World {
         if section.positions.len() != n {
             return Err(SectionRefusal::VertexCount);
         }
+        if !run.bucket_colors && (section.baked_colors.len() == n) != run.has_baked_colors {
+            return Err(SectionRefusal::ColorStream);
+        }
         let base = run.first_vertex;
         let ranges = self
             .draws
@@ -380,13 +387,13 @@ impl World {
             let (mut placed, mut program) = section_vertex(section, &run.place, lit, i);
             if keep_lighting {
                 let old = self.vertices[first + i];
-                placed.baked_color = old.baked_color;
+                if run.bucket_colors { placed.baked_color = old.baked_color; }
                 placed.lightmap_uv = old.lightmap_uv;
                 placed.lighting = old.lighting;
                 placed.packed = pack_frame(placed.normal, placed.binormal, placed.tangent, placed.lighting);
                 if programs {
                     let old = self.program_vertices[first + i];
-                    program.baked_color = old.baked_color;
+                    if run.bucket_colors { program.baked_color = old.baked_color; }
                     program.lightmap_uv = old.lightmap_uv;
                     program.lighting = old.lighting;
                     program.packed = pack_frame(program.normal, program.binormal, program.tangent, program.lighting);
@@ -435,6 +442,8 @@ pub enum SectionRefusal {
     NoSection,
     /// The vertex count changed.
     VertexCount,
+    /// Rebuild classifications when a section colour stream appears or disappears.
+    ColorStream,
     /// A part the world draws has other triangles, or is gone.
     Triangles,
 }
@@ -574,6 +583,8 @@ impl WorldBuilder {
             first_vertex: base,
             vertex_count: n as u32,
             place: *place,
+            bucket_colors: section.bucket_colors,
+            has_baked_colors: inputs & BAKED_COLOR_INPUT != 0,
         });
         for i in 0..n {
             let (placed, program) = section_vertex(section, place, lit, i);
@@ -863,6 +874,7 @@ mod tests {
         let mut own = quad(0, false, true);
         own.lightmap_uvs = vec![[0.125; 2]; 4];
         own.baked_colors = vec![[12, 21, 42, 129]; 4];
+        own.bucket_colors = true;
         let mut w = build(&quad(0, false, true), &own);
         let mut def = edited.clone();
         def.lightmap_uvs = vec![[0.9; 2]; 4];
@@ -874,6 +886,13 @@ mod tests {
         assert_eq!(w.vertices, want.vertices);
         assert_eq!(w.draws, want.draws);
 
+        let mut from_section = own.clone();
+        from_section.bucket_colors = false;
+        let mut edited_colors = build(&quad(0, false, true), &from_section);
+        assert_eq!(edited_colors.replace_section(Owner::Instance(3), &def), Err(SectionRefusal::ColorStream));
+        def.baked_colors = vec![[7, 11, 13, 17]; 4];
+        assert!(edited_colors.replace_section(Owner::Instance(3), &def).is_ok());
+        assert_eq!(edited_colors.program_vertices[4].baked_color, [7, 11, 13, 17]);
         let before = w.clone();
         let mut fewer = quad(0, false, true);
         fewer.positions.pop();
