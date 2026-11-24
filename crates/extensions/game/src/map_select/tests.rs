@@ -430,7 +430,7 @@ fn the_boot_s_features_plan_together_with_the_campaigns() {
         ),
     };
     for line in [
-        "0x00149f49 SCREEN_REQUEST: observe_before [map-select:change map arms the categories] -> before [campaigns:the campaign picker first] -> original",
+        "0x00149f49 SCREEN_REQUEST: before [campaigns:the campaign picker first] -> original",
         "0x0019c6a0 MP_LEVEL_ARRAY: before [map-select:a Select Map of ours lists ours] -> original",
         "0x00137fe0 GAME_TICK: before [map-select:refresh installed map offers] -> original",
         "0x002afd70 MP_LEVEL_NAME: before [map-select:category names] -> original",
@@ -713,7 +713,11 @@ fn pack_picker_uses_exact_installed_slots_for_disc_and_dlc_bases() {
     assert_eq!(row_label(&cat, Mode::Maps(Category::Mods), a).unwrap().1, "After Hours");
     assert_eq!(list_for(&cat, Mode::Pack(a), &|_| 0), [(a, 0), (b, 0)]);
     assert_eq!(row_label(&cat, Mode::Pack(a), b).unwrap().1, "Warlock");
+    let members = cat.playable_maps(Category::Mods);
+    assert_eq!(members.iter().map(|m| m.id).collect::<Vec<_>>(), [a, b]);
+    assert_eq!(members[1].name, "After Hours / Warlock");
     cat.active_pack = Some("release-one".into());
+    assert!(cat.playable_maps(Category::Halo2).iter().any(|m| m.id == a && m.name == "Lockout (After Hours)"));
     let disc = list_for(&cat, Mode::Maps(Category::Halo2), &|id| u8::from(id == 0x0a));
     assert!(disc.contains(&(a, 1)), "the pack maps onto the retail row with its lock flag");
     assert!(disc.contains(&(0x14, 0)), "uncovered bases stay on disc");
@@ -782,9 +786,14 @@ fn changing_the_game_variant_filters_the_same_map_list_used_for_forge() {
     ]));
     let holdout = &listed_named("Holdout").unwrap().record;
     let basin = &listed_named("Basin").unwrap().record;
-    let offered = |record| catalogue.for_variant(Mode::Multiplayer, Some(record))
-        .all().map(|m| m.id).collect::<Vec<_>>();
+    let selection = Selection::new((*catalogue).clone());
+    let offered = |record| {
+        let open = selection.begin_picker(Mode::Multiplayer, Some(record));
+        assert_eq!(open.mode, super::Mode::Maps(Category::Firefight));
+        selection.picker_catalogue().all().map(|m| m.id).collect::<Vec<_>>()
+    };
     assert_eq!(offered(holdout), [3, 2]);
     assert_eq!(offered(basin), [3]);
-    assert!(Arc::ptr_eq(&catalogue.for_variant(Mode::Forge, Some(basin)), &catalogue));
+    assert_eq!(selection.begin_picker(Mode::Forge, Some(basin)).mode, super::Mode::Categories);
+    assert!(Arc::ptr_eq(&selection.picker_catalogue(), &selection.catalogue()));
 }

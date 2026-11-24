@@ -17,6 +17,11 @@ that page's rule, the carrier's own rules.
 Everything not marked **Code** is **Design**
 ([docs-style.md](../meta/docs-style.md)).
 
+Change Map checks each installed map against the selected script's label and tag
+requirements. For Siege the map must provide a site (a Siege site or a territory)
+or a final stand (a Siege goal or the defending team's flag stand). Start Game
+applies the same check when the party changes variants after choosing a map.
+
 ## The check
 
 **Code**, `crates/formats/rules/src/labels.rs`.

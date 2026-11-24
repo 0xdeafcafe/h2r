@@ -2976,7 +2976,7 @@ or the game's UI state without UI watch. All are read-only except
   `header` the text the lobby's update gives its header (`CUSTOM GAMES`,
   `FORGE`, ...). `tabs` lists the modes present, each `{tab, label,
   state, reason}` with `tab` one of `multiplayer`, `custom_games`,
-  `forge`, `firefight`, `co_op`, `state` one of `selected`, `on`, `off`,
+  `forge`, `co_op`, `state` one of `selected`, `on`, `off`,
   and `reason` the status-line sentence of a mode that cannot run here
   (else null). `clanker` is, in MULTIPLAYER, whether the lobby's
   playlist is one the server marks as a Clanker playlist (null in

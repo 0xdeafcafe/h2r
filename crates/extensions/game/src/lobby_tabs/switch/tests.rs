@@ -82,7 +82,7 @@ fn switching_to_firefight_holds_the_setting_and_picks_a_kit_map() {
 }
 
 #[test]
-fn switching_to_forge_keeps_a_halo_2_map() {
+fn switching_to_forge_keeps_the_selected_map() {
     let c = catalogue();
     let p = plan(Tab::CustomGames, Tab::Forge);
     assert_eq!((p.mode, p.firefight, p.retail), (Mode::Forge, false, None));

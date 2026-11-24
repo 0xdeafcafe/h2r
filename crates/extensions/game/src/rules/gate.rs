@@ -180,15 +180,17 @@ pub fn check(key: &Key, sources: &dyn Sources) -> Verdict {
     if !matches_engine || (ir.labels.is_empty() && ir.tags.is_empty()) {
         return Verdict::Clear;
     }
+    let siege = is_siege(prefix);
     let census = match sources.census(key.map, key.forge_map.as_deref()) {
         Ok(c) => c,
+        Err(e) if siege => return Verdict::Blocked(vec![format!("Siege cannot read this map's objectives: {e}")]),
         Err(e) => {
             eprintln!("rules: the lobby's map census could not be read, the host checks at the start: {e}");
             return Verdict::Clear;
         }
     };
     let teams: &[u8] = if key.team_play { TEAMS } else { &[] };
-    let problems = map_problems(&ir, &census, teams, is_siege(prefix));
+    let problems = map_problems(&ir, &census, teams, siege);
     if problems.is_empty() {
         Verdict::Clear
     } else {

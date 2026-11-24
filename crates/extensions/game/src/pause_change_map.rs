@@ -268,7 +268,7 @@ pub fn opening(mode: lobby_start::Mode, cat: &Catalogue) -> Option<Opening> {
 
 /// The maps a category's picker shows, in the catalogue's order.
 pub fn maps(cat: &Catalogue, c: Category) -> Vec<Map> {
-    cat.maps(c).to_vec()
+    cat.playable_maps(c)
 }
 
 fn catalogue() -> Arc<Catalogue> {
