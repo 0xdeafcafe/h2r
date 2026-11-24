@@ -156,6 +156,9 @@ mod tests {
 
     #[test]
     fn a_map_with_no_scenario_has_no_flags() {
-        assert_eq!(flags(&FakeGuest::new()).unwrap(), Vec::new());
+        // The scenario pointer is mapped and zero: no scenario loaded.
+        let mut m = FakeGuest::new();
+        m.put_u32(points::SCENARIO.base, 0);
+        assert_eq!(flags(&m).unwrap(), Vec::new());
     }
 }

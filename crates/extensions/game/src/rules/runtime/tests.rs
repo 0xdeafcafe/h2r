@@ -966,16 +966,16 @@ fn a_carrier_scored_slayer_script_runs_the_builtin_slayer_under_its_record() {
 fn a_carrier_whose_builtin_this_host_cannot_run_is_refused_by_name() {
     use crate::rules::scoring;
     let store = Local::default();
-    // King of the Hill's built-in answers on round_start, which this host
-    // does not do yet.
-    let (s, m, _, line, id) = carried(&store, ::rules::builtin::SUN_KING, 4);
+    // Oddball's built-in answers on pickup and drop, which this host does
+    // not deliver yet.
+    let (s, m, _, line, id) = carried(&store, ::rules::builtin::WHEEEEEE, 3);
     assert!(line.starts_with("rules: refused"), "{line}");
     let state = s.lock().state();
     assert!(!state.running, "{state:?}");
     let why = state.refused.unwrap();
     assert!(
         why.starts_with(
-            "Sun King uses the built-in King of the Hill script, which this host cannot run yet: "
+            "Wheeeeee! uses the built-in Oddball script, which this host cannot run yet: "
         ),
         "{why}"
     );
@@ -1004,7 +1004,14 @@ fn every_listed_carrier_script_runs_its_builtin_or_is_refused_by_name() {
         let store = Local::default();
         // A listed script is compiled in: found by its prefix.
         let s = shared(&store, Box::new(no_fetch));
-        let (m, _) = guest(block(prefix(&ir.id()), 0), i32::from(b.engine));
+        let (mut m, _) = guest(block(prefix(&ir.id()), 0), i32::from(b.engine));
+        // A map with a hill, for the built-in that reads one.
+        let (scnr, flags_at) = (0x1006_0000, 0x1006_0400);
+        m.put_u32(points::SCENARIO.base, scnr);
+        m.map(scnr, 0x1000);
+        m.put_u32(scnr + engine::objectives::NETGAME_FLAGS, 1)
+            .put_u32(scnr + engine::objectives::NETGAME_FLAGS + 4, flags_at)
+            .put_u16(flags_at + engine::objectives::FLAG_TYPE, 11);
         let line = s.lock().start(&m, false);
         let state = s.lock().state();
         assert!(state.blocked.is_empty(), "{name}: {state:?}");

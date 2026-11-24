@@ -91,7 +91,7 @@ pub const WALLS: u8 = 2;
 /// base (the handle bit and the flags' block) with the flag's index
 /// (`game::rules::census::Thing::handle`). The index is what a walls cue
 /// carries.
-pub const ZONE_BASE: u32 = 0x4001_0000;
+pub const ZONE_BASE: u32 = 0x4008_0000;
 /// The most walls a cue holds: the VM's shown areas.
 pub const MAX_WALLS: usize = crate::vm::MAX_SHOWN_AREAS;
 /// How often the authority repeats a non-empty walls cue, in ticks.
