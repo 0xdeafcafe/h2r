@@ -374,6 +374,7 @@ impl App {
             asset: None,
             tool: Some(super::ToolKind::Scenario),
             field: None,
+            at: None,
         };
         let mut rows = Vec::new();
         if let Some(why) = &self.ground.error {

@@ -1863,15 +1863,15 @@ a temporary data root.
 
 ### Problems
 
-`problems.list {source?}` is the Problems panel's list
+`problems.list {source?, asset?}` is the Problems panel's list
 (docs/editor/studio-redesign.md, "The shell"; `app/problems.rs`,
 `api/problems.rs`), read again on every call. A row is
 `{source, area, code, severity, message, target, path?, asset?, field?,
-tool?}`, worst first. The sources:
+tool?, line?, col?}`, worst first. The sources:
 
 | `source` | Rows from |
 |---|---|
-| `check` | `check.run`'s `models` and `sounds` checks |
+| `check` | `check.run`'s `models` and `sounds` checks, and the diagnostics of the script open in the script editor (area `scripts`, code `script.<code>`, target `<title>:<line>`, with `line` and `col`; the row opens the editor with the cursor there) |
 | `ui` | `ui.check` |
 | `hud` | `hud.check` and the HUD kit's check |
 | `package` | the manifest checks `h2 package check` runs over the packages under `<data>/packages/`: an item with no builder, a missing or oversize source, a source its builder refuses, two items that add one tag path, a file that is a raw resource or a tag file of the user's tag store (`workspace::store_findings`), and the conflict rows of the last `package.diff` with a `map` for each level (`package.refused`, a warning: the package is off for that level, with the reason; `package.override`, a note: a later package's value for a field or an asset wins; target `<map>: <package>`, asset `package:<id>`). A refresh keeps those rows; the next diff of the level replaces them |
@@ -1889,6 +1889,14 @@ that source is read and the panel's other rows stay. The panel's
 double-click on a row is `Action::OpenProblem`: a tag opens in its editor
 with the field shown, a package or item shows in the browser, a screen or
 a HUD shows its tool.
+
+`asset` (an asset id) keeps the rows about that asset: those whose
+`asset` is it, and for the HUD, a screen at its state and the open script
+the rows their tool holds (`App::asset_problems`, `App::doc_problems`). The
+number on the header's **Check** is the same rows' count
+(`App::doc_problem_count`), so it equals this call's `counts.total` for
+the document's asset. A HUD document has no asset id of its own when it
+was opened from a map; its count is the `hud` rows.
 
 ```sh
 h2 studio problems.list '{"source":"package"}'
@@ -2085,14 +2093,18 @@ which fit each aspect asked is.
 `off_screen`, `outside_frame`, `art_overlap`, `text_overlap` or
 `text_spills` (`hud_edit::checks`).
 
-**`check.run {what?, target?}`** (`api/checks.rs`) runs every check of
+**`check.run {what?, target?, asset?}`** (`api/checks.rs`) runs every check of
 `CHECKS` (or one area's: `models`, `sounds`, `ui`, `hud`, `markers`) and answers
 `{findings, counts, ran, skipped}`. A finding is `{area, code,
 severity, message, target, path?}`, worst first; `counts` has `error`,
 `warning`, `note`, `total` and `by_area`; `ran` names each check with
 its count; `skipped` each check that could not run and why, and each
 area with no check registered. `target` narrows every check to one
-thing; a check it does not fit is skipped. The checks:
+thing; a check it does not fit is skipped. With `asset` (an asset id)
+the Problems list is read again over every source and the answer is
+`{asset, findings, counts, ran, skipped}` for only the rows about that
+asset (the rows of `problems.list {asset}`, with `source`, `asset` and the
+rest); `what` and `target` are not used. The checks:
 
 | Area | Check | What it checks |
 |---|---|---|

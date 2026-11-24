@@ -51,6 +51,11 @@ fn load(app: &App, id: &str) -> Result<Links, String> {
 
 fn link_role(row: &links::Link) -> &'static str { row.role }
 
+/// The header's **Check**: the count of this document's findings in Problems.
+pub(crate) fn check_label(count: usize) -> String {
+    if count == 0 { "Check##doc-check".to_owned() } else { format!("Check {count}##doc-check") }
+}
+
 fn target_text(target: Option<String>, dirty: bool) -> String {
     format!("into: {}{}", target.unwrap_or_else(|| "no package".into()), if dirty { " *" } else { "" })
 }
@@ -104,7 +109,7 @@ pub(super) fn draw(ui: &Ui, app: &App, actions: &mut Vec<Action>, browser: &mut 
     ui.same_line();
     let plan = app.game_preview(doc);
     if button(ui, "In game", plan.is_ok(), "This document cannot preview in game") { actions.push(Action::PreviewInGame(Some(doc))); }
-    if ui.button("Check") { actions.push(Action::RefreshProblems(None)); }
+    if ui.button(check_label(app.doc_problem_count(doc))) { actions.push(Action::RefreshProblems(None)); }
     ui.same_line();
     let (undo, redo) = app.doc_can(doc);
     if button(ui, "Undo", undo, "Nothing to undo") { actions.push(Action::UndoDoc(doc)); }
@@ -142,6 +147,12 @@ pub(super) fn draw(ui: &Ui, app: &App, actions: &mut Vec<Action>, browser: &mut 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn check_shows_the_count_of_findings_only_when_there_are_some() {
+        assert_eq!(check_label(0), "Check##doc-check");
+        assert_eq!(check_label(3), "Check 3##doc-check");
+    }
 
     #[test]
     fn invented_weapon_header_names_its_target_and_link_roles() {

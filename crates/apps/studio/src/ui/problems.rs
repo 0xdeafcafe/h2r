@@ -33,6 +33,16 @@ fn tone(s: Severity) -> ([f32; 4], &'static str) {
     }
 }
 
+/// One finding as a line: the severity's mark and the text, as the HUD and
+/// screen editors list the findings of their picture. Whether it is hovered.
+pub fn finding_line(ui: &Ui, severity: Severity, text: &str) -> bool {
+    let (color, glyph) = tone(severity);
+    ui.text_colored(color, glyph);
+    ui.same_line();
+    ui.text_wrapped(text);
+    ui.is_item_hovered()
+}
+
 /// Draw the panel.
 pub fn draw(ui: &Ui, app: &App, st: &mut ProblemsUi, actions: &mut Vec<Action>) {
     st.shown.clear();

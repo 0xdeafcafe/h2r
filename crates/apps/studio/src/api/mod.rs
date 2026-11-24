@@ -361,9 +361,9 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::PROBLEMS_LIST,
-        "The Problems panel's list, read again: every source or one. `check` is check.run's models and sounds, `ui` is ui.check, `hud` is hud.check and the HUD kit's, `package` is the manifest checks over the packages under <data>/packages/, `build` is what the game's package set refuses to load. Worst first; each row names what opens it (`asset`: a tag, a package or an item; `field`; or the `tool` that holds a screen or a HUD). A check that cannot run is under `skipped`",
-        r#"{"source?":"check|ui|hud|package|build"}"#,
-        r#"{"problems":"[{source,area,code,severity,message,target,path?,asset?,field?,tool?}]","counts":"{error,warning,note,total,by_source:{source:integer}}","ran":"[{source,check,findings}]","skipped":"[{source,check,why}]"}"#,
+        "The Problems panel's list, read again: every source or one. `check` is check.run's models and sounds, `ui` is ui.check, `hud` is hud.check and the HUD kit's, `package` is the manifest checks over the packages under <data>/packages/, `build` is what the game's package set refuses to load; the open script's diagnostics are `check` rows of area `scripts`, with their `line` and `col`. `asset` (an asset id) keeps the rows about that asset, as the count on the header's Check is. Worst first; each row names what opens it (`asset`: a tag, a package or an item; `field`; or the `tool` that holds a screen or a HUD). A check that cannot run is under `skipped`",
+        r#"{"source?":"check|ui|hud|package|build","asset?":"string"}"#,
+        r#"{"problems":"[{source,area,code,severity,message,target,path?,asset?,field?,tool?,line?,col?}]","counts":"{error,warning,note,total,by_source:{source:integer}}","ran":"[{source,check,findings}]","skipped":"[{source,check,why}]"}"#,
         r#"{"source":"package"}"#,
     ),
     def(

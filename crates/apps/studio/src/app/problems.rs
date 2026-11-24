@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use super::assets::read_set;
 use super::mods::Conflict;
 use super::navigation::NavAction;
-use super::{Action, App, ToolKind, tag_api};
+use super::{Action, App, Doc, ToolKind, rules_edit, tag_api};
 use crate::api::checks::{CHECKS, ContentCheck, Finding, Severity};
 
 /// Every source, in the order the panel lists them.
@@ -72,6 +72,8 @@ pub struct Problem {
     pub tool: Option<ToolKind>,
     /// The field of the tag the finding names.
     pub field: Option<String>,
+    /// The line and column (1-based) a script finding is at.
+    pub at: Option<(u32, u32)>,
 }
 
 impl Problem {
@@ -93,6 +95,10 @@ impl Problem {
             if let Some(s) = value {
                 v[key] = json!(s);
             }
+        }
+        if let Some((line, col)) = self.at {
+            v["line"] = json!(line);
+            v["col"] = json!(col);
         }
         v
     }
@@ -204,6 +210,7 @@ fn from_finding(app: &App, source: &'static str, f: &Finding) -> Problem {
         target: f.target.clone(),
         path: f.path.clone(),
         field: asset.as_ref().and_then(|_| field_of(&f.message)),
+        at: None,
         asset,
         tool: match source {
             "ui" => Some(ToolKind::UiScreens),
@@ -236,6 +243,7 @@ fn from_conflict(c: &Conflict) -> Problem {
         asset: Some(format!("package:{}", c.package)),
         tool: None,
         field: c.path.clone(),
+        at: None,
     }
 }
 
@@ -263,7 +271,40 @@ fn from_package(f: &::workspace::Finding) -> Problem {
         asset: Some(asset),
         tool: None,
         field: None,
+        at: None,
     }
+}
+
+/// The open script's diagnostics as rows of `check`, area `scripts`: each
+/// carries its line and column, and opens at them ([`App::open_problem`]).
+fn script_rows(app: &mut App) -> Vec<Problem> {
+    app.rules.refresh();
+    let asset = app.doc_asset(Doc::Rules);
+    let title = app.rules.title.clone();
+    rules_edit::problems(&app.rules.text, &app.rules.analysis.diagnostics)
+        .into_iter()
+        .map(|p| Problem {
+            source: "check",
+            area: "scripts".to_owned(),
+            code: if p.code.is_empty() {
+                "script.diagnostic".to_owned()
+            } else {
+                format!("script.{}", p.code)
+            },
+            severity: match p.severity {
+                "error" => Severity::Error,
+                "warning" => Severity::Warning,
+                _ => Severity::Note,
+            },
+            message: p.message,
+            target: format!("{title}:{}", p.line),
+            path: None,
+            asset: asset.clone(),
+            tool: Some(ToolKind::Variants),
+            field: None,
+            at: Some((p.line, p.col)),
+        })
+        .collect()
 }
 
 /// Read the problems of `source` (every one when `None`) over `checks`: the
@@ -288,6 +329,11 @@ pub fn gather(app: &mut App, source: Option<&str>, checks: &[ContentCheck]) -> P
                 .skipped
                 .push(json!({"source": src, "check": c.name, "why": why})),
         }
+    }
+    if wanted("check") && app.rules.opened {
+        let rows = script_rows(app);
+        out.ran.push(json!({"source": "check", "check": "script.analysis", "findings": rows.len()}));
+        out.rows.extend(rows);
     }
     if wanted("ground") {
         let rows = app.ground_problem_rows();
@@ -337,6 +383,7 @@ pub fn gather(app: &mut App, source: Option<&str>, checks: &[ContentCheck]) -> P
                 asset: None,
                 tool: None,
                 field: None,
+                at: None,
             }));
         }
     }
@@ -360,6 +407,61 @@ impl App {
         self.problems.merge(fresh, &sources);
     }
 
+    /// The rows about the document `doc`: its asset's rows, and for the
+    /// documents with no asset of their own the rows its tool holds: a
+    /// HUD's checks (not the kit's), the screen shown at its state, the
+    /// open script's diagnostics. The header's count and `problems.list`
+    /// with an `asset` read this.
+    pub fn doc_problems(&self, doc: Doc) -> Vec<&Problem> {
+        let asset = self.doc_asset(doc);
+        let screen = match (doc, self.ui_screens.pick.as_ref()) {
+            (Doc::Ui, Some(super::ui_screens::Pick::Native { screen, state })) => {
+                Some(format!("{screen}/{state}"))
+            }
+            _ => None,
+        };
+        self.problems
+            .rows
+            .iter()
+            .filter(|p| match doc {
+                Doc::Hud => p.source == "hud" && !p.code.starts_with("hud.kit"),
+                Doc::Rules => p.area == "scripts",
+                Doc::Ui if screen.is_some() => p.source == "ui" && Some(&p.target) == screen.as_ref(),
+                _ => asset.is_some() && p.asset == asset,
+            })
+            .collect()
+    }
+
+    /// How many rows [`Self::doc_problems`] has: the number on the
+    /// header's **Check**.
+    pub fn doc_problem_count(&self, doc: Doc) -> usize {
+        self.doc_problems(doc).len()
+    }
+
+    /// The rows about asset `id`: those that name it, and those of a
+    /// document whose asset it is ([`Self::doc_problems`]).
+    pub fn asset_problems(&self, id: &str) -> Vec<Problem> {
+        let norm = |s: &str| s.replace('/', "\\");
+        let id = norm(id);
+        let mut rows: Vec<Problem> = self
+            .problems
+            .rows
+            .iter()
+            .filter(|p| p.asset.as_deref().is_some_and(|a| norm(a) == id))
+            .cloned()
+            .collect();
+        for doc in [Doc::Hud, Doc::Ui, Doc::Rules] {
+            if self.doc_asset(doc).is_some_and(|a| norm(&a) == id) {
+                for p in self.doc_problems(doc) {
+                    if !rows.contains(p) {
+                        rows.push(p.clone());
+                    }
+                }
+            }
+        }
+        rows
+    }
+
     /// [`Action::OpenProblem`]: the document of row `index`, in front: a tag
     /// in its editor with the finding's field shown, a package or item in
     /// the browser, a screen or a HUD in its tool.
@@ -367,6 +469,16 @@ impl App {
         let Some(p) = self.problems.rows.get(index).cloned() else {
             return self.error(format!("no problem {index} in the list"));
         };
+        if let Some((line, col)) = p.at {
+            // A script finding: the editor, with the cursor on the line.
+            self.dispatch(Action::SetTool(ToolKind::Variants));
+            let rows = rules_edit::problems(&self.rules.text, &self.rules.analysis.diagnostics);
+            if let Some(row) = rows.iter().find(|r| r.line == line && r.col == col) {
+                self.rules.want_cursor = Some(row.at);
+                self.rules.cursor = row.at;
+            }
+            return;
+        }
         if let Some(asset) = &p.asset {
             if let Some(text) = asset.strip_prefix("tag:") {
                 self.open_asset(asset, None);
