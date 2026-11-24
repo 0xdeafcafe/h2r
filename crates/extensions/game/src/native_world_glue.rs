@@ -382,6 +382,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let run = u64::from(d.swap_count()).wrapping_add(1);
         let (device, color, depth) = d.external_pipeline_target(&ReadMemory(mem))?;
         let time = native_render::layer_pass::render_time(&ReadMemory(mem));
+        let accumulation = if d.samples_levels_in_place() {
+            accumulation_target(&ReadMemory(mem), d.bound_target())
+        } else { None };
         let select = |parts: &[(Owner, u8)], display_only| {
             let mut guard = if display_only || ready.owns_display_lightmaps() {
                 ready.gpu()
@@ -391,6 +394,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             let gpu = guard.as_mut()?;
             configure_world(gpu, depth, cull, &stencil);
             let mut selection = gpu.select_parts(parts, &admission_camera)?;
+            if !gpu.select_texaccum(&mut selection, accumulation) { return None; }
             gpu.animate_selection(&mut selection, time).ok()?;
             gpu.prewarm_world(&device, color, depth, &selection).then(|| Arc::new(selection))
         };
@@ -412,7 +416,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             let parts = display_section_parts(sections, &ready.section_parts,
                 &ready.part_bounds.read().unwrap_or_else(|e| e.into_inner()), &frustum);
             if !parts.is_empty() && let Some(selection) = select(&parts, true) {
-                let plan = d3d::ExternalPlan { stage: timeline::native::Stage::World, view, ranges: parts.len(), slots: Vec::new() };
+                let plan = d3d::ExternalPlan { stage: timeline::native::Stage::World, view, ranges: parts.len(), slots: accumulation_slots(&selection) };
                 let _ = d.draw_display_stage(&mut crate::native_lights_glue::DeviceMemory(mem), plan, Box::new(world_pass(selection, true)));
             }
         }
@@ -427,14 +431,16 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         };
         let ranges = selected.len();
         if ranges == 0 { return None; }
-        let plan = d3d::ExternalPlan { stage: timeline::native::Stage::World, view, ranges, slots: Vec::new() };
         let counted = timeline::phase::enabled().then(|| selected.iter().map(|p| p.0).collect::<Vec<_>>());
         let selection = select(&selected, false)?;
+        let plan = d3d::ExternalPlan { stage: timeline::native::Stage::World, view, ranges, slots: accumulation_slots(&selection) };
         let pass = || Box::new(world_pass(Arc::clone(&selection), false));
         drop(planning);
         // A scene stage: queued now, prepared and recorded when the render
         // thread reaches it. Not taken, the pass is reserved here as before.
-        let staged = if scene {
+        // A combined pass also validates alias identity on both pinned copies.
+        // Complete that check before clearing any guest mask.
+        let staged = if scene && selection.texaccum.is_none() {
             let reserved = d.reserve_scene_stage(&mut crate::native_lights_glue::DeviceMemory(mem), plan.clone(), pass());
             match reserved {
                 Ok(Some(reservation)) => {
@@ -452,7 +458,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             false
         };
         if !staged {
-            let reservation = d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass(), Vec::new()).ok()??;
+            let mut memory = crate::native_lights_glue::DeviceMemory(mem);
+            let reservation = if selection.texaccum.is_some() {
+                d.prepare_external_pass(&mut memory, plan, pass())
+            } else {
+                d.prepare_external_bound(&mut memory, plan, pass(), Vec::new())
+            }.ok()??;
             if !masks.apply(&mut render_bridge::native_world::Mem(mem)) {
                 timeline::native::Stage::World.count(timeline::native::Metric::RefusedMasks, ranges as u64);
                 return None;
@@ -1032,6 +1043,25 @@ fn display_section_parts(
     selected
 }
 
+/// Both headers identify target 1. The shader uses guest texel coordinates,
+/// so only a linear level of the descriptor's size can supply it.
+fn accumulation_target(mem: &ReadMemory<'_>, bound: [u32; 8]) -> Option<native_render::world_layers::Texaccum> {
+    use gfx::texture::{TextureDesc, TextureKind};
+    let target = native_render::world_layers::Texaccum::read(mem)?;
+    let surface = target.surface?;
+    if bound[..2].contains(&surface) { return None; }
+    let image = d3d::resource::PixelContainer::read(mem, target.texture).ok()?;
+    let desc = TextureDesc::from_header(image.format, image.size).ok()?;
+    (image.resource.kind() == d3d::resource::ResourceType::Texture
+        && desc.kind == TextureKind::D2 && desc.format.layout() == gfx::format::Layout::Linear
+        && desc.levels == 1 && (desc.width, desc.height) == target.size).then_some(target)
+}
+
+fn accumulation_slots(selection: &WorldSelection) -> Vec<Option<d3d::ExternalSlot>> {
+    selection.texaccum.and_then(|t| t.surface)
+        .map(|header| Some(d3d::ExternalSlot { header, written: false })).into_iter().collect()
+}
+
 /// One view's world pass.
 struct WorldPass {
     display_only: bool,
@@ -1103,6 +1133,10 @@ impl d3d::ExternalPass for WorldPass {
     // and each recording binds the target copy passed to it by the renderer.
     fn replays_scene(&self) -> bool { true }
 
+    fn sampled(&self) -> Vec<u32> {
+        self.selection.texaccum.iter().map(|t| t.texture).collect()
+    }
+
     fn relit_lightmap_ranges(&self) -> usize {
         self.ready.gpu().as_ref().map_or(0, |gpu| gpu.relit_lightmap_ranges(&self.selection))
     }
@@ -1152,7 +1186,24 @@ impl d3d::ExternalPass for WorldPass {
         let view = ViewInputs {
             constants: request.view_constants(t.copy, constants), guest_size: request.surface_size, size: t.size, z_scale: request.z_scale, w_clip: self.w_clip,
         };
-        let draws = gpu.selection_draws_lit(t.color_format, t.depth_format, t.size, selection, &view, world_lighting(t.copy, t.lighting));
+        let accumulation = if let Some(descriptor) = selection.texaccum {
+            let Some(level) = t.sampled.first().and_then(Option::as_ref) else {
+                return Some(Err("world accumulation level unavailable"));
+            };
+            let Some(source) = t.slots.first().and_then(Option::as_ref) else {
+                return Some(Err("world accumulation surface unavailable"));
+            };
+            if source.guest_size != descriptor.size || source.size != level.size
+                || source.sample.texture() != level.view.texture()
+                || level.view.texture() == t.color.texture() || level.view.texture() == t.depth.texture()
+                || !gfx::program::filterable(level.view.texture().format(), t.device.features())
+            {
+                return Some(Err("world accumulation target mismatch"));
+            }
+            Some((&t.device, &level.view))
+        } else { None };
+        let draws = gpu.selection_draws_bound(t.color_format, t.depth_format, t.size, selection, &view,
+            world_lighting(t.copy, t.lighting), accumulation);
         Some(draws.and_then(|draws| crate::native_layers_glue::clip_packets(draws, request, t.size)))
     }
 
@@ -2226,6 +2277,31 @@ mod tests {
         assert_eq!(inherited_cull((CullMode::Cw, FrontFace::Cw)), (Some(wgpu::Face::Front), wgpu::FrontFace::Cw));
         assert_eq!(inherited_cull((CullMode::Ccw, FrontFace::Cw)), (Some(wgpu::Face::Back), wgpu::FrontFace::Cw));
         assert_eq!(inherited_cull((CullMode::None, FrontFace::Ccw)), (None, wgpu::FrontFace::Ccw));
+    }
+
+    #[test]
+    fn combined_world_draws_pin_the_linear_accumulation_level_at_its_guest_size() {
+        use d3d::resource::{ResourceType, common};
+        use native_render::object_nodes::{TEXACCUM_HEADER as header, TEXACCUM_TARGET as descriptor};
+        let mut mem = engine::memory::FlatMemory::new(descriptor, 0x98);
+        for (offset, word) in [(0x78, 1), (0x80, 8), (0x84, 3), (0x88, 1)] {
+            mem.set_u32(descriptor + offset, word).unwrap();
+        }
+        let format = |f: gfx::D3DFormat| (2 << 4) | (f.raw() << 8) | (1 << 16);
+        mem.set_u32(header, ResourceType::Texture.raw() << common::TYPE_SHIFT).unwrap();
+        mem.set_u32(header + 12, format(gfx::D3DFormat::LinA8R8G8B8)).unwrap();
+        mem.set_u32(header + 16, 7 | (2 << 12)).unwrap();
+        let bound = [0; 8];
+        let t = accumulation_target(&ReadMemory(&mem), bound).unwrap();
+        assert_eq!((t.texture, t.size), (header, (8, 3)));
+        let mut alias = bound;
+        alias[0] = t.surface.unwrap();
+        assert!(accumulation_target(&ReadMemory(&mem), alias).is_none());
+        mem.set_u32(descriptor + 0x80, 7).unwrap();
+        assert!(accumulation_target(&ReadMemory(&mem), bound).is_none());
+        mem.set_u32(descriptor + 0x80, 8).unwrap();
+        mem.set_u32(header + 12, format(gfx::D3DFormat::A8R8G8B8)).unwrap();
+        assert!(accumulation_target(&ReadMemory(&mem), bound).is_none());
     }
 
     #[test]

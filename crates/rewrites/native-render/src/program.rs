@@ -222,6 +222,26 @@ pub enum ProgramChange {
 }
 
 impl MaterialProgram {
+    fn texaccum_stages(&self) -> [bool; 4] {
+        std::array::from_fn(|n| self.dims[n].is_some() && self.stages[n] == Stage::Engine(crate::object_program::TEXACCUM_TEXTURE))
+    }
+
+    pub(crate) fn needs_texaccum(&self) -> bool {
+        self.texaccum_stages().contains(&true) || !self.texaccum_dimensions.is_empty()
+    }
+
+    fn apply_texaccum_dimensions(&self, vertex: &mut VertexUniforms, size: (u32, u32)) {
+        for &(d, mask) in &self.texaccum_dimensions {
+            let row = if d.bank == 1 { &mut vertex.constants[18 + usize::from(d.reg)] }
+                else { &mut vertex.defaults[usize::from(d.reg)] };
+            let mut value = *row;
+            d.eval_size(&mut value, (size.0 as f32, size.1 as f32));
+            for (lane, dst) in row.iter_mut().enumerate() {
+                if mask & (1 << lane) != 0 { *dst = value[lane]; }
+            }
+        }
+    }
+
     fn samples_lightmap(&self) -> bool {
         self.stages.iter().zip(&self.dims).any(|(s, dim)| *s == Stage::Lightmap && dim.is_some())
     }
@@ -1483,7 +1503,7 @@ pub struct ProgramSet {
     rigid: HashMap<u16, Rigid>,
     /// Per batch of the world: the texture group, when the batch's
     /// material has a program.
-    batch_groups: Vec<Option<wgpu::BindGroup>>,
+    batch_groups: Vec<Option<BatchTextures>>,
     /// Only groups sampling the structure lightmap have alternate bindings.
     /// `None` keeps ordinary loads free of replacement textures and groups.
     relit: Option<Vec<Option<RelitBatch>>>,
@@ -1499,10 +1519,23 @@ pub struct ProgramSet {
 
 #[derive(Clone)]
 struct RelitBatch {
-    on: wgpu::BindGroup,
-    off: wgpu::BindGroup,
+    on: BatchTextures,
+    off: BatchTextures,
     /// This page/palette pair includes texels affected by the chosen lamp.
     changed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum BatchTextures {
+    Resident(wgpu::BindGroup),
+    /// The page (retail or relit) is resident. Target 1 is pinned per draw.
+    Accumulation { page: Option<wgpu::TextureView> },
+}
+
+impl BatchTextures {
+    fn resident(&self) -> Option<&wgpu::BindGroup> {
+        match self { Self::Resident(group) => Some(group), Self::Accumulation { .. } => None }
+    }
 }
 
 /// What [`ProgramSet::refresh`] did, by material, ascending.
@@ -1522,7 +1555,7 @@ enum Planned {
     Rebuild(
         Box<Gpu>,
         Option<Rigid>,
-        Vec<(usize, Option<wgpu::BindGroup>)>,
+        Vec<(usize, Option<BatchTextures>)>,
     ),
 }
 
@@ -1710,6 +1743,15 @@ impl Gpu {
             samplers,
             stage_views,
         })
+    }
+
+    fn batch_binding(&self, device: &wgpu::Device, page: Option<&wgpu::TextureView>) -> Option<BatchTextures> {
+        if self.program.texaccum_stages().contains(&true) {
+            if self.program.samples_lightmap() && page.is_none() { return None; }
+            Some(BatchTextures::Accumulation { page: page.cloned() })
+        } else {
+            self.textures(device, page).map(BatchTextures::Resident)
+        }
     }
 
     /// The texture group with `page` bound where the program samples the
@@ -2141,7 +2183,7 @@ impl ProgramSet {
                                 })
                                 .clone()
                         });
-                        g.textures(device, page.as_ref())
+                        g.batch_binding(device, page.as_ref())
                     })
                     .clone()
             })
@@ -2173,7 +2215,7 @@ impl ProgramSet {
                 continue;
             }
             let key = batch.lightmap.ok_or("world batch has no lightmap key")?;
-            self.batch_textures(index).ok_or("world batch has no retail binding")?;
+            self.lit_batch_binding(index, d3d::Lighting::Retail).ok_or("world batch has no retail binding")?;
             let (on_view, off_view, changed) = match pages.entry(key) {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                 std::collections::hash_map::Entry::Vacant(e) => {
@@ -2185,8 +2227,8 @@ impl ProgramSet {
             let bindings = match groups.entry((batch.material, key)) {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                 std::collections::hash_map::Entry::Vacant(e) => e.insert(RelitBatch {
-                    on: gpu.textures(device, Some(on_view)).ok_or("lamp-on binding unavailable")?,
-                    off: gpu.textures(device, Some(off_view)).ok_or("lamp-off binding unavailable")?,
+                    on: gpu.batch_binding(device, Some(on_view)).ok_or("lamp-on binding unavailable")?,
+                    off: gpu.batch_binding(device, Some(off_view)).ok_or("lamp-off binding unavailable")?,
                     changed: *changed,
                 }),
             };
@@ -2213,6 +2255,10 @@ impl ProgramSet {
     }
 
     pub(crate) fn lit_batch_textures(&self, index: usize, lighting: d3d::Lighting) -> Option<&wgpu::BindGroup> {
+        self.lit_batch_binding(index, lighting)?.resident()
+    }
+
+    pub(crate) fn lit_batch_binding(&self, index: usize, lighting: d3d::Lighting) -> Option<&BatchTextures> {
         if let Some(batch) = self.relit.as_ref().and_then(|v| v.get(index)).and_then(Option::as_ref) {
             match lighting {
                 d3d::Lighting::RelightOn => return Some(&batch.on),
@@ -2220,7 +2266,16 @@ impl ProgramSet {
                 _ => {}
             }
         }
-        self.batch_textures(index)
+        self.batch_groups.get(index)?.as_ref()
+    }
+
+    pub(crate) fn accumulation_group(
+        &self, device: &wgpu::Device, material: u16, page: Option<&wgpu::TextureView>, target: &wgpu::TextureView,
+    ) -> Option<wgpu::BindGroup> {
+        let gpu = self.materials.get(&material)?;
+        let supplied = gpu.program.texaccum_stages().into_iter().enumerate()
+            .filter_map(|(n, on)| on.then(|| (n, target.clone()))).collect();
+        gpu.textures_supplied(device, page, &supplied)
     }
 
     /// The program material `material` draws with, if it has one.
@@ -2271,7 +2326,7 @@ impl ProgramSet {
                     // One group per page, as the load makes them; a page
                     // that did not decode leaves its batches unbound, as
                     // at the load.
-                    let mut by_page: HashMap<Option<LightmapKey>, Option<wgpu::BindGroup>> =
+                    let mut by_page: HashMap<Option<LightmapKey>, Option<BatchTextures>> =
                         HashMap::new();
                     let mut groups = Vec::new();
                     for (n, b) in world
@@ -2284,7 +2339,7 @@ impl ProgramSet {
                             let page = b
                                 .lightmap
                                 .and_then(|k| self.pages.get(&k).cloned().flatten());
-                            g.textures(device, page.as_ref())
+                            g.batch_binding(device, page.as_ref())
                         });
                         groups.push((n, group.clone()));
                     }
@@ -2552,7 +2607,7 @@ impl ProgramSet {
             .stage(uploads.device, uploads.queue, &view_bytes(view));
         let viewport = start + VIEW_PREFIX as u64;
         for material in selection.materials.keys() {
-            if selection.constants.contains_key(material) {
+            if selection.constants.contains_key(material) || self.materials[material].program.needs_texaccum() {
                 continue;
             }
             uploads.copy(
@@ -2564,7 +2619,7 @@ impl ProgramSet {
             );
         }
         for &(material, instance) in &selection.vertices {
-            if selection.constants.contains_key(&material) {
+            if selection.constants.contains_key(&material) || self.materials[&material].program.needs_texaccum() {
                 continue;
             }
             let (buffer, offset) = if let Some(n) = instance {
@@ -2590,7 +2645,7 @@ impl ProgramSet {
         let (viewport, pixel) = rest.split_at(32);
         let mut writes = self.sampled_writes(view, selection);
         for material in selection.materials.keys() {
-            if selection.constants.contains_key(material) {
+            if selection.constants.contains_key(material) || self.materials[material].program.needs_texaccum() {
                 continue;
             }
             writes.push((
@@ -2600,7 +2655,7 @@ impl ProgramSet {
             ));
         }
         for &(material, instance) in &selection.vertices {
-            if selection.constants.contains_key(&material) {
+            if selection.constants.contains_key(&material) || self.materials[&material].program.needs_texaccum() {
                 continue;
             }
             let (buffer, offset) = if let Some(n) = instance {
@@ -2656,22 +2711,38 @@ impl ProgramSet {
     /// slot with its rows.
     fn sampled_writes(&self, view: &ViewInputs, selection: &crate::gpu::WorldSelection) -> Vec<(wgpu::Buffer, u64, Vec<u8>)> {
         let mut writes = Vec::new();
-        for (material, s) in &selection.constants {
+        for material in selection.materials.keys() {
+            let sampled = selection.constants.get(material);
+            let program = &self.materials[material].program;
+            let size = selection.texaccum.filter(|_| program.needs_texaccum()).map(|t| t.size);
+            if sampled.is_none() && size.is_none() { continue; }
+            let mut pixel = sampled.map_or(program.pixel, |s| s.pixel(&program.pixel));
+            if let Some(size) = size {
+                crate::object_program_gpu::texaccum_scale(&mut pixel, program.texaccum_stages(), size);
+            }
             let g = &self.materials[material];
-            writes.push((g.pixel_buffer.clone(), 0, frame_pixel(&s.pixel(&g.program.pixel), view).to_bytes()));
+            writes.push((g.pixel_buffer.clone(), 0, frame_pixel(&pixel, view).to_bytes()));
         }
         for &(material, instance) in &selection.vertices {
-            let Some(s) = selection.constants.get(&material) else { continue };
+            let sampled = selection.constants.get(&material);
+            let program = &self.materials[&material].program;
+            let size = selection.texaccum.filter(|_| program.needs_texaccum()).map(|t| t.size);
+            if sampled.is_none() && size.is_none() { continue; }
+            let vertex = |base: &VertexUniforms| {
+                let mut vertex = sampled.map_or_else(|| base.clone(), |s| s.vertex(base));
+                if let Some(size) = size { program.apply_texaccum_dimensions(&mut vertex, size); }
+                vertex
+            };
             match instance {
                 Some(n) => {
                     let r = &self.rigid[&material];
                     let slot = r.slots.binary_search_by_key(&n, |s| s.0).expect("selected slot");
-                    let vertex = rigid_vertex(&s.vertex(&r.program.vertex), view, &r.slots[slot].1);
+                    let vertex = rigid_vertex(&vertex(&r.program.vertex), view, &r.slots[slot].1);
                     writes.push((r.buffer.clone(), r.stride * slot as u64, vertex.to_bytes()));
                 }
                 None => {
                     let g = &self.materials[&material];
-                    writes.push((g.vertex_buffer.clone(), 0, frame_vertex(&s.vertex(&g.program.vertex), view).to_bytes()));
+                    writes.push((g.vertex_buffer.clone(), 0, frame_vertex(&vertex(&g.program.vertex), view).to_bytes()));
                 }
             }
         }
@@ -2722,7 +2793,7 @@ impl ProgramSet {
     }
 
     pub(crate) fn batch_textures(&self, index: usize) -> Option<&wgpu::BindGroup> {
-        self.batch_groups.get(index)?.as_ref()
+        self.batch_groups.get(index)?.as_ref()?.resident()
     }
 
     pub(crate) fn cluster(
@@ -3653,6 +3724,15 @@ mod tests {
     /// write exactly the ranges the ordered path writes.
     #[test]
     fn world_packets_draw_what_the_selected_pass_draws_with_the_view_written_up_front() {
+        draw_world_samples(false);
+    }
+
+    #[test]
+    fn combined_world_packets_sample_each_copys_accumulation_level_in_guest_texels() {
+        draw_world_samples(true);
+    }
+
+    fn draw_world_samples(accumulation: bool) {
         use crate::camera::RenderCamera;
         use crate::gpu::{DepthRule, GpuWorld, PassViewport};
         use crate::world::{PartInput, Placement, SectionInput, WorldBuilder};
@@ -3711,21 +3791,31 @@ mod tests {
             texture_modes: texture_modes([0, TEX_PROJECT2D, 0, 0]),
             ..Default::default()
         };
+        let stage = if accumulation { Stage::Engine(crate::object_program::TEXACCUM_TEXTURE) } else { Stage::Lightmap };
         let look = PassLook {
-            textures: [Stage::Empty, Stage::Lightmap, Stage::Empty, Stage::Empty],
+            textures: [Stage::Empty, stage, Stage::Empty, Stage::Empty],
             pixel_shader: shader.to_bytes(),
             ..plain_look()
         };
-        let program = compile(&look, &plain_program()).unwrap();
+        let mut program = compile(&look, &plain_program()).unwrap();
+        if accumulation {
+            program.texaccum_dimensions.push((
+                tags::material::EngineVertexConstant { bank: 1, reg: 2, mode: 9, stage: 2, source: 0 },
+                0b0011,
+            ));
+            program.vertex.constants[20] = [0.0, 0.0, -7.0, 11.0];
+        }
         let mut set = ProgramSet::new(
             &ctx.device, &ctx.queue, &world, [(0, program.clone()), (1, program)].into(),
             &mut |_| None, &mut |_| Some(Image::solid([10, 50, 90, 255])),
         );
-        let on = HashMap::from([(page.unwrap(), Image::solid([240, 60, 90, 255]))]);
-        let off = HashMap::from([(page.unwrap(), Image::solid([20, 60, 90, 255]))]);
-        assert!(set.install_relight(&ctx.device, &ctx.queue, &world, &[on.clone(), HashMap::new()]).is_err());
-        assert!(!set.has_relight(), "a missing lamp-off page refuses both arms");
-        set.install_relight(&ctx.device, &ctx.queue, &world, &[on, off]).unwrap();
+        if !accumulation {
+            let on = HashMap::from([(page.unwrap(), Image::solid([240, 60, 90, 255]))]);
+            let off = HashMap::from([(page.unwrap(), Image::solid([20, 60, 90, 255]))]);
+            assert!(set.install_relight(&ctx.device, &ctx.queue, &world, &[on.clone(), HashMap::new()]).is_err());
+            assert!(!set.has_relight(), "a missing lamp-off page refuses both arms");
+            set.install_relight(&ctx.device, &ctx.queue, &world, &[on, off]).unwrap();
+        }
         let mut gpu = GpuWorld::with_programs(&ctx.device, &ctx.queue, world, set);
         let camera = RenderCamera {
             position: [0.0; 3],
@@ -3742,9 +3832,14 @@ mod tests {
             (Owner::Cluster(1), 0),
             (Owner::Cluster(2), 0),
         ];
-        let selection = gpu
+        let mut selection = gpu
             .select_parts(&parts, &camera)
             .expect("all parts in view");
+        if accumulation {
+            assert!(!gpu.select_texaccum(&mut selection, None));
+            let target = crate::world_layers::Texaccum { surface: Some(17), texture: 21, size: (4, 2) };
+            assert!(gpu.select_texaccum(&mut selection, Some(target)));
+        }
         assert!(gpu.prepare_selection(&ctx.device, F::Rgba8Unorm, F::Depth32Float, &selection));
         let mut constants = [[0.0; 4]; VIEW_CONSTANTS];
         constants[..4].copy_from_slice(&[
@@ -3776,10 +3871,10 @@ mod tests {
                 view_formats: &[],
             })
         };
-        assert_eq!(gpu.relit_lightmap_ranges(&selection), parts.len());
+        assert_eq!(gpu.relit_lightmap_ranges(&selection), if accumulation { 0 } else { parts.len() });
         let mut images = Vec::new();
         // Packets first: the rows they read are only those written ahead.
-        for (lighting, packets, expected) in [
+        let retail_cases = [
             (d3d::Lighting::Retail, true, [10, 50, 90]),
             (d3d::Lighting::Retail, false, [10, 50, 90]),
             (d3d::Lighting::RelightOn, true, [240, 60, 90]),
@@ -3787,7 +3882,13 @@ mod tests {
             (d3d::Lighting::RelightOff, true, [20, 60, 90]),
             (d3d::Lighting::RelightOff, false, [20, 60, 90]),
             (d3d::Lighting::Retail, true, [10, 50, 90]),
-        ] {
+        ];
+        let combined_cases = [
+            (d3d::Lighting::Retail, true, [31, 75, 95]),
+            (d3d::Lighting::Retail, true, [75, 31, 95]),
+        ];
+        let cases: &[_] = if accumulation { &combined_cases } else { &retail_cases };
+        for &(lighting, packets, expected) in cases {
             let (color, depth) = (texture(F::Rgba8Unorm), texture(F::Depth32Float));
             let (cv, dv) = (
                 color.create_view(&Default::default()),
@@ -3826,14 +3927,30 @@ mod tests {
                 occlusion_query_set: None,
                 multiview_mask: None,
             }));
+            let source = accumulation.then(|| {
+                // The constant texture coordinate (.5,.5) is the centre of
+                // guest texel zero. Scale this copy 2x; every texel outside
+                // its top-left 2x2 is black.
+                let mut rgba = vec![0; 8 * 4 * 4];
+                for (x, y) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                    let at = (y * 8 + x) * 4;
+                    rgba[at..at + 4].copy_from_slice(&[expected[0], expected[1], expected[2], 255]);
+                }
+                crate::gpu::texture(&ctx.device, &ctx.queue, &Image::level(8, 4, rgba).unwrap(), "synthetic target 1")
+            });
+            if accumulation {
+                assert!(gpu.selection_draws_lit(F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE),
+                    &selection, &view, lighting).is_err());
+            }
             let draws = gpu
-                .selection_draws_lit(
+                .selection_draws_bound(
                     F::Rgba8Unorm,
                     F::Depth32Float,
                     (SIZE, SIZE),
                     &selection,
                     &view,
                     lighting,
+                    source.as_ref().map(|v| (&ctx.device, v)),
                 )
                 .unwrap();
             assert_eq!(
@@ -3843,9 +3960,17 @@ mod tests {
             );
             assert_eq!(
                 draws.writes.len(),
-                2 + 2 * 2,
+                if accumulation { 4 } else { 2 + 2 * 2 },
                 "each material's pixel tail, its vertex prefix and viewport"
             );
+            if accumulation {
+                let vertex_blocks: Vec<_> = draws.writes.iter().filter(|(_, _, data)| data.len() == VertexUniforms::SIZE).collect();
+                assert_eq!(vertex_blocks.len(), 2);
+                for (_, offset, data) in vertex_blocks {
+                    assert_eq!(*offset, 0);
+                    assert_eq!(&data[20 * 16..21 * 16], bytemuck::bytes_of(&[4.0f32, 2.0, -7.0, 11.0]));
+                }
+            }
             if packets {
                 // Ahead of the submission (`GfxBackend::write_ahead`).
                 for (buffer, offset, bytes) in &draws.writes {
@@ -3910,6 +4035,11 @@ mod tests {
             let pixels = read(&color, wgpu::TextureAspect::All);
             assert!(pixels.chunks_exact(4).any(|p| p[..3] == expected), "{lighting:?}, packets {packets}");
             images.push((pixels, read(&depth, wgpu::TextureAspect::DepthOnly)));
+        }
+        if accumulation {
+            assert_ne!(images[0].0, images[1].0);
+            assert_eq!(images[0].1, images[1].1);
+            return;
         }
         assert_eq!(images[0], images[1]);
         assert_eq!(images[2], images[3]);

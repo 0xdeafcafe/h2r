@@ -264,6 +264,7 @@ impl PassStencil {
 /// A single guest list in draw order. Only uniform destinations are deduplicated.
 #[derive(Default)]
 pub struct WorldSelection {
+    pub texaccum: Option<crate::world_layers::Texaccum>,
     spans: Vec<(usize, usize, usize)>,
     pub(crate) materials: HashMap<u16, MaterialUse>,
     pub(crate) vertices: HashSet<(u16, Option<u32>)>,
@@ -1436,6 +1437,15 @@ impl GpuWorld {
         Some(selection)
     }
 
+    /// Bind the live target descriptor only for selections whose sampled stages or
+    /// vertex constants use it. A missing descriptor prevents their reservation.
+    pub fn select_texaccum(&self, selection: &mut WorldSelection, target: Option<crate::world_layers::Texaccum>) -> bool {
+        let needed = self.programs.as_ref().is_some_and(|p| selection.materials.keys()
+            .any(|&m| p.program(m).is_some_and(|p| p.needs_texaccum())));
+        selection.texaccum = target.filter(|_| needed);
+        !needed || selection.texaccum.is_some()
+    }
+
     /// Check bindings on this attachment pair before the guest parts can be suppressed.
     pub fn prepare_selection(
         &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, selection: &WorldSelection,
@@ -1452,7 +1462,8 @@ impl GpuWorld {
         };
         let state = &self.stencil.state;
         p.selected_pipelines(device, color, depth, state, &selection.materials, usage)
-            && selection.spans.iter().all(|&(batch, _, _)| p.batch_textures(batch).is_some())
+            && selection.spans.iter().all(|&(batch, _, _)| p.lit_batch_binding(batch, d3d::Lighting::Retail).is_some())
+            && (selection.texaccum.is_some() || !selection.materials.keys().any(|&m| p.program(m).is_some_and(|p| p.needs_texaccum())))
             && selection.vertices.iter().all(|&(material, instance)| match instance {
                 Some(n) => p.rigid(material, n, color, depth, state).is_some(),
                 None => p.cluster(material, color, depth, state).is_some(),
@@ -1628,6 +1639,15 @@ impl GpuWorld {
         &mut self, color_format: wgpu::TextureFormat, depth_format: wgpu::TextureFormat, target_size: (u32, u32),
         selection: &WorldSelection, view: &ViewInputs, lighting: d3d::Lighting,
     ) -> Result<gfx::external::ExternalDraws, &'static str> {
+        self.selection_draws_bound(color_format, depth_format, target_size, selection, view, lighting, None)
+    }
+
+    pub fn selection_draws_bound(
+        &mut self, color_format: wgpu::TextureFormat, depth_format: wgpu::TextureFormat, target_size: (u32, u32),
+        selection: &WorldSelection, view: &ViewInputs, lighting: d3d::Lighting,
+        accumulation: Option<(&wgpu::Device, &wgpu::TextureView)>,
+    ) -> Result<gfx::external::ExternalDraws, &'static str> {
+        use crate::program::BatchTextures;
         use gfx::{BoundGroup, RecordedDraw, ScissorRect};
         let Self { programs, packet_pipelines, world, stencil, program_vertices, indices, .. } = self;
         let p = programs.as_ref().ok_or("world programs unavailable")?;
@@ -1646,7 +1666,8 @@ impl GpuWorld {
         }
         let mut packets = Vec::new();
         let mut ranges = 0;
-        let mut bound: Option<((u16, &wgpu::BindGroup, Option<u32>, u32), Bound)> = None;
+        let mut bound: Option<((u16, wgpu::BindGroup, Option<u32>, u32), Bound)> = None;
+        let mut live_groups = HashMap::new();
         let mut pending: Option<std::ops::Range<u32>> = None;
         let emit = |packets: &mut Vec<RecordedDraw>, b: &Bound, range: std::ops::Range<u32>| {
             let count = range.end - range.start;
@@ -1664,7 +1685,18 @@ impl GpuWorld {
         };
         for &(i, first, last) in &selection.spans {
             let batch = &world.batches[i];
-            let textures = p.lit_batch_textures(i, lighting).ok_or("world batch textures unavailable")?;
+            let textures: &wgpu::BindGroup = match p.lit_batch_binding(i, lighting).ok_or("world batch textures unavailable")? {
+                BatchTextures::Resident(group) => group,
+                BatchTextures::Accumulation { page } => {
+                    let (device, target) = accumulation.ok_or("world accumulation target unavailable")?;
+                    match live_groups.entry((batch.material, batch.lightmap)) {
+                        std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                        std::collections::hash_map::Entry::Vacant(entry) => entry.insert(
+                            p.accumulation_group(device, batch.material, page.as_ref(), target)
+                                .ok_or("world accumulation binding unavailable")?),
+                    }
+                }
+            };
             let draws = &world.draws[first..last];
             let mut k = 0;
             while k < draws.len() {
@@ -1679,7 +1711,7 @@ impl GpuWorld {
                     Owner::Cluster(_) => None,
                     Owner::Instance(n) => Some(n),
                 };
-                let binding = (batch.material, textures, instance, reference);
+                let binding = (batch.material, textures.clone(), instance, reference);
                 if bound.as_ref().is_none_or(|(at, _)| *at != binding) {
                     if let (Some(range), Some((_, b))) = (pending.take(), &bound) {
                         emit(&mut packets, b, range);
