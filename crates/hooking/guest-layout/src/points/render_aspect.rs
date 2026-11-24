@@ -4,6 +4,9 @@ use super::{
 };
 
 pub const DOC: &str = "docs/graphics/high-resolution.md";
+// The main visibility builder has selected the tangent rectangle in ECX.
+pub const VIEW_FRUSTUM_RECT: Point = Point::new("VIEW_FRUSTUM_RECT", 0x0004_4300, Sig::Site, DOC);
+pub const VIEW_FRUSTUM_CALL_RETURN: u32 = 0x0003_f2dd;
 pub const ANCHOR: Point = Point::new("HUD_LAYOUT_ANCHOR", 0x0013_96c7, Sig::Site, DOC);
 pub const ANCHOR_READY: Point = Point::new("HUD_LAYOUT_ANCHOR_READY", 0x0013_9929, Sig::Site, DOC);
 // Fade over the whole per-player UI viewport inside the menu callback.
@@ -65,6 +68,7 @@ pub fn instruction_entries() -> impl Iterator<Item = u32> {
         ui_render::HUD_RETURN.base,
         ui_render::HUD_HIDDEN_RETURN.base,
         ui_render::LAYERS_RETURN.base,
+        VIEW_FRUSTUM_RECT.base,
         ANCHOR.base,
         ANCHOR_READY.base,
         MENU_FILL.base,

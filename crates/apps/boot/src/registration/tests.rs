@@ -241,6 +241,7 @@ fn registry_with_film(
         crate::render_aspect::install(
             &mut features,
             Arc::new(|| (640, 480)),
+            false,
             Arc::new(|| 0),
             Arc::new(NoDevice),
         )
