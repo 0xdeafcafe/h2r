@@ -310,13 +310,22 @@ fn the_cards_need_the_kit_in_the_set_and_cards_to_add() {
 // ---- Firefight's wave sets ----
 
 #[test]
-fn the_modes_package_carries_the_four_wave_sets_the_game_builds_in() {
+fn the_modes_package_carries_the_wave_sets_the_game_builds_in() {
     let modes = package("modes");
     assert_eq!(check_package(&modes), vec![]);
     let sets = wave_sets(std::slice::from_ref(&modes));
     assert!(sets.iter().all(|(id, _)| id == "modes"));
     let defs: Vec<_> = sets.into_iter().map(|(_, d)| d).collect();
-    assert_eq!(defs, firefight::builtin::definitions().to_vec());
+    // The built-ins, then the map-specific sets, in item order
+    // (firefight::builtin::{definitions, MAP_SETS}).
+    let mut expected = firefight::builtin::definitions().to_vec();
+    expected.extend(firefight::builtin::MAP_SETS.iter().map(
+        |&(_, file, text)| {
+            serde_json::from_str(text)
+                .unwrap_or_else(|e| panic!("{file} is not a Firefight set: {e}"))
+        },
+    ));
+    assert_eq!(defs, expected);
     // The director's script builds from each, as a lobby builds it.
     for def in &defs {
         firefight::script::compile(def).unwrap();

@@ -272,8 +272,30 @@ fn the_settings_are_kept_with_every_other_setting() {
         );
         assert!(d.key.starts_with("firefight."), "{}", d.key);
     }
-    let keys: Vec<String> = doc().rows.values().filter_map(|r| r.setting.clone()).collect();
-    let defs: Vec<&str> = DEFS.iter().map(|d| d.key).collect();
+    // The Wave set row is bound instead: its offered values are the lobby
+    // map's menu, not the setting's fixed choices.
+    let (settings, binds): (Vec<Option<String>>, Vec<Option<String>>) = doc()
+        .rows
+        .values()
+        .map(|r| (r.setting.clone(), r.bind.clone()))
+        .unzip();
+    assert_eq!(
+        binds,
+        [
+            None,
+            Some("waveset".to_owned()),
+            None,
+            None,
+            None,
+            None
+        ]
+    );
+    let keys: Vec<String> = settings.into_iter().flatten().collect();
+    let defs: Vec<&str> = DEFS
+        .iter()
+        .map(|d| d.key)
+        .filter(|key| *key != WAVE_SET.key)
+        .collect();
     assert_eq!(keys, defs, "a row per setting, in the page's order");
 }
 
@@ -331,6 +353,7 @@ fn the_choices_reach_the_definition_and_the_difficulty() {
         o,
         Options {
             enabled: true,
+            map: None,
             wave_set: 2,
             teams: None,
             difficulty: Difficulty::Legendary,
@@ -383,6 +406,91 @@ fn every_wave_set_and_lives_choice_makes_a_valid_definition() {
             }
         }
     }
+    // The map-specific set, on its own map.
+    for teams in [None, Some(1), Some(2)] {
+        for lives in lives_choices() {
+            for skulls in [true, false] {
+                let o = Options {
+                    map: Some("beavercreek".into()),
+                    wave_set: usize::try_from(builtin::MAP_SET_BASE).unwrap(),
+                    teams,
+                    lives,
+                    skulls,
+                    ..Options::default()
+                };
+                let def = o.definition().unwrap();
+                ::firefight::validate(&def, &limits)
+                    .unwrap_or_else(|e| panic!("{o:?}: {e}"));
+            }
+        }
+    }
+}
+
+/// The lobby's kit map puts its own set first in the Wave set row: the
+/// picker offers Basin, then the built-ins; picking Basin keeps its own
+/// value, and right from it steps to Holdout.
+#[test]
+fn the_wave_set_row_offers_the_maps_set_first_on_its_map() {
+    use crate::lobby_start;
+    use crate::list_class::Rows;
+    lobby_start::set_kit_map(Some("beavercreek".into()));
+    let kept = store();
+    let s = screen(&kept);
+    assert_eq!(s.press(1), Chosen::Open(picker::NAME), "Wave set");
+    let pick = picker::current().expect("a pick");
+    assert_eq!(
+        pick.values,
+        ["Basin", "Holdout", "Attrition", "Last Stand", "Crossfire"]
+    );
+    assert_eq!(pick.opener, Opener::GAME_SETUP_FIREFIGHT);
+    assert_eq!(
+        (pick.set)(0),
+        "firefight.waveset -> Basin",
+        "the picker keeps the map set's own value"
+    );
+    assert_eq!(kept.get(WAVE_SET.key), Some(Value::Int(builtin::MAP_SET_BASE)));
+    // Right from the map's own set steps to Holdout.
+    let l = list(&s);
+    let mut state = named(&l, "focus-0");
+    assert_eq!(
+        run(&l, &mut state, [Down, Right]),
+        vec![
+            ListEffect::Focus(1),
+            stepped("firefight: right on row 1: firefight.waveset -> Holdout")
+        ]
+    );
+    assert_eq!(kept.get(WAVE_SET.key), Some(Value::Int(0)));
+    lobby_start::set_kit_map(None);
+}
+
+/// A map-specific set plays on its own map only (`builtin::resolve`);
+/// elsewhere the built-ins play, the row says what does, and a value no
+/// set names defines nothing.
+#[test]
+fn a_map_set_value_plays_on_its_map_and_falls_back() {
+    use crate::lobby_start;
+    let kept = store();
+    kept.set(WAVE_SET.key, Value::Int(builtin::MAP_SET_BASE)).unwrap();
+    // No map known: the built-ins play.
+    let o = Options::read(&kept).unwrap();
+    assert_eq!(o.definition().unwrap(), builtin::definitions()[0]);
+    assert_eq!(o.wave_set_label(), "Holdout");
+    // On Beaver Creek: Basin, one team of its own.
+    let o = Options::for_map(&kept, Some("beavercreek")).unwrap();
+    assert_eq!(o.definition().unwrap(), builtin::map_sets("beavercreek")[0]);
+    assert_eq!(o.wave_set_label(), "Basin");
+    assert_eq!(o.player_teams(), 1);
+    // Another map: the built-ins again, and the row says so.
+    let o = Options::for_map(&kept, Some("coagulation")).unwrap();
+    assert_eq!(o.definition().unwrap(), builtin::definitions()[0]);
+    assert_eq!(o.wave_set_label(), "Holdout");
+    // A value no set names defines nothing.
+    let refused = Options {
+        wave_set: 99,
+        ..Options::default()
+    };
+    assert!(refused.definition().is_err());
+    lobby_start::set_kit_map(None);
 }
 
 /// The starting pools the page offers: none (the wave set's own) first.
