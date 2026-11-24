@@ -12,7 +12,7 @@
 //! old occupant is deleted, as `world.object.respawn` does.
 
 use agent_proto::sim::Placement;
-use agent_proto::{Kind, ObjectId, RpcError};
+use agent_proto::{ObjectId, RpcError};
 use engine::GuestMemory;
 use engine::entry::{Cx, EntryError, GuestCall};
 use engine::handle::DatumHandle;
@@ -82,7 +82,12 @@ fn survey(m: &dyn GuestMemory, definition: u32, previews: &Previews) -> Result<S
         {
             continue;
         }
-        let Some(kind) = Kind::of_object_type(ty as u8) else {
+        // The kinds a placement block makes: `of_object_type` leaves out the
+        // vehicles and machines, which have scans of their own.
+        let Some(kind) = BLOCKS
+            .iter()
+            .find_map(|&(_, kind, t)| (t as u8 == ty as u8).then_some(kind))
+        else {
             continue;
         };
         let id = ObjectId { kind, key: obj.id().0 };
