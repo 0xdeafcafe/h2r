@@ -16,7 +16,7 @@ use tags::geometry::{RawSource, Section, TagView};
 use tags::structure::{Lightmap, LightmapGroup, LightmapRenderInfo, StructureRender};
 
 mod gameplay;
-pub use gameplay::{Gameplay, flag_outlines, flag_type_name};
+pub use gameplay::{Gameplay, flag_type_name};
 
 pub type Vec3 = [f32; 3];
 pub type Mat4 = [[f32; 4]; 4];

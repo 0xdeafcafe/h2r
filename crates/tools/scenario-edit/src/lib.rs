@@ -18,6 +18,9 @@
 //!   and picking, and an offscreen wgpu viewport (no UI toolkit).
 //! - [`scene`]: the map's art for the viewport: the BSP textured with each
 //!   shader's base map, and the placed objects' render models.
+//! - [`marker_view`]: the game type markers of the open map (spawns, goals,
+//!   hills, item spawners, trigger volumes) as the shared `game_markers`
+//!   shapes, placed and split into the layers' overlays.
 //! - [`volumes`]: the trigger volumes, kill triggers and BSP switches as
 //!   oriented boxes to draw, pick and edit (BSP switches read only), kept
 //!   as the editor's own block list beside [`layout`].
@@ -44,6 +47,7 @@ pub mod fixture;
 pub mod geometry;
 pub mod layers;
 pub mod layout;
+pub mod marker_view;
 pub mod native_view;
 pub mod nav_view;
 pub mod object_collision;
