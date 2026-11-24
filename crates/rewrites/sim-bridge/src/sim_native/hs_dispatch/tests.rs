@@ -1,13 +1,14 @@
 use super::*;
 use engine::FlatMemory;
 
-const BASE: u32 = THREADS & !0xfff;
-const THREAD_POOL: u32 = BASE + 0x1000;
-const THREAD: u32 = BASE + 0x1100;
-const NODE_POOL: u32 = BASE + 0x2000;
-const NODE_DATA: u32 = BASE + 0x2100;
-const STACK: u32 = BASE + 0x3000;
-const PARAMETERS: u32 = BASE + 0x3200;
+const BASE: u32 = hs::FUNCTION_COUNT & !0xfff;
+const ARENA: u32 = THREADS & !0xfff;
+const THREAD_POOL: u32 = ARENA + 0x1000;
+const THREAD: u32 = ARENA + 0x1100;
+const NODE_POOL: u32 = ARENA + 0x2000;
+const NODE_DATA: u32 = ARENA + 0x2100;
+const STACK: u32 = ARENA + 0x3000;
+const PARAMETERS: u32 = ARENA + 0x3200;
 const FRAME: u32 = THREAD + 0x40;
 const PREFIX: u16 = 2;
 const ARGS: u32 = FRAME + FRAME_LOCALS + PREFIX as u32;
@@ -18,7 +19,7 @@ const ARG1: u32 = 0xa11c_0002;
 const ARG2: u32 = 0xc0de_0003;
 
 fn fixture(count: u32, first: bool, position: u16, expression: u32) -> (CpuAbi, FlatMemory) {
-    let mut mem = FlatMemory::new(BASE, 0x4000);
+    let mut mem = FlatMemory::new(BASE, (ARENA - BASE + 0x4000) as usize);
     for (global, pool, data, stride, used) in [
         (THREADS, THREAD_POOL, THREAD, THREAD_BYTES, 1),
         (NODES, NODE_POOL, NODE_DATA, Node::SIZE as u32, 4),
@@ -47,6 +48,10 @@ fn fixture(count: u32, first: bool, position: u16, expression: u32) -> (CpuAbi, 
         mem.set_u32(at + 8, next).unwrap();
         mem.set_u32(at + 0x10, data).unwrap();
     }
+    let descriptor = PARAMETERS - 14;
+    mem.set_u32(hs::FUNCTION_COUNT, 9).unwrap();
+    mem.set_u32(hs::FUNCTION_TABLE + 4 * 8, descriptor).unwrap();
+    mem.set_u16(descriptor + 12, count as u16).unwrap();
     mem.set_u16(PARAMETERS, 8).unwrap();
     mem.set_u16(PARAMETERS + 2, 8).unwrap();
     let index = ARGS + count * 4;
@@ -71,7 +76,9 @@ fn fixture(count: u32, first: bool, position: u16, expression: u32) -> (CpuAbi, 
 #[test]
 fn reentry_resumes_after_the_completed_argument() {
     let (cpu, mem) = fixture(2, false, 1, ARG2);
-    let planned = plan(&cpu, &mem).unwrap();
+    let Prediction::Arguments(planned) = plan(&cpu, &mem).unwrap() else {
+        panic!("synthetic signature should match");
+    };
     assert_eq!(
         (planned.index, planned.next, planned.result),
         (2, Datum::NULL, 0)
@@ -83,7 +90,9 @@ fn reentry_resumes_after_the_completed_argument() {
         (ARGS + 4, Datum(ARG2))
     );
     let (cpu, mut mem) = fixture(2, true, 0x7777, u32::MAX);
-    let first = plan(&cpu, &mem).unwrap();
+    let Prediction::Arguments(first) = plan(&cpu, &mem).unwrap() else {
+        panic!("synthetic signature should match");
+    };
     assert!(first.child.is_none());
     assert_eq!((first.index, first.next, first.result), (1, Datum(ARG2), 0));
     mem.set_u16(PARAMETERS, 7).unwrap();
@@ -103,8 +112,29 @@ fn ready_returns_the_start_of_the_reserved_block() {
             .unwrap()
             .contains("argument block")
     );
-    mem.set_u32(STACK + 8, u32::MAX).unwrap();
+    mem.set_u32(STACK + 8, u16::MAX.into()).unwrap();
+    mem.set_u16(PARAMETERS - 2, u16::MAX).unwrap();
     assert!(plan(&cpu, &mem).is_none(), "oversized argument reservation");
+}
+
+#[test]
+fn a_wrapper_receiving_another_builtins_signature_is_a_mismatch() {
+    let (cpu, mut mem) = fixture(2, false, 2, u32::MAX);
+    mem.set_u32(STACK + 8, 1).unwrap();
+    let wrong_count = plan(&cpu, &mem).unwrap();
+    assert!(
+        compare(&wrong_count, &cpu, &mem)
+            .unwrap()
+            .contains("expects 2 arguments")
+    );
+    mem.set_u32(STACK + 8, 2).unwrap();
+    mem.set_u32(STACK + 12, PARAMETERS + 2).unwrap();
+    let wrong_type = plan(&cpu, &mem).unwrap();
+    assert!(
+        compare(&wrong_type, &cpu, &mem)
+            .unwrap()
+            .contains("argument 1 expects type 8")
+    );
 }
 
 /// Repeat each boundary against the actual lifted helper and expression

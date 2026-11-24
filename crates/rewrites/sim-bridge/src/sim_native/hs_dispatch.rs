@@ -36,6 +36,12 @@ fn node(mem: &dyn GuestMemory, datum: Datum) -> Option<Node> {
 }
 
 #[derive(Debug)]
+enum Prediction {
+    Arguments(Dispatch),
+    WrongSignature(String),
+}
+
+#[derive(Debug)]
 struct Dispatch {
     thread: u32,
     parent: u32,
@@ -55,17 +61,36 @@ struct Child {
     flags: u8,
 }
 
-fn plan(cpu: &CpuAbi, mem: &dyn GuestMemory) -> Option<Dispatch> {
+fn plan(cpu: &CpuAbi, mem: &dyn GuestMemory) -> Option<Prediction> {
     let arg = |offset| mem.u32(cpu.esp.checked_add(offset)?).ok();
     let thread = record(mem, THREADS, THREAD_BYTES, Datum(arg(4)?))?;
-    let count = arg(8)?;
-    let parameters = arg(12)?;
+    let supplied_count = arg(8)?;
+    let supplied_parameters = arg(12)?;
     let first = arg(16)? as u8 != 0;
     let end = thread.checked_add(THREAD_BYTES)?;
     let parent = mem.u32(thread + 0x10).ok()?;
     if !(thread + FIRST_FRAME..=end.checked_sub(FRAME_LOCALS)?).contains(&parent) {
         return None;
     }
+
+    // Select the signature independently from the expression being evaluated.
+    // Two evaluator wrappers can share an entry, with distinct descriptors.
+    let call = node(mem, Datum(mem.u32(parent + 4).ok()?))?;
+    let index = u32::from(call.opcode());
+    if call.atom() || call.script_call() || index >= mem.u32(hs::FUNCTION_COUNT).ok()? {
+        return None;
+    }
+    let descriptor = mem.u32(hs::FUNCTION_TABLE + 4 * index).ok()?;
+    if descriptor == 0 || mem.u16(descriptor.checked_add(2)?).ok()? & 2 != 0 {
+        return None;
+    }
+    let count = u32::from(mem.u16(descriptor.checked_add(12)?).ok()?);
+    if supplied_count != count {
+        return Some(Prediction::WrongSignature(format!(
+            "builtin {index} expects {count} arguments, wrapper supplied {supplied_count}"
+        )));
+    }
+    let parameters = descriptor.checked_add(14)?;
 
     // Evaluators can reserve other locals before entering this helper.
     let used = u32::from(mem.u16(parent + 0xc).ok()?);
@@ -76,7 +101,6 @@ fn plan(cpu: &CpuAbi, mem: &dyn GuestMemory) -> Option<Dispatch> {
     }
     let cursor = u16::try_from(used + count * 4 + 6).ok()?;
     let (index, expression) = if first {
-        let call = node(mem, Datum(mem.u32(parent + 4).ok()?))?;
         let head = node(mem, Datum(call.data()))?;
         (0, head.next())
     } else {
@@ -91,6 +115,19 @@ fn plan(cpu: &CpuAbi, mem: &dyn GuestMemory) -> Option<Dispatch> {
     let signature: Vec<_> = (0..count)
         .map(|i| mem.u16(parameters.checked_add(i * 2)?).ok())
         .collect::<Option<_>>()?;
+    if supplied_parameters != parameters {
+        for (slot, &ty) in signature.iter().enumerate() {
+            let supplied = mem
+                .u16(supplied_parameters.checked_add(2 * slot as u32)?)
+                .ok()?;
+            if supplied != ty {
+                return Some(Prediction::WrongSignature(format!(
+                    "builtin {} argument {slot} expects type {ty}, wrapper supplied {supplied}",
+                    call.opcode()
+                )));
+            }
+        }
+    }
     let mut result = Dispatch {
         thread,
         parent,
@@ -129,10 +166,14 @@ fn plan(cpu: &CpuAbi, mem: &dyn GuestMemory) -> Option<Dispatch> {
             }
         }
     }
-    Some(result)
+    Some(Prediction::Arguments(result))
 }
 
-fn compare(expected: &Dispatch, cpu: &CpuAbi, mem: &dyn GuestMemory) -> Option<String> {
+fn compare(prediction: &Prediction, cpu: &CpuAbi, mem: &dyn GuestMemory) -> Option<String> {
+    let expected = match prediction {
+        Prediction::WrongSignature(difference) => return Some(difference.clone()),
+        Prediction::Arguments(expected) => expected,
+    };
     let current = expected.child.as_ref().map_or(expected.parent, |c| c.frame);
     let value = |name, actual, expected| {
         (actual != Some(expected))
