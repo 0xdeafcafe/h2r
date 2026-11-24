@@ -138,6 +138,8 @@ pub enum Refusal {
 pub struct WorldPass {
     pub look: PassLook,
     pub state: PassState,
+    /// Effective writes that take their dimensions from target 1.
+    pub texaccum_dimensions: Vec<(tags::material::EngineVertexConstant, u8)>,
     /// The implementation does not set `CULLMODE`: the pass culls as the
     /// device does when layer 3 is drawn (`crate::program::InheritedCull`),
     /// and nothing where that is not known (`state`'s cull is `None`).
@@ -159,7 +161,7 @@ pub struct WorldPass {
 /// faces: the 43 px on 03a).
 pub fn layer3_pass(material: &Material) -> Result<WorldPass, Refusal> {
     let (pass, imp) = layer3_selected(material)?;
-    world_pass(implementation_look(pass, imp)?, imp, &material.inputs)
+    world_pass(world_implementation_look(pass, imp, None)?, imp, &material.inputs)
 }
 
 /// [`layer3_pass`] for a pass whose constants animate: compiled from its
@@ -173,7 +175,7 @@ pub fn layer3_pass_sampled(
 ) -> Result<(WorldPass, Option<crate::layer_pass::PassAnimation>), Refusal> {
     let (pass, imp) = layer3_selected(material)?;
     let (imp, animation) = sampled(imp, properties)?;
-    Ok((world_pass(implementation_look(pass, &imp)?, &imp, &material.inputs)?, animation))
+    Ok((world_pass(world_implementation_look(pass, &imp, None)?, &imp, &material.inputs)?, animation))
 }
 
 fn sampled(
@@ -191,7 +193,7 @@ pub fn unlit_bsp_pass(
     pass: &tags::material::SelectedImplementation, inputs: &EngineInputs, normalization: Option<TagId>,
 ) -> Result<WorldPass, Refusal> {
     let imp = unlit_bsp_implementation(pass)?;
-    let look = look_with_engine(pass.pass, imp, normalization, None)?;
+    let look = world_implementation_look(pass.pass, imp, normalization)?;
     world_pass(look, imp, inputs)
 }
 
@@ -202,7 +204,7 @@ pub fn unlit_bsp_pass_sampled(
     properties: &[tags::shader::AnimatedProperty],
 ) -> Result<(WorldPass, Option<crate::layer_pass::PassAnimation>), Refusal> {
     let (imp, animation) = sampled(unlit_bsp_implementation(pass)?, properties)?;
-    let look = look_with_engine(pass.pass, &imp, normalization, None)?;
+    let look = world_implementation_look(pass.pass, &imp, normalization)?;
     Ok((world_pass(look, &imp, inputs)?, animation))
 }
 
@@ -240,7 +242,8 @@ fn world_pass(mut look: PassLook, imp: &ResolvedImplementation, inputs: &EngineI
     if inherits_cull {
         state.primitive.cull_mode = None;
     }
-    Ok(WorldPass { look, state, inherits_cull })
+    let texaccum_dimensions = texaccum_dimensions(imp);
+    Ok(WorldPass { look, state, inherits_cull, texaccum_dimensions })
 }
 
 /// Whether `states` set `which` (build 5849's slots).
@@ -302,6 +305,59 @@ pub fn implementation_look_with_rasterizer(
     pass: TagId, imp: &ResolvedImplementation, rasterizer: Option<TagId>,
 ) -> Result<PassLook, Refusal> {
     look_with_engine(pass, imp, None, rasterizer)
+}
+
+/// Target 1 is a live render texture. Its size bindings can share a row
+/// with instance data, another dimension binding or a scalar input.
+/// Keep only lanes for which target 1 is the final engine write.
+fn texaccum_dimensions(imp: &ResolvedImplementation) -> Vec<(tags::material::EngineVertexConstant, u8)> {
+    use tags::material::VectorTarget;
+    let mut covered = [[0u8; 16]; 2];
+    for b in imp.scalar_bindings.iter().chain(&imp.vector_bindings) {
+        if let VectorTarget::Vertex { bank, reg, components } = b.target {
+            covered[usize::from(bank)][usize::from(reg)] |= components;
+        }
+    }
+    let mut dimensions = Vec::new();
+    for &d in imp.dimension_bindings.iter().rev() {
+        let written = &mut covered[usize::from(d.bank)][usize::from(d.reg)];
+        let lanes = d.components() & !*written;
+        *written |= d.components();
+        let stage = usize::from(d.stage).checked_sub(1).and_then(|n| imp.textures.get(n)).copied().flatten();
+        if lanes != 0 && stage.is_some_and(|t| t.source == TextureSource::Engine(crate::object_program::TEXACCUM_TEXTURE)) {
+            dimensions.push((d, lanes));
+        }
+    }
+    dimensions
+}
+
+fn world_implementation_look(
+    pass: TagId, imp: &ResolvedImplementation, normalization: Option<TagId>,
+) -> Result<PassLook, Refusal> {
+    use crate::object_program::TEXACCUM_TEXTURE;
+    if !imp.textures.iter().flatten().any(|t| t.source == TextureSource::Engine(TEXACCUM_TEXTURE)) {
+        return look_with_engine(pass, imp, normalization, None);
+    }
+    let mut resolved = imp.clone();
+    let mut stages = [false; 4];
+    for (n, stage) in resolved.textures.iter_mut().enumerate() {
+        if let Some(t) = stage && t.source == TextureSource::Engine(TEXACCUM_TEXTURE) {
+            stages[n] = true;
+            t.source = TextureSource::None;
+        }
+    }
+    for r in &mut resolved.vertex_constants {
+        if imp.dimension_bindings.iter().any(|d| d.bank == 1 && 18 + d.reg == r.index
+            && usize::from(d.stage).checked_sub(1).is_some_and(|n| stages.get(n) == Some(&true))) {
+            // Per-draw scalar/vector dependencies still refuse at compile.
+            r.origin = Origin::Instance;
+        }
+    }
+    let mut look = look_with_engine(pass, &resolved, normalization, None)?;
+    for (stage, accum) in look.textures.iter_mut().zip(stages) {
+        if accum { *stage = Stage::Engine(TEXACCUM_TEXTURE); }
+    }
+    Ok(look)
 }
 
 fn look_with_engine(
@@ -724,7 +780,16 @@ mod tests {
         // Every layer-3 refusal still applies.
         let mut texaccum = opaque(implementation(0, true), &[]);
         texaccum.textures[0] = texture(TextureSource::Engine(3));
-        assert_eq!(refusal(texaccum), Refusal::EngineTexture(3));
+        let mut binding = tags::material::EngineVertexConstant { bank: 1, reg: 1, mode: 9, stage: 1, source: 0 };
+        texaccum.vertex_constants[0].origin = Origin::Engine;
+        texaccum.dimension_bindings.push(binding);
+        // Stage 1's later width occupies x of the same row.
+        binding.stage = 2;
+        binding.mode = 5;
+        texaccum.dimension_bindings.push(binding);
+        let pass = layer3_pass(&material(3, vec![vec![texaccum]])).unwrap();
+        assert_eq!(pass.look.textures[0], Stage::Engine(3));
+        assert_eq!(pass.texaccum_dimensions[0].1, 0b0010);
     }
 
     #[test]

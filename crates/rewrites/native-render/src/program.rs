@@ -186,6 +186,7 @@ pub struct MaterialProgram {
     /// pass that animates nothing and for the other paths' programs,
     /// which keep their animation themselves.
     pub animation: Option<crate::layer_pass::PassAnimation>,
+    pub(crate) texaccum_dimensions: Vec<(tags::material::EngineVertexConstant, u8)>,
 }
 
 /// A world pass linked with its vertex program's rigid classification
@@ -239,6 +240,7 @@ impl MaterialProgram {
             && self.stages == edited.stages
             && self.samplers == edited.samplers
             && self.dims == edited.dims
+            && self.texaccum_dimensions == edited.texaccum_dimensions
             && self.signed == edited.signed
             && self.inputs == edited.inputs
             && self.pixel_options == edited.pixel_options
@@ -324,6 +326,7 @@ fn compile_with_textures(
         inherits_cull: false,
         rigid: None,
         animation: None,
+        texaccum_dimensions: Vec::new(),
     })
 }
 
@@ -353,6 +356,7 @@ pub fn compile_section(
     world_parity(&pass.look)?;
     world_constants_read(&pass.look, microcode)?;
     let mut p = compile_with_textures(&pass.look, microcode, pass.state.alpha_test, dims)?;
+    p.texaccum_dimensions.clone_from(&pass.texaccum_dimensions);
     p.state = Some(pass.state);
     p.inherits_cull = pass.inherits_cull;
     Ok(p)
@@ -4171,6 +4175,7 @@ mod tests {
             look,
             state,
             inherits_cull: false,
+            texaccum_dimensions: Vec::new(),
         }
     }
 

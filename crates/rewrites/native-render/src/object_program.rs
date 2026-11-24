@@ -568,6 +568,7 @@ pub fn compile_object_stages(
         inherits_cull: false,
         rigid: None,
         animation: None,
+        texaccum_dimensions: Vec::new(),
     })
 }
 

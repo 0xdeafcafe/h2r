@@ -1758,7 +1758,7 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
                         Stage::Bitmap { bitmap, image } => Some(*dimensions.entry((bitmap, image))
                             .or_insert_with(|| bitmap_dimension(map, files, bitmap, image, layered))
                             .as_ref().map_err(Clone::clone)?),
-                        Stage::Lightmap => Some(TextureDim::D2),
+                        Stage::Lightmap | Stage::Engine(native_render::object_program::TEXACCUM_TEXTURE) => Some(TextureDim::D2),
                         Stage::Empty => None,
                         Stage::Engine(id) => return Err(format!("unbound engine texture {id}")),
                         Stage::Host(h) => return Err(format!("a host stage in a tag's pass ({h:?})")),
