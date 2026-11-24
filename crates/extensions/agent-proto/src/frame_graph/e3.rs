@@ -33,6 +33,8 @@ pub struct E3Report {
     pub lights_shadowed: u32,
     pub lights_over_cap: u32,
     pub sun_tiles: u32,
+    /// Offscreen casters with a receiver draw in this view, summed across views.
+    pub sun_tiles_offscreen: u32,
     pub sun_tiles_redrawn: u32,
     pub atlas_halved: u32,
     /// Shadow maps left at the guest's size with retail's comparison.

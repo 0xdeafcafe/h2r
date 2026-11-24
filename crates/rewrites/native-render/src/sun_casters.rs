@@ -29,7 +29,7 @@ use crate::world::{Aabb, Owner, World};
 
 /// Retail draws an object shadow only when its weight exceeds this
 /// (`0x00032438`).
-pub const DRAW_THRESHOLD: f32 = 0.09;
+pub const DRAW_THRESHOLD: f32 = frame_scene::ObjectShadow::DRAW_THRESHOLD;
 
 /// The loaded models, by object definition tag datum
 /// ([`frame_scene::Instance::definition`]): each definition's render
@@ -80,6 +80,11 @@ pub trait WorldReceivers {
     /// A world of another BSP names other clusters by the same indices.
     fn current(&self) -> bool {
         true
+    }
+
+    /// Opaque parts of visible clusters whose bounds meet the shadow projection.
+    fn shadow_parts(&self, _clusters: &[u16], _caster: &SunCaster) -> Vec<ReceiverMesh> {
+        Vec::new()
     }
 
     /// Part `part` of `owner`'s section in world space, when held.
@@ -215,6 +220,29 @@ impl SunWorld {
 impl WorldReceivers for SunWorld {
     fn current(&self) -> bool {
         self.current.as_ref().is_none_or(|f| f())
+    }
+
+    fn shadow_parts(&self, clusters: &[u16], caster: &SunCaster) -> Vec<ReceiverMesh> {
+        let rows = crate::sun_tiles::tile_rows(caster.centre, caster.radius, caster.towards_light);
+        let mut receivers = Vec::new();
+        for &cluster in clusters {
+            let owner = Owner::Cluster(u32::from(cluster));
+            let first = self.parts.partition_point(|p| p.owner < owner);
+            for p in self.parts[first..].iter().take_while(|p| p.owner == owner) {
+                let (centre, radius) = box_sphere(&p.bounds);
+                if crate::sun_tiles::meets(&rows, caster.radius, centre, radius)
+                    && let Some(part) = self.part(owner, p.part)
+                {
+                    receivers.push(ReceiverMesh {
+                        key: ReceiverKey::World(owner, p.part),
+                        mesh: part.mesh,
+                        centre,
+                        radius,
+                    });
+                }
+            }
+        }
+        receivers
     }
 
     fn part(&self, owner: Owner, part: u8) -> Option<WorldPart> {
@@ -425,14 +453,9 @@ impl Gathered {
 /// `view`'s perspective camera.
 pub fn view_diameter(view: &View, height: u32, centre: [f32; 3], radius: f32) -> f32 {
     let c = &view.camera;
-    let f = c.forward;
-    let n = (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]).sqrt().max(1e-6);
-    let d = [
-        centre[0] - c.position[0],
-        centre[1] - c.position[1],
-        centre[2] - c.position[2],
-    ];
-    let depth = ((d[0] * f[0] + d[1] * f[1] + d[2] * f[2]) / n).max(c.near.max(1e-3));
+    // The ranked shadow rows use absolute depth. A caster behind the eye
+    // still has a finite apparent size for choosing its tile.
+    let depth = c.depth_of(centre).abs().max(c.near.max(1e-3));
     let half = (0.5 * c.fov).tan().max(1e-6);
     radius * height as f32 / (depth * half)
 }
@@ -501,17 +524,22 @@ pub fn gather(scene: &FrameScene, view: u32, height: u32, models: &dyn CasterMod
             if shadow.creature {
                 return Err(CasterRefusal::Creature);
             }
-            let instance = instances
-                .iter()
-                .find(|i| i.key == shadow.caster())
-                .ok_or(CasterRefusal::NoInstance)?;
-            let nodes = scene.nodes_of(instance);
+            let key = shadow.caster();
+            let (definition, sphere, nodes) =
+                if let Some(i) = instances.iter().find(|i| i.key == key) {
+                    (i.definition, i.sphere, scene.nodes_of(i))
+                } else {
+                    let (_, c) = scene
+                        .nearby_casters
+                        .iter()
+                        .find(|(v, c)| *v == view && c.handle == key.0)
+                        .ok_or(CasterRefusal::NoInstance)?;
+                    (c.definition, c.sphere, c.nodes.as_slice())
+                };
             if nodes.is_empty() || !nodes.iter().all(NodeMatrix::is_finite) {
                 return Err(CasterRefusal::NoNodes);
             }
-            let loaded = models
-                .model(instance.definition)
-                .ok_or(CasterRefusal::NoModel)?;
+            let loaded = models.model(definition).ok_or(CasterRefusal::NoModel)?;
             let towards_light = shadow
                 .towards_light(scene)
                 .ok_or(CasterRefusal::NoDirection)?;
@@ -524,12 +552,12 @@ pub fn gather(scene: &FrameScene, view: u32, height: u32, models: &dyn CasterMod
             if mesh.indices.is_empty() {
                 return Err(CasterRefusal::Empty);
             }
-            let (centre, radius) = instance.sphere;
+            let (centre, radius) = sphere;
             let words: &[f32] = bytemuck::cast_slice(nodes);
             Ok(Admitted {
                 shadow: index,
                 caster: SunCaster {
-                    id: u64::from(instance.key.0),
+                    id: u64::from(key.0),
                     centre,
                     radius,
                     screen_diameter: view_diameter(v, height, centre, radius),

@@ -219,7 +219,7 @@ fn record(
             if !sun_replay.as_ref().is_some_and(|s| s.skip[i]) {
                 pass.apply(op).map_err(named)?;
             }
-            if let Some(stage) = sun_replay.as_ref().and_then(|s| s.after.get(&i)) {
+            for stage in sun_replay.as_ref().and_then(|s| s.after.get(&i)).into_iter().flatten() {
                 pass.apply(stage).map_err(named)?;
             }
             if let Some(stage) = marker_stages.get(&i) {

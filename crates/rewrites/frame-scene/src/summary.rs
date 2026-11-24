@@ -78,6 +78,22 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
             }
             None => h.word(0),
         }
+        for (_, caster) in scene
+            .nearby_casters
+            .iter()
+            .filter(|(view, _)| *view as usize == vi)
+        {
+            h.word(caster.handle);
+            h.word(caster.definition);
+            h.floats(&caster.sphere.0);
+            h.float(caster.sphere.1);
+            h.floats(&caster.towards_light);
+            h.float(caster.strength);
+            h.word(caster.nodes.len() as u32);
+            for n in &caster.nodes {
+                h.floats(bytemuck::cast_ref::<_, [f32; 13]>(n));
+            }
+        }
         let instances = scene.instances_of(v);
         h.word(instances.len() as u32);
         for i in instances {

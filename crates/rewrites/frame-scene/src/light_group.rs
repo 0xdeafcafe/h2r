@@ -218,6 +218,9 @@ pub struct ObjectShadow {
 }
 
 impl ObjectShadow {
+    /// Minimum weight of an ordinary mask draw (0x00032438).
+    pub const DRAW_THRESHOLD: f32 = 0.09;
+
     /// The caster's object handle.
     pub fn caster(&self) -> InstanceKey {
         InstanceKey(self.identity[0])

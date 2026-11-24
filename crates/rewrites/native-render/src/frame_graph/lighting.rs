@@ -30,6 +30,8 @@ pub struct E3Report {
     pub lights_shadowed: u32,
     pub lights_over_cap: u32,
     pub sun_tiles: u32,
+    /// Offscreen casters with a receiver draw in this view, summed across views.
+    pub sun_tiles_offscreen: u32,
     pub sun_tiles_redrawn: u32,
     pub atlas_halved: u32,
     /// Shadow maps the mode left at the guest's size with retail's
@@ -54,6 +56,7 @@ impl E3Report {
         self.sun_tile_draws.draws += work.tile_draws;
         self.sun.draws += work.receiver_draws;
         self.sun_tiles += work.sun_tiles;
+        self.sun_tiles_offscreen += work.sun_tiles_offscreen;
         self.sun_tiles_redrawn += work.sun_tiles_redrawn;
         self.atlas_halved += work.atlas_halved;
         self.tiles_refused += work.refused;
@@ -107,6 +110,7 @@ mod tests {
         let mut report = E3Report::default();
         report.add_sun(SunWork {
             sun_tiles: 3,
+            sun_tiles_offscreen: 2,
             sun_tiles_redrawn: 1,
             atlas_halved: 2,
             refused: 1,

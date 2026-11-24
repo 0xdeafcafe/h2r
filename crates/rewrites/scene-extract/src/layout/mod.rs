@@ -9,6 +9,7 @@ pub mod camera;
 pub mod decorators;
 pub mod layer_inputs;
 pub mod light_passes;
+pub mod nearby_casters;
 pub mod object_lighting;
 pub mod object_nodes;
 pub mod object_walk;
