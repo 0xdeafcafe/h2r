@@ -123,6 +123,7 @@ connection to hold `session.claim`.
 | `theater.*` | read or act | [Theater transport](#theater-transport) |
 | `collision.stats` | read | [`collision`](#collision-the-native-collision-world) |
 | `collision.trace` | read | [`collision`](#collision-the-native-collision-world) |
+| `collision.sources`, `collision.sources.clear` | read, claim | [`collision`](#collision-the-native-collision-world) |
 | `anim.graph_walk` | read | [`anim`](#anim-the-animation-graph-walk) |
 | `input.list`, `input.log.read` | read | [Input logs](#input-act-like-a-player) |
 | `trace.*`, `flight.*` | read | [Tick traces and the flight recorder](#tick-traces-and-the-flight-recorder) |
@@ -5548,6 +5549,8 @@ bail reasons are in [collision-queries.md](../engine/collision-queries.md).
 |---|---|---|
 | `collision.stats` | read | No parameters. Returns `switch`, `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `mopps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, `precision` (aggregate single, reserved, double and extended x87 calls at C and D), `vector` (C’s result parity), `context` (D’s outer walk parity), and `ray` (I’s parity arm, below). |
 | `collision.trace` | read | `{start, delta, flags}` where `start` and `delta` are three finite binary32 world coordinates and `flags` is an unsigned 32-bit whole-query mask. |
+| `collision.sources` | read | No parameters. Checks the source fingerprints of each resident native BSP and MOPP against guest RAM. |
+| `collision.sources.clear` | claim | No parameters. Returns the same check and drops all resident entries from the collision world at that tick boundary. |
 
 `collision.trace` evaluates entry J at a tick boundary on the active
 structure. The segment ends at `start + delta`. Both ignore handles are
@@ -5606,6 +5609,48 @@ The bail audit (under 0.1% of calls bailing) reads `bails` against
 `native`. For `mopp_box`, `grow` counts answers that did not fit the
 key array's room. A reason that appears on one architecture only is a determinism
 bug.
+
+### Checking a cold collision world
+
+At a tick boundary, `collision.sources` returns `sources` sorted by
+`kind` and guest `address`, with `cached` and `live` 64-bit hexadecimal
+fingerprints. A BSP fingerprint covers the live header, all eight blocks,
+the projection table and the zero used by the matcher. A MOPP fingerprint
+covers origin, scale, program length and bytecode. A failed live read
+returns `live: null` and the `bail` reason. The reply counts `mismatched`
+and `unreadable` separately. An empty list means no BSP or MOPP is
+resident. A debugger memory trap makes the method unavailable.
+
+For the cache-cold parity arm, `collision.sources.clear` gives the
+pre-clear readings and drops the BSPs, MOPPs, leaf table and portal graph.
+The next queries repopulate the world from current guest sources. The
+read-only form leaves the warm world's entries in place.
+
+Start each arm from the same match state and input with
+`impl.sim.native.collision` and `impl.sim.arena-hash` enabled.
+Use one claimed connection per arm. This example captures 1,800 cold ticks.
+Replace `collision.sources.clear` with `collision.sources` for the warm
+run and save its JSON lines separately.
+
+```sh
+{
+  echo claim
+  echo pause
+  echo collision.sources.clear
+  for tick in $(seq 1 1800); do
+    echo 'step 1'
+    echo collision.sources.clear
+  done
+  echo sim.hashes
+  echo release
+} | h2 agent -
+```
+
+Compare tick stamps and the sampled gameplay and arena rows from
+`sim.hashes`. At each tick, match the cold sources to warm sources of the
+same kind and address, and compare fingerprints. A warm world may retain
+entries from earlier ticks. Inspect unreadable sources, missing counterparts
+and cached/live differences before treating a run as clean.
 
 ## Tick traces and the flight recorder
 

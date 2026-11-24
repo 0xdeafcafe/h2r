@@ -15,7 +15,10 @@ pub mod method {
     /// Predict the whole-query result at the current tick, without scattering its writes.
     pub const TRACE: &str = "collision.trace";
 
-    pub const ALL: &[&str] = &[STATS, TRACE];
+    pub const SOURCES: &str = "collision.sources";
+    pub const CLEAR_SOURCES: &str = "collision.sources.clear";
+
+    pub const ALL: &[&str] = &[STATS, TRACE, SOURCES, CLEAR_SOURCES];
 }
 
 /// A world-space segment. Delta is a displacement in world units.
