@@ -156,6 +156,9 @@ pub struct ViewportView {
     /// The next left click in the viewport places a new entry of this
     /// block there (a copy of the entry, when given).
     pub placing: Option<(BlockKind, Option<usize>)>,
+    /// The next left click places this ground label there, facing the way
+    /// the camera looks (the AI and objectives group).
+    pub placing_label: Option<scenario_edit::LabelKind>,
     hovered: bool,
     /// The handles on the selected flag's area.
     area: area::AreaHandles,
@@ -192,6 +195,7 @@ impl ViewportView {
             orbiting: false,
             panning: false,
             placing: None,
+            placing_label: None,
             hovered: false,
             area: Default::default(),
             shown: None,
@@ -417,14 +421,44 @@ impl ViewportView {
             .update_shared(app.session.camera_mut(), &input, app.pairing.camera.mode);
         app.set_fly_speed(self.camera.speed);
 
-        if self.placing.is_some() && ui.is_key_pressed(Key::Escape) {
+        if (self.placing.is_some() || self.placing_label.is_some())
+            && ui.is_key_pressed(Key::Escape)
+        {
             self.placing = None;
+            self.placing_label = None;
         }
         let clicked = hovered
             && !alt
             && !over_gizmo
             && !using_gizmo
             && ui.is_mouse_clicked(MouseButton::Left);
+        // Placing a label: the click puts the flag where the cursor meets
+        // the level, as `scenario.add {block: "label"}` does.
+        if clicked && let Some(kind) = self.placing_label {
+            match app.session.surface_hit_visible(&ray, &app.layers) {
+                Some(at) => {
+                    let at = if self.snap.grid {
+                        snap_to_grid(at, self.snap.grid_step)
+                    } else {
+                        at
+                    };
+                    let (team, phase) = app
+                        .session
+                        .scenario()
+                        .map_or((0, 0), |s| crate::app::ground::next_team_phase(s, kind));
+                    actions.push(Action::PlaceLabelAt {
+                        kind,
+                        at,
+                        facing: app.session.camera().yaw,
+                        team,
+                        phase,
+                    });
+                    self.placing_label = None;
+                }
+                None => app.error("place it on the level: nothing is under the cursor"),
+            }
+            return;
+        }
         // Placing: the click puts the new entry where the cursor meets the
         // level.
         if clicked && let Some((kind, like)) = self.placing {

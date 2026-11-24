@@ -23,7 +23,7 @@ use super::{Action, App, ToolKind, tag_api};
 use crate::api::checks::{CHECKS, ContentCheck, Finding, Severity};
 
 /// Every source, in the order the panel lists them.
-pub const SOURCES: [&str; 5] = ["check", "ui", "hud", "package", "build"];
+pub const SOURCES: [&str; 6] = ["check", "ui", "hud", "package", "build", "ground"];
 
 /// The source a check's findings belong to: the content checks' areas
 /// `ui` and `hud` are their own sources, `models` and `sounds` are `check`.
@@ -33,6 +33,7 @@ pub fn source_of(area: &str) -> &'static str {
         "hud" => "hud",
         "package" => "package",
         "build" => "build",
+        "ground" => "ground",
         _ => "check",
     }
 }
@@ -44,6 +45,7 @@ pub fn source_label(source: &str) -> &'static str {
         "ui" => "UI",
         "hud" => "HUD",
         "package" => "Packages",
+        "ground" => "AI ground",
         _ => "Build",
     }
 }
@@ -246,6 +248,11 @@ pub fn gather(app: &mut App, source: Option<&str>, checks: &[ContentCheck]) -> P
                 .skipped
                 .push(json!({"source": src, "check": c.name, "why": why})),
         }
+    }
+    if wanted("ground") {
+        let rows = app.ground_problem_rows();
+        out.ran.push(json!({"source": "ground", "check": "ground.build", "findings": rows.len()}));
+        out.rows.extend(rows);
     }
     if wanted("package") || wanted("build") {
         let set = read_set(&app.data_root());

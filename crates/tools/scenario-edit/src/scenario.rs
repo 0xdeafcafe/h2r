@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use std::io::{Read, Seek};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub mod ground;
+
 /// The `scnr` root is at least this long: the furthest block pair this crate
 /// reads is crates' palette at `+0x330`.
 const ROOT: u32 = 0x338;
@@ -447,6 +449,9 @@ pub struct Scenario {
     /// (docs/game/gametype-markers.md, "In the document"). Edited through
     /// [`Self::set_area`]; an entry whose flag is gone waits for its undo.
     areas: std::collections::BTreeMap<PlacementId, game_markers::Area>,
+    /// The ground label of each netgame flag that has one, by placement
+    /// ([`ground`]).
+    labels: std::collections::BTreeMap<PlacementId, ground::FlagLabel>,
 }
 
 pub(crate) fn u32_at(b: &[u8], o: usize) -> u32 {
@@ -663,6 +668,7 @@ impl Scenario {
             geometry: GeometryChanges::default(),
             bitmap: GeometryChanges::default(),
             areas: std::collections::BTreeMap::new(),
+            labels: std::collections::BTreeMap::new(),
         })
     }
 
