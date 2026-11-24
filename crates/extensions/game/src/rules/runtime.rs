@@ -360,7 +360,7 @@ pub enum Call {
     /// `reset_objective`: the objective (a salted datum) returned
     /// (`super::objectives`).
     ResetObjective(u32),
-    Vehicle(super::world::vehicles::Action, u32),
+    Vehicle(super::world::vehicles::Action, Option<u32>),
     /// `bot_go`, `bot_hold`, `bot_follow`, `bot_attack` and `bot_free`: an
     /// outside order to the phantom in `player`'s seat, or `None` to free
     /// it (`super::world::bots`).
@@ -727,11 +727,7 @@ impl Game for GuestGame<'_> {
                 }
                 _ => None,
             },
-            id::HOVER | id::UNLOAD => match call.args.as_slice() {
-                [Arg::Object(Some(v)), Arg::Bool(on)] => Some(Call::Vehicle(super::world::vehicles::Action::Hover(*on), *v)),
-                [Arg::Object(Some(v))] => Some(Call::Vehicle(super::world::vehicles::Action::Unload, *v)),
-                _ => None,
-            },
+            id::HOVER | id::UNLOAD => super::world::vehicles::plan(self.m, self.table, call),
             id::RESET_OBJECTIVE => match call.args.first() {
                 Some(Arg::Object(Some(o))) => Some(Call::ResetObjective(*o)),
                 _ => None,

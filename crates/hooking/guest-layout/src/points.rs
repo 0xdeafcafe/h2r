@@ -427,7 +427,7 @@ points! { ALL;
     /// actor at placement, from the start's character or else the squad's
     /// (`+0x36`). `location` -1 lets [`AI_CHOOSE_SQUAD_START`] pick each
     /// start; a given location places one actor. `force` (a byte) skips the
-    /// location's availability check and the vehicle-seat attempt;
+    /// location's availability check and the emitter's deferred placement action;
     /// `spawn_flags` goes to [`AI_SPAWN_AT_SQUAD_START`]. Returns at once
     /// while the AI globals' initialised byte is clear.
     AI_SQUAD_PLACE @ 0x0020_1520: [fn(count: eax, squad: stack 0, location: stack 1, force: stack 2, spawn_flags: stack 3) ret 16]; "docs/game/firefight.md";

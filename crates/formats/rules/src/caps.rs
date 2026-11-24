@@ -487,23 +487,20 @@ pub const ENTRIES: &[Entry] = &[
     // `fly(v, path, t)`: the vehicle moves along the `path` label's points
     // in number order in `t` ticks, facing the tangent of its segment
     // (`crate::vehicles::Flight`). It is the world API's mover on a
-    // vehicle, which is not built, and whether a vehicle's Havok body
-    // accepts a transform every tick without fighting it is not read (R7).
+    // vehicle. Havok can advance the body between notified transforms (R7).
     act(id::FLY, "fly", &[Object, Label, Int], Some("vehicles.drive"), Queued, NotBuilt),
     // `hover(v, on)`: holds the vehicle where it is. The retail body also refreshes its physics state.
     act(id::HOVER, "hover", &[Object, Bool], Some("vehicles.drive"), Queued, Named),
     // `seat(p, v)` and `eject(p)`: the player's unit enters the vehicle's
     // first free seat (the driver's first) and leaves it. The vehicle
     // entry routine `0x11ade0` behind `unit_enter_vehicle` (`0x2a3ad0`) and
-    // the biped action `0x1e` of the teleport path (`0xe68c0`) are
-    // addresses in a doc, not points.
+    // the biped exit action still need rules host bindings.
     act(id::SEAT, "seat", &[Player, Object], Some("vehicles.drive"), Queued, Traced),
     act(id::EJECT, "eject", &[Player], Some("vehicles.drive"), Queued, Traced),
     // `place_squad_in(s, class, n, v)`: `place_squad` with the squad's
     // actors put in the vehicle's free seats, at most as many as there are
     // (loading is the vehicles capability's, not the squads').
-    // `AI_SQUAD_PLACE` (`0x201520`) has a seat attempt behind its third
-    // stack word, selected by the scenario start rather than a script datum.
+    // AI_SQUAD_PLACE chooses a vehicle by palette and can leave actors on foot.
     act(id::PLACE_SQUAD_IN, "place_squad_in", &[Squad, Class, Int, Object], Some("vehicles.drive"), Queued, Traced),
     // `unload(v)`: everyone aboard leaves. The retail unload body accepts -1 for all seats.
     act(id::UNLOAD, "unload", &[Object], Some("vehicles.drive"), Queued, Named),
