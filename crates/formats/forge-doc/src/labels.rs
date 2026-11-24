@@ -201,6 +201,9 @@ pub fn labelled(rows: &MapRows, doc: Option<&ForgeDoc>) -> Result<Vec<LabelledTh
     let mut flags = rows.flags.clone();
     let mut starts = rows.starts.clone();
     let mut labels = Labels::default();
+    // An item spawner's team is a property of the document
+    // (`EntryOp::Property`), by the spawner's final index.
+    let mut spawner_teams: BTreeMap<u32, u8> = BTreeMap::new();
     if let Some(doc) = doc {
         for op in &doc.ops {
             if let Edit::Placement(p) = &op.edit {
@@ -208,6 +211,15 @@ pub fn labelled(rows: &MapRows, doc: Option<&ForgeDoc>) -> Result<Vec<LabelledTh
             }
         }
         labels = doc.labels(&rows.counts)?;
+        let teams = crate::teams(&doc.ops);
+        if !teams.is_empty() {
+            let resolved = crate::resolve(&doc.ops, &rows.counts)?;
+            for (end, team) in teams {
+                if let Some(index) = resolved.index(end) {
+                    spawner_teams.insert(index, team);
+                }
+            }
+        }
     }
     let own = |block: BlockKind, index: u32| {
         labels
@@ -238,6 +250,7 @@ pub fn labelled(rows: &MapRows, doc: Option<&ForgeDoc>) -> Result<Vec<LabelledTh
                     .get(l.index as usize)
                     .and_then(|&t| designator(i64::from(t))),
             ),
+            BlockKind::NetgameEquipment => (Class::Object, spawner_teams.get(&l.index).copied()),
             _ => (Class::Object, None),
         };
         out.push(LabelledThing {
@@ -455,13 +468,19 @@ pub fn rows_of_file<R: Read + Seek>(map: &mut map::Map<R>) -> Result<MapRows> {
         let count = le_u32(&root, def.offset as usize)?;
         rows.counts.insert(def.kind, count.min(CENSUS_ENTRY_LIMIT));
     }
-    rows.flags = read_block(map, &root, loc.space, BlockKind::NetgameFlags, CENSUS_FLAG_LIMIT)?
-        .iter()
-        .map(|e| FlagRow {
-            kind: u16_at(e, 0x10),
-            team: u16_at(e, 0x12),
-        })
-        .collect();
+    rows.flags = read_block(
+        map,
+        &root,
+        loc.space,
+        BlockKind::NetgameFlags,
+        CENSUS_FLAG_LIMIT,
+    )?
+    .iter()
+    .map(|e| FlagRow {
+        kind: u16_at(e, 0x10),
+        team: u16_at(e, 0x12),
+    })
+    .collect();
     rows.starts = read_block(
         map,
         &root,

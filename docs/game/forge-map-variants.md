@@ -1,6 +1,6 @@
 # Forge map variants: editing the map's own placements, and the file that keeps the edits
 
-Status: Design, slices M1 to M10 built. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1), `resolve`, which lowers entry ops for `replay` (M2), the materialiser's entry ops and print check (M3), the tier, the play and session forms and the variant name rule (M4), the session's things, `Session::{things, move_thing, hold}`, its kept rows and print check, and the base calls on `World` (M5), `Session::{set_field, remove, reset}` and `forge::props` (M6), `forge_map::rows`, which reads each block's rows, typed fields and prints from the loaded scenario as the session opens (M7), `ForgeWorld`'s base calls over the call queue, `base_move`, `base_field`, `base_inert` and `base_restore` (M8), the Objects tool aiming at every thing, own or added, mark or body, by game type and `forge.show` (M9), and `forge.things`, entry ops in `forge.propose` with named refusals and the variant in `forge.status` (M10); everything else named here as new is not.
+Status: Design, slices M1 to M10 and D2 to D4 built. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1), `resolve`, which lowers entry ops for `replay` (M2), the materialiser's entry ops and print check (M3), the tier, the play and session forms and the variant name rule (M4), the session's things, `Session::{things, move_thing, hold}`, its kept rows and print check, and the base calls on `World` (M5), `Session::{set_field, remove, reset}` and `forge::props` (M6), `forge_map::rows`, which reads each block's rows, typed fields and prints from the loaded scenario as the session opens (M7), `ForgeWorld`'s base calls over the call queue, `base_move`, `base_field`, `base_inert` and `base_restore` (M8), the Objects tool aiming at every thing, own or added, mark or body, by game type and `forge.show` (M9), and `forge.things`, entry ops in `forge.propose` with named refusals and the variant in `forge.status` (M10); `forge_doc::games` (D2), `forge::props::{games, games_ops}` and `Session::set_games`, the item spawner's game types, one op a changed slot (D3), and `EntryOp::Property` with the spawner's `team`, `forge_doc::teams` and the census's team for it (D4); everything else named here as new is not.
 Code: `crates/formats/forge-doc` (the document), `crates/tools/forge-build` (the materialiser), `crates/extensions/forge` (`Session`; `things.rs` for things, kept rows and the base reconcile; `tool.rs` for aiming), `crates/extensions/agent/src/forge/{local.rs, base.rs}` (`ForgeWorld`, its base calls and the agent methods), `crates/extensions/game/src/forge_map.rs`, `crates/live/live-hle/src/maps.rs` (`MapGate`). Tests: named per slice below.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
@@ -128,8 +128,8 @@ map; that tool is not designed here.
 A family beside `Placement`, `TagField` and `Forge`
 (`forge_doc::Edit::Entry(EntryOp)`, in
 `crates/formats/forge-doc/src/entry.rs`; the type is `EntryOp` because
-`forge_doc::Entry` is the log entry). `Set`, `Remove` and `Reset` are
-built; `Property` is slice D4's:
+`forge_doc::Entry` is the log entry). `Set`, `Remove`,
+`Reset` and `Property` (only a team, so far) are built:
 
 | Op | Does | Carries |
 |---|---|---|
@@ -274,8 +274,11 @@ section 2 is where the page for it is.
 built: position and rotation (the block's rotation or facing) on every
 kind, object, item, respawn time, return time, team, role and order,
 each with the kinds it is on, how it reads a thing and the one
-`EntryOp::Set` it writes. Game types joins it in D3, and the rows a
-Forge property backs in D4 and D5. A teleporter's channel is its link's
+`EntryOp::Set` it writes. The game types of an item spawner are not a
+row of that table, which is one field a row: `props::games` reads the
+four slots as a set and `Session::set_games` writes the slots that
+change in one undo step. The rows a Forge property backs come in D4 and
+D5. A teleporter's channel is its link's
 (the Links tool), not a row. `Session::set_field` takes a row's name
 and refuses one the thing's kind does not have.
 
@@ -290,7 +293,7 @@ scenario bytes (`forge_doc::Labels`).
 | Property | On | Reaches the game by | State |
 |---|---|---|---|
 | `spare_clips` | item spawner of a weapon | a write to the new weapon's reserve after the spawner makes it. The spawner returns the object's ID and stores the entry's index on it (**E**, forge.md 1.2); the reserve's field on a weapon object is not decoded | not shown until slice D5 proves the write |
-| `team` | item spawner | nothing in a retail game type. A rules script reads it, as it reads a label ([rules-engine.md](rules-engine.md#forge-labels)) | shown with D4 |
+| `team` | item spawner | nothing in a retail game type. A rules script reads it, as it reads a label ([rules-engine.md](rules-engine.md#forge-labels)) | `Session::{team, set_team}`; `forge_doc::labelled` reports it for a labelled spawner |
 | `weight` | starting point | an answer to the spawn chooser's hook (`PLAYER_SPAWN_LOCATION`, the point `spawn_areas` already names, [rules-engine.md](rules-engine.md)). How the routine weighs locations is not traced | not shown until slice D5 |
 | `games` | object | the materialiser leaves the placement out of a map built for another game type ("Game types") | slice G1 |
 
@@ -314,7 +317,7 @@ engines, or all of them.
   engine's code or a group value: 12 every engine, 13 and 14 every
   engine but CTF and Assault, which match each other's code; King of
   the Hill's code is 0 (**E**, `map::scenario_layout::game_types`).
-  `forge_doc::games::encode(set)` (new) gives the slots for a set: a group value when one equals the
+  `forge_doc::games::encode(set)` gives the slots for a set: a group value when one equals the
   set, else one slot an engine. A set that needs more than four slots
   is refused with "An item can name four game types at most."
   `decode(slots)` gives the set back, and an entry whose slots hold a
@@ -525,9 +528,9 @@ Every machine builds the map from its own disc; no built byte travels
 ## Interfaces
 
 - **`forge-doc`**: `Endpoint::Base.print`, `print`, `check_print`, `Edit::Entry`,
-  `EntryOp`, `Property`, `resolve`, `Resolved`, `Printed`,
+  `EntryOp`, `Property`, `teams`, `resolve`, `Resolved`, `Printed`,
   `Apply::prints`, `Refusal::Print`, `games::{GameSet,
-  encode, decode}`, `Tier`, `ForgeDoc::{tier, check_variant}`,
+  GamesError, ENGINES, encode, decode, flag_games}`, `Tier`, `ForgeDoc::{tier, check_variant}`,
   `Refusal::Tier`, `play_form`, `session_form`, `KIT_RECIPE`,
   `variant_name`.
 - **`forge`**: `Thing {id: Endpoint, block, kind, own, frame, fields,

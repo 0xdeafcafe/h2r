@@ -450,6 +450,60 @@ impl Session {
         self.edit(world, tick, ops, None)
     }
 
+    /// Give an item spawner the game types `set` ([`props::games_ops`]):
+    /// one `EntryOp::Set` of each slot that changes, in one undo step. A
+    /// set it already has writes nothing.
+    pub fn set_games(
+        &mut self,
+        world: &mut impl World,
+        tick: u32,
+        id: Endpoint,
+        set: forge_doc::games::GameSet,
+    ) -> Result<(), String> {
+        self.restore(world)?;
+        let thing = self.thing(id).ok_or(NO_THING)?;
+        let edits: Vec<_> = props::games_ops(&thing, set)?
+            .into_iter()
+            .map(Edit::Entry)
+            .collect();
+        if edits.is_empty() {
+            return Ok(());
+        }
+        let ops = self.ops(edits)?;
+        self.edit(world, tick, ops, None)
+    }
+
+    /// An item spawner's team, by the document's `Property` ops
+    /// ([`forge_doc::teams`]); none when it has none.
+    pub fn team(&self, id: Endpoint) -> Option<u8> {
+        forge_doc::teams(&self.doc.ops).get(&id.identity()).copied()
+    }
+
+    /// Give an item spawner a team, or none: one `EntryOp::Property`, which
+    /// writes nothing to the world. A thing that is no spawner is refused
+    /// by the sentence of the property's rule.
+    pub fn set_team(
+        &mut self,
+        world: &mut impl World,
+        tick: u32,
+        id: Endpoint,
+        team: Option<u8>,
+    ) -> Result<(), String> {
+        self.restore(world)?;
+        let thing = self.thing(id).ok_or(NO_THING)?;
+        if thing.kind != ThingKind::ItemSpawner {
+            return Err(format!("This {} has no team.", thing.kind.name()));
+        }
+        if self.team(thing.id) == team {
+            return Ok(());
+        }
+        let ops = self.ops(vec![Edit::Entry(EntryOp::Property {
+            target: thing.id,
+            property: forge_doc::Property::Team(team),
+        })])?;
+        self.edit(world, tick, ops, None)
+    }
+
     /// Remove a thing, own or added. A linked entry cannot be removed, so
     /// its links end in the same undo step. In the world an own entry's row
     /// is made inert, and an undo writes the kept row back.

@@ -117,25 +117,11 @@ pub fn in_game(thing: &Thing, game: Option<i32>) -> bool {
                     .any(|&slot| game_types::slot_matches(slot, Some(code)))
         }
         ThingKind::Goal => match field(thing, "type") {
-            Some(Value::Int(ty)) => goal_games(*ty).is_none_or(|games| games.contains(&game)),
+            Some(Value::Int(ty)) => forge_doc::games::flag_games(*ty).is_none_or(|games| games.has(game)),
             _ => true,
         },
         ThingKind::StartingPoint | ThingKind::Teleporter | ThingKind::Object => true,
     }
-}
-
-/// The engine indices whose engines read a netgame flag of type `ty`, or
-/// none for a type every game type keeps (forge-doc's `builtin_label`
-/// names the traced types).
-fn goal_games(ty: i64) -> Option<&'static [i32]> {
-    Some(match ty {
-        0 | 1 => &[1],
-        2 | 3 => &[9],
-        4 => &[3],
-        10 => &[8],
-        11..=18 => &[4],
-        _ => return None,
-    })
 }
 
 fn field<'a>(thing: &'a Thing, name: &str) -> Option<&'a Value> {
@@ -370,6 +356,11 @@ impl Default for Tool {
 }
 
 impl Tool {
+    /// Where the held thing was picked up: the readout's `from` mark.
+    pub fn picked_up_at(&self) -> Option<[f32; 3]> {
+        self.held_thing.map(|_| self.initial_position)
+    }
+
     /// A tool whose palette items have these bounding spheres, in palette
     /// order. An item without one carries [`Extent::default`].
     pub fn with_extents(extents: Arc<[Extent]>) -> Self {

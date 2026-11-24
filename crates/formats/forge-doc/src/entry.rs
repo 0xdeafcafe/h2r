@@ -129,12 +129,36 @@ pub enum EntryOp {
     /// the map again as the disc has it. Links and labels are their own ops
     /// and are not reset.
     Reset { target: Endpoint },
+    /// Set or clear a property of the entry that has no retail field
+    /// ([`Property`]): document data with no scenario bytes, as a label
+    /// is. It lowers to nothing.
+    Property {
+        target: Endpoint,
+        property: Property,
+    },
 }
+
+/// A property of an entry the retail layout has no field for
+/// (docs/game/forge-map-variants.md, "Properties without a retail
+/// field"). A document that sets one is format 3 as any entry op is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum Property {
+    /// An item spawner's team, `0..8`, or none. A rules script reads it as
+    /// it reads a label; no retail game type does.
+    Team(Option<u8>),
+}
+
+/// How many teams a team property names.
+pub const PROPERTY_TEAMS: u8 = 8;
 
 impl EntryOp {
     pub fn target(&self) -> Endpoint {
         match self {
-            Self::Set { target, .. } | Self::Remove { target } | Self::Reset { target } => *target,
+            Self::Set { target, .. }
+            | Self::Remove { target }
+            | Self::Reset { target }
+            | Self::Property { target, .. } => *target,
         }
     }
 
@@ -143,6 +167,7 @@ impl EntryOp {
             Self::Set { .. } => "entry set",
             Self::Remove { .. } => "entry removal",
             Self::Reset { .. } => "entry reset",
+            Self::Property { .. } => "entry property",
         }
     }
 }
@@ -173,6 +198,7 @@ pub(crate) fn check_op(edit: &EntryOp, limits: &Limits) -> Result<()> {
                 EntryOp::Set { write, .. } => validate::placement_field(def, write, limits.world),
                 EntryOp::Remove { .. } => removable(block),
                 EntryOp::Reset { .. } => Ok(()),
+                EntryOp::Property { property, .. } => check_property(block, *property, what),
             }
         }
         Endpoint::Added(OpId(0)) => Err(Refusal::invalid(what, "want the ID of an add op")),
@@ -193,7 +219,51 @@ pub(crate) fn check_added(
         EntryOp::Set { write, .. } => validate::placement_field(layout::block(block), write, world),
         EntryOp::Remove { .. } => removable(block),
         EntryOp::Reset { .. } => Err(Refusal::invalid(edit.what(), "a reset names a base entry")),
+        EntryOp::Property { property, .. } => check_property(block, *property, edit.what()),
     }
+}
+
+/// A property is on the kinds of entry that have it, with a value in its
+/// range.
+fn check_property(block: BlockKind, property: Property, what: &'static str) -> Result<()> {
+    match property {
+        Property::Team(team) => {
+            if block != BlockKind::NetgameEquipment {
+                return Err(Refusal::invalid(what, "a team is an item spawner's"));
+            }
+            if team.is_some_and(|t| t >= PROPERTY_TEAMS) {
+                return Err(Refusal::invalid(what, "a team is 0 to 7"));
+            }
+            Ok(())
+        }
+    }
+}
+
+/// The team each entry has by the document's ops, by identity
+/// ([`Endpoint::identity`]): the last `Team` op of an entry not covered by
+/// a later reset, a clear leaving none. An entry that is removed is not
+/// told apart here: resolve its identity to a final index to find out
+/// ([`crate::resolve`]).
+pub fn teams(ops: &[Op]) -> std::collections::BTreeMap<Endpoint, u8> {
+    let covered = covered(ops);
+    let mut out = std::collections::BTreeMap::new();
+    for op in ops {
+        let Edit::Entry(EntryOp::Property {
+            target,
+            property: Property::Team(team),
+        }) = &op.edit
+        else {
+            continue;
+        };
+        if covered.contains(&op.id) {
+            continue;
+        }
+        match team {
+            Some(t) => out.insert(target.identity(), *t),
+            None => out.remove(&target.identity()),
+        };
+    }
+    out
 }
 
 fn removable(block: BlockKind) -> Result<()> {

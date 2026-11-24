@@ -307,6 +307,30 @@ pub fn aimed(
     }
 }
 
+/// The readout's hold line for a thing carried at `at`, `height` over the
+/// ground, with the movement snap (`None` off), the axes in force and where
+/// it was picked up. Not blocked: the tool reports no refusal here.
+pub fn hold(
+    at: [f32; 3],
+    height: f32,
+    snap: Option<f32>,
+    local: bool,
+    from: Option<[f32; 3]>,
+) -> Hold {
+    Hold {
+        position: at,
+        height,
+        snap,
+        axes: if local {
+            fr::Axes::Local
+        } else {
+            fr::Axes::World
+        },
+        blocked: None,
+        from,
+    }
+}
+
 /// The outline of the hill `goal` is a corner of: the positions of the
 /// hill's corners in order (type 11 to 18, the corner's number) with the
 /// first again at the end, or none for a goal that is not a hill corner or

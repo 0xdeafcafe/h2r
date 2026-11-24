@@ -64,6 +64,9 @@ replay parity on its invented cache.
   well as added ones: `Set` writes one typed, editable field, `Remove`
   removes the entry and `Reset` drops the effect of every earlier entry
   op on a base entry, so it is in the map again as the disc has it.
+  `Property` sets or clears a property with no retail field (an item
+  spawner's `team`, 0 to 7, `teams` reads it); it lowers to nothing.
+  Game types are `games`: a set of engines and the item slots that name it.
   Links and labels are their own ops and a reset leaves them. A target
   is an endpoint, as for links and labels; a base target carries its
   **print**, the first eight bytes (sixteen hex digits) of the SHA-256

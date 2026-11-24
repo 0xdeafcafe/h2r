@@ -365,3 +365,112 @@ fn reset_puts_an_own_entry_back_as_the_map_has_it() {
         Some(&Call::BaseInert(BlockKind::Weapons, 0))
     );
 }
+
+#[test]
+fn game_types_are_the_slots_read_and_a_set_change_is_one_op_a_changed_slot() {
+    use forge_doc::games::GameSet;
+    let spawner = Endpoint::base(BlockKind::NetgameEquipment, 0);
+    let mut s = open(rows());
+    let mut w = Fake::default();
+    let thing = s.thing(spawner).unwrap();
+    // The map's spawner has the group value in every slot: every engine.
+    assert_eq!(props::games(&thing), Some(GameSet::ALL));
+    assert_eq!(props::games(&s.thing(weapon(0)).unwrap()), None);
+
+    // Slayer and Oddball: [2, 3, 2, 2] changes all four slots.
+    let set = GameSet::of(&[2, 3]);
+    s.set_games(&mut w, 1, spawner, set).unwrap();
+    let slot = |n: usize, v: i64| EntryOp::Set {
+        target: spawner_target(),
+        write: FieldWrite {
+            field: props::GAME_SLOTS[n].into(),
+            value: Value::Int(v),
+        },
+    };
+    assert_eq!(
+        entry_ops(&s),
+        [slot(0, 2), slot(1, 3), slot(2, 2), slot(3, 2)]
+    );
+    assert_eq!(props::games(&s.thing(spawner).unwrap()), Some(set));
+    // One undo step puts all four back.
+    s.undo(&mut w, 2).unwrap();
+    assert_eq!(props::games(&s.thing(spawner).unwrap()), Some(GameSet::ALL));
+
+    // The same set writes nothing; a set that differs in one slot writes one.
+    s.set_games(&mut w, 3, spawner, GameSet::ALL).unwrap();
+    s.set_games(&mut w, 4, spawner, GameSet::of(&[2])).unwrap();
+    let before = s.document().ops.len();
+    s.set_games(&mut w, 5, spawner, GameSet::of(&[2])).unwrap();
+    assert_eq!(s.document().ops.len(), before);
+    s.set_games(&mut w, 6, spawner, GameSet::of(&[2, 3]))
+        .unwrap();
+    assert_eq!(
+        s.document().ops.len(),
+        before + 1,
+        "only the second slot changes"
+    );
+}
+
+fn spawner_target() -> Endpoint {
+    Endpoint::Base {
+        block: BlockKind::NetgameEquipment,
+        index: 0,
+        print: Some(rows().into_iter().last().unwrap().print),
+    }
+}
+
+#[test]
+fn a_set_the_slots_cannot_name_is_refused_with_its_sentence_and_nothing_is_written() {
+    use forge_doc::games::GameSet;
+    let spawner = Endpoint::base(BlockKind::NetgameEquipment, 0);
+    let mut s = open(rows());
+    let mut w = Fake::default();
+    let too_many = GameSet::of(&[4, 2, 3, 7, 1, 9]);
+    assert_eq!(
+        s.set_games(&mut w, 1, spawner, too_many).unwrap_err(),
+        "An item can name four game types at most."
+    );
+    assert_eq!(
+        s.set_games(&mut w, 1, spawner, GameSet::of(&[1]))
+            .unwrap_err(),
+        "Capture the Flag and Assault go together."
+    );
+    assert_eq!(
+        s.set_games(&mut w, 1, weapon(0), GameSet::ALL).unwrap_err(),
+        "This object has no game types to edit."
+    );
+    assert!(s.document().ops.is_empty());
+    assert!(w.calls.is_empty());
+}
+
+#[test]
+fn a_spawners_team_is_a_property_op_that_touches_nothing_in_the_world() {
+    let spawner = Endpoint::base(BlockKind::NetgameEquipment, 0);
+    let mut s = open(rows());
+    let mut w = Fake::default();
+    assert_eq!(s.team(spawner), None);
+    s.set_team(&mut w, 1, spawner, Some(3)).unwrap();
+    assert_eq!(s.team(spawner), Some(3));
+    assert_eq!(
+        entry_ops(&s),
+        [EntryOp::Property {
+            target: spawner_target(),
+            property: forge_doc::Property::Team(Some(3)),
+        }]
+    );
+    assert!(w.calls.is_empty(), "no scenario bytes: {:?}", w.calls);
+    // The same team writes nothing; a clear is one op; undo takes it back.
+    s.set_team(&mut w, 2, spawner, Some(3)).unwrap();
+    assert_eq!(s.document().ops.len(), 1);
+    s.set_team(&mut w, 3, spawner, None).unwrap();
+    assert_eq!((s.document().ops.len(), s.team(spawner)), (2, None));
+    s.undo(&mut w, 4).unwrap();
+    assert_eq!(s.team(spawner), Some(3));
+    // Another kind has none, and a team past 7 is refused.
+    assert_eq!(
+        s.set_team(&mut w, 5, weapon(0), Some(1)).unwrap_err(),
+        "This object has no team."
+    );
+    assert!(s.set_team(&mut w, 5, spawner, Some(8)).is_err());
+    assert_eq!(s.document().ops.len(), 1);
+}
