@@ -9,12 +9,16 @@ use tags::anim_sample::{NodeDefault, NodeTransform, Pose};
 
 mod angles;
 mod check;
+mod gltf;
+mod retarget;
 mod source;
 
 pub use angles::{
     angles_near, angles_to_rotation, rotation_to_angles, tangent_from_angles, tangent_to_angles,
 };
 pub use check::{Check, FootContact, NodeCheck};
+pub use gltf::{GltfClip, gltf_clips, read_gltf};
+pub use retarget::{DroppedChannel, NodeMapping, RetargetReport, retarget, retarget_report};
 pub use source::{
     ClipKind, Encoded, Operation, Source, SourceChannel, SourceKey, SourceKind, SourceNode, encode,
 };

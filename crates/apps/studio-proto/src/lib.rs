@@ -330,6 +330,8 @@ pub mod method {
     pub const ANIM_KEY: &str = "anim.key";
     pub const ANIM_CHECK: &str = "anim.check";
     pub const ANIM_SAVE: &str = "anim.save";
+    pub const ANIM_RETARGET: &str = "anim.retarget";
+    pub const ANIM_IMPORT: &str = "anim.import";
 
     // Planned namespaces: listed by `session.methods` with status
     // "planned"; a call answers NOT_YET until its lane registers it.

@@ -763,14 +763,35 @@ time or delete. **New animation** makes an empty base clip on the
 graph's skeleton. **Duplicate** makes a separate document from the
 current keys. `anim.duplicate` can also start from the decoded source.
 
-**Retarget.** **Retarget from...** takes a clip of another graph. Nodes
-match by name (`h1-assets`' `models/names.rs` maps Halo 1 names the same
-way), with a table to fix the rest. Rotations carry as deltas from each
-skeleton's rest pose; translations scale by bone length. The report
-lists unmatched nodes and channels dropped.
+**Retarget (AN5, built as `anim.retarget`).** `anim_edit::retarget`
+(`crates/tools/anim-edit/src/retarget.rs`) copies a document's sparse
+channels onto another skeleton and keeps every key's frame and
+interpolation. Nodes pair by case-insensitive name when the name is
+unique on both skeletons (`h1-assets`' `models/names.rs` maps Halo 1
+names the same way); explicit `{source, target}` pairs win, and a `null`
+target drops a node. A base or replacement rotation becomes
+`target_rest * inverse(source_rest) * key`, so a key equal to the source
+rest lands on the target rest. A translation keeps its offset from the
+rest pose, scaled by the ratio of the two local bone lengths (a root or
+a zero-length bone keeps the offset). A scale scales by the ratio of the
+rest scales. An overlay rotation and scale copy as they are; its
+translation takes the length ratio. The reply's node table has one row
+per source node with both names, then `unmatched_source`,
+`unmatched_target` and `dropped_channels`. `preview` returns the table
+without opening a document. Rest transforms come from the graph's model
+(`to_model`, `from_model` pick one when several use the graph) and are
+kept per graph, so a document can be retargeted from a map the Tags tool
+no longer shows. The Animation window has no retarget dialog yet.
 
-**Import.** A glTF file's clips import through the same retarget, which
-is the "own animation" row of
+**Import (AN5, built as `anim.import`).** `anim_edit::read_gltf`
+(`crates/tools/anim-edit/src/gltf.rs`) reads one animation of a `.gltf`
+(external or base64 buffers) or `.glb` as a clip on the file's node
+tree, then the same retarget places it on the graph. Times round to
+frames at 30 Hz, the file's axes become the engine's (the file's x, y, z
+are the engine's y, z, x), `STEP`, `LINEAR` and `CUBICSPLINE` become step,
+linear and smooth keys, and `matrix` nodes, sparse or normalised
+accessors, morph weights and non-uniform scale are refused or listed in
+`notes`. This is the "own animation" row of
 [forge-features.md](../game/forge-features.md).
 
 **Writing the tag (AN4, built).** The `animation` builder
@@ -824,7 +845,8 @@ ticks. The guest entry used to start a named animation remains **E first**.
 | `anim.new {tag, name, frames}`, `anim.duplicate {tag, animation, name}` or `anim.duplicate {doc, name}` | create a new animation document |
 | `anim.save {doc, package, mode?, class?, weapon_type?, action?}` | save a map-scoped `.anim.yaml` item in a local package |
 | `anim.check {doc, model?}` | per-node codec quantisation and loop seam, and feet under the model-space ground plane |
-| `anim.retarget {from, to, map?}`, `anim.import {file}` | retarget or import keys (AN5) |
+| `anim.retarget {from, to, map?, name?, from_model?, to_model?, preview?}` | retarget an open document onto a graph; the node table and unmatched nodes |
+| `anim.import {file, to?, clip?, map?, name?, to_model?, preview?}` | import a glTF clip onto a graph through the same retarget |
 
 ## The sound editor
 
@@ -1001,7 +1023,7 @@ Rows are in build order.
 | AN2 | **The encoder** (built): `tags::anim_write` (codecs 1 and 3) lifted from `h1-assets`, which calls it | M | nothing | `decode(encode(c))` equals `c` within quantisation on invented clips; the converter's `jmad` tests pass unchanged |
 | AN3 (built) | **Keys and curves**: `crates/tools/anim-edit`, `AnimDoc`, `anim.key`, gizmo keying, the Curves tab, `anim.new`, `anim.duplicate`, `anim.check` | M | AN1 | a key set by the gizmo and by `anim.key` make the same document, a drag is one undo step, and a rotation survives the angle view unchanged. `api/anim/read_tests.rs`, `ui/anim/edit.rs` and `crates/tools/anim-edit/src/tests.rs` |
 | AN4 (built) | **Write back**: `anim.save`, the `animation` builder, replace and add in a `jmad`, the refusals, the live metadata flush | M | AN2, AN3, X2, PK2 | an invented graph with one animation replaced keeps its other records and streams, an added one is reachable by its action, and an inheriting graph is refused by name. `crates/tools/workspace/src/animation/tests.rs` |
-| AN5 | **Retarget and glTF**: `anim.retarget`, `anim.import`, the node table | M | AN3 | a clip retargeted to a skeleton with one renamed and one longer bone keeps the end position within a bound; unmatched nodes are listed |
+| AN5 (built) | **Retarget and glTF**: `anim.retarget`, `anim.import`, the node table | M | AN3 | a clip retargeted to a skeleton with one renamed and one longer bone keeps the end position within a bound; unmatched nodes are listed. `crates/tools/anim-edit/src/retarget/tests.rs`, `gltf/tests.rs` and `api/anim/transfer_tests.rs` |
 | AN6 | **Animation in the game**: the game's `world.object.animate` (**E first**), `pair.preview {what: "animation"}` | S | AN4 | on the fake game the preview sends spawn, animate, wait and capture in order |
 | A2, A3, A4 | **Mouth curves** (rich-editors) | S, S, M | A1; M1 for A3 | as there |
 | SN1 (built) | **The sound editor as a document** (built: `ui/sound.rs` draws the front sound tab, `App::sound_rows`, `App::front_tag_doc`): the audition as a document, permutations with loudness, the mouth track row | S | SH1 | an invented sound opens as a tab; each permutation row carries `sound.measure`'s numbers |

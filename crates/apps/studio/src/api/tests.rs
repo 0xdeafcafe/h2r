@@ -435,6 +435,26 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             std::fs::write(&map, super::anim::tests::anim_map(true)).unwrap();
             app.dispatch(Action::OpenSource(map));
         }
+        // The invented two-bone model and graph, with a document to
+        // retarget or a glTF file to import.
+        m::ANIM_RETARGET | m::ANIM_IMPORT => {
+            let map = t.path("pose.map");
+            std::fs::write(&map, super::anim::tests::anim_map(true)).unwrap();
+            app.dispatch(Action::OpenSource(map));
+            if name == m::ANIM_IMPORT {
+                let out = t.path("out");
+                std::fs::create_dir_all(&out).unwrap();
+                super::anim::transfer_tests::gltf(&out, ["body", "arm"], 1);
+            } else {
+                let opened = call(
+                    api,
+                    app,
+                    m::ANIM_NEW,
+                    json!({"tag": r"jmad:invented\stickman", "name": "wave", "frames": 30}),
+                );
+                assert_eq!(opened["doc"], 1, "the example's document");
+            }
+        }
         // The invented two-bone graph for the animation editor.
         m::ANIM_READ
         | m::ANIM_NEW
