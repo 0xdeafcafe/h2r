@@ -87,45 +87,65 @@ fn refuse(mut widget: Widget, reason: Ui) {
     reason.count();
 }
 
-fn camera_matches(
+/// Read the model view at the nested camera call, after the guest resolves
+/// its object and light names. The latter are separate datum namespaces.
+fn read_view(
     mem: &dyn GuestMemory,
     widget: u32,
     frame: u32,
     center: u32,
+    up: u32,
     stack: u32,
     mxcsr: u32,
-) -> Option<bool> {
+) -> Option<frame_scene::OverlayModelView> {
     let word = |offset| mem.u32(frame.checked_add(offset)?).ok();
     if word(MODEL_WIDGET_LOCAL)? != widget {
-        return Some(false);
+        return None;
     }
     let primary = word(PRIMARY_COUNT)?;
     let secondary = word(SECONDARY_COUNT)?;
     if !(1..=PRIMARY_CAPACITY).contains(&primary) || secondary > SECONDARY_CAPACITY {
-        return Some(false);
+        return None;
     }
-    for (handles, count) in [
-        (frame.checked_sub(PRIMARY_HANDLES_BELOW_FRAME)?, primary),
-        (frame.checked_add(SECONDARY_HANDLES)?, secondary),
-    ] {
-        for index in 0..count {
-            if mem.u32(handles.checked_add(4 * index)?).ok()? == u32::MAX {
-                return Some(false);
-            }
+    let objects_at = frame.checked_sub(PRIMARY_HANDLES_BELOW_FRAME)?;
+    let objects = (0..primary).map(|index| {
+        let handle = mem.u32(objects_at.checked_add(4 * index)?).ok()?;
+        (handle != u32::MAX).then_some(handle)
+    }).collect::<Option<Vec<_>>>()?;
+    for index in 0..secondary {
+        if word(SECONDARY_HANDLES + index * 4)? == u32::MAX {
+            return None;
         }
     }
+    let vec3 = |ptr: u32| {
+        let mut v = [0.0; 3];
+        for (i, component) in v.iter_mut().enumerate() {
+            *component = mem.f32(ptr.checked_add(i as u32 * 4)?).ok()?;
+        }
+        v.iter().all(|f| f.is_finite()).then_some(v)
+    };
     let camera = ui_model::camera(mem, widget, word(MODEL_PARENT_BOUNDS)?, mxcsr)?;
-    for (i, component) in camera.center.into_iter().enumerate() {
-        if mem.u32(center.checked_add(i as u32 * 4)?).ok()? != component {
-            return Some(false);
-        }
+    let position = vec3(center)?;
+    if position.map(f32::to_bits) != camera.center {
+        return None;
     }
     for (i, coordinate) in camera.bounds.into_iter().enumerate() {
         if mem.u16(stack.checked_add(i as u32 * 4)?).ok()? != coordinate {
-            return Some(false);
+            return None;
         }
     }
-    Some(mem.u32(stack.checked_add(20)?).ok()? == camera.fov)
+    if mem.u32(stack.checked_add(20)?).ok()? != camera.fov {
+        return None;
+    }
+    Some(frame_scene::OverlayModelView {
+        camera: frame_scene::OverlayCamera {
+            position,
+            forward: vec3(mem.u32(stack.checked_add(16)?).ok()?)?,
+            up: vec3(up)?,
+            fov_y: f32::from_bits(camera.fov),
+        },
+        objects,
+    })
 }
 
 fn view(c: &Call<'_>) {
@@ -138,8 +158,7 @@ fn view(c: &Call<'_>) {
         return;
     }
     let mem = rt.memory();
-    if camera_matches(&*mem, widget.address, c.cpu.ebp, c.cpu.eax, c.cpu.esp, c.cpu.mxcsr)
-        != Some(true)
+    if read_view(&*mem, widget.address, c.cpu.ebp, c.cpu.eax, c.cpu.ecx, c.cpu.esp, c.cpu.mxcsr).is_none()
     {
         refuse(widget, Ui::ModelCamera);
         return;
@@ -290,6 +309,48 @@ pub(super) fn place(b: &mut Builder<'_>) {
 mod tests {
     use super::*;
     use engine::testing::FakeGuest;
+
+    #[test]
+    fn view_uses_resolved_objects_in_order_and_camera_axes_from_call() {
+        let mut mem = FakeGuest::new();
+        let (widget, frame, def, bounds, stack) = (0x1000, 0x3000, 0x5000, 0x7000, 0x9000);
+        let (center, forward, up) = (0xa000, 0xb000, 0xc000);
+        mem.put_u32(frame + MODEL_WIDGET_LOCAL, widget)
+            .put_u32(frame + MODEL_PARENT_BOUNDS, bounds)
+            .put_u32(frame + PRIMARY_COUNT, 2)
+            .put_u32(frame + SECONDARY_COUNT, 1)
+            .put_u32(frame + SECONDARY_HANDLES, 9)
+            .put_u32(frame - PRIMARY_HANDLES_BELOW_FRAME, 42)
+            .put_u32(frame - PRIMARY_HANDLES_BELOW_FRAME + 4, 17)
+            .put_u32(widget + 0x70, def)
+            .put_f32(def + 0x34, 1.5)
+            .put_f32(0x0045_dbc0, 0.5)
+            .put_f32(0x0045_e5b0, 2.5)
+            .put_f32(0x0045_e5ac, 0.5)
+            .put_u32(stack + 16, forward)
+            .put_f32(stack + 20, 0.75);
+        for (i, outer) in [0u16, 0, 480, 640].into_iter().enumerate() {
+            let at = i as u32 * 2;
+            mem.put_u16(bounds + at, outer)
+                .put_u16(def + 0x38 + at, 0)
+                .put_u16(stack + i as u32 * 4, [320, 240, 320, 240][i]);
+        }
+        for i in 0..3 {
+            let at = i * 4;
+            mem.put_f32(widget + 0x58 + at, 0.0)
+                .put_f32(def + 0x1c + at, 1.0)
+                .put_f32(def + 0x28 + at, i as f32)
+                .put_f32(center + at, i as f32)
+                .put_f32(forward + at, if i == 1 { 1.0 } else { 0.0 })
+                .put_f32(up + at, if i == 2 { 1.0 } else { 0.0 });
+        }
+        let view = read_view(&mem, widget, frame, center, up, stack, 0x1f80).unwrap();
+        assert_eq!(view.objects, vec![42, 17]);
+        assert_eq!(view.camera.forward, [0.0, 1.0, 0.0]);
+        assert_eq!(view.camera.up, [0.0, 0.0, 1.0]);
+        assert_eq!(view.camera.position, [0.0, 1.0, 2.0]);
+        assert_eq!(view.camera.fov_y, 0.75);
+    }
 
     #[test]
     fn model_builder_only_skips_a_noop_texture_commit() {
