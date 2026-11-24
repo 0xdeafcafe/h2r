@@ -20,7 +20,7 @@ pub mod mock;
 mod thread;
 mod value;
 
-pub use convert::{Cast, PureCast, classify, cvttss2si, fistp};
+pub use convert::{Cast, PureCast, apply as apply_pure_cast, classify, cvttss2si, fistp};
 pub use engine::{Binding, Bindings, Engine, EngineCall, EngineError, Override, ScenarioGlobals};
 pub use eval::{ArgumentStep, argument_step};
 pub use image::{Native, SLEEP_UNTIL_INDEX, VmImage};
