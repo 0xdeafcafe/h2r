@@ -1,8 +1,10 @@
-//! Build a stage-one Firefight package from the owner's multiplayer cache.
+//! Build a Firefight package from the owner's multiplayer cache.
 //! The kit arms the map's two bases (`bases`): drop zones keep off them,
 //! one zone and one Hunt order per base, and each starting location takes
-//! its nearest base's team. Only the authored character gets a new datum. Scenario and BSP roots keep
-//! their addresses and point at new block trees in resident tag memory.
+//! its nearest base's team. Stage one authors one character; stage two
+//! (`transplant`) copies more classes from donor maps. Scenario and BSP
+//! roots keep their addresses and point at new block trees in resident
+//! tag memory.
 use std::{fmt, io::Cursor, path::Path};
 
 use anyhow::{Context, Result, ensure};
@@ -20,12 +22,14 @@ mod ai;
 mod bases;
 pub mod ground;
 mod nav;
+mod transplant;
 /// An invented map the kit builds on, for tests here and in other crates.
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;
 
 pub use bases::{Bases, Config, Source, Team};
 pub use ground::{Ground, Labels, Problem, Receipt, Recipe};
+pub use transplant::{ClassCost, ClassSpec, Classes, Donor};
 
 /// The kit's version: the `firefight` crate's, which session data names.
 pub const KIT_VERSION: u32 = firefight::KIT_VERSION;
@@ -49,6 +53,9 @@ pub struct Costs {
     pub zones: usize,
     pub squads: usize,
     pub characters: usize,
+    /// The transplanted classes' tags and index entries
+    /// (`ClassCost::bytes` summed): an estimate inside `tag_growth`.
+    pub classes: usize,
     pub scripts: usize,
     /// The starting locations, when their rewritten rows cannot stay in
     /// place (0 when they do).
@@ -69,12 +76,13 @@ pub struct Costs {
 
 impl Costs {
     /// The parts, largest first.
-    fn parts(&self) -> [(&'static str, usize); 8] {
+    fn parts(&self) -> [(&'static str, usize); 9] {
         let mut parts = [
             ("sectors", self.sectors),
             ("zones", self.zones),
             ("squads", self.squads),
             ("characters and palettes", self.characters),
+            ("transplanted classes", self.classes),
             ("scripts", self.scripts),
             ("starting locations", self.starts),
             ("tag index", self.index),
@@ -89,13 +97,14 @@ impl fmt::Display for Costs {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sectors {} B ({} of {} generated kept), zones {} B, squads {} B, characters and palettes {} B, scripts {} B, starting locations {} B, tag index {} B, padding {} B; tag growth {} B, available {} B",
+            "sectors {} B ({} of {} generated kept), zones {} B, squads {} B, characters and palettes {} B, transplanted classes {} B, scripts {} B, starting locations {} B, tag index {} B, padding {} B; tag growth {} B, available {} B",
             self.sectors,
             self.sectors_kept,
             self.sectors_generated,
             self.zones,
             self.squads,
             self.characters,
+            self.classes,
             self.scripts,
             self.starts,
             self.index,
@@ -114,6 +123,10 @@ pub struct Package {
     pub squads: usize,
     /// The two bases the kit armed, base 0 the home base.
     pub bases: Bases,
+    /// What each kept class added, in palette order after the Elite.
+    pub classes: Vec<ClassCost>,
+    /// The classes cut to fit the headroom, first cut first.
+    pub cut: Vec<String>,
 }
 
 struct Built {
@@ -123,6 +136,8 @@ struct Built {
     squads: usize,
     bases: Bases,
     problems: Vec<Problem>,
+    classes: Vec<ClassCost>,
+    cut: Vec<String>,
 }
 
 struct Field {
@@ -224,6 +239,57 @@ fn build_with(
     config: &Config,
     labels: &Labels,
 ) -> Result<Built> {
+    build_with_classes(base, base_name, mode, config, labels, None)
+}
+
+/// [`build_with`] with the transplanted `classes`. A build over the tag
+/// headroom is refused with every class's cost, or, with
+/// `cut_to_fit`, retried without the last class until it fits
+/// (`transplant`).
+fn build_with_classes(
+    base: &[u8],
+    base_name: &str,
+    mode: Mode,
+    config: &Config,
+    labels: &Labels,
+    classes: Option<&Classes<'_>>,
+) -> Result<Built> {
+    let total = classes.map_or(0, |c| c.specs.len());
+    let mut keep = total;
+    loop {
+        match assemble(base, base_name, mode, config, labels, classes, keep) {
+            Ok(mut built) => {
+                if let Some(c) = classes {
+                    built.cut = c.specs[keep..]
+                        .iter()
+                        .rev()
+                        .map(|s| s.name.clone())
+                        .collect();
+                }
+                return Ok(built);
+            }
+            Err(e)
+                if keep > 0
+                    && classes.is_some_and(|c| c.cut_to_fit)
+                    && e.downcast_ref::<transplant::Overflow>().is_some() =>
+            {
+                keep -= 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// One build of the kit with the first `keep` classes.
+fn assemble(
+    base: &[u8],
+    base_name: &str,
+    mode: Mode,
+    config: &Config,
+    labels: &Labels,
+    classes: Option<&Classes<'_>>,
+    keep: usize,
+) -> Result<Built> {
     let mut map = Map::from_reader(Cursor::new(base))?;
     ensure!(
         map.header().cache_type == CacheType::Multiplayer,
@@ -253,11 +319,16 @@ fn build_with(
     // The version travels in the map, so it participates in the package id
     // even when two revisions happen to write identical AI tuning.
     set.intern(&format!("firefight_kit_v{KIT_VERSION}"))?;
+    let added = match classes {
+        Some(c) => transplant::add(&mut set, c, keep)?,
+        None => transplant::Added::default(),
+    };
     let ai = ai::prepare(
         &mut map,
         nav.zones,
         nav.base_zones,
         elite,
+        &added.ids,
         mode == Mode::Probe,
     )
     .map_err(anyhow::Error::msg)?;
@@ -295,6 +366,7 @@ fn build_with(
     let mut costs = Costs {
         sectors_generated: nav.trim.generated,
         sectors_kept: nav.trim.kept,
+        classes: added.costs.iter().map(|c| c.bytes).sum(),
         ..Costs::default()
     };
     let mut squads = 0;
@@ -333,12 +405,14 @@ fn build_with(
     costs.available = max_metadata_size(CacheType::Multiplayer)?.saturating_sub(base_memory);
     if costs.tag_growth > costs.available {
         let (biggest, bytes) = costs.parts()[0];
-        anyhow::bail!(
-            "Firefight kit exceeds tag headroom by {} B; the biggest part is {biggest} ({bytes} B), after trimming the sectors to the {} of {} generated the AI can use: {costs}",
+        return Err(transplant::Overflow(format!(
+            "Firefight kit exceeds tag headroom by {} B; the biggest part is {biggest} ({bytes} B), after trimming the sectors to the {} of {} generated the AI can use: {costs}{}",
             costs.tag_growth - costs.available,
             costs.sectors_kept,
             costs.sectors_generated,
-        );
+            transplant::describe(&added.costs),
+        ))
+        .into());
     }
     Ok(Built {
         bytes,
@@ -347,6 +421,8 @@ fn build_with(
         squads,
         bases,
         problems,
+        classes: added.costs,
+        cut: Vec::new(),
     })
 }
 
@@ -395,7 +471,40 @@ pub fn build_package(
     package_dir: &str,
     replace: bool,
 ) -> Result<Package> {
-    let built = build_with(base, base_name, mode, config, &Labels::default())?;
+    build_package_with(
+        base,
+        base_name,
+        mode,
+        config,
+        None,
+        maps_dir,
+        package_dir,
+        replace,
+    )
+}
+
+/// [`build_package`] with the transplanted `classes` (stage two). The
+/// package id follows the class list, so machines with the same donors
+/// and list build the same id.
+#[allow(clippy::too_many_arguments)]
+pub fn build_package_with(
+    base: &[u8],
+    base_name: &str,
+    mode: Mode,
+    config: &Config,
+    classes: Option<&Classes<'_>>,
+    maps_dir: &Path,
+    package_dir: &str,
+    replace: bool,
+) -> Result<Package> {
+    let built = build_with_classes(
+        base,
+        base_name,
+        mode,
+        config,
+        &Labels::default(),
+        classes,
+    )?;
     let id = install(
         base,
         base_name,
@@ -411,6 +520,8 @@ pub fn build_package(
         zones: built.zones,
         squads: built.squads,
         bases: built.bases,
+        classes: built.classes,
+        cut: built.cut,
     })
 }
 

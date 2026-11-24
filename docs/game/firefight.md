@@ -5,7 +5,8 @@ sets, director (FF2), stage-one offline kit, probe recipe, the host
 runtime (FF4) with its `Game` over the guest bodies of the engine
 entries and the `firefight` feature that runs it, the agent API
 (FF5), the Game Setup row and options page, the HUD's mode blob, view and
-its HUD kit HUD (FF8), the mode state in the host log and the host log
+its HUD kit HUD (FF8), the kit's stage two (FF12: transplanted classes,
+a library call with no command yet), the mode state in the host log and the host log
 in films (AN14), and the dedicated host's whole-pack
 admission and bundled kits (FF10) are implemented, tests only. "Guest boundary" lists the runs that
 settle what the disassembly leaves open. Retail play and the network probes await verification.
@@ -517,7 +518,7 @@ that id, and each machine loads its own build.
 | Zones, areas, firing positions | sampled from the sectors: cover is a position with a wall toward the middle | the block writers of `h1campaign::ai` (`ScenarioBlocks`) |
 | Squad slots | 16 empty squads the director fills (class, count and zone are set at place time) | the same writers |
 | Characters, stage 1 | `char` tags we author from a tuning table of ours, on bipeds and weapons the multiplayer map already has | Elites only; no tag is copied from another map |
-| Characters, stage 2 | `tags::schema::transplant` from the player's own campaign maps, with the sound gestalt merge | each class costs tag headroom; `validate` refuses a class that does not fit and the builder reports the cost |
+| Characters, stage 2 | `firefight_kit::Classes` (`src/transplant.rs`): `tags::schema::transplant` of a donor's `char` tag and its closure, from the player's own campaign maps, with the sound gestalt merge (`h1_assets::sounds::transplant_from`) | each class costs tag headroom; the builder refuses a build that does not fit, naming every class's cost, or cuts classes from the end of the list |
 
 Stage 1 runs against a map on the configured disc or extracted disc tree:
 
@@ -537,6 +538,45 @@ empty. The [test-map API](test-maps.md) can also create and list the
 probe on a running host. There is no separate list of Firefight maps:
 the lobby offers every installed kit package, so building a map's kit
 offers it.
+
+Stage 2 (`firefight_kit::build_package_with`) takes a `Classes`: the
+donor maps (name and file bytes), the schema, and the class list, each a
+donor's `char` tag path. The classes are copied after the Elite, so
+palette row 0 stays the Elite and row N+1 is class N of the list. A tag
+the base already has (same group and name) is reused, so a class costs
+what its closure adds over the base and the classes before it; sounds
+bring their entries into the base's `ugh!` gestalt, and a class with
+sounds is refused when the base or the donor has no gestalt. The
+package id follows the base, the kit version and the list in order, so
+two machines with the same donors and list build the same id. `h2
+firefight kit` does not pass classes yet, and the retail class table
+(which donor and which `char` path gives a Grunt, a Jackal, a Brute) is
+not built: the census goes in notes.
+
+**The cost and the cut order.** `Package::classes` gives each class's
+tags, sounds and tag bytes (the copied tags and their index entries; the
+gestalt's growth and alignment are in the build's exact `tag_growth`),
+and `Costs::classes` their sum. The list is in keep order: the first
+class is the last to go. When the build is over the tag headroom, the
+default is a refusal that names the excess, the biggest part and every
+class's cost. With `Classes::cut_to_fit` the builder retries without the
+last class until the build fits, and `Package::cut` names what it cut,
+first cut first. A refusal by the schema (a tag it cannot copy) or a
+missing `char` is an error naming the class, never a cut.
+
+**A drop ship (rules-world-api.md W8, R8).** The same machinery copies
+any group's tree, but three things are missing for a `vehi` root. The
+class takes `char` roots only (`ClassSpec` has no group), so a root group
+and a palette row for it are needed: the scenario's vehicle palette,
+written like the weapon palette row (`ai::weapon_slot`), and a squad's
+`vehicle` index. The schema (`layouts.txt`) must describe every group in
+the ship's closure (vehicle, model, render model, collision, physics,
+animation graph, effects, sounds): the transplant refuses the whole tree
+for one group without a layout, and a census on the player's campaign
+maps says which ship has a closure that copies. And the headroom: a ship
+with its animation graph and physics is far larger than a character, so
+Waterworks, Zanzibar and the other maps with a few KB of room refuse it
+and the cut order drops it first; R8 measures it per map in notes.
 
 The build is `firefight_kit::ground::build`, which takes the labels
 placed on the map and the recipe, and gives each label's place to the
@@ -1013,7 +1053,7 @@ are slices of [ai-networking.md](ai-networking.md); P numbers its probes.
 | **FF9** | Live: the variant bytes, `NewSession.firefight`, 1-to-4-player hopper entries, the lobby's local kit check | M | FF1 | `crates/formats/variants/src/ext.rs`, `crates/live/live-proto/`, `crates/live/live-server/`, `crates/live/live-worker/`, `crates/tools/hopper-edit/` | `the_mode_bytes_round_trip_and_leave_the_crc_valid`, `a_joiner_without_the_kit_map_is_refused_before_load`, `first_playlist_accepts_one_to_four_players`, `an_oversize_def_is_refused`, the parity suite; built: `firefight_match_round_trips_and_is_left_out_when_none`, `firefight_match_is_validated`, `sessions_carry_the_hosts_firefight_match`, `guests_read_the_firefight_match_their_host_advertises`, `each_multiplayer_start_names_its_match_for_the_session`, `each_builtin_is_found_by_its_hash_prefix`, `a_hopper_takes_the_builtin_firefight_sets`, `a_crossfire_variant_is_accepted_by_its_hash_prefix`, `the_builtin_firefight_sets_are_offered_crossfire_with_teams`, `firefight_seats_balance_two_teams_and_fill_one`, `firefight_sessions_seat_clankers_on_player_teams_only`, `a_firefight_session_seats_balanced_clankers_on_the_worker` | both homes offer 1 to 4 players and refuse unsupported sizes and missing local kits. A retail variant is unchanged |
 | **FF10** | Dedicated host: the Firefight host class and admission, the kit in the host's map set, the strip keeping AI data | S | FF3, FF4, P5 | `crates/live/live-proto/src/{hosts,host_pack}.rs`, `crates/apps/cli/src/host_cmd/{pack,process}.rs`, `crates/apps/cli/src/server_map.rs`, `crates/live/host-data/`, [dedicated-host.md](../live/dedicated-host.md) | `a_firefight_match_takes_a_whole_slot_class`, `strip_keeps_squads_and_sectors`; built: `a_whole_slot_class_needs_an_empty_pack_and_keeps_it`, `a_firefight_lease_takes_the_whole_slot_class`, `the_bundle_carries_each_maps_firefight_kit_and_the_host_places_it`, `only_kit_packages_and_their_index_are_firefight_payload` | admission tests; the coordinator's host run in notes |
 | **FF11** | `h2 sim run` Firefight matches: Clankers as the players, on one team or balanced across two (the `[firefight]` table: `set`, `difficulty`, `teams`, `lives`, `skulls`; examples `docs/runtime/sim-examples/firefight-beavercreek.toml` and `firefight-beavercreek-crossfire.toml`), a report with rounds, score and tick times. `host.metrics` reports `game_cpu_ms_per_tick_p99` over the last 30 steady gameplay seconds from per-tick game-thread CPU deltas | M | FF4 | `crates/live/sim-bench/`, `crates/extensions/game/src/host_metrics.rs`, [sim.md](../runtime/sim.md), [agent-api.md](../runtime/agent-api.md#hostmetrics) | `a_firefight_match_toml_parses`, `firefight_bots_are_on_player_teams_only`, `two_team_firefight_balances_omitted_teams`, `the_report_has_rounds_and_score`, `a_firefight_match_finds_its_kit_package`, `a_firefight_table_becomes_the_pages_choices`, `the_firefight_examples_load`, `rolling_p99_counts_individual_gameplay_intervals_and_expires_at_30s` | a match file runs headless (coordinator) and feeds P5. The p99 comes from individual gameplay samples and resets between matches |
-| **FF12** | The kit, stage 2: transplanted classes, their cost, the cut order | L | FF3, P2 | `crates/tools/firefight-kit/src/transplant.rs` (new) | `a_class_over_the_headroom_is_refused_with_its_cost`, `a_transplanted_closure_resolves`, `two_machines_build_equal_ids` | on invented maps; the retail census goes in notes |
+| **FF12** | The kit, stage 2: transplanted classes, their cost, the cut order (**built**, no command yet) | L | FF3, P2 | `crates/tools/firefight-kit/src/{transplant,lib,ai,testkit}.rs` | `a_class_over_the_headroom_is_refused_with_its_cost`, `a_transplanted_closure_resolves`, `two_machines_build_equal_ids`, `the_cut_order_drops_the_last_class_first`, `a_class_the_schema_cannot_copy_is_refused_by_name` | on invented maps; the retail census, the `h2 firefight kit` option and the class table remain |
 | **FF13** | The 16-player playlist at the live-actor cap measured by the CPU probe | S | FF9, FF10, FF11, P5 passes at 16 seats | `crates/tools/hopper-edit/`, `crates/live/live-server/`, `crates/live/live-worker/` | `sixteen_player_playlist_requires_the_measured_host_class`, `sixteen_player_definition_honours_the_measured_actor_cap`, the parity suite | publish in both Live homes only with a P5 result at or below 28 ms p99 game-thread CPU at the chosen live-actor cap on the intended host class. Admission uses that class and cap |
 | **FF14** | Home bases in the kit: bases from flag stands, team starts or clusters; drops away from both with a path to each; firing positions facing the nearer base; `ff_base_NN` zones and `ff_hunt_NN` orders; starts rewritten to their base's team; `--home`; Beaver Creek's kit | M | FF3 | `crates/tools/firefight-kit/src/{bases,nav,ai,lib}.rs`, `crates/apps/h2-tools/src/firefight_cmd.rs`, `crates/extensions/game/src/firefight/guest.rs` | `home_base_is_read_from_team_starting_points`, `home_base_prefers_the_ctf_flag_stand`, `the_home_option_swaps_the_bases`, `bases_split_untagged_starts_into_two_clusters`, `starting_locations_take_their_base_team`, `drops_are_chosen_away_from_the_home_base`, `every_drop_zone_has_a_path_to_each_base`, `firing_positions_face_the_nearer_base`, `each_base_has_a_hunt_order_over_its_area`, `the_kit_writes_each_start_its_base_team`, `read_kit_finds_the_bases_and_hunt_orders` | on invented maps the bases, drops and orders read back; the coordinator's Beaver Creek build goes in notes |
 | **FF15** | Two player teams: `Def::teams` and `player_kill` (format 2), validation, Crossfire, per-team pools and scores, targets, team-side zones, two-team ends, the rules-script form and its entries | M | FF2 | `crates/formats/firefight/src/{def,validate,builtin,director,script}.rs`, `crates/formats/rules/src/{caps.rs,lang/sig.rs}`, `crates/formats/firefight/tests/teams.rs` | `two_teams_start_with_a_pool_each_and_spend_their_own`, `a_team_out_of_lives_loses_to_the_other`, `both_teams_out_at_once_go_to_the_higher_score`, `both_teams_out_level_on_score_and_lives_is_a_draw`, `the_last_round_goes_to_the_higher_score_then_lives_then_a_draw`, `player_kills_score_across_the_teams_only`, `squads_are_sent_at_both_teams`, `the_team_fewer_actors_press_gets_the_next_squad`, `a_squad_drops_on_its_target_teams_side`, `a_players_team_is_fixed_when_first_seen`, `two_team_matches_always_end_with_a_team_result`, `team_counts_and_player_kill_points_are_refused_out_of_range`, `two_team_matches_give_the_same_commands`, `two_team_ends_give_the_same_commands`, `a_team_pool_set_from_outside_is_the_one_its_respawns_spend`, `pools_set_from_outside_are_refused_where_the_match_keeps_none` | the director and the script give the same commands over two-team scenarios; every two-team match ends with a team result |

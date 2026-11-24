@@ -96,3 +96,116 @@ pub fn court_kit() -> Vec<u8> {
         .expect("the kit builds on court")
         .bytes
 }
+
+/// The donor map's label.
+pub const DONOR: &str = "donor";
+
+/// The base's plasma rifle: the donor has a tag of this name, so a class
+/// that uses it reuses the base's.
+pub const SHARED_WEAPON: &str = r"objects\weapons\rifle\plasma_rifle\plasma_rifle";
+
+/// An invented donor map with three classes. Each `char` (0x20 bytes) points
+/// at its biped (0x0), at [`SHARED_WEAPON`] (0x8) and carries a data
+/// block (0x10) of the class's `bulk` bytes: grunt 0x20, jackal 0x20,
+/// hunter 0x10000. Every biped (0x10 bytes) points at one `rail` weapon,
+/// so the second class pays only for its char and biped.
+pub fn donor() -> Vec<u8> {
+    let mut set = TagSet::new(CacheType::Multiplayer, DONOR, r"invented\donor");
+    for group in [b"matg", b"scnr", b"char", b"bipd", b"weap"] {
+        set.add_group(FourCC(*group), None, None);
+    }
+    set.globals = set
+        .add_tag(
+            FourCC(*b"matg"),
+            "globals",
+            TagPayload::Built(Block::zeroed(0x284)),
+        )
+        .unwrap();
+    set.scenario = set
+        .add_tag(
+            FourCC(*b"scnr"),
+            DONOR,
+            TagPayload::Built(Block::zeroed(0x3e0)),
+        )
+        .unwrap();
+    let mut weapon = |name: &str| {
+        set.add_tag(
+            FourCC(*b"weap"),
+            name,
+            TagPayload::Built(Block::zeroed(0x10)),
+        )
+        .unwrap()
+    };
+    let shared = weapon(SHARED_WEAPON);
+    let rail = weapon(r"donor\weapons\rail");
+    for (name, bulk) in [("grunt", 0x20usize), ("jackal", 0x20), ("hunter", 0x10000)] {
+        let mut unit = Block::zeroed(0x10);
+        unit.tag_ref(0, rail);
+        let unit = set
+            .add_tag(
+                FourCC(*b"bipd"),
+                &format!(r"donor\units\{name}"),
+                TagPayload::Built(unit),
+            )
+            .unwrap();
+        let mut root = Block::zeroed(0x20);
+        root.tag_ref(0, unit)
+            .tag_ref(8, shared)
+            .data(0x10, Block::new(vec![7; bulk]).aligned(1));
+        set.add_tag(
+            FourCC(*b"char"),
+            &format!(r"donor\characters\{name}"),
+            TagPayload::Built(root),
+        )
+        .unwrap();
+    }
+    set.build().unwrap().0
+}
+
+/// The layouts of [`donor`]'s three groups.
+pub fn donor_schema() -> tags::schema::Schema {
+    use std::collections::BTreeMap;
+    use tags::schema::{Field, Schema, Struct};
+    let bytes = Struct {
+        size: 1,
+        align: 1,
+        fields: BTreeMap::new(),
+    };
+    let group = |size, fields| Struct {
+        size,
+        align: 4,
+        fields,
+    };
+    Schema {
+        groups: BTreeMap::from([
+            (
+                FourCC(*b"char"),
+                group(
+                    0x20,
+                    BTreeMap::from([
+                        (0, Field::TagRef),
+                        (8, Field::TagRef),
+                        (0x10, Field::Block(Box::new(bytes))),
+                    ]),
+                ),
+            ),
+            (
+                FourCC(*b"bipd"),
+                group(0x10, BTreeMap::from([(0, Field::TagRef)])),
+            ),
+            (FourCC(*b"weap"), group(0x10, BTreeMap::new())),
+        ]),
+    }
+}
+
+/// The three classes of [`donor`], in keep order.
+pub fn donor_classes() -> Vec<crate::ClassSpec> {
+    ["grunt", "jackal", "hunter"]
+        .into_iter()
+        .map(|name| crate::ClassSpec {
+            name: name.into(),
+            donor: 0,
+            path: format!(r"donor\characters\{name}"),
+        })
+        .collect()
+}
