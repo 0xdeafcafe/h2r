@@ -21,10 +21,10 @@
 //!   view or of the first person): the bridge extracts the layer's pass
 //!   from guest memory (`render_bridge::native_layers::extract`); the plan
 //!   takes each item or names why not. A structure item (a cluster's or
-//!   a placement's, the scene's caller only) is drawn when its draw is
-//!   static (the material as resolved at the load, no animation: what the
-//!   compiled programs hold) and the layer's set draws its part with its
-//!   shader. An object item is drawn when extraction names no cause
+//!   a placement's, the scene's caller only) draws when the set holds its
+//!   shader and part and the plan supplies its constants. Game-time
+//!   animation updates the compiled passes' uniforms at the layer call.
+//!   An object item is drawn when extraction names no cause
 //!   (`frame_scene::LayerObjectRefusal`), a PRT stream the draw adds for
 //!   it (layer 5, `frame_scene::PrtStream`) reads from guest memory in
 //!   the format its pass's PRT variant was compiled for
@@ -71,6 +71,7 @@ use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
 use frame_scene::{FrameScene, LayerItem, LayerOwner, LayerPass, PartFlags};
+use native_render::fog_gpu::{LayerSamples, sampled_constants};
 use native_render::layer_pass::{self, PrefixItem};
 use native_render::object_program_gpu::{LitObjects, OBJECT_LAYERS, PlannedDraw};
 use native_render::object_streams::StreamFormats;
@@ -132,6 +133,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let is_object = |slot: u32| object_items.iter().any(|i| i.slot == slot);
         // The plan of the structure's items, from the scene alone.
         let mut taken: HashMap<u32, u32> = HashMap::new();
+        let mut samples = LayerSamples::new();
         let plan = world.map(|(view, _)| layer_pass::plan(scene, pass, &mut Loaded(view)));
         match &plan {
             Some(plan) => {
@@ -141,14 +143,17 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                     }
                 }
                 for d in &plan.draws {
-                    if layer_pass::world_owner(d.owner).is_none() {
-                        continue; // an object's: planned below
+                    let Some(owner) = layer_pass::world_owner(d.owner) else { continue };
+                    // Structure items of the same material share the layer clock,
+                    // have no object inputs and draw the load's single implementation.
+                    if let Some(&(material, shader)) = data.and_then(|l| l.part_set.get(&(owner, d.part)))
+                        && shader == d.shader
+                        && !samples.contains_key(&material)
+                        && let Some(passes) = sampled_constants(d)
+                    {
+                        samples.insert(material, passes);
                     }
-                    if !layer_pass::is_static(d) {
-                        *outcomes.entry("animated").or_default() += 1;
-                    } else {
-                        taken.insert(d.slot, d.shader);
-                    }
+                    taken.insert(d.slot, d.shader);
                 }
             }
             None => {
@@ -298,8 +303,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let (drawn, cleared) = layer_pass::clear_layer_prefix(&mut preview, layer, &|item| match item {
             PrefixItem::World(item) => data.is_some_and(|data| {
                 taken.get(&item.slot) == Some(&item.shader)
-                    && data.part_set.get(&(item.owner, item.part)) == Some(&item.shader)
-                    && data.parts.iter().any(|&(k, (_, _, _, m))| k == (item.owner, item.part) && fogs.contains_key(&m))
+                    && data.part_set.get(&(item.owner, item.part))
+                        .is_some_and(|(m, shader)| *shader == item.shader && fogs.contains_key(m))
             }),
             PrefixItem::Object { slot, shader } => object_draws.get(&slot).is_some_and(|o| o.shader == shader),
         })?;
@@ -347,6 +352,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             objects: models,
             layer: l,
             runs,
+            samples,
             fogs,
             view: None,
             w_clip: None,
@@ -515,6 +521,8 @@ struct LayerViewPass {
     layer: u8,
     /// The surrendered items' runs, in the list's order.
     runs: Vec<LayerRun>,
+    /// Sampled world constants in each material's compiled pass order.
+    samples: LayerSamples,
     /// Each material's fog unit and colour, the device's at the ask under
     /// the material's own words.
     fogs: HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
@@ -739,7 +747,10 @@ impl LayerViewPass {
                     let ready = self.ready.as_ref().ok_or("world geometry unavailable")?;
                     let mut guard = ready.gpu();
                     let gpu = guard.as_mut().ok_or("world geometry unavailable")?;
-                    gpu.layer_draws(self.layer, &t.device, t.color_format, t.depth_format, t.size, selected, &view, &self.fogs, &self.stencil)?
+                    gpu.layer_draws(
+                        self.layer, &t.device, t.color_format, t.depth_format, t.size, selected, &view,
+                        &self.fogs, &self.stencil, &self.samples,
+                    )?
                 }
                 LayerRun::Objects(draws) => {
                     let models = self.objects.as_ref().ok_or("layer object geometry unavailable")?;

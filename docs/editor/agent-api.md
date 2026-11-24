@@ -523,8 +523,8 @@ Notes on some:
   curve, which `function.read`, `function.set` and `function.sample`
   take, the kinds of target it drives, a `refusal` when it drives a
   target the layer plan does not animate, and its `value` at `time` on
-  the preview clock or `no_value` and why: an object-driven property or
-  a period that is not positive has none), `time` and `clock_length`,
+  the preview clock or `no_value` with the reason, such as a missing
+  object function, an invalid period or a wave requiring an engine table), `time` and `clock_length`,
   the passes per layer, `names_known` (false until the template's parameter names are
   read), `read_only` and the bindings that did not read (`refusals`).
   `shader.set {tag, slot: {kind, index}, value}` writes one slot: the
@@ -537,9 +537,10 @@ Notes on some:
   count and reason, `base` when the base look does not draw, and
   `covered`. `time` (0 to 86400 seconds, default 0) is the preview
   clock: the answer repeats it and lists each animated property's value
-  there in `animation`. A pass that animates a constant is left out at
-  every time and named in `refusals`: the plan draws the constants the
-  compiled programs hold. With no renderer `png` is null and the counts
+  there in `animation`. The drawn layer passes use the pixel constants,
+  vertex constants and vertex defaults sampled at that time. A bitmap
+  frame change or a missing texture-transform input appears in `refusals`.
+  With no renderer `png` is null and the counts
   still answer.
   `shader.code {tag, pass?, implementation?}` reads one pass's programs
   as text (`native_view::code`, the Shader tab's Code section): `pass`
@@ -1300,7 +1301,7 @@ Notes on some:
   cause with how many, `refused`, as `cause: detail`: `program` for the
   load's refusals, such as a view constant the camera does not give or
   a layer-3 stage bitmap that is not 2D, then the plan's causes,
-  `animated`, `fog`, and for layer 1 `layer 1: stencil mode not checked
+  `animation` for an unsupported target, `fog`, and for layer 1 `layer 1: stencil mode not checked
   against the game`; and `parts_refused`, layer 3's parts of a drawn
   material that its pass does not take, by cause with how many, which
   draw the base look; they draw in the `game` mode only), the `errors` of BSPs that

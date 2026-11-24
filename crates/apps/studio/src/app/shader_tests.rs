@@ -147,7 +147,7 @@ fn animated(index: usize, kinds: &[&'static str]) -> Animated {
 /// animate says so.
 #[test]
 fn an_animated_property_names_its_curve_and_what_the_plan_refuses() {
-    let a = animated(3, &["pixel constant", "vertex constant"]);
+    let a = animated(3, &["texture transform", "pixel constant", "vertex constant"]);
     assert_eq!(a.path(), "postprocess[0].properties[3].function");
     assert_eq!(a.refusal(), None);
     let b = animated(0, &["pixel constant", "render state", "stage state"]);

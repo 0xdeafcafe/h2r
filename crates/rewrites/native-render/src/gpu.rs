@@ -939,7 +939,8 @@ impl GpuWorld {
     /// D3D pass already open on these attachments, the uniforms as writes
     /// ahead of them ([`FogSet::draws_stencil`]; `fogs` the fog unit the
     /// passes hold and `stencil` the stencil state, both the device's at
-    /// the layer).
+    /// the layer). `samples` holds the registers the planner evaluates at
+    /// the layer call.
     pub fn layer_draws(
         &mut self,
         layer: u8,
@@ -951,6 +952,7 @@ impl GpuWorld {
         view: &ViewInputs,
         fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
         stencil: &gfx::state::StencilState,
+        samples: &crate::fog_gpu::LayerSamples,
     ) -> Result<gfx::external::ExternalDraws, &'static str> {
         let Self { layers, packet_pipelines, program_vertices, indices, .. } = self;
         let set = layers.get_mut(&layer).ok_or("layer materials unavailable")?;
@@ -960,7 +962,7 @@ impl GpuWorld {
         if packet_pipelines.len() > 4096 {
             packet_pipelines.clear();
         }
-        set.draws_stencil(packet_pipelines, program_vertices, indices, color_format, depth_format, target_size, selected, view, fogs, stencil)
+        set.draws_stencil(packet_pipelines, program_vertices, indices, color_format, depth_format, target_size, selected, view, fogs, stencil, samples)
     }
 
     /// Draws the water edge blend of `set`'s materials from now on.
@@ -1198,17 +1200,18 @@ impl GpuWorld {
     }
 
     /// The uniforms of `layer`'s set for one view ([`FogSet::prepare`];
-    /// `fogs` the fog unit each material draws with), through the
-    /// submission's upload arena.
+    /// `fogs` the fog unit each material draws with) and the material
+    /// constants at the preview time, through the submission's upload arena.
     pub fn prepare_layer(
         &mut self,
         layer: u8,
         uploads: &mut gfx::ring::EncoderUploads<'_>,
         view: &ViewInputs,
         fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
+        samples: &crate::fog_gpu::LayerSamples,
     ) {
         if let Some(set) = self.layers.get(&layer) {
-            set.prepare(uploads, view, fogs);
+            set.prepare_layer(uploads, view, fogs, samples);
         }
     }
 

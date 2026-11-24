@@ -749,12 +749,8 @@ pub fn material<R: Read + Seek>(
     material_at(map, files, shader, shape, 0.0)
 }
 
-/// [`material`] planned at render time `time` seconds, the preview
-/// clock: a pass's animated properties are evaluated there
-/// (`layers_load::plan_without_game`). A pass that animates a constant is
-/// still left out and named, whatever the time: the editor's plan draws
-/// the constants the compiled programs hold (`layers_load`'s `animated`
-/// refusal).
+/// [`material`] with the layer plan's pixel and vertex constants sampled
+/// at `time` seconds on the preview clock.
 pub fn material_at<R: Read + Seek>(
     map: &mut Map<R>,
     files: &mut ResourceFiles,
@@ -852,48 +848,118 @@ pub fn render_material(
     size: [u32; 2],
     background: [f64; 3],
 ) -> wgpu::Texture {
-    let extent = wgpu::Extent3d {
-        width: size[0].max(1),
-        height: size[1].max(1),
-        depth_or_array_layers: 1,
-    };
-    let color_format = crate::render::UI_FORMAT;
-    let depth_format = crate::render::DEPTH_FORMAT;
-    let color = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("material preview colour"),
-        size: extent,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: color_format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-            | wgpu::TextureUsages::COPY_SRC
-            | wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    });
-    let depth = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("material preview depth"),
-        size: extent,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: depth_format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        view_formats: &[],
-    });
-    let mut world = NativeWorld::new(device, queue, &preview.load, Lighting::Game);
-    world.render(
-        device,
-        queue,
-        &color.create_view(&Default::default()),
-        color_format,
-        &depth.create_view(&Default::default()),
-        depth_format,
-        [extent.width, extent.height],
-        &preview.camera,
-        Clear::all(background),
-    );
-    color
+    let mut surface = MaterialSurface::new(device, queue, preview, size);
+    surface.draw(device, queue, preview, background);
+    surface.color
+}
+
+/// A preview's uploaded geometry, programs, stage images and render
+/// targets. The Shader tab keeps them while the clock runs.
+pub struct MaterialSurface {
+    world: NativeWorld,
+    color: wgpu::Texture,
+    depth: wgpu::Texture,
+}
+
+impl MaterialSurface {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        preview: &MaterialPreview,
+        size: [u32; 2],
+    ) -> Self {
+        let extent = wgpu::Extent3d {
+            width: size[0].max(1),
+            height: size[1].max(1),
+            depth_or_array_layers: 1,
+        };
+        let color_format = crate::render::UI_FORMAT;
+        let depth_format = crate::render::DEPTH_FORMAT;
+        let color = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("material preview colour"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: color_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let depth = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("material preview depth"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: depth_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        Self {
+            world: NativeWorld::new(device, queue, &preview.load, Lighting::Game),
+            color,
+            depth,
+        }
+    }
+
+    pub fn color(&self) -> &wgpu::Texture {
+        &self.color
+    }
+
+    pub fn draw(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        preview: &MaterialPreview,
+        background: [f64; 3],
+    ) {
+        self.world.render(
+            device,
+            queue,
+            &self.color.create_view(&Default::default()),
+            self.color.format(),
+            &self.depth.create_view(&Default::default()),
+            self.depth.format(),
+            [self.color.width(), self.color.height()],
+            &preview.camera,
+            Clear::all(background),
+        );
+    }
+
+    /// Redraws on the same targets when a clock sample changes a drawn
+    /// layer's constants. A material preview contains only material 0.
+    pub fn draw_at(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        preview: &MaterialPreview,
+        background: [f64; 3],
+        time: f64,
+    ) {
+        if !time.is_finite() {
+            return;
+        }
+        let Some(layers) = preview.load.layers() else {
+            return;
+        };
+        let mut changed = false;
+        for layer in &mut self.world.layers {
+            if layer.constants.is_empty() {
+                continue;
+            }
+            let sampled =
+                layers_load::plan_without_game(&layers.view, &[preview.shader], layer.layer, time);
+            if layer.constants != sampled.constants {
+                layer.constants = sampled.constants;
+                changed = true;
+            }
+        }
+        if changed {
+            self.draw(device, queue, preview, background);
+        }
+    }
 }
 
 #[cfg(test)]

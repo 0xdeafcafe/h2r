@@ -31,7 +31,7 @@ use super::{PanelState, colour, curve, picker};
 use crate::App;
 use crate::app::map_pack::Picture;
 use crate::app::shader::{
-    Animated, BACKGROUND, CONSTANTS_HELD, NAMES_NOT_READ, PreviewPasses, ShaderRead, Slot,
+    Animated, BACKGROUND, NAMES_NOT_READ, PreviewPasses, ShaderRead, Slot,
     SlotKind, SlotValue,
 };
 use crate::app::{Action, NavAction, TagAction, TagDoc, tag_api};
@@ -64,9 +64,8 @@ struct Key {
 /// The drawn preview on the GPU.
 struct Preview {
     id: ExternalTextureId,
-    _texture: wgpu::Texture,
-    width: u32,
-    height: u32,
+    material: material::MaterialPreview,
+    surface: material::MaterialSurface,
     passes: PreviewPasses,
 }
 
@@ -93,8 +92,7 @@ pub struct ShaderUi {
     thumbs_map: Option<String>,
     pick: Option<Pick>,
     shape_pick: Option<ShapePick>,
-    /// The preview clock in seconds, and whether it runs. The picture is
-    /// drawn at `drawn_time`; it is not redrawn while the clock runs.
+    /// The preview clock in seconds and the sample on the GPU.
     time: f64,
     playing: bool,
     drawn_time: f64,
@@ -129,6 +127,9 @@ pub fn draw(ui: &Ui, app: &App, tag: TagId, cx: &mut ViewCx<'_, '_>, actions: &m
         None => return,
     };
     header(ui, app, &read, actions);
+    if !read.animations.is_empty() {
+        clock(ui, cx.shader, &read);
+    }
     preview(ui, app, &read, &key, cx);
     if !read.names_known {
         ui.text_disabled(NAMES_NOT_READ);
@@ -169,12 +170,10 @@ pub fn draw(ui: &Ui, app: &App, tag: TagId, cx: &mut ViewCx<'_, '_>, actions: &m
             TreeNodeFlags::empty(),
         )
     {
-        clock(ui, cx.shader, &read);
         let values = read.values_at(cx.shader.time);
         for (a, v) in read.animations.iter().zip(&values) {
             animation_row(ui, doc, &read, a, v, cx.shader.time, cx.panel);
         }
-        ui.text_disabled(CONSTANTS_HELD);
     }
     code_section(ui, app, &read, &key, cx.shader);
     bitmap_picker(ui, app, &read, cx, actions);
@@ -184,7 +183,7 @@ pub fn draw(ui: &Ui, app: &App, tag: TagId, cx: &mut ViewCx<'_, '_>, actions: &m
 }
 
 /// The preview clock: play or pause, and the time in the loop. Dragging
-/// it stops it; the picture is redrawn at the time it is left at.
+/// it pauses playback at the sample under the slider.
 fn clock(ui: &Ui, st: &mut ShaderUi, read: &ShaderRead) {
     let length = read.clock_length();
     if st.playing {
@@ -399,8 +398,7 @@ fn preview(
     let stale = st
         .preview
         .as_ref()
-        .is_none_or(|(k, s, _)| k != key || *s != st.shape)
-        || (!st.playing && st.drawn_time != st.time);
+        .is_none_or(|(k, s, _)| k != key || *s != st.shape);
     if stale {
         if let Some((_, _, Ok(old))) = st.preview.take() {
             let _ = cx.gpu.renderer.unregister_external_texture(old.id);
@@ -408,6 +406,11 @@ fn preview(
         let drawn = render(cx.gpu, app, read, st.shape, st.time);
         st.drawn_time = st.time;
         st.preview = Some((key.clone(), st.shape, drawn));
+    } else if st.drawn_time != st.time {
+        if let Some((_, _, Ok(p))) = &mut st.preview {
+            p.surface.draw_at(cx.gpu.device, cx.gpu.queue, &p.material, BACKGROUND, st.time);
+        }
+        st.drawn_time = st.time;
     }
     ui.text(format!("Preview on {}", shape_words(app, st.shape)));
     ui.same_line();
@@ -419,8 +422,9 @@ fn preview(
     }
     match st.preview.as_ref().map(|(_, _, p)| p) {
         Some(Ok(p)) => {
-            let w = ui.content_region_avail()[0].clamp(64.0, p.width as f32);
-            let h = w * p.height as f32 / p.width.max(1) as f32;
+            let texture = p.surface.color();
+            let w = ui.content_region_avail()[0].clamp(64.0, texture.width() as f32);
+            let h = w * texture.height() as f32 / texture.width() as f32;
             ui.image(p.id.texture_id(), [w, h]);
             let n = p.passes.drawn;
             ui.text_disabled(format!(
@@ -445,18 +449,18 @@ fn render(
     time: f64,
 ) -> Result<Preview, String> {
     let p = app.shader_preview(read.tag, shape, time)?;
-    let texture = material::render_material(gpu.device, gpu.queue, &p, PICTURE, BACKGROUND);
-    let view = texture.create_view(&Default::default());
+    let mut surface = material::MaterialSurface::new(gpu.device, gpu.queue, &p, PICTURE);
+    surface.draw(gpu.device, gpu.queue, &p, BACKGROUND);
+    let view = surface.color().create_view(&Default::default());
     let id = gpu
         .renderer
         .register_external_texture(&view)
         .map_err(|e| format!("{e}"))?;
     Ok(Preview {
         id,
-        width: texture.width(),
-        height: texture.height(),
-        _texture: texture,
         passes: PreviewPasses::of(read, &material::material_draws(&p)),
+        material: p,
+        surface,
     })
 }
 

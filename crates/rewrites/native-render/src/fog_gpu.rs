@@ -29,7 +29,8 @@ use crate::world::{LightmapKey, ModelRows, Owner, World};
 use gfx::state::RenderStateType;
 use gfx::xdk::{HALO2_BUILD, RenderStateTable};
 use shaders::psh::{self, PixelShaderDef, TexMode};
-use tags::material::Material;
+use tags::material::{Material, Register, ResolvedImplementation};
+use shaders::vsh::VertexUniforms;
 use tags::shader::RenderStateValue;
 
 /// The render-state slots that set the fog a draw takes: `D3DRS_FOGENABLE`
@@ -280,14 +281,14 @@ pub fn layer_has_choice(material: &Material, layer: usize) -> bool {
 /// refuses here; [`layer_passes_selected`] takes them where the caller
 /// knows which.
 pub fn layer_passes(material: &Material, layer: usize) -> Result<Vec<FogPass>, FogRefusal> {
-    passes_of(material, layer, false, Selection::default())
+    passes_of(material, layer, false, Selection::default(), None)
 }
 
 /// [`layer_passes`] for a draw that binds [`Selection::implementation`]
 /// and, with [`Selection::layer_cull`], takes the layer's start cull for a
 /// pass that leaves `CULLMODE` unset.
 pub fn layer_passes_selected(material: &Material, layer: usize, selection: Selection) -> Result<Vec<FogPass>, FogRefusal> {
-    passes_of(material, layer, false, selection)
+    passes_of(material, layer, false, selection, None)
 }
 
 /// [`layer_passes`] with the engine-texture stages a per-view supply
@@ -296,10 +297,21 @@ pub fn layer_passes_selected(material: &Material, layer: usize, selection: Selec
 /// what the water edge blend binds. An id nothing supplies refuses the
 /// material ([`FogRefusal::Unsupplied`]).
 pub fn supplied_layer_passes(material: &Material, layer: usize) -> Result<Vec<FogPass>, FogRefusal> {
-    passes_of(material, layer, true, Selection::default())
+    passes_of(material, layer, true, Selection::default(), None)
 }
 
-fn passes_of(material: &Material, layer: usize, supplied: bool, selection: Selection) -> Result<Vec<FogPass>, FogRefusal> {
+/// Compiles the same pass shape the layer planner samples at draw time.
+/// A sample supplies the registers and defaults for vertex input validation.
+pub(crate) fn sampled_layer_passes(
+    material: &Material, layer: usize, selection: Selection, properties: &[tags::shader::AnimatedProperty],
+) -> Result<Vec<FogPass>, FogRefusal> {
+    passes_of(material, layer, false, selection, Some(properties))
+}
+
+fn passes_of(
+    material: &Material, layer: usize, supplied: bool, selection: Selection,
+    properties: Option<&[tags::shader::AnimatedProperty]>,
+) -> Result<Vec<FogPass>, FogRefusal> {
     let layer = material
         .layers
         .iter()
@@ -314,6 +326,15 @@ fn passes_of(material: &Material, layer: usize, supplied: bool, selection: Selec
                 .implementation
                 .and_then(|i| all.get(i))
                 .ok_or(FogRefusal::Implementations { pass: n, count: all.len() })?,
+        };
+        let mut sampled;
+        let imp = if let Some(properties) = properties.filter(|_| !imp.animated.is_empty()) {
+            sampled = crate::layer_pass::sample_constants(imp, properties, Some(0.0), false, n)
+                .map_err(|reason| FogRefusal::Compile { pass: n, reason: format!("{}: {reason:?}", reason.name()) })?;
+            sampled.animated.clear();
+            &sampled
+        } else {
+            imp
         };
         let mut look = if supplied {
             // `implementation_look` with the engine stages kept when a
@@ -530,6 +551,66 @@ impl FogProgram {
     }
 }
 
+/// Constants from one sampled implementation, in hardware register order.
+/// View inputs, placement rows and fog still come from the draw.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayerConstants {
+    vertex: Vec<Register>,
+    defaults: Vec<Register>,
+    c0: [[f32; 4]; 9],
+    c1: [[f32; 4]; 9],
+}
+
+impl LayerConstants {
+    pub fn from_implementation(imp: &ResolvedImplementation) -> Self {
+        let def = PixelShaderDef::from_bytes(&imp.pixel_shader).expect("fixed-size pixel shader definition");
+        let (c0, c1) = def.embedded_constants();
+        Self { vertex: imp.vertex_constants.clone(), defaults: imp.vertex_defaults.clone(), c0, c1 }
+    }
+
+    fn vertex(&self, base: &VertexUniforms) -> VertexUniforms {
+        let mut vertex = base.clone();
+        for r in &self.vertex {
+            crate::program::put(&mut vertex.constants, r);
+        }
+        for r in &self.defaults {
+            crate::program::put(&mut vertex.defaults, r);
+        }
+        vertex
+    }
+}
+
+/// The sampled registers over a compiled pass's uniforms, followed by the fog
+/// words for this draw. Vertex classification and per-view state survive.
+fn layer_uniforms<'a>(
+    sample: Option<&LayerConstants>, base: &'a MaterialProgram, fog: &psh::fog::Fog, color: [f32; 4],
+) -> (std::borrow::Cow<'a, VertexUniforms>, psh::PixelUniforms) {
+    let mut pixel = base.pixel;
+    let vertex = match sample {
+        Some(s) => {
+            (pixel.c0, pixel.c1) = (s.c0, s.c1);
+            std::borrow::Cow::Owned(s.vertex(&base.vertex))
+        }
+        None => std::borrow::Cow::Borrowed(&base.vertex),
+    };
+    pixel.fog = fog.uniform();
+    pixel.fog_color = color;
+    (vertex, pixel)
+}
+
+/// One layer's time sample, per material and in compiled pass order.
+pub type LayerSamples = HashMap<u16, Vec<Option<LayerConstants>>>;
+
+pub fn sampled_constants(draw: &crate::layer_pass::LayerDraw) -> Option<Vec<Option<LayerConstants>>> {
+    if !draw.passes.iter().any(|p| draw.implementation(p).is_some_and(|i| !i.animated.is_empty())) {
+        return None;
+    }
+    Some(draw.passes.iter().map(|p| {
+        let imp = draw.implementation(p)?;
+        (!imp.animated.is_empty()).then(|| LayerConstants::from_implementation(imp))
+    }).collect())
+}
+
 struct FogMaterial {
     /// The passes in draw order, a placement's draws with the pass's
     /// rigid program when it compiled one.
@@ -705,15 +786,25 @@ impl FogSet {
         view: &ViewInputs,
         fogs: &HashMap<u16, (psh::fog::Fog, [f32; 4])>,
     ) {
+        self.prepare_layer(uploads, view, fogs, &LayerSamples::new());
+    }
+
+    pub(crate) fn prepare_layer(
+        &self, uploads: &mut gfx::ring::EncoderUploads<'_>, view: &ViewInputs,
+        fogs: &HashMap<u16, (psh::fog::Fog, [f32; 4])>, samples: &LayerSamples,
+    ) {
         for (&material, m) in &self.materials {
             let Some((fog, color)) = fogs.get(&material) else { continue };
-            for (g, _, rigid) in &m.passes {
-                let mut pixel = g.program.pixel;
-                pixel.fog = fog.uniform();
-                pixel.fog_color = *color;
-                g.prepare_with(uploads, view, &pixel);
+            for (n, (g, _, rigid)) in m.passes.iter().enumerate() {
+                let sample = samples.get(&material).and_then(|p| p.get(n)).and_then(Option::as_ref);
+                let (vertex, pixel) = layer_uniforms(sample, &g.program, fog, *color);
+                g.prepare_with(uploads, view, &vertex, &pixel);
                 if let Some(r) = rigid {
-                    r.prepare(uploads, view);
+                    if let Some(s) = sample {
+                        r.prepare_sampled(uploads, view, &s.vertex(&r.program.vertex));
+                    } else {
+                        r.prepare(uploads, view);
+                    }
                 }
             }
         }
@@ -747,7 +838,7 @@ impl FogSet {
         fogs: &HashMap<u16, (psh::fog::Fog, [f32; 4])>,
     ) -> Result<d3d::backend::ExternalDraws, &'static str> {
         let off = gfx::state::StencilState::default();
-        self.draws_stencil(cache, vertices, indices, color, depth, target_size, selected, view, fogs, &off)
+        self.draws_stencil(cache, vertices, indices, color, depth, target_size, selected, view, fogs, &off, &LayerSamples::new())
     }
 
     /// [`FogSet::draws`] under the device's stencil at the layer call
@@ -768,6 +859,7 @@ impl FogSet {
         view: &ViewInputs,
         fogs: &HashMap<u16, (psh::fog::Fog, [f32; 4])>,
         device_stencil: &gfx::state::StencilState,
+        samples: &LayerSamples,
     ) -> Result<d3d::backend::ExternalDraws, &'static str> {
         use gfx::{BoundGroup, RecordedDraw, ScissorRect};
         let stencil = layer_stencil(device_stencil, depth).ok_or("the layer's stencil needs a stencil attachment")?;
@@ -836,13 +928,13 @@ impl FogSet {
         for (material, slots) in &used {
             let m = &self.materials[material];
             let (fog, color) = &fogs[material];
-            for (g, _, rigid) in &m.passes {
-                let mut pixel = g.program.pixel;
-                pixel.fog = fog.uniform();
-                pixel.fog_color = *color;
-                writes.extend(g.prepare_writes(view, &pixel));
+            for (n, (g, _, rigid)) in m.passes.iter().enumerate() {
+                let sample = samples.get(material).and_then(|p| p.get(n)).and_then(Option::as_ref);
+                let (vertex, pixel) = layer_uniforms(sample, &g.program, fog, *color);
+                writes.extend(g.prepare_writes(view, &vertex, &pixel));
                 if let Some(r) = rigid {
-                    writes.extend(r.prepare_writes(view, slots.iter().copied()));
+                    let vertex = sample.map(|s| s.vertex(&r.program.vertex));
+                    writes.extend(r.prepare_writes(view, slots.iter().copied(), vertex.as_ref()));
                 }
             }
         }
@@ -1007,6 +1099,33 @@ pub(crate) mod tests {
             FogPass { look, state, fog: FogWords::default() },
             FogProgram { program, state, words: FogWords::default(), rigid: Some(rigid) },
         )
+    }
+
+    #[test]
+    fn a_layer_sample_reaches_both_uniform_blocks_and_keeps_the_placement_rows() {
+        let (_, p) = pass(Stage::Empty);
+        let mut imp = crate::engine_states::tests::implementation(Vec::new(), 0);
+        let reg = Register { index: 21, value: [3.0, 5.0, 7.0, 9.0], written: 0b1010, origin: tags::material::Origin::Instance };
+        imp.vertex_constants.push(reg);
+        imp.vertex_defaults.push(Register { index: 7, ..reg });
+        let mut def = PixelShaderDef::default();
+        def.constant0[2] = 0x8060_4020;
+        def.final_constant1 = 0x2244_6688;
+        imp.pixel_shader = def.to_bytes();
+        let sample = LayerConstants::from_implementation(&imp);
+        let color = [0.3, 0.5, 0.7, 1.0];
+        let (v, psh) = layer_uniforms(Some(&sample), &p.program, &psh::fog::Fog::OFF, color);
+        assert_eq!(v.constants[21], [0.0, 5.0, 0.0, 9.0]);
+        assert_eq!(v.defaults[7], [0.0, 5.0, 0.0, 9.0]);
+        assert_eq!(psh.c0[2], shaders::psh::argb(def.constant0[2]));
+        assert_eq!(psh.c1[8], shaders::psh::argb(def.final_constant1));
+        assert_eq!(psh.fog_color, color);
+        let rigid = sample.vertex(&p.rigid.as_ref().unwrap().vertex);
+        let rows = [[2.0; 4], [3.0; 4], [4.0; 4]];
+        let placed = crate::program::rigid_vertex(&rigid, &view(), &rows);
+        assert_eq!(placed.constants[21], v.constants[21]);
+        assert_eq!(placed.constants[MODEL_ROWS..MODEL_ROWS + 3], rows);
+        assert_eq!(p.program.vertex.constants[21], [0.0; 4]);
     }
 
     /// A cluster (material 0) at x = 10 and a placement of the same
@@ -1185,7 +1304,7 @@ pub(crate) mod tests {
         let (selected, view, fogs) = (selected(), view(), fogs());
         let marking = StencilState { reference: 0x80, ..crate::object_state::structure_stencil(0) };
         assert!(
-            gpu.layer_draws(1, &ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), &selected, &view, &fogs, &marking).is_err(),
+            gpu.layer_draws(1, &ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), &selected, &view, &fogs, &marking, &LayerSamples::new()).is_err(),
             "a stencil that is on needs the attachment's stencil"
         );
         let depth_format = F::Depth24PlusStencil8;
@@ -1203,7 +1322,7 @@ pub(crate) mod tests {
                 size: (SIZE, SIZE), samples: 1,
             };
             let draws = gpu
-                .layer_draws(1, &ctx.device, F::Rgba8Unorm, depth_format, (SIZE, SIZE), &selected, &view, &fogs, &stencil)
+                .layer_draws(1, &ctx.device, F::Rgba8Unorm, depth_format, (SIZE, SIZE), &selected, &view, &fogs, &stencil, &LayerSamples::new())
                 .expect("the layer draws under the device's stencil");
             assert_eq!((draws.ranges, draws.packets.len()), (2, 2), "one pass each, cluster and placement");
             let arena = gfx::ring::UploadPool::default().begin();
