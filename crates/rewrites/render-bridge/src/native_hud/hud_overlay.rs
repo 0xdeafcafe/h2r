@@ -40,6 +40,89 @@ pub fn tag_quad(mem: &dyn GuestMemory, frame: u32) -> Option<HudTagQuad> {
     Some(HudTagQuad { bitmap, image, shader, hud_input })
 }
 
+/// A pointer to the record whose `+0x3fc` is the datum of the `unic` tag
+/// the HUD's strings come from (`0x13925f`).
+const STRINGS_OWNER: u32 = 0x0051_0c94;
+const OWNER_UNIC: u32 = 0x3fc;
+/// The tag instance table (`0x10` bytes each, tag data at `+8`) and the
+/// language index (`-1` until the lookup first picks one, `0x1a0188`).
+const TAG_TABLE: u32 = 0x004e_3b44;
+const TAG_STRIDE: u32 = 0x10;
+const TAG_DATA: u32 = 8;
+const LANGUAGE: u32 = 0x0047_ff38;
+/// The globals tag's data, whose locale records are the string tables.
+const GLOBALS: u32 = 0x004e_034c;
+/// A `unic`'s `(start, count)` pair of `i16`s per language, from its `+0x10`.
+const RANGES: u32 = 0x10;
+/// The text widget's string ID (`+0x28`, `0x22a97e`).
+pub const WIDGET_STRING: u32 = 0x28;
+/// The string draw's replacements (`0x22d2ee`): 18 entries, each a wide
+/// pattern pointer and the character that takes its place.
+const REPLACEMENTS: u32 = 0x0044_a3f0;
+const REPLACEMENT_COUNT: u32 = 18;
+const REPLACEMENT_STRIDE: u32 = 8;
+/// The button glyphs the draw swaps for the player's controls
+/// (`0x22d318`..`0x22d32a`).
+const SUBSTITUTED: std::ops::RangeInclusive<u16> = 0xe000..=0xf8ff;
+/// The lookup's output holds 0xff units (`0x1a0379`).
+const MAX_UNITS: usize = 0xff;
+
+/// A text widget's localized string as the game's string tables hold it
+/// (`0x22a97b`: `0x13925f` finds the string ID `key` in the language's
+/// range of the HUD's `unic`, `0x140440` decodes its UTF-8): `None` when
+/// the lookup is not ready (no language chosen, no tables), or when the
+/// string draw would change it before drawing, which is not read: button
+/// glyphs and the replacement patterns (`0x22d2ee`), a character outside
+/// the basic plane or text that is not UTF-8. A string the tables lack is
+/// the empty one, as in the game.
+pub fn localized(mem: &dyn GuestMemory, key: u32) -> Option<String> {
+    use engine::locale::{LocaleTable, StringId};
+
+    if key == 0 {
+        return None;
+    }
+    let owner = mem.u32(STRINGS_OWNER).ok().filter(|&o| o != 0)?;
+    let datum = mem.u32(owner.checked_add(OWNER_UNIC)?).ok().filter(|&d| d != u32::MAX)?;
+    let language = mem.u32(LANGUAGE).ok().filter(|&l| l != u32::MAX)?;
+    let tags = mem.u32(TAG_TABLE).ok()?;
+    let instance = tags.checked_add((datum & 0xffff).checked_mul(TAG_STRIDE)?)?;
+    let data = mem.u32(instance.checked_add(TAG_DATA)?).ok()?;
+    let range = data.checked_add(RANGES)?.checked_add(language.checked_mul(4)?)?;
+    let start = i32::from(mem.u16(range).ok()? as i16);
+    let count = i32::from(mem.u16(range.checked_add(2)?).ok()? as i16);
+    let table = LocaleTable::in_globals(mem.u32(GLOBALS).ok()?, language);
+    if !table.is_loaded(mem).ok()? {
+        return Some(String::new());
+    }
+    let at = table.find(mem, start, count, StringId(key)).ok()?;
+    let mut bytes = Vec::new();
+    for offset in 0..4 * MAX_UNITS as u32 {
+        match mem.u8(at.checked_add(offset)?).ok()? {
+            0 => break,
+            b => bytes.push(b),
+        }
+    }
+    let text = String::from_utf8(bytes).ok()?;
+    let units: Vec<u16> = text.chars().map(|c| u16::try_from(u32::from(c)).ok()).collect::<Option<_>>()?;
+    if units.iter().any(|u| SUBSTITUTED.contains(u)) {
+        return None;
+    }
+    for entry in 0..REPLACEMENT_COUNT {
+        let pattern = mem.u32(REPLACEMENTS + entry * REPLACEMENT_STRIDE).ok()?;
+        let mut wide = Vec::new();
+        for unit in 0..16 {
+            match mem.u16(pattern.checked_add(2 * unit)?).ok()? {
+                0 => break,
+                u => wide.push(u),
+            }
+        }
+        if !wide.is_empty() && units.windows(wide.len()).any(|w| w == wide) {
+            return None;
+        }
+    }
+    Some(String::from_utf16_lossy(&units[..units.len().min(MAX_UNITS)]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -61,5 +144,69 @@ mod tests {
         assert!(tag_quad(&m, frame).is_none());
         m.put_u32(frame + 12, 1).put_u32(frame + 4, 0x1234);
         assert!(tag_quad(&m, frame).is_none());
+    }
+    /// The guest's string lookup over invented tables: the language's
+    /// range of the HUD's list, the locale record's entry by full string
+    /// ID, its UTF-8 blob.
+    fn tables() -> FakeGuest {
+        let mut m = FakeGuest::new();
+        let (owner, tags, unic, globals, blob) = (0x1000, 0x2000, 0x3000, 0x4000, 0x6000);
+        m.put_u32(STRINGS_OWNER, owner).put_u32(owner + OWNER_UNIC, 0x8001_0002);
+        m.put_u32(LANGUAGE, 1).put_u32(TAG_TABLE, tags).put_u32(GLOBALS, globals);
+        m.put_u32(tags + 2 * TAG_STRIDE + TAG_DATA, unic);
+        // Language 1 owns entries 1 to 2.
+        m.put_u16(unic + RANGES + 4, 1).put_u16(unic + RANGES + 6, 2);
+        // The locale record of language 1: three entries.
+        let record = globals + 0x188 + 0x1c;
+        let index = 0x5000;
+        m.put_u32(record, index).put_u32(record + 4, blob).put_u32(record + 8, 3).put_u8(record + 0x18, 1);
+        for (n, (id, offset)) in [(0x0300_0001, 0), (0x0500_0abc, 8), (0x0400_0def, 16)].into_iter().enumerate() {
+            m.put_u32(index + 8 * n as u32, id).put_u32(index + 8 * n as u32 + 4, offset);
+        }
+        m.put(blob, b"zero\0").put(blob + 8, b"Ammo\0").put(blob + 16, "Zur\u{fc}ck\0".as_bytes());
+        m.put_u8(engine::locale::EMPTY_STRING, 0);
+        // A replacement table whose only pattern is "[x]".
+        m.put_u32(REPLACEMENTS, 0x7000).put(0x7000, &[b'[', 0, b'x', 0, b']', 0, 0, 0]);
+        for entry in 1..REPLACEMENT_COUNT {
+            m.put_u32(REPLACEMENTS + entry * REPLACEMENT_STRIDE, 0x7100);
+        }
+        m.put_u16(0x7100, 0);
+        m
+    }
+
+    #[test]
+    fn a_localized_string_is_found_in_the_languages_range_by_its_full_id() {
+        let mut m = tables();
+        assert_eq!(localized(&m, 0x0500_0abc).as_deref(), Some("Ammo"));
+        assert_eq!(localized(&m, 0x0400_0def).as_deref(), Some("Zur\u{fc}ck"));
+        // Outside the language's range, or a different length byte, it is the empty string.
+        assert_eq!(localized(&m, 0x0300_0001).as_deref(), Some(""));
+        assert_eq!(localized(&m, 0x0600_0abc).as_deref(), Some(""));
+        // Not ready: no language yet, no list, no string.
+        assert_eq!(localized(&m, 0), None);
+        m.put_u32(LANGUAGE, u32::MAX);
+        assert_eq!(localized(&m, 0x0500_0abc), None);
+        m.put_u32(LANGUAGE, 1).put_u32(0x1000 + OWNER_UNIC, u32::MAX);
+        assert_eq!(localized(&m, 0x0500_0abc), None);
+        // A table not loaded draws as the game's empty buffer.
+        let mut m = tables();
+        m.put_u8(0x4000 + 0x188 + 0x1c + 0x18, 0);
+        assert_eq!(localized(&m, 0x0500_0abc).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn text_the_string_draw_would_change_is_not_read() {
+        let mut m = tables();
+        // A button glyph, a pattern the draw replaces, a character past the basic plane.
+        m.put(0x6008, "A\u{e001}\0".as_bytes());
+        assert_eq!(localized(&m, 0x0500_0abc), None);
+        m.put(0x6008, b"a[x]b\0");
+        assert_eq!(localized(&m, 0x0500_0abc), None);
+        m.put(0x6008, "\u{1f600}\0".as_bytes());
+        assert_eq!(localized(&m, 0x0500_0abc), None);
+        m.put(0x6008, &[0xff, 0]);
+        assert_eq!(localized(&m, 0x0500_0abc), None);
+        m.put(0x6008, b"[x\0");
+        assert_eq!(localized(&m, 0x0500_0abc).as_deref(), Some("[x"));
     }
 }

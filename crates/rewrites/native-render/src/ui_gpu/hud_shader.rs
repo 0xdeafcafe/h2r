@@ -74,6 +74,32 @@ pub fn hud_shader_supported(words: &[u32; 60]) -> bool {
     hud_stage(&def).is_some()
 }
 
+/// The colour a glyph shader's captured state gives a fully covered glyph
+/// texel under white diffuse: the flat colour of a text run drawn in that
+/// shader's place. The combiners run on the CPU (`shaders::psh::interp`)
+/// over the definition's own constants, which the draw snapshot has
+/// filled. `None` when the overlay does not support the shader or it
+/// draws nothing for a covered texel.
+pub fn glyph_colour(words: &[u32; 60]) -> Option<[f32; 4]> {
+    use shaders::psh::interp::{Inputs, Sampler, Uniforms, Vec4, run};
+    use shaders::psh::{PixelOptions, TextureDim};
+
+    // The glyph pages store coverage in alpha over white.
+    struct Covered;
+    impl Sampler for Covered {
+        fn sample(&self, _: usize, _: TextureDim, _: [f32; 3]) -> Vec4 {
+            [1.0; 4]
+        }
+    }
+    let def = shaders::psh::PixelShaderDef::from_words(words);
+    hud_stage(&def)?;
+    let (c0, c1) = def.embedded_constants();
+    let uniforms = Uniforms { c0, c1, ..Default::default() };
+    let inputs = Inputs { d0: [1.0; 4], ..Default::default() };
+    let out = run(&def, &PixelOptions::default(), &inputs, &uniforms, &Covered)?;
+    (out[3] > 0.0).then_some(out)
+}
+
 impl HudPipeline {
     pub(super) fn new(
         device: &wgpu::Device,
@@ -346,5 +372,28 @@ mod tests {
             assert_eq!([pixels[0], pixels[4]], expected);
         }
         assert_eq!(gpu.hud.len(), 1, "fill changes only the constants");
+    }
+
+    /// A glyph shader's colour is what its combiners give a covered texel:
+    /// here the final combiner copies the final constant, so the colour is
+    /// the constant; an unsupported or invisible shader gives none.
+    #[test]
+    fn a_glyph_shaders_colour_is_its_combiners_result_for_a_covered_texel() {
+        let mut words = [0u32; 60];
+        words[8] = inputs(0, 0, 0, REG_C0);
+        words[9] = final_efg(0, 0, REG_C0 | CHAN_ALPHA, 0);
+        words[43] = 0x83_37_42_a8;
+        let colour = glyph_colour(&words).unwrap();
+        let want = [0x37, 0x42, 0xa8, 0x83].map(|c| f32::from(c) / 255.0);
+        for (got, want) in colour.iter().zip(want) {
+            assert!((got - want).abs() < 1e-5, "{colour:?} != {want:?}");
+        }
+        // The same shader with a transparent constant draws nothing.
+        words[43] = 0x00_37_42_a8;
+        assert_eq!(glyph_colour(&words), None);
+        // A program reading the specular register is not one the overlay draws.
+        words[8] = inputs(0, 0, 0, REG_V1);
+        words[43] = 0x83_37_42_a8;
+        assert_eq!(glyph_colour(&words), None);
     }
 }

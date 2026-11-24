@@ -320,6 +320,24 @@ The glyph callback retains that shader and samples the live glyph cache.
 The selected combiner computes the glyph's colour. Capturing the glyph
 after layout preserves spacing and per-corner diffuse colour.
 
+A text widget the list walk draws (`hud_edit::overlay::draw_list` under
+`Shading::Engine`) is one `TextRun` over its font's glyph pages, laid out
+by `font::layout`. Its colour is what the shader's captured state gives a
+fully covered glyph texel under white diffuse
+(`native_render::ui_gpu::glyph_colour`: the reference combiner
+interpreter over the definition and its evaluated constants). Its string
+is the game's: for a widget without the number or name flags,
+`0x22a97b` calls `0x13925f` with the string ID at `+0x28`, which finds
+the ID among the language's range of the HUD's `unic`
+(`engine::locale::LocaleTable::find`, language at `0x0047ff38`, range
+pairs from `unic` `+0x10`) and decodes the UTF-8 (`0x140440`) before
+the string draw `0x22d2b7` swaps button glyphs and replacement patterns
+(`0x22d2ee`). `render_bridge::native_hud::hud_overlay::localized` reads
+the text the same way and returns nothing for a string that draw would
+change. A text widget with no shader capture, no resolved string or no
+fonts stays inexact (`Inexact::Text`), so a HUD that has one is drawn by
+the guest's glyph quads as above.
+
 `game::hud_overlay` takes the selected pixel shader definition and its
 evaluated constants from the draw snapshot. This covers full shader binds
 and constants-only updates, including successive instances of the same
