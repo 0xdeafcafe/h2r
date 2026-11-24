@@ -322,6 +322,11 @@ pub mod method {
     // The animation editor, read (AN1 of docs/editor/studio-redesign.md):
     // one animation's channels as keys, and the events it declares.
     pub const ANIM_READ: &str = "anim.read";
+    // In-memory animation documents (AN3).
+    pub const ANIM_NEW: &str = "anim.new";
+    pub const ANIM_DUPLICATE: &str = "anim.duplicate";
+    pub const ANIM_KEY: &str = "anim.key";
+    pub const ANIM_CHECK: &str = "anim.check";
 
     // Planned namespaces: listed by `session.methods` with status
     // "planned"; a call answers NOT_YET until its lane registers it.

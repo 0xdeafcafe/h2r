@@ -2115,9 +2115,11 @@ with the saved map's name reads the edit.
 
 `anim.*` reads a `jmad` tag of the map the Tags tool shows, poses it
 on the model that uses it (rich-editors.md, "Model poses", slice M1) and
-lists a clip's channels as keys (studio-redesign.md, "The animation
-editor", slice AN1); the same calls the Animation window draws with,
-`app::anim`. `tag` is as `sound.*` takes it; read-only.
+lists a clip's channels as keys. The Animation window and the API share
+the same editable documents in `app::anim`. See the animation editor
+in [studio-redesign.md](studio-redesign.md) (AN1 and AN3). `tag` takes
+the same form as `sound.*`. Document IDs last for the Studio session,
+and edits live in memory.
 
 - `anim.list {tag}`: the graph's animations, each
   `{index, name, type (base|overlay|replacement|unknown), frames,
@@ -2151,8 +2153,14 @@ editor", slice AN1); the same calls the Animation window draws with,
   cache directory's `studio/anim/`; never into a Git checkout), with
   `width`, `height`, `covered` as `model.render` gives them; without a
   renderer the transforms still answer and a note names why.
-- `anim.read {tag, animation, tolerance?, keys?}`: one animation as the
-  timeline shows it. `nodes` has a row per node, `{index, name, parent,
+- `anim.pose {doc, frame?, base?, overlay?, model?, size?, out?}`:
+  the same reply sampled from an editable document using its key
+  interpolation. For an overlay document, `base` names or indexes a
+  base animation in the same graph. Without `base` the overlay applies
+  over rest. A base document accepts the `overlay` parameter described
+  above. The Tags tool must show the document's map for posing.
+- `anim.read {tag, animation, tolerance?, keys?}`: one decoded
+  animation's source reduction. `nodes` has a row per node, `{index, name, parent,
   channels}`, with the channels the clip drives, each `{kind (rotation,
   translation or scale), moves, key_count, keys: [{frame, value}]}`. A
   rotation's value is a quaternion `[x, y, z, w]`, a translation's
@@ -2175,6 +2183,40 @@ editor", slice AN1); the same calls the Animation window draws with,
   note says so when there are any; so is a root movement
   (`frame_info_type` other than none). An aim grid (codec 8) is not a
   time series: its nodes list without channels and a note says so.
+  `doc` identifies the same editable clip used by the window, seeded
+  with the default tolerance even when this reply uses a custom
+  tolerance. It is null when the source clip cannot open as a document,
+  including aim grids.
+- `anim.read {doc, keys?}` returns `{doc, name, frame_rate, frames,
+  duration, revision, nodes}` for the document's current keys. Each
+  key includes `{frame, value, interp, tangent}`. A tangent has the
+  channel's width and uses stored coordinates per frame (quaternion
+  components for rotation).
+- `anim.new {tag, name, frames}` creates an empty base clip on the
+  graph's skeleton. The name must contain a non-space character.
+  `frames` is an integer from 1 to 32767.
+- `anim.duplicate {tag, animation, name}` creates a document from a
+  decoded clip. `anim.duplicate {doc, name}` copies an open document's
+  current keys. Both forms and `anim.new` return `{doc, name, frames,
+  nodes, revision}` with a node count and a fresh revision of zero.
+- `anim.key {doc, node, channel, frame, value?, interp?, remove?}`
+  edits one key. `node` is an index or a unique exact node name.
+  `channel` is `rotation`, `translation` or `scale`. A zero-based
+  `frame` must fit the clip. Set `value` as above or supply just
+  `interp` to change an existing key. `step`, `linear` and `smooth`
+  govern the segment to the next key. A new key defaults to linear.
+  `remove: true` takes neither `value` nor `interp`. The reply is
+  `{doc, revision, changed, key}` with the current key or null.
+- `anim.check {doc, model?}` returns `{doc, nodes, feet_checked,
+  feet_below_ground, loop_seam}`. Each `nodes` row has
+  `{node, rotation_degrees, translation, scale}` and records the
+  largest quantisation error across all baked frames for codecs 1
+  and 3. `loop_seam` uses the same row shape for the difference in
+  local transforms between the first and last frames. When a model
+  and a named foot node are available, `feet_checked` is true and
+  `feet_below_ground` lists `{node, frame, z}` for each foot below
+  model-space `z = 0`. Overlay diagnostics use full weight over rest.
+  `model` and the shown map follow the rules for posing.
 
 ### `model.colors` and `model.emblem` (planned)
 
@@ -2254,7 +2296,11 @@ animation that is not there, a negative or unknown tolerance).
 keys within tolerance at every frame on a noisy clip, a flipped
 quaternion sign, undriven channels, one frame, none. The timeline's
 transport (scrub, play, step, loop, speed) is `app::anim::Transport`,
-tested in `app/anim.rs`.
+tested in `app/anim.rs`. The same invented graph tests animation
+documents, including gizmo/RPC equivalence and single-step drag undo.
+`crates/tools/anim-edit/src/tests.rs` covers interpolation, history,
+diagnostics and angle display. `ui/anim/edit.rs` tests that plotting
+the rotation leaves its stored quaternions unchanged.
 
 ## Code
 
@@ -2276,9 +2322,9 @@ tested in `app/anim.rs`.
   `api/checks.rs`: the content checks. `api/models.rs`: `model.*` (its
   renders through `scenario_edit::native_view::preview`).
   `api/markers.rs`: `markers.*`, over `scenario_edit::marker_view`.
-  `api/anim.rs`: `anim.*`, over `app/anim.rs` (the graph, its clips and
-  the models kept per map and tag; the Animation window, `ui/anim.rs`,
-  draws the same poses and the timeline over `anim.read`'s rows).
+  `api/anim.rs` and `api/anim/edit.rs`: `anim.*` over `app/anim.rs` and
+  `app/anim/document.rs`. The Animation window in `ui/anim.rs` draws
+  the same poses and edits the same `anim-edit::AnimDoc` tracks.
   `api/playtest.rs`: the playtest checks (`app/playtest_static.rs`) and
   the runner's methods (`app/playtest.rs`). `api/workspace.rs` (with
   `app/workspace.rs`: the tree's root, the plan, the extraction thread,

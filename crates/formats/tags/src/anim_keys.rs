@@ -233,7 +233,7 @@ fn hemisphere(a: [f32; 4], b: [f32; 4]) -> f32 {
 /// the turn between them (`4 asin(|a - b| / 2)` of the quaternions in one
 /// hemisphere, which stays exact for small angles where `acos` of a dot
 /// does not).
-fn distance(kind: Kind, a: [f32; 4], b: [f32; 4]) -> f32 {
+pub fn distance(kind: Kind, a: [f32; 4], b: [f32; 4]) -> f32 {
     match kind {
         Kind::Rotation => {
             let s = hemisphere(a, b);
@@ -248,7 +248,8 @@ fn distance(kind: Kind, a: [f32; 4], b: [f32; 4]) -> f32 {
     }
 }
 
-fn lerp(kind: Kind, a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+/// Linearly blend values, taking the shorter arc and normalising for rotations.
+pub fn lerp(kind: Kind, a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
     let s = if kind == Kind::Rotation {
         hemisphere(a, b)
     } else {

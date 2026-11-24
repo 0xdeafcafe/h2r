@@ -39,6 +39,7 @@ before its slice starts.
 | Sound audition (A1), mouth curves read (A2), sound measurement | built | `app/audition.rs`, `ui/sound.rs`, `api/sound.rs`, `api/sound_measure.rs`, `tags::sound::Gestalt::mouth_curve` |
 | Announcer lines and voice cloning | built | [announcer.md](announcer.md), [voice-cloning.md](voice-cloning.md) |
 | Animation graphs read and sampled, every retail codec, and a graph's clips posed on the model that uses it (M1) | built | `crates/formats/tags/src/anim.rs`, `anim_sample.rs` ([animation.md](../formats/animation.md)); the pose view `crates/apps/studio/src/{app,ui,api}/anim.rs` |
+| Animation key editing, curve handles, gizmo keying, and in-memory clip checks (AN3) | built | `crates/tools/anim-edit`, Studio `app/anim/document.rs`, `ui/anim.rs`, `ui/anim/edit.rs` and `api/anim/edit.rs` |
 | A `jmad` stream encoder (static stream and the 8-byte quantised codec), which the Halo 1 converter calls | built (AN2) | `crates/formats/tags/src/anim_write.rs`; the converter's graph assembly stays in `crates/tools/h1-assets/src/models/jmad.rs` |
 | An Xbox ADPCM encoder; a `snd!` writer with the gestalt merge | built, the second inside the converter | `crates/platform/audio/src/adpcm.rs` (`encode`), `crates/tools/h1-assets/src/sounds/merge.rs` |
 | Packages: `content::package::{Manifest, Lock, PackageId, Set}`, validation, `requires`, `after`, `set.toml`, `core` and `ui` always on, the load order, the content set | built | `crates/formats/content/src/package/` |
@@ -690,8 +691,9 @@ command line, for the coordinator and CI.
 
 ## The animation editor
 
-Opening a `jmad` gives the animation editor: it poses a model with the
-graph, edits keys on a timeline and writes the graph back.
+Opening a `jmad` gives the animation editor. It poses the graph's model
+and edits an in-memory clip on a timeline. AN4 covers package source and
+graph writeback.
 
 ```
 +----------------+---------------------------------------------------+-----------------+
@@ -727,40 +729,38 @@ the sampled channels merge with the render model node's defaults and
 compose up its tree (animation.md, "Composing a pose"), an overlay
 applying with the engine's scaled-add rule.
 
-**Timeline (slice AN1, built).** One row per node with its rotation,
-translation and scale channels as lanes of key markers, a ruler in
-frames at the graph's 30 Hz, a scrub head (a click or drag on the ruler
-or rows), play, step, loop and speed (`app::anim::Transport`, drawn by
-`ui/anim.rs`). The rows are `anim.read`'s: the decoded frames reduced to
-keys by `tags::anim_keys::reduce`, so the timeline shows the keys the
-document will hold. Overlays show their base beside them (with the
-document, AN3). An **events** row shows the
-animation's sound and effect events; their blocks are counted but not
-decoded ([animation.md](../formats/animation.md), "Open items"), so the
-row is **E first** and read-only until then. Root movement (the frame
-info data) is the same: shown as a path once decoded, **E first**.
+**Timeline (AN1 and AN3, built).** One row per node shows rotation,
+translation and scale as lanes of key markers. The ruler uses frames
+at the graph's 30 Hz. Click or drag to scrub. Play, step, loop and speed
+use `app::anim::Transport`. An overlay can pose over a selected base
+clip, shown beside it. The events row counts frame, sound and effect
+events. Event and root-movement decoding are **E first** (see
+[animation.md](../formats/animation.md), "Open items").
 
-**The document.** `AnimDoc` (`crates/tools/anim-edit`, new) holds a clip
-as sparse keys per channel with an interpolation per key (step, linear,
-smooth). Opening a retail animation decodes it to dense frames and
-reduces them (`tags::anim_keys::reduce`: Ramer-Douglas-Peucker over the
-frames, the error a turn's angle, a distance or a scale's difference)
-to keys within a tolerance shown on the timeline;
-nothing is stored until an edit. The source form is `.anim.yaml` in the
-package: the graph it joins, the mode, class and action it is filed
-under, the node names and the keys. It holds our numbers only.
+**The document (AN3, built).** `AnimDoc` in `crates/tools/anim-edit`
+holds sparse keys per channel with step, linear or smooth outgoing
+interpolation. Opening a retail clip reduces its dense frames with
+`tags::anim_keys::reduce`. Its Ramer-Douglas-Peucker reduction measures
+rotation as an angle, translation as a distance and scale as a
+difference. The timeline shows the source tolerance. Each document has
+its own undo and redo history. The decoder's source and its graph stay
+on disk. The AN4 package source is `.anim.yaml`, with the graph, mode,
+class and action, node names and authored keys.
 
-**Curves.** The Curves tab plots a channel against frames, a rotation as
-three angles unwrapped for display and stored as a quaternion. Handles
-edit the key's value and tangent; a drag is one undo step. The plot
-widget is the curve editor's ([rich-editors.md](rich-editors.md), slice
-F1) with a frame axis.
+**Curves (AN3, built).** The Curves tab shares the curve editor's plot
+with a frame axis. It shows rotation as three unwrapped angles while
+the document stores quaternions. Drag a key's component to edit its
+value. Select a key next to a smooth segment to show its tangent
+handles. One drag is one undo step.
 
-**Editing keys.** Select nodes in the view or the rows. Rotate and move
-with the gizmo at the scrub head: a change sets a key on that channel.
-Keys move, copy, paste, scale in time and delete on the timeline. **New
-animation** makes an empty clip on a graph's skeleton; **Duplicate**
-starts from a decoded one.
+**Editing keys (AN3, built).** Select a node in the model view or a
+timeline row. Move, rotate or scale it with the gizmo to set the
+corresponding channel at the scrub frame. For an overlay, the key stores
+the change relative to its base. Shift-click keys in one lane to select
+a range. Drag to move them, or copy, paste at the scrub head, scale in
+time or delete. **New animation** makes an empty base clip on the
+graph's skeleton. **Duplicate** makes a separate document from the
+current keys. `anim.duplicate` can also start from the decoded source.
 
 **Retarget.** **Retarget from...** takes a clip of another graph. Nodes
 match by name (`h1-assets`' `models/names.rs` maps Halo 1 names the same
@@ -801,12 +801,13 @@ which guest entry it calls is **E first**.
 
 | Method | Does |
 |---|---|
-| `anim.list {graph}` | modes, classes, actions, animations with frames, codec and type |
-| `anim.pose {graph, animation, frame, model?, out?}` | node transforms, or a render |
-| `anim.read {tag, animation, tolerance?, keys?}` (built) | channels as keys, the reduction's measured error, events counted |
-| `anim.key {doc, node, channel, frame, value?, interp?, remove?}` | sets or removes a key |
-| `anim.new`, `anim.duplicate`, `anim.retarget {from, to, map?}`, `anim.import {file}` | the commands above |
-| `anim.check {doc}` | quantisation error per node, feet under the ground plane, a loop's seam |
+| `anim.list {tag}` | graph animations with frames, codecs and types, and the models that use the graph |
+| `anim.pose {tag, animation, frame?, model?, out?}` or `anim.pose {doc, frame?, base?, model?, out?}` | sample a source clip or document, with a model render when available |
+| `anim.read {tag, animation, tolerance?, keys?}` or `anim.read {doc, keys?}` | the source reduction and its document ID, or the document's current keys |
+| `anim.key {doc, node, channel, frame, value?, interp?, remove?}` | set or remove a key |
+| `anim.new {tag, name, frames}`, `anim.duplicate {tag, animation, name}` or `anim.duplicate {doc, name}` | create a new animation document |
+| `anim.check {doc, model?}` | per-node codec quantisation and loop seam, and feet under the model-space ground plane |
+| `anim.retarget {from, to, map?}`, `anim.import {file}` | retarget or import keys (AN5) |
 
 ## The sound editor
 
@@ -981,7 +982,7 @@ Rows are in build order.
 | M1 (built) | **Model poses** (rich-editors) | M | nothing | as there |
 | AN1 (built) | **The animation editor, read**: `anim.read`, the timeline rows, scrub, loop, the key reduction | M | M1, SH1 | an invented two-bone clip lists its channels; reduce then bake is within the tolerance at every frame |
 | AN2 | **The encoder** (built): `tags::anim_write` (codecs 1 and 3) lifted from `h1-assets`, which calls it | M | nothing | `decode(encode(c))` equals `c` within quantisation on invented clips; the converter's `jmad` tests pass unchanged |
-| AN3 | **Keys and curves**: `crates/tools/anim-edit`, `AnimDoc`, `anim.key`, gizmo keying, the Curves tab, `anim.new`, `anim.duplicate`, `anim.check` | M | AN1 | a key set by the gizmo and by `anim.key` make the same document; a drag is one undo step; a rotation survives the angle view unchanged |
+| AN3 (built) | **Keys and curves**: `crates/tools/anim-edit`, `AnimDoc`, `anim.key`, gizmo keying, the Curves tab, `anim.new`, `anim.duplicate`, `anim.check` | M | AN1 | a key set by the gizmo and by `anim.key` make the same document, a drag is one undo step, and a rotation survives the angle view unchanged. `api/anim/read_tests.rs`, `ui/anim/edit.rs` and `crates/tools/anim-edit/src/tests.rs` |
 | AN4 | **Write back**: the `animation` builder, replace and add in a `jmad`, the refusals, the live flush | M | AN2, AN3, X2, PK2 | an invented graph with one animation replaced differs only in that record and stream; an added one is reachable by its action; an inheriting graph is refused by name |
 | AN5 | **Retarget and glTF**: `anim.retarget`, `anim.import`, the node table | M | AN3 | a clip retargeted to a skeleton with one renamed and one longer bone keeps the end position within a bound; unmatched nodes are listed |
 | AN6 | **Animation in the game**: the game's `world.object.animate` (**E first**), `pair.preview {what: "animation"}` | S | AN4 | on the fake game the preview sends spawn, animate, wait and capture in order |

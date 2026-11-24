@@ -434,11 +434,20 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             std::fs::write(&map, super::anim::tests::anim_map(true)).unwrap();
             app.dispatch(Action::OpenSource(map));
         }
-        // The invented two-bone graph for the animation editor's read.
-        m::ANIM_READ => {
+        // The invented two-bone graph for the animation editor.
+        m::ANIM_READ | m::ANIM_NEW | m::ANIM_DUPLICATE | m::ANIM_KEY | m::ANIM_CHECK => {
             let map = t.path("timeline.map");
             std::fs::write(&map, super::anim::read_tests::read_map()).unwrap();
             app.dispatch(Action::OpenSource(map));
+            if matches!(name, m::ANIM_KEY | m::ANIM_CHECK) {
+                let opened = call(
+                    api,
+                    app,
+                    m::ANIM_NEW,
+                    json!({"tag": r"jmad:invented\stickman", "name": "wave", "frames": 30}),
+                );
+                assert_eq!(opened["doc"], 1, "the example's document");
+            }
         }
         n if n.starts_with("hud.") => {
             // The HUD fixture's map as the source (it has no scenario).
@@ -1184,7 +1193,31 @@ fn every_method_in_methods_has_a_test() {
                 if matches!(d.name, m::UI_HIDE | m::UI_DUPLICATE | m::UI_SET_STRING)
                     && e.code == code::REFUSED => {}
             (None, Err(e)) => panic!("{} {params}: {e}", d.name),
-            (None, Ok(v)) => assert!(!v.is_null() || matches!(d.name, m::METHODS | m::MIRROR_PICK), "{}", d.name),
+            (None, Ok(v)) => {
+                assert!(
+                    !v.is_null() || matches!(d.name, m::METHODS | m::MIRROR_PICK),
+                    "{}",
+                    d.name
+                );
+                if d.name.starts_with("anim.") {
+                    let fields = shape_keys(d.result);
+                    let result = v.as_object().expect("an animation result object");
+                    for (name, required) in &fields {
+                        assert!(
+                            !*required || result.contains_key(name),
+                            "{}: missing {name}",
+                            d.name
+                        );
+                    }
+                    for name in result.keys() {
+                        assert!(
+                            fields.iter().any(|(field, _)| field == name),
+                            "{}: undeclared {name}",
+                            d.name
+                        );
+                    }
+                }
+            }
         }
         ran.push(d.name);
     }

@@ -502,3 +502,242 @@ fn refusals_are_named() {
         assert!(e.message.contains("tolerance"), "{}", e.message);
     }
 }
+
+fn create_doc(api: &mut Api, app: &mut crate::App, name: &str) -> u64 {
+    let result = call(
+        api,
+        app,
+        m::ANIM_NEW,
+        json!({"tag": GRAPH, "name": name, "frames": 6}),
+    );
+    assert_eq!(result["name"], name);
+    assert_eq!(result["frames"], 6);
+    assert_eq!(result["nodes"], 2);
+    assert_eq!(result["revision"], 0);
+    result["doc"].as_u64().unwrap()
+}
+
+#[test]
+fn document_edits_drive_the_pose_and_a_duplicate_has_independent_keys() {
+    let t = Temp::new("document");
+    let (mut app, mut api) = open(&t);
+    let doc = create_doc(&mut api, &mut app, "wave");
+    let blank = read(&mut api, &mut app, json!({"doc": doc}));
+    assert_eq!(blank["name"], "wave");
+    assert_eq!(blank["nodes"][1]["name"], "arm");
+    assert_eq!(blank["nodes"][1]["channels"], json!([]));
+
+    let mut key = json!({"doc": doc, "node": "arm", "channel": "translation", "frame": 0});
+    key["value"] = json!([1, 0, 0]);
+    assert_eq!(call(&mut api, &mut app, m::ANIM_KEY, key.clone())["revision"], 1);
+    key["frame"] = json!(5);
+    key["value"] = json!([3, 0, 0]);
+    call(&mut api, &mut app, m::ANIM_KEY, key.clone());
+    key["frame"] = json!(0);
+    key.as_object_mut().unwrap().remove("value");
+    key["interp"] = json!("step");
+    let step = call(&mut api, &mut app, m::ANIM_KEY, key.clone());
+    assert_eq!(step["changed"], true);
+    assert_eq!(step["key"]["interp"], "step");
+    assert!(close(&step["key"]["value"], &[1.0, 0.0, 0.0], 1e-6));
+    assert!(close(&step["key"]["tangent"], &[0.0; 3], 1e-6));
+    let unchanged = call(&mut api, &mut app, m::ANIM_KEY, key);
+    assert_eq!(unchanged["changed"], false);
+    assert_eq!(unchanged["revision"], step["revision"]);
+
+    for (frame, x) in [(3, 1.0), (5, 3.0)] {
+        let pose = call(&mut api, &mut app, m::ANIM_POSE, json!({"doc": doc, "frame": frame}));
+        assert_eq!(pose["animation"]["name"], "wave");
+        assert_eq!(pose["nodes"][1]["has"]["translation"], true);
+        assert!(close(&pose["nodes"][1]["translation"], &[x, 0.0, 0.0], 1e-6));
+    }
+
+    let duplicate = call(
+        &mut api, &mut app, m::ANIM_DUPLICATE, json!({"doc": doc, "name": "wave copy"}),
+    );
+    let copy = duplicate["doc"].as_u64().unwrap();
+    assert_ne!(copy, doc);
+    assert_eq!(duplicate["revision"], 0);
+    let before = read(&mut api, &mut app, json!({"doc": doc}));
+    assert_eq!(before["nodes"], read(&mut api, &mut app, json!({"doc": copy}))["nodes"]);
+    let removal = call(
+        &mut api,
+        &mut app,
+        m::ANIM_KEY,
+        json!({"doc": copy, "node": 1, "channel": "translation", "frame": 5, "remove": true}),
+    );
+    assert_eq!(removal["changed"], true);
+    assert_eq!(removal["key"], Value::Null);
+    let after = read(&mut api, &mut app, json!({"doc": copy, "keys": false}));
+    let channel = channel(&after, 1, "translation");
+    assert_eq!(channel["moves"], false);
+    assert_eq!(channel["key_count"], 1);
+    assert!(channel.get("keys").is_none());
+    assert_eq!(before, read(&mut api, &mut app, json!({"doc": doc})));
+}
+
+#[test]
+fn a_retail_read_returns_the_canonical_doc_and_can_start_a_fresh_copy() {
+    let t = Temp::new("editable-retail");
+    let (mut app, mut api) = open(&t);
+    let retail = read(&mut api, &mut app, json!({"tag": GRAPH, "animation": IDLE}));
+    let doc = retail["doc"].as_u64().expect("an editable document");
+    let snapshot = read(&mut api, &mut app, json!({"doc": doc}));
+    let overlaid = call(
+        &mut api,
+        &mut app,
+        m::ANIM_POSE,
+        json!({"doc": doc, "overlay": {"animation": ARM_OVER, "weight": 1.0}}),
+    );
+    assert!(close(
+        &overlaid["nodes"][1]["rotation"],
+        &[SQRT_HALF, 0.0, 0.0, SQRT_HALF],
+        1e-3,
+    ));
+
+    call(
+        &mut api,
+        &mut app,
+        m::ANIM_KEY,
+        json!({"doc": doc, "node": 1, "channel": "rotation", "frame": 0, "value": [1, 0, 0, 0]}),
+    );
+    assert_eq!(retail, read(&mut api, &mut app, json!({"tag": GRAPH, "animation": IDLE})));
+    let loose = read(
+        &mut api,
+        &mut app,
+        json!({"tag": GRAPH, "animation": 0, "tolerance": {"rotation_degrees": 100}}),
+    );
+    assert_eq!(loose["doc"], doc);
+    assert_eq!(channel(&loose, 1, "rotation")["key_count"], 1);
+
+    let overlay = read(&mut api, &mut app, json!({"tag": GRAPH, "animation": ARM_OVER}));
+    let with_base = call(
+        &mut api,
+        &mut app,
+        m::ANIM_POSE,
+        json!({"doc": overlay["doc"], "base": IDLE}),
+    );
+    let as_overlay = call(
+        &mut api,
+        &mut app,
+        m::ANIM_POSE,
+        json!({"doc": doc, "overlay": {"animation": ARM_OVER, "weight": 1.0}}),
+    );
+    assert_eq!(with_base["nodes"], as_overlay["nodes"]);
+
+    let edited = read(&mut api, &mut app, json!({"doc": doc}));
+    assert!(close(
+        &channel(&edited, 1, "rotation")["keys"][0]["value"],
+        &[1.0, 0.0, 0.0, 0.0],
+        1e-6,
+    ));
+    let copy = call(
+        &mut api,
+        &mut app,
+        m::ANIM_DUPLICATE,
+        json!({"tag": GRAPH, "animation": IDLE, "name": "decoded copy"}),
+    );
+    assert_ne!(copy["doc"], doc);
+    assert_eq!(
+        read(&mut api, &mut app, json!({"doc": copy["doc"]}))["nodes"],
+        snapshot["nodes"]
+    );
+}
+
+#[test]
+fn edit_validation_preserves_the_document_and_check_reports_the_seam() {
+    let t = Temp::new("check");
+    let (mut app, mut api) = open(&t);
+    let doc = create_doc(&mut api, &mut app, "lurch");
+    let blank = read(&mut api, &mut app, json!({"doc": doc}));
+    for (node, channel, frame, value, remove) in [
+        (json!("unknown"), "rotation", 0, json!([0, 0, 0, 1]), false),
+        (json!(1), "rotation", 6, json!([0, 0, 0, 1]), false),
+        (json!(1), "rotation", 0, json!([0, 0, 0, 0]), false),
+        (json!(1), "translation", 0, json!([1e100, 0, 0]), false),
+        (json!(1), "scale", 0, json!([1, 2]), false),
+        (json!(1), "scale", 0, json!([1]), true),
+    ] {
+        let error = refused(api.call(
+            &mut app,
+            m::ANIM_KEY,
+            json!({"doc": doc, "node": node, "channel": channel, "frame": frame, "value": value, "remove": remove}),
+        ));
+        assert_eq!(error.code, code::INVALID_PARAMS, "{error}");
+    }
+    assert_eq!(blank, read(&mut api, &mut app, json!({"doc": doc})));
+    for (frame, x) in [(0, 0), (5, 2)] {
+        call(
+            &mut api,
+            &mut app,
+            m::ANIM_KEY,
+            json!({"doc": doc, "node": 1, "channel": "translation", "frame": frame, "value": [x, 0, 0]}),
+        );
+    }
+
+    let report = call(&mut api, &mut app, m::ANIM_CHECK, json!({"doc": doc}));
+    assert_eq!(report["doc"], doc);
+    let error = report["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["node"] == 1)
+        .unwrap();
+    assert_eq!(error["translation"].as_f64(), Some(0.0));
+    let seam = report["loop_seam"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["node"] == 1)
+        .unwrap();
+    assert_eq!(seam["translation"].as_f64(), Some(2.0));
+    assert_eq!(report["feet_checked"], false);
+    assert_eq!(report["feet_below_ground"], json!([]));
+}
+
+#[test]
+fn a_gizmo_drag_and_a_socket_key_write_the_same_document() {
+    use tags::anim_keys::Kind;
+
+    let t = Temp::new("gizmo-key");
+    let (mut app, mut api) = open(&t);
+    let socket = create_doc(&mut api, &mut app, "socket");
+    let gizmo = create_doc(&mut api, &mut app, "gizmo");
+    call(
+        &mut api,
+        &mut app,
+        m::ANIM_KEY,
+        json!({"doc": socket, "node": 1, "channel": "translation", "frame": 2, "value": [2, 3, 4]}),
+    );
+    {
+        let doc = app.anim_doc_mut(gizmo).unwrap();
+        let gesture = doc.begin_gesture();
+        for x in [1.0, 2.0] {
+            let local = [
+                1.0, 0.0, 0.0, 0.0,
+                0.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0,
+                x, 3.0, 4.0, 1.0,
+            ];
+            assert!(crate::ui::anim::key_gizmo(
+                doc,
+                1,
+                Kind::Translation,
+                2,
+                local,
+                None,
+                Some(gesture),
+            )
+            .unwrap());
+        }
+    }
+    let socket_keys = read(&mut api, &mut app, json!({"doc": socket}))["nodes"].clone();
+    assert_eq!(socket_keys, read(&mut api, &mut app, json!({"doc": gizmo}))["nodes"]);
+
+    let doc = app.anim_doc_mut(gizmo).unwrap();
+    assert!(doc.undo());
+    assert!(!doc.can_undo());
+    assert!(doc.key(1, Kind::Translation, 2).is_none());
+    assert!(doc.redo());
+    assert_eq!(socket_keys, read(&mut api, &mut app, json!({"doc": gizmo}))["nodes"]);
+}

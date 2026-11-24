@@ -22,8 +22,8 @@
 //!
 //! **The timeline.** [`App::anim_read`] decodes a clip to dense frames and
 //! reduces them to keys within a tolerance ([`tags::anim_keys`]), listed
-//! per node and channel: the rows of the Animation window's timeline and
-//! the answer of `anim.read`. [`Transport`] is the timeline's scrub head,
+//! per node and channel for `anim.read` and the initial editing document.
+//! [`Transport`] is the timeline's scrub head,
 //! play, loop and speed, one type for the window and its tests.
 //!
 //! The graph, its clips and the models are read once per (map, tag) and
@@ -33,6 +33,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use map::{RawPointer, TagId};
@@ -41,11 +42,13 @@ use scenario_edit::native_view::posed_nodes;
 use scenario_edit::native_view::preview::{self, Matrix, Piece};
 use tags::anim::AnimationGraph;
 use tags::anim_keys::{self, Keys, Tolerance};
-use tags::anim_sample::{AnimationClip, Codec, NodeDefault};
+use tags::anim_sample::{AnimationClip, Codec, Mat4, NodeDefault, Pose};
 use tags::object::Context;
 use tags::sound::ResourceReader;
 
 use super::App;
+
+mod document;
 
 /// The renders' background, sRGB-encoded: `model.render`'s own.
 pub(crate) const BACKGROUND: [f64; 3] = [0.10, 0.11, 0.13];
@@ -147,6 +150,9 @@ pub struct PoseAnswer {
     /// The frame sampled (fractional frames blend the neighbours).
     pub frame: f32,
     pub nodes: Vec<PoseNode>,
+    /// Local transforms under the overlay, including model defaults.
+    /// The gizmo uses them to turn composed transforms back into delta keys.
+    pub base_nodes: Option<Vec<PoseNode>>,
     /// The model posed, when the map has one that uses the graph.
     pub model: Option<PoseModel>,
     pub notes: Vec<String>,
@@ -271,9 +277,17 @@ pub struct AnimRead {
     pub notes: Vec<String>,
 }
 
-/// What was read for one (map, tag), kept between calls.
+/// A graph's identity even while the Tags tool shows another map.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GraphKey {
+    source: Option<PathBuf>,
+    map: Option<String>,
+    tag: TagId,
+}
+
+/// What was read for one graph, kept between calls.
 struct Loaded {
-    key: (String, TagId),
+    key: GraphKey,
     graph: AnimationGraph,
     /// The graph's node and animation names, resolved through the map's
     /// strings (a name that does not resolve is `animation <index>`).
@@ -356,6 +370,110 @@ impl Loaded {
         }
     }
 
+    fn sample_clip(
+        &mut self,
+        index: usize,
+        frame: f32,
+        reader: &mut dyn ResourceReader,
+    ) -> Result<Pose, AnimError> {
+        self.clip(index, reader)
+            .map_err(AnimError::Refused)?
+            .sample(frame)
+            .map_err(|e| AnimError::Failed(format!("sampling: {e}")))
+    }
+
+    fn pose(
+        &self,
+        summary: AnimSummary,
+        frame: f32,
+        mut pose: Pose,
+        overlay: Option<(&Pose, f32)>,
+        model: Option<&str>,
+    ) -> Result<PoseAnswer, AnimError> {
+        let nodes_of = |pose: &Pose, parents: &[i16], worlds: Option<&[Mat4]>| {
+            pose.nodes
+                .iter()
+                .enumerate()
+                .map(|(i, n)| PoseNode {
+                    name: self.node_names.get(i).cloned().flatten(),
+                    parent: parents.get(i).copied().unwrap_or(-1),
+                    rotation: n.rotation,
+                    translation: n.translation,
+                    scale: n.scale,
+                    has: [n.has_rotation, n.has_translation, n.has_scale],
+                    world: worlds.map(|w| w[i]),
+                })
+                .collect::<Vec<_>>()
+        };
+        let apply_overlay = |pose: &mut Pose, parents: &[i16]| -> Result<_, AnimError> {
+            let Some((sample, weight)) = overlay else {
+                return Ok(None);
+            };
+            let base_nodes = nodes_of(pose, parents, None);
+            pose.add_overlay(sample, weight)
+                .map_err(|e| AnimError::Failed(format!("the overlay: {e}")))?;
+            Ok(Some(base_nodes))
+        };
+
+        let Some(picked) = self.pick_model(model)? else {
+            let parents: Vec<_> = self.graph.nodes.iter().map(|n| n.parent).collect();
+            let base_nodes = apply_overlay(&mut pose, &parents)?;
+            return Ok(PoseAnswer {
+                animation: summary,
+                frame,
+                nodes: nodes_of(&pose, &parents, None),
+                base_nodes,
+                model: None,
+                notes: vec![
+                    "no model of this map uses this graph: the transforms are the animation's own channels"
+                        .to_owned(),
+                ],
+            });
+        };
+        let (user, piece) = &self.models[picked];
+        let piece = piece
+            .clone()
+            .map_err(|e| AnimError::Refused(format!("{}: {e}", user.name)))?;
+        if pose.nodes.len() != piece.skeleton.len() {
+            return Err(AnimError::Refused(format!(
+                "{}: the animation has {} nodes, the render model {}",
+                summary.name,
+                pose.nodes.len(),
+                piece.skeleton.len()
+            )));
+        }
+        // Merge the base's channels with the model's defaults, then add
+        // the overlay before composing the local transforms up the tree.
+        let defaults = model_defaults(&piece);
+        let parents: Vec<_> = defaults.iter().map(|n| n.parent).collect();
+        let mut composed = pose
+            .merged(&defaults)
+            .map_err(|e| AnimError::Failed(e.to_string()))?;
+        let base_nodes = apply_overlay(&mut composed, &parents)?;
+        let worlds = composed
+            .world_matrices(&parents)
+            .map_err(|e| AnimError::Failed(e.to_string()))?;
+        let nodes = posed_nodes(&piece.skeleton, &composed, &Matrix::IDENTITY)
+            .map_err(AnimError::Failed)?;
+        let bounds = preview::posed_bounds(&piece, &nodes);
+        let camera = preview::framing(bounds.unwrap_or(([-0.5; 3], [0.5; 3])), YAW, PITCH);
+        Ok(PoseAnswer {
+            animation: summary,
+            frame,
+            nodes: nodes_of(&composed, &parents, Some(&worlds)),
+            base_nodes,
+            model: Some(PoseModel {
+                object: user.object,
+                name: user.name.clone(),
+                piece,
+                nodes,
+                sphere: sphere_of(bounds),
+                camera,
+            }),
+            notes: Vec::new(),
+        })
+    }
+
     /// Which of the graph's models to pose: the one named, the only one
     /// when none is, or `None` when the map has none. Several without a
     /// name, or a name that is no user, are refused by name.
@@ -394,10 +512,24 @@ impl Loaded {
     }
 }
 
-/// The app's model-pose state: what was read for which (map, tag).
+/// The app's animation documents and the graph currently loaded for posing.
 #[derive(Default)]
 pub struct Anim {
     loaded: Option<Loaded>,
+    docs: Vec<document::AnimationDocument>,
+}
+
+fn model_defaults(piece: &Piece) -> Vec<NodeDefault> {
+    piece
+        .skeleton
+        .iter()
+        .map(|n| NodeDefault {
+            parent: n.parent,
+            rotation: n.rotation,
+            translation: n.translation,
+            scale: n.scale,
+        })
+        .collect()
 }
 
 /// [`ResourceReader`] over the shown map's raw-resource files.
@@ -463,16 +595,14 @@ fn sphere_of(bounds: Option<([f32; 3], [f32; 3])>) -> ([f32; 3], f32) {
     })
 }
 
-/// The posed model drawn offscreen through the viewport's native object
-/// renderer (the picture `anim.pose` writes and the Animation window
-/// shows): RGBA bytes and the texture's size.
-pub(crate) fn draw(
+/// The Animation window's GPU-only picture from the native object renderer.
+pub(crate) fn texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     model: &PoseModel,
     size: [u32; 2],
-) -> Result<(Vec<u8>, u32, u32), String> {
-    let texture = preview::render_posed(
+) -> wgpu::Texture {
+    preview::render_posed(
         device,
         queue,
         &[preview::Posed {
@@ -483,23 +613,34 @@ pub(crate) fn draw(
         &model.camera,
         size,
         BACKGROUND,
-    );
+    )
+}
+
+/// The same picture as RGBA bytes for `anim.pose` to write to a PNG.
+pub(crate) fn draw(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    model: &PoseModel,
+    size: [u32; 2],
+) -> Result<(Vec<u8>, u32, u32), String> {
+    let texture = texture(device, queue, model, size);
     let rgba =
         crate::headless::read_texture(device, queue, &texture).map_err(|e| format!("{e:#}"))?;
     Ok((rgba, texture.width(), texture.height()))
 }
 
 impl App {
-    fn anim_key(&self, id: TagId) -> (String, TagId) {
+    pub(crate) fn anim_graph_key(&self, id: TagId) -> GraphKey {
         let source = self
             .source
             .as_ref()
-            .map(|s| s.path().display().to_string())
-            .unwrap_or_default();
-        (
-            format!("{source}|{}", self.shown_map_name().unwrap_or_default()),
-            id,
-        )
+            .map(|s| s.path().to_path_buf())
+            .or_else(|| self.session.source().map(|s| s.path.clone()));
+        GraphKey {
+            source,
+            map: self.shown_map_name().map(str::to_owned),
+            tag: id,
+        }
     }
 
     /// Reads the graph of `id` from the map the Tags tool shows, unless it
@@ -629,125 +770,24 @@ impl App {
             .map_err(|e| AnimError::Failed(format!("the map's resource files: {e}")))?;
         let mut reader = Raw(&mut files);
         let loaded = self.anim.loaded.as_mut().expect("loaded");
-        let clip = loaded
-            .clip(animation, &mut reader)
-            .map_err(AnimError::Refused)?;
-        let over = match overlay {
-            Some((index, _)) => Some(
-                loaded
-                    .clip(index, &mut reader)
-                    .map_err(AnimError::Refused)?,
-            ),
-            None => None,
-        };
-        let summary = loaded.summary(animation);
-        let picked = loaded.pick_model(model)?;
-        let pose = clip
-            .sample(frame)
-            .map_err(|e| AnimError::Failed(format!("sampling: {e}")))?;
-        let node_names = &loaded.node_names;
-        let nodes_of = |pose: &tags::anim_sample::Pose,
-                        parents: &[i16],
-                        worlds: Option<&[tags::anim_sample::Mat4]>|
-         -> Vec<PoseNode> {
-            pose.nodes
-                .iter()
-                .enumerate()
-                .map(|(i, n)| PoseNode {
-                    name: node_names.get(i).cloned().flatten(),
-                    parent: parents.get(i).copied().unwrap_or(-1),
-                    rotation: n.rotation,
-                    translation: n.translation,
-                    scale: n.scale,
-                    has: [n.has_rotation, n.has_translation, n.has_scale],
-                    world: worlds.map(|w| w[i]),
-                })
-                .collect()
-        };
-        let Some(picked) = picked else {
-            // No model to compose on: the channels are the animation's
-            // own, the overlay applied over them as they are.
-            let mut pose = pose;
-            if let (Some(over), Some((_, weight))) = (over.as_ref(), overlay) {
-                let sample = over
-                    .sample(frame)
-                    .map_err(|e| AnimError::Failed(format!("sampling the overlay: {e}")))?;
-                pose.add_overlay(&sample, weight)
-                    .map_err(|e| AnimError::Failed(format!("the overlay: {e}")))?;
-            }
-            let parents: Vec<i16> = loaded.graph.nodes.iter().map(|n| n.parent).collect();
-            return Ok(PoseAnswer {
-                animation: summary,
-                frame,
-                nodes: nodes_of(&pose, &parents, None),
-                model: None,
-                notes: vec![
-                    "no model of this map uses this graph: the transforms are the animation's own channels"
-                        .to_owned(),
-                ],
-            });
-        };
-        let (user, piece) = &loaded.models[picked];
-        let piece = piece
-            .clone()
-            .map_err(|e| AnimError::Refused(format!("{}: {e}", user.name)))?;
-        if pose.nodes.len() != piece.skeleton.len() {
-            return Err(AnimError::Refused(format!(
-                "{}: the animation has {} nodes, the render model {}",
-                summary.name,
-                pose.nodes.len(),
-                piece.skeleton.len()
-            )));
-        }
-        // The engine's order: the node defaults under the base's channels,
-        // the overlay scaled onto what that left.
-        let defaults: Vec<NodeDefault> = piece
-            .skeleton
-            .iter()
-            .map(|n| NodeDefault {
-                parent: n.parent,
-                rotation: n.rotation,
-                translation: n.translation,
-                scale: n.scale,
+        let pose = loaded.sample_clip(animation, frame, &mut reader)?;
+        let overlay = overlay
+            .map(|(index, weight)| {
+                let pose = loaded.sample_clip(index, frame, &mut reader)?;
+                Ok::<_, AnimError>((pose, weight))
             })
-            .collect();
-        let mut composed = pose
-            .merged(&defaults)
-            .map_err(|e| AnimError::Failed(e.to_string()))?;
-        if let (Some(over), Some((_, weight))) = (over.as_ref(), overlay) {
-            let sample = over
-                .sample(frame)
-                .map_err(|e| AnimError::Failed(format!("sampling the overlay: {e}")))?;
-            composed
-                .add_overlay(&sample, weight)
-                .map_err(|e| AnimError::Failed(format!("the overlay: {e}")))?;
-        }
-        let parents: Vec<i16> = piece.skeleton.iter().map(|n| n.parent).collect();
-        let worlds = composed
-            .world_matrices(&parents)
-            .map_err(|e| AnimError::Failed(e.to_string()))?;
-        let nodes = posed_nodes(&piece.skeleton, &composed, &Matrix::IDENTITY)
-            .map_err(AnimError::Failed)?;
-        let bounds = preview::posed_bounds(&piece, &nodes);
-        let camera = preview::framing(bounds.unwrap_or(([-0.5; 3], [0.5; 3])), YAW, PITCH);
-        Ok(PoseAnswer {
-            animation: summary,
+            .transpose()?;
+        loaded.pose(
+            loaded.summary(animation),
             frame,
-            nodes: nodes_of(&composed, &parents, Some(&worlds)),
-            model: Some(PoseModel {
-                object: user.object,
-                name: user.name.clone(),
-                piece,
-                nodes,
-                sphere: sphere_of(bounds),
-                camera,
-            }),
-            notes: Vec::new(),
-        })
+            pose,
+            overlay.as_ref().map(|(pose, weight)| (pose, *weight)),
+            model,
+        )
     }
 
     fn ensure_anim(&mut self, id: TagId) -> Result<(), AnimError> {
-        let key = self.anim_key(id);
+        let key = self.anim_graph_key(id);
         if self.anim.loaded.as_ref().is_some_and(|l| l.key == key) {
             return Ok(());
         }

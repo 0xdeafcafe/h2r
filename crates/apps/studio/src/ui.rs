@@ -18,7 +18,7 @@ mod playlists;
 pub mod problems;
 mod preview_switch;
 mod sound;
-mod anim;
+pub(crate) mod anim;
 mod announcer;
 pub mod scripts;
 pub mod tags;
