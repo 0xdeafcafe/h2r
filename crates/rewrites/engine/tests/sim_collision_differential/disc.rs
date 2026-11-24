@@ -512,7 +512,7 @@ fn for_each_map(mut visit: impl FnMut(&str, &mut Map<BufReader<File>>)) {
 
 /// Structures have individual address spaces. Ordinary tags can alias a
 /// root or share children beyond their tag index entry's byte extent.
-fn for_each_tag(groups: &[FourCC], mut visit: impl FnMut(&str, FourCC, &TagView<'_>, u32)) {
+pub(super) fn for_each_tag(groups: &[FourCC], mut visit: impl FnMut(&str, FourCC, &TagView<'_>, u32)) {
     for_each_map(|path, map| {
         let tags: Vec<_> = map.tags().iter()
             .filter(|t| groups.contains(&t.group))
