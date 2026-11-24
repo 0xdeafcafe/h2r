@@ -35,6 +35,10 @@
 //!   `before`s in the default class: while a script runs on the authority,
 //!   the carrier's own scoring and role-making return at once
 //!   ([`super::scoring`]).
+//! - `VARIANT_CLEAN_UP`, `VARIANT_ENCODE`, `VARIANT_DECODE` and
+//!   `VARIANT_PROTOCOL`, `before`s in the default class: a record of the
+//!   script index is kept by the clean-up, crosses the wire with no type
+//!   area and plays distributed ([`super::record`]).
 //!
 //! A script with a `uses` line (docs/game/rules-variants.md, "A script
 //! that keeps its carrier's rules") runs the built-in script of the type it
@@ -367,6 +371,7 @@ impl hooks::Feature for Rules {
             s.lock().post_tick(m);
         });
         super::scoring::register(b, &self.shared);
+        super::record::register(b);
         register_spawns(b, &self.shared);
         register_bodies(b, &self.shared);
         let s = Arc::clone(&self.shared);

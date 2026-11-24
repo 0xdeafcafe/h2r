@@ -53,6 +53,8 @@ mod sim_physics_differential;
 mod sim_tier_differential;
 #[path = "states_differential.rs"]
 mod states_differential;
+#[path = "variant_record_differential.rs"]
+mod variant_record_differential;
 #[path = "views.rs"]
 mod views;
 

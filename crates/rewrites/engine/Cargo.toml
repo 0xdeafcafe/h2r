@@ -42,11 +42,14 @@ lifted = { path = "../../runtime/lifted", optional = true }
 tags = { workspace = true, optional = true }
 map = { workspace = true, optional = true }
 xiso = { workspace = true, optional = true }
+# For tests/variant_record_differential.rs: the record model the native
+# clean-up and protocol answers come from.
+variants = { path = "../../formats/variants", optional = true }
 
 [features]
 runtime-glue = ["dep:runtime", "dep:mopp", "guest-layout/runtime-glue"]
 # Seeded differential test against the lifted original (tests/differential.rs).
-differential = ["runtime-glue", "dep:analyze", "dep:xbe", "dep:ir", "dep:lift", "sim-core/override", "sim-collision/synth", "dep:tags", "dep:map", "dep:xiso", "dep:emit", "dep:lifted"]
+differential = ["runtime-glue", "dep:analyze", "dep:xbe", "dep:ir", "dep:lift", "sim-core/override", "sim-collision/synth", "dep:tags", "dep:map", "dep:xiso", "dep:emit", "dep:lifted", "dep:variants"]
 
 [dev-dependencies]
 # Synthetic BSPs for the native adapter tests.
