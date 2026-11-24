@@ -185,6 +185,7 @@ pub struct Voices {
     /// The voice the voice document shows (`Doc::Voice`): a character id
     /// or [`ANNOUNCER`]. `None` while no voice is open.
     pub doc: Option<String>,
+    pub(crate) announcer_save: Option<(PathBuf, String)>,
     /// The pane of that document.
     pub pane: Pane,
 }
@@ -216,6 +217,7 @@ impl Voices {
             next_job: 1,
             batch: Default::default(),
             doc: None,
+            announcer_save: None,
             pane: Pane::default(),
         }
     }

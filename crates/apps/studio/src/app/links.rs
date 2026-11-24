@@ -510,6 +510,25 @@ pub fn item_id(set: &GameSet, kind: ItemKind, name: &str) -> Option<String> {
     None
 }
 
+/// Identify a saved document by its full package source path.
+fn item_at_path(set: &GameSet, kind: ItemKind, path: &Path) -> Option<String> {
+    for entry in &set.on {
+        let id = entry.loaded.package.name();
+        let Some(dir) = set.listed.iter().find(|entry| entry.id == id)
+            .and_then(|entry| entry.dir.as_deref())
+        else {
+            continue;
+        };
+        let Ok(rel) = path.strip_prefix(dir) else { continue; };
+        if let Some(index) = entry.loaded.package.manifest.items.iter().position(|item| {
+            item.kind == kind && item.source.as_deref().is_some_and(|source| Path::new(source) == rel)
+        }) {
+            return Some(format!("item:{id}:{index}"));
+        }
+    }
+    None
+}
+
 /// What a package item is called in a header's path: its kind word and its source.
 pub fn item_label(set: &GameSet, package: &str, n: usize) -> Option<(String, String)> {
     let entry = set.on.iter().find(|e| e.loaded.package.name() == package)?;
@@ -541,16 +560,26 @@ impl super::App {
                 _ => None,
             },
             Doc::Rules => {
-                let file = self.rules.path.as_ref()?.file_name()?.to_string_lossy().into_owned();
-                item_id(&set(), ItemKind::Rules, script_key(&file))
+                let path = self.rules.path.as_deref()?;
+                item_at_path(&set(), ItemKind::Rules, path).or_else(|| {
+                    let file = path.file_name()?.to_string_lossy();
+                    item_id(&set(), ItemKind::Rules, script_key(&file))
+                })
             }
             Doc::Variant => {
-                let name = ::variants::panel::strip_icon(&self.variants.as_ref()?.current()?.name());
+                let editor = self.variants.as_ref()?;
+                if let Some(path) = editor.package_source() {
+                    return item_at_path(&set(), ItemKind::Variant, path);
+                }
+                let name = ::variants::panel::strip_icon(&editor.current()?.name());
                 item_id(&set(), ItemKind::Variant, &name)
             }
             Doc::Playlists => {
-                let file = self.hoppers.path()?.file_name()?.to_string_lossy().into_owned();
-                item_id(&set(), ItemKind::Playlist, &file)
+                let path = self.hoppers.path()?;
+                item_at_path(&set(), ItemKind::Playlist, path).or_else(|| {
+                    let file = path.file_name()?.to_string_lossy();
+                    item_id(&set(), ItemKind::Playlist, &file)
+                })
             }
             Doc::Hud => {
                 let opened = self.hud.opened.as_ref()?;

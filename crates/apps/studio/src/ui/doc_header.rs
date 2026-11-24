@@ -118,7 +118,7 @@ pub(super) fn draw(ui: &Ui, app: &App, actions: &mut Vec<Action>, browser: &mut 
     ui.same_line();
     let _ = button(ui, "Revert", false, "Revert is not available for this document yet");
     ui.same_line();
-    let save = match doc { Doc::Variant => Some(Action::SaveVariant), Doc::Playlists => Some(Action::SaveHopper), Doc::Map | Doc::Tag(_) => Some(Action::Save), _ => None };
+    let save = app.doc_save_action(doc);
     if button(ui, "Save", save.is_some(), "Save is not available for this document") { actions.extend(save); }
     ui.same_line();
     if ui.button("Links") { ui.open_popup("##doc-links"); }

@@ -85,7 +85,7 @@ fn rows_view(ui: &Ui, app: &mut App, st: &mut VoicesUi, id: &str) {
             .build();
         if ui.is_item_hovered() {
             ui.tooltip_text(
-                "Names the saved clip: art/announcer/<name>.wav. Lowercase letters, digits and -.",
+                "Names the sound item. Lowercase letters, digits and -.",
             );
         }
         ui.same_line();
@@ -109,7 +109,7 @@ fn rows_view(ui: &Ui, app: &mut App, st: &mut VoicesUi, id: &str) {
                 "Replaces: the game sound this line stands in for. Kept lines go into the \
                  edit target package over it.",
             );
-            if ui.selectable_config("Nothing: save only as the output name's clip").selected(target.is_none()).build() {
+            if ui.selectable_config("Standalone sound item").selected(target.is_none()).build() {
                 app.voices.batch.rows[i].tag = None;
             }
             match st.tags.clone() {
@@ -307,29 +307,7 @@ pub(super) fn character(ui: &Ui, app: &mut App, st: &mut VoicesUi, id: &str, dia
         ui.text_disabled(w);
     }
 
-    // Keep.
-    ui.separator_with_text("Keep: play each line above, Re-run one you do not like");
-    ui.checkbox("Replace clips the checkout already has##voices-replace", &mut app.voices.batch.replace);
-    let save_why = app.voice_batch_save_problem();
-    if action(
-        ui,
-        "Keep all done lines##voices-save",
-        save_why.as_deref(),
-    ) {
-        let r = app.voice_batch_save(None, None, None);
-        let ok = r.iter().filter(|(_, r)| r.is_ok()).count();
-        let said = format!("Kept {ok} of {} lines (each line says where, or why not)", r.len());
-        st.batch_note = Some(if ok == 0 && !r.is_empty() { Err(said) } else { Ok(said) });
-    }
-    if let Some(w) = &save_why {
-        ui.text_disabled(w);
-    } else {
-        ui.text_disabled(format!(
-            "A line with an output name is copied to art/announcer/<name>.wav of the checkout (git add it); \
-             one with a target sound becomes a sound item of the edit target ({}).",
-            app.edit_target().unwrap_or_else(|| "none set".into())
-        ));
-    }
+
 }
 
 /// The **Lines** pane of a sound's document: the batch's rows whose
@@ -414,23 +392,9 @@ pub(crate) fn sound_pane(ui: &Ui, app: &mut App, tag: &str, original_ms: Option<
             && state == RowState::Done
         {
             said_under_original(ui, &said, original_ms);
-            let save_why = if app.edit_target().is_none() {
-                Some(crate::app::edit_target::NO_TARGET.to_owned())
-            } else {
-                None
-            };
             if action(ui, "Play##sound-line-play", None) {
                 let _ = app.voice_batch_play(id);
             }
-            ui.same_line();
-            if action(ui, "Save##sound-line-save", save_why.as_deref()) {
-                app.voice_batch_save(Some(&[id]), None, None);
-            }
-            ui.same_line();
-            ui.text_disabled(match app.edit_target() {
-                Some(t) => format!("Save makes a sound item of {t}"),
-                None => "Save needs an edit target package".to_owned(),
-            });
         }
         ui.separator();
     }
@@ -509,6 +473,7 @@ pub(super) fn announcer(ui: &Ui, app: &mut App, st: &mut VoicesUi) {
             play: true,
             ..SayParams::default()
         };
+        app.voices.announcer_save = None;
         st.last = Some(app.voice_say(params));
         st.committed = None;
     }
@@ -609,32 +574,8 @@ fn said_view(ui: &Ui, app: &mut App, st: &mut VoicesUi, s: &Said) {
             st.committed = Some(Err(e.to_string()));
         }
     }
-    if let Some(r) = &s.ready {
-        ui.separator();
-        ui.text_wrapped(format!(
-            "As a clip: {} in the checkout (Git LFS)",
-            r.repo_path
-        ));
-        if ui.button("Copy into the checkout##announcer-commit") {
-            st.committed = Some(
-                app.voice_commit(&r.clip, Some(&s.file), None, r.exists)
-                    .map(|(to, r)| {
-                        format!(
-                            "Copied to {}. git add it{}",
-                            to.display(),
-                            if r.exists {
-                                String::new()
-                            } else {
-                                format!(", and add to boot::medal_announcer::CLIPS: {}", r.clips_entry)
-                            }
-                        )
-                    })
-                    .map_err(|e| e.to_string()),
-            );
-        }
-        if r.exists {
-            ui.text_disabled("This clip exists: copying replaces it.");
-        }
+    if let Some(ready) = &s.ready {
+        app.voices.announcer_save = Some((s.file.clone(), ready.clip.clone()));
     }
     match &st.committed {
         Some(Ok(t)) => ui.text_wrapped(t),

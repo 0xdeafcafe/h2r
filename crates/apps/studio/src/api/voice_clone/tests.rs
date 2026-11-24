@@ -714,6 +714,44 @@ fn a_failing_model_fails_its_rows_and_the_done_ones_are_saved_together() {
 }
 
 #[test]
+fn a_done_voice_line_saves_and_updates_only_its_package_item() {
+    use content::package::Kind;
+    use crate::app::{Action, EditChoice};
+
+    let t = Temp::new("batch-package-save");
+    let mut app = test_app(&t);
+    let mut api = Api::new();
+    test_setup(&mut app, true, true);
+    let said = call(&mut api, &mut app, m::VOICE_SAY_BATCH, json!({
+        "rows": [{"text": "Invented line.", "character": "cortana", "clip": "invented-line"}],
+        "wait": true,
+    }));
+    let id = said["rows"][0]["id"].as_u64().unwrap();
+    assert_eq!(
+        api.call(&mut app, m::VOICE_BATCH_SAVE, json!({"ids": [id]})).unwrap_err().code,
+        code::NO_TARGET
+    );
+    let data = app.data_root();
+    let source = std::path::PathBuf::from(said["rows"][0]["file"].as_str().unwrap());
+    let original = std::fs::read(&source).unwrap();
+    app.dispatch(Action::SaveVoiceLines(vec![id]));
+    assert!(app.edits.picker.is_some());
+    app.dispatch(Action::ChooseEditTarget(EditChoice::New("My Lines".into())));
+    let saved = call(&mut api, &mut app, m::VOICE_BATCH_SAVE, json!({"ids": [id]}));
+    assert_eq!(saved["saved"], 1, "{saved}");
+    let dir = data.join("packages/my-lines");
+    let loaded = ::workspace::Loaded::from_dir(&dir).unwrap();
+    let [item] = loaded.package.manifest.items.as_slice() else {
+        panic!("expected one sound item");
+    };
+    assert_eq!(item.kind, Kind::Sound);
+    assert_eq!(item.source.as_deref(), Some("sounds/invented-line.wav"));
+    assert_eq!(loaded.files[item.source.as_ref().unwrap()], original);
+    assert_eq!(std::fs::read(source).unwrap(), original);
+    assert!(!t.0.join("art/announcer/invented-line.wav").exists());
+}
+
+#[test]
 fn the_window_will_not_say_a_line_with_no_output_name_and_no_game_line() {
     use crate::app::voice_batch::Batch;
     let mut b = Batch::default();

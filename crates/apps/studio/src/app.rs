@@ -45,6 +45,7 @@ pub mod tag_doc;
 pub mod assets;
 pub mod links;
 pub mod edit_lines;
+mod doc_save;
 pub mod edit_target;
 pub mod mods;
 pub mod package_doc;
@@ -170,6 +171,10 @@ pub enum Action {
     /// Save the map to its current destination, or write the edit lines to
     /// the edit target (asking for one first when there is none).
     Save,
+    SaveRules,
+    SaveAnimation { doc: u64, placement: Option<anim::DraftPlacement> },
+    SaveVoiceLines(Vec<u64>),
+    SaveVoiceClip { file: PathBuf, clip: String },
     /// **Export map...**: write the edited map as a whole `.map` file.
     SaveMapAs(PathBuf),
     /// The answer to the first-edit picker.
@@ -488,10 +493,11 @@ pub enum Action {
     NewHopper,
     /// Start from the Live server's built-in lineup.
     NewDefaultHopper,
-    /// Save the playlist file in place.
+    /// Save the playlist as an item of the edit target.
     SaveHopper,
     /// Save the playlist file to a path (and edit that from now on).
     SaveHopperAs(PathBuf),
+    ExportPlaylist(PathBuf),
     /// Give a playlist entry a game variant (one undo step).
     SetEntryVariant(usize, usize, Box<GameVariant>),
     /// Open a playlist entry's variant in the variant tool, as a new copy.
@@ -1074,6 +1080,15 @@ impl App {
         let Some((action, tool)) = self.pending.take() else {
             return;
         };
+        if matches!(answer, Answer::Save)
+            && self.edits.uses_target()
+            && matches!(tool, ToolKind::Variants | ToolKind::Playlists)
+            && self.edit_target().is_none()
+        {
+            self.pending = Some((action, tool));
+            self.hold_prompt_save();
+            return;
+        }
         match answer {
             Answer::Cancel => return,
             Answer::Discard => self.close_tool(tool),
@@ -1165,6 +1180,11 @@ impl App {
                     self.saved_path = Some(path);
                 }
             }
+            Action::SaveVariant | Action::SaveHopper if self.edits.uses_target() => {
+                self.save_to_target(action);
+            }
+            Action::SaveRules | Action::SaveAnimation { .. } | Action::SaveVoiceLines(_)
+            | Action::SaveVoiceClip { .. } => self.save_to_target(action),
             Action::ChooseEditTarget(choice) => self.choose_edit_target(choice),
             Action::OpenPackageEntry(key) => self.open_package_entry(&key),
             Action::OpenMapPack(key) => self.open_pack_map(&key),
@@ -1930,6 +1950,17 @@ impl App {
                 self.hopper_preset = None;
                 self.refresh_playlist_sources();
                 self.info("new playlist file from the Live server's built-in lineup");
+            }
+            Action::ExportPlaylist(path) => {
+                let result = self.hoppers.build().and_then(|file| {
+                    let bytes = hopper_edit::write_file(&file, self.hoppers.format().expect("built"))?;
+                    std::fs::write(&path, bytes)?;
+                    Ok(())
+                });
+                match result {
+                    Ok(()) => self.info(format!("exported {}", path.display())),
+                    Err(why) => self.error(why.to_string()),
+                }
             }
             Action::SaveHopper => match self.hoppers.path().map(Path::to_owned) {
                 Some(path) => self.run_playlist(Action::SaveHopperAs(path)),

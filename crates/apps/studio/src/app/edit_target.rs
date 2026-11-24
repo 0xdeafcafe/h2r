@@ -22,6 +22,7 @@ use ::workspace::{TagEdit, edits_text, parse_edits};
 use super::edit_lines;
 use super::package_doc;
 use super::tag_doc::TagAction;
+use super::Action;
 use crate::App;
 
 /// What an edit without a target says; the API's `NO_TARGET` message.
@@ -56,6 +57,7 @@ pub struct EditState {
     pub picker: Option<Picker>,
     /// The change the picker was opened for.
     held: Option<TagAction>,
+    held_save: Option<HeldSave>,
     /// The tags this session has changed, by `group:path`.
     touched: BTreeSet<String>,
     /// The map's tag document the touched set is for.
@@ -64,7 +66,16 @@ pub struct EditState {
     said: BTreeSet<String>,
 }
 
+enum HeldSave {
+    Document(Action),
+    Prompt,
+}
+
 impl EditState {
+    pub(super) fn uses_target(&self) -> bool {
+        self.armed
+    }
+
     /// Open the first-edit picker with nothing held.
     pub fn open_picker(&mut self) {
         self.picker.get_or_insert_with(Picker::default);
@@ -137,6 +148,17 @@ impl App {
         None
     }
 
+    pub(super) fn hold_target_save(&mut self, action: Action) {
+        self.edits.held_save = Some(HeldSave::Document(action));
+        self.edits.open_picker();
+        self.error(NO_TARGET);
+    }
+
+    pub(super) fn hold_prompt_save(&mut self) {
+        self.edits.held_save = Some(HeldSave::Prompt);
+        self.edits.open_picker();
+    }
+
     /// [`Action::ChooseEditTarget`].
     pub(super) fn choose_edit_target(&mut self, choice: EditChoice) {
         let data = self.data_root();
@@ -144,6 +166,7 @@ impl App {
             EditChoice::Cancel => {
                 self.edits.picker = None;
                 self.edits.held = None;
+                self.edits.held_save = None;
                 return;
             }
             EditChoice::Existing(id) => Ok(id),
@@ -157,12 +180,22 @@ impl App {
             Ok(id) => {
                 self.edits.picker = None;
                 self.info(format!("edits go to {id}"));
+                if let Some(save) = self.edits.held_save.take() {
+                    match save {
+                        HeldSave::Document(action) => self.run(action),
+                        HeldSave::Prompt => self.resolve(super::Answer::Save),
+                    }
+                    return;
+                }
                 match self.edits.held.take() {
                     Some(action) => self.run_map_tag(action),
                     None => self.sync_edit_lines(),
                 }
             }
-            Err(e) => self.error(e.to_string()),
+            Err(e) => {
+                self.edits.open_picker();
+                self.error(e.to_string());
+            }
         }
     }
 

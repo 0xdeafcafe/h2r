@@ -204,8 +204,8 @@ Keyboard shortcuts (Cmd on macOS, Ctrl elsewhere):
 | Keys | Action |
 |---|---|
 | Cmd+O | Open a disc image or map |
-| Cmd+S | Save the map, variant, playlist file or HUD edits in the front editor |
-| Shift+Cmd+S | Choose a path for the map or playlist file |
+| Cmd+S | Save the front document |
+| Shift+Cmd+S | Export the open map |
 | Cmd+P | Open Go to anything |
 | Cmd+Z | Undo in the front document: the tool's, or the tag's tab in front |
 | Cmd+Shift+Z or Cmd+Y | Redo |
@@ -827,7 +827,7 @@ types** kind.
   ![Match options with a tooltip over Score to Win Round: Points are earned in Slayer for killing other players. This setting determines how many points are needed to win a round. Default: 25](../images/editor/variants-help.png)
   
   *Hovering a setting shows the game's help text and the default.*
-- **Inspector** (right): **Save**, **Revert** (back to the variant as
+- **Inspector** (right): **Revert** (back to the variant as
   last saved), **Delete**, **Export...** and **Import...**; whether the
   game accepts the variant; and **Changes from the ... defaults**, the
   list of what differs from the game type's defaults. At the bottom,
@@ -859,12 +859,9 @@ From a built-in variant:
    ![The Inspector for the copy: Save, Revert, Delete, Export..., Import..., The game accepts this variant., and Changes from the Slayer defaults (10), starting Score to Win Round: 25 -> 5 and Respawn Time: 5 Seconds -> 3 Seconds](../images/editor/variants-changes.png)
    
    *Two settings changed on the copy, at the top of the changes list (the rest are Swords' own).*
-4. Click **Save** (or press Cmd+S). The log says `saved as "..."`, and the
-   variant appears under **Saved**.
-
-   ![The Variants panel with Swords Night (Slayer) listed and selected under Saved, above the built-ins](../images/editor/variants-saved.png)
-   
-   *Saved: the variant is listed under **Saved**.*
+4. Click **Save** in the header (or press Cmd+S). Choose or create a
+   package if the edit target is unset. The package contains the
+   portable variant record.
 
 ![An editable copy of Swords, named Swords Night, unsaved](../images/editor/variants-edit.jpg)
 
@@ -892,12 +889,8 @@ someone else's), the section names the script's hash and the settings
 are left as they are; open the script in the Game type script window to
 see its options.
 
-To change a saved variant later, click it under **Saved**, edit it and
-**Save** again. **Delete** removes the open saved variant.
-
-Variants are saved into the game's own storage, not to a file you choose
-(use **Export...** for a file).
-
+Open a packaged variant from its item row to edit it. The **Saved**
+list and **Delete** manage variants in the game's save storage.
 
 ### The settings pages
 
@@ -955,13 +948,6 @@ it is.
 ![Territories options for 3 Plots: Territory Count 3 Territories](../images/editor/variants-page-territories.png)
 
 ***Territories options**.*
-
-### Use it in game
-
-The editor saves variants where the game keeps its saved variants, inside
-the data folder. Start the game with the same data folder (`h2 play`, or
-`h2 play --data <dir>`) and set up a custom game: your variant is listed
-with the game's own saved variants for its game type.
 
 ### Share a variant
 
@@ -1053,7 +1039,7 @@ text for the next open.
   under it lists the record settings the script's `settings` block names
   with their values, and the rows its `quick` line marks, in order,
   each tagged as a setting or an option.
-- **Save as game variant** writes the script's own variant as a
+- **Export game variant...** writes the script's own variant as a
   `.h2variant` file: the record of the script, its options at their
   defaults, and the script with its source
   (`variants::portable::from_script`, as `h2 variants from-script`
@@ -1191,7 +1177,7 @@ serves before anything is published.
 ![The Playlists tool with the default lineup's Team Slayer playlist: the 16 playlists on the left, its entries in the middle, presets and variant sources on the right](../images/editor/hopper-playlist.jpg)
 
 - **Playlists** (left): **New**, **Default lineup**, **Open...**,
-  **Save** and **Save as...**, the file's path and form, then the 16
+  the file's path and form, then the 16
   playlists. Hover over one for its type and number of entries; one that
   wouldn't save has a warning mark.
 
@@ -1232,11 +1218,8 @@ Map names come from your disc. Without a disc, maps show as numbers
    *An entry's **Map** list, open.*
 4. Reorder entries with the arrows, copy one, or remove one. A playlist
    has between 1 and 100 entries.
-5. Click **Save** (Cmd+S), or **Save as...** for a new file.
-
-   ![The File menu in the Playlists tool: New playlist file, New from the default lineup, Open playlist file..., Save playlist file, Save playlist file as..., with the scenario items greyed out](../images/editor/hopper-file-menu.png)
-   
-   *In the Playlists tool, **File** has the playlist file's commands too. The file's name and place are picked in your system's save window, not pictured.*
+5. Click **Save** (Cmd+S) in the document header to write a playlist
+   item. Use **File > Export playlist file...** for a standalone copy.
 
 If something isn't valid (an empty title, say), it's listed in red under
 the entries, and saving is refused until it's fixed.
@@ -1265,8 +1248,8 @@ Click the entry's **Game variant**. The list has three groups:
 
 - **Matchmaking**: the variants of the default lineup, each the record of
   a script.
-- **Saved**: the variants you saved in the Game variants tool that run a
-  script. After saving a new one, click **Refresh saved** to see it here.
+- **Saved**: variants from the game's save storage that run a script.
+  Use **Refresh saved** to update this list.
 - **Files**: `.h2variant` files you loaded this session that run a script:
   type a path under **Variants for the entries** and click **Load**, or
   click **Browse...**.
@@ -1282,9 +1265,9 @@ is greyed out; hover over it to see why.
 
 
 To change an entry's variant a little, click **Edit** on its row. The Game
-variants tool opens with a copy of it. Change it and **Save** there, go
-back to **Playlists**, click **Refresh saved**, and pick your variant
-from **Saved**.
+variants tool opens with a copy of it. Change it and **Export...** from
+the variant editor, then load the portable file in the Playlists inspector
+and select it from **Files**.
 
 ![The Game variants tool after Edit on a playlist entry: an unsaved copy of the entry's Team Slayer variant open in Settings](../images/editor/hopper-edit.jpg)
 
@@ -1669,11 +1652,10 @@ time, the window shows the command to add it:
 security add-generic-password -s fish-audio -a "$USER" -w '<your-fish-audio-key>'
 ```
 
-Lines are saved under `<data>/announcer/`, outside any checkout. **Copy
-into the checkout** (the same as `voice.commit` in the
-[agent API](agent-api.md)) puts a line with a clip id at
-`art/announcer/<clip>.wav` for you to `git add`; nothing else writes
-there. [announcer.md](announcer.md) has the rest.
+Studio caches spoken lines under `<data>/announcer/`. Give the line a
+clip id and use the document header's **Save** to make it a sound item of
+the edit target. [announcer.md](announcer.md) describes the API export
+for bundled art.
 
 ### Lines in a game character's voice
 
@@ -1683,8 +1665,8 @@ bottom: **Lines** (type or paste many lines, one per line, or import a
 text file; each row has an output name and the game sound it replaces),
 **Say** (**Say all** says every row of this voice in turn; each row shows
 queued, running, done or why it failed, plays, and re-runs on its own),
-and **Keep** (**Keep all done lines** copies them into the checkout or the
-edit target package in one step). Buttons that are off say why.
+and **Save** in the header writes the voice's done lines to the edit
+target. Buttons that are off say why.
 
 A line for one sound is also made from the sound itself. A dialogue
 sound's editor ends with a **Lines** pane: **New line** adds a line that
@@ -1794,14 +1776,6 @@ with a warning on the game's console, and the disc's map is used.
 **"no XBE found (set H2_XBE): saved variants can be edited, but not
 created".** Put `default.xbe` next to your disc image, or set `H2_XBE`
 to its path, and restart the editor.
-
-**My saved variant isn't listed in game.** Check that the game and the
-editor use the same data folder (`--data`), and that the variant is
-listed under **Saved** in the editor. Saving from the editor follows the
-game's own file format, but the signature the game checks on our runtime
-hasn't been confirmed in a running game yet ([variants.md](variants.md),
-"Open"); if the game skips the variant, that is the likely cause: please
-report it.
 
 **"no disc: using the built-in setting model".** The Game variants tool
 couldn't read your disc. Open one with **File > Open disc or map...**.
