@@ -308,10 +308,10 @@ All are front-end types, erased before the IR as `zone` and `time` are
 | Type | What it is | In the IR |
 |---|---|---|
 | `vec` | three `fixed`: `vec(x, y, z)`, `.x`, `.y`, `.z`, `+`, `-`, `v * k` (`k` a `fixed`; a bare literal may lead), `length(v)`, `distance(a, b)`. World units in 16.16, so a coordinate is within ±32,768. It is the value of an expression or a `let`; it is not stored in a variable, option, table, parameter or result, and it has no `==`, order or `/` (the checker says so by name) | three `Fixed` registers kept together (`lang/lower.rs`, `vec_expr`); a `vec` read is three calls with an axis argument; `length` is the VM's `vec_length`, taken whole in 128 bits so no square overflows |
-| `vehicle` | an object whose tag is a vehicle; `as_vehicle(o)` gives a `vehicle?` | `Object` |
+| `vehicle` | an object whose tag is a vehicle; `as_vehicle(o)` gives a `vehicle?`. Not built: the vehicle entries take an `object` and the game refuses a call on one that is no vehicle ("Vehicles and drop ships") | `Object` |
 | `sound` | a tag path that must be a sound's, as `weapon` is a weapon's | `Tag`, with the tag table's group |
 | `line` | a dialogue vocalization by name, checked at load against the map's dialogue names | `Text` |
-| label kind `path` | an ordered set of at least two labelled points, numbered from 0 with no gap; the start gate checks it | the label table's `numbered` range |
+| label kind `path` | an ordered set of at least two labelled points, numbered from 0 with no gap and none twice; the start gate checks it (`labels::check`) and only `fly` takes it | `LabelKind::Path` in the label table, with the `numbered` flag |
 | `hud` and `waypoint` declarations | a fixed list of HUD elements and waypoint slots the script owns (below) | a header table |
 
 An action's `at` argument is an `object` (any handle, or a labelled
@@ -346,12 +346,50 @@ Capability `vehicles.drive` ("flies and loads vehicles").
 
 | Script | Entry | Engine | Status | Synced by |
 |---|---|---|---|---|
-| `as_vehicle(o)`, `v.driver` (`player?`), `v.riders` (`int`) | reads | the unit's seat list (`UNIT_SEATS_BEGIN` `0xd0620`, `UNIT_SEATS_NEXT` `0xd0690`) | named | a read |
-| `fly(v, path, t)`, `hover(v, on)` | `move_along` on a vehicle; `hover` | the mover above, facing along the path's tangent; `vehicle_hover` is known by its evaluator number only ([scripts.md](../halo1/scripts.md)) | not built; untraced | the vehicle entity (type 12) |
-| `seat(p, v)`, `eject(p)` | `seat`, `eject` | the vehicle entry routine `0x11ade0` behind `unit_enter_vehicle` (`0x2a3ad0`, [script-builtins.md](../halo1/script-builtins.md)); the biped action `0x1e` the teleport path uses (`0xe68c0`) | traced | events 24 and 11 |
-| `place_squad_in(s, class, n, v)` | `place_squad_in` | `AI_SQUAD_PLACE` (`0x201520`): its third stack word gates a vehicle-seat attempt ([firefight.md](firefight.md#guest-boundary)); which vehicle it tries is not read. `vehicle_load_magic` is not traced | traced | unit entities with the parent-vehicle flag |
-| `unload(v)` | `unload` | `vehicle_unload`: not traced | untraced | event 11 |
+| `vehicle_riders(v)` (`int`), `vehicle_driver(v)` (`player?`) | reads | the unit's seat iterator (`UNIT_SEATS_BEGIN` and `UNIT_SEATS_NEXT`) | host reads pending | a read |
+| `fly(v, path, t)` | `fly` | a notified transform reaches eligible Havok bodies, which retain velocity | not built | the vehicle entity (type 12) |
+| `hover(v, on)` | `hover` | `VEHICLE_HOVER` (`0xf0fd0`) toggles the hold bit and refreshes the physics component on a change | named | vehicle replication unverified |
+| `seat(p, v)`, `eject(p)` | `seat`, `eject` | the vehicle entry routine `0x11ade0` behind `unit_enter_vehicle` and the biped exit action at `0xe68c0` | traced | events 24 and 11 |
+| `place_squad_in(s, class, n, v)` | `place_squad_in` | `AI_SQUAD_PLACE` selects by the scenario's vehicle palette and can leave actors unseated | refused | unit entities with the parent-vehicle flag |
+| `unload(v)` | `unload` | `VEHICLE_UNLOAD` (`0x11b2b0`) requests exit from occupied seats with the all-seats mapping | named | event 11 |
 | `on board(p, v)`, `on leave_vehicle(p, v)` | events | observers on the enter and exit events the engine queues (`SIM_EVENT_GENERATE` `0xb5a70`, types 24 and 11) | named | read on the `Authority` |
+
+The host queues `hover` and `unload` for the tick boundary. It resolves a
+labelled vehicle placement to a live datum and rechecks the datum before
+calling retail. The fake also implements the entries below. A host
+refuses scripts using them at start. [Retail traces for R6 and R7](notes/2026-11-24-vehicle-actions.md).
+
+| Entry | Held back by |
+|---|---|
+| `fly` | W3's mover and verification of the path after physics steps with riders and contacts |
+| `place_squad_in` | needs a seat-limited spawn into the supplied vehicle. Retail placement chooses or creates its own seat vehicle. |
+| `seat`, `eject`, `vehicle_riders`, `vehicle_driver` | host seat selection, player actions and synchronous seat reads |
+| the kit's ship and paths | R8: the kit's stage 2 (`crates/tools/firefight-kit`, FF12) is not built, so no map carries a ship or a labelled path |
+
+Four choices of the fake are the API's contract, and a host that gives
+different answers is wrong until a run says the engine does:
+
+- A **vehicle** is an `object` the game checks at the call. `vehicle` is
+  not a front-end type, and there is no `as_vehicle`, `v.driver` or
+  `v.riders` (the entries above read them): a type would add no safety,
+  since a call on a crate is a refused call either way, and it would
+  edit `lang/check.rs` in the same waves as W2, W3 and W5.
+- A **refused call** changes nothing and is recorded (the fake's
+  `refused`): a vehicle entry on an object that is no vehicle, a seat
+  with none free, a dead player, a flight of no ticks or over a path with
+  a point not placed.
+- **Seats** fill driver first. A player who boards another vehicle leaves
+  the first, and one who dies or quits leaves at once.
+  `place_squad_in` seats `min(n, free seats)` actors and is refused when
+  none fit; `unload` takes everyone out, players and actors.
+- A **flight** is `vehicles::Flight`: one speed along the polyline of the
+  path's points in number order, so the vehicle is at the last point on
+  the tick `start + t` and covers equal lengths in equal ticks; its
+  facing is the unit tangent of its segment (a corner belongs to the
+  second). The math is 16.16 integers, so every machine and a film agree.
+  The fake reports each flight's end once (`take_arrived`); `on arrive`
+  is W3's event, and until it lands a script times the end itself
+  (`now()` against the tick it started on, as `tests/vehicles.rs` does).
 
 **A drop ship is a vehicle on a keyed path.** The kit places it, parked,
 with a label (`label ship: object`), and labels the run-in as a `path`.
@@ -741,7 +779,7 @@ own target on top of the three common ones, as `rules.world_ns` at the
 | W5 | Audio (**partly built**): `sound_to`, `sound_to_team`, `sound_to_all`, with the host finding a sound by the loaded map's tag index; `say`, `sound_at`, `music`, `announce` refused by name until R4 and R5 | `game/rules/world/audio.rs` (new), the `sound` and `line` types in `lang/*`, the tag table's sound group in `ir.rs` and `verify.rs` | a sound that is not in the map blocks the start by name; a `sound_to` cue reaches only its audience; the music slot starts a late machine at the right tick | a wave's stinger and an Elite's taunt play on every machine of a Live Firefight | W1; R4, R5 | 4 sounds every tick: 0.05 ms |
 | W6 | AI orders and the hand-written director: `go_to`, `hold`, `set_skull`, `firefight.rules` | `crates/tools/firefight-kit` (an order per zone), `game/actor_net/squads.rs`, `builtin/firefight.rules` (new), `crates/formats/firefight/src/script.rs` (fills tables) | every scenario of `crates/formats/firefight/tests` passes against the hand-written script; a squad sent to a zone gets that zone's order on the fake squad entry | Firefight runs from `firefight.rules`; the `ff_*` entries, `zone_seen`, `zone_distance` and `firefight.director` are deleted only once the script matches the generated director on every scenario | W2, W4, W5; Firefight's runs R1 to R4 | the script director with 24 actors: `rules.vm_ns` at most 0.4 ms, and the tick within 2% of the generated director's |
 | W7 | Bot orders (**built**) | `crates/live/bots/src/brain.rs`, `decisions.rs` (an outside order as the goal), `pad_source.rs`, `lib.rs`, `phantom.rs` (delivery), `game/rules/world/bots.rs` (new) | a phantom with `bot_hold` plans to the zone on a nav fixture (`bots::mind::tests`); playback makes no order (`rules::runtime::tests`); an order changes no `RulesExt` byte (`rules::vm::tests`, `rules::runtime::tests`) | Clankers hold the zones a Firefight script sends them to | W0 | 16 orders every tick: 0.02 ms on the game thread |
-| W8 | Vehicles and drop ships: `vehicle`, `path`, `fly`, `seat`, `place_squad_in`, `unload` | `rules/labels.rs` (`path`), `game/rules/world/vehicles.rs` (new), the kit's stage 2 and its labelled ship and paths in `crates/tools/firefight-kit` | a `path` with a gap blocks the start; a ship flies a path in the stated ticks, facing its tangent; riders are placed and unloaded on the fake | a Firefight wave arrives by drop ship on a kit map | W3, W6; R6, R7, R8 | a drop ship with 8 riders in flight: 0.2 ms |
+| W8 | Vehicles and drop ships: `vehicle`, `path`, `fly`, `seat`, `place_squad_in`, `unload` (built on the fake, with host hover and unload; see "Vehicles and drop ships") | `rules/labels.rs` (`path`), `game/rules/world/vehicles.rs`, the kit's stage 2 and its labelled ship and paths in `crates/tools/firefight-kit` | a `path` with a gap blocks the start; a ship flies a path in the stated ticks, facing its tangent; riders are placed and unloaded on the fake | a Firefight wave arrives by drop ship on a kit map | W3, W6; R6, R7, R8 | a drop ship with 8 riders in flight: 0.2 ms |
 | W9 | Advanced data: tag reads, squad state, `on damage`, squads by name | `game/rules/world/data.rs` (new), the field resolver over `tags::schema` | a field the schema lacks is a load error naming it; a tag read is the same on two fake machines | a boss wave's bar shows the boss's shield | W2 | 64 tag reads every tick: 0.02 ms |
 | W10 | Modules: `use` (language, CLI, editors and bundle **built**) | `lang/*`, `crates/formats/variants` (the bundle's files), Live's script routes, the workbench's tabs | two files compile to the blob of the same text in one; a cycle is an error naming both files | Firefight's director and its wave tables are two files | W6 | none in the game; `h2 rules check` on 256 KiB of source in under 50 ms |
 | W11 | The show channel on System Link | a LAN carrier beside `crates/live/live-hle/src/tunnel_host.rs` and `tunnel_client.rs`: `crates/platform/show-lan` (**built**, carrier only; wiring waits on R10) | two invented peers over an in-memory LAN and over loopback UDP exchange a `Key` and a `Cue`; a forged tag, a replay, a foreign host key and a flood are dropped and counted (`show_lan::tests`) | a System Link guest sees a script's HUD and hears its sounds | W2; R10 | W2's gate over the LAN carrier |
@@ -761,8 +799,8 @@ on it:
 | R3 | Which object groups get an entity when the host makes or moves one (forge-design.md slice F3) | W3, W8 |
 | R4 | The body behind `sound_impulse_start` (`0x2a9e00`) for a positioned and an unpositioned one-shot; a table of a map's dialogue names for `line` | W5 |
 | R5 | The start and stop of a looping sound; how a retail game event is raised on the host with a player | W5 |
-| R6 | `vehicle_load_magic`, `vehicle_unload` and `vehicle_hover`: their evaluators and bodies; which vehicle `AI_SQUAD_PLACE`'s seat attempt uses | W8 |
-| R7 | Whether a vehicle's Havok body accepts a transform each tick without fighting it | W8 |
+| R6 | [Traced](notes/2026-11-24-vehicle-actions.md). Load (232) calls `0x11b0c0`, unload (233) calls `0x11b2b0`, hover (621) calls `0xf0fd0`. Squad placement selects a seat vehicle by palette and can spawn one. The start's emitter only defers placement. | W8 |
+| R7 | [Traced](notes/2026-11-24-vehicle-actions.md). Notified transforms reach eligible Havok bodies through `0x1c4a80`. The next physics step can change the pose. Exact path following with riders and contacts needs a run. | W8 |
 | R8 | The kit's stage 2 transplant of a drop ship and its tag headroom on each map | W8 |
 | R9 | How a client's own predicted biped takes a host-set position or velocity | W3, W4 |
 | R10 | A datagram of ours between System Link peers through the HLE's sockets | W11 |
@@ -770,7 +808,9 @@ on it:
 
 ## Not verified
 
-- Everything in "Research" above.
+- Driver-first seat order, hover replication and end-of-tick path following
+  with riders and contacts.
+- The open questions in "Research" above.
 - That a generic object's client extrapolates by the replicated
   velocity between updates, so a mover looks smooth at 10 updates a
   second.

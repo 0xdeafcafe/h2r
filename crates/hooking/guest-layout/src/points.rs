@@ -405,6 +405,11 @@ points! { ALL;
     /// at actor +0x90 through the dispatch table at 0x46eeb8.
     AI_UPDATE_BEHAVIORS @ 0x001a_7cc0: [fn(actor: stack 0) ret 4], Hot; "docs/halo1/ai-control.md";
     HS_UNIT_GRENADE_COUNT @ 0x002a_4310: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
+    /// Scripted vehicle hold. The boolean is passed in CL.
+    VEHICLE_HOVER @ 0x000f_0fd0: [fn(vehicle: eax, on: ecx) ret 0], Optional; "docs/game/notes/2026-11-24-vehicle-actions.md";
+    /// Request exit from occupied seats matching the mapping (-1 for all).
+    /// The accepted action count occupies the low word of EAX.
+    VEHICLE_UNLOAD @ 0x0011_b2b0: [fn(vehicle: edx, mapping: ecx) -> eax ret 0], Optional; "docs/game/notes/2026-11-24-vehicle-actions.md";
     /// HaloScript's object awareness evaluator, index 305.
     HS_AI_SEE_OBJECT @ 0x002a_53b0: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
     /// HaloScript's two-argument `ai_place` evaluator (291): a squad and a
@@ -422,7 +427,7 @@ points! { ALL;
     /// actor at placement, from the start's character or else the squad's
     /// (`+0x36`). `location` -1 lets [`AI_CHOOSE_SQUAD_START`] pick each
     /// start; a given location places one actor. `force` (a byte) skips the
-    /// location's availability check and the vehicle-seat attempt;
+    /// location's availability check and the emitter's deferred placement action;
     /// `spawn_flags` goes to [`AI_SPAWN_AT_SQUAD_START`]. Returns at once
     /// while the AI globals' initialised byte is clear.
     AI_SQUAD_PLACE @ 0x0020_1520: [fn(count: eax, squad: stack 0, location: stack 1, force: stack 2, spawn_flags: stack 3) ret 16]; "docs/game/firefight.md";

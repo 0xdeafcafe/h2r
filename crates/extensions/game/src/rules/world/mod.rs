@@ -9,5 +9,6 @@ pub mod loadout;
 pub mod objects;
 pub mod show;
 pub mod spawns;
+pub mod vehicles;
 pub mod walls;
 pub mod zones;

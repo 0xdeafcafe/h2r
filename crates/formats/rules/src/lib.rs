@@ -24,6 +24,7 @@ pub mod show;
 pub mod sim;
 pub mod ty;
 pub mod types;
+pub mod vehicles;
 pub mod verify;
 pub mod vm;
 pub mod weapons;

@@ -113,6 +113,7 @@ label barrier: objects                      // a set; `zones`, `spawns` likewise
 label capture: zones numbered 0..1 = "zone" // map text "zone"; numbers 0 and 1 each present
 label flag_spawn: zones at most 16 per team
 label race_start: spawns                    // starting locations, for spawn_areas only
+label run_in: path                          // a flight: points numbered from 0, at least 2, for fly only
 ```
 
 Requirements on a set: `at least n`, `at most n`, `exactly n`, `n..m`,
@@ -297,6 +298,13 @@ outline and folding. A name is the declaration's number, a `const`.
 | `place_squad` | squad, Class, int, label | `ai.squads` | queued | named |
 | `place_squad_at` | squad, Class, int, int, int | `ai.squads` | queued | named |
 | `hunt`, `erase_squad` | squad | `ai.squads` | queued | named |
+| `fly` | object, path label, time | `vehicles.drive` | queued | not built (a vehicle flown along a `path` label in the stated ticks, facing its tangent; the host refuses it, by name) |
+| `hover` | object, bool | `vehicles.drive` | queued | untraced |
+| `seat` | player, object | `vehicles.drive` | queued | traced (the vehicle's first free seat, the driver's first) |
+| `eject` | player | `vehicles.drive` | queued | traced |
+| `place_squad_in` | squad, Class, int, object | `vehicles.drive` | queued | traced (`place_squad` seating the squad in the vehicle's free seats) |
+| `unload` | object | `vehicles.drive` | queued | untraced |
+| `vehicle_riders`, `vehicle_driver` | object | none | now | traced (reads: everyone aboard; the driver's player or `none`) |
 | `forge_move` | object, object | `forge.move` | queued | named |
 | `forge_delete` | object | `forge.delete` | queued | named |
 | `forge_place` | tag, object | `forge.place` | queued | named |

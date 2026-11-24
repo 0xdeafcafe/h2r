@@ -290,6 +290,83 @@ fn a_script_naming_a_weapon_off_the_list_is_refused_by_its_path() {
     assert!(why.contains("set_loadout"), "{why}");
 }
 
+/// For the remaining vehicle entries, a host refuses a script
+/// that calls one, by name and by why (docs/game/rules-world-api.md,
+/// "Vehicles and drop ships"), before its game starts.
+#[test]
+fn a_script_that_flies_a_ship_is_refused_by_the_entry_it_calls() {
+    for (name, call, status) in [
+        ("fly", "fly(ship, run_in, 10t)", "not built"),
+        ("eject", "if let p = first(players q) { eject(p) }", "traced but not a named point"),
+    ] {
+        let src = format!(
+            "rules \"Drop\" 1\ntype slayer\nrequires vehicles.drive\nlabel ship: object\nlabel run_in: path\non tick {{ {call} }}\n"
+        );
+        let ir = ::rules::compile(&src).unwrap_or_else(|e| panic!("{call}: {e:?}"));
+        let why = host_refusal(&ir).unwrap();
+        assert!(why.contains(name) && why.contains(status), "{call}: {why}");
+    }
+}
+
+#[test]
+fn a_labelled_ship_queues_hover_and_unload_for_its_salted_datum() {
+    use crate::rules::world::vehicles::Action::{Hover, Unload};
+    let ir = ::rules::compile(r#"
+rules "Drop" 1
+type slayer
+requires vehicles.drive
+label ship: object
+on init {
+    hover(ship, true)
+    hover(ship, false)
+    unload(ship)
+}
+"#).unwrap();
+    assert_eq!(host_refusal(&ir), None);
+    let (mut m, s, units) = world(&ir, &[], [[0.0; 3]; 2]);
+    let v = units[0];
+    let array = Datums::<Header>::at(OBJECTS);
+    let header = array.get_absolute(&m, 0).unwrap().unwrap();
+    header.set_kind(&mut m, engine::view::objects::VEHICLE).unwrap();
+    m.put_u16(body_of(0).addr + guest_layout::Object::PLACEMENT_INDEX.offset, 3);
+    let table = Table::from_things(vec![census::Thing {
+        text: "ship".into(),
+        label: Some(0),
+        number: None,
+        class: ::rules::labels::Class::Object,
+        designator: None,
+        block: forge_doc::BlockKind::Vehicles,
+        index: 3,
+        area: None,
+    }]);
+    let mut calls = Vec::new();
+    let mut game = GuestGame::new(&m, &mut calls).with_table(&table);
+    let mut vm = Vm::new(ir, 0, 1).unwrap();
+    vm.begin_tick(TICK);
+    assert_eq!(vm.fire(&mut game, Input::Init), Fired::Ran);
+    vm.flush_queue(&mut game);
+    assert_eq!(calls, [
+        Call::Vehicle(Hover(true), Some(v)),
+        Call::Vehicle(Hover(false), Some(v)),
+        Call::Vehicle(Unload, Some(v)),
+    ]);
+    let work = Work { tick: TICK, ask_authority: true, calls };
+    assert_eq!(run(&s, &m, work.clone(), false), [
+        GuestCall::new(points::GAME_ENGINE_AUTHORITATIVE.base),
+        GuestCall::new(points::VEHICLE_HOVER.base).eax(v).ecx(1),
+        GuestCall::new(points::VEHICLE_HOVER.base).eax(v).ecx(0),
+        GuestCall::new(points::VEHICLE_UNLOAD.base).edx(v).ecx(u32::MAX),
+        GuestCall::new(points::GAME_TICK.base),
+    ]);
+    // Even a replacement vehicle at the same placement and slot cannot
+    // inherit the queued requests.
+    header.set_salt(&mut m, ((v >> 16) as u16) ^ 1).unwrap();
+    assert_eq!(run(&s, &m, work, false), [
+        GuestCall::new(points::GAME_ENGINE_AUTHORITATIVE.base),
+        GuestCall::new(points::GAME_TICK.base),
+    ]);
+}
+
 /// Every listed script a host scores runs here: none is listed only to be
 /// refused when the game starts.
 #[test]

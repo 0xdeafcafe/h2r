@@ -144,6 +144,8 @@ pub const ACTIONS: &[u16] = &[
     id::RESPAWN,
     id::ROLE_TRAITS,
     id::RESET_OBJECTIVE,
+    id::HOVER,
+    id::UNLOAD,
     id::BOT_GO,
     id::BOT_HOLD,
     id::BOT_FOLLOW,
@@ -386,6 +388,7 @@ pub enum Call {
     /// `reset_objective`: the objective (a salted datum) returned
     /// (`super::objectives`).
     ResetObjective(u32),
+    Vehicle(super::world::vehicles::Action, Option<u32>),
     /// `bot_go`, `bot_hold`, `bot_follow`, `bot_attack` and `bot_free`: an
     /// outside order to the phantom in `player`'s seat, or `None` to free
     /// it (`super::world::bots`).
@@ -430,6 +433,7 @@ impl Call {
             Call::SetLives { .. } => "set_lives",
             Call::Respawn(_) => "respawn",
             Call::RoleTraits { .. } => "role_traits",
+            Call::Vehicle(action, _) => action.name(),
             Call::ResetObjective(_) => "reset_objective",
             Call::BotOrder { order, .. } => match order {
                 Some(bots::brain::Order::Go(_)) => "bot_go",
@@ -782,6 +786,7 @@ impl Game for GuestGame<'_> {
                 }
                 _ => None,
             },
+            id::HOVER | id::UNLOAD => super::world::vehicles::plan(self.m, self.table, call),
             id::RESET_OBJECTIVE => match call.args.first() {
                 Some(Arg::Object(Some(o))) => Some(Call::ResetObjective(*o)),
                 _ => None,
@@ -2021,6 +2026,7 @@ pub async fn make_calls(cx: &Cx, work: &Work) -> (Option<bool>, Vec<(String, Str
             Call::SetLives { player, lives } => guest::set_lives(cx, player, lives).await,
             Call::Respawn(player) => crate::firefight::guest::respawn(cx, player).await,
             Call::RoleTraits { player, on } => super::roles::set(cx, player, on).await,
+            Call::Vehicle(action, object) => action.apply(cx, object).await,
             Call::ResetObjective(object) => super::objectives::reset(cx, object).await,
             Call::BotOrder { player, order } => {
                 if super::world::bots::deliver(player, order) {

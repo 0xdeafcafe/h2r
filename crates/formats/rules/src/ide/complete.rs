@@ -151,7 +151,7 @@ fn candidates(m: &Model, off: usize) -> Vec<CompletionItem> {
             let set = m
                 .code
                 .get(colon + 1)
-                .is_some_and(|t| matches!(m.text(t), "objects" | "zones" | "spawns"));
+                .is_some_and(|t| matches!(m.text(t), "objects" | "zones" | "spawns" | "path"));
             return requirements(set);
         }
         return Vec::new();
@@ -769,6 +769,7 @@ fn label_kinds() -> Vec<CompletionItem> {
         ("zone?", "One zone, or none on a map that has none."),
         ("object?", "One object, or none on a map that has none."),
         ("spawns", "Spawn areas, passed to spawn_areas."),
+        ("path", "A flight path: points numbered from 0, passed to fly."),
     ]
     .iter()
     .map(|(k, doc)| plain(k, kind::TYPE_PARAMETER, "label kind", *doc))

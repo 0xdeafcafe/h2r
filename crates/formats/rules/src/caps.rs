@@ -58,6 +58,7 @@ pub const CAPABILITIES: &[Capability] = &[
     cap("objects.delete", "removes objects", false),
     cap("objects.move", "moves objects", false),
     cap("ai.squads", "places and commands AI", false),
+    cap("vehicles.drive", "flies and loads vehicles", false),
     cap("bots.orders", "gives bots orders", false),
     cap("hud.message", "shows messages", false),
     cap("audio.play", "plays sounds, dialogue and music", false),
@@ -219,7 +220,7 @@ use self::Order::{Now, Queued};
 /// The carriers of the entries one engine's routine makes.
 const ON_ODDBALL: &[u8] = &[3];
 
-use self::Status::{Named, Traced, Untraced};
+use self::Status::{Named, NotBuilt, Traced, Untraced};
 use crate::ty::Ty::{Bool, Class, Fixed, Int, Label, Object, Player, Squad, Tag, Team, Text};
 
 pub mod id {
@@ -326,6 +327,14 @@ pub mod id {
     pub const TELEPORT: u16 = 99;
     pub const MOVE_TO: u16 = 100;
     pub const STOP: u16 = 101;
+    pub const FLY: u16 = 102;
+    pub const HOVER: u16 = 103;
+    pub const SEAT: u16 = 104;
+    pub const EJECT: u16 = 105;
+    pub const PLACE_SQUAD_IN: u16 = 106;
+    pub const UNLOAD: u16 = 107;
+    pub const VEHICLE_RIDERS: u16 = 108;
+    pub const VEHICLE_DRIVER: u16 = 109;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -554,6 +563,35 @@ pub const ENTRIES: &[Entry] = &[
     act(id::TELEPORT, "teleport", &[Object, Fixed, Fixed, Fixed], Some("objects.move"), Queued, Named),
     act(id::MOVE_TO, "move_to", &[Object, Fixed, Fixed, Fixed, Int], Some("objects.move"), Now, Named),
     act(id::STOP, "stop", &[Object], Some("objects.move"), Now, Named),
+    // Vehicles and drop ships (docs/game/rules-world-api.md, "Vehicles and
+    // drop ships"). The vehicle is an `object` a host checks at the call:
+    // one that is no vehicle is a refused call. The fake models the whole group.
+    //
+    // `fly(v, path, t)`: the vehicle moves along the `path` label's points
+    // in number order in `t` ticks, facing the tangent of its segment
+    // (`crate::vehicles::Flight`). It is the world API's mover on a
+    // vehicle. Havok can advance the body between notified transforms (R7).
+    act(id::FLY, "fly", &[Object, Label, Int], Some("vehicles.drive"), Queued, NotBuilt),
+    // `hover(v, on)`: holds the vehicle where it is. The retail body also refreshes its physics state.
+    act(id::HOVER, "hover", &[Object, Bool], Some("vehicles.drive"), Queued, Named),
+    // `seat(p, v)` and `eject(p)`: the player's unit enters the vehicle's
+    // first free seat (the driver's first) and leaves it. The vehicle
+    // entry routine `0x11ade0` behind `unit_enter_vehicle` (`0x2a3ad0`) and
+    // the biped exit action still need rules host bindings.
+    act(id::SEAT, "seat", &[Player, Object], Some("vehicles.drive"), Queued, Traced),
+    act(id::EJECT, "eject", &[Player], Some("vehicles.drive"), Queued, Traced),
+    // `place_squad_in(s, class, n, v)`: `place_squad` with the squad's
+    // actors put in the vehicle's free seats, at most as many as there are
+    // (loading is the vehicles capability's, not the squads').
+    // AI_SQUAD_PLACE chooses a vehicle by palette and can leave actors on foot.
+    act(id::PLACE_SQUAD_IN, "place_squad_in", &[Squad, Class, Int, Object], Some("vehicles.drive"), Queued, Traced),
+    // `unload(v)`: everyone aboard leaves. The retail unload body accepts -1 for all seats.
+    act(id::UNLOAD, "unload", &[Object], Some("vehicles.drive"), Queued, Named),
+    // What is aboard (the driver and every rider, players and AI) and the
+    // driver's player, or none: the unit's seat list (`UNIT_SEATS_BEGIN`
+    // `0xd0620`, `UNIT_SEATS_NEXT` `0xd0690`). A non-vehicle has none.
+    read(id::VEHICLE_RIDERS, "vehicle_riders", &[Object], Int, Traced),
+    read(id::VEHICLE_DRIVER, "vehicle_driver", &[Object], Player, Traced),
 ];
 
 /// The word `message(to, text)` takes for everyone.

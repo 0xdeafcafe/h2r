@@ -192,6 +192,7 @@ fn label_line(def: &LabelDef) -> LabelLine {
             LabelKind::Object => "object",
             LabelKind::Zone => "zone",
             LabelKind::Spawn => "spawn",
+            LabelKind::Path => "path",
         },
         min: def.min,
         max: def.bounded().then_some(def.max),

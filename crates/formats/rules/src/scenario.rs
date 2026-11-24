@@ -114,7 +114,7 @@ impl ScenarioLabel {
                 .iter()
                 .find(|d| d.text == self.label)
                 .map_or(Class::Object, |d| match d.kind {
-                    LabelKind::Object => Class::Object,
+                    LabelKind::Object | LabelKind::Path => Class::Object,
                     LabelKind::Zone => Class::Volume,
                     LabelKind::Spawn => Class::Spawn,
                 })

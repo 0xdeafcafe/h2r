@@ -331,7 +331,7 @@ fn objects(ir: &Ir, teams: u8) -> Vec<ScenarioLabel> {
     for def in ir.labels.iter().filter(|d| d.max >= 1) {
         census.labels.entry(def.text.clone()).or_insert_with(|| {
             let class = match def.kind {
-                LabelKind::Object => Class::Object,
+                LabelKind::Object | LabelKind::Path => Class::Object,
                 LabelKind::Zone => Class::Volume,
                 LabelKind::Spawn => Class::Spawn,
             };

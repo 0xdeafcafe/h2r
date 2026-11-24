@@ -34,7 +34,7 @@ impl Class {
     /// Whether a member of this class satisfies a label of `kind`.
     pub fn satisfies(self, kind: LabelKind) -> bool {
         match kind {
-            LabelKind::Object => self != Class::Spawn,
+            LabelKind::Object | LabelKind::Path => self != Class::Spawn,
             LabelKind::Zone => matches!(self, Class::Flag | Class::Volume),
             LabelKind::Spawn => self == Class::Spawn,
         }
@@ -164,6 +164,11 @@ pub enum ProblemKind {
     Unnumbered { label: u16 },
     /// A team in play with no member, of a `per team` label.
     Team { label: u16, team: u8 },
+    /// A path with no point numbered `number` below its last: a hole in
+    /// the flight (or no point 0).
+    PathGap { label: u16, number: i32 },
+    /// Two points of a path with the same number.
+    PathDuplicate { label: u16, number: i32 },
     /// A tag the map holds of another type than the tag table's group.
     TagGroup { tag: u16, found: ObjectType },
     /// A sound the script plays that the map does not hold.
@@ -288,6 +293,11 @@ fn label(name: &str, index: u16, def: &LabelDef, census: &Census, teams: &[u8], 
             }
         }
     }
+    if def.kind == LabelKind::Path {
+        for (kind, text) in path(name, index, def, &good) {
+            push(kind, text);
+        }
+    }
     if def.per_team() {
         for &team in teams {
             if !good.iter().any(|m| m.team == Some(team)) {
@@ -300,6 +310,37 @@ fn label(name: &str, index: u16, def: &LabelDef, census: &Census, teams: &[u8], 
     }
 }
 
+/// A path's points are numbered from 0 with none missing and none twice:
+/// a flight visits point 0, 1, 2 ... in order, so a hole has no meaning
+/// and a repeat has two. Only the first gap is reported, since the points
+/// after it are not the ones the author meant.
+fn path(name: &str, index: u16, def: &LabelDef, good: &[&Member]) -> Vec<(ProblemKind, String)> {
+    let mut out = Vec::new();
+    let text = def.text.as_str();
+    let mut numbers: Vec<i32> = good.iter().filter_map(|m| m.number).collect();
+    numbers.sort_unstable();
+    if let Some(w) = numbers.windows(2).find(|w| w[0] == w[1]) {
+        out.push((
+            ProblemKind::PathDuplicate { label: index, number: w[0] },
+            format!("two points of the path labelled \"{text}\" have the number {}; {name} needs each point numbered once", w[0]),
+        ));
+    }
+    numbers.dedup();
+    let Some(&last) = numbers.last() else {
+        return out;
+    };
+    // Sorted and distinct, the numbers are 0, 1, 2 ... until the first gap.
+    if let Some(number) = numbers.iter().enumerate().find(|&(i, &n)| n != i as i32).map(|(i, _)| i as i32) {
+        out.push((
+            ProblemKind::PathGap { label: index, number },
+            format!(
+                "the path labelled \"{text}\" has no point numbered {number}; {name} needs its points numbered 0 to {last} with none missing"
+            ),
+        ));
+    }
+    out
+}
+
 /// The smallest census [`check`] accepts for `teams`: for each label, the
 /// most of its `min`, one member per number of its range and one per team
 /// in play; volumes for a zone label, objects and starting locations for
@@ -309,7 +350,7 @@ pub fn minimal(ir: &Ir, teams: &[u8]) -> Census {
     let mut census = Census::default();
     for def in &ir.labels {
         let class = match def.kind {
-            LabelKind::Object => Class::Object,
+            LabelKind::Object | LabelKind::Path => Class::Object,
             LabelKind::Zone => Class::Volume,
             LabelKind::Spawn => Class::Spawn,
         };
@@ -345,6 +386,8 @@ fn noun(kind: LabelKind, n: usize) -> &'static str {
         (LabelKind::Zone, false) => "zones",
         (LabelKind::Spawn, true) => "starting location",
         (LabelKind::Spawn, false) => "starting locations",
+        (LabelKind::Path, true) => "path point",
+        (LabelKind::Path, false) => "path points",
     }
 }
 
@@ -353,6 +396,7 @@ fn kind_a(kind: LabelKind) -> &'static str {
         LabelKind::Object => "an object (anything placed but a starting location)",
         LabelKind::Zone => "a zone (a trigger volume or a flag)",
         LabelKind::Spawn => "starting locations",
+        LabelKind::Path => "the points of a path (placements numbered from 0, none missing)",
     }
 }
 

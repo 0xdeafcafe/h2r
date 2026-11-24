@@ -292,6 +292,10 @@ pub enum LabelKind {
     Zone,
     /// Starting locations: a set passed to `spawn_areas`, never visited.
     Spawn,
+    /// The points of a flight path: placements numbered from 0 with no
+    /// gap, at least two. Passed to `fly`, never visited
+    /// (docs/game/rules-world-api.md, "Vehicles and drop ships").
+    Path,
 }
 
 impl LabelKind {
@@ -300,6 +304,7 @@ impl LabelKind {
             LabelKind::Object => 1,
             LabelKind::Zone => 2,
             LabelKind::Spawn => 3,
+            LabelKind::Path => 4,
         }
     }
 
@@ -308,6 +313,7 @@ impl LabelKind {
             1 => LabelKind::Object,
             2 => LabelKind::Zone,
             3 => LabelKind::Spawn,
+            4 => LabelKind::Path,
             _ => return None,
         })
     }

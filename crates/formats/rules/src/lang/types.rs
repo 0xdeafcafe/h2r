@@ -69,6 +69,8 @@ pub enum SetKind {
     Zones,
     /// Starting locations: passed to `spawn_areas`, never visited.
     Spawns,
+    /// The points of a flight path: passed to `fly`, never visited.
+    Paths,
 }
 
 impl SetKind {
@@ -80,6 +82,7 @@ impl SetKind {
             SetKind::Objects => "objects",
             SetKind::Zones => "zones",
             SetKind::Spawns => "spawns",
+            SetKind::Paths => "paths",
         }
     }
 
@@ -90,7 +93,22 @@ impl SetKind {
             SetKind::Teams => Some(Handle::Team),
             SetKind::Objectives | SetKind::Objects => Some(Handle::Object),
             SetKind::Zones => Some(Handle::Zone),
-            SetKind::Spawns => None,
+            SetKind::Spawns | SetKind::Paths => None,
+        }
+    }
+
+    /// The message for a set with no members to visit (`to` is "visit" or
+    /// "test"), saying which call takes it; `None` for a set a script can
+    /// visit.
+    pub fn unvisited(self, name: &str, to: &str) -> Option<String> {
+        match self {
+            SetKind::Spawns => Some(format!(
+                "{name} names spawn areas, which have no objects to {to}. Pass it to spawn_areas."
+            )),
+            SetKind::Paths => Some(format!(
+                "{name} names a flight path, whose points are not objects to {to}. Pass it to fly."
+            )),
+            _ => None,
         }
     }
 
@@ -105,6 +123,7 @@ impl SetKind {
     pub fn words(self) -> &'static str {
         match self {
             SetKind::Spawns => "spawn areas",
+            SetKind::Paths => "a flight path",
             SetKind::Zones => "a set of zones",
             SetKind::Players => "a set of players",
             SetKind::Teams => "a set of teams",

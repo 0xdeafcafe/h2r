@@ -337,6 +337,7 @@ pub(crate) fn type_word_doc(w: &str) -> Option<&'static str> {
         "objects" => "A set of objects: a label's kind, or a set parameter.",
         "zones" => "A set of zones: a label's kind, or a set parameter. A set of zones is a set of objects.",
         "spawns" => "Spawn areas: a label's kind, passed to `spawn_areas`, never visited.",
+        "path" => "A flight path: a label's kind, at least 2 points numbered from 0, passed to `fly`, never visited.",
         _ => return None,
     })
 }
@@ -536,6 +537,7 @@ fn label_markdown(m: &Model, d: usize) -> String {
     let what = if l.def.kind == LabelKind::Zone { "zone" } else { "object" };
     let sees = match (l.def.kind, l.single) {
         (LabelKind::Spawn, _) => "Spawn areas: pass it to `spawn_areas`; a loop cannot visit them.".to_string(),
+        (LabelKind::Path, _) => "A flight path: pass it to `fly`; a loop cannot visit its points.".to_string(),
         (_, true) if l.optional => format!("One {what}, or `none` on a map that has none (`{what}?`)."),
         (_, true) => format!("One {what}."),
         (_, false) => {
