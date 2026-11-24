@@ -67,9 +67,10 @@ pub fn page() -> Option<ScreenSpec> {
     driver.editor.as_ref()?.page()
 }
 
-/// The markers of the session's other monitors, projected through the
-/// last frame's world view: the play window's overlay paints them beside
-/// the gizmo. A monitor's own marker is never drawn.
+/// The rings the play window's overlay paints beside the gizmo, projected
+/// through the last frame's world view: the ground's problems and markers
+/// (docs/game/forge-map-variants.md, "AI ground"), then the session's other
+/// monitors. A monitor's own marker is never drawn.
 pub fn markers() -> Vec<marker::Marker> {
     let Some(driver) = current() else {
         return Vec::new();
@@ -285,7 +286,8 @@ impl Driver {
             e.tick(tick, bsp, crate::forge_screens::ui_up(m), game);
             let now = tick as f32 / 30.;
             crate::forge_readout::publish(e.readout_scene(game));
-            self.markers = e.monitor_markers(now);
+            self.markers = e.ground_rings();
+            self.markers.extend(e.monitor_markers(now));
             self.bodies = e.monitor_draws(now, now);
         }
     }
@@ -502,6 +504,18 @@ impl LocalApi for Backend {
 
     fn session(&self) -> Result<Arc<forge::Session>, String> {
         self.read(|e| e.session.clone())
+    }
+
+    fn ground(&self) -> Result<Value, String> {
+        self.read(Editor::ground_json)
+    }
+
+    fn ground_build(&self, if_stale: bool) -> Result<local::GroundReply, String> {
+        let mut driver = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(e) = driver.editor.as_mut() else {
+            return Err(driver.reason.clone());
+        };
+        e.ground_build(if_stale)
     }
 
     fn document(&self) -> Result<ForgeDoc, String> {

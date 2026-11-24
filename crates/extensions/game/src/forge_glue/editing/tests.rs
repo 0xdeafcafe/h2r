@@ -541,3 +541,212 @@ fn spawn_goal_and_item_properties_write_their_fields() {
         forge_doc::Value::Int(45)
     );
 }
+
+// ---- AI ground: the build runs on a worker (docs/game/forge-map-variants.md, "AI ground") ----
+
+mod ground {
+    use super::*;
+    use crate::forge_glue::ground::{self as installed, NO_BUILDER, TEST_GUARD};
+    use forge::{GroundBuilder, GroundProblem, GroundRecipe, GroundReport, GroundState};
+
+    /// A builder with an invented report, or a refusal.
+    struct Kit {
+        refuse: bool,
+    }
+
+    impl GroundBuilder for Kit {
+        fn recipe(&self) -> GroundRecipe {
+            GroundRecipe {
+                kit_version: 3,
+                home: 0,
+                probe: false,
+            }
+        }
+
+        fn build(&mut self, _: &ForgeDoc) -> Result<GroundReport, String> {
+            if self.refuse {
+                return Err("No room: the sectors take 9 KB too many.".into());
+            }
+            Ok(GroundReport {
+                zones: 2,
+                squads: 16,
+                problems: vec![GroundProblem {
+                    label: "ff_drop".into(),
+                    position: [1., 1., 0.],
+                    reason: "off the walkable area".into(),
+                }],
+                receipt: None,
+            })
+        }
+    }
+
+    /// An editor over a map with three netgame flags of its own, so a marker
+    /// is a flag after them.
+    fn ground_editor() -> Editor {
+        let mut e = editor();
+        let base = e.session.document().clone();
+        let limits = Limits {
+            world: Some(WorldBounds {
+                min: [-10.; 3],
+                max: [10.; 3],
+            }),
+            base_counts: [(BlockKind::Crates, 2), (BlockKind::NetgameFlags, 3)]
+                .into_iter()
+                .collect(),
+            ..Limits::default()
+        };
+        e.session = Arc::new(Session::new(base, limits, vec![], 8).unwrap());
+        e.tool.monitor = true;
+        e
+    }
+
+    /// Poll the editor's file job until its worker is done.
+    fn finish(e: &mut Editor, tick: u32) {
+        for _ in 0..500 {
+            e.poll_file(tick);
+            if !e.busy() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the ground build never finished");
+    }
+
+    fn drop_at(x: f32) -> Command {
+        Command::Marker {
+            label: forge::GroundLabel::Drop,
+            frame: Frame {
+                position: [x, 1., 0.],
+                rotation: [0.; 3],
+            },
+        }
+    }
+
+    #[test]
+    fn build_ai_ground_runs_on_a_worker_and_the_editor_takes_the_copy_back() {
+        let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        installed::loads_map(false);
+        installed::install(Box::new(Kit { refuse: false }));
+        let mut e = ground_editor();
+        e.command(1, drop_at(1.)).unwrap();
+        e.poll(2);
+        assert_eq!(e.session.ground_state(), GroundState::NotBuilt);
+        assert_eq!(e.status()["ground"]["state"], "not_built");
+        assert_eq!(e.status()["ground"]["available"], true);
+        assert_eq!(e.status()["ground"]["markers"], 1);
+
+        e.command(3, Command::BuildGround).unwrap();
+        assert!(e.busy() && e.ground_building);
+        assert_eq!(e.status()["ground"]["building"], true);
+        assert_eq!(e.notice.as_ref().unwrap().0, "Building AI ground...");
+        // While it runs nothing else is asked of the session.
+        let asked = e.command(4, Command::TestWaves).unwrap_err();
+        assert_eq!(asked, "A Forge edit is waiting for the game.");
+
+        finish(&mut e, 5);
+        assert!(!e.ground_building);
+        assert_eq!(e.session.ground_state(), GroundState::Current);
+        assert_eq!(
+            e.notice,
+            Some((
+                "AI ground built: 2 zones, 16 squad slots, 1 problem. The running map is not changed."
+                    .into(),
+                5
+            ))
+        );
+        let status = e.status();
+        assert_eq!(status["ground"]["state"], "current");
+        assert_eq!(status["ground"]["zones"], 2);
+        assert_eq!(status["ground"]["problems"], 1);
+        assert_eq!(status["ground"]["loaded"], false);
+
+        // Test waves with the ground current builds nothing.
+        e.command(6, Command::TestWaves).unwrap();
+        finish(&mut e, 7);
+        assert_eq!(e.notice.as_ref().unwrap().0, "AI ground is current.");
+        // Another marker makes it stale, and Test waves builds again.
+        e.command(8, drop_at(2.)).unwrap();
+        e.poll(9);
+        assert_eq!(e.session.ground_state(), GroundState::Stale);
+        e.command(10, Command::TestWaves).unwrap();
+        finish(&mut e, 11);
+        assert_eq!(e.session.ground_state(), GroundState::Current);
+        installed::uninstall();
+    }
+
+    #[test]
+    fn an_agent_asking_for_a_build_is_answered_when_it_ends() {
+        let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        installed::install(Box::new(Kit { refuse: false }));
+        let mut e = ground_editor();
+        let answer = e.ground_build(true).unwrap();
+        assert!(answer.try_recv().is_err(), "not before the worker is done");
+        finish(&mut e, 3);
+        let reply = answer.try_recv().unwrap().unwrap();
+        assert_eq!(reply["built"], true);
+        assert_eq!(reply["state"], "current");
+        assert_eq!(reply["report"]["zones"], 2);
+        assert_eq!(reply["problems"][0]["reason"], "off the walkable area");
+        assert_eq!(reply["building"], false);
+
+        // Already current: answered, and not built.
+        let answer = e.ground_build(true).unwrap();
+        finish(&mut e, 4);
+        assert_eq!(answer.try_recv().unwrap().unwrap()["built"], false);
+        installed::uninstall();
+    }
+
+    #[test]
+    fn a_build_that_fails_says_why_changes_nothing_and_answers_the_agent() {
+        let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        installed::install(Box::new(Kit { refuse: true }));
+        let mut e = ground_editor();
+        let answer = e.ground_build(false).unwrap();
+        finish(&mut e, 3);
+        let reason = "No room: the sectors take 9 KB too many.";
+        assert_eq!(answer.try_recv().unwrap(), Err(reason.to_string()));
+        assert_eq!(e.notice, Some((reason.into(), 3)));
+        assert!(!e.ground_building);
+        assert_eq!(e.session.ground_state(), GroundState::NotBuilt);
+        installed::uninstall();
+    }
+
+    #[test]
+    fn with_no_builder_the_rows_and_the_agent_refuse_and_change_nothing() {
+        let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        installed::uninstall();
+        let mut e = ground_editor();
+        assert_eq!(e.command(1, Command::BuildGround), Err(NO_BUILDER.into()));
+        assert_eq!(e.command(1, Command::TestWaves), Err(NO_BUILDER.into()));
+        assert_eq!(e.ground_build(false).unwrap_err(), NO_BUILDER);
+        assert!(!e.busy());
+        assert_eq!(e.status()["ground"]["available"], false);
+        assert_eq!(e.ground_json()["state"], "not_built");
+    }
+
+    #[test]
+    fn the_overlay_rings_the_markers_and_the_problems_the_last_build_made() {
+        let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        installed::install(Box::new(Kit { refuse: false }));
+        let mut e = ground_editor();
+        assert!(e.ground_rings().is_empty());
+        e.command(1, drop_at(1.)).unwrap();
+        e.poll(2);
+        let rings = e.ground_rings();
+        assert_eq!(rings.len(), 1);
+        assert_eq!(rings[0].0.position, [1., 1., 0.]);
+        assert_eq!(rings[0].1, ground_ring(forge::GroundLabel::Drop, 0));
+
+        e.command(3, Command::BuildGround).unwrap();
+        finish(&mut e, 4);
+        // The problem is first, so its colour is the one that shows.
+        let rings = e.ground_rings();
+        assert_eq!(rings.len(), 2);
+        assert_eq!(rings[0].1, PROBLEM_RING);
+        assert_eq!(rings[1].1, ground_ring(forge::GroundLabel::Drop, 0));
+        // The monitor off draws none.
+        e.tool.monitor = false;
+        assert!(e.ground_rings().is_empty());
+        installed::uninstall();
+    }
+}

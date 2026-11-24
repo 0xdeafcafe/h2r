@@ -3,6 +3,7 @@
 //! Its screens are the game's (`crate::forge_screens`): it builds their
 //! sheets and acts on their choices.
 use super::{GENERATION, admitted, controls};
+use agent::forge::ground as ground_api;
 use agent::forge::local::{self as local_api, ForgeEdit, ForgeWorld, Guard, ProposalReply};
 use agent::sim::calls;
 use forge::tool::{Axes, Command, Extent, Tool};
@@ -47,7 +48,12 @@ enum FileResult {
     /// Saved as this name; the saved maps after.
     Saved(String, Vec<String>),
     Loaded(Pending),
+    /// The ground build's copy of the session, and whether it built.
+    Ground(Box<(Session, bool)>),
 }
+
+/// Where a ground build's answer goes when an agent asked for it.
+type GroundAnswer = mpsc::Sender<Result<Value, String>>;
 
 #[derive(Clone, Copy)]
 enum CoordinateTarget {
@@ -60,6 +66,21 @@ const GROUND_REACH: f32 = 100.;
 /// How far in front of the monitor a ground marker is placed, in world
 /// units.
 const MARKER_REACH: f32 = 3.;
+/// The overlay's ring for a label the last build could not honour.
+const PROBLEM_RING: [u8; 3] = [255, 90, 0];
+
+/// The overlay's ring for a placed ground marker: a drop green, a cover
+/// yellow, a base its team's colour, and the siege labels violet.
+fn ground_ring(label: forge::GroundLabel, team: u8) -> [u8; 3] {
+    use forge::GroundLabel as L;
+    match label {
+        L::Drop => [60, 220, 90],
+        L::Cover => [235, 205, 60],
+        L::Base if team == 0 => [225, 70, 70],
+        L::Base => [70, 110, 235],
+        L::Site | L::Goal | L::Line => [190, 120, 245],
+    }
+}
 
 pub(super) struct Editor {
     pub session: Arc<Session>,
@@ -100,6 +121,13 @@ pub(super) struct Editor {
     refused: Vec<String>,
     /// Set in a shared session (docs/game/forge-design.md, F5).
     net: Option<net::Net>,
+    /// The tick the last [`Editor::tick`] ran at, for a notice asked for
+    /// between ticks.
+    now: u32,
+    /// The file job is a ground build (`forge_glue::ground`).
+    ground_building: bool,
+    /// The agent that asked for the running build, to answer when it ends.
+    ground_answer: Option<GroundAnswer>,
 }
 
 impl Editor {
@@ -136,6 +164,9 @@ impl Editor {
             ui_up: false,
             refused: opened.refused,
             net: None,
+            now: 0,
+            ground_building: false,
+            ground_answer: None,
         }
     }
 
@@ -272,10 +303,93 @@ impl Editor {
             "links":self.links_json(),
             "budget":{"used":self.session.objects().len(),"limit":self.session.budget()},
             "palette":self.session.palette().len(), "palette_refused":self.refused,
+            "ground":ground_api::status(&self.session, self.ground_facts()),
             "parked":controls::parked().map(|unit| format!("{unit:#010x}")),
             "pending_call":self.pending.is_some(), "pending_file":self.file_job.is_some(), "file":self.filename,
             "notice":self.notice.as_ref().map(|(text,_)|text)
         })
+    }
+
+    /// What the game knows of the ground besides the session
+    /// (`forge.ground`).
+    fn ground_facts(&self) -> ground_api::Facts {
+        ground_api::Facts {
+            available: super::ground::available(),
+            building: self.ground_building,
+            loaded: super::ground::loads()
+                && self.session.ground_state() == forge::GroundState::Current,
+        }
+    }
+
+    /// `forge.ground`'s reply.
+    pub fn ground_json(&self) -> Value {
+        ground_api::reply(&self.session, self.ground_facts())
+    }
+
+    /// **Build AI ground** (`if_stale` false) or **Test waves**: build the
+    /// ground on a worker over a copy of the session, which the editor takes
+    /// back when the worker is done. Edits wait meanwhile. `answer` is told
+    /// how it ended.
+    fn start_ground(
+        &mut self,
+        tick: u32,
+        if_stale: bool,
+        answer: Option<GroundAnswer>,
+    ) -> Result<(), String> {
+        if self.is_shared() {
+            return Err("AI ground is built in a local session.".into());
+        }
+        if self.busy() {
+            return Err("A Forge edit is waiting for the game.".into());
+        }
+        if !super::ground::available() {
+            return Err(super::ground::NO_BUILDER.into());
+        }
+        let session = self.session.clone();
+        self.file(move || {
+            let mut copy = Session::clone(&session);
+            let built = super::ground::run(&mut copy, if_stale)?;
+            Ok(FileResult::Ground(Box::new((copy, built))))
+        })?;
+        self.ground_building = true;
+        self.ground_answer = answer;
+        self.notice = Some(("Building AI ground...".into(), tick));
+        Ok(())
+    }
+
+    /// `forge.ground.build`: start a build and answer when it has ended.
+    pub fn ground_build(
+        &mut self,
+        if_stale: bool,
+    ) -> Result<mpsc::Receiver<Result<Value, String>>, String> {
+        let (tx, rx) = mpsc::channel();
+        self.start_ground(self.now, if_stale, Some(tx))?;
+        Ok(rx)
+    }
+
+    /// The ground's marks and problems as rings for the play window's
+    /// overlay: a problem first, so its colour is the one a marker at the
+    /// same place shows through. Nothing with the monitor off.
+    pub fn ground_rings(&self) -> Vec<(forge::Frame, [u8; 3])> {
+        if !self.tool.monitor {
+            return Vec::new();
+        }
+        let problems = self.session.ground_report().into_iter().flat_map(|r| {
+            r.problems.iter().map(|p| {
+                let frame = forge::Frame {
+                    position: p.position,
+                    rotation: [0.; 3],
+                };
+                (frame, PROBLEM_RING)
+            })
+        });
+        let placed = self.session.ground_counts().iter().sum::<usize>() > 0;
+        let marks = placed
+            .then(|| self.session.markers().unwrap_or_default())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|m| (m.frame, ground_ring(m.label, m.team)));
+        problems.chain(marks).collect()
     }
 
     /// What is placed, held or aimed at: its name, block and frame (the
@@ -526,6 +640,7 @@ impl Editor {
     /// the variant record's engine index, which decides the things the
     /// Objects tool aims at.
     pub fn tick(&mut self, tick: u32, bsp: Option<usize>, ui_up: bool, game: Option<i32>) {
+        self.now = tick;
         self.ui_up = ui_up;
         if self.tool.game != game {
             self.tool.game = game;
@@ -652,7 +767,28 @@ impl Editor {
                 self.saved_head = self.session.head();
             }
             Ok(FileResult::Loaded(pending)) => self.pending = Some(pending),
-            Err(reason) => self.notice = Some((reason, tick)),
+            Ok(FileResult::Ground(done)) => {
+                // No edit runs while a file job does: the copy is the
+                // session as it was, with the build recorded.
+                let (session, built) = *done;
+                self.session = Arc::new(session);
+                self.ground_building = false;
+                let text = super::ground::notice(self.session.ground_report(), built);
+                self.notice = Some((text, tick));
+                if let Some(answer) = self.ground_answer.take() {
+                    let mut reply = self.ground_json();
+                    reply["built"] = json!(built);
+                    let _ = answer.send(Ok(reply));
+                }
+            }
+            Err(reason) => {
+                if std::mem::take(&mut self.ground_building)
+                    && let Some(answer) = self.ground_answer.take()
+                {
+                    let _ = answer.send(Err(reason.clone()));
+                }
+                self.notice = Some((reason, tick));
+            }
         }
     }
 
@@ -716,6 +852,8 @@ impl Editor {
             Tools => screens::request(Kind::Tools)?,
             Settings => screens::request(Kind::Settings)?,
             Menu => return Err("The Forge menu is GAME MENU: press Start.".into()),
+            BuildGround => return self.start_ground(tick, false, None),
+            TestWaves => return self.start_ground(tick, true, None),
             DialogUp | DialogDown | DialogAccept | DialogBack => {
                 return Err("A screen is up; it takes the pad.".into());
             }
@@ -1066,8 +1204,6 @@ fn run(s: &mut Session, w: &mut ForgeWorld, tick: u32, cmd: Command) -> Result<(
         Undo => s.undo(w, tick),
         Redo => s.redo(w, tick),
         Marker { label, frame } => s.place_marker_next(w, tick, label, frame).map(|_| ()),
-        BuildGround => super::ground::build(s),
-        TestWaves => super::ground::test_waves(s),
         _ => Err("A screen's command is not an edit.".into()),
     }
 }
