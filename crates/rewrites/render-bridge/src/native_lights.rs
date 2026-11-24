@@ -857,7 +857,9 @@ impl Feature for NativeLights {
         b.raw()
             .observe_before(&points::RENDER_DYNAMIC_LIGHTS, "native_lights_view", |o| {
                 if !Stage::Lights.standing_down() {
-                    slot_visibility::begin(&*o.guest());
+                    let mem = o.guest();
+                    crate::native_world::load_active_bsp(&*mem);
+                    slot_visibility::begin(&*mem);
                     new_view();
                 }
             })

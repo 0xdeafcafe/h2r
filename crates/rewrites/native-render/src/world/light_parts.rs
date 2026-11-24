@@ -118,6 +118,30 @@ mod tests {
     use crate::world::{PartInput, Placement, WorldBuilder};
 
     #[test]
+    fn structure_part_ids_use_all_eight_bits_without_wrapping() {
+        let owner = Owner::Cluster(0);
+        let part = PartInput { material: 0, transparent: false, triangles: vec![[0, 1, 2]] };
+        let source = SourcePart { first: 0, count: 3, topology: Topology::List, as_list: None };
+        let mut input = SectionInput {
+            positions: vec![[0.; 3]; 3],
+            parts: vec![part; 257],
+            source: Some(SourceSection { section: 0, parts: vec![source; 257] }),
+            ..Default::default()
+        };
+        input.parts[255].transparent = true;
+        input.parts[256].material = 1;
+        let mut b = WorldBuilder::new();
+        b.add_section(owner, &input, &Placement::IDENTITY, None);
+        let world = b.finish();
+        assert_eq!(world.draws.len(), 255);
+        assert_eq!(world.transparents[0].part, 255);
+        assert_eq!(world.light_parts.len(), 256);
+        assert_eq!(world.light_parts[&(owner, 0)].material, 0);
+        assert_eq!(world.light_parts[&(owner, 16)].native, 48..51);
+        assert_eq!(world.light_parts[&(owner, 255)].native, 765..768);
+    }
+
+    #[test]
     fn a_gather_can_draw_the_same_raw_strip_as_a_list_after_base_filtering() {
         let owner = Owner::Cluster(9);
         let section = SectionInput {
