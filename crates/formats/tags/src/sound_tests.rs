@@ -326,3 +326,23 @@ fn an_extra_info_with_an_unknown_child_block_is_refused() {
     bytes[EXTRA_AT..EXTRA_AT + 4].copy_from_slice(&1u32.to_le_bytes());
     assert!(Gestalt::decode(&bytes, BASE).is_err());
 }
+
+#[test]
+fn a_mouth_span_names_the_curve_bytes_inside_the_resource() {
+    let (bytes, resource) = mouth_gestalt(&[&[10, 200, 255], &[4, 5]]);
+    let g = Gestalt::decode(&bytes, BASE).unwrap();
+    let h = mouth_header(0);
+    let mut r = Resource(resource.clone());
+    let s = g.mouth_span(&h, &g.permutations[1], &mut r).unwrap().unwrap();
+    assert_eq!(s.curve, vec![4, 5]);
+    assert_eq!(s.resource_size as usize, resource.len());
+    assert_eq!(s.resource.offset, 0x1000);
+    // The span's offset is where those bytes are in the resource.
+    assert_eq!(&resource[s.offset as usize..][..2], &[4, 5]);
+    let first = g.mouth_span(&h, &g.permutations[0], &mut r).unwrap().unwrap();
+    assert_eq!(&resource[first.offset as usize..][..3], &[10, 200, 255]);
+    // An unvoiced permutation has no span.
+    let (bytes, resource) = mouth_gestalt(&[&[1], &[]]);
+    let g = Gestalt::decode(&bytes, BASE).unwrap();
+    assert_eq!(g.mouth_span(&h, &g.permutations[1], &mut Resource(resource)).unwrap(), None);
+}

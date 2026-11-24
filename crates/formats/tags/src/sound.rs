@@ -478,6 +478,21 @@ impl Gestalt {
         p: &Permutation,
         r: &mut dyn ResourceReader,
     ) -> Result<Option<Vec<u8>>> {
+        Ok(self.mouth_span(h, p, r)?.map(|s| s.curve))
+    }
+
+    /// Where permutation `p`'s mouth curve sits: the extra-info resource's
+    /// raw pointer and size, the curve's byte offset inside it, and the
+    /// curve itself (what [`Self::mouth_curve`] gives, read the same way).
+    /// `Ok(None)` when unvoiced. A redrawn curve of the same length is a
+    /// patch of `curve.len()` bytes at `offset` of the `resource_size`
+    /// bytes at `resource`.
+    pub fn mouth_span(
+        &self,
+        h: &SoundHeader,
+        p: &Permutation,
+        r: &mut dyn ResourceReader,
+    ) -> Result<Option<MouthSpan>> {
         if h.extra_info == u16::MAX {
             return Ok(None);
         }
@@ -530,8 +545,28 @@ impl Gestalt {
         let curve = data
             .get(start..start.saturating_add(u32_at(d, 4) as usize))
             .ok_or(Error::Invalid("a mouth curve runs outside the extra-info data"))?;
-        Ok((!curve.is_empty()).then(|| curve.to_vec()))
+        // The data buffer's own offset in the resource, then the curve's in it.
+        let offset = 0x18 + e.locators[0].offset + start as u32;
+        Ok((!curve.is_empty()).then(|| MouthSpan {
+            resource: e.pointer,
+            resource_size: e.size,
+            offset,
+            curve: curve.to_vec(),
+        }))
     }
+}
+
+/// Where a mouth curve is stored ([`Gestalt::mouth_span`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MouthSpan {
+    /// The extra-info resource's raw pointer (its file is the sound's).
+    pub resource: RawPointer,
+    /// The resource's whole byte length.
+    pub resource_size: u32,
+    /// The curve's first byte, from the start of the resource.
+    pub offset: u32,
+    /// The curve as stored: one aperture byte per tick.
+    pub curve: Vec<u8>,
 }
 
 #[cfg(test)]

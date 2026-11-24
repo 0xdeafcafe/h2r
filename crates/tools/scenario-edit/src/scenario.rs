@@ -207,6 +207,8 @@ pub struct Changes {
     pub geometry_refusal: Option<String>,
     /// The same for the Textures tool's edits.
     pub bitmap_refusal: Option<String>,
+    /// The same for the Sound window's mouth curve edits.
+    pub sound_refusal: Option<String>,
     /// The areas record (`game_markers::record`) the map would carry,
     /// when the areas differ from the ones it was opened with (empty when
     /// they were all taken off); none otherwise. A save appends it to the map's tail
@@ -226,6 +228,7 @@ impl Changes {
             && self.tag_moves.is_empty()
             && self.geometry_refusal.is_none()
             && self.bitmap_refusal.is_none()
+            && self.sound_refusal.is_none()
             && self.areas.is_none()
     }
 }
@@ -459,6 +462,9 @@ pub struct Scenario {
     /// The Textures tool's writes, in the same shape. See
     /// [`Self::set_bitmap_changes`].
     bitmap: GeometryChanges,
+    /// The Sound window's mouth curve writes (raw patches only). See
+    /// [`Self::set_sound_changes`].
+    sound: GeometryChanges,
     /// The area of each netgame flag that has one, by placement, so a
     /// swap-removal or an append moves nothing
     /// (docs/game/gametype-markers.md, "In the document"). Edited through
@@ -690,6 +696,7 @@ impl Scenario {
             data: std::collections::BTreeMap::new(),
             geometry: GeometryChanges::default(),
             bitmap: GeometryChanges::default(),
+            sound: GeometryChanges::default(),
             areas: std::collections::BTreeMap::new(),
             areas_loaded: Vec::new(),
             labels: std::collections::BTreeMap::new(),
@@ -987,6 +994,10 @@ impl Scenario {
         out.tag_moves.extend(self.geometry.moved.iter().cloned());
         out.tag_moves.extend(self.bitmap.moved.iter().cloned());
         out.bitmap_refusal = self.bitmap.refusal.clone();
+        // The Sound window's mouth curves: raw patches in the extra-info
+        // resource, a block no other tool patches.
+        out.raw_patches.extend(self.sound.raw_patches.iter().cloned());
+        out.sound_refusal = self.sound.refusal.clone();
         for b in &self.blocks {
             let root = self.address + b.def.offset;
             if b.len() > b.capacity() {
@@ -1136,6 +1147,31 @@ impl Scenario {
     /// The Textures tool's writes.
     pub fn bitmap_changes(&self) -> &GeometryChanges {
         &self.bitmap
+    }
+
+    /// Replace the Sound window's writes (all of them, not a delta): raw
+    /// block patches inside a sound's extra-info resource
+    /// (docs/editor/rich-editors.md, "Sounds and facial animation"). Only
+    /// `raw_patches` and `refusal` are taken; any other write is refused,
+    /// because a mouth curve edit never changes a length or a tag. The
+    /// `refusal` makes the save fail before it writes.
+    pub fn set_sound_changes(&mut self, changes: GeometryChanges) -> Result<()> {
+        if !(changes.patches.is_empty()
+            && changes.bsp_patches.is_empty()
+            && changes.raw_appends.is_empty()
+            && changes.grown.is_empty()
+            && changes.moved.is_empty())
+        {
+            return Err(Error::Refused(
+                "a mouth curve edit writes raw bytes in place and nothing else",
+            ));
+        }
+        self.sound = changes;
+        Ok(())
+    }
+    /// The Sound window's writes.
+    pub fn sound_changes(&self) -> &GeometryChanges {
+        &self.sound
     }
 
     /// Replace the recordings block's writes (all of them, not a delta):

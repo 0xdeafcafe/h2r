@@ -1,6 +1,6 @@
 # Rich editors: shaders, colours, curves, scripts, sounds and recordings
 
-Status: Design, except the seam (X1), "Data that changes length", sound audition (A1), mouth curves, read (A2), Scripts, read (H1), Recordings, read (K1), Recordings, play (K2), Recordings, write (K3), the curve editor, same length (F1), curve type changes (F2), Model poses (M1), the colour picker (C1) and the colour forms of `obje`, `deca`, `lens` and `sky ` (C2), the Shader tab (S1) and shader code, read (S4), which are built; each section names the format code it stands on and the gaps in it.
+Status: Design, except the seam (X1), "Data that changes length", sound audition (A1), mouth curves, read (A2), mouth curves, write (A4), Scripts, read (H1), Recordings, read (K1), Recordings, play (K2), Recordings, write (K3), the curve editor, same length (F1), curve type changes (F2), Model poses (M1), the colour picker (C1) and the colour forms of `obje`, `deca`, `lens` and `sky ` (C2), the Shader tab (S1) and shader code, read (S4), which are built; each section names the format code it stands on and the gaps in it.
 Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/fields/rich.rs` (the seam), `crates/formats/tags/src/defs/attrs.rs` (`FieldView`), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/tools/scenario-edit/src/scenario/data.rs` (the scenario's data that changes length), `crates/apps/studio/src/fields/colour.rs` and `crates/apps/studio/src/api/colours.rs` (C1), `crates/apps/studio/src/fields/curve.rs` and `crates/apps/studio/src/api/curves.rs` (F1), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/formats/hs/src/script_doc.rs`, `crates/formats/hs/src/recording.rs`, `crates/formats/hs/src/recording_edit.rs`, `crates/apps/studio/src/app/recordings.rs`, `crates/apps/studio/src/api/recordings.rs`, `crates/apps/studio/src/app/scripts.rs`, `crates/apps/studio/src/ui/scripts.rs`, `crates/apps/studio/src/api/scripts.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`, `crates/apps/studio/src/app/shader.rs`, `crates/apps/studio/src/fields/shader.rs`, `crates/apps/studio/src/api/shader.rs` `crates/tools/scenario-edit/src/native_view/preview.rs` (`material`, S1) and `crates/tools/scenario-edit/src/native_view/code.rs` (`pass_code`, S4). Tests: `defs/tests.rs`, `registry/tests.rs`, `fields::rich::tests` and `api/tests.rs` (X1), `effects::function::tests` and `api/curves/tests.rs` (F1), `app/tag_data_tests.rs` and scenario-edit's `data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1), `app::scripts::tests`, `hs::script_doc::tests` and `hs::source::each_tests` (H1), `hs::recording::tests`, `hs::recording_edit::tests` (`recording_edit_tests.rs`) and `app/recordings_tests.rs` (K1, K3), `fields/colour/tests.rs` and `api/colours/tests.rs` (C1), `scenario-edit`'s `the_recordings_blocks_writes_save_with_the_scenario` (K3), `app/shader_tests.rs`, `api/tests/shader_tests.rs` and `native_view::tests` (S1), `native_view::code::tests` and `shader_code_lists_both_programs_of_a_pass` (S4); each other slice names its own, `crates/apps/studio/src/app/anim.rs`, `crates/apps/studio/src/ui/anim.rs` (M1), `api/anim/tests.rs`, `anim_tests.rs`.
 Switch: none.
 
@@ -572,7 +572,7 @@ codec tables from a verified `default.xbe` (`wma::VerifiedImage`). Gaps:
   exist) lists the permutations, draws the waveform, plays, stops and
   plays from a click on the waveform. A permutation whose compression is
   neither Xbox ADPCM nor a codec stream is refused by name. The curve's
-  drawing is A4;
+  drawing is slice A4 (below);
 - models posed from their animation graphs: slice M1 (built) samples a
   clip with `tags::anim_sample::AnimationClip` and draws the posed node
   matrices in place of `native_view`'s `rest_nodes` (the Animation
@@ -606,7 +606,27 @@ with the character speaking is a script call and belongs to `hs.eval`.
 | The audio itself | not written | always: replacing samples is an encoder and a gestalt rebuild, outside this design |
 
 A curve's length follows the sound's length, so a redraw never needs
-another length. The Halo 1 converter is the one existing writer of
+another length.
+
+The write is built (slice A4, `crates/apps/studio/src/app/sound_mouth.rs`).
+`Gestalt::mouth_span` gives, beside the curve, where its bytes are: the
+extra-info resource's raw pointer and size and the curve's offset in it.
+A redraw is a `RawPatch` of exactly those bytes, handed to the map's save
+as the session's sound changes (`Scenario::set_sound_changes`, merged with
+the other tools' raw patches), so a saved map differs from its source in
+the curve's bytes and the checksum only. The edits are kept until the save,
+shown by every read (`sound.mouth`, `sound.read`, the track, the face
+preview), and each is one undo step (**Undo** in the window, `undo` in the
+API; `revert` gives the file's curve back, also one step). A curve drawn
+back to the file's values is no edit. Two permutations that share a
+descriptor share its bytes, so the last drawing wins for both. A refusal
+(`check_writable`) names the cause. On the Sound window, a drag along the
+track draws (one stroke is one write), **From the sound** fills the curve
+from the decoded audio at the window's **Gain** and **Smoothing**, and
+**Revert** and **Undo** sit beside it; the waveform keeps click-to-play.
+**From the sound** is our own generator: the RMS of each 30 Hz tick,
+scaled so the loudest is the gain (0 to 4), then smoothed forward (0 to
+0.95); it needs the audio decoded, and keeps the stored length. The Halo 1 converter is the one existing writer of
 curves and stays the reference for the resource's layout.
 
 ### Recordings
@@ -791,7 +811,7 @@ already a namespace there (player models and looks), so poses use `anim.*`.
 | `sound.read` | `{tag, range?, permutation?, bins?}` | the header, every pitch range's permutations `{encoded_bytes, chunks}`, for one permutation `{channels, rate, frames, duration_ms, peaks}` or its `refusal`, its `mouth` `{ticks, curve}` either way, and `playback` |
 | `sound.play` | `{tag, range?, permutation?, from_ms?}` | `{playing, frames, rate, channels, duration_ms, from_ms, output}`; `output` is `headless` when `Audition::headless` is set (tests, the API's own examples), which plays to nothing in real time |
 | `sound.stop` | `{}` | `{stopped}` |
-| `sound.mouth` | `{tag, range?, permutation?}`; `curve?` or `from_sound?: {gain, smoothing}` to write are A4 | `{ticks, curve}` (0 to 1 per tick; `curve` null when unvoiced) |
+| `sound.mouth` | `{tag, range?, permutation?}`; `curve?`, `from_sound?: {gain, smoothing}`, `revert?` or `undo?` to write (A4) | `{ticks, curve, edited}` (0 to 1 per tick; `curve` null when unvoiced), `written` after a write |
 | `sound.face` | `{tag?, range?, permutation?, at_ms?}` or `{weight?}`, with `on?` (the object), `overlay?` (in place of `talk`), `size?`, `out?` | `{weight, at_ms, tick, ticks, byte, voiced}`; with `on`, `talk`, `base` and `anim.pose`'s answer and PNG |
 | `anim.list`, `anim.pose` | `{tag}`; `{tag, animation, frame?, overlay?: {animation, weight}, model?, size?, out?}` | the animations with types, frame counts and codecs, and the models that use the graph; the posed node transforms (local and world, which channels the animation supplied), and the posed model drawn to a PNG |
 | `recording.list` | none | `{recordings: [{name, ticks, version, control_version, stream_bytes, events, problem?, played_by}], note?}` |
@@ -882,7 +902,7 @@ the first one whose needs are met.
 | C3 | **Colour functions**: the read of which colours a function blends (**E**), gradient strips | M | F1, C1 | an invented colour property draws its strip; the note records the reader |
 | H2 (built) | **Script compiler**: `hs::compile` (parser, names, types and casts, literals, allocator), messages with positions | L | H1 | `compile(decompile(s))` equals the nodes for every construct of the synthetic fixtures; each error class has a test; the `#[ignore]`d disc run reports the share of scripts that round-trip |
 | H3 | **Scripts, write**: Edit and Compile in the tool, the session ops, free-slot reuse, growth, strings, the three validations, `script.compile` | M | H2, X2 | one changed script changes only its nodes and new strings in the saved map; a compile past the node limit is refused with both counts; undo restores the table |
-| A4 | **Mouth curves, write**: drawing, **From the sound**, the in-place raw write | M | A2; modeling 3 | a redrawn invented curve changes only its bytes and the checksum; a shared-cache sound and a split chain are refused |
+| A4 (built) | **Mouth curves, write**: drawing, **From the sound**, the in-place raw write | M | A2; modeling 3 | a redrawn invented curve changes only its bytes and the checksum; a shared-cache sound and a split chain are refused |
 | K1 (built) | **Recordings, read**: the stream crate, typed events, the tool and timeline, `recording.list`, `recording.read` | M | H1 | every Halo 2 event type decodes from an invented stream; a bad type or length is an error with its offset |
 | K2 (built) | **Recordings, play**: the game's `recording.play`, the path in Scene | M | K1; live-mirror | on the fake game, **Play on unit...** sends the call and the streamed positions draw a path |
 | H4 | **`hs.eval`** in the game, and an expression box in the Scripts tool | M | H1 | the agent crate's test evaluates an invented expression through the evaluator entry; a parse error returns the evaluator's text |

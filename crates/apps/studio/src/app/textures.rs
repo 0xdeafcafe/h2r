@@ -723,6 +723,8 @@ impl App {
         self.textures.pushed = stamps.into_iter().collect();
         let r = self.session.set_bitmap_changes(changes);
         self.ok_or_log(r);
+        // Every save runs this first: the redrawn mouth curves ride with it.
+        self.push_sound_changes();
     }
 
     /// What [`Self::push_bitmap_changes`] hands the save.
