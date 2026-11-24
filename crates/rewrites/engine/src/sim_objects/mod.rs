@@ -36,7 +36,7 @@ mod projectile;
 // Slice 11, the projectile step `f8eb0` (x87 and `xmm` lane).
 mod projectile_step;
 mod scenery;
-mod sse;
+pub(crate) mod sse;
 // Slice 4: the post-update shell.
 mod bounds;
 mod pose;

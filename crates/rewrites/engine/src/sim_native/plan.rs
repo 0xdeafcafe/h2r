@@ -31,8 +31,8 @@ impl SegmentMemory for Guest {
     }
 }
 
-// No store in the body is wider than a dword. Keeping the log on the
-// stack avoids an allocation at every animation-manager boundary.
+// Common segments use only the inline log. A larger node or event copy
+// spills and indexes its stores by physical address for forwarding.
 #[derive(Clone, Copy, Default)]
 struct Store {
     addr: u32,
@@ -48,6 +48,9 @@ pub(crate) struct Plan<'a, M, const N: usize> {
     ram: &'a mut M,
     stores: [Store; N],
     count: usize,
+    allow_spill: bool,
+    spill: Vec<Store>,
+    forwarded: Option<std::collections::HashMap<u32, [Option<u8>; 4]>>,
 }
 
 fn decline(addr: u32, len: usize, access: Access) -> GuestFault {
@@ -69,6 +72,9 @@ impl<'a, M: SegmentMemory, const N: usize> Plan<'a, M, N> {
             inline_text: 0..0,
             stores: [Store::default(); N],
             count: 0,
+            allow_spill: false,
+            spill: Vec::new(),
+            forwarded: None,
         })
     }
 
@@ -82,8 +88,19 @@ impl<'a, M: SegmentMemory, const N: usize> Plan<'a, M, N> {
         }
     }
 
+    pub(crate) fn allow_large_segment(&mut self) {
+        self.allow_spill = true;
+    }
+
+    fn index_store(words: &mut std::collections::HashMap<u32, [Option<u8>; 4]>, store: &Store) {
+        for (i, &byte) in store.bytes[..usize::from(store.len)].iter().enumerate() {
+            let p = store.physical + i as u32;
+            words.entry(p / 4).or_default()[(p % 4) as usize] = Some(byte);
+        }
+    }
+
     fn commit(self) -> Result<(), GuestFault> {
-        for store in &self.stores[..self.count] {
+        for store in self.stores[..self.count].iter().chain(&self.spill) {
             self.ram.write_bytes(
                 store.addr,
                 &store.bytes[..usize::from(store.len)],
@@ -91,6 +108,21 @@ impl<'a, M: SegmentMemory, const N: usize> Plan<'a, M, N> {
             )?;
         }
         Ok(())
+    }
+}
+
+impl<const N: usize> Plan<'_, Guest, N> {
+    /// The caller may subscribe to physical writes and read this range to
+    /// build a derived lookup table. All guest stores still go via the log.
+    /// A staged write in either mapping makes the underlying RAM stale.
+    pub(crate) fn unstaged_read(&mut self, addr: u32, len: usize) -> Option<&mut Guest> {
+        let start = u64::from(self.ram.checked_offset(addr, len, Access::Read, 1)?);
+        let end = start + len as u64;
+        let changed = self.stores[..self.count].iter().chain(&self.spill).any(|s| {
+            let written = u64::from(s.physical);
+            written < end && start < written + u64::from(s.len)
+        });
+        (!changed).then_some(&mut *self.ram)
     }
 }
 
@@ -105,6 +137,15 @@ impl<M: SegmentMemory, const N: usize> Memory for Plan<'_, M, N> {
             .checked_offset(addr, dst.len(), Access::Read, alignment)
             .ok_or_else(|| decline(addr, dst.len(), Access::Read))?;
         self.ram.read_bytes(addr, dst, alignment)?;
+        if let Some(words) = &self.forwarded {
+            for (i, byte) in dst.iter_mut().enumerate() {
+                let p = physical + i as u32;
+                if let Some(Some(value)) = words.get(&(p / 4)).map(|w| w[(p % 4) as usize]) {
+                    *byte = value;
+                }
+            }
+            return Ok(());
+        }
         let start = u64::from(physical);
         let end = start + dst.len() as u64;
         for store in &self.stores[..self.count] {
@@ -133,14 +174,31 @@ impl<M: SegmentMemory, const N: usize> Memory for Plan<'_, M, N> {
         {
             return Err(err());
         }
-        let slot = self.stores.get_mut(self.count).ok_or_else(err)?;
-        let dst = slot.bytes.get_mut(..src.len()).ok_or_else(err)?;
+        let mut store = Store::default();
+        let dst = store.bytes.get_mut(..src.len()).ok_or_else(err)?;
         dst.copy_from_slice(src);
-        slot.addr = addr;
-        slot.physical = physical;
-        slot.len = src.len() as u8;
-        slot.alignment = alignment;
-        self.count += 1;
+        store.addr = addr;
+        store.physical = physical;
+        store.len = src.len() as u8;
+        store.alignment = alignment;
+        if self.count < N {
+            self.stores[self.count] = store;
+            self.count += 1;
+        } else {
+            // Bound malformed copy counts before anything reaches guest RAM.
+            if !self.allow_spill || self.spill.len() >= 65536 {
+                return Err(err());
+            }
+            let words = self.forwarded.get_or_insert_with(|| {
+                let mut words = std::collections::HashMap::new();
+                for previous in &self.stores[..self.count] {
+                    Self::index_store(&mut words, previous);
+                }
+                words
+            });
+            Self::index_store(words, &store);
+            self.spill.push(store);
+        }
         Ok(())
     }
 }
@@ -199,6 +257,27 @@ mod tests {
         assert_eq!(plan.u16(0x10004).unwrap(), 0x44fa);
         plan.commit().unwrap();
         assert_eq!(ram.u32(0x10002).unwrap(), 0x44fa2211);
+    }
+
+    #[test]
+    fn spilled_stores_forward_through_aliases_and_commit_in_order() {
+        let mut ram = Guest::new();
+        ram.map(TEXT_START, TEXT_LEN, 0x4000, Permissions::RX).unwrap();
+        for va in [0x10000, 0x20000] {
+            ram.map(va, 0x1000, 0, Permissions::RW).unwrap();
+        }
+        let mut plan = Plan::<_, 2>::new(&mut ram, TEXT_START, TEXT_START + TEXT_LEN).unwrap();
+        plan.allow_large_segment();
+        plan.set_u32(0x10002, 0x44332211).unwrap();
+        plan.set_u16(0x10005, 0xabcd).unwrap();
+        plan.set_u32(0x20000, 0x76543210).unwrap();
+        assert_eq!(plan.u32(0x20002).unwrap(), 0xcd337654);
+        assert!(plan.unstaged_read(0x10001, 2).is_none());
+        assert!(plan.unstaged_read(0x20004, 1).is_none());
+        assert!(plan.unstaged_read(0x20007, 1).is_some());
+        plan.set_u8(0x10003, 0x12).unwrap();
+        plan.commit().unwrap();
+        assert_eq!(ram.u32(0x20002).unwrap(), 0xcd331254);
     }
 
     #[test]
