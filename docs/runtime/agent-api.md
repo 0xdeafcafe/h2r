@@ -4363,8 +4363,20 @@ the id at execution, so a removed object or reused slot returns
 |---|---|---|
 | `world.object.set` | `{id, pos?, forward?, up?, epoch?, confirm_peers?}` | `{at, object}` with the moved object's id |
 | `world.object.delete` | `{id, epoch?, confirm_peers?}` | `{at, deleted}` with the deleted id |
-| `world.object.respawn` | `{id, epoch?, confirm_peers?}` or `{placement: {block, index}, epoch?, confirm_peers?}` | `{at, old, object, linked}` with the old id (null for an empty placement) and the new id |
+| `world.object.respawn` | `{id, epoch?, confirm_peers?}`, `{placement: {block, index}, epoch?, confirm_peers?}` or `{definition, epoch?, confirm_peers?}` | `{at, old, object, linked}` with the old id (null for an empty placement) and the new id; for a definition, `{at, definition, respawned, skipped, engine_made}` |
 
+- **Respawn by definition.** `definition` is a tag datum handle in hex.
+  Every placement of the loaded scenario whose palette entry names it and
+  that a live object occupies is remade by the sequence of "Linked
+  creation" below (`crates/extensions/agent/src/sim/calls/placement/definition.rs`):
+  the replacement first, with the placement index written into the
+  placement data, then the old object's deletion. `respawned` lists each
+  as `{placement: {block, index}, old, object, linked}`. A placement the
+  engine path cannot remake (held or attached occupant, a named or flagged
+  record, extra creation fields) or that no live object occupies is listed
+  in `skipped` with `{placement, why}` and left to its next creation. A
+  live object of the definition that no placement made is listed by id in
+  `engine_made` and not touched.
 - **Set** passes the position pointer in EAX, forward in ECX and up in
   EDX to `OBJECT_SET_POSITION` (`0xb75a0`), with `(datum, 0, 0)` on the
   stack. The projectile step loads all three registers before its call

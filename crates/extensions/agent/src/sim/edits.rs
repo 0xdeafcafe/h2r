@@ -262,12 +262,24 @@ impl Sim {
             }
             method::OBJECT_RESPAWN => {
                 let p: wire::ObjectRespawnParams = params(v)?;
-                let target = match (p.id, p.placement) {
-                    (Some(id), None) => RespawnTarget::Object(object_id(&id)?),
-                    (None, Some(place)) => RespawnTarget::Placement(place),
-                    _ => return Err(invalid("give exactly one of id or placement")),
-                };
-                Call::ObjectRespawn { target }
+                match (p.id, p.placement, p.definition) {
+                    (Some(id), None, None) => Call::ObjectRespawn {
+                        target: RespawnTarget::Object(object_id(&id)?),
+                    },
+                    (None, Some(place), None) => Call::ObjectRespawn {
+                        target: RespawnTarget::Placement(place),
+                    },
+                    (None, None, Some(definition)) => Call::ObjectRespawnDefinition {
+                        definition: u32::from_str_radix(
+                            definition.trim_start_matches("0x"),
+                            16,
+                        )
+                        .map_err(|_| invalid("definition: a tag datum handle in hex"))?,
+                    },
+                    _ => {
+                        return Err(invalid("give exactly one of id, placement or definition"));
+                    }
+                }
             }
             method::PLACEMENT_EDIT => {
                 let plan = calls::PlacementPlan::new(params(v)?)?;

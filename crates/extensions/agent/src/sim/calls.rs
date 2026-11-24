@@ -300,6 +300,9 @@ pub enum Call {
     },
     ObjectDelete { id: ObjectId },
     ObjectRespawn { target: RespawnTarget },
+    /// Remake every placed object of the tag datum `definition`, linked
+    /// (`world.object.respawn {definition}`).
+    ObjectRespawnDefinition { definition: u32 },
     /// One transaction on a scenario placement block (`world.placement.edit`).
     PlacementEdit { plan: Box<PlacementPlan> },
     /// One local Forge edit's engine work, rechecking its admission and
@@ -1495,6 +1498,9 @@ async fn run_call(
             }
             lock(queue).previews.remember(&entry, object);
             Ok(Ok(json!({ "old": old, "object": object.to_string(), "linked": false })))
+        }
+        Call::ObjectRespawnDefinition { definition } => {
+            placement::definition::run(cx, scratch, queue, definition).await
         }
         Call::PlacementEdit { ref plan } => placement::edit::run(cx, scratch, queue, plan).await,
         Call::Forge { guard, ref steps } => run_forge(cx, scratch, queue, guard, steps).await,

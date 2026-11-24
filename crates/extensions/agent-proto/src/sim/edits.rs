@@ -52,6 +52,10 @@ pub struct ObjectRespawnParams {
     pub id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub placement: Option<Placement>,
+    /// A tag datum handle in hex: every placed object of that definition is
+    /// remade, linked to its placement.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub definition: Option<String>,
     /// The map epoch the caller saw (`edit.map`). The host refuses the
     /// edit when the map changed before it runs.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -226,8 +230,11 @@ mod tests {
             "placement":{"block":"crates","index":2}
         })).unwrap();
         assert_eq!(p.placement.unwrap().index, 2);
-        assert!(p.id.is_none());
+        assert!(p.id.is_none() && p.definition.is_none());
         assert!(p.epoch.is_none());
+        let p: ObjectRespawnParams =
+            serde_json::from_value(json!({"definition":"e1230004"})).unwrap();
+        assert_eq!(p.definition.as_deref(), Some("e1230004"));
         let p: ObjectDeleteParams =
             serde_json::from_value(json!({"id":"crate.abcd0001", "epoch": 7})).unwrap();
         assert_eq!(p.epoch, Some(7));

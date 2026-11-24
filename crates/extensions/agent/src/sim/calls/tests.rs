@@ -1689,6 +1689,7 @@ fn reactivating_needs_a_loaded_active_structure_and_checks_what_it_left() {
 }
 
 mod base;
+mod definition;
 mod same_calls;
 
 #[test]
