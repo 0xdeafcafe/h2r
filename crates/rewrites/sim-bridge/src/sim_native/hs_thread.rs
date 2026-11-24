@@ -1,10 +1,10 @@
-//! Check an ordinary script from its root frame to completion. A prediction
+//! Check an ordinary script from its root frame to completion or its first sleep. A prediction
 //! uses the real VM, seeded with the global cells that expression can reach.
-//! Only synchronous scalar scripts can run here. The guest executes once.
+//! Scalar work and self-sleeps run in the VM. The guest executes once.
 use super::hs_parity::{self, THREAD};
 use engine::{datum::layout, hs_pool, hs_syntax, points};
 use hooks::Builder;
-use hs::vm::{Cell, HsType, Native, ThreadState, Vm, VmImage};
+use hs::vm::{Cell, Engine, EngineCall, EngineError, HsType, Native, ThreadState, Vm, VmImage};
 use hs::{Catalog, Datum, Global, Node, Scenario, Script};
 use runtime::{CpuAbi, Guest};
 use std::collections::BTreeMap;
@@ -98,6 +98,8 @@ struct Start {
     thread: u32,
     script: u16,
     tick: i32,
+    time: u32,
+    nearest_x87: bool,
     scenario: u32,
 }
 
@@ -128,6 +130,8 @@ impl Start {
             thread,
             script,
             tick,
+            time,
+            nearest_x87: cpu.x87.control & 0x0c3f == 0x003f,
             scenario,
         })
     }
@@ -136,7 +140,8 @@ impl Start {
 struct Expected {
     thread: u32,
     script: u16,
-    result: Cell,
+    result: Option<Cell>,
+    frames: Vec<(Datum, u16)>,
     wake: i32,
     globals: Vec<(u32, Cell)>,
 }
@@ -177,6 +182,7 @@ fn current_builtin(g: &Guest, program: &Program, index: u16) -> Option<Native> {
         | Native::If
         | Native::Set
         | Native::AndOr
+        | Native::Sleep
         | Native::Arithmetic
         | Native::Equal
         | Native::Compare
@@ -186,11 +192,63 @@ fn current_builtin(g: &Guest, program: &Program, index: u16) -> Option<Native> {
     }
 }
 
+/// Clock only. Any builtin, RNG draw or world lookup invalidates the comparison.
+struct Clock {
+    tick: i32,
+    rate: i16,
+    yields: bool,
+    world_access: bool,
+    seed: u32,
+}
+
+impl Engine for Clock {
+    fn game_time(&self) -> i32 {
+        self.tick
+    }
+    fn tick_rate(&self) -> i16 {
+        self.rate
+    }
+    fn sleeps_yield(&self) -> bool {
+        self.yields
+    }
+    fn random_seed(&mut self) -> &mut u32 {
+        self.world_access = true;
+        &mut self.seed
+    }
+    fn call(&mut self, _: EngineCall<'_>) -> Result<Cell, EngineError> {
+        Err(EngineError::Unimplemented)
+    }
+    fn object_type(&mut self, _: u32) -> Option<u8> {
+        self.world_access = true;
+        None
+    }
+    fn object_from_name(&mut self, _: i16) -> u32 {
+        self.world_access = true;
+        u32::MAX
+    }
+    fn object_list_new(&mut self, _: &[u32]) -> u32 {
+        self.world_access = true;
+        u32::MAX
+    }
+    fn object_list_from_ai(&mut self, _: u32) -> u32 {
+        self.world_access = true;
+        u32::MAX
+    }
+    fn external_global_read(&mut self, _: u16, _: HsType) -> Option<Cell> {
+        self.world_access = true;
+        None
+    }
+    fn external_global_write(&mut self, _: u16, _: HsType, _: Cell) {
+        self.world_access = true;
+    }
+}
+
 fn plan(g: &Guest, start: &Start, program: &Program) -> Option<Expected> {
     let script = current_script(g, start.scenario, program, start.script)?;
     if script.kind() > 2 {
         return None;
     }
+    let mut sleeps = false;
     let mut globals = BTreeMap::new();
     let mut pending = vec![script.root()];
     // Recheck every input a cached expression can reach against the live
@@ -219,13 +277,27 @@ fn plan(g: &Guest, start: &Start, program: &Program) -> Option<Expected> {
                     return None;
                 }
                 pending.push(callee.root());
-            } else if current_builtin(g, program, node.opcode())? == Native::Set {
-                let head = program.scenario.node(Datum(node.data())).ok()?;
-                // The set evaluator takes the target's raw index, without
-                // evaluating its node. Require that the dependency walk will
-                // account for the exact local cell the evaluator writes.
-                if !program.scenario.node(head.next()).ok()?.global() {
-                    return None;
+            } else {
+                match current_builtin(g, program, node.opcode())? {
+                    Native::Set => {
+                        // The target is read as a raw index. Require it to be a
+                        // known scenario cell in the dependency walk.
+                        let head = program.scenario.node(Datum(node.data())).ok()?;
+                        if !program.scenario.node(head.next()).ok()?.global() {
+                            return None;
+                        }
+                    }
+                    Native::Sleep => {
+                        let head = program.scenario.node(Datum(node.data())).ok()?;
+                        let duration = program.scenario.node(head.next()).ok()?;
+                        if duration.next() != Datum::NULL
+                            || duration.value_type() != HsType::SHORT.0
+                        {
+                            return None; // A named target can mutate another thread.
+                        }
+                        sleeps = true;
+                    }
+                    _ => {}
                 }
             }
         } else if node.global() {
@@ -256,21 +328,28 @@ fn plan(g: &Guest, start: &Start, program: &Program) -> Option<Expected> {
     }
     let slot = vm.create_script_thread(start.script).ok()?;
     vm.wake_script(start.script).ok()?;
-    // The whitelist above excludes engine calls, external cells, object
-    // conversions and RNG draws. Only the engine clock participates.
-    let mut engine = hs::vm::mock::RecordingEngine::new(hs::vm::mock::Policy::Neutral);
-    engine.time = start.tick;
+    let mut engine = Clock {
+        tick: start.tick,
+        rate: 0,
+        yields: false,
+        world_access: false,
+        seed: 0,
+    };
+    if sleeps {
+        // Sleep converts to ticks with fistp under the caller's x87 controls.
+        if !start.nearest_x87 {
+            return None;
+        }
+        engine.rate = g.u16(start.time.checked_add(2)?).ok()? as i16;
+        let game = g.u32(points::GAME_GLOBALS.base).ok()?;
+        engine.yields = game != 0 && g.u8(game.checked_add(0x1120)?).ok()? != 0;
+    }
     vm.update(&mut engine);
-    if !vm.faults().is_empty()
-        || !engine.counts.is_empty()
-        || engine.object_queries != 0
-        || !engine.external_reads.is_empty()
-        || !engine.external_writes.is_empty()
-    {
+    if !vm.faults().is_empty() || engine.world_access {
         return None;
     }
     let thread = vm.thread(slot)?;
-    let result = thread.root_result()?;
+    let result = thread.root_result();
     let wake = match thread.state() {
         ThreadState::Finished => hs::vm::FINISHED,
         ThreadState::Waiting(wake) => wake,
@@ -279,6 +358,7 @@ fn plan(g: &Guest, start: &Start, program: &Program) -> Option<Expected> {
     Some(Expected {
         script: start.script,
         thread: start.thread,
+        frames: thread.frame_layout().collect(),
         result,
         wake,
         globals: globals
@@ -299,17 +379,30 @@ fn compare(expected: &Expected, _: &CpuAbi, g: &Guest) -> Option<String> {
             )
         })
     };
+    let mut frame = root;
+    let mut parent = 0;
+    for &(expr, cursor) in &expected.frames {
+        if let Some(diff) = word("frame parent", frame, parent)
+            .or_else(|| word("frame expression", frame + 4, expr.0))
+        {
+            return Some(diff);
+        }
+        let actual = g.u16(frame + 0xc).ok();
+        if actual != Some(cursor) {
+            return Some(format!(
+                "script {} frame {frame:#x} cursor: expected {cursor}, read {actual:?}",
+                expected.script
+            ));
+        }
+        parent = frame;
+        frame += 0x10 + u32::from(cursor);
+    }
     word("wake", expected.thread + 8, expected.wake as u32)
-        .or_else(|| word("frame", expected.thread + 0x10, root))
-        .or_else(|| word("result", root + 0xe, expected.result.0))
+        .or_else(|| word("top frame", expected.thread + 0x10, parent))
         .or_else(|| {
-            let cursor = g.u16(root + 0xc).ok();
-            (cursor != Some(4)).then(|| {
-                format!(
-                    "script {} root cursor: expected 4, read {cursor:?}",
-                    expected.script
-                )
-            })
+            expected
+                .result
+                .and_then(|value| word("result", root + 0xe, value.0))
         })
         .or_else(|| {
             expected
@@ -331,14 +424,20 @@ mod tests {
     const CELL: u32 = CELLS + hs_pool::EXTERNALS * 8 + 4;
     const VALUE: u32 = 0xe765_4321;
 
-    fn fixture(kind: u16) -> (Guest, CpuAbi, u32) {
+    const TIME: u32 = BASE + 0x1400;
+    const GAME: u32 = BASE + 0x5000;
+
+    fn fixture(kind: u16, with_sleep: bool) -> (Guest, CpuAbi, u32) {
         let mut g = Guest::new();
         let exe = Exe {
-            builtins: vec![Builtin {
-                returns: HsType::PASSTHROUGH.0,
-                flags: 2,
-                ..Builtin::default()
-            }],
+            builtins: vec![
+                Builtin {
+                    returns: HsType::PASSTHROUGH.0,
+                    flags: 2,
+                    ..Builtin::default()
+                };
+                3
+            ],
             ..Exe::default()
         };
         // Map the single synthetic section emitted by Exe::xbe.
@@ -346,13 +445,18 @@ mod tests {
         g.map_zeroed(0x0020_0000, 0x0028_0000, Permissions::RW)
             .unwrap();
         g.write_bytes(0x0020_0000, &bytes[0x400..], 1).unwrap();
-        let desc = g.u32(hs::FUNCTION_TABLE).unwrap();
-        let addr = Native::BY_ADDRESS
-            .iter()
-            .find(|(_, op)| *op == Native::Set)
-            .unwrap()
-            .0;
-        g.set_u32(desc + 4, addr).unwrap();
+        for (index, native) in [Native::Set, Native::Begin, Native::Sleep]
+            .into_iter()
+            .enumerate()
+        {
+            let desc = g.u32(hs::FUNCTION_TABLE + index as u32 * 4).unwrap();
+            let addr = Native::BY_ADDRESS
+                .iter()
+                .find(|(_, op)| *op == native)
+                .unwrap()
+                .0;
+            g.set_u32(desc + 4, addr).unwrap();
+        }
         let mut t = Tables::new();
         let ty = HsType::LONG.0;
         for name in ["dest", "source"] {
@@ -362,6 +466,14 @@ mod tests {
         let dest = t.global(0, "dest", ty);
         let src = t.global(1, "source", ty);
         let root = t.call(0, "assign", ty, &[dest, src]);
+        let root = if with_sleep {
+            let duration = t.value(HsType::SHORT.0, 2);
+            let sleep = t.call(2, "sleep", HsType::VOID.0, &[duration]);
+            let inner = t.call(1, "begin", ty, &[sleep, root]);
+            t.call(1, "begin", ty, &[inner])
+        } else {
+            root
+        };
         t.script("copy", kind, ty, root);
         let mut payload = vec![0; 0x1000];
         t.write(&mut payload, BASE, 0x240);
@@ -370,11 +482,12 @@ mod tests {
             points::SCENARIO.base,
             hs_pool::THREADS,
             points::GAME_TIME.base,
+            points::GAME_GLOBALS.base,
         ] {
             g.map_zeroed(point & !0xfff, 0x1000, Permissions::RW)
                 .unwrap();
         }
-        g.map_zeroed(BASE, 0x5000, Permissions::RW).unwrap();
+        g.map_zeroed(BASE, 0x7000, Permissions::RW).unwrap();
         g.write_bytes(BASE, &payload, 1).unwrap();
         let nodes = g.u32(BASE + 0x23c).unwrap();
         let count = g.u32(BASE + 0x238).unwrap();
@@ -402,7 +515,11 @@ mod tests {
         }
         g.set_u8(ENABLED, 1).unwrap();
         g.set_u32(points::SCENARIO.base, BASE).unwrap();
-        g.set_u32(points::GAME_TIME.base, BASE + 0x1400).unwrap();
+        g.set_u32(points::GAME_TIME.base, TIME).unwrap();
+        g.set_u32(TIME + 8, 100).unwrap();
+        g.set_u16(TIME + 2, 60).unwrap();
+        g.set_u32(points::GAME_GLOBALS.base, GAME).unwrap();
+        g.set_u32(THREAD + 0x18 + 4, Datum::NULL.0).unwrap();
         g.set_u16(THREAD, 0x8123).unwrap();
         g.set_u32(THREAD + 0x10, THREAD + 0x18).unwrap();
         g.set_u32(CELL + 8, VALUE).unwrap();
@@ -417,7 +534,7 @@ mod tests {
     #[test]
     fn predicts_a_script_root_and_its_stores_without_applying_them() {
         for (kind, wake) in [(0, u32::MAX), (1, u32::MAX), (2, 0)] {
-            let (mut g, cpu, _) = fixture(kind);
+            let (mut g, cpu, _) = fixture(kind, false);
             let start = Start::read(&cpu, &g).unwrap();
             let program = Program::load(&g, BASE).unwrap();
             let expected = plan(&g, &start, &program).unwrap();
@@ -435,8 +552,64 @@ mod tests {
     }
 
     #[test]
+    fn self_sleep_observes_the_live_rate_gate_and_pending_parent_chain() {
+        let (mut g, cpu, _) = fixture(0, true);
+        let start = Start::read(&cpu, &g).unwrap();
+        let program = Program::load(&g, BASE).unwrap();
+        let outer = program.scenario.scripts()[0].root();
+        let name = Datum(program.scenario.node(outer).unwrap().data());
+        let inner = program.scenario.node(name).unwrap().next();
+        // With the yield gate clear, both begins finish and assign the global
+        // on this execution despite the positive duration.
+        for game in [0, GAME] {
+            g.set_u32(points::GAME_GLOBALS.base, game).unwrap();
+            let expected = plan(&g, &start, &program).unwrap();
+            assert_eq!(expected.result, Some(Cell(VALUE)));
+            assert_eq!(expected.wake, -1);
+            assert!(expected.globals.contains(&(CELL, Cell(VALUE))));
+        }
+
+        g.set_u8(GAME + 0x1120, 1).unwrap();
+        let suspended = plan(&g, &start, &program).unwrap();
+        assert_eq!(suspended.result, None);
+        assert_eq!(suspended.wake, 104, "tick 100 + two 30-Hz units at 60 Hz");
+        assert!(suspended.globals.contains(&(CELL, Cell::ZERO)));
+        let root_frame = THREAD + 0x18;
+        let outer_frame = root_frame + 0x10 + 4;
+        let inner_frame = outer_frame + 0x10 + 8;
+        g.set_u32(THREAD + 8, 104).unwrap();
+        g.set_u32(THREAD + 0x10, inner_frame).unwrap();
+        g.set_u16(root_frame + 0xc, 4).unwrap();
+        // A pending thread has no root result. The old slot may contain
+        // anything until the expression returns.
+        g.set_u32(root_frame + 0xe, 0xdead_beef).unwrap();
+        for (frame, parent, expr) in [
+            (outer_frame, root_frame, outer),
+            (inner_frame, outer_frame, inner),
+        ] {
+            g.set_u32(frame, parent).unwrap();
+            g.set_u32(frame + 4, expr.0).unwrap();
+            g.set_u16(frame + 0xc, 8).unwrap();
+        }
+        assert_eq!(compare(&suspended, &cpu, &g), None);
+        g.set_u32(inner_frame, root_frame).unwrap();
+        assert!(compare(&suspended, &cpu, &g).unwrap().contains("parent"));
+        g.set_u32(inner_frame, outer_frame).unwrap();
+        g.set_u32(outer_frame + 4, inner.0).unwrap();
+        assert!(
+            compare(&suspended, &cpu, &g)
+                .unwrap()
+                .contains("expression")
+        );
+        g.set_u32(outer_frame + 4, outer.0).unwrap();
+        g.set_u32(THREAD + 0x10, outer_frame).unwrap();
+        assert!(compare(&suspended, &cpu, &g).unwrap().contains("top frame"));
+        assert!(Start::read(&cpu, &g).is_none());
+    }
+
+    #[test]
     fn cached_program_declines_edits_unsupported_evaluators_and_suspended_frames() {
-        let (mut g, cpu, root) = fixture(0);
+        let (mut g, cpu, root) = fixture(0, false);
         let start = Start::read(&cpu, &g).unwrap();
         let program = Program::load(&g, BASE).unwrap();
         let desc = g.u32(hs::FUNCTION_TABLE).unwrap();

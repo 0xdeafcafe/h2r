@@ -161,6 +161,11 @@ impl Thread {
     pub fn depth(&self) -> usize {
         self.frames.len() - 1
     }
+    /// Live frames in root-to-top order with their expression and local byte
+    /// cursor. The cursor places the next guest frame after the frame header.
+    pub fn frame_layout(&self) -> impl Iterator<Item = (Datum, u16)> + '_ {
+        self.frames.iter().map(|frame| (frame.expr, frame.bytes))
+    }
     /// The value in the root frame once its expression has completed.
     pub fn root_result(&self) -> Option<Cell> {
         let [root] = self.frames.as_slice() else { return None };
