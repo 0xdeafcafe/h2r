@@ -722,6 +722,10 @@ fn kind_words(kind: ErrorKind) -> String {
             "more than {} areas are shown at once; hide_area takes one off",
             vm::MAX_SHOWN_AREAS
         ),
+        ErrorKind::Movers => format!(
+            "more than {} objects are moving at once; stop takes one off",
+            vm::MAX_MOVERS
+        ),
     }
 }
 

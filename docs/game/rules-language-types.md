@@ -93,6 +93,9 @@ types. A test asserts each front-end signature erases to its entry's
 | `spawn_areas(t, areas, n)`, `spawn_near(t, z, n)` | `team, spawns, int`; `team, zone?, int` (`none` lifts the rule) |
 | `set_body(t, body)` | `team, tag?` (`none` gives the players their own) |
 | `show_area(z, t)`, `hide_area(z)` | `zone, team?` (`none` is neutral); `zone` |
+| `teleport(o, at)`, `move_to(o, at, t)`, `object_pos`, `object_vel` | `object, vec`; `object, vec, time`; `object, int -> fixed` (a `vec` is three `fixed` registers in the IR, `Type::width`; `at` may also be an object, and `teleport(o, at, offset)` an object and a `vec`) |
+| `vec(x, y, z)`, `length(v)`, `distance(a, b)`, `v.x`, `o.position`, `o.velocity`, `o.speed` | `fixed, fixed, fixed -> vec`; `vec -> fixed`; `vec, vec -> fixed`; `vec -> fixed`; `-> vec`; `-> vec`; `-> fixed` |
+| `on arrive(o)` | `object` |
 | `place_squad(s, c, n, at)` | `squad, class, int, objects` |
 | `round_time_left()`, `now()`, `seconds(n)` | `-> time`; `int -> time` |
 | `on kill(victim, killer)` | `player, player?` |

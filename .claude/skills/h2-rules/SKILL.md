@@ -401,15 +401,19 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
   `take`, `create`, `register_objective`,
   `spawn_objective`. `check` lists these as unhostable. The host runtime
   also delivers only `init`, `round_start`, `kill`, `quit`, `timer`,
-  `tick`, `bounce`, `bounced`, `spawn`, `death`, `enter` and `leave`;
+  `tick`, `bounce`, `bounced`, `spawn`, `death`, `enter`, `leave` and `arrive`;
   reads only scores, kills, deaths, `alive`, `team_of`, `lives`,
   `round_time_left`, `is_objective`, `carrier_of`, the label reads,
-  `inside` and `player_of`; makes only `score`, `end_round`, `set_lives`,
+  `inside`, `player_of`, `object_pos` and `object_vel`; makes only `score`, `end_round`, `set_lives`,
   `respawn`, `role_traits`, `reset_objective`, `set_loadout` (the
   multiplayer weapon list's tags only), `spawn_areas` and `spawn_near`
   (a team's spawn rule, read at each spawn), `set_body` (a team's body,
   Spartan or Elite, at each spawn), `show_area` and `hide_area` (a zone's
-  boundary drawn in play, at most eight) and the `bot_*` orders
+  boundary drawn in play, at most eight), `teleport` (an object put at a
+  `vec` or at another object's place; a position outside the world is a
+  refused call), `move_to` and `stop` (a mover of at most 16, stepped each
+  tick, with `on arrive(o)` on its end tick; `face`, `move_along`, `attach`
+  and a player's `teleport` are refused by name) and the `bot_*` orders
   (a `bot_*` order to a seat no phantom holds is a refused call), and
   `message`, `message_team` and `message_all`, which it shows to the host's
   own players and sends to clients as a show cue

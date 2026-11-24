@@ -44,6 +44,11 @@ pub fn of(e: &Entry) -> Option<Sig> {
         id::GIVE => given(&[P, W], None),
         id::SPAWN_AREAS => given(&[T, Type::Set(SetKind::Spawns), Type::Int], None),
         id::SPAWN_NEAR => given(&[T, Type::H(Handle::Zone, true), Type::Int], None),
+        // A `vec` is three registers in the IR (`Type::width`). The `at` of
+        // `teleport` and `move_to` may also be an object, which the checker
+        // and the lowering turn into its position.
+        id::TELEPORT => given(&[O, Type::Vec], None),
+        id::MOVE_TO => given(&[O, Type::Vec, Type::Time], None),
         id::SHOW_AREA => given(&[Z, T_], None),
         id::HIDE_AREA => given(&[Z], None),
         id::SET_BODY => given(&[T, Type::H(Handle::Tag, true)], None),
@@ -71,6 +76,7 @@ pub fn event_args(ev: Event) -> &'static [Type] {
         Event::Pickup | Event::Drop | Event::Press | Event::Edit => &[P, O],
         Event::Bounce => &[P, Z, Type::Int, Type::Bool],
         Event::Enter | Event::Leave => &[Z, O],
+        Event::Arrive => &[O],
         Event::SquadDead => &[Type::Squad],
         Event::ActorKill => &[P_, Type::Class],
         Event::ActorAssist => &[P_, P_, Type::Class],
@@ -103,7 +109,11 @@ mod tests {
                 assert_eq!(e.id, id::LABEL_OF, "{}", e.name);
                 continue;
             };
-            let args: Vec<_> = sig.args.iter().map(|t| t.ir()).collect();
+            let args: Vec<_> = sig
+                .args
+                .iter()
+                .flat_map(|t| std::iter::repeat_n(t.ir(), t.width()))
+                .collect();
             assert_eq!(args, e.args, "{}", e.name);
             assert_eq!(sig.result.map(|t| t.ir()), e.result, "{}", e.name);
         }

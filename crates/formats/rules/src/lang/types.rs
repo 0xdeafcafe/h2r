@@ -127,6 +127,11 @@ pub enum Type {
     H(Handle, bool),
     /// A set (`zones`): read where a set is read, never a value.
     Set(SetKind),
+    /// A point or an offset in world units: three `fixed` registers the
+    /// lowering keeps together. It is the value of an expression
+    /// (`vec(x, y, z)`, `o.position`, `a + b`) or a `let`, and is never
+    /// stored in a variable, an option, a table or a parameter.
+    Vec,
 }
 
 impl Type {
@@ -148,8 +153,16 @@ impl Type {
             Type::Text => Ty::Text,
             Type::Enum(e) => Ty::Enum(e),
             Type::H(h, _) => h.erase(),
+            // The type of each of its registers.
+            Type::Vec => Ty::Fixed,
             Type::Set(_) => return None,
         })
+    }
+
+    /// The registers a value of the type takes: three for a `vec`, one
+    /// for the rest.
+    pub fn width(self) -> usize {
+        if self == Type::Vec { 3 } else { 1 }
     }
 
     /// The register or argument type: a set argument is a label index.
@@ -255,6 +268,7 @@ impl Type {
             "objects" => Type::Set(SetKind::Objects),
             "zones" => Type::Set(SetKind::Zones),
             "spawns" => Type::Set(SetKind::Spawns),
+            "vec" => Type::Vec,
             other => Type::Enum(enums.iter().position(|n| n == other)? as u8),
         };
         match (t, optional) {
@@ -279,6 +293,7 @@ impl Type {
             Type::H(h, false) => h.name().into(),
             Type::H(h, true) => format!("{}?", h.name()),
             Type::Set(s) => s.name().into(),
+            Type::Vec => "vec".into(),
         }
     }
 }
@@ -319,5 +334,10 @@ mod tests {
         assert!(!Type::Int.fits(Type::Time));
         assert_eq!(Type::named("Role", false, &["Role".into()]), Some(Type::Enum(0)));
         assert_eq!(Type::ZONE.optional().name(&[]), "zone?");
+        assert_eq!(Type::named("vec", false, &[]), Some(Type::Vec));
+        assert_eq!(Type::named("vec", true, &[]), None);
+        assert_eq!(Type::Vec.name(&[]), "vec");
+        assert_eq!((Type::Vec.erase(), Type::Vec.width(), Type::Fixed.width()), (Some(Ty::Fixed), 3, 1));
+        assert!(!Type::Vec.fits(Type::Fixed) && !Type::Fixed.fits(Type::Vec) && Type::Vec.fits(Type::Vec));
     }
 }

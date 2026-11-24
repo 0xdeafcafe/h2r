@@ -378,6 +378,17 @@ fn retired_line(word: &str, arg: &str, s: &Script) -> String {
     }
 }
 
+/// What a name of the world API's objects slice that is not built waits
+/// for, to say with the refusal (docs/game/rules-world-api.md, "Objects").
+fn world_refusal(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "move_along" => "it needs a `path` label, which the drop-ship slice builds; move_to takes one point",
+        "face" => "whether the engine's position and facing flags carry a host-set facing to clients is not researched (R2); teleport and move_to keep the object's facing",
+        "attach" | "detach" => "the engine's attach routine is not traced; move_to with the parent's position each tick follows it",
+        _ => return None,
+    })
+}
+
 fn is_none_lit(e: &Expr) -> bool {
     matches!(e.kind, ExprKind::None)
 }
@@ -596,6 +607,9 @@ impl<'s> Cx<'s> {
                     pos,
                 } => self.table(name, columns, rows, *pos),
                 Item::Fn(f) => {
+                    if matches!(f.name.as_str(), "vec" | "length" | "distance") {
+                        self.err("decl", f.pos, format!("fn {} is the name of a built-in", f.name));
+                    }
                     if self.fns.insert(f.name.as_str(), f).is_some() {
                         self.err("decl", f.pos, format!("fn {} is declared twice", f.name));
                     }
@@ -1363,6 +1377,11 @@ impl<'s> Cx<'s> {
     /// The type a type name names; reports an unknown one.
     fn type_of(&mut self, t: &TypeName) -> Option<Type> {
         if let Some(ty) = Type::named(&t.name, t.optional, &self.enum_names) {
+            if ty == Type::Vec {
+                let m = "a vec is the value of an expression, not a type to store: keep x, y and z as three fixed";
+                self.err("type.mismatch", t.pos, m);
+                return None;
+            }
             return Some(ty);
         }
         if t.optional && Type::named(&t.name, false, &self.enum_names).is_some() {
@@ -2738,6 +2757,13 @@ impl<'s> Cx<'s> {
         if let Some(v) = self.var(f, scope) {
             return Some(v.ty);
         }
+        if scope == Scope::Object {
+            match f {
+                "position" | "velocity" => return Some(Type::Vec),
+                "speed" => return Some(Type::Fixed),
+                _ => {}
+            }
+        }
         let ir_owner = owner.erase()?;
         let &(_, _, id) = FIELDS.iter().find(|&&(o, n, _)| o == ir_owner && n == f)?;
         sig::of(&ENTRIES[id as usize])?.result
@@ -2779,6 +2805,13 @@ impl<'s> Cx<'s> {
             _ => {}
         }
         let bt = self.expr(base, None)?;
+        if bt == Type::Vec {
+            if matches!(f, "x" | "y" | "z") {
+                return Some(Type::Fixed);
+            }
+            self.err("name.unknown", pos, format!("a vec has no field {f}: its fields are x, y and z"));
+            return None;
+        }
         if bt.is_opt() {
             self.null_use(base);
             return None;
@@ -2955,6 +2988,18 @@ impl<'s> Cx<'s> {
         let lit_first = is_literal(a) && !is_literal(b);
         let (first, second) = if lit_first { (b, a) } else { (a, b) };
         let tf = self.expr(first, hint)?;
+        if tf == Type::Vec {
+            // `a + b`, `a - b` and `v * k`; nothing else is a vec's.
+            return match op {
+                BinOp::Add | BinOp::Sub => self.expect(second, Type::Vec, None).map(|_| Type::Vec),
+                BinOp::Mul => self.expect(second, Type::Fixed, None).map(|_| Type::Vec),
+                _ => {
+                    let m = "a vec takes + and - with a vec and * with a fixed; compare two with distance(a, b)";
+                    self.err("type.mismatch", pos, m);
+                    None
+                }
+            };
+        }
         if matches!(tf, Type::Int | Type::Time) {
             let ts = self.expr(second, Some(tf))?;
             let (ta, tb) = if lit_first { (ts, tf) } else { (tf, ts) };
@@ -3188,6 +3233,30 @@ impl<'s> Cx<'s> {
                 }
                 return ok.then_some(Some(t));
             }
+            // A point or an offset: `vec(x, y, z)`, the length of one, and
+            // the distance between two (docs/game/rules-world-api.md,
+            // "Objects"). Three fixed values, never stored.
+            "vec" => {
+                if !arity(self, 3) {
+                    return None;
+                }
+                let mut ok = true;
+                for a in args {
+                    ok &= self.expect(a, Type::Fixed, Some("vec")).is_some();
+                }
+                return ok.then_some(Some(Type::Vec));
+            }
+            "length" | "distance" => {
+                let n = if name == "length" { 1 } else { 2 };
+                if !arity(self, n) {
+                    return None;
+                }
+                let mut ok = true;
+                for a in args {
+                    ok &= self.expect(a, Type::Vec, Some(name)).is_some();
+                }
+                return ok.then_some(Some(Type::Fixed));
+            }
             "grant" => {
                 if !no_value(self) {
                     return None;
@@ -3240,6 +3309,10 @@ impl<'s> Cx<'s> {
         if name == "message" {
             return self.message(args, pos, need_value);
         }
+        if let Some(why) = world_refusal(name) {
+            self.err("name.unknown", pos, format!("{name} is not built: {why}"));
+            return None;
+        }
         let Some(entry) = caps::entry_named(name) else {
             self.err("name.unknown", pos, format!("unknown function {name}"));
             return None;
@@ -3249,7 +3322,14 @@ impl<'s> Cx<'s> {
             self.err("name.unknown", pos, m);
             return None;
         };
-        if !arity(self, sig.args.len()) {
+        // `teleport(o, at, offset)`: an object's place and an offset from it.
+        let offset_form = entry.id == id::TELEPORT && args.len() == 3;
+        let wants: Vec<Type> = if offset_form {
+            vec![Type::OBJECT, Type::Vec, Type::Vec]
+        } else {
+            sig.args.clone()
+        };
+        if !offset_form && !arity(self, sig.args.len()) {
             return None;
         }
         if let Some(cap) = entry.cap {
@@ -3260,7 +3340,12 @@ impl<'s> Cx<'s> {
             self.used_caps.insert(cap.to_string());
         }
         let mut ok = true;
-        for (a, &want) in args.iter().zip(&sig.args) {
+        for (k, (a, &want)) in args.iter().zip(&wants).enumerate() {
+            // The object moved and the place it goes to.
+            if matches!(entry.id, id::TELEPORT | id::MOVE_TO) && k < 2 {
+                ok &= self.moved_arg(a, want, k, offset_form, name).is_some();
+                continue;
+            }
             match self.expect(a, want, Some(name)) {
                 Some(got) => {
                     if entry.id == id::SET_BODY
@@ -3286,6 +3371,53 @@ impl<'s> Cx<'s> {
             return None;
         }
         ok.then_some(sig.result)
+    }
+
+    /// The object `teleport` and `move_to` move (a player is refused by
+    /// name: how the player's own machine takes a position the host sets is
+    /// not researched) and the place it goes to: a `vec`, or an object,
+    /// whose position it is (with an offset after it, only an object).
+    fn moved_arg(&mut self, a: &'s Expr, want: Type, k: usize, offset_form: bool, name: &'s str) -> Option<Type> {
+        let saved = self.arg_of;
+        self.arg_of = Some(name);
+        let got = self.expr(a, Some(want));
+        self.arg_of = saved;
+        let got = got?;
+        if k == 1 {
+            if got == Type::Vec && !offset_form {
+                return Some(got);
+            }
+            if got == Type::Vec {
+                let m = format!("{name} with an offset goes to an object's place: give an object, then the offset");
+                self.err("type.mismatch", a.pos, m);
+                return None;
+            }
+            if got.fits(Type::OBJECT) {
+                return Some(got);
+            }
+            let x = describe(a);
+            if got.is_opt() && got.handle().is_some_and(|h| h.fits(Handle::Object)) {
+                let fix = self.null_fix(a);
+                self.err("null.arg", a.pos, format!("{name} goes to a vec or an object, and {x} may be none here. {fix}"));
+            } else {
+                let m = format!("{name} goes to a vec or an object, and {x} is {}", self.tn(got));
+                self.err("type.mismatch", a.pos, m);
+            }
+            return None;
+        }
+        if got.fits(want) {
+            return Some(got);
+        }
+        if got.handle() == Some(Handle::Player) {
+            let x = describe(a);
+            let m = format!(
+                "{name} moves an object, and {x} is a player. Moving a player's unit is not built: how the player's own machine takes a position the host sets is not researched (R9)."
+            );
+            self.err("type.mismatch", a.pos, m);
+            return None;
+        }
+        self.mismatch(a, got, want, Some(name));
+        None
     }
 
     fn fn_call(&mut self, decl: &'s FnDecl, args: &'s [Expr], pos: Pos, need_value: bool) -> Option<Option<Type>> {

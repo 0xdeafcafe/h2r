@@ -300,6 +300,12 @@ pub mod id {
     pub const SET_BODY: u16 = 76;
     pub const SHOW_AREA: u16 = 77;
     pub const HIDE_AREA: u16 = 78;
+    pub const OBJECT_POS: u16 = 79;
+    pub const OBJECT_VEL: u16 = 80;
+    pub const VEC_LENGTH: u16 = 81;
+    pub const TELEPORT: u16 = 82;
+    pub const MOVE_TO: u16 = 83;
+    pub const STOP: u16 = 84;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -471,6 +477,24 @@ pub const ENTRIES: &[Entry] = &[
     // (`game::rules::world::walls`). A display only, so no capability.
     act(id::SHOW_AREA, "show_area", &[Object, Team], None, Now, Named),
     act(id::HIDE_AREA, "hide_area", &[Object], None, Now, Named),
+    // Objects in motion (docs/game/rules-world-api.md, "Objects"). An
+    // object's position and velocity, one axis (0 x, 1 y, 2 z) a read, in
+    // world units as 16.16: `o.position` and `o.velocity` are three of
+    // each (`game::rules::world::objects`). `vec_length` is the VM's own:
+    // the length of three components, whole in 128 bits so no square
+    // overflows (`length`, `distance` and `o.speed` are calls of it).
+    read(id::OBJECT_POS, "object_pos", &[Object, Int], Fixed, Named),
+    read(id::OBJECT_VEL, "object_vel", &[Object, Int], Fixed, Named),
+    vm(id::VEC_LENGTH, "vec_length", &[Fixed, Fixed, Fixed], Fixed),
+    // `teleport(o, at)`: the object's position set, queued to the tick
+    // boundary where the engine's `OBJECT_SET_TRANSFORM` (`0xb7430`)
+    // answers false for a position outside the world, which is a refused
+    // call. `move_to(o, at, t)` starts a mover: a record in the VM's state
+    // (`vm::RulesExt::movers`) the VM steps every tick for `t` ticks, and
+    // `stop(o)` ends it with no `on arrive`.
+    act(id::TELEPORT, "teleport", &[Object, Fixed, Fixed, Fixed], Some("objects.move"), Queued, Named),
+    act(id::MOVE_TO, "move_to", &[Object, Fixed, Fixed, Fixed, Int], Some("objects.move"), Now, Named),
+    act(id::STOP, "stop", &[Object], Some("objects.move"), Now, Named),
 ];
 
 /// The word `message(to, text)` takes for everyone.
@@ -896,6 +920,27 @@ mod tests {
             crate::policy::eligible(&[c.name.to_string()], API_VERSION),
             ["custom", "hopper", "ranked"]
         );
+    }
+
+    #[test]
+    fn objects_in_motion_are_gated_by_objects_move() {
+        for name in ["teleport", "move_to", "stop"] {
+            let e = entry_named(name).unwrap();
+            assert_eq!(e.kind, Kind::Action, "{name}");
+            assert_eq!(e.cap, Some("objects.move"), "{name}");
+            assert!(e.status.hostable(), "{name}");
+        }
+        assert_eq!(entry_named("teleport").unwrap().order, Order::Queued);
+        assert_eq!(entry_named("move_to").unwrap().order, Order::Now);
+        assert_eq!(entry(id::TELEPORT, API_VERSION).unwrap().args, &[Object, Fixed, Fixed, Fixed]);
+        assert_eq!(entry(id::MOVE_TO, API_VERSION).unwrap().args, &[Object, Fixed, Fixed, Fixed, Int]);
+        for name in ["object_pos", "object_vel"] {
+            let e = entry_named(name).unwrap();
+            assert_eq!((e.kind, e.result, e.cap), (Kind::Read, Some(Fixed), None), "{name}");
+            assert_eq!(e.args, &[Object, Int], "{name}");
+        }
+        let len = entry(id::VEC_LENGTH, API_VERSION).unwrap();
+        assert_eq!((len.kind, len.result), (Kind::VmOnly, Some(Fixed)));
     }
 
     #[test]

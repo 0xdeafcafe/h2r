@@ -317,13 +317,13 @@ game (`Status::Blocked`, below), and no rules play, the carrier's
 included. Last, a script is refused when it needs what this runtime does
 not do yet (`runtime::host_refusal`): an event other than `init`,
 `round_start`, `kill`, `quit`, `timer`, `tick`, `bounce`, `bounced`,
-`spawn`, `death`, `enter` and `leave`; a read other than the scores,
+`spawn`, `death`, `enter`, `leave` and `arrive`; a read other than the scores,
 kills, deaths, `alive`, `team_of`, `lives`, `round_time_left`,
 `is_objective`, `carrier_of`, the label reads (`label_number`,
-`label_of`, `zone_id`, `object_team`), `inside` and `player_of`; an
+`label_of`, `zone_id`, `object_team`), `inside`, `player_of`, `object_pos` and `object_vel`; an
 action other than `score`, `end_round`, `set_lives`, `respawn`,
 `role_traits`, `reset_objective`, the bot orders, the messages,
-`set_loadout`, `spawn_areas`, `spawn_near`, `set_body`, `show_area` and `hide_area`; a variant field other than `team_play`, `score_limit`,
+`set_loadout`, `spawn_areas`, `spawn_near`, `set_body`, `show_area`, `hide_area`, `teleport`, `move_to` and `stop`; a variant field other than `team_play`, `score_limit`,
 `time_limit` and `lives`, whose record offsets are not traced; a
 `grant`; a script that calls `set_loadout` and names a weapon off the
 multiplayer weapon list (`rules::weapons`), by the weapon's path.
@@ -982,6 +982,7 @@ error, with the nearest declared name offered.
 `on bounce(p, spot, chain, monster)` (`chain` the bounce's place in its
 chain, 1 for a single bounce; `monster` a Monster Bounce),
 `on bounced(p)` (a fall out of the map during a bounce),
+`on arrive(o)` (a `move_to` reached its end, on that tick),
 `on edit(p, o)` (a granted power was used),
 `on join(p)`, `on quit(p)`, `on round_end`. A handler names its event's
 arguments in order and may leave out trailing ones (`on bounce(p, spot)`);
@@ -1396,7 +1397,8 @@ Actions:
 | `hide(p)`, `show(p)`: a player's biped not drawn, not hit | no entry known. The native renderer can skip the draw; hitboxes and collision are the engine's | untraced | `player.disguise` |
 | `attach(o, to)`: an object follows another | no entry known; the object datum has a parent field (`guest-layout` `object.rs`) | untraced | `objects.move` |
 | `camera(p, mode)`: first or third person | no entry known | untraced | `player.camera` |
-| teleport, device power | Forge's sinks (forge-features.md) | not built | `objects.move` |
+| `teleport(o, at)`, `move_to(o, at, t)`, `stop(o)`; `o.position`, `o.velocity`, `o.speed`; `on arrive(o)` | `OBJECT_SET_TRANSFORM` `0xb7430` for a put and a mover's step each tick; the movers in the VM's state (`RulesExt::movers`); the object datum's position and velocity for the reads (`rules/world/objects.rs`, [rules-world-api.md](rules-world-api.md#objects)) | named; whether a client sees the move is not researched (R2, R3) | `objects.move` |
+| device power | Forge's sinks (forge-features.md) | not built | `objects.move` |
 | `message(to, text)`: `to` is a player, a team or `all` (everyone); the compiler picks one of three entries by its type (`message`, `message_team`, `message_all`), all spelled `message`. A text written in the call may hold up to four `{name}` holes, each a player, team, int, time or enum in scope (`{{` is a brace); the call reaches the game with the holes' values after its own arguments ([rules-language-types.md](rules-language-types.md#messages)). The host shows it to its local users in the audience through the notification insert (`hud_kit::NOTIFY`) and sends it to clients as a show cue ([rules-world-api.md](rules-world-api.md#the-show-channel)). Scoreboard text, announcer, waypoint | the notification queue (`0x24cbee`), per local user (hud-kit.md "Messages"); the centred text (`0x24cc73`) is not used | named | `hud.message` |
 | `place_squad_at(s, class, n, zone, tier)`: a squad at a kit zone index with a weapon tier | Firefight's `PlaceSquad` command, through the same squad entry | named | `ai.squads` |
 | `ff_round`, `ff_wave`, `ff_skull`, `ff_lives`, `ff_score`, `ff_respawn`, `ff_finish`; with two player teams `ff_target(s, team)`, `ff_team_lives(team, n)`, `ff_player_score(p, n)`, `ff_team_finish(winner)` (`none` a draw) | Firefight's host log entries (`firefight::Command`), queued with the squad commands so the log keeps program order | named | `firefight.director` |
@@ -1408,6 +1410,7 @@ VM built-ins reach no engine entry (status **VM-only**):
 | Built-in | What it is |
 |---|---|
 | `count(set)`, `first(set)`, `len(table)`, `min(a, b)`, `max(a, b)`, `clamp(v, lo, hi)` | over a finite set or a constant table; `first` follows the `for each` order and gives `none` for an empty set; `min`, `max` and `clamp` take all `int`s or all `time`s |
+| `vec_length(x, y, z)` (`length(v)`, `distance(a, b)`, `o.speed`) | the length of three 16.16 components as 16.16, the square root of the sum of the raw squares taken whole in 128 bits (`ty::fixed::length`) |
 | `pick(set, n)` | `n` members drawn with the VM's generator |
 | `seconds(n)`, `whole_seconds(t)`, `ticks(t)` | `n` times the tick rate, as `time`; `t` divided by the tick rate (rounded toward zero), and `t` itself, as `int` |
 | `ticks_held(zone, team)` | a counter the VM keeps in `RulesExt` per zone and team: each tick from the first one a script names the zone, the team the game reports holding it alone (`Game::zone_holder`) gains a tick. Counts clear at the round's end; at most 32 zones are counted, and a 33rd is a script error. `none` or a team out of range reads 0. The host answers `zone_holder` with its zone test ("The host runtime", "Zones"). The host delivers no `round_end`, so its counts run for the whole game; a script that ends the round with `end_round` ends the game |

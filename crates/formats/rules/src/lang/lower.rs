@@ -74,6 +74,8 @@ enum Local {
     Row(u8, Reg),
     /// A function's set parameter: the label it stands for.
     Set(u16),
+    /// A `let` of a `vec`: its x, y and z registers.
+    Vec([Reg; 3]),
 }
 
 #[derive(Default)]
@@ -125,6 +127,21 @@ impl Fun {
         if kept {
             self.live.push(keep);
         }
+    }
+
+    /// Like [`Fun::keep`] for several registers: frees what was allocated
+    /// since `mark` except `keep`, which stay live for the enclosing block.
+    fn keep_all(&mut self, mark: usize, keep: &[Reg]) {
+        let mut kept = Vec::new();
+        for &k in keep {
+            let from = mark.min(self.live.len());
+            if let Some(i) = self.live[from..].iter().position(|&r| r == k) {
+                self.live.remove(from + i);
+                kept.push(k);
+            }
+        }
+        self.release(mark);
+        self.live.extend(kept);
     }
 
     fn emit(&mut self, op: Op) -> usize {
@@ -678,6 +695,10 @@ impl<'s> Cx<'s> {
                     let (table, row) = self.row(f, base, index, *pos)?;
                     f.keep(mark, row);
                     f.bind(name, Local::Row(table, row));
+                } else if self.ty_of(value)? == Type::Vec {
+                    let v = self.vec_expr(f, value)?;
+                    f.keep_all(mark, &v);
+                    f.bind(name, Local::Vec(v));
                 } else {
                     let (r, t) = self.expr(f, value)?;
                     f.keep(mark, r);
@@ -1102,6 +1123,7 @@ impl<'s> Cx<'s> {
             Some(Local::Reg(r, t)) => return Ok((r, t)),
             Some(Local::Set(ix)) => return Ok((f.konst(Ty::Label, ix as i32, pos)?, Ty::Label)),
             Some(Local::Row(..)) => return internal(pos, "a row read as a value"),
+            Some(Local::Vec(..)) => return internal(pos, "a vec read as one value"),
             None => {}
         }
         if let Some(&(r, t)) = f.implicit.last()
@@ -1170,6 +1192,17 @@ impl<'s> Cx<'s> {
             });
             return Ok(Some((dst, ty.register())));
         }
+        if oty == Ty::Object && field == "speed" {
+            // The length of the velocity.
+            let v = self.object_vec(f, owner, caps::id::OBJECT_VEL, pos)?;
+            let dst = f.alloc(Ty::Fixed, pos)?;
+            f.emit(Op::Call {
+                entry: caps::id::VEC_LENGTH,
+                args: v.to_vec(),
+                dst: Some(dst),
+            });
+            return Ok(Some((dst, Ty::Fixed)));
+        }
         if let Some(&(_, _, id)) = FIELDS.iter().find(|&&(o, n, _)| o == oty && n == field) {
             let entry = &caps::ENTRIES[id as usize];
             let ty = entry.result.unwrap_or(Ty::Int);
@@ -1185,6 +1218,15 @@ impl<'s> Cx<'s> {
     }
 
     fn field(&mut self, f: &mut Fun, base: &'s Expr, field: &str, pos: Pos) -> R<(Reg, Ty)> {
+        if self.c.ty(base) == Some(Type::Vec) {
+            let v = self.vec_expr(f, base)?;
+            return match field {
+                "x" => Ok((v[0], Ty::Fixed)),
+                "y" => Ok((v[1], Ty::Fixed)),
+                "z" => Ok((v[2], Ty::Fixed)),
+                _ => internal(pos, "an unknown vec field"),
+            };
+        }
         match &base.kind {
             ExprKind::Name(b) => match f.lookup(b) {
                 Some(Local::Row(table, row)) => return self.column(f, table, row, field, pos),
@@ -1281,6 +1323,98 @@ impl<'s> Cx<'s> {
             col: col as u8,
         });
         Ok((dst, ty))
+    }
+
+    /// The three axis reads of an object's position or velocity (`entry`).
+    fn object_vec(&mut self, f: &mut Fun, object: Reg, entry: u16, pos: Pos) -> R<[Reg; 3]> {
+        let mut out = [0; 3];
+        for (axis, slot) in out.iter_mut().enumerate() {
+            let a = f.konst(Ty::Int, axis as i32, pos)?;
+            let dst = f.alloc(Ty::Fixed, pos)?;
+            f.emit(Op::Call {
+                entry,
+                args: vec![object, a],
+                dst: Some(dst),
+            });
+            *slot = dst;
+        }
+        Ok(out)
+    }
+
+    /// Component-wise `a op b` of two vecs, or of a vec and a fixed
+    /// register (`b` the same in all three).
+    fn vec_arith(&mut self, f: &mut Fun, op: ArithOp, a: [Reg; 3], b: [Reg; 3], pos: Pos) -> R<[Reg; 3]> {
+        let mut out = [0; 3];
+        for i in 0..3 {
+            let dst = f.alloc(Ty::Fixed, pos)?;
+            f.emit(Op::Arith {
+                op,
+                ty: NumTy::Fixed,
+                dst,
+                a: a[i],
+                b: b[i],
+            });
+            out[i] = dst;
+        }
+        Ok(out)
+    }
+
+    /// A `vec` expression's three registers: `vec(x, y, z)`, a `let` of
+    /// one, an object's `position` or `velocity`, `a + b`, `a - b` and
+    /// `v * k`.
+    fn vec_expr(&mut self, f: &mut Fun, e: &'s Expr) -> R<[Reg; 3]> {
+        let pos = e.pos;
+        match &e.kind {
+            ExprKind::Call(name, args) if name == "vec" => {
+                let [x, y, z] = &args[..] else {
+                    return internal(pos, "a vec of no three components");
+                };
+                Ok([self.expr(f, x)?.0, self.expr(f, y)?.0, self.expr(f, z)?.0])
+            }
+            ExprKind::Name(n) => match f.lookup(n) {
+                Some(Local::Vec(v)) => Ok(v),
+                _ => internal(pos, "a vec name of no vec"),
+            },
+            ExprKind::Field(base, field) if field == "position" || field == "velocity" => {
+                let (o, _) = self.expr(f, base)?;
+                let entry = if field == "position" {
+                    caps::id::OBJECT_POS
+                } else {
+                    caps::id::OBJECT_VEL
+                };
+                self.object_vec(f, o, entry, pos)
+            }
+            ExprKind::Binary(op @ (BinOp::Add | BinOp::Sub), a, b) => {
+                let va = self.vec_expr(f, a)?;
+                let vb = self.vec_expr(f, b)?;
+                let aop = if *op == BinOp::Add { ArithOp::Add } else { ArithOp::Sub };
+                self.vec_arith(f, aop, va, vb, pos)
+            }
+            ExprKind::Binary(BinOp::Mul, a, b) => {
+                let (v, k) = if self.ty_of(a)? == Type::Vec { (a, b) } else { (b, a) };
+                let rv = self.vec_expr(f, v)?;
+                let (rk, _) = self.expr(f, k)?;
+                self.vec_arith(f, ArithOp::Mul, rv, [rk; 3], pos)
+            }
+            _ => internal(pos, "a vec expression"),
+        }
+    }
+
+    /// The place `teleport` and `move_to` go to: a `vec`, or an object's
+    /// position, plus an offset.
+    fn place(&mut self, f: &mut Fun, at: &'s Expr, offset: Option<&'s Expr>, pos: Pos) -> R<[Reg; 3]> {
+        if self.ty_of(at)? == Type::Vec {
+            return self.vec_expr(f, at);
+        }
+        let (o, _) = self.expr(f, at)?;
+        let p = self.object_vec(f, o, caps::id::OBJECT_POS, pos)?;
+        match offset {
+            Some(off) => {
+                let vo = self.vec_expr(f, off)?;
+                self.vec_arith(f, ArithOp::Add, p, vo, pos)
+            }
+            None => Ok(p),
+        }
     }
 
     fn binary(&mut self, f: &mut Fun, op: BinOp, a: &'s Expr, b: &'s Expr, pos: Pos) -> R<(Reg, Ty)> {
@@ -1412,6 +1546,51 @@ impl<'s> Cx<'s> {
                     b: rate,
                 });
                 return Ok(Some((dst, Ty::Int)));
+            }
+            // A `vec` is read through `vec_expr`; one named as a statement
+            // does nothing.
+            "vec" if !need_value => return Ok(None),
+            "length" => {
+                let v = self.vec_expr(f, &args[0])?;
+                let dst = f.alloc(Ty::Fixed, pos)?;
+                f.emit(Op::Call {
+                    entry: caps::id::VEC_LENGTH,
+                    args: v.to_vec(),
+                    dst: Some(dst),
+                });
+                return Ok(Some((dst, Ty::Fixed)));
+            }
+            "distance" => {
+                let va = self.vec_expr(f, &args[0])?;
+                let vb = self.vec_expr(f, &args[1])?;
+                let d = self.vec_arith(f, ArithOp::Sub, va, vb, pos)?;
+                let dst = f.alloc(Ty::Fixed, pos)?;
+                f.emit(Op::Call {
+                    entry: caps::id::VEC_LENGTH,
+                    args: d.to_vec(),
+                    dst: Some(dst),
+                });
+                return Ok(Some((dst, Ty::Fixed)));
+            }
+            // `teleport(o, at)`, `teleport(o, at, offset)` and
+            // `move_to(o, at, t)`: the entry takes the place as three
+            // fixed registers, read from an object or given as a `vec`.
+            "teleport" | "move_to" if !self.fns.contains_key(name) => {
+                let (o, _) = self.expr(f, &args[0])?;
+                let at = self.place(f, &args[1], args.get(2).filter(|_| name == "teleport"), pos)?;
+                let mut regs = vec![o, at[0], at[1], at[2]];
+                if name == "move_to" {
+                    regs.push(self.expr(f, &args[2])?.0);
+                }
+                let Some(entry) = caps::entry_named(name) else {
+                    return internal(pos, "an unknown function");
+                };
+                f.emit(Op::Call {
+                    entry: entry.id,
+                    args: regs,
+                    dst: None,
+                });
+                return Ok(None);
             }
             "grant" => {
                 let (player, _) = self.expr(f, &args[0])?;

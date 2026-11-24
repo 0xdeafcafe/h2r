@@ -73,6 +73,22 @@ pub struct FakeGame {
     /// a zone object and the team of its wall's colour, in the order first
     /// shown (`vm::RulesExt::shown`).
     pub shown: Vec<(u32, Option<u8>)>,
+    /// Where each object is, in 16.16 world units: what `object_pos`
+    /// reads, set by a scenario, by `teleport` and by a mover's step.
+    pub object_positions: BTreeMap<u32, [i32; 3]>,
+    /// Each object's velocity in 16.16 world units a second: what
+    /// `object_vel` reads, set by a mover's step.
+    pub object_velocities: BTreeMap<u32, [i32; 3]>,
+    /// The world's half-width in 16.16 world units: a `teleport` with a
+    /// coordinate past it is refused, as the engine answers false for a
+    /// position outside the world. `None`: the whole 16.16 range is inside.
+    pub world_limit: Option<i32>,
+    /// Calls the world refused, as `(entry name, why)`: each is in
+    /// [`FakeGame::calls`] too, and changed nothing.
+    pub refused: Vec<(&'static str, String)>,
+    /// The steps the VM's movers made, in order: the object, where it was
+    /// put and its velocity.
+    pub steps: Vec<(u32, [i32; 3], [i32; 3])>,
     pub script_error: Option<ScriptError>,
 }
 
@@ -385,6 +401,7 @@ impl FakeGame {
             self.spawns.clear();
             self.bodies.clear();
             self.shown.clear();
+            self.object_velocities.clear();
         }
         if let Input::Quit(p) = *input {
             self.players.remove(&p);
@@ -471,6 +488,20 @@ impl Game for FakeGame {
             _ => None,
         };
         match call.entry.id {
+            id::OBJECT_POS | id::OBJECT_VEL => {
+                let table = if call.entry.id == id::OBJECT_POS {
+                    &self.object_positions
+                } else {
+                    &self.object_velocities
+                };
+                match (object(0), call.args.get(1)) {
+                    (Some(o), Some(Arg::Int(axis))) => usize::try_from(*axis)
+                        .ok()
+                        .and_then(|a| table.get(&o)?.get(a).copied())
+                        .unwrap_or(0),
+                    _ => 0,
+                }
+            }
             id::IS_OBJECTIVE => object(0).is_some_and(|o| self.objectives.contains_key(&o)) as i32,
             id::CARRIER_OF => object(0)
                 .and_then(|o| self.objectives.get(&o).copied().flatten())
@@ -571,6 +602,23 @@ impl Game for FakeGame {
             }
             return;
         }
+        if call.entry.id == id::TELEPORT {
+            // The engine answers false for a position outside the world:
+            // a refused call, which moves nothing.
+            if let [Arg::Object(Some(o)), Arg::Fixed(x), Arg::Fixed(y), Arg::Fixed(z)] = call.args[..] {
+                let at = [x, y, z];
+                if self.world_limit.is_some_and(|w| at.iter().any(|c| c.unsigned_abs() > w.unsigned_abs())) {
+                    self.refused.push(("teleport", format!("{at:?} is outside the world")));
+                } else {
+                    self.object_positions.insert(o, at);
+                }
+            }
+            return;
+        }
+        if matches!(call.entry.id, id::MOVE_TO | id::STOP) {
+            // The VM keeps the mover; the steps arrive as `step_object`.
+            return;
+        }
         if call.entry.id == id::SET_BODY
             && let Some(Arg::Team(Some(team))) = call.args.first()
         {
@@ -607,6 +655,12 @@ impl Game for FakeGame {
             }
             _ => {}
         }
+    }
+
+    fn step_object(&mut self, object: u32, at: [i32; 3], velocity: [i32; 3]) {
+        self.steps.push((object, at, velocity));
+        self.object_positions.insert(object, at);
+        self.object_velocities.insert(object, velocity);
     }
 
     fn script_error(&mut self, error: &ScriptError) {
