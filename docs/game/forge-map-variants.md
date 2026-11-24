@@ -291,7 +291,7 @@ scenario bytes (`forge_doc::Labels`).
 |---|---|---|---|
 | `spare_clips` | item spawner of a weapon | a write to the new weapon's reserve after the spawner makes it. The spawner returns the object's ID and stores the entry's index on it (**E**, forge.md 1.2); the reserve's field on a weapon object is not decoded | not shown until slice D5 proves the write |
 | `team` | item spawner | nothing in a retail game type. A rules script reads it, as it reads a label ([rules-engine.md](rules-engine.md#forge-labels)) | shown with D4 |
-| `weight` | starting point | an answer to the spawn chooser's hook (`PLAYER_SPAWN_LOCATION`, the point `spawn_areas` already names, [rules-engine.md](rules-engine.md)). How the routine weighs locations is not traced | not shown until slice D5 |
+| `weight` | starting point | an answer to the spawn chooser (`PLAYER_SPAWN_LOCATION`, whose free-spot test `spawn_areas` answers, [rules-engine.md](rules-engine.md)). How the routine weighs locations is not traced | not shown until slice D5 |
 | `games` | object | the materialiser leaves the placement out of a map built for another game type ("Game types") | slice G1 |
 
 A property that reaches the game through a hook is host state in

@@ -289,3 +289,41 @@ fn every_listed_scripted_mode_is_hostable() {
         assert!(scripted.contains(&name), "{name}: {scripted:?}");
     }
 }
+
+const LINES: &str = r#"
+rules "Lines" 1
+carrier slayer
+teams 2
+requires player.spawn
+label site: zones = "territory"
+on round_start { for each site s { spawn_near(team 1, s, 2) } }
+"#;
+
+/// `spawn_near` keeps team 1's spawns to the two starting locations
+/// nearest the territory, once this machine makes the game's rules; team
+/// 0 has no rule, so the engine picks for it.
+#[test]
+fn a_teams_spawn_rule_keeps_its_spawns_to_the_nearest_locations() {
+    use std::collections::BTreeSet;
+    const STARTS_AT: u32 = SCNR + 0x800;
+    let ir = ::rules::compile(LINES).unwrap();
+    assert_eq!(host_refusal(&ir), None);
+    let (mut m, s, _) = world(&ir, &[([9.0, 0.0, 0.0], TERRITORY, 8)], [[0.0; 3], [5.0, 0.0, 0.0]]);
+    let starts = map::scenario_layout::block(forge_doc::BlockKind::StartingLocations);
+    m.put_u32(SCNR + starts.offset, 4)
+        .put_u32(SCNR + starts.offset + 4, STARTS_AT);
+    for (i, x) in [0.0f32, 4.0, 8.0, 10.0].into_iter().enumerate() {
+        m.put_f32(STARTS_AT + i as u32 * starts.stride, x);
+    }
+    s.lock().start(&m, false);
+    assert!(s.lock().state().running);
+    assert_eq!(s.lock().spawn_filter(&m, 1), None, "no authority yet");
+    let work = tick(&s, &mut m, 1).expect("the authority");
+    run(&s, &m, work, true);
+    let f = s.lock().spawn_filter(&m, 1).expect("team 1's rule");
+    assert_eq!(f.base, STARTS_AT);
+    assert_eq!(f.live, BTreeSet::from([2, 3]));
+    assert!(f.passes(STARTS_AT + 2 * starts.stride));
+    assert!(!f.passes(STARTS_AT));
+    assert_eq!(s.lock().spawn_filter(&m, 0), None, "team 0 has no rule");
+}

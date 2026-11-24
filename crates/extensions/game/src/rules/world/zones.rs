@@ -59,6 +59,21 @@ pub enum Shape {
 }
 
 impl Shape {
+    /// The zone's middle: a cylinder's flag, or a polygon's corners'
+    /// mean across the floor halfway between its heights. `spawn_near`
+    /// measures from it (`super::spawns`).
+    pub fn middle(&self) -> [f32; 3] {
+        match self {
+            Shape::Cylinder { at } => *at,
+            Shape::Polygon { corners, low, high } => {
+                let n = corners.len().max(1) as f32;
+                let x = corners.iter().map(|c| c[0]).sum::<f32>() / n;
+                let y = corners.iter().map(|c| c[1]).sum::<f32>() / n;
+                [x, y, (low + high) / 2.0]
+            }
+        }
+    }
+
     /// Whether `p` is inside, edges included.
     pub fn contains(&self, p: [f32; 3]) -> bool {
         match self {

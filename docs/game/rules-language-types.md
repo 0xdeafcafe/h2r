@@ -90,7 +90,7 @@ types. A test asserts each front-end signature erases to its entry's
 | `end_round(winner)`, `ff_team_finish(winner)` | `team?` (`none` is a draw) |
 | `register_objective(o, t)`, `spawn_objective(tag, at, t)` | the team is `team?` |
 | `set_loadout(p, a, b)`, `give(p, w)` | `player, weapon?, weapon?`; `player, weapon` |
-| `spawn_areas(t, areas, n)` | `team, spawns, int` |
+| `spawn_areas(t, areas, n)`, `spawn_near(t, z, n)` | `team, spawns, int`; `team, zone?, int` (`none` lifts the rule) |
 | `place_squad(s, c, n, at)` | `squad, class, int, objects` |
 | `round_time_left()`, `now()`, `seconds(n)` | `-> time`; `int -> time` |
 | `on kill(victim, killer)` | `player, player?` |

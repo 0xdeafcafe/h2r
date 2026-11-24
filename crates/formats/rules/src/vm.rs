@@ -263,6 +263,36 @@ pub struct RulesExt {
     /// tick after a script first names the zone and ends at the round's
     /// end.
     pub held: BTreeMap<u32, [u32; MAX_TEAMS]>,
+    /// Each team's spawn rule (`spawn_areas`, `spawn_near`), by team
+    /// index: which starting locations its players' spawns may use. The
+    /// host's spawn hook reads it at each spawn; it ends at the round's
+    /// end.
+    pub spawns: [Option<Spawns>; MAX_TEAMS],
+}
+
+/// A team's spawn rule: the starting locations its players' spawns may
+/// use (docs/game/rules-engine.md, "The engine API").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Spawns {
+    /// `spawn_areas(team, label, n)`: the starting locations of the IR's
+    /// label `label` numbered `number`.
+    Areas { label: u16, number: i32 },
+    /// `spawn_near(team, zone, n)`: the `count` starting locations nearest
+    /// the zone object `zone`.
+    Near { zone: u32, count: u8 },
+}
+
+/// The most starting locations `spawn_near` keeps.
+pub const MAX_SPAWN_NEAR: i32 = u8::MAX as i32;
+
+/// A team's spawn rule with its label resolved, as a host reads it
+/// ([`Vm::spawn_rule`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpawnRule<'a> {
+    /// The starting locations labelled `label` and numbered `number`.
+    Areas { label: &'a str, number: i32 },
+    /// The `count` starting locations nearest the zone object `zone`.
+    Near { zone: u32, count: u8 },
 }
 
 /// State bytes that do not decode, or do not fit the blob.
@@ -277,8 +307,8 @@ pub enum StateError {
 }
 
 const STATE_MAGIC: [u8; 4] = *b"H2RX";
-/// 2 added the `ticks_held` counters.
-const STATE_VERSION: u8 = 2;
+/// 2 added the `ticks_held` counters; 3 the teams' spawn rules.
+const STATE_VERSION: u8 = 3;
 
 impl RulesExt {
     /// Whether `player` holds `cap` (an index into `requires`) with uses
@@ -367,6 +397,21 @@ impl RulesExt {
             w.extend_from_slice(&q.entry.to_le_bytes());
             w.push(q.args.len() as u8);
             i32s(&mut w, &q.args);
+        }
+        for rule in &self.spawns {
+            match *rule {
+                None => w.push(0),
+                Some(Spawns::Areas { label, number }) => {
+                    w.push(1);
+                    w.extend_from_slice(&label.to_le_bytes());
+                    w.extend_from_slice(&number.to_le_bytes());
+                }
+                Some(Spawns::Near { zone, count }) => {
+                    w.push(2);
+                    w.extend_from_slice(&zone.to_le_bytes());
+                    w.push(count);
+                }
+            }
         }
         w.push(self.held.len() as u8);
         for (zone, counts) in &self.held {
@@ -468,6 +513,26 @@ impl RulesExt {
                 args: r.i32s(argc)?,
             });
         }
+        let mut spawns = [None; MAX_TEAMS];
+        for rule in &mut spawns {
+            let at = r.at;
+            *rule = match r.u8()? {
+                0 => None,
+                1 => Some(Spawns::Areas {
+                    label: r.u16()?,
+                    number: r.i32()?,
+                }),
+                2 => {
+                    let zone = r.u32()?;
+                    let count = r.u8()?;
+                    if count == 0 {
+                        return Err(StateError::Malformed(at));
+                    }
+                    Some(Spawns::Near { zone, count })
+                }
+                _ => return Err(StateError::Malformed(at)),
+            };
+        }
         let n = r.u8()? as usize;
         let mut held = BTreeMap::new();
         let mut last: Option<u32> = None;
@@ -500,6 +565,7 @@ impl RulesExt {
             grants,
             queue,
             held,
+            spawns,
         })
     }
 }
@@ -528,6 +594,9 @@ impl<'a> StateReader<'a> {
     fn u32(&mut self) -> Result<u32, StateError> {
         let b = self.take(4)?;
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+    fn i32(&mut self) -> Result<i32, StateError> {
+        Ok(self.u32()? as i32)
     }
     fn u64(&mut self) -> Result<u64, StateError> {
         let b = self.take(8)?;
@@ -634,6 +703,7 @@ impl Vm {
             grants: Vec::new(),
             queue: Vec::new(),
             held: BTreeMap::new(),
+            spawns: [None; MAX_TEAMS],
         };
         Ok(Vm {
             ir,
@@ -659,6 +729,10 @@ impl Vm {
             && ext.objects.len() <= MAX_OBJECT_RECORDS
             && ext.queue.len() <= MAX_QUEUE
             && ext.held.len() <= MAX_HELD_ZONES
+            && ext.spawns.iter().all(|r| match r {
+                Some(Spawns::Areas { label, .. }) => (*label as usize) < ir.labels.len(),
+                _ => true,
+            })
             && ext.grants.iter().all(|g| {
                 (g.cap as usize) < ir.header.requires.len()
                     && g.palette.is_none_or(|p| (p as usize) < ir.palettes.len())
@@ -928,15 +1002,28 @@ impl Vm {
     }
 
     /// Grants end at the player's quit and at the round's end; the
-    /// `ticks_held` counters end at the round's end.
+    /// `ticks_held` counters and the spawn rules end at the round's end.
     fn after(&mut self, input: &Input) {
         match *input {
             Input::Quit(p) => self.ext.grants.retain(|g| g.player != p),
             Input::RoundEnd => {
                 self.ext.grants.clear();
                 self.ext.held.clear();
+                self.ext.spawns = [None; MAX_TEAMS];
             }
             _ => {}
+        }
+    }
+
+    /// Team `team`'s spawn rule, its label resolved: what the host's spawn
+    /// hook keeps the team's spawns to. `None`: the engine's own pick.
+    pub fn spawn_rule(&self, team: u8) -> Option<SpawnRule<'_>> {
+        match (*self.ext.spawns.get(team as usize)?)? {
+            Spawns::Areas { label, number } => Some(SpawnRule::Areas {
+                label: self.ir.labels.get(label as usize)?.text.as_str(),
+                number,
+            }),
+            Spawns::Near { zone, count } => Some(SpawnRule::Near { zone, count }),
         }
     }
 
@@ -1432,6 +1519,7 @@ impl<'a> Run<'a> {
             Kind::Action => {
                 match e.order {
                     Order::Now => {
+                        self.stand(e.id, &raw);
                         let mut call = self.resolve(e, &raw);
                         if caps::is_message(e.id) {
                             // The holes' values follow the entry's own
@@ -1452,6 +1540,39 @@ impl<'a> Run<'a> {
                 }
                 Ok(None)
             }
+        }
+    }
+
+    /// The standing rules an action sets in the VM's state, which the host
+    /// reads when the engine asks: a team's spawn rule. `none` for the team
+    /// sets nothing; `spawn_near` with a count of 0 or less, or `none` for
+    /// the zone, lifts the team's rule.
+    fn stand(&mut self, entry: u16, raw: &[i32]) {
+        let Some(slot) = raw
+            .first()
+            .and_then(|&t| usize::try_from(t).ok())
+            .and_then(|t| self.ext.spawns.get_mut(t))
+        else {
+            return;
+        };
+        match entry {
+            caps::id::SPAWN_AREAS => {
+                if let (Some(label), Some(&number)) = (raw.get(1).and_then(|&l| u16::try_from(l).ok()), raw.get(2)) {
+                    *slot = Some(Spawns::Areas { label, number });
+                }
+            }
+            caps::id::SPAWN_NEAR => {
+                let zone = raw.get(1).and_then(|&z| object_id(z));
+                let count = raw.get(2).copied().unwrap_or(0).min(MAX_SPAWN_NEAR);
+                *slot = match zone {
+                    Some(zone) if count > 0 => Some(Spawns::Near {
+                        zone,
+                        count: count as u8,
+                    }),
+                    _ => None,
+                };
+            }
+            _ => {}
         }
     }
 
@@ -1601,6 +1722,16 @@ mod tests {
                 args: vec![4],
             }],
             held: [(5u32, [0, 30, 0, 0, 0, 0, 0, 0]), (12, [7; MAX_TEAMS])].into_iter().collect(),
+            spawns: [
+                Some(Spawns::Areas { label: 0, number: -2 }),
+                None,
+                Some(Spawns::Near { zone: 0x4001_0003, count: 4 }),
+                None,
+                None,
+                None,
+                None,
+                None,
+            ],
         }
     }
 
@@ -1630,6 +1761,57 @@ mod tests {
         for cut in 0..bytes.len() {
             assert!(RulesExt::decode(&bytes[..cut]).is_err(), "cut at {cut}");
         }
+    }
+
+    #[test]
+    fn state_refuses_a_spawn_rule_it_does_not_know() {
+        let bytes = ext().encode();
+        // The spawn rules sit before the held counters: team 0's kind byte
+        // is the first of them.
+        let held = 1 + 2 * (4 + 4 * MAX_TEAMS);
+        let rules = (1 + 2 + 4) + (MAX_TEAMS - 2) + (1 + 4 + 1);
+        let first = bytes.len() - held - rules;
+        assert_eq!(bytes[first], 1, "team 0 has an Areas rule");
+        let mut bad = bytes.clone();
+        bad[first] = 3;
+        assert!(RulesExt::decode(&bad).is_err());
+        // A Near rule keeps at least one location.
+        let mut e = ext();
+        e.spawns[2] = Some(Spawns::Near { zone: 1, count: 0 });
+        assert!(RulesExt::decode(&e.encode()).is_err());
+    }
+
+    /// `spawn_near` and `spawn_areas` set the team's rule in the state the
+    /// host's spawn hook reads; a count of 0 lifts it, and the round's end
+    /// ends them all.
+    #[test]
+    fn spawn_rules_stand_in_the_state_until_the_round_ends() {
+        let src = "rules \"Lines\" 1\ncarrier slayer\nteams 2\nrequires player.spawn\n\
+                   label goal: zone\nlabel attack: spawns\nglobal var phase: int = 0\n\
+                   on round_start { spawn_near(team 1, goal, 3)\n spawn_areas(team 0, attack, 2) }\n\
+                   on tick { phase = phase + 1\n if phase == 2 { spawn_near(team 1, goal, 0) } }\n";
+        let (ir, _) = crate::build(src).unwrap();
+        let mut vm = Vm::new(ir, 0, 0).unwrap();
+        let mut g = crate::fake::FakeGame::with_players(2);
+        g.label("goal", 0x4001_0002, 0, 2);
+        vm.begin_tick(0);
+        vm.fire(&mut g, Input::RoundStart);
+        assert_eq!(vm.spawn_rule(1), Some(SpawnRule::Near { zone: 0x4001_0002, count: 3 }));
+        assert_eq!(vm.spawn_rule(0), Some(SpawnRule::Areas { label: "attack", number: 2 }));
+        assert_eq!(vm.spawn_rule(2), None);
+        assert_eq!(vm.spawn_rule(200), None);
+        // The rule is in the record: a resume keeps it.
+        let back = Vm::resume(vm.ir().clone(), 0, RulesExt::decode(&vm.ext().encode()).unwrap()).unwrap();
+        assert_eq!(back.spawn_rule(1), vm.spawn_rule(1));
+        vm.begin_tick(1);
+        vm.update(&mut g);
+        assert!(vm.spawn_rule(1).is_some());
+        vm.begin_tick(2);
+        vm.update(&mut g);
+        assert_eq!(vm.spawn_rule(1), None, "a count of 0 lifts it");
+        assert!(vm.spawn_rule(0).is_some());
+        vm.fire(&mut g, Input::RoundEnd);
+        assert_eq!(vm.spawn_rule(0), None);
     }
 
     #[test]
@@ -1671,6 +1853,7 @@ mod tests {
                 MAX_QUEUE
             ],
             held: (0..MAX_HELD_ZONES as u32).map(|z| (z, [u32::MAX; MAX_TEAMS])).collect(),
+            spawns: [Some(Spawns::Near { zone: u32::MAX, count: u8::MAX }); MAX_TEAMS],
         };
         let bytes = e.encode();
         assert!(bytes.len() <= MAX_STATE_BYTES, "{} bytes", bytes.len());

@@ -24,6 +24,10 @@
 //! - `GAME_TICK`, an observer after: timers and `on tick`
 //!   ([`Runtime::post_tick`]).
 //! - `GAME_END`, an observer after: the record is removed.
+//! - `PLAYER_SPAWN_LOCATION`, observers before and after, and
+//!   `SPAWN_LOCATION_FREE`, a `before` in the default class: a team's
+//!   spawn rule keeps its spawns to the rule's starting locations
+//!   ([`register_spawns`], `super::world::spawns`).
 //! - `SLAYER_KILL`, `JUGGERNAUT_KILL`, `JUGGERNAUT_TICK` and `SCORE_ADD`,
 //!   `before`s in the default class: while a script runs on the authority,
 //!   the carrier's own scoring and role-making return at once
@@ -63,6 +67,9 @@ pub struct Shared {
     pub reentry: AtomicBool,
     /// The last `rules.reload`, for `rules.state`.
     last_reload: Mutex<Option<wire::LastReload>>,
+    /// The live starting locations of the spawn pick in progress, set as
+    /// `PLAYER_SPAWN_LOCATION` starts and cleared as it returns.
+    spawn_pick: Mutex<Option<super::world::spawns::Filter>>,
     /// What a reload reaches beyond the runtime, set at install.
     links: OnceLock<Links>,
 }
@@ -79,6 +86,7 @@ impl Shared {
             runtime: Mutex::new(runtime),
             reentry: AtomicBool::new(false),
             last_reload: Mutex::new(None),
+            spawn_pick: Mutex::new(None),
             links: OnceLock::new(),
         }
     }
@@ -94,6 +102,11 @@ impl Shared {
 
     pub fn links(&self) -> Option<&Links> {
         self.links.get()
+    }
+
+    /// The spawn pick in progress (`super::world::spawns`).
+    pub fn spawn_pick(&self) -> MutexGuard<'_, Option<super::world::spawns::Filter>> {
+        self.spawn_pick.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn set_last_reload(&self, r: wire::LastReload) {
@@ -341,6 +354,7 @@ impl hooks::Feature for Rules {
             s.lock().post_tick(m);
         });
         super::scoring::register(b, &self.shared);
+        register_spawns(b, &self.shared);
         let s = Arc::clone(&self.shared);
         b.game().on_end("end the rules script", move |_| {
             s.lock().ended();
@@ -351,6 +365,51 @@ impl hooks::Feature for Rules {
         }));
         Ok(())
     }
+}
+
+/// The spawn rules (`spawn_areas`, `spawn_near`; `super::world::spawns`):
+/// as `PLAYER_SPAWN_LOCATION` starts, the spawning player's (ECX) team
+/// rule becomes the pick's filter, cleared as it returns; the free-spot
+/// test `SPAWN_LOCATION_FREE`, which only that chooser calls, answers AL 0
+/// ("something stands there") for a location the filter does not keep,
+/// so the chooser keeps its best of the rest. No other feature answers
+/// the test; `coop_players`' `after` on the chooser only runs in co-op.
+fn register_spawns(b: &mut hooks::Builder, shared: &Arc<Shared>) {
+    use hooks::Flow;
+    let s = Arc::clone(shared);
+    b.raw().observe_before(
+        &engine::points::PLAYER_SPAWN_LOCATION,
+        "rules: the spawning team's starting locations",
+        move |o| {
+            let pick = {
+                let mem = o.guest();
+                let m: &dyn GuestMemory = &*mem;
+                s.lock().spawn_filter(m, o.cpu.ecx)
+            };
+            *s.spawn_pick() = pick;
+        },
+    );
+    let s = Arc::clone(shared);
+    b.raw().observe_after(
+        &engine::points::PLAYER_SPAWN_LOCATION,
+        "rules: the spawn pick ends",
+        move |_| {
+            *s.spawn_pick() = None;
+        },
+    );
+    let s = Arc::clone(shared);
+    b.raw().before(
+        &engine::points::SPAWN_LOCATION_FREE,
+        "rules: a starting location off the team's rule is taken",
+        move |c| {
+            let blocked = s.spawn_pick().as_ref().is_some_and(|f| !f.passes(c.cpu.ecx));
+            if !blocked {
+                return Ok(Flow::Continue);
+            }
+            c.cpu.eax &= !0xff;
+            c.ret(0).map(Flow::Return)
+        },
+    );
 }
 
 /// Adds the feature. Says why when it is left out. `film`: this run plays

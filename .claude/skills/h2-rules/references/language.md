@@ -255,7 +255,8 @@ game answers it from its `enter` and `leave` events.
 | `take` | player, object | `player.weapons` | now | traced |
 | `create` | tag, object | `objects.create` | queued | traced |
 | `delete` | object | `objects.delete` | queued | named |
-| `spawn_areas` | team, label, int | `player.spawn` | now | untraced |
+| `spawn_areas` | team, spawns label, int | `player.spawn` | now | named (labelled starting locations; a retail map has none) |
+| `spawn_near` | team, zone (may be `none`), int | `player.spawn` | now | named (the `n` starting locations nearest the zone; `none` or 0 lifts it) |
 | `message` | player, team or `all`; text | `hud.message` | now | untraced |
 | `place_squad` | squad, Class, int, label | `ai.squads` | queued | named |
 | `place_squad_at` | squad, Class, int, int, int | `ai.squads` | queued | named |

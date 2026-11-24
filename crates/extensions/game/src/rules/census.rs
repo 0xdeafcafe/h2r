@@ -141,6 +141,12 @@ impl Table {
         t
     }
 
+    /// A table of `things` as they are, for tests of what reads it.
+    #[cfg(test)]
+    pub fn from_things(things: Vec<Thing>) -> Table {
+        Table { things }
+    }
+
     /// Points each thing at `ir`'s label of its text, after a swap.
     pub fn relabel(&mut self, ir: &Ir) {
         for t in &mut self.things {

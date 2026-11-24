@@ -53,7 +53,19 @@ pub struct FakeGame {
     pub reads: Vec<&'static str>,
     /// Messages shown, in call order (each is in [`FakeGame::calls`] too).
     pub messages: Vec<FakeMessage>,
+    /// Each team's spawn rule, as `spawn_areas` and `spawn_near` set it:
+    /// the starting locations the engine's spawns of that team may use.
+    pub spawns: BTreeMap<u8, FakeSpawns>,
     pub script_error: Option<ScriptError>,
+}
+
+/// A team's spawn rule in the fake game.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FakeSpawns {
+    /// The starting locations labelled `label` and numbered `number`.
+    Areas { label: String, number: i32 },
+    /// The `count` starting locations nearest the zone object `zone`.
+    Near { zone: u32, count: i32 },
 }
 
 /// A message the script showed: to whom, its audience as a mask of player
@@ -312,8 +324,12 @@ impl FakeGame {
     }
 
     /// What the engine does after the handler of `input`: a quit removes
-    /// the player and its unit.
+    /// the player and its unit, and the round's end ends the teams' spawn
+    /// rules, as the VM's state does.
     pub fn after(&mut self, input: &Input) {
+        if let Input::RoundEnd = *input {
+            self.spawns.clear();
+        }
         if let Input::Quit(p) = *input {
             self.players.remove(&p);
             self.units.retain(|_, q| *q != p);
@@ -437,6 +453,34 @@ impl Game for FakeGame {
             self.objectives.insert(*o, None);
             if let Some(Arg::Team(Some(t))) = call.args.get(1) {
                 self.object_teams.insert(*o, *t);
+            }
+            return;
+        }
+        if let Some(Arg::Team(Some(team))) = call.args.first()
+            && matches!(call.entry.id, id::SPAWN_AREAS | id::SPAWN_NEAR)
+        {
+            // As the VM keeps it (`vm::Spawns`): `spawn_near` with no zone
+            // or a count of 0 or less lifts the team's rule.
+            let rule = match (call.entry.id, call.args.get(1), call.args.get(2)) {
+                (id::SPAWN_AREAS, Some(Arg::Label(label)), Some(Arg::Int(n))) => Some(FakeSpawns::Areas {
+                    label: label.clone(),
+                    number: *n,
+                }),
+                (id::SPAWN_NEAR, Some(Arg::Object(Some(zone))), Some(Arg::Int(n))) if *n > 0 => {
+                    Some(FakeSpawns::Near {
+                        zone: *zone,
+                        count: (*n).min(crate::vm::MAX_SPAWN_NEAR),
+                    })
+                }
+                _ => None,
+            };
+            match rule {
+                Some(r) => {
+                    self.spawns.insert(*team, r);
+                }
+                None => {
+                    self.spawns.remove(team);
+                }
             }
             return;
         }

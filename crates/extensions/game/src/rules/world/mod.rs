@@ -4,4 +4,5 @@
 pub mod bots;
 pub mod loadout;
 pub mod show;
+pub mod spawns;
 pub mod zones;

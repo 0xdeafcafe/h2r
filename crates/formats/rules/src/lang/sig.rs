@@ -43,6 +43,7 @@ pub fn of(e: &Entry) -> Option<Sig> {
         id::SET_LOADOUT => given(&[P, W_, W_], None),
         id::GIVE => given(&[P, W], None),
         id::SPAWN_AREAS => given(&[T, Type::Set(SetKind::Spawns), Type::Int], None),
+        id::SPAWN_NEAR => given(&[T, Type::H(Handle::Zone, true), Type::Int], None),
         id::PLACE_SQUAD => given(&[Type::Squad, Type::Class, Type::Int, Type::Set(SetKind::Objects)], None),
         _ => {
             let mut args = Vec::with_capacity(e.args.len());

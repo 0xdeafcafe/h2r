@@ -7,19 +7,21 @@
 // the sites: taking them all wins it. Each phase has its own clock; the
 // defenders win when one runs out. Each side spawns with its own loadout,
 // and its dead come back together in waves: the variant's one life holds
-// a death's respawn, and the side's wave timer releases it. The winners
-// score a point each, so the post-game's scores name them.
+// a death's respawn, and the side's wave timer releases it. Each side
+// spawns near its line, which moves with the phases (`spawn_near`): the
+// attackers at their own flag stand, then at the last site they took; the
+// defenders at a site still to take, then at their flag stand. The
+// winners score a point each, so the post-game's scores name them.
 // docs/game/rules-engine.md, "Phases: attack and defend" and "Payoff".
 //
 // Entries a host cannot make yet (`verify::unhostable`): none.
-// Not covered: a body per team (Spartan or Elite) has no entry; spawn
-// areas do not move up (`spawn_areas` is untraced), and the map does not
-// open (no map labels barriers).
+// Not covered: a body per team (Spartan or Elite) has no entry, and the
+// map does not open (no map labels barriers).
 rules "Siege" 1
 carrier slayer
 teams 2
 list party
-requires player.weapons, hud.message
+requires player.weapons, player.spawn, hud.message
 about "Attackers take the map's territories, then storm the defenders' flag stand. Each phase has its own clock: run it out and the defenders win."
 quick respawn_time, wave_time, phase_time, capture_time, sites
 
@@ -47,6 +49,9 @@ option phase_time: time 60s..600s = 180s "Phase time" "How long the attackers ha
 option capture_time: time 5s..60s = 15s "Capture time" "How long the attackers hold a site or the flag stand alone to take it"
 option sites: int 1..4 = 2 "Sites" "How many territories the attackers take before the final assault"
 option wave_time: time 3s..30s = 10s "Respawn wave" "How long a side's dead wait to come back together"
+
+// How many starting locations a side's spawns keep near its line.
+const line = 4
 
 table loadouts: (side: team, primary: weapon, secondary: weapon) = [
     (team 0, "objects/weapons/rifle/battle_rifle/battle_rifle", "objects/weapons/pistol/magnum/magnum"),
@@ -79,6 +84,16 @@ fn win(side: team) {
     end_round(side)
 }
 
+// The defenders' line: a site still to take while sites remain, then
+// their flag stand. A map with neither leaves them the engine's spawns.
+fn fall_back() {
+    if phase < needed {
+        spawn_near(team 1, first(site where not taken), line)
+    } else {
+        spawn_near(team 1, base[team 1], line)
+    }
+}
+
 // A death starts the side's wave when none is running. The variant's one
 // life, which the death took, holds the respawn until the wave releases
 // it; `respawn` gives the life back and the engine does the spawning.
@@ -101,6 +116,9 @@ on round_start {
     assault = base[team 1] != none
     if needed > 0 or assault {
         begin(0)
+        // The attackers start at their own flag stand, when the map has one.
+        spawn_near(team 0, base[team 0], line)
+        fall_back()
         if assault {
             message(all, "Sites to take: {needed}. Then the defenders' flag")
         } else {
@@ -119,6 +137,10 @@ on tick {
             if phase < needed and ticks_held(s, team 0) >= capture_time {
                 s.taken = true
                 begin(phase + 1)
+                // The front moves up: the attackers spawn at the site they
+                // took, and the defenders fall back.
+                spawn_near(team 0, s, line)
+                fall_back()
                 if phase < needed {
                     message(all, "The attackers took a site")
                 } else if assault {
