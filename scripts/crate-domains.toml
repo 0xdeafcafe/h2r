@@ -13,7 +13,7 @@
 about = "Disc, tag and file formats, ours and the game's: plain data, no guest, no host"
 uses = []
 crates = [
-    "asf", "content", "firefight", "font", "forge-doc", "h1-contract", "host-dirs", "host-log", "hs", "map", "pogo",
+    "asf", "content", "firefight", "font", "forge-doc", "game-markers", "h1-contract", "host-dirs", "host-log", "hs", "map", "pogo",
     "mopp", "movies", "pathfind", "rules", "settings", "shaders", "tags", "variants", "xbe", "xiso",
 ]
 

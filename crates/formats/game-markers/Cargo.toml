@@ -1,0 +1,14 @@
+[package]
+name = "game-markers"
+description = "Game type markers: the shapes Forge and Studio draw for spawns, goals, areas, teleporters, item spawns, volumes and script labels, and the area a hill or a site covers"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.h2]
+doc = ["game/gametype-markers.md"]
+status = "in progress"
+
+[lints]
+workspace = true

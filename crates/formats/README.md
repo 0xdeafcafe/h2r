@@ -15,6 +15,7 @@ crate needs another it depends on it directly (`tags` on `map`, `asf` on
 | [content](content/) | Map packages: manifest, `MapId`, patch readers and the resolver |
 | [font](font/) | Packed bitmap font parser, encoder and CPU text rasteriser |
 | [forge-doc](forge-doc/) | Forge documents, portable ops and the host-stamped edit log |
+| [game-markers](game-markers/) | Game type markers: the shapes Forge and Studio draw, and the area a hill or a site covers |
 | [h1-contract](h1-contract/) | Names shared by the Halo 1 converters and the in-game Halo 1 hooks |
 | [host-dirs](host-dirs/) | The per-user data, cache and config directories under each host's convention |
 | [host-log](host-log/) | Canonical hash-chained host commands for Forge and Firefight |
