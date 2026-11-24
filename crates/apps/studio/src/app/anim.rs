@@ -50,7 +50,7 @@ use super::App;
 
 mod document;
 pub use document::save::{AnimationPlacement, SavedAnimation};
-pub use document::transfer::{AnimationSource, RetargetOptions, Transfer};
+pub use document::transfer::{RetargetOptions, Transfer};
 
 /// The renders' background, sRGB-encoded: `model.render`'s own.
 pub(crate) const BACKGROUND: [f64; 3] = [0.10, 0.11, 0.13];

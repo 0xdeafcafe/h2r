@@ -4,17 +4,8 @@
 use anim_edit::{ClipKind, GltfClip, Node, NodeMapping, RetargetReport, retarget, retarget_report};
 use map::TagId;
 
-use super::super::{AnimError, AnimSummary, id_text};
+use super::super::{AnimError, AnimSummary};
 use super::{AnimationDocument, App, authored_summary};
-
-/// An open animation that can serve as the source of a transfer.
-pub struct AnimationSource {
-    pub doc: u64,
-    pub name: String,
-    pub graph: String,
-    pub map: Option<String>,
-    pub models: Vec<String>,
-}
 
 #[derive(Clone, Copy, Default)]
 pub struct RetargetOptions<'a> {
@@ -35,37 +26,13 @@ pub struct Transfer {
     pub notes: Vec<String>,
 }
 
+#[derive(Clone, Copy)]
 enum Input<'a> {
     Document(u64),
     Gltf(&'a GltfClip),
 }
 
 impl App {
-    /// Open documents keep their graphs' rest skeletons across map changes.
-    pub fn anim_sources(&self) -> Vec<AnimationSource> {
-        self.anim
-            .docs
-            .iter()
-            .enumerate()
-            .map(|(index, doc)| {
-                let graph = self.anim.graph_rests.get(&doc.graph);
-                AnimationSource {
-                    doc: index as u64 + 1,
-                    name: doc.clip.name().to_owned(),
-                    graph: graph
-                        .map(|g| g.name.clone())
-                        .unwrap_or_else(|| id_text(doc.graph.tag)),
-                    map: doc.graph.map.clone(),
-                    models: graph
-                        .into_iter()
-                        .flat_map(|g| &g.models)
-                        .map(|(user, _)| user.name.clone())
-                        .collect(),
-                }
-            })
-            .collect()
-    }
-
     pub fn anim_retarget(
         &mut self,
         from: u64,
@@ -115,9 +82,9 @@ impl App {
             doc: None,
             name,
             source: source.nodes().to_vec(),
-            target,
-            report: retarget_report(source, &destination.skeleton(), options.mapping)
+            report: retarget_report(source, &target, options.mapping)
                 .map_err(AnimError::Refused)?,
+            target,
             notes,
         };
         if options.preview {
