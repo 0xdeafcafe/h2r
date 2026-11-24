@@ -38,6 +38,7 @@ pub mod pvs;
 mod read;
 pub mod sphere;
 pub mod view;
+pub mod window_record;
 
 pub use parity::{Mismatch, Parity, VisibilitySets, compare};
 
