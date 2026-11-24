@@ -977,14 +977,19 @@ impl Session {
     /// Load a variant read from the store (`files::variants::load`) as a
     /// fresh log checkpoint. Verify the whole document and project its
     /// final objects before asking the game to change. The document is in
-    /// its play form; the session's kit is put back.
+    /// its play form; it takes the session's kit state, with the kit
+    /// recipe if the session's document has it and without if not.
     pub fn load_variant(
         &mut self,
         world: &mut impl World,
         _tick: u32,
         doc: ForgeDoc,
     ) -> Result<(), String> {
-        let loaded = forge_doc::session_form(&doc);
+        let loaded = if self.doc.recipes.contains(&forge_doc::kit()) {
+            forge_doc::session_form(&doc)
+        } else {
+            forge_doc::play_form(&doc)
+        };
         forge_doc::validate(&loaded, &self.limits).map_err(reason)?;
         let (doc, ground) = Self::take_ground(loaded.clone())?;
         if doc.base != self.doc.base

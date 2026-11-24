@@ -12,6 +12,8 @@ states:
     focus: 1
   load:
     focus: 1
+  delete-variant:
+    focus: 1
 widgets:
   title:
     component: title

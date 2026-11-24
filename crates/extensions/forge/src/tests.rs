@@ -287,8 +287,9 @@ fn canonical_save_loads_at_its_document_head_and_compensates_failed_loads() {
     let mut a = session(3);
     let base = a.document().clone();
     let mut world = Fake::default();
-    let id = a.place(&mut world, 1, 0, frame(1., 0.)).unwrap();
-    a.move_object(&mut world, 2, id, frame(2., 0.2)).unwrap();
+    // Only adds: a placement set by running index makes a Forge map,
+    // which is not a map variant.
+    let id = a.place(&mut world, 1, 0, frame(2., 0.2)).unwrap();
     a.place(&mut world, 3, 0, frame(5., 0.)).unwrap();
     let stem = a.save_variant(&data.0, "Our Room", false).unwrap();
     assert_eq!(stem, "Our_Room");

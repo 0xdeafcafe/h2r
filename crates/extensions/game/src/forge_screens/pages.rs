@@ -125,6 +125,10 @@ pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
             ("overwrite", sheet::question(Ask::Overwrite, "Courtyard")),
             ("leave", sheet::question(Ask::Leave, "")),
             ("load", sheet::question(Ask::Load, "")),
+            (
+                "delete-variant",
+                sheet::question(Ask::DeleteVariant, "Courtyard"),
+            ),
         ],
         Kind::Options => {
             let open = sheet::options();
@@ -142,7 +146,47 @@ pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
             let done = at(&super::games::sheet(GameSet::ALL), 8);
             vec![("open", open), ("all", done)]
         }
+        Kind::Variants => {
+            let rows = sample_variants();
+            let open = super::variants::list_sheet(&rows, Some("Courtyard"));
+            let unusable = at(&open, 3);
+            let empty = super::variants::list_sheet(&[], None);
+            vec![("open", open), ("unusable", unusable), ("empty", empty)]
+        }
+        Kind::Variant => {
+            let rows = sample_variants();
+            let open = Some("Courtyard");
+            vec![
+                ("saved", super::variants::variant_sheet(&rows[0], open)),
+                ("open", super::variants::variant_sheet(&rows[1], open)),
+                ("live", super::variants::variant_sheet(&rows[2], open)),
+                ("unusable", super::variants::variant_sheet(&rows[3], open)),
+            ]
+        }
     }
+}
+
+/// Sample map variants: two saved (the second is the open one), one from
+/// Xbox Live and one that fails a check.
+fn sample_variants() -> Vec<super::variants::Row> {
+    use super::variants::Row;
+    let row = |file: &str, name: &str, saved, sentence: Option<String>| Row {
+        file: file.into(),
+        name: name.into(),
+        saved,
+        sentence,
+    };
+    vec![
+        row("Arena", "Arena", true, None),
+        row("Courtyard", "Courtyard", true, None),
+        row("Two_Towers", "Two Towers", false, None),
+        row(
+            "Old_Arena",
+            "Old Arena",
+            true,
+            Some(forge::files::variants::Problem::BaseHash.sentence("Old Arena", "court")),
+        ),
+    ]
 }
 
 /// A Forge screen in one of its sample sheets, its focus where the

@@ -333,6 +333,25 @@ pub fn generate(input: &Input) -> Result<Generated, String> {
 
     let mut data = bots::cache::build(&level)?;
     let mut edges = data.nav.edges.clone();
+    // A merged solid keeps the level's surfaces whole, so a floor's polygon
+    // has no side where a ramp stands on it: the ramp's side walks down onto
+    // the floor and nothing walks back. A walk is the same crossing both
+    // ways, so each walk with no way back gets one.
+    let walked: std::collections::HashSet<(u32, u32)> = edges
+        .iter()
+        .filter(|e| e.kind == Kind::Walk)
+        .map(|e| (e.from, e.to))
+        .collect();
+    let back: Vec<Edge> = edges
+        .iter()
+        .filter(|e| e.kind == Kind::Walk && !walked.contains(&(e.to, e.from)))
+        .map(|e| Edge {
+            from: e.to,
+            to: e.from,
+            ..*e
+        })
+        .collect();
+    edges.extend(back);
     for (n, t) in input.teleporters.iter().enumerate() {
         let from = on_mesh(&data.nav, t.sender);
         let to = on_mesh(&data.nav, t.receiver);

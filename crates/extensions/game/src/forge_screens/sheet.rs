@@ -35,6 +35,10 @@ pub enum Kind {
     Controls,
     /// The game types of an item spawner, ticked a row each.
     Games,
+    /// The map variants of the open map, a row each.
+    Variants,
+    /// One map variant's actions, a dialog over [`Kind::Variants`].
+    Variant,
 }
 
 /// How a screen is built, each on a retail screen tag the game maps have.
@@ -53,7 +57,7 @@ pub enum Look {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 10] = [
+    pub const ALL: [Kind; 12] = [
         Kind::Objects,
         Kind::Properties,
         Kind::Coordinates,
@@ -64,6 +68,8 @@ impl Kind {
         Kind::Options,
         Kind::Controls,
         Kind::Games,
+        Kind::Variants,
+        Kind::Variant,
     ];
 
     /// The name `Open` rows, `h2 ui preview` and the loader know it by.
@@ -79,6 +85,8 @@ impl Kind {
             Kind::Options => "forge.options",
             Kind::Controls => "forge.controls",
             Kind::Games => "forge.games",
+            Kind::Variants => "forge.variants",
+            Kind::Variant => "forge.variant",
         }
     }
 
@@ -95,6 +103,8 @@ impl Kind {
             Kind::Options => "forge-options",
             Kind::Controls => "forge-controls",
             Kind::Games => "forge-games",
+            Kind::Variants => "forge-variants",
+            Kind::Variant => "forge-variant",
         }
     }
 
@@ -110,12 +120,16 @@ impl Kind {
             Kind::Options => const { ids::family("forge options") },
             Kind::Controls => const { ids::family("forge controls") },
             Kind::Games => const { ids::family("forge games") },
+            Kind::Variants => const { ids::family("forge variants") },
+            Kind::Variant => const { ids::family("forge variant") },
         }
     }
 
     pub const fn look(self) -> Look {
         match self {
-            Kind::Objects | Kind::Tools | Kind::Games => Look::Picker,
+            Kind::Objects | Kind::Tools | Kind::Games | Kind::Variants | Kind::Variant => {
+                Look::Picker
+            }
             Kind::Properties
             | Kind::Coordinates
             | Kind::Settings
@@ -152,6 +166,8 @@ pub enum Ask {
     Leave,
     /// Load a map variant over unsaved edits.
     Load,
+    /// Delete a saved map variant.
+    DeleteVariant,
 }
 
 /// A value a Properties or Tool settings row sets.
@@ -261,6 +277,11 @@ pub enum NumberField {
     LabelNumber,
     /// The name a prefab is saved as.
     PrefabName,
+    /// The new name of the map variant the Map variants screen chose
+    /// (`forge_screens::variants`).
+    RenameVariant,
+    /// The name of the copy of that map variant.
+    DuplicateVariant,
 }
 
 /// A row that opens the game's keyboard for a number.
@@ -329,6 +350,12 @@ pub enum Choice {
     SaveAs(String),
     /// Load the map variant of this file stem (`variants::Row::file`).
     Load(String),
+    /// Give the saved map variant of this file stem the typed name.
+    RenameVariant(String, String),
+    /// Copy the saved map variant of this file stem under the typed name.
+    DuplicateVariant(String, String),
+    /// **Delete** on a variant's dialog: ask, then remove this file stem.
+    DeleteVariant(String),
     /// The Game types dialog's Done: give the aimed or held item spawner
     /// this set, as one step.
     Games(forge_doc::games::GameSet),
@@ -358,6 +385,9 @@ pub enum Act {
     Tick(super::games::Tick),
     /// The Game types dialog's Done: [`super::games::done`].
     Done,
+    /// A map variant's row on Map variants: the file stem it stands for
+    /// is the target of the dialog's rows, which open above this screen.
+    Variant(String, Box<Sheet>),
 }
 
 /// A row's value picker: its values, the held one, what it says, and the
@@ -1141,6 +1171,11 @@ pub const OPTIONS: &[OptionDef] = &[
         description: "Every Forge control, with its button.",
         opens: Kind::Controls,
     },
+    OptionDef {
+        label: "Map variants...",
+        description: "Load, rename, copy or delete this map's variants.",
+        opens: Kind::Variants,
+    },
 ];
 
 /// The Forge options page.
@@ -1378,6 +1413,7 @@ pub fn question(ask: Ask, name: &str) -> Sheet {
             "This Forge map has edits that are not saved. Leave without saving?".to_string(),
         ),
         Ask::Load => ("LOAD", super::variants::LOAD_QUESTION.to_string()),
+        Ask::DeleteVariant => ("DELETE", super::variants::delete_question(name)),
     };
     let answer = |yes| Act::Choose(Choice::Answer { ask, yes });
     Sheet {

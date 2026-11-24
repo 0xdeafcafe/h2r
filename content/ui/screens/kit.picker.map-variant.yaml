@@ -1,4 +1,4 @@
-screen: kit.picker.forge-map
+screen: kit.picker.map-variant
 kind: picker
 layout: picker
 backing: over

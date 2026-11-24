@@ -487,7 +487,7 @@ Halo Infinite's that fit, and looks like Halo 2. Three pages hold it:
 in Split Screen, in a hosted System Link game and in an Xbox Live
 custom game, which the Xbox Live menu's Forge row opens in it
 (forge-firefight-ui.md, "The lobbies"). In Forge Game Setup has
-**Change Map...** (the original maps), **Forge Map...** (New, or a
+**Change Map...** (the original maps), **Map Variant...** (Original, or a
 map variant of the lobby's map, `forge::files::variants::list`) and the game
 type, which picks the goals the session edits. Start Game is the
 game's; the draft is loaded as the session opens

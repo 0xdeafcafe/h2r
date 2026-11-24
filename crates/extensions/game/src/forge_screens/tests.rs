@@ -98,6 +98,23 @@ fn page_tables() {
             ],
             after: "FORGE OPTIONS | focus 1 Controls",
         },
+        // A variant's row opens its dialog.
+        Case {
+            kind: Kind::Variants,
+            from: "open",
+            inputs: &[A],
+            effects: vec![Open(Kind::Variant.screen())],
+            after: "MAP VARIANTS | focus 0 Arena = Saved",
+        },
+        // Rename types a name; Delete is the last row of a variant that
+        // fails a check.
+        Case {
+            kind: Kind::Variant,
+            from: "unusable",
+            inputs: &[A, Down, A],
+            effects: vec![Action, Focus(1), Action],
+            after: "MAP VARIANT | focus 1 Delete",
+        },
         // A tick row acts and a Down moves on; Done is the last row.
         Case {
             kind: Kind::Games,
