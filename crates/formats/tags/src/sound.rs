@@ -495,14 +495,13 @@ impl Gestalt {
         if raw.len() < 0x20 || raw[..4] != *b"hklb" || raw[raw.len() - 4..] != *b"fklb" {
             return Err(Error::Invalid("the extra-info resource is not an hklb block"));
         }
-        if raw.len() != 0x1c + u32_at(raw, 4) as usize {
+        if raw.len() != 0x1c + u32_at(&raw, 4) as usize {
             return Err(Error::Invalid("the extra-info resource disagrees with its size word"));
         }
         if e.locators.len() != 2 {
-            return Err(Error::Invalid(format!(
-                "the extra-info resource has {} locators, not the data and descriptor two",
-                e.locators.len()
-            )));
+            return Err(Error::Invalid(
+                "the extra-info resource does not have two locators (the data and the descriptor)",
+            ));
         }
         let buffer = |l: &Locator, head: &[u8; 8]| -> Result<&[u8]> {
             if &l.head != head {

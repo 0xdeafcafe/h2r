@@ -485,7 +485,8 @@ fn every_forge_option_has_its_help() {
     let [top, left, bottom, right] = SETTINGS_HELP_TEXT.rect;
     let (width, height) = (i32::from(right - left), i32::from(top - bottom));
     let page = sheet::options();
-    assert_eq!(page.rows.len(), sheet::OPTIONS.len());
+    // The options, then Build AI ground and Test waves.
+    assert_eq!(page.rows.len(), sheet::OPTIONS.len() + 2);
     for r in &page.rows {
         let help = r.description.as_deref().unwrap_or_default();
         assert!(!help.trim().is_empty(), "{}: no help", r.label);

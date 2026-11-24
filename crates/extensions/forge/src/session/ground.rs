@@ -395,10 +395,17 @@ impl Session {
         id: OpId,
     ) -> Result<(), String> {
         let (_, index) = self.marker_index(id)?;
-        let ops = self.ops(vec![Edit::Placement(Placement::Remove {
-            block: BlockKind::NetgameFlags,
-            index,
-        })])?;
+        // The label goes first: a labelled entry cannot be removed.
+        let ops = self.ops(vec![
+            Edit::Forge(Forge::Label {
+                target: Endpoint::Added(id),
+                label: None,
+            }),
+            Edit::Placement(Placement::Remove {
+                block: BlockKind::NetgameFlags,
+                index,
+            }),
+        ])?;
         self.edit(world, tick, ops, None)
     }
 }

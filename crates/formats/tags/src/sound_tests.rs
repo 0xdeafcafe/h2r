@@ -308,7 +308,7 @@ fn a_bad_extra_info_or_resource_is_refused_by_name() {
     // descriptors start after the resource's header (24), the data and the
     // second crsr: 24 + block_start.
     let mut long = resource.clone();
-    let block_start = (4 + 3).next_multiple_of(4) + 4;
+    let block_start = (4usize + 3).next_multiple_of(4) + 4;
     let at = 24 + block_start + 4;
     long[at..at + 4].copy_from_slice(&9u32.to_le_bytes());
     assert!(g.mouth_curve(&h, &g.permutations[0], &mut Resource(long)).is_err());
