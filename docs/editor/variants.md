@@ -288,28 +288,31 @@ file, so it carries no signature.
 - **A script's own variant.** `portable::record_for(ir, options)` is the
   one builder of a variant from a rules script
   ([rules-variants.md](../game/rules-variants.md#the-record-of-a-script)):
-  the stock record of the script's carrier (`GameVariant::stock`, below),
-  each setting of the script's `settings` block written where its row of
+  a script using Slayer's template and writing no type-area setting starts
+  from `GameVariant::stock(GameType::Script)` with engine 6. Its common
+  fields start at Slayer's stock values and its type area is zero. Every
+  other script starts from its retail template. Each setting of the
+  script's `settings` block is written where its row of
   `rules::settings::TABLE` stores it (a record setting through
   `GameVariant::set`, the carrier's own score setting for `score_limit`,
   CTF's or Assault's setting for the paired `ctf_*` rows, an `hx` field
-  for `gravity`, `damage`, `shield`, `health` and `unlimited_grenades`),
-  the script's name, and the script reference (mode 2, the IR hash's
-  first 8 bytes and the option bits, the defaults for options not
-  given). It refuses a setting past the table, on a carrier it does not
+  for `gravity`, `damage`, `shield`, `health` and `unlimited_grenades`).
+  The builder writes the script's name and mode-2 reference, the IR
+  hash's first eight bytes and the option bits with defaults for
+  omitted values. It refuses a setting past the table, on a carrier it does not
   apply to or out of its range, a name the name rules refuse, and a
   record `record::refused` refuses (a Juggernaut script with team play,
   a CTF script without), in those rules' words; nothing falls back.
   `portable::settings_record` is the same record before the name and the
-  reference: `Bundle::check` and `h2 rules check` refuse a script whose
-  settings it refuses. `portable::from_script(ir, source, options)`
+  reference. `h2 rules check` reports its engine and rejects settings
+  the record cannot store. `portable::from_script(ir, source, options)`
   makes the bundle: that record, the script's name and `about` as the
   bundle's name and description, and the script part. `h2 variants
   from-script <file.rules> [--option KEY=VALUE]... [-o DIR]` writes it
   and prints its id and path; the same script and options give the same
-  id. `h2 rules settings <file.rules>` prints the record: every setting
-  of the carrier a script may name, with its value and `script` or
-  `stock`, then the record's settings no script names.
+  id. `h2 rules settings <file.rules>` prints the generated record's
+  engine and each available setting with its value and `script` or
+  `stock`, then the record fields no script setting names.
 
 ## The editor
 

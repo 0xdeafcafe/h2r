@@ -204,8 +204,8 @@ pub struct Listed {
     pub name: String,
     /// `header.about`: the entry's description.
     pub about: String,
-    /// The record's game type (`header.engine()`) as a list type (its
-    /// place in `GameType::ALL`).
+    /// The retail loader template's index in `GameType::ALL`. A script-index
+    /// record loads through the Slayer template.
     pub list_type: u32,
     /// The category selected by the script, independent of its loader template.
     pub game_type: Type,
