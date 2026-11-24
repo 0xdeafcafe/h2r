@@ -519,7 +519,7 @@ impl PlayUi {
                     }
                 }
             }
-            if p.can_respawn() && ui.button("Respawn now") {
+            if (p.can_respawn() || p.can_respawn_definitions(app)) && ui.button("Respawn now") {
                 action = Some(Apply::Respawn);
             }
             if let Some(why) = move_refusal {

@@ -15,6 +15,7 @@ use scenario_edit::layout::{self, BLOCKS};
 use scenario_edit::scenario::PlacementId;
 use scenario_edit::{BlockKind, Role, Scenario};
 
+pub(super) mod definitions;
 pub(super) mod drive;
 pub(super) mod previews;
 pub(super) use drive::State;

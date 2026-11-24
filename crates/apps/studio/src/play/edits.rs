@@ -886,7 +886,12 @@ impl Play {
                 }
                 if action == Apply::Respawn {
                     self.require_method(agent_proto::sim::method::OBJECT_RESPAWN)?;
-                    self.respawn_objects(app)?;
+                    let sent = self.respawn_definitions(app)?;
+                    if let Err(why) = self.respawn_objects(app)
+                        && sent == 0
+                    {
+                        return Err(why);
+                    }
                 } else {
                     self.remember_place(app);
                     let route = playtest::Reload::route(
