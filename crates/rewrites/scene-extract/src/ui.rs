@@ -1107,12 +1107,17 @@ mod tests {
         let mut o = Overlay::default();
         let listed = draw_list(&frame, &Cells, &mut o);
         assert!(o.is_empty());
-        assert!(listed[0].note.as_deref().unwrap().contains("font 2"));
+        // Deeper first: the off-canvas widget at depth 0.1 lists before
+        // the text at 0.0.
         assert!(
-            listed[1].note.as_deref().unwrap().contains("Clip"),
+            listed[0].note.as_deref().unwrap().contains("Clip"),
             "a viewport off the canvas"
         );
+        assert!(listed[1].note.as_deref().unwrap().contains("font 2"));
         let none = draw_list(&frame, &NoText, &mut o);
-        assert!(none[0].item.is_none() && none[0].note.is_some());
+        assert!(
+            none[1].item.is_none() && none[1].note.is_some(),
+            "no fonts at all refuses the text too"
+        );
     }
 }

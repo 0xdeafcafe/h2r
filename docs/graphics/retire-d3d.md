@@ -409,6 +409,10 @@ The guest still selects the visible widgets and places each shield
 layer and each glyph. The overlay executes supported widget combiners
 at their place in the frame.
 See [the HUD on the overlay](native-post-hud.md#the-hud-on-the-overlay).
+The renderer's glyph atlas is `native_render::overlay::GlyphPages` (one
+page per font, filled by the host from the fonts as the game serves them:
+`game::hud_overlay::fill_glyphs`, each glyph decoded once and uploaded
+once by `ui_gpu::OverlayResidency`).
 
 The UI's producer is `scene_extract::ui::draw_list`. Its input, a
 `UiFrame`, is the guest's UI draws in call order: the fade, the solid

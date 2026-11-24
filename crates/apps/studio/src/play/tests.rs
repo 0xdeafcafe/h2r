@@ -1605,6 +1605,9 @@ fn the_mirror_follows_the_panel_mode_between_two_games() {
 
     play.follow(&mut app, pair::PanelMode::Own);
     assert_eq!(app.pairing.panel, pair::PanelMode::Own);
+    // The switch leaves the attached game: answer its keep-or-restore.
+    assert!(app.pairing.leaving);
+    play.apply_edits(&mut app, Apply::Keep).unwrap();
     until(&mut play, &mut app, "the mirror on the own game", |p, _| {
         p.is_paired() && p.endpoint() == Some(&o) && p.session.is_some()
     });
@@ -1613,6 +1616,9 @@ fn the_mirror_follows_the_panel_mode_between_two_games() {
 
     play.follow(&mut app, pair::PanelMode::Attached);
     assert_eq!(app.pairing.panel, pair::PanelMode::Attached);
+    // Leaving the own game asks the same answer.
+    assert!(app.pairing.leaving);
+    play.apply_edits(&mut app, Apply::Keep).unwrap();
     until(&mut play, &mut app, "the mirror back on the attached game", |p, _| {
         p.is_paired() && p.endpoint() == Some(&a) && p.session.is_some()
     });

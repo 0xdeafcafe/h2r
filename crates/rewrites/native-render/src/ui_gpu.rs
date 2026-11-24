@@ -921,13 +921,14 @@ impl OverlayGpu {
 
 /// The textures an overlay names, resident on one device: each bitmap
 /// image uploaded once, each font's glyph page uploaded when it first
-/// appears and written again when its version moves
-/// ([`crate::overlay::GlyphPages`]).
+/// appears and, as it grows, each glyph added since the version it holds
+/// written once, by its rectangle ([`crate::overlay::GlyphPages`]).
 #[derive(Default)]
 pub struct OverlayResidency {
     /// The assets' generation what it holds came from.
     generation: u64,
     images: HashMap<(u32, u16), wgpu::TextureView>,
+    /// Each font's page: the version it holds, its texture and view.
     glyphs: HashMap<u16, (u64, wgpu::Texture, wgpu::TextureView)>,
 }
 
@@ -958,12 +959,41 @@ fn write_rgba(queue: &wgpu::Queue, texture: &wgpu::Texture, rgba: &[u8]) {
     );
 }
 
+/// Writes one glyph's rectangle of a `side` texel square page (`rgba`,
+/// row-major) to `texture`: the texels a page gained, not the page.
+fn write_glyph(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    side: u32,
+    rgba: &[u8],
+    rect: crate::overlay::GlyphRect,
+) {
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d { x: rect.x, y: rect.y, z: 0 },
+            aspect: wgpu::TextureAspect::All,
+        },
+        &rgba[(rect.y * side + rect.x) as usize * 4..],
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * side),
+            rows_per_image: Some(rect.height),
+        },
+        wgpu::Extent3d { width: rect.width, height: rect.height, depth_or_array_layers: 1 },
+    );
+}
+
 impl OverlayResidency {
     /// Uploads what `assets` holds that is not resident, or has changed:
-    /// how many textures it wrote. Assets of another generation (another
-    /// map) replace all it holds. An image with no texels, or fewer than
-    /// its size needs, or past the device's largest texture, stays out
-    /// (its batches are refused as not resident).
+    /// how many textures it wrote. A font's glyph page is written whole
+    /// when it first appears and, when its version moves, in the rectangles
+    /// of the glyphs added since the version held, so no glyph's texels
+    /// are written twice. Assets of another generation (another map)
+    /// replace all it holds. An image with no texels, or fewer than its
+    /// size needs, or past the device's largest texture, stays out (its
+    /// batches are refused as not resident).
     pub fn sync(
         &mut self,
         device: &wgpu::Device,
@@ -998,7 +1028,11 @@ impl OverlayResidency {
             match self.glyphs.get_mut(&font) {
                 Some((resident, _, _)) if *resident == version => {}
                 Some((resident, texture, _)) => {
-                    write_rgba(queue, texture, rgba);
+                    if let Some((side, rgba, added)) = assets.glyphs.added_since(font, *resident) {
+                        for (_, rect) in added {
+                            write_glyph(queue, texture, side, rgba, *rect);
+                        }
+                    }
                     *resident = version;
                     wrote += 1;
                 }
@@ -1242,9 +1276,28 @@ mod tests {
             assert_eq!(rgb(2, y), [255, 255, 0], "row {y}: the glyph's covered texel");
             assert_eq!(rgb(3, y), [0, 0, 0], "row {y}: the glyph's empty texel blends to nothing");
         }
-        // A grown page is written again; another map's assets start over.
-        assert!(assets.glyphs.insert(6, 4, 1, 1, &[9]));
-        assert_eq!(residency.sync(&ctx.device, &ctx.queue, &assets), 1);
+        // A glyph added after the page is resident reaches it by its
+        // rectangle alone (no texel of the page is written again) and
+        // draws: a red glyph over the sprite's top left.
+        assert!(assets.glyphs.insert(6, 4, 1, 1, &[255]));
+        assert_eq!(residency.sync(&ctx.device, &ctx.queue, &assets), 1, "a grown page is written again");
+        let added = [OverlayGlyph { index: 4, rect: [0.0, 0.0, 1.0, 1.0] }];
+        let red = OverlayMaterial::text(6);
+        overlay.push_text_run(red, ClipRect::full([2, 2]), [1.0, 0.0, 0.0, 1.0], &added).unwrap();
+        let plan = OverlayPlan::new(&overlay, [4, 4], &assets.glyphs);
+        let (encoded, stats) = gpu.prepare(&ctx.device, &view, &plan, &residency).unwrap();
+        assert_eq!((stats.batches, stats.refused_glyph), (3, 0));
+        let mut encoder = ctx.device.create_command_encoder(&Default::default());
+        (encoded.commands)(&mut encoder);
+        ctx.queue.submit([encoder.finish()]);
+        let pixels = gfx::readback::read_texture(&ctx, &target, wgpu::TextureAspect::All, 4, (4, 4));
+        let rgb = |x: usize, y: usize| {
+            let i = 4 * (y * 4 + x);
+            [pixels[i], pixels[i + 1], pixels[i + 2]]
+        };
+        assert_eq!((rgb(0, 0), rgb(1, 1)), ([255, 0, 0], [255, 0, 0]), "the glyph added");
+        assert_eq!((rgb(0, 3), rgb(3, 3)), ([0, 0, 255], [0, 0, 0]), "the rest as it was");
+        // Another map's assets start over.
         let next = OverlayAssets { generation: 1, ..OverlayAssets::default() };
         assert_eq!(residency.sync(&ctx.device, &ctx.queue, &next), 0);
         assert!(residency.view(OverlayTexture::Bitmap { tag: 7, image: 1 }).is_none());

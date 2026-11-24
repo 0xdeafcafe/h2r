@@ -94,7 +94,7 @@ What goes through actions, from both sides:
 | Navigate tag fields | `Navigate` | inspector links and breadcrumbs | `nav.go`, `nav.back`, `nav.forward` |
 | Undo, redo | `Undo`, `Redo` (the tool shown), `UndoIn(tool)`, `RedoIn(tool)` | Edit menu, keys | `doc.undo`, `doc.redo` |
 | Save | `Save`, `SaveMapAs`, `SaveVariant`, `SaveHopper(As)`, `ExportVariant` | File menu, shortcuts, prompt | `doc.save`, `doc.save_as` |
-| Go to anything | `GoTo` for tags and placements, existing map-open and menu actions for the other entries | Edit menu, Cmd/Ctrl+P | `ui.palette {query, run?}` |
+| Go to anything | `OpenAsset` for tags, packages and items, `GoTo` for placements, existing map-open and menu actions for the other entries | Edit menu, Cmd/Ctrl+P | `ui.palette {query, run?}` |
 | Variant edits | `OpenVariant`, `NewVariant`, `NewVariantFromScript`, `CopyBuiltin`, `SetVariantName`, `SetSetting`, `SetScriptOption`, `ImportVariant*`, `DeleteVariant` | the variant tool | `doc.open`, `variant.*` |
 | Playlist edits | `EditPlaylist(PlaylistEdit)`, `SetEntryVariant` | the title and description fields, the table's row buttons, weights, Add, the unused slot's "Make a … playlist" buttons and "Remove playlist" apply the same `PlaylistEdit`s | `playlist.set`, `playlist.entry`, `playlist.entry_variant` |
 | UI screens | `UiPick`, `UiPress`, `UiBrowse` | the UI Screens tool | `ui.pick`, `ui.press`, `ui.select_folder` |
@@ -198,16 +198,24 @@ group. `maps` remains the array of Halo 2 file stems in source order.
 ## Go to anything
 
 `ui.palette {query}` returns `{entries, totals}` from `app::commands::palette`.
-The commands are the menus' own, one `Open editor: <name>` per editor of
-View > Editors, and `Open: Voices` (`Action::ShowVoices`).
+The asset rows are what `asset.list` answers for the query — every tag
+of the tags tree, the set's packages and the items of each package that
+is on (`app::commands::palette_assets`), with no map open. The commands
+are the menus' own, one `Open editor: <name>` per editor of View >
+Editors, and `Open: Voices` (`Action::ShowVoices`).
 Entries are `{kind, label, detail}` in the order shown by Cmd/Ctrl+P:
-`map`, `tag`, `placement`, then `command`. Each kind has at most 20
-entries. `totals` counts all matches by kind before that cap. Each word
-of the query must match and case is ignored.
+`map`, then the asset rows `tag`, `package`, `item`, then `placement`
+and `command`. Each kind has at most 20 entries. `totals` counts all
+matches by kind before that cap. Each word of the query must match the
+commands' labels and details, and is the same search `asset.list` runs
+on the asset rows.
 
 Pass `run` with a zero-based index into the displayed entries to run the
 action and return its index as `ran`. An out-of-range index returns
-`INVALID_PARAMS`. Actions that would discard edits return `UNSAVED`.
+`INVALID_PARAMS`. Actions that would discard edits return `UNSAVED`. A
+tag entry opens on the map that holds it (`Action::OpenAsset`); a
+package's and an item's rows carry the same action, which opens their
+documents as the slices of docs/editor/studio-flow.md teach it to.
 
 ## The design system
 
@@ -1741,14 +1749,29 @@ and answers `not-yet`.
 is refused); the new path is `to`, or the source's with `_copy`; a path
 the tree or the package already has is refused.
 
+`asset.links {asset}` answers what the asset uses, what uses it and which
+editors open it (docs/editor/studio-flow.md, "Links"; `app/links.rs`):
+`{asset, uses, used_by, editors, problems}`. A link is `{asset, role, via}`;
+`role` groups it (Model, Animations, Sounds, HUD, Projectile, Variant,
+Voice, Package, or the target's kind). A tag's `uses` are the tags its file
+references (`via` is `node <n> +<offset>`) and, for a dialogue sound, the
+voice that says it (`voice:<character>`); its `used_by` are the tags that
+reference it and the packages that add or edit it. A `variant` item uses the
+`rules` item of its script key, which lists the variant under `used_by`.
+An item lists the tag it adds or edits and its package; a package lists its
+items and `requires`. `editors` is `[{id, label, why_not}]`. A tag file that
+does not decode, or a missing tree, is named in `problems`. A bad id is
+`INVALID_PARAMS`; an unknown package or item number is `REFUSED`.
+
 ```sh
 h2 studio asset.list '{"kind":"Objects","query":"rifle"}'
 h2 studio asset.list '{"root":"packages","package":"pogo"}'
 h2 studio asset.copy '{"asset":"tag:weap:objects\\weapons\\rifle","package":"my-pack"}'
+h2 studio asset.links '{"asset":"tag:weap:objects\\weapons\\rifle"}'
 ```
 
-The tests (`api/tests/assets_tests.rs`) run over an invented tree of two
-maps and one package.
+The tests (`api/tests/assets_tests.rs`, `api/tests/links_tests.rs`) run over
+an invented tree and local packages.
 
 ### Packages
 
@@ -2401,11 +2424,24 @@ the window and the API stay one path.
   saying a save writes the whole tag again and `movable` null or why the
   bitmap cannot gain an image;
   `bitmap.pixels {bitmap, image?, rect}` the RGBA of a rectangle (at most
-  65,536 pixels); `bitmap.paint`, `bitmap.fill` and `bitmap.adjust`
-  (invert, levels, hsv) and `bitmap.import` (a PNG, resampled to the
-  rectangle) are `Action::Bitmap`, one undo step each; `bitmap.export
+  65,536 pixels); `bitmap.paint`, `bitmap.fill`, `bitmap.adjust`
+  (invert, levels, hsv), `bitmap.channel_copy`, `bitmap.turn` and
+  `bitmap.import` (a PNG, resampled to the rectangle) are
+  `Action::Bitmap`, one undo step each; `bitmap.export
   {bitmap, image?, mip?, out}` writes a PNG and is refused inside a Git
-  checkout. A bitmap is named by hex tag id, path, `\key` path tail or a
+  checkout. `bitmap.paint {bitmap, image?, points, color, size, ...}`
+  stamps at every point and at most `spacing` apart between them, so two
+  points are a line; with `source` ([x, y]) it is a clone stroke, each
+  stamp the pixels at the offset from `source` to the first point, read
+  from the layer `from` (`{image?, face?, slice?}`; the layer painted
+  without it) as it was when the stroke began, and `color` is not
+  needed. `bitmap.channel_copy {bitmap, image?, from, to, rect?}` writes
+  a channel (`r`, `g`, `b`, `a`, `luma`) into the channels `to` (letters
+  of rgba); `bitmap.turn {bitmap, image?, by, rect?}` is
+  `flip_horizontal`, `flip_vertical`, `quarter`, `half` or
+  `three_quarters` of the rectangle, in place (a quarter turn needs a
+  square). An edit that changes no pixel is no undo step. A bitmap is
+  named by hex tag id, path, `\key` path tail or a
   unique substring. `bitmap.reshape {bitmap, image?, width?, height?,
   format?}` and `bitmap.image.resize {bitmap, image?, size? | width?,
   height?, format?}` ask for a new size and/or format (`dxt1`,

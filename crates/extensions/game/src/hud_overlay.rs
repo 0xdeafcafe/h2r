@@ -5,22 +5,27 @@
 //! onto the overlay with the guest's combiner and blend at the draw; and
 //! the passes of the menus' runs (`place_menu`).
 //! The draw snapshot pins the sampled image, including the changing glyph cache.
-use std::collections::HashMap;
+//!
+//! The overlay's glyphs are every list's to share: [`fonts`] is the disc's fonts
+//! as the game serves them, [`assets`] the loaded map's overlay assets and
+//! [`fill_glyphs`] puts a list's glyphs into their pages, each decoded once;
+//! [`place_menu`] fills before it places.
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use d3d::backend::{ExternalAttachments, ExternalEncoded};
 use d3d::{DrawAdmission, DrawSnapshot, ExternalPass, ExternalPassRequest, ExternalPlan};
 use engine::memory::GuestMemory;
 use frame_scene::{
-    ClipRect, Overlay, OverlayBlend, OverlayMaterial, OverlayTexture, OverlayVertex, Program,
+    ClipRect, Overlay, OverlayBlend, OverlayKind, OverlayMaterial, OverlayTexture, OverlayVertex, Program,
     Sampler,
 };
 use gfx::state::{
     BlendFactor, CompareFunc, CullMode, DepthBufferMode, FillMode, TextureAddress, TextureFilter,
 };
-use hud_edit::render::Art;
+use hud_edit::render::{Art, Fonts};
 use map::TagId;
-use native_render::overlay::{NoGlyphs, OverlayAssets, OverlayImage, OverlayPlan};
+use native_render::overlay::{GlyphPages, NoGlyphs, OverlayAssets, OverlayImage, OverlayPlan};
 use native_render::ui_gpu::{OverlayGpu, OverlayResidency, OverlayTextures};
 use render_bridge::native_hud::{HudTagQuad, HudVertices};
 use timeline::native::Stage;
@@ -553,6 +558,109 @@ fn decode_images(a: &mut MenuArt, part: &Overlay, assets: &mut OverlayAssets) ->
     true
 }
 
+/// Why a font did not give a glyph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GlyphMissing {
+    /// No such font: a line the table lacks, or a file not read.
+    Font,
+    /// The glyph's record is out of range or its pixel stream is malformed.
+    Decode,
+    /// Its page has no room for it.
+    Room,
+}
+
+/// A glyph a list's text run draws that its font did not give.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MissingGlyph {
+    /// The engine font, as the run's material names it.
+    pub font: u16,
+    /// The font's glyph record.
+    pub index: u32,
+    pub why: GlyphMissing,
+}
+
+/// Puts every glyph `overlay`'s text runs draw into `pages`: for each
+/// engine font (the run's material's) and glyph index not in its page,
+/// the glyph decoded from `fonts` once, white with its ARGB4444 alpha
+/// times 17. A glyph already in a page is not decoded again, so a list
+/// filled again costs nothing, and `Ok(())` says every glyph of the list
+/// is in the pages: the call is a list's preflight too. A glyph missing
+/// at plan time makes the plan drop its run (`refused_glyph`). `Err` is
+/// the first glyph not put in. A page keeps coverage alone: a glyph with
+/// colours of its own (a medal, a button icon) draws in its run's colour.
+pub fn fill_glyphs(pages: &mut GlyphPages, overlay: &Overlay, fonts: &Fonts) -> Result<(), MissingGlyph> {
+    // What is not in a page yet, by engine font, in the order first drawn.
+    let mut wanted: BTreeMap<u16, BTreeSet<u32>> = BTreeMap::new();
+    for item in &overlay.items {
+        if item.kind != OverlayKind::TextRun {
+            continue;
+        }
+        let OverlayTexture::Glyphs { font } = item.material.texture else { continue };
+        for g in overlay.glyphs_of(item) {
+            if !pages.has(font, g.index) {
+                wanted.entry(font).or_default().insert(g.index);
+            }
+        }
+    }
+    for (font, indices) in wanted {
+        let parsed = i16::try_from(font).ok().and_then(|i| fonts.font(i));
+        for index in indices {
+            let missing = |why| MissingGlyph { font, index, why };
+            let Some(f) = parsed.as_ref() else {
+                return Err(missing(GlyphMissing::Font));
+            };
+            let Ok(glyph) = f.glyph_by_index(index) else {
+                return Err(missing(GlyphMissing::Decode));
+            };
+            let alpha: Vec<u8> = glyph.pixels.iter().map(|&px| ((px >> 12) * 17) as u8).collect();
+            if !pages.insert(font, index, glyph.record.width, glyph.record.height, &alpha) {
+                return Err(missing(GlyphMissing::Room));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The disc's fonts once read ([`fonts`]).
+static FONTS: Mutex<Option<Arc<Fonts>>> = Mutex::new(None);
+
+/// The disc's fonts as the game serves them: `font_table.txt` and the
+/// font files it names, by engine font index (a line of the table), read
+/// through the VFS with the game's font rewrites. Read once, the first
+/// ask (the HUDs' load thread asks first), and shared by every list drawn
+/// from the overlay. `None` while they cannot be read: no VFS mounted or
+/// no table on the disc, asked for again next time.
+pub fn fonts() -> Option<Arc<Fonts>> {
+    let mut cached = FONTS.lock().unwrap_or_else(|e| e.into_inner());
+    if cached.is_none() {
+        let read = read_fonts();
+        if read.table.is_empty() {
+            return None;
+        }
+        *cached = Some(Arc::new(read));
+    }
+    cached.clone()
+}
+
+/// The font table and every font it names, as the guest reads them.
+fn read_fonts() -> Fonts {
+    let dir = format!("{}\\maps\\fonts", vfs::CDROM_DEVICE);
+    let Some(table) = crate::native_map::guest_file(&format!("{dir}\\font_table.txt")) else {
+        return Fonts::served(b"", []);
+    };
+    // The table names some fonts more than once: each file is read once.
+    let mut names = Fonts::served(&table, []).table;
+    names.sort();
+    names.dedup();
+    let files = names
+        .into_iter()
+        .filter_map(|name| {
+            crate::native_map::guest_file(&format!("{dir}\\{name}")).map(|bytes| (name, bytes))
+        })
+        .collect::<Vec<_>>();
+    Fonts::served(&table, files)
+}
+
 /// Places a pass drawing `overlay` from `assets` at this point in the
 /// frame: whether the device took it.
 pub fn place<B: d3d::Backend + Send + 'static>(
@@ -588,6 +696,11 @@ pub fn place_menu<B: d3d::Backend + Send + 'static>(
         if !decode_images(&mut a, part, &mut assets.lock().unwrap_or_else(|e| e.into_inner())) {
             return false;
         }
+    }
+    // A glyph the fonts do not give leaves its run out of the plan
+    // (`refused_glyph`); the rest of the list still draws.
+    if let Some(fonts) = fonts() {
+        let _ = fill_glyphs(&mut assets.lock().unwrap_or_else(|e| e.into_inner()).glyphs, part, &fonts);
     }
     place(device, mem, Arc::new(part.clone()), assets)
 }
@@ -714,5 +827,125 @@ mod tests {
         assert_eq!(Source::Screen(ScreenDraw::Fade).texture(&[None; 4], None), Some(OverlayTexture::None));
         assert_eq!(screen.shader(), (0, [0.0; 4]));
         assert_eq!(Source::Tag(&at).shader(), (0xe000_0001, [0.5; 4]));
+    }
+
+    /// An invented font: a blank record every unit maps to, with a glyph
+    /// of its own for each `(unit, width, height, alpha over 15)`, in the
+    /// font's ascent of 12.
+    fn invented_font(glyphs: &[(u16, u16, u16, u16)]) -> Vec<u8> {
+        let mut base = vec![0; font::RECORDS_OFFSET + font::RECORD_LEN];
+        let mut put = |at: usize, bytes: &[u8]| base[at..at + bytes.len()].copy_from_slice(bytes);
+        put(font::HEADER_OFFSET, &font::MAGIC.to_le_bytes());
+        put(font::HEADER_OFFSET + 4, &12u16.to_le_bytes());
+        put(font::HEADER_OFFSET + 0xc, &1u32.to_le_bytes());
+        let added = glyphs
+            .iter()
+            .map(|&(unit, width, height, alpha)| font::patch::Replacement {
+                unit,
+                width,
+                height,
+                advance: width as i16 + 1,
+                x_offset: 0,
+                y_offset: None,
+                pixels: vec![(alpha << 12) | 0x0fff; usize::from(width) * usize::from(height)],
+            })
+            .collect::<Vec<_>>();
+        font::patch::apply(&base, &added).unwrap()
+    }
+
+    /// A text run of `text` in engine font `font`, laid out as the walk
+    /// lays one out ([`Fonts::layout`]).
+    fn run(overlay: &mut Overlay, fonts: &Fonts, font: u16, text: &str) {
+        let (laid, _) = fonts.layout(font as i16, text).unwrap();
+        let glyphs = laid
+            .glyphs
+            .iter()
+            .filter(|g| g.width != 0 && g.height != 0)
+            .map(|g| frame_scene::OverlayGlyph {
+                index: g.index,
+                rect: [
+                    g.x as f32,
+                    g.y as f32,
+                    (g.x + i64::from(g.width)) as f32,
+                    (g.y + i64::from(g.height)) as f32,
+                ],
+            })
+            .collect::<Vec<_>>();
+        let all = frame_scene::ClipRect::full([640, 480]);
+        overlay.push_text_run(frame_scene::OverlayMaterial::text(font), all, [1.0; 4], &glyphs).unwrap();
+    }
+
+    /// The filler decodes each glyph of a list's text runs once, from the
+    /// run's font, and the filled list's runs draw: the plan, which
+    /// refuses a run over an empty atlas, refuses none of them.
+    #[test]
+    fn the_filler_decodes_each_glyph_once_and_the_runs_draw() {
+        let (a, one, b) = (u16::from(b'A'), u16::from(b'1'), u16::from(b'B'));
+        let fonts = Fonts::served(
+            b"one\r\ntwo",
+            [
+                ("one".to_owned(), invented_font(&[(a, 2, 2, 15), (one, 3, 1, 8)])),
+                ("two".to_owned(), invented_font(&[(b, 1, 1, 4)])),
+            ],
+        );
+        let mut overlay = Overlay::new([640, 480]);
+        run(&mut overlay, &fonts, 0, "A1A");
+        run(&mut overlay, &fonts, 1, "BB");
+        let index = |font: i16, unit: u16| fonts.font(font).unwrap().glyph_index(unit);
+        let refused = OverlayPlan::new(&overlay, [640, 480], &GlyphPages::default());
+        assert_eq!((refused.batches.len(), refused.stats.refused_glyph), (0, 2), "over an empty atlas");
+        let mut pages = GlyphPages::new(16);
+        fill_glyphs(&mut pages, &overlay, &fonts).unwrap();
+        assert!(pages.has(0, index(0, a)) && pages.has(0, index(0, one)));
+        assert!(pages.has(1, index(1, b)));
+        assert_eq!(pages.fonts().collect::<Vec<_>>(), [0, 1]);
+        let (side, rgba, version) = pages.page(0).unwrap();
+        assert_eq!((side, version), (16, 2), "three glyphs of two");
+        let texel = |x: usize, y: usize| rgba[(y * 16 + x) * 4..(y * 16 + x) * 4 + 4].to_vec();
+        assert_eq!(texel(1, 1), [255, 255, 255, 255], "A, white with its alpha");
+        assert_eq!(texel(5, 1), [255, 255, 255, 136], "1 beside it: alpha 8 of 15");
+        assert_eq!(texel(4, 1), [0, 0, 0, 0], "the texel between them");
+        assert_eq!(pages.page(1).unwrap().2, 1, "B twice is decoded once");
+        fill_glyphs(&mut pages, &overlay, &fonts).unwrap();
+        assert_eq!((pages.page(0).unwrap().2, pages.page(1).unwrap().2), (2, 1), "filled again: nothing added");
+        let plan = OverlayPlan::new(&overlay, [640, 480], &pages);
+        assert_eq!((plan.batches.len(), plan.stats.refused_glyph, plan.stats.glyphs), (2, 0, 5));
+        assert_eq!(plan.vertices[1].uv, [3.0 / 16.0, 1.0 / 16.0], "A's top right");
+        assert_eq!(plan.vertices[6].uv, [8.0 / 16.0, 2.0 / 16.0], "1's bottom right");
+    }
+
+    /// A glyph no font gives is named: a record out of range or a file
+    /// that is not a font, a line the table lacks, and a page with no
+    /// room. A list without a text run fills without the fonts.
+    #[test]
+    fn a_glyph_no_font_gives_is_named() {
+        let fonts = Fonts::served(
+            b"one\r\nunread",
+            [
+                ("one".to_owned(), invented_font(&[(u16::from(b'A'), 6, 1, 15)])),
+                ("unread".to_owned(), b"not a font".to_vec()),
+            ],
+        );
+        let list = |font: u16, index: u32| {
+            let glyphs = [frame_scene::OverlayGlyph { index, rect: [0.0, 0.0, 6.0, 1.0] }];
+            let mut overlay = Overlay::new([640, 480]);
+            let all = frame_scene::ClipRect::full([640, 480]);
+            overlay.push_text_run(frame_scene::OverlayMaterial::text(font), all, [1.0; 4], &glyphs).unwrap();
+            overlay
+        };
+        let missing = |font: u16, index: u32, why| fill_glyphs(&mut GlyphPages::default(), &list(font, index), &fonts)
+            .unwrap_err() == MissingGlyph { font, index, why };
+        assert!(missing(0, 9, GlyphMissing::Decode), "no such record");
+        assert!(missing(1, 1, GlyphMissing::Font), "a file that is not a font");
+        assert!(missing(3, 1, GlyphMissing::Font), "no such line");
+        // Six wide does not fit a four texel page.
+        assert_eq!(
+            fill_glyphs(&mut GlyphPages::new(4), &list(0, 1), &fonts),
+            Err(MissingGlyph { font: 0, index: 1, why: GlyphMissing::Room })
+        );
+        let mut plain = Overlay::new([640, 480]);
+        let all = frame_scene::ClipRect::full([640, 480]);
+        plain.push_fill(all, [0.0, 0.0, 4.0, 4.0], [1.0; 4], frame_scene::OverlayBlend::Off).unwrap();
+        assert_eq!(fill_glyphs(&mut GlyphPages::default(), &plain, &fonts), Ok(()));
     }
 }

@@ -7,7 +7,7 @@
 //! tag metadata it decodes holds every live tag write too.
 
 use std::fs::File;
-use std::io::{BufReader, Cursor, Read, Seek};
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::sync::{Arc, Mutex, Weak, mpsc};
 
 use assets::{Region, ResourceFiles};
@@ -94,6 +94,34 @@ pub fn mount(vfs: Arc<Mutex<Vfs>>, rebind: Option<vfs::MapRebind>, data_root: &s
 pub(crate) fn data_root() -> Option<std::path::PathBuf> {
     let sources = SOURCES.lock().unwrap_or_else(|e| e.into_inner()).upgrade()?;
     Some(sources.data_root.clone())
+}
+
+/// A file of the mounted VFS as the guest reads it, the disc's rewrites
+/// applied: `None` without a mount or for a file the VFS does not have.
+pub fn guest_file(path: &str) -> Option<Vec<u8>> {
+    let sources = SOURCES.lock().unwrap_or_else(|e| e.into_inner()).upgrade()?;
+    read_from(&sources.vfs, path)
+}
+
+/// A file of `vfs` as the guest reads it. The VFS is held only to find
+/// where the file is, never while it is read.
+fn read_from(vfs: &Mutex<Vfs>, path: &str) -> Option<Vec<u8>> {
+    let source = vfs.lock().unwrap_or_else(|e| e.into_inner()).file_source(path)?;
+    read_source(source)
+}
+
+/// A VFS file's bytes: a host file's region, or the memory it is served from.
+fn read_source(source: FileSource) -> Option<Vec<u8>> {
+    match source {
+        FileSource::Host(file) => {
+            let mut reader = File::open(&file.path).ok()?;
+            reader.seek(SeekFrom::Start(file.offset)).ok()?;
+            let mut bytes = vec![0; usize::try_from(file.len).ok()?];
+            reader.read_exact(&mut bytes).ok()?;
+            Some(bytes)
+        }
+        FileSource::Memory(bytes) => Some(bytes.to_vec()),
+    }
 }
 
 /// Only the editor's activation observer publishes a private generation.
@@ -295,6 +323,34 @@ mod tests {
         old.generation = Some(generation);
         let (activated, _) = open_resolved(&vfs, "level", None, Some(old), true).unwrap();
         assert_eq!(activated.header().name, "level");
+    }
+
+    /// A guest file's bytes are the VFS's: a file of the disc's directory
+    /// read from the host, and a rewritten one as its rewrite serves it.
+    #[test]
+    fn a_guest_file_is_read_as_the_vfs_serves_it() {
+        struct Double;
+        impl vfs::Rewrite for Double {
+            fn wants(&self, path: &str) -> bool {
+                path.ends_with("doubled")
+            }
+            fn rewrite(&mut self, _path: &str, original: &[u8]) -> Option<Vec<u8>> {
+                Some(original.repeat(2))
+            }
+        }
+        let t = Temp::new();
+        let fonts = t.0.join("maps/fonts");
+        std::fs::create_dir_all(&fonts).unwrap();
+        std::fs::write(fonts.join("plain"), [1, 2, 3]).unwrap();
+        std::fs::write(fonts.join("doubled"), [4, 5]).unwrap();
+        let mut vfs = Vfs::new();
+        let disc = vfs::DirDiscBackend::open(&t.0).unwrap();
+        vfs.mount(vfs::CDROM_DEVICE, vfs::RewriteBackend::new(disc, Double)).unwrap();
+        let mounted = Mutex::new(vfs);
+        let path = |name: &str| format!("{}\\maps\\fonts\\{name}", vfs::CDROM_DEVICE);
+        assert_eq!(read_from(&mounted, &path("plain")).unwrap(), [1, 2, 3], "as the directory holds it");
+        assert_eq!(read_from(&mounted, &path("doubled")).unwrap(), [4, 5, 4, 5], "as the rewrite serves it");
+        assert_eq!(read_from(&mounted, &path("missing")), None);
     }
 
     /// A live open's resource files read through the overlay: a
