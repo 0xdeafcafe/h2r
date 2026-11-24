@@ -25,6 +25,7 @@ pub(super) fn install(b: &mut Builder) {
                 if addr != points::RENDER_LIGHT_PASSES.base || Stage::Lights.standing_down() {
                     return original(cpu, ctx, addr);
                 }
+                let typed_fpu = super::typed::fpu_ready(cpu.x87.tag, cpu.x87.status, cpu.x87.control);
                 let fpu = Fpu {
                     mxcsr: cpu.mxcsr,
                     x87_control: cpu.x87.control,
@@ -43,7 +44,13 @@ pub(super) fn install(b: &mut Builder) {
                 };
                 hooks::entry::start_render(cpu, ctx, addr, move |cx: Cx| -> EntryFuture {
                     Box::pin(async move {
-                        let (ret, _) = passes::run(&cx, plan).await?;
+                        let (ret, _) = passes::run_with(&cx, plan, |mem, p| {
+                            if !typed_fpu {
+                                refused(SceneList::TypedLightPasses, engine::render::light_gather::Refusal::Unsupported);
+                                return Ok(None);
+                            }
+                            super::typed::dynamic(mem, p)
+                        }).await?;
                         SceneList::LightPasses.count(SceneListResult::Native);
                         Ok::<_, engine::entry::EntryError>(ret)
                     })

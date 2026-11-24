@@ -34,6 +34,8 @@
 //! guest's `ESP`. The layer's draw byte is the shadow argument's low byte,
 //! as in the guest (`[esp+1Ch]`).
 
+pub mod additional;
+
 use std::cell::Cell;
 
 use super::guest::TAGS;
@@ -324,9 +326,19 @@ async fn guest(cx: &Cx, plan: &Plan, site: u32, call: GuestCall) -> Result<Regs,
 /// Makes the passes. Returns as `0x00031170` does (`ret 0x10`, EAX what
 /// the last target call left) with what it did.
 pub async fn run(cx: &Cx, plan: Plan) -> Result<(Ret, LightPasses), EntryError> {
+    run_with(cx, plan, |_, _| Ok(None)).await
+}
+
+/// The gather owns the item lists only until this invocation ends. Let a
+/// renderer reserve the remaining passes together after the lists are ready.
+/// A refusal continues at the shadow byte with those same lists.
+pub async fn run_with(
+    cx: &Cx,
+    plan: Plan,
+    typed: impl FnOnce(&mut dyn GuestMemory, &Plan) -> Result<Option<(Ret, LightPasses)>, EntryError>,
+) -> Result<(Ret, LightPasses), EntryError> {
     let p = &plan;
     let regs = |call: GuestCall| call.esi(p.data).edi(p.context);
-    let mut out = LightPasses::default();
 
     // 1: the item lists.
     let tags = cx.read(|m| m.u32(TAGS))?;
@@ -337,6 +349,11 @@ pub async fn run(cx: &Cx, plan: Plan) -> Result<(Ret, LightPasses), EntryError> 
         regs(GuestCall::new(call::ITEMS)).eax(0).ecx(tags),
     )
     .await?;
+
+    if let Some(issued) = cx.write(|m| typed(m, p))? {
+        return Ok(issued);
+    }
+    let mut out = LightPasses::default();
 
     // 2: the shadow byte.
     let mut shadow = cx.read(|m| m.u8(p.shadow_at()))?;

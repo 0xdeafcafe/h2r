@@ -33,6 +33,8 @@ pub mod history;
 pub mod items;
 pub mod object_shadows;
 pub mod passes;
+pub mod typed;
+pub mod typed_tail;
 pub mod visible;
 pub mod volume;
 
