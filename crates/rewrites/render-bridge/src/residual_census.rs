@@ -301,7 +301,7 @@ pub const REGISTRY: &[Row] = &[
     Row {
         name: "decals",
         entry: 0x0004_4040,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "opaque",
     },
     Row {
@@ -1413,6 +1413,7 @@ mod tests {
                         | "ui"
                         | "fade"
                         | "loading"
+                        | "decals"
                         | "dynamic_lights"
                         | "light_passes"
                         | "frame_tail"

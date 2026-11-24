@@ -76,7 +76,7 @@ fn clip(r: d3d::PixelRect) -> ClipRect {
 
 /// The resolved draw's vertices, decoded from its one stream. Halo 2's decal
 /// declaration (the attribute list at `0x0043f7b9`, bound with stride 16) is
-/// float3 position at `+0` in `v0` and `NORMPACKED3` at `+12` in `v1` or `v3`: an
+/// float3 position at `+0` in `v0` and `NORMPACKED3` at `+12` in the second declared register: an
 /// 11:11:10 signed normalised dword, decoded as the NV2A fetches it
 /// ([`decode_packed`]). Any other declaration is refused.
 fn decal_vertices(
@@ -94,7 +94,7 @@ fn decal_vertices(
         (a.register, a.data_type, a.offset) == (VertexRegister::POSITION, VertexDataType::Float3, 0)
     });
     let packed = layout.attributes.iter().any(|a| {
-        matches!(a.register.0, 1 | 3)
+        (1..16).contains(&a.register.0)
             && a.data_type == VertexDataType::NormPacked3
             && a.offset == 12
     });
@@ -451,13 +451,19 @@ mod tests {
     }
 
     #[test]
-    fn packed_semantic_at_v1_decodes_from_the_same_offset() {
+    fn packed_semantic_decodes_at_each_non_position_register() {
         let mut layout = declaration();
-        layout.attributes[1].register = VertexRegister(1);
-        let vs = [vertex([2., -1., 7.], 1)];
-        let got = decal_vertices(&layout, &stream(&vs, 16), 1).unwrap();
-        assert_eq!(got[0].position, [2., -1., 7.]);
-        assert_eq!(got[0].diffuse, [1. / 1023., 0., 0.]);
+        let bytes = stream(&[vertex([2., -1., 7.], 1)], 16);
+        for register in 1..16 {
+            layout.attributes[1].register = VertexRegister(register);
+            let got = decal_vertices(&layout, &bytes, 1).unwrap();
+            assert_eq!(got[0].position, [2., -1., 7.]);
+            assert_eq!(got[0].diffuse, [1. / 1023., 0., 0.]);
+        }
+        for register in [0, 16] {
+            layout.attributes[1].register = VertexRegister(register);
+            assert_eq!(decal_vertices(&layout, &bytes, 1), Err("vertex declaration"));
+        }
     }
 
     #[test]

@@ -2,10 +2,9 @@
 //! `d3d::DrawAdmission` in boot. On with the native renderer
 //! (`impl.render.native`).
 //!
-//! The observers do not suppress guest code. `0x00044040` still binds every
-//! texture, writes every duplicate marker and emits every draw. The admission
-//! replaces only a fully resolved D3D draw packet, after two-copy recording
-//! succeeds. Sorted handlers `0x00041cc0` and `0x000423c0` are object/layer
+//! The callback at `0x00044040` binds textures and marks duplicates. The
+//! per-record hook skips the guest array submission after a native commit.
+//! Otherwise the guest submits the draw through ordered packet admission. Sorted handlers `0x00041cc0` and `0x000423c0` are object/layer
 //! replays, not decals, and are deliberately left alone.
 //!
 //! Refusals are tallied by reason; the examined, admitted and refused
@@ -136,8 +135,7 @@ fn end() {
     CURRENT.with(|c| c.set(None));
 }
 
-use points::scene_effects::{DECAL_ITEM_GEOMETRY, DECAL_RENDER_END};
-const DECAL_ITEM_NEXT: u32 = 0x0004_4195;
+use points::scene_effects::{DECAL_ITEM_GEOMETRY, DECAL_ITEM_NEXT, DECAL_RENDER_END};
 const GEOMETRY_ALLOCATOR: u32 = 0x0050_9448;
 
 fn item_range(mem: &dyn GuestMemory, record: u32) -> Option<(u32, u32)> {

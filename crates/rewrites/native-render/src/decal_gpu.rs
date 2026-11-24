@@ -307,11 +307,11 @@ fn pixel_options(mode: Mode, shader: &ShaderSnapshot) -> PixelOptions {
 
 // D3D derives this mask from the resolved declaration. Position is v0.
 fn packed_location(provided: u16) -> Result<u32, &'static str> {
-    match provided {
-        0b0011 => Ok(1),
-        0b1001 => Ok(3),
-        _ => Err("vertex inputs"),
+    let packed = provided & !1;
+    if provided & 1 == 0 || !packed.is_power_of_two() {
+        return Err("vertex inputs");
     }
+    Ok(packed.trailing_zeros())
 }
 
 fn vertex_attributes(packed: u32) -> [wgpu::VertexAttribute; 2] {
