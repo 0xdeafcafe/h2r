@@ -282,9 +282,6 @@ fn entry_at(mem: &dyn GuestRead, item: u32, sorted: Sorted) -> R<(LightEntry, Ve
             LightPose::Rows(0..0),
         )
     };
-    if flags & 1 << 6 != 0 && word(mem, at(rec, 0x14)?)? != 0 && word(mem, at(data, 8)?)? != 0 {
-        return Err(Cause::Subparts);
-    }
     let part = index(ptr(mem, data, 4)?, argument & 0xff, 0x48)?;
     let part_flags = half(mem, at(part, 2)?)?;
     let first_index = u32::from(half(mem, at(part, 6)?)?);
@@ -292,12 +289,23 @@ fn entry_at(mem: &dyn GuestRead, item: u32, sorted: Sorted) -> R<(LightEntry, Ve
     if index_count < 3 || first_index + index_count > word(mem, at(data, 0x20)?)? {
         return Err(Cause::Range);
     }
+    let strip = flags & (1 << 9) != 0 && part_flags & 8 == 0;
+    if flags & (1 << 6) != 0 {
+        let bitmap = word(mem, at(rec, 0x14)?)?;
+        if bitmap != 0 {
+            let spans = crate::layout::world_ranges::emissions(mem, data, part, flags, bitmap, strip)
+                .map_err(|_| Cause::Subparts)?;
+            if spans.as_slice() != [first_index..first_index + index_count] {
+                return Err(Cause::Subparts);
+            }
+        }
+    }
     material(mem, shader)?;
     let rows = match pose {
         LightPose::Rows(_) => record_rows(mem, record).map_err(|_| Cause::Pose)?,
         _ => Vec::new(),
     };
-    let topology = if flags & 1 << 9 != 0 && part_flags & 8 == 0 {
+    let topology = if strip {
         Topology::Strip
     } else {
         Topology::List
@@ -713,6 +721,35 @@ mod tests {
             entry(&m, ITEMS, sorted(0)).unwrap().0.stream.topology,
             Topology::Strip
         );
+    }
+
+    #[test]
+    fn a_light_accepts_visible_subparts_only_when_the_emitter_draws_one_whole_part() {
+        let mut m = fixture();
+        let rec = RENDER_RECORDS + RENDER_RECORD_SIZE;
+        let (bitmap, descriptors) = (0x0067_0000, 0x0068_0000);
+        m.w(rec, 1 << 6);
+        m.w(rec + 0x14, bitmap);
+        m.w(DATA + 8, 33);
+        m.w(DATA + 12, descriptors);
+        set_half(&mut m, PARTS + 10, 31);
+        set_half(&mut m, PARTS + 12, 2);
+        m.w(descriptors + 31 * 8, 2 << 16);
+        m.w(descriptors + 32 * 8, 2 | 4 << 16);
+        m.w(bitmap, 1 << 31);
+        m.w(bitmap + 4, 1);
+        let part = entry(&m, ITEMS, sorted(0)).unwrap().0;
+        assert_eq!((part.stream.first_index, part.stream.index_count), (0, 6));
+
+        m.w(bitmap, 0);
+        assert_eq!(entry(&m, ITEMS, sorted(0)), Err(Cause::Subparts));
+        m.w(bitmap, 1 << 31);
+        m.w(rec, (1 << 6) | (1 << 9));
+        set_half(&mut m, PARTS + 2, 0);
+        assert_eq!(entry(&m, ITEMS, sorted(0)), Err(Cause::Subparts), "two separate strips");
+        m.w(bitmap + 4, 0);
+        m.w(descriptors + 31 * 8, 6 << 16);
+        assert_eq!(entry(&m, ITEMS, sorted(0)).unwrap().0.stream.topology, Topology::Strip);
     }
 
     #[test]
