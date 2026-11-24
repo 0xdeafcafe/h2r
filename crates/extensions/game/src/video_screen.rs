@@ -895,9 +895,9 @@ mod tests {
         let lod = m.store().handle::<u32>(LOD_DISTANCE.key);
         assert_eq!(press(&m, LIST, row), Chosen::Open(picker::NAME));
         let pick = picker::current().unwrap();
-        assert_eq!(pick.values, ["Retail", "0.5x", "1x", "1.5x", "2x", "3x", "4x"]);
-        assert_eq!(pick.values[pick.current], "1x");
-        assert_eq!(lod.get(), 2, "opening leaves the current value alone");
+        assert_eq!(pick.values, ["Retail", "0.5x", "1x", "1.5x", "2x", "3x", "4x", "Highest"]);
+        assert_eq!(pick.values[pick.current], "Highest");
+        assert_eq!(lod.get(), crate::setting_defs::LOD_HIGHEST, "opening leaves the current value alone");
         (pick.set)(3);
         assert_eq!(lod.get(), 3);
         assert_eq!(drawn(&m, LIST, row), s("LOD Distance", "1.5x"));

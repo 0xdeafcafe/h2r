@@ -69,6 +69,7 @@ impl PartRange {
 
 struct ModelCoverage {
     display_parts: HashMap<u16, Vec<(u8, u32)>>,
+    node_maps: Vec<Vec<u8>>,
     nodes: usize,
     assets: Arc<palette::GpuAssets>,
     all_parts: bool,
@@ -455,12 +456,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }
     }
 
-    fn draw_display_objects(&self, mem: &mut dyn GuestMemory, view: &View) {
-        let _ = self.draw_display_models(mem, view);
+    fn draw_display_objects(&self, mem: &mut dyn GuestMemory, view: &View, lod: render_bridge::native_scene_lists::LodDetail) {
+        let _ = self.draw_display_models(mem, view, lod);
     }
 
     fn draw_walk(
         &self, mem: &mut dyn GuestMemory, view: Option<(&FrameScene, &View)>, first: usize, run: &[Entry],
+        display_lod: Option<render_bridge::native_scene_lists::LodDetail>,
         consume: &mut dyn FnMut(&mut dyn GuestMemory) -> bool,
     ) -> Result<(), ObjectWalk> {
         use timeline::native::{Metric, Stage, Timer};
@@ -503,12 +505,18 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         } else {
             None
         };
+        let display_draws = display_lod.and_then(|lod| {
+            display::plan_lod(&models, &device, mem, scene, scene_view, run, &draws, lod)
+        });
         let ranges = draws.len();
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
         let promise = d3d::ExternalPlan { stage: Stage::Objects, view, ranges, slots: Vec::new() };
         let batch = u64::from(device.swap_count()).wrapping_add(1);
         let pass = |draws: Vec<(u32, PlannedDraw)>| {
-            Box::new(ObjectsPass { display_only: false, models: Arc::clone(&models), draws, texaccum, view: None, w_clip: None, run: batch })
+            Box::new(ObjectsPass {
+                display_only: false, display_draws: display_draws.clone(),
+                models: Arc::clone(&models), draws, texaccum, view: None, w_clip: None, run: batch,
+            })
         };
         drop(planning);
         // The load the run was planned against, held to the commit.
@@ -1274,7 +1282,8 @@ fn load_model(o: &mut Opened, mode: TagId) -> Result<(CpuModel, ModelCoverage, R
             display_parts.insert(section, keys);
         }
     }
-    let cover = ModelCoverage { display_parts, nodes: geo.nodes.len(), assets, all_parts, ranges };
+    let node_maps = geo.sections.iter().map(|section| section.node_map.clone()).collect();
+    let cover = ModelCoverage { display_parts, node_maps, nodes: geo.nodes.len(), assets, all_parts, ranges };
     let cpu = CpuModel { lit, normalization: o.normalization.clone().flatten() };
     Ok((cpu, cover, geo))
 }
@@ -1514,6 +1523,9 @@ fn object_vertex_program(o: &mut Opened, vs: TagId, geometry: u16, influences: u
 /// order.
 struct ObjectsPass {
     display_only: bool,
+    /// Alternative geometry for the display. The original run still owns
+    /// all guest writes and is the only geometry sent to the reference.
+    display_draws: Option<Vec<(u32, PlannedDraw)>>,
     models: Arc<Models>,
     /// The planned draws with their model index.
     draws: Vec<(u32, PlannedDraw)>,
@@ -1535,7 +1547,7 @@ struct ObjectsPass {
 impl d3d::ExternalPass for ObjectsPass {
     fn display_only(&self) -> bool { self.display_only }
 
-    fn replays_scene(&self) -> bool { self.display_only }
+    fn replays_scene(&self) -> bool { true }
 
     fn batch_key(&self) -> Option<u64> { Some(self.run) }
 
@@ -1563,13 +1575,23 @@ impl d3d::ExternalPass for ObjectsPass {
     fn record_draws(
         &mut self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
     ) -> Option<Result<d3d::backend::ExternalDraws, &'static str>> {
-        Some(self.packets(t, request))
+        if t.copy == d3d::TargetCopy::Display
+            && let Some(draws) = &self.display_draws
+            && let Ok(mut packets) = self.packets(t, request, draws, false)
+        {
+            // Ranges describe the guest run represented by these packets.
+            packets.ranges = self.draws.len();
+            return Some(Ok(packets));
+        }
+        Some(self.packets(t, request, &self.draws, true))
     }
 }
 
 impl ObjectsPass {
     fn packets(
         &self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
+        draws: &[(u32, PlannedDraw)],
+        report_missing: bool,
     ) -> Result<d3d::backend::ExternalDraws, &'static str> {
         let constants = self.view.ok_or("object view constants unavailable")?;
         let texaccum = match self.texaccum {
@@ -1586,19 +1608,23 @@ impl ObjectsPass {
         }
         let mut lit = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
         let lit = lit.as_mut().ok_or_else(|| {
-            for (_, draw) in &self.draws {
-                d3d::scene_stage::residency::missing_object(draw.instance);
+            if report_missing {
+                for (_, draw) in draws {
+                    d3d::scene_stage::residency::missing_object(draw.instance);
+                }
             }
             "planned object geometry unavailable"
         })?;
-        let mut missing = self.draws.iter().filter(|(model, draw)| !lit.has_draw_assets(*model, draw)).peekable();
+        let mut missing = draws.iter().filter(|(model, draw)| !lit.has_draw_assets(*model, draw)).peekable();
         if missing.peek().is_some() {
-            for (_, draw) in missing {
-                d3d::scene_stage::residency::missing_object(draw.instance);
+            if report_missing {
+                for (_, draw) in missing {
+                    d3d::scene_stage::residency::missing_object(draw.instance);
+                }
             }
             return Err("planned object geometry or material unavailable");
         }
-        if self.draws.iter().any(|(_, d)| d.indices.is_empty()) {
+        if draws.iter().any(|(_, d)| d.indices.is_empty()) {
             return Err("planned object indices empty");
         }
         let view = ViewInputs {
@@ -1608,7 +1634,7 @@ impl ObjectsPass {
             z_scale: request.z_scale,
             w_clip: self.w_clip,
         };
-        let draws = lit.draws(&t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, &view, request.projection_factor(t.copy), &self.draws, texaccum)?;
+        let draws = lit.draws(&t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, &view, request.projection_factor(t.copy), draws, texaccum)?;
         crate::native_layers_glue::clip_packets(draws, request, t.size)
     }
 }
@@ -1663,6 +1689,7 @@ mod tests {
         use d3d::ExternalPass;
         let mut pass = ObjectsPass {
             display_only: false,
+            display_draws: None,
             models: Arc::new(Models::default()),
             draws: Vec::new(),
             texaccum: None,

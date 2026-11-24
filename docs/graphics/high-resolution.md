@@ -149,10 +149,10 @@ The playerless Theater observer has the whole BSP and object array. It
 uses the same Hor+ lens for projection and its own frustum test on both.
 See [the host film view](../game/film-format.md#choosing-a-players-view).
 
-In offline play with the default LOD Distance, timings above 480 lines include the cost
-of retaining more detailed models and structure geometry. To compare raster
-cost at different resolutions with the original detail choices, select
-**Retail** at every resolution. Record both settings with the timings.
+**Highest** requests the finest model tiers at any resolution. At **1x**,
+higher resolutions also increase projected sizes in the single-copy
+structure walks. To compare raster cost with retail geometry choices,
+select **Retail** at every resolution. Record both settings with the timings.
 [Lab benchmarks](../runtime/lab.md#--serve-and-bench).
 
 ## Single-copy readbacks
@@ -722,12 +722,18 @@ independently of the recorded guest. The Video row itself writes its label
 into guest memory. Local films record each size the row or picker observes so
 replaying a trip through Settings shows the same choices on another monitor.
 See [film playback](../game/film-format.md#choosing-a-players-view).
-For protected sessions, the guest
-uses retail LOD distances independent of the viewer's output height or
-LOD preference. Older films that record the scalar render scale and LOD
-selection reproduce the corresponding startup multiplier. A legacy film's
-startup record cannot describe a later change to either setting. In offline
-single-copy play, guest readbacks still sample the display raster.
+Protected sessions keep retail geometry selection on the guest and
+reference path. The native opaque object pass builds supported display
+sections on a private overlay and submits them to the display attachments.
+The overlay keeps the guest object pose, lighting cache, palette and
+residency writes private. Marker lookup reads the live object's node
+matrices, and film and lockstep checkpoints hash the live arena. Older
+films with a scalar render scale and LOD selection reproduce that startup
+multiplier on the reference. In offline single-copy play, guest readbacks
+sample the display raster.
+[Private model sections](../../crates/rewrites/render-bridge/src/native_scene_lists/setup.rs),
+[marker lookup](../../crates/rewrites/engine/src/sim_native/marker.rs),
+[arena hash](../../crates/extensions/lockstep/src/lib.rs).
 
 The observer produces the vertical field of view from player control.
 Aim search and shot assistance use weapon tag angles and zoom, and the

@@ -394,6 +394,7 @@ pub struct ScaledBackend<R: Backend, V: ScaleView<R>> {
     single_copy: bool,
     /// The sealed game frame currently owns the shared images, including at 1x.
     scene_active: bool,
+    keep_display_copy: bool,
     /// Shadow levels a native E3 private draw repeats into tiles at the E3
     /// factor while the scene is active (`private_scene`). Empty otherwise.
     scene_tiles: Vec<R::Surface>,
@@ -527,6 +528,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
         Ok(Self {
             single_copy,
             scene_active: false,
+            keep_display_copy: false,
             scene_tiles: Vec::new(),
             scene_coherent: Vec::new(),
             reference,
@@ -639,11 +641,18 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
         shadow_scale(self.scale.vertical_rounded(), lighting)
     }
 
+    /// Keep the reference and display distinct at the same raster size so
+    /// display geometry can differ without changing guest readbacks.
+    pub fn keep_display_copy(&mut self) {
+        self.keep_display_copy = true;
+    }
+
     /// Whether frame-size display surfaces carry a distinct raster, lighting
     /// or an anamorphic presentation alongside the exact reference.
     fn awake(&self) -> bool {
         self.scale != RenderScale::ONE || self.shadow_factor() > 1
-            || (!self.single_copy && (self.anamorphic_guest_frame() || self.lighting.is_relight()))
+            || (!self.single_copy && (self.keep_display_copy
+                || self.anamorphic_guest_frame() || self.lighting.is_relight()))
     }
 
     /// Takes the wanted scale and lighting at a frame boundary.

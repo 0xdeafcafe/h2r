@@ -139,57 +139,50 @@ reads only AL: non-zero with view kind 1 re-runs the same index.
 
 ### Projected size and level of detail
 
-At 1920 rendered lines, a sphere that spans 10 guest pixels counts as 40
-pixels for visual detail. Choosing 1.5x on the Video screen makes that 60.
-`setting_defs::lod_pixel_multiplier` multiplies the active target height
-divided by 480 by the player's LOD Distance during offline play. Protected
-sessions use a fixed guest geometry multiplier independent of display
-resolution. See [determinism](high-resolution.md#determinism). The guest projection already
-accounts for the viewport and FOV, including split screen. Retail selects
-the original pixel size at every resolution. See the
+**Highest** selects the finest model tier for the active permutation. The
+MODE tag numbers it 5 because its tiers run from coarsest to finest.
+At **1x** and 1920 rendered lines, a sphere that spans 10 guest pixels
+counts as 40 pixels for visual detail. **1.5x** makes that 60. The guest
+projection accounts for the viewport and FOV, including split screen.
+**Retail** uses the original distances and pixel sizes.
 [Video settings](../game/settings-menu.md#video-screen).
 
-- **Menu model widgets.** A model widget's view (the Choose Profile and
-  Appearance previews; `0x002b0e12` calls `0x0002c560`) reaches the
-  record reset through `0x0002bcd0` and `0x00031c80`, the same caller
-  (`0x00031ef5`) as a world view. `lod_distance.rs` marks the span from
-  `UI_MODEL_VIEW_CALL` to `UI_MODEL_VIEW_RETURN` in its guest words, and
-  `reset_view` writes factor 1.0 there, so the widget's models, records
-  and structure keep retail detail at every resolution and LOD Distance.
-  A reset from any caller other than the three world callers also writes
-  1.0. Under the light frame body (native-light-gather.md, L2) the reset's
-  return address is the body's continuation, so `lod_distance.rs` takes
-  the caller from `light_gather::frame::call_site`, which names
-  `0x00031ef5` while the body makes that call. Test:
-  `a_menu_model_view_keeps_retail_detail_and_the_world_still_scales`.
-- **BSP clusters and placements.** The record reset at `0x0002cb30` samples
-  the LOD factor once per view. Guest and native record builders read that
-  factor from the view's guest memory, including on a render worker. The
-  reset restores any projection saved by an interrupted walk before
-  installing the scaled vertical projection for the two structure walks. The guest
-  walks and the Rust `world_walk` rewrite read the same value. A placement's
-  world-space radius still decides whether to apply its small-object
-  factor. The adjusted pixel size controls its fade and zero-alpha cull.
-  Each emitted record stores a size byte, saturated at 255.
-- **Object models.** The object walk at `0x00133720` restores the original
-  projection. A model's detail tier follows its camera distance, not its
-  projected size. `0x00133790` passes the camera-to-centre length times
-  `0x004b9dcc` to `0x0004bcc0`, and the chooser at `0x0004c450` compares it
-  with the model's cutoffs at `hlmt + 0x34`, world units, farthest first.
-  The guest chooser and the Rust `native_scene_lists/setup/sections.rs`
-  divide that distance by the factor, so at 1920 lines a model 40 units
-  away picks the detail retail gives it at 10. Both preserve the transition
-  hysteresis and resident-section fallback. The material record gets its
-  own scaled size byte. For models with pose-dependent sections
-  (`hlmt + 0xc4`), section selection keeps the retail distance. The
-  selected sections can clear an object's dirty bit and trigger a shared
-  animation update at `0x000bd7b2`. Object lighting uses the original
-  projected size because effects read its cache on the game tick.
-- **Other view consumers.** Lights and shadow casters compete for a fixed
-  budget by relative projected size. Billboard rotation needs both original
-  projection axes. Decorator detail and particle fades compare camera
-  distance with authored world distances. These consumers keep their
-  retail inputs, as do object distance fades and frustum tests.
+- **View setup.** The record reset at `0x0002cb30` samples LOD Distance
+  into the render context's guest words. Choose Profile and Appearance
+  reach the world reset caller `0x00031ef5` through `0x0002bcd0` and
+  `0x00031c80`. The Rust light frame body identifies that caller through
+  `light_gather::frame::call_site`. The display and exact reference each
+  have a latched selection. The reference uses the original projection
+  and geometry, including retail detail for menu widgets.
+- **BSP clusters and placements.** In single-copy rendering, numeric
+  multipliers scale the projection for the guest and Rust `world_walk`
+  record builders. A placement's world-space radius still decides whether
+  to apply its small-object factor. Its projected size controls the fade
+  and zero-alpha cull, and the record stores a size byte saturated at 255.
+  Highest leaves projected sizes at their original values. The reset
+  repairs an interrupted walk's projection, and object setup restores it
+  before object lighting computes its pixel radius.
+- **Object models.** The chooser at `0x0004c450` compares the
+  camera-to-centre distance to the model's cutoffs at `hlmt + 0x34`.
+  Numeric choices divide that distance by the multiplier. Highest selects
+  the finest tier directly. Shared setup keeps retail selection for
+  pose-dependent sections (`hlmt + 0xc4`). Their render setup can clear the
+  live object's dirty bit and evaluate shared node matrices at
+  `0x000bd7b2`. The native opaque object pass can instead build display
+  sections and palettes against a private overlay. It uses the mounted
+  model's node maps even when the guest has yet to stream those sections.
+  The pass replaces complete supported objects in the same sorted run.
+  Draws outside that coverage use their original records.
+  [Determinism](high-resolution.md#determinism).
+- **First person and decorators.** First-person setup starts each viewmodel
+  at the finest tier and uses its own pose slots. Native first-person draws
+  consume those records. Model decorators draw the geometry authored for
+  each placed permutation. Their material detail and distance fades are
+  separate from model section selection.
+  [Decorator layout](native-decorators.md).
+- **Other view consumers.** Lights and shadow casters rank projected sizes
+  within fixed budgets. Billboard rotation, particle fades, model
+  distance fades and frustum tests use their original inputs.
 
 ### What does not go through the object list
 

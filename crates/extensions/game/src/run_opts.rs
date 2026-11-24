@@ -188,6 +188,8 @@ pub struct DisplayView {
     pub native_target: NativeTarget,
     /// Playback uses the viewer's chosen raster while the guest uses its recorded settings.
     pub viewer_output: Option<NativeSize>,
+    /// Theater display geometry follows the viewer’s Video setting.
+    pub viewer_lod: Option<settings::Setting<u32>>,
     /// Physical presentation rectangle for an internal render resolution.
     pub display_size: Arc<dyn Fn((u32, u32)) -> (u32, u32) + Send + Sync>,
 }

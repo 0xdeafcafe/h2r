@@ -256,13 +256,17 @@ fn registry_with_film(
         replay: None,
     };
     let lockstep_on = lockstep.enabled();
+    #[cfg(feature = "gpu")]
+    let protected = crate::d3d_glue::protected_readbacks(live.is_some(), film.is_some(), lockstep_on);
     let mut late = register_late_for_profile(
         &mut features,
         LateInputs {
             #[cfg(feature = "gpu")]
             view: windowed.then_some(&crate::d3d_glue::DrawingView { scale_stats: None }),
             #[cfg(feature = "gpu")]
-            fixed_lod: None,
+            reference_lod: protected.then_some(1.0),
+            #[cfg(feature = "gpu")]
+            viewer_lod: None,
             #[cfg(feature = "gpu")]
             world_line_present: None,
             rt: &rt,

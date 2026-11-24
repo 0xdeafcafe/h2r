@@ -306,6 +306,7 @@ pub(super) fn host(
     camera: FilmCamera,
     observer: bool,
     host_bots: bool,
+    viewer_lod: settings::Setting<u32>,
 ) -> Result<boot::Host> {
     let mut frames = app::FrameSink::headless().context("creating the offline clip GPU")?;
     let ctx = || boot::d3d_glue::share_context(frames.context());
@@ -344,6 +345,7 @@ pub(super) fn host(
                     Arc::new(move || settings::NativeTarget::windowed(raster()))
                 },
                 viewer_output: Some(raster),
+                viewer_lod: Some(viewer_lod),
                 display_size: Arc::new(|size| size),
             }),
             None,

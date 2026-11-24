@@ -8,7 +8,7 @@ mod objects;
 mod object_lod;
 mod records;
 mod setup;
-pub use setup::{DisplaySection, display_model};
+pub use setup::{DisplayGeometry, DisplaySection, display_model};
 mod transparents;
 
 use std::collections::HashMap;
@@ -34,21 +34,61 @@ fn enabled(switches: &Switches) -> bool {
     hooks::switches::native_render_on(switches)
 }
 
-/// Guest word holding the multiplier sampled when this view starts building records.
+/// The view's requested geometry detail. The MODE tag numbers its tiers
+/// from coarsest to finest, opposite the "LOD 0" convention in most tools.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LodDetail {
+    Retail,
+    Scaled(f32),
+    Highest,
+}
+
+impl LodDetail {
+    pub const fn pixel_multiplier(self) -> f32 {
+        match self {
+            Self::Scaled(value) => value,
+            Self::Retail | Self::Highest => 1.0,
+        }
+    }
+
+    pub const fn guest_word(self) -> u32 {
+        match self {
+            Self::Highest => 0x7fff_ffff,
+            other => other.pixel_multiplier().to_bits(),
+        }
+    }
+
+    fn from_guest_word(word: u32) -> Self {
+        let scale = f32::from_bits(word);
+        match word {
+            0x7fff_ffff => Self::Highest,
+            _ if scale.is_normal() && scale > 0.0 && scale != 1.0 => Self::Scaled(scale),
+            _ => Self::Retail,
+        }
+    }
+}
+
+/// The renderer's two LOD selections, sampled at the same view boundary.
+/// The first word serves the guest and exact reference. The display word
+/// follows it, in the render context's private allocation.
 #[derive(Clone, Copy)]
 pub struct ViewLodScale(u32);
 
 impl ViewLodScale {
+    pub const MODEL_VIEW: u32 = 1 << 31;
+
     pub const fn new(guest_word: u32) -> Self {
         Self(guest_word)
     }
 
-    /// Older snapshots and views before their first record reset use retail pixels.
-    pub fn read(self, m: &dyn GuestMemory) -> f32 {
-        match m.f32(self.0) {
-            Ok(value) if value.is_finite() && value > 0.0 => value,
-            _ => 1.0,
-        }
+    pub fn read(self, m: &dyn GuestMemory) -> LodDetail {
+        m.u32(self.0).map_or(LodDetail::Retail, LodDetail::from_guest_word)
+    }
+
+    pub fn display(self, m: &dyn GuestMemory) -> LodDetail {
+        m.u32(self.0 + 4).map_or(LodDetail::Retail, |word| {
+            LodDetail::from_guest_word(word & !Self::MODEL_VIEW)
+        })
     }
 }
 
@@ -106,7 +146,7 @@ impl Feature for ScaledSceneLists {
         install(
             b,
             Seam::Function(&points::OBJECT_RENDER_SETUP, 20),
-            move |m, cpu| setup::build(m, cpu, scale.map_or(1.0, |scale| scale.read(m))),
+            move |m, cpu| setup::build(m, cpu, scale.map_or(LodDetail::Retail, |scale| scale.read(m))),
         );
         install(
             b,
@@ -115,7 +155,7 @@ impl Feature for ScaledSceneLists {
                 points::OBJECT_RECORD_APPENDED,
                 SceneList::ObjectRecord,
             ),
-            move |m, cpu| records::build(m, cpu, scale.map_or(1.0, |scale| scale.read(m))),
+            move |m, cpu| records::build(m, cpu, scale.map_or(1.0, |scale| scale.read(m).pixel_multiplier())),
         );
         install(
             b,
@@ -439,18 +479,18 @@ mod tests {
         let address = 0x10000;
         let scale = ViewLodScale::new(address);
         let mut live = FlatMemory::new(address, 4);
-        assert_eq!(scale.read(&live), 1.0);
+        assert_eq!(scale.read(&live), LodDetail::Retail);
         live.set_f32(address, 6.0).unwrap();
         let render_snapshot = live.clone();
         live.set_f32(address, 0.5).unwrap();
-        assert_eq!(scale.read(&live), 0.5);
-        assert_eq!(scale.read(&render_snapshot), 6.0);
+        assert_eq!(scale.read(&live), LodDetail::Scaled(0.5));
+        assert_eq!(scale.read(&render_snapshot), LodDetail::Scaled(6.0));
 
         for invalid in [-1.0, f32::NAN, f32::INFINITY] {
             live.set_f32(address, invalid).unwrap();
-            assert_eq!(scale.read(&live), 1.0);
+            assert_eq!(scale.read(&live), LodDetail::Retail);
         }
-        assert_eq!(scale.read(&FlatMemory::new(address + 4, 4)), 1.0);
+        assert_eq!(scale.read(&FlatMemory::new(address + 4, 4)), LodDetail::Retail);
     }
 
     #[test]
