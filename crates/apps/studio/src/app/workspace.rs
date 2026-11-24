@@ -965,7 +965,7 @@ fn named_raws(root: &Path) -> Result<HashSet<String>, String> {
         }
         // A map's extent table names every raw file its map file is
         // served from.
-        if let Ok(x) = repo::skeleton::Extents::parse(&text) {
+        if let Ok(x) = tags::repo::skeleton::Extents::parse(&text) {
             named.extend(x.extents.into_iter().map(|e| e.hash));
         }
     }

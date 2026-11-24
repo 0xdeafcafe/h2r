@@ -1300,6 +1300,7 @@ fn run_configured(
         #[cfg(feature = "test-maps")]
         forge_glue::nav::install(Box::new(nav_builder::AppNav::disc(opts.disc.clone())));
         // The lobby's map variant builds the same way (forge_maps.rs).
+        #[cfg(feature = "test-maps")]
         game::map_variant::install(Box::new(forge_maps::DiscMaps::new(
             opts.disc.clone(),
             opts.data_root.clone(),
