@@ -21,6 +21,7 @@ fn the_native_renderers_points_are_discovered_functions() {
     let entries = analyze::dispatch::entries(&xbe, &analysis);
     for p in [
         &points::LAYER_DRAW,
+        &points::DECORATOR_GRID,
         &points::SCENE_TRANSPARENTS,
         &points::VIEW_WINDOW_BUILD,
         &points::TRANSPARENT_GEOMETRY,

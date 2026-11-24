@@ -5,7 +5,7 @@ use super::*;
 use crate::layout::skip::MAX_ITEMS;
 use engine::render_loop::occlusion::guest::MAIN_VIS;
 
-pub(super) const VISIBLE_COUNT: u32 = 0x0050_9438;
+pub const VISIBLE_COUNT: u32 = 0x0050_9438;
 const DRAW_DISTANCE: u32 = 0x0052_5930;
 const LEAF_HALF_SIZE: u32 = 0x0052_5924;
 const POSITIVE_EPSILON: u32 = 0x0045_dbdc;
@@ -13,7 +13,7 @@ const NEGATIVE_EPSILON: u32 = 0x0045_ddfc;
 const PLANE_SCALE: u32 = 0x0043_f9d0;
 
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Cell {
+pub struct Cell {
     pub index: u32,
     pub origin: [f32; 3],
 }
@@ -87,24 +87,9 @@ impl Grid<'_> {
     }
 }
 
-/// Rebuild the ordered visible leaf cells and their origins. The draw
-/// encodes an eight-bit slot, so a different cell order or float bit can
-/// change which instance registers the list addresses.
-pub(super) fn matched(
-    mem: &dyn GuestRead,
-    block: u32,
-    camera: [f32; 3],
-    k: &Constants,
-) -> Result<Vec<Cell>, Refusal> {
+/// Rebuild the visible grid from the input view and the BSP's octree.
+pub fn build(mem: &dyn GuestRead, block: u32, camera: [f32; 3]) -> Result<Vec<Cell>, Refusal> {
     let count = word(mem, block, 0x20)? as i32;
-    let guest_count = word(mem, VISIBLE_COUNT, 0)?;
-    if count <= 0 {
-        return if guest_count == 0 {
-            Ok(Vec::new())
-        } else {
-            Err(Refusal::GridMismatch)
-        };
-    }
     let frustum = word(mem, MAIN_VIS, 0)?;
     let mut bounds: [f32; 6] = floats(mem, frustum.checked_add(0xf4).ok_or(Refusal::Unread)?)?;
     let distance = float(mem, DRAW_DISTANCE, 0)?;
@@ -117,6 +102,9 @@ pub(super) fn matched(
         if bounds[2 * axis + 1] > max {
             bounds[2 * axis + 1] = max;
         }
+    }
+    if count <= 0 {
+        return Ok(Vec::new());
     }
     let mut planes = [[0.0; 4]; 6];
     for (i, plane) in planes.iter_mut().enumerate() {
@@ -136,7 +124,7 @@ pub(super) fn matched(
         leaf: float(mem, LEAF_HALF_SIZE, 0)?,
         min_delta: float(mem, NEGATIVE_EPSILON, 0)?,
         max_delta: float(mem, POSITIVE_EPSILON, 0)?,
-        child_scale: k.colour_floor, // [0x0045dbbc], also used in the centre calculation
+        child_scale: float(mem, constant::COLOUR_FLOOR, 0)?,
         visited: 0,
         cells: Vec::new(),
     };
@@ -144,18 +132,25 @@ pub(super) fn matched(
         index: 0,
         origin: floats(mem, block)?,
     };
-    let half = (word(mem, block, 0xc)? as i32 as f32 * k.position) * grid.child_scale;
+    let half = (word(mem, block, 0xc)? as i32 as f32 * float(mem, constant::POSITION, 0)?)
+        * grid.child_scale;
     grid.visit(root, half, 0)?;
-    if grid.cells.len() as u32 != guest_count {
-        return Err(Refusal::GridMismatch);
+    Ok(grid.cells)
+}
+
+/// Check slot indices and all origin bits. Every draw addresses a slot by
+/// its low eight argument bits.
+pub fn matches(mem: &dyn GuestRead, cells: &[Cell]) -> Result<bool, Refusal> {
+    if cells.len() as u32 != word(mem, VISIBLE_COUNT, 0)? {
+        return Ok(false);
     }
-    for (slot, cell) in grid.cells.iter().enumerate() {
+    for (slot, cell) in cells.iter().enumerate() {
         let at = VISIBLE_CLUSTERS + 0x10 * slot as u32;
         if word(mem, at, 0)? != cell.index
             || floats::<3>(mem, at + 4)?.map(f32::to_bits) != cell.origin.map(f32::to_bits)
         {
-            return Err(Refusal::GridMismatch);
+            return Ok(false);
         }
     }
-    Ok(grid.cells)
+    Ok(true)
 }

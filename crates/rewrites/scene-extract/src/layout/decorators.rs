@@ -40,7 +40,7 @@ use frame_scene::Row;
 
 use crate::GuestRead;
 
-mod cells;
+pub mod cells;
 mod placements;
 pub(crate) use placements::{model_items, ModelItem};
 

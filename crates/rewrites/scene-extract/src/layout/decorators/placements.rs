@@ -88,10 +88,11 @@ pub(crate) fn model_items(
     let scenario = word(mem, SCENARIO, 0)?;
     let mut visited = 0;
     let mut levels = std::collections::HashMap::new();
-    for (slot, visible) in cells::matched(mem, block, camera, k)?
-        .into_iter()
-        .enumerate()
-    {
+    let cells = cells::build(mem, block, camera)?;
+    if !cells::matches(mem, &cells)? {
+        return Err(Refusal::GridMismatch);
+    }
+    for (slot, visible) in cells.into_iter().enumerate() {
         let slot = slot as u32;
         let cell = block_record(mem, block, 0x20, visible.index, 0x18)?;
         let count = half(mem, cell, 0x12)? as i16;
