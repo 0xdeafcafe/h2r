@@ -18,7 +18,7 @@ fn animation(frames: i16, static_size: usize, animated_size: usize, static_flags
         anim_type: AnimationType::Base,
         frame_info_type: 0,
         unknown_12: 0,
-        node_count: NODES as i16,
+        node_count: NODES as u8,
         frame_count: frames,
         flags: 0x10,
         unknown_18: [0; 8],
