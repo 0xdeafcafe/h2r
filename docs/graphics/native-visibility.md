@@ -210,6 +210,19 @@ start cluster's row of the first table. Each portal is looked at once. A
 pass that adds nothing ends it. The result is the smallest row closed
 under that rule, whatever the walk's order.
 
+At the mode-2 producer (`0x001733e0`, called by `0x00132152`),
+`render_bridge::native_scene_lists::regions` uses the caller's start
+argument. The sentinel selects an empty list even when the view has a
+resolved start cluster. On the first call for a start, the original
+producer runs. Rust compares the ordered region IDs, the sorted ordinal
+table, both counts and the link from each region to its window. On a
+match, Rust owns those records on subsequent calls with the same start,
+computed row and open-portal bits. A BSP activation or reload clears
+the comparison. Each window's complete camera-dependent payload still
+comes from the guest frustum builder at `0x00163db0`.
+`native_scene_lists_pvs_regions_` counters report comparisons,
+mismatches, native calls and fallbacks.
+
 ### Objects
 
 `visibility::objects::object_set` is `0x00132220` with its per-object

@@ -406,7 +406,7 @@ impl std::fmt::Display for WorldMaterials {
 }
 
 const SCENE_LIST_START: usize = WORLD_SECTION_BASE + WORLD_SECTION_COLUMNS.len();
-const SCENE_LISTS: [&str; 28] = [
+const SCENE_LISTS: &[&str] = &[
     "view_objects",
     "light_objects",
     "object_order",
@@ -417,6 +417,7 @@ const SCENE_LISTS: [&str; 28] = [
     "visible_lights",
     "light_geometry",
     "light_extra_caster",
+    "pvs_regions",
     "transparent_effect",
     "transparent_polygon",
     "transparent_geometry",
@@ -463,6 +464,7 @@ pub enum SceneList {
     VisibleLights,
     LightGeometry,
     LightExtraCaster,
+    PvsRegions,
     TransparentEffect,
     TransparentPolygon,
     TransparentGeometry,

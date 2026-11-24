@@ -25,6 +25,7 @@ fn the_native_renderers_points_are_discovered_functions() {
         &points::TRANSPARENT_GEOMETRY,
         &points::SCENE_CLUSTER_GATHER,
         &points::SCENE_GEOMETRY_GATHER,
+        &points::VIEW_PVS_REGIONS,
         &points::SCENE_OBJECT_ORDER,
         &points::VISIBLE_LIGHT_LIST,
         &points::LIGHT_GEOMETRY_FLAGS,
