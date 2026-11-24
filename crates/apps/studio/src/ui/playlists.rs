@@ -83,17 +83,6 @@ pub fn list(ui: &Ui, app: &mut App, fonts: &Fonts, dialogs: bool, actions: &mut 
         "A multiplayer_hopper.dat: the console's raw image or a downloaded envelope",
     );
     let open = app.hoppers.is_open();
-    let d = ui.begin_disabled_with_cond(!open);
-    if ui.button(format!("{} Save", icon::SAVE)) {
-        save(app, dialogs, actions);
-    }
-    ui.same_line();
-    if ui.button("Save as...")
-        && let Some(p) = save_dialog(dialogs, app)
-    {
-        actions.push(Action::SaveHopperAs(p));
-    }
-    d.end();
     if !open {
         ui.spacing();
         ui.text_wrapped(
@@ -157,15 +146,6 @@ pub fn list(ui: &Ui, app: &mut App, fonts: &Fonts, dialogs: bool, actions: &mut 
     }
 }
 
-/// Save in place, or ask where when the file has no path yet.
-pub fn save(app: &App, dialogs: bool, actions: &mut Vec<Action>) {
-    if app.hoppers.path().is_some() {
-        actions.push(Action::SaveHopper);
-    } else if let Some(p) = save_dialog(dialogs, app) {
-        actions.push(Action::SaveHopperAs(p));
-    }
-}
-
 pub fn open_dialog(dialogs: bool) -> Option<PathBuf> {
     if !dialogs {
         return None;
@@ -187,7 +167,7 @@ pub fn save_dialog(dialogs: bool, app: &App) -> Option<PathBuf> {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "multiplayer_hopper.dat".into());
     rfd::FileDialog::new()
-        .set_title("Save the playlist file as")
+        .set_title("Export the playlist file")
         .add_filter("Playlist file", &["dat"])
         .set_file_name(name)
         .save_file()

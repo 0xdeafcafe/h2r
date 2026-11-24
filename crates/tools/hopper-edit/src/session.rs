@@ -391,9 +391,15 @@ impl HopperSession {
     /// written.
     pub fn save_to(&mut self, path: &Path) -> Result<usize> {
         let file = self.build()?;
-        let doc = self.doc.as_mut().expect("built");
-        let bytes = write_file(&file, doc.format)?;
+        let bytes = write_file(&file, self.format().expect("built"))?;
         std::fs::write(path, &bytes)?;
+        self.mark_saved(path, file);
+        Ok(bytes.len())
+    }
+
+    /// Record a successfully persisted image without writing it again.
+    pub fn mark_saved(&mut self, path: &Path, file: HopperFile) {
+        let Some(doc) = self.doc.as_mut() else { return; };
         if doc.state.hoppers == *doc.state.baseline {
             // No edits: what was written is the base image itself.
             doc.saved = doc.state.base.clone();
@@ -404,7 +410,6 @@ impl HopperSession {
             doc.saved = base;
         }
         doc.path = Some(path.to_owned());
-        Ok(bytes.len())
     }
 
     /// Unsaved changes: edits, or a save undone past.

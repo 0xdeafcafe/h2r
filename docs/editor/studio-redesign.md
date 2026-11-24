@@ -398,8 +398,8 @@ maps = "multiplayer"
 | `hud` | HUD kit YAML (a `hud_kit_core::model::Hud` as data) | HUD kit records | client |
 | `strings` | YAML by name and language | `unic` rows | client |
 | `rules` | `.rules`; `inputs` are joined after the source (CTF and Assault are a header then the shared body) | a compiled script in the rules registry (built: checked at build, read by `workspace::script_registry`; a `rules` item of `core` is a retail type's game) | sim |
-| `variant` | a settings or scripted `.rules` file (built; `.h2variant` is not read yet) | a built-in list entry, in manifest order | sim |
-| `playlist` | a hopper fragment, TOML (`content::playlist::Fragment`): named map lists, playlists and entries by map name or `MapId`, a variant by the key of a matchmaking script | rows of the default hopper (built: parsed and checked; the server reads `workspace::hopper_fragments`) | Live |
+| `variant` | a settings or scripted `.rules` file or a portable `.h2variant` record | the boot list reads script-based entries in manifest order | sim |
+| `playlist` | a TOML hopper fragment (`content::playlist::Fragment`) or an edited `multiplayer_hopper.dat` | the server reads TOML fragments through `workspace::hopper_fragments` | Live |
 | `map` | `map.toml`: `mode` (`fresh`, `onto`), `base`, the new map's `name`, `scenario` and `kits` (`fresh`), and `ground` when it has AI; the items it takes are those whose `maps` names it | a derived map package under `<data>/maps/`, built at prepare, or when first picked if it has `ground` (built: `workspace::prepare`) | sim |
 | `map-patch` | a PPF, IPS or BPS file, and in `inputs` one TOML file with the base's `map` name and `sha256` | a map package with that layer, the one `h2 live maps import` writes for the patch (built) | sim |
 | `convert` | a recipe, `<name>.convert.toml`: a `converter` (`halo1`, `map-pack`) and its `[settings]`; the input is the user's own disc | map packages and campaign files under the data root, at prepare (built: `workspace::convert`, "Conversions") | sim |
@@ -1029,7 +1029,7 @@ checked on a running game.
 | `anim.read {tag, animation, tolerance?, keys?}` or `anim.read {doc, keys?}` | the source reduction and its document ID, or the document's current keys |
 | `anim.key {doc, node, channel, frame, value?, interp?, remove?}` | set or remove a key |
 | `anim.new {tag, name, frames}`, `anim.duplicate {tag, animation, name}` or `anim.duplicate {doc, name}` | create a new animation document |
-| `anim.save {doc, package, mode?, class?, weapon_type?, action?}` | save a map-scoped `.anim.yaml` item in a local package |
+| `anim.save {doc, package?, mode?, class?, weapon_type?, action?}` | save a map-scoped `.anim.yaml` item in the edit target or a specified local package |
 | `anim.check {doc, model?}` | per-node codec quantisation and loop seam, and feet under the model-space ground plane |
 | `anim.retarget {from, to, map?, name?, from_model?, to_model?, preview?}` | retarget an open document onto a graph; the node table and unmatched nodes |
 | `anim.import {file, to?, clip?, map?, name?, to_model?, preview?}` | import a glTF clip onto a graph through the same retarget |

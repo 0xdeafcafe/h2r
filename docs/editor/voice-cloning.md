@@ -177,11 +177,10 @@ trimmed and levelled as `voice.clone.say` does it. The window calls it once
 a frame; `voice.say_batch {wait}` runs it to the end. A row that fails
 (for example, the model not installed yet, whose install starts) fails
 alone with why, and **Say all** asks the failed rows again. **Re-run**
-asks the model again instead of the cache. **Keep all done lines**
-(`App::voice_batch_save`) copies each done row with an output name to
-`art/announcer/<name>.wav` of the checkout (an existing clip only with
-**Replace**), and puts a row with a tag into the edit target package as a
-`sound` item, as `voice.commit` does. The picker for the tag lists the
+asks the model again instead of the cache. The document header's
+**Save** (`App::voice_batch_save`) writes done lines as `sound` items
+of the edit target. Each item's identity is its target sound or clip
+name. The picker for the tag lists the
 open map's dialogue sounds; a tag names a sound, not one permutation.
 
 The voice document adds two rules the API does not have. A row needs an output

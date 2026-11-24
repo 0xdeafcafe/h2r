@@ -24,6 +24,7 @@ mod links_tests;
 mod mods_tests;
 mod packages_tests;
 mod edit_target_tests;
+mod doc_save_tests;
 mod problems_tests;
 mod import_tests;
 mod sound_edit_tests;
@@ -485,7 +486,7 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         m::VARIANT_COPY => c(m::DOC_OPEN, json!({"variant": {"builtin": 0}})),
         m::VARIANT_DELETE => {
             c(m::DOC_OPEN, new_variant);
-            c(m::DOC_SAVE, json!({"doc": "variant"}));
+            app.dispatch(Action::SaveVariant);
         }
         m::VARIANT_IMPORT => {
             c(m::DOC_OPEN, new_variant);

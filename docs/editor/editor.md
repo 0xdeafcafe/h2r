@@ -1067,17 +1067,16 @@ The variant editor of [variants.md](variants.md), in the same windows:
   a bounded number; a setting changed from the type's default is bold,
   and its help and default are on hover. Built-ins are read-only, as in
   the game: Copy makes a named, editable copy.
-- **Inspector**: Save (to the game's save storage under the data root),
-  Revert, Delete, Export... (a portable `.h2variant` file), Import... (a
+- **Inspector**: Revert, Delete for an imported game save, Export... (a portable `.h2variant` file), Import... (a
   file, or pasted text), whether the game would accept it, and the
   changes from the type's defaults.
 
 The schema comes from the disc's `mainmenu` map (the built-in model
 without a disc); save names come from the XBE (`H2_XBE`, else
 `default.xbe` beside the disc image) (`editor_core::variant_sources`).
-Saves go to the runtime's save storage (`U:` under `<data>`), so there is
-no Save As; use Export to share. Every edit undoes; typing a name is one
-step.
+The document header's **Save** writes a `variant` item in the edit
+target. Use **Export...** to share a portable variant file. Typing a
+name is one undo step.
 
 ## Playlists
 
@@ -1087,11 +1086,13 @@ server's copy:
 
 - **Playlists** (the outliner's place): New (an all-zero image, every
   playlist empty), Default lineup (the playlists a Live server serves
-  before any file is published), Open..., Save, Save as..., then the 16
+  before any file is published), Open..., then the 16
   playlists (a mark on those that would not save). Open reads either form
   of `multiplayer_hopper.dat`: the raw 0x162cc0-byte image the console
   caches, or the download envelope (header, size, zlib) the server
-  publishes. Save writes the same form back. An envelope larger than the
+  publishes. The document header's **Save** writes that form as a
+  `playlist` item in the edit target. **File > Export playlist file...**
+  writes a copy. An envelope larger than the
   game's 128 KiB download buffer is refused (the game would keep its
   built-in playlists).
 - **Entries** (centre): the playlist's title (15 bytes) and description

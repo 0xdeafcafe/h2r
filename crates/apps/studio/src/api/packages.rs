@@ -15,12 +15,19 @@ use crate::app::assets::read_set;
 use crate::app::mods;
 use crate::app::package_doc::{self as doc, BaseMap, Refusal};
 
-fn refuse(r: Refusal) -> RpcError {
+pub(super) fn refuse(r: Refusal) -> RpcError {
     match r {
         Refusal::Params(m) => err(code::INVALID_PARAMS, m),
         Refusal::Refused(m) => err(code::REFUSED, m),
         Refusal::Failed(m) => err(code::FAILED, m),
     }
+}
+
+/// Resolve the package for a save without opening the window's picker.
+pub(super) fn save_target(app: &App, package: Option<&str>) -> Result<String, RpcError> {
+    package.map(str::to_owned).or_else(|| app.edit_target()).ok_or_else(|| {
+        err(code::NO_TARGET, crate::app::edit_target::NO_TARGET)
+    })
 }
 
 /// `id`, else the edit target; with neither, `NO_TARGET`.

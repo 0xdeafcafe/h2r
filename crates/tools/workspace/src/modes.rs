@@ -5,9 +5,9 @@
 //!
 //! None of them adds a tag. A script is read by the game when a record
 //! names it, so what the builders do is the part that needs no map: the
-//! script must compile and fit the tick budget, a `variant` must be a
-//! script a list entry can be made of, and a hopper fragment must parse
-//! and name only matchmaking scripts of its package. [`script_registry`]
+//! script must compile and fit the tick budget. Variant items carry a list
+//! script or a portable record, and playlist items carry a fragment or a
+//! hopper image. [`script_registry`]
 //! and [`hopper_fragments`] are what the game and the server read from a set.
 use std::collections::BTreeSet;
 
@@ -67,6 +67,12 @@ pub fn check_rules(job: &Job<'_>) -> Result<(), Failure> {
 }
 
 pub fn check_variant(job: &Job<'_>) -> Result<(), Failure> {
+    if job.item.source.as_deref().is_some_and(|name| name.ends_with(".h2variant")) {
+        no_tag(job)?;
+        return variants::portable::import(&text(job)?)
+            .map(drop)
+            .map_err(|e| e.to_string().into());
+    }
     let ir = script(job)?;
     // A list entry is the record of the script, on a template the game's
     // loader can construct (`variants::portable::record_for`).
@@ -77,6 +83,15 @@ pub fn check_variant(job: &Job<'_>) -> Result<(), Failure> {
 
 pub fn check_playlist(job: &Job<'_>) -> Result<(), Failure> {
     no_tag(job)?;
+    if job.item.source.as_deref().is_some_and(|name| name.ends_with(".dat")) {
+        use live_proto::hopper::{HopperFile, INFLATED_SIZE};
+        let file = if job.source.len() == INFLATED_SIZE {
+            HopperFile::from_image(job.source)
+        } else {
+            HopperFile::parse_legacy(job.source)
+        };
+        return file.map(drop).map_err(|e| e.to_string().into());
+    }
     Fragment::parse(&text(job)?)
         .map(drop)
         .map_err(|e| e.to_string().into())

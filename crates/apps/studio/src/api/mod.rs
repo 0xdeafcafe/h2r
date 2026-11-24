@@ -403,9 +403,9 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::DOC_SAVE,
-        "Save to the document's destination; for a source map the edits are lines in the edit target, and with none set the call answers NO_TARGET",
-        r#"{"doc?":"map|variant|playlists (default: the tool shown)"}"#,
-        r#"{"saved":"boolean","path?":"string","bytes?":"integer","edit_target?":"string","log":"[string]"}"#,
+        "Save a variant, rules script or playlist as an item of the edit target (NO_TARGET when unset). Save a map to its destination or record its edit lines in the edit target",
+        r#"{"doc?":"map|variant|rules|playlists (default: the tool shown)"}"#,
+        r#"{"saved":"boolean","path?":"string","bytes?":"integer","edit_target?":"string","log?":"[string]","reload?":"object|null"}"#,
         r#"{"doc":"map"}"#,
     ),
     def(

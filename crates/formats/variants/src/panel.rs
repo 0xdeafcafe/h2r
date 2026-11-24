@@ -76,6 +76,7 @@ impl Target {
 struct Doc {
     origin: Origin,
     variant: GameVariant,
+    package_source: Option<PathBuf>,
     /// The variant as last loaded or saved.
     base: GameVariant,
     undo: Vec<GameVariant>,
@@ -166,7 +167,7 @@ impl VariantEditor {
     pub fn is_dirty(&self) -> bool {
         self.doc
             .as_ref()
-            .is_some_and(|d| d.origin == Origin::New || d.variant != d.base)
+            .is_some_and(|d| (d.origin == Origin::New && d.package_source.is_none()) || d.variant != d.base)
     }
 
     /// The last status message, `true` for an error.
@@ -199,6 +200,7 @@ impl VariantEditor {
     fn open(&mut self, origin: Origin, v: GameVariant) {
         self.doc = Some(Doc {
             origin,
+            package_source: None,
             base: v.clone(),
             variant: v,
             undo: Vec::new(),
@@ -473,6 +475,21 @@ impl VariantEditor {
         self.status = Some((false, format!("saved as \"{}\"", saved.save_name)));
         self.refresh();
         Ok(())
+    }
+
+    /// The package source the open variant was loaded from or saved to.
+    pub fn package_source(&self) -> Option<&std::path::Path> {
+        self.doc.as_ref()?.package_source.as_deref()
+    }
+
+    /// Keep undo history and set the saved baseline to the open record.
+    pub fn mark_packaged(&mut self, path: PathBuf) {
+        if let Some(doc) = &mut self.doc {
+            doc.package_source = Some(path);
+            doc.origin = Origin::New;
+            doc.base = doc.variant.clone();
+            doc.last = None;
+        }
     }
 
     /// Deletes the open saved variant.

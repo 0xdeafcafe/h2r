@@ -96,10 +96,11 @@ Committing is a separate, explicit step. The announcer's clips are
 `boot::medal_announcer::CLIPS`. `voice.say` with `clip: "<id>"` says what
 that takes (`ready`). `voice.commit {tag}` adds the saved line to the edit target as a
 `sound` item of that `snd!`, and a dataset or weights path is refused.
-`voice.commit {clip}` then copies the saved line to
-`art/announcer/<clip>.wav` in the checkout. It refuses to replace a clip
-that exists unless `replace` is set, does not run `git`, and does not edit
-`CLIPS`: for a new clip the reply gives the entry to add, and a medal
+The document header's **Save** and `voice.commit {clip}` make a
+standalone `sound` item of the edit target. For bundled announcer art,
+`voice.commit {clip, repo}` exports a clip to
+`art/announcer/<clip>.wav` in the specified checkout. An existing
+export needs `replace`. The reply gives the `CLIPS` entry to add, and a medal
 needs its id in `hud_kit_core::huds::superbounce::MEDALS` as well
 ([superbounce.md](../game/superbounce.md), "Medals"). `git add` and the
 commit are the user's.
