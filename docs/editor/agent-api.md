@@ -1393,6 +1393,53 @@ keeping what a tag file or a manifest names); the API's tests
 (`api/tests.rs`) do the same through the dispatcher, and every method's
 example runs in `every_method_in_methods_has_a_test`.
 
+### The browser
+
+`asset.*` is the browser's data (docs/editor/studio-redesign.md, "The
+browser"; `app/assets.rs`). An asset is named by an id: `tag:<group>:<path>`
+(a tag of the tree, or one a package adds), `package:<id>` or
+`item:<package>:<n>` (the n-th item of a package's manifest).
+
+`asset.list {root?, package?, kind?, map?, query?, limit?}` answers
+`{rows, total, limit, truncated, maps, kinds, problems}`. With `root`
+`tags` (the default) a row is one tag path of the tags tree: a tag every
+map holds alike is one row with `variants: []`; where maps hold
+different versions the row's `variants` lists each (`variant`, null for
+the main file, and its `maps`). A tag a package adds is in the same list
+(`new: true`, `origin: "package"`, badge `new in <package>`); a tag an
+edit line of a package on touches has badge `edited by <package>` and
+the packages in `packages`. `kind` is one of `kinds` (Maps, Objects,
+Models, Animations, Bitmaps, Shaders, Effects, Sounds, Screens, HUDs,
+Strings, Other) or a tag group; `map` keeps what that map's manifest
+holds, with the tags a package adds for it; every word of `query` must
+match the path, group, kind or a package id; `package` keeps what that
+package adds or edits. `root` `packages` lists the set (baked, then
+`<data>/packages/`) with on or off and why; with `package` it lists that
+package's items. `root` `live` answers `offline: true`: the server's
+offer is not held. A missing tree is refused with the way to make it
+(`workspace.extract`).
+
+`asset.thumb {asset, out?}` writes a PNG and answers its path: for a
+package's bitmap item with a PNG source. A tag's own picture (a bitmap,
+a model through `model.render`, a waveform, a screen) is not drawn yet
+and answers `not-yet`.
+
+`asset.copy {asset, package, to?}` is Copy into a package: it writes
+`tags/<path>.<group>.yaml` holding only `like: '<group>:<path>'`, adds a
+`tag` item to the package's `package.toml` and rewrites its
+`package.lock`. The package is one under `<data>/packages/` (a baked one
+is refused); the new path is `to`, or the source's with `_copy`; a path
+the tree or the package already has is refused.
+
+```sh
+h2 studio asset.list '{"kind":"Objects","query":"rifle"}'
+h2 studio asset.list '{"root":"packages","package":"pogo"}'
+h2 studio asset.copy '{"asset":"tag:weap:objects\\weapons\\rifle","package":"my-pack"}'
+```
+
+The tests (`api/tests/assets_tests.rs`) run over an invented tree of two
+maps and one package.
+
 ### Errors
 
 The JSON-RPC codes (`-32700` parse, `-32601` no such method, `-32602`
