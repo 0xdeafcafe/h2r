@@ -90,12 +90,7 @@ pub struct Ready {
     /// The structure BSP tag this world was loaded from: what a live
     /// edit's `Section` names.
     bsp_tag: Option<TagId>,
-    /// The BSP's material shaders, by world material: what a live
-    /// shader edit's refresh resolves again ([`refresh_shaders`]).
-    shaders: Vec<TagId>,
-    /// The load had no lightmap group: layer 3 drew unlit
-    /// ([`material_programs`]'s `no_lightmap_group`).
-    no_lightmap_group: bool,
+    layer3: Layer3Materials,
     /// The lightmap pages that decoded at the load, which the program
     /// set holds: a refreshed program's parts may sample only these.
     pages: HashSet<LightmapKey>,
@@ -790,7 +785,7 @@ fn refresh_shaders(key: &BspKey, ready: &Ready, tags: &[u32]) -> Result<(), Stri
     let mut lib = tags::material::ShaderLibrary::read(&mut map).map_err(|e| format!("the shader tags do not read ({e})"))?;
     let edited: Vec<TagId> = tags.iter().map(|&t| TagId(t)).collect();
     let mut known = HashMap::new();
-    let affected = edited_materials(&ready.shaders, &mut |s| shader_edited(&mut lib, &mut known, &edited, s));
+    let affected = edited_materials(&ready.layer3.shaders, &mut |s| shader_edited(&mut lib, &mut known, &edited, s));
     if affected.is_empty() {
         return Ok(());
     }
@@ -822,7 +817,7 @@ fn refresh_shaders(key: &BspKey, ready: &Ready, tags: &[u32]) -> Result<(), Stri
         }
     }
     if !ready.opaque.is_empty() {
-        let mut shaders: Vec<TagId> = affected.iter().filter_map(|&m| ready.shaders.get(usize::from(m)).copied()).collect();
+        let mut shaders: Vec<TagId> = affected.iter().filter_map(|&m| ready.layer3.shaders.get(usize::from(m)).copied()).collect();
         shaders.sort_unstable_by_key(|s| s.0);
         shaders.dedup();
         let fresh = opaque_materials::Library::load(&mut map, &shaders);
@@ -861,8 +856,8 @@ fn refresh_shaders(key: &BspKey, ready: &Ready, tags: &[u32]) -> Result<(), Stri
     };
     let mut decoder = StageDecoder::new(ready.palettes.clone());
     let mut layered = LayeredImages::new();
-    let out = material_programs(&mut map, &mut files, &ready.shaders, &world, &page_ready, &mut decoder,
-        ready.no_lightmap_group, &mut layered, key, Some(&native));
+    let out = material_programs(&mut map, &mut files, &ready.layer3, &world, &page_ready, &mut decoder,
+        &mut layered, key, Some(&native));
     if let Some((why, _)) = out.refused.iter().next() {
         return Err(format!("an edited material no longer compiles ({why})"));
     }
@@ -1338,7 +1333,8 @@ fn load_ready(
     let mut raw = Raw(files);
     let LoadedWorld {
         checksum,
-        world,
+        mut world,
+        per_vertex_placements,
         shaders,
         lightmap_bitmap,
         lightmap_error,
@@ -1393,13 +1389,29 @@ fn load_ready(
     // whose streams and images supply that program.
     let mut decoder = StageDecoder::new(palettes);
     let mut layered_images = LayeredImages::new();
+    // The later shader walks use part descriptors and placement rows. Keep
+    // those before filtering layer 3, without copying any vertex or index data.
+    let stage_world = World {
+        draws: world.draws.clone(),
+        batches: world.batches.clone(),
+        transparents: world.transparents.clone(),
+        placements: world.placements.clone(),
+        ..Default::default()
+    };
+    let opaque = opaque_materials::Library::load(&mut map, &shaders);
+    // Every opaque part, before the layer-3 filter: E3's sun tiles draw
+    // object shadows on the structure (docs/graphics/e3-lighting.md, "Sun
+    // shadows from objects"). Retail never reads it.
+    let sun_world = native_render::sun_casters::SunWorld::new(&world);
+    let layer3 = Layer3Materials::group(&mut world, &shaders, lightmap_bitmap.is_some(), &per_vertex_placements)?;
+    let declared = world.materials().len();
     let out = match lightmap_error {
         Some(reason) => Programs {
             refused: BTreeMap::from([(format!("lightmap group does not decode ({reason})"), world.materials())]),
             ..Default::default()
         },
-        None => material_programs(&mut map, &mut files, &shaders, &world, &page_ready, &mut decoder,
-            lightmap_bitmap.is_none(), &mut layered_images, key, None),
+        None => material_programs(&mut map, &mut files, &layer3, &world, &page_ready, &mut decoder,
+            &mut layered_images, key, None),
     };
     if !key.current() { return Ok(()); }
     let native: HashSet<u16> = out.programs.keys().copied().collect();
@@ -1409,7 +1421,7 @@ fn load_ready(
     let (programs, mut stage_images, refused) = (out.programs, out.images, out.refused);
     let accepts = |d: &WorldDraw| prepared_parts.contains(&(d.owner, d.part));
     if hooks::native_verbose() {
-        log_coverage(&mut map, &world, &shaders, &native, &refused, prepared_parts.len());
+        log_coverage(&mut map, &world, &layer3.shaders, &native, &refused, prepared_parts.len());
         let placed = world.draws.iter().filter(|d| native.contains(&d.material) && matches!(d.owner, Owner::Instance(_)));
         let (with, without) = placed.fold((0, 0), |(w, wo), d| if accepts(d) { (w + 1, wo) } else { (w, wo + 1) });
         eprintln!(
@@ -1431,26 +1443,11 @@ fn load_ready(
         }
     }
     if !key.current() { return Ok(()); }
-    // The later shader walks use part descriptors and placement rows. Keep
-    // those before filtering layer 3, without copying any vertex or index data.
-    let stage_world = World {
-        draws: world.draws.clone(),
-        batches: world.batches.clone(),
-        transparents: world.transparents.clone(),
-        placements: world.placements.clone(),
-        ..Default::default()
-    };
-    let opaque = opaque_materials::Library::load(&mut map, &shaders);
-    let declared = world.materials().len();
-    // Every opaque part, before the layer-3 filter: E3's sun tiles draw
-    // object shadows on the structure (docs/graphics/e3-lighting.md, "Sun
-    // shadows from objects"). Retail never reads it.
-    let sun_world = native_render::sun_casters::SunWorld::new(&world);
     let missed_lit_parts = if relight_requested {
         world.draws.iter().filter(|d| d.lightmap.is_some() && !accepts(d)).count()
     } else { 0 };
     let world = keep_draws(world, &accepts);
-    let parts = part_set(&world, &shaders);
+    let parts = part_set(&world, &layer3.shaders);
     let mut section_parts = HashMap::<Owner, Vec<u8>>::new();
     for &(owner, part) in parts.keys() {
         section_parts.entry(owner).or_default().push(part);
@@ -1462,8 +1459,6 @@ fn load_ready(
         Stage::Bitmap { bitmap, image } => images.get(&(bitmap, image)).cloned(),
         _ => None,
     };
-    let refresh_shaders_list = shaders.clone();
-    let lightmap_bitmap_missing = lightmap_bitmap.is_none();
     let page_set: HashSet<LightmapKey> = lightmaps.keys().copied().collect();
     let gpu = {
         let mut set = ProgramSet::with_layered(&device, &queue, &world, programs, &mut |s| stage_bitmap(&stage_images, s),
@@ -1504,7 +1499,7 @@ fn load_ready(
         sun_world: Some(sun_world),
         relit: AtomicBool::new(gpu.has_relight()),
         retire: Some(retire), opaque, part_bounds, bsp_tag: Some(bsp_tag), gpu: Mutex::new(Some(gpu)), parts: Arc::new(parts), section_parts,
-        shaders: refresh_shaders_list, no_lightmap_group: lightmap_bitmap_missing, pages: page_set,
+        layer3, pages: page_set,
         upload_device: Some((device.clone(), queue.clone())), palettes: decoder.used().clone(),
         fog: OnceLock::new(), water: OnceLock::new(), layers: OnceLock::new(),
         decorators: OnceLock::new(), lights: OnceLock::new(),
@@ -1662,6 +1657,54 @@ fn log_coverage<R: std::io::Read + std::io::Seek>(
     }
 }
 
+/// Layer 3 batches by the program the render record selects. BSP material
+/// indices stay valid for the other passes and for live shader edits. Only
+/// a material drawn with both lighting modes needs an extra program slot.
+#[derive(Default)]
+struct Layer3Materials {
+    shaders: Vec<TagId>,
+    implementations: Vec<usize>,
+}
+
+impl Layer3Materials {
+    fn group(world: &mut World, shaders: &[TagId], has_group: bool, per_vertex: &[bool]) -> Result<Self, &'static str> {
+        let mut slots = Self {
+            shaders: shaders.to_vec(),
+            implementations: vec![if has_group { 0 } else { look::UNLIT_BSP_IMPLEMENTATION }; shaders.len()],
+        };
+        if !has_group { return Ok(slots); }
+        let vertex_lit = |d: &WorldDraw| matches!(d.owner, Owner::Instance(i) if per_vertex.get(i as usize) == Some(&true));
+        let per_pixel: HashSet<_> = world.draws.iter().filter(|d| !vertex_lit(d)).map(|d| d.material).collect();
+        let mut mixed = HashMap::new();
+        for draw in &mut world.draws {
+            let m = usize::from(draw.material);
+            // Keep a malformed section index from aliasing an appended slot.
+            if m >= shaders.len() || draw.material == u16::MAX {
+                draw.material = u16::MAX;
+                continue;
+            }
+            if !vertex_lit(draw) { continue; }
+            if per_pixel.contains(&draw.material) {
+                let slot = match mixed.entry(draw.material) {
+                    std::collections::hash_map::Entry::Occupied(slot) => *slot.get(),
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        let next = u16::try_from(slots.shaders.len()).ok().filter(|&n| n != u16::MAX)
+                            .ok_or("too many world lighting variants for layer 3")?;
+                        slots.shaders.push(shaders[m]);
+                        slots.implementations.push(1);
+                        *entry.insert(next)
+                    }
+                };
+                draw.material = slot;
+            } else {
+                slots.implementations[m] = 1;
+            }
+        }
+        world.regroup_draws();
+        Ok(slots)
+    }
+}
+
 /// What [`material_programs`] gives.
 #[derive(Default)]
 struct Programs {
@@ -1684,11 +1727,10 @@ struct Programs {
 fn material_programs<R: std::io::Read + std::io::Seek>(
     map: &mut Map<R>,
     files: &mut assets::ResourceFiles,
-    shaders: &[TagId],
+    layer3: &Layer3Materials,
     world: &World,
     page_ready: &dyn Fn(LightmapKey) -> Result<(), String>,
     decoder: &mut StageDecoder,
-    no_lightmap_group: bool,
     layered: &mut LayeredImages,
     key: &BspKey,
     only: Option<&HashSet<u16>>,
@@ -1726,29 +1768,23 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
     for m in materials {
         if !key.current() { break; }
         let mut uses_palette = false;
-        let Some(&shader) = shaders.get(usize::from(m)) else {
+        let Some(&shader) = layer3.shaders.get(usize::from(m)).filter(|_| m != u16::MAX) else {
             refused.entry("no shader".into()).or_default().push(m);
             continue;
         };
         // An animated pass compiles at clock 0 and keeps its animation,
         // sampled at the render clock each frame (`GpuWorld::animate_selection`).
         let properties = native_render::layer_pass::instance_properties(&lib, shader);
-        let pass = if no_lightmap_group {
-            let selection = tags::material::PassSelection { lod: 0, layer: look::LIGHTMAP_LAYER, pass: 0,
-                implementation: look::UNLIT_BSP_IMPLEMENTATION };
-            // Resolved with the instance's inputs, which the engine-driven
-            // states read too.
-            let inputs = lib.shader(shader).map(|s| tags::material::EngineInputs::for_shader(&s)).map_err(|e| format!("material: {e}"));
-            inputs.and_then(|inputs| {
-                lib.selected_implementation(shader, selection, Some(&inputs), None).map_err(|e| format!("material: {e}"))
-                    .and_then(|pass| {
-                        look::unlit_bsp_pass_sampled(&pass, &inputs, normalization, &properties).map_err(|r| format!("layer 3: {r:?}"))
-                    })
-            })
-        } else {
-            lib.material(shader, None).map_err(|e| format!("material: {e}"))
-                .and_then(|mat| look::layer3_pass_sampled(&mat, &properties).map_err(|r| format!("layer 3: {r:?}")))
-        };
+        let implementation = layer3.implementations[usize::from(m)];
+        let selection = tags::material::PassSelection { lod: 0, layer: look::LIGHTMAP_LAYER, pass: 0, implementation };
+        let pass = lib.shader(shader).map(|s| tags::material::EngineInputs::for_shader(&s))
+            .map_err(|e| format!("material: {e}"))
+            .and_then(|inputs| {
+                let pass = lib.selected_implementation(shader, selection, Some(&inputs), None)
+                    .map_err(|e| format!("material: {e}"))?;
+                look::selected_bsp_pass_sampled(&pass, &inputs, normalization, &properties)
+                    .map_err(|r| format!("layer 3: {r:?}"))
+            });
         let compiled = pass
             .and_then(|(pass, animation)| {
                 let code = look::world_program(map, lib.metadata(), pass.look.vertex_shader).ok_or("no world-space vertex program")?;
@@ -2043,6 +2079,38 @@ mod tests {
             top.iter().map(|(why, count)| (why.as_str(), *count)).collect::<Vec<_>>(),
             [("no palette", 3), ("missing page", 2), ("no shader", 2), ("linear", 1), ("no program", 1)],
         );
+    }
+
+    #[test]
+    fn one_shader_batches_the_lightmap_and_vertex_lighting_implementations_separately() {
+        let tri = |material| SectionInput {
+            positions: vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]],
+            parts: vec![PartInput { material, triangles: vec![[0, 1, 2]], ..Default::default() }],
+            ..Default::default()
+        };
+        let mut builder = WorldBuilder::new();
+        // Absence of UVs itself never changes the implementation selected by the record.
+        builder.add_section(Owner::Cluster(3), &tri(0), &Placement::IDENTITY, None);
+        builder.add_section(Owner::Instance(0), &tri(0), &Placement::IDENTITY, None);
+        builder.add_section(Owner::Instance(1), &tri(0), &Placement::IDENTITY, None);
+        builder.add_section(Owner::Instance(2), &tri(1), &Placement::IDENTITY, None);
+        let mut world = builder.finish();
+        let mut menu = world.clone();
+        let shaders = [TagId(100), TagId(200)];
+        let modes = [false, true, true];
+        let slots = Layer3Materials::group(&mut world, &shaders, true, &modes).unwrap();
+        assert_eq!(slots.shaders, [TagId(100), TagId(200), TagId(100)]);
+        assert_eq!(slots.implementations, [0, 1, 1]);
+        let draws: Vec<_> = world.draws.iter().map(|d| {
+            assert_eq!(world.batches[d.batch as usize].material, d.material);
+            (d.owner, slots.implementations[d.material as usize])
+        }).collect();
+        assert_eq!(draws, [(Owner::Cluster(3), 0), (Owner::Instance(0), 0),
+            (Owner::Instance(2), 1), (Owner::Instance(1), 1)]);
+        assert_eq!(part_set(&world, &slots.shaders)[&(Owner::Instance(1), 0)], shaders[0].0);
+        let unlit = Layer3Materials::group(&mut menu, &shaders, false, &modes).unwrap();
+        assert_eq!(unlit.shaders, shaders);
+        assert_eq!(unlit.implementations, [3, 3]);
     }
 
     #[test]

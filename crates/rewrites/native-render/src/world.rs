@@ -622,21 +622,8 @@ impl WorldBuilder {
 
     /// Sorts the draws by (material, lightmap, owner) and groups them.
     pub fn finish(mut self) -> World {
-        self.draws
-            .sort_by_key(|d| (d.material, d.lightmap, d.owner, d.first_index));
-        let mut batches: Vec<Batch> = Vec::new();
-        for (i, d) in self.draws.iter_mut().enumerate() {
-            match batches.last_mut() {
-                Some(b) if b.material == d.material && b.lightmap == d.lightmap => b.draw_count += 1,
-                _ => batches.push(Batch {
-                    material: d.material,
-                    lightmap: d.lightmap,
-                    first_draw: i as u32,
-                    draw_count: 1,
-                }),
-            }
-            d.batch = batches.len() as u32 - 1;
-        }
+        let mut batches = Vec::new();
+        sort_and_batch(&mut self.draws, &mut batches);
         let mut bounds = Aabb::EMPTY;
         for d in &self.draws {
             bounds.add(d.bounds.min);
@@ -666,23 +653,38 @@ impl WorldBuilder {
 /// game, the editor, Theater's host view).
 pub fn keep_draws(mut world: World, keep: &dyn Fn(&WorldDraw) -> bool) -> World {
     world.draws.retain(|d| keep(d));
-    world.batches.clear();
-    for (i, d) in world.draws.iter_mut().enumerate() {
-        match world.batches.last_mut() {
+    rebuild_batches(&mut world.draws, &mut world.batches);
+    world
+}
+
+fn sort_and_batch(draws: &mut [WorldDraw], batches: &mut Vec<Batch>) {
+    draws.sort_by_key(|d| (d.material, d.lightmap, d.owner, d.first_index));
+    rebuild_batches(draws, batches);
+}
+
+fn rebuild_batches(draws: &mut [WorldDraw], batches: &mut Vec<Batch>) {
+    batches.clear();
+    for (i, d) in draws.iter_mut().enumerate() {
+        match batches.last_mut() {
             Some(b) if b.material == d.material && b.lightmap == d.lightmap => b.draw_count += 1,
-            _ => world.batches.push(Batch {
+            _ => batches.push(Batch {
                 material: d.material,
                 lightmap: d.lightmap,
                 first_draw: i as u32,
                 draw_count: 1,
             }),
         }
-        d.batch = world.batches.len() as u32 - 1;
+        d.batch = batches.len() as u32 - 1;
     }
-    world
 }
 
 impl World {
+    /// Regroup the resident layer-3 draws after assigning a program slot
+    /// to each (BSP material, lighting implementation) pair.
+    pub fn regroup_draws(&mut self) {
+        sort_and_batch(&mut self.draws, &mut self.batches);
+    }
+
     /// The lightmap pages the draws and the transparent parts use, in a
     /// fixed order: index `i` is layer `i` of the lightmap array.
     pub fn lightmap_keys(&self) -> Vec<LightmapKey> {
