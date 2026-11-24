@@ -38,6 +38,7 @@ mod geometry;
 mod hud;
 mod image_gen;
 mod import;
+mod markers;
 mod mirror;
 mod models;
 mod nav;

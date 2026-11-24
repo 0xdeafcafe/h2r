@@ -15,7 +15,8 @@ use dear_imgui_wgpu::{ExternalTextureId, WgpuRenderer};
 use dear_imguizmo::{GuizmoExt, Mode, Operation};
 use scenario_edit::layers::{LayerId, Layers};
 use scenario_edit::render::{self, Viewport};
-use scenario_edit::volumes::{Frame, VolumeKind};
+use scenario_edit::marker_view;
+use scenario_edit::volumes::Frame;
 use scenario_edit::{BlockKind, Session, geometry};
 
 use crate::app::{Action, App};
@@ -735,11 +736,38 @@ pub(crate) fn upload_placements(
     linked: &BTreeSet<(BlockKind, usize)>,
 ) {
     let session = &app.session;
-    let markers: Vec<_> = session.markers().iter().copied()
+    let shown: Vec<_> = session.markers().iter().copied()
         .filter(|m| app.layers.placement(m.block))
         .collect();
     let selected = session.selection();
     let gameplay = |m: &geometry::Marker| geometry::Gameplay::of(session.scenario(), m);
+    // Spawns, flags and item spawners are the shared game type markers
+    // (scenario_edit::marker_view). What has no marker is left to the
+    // glyphs: a flag of a type the game does not read, and a spawner whose
+    // model draws.
+    let modelled = |m: &geometry::Marker| {
+        session.scene().is_some_and(|s| s.model_of(m).is_some())
+            || m.object.is_some_and(|o| {
+                session.native_models().is_some_and(|n| n.of(o).is_some())
+            })
+    };
+    let item = |m: &geometry::Marker| {
+        session
+            .scenario()
+            .and_then(|s| s.object_tag(m.block, m.index))
+            .map_or(marker_view::game_markers::Item::Equipment, |r| {
+                marker_view::item_of_group(r.group.0)
+            })
+    };
+    let volumes = session.volumes();
+    let placed = marker_view::placed(&shown, gameplay, item, modelled, volumes);
+    let handled: BTreeSet<(BlockKind, usize)> =
+        placed.iter().flat_map(|p| p.members.iter().copied()).collect();
+    let markers: Vec<_> = shown
+        .iter()
+        .copied()
+        .filter(|m| !handled.contains(&(m.block, m.index)))
+        .collect();
     let style = |m: &geometry::Marker| {
         let data = gameplay(m);
         (crate::theme::placement_color(m.block, data.team), data.flag_type)
@@ -752,31 +780,19 @@ pub(crate) fn upload_placements(
             device, &render::glyph_vertices_styled(&markers, &selected, |_| false, style),
         ),
     }
-
-    let mut lines = Vec::new();
-    if app.layers.visible(LayerId::Markers) {
-        let color = crate::theme::layer_color(LayerId::Flags);
-        for outline in geometry::flag_outlines(&markers, gameplay) {
-            let mut segment = |a, b| {
-                for position in [a, b] {
-                    lines.push(render::Vertex {
-                        position,
-                        center: position,
-                        normal: [0.0, 0.0, 1.0],
-                        color,
-                    });
-                }
-            };
-            for edge in outline.windows(2) {
-                segment(edge[0], edge[1]);
-            }
-            if outline.len() > 2 {
-                segment(outline[outline.len() - 1], outline[0]);
-            }
-        }
+    let selected_volume = session.selected_volume();
+    let mut overlays = marker_view::overlays(
+        &placed,
+        &marker_view::game_markers::Palette::default(),
+        |p| {
+            p.volume.is_some_and(|v| selected_volume == Some(v))
+                || p.members.iter().any(|m| selected.contains(m))
+        },
+    );
+    for id in marker_view::layers() {
+        let (faces, lines) = overlays.remove(&id).unwrap_or_default();
+        vp.set_layer_overlay(device, id, &faces, &lines);
     }
-    vp.set_layer_overlay(device, LayerId::Flags, &[], &lines);
-    upload_volumes(vp, device, app);
     upload_collision(vp, device, app);
     nav::upload(vp, device, app);
 }
@@ -863,43 +879,6 @@ fn upload_collision(vp: &mut Viewport, device: &wgpu::Device, app: &App) {
         }
     }
     vp.set_layer_overlay(device, LayerId::ObjectCollision, &[], &lines);
-}
-
-/// The trigger volumes as boxes, one overlay per kind a box is drawn as
-/// (translucent faces and wire edges), the selected box's edges in the
-/// selection colour. Parented volumes are left out: their frame is
-/// relative to an object only a running game places.
-fn upload_volumes(vp: &mut Viewport, device: &wgpu::Device, app: &App) {
-    let empty = scenario_edit::volumes::Volumes::default();
-    let volumes = app.session.volumes().unwrap_or(&empty);
-    let selected = app.session.selected_volume();
-    for kind in VolumeKind::ALL {
-        let (mut faces, mut lines) = (Vec::new(), Vec::new());
-        let color = crate::theme::volume_color(kind);
-        for (i, volume) in volumes.triggers.iter().enumerate() {
-            if !volume.in_world() || !volumes.kinds(i).contains(&kind) {
-                continue;
-            }
-            let (Some(tris), Some(edges)) = (volume.frame.faces(), volume.frame.edges()) else {
-                continue;
-            };
-            faces.extend(render::overlay_vertices(&tris, color));
-            let edge = if selected == Some(i) {
-                crate::theme::VOLUME_SELECTED
-            } else {
-                color
-            };
-            for position in edges.into_iter().flatten() {
-                lines.push(render::Vertex {
-                    position,
-                    center: position,
-                    normal: [0.0, 0.0, 1.0],
-                    color: edge,
-                });
-            }
-        }
-        vp.set_layer_overlay(device, LayerId::Volume(kind), &faces, &lines);
-    }
 }
 
 pub(crate) fn upload_overlays(vp: &mut Viewport, device: &wgpu::Device, app: &App) {

@@ -1,7 +1,7 @@
 # Game type markers
 
-Status: Partly built. The marker set and the area model exist (MK1); the area in the document, the zone read, the drawing in Studio and in the game, the editing and the agent methods are design.
-Code: `crates/formats/game-markers/src/lib.rs` (`Marker::mesh`), `crates/formats/game-markers/src/area.rs` (`Area`). Tests: `crates/formats/game-markers/src/tests.rs`.
+Status: Partly built. The marker set and the area model exist (MK1), and Studio draws the markers and answers `markers.list` and `markers.render` (MK4); the area in the document, the zone read, the drawing in the game and the editing are design.
+Code: `crates/formats/game-markers/src/lib.rs` (`Marker::mesh`), `crates/formats/game-markers/src/area.rs` (`Area`), `crates/tools/scenario-edit/src/marker_view.rs` (`placed`, `overlays`), `crates/apps/studio/src/api/markers.rs`. Tests: `crates/formats/game-markers/src/tests.rs`, `marker_view.rs`, `crates/apps/studio/src/api/tests/markers_tests.rs`.
 Switch: none.
 
 A game type's parts are rows of a scenario with no body: a player
@@ -23,13 +23,13 @@ plus **C**: the retail games as publicly documented.
 
 | Part | Stored as | Forge draws | Studio draws |
 |---|---|---|---|
-| Player spawn | a player starting location: position, facing, team ([forge.md](forge.md) 1.2) | nothing; the Objects tool aims at its place ([forge-map-variants.md](forge-map-variants.md), "Things") | a glyph in its team's colour (`scenario_edit::render::glyph_vertices_styled`) |
-| Flag stand and return, bomb spawn and goal, ball spawn, territory | a netgame flag by type and team; its built-in label (`forge_doc::builtin_label`) | nothing | a glyph by flag type |
-| Hill | netgame flags of types 11 to 18, one hill a type, each flag a corner (`hill_corner`, numbered by hill) | nothing | a glyph a corner and the outline through a hill's corners in authored order (`scenario_edit::geometry::flag_outlines`) |
-| Teleporter | netgame flags of the two teleporter types and a channel | nothing; the Links tool lists them | a glyph, and a line between linked ends |
-| Item spawner | a netgame equipment row | the object it last made | the item's model, else a glyph |
-| Trigger volume, kill trigger, BSP switch | the scenario's trigger volumes and the blocks that name them (`scenario_edit::volumes`) | nothing | a wire box by kind (`LayerId::Volume`) |
-| Script label | a label op on a netgame flag (`forge_doc::GroundLabel`; [rules-engine.md](rules-engine.md#forge-labels)) | a ring in the label's colour painted on the HUD canvas (`Editor::ground_rings`, `forge_glue::marker`) | a glyph |
+| Player spawn | a player starting location: position, facing, team ([forge.md](forge.md) 1.2) | nothing; the Objects tool aims at its place ([forge-map-variants.md](forge-map-variants.md), "Things") | its `Spawn` marker in the team's colour |
+| Flag stand and return, bomb spawn and goal, ball spawn, territory | a netgame flag by type and team; its built-in label (`forge_doc::builtin_label`) | nothing | the marker of its flag type (`marker_view::flag_kind`) |
+| Hill | netgame flags of types 11 to 18, one hill a type, each flag a corner (`hill_corner`, numbered by hill) | nothing | three or more corners of one hill and number are one `Hill` with their hull's area; fewer are a `Hill` with the default area each |
+| Teleporter | netgame flags of the two teleporter types and a channel | nothing; the Links tool lists them | the sender's or receiver's marker (a line between linked ends is not drawn) |
+| Item spawner | a netgame equipment row | the object it last made | the item's model, else its `Item` marker |
+| Trigger volume, kill trigger, BSP switch | the scenario's trigger volumes and the blocks that name them (`scenario_edit::volumes`) | nothing | a `Volume` marker box by kind (`LayerId::Volume`) |
+| Script label | a label op on a netgame flag (`forge_doc::GroundLabel`; [rules-engine.md](rules-engine.md#forge-labels)) | a ring in the label's colour painted on the HUD canvas (`Editor::ground_rings`, `forge_glue::marker`) | not drawn |
 
 A script's zone is made of the flags alone (`game::rules::world::zones`):
 three or more flags of one label and number are the convex hull of
@@ -216,16 +216,26 @@ and place it. Neither holds a shape of its own.
 
 ### Studio
 
-`scenario_edit::marker_view` (new) turns the session's
+`scenario_edit::marker_view` turns the session's
 `geometry::Marker`s, their `Gameplay` (flag type, team, identifier),
 the document's labels and areas, and the trigger volumes into placed
-`game_markers::Mesh`es, and `render::Viewport::set_layer_overlay` takes
-them as the triangle list and line list of the layer each belongs to
-(`SpawnPoints`, `Flags`, `NetgameItems`, `Volume(kind)`). They replace
-the glyphs of those blocks, `flag_outlines` and the volume boxes. The
+`game_markers::Mesh`es (`marker_view::placed`), and
+`render::Viewport::set_layer_overlay` takes them as the triangle list and
+line list of the layer each belongs to (`SpawnPoints`, `Flags`,
+`NetgameItems`, `Volume(kind)`; `marker_view::overlays`). They replace
+the glyphs of those blocks and the volume boxes. A selected marker (any
+corner of a hill, the selected volume) is white. The
 Show popover and `view.layers` hide and show them as they do the layers
 now, and X-ray draws them through walls. `view.snapshot` draws what the
 window draws.
+
+A placement `marker_view` has no marker for keeps its glyph: a flag of a
+type the game does not read, and an item spawner whose model draws (the
+model is the hologram). An item spawner's class is its item's tag group:
+`weap` and `itmc` a weapon, `vehi` and `vehc` a vehicle, else equipment.
+The overlay's blend sets the opacity of the skin (`OVERLAY_ALPHA`) and
+of the lines, so the skin is not `FILL_ALPHA` there and `Mesh::faded`
+does not reach it. The labels of `gameplay_labels` are unchanged.
 
 A trigger volume's box is given by a corner and three full lengths
 (`scenario_edit::volumes`); `marker_view` hands `Solid::Box` the half
@@ -337,9 +347,9 @@ of a window ([agent API rules](../../AGENTS.md)).
 
 | Method | API | Does |
 |---|---|---|
-| `markers.list {kind?, layer?}` | Studio | every marker of the open map: `{id, kind, team, position, facing, label, number, area, bounds, lines, triangles}`, `id` the placement as `scenario.*` names it, `area` as the document writes it or `null`, `bounds` the placed mesh's box |
-| `markers.render {kind?, team?, area?, view?, size?, out?}` | Studio | draws markers with no map, on the grid at the scale of a 0.7 figure: one kind, or with none the contact sheet of `Kind::samples` in red, blue and neutral. Answers `{path, kinds}`. Needs no disc |
-| `markers.area.set {id, area}` | Studio | sets or clears a flag's area; answers the area as stored, or `Area::validate`'s sentence as the refusal |
+| `markers.list {kind?, layer?}` (built) | Studio | every marker of the open map: `{id, kind, layer, team, position, facing, label, number, area, area_from, members, bounds, lines, triangles}`, `id` the placement as `scenario.*` names it (`netgame_flags[3]`; `volume[2]` for a trigger volume), `area` as the document writes it (floats in hex) or `null`, `area_from` `corners` or `default` while the area is derived and not stored, `members` the placements it stands for, `bounds` the placed mesh's box; with `counts` by kind |
+| `markers.render {kind?, team?, area?, view?, size?, out?}` (built) | Studio | draws markers with no map, on the grid at the scale of a 0.7 figure: one kind, or with none the contact sheet of `Kind::samples` in red, blue and neutral (a kind of one fixed colour once). Answers `{path, width, height, view, covered, kinds}`, each of `kinds` with its cell and its centre in pixels. `area` is `{radius, below?, above?}` or `{path, below?, above?}` in plain numbers and is refused with `Area::validate`'s sentence. Needs no disc |
+| `markers.area.set {id, area}` | Studio (MK5) | sets or clears a flag's area; answers the area as stored, or `Area::validate`'s sentence as the refusal |
 | `check.run` | Studio | gains the `markers` check: an area that does not validate; a hill with both corners and an area; a spawn or a marker under the floor or off the map; a hill, territory or site whose area holds no walkable floor; two areas of one label that overlap |
 | `view.layers`, `view.snapshot` | Studio | as they are: the layers now draw the markers |
 | `forge.things` | game | each goal gains `area` |
@@ -377,7 +387,7 @@ lines with tests, M under 2,500.
 | MK1 (built) | **The marker set and the area**: `game_markers`, every `Kind`'s mesh, `Palette`, `Area` with `validate`, `contains`, `outline`, `of_corners` | S | nothing | `every_kind_has_its_lines_faces_and_bounds` gives each kind's lines, triangles and box; a marker is its team's colour; a bow tie, a spike, points in a line and a radius out of range are refused by name; an L holds its inside and not its notch; a hill's corners give the hull the host makes |
 | MK2 | **The area in the document**: `EntryOp::Area`, its wire form, the validator's refusals, `ForgeDoc::areas`, `LabelledThing::area`, `Session::set_area`, `forge.propose` and `forge.things` | S | MK1 | an area op round-trips canonical JSON; a crossing path is refused with `AreaError`'s sentence; an area follows its flag through a swap-remove; a document with an area is format 3 and a map variant; a hill with corners refuses an area |
 | MK3 | **The zone read**: `zones::Shape::Area`, the three-step order, `FakeGame`'s areas, `bots::objective::zones`, `rules.zones` | S | MK2 | on the fake game `koth.rules` scores a player inside a path hill and not one in its notch; a retail hill's zone holds the same points before and after; a lone flag is the default cylinder |
-| MK4 | **Studio draws them**: `scenario_edit::marker_view`, the layers' overlays in place of the glyphs, outlines and volume boxes, `markers.list`, `markers.render` | M | MK1 | on the invented cache each placement block gives its kind and team; a hill's corners give one `Hill`; `markers.render` writes the sheet with every kind of `Kind::samples`; `view.snapshot` of a spawn differs from the background where its mesh projects |
+| MK4 (built) | **Studio draws them**: `scenario_edit::marker_view`, the layers' overlays in place of the glyphs, outlines and volume boxes, `markers.list`, `markers.render` | M | MK1 | on the invented cache each placement block gives its kind and team; a hill's corners give one `Hill`; `markers.render` writes the sheet with every kind of `Kind::samples`; `view.snapshot` of a spawn differs from the background where its mesh projects |
 | MK5 | **Studio edits areas**: the gizmo handles, the inspector rows, `markers.area.set`, **Convert to area**, the `markers` check | M | MK2, MK4 | a rim drag writes one area op; an edge handle adds a point; a refused drag leaves the document as it was; converting a hill's corners gives a zone that holds the same points; the check names an overlapping pair |
 | MK6 | **Forge draws them**: `forge_glue::markers_world` as a world-line source, the fades and the budget, the label text, `render.markers`; the HUD-canvas rings for ground labels removed | M | MK1 | on an invented session every thing gives its marker's lines with the monitor on and none with it off; a marker of another game type is faded; the 257th marker is counted and not drawn |
 | MK7 | **Forge edits areas**: **Edit area**, radius by stick and typed, the path's drop, drag, remove and close, the notices | M | MK2, MK6 | scripted pad input (`forge.input`) that drops four points and closes writes one op with those points; a crossing fifth point is refused with its sentence and the path is unchanged; B leaves the document as it was |

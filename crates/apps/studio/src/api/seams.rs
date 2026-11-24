@@ -140,6 +140,9 @@ pub fn register(api: &mut Api) {
     // model.*: objects' models read, rendered (ground, third and first
     // person) and checked as content, Pogo kit maps included.
     api.register(Box::new(super::models::Models::default()));
+    // markers.*: the open map's game type markers listed, and the marker
+    // shapes rendered on a grid with no map.
+    api.register(Box::new(super::markers::Markers::default()));
     // anim.*: a jmad's animations listed and one posed on the model that
     // uses it (app::anim), the Animation window's own path.
     api.register(Box::new(super::anim::Anim::default()));

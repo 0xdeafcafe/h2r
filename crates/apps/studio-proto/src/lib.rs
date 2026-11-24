@@ -253,6 +253,9 @@ pub mod method {
     pub const VIEW_LIGHTING: &str = "view.lighting";
     pub const VIEW_SNAPSHOT: &str = "view.snapshot";
     pub const VIEW_STATS: &str = "view.stats";
+    // Game type markers (docs/game/gametype-markers.md, "Agent API").
+    pub const MARKERS_LIST: &str = "markers.list";
+    pub const MARKERS_RENDER: &str = "markers.render";
     pub const GEOMETRY_LIST: &str = "geometry.list";
     pub const GEOMETRY_OPEN: &str = "geometry.open";
     pub const GEOMETRY_CLOSE: &str = "geometry.close";

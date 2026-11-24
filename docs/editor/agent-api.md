@@ -295,6 +295,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `scenario` | `blocks`, `list {block}`, `get`, `set {block, index, field, value}`, `add {block, like, position}`, `move {block, index, position, ypr}`, `delete`, `duplicate`, `select` |
 | `volume` | `list {kind?}` (short form `volumes [kind]`), `select {index?, focus?}`, `set {index, origin?, center?, forward?, up?, size?}`, `add {kill?, center?, origin?, forward?, up?, size?}`, `remove {kind?, index}` |
 | `collision` | `surfaces {class?, bsp?, offset?, limit?}`, `at {origin, dir}` or `at {point, within?}` (with `select?`), `select {index?, focus?}`, `objects {block?, index?}` |
+| `markers` | `list {kind?, layer?}`, `render {kind?, team?, area?, view?, size?, out?}`: the game type markers of the open map, and the marker shapes drawn on a grid ([Game type markers](#game-type-markers)) |
 | `nav` | `status`, `back`, `forward`, `go` (the inspector's history); `pathfinding {bsp?, offset?, limit?}`, `bots {wait?, polys?, links?, spots?, offset?, limit?}`, `pick {origin, dir}` or `pick {point, within?}` (with `layer?`, `shown?`, `select?`) or `pick {kind, index, focus?}` (the Navigation layers) |
 | `playtest` | `static {wait?}`: the open map's static checks and each built-in game type's readiness ([playtest.md](playtest.md#static-checks)); `run {preset?, game_types?, seeds?, minutes?, bots?}`, `status {run?}`, `result {run?, game_type?, measure?}`, `cancel {run?}`: headless bot matches on the open map and their measures ([playtest.md](playtest.md#what-a-run-is)) |
 | `variant` | `list`, `get` (with `script`), `set {setting \| option, value}`, `rename`, `copy`, `export`, `import`, `delete` |
@@ -1918,6 +1919,52 @@ the window and the API stay one path.
   commands `Action::Image` runs, which write through the Textures tool's
   `BitmapAction`s ([Generating images](#generating-images)).
 
+## Game type markers
+
+`markers.*` (`api/markers.rs`, a provider) is the agent's view of the
+shapes Studio draws for a game type's parts
+([gametype-markers.md](../game/gametype-markers.md)): player spawns, the
+netgame flags the game reads (flag, bomb, ball, teleporter, territory,
+hill), item spawners and trigger volumes, all from the shared
+`game_markers` set through `scenario_edit::marker_view`.
+
+- `markers.list {kind?, layer?}`: every marker of the open map, whatever
+  the layers show, as `{id, kind, layer, team, position, facing, label,
+  number, area, area_from, members, bounds, lines, triangles}`, with
+  `counts` by kind. `id` is the placement as `scenario.*` names it
+  (`netgame_flags[3]`), or `volume[2]` for a trigger volume (one row a
+  kind it draws as: trigger, kill, BSP switch); a hill of three or more
+  corner flags is one row, `id` its first corner, `members` all of them,
+  `area` the path of their hull and `area_from: "corners"`. `area` is
+  written as the document writes it (floats as hex bits) and `area_from:
+  "default"` marks a flag with no shaped area. `kind` is a name of
+  `markers.render`'s `kinds`; `layer` one of `spawn_points`, `flags`,
+  `netgame_items`, `trigger_volumes`, `kill_volumes`, `bsp_switches`. A
+  name that is neither is `INVALID_PARAMS`. A flag of a type the game
+  does not read has no row. `NO_DOCUMENT` with no map open.
+- `markers.render {kind?, team?, area?, view?, size?, out?}`: the shapes
+  drawn offscreen through the viewport's renderer on a floor grid, to a
+  PNG under the cache directory's `studio/markers/`, never into a Git
+  checkout (`REFUSED`). It needs no map and no disc. With no `kind` it is
+  the contact sheet of every kind in red, blue and neutral (a kind of one
+  fixed colour once); `team` (0 to 7) draws one. `area` (`{radius,
+  below?, above?}` or `{path: [[x, y], ...], below?, above?}`, plain
+  numbers) replaces the area of a hill, territory or siege site, and a
+  refused area gives `Area::validate`'s sentence. `view` is `angled`
+  (default), `top` or `front`, +x to the right; `size` defaults to
+  `[1280, 720]`. The answer is `{path, width, height, view, covered,
+  kinds}`: `covered` counts the pixels that are not the corner's
+  background, and each of `kinds` has its `cell`, its `center` in pixels
+  and its mesh's `lines`, `triangles` and `bounds`, so a picture is read
+  against the list. `NO_GPU` where there is no adapter.
+
+`view.layers` shows the markers' layers (`spawn_points`, `flags`,
+`netgame_items`, the volume layers) and `view.snapshot` draws them.
+`api/tests/markers_tests.rs` runs the list over the invented cache (each
+block's kind and team, a hill of corners, the volumes), the refusals, the
+sheet with every kind, and a snapshot whose spawn pixels all lie in the
+spawns' projected boxes.
+
 ## Models and customisation
 
 `model.*` is where a content author (an agent building a weapon, an
@@ -2190,6 +2237,7 @@ tested in `app/anim.rs`.
   the verdict over the audio crate's meter), `api/ui_check.rs` and
   `api/checks.rs`: the content checks. `api/models.rs`: `model.*` (its
   renders through `scenario_edit::native_view::preview`).
+  `api/markers.rs`: `markers.*`, over `scenario_edit::marker_view`.
   `api/anim.rs`: `anim.*`, over `app/anim.rs` (the graph, its clips and
   the models kept per map and tag; the Animation window, `ui/anim.rs`,
   draws the same poses and the timeline over `anim.read`'s rows).

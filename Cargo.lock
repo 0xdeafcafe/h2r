@@ -6232,6 +6232,7 @@ dependencies = [
  "assets",
  "bytemuck",
  "content",
+ "game-markers",
  "gfx",
  "h1-assets",
  "map",
