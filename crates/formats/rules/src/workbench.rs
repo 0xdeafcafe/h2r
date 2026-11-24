@@ -730,6 +730,11 @@ fn kind_words(kind: ErrorKind) -> String {
             "more than {} objects are moving at once; stop takes one off",
             vm::MAX_MOVERS
         ),
+        ErrorKind::Sight => format!(
+            "more than {} pairs are asked to sees within {} ticks",
+            vm::MAX_SIGHT_PAIRS,
+            vm::SIGHT_KEEP
+        ),
     }
 }
 
