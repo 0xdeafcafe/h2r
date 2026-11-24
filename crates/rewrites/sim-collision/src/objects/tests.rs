@@ -255,3 +255,32 @@ fn a_cycle_in_the_live_reference_list_declines() {
     w.img.word(LISTS[0].2 + References::SIZE + layout::NEXT, 0);
     assert_eq!(run(&w, &query()), Err(Bail::Data));
 }
+
+#[test]
+fn visit_batch_advances_the_flood_epoch_only_on_flooding_visits() {
+    let [a, b] = lists();
+    let mut w = world([&a, &b]);
+    let q = VisitQuery { flood_epoch: u32::MAX - 1, ..query() };
+    let no_flood = VisitQuery { radius: 0, ..q };
+    let queries = [q, no_flood, q];
+    let topology = Arc::new(Topology::decode(&w.img, w.key, &CONSTS.projection).unwrap());
+    let answers = crate::batch::visit_batch(&w.img, &queries, || Ok(topology.clone())).unwrap();
+    assert_eq!(answers[1].flood_epoch, None);
+    assert_eq!(answers[2].flood_epoch, Some(0));
+    assert_eq!(answers[2].visit.flood.as_ref().unwrap().clusters, [0, 1]);
+    let (mut epoch, mut generation) = (q.flood_epoch, q.generation);
+    for (query, answer) in queries.iter().zip(answers) {
+        let serial = run(&w, &VisitQuery { flood_epoch: epoch, generation, ..*query }).unwrap();
+        assert_eq!(serial, answer.visit);
+        if let Some(f) = serial.flood {
+            epoch = epoch.wrapping_add(1);
+            for c in f.clusters {
+                w.img.word(CLUSTER_MARKS + 4 * u32::from(c), epoch);
+            }
+        }
+        generation = generation.wrapping_add(1);
+        for mark in serial.marks {
+            w.img.word(OBJECT_MARKS + 4 * u32::from(mark), generation);
+        }
+    }
+}

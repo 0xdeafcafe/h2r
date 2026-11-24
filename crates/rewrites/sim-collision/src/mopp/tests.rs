@@ -382,7 +382,10 @@ fn frames_count_the_original_self_calls() {
     assert_eq!(tree(&code).query_box(&q, usize::MAX).unwrap().frames, MAX_FRAMES);
     let code = prog(&nested(MAX_FRAMES + 1));
     let q = corners(&code, &b, DOUBLE).unwrap();
-    assert_eq!(tree(&code).query_box(&q, usize::MAX), Err(Bail::Depth));
+    let tree = tree(&code);
+    assert_eq!(tree.query_box(&q, usize::MAX), Err(Bail::Depth));
+    let high = corners(&code, &on_x(300.0, 301.0), DOUBLE).unwrap();
+    assert_eq!(tree.query_packet(&[q, high]), [Err(Bail::Depth), Ok(vec![1])]);
 }
 
 #[test]
