@@ -1,6 +1,6 @@
 # Game types without carriers
 
-Status: Design. Nothing here is built; "What the carrier supplies" is the state of the code and the slices are the order to change it in.
+Status: Design, with GM1 built (`crates/tools/firefight-kit/src/ground.rs`); "What the carrier supplies" is the state of the code and the slices are the order to change the rest in.
 Code: `crates/formats/rules/src` (`ir.rs` the header, `lang/check.rs`, `caps.rs`, `builtin/`), `crates/extensions/game/src/rules/` (`runtime.rs`, `scoring.rs`, `objectives.rs`, `roles.rs`), `crates/formats/variants/src/portable.rs` (`record_for`), `crates/extensions/game/src/community_variants.rs`. Tests: `crates/formats/rules/tests/engines.rs`, `tests/modes.rs`.
 Switch: none (the `rules` feature).
 
@@ -222,6 +222,39 @@ the edit target with its `ground` table.
 | `ground.build {doc?}` | builds; answers with a job as `playtest.run` does |
 | `scenario.add {block: "label", name, ...}` | places a label |
 
+### The build step
+
+`firefight_kit::ground::build(map, name, labels, recipe)`
+(`crates/tools/firefight-kit/src/ground.rs`) is the one build; Forge,
+Studio and `h2 firefight kit` call it, and it runs only when asked.
+
+- **Labels** (`Labels`): `ff_drop`, `ff_cover` (a position and a yaw),
+  `ff_base` (a position and a team), `siege_site`, `siege_goal`,
+  `siege_line` (a position, a phase and a team). They are sorted before
+  use, so the order they were placed in changes nothing: zone `NN` is
+  the `NN`th drop by position.
+- **What a label replaces.** Any `ff_drop` replaces the generated drops:
+  one `ff_drop_NN` zone per label, its first firing position the
+  label's own point, cover facing its yaw. `ff_base` labels, one for
+  each team or none, replace the bases `bases.rs` finds
+  (`Source::Labels`). A placed `ff_cover` within reach of a zone is that
+  zone's first firing position after the drop's own. With none placed,
+  the generator picks as the table above says.
+- **Problems** (`Ground::problems`): a drop or cover off the walkable
+  area the bases share, a drop with no room for two firing positions,
+  and a siege label off the ground the AI keeps. The build succeeds
+  with the rest, and fails only when no drop zone is left.
+- **The recipe** (`Recipe`): the kit's version, the home team and kit or
+  probe. A recipe for another kit version is refused.
+- **The receipt** (`Receipt`) holds the SHA-256 of the base map, the
+  digest of the canonical labels and the recipe. **The stale rule**
+  (`Receipt::stale`): the ground is stale when the kit version, the
+  base map's bytes (its collision, with a session's solid objects), the
+  recipe or the labels differ from the receipt's, and only then; it
+  answers which (`Stale`).
+- **Headroom.** A ground that does not fit is refused with its cost and
+  its biggest part, before `Ground::install` writes anything.
+
 ### Where the ground is kept
 
 The ground is made from the disc map's collision, so it is disc-derived
@@ -281,7 +314,7 @@ with tests, M under 2,500. Tests are headless on `rules::fake::FakeGame`.
 | GE3 | **The protocol map**: the native answer at `0x161c90` | S | GE0 | the script index answers distributed; every retail index answers as the table of [live-coop.md](../live/live-coop.md) says |
 | GE4 | **The engine object**: a host-owned object of shared bodies for the script index; the runtime's events from the common paths; `rules/scoring.rs`' in-place answers deleted | L | GE0, GT3, GT4 | on the fake game a script game starts with the script index and its object; a kill reaches `on kill` with no engine slot answered; no retail scoring site is hooked |
 | GE5 | **Every script game on the script index**: `record_for`, the retail-record swap, films and the session; the base HUD (score, time) as a HUD kit HUD | M | GE1 to GE4, GT6, GT7 | `tests/modes.rs` and `tests/engines.rs` pass on script-index records; no built-in's record is index 2; the base HUD compiles and shows an invented score and clock |
-| GM1 | **Ground as a build step**: `firefight_kit`'s generator behind `ground::build(map, labels, recipe)`, labels in place of found bases and picked drops, the stale rule, the receipt | M | nothing | on the kit's invented court: no labels gives the tags `build_package` gives; a moved `ff_drop` moves its zone; the same inputs give the same bytes; over headroom is refused with its biggest part |
+| GM1 (built) | **Ground as a build step**: `firefight_kit`'s generator behind `ground::build(map, labels, recipe)`, labels in place of found bases and picked drops, the stale rule, the receipt | M | nothing | on the kit's invented court: no labels gives the tags `build_package` gives; a moved `ff_drop` moves its zone; the same inputs give the same bytes; over headroom is refused with its biggest part |
 | GM2 | **Studio**: the AI and objectives group, **Build AI ground**, `ground.status`, `ground.build`, the Navigation layers, the `map` item's `ground` | M | GM1, PK9 of studio-redesign | a label placed in the window and by `scenario.add` make the same document; a build on an invented map lists its sectors; an edit that moves collision marks it stale |
 | GM3 | **Forge**: the palette page, the `ground` recipe in the document and `Tier::Variant`, **Build AI ground**, the rebuild and reload, build on save, the overlay | M | GM1 | a variant with labels and a recipe validates as a variant; materialising it equals GM1's build of the same inputs; a save with stale ground builds first |
 | GM4 | **Labels the scripts read**: Firefight's director and `siege.rules` take their places from labels; the lobby's refusal for a map without them | S | GM1, GT1 | on the fake game a wave lands at a placed drop; Siege's sites are the placed ones; a map with no required label is refused by name |
