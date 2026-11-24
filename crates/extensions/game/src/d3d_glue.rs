@@ -223,7 +223,7 @@ pub fn window_targets(
     display: impl FnOnce() -> d3d::GfxBackend,
 ) -> (d3d::GfxBackend, crate::run_opts::DisplayView) {
     let (main, backend) = (reference(), Some(display()));
-    (main, crate::run_opts::DisplayView { backend, native_target, viewer_output: None, display_size: Arc::new(display_size) })
+    (main, crate::run_opts::DisplayView { backend, native_target, viewer_output: None, viewer_lod: None, display_size: Arc::new(display_size) })
 }
 
 /// A locked retail target has no live raster edits. It can present directly

@@ -23,7 +23,7 @@ An `impl.` name is an implementation switch
 | `H2_RESOLUTION` | `native` (physical viewport pixels, with a 3840 × 2160 pixel budget in fullscreen, the default) or a fixed `WxH`, each dimension 1–8192. Locks the Video screen's Resolution row. A headless GPU uses 640x480 for Native. |
 | `H2_RENDER_SCALE` | Legacy resolution override from 1 to 6. A value of 2 means 1280x960. `H2_RESOLUTION` takes precedence. |
 | `H2_HUD_POSITION` | `pinned` (default) anchors HUD elements to their screen edges. `centered` uses a centered safe area. Locks the HUD Position row. |
-| `H2_LOD_DISTANCE` | Video’s LOD Distance (`graphics.lod_distance`). Choose 0.5, 1 (default), 1.5, 2, 3 or 4 times the resolution-adjusted distance, or `retail` for 640x480 distances at any resolution. |
+| `H2_LOD_DISTANCE` | Video’s LOD Distance (`graphics.lod_distance`). Use `highest` (default) for the finest model tier at any distance, 0.5, 1, 1.5, 2, 3 or 4 times the resolution-adjusted distance, or `retail` for 640x480 distances. |
 | `H2_ICONS` | Prompt glyphs. `auto` follows the active device. `--icons` takes precedence ([button icons](../input/button-icons.md)). |
 | `H2_AUDIO_LATENCY_MS` | Starting audio playout target, 10 to 500 ms (`crates/extensions/game/src/dsound_glue.rs`). |
 | `H2_AIM_ASSIST` | aim-assist strength. Its Controls row appears on iOS and is editable from the main menu ([aim-assist.md](../game/aim-assist.md)) |
