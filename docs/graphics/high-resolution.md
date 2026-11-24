@@ -135,7 +135,11 @@ lens. The scene step walks the open portals with both the retail and display
 cameras, including their off-centre projections. It excludes geometry
 already admitted by the retail lens or submitted by the guest. Each rigid
 BSP placement needs to intersect a portal window in a cluster that references
-it. Layer 6 can submit supported water edge blends for display-only clusters.
+it. For layers 6 and 16, a display-only submission needs an empty guest
+layer and one supported part in a cluster wholly inside one portal window.
+The live material must be visible and have a single shader LOD. For fog,
+the cluster's atmosphere and the planar gate must select the loaded
+implementation.
 The visible water surface uses the sorted transparent geometry handler on
 layer 15. That handler needs the guest's sorted entry, so an exact-mode
 cluster ID alone cannot supply a missing surface. Decorator placements
