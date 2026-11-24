@@ -24,7 +24,7 @@ pub use convert::{Cast, PureCast, apply as apply_pure_cast, classify, cvttss2si,
 pub use engine::{Binding, Bindings, Engine, EngineCall, EngineError, Override, ScenarioGlobals};
 pub use eval::{ArgumentStep, argument_step};
 pub use image::{Native, SLEEP_UNTIL_INDEX, VmImage};
-pub use thread::{Category, DORMANT, FINISHED, Thread, ThreadState};
+pub use thread::{Category, DORMANT, FINISHED, Schedule, ScheduleSlot, Thread, ThreadState};
 pub use value::{Cell, HsType, StringRef, Value};
 
 use crate::{Catalog, Datum, Node, Scenario};
@@ -367,17 +367,21 @@ impl<'a> Vm<'a> {
             return;
         }
         self.stats.updates += 1;
-        let now = e.game_time();
-        let mut slot = self.pool.next(0);
-        while let Some(i) = slot {
-            let t = self.pool.slots[i].as_ref().unwrap();
-            if t.category != Category::External && t.wake >= 0 && t.wake <= now {
-                self.run(e, i);
-            }
-            slot = self.pool.next(i + 1);
-            if !self.enabled {
-                break;
-            }
+        let mut schedule = Schedule::new(e.game_time());
+        while self.enabled {
+            let Ok(next) = schedule.next_ready(|start| {
+                Ok::<_, std::convert::Infallible>(self.pool.next(start).map(|i| {
+                    let thread = self.pool.slots[i].as_ref().unwrap();
+                    ScheduleSlot {
+                        index: i,
+                        external: thread.category == Category::External,
+                        wake: thread.wake,
+                        thread: i,
+                    }
+                }))
+            });
+            let Some(i) = next else { break };
+            self.run(e, i);
         }
         e.after_update();
     }
