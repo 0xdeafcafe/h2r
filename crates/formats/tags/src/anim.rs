@@ -50,7 +50,7 @@ pub const RESOURCE_SIZE: usize = 0x14;
 pub const STATIC_POSE_SIZE: usize = 0x18;
 
 /// Header offsets of the blocks (count at `off`, pointer at `off + 4`).
-mod hdr {
+pub mod hdr {
     pub const NODES: usize = 0x0c;
     pub const SOUND_REFS: usize = 0x14;
     pub const EFFECT_REFS: usize = 0x1c;

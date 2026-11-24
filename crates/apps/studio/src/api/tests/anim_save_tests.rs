@@ -3,7 +3,7 @@
 use super::*;
 use anim_edit::{ClipKind, Operation, Source};
 use content::package::{Kind as ItemKind, Maps};
-use tags::anim_keys::Kind;
+use ::tags::anim_keys::Kind;
 
 const TAG: &str = r"jmad:invented\stickman";
 
