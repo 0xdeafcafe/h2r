@@ -16,6 +16,7 @@ pub mod defs;
 pub mod events;
 pub mod view;
 pub mod wake;
+pub mod walk;
 // Slice 4: the bounds arithmetic.
 pub mod bounds;
 

@@ -423,6 +423,11 @@ thread interleaving changes.
 
 ## Slice 1 bodies
 
+The three walks and the typed object iterator use the same bounded bitmap scan
+in `sim_objects::walk::next_live`. Each visit reads through the first occupied
+slot and stops. The next visit reads the high-water mark and the bitmap again,
+so a callback can activate or delete a slot in the same word.
+
 Each is **C**: read at its address with `h2 disasm`, and compared with
 the lifted original by `tests/sim_objects_differential.rs`.
 
