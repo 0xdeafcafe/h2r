@@ -12,6 +12,7 @@
 //! <repo>/maps/<map>.skel           its skeleton: the bytes not in raw files (skeleton.rs)
 //! <repo>/maps/<map>.extents        its extent table: every other range by raw hash
 //! <repo>/extract.toml              versions and disc identity ([`ExtractRecord`])
+//! <repo>/assets.idx                the asset catalogue (catalogue.rs): each asset by hash
 //! <repo>/conflicts.txt             keys with variants and the maps that differ
 //! ```
 //!
@@ -90,13 +91,13 @@ fn parse_group(s: &str) -> Option<FourCC> {
 }
 
 /// Escape a string for one line of a text file.
-fn esc(s: &str) -> String {
+pub(super) fn esc(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('\n', "\\n")
         .replace('\t', "\\t")
 }
 
-fn unesc(s: &str) -> String {
+pub(super) fn unesc(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut it = s.chars();
     while let Some(c) = it.next() {
@@ -118,7 +119,7 @@ fn key_line(k: &TagKey) -> String {
     format!("{}\t{}", group_ext(k.group), esc(&k.path))
 }
 
-fn parse_key(g: &str, p: &str) -> Result<TagKey> {
+pub(super) fn parse_key(g: &str, p: &str) -> Result<TagKey> {
     let group = parse_group(g).ok_or_else(|| Error::Invalid(format!("bad group {g:?}")))?;
     Ok(TagKey::new(group, unesc(p)))
 }
@@ -611,10 +612,10 @@ impl TagRepo {
     }
 
     /// Empty the tree for a re-extraction under new versions: tag files,
-    /// manifests, the group and string tables and `conflicts.txt` go; raw
-    /// resources (by hash) stay. Then the record says `extractor` and
-    /// `format` with no map, so an interrupted reset runs again only if it
-    /// did not get that far.
+    /// manifests, the group and string tables, `conflicts.txt` and the
+    /// asset catalogue go; raw resources (by hash) stay. Then the record
+    /// says `extractor` and `format` with no map, so an interrupted reset
+    /// runs again only if it did not get that far.
     pub fn reset(&mut self, extractor: u32, format: u16) -> Result<()> {
         for d in ["tags", "maps"] {
             let p = self.root.join(d);
@@ -625,7 +626,12 @@ impl TagRepo {
             }
             fs::create_dir_all(&p)?;
         }
-        for f in ["groups.txt", "strings.txt", "conflicts.txt"] {
+        for f in [
+            "groups.txt",
+            "strings.txt",
+            "conflicts.txt",
+            super::catalogue::CATALOGUE_FILE,
+        ] {
             match fs::remove_file(self.root.join(f)) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
