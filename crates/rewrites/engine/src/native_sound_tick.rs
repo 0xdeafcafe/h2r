@@ -11,6 +11,7 @@ use runtime::{CpuAbi, Guest, GuestFault};
 use sim_sound::tick::{USER_COUNT, next_listener};
 
 mod seeds;
+mod stream;
 
 pub const BODIES: &[Body] = &[Body {
     point: &points::SOUND_UPDATE,
@@ -20,7 +21,7 @@ pub const BODIES: &[Body] = &[Body {
         0x125c8c, 0x125ca1, 0x125ce9, 0x125cee, 0x125d02, 0x125d09, 0x125d30,
     ],
     run: frame,
-}, seeds::BODY];
+}, seeds::BODY, stream::BODY];
 
 const FRAME: u32 = 0x1744;
 const CACHE_GLOBAL: u32 = 0x0050_210c;

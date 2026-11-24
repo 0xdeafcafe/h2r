@@ -15,6 +15,32 @@ pub fn next_listener<E>(
     Ok(None)
 }
 
+/// A stream record stores its signed three-bit phase beside unrelated flags.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StreamPhase(i8);
+
+impl StreamPhase {
+    pub fn from_record(flags: u8) -> Self {
+        Self(((flags << 5) as i8) >> 5)
+    }
+
+    pub fn value(self) -> i8 {
+        self.0
+    }
+
+    pub fn accepts_queued(self) -> bool {
+        self.0 < 3
+    }
+
+    pub fn releases_current(self) -> bool {
+        self.0 < 2
+    }
+
+    pub fn advances_time(self) -> bool {
+        self.0 > 0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
