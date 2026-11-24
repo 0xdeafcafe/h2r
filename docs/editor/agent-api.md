@@ -476,13 +476,23 @@ Notes on some:
   for identity), null for a type with no layout. `editable` is false
   and `read_only` says why for a type the game evaluates as 0 or a
   tag that may not be written. `function.set {tag, path, type?,
-  ranged?, range?, sets?}` edits the curve, same length, as one undo
-  step through the Tags tool's own command: `ranged` turns the second
+  ranged?, range?, sets?}` edits the curve as one undo step through the
+  Tags tool's own command: `type` changes the type (any of `identity`,
+  `constant`, `transition`, `periodic`, `linear`, `linear_key`,
+  `spline`, `spline_2`, `exponent`), rebuilding the blob at the new
+  type's `blob_len` with defaults (`Function::with_kind`: a transition
+  from 0 to 1, a periodic cosine of one cycle, a line of slope 1, a
+  ramp, a cubic that is `t`, an exponent that is `x`, a constant of 0,
+  the flags, output range and unread header bytes kept) and writing it
+  as a resize of the data, so a longer blob grows the tag only when
+  growth is on and is refused by name when it is off; `sets` in the
+  same call apply to the new type. `ranged` turns the second
   set on or off, `range` sets the output range, and each set object's
   keys present are written (its `shape` or `wave` writes the header
   byte, as the dialog's picker rows do); the answer is the new
-  `function.read`. A type change is refused (the length would change;
-  F2 writes it), and so is anything the Curves section refuses.
+  `function.read`. A change to a type the game evaluates as 0 (`multi_linear_key`,
+  `multi_spline`, an unknown byte) is refused, and so is anything the
+  Curves section refuses.
   `function.sample {tag, path, inputs, range_input?}` returns
   `{outputs}` from `Function::evaluate` itself (the ported engine
   evaluator) at each input, `range_input` blending the two sets of a
@@ -1663,8 +1673,9 @@ the window and the API stay one path.
   `tags::effects::function` (`Set`, `Function::set_values`,
   `Function::write_set`) and the curve editor's own helpers
   (`fields/curve.rs`); `function.set` is a `TagAction::Write` of the
-  same length at the data's start through `App::perform`, one undo
-  step, exactly as the dialog's drags write.
+  same length at the data's start through `App::perform`, or, for a
+  type change, a `TagAction::ResizeData` (rich editors F2), one undo
+  step, exactly as the dialog's drags and type picker write.
 - **Game type scripts.** `api/game_script.rs` registers `GameScript` for
   `rules.*`, over `App::rules` (`app/rules_edit.rs`), the state the
   window draws; `rules.reload` leaves the blob in its outbox and

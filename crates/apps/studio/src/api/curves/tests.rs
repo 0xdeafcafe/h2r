@@ -8,12 +8,13 @@ use map::TagId;
 use scenario_edit::fixture::{self, put, putf};
 use serde_json::{Value, json};
 use studio_proto::{code, method as m};
-use tags::effects::function::{HEADER_LEN, Set};
+use tags::effects::function::{Function, FunctionType, HEADER_LEN, Set};
 use tags::registry::Registry;
 
 use crate::api::Api;
+use crate::app::tag_doc::DATA_GROWTH_REFUSAL;
 use crate::app::tag_tests;
-use crate::fields::curve::{EVALUATED_AS_ZERO, TYPE_CHANGE};
+use crate::fields::curve::{EVALUATED_AS_ZERO, change_to_unevaluated};
 
 /// The weapon's function fields: (name, the blob's type byte). `curve`
 /// is the transition the examples edit.
@@ -261,7 +262,10 @@ fn read_gives_the_typed_sets() {
     assert_eq!(r["sub_types"], json!([3, 1]));
     assert_eq!(r["range"], json!([0.0, 1.0]));
     assert_eq!(r["length"], 36);
-    assert_eq!((r["editable"].clone(), r["read_only"].clone()), (json!(true), Value::Null));
+    assert_eq!(
+        (r["editable"].clone(), r["read_only"].clone()),
+        (json!(true), Value::Null)
+    );
     let sets = r["sets"].as_array().unwrap();
     assert_eq!(sets.len(), 2);
     assert_eq!(sets[0], json!({"shape": 3, "from": 0.0, "to": 0.25}));
@@ -439,15 +443,30 @@ fn refusals() {
             EVALUATED_AS_ZERO
         );
     }
-    // A type change would change the length.
+    // A change to a type the game evaluates as 0 has nothing to build.
+    for (word, kind) in [
+        ("multi_linear_key", FunctionType::MultiLinearKey),
+        ("multi_spline", FunctionType::MultiSpline),
+    ] {
+        assert_eq!(
+            message_of(api.call(
+                &mut app,
+                m::FUNCTION_SET,
+                json!({"tag": "weap", "path": "curve", "type": word})
+            )),
+            change_to_unevaluated(kind)
+        );
+    }
+    // A longer blob is refused while growth is off, and nothing changes.
     assert_eq!(
         message_of(api.call(
             &mut app,
             m::FUNCTION_SET,
-            json!({"tag": "weap", "path": "curve", "type": "periodic"})
+            json!({"tag": "weap", "path": "curve", "type": "linear_key"})
         )),
-        TYPE_CHANGE
+        DATA_GROWTH_REFUSAL
     );
+    assert!(!app.tags.has_edits());
     // The same type is taken (nothing changes).
     let r = call(
         &mut api,
@@ -503,4 +522,138 @@ fn refusals() {
         )),
         code::INVALID_PARAMS
     );
+}
+
+/// The curve field's pair: the weapon's root, then the field's offset.
+const CURVE_PAIR: u32 = fixture::META + 0x1100 + 0x8;
+
+/// The blob field `curve` points at, as `function.read` and the document
+/// have it.
+fn curve_bytes(app: &crate::App) -> Vec<u8> {
+    let (n, at) = app.tags.pair(weap_id(), CURVE_PAIR).unwrap();
+    app.tags.read(weap_id(), at, n).unwrap()
+}
+
+/// A type change saves at the new `blob_len` and reads back equal: a
+/// shorter type in place, a longer one grown (with growth on), the saved
+/// map holding the same bytes; one undo step each, and the sets given in
+/// the same call apply to the new type.
+#[test]
+fn a_type_change_saves_at_the_new_length() {
+    let t = Temp::new("retype");
+    let (mut app, mut api) = open(&t);
+    app.session.set_allow_growth(true);
+    app.tags.allow_growth = true;
+    let from = Function::parse(&field_blob("curve")).unwrap();
+
+    // Shorter: a constant (a ranged transition keeps its flags and range).
+    let r = call(
+        &mut api,
+        &mut app,
+        m::FUNCTION_SET,
+        json!({"tag": "weap", "path": "curve", "type": "constant"}),
+    );
+    let want = from.with_kind(FunctionType::Constant).unwrap();
+    assert_eq!(r["type"], "constant");
+    assert_eq!(r["length"], FunctionType::Constant.blob_len().unwrap());
+    assert_eq!(r["ranged"], true);
+    assert_eq!(curve_bytes(&app), want.to_bytes());
+
+    // Longer, with a set edited in the same call.
+    let r = call(
+        &mut api,
+        &mut app,
+        m::FUNCTION_SET,
+        json!({"tag": "weap", "path": "curve", "type": "linear_key",
+               "sets": [{"base": 0.125}]}),
+    );
+    let len = FunctionType::LinearKey.blob_len().unwrap();
+    assert_eq!(
+        (r["type"].clone(), r["length"].clone()),
+        (json!("linear_key"), json!(len))
+    );
+    assert_eq!(r["sets"][0]["base"], 0.125);
+    let mut want = from.with_kind(FunctionType::LinearKey).unwrap();
+    let Some(Set::LinearKey { keys, .. }) = want.set_values(0) else {
+        unreachable!()
+    };
+    want.write_set(0, &Set::LinearKey { base: 0.125, keys })
+        .unwrap();
+    assert_eq!(curve_bytes(&app), want.to_bytes());
+    // The read, the sample and the row agree with the new blob.
+    let s = call(
+        &mut api,
+        &mut app,
+        m::FUNCTION_SAMPLE,
+        json!({"tag": "weap", "path": "curve", "inputs": [0.5], "range_input": 0.5}),
+    );
+    assert_eq!(
+        s["outputs"][0].as_f64().unwrap() as f32,
+        want.evaluate(0.5, 0.5)
+    );
+
+    // The saved map holds the same bytes at the same length.
+    let out = t.0.join("retype.map");
+    app.dispatch(crate::app::Action::SaveMapAs(out.clone()));
+    let mut saved =
+        map::Map::from_reader(std::io::Cursor::new(std::fs::read(&out).unwrap())).unwrap();
+    saved.validate_checksum().unwrap();
+    let mut doc = crate::app::TagDoc::new(registry());
+    doc.load(&mut saved).unwrap();
+    let (n, at) = doc.pair(weap_id(), CURVE_PAIR).unwrap();
+    assert_eq!(n as usize, len);
+    assert_eq!(doc.read(weap_id(), at, n).unwrap(), want.to_bytes());
+
+    // One undo step per change.
+    app.dispatch(crate::app::Action::Undo);
+    assert_eq!(
+        curve_bytes(&app),
+        from.with_kind(FunctionType::Constant).unwrap().to_bytes()
+    );
+    app.dispatch(crate::app::Action::Undo);
+    assert_eq!(curve_bytes(&app), field_blob("curve"));
+}
+
+/// A same-length type change (spline to spline 2) is a rebuild too, and
+/// the type words round-trip through `function.read`.
+#[test]
+fn every_editable_type_reads_back_what_was_written() {
+    let t = Temp::new("retype-all");
+    let (mut app, mut api) = open(&t);
+    app.session.set_allow_growth(true);
+    app.tags.allow_growth = true;
+    for word in [
+        "linear_key",
+        "spline",
+        "spline_2",
+        "periodic",
+        "exponent",
+        "linear",
+        "transition",
+        "identity",
+        "constant",
+    ] {
+        let r = call(
+            &mut api,
+            &mut app,
+            m::FUNCTION_SET,
+            json!({"tag": "weap", "path": "curve", "type": word}),
+        );
+        let kind = FunctionType::from_word(word).unwrap();
+        assert_eq!(r["type"], word);
+        assert_eq!(
+            r["length"].as_u64().unwrap() as usize,
+            kind.blob_len().unwrap()
+        );
+        let read = call(
+            &mut api,
+            &mut app,
+            m::FUNCTION_READ,
+            json!({"tag": "weap", "path": "curve"}),
+        );
+        assert_eq!(read, r, "{word}");
+        let bytes = curve_bytes(&app);
+        assert_eq!(bytes.len(), kind.blob_len().unwrap(), "{word}");
+        assert_eq!(Function::parse(&bytes).unwrap().kind, kind);
+    }
 }
