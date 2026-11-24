@@ -484,10 +484,13 @@ fn playtest_layers_count_the_result_and_draw_in_the_snapshot() {
     ok(&mut p, &mut app, m::PLAYTEST_STATUS, json!({}));
     let r = rows(&mut api, &mut app);
     // The invented matches have twelve kills each at one place, victims on
-    // three polygons; every other measure had too few events.
+    // three polygons; the sightlines have a segment per kill, and every
+    // other measure had too few events.
     assert_eq!((r[0]["count"].clone(), r[1]["count"].clone()), (json!(1), json!(3)), "{r:?}");
     assert_eq!(r[0]["refused"], Value::Null);
-    for row in &r[2..] {
+    assert!(r[6]["count"].as_u64().unwrap() > 0, "{r:?}");
+    assert_eq!(r[6]["refused"], Value::Null);
+    for row in r[2..].iter().filter(|x| x["name"] != "playtest_sightlines") {
         assert_eq!(row["count"], 0, "{row}");
         assert!(row["refused"].as_str().is_some_and(|s| s.contains("too few")), "{row}");
     }

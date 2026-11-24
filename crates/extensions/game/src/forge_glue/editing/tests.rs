@@ -191,6 +191,7 @@ fn the_placed_objects_browser_flies_the_monitor_to_the_chosen_object() {
 #[test]
 fn selecting_two_objects_groups_them_and_the_browser_lists_the_group_first() {
     let mut e = editor();
+    calls::lock(&e.calls).arm();
     e.tool.monitor = true;
     for (n, x) in [3., 5.].into_iter().enumerate() {
         let frame = Frame {

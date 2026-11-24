@@ -245,7 +245,7 @@ mod tests {
             // slot runs for it, and the objective ports show their state
             // in widgets and waypoints.
             let wants: &[&str] = match index {
-                1 | 3 | 9 => &["hud.widgets", "objects.delete"],
+                1 | 3 | 9 => &["hud.waypoints", "hud.widgets", "objects.delete"],
                 4 | 8 => &["hud.waypoints", "hud.widgets"],
                 _ => &[],
             };

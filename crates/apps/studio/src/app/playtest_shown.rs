@@ -101,14 +101,23 @@ impl Shown {
             self.diff = Some(Err("no result is shown".into()));
             return true;
         };
+        // `baseline` (a run's own `compare_to` may say it) names the baseline
+        // run's id.
+        let resolve = |id: String| {
+            if id == "baseline" {
+                self.baseline.clone().unwrap_or(id)
+            } else {
+                id
+            }
+        };
         let with = match want.as_str() {
-            "default" => shown
-                .compare_to
-                .clone()
-                .or_else(|| self.baseline.clone())
-                .unwrap_or_else(|| "baseline".into()),
-            "baseline" => self.baseline.clone().unwrap_or_else(|| "baseline".into()),
-            id => id.to_owned(),
+            "default" => resolve(
+                shown
+                    .compare_to
+                    .clone()
+                    .unwrap_or_else(|| "baseline".into()),
+            ),
+            id => resolve(id.to_owned()),
         };
         let key = (
             with.clone(),

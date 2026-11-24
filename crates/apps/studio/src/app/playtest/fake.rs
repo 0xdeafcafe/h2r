@@ -152,7 +152,8 @@ fn party(player: u8, at: Place) -> Party {
 }
 
 /// `KILLS` kills of a match two game minutes long; `seed` moves the
-/// victims. Every other measure has too few events.
+/// victims; the sightlines have a segment per kill. Every other measure has
+/// too few events.
 pub const KILLS: usize = 12;
 
 pub fn trace(job: &JobId, kills: usize, jitter: bool) -> Trace {
