@@ -1,7 +1,7 @@
 # Native light gather and passes
 
-Status: Partly built. Slices L1 to L6 are built: the model's rows and histories and the leaves (the visible-light list, the geometry flags, the extra caster, the light volume) in `engine::render::light_gather`, which the seams of [native-renderer.md](native-renderer.md), "Scene list builders", call; the frame body of `0x00031c80` (`light_gather::frame`), which `render_bridge::native_lights::frame` installs at `RENDER_DYNAMIC_LIGHTS`; a light's cluster and placement records (`engine::render_loop::world_walk::records` in the light's kind), which the frame body makes; a light's item lists and the first-person table (`light_gather::items`), which `render_bridge::native_lights::items` installs at `SCENE_ITEMS`; and the scene's dynamic lights, made from the frame body's hand-off (`frame::Passes`) and the item body's lists (`render_bridge::native_lights::handoff`); one light's passes, `0x00031170` (`light_gather::passes`), which `render_bridge::native_lights::passes` installs at `RENDER_LIGHT_PASSES`; and the first-person lights, `0x000404b0` and each slot's record replay `0x000402b0` (`light_gather::first_person`), which `render_bridge::native_lights::first_person` installs at `FIRST_PERSON_LIGHTS` and `FIRST_PERSON_LIGHT_RECORDS`. L7 on are design. The other leaf ports it starts from (the light constants, the pass flags, the shadow projection, the gathered groups) are described in [native-lights.md](native-lights.md).
-Code: `crates/rewrites/engine/src/render/light_gather.rs` and `light_gather/` (the model and the bodies), `crates/rewrites/engine/src/render_loop/world_walk.rs` (the record walks), `crates/rewrites/render-bridge/src/native_lights/frame.rs` and `items.rs` and `passes.rs` and `first_person.rs` (the installs), `handoff.rs` (the scene's lights), `crates/rewrites/render-bridge/src/native_scene_lists/lights.rs` (the leaf seams that stay for the fallback). Tests: `crates/rewrites/engine/tests/light_gather_differential.rs`, `light_gather.rs`, the unit tests of `world_walk.rs` and `native_lights/handoff.rs`, `crates/rewrites/render-bridge/tests/native_lights.rs`.
+Status: Partly built. L1–L7 implement the visible list and history, light volumes, frame and per-light passes, record and item walks, scene hand-off, first-person lights and object-shadow list, rows and mask casters. L8 and L9 are design. L7 differential, live parity and timing results are unverified.
+Code: `crates/rewrites/engine/src/render/light_gather.rs` and `light_gather/` (including `object_shadows.rs`, `object_shadows/rows.rs` and `object_shadows/caster.rs`), `crates/rewrites/engine/src/render_loop/world_walk.rs` (the record walks), `crates/rewrites/render-bridge/src/native_lights/` (`frame.rs`, `items.rs`, `passes.rs`, `first_person.rs` and `object_shadows.rs` install the bodies, `handoff.rs` supplies the scene lights), `crates/rewrites/render-bridge/src/native_scene_lists/lights.rs` (fallback leaves). Tests: `crates/rewrites/engine/tests/light_gather_differential.rs`, `light_gather.rs`, the unit tests in `world_walk.rs`, `object_shadows/` and `native_lights/handoff.rs`, `crates/rewrites/render-bridge/tests/native_lights.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md). No slice adds a switch.
 
 Slice R3 of [retire-d3d.md](retire-d3d.md): the guest's light front-end
@@ -21,10 +21,9 @@ and offsets are research points. No game data.
 
 ### The three entries and their phases (Design)
 
-Each entry is a `before` hook that plans synchronously and then answers
-with a render entry (`hooks::Call::answer_render_async`,
-`crates/hooking/hooks/src/entry.rs`), or returns `Flow::Continue` so the
-guest function runs whole. A light has two phases:
+Each install uses `implement` and plans synchronously. On admission,
+`hooks::entry::start_render` drives the body. A refused entry invokes
+its original function with the entry registers and stack intact. A light has two phases:
 
 - **Gather.** Which lights, their weights, the pose, the volume, the
   shadow decision, the light's visibility, its render records and its
@@ -117,8 +116,9 @@ pub struct FirstPersonSlot {
 }
 ```
 
-`ObjectShadowFrame` has the same shape for `0x000335e0`: its rows, its
-`History`, and per caster the two arguments of `0x00032350`.
+`object_shadows::rows::Rows` holds a view's decoded `History` and ranked
+rows. The outer loop loads the two arguments of `0x00032350` from each
+row at its call site. The shadow observer records that pair in the scene.
 
 **What stays in guest memory.** The two histories are the only state
 that crosses frames. They stay at their guest addresses and the model
@@ -274,8 +274,8 @@ Two things the port keeps (**S** until the differentials run them):
 ### The object shadows (E `0x000335e0`, `0x00033400`)
 
 `0x000335e0(mode)` runs only with an active lightmap (`0x000226d0`) and
-the override's leave (`0x000335c0`). It sets the bytes `0x00485a46` and
-`0x00509413`, sizes target 9 (`0x0001ddd0`), gathers rows into the
+the override's leave (`0x000335c0`). It sets `0x00485a46`,
+sizes target 9 (`0x0001ddd0`), sets `0x00509413`, gathers rows into the
 `0x280` bytes below its entry `ESP` (`0x00033400`, EBX the main view's
 object list `[0x00547f9c]`), calls `0x00032350(row+8, row+0xc)` per row
 and clears both bytes.
@@ -308,7 +308,8 @@ visibility, lists, constants, projection, layer 10, the filter
 | `FIRST_PERSON_LIGHTS` | `0x000404b0` | `light_gather::first_person::run`, installed by `render_bridge::native_lights::first_person` | the guest function: a refused plan |
 | `FIRST_PERSON_LIGHT_RECORDS` | `0x000402b0` | `light_gather::first_person::run_records`, called by the first-person body and installed at the point | the guest function: a refused plan |
 | `OBJECT_SHADOW_LIST` | `0x000335e0` | `light_gather::object_shadows::run` | the guest function |
-| `OBJECT_SHADOW` | `0x00032350` | `light_gather::object_shadows::caster` | the guest function |
+| `GATHER_OBJECT_SHADOWS` | `0x00033400` | `light_gather::object_shadows::rows::run` | the guest function |
+| `OBJECT_SHADOW` | `0x00032350` | `light_gather::object_shadows::caster::run` | the guest function |
 
 `FIRST_PERSON_LIGHTS` and `FIRST_PERSON_LIGHT_RECORDS` are named points
 (`crates/hooking/guest-layout/src/points.rs`). Named points to come, all
@@ -346,7 +347,8 @@ site, `GroupSite::FirstPerson`.
 Counters follow the scene lists' scheme
 (`timeline::native::SceneList`, `SceneListResult`): stages
 `light_frame`, `light_passes`, `first_person_lights`,
-`first_person_records`, `object_shadow_list` and `object_shadow_caster`, each with `_native`,
+`first_person_records`, `object_shadow_list`, `object_shadow_rows` and
+`object_shadow_caster`, each with `_native`,
 `_fallback` and a reason. A step a running body gives to the guest
 counts as its own stage's `_fallback` and reason: `light_volume` and
 `light_records` from the frame body, `light_geometry` and
@@ -371,7 +373,10 @@ hand-off, `_fallback` and the reason for one it reads from memory (the
 item body declined, or no item lists' call took the hand-off:
 `layout`). Each light taken from a hand-off is checked against guest
 memory once its lists are made: `_compared` per light, `_mismatch` per
-difference. `render.scene` and `render.stats` report them ([agent-api.md](../runtime/agent-api.md)). The producers of
+difference. `render.stats.counters` reports per-frame means for the stage columns.
+Each L7 stage counts one `_native` per completed body or one `_fallback`
+plus its reason per refused plan. `render.scene` reports the filter and
+layer draws ([agent-api.md](../runtime/agent-api.md)). The producers of
 `render.residual` are `dynamic_lights`, `light_passes`,
 `object_shadows`, `object_shadow` and `first_person`
 (`render_bridge::residual_census`).
@@ -709,25 +714,63 @@ The hand-off and the passes body are built.
   it, every step is a guest call or a write; a record the port does not
   take is the guest's part calls for that record.
 
-### L7: the object shadows (M)
+### L7: the object shadows (M, built)
 
-- **Build.** `light_gather::object_shadows::run`: the gates, the rows
-  (byte 3 read from the guest buffer's address), `History` at
-  `0x005246f8`, the merge and ranking of L1 with the call site's limit
-  and step, then one caster body per row. The caster body drives the
-  mask branch of `0x00032350` with L3's and L4's pieces and guest calls
-  for the rest; the creature branch (`0x00032ce0`) and the early exits
-  are the guest function.
-- **Guest state.** `0x00485a46`, `0x00509413`, the history, and per
-  caster what the lights' gather and passes write.
-- **Tests.** Differential roots `0x00033400` (with `0x0003d7f0` and
-  `0x0003e9c0` stubbed) and `0x000335e0` (callees stubbed); a stale
-  byte 3 of each value. Unit:
-  `an_object_shadow_row_keeps_the_buffers_stale_keep_byte`.
-- **Live check.** `object_shadow_list_native`; `shadow_walk_layers`
-  unchanged; `render.parity` outdoors.
-- **Refusal.** The list refuses before any write. A caster the body
-  does not take is one guest call of `0x00032350`.
+- **List.** `object_shadows::run` calls the lightmap and override gates
+  below the row buffer. On permission it sets the mode, sizes target 9,
+  sets the gather byte and calls `GATHER_OBJECT_SHADOWS`. Each ranked
+  row supplies its caster and fade at the time of the call. ESI points
+  at the caster word and EDI counts down. The loop clears the gather
+  byte first and the mode byte second.
+- **Rows.** `rows::run` tests each object's list flags, calls eligibility
+  even after filling 32 rows, and calls the local-owner predicate only
+  for rows it accepts. It publishes the object words, eligibility fade
+  and projected size before that predicate. It writes flag bytes 0–2
+  and reads byte 3 from the actual row at merge. `history::merge` and
+  `history::rank_and_fade` use the clamped view's history at `0x005246f8`
+  and the ranking call site's limit and step. A frozen override keeps
+  the merged order and fades. A non-finite ranking input goes to the
+  guest rank function. If a predicate invalidates the history layout,
+  the guest merge and rank finish the gather.
+- **Caster.** `caster::plan` admits a visible root of the mask kind with
+  shadows enabled, supported float state and readable resident lighting.
+  Creature and cold-cache paths run the original whole. `caster::run`
+  calls eligibility, visibility and lighting again in guest order, then
+  expands extents, constructs the projection basis and bounds using SSE
+  and x87, and asks the guest to cull the bounds. A failed gate after
+  entry takes its original return path in place. If eligibility returns
+  a creature byte on an admitted call, the body obeys the two mode bytes
+  and calls the guest creature setup and draw at their original sites.
+  Frusta, visibility,
+  records, part visibility, constants, projection and items are named
+  guest calls. The record wrapper reaches L3's cluster and placement
+  walks, and `SCENE_ITEMS` reaches L4's item body.
+- **Layers.** Both the caster's layer-10 bit and the receivers' layer-11
+  bit admit the mask chain. The filter runs even if the layer-10 begin
+  declines the draw. The layer-11 block rereads its mask after the filter
+  and the draw byte after stencil setup. `passes::named` and `passes::caller`
+  preserve the guest sites for the row, record and layer observers.
+  [native-shadow-layers.md](native-shadow-layers.md) describes the GPU
+  groups and filter. The tail restores the pass flags and mode bytes.
+- **Tests.** `object_shadow_list_matches_the_lifted_original`,
+  `object_shadow_rows_match_the_lifted_original` and
+  `object_shadow_caster_matches_the_lifted_original` compare named call
+  transcripts, EAX, stack cleanup and live memory. The seeds cover both
+  failed list gates, up to 32 draws, stale keep bytes, histories changed
+  by predicates, culling, the strength threshold, and layer and filter
+  calls that change later inputs. `object_shadow_caster_refuses_before_writing`
+  compares the full image on refusal. The unit test
+  `an_object_shadow_row_keeps_the_buffers_stale_keep_byte` checks all
+  256 byte values.
+- **Live check.** On an outdoor view with mask casters, `render.stats`
+  reports positive `native_scene_lists_object_shadow_list_native`,
+  `native_scene_lists_object_shadow_rows_native` and
+  `native_scene_lists_object_shadow_caster_native`. Check each `_fallback`
+  against its reason, including `_unsupported` for creatures and
+  `_residency` for cold lighting. Compare `shadow_walk_layers`, the
+  scene's `scene_shadow_layers_alone_10`, `_11` and
+  `scene_shadow_filters_native` against the reference on the same view.
+  `render.parity` covers the caster and receiver outdoors.
 
 ### L8: the passes typed (L)
 
@@ -815,7 +858,8 @@ and the attachment walk `0x00041c80`.
   (`visible::list`, `history::merge`, `history::rank_and_fade`,
   `geometry::flags`, `extra_caster::list`, `volume::light_volume`,
   `frame::plan`, `frame::run`, `frame::run_with`, `first_person::run`,
-  `first_person::run_records`),
+  `first_person::run_records`, `object_shadows::run`,
+  `object_shadows::rows::run`, `object_shadows::caster::run`),
   `render_bridge::native_lights::handoff` (the scene's lights; the
   passes' item lists call at `0x00031192`, the shadow byte at
   `0x0003119b`),

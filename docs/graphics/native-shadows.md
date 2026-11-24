@@ -4,7 +4,7 @@ Status: Built. Replaces sorted BSP and model draws in layers 10, 11 and 14 on a 
 Code: `crates/rewrites/render-bridge/src/native_shadows.rs`, `crates/extensions/game/src/native_shadows_glue.rs`, `native_shadows_scope.rs`, `native_shadows_draw.rs`, `native_lights_glue.rs`, `crates/rewrites/native-render/src/shadows.rs`, `shadow_gpu.rs`, `shadow_look.rs`, `shadow_scene.rs`, `shadow_filter_gpu.rs`. Tests: `crates/rewrites/native-render/tests/shadow_gpu.rs`, `native_render::shadow_look`, `shadow_scene`, `shadow_filter_gpu`, `light_gpu`, `crates/rewrites/render-bridge/tests/native_shadows.rs`, `crates/rewrites/engine/tests/shadow_constants*.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
-The stage keeps the game's gather, template selection, material setup, push-buffer decoding and vertex resolution, and replaces the resolved draws with independent GPU packets recorded into the D3D frame. A draw the stage cannot prove stays on D3D. At each layer's build, a whole scene group instead goes through `shadow_look` and `shadow_scene`: structure and model parts compile from the map, the group's projection fills `c[40..48]`, and `native_lights_glue::shadow_alone` seals the packet run before the guest entry loop is emptied. Receivers bind the boundary's frozen map; the object filter's native quads and final copy go into the same guest targets. The guest's target begin, clear and end still run. Part of [native-renderer.md](native-renderer.md); the light path it sits in is [native-lights.md](native-lights.md).
+The shadow draw stage consumes the gathered lists from [native-light-gather.md](native-light-gather.md). It keeps template selection, material setup, push-buffer decoding and vertex resolution, and replaces the resolved draws with independent GPU packets recorded into the D3D frame. A draw the stage cannot prove stays on D3D. At each layer's build, a whole scene group instead goes through `shadow_look` and `shadow_scene`: structure and model parts compile from the map, the group's projection fills `c[40..48]`, and `native_lights_glue::shadow_alone` seals the packet run before the guest entry loop is emptied. Receivers bind the boundary's frozen map; the object filter's native quads and final copy go into the same guest targets. The guest's target begin, clear and end still run. Part of [native-renderer.md](native-renderer.md); the light path it sits in is [native-lights.md](native-lights.md).
 
 ## How it works
 
@@ -90,7 +90,7 @@ receiver. `engine::render::object_shadow::{Candidate, Lighting}` reads
 the gather row and resolved sample in
 `crates/rewrites/engine/src/render/object_shadow.rs`.
 
-The main branch sets pass flags `0x14`, renders the layer-10 silhouette, calls `0x000222a0` for the two filter passes through targets 10 → 11 → 10, and applies layer 11 with the filtered target 10. The native freeze is ordered at the start of 11. A native caster can therefore share its map with D3D casters and with the guest filter. The original handles the early and alternate branches, projection setup, tail at `0x0004a780`, and the outer loop's restoration of both mode bytes. Each object and each additional-caster suffix at `0x00030ed0` starts a new generation.
+The main branch sets pass flags `0x14`, renders the layer-10 silhouette, calls `0x000222a0` for the two filter passes through targets 10 → 11 → 10, and applies layer 11 with the filtered target 10. The native freeze is ordered at the start of 11. A native caster can therefore share its map with D3D casters and with the guest filter. `light_gather::object_shadows::caster` drives admitted mask casters through projection setup and the tail at `0x0004a780`. A refused caster runs the guest function whole, including creature shadows. `object_shadows::run` restores both mode bytes after the last caster. Each object and each additional-caster suffix at `0x00030ed0` starts a new generation.
 
 ## Interfaces
 
@@ -110,7 +110,7 @@ Range admission requires the original sorted entry, matching shader and part, a 
 
 - Pixel parity against D3D for the layer 10, 11 and 14 replacements, on the Old Mombasa level and on the E3 lighting setting at render scale 2.
 - Object filter and application sites that those scenes do not exercise.
-- Timing: guest gather, decoding and per-range preparation remain in the frame cost.
+- The frame cost of row gathering, mask setup, decoding and per-range preparation.
 
 ## Related
 
