@@ -97,6 +97,9 @@ pub const MAX_PANEL_LINES: usize = 3;
 /// The status line's text while the start gate holds Start Game, after
 /// the panel lines' slots.
 const GATE_SLOT: u32 = PANEL_SLOTS + MAX_PANEL_LINES as u32 + 1;
+/// The status line's text while the lobby's map variant builds or is
+/// refused ([`variant_text_id`]).
+const VARIANT_SLOT: u32 = GATE_SLOT + 1;
 
 pub const FORGE_MAP_LABEL: &str = "Forge Map...";
 /// A matchmaking lobby's action 9 ([`crate::clankermatch::CHANGE_PLAYLIST`]).
@@ -394,7 +397,25 @@ pub fn start_refusal(m: &dyn GuestMemory) -> Option<Reason> {
 /// start gate holds it ([`gate_blocked`]).
 pub fn start_refused(m: &dyn GuestMemory) -> bool {
     let state = lobby_start::state();
-    state.lobby && (gate_blocked().is_some() || start_refusal(m).is_some())
+    state.lobby
+        && (gate_blocked().is_some() || start_refusal(m).is_some() || variant_hold(m).is_some())
+}
+
+/// What holds Start Game on the lobby's map variant: it builds, or a check
+/// of the table failed ([`crate::map_variant::hold`]). A pick made on
+/// another map is cleared first.
+pub fn variant_hold(m: &dyn GuestMemory) -> Option<String> {
+    crate::map_variant::sync(m.u32(crate::h1_options_row::LOBBY_MAP).ok());
+    crate::map_variant::hold()
+}
+
+/// The status line's text while the map variant holds Start Game, written
+/// to its slot. `None` while it does not.
+pub fn variant_text_id(m: &mut dyn GuestMemory) -> Option<u32> {
+    let text = variant_hold(&*m)?;
+    let id = TEXTS.set(VARIANT_SLOT, &text);
+    TEXTS.write(m).ok()?;
+    Some(id)
 }
 
 /// The status line's text while the start gate holds Start Game: the
@@ -565,7 +586,9 @@ fn load_state(bytes: &[u8]) -> Result<(), String> {
         lobby: *lobby != 0,
         mode,
         forge_map: name,
+        map_variant: None,
     });
+    crate::map_variant::forget();
     TEXTS.rewrite_all();
     // The start gate checks the restored lobby again at its next refresh.
     #[cfg(feature = "rules")]

@@ -40,7 +40,6 @@ pub(crate) fn custom_game_text(m: &mut dyn GuestMemory, return_pc: u32, id: u32)
     if let Some(gate) = crate::lobby_mode::gate_text_id(m) {
         return Some(gate);
     }
-    let m: &dyn GuestMemory = m;
     // A Forge lobby with a member on another console, or a Firefight lobby
     // on a map without the kit: its start state is held off ready, and the
     // line says why in place of retail's text (the lobby modes' reasons,
@@ -48,6 +47,11 @@ pub(crate) fn custom_game_text(m: &mut dyn GuestMemory, return_pc: u32, id: u32)
     if let Some(reason) = crate::lobby_mode::start_refusal(m) {
         return Some(reason.id());
     }
+    // The lobby's map variant builds, or failed a check: its sentence.
+    if let Some(id) = crate::lobby_mode::variant_text_id(m) {
+        return Some(id);
+    }
+    let m: &dyn GuestMemory = m;
     if !CUSTOM_COUNTDOWN_IDS.contains(&id) {
         return None;
     }

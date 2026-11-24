@@ -532,7 +532,8 @@ fn a_snapshot_keeps_the_lobbys_mode() {
         lobby_start::State {
             lobby: true,
             mode: Mode::Forge,
-            forge_map: Some("Castle".into())
+            forge_map: Some("Castle".into()),
+            map_variant: None
         }
     );
     assert!(load_state(&[1]).is_err());

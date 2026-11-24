@@ -5,7 +5,9 @@
 
 mod budget;
 pub mod camera;
-mod files;
+pub mod files;
+#[cfg(test)]
+mod file_tests;
 mod links;
 pub mod look;
 pub mod net;
