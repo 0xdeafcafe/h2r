@@ -502,12 +502,16 @@ is in `compiler/tests.rs`; the disc form is `tests/compile_disc.rs`,
 as the evidence that the type rules match retail.
 
 **Preview.** There is no editor-side run. `hs::vm` evaluates against
-`vm::mock` only and nothing in the game calls it
+`vm::mock` only and the game's scripts run on the retail interpreter
 ([hs_vm.md](../engine/hs_vm.md)). With a game connected the tool shows
 live threads and globals beside the source (`hs.threads`, `hs.globals`).
-A changed script has the `reload` effect. Evaluating an expression in the
-running game needs a game method that does not exist (`hs.eval`, slice
-H4), and is not assumed.
+A changed script has the `reload` effect. The expression box under the
+search (**Evaluate in game**, `script.eval`) sends one expression to the
+paired game's `hs.eval`, which compiles it against the loaded map and runs
+it at a tick boundary over a snapshot of the map's globals; the last answer
+shows under the box. It does not run builtins that act on the game's
+objects, and it writes nothing back
+([runtime/agent-api.md](../runtime/agent-api.md#hseval)).
 
 **Write** (`crates/apps/studio/src/app/script_edit.rs`,
 `crates/formats/hs/src/table_writes.rs`). `App::script_compile(source,
@@ -644,7 +648,9 @@ codec tables from a verified `default.xbe` (`wma::VerifiedImage`). Gaps:
 
 **Preview.** Audio through the host mixer; the face in the editor's
 native view. The game is not needed. Hearing a line in the running game
-with the character speaking is a script call and belongs to `hs.eval`.
+with the character speaking is a script call and belongs to `hs.eval`, which
+runs builtins that need the game's objects only once the guest-backed engine
+exists.
 
 **Write.**
 
@@ -853,6 +859,7 @@ already a namespace there (player models and looks), so poses use `anim.*`.
 | `script.follow` | `{name?, link}` | `{kind, name, target, tool, log}`: what a click on the link does |
 | `script.compile` | `{source?, working?, name?, apply?}` | `{ok, applied, definitions, nodes, freed, reused, grown, new_strings, grows, free_nodes, depth}`, or `{ok: false, errors: [{line, column, span, code, text}]}`; with `apply`, one undo step |
 | `script.undo` | `{redo?}` | `{changed, free_nodes, depth}` |
+| `script.eval` | `{expression, type?}` | the paired game's `hs.eval`: `{ok, type, type_index, value, bits}`, or `{ok: false, errors, error}`; `REFUSED` without a paired, running game that lists it |
 | `script.uses` | `{kind, name}` | `{uses: [{name, item, count}]}`: the definitions that name a script, global, object name, volume, tag or recording |
 | `script.builtins` | `{filter?, unnamed?}` | `{builtins: [{index, name, label, from, returns, parameters, own_arguments, call, usage}], named_by_map, named_by_doc, unnamed, doc}` |
 | `script.doc` | `{path}` | `{path, doc, log}`: names builtins from the listing at `path` (`null`: none) |
@@ -881,7 +888,7 @@ slice and by later tests, so each is an expansion, not a one-off:
 
 | Method | Class | Does | Needed by |
 |---|---|---|---|
-| `hs.eval` | act | evaluates one expression through the game's own script evaluator on the game thread; `{value, type}` or the evaluator's error | H4; any test that drives a scripted map |
+| `hs.eval` (built) | read | compiles one expression against the loaded map (`hs::compile`) and runs it on `hs::vm` over a snapshot of the scripts and global cells at a tick boundary; `{type, type_index, value, bits}`, the compiler's problems with places, or the evaluator's refusal; builtins that act on the game are refused by name | H4; any test that drives a scripted map |
 | `recording.play` (built) | act | plays a named recording on a player's unit by the engine's own entry | K2 |
 | `recording.capture` | act | records a unit's control per tick into events until stopped | K4 |
 
@@ -955,7 +962,7 @@ the first one whose needs are met.
 | A4 (built) | **Mouth curves, write**: drawing, **From the sound**, the in-place raw write | M | A2; modeling 3 | a redrawn invented curve changes only its bytes and the checksum; a shared-cache sound and a split chain are refused |
 | K1 (built) | **Recordings, read**: the stream crate, typed events, the tool and timeline, `recording.list`, `recording.read` | M | H1 | every Halo 2 event type decodes from an invented stream; a bad type or length is an error with its offset |
 | K2 (built) | **Recordings, play**: the game's `recording.play`, the path in Scene | M | K1; live-mirror | on the fake game, **Play on unit...** sends the call and the streamed positions draw a path |
-| H4 | **`hs.eval`** in the game, and an expression box in the Scripts tool | M | H1 | the agent crate's test evaluates an invented expression through the evaluator entry; a parse error returns the evaluator's text |
+| H4 (built) | **`hs.eval`** in the game, and an expression box in the Scripts tool | M | H1 | the agent crate's test evaluates an invented expression through the evaluator; a parse error returns the compiler's text with its place |
 | K3 (built) | **Recordings, write**: the encoder, event edits, `recording.write`, the converted-map overlay | M | K1, X2 | `encode(decode(s)) == s`; an edited stream saves and walks clean; removing a played recording is refused |
 | S5 | **WGSL overrides from the editor** | S | S4, P12 | on the fake game, an edited file reaches `render.reload` and a compile error shows under the text |
 | N1 | **Strings, read**: every string by name and language, searched | S | nothing | an invented table lists and searches in each language |

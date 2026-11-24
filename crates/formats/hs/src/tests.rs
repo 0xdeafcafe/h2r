@@ -661,3 +661,60 @@ fn castable_follows_the_retail_converter() {
     assert!(!castable(12, 9));
     assert!(!castable(11, 9));
 }
+
+/// The catalog and the scenario's tables read from memory laid out as the
+/// invented executable and scenario payload are, equal to the file readers'.
+#[test]
+fn the_tables_read_from_memory_equal_the_file_readers() {
+    use crate::fixture::{Builtin, Exe, Tables};
+    let exe = Exe {
+        types: (0..crate::fixture::TYPES).map(|i| format!("t{i}")).collect(),
+        builtins: vec![Builtin { returns: 6, flags: 0, parameters: vec![6, 6], usage: Some("u".into()) }],
+        external_type: 6,
+        ..Exe::default()
+    };
+    let bytes = exe.xbe();
+    let image = |at: u32, len: usize| -> Result<Vec<u8>> {
+        let from = at.checked_sub(0x0020_0000).ok_or_else(|| invalid("below the image"))? as usize + 0x400;
+        bytes
+            .get(from..from + len)
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| invalid("past the image"))
+    };
+    let from_file = exe.catalog();
+    let from_memory = Catalog::from_memory(&image, &|at| at >= 0x0020_0000).unwrap();
+    assert_eq!(format!("{from_file:?}"), format!("{from_memory:?}"));
+    // The count anchors it.
+    assert!(Catalog::from_memory(&|_, len| Ok(vec![0; len]), &|_| true).is_err());
+
+    let mut t = Tables::new();
+    let four = t.value(7, 4);
+    t.global_definition("count", 7, four);
+    let mut payload = vec![0u8; 0x400];
+    t.write(&mut payload, 0x0900_0000, 0x240);
+    let payload_read = |at: u32, len: usize| -> Result<Vec<u8>> {
+        let from = at.checked_sub(0x0900_0000).ok_or_else(|| invalid("below the payload"))? as usize;
+        payload
+            .get(from..from + len)
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| invalid("past the payload"))
+    };
+    let scenario = Scenario::read_memory(0x0900_0000, &payload_read).unwrap();
+    assert_eq!(format!("{:?}", scenario.globals()), format!("{:?}", t.scenario().globals()));
+    assert_eq!(scenario.nodes().len(), 1);
+    // A table past the payload is an error, not a read of other memory.
+    assert!(Scenario::read_memory(0x0900_0000, &|_, _| Err(invalid("unreadable"))).is_err());
+}
+
+#[test]
+fn a_global_cell_can_be_given_a_value_and_only_within_the_definitions() {
+    use crate::vm::{Cell, Vm, VmImage};
+    let (scenario, catalog) = fixture();
+    let image = VmImage::without_stubs();
+    let mut vm = Vm::new(&scenario, &catalog, &image);
+    let count = scenario.globals().len();
+    assert!(count > 0);
+    assert!(vm.set_global(0, Cell::from_long(9)));
+    assert_eq!(vm.global(0), Some(Cell::from_long(9)));
+    assert!(!vm.set_global(count, Cell::from_long(1)));
+}

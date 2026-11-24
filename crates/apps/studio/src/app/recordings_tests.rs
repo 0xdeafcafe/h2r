@@ -1,5 +1,6 @@
 //! The recordings read over the scenario crate's invented map: invented
 //! streams, an invented executable, no game data.
+use agent_proto::RpcError;
 use hs::fixture::{Builtin, Exe, Tables};
 use scenario_edit::fixture;
 use serde_json::{Value, json};
@@ -211,6 +212,15 @@ mod game {
         /// `plays`: the game lists `recording.play`. `refuse`: it answers
         /// that the unit is gone.
         pub fn start(tag: &str, plays: bool, refuse: bool) -> Game {
+            Self::start_with(tag, plays, refuse, None)
+        }
+
+        /// A game that also answers `hs.eval` with `reply`.
+        pub fn evaluating(tag: &str, reply: Result<Value, RpcError>) -> Game {
+            Self::start_with(tag, false, false, Some(reply))
+        }
+
+        fn start_with(tag: &str, plays: bool, refuse: bool, eval: Option<Result<Value, RpcError>>) -> Game {
             let path = std::env::temp_dir()
                 .join(format!("h2e-rec-{tag}-{}.sock", std::process::id()));
             let agent = Agent::new();
@@ -226,6 +236,13 @@ mod game {
                         "player": p["player"], "recording": p["recording"],
                         "index": 0, "unit": "00010001",
                     }))
+                });
+            }
+            if let Some(reply) = eval {
+                let seen = Arc::clone(&calls);
+                agent.add_method("hs.eval", Access::Read, move |p| {
+                    seen.lock().unwrap().push(p.clone());
+                    reply.clone()
                 });
             }
             let server = Server::listen(&path, agent.clone()).unwrap();
@@ -583,4 +600,53 @@ fn without_the_scripts_a_removal_is_refused_because_who_plays_it_is_unknown() {
         m::RECORDING_WRITE,
         json!({"name": "arrive", "initial": {"aiming_speed": 2}}),
     );
+}
+
+#[test]
+fn script_eval_sends_the_expression_and_returns_the_games_answer_or_its_problems() {
+    let t = Temp::new("script-eval");
+    let mut app = open(scripts::scripted_source(&t.0, true), &t);
+    let mut api = Api::new();
+    // Not paired.
+    let e = api.call(&mut app, m::SCRIPT_EVAL, json!({"expression": "count"})).unwrap_err();
+    assert_eq!(e.code, code::REFUSED);
+    // A value.
+    let game = game::Game::evaluating(
+        "eval-ok",
+        Ok(json!({"type": "short", "type_index": 7, "value": 4, "bits": 4})),
+    );
+    pair(&mut app, &game, false);
+    let v = call(&mut api, &mut app, m::SCRIPT_EVAL, json!({"expression": "count", "type": "short"}));
+    assert_eq!((v["ok"].clone(), v["value"].clone(), v["type"].clone()), (json!(true), json!(4), json!("short")));
+    assert_eq!(*game.calls.lock().unwrap(), [json!({"expression": "count", "type": "short"})]);
+    // A paused game would not answer.
+    pair(&mut app, &game, true);
+    let e = api.call(&mut app, m::SCRIPT_EVAL, json!({"expression": "count"})).unwrap_err();
+    assert!(e.message.contains("paused"), "{}", e.message);
+    // Problems in the text come back as errors, not as a refusal.
+    let problems = json!([{"line": 1, "column": 1, "code": "syntax.open", "text": "this ( is never closed"}]);
+    let game = game::Game::evaluating(
+        "eval-problems",
+        Err(RpcError {
+            code: agent_proto::code::INVALID_PARAMS,
+            message: "1:1: this ( is never closed".into(),
+            data: Some(json!({ "problems": problems })),
+        }),
+    );
+    pair(&mut app, &game, false);
+    let v = call(&mut api, &mut app, m::SCRIPT_EVAL, json!({"expression": "(add 1"}));
+    assert_eq!((v["ok"].clone(), v["errors"].clone()), (json!(false), problems));
+    // The evaluator's refusal is the answer's `error`.
+    let game = game::Game::evaluating(
+        "eval-stopped",
+        Err(RpcError::new(agent_proto::code::UNAVAILABLE, "`print` needs the running game")),
+    );
+    pair(&mut app, &game, false);
+    let v = call(&mut api, &mut app, m::SCRIPT_EVAL, json!({"expression": "(print 1)"}));
+    assert_eq!((v["ok"].clone(), v["error"].clone()), (json!(false), json!("`print` needs the running game")));
+    // A game from before hs.eval.
+    let old = game::Game::start("eval-old", false, false);
+    pair(&mut app, &old, false);
+    let e = api.call(&mut app, m::SCRIPT_EVAL, json!({"expression": "count"})).unwrap_err();
+    assert!(e.message.contains("does not list hs.eval"), "{}", e.message);
 }
