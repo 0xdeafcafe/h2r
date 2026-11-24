@@ -82,6 +82,11 @@ pub mod method {
     pub const SHELL_OPEN: &str = "shell.open";
     pub const SHELL_FOCUS: &str = "shell.focus";
     pub const SHELL_CLOSE: &str = "shell.close";
+    // The browser (docs/editor/studio-redesign.md, "The browser";
+    // api/assets.rs).
+    pub const ASSET_LIST: &str = "asset.list";
+    pub const ASSET_THUMB: &str = "asset.thumb";
+    pub const ASSET_COPY: &str = "asset.copy";
     // The tag workspace (docs/editor/tag-workspace.md, "Interfaces";
     // api/workspace.rs).
     pub const WORKSPACE_STATUS: &str = "workspace.status";

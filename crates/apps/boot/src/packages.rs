@@ -21,6 +21,12 @@ mod baked {
 /// The set this boot read.
 static SET: OnceLock<Arc<GameSet>> = OnceLock::new();
 
+/// The baked packages, with a line for each that did not read: what
+/// Studio's browser lists beside the user's.
+pub fn baked() -> (Vec<workspace::Loaded>, Vec<String>) {
+    workspace::baked(baked::BAKED)
+}
+
 /// The boot's set and its rewrite.
 pub struct Packages {
     pub set: Arc<GameSet>,

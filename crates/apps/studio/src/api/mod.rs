@@ -26,6 +26,7 @@ use studio_proto::{code, method as m};
 use crate::App;
 
 mod anim;
+mod assets;
 mod bitmaps;
 mod checks;
 mod collision;
@@ -205,6 +206,27 @@ pub const METHODS: &[MethodDef] = &[
         "{}",
         r#"{"source":"string|null","maps":"[string]","map_entries":"[{map,label,group}]","halo1_maps":"[{map,label,group}]","map_pack":"[{map,label,group}]","loaded":"string|null","packages":"[{key,map,label,group}]"}"#,
         "null",
+    ),
+    def(
+        m::ASSET_LIST,
+        "The browser's rows. root tags (the default): every tag of the tags tree by path, one row for a tag all its maps hold alike and `variants` (each with its maps) where they differ, plus the tags packages add (`new`, badge `new in <package>`); a tag an edit line touches has badge `edited by <package>`. root packages: the set (a package per row), or with `package` that package's items. root live: the server's offer (none is held offline). `kind` is Maps, Objects, Models, Animations, Bitmaps, Shaders, Effects, Sounds, Screens, HUDs, Strings, Other or a tag group; `map` keeps what that map holds; every word of `query` must match the path, group, kind or a package id",
+        r#"{"root?":"tags|packages|live","package?":"string","kind?":"string","map?":"string","query?":"string","limit?":"integer"}"#,
+        r#"{"root":"string","rows":"[{asset,root,kind,name,group?,path?,origin?,new?,badge?,packages?,maps?,variants?,...}]","total":"integer","limit":"integer","truncated":"boolean","maps":"[string]","kinds":"[string]","problems":"[string]"}"#,
+        r#"{"kind":"Objects","query":"rifle"}"#,
+    ),
+    def(
+        m::ASSET_THUMB,
+        "A thumbnail as a PNG path: for a package's bitmap item (item:<package>:<n>) with a PNG source. A tag's own picture (a bitmap, a model, a waveform, a screen) answers not-yet until the renderer draws it",
+        r#"{"asset":"string","out?":"string"}"#,
+        r#"{"asset":"string","path":"string","bytes":"integer","source":"string"}"#,
+        r#"{"asset":"item:pogo:2"}"#,
+    ),
+    def(
+        m::ASSET_COPY,
+        "Copy into a package: a new `tag` item `like:` the tag of the tree, in a package under <data>/packages/ (the source file holds no bytes of the disc's tag; the lock is rewritten). The new path is `to`, or the tag's path with _copy added",
+        r#"{"asset":"string (tag:<group>:<path>)","package":"string","to?":"string"}"#,
+        r#"{"package":"string","from":"string","tag":"string","source":"string","item":"integer","dir":"string"}"#,
+        r#"{"asset":"tag:weap:objects\weapons\rifle\battle_rifle\battle_rifle","package":"my-pack"}"#,
     ),
     def(
         m::WORKSPACE_STATUS,
@@ -843,6 +865,7 @@ impl Api {
             "session" => self.session(app, method, &p),
             "source" | "doc" => docs::call(app, method, &p),
             "shell" => shell::call(app, method, &p),
+            "asset" => assets::call(app, method, &p),
             "tag" => tags::call(app, method, &p),
             "scenario" => scenario::call(app, method, &p),
             "volume" => scenario::volume(app, method, &p),
