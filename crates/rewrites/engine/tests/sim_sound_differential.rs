@@ -120,12 +120,24 @@ fn compare_ram(reference: &Guest, native: &Guest, esp: u32, context: &str) {
 }
 
 fn compare(image: &Image, code: &mut lifted::Original, body: &'static Body, case: &Case) {
+    compare_with(image, code, body, case, |_, _| {});
+}
+
+fn compare_with(
+    image: &Image,
+    code: &mut lifted::Original,
+    body: &'static Body,
+    case: &Case,
+    dress: impl Fn(&mut Guest, &mut Cpu),
+) {
     let root = body.point.base;
     // Isolate the entry: even a child with its own port must appear as a
     // callout here, with the same args and return site as the lifted code.
     let table = Table::new(std::iter::once(body)).unwrap();
     let (mut reference_ram, mut reference) = start(image, root, case);
     let (mut native_ram, mut native) = start(image, root, case);
+    dress(&mut reference_ram, &mut reference);
+    dress(&mut native_ram, &mut native);
     code.prime(root);
     for n in 0..8192 {
         let pc = reference.eip;
@@ -168,9 +180,14 @@ fn compare(image: &Image, code: &mut lifted::Original, body: &'static Body, case
     panic!("{} case {} did not finish", body.point.name, case.seed);
 }
 
+#[path = "sim_sound_differential/ambience.rs"]
+mod ambience;
+#[path = "sim_sound_differential/channel.rs"]
+mod channel;
 #[path = "sim_sound_differential/core.rs"]
 mod core_cases;
-
+#[path = "sim_sound_differential/disc.rs"]
+mod disc;
 #[path = "sim_sound_differential/extra.rs"]
 mod extra;
 #[path = "sim_sound_differential/impulse.rs"]
@@ -179,19 +196,16 @@ mod impulse;
 mod listener;
 #[path = "sim_sound_differential/loops.rs"]
 mod loops;
-#[path = "sim_sound_differential/sources.rs"]
-mod sources;
-
-#[path = "sim_sound_differential/ambience.rs"]
-mod ambience;
-#[path = "sim_sound_differential/channel.rs"]
-mod channel;
-#[path = "sim_sound_differential/disc.rs"]
-mod disc;
 #[path = "sim_sound_differential/objectsound.rs"]
 mod objectsound;
+#[path = "sim_sound_differential/portal_query.rs"]
+mod portal_query;
+#[path = "sim_sound_differential/scheduled_start.rs"]
+mod scheduled_start;
 #[path = "sim_sound_differential/segments.rs"]
 mod segments;
+#[path = "sim_sound_differential/sources.rs"]
+mod sources;
 #[path = "sim_sound_differential/spatial.rs"]
 mod spatial;
 #[path = "sim_sound_differential/stream.rs"]
@@ -200,20 +214,27 @@ mod stream;
 mod streammix;
 
 fn cases(entry: u32) -> Vec<Case> {
-    let mut result = core_cases::cases(entry);
-    result.extend(ambience::cases(entry));
-    result.extend(channel::cases(entry));
-    result.extend(objectsound::cases(entry));
-    result.extend(segments::cases(entry));
-    result.extend(spatial::cases(entry));
-    result.extend(stream::cases(entry));
-    result.extend(streammix::cases(entry));
-    result.extend(extra::cases(entry));
-    result.extend(impulse::cases(entry));
-    result.extend(listener::cases(entry));
-    result.extend(loops::cases(entry));
-    result.extend(sources::cases(entry));
-    result
+    let providers: &[fn(u32) -> Vec<Case>] = &[
+        ambience::cases,
+        channel::cases,
+        core_cases::cases,
+        extra::cases,
+        impulse::cases,
+        listener::cases,
+        loops::cases,
+        objectsound::cases,
+        portal_query::cases,
+        scheduled_start::cases,
+        segments::cases,
+        sources::cases,
+        spatial::cases,
+        stream::cases,
+        streammix::cases,
+    ];
+    providers
+        .iter()
+        .flat_map(|provider| provider(entry))
+        .collect()
 }
 
 #[test]
