@@ -25,23 +25,10 @@ pub const ONE: u32 = 0x0045_dbc0;
 /// The vector test's result record R (entries C and D).
 pub use sim_collision::bsp::segment::record;
 
-/// The vector test's 40-byte context (entry D's first argument; entry C
-/// builds one in its own frame).
-pub mod context {
-    pub const FLAGS: u32 = 0x00;
-    pub const BSP: u32 = 0x04;
-    /// `u16`.
-    pub const BREAKABLE_COUNT: u32 = 0x08;
-    pub const MASK: u32 = 0x0c;
-    pub const START: u32 = 0x10;
-    pub const DELTA: u32 = 0x14;
-    pub const RECORD: u32 = 0x18;
-    pub const PREV_LEAF: u32 = 0x1c;
-    /// `u8`.
-    pub const PREV_KIND: u32 = 0x20;
-    pub const PLANE: u32 = 0x24;
-    pub const SIZE: u32 = 0x28;
-}
+pub use sim_collision::bsp::segment::context;
+
+/// Return site of the BSP walk's near-child self-call.
+pub const CONTEXT_RECURSIVE_RETURN: u32 = 0x001d_e7dd;
 
 /// A near-child call enters 0x28 bytes below its parent. The deepest leaf
 /// uses another 0x30 to enter the matcher, 0x48 to call the ring test and

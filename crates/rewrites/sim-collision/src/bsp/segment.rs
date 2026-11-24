@@ -108,7 +108,35 @@ pub mod record {
     pub const SIZE: u32 = 0x41c;
 }
 
+/// The vector test's 40-byte context (entry D's first argument; entry C
+/// builds one in its own frame).
+pub mod context {
+    pub const FLAGS: u32 = 0x00;
+    pub const BSP: u32 = 0x04;
+    /// `u16`.
+    pub const BREAKABLE_COUNT: u32 = 0x08;
+    pub const MASK: u32 = 0x0c;
+    pub const START: u32 = 0x10;
+    pub const DELTA: u32 = 0x14;
+    pub const RECORD: u32 = 0x18;
+    pub const PREV_LEAF: u32 = 0x1c;
+    /// `u8`.
+    pub const PREV_KIND: u32 = 0x20;
+    pub const PLANE: u32 = 0x24;
+    pub const SIZE: u32 = 0x28;
+}
+
 impl Outcome {
+    /// The context fields the caller reads after the walk.
+    pub fn write_context<E>(
+        &self,
+        mut store: impl FnMut(u32, &[u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        store(context::PREV_LEAF, &self.prev_leaf.to_le_bytes())?;
+        store(context::PREV_KIND, &[self.prev_kind])?;
+        store(context::PLANE, &self.plane.to_le_bytes())
+    }
+
     /// Emit result-record stores in execution order. Unvisited list entries and
     /// the hit fields on a miss retain their caller-provided bytes.
     pub fn write_record<E>(
