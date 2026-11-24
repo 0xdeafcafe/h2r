@@ -120,8 +120,8 @@ fn a_view_light_matches_the_layer_target_setters_constants_and_final_viewport() 
         let vp = dev + f::VIEWPORT;
         for _ in 0..layers {
             guest.set_viewport(&mut gm, vp).unwrap();
-            guest.set_render_state(&mut gm, 158, 0).unwrap();
             guest.set_render_state_simple(&mut gm, header, 0).unwrap();
+            guest.set_render_state(&mut gm, 158, 0).unwrap();
             guest.set_render_state(&mut gm, d3d::state::slot::STENCILENABLE, 0).unwrap();
         }
         game_tail(&mut guest, &mut gm);

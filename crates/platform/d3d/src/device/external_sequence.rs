@@ -229,9 +229,9 @@ impl<B: Backend> PreparedSequence<'_, B> {
             let viewport = dev + field::VIEWPORT;
             for _ in 0..view_layers {
                 d.set_viewport(&mut writes, viewport)?;
-                // 0x00015680: sample alpha and the build's simple state.
-                d.set_render_state(&mut writes, 158, 0)?;
+                // 0x000156f3: the stipple Simple setter precedes SampleAlpha.
                 d.set_render_state_simple(&mut writes, clip_header.unwrap(), 0)?;
+                d.set_render_state(&mut writes, 158, 0)?;
                 d.set_render_state(&mut writes, slot::STENCILENABLE, 0)?;
             }
             if !d.light_passes_tail(&mut writes, clip)? {
