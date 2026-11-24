@@ -599,13 +599,14 @@ the checks and the preview cover it. `hud_kit_core::world` has its
 shapes and its pose:
 
 ```rust
-pub enum Shape { Pipper, Bracket, Arrow, Ticks, Bar, Line }
+pub enum Shape { Pipper, Bracket, Arrow, Ticks, Bar, Line, Segment }
 
 pub struct Pose {
     pub at: Vec3,          // the point on the geometry
     pub along: [f32; 2],   // the heading, flat: a bracket's long side, an arrow's way
     pub half: [f32; 2],    // the size, world units
     pub strength: f32,     // 0 to 1: the lines' alpha, for a mark that fades
+    pub to: Option<Vec3>,  // a Segment's far end
 }
 ```
 
@@ -617,9 +618,10 @@ pub struct Pose {
 | `Ticks` | three dashes from the point along the heading | the run they take, unused |
 | `Bar` | a line across the heading through the point; with a band, its two ends as lines half as long either side along the heading | the band's half along the heading (0: none), the line's half across |
 | `Line` | one segment through the point along the heading, an edge of an outline | half its length, unused |
+| `Segment` | one segment from the point to `Pose::to`, at any slope and not lifted: an axis of a gizmo | unused |
 
 `world::edges(shape, &pose)` gives the line segments in world space,
-flat and 0.02 above the pose's point. The game and the preview draw the
+flat and 0.02 above the pose's point (a `Segment` is the pose's two points as given). The game and the preview draw the
 same segments: the game through the window's world-line pass, from each
 view's camera, under the HUD and with no depth test
 ([superbounce.md](superbounce.md#the-superbounce-game-type), the pass
@@ -635,7 +637,9 @@ present, and only while a shown mark has the style
 team the mark is in the user's HUD colour. The preview has no map to read
 it from and draws the stand-ins `preview::PREVIEW_TEAMS` (**S**: not the
 game's, apart enough to tell on the sheet). The `world` check refuses
-`Team` on any other kind, and a team of `world::TEAMS` (8) or more. One
+`Team` on any other kind, and a team of `world::TEAMS` (8) or more. `Axis(n)` (`0..world::AXES`) draws in the colour of axis X, Y or Z
+(`world::AXIS_COLOURS`, ours), for a gizmo's three segments; the `world`
+check refuses it on any other kind and an axis of 3 or more. One
 more style is a world mark's alone: `Go`, a
 green (`world::GO_GREEN`, [0.35, 0.95, 0.45]) for a mark that says "this
 will work": the approach guide's "this fall will bounce"
@@ -968,7 +972,7 @@ the check, the elements and the state and mode:
 | prompt | a `Message` or `Training` text, and its `longest`, has at most two lines, a `Prompt` or `Banner` one (the game's prompt line draws no line break; the banner is one centred line), and fits the frame's width (less the training box's margin); a `Message` or a `Banner` has at most 62 UTF-16 units |
 | modes | an element with no half or quarter offset is not drawn there (the JSON says why), a text has no font there, and the widgets of one HUD show in the same modes, so a block is never drawn in part |
 | drawn | a text or channel shown in a state, in a mode it shows in, puts opaque pixels down (alpha over 64): a transparent colour or a missing shader is a finding. A gauge shown puts pixels down: one whose picture no code of ours draws, or draws at another size, is a finding |
-| world | every sample pose is for a world mark of the HUD and has no fault (a number that is not finite, a negative size, a strength outside 0 to 1); a world mark shown in a state has a sample pose there, draws lines and keeps them inside the HUD frame; and `Go` and `Team` are on world marks alone, `Team` of a team the game has. A world mark's lines are not compared with the widgets' (`own`): they are under the HUD, on the geometry |
+| world | every sample pose is for a world mark of the HUD and has no fault (a number that is not finite, a negative size, a strength outside 0 to 1); a world mark shown in a state has a sample pose there, draws lines and keeps them inside the HUD frame; and `Go`, `Team` and `Axis` are on world marks alone, `Team` of a team the game has and `Axis` of one of the three. A world mark's lines are not compared with the widgets' (`own`): they are under the HUD, on the geometry |
 
 The synthetic source has no fonts, so it skips the glyph check and says
 so, and its retail check is against the flat disc and boxes, not the disc's art.

@@ -635,6 +635,11 @@ pub enum Style {
     /// finding of the `world` check. Where the game has no colour for the
     /// team the mark is in the user's HUD colour.
     Team(u8),
+    /// Axis `n`'s colour (`0..world::AXES`: X, Y, Z, `world::AXIS_COLOURS`),
+    /// for a world mark alone, as a gizmo's three segments: a widget or a
+    /// text channel in it, or an axis outside the three, is a finding of
+    /// the `world` check.
+    Axis(u8),
 }
 
 impl Style {
@@ -646,6 +651,7 @@ impl Style {
             Style::Flash(p) => format!("flash {}", p.name()),
             Style::Go => "go".into(),
             Style::Team(n) => format!("team {n}"),
+            Style::Axis(n) => format!("axis {n}"),
         }
     }
 }
