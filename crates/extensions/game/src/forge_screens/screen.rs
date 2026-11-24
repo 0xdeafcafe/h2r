@@ -509,7 +509,12 @@ fn row_spec(r: &super::sheet::SheetRow, described: bool) -> RowSpec {
             RowSpec::action(&r.label).press(Press::Open(sheet.kind.screen().into()))
         }
         Act::Tick(_) => RowSpec::value(&r.label, &[value.as_str()], 0).press(Press::Act),
-        Act::Info => RowSpec::info(&r.label, &value),
+        Act::Info => {
+            // A fact takes no A: its legend is Back alone.
+            let mut row = RowSpec::info(&r.label, &value);
+            row.prompts = Some(vec![Prompt::new(&[Glyph::B], "Back")]);
+            row
+        }
         Act::Choose(_) | Act::Close | Act::Done => RowSpec::action(&r.label).press(Press::Act),
     };
     match (&r.description, described) {

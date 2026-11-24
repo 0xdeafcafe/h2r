@@ -18,7 +18,7 @@ use sheet::{Act, Group, Prop, Tool};
 #[test]
 fn page_tables() {
     use Input::{A, B, Down, Left, Right, Up};
-    use ListEffect::{Action, Close, Focus, None as Nothing, Open};
+    use ListEffect::{Action, Close, Focus, None as Nothing, Open, Stepped};
     struct Case {
         kind: Kind,
         from: &'static str,
@@ -104,7 +104,12 @@ fn page_tables() {
             kind: Kind::Games,
             from: "open",
             inputs: &[A, Down, A, Up],
-            effects: vec![Action, Focus(1), Action, Focus(0)],
+            effects: vec![
+                Stepped("All game types: On".into()),
+                Focus(1),
+                Stepped("King of the Hill: On".into()),
+                Focus(0),
+            ],
             after: "GAME TYPES | focus 0 All game types = Off",
         },
         // The Controls page only lists: A does nothing.

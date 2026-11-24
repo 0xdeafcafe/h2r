@@ -149,6 +149,7 @@ fn palette_to_properties_to_confirmed_engine_handle() {
 #[test]
 fn the_placed_objects_browser_flies_the_monitor_to_the_chosen_object() {
     let mut e = editor();
+    calls::lock(&e.calls).arm();
     e.tool.monitor = true;
     assert!(e.placed().is_empty());
     let frame = Frame {
