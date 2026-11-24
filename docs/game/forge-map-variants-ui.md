@@ -90,7 +90,8 @@ nudge and nothing else.
 | own, changed | Restore original | the question | `EntryOp::Reset` | M6 |
 | Object | Object... | a picker of its group's palette | the palette entry | M6 |
 | Object | Game types... | the Game types dialog | the `games` property | G1 |
-| Object | Label... | a picker of the labels the session's script declares, then a number | the label ([rules-engine.md](rules-engine.md#forge-labels)) | P5 |
+| Any thing | Label, Label number, Clear label | the keyboard on the text, the keyboard on the number, and an act; `forge.properties` rows `label`, `label number` and `clear label` (`open: keyboard` and `open: act`) | the label ([rules-engine.md](rules-engine.md#forge-labels)) | built; a picker of a script's declared labels is design |
+| Object the session placed | Save as prefab | the keyboard on the prefab's name; the row `prefab` | `<data>/forge/prefabs/<name>.h2prefab` ([forge-editing.md](forge-editing.md), "Selection, groups and prefabs") | built |
 | Item spawner | Item... | the object menu's item groups, as a picker | `item` | M6 |
 | Item spawner | Respawn time | a picker: Map default, then seconds | `respawn time` | M6 |
 | Item spawner | Return time | a picker of seconds | `abandon limit` | M6 |

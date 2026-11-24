@@ -5,7 +5,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use forge_doc::{ForgeDoc, Limits, MAX_DOC_BYTES};
+use forge_doc::{ForgeDoc, Limits, MAX_DOC_BYTES, MAX_PREFAB_BYTES, Prefab};
 
 fn filename(name: &str) -> Result<String, String> {
     if !content::manifest::is_map_name(name) {
@@ -525,4 +525,80 @@ pub mod variants {
         }
         fs::remove_file(path).map_err(io)
     }
+}
+
+/// The suffix of a prefab file.
+const PREFAB_SUFFIX: &str = ".h2prefab";
+
+/// The most prefab files one listing reads.
+const MAX_PREFABS: usize = 256;
+
+/// Write `prefab` as `<data>/forge/prefabs/<name>.h2prefab`, canonical
+/// JSON, replacing a prefab of that name.
+pub(crate) fn save_prefab(data: &Path, prefab: &Prefab) -> Result<(), String> {
+    let bytes = prefab.canonical_json().map_err(|e| e.to_string())?;
+    let path =
+        std::path::absolute(data.join("forge").join("prefabs")).map_err(|e| e.to_string())?;
+    let dir = ensure_dir(&path)?;
+    content::store::write_atomic(
+        &dir.join(format!("{}{PREFAB_SUFFIX}", prefab.name)),
+        bytes.as_bytes(),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// The prefabs under `<data>/forge/prefabs`, by name, and a line for each
+/// file that is not one: a file that is not a regular file, is over the
+/// bound, does not read, or holds a name other than its own is named and
+/// left out.
+pub fn load_prefabs(data: &Path) -> Result<(Vec<Prefab>, Vec<String>), String> {
+    let dir = data.join("forge").join("prefabs");
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok((vec![], vec![])),
+        Err(e) => return Err(e.to_string()),
+    };
+    outside_checkout(&dir.canonicalize().map_err(|e| e.to_string())?)?;
+    let mut files = vec![];
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let filename = entry.file_name();
+        if let Some(stem) = filename
+            .to_str()
+            .and_then(|s| s.strip_suffix(PREFAB_SUFFIX))
+        {
+            files.push(stem.to_owned());
+        }
+    }
+    files.sort_unstable();
+    let mut prefabs = vec![];
+    let mut skipped = vec![];
+    for stem in files.into_iter().take(MAX_PREFABS) {
+        match read_prefab(&dir.join(format!("{stem}{PREFAB_SUFFIX}")), &stem) {
+            Ok(prefab) => prefabs.push(prefab),
+            Err(reason) => skipped.push(format!("{stem}: {reason}")),
+        }
+    }
+    Ok((prefabs, skipped))
+}
+
+fn read_prefab(path: &Path, stem: &str) -> Result<Prefab, String> {
+    if !path
+        .symlink_metadata()
+        .map_err(|e| e.to_string())?
+        .is_file()
+    {
+        return Err("not a regular file".into());
+    }
+    let mut bytes = vec![];
+    fs::File::open(path)
+        .map_err(|e| e.to_string())?
+        .take(MAX_PREFAB_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    let prefab = Prefab::from_bytes(&bytes).map_err(|e| e.to_string())?;
+    if prefab.name != stem {
+        return Err(format!("holds the name {}", prefab.name));
+    }
+    Ok(prefab)
 }

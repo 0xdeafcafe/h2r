@@ -18,9 +18,9 @@ mod things;
 pub mod tool;
 
 pub use budget::{Binds, Budget, noun};
-pub use files::{load_saved, saved_names};
+pub use files::{load_prefabs, load_saved, saved_names};
 pub use forge_doc::{BlockKind, Endpoint, OpId, TagKey, Value};
-pub use forge_doc::{GroundLabel, GroundRecipe, MIN_GROUP_MEMBERS};
+pub use forge_doc::{GroundLabel, GroundRecipe, Label, MIN_GROUP_MEMBERS, Prefab};
 pub use links::{Linkable, Teleporter};
 pub use session::{
     Goal, GroundBuilder, GroundProblem, GroundReceipt, GroundReport, GroundState, GroupInfo,

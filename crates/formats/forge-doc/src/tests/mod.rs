@@ -8,6 +8,7 @@ mod groups;
 mod labels;
 mod links;
 mod log;
+mod prefab;
 mod property;
 
 const EMPTY: &str = r#"{"author":"Editor","base":{"map":"fixture","sha256":"1111111111111111111111111111111111111111111111111111111111111111"},"builder":{"bots":3,"forge_build":1,"pathfind":2},"description":"row 1\nrow 2","format":1,"imports":[],"ops":[],"recipes":[],"sources":[],"title":"Forge \"é\""}"#;

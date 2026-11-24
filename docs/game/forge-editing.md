@@ -1,6 +1,6 @@
 # Forge editing: the monitor's controls, tools and properties
 
-Status: Partly built. The Halo 3 button table, flying with thrust and fine movement, pick up and drop, manipulating a held object, movement and rotation snap, world or local axes, Coordinates with typing and nudging, hold to delete, undo and redo, the Tools picker with the Objects and Links tools, the object menu, a Properties page with Heading and the spawn, goal and item rows, Tool settings with Movement snap, Rotation snap and Axes, the Overlays page with the Markers, Other monitors and Axes overlays, the placed objects browser, and groups (Select, Group selection, Ungroup, Lock group; moving one member moves the group) exist. The nav overlay (with F9), prefabs, the group pivot row, a held A to select and lights are design.
+Status: Partly built. The Halo 3 button table, flying with thrust and fine movement, pick up and drop, manipulating a held object, movement and rotation snap, world or local axes, Coordinates with typing and nudging, hold to delete, undo and redo, the Tools picker with the Objects and Links tools, the object menu, a Properties page with Heading and the spawn, goal and item rows, Tool settings with Movement snap, Rotation snap and Axes, the Overlays page with the Markers, Other monitors and Axes overlays, the placed objects browser, groups (Select, Group selection, Ungroup, Lock group; moving one member moves the group), labels (Label, Label number, Clear label) and prefabs (Save as prefab, the object menu's Prefabs row) exist. The nav overlay (with F9), the group pivot row, a picker of a script's declared labels, a held A to select and lights are design.
 Code: `crates/extensions/forge/src/tool.rs` (`Tool`, `Action`, `Input`, `Command`), `crates/extensions/forge/src/session.rs` and `session/groups.rs` (`Session`), `crates/extensions/game/src/forge_controls.rs` and `forge_controls/bindings.rs` (pad, keyboard and agent input; the bindings table), `crates/extensions/game/src/forge_screens/sheet.rs` (the menus' tables), `crates/extensions/game/src/forge_glue/editing.rs` (the host). Tests: `crates/extensions/forge/src/tool_tests.rs`, `link_tests.rs`, `props_tests.rs`, `group_tests.rs`, `tests.rs`; `forge_controls.rs`, `bindings.rs`, `forge_screens/tests.rs` and `forge_glue/editing/tests.rs` in `crates/extensions/game/src`.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
@@ -43,7 +43,7 @@ objects that are guest truth, tool state that is presentation
 | Placed-object browser | built | A picker over `Session::objects`; choosing a row flies the monitor to it (`sheet::placed_rows`, `Camera::toward`) | none |
 | Limits by kind | P4 | `forge.capacity` already measures the object pool, each block's count and limit, and tag headroom | in P4 |
 | Selection, groups, group pivot | built, but the pivot row and a held A | A selection is tool state (`Tool::toggle_selected`). A group is a Forge-family op naming its members by endpoint (`forge_doc::Group`); moving one is a batch of entry sets in one undo step, as a delete of a linked machine is one step (`Session::move_thing`). The pivot, centre or first member, is a field of the op (`pivot_first`); the Properties page makes centre groups, and `forge.propose` writes the other | none; the document format is 4 (`FORMAT_GROUPS`) |
-| Prefabs | P5 | A prefab is a small document: tag keys and frames relative to a pivot, no game bytes. Placing one checks every tag against this map's palette and refuses by name | in P5; sharing on Live rides F14 |
+| Prefabs | built (P5) | A prefab is a small file: tag keys and frames relative to a pivot, no game bytes. Placing one checks every tag against this map's palette and refuses by name | sharing on Live rides F14 |
 | Folders, lock | built | A group's name is the folder (the browser lists groups first); lock is a flag on the group (`Forge::GroupLock`) that the tool honours: it does not aim at a locked group's things | none |
 | Placed lights | P6 | A kit piece of ours with a generated light tag; colour and size are tag field writes, which are Live ([forge-design.md](forge-design.md), "What the engine allows at runtime"). Halo 2 lights the level from a baked lightmap, so a placed light adds dynamic light only and casts no shadow (**S**: the engine's count of dynamic lights a frame, to be probed) | M, after F8's generators |
 | Node graph | F7, [rules-engine.md](rules-engine.md) | The graph exists in the design as links between ports ([forge-features.md](forge-features.md), "Teleporters, buttons and triggers"), compiled to the rules IR. On a pad it is edited in the world with the Links tool, one link at a time; a canvas view belongs to the paired editor. Its caps are the validator's and the Forge step's budget of node visits a tick | L (F7), unchanged |
@@ -199,7 +199,7 @@ block's objects have a group (`Group::of_block`).
 | Goals | Hill, Territory and Siege site | one centre flag and its default area | MK7. Other goal placements are P2 |
 | Structure | the kit's block-out pieces and barriers | generated kit tags | F8 |
 | Lights | the kit's lights | a generated kit tag | P6 |
-| Prefabs | the player's saved prefabs that fit this map | a group of placements | P5 |
+| Prefabs | the player's saved prefabs whose every tag this map holds | the pieces as placements, their labels, and a group | built |
 | My imports | the player's converted models | import slots | F12 |
 
 - A row's description gives what the object is, how many are placed and
@@ -241,7 +241,8 @@ opens a picker; an action row acts and closes.
 | goal | Order | the flag's identifier, for hills and territories | built | P2 |
 | teleporter | Channel | the flag's identifier, through a link (`forge_doc::Forge::Link`) | Kit; built for the map's own flags | F6, P2 |
 | scenery, crate, machine | Physics: Normal, Fixed | **S**: no placement field that pins a physical object is known | | after a probe |
-| any object | Label | a label and number in the document ([rules-engine.md](rules-engine.md#forge-labels)) | none: scripts read it | P5 |
+| any thing | Label, Label number, Clear label | a label and number in the document ([rules-engine.md](rules-engine.md#forge-labels)): `Forge::Label` | none: scripts read it | built |
+| object the session placed | Save as prefab | `<data>/forge/prefabs/<name>.h2prefab` | none | built |
 | any object | Select, Group selection | tool state; the group op | none | built |
 | group member | Group, Lock group, Ungroup | `Forge::GroupLock`, `Forge::Ungroup` | none | built |
 | light | Colour, Size, Brightness | fields of the light's generated tag | Live | P6 |
@@ -289,11 +290,40 @@ opens a picker; an action row acts and closes.
   256 members. Deleting a member leaves the others grouped, in the same
   undo step, and ends the group when one is left. The tool shows only the
   held member's ghost; the others move on the drop.
-- **Prefab.** **Save as prefab** writes
-  `<data>/forge/prefabs/<name>.h2prefab`: canonical JSON of tag keys and
-  frames relative to the pivot, read with the document's bounded reader.
-  It holds nothing a document could not. The Prefabs group lists those
-  whose every tag this map holds; placing one is one undo step.
+- **Label.** The **Label** row opens the game's keyboard on the label's
+  text, which the session lowercases and checks as `forge_doc::Label`
+  does (1 to 32 bytes of letters, digits, `_`, `-` and `.`); **Label
+  number** types the number, empty taking it off; **Clear label** takes
+  the label off. Each is one `Forge::Label` op (`Session::set_label`),
+  and a thing has one label, so a later set replaces it. A label is
+  document data with no scenario bytes. Deleting or removing a labelled
+  thing clears its label in the same undo step, as it ends its links
+  and its place in a group. The ground labels belong to the AI and
+  objectives page: they are neither set nor replaced here. A script's
+  declared labels are not offered as a picker, since a session does not
+  know its script; the player types the name.
+- **Prefab.** **Save as prefab** (an object the session placed) takes
+  the object's group, else the selection when it holds the object with
+  another, else the object alone, and asks for a name on the keyboard.
+  It writes `<data>/forge/prefabs/<name>.h2prefab` (`forge_doc::Prefab`):
+  canonical JSON of each piece's block, tag key, label, and position and
+  rotation from the pivot, the first piece, as if the pivot faced yaw 0,
+  read back with a bounded reader (128 KiB, 256 pieces). It holds nothing
+  a document could not, and a name is 1 to 64 letters, digits, dashes and
+  underscores. A name already saved is replaced and the notice says so. A
+  map's own entries are not saved, since they name no tag of their own.
+  Two or more pieces place as a group. A file that does not read, is not
+  a regular file or holds another name than its own is named in a notice
+  and left out.
+- **Placing a prefab.** The object menu's **Prefabs** row lists the
+  prefabs whose every tag this map's palette holds, each with its
+  object count; choosing one places it with its pivot 3 world units in
+  front of the monitor, facing as the monitor does
+  (`Session::place_prefab`). It is one undo step: an add for each piece,
+  a label for each piece that has one, and the group, whose pivot is the
+  first piece. A prefab naming a tag the map lacks, or more objects than
+  the budget has left, is refused by name (`Session::prefab_fits`) and
+  nothing is placed or substituted.
 - The browser (**Placed objects**, a row of the Forge options page)
   opens a picker over every object placed, named as the object menu names
   it and numbered when the map has more than one ("Beacon 2", in the
@@ -319,11 +349,23 @@ opens a picker; an action row acts and closes.
 - **Document**: a document with a group op is format 4
   (`forge_doc::FORMAT_GROUPS`), since the format is one number and an
   older build refuses a newer document whole (`validate.rs`); one with no
-  group op keeps its number. Prefabs take the next step when built.
+  group op keeps its number. A prefab is a file with its own number
+  (`forge_doc::PREFAB_FORMAT`, 1), and a placed prefab is the ordinary add,
+  label and group ops, so a document that holds one needs no number of
+  its own.
 - **Agent API**: `forge.status` has `groups` (`{id, name, locked, pivot,
   members}`) and `selection`; a group is made, ended or locked through
   `forge.propose` with a `Forge::Group`, `Ungroup` or `GroupLock` op
   ([agent-api.md](../runtime/agent-api.md), "Local Forge session").
+- **Agent API**: `forge.status` has `labels` (`{thing, text, number}`) and
+  `prefabs` (`{name, pieces, grouped, fits, reason}`, `reason` the sentence
+  that refuses it on this map). A label is set or cleared through
+  `forge.propose` with a `Forge::Label` op, and a prefab's pieces are
+  placed through it with their own ops; the prefab file is the player's
+  and no method reads or writes it.
+- **`forge::Session`**: `label_of`, `labels`, `set_label`,
+  `capture_prefab`, `save_prefab`, `prefab_fits` and `place_prefab`;
+  `forge::load_prefabs` lists the files.
 
 ## Rules and limits
 
@@ -351,6 +393,9 @@ opens a picker; an action row acts and closes.
   `the_gate_follows_halo_3s_buttons`, `the_controls_page_lists_the_bindings_table`
   and the Coordinates, nudge and property tests in
   `crates/extensions/game/src/forge_screens` and `forge_glue/editing`.
+  Labels and prefabs: `prefab_tests.rs` in `crates/extensions/forge/src`,
+  `tests/prefab.rs` in `crates/formats/forge-doc/src`, and the label and
+  prefab tests of `forge_screens/props_tests.rs` and `forge_glue/editing/tests.rs`.
 - **E** The netgame equipment entry and its spawner: [forge.md](forge.md)
   1.2 and [scenario-editor.md](../editor/scenario-editor.md) section 2.
 - **C** Every statement about Halo 3, Reach and Infinite:

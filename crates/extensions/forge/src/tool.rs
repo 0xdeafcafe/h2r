@@ -348,6 +348,17 @@ pub enum Command {
         group: OpId,
         locked: bool,
     },
+    /// Give a thing a label, or clear it ([`crate::Session::set_label`]).
+    SetLabel {
+        id: Endpoint,
+        label: Option<forge_doc::Label>,
+    },
+    /// Place a prefab with its pivot at a frame
+    /// ([`crate::Session::place_prefab`]).
+    PlacePrefab {
+        prefab: Box<forge_doc::Prefab>,
+        frame: Frame,
+    },
     Undo,
     Redo,
     /// Place the next ground marker of this label at a frame
@@ -656,6 +667,7 @@ impl Tool {
                 | Command::Link { .. }
                 | Command::Unlink { .. }
                 | Command::Goal { .. }
+                | Command::PlacePrefab { .. }
                 | Command::Undo
                 | Command::Redo
         ) {

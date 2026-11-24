@@ -283,10 +283,11 @@ pub struct PropDoc {
     /// The kinds of thing it is for ([`PROP_KINDS`]); none is any.
     #[serde(default)]
     pub on: Vec<String>,
-    /// The property: a name in `forge::props`, or `coordinates`,
-    /// `heading` or `games`, which are not fields.
+    /// The property: a name in `forge::props`, or one of
+    /// [`PROP_VIRTUAL`], which are not fields.
     pub prop: String,
-    /// What A does: `picker`, `keyboard`, or the name of a Forge screen.
+    /// What A does: `picker`, `keyboard`, `act` (do it and close), or the
+    /// name of a Forge screen.
     pub open: String,
     /// A picker's choices, in order; the choice sent is the index.
     pub values: Option<Vec<String>>,
@@ -295,7 +296,15 @@ pub struct PropDoc {
 /// The kinds a [`PropDoc`] may be `on`.
 pub const PROP_KINDS: [&str; 6] = ["any", "object", "spawner", "starting-point", "goal", "teleporter"];
 /// The properties that are not fields of a thing.
-pub const PROP_VIRTUAL: [&str; 3] = ["coordinates", "heading", "games"];
+pub const PROP_VIRTUAL: [&str; 7] = [
+    "coordinates",
+    "heading",
+    "label",
+    "label number",
+    "clear label",
+    "prefab",
+    "games",
+];
 
 /// A settings dialog's own: which host it sits on, its static header
 /// (icon, name, what the window is for), the row elsewhere that opens it
@@ -627,8 +636,8 @@ impl ScreenDoc {
                 return err(at("on"), format!("{k:?} is not one of {PROP_KINDS:?}"));
             }
             let screen = crate::forge_screens::sheet::Kind::of_screen(&p.open).is_some();
-            if !screen && !matches!(p.open.as_str(), "picker" | "keyboard") {
-                return err(at("open"), format!("{:?} is neither picker, keyboard nor a Forge screen", p.open));
+            if !screen && !matches!(p.open.as_str(), "picker" | "keyboard" | "act") {
+                return err(at("open"), format!("{:?} is neither picker, keyboard, act nor a Forge screen", p.open));
             }
             let values = p.values.as_deref().unwrap_or(&[]);
             if p.open == "picker" && values.is_empty() && p.prop != "heading" {

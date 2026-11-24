@@ -17,6 +17,7 @@ mod area;
 mod budget;
 mod ground;
 mod groups;
+mod prefabs;
 mod shared;
 
 pub use area::{Goal, flag_label};
@@ -356,6 +357,7 @@ impl Session {
             .map(|a| Edit::Forge(Forge::Unlink { link: a.id }))
             .collect();
         edits.extend(self.leave_group(Endpoint::Added(id)));
+        edits.extend(self.leave_label(Endpoint::Added(id)));
         edits.push(Edit::Placement(Placement::Remove {
             block: object.item.block,
             index,
@@ -595,6 +597,7 @@ impl Session {
             .map(|a| Edit::Forge(Forge::Unlink { link: a.id }))
             .collect();
         edits.extend(self.leave_group(thing.id));
+        edits.extend(self.leave_label(thing.id));
         edits.push(Edit::Entry(EntryOp::Remove { target: thing.id }));
         let ops = self.ops(edits)?;
         self.edit(world, tick, ops, None)
