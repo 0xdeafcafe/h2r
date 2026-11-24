@@ -120,8 +120,9 @@ unplaced name.
 - **Seats** (`+0x1c8`): one per Halo 1 seat (Halo 1's `unit +0x2e4`,
   `0x11c` each, V on a10, b30 and c10: label `+4`, marker `+0x24`, camera
   marker `+0x84`, each 32 characters). The Halo 2 seat takes Halo 1's
-  `label` (so a10's `CT-driver` is the text its scripts name; the seat
-  table matches a label equal to the script's text), the marker at `+8`
+  `label` as the rider's animation mode (`names::mode_name`: a10's
+  `CT-driver` is `c_turret_ap_d`; the scripts' seat text maps to the same
+  mode, `h1scripts::seats`), the marker at `+8`
   and the camera marker at `+0x60` (D: retail's values there are marker
   names, `driver`, `gunner`, `camera_rider`).
 - **Entry words** (`TURRET_SEAT_ROLE`): a Halo 1 seat has no entry
@@ -167,8 +168,8 @@ cargo test --release -p h1campaign --test disc a10_cryotubes -- --ignored --noca
   fresh): `cryotube_1` and `cryotube_2` name vehicle placements whose
   palette entry is the cryotube; read back out of the converted map it
   decodes and encodes byte-identical, its `hlmt`, `mode`, `coll` and
-  `jmad` are tags in the map, and it has one seat, `CT-driver`, at marker
-  `driver`.
+  `jmad` are tags in the map, and it has one seat, labelled
+  `c_turret_ap_d`, at marker `driver`.
 
 What to watch in the game: the player seated in the cryotube during
 a10's opening, and getting out when the scripts open it. The first
@@ -176,7 +177,7 @@ suspects if that goes wrong: the physics model (a dynamic body: a
 vehicle whose shape is not on a floor may drop or drift); and
 the rider's pose, since retail seat labels
 (`warthog_d`) also read like the riders' animation mode names (D) and the
-player's graph has no `CT-driver` mode.
+player's graph may have no mode for the cryotube's seat.
 
 ## Every vehicle from definitions (`h1objects::rebuild::vehicle`)
 
