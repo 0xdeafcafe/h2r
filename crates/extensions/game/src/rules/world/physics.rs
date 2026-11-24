@@ -23,8 +23,11 @@
 //! requires `hud.superbounce` runs.
 
 use ::rules::Input;
+use engine::GuestMemory;
+use engine::entry::Cx;
 
 use super::objects::to_fixed;
+use crate::rules::census::Table;
 use crate::superbounce_chain::{Body, Physics};
 
 /// A speed (units/s) as a `fixed` rounded up to the next 1/65536: for any
@@ -67,6 +70,51 @@ pub fn read(bodies: &[Body], entry: u16, slot: u8) -> bool {
         ::rules::caps::id::PRIMED => b.primed,
         _ => false,
     }
+}
+
+/// Guest workspace for the two world-space points passed to the sight query.
+pub const SIGHT_SCRATCH_SIZE: u32 = 24;
+
+/// A sight table key and the live datums it named at the boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SightQuery {
+    pub pair: (u32, u32),
+    datums: Option<(u32, u32)>,
+}
+
+impl SightQuery {
+    /// Pin placement labels to salted datums before the async calls run.
+    pub fn plan(m: &dyn GuestMemory, table: &Table, from: u32, to: u32) -> Self {
+        let datum = |object| {
+            if object & 0x8000_0000 != 0 {
+                return Some(object);
+            }
+            let thing = table.get(object)?;
+            let kind = u8::try_from(map::scenario_layout::block(thing.block).object_type?).ok()?;
+            let index = i16::try_from(thing.index).ok()?;
+            super::objects::placed_datum(m, kind, index)
+        };
+        Self {
+            pair: (from, to),
+            datums: datum(from).zip(datum(to)),
+        }
+    }
+}
+
+/// Read both positions after the boundary's puts, and ignore their root
+/// bodies in the collision query. Missing objects and failed traces read false.
+pub async fn trace_sight(cx: &Cx, scratch: u32, query: SightQuery) -> bool {
+    let Some((from, to)) = query.datums else {
+        return false;
+    };
+    let Some(((from, source), (to, target))) = cx.read(|m| {
+        super::objects::sight_endpoint(m, from).zip(super::objects::sight_endpoint(m, to))
+    }) else {
+        return false;
+    };
+    crate::firefight::guest::line_of_sight(cx, scratch, from, to, [source, target])
+        .await
+        .unwrap_or(false)
 }
 
 /// One tick's physics events, in the chain's order (slot by slot, in

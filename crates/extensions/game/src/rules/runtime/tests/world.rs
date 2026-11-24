@@ -199,7 +199,7 @@ fn answer(c: &GuestCall, added: bool) -> Regs {
 
 fn run(s: &Arc<Shared>, m: &FakeGuest, work: Work, added: bool) -> Vec<GuestCall> {
     let shared = Arc::clone(s);
-    let entry = move |cx: Cx| -> EntryFuture { Box::pin(run_work(cx, Arc::clone(&shared), work.clone())) };
+    let entry = move |cx: Cx| -> EntryFuture { Box::pin(run_work(cx, Arc::clone(&shared), work.clone(), SCRATCH)) };
     let run = testing::run(&entry, m.clone(), Regs::default(), |c, _| answer(c, added));
     assert_eq!(run.result, Ok(Ret::new(0, 0)));
     run.calls
@@ -350,7 +350,7 @@ on init {
         Call::Vehicle(Hover(false), Some(v)),
         Call::Vehicle(Unload, Some(v)),
     ]);
-    let work = Work { tick: TICK, ask_authority: true, calls };
+    let work = Work { tick: TICK, ask_authority: true, calls, sight: Vec::new() };
     assert_eq!(run(&s, &m, work.clone(), false), [
         GuestCall::new(points::GAME_ENGINE_AUTHORITATIVE.base),
         GuestCall::new(points::VEHICLE_HOVER.base).eax(v).ecx(1),
@@ -365,6 +365,87 @@ on init {
         GuestCall::new(points::GAME_ENGINE_AUTHORITATIVE.base),
         GuestCall::new(points::GAME_TICK.base),
     ]);
+}
+
+#[test]
+fn sees_answers_from_the_next_boundary_and_refreshes_each_tick() {
+    let ir = ::rules::compile(r#"
+rules "Sight" 1
+type slayer
+label eye: object?
+label target: object?
+global var seen: bool = false
+on tick {
+    if let a = eye {
+        if let b = target { seen = sees(a, b) }
+    }
+}
+"#).unwrap();
+    assert_eq!(host_refusal(&ir), None);
+    let positions = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
+    let (mut m, s, units) = world(&ir, &[], positions);
+    let array = Datums::<Header>::at(OBJECTS);
+    for i in 0..2 {
+        let header = array.get_absolute(&m, i).unwrap().unwrap();
+        header.set_kind(&mut m, engine::view::objects::VEHICLE).unwrap();
+        let body = body_of(i as usize);
+        body.set_parent(&mut m, None).unwrap();
+        m.put_u16(body.addr + guest_layout::Object::PLACEMENT_INDEX.offset, i as u16);
+    }
+    s.lock().start(&m, false);
+    {
+        // The two stand-in object placements have the same kind and
+        // different indices, as they would in the scenario census.
+        let mut rt = s.lock();
+        let Status::Running(r) = &mut rt.status else {
+            panic!("the host refused the sees script");
+        };
+        r.table = Table::from_things(
+            ["eye", "target"].into_iter().enumerate().map(|(i, name)| census::Thing {
+                text: name.into(),
+                label: Some(i as u16),
+                number: None,
+                class: ::rules::labels::Class::Object,
+                designator: None,
+                block: forge_doc::BlockKind::Vehicles,
+                index: i as u32,
+                area: None,
+            }).collect(),
+        );
+    }
+    let work = s.lock().pre_tick(&m).unwrap();
+    assert!(work.sight.is_empty(), "no handler has asked yet");
+    run(&s, &m, work, false);
+    m.put_u32(GAME_TIME + 8, TICK + 1);
+    s.lock().post_tick(&m, &[]);
+    assert_eq!(global(&s, "seen"), 0, "false on the first request");
+
+    for (n, clear) in [(2, true), (3, false)] {
+        let work = s.lock().pre_tick(&m).expect("sight alone schedules boundary work");
+        assert!(!work.ask_authority);
+        assert!(work.calls.is_empty());
+        assert_eq!(work.sight.len(), 1);
+        let shared = Arc::clone(&s);
+        let entry = move |cx: Cx| -> EntryFuture {
+            Box::pin(run_work(cx, Arc::clone(&shared), work.clone(), SCRATCH))
+        };
+        let run = testing::run(&entry, m.clone(), Regs::default(), |call, guest| {
+            if call.target == points::AI_LINE_OF_SIGHT.base {
+                assert_eq!(guest.vec3(SCRATCH).unwrap(), positions[0]);
+                assert_eq!(guest.vec3(SCRATCH + 12).unwrap(), positions[1]);
+            }
+            Regs { eax: u32::from(call.target == points::AI_LINE_OF_SIGHT.base && clear), ..Default::default() }
+        });
+        assert_eq!(run.result, Ok(Ret::new(0, 0)));
+        assert_eq!(run.calls, [
+            GuestCall::new(points::AI_LINE_OF_SIGHT.base)
+                .esi(SCRATCH).edi(SCRATCH + 12).edx(units[0]).ecx(units[1]),
+            GuestCall::new(points::GAME_TICK.base),
+        ]);
+        m.put_u32(GAME_TIME + 8, TICK + n);
+        s.lock().post_tick(&m, &[]);
+        assert_eq!(global(&s, "seen"), i32::from(clear));
+    }
 }
 
 /// Every listed script a host scores runs here: none is listed only to be

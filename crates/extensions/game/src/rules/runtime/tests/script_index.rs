@@ -145,7 +145,7 @@ fn each_ready_round_posts_the_record_scripts_line_on_the_host() {
         assert_eq!(work.calls, [Call::StartLine(Type::Ctf)]);
         let shared = s.clone();
         let entry = move |cx: Cx| -> EntryFuture {
-            Box::pin(run_work(cx, Arc::clone(&shared), work.clone()))
+            Box::pin(run_work(cx, Arc::clone(&shared), work.clone(), 0))
         };
         let run = testing::run(&entry, m, Regs { esp: SP, ..Regs::default() }, |_, _| Regs::default());
         assert_eq!(run.result, Ok(Ret::new(0, 0)));

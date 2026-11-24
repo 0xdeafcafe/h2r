@@ -70,7 +70,7 @@ passed at run time is a **script error**, which ends the round.
 | sounds | 4 | 8 per player | 4 playing per player; one music slot |
 | HUD and waypoint writes | 32 | 240 | 16 elements, 8 waypoints, 4 countdowns; a text 32 bytes after its holes |
 | show channel bytes to one client | 1,000 (one packet) | 600 | the state 255 bytes; the tag is inside the cap |
-| new `sees` pairs | 32 traces | | 64 pairs in the table |
+| retained `sees` pairs | 32 traces | | 32 ordered pairs in the table |
 | objects alive from `create` | | | 64, as rules-engine.md "Budgets" |
 
 A `Viewer` enforces the cue, sound and byte caps itself, on what it

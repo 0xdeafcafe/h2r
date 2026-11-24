@@ -646,9 +646,9 @@ pub const ENTRIES: &[Entry] = &[
     read(id::PRIMED, "primed", &[Player], Bool, Named),
     // `sees(a, b)`: nothing solid between two objects. A VM read of its
     // sight table (`vm::RulesExt::sight`): a pair asked for in one tick is
-    // traced at the next tick boundary through `Game::trace_sight`, and
+    // traced by the host at the next tick boundary, and
     // answers from then on, false until its first trace.
-    Entry { status: NotBuilt, ..vm(id::SEES, "sees", &[Object, Object], Bool) },
+    Entry { status: Named, ..vm(id::SEES, "sees", &[Object, Object], Bool) },
     // `set_open(o, open)`: a barrier opened or closed. The VM keeps each
     // open barrier's closed place (`vm::RulesExt::gates`, at most
     // `vm::MAX_GATES`) and, when it opens one, steps it to the place
@@ -1158,7 +1158,7 @@ mod tests {
     }
 
     #[test]
-    fn physics_reads_need_no_capability_and_crouching_and_sees_wait_on_the_game_side() {
+    fn physics_reads_need_no_capability_and_only_crouching_waits_on_the_game_side() {
         for name in ["airborne", "crouching", "primed"] {
             let e = entry_named(name).unwrap();
             assert_eq!((e.kind, e.result, e.cap), (Kind::Read, Some(Bool), None), "{name}");
@@ -1168,7 +1168,7 @@ mod tests {
         let sees = entry(id::SEES, API_VERSION).unwrap();
         assert_eq!((sees.kind, sees.result, sees.cap), (Kind::VmOnly, Some(Bool), None));
         assert_eq!(sees.args, &[Object, Object]);
-        assert!(!sees.status.hostable());
+        assert_eq!(sees.status, Named);
         assert!(entry_named("push").is_none() && entry_named("launch").is_none(), "R9 is open");
     }
 
