@@ -39,7 +39,8 @@
 //! [`object_shadow_rows_match_the_lifted_original`] and
 //! [`object_shadow_caster_matches_the_lifted_original`].
 //!
-//! **Sphere projection (L8).** See [`screen_bounds_match_the_lifted_original`].
+//! **Typed passes (L8).** See [`screen_bounds_match_the_lifted_original`] and
+//! [`typed_light_tail_matches_the_lifted_layer_wrappers`].
 //!
 //! Needs the user's XBE (`H2_XBE`, or `disc/default.xbe`), pinned by hash;
 //! skips without it. Nothing is copied from it: thresholds and constants
@@ -3964,5 +3965,156 @@ fn empty_additional_casters_match_the_lifted_original() {
     });
     if !found {
         eprintln!("SKIPPED empty_additional_casters_match_the_lifted_original: no XBE (set H2_XBE)");
+    }
+}
+
+// The game's layers, their shader reset and the final target/viewport wrapper
+// run lifted. The already-admitted layer build returns zero, as the native
+// whole-group hook does. Device calls are the HLE boundary; the device's own
+// tail tests compare its push buffer and the next draw.
+const TYPED_TAIL_STUBS: Stubs = &[
+    (passes::call::ITEMS, &[], 0, 0),
+    (passes::call::CONSTANTS, &[], 4, 16),
+    (0x0003_bab0, &[], 4, 16),        // whole sorted group
+    (0x003f_8100, &[], 1, 4),         // SetViewport
+    (0x003f_5cf0, &[1, 2], 0, 0),     // SetRenderState_Simple
+    (0x003f_5b20, &[], 1, 4),         // SampleAlpha
+    (passes::call::STENCIL_ENABLE, &[], 1, 4),
+    (passes::call::SCISSORS, &[], 3, 12),
+    (0x003f_6190, &[0], 0, 0),        // viewport fragment's output put
+];
+
+const TAIL_WINDOW: u32 = 0x0048_5648;
+const TAIL_CACHE: u32 = 0x0048_5b48;
+const TAIL_IMPLEMENTATION: u32 = 0x034c_0000;
+const TAIL_STATE: u32 = 0x034d_0000;
+const TAIL_RESTORE: u32 = 0x034e_0000;
+
+fn typed_tail_world(m: &mut FlatMemory, r: &mut Rng, c: &mut Cpu) {
+    let esp = c.gpr[4];
+    (c.gpr[0], c.gpr[1]) = pass_world(m, r, esp);
+    // Nonzero definition kind keeps the colour written by the constants.
+    // A kind-zero context and a bright colour B reach layers 11, 14, 12, 13.
+    put(m, PASS_DATA, 0);
+    put16(m, PASS_DATA + 4, 1);
+    put16(m, PASS_CONTEXT, 0);
+    let above = word(m, 0x0045_dc7c) + 1;
+    put(m, PASS_COLOUR_B, above);
+    put(m, OVERRIDE, 0);
+    put(m, esp, HARNESS_EXIT);
+    put(m, esp + 0xc, r.u32() & !0xff);
+    put(m, PASS_VIEW_TARGET, 0);
+    let colour = 0x034b_0000;
+    let depth = 0x034b_0100;
+    for (a, v) in [(0x0050_935c, colour), (0x0050_9364, depth),
+                   (0x0051_f3f4, colour), (0x0051_f3f8, depth)] {
+        put(m, a, v);
+    }
+    put16(m, 0x0048_5602, 0);
+    put8(m, 0x0048_5607, 0);
+    for (i, v) in [5, 17, 85, 181].into_iter().enumerate() {
+        put16(m, TAIL_WINDOW + i as u32 * 2, v);
+    }
+    // In this stubbed-device comparison the depth-range wrapper writes
+    // already-current clip/flags/put; it still calls its fragment.
+    put(m, FP_DEVICE_POINTER, FP_DEVICE);
+    put(m, FP_DEVICE, 0x034b_1000);
+    put(m, FP_DEVICE + 4, 0x034b_2000);
+    put(m, FP_DEVICE + 0x1c18, r.u32() | 2);
+    for i in [0, 4] {
+        let value = r.u32();
+        put(m, FP_RANGE + i, value);
+        put(m, FP_DEVICE + 0x1c10 + i, value);
+    }
+    let unit = word(m, 0x0045_dbc0);
+    put(m, 0x004b_8494, unit);
+    fill(m, r, TAIL_CACHE, 0x1400);
+    put(m, TAIL_CACHE + 0x24, TAIL_IMPLEMENTATION);
+    put(m, TAIL_CACHE + 0x20, TAIL_STATE);
+    put(m, TAIL_STATE + 0x14, TAIL_RESTORE);
+    put16(m, TAIL_IMPLEMENTATION + 0x11c, 3); // zero count, nonzero first
+    fill(m, r, FP_LAYER_WORDS, 12);
+    put(m, 0x0046_7010, r.u32());
+    put(m, FP_TARGETS, r.u32());
+    put(m, FP_STENCIL_STATE, r.u32());
+    put(m, 0x004b_8348, r.u32());
+    put(m, 0x004b_8474, r.u32());
+    put(m, 0x0040_75e4, r.u32());
+}
+
+/// Run the full root with the same device contract each time. Check every
+/// viewport's six arguments while its pointer still addresses live stack.
+fn lifted_typed_tail(lifted: &mut Lifted<'_>, m: &mut FlatMemory, c: &Cpu) -> (Vec<Callout>, u32) {
+    let esp = c.gpr[4];
+    let (calls, eax, after) = original_stubbed(
+        lifted, m, &mut c.clone(), passes_entry(), esp, TYPED_TAIL_STUBS, true,
+        |_, call, m| {
+            match call.target {
+                0x003f_8100 => {
+                    let p = call.args[0];
+                    let viewport: [u32; 6] = std::array::from_fn(|i| word(m, p + 4 * i as u32));
+                    assert_eq!(viewport, [17, 5, 164, 80, 0, 1.0f32.to_bits()]);
+                    (0, 0)
+                }
+                0x003f_6190 => (call.regs[0], 0),
+                _ => (0, 0),
+            }
+        },
+    ).expect("lifted diffuse/specular light tail");
+    assert_eq!(after, esp + 0x14);
+    (calls, eax)
+}
+
+#[test]
+fn typed_light_tail_matches_the_lifted_layer_wrappers() {
+    use engine::render::light_gather::typed_tail::plan_dynamic;
+
+    if !with_image(|image, mut lifted| {
+        for seed in seeds() {
+            let mut r = Rng(seed);
+            let mut c = cpu(&mut r);
+            let esp = c.gpr[4];
+            let mut original = image.clone();
+            typed_tail_world(&mut original, &mut r, &mut c);
+            let mut typed = Ram(original.clone());
+            let pass = passes::plan(&typed, esp, c.gpr[0], c.gpr[1], FPU).unwrap();
+            let flags = engine::light_passes::flag::CONTEXT_ZERO | engine::light_passes::flag::SPECULAR;
+            for draws in [0, 1 << 12 | 1 << 13, 1 << 12, 1 << 13] {
+                put(&mut original, PASS_LIGHT_MASK, draws);
+                put(&mut typed.0, PASS_LIGHT_MASK, draws);
+                let tail = plan_dynamic(&typed, &pass, flags, draws).unwrap();
+                tail.write(&mut typed).unwrap();
+                let (calls, eax) = lifted_typed_tail(&mut lifted, &mut original, &c);
+                assert_eq!(eax, tail.eax);
+                let count = |target| calls.iter().filter(|c| c.target == target).count();
+                assert_eq!(count(0x0003_bab0), draws.count_ones() as usize);
+                assert_eq!(count(0x003f_8100), draws.count_ones() as usize + 1);
+                compare(&format!("typed tail seed {seed} mask {draws:#x}"), &original, &typed.0, esp);
+            }
+
+            // A nonempty previous restore stays on the original. Execute
+            // the following light on both states: it must actually apply
+            // the restored state and observe identical cache and memory.
+            let slot = 0x60u32;
+            let value = r.u32();
+            for mem in [&mut original, &mut typed.0] {
+                put(mem, PASS_LIGHT_MASK, 1 << 12);
+                put(mem, TAIL_CACHE + 0x24, TAIL_IMPLEMENTATION);
+                put(mem, TAIL_CACHE + 0x20, TAIL_STATE);
+                put16(mem, TAIL_IMPLEMENTATION + 0x11c, 1 << 9);
+                put8(mem, TAIL_RESTORE, slot as u8);
+                put(mem, TAIL_RESTORE + 1, value);
+                put(mem, 0x0040_7498 + 4 * slot, !value);
+            }
+            assert!(plan_dynamic(&typed, &pass, flags, 1 << 12).is_none());
+            let (a, ra) = lifted_typed_tail(&mut lifted, &mut original, &c);
+            let (b, rb) = lifted_typed_tail(&mut lifted, &mut typed.0, &c);
+            assert_transcripts("the following light", &a, &b);
+            assert_eq!(ra, rb);
+            assert_eq!(word(&typed.0, 0x0040_7498 + 4 * slot), value);
+            compare("the following light", &original, &typed.0, esp);
+        }
+    }) {
+        eprintln!("SKIPPED typed_light_tail_matches_the_lifted_layer_wrappers: no XBE (set H2_XBE)");
     }
 }
