@@ -453,6 +453,16 @@ fn passes_of(
             .map_err(|r| FogRefusal::Look { pass: n, refusal: Refusal::EngineStates(r) })?;
         look.stage_states = applied.stage_states;
         let states = applied.render_states;
+        // Input masks also request evaluations whose result is never bound.
+        // The states above are resolved. Without a register write or a
+        // dynamic fragment selector, the shader itself is view-independent.
+        if layer.layer == crate::fog::FOG_LAYER
+            && !imp.pixel_constants_from_engine
+            && imp.vertex_defaults.iter().all(|r| r.origin != tags::material::Origin::Engine)
+            && (!imp.variant || imp.input_reads.ints & !tags::material::INSTANCE_INTS == 0)
+        {
+            look.per_draw_inputs = false;
+        }
         match fog_parity(&look) {
             Ok(()) => {}
             Err(FogParity::NoFinalCombiner) => return Err(FogRefusal::NoFinalCombiner { pass: n }),
@@ -886,7 +896,7 @@ impl FogSet {
     /// part per pass in reservation order, with the pass's pipeline, its
     /// uniform group (a placement's at its slot's dynamic offset), the
     /// part's texture group, the pass's blend constant, the part's index
-    /// range and the whole target as viewport and scissor. The writes are
+    /// range and the whole target as viewport and the player view as scissor. The writes are
     /// the selected materials' blocks (and the selected placements'
     /// slots) only: nothing else is read. `cache` holds the described
     /// pipelines ([`crate::gpu::GpuWorld::fog_draws`]); the pipelines
@@ -902,13 +912,14 @@ impl FogSet {
         color: wgpu::TextureFormat,
         depth: wgpu::TextureFormat,
         target_size: (u32, u32),
+        scissor: gfx::ScissorRect,
         selected: &[(Owner, u8)],
         view: &ViewInputs,
         fogs: &HashMap<u16, (psh::fog::Fog, [f32; 4])>,
         samples: &LayerSamples,
     ) -> Result<d3d::backend::ExternalDraws, &'static str> {
         let off = gfx::state::StencilState::default();
-        self.draws_stencil(cache, vertices, indices, color, depth, target_size, selected, view, fogs, &off, samples)
+        self.draws_stencil(cache, vertices, indices, color, depth, target_size, scissor, selected, view, fogs, &off, samples)
     }
 
     /// [`FogSet::draws`] under the device's stencil at the layer call
@@ -925,15 +936,15 @@ impl FogSet {
         color: wgpu::TextureFormat,
         depth: wgpu::TextureFormat,
         target_size: (u32, u32),
+        scissor: gfx::ScissorRect,
         selected: &[(Owner, u8)],
         view: &ViewInputs,
         fogs: &HashMap<u16, (psh::fog::Fog, [f32; 4])>,
         device_stencil: &gfx::state::StencilState,
         samples: &LayerSamples,
     ) -> Result<d3d::backend::ExternalDraws, &'static str> {
-        use gfx::{BoundGroup, RecordedDraw, ScissorRect};
+        use gfx::{BoundGroup, RecordedDraw};
         let stencil = layer_stencil(device_stencil, depth).ok_or("the layer's stencil needs a stencil attachment")?;
-        let scissor = ScissorRect::full(target_size.0, target_size.1);
         // The packets set the stencil reference from the render state.
         let render = gfx::state::RenderState { stencil: *device_stencil, ..Default::default() };
         let mut packets = Vec::new();
@@ -1099,6 +1110,30 @@ pub(crate) mod tests {
     use wgpu::{TextureFormat as F, TextureUsages as U};
 
     pub(crate) const SIZE: u32 = 32;
+
+    pub(crate) fn player_viewport(split: bool) -> [f32; 4] {
+        // A guest boundary at 10 / 19 of the screen falls between physical texels.
+        let request = d3d::ExternalPassRequest {
+            rect: if split { (10, 0, 9, 19) } else { (0, 0, 19, 19) },
+            surface_size: (19, 19),
+            display_projection_factor: 0.75,
+            z_scale: 1.0,
+        };
+        d3d::external_viewport(&request, (SIZE, SIZE))
+    }
+
+    pub(crate) fn assert_split_images(images: &[(Vec<u8>, Vec<u8>)]) {
+        assert_eq!(images[0], images[1], "full-view packet and direct draws");
+        assert_eq!(images[2], images[3], "split-view packet and direct draws");
+        let boundary = 17; // round(32 * 10 / 19)
+        let mut covered = [false; 2];
+        for (i, (full, split)) in images[0].0.chunks_exact(4).zip(images[2].0.chunks_exact(4)).enumerate() {
+            let in_view = i % SIZE as usize >= boundary;
+            covered[usize::from(in_view)] |= full.iter().any(|&byte| byte != 0);
+            assert_eq!(split, if in_view { full } else { &[0; 4] }, "texel {i}");
+        }
+        assert_eq!(covered, [true, true], "geometry crosses the split");
+    }
 
     pub(crate) fn look(stage0: Stage) -> PassLook {
         PassLook {
@@ -1301,9 +1336,12 @@ pub(crate) mod tests {
         let (selected, view, fogs) = (selected(), view(), fogs());
         let mut images = Vec::new();
         // Packets first: the uniforms they read are only those written ahead.
-        for packets in [true, false] {
+        for (packets, split) in [(true, false), (false, false), (true, true), (false, true)] {
             images.push(render(&ctx, |enc, arena, target| {
-                let draws = gpu.fog_draws(&ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), &selected, &view, &fogs, &LayerSamples::new()).unwrap();
+                let draws = gpu.fog_draws(
+                    &ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), player_viewport(split),
+                    &selected, &view, &fogs, &LayerSamples::new(),
+                ).unwrap();
                 assert_eq!((draws.ranges, draws.packets.len()), (2, 2), "one pass each, cluster and placement");
                 assert_eq!(draws.writes.len(), 2 + 2, "the pass's two blocks, the placement's view prefix and tail");
                 if packets {
@@ -1316,14 +1354,14 @@ pub(crate) mod tests {
                     gpu.prepare_fog(&mut uploads, &view, &fogs, &LayerSamples::new());
                     assert!(draws.writes.iter().all(|(buffer, ..)| arena.wrote_in_order(buffer)));
                     let recorded = gpu.encode_fog(
-                        &ctx.device, enc, target.color, F::Rgba8Unorm, target.depth.unwrap(), F::Depth32Float, (SIZE, SIZE), &selected,
+                        &ctx.device, enc, target.color, F::Rgba8Unorm, target.depth.unwrap(), F::Depth32Float, (SIZE, SIZE), player_viewport(split), &selected,
                     );
                     assert_eq!(recorded, 2);
                 }
             }));
         }
         assert!(images[0].0.iter().any(|&b| b != 0), "the fog drew something");
-        assert_eq!(images[0], images[1]);
+        assert_split_images(&images);
     }
 
     /// A world layer's draws take the device's stencil at the layer call:
@@ -1433,7 +1471,10 @@ pub(crate) mod tests {
         gpu.set_fog(set);
         let (view, fogs) = (view(), fogs());
         let draws = |gpu: &mut GpuWorld, selected: &[(Owner, u8)], fogs: &HashMap<u16, (psh::fog::Fog, [f32; 4])>| {
-            gpu.fog_draws(&ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), selected, &view, fogs, &LayerSamples::new())
+            gpu.fog_draws(
+                &ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), player_viewport(false),
+                selected, &view, fogs, &LayerSamples::new(),
+            )
         };
         assert!(draws(&mut gpu, &selected(), &fogs).is_ok());
         assert!(draws(&mut gpu, &[(Owner::Cluster(9), 0)], &fogs).is_err(), "a part the set does not hold");
@@ -1550,6 +1591,29 @@ mod selection_tests {
         assert_eq!(passes[0].look.textures[0], Stage::Bitmap { bitmap, image: 0 });
         assert_eq!(passes[0].look.textures[1], Stage::Bitmap { bitmap, image: 1 });
         assert!(crate::water_gpu::water_passes(&water, None).is_err());
+    }
+
+    #[test]
+    fn fog_ignores_an_unbound_input_and_retains_dynamic_bindings() {
+        use tags::material::{VectorBinding, VectorTarget};
+
+        let mut pass = imp(0, &[state(CULL_MODE, CW)]);
+        pass.per_draw_inputs = true;
+        pass.input_reads.vectors = 1;
+        let resolve = |i| layer_passes(&material(16, vec![vec![i]]), 16);
+        let static_pass = resolve(pass.clone()).unwrap().remove(0);
+        assert!(!static_pass.look.per_draw_inputs);
+        assert!(static_pass.planar.is_none());
+
+        pass.input_reads.vectors = 1 << 31;
+        pass.pixel_constants_from_engine = true;
+        pass.vector_bindings.push(VectorBinding {
+            source: 31,
+            target: VectorTarget::Pixel { c1: false, slot: 0, mask: 0x00ff_ffff, half: false, transform: 0 },
+        });
+        assert!(resolve(pass.clone()).unwrap()[0].planar.is_some());
+        pass.variant = true;
+        assert!(resolve(pass).is_err());
     }
 
     #[test]

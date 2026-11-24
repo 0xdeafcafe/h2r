@@ -283,8 +283,29 @@ struct Glue<B: d3d::backend::Backend + Send + 'static> {
     state: State,
 }
 
+/// A display-only part has no entry in the retail layer sort. The hook
+/// supplies whole clusters only when there are no guest entries to order
+/// against. Multiple candidates also need a sort before they can be drawn.
+pub(super) fn display_late_part(
+    mem: &dyn GuestMemory, clusters: &[u16], parts: &HashMap<(Owner, u8), u16>,
+    layer: u8, eligible: impl Fn(u16, u16) -> bool,
+) -> Option<(Owner, u8)> {
+    let mut selected = None;
+    for (&(owner, part), &loaded) in parts {
+        let Owner::Cluster(cluster) = owner else { continue };
+        let Ok(id) = u16::try_from(cluster) else { continue };
+        if clusters.binary_search(&id).is_err() || !eligible(id, loaded) { continue; }
+        if render_bridge::native_world::display_late_shader(mem, id, part, layer) != Some(loaded) {
+            continue;
+        }
+        if selected.is_some() { return None; }
+        selected = Some((owner, part));
+    }
+    selected
+}
+
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
-    fn ask(&self, mem: &mut dyn GuestMemory) -> Option<native_render::skip::Cleared> {
+    fn ask(&self, mem: &mut dyn GuestMemory, display_clusters: &[u16]) -> Option<native_render::skip::Cleared> {
         use timeline::native::{Metric, Stage};
         let ready = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -323,10 +344,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             }
             return None;
         };
-        // The skip over a preview: nothing touches the guest until the
-        // reservation has recorded on every copy
-        // (`native_render::skip::MaskPreview`).
-        let read = ReadMemory(mem);
         let mut samples = fog_gpu::LayerSamples::new();
         let inputs = fog_gpu::PlanarInputs::read(&read);
         for (&material, passes) in &fog.programs {
@@ -341,6 +358,50 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             }
         }
         let samples = Arc::new(samples);
+        // What the passes write: colour always (they blend over the
+        // scene), depth when any of their states writes it.
+        let writes_depth = fog
+            .programs
+            .values()
+            .any(|passes| passes.iter().any(|p| p.state.depth_write));
+        let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
+        let plan = |ranges| d3d::ExternalPlan { stage: Stage::Fog, view, ranges, slots: Vec::new() };
+        let run = u64::from(d.swap_count()).wrapping_add(1);
+        let pass = |selected, fogs, display_only| -> Box<dyn d3d::ExternalPass> {
+            Box::new(FogViewPass {
+                ready: Arc::clone(&ready),
+                selected,
+                samples: Arc::clone(&samples),
+                fogs,
+                display_only,
+                view: None,
+                w_clip: None,
+                writes_depth,
+                run,
+            })
+        };
+        if !display_clusters.is_empty() {
+            let planar = native_render::fog::planar_gate(&ReadMemory(mem))?;
+            let selected = display_late_part(mem, display_clusters, &fog.part_set, FOG_LATE_LAYER, |id, shader| {
+                let Some(record) = render_bridge::native_scene_lists::display_cluster_fog_flags(mem, id) else { return false };
+                native_render::fog::layer_implementation(record, planar)
+                    .is_some_and(|implementation| fog.chosen.get(&shader).is_none_or(|&loaded| loaded == implementation))
+            });
+            if let Some(selected) = selected {
+                let target = d.external_ready(&ReadMemory(mem), false).ok()?;
+                if d.projection_factor_for_target(target.surface_size) < 1.0 {
+                    ready.with_pipeline_target(&d, mem, |gpu, device, color, depth| {
+                        gpu.prewarm_fog(device, color, depth).then_some(())
+                    })?;
+                    let display = pass(vec![selected], late_fogs(&materials), true);
+                    let _ = d.draw_display_stage(&mut crate::native_lights_glue::DeviceMemory(mem), plan(1), display);
+                }
+            }
+        }
+        // The skip over a preview: nothing touches the guest until the
+        // reservation has recorded on every copy
+        // (`native_render::skip::MaskPreview`).
+        let read = ReadMemory(mem);
         let mut preview = native_render::skip::MaskPreview::new(&read)?;
         let (selected, cleared, refused) = native_render::fog::clear_fog(&mut preview, native_render::fog::FOG_LAYER as u32, &|item| {
             let accepted = fog.draws(item.owner, item.part, item.shader, item.implementation);
@@ -365,29 +426,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let fogs = late_fogs(&late.materials);
         let selected = late_selected(&late.parts);
         let ranges = selected.len();
-        // What the passes write: colour always (they blend over the
-        // scene), depth when any of their states writes it.
-        let writes_depth = fog
-            .programs
-            .values()
-            .any(|passes| passes.iter().any(|p| p.state.depth_write));
-        let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
-        let plan = d3d::ExternalPlan { stage: Stage::Fog, view, ranges, slots: Vec::new() };
-        let run = u64::from(d.swap_count()).wrapping_add(1);
-        let pass = || -> Box<dyn d3d::ExternalPass> {
-            Box::new(FogViewPass {
-                ready: Arc::clone(&ready),
-                selected: selected.clone(),
-                fogs: fogs.clone(),
-                samples: Arc::clone(&samples),
-                view: None,
-                w_clip: None,
-                writes_depth,
-                run,
-            })
-        };
         drop(planning);
-        if !commit_late(&mut d, mem, &self.state, &ready, scene, plan, &pass, &masks) {
+        if !commit_late(&mut d, mem, &self.state, &ready, scene, plan(ranges), &|| pass(selected.clone(), fogs.clone(), false), &masks) {
             return None;
         }
         render_bridge::scene_step::late_drawn(late.key, FOG_LATE_LAYER);
@@ -505,9 +545,10 @@ static FOG_UNREADABLE: AtomicBool = AtomicBool::new(false);
 
 /// One view's fog replacement.
 struct FogViewPass {
+    display_only: bool,
     ready: Arc<Ready>,
-    /// The parts the masks surrendered, in the layer's item order: what
-    /// the replacement must record on every copy.
+    /// Parts in layer order for a guest-list replacement, or the single
+    /// part admitted for the display copy.
     selected: Vec<(Owner, u8)>,
     samples: Arc<fog_gpu::LayerSamples>,
     /// Each material's fog unit and colour, resolved at the ask.
@@ -523,6 +564,7 @@ struct FogViewPass {
 }
 
 impl d3d::ExternalPass for FogViewPass {
+    fn display_only(&self) -> bool { self.display_only }
     // The selection and constants belong to this view. Ready pins the BSP,
     // and each recording binds the target copy passed to it by the renderer.
     fn replays_scene(&self) -> bool { true }
@@ -580,7 +622,10 @@ impl d3d::ExternalPass for FogViewPass {
             z_scale: request.z_scale,
             w_clip: self.w_clip,
         };
-        Some(gpu.fog_draws(&t.device, t.color_format, t.depth_format, t.size, &self.selected, &view, &self.fogs, &self.samples))
+        Some(gpu.fog_draws(
+            &t.device, t.color_format, t.depth_format, t.size, d3d::external_viewport(&request, t.size),
+            &self.selected, &view, &self.fogs, &self.samples,
+        ))
     }
 
     fn record_ranges(&mut self, mut t: d3d::ExternalTarget<'_>) -> usize {
@@ -603,7 +648,7 @@ impl d3d::ExternalPass for FogViewPass {
             let mut uploads = t.encoder_uploads();
             gpu.prepare_fog(&mut uploads, &view, &self.fogs, &self.samples);
         }
-        gpu.encode_fog(t.device, t.encoder, t.color, t.color_format, t.depth, t.depth_format, t.size, &self.selected)
+        gpu.encode_fog(t.device, t.encoder, t.color, t.color_format, t.depth, t.depth_format, t.size, t.viewport, &self.selected)
     }
 }
 

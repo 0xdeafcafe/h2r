@@ -54,7 +54,7 @@ pub const WATER_LAYER: u32 = 6;
 /// so the replacement lands inside their window and the alpha-only
 /// clear `0x3c515` keeps its guest order after it.
 pub trait Host: Send + Sync {
-    fn ask(&self, mem: &mut dyn GuestMemory) -> Option<Cleared>;
+    fn ask(&self, mem: &mut dyn GuestMemory, display_clusters: &[u16]) -> Option<Cleared>;
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -146,17 +146,17 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         }
         None => return,
     }
-    // A layer 6 without a structure item draws no world water. As the
-    // fog's: the scene records what the guest keeps, the glue what it
-    // takes.
-    if skip::has_structure_items(&m, WATER_LAYER) != Some(true) {
+    // The widened portal flood can reach water even when the retail list is empty.
+    let display = crate::scene_step::late_display_visibility(&*m.0, WATER_LAYER as u8);
+    let clusters = display.as_ref().map_or(&[][..], |extra| extra.whole_clusters.as_slice());
+    if clusters.is_empty() && skip::has_structure_items(&m, WATER_LAYER) != Some(true) {
         crate::scene_step::late_kept(&*m.0, WATER_LAYER as u8, true);
         return;
     }
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
         return;
     };
-    let Some(cleared) = host.ask(&mut *m.0) else {
+    let Some(cleared) = host.ask(&mut *m.0, clusters) else {
         crate::scene_step::late_kept(&*m.0, WATER_LAYER as u8, true);
         return;
     };

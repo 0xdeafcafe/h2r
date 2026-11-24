@@ -61,12 +61,13 @@ widescreen factor at `0x0045dfdc`. A 16:9 image can therefore occupy
 the same 640x480 allocation as a 4:3 image.
 
 `crates/extensions/game/src/render_aspect.rs` reads the Xbox anamorphic
-state at both the game and alternate view entries. For a recognised
+state at both the game and alternate view entries. In exact mode, for a recognised
 perspective draw, the host scales the
 horizontal clip coordinate by the ratio of the guest's pixel aspect to
 the displayed pixel aspect. For translated shaders, the recogniser
-requires a four-row perspective transform. Programs with an unrecognised
-clip transform keep their original positions. The flare pass translates its
+follows the X, Y and W rows through partial position writes. It accepts
+a four-row perspective transform or a far-plane surface that writes W to Z. Programs with an unrecognised
+clip transform keep their original positions. With a retail camera the flare pass translates its
 occlusion query to the projected display column, preserving the footprint used
 for the expected count, and applies the lens to the reflection billboards and final composite fans.
 Light volumes and light trails use the same CPU projector. Both billboard
@@ -76,7 +77,8 @@ translator applies the same transform to its depth lookup in register 1
 and to its raster position. Its sprite UVs keep their authored range.
 On a perspective draw that samples scene colour or depth with a bump matrix,
 both coefficients contributing to horizontal displacement take the display
-lens. Asset-space bump matrices keep their material values.
+lens, including when the guest camera already contains the correction. A frame-sized render level such as texaccum
+is identified by its backing address, format and dimensions. Asset-space bump matrices keep their material values.
 The exact reference draws both at the retail coordinates. The display keeps the
 vertical field of view and depth of the simulation camera. Orthographic
 menu widgets use a uniform fit inside each player's viewport. A menu quad
@@ -119,20 +121,31 @@ groups can use the fitted rectangle or the viewport edges. If the game already
 uses the Xbox widescreen HUD layout, its artwork receives only the remaining
 aspect correction. At 16:9 the Pinned layout retains the retail widescreen fit.
 
-The main portal gather starts from the tangent rectangle in the render
-projection. The single-copy hook at `VIEW_FRUSTUM_RECT` in
-`crates/extensions/game/src/render_aspect.rs` scales its horizontal extent
-around the lens centre before the guest builds the root polygon and side
-planes. The BSP flood clips each open portal to the parent window. Objects
-must pass a sphere test against one of their cluster's window frusta.
-The player FOV setting supplies the vertical extent through the observer.
+Single-copy play fits the horizontal projection terms in the guest's active
+and saved display cameras at `VIEW_PROJECTION_TERMS`
+(`crates/extensions/game/src/render_aspect.rs`). The camera matrix, CPU
+pixel scale and root portal bounds derive from these terms. Water and fog
+geometry built with this camera, the sky and CPU-projected effects share
+its horizontal lens. The BSP flood clips each open portal to its parent
+window. Object spheres must intersect one of their cluster's window frusta.
+The observer supplies the vertical field of view.
 
 Exact mode keeps the guest gather and visibility readbacks at the retail
 lens. The scene step walks the open portals with both the retail and display
 cameras, including their off-centre projections. It excludes geometry
 already admitted by the retail lens or submitted by the guest. Each rigid
 BSP placement needs to intersect a portal window in a cluster that references
-it. Layer 3 draws resident cluster parts and fully opaque rigid placements.
+it. For layers 6 and 16, a display-only submission needs an empty guest
+layer and one supported part in a cluster wholly inside one portal window.
+The live material must be visible and have a single shader LOD. For fog,
+the cluster's atmosphere and the planar gate must select the loaded
+implementation.
+The visible water surface uses the sorted transparent geometry handler on
+layer 15. That handler needs the guest's sorted entry, so an exact-mode
+cluster ID alone cannot supply a missing surface. Decorator placements
+also come from the guest's per-view list. A layer-6 material count
+describes the edge blend.
+Layer 3 draws resident cluster parts and fully opaque rigid placements.
 For objects, it builds the model sections and node palettes on a private
 copy of the record writes. Materials without native layer-3 support, fades,
 attachments and objects that require guest animation code can still leave
@@ -144,6 +157,11 @@ all three and its camera. The display frame recorder includes the final
 scissor and projection factor.
 [FrameScene reads](../runtime/agent-api.md#framescene-checks-compare-capture-scene-parity-hashes)
 and [display raster](../runtime/agent-api.md#renderframe_layout).
+
+First-person draws use the weapon camera and the section, parts and node
+palette selected by the guest's first-person records. On the native layer-3
+path the material's fog and specular state resolve over the device state at
+the draw boundary (`crates/extensions/game/src/native_first_person_glue.rs`).
 
 The playerless Theater observer has the whole BSP and object array. It
 uses the same Hor+ lens for projection and its own frustum test on both.

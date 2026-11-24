@@ -6158,13 +6158,40 @@ impl<B: Backend> Device<B> {
         #[cfg(not(feature = "gpu"))]
         let retail_constants = None;
 
+        let frame_size = self.swap.as_ref().map(|swap| swap.size);
+        for stage in 0..4 {
+            let Some(info) = texture_info[stage] else { continue };
+            let size = (info.width, info.height);
+            if !sampled[stage] || extras[stage].samples_frame || Some(size) != frame_size
+                || info.kind != gfx::texture::TextureKind::D2 || info.levels != 1
+            {
+                continue;
+            }
+            // Texaccum can be bound directly, through a feedback snapshot, or
+            // after writeback through the ordinary texture cache. In each case
+            // the sampler addresses the same screen image in guest coordinates.
+            let pixels = crate::resource::PixelContainer::read(mem, info.header)?;
+            let data = self.cfg.address_map.to_virtual(pixels.resource.data);
+            extras[stage].samples_frame = self.rtt.values().any(|level| {
+                level.data == data
+                    && (level.width, level.height) == size
+                    && level.identity[1] == pixels.format
+                    && level.identity[2] == pixels.size
+            });
+        }
+        #[cfg(feature = "gpu")]
+        self.projection.fit_camera_bumps(
+            &shader,
+            self.ui_fit.is_none() && (target.width, target.height) == (640, 480),
+            &mut extras,
+        );
         // A draw that samples a frame-sized render target into a frame-sized
         // target copies the frame (the blur under a menu dialog ping-pongs
         // two of them). The UI fit places widgets; it must not shrink a
         // copy into the safe area (docs/graphics/high-resolution.md).
         let copies_a_frame = (0..4).any(|stage| {
             sampled[stage]
-                && (snapshots[stage].is_some() || aliases[stage].is_some())
+                && (extras[stage].samples_frame || snapshots[stage].is_some() || aliases[stage].is_some())
                 && texture_info[stage]
                     .is_some_and(|i| (i.width, i.height) == (target.width, target.height))
         });

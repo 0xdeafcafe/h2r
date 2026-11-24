@@ -1137,6 +1137,40 @@ fn edge_scene<B: Backend>(backend: B, pass: EdgePass) -> Device<B> {
 }
 
 #[test]
+fn only_frame_sized_render_levels_supply_screen_coordinates() {
+    for direct in [false, true] {
+        for (pass, frame) in [(EdgePass::FrameChain, true), (EdgePass::SmallBlur, false)] {
+            let mut backend = d3d::RecordingBackend::new();
+            backend.sample_surfaces = direct;
+            let device = edge_scene(backend, pass);
+            let draws = device.backend.draws();
+            let copy = draws.last().unwrap();
+            assert!(copy.texture_info[0].is_some());
+            assert_eq!(copy.extras[0].samples_frame, frame, "{pass:?}, direct={direct}");
+            let clip = copy.display_rect(copy.clip.unwrap());
+            assert!(clip.is_whole(W, H));
+        }
+    }
+}
+
+#[test]
+fn clipped_world_bounds_reach_both_edges_of_the_presented_player_view() {
+    use d3d::backend::PixelRect;
+
+    let grid = d3d::scaled::RenderScale::between((640, 480), (5120, 2880)).unwrap();
+    // A right-hand player view with a water plane clipped at the left
+    // boundary and a fog plane clipped at the right boundary.
+    let view = (320, 0, 320, 480);
+    let physical = |x, width| {
+        let rect = PixelRect { x, y: 0, width, height: 480 }.projected_x(view, 0.75);
+        grid.rect(rect.x, rect.y, rect.width, rect.height)
+    };
+    assert_eq!(physical(320, 320), [2560, 0, 2560, 2880]);
+    assert_eq!(physical(320, 200), [2560, 0, 1520, 2880]);
+    assert_eq!(physical(440, 200), [3600, 0, 1520, 2880]);
+}
+
+#[test]
 fn fractional_per_axis_surfaces_keep_fullscreen_edges_and_guest_answers() {
     let Some(ctx) = context() else { return };
     let output = (149, 101);

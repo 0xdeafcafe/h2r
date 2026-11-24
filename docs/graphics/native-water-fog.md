@@ -1,6 +1,6 @@
 # Native renderer stage 4b: water, fog and camouflage
 
-Status: Partly built. Planar fog (layer 16), the water edge blend (layer 6) and active camouflage's layers 18 and 19 and the hologram's layer 21 are drawn natively, and parity with D3D is not verified.
+Status: Partly built. The native renderer draws planar fog (layer 16), the water edge blend (layer 6), sorted pool surfaces (layer 15), active camouflage (layers 18 and 19) and holograms (layer 21). Parity with D3D remains unverified.
 Code: `crates/rewrites/render-bridge/src/native_fog.rs`, `native_water.rs`, `native_layers.rs`, `crates/extensions/game/src/native_fog_glue.rs`, `native_water_glue.rs`, `native_layers_glue.rs`, `native_objects_glue.rs`, `crates/rewrites/native-render/src/fog.rs`, `fog_gpu.rs`, `water_gpu.rs`, `object_program_gpu.rs`, `crates/rewrites/scene-extract/src/layout/world_layers.rs` (`sorted_site`). Tests: `crates/rewrites/render-bridge/tests/native_fog.rs`, the unit tests of `render_bridge::native_layers`, `native_render::object_program` and `object_program_gpu`, `scene_extract::layout::world_layers`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
@@ -8,7 +8,12 @@ Part of [native-renderer.md](native-renderer.md).
 
 ## Stage 4b: water, fog and camouflage
 
-These are the scene-list layers that are not the world's, the objects' or the lights': water (6), planar fog (16), active camouflage (18, 19) and the hologram (21), plus the scene-copy and reflection inputs water may read. Everything here draws through the same layer draw (`0x00044550`) over the same scene list (`0x004c1a48`) as layer 3, so the skip is the world's shape: clear the layer's bit on the items the native pass draws, restore at the next layer draw, and ask for one external pass per view.
+The late scene-list passes include the water edge blend (6), planar fog
+(16), active camouflage (18, 19) and holograms (21). They use the layer
+draw (`0x00044550`) and scene list (`0x004c1a48`) also used by layer 3.
+A whole-layer native replacement clears the layer bit for the items it
+draws and restores the bit at the next layer draw. Pool surfaces use the
+sorted layer-15 handler. The water passes can read scene-copy and reflection inputs.
 
 ### The census (Code, from the lifted `render_scene_passes` and layer draw ports, `engine::render_loop::scene` and `layer`; pass counts are V on the owner's disc, e3-lighting.md "Pass taxonomy")
 
@@ -39,6 +44,18 @@ gates the player chain after):
   hologram's; their items are object render records, stage 2's.
 - **Scene-copy and reflection inputs.** A template pass binds its stages from the instance bitmaps or the engine textures (`ResolvedImplementation::textures`); the engine-texture table (`0x00019530`, the jump table at `0x00019b68`) names every render target a pass can sample: 5 the view's bound target (a scene copy), 2 and 3 target 1 (the texaccum), 6 target 3, 13 target 9 (the shadow map), 8 target 10. Engine textures 14 and 15 bind the rasterizer data's bitmap at `+0x14` (`0x000197dd`, `0x000197fb`: `[[0x00485a80]+0x14]` through `0x000143c0`), 14 its image 0 and 15 its image 1 (14 clears `ecx`, the image argument; 15 leaves the 1 loaded at `0x00019538`); the fog and water loaders resolve it from the globals tag (`fog_gpu::Selection::rasterizer`, `look::rasterizer_image`) and sample it as an ordinary bitmap stage. A pass sampling a target the native side has no copy of stays on the D3D path. The fog pass draws before layer 6 and touches no target but the bound one. The water edge blend reads the alpha of the bound target (the teardown clears it after), so its native pass runs inside the wrapper's window, before `0x0003c3c0`'s clear; the pass is issued at the next D3D entry, and the teardown's clear is an entry.
 
+The water edge blend and planar fog use the active player's physical
+viewport as their scissor. The water scene copy covers its entire colour attachment
+so a shader can address the copy with the same coordinates as the source.
+The packet path and the direct encoder use the same viewport edges at
+fractional raster scales.
+
+In exact mode, `scene_step::late_display_visibility` can supply a
+display-only cluster to layers 6 and 16 when the guest layer is empty.
+The cluster must be wholly inside a display portal window and supply one
+eligible part with a visible, single-LOD material. Fog also checks that the
+record flags and planar gate select the loaded implementation.
+
 ### Planar fog
 
 `feature::native_fog` and
@@ -55,8 +72,10 @@ the cached pipelines with their own uniforms and sampled textures.
   `look::implementation_look` (a fog pass is exactly the "combiner that
   reads the fog register" that layer 3's `world_parity` refuses: its
   colour is `SET_FOG_COLOR` and its factor the fog unit's, both device
-  state at the layer). It refuses what layer 3 refuses — per-draw
-  engine inputs outside the planar combiner bindings below, unsupplied engine textures, animated
+  state at the layer). An engine input mask can request an evaluation whose
+  value reaches no register, fragment selector or render state. The pass
+  can use a static shader in that case. It refuses per-draw engine inputs
+  outside the planar combiner bindings below, unsupplied engine textures, animated
   passes, engine-driven states from a source other than the instance's
   scalar 21 or a driven fog colour with the fog on
   (`engine_states::apply_static`), a definition without
@@ -73,7 +92,8 @@ the cached pipelines with their own uniforms and sampled textures.
   at `MATERIAL + 0x90` and fade at `FADE`. The two weights are
   `(1 - fade) * strength` and `fade * strength`
   (`scene_extract::layout::layer_inputs`). The host samples these at the
-  layer call. Each pass applies its binding's transform, half-range packing
+  layer call for both guest-list replacements and display-only draws.
+  Each pass applies its binding's transform, half-range packing
   and channel mask to the combiner bank and slot named by the material.
   The program takes its plane and camera calculations from the device's
   vertex constants. Each target copy uses its own projection for position.
@@ -127,8 +147,9 @@ the cached pipelines with their own uniforms and sampled textures.
   `LAYER_DRAW`, after the world's. It restores the last skip, then when
   the current layer is 16, the caller is the late passes' call
   (`[esp] == 0x0002c0e9`), the layer-draw's own gate holds
-  (`[0x0048574c] == 3` or a fog byte set) and the list holds a BSP item
-  in the layer, asks the host; the host plans the skip over a preview,
+  (`[0x0048574c] == 3` or a fog byte set), and either a BSP item or a
+  display-only cluster is available, it asks the host. For a guest-list
+  replacement, the host plans the skip over a preview,
   writes the view's fog into the frame step's scene and builds the pass
   from the scene's copy (framescene.md, slice 5), reserves it (a scene
   stage the render thread prepares and records when it takes them,
