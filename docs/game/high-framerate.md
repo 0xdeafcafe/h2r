@@ -487,7 +487,7 @@ h2 lockstep $TMPDIR/a.trace $TMPDIR/b.trace   # exit 0 identical, 1 differ
 
 ### The setting
 
-`H2_FPS=30|60|120|uncapped`, or `h2 play --fps`, sets `AppConfig::fps` (`app::fps::FpsTarget`). With neither, the Video screen's Frame Rate row decides (saved as `[graphics] fps` in `<data>/settings.toml`; [settings-menu.md](settings-menu.md), "Video screen"). A press there applies at the window's next turn: `app::fps::FpsControl` carries it, the `DisplaySchedule` is retargeted and, to or from uncapped, the surface's vsync is configured again (`app::fps::follow`). The window and any enabled render-thread replay read the setting.
+`H2_FPS=30|60|120|uncapped`, or `h2 play --fps`, sets `AppConfig::fps` (`app::fps::FpsTarget`). With neither, the Video screen's Frame Rate row decides (saved as `[graphics] fps` in `<data>/settings.toml`; [settings-menu.md](settings-menu.md), "Video screen"). A press there applies at the window's next turn: `app::fps::FpsControl` carries it, the `DisplaySchedule` is retargeted and `app::fps::follow` requests a vsync change only when the effective setting changes. On macOS, `app::surface::WindowSurface` sets display sync directly on the window’s Metal layer. Other backends reconfigure the surface on the next acquire if the two settings select different present modes. The window and any enabled render-thread replay read the setting.
 
 | setting | window |
 |---|---|

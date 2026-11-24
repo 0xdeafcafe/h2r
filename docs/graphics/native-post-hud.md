@@ -640,7 +640,9 @@ wrapper's return (`Host::finish_modal_blur`) the quads are checked
 (unblended, every channel written, each sampling the target the plan
 names, whole; targets 0 and 1 the same size). The overlay's blur is then
 drawn into target 0 by `OverlayGpu` in their place: the copy, the steps
-in scratch targets, the result written back into every channel. The
+in scratch targets, the result written back into every channel. The renderer
+reuses the scratch pair for each of the two most recent target sizes and
+formats so the guest and display copies can alternate each frame. The
 item joins `FrameScene::overlay`. A quad off the plan, a check that
 fails or a pass that does not record gives the game's quads back in
 order (`overlay_modal_blur_replayed`).

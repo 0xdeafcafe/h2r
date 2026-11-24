@@ -1297,7 +1297,7 @@ impl ApplicationHandler<UserEvent> for Shell {
             self.display.retarget(target);
             if let Some(g) = self.gpu.as_mut() {
                 if let Some(v) = vsync {
-                    g.surface.set_vsync(v);
+                    g.surface.set_vsync(&g.ctx, v);
                 }
                 // A publish just before the switch may still be waiting.
                 g.window.request_redraw();

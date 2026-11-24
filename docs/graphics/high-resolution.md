@@ -99,7 +99,12 @@ the fit. Tests:
 `quads_are_read_at_the_shader_screen_and_rect_sites`.
 The menu backdrop (`UI_MENU_BACKDROP`) uses the scene's full viewport
 through its blur and dim passes. `crates/extensions/game/src/render_aspect.rs`
-restores the widget fit when it finishes. A dialog blurs the screen under it
+restores the widget fit when it finishes. Under a dialog the window stack
+calls the colour fill at `UI_MENU_VIEW_FILL`. Its quad starts at the local
+origin and takes its width and height from the raster rectangle used by
+the rectangle shader (`0x00485648`). This covers the current view even
+when the window stack supplies narrower UI bounds. The subsequent dialog
+pass blurs the screen under it
 with the screen convolution blur (`SCREEN_CONVOLUTION_BLUR`, called by the
 modal blur at `0x00235756`), which copies whole 640x480 targets back and
 forth inside the widget fit. The device draws any draw that samples a
