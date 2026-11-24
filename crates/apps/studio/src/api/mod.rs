@@ -219,14 +219,14 @@ pub const METHODS: &[MethodDef] = &[
         "A thumbnail as a PNG path: for a package's bitmap item (item:<package>:<n>) with a PNG source. A tag's own picture (a bitmap, a model, a waveform, a screen) answers not-yet until the renderer draws it",
         r#"{"asset":"string","out?":"string"}"#,
         r#"{"asset":"string","path":"string","bytes":"integer","source":"string"}"#,
-        r#"{"asset":"item:pogo:2"}"#,
+        r#"{"asset":"item:kit-test:2"}"#,
     ),
     def(
         m::ASSET_COPY,
         "Copy into a package: a new `tag` item `like:` the tag of the tree, in a package under <data>/packages/ (the source file holds no bytes of the disc's tag; the lock is rewritten). The new path is `to`, or the tag's path with _copy added",
         r#"{"asset":"string (tag:<group>:<path>)","package":"string","to?":"string"}"#,
         r#"{"package":"string","from":"string","tag":"string","source":"string","item":"integer","dir":"string"}"#,
-        r#"{"asset":"tag:weap:objects\weapons\rifle","package":"pogo"}"#,
+        r#"{"asset":"tag:weap:objects\weapons\rifle","package":"kit-test"}"#,
     ),
     def(
         m::WORKSPACE_STATUS,

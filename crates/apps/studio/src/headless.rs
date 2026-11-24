@@ -1847,7 +1847,7 @@ mod tests {
     /// An invented tags tree for the browser: the maps `example` (the
     /// fixture's own name) and `other` share a rifle and each hold their
     /// own bitmap named `objects\\pixels` (a variant of it), and a local
-    /// package `pogo` edits the rifle. Placeholder bytes: the browser
+    /// package `kit-test` edits the rifle. Placeholder bytes: the browser
     /// never decodes them.
     fn browser_tree(data: &std::path::Path) -> std::path::PathBuf {
         use map::FourCC;
@@ -1884,23 +1884,26 @@ mod tests {
             )
             .unwrap();
         }
-        let pkg = data.join("packages/pogo");
+        let pkg = data.join("packages/kit-test");
         std::fs::create_dir_all(pkg.join("edits")).unwrap();
         std::fs::write(
             pkg.join("package.toml"),
-            "[package]\nformat = 1\nid = \"pogo\"\nname = \"Pogo\"\n\n[[item]]\nkind = \"edits\"\nsource = \"edits/pogo.yaml\"\n",
+            "[package]\nformat = 1\nid = \"kit-test\"\nname = \"Kit test\"\n\n[[item]]\nkind = \"edits\"\nsource = \"edits/kit.yaml\"\n",
         )
         .unwrap();
         std::fs::write(
-            pkg.join("edits/pogo.yaml"),
+            pkg.join("edits/kit.yaml"),
             "- tag: 'weap:objects\\weapons\\rifle'\n  set:\n    - {path: x, value: 1}\n",
         )
         .unwrap();
         pkg
     }
 
+    /// The rows shown, bar the baked packages' own tags (the Pogo Stick's
+    /// weapons are in every tree), sorted.
     fn shown(h: &Headless) -> Vec<String> {
         let mut v = h.studio.browser.shown.clone();
+        v.retain(|row| !row.contains("\\multiplayer\\pogo\\"));
         v.sort();
         v
     }
@@ -1939,7 +1942,7 @@ mod tests {
         // The variants of the differing bitmap are lines under its row.
         h.scene.find("##browser-tag:bitm:objects\\pixels-v-1").unwrap();
         // The rifle's package edit is its badge.
-        h.scene.find("[edited by pogo]").unwrap();
+        h.scene.find("[edited by kit-test]").unwrap();
 
         // The Kind picker and the search narrow the list.
         h.studio.browser.kind = Some("Maps".into());
@@ -1960,7 +1963,7 @@ mod tests {
         h.step(&mut app, &Step::Click("##browser-root-1".into(), Button::Left))
             .unwrap();
         h.frames(&mut app, 2).unwrap();
-        assert!(h.studio.browser.shown.contains(&"package:pogo".to_owned()));
+        assert!(h.studio.browser.shown.contains(&"package:kit-test".to_owned()));
         h.step(&mut app, &Step::Click("##browser-root-0".into(), Button::Left))
             .unwrap();
         h.studio.browser.kind = Some("Maps".into());
@@ -1991,7 +1994,7 @@ mod tests {
         app.set_data_root(data);
         app.dispatch(Action::CopyAsset {
             asset: "tag:weap:objects\\weapons\\rifle".into(),
-            package: "pogo".into(),
+            package: "kit-test".into(),
         });
         let like = pkg.join("tags/objects/weapons/rifle_copy.weap.yaml");
         assert_eq!(
@@ -2004,7 +2007,7 @@ mod tests {
         let before = app.log().len();
         app.dispatch(Action::CopyAsset {
             asset: "tag:weap:objects\\nothing".into(),
-            package: "pogo".into(),
+            package: "kit-test".into(),
         });
         assert!(app.log().len() > before);
         assert!(!pkg.join("tags/objects/nothing_copy.weap.yaml").exists());

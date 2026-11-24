@@ -421,7 +421,11 @@ mod tests {
         encode(&slayer, &mut as_slayer).unwrap();
         assert_eq!(as_slayer.pos, bits.pos + 3, "Slayer's 3 type-area bits");
 
-        let mut out = [0x55u8; RECORD_SIZE];
+        // The decode writes only what it reads, so the clean-up that ends it
+        // sees the buffer's other bytes (`+0xb0` must be 0): start from a
+        // valid record whose type area holds junk.
+        let mut out = r;
+        out[TYPE_AREA].fill(0x55);
         bits.pos = 0;
         assert_eq!(decode(&mut out, &mut bits), Decoded::Kept);
         assert_eq!(out[TYPE_AREA], [0; 0x1c], "the type area is zero");
