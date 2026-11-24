@@ -8,9 +8,15 @@
 //!   convex faces, each drawn with one of two surfaces; the same faces are
 //!   the render triangles and the collision polygons.
 //! - [`texture`]: the textures, drawn in code: the floor grid with its
-//!   distance labels and pads, the ruler and the flat lightmap page.
+//!   distance labels and pads, and the ruler.
+//! - [`light`]: the lightmap page, computed from the layout's lights: flat
+//!   and dark bays constant, the day bay lit by its sun and sky fill with
+//!   the sun's shadows.
+//! - [`sky`]: the sky dome, its picture (gradient, horizon, compass
+//!   letters, the sun's disc), model and tag.
 //! - [`kit`]: the stage's own tags added to a tag set (bitmaps, shaders,
-//!   the structure BSP and lightmap), and what they take from the base.
+//!   the structure BSP and lightmap, the sky), and what they take from the
+//!   base.
 //! - [`map`](self::map): the map: the base's scenario made the stage's, a `fresh`
 //!   build over a `TagSource` (the disc map or the tag tree), the report
 //!   and the package.
@@ -23,16 +29,18 @@
 
 pub mod kit;
 pub mod layout;
+pub mod light;
 pub mod map;
 pub mod mesh;
+pub mod sky;
 pub mod texture;
 
 pub use self::map::{Base, Built, Project, build};
-pub use layout::{Layout, Player};
+pub use layout::{Layout, Lights, Player};
 
 /// The stage's build version: part of every build key. Bump it when the
 /// same sources would give other bytes.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// The layout shipped with the repository.
 pub const SOURCE: &str = include_str!("../../../../art/stage/stage.yaml");

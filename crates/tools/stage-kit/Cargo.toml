@@ -26,6 +26,8 @@ h1convert = { path = "../h1convert" }
 h1-assets = { path = "../h1-assets" }
 h1map = { path = "../h1map" }
 pogo-kit = { path = "../pogo-kit" }
+# The lightmap page's Xbox swizzle.
+gfx = { path = "../../platform/gfx" }
 content.workspace = true
 # The project file and the build report.
 toml.workspace = true

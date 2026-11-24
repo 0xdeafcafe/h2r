@@ -221,8 +221,6 @@ fn the_textures_are_the_right_size() {
         (r.width, r.height),
         (texture::RULER_TEXELS, texture::RULER_TEXELS)
     );
-    let m = texture::lightmap();
-    assert!(m.pixels.chunks(4).all(|p| p == [0x80, 0x80, 0x80, 0xff]));
 }
 
 #[test]
@@ -348,12 +346,14 @@ mod base {
         root.bytes[0x270..0x274].copy_from_slice(&RADIUS.to_le_bytes());
         tags.push(tag(biped.clone(), Region::Metadata, vec![root]));
 
-        // The stem and the default bitmaps, each a 16 by 16 image.
-        tags.push(tag(
-            TagKey::new(STEM, h1convert::shad::TEX_BUMP.stem),
-            Region::Metadata,
-            vec![node(4, 1, Vec::new())],
-        ));
+        // The stems and the default bitmaps, each a 16 by 16 image.
+        for stem in [h1convert::shad::TEX_BUMP.stem, h1convert::shad::ILLUM.stem] {
+            tags.push(tag(
+                TagKey::new(STEM, stem),
+                Region::Metadata,
+                vec![node(4, 1, Vec::new())],
+            ));
+        }
         for f in FIXED {
             let mut root = node(0x4c, 1, vec![(0x44, Value::Block(1))]);
             put(&mut root.bytes, 0x44, 1);
@@ -519,6 +519,13 @@ fn the_map_is_built_on_an_invented_base() {
         e.cleared
     );
     assert_eq!(e.palette_entries, 1);
+    assert!(
+        e.cleared.iter().any(|(n, _)| n == "skies"),
+        "the base's skies are emptied for the stage's own: {:?}",
+        e.cleared
+    );
+    assert!(r.own.iter().any(|k| k.starts_with("sky ")), "{:?}", r.own);
+    assert!(r.lightmap_side.is_power_of_two() && r.lightmap_density > 0.0);
     assert_eq!(e.datum_words, 1, "the script's biped datum");
     assert!(e.renamed >= 2, "the descriptor's two references");
     assert!(r.memory_size <= r.memory_max);
@@ -575,4 +582,368 @@ fn a_base_already_holding_the_stage_is_refused() {
 fn the_package_is_refused_inside_a_git_checkout() {
     let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     assert!(crate::map::git_checkout(here).is_some());
+}
+
+// The lights, the lightmap and the sky.
+
+#[test]
+fn the_lights_parse_and_are_refused_when_wrong() {
+    let l = layout();
+    assert_eq!(l.lights, crate::Lights::default());
+    let yaml = serde_yaml_ng::to_string(&l).unwrap();
+    assert!(yaml.contains("lights"), "the report carries the lights");
+    let sun = l.lights.sun.direction();
+    assert!((sun.iter().map(|v| v * v).sum::<f32>() - 1.0).abs() < 1e-5);
+    assert!(sun[2] > 0.0, "the sun is over the horizon");
+    let with = |lights: &str| {
+        format!(
+            "lights: {lights}\n{}",
+            small("  - { name: cube, at: [6, 3], box: { size: [1, 1, 1] } }")
+        )
+    };
+    // The same text with good lights parses: the refusals below are the
+    // lights'.
+    let good = "{ sun: { azimuth: 90, elevation: 30, color: [1, 1, 1], power: 1 }, fill: [0.1, 0.1, 0.1], flat: 1, dark: 0.02 }";
+    let l = Layout::parse(&with(good), PLAYER).expect("good lights parse");
+    assert_eq!(l.lights.sun.azimuth, 90.0);
+    for (what, lights) in [
+        (
+            "the sun on the horizon",
+            "{ sun: { azimuth: 0, elevation: 0, color: [1, 1, 1], power: 1 }, fill: [0, 0, 0], flat: 1, dark: 0 }",
+        ),
+        (
+            "a dark bay as bright as the flat one",
+            "{ sun: { azimuth: 0, elevation: 30, color: [1, 1, 1], power: 1 }, fill: [0, 0, 0], flat: 0.5, dark: 0.5 }",
+        ),
+        (
+            "a negative fill",
+            "{ sun: { azimuth: 0, elevation: 30, color: [1, 1, 1], power: 1 }, fill: [-1, 0, 0], flat: 1, dark: 0 }",
+        ),
+        (
+            "an unknown field",
+            "{ sun: { azimuth: 0, elevation: 30, color: [1, 1, 1], power: 1 }, fill: [0, 0, 0], flat: 1, dark: 0, moon: 1 }",
+        ),
+    ] {
+        assert!(
+            matches!(
+                Layout::parse(&with(lights), PLAYER),
+                Err(Error::Layout(_) | Error::Yaml(_))
+            ),
+            "{what}"
+        );
+    }
+}
+
+/// The face a ray dropped on `(x, y)` lands on.
+fn floor_at(mesh: &Mesh, x: f32, y: f32) -> usize {
+    let (_, face) = mesh
+        .first_hit([x, y, 20.0], [0.0, 0.0, -1.0])
+        .expect("a floor");
+    assert_eq!(mesh.faces[face].surface, Surface::Grid);
+    face
+}
+
+#[test]
+fn the_day_bay_is_brighter_on_the_suns_side_of_a_reference() {
+    let l = layout();
+    let mesh = Mesh::build(&l);
+    let baked = crate::light::bake(&l, &mesh).unwrap();
+    let cube = l.bays[1]
+        .references
+        .iter()
+        .find(|r| r.name == "cube")
+        .unwrap();
+    let b = cube.bounds;
+    let centre = [(b[0] + b[1]) / 2.0, (b[2] + b[3]) / 2.0];
+    let sun = l.lights.sun.direction();
+    let run = (sun[0] * sun[0] + sun[1] * sun[1]).sqrt();
+    let (hx, hy) = (sun[0] / run, sun[1] / run);
+    // Past the cube's corner, towards and away from the sun, where the
+    // cube's shadow (one unit long at 45 degrees) falls on the far side.
+    let reach = ((b[1] - b[0]).hypot(b[3] - b[2])) / 2.0 + 0.35;
+    let toward = [centre[0] + hx * reach, centre[1] + hy * reach];
+    let away = [centre[0] - hx * reach, centre[1] - hy * reach];
+    let lit = baked.sample(
+        floor_at(&mesh, toward[0], toward[1]),
+        [toward[0], toward[1], 0.0],
+    );
+    let shade = baked.sample(floor_at(&mesh, away[0], away[1]), [away[0], away[1], 0.0]);
+    assert!(lit[0] > shade[0] + 0.3, "{lit:?} against {shade:?}");
+    // In its shadow the floor has the sky fill and nothing else.
+    for c in 0..3 {
+        assert!((shade[c] - l.lights.fill[c]).abs() < 0.03, "{shade:?}");
+    }
+    // In the sun it has the fill and the sun's share.
+    let want = l.lights.fill[0] + l.lights.sun.color[0] * l.lights.sun.power * sun[2];
+    assert!((lit[0] - want).abs() < 0.03, "{lit:?} against {want}");
+    // A face the sun cannot reach has the fill's share of it only: the
+    // cube's side away from the sun.
+    let side = mesh
+        .faces
+        .iter()
+        .position(|f| {
+            f.bay == 1
+                && f.normal[2].abs() < 1e-3
+                && f.points.iter().all(|p| {
+                    p[0] >= b[0] - 1e-3
+                        && p[0] <= b[1] + 1e-3
+                        && p[1] >= b[2] - 1e-3
+                        && p[1] <= b[3] + 1e-3
+                })
+                && f.normal[0] * sun[0] + f.normal[1] * sun[1] < -0.5
+        })
+        .expect("a side of the cube turned from the sun");
+    let p = mesh.faces[side].points[0];
+    let dark_side = baked.sample(side, [p[0], p[1], b[5] / 2.0]);
+    assert!(dark_side[0] < lit[0] - 0.3, "{dark_side:?} against {lit:?}");
+}
+
+/// What the dark bay's light is under.
+const DARK_BAR: f32 = 0.05;
+
+#[test]
+fn the_flat_bay_is_even_and_the_dark_bay_is_under_its_bar() {
+    use crate::layout::Light;
+    let l = layout();
+    let mesh = Mesh::build(&l);
+    let baked = crate::light::bake(&l, &mesh).unwrap();
+    let mut seen = [0usize; 3];
+    for (i, f) in mesh.faces.iter().enumerate() {
+        for p in &f.points {
+            let got = baked.sample(i, *p);
+            match l.bays[f.bay].light {
+                Light::Flat => {
+                    seen[0] += 1;
+                    for c in got {
+                        assert!(
+                            (c - l.lights.flat).abs() < 1.0 / crate::light::HALF,
+                            "{got:?}"
+                        );
+                    }
+                }
+                Light::Dark => {
+                    seen[1] += 1;
+                    assert!(got.iter().all(|c| *c < DARK_BAR), "{got:?}");
+                }
+                Light::Day => seen[2] += 1,
+            }
+        }
+    }
+    assert!(seen.iter().all(|n| *n > 0), "{seen:?}");
+    // The flat bay's faces share one cell and the dark bay's another: no
+    // texels spent on them.
+    let flat: std::collections::HashSet<_> = mesh
+        .faces
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| l.bays[f.bay].light == Light::Flat)
+        .map(|(i, _)| baked.cell(i).0)
+        .collect();
+    assert_eq!(flat.len(), 1);
+    // The day floor has both lit and shaded texels.
+    let floor = floor_at(&mesh, l.bays[1].origin[0], l.bays[1].origin[1]);
+    let (cell, constant) = baked.cell(floor);
+    assert!(!constant);
+    let mut values = std::collections::HashSet::new();
+    for y in cell.y..cell.y + cell.h {
+        for x in cell.x..cell.x + cell.w {
+            values.insert(baked.page.get(x, y));
+        }
+    }
+    assert!(
+        values.len() >= 3,
+        "{} values on the day floor",
+        values.len()
+    );
+}
+
+#[test]
+fn the_lightmap_cells_fit_the_page_and_the_vertices_read_their_own() {
+    let l = layout();
+    let mesh = Mesh::build(&l);
+    let baked = crate::light::bake(&l, &mesh).unwrap();
+    let side = baked.side();
+    assert!(
+        side.is_power_of_two() && side <= crate::light::MAX_PAGE,
+        "{side}"
+    );
+    assert_eq!(baked.page.height, side);
+    let mut cells = Vec::new();
+    for i in 0..mesh.faces.len() {
+        let (c, _) = baked.cell(i);
+        assert!(c.x + c.w <= side && c.y + c.h <= side, "{c:?}");
+        if !cells.contains(&c) {
+            cells.push(c);
+        }
+        // Each corner reads inside its own cell, texel centres only.
+        for p in &mesh.faces[i].points {
+            let [u, v] = baked.uv(i, *p);
+            let (x, y) = (u * side as f32, v * side as f32);
+            assert!(
+                x >= c.x as f32
+                    && x <= (c.x + c.w) as f32
+                    && y >= c.y as f32
+                    && y <= (c.y + c.h) as f32,
+                "face {i}: ({x}, {y}) is outside {c:?}"
+            );
+        }
+    }
+    for (k, a) in cells.iter().enumerate() {
+        for b in &cells[k + 1..] {
+            let apart = a.x + a.w < b.x || b.x + b.w < a.x || a.y + a.h < b.y || b.y + b.h < a.y;
+            assert!(apart, "{a:?} touches {b:?}");
+        }
+    }
+    // Lit from the sun on a day face that looks at it; by its own normal
+    // elsewhere.
+    let sun = l.lights.sun.direction();
+    let up = floor_at(&mesh, l.bays[1].origin[0], l.bays[1].origin[1]);
+    assert_eq!(baked.incident(up, [0.0, 0.0, 1.0]), sun);
+    let flat = floor_at(&mesh, 0.0, 0.0);
+    assert_eq!(baked.incident(flat, [0.0, 0.0, 1.0]), [0.0, 0.0, 1.0]);
+}
+
+#[test]
+fn the_lightmap_is_the_same_twice() {
+    let l = layout();
+    let mesh = Mesh::build(&l);
+    let a = crate::light::bake(&l, &mesh).unwrap();
+    let b = crate::light::bake(&l, &mesh).unwrap();
+    assert_eq!(a, b);
+    assert_eq!(a.texels().len(), a.page.pixels.len());
+}
+
+#[test]
+fn the_sky_dome_faces_in_and_converts() {
+    use crate::sky;
+    let tris = sky::triangles();
+    assert!(!tris.is_empty());
+    let model = sky::dome();
+    let part = &model.geometries[0].parts[0];
+    assert!(part.vertices.len() < 0xffff);
+    // The strip reads back as the triangles, every one wound counter-
+    // clockwise seen from the camera at the dome's centre.
+    assert_eq!(sky::model_triangles(&model), tris);
+    for t in &tris {
+        let p: Vec<[f32; 3]> = t
+            .iter()
+            .map(|&k| part.vertices[k as usize].position)
+            .collect();
+        let (a, b) = (
+            [p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]],
+            [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]],
+        );
+        let n = [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ];
+        let c = [
+            p[0][0] + p[1][0] + p[2][0],
+            p[0][1] + p[1][1] + p[2][1],
+            p[0][2] + p[1][2] + p[2][2],
+        ];
+        assert!(
+            n[0] * c[0] + n[1] * c[1] + n[2] * c[2] < 0.0,
+            "{t:?} faces out"
+        );
+    }
+    // Every vertex is one radius out, and its normal points back in.
+    for v in &part.vertices {
+        let r = v.position.iter().map(|c| c * c).sum::<f32>().sqrt();
+        assert!((r - sky::RADIUS).abs() < 0.01, "{r}");
+        let n: f32 = (0..3).map(|a| v.normal[a] * v.position[a]).sum();
+        assert!(n < 0.0);
+    }
+    // The picture's columns run with the dome's azimuth.
+    let (az, el) = sky::angles(0.5, 0.25);
+    assert_eq!((az, el), (0.0, 45.0));
+    let (x, y) = sky::pixel(az, el);
+    assert_eq!((x, y), (sky::WIDTH as f32 / 2.0, sky::HEIGHT as f32 / 4.0));
+    // It converts to a `mode` naming the one shader.
+    let converted = sky::convert(map::TagId(0xe174_0001)).expect("the dome converts");
+    assert_eq!(converted.group, map::FourCC(*b"mode"));
+    assert!(!converted.raw.is_empty());
+}
+
+#[test]
+fn the_sky_picture_marks_up_north_and_the_sun() {
+    use crate::sky;
+    let l = layout();
+    let img = sky::picture(&l);
+    assert_eq!((img.width, img.height), (sky::WIDTH, sky::HEIGHT));
+    let bright = |c: [u8; 4]| u32::from(c[0]) + u32::from(c[1]) + u32::from(c[2]);
+    // Up is blue and the horizon pale; below it is dark grey.
+    let top = img.get(10, 0);
+    let near = img.get(10, sky::HEIGHT / 2 - 6);
+    let under = img.get(10, sky::HEIGHT / 2 + 20);
+    assert!(top[2] > top[0] + 80, "{top:?}");
+    assert!(bright(near) > bright(top), "{near:?} against {top:?}");
+    assert!(bright(under) < bright(near) / 2, "{under:?}");
+    // A dark line on the horizon itself.
+    assert!(bright(img.get(10, sky::HEIGHT / 2)) < 90);
+    // The sun's disc is where the layout puts it, and bright.
+    let s = l.lights.sun;
+    let (x, y) = sky::pixel(s.azimuth, s.elevation);
+    let disc = img.get(x as u32, y as u32);
+    assert!(disc.iter().take(3).all(|c| *c > 200), "{disc:?}");
+    // The four letters are where the compass puts them, and nothing else
+    // on the horizon band is ink.
+    let ink = |az: f32| {
+        let (cx, cy) = sky::pixel(az, sky::LETTER_ELEVATION);
+        let r = (3 * sky::LETTER_SCALE) as i64;
+        let mut n = 0;
+        for dy in -r..=r {
+            for dx in -r..=r {
+                let x = (cx as i64 + dx).rem_euclid(i64::from(sky::WIDTH)) as u32;
+                let y = (cy as i64 + dy) as u32;
+                n += usize::from(img.get(x, y) == sky::INK);
+            }
+        }
+        n
+    };
+    for (ch, az) in sky::COMPASS {
+        assert!(ink(az) > 200, "no {ch} at {az}: {}", ink(az));
+    }
+    assert_eq!(ink(45.0), 0);
+    assert_eq!(ink(-135.0), 0);
+}
+
+#[test]
+fn the_scenario_names_the_sky() {
+    use ::map::build::{Block, FixupKind};
+    let mut root = Block::zeroed(0x40);
+    // A skies block already there is replaced, not added to.
+    root.block(crate::sky::SKIES, 3, Block::zeroed(24));
+    root.tag_ref(0x20, ::map::TagId::NULL);
+    let sky = ::map::TagId(0xe174_0042);
+    crate::sky::name_sky(&mut root, sky);
+    let blocks: Vec<_> = root
+        .fixups
+        .iter()
+        .filter(|f| f.offset == crate::sky::SKIES)
+        .collect();
+    assert_eq!(blocks.len(), 1);
+    let FixupKind::Block { count, child } = &blocks[0].kind else {
+        panic!("not a block");
+    };
+    assert_eq!(*count, 1);
+    assert_eq!(child.bytes.len(), 8);
+    assert_eq!(child.fixups.len(), 1);
+    assert_eq!(child.fixups[0].offset, 0);
+    assert_eq!(child.fixups[0].kind, FixupKind::TagRef(sky));
+    // What the block did not hold is left alone.
+    assert!(root.fixups.iter().any(|f| f.offset == 0x20));
+}
+
+#[test]
+fn a_base_without_the_self_illuminated_stem_is_refused_by_name() {
+    let (mut src, base) = base::make();
+    src.tags.retain(|t| {
+        !(t.key.group == crate::kit::STEM && t.key.path == h1convert::shad::ILLUM.stem)
+    });
+    match crate::kit::Facts::read(&mut src, &base.globals) {
+        Err(Error::Base(why)) => assert!(why.contains(h1convert::shad::ILLUM.stem), "{why}"),
+        other => panic!("{other:?}"),
+    }
 }

@@ -27,8 +27,7 @@ pub struct Player {
     pub radius: f32,
 }
 
-/// How a bay is lit (`stage_kit::light`, slice S3; every bay is lit flat
-/// until then).
+/// How a bay is lit (`stage_kit::light`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Light {
@@ -38,6 +37,89 @@ pub enum Light {
     Day,
     /// A closed room at near-black.
     Dark,
+}
+
+/// The sun the day bay is lit by, and the sky's disc is drawn at.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Sun {
+    /// Degrees counter-clockwise from +x, seen from above, of the sun's
+    /// side of the sky.
+    pub azimuth: f32,
+    /// Degrees above the horizon, over 0 and up to 90.
+    pub elevation: f32,
+    /// The light's colour.
+    pub color: [f32; 3],
+    /// A face square to the sun takes `color * power` from it.
+    pub power: f32,
+}
+
+impl Sun {
+    /// The unit vector from the ground towards the sun.
+    pub fn direction(&self) -> [f32; 3] {
+        let (az, el) = (self.azimuth.to_radians(), self.elevation.to_radians());
+        [el.cos() * az.cos(), el.cos() * az.sin(), el.sin()]
+    }
+}
+
+/// The lights of the three bays (`stage_kit::light`). Levels are in
+/// units of full light: 1 is what a lit surface shows its texture at.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Lights {
+    /// The day bay's sun.
+    pub sun: Sun,
+    /// The day bay's sky fill, at a face looking up; a face looking down
+    /// takes none, and one looking aside half.
+    pub fill: [f32; 3],
+    /// The flat bay's even grey.
+    pub flat: f32,
+    /// The dark bay's grey: near-black.
+    pub dark: f32,
+}
+
+impl Default for Lights {
+    fn default() -> Self {
+        Lights {
+            sun: Sun {
+                azimuth: 215.0,
+                elevation: 45.0,
+                color: [1.0, 0.95, 0.85],
+                power: 1.0,
+            },
+            fill: [0.26, 0.30, 0.38],
+            flat: 1.0,
+            dark: 0.03,
+        }
+    }
+}
+
+impl Lights {
+    fn check(&self) -> Result<()> {
+        let s = &self.sun;
+        finite("lights.sun", &[s.azimuth, s.elevation, s.power])?;
+        finite("lights.sun.color", &s.color)?;
+        finite("lights.fill", &self.fill)?;
+        finite("lights", &[self.flat, self.dark])?;
+        if !(s.elevation > 0.0 && s.elevation <= 90.0) {
+            return Err(Error::Layout(format!(
+                "lights.sun.elevation: {} degrees is not over 0 and up to 90",
+                s.elevation
+            )));
+        }
+        positive("lights.sun.power", s.power)?;
+        positive("lights.flat", self.flat)?;
+        if s.color.iter().chain(&self.fill).any(|v| *v < 0.0) || self.dark < 0.0 {
+            return Err(Error::Layout("lights: a negative level".into()));
+        }
+        if self.dark >= self.flat {
+            return Err(Error::Layout(format!(
+                "lights.dark: {} is not under lights.flat {}",
+                self.dark, self.flat
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// Every bay's floor.
@@ -77,6 +159,7 @@ pub struct Layout {
     pub version: u32,
     pub player: Player,
     pub floor: Floor,
+    pub lights: Lights,
     pub bays: Vec<Bay>,
 }
 
@@ -183,6 +266,8 @@ impl Camera {
 #[serde(deny_unknown_fields)]
 struct Source {
     floor: Floor,
+    #[serde(default)]
+    lights: Lights,
     bays: Vec<BaySource>,
     spawn: SpawnSource,
     subject: PadSource,
@@ -388,6 +473,7 @@ impl Layout {
                 floor.texels
             )));
         }
+        src.lights.check()?;
         if src.bays.is_empty() {
             return Err(Error::Layout("no bays".into()));
         }
@@ -529,6 +615,7 @@ impl Layout {
             version: crate::VERSION,
             player,
             floor,
+            lights: src.lights,
             bays,
         };
         layout.check()?;

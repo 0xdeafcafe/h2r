@@ -14,16 +14,17 @@
 //!    emptied, its base palettes nulled, its trigger volumes parked, every
 //!    reference to the base's level renamed to the stage's, and every word
 //!    holding a base datum outside a typed field (script nodes, the tag
-//!    list) made a reference by key. Everything else (the sky, the
-//!    ambience palettes, the scripts, the AI and the rest) is the base's.
+//!    list) made a reference by key; its skies block emptied. Everything
+//!    else (the ambience palettes, the scripts, the AI and the rest) is the base's.
 //! 3. A layer over the base ([`StageSource`]) gives that scenario and two
 //!    placeholders for the `sbsp` and `ltmp`, and hides the base's
 //!    scenario and level. Closure from the globals, the scenario and the
 //!    base's kept groups and prefixes (`h1convert::fresh::KEEP_GROUPS`,
 //!    `KEEP_PREFIXES`), then `tags::repo::to_tag_set`. A missing tag, a
 //!    lossy tag or a dangling reference is an error naming it.
-//! 4. [`kit::install`] adds the stage's tags and writes the structure into
-//!    the placeholders; the scenario's descriptor takes that BSP section.
+//! 4. [`kit::install`] adds the stage's tags (the sky among them, named by
+//!    the scenario's skies block) and writes the structure into the
+//!    placeholders; the scenario's descriptor takes that BSP section.
 //! 5. The sound gestalt is cut to the sounds kept
 //!    (`h1convert::compact::gestalt`), the bitmaps' and gestalt's blocks
 //!    kept to their own tags (`h1convert::scratch::scope_shares`), the
@@ -73,7 +74,8 @@ pub const SALT: u16 = 0xe174;
 /// The root blocks emptied: the base's placements
 /// (`h1convert::apply::BASE_OBJECTS`), its netgame flags and equipment,
 /// its light fixtures and decorators (`h1convert::convert::BASE_BLOCKS`),
-/// all placed for its own level, and its BSP switches.
+/// all placed for its own level, its BSP switches, and its skies (the
+/// stage's own is named once the structure is written, [`kit::install`]).
 fn cleared() -> Vec<(u32, &'static str)> {
     let mut out: Vec<(u32, &'static str)> = [
         BlockKind::Scenery,
@@ -93,6 +95,7 @@ fn cleared() -> Vec<(u32, &'static str)> {
         out.push((at as u32, what));
     }
     out.push((BSP_SWITCHES, "bsp_switches"));
+    out.push((crate::sky::SKIES, "skies"));
     out
 }
 
@@ -706,6 +709,10 @@ pub struct Report {
     pub triangles: usize,
     pub vertices: usize,
     pub collision_surfaces: usize,
+    /// The lightmap page's side in texels, and its texels to the unit on
+    /// a day face.
+    pub lightmap_side: u32,
+    pub lightmap_density: f32,
     pub file_size: u32,
     /// Tag memory used and the bound (`map::writer::max_metadata_size`).
     pub memory_size: u32,
@@ -934,6 +941,8 @@ pub fn build(src: &mut dyn TagSource, base: &Base, project: &Project) -> Result<
         triangles: installed.triangles,
         vertices: installed.vertices,
         collision_surfaces: installed.surfaces,
+        lightmap_side: installed.lightmap_side,
+        lightmap_density: installed.lightmap_density,
         file_size: out.file_size,
         memory_size: out.memory_size,
         memory_max,

@@ -1,6 +1,8 @@
 //! The stage's own tags, added to a tag set: the grid and ruler bitmaps,
-//! their two shaders, the flat lightmap bitmap, and the structure BSP and
-//! lightmap written over the two placeholder tags the set holds for them.
+//! their two shaders, the lightmap bitmap ([`crate::light`]), the sky
+//! ([`crate::sky`]: its picture, shader, model and tag, named by the
+//! scenario), and the structure BSP and lightmap written over the two
+//! placeholder tags the set holds for them.
 //!
 //! What the tags take from the base is read first ([`Facts::read`]) from
 //! the base's tags, never from a figure in the repository: the player's
@@ -12,12 +14,12 @@
 //! the writer every converted Halo 1 level goes through: one cluster, the
 //! render geometry of [`crate::mesh`] packed into sections of one lightmap
 //! page, the collision compiled from the same faces with its MOPP, the
-//! base's sky (cluster sky 0), no portals and no ambient sound.
+//! stage's sky (cluster sky 0), no portals and no ambient sound.
 
 use std::collections::HashMap;
 
 use h1convert::clusters::Visibility;
-use h1convert::shad::{self, Bound, Fixed, Library, Role, TEX_BUMP};
+use h1convert::shad::{self, Bound, Fixed, ILLUM, Library, Role, TEX_BUMP};
 use h1convert::structure::{
     self, COLLISION_MATERIAL, Mesh as Part, Sound, Structure, Templates, Vertex,
 };
@@ -29,7 +31,9 @@ use map::{FourCC, TagId};
 use tags::repo::{LooseTag, TagKey, TagSource, Tree, Value};
 
 use crate::layout::{Layout, Player};
+use crate::light::{self, Baked};
 use crate::mesh::{Mesh, Surface, V3};
+use crate::sky;
 use crate::texture::{self, Image as Picture};
 use crate::{Error, Result};
 
@@ -40,6 +44,8 @@ pub const LTMP: FourCC = FourCC(*b"ltmp");
 pub const SCNR: FourCC = FourCC(*b"scnr");
 pub const STEM: FourCC = FourCC(*b"stem");
 pub const BIPD: FourCC = FourCC(*b"bipd");
+pub const SKY: FourCC = FourCC(*b"sky ");
+pub const MODE: FourCC = FourCC(*b"mode");
 
 /// The multiplayer player's biped, whose size the scale references take.
 pub const BIPED: &str = "objects\\characters\\masterchief\\masterchief_mp";
@@ -76,6 +82,11 @@ pub struct Keys {
     pub ltmp: TagKey,
     /// The lightmap bitmap.
     pub lightmap: TagKey,
+    /// The sky: its tag, model, picture and shader.
+    pub sky: TagKey,
+    pub sky_model: TagKey,
+    pub sky_bitmap: TagKey,
+    pub sky_shader: TagKey,
     /// Per [`Surface`], its bitmap and shader.
     pub bitmaps: [TagKey; 2],
     pub shaders: [TagKey; 2],
@@ -100,6 +111,10 @@ impl Keys {
             sbsp: TagKey::new(SBSP, path),
             ltmp: TagKey::new(LTMP, format!("{path}_lightmap")),
             lightmap: TagKey::new(BITM, format!("{path}_lightmap")),
+            sky: TagKey::new(SKY, at("sky\\stage")),
+            sky_model: TagKey::new(MODE, at("sky\\stage")),
+            sky_bitmap: TagKey::new(BITM, at("sky\\stage")),
+            sky_shader: TagKey::new(SHAD, at("sky\\stage")),
             bitmaps: surface(BITM, "bitmaps"),
             shaders: surface(SHAD, "shaders"),
         }
@@ -114,6 +129,12 @@ impl Keys {
             out.push(self.shaders[i].clone());
         }
         out.push(self.lightmap.clone());
+        out.extend([
+            self.sky_bitmap.clone(),
+            self.sky_shader.clone(),
+            self.sky_model.clone(),
+            self.sky.clone(),
+        ]);
         out
     }
 }
@@ -126,6 +147,9 @@ pub struct Facts {
     pub material: u16,
     /// The opaque stem.
     pub stem: TagKey,
+    /// The self-illuminated stem the sky's dome is drawn with: it takes
+    /// no light from a lightmap.
+    pub illum: TagKey,
     /// Each of [`FIXED`]: its bitmap and LOD offset.
     pub fixed: Vec<(Fixed, TagKey, f32)>,
 }
@@ -203,6 +227,10 @@ impl Facts {
         if src.read(&stem)?.is_none() {
             return Err(Error::Base(format!("the base has no {stem}")));
         }
+        let illum = TagKey::new(STEM, ILLUM.stem);
+        if src.read(&illum)?.is_none() {
+            return Err(Error::Base(format!("the base has no {illum}")));
+        }
         let mut fixed = Vec::new();
         for f in FIXED {
             let key = TagKey::new(BITM, f.path());
@@ -219,6 +247,7 @@ impl Facts {
             player,
             material,
             stem,
+            illum,
             fixed,
         })
     }
@@ -234,6 +263,15 @@ pub struct Installed {
     pub bitmaps: [TagId; 2],
     pub shaders: [TagId; 2],
     pub lightmap: TagId,
+    /// The lightmap page's side, texels, and its texels to the unit on a
+    /// day face ([`light::Baked`]).
+    pub lightmap_side: u32,
+    pub lightmap_density: f32,
+    /// The sky, its model, picture and shader.
+    pub sky: TagId,
+    pub sky_model: TagId,
+    pub sky_bitmap: TagId,
+    pub sky_shader: TagId,
     /// Render triangles and vertices, collision surfaces.
     pub triangles: usize,
     pub vertices: usize,
@@ -254,18 +292,15 @@ fn colour_bitmap(img: &Picture) -> Result<h1_assets::models::Converted> {
     .map_err(|e| fail("a stage texture", e))
 }
 
-/// The flat lightmap page ([`texture::lightmap`]) as a `bitm` laid out as
-/// a converted Halo 1 level's lightmap is (`h1_assets::bitmaps::atlas::
+/// The baked lightmap page ([`light::bake`]) as a `bitm` laid out as a
+/// converted Halo 1 level's lightmap is (`h1_assets::bitmaps::atlas::
 /// compose`): one 2D image a page, 32-bit colour, swizzled, no mipmaps, a
 /// sequence a page; usage 4 (light map), encoding 4 (32-bit colour).
-fn lightmap_bitmap() -> Result<h1_assets::models::Converted> {
-    let page = texture::lightmap();
-    // X8R8G8B8 is B, G, R, A in memory; the page is grey, so swizzling
-    // moves nothing.
-    let mut texels = Vec::with_capacity(page.pixels.len());
-    for p in page.pixels.chunks(4) {
-        texels.extend_from_slice(&[p[2], p[1], p[0], 0xff]);
-    }
+fn lightmap_bitmap(baked: &Baked) -> Result<h1_assets::models::Converted> {
+    let page = &baked.page;
+    // X8R8G8B8 is B, G, R, A in memory; the Xbox stores the rows swizzled.
+    let texels = gfx::swizzle::swizzle(&baked.texels(), page.width, page.height, 1, 4)
+        .map_err(|e| fail("the lightmap bitmap", format!("{e:?}")))?;
     let image = Image {
         width: page.width as u16,
         height: page.height as u16,
@@ -348,15 +383,21 @@ fn frame(points: &[V3], uvs: &[[f32; 2]], n: V3) -> (V3, V3) {
 }
 
 /// The render meshes, one a surface (its material index), every vertex
-/// at the flat lightmap page's centre.
-pub fn render_meshes(mesh: &Mesh) -> Vec<Part> {
+/// at its place on the lightmap page `baked` and lit from the direction
+/// `baked` gives it.
+pub fn render_meshes(mesh: &Mesh, baked: &Baked) -> Vec<Part> {
     use h1_assets::models::mode::pack_normal;
     Surface::ALL
         .iter()
         .map(|&s| {
             let mut vertices = Vec::new();
             let mut triangles = Vec::new();
-            for f in mesh.faces.iter().filter(|f| f.surface == s) {
+            for (face, f) in mesh
+                .faces
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| f.surface == s)
+            {
                 let (t, b) = frame(&f.points, &f.uvs, f.normal);
                 let first = vertices.len() as u32;
                 for (p, uv) in f.points.iter().zip(&f.uvs) {
@@ -364,8 +405,8 @@ pub fn render_meshes(mesh: &Mesh) -> Vec<Part> {
                         position: *p,
                         frame: [pack_normal(f.normal), pack_normal(b), pack_normal(t)],
                         texcoord: *uv,
-                        lightmap: [0.5, 0.5],
-                        incident: pack_normal(f.normal),
+                        lightmap: baked.uv(face, *p),
+                        incident: pack_normal(baked.incident(face, f.normal)),
                     });
                 }
                 for k in 1..f.points.len() as u32 - 1 {
@@ -421,7 +462,8 @@ pub fn install(set: &mut TagSet, layout: &Layout, facts: &Facts, keys: &Keys) ->
             },
         ));
     }
-    let library = Library::new(&[(TEX_BUMP.stem, stem)], &fixed);
+    let illum = find(set, &facts.illum)?;
+    let library = Library::new(&[(TEX_BUMP.stem, stem), (ILLUM.stem, illum)], &fixed);
 
     let pictures = [texture::grid(layout), texture::ruler()];
     let mut bitmaps = [TagId::NULL; 2];
@@ -448,15 +490,53 @@ pub fn install(set: &mut TagSet, layout: &Layout, facts: &Facts, keys: &Keys) ->
             .add_tag(SHAD, &keys.shaders[i].path, TagPayload::Built(tree))
             .map_err(|e| fail(s.name(), e))?;
     }
-    let lightmap = lightmap_bitmap()?
+    let mesh = Mesh::build(layout);
+    let baked = light::bake(layout, &mesh)?;
+    let lightmap = lightmap_bitmap(&baked)?
         .install(set, &keys.lightmap.path)
         .map_err(|e| fail("the lightmap bitmap", e))?;
 
-    let mesh = Mesh::build(layout);
+    // The sky: its picture on a self-illuminated shader, the dome that
+    // draws it, the tag, and the scenario's skies block naming it.
+    let picture = sky::picture(layout);
+    let sky_bitmap = colour_bitmap(&picture)?
+        .install(set, &keys.sky_bitmap.path)
+        .map_err(|e| fail("the sky's picture", e))?;
+    let maps = HashMap::from([(
+        Role::Base,
+        Bound {
+            id: sky_bitmap,
+            scale: [1.0, 1.0],
+            lod_offset: shad::lod_offset(picture.width as u16, picture.height as u16),
+        },
+    )]);
+    let tree = library
+        .build(&ILLUM, &maps)
+        .map_err(|e| fail("the sky's shader", e))?;
+    let sky_shader = set
+        .add_tag(SHAD, &keys.sky_shader.path, TagPayload::Built(tree))
+        .map_err(|e| fail("the sky's shader", e))?;
+    let sky_model = sky::convert(sky_shader)?
+        .install(set, &keys.sky_model.path)
+        .map_err(|e| fail("the sky's model", e))?;
+    let sky_tag = sky::tag(layout, sky_model)?
+        .install(set, &keys.sky.path)
+        .map_err(|e| fail("the sky", e))?;
+    let scenario = find(set, &keys.scenario)?;
+    match set.tag_mut(scenario).map(|t| &mut t.payload) {
+        Some(TagPayload::Built(root)) => sky::name_sky(root, sky_tag),
+        _ => {
+            return Err(Error::Build(format!(
+                "{} is not a tag the stage can name its sky in",
+                keys.scenario
+            )));
+        }
+    }
+
     let compiled = mesh.collision()?;
     let mopp = h1convert::convert::structure_mopp(&compiled.bsp)
         .map_err(|e| fail("the collision's MOPP", e))?;
-    let parts = render_meshes(&mesh);
+    let parts = render_meshes(&mesh, &baked);
     let material: Vec<u16> = Surface::ALL.iter().map(|s| s.index()).collect();
     let sections = structure::pack(&parts, &material);
 
@@ -511,6 +591,12 @@ pub fn install(set: &mut TagSet, layout: &Layout, facts: &Facts, keys: &Keys) ->
         bitmaps,
         shaders,
         lightmap,
+        lightmap_side: baked.side(),
+        lightmap_density: baked.density,
+        sky: sky_tag,
+        sky_model,
+        sky_bitmap,
+        sky_shader,
         triangles: parts.iter().map(|p| p.triangles.len()).sum(),
         vertices: parts.iter().map(|p| p.vertices.len()).sum(),
         surfaces: compiled.bsp.surfaces.len(),
