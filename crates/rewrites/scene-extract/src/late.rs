@@ -16,6 +16,10 @@ use crate::layout::skip::{CURRENT_LAYER, CURRENT_LIST, ITEM_SIZE, MAX_ITEMS};
 pub const SCENE_FOG_RETURN: u32 = 0x0002_c0e9;
 pub const SCENE_WATER_RETURN: u32 = 0x0002_c120;
 
+/// The first-person renderer normally begins layer 2 here. A fog range at
+/// this site must independently identify layer 16 in the live handler.
+pub const FIRST_PERSON_OVERLAY_RETURN: u32 = 0x0004_0289;
+
 /// A layer number alone also matches draws from nested view handlers.
 pub fn scene_layer_call(layer: u32, ret: u32) -> bool {
     matches!((layer, ret), (16, SCENE_FOG_RETURN) | (6, SCENE_WATER_RETURN))

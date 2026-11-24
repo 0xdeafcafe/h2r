@@ -394,13 +394,13 @@ pub const LAYER_SITES: [&str; 6] = [
 /// 17 and 20 (`frame-scene.layers`) and 3 (`native_objects`,
 /// `native_world`, the decorators), 6 (water) and 16 (fog), the alternate
 /// view's 1, 2, 3 and 5, and the first person's 1, 2, 7, 8 and 20 (`frame-scene.layers`)
-/// and 3 (`native_first_person`), the light passes’ 12 and 13, and the
+/// and 3 (`native_first_person`), layer 16 when confirmed at an indexed fog range, the light passes’ 12 and 13, and the
 /// object shadow's caster and receiver layers 10 and 11. Each is
 /// [`Status::Partial`]: what its stages refuse stays the guest's.
 pub const PARTIAL_LAYERS: [(u8, &[u8]); 5] = [
     (0, &[1, 2, 3, 5, 6, 7, 8, 16, 17, 20]),
     (1, &[1, 2, 3, 5]),
-    (2, &[1, 2, 3, 7, 8, 20]),
+    (2, &[1, 2, 3, 7, 8, 16, 20]),
     (3, &[12, 13]),
     (4, &[10, 11]),
 ];
@@ -1368,7 +1368,7 @@ mod tests {
         for layer in [1, 2, 3, 5, 7, 8, 17, 20] {
             assert_eq!(status(0, layer), "partial", "the scene's layer {layer}");
         }
-        for layer in [1, 2, 3, 7, 8, 20] {
+        for layer in [1, 2, 3, 7, 8, 16, 20] {
             assert_eq!(
                 status(2, layer),
                 "partial",

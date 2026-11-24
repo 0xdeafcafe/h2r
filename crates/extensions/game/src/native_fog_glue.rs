@@ -327,6 +327,20 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // reservation has recorded on every copy
         // (`native_render::skip::MaskPreview`).
         let read = ReadMemory(mem);
+        let mut samples = fog_gpu::LayerSamples::new();
+        let inputs = fog_gpu::PlanarInputs::read(&read);
+        for (&material, passes) in &fog.programs {
+            if passes.iter().any(|p| p.planar.is_some()) {
+                let Some(inputs) = &inputs else {
+                    render_bridge::native_layers::count(FOG_LATE_LAYER.into(), "refused_planar_inputs_view", 1);
+                    return None;
+                };
+                samples.insert(material, passes.iter().map(|p| {
+                    p.planar.as_ref().map(|b| b.sample(&p.program.pixel, inputs))
+                }).collect());
+            }
+        }
+        let samples = Arc::new(samples);
         let mut preview = native_render::skip::MaskPreview::new(&read)?;
         let (selected, cleared, refused) = native_render::fog::clear_fog(&mut preview, native_render::fog::FOG_LAYER as u32, &|item| {
             let accepted = fog.draws(item.owner, item.part, item.shader, item.implementation);
@@ -365,6 +379,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 ready: Arc::clone(&ready),
                 selected: selected.clone(),
                 fogs: fogs.clone(),
+                samples: Arc::clone(&samples),
                 view: None,
                 w_clip: None,
                 writes_depth,
@@ -494,6 +509,7 @@ struct FogViewPass {
     /// The parts the masks surrendered, in the layer's item order: what
     /// the replacement must record on every copy.
     selected: Vec<(Owner, u8)>,
+    samples: Arc<fog_gpu::LayerSamples>,
     /// Each material's fog unit and colour, resolved at the ask.
     fogs: HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
     view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
@@ -564,7 +580,7 @@ impl d3d::ExternalPass for FogViewPass {
             z_scale: request.z_scale,
             w_clip: self.w_clip,
         };
-        Some(gpu.fog_draws(&t.device, t.color_format, t.depth_format, t.size, &self.selected, &view, &self.fogs))
+        Some(gpu.fog_draws(&t.device, t.color_format, t.depth_format, t.size, &self.selected, &view, &self.fogs, &self.samples))
     }
 
     fn record_ranges(&mut self, mut t: d3d::ExternalTarget<'_>) -> usize {
@@ -585,7 +601,7 @@ impl d3d::ExternalPass for FogViewPass {
         let Some(gpu) = gpu.as_mut() else { return 0 };
         {
             let mut uploads = t.encoder_uploads();
-            gpu.prepare_fog(&mut uploads, &view, &self.fogs);
+            gpu.prepare_fog(&mut uploads, &view, &self.fogs, &self.samples);
         }
         gpu.encode_fog(t.device, t.encoder, t.color, t.color_format, t.depth, t.depth_format, t.size, &self.selected)
     }

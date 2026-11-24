@@ -104,8 +104,10 @@ fn walk_stage(mem: &dyn GuestRead, esp: u32) -> Option<Stage> {
             use native_render::world_layers::{Site, layer_site};
             let caller = word(LAYER_DRAW_FRAME)?;
             // The layer's sorted dispatcher has already applied the pass and
-            // chosen this range. Claim only the scene's own late-layer calls.
-            if scene_extract::late::scene_layer_call(layer, caller)
+            // chosen this range. Require the live handler and current layer
+            // to agree even at the first-person renderer's overlay call.
+            let overlay_fog = layer == 16 && caller == scene_extract::late::FIRST_PERSON_OVERLAY_RETURN;
+            if (scene_extract::late::scene_layer_call(layer, caller) || overlay_fog)
                 && mem.read_u32(native_render::skip::CURRENT_LAYER) == Some(layer)
                 && word(0xf094) == Some(0x0004_45b7)
             {
@@ -570,6 +572,7 @@ mod walk_tests {
         for (layer, caller, stage) in [
             (6, scene_extract::late::SCENE_WATER_RETURN, Stage::Water),
             (16, scene_extract::late::SCENE_FOG_RETURN, Stage::Fog),
+            (16, scene_extract::late::FIRST_PERSON_OVERLAY_RETURN, Stage::Fog),
         ] {
             for (offset, value) in [(0x18, GEOMETRY_EMITTER_CALLER), (0x68, LAYER_DRAW_CALLER),
                 (0x78, layer), (0xf094, 0x0004_45b7), (LAYER_DRAW_FRAME, caller)] {

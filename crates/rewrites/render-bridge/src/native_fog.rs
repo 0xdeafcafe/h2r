@@ -123,10 +123,14 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         return;
     }
     VIEWS.fetch_add(1, Ordering::Relaxed);
+    if ret == scene_extract::late::FIRST_PERSON_OVERLAY_RETURN {
+        // Only the indexed range hook can establish this handler's layer.
+        return;
+    }
     if ret != fog::SCENE_FOG_RETURN {
         let n = WRONG_CALLER.fetch_add(1, Ordering::Relaxed);
         if n % 1800 == 0 {
-            eprintln!("native-fog: {} layer-16 calls from {ret:#010x}, not the late passes' ({:#010x}): left to the D3D path", n + 1, fog::SCENE_FOG_RETURN);
+            eprintln!("native-fog: {} layer-16 calls from other sites (latest {ret:#010x}, scene {:#010x}): no whole-list claim", n + 1, fog::SCENE_FOG_RETURN);
         }
         return;
     }
