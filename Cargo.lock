@@ -2500,6 +2500,7 @@ dependencies = [
  "xapi",
  "xbe",
  "xiso",
+ "zstd",
 ]
 
 [[package]]

@@ -1,6 +1,6 @@
 # Theater: the full in-game player
 
-Status: Design. “What it builds on” describes the existing player. The session ring and warm restore are on by default; keyframe cost measurements and film replay verification are pending.
+Status: Design. “What it builds on” describes the existing player. The session ring and warm restore are on by default; keyframe cost measurements and film replay verification are pending. Slices 0 to 10, 12 to 14 and 16 are in code; slice 15 has the seat record in the recorder and the start point envelope (`theater/start_point.rs`), and waits on its three experiments; slice 11 waits on `sim_state::Keyframe`.
 Code: `crates/extensions/game/src/theater.rs` (`Session`), `crates/extensions/game/src/theater/actions.rs` (the per-tick inputs), `crates/live/film/src/tape.rs` (the HLE tape), `crates/apps/cli/src/theater_cmd.rs` (the player process), `crates/live/film` (the container). Tests: `crates/extensions/game/src/theater/tests.rs`, `crates/live/film/src/tests.rs`.
 Switch: [Theater ring](../runtime/switches.md).
 

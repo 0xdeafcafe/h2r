@@ -487,6 +487,13 @@ so the host gives them a start point.
   2 and a block of kind 2 before its first tick chunk. It stays on the
   joiner's machine. The joiner can instead fetch the earlier chunks and
   hold the whole game from its seed.
+- **The envelope.** `crates/extensions/game/src/theater/start_point.rs`
+  writes and reads the tagged form: lengths, arena hash and identifiers,
+  the SHA-256 of both stored frames, and an HMAC-SHA-256 over all of it.
+  The reader checks the tag, the digest, its own arena size and the film's
+  arena hash before it inflates, then inflates into exactly the stated
+  sizes. The caller compares `lockstep::hash_sim` after loading with
+  `StartPoint::check_loaded`.
 - **What it waits for.** Loading an arena into a running match, which is
   the retail synchronous join for co-op
   (`crates/extensions/game/src/coop_jip.rs`) and `sim_state::Keyframe`

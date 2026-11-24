@@ -29,6 +29,7 @@ pub use startup::Startup;
 pub use startup::configure_replay_child;
 mod replay;
 mod sidecar;
+pub mod start_point;
 pub use sidecar::{ReplayCache, RetrySeek};
 mod replay_cursor;
 pub(crate) mod ring;
