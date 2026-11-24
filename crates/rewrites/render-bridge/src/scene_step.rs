@@ -486,9 +486,16 @@ fn host_lights(mem: &dyn GuestMemory) -> Vec<frame_scene::Light> {
 /// The main view's light pass is over (at the decal mode that follows
 /// it). Fill the candidate data alongside the original draw steps, which
 /// already hold their final group indices, then add the host's lights
-/// ([`set_host_lights`]) after them.
-fn light_candidates(mem: &dyn GuestMemory, fpu: engine::light_constants::Fpu) {
+/// ([`set_host_lights`]) after them. Returns the host lights it added,
+/// for the light passes' owner to draw
+/// ([`crate::native_lights::host::draw`]); none for a view that is not a
+/// game view.
+fn light_candidates(
+    mem: &dyn GuestMemory,
+    fpu: engine::light_constants::Fpu,
+) -> Vec<frame_scene::Light> {
     let host = host_lights(mem);
+    let mut added = Vec::new();
     with_step(|step| {
         let Some((scene, view)) = step.builder.open() else {
             return;
@@ -514,12 +521,17 @@ fn light_candidates(mem: &dyn GuestMemory, fpu: engine::light_constants::Fpu) {
         } else {
             LIGHT_EXTRACT_UNREAD.fetch_add(1, Ordering::Relaxed);
         }
-        if !host.is_empty() && step.builder.add_light_candidates(host).is_err() {
-            REFUSED.fetch_add(1, Ordering::Relaxed);
+        if !host.is_empty() {
+            if step.builder.add_light_candidates(host.clone()).is_err() {
+                REFUSED.fetch_add(1, Ordering::Relaxed);
+            } else {
+                added = host;
+            }
         }
         LIGHT_EXTRACT_VIEWS.fetch_add(1, Ordering::Relaxed);
         LIGHT_EXTRACT_NS.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
     });
+    added
 }
 
 /// A light's passes begin: until [`light`] puts it in the view, its
@@ -1010,6 +1022,18 @@ pub fn counters() -> Vec<(&'static str, u64)> {
             crate::native_lights::objects_drawn_alone(),
         ),
         (
+            "scene_host_lights_drawn",
+            crate::native_lights::host::drawn(),
+        ),
+        (
+            "scene_host_lights_kept",
+            crate::native_lights::host::kept(),
+        ),
+        (
+            "scene_host_lights_unread",
+            crate::native_lights::host::unread(),
+        ),
+        (
             "scene_first_person_light_layers_alone",
             crate::native_lights::first_person_drawn_alone(),
         ),
@@ -1154,17 +1178,22 @@ impl Feature for FrameSceneStep {
                 &points::RENDER_DECAL_MODE,
                 "frame_scene_light_candidates",
                 |o| {
-                    let g = o.guest();
+                    let mut g = o.guest();
                     if g.u32(o.cpu.esp).ok() != Some(DECALS_AFTER_LIGHTS) {
                         return;
                     }
-                    light_candidates(
-                        &*g,
-                        engine::light_constants::Fpu {
-                            mxcsr: o.cpu.mxcsr,
-                            x87_control: o.cpu.x87.control,
-                        },
-                    );
+                    let fpu = engine::light_constants::Fpu {
+                        mxcsr: o.cpu.mxcsr,
+                        x87_control: o.cpu.x87.control,
+                    };
+                    let host = light_candidates(&*g, fpu);
+                    // The host's own lights have no guest passes: the light
+                    // passes' owner draws their layers here, where the pass
+                    // is over and the view's target is still bound.
+                    if !host.is_empty() {
+                        let mem: &mut dyn GuestMemory = &mut *g;
+                        crate::native_lights::host::draw(mem, &host, fpu);
+                    }
                 },
             )
             .after_feature(crate::render_timing::ID)

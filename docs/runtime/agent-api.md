@@ -1957,6 +1957,9 @@ h2 agent render.parity '{"arm": true}'
   (their object entries: model parts drawn with no handler),
   `scene_first_person_light_layers_alone` (of those layers, the
   first-person lights'),
+  `scene_host_lights_drawn`, `scene_host_lights_kept` and
+  `scene_host_lights_unread` (the host's own lights, ML5, drawn by the
+  light passes, made but kept, and whose constants did not read),
   `scene_light_entries` and
   `scene_light_entry_remainder_<cause>` (sorted entries left to the
   guest's handlers, by `scene_extract::light_groups::Cause`: `memory`,
