@@ -298,7 +298,8 @@ fn resolve_overlay(info: &AnimInfo, p: &P) -> Result<Option<(usize, f32)>, agent
         .get("weight")
         .and_then(Value::as_f64)
         .filter(|f| (0.0..=1.0).contains(f))
-        .ok_or_else(bad)? as f32;
+        .ok_or_else(|| err(code::INVALID_PARAMS, "overlay.weight: expected a number from 0 to 1"))?
+        as f32;
     Ok(Some((find_animation(info, want)?, weight)))
 }
 

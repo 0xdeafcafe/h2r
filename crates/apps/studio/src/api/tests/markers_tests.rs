@@ -91,6 +91,7 @@ fn a_hills_corners_list_as_one_hill() {
     let mut app = app(&t);
     let mut api = Api::new();
     open_map(&mut api, &mut app, &t, "hill.map", fixture::fixture_at_end());
+    app.session.set_allow_growth(true);
     for (field, value) in [("type", 11), ("identifier", 1)] {
         call(&mut api, &mut app, m::SCENARIO_SET, json!({
             "block": "netgame_flags", "index": 0, "field": field, "value": value

@@ -26,7 +26,7 @@ struct Ram<'a> {
     calls: Vec<Cpu>,
 }
 
-#[path = "unit_pose_differential.rs"]
+#[path = "sim_native_differential/unit_pose.rs"]
 mod full_pose;
 
 impl<'a> Ram<'a> {

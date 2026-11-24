@@ -3,7 +3,7 @@
 Status: Built. Disc parity and game timing await verification.
 Code: `crates/rewrites/engine/src/sim_native/unit.rs` (`run`) and
 `crates/rewrites/sim-bridge/src/sim_native.rs` (`install_anim`).
-Tests: `crates/rewrites/engine/tests/unit_pose_differential.rs`.
+Tests: `crates/rewrites/engine/tests/sim_native_differential/unit_pose.rs`.
 Switch: `impl.sim.native.anim`, listed in [switches.md](../runtime/switches.md).
 
 The unit pose selects and weights animation layers for a unit's node
