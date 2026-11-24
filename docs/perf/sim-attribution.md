@@ -445,9 +445,11 @@ a sample to the innermost identified operation: VM scheduling and
 evaluation, an engine-facing builtin, actor decisions, or path searches.
 Retain the caller separately, so a search requested by a scripted AI
 action counts once. Leave samples without an identified operation in an
-unresolved row. Record counts, share of game-thread samples and ms per
-tick for each row and level in a dated perf note with the capture command
-and commit. Rank the two AI phases by measured active-encounter cost. If
+unresolved row. Report each row's count and share with the number of
+sampled ticks. For ms/tick, divide the window's attributed simulation
+CPU time by its completed simulation ticks. Report mean guest ms/frame at
+the user's 4x setting separately. Put both level tables, the capture command
+and commit in a dated perf note. Rank the two AI phases by measured active-encounter cost. If
 the unresolved share could reverse the ranking, identify its hottest
 callers before assigning either phase.
 

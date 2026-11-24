@@ -437,9 +437,11 @@ as runtime before).
 
 **AI, actors, pathfinding and HaloScript (campaign; slot set by census B).**
 
-- *HaloScript.* The `crates/formats/hs` VM exists and is not wired in
-  ([hs_vm.md](hs_vm.md)). It goes in behind `impl.sim.native.hs`, with
-  arena-hash parity on campaign levels.
+- *HaloScript.* Under `impl.sim.native.hs` the [Rust VM](hs_vm.md#live-comparison)
+  compares supported whole threads, scheduling order, expression results,
+  global cells and builtin argument dispatch against the guest. The guest
+  is authoritative. Promotion requires engine-call and suspension coverage
+  plus campaign arena-hash parity through the verification ladder.
 - *Pathfinding.* `crates/formats/pathfind` decodes and generates the data.
 - *AI.* `AI_TARGET_SCORE` `265d30` is already a named hot point.
 - *Order.* Set by the phase 0 campaign census, not guessed here.
