@@ -3253,6 +3253,14 @@ impl<'s> Cx<'s> {
         for (a, &want) in args.iter().zip(&sig.args) {
             match self.expect(a, want, Some(name)) {
                 Some(got) => {
+                    if entry.id == id::SET_BODY
+                        && let ExprKind::Str(path) = &a.kind
+                        && crate::bodies::of_path(path).is_none()
+                    {
+                        let names: Vec<&str> = crate::bodies::LIST.iter().map(|&(p, _)| p).collect();
+                        let m = format!("{path} is not a player body; set_body takes {}", names.join(" or "));
+                        self.err("body.unknown", a.pos, m);
+                    }
                     if entry.id == id::DELETE && got.handle() == Some(Handle::Zone) {
                         let x = describe(a);
                         let m = format!(

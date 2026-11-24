@@ -11,17 +11,17 @@
 // spawns near its line, which moves with the phases (`spawn_near`): the
 // attackers at their own flag stand, then at the last site they took; the
 // defenders at a site still to take, then at their flag stand. The
-// winners score a point each, so the post-game's scores name them.
+// attackers spawn as Spartans and the defenders as Elites (`set_body`).
+// The winners score a point each, so the post-game's scores name them.
 // docs/game/rules-engine.md, "Phases: attack and defend" and "Payoff".
 //
 // Entries a host cannot make yet (`verify::unhostable`): none.
-// Not covered: a body per team (Spartan or Elite) has no entry, and the
-// map does not open (no map labels barriers).
+// Not covered: the map does not open (no map labels barriers).
 rules "Siege" 1
 carrier slayer
 teams 2
 list party
-requires player.weapons, player.spawn, hud.message
+requires player.weapons, player.spawn, player.disguise, hud.message
 about "Attackers take the map's territories, then storm the defenders' flag stand. Each phase has its own clock: run it out and the defenders win."
 quick respawn_time, wave_time, phase_time, capture_time, sites
 
@@ -111,6 +111,9 @@ fn release(side: team) {
 
 on round_start {
     over = false
+    // Spartans attack, Elites defend.
+    set_body(team 0, "objects/characters/masterchief/masterchief_mp")
+    set_body(team 1, "objects/characters/elite/elite_mp")
     for each site s { s.taken = false }
     needed = min(sites, count(site))
     assault = base[team 1] != none

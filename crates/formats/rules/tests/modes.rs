@@ -2,6 +2,7 @@
 //! game (`rules::scenario`): what each one does in a whole round. The
 //! JSON files under `scenarios/` are the ones `h2 rules run` takes.
 
+use rules::bodies::Body;
 use rules::builtin;
 use rules::fake::FakeSpawns;
 use rules::ir::OptionValue;
@@ -120,6 +121,36 @@ fn siege_moves_each_sides_spawns_up_with_the_phases() {
     let rule = |zone| FakeSpawns::Near { zone, count: 4 };
     assert_eq!(r.game.spawns.get(&0), Some(&rule(11)));
     assert_eq!(r.game.spawns.get(&1), Some(&rule(21)));
+}
+
+/// The attackers spawn as Spartans and the defenders as Elites, from the
+/// round's start.
+#[test]
+fn siege_gives_each_side_its_own_body() {
+    let (ir, _) = siege(&[]);
+    let s: Scenario = serde_json::from_str(SIEGE_ATTACKERS_WIN).unwrap();
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    let start = calls(&r, "message_all")[0].0;
+    let made: Vec<(u32, Vec<Arg>)> = calls(&r, "set_body")
+        .into_iter()
+        .map(|(t, a)| (t, a.to_vec()))
+        .collect();
+    let body = |team: u8, path: &str| {
+        (
+            start,
+            vec![Arg::Team(Some(team)), Arg::Tag(Some(path.into()))],
+        )
+    };
+    assert_eq!(
+        made,
+        [
+            body(0, "objects/characters/masterchief/masterchief_mp"),
+            body(1, "objects/characters/elite/elite_mp"),
+        ]
+    );
+    assert_eq!(r.game.bodies.get(&0), Some(&Body::Spartan));
+    assert_eq!(r.game.bodies.get(&1), Some(&Body::Elite));
 }
 
 /// A map with no flag stands lifts both sides' lines where a stand would

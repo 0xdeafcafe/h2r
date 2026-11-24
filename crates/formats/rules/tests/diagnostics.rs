@@ -913,3 +913,19 @@ fn the_hash_covers_settings_marks_and_about() {
     assert_ne!(swapped, SWAT);
     assert_eq!(compile(&swapped).unwrap().id(), base);
 }
+
+#[test]
+fn body_codes() {
+    let m = error(
+        &script("player.disguise", "on round_start { set_body(team 0, \"objects/characters/elite/elite\") }\n"),
+        "body.unknown",
+    );
+    assert!(m.contains("objects/characters/elite/elite is not a player body"), "{m}");
+    assert!(m.contains("objects/characters/masterchief/masterchief_mp or objects/characters/elite/elite_mp"), "{m}");
+    // Both bodies, and none, check.
+    let ok = script(
+        "player.disguise",
+        "on round_start {\n    set_body(team 0, \"objects/characters/masterchief/masterchief_mp\")\n    set_body(team 0, \"objects/characters/elite/elite_mp\")\n    set_body(team 0, none)\n}\n",
+    );
+    assert!(compile(&ok).is_ok(), "{:#?}", diagnose(&ok).diagnostics);
+}

@@ -91,6 +91,7 @@ types. A test asserts each front-end signature erases to its entry's
 | `register_objective(o, t)`, `spawn_objective(tag, at, t)` | the team is `team?` |
 | `set_loadout(p, a, b)`, `give(p, w)` | `player, weapon?, weapon?`; `player, weapon` |
 | `spawn_areas(t, areas, n)`, `spawn_near(t, z, n)` | `team, spawns, int`; `team, zone?, int` (`none` lifts the rule) |
+| `set_body(t, body)` | `team, tag?` (`none` gives the players their own) |
 | `place_squad(s, c, n, at)` | `squad, class, int, objects` |
 | `round_time_left()`, `now()`, `seconds(n)` | `-> time`; `int -> time` |
 | `on kill(victim, killer)` | `player, player?` |
@@ -500,6 +501,7 @@ numbered.
 | `null.never` (warning) | `p is never none here.` | Remove the check |
 | `unit.mix`, `unit.literal` | "Time"; `0.01s is not a whole number of ticks (30 a second).` | Add `s`; Wrap in `seconds(...)` |
 | `tag.group` | "Zones and weapons" | Change the column to `weapon` |
+| `body.unknown` | `objects/characters/elite/elite is not a player body; set_body takes objects/characters/masterchief/masterchief_mp or objects/characters/elite/elite_mp` | none |
 | `zone.delete` (warning) | `goal is a zone. A flag cannot be deleted, so on a map where goal is a flag this does nothing.` | none |
 | `match.missing` | "Enums and match" | Add the missing arms |
 | `const.range`, `const.zero` | "Constants" | none |

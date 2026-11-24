@@ -1,4 +1,4 @@
-# Spawn locations for scripts: evidence
+# Spawn locations and bodies for scripts: evidence
 
 Evidence for [rules-engine.md](../rules-engine.md) ("The engine API",
 "Phases: attack and defend"). Nothing here states what the code does
@@ -103,3 +103,86 @@ host, through `h2 agent`:
    and spawn the tick one is free, and nobody spawns elsewhere.
 4. A client's view of those spawns matches the host's (the spawn is the
    host's; clients get the unit).
+
+## 2026-11-24: a player's body at spawn, read from the retail image
+
+Commit `92bde37b3`; retail 1.0 `default.xbe` through `$H2_DISC`. Static
+reading only, with `h2 disasm`. No run.
+
+**Reproduce.**
+
+```sh
+h2 disasm "$H2_DISC" 0x14f040 50    # the representation pick
+h2 disasm "$H2_DISC" 0x14f2e0 200   # PLAYER_SPAWN
+h2 disasm "$H2_DISC" 0x14cad0 200   # the player's unit set
+h2 disasm "$H2_DISC" 0xa9440 80     # a caller of both
+# with text.asm from the section above
+grep -n 'call 0014F040h' text.asm
+grep -n 'call 0014CAD0h' text.asm
+grep -n '+88h\]' text.asm
+```
+
+### The representation pick `0x14f040`
+
+EAX the player handle, EBX an output (or 0), one stack argument (an
+output), `ret 4`.
+
+| Address | What it does |
+|---|---|
+| `0x14f040`..`0x14f05b` | the player datum (`PLAYERS` `+0x44`, `0x21c` each), and its byte `+0x88`: the active configuration's model (the configuration is at `+0x44`; [bots.md](../bots.md), "A phantom's player configuration") |
+| `0x14f06f`..`0x14f085` | a negative byte reads as 0; otherwise the byte is clamped to the globals' representation count less one (`matg` `+0x138`, through `[0x4e034c]`) |
+| `0x14f087`..`0x14f0a8` | in a multiplayer game (`[0x4e6948]+8` is 2), model 0 is representation 2 and model 1 is representation 3 |
+| `0x14f0ae`..`0x14f0d0` | inside the count, representation `i` of `matg` `+0x13c` (`0xbc` each): `+0xb4` the unit type into EDX, `+0xb8` a second tag into EDI |
+
+So in a multiplayer game the body comes from one byte of the player
+datum and nothing else: not the team, not the game type. The pick is a
+pure read; it writes nothing back.
+
+### Where the byte is read
+
+`0x14f040` is called from `PLAYER_SPAWN` (`0x14f381`), whose unit type
+goes to the chooser (`0x14f391`) and to the unit's creation.
+`PLAYER_SPAWN` hands the new unit to the player through `0x14cad0`
+(`0x14f4b7`, and `0x14f5b3` on its second path), which reads `+0x88`
+again (`0x14cc28`), with the same 2/3 mapping, for the call `0x1682bf`
+makes for the local player's first-person representation. `0xa9440`
+calls `0x14cad0` and then `PLAYER_SPAWN`; its callers look like the
+replication of a player's unit, but that is inferred, not traced.
+
+`PLAYER_ENTITY_DIRTY` has four call sites, none of them after a write
+of the configuration, so the byte is not what the game sends a client:
+a client learns the body from the unit the host spawned.
+
+### What a script's team body needs
+
+- **The point.** A write of the team's model byte before `PLAYER_SPAWN`
+  runs, and the player's own put back after it returns. Every read the
+  spawn makes (the pick, the chooser's capsule for the unit type, the
+  unit set) then sees the team's body, and nothing outside the spawn
+  does: the pregame lobby, the scoreboard and the next game read the
+  player's own choice. `PLAYER_SPAWN`'s stack argument is the player
+  handle.
+- **Not a persistent write.** Writing the byte for the whole round
+  would reach whatever else reads the configuration (the post-game
+  carnage report's model, a client's copy of the player's settings),
+  which is not traced.
+- **Not traced.** Which tags representations 2 and 3 hold. The
+  multiplayer globals are map data and are not read here; the names
+  `masterchief_mp` and `elite_mp` are the ones the game's own
+  multiplayer bodies carry ([live-gamestate.md](../../live/live-gamestate.md)).
+
+### What the live probe must show
+
+On a Siege game (any map), on the host and on a client, through
+`h2 agent`:
+
+1. With every player set to the Spartan in the lobby, each defender
+   spawns as `elite_mp`; with every player set to the Elite, each
+   attacker spawns as `masterchief_mp`. The unit's tag is the check.
+2. The local player's first-person arms match the body, on the host and
+   on a client (the client reads its own `+0x88` in `0x14cad0` if the
+   replication path runs it).
+3. The scoreboard and the post-game show each player's own model, and
+   the next game's lobby keeps it.
+4. Model 0 is representation 2, `masterchief_mp`, and model 1 is
+   representation 3, `elite_mp`, as the mapping above reads.

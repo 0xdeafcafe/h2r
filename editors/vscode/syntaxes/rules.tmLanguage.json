@@ -694,7 +694,7 @@
     },
     "api-call": {
       "comment": "The game API's entries (caps::ENTRIES) and the language's built-in functions.",
-      "match": "\\b(alive|carrier_of|clamp|count|create|deaths|delete|end_round|erase_squad|ff_finish|ff_lives|ff_player_score|ff_respawn|ff_round|ff_score|ff_skull|ff_target|ff_team_finish|ff_team_lives|ff_wave|first|forge_delete|forge_move|forge_place|forge_scale|give|grant|granted|hunt|inside|is_objective|kills|label_number|len|lives|max|message|min|now|object_team|pick|place_squad|place_squad_at|player_of|player_score|random|register_objective|reset_objective|respawn|revoke|role_traits|round_time_left|score|seconds|set_gravity|set_lives|set_loadout|set_team|spawn_areas|spawn_near|spawn_objective|squad|squad_alive|take|team_of|team_score|ticks|ticks_held|whole_seconds|zone_distance|zone_id|zone_seen|zone_team_distance)\\s*(?=\\()",
+      "match": "\\b(alive|carrier_of|clamp|count|create|deaths|delete|end_round|erase_squad|ff_finish|ff_lives|ff_player_score|ff_respawn|ff_round|ff_score|ff_skull|ff_target|ff_team_finish|ff_team_lives|ff_wave|first|forge_delete|forge_move|forge_place|forge_scale|give|grant|granted|hunt|inside|is_objective|kills|label_number|len|lives|max|message|min|now|object_team|pick|place_squad|place_squad_at|player_of|player_score|random|register_objective|reset_objective|respawn|revoke|role_traits|round_time_left|score|seconds|set_body|set_gravity|set_lives|set_loadout|set_team|spawn_areas|spawn_near|spawn_objective|squad|squad_alive|take|team_of|team_score|ticks|ticks_held|whole_seconds|zone_distance|zone_id|zone_seen|zone_team_distance)\\s*(?=\\()",
       "captures": {
         "1": {
           "name": "support.function.rules"

@@ -297,6 +297,7 @@ pub mod id {
     pub const FF_PLAYER_SCORE: u16 = 73;
     pub const FF_TEAM_FINISH: u16 = 74;
     pub const SPAWN_NEAR: u16 = 75;
+    pub const SET_BODY: u16 = 76;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -465,6 +466,13 @@ pub const ENTRIES: &[Entry] = &[
     // (`n` 0 lifts it): `spawn_areas` for a map with no labelled starting
     // locations, through the same answer of `SPAWN_LOCATION_FREE`.
     act(id::SPAWN_NEAR, "spawn_near", &[Team, Object, Int], Some("player.spawn"), Now, Named),
+    // A team's players spawn in a body of the list (`crate::bodies`), or
+    // their own (`none`). Kept in the VM's state (`vm::RulesExt::bodies`);
+    // the host writes the body's model byte (player `+0x88`) for the
+    // length of `PLAYER_SPAWN` (`0x14f2e0`), whose representation pick
+    // `0x14f040` and unit handover `0x14cad0` read it
+    // (`game::rules::world::body`).
+    act(id::SET_BODY, "set_body", &[Team, Tag], Some("player.disguise"), Now, Named),
 ];
 
 /// The word `message(to, text)` takes for everyone.

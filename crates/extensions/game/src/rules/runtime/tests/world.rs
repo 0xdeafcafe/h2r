@@ -327,3 +327,39 @@ fn a_teams_spawn_rule_keeps_its_spawns_to_the_nearest_locations() {
     assert!(!f.passes(STARTS_AT));
     assert_eq!(s.lock().spawn_filter(&m, 0), None, "team 0 has no rule");
 }
+
+const SIDES: &str = r#"
+rules "Sides" 1
+carrier slayer
+teams 2
+requires player.disguise
+on round_start { set_body(team 1, "objects/characters/elite/elite_mp") }
+"#;
+
+/// `set_body` gives team 1's spawns the Elite's model byte, once this
+/// machine makes the game's rules; the spawn's hooks write it into the
+/// player's configuration for the spawn and put the player's own back.
+#[test]
+fn a_teams_body_is_the_model_byte_for_its_players_spawns() {
+    use crate::rules::world::body;
+    use ::rules::bodies::Body;
+    let ir = ::rules::compile(SIDES).unwrap();
+    assert_eq!(host_refusal(&ir), None);
+    let (mut m, s, _) = world(&ir, &[], [[0.0; 3], [5.0, 0.0, 0.0]]);
+    s.lock().start(&m, false);
+    assert!(s.lock().state().running);
+    assert_eq!(s.lock().spawn_body(&m, 1), None, "no authority yet");
+    let work = tick(&s, &mut m, 1).expect("the authority");
+    run(&s, &m, work, true);
+    assert_eq!(s.lock().spawn_body(&m, 1), Some((1, Body::Elite)));
+    assert_eq!(s.lock().spawn_body(&m, 0), None, "team 0 keeps its own");
+
+    let at = crate::firefight::guest::player_record(&m, 1).unwrap() + body::PLAYER_MODEL;
+    assert_eq!(m.u8(at).unwrap(), 0, "player 1 chose the Spartan");
+    let swap = body::put(&mut m, 1, Body::Elite).unwrap().expect("a change");
+    assert_eq!(m.u8(at).unwrap(), 1);
+    body::restore(&mut m, swap).unwrap();
+    assert_eq!(m.u8(at).unwrap(), 0, "the player's own again");
+    // A player already in the body is left alone.
+    assert_eq!(body::put(&mut m, 1, Body::Spartan).unwrap(), None);
+}

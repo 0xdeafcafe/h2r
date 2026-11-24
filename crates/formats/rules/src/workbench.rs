@@ -717,6 +717,7 @@ fn kind_words(kind: ErrorKind) -> String {
             "more than {} zones are named to ticks_held",
             vm::MAX_HELD_ZONES
         ),
+        ErrorKind::Body => "set_body names a tag that is no player body".into(),
     }
 }
 

@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::bodies::Body;
 use crate::caps::{self, Entry, Kind, Order, VARIANT_FIELDS};
 use crate::ir::*;
 use crate::policy;
@@ -194,6 +195,8 @@ pub enum ErrorKind {
     Squad,
     /// More than [`MAX_HELD_ZONES`] zones named to `ticks_held`.
     Zones,
+    /// `set_body` named a tag that is no body of `crate::bodies::LIST`.
+    Body,
 }
 
 impl ErrorKind {
@@ -209,6 +212,7 @@ impl ErrorKind {
             3 => ErrorKind::Queue,
             4 => ErrorKind::Squad,
             5 => ErrorKind::Zones,
+            6 => ErrorKind::Body,
             _ => return None,
         })
     }
@@ -268,6 +272,10 @@ pub struct RulesExt {
     /// host's spawn hook reads it at each spawn; it ends at the round's
     /// end.
     pub spawns: [Option<Spawns>; MAX_TEAMS],
+    /// Each team's body (`set_body`), by team index: the body its players
+    /// spawn in; `None`, their own. The host's spawn hook reads it at each
+    /// spawn; it ends at the round's end.
+    pub bodies: [Option<Body>; MAX_TEAMS],
 }
 
 /// A team's spawn rule: the starting locations its players' spawns may
@@ -307,7 +315,8 @@ pub enum StateError {
 }
 
 const STATE_MAGIC: [u8; 4] = *b"H2RX";
-/// 2 added the `ticks_held` counters; 3 the teams' spawn rules.
+/// 2 added the `ticks_held` counters; 3 the teams' spawn rules and
+/// bodies.
 const STATE_VERSION: u8 = 3;
 
 impl RulesExt {
@@ -412,6 +421,9 @@ impl RulesExt {
                     w.push(count);
                 }
             }
+        }
+        for body in &self.bodies {
+            w.push(body.map_or(0, Body::code));
         }
         w.push(self.held.len() as u8);
         for (zone, counts) in &self.held {
@@ -533,6 +545,14 @@ impl RulesExt {
                 _ => return Err(StateError::Malformed(at)),
             };
         }
+        let mut bodies = [None; MAX_TEAMS];
+        for body in &mut bodies {
+            let at = r.at;
+            *body = match r.u8()? {
+                0 => None,
+                c => Some(Body::from_code(c).ok_or(StateError::Malformed(at))?),
+            };
+        }
         let n = r.u8()? as usize;
         let mut held = BTreeMap::new();
         let mut last: Option<u32> = None;
@@ -566,6 +586,7 @@ impl RulesExt {
             queue,
             held,
             spawns,
+            bodies,
         })
     }
 }
@@ -704,6 +725,7 @@ impl Vm {
             queue: Vec::new(),
             held: BTreeMap::new(),
             spawns: [None; MAX_TEAMS],
+            bodies: [None; MAX_TEAMS],
         };
         Ok(Vm {
             ir,
@@ -1010,6 +1032,7 @@ impl Vm {
                 self.ext.grants.clear();
                 self.ext.held.clear();
                 self.ext.spawns = [None; MAX_TEAMS];
+                self.ext.bodies = [None; MAX_TEAMS];
             }
             _ => {}
         }
@@ -1025,6 +1048,12 @@ impl Vm {
             }),
             Spawns::Near { zone, count } => Some(SpawnRule::Near { zone, count }),
         }
+    }
+
+    /// Team `team`'s body (`set_body`): what the host's spawn hook makes its
+    /// players spawn as. `None`: their own.
+    pub fn body(&self, team: u8) -> Option<Body> {
+        *self.ext.bodies.get(team as usize)?
     }
 
     /// The ticks `team` has held `zone` alone, as `ticks_held` reads it,
@@ -1519,7 +1548,7 @@ impl<'a> Run<'a> {
             Kind::Action => {
                 match e.order {
                     Order::Now => {
-                        self.stand(e.id, &raw);
+                        self.stand(e.id, &raw)?;
                         let mut call = self.resolve(e, &raw);
                         if caps::is_message(e.id) {
                             // The holes' values follow the entry's own
@@ -1544,27 +1573,29 @@ impl<'a> Run<'a> {
     }
 
     /// The standing rules an action sets in the VM's state, which the host
-    /// reads when the engine asks: a team's spawn rule. `none` for the team
-    /// sets nothing; `spawn_near` with a count of 0 or less, or `none` for
-    /// the zone, lifts the team's rule.
-    fn stand(&mut self, entry: u16, raw: &[i32]) {
-        let Some(slot) = raw
+    /// reads when the engine asks: a team's spawn rule and its body. `none`
+    /// for the team sets nothing; `spawn_near` with a count of 0 or less,
+    /// or `none` for the zone, lifts the team's rule, and `set_body` with
+    /// `none` gives the team its own bodies. A `set_body` tag that is no
+    /// body is a script error.
+    fn stand(&mut self, entry: u16, raw: &[i32]) -> Result<(), ErrorKind> {
+        let Some(team) = raw
             .first()
             .and_then(|&t| usize::try_from(t).ok())
-            .and_then(|t| self.ext.spawns.get_mut(t))
+            .filter(|&t| t < MAX_TEAMS)
         else {
-            return;
+            return Ok(());
         };
         match entry {
             caps::id::SPAWN_AREAS => {
                 if let (Some(label), Some(&number)) = (raw.get(1).and_then(|&l| u16::try_from(l).ok()), raw.get(2)) {
-                    *slot = Some(Spawns::Areas { label, number });
+                    self.ext.spawns[team] = Some(Spawns::Areas { label, number });
                 }
             }
             caps::id::SPAWN_NEAR => {
                 let zone = raw.get(1).and_then(|&z| object_id(z));
                 let count = raw.get(2).copied().unwrap_or(0).min(MAX_SPAWN_NEAR);
-                *slot = match zone {
+                self.ext.spawns[team] = match zone {
                     Some(zone) if count > 0 => Some(Spawns::Near {
                         zone,
                         count: count as u8,
@@ -1572,8 +1603,20 @@ impl<'a> Run<'a> {
                     _ => None,
                 };
             }
+            caps::id::SET_BODY => {
+                let path = raw
+                    .get(1)
+                    .and_then(|&t| usize::try_from(t).ok())
+                    .and_then(|i| self.ir.tags.get(i))
+                    .map(|t| t.path.as_str());
+                self.ext.bodies[team] = match path {
+                    None => None,
+                    Some(p) => Some(crate::bodies::of_path(p).ok_or(ErrorKind::Body)?),
+                };
+            }
             _ => {}
         }
+        Ok(())
     }
 
     /// A `fmt_*` call: queues the value of register type `ty` for the next
@@ -1732,6 +1775,7 @@ mod tests {
                 None,
                 None,
             ],
+            bodies: [Some(Body::Elite), Some(Body::Spartan), None, None, None, None, None, None],
         }
     }
 
@@ -1770,10 +1814,14 @@ mod tests {
         // is the first of them.
         let held = 1 + 2 * (4 + 4 * MAX_TEAMS);
         let rules = (1 + 2 + 4) + (MAX_TEAMS - 2) + (1 + 4 + 1);
-        let first = bytes.len() - held - rules;
+        let first = bytes.len() - held - MAX_TEAMS - rules;
         assert_eq!(bytes[first], 1, "team 0 has an Areas rule");
         let mut bad = bytes.clone();
         bad[first] = 3;
+        assert!(RulesExt::decode(&bad).is_err());
+        // A body byte that is no body.
+        let mut bad = bytes.clone();
+        bad[bytes.len() - held - MAX_TEAMS] = 3;
         assert!(RulesExt::decode(&bad).is_err());
         // A Near rule keeps at least one location.
         let mut e = ext();
@@ -1812,6 +1860,35 @@ mod tests {
         assert!(vm.spawn_rule(0).is_some());
         vm.fire(&mut g, Input::RoundEnd);
         assert_eq!(vm.spawn_rule(0), None);
+    }
+
+    /// `set_body` sets the team's body in the state, `none` gives the
+    /// players their own, and a tag that is no body stops the script.
+    #[test]
+    fn a_teams_body_stands_in_the_state_and_a_wrong_tag_stops_the_script() {
+        let src = "rules \"Bodies\" 1\ncarrier slayer\nteams 2\nrequires player.disguise\n\
+                   table kinds: (side: team, body: tag) = [(team 0, \"objects/characters/elite/elite\")]\n\
+                   global var phase: int = 0\n\
+                   on round_start { set_body(team 1, \"objects/characters/elite/elite_mp\")\n\
+                   set_body(team 0, \"Objects/Characters/Masterchief/Masterchief_MP\") }\n\
+                   on tick { phase = phase + 1\n if phase == 1 { set_body(team 0, none) }\n\
+                   if phase == 2 { set_body(team 1, kinds[team 0].body) } }\n";
+        let (ir, _) = crate::build(src).unwrap();
+        let mut vm = Vm::new(ir, 0, 0).unwrap();
+        let mut g = crate::fake::FakeGame::with_players(2);
+        vm.begin_tick(0);
+        vm.fire(&mut g, Input::RoundStart);
+        assert_eq!(vm.body(1), Some(Body::Elite));
+        assert_eq!(vm.body(0), Some(Body::Spartan), "in any case");
+        assert_eq!(vm.body(2), None);
+        vm.begin_tick(1);
+        vm.update(&mut g);
+        assert_eq!(vm.body(0), None, "none: their own");
+        assert_eq!(g.script_error, None);
+        vm.begin_tick(2);
+        vm.update(&mut g);
+        assert_eq!(g.script_error.map(|e| e.kind), Some(ErrorKind::Body));
+        assert_eq!(vm.body(1), Some(Body::Elite), "the refused call changed nothing");
     }
 
     #[test]
@@ -1854,6 +1931,7 @@ mod tests {
             ],
             held: (0..MAX_HELD_ZONES as u32).map(|z| (z, [u32::MAX; MAX_TEAMS])).collect(),
             spawns: [Some(Spawns::Near { zone: u32::MAX, count: u8::MAX }); MAX_TEAMS],
+            bodies: [Some(Body::Elite); MAX_TEAMS],
         };
         let bytes = e.encode();
         assert!(bytes.len() <= MAX_STATE_BYTES, "{} bytes", bytes.len());

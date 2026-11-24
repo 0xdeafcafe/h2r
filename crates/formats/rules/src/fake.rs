@@ -56,6 +56,9 @@ pub struct FakeGame {
     /// Each team's spawn rule, as `spawn_areas` and `spawn_near` set it:
     /// the starting locations the engine's spawns of that team may use.
     pub spawns: BTreeMap<u8, FakeSpawns>,
+    /// Each team's body, as `set_body` sets it: what its players spawn as.
+    /// A team with none spawns in its players' own.
+    pub bodies: BTreeMap<u8, crate::bodies::Body>,
     pub script_error: Option<ScriptError>,
 }
 
@@ -325,10 +328,11 @@ impl FakeGame {
 
     /// What the engine does after the handler of `input`: a quit removes
     /// the player and its unit, and the round's end ends the teams' spawn
-    /// rules, as the VM's state does.
+    /// rules and bodies, as the VM's state does.
     pub fn after(&mut self, input: &Input) {
         if let Input::RoundEnd = *input {
             self.spawns.clear();
+            self.bodies.clear();
         }
         if let Input::Quit(p) = *input {
             self.players.remove(&p);
@@ -480,6 +484,21 @@ impl Game for FakeGame {
                 }
                 None => {
                     self.spawns.remove(team);
+                }
+            }
+            return;
+        }
+        if call.entry.id == id::SET_BODY
+            && let Some(Arg::Team(Some(team))) = call.args.first()
+        {
+            match call.args.get(1) {
+                Some(Arg::Tag(Some(path))) => {
+                    if let Some(b) = crate::bodies::of_path(path) {
+                        self.bodies.insert(*team, b);
+                    }
+                }
+                _ => {
+                    self.bodies.remove(team);
                 }
             }
             return;
