@@ -25,6 +25,16 @@ mod disc;
 mod mopp_box;
 #[path = "sim_collision_differential/mopp_ray.rs"]
 mod mopp_ray;
+#[path = "sim_collision_differential/instance.rs"]
+mod instance;
+#[path = "sim_collision_differential/model.rs"]
+mod model;
+#[path = "sim_collision_differential/query.rs"]
+mod query;
+#[path = "sim_collision_differential/spatial.rs"]
+mod spatial;
+#[path = "sim_collision_differential/straight.rs"]
+mod straight;
 
 use engine::sim_collision::{self as adapter, CollisionWorld, layout};
 use engine::{points, sim_native as sim};
