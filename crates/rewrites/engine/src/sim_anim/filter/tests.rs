@@ -148,6 +148,85 @@ fn a_target_within_reach_snaps() {
     assert_eq!(f(&g, STACK + 4), 1.0);
 }
 
+/// Observe the stores as they reach the bus, even when a later one
+/// replaces the same word or leaves the value unchanged.
+struct StoreTrace<'a> {
+    guest: &'a mut Guest,
+    writes: Vec<(u32, u32)>,
+}
+
+impl Memory for StoreTrace<'_> {
+    fn physical_read(&self, addr: u32, len: usize) -> Option<u32> {
+        Memory::physical_read(&*self.guest, addr, len)
+    }
+
+    fn read_bytes(&self, addr: u32, dst: &mut [u8], align: u32) -> Result<(), GuestFault> {
+        self.guest.read_bytes(addr, dst, align)
+    }
+
+    fn write_bytes(&mut self, addr: u32, data: &[u8], align: u32) -> Result<(), GuestFault> {
+        self.guest.write_bytes(addr, data, align)?;
+        let word = u32::from_le_bytes(data.try_into().unwrap());
+        self.writes.push((addr, word));
+        Ok(())
+    }
+}
+
+fn check_stores(k: Case, expected: &[(u32, f32)], snapped: bool) {
+    let (mut c, mut g) = machine(&k);
+    let mut trace = StoreTrace {
+        guest: &mut g,
+        writes: Vec::new(),
+    };
+    let mut counts = Stats::default();
+    assert!(with(true, || run_counted(&mut c, &mut trace, SITE, &mut counts)).unwrap());
+    let mut words = vec![(STACK - 4, SITE)];
+    words.extend(expected.iter().map(|&(addr, value)| (addr, value.to_bits())));
+    assert_eq!(trace.writes, words);
+    assert_eq!(counts.native, 1);
+    assert_eq!(counts.snapped, u64::from(snapped));
+    assert_eq!(counts.declined, [0; DECLINES]);
+}
+
+#[test]
+fn snap_writes_both_reaches_and_leaves_tick_untouched() {
+    check_stores(
+        Case {
+            target: 0.25,
+            ..BASE
+        },
+        &[
+            (STACK - 16, 0.0), (STACK - 8, 16.0), (STACK, 0.25),
+            (STACK - 12, 4.0), (STACK - 12, 0.5),
+            (VEL, 0.0), (POS, 0.25),
+        ],
+        true,
+    );
+}
+
+#[test]
+fn wrap_and_brake_write_each_intermediate_stack_word() {
+    // The short way from -0.75 to 0.75 is -0.5. The stopping speed
+    // is 0.5 in magnitude and the acceleration bound is 0.25.
+    check_stores(
+        Case {
+            p: -0.75,
+            target: 0.75,
+            accel: 0.25,
+            wrap: true,
+            ..BASE
+        },
+        &[
+            (STACK - 16, 0.0), (STACK - 8, 16.0),
+            (STACK, 1.5), (STACK, -0.5),
+            (STACK - 12, 4.0), (STACK - 12, 0.25),
+            (STACK, 0.5), (STACK, -0.5), (STACK + 4, -0.5),
+            (VEL, -0.25), (POS, 0.875),
+        ],
+        false,
+    );
+}
+
 #[test]
 fn a_snap_clamps_the_target() {
     let k = Case {
@@ -287,6 +366,44 @@ fn state_in_the_stack_window_declines() {
     declines(&BASE, |c, _| c.esi = STACK - 8, Decline::Alias);
     declines(&BASE, |c, _| c.edi = STACK + 0x10, Decline::Alias);
     declines(&BASE, |c, _| c.edi = STACK + 0x12, Decline::Alias);
+}
+
+#[test]
+fn virtual_aliases_of_stack_constants_and_instructions_decline() {
+    // Explicitly map each source span at a second, disjoint guest VA.
+    const ALIAS: u32 = RAM + 0x1000;
+    fn alias(g: &mut Guest, at: u32, len: u32) {
+        let phys = Memory::physical_read(g, at, len as usize).unwrap();
+        g.map(ALIAS, len, phys, Permissions::RW).unwrap();
+    }
+
+    declines(
+        &BASE,
+        |c, g| {
+            alias(g, STACK - 6, 4);
+            c.esi = ALIAS;
+        },
+        Decline::Alias,
+    );
+
+    for target in [HALF, TWO] {
+        declines(
+            &BASE,
+            |c, g| {
+                alias(g, target, (4 * WINDOW) as u32);
+                c.esp = ALIAS + 16;
+            },
+            Decline::Alias,
+        );
+    }
+    declines(
+        &BASE,
+        |c, g| {
+            alias(g, MOVE_LAST - 1, 4);
+            c.edi = ALIAS;
+        },
+        Decline::Alias,
+    );
 }
 
 #[test]

@@ -29,8 +29,8 @@
 //!
 //! It declines before writing anything (the port makes the guest call)
 //! when a read faults, when an emulated instruction would deliver an
-//! unmasked exception, or when the velocity or position overlaps the
-//! call's stack window.
+//! unmasked exception, or when stack or output stores alias the inputs
+//! used to plan the call or its instructions.
 use crate::light_constants::X87;
 use crate::sim_native::Memory;
 use runtime::{CpuAbi, GuestFault};
@@ -39,6 +39,8 @@ use x87::abi::{arith_op, unary_op};
 
 /// The filter step.
 pub const FILTER: u32 = 0x0011_eed0;
+/// First byte following the final return.
+pub(crate) const FILTER_END: u32 = 0x0011_f0c2;
 /// `0.5` and `2.0` in the image.
 const HALF: u32 = 0x0045_dbbc;
 const TWO: u32 = 0x0045_dc0c;
@@ -111,7 +113,7 @@ pub enum Decline {
     Fault = 0,
     /// An instruction would deliver an unmasked SSE or x87 exception.
     Float,
-    /// The velocity or position overlaps the call's stack window.
+    /// Stack or output storage aliases a gathered input or the body's instructions.
     Alias,
 }
 
@@ -130,6 +132,23 @@ pub struct Stats {
 static NATIVE: AtomicU64 = AtomicU64::new(0);
 static SNAPPED: AtomicU64 = AtomicU64::new(0);
 static DECLINED: [AtomicU64; DECLINES] = [const { AtomicU64::new(0) }; DECLINES];
+
+impl Stats {
+    /// Publish the leaf calls in a committed first-person segment.
+    pub(crate) fn record(&self) {
+        if self.native != 0 {
+            NATIVE.fetch_add(self.native, Ordering::Relaxed);
+        }
+        if self.snapped != 0 {
+            SNAPPED.fetch_add(self.snapped, Ordering::Relaxed);
+        }
+        for (counter, &count) in DECLINED.iter().zip(&self.declined) {
+            if count != 0 {
+                counter.fetch_add(count, Ordering::Relaxed);
+            }
+        }
+    }
+}
 
 pub fn stats() -> Stats {
     Stats {
@@ -225,9 +244,30 @@ fn fpu_val<T>(r: Result<T, crate::light_constants::Error>) -> Step<T> {
     r.map_err(|_| Decline::Float)
 }
 
+/// Body stores between the call's return-address push and the two axis
+/// outputs. One path writes all nine: two locals, two distances, two
+/// reaches, the stopping speed and its negation, then the acceleration.
+#[derive(Default)]
+struct StackStores {
+    entries: [(usize, u32); 9],
+    len: usize,
+}
+
+impl StackStores {
+    fn write(&mut self, window: &mut [u32; WINDOW], slot: usize, value: u32) {
+        window[slot] = value;
+        self.entries[self.len] = (slot, value);
+        self.len += 1;
+    }
+}
+
 /// `11eed0`'s body on gathered state, in the guest's instruction order.
 /// No guest memory is touched.
 pub fn step(i: &In) -> Step<Out> {
+    step_with_stores(i, &mut StackStores::default())
+}
+
+fn step_with_stores(i: &In, stores: &mut StackStores) -> Step<Out> {
     let mut w = i.window;
     let mut s = Sse {
         x: i.xmm,
@@ -241,14 +281,14 @@ pub fn step(i: &In) -> Step<Out> {
     s.load(0, i.velocity);
     s.load(6, i.position);
     s.x[7] = 0;
-    w[VELOCITY] = s.low(0);
+    stores.write(&mut w, VELOCITY, s.low(0));
     s.mov(0, 5);
     s.mul(0, s.low(5))?;
-    w[SPEED_SQUARED] = s.low(0);
+    stores.write(&mut w, SPEED_SQUARED, s.low(0));
     s.load(0, w[TARGET]);
     s.mov(2, 0);
     s.sub(2, s.low(6))?;
-    w[TARGET] = s.low(2);
+    stores.write(&mut w, TARGET, s.low(2));
     if i.wrap {
         // 11ef09: the short way round `[lo, hi]`.
         s.load(1, w[HI]);
@@ -257,7 +297,7 @@ pub fn step(i: &In) -> Step<Out> {
         if s.above(s.low(2), s.low(1))? {
             s.mul(1, i.two)?;
             s.sub(2, s.low(1))?;
-            w[TARGET] = s.low(2);
+            stores.write(&mut w, TARGET, s.low(2));
         } else {
             s.mov(3, 7);
             s.sub(3, s.low(1))?;
@@ -265,7 +305,7 @@ pub fn step(i: &In) -> Step<Out> {
                 s.mul(1, i.two)?;
                 s.add(1, s.low(2))?;
                 s.mov(2, 1);
-                w[TARGET] = s.low(2);
+                stores.write(&mut w, TARGET, s.low(2));
             }
         }
     }
@@ -277,9 +317,9 @@ pub fn step(i: &In) -> Step<Out> {
     s.mov(4, 3);
     s.mul(4, s.low(5))?;
     let longer = s.above(s.low(1), s.low(4))?;
-    w[REACH] = s.low(4);
+    stores.write(&mut w, REACH, s.low(4));
     if !longer {
-        w[REACH] = s.low(1);
+        stores.write(&mut w, REACH, s.low(1));
     }
     // 11ef7c: |distance - velocity * tick| against the reach.
     fpu_ok(f.fld(w[VELOCITY]))?;
@@ -326,23 +366,23 @@ pub fn step(i: &In) -> Step<Out> {
     fpu_ok(f.fstp_st(0))?;
     if slower & 1 != 0 {
         fpu_ok(f.unary(unary_op::SQRT))?;
-        w[TARGET] = fpu_val(f.fstp_m32())?;
+        stores.write(&mut w, TARGET, fpu_val(f.fstp_m32())?);
     } else {
         fpu_ok(f.fstp_st(0))?;
-        w[TARGET] = s.low(5);
+        stores.write(&mut w, TARGET, s.low(5));
     }
     // 11efe9: toward the target.
     if s.above(s.low(7), s.low(2))? {
         s.mov(0, 7);
         s.sub(0, w[TARGET])?;
-        w[TARGET] = s.low(0);
+        stores.write(&mut w, TARGET, s.low(0));
     }
     // 11effd: the acceleration that reaches that speed in one tick,
     // stored over the tick argument, and its size against the bound.
     fpu_ok(f.fld(w[TARGET]))?;
     fpu_ok(f.arith_m(arith_op::SUB, w[VELOCITY]))?;
     fpu_ok(f.arith_m(arith_op::DIV, w[TICK]))?;
-    w[TICK] = fpu_val(f.fst_m32())?;
+    stores.write(&mut w, TICK, fpu_val(f.fst_m32())?);
     fpu_ok(f.unary(unary_op::ABS))?;
     s.load(0, w[TICK]);
     fpu_ok(f.fld(w[ACCEL]))?;
@@ -407,8 +447,15 @@ pub fn step(i: &In) -> Step<Out> {
     })
 }
 
-fn overlaps(a: (u32, u32), b: (u32, u32)) -> bool {
-    a.0 < b.1 && b.0 < a.1
+/// A guest virtual span can share backing RAM with a different virtual
+/// address. Compare physical byte ranges, including partial-word aliases.
+fn physical(g: &impl Memory, addr: u32, size: usize) -> Step<std::ops::Range<u64>> {
+    let start = u64::from(g.physical_read(addr, size).ok_or(Decline::Fault)?);
+    Ok(start..start + size as u64)
+}
+
+fn overlaps(a: &std::ops::Range<u64>, b: &std::ops::Range<u64>) -> bool {
+    a.start < b.end && b.start < a.end
 }
 
 fn fpu_in(c: &CpuAbi) -> x87::abi::X87Abi {
@@ -430,6 +477,7 @@ fn fpu_in(c: &CpuAbi) -> x87::abi::X87Abi {
 struct Plan {
     base: u32,
     out: Out,
+    stores: StackStores,
     esi: u32,
     edi: u32,
     /// FOP of the path's last x87 instruction, read from the image.
@@ -440,22 +488,27 @@ fn plan(c: &CpuAbi, g: &impl Memory, site: u32) -> Step<Plan> {
     // The body's `esp`: the call pushes the return address, the body
     // takes 12 bytes of locals.
     let base = c.esp.wrapping_sub(16);
-    let span = (base, base.wrapping_add(4 * WINDOW as u32));
-    if span.1 < span.0 {
+    let stack = physical(g, base, WINDOW * 4)?;
+    let velocity = physical(g, c.esi, 4)?;
+    let position = physical(g, c.edi, 4)?;
+    let code = physical(g, FILTER, (FILTER_END - FILTER) as usize)?;
+    let half = physical(g, HALF, 4)?;
+    let two = physical(g, TWO, 4)?;
+
+    if overlaps(&stack, &velocity) || overlaps(&stack, &position) {
         return Err(Decline::Alias);
     }
-    for p in [c.esi, c.edi] {
-        let r = (p, p.wrapping_add(4));
-        if r.1 < r.0 || overlaps(r, span) {
-            return Err(Decline::Alias);
-        }
+    // The constants are gathered before the call pushes its return
+    // address. Stores into code can also change later instructions.
+    if overlaps(&stack, &half)
+        || overlaps(&stack, &two)
+        || [&stack, &velocity, &position].iter().any(|r| overlaps(r, &code))
+    {
+        return Err(Decline::Alias);
     }
     let mut window = [0u32; WINDOW];
     for (k, v) in window.iter_mut().enumerate().skip(TARGET) {
         *v = read(g.u32(base.wrapping_add(4 * k as u32)))?;
-    }
-    for k in 0..RETURN {
-        window[k] = read(g.u32(base.wrapping_add(4 * k as u32)))?;
     }
     window[RETURN] = site;
     let input = In {
@@ -469,12 +522,14 @@ fn plan(c: &CpuAbi, g: &impl Memory, site: u32) -> Step<Plan> {
         half: read(g.u32(HALF))?,
         two: read(g.u32(TWO))?,
     };
-    let out = step(&input)?;
+    let mut stores = StackStores::default();
+    let out = step_with_stores(&input, &mut stores)?;
     let last = if out.snapped { SNAP_LAST } else { MOVE_LAST };
     let [op, modrm] = read(g.load::<2>(last))?;
     Ok(Plan {
         base,
         out,
+        stores,
         esi: c.esi,
         edi: c.edi,
         opcode: (u16::from(op & 7) << 8) | u16::from(modrm),
@@ -486,8 +541,8 @@ fn scatter(c: &mut CpuAbi, g: &mut impl Memory, p: &Plan) -> Result<(), GuestFau
     // slots, then the velocity and the position.
     let at = |k: usize| p.base.wrapping_add(4 * k as u32);
     g.set_u32(at(RETURN), p.out.window[RETURN])?;
-    for k in [VELOCITY, SPEED_SQUARED, TARGET, REACH, TICK] {
-        g.set_u32(at(k), p.out.window[k])?;
+    for &(slot, value) in &p.stores.entries[..p.stores.len] {
+        g.set_u32(at(slot), value)?;
     }
     g.set_u32(p.esi, p.out.velocity)?;
     g.set_u32(p.edi, p.out.position)?;
@@ -527,21 +582,32 @@ fn scatter(c: &mut CpuAbi, g: &mut impl Memory, p: &Plan) -> Result<(), GuestFau
 /// `site`. `Ok(false)`: declined, nothing written; the caller makes the
 /// guest call.
 pub fn run(c: &mut CpuAbi, g: &mut impl Memory, site: u32) -> Result<bool, GuestFault> {
+    let mut counts = Stats::default();
+    let result = run_counted(c, g, site, &mut counts)?;
+    counts.record();
+    Ok(result)
+}
+
+/// The caller publishes the counts when it commits the segment.
+pub(crate) fn run_counted(
+    c: &mut CpuAbi,
+    g: &mut impl Memory,
+    site: u32,
+    counts: &mut Stats,
+) -> Result<bool, GuestFault> {
     if !enabled() {
         return Ok(false);
     }
     let plan = match plan(c, g, site) {
         Ok(p) => p,
         Err(why) => {
-            DECLINED[why as usize].fetch_add(1, Ordering::Relaxed);
+            counts.declined[why as usize] += 1;
             return Ok(false);
         }
     };
     scatter(c, g, &plan)?;
-    NATIVE.fetch_add(1, Ordering::Relaxed);
-    if plan.out.snapped {
-        SNAPPED.fetch_add(1, Ordering::Relaxed);
-    }
+    counts.native += 1;
+    counts.snapped += u64::from(plan.out.snapped);
     Ok(true)
 }
 
