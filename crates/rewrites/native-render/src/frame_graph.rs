@@ -8,6 +8,7 @@
 mod inputs;
 pub use inputs::{freeze_display_inputs, freeze_scaled_inputs};
 mod lighting;
+mod markers;
 mod private;
 mod sun;
 pub use lighting::{E3Report, PassWork};
@@ -202,6 +203,9 @@ fn record(
     // The graph replays the guest's layers in both modes. Only work
     // submitted by the E3 stages belongs to these four pass rows.
     let mut e3 = (lighting == Lighting::E3).then(E3Report::default);
+    // The marker skin: a stage after each game view's last op, before the
+    // overlay (`markers`).
+    let marker_stages = markers::plan(scene, frame);
     let rows = observer
         .as_ref()
         .map(|_| pass_rows(frame))
@@ -216,6 +220,9 @@ fn record(
                 pass.apply(op).map_err(named)?;
             }
             if let Some(stage) = sun_replay.as_ref().and_then(|s| s.after.get(&i)) {
+                pass.apply(stage).map_err(named)?;
+            }
+            if let Some(stage) = marker_stages.get(&i) {
                 pass.apply(stage).map_err(named)?;
             }
             if let Some((index, row)) = rows.next_if(|(_, row)| row.ops.end == i + 1)

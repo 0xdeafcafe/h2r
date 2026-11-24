@@ -77,6 +77,7 @@ pub mod lights;
 pub mod load;
 #[cfg(feature = "gpu")]
 pub mod look;
+pub mod markers;
 pub mod model;
 #[cfg(feature = "gpu")]
 pub mod model_gpu;
