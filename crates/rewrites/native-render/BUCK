@@ -240,6 +240,42 @@ workspace_test(
 )
 
 workspace_test(
+    name = "markers_gpu",
+    crate = "markers_gpu",
+    crate_root = "crates/rewrites/native-render/tests/markers_gpu.rs",
+    description = "Native GPU renderer: the static world (structure BSP) loaded once from the map's tags, culled and drawn with indirect draws (docs/graphics/native-renderer.md)",
+    features = [
+        "default",
+        "gpu",
+    ],
+    manifest = "crates/rewrites/native-render",
+    package = "native-render",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/map:map",
+        "//crates/formats/shaders:shaders",
+        "//crates/formats/tags:tags",
+        "//crates/formats/xbe:xbe",
+        "//crates/platform/assets:assets",
+        "//crates/platform/d3d:d3d",
+        "//crates/platform/gfx:gfx",
+        "//crates/platform/mem-watch:mem-watch",
+        "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/ir:ir",
+        "//crates/recompiler/lift:lift",
+        "//crates/rewrites/frame-scene:frame-scene",
+        "//crates/rewrites/scene-extract:scene-extract",
+        "//crates/runtime/background:background",
+        "//crates/runtime/timeline:timeline",
+        "//third-party/rust:bytemuck",
+        "//third-party/rust:pollster",
+        "//third-party/rust:wgpu",
+        ":native-render",
+    ],
+)
+
+workspace_test(
     name = "model_rows_differential",
     crate = "model_rows_differential",
     crate_root = "crates/rewrites/native-render/tests/model_rows_differential.rs",

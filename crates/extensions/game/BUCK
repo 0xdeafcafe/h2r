@@ -159,6 +159,7 @@ workspace_library(
         "//third-party/rust:serde_yaml_ng",
         "//third-party/rust:toml",
         "//third-party/rust:wgpu",
+        "//third-party/rust:zstd",
     ] + select({
         "config//os:linux": [
             "//third-party/rust:libc",
@@ -268,6 +269,7 @@ workspace_test(
         "//third-party/rust:serde_yaml_ng",
         "//third-party/rust:toml",
         "//third-party/rust:wgpu",
+        "//third-party/rust:zstd",
     ] + select({
         "config//os:linux": [
             "//third-party/rust:libc",
@@ -377,6 +379,7 @@ workspace_test(
         "//third-party/rust:serde_yaml_ng",
         "//third-party/rust:toml",
         "//third-party/rust:wgpu",
+        "//third-party/rust:zstd",
         ":game",
     ] + select({
         "config//os:linux": [

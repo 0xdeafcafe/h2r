@@ -6763,6 +6763,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sound-edit"
+version = "0.1.0"
+dependencies = [
+ "audio",
+ "serde",
+ "serde_yaml_ng",
+]
+
+[[package]]
 name = "spin"
 version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7133,6 +7142,7 @@ dependencies = [
  "scenario-edit",
  "serde_json",
  "sim-bench",
+ "sound-edit",
  "stage-kit",
  "studio-proto",
  "superbounce",
@@ -8895,6 +8905,8 @@ dependencies = [
  "anim-edit",
  "audio",
  "content",
+ "firefight",
+ "font",
  "game",
  "h1-assets",
  "hud-kit-core",
@@ -8906,6 +8918,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "sound-edit",
  "tags",
  "thiserror 2.0.21",
  "toml",

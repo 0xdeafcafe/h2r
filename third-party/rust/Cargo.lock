@@ -5330,6 +5330,7 @@ dependencies = [
  "cranelift-native",
  "cranelift-object",
  "crc32fast",
+ "curve25519-dalek",
  "dear-imgui-rs",
  "dear-imgui-wgpu",
  "dear-imgui-winit",
