@@ -161,6 +161,11 @@ impl Thread {
     pub fn depth(&self) -> usize {
         self.frames.len() - 1
     }
+    /// The value in the root frame once its expression has completed.
+    pub fn root_result(&self) -> Option<Cell> {
+        let [root] = self.frames.as_slice() else { return None };
+        root.locals.first().copied()
+    }
     pub fn state(&self) -> ThreadState {
         match self.wake {
             FINISHED => ThreadState::Finished,
