@@ -1777,9 +1777,14 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
         let properties = native_render::layer_pass::instance_properties(&lib, shader);
         let implementation = layer3.implementations[usize::from(m)];
         let selection = tags::material::PassSelection { lod: 0, layer: look::LIGHTMAP_LAYER, pass: 0, implementation };
-        let pass = lib.shader(shader).map(|s| tags::material::EngineInputs::for_shader(&s))
-            .map_err(|e| format!("material: {e}"))
-            .and_then(|inputs| {
+        let pass = lib.shader(shader).map_err(|e| format!("material: {e}"))
+            .and_then(|s| {
+                // The flagged draw skips the bucket bind and runs the sorted
+                // handler's additional per-record shader setup.
+                if implementation == 1 && s.raw[0x16] & 1 != 0 {
+                    return Err("vertex-lit shader requires sorted BSP parameter setup".to_owned());
+                }
+                let inputs = tags::material::EngineInputs::for_shader(&s);
                 let pass = lib.selected_implementation(shader, selection, Some(&inputs), None)
                     .map_err(|e| format!("material: {e}"))?;
                 look::selected_bsp_pass_sampled(&pass, &inputs, normalization, &properties)
@@ -1787,7 +1792,10 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
             });
         let compiled = pass
             .and_then(|(pass, animation)| {
-                let code = look::world_program(map, lib.metadata(), pass.look.vertex_shader).ok_or("no world-space vertex program")?;
+                let vrtx = map.tag(pass.look.vertex_shader).ok().and_then(|t| t.location)
+                    .ok_or("vertex shader tag unavailable")?.address;
+                let code = look::vertex_program(lib.metadata(), vrtx, look::WORLD_CLASSIFICATION)
+                    .ok_or("no world-space vertex program")?;
                 let mut dims = [None; 4];
                 for (slot, stage) in dims.iter_mut().zip(pass.look.textures) {
                     *slot = match stage {
@@ -1800,14 +1808,25 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
                         Stage::Host(h) => return Err(format!("a host stage in a tag's pass ({h:?})")),
                     };
                 }
+                let required_streams = |inputs, class| {
+                    if implementation != 1 { return Ok(inputs); }
+                    let semantics = look::vertex_semantics(lib.metadata(), vrtx, class)
+                        .ok_or_else(|| format!("unreadable vertex-lit input declaration for class {class}"))?;
+                    program::vertex_lit_inputs(inputs, &semantics)
+                };
                 let mut p = program::compile_section(&pass, &code, dims)?;
+                p.inputs = required_streams(p.inputs, look::WORLD_CLASSIFICATION)?;
                 p.animation = animation;
                 if placed.contains(&m) {
                     // Its placements: the pass with the rigid
                     // classification, or they stay on the D3D path.
-                    let rigid = look::rigid_program(map, lib.metadata(), pass.look.vertex_shader)
+                    let rigid = look::vertex_program(lib.metadata(), vrtx, look::RIGID_CLASSIFICATION)
                         .ok_or_else(|| "no rigid vertex program".to_string())
-                        .and_then(|code| program::compile_section_rigid(&pass.look, pass.state.alpha_test, &code, dims));
+                        .and_then(|code| {
+                            let mut rigid = program::compile_section_rigid(&pass.look, pass.state.alpha_test, &code, dims)?;
+                            rigid.inputs = required_streams(rigid.inputs, look::RIGID_CLASSIFICATION)?;
+                            Ok(rigid)
+                        });
                     match rigid {
                         Ok(r) => p.rigid = Some(r),
                         Err(why) => rigid_refused.entry(why).or_default().push(m),
