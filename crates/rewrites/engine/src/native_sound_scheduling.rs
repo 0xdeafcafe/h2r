@@ -9,6 +9,7 @@ use runtime::{CpuAbi, Guest, GuestFault};
 use sim_sound::scheduling::{self, HeadAction};
 
 mod promotion;
+mod start;
 
 const DOC: &str = "docs/engine/sim-rewrite.md";
 pub const GAME_SOUND_UPDATE: Point = Point::new(
@@ -47,6 +48,7 @@ const FRAME_SITES: &[u32] = &[
 ];
 pub const BODIES: &[Body] = &[
     promotion::BODY,
+    start::BODY,
     Body {
         point: &GAME_SOUND_UPDATE,
         sites: FRAME_SITES,
