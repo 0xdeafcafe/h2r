@@ -5,6 +5,19 @@
 use x87::Const;
 use x87::abi::{self as fp, X87Abi, arith_op, src_kind, unary_op};
 
+/// Compare the position or acoustic delta against its strictly-open threshold.
+/// The x87 compare also distinguishes unordered inputs. Return its arithmetic
+/// flags for the adapter and pop both operands.
+pub fn compare_delta(fpu: &mut X87Abi, target: u32, old: u32, threshold: u32) -> u32 {
+    fp::ld_f32(fpu, target);
+    fp::arith(fpu, arith_op::SUB, 0, src_kind::F32, u64::from(old));
+    fp::unary(fpu, unary_op::ABS);
+    fp::ld_f32(fpu, threshold);
+    let flags = fp::cmp(fpu, 0, src_kind::ST, 1, 1, true);
+    fp::st_st(fpu, 0, true);
+    flags & 0x45
+}
+
 /// Leave `scale * log10(gain)` on top of the caller's masked x87 stack.
 pub fn gain_level(fpu: &mut X87Abi, gain: u32, scale: u32) {
     fp::ld_f32(fpu, gain);
@@ -63,6 +76,28 @@ fn multiply(fpu: &mut X87Abi, factor: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn acoustic_threshold_checks_each_side_and_rejects_equality_and_unordered() {
+        let mut fpu = X87Abi::default();
+        for (target, expected) in [
+            (1.5f32, true),
+            (2.25, true),
+            (1.0, false),
+            (3.0, false),
+            (-7.0, false),
+            (f32::NAN, false),
+        ] {
+            let flags = compare_delta(
+                &mut fpu,
+                target.to_bits(),
+                2.0f32.to_bits(),
+                1.0f32.to_bits(),
+            );
+            assert_eq!(flags & 0x41 == 0, expected);
+            assert_eq!(fpu.tag, u16::MAX);
+        }
+    }
 
     #[test]
     fn gain_and_resonance_leave_one_result_above_the_callers_value() {

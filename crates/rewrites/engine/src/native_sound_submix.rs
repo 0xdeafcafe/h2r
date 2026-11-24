@@ -11,6 +11,8 @@ use crate::sim_physics::spatial::{finish_fpu, load_fpu};
 use runtime::{CpuAbi, Guest};
 use sim_sound::submix::{self, CutoffScale};
 
+mod position;
+
 const SOUND_GLOBALS: u32 = 0x51ebe4;
 const FLOAT_ZERO: u32 = 0x45dbd8;
 const FLOAT_ONE: u32 = 0x45dbc0;
@@ -42,6 +44,11 @@ const FILTER_SENT: u32 = 0x22147c;
 const RESONANCE_INTEGER: u32 = 0x21e314;
 
 pub const BODIES: &[Body] = &[
+    Body {
+        point: &points::SOUND_SUBMIX_UPDATE,
+        sites: &[position::POSITION_SENT, position::EFFECTS_SENT],
+        run: position::update,
+    },
     Body {
         point: &points::SOUND_SUBMIX_FX,
         sites: &[
