@@ -106,41 +106,83 @@ pub fn row_json(doc: &TagDoc, tag: TagId, address: u32) -> Value {
     }
 }
 
-/// The curve of `f` over the input's `[0, 1]` at the range input `r`,
-/// drawn in the rectangle at `origin` of `size`: `columns` samples, the
-/// two sets faint when the function is ranged and the blended curve (set
-/// 0's, when it is not) in the accent colour. A NaN output (the engine
-/// passes it through) leaves a gap.
-fn plot(ui: &Ui, origin: [f32; 2], size: [f32; 2], f: &Function, r: f32, columns: usize) {
-    let dl = ui.get_window_draw_list();
-    dl.add_rect(
-        origin,
-        [origin[0] + size[0], origin[1] + size[1]],
-        theme::RAISED,
-    )
-    .filled(true)
-    .build();
-    let t = |i: usize| i as f32 / (columns as f32 - 1.0);
-    let at = |i: usize, v: f32| {
+/// Screen coordinates shared by function and animation curves.
+#[derive(Clone, Copy)]
+pub(crate) struct Plot {
+    pub origin: [f32; 2],
+    pub size: [f32; 2],
+    pub x: [f32; 2],
+    pub y: [f32; 2],
+}
+
+impl Plot {
+    pub(crate) fn point(self, x: f32, y: f32) -> [f32; 2] {
+        let fraction = |v: f32, [lo, hi]: [f32; 2]| {
+            let (v, lo, hi) = (f64::from(v), f64::from(lo), f64::from(hi));
+            ((v - lo) / (hi - lo)).clamp(0.0, 1.0) as f32
+        };
+        let u = fraction(x, self.x);
+        let v = fraction(y, self.y);
         [
-            origin[0] + size[0] * t(i),
-            origin[1] + size[1] * (1.0 - v.clamp(0.0, 1.0)),
+            self.origin[0] + self.size[0] * u,
+            self.origin[1] + self.size[1] * (1.0 - v),
         ]
-    };
-    let mut curve = |blend: f32, colour: [f32; 4]| {
-        let mut last: Option<[f32; 2]> = None;
-        for i in 0..columns {
-            let v = f.evaluate(t(i), blend);
-            if v.is_finite() {
-                let p = at(i, v);
-                if let Some(a) = last {
-                    dl.add_line(a, p, colour).thickness(1.5).build();
-                }
-                last = Some(p);
-            } else {
-                last = None;
+    }
+
+    pub(crate) fn delta_y(self, pixels_up: f32) -> f32 {
+        let [lo, hi] = self.y.map(f64::from);
+        (f64::from(pixels_up / self.size[1]) * (hi - lo)) as f32
+    }
+
+    pub(crate) fn background(self, ui: &Ui) {
+        ui.get_window_draw_list()
+            .add_rect(
+                self.origin,
+                [self.origin[0] + self.size[0], self.origin[1] + self.size[1]],
+                theme::RAISED,
+            )
+            .filled(true)
+            .build();
+    }
+
+    pub(crate) fn line(
+        self,
+        ui: &Ui,
+        values: impl IntoIterator<Item = [f32; 2]>,
+        colour: [f32; 4],
+    ) {
+        let dl = ui.get_window_draw_list();
+        let mut last = None;
+        for [x, y] in values {
+            let point = (x.is_finite() && y.is_finite()).then(|| self.point(x, y));
+            if let (Some(a), Some(b)) = (last, point) {
+                dl.add_line(a, b, colour).thickness(1.5).build();
             }
+            last = point;
         }
+    }
+}
+
+/// The curve of `f` over the input's `[0, 1]` at the range input `r`,
+/// with the two sets faint when the function is ranged. A NaN output
+/// (which the engine passes through) leaves a gap.
+fn plot(ui: &Ui, origin: [f32; 2], size: [f32; 2], f: &Function, r: f32, columns: usize) {
+    let plot = Plot {
+        origin,
+        size,
+        x: [0.0, 1.0],
+        y: [0.0, 1.0],
+    };
+    plot.background(ui);
+    let curve = |blend, colour| {
+        plot.line(
+            ui,
+            (0..columns).map(|i| {
+                let t = i as f32 / (columns as f32 - 1.0);
+                [t, f.evaluate(t, blend)]
+            }),
+            colour,
+        );
     };
     if f.is_ranged() {
         curve(0.0, theme::DIM);

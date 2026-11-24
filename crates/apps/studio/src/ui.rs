@@ -17,7 +17,7 @@ mod play;
 mod playlists;
 pub mod problems;
 mod sound;
-mod anim;
+pub(crate) mod anim;
 mod announcer;
 pub mod scripts;
 pub mod tags;

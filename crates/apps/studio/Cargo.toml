@@ -66,6 +66,8 @@ wma = { path = "../../platform/wma" }
 # The tag editor's field registry (schema structure + definition names),
 # and the tags tree the workspace keeps (src/app/workspace.rs).
 tags.workspace = true
+# Sparse animation documents and edit history (docs/editor/studio-redesign.md).
+anim-edit.workspace = true
 # The tag workspace's disc images (src/app/workspace.rs).
 xiso.workspace = true
 # The Scripts tool: the scenario's script tables, decompiled with the

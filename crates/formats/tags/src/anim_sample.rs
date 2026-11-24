@@ -178,7 +178,7 @@ pub fn mat_mul(a: &Mat4, b: &Mat4) -> Mat4 {
 /// (its `a ⊗ b` operation order, docs/engine/anim-sampling.md,
 /// "Evaluators"): components `[x, y, z, w]`, `b`'s rotation applying
 /// first.
-fn hamilton(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+pub fn hamilton(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     let [ax, ay, az, aw] = a;
     let [bx, by, bz, bw] = b;
     [

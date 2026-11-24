@@ -1,9 +1,7 @@
-//! Model poses and the animation editor's read as the agent API
-//! ([`super::Provider`], registered in [`super::seams`]): `anim.list`,
-//! `anim.pose` and `anim.read` over the Tags tool's own animation reads
-//! (`app::anim`), so the Animation window and the API are one path.
-//! docs/editor/agent-api.md, docs/editor/rich-editors.md ("Model poses",
-//! slice M1), docs/editor/studio-redesign.md (slice AN1).
+//! Model poses and animation documents in the agent API. The Animation
+//! window and these methods share the Tags tool's animation state
+//! (`app::anim`). See docs/editor/agent-api.md ("Model poses") and
+//! docs/editor/studio-redesign.md ("The animation editor").
 
 use std::path::PathBuf;
 
@@ -17,6 +15,9 @@ use crate::App;
 use crate::app::anim::{AnimError, AnimInfo, AnimRead, HZ, PoseAnswer};
 use tags::anim_keys::{Kind, Tolerance};
 
+#[path = "anim/edit.rs"]
+mod edit;
+
 const LIST: MethodDef = def(
     m::ANIM_LIST,
     "A jmad tag of the map the Tags tool shows: every animation with its name, type (base, overlay or replacement), frame count, the codecs of its static and animated streams, whether it is an aim grid (codec 8, whose frames are aim cells, not time) and why any clip does not build; and the map's objects whose hlmt names the graph",
@@ -26,18 +27,18 @@ const LIST: MethodDef = def(
 );
 const POSE: MethodDef = def(
     m::ANIM_POSE,
-    "One animation of a jmad tag sampled at a frame (a fractional frame blends the neighbours) and posed on the model that uses the graph: every node's local transform (the animation's channel where it has one, the node's default where it does not), which channels the animation supplied, and the posed world matrix. `overlay` applies a second animation over the base at a weight with the engine's scaled-add rule. The answer also draws the posed model offscreen through the viewport's renderer to a PNG (default: the cache directory's studio/anim/; never into a Git checkout); without a renderer, or when no model of the map uses the graph, the transforms still answer and a note says so",
-    r#"{"tag":"string","animation":"string|integer (its name or index)","frame?":"number (default 0)","overlay?":{"animation":"string|integer","weight":"number (0 to 1)"},"model?":"string (an object that uses the graph, by name or 0x... id; default its only one)","size?":"[w,h] (default [640,480])","out?":"string"}"#,
-    r#"{"tag":"string","animation":"string","frame":"number","frames":"integer","model":"{object,name,triangles,untextured}|null","nodes":"[{index,name,parent,rotation,translation,scale,has:{rotation,translation,scale},world:[[f,f,f,f];4]|null}]","png":"string|null","width":"integer","height":"integer","covered":"integer","notes":"[string]"}"#,
+    "Sample an animation from a jmad tag or an open document, compose it on the selected model, and draw it to a PNG outside Git. The nodes include local transforms, the driven channels and composed world matrices. An optional overlay uses the engine's scaled-add rule. When no model or renderer is available the transforms still answer",
+    r#"{"tag?":"string (with animation)","animation?":"string|integer (its name or index)","doc?":"integer (instead of tag and animation)","frame?":"number (default 0)","base?":"string|integer (base animation for an overlay document)","overlay?":{"animation":"string|integer","weight":"number (0 to 1)"},"model?":"string (an object that uses the graph, by name or 0x... id; default its only one)","size?":"[w,h] (default [640,480])","out?":"string"}"#,
+    r#"{"animation":"{index,name,type,frames,codecs,aim_grid,error}","frame":"number","frames":"integer","model":"{object,name,triangles,untextured}|null","nodes":"[{index,name,parent,rotation,translation,scale,has:{rotation,translation,scale},world:[[f,f,f,f];4]|null}]","png":"string|null","width":"integer","height":"integer","covered":"integer","notes":"[string]"}"#,
     r#"{"tag":"jmad:invented\\stickman","animation":"combat:idle","frame":2,"out":"$OUT/pose.png"}"#,
 );
 
 const READ: MethodDef = def(
     m::ANIM_READ,
-    "One animation of a jmad tag read as the timeline shows it: a row per node with the rotation, translation and scale channels the clip drives, each as keys (frame and value; a rotation is a quaternion [x,y,z,w], a translation [x,y,z], a scale [s]) between which the value is linear (a rotation along the shorter arc). The keys are the dense decoded frames reduced within `tolerance` (the default is a tenth of a degree, a thousandth of a unit and of a scale), so baking them back stays within it at every frame: `reduction.max_error` is what was measured. A channel with one key does not change over the clip. Events are counted, not decoded; an aim grid (codec 8) lists its nodes without keys. Reads only",
-    r#"{"tag":"string","animation":"string|integer (its name or index)","tolerance?":{"rotation_degrees?":"number (default 0.1)","translation?":"number (default 0.001)","scale?":"number (default 0.001)"},"keys?":"boolean (default true; false lists key counts only)"}"#,
-    r#"{"tag":"string","animation":"{index,name,type,frames,codecs,aim_grid,error}","frame_rate":"number (30)","frames":"integer","duration":"number (seconds)","tolerance":"{rotation_degrees,translation,scale}","nodes":"[{index,name,parent,channels:[{kind,moves,key_count,keys?:[{frame,value:[number]}]}]}]","reduction":"{channels,dense_values,keys,max_error:{rotation_degrees,translation,scale}}","events":"{frame,sound,effect,decoded}","notes":"[string]"}"#,
-    r#"{"tag":"jmad:invented\stickman","animation":"combat:idle"}"#,
+    "Read a jmad clip's keys and reduction measurements or inspect an open document's current keys. For a jmad clip, doc identifies the editable copy with the default tolerance when available. Aim grids have no document. For an open document, keys include interpolation and tangent data",
+    r#"{"tag?":"string (with animation)","animation?":"string|integer (its name or index)","doc?":"integer (instead of tag and animation)","tolerance?":{"rotation_degrees?":"number (default 0.1)","translation?":"number (default 0.001)","scale?":"number (default 0.001)"},"keys?":"boolean (default true; false lists key counts only)"}"#,
+    r#"{"doc":"integer|null","tag?":"string (jmad clip)","animation?":"{index,name,type,frames,codecs,aim_grid,error} (jmad clip)","name?":"string (document)","revision?":"integer (document)","frame_rate":"number (30)","frames":"integer","duration":"number (seconds)","tolerance?":"{rotation_degrees,translation,scale} (jmad clip)","nodes":"[{index,name,parent,channels:[{kind,moves,key_count,keys?:[{frame,value:[number],interp?,tangent?}]}]}]","reduction?":"{channels,dense_values,keys,max_error:{rotation_degrees,translation,scale}} (jmad clip)","events?":"{frame,sound,effect,decoded} (jmad clip)","notes?":"[string] (jmad clip)"}"#,
+    r#"{"tag":"jmad:invented\\stickman","animation":"combat:idle"}"#,
 );
 
 fn failed(e: AnimError) -> agent_proto::RpcError {
@@ -193,7 +194,7 @@ fn kind_value(kind: Kind, value: [f32; 4]) -> Value {
     json!(value[..kind.width()].to_vec())
 }
 
-fn read_json(tag: &str, r: &AnimRead, with_keys: bool) -> Value {
+fn read_json(tag: &str, r: &AnimRead, doc: Option<u64>, with_keys: bool) -> Value {
     let degrees = |radians: f32| radians.to_degrees();
     let nodes: Vec<Value> = r
         .nodes
@@ -228,6 +229,7 @@ fn read_json(tag: &str, r: &AnimRead, with_keys: bool) -> Value {
         .collect();
     json!({
         "tag": tag,
+        "doc": doc,
         "animation": summary_json(&r.animation),
         "frame_rate": HZ,
         "frames": r.frames,
@@ -259,18 +261,45 @@ fn read_json(tag: &str, r: &AnimRead, with_keys: bool) -> Value {
 }
 
 fn read(app: &mut App, p: &P) -> Reply {
+    let with_keys = if p.has("keys") { p.bool("keys")? } else { true };
+    if let Some(doc) = p.opt_u64("doc")? {
+        edit::doc_only(p, &["tag", "animation", "tolerance"])?;
+        return edit::read(app, doc, with_keys);
+    }
+
+    let tag = p.str("tag")?;
     let id = anim_tag(app, p)?;
     let info = app.anim_info(id).map_err(failed)?;
     let animation = find_animation(&info, p.get("animation").unwrap_or(&Value::Null))?;
     let tol = tolerance(p)?;
-    let with_keys = match p.get("keys") {
-        None => true,
-        Some(v) => v
-            .as_bool()
-            .ok_or_else(|| err(code::INVALID_PARAMS, format!("keys: true or false, not {v}")))?,
+    let mut answer = app.anim_read(id, animation, tol).map_err(failed)?;
+    let doc = if answer.animation.aim_grid {
+        None
+    } else {
+        match app.anim_open_read(id, &answer) {
+            Ok(doc) => Some(doc),
+            Err(error) => {
+                answer.notes.push(format!("Cannot open for editing: {error}"));
+                None
+            }
+        }
     };
-    let answer = app.anim_read(id, animation, tol).map_err(failed)?;
-    Ok(read_json(p.str("tag")?, &answer, with_keys))
+    Ok(read_json(tag, &answer, doc, with_keys))
+}
+
+fn resolve_overlay(info: &AnimInfo, p: &P) -> Result<Option<(usize, f32)>, agent_proto::RpcError> {
+    let Some(value) = p.get("overlay") else {
+        return Ok(None);
+    };
+    let bad = || err(code::INVALID_PARAMS, "overlay: expected {animation, weight (0 to 1)}");
+    let object = value.as_object().ok_or_else(bad)?;
+    let want = object.get("animation").ok_or_else(bad)?;
+    let weight = object
+        .get("weight")
+        .and_then(Value::as_f64)
+        .filter(|f| (0.0..=1.0).contains(f))
+        .ok_or_else(bad)? as f32;
+    Ok(Some((find_animation(info, want)?, weight)))
 }
 
 /// The provider: a GPU for the renders, held between calls.
@@ -281,18 +310,28 @@ pub struct Anim {
 
 impl Provider for Anim {
     fn methods(&self) -> Vec<MethodDef> {
-        vec![LIST, POSE, READ]
+        vec![
+            LIST,
+            POSE,
+            READ,
+            edit::NEW,
+            edit::DUPLICATE,
+            edit::KEY,
+            edit::CHECK,
+        ]
     }
 
     fn call(&mut self, app: &mut App, method: &str, params: &Value) -> Option<Reply> {
-        if !matches!(method, m::ANIM_LIST | m::ANIM_POSE | m::ANIM_READ) {
-            return None;
-        }
         let p = P(params);
         Some(match method {
             m::ANIM_LIST => self.list(app, &p),
             m::ANIM_READ => read(app, &p),
-            _ => self.pose(app, &p),
+            m::ANIM_POSE => self.pose(app, &p),
+            m::ANIM_NEW => edit::new(app, &p),
+            m::ANIM_DUPLICATE => edit::duplicate(app, &p),
+            m::ANIM_KEY => edit::key(app, &p),
+            m::ANIM_CHECK => edit::check(app, &p),
+            _ => return None,
         })
     }
 }
@@ -310,55 +349,50 @@ impl Anim {
     }
 
     fn pose(&mut self, app: &mut App, p: &P) -> Reply {
-        let id = anim_tag(app, p)?;
-        let info = app.anim_info(id).map_err(failed)?;
-        let animation = find_animation(&info, p.get("animation").unwrap_or(&Value::Null))?;
         let frame = p.opt_f32("frame")?.unwrap_or(0.0);
-        let overlay = match p.get("overlay") {
-            None => None,
-            Some(v) => {
-                let o = v.as_object().ok_or_else(|| {
-                    err(code::INVALID_PARAMS, format!("overlay: an object, not {v}"))
-                })?;
-                let bad = || {
-                    err(
-                        code::INVALID_PARAMS,
-                        "overlay: {animation (name or index), weight (0 to 1)}".to_owned(),
-                    )
-                };
-                let want = o.get("animation").ok_or_else(bad)?;
-                let weight = o
-                    .get("weight")
-                    .and_then(Value::as_f64)
-                    .filter(|f| f.is_finite())
-                    .ok_or_else(bad)? as f32;
-                if !(0.0..=1.0).contains(&weight) {
-                    return Err(err(
-                        code::INVALID_PARAMS,
-                        format!("overlay.weight: 0 to 1, not {weight}"),
-                    ));
-                }
-                Some((find_animation(&info, want)?, weight))
-            }
-        };
         let model = p.opt_str("model")?;
-        let mut answer = app
-            .anim_pose(id, animation, frame, overlay, model)
-            .map_err(failed)?;
+        let mut answer = if let Some(doc) = p.opt_u64("doc")? {
+            edit::doc_only(p, &["tag", "animation"])?;
+            if let Some(base) = p.get("base") {
+                if p.has("overlay") {
+                    return Err(err(code::INVALID_PARAMS, "base and overlay cannot be combined"));
+                }
+                let tag = app.anim_doc_tag(doc).map_err(failed)?;
+                let info = app.anim_info(tag).map_err(failed)?;
+                let base = find_animation(&info, base)?;
+                app.anim_doc_pose_over(doc, frame, base, model).map_err(failed)?
+            } else {
+                let overlay = if p.has("overlay") {
+                    let tag = app.anim_doc_tag(doc).map_err(failed)?;
+                    resolve_overlay(&app.anim_info(tag).map_err(failed)?, p)?
+                } else {
+                    None
+                };
+                app.anim_doc_pose(doc, frame, overlay, model).map_err(failed)?
+            }
+        } else {
+            if p.has("base") {
+                return Err(err(code::INVALID_PARAMS, "base requires an overlay document"));
+            }
+            let id = anim_tag(app, p)?;
+            let info = app.anim_info(id).map_err(failed)?;
+            let animation = find_animation(&info, p.get("animation").unwrap_or(&Value::Null))?;
+            let overlay = resolve_overlay(&info, p)?;
+            app.anim_pose(id, animation, frame, overlay, model)
+                .map_err(failed)?
+        };
         let size = size(p)?;
         let out = match p.opt_str("out")? {
             Some(o) => PathBuf::from(o),
             None => {
                 let stem = p
-                    .str("tag")?
-                    .rsplit(['\\', '/'])
-                    .next()
-                    .unwrap_or("pose")
-                    .to_owned();
-                studio_proto::output_dir().join("anim").join(format!(
-                    "{stem}_{}_{}.png",
-                    answer.animation.name, answer.frame
-                ))
+                    .opt_str("tag")?
+                    .and_then(|tag| tag.rsplit(['\\', '/']).next())
+                    .unwrap_or("document");
+                let name = answer.animation.name.replace(['\\', '/'], "_");
+                studio_proto::output_dir()
+                    .join("anim")
+                    .join(format!("{stem}_{name}_{}.png", answer.frame))
             }
         };
         // Everything but the picture answers on any machine; the picture
