@@ -36,10 +36,11 @@ pub fn parse_doc(d: &str) -> Result<ToolKind, RpcError> {
         "hud" => ToolKind::Hud,
         "scripts" => ToolKind::Scripts,
         "bitmaps" | "textures" => ToolKind::Textures,
+        "package" => ToolKind::Package,
         other => {
             return Err(err(
                 code::INVALID_PARAMS,
-                format!("no document {other:?} (map, tags, scripts, bitmaps, variant, playlists, ui, hud)"),
+                format!("no document {other:?} (map, tags, scripts, bitmaps, variant, playlists, ui, hud, package)"),
             ));
         }
     })
@@ -55,6 +56,7 @@ pub fn doc_name(t: ToolKind) -> &'static str {
         ToolKind::Hud => "hud",
         ToolKind::Scripts => "scripts",
         ToolKind::Textures => "bitmaps",
+        ToolKind::Package => "package",
     }
 }
 
@@ -68,6 +70,7 @@ fn is_open(app: &App, t: ToolKind) -> bool {
         ToolKind::Hud => app.hud.session.is_some(),
         ToolKind::Scripts => app.scripts_loaded().is_ok(),
         ToolKind::Textures => app.session.is_open(),
+        ToolKind::Package => app.package_document.id().is_some(),
     }
 }
 
@@ -84,7 +87,7 @@ fn can(app: &App, t: ToolKind) -> (bool, bool) {
             .as_ref()
             .map_or((false, false), |e| (e.can_undo(), e.can_redo())),
         ToolKind::Playlists => (app.hoppers.can_undo(), app.hoppers.can_redo()),
-        ToolKind::UiScreens => (false, false),
+        ToolKind::UiScreens | ToolKind::Package => (false, false),
         // The compiles into the map's scripts are the Scripts surface's stack.
         ToolKind::Scripts => app
             .scripts
@@ -126,6 +129,7 @@ fn name_of(app: &App, t: ToolKind) -> Option<String> {
         }),
         ToolKind::Scripts => app.scripts_loaded().ok().map(|l| l.map.clone()),
         ToolKind::Textures => app.loaded_map().map(str::to_owned),
+        ToolKind::Package => app.package_document.name().map(str::to_owned),
     }
 }
 
@@ -149,6 +153,7 @@ pub fn list(app: &App) -> Value {
     Value::Array(
         ToolKind::ALL
             .into_iter()
+            .chain(app.package_document.id().map(|_| ToolKind::Package))
             .map(|t| {
                 let (u, r) = can(app, t);
                 let mut v = json!({
@@ -295,6 +300,10 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 return Ok(json!({ "closed": true }));
             }
             let t = parse_doc(p.str("doc")?)?;
+            if t == ToolKind::Package {
+                run(app, Action::CloseDoc(Doc::Package), false)?;
+                return Ok(json!({ "closed": true }));
+            }
             if app.tool_dirty(t) && !p.bool("discard")? {
                 return Err(err(
                     code::UNSAVED,
@@ -508,6 +517,7 @@ fn save(app: &mut App, t: ToolKind) -> Reply {
             "UI screens have nothing to save: ui.render writes a PNG",
         )),
         ToolKind::Scripts => Err(err(code::REFUSED, SCRIPTS_READ_ONLY)),
+        ToolKind::Package => Err(err(code::REFUSED, "package changes save immediately")),
         ToolKind::Hud => match app.hud.session.as_ref().and_then(|s| s.saved_path.clone()) {
             Some(path) => save_as(app, t, path),
             None => Err(err(
@@ -543,6 +553,7 @@ fn save_as(app: &mut App, t: ToolKind, path: PathBuf) -> Reply {
             ));
         }
         ToolKind::Scripts => return Err(err(code::REFUSED, SCRIPTS_READ_ONLY)),
+        ToolKind::Package => return Err(err(code::REFUSED, "use package.export")),
     };
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir)
@@ -669,6 +680,7 @@ fn diff(app: &mut App, t: ToolKind) -> Reply {
         ToolKind::Scripts => Ok(json!({ "doc": "scripts", "dirty": false })),
         ToolKind::Textures => Ok(super::bitmaps::diff(app)),
         ToolKind::Hud => super::hud::diff(app),
+        ToolKind::Package => Ok(json!({ "doc": "package", "dirty": false })),
     }
 }
 

@@ -105,6 +105,7 @@ pub mod method {
     pub const PACKAGE_ORDER: &str = "package.order";
     pub const PACKAGE_CHECK: &str = "package.check";
     pub const PACKAGE_BUILD: &str = "package.build";
+    pub const PACKAGE_EXPORT: &str = "package.export";
     pub const PACKAGE_PLAY: &str = "package.play";
     pub const PACKAGE_DIFF: &str = "package.diff";
     // The Problems panel (docs/editor/studio-redesign.md; api/problems.rs).
@@ -181,6 +182,7 @@ pub mod method {
     pub const SOUND_PERMUTATION: &str = "sound.permutation";
     // A WAV imported into a package as a `sound` item (api/import.rs).
     pub const IMPORT_SOUND: &str = "import.sound";
+    pub const IMPORT_MODEL: &str = "import.model";
     // A PNG imported into a package as a `bitmap` item (api/import.rs).
     pub const IMPORT_BITMAP: &str = "import.bitmap";
 

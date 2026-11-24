@@ -207,6 +207,7 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
                 );
             }
         }
+        m::PACKAGE_EXPORT => c(m::PACKAGE_NEW, json!({"id": "export-example", "name": "Export example"})),
         n if n.starts_with("package.") => {
             // The invented package `kit-test`, and the file its example adds.
             let dir = t.path("data/packages/kit-test");
@@ -229,6 +230,10 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
                 m::IMPORT_SOUND,
                 json!({"file": t.path("out/clip.wav").display().to_string(), "package": "mine", "tag": "sounds\\clip"}),
             );
+        }
+        m::IMPORT_MODEL => {
+            import_tests::package(&t.path("data/packages/mine"), "mine");
+            import_tests::model_files(&t.path("out"));
         }
         m::IMPORT_BITMAP => {
             // An empty local package `mine` and a PNG of invented pixels.

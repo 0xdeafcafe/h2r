@@ -533,6 +533,8 @@ impl App {
                         self.error(e);
                     }
                 }
+            } else if asset.starts_with("package:") {
+                self.dispatch(Action::OpenAsset { asset: asset.clone(), map: None });
             } else {
                 // The browser is a panel of the map tools.
                 if !matches!(self.tool, ToolKind::Scenario | ToolKind::Tags | ToolKind::Scripts) {

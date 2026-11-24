@@ -521,3 +521,61 @@ fn build_reports_a_row_per_map_the_package_touches() {
     assert_eq!(c, code::REFUSED);
     assert!(why.contains("off"), "{why}");
 }
+
+#[test]
+fn the_new_package_command_opens_a_tab_and_sets_the_target() {
+    let (_t, mut app, mut api) = setup("pkg-document");
+    app.dispatch(crate::app::Action::PackageCommand {
+        method: m::PACKAGE_NEW,
+        params: json!({"id": "local-kit", "name": "Local kit"}),
+    });
+    let list = call(&mut api, &mut app, m::PACKAGE_LIST, json!({}));
+    assert_eq!(list["target"], "local-kit");
+    assert!(ids(&list).iter().any(|id| id == "local-kit"));
+    let tabs = call(&mut api, &mut app, m::SHELL_TABS, json!({}));
+    let opened = call(
+        &mut api, &mut app, m::SHELL_OPEN, json!({"asset": "package:local-kit"}),
+    );
+    assert_eq!(opened["front"], "package");
+    assert_eq!(opened["tab"], tabs["tabs"][0]);
+    assert_eq!(opened["tab"]["title"], "Local kit");
+    let doc = call(&mut api, &mut app, m::PACKAGE_READ, json!({"id": "local-kit"}));
+    assert_eq!(app.package_document.read.as_ref(), Some(&doc));
+
+    let args = json!({"id": "local-kit"});
+    app.dispatch(crate::app::Action::PackageCommand {
+        method: m::PACKAGE_CHECK,
+        params: args.clone(),
+    });
+    let checked = call(&mut api, &mut app, m::PACKAGE_CHECK, args);
+    let (method, result) = app.package_document.result.as_ref().unwrap();
+    assert_eq!(*method, m::PACKAGE_CHECK);
+    assert_eq!(result.as_ref().unwrap(), &checked);
+
+    let closed = call(&mut api, &mut app, m::SHELL_CLOSE, json!({"doc": "package"}));
+    assert_eq!(closed["closed"], true);
+    assert!(app.package_document.id().is_none());
+}
+
+#[test]
+fn package_export_writes_only_the_manifest_lock_and_named_sources() {
+    let (t, mut app, mut api) = setup("pkg-export");
+    new_package(&mut api, &mut app, "mine");
+    let dir = t.path("data/packages/mine");
+    std::fs::write(dir.join("note.txt"), "invented content").unwrap();
+    std::fs::write(dir.join("draft.txt"), "unreferenced").unwrap();
+    call(
+        &mut api, &mut app, m::PACKAGE_ITEM_ADD,
+        json!({"id": "mine", "item": {"kind": "data", "source": "note.txt"}}),
+    );
+    let out = t.path("export");
+    let args = json!({"id": "mine", "out": out});
+    let exported = call(&mut api, &mut app, m::PACKAGE_EXPORT, args.clone());
+    assert_eq!(exported["files"], 3);
+    assert!(out.join("package.toml").is_file());
+    assert!(out.join("package.lock").is_file());
+    assert_eq!(std::fs::read_to_string(out.join("note.txt")).unwrap(), "invented content");
+    assert!(!out.join("draft.txt").exists());
+    assert!(api.call(&mut app, m::PACKAGE_EXPORT, args).is_err());
+    assert!(out.join("note.txt").is_file());
+}
