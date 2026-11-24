@@ -22,7 +22,7 @@ fn rows_with(g: &mut FakeGuest, list: u32, words: &[i16], element: i32) -> Vec<D
     g.map(NAME, 0x20).map(ARRAY, 0x1000);
     g.put_u32(list + LIST_ROWS, ARRAY);
     let rows = DatumArray::at(ARRAY);
-    rows.initialize_contiguous(g, NAME, 9, element, 0, 0)
+    rows.initialize_contiguous(g, NAME, 11, element, 0, 0)
         .unwrap();
     rows.make_valid(g).unwrap();
     words
@@ -61,11 +61,11 @@ fn block_of(name: &str) -> [u8; ext::LEN] {
 #[test]
 fn our_rows_are_last_after_territories() {
     let words = with_row(&GAME_TYPE_WORDS);
-    assert_eq!(words, [0, 1, 3, 4, 6, 7, 8, RESEARCH_WORD, PARTY_WORD]);
-    assert_eq!(words[words.len() - 3], 8, "Territories just above them");
+    assert_eq!(words, [0, 1, 3, 4, 6, 7, 8, RESEARCH_WORD, PARTY_WORD, FIREFIGHT_WORD, SIEGE_WORD]);
+    assert_eq!(words[words.len() - 5], 8, "Territories just above them");
     assert_eq!(with_row(&words), words, "added once");
     // Two retail rows are left out of some lists; ours are still last.
-    assert_eq!(with_row(&[0, 1, 3, 6, 7]), [0, 1, 3, 6, 7, RESEARCH_WORD, PARTY_WORD]);
+    assert_eq!(with_row(&[0, 1, 3, 6, 7]), [0, 1, 3, 6, 7, RESEARCH_WORD, PARTY_WORD, FIREFIGHT_WORD, SIEGE_WORD]);
     for r in Row::ALL {
         assert!(!GAME_TYPE_WORDS.contains(&word_of_row(r)));
         assert_eq!(row_of_word(word_of_row(r)), Some(r));
@@ -82,66 +82,25 @@ fn both_game_type_screens_get_the_row_but_not_the_create_mode() {
 }
 
 #[test]
-fn each_row_keeps_its_own_and_slayer_the_rest() {
-    let under: Vec<_> = row_variants().map(|l| l.name.as_str()).collect();
-    assert!(under.contains(&"Superbounce") && under.contains(&"Zombies"), "{under:?}");
-    let slayer: Vec<_> = community::listed()
-        .iter()
-        .flatten()
-        .filter(|l| l.record.game_type() == GameType::Slayer && l.row.is_none())
-        .map(|l| l.name.as_str())
-        .collect();
-    assert!(!slayer.contains(&"Superbounce") && !slayer.contains(&"Zombies"), "{slayer:?}");
-    assert!(slayer.contains(&"SWAT"), "the rest stay: {slayer:?}");
-
-    let none = [0; ext::LEN];
-    let sb = community::row_of("Superbounce \u{e006}", &none);
-    let zombies = community::row_of("Zombies \u{e006}", &none);
-    let swat = community::row_of("SWAT \u{e006}", &none);
-    let (research, party) = (Some(Row::Research), Some(Row::PartyGames));
-    assert!(keeps(research, true, sb) && !keeps(party, true, sb) && !keeps(None, true, sb));
-    assert!(keeps(party, true, zombies) && !keeps(research, true, zombies));
-    assert!(keeps(None, true, swat) && !keeps(research, true, swat) && !keeps(party, true, swat));
-    // A record that did not load stays retail's.
-    assert!(keeps(None, false, research) && !keeps(research, false, research));
-}
-
-#[test]
-fn every_row_variant_is_a_slayer_or_juggernaut_variant() {
-    // A row's list is Slayer's and Juggernaut's lists filtered. Each
-    // built-in's record names its script.
-    for l in row_variants() {
-        assert!(
-            matches!(l.record.game_type(), GameType::Slayer | GameType::Juggernaut),
-            "{}",
-            l.name
-        );
-        assert!(!l.ext().is_default(), "{}", l.name);
-    }
-    // Hide and Seek is Juggernaut's and says Party Games: a row's variant.
-    let hide = community::listed_named("Hide and Seek").unwrap();
-    assert_eq!(hide.row, Some(Row::PartyGames));
-    assert_eq!(hide.record.game_type(), GameType::Juggernaut);
-    assert!(row_variants().any(|l| l.name == "Hide and Seek"));
-    assert!(filtered(SLAYER_CATEGORY) && filtered(JUGGERNAUT_CATEGORY));
-    assert!(!filtered(2), "King of the Hill's list is retail's");
-}
-
-#[test]
-fn a_record_of_another_type_is_on_no_row() {
+fn the_script_type_on_a_renamed_save_does_not_depend_on_the_engine() {
     let mut g = FakeGuest::new();
     g.map(RECORDS, 0x1000);
-    let hide = community::listed_named("Hide and Seek").unwrap();
-    put_typed(&mut g, RECORDS, &hide.display_name(), hide.block(), GameType::Juggernaut);
-    assert_eq!(record_row(&g, RECORDS), Some(Row::PartyGames), "Juggernaut's");
-    put_typed(&mut g, RECORDS, "My Hide", hide.block(), GameType::Juggernaut);
-    assert_eq!(record_row(&g, RECORDS), Some(Row::PartyGames), "its copy too");
-    put_typed(&mut g, RECORDS, "My Hide", hide.block(), GameType::Oddball);
-    assert_eq!(record_row(&g, RECORDS), None, "Oddball's");
-    put_typed(&mut g, RECORDS, "My Zombies", block_of("Zombies"), GameType::Slayer);
-    assert_eq!(record_row(&g, RECORDS), Some(Row::PartyGames));
-    put_typed(&mut g, RECORDS, "My Zombies", block_of("Zombies"), GameType::King);
-    assert_eq!(record_row(&g, RECORDS), None, "a row is for Slayer and Juggernaut records");
+    for ty in [GameType::Script, GameType::Oddball, GameType::Slayer] {
+        for (name, expected) in [
+            ("Hide and Seek", Type::Party),
+            ("Clint Eastwood", Type::Juggernaut),
+            ("Siege", Type::Siege),
+        ] {
+            put_typed(&mut g, RECORDS, "Edited variant", block_of(name), ty);
+            assert_eq!(record_type(&g, RECORDS), Some(expected), "{name} on {ty}");
+        }
+    }
+    let firefight = Ext {
+        script: ext::Script { mode: ext::Mode::Firefight, ..Default::default() },
+        ..Default::default()
+    };
+    put_typed(&mut g, RECORDS, "Wave test", firefight.encode(), GameType::Slayer);
+    assert_eq!(record_type(&g, RECORDS), Some(Type::Firefight));
 }
 
 #[test]
@@ -193,6 +152,7 @@ fn run_fill_in(
     const E: u32 = 0xe020_0005;
     const F: u32 = 0xe020_0006;
     const G: u32 = 0xe000_0007;
+    const H: u32 = 0xe000_0008;
     let mut g = FakeGuest::new();
     g.map(SCREEN, 0x5000)
         .map(STACK, 0x100)
@@ -225,9 +185,9 @@ fn run_fill_in(
             let asked = call.args[1];
             assert_eq!(call.args, [0, asked, COUNT, HANDLES, 1]);
             let got: &[u32] = match asked {
-                SLAYER_CATEGORY => &[A, B, C, D],
+                SLAYER_CATEGORY => &[A, B, C, D, H],
                 JUGGERNAUT_CATEGORY => &[E, F, G],
-                other => panic!("category {other}"),
+                _ => &[],
             };
             m.set_u16(COUNT, got.len() as u16).unwrap();
             for (i, h) in got.iter().enumerate() {
@@ -243,6 +203,7 @@ fn run_fill_in(
                 Some(D) => ("Zombies \u{e006}", [0; ext::LEN], GameType::Slayer),
                 Some(E) => ("Hide and Seek \u{e006}", [0; ext::LEN], GameType::Juggernaut),
                 Some(F) => ("Clint Eastwood \u{e006}", [0; ext::LEN], GameType::Juggernaut),
+                Some(H) => ("Copied Clint", block_of("Clint Eastwood"), GameType::Script),
                 Some(G) => ("My Hide", block_of("Hide and Seek"), GameType::Juggernaut),
                 _ => ("My Bounce", block_of("Superbounce"), GameType::Slayer),
             };
@@ -308,7 +269,8 @@ fn hide_and_seek_lists_under_party_games() {
         .filter(|c| c.target == points::VARIANTS_ENUMERATE.base)
         .map(|c| c.args[1])
         .collect();
-    assert_eq!(asked, [SLAYER_CATEGORY, JUGGERNAUT_CATEGORY]);
+    let all: Vec<_> = GameType::ALL.into_iter().filter_map(GameType::content_type).collect();
+    assert_eq!(asked, all);
     let kept = read_handles(&run.guest, COUNT, HANDLES).unwrap();
     assert!(kept.contains(&0xe020_0005), "the built-in Hide and Seek");
     assert!(kept.contains(&0xe000_0007), "a saved copy of it");
@@ -329,49 +291,25 @@ fn juggernauts_own_list_drops_hide_and_seek_and_keeps_the_rest() {
             .iter()
             .filter(|c| c.target == points::VARIANTS_ENUMERATE.base)
             .count(),
-        1,
-        "its own list asks its own category only"
+        GameType::ALL.len(),
+        "a renamed script may have been saved under any category"
     );
     assert_eq!(
         read_handles(&run.guest, COUNT, HANDLES),
-        Ok(vec![0xe020_0006]),
-        "Clint Eastwood stays; Hide and Seek and its copy are Party Games'"
+        Ok(vec![0xe020_0006, 0xe000_0008]),
+        "Clint Eastwood and an index-6 copy saved under Slayer"
     );
     assert!(DatumArray::at(ARRAY).try_get(&run.guest, rows[0]).unwrap().is_some());
 }
 
 #[test]
-fn clint_eastwood_names_no_row_and_stays_under_juggernaut() {
-    let clint = community::listed_named("Clint Eastwood").unwrap();
-    assert_eq!(clint.record.game_type(), GameType::Juggernaut);
-    assert_eq!(clint.row, None);
-    assert!(row_variants().all(|l| l.name != "Clint Eastwood"));
-    assert_eq!(community::row_of("Clint Eastwood \u{e006}", &[0; ext::LEN]), None);
-    assert_eq!(community::row_of("My Clint", &clint.block()), None);
-}
-
-#[test]
-fn only_slayers_and_juggernauts_categories_are_filtered() {
-    assert!(filtered(SLAYER_CATEGORY) && filtered(JUGGERNAUT_CATEGORY));
-    assert_eq!(
-        JUGGERNAUT_CATEGORY,
-        GameType::Juggernaut.content_type().unwrap()
-    );
-    assert!(takes_juggernauts(Some(Row::PartyGames), SLAYER_CATEGORY));
-    assert!(!takes_juggernauts(None, SLAYER_CATEGORY), "Slayer's own list");
-    assert!(!takes_juggernauts(Some(Row::PartyGames), JUGGERNAUT_CATEGORY));
-    assert!(row_engine(GameType::Slayer.engine()) && row_engine(GameType::Juggernaut.engine()));
-    assert!(!row_engine(GameType::King.engine()));
-}
-
-#[test]
-fn another_categorys_fill_is_left_alone() {
+fn an_unrelated_content_category_is_left_alone() {
     let mut g = FakeGuest::new();
     g.map(SCREEN, 0x5000)
         .map(STACK, 0x100)
         .map(COUNT, 4)
         .map(HANDLES, 0x100);
-    for (i, v) in [FILL_RETURN, 0, 2, COUNT, HANDLES, 1]
+    for (i, v) in [FILL_RETURN, 0, 99, COUNT, HANDLES, 1]
         .into_iter()
         .enumerate()
     {
@@ -417,7 +355,9 @@ fn our_pane_is_the_row_with_our_word() {
     assert_eq!(our_pane(&g, SCREEN, 0xcf, 8), Some(Row::PartyGames));
     assert_eq!(our_pane(&g, SCREEN, 0xcf, 6), None, "Territories has its pane");
     assert_eq!(our_pane(&g, SCREEN, 0xd0, 7), None, "another screen");
-    assert_eq!(our_pane(&g, SCREEN, 0xcf, 9), None, "no row there");
+    assert_eq!(our_pane(&g, SCREEN, 0xcf, 9), Some(Row::Firefight));
+    assert_eq!(our_pane(&g, SCREEN, 0xcf, 10), Some(Row::Siege));
+    assert_eq!(our_pane(&g, SCREEN, 0xcf, 11), None);
 }
 
 #[test]
@@ -572,22 +512,29 @@ fn the_hooks_are_on_the_plan() {
 }
 
 #[test]
-fn both_our_rows_are_added_to_a_full_retail_list() {
+fn the_category_constructor_reserves_room_for_all_four_custom_rows() {
     let mut g = FakeGuest::new();
     g.map(SCREEN, 0x5000);
     let list = HANDLER;
-    rows_with(&mut g, list, &GAME_TYPE_WORDS, 0x10);
+    assert_eq!(list_capacity(9), 9);
+    BUILDING_CATEGORY.set(true);
+    let capacity = list_capacity(9);
+    assert_eq!(list_capacity(16), 16);
+    BUILDING_CATEGORY.set(false);
+    assert_eq!(capacity, 11);
+    rows_with(&mut g, list, &GAME_TYPE_WORDS, 4);
     let n = h1_options_row::insert_row_ordered(&mut g, list, with_row).unwrap();
-    assert_eq!(n, 9);
-    let words: Vec<i16> = (0..9).map(|i| word_at(&g, list, i).unwrap()).collect();
+    assert_eq!(n, capacity as usize);
+    let words: Vec<i16> = (0..capacity as i32).map(|i| word_at(&g, list, i).unwrap()).collect();
     assert_eq!(words, with_row(&GAME_TYPE_WORDS));
     // No room for more: the list is left as it was, not half-added.
     assert!(h1_options_row::insert_row_ordered(&mut g, list, |w| {
         let mut w = w.to_vec();
-        w.push(11);
+        w.push(13);
         w
     })
     .is_err());
     assert_eq!(word_at(&g, list, 8), Some(PARTY_WORD));
-    assert_eq!(word_at(&g, list, 9), None);
+    assert_eq!(word_at(&g, list, 10), Some(SIEGE_WORD));
+    assert_eq!(word_at(&g, list, 11), None);
 }

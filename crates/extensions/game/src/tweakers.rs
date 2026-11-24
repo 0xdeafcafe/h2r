@@ -1,6 +1,6 @@
 //! Our game type rows at the bottom of the custom game's game type list,
-//! under Territories: Research and Devolution (practice and the maps'
-//! tricks) and Party Games ([`community::Row`];
+//! under Territories: Research and Devolution, Party Games, Firefight and
+//! Siege ([`community::Row`];
 //! docs/game/community-gametypes.md "Tweakers").
 //!
 //! **The list** (read from the XBE, 2026-11-21, static). Change Rules on
@@ -26,7 +26,7 @@
 //!   [`community::Row::mark`]); every other variant list is marked 0.
 //! - The fill: the variant list's call to `0x215900` is answered by the
 //!   original, then the handles are kept or dropped by
-//!   [`community::row_of`] on each record (loaded with `0x212bc0`, as the
+//!   [`record_type`] on each record (loaded with `0x212bc0`, as the
 //!   fill itself does). A row's list keeps its own variants and drops
 //!   Create New; Slayer's drops every row's.
 //! - The look: a row shows Slayer's pane with its title and description
@@ -35,14 +35,9 @@
 //!   Slayer's; its own loader, which a screen stack reopens it with, is an
 //!   entry of ours that opens it marked again.
 //!
-//! Our rows hold Slayer and Juggernaut variants ([`record_row`]). A row's
-//! list is Slayer's variant list (the press runs Slayer's), and its fill
-//! adds Juggernaut's handles to Slayer's ([`JUGGERNAUT_CATEGORY`]) before
-//! the filter, so Hide and Seek, a Juggernaut script that says `list
-//! party`, is under Party Games and off Juggernaut's own list. Each
-//! built-in's record names its
-//! script from the list's load (`community::write_blocks`), so a game on
-//! one, and a copy of one, names it too.
+//! Content handles retain their physical save category. A list enumerates
+//! the seven categories and shows each loaded record under its script's
+//! type. A renamed save follows the same rule as a built-in.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -53,6 +48,7 @@ use engine::points;
 use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use runtime::GuestFault;
 use runtime::guest::Permissions;
+use ::rules::types::Type;
 use variants::ext;
 use variants::record::GameType;
 
@@ -82,6 +78,8 @@ pub const SLAYER_WORD: i16 = 0;
 /// Our rows' words: past retail's, never seen by its press.
 pub const RESEARCH_WORD: i16 = 9;
 pub const PARTY_WORD: i16 = 10;
+pub const FIREFIGHT_WORD: i16 = 11;
+pub const SIEGE_WORD: i16 = 12;
 /// Slayer's pane (index 0), the one our rows show with their texts.
 pub const SLAYER_PANE: i16 = 0;
 /// The pane's text blocks: the description (block 0) and the title
@@ -148,6 +146,8 @@ pub fn word_of_row(row: Row) -> i16 {
     match row {
         Row::Research => RESEARCH_WORD,
         Row::PartyGames => PARTY_WORD,
+        Row::Firefight => FIREFIGHT_WORD,
+        Row::Siege => SIEGE_WORD,
     }
 }
 
@@ -172,31 +172,11 @@ pub fn with_row(words: &[i16]) -> Vec<i16> {
     out
 }
 
-/// Whether a variant list keeps a handle: a row's list (`list`) the
-/// variants of that row only, Slayer's list (`None`) the rest. A record
-/// that did not load is retail's business, so it stays on retail's lists.
-pub fn keeps(list: Option<Row>, loaded: bool, record: Option<Row>) -> bool {
-    list == if loaded { record } else { None }
-}
-
-/// Whether the fill of a list of `category` is ours to filter: Slayer's
-/// and Juggernaut's (a row's variant is either's). Slayer's own list and a
-/// row's list are Slayer's category; Juggernaut's own list is the other,
-/// which drops what a row holds.
-pub fn filtered(category: u32) -> bool {
-    category == SLAYER_CATEGORY || category == JUGGERNAUT_CATEGORY
-}
-
-/// Whether the fill of a row's list also takes the handles of Juggernaut's
-/// category: it is Slayer's category fill of a marked list.
-pub fn takes_juggernauts(list: Option<Row>, category: u32) -> bool {
-    list.is_some() && category == SLAYER_CATEGORY
-}
-
-/// Whether a variant record of `engine` can be under one of our rows:
-/// Slayer's and Juggernaut's.
-pub fn row_engine(engine: i32) -> bool {
-    [GameType::Slayer, GameType::Juggernaut].map(GameType::engine).contains(&engine)
+/// The type of a stock content category, as opposed to a custom row's
+/// mark. Both can be the destination of a script on any physical index.
+fn category_type(category: u32) -> Option<Type> {
+    let engine = GameType::from_content_type(category)?.engine();
+    Type::of_engine(engine as u8)
 }
 
 /// The retail loader a row's list reopens with, by its mode bytes.
@@ -293,15 +273,13 @@ pub fn record_engine(m: &dyn GuestMemory, record: u32) -> Option<i32> {
         .map(|e| e as i32)
 }
 
-/// The row of ours the variant record at `record` is listed under
-/// ([`community::row_of`]). Our rows hold Slayer and Juggernaut variants
-/// (docs/game/rules-variants.md, "Rules and limits"): a record of another
-/// type is listed under its game type, whatever its script's `list`.
-pub fn record_row(m: &dyn GuestMemory, record: u32) -> Option<Row> {
-    if !row_engine(record_engine(m, record)?) {
-        return None;
-    }
-    community::row_of(&record_name(m, record)?, &record_block(m, record)?)
+/// The menu type of a loaded variant (script, or its physical fallback).
+pub fn record_type(m: &dyn GuestMemory, record: u32) -> Option<Type> {
+    community::filed_type(
+        &record_name(m, record)?,
+        &record_block(m, record)?,
+        GameType::from_engine(record_engine(m, record)?),
+    )
 }
 
 /// The handles the fill got: `*count` (a `u16`) of them at `handles`.
@@ -347,6 +325,21 @@ pub fn drop_create_new(m: &mut dyn GuestMemory, handler: u32) -> Result<bool, Me
 }
 
 // ---- the hooks ----
+
+// The shared UI list allocator is called inside the category constructor.
+// It allocates nine datums for the stock picker, enough for seven stock
+// rows and two custom ones. Grow the allocation before retail fills it.
+thread_local! {
+    static BUILDING_CATEGORY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub(crate) fn list_capacity(count: u32) -> u32 {
+    if BUILDING_CATEGORY.get() && count == 9 {
+        (GAME_TYPE_WORDS.len() + Row::ALL.len()) as u32
+    } else {
+        count
+    }
+}
 
 /// Retail's press or a reopen loader is running for one of our rows (its
 /// [`Row::mark`], 0 none): the variant list it builds is that row's.
@@ -402,42 +395,39 @@ async fn fill(cx: Cx, scratch: u32) -> Result<Ret, EntryError> {
     let r = cx
         .call(GuestCall::new(points::VARIANTS_ENUMERATE.base).args(args))
         .await?;
-    if !filtered(args[1]) {
+    let Some(physical) = category_type(args[1]) else {
         return Ok(Ret::new(r.eax, 20));
-    }
+    };
+    let wanted = list.map(Row::game_type).unwrap_or(physical);
     let (count, handles) = (args[2], args[3]);
-    let mut got = cx.read(|m| read_handles(m, count, handles))?;
-    if takes_juggernauts(list, args[1]) {
-        let mut more = args;
-        more[1] = JUGGERNAUT_CATEGORY;
-        cx.call(GuestCall::new(points::VARIANTS_ENUMERATE.base).args(more))
-            .await?;
-        got.extend(cx.read(|m| read_handles(m, count, handles))?);
-        got.truncate(MAX_HANDLES as usize);
-    }
-    let mut keep = Vec::with_capacity(got.len());
-    for h in &got {
-        let loaded = cx
-            .call(GuestCall::new(LOAD_VARIANT).eax(scratch).edx(*h))
-            .await?
-            .eax
-            & 0xff
-            != 0;
-        let record = if loaded { cx.read(|m| record_row(m, scratch)) } else { None };
-        if keeps(list, loaded, record) {
-            keep.push(*h);
+    let mut keep = Vec::new();
+    // Saves keep the category they were written with. Ask the requested
+    // category first so its existing variants retain their order.
+    let categories = GameType::ALL.into_iter().filter_map(GameType::content_type);
+    'categories: for category in std::iter::once(args[1]).chain(categories.filter(|c| *c != args[1])) {
+        if category != args[1] {
+            let mut more = args;
+            more[1] = category;
+            cx.call(GuestCall::new(points::VARIANTS_ENUMERATE.base).args(more)).await?;
+        }
+        for h in cx.read(|m| read_handles(m, count, handles))? {
+            let loaded = cx
+                .call(GuestCall::new(LOAD_VARIANT).eax(scratch).edx(h))
+                .await?
+                .eax & 0xff != 0;
+            let ty = if loaded { cx.read(|m| record_type(m, scratch)) } else { None };
+            if ty.or_else(|| category_type(category)) == Some(wanted) {
+                keep.push(h);
+                if keep.len() == MAX_HANDLES as usize {
+                    break 'categories;
+                }
+            }
         }
     }
     cx.write(|m| write_handles(m, count, handles, &keep))?;
     if list.is_some() {
         cx.write(|m| drop_create_new(m, handler))?;
     }
-    eprintln!(
-        "tweakers: {} list: {} of {} variants",
-        list.map_or("Slayer", Row::label),
-        keep.len(),
-        got.len()
-    );
     Ok(Ret::new(r.eax, 20))
 }
 
@@ -548,7 +538,7 @@ fn row_chosen(c: &mut Call) -> Result<Flow, GuestFault> {
 
 /// The reopen entries' labels: for each row in [`Row::ALL`]'s order, its
 /// settings, lobby and pick loaders.
-const REOPEN_LABELS: [[&str; 3]; 2] = [
+const REOPEN_LABELS: [[&str; 3]; Row::ALL.len()] = [
     [
         "tweakers: reopen a Research and Devolution list (settings)",
         "tweakers: reopen a Research and Devolution list (lobby)",
@@ -559,6 +549,16 @@ const REOPEN_LABELS: [[&str; 3]; 2] = [
         "tweakers: reopen a Party Games list (lobby)",
         "tweakers: reopen a Party Games list (pick)",
     ],
+    [
+        "tweakers: reopen a Firefight list (settings)",
+        "tweakers: reopen a Firefight list (lobby)",
+        "tweakers: reopen a Firefight list (pick)",
+    ],
+    [
+        "tweakers: reopen a Siege list (settings)",
+        "tweakers: reopen a Siege list (lobby)",
+        "tweakers: reopen a Siege list (pick)",
+    ],
 ];
 
 /// Our rows on the game type list and their variant lists.
@@ -566,7 +566,7 @@ pub struct Tweakers;
 
 impl hooks::Feature for Tweakers {
     fn manifest(&self) -> Manifest {
-        Manifest::new(FEATURE, "Our game type rows (Research and Devolution, Party Games) and their variant lists")
+        Manifest::new(FEATURE, "Game type rows and variant lists filed by script type")
             .doc("docs/game/community-gametypes.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
@@ -587,11 +587,21 @@ impl hooks::Feature for Tweakers {
             }
         }
 
+        b.raw().observe_before(
+            &points::VARIANT_CATEGORY_SCREEN_CTOR,
+            "size our game type rows",
+            |o| {
+                let id = o.arg_u32("id").map_or(-1, |id| id as i16);
+                let create = o.arg_u32("create").is_none_or(|v| v as u8 != 0);
+                BUILDING_CATEGORY.set(wants_row(id, create));
+            },
+        );
         let added = Arc::new(AtomicBool::new(false));
         b.raw().after(
             &points::VARIANT_CATEGORY_SCREEN_CTOR,
             "add our game type rows",
             move |c| {
+                BUILDING_CATEGORY.set(false);
                 let screen = c.cpu.eax;
                 let rt = Arc::clone(c.ctx.runtime());
                 let mut mem = rt.memory();
@@ -704,14 +714,6 @@ pub fn live() -> Option<String> {
         return Some("one of our rows' variant lists is opening".into());
     }
     (UPDATING.load(Ordering::SeqCst) != 0).then(|| "one of our rows' lists is updating".into())
-}
-
-/// The listed scripts whose built-ins are under one of our rows, in list
-/// order: the Slayer and Juggernaut ones whose header names a row.
-pub fn row_variants() -> impl Iterator<Item = &'static community::Listed> {
-    community::listed().iter().flatten().filter(|l| {
-        l.row.is_some() && row_engine(l.record.game_type().engine())
-    })
 }
 
 #[cfg(test)]
