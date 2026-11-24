@@ -23,13 +23,17 @@ The light path in the order the game draws it ([e3-lighting.md](e3-lighting.md),
   remaining rows by projected size and fades their weights towards a
   budget of three. Lights fading out can still draw. For each
   light above the weight threshold (`[0x0045dc58]`) it re-poses an attached light
-  (`0x00031dac`), records it for the first-person pass (`0x004c6b00`,
-  stride `0x408`, at most eight, count `[0x00509440]`), decides the
-  shadow (`0x00031e02`), gathers the light's geometry into the light's
-  list `0x004c1a60` (`0x000c1d90`, `0x001320f0`, `0x00031660`, and the
-  extra call `0x00031c20` for definition bit 22), runs the objects'
-  render records for it (`0x00133390`, `0x00133520`, `0x00133720`), and
-  calls `render_light_passes` once.
+  (`0x00031dac`), poses its volume (`0x000c17f0`), takes a slot of the
+  first-person table for it (the table at `0x004c6700`, eight slots of
+  `0x408` bytes, the datum at `+0x400`, count `[0x00509440]`), decides
+  the shadow (`0x00031e02`), fills the light's visibility struct
+  `0x0054aa68` (`0x000c1d90`, `0x001320f0`, `0x00031660`, and the extra
+  call `0x00031c20` for definition bit 22), writes its render records
+  (`0x0002cb30`, `0x00133390`, `0x00133520`, `0x00133720`) and their
+  part visibility (`0x00044720`), and calls `render_light_passes` once.
+  The passes fill the light's item lists `0x004c1a60` and `0x004c1a78`
+  from those records (`0x00040e90`). Step by step in
+  [native-light-gather.md](native-light-gather.md).
 - **One light's passes.** `0x00031170` (`points::RENDER_LIGHT_PASSES`; its
   only caller is `0x00031f26`): EAX the `ligh` datum, ECX a context from
   `0x000c17f0` (the posed light volume, decoded by
@@ -487,7 +491,7 @@ The host takes each of layers 12 and 13 a light's steps draw, shadowed or not, w
 
 - On the resolved-draw path only structure geometry is drawn natively, and models keep their D3D handlers. A split may consume a contiguous native prefix; the remaining entries run in guest order. A whole group of layer 12 or 13, structure and model entries alike, is drawn from the scene with no handler.
 - A light that samples a shadow map (engine textures 13 and 8), an animated input, an engine-driven state from a source other than the instance's scalar 21 or an unsupplied constant keeps its D3D passes (`light_look`).
-- The visible-light gather at `0x00031c80`, the object-model lights and the object-shadow call `0x00032350`'s lights run in the guest. The first-person lights' loop (`0x000404b0`) runs in the guest too: its list rebuild, constants, flags and layers 11 and 14; only its layers 12 and 13 whose groups the scene holds whole are drawn from the scene. The first-person table at `0x004c6700` would need writing before the gather can be skipped.
+- The visible-light gather at `0x00031c80` runs as a Rust frame body when the lights stage is on, and hands each step it does not port to the guest ([native-light-gather.md](native-light-gather.md), L2). The object-model lights and the object-shadow call `0x00032350`'s lights run in the guest. The first-person lights' loop (`0x000404b0`) runs in the guest too: its list rebuild, constants, flags and layers 11 and 14; only its layers 12 and 13 whose groups the scene holds whole are drawn from the scene.
 - Diagnostics print as `native-lights:` on stderr: at load, each light texture with its size or why it did not load, and the surfaces left to D3D; at run time, each refusal reason on its first occurrence, and counts by reason every 1800 host decisions.
 
 ## Not verified
@@ -502,4 +506,4 @@ The host takes each of layers 12 and 13 a light's steps draw, shadowed or not, w
 
 ## Related
 
-[native-renderer.md](native-renderer.md), [native-shadows.md](native-shadows.md), [native-gels.md](native-gels.md), [e3-lighting.md](e3-lighting.md), [layer-draw.md](layer-draw.md).
+[native-renderer.md](native-renderer.md), [native-light-gather.md](native-light-gather.md), [native-shadows.md](native-shadows.md), [native-gels.md](native-gels.md), [e3-lighting.md](e3-lighting.md), [layer-draw.md](layer-draw.md).

@@ -253,11 +253,11 @@ impl std::fmt::Display for WorldMaterials {
 }
 
 const SCENE_LIST_START: usize = WORLD_SECTION_BASE + WORLD_SECTION_COLUMNS.len();
-const SCENE_LISTS: [&str; 14] = [
+const SCENE_LISTS: [&str; 16] = [
     "view_objects", "light_objects", "object_order", "object_setup", "object_record",
     "view_geometry", "light_geometry_gather", "visible_lights", "light_geometry",
     "light_extra_caster", "transparent_effect", "transparent_polygon",
-    "transparent_geometry", "transparents",
+    "transparent_geometry", "transparents", "light_frame", "light_volume",
 ];
 const SCENE_LIST_RESULTS: [&str; 11] = [
     "native", "fallback", "memory", "layout", "unsupported", "residency", "lighting",
@@ -282,6 +282,11 @@ pub enum SceneList {
     TransparentPolygon,
     TransparentGeometry,
     Transparents,
+    /// One call of `0x00031c80` by the light frame body
+    /// (docs/graphics/native-light-gather.md, slice L2).
+    LightFrame,
+    /// One light's volume (`0x000c17f0`) in the frame body.
+    LightVolume,
 }
 
 #[derive(Clone, Copy)]
@@ -527,7 +532,9 @@ mod tests {
         assert_eq!(columns[lists].1, "native_scene_lists_view_objects_native");
         let ui = phase::Counter::ALL.len() + UI_OFFSET;
         assert_eq!(ui, lists + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len());
-        assert_eq!(columns[ui - 1].1, "native_scene_lists_transparents_mismatch");
+        assert_eq!(columns[ui - 1].1, "native_scene_lists_light_volume_mismatch");
+        let frame = lists + SceneList::LightFrame as usize * SCENE_LIST_RESULTS.len();
+        assert_eq!(columns[frame].1, "native_scene_lists_light_frame_native");
         assert_eq!(columns[ui].1, "native_ui_items");
         assert_eq!(columns[phase::Counter::ALL.len() + COLUMNS - 1].1, "native_ui_outline_fallback_reservation");
         let walk = phase::Counter::ALL.len() + STAGE_COLUMNS;
