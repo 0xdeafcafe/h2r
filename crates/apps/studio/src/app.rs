@@ -54,7 +54,7 @@ pub use hud::HudTool;
 pub use scripts::{ScriptAction, ScriptsTool};
 pub use shell::{Doc, Tab};
 pub use navigation::{NavAction, NavHistory, NavLocation};
-pub use tag_doc::{BlockOp, TagAction, TagDoc, TagWrite};
+pub use tag_doc::{BlockEdit, BlockOp, TagAction, TagDoc, TagWrite};
 pub use ui_screens::{Pick, UiScreens};
 
 use editor_core::map_groups::MapGroup;

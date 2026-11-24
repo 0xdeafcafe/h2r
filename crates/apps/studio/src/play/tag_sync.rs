@@ -11,6 +11,7 @@ use super::playtest::{self, Waiting};
 use super::{raw_sync, sync};
 use crate::app::live::{Change, Class, Host, Route, Target};
 use crate::app::{App, TagDoc};
+use agent_proto::hot::encode_base64;
 use map::TagId;
 use scenario_edit::BspPatch;
 use serde_json::{Value, json};
@@ -113,6 +114,21 @@ pub struct TagBaseline {
     // addresses whose actual storage was allocated by the map writer.
     structural: Vec<(String, Vec<(u32, u32)>)>,
     strings: Vec<String>,
+    /// What the game holds of each block it was given by a move, by
+    /// `(tag, pair)`; a block not here holds the source's.
+    blocks: BTreeMap<(u32, u32), Held>,
+}
+
+/// A block as the game holds it.
+#[derive(Clone, Debug, PartialEq)]
+struct Held {
+    count: u32,
+    /// Where the elements are in the game, when known: a play copy's
+    /// grown blocks lie where its writer put them, which the document
+    /// does not learn.
+    address: Option<u32>,
+    bytes: Vec<u8>,
+    size: u32,
 }
 
 impl TagBaseline {
@@ -133,7 +149,40 @@ impl TagBaseline {
             base.structural.push((label.clone(), ranges.clone()));
         }
         base.strings = doc.new_strings().to_vec();
+        for b in doc.live_blocks().into_iter().filter(|b| b.live) {
+            if let Some((count, bytes)) = block_now(doc, b.tag, b.pair, b.size) {
+                base.blocks.insert(
+                    (b.tag.0, b.pair),
+                    Held {
+                        count,
+                        address: None,
+                        bytes,
+                        size: b.size,
+                    },
+                );
+            }
+        }
         base
+    }
+
+    /// The game took `moves`: it holds each block where `reply`'s
+    /// `moves` (in the same order) says.
+    pub fn moved(&mut self, moves: &[BlockMove], reply: &Value) {
+        let places = reply["moves"].as_array().map_or(&[][..], Vec::as_slice);
+        for (m, place) in moves.iter().zip(places) {
+            let address = place["address"]
+                .as_u64()
+                .and_then(|a| u32::try_from(a).ok());
+            self.blocks.insert(
+                (m.tag.0, m.pair),
+                Held {
+                    count: m.count,
+                    address,
+                    bytes: m.bytes.clone(),
+                    size: m.size,
+                },
+            );
+        }
     }
 
     pub fn wrote(&mut self, at: u32, bytes: &[u8]) {
@@ -311,6 +360,13 @@ pub fn diff(base: &TagBaseline, doc: &TagDoc) -> (Vec<Write>, Vec<Value>) {
         }
     }
     let mut excluded = Vec::new();
+    // A block the game is given as a move, with its elements, is sent as
+    // one ([`block_moves`]), not as writes at the addresses the document
+    // keeps for it.
+    for (&(_, pair), &(tag, size)) in &live_candidates(base, doc) {
+        excluded.push((pair, 8));
+        excluded.extend(block_regions(doc, tag, pair, size));
+    }
     let mut structures = BTreeSet::new();
     for (label, ranges) in doc.structural_edits().chain(&base.structural) {
         if !structures.insert((label, ranges)) {
@@ -445,6 +501,304 @@ pub fn diff(base: &TagBaseline, doc: &TagDoc) -> (Vec<Write>, Vec<Value>) {
         }
     }
     (writes, rows)
+}
+
+/// The most bytes of elements a move carries; a larger block waits for a
+/// reload (the request is one line, base64 doubling the bytes).
+const MOVE_MAX: usize = 64 * 1024;
+
+/// The blocks the game is, or is to be, given as moves: those the undo
+/// stack's operations changed and those the game already holds moved,
+/// with the tag and the element size. A block an operation shifted
+/// elements of stays under reload and is not here.
+fn live_candidates(base: &TagBaseline, doc: &TagDoc) -> BTreeMap<(u32, u32), (TagId, u32)> {
+    let mut found: BTreeMap<(u32, u32), (TagId, u32, bool)> = BTreeMap::new();
+    for b in doc.live_blocks() {
+        found.insert((b.tag.0, b.pair), (b.tag, b.size, b.live));
+    }
+    for (&(tag, pair), held) in &base.blocks {
+        found
+            .entry((tag, pair))
+            .or_insert((TagId(tag), held.size, true));
+    }
+    found
+        .into_iter()
+        .filter(|(_, (_, _, live))| *live)
+        .map(|(key, (tag, size, _))| (key, (tag, size)))
+        .collect()
+}
+
+/// Where a block's elements are in the document: the source's room and
+/// the current place, when it is in the loaded metadata.
+fn block_regions(doc: &TagDoc, tag: TagId, pair: u32, size: u32) -> Vec<(u32, u32)> {
+    let mut regions = Vec::new();
+    if let Some(src) = doc.read_source(tag, pair, 8) {
+        let count = u32::from_le_bytes([src[0], src[1], src[2], src[3]]);
+        let at = u32::from_le_bytes([src[4], src[5], src[6], src[7]]);
+        regions.push((at, count.saturating_mul(size)));
+    }
+    if let Some((count, at)) = doc.pair(tag, pair)
+        && !doc.is_grown_room(at)
+    {
+        regions.push((at, count.saturating_mul(size)));
+    }
+    regions
+}
+
+/// The block's count and elements as the document holds them.
+fn block_now(doc: &TagDoc, tag: TagId, pair: u32, size: u32) -> Option<(u32, Vec<u8>)> {
+    let (count, at) = doc.pair(tag, pair)?;
+    let len = count.checked_mul(size)?;
+    let bytes = if len == 0 {
+        Vec::new()
+    } else {
+        doc.read(tag, at, len)?
+    };
+    Some((count, bytes))
+}
+
+/// The block as the game holds it before any move: the source's.
+fn block_source(doc: &TagDoc, tag: TagId, pair: u32, size: u32) -> Option<Held> {
+    let src = doc.read_source(tag, pair, 8)?;
+    let count = u32::from_le_bytes([src[0], src[1], src[2], src[3]]);
+    let address = u32::from_le_bytes([src[4], src[5], src[6], src[7]]);
+    let len = count.checked_mul(size)?;
+    let bytes = if len == 0 {
+        Vec::new()
+    } else {
+        doc.read_source(tag, address, len)?.to_vec()
+    };
+    Some(Held {
+        count,
+        address: Some(address),
+        bytes,
+        size,
+    })
+}
+
+/// The path `moves` names the block whose `(count, address)` pair lies at
+/// `pair` by, as raw segments from the tag's root element (they need no
+/// definition and follow the game's own pointers), with the block field's
+/// `applies` and name.
+fn pair_path(
+    doc: &TagDoc,
+    tag: TagId,
+    root: u32,
+    layout: &Layout,
+    pair: u32,
+    prefix: &str,
+    depth: u8,
+) -> Option<(String, Option<&'static str>, String)> {
+    let offset = pair.checked_sub(root)?;
+    if let Some(f) = layout
+        .fields
+        .iter()
+        .find(|f| f.offset == offset && matches!(f.kind, Kind::Block(_)))
+    {
+        return Some((
+            format!("{prefix}+{offset:#x}:bytes[8]"),
+            f.applies,
+            f.name.clone(),
+        ));
+    }
+    if depth == 0 {
+        return None;
+    }
+    for field in &layout.fields {
+        let Kind::Block(child) = &field.kind else {
+            continue;
+        };
+        let Some((count, first)) = root
+            .checked_add(field.offset)
+            .and_then(|p| doc.block(tag, p, child))
+        else {
+            continue;
+        };
+        if child.size == 0 {
+            continue;
+        }
+        let Some(index) = pair
+            .checked_sub(first)
+            .map(|o| o / child.size)
+            .filter(|i| *i < count)
+        else {
+            continue;
+        };
+        let seg = format!("{prefix}+{:#x}/{:#x}[{index}].", field.offset, child.size);
+        if let Some(found) = pair_path(
+            doc,
+            tag,
+            first + index * child.size,
+            child,
+            pair,
+            &seg,
+            depth - 1,
+        ) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// One block the game is to be given again, as a `moves` entry of
+/// `edit.batch`: the whole block as the document holds it, put in the
+/// edit arena, its pair repointed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlockMove {
+    pub tag: TagId,
+    pub pair: u32,
+    /// Bytes per element.
+    pub size: u32,
+    /// The block's path from the tag's root (raw segments).
+    pub path: String,
+    /// The Pending row's path.
+    pub row_path: String,
+    pub count: u32,
+    pub bytes: Vec<u8>,
+    /// The `(count, address)` the game holds now.
+    pub was: (u32, u32),
+}
+
+impl BlockMove {
+    pub fn wire(&self) -> Value {
+        json!({
+            "root": {"tag": format!("{:#010x}", self.tag.0), "path": self.path},
+            "stride": self.size,
+            "count": self.count,
+            "capacity": self.count.max(1),
+            "bytes": encode_base64(&self.bytes),
+            "was": {"count": self.was.0, "address": self.was.1},
+        })
+    }
+}
+
+/// The block operations of tags the game has loaded as moves
+/// (docs/editor/realtime-edits.md, "The editor"), and the
+/// Pending rows for them: a move row for each block the game is to be
+/// given, a Shape row under After reload, with the reason, for a block it
+/// cannot be given (one nested in another changed block, too large, a play
+/// copy's block whose place the document does not know, or one the
+/// definition cannot name). A block the document holds as the game does
+/// has neither.
+pub fn block_moves(base: &TagBaseline, doc: &TagDoc) -> (Vec<BlockMove>, Vec<Value>) {
+    let found = live_candidates(base, doc);
+    let elements: Vec<(u32, Vec<(u32, u32)>)> = found
+        .iter()
+        .map(|(&(_, pair), &(tag, size))| (pair, block_regions(doc, tag, pair, size)))
+        .collect();
+    let mut moves = Vec::new();
+    let mut rows = Vec::new();
+    for (&(_, pair), &(tag, size)) in &found {
+        let Some((count, bytes)) = block_now(doc, tag, pair, size) else {
+            continue;
+        };
+        let Some(held) = base
+            .blocks
+            .get(&(tag.0, pair))
+            .cloned()
+            .or_else(|| block_source(doc, tag, pair, size))
+        else {
+            continue;
+        };
+        if held.count == count && held.bytes == bytes {
+            continue;
+        }
+        let entry = doc.tag(tag);
+        let name = entry.map_or_else(String::new, |t| t.name.clone());
+        let located =
+            entry.and_then(|t| pair_path(doc, tag, t.address, doc.layout(tag)?, pair, "", 12));
+        let field = located
+            .as_ref()
+            .map_or_else(|| "block".to_owned(), |(_, _, f)| f.clone());
+        let row_path = format!("{name} · {field} ({pair:#x})");
+        let tag_json = json!(format!("{:#010x}", tag.0));
+        let nested = elements.iter().any(|(other, regions)| {
+            *other != pair
+                && regions
+                    .iter()
+                    .any(|&(at, len)| pair.checked_sub(at).is_some_and(|o| o < len))
+        });
+        let why = if nested {
+            Some("the block lies inside another block that changed")
+        } else if bytes.len() > MOVE_MAX {
+            Some("the block is too large to send to the game")
+        } else if held.address.is_none() {
+            Some("the play copy holds this block where the document does not know")
+        } else if located.is_none() {
+            Some("the block's place in the tag is not known")
+        } else {
+            None
+        };
+        let (Some((path, applies, _)), Some(address), None) = (located, held.address, why) else {
+            let mut shape = row(
+                "tags",
+                tag_json,
+                &row_path,
+                Effect::Reload,
+                why.unwrap_or("the block's place in the tag is not known"),
+            );
+            set_class(&mut shape, Class::Shape);
+            rows.push(shape);
+            continue;
+        };
+        let effect = Effect::of_applies(applies);
+        let mut pending = row(
+            "tags",
+            tag_json,
+            &row_path,
+            effect,
+            "the block's elements go to the game's edit arena",
+        );
+        pending["label"] = json!(format!("{name} · {field}"));
+        pending["at"] = json!(pair);
+        rows.push(pending);
+        moves.push(BlockMove {
+            tag,
+            pair,
+            size,
+            path,
+            row_path,
+            count,
+            bytes,
+            was: (held.count, address),
+        });
+    }
+    (moves, rows)
+}
+
+/// Block moves the game refused, held until the block changes so the
+/// same move is not sent again.
+#[derive(Default)]
+pub(super) struct MoveRefusals {
+    held: Vec<(BlockMove, String)>,
+}
+
+impl MoveRefusals {
+    pub(super) fn record(&mut self, moves: &[BlockMove], why: &str) {
+        self.held
+            .extend(moves.iter().map(|m| (m.clone(), why.to_owned())));
+    }
+
+    /// Marks the rows of refused moves, and takes the moves out of
+    /// `moves`; a record whose block has changed is dropped.
+    pub(super) fn hold(&mut self, moves: &mut Vec<BlockMove>, rows: &mut [Value]) {
+        self.held.retain(|(h, _)| moves.contains(h));
+        if self.held.is_empty() {
+            return;
+        }
+        for row in rows {
+            let path = row["path"].as_str();
+            if let Some((_, why)) = self
+                .held
+                .iter()
+                .find(|(h, _)| path == Some(h.row_path.as_str()))
+            {
+                row["refused"] = json!(true);
+                row["why"] = json!(why);
+            }
+        }
+        moves.retain(|m| !self.held.iter().any(|(h, _)| h == m));
+    }
 }
 
 /// Re-resolve the submitted tag field, including every indexed block along its path.
@@ -676,6 +1030,107 @@ mod tests {
         assert_eq!(pending["class"], "field");
         assert_eq!(Effect::of_row(&pending), Some(Effect::NextUse));
     }
+
+    /// The weapon's parts block, operated on directly.
+    fn part_op(app: &mut crate::app::App, op: crate::app::BlockOp) -> Result<(), String> {
+        let layout = app.tags.layout(tag_tests::weap_id()).unwrap().clone();
+        let Kind::Block(child) = &layout.field_at(8).unwrap().kind else {
+            panic!("the weapon's parts are a block")
+        };
+        app.tags
+            .block_op(tag_tests::weap_id(), tag_tests::WEAP + 8, child, &op)
+    }
+
+    /// An append or a trailing removal of a live tag's block is a move of
+    /// the whole block, named by raw segments, `was` the source's pair; a
+    /// removal that shifts elements, which other blocks may index, is a
+    /// Shape row under reload; once the game holds the move nothing is
+    /// left, and undo is a move of the source's bytes back.
+    #[test]
+    fn block_operations_are_moves_when_no_index_shifts() {
+        use crate::app::BlockOp;
+        let t = crate::play::testing::Temp::new("tag-sync-moves");
+        let (mut app, _, _) = tag_tests::app(&t.0);
+        app.tags.allow_growth = true;
+        let base = TagBaseline::default();
+        assert!(block_moves(&base, &app.tags).0.is_empty());
+
+        part_op(&mut app, BlockOp::Add).unwrap();
+        let (moves, rows) = block_moves(&base, &app.tags);
+        assert_eq!(moves.len(), 1, "{rows:?}");
+        let m = &moves[0];
+        assert_eq!(
+            (m.path.as_str(), m.count, m.size),
+            ("+0x8:bytes[8]", 3, 0xc)
+        );
+        assert_eq!(m.bytes.len(), 3 * 0xc);
+        assert_eq!(m.was, (2, tag_tests::PARTS));
+        assert_eq!(rows.len(), 1);
+        assert_ne!(rows[0]["effect"], "reload");
+        // The elements are the document's, the new one after them.
+        assert_eq!(
+            m.bytes[..0x18],
+            app.tags
+                .read(tag_tests::weap_id(), tag_tests::PARTS, 0x18)
+                .unwrap()[..]
+        );
+        // The byte diff leaves the block to the move.
+        assert!(diff(&base, &app.tags).1.is_empty());
+
+        let mut held = base.clone();
+        held.moved(&moves, &json!({"moves": [{"address": 0xe200_0000u32}]}));
+        assert!(block_moves(&held, &app.tags).0.is_empty());
+
+        app.dispatch(crate::app::Action::Undo);
+        let (back, _) = block_moves(&held, &app.tags);
+        assert_eq!(back.len(), 1);
+        assert_eq!((back[0].count, back[0].was), (2, (3, 0xe200_0000)));
+        assert_eq!(back[0].bytes.len(), 2 * 0xc);
+        // The source's, and nothing to say against the source's own base.
+        assert!(block_moves(&base, &app.tags).0.is_empty());
+    }
+
+    /// A removal that moves later elements down is not a move.
+    #[test]
+    fn a_removal_that_shifts_elements_stays_under_reload() {
+        use crate::app::BlockOp;
+        let t = crate::play::testing::Temp::new("tag-sync-shift");
+        let (mut app, _, _) = tag_tests::app(&t.0);
+        part_op(&mut app, BlockOp::Remove(0)).unwrap();
+        let base = TagBaseline::default();
+        assert!(block_moves(&base, &app.tags).0.is_empty());
+        let rows = diff(&base, &app.tags).1;
+        assert!(
+            rows.iter()
+                .any(|r| r["class"] == "shape" && r["effect"] == "reload")
+        );
+    }
+
+    /// A refused move is held until its block changes.
+    #[test]
+    fn a_refused_move_is_held_until_the_block_changes() {
+        use crate::app::BlockOp;
+        let t = crate::play::testing::Temp::new("tag-sync-refused");
+        let (mut app, _, _) = tag_tests::app(&t.0);
+        app.tags.allow_growth = true;
+        part_op(&mut app, BlockOp::Add).unwrap();
+        let base = TagBaseline::default();
+        let (moves, mut rows) = block_moves(&base, &app.tags);
+        let mut refused = MoveRefusals::default();
+        refused.record(&moves, "no room");
+        let mut again = moves.clone();
+        refused.hold(&mut again, &mut rows);
+        assert!(again.is_empty());
+        assert_eq!(
+            (rows[0]["refused"].clone(), rows[0]["why"].clone()),
+            (json!(true), json!("no room"))
+        );
+        part_op(&mut app, BlockOp::Add).unwrap();
+        let (mut changed, mut rows) = block_moves(&base, &app.tags);
+        refused.hold(&mut changed, &mut rows);
+        assert_eq!(changed.len(), 1);
+        assert!(rows[0].get("refused").is_none());
+    }
 }
 
 /// The fan-out on the invented game (docs/editor/live-editors.md, LE1).
@@ -732,6 +1187,10 @@ mod fan_out_tests {
     }
 
     fn remove_part(app: &mut App) {
+        part_op(app, BlockOp::Remove(0));
+    }
+
+    fn part_op(app: &mut App, op: BlockOp) {
         let field = app
             .tags
             .layout(tag_tests::weap_id())
@@ -746,7 +1205,7 @@ mod fan_out_tests {
             tag: tag_tests::weap_id(),
             pair: tag_tests::WEAP + 8,
             layout: layout.clone(),
-            op: BlockOp::Remove(1),
+            op,
         }));
     }
 
@@ -849,6 +1308,49 @@ mod fan_out_tests {
         let row = app.pairing.pending.iter().find(|r| r["doc"] == "host").unwrap();
         assert_eq!(row["why"], Host::NO_RELOAD);
         assert_eq!(reloads.load(Ordering::SeqCst), 0);
+    }
+
+    /// An element added to a block is one batch with one move, alone, not
+    /// a reload; undoing it is a second move of the source's elements, and
+    /// the game's last answer is the `was` of the next.
+    #[test]
+    fn an_added_element_is_one_batch_with_a_move() {
+        let (_t, game, mut app, mut play, _) = paired("fan-grow-own", true);
+        app.session.set_allow_growth(true);
+        app.tags.allow_growth = true;
+        part_op(&mut app, BlockOp::Add);
+        until(&mut play, &mut app, "the move's batch", |p, _| {
+            game.calls("edit.batch").len() == 1 && p.edits.sent.is_none()
+        });
+        frames(&mut play, &mut app, 20);
+        let calls = game.calls("edit.batch");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["writes"].as_array().unwrap().len(), 0);
+        let moves = calls[0]["moves"].as_array().unwrap();
+        assert_eq!(moves.len(), 1);
+        assert_eq!(moves[0]["root"]["path"], "+0x8:bytes[8]");
+        assert_eq!(
+            (moves[0]["count"].clone(), moves[0]["stride"].clone()),
+            (json!(3), json!(0xc))
+        );
+        assert_eq!(
+            moves[0]["was"],
+            json!({"count": 2, "address": tag_tests::PARTS})
+        );
+        let bytes = agent_proto::hot::decode_base64(moves[0]["bytes"].as_str().unwrap()).unwrap();
+        assert_eq!(bytes.len(), 3 * 0xc);
+        assert!(app.pairing.pending.iter().all(|r| r["doc"] != "tags"));
+        assert!(game.calls(MAP_RELOAD).is_empty());
+
+        app.dispatch(Action::Undo);
+        until(&mut play, &mut app, "the undo's move", |p, _| {
+            game.calls("edit.batch").len() == 2 && p.edits.sent.is_none()
+        });
+        let back = &game.calls("edit.batch")[1]["moves"][0];
+        assert_eq!(back["count"], 2);
+        assert_eq!(back["was"]["count"], 3);
+        assert_ne!(back["was"]["address"], json!(tag_tests::PARTS));
+        assert!(app.pairing.pending.iter().all(|r| r["doc"] != "tags"));
     }
 
     /// A block element removed is a Shape change: one play-copy reload in
