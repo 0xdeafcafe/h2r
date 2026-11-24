@@ -1,6 +1,6 @@
 # Animation graphs (`jmad`) and animation data
 
-Status: Built. Code: `crates/formats/tags/src/anim.rs`, `crates/formats/tags/src/anim_sample.rs`. Tests: `crates/formats/tags/src/anim_tests.rs`. Switch: none.
+Status: Built. Code: `crates/formats/tags/src/anim.rs`, `crates/formats/tags/src/anim_sample.rs`, encoder `crates/formats/tags/src/anim_write.rs`. Tests: `crates/formats/tags/src/anim_tests.rs`, `anim_write_tests.rs`. Switch: none.
 
 This describes `crates/formats/tags/src/anim.rs` (the `jmad` tag), `crates/formats/tags/src/anim_sample.rs`
 (decompression and sampling) and `h2 anim` in `crates/apps/cli`. Like
