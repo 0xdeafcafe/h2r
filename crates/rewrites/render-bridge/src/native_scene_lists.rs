@@ -3,6 +3,7 @@
 //! guest-memory guard and proposes all its writes before any output
 //! becomes visible.
 mod geometry;
+mod portal_merge;
 mod lights;
 mod objects;
 mod object_lod;
@@ -135,6 +136,7 @@ impl Feature for ScaledSceneLists {
             lights::extra_caster,
         );
         regions::install(b);
+        portal_merge::install(b);
         install(
             b,
             Seam::Function(&points::TRANSPARENT_EFFECT_ENTRY, 8),

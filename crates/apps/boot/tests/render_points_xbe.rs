@@ -23,6 +23,8 @@ fn the_native_renderers_points_are_discovered_functions() {
         &points::LAYER_DRAW,
         &points::SCENE_TRANSPARENTS,
         &points::TRANSPARENT_GEOMETRY,
+        &points::PORTAL_WINDOW_MERGE,
+        &points::PORTAL_WINDOW_REGIONS,
         &points::SCENE_CLUSTER_GATHER,
         &points::SCENE_GEOMETRY_GATHER,
         &points::VIEW_PVS_REGIONS,
