@@ -1,6 +1,6 @@
 # Game type markers
 
-Status: Partly built. The marker set and the area model exist (MK1), Studio draws the markers and answers `markers.list` and `markers.render` (MK4), Forge draws them as world lines and answers `render.markers` (MK6), the Forge document stores areas, which `forge.things` and `forge.propose` carry (MK2), a script's zone reads them (MK3), Studio edits them (MK5), Forge places and edits them in the monitor (MK7) and a script shows an area's wall in play (MK8); the skin, Studio's saved map and the wall on a client that does not run the script are design.
+Status: Partly built. The marker set and the area model exist (MK1), Studio draws the markers and answers `markers.list` and `markers.render` (MK4), Forge draws them as world lines and answers `render.markers` (MK6), the Forge document stores areas, which `forge.things` and `forge.propose` carry (MK2), a script's zone reads them (MK3), Studio edits them (MK5), Forge places and edits them in the monitor (MK7) and a script shows an area's wall in play (MK8) and the renderer's marker pass draws the skin and the X-ray lines (MK9, `native_render::markers`; feeding it the game's marker meshes is not wired); the skin, Studio's saved map and the wall on a client that does not run the script are design.
 Code: `crates/formats/game-markers/src/lib.rs` (`Marker::mesh`), `crates/formats/game-markers/src/area.rs` (`Area`), `crates/tools/scenario-edit/src/marker_view.rs` (`placed`, `overlays`), `crates/apps/studio/src/api/markers.rs`, `crates/apps/studio/src/api/markers_check.rs` (the `markers` check), `crates/tools/scenario-edit/src/area_edit.rs` (handles, drag), `crates/tools/scenario-edit/src/session/area.rs` (`set_area`, `convert_hill`), `crates/apps/studio/src/viewport/area.rs`, `crates/apps/studio/src/ui/inspector/area.rs`, `crates/extensions/game/src/forge_glue/markers_world.rs` (Forge's source, `render.markers`), `crates/extensions/game/src/forge_glue/editing/area.rs` (Forge's draft area), `crates/formats/forge-doc/src/{area,entry,links}.rs`, `crates/extensions/forge/src/session.rs`, `crates/extensions/agent/src/forge/local.rs`, `crates/extensions/game/src/rules/world/zones.rs` (`Zones::new`), `crates/formats/rules/src/fake.rs` (`FakeGame::set_area`, `move_to`, `shown`), `crates/formats/rules/src/vm.rs` (`RulesExt::shown`), `crates/extensions/game/src/rules/world/walls.rs`, `crates/extensions/game/src/forge_glue/markers_world.rs` (`Wall`, `draw_walls`), `crates/live/bots/src/objective/zones.rs` (`first_hill`), `crates/extensions/agent-proto/src/rules.rs` (`rules.zones`). Tests: `crates/formats/game-markers/src/tests.rs`, `marker_view.rs`, `crates/apps/studio/src/api/tests/markers_tests.rs`, `crates/tools/scenario-edit/src/area_tests.rs`, `area_edit.rs`, `crates/apps/studio/src/viewport/area.rs`, `crates/extensions/game/src/forge_glue/markers_world/tests.rs`, `crates/extensions/game/src/forge_glue/editing/tests/area.rs`, `crates/formats/forge-doc/src/tests/area.rs`, `crates/extensions/forge/src/base_tests.rs`, `crates/extensions/agent/src/forge/tests.rs`, `zones.rs`' `a_flags_area_is_its_zone_before_corners_and_the_default`, `crates/formats/rules/tests/area_zones.rs`, `crates/formats/rules/tests/modes.rs` (`siege_shows_each_site_in_its_holders_colour`), `crates/extensions/game/src/rules/runtime/tests/world.rs`, `crates/extensions/game/src/rules/world/walls.rs`, `crates/live/bots/src/objective/zones/tests.rs`, `crates/extensions/agent/src/rules/tests.rs`.
 Switch: none.
 
@@ -266,15 +266,20 @@ area.
 - **Lines first.** The world-line pass draws lines, with no depth test.
   That is the hologram's frame and is enough to read every marker. The
   translucent skin (`Mesh::tris`) is drawn by a marker pass of the
-  native renderer (`native_render::markers`, new): alpha blended, depth
-  tested and not written, after the world's transparents and before the
-  HUD, behind the renderer's own switch `impl.render.native`
-  ([switches.md](../runtime/switches.md)). With the native renderer off
-  the lines alone draw.
+  native renderer (`native_render::markers::Pass`): alpha blended, depth
+  tested and not written, over the world's colour and depth, behind the
+  renderer's own switch `impl.render.native`
+  ([switches.md](../runtime/switches.md)). It takes a `Batch` of
+  vertices (three a face, two a line) and a world-to-clip matrix.
+  With the native renderer off (`markers::plan`) the pass draws nothing
+  and the lines alone draw.
 - **Depth.** A marker behind a wall draws its lines at a third of their
-  alpha (the X-ray look) and no skin, so an author finds a spawn through
-  a wall and still sees which side of it the spawn is on. The line pass
-  has no depth, so until the marker pass exists every line draws full.
+  alpha (`markers::XRAY_ALPHA`, the X-ray look) and no skin, so an author
+  finds a spawn through a wall and still sees which side of it the spawn
+  is on. The marker pass tests against the world's depth: the skin and
+  the lines in front draw where the marker is nearer, the lines behind
+  where it is not. The window's line pass has no depth, so on its own
+  every line draws full.
 - **Distance.** A marker fades from 40 world units to nothing at 60, an
   area's wall from 80 to 120, as the window's own per-line fade
   (`LineStyle::fade`); its label shows within 20. The aimed-at and held
@@ -419,7 +424,7 @@ lines with tests, M under 2,500.
 | MK6 (built) | **Forge draws them**: `forge_glue::markers_world` as a world-line source, the fades and the budget, the label text, `render.markers`; the HUD-canvas rings for ground labels removed | M | MK1 | on an invented session every thing gives its marker's lines with the monitor on and none with it off; a marker of another game type is faded; the 257th marker is counted and not drawn |
 | MK7 (built) | **Forge edits areas**: **Edit area**, radius by stick and typed, the path's drop, drag, remove and close, the notices | M | MK2, MK6 | scripted pad input (`forge.input`) that drops four points and closes writes one op with those points; a crossing fifth point is refused with its sentence and the path is unchanged; B leaves the document as it was |
 | MK8 (built) | **The boundary in play**: `show_area`, `hide_area`, the eight shown areas in `RulesExt`, the built-ins' calls, the wall from the same source | S | MK3, MK6 | on the fake game `koth.rules` shows the hill in play and one area at a time as the hill moves; the shown areas are equal on a host and a client after a tick; a script that never calls it shows none |
-| MK9 | **The skin**: `native_render::markers`, the translucent faces with depth, the X-ray lines | M | MK6 | on the renderer's headless target a hill's wall changes pixels in front of a floor and none behind a nearer wall; with `impl.render.native=off` the lines draw alone |
+| MK9 (pass built) | **The skin**: `native_render::markers`, the translucent faces with depth, the X-ray lines | M | MK6 | on the renderer's headless target a hill's wall changes pixels in front of a floor and none behind a nearer wall; with `impl.render.native=off` the lines draw alone |
 
 MK1 is first. MK2 and MK4 start together after it, and MK6 beside
 them; MK3, MK5 and MK7 follow their needs; MK8 and MK9 are last.
@@ -437,7 +442,11 @@ them; MK3, MK5 and MK7 follow their needs; MK8 and MK9 are last.
   `a_concave_path_holds_what_is_in_it_and_not_its_notch`,
   `a_radius_area_holds_a_cylinder`. A retail hill's area:
   `a_hills_corners_make_the_area_the_host_makes_of_them`. All in
-  `crates/formats/game-markers/src/tests.rs`.
+  `crates/formats/game-markers/src/tests.rs`. The skin on the headless
+  target: `a_wall_changes_pixels_in_front_of_a_floor_and_none_behind_a_nearer_wall`
+  and `a_line_behind_the_world_draws_at_a_third_of_its_alpha`
+  (`crates/rewrites/native-render/tests/markers_gpu.rs`); the switch:
+  `with_the_native_renderer_off_nothing_draws_here`.
 - **C** Halo 3's Forge shows spawn and goal objects as holograms in the
   team's colour under a chosen game type, and its hill in play is a
   ring of light on the floor; Halo: Reach gives a labelled object a
