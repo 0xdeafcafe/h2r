@@ -1368,6 +1368,14 @@ points! { ALL;
     /// The best free starting location for a player (handle in ECX): AX the
     /// index into `scnr+0x100`, `0xffff` when every spot is blocked.
     PLAYER_SPAWN_LOCATION @ 0x0014_ef00: [fn(player: ecx, unit: stack 0, a: stack 1, b: stack 2) -> eax ret 12]; "docs/live/live-coop.md";
+    /// The spawn chooser's free-spot test, called only from
+    /// `PLAYER_SPAWN_LOCATION` (`0x14efce`), and only for a location that
+    /// weighs more than the best so far: ECX the starting location
+    /// (`scnr+0x104` + `0x34` × index), EAX the unit type the player spawns
+    /// as (-1 passes). AL 1 when the type's capsule fits there, 0 when
+    /// something stands in it, and the chooser then keeps its best. EDI
+    /// holds the chooser's player handle across the call.
+    SPAWN_LOCATION_FREE @ 0x0023_bb70: [fn(location: ecx, unit: eax) -> al ret 0]; "docs/game/notes/2026-11-24-siege-spawns-and-bodies.md";
     /// Retail co-op placement: move a player (EBX) next to a position (ESI,
     /// three floats) beside an anchor unit (stack). The co-op respawn's
     /// own call is at `0x14cffd`. AL 1 when placed.

@@ -8,6 +8,7 @@
 //! See [the design](../../../../docs/game/rules-engine.md).
 #![forbid(unsafe_code)]
 
+pub mod bodies;
 pub mod builtin;
 pub mod caps;
 pub mod fake;

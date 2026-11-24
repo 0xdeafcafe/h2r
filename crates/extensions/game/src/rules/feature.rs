@@ -24,6 +24,13 @@
 //! - `GAME_TICK`, an observer after: timers and `on tick`
 //!   ([`Runtime::post_tick`]).
 //! - `GAME_END`, an observer after: the record is removed.
+//! - `PLAYER_SPAWN_LOCATION`, observers before and after, and
+//!   `SPAWN_LOCATION_FREE`, a `before` in the default class: a team's
+//!   spawn rule keeps its spawns to the rule's starting locations
+//!   ([`register_spawns`], `super::world::spawns`).
+//! - `PLAYER_SPAWN`, a `before` and an `after` in the default class: a
+//!   team's body is the spawning player's model byte for the length of
+//!   the spawn ([`register_bodies`], `super::world::body`).
 //! - `SLAYER_KILL`, `JUGGERNAUT_KILL`, `JUGGERNAUT_TICK` and `SCORE_ADD`,
 //!   `before`s in the default class: while a script runs on the authority,
 //!   the carrier's own scoring and role-making return at once
@@ -63,6 +70,13 @@ pub struct Shared {
     pub reentry: AtomicBool,
     /// The last `rules.reload`, for `rules.state`.
     last_reload: Mutex<Option<wire::LastReload>>,
+    /// The live starting locations of the spawn pick in progress, set as
+    /// `PLAYER_SPAWN_LOCATION` starts and cleared as it returns.
+    spawn_pick: Mutex<Option<super::world::spawns::Filter>>,
+    /// The model byte each spawn in progress was given, to put back after
+    /// it: one entry per `PLAYER_SPAWN` running, innermost last, so a
+    /// spawn that re-enters itself (`coop_players`) puts back only its own.
+    body_swap: Mutex<Vec<Option<super::world::body::Swap>>>,
     /// What a reload reaches beyond the runtime, set at install.
     links: OnceLock<Links>,
 }
@@ -79,6 +93,8 @@ impl Shared {
             runtime: Mutex::new(runtime),
             reentry: AtomicBool::new(false),
             last_reload: Mutex::new(None),
+            spawn_pick: Mutex::new(None),
+            body_swap: Mutex::new(Vec::new()),
             links: OnceLock::new(),
         }
     }
@@ -94,6 +110,16 @@ impl Shared {
 
     pub fn links(&self) -> Option<&Links> {
         self.links.get()
+    }
+
+    /// The spawn pick in progress (`super::world::spawns`).
+    pub fn spawn_pick(&self) -> MutexGuard<'_, Option<super::world::spawns::Filter>> {
+        self.spawn_pick.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The model bytes of the spawns in progress (`super::world::body`).
+    pub fn body_swap(&self) -> MutexGuard<'_, Vec<Option<super::world::body::Swap>>> {
+        self.body_swap.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn set_last_reload(&self, r: wire::LastReload) {
@@ -341,6 +367,8 @@ impl hooks::Feature for Rules {
             s.lock().post_tick(m);
         });
         super::scoring::register(b, &self.shared);
+        register_spawns(b, &self.shared);
+        register_bodies(b, &self.shared);
         let s = Arc::clone(&self.shared);
         b.game().on_end("end the rules script", move |_| {
             s.lock().ended();
@@ -351,6 +379,102 @@ impl hooks::Feature for Rules {
         }));
         Ok(())
     }
+}
+
+/// The spawn rules (`spawn_areas`, `spawn_near`; `super::world::spawns`):
+/// as `PLAYER_SPAWN_LOCATION` starts, the spawning player's (ECX) team
+/// rule becomes the pick's filter, cleared as it returns; the free-spot
+/// test `SPAWN_LOCATION_FREE`, which only that chooser calls, answers AL 0
+/// ("something stands there") for a location the filter does not keep,
+/// so the chooser keeps its best of the rest. No other feature answers
+/// the test; `coop_players`' `after` on the chooser only runs in co-op.
+fn register_spawns(b: &mut hooks::Builder, shared: &Arc<Shared>) {
+    use hooks::Flow;
+    let s = Arc::clone(shared);
+    b.raw().observe_before(
+        &engine::points::PLAYER_SPAWN_LOCATION,
+        "rules: the spawning team's starting locations",
+        move |o| {
+            let pick = {
+                let mem = o.guest();
+                let m: &dyn GuestMemory = &*mem;
+                s.lock().spawn_filter(m, o.cpu.ecx)
+            };
+            *s.spawn_pick() = pick;
+        },
+    );
+    let s = Arc::clone(shared);
+    b.raw().observe_after(
+        &engine::points::PLAYER_SPAWN_LOCATION,
+        "rules: the spawn pick ends",
+        move |_| {
+            *s.spawn_pick() = None;
+        },
+    );
+    let s = Arc::clone(shared);
+    b.raw().before(
+        &engine::points::SPAWN_LOCATION_FREE,
+        "rules: a starting location off the team's rule is taken",
+        move |c| {
+            let blocked = s.spawn_pick().as_ref().is_some_and(|f| !f.passes(c.cpu.ecx));
+            if !blocked {
+                return Ok(Flow::Continue);
+            }
+            c.cpu.eax &= !0xff;
+            c.ret(0).map(Flow::Return)
+        },
+    );
+}
+
+/// The teams' bodies (`set_body`; `super::world::body`): before
+/// `PLAYER_SPAWN` (the player handle its stack argument), the spawning
+/// player's team body becomes its model byte; after it, the player's own
+/// is put back. Both continue the chain. `sim_glue`'s `before` runs first
+/// (its own class), and `coop_players`' (campaign co-op, which runs no
+/// script) sits outside this one.
+fn register_bodies(b: &mut hooks::Builder, shared: &Arc<Shared>) {
+    use hooks::Flow;
+    let s = Arc::clone(shared);
+    b.raw().before(
+        &engine::points::PLAYER_SPAWN,
+        "rules: the spawning team's body",
+        move |c| {
+            // One entry per spawn, written or not, so the after pops its own.
+            let mut swap = None;
+            if let Some(handle) = c.arg_u32("player") {
+                let rt = Arc::clone(c.ctx.runtime());
+                let mut mem = rt.memory();
+                let m: &mut dyn GuestMemory = &mut *mem;
+                let body = s.lock().spawn_body(&*m, handle);
+                if let Some((slot, body)) = body {
+                    match super::world::body::put(m, slot, body) {
+                        Ok(w) => swap = w,
+                        Err(e) => eprintln!("rules: player {slot}'s body was not set: {e:?}"),
+                    }
+                }
+            }
+            s.body_swap().push(swap);
+            Ok(Flow::Continue)
+        },
+    )
+    // Inside `coop_players`' spawn, which re-enters the spawn it answers.
+    .after_feature(crate::coop_players::FEATURE);
+    let s = Arc::clone(shared);
+    b.raw().after(
+        &engine::points::PLAYER_SPAWN,
+        "rules: the player's own body again",
+        move |c| {
+            let Some(swap) = s.body_swap().pop().flatten() else {
+                return Ok(());
+            };
+            let rt = Arc::clone(c.ctx.runtime());
+            let mut mem = rt.memory();
+            if let Err(e) = super::world::body::restore(&mut *mem, swap) {
+                eprintln!("rules: a player's own body was not put back: {e:?}");
+            }
+            Ok(())
+        },
+    );
 }
 
 /// Adds the feature. Says why when it is left out. `film`: this run plays

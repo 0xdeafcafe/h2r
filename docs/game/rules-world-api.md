@@ -245,8 +245,9 @@ entries, signatures and fake of a group in
 `vehicles`, `squads`, `bots`, `audio`, `hud`, `physics`, `data` and
 `show`. The host's zone test (`world/zones.rs`, the labelled flags as
 cylinders and hill polygons, behind `inside`, `ticks_held`, `on enter`
-and `on leave`) and `set_loadout` (`world/loadout.rs`) are guest halves
-of the core entries, with no group of their own
+and `on leave`), `set_loadout` (`world/loadout.rs`), the spawn rules
+(`world/spawns.rs`) and the bodies (`world/body.rs`) are guest halves of the core entries, with no group
+of their own
 ([rules-engine.md](rules-engine.md#the-host-runtime)).
 `rules::vm::Game` gains one sub-trait per group, so a fake or a
 host implements a group whole or not at all. The traits take typed
@@ -411,6 +412,27 @@ nothing.
 | Script | Entry | Engine | Status | Synced by |
 |---|---|---|---|---|
 | `set_loadout(p, primary, secondary)` | `set_loadout` | `STARTING_WEAPON_PICK` (`0x19eda0`) answers the value's tag from the map's multiplayer globals, as the spawn's weapon pass asks it; the weapon is made and added as a starting profile does (`placement_data_new`, `object_new`, `unit_add_weapon`, and `object_delete` when the unit refuses it) — the primary in mode 2, which empties the unit's weapon slots first and readies it, the secondary in mode 1 beside it (mode 2 when there is no primary) | named | the unit's weapon entities |
+
+### Spawns
+
+Capability `player.spawn`. A team's spawn rule is in the VM's state
+until the round's end; the host reads it at each spawn, so neither call
+waits for a tick boundary.
+
+| Script | Entry | Engine | Status | Synced by |
+|---|---|---|---|---|
+| `spawn_areas(team, label, n)` | `spawn_areas` | `SPAWN_LOCATION_FREE` (`0x23bb70`), the free-spot test of `PLAYER_SPAWN_LOCATION` (`0x14ef00`), answers "taken" for each starting location not labelled `label` and numbered `n`; the chooser's own weights pick among the rest | named | the spawned unit |
+| `spawn_near(team, zone, n)` | `spawn_near` | as above, keeping the `n` starting locations nearest the zone's middle; `none` or 0 lifts the rule | named | the spawned unit |
+
+### Bodies
+
+Capability `player.disguise`. A team's body is in the VM's state until
+the round's end, and the host writes it at each spawn of the team's
+players.
+
+| Script | Entry | Engine | Status | Synced by |
+|---|---|---|---|---|
+| `set_body(team, tag)` | `set_body` | the model byte (player `+0x88`) is the body's (0 `masterchief_mp`, 1 `elite_mp`) while `PLAYER_SPAWN` (`0x14f2e0`) runs, and the player's own after it; the representation pick `0x14f040` reads it for the unit type (`rules/world/body.rs`). `none` lifts it; another tag is a script error | named | the spawned unit; **S** a client's first-person hands |
 
 ### Audio
 

@@ -255,7 +255,9 @@ game answers it from its `enter` and `leave` events.
 | `take` | player, object | `player.weapons` | now | traced |
 | `create` | tag, object | `objects.create` | queued | traced |
 | `delete` | object | `objects.delete` | queued | named |
-| `spawn_areas` | team, label, int | `player.spawn` | now | untraced |
+| `spawn_areas` | team, spawns label, int | `player.spawn` | now | named (labelled starting locations; a retail map has none) |
+| `spawn_near` | team, zone (may be `none`), int | `player.spawn` | now | named (the `n` starting locations nearest the zone; `none` or 0 lifts it) |
+| `set_body` | team, tag (may be `none`) | `player.disguise` | now | named (`objects/characters/masterchief/masterchief_mp` or `objects/characters/elite/elite_mp`; `none` gives the players their own) |
 | `message` | player, team or `all`; text | `hud.message` | now | untraced |
 | `place_squad` | squad, Class, int, label | `ai.squads` | queued | named |
 | `place_squad_at` | squad, Class, int, int, int | `ai.squads` | queued | named |
@@ -294,7 +296,9 @@ The VM stops, the round ends with "script error", the same op every run:
 the tick's 100,000 ops ran out (`Budget`), a table row out of range
 (`TableRow`), more than 256 objects with object variables (`Objects`), more
 than 128 queued calls (`Queue`), `squad(n)` outside 0 to 15 (`Squad`),
-more than 32 zones asked about by `ticks_held` (`Zones`).
+more than 32 zones asked about by `ticks_held` (`Zones`), a `set_body` tag
+that is no player body (`Body`; one written in the call is a compile
+error, `body.unknown`).
 `h2 rules run` prints `script error <kind> at tick T, handler H, op P` and
 exits 1.
 

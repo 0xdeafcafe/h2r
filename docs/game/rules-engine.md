@@ -314,8 +314,8 @@ kills, deaths, `alive`, `team_of`, `lives`, `round_time_left`,
 `is_objective`, `carrier_of`, the label reads (`label_number`,
 `label_of`, `zone_id`, `object_team`), `inside` and `player_of`; an
 action other than `score`, `end_round`, `set_lives`, `respawn`,
-`role_traits`, `reset_objective`, the bot orders, the messages and
-`set_loadout`; a variant field other than `team_play`, `score_limit`,
+`role_traits`, `reset_objective`, the bot orders, the messages,
+`set_loadout`, `spawn_areas`, `spawn_near` and `set_body`; a variant field other than `team_play`, `score_limit`,
 `time_limit` and `lives`, whose record offsets are not traced; a
 `grant`; a script that calls `set_loadout` and names a weapon off the
 multiplayer weapon list (`rules::weapons`), by the weapon's path.
@@ -485,6 +485,45 @@ Oddball and CTF give their carrier traits to whoever holds the
 objective, and Slayer, King and Territories have no role traits, so a
 host makes the call on no other carrier. A game whose Juggernaut globals
 are not set up, or a slot with no player, is a refused call.
+
+`spawn_areas(team, label, n)` and `spawn_near(team, zone, n)`
+(`rules/world/spawns.rs`) set the team's spawn rule, which the VM keeps
+in its state (`rules::vm::Spawns`, so checkpoints, snapshots and films
+carry it) until the round's end; neither makes a call at the boundary.
+The engine's spawn chooser `PLAYER_SPAWN_LOCATION` (`0x14ef00`) weighs
+every starting location of `scnr+0x100` and keeps the heaviest that
+passes its free-spot test `SPAWN_LOCATION_FREE` (`0x23bb70`), which
+nothing else calls. As the chooser starts, the feature reads the
+spawning player's (ECX) team rule; the free-spot test then answers AL 0
+for each location outside it, so the chooser picks among the rule's
+locations by its own weights and draws. `spawn_areas` keeps the starting
+locations labelled `label` and numbered `n`; `spawn_near` keeps the `n`
+(at most 255) nearest the zone's middle (a flag's position, a hill's
+corners' mean), the lower index first on a tie, and `none` or an `n` of
+0 lifts the team's rule. A rule the map has no location for leaves the
+engine's own pick. With every location of a rule stood on, the chooser
+finds none, and the engine retries the spawn each tick until one is
+free. The host's census has no Forge document at a game's start, so a
+retail map's starting locations carry no label and the start gate
+refuses a script whose `spawns` label needs members; `spawn_near`
+needs none. The evidence is in
+[notes/2026-11-24-siege-spawns-and-bodies.md](notes/2026-11-24-siege-spawns-and-bodies.md).
+
+`set_body(team, tag)` (`rules/world/body.rs`) sets the body the team's
+players spawn in, the Spartan (`masterchief_mp`) or the Elite
+(`elite_mp`), which the VM keeps in its state (`RulesExt::bodies`) until
+the round's end; `none` lifts it, and any other tag stops the script
+with a script error (`rules::bodies`; the checker names a literal one,
+`body.unknown`). A multiplayer player's body is the map's player
+representation that the active configuration's model byte (player
+`+0x88`, 0 the Spartan, 1 the Elite) picks: `PLAYER_SPAWN` (`0x14f2e0`)
+asks the representation pick `0x14f040` for the unit type, and the hand
+over `0x14cad0` reads the byte again. Before `PLAYER_SPAWN` runs for a
+player whose team has a body, the feature writes the body's model byte,
+and after it returns it puts the player's own back, so the spawn's every
+read sees the team's body and the lobby, the scoreboard and the next
+game keep the player's choice. The spawn is the host's; clients get the
+unit. The evidence is in the same note.
 
 The objective set (`for each objectives`) and `o.carrier` (`carrier_of`)
 read the registry `E+0xc18`/`E+0xc1c` (`rules/objectives.rs`): each
@@ -1096,8 +1135,14 @@ straight to the flag stand, with no flag stand taking every site wins
 it, and with neither the round draws at its start with a message. The
 variant's `lives = 1` holds each death's respawn (the engine's own
 lives gate), and each side's dead come back together when its wave
-timer (`wave_time`) runs out (`respawn`). It opens no barriers
-and moves no spawn areas (`delete`, `create` and `spawn_areas` are not
+timer (`wave_time`) runs out (`respawn`). Each side spawns near its
+line (`spawn_near`, the four starting locations nearest it), and the
+lines move with the phases: the attackers start at their own flag stand
+(`base[team 0]`) and spawn at each site they take, and the defenders
+hold a site still to take, then fall back to their flag stand for the
+final assault. A line the map lacks (no flag stand) leaves that side the
+engine's own spawns. The attackers spawn as Spartans and the defenders
+as Elites (`set_body`), whatever each player chose. It opens no barriers (`delete` and `create` are not
 hostable, "The engine API"), and it has no core to carry.
 
 ### A Forge graph is the same IR
@@ -1298,11 +1343,12 @@ Actions:
 | `role_traits(p, on)`: the carrier engine's role and its traits from the variant's type area | Juggernaut: `JUGGERNAUT_ROLE_SET` `0x192970` (the player's bit of the role mask `[0x510c9c]+0`), whose trait query `0x1926c0` answers from the mask. Oddball's and CTF's carrier traits follow the held object (`0x2bcc90`); Slayer, King and Territories have none | named on Juggernaut | core |
 | barriers and other map changes | create and delete at labels, as above; a barrier is a labelled placement (forge-features.md "Invisible barriers") | not built | `objects.create`, `objects.delete` |
 | `place_squad(s, class, n, label)` from the palette with its team, `hunt(s)`, erase | `AI_SQUAD_PLACE` `0x201520`, `AI_SET_TEAM` `0x275b60`, `AI_SET_ORDERS` `0x275cb0`, `AI_ERASE` `0x2736c0`, through `actor_net::squads::SquadEntry` (firefight.md "Guest boundary") | named; game runs R1, R2 pending | `ai.squads` |
-| `spawn_areas(team, label, n)`: which starting locations are live | answer a hook on `PLAYER_SPAWN_LOCATION` `0x14ef00` (picks from `scnr+0x100`) with labelled locations only; how the routine weighs locations is not traced | named point; untraced rule | `player.spawn` |
+| `spawn_areas(team, label, n)`: the team spawns only at the starting locations labelled `label` and numbered `n` | the rule in the VM's state; `SPAWN_LOCATION_FREE` `0x23bb70`, the free-spot test of `PLAYER_SPAWN_LOCATION` `0x14ef00`, answers "taken" for every other location (`rules/world/spawns.rs`); how the chooser weighs a location is not traced and not needed | named | `player.spawn` |
+| `spawn_near(team, zone, n)`: the team spawns only at the `n` starting locations nearest the zone; `none` or 0 lifts it | as `spawn_areas`, over the starting locations' positions (`+0x00`) | named | `player.spawn` |
 | loadout chosen at spawn | `on spawn` and `set_loadout`, plus a picker screen of ours | named; picker not built | `player.weapons` |
 | `give(p, tag)`: a weapon into a living player's hands | no entry proven. The pickup's attach routine `0x10ca80` (item, new unit) is on record as an observer only (**E**, [bots.md](bots.md) "Weapon taken") | untraced | `player.weapons` |
 | `take(p, weapon)` | the inventory removal `0xce920`, reached from the drop path `0xe8de0` (**E**, bots.md, the dual-wield drop); a call outside a drop is not proven | traced | `player.weapons` |
-| player body per team (Spartan, Elite) | `PLAYER_SPAWN` chooses the unit type; what it reads is not traced | untraced | `player.disguise` |
+| `set_body(team, tag)`: the team's players spawn as the Spartan or the Elite; `none` lifts it | the rule in the VM's state; the model byte (player `+0x88`) that `PLAYER_SPAWN` `0x14f2e0` and its representation pick `0x14f040` read, written for the spawn and put back after it (`rules/world/body.rs`) | named | `player.disguise` |
 | `hide(p)`, `show(p)`: a player's biped not drawn, not hit | no entry known. The native renderer can skip the draw; hitboxes and collision are the engine's | untraced | `player.disguise` |
 | `attach(o, to)`: an object follows another | no entry known; the object datum has a parent field (`guest-layout` `object.rs`) | untraced | `objects.move` |
 | `camera(p, mode)`: first or third person | no entry known | untraced | `player.camera` |
@@ -2144,10 +2190,10 @@ The phased mode is the check that the API is wide enough:
 | capture zones, then a goal | the host's zone tests and `ticks_held`, over the map's territory and CTF flags | named; the built-in Siege |
 | a core carried to a goal | the objective registry as CTF and Assault | traced |
 | the map opens per phase | delete and create barriers at labels | not built (Forge labels, barriers) |
-| spawn areas switch per phase | `spawn_areas` | named point; rule untraced |
+| spawn areas switch per phase | `spawn_areas` over labelled starting locations; `spawn_near` over a zone, which needs no labels | named; the built-in Siege (`spawn_near`) |
 | loadouts per team, chosen at spawn | `on spawn` and `set_loadout`; Halo 2 has no armor abilities, so a loadout is weapons, grenades and traits | named; the built-in Siege; picker screen not built |
 | team respawn waves | hold respawns with the lives gates, release on a timer | named; the built-in Siege |
-| two species teams | Halo 2's multiplayer has Spartan and Elite bodies (live-gamestate.md); forcing one per team | untraced |
+| two species teams | `set_body` per team at the round's start | named; the built-in Siege |
 
 ## Forge labels
 
@@ -2260,8 +2306,7 @@ the ReachVariantTool importer follows phase 10.
   and `Session::apply`, which both homes run (`live-server` and the
   Cloudflare worker); the worker's own run of the test is not seen.
 - **Round end and the winner.** Only the game-end latch is known.
-- **`set_team`, per-player traits, movement speed, the body a player
-  spawns in.** No entry is known.
+- **`set_team`, per-player traits, movement speed.** No entry is known.
 - **`give`, `hide`, `attach`, `camera`, and `take` outside a drop.** No
   entry is proven. `0x10ca80` is known only as an observer of a pickup,
   and `0xce920` only on the drop path. `set_loadout`'s routine

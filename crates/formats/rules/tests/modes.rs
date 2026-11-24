@@ -2,7 +2,9 @@
 //! game (`rules::scenario`): what each one does in a whole round. The
 //! JSON files under `scenarios/` are the ones `h2 rules run` takes.
 
+use rules::bodies::Body;
 use rules::builtin;
+use rules::fake::FakeSpawns;
 use rules::ir::OptionValue;
 use rules::scenario::{self, RunResult, Scenario, ScenarioEvent, ScenarioTick};
 use rules::vm::Arg;
@@ -78,6 +80,102 @@ fn siege_attackers_take_the_sites_then_the_flag_stand() {
     assert_eq!(calls(&r, "end_round").len(), 1);
     assert_eq!(r.game.players[&0].score, 1, "the winners score");
     assert_eq!(r.game.players[&1].score, 0);
+}
+
+/// Each side spawns near its line, and the lines move with the phases:
+/// the attackers from their flag stand (20) to each site they take (10,
+/// then 11), the defenders from the site still to take (10, then 11) to
+/// their flag stand (21) for the final assault.
+#[test]
+fn siege_moves_each_sides_spawns_up_with_the_phases() {
+    let (ir, _) = siege(&[]);
+    let s: Scenario = serde_json::from_str(SIEGE_ATTACKERS_WIN).unwrap();
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    // The ticks of "Sites to take", "The attackers took a site" and
+    // "Final assault".
+    let shown: Vec<u32> = calls(&r, "message_all").iter().map(|&(t, _)| t).collect();
+    let (start, first, last) = (shown[0], shown[1], shown[2]);
+    let near = |tick: u32, team: u8, zone: u32| {
+        (
+            tick,
+            vec![Arg::Team(Some(team)), Arg::Object(Some(zone)), Arg::Int(4)],
+        )
+    };
+    let made: Vec<(u32, Vec<Arg>)> = calls(&r, "spawn_near")
+        .into_iter()
+        .map(|(t, a)| (t, a.to_vec()))
+        .collect();
+    assert_eq!(
+        made,
+        [
+            near(start, 0, 20),
+            near(start, 1, 10),
+            near(first, 0, 10),
+            near(first, 1, 11),
+            near(last, 0, 11),
+            near(last, 1, 21),
+        ]
+    );
+    // The fake game keeps each side's last line.
+    let rule = |zone| FakeSpawns::Near { zone, count: 4 };
+    assert_eq!(r.game.spawns.get(&0), Some(&rule(11)));
+    assert_eq!(r.game.spawns.get(&1), Some(&rule(21)));
+}
+
+/// The attackers spawn as Spartans and the defenders as Elites, from the
+/// round's start.
+#[test]
+fn siege_gives_each_side_its_own_body() {
+    let (ir, _) = siege(&[]);
+    let s: Scenario = serde_json::from_str(SIEGE_ATTACKERS_WIN).unwrap();
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    let start = calls(&r, "message_all")[0].0;
+    let made: Vec<(u32, Vec<Arg>)> = calls(&r, "set_body")
+        .into_iter()
+        .map(|(t, a)| (t, a.to_vec()))
+        .collect();
+    let body = |team: u8, path: &str| {
+        (
+            start,
+            vec![Arg::Team(Some(team)), Arg::Tag(Some(path.into()))],
+        )
+    };
+    assert_eq!(
+        made,
+        [
+            body(0, "objects/characters/masterchief/masterchief_mp"),
+            body(1, "objects/characters/elite/elite_mp"),
+        ]
+    );
+    assert_eq!(r.game.bodies.get(&0), Some(&Body::Spartan));
+    assert_eq!(r.game.bodies.get(&1), Some(&Body::Elite));
+}
+
+/// A map with no flag stands lifts both sides' lines where a stand would
+/// be: the attackers start on the engine's own spawns, and the defenders
+/// keep to the next site until the last is taken.
+#[test]
+fn siege_with_no_flag_stands_leaves_those_lines_to_the_engine() {
+    let (ir, _) = siege(&[]);
+    let mut s: Scenario = serde_json::from_str(SIEGE_ATTACKERS_WIN).unwrap();
+    s.map.as_mut().unwrap().retain(|t| t.label != "ctf_flag_spawn");
+    s.ticks.truncate(2);
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    assert_eq!(
+        calls(&r, "spawn_near")
+            .into_iter()
+            .map(|(_, a)| a.to_vec())
+            .collect::<Vec<_>>(),
+        [
+            vec![Arg::Team(Some(0)), Arg::Object(None), Arg::Int(4)],
+            vec![Arg::Team(Some(1)), Arg::Object(Some(10)), Arg::Int(4)],
+        ]
+    );
+    assert_eq!(r.game.spawns.get(&0), None, "no stand: the engine's spawns");
+    assert_eq!(r.game.spawns.get(&1), Some(&FakeSpawns::Near { zone: 10, count: 4 }));
 }
 
 /// A defender on the site holds the attackers off: the time counts only

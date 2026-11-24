@@ -147,6 +147,13 @@ pub const ACTIONS: &[u16] = &[
     id::MESSAGE_ALL,
     // The multiplayer list's weapons (`super::world::loadout`).
     id::SET_LOADOUT,
+    // Kept in the VM's state; the spawn chooser's hooks read it
+    // (`super::world::spawns`), so no call is made at the boundary.
+    id::SPAWN_AREAS,
+    id::SPAWN_NEAR,
+    // Kept in the VM's state; the spawn's hooks read it
+    // (`super::world::body`).
+    id::SET_BODY,
 ];
 
 /// Where the `RULES` record lives: the process's `SimExt` blob in the
@@ -707,6 +714,12 @@ impl Game for GuestGame<'_> {
             }
             // The winner is not passed: naming one is not traced.
             id::END_ROUND => Some(Call::End),
+            // The VM keeps the rule in its state, which the spawn chooser's
+            // hooks read at each spawn (`super::world::spawns`).
+            id::SPAWN_AREAS | id::SPAWN_NEAR => None,
+            // The VM keeps the body in its state, which the spawn's hooks
+            // read (`super::world::body`).
+            id::SET_BODY => None,
             id::SET_LOADOUT => {
                 let tag = |n: usize| match call.args.get(n) {
                     Some(Arg::Tag(t)) => t.clone(),
@@ -1027,6 +1040,40 @@ impl Runtime {
             Status::Running(r) => Some(r),
             _ => None,
         }
+    }
+
+    /// The starting locations the spawn of player `handle` (the chooser's
+    /// ECX) may pick, by its team's spawn rule (`super::world::spawns`):
+    /// none while no script makes the game's rules here, when the team has
+    /// no rule, or when the map has none of the rule's locations.
+    pub fn spawn_filter(&self, m: &dyn GuestMemory, handle: u32) -> Option<super::world::spawns::Filter> {
+        let r = self.running().filter(|r| r.authority == Some(true))?;
+        let slot = (handle & 0xffff) as u8;
+        let team = read_players(m)
+            .ok()?
+            .into_iter()
+            .find(|(p, _)| p.slot == slot)?
+            .0
+            .team;
+        let rule = r.vm.spawn_rule(team)?;
+        let starts = super::world::spawns::starts(m).ok()?;
+        super::world::spawns::filter(Some(rule), &starts, &r.table, &r.zones)
+    }
+
+    /// The body player `handle` (`PLAYER_SPAWN`'s argument) spawns in, by
+    /// its team's `set_body` (`super::world::body`), with its roster slot:
+    /// none while no script makes the game's rules here, or when the team
+    /// has no body.
+    pub fn spawn_body(&self, m: &dyn GuestMemory, handle: u32) -> Option<(u8, ::rules::bodies::Body)> {
+        let r = self.running().filter(|r| r.authority == Some(true))?;
+        let slot = (handle & 0xffff) as u8;
+        let team = read_players(m)
+            .ok()?
+            .into_iter()
+            .find(|(p, _)| p.slot == slot)?
+            .0
+            .team;
+        Some((slot, r.vm.body(team)?))
     }
 
     /// The running blob's full hash, for the Live session's `rules` field.

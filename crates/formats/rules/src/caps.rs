@@ -296,6 +296,8 @@ pub mod id {
     pub const FF_TEAM_LIVES: u16 = 72;
     pub const FF_PLAYER_SCORE: u16 = 73;
     pub const FF_TEAM_FINISH: u16 = 74;
+    pub const SPAWN_NEAR: u16 = 75;
+    pub const SET_BODY: u16 = 76;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -342,7 +344,14 @@ pub const ENTRIES: &[Entry] = &[
     act(id::PLACE_SQUAD, "place_squad", &[Squad, Class, Int, Label], Some("ai.squads"), Queued, Named),
     act(id::HUNT, "hunt", &[Squad], Some("ai.squads"), Queued, Named),
     act(id::ERASE_SQUAD, "erase_squad", &[Squad], Some("ai.squads"), Queued, Named),
-    act(id::SPAWN_AREAS, "spawn_areas", &[Team, Label, Int], Some("player.spawn"), Now, Untraced),
+    // Which starting locations a team's spawns may use: those of the
+    // label numbered `n`. Kept in the VM's state (`vm::Spawns`); the host
+    // answers the spawn chooser's free-spot test `SPAWN_LOCATION_FREE`
+    // (`0x23bb70`, called only from `PLAYER_SPAWN_LOCATION` `0x14ef00`)
+    // with "blocked" for every other location, so the chooser's own
+    // weighing picks among the live ones (`game::rules::world::spawns`;
+    // docs/game/notes/2026-11-24-siege-spawns-and-bodies.md).
+    act(id::SPAWN_AREAS, "spawn_areas", &[Team, Label, Int], Some("player.spawn"), Now, Named),
     // `message(to, text)`: the language picks this entry for a player,
     // `message_team` for a team and `message_all` for `all` ([`spelled`]).
     // The host shows it to its local users through the notification insert
@@ -453,6 +462,17 @@ pub const ENTRIES: &[Entry] = &[
     act(id::FF_TEAM_LIVES, "ff_team_lives", &[Team, Int], Some("firefight.director"), Queued, Named),
     act(id::FF_PLAYER_SCORE, "ff_player_score", &[Player, Int], Some("firefight.director"), Queued, Named),
     act(id::FF_TEAM_FINISH, "ff_team_finish", &[Team], Some("firefight.director"), Queued, Named),
+    // A team's spawns use only the `n` starting locations nearest a zone
+    // (`n` 0 lifts it): `spawn_areas` for a map with no labelled starting
+    // locations, through the same answer of `SPAWN_LOCATION_FREE`.
+    act(id::SPAWN_NEAR, "spawn_near", &[Team, Object, Int], Some("player.spawn"), Now, Named),
+    // A team's players spawn in a body of the list (`crate::bodies`), or
+    // their own (`none`). Kept in the VM's state (`vm::RulesExt::bodies`);
+    // the host writes the body's model byte (player `+0x88`) for the
+    // length of `PLAYER_SPAWN` (`0x14f2e0`), whose representation pick
+    // `0x14f040` and unit handover `0x14cad0` read it
+    // (`game::rules::world::body`).
+    act(id::SET_BODY, "set_body", &[Team, Tag], Some("player.disguise"), Now, Named),
 ];
 
 /// The word `message(to, text)` takes for everyone.

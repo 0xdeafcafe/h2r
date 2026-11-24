@@ -391,7 +391,7 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
   does not print the order; `crates/formats/rules/src/caps.rs` does.
 - **Known runtime gaps.** A host refuses a script, by name, if it calls an
   entry that is not `named` or VM-only: `set_team`, `give`,
-  `spawn_areas`, `take`, `create`, `register_objective`,
+  `take`, `create`, `register_objective`,
   `spawn_objective`. `check` lists these as unhostable. The host runtime
   also delivers only `init`, `round_start`, `kill`, `quit`, `timer`,
   `tick`, `bounce`, `bounced`, `spawn`, `death`, `enter` and `leave`;
@@ -399,7 +399,9 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
   `round_time_left`, `is_objective`, `carrier_of`, the label reads,
   `inside` and `player_of`; makes only `score`, `end_round`, `set_lives`,
   `respawn`, `role_traits`, `reset_objective`, `set_loadout` (the
-  multiplayer weapon list's tags only) and the `bot_*` orders
+  multiplayer weapon list's tags only), `spawn_areas` and `spawn_near`
+  (a team's spawn rule, read at each spawn), `set_body` (a team's body,
+  Spartan or Elite, at each spawn) and the `bot_*` orders
   (a `bot_*` order to a seat no phantom holds is a refused call), and
   `message`, `message_team` and `message_all`, which it shows to the host's
   own players and sends to clients as a show cue
