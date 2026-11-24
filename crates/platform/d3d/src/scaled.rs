@@ -520,9 +520,9 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
         view.stop_counting();
         let mut reference = reference;
         view.share_results(&mut reference);
-        if single_copy {
-            view.enable_surface_aliases(&mut reference);
-            if scale != RenderScale::ONE { view.move_counter(&mut reference, true); }
+        view.enable_surface_aliases(&mut reference);
+        if single_copy && scale != RenderScale::ONE {
+            view.move_counter(&mut reference, true);
         }
         Ok(Self {
             single_copy,
@@ -2141,7 +2141,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
     }
 
     fn handles_surface_aliases(&self) -> bool {
-        self.single_copy
+        self.reference.handles_surface_aliases() && self.view.handles_surface_aliases()
     }
 
     fn defers_depth_aliases(&self) -> bool {
@@ -2181,54 +2181,25 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         else {
             return Ok(None);
         };
-        // The whole buffer as one linear texture of its size (Halo's
-        // 0x509368 and 0x50936C, the fog and distortion passes): made from
-        // the view's scaled depth, on the GPU. The draw keeps the guest
-        // size for texel addressing, so the scaled texture lines up.
-        // Anything else is the reference's 1x texture.
-        let s = self.scale;
-        let whole = offset == 0
-            && format == D3DFormat::LinD24S8
-            && (desc.width, desc.height) == (width, height)
-            && desc.pitch == pitch && pitch == width * 4
-            && desc.levels == 1
-            && desc.kind == gfx::texture::TextureKind::D2
-            && desc.format.layout() == gfx::format::Layout::Linear;
-        let mut view = None;
-        if let Some(vd) = self
-            .live(depth.view)
-            .filter(|_| whole && self.view.defers_depth_aliases())
-        {
-            let (w, h) = s.size(width, height);
-            // This whole-buffer view has one 32-bit word per physical pixel.
-            let scaled = TextureDesc {
-                width: w,
-                height: h,
-                pitch: w * 4,
-                ..desc.clone()
-            };
-            match self.view.depth_alias_texture(
-                vd,
-                format,
-                w,
-                h,
-                w * 4,
-                generation,
-                0,
-                &scaled,
-                options,
-            ) {
-                Ok(Some(t)) => {
-                    self.stats.scaled_depth_aliases += 1;
-                    view = Some(t);
+        // Byte offsets, row pitch and the sampled header address guest memory.
+        // Each encoder maps those addresses onto its own physical surface. A
+        // partial texture over texaccum can span different rows in each image.
+        let view = match self.live(depth.view) {
+            Some(surface) if self.view.handles_surface_aliases() => {
+                match self.view.depth_alias_texture(
+                    surface, format, width, height, pitch, generation, offset, desc, options,
+                ) {
+                    Ok(alias) => {
+                        self.stats.scaled_depth_aliases += u64::from(alias.is_some());
+                        alias
+                    }
+                    Err(e) => {
+                        self.view_failed("surface alias", e);
+                        None
+                    }
                 }
-                Ok(None) => {}
-                Err(e) => self.view_failed("depth alias", e),
             }
-        }
-        let view = match view {
-            Some(v) => Some(v),
-            None => self.share(&reference),
+            _ => self.share(&reference),
         };
         Ok(Some(ScaledTexture { reference, view }))
     }
@@ -2544,6 +2515,10 @@ impl ScaleView<ScaledBackend<GfxBackend, GfxBackend>> for GfxBackend {
         scale: RenderScale,
     ) -> Result<gfx::surface::SurfaceId, String> {
         <Self as ScaleView<GfxBackend>>::create_scaled_texture_target(self, format, width, height, scale)
+    }
+
+    fn enable_surface_aliases(&mut self, reference: &mut ScaledBackend<GfxBackend, GfxBackend>) {
+        self.single_copy_aliases = reference.handles_surface_aliases();
     }
 
     fn stop_counting(&mut self) {
