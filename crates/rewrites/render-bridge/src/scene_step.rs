@@ -163,18 +163,20 @@ static POST_UNPLACED: AtomicU64 = AtomicU64::new(0);
 fn display_additions(
     mem: &Ro<'_>, gather: &frame_scene::scene::ClusterGather, camera: Camera,
     factor: f32, cache: &mut scene_extract::visibility::GraphCache,
+    retail: &scene_extract::visibility::frusta::WindowFrusta,
 ) -> Option<frame_scene::DisplayVisibility> {
     if gather.mode != 0 || gather.source != frame_scene::VisibilitySource::Rust {
         return None;
     }
     let display = native_render::camera::display_camera(camera, factor);
-    let mut visible = scene_extract::visibility::compute(
+    let (mut visible, windows) = scene_extract::visibility::compute_with_windows(
         mem, &display, cache, crate::native_map_work::generation(),
     ).ok()?;
+    let placements = windows.as_ref().and_then(|w| cache.display_placements(mem, retail, w)).unwrap_or_default();
     visible.clusters.retain(|id| gather.visible.binary_search(id).is_err());
     visible.objects.retain(|id| gather.objects.binary_search(id).is_err());
-    (!visible.clusters.is_empty() || !visible.objects.is_empty()).then_some(frame_scene::DisplayVisibility {
-        clusters: visible.clusters, objects: visible.objects,
+    (!visible.clusters.is_empty() || !visible.objects.is_empty() || !placements.is_empty()).then_some(frame_scene::DisplayVisibility {
+        clusters: visible.clusters, objects: visible.objects, placements,
     })
 }
 
@@ -397,9 +399,10 @@ fn open_kind_at_layer(mem: &dyn GuestMemory, kind: ViewKind, layer_hook: bool) -
                             VisibilityLens::Guest(factor) => native_render::camera::display_camera(lens, factor),
                             _ => lens,
                         };
-                        let gather = visibility_arm(&m, &guest_lens, key, &mut step.visibility, gather);
+                        let (gather, windows) = visibility_arm(&m, &guest_lens, key, &mut step.visibility, gather);
                         if let VisibilityLens::Display(factor) = step.visibility_lens
-                            && let Some(extra) = display_additions(&m, &gather, lens, factor, &mut step.visibility)
+                            && let Some(retail) = windows.as_ref()
+                            && let Some(extra) = display_additions(&m, &gather, lens, factor, &mut step.visibility, retail)
                         {
                             step.builder.set_display_visibility(extra)?;
                         }
@@ -1196,17 +1199,17 @@ fn visibility_arm(
     key: ViewKey,
     cache: &mut scene_extract::visibility::GraphCache,
     gather: frame_scene::scene::ClusterGather,
-) -> frame_scene::scene::ClusterGather {
+) -> (frame_scene::scene::ClusterGather, Option<scene_extract::visibility::frusta::WindowFrusta>) {
     use scene_extract::visibility::{self, Decline};
     let start = Instant::now();
-    let rust = visibility::compute(m, camera, cache, crate::native_map_work::generation());
+    let rust = visibility::compute_with_windows(m, camera, cache, crate::native_map_work::generation());
     VISIBILITY_NS.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
-    let rust = match rust {
+    let (rust, windows) = match rust {
         Ok(rust) => rust,
         Err(why) => {
             let i = Decline::ALL.iter().position(|&d| d == why).unwrap_or(0);
             VISIBILITY_DECLINED[i].fetch_add(1, Ordering::Relaxed);
-            return gather;
+            return (gather, None);
         }
     };
     VISIBILITY_CHECKED.fetch_add(1, Ordering::Relaxed);
@@ -1231,13 +1234,13 @@ fn visibility_arm(
                 parity.objects_rust_only,
             )
         });
-        return gather;
+        return (gather, None);
     }
     VISIBILITY_EQUAL.fetch_add(1, Ordering::Relaxed);
     if gather.source == frame_scene::VisibilitySource::Rust {
         VISIBILITY_TAKEN.fetch_add(1, Ordering::Relaxed);
     }
-    gather
+    (gather, windows)
 }
 
 /// The main view's records in Rust beside the guest's

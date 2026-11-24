@@ -80,8 +80,8 @@ pub struct Ready {
     /// The parts the native pass draws, with their shaders: what the skip
     /// clears.
     parts: Arc<PartSet>,
-    /// Resident layer-3 parts in each cluster, in section order.
-    cluster_parts: HashMap<u16, Vec<u8>>,
+    /// Resident layer-3 parts in each rigid placement or cluster, in section order.
+    section_parts: HashMap<Owner, Vec<u8>>,
     /// Each drawn part's world bounds, what the guest's admission culls
     /// by; a live edit's refresh recomputes an edited section's
     /// ([`refresh_world`]).
@@ -397,8 +397,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             cull,
             run,
         };
-        if factor < 1.0 && let Some(visibility) = &scene_view.display_visibility && !visibility.clusters.is_empty() {
-            let parts = display_cluster_parts(&visibility.clusters, &ready.cluster_parts,
+        if factor < 1.0 && let Some(visibility) = &scene_view.display_visibility && (!visibility.clusters.is_empty() || !visibility.placements.is_empty()) {
+            let sections = visibility.clusters.iter().map(|&id| Owner::Cluster(u32::from(id)))
+                .chain(visibility.placements.iter().copied().filter(|&id| {
+                    engine::render_loop::world_walk::fully_visible_placement(mem, bsp, id) == Some(true)
+                }).map(|id| Owner::Instance(u32::from(id))));
+            let parts = display_section_parts(sections, &ready.section_parts,
                 &ready.part_bounds.read().unwrap_or_else(|e| e.into_inner()), &frustum);
             if !parts.is_empty() && let Some(selection) = select(&parts, true) {
                 let plan = d3d::ExternalPlan { stage: timeline::native::Stage::World, view, ranges: parts.len(), slots: Vec::new() };
@@ -996,15 +1000,14 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
     shadows
 }
 
-/// Only parts in the display flood's newly reached clusters are candidates.
-fn display_cluster_parts(
-    clusters: &[u16], resident: &HashMap<u16, Vec<u8>>,
+/// The flood supplies newly visible clusters and fully opaque rigid placements.
+fn display_section_parts(
+    sections: impl Iterator<Item = Owner>, resident: &HashMap<Owner, Vec<u8>>,
     bounds: &HashMap<(Owner, u8), native_render::world::Aabb>, frustum: &native_render::cull::Frustum,
 ) -> Vec<(Owner, u8)> {
     let mut selected = Vec::new();
-    for &cluster in clusters {
-        let owner = Owner::Cluster(u32::from(cluster));
-        for &part in resident.get(&cluster).into_iter().flatten() {
+    for owner in sections {
+        for &part in resident.get(&owner).into_iter().flatten() {
             if bounds.get(&(owner, part)).is_some_and(|b| frustum.may_see(b)) {
                 selected.push((owner, part));
             }
@@ -1423,13 +1426,11 @@ fn load_ready(
     } else { 0 };
     let world = keep_draws(world, &accepts);
     let parts = part_set(&world, &shaders);
-    let mut cluster_parts = HashMap::<u16, Vec<u8>>::new();
+    let mut section_parts = HashMap::<Owner, Vec<u8>>::new();
     for &(owner, part) in parts.keys() {
-        if let Owner::Cluster(c) = owner && let Ok(c) = u16::try_from(c) {
-            cluster_parts.entry(c).or_default().push(part);
-        }
+        section_parts.entry(owner).or_default().push(part);
     }
-    for group in cluster_parts.values_mut() { group.sort_unstable(); }
+    for group in section_parts.values_mut() { group.sort_unstable(); }
     let part_bounds = RwLock::new(world.draws.iter().map(|d| ((d.owner, d.part), d.bounds)).collect());
     let empty_world = parts.is_empty() && opaque.is_empty();
     let stage_bitmap = |images: &StageImages, stage: Stage| match stage {
@@ -1474,7 +1475,7 @@ fn load_ready(
     };
     if !send(StageReady::World(Arc::new(Ready {
         relit: AtomicBool::new(gpu.has_relight()),
-        retire: Some(retire), opaque, part_bounds, bsp_tag: Some(bsp_tag), gpu: Mutex::new(Some(gpu)), parts: Arc::new(parts), cluster_parts,
+        retire: Some(retire), opaque, part_bounds, bsp_tag: Some(bsp_tag), gpu: Mutex::new(Some(gpu)), parts: Arc::new(parts), section_parts,
         shaders: refresh_shaders_list, no_lightmap_group: lightmap_bitmap_missing, pages: page_set,
         upload_device: Some((device.clone(), queue.clone())), palettes: decoder.used().clone(),
         fog: OnceLock::new(), water: OnceLock::new(), layers: OnceLock::new(),
@@ -1861,7 +1862,7 @@ mod tests {
     #[test]
     fn the_display_flood_selects_only_resident_parts_inside_its_frustum() {
         use native_render::{cull::Frustum, world::Aabb};
-        let resident = HashMap::from([(2, vec![0, 1, 2]), (3, vec![0])]);
+        let resident = HashMap::from([(Owner::Cluster(2), vec![0, 1, 2]), (Owner::Cluster(3), vec![0])]);
         let point = |x| Aabb { min: [x, 0., 0.5], max: [x, 0., 0.5] };
         let bounds = HashMap::from([
             ((Owner::Cluster(2), 0), point(1.25)),
@@ -1871,8 +1872,8 @@ mod tests {
         let frustum = |scale| Frustum::from_view_projection(&[
             [scale, 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [0., 0., 0., 1.],
         ]);
-        assert!(display_cluster_parts(&[2], &resident, &bounds, &frustum(1.)).is_empty());
-        assert_eq!(display_cluster_parts(&[2], &resident, &bounds, &frustum(0.75)), [(Owner::Cluster(2), 0)]);
+        assert!(display_section_parts([Owner::Cluster(2)].into_iter(), &resident, &bounds, &frustum(1.)).is_empty());
+        assert_eq!(display_section_parts([Owner::Cluster(2)].into_iter(), &resident, &bounds, &frustum(0.75)), [(Owner::Cluster(2), 0)]);
     }
 
     #[test]

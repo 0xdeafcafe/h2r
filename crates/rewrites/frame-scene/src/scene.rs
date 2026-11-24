@@ -120,6 +120,7 @@ pub struct AuxDepth {
 /// IDs belong to this BSP and this frame's object table.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct DisplayVisibility {
+    pub placements: Vec<u16>,
     pub clusters: Vec<u16>,
     pub objects: Vec<u32>,
 }

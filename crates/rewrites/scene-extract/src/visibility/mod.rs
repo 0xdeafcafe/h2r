@@ -30,6 +30,7 @@ pub mod light;
 mod light_frusta;
 pub mod objects;
 pub mod parity;
+mod placements;
 pub mod pvs;
 mod read;
 pub mod sphere;
@@ -95,6 +96,7 @@ impl Decline {
 pub struct GraphCache {
     key: Option<(u64, u32, [u32; 2])>,
     graph: Option<Result<PortalGraph, Decline>>,
+    placements: Option<placements::Index>,
 }
 
 impl GraphCache {
@@ -116,6 +118,7 @@ impl GraphCache {
                 self.forget();
                 return Err(Decline::Unread);
             }
+            self.placements = None;
             self.key = Some(key);
             self.graph = Some(read);
         }
@@ -126,7 +129,18 @@ impl GraphCache {
         }
     }
 
+    /// Placement spheres reached through the wide portals only. Also
+    /// exclude every placement the guest submitted, including shared ones.
+    pub fn display_placements(&mut self, mem: &dyn GuestRead, retail: &frusta::WindowFrusta, wide: &frusta::WindowFrusta) -> Option<Vec<u16>> {
+        let (_, bsp, _) = self.key?;
+        if self.placements.is_none() {
+            self.placements = Some(placements::Index::read(mem, bsp)?);
+        }
+        Some(self.placements.as_ref()?.extra(retail, wide, placements::submitted(mem)?))
+    }
+
     pub fn forget(&mut self) {
+        self.placements = None;
         self.key = None;
         self.graph = None;
     }
@@ -140,6 +154,12 @@ pub fn compute(
     cache: &mut GraphCache,
     epoch: u64,
 ) -> Result<VisibilitySets, Decline> {
+    compute_with_windows(mem, camera, cache, epoch).map(|(sets, _)| sets)
+}
+
+pub fn compute_with_windows(
+    mem: &dyn GuestRead, camera: &RenderCamera, cache: &mut GraphCache, epoch: u64,
+) -> Result<(VisibilitySets, Option<frusta::WindowFrusta>), Decline> {
     let view = guest::view(mem)?;
     let graph = cache.graph(mem, epoch, view.structure)?;
     let lens = flood::Lens::new(camera).ok_or(Decline::Camera)?;
@@ -190,8 +210,9 @@ pub fn compute(
         _ => return Err(Decline::Mode),
     };
     let world = guest::object_world(mem, &view, &reached.clusters)?;
-    let objects = objects::object_set(&world, &reached, clip)?;
-    Ok(VisibilitySets::new(reached.clusters, objects))
+    let objects = objects::object_set_with_clip(&world, &reached, &clip)?;
+    let windows = match clip { objects::Clip::Frusta(w) => Some(w), _ => None };
+    Ok((VisibilitySets::new(reached.clusters, objects), windows))
 }
 
 /// The view's gather with the Rust sets in place of the guest's lists when

@@ -256,7 +256,7 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     let Some(mut view) = crate::scene_step::open_kind(&*m.0, kind) else { return; };
     if site != Site::Scene { view.display_visibility = None; }
     let claim_guest = has_world && !resolved;
-    if !claim_guest && view.display_visibility.as_ref().is_none_or(|v| v.clusters.is_empty()) {
+    if !claim_guest && view.display_visibility.as_ref().is_none_or(|v| v.clusters.is_empty() && v.placements.is_empty()) {
         return;
     }
     // How the layer's items switch the stencil (0x0004d640/0x0004d720):
