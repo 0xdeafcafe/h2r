@@ -359,6 +359,12 @@ pub fn overlay_blend(blend: frame_scene::OverlayBlend) -> Result<Option<wgpu::Bl
     Ok(Some(wgpu::BlendState { color: component, alpha: component }))
 }
 
+/// An item's blend constant (`OverlayItem::blend_constant`) as the pass
+/// sets it.
+pub fn blend_color([r, g, b, a]: [f32; 4]) -> wgpu::Color {
+    wgpu::Color { r: f64::from(r), g: f64::from(g), b: f64::from(b), a: f64::from(a) }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct OverlayPipelineKey {
     color_write: u32,
@@ -699,6 +705,7 @@ impl OverlayGpu {
             group: wgpu::BindGroup,
             scissor: crate::overlay::Scissor,
             indices: std::ops::Range<u32>,
+            blend_constant: wgpu::Color,
         }
         let mut draws = Vec::with_capacity(plan.batches.len());
         for (index, batch) in plan.batches.iter().enumerate() {
@@ -770,6 +777,7 @@ impl OverlayGpu {
                 pipeline, group, stages,
                 scissor: batch.scissor,
                 indices: batch.first_index..batch.first_index + batch.index_count,
+                blend_constant: blend_color(batch.blend_constant),
             });
         }
         stats.batches = draws.len() as u32;
@@ -870,6 +878,7 @@ impl OverlayGpu {
                             pass.set_bind_group(0, &d.group, &[]);
                             if let Some(stages) = &d.stages { pass.set_bind_group(1, stages, &[]); }
                             pass.set_scissor_rect(d.scissor.x, d.scissor.y, d.scissor.width, d.scissor.height);
+                            pass.set_blend_constant(d.blend_constant);
                             pass.draw_indexed(d.indices.clone(), 0, 0..1);
                             *next += 1;
                         }

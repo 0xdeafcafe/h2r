@@ -339,6 +339,16 @@ packet for replay if the worker cannot record the overlay. The
 `native_ui_overlay_hud_*` counters distinguish bitmap and glyph
 reservations and refusals, display recordings, and failed recordings.
 
+A menu shader bitmap (type 9) is drawn the same way. Its draw
+`0x002b11c9` copies the widget's four shader inputs (`+0x74`) through
+`0x001392f8` to `+0x1c0` of the UI globals `[0x00510c4c]`, then calls
+`0x0022a664` at `0x002b12ae` with the definition's bitmap (`+0x10`),
+image (`+0x0a`) and shader (`+0x18`). At the shader quad,
+`native_hud::hud_overlay::menu_shader_quad` reads those arguments and the
+UI's inputs into the item's `hud_input` slot, and the quad is captured as
+a HUD widget's is, with its template's combiner and evaluated constants
+(`menu_shader_quads`, `menu_shader_fallback`).
+
 #### The menus on the overlay
 
 The overlay stage draws a menu widget in place of its draw when the
@@ -390,39 +400,30 @@ claimed ones counts `menu_mismatch` and its screen is the game's until
 the next map. A list drawn inside another's draw has its own frame and
 closes inside out.
 
-What the overlay lists today is the containers and the plain bitmap
-widgets. A widget whose draw is the base's `ret 4` (`0x00333105`: the
-screen's, list item's, page selector's and table's) has no pixels. A
-bitmap widget's draw is read by `ui_overlay::bitmaps` ([Bitmap
-widgets](#bitmap-widgets)). Every other draw is the game's, counted by
-what is not read (`render.stats`, `native_ui_overlay_menu_*`):
+What the overlay lists at the sorted list is the containers and the
+plain bitmap widgets. A widget whose draw is the base's `ret 4`
+(`0x00333105`: the screen's, list item's, page selector's and table's)
+has no pixels. A bitmap widget's draw is read by `ui_overlay::bitmaps`
+([Bitmap widgets](#bitmap-widgets)). A shader bitmap's draw
+(`0x002b11c9`) sets its combiner and constants at its quad, not in memory
+the list can read, so the list leaves it to the game: it ends a run and
+is not refused, and its quad is drawn from the overlay at the shader quad
+([The HUD on the overlay](#the-hud-on-the-overlay)). Every other draw is
+the game's, counted by what is not read (`render.stats`,
+`native_ui_overlay_menu_*`):
 
 | Reason | Draw | What reading it needs |
 |---|---|---|
 | `bitmap_meter` | `0x002b07e2` | the meter's own quads |
 | `bitmap_scroll` | `0x00235f31` | the scrolling quad's coordinates from the widget's `+0x7c` state |
 | `bitmap_state` | `0x002b0565` | a draw the overlay does not make as the game does: the debug labels on, an image set from elsewhere, an image not resident, a stage constant not white, the quads turned off |
-| `shader` | `0x002b11c9` | the tag shader the quad `0x0022a664` draws with (called from `0x002b12ae`): its combiner and constants are set by the shader draw `0x0001bbf0` at the quad, not held in memory at the sorted list |
 | `text` | `0x002538f5` | the string as the interface holds it, its font and justification, and the colour product the draw writes into the interface (its `+0x3c` slot) for the interface's own draw; then the glyph pages (`native_render::overlay::GlyphPages`) |
 | `model` | `0x002b0baa` | a stage that draws a `ModelView` |
 | `draw` | a list's `0x0024bda2`, a button's `0x00253ea8`, a screen's own | those draws read |
 
-The fade, the bars and the loading screen are drawn by the producers
-above and are not on the overlay. Reading them into a `UiFrame` needs,
-per draw (Code, `h2 disasm`):
-
-- The fade `0x00040890`: its mode `[0x00485870]` (0 draws nothing)
-  picks one of six cases through the table at `0x00040dc0`; each writes
-  its own blend factors and combiner words, with the colour at
-  `0x00485874` packed (`0x00131e50`) into combiner constants. Each case
-  is a fill of its own blend and combiner.
-- The bars (`0x00052ce7`, in `0x00052040`): a record with no image
-  writes no combiner (`0x00052857` skips to the upload), so the PSDEF at
-  `0x00484f68` is the one the last record with an image wrote. The bar's
-  colour is that combiner over the vertex colour.
-- The loading screen `0x000289e0`: its background, sweep and spinner
-  bitmaps by the state the producers read
-  ([Native UI](#native-ui)).
+The fade, the bars and the loading screen are drawn from the overlay at
+their producers ([The fade, the bars and the loading
+screen](#the-fade-the-bars-and-the-loading-screen)).
 
 ##### Bitmap widgets
 
@@ -472,9 +473,49 @@ coordinate on the overlay's pixel edge of the same number.
 them), or refuses the widget: a meter, a scrolling bitmap, or any state
 above it does not draw as the game does. The image is named by its tag
 datum and index (`OverlayTexture::Bitmap`), and the menu's pass decodes
-it from the map before it is placed (`game::hud_overlay::place_menu`).
-While the map's HUDs load, or when the image does not decode, the run is
-not placed and the game draws it.
+it from the map before it is placed (`game::hud_overlay::place_menu`,
+which reads the loaded map off the game thread once a map). While the map
+loads, or when the image does not decode, the run is not placed and the
+game draws it.
+
+##### The fade, the bars and the loading screen
+
+Each of these draws is taken at its producer ([Native UI](#native-ui))
+and drawn from the overlay with the guest's own state at the draw
+(`game::hud_overlay::draw_screen`): the pixel shader definition and its
+constants from the draw snapshot, the blend and its constant colour, the
+bound textures and the vertex program's positions, coordinates and
+colour, as a HUD widget's quad is. The item names no tag (`Program::Shader`
+with datum 0) and samples its bound stages. A draw the capture does not
+take (a raster, texture or combiner state outside it) keeps the UI fan
+path (`screen_fallback`). Per draw (Code, `h2 disasm`):
+
+- The fade `0x00040890`: its mode `[0x00485870]` (0 draws nothing) picks
+  one of six cases through the table at `0x00040dc0`. The colour at
+  `0x00485878` and its complement, each times the fraction at
+  `0x00485874`, are packed (`0x00131e50`). Mode 1 blends one with one
+  minus source alpha, added; mode 2 one with one, reverse-subtracted;
+  modes 3 to 5 one minus the destination colour with one minus the
+  constant colour, by maximum, minimum and addition, the packed colour as
+  `BLENDCOLOR`; mode 6 one with one minus the constant colour, added, the
+  packed complement as `BLENDCOLOR`. Each case writes its combiner words
+  into the PSDEF at `0x00484f68` before the fan at `0x00040d86`.
+  The overlay item carries the constant (`OverlayItem::blend_constant`),
+  which the pass sets per batch (`fade_quads`).
+- The bars (`0x00052ce7`, in `0x00052040`): menu fade rectangles,
+  cinematic and progress bars and split-screen dividers. A record with no
+  image writes no combiner (`0x00052857` skips to the upload), so the
+  PSDEF at `0x00484f68` is the one the last record with an image wrote;
+  the snapshot at the draw holds that definition, so the bar inherits it
+  as the game's does (`bar_quads`). A fan or quad list is taken; a strip,
+  whose corners do not go round the quad, keeps the fan path.
+- The loading screen `0x000289e0`: its background and sweep bitmaps at
+  `0x0002ae60` and its spinner at `0x0002a1f4`, each with its bound
+  bitmap (`loading_quads`).
+
+The typed `UiDraw::Fade`, `Rect` and `Bitmap` of `scene_extract::ui` are
+not filled from these draws: a fade's combiner is not one of the
+overlay's fixed ones.
 
 ### Post admission
 

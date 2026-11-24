@@ -250,6 +250,9 @@ pub struct OverlayItem {
     pub alpha_kill: u8,
     /// The four shader inputs for this HUD widget.
     pub hud_input: [f32; 4],
+    /// The blend's constant colour (RGBA, 0 to 1) for a blend whose factors
+    /// name it (the fade's modes 3 to 6); zero otherwise, as D3D's default.
+    pub blend_constant: [f32; 4],
     /// Runtime pixel shader definition, including its evaluated combiner constants.
     pub shader_words: Option<Box<[u32]>>,
     /// Bindings of the tag shader, in Xbox texture stage order.
@@ -395,6 +398,7 @@ impl Overlay {
             glyph_cache: 0,
             color_write: OverlayItem::RGB_WRITE,
             hud_input: [0.0; 4],
+            blend_constant: [0.0; 4],
             shader_words: None,
             shader_stages: [None; 4],
             stage_uv: None,
@@ -459,6 +463,7 @@ impl Overlay {
             glyph_cache: 0,
             color_write: OverlayItem::RGB_WRITE,
             hud_input: [0.0; 4],
+            blend_constant: [0.0; 4],
             shader_words: None,
             shader_stages: [None; 4],
             stage_uv: None,
@@ -483,6 +488,7 @@ impl Overlay {
             glyph_cache: 0,
             color_write: OverlayItem::RGB_WRITE,
             hud_input: [0.0; 4],
+            blend_constant: [0.0; 4],
             shader_words: None,
             shader_stages: [None; 4],
             stage_uv: None,
@@ -696,6 +702,11 @@ pub(crate) fn summary_words(overlay: &Overlay, word: &mut dyn FnMut(u32)) {
                 word(dest);
                 word(equation);
             }
+        }
+        // Only a constant blend adds words, so other items hash as before.
+        if item.blend_constant != [0.0; 4] {
+            word(0x200);
+            floats(word, &item.blend_constant);
         }
         let c = item.clip;
         for w in [c.x, c.y, c.width, c.height] {

@@ -75,6 +75,14 @@ fn walk_quad(mem: &mut dyn GuestMemory, frame: u32, colour: u32) -> bool {
                 return true;
             }
             timeline::native::Ui::OverlayHudTagFallback.count();
+        } else if let Some(at) = hud_overlay::menu_shader_quad(mem, frame) {
+            // A menu shader bitmap: the game's draw at the sorted list
+            // (`ui_overlay::plan`), its quad from the overlay here.
+            if host.draw_tag_quad(mem, &at, &vertices) {
+                timeline::native::Ui::OverlayMenuShaderQuads.count();
+                return true;
+            }
+            timeline::native::Ui::OverlayMenuShaderFallback.count();
         }
         host.draw_quad(mem, &vertices)
     });
@@ -106,6 +114,12 @@ pub trait Host: Send + Sync {
 
     fn loading_bitmap_fan(&self, _mem: &mut dyn GuestMemory, _vertices: &[[(u8, [f32; 4]); 2]; 4]) -> bool {
         false
+    }
+
+    /// The loading screen's spinner fan: a screen draw as
+    /// [`Self::draw_quad`]'s unless the host takes it apart.
+    fn loading_spinner(&self, mem: &mut dyn GuestMemory, vertices: &HudVertices) -> bool {
+        self.draw_quad(mem, vertices)
     }
 
     fn backdrop_wash(&self, _mem: &mut dyn GuestMemory, _vertices: &HudVertices) -> bool {

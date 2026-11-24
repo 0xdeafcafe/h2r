@@ -16,7 +16,10 @@
 //! host-drawn widget's is. At [`LIST_DONE`] the claim closes; a list whose
 //! skipped draws are not its claimed ones is counted and its screen is not
 //! claimed again until the next map ([`close`]). A bitmap widget's draw
-//! is read by [`bitmaps`].
+//! is read by [`bitmaps`]. A shader bitmap's draw is the game's here and
+//! its quad is the overlay's at the shader quad
+//! (`super::hud_overlay::menu_shader_quad`): it ends a run and is not
+//! refused.
 
 pub mod bitmaps;
 
@@ -95,7 +98,8 @@ impl MenuRefusal {
             // Read by `bitmaps`: never a reason of its own.
             MenuRefusal::Widget(Unread::Bitmap) => Ui::OverlayMenuRefusedBitmapState,
             MenuRefusal::Bitmap(why) => why.counter(),
-            MenuRefusal::Widget(Unread::Shader) => Ui::OverlayMenuRefusedShader,
+            // Drawn at its quad (`plan`): never a reason of its own.
+            MenuRefusal::Widget(Unread::Shader) => Ui::OverlayMenuShaderFallback,
             MenuRefusal::Widget(Unread::Text) => Ui::OverlayMenuRefusedText,
             MenuRefusal::Widget(Unread::Model) => Ui::OverlayMenuRefusedModel,
             MenuRefusal::Widget(Unread::Draw) => Ui::OverlayMenuRefusedDraw,
@@ -247,6 +251,13 @@ pub fn plan(mem: &dyn GuestRead, list: &UiList) -> (Claim, Vec<(u32, MenuRefusal
         }
         let items = match part(mem, e, list.user) {
             Ok(items) => items,
+            Err(MenuRefusal::Widget(Unread::Shader)) => {
+                // A shader bitmap: the game draws it, and its quad is drawn
+                // from the overlay at the shader quad (`super::hud_overlay::
+                // menu_shader_quad`). It ends the run, so order holds.
+                open = false;
+                continue;
+            }
             Err(why) => {
                 refused.push((i as u32, why));
                 open = false;
@@ -588,6 +599,21 @@ mod tests {
             MenuRefusal::Bitmap(bitmaps::Refusal::Meter).counter() as usize,
             Ui::OverlayMenuRefusedBitmapMeter as usize
         );
+    }
+
+    /// A shader bitmap is the game's at the list, drawn from the overlay at
+    /// its quad: it ends a run and is not refused.
+    #[test]
+    fn a_shader_bitmap_ends_a_run_and_is_not_refused() {
+        const SHADER_VTABLE: u32 = 0x5300;
+        let mut mem = widgets();
+        mem.w(SHADER_VTABLE + 0x10, draws::SHADER_BITMAP);
+        mem.w(0x1200, SHADER_VTABLE);
+        let (claim, refused) = plan(&mem, &list(0x8000, [0.0; 5]));
+        assert!(refused.is_empty(), "{refused:?}");
+        let runs: Vec<_> = claim.runs.iter().map(|r| r.entries.clone()).collect();
+        assert_eq!(runs, [vec![0, 1], vec![3, 4]]);
+        assert_eq!(claim.run_of[2], None, "the game draws it");
     }
 
     /// A list drawn inside another's draw has its own frame; its end

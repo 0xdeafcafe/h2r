@@ -580,6 +580,12 @@ const UI_COLUMNS: [&str; Ui::OverlayMenuRefusedPass as usize + 1] = [
     "overlay_hud_tag_record_failed",
     "overlay_hud_text_quads",
     "overlay_hud_text_fallback",
+    "overlay_menu_shader_quads",
+    "overlay_menu_shader_fallback",
+    "overlay_fade_quads",
+    "overlay_bar_quads",
+    "overlay_loading_quads",
+    "overlay_screen_fallback",
     "overlay_menu_claimed",
     "overlay_menu_skipped",
     "overlay_menu_passes",
@@ -589,7 +595,6 @@ const UI_COLUMNS: [&str; Ui::OverlayMenuRefusedPass as usize + 1] = [
     "overlay_menu_refused_bitmap_meter",
     "overlay_menu_refused_bitmap_scroll",
     "overlay_menu_refused_bitmap_state",
-    "overlay_menu_refused_shader",
     "overlay_menu_refused_text",
     "overlay_menu_refused_model",
     "overlay_menu_refused_draw",
@@ -697,6 +702,17 @@ pub enum Ui {
     /// Glyph quads admitted with the text widget's evaluated pixel shader.
     OverlayHudTextQuads,
     OverlayHudTextFallback,
+    /// Menu shader bitmaps' quads drawn from the overlay with their tag
+    /// shader's combiner, and those the UI fan path kept.
+    OverlayMenuShaderQuads,
+    OverlayMenuShaderFallback,
+    /// The fade's, the bars' and the loading screen's draws drawn from the
+    /// overlay with the guest's combiner and blend at the draw, and those
+    /// the UI fan path kept.
+    OverlayFadeQuads,
+    OverlayBarQuads,
+    OverlayLoadingQuads,
+    OverlayScreenFallback,
     /// Menu widget draws the overlay claimed at their sorted list
     /// (docs/graphics/native-post-hud.md, "The menus on the overlay").
     OverlayMenuClaimed,
@@ -718,10 +734,9 @@ pub enum Ui {
     OverlayMenuRefusedBitmapMeter,
     OverlayMenuRefusedBitmapScroll,
     OverlayMenuRefusedBitmapState,
-    /// Drawn widgets the game keeps, by the draw not read yet: a shader
-    /// bitmap, text, a model scene, another draw (a list's, a button's);
-    /// one that did not read; one the overlay refused.
-    OverlayMenuRefusedShader,
+    /// Drawn widgets the game keeps, by the draw not read yet: text, a
+    /// model scene, another draw (a list's, a button's); one that did not
+    /// read; one the overlay refused.
     OverlayMenuRefusedText,
     OverlayMenuRefusedModel,
     OverlayMenuRefusedDraw,

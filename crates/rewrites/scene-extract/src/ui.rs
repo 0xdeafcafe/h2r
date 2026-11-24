@@ -461,7 +461,9 @@ pub enum Unread {
     /// so the caller reads it (`render_bridge::native_hud::ui_overlay::
     /// bitmaps`) over this header ([`read_header`]).
     Bitmap,
-    /// A shader bitmap: tag shaders do not translate.
+    /// A shader bitmap: its combiner is set at its quad, not held at the
+    /// list, so its quad is taken there (`render_bridge::native_hud::
+    /// hud_overlay::menu_shader_quad`).
     Shader,
     /// A text widget: the string, its font and the interface's colour.
     Text,
