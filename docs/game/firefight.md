@@ -1,7 +1,8 @@
 # Firefight
 
 Status: Partly built. The definition format, validator, three built-in wave
-sets, director (FF2), stage-one offline kit, probe recipe, the host
+sets, director (FF2), stage-one offline kit, its home bases, drops,
+firing positions and hunt orders (FF14), probe recipe, the host
 runtime (FF4) with its `Game` over the guest bodies of the engine
 entries and the `firefight` feature that runs it, the agent API
 (FF5), the Game Setup row and options page, the HUD's mode blob, view and
