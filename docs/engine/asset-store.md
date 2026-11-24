@@ -509,48 +509,33 @@ AS8, AS10, AS11, AS12 and AS13 follow AS4 side by side.
 
 ## Decisions
 
-Each is the owner's. The recommendation is first.
-
-1. **Is the disc image needed after the first extraction?**
-   (a) No: the store reassembles every map, and the executable, movies
-   and fonts are copied to the data root. (b) Yes: the store is a cache
-   and a boot still opens the image. Recommended: (a). It is what makes
-   the store smaller than what it replaces.
-2. **Where extraction runs.** (a) `h2 build`, and the pre-boot plan as a
-   check that extracts when stale. (b) Studio's first start only, the
-   game using the disc until then. Recommended: (a), "on compile" as
-   asked, with Studio calling the same code.
-3. **What an edit in Studio touches by default.** (a) Every level that
-   names the asset, with **Fork for this map** as the explicit other
-   choice. (b) The open level only, with "apply everywhere" explicit.
-   Recommended: (a).
-4. **When two mods collide.** (a) Different fields both apply, the same
-   field goes to the later package and is listed, and a structural
-   clash puts the later package off with the reason. (b) Any clash
-   stops the load. (c) The later package always wins. Recommended: (a).
-5. **What a shared mod may hold.** (a) Field patches, authored
-   overrides, new assets and `tag-delta` items, with any blob matching
-   a retail hash refused. (b) No deltas: only fields and authored
-   sources. Recommended: (a). A delta stands where a `map-patch` stands
-   already, and imported community mods need it.
-6. **Community mods already imported.** (a) Convert to tag-level
-   packages at import, `map-patch` when a mod cannot be said that way.
-   (b) Leave them whole-map patches. Recommended: (a); nothing is
-   published, so nothing is migrated.
-7. **What gates a session, and old films.** (a) `LevelId` gates joins
-   and names a film's level; `MapId` and `PackageId` stay the names of
-   things on Live; images a saved film names are kept. (b) Keep
-   `map_id` plus the content set, and refuse a film after a builder
-   change. Recommended: (a).
-8. **Client-only assets in `LevelId`.** (a) Every asset counts until a
+1. **The disc image after the first extraction.** A boot does not open
+   it: the store reassembles every map, and the executable, movies and
+   fonts are copied to the data root. The image is never deleted; it is
+   read again only when the store has to be extracted again.
+2. **Where extraction runs.** `h2 build`, with the pre-boot plan as a
+   check that extracts when the store is stale. Studio calls the same
+   code.
+3. **What an edit in Studio touches.** Every level that names the
+   asset. **Fork for this map** is the explicit other choice.
+4. **When two mods collide.** Different fields both apply. The same
+   field goes to the later package and is listed. A structural clash
+   turns the later package off with the reason.
+5. **What a shared mod may hold.** Field patches, authored overrides,
+   new assets and `tag-delta` items. Any blob matching a retail hash is
+   refused.
+6. **Community mods already imported.** They are converted to
+   tag-level packages at import, with `map-patch` when a mod cannot be
+   said that way.
+7. **What gates a session, and films.** `LevelId` gates joins and names
+   a film's level. `MapId` and `PackageId` stay the names of things on
+   Live. The images a saved film names are kept.
+8. **Client-only assets in `LevelId`.** Every asset counts until a
    lockstep run shows a client asset cannot move the simulation.
-   (b) Leave client assets out from the start. Recommended: (a).
-9. **Converted Halo 1 levels.** (a) Into the store after AS4 (AS10).
-   (b) Leave them whole maps. Recommended: (a): on the owner's machine
-   they are 4.3 GB of whole maps.
-10. **Raw resources on disk.** (a) One file per resource, as built,
-    with a pack file per level only if AS2 measures the reads as slow.
-    (b) Pack files from the start. (c) Compressed. Recommended: (a).
+9. **Converted Halo 1 levels.** They go into the store after AS4
+   (AS10).
+10. **Raw resources on disk.** One file per resource, as built, with a
+    pack file per level only if AS2 measures the reads as slow.
 
 ## Evidence
 
