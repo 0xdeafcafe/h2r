@@ -399,6 +399,10 @@ pub mod clear_flags {
 pub struct Stats {
     /// Changes of the bound colour/depth pair, including a switch away and back.
     pub target_changes: u64,
+    /// Title-owned attachment binds committed by the native reference transaction.
+    pub native_guest_binds: u64,
+    /// Title-owned attachment binds requiring the guest resource destructor.
+    pub guest_bind_refused_destroy: u64,
     /// External passes recorded ([`Device::request_external_pass`]).
     pub external_passes: u64,
     /// External passes dropped (no colour or depth bound, the backend
@@ -441,6 +445,10 @@ pub struct Stats {
     /// Clears that were not one whole-attachment clear (rectangles or
     /// channel masks), handed to [`Backend::clear_rects`].
     pub partial_clears: u64,
+    /// Rectangle plans committed as a masked pass or whole attachment load.
+    pub native_rect_clears: u64,
+    /// Clear lists over the native union planner's complexity bound.
+    pub clear_refused_rect_count: u64,
     /// Frame-buffer copies made for draws that sample a texture over one
     /// ([`BACK_BUFFER_DATA`], [`DISPLAY_BUFFER_DATA`]).
     pub frame_snapshots: u64,
@@ -731,11 +739,11 @@ impl Staged {
 
     /// Writes the words; returns the resources to destroy.
     #[must_use = "the destroys have to reach Device::destroy_resource"]
-    fn commit(self, mem: &mut dyn GuestMemory) -> Result<Vec<u32>, D3dError> {
-        for (addr, value) in self.words {
+    fn commit(&mut self, mem: &mut dyn GuestMemory) -> Result<Vec<u32>, D3dError> {
+        for (addr, value) in self.words.drain(..) {
             mem.write_u32(addr, value)?;
         }
-        Ok(self.destroys)
+        Ok(std::mem::take(&mut self.destroys))
     }
 }
 
@@ -1489,6 +1497,10 @@ impl<B: Backend> Device<B> {
             state_words: s.state_words,
             copies: s.frame_snapshots,
             uploads: s.texture_uploads,
+            native_guest_binds: s.native_guest_binds,
+            guest_bind_refused_destroy: s.guest_bind_refused_destroy,
+            native_rect_clears: s.native_rect_clears,
+            clear_refused_rect_count: s.clear_refused_rect_count,
         }
     }
 
@@ -5060,11 +5072,19 @@ impl<B: Backend> Device<B> {
         // new one is acquired before the old one is stamped and released.
         // Staged, so a release that stops leaves every count and the
         // binding as they were.
-        let move_refs = !self.residual.enabled
-            || [target, z_stencil, self.render_target, self.depth_stencil]
-                .into_iter()
-                .any(|header| self.title_surface(header));
-        let mut refs = Staged::default();
+        let native = self.residual.enabled;
+        let title = native && [target, z_stencil, self.render_target, self.depth_stencil]
+            .into_iter()
+            .any(|header| self.title_surface(header));
+        let move_refs = !native || title;
+        // Keep the transaction storage across native binds; each new bind
+        // still reads the live guest counts and lock stamps. On an early
+        // error the local transaction drops with all its pending writes.
+        let mut refs = if title {
+            std::mem::take(&mut self.residual.bind_refs)
+        } else {
+            Staged::default()
+        };
         if move_refs {
             self.acquire_surface(&mut refs, mem, target)?;
             self.release_surface(&mut refs, mem, entry, self.render_target)?;
@@ -5088,9 +5108,16 @@ impl<B: Backend> Device<B> {
                 self.write_back(mem, old, WritebackCause::DepthBinding)?;
             }
         }
+        let mut guest_destroy = false;
         if move_refs {
             let destroys = refs.commit(mem)?;
-            self.destroy_resources(mem, destroys)?;
+            guest_destroy = !destroys.is_empty();
+            if guest_destroy {
+                self.destroy_resources(mem, destroys)?;
+            }
+            if title {
+                self.residual.bind_refs = refs;
+            }
         }
         if (self.render_target, self.depth_stencil) != (target, z_stencil) {
             self.stats.target_changes = self.stats.target_changes.wrapping_add(1);
@@ -5100,6 +5127,13 @@ impl<B: Backend> Device<B> {
         let dev = self.cfg.layout.device;
         mem.write_u32(dev + field::RENDER_TARGET, target)?;
         mem.write_u32(dev + field::DEPTH_STENCIL, z_stencil)?;
+        if title {
+            if guest_destroy {
+                self.stats.guest_bind_refused_destroy += 1;
+            } else {
+                self.stats.native_guest_binds += 1;
+            }
+        }
         Ok(())
     }
 

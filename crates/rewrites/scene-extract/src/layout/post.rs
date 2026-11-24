@@ -140,6 +140,21 @@ mod tests {
     }
 
     #[test]
+    fn side_target_strip_inputs_require_every_corner_before_drawing() {
+        let mut m = Mem::default();
+        for i in 0..19 {
+            m.w(0x4000 + 4 * i, i);
+        }
+        assert_eq!(
+            screen_inputs(&m, 0x4000, 0x4010, 2, 2),
+            Err("unreadable screen corner"),
+        );
+        m.w(0x404c, 19);
+        let (_, corners) = screen_inputs(&m, 0x4000, 0x4010, 2, 2).unwrap();
+        assert_eq!(corners[3], [16, 17, 18, 19]);
+    }
+
+    #[test]
     fn the_frame_reads_its_gates() {
         let mut m = Mem::default();
         m.w(VIEW_KIND, 1);

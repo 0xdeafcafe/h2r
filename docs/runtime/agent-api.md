@@ -2085,7 +2085,7 @@ h2 agent render.parity '{"arm": true}'
   stream. Private replays also contribute. These counters are available
   with frame statistics and the residual census disabled.
   `post_effect_refused_<cause>` counts screen-effect preflight refusals.
-  A missing view strip increments `view_target`. A missing or empty
+  A call that needs the view but has no view strip increments `view_target`. A missing or empty
   target 1 size increments `pass_target`. Unless
   `frame-scene.layers=off` is in `H2_FEATURES`, `layer_plan_asked`, `layer_plan_drawn`,
   `layer_plan_items` and the plan's outcomes by layer,
@@ -2325,6 +2325,12 @@ h2 agent render.residual '{"top": 500}'        # the last finished window
   `copies` (frame-buffer copies), `uploads` (texture uploads), `locks`
   (`BlockOnResource`, `BlockOnTime`, `IsBusy`), `queries` (visibility
   tests and results), `presents`, and `d3d_ms` (time in the adapter).
+  Totals and producer rows also count committed native rectangle plans
+  (`native_rect_clears`) and longer lists using the linear path
+  (`clear_refused_rect_count`). Title binds that complete without resource
+  destruction increment `native_guest_binds`. Final releases increment
+  `guest_bind_refused_destroy`. The helper rows are `scene_clear` and
+  `target_select`.
 - **`callers`**, at most `top`, by `residual`, then calls:
   `{function, sites, entries, draws, inline_draws, residual, d3d_ms}`.
   A caller is the analysed guest function holding the entry calls' return
@@ -2338,7 +2344,8 @@ h2 agent render.residual '{"top": 500}'        # the last finished window
   `sites_full` is true.
 - **`producers`**, at most `top`, by `residual`, then `entries`:
   `{producer, status, slot, calls, draws, claimed, residual, entries,
-  push_words, state_words, clears, binds, copies, uploads, d3d_ms,
+  push_words, state_words, clears, binds, native_rect_clears, clear_refused_rect_count,
+  native_guest_binds, guest_bind_refused_destroy, copies, uploads, d3d_ms,
   guest_ms}`. Only with `frame-scene.census` in `H2_FEATURES`, which
   places an entry and an exit observer on each producer in
   `residual_census::REGISTRY` (the views, the scene passes, the object
@@ -2351,7 +2358,7 @@ h2 agent render.residual '{"top": 500}'        # the last finished window
   frame it is `outside_render`. At each boundary the device first decodes
   the push buffer, so an inline draw is charged to the producer open when
   its words were written. `status` is `native` or `d3d` from the
-  registry, and `partial` for the screen-effect producer or a layer draw a native stage draws some
+  registry, and `partial` for the clear, target-selection and screen-effect producers or a layer draw a native stage draws some
   items of from the scene, skipping their guest draws
   (`residual_census::PARTIAL_LAYERS`: the scene's layers 1, 2, 3, 5, 7,
   8, 17 and 20 and the first person's 1, 2, 3, 7, 8 and 20); its `residual` is
