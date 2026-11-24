@@ -175,3 +175,115 @@ fn a_load_the_store_refuses_ends_in_its_sentence() {
     assert_eq!(notice(&e), Some("nothing is not a map variant."));
     assert!(e.pending.is_none());
 }
+
+fn saved_two(e: &mut Editor) {
+    for name in ["Arena", "Keep"] {
+        e.choose(1, Choice::SaveAs(name.into())).unwrap();
+        settle(e, 2);
+    }
+    assert_eq!(names(e), ["Arena", "Keep"]);
+    assert_eq!(e.filename.as_deref(), Some("Keep"));
+}
+
+fn file_of(e: &Editor, name: &str) -> String {
+    e.variants.iter().find(|l| l.name == name).unwrap().file.clone()
+}
+
+#[test]
+fn rename_to_a_taken_name_writes_nothing_and_a_free_name_renames() {
+    let dir = Dir::new();
+    let mut e = editor_in(&dir.0);
+    saved_two(&mut e);
+    let arena = file_of(&e, "Arena");
+    // A taken name, with any case, is the store's sentence and nothing changes.
+    e.choose(3, Choice::RenameVariant(arena.clone(), "keep".into()))
+        .unwrap();
+    settle(&mut e, 4);
+    assert_eq!(notice(&e), Some("A map variant named keep already exists."));
+    assert_eq!(names(&e), ["Arena", "Keep"]);
+    // A name the store would refuse never reaches it.
+    assert!(
+        e.choose(5, Choice::RenameVariant(arena.clone(), "   ".into()))
+            .is_err()
+    );
+    assert!(e.file_job.is_none());
+    // A free name renames it; the open variant stays Keep.
+    e.choose(6, Choice::RenameVariant(arena, " Court ".into()))
+        .unwrap();
+    settle(&mut e, 7);
+    assert_eq!(notice(&e), Some("Renamed to Court."));
+    assert!(names(&e).contains(&"Court") && !names(&e).contains(&"Arena"));
+    assert_eq!(e.filename.as_deref(), Some("Keep"));
+}
+
+#[test]
+fn renaming_the_open_variant_renames_the_session() {
+    let dir = Dir::new();
+    let mut e = editor_in(&dir.0);
+    saved_two(&mut e);
+    let keep = file_of(&e, "Keep");
+    e.choose(3, Choice::RenameVariant(keep, "Held".into()))
+        .unwrap();
+    settle(&mut e, 4);
+    assert_eq!(e.filename.as_deref(), Some("Held"));
+}
+
+#[test]
+fn duplicate_copies_under_a_new_name_and_a_taken_one_copies_nothing() {
+    let dir = Dir::new();
+    let mut e = editor_in(&dir.0);
+    saved_two(&mut e);
+    let arena = file_of(&e, "Arena");
+    e.choose(3, Choice::DuplicateVariant(arena.clone(), "Keep".into()))
+        .unwrap();
+    settle(&mut e, 4);
+    assert_eq!(names(&e), ["Arena", "Keep"]);
+    e.choose(5, Choice::DuplicateVariant(arena, "Arena 2".into()))
+        .unwrap();
+    settle(&mut e, 6);
+    assert_eq!(notice(&e), Some("Copied as Arena 2."));
+    assert_eq!(names(&e), ["Arena", "Arena 2", "Keep"]);
+}
+
+#[test]
+fn delete_asks_with_no_focused_and_yes_removes_the_file() {
+    let dir = Dir::new();
+    let mut e = editor_in(&dir.0);
+    saved_two(&mut e);
+    let arena = file_of(&e, "Arena");
+    e.choose(3, Choice::DeleteVariant(arena.clone())).unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Question));
+    let question = screens::screen(Kind::Question).sheet();
+    assert_eq!(question.body, "Delete Arena?");
+    assert_eq!(question.rows[question.focus].label, "No");
+    answer(&mut e, 4, Ask::DeleteVariant, false);
+    assert_eq!(notice(&e), Some(flows::NOT_DELETED));
+    assert_eq!(names(&e), ["Arena", "Keep"]);
+    e.choose(5, Choice::DeleteVariant(arena)).unwrap();
+    answer(&mut e, 6, Ask::DeleteVariant, true);
+    settle(&mut e, 7);
+    assert_eq!(notice(&e), Some("Deleted Arena."));
+    assert_eq!(names(&e), ["Keep"]);
+}
+
+#[test]
+fn the_open_variant_is_not_deleted() {
+    let dir = Dir::new();
+    let mut e = editor_in(&dir.0);
+    saved_two(&mut e);
+    let keep = file_of(&e, "Keep");
+    e.choose(3, Choice::DeleteVariant(keep)).unwrap();
+    assert_eq!(
+        e.choose(
+            4,
+            Choice::Answer {
+                ask: Ask::DeleteVariant,
+                yes: true
+            }
+        )
+        .unwrap_err(),
+        flows::OPEN_CANNOT_DELETE
+    );
+    assert!(e.file_job.is_none());
+    assert_eq!(names(&e), ["Arena", "Keep"]);
+}

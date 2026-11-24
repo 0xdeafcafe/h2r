@@ -166,6 +166,12 @@ impl ForgeScreen {
         self.close_after_pick.swap(false, Ordering::SeqCst)
     }
 
+    /// Asks this screen to close at the next UI update, as a closing pick
+    /// does: its dialog chose something that leaves it with nothing to show.
+    pub fn close_with_dialog(&self) {
+        self.close_after_pick.store(true, Ordering::SeqCst);
+    }
+
     /// The rows its text slots hold, and the in-game list's lines.
     pub fn max_rows(&self) -> usize {
         let slots = ((self.kind.family().len - ROWS) / 2) as usize;
@@ -394,6 +400,11 @@ impl Rows for ForgeScreen {
                 Chosen::Act
             }
             Act::Choose(c) => {
+                if self.kind == Kind::Variant
+                    && matches!(c, Choice::Load(_) | Choice::DeleteVariant(_))
+                {
+                    super::screen(Kind::Variants).close_with_dialog();
+                }
                 lock(&self.outbox).push_back(c.clone());
                 self.closing.store(true, Ordering::SeqCst);
                 Chosen::Act
@@ -414,6 +425,15 @@ impl Rows for ForgeScreen {
                         Chosen::Act
                     }
                     Err(why) => Chosen::Stepped(format!("{}: {why}", self.kind.screen())),
+                }
+            }
+            Act::Variant(file, sheet) => {
+                super::target_variant(file.clone());
+                match super::push((**sheet).clone()) {
+                    Ok(chosen) => chosen,
+                    Err(why) => {
+                        Chosen::Stepped(format!("{}: not opened: {why}", sheet.kind.screen()))
+                    }
                 }
             }
             Act::Dialog(sheet) => match super::push((**sheet).clone()) {
@@ -508,6 +528,8 @@ fn row_spec(r: &super::sheet::SheetRow, described: bool) -> RowSpec {
         Act::Dialog(sheet) => {
             RowSpec::action(&r.label).press(Press::Open(sheet.kind.screen().into()))
         }
+        Act::Variant(_, sheet) => RowSpec::value(&r.label, &[value.as_str()], 0)
+            .press(Press::Open(sheet.kind.screen().into())),
         Act::Tick(_) => RowSpec::value(&r.label, &[value.as_str()], 0).press(Press::Act),
         Act::Info => {
             // A fact takes no A: its legend is Back alone.

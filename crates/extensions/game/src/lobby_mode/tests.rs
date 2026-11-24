@@ -25,7 +25,7 @@ const ALL: Offer = Offer {
 /// A row's text, as the Game Setup list draws it.
 fn label(action: i16) -> &'static str {
     match action {
-        FORGE_MAP_ACTION => FORGE_MAP_LABEL,
+        MAP_VARIANT_ACTION => MAP_VARIANT_LABEL,
         CHANGE_MAP => "Change Map...",
         CHANGE_RULES => "Change Rules...",
         QUICK_OPTIONS => "Quick Options...",
@@ -58,6 +58,7 @@ fn game_setup_lists_the_rows_of_each_mode() {
             Mode::Multiplayer,
             &[
                 "Change Map...",
+                MAP_VARIANT_LABEL,
                 "Change Rules...",
                 "Quick Options...",
                 "Clanker Options...",
@@ -68,7 +69,7 @@ fn game_setup_lists_the_rows_of_each_mode() {
             Mode::Forge,
             &[
                 "Change Map...",
-                FORGE_MAP_LABEL,
+                MAP_VARIANT_LABEL,
                 "Change Rules...",
                 "Quick Options...",
                 "Clanker Options...",
@@ -98,7 +99,7 @@ fn game_setup_lists_the_rows_of_each_mode() {
     );
     assert_eq!(
         Opener::GAME_SETUP_FORGE.rows[Opener::GAME_SETUP_FORGE.focus],
-        FORGE_MAP_LABEL
+        MAP_VARIANT_LABEL
     );
     assert_eq!(
         Opener::GAME_SETUP_FIREFIGHT.rows,
@@ -134,7 +135,7 @@ fn forge_mode_lists_change_map_and_forge_map() {
     let at = |a: i16| rows.iter().position(|&r| r == a);
     assert_eq!(at(CHANGE_MAP), Some(0));
     assert_eq!(
-        at(FORGE_MAP_ACTION),
+        at(MAP_VARIANT_ACTION),
         Some(1),
         "Forge Map follows Change Map"
     );
@@ -152,7 +153,7 @@ fn forge_mode_lists_change_map_and_forge_map() {
     .unwrap();
     assert_eq!(
         h1,
-        [CHANGE_MAP, FORGE_MAP_ACTION, CHANGE_RULES, OPTIONS_ACTION]
+        [CHANGE_MAP, MAP_VARIANT_ACTION, CHANGE_RULES, OPTIONS_ACTION]
     );
 }
 
@@ -168,7 +169,7 @@ fn arrange_drops_the_switch_to_rows() {
             ALL,
             &[CHANGE_MAP, CHANGE_RULES, 9, SWITCH_ACTION, 6]
         ),
-        Some(vec![CHANGE_MAP, CHANGE_RULES])
+        Some(vec![CHANGE_MAP, MAP_VARIANT_ACTION, CHANGE_RULES])
     );
     // A matchmaking lobby's list keeps Change Playlist.
     assert_eq!(
@@ -199,7 +200,15 @@ fn arrange_drops_the_switch_to_rows() {
 #[test]
 fn a_list_with_nothing_to_change_is_left_as_built() {
     let plain = [CHANGE_MAP, CHANGE_RULES, QUICK_OPTIONS, CLANKERS, FIREFIGHT];
-    assert_eq!(arrange(Mode::Multiplayer, ALL, &plain), None);
+    // Map Variant... joins a custom game's list with the `forge` feature on.
+    assert!(arrange(Mode::Multiplayer, ALL, &plain).is_some());
+    let firefight_only = Offer {
+        forge: false,
+        firefight: true,
+    };
+    assert_eq!(arrange(Mode::Multiplayer, firefight_only, &plain), None);
+    let with_row = arrange(Mode::Multiplayer, ALL, &plain).unwrap();
+    assert_eq!(arrange(Mode::Multiplayer, ALL, &with_row), None);
     // No mode besides Multiplayer on offer: the held mode is not applied,
     // and the Switch To rows still go.
     assert_eq!(arrange(Mode::Forge, Offer::default(), &plain), None);
@@ -251,29 +260,90 @@ fn game_setup_has_no_mode_row() {
     }
 }
 
+fn entry(file: &str, name: &str, sentence: Option<&str>) -> VariantEntry {
+    VariantEntry {
+        file: file.into(),
+        name: name.into(),
+        sentence: sentence.map(str::to_owned),
+        detail: format!("By Builder. Adds 2 Crates ({name})."),
+    }
+}
+
+/// A choice that records what was picked: `Some(file)` or Original.
+fn recorder() -> (Choose, Arc<Mutex<Vec<Option<String>>>>) {
+    let seen: Arc<Mutex<Vec<Option<String>>>> = Arc::default();
+    let log = Arc::clone(&seen);
+    let choose: Choose = Arc::new(move |file| {
+        log.lock().unwrap().push(file.map(str::to_owned));
+        "chosen".into()
+    });
+    (choose, seen)
+}
+
 #[test]
-fn the_forge_map_picker_offers_new_and_the_saved_maps() {
-    let saved = vec![
-        ("Castle".to_owned(), "Castle".to_owned()),
-        ("Two_Towers".to_owned(), "Two Towers".to_owned()),
+fn the_map_variant_picker_offers_original_first_and_the_variants_by_name() {
+    let listed = vec![
+        entry("Castle", "Castle", None),
+        entry("Two_Towers", "Two Towers", None),
     ];
-    let pick = forge_map_pick(Ok(saved), Some("Two_Towers"));
+    let (choose, seen) = recorder();
+    let pick = map_variant_pick(Ok(listed), Some("Two_Towers"), choose);
     // The row shows names; the lobby holds the file stem.
-    assert_eq!(pick.values, [NEW_MAP, "Castle", "Two Towers"]);
+    assert_eq!(pick.values, [ORIGINAL, "Castle", "Two Towers"]);
     assert_eq!(pick.current, 2);
-    assert_eq!(pick.title, "FORGE MAP");
-    assert_eq!((pick.set)(2), "lobby mode: Forge map Two_Towers");
-    assert_eq!(lobby_start::forge_map().as_deref(), Some("Two_Towers"));
-    assert_eq!((pick.set)(1), "lobby mode: Forge map Castle");
-    assert_eq!(lobby_start::forge_map().as_deref(), Some("Castle"));
-    assert_eq!((pick.set)(0), "lobby mode: a new Forge map");
-    assert_eq!(lobby_start::forge_map(), None);
-    // A list that cannot be read is named, and New still works.
-    let pick = forge_map_pick(Err("permission denied".into()), None);
-    assert_eq!(pick.values, [NEW_MAP]);
+    assert_eq!(pick.title, "MAP VARIANT");
+    assert_eq!(pick.line(0), "Play the map as it is.");
+    assert!(pick.line(1).contains("Adds 2 Crates"));
+    (pick.set)(2);
+    (pick.set)(1);
+    (pick.set)(0);
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [Some("Two_Towers".to_owned()), Some("Castle".to_owned()), None]
+    );
+    // A list that cannot be read is named, and Original still works.
+    let pick = map_variant_pick(Err("permission denied".into()), None, recorder().0);
+    assert_eq!(pick.values, [ORIGINAL]);
     assert!(pick.description.contains("permission denied"));
-    // A held map no longer saved focuses New.
-    assert_eq!(forge_map_pick(Ok(vec![]), Some("Gone")).current, 0);
+    // A held variant no longer saved focuses Original.
+    assert_eq!(map_variant_pick(Ok(vec![]), Some("Gone"), recorder().0).current, 0);
+}
+
+#[test]
+fn an_unusable_variant_shows_its_sentence_and_cannot_be_chosen() {
+    let why = "Old Keep was made for another version of court.";
+    let listed = vec![entry("ok", "Fine", None), entry("old", "Old Keep", Some(why))];
+    let pick = map_variant_pick(Ok(listed), None, recorder().0);
+    assert_eq!(pick.values, [ORIGINAL, "Fine", "Old Keep"]);
+    assert_eq!(pick.line(2), why);
+    assert!(!pick.is_blocked(0) && !pick.is_blocked(1));
+    assert!(pick.is_blocked(2));
+}
+
+/// FORGE: the choice is the file the session opens; Original is a new map.
+#[test]
+fn in_forge_the_choice_is_the_map_the_session_opens() {
+    lobby_start::set_mode(Mode::Forge);
+    let choose = choose_in_lobby(std::env::temp_dir(), None);
+    assert_eq!(choose(Some("Castle")), "lobby mode: Forge map variant Castle");
+    assert_eq!(lobby_start::forge_map().as_deref(), Some("Castle"));
+    assert_eq!(choose(None), "lobby mode: a new Forge map");
+    assert_eq!(lobby_start::forge_map(), None);
+    lobby_start::clear();
+}
+
+/// CUSTOM GAMES: Original clears the lobby's pick; a map the lobby does not
+/// know cannot be picked from, by name.
+#[test]
+fn in_a_custom_game_the_choice_is_the_variant_built() {
+    lobby_start::clear();
+    let choose = choose_in_lobby(std::env::temp_dir(), None);
+    assert_eq!(
+        choose(Some("Castle")),
+        "lobby mode: the lobby's map is not known"
+    );
+    assert!(crate::map_variant::picked().is_none());
+    assert_eq!(choose(None), "lobby mode: the original map");
 }
 
 #[test]
@@ -401,8 +471,8 @@ fn the_start_is_refused_only_in_a_forge_lobby() {
 
 #[test]
 fn the_help_lines_name_the_map() {
-    assert_eq!(forge_map_help(None), "New starts from the map as it is.");
-    assert!(forge_map_help(Some("Castle")).contains("Castle"));
+    assert_eq!(map_variant_help(None), "Original plays the map as it is.");
+    assert!(map_variant_help(Some("Castle")).contains("Castle"));
 }
 
 /// Rows, values and lines read as the game's: no colon between a label
@@ -410,7 +480,7 @@ fn the_help_lines_name_the_map() {
 #[test]
 fn the_copy_has_no_colon_values_or_repeated_spaces() {
     let options = ff::Options::default();
-    let mut texts: Vec<String> = vec![FORGE_MAP_LABEL.into(), NEW_MAP.into()];
+    let mut texts: Vec<String> = vec![MAP_VARIANT_LABEL.into(), ORIGINAL.into()];
     texts.extend(Mode::ALL.iter().map(|m| m.label().to_owned()));
     texts.extend(panel_lines(Mode::Forge, None, None));
     texts.extend(panel_lines(Mode::Forge, Some("Castle"), None));
@@ -420,7 +490,11 @@ fn the_copy_has_no_colon_values_or_repeated_spaces() {
         assert!(!t.contains("  "), "{t:?} has two spaces");
         assert!(!t.trim_end_matches("...").contains("..."), "{t:?}");
     }
-    let picks = [forge_map_pick(Ok(vec![("Castle".into(), "Castle".into())]), None)];
+    let picks = [map_variant_pick(
+        Ok(vec![entry("Castle", "Castle", None)]),
+        None,
+        recorder().0,
+    )];
     for p in &picks {
         assert!(!p.description.contains("  "), "{}", p.description);
         assert!(p.values.iter().all(|v| !v.contains(':')), "{:?}", p.values);
@@ -689,7 +763,7 @@ fn the_rows_actions_are_their_own() {
         crate::clankermatch::SWITCH_ACTION,
         FIREFIGHT,
     ] {
-        assert!(FORGE_MAP_ACTION > theirs);
+        assert!(MAP_VARIANT_ACTION > theirs);
     }
 }
 
@@ -1024,8 +1098,8 @@ mod gate {
 }
 
 #[test]
-fn the_forge_map_list_names_a_lobby_map_it_does_not_know() {
+fn the_map_variant_list_names_a_lobby_map_it_does_not_know() {
     let dir = std::env::temp_dir();
-    let why = forge_map_list(&dir, None).unwrap_err();
+    let why = map_variant_list(&dir, None).unwrap_err();
     assert!(why.contains("not known"), "{why}");
 }

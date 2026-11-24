@@ -57,6 +57,9 @@ enum FileResult {
     Saved(String, Vec<Listed>),
     /// The store has a variant of this name: Replace asks.
     Taken(String),
+    /// A map variant was renamed, copied or deleted: the notice, the map's
+    /// variants after, and a rename's old and new names.
+    Variants(String, Vec<Listed>, Option<(String, String)>),
     Loaded(Pending),
     /// The ground build's copy of the session, and whether it built.
     Ground(Box<(Session, bool)>),
@@ -123,6 +126,11 @@ pub(super) struct Editor {
     overwrite_asked: Option<String>,
     /// The variant file the load question is about.
     load_asked: Option<String>,
+    /// The variant file the delete question is about.
+    variant_asked: Option<String>,
+    /// A question that could not open because a Forge screen was still
+    /// closing: tried again each tick.
+    ask_wait: Option<(Ask, String)>,
     /// The log head as last saved or loaded: edits since are not saved.
     saved_head: LogHead,
     /// The map's variants, for Load.
@@ -184,6 +192,8 @@ impl Editor {
             delete_asked: None,
             overwrite_asked: None,
             load_asked: None,
+            variant_asked: None,
+            ask_wait: None,
             saved_head,
             variants: Vec::new(),
             prefabs: Vec::new(),
@@ -1035,6 +1045,9 @@ impl Editor {
         self.poll_file(tick);
         self.poll(tick);
         self.net_tick(tick);
+        if let Some((ask, name)) = self.ask_wait.take() {
+            self.ask(ask, &name);
+        }
         if !self.busy() {
             for choice in screens::take_choices() {
                 if let Err(error) = self.choose(tick, choice) {
@@ -1197,6 +1210,15 @@ impl Editor {
                 Ok(()) => self.overwrite_asked = Some(name),
                 Err(reason) => self.notice = Some((reason, tick)),
             },
+            Ok(FileResult::Variants(notice, listed, renamed)) => {
+                self.notice = Some((notice, tick));
+                if let (Some((old, new)), Some(open)) = (renamed, &self.filename)
+                    && flows::same_name(&old, open)
+                {
+                    self.filename = Some(new);
+                }
+                self.variants = listed;
+            }
             Ok(FileResult::Loaded(pending)) => self.pending = Some(pending),
             Ok(FileResult::Ground(done)) => {
                 // No edit runs while a file job does: the copy is the
@@ -1712,6 +1734,11 @@ impl Editor {
                         Ok(FileResult::Prefab(prefab.name, list, skipped))
                     });
                 }
+                // The keyboard's completion names the variant
+                // (`forge_screens`); a number that got here has none.
+                sheet::NumberField::RenameVariant | sheet::NumberField::DuplicateVariant => {
+                    return Err("That map variant is gone.".into());
+                }
                 sheet::NumberField::RespawnTime => {
                     let value = text
                         .parse::<i64>()
@@ -1780,11 +1807,32 @@ impl Editor {
             },
             Choice::Load(file) => {
                 if self.dirty() {
-                    screens::open(sheet::question(Ask::Load, ""))?;
                     self.load_asked = Some(file);
+                    self.ask(Ask::Load, "");
                 } else {
                     return self.load(tick, file);
                 }
+            }
+            Choice::DeleteVariant(file) => {
+                let name = self.variant_name(&file);
+                self.variant_asked = Some(file);
+                self.ask(Ask::DeleteVariant, &name);
+            }
+            Choice::Answer {
+                ask: Ask::DeleteVariant,
+                yes,
+            } => {
+                let file = self.variant_asked.take().ok_or("Nothing to delete.")?;
+                if yes {
+                    return self.delete_variant(file);
+                }
+                self.notice = Some((flows::NOT_DELETED.into(), tick));
+            }
+            Choice::RenameVariant(file, typed) => {
+                return self.rename_variant(file, typed.trim().to_owned());
+            }
+            Choice::DuplicateVariant(file, typed) => {
+                return self.duplicate_variant(file, typed.trim().to_owned());
             }
             Choice::Games(set) => {
                 let id = self
@@ -1816,6 +1864,77 @@ impl Editor {
             Ok(_) => Ok(FileResult::Saved(name, list_variants(&data, &session)?)),
             Err(variants::Error::NameTaken(_)) => Ok(FileResult::Taken(name)),
             Err(e) => Err(e.to_string()),
+        })
+    }
+
+    /// The name of the listed variant of file stem `file`.
+    fn variant_name(&self, file: &str) -> String {
+        self.variants
+            .iter()
+            .find(|v| v.file == file)
+            .map_or_else(|| file.to_owned(), |v| v.name.clone())
+    }
+
+    /// Opens the question `ask`; while a Forge screen is still up it opens
+    /// at a later tick.
+    fn ask(&mut self, ask: Ask, name: &str) {
+        if screens::open(sheet::question(ask, name)).is_err() {
+            self.ask_wait = Some((ask, name.to_owned()));
+        }
+    }
+
+    /// Gives the saved variant of file stem `file` the name `name`. A name
+    /// another variant has is the store's refusal: nothing is replaced.
+    fn rename_variant(&mut self, file: String, name: String) -> Result<(), String> {
+        forge_doc::variant_name(&name).map_err(|e| e.to_string())?;
+        let old = self.variant_name(&file);
+        let (data, session) = (self.data.clone(), self.session.clone());
+        self.file(move || {
+            let map = session.document().base.map.clone();
+            variants::rename(&data, &map, &file, &name).map_err(|e| e.to_string())?;
+            Ok(FileResult::Variants(
+                flows::renamed(&name),
+                list_variants(&data, &session)?,
+                Some((old, name)),
+            ))
+        })
+    }
+
+    /// Copies the saved variant of file stem `file` under `name`.
+    fn duplicate_variant(&mut self, file: String, name: String) -> Result<(), String> {
+        forge_doc::variant_name(&name).map_err(|e| e.to_string())?;
+        let (data, session) = (self.data.clone(), self.session.clone());
+        self.file(move || {
+            let map = session.document().base.map.clone();
+            variants::duplicate(&data, &map, &file, &name).map_err(|e| e.to_string())?;
+            Ok(FileResult::Variants(
+                flows::duplicated(&name),
+                list_variants(&data, &session)?,
+                None,
+            ))
+        })
+    }
+
+    /// Removes the saved variant of file stem `file`. The open variant is
+    /// refused here as its dialog has no row for it.
+    fn delete_variant(&mut self, file: String) -> Result<(), String> {
+        let name = self.variant_name(&file);
+        if self
+            .filename
+            .as_deref()
+            .is_some_and(|open| flows::same_name(open, &name))
+        {
+            return Err(flows::OPEN_CANNOT_DELETE.into());
+        }
+        let (data, session) = (self.data.clone(), self.session.clone());
+        self.file(move || {
+            let map = session.document().base.map.clone();
+            variants::delete(&data, &map, &file).map_err(|e| e.to_string())?;
+            Ok(FileResult::Variants(
+                flows::deleted(&name),
+                list_variants(&data, &session)?,
+                None,
+            ))
         })
     }
 
