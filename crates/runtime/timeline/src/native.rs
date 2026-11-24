@@ -1001,7 +1001,7 @@ mod tests {
         let animation = phase::Counter::ALL.len() + ANIMATION_OFFSET;
         assert_eq!(
             columns[animation - 1].1,
-            "native_ui_overlay_menu_refused_pass"
+            "native_ui_overlay_modal_blur_refused_targets"
         );
         assert_eq!(columns[animation].1, "native_shader_animation_layers_drawn");
         assert_eq!(
@@ -1013,6 +1013,10 @@ mod tests {
             "native_shader_animation_layer3_refused"
         );
         assert_eq!(columns[ui + Ui::OverlayMenuClaimed as usize].1, "native_ui_overlay_menu_claimed");
+        assert_eq!(
+            columns[ui + Ui::OverlayMenuRefusedPass as usize].1,
+            "native_ui_overlay_menu_refused_pass"
+        );
         assert_eq!(columns[ui + Ui::OverlayRefusedTexture as usize].1, "native_ui_overlay_refused_texture");
         assert_eq!(columns[ui + Ui::OverlayModelViews as usize].1, "native_ui_overlay_model_views");
         assert_eq!(columns[ui + Ui::OverlayRefusedBlur as usize].1, "native_ui_overlay_refused_blur");

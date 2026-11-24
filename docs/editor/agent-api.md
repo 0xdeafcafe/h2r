@@ -2101,10 +2101,12 @@ severity, message, target, path?}`, worst first; `counts` has `error`,
 its count; `skipped` each check that could not run and why, and each
 area with no check registered. `target` narrows every check to one
 thing; a check it does not fit is skipped. With `asset` (an asset id)
-the Problems list is read again over every source and the answer is
+the Problems list is read again and the answer is
 `{asset, findings, counts, ran, skipped}` for only the rows about that
 asset (the rows of `problems.list {asset}`, with `source`, `asset` and the
-rest); `what` and `target` are not used. The checks:
+rest); `what` and `target` are not used. For a package item, both calls
+refresh package checks and open-script diagnostics, which are the sources
+that can report a finding on an item. The checks:
 
 | Area | Check | What it checks |
 |---|---|---|

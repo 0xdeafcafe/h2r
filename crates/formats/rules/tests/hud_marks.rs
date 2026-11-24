@@ -204,6 +204,25 @@ fn the_siege_mark_and_row_follow_the_front_and_its_holder() {
     g.inside.remove(&(0, 601));
     ticks(&mut vm, &mut g, 6, 1);
     assert_eq!(front(&vm), Some((true, 1, 1)));
+
+    // The front stays on the occupied site even as attackers move elsewhere.
+    g.inside.insert((0, 600));
+    ticks(&mut vm, &mut g, 7, 1);
+    assert_eq!(marked(&vm, "koth.mark", 0), Some(601));
+
+    // Once empty, the old front's accumulated capture time does not keep
+    // the mark there.
+    g.inside.remove(&(1, 601));
+    g.inside.insert((1, 600));
+    ticks(&mut vm, &mut g, 8, 1);
+    assert_eq!(marked(&vm, "koth.mark", 0), Some(600));
+
+    // The front can follow attackers onto a contested site immediately.
+    g.inside.clear();
+    g.inside.extend([(0, 601), (1, 601)]);
+    ticks(&mut vm, &mut g, 9, 1);
+    assert_eq!(marked(&vm, "koth.mark", 0), Some(601));
+    assert_eq!(front(&vm).map(|(shown, style, _)| (shown, style)), Some((true, 2)));
 }
 
 /// Holds site 600 alone until the banner shows, and returns its text, the
@@ -255,7 +274,7 @@ fn the_siege_clock_is_called_at_thirty_and_ten_seconds() {
 #[test]
 fn a_mark_names_its_audience_and_the_view_hides_the_rest() {
     let src = "rules \"Aim\" 1\ntype slayer\nrequires hud.waypoints\n\
-        label hill: zones\n\
+        label hill: zones numbered\n\
         waypoint all_mark at ctf.mark\n\
         waypoint team_mark at ter.mark\n\
         waypoint one_mark at asl.mark\n\

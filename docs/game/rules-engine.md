@@ -1231,10 +1231,12 @@ that side the engine's own spawns. The attackers spawn as Spartans and the defen
 as Elites (`set_body`), whatever each player chose. The HUD is the King of
 the Hill kit's ("The HUDs a script feeds" in
 [rules-world-api.md](rules-world-api.md#the-huds-a-script-feeds)): the
-mark and the row (`koth.hill`) follow the front, the site the attackers
-are on (a site someone stands on stays the front, contested or not), else
-the first site still to take, then the final stand; the row reads open,
-held by a side or contested; the banner (`koth.banner`) says a site
+mark and the row (`koth.hill`) stay on the current untaken site while
+any living player occupies it. When that site empties or is taken, the
+mark moves to the first untaken site with living attackers, including a
+contested site. With no attackers on a site it marks the first untaken
+site, and in the final phase it marks the stand. The row reads open,
+held by a side or contested. The banner (`koth.banner`) says a site
 taken, the final assault, an overtime, and the last 30 and 10 seconds of a
 phase; the phase's seconds left are the kit's `koth.phase` row ("Phase
 2:59"). A phase whose clock runs out with an attacker on its front goes

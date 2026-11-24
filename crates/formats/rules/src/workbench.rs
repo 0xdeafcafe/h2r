@@ -1301,7 +1301,7 @@ mod tests {
     #[test]
     fn the_trace_keeps_the_hud_rows_one_viewer_sees() {
         let src = "rules \"Strip\" 1\ntype slayer\nrequires hud.widgets, hud.waypoints\n\
-             label hill: zones\n\
+             label hill: zones numbered\n\
              hud wave: text at koth.hill\nwaypoint spot at koth.mark\n\
              on round_start {\n\
                  hud_text(wave, \"Wave two\")\n\
@@ -1310,7 +1310,10 @@ mod tests {
                  if let z = hill[0] { mark(spot, z) }\n\
              }\n";
         let mut scenario = slayer_scenario();
-        scenario.map = Some(vec![scenario::ScenarioLabel::new("hill", 0x4001_0000)]);
+        scenario.map = Some(vec![scenario::ScenarioLabel {
+            number: Some(0),
+            ..scenario::ScenarioLabel::new("hill", 0x4001_0000)
+        }]);
         let t = run(src, &scenario).unwrap();
         let kept = t
             .ticks

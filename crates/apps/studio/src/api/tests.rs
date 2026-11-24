@@ -659,7 +659,7 @@ fn ui_palette_lists_and_runs_fixture_maps_tags_and_placements() {
     assert_eq!(kinds, ["map", "tag", "placement", "placement"]);
     assert_eq!(
         list["totals"],
-        json!({"map":1, "tag":1, "package":0, "item":0, "placement":2, "command":0})
+        json!({"map":1, "tag":1, "package":0, "item":0, "voice":0, "placement":2, "command":0})
     );
     assert_eq!(entries[0]["label"], "blaster");
     // The tag row: the file name as its label, the path in its detail.
@@ -670,7 +670,7 @@ fn ui_palette_lists_and_runs_fixture_maps_tags_and_placements() {
     let filtered = call(&mut api, &mut app, m::UI_PALETTE, json!({"query":"WEAP bla"}));
     assert_eq!(
         filtered["totals"],
-        json!({"map":0, "tag":1, "package":0, "item":0, "placement":2, "command":0})
+        json!({"map":0, "tag":1, "package":0, "item":0, "voice":0, "placement":2, "command":0})
     );
     let result = call(
         &mut api, &mut app, m::UI_PALETTE, json!({"query":"blast", "run":1}),

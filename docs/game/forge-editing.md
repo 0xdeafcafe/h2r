@@ -39,7 +39,7 @@ objects that are guest truth, tool state that is presentation
 | Movement and rotation snap | built | Tool state only: the frame is rounded before the op is made (`Tool::set_movement_step`, `Tool::set_rotation_step`) | none |
 | World or local axes | built | Tool state: which basis the snap, the nudge and the gizmo use (`Tool::set_axes`); Local is the pickup's basis | none |
 | Typed numbers, Coordinates | built | A frame is six `f32` values kept bit-exact in the document (`forge::Frame`), so a typed number is the number saved. Halo 3's variants quantise positions (**C**, [forge.md](forge.md) 1.1); ours do not. A typed or nudged value moves the held thing live, and closing writes one op (`Session::hold`, then `move_thing`) | none |
-| Duplicate | built | One `Placement::Add` with the source's fields — the palette tag it places, at the frame in front of the monitor — held at once (`Session::duplicate`, `Tool::take_up`); a kind the session cannot add waits for the kit (P2) | none |
+| Duplicate | built | One `Placement::Add` with the source's tag from the placeable palette, at the frame in front of the monitor. The tool holds the copy at once (`Session::duplicate`, `Tool::take_up`). Kinds that require the kit are refused. | none |
 | Placed-object browser | built | A picker over `Session::objects`; choosing a row flies the monitor to it (`sheet::placed_rows`, `Camera::toward`) | none |
 | Limits by kind | P4 | `forge.capacity` already measures the object pool, each block's count and limit, and tag headroom | in P4 |
 | Selection, groups, group pivot | built, but the pivot row and a held A | A selection is tool state (`Tool::toggle_selected`). A group is a Forge-family op naming its members by endpoint (`forge_doc::Group`); moving one is a batch of entry sets in one undo step, as a delete of a linked machine is one step (`Session::move_thing`). The pivot, centre or first member, is a field of the op (`pivot_first`); the Properties page makes centre groups, and `forge.propose` writes the other | none; the document format is 4 (`FORMAT_GROUPS`) |
@@ -299,8 +299,9 @@ opens a picker; an action row acts and closes.
   Return time and Game types for item spawners. Heading is Coordinates' Yaw; the rotation step is the
   Rotation snap setting, on Tool settings (`sheet::SETTINGS`). Team, Role
   and Order open pickers; Respawn time and Return time open the game's
-  keyboard, and a spawner whose block has no abandon limit shows no Return
-  time row.
+  keyboard. The keyboard sends the `return time` property to
+  `Session::set_field`, which writes `abandon limit`. A spawner whose
+  block has no abandon limit shows no Return time row.
 
 ## Selection, groups and prefabs
 

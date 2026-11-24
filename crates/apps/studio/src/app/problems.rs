@@ -19,7 +19,7 @@
 
 use serde_json::{Value, json};
 
-use super::assets::read_set;
+use super::assets::{AssetId, read_set};
 use super::mods::Conflict;
 use super::navigation::NavAction;
 use super::{Action, App, Doc, ToolKind, rules_edit, tag_api};
@@ -405,6 +405,45 @@ impl App {
             None => SOURCES.to_vec(),
         };
         self.problems.merge(fresh, &sources);
+    }
+
+    /// Refresh the findings that can belong to this asset and return its rows.
+    pub fn refresh_asset_problems(
+        &mut self,
+        asset: &str,
+        source: Option<&str>,
+        checks: &[ContentCheck],
+    ) -> Result<Problems, String> {
+        let (ran, skipped) = if matches!(AssetId::parse(asset)?, AssetId::Item(..)) {
+            // Package checks and the open script can name items. The other
+            // checks name tags or tools and cannot contribute item findings.
+            let mut ran = Vec::new();
+            if source.is_none_or(|s| s == "package") {
+                let packages = gather(self, Some("package"), &[]);
+                ran.extend(packages.ran.iter().cloned());
+                self.problems.merge(packages, &["package"]);
+            }
+            if source.is_none_or(|s| s == "check") {
+                let script = gather(self, Some("check"), &[]);
+                ran.extend(script.ran.iter().cloned());
+                self.problems.rows.retain(|p| p.area != "scripts");
+                self.problems.ran.retain(|v| v["check"] != "script.analysis");
+                self.problems.rows.extend(script.rows);
+                self.problems.ran.extend(script.ran);
+                self.problems.checked = true;
+                self.problems.sort();
+            }
+            (ran, Vec::new())
+        } else {
+            self.refresh_problems_over(source, checks);
+            (self.problems.ran.clone(), self.problems.skipped.clone())
+        };
+        Ok(Problems {
+            rows: self.asset_problems(asset),
+            ran,
+            skipped,
+            ..Problems::default()
+        })
     }
 
     /// The rows about the document `doc`: its asset's rows, and for the

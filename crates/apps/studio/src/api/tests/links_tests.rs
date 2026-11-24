@@ -294,25 +294,25 @@ fn a_script_document_is_the_item_of_the_package_that_carries_it() {
     use crate::app::{Doc, assets::read_set, links::item_id};
     use content::package::Kind;
     let (t, mut app, _api) = setup("links-doc-asset");
-    let script = |f: &str| Some(t.path(&format!("data/packages/modes/scripts/{f}")));
+    let script = |f: &str| Some(t.path(&format!("data/packages/modes-test/scripts/{f}")));
     app.rules.path = script("hill.rules");
-    assert_eq!(app.doc_asset(Doc::Rules).as_deref(), Some("item:modes:0"));
+    assert_eq!(app.doc_asset(Doc::Rules).as_deref(), Some("item:modes-test:0"));
     app.rules.path = script("other.rules");
-    assert_eq!(app.doc_asset(Doc::Rules).as_deref(), Some("item:modes:2"));
+    assert_eq!(app.doc_asset(Doc::Rules).as_deref(), Some("item:modes-test:2"));
     app.rules.path = script("nowhere.rules");
     assert_eq!(app.doc_asset(Doc::Rules), None);
     // A variant and a playlist file are named the same way; none open is none.
     let set = read_set(&app.data_root());
-    assert_eq!(item_id(&set, Kind::Variant, "hill").as_deref(), Some("item:modes:1"));
-    assert_eq!(item_id(&set, Kind::Variant, "HILL").as_deref(), Some("item:modes:1"));
+    assert_eq!(item_id(&set, Kind::Variant, "hill").as_deref(), Some("item:modes-test:1"));
+    assert_eq!(item_id(&set, Kind::Variant, "HILL").as_deref(), Some("item:modes-test:1"));
     assert_eq!(item_id(&set, Kind::Playlist, "hill"), None);
     assert_eq!(app.doc_asset(Doc::Variant), None);
     assert_eq!(app.doc_asset(Doc::Playlists), None);
     // The header's path for an item names its package, its kind and its source.
-    let c = crate::ui::doc_header_crumbs(&app, "item:modes:1").unwrap();
+    let c = crate::ui::doc_header_crumbs(&app, "item:modes-test:1").unwrap();
     assert_eq!(
         (c.origin.as_str(), c.kind.as_str(), c.leaf.as_str()),
-        ("modes", "variant", "scripts/hill.variant.rules")
+        ("modes-test", "variant", "scripts/hill.variant.rules")
     );
 }
 

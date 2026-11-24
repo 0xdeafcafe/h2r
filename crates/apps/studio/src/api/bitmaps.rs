@@ -459,8 +459,10 @@ fn auto_or_format(
     if !f.eq_ignore_ascii_case("auto") {
         return format_of(f).map(Some);
     }
+    app.ensure_bitmap(tag).map_err(bad)?;
     let size = match (width, height) {
         (None, None) => None,
+        (Some(w), Some(h)) => Some((w, h)),
         (w, h) => {
             let (cw, ch) = app
                 .textures
@@ -705,7 +707,7 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
             let tag = bitmap(app, p)?;
             let image = p.opt_usize("image")?.unwrap_or(0);
             let (width, height) = size_of(p)?;
-            let format = p.opt_str("format")?.map(format_of).transpose()?;
+            let format = auto_or_format(app, tag, image, p.opt_str("format")?, width, height)?;
             if width.is_none() && height.is_none() && format.is_none() {
                 return Err(bad("give size, width, height and/or format"));
             }
