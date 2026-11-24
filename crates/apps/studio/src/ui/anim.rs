@@ -11,7 +11,8 @@ use tags::anim_keys::{Kind, Tolerance};
 use tags::anim_sample::hamilton;
 
 use crate::app::anim::{
-    AnimError, AnimInfo, AnimRead, GraphKey, HZ, PoseAnswer, PoseModel, PoseNode, Transport,
+    AnimError, AnimInfo, AnimRead, GraphKey, HZ, PoseAnswer, PoseModel, PoseNode,
+    RetargetOptions, Transport,
 };
 use crate::app::{App, ToolKind};
 use crate::theme::{self, icon};
