@@ -112,7 +112,7 @@ fn random_op(rng: &mut Rng, m: &Mesh) -> MeshOp {
     };
     let vert_ids: Vec<u32> = verts.iter().map(|v| v.0).collect();
     let edge_ids: Vec<u32> = edges.iter().map(|e| e.0).collect();
-    match rng.below(26) {
+    match rng.below(30) {
         0 => MeshOp::Mode { mode: [SelectMode::Vert, SelectMode::Edge, SelectMode::Face][rng.below(3)] },
         1 | 2 => {
             let ids = match m.selection().mode() {
@@ -163,13 +163,16 @@ fn random_op(rng: &mut Rng, m: &Mesh) -> MeshOp {
         },
         23 => MeshOp::Flip,
         24 => MeshOp::RecalcNormals,
-        _ => {
+        25 => {
             if rng.below(2) == 0 {
                 MeshOp::Triangulate
             } else {
                 MeshOp::SetMaterial { material: rng.below(4) as u16 }
             }
         }
+        26 | 27 => MeshOp::TrisToQuads { angle: 1.0 + rng.unit() * 60.0 },
+        28 => MeshOp::Inset { thickness: rng.unit() * 0.2, depth: rng.unit() - 0.5, individual: rng.below(2) == 0 },
+        _ => MeshOp::Bevel { width: 0.02 + rng.unit() * 0.2 },
     }
 }
 

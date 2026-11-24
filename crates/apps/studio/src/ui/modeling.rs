@@ -14,7 +14,6 @@ use crate::app::modeling::ModelAction;
 use crate::theme;
 
 /// What the section keeps between frames.
-#[derive(Default)]
 pub struct ModelingPanel {
     /// The open map's targets (`World rev`, list), read when the section
     /// first opens on a map.
@@ -24,6 +23,31 @@ pub struct ModelingPanel {
     /// The collision box's corners, world units.
     box_lo: [f32; 3],
     box_hi: [f32; 3],
+    /// `Bevel`'s width.
+    bevel_width: f32,
+    /// `Inset`'s thickness, depth, and whether each face goes alone.
+    inset_thickness: f32,
+    inset_depth: f32,
+    inset_individual: bool,
+    /// `TrisToQuads`' flatness, degrees.
+    quad_angle: f32,
+}
+
+impl Default for ModelingPanel {
+    fn default() -> Self {
+        ModelingPanel {
+            targets: None,
+            picked: 0,
+            delta: [0.0; 3],
+            box_lo: [0.0; 3],
+            box_hi: [0.0; 3],
+            bevel_width: 0.1,
+            inset_thickness: 0.1,
+            inset_depth: 0.0,
+            inset_individual: false,
+            quad_angle: 1.0,
+        }
+    }
 }
 
 /// The section, under the inspector's fields.
@@ -124,6 +148,39 @@ pub fn section(ui: &Ui, app: &mut App, st: &mut ModelingPanel, actions: &mut Vec
             pivot: None,
         }]));
     }
+    ui.separator();
+    ui.text("Edge and face tools");
+    let mut width = st.bevel_width;
+    if ui.input_float("Bevel width##modeling-bevel-width", &mut width) && width.is_finite() {
+        st.bevel_width = width;
+    }
+    if ui.button("Bevel selected edges##modeling-bevel") && st.bevel_width > 0.0 && selected > 0 {
+        actions.push(apply(vec![MeshOp::Bevel { width: st.bevel_width }]));
+    }
+    let mut thickness = st.inset_thickness;
+    if ui.input_float("Inset thickness##modeling-inset-thickness", &mut thickness) && thickness.is_finite() {
+        st.inset_thickness = thickness;
+    }
+    let mut depth = st.inset_depth;
+    if ui.input_float("Inset depth##modeling-inset-depth", &mut depth) && depth.is_finite() {
+        st.inset_depth = depth;
+    }
+    ui.checkbox("Each face alone##modeling-inset-individual", &mut st.inset_individual);
+    if ui.button("Inset selected faces##modeling-inset") && st.inset_thickness >= 0.0 && selected > 0 {
+        actions.push(apply(vec![MeshOp::Inset {
+            thickness: st.inset_thickness,
+            depth: st.inset_depth,
+            individual: st.inset_individual,
+        }]));
+    }
+    let mut angle = st.quad_angle;
+    if ui.input_float("Flat within (degrees)##modeling-quad-angle", &mut angle) && angle.is_finite() {
+        st.quad_angle = angle.clamp(0.0, 180.0);
+    }
+    if ui.button("Triangles to quads##modeling-quads") && selected > 0 {
+        actions.push(apply(vec![MeshOp::TrisToQuads { angle: st.quad_angle }]));
+    }
+    ui.separator();
     if ui.button("Undo##modeling-undo") {
         actions.push(Action::Model(ModelAction::Undo));
     }

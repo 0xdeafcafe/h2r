@@ -156,10 +156,11 @@ selected face on one side only), `Vb` the verts on `B`.
 | `Fill` | one face from an ordered vert cycle or a closed chain of selected edges; attributes from the neighbouring corners | F +1, E +missing edges |
 | `Flip` | reverses the selected faces' loop order and negates their corner normals | none |
 | `RecalcNormals` | per connected component, orient faces alike across two-face edges; a closed component faces out (positive volume), an open one agrees with the majority of its source normals. Then every fan is recomputed | none |
-| `TrisToQuads` | pairs of triangles sharing a two-face edge join when coplanar within `angle`, of one material and group, and continuous in both coordinates across the edge; best pair first, ties by lowest edge id | F -pairs, E -pairs |
+| `TrisToQuads` | pairs of selected triangles sharing a two-face edge join when their normals differ by at most `angle` degrees (default 1), they are of one material and group, continuous in both coordinates across the edge, and the quad is convex; flattest pair first, ties by lowest edge id, a triangle joins once. The lower face id keeps its id and corners; it refuses when nothing joins (`crates/tools/mesh-edit/src/ops/quads.rs`) | F -pairs, E -pairs |
 | `Triangulate` | a convex face as a fan from its first corner, any other by ear clipping from its first corner | F +(n-3) per face |
 | `SetMaterial`, `UvTransform`, `UvProject` | face material; a 3x2 matrix on selected corners' coordinates; planar or box projection | none |
-| `Bevel`, `Inset` | one-segment edge bevel; face inset | later slice |
+| `Inset` | the selected faces as one region (or with `individual`, each alone) are rewired to copies of their border verts, as `ExtrudeFaces` does, and a quad joins each border edge to its copy; the copies then move into the face by `thickness` (measured across the plane from each border edge, so a corner runs along its bisector, at most four times as far) and the region's verts move along its normal by `depth`. Coordinates stay on the faces: the inset face keeps its own, a side takes the border's. Refuses a region with no border (`ops/inset.rs`) | V +\|Vb\|, E +\|B\|+\|Vb\|, F +\|B\| per region |
+| `Bevel` | each selected edge with two faces that run it in opposite directions is replaced by one strip face. At each end the two faces' other edges are cut `width` from the end (at most half the edge, new verts interpolating position, coordinates and skin); a face round the end between the cuts takes them in place of the end, an end no face is left on goes, and any other end stays with the strip passing through it. The strip takes material and group from the first face and a flat normal. The bevelled edges may not share an end, and no edge may be cut by two of them (`ops/bevel.rs`) | edge whose ends each have three edges: V +2, E +3, F +1 |
 
 `ExtrudeFaces` on one face of a closed cube: V 8 to 12, E 12 to 20, F 6
 to 10, and V - E + F stays 2. That, and the count column for every row,
@@ -496,7 +497,9 @@ pages open read-only.
   **Object mode** selects targets and moves instances and markers with
   the existing gizmo. **Edit mode** (Tab) opens the selected targets'
   meshes; the scene draws them from the edit mesh's own export, so the
-  viewport shows what a save writes.
+  viewport shows what a save writes. The inspector's Modeling section
+  has buttons for `Bevel`, `Inset` and `TrisToQuads`, each with its
+  width, thickness, depth or angle, applying one op to the selection.
 - **Selection.** Click, Cmd/Ctrl+click and Shift+click as the outliner's
   rules; box (drag), circle (C) and lasso (Ctrl+drag); through-mesh
   selection in wireframe only. The viewport turns a pick into ids and
@@ -601,7 +604,7 @@ namespace (player models and looks) is separate and unchanged.
 | `mesh.fill`, `mesh.flip`, `mesh.recalc_normals`, `mesh.triangulate`, `mesh.tris_to_quads {angle?}` | |
 | `mesh.set_material {material}`, `mesh.uv {matrix \| project}` | |
 | `mesh.ops {target}` | the op log |
-| `mesh.apply {ops}` | a list of `MeshOp`s as one undo step: how a recorded log is replayed |
+| `mesh.apply {ops}` | a list of `MeshOp`s as one undo step: how a recorded log is replayed, and the way to run any op above (`{"op": "bevel", "width": 0.1}`, `{"op": "inset", "thickness": 0.1}`, `{"op": "tris_to_quads"}`) |
 | `bitmap.list {name?}`, `bitmap.read {bitmap, image?}` | images with size, format, mips, where the pixels are, write class (`in_place`, `appended`, `new`, `none`), any reshape, and the sequences; `grown` and `movable` say whether a save moves the tag |
 | `bitmap.reshape {bitmap, image?, width?, height?, format?}`, `bitmap.image.resize {bitmap, image?, size? \| width?, height?, format?}` | asks for a new size or format; a save writes the image whole |
 | `bitmap.image.add {bitmap, from?, size?, format?}` | appends an image copied from `from`; answers its index; a save moves the tag |
