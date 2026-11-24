@@ -5,7 +5,9 @@
 //! A problem has a **source**: `check` (`check.run`'s models and sounds),
 //! `ui` (`ui.check`), `hud` (`hud.check` and the HUD kit's), `package`
 //! (the manifest checks `h2 package check` runs over the packages under
-//! `<data>/packages/`) and `build` (what the game's package set refuses
+//! `<data>/packages/`, a file that holds bytes of the user's own store, and
+//! the conflict rows of the last `package.diff` of each level: a package
+//! off for it, a field a later package takes) and `build` (what the game's package set refuses
 //! to load, as the boot log says it). Each row names what it opens: a tag
 //! (`asset`, with the `field` the finding names), a package or one of its
 //! items, or the tool that holds the screen or the HUD.
@@ -18,6 +20,7 @@
 use serde_json::{Value, json};
 
 use super::assets::read_set;
+use super::mods::Conflict;
 use super::navigation::NavAction;
 use super::{Action, App, ToolKind, tag_api};
 use crate::api::checks::{CHECKS, ContentCheck, Finding, Severity};
@@ -107,9 +110,20 @@ pub struct Problems {
     pub checked: bool,
     /// A package or item the browser is to show, set by opening a row.
     pub reveal: Option<String>,
+    /// The conflict table's rows from the last build of each level
+    /// (`package.diff` with a map): a package off for a level, and a field
+    /// or an asset a later package takes. They list under `package`, and a
+    /// refresh keeps them: only a later diff of the level replaces them.
+    pub levels: Vec<Conflict>,
 }
 
 impl Problems {
+    /// The rows a build of `map` gave, in place of the last ones for it.
+    pub fn set_levels(&mut self, map: &str, rows: Vec<Conflict>) {
+        self.levels.retain(|c| !c.map.eq_ignore_ascii_case(map));
+        self.levels.extend(rows);
+    }
+
     /// Take a fresh read of `sources` in place of what the list held for them.
     pub fn merge(&mut self, fresh: Problems, sources: &[&str]) {
         let keep = |v: &Value| !sources.iter().any(|s| v["source"] == *s);
@@ -199,6 +213,32 @@ fn from_finding(app: &App, source: &'static str, f: &Finding) -> Problem {
     }
 }
 
+/// A refusal or an override of one level, as a row of `package`: a package
+/// off for the level is a warning, a field a later package takes a note.
+fn from_conflict(c: &Conflict) -> Problem {
+    let refused = c.kind == "refused";
+    Problem {
+        source: "package",
+        area: "package".to_owned(),
+        code: format!("package.{}", c.kind),
+        severity: if refused {
+            Severity::Warning
+        } else {
+            Severity::Note
+        },
+        message: if refused {
+            format!("{c_package} is off for {}: {}", c.map, c.why, c_package = c.package)
+        } else {
+            format!("{}: {}", c.map, c.why)
+        },
+        target: format!("{}: {}", c.map, c.package),
+        path: None,
+        asset: Some(format!("package:{}", c.package)),
+        tool: None,
+        field: c.path.clone(),
+    }
+}
+
 fn from_package(f: &::workspace::Finding) -> Problem {
     let (code, target, asset) = match f.item {
         Some(n) => (
@@ -266,10 +306,21 @@ pub fn gather(app: &mut App, source: Option<&str>, checks: &[ContentCheck]) -> P
             let mut found: Vec<::workspace::Finding> =
                 local.iter().flat_map(::workspace::check_package).collect();
             found.extend(::workspace::check_set(&local));
+            // A file that is a raw resource or a tag file of the user's own
+            // store: the retail list on their machine.
+            let store = app.tags_root();
+            for l in &local {
+                found.extend(::workspace::store_findings(&store, l));
+            }
             out.ran.push(json!({
                 "source": "package", "check": "package.check", "findings": found.len()
             }));
             out.rows.extend(found.iter().map(from_package));
+            let conflicts = app.problems.levels.clone();
+            out.ran.push(json!({
+                "source": "package", "check": "package.diff", "findings": conflicts.len()
+            }));
+            out.rows.extend(conflicts.iter().map(from_conflict));
         }
         if wanted("build") {
             out.ran.push(json!({

@@ -21,6 +21,7 @@ mod markers_tests;
 mod script_variants_tests;
 mod assets_tests;
 mod links_tests;
+mod mods_tests;
 mod packages_tests;
 mod edit_target_tests;
 mod problems_tests;
@@ -190,6 +191,20 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             // An invented tags tree of two maps and a package `kit-test`.
             assets_tests::tree(&app.tags_root());
             assets_tests::package(&t.path("data/packages/kit-test"));
+        }
+        m::ASSET_FORK | m::ASSET_REVERT => {
+            // The invented tree and package `kit-test`, whose edit item
+            // sets the rifle for every map; a revert has a fork to take out.
+            assets_tests::tree(&app.tags_root());
+            assets_tests::package(&t.path("data/packages/kit-test"));
+            if name == m::ASSET_REVERT {
+                call(
+                    api,
+                    app,
+                    m::ASSET_FORK,
+                    json!({"tag": "weap:objects\\weapons\\rifle", "map": "example", "package": "kit-test"}),
+                );
+            }
         }
         n if n.starts_with("package.") => {
             // The invented package `kit-test`, and the file its example adds.

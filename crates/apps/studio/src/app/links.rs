@@ -8,7 +8,7 @@
 //!
 //! | Asset | Uses | Used by |
 //! |---|---|---|
-//! | a tag | the tags it references (role of the target's kind); for a dialogue sound, the voice that says it | the tags that reference it; the packages that edit or add it |
+//! | a tag | the tags it references (role of the target's kind); for a dialogue sound, the voice that says it | the tags that reference it; the packages that edit or add it (and, as `changed_by`, the packages that patch it in load order) |
 //! | a `rules` or `variant` item | (a variant) the `rules` items of its key | (a script) the `variant` items of its key |
 //! | any other item | the tag it adds or edits | its package |
 //! | a package | its items, the packages it `requires` | the packages that require it |
@@ -28,6 +28,7 @@ use tags::repo::{Body, TagKey, TagRepo, TagSource, Value as FieldValue};
 
 use super::assets::{AssetId, kind_of, overlay, tag_id};
 use super::kinds::{self, Editor};
+use super::mods::{ChangedBy, changed_by};
 use crate::voice::dataset::{CHARACTERS, Rules, is_dialogue};
 
 /// One link: the asset at its end, the plain word the menu groups it by
@@ -53,6 +54,9 @@ pub struct EditorRow {
 pub struct Links {
     pub uses: Vec<Link>,
     pub used_by: Vec<Link>,
+    /// A tag: the packages with a patch on it, in load order, with each
+    /// field's value and whether it wins (`app::mods::changed_by`).
+    pub changed_by: Vec<ChangedBy>,
     pub editors: Vec<EditorRow>,
     /// What could not be read, one line each: a tag file that does not
     /// decode, a missing tree. The answer is whole for everything else.
@@ -70,6 +74,7 @@ impl Links {
             "asset": asset,
             "uses": rows(&self.uses),
             "used_by": rows(&self.used_by),
+            "changed_by": self.changed_by.iter().map(ChangedBy::json).collect::<Vec<_>>(),
             "editors": self.editors.iter().map(|e| json!({
                 "id": e.id,
                 "label": e.label,
@@ -247,6 +252,7 @@ fn tag_links(tags_root: &Path, set: &GameSet, key: &TagKey) -> Links {
             via: "dialogue rules".to_owned(),
         });
     }
+    out.changed_by = changed_by(set, key, None, None);
     let o = overlay(set);
     for (word, by) in [("adds", &o.added), ("edits", &o.edited)] {
         for (package, _) in by.get(key).into_iter().flatten() {
