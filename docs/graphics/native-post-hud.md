@@ -266,6 +266,14 @@ Native UI uses the live textures, including the glyph cache. The guest lays
 out the string before `native_hud::ui::screen_quad` reads the corners, so a
 leading glyph quad with zero alpha keeps its draw position and the next glyph
 uses the guest's pen advance and kerning.
+Within an eligible HUD, UI layer or widget callback, the overlay also
+takes generic shader-helper fans and inline screen quads using the sampled
+textures and combiner at the draw. Tag and glyph captures take precedence.
+The shader helper observes API Begin state. The inline screen quad requires
+room in the guest push buffer and observes pushed state. An overlay refusal
+continues through the native UI packet path. `native_ui_overlay_widget_quads`
+counts admitted generic fans.
+
 Ordered native packets can join the same GPU pass as adjacent compatible
 draws.
 

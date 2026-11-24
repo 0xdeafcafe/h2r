@@ -587,6 +587,7 @@ const UI_COLUMNS: [&str; Ui::OverlayModalBlurRefusedTargets as usize + 1] = [
     "overlay_fade_quads",
     "overlay_bar_quads",
     "overlay_loading_quads",
+    "overlay_widget_quads",
     "overlay_screen_fallback",
     "overlay_menu_claimed",
     "overlay_menu_skipped",
@@ -721,6 +722,7 @@ pub enum Ui {
     OverlayFadeQuads,
     OverlayBarQuads,
     OverlayLoadingQuads,
+    OverlayWidgetQuads,
     OverlayScreenFallback,
     /// Menu widget draws the overlay claimed at their sorted list
     /// (docs/graphics/native-post-hud.md, "The menus on the overlay").
