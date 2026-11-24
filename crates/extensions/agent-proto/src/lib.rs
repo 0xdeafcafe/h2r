@@ -230,6 +230,10 @@ pub mod method {
     /// what each map read got from them (docs/editor/studio-redesign.md,
     /// "How the game consumes packages"; `boot::packages`).
     pub const PACKAGES_LIST: &str = "packages.list";
+    /// The tag store at `<data>/tags`: the maps it can serve and whether
+    /// this boot serves them (docs/engine/asset-store.md, `store-maps`;
+    /// `boot::store_status`).
+    pub const STORE_STATUS: &str = "store.status";
     /// Test maps (docs/game/test-maps.md, [`crate::test_maps`]): the
     /// built-in recipes and the test maps built.
     pub const MAPS_TEST_LIST: &str = "maps.test.list";

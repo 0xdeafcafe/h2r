@@ -355,20 +355,57 @@ classified readers, 73 read run state and 30 start from it.
 | Fog, water, camouflage, hologram | layers 16, 6, 18, 19, 21 | typed late passes sampling the scene's depth and colour on the GPU | fog, water, 18, 19 and 21 partly built |
 | Lens flares | `0x00020bb0`, `0x00020770`, the visibility entries | a native query pass; the flare's own fade state is advanced in Rust from its result | GPU counter and native colour fans built, fade state guest-owned |
 | Post | `0x00013870`, `0x000214f0`, `0x0002d140`, `0x0002dd30`, `0x0002df00`, layer 17 | typed post from the scenario's screen effects and the camera's parameters | glow and screen effects built |
-| HUD | `0x001917eb`, `0x0013954b`, the widgets `0x0022b397` to `0x0022bca4` | a Rust HUD that walks the HUD definitions against the unit's and weapon's state and emits a draw list. It is the same HUD kit the added HUD pieces use | quads only |
+| HUD | `0x001917eb`, `0x0013954b`, the widgets `0x0022b397` to `0x0022bca4` | a Rust HUD that walks the HUD definitions against the unit's and weapon's state and emits a draw list. It is the same HUD kit the added HUD pieces use | the walk emits the overlay's items (`hud_edit::overlay::draw_list`, from a `HudState` read from the user's unit and weapon and the engine's gate words); a HUD draw every shown widget of which is exact is drawn from the overlay in place of its quads. No retail HUD is yet: its bitmap widgets are drawn by tag shaders, which do not translate, and its text's colour is its shader's |
 | Menus and UI | `0x00147af1`, the widget sort `0x002353a5`, each widget's draw | a Rust walk of the guest's screens and widgets (the UI's logic, input and state stay the guest's) that emits a draw list: bitmaps, text runs, model widgets, the backdrop's blur chain | quads only |
 | Text | glyph decode `0x0001f5c0`, the glyph cache, one quad per glyph | Rust shaping from the font data ([fonts.md](../formats/fonts.md)) into the renderer's own atlas, one draw per run | not built |
 | Movies | `0x00156040`'s blit and quad, `BinkCopyToBuffer` | the decoder's host frame goes to the renderer as a scene item; no guest texture is locked | not built |
 | Loading, fade, bars | `0x000289e0`, `0x00040890`, `0x00052ce7` | draw-list items from the same state words the guest reads | geometry only |
 | Final display | `0x00013b90`, `0x00013cd0`, `0x00013f10`, `Swap` | the publish. Vblank, the logical frame wait and the gamma ramp move out of `d3d` into the frame step; the screenshot readback becomes a `RenderFeedback` message | not built |
 
-The HUD, the UI, text, movies, loading and the fade share one new typed
-stage, `frame_scene::Overlay`: an ordered list of `Quad`, `TextRun`,
-`ModelView`, `Blur`, `MovieFrame` and `Fill` items with a material key
-and a clip rectangle, drawn by `native_render::ui_gpu`. Its materials are
-named Rust programs for the handful of fixed combiners the screen-quad
-path builds, and translated tag shaders for the rest. The blend tables
-the guest indexes are read from the running image, never committed.
+The HUD, the UI, text, movies, loading and the fade share one typed
+stage, `frame_scene::Overlay` (`FrameScene::overlay`): an ordered list of
+items, each with a material key and a clip rectangle, drawn by
+`native_render::ui_gpu::OverlayGpu`. The stage has `Quad`, `TextRun` and
+`Fill` items (`frame_scene::overlay`); `ModelView`, `Blur` and
+`MovieFrame` join it with the slices that draw them (R7, R8). Positions
+are the guest target's pixels, so a producer writes what the guest's
+screen transform would have made, and the renderer scales them and the
+clips to its own target. A text run is one font's glyphs, each a glyph
+index and a rectangle laid out by `font::layout`; the renderer's glyph
+atlas (`native_render::overlay::GlyphAtlas`) supplies their coordinates.
+
+`native_render::overlay::OverlayPlan` turns the list into one vertex and
+index list and its batches: consecutive items with the same material
+and clip draw as one, and nothing is reordered. Its materials are named
+Rust programs for the fixed combiners the screen-quad path builds
+(`Combiner`: flat, texture, texture alpha for glyphs, texture luma), and
+translated tag shaders for the rest (`Program::Shader`). A blend is the
+guest's D3D factors and equation by value, read from the running image
+by the producer, never committed. An item the renderer cannot draw (a tag
+shader, while they do not translate; a clip off the target; a glyph the
+atlas lacks; a texture that is not resident or a blend that is not a D3D
+blend) is dropped and counted: the overlay has no guest draw behind it.
+`render.stats` reports the counts as `native_ui_overlay_*`
+([agent-api.md](../runtime/agent-api.md#renderstats)).
+
+The HUD's producer is `hud_edit::overlay::draw_list`: the walk of the
+HUD editor's and the HUD kit's preview (the gate, anchors, sprites,
+crops, turns and answers) emitting a quad per bitmap widget and a text
+run per text widget, in the engine's widget order. The game runs it at
+each HUD draw on the game thread, with the engine's own gate words and a
+`HudState` read from the user's unit and held weapon, and every bitmap
+widget names its shader. When every shown widget is exact, the items join
+`FrameScene::overlay` and a pass placed at that HUD draw's point in the
+frame draws them, so the fade and the UI still go over the HUD, and the
+game's quads for those widgets are left out; otherwise the HUD draw is the
+game's quads of [native-post-hud.md](native-post-hud.md), counted by its
+first reason ([native-post-hud.md](native-post-hud.md#the-hud-on-the-overlay)).
+The renderer's glyph atlas is `native_render::overlay::GlyphPages` (one
+page per font, each glyph rasterised once) and its bitmap images are
+decoded from the map on the host (`OverlayAssets`, uploaded by
+`ui_gpu::OverlayResidency`). Tag shaders do not translate, so no retail
+HUD draw is the overlay's yet; what translating them needs is in
+[native-post-hud.md](native-post-hud.md#the-hud-on-the-overlay).
 
 ### What stays the same, and the proof
 

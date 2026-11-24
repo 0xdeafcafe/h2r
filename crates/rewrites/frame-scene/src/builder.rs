@@ -160,6 +160,13 @@ impl SceneBuilder {
         self.cut(why);
     }
 
+    /// The view keys of the scene sealed before, sorted: with the open
+    /// scene's own, the views a frame step expects this frame (the E3
+    /// light choice's share, `native_render::light_choice::share_of`).
+    pub fn previous_views(&self) -> &[ViewKey] {
+        &self.previous.views
+    }
+
     /// The scene being written.
     pub fn scene(&self) -> Option<&FrameScene> {
         self.scene.as_ref()
@@ -226,6 +233,12 @@ impl SceneBuilder {
             .nearby_casters
             .extend(casters.into_iter().map(|c| (view as u32, c)));
         Ok(())
+    }
+
+    /// The scene being written, for a write that belongs to no view (the
+    /// overlay, `crate::overlay`).
+    pub(crate) fn scene_mut(&mut self) -> Result<&mut FrameScene, BuildError> {
+        self.scene.as_mut().ok_or(BuildError::NoScene)
     }
 
     pub(crate) fn open_mut(&mut self) -> Result<(&mut FrameScene, usize), BuildError> {

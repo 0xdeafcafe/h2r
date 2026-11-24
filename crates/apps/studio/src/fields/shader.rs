@@ -4,10 +4,11 @@
 //! or an object's model (a picker dialog chooses); then the slots in
 //! folding sections: **Bitmaps** with thumbnails and a bitmap picker that
 //! shows them, **Colours** as the panel's own colour rows (the C1 dialog),
-//! **Vectors** as four numbers, **Animation** as what each animated
-//! property drives, **Code** as each pass's vertex and pixel programs
+//! **Vectors** as four numbers, **Animation** as the preview clock and, per
+//! animated property, its curve (the curve editor's plot and dialog), its
+//! value at the clock and what it drives (slice S2), **Code** as each pass's vertex and pixel programs
 //! (listing, translated WGSL and the translator's warnings; slice S4,
-//! read only). Each row has its `Used by` line.
+//! read only) and an **Override** per pass (slice S5: the linked WGSL edited, checked, pushed to the paired game and reverted). Each row has its `Used by` line.
 //!
 //! The tab reads through `app::shader` (the shown map with the
 //! document's edits) and writes through the field panel's own commands:
@@ -18,7 +19,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use dear_imgui_rs::{ColorButtonFlags, ListClipper, TreeNodeFlags, Ui, WindowFlags};
+use dear_imgui_rs::{
+    ColorButtonFlags, InputTextMultilineFlags, ListClipper, TreeNodeFlags, Ui, WindowFlags,
+};
 use dear_imgui_wgpu::ExternalTextureId;
 use map::{FourCC, TagId};
 use scenario_edit::native_view::code::{PassCode, ProgramCode};
@@ -26,12 +29,14 @@ use scenario_edit::native_view::preview::{self as material, Shape};
 use serde_json::{Value, json};
 
 use super::rich::{FIELDS_TAB, ViewCx};
-use super::{PanelState, colour, picker};
+use super::{PanelState, colour, curve, picker};
 use crate::App;
 use crate::app::map_pack::Picture;
 use crate::app::shader::{
-    BACKGROUND, NAMES_NOT_READ, PreviewPasses, ShaderRead, Slot, SlotKind, SlotValue,
+    Animated, BACKGROUND, NAMES_NOT_READ, PreviewPasses, ShaderRead, Slot,
+    SlotKind, SlotValue,
 };
+use crate::app::shader_override as ovr;
 use crate::app::{Action, NavAction, TagAction, TagDoc, tag_api};
 use crate::theme::{self, icon};
 use crate::viewport::Gpu;
@@ -62,9 +67,8 @@ struct Key {
 /// The drawn preview on the GPU.
 struct Preview {
     id: ExternalTextureId,
-    _texture: wgpu::Texture,
-    width: u32,
-    height: u32,
+    material: material::MaterialPreview,
+    surface: material::MaterialSurface,
     passes: PreviewPasses,
 }
 
@@ -91,9 +95,15 @@ pub struct ShaderUi {
     thumbs_map: Option<String>,
     pick: Option<Pick>,
     shape_pick: Option<ShapePick>,
+    /// The preview clock in seconds and the sample on the GPU.
+    time: f64,
+    playing: bool,
+    drawn_time: f64,
     /// The Code section's passes read so far, by pass number
     /// (implementation 0), for one document revision.
     code: Option<(Key, HashMap<usize, Result<PassCode, String>>)>,
+    /// The game's program id typed into the Override box (16 hex digits).
+    program: String,
 }
 
 /// The tab: [`super::rich::TagView::draw`] of the `shader` view.
@@ -122,6 +132,9 @@ pub fn draw(ui: &Ui, app: &App, tag: TagId, cx: &mut ViewCx<'_, '_>, actions: &m
         None => return,
     };
     header(ui, app, &read, actions);
+    if !read.animations.is_empty() {
+        clock(ui, cx.shader, &read);
+    }
     preview(ui, app, &read, &key, cx);
     if !read.names_known {
         ui.text_disabled(NAMES_NOT_READ);
@@ -162,29 +175,114 @@ pub fn draw(ui: &Ui, app: &App, tag: TagId, cx: &mut ViewCx<'_, '_>, actions: &m
             TreeNodeFlags::empty(),
         )
     {
-        for a in &read.animations {
-            let input = match a.input {
-                Some(s) => format!("driven by {}", doc.string(s).unwrap_or("an object function")),
-                None => match a.period {
-                    Some(p) => format!("game time, every {p} s"),
-                    None => "game time".to_owned(),
-                },
-            };
-            ui.text(format!("Property {}: {input}", a.index));
-            for d in &a.drives {
-                ui.text_disabled(format!("    drives {d}"));
-            }
+        let values = read.values_at(cx.shader.time);
+        for (a, v) in read.animations.iter().zip(&values) {
+            animation_row(ui, doc, &read, a, v, cx.shader.time, cx.panel);
         }
-        ui.text_disabled("Animated properties are edited as curves in the Fields tab.");
     }
-    code_section(ui, app, &read, &key, cx.shader);
+    code_section(ui, app, &read, &key, cx.shader, actions);
     bitmap_picker(ui, app, &read, cx, actions);
     shape_picker(ui, app, cx.shader);
     colour::draw(ui, doc, cx.panel, actions);
+    curve::draw(ui, doc, cx.panel, actions);
+}
+
+/// The preview clock: play or pause, and the time in the loop. Dragging
+/// it pauses playback at the sample under the slider.
+fn clock(ui: &Ui, st: &mut ShaderUi, read: &ShaderRead) {
+    let length = read.clock_length();
+    if st.playing {
+        st.time = (st.time + f64::from(ui.io().delta_time())) % length;
+    } else {
+        st.time = st.time.clamp(0.0, length);
+    }
+    if ui.button(if st.playing {
+        "Pause##shader-clock"
+    } else {
+        "Play##shader-clock"
+    }) {
+        st.playing = !st.playing;
+    }
+    ui.same_line();
+    let mut t = st.time as f32;
+    if ui
+        .slider_config("Preview clock (s)##shader-clock-time", 0.0, length as f32)
+        .build(&mut t)
+    {
+        st.time = f64::from(t);
+        st.playing = false;
+    }
+}
+
+/// One animated property: what drives it, its curve (the small plot with
+/// the clock's place marked, and **Edit curve...**), its value at the
+/// clock, what it drives and any target the plan does not animate.
+fn animation_row(
+    ui: &Ui,
+    doc: &TagDoc,
+    read: &ShaderRead,
+    a: &Animated,
+    value: &Result<f32, String>,
+    time: f64,
+    panel: &mut PanelState,
+) {
+    let _id = ui.push_id(format!("shader-animation-{}", a.index).as_str());
+    let input = match a.input {
+        Some(s) => format!("driven by {}", doc.string(s).unwrap_or("an object function")),
+        None => match a.period {
+            Some(p) => format!("game time, every {p} s"),
+            None => "game time".to_owned(),
+        },
+    };
+    ui.text(format!("Property {}: {input}", a.index));
+    let path = a.path();
+    match tag_api::resolve(doc, read.tag, &path) {
+        Ok((at, layout, field)) => {
+            let address = at + field.offset;
+            match curve::function(doc, read.tag, address) {
+                Ok((_, _, f)) => {
+                    let marker = a
+                        .period
+                        .filter(|p| p.is_finite() && *p > 0.0)
+                        .map(|p| ((time / f64::from(p)) % 1.0) as f32);
+                    curve::animation_plot(ui, &f, marker);
+                    ui.same_line();
+                    if ui.small_button("Edit curve...##shader-curve") {
+                        panel.curve = Some(curve::Open::new(
+                            read.tag,
+                            address,
+                            &field,
+                            &layout,
+                            &format!("Property {}", a.index),
+                        ));
+                    }
+                }
+                Err(e) => ui.text_disabled(format!("    No curve: {e}")),
+            }
+        }
+        Err(e) => ui.text_disabled(format!("    No curve: {e}")),
+    }
+    match value {
+        Ok(v) => ui.text_disabled(format!("    {v:.3} at {time:.2} s")),
+        Err(why) => ui.text_disabled(format!("    No value: {why}")),
+    }
+    for d in &a.drives {
+        ui.text_disabled(format!("    drives {d}"));
+    }
+    if let Some(why) = a.refusal() {
+        ui.text_colored(theme::WARN, format!("{} {why}", icon::ALERT));
+    }
 }
 
 /// The **Code** section: a node per pass, read when it is opened.
-fn code_section(ui: &Ui, app: &App, read: &ShaderRead, key: &Key, st: &mut ShaderUi) {
+fn code_section(
+    ui: &Ui,
+    app: &App,
+    read: &ShaderRead,
+    key: &Key,
+    st: &mut ShaderUi,
+    actions: &mut Vec<Action>,
+) {
     let total: usize = read.passes.values().sum();
     if total == 0
         || !ui.collapsing_header(
@@ -195,7 +293,7 @@ fn code_section(ui: &Ui, app: &App, read: &ShaderRead, key: &Key, st: &mut Shade
         return;
     }
     ui.text_disabled(
-        "What the renderer is given, read only. It is not written into the map; a program's text is not edited here.",
+        "What the renderer is given. The listings are read only and nothing here is written into the map; an Override edits the linked program for the game's renderer.",
     );
     if st.code.as_ref().is_none_or(|(k, _)| k != key) {
         st.code = Some((key.clone(), HashMap::new()));
@@ -230,7 +328,101 @@ fn code_section(ui: &Ui, app: &App, read: &ShaderRead, key: &Key, st: &mut Shade
                 }
                 program(ui, &format!("{pass}-vertex"), "Vertex program", &c.vertex);
                 program(ui, &format!("{pass}-pixel"), "Pixel program", &c.pixel);
+                let ok = OverrideKey {
+                    key: ovr::Key { tag: read.tag, pass, implementation: 0 },
+                    linked: &c.linked,
+                };
+                override_box(ui, app, &ok, &mut st.program, actions);
             }
+        }
+    }
+}
+
+/// The pass an override box is for and the text it starts from.
+struct OverrideKey<'a> {
+    key: ovr::Key,
+    linked: &'a Result<String, String>,
+}
+
+/// The **Override** node of a pass: the linked program as editable text,
+/// its check under it, and Push, Revert and Discard. The override changes
+/// the game's renderer only; the map is not touched.
+fn override_box(
+    ui: &Ui,
+    app: &App,
+    o: &OverrideKey<'_>,
+    program: &mut String,
+    actions: &mut Vec<Action>,
+) {
+    let id = format!("shader-override-{}", o.key.pass);
+    let Some(_node) = ui.tree_node_config(id.clone()).label("Override (WGSL)").push() else {
+        return;
+    };
+    ui.text_disabled(
+        "Changes how our renderer draws: saved in the override directory and sent to the paired game; never written into the map.",
+    );
+    let draft = app.shader_overrides.draft(&o.key);
+    let Some(start) = draft.or(o.linked.as_deref().ok()) else {
+        if let Err(why) = o.linked {
+            ui.text_colored(theme::WARN, format!("{} {why}", icon::ALERT));
+        }
+        return;
+    };
+    let mut text = start.to_owned();
+    let lines = text.lines().count().clamp(4, 24) as f32;
+    ui.input_text_multiline(
+        format!("##{id}-text"),
+        &mut text,
+        [-1.0, lines * ui.text_line_height_with_spacing()],
+    )
+    .flags(InputTextMultilineFlags::ALLOW_TAB_INPUT)
+    .build();
+    if text != start {
+        actions.push(Action::ShaderOverride(ovr::OverrideAction::Edit(o.key, text.clone())));
+    }
+    let checked = ovr::check(&text);
+    match &checked {
+        Ok(()) => ui.text_disabled("Parses; the game checks its interface against the program."),
+        Err(e) => ui.text_colored(
+            theme::WARN,
+            format!("{} {}", icon::ALERT, ovr::describe(e)),
+        ),
+    }
+    ui.text("Game program");
+    ui.same_line();
+    ui.input_text(format!("##{id}-program"), program)
+        .hint("16 hex digits (render.programs)")
+        .build();
+    let id_ok = ovr::parse_program(program.trim());
+    if ui.button(format!("Push##{id}")) {
+        match id_ok {
+            Some(p) if checked.is_ok() => {
+                actions.push(Action::ShaderOverride(ovr::OverrideAction::Push(o.key, p)));
+            }
+            _ => {}
+        }
+    }
+    if ui.is_item_hovered() {
+        ui.tooltip_text(match (&checked, id_ok) {
+            (Err(_), _) => "The text does not parse.",
+            (_, None) => "Name the game's program: 16 hex digits from render.programs.",
+            _ => "Write the override file and tell the paired game to read it.",
+        });
+    }
+    let pushed = app.shader_overrides.pushed_for(&o.key);
+    ui.same_line();
+    if ui.button(format!("Revert##{id}")) && !pushed.is_empty() {
+        actions.push(Action::ShaderOverride(ovr::OverrideAction::Revert(o.key)));
+    }
+    ui.same_line();
+    if ui.button(format!("Discard edits##{id}")) {
+        actions.push(Action::ShaderOverride(ovr::OverrideAction::Discard(o.key)));
+    }
+    for (p, pushed) in pushed {
+        let line = format!("{}: {}", ovr::program_text(p), pushed.state.id());
+        match pushed.state.why() {
+            Some(why) => ui.text_colored(theme::WARN, format!("{} {line} ({why})", icon::ALERT)),
+            None => ui.text_disabled(line),
         }
     }
 }
@@ -317,8 +509,14 @@ fn preview(
         if let Some((_, _, Ok(old))) = st.preview.take() {
             let _ = cx.gpu.renderer.unregister_external_texture(old.id);
         }
-        let drawn = render(cx.gpu, app, read, st.shape);
+        let drawn = render(cx.gpu, app, read, st.shape, st.time);
+        st.drawn_time = st.time;
         st.preview = Some((key.clone(), st.shape, drawn));
+    } else if st.drawn_time != st.time {
+        if let Some((_, _, Ok(p))) = &mut st.preview {
+            p.surface.draw_at(cx.gpu.device, cx.gpu.queue, &p.material, BACKGROUND, st.time);
+        }
+        st.drawn_time = st.time;
     }
     ui.text(format!("Preview on {}", shape_words(app, st.shape)));
     ui.same_line();
@@ -330,8 +528,9 @@ fn preview(
     }
     match st.preview.as_ref().map(|(_, _, p)| p) {
         Some(Ok(p)) => {
-            let w = ui.content_region_avail()[0].clamp(64.0, p.width as f32);
-            let h = w * p.height as f32 / p.width.max(1) as f32;
+            let texture = p.surface.color();
+            let w = ui.content_region_avail()[0].clamp(64.0, texture.width() as f32);
+            let h = w * texture.height() as f32 / texture.width() as f32;
             ui.image(p.id.texture_id(), [w, h]);
             let n = p.passes.drawn;
             ui.text_disabled(format!(
@@ -348,20 +547,26 @@ fn preview(
 }
 
 /// The preview drawn and put on the GPU for the window.
-fn render(gpu: &mut Gpu<'_>, app: &App, read: &ShaderRead, shape: Shape) -> Result<Preview, String> {
-    let p = app.shader_preview(read.tag, shape)?;
-    let texture = material::render_material(gpu.device, gpu.queue, &p, PICTURE, BACKGROUND);
-    let view = texture.create_view(&Default::default());
+fn render(
+    gpu: &mut Gpu<'_>,
+    app: &App,
+    read: &ShaderRead,
+    shape: Shape,
+    time: f64,
+) -> Result<Preview, String> {
+    let p = app.shader_preview(read.tag, shape, time)?;
+    let mut surface = material::MaterialSurface::new(gpu.device, gpu.queue, &p, PICTURE);
+    surface.draw(gpu.device, gpu.queue, &p, BACKGROUND);
+    let view = surface.color().create_view(&Default::default());
     let id = gpu
         .renderer
         .register_external_texture(&view)
         .map_err(|e| format!("{e}"))?;
     Ok(Preview {
         id,
-        width: texture.width(),
-        height: texture.height(),
-        _texture: texture,
         passes: PreviewPasses::of(read, &material::material_draws(&p)),
+        material: p,
+        surface,
     })
 }
 

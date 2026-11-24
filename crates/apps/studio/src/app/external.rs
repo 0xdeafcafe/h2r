@@ -92,7 +92,7 @@ pub struct WorkingCopy {
 
 impl WorkingCopy {
     /// Problems and changes again, for the text as it is now.
-    fn check(&mut self, l: &Loaded) {
+    pub(crate) fn check(&mut self, l: &Loaded) {
         self.problems = ide::diagnostics(&self.text, &self.context);
         self.changes = changes(l, &self.text, &self.context);
     }

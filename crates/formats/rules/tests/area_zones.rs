@@ -33,6 +33,7 @@ fn seat(slot: u8, unit: u32) -> ScenarioPlayer {
         score: 0,
         lives: 0,
         unit: Some(unit),
+        body: Default::default(),
     }
 }
 

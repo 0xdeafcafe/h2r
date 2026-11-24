@@ -124,6 +124,9 @@ fn leave(c: &mut Call<'_>, mut scope: UiScope) {
     if scope == UiScope::Widget && super::model::end(c) {
         scope = UiScope::Model;
     }
+    if scope == UiScope::Hud {
+        super::hud_scope_left();
+    }
     if let Some(host) = host() {
         let rt = Arc::clone(c.ctx.runtime());
         host.leave_ui(&mut *rt.memory(), scope, c.cpu.esp);

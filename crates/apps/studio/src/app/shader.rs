@@ -18,11 +18,14 @@
 use std::collections::BTreeMap;
 
 use map::{FourCC, TagId};
+use scenario_edit::native_view::animate;
 use scenario_edit::native_view::code::{self, PassCode};
 use scenario_edit::native_view::preview::{self, MaterialDraws, MaterialPreview, Shape};
 use serde_json::{Value, json};
-use tags::material::ShaderLibrary;
-use tags::shader::{IndexRange, PassPostprocess, ShaderPostprocess, TemplatePostprocess};
+use tags::material::{AnimationKind, ShaderLibrary};
+use tags::shader::{
+    AnimatedProperty, IndexRange, PassPostprocess, ShaderPostprocess, TemplatePostprocess,
+};
 
 use super::App;
 
@@ -159,8 +162,41 @@ pub struct Animated {
     pub input: Option<u32>,
     pub period: Option<f32>,
     pub function_bytes: usize,
-    /// In words: `pixel constant 8 of pass 0 in layer 5`.
+    /// For example, `final combiner c0 of pass 0 in layer 5`.
     pub drives: Vec<String>,
+    /// The kinds of target it drives, including texture transforms feeding
+    /// vertex constants. Each appears once.
+    pub kinds: Vec<&'static str>,
+}
+
+/// The kinds of target the layer plan does not animate
+/// (`native_render::layer_pass::LayerRefusal::Animation`): it applies
+/// pixel and vertex constants, including bitmap-slot texture transforms.
+const UNAPPLIED_KINDS: [&str; 3] = ["bitmap", "render state", "stage state"];
+
+impl Animated {
+    /// The path of the property's function curve, the field the curve
+    /// editor writes (`function.read` and `function.set` take it).
+    pub fn path(&self) -> String {
+        format!("postprocess[0].properties[{}].function", self.index)
+    }
+
+    /// Why the plan refuses what the property drives, when it drives a
+    /// kind of target it does not animate.
+    pub fn refusal(&self) -> Option<String> {
+        let kinds: Vec<&str> = self
+            .kinds
+            .iter()
+            .copied()
+            .filter(|k| UNAPPLIED_KINDS.contains(k))
+            .collect();
+        (!kinds.is_empty()).then(|| {
+            format!(
+                "it drives a {}, which the layer plan refuses to animate",
+                kinds.join(" and a ")
+            )
+        })
+    }
 }
 
 /// The tab's read of one shader.
@@ -175,6 +211,9 @@ pub struct ShaderRead {
     pub colours: Vec<Slot>,
     pub vectors: Vec<Slot>,
     pub animations: Vec<Animated>,
+    /// The instance's animated properties, as the file holds them: what
+    /// the preview clock evaluates ([`ShaderRead::values_at`]).
+    pub properties: Vec<AnimatedProperty>,
     /// Whether the slots have the template's names (never yet: S3).
     pub names_known: bool,
     /// The passes of each layer at [`LOD`], by layer: how many a preview
@@ -187,6 +226,19 @@ pub struct ShaderRead {
 }
 
 impl ShaderRead {
+    /// Each animated property's value at preview-clock time `time`
+    /// seconds, or why it has none (the game's own evaluation,
+    /// [`animate::value_at`]).
+    pub fn values_at(&self, time: f64) -> Vec<Result<f32, String>> {
+        animate::values_at(&self.properties, time)
+    }
+
+    /// The length of the preview clock's loop in seconds
+    /// ([`animate::clock_length`]).
+    pub fn clock_length(&self) -> f64 {
+        animate::clock_length(&self.properties)
+    }
+
     pub fn slots(&self, kind: SlotKind) -> &[Slot] {
         match kind {
             SlotKind::Bitmap => &self.bitmaps,
@@ -306,31 +358,44 @@ fn bindings(
 /// their property ranges).
 fn animated(sp: &ShaderPostprocess, counts: &BTreeMap<usize, usize>) -> Vec<Animated> {
     let mut drives: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+    let mut kinds: BTreeMap<usize, Vec<&'static str>> = BTreeMap::new();
     for (&layer, &n) in counts {
         for pi in 0..n {
             for k in 0..32 {
                 let Some(a) = sp.animation_leaf(LOD, layer, pi, k) else {
                     break;
                 };
-                for (kind, range) in [
-                    ("bitmap", a.bitmaps),
-                    ("render state", a.render_states),
-                    ("stage state", a.stage_states),
-                    ("pixel constant", a.pixel_constants),
-                    ("vertex constant", a.vertex_constants),
+                for (target_kind, kind, range) in [
+                    (AnimationKind::Bitmap, "bitmap", a.bitmaps),
+                    (AnimationKind::RenderState, "render state", a.render_states),
+                    (AnimationKind::StageState, "stage state", a.stage_states),
+                    (AnimationKind::PixelConstant, "pixel constant", a.pixel_constants),
+                    (AnimationKind::VertexConstant, "vertex constant", a.vertex_constants),
                 ] {
                     for b in get(&sp.animations, range) {
-                        let Some(&pr) = sp.property_ranges.get(usize::from(b.properties)) else {
-                            continue;
-                        };
-                        for r in get(&sp.property_refs, pr) {
+                        let word = u16::from_le_bytes([b.target, b.b1]);
+                        let refs = target_kind.property_refs(sp, *b);
+                        for r in refs {
+                            let kind = if kind == "bitmap" && (1..=7).contains(&r.component) {
+                                "texture transform"
+                            } else {
+                                kind
+                            };
                             let Ok(p) = usize::try_from(r.property) else {
                                 continue;
                             };
-                            drives.entry(p).or_default().push(format!(
-                                "{kind} {} of pass {pi} in layer {layer}",
-                                b.target
-                            ));
+                            let seen = kinds.entry(p).or_default();
+                            if !seen.contains(&kind) {
+                                seen.push(kind);
+                            }
+                            let dst = match kind {
+                                "vertex constant" => vector_reads(word),
+                                "pixel constant" if word & 0x3c0 == 0x200 => colour_reads(word),
+                                "pixel constant" => format!("{} before fragment selection", colour_reads(word)),
+                                "texture transform" => format!("texture slot {} transform component {}", b.target, r.component),
+                                _ => format!("{kind} {}", b.target),
+                            };
+                            drives.entry(p).or_default().push(format!("{dst} of pass {pi} in layer {layer}"));
                         }
                     }
                 }
@@ -346,6 +411,7 @@ fn animated(sp: &ShaderPostprocess, counts: &BTreeMap<usize, usize>) -> Vec<Anim
             period: (p.input == 0).then(|| f32::from_bits(p.input_b)),
             function_bytes: p.function.len(),
             drives: drives.remove(&index).unwrap_or_default(),
+            kinds: kinds.remove(&index).unwrap_or_default(),
         })
         .collect()
 }
@@ -425,6 +491,7 @@ pub fn read_from(lib: &mut ShaderLibrary, shader: TagId) -> Result<ShaderRead, S
         colours,
         vectors,
         animations: animated(&sp, &counts),
+        properties: sp.properties.clone(),
         names_known: false,
         passes: counts,
         read_only: None,
@@ -539,12 +606,17 @@ impl App {
         code::pass_code(&mut map, shader, pass, implementation)
     }
 
-    /// `shader` drawn alone on `shape` from the shown map with its edits,
-    /// ready to draw ([`preview::render_material`]).
-    pub fn shader_preview(&self, shader: TagId, shape: Shape) -> Result<MaterialPreview, String> {
+    /// `shader` drawn alone on `shape` at preview-clock time `time` seconds
+    /// from the shown map with its edits, ready to draw ([`preview::render_material`]).
+    pub fn shader_preview(
+        &self,
+        shader: TagId,
+        shape: Shape,
+        time: f64,
+    ) -> Result<MaterialPreview, String> {
         let mut map = self.open_shown_map_edited()?;
         let mut files = self.shown_raw_files()?;
-        preview::material(&mut map, &mut files, shader, shape)
+        preview::material_at(&mut map, &mut files, shader, shape, time)
     }
 
     /// `shader` drawn on `shape` into a `size` picture on `device`: the
@@ -556,8 +628,9 @@ impl App {
         read: &ShaderRead,
         shape: Shape,
         size: [u32; 2],
+        time: f64,
     ) -> Result<Picture, String> {
-        let p = self.shader_preview(read.tag, shape)?;
+        let p = self.shader_preview(read.tag, shape, time)?;
         let texture = preview::render_material(device, queue, &p, size, BACKGROUND);
         let rgba = crate::headless::read_texture(device, queue, &texture)
             .map_err(|e| format!("{e:#}"))?;

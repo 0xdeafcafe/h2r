@@ -356,9 +356,40 @@ Notes on some:
   differ from the map's (`changed`, `added`, `removed`), its `problems`
   against the context (`line`, `col` from 1, `severity`, `message`,
   `code`), and `stale` when the map's scripts changed while it held
-  edits; `{open: false}` when none is open. It needs no map. Nothing is
-  written into the map ([editor-guide.md, "Scripts in VS Code and
+  edits; `{open: false}` when none is open. It needs no map. It writes
+  nothing into the map ([editor-guide.md, "Scripts in VS Code and
   Zed"](editor-guide.md#scripts-in-vs-code-and-zed)).
+  `script.compile {source?, working?, name?, apply?}` compiles source into
+  the map's script tables (`hs::compile`): a definition named as one the
+  map has replaces it, any other is added, and only those definitions'
+  nodes change. `source` is the text; `working: true` takes the working
+  copy's changed and added definitions (it is `REFUSED` with no working
+  copy or no edits; give one of the two, else `INVALID_PARAMS`); `name`
+  requires the source to define it (`INVALID_PARAMS` otherwise). Without
+  `apply` nothing changes and the answer says what would. Problems are
+  an answer, not an error: `{ok: false, applied: false, errors: [{line,
+  column, span: [start, end], code, text}]}` (a compile past the node
+  limit has both counts in its `text`). Otherwise `{ok: true, applied,
+  definitions: [{name, item}], nodes, freed, reused, grown, new_strings,
+  grows, free_nodes, depth: {undo, redo}}`: nodes the definitions use,
+  slots freed and reused, slots added, string bytes added, whether a
+  table outgrows the map's (`grows`) and the free nodes left. With
+  `apply` the compile is one undo step, the Scripts tab and the unsaved
+  count follow, and a table that grows is `REFUSED` while **Allow growing
+  full blocks** is off. With no executable it is `REFUSED` with the
+  tool's sentence, and with no map `NO_DOCUMENT`. Names the map's scripts
+  do not already use do not resolve (`name.unresolved`).
+  `script.undo {redo?}` takes back (or redoes) the last applied compile:
+  `{changed, free_nodes, depth}`.
+  `script.eval {expression, type?}` sends an expression to the paired
+  game's `hs.eval` ([runtime/agent-api.md](../runtime/agent-api.md#hseval))
+  and returns `{ok: true, type, type_index, value, bits}`. Problems in the
+  text are an answer, as in `script.compile`: `{ok: false, errors: [{line,
+  column, code, text}], error}`, counted in the expression; so is the
+  evaluator's refusal, `{ok: false, error}`. `REFUSED` without a paired
+  game, with the game paused (the call answers on its next tick) or with a
+  game that does not list `hs.eval`. The Scripts tab's expression box sends
+  the same call.
 - **Variants of a script.** `doc.open {variant: {script: <starter>}}` (a
   `rules.get` starter's name, or `open` for the script in the script
   window) opens a new, unsaved variant of it: the record
@@ -372,6 +403,13 @@ Notes on some:
   0 or 1, an enum's value as its position from the option's low end); a
   run of edits to one option is one `doc.undo` step. An unknown option
   or a value out of range is `INVALID_PARAMS`, a built-in `REFUSED`.
+- **Suggested map variants.** `variant.maps` lists this machine's map
+  variants a game variant may suggest (`{map, name, base, variant,
+  source}`, by map and name). `variant.export {path, maps: [variant id]}`
+  writes a version-2 file whose `maps` are those, in that order, and
+  answers how many; an id not on the list is `INVALID_PARAMS`, and more than
+  eight, or a record that names a script, is refused by name. Without `maps` the file is
+  the version-1 text.
 - **Game type scripts.** `rules.*` drive the one script the Game type
   script window shows (`app/rules_edit.rs`). Each answers its state:
   `title`, `path`, `dirty`, `problems` (each `line`, `col` from 1,
@@ -484,24 +522,35 @@ Notes on some:
   A block's value is its element count. Scalar values follow
   `tag.read`. The rows use the open or browsed tag document and include
   its pending edits (`api/tag_fields.rs`).
-- **Shaders.** `shader.read {tag}` reads a `shad` as the Shader tab shows
+- **Shaders.** `shader.read {tag, time?}` reads a `shad` as the Shader tab shows
   it ([rich-editors.md](rich-editors.md), "Shaders"; `api/shader.rs`):
   the template, the level of detail shown (0) and how many there are, the
   bitmap, colour and vector slots of the compiled postprocess (each with
   its `tag.set` path, value, and `used_by`: the layer, pass,
   implementation and register or stage the template's binding puts it
-  in), the animated properties and what each drives, the passes per
-  layer, `names_known` (false until the template's parameter names are
+  in), the animated properties (each with the `path` of its function
+  curve, which `function.read`, `function.set` and `function.sample`
+  take, the kinds of target it drives, a `refusal` when it drives a
+  target the layer plan does not animate, and its `value` at `time` on
+  the preview clock or `no_value` with the reason, such as a missing
+  object function, an invalid period or a wave requiring an engine table), `time` and `clock_length`,
+  the passes per layer, `names_known` (false until the template's parameter names are
   read), `read_only` and the bindings that did not read (`refusals`).
   `shader.set {tag, slot: {kind, index}, value}` writes one slot: the
   `tag.set` at the slot's path with the same value, one undo step,
   refused as `tag.set` refuses; a slot past the shader's is
-  `INVALID_PARAMS`. `shader.preview {tag, shape?, object?, size?, out?}`
+  `INVALID_PARAMS`. `shader.preview {tag, shape?, object?, size?, time?, out?}`
   draws the shader alone on a sphere (the default), a flat square
   (`quad`) or an object tag's model, unlit, to a PNG outside Git; it
   answers `passes_drawn`, each left-out layer in `refusals` with its pass
   count and reason, `base` when the base look does not draw, and
-  `covered`. With no renderer `png` is null and the counts still answer.
+  `covered`. `time` (0 to 86400 seconds, default 0) is the preview
+  clock: the answer repeats it and lists each animated property's value
+  there in `animation`. The drawn layer passes use the pixel constants,
+  vertex constants and vertex defaults sampled at that time. A bitmap
+  frame change or a missing texture-transform input appears in `refusals`.
+  With no renderer `png` is null and the counts
+  still answer.
   `shader.code {tag, pass?, implementation?}` reads one pass's programs
   as text (`native_view::code`, the Shader tab's Code section): `pass`
   counts the passes across the layers of the first level of detail in
@@ -515,6 +564,26 @@ Notes on some:
   does not decode has a null `listing` too. A pass or implementation the
   shader lacks, or a tag that is not a `shad`, is `REFUSED`. It reads
   with the document's edits and writes nothing.
+  `shader.override {tag, pass?, implementation?, text?}` reads or edits the
+  WGSL of a pass's program (slice S5; `app::shader_override`): `base` is the
+  vertex and pixel programs linked into one module (`vs_main`, `fs_main`;
+  default options), `text` the draft (a string sets it, null discards it),
+  `check` the draft as the game parses it (`{ok: true}`, or `{ok: false,
+  error, line, column}`; null with no draft), `edited` whether it differs
+  from `base` and `pushed` the overrides sent from it, each
+  `{program, file, state, why}` with `state` one of `queued`, `sent`,
+  `loaded`, `refused` and `reverting`. `shader.push {tag, pass?,
+  implementation?, program, dir?}` queues the draft as the override of the
+  game program `program` (16 hex digits from `render.programs`): a missing
+  or unparsable draft is `REFUSED` with its line; the link then writes
+  `<program>_studio.wgsl` in `dir` (default the game's default override
+  directory on this machine) and calls `render.reload {dir}` on the paired
+  game. Not paired, or a game without `render.reload`, ends as `refused` and
+  writes no file. `shader.revert {tag, pass?, implementation?, program?}`
+  queues deleting the pass's pushed files (or the one `program`) and the
+  same reload; a program with no override pushed from here is `REFUSED`.
+  An override changes the game's renderer only; nothing is written into a
+  map.
 - **Curves.** `function.read {tag, path}` reads the function blob a
   `view=function` data field points at
   ([rich-editors.md](rich-editors.md), "Curves"; `api/curves.rs`):
@@ -792,8 +861,20 @@ Notes on some:
   `{ticks, curve}` with one aperture value, 0 to 1, per 30 Hz tick, or
   `curve: null` for an unvoiced permutation (the sound has no extra
   info, its descriptor index is negative, or the mouth entry is
-  zero-length). The window's Sound window draws the same curve under
-  the waveform and calls the same `App::sound_*` methods. `sound.face`
+  zero-length). With `curve` (one value 0 to 1 per tick, exactly the
+  stored count), `from_sound` (`{gain?, smoothing?}`: the curve of the
+  sound's own loudness), `revert` or `undo` (the last redraw of the shown
+  map; no `tag` needed; the reply's `undone` names it or is null)
+  `sound.mouth` redraws the curve in place: one undo step, shown by every
+  read at once (`edited` is true while it differs from the file), saved
+  with the map as a patch of those bytes in the raw data, the checksum
+  aside. `written` is `{ticks, changed, edited}`. It is `REFUSED`, by
+  name, for a sound whose data is in a shared cache, a permutation that
+  is a split chain, an unvoiced one, a curve of another length and a
+  browsed map; `INVALID_PARAMS` for a value outside 0 to 1 or more than
+  one of `curve`, `from_sound` and `revert`. The window's Sound window
+  draws the same curve under the waveform, draws with a drag on it and
+  calls the same `App::sound_*` methods. `sound.face`
   is the face preview: the weight the curve gives `at_ms` into a
   permutation (the byte of that 30 Hz tick over 255, 0 past the end;
   the playhead by default while that permutation plays), or a `weight`
@@ -928,9 +1009,11 @@ Notes on some:
 - **Game picture.** The Game panel shows the paired game's own frames,
   read from the game's `render.picture` ring ([game-view.md](game-view.md),
   `play/picture.rs`). `game.status` answers `{mode, camera, own, attached,
-  picture}`: `mode` is `attached` and `camera` is `player` (the editor's own
-  game, `game.start` and `game.camera` are not built, so `own` is
-  `{state: "none"}`); `attached` repeats `pair.status`'s socket, map, phase
+  picture}`: `mode` is `own` or `attached` (which game the panel follows,
+  `game.mode`) and `camera` is `player` (`game.camera` is not built); `own`
+  is `{state: "none"}`, or `{state: "starting" | "running", map, socket,
+  editor}` for the game this editor started (`running` once its link is up;
+  `editor` is whether it was started with `--editor`); `attached` repeats `pair.status`'s socket, map, phase
   and tick with the link plate's state and text, and is null before the
   window has run its game link; `picture` is null with no pairing. Its
   `state` is `connecting`, `open`, `stalled` (no new frame for two
@@ -950,6 +1033,14 @@ Notes on some:
   picture, and for a path inside a Git checkout. The picture is opened when
   the pairing learns the game offers `render.picture.open`, and again when
   the game closed it; it ends with the pairing.
+  `game.start` leaves a request for the window (or `h2-editor --serve`) to
+  start the editor's own game on the open document, as `h2 play --editor`,
+  and answers `{requested: true}`; it replaces a game this editor started
+  before, and sets the panel to `own` when it starts. It is `REFUSED` with
+  no game link yet, with no map open, or while the link is connecting or a
+  playtest runs. `game.stop` asks the same for the end of that game
+  (`REFUSED` when the editor started none). `game.mode {mode}` is `own` or
+  `attached`; `own` is `REFUSED` while there is no own game.
 - **Live mirror.** The paired editor reads the game's `objects`,
   `players` and `camera` stream. `mirror.status.stream.refused.camera`
   says why a game has no camera layer. `mirror.status` reports the stream state, layers,
@@ -1249,7 +1340,7 @@ Notes on some:
   cause with how many, `refused`, as `cause: detail`: `program` for the
   load's refusals, such as a view constant the camera does not give or
   a layer-3 stage bitmap that is not 2D, then the plan's causes,
-  `animated`, `fog`, and for layer 1 `layer 1: stencil mode not checked
+  `animation` for an unsupported target, `fog`, and for layer 1 `layer 1: stencil mode not checked
   against the game`; and `parts_refused`, layer 3's parts of a drawn
   material that its pass does not take, by cause with how many, which
   draw the base look; they draw in the `game` mode only), the `errors` of BSPs that
@@ -2208,10 +2299,13 @@ the window and the API stay one path.
   the colour picker's helpers (`fields/colour.rs`); a colour's `tag.set`
   is `app::tag_api::set_field` with `fields::colour::from_json`, a
   `TagAction::Write` of the field's own length, as the dialog writes.
-- **Shaders (rich editors S1).** `api/shader.rs` registers `Shader` for
-  `shader.read`, `shader.set`, `shader.preview` and `shader.code`, over
+- **Shaders (rich editors S1, S2).** `api/shader.rs` registers `Shader` for
+  `shader.read`, `shader.set`, `shader.preview`, `shader.code`,
+  `shader.override`, `shader.push` and `shader.revert` (S5; the link sends
+  the queued push in `play::send_shader_overrides`), over
   `app/shader.rs` (the Shader tab's read, on the shown map with the
-  document's edits), `native_view::preview::material` and
+  document's edits), `native_view::preview::material_at` (the preview clock),
+  `native_view::animate` (the properties' values at a time) and
   `native_view::code::pass_code` (S4); `shader.set` is `tag.set` at the
   slot's path (`SlotKind::path`) through `tag_fields::perform`, one undo
   step.

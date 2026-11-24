@@ -154,7 +154,7 @@ impl Studio {
             browser: browser::BrowserUi::default(),
             problems: problems::ProblemsUi::default(),
             map_list: map_list::MapListUi::default(),
-            sound: sound::SoundUi::default(),
+            sound: sound::SoundUi::new(),
             anim: anim::AnimUi::default(),
             announcer: announcer::AnnouncerUi::default(),
             workspace: workspace::WorkspaceUi::default(),
@@ -1080,7 +1080,7 @@ impl Studio {
                 return;
             }
             if app.surface() == Surface::Scripts {
-                scripts::source(ui, app, &self.fonts, actions);
+                scripts::source(ui, app, &mut self.scripts, &self.fonts, actions);
                 return;
             }
             if let Some(view) = app.halo1_view() {

@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 pub mod announcer;
 pub mod anim;
 pub mod audition;
+pub mod sound_mouth;
 pub mod bot_nav;
 pub mod ground;
 pub mod commands;
@@ -30,9 +31,11 @@ pub mod playtest_static;
 pub mod external;
 pub mod rules_edit;
 pub mod recordings;
+pub mod script_edit;
 pub mod scripts;
 pub mod shared_refs;
 pub mod shader;
+pub mod shader_override;
 pub mod shell;
 pub mod subject;
 pub mod tag_api;
@@ -312,6 +315,8 @@ pub enum Action {
     FocusSelected,
     SetFlySpeed(f32),
     SetAllowGrowth(bool),
+    /// The Shader tab's WGSL override box (`shader_override`).
+    ShaderOverride(shader_override::OverrideAction),
     /// "Allow unverified geometry writes": while off, a save with
     /// Modeling edits is refused (docs/editor/modeling.md).
     SetAllowUnverifiedGeometry(bool),
@@ -390,6 +395,10 @@ pub enum Action {
     DeleteVariant,
     /// Write the open variant as a portable `.h2variant` file.
     ExportVariant(PathBuf),
+    /// The same, suggesting these map variants
+    /// (`VariantEditor::export_current_with`): a version-2 file with
+    /// `maps`. None suggested is `ExportVariant`.
+    ExportVariantWith(PathBuf, Vec<variants::portable::MapSuggestion>),
     /// Open a portable `.h2variant` file as a new, unsaved variant.
     ImportVariantFile(PathBuf),
     /// The same, from pasted text.
@@ -699,6 +708,8 @@ pub struct App {
     pub voices: voices::Voices,
     /// The game type script editor (`rules_edit`).
     pub rules: rules_edit::RulesEditor,
+    /// The Shader tab's WGSL drafts and pushed overrides (`shader_override`).
+    pub shader_overrides: shader_override::Overrides,
     /// The document tabs and the one in front (`shell`).
     tabs: shell::Tabs,
     /// The tag workspace: the tree's root, the plan, extraction and
@@ -785,6 +796,7 @@ impl App {
             announcer: Default::default(),
             voices: Default::default(),
             rules: Default::default(),
+            shader_overrides: Default::default(),
             tabs: Default::default(),
             workspace: Default::default(),
         }
@@ -1343,6 +1355,7 @@ impl App {
                 self.tags.allow_growth = allow;
             }
             Action::SetAllowUnverifiedGeometry(allow) => self.set_allow_unverified_geometry(allow),
+            Action::ShaderOverride(a) => self.run_shader_override(a),
             Action::Model(a) => self.run_model(a),
             Action::Bitmap(a) => self.run_bitmap(a),
             Action::Image(a) => self.run_image(a),
@@ -1489,6 +1502,7 @@ impl App {
             | Action::RevertVariant
             | Action::DeleteVariant
             | Action::ExportVariant(_)
+            | Action::ExportVariantWith(..)
             | Action::ImportVariantFile(_)
             | Action::ImportVariantText(_)) => self.run_variant(a),
             a => self.run_playlist(a),
@@ -1801,6 +1815,13 @@ impl App {
                     .map(|()| Some(format!("exported {}", path.display())))
                     .map_err(|err| format!("{}: {err}", path.display())),
             },
+            Action::ExportVariantWith(path, maps) => match e.export_current_with(maps) {
+                None => Err("no variant is open".into()),
+                Some(Err(why)) => Err(why.to_string()),
+                Some(Ok(text)) => std::fs::write(&path, text)
+                    .map(|()| Some(format!("exported {}", path.display())))
+                    .map_err(|err| format!("{}: {err}", path.display())),
+            },
             Action::ImportVariantFile(path) => std::fs::read_to_string(&path)
                 .map_err(|err| format!("{}: {err}", path.display()))
                 .and_then(|text| e.import(&text).map_err(|err| err.to_string()))
@@ -2094,6 +2115,8 @@ pub(crate) mod tag_tests;
 mod tag_data_tests;
 #[cfg(test)]
 mod audition_tests;
+#[cfg(test)]
+mod sound_mouth_tests;
 #[cfg(test)]
 pub(crate) mod map_cards_tests;
 #[cfg(test)]

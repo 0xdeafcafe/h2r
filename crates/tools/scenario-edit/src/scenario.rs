@@ -207,6 +207,8 @@ pub struct Changes {
     pub geometry_refusal: Option<String>,
     /// The same for the Textures tool's edits.
     pub bitmap_refusal: Option<String>,
+    /// The same for the Sound window's mouth curve edits.
+    pub sound_refusal: Option<String>,
     /// The areas record (`game_markers::record`) the map would carry,
     /// when the areas differ from the ones it was opened with (empty when
     /// they were all taken off); none otherwise. A save appends it to the map's tail
@@ -226,6 +228,7 @@ impl Changes {
             && self.tag_moves.is_empty()
             && self.geometry_refusal.is_none()
             && self.bitmap_refusal.is_none()
+            && self.sound_refusal.is_none()
             && self.areas.is_none()
     }
 }
@@ -449,6 +452,9 @@ pub struct Scenario {
     /// The recordings block's writes. See [`Self::set_recording_changes`].
     recording_patches: Vec<(u32, Vec<u8>)>,
     recording_grown: Vec<TagGrown>,
+    /// The script tables' writes. See [`Self::set_script_changes`].
+    script_patches: Vec<(u32, Vec<u8>)>,
+    script_grown: Vec<TagGrown>,
     /// The payload as read, for the source of a resized data reference.
     payload: std::sync::Arc<[u8]>,
     /// Resized data references: each one's whole current payload, by the
@@ -459,6 +465,9 @@ pub struct Scenario {
     /// The Textures tool's writes, in the same shape. See
     /// [`Self::set_bitmap_changes`].
     bitmap: GeometryChanges,
+    /// The Sound window's mouth curve writes (raw patches only). See
+    /// [`Self::set_sound_changes`].
+    sound: GeometryChanges,
     /// The area of each netgame flag that has one, by placement, so a
     /// swap-removal or an append moves nothing
     /// (docs/game/gametype-markers.md, "In the document"). Edited through
@@ -686,10 +695,13 @@ impl Scenario {
             tag_strings: Vec::new(),
             recording_patches: Vec::new(),
             recording_grown: Vec::new(),
+            script_patches: Vec::new(),
+            script_grown: Vec::new(),
             payload: bytes.into(),
             data: std::collections::BTreeMap::new(),
             geometry: GeometryChanges::default(),
             bitmap: GeometryChanges::default(),
+            sound: GeometryChanges::default(),
             areas: std::collections::BTreeMap::new(),
             areas_loaded: Vec::new(),
             labels: std::collections::BTreeMap::new(),
@@ -974,6 +986,8 @@ impl Scenario {
         }
         out.patches.extend(self.recording_patches.iter().cloned());
         out.tag_grown.extend(self.recording_grown.iter().cloned());
+        out.patches.extend(self.script_patches.iter().cloned());
+        out.tag_grown.extend(self.script_grown.iter().cloned());
         out.patches.extend(self.geometry.patches.iter().cloned());
         out.bsp_patches
             .extend(self.geometry.bsp_patches.iter().cloned());
@@ -987,6 +1001,10 @@ impl Scenario {
         out.tag_moves.extend(self.geometry.moved.iter().cloned());
         out.tag_moves.extend(self.bitmap.moved.iter().cloned());
         out.bitmap_refusal = self.bitmap.refusal.clone();
+        // The Sound window's mouth curves: raw patches in the extra-info
+        // resource, a block no other tool patches.
+        out.raw_patches.extend(self.sound.raw_patches.iter().cloned());
+        out.sound_refusal = self.sound.refusal.clone();
         for b in &self.blocks {
             let root = self.address + b.def.offset;
             if b.len() > b.capacity() {
@@ -1138,6 +1156,31 @@ impl Scenario {
         &self.bitmap
     }
 
+    /// Replace the Sound window's writes (all of them, not a delta): raw
+    /// block patches inside a sound's extra-info resource
+    /// (docs/editor/rich-editors.md, "Sounds and facial animation"). Only
+    /// `raw_patches` and `refusal` are taken; any other write is refused,
+    /// because a mouth curve edit never changes a length or a tag. The
+    /// `refusal` makes the save fail before it writes.
+    pub fn set_sound_changes(&mut self, changes: GeometryChanges) -> Result<()> {
+        if !(changes.patches.is_empty()
+            && changes.bsp_patches.is_empty()
+            && changes.raw_appends.is_empty()
+            && changes.grown.is_empty()
+            && changes.moved.is_empty())
+        {
+            return Err(Error::Refused(
+                "a mouth curve edit writes raw bytes in place and nothing else",
+            ));
+        }
+        self.sound = changes;
+        Ok(())
+    }
+    /// The Sound window's writes.
+    pub fn sound_changes(&self) -> &GeometryChanges {
+        &self.sound
+    }
+
     /// Replace the recordings block's writes (all of them, not a delta):
     /// patches to the scenario's own `recorded_animation` elements, their
     /// count and the streams written in place, and the streams that
@@ -1177,6 +1220,46 @@ impl Scenario {
     /// The recordings block's in-place writes and grown streams.
     pub fn recording_changes(&self) -> (&[(u32, Vec<u8>)], &[TagGrown]) {
         (&self.recording_patches, &self.recording_grown)
+    }
+
+    /// Replace the script tables' writes (all of them, not a delta): the
+    /// patches to the nodes, string data, scripts, globals and references
+    /// the scenario's header describes, written in place, and the tables
+    /// that outgrew their source, appended at save with the header's
+    /// `(count, address)` pair pointed at the copy (`hs::table_writes`).
+    /// They are the scenario's bytes but no placement block's, so they go
+    /// out beside the blocks' own. Refused when a grown table's pair lies
+    /// outside the scenario's payload or a patch covers it.
+    pub fn set_script_changes(
+        &mut self,
+        patches: Vec<(u32, Vec<u8>)>,
+        grown: Vec<TagGrown>,
+    ) -> Result<()> {
+        let (lo, hi) = (self.address, self.address.saturating_add(self.size));
+        for g in &grown {
+            let end = g.root.saturating_add(8);
+            if g.root < lo || end > hi {
+                return Err(Error::Refused(
+                    "a grown script table's pair is outside the scenario's payload",
+                ));
+            }
+            if patches
+                .iter()
+                .any(|(a, b)| *a < end && g.root < a.saturating_add(b.len() as u32))
+            {
+                return Err(Error::Refused("a grown script table's pair is also patched"));
+            }
+            if g.bytes.is_empty() || g.count == 0 {
+                return Err(Error::Refused("a grown script table has no bytes"));
+            }
+        }
+        self.script_patches = patches;
+        self.script_grown = grown;
+        Ok(())
+    }
+    /// The script tables' in-place writes and grown tables.
+    pub fn script_changes(&self) -> (&[(u32, Vec<u8>)], &[TagGrown]) {
+        (&self.script_patches, &self.script_grown)
     }
 
     /// Replace the other tags' grown blocks (all of them, not a delta).

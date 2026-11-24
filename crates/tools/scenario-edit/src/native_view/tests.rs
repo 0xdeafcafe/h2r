@@ -495,6 +495,7 @@ fn the_game_mode_draws_layer_3_where_it_compiled() {
 fn layer_1_is_refused_until_it_is_checked_against_the_game() {
     let plan = StaticLayer {
         compiled: 3,
+        constants: Default::default(),
         drawn: [0u16, 2].into_iter().collect(),
         parts: vec![((Owner::Cluster(0), 0), (0, 6, None, 0))],
         refused: BTreeMap::from([("animated: x".to_owned(), 1)]),
@@ -1439,6 +1440,76 @@ fn a_material_preview_draws_its_colour_and_follows_an_edit() {
     let refused = draw(crate::fixture::fixture_with_shader_colour(1));
     assert_eq!(refused.iter().filter(|p| green(p)).count(), 0, "layer 1 is absent");
     assert!(refused.iter().filter(|p| p[..3] != [0, 0, 0]).count() > 200, "the base look draws");
+}
+
+/// The floor's final C0 red lane follows a one-second ramp. Its green
+/// and blue lanes still come from the authored colour.
+#[test]
+fn material_at_and_the_playing_clock_sample_the_same_pixels() {
+    use crate::fixture::{self, FINAL_C0, LAYERED_LAYER, META, META_FILE, TEX_SHAD, id, put, putf};
+    use preview::{MaterialSurface, Shape, material_at, render_material};
+
+    let mut bytes = fixture::fixture_with_shader_colour(LAYERED_LAYER);
+    // Free space after the vertex shader in the fixture's metadata.
+    let table = 0x2c00;
+    let post = META_FILE + TEX_SHAD + 0x60;
+    for (field, count, relative) in [
+        (0x1c, 1, 0x00), // instance LOD, mask and six layer entries
+        (0x24, 6, 0x08),
+        (0x2c, 1, 0x14), // one pass and its animation ranges
+        (0x34, 1, 0x18),
+        (0x3c, 1, 0x28), // time property, ref, range and binding
+        (0x44, 1, 0x40),
+        (0x4c, 1, 0x44),
+        (0x54, 1, 0x48),
+    ] {
+        put(&mut bytes, post + field, count);
+        put(&mut bytes, post + field + 4, META + (table + relative) as u32);
+    }
+    let at = META_FILE + table;
+    put(&mut bytes, at, 1 << LAYERED_LAYER);
+    for (offset, count) in [
+        (4, 6u16),
+        (0x08 + 2 * usize::from(LAYERED_LAYER), 1),
+        (0x14, 1),
+        (0x18 + 6, 1),
+        (0x44, 1),
+    ] {
+        bytes[at + offset..at + offset + 2].copy_from_slice(&(count << 9).to_le_bytes());
+    }
+    putf(&mut bytes, at + 0x28 + 8, 1.0); // period
+    put(&mut bytes, at + 0x28 + 12, 20);
+    put(&mut bytes, at + 0x28 + 16, META + table as u32 + 0x50);
+    putf(&mut bytes, at + 0x50 + 8, 1.0); // identity function, range [0, 1]
+    bytes[at + 0x48..at + 0x4a].copy_from_slice(&FINAL_C0.to_le_bytes());
+
+    let mut files = ResourceFiles::new();
+    files.set_bytes(map::ResourceFile::Local, bytes.clone().into());
+    let mut map = Map::from_reader(std::io::Cursor::new(bytes)).unwrap();
+    let mut sample = |time| material_at(&mut map, &mut files, id(6), Shape::Sphere, time).unwrap();
+    let start = sample(0.0);
+    let half = sample(0.5);
+    let plan = |p: &preview::MaterialPreview| {
+        let layer = &p.load.layers().unwrap().plans()[&LAYERED_LAYER];
+        assert!(layer.drawn.contains(&0), "{:?}", layer.refused);
+        layer.constants[&0].clone()
+    };
+    assert_ne!(plan(&start), plan(&half));
+    assert_eq!(plan(&start), plan(&sample(1.0)));
+
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let mut surface = MaterialSurface::new(&device, &queue, &start, [64, 64]);
+    surface.draw(&device, &queue, &start, [0.0; 3]);
+    let first = read_pixels(&device, &queue, surface.color());
+    surface.draw_at(&device, &queue, &start, [0.0; 3], 0.5);
+    let playing = read_pixels(&device, &queue, surface.color());
+    assert_ne!(first, playing);
+    let at_half = render_material(&device, &queue, &half, [64, 64], [0.0; 3]);
+    assert_eq!(playing, read_pixels(&device, &queue, &at_half));
+    surface.draw_at(&device, &queue, &start, [0.0; 3], 1.0);
+    assert_eq!(first, read_pixels(&device, &queue, surface.color()));
 }
 
 /// Every pixel of a 64 by 64 colour texture.

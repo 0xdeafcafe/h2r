@@ -444,6 +444,7 @@ pub fn editor_plan(layer: u8, mut plan: StaticLayer) -> StaticLayer {
             .entry(LAYER_1_UNCHECKED.to_owned())
             .or_default() += plan.drawn.len();
         plan.drawn.clear();
+        plan.constants.clear();
         plan.parts.clear();
     }
     plan
@@ -456,8 +457,7 @@ pub fn editor_plan(layer: u8, mut plan: StaticLayer) -> StaticLayer {
 /// (`program::CAMERA_GIVEN`: a pass reading another is refused, named
 /// with the register) and no stage palettes (a palettized stage bitmap is
 /// refused, named). Each layer is planned with no game
-/// (`layers_load::plan_without_game` at render time 0: an animated pass
-/// is refused, so the time reaches no draw), and layer 1 is refused
+/// (`layers_load::plan_without_game` at the requested render time), and layer 1 is refused
 /// whole ([`editor_plan`]). Layer 3 is loaded with its own translated
 /// passes too (`layers_load::load_layer3`, planned by
 /// `layers_load::plan_layer3`), drawn in the Game mode in the base look's
@@ -483,6 +483,21 @@ impl NativeLayers {
         world: &World,
         pages: &HashMap<LightmapKey, Image>,
         unlit_bsp: bool,
+    ) -> Self {
+        Self::read_at(map, files, shaders, world, pages, unlit_bsp, 0.0)
+    }
+
+    /// [`Self::read`] with each layer planned at render time `time`
+    /// seconds (the Shader tab's preview clock): the plan evaluates a
+    /// pass's animated properties there.
+    pub fn read_at<R: Read + Seek>(
+        map: &mut Map<R>,
+        files: &mut ResourceFiles,
+        shaders: &[TagId],
+        world: &World,
+        pages: &HashMap<LightmapKey, Image>,
+        unlit_bsp: bool,
+        time: f64,
     ) -> Self {
         let world = World {
             draws: world.draws.clone(),
@@ -517,7 +532,7 @@ impl NativeLayers {
         let mut plans: BTreeMap<u8, StaticLayer> = native_render::layer_pass::LAYERS
             .into_iter()
             .map(|layer| {
-                let plan = layers_load::plan_without_game(&view, shaders, layer, 0.0);
+                let plan = layers_load::plan_without_game(&view, shaders, layer, time);
                 (layer, editor_plan(layer, plan))
             })
             .collect();
@@ -733,6 +748,7 @@ fn base_set(
         set,
         DrawnLayer {
             layer: BASE_LAYER,
+            constants: Default::default(),
             selected,
             fogs,
         },
@@ -743,6 +759,7 @@ fn base_set(
 /// with.
 struct DrawnLayer {
     layer: u8,
+    constants: native_render::fog_gpu::LayerSamples,
     selected: Vec<(Owner, u8)>,
     fogs: layers_load::Fogs,
 }
@@ -799,6 +816,7 @@ impl NativeWorld {
                 gpu.set_layer(layer, set.set);
                 layers.push(DrawnLayer {
                     layer,
+                    constants: plan.constants.clone(),
                     selected: set.selected,
                     fogs: set.fogs,
                 });
@@ -944,7 +962,7 @@ impl NativeWorld {
             let inputs = ViewInputs::from_camera(&view, (size[0], size[1]));
             for l in self.base.iter().chain(&self.layers) {
                 self.gpu
-                    .prepare_layer(l.layer, &mut uploads, &inputs, &l.fogs);
+                    .prepare_layer(l.layer, &mut uploads, &inputs, &l.fogs, &l.constants);
             }
             self.gpu.prepare(&mut uploads, &view, DEPTH_RULE)
         };
@@ -1483,6 +1501,7 @@ impl NativeObjects {
     }
 }
 
+pub mod animate;
 pub mod code;
 pub mod preview;
 

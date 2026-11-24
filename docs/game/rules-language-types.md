@@ -102,6 +102,8 @@ types. A test asserts each front-end signature erases to its entry's
 | `teleport(o, at)`, `move_to(o, at, t)`, `object_pos`, `object_vel` | `object, vec`; `object, vec, time`; `object, int -> fixed` (a `vec` is three `fixed` registers in the IR, `Type::width`; `at` may also be an object, and `teleport(o, at, offset)` an object and a `vec`) |
 | `vec(x, y, z)`, `length(v)`, `distance(a, b)`, `v.x`, `o.position`, `o.velocity`, `o.speed` | `fixed, fixed, fixed -> vec`; `vec -> fixed`; `vec, vec -> fixed`; `vec -> fixed`; `-> vec`; `-> vec`; `-> fixed` |
 | `on arrive(o)` | `object` |
+| `on touchdown(p, down, up)` | `player, fixed, fixed` |
+| `airborne(p)`, `crouching(p)`, `primed(p)` (`p.airborne`, `p.crouching`, `p.primed`), `sees(a, b)` | `player -> bool`; `object, object -> bool` |
 | `place_squad(s, c, n, at)` | `squad, class, int, objects` |
 | `fly(v, p, t)` | `object, path, time`; the vehicle is an `object` the host checks, since `vehicle` is not a front-end type ([rules-world-api.md](rules-world-api.md#vehicles-and-drop-ships)) |
 | `round_time_left()`, `now()`, `seconds(n)` | `-> time`; `int -> time` |

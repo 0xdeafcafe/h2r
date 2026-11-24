@@ -493,3 +493,58 @@ fn the_live_refresh_saves_each_variant_with_its_script() {
     assert_eq!(s.lock().unwrap().entries().len(), 2);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn a_kept_game_variant_takes_its_map_suggestions_and_writes_them_to_its_file() {
+    use super::suggest;
+    use forge::files::variants::{Source, Suggestable};
+    let castle = Suggestable {
+        source: Source::Saved,
+        map: "fixture".into(),
+        file: "Castle".into(),
+        name: "Castle".into(),
+        base: Sha256::of(b"base"),
+        id: Sha256::of(b"castle"),
+    };
+    let tower = Suggestable {
+        name: "Tower".into(),
+        file: "Tower".into(),
+        id: Sha256::of(b"tower"),
+        ..castle.clone()
+    };
+    let choices = [castle.clone(), tower.clone()];
+    let ids = |list: &[&Suggestable]| list.iter().map(|c| c.id.to_string()).collect::<Vec<_>>();
+    // A pick is the suggestions, in the order picked; an unknown id or too
+    // many is refused by name.
+    let picked = suggest::suggestions(&choices, &ids(&[&tower, &castle])).unwrap();
+    assert_eq!(picked.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["Tower", "Castle"]);
+    assert_eq!(picked[0].base, castle.base.to_string());
+    assert!(suggest::suggestions(&choices, &["0".repeat(64)]).unwrap_err().contains("no map variant"));
+    assert!(suggest::suggestions(&choices, &vec![castle.id.to_string(); 9]).unwrap_err().contains("at most 8"));
+
+    let root = tmp("suggest");
+    let a = bundle("Imported", 10, None);
+    std::fs::write(root.join("a.h2variant"), a.canonical()).unwrap();
+    std::fs::create_dir_all(root.join("live")).unwrap();
+    let from_live = bundle("From Live", 20, None);
+    std::fs::write(root.join("live/l.h2variant"), from_live.canonical()).unwrap();
+    let (mut s, lines) = Store::open(&root);
+    assert_eq!(s.entries().len(), 2, "{lines:?}");
+    let new = s.set_maps(&a.id(), picked.clone()).unwrap();
+    assert_ne!(new, a.id());
+    // The entry and its own file hold the suggestions, the record untouched.
+    let entry = s.entries().iter().find(|e| e.bundle.id() == new).unwrap();
+    assert_eq!(entry.bundle.maps, picked);
+    assert_eq!(entry.bundle.record_hex, a.record_hex);
+    let (again, _) = Store::open(&root);
+    let back = again.entries().iter().find(|e| e.bundle.id() == new).unwrap();
+    assert_eq!(back.bundle.maps, picked);
+    assert_eq!(again.entries().len(), 2, "the file was rewritten, not copied");
+    // The same suggestions again change nothing; none clears them.
+    assert_eq!(s.set_maps(&new, picked.clone()).unwrap(), new);
+    assert_eq!(s.set_maps(&new, Vec::new()).unwrap(), a.id());
+    // A Live variant and an id not kept are refused by name.
+    assert!(s.set_maps(&from_live.id(), picked.clone()).unwrap_err().contains("Live variant"));
+    assert!(s.set_maps(&"0".repeat(64), picked).unwrap_err().contains("kept here"));
+    let _ = std::fs::remove_dir_all(&root);
+}

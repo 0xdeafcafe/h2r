@@ -96,6 +96,7 @@ connection to hold `session.claim`.
 | `audio.play` | act | [`audio.play`](#audioplay) |
 | `recording.play` | act | [`recording.play`](#recordingplay) |
 | `hs.threads`, `hs.globals`, `hs.player_actions` | read | [HaloScript state](#haloscript-state) |
+| `hs.eval` | read | [`hs.eval`](#hseval) |
 | `input.pad`, `release`, `record`, `replay`, `stop` | act | [`input`](#input-act-like-a-player) |
 | `input.state`, `input.host` | read | [`input`](#input-act-like-a-player) |
 | `input.route`, `input.route.stop` | act | [Routes](#routes) |
@@ -127,6 +128,7 @@ connection to hold `session.claim`.
 | `map.reload` | act | [Test maps](#test-maps) |
 | `maps.load`, `maps.test.list`, `create`, `load`, `remove` | act, read, act, act, act | [Test maps](#test-maps) |
 | `packages.list` | read | [Content packages](#content-packages) |
+| `store.status` | read | [The tag store](#the-tag-store) |
 
 A new method gets a row here and a section for its domain. The names
 live in `crates/extensions/agent-proto/src` (`method::ALL`, `hot::method::ALL`,
@@ -1459,9 +1461,21 @@ readbacks come from `crates/platform/d3d/src/scaled.rs` and
 No params. `display_rate` is the frame owner's display-rate loop, the
 display frames drawn between sealed scenes at 60 and 120 fps
 ([framescene.md](../graphics/framescene.md), section 7). `counters.line` is the frame-stats window's
-summary. `counters` also reports the per-frame means for `shadow_walk_layers`
-and each `native_scene_lists_*` stage. The `_native` and `_fallback` fields
-include zeroes. A refusal reason appears when its window count is positive.
+summary. `counters` also reports the per-frame means for `shadow_walk_layers`,
+each `native_scene_lists_*` stage and the overlay stage's
+`native_ui_overlay_*` counters. The `_native` and `_fallback` fields and
+every overlay counter include zeroes. Another refusal reason appears when
+its window count is positive. The overlay's counters are its items by kind
+(`items`, `quads`, `text_runs`, `fills`, `glyphs`), the draws recorded
+(`batches`) and the items dropped, by reason (`refused_material`,
+`refused_clip`, `refused_glyph`, `refused_texture`;
+[retire-d3d.md](../graphics/retire-d3d.md#what-replaces-each-subsystem)).
+The HUD's own (`hud_*`) are the HUD draws the overlay drew (`hud_claimed`),
+the game's widget quads it left out (`hud_quads_skipped`), claims whose
+left-out quads were not the items drawn (`hud_mismatch`), and the HUD draws
+left to the game's quads by their first reason (`hud_refused_shader`,
+`_text`, `_effects`, `_anchor`, `_unlisted`, `_frame`, `_loading`, `_pass`;
+[native-post-hud.md](../graphics/native-post-hud.md#the-hud-on-the-overlay)).
 The object-shadow list, row gather and caster each count calls to their own
 entry ([native-light-gather.md](../graphics/native-light-gather.md), L7).
 `counters` is `null` where the frame-stats window is not running.
@@ -1486,6 +1500,8 @@ headless run lock it). Its fields, counted since the loop was installed:
 | `moved_draws` | carried draws drawn on a blended camera |
 | `moved_stages` | typed stages drawn on a blended camera |
 | `held_stages` | typed stages in a game view drawn at their tick's camera |
+| `marks_moved` | views on display frames whose world marks were moved onto the camera the frame drew them with |
+| `marks_held` | views on display frames whose world marks kept their image's camera (no drawn view at their viewport) |
 
 At `--fps 60` and above with the frame owner on, `blended` rises with
 play; at 30 it stays 0 and `swaps` still counts. The loop is in
@@ -1515,8 +1531,10 @@ includes it for the corresponding draw. Its `passes` array contains
 `name`, submitted `draws` and `gpu_ns` (null for an empty or unmeasured
 stage). Snapshot indices refer to the attachment runs in the frame
 record. The per-frame counters are `lights_lit`, `lights_shadowed`,
-`lights_over_cap`, `sun_tiles`, `sun_tiles_redrawn`, `sun_tiles_offscreen`, `atlas_halved` and
-`tiles_refused`. They count the E3 renderer's selections and atlas work.
+`lights_over_cap`, `lights_beyond_guest`, `sun_tiles`, `sun_tiles_redrawn`, `sun_tiles_offscreen`, `atlas_halved`,
+`tiles_refused`, `cones_shadowed`, `cones_flagged_off`, `flashlight_shadowed`,
+`shadows_over_cap`, `cones_refused`, `cones_drawn` and `cones_kept`. They
+count the E3 renderer's selections and atlas work.
 The graph draws the guest's shadow maps as tiles
 ([e3-lighting.md](../graphics/e3-lighting.md), "Shadows from local
 lights"): `e3.tiles` counts the caster draws into them, `e3.marks` the
@@ -1526,8 +1544,18 @@ left at the guest's size. The display on the guest's live attachments
 draws no tiles. `lights_lit` and `lights_over_cap` are the renderer's
 own choice of lights from the scene's candidates (e3-lighting.md,
 "Lights: which, and how many"): the lights it chose, and the candidates
-its cap of 16 left out. The lights drawn are still the guest's, so
-`e3.lights` has no draws. `sun_tiles_offscreen` counts offscreen casters for which the graph
+its cap of 16 left out. `lights_beyond_guest` counts the chosen game
+lights the guest did not draw, and `e3.lights` the ranges of the stages
+that draw them (layers 12 and 13 over the structure each light meets),
+which only an E3 draw records. The five cone counters are the renderer's
+choice of shadowed lights from those it lit (e3-lighting.md, "Built: the
+shadowed cones"): the cones it shadows itself, the shadowed lights whose
+content flag was off, the views whose flashlight holds a slot, the lit
+cones its four slots left out, and the lit lights whose frustum makes no
+projection. A chosen light the renderer shadows reads its cone's term:
+`cones_drawn` counts the cone tiles drawn for those lights (their caster
+draws join `e3.tiles`, their receivers `e3.marks`) and `cones_kept` the
+lights left undrawn because their cone could not be. `sun_tiles_offscreen` counts offscreen casters for which the graph
 submits a receiver draw, summed across views. A cached tile can have
 receiver draws with no redraw. The
 guest's light selections are in `render.scene.views`.
@@ -1960,6 +1988,11 @@ h2 agent render.parity '{"arm": true}'
   `scene_host_lights_drawn`, `scene_host_lights_kept` and
   `scene_host_lights_unread` (the host's own lights, ML5, drawn by the
   light passes, made but kept, and whose constants did not read),
+  `scene_e3_lights_drawn`, `scene_e3_lights_kept`,
+  `scene_e3_lights_unread` and `scene_e3_lights_shadowed` (E3's chosen
+  lights beyond the guest's, queued as E3 stages, ready but not queued,
+  with no constants to draw from, and handed to the host with their
+  shadowed implementations over the renderer's cone shadow),
   `scene_light_entries` and
   `scene_light_entry_remainder_<cause>` (sorted entries left to the
   guest's handlers, by `scene_extract::light_groups::Cause`: `memory`,
@@ -1975,7 +2008,10 @@ h2 agent render.parity '{"arm": true}'
   `scene_dropped_shadow_layers`, `scene_shadow_filters_native` (object
   filters replaced by native quads) and
   `scene_shadow_filter_refused_<cause>` (`program`, `state`, `target`,
-  `callback`, `device`) ([native-shadow-layers.md](../graphics/native-shadow-layers.md)),
+  `callback`, `device`), `scene_shadow_chains_private` (object masks
+  drawn into a private chain) and `scene_shadow_chains_spilled` (of
+  those, chains copied back to target 10 for the guest's filter)
+  ([native-shadow-layers.md](../graphics/native-shadow-layers.md)),
   `scene_fog_views`, `scene_fog_gate_held`, `scene_fog_drawn`,
   `scene_fog_parts` and the same four for `scene_water_` (late layers
   written, of those whose gate held, those the native stage took, and
@@ -3151,12 +3187,48 @@ its backing state is unreadable or uninitialized.
   Each row has `name`, `type`, `type_index` and `value.bits`; scalar types
   also have `boolean`, `real` or signed `number`. Scenario declarations
   start after the interpreter's external-global cells.
+- `hs.eval` is below.
 - `hs.player_actions` returns three unsigned masks from local player
   control. `latched` records inputs seen since the script's last
   action-test reset; `capture` identifies inputs claimed by script tests;
   `until_release` retains suppression through button-up after a reset. Bit
   0 of each mask denotes the mapped action/reload button. The state is
   shared by local controls, so the method takes no player index.
+
+### `hs.eval`
+
+`hs.eval {expression, type?}` compiles one HaloScript expression against
+the loaded map's scripts and answers its value (`crates/extensions/agent/src/hs_eval.rs`).
+It runs at the tick boundary the request is served at, over a snapshot:
+the scenario's tables (`hs::Scenario::read_memory`), the builtin table
+from the running image (`hs::Catalog::from_memory`, named by the map's own
+calls) and the live cell of each scenario global. The text is wrapped in
+a static script of a copy of the tables (`hs::compile`) and run on
+`hs::vm`, the native evaluator ([hs_vm.md](../engine/hs_vm.md)); nothing
+is written back to the game, so a `set` of a global changes the snapshot
+only. Control flow, arithmetic, comparison and reads of the map's globals
+run. A builtin that needs the game's objects, AI or sound is refused by
+name until the guest-backed engine exists, and an expression that sleeps
+is refused: the answer comes at one boundary.
+
+- **`type`** names the result's type (`real`, `short`, `boolean`, ...).
+  Without it the expression's own is used where it is fixed: a call of a
+  builtin or script that returns a plain value, or a bare global's name.
+  A `begin`, an `if` or a literal needs it.
+- **Result.** `{type, type_index, value, bits}`: `value` is a boolean, a
+  number, the string's text, or the raw bits of a handle or index, and
+  `null` for void.
+- **Errors.** Problems in the text are `INVALID_PARAMS` with the compiler's
+  sentence and `data.problems: [{line, column, code, text}]`, counted in the
+  expression (a `(` it never closes is named at its own place). An unknown
+  `type` is `INVALID_PARAMS`. The evaluator's refusal (an engine builtin,
+  a sleeping expression, a thread that faults) and unreadable or
+  uninitialized scripts and globals are `UNAVAILABLE`.
+
+```sh
+h2 agent hs.eval '{"expression":"my_global"}'
+h2 agent hs.eval '{"expression":"(begin (set counter 3) counter)","type":"short"}'
+```
 
 ## `input`: act like a player
 
@@ -5107,7 +5179,7 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 | `theater.state` | `{}` | transport state, or `{id:null,active:false}` with no player |
 | `theater.state` | `{"id":"film-id"}` on the library agent | Prepare progress for that ID |
 | `theater.pause` | `{}` | holds playback and reports state. During a seek it arranges a hold at the destination |
-| `theater.compat` | `{"id":"film-id"}` | `{state, reasons, film: {xbe, contract, hooks, abi}, installed: [{stamp, state}]}` |
+| `theater.compat` | `{"id":"film-id"}` | `{state, reasons, film: {xbe, contract, hooks, abi}, installed: [{stamp, state}], monitor_looks?: [{seat, map, reason}]}` |
 | `theater.speed` | `{"speed":0.5}` | sets host pacing from 0.25 to 4 times realtime |
 | `theater.seek` | `{"tick":900}`, optionally `"clip_marks":[300,null]`, `"source":"boot"` or `"source":"keyframe"` | restores a frame or starts a fresh child, then fast-forwards to the target, carrying camera and timeline state. Forcing a keyframe requires a compatible frame at or before the target |
 | `theater.seek` | `{"cancel":true}` | returns to the tick the active seek left and holds there. An optional `tick` is ignored. If no seek is active, returns the current state |
@@ -5198,6 +5270,12 @@ to select a subject. On rendered films, first person selects the recorded
 viewport. If the subject has no viewport, state reports `camera: "follow"`
 and `camera_fallback: "no-recorded-viewport"` until one is drawn.
 On playerless films, first person uses the unit's eye.
+A Forge monitor seat that the film recorded can be named by its seat number
+in `follow`, `orbit` and `first-person` even when the roster does not list
+it; first person looks from the monitor's recorded pose. `theater.state`
+and `theater.compat` list `monitor_looks` (`{seat, map, reason:
+"monitor_look_source"}`) the machine draws as the marker; they never change
+`state`.
 
 `look` adjusts yaw and pitch in radians in free and orbit modes. In free
 mode, `movement` adjusts strafe, forward and rise in world units. In orbit
@@ -5276,7 +5354,7 @@ h2 agent theater.play '{}' --socket "$film_run/play.sock"
 
 ## `collision`: the native collision world
 
-The collision switch enables counters for native entries A and B, and
+The collision switch enables counters for native entries A, B and F, and
 before-call observers for the lifted vector and instance traces C–E, the
 cluster flood G and the object visit H. The game
 method reads process counters at a tick boundary. The entry addresses and
@@ -5284,7 +5362,7 @@ bail reasons are in [collision-queries.md](../engine/collision-queries.md).
 
 | Method | Access | Params and result |
 |---|---|---|
-| `collision.stats` | read | No parameters. Returns `switch`, `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, and `precision` (aggregate single, reserved, double and extended x87 calls at C and D). |
+| `collision.stats` | read | No parameters. Returns `switch`, `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `mopps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, and `precision` (aggregate single, reserved, double and extended x87 calls at C and D). |
 
 Each row in `entries` gives the `name` and eight-digit guest `addr`, the
 count of `native` answers, and `bails` by reason. Two frequency maps count
@@ -5296,7 +5374,9 @@ a call count. Each map counts its own register independently. For
 `object_visit`, only the frequency maps accumulate; `cluster_flood` also
 counts the flood's recursive entries. An image without an observed entry
 leaves its row empty. `array_bytes` counts the decoded BSP allocations, the
-packed cluster table and the portal graph. `bytes` adds the reserved space for BSP owners and address-index
+packed cluster table, the portal graph and the decoded MOPP trees (`mopps`
+of them; `decodes` and `decode_failures` include MOPP programs, a failure
+being one left to the guest). `bytes` adds the reserved space for BSP owners and address-index
 capacity. `budget_bytes` limits that total to 8 MiB per loaded map.
 `ring_fallbacks` counts transitions to scalar ring reads, and
 `cluster_budget_reads` counts lookups that need the live cluster word
@@ -5308,7 +5388,8 @@ h2 agent collision.stats
 ```
 
 The bail audit (under 0.1% of calls bailing) reads `bails` against
-`native`. A reason that appears on one architecture only is a determinism
+`native`. For `mopp_box`, `grow` counts answers that did not fit the
+key array's room. A reason that appears on one architecture only is a determinism
 bug.
 
 ## Tick traces and the flight recorder
@@ -5577,6 +5658,34 @@ game read got from them ([studio-redesign.md](../editor/studio-redesign.md),
 
 ```sh
 h2 agent packages.list
+```
+
+## The tag store
+
+The tag store at `<data>/tags` and the maps it can give back byte for
+byte from their skeletons and extent tables
+([asset-store.md](../engine/asset-store.md)). With the `store-maps`
+feature on, the game reads the disc's maps from it and never from the
+disc. Registered by `crates/apps/boot/src/store_status.rs`; the maps are
+`vfs::store_map::status`, read from the extent tables.
+
+| Method | Access | Params and result |
+|---|---|---|
+| `store.status` | read | `{}` → `{root, exists, served, maps, stale, broken}` |
+
+- `root`: the store's directory; `exists`: whether it is a tag
+  repository.
+- `served`: whether this boot serves the disc's maps from it
+  (`store-maps`).
+- `maps`: each map it can serve: `map`, `length`, `sha256` (the file it
+  was extracted from), `skeleton_bytes` (the skeleton file, compressed),
+  `extents` and `extent_bytes`.
+- `stale`: maps `extract.toml` records with no skeleton or extent table
+  (`h2 tags extract --update` takes them again).
+- `broken`: maps whose extent table does not read, with `why`.
+
+```sh
+h2 agent store.status
 ```
 
 ## Rules and limits

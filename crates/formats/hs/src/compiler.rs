@@ -1260,4 +1260,4 @@ fn unescape(raw: &str) -> std::result::Result<Vec<u8>, String> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

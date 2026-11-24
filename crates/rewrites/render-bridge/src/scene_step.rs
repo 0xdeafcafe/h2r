@@ -486,16 +486,14 @@ fn host_lights(mem: &dyn GuestMemory) -> Vec<frame_scene::Light> {
 /// The main view's light pass is over (at the decal mode that follows
 /// it). Fill the candidate data alongside the original draw steps, which
 /// already hold their final group indices, then add the host's lights
-/// ([`set_host_lights`]) after them. Returns the host lights it added,
-/// for the light passes' owner to draw
-/// ([`crate::native_lights::host::draw`]); none for a view that is not a
-/// game view.
-fn light_candidates(
-    mem: &dyn GuestMemory,
-    fpu: engine::light_constants::Fpu,
-) -> Vec<frame_scene::Light> {
+/// ([`set_host_lights`]) after them. Returns what the light passes' owner
+/// draws next: the host lights it added
+/// ([`crate::native_lights::host::draw`]) and E3's chosen lights beyond
+/// the guest's ([`chosen_lights`]); none for a view that is not a game
+/// view.
+fn light_candidates(mem: &dyn GuestMemory, fpu: engine::light_constants::Fpu) -> ViewLights {
     let host = host_lights(mem);
-    let mut added = Vec::new();
+    let mut added = ViewLights::default();
     with_step(|step| {
         let Some((scene, view)) = step.builder.open() else {
             return;
@@ -525,13 +523,48 @@ fn light_candidates(
             if step.builder.add_light_candidates(host.clone()).is_err() {
                 REFUSED.fetch_add(1, Ordering::Relaxed);
             } else {
-                added = host;
+                added.host = host;
             }
         }
+        (added.chosen, added.unread) = chosen_lights(&step.builder);
         LIGHT_EXTRACT_VIEWS.fetch_add(1, Ordering::Relaxed);
         LIGHT_EXTRACT_NS.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
     });
     added
+}
+
+/// What the light passes' owner draws once a game view's light pass is
+/// over ([`light_candidates`]).
+#[derive(Default)]
+struct ViewLights {
+    host: Vec<frame_scene::Light>,
+    chosen: Vec<crate::native_lights::chosen::ChosenLight>,
+    /// Chosen lights with nothing to draw from.
+    unread: usize,
+}
+
+/// The open view's chosen lights beyond the guest's
+/// ([`crate::native_lights::chosen::beyond_guest`]), under its share of
+/// the cap and of the shadow slots among the views of this scene so far
+/// and the scene before ([`native_render::light_choice::share_of`],
+/// [`native_render::cone_shadows::slot_share_of`]): the shares the render
+/// thread's choice gives it when the frame has the views the last one
+/// had.
+fn chosen_lights(
+    builder: &frame_scene::SceneBuilder,
+) -> (Vec<crate::native_lights::chosen::ChosenLight>, usize) {
+    let Some((scene, view)) = builder.open() else {
+        return (Vec::new(), 0);
+    };
+    let keys: Vec<frame_scene::ViewKey> = scene
+        .views
+        .iter()
+        .map(|v| v.key)
+        .chain(builder.previous_views().iter().copied())
+        .collect();
+    let cap = native_render::light_choice::share_of(&keys, view.key);
+    let slots = native_render::cone_shadows::slot_share_of(&keys, view.key);
+    crate::native_lights::chosen::beyond_guest(scene.lights_of(view), cap, slots)
 }
 
 /// A light's passes begin: until [`light`] puts it in the view, its
@@ -868,6 +901,13 @@ pub fn with_open<R>(f: impl FnOnce(Option<(&FrameScene, &View)>) -> R) -> R {
     with_step(|step| f(step.builder.open()))
 }
 
+/// Runs `f` on the overlay of the scene being written (`FrameScene::overlay`,
+/// docs/graphics/retire-d3d.md): `None` with no scene open. The step is
+/// held for the call: `f` must not come back here.
+pub fn with_overlay<R>(f: impl FnOnce(&mut frame_scene::Overlay) -> R) -> Option<R> {
+    with_step(|step| step.builder.overlay_mut().ok().map(f))
+}
+
 /// A host which joins the typed scene to the owned device work seen
 /// during the same begin/seal interval. Invoked without the builder lock.
 #[derive(Clone, Copy)]
@@ -957,6 +997,7 @@ pub fn forget() {
     crate::entry_census::forget();
     crate::residual_census::forget();
     crate::carried_slots::forget();
+    crate::native_hud::hud_overlay::forget();
 }
 
 /// The scene sealed last.
@@ -1034,6 +1075,22 @@ pub fn counters() -> Vec<(&'static str, u64)> {
             crate::native_lights::host::unread(),
         ),
         (
+            "scene_e3_lights_drawn",
+            crate::native_lights::chosen::drawn(),
+        ),
+        (
+            "scene_e3_lights_kept",
+            crate::native_lights::chosen::kept(),
+        ),
+        (
+            "scene_e3_lights_unread",
+            crate::native_lights::chosen::unread(),
+        ),
+        (
+            "scene_e3_lights_shadowed",
+            crate::native_lights::chosen::shadowed(),
+        ),
+        (
             "scene_first_person_light_layers_alone",
             crate::native_lights::first_person_drawn_alone(),
         ),
@@ -1095,6 +1152,7 @@ pub fn counters() -> Vec<(&'static str, u64)> {
     .chain(crate::native_decorators::counters())
     .chain(crate::native_shadows::alone_counters())
     .chain(crate::native_shadows::filter_counters())
+    .chain(crate::native_shadows::chain_counters())
     .chain(
         LIGHT_ENTRY_REMAINDER_NAMES.into_iter().zip(
             LIGHT_ENTRY_REMAINDER
@@ -1186,14 +1244,16 @@ impl Feature for FrameSceneStep {
                         mxcsr: o.cpu.mxcsr,
                         x87_control: o.cpu.x87.control,
                     };
-                    let host = light_candidates(&*g, fpu);
-                    // The host's own lights have no guest passes: the light
-                    // passes' owner draws their layers here, where the pass
-                    // is over and the view's target is still bound.
-                    if !host.is_empty() {
-                        let mem: &mut dyn GuestMemory = &mut *g;
-                        crate::native_lights::host::draw(mem, &host, fpu);
+                    let lights = light_candidates(&*g, fpu);
+                    // The host's own lights and E3's chosen lights have no
+                    // guest passes: the light passes' owner draws their
+                    // layers here, where the pass is over and the view's
+                    // target is still bound.
+                    let mem: &mut dyn GuestMemory = &mut *g;
+                    if !lights.host.is_empty() {
+                        crate::native_lights::host::draw(mem, &lights.host, fpu);
                     }
+                    crate::native_lights::chosen::draw(mem, &lights.chosen, lights.unread);
                 },
             )
             .after_feature(crate::render_timing::ID)

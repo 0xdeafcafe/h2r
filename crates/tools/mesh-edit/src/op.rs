@@ -53,6 +53,10 @@ fn half() -> f32 {
     0.5
 }
 
+fn one_degree() -> f32 {
+    1.0
+}
+
 /// A mesh operation as a value.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -142,6 +146,25 @@ pub enum MeshOp {
     RecalcNormals,
     /// The selected faces into triangles.
     Triangulate,
+    /// Pairs of selected triangles that are flat to within `angle` degrees
+    /// (and continuous in their coordinates) into quads.
+    TrisToQuads {
+        #[serde(default = "one_degree")]
+        angle: f32,
+    },
+    /// The selected faces (or with `individual`, each alone) shrunk by
+    /// `thickness` inside a ring of new faces, and moved along their
+    /// normal by `depth`.
+    Inset {
+        thickness: f32,
+        #[serde(default)]
+        depth: f32,
+        #[serde(default)]
+        individual: bool,
+    },
+    /// Each selected edge replaced by a strip face, its ends cut `width`
+    /// along the neighbouring edges.
+    Bevel { width: f32 },
     SetMaterial { material: u16 },
 }
 
@@ -243,6 +266,9 @@ impl Mesh {
             MeshOp::Flip => self.flip()?,
             MeshOp::RecalcNormals => self.recalc_normals()?,
             MeshOp::Triangulate => self.triangulate_faces()?,
+            MeshOp::TrisToQuads { angle } => self.tris_to_quads(*angle)?,
+            MeshOp::Inset { thickness, depth, individual } => self.inset(*thickness, *depth, *individual)?,
+            MeshOp::Bevel { width } => self.bevel(*width)?,
             MeshOp::SetMaterial { material } => {
                 let faces = self.selected_faces();
                 if faces.is_empty() {

@@ -5,7 +5,9 @@
 //!
 //! A and B compare the entire CPU and memory including their saved stack
 //! words. C and D compare outside the vector clobbers and dead stack slots,
-//! including the return address, EFLAGS and live x87 registers. A decline
+//! including the return address, EFLAGS and live x87 registers. F
+//! (`mopp_box`) compares outside `eax`, `ecx`, `edx`, the x87 condition
+//! codes and its dead stack. A decline
 //! must preserve every guest register and byte. Each case takes the adapter
 //! cold and warm, and compares the older per-function port where present.
 //! G and H compare like C and D, with their own dead stack; their third arm
@@ -16,6 +18,8 @@
 mod common;
 #[path = "sim_collision_differential/disc.rs"]
 mod disc;
+#[path = "sim_collision_differential/mopp_box.rs"]
+mod mopp_box;
 
 use engine::sim_collision::{self as adapter, CollisionWorld, layout};
 use engine::{points, sim_native as sim};

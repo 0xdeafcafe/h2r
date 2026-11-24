@@ -601,3 +601,571 @@ fn settling_puts_the_first_content_in_the_main_file() {
     assert_eq!(repo.settle().unwrap().promoted, 0);
     assert_eq!(snapshot(&dir.0), before);
 }
+
+// --- Skeletons and extent tables (docs/engine/asset-store.md, AS1) ---
+
+use skeleton::{Extents, Part, Skeleton, StoreFile, partition};
+use std::io::{Read as _, Seek as _};
+
+fn h(n: u8) -> String {
+    hex(&[n; 32])
+}
+
+/// Structural ranges are merged; a named resource inside the skeleton, or
+/// overlapping one taken before it, is left to the unnamed ranges; what
+/// nothing names is unnamed, split at the piece size; the parts tile.
+#[test]
+fn partition_tiles_the_file() {
+    let len = 0x10000;
+    let structural = [
+        (0, 0x800),
+        (0x4000, 0x1000),  // BSP 1
+        (0x6000, 0x800),   // BSP 2
+        (0xc000, 0x2000),  // index and metadata
+        (0xc800, 0x100),   // a string table inside it
+        (0xf000, 0x10000), // clipped at the end
+    ];
+    let named = [
+        (0x1000, 0x400, h(1)),
+        (0x1000, 0x200, h(2)), // same start, shorter: the longer wins
+        (0x1200, 0x100, h(3)), // inside the one taken
+        (0x4800, 0x100, h(4)), // inside a BSP region
+        (0x2000, 0x800, h(5)),
+        (0xfff0, 0x100, h(6)), // past the end
+    ];
+    let parts = partition(len, &structural, &named);
+    assert_eq!(
+        parts,
+        [
+            Part::Skeleton {
+                offset: 0,
+                len: 0x800
+            },
+            Part::Unnamed {
+                offset: 0x800,
+                len: 0x800
+            },
+            Part::Named {
+                offset: 0x1000,
+                len: 0x400,
+                hash: h(1)
+            },
+            Part::Unnamed {
+                offset: 0x1400,
+                len: 0xc00
+            },
+            Part::Named {
+                offset: 0x2000,
+                len: 0x800,
+                hash: h(5)
+            },
+            Part::Unnamed {
+                offset: 0x2800,
+                len: 0x1800
+            },
+            Part::Skeleton {
+                offset: 0x4000,
+                len: 0x1000
+            },
+            Part::Unnamed {
+                offset: 0x5000,
+                len: 0x1000
+            },
+            Part::Skeleton {
+                offset: 0x6000,
+                len: 0x800
+            },
+            Part::Unnamed {
+                offset: 0x6800,
+                len: 0x5800
+            },
+            Part::Skeleton {
+                offset: 0xc000,
+                len: 0x2000
+            },
+            Part::Unnamed {
+                offset: 0xe000,
+                len: 0x1000
+            },
+            Part::Skeleton {
+                offset: 0xf000,
+                len: 0x1000
+            },
+        ]
+    );
+    // A long unnamed range is split.
+    let big = skeleton::UNNAMED_PIECE * 2 + 5;
+    let parts = partition(big, &[], &[]);
+    assert_eq!(parts.len(), 3);
+    assert_eq!(parts[2].range(), (skeleton::UNNAMED_PIECE * 2, 5));
+}
+
+#[test]
+fn skeletons_and_extent_tables_round_trip() {
+    let s = Skeleton {
+        len: 52,
+        ranges: vec![(0, 4), (50, 2)],
+        bytes: vec![1, 2, 3, 4, 9, 9],
+    };
+    assert_eq!(Skeleton::decode(&s.encode().unwrap()).unwrap(), s);
+    assert!(Skeleton::decode(b"h2skel\0\x01garbage").is_err());
+    assert!(Skeleton::decode(b"nope").is_err());
+    let x = Extents {
+        file: h(7),
+        len: 52,
+        extents: vec![skeleton::Extent {
+            offset: 4,
+            len: 46,
+            hash: h(8),
+        }],
+    };
+    assert_eq!(Extents::parse(&x.to_text()).unwrap(), x);
+    assert!(Extents::parse("h2 extents 1\n4\t46\tnot-a-hash\n").is_err());
+    assert!(Extents::parse("something else\n").is_err());
+    // Parts that do not tile the file are refused.
+    let raw = std::env::temp_dir();
+    let f = StoreFile::from_parts("m", s.clone(), x.clone(), raw.clone()).unwrap();
+    assert_eq!((f.len(), f.skeleton_bytes(), f.extent_count()), (52, 6, 1));
+    let mut gap = x.clone();
+    gap.extents[0].len = 45;
+    assert!(StoreFile::from_parts("m", s.clone(), gap, raw.clone()).is_err());
+    let mut overlap = x.clone();
+    overlap.extents[0].offset = 3;
+    assert!(StoreFile::from_parts("m", s.clone(), overlap, raw.clone()).is_err());
+    let mut longer = x;
+    longer.len = 53;
+    assert!(StoreFile::from_parts("m", s, longer, raw).is_err());
+}
+
+/// An invented map file: a header, two BSP regions, an index with its
+/// metadata, local raw resources (two at one offset), a range a pointer
+/// into a shared cache would name (not local, so nothing here names it),
+/// padding, and bytes past the declared size.
+fn invented_file() -> (Vec<u8>, Vec<(u64, u64)>, Vec<(u64, u64)>) {
+    let len = 0x9123usize;
+    let bytes: Vec<u8> = (0..len)
+        .map(|i| (i.wrapping_mul(31) ^ (i >> 7)) as u8)
+        .collect();
+    let structural = vec![
+        (0, 0x800),
+        (0x3000, 0x900),  // BSP 1
+        (0x4000, 0x700),  // BSP 2
+        (0x7000, 0x1800), // index and metadata
+    ];
+    // Local resources: (offset, length).
+    let raws = vec![
+        (0x800, 0x300),
+        (0x800, 0x100),
+        (0x1000, 0x1234),
+        (0x5000, 0x10),
+    ];
+    (bytes, structural, raws)
+}
+
+fn store_invented(dir: &std::path::Path) -> (TagRepo, Vec<u8>, skeleton::SkeletonReport) {
+    let (bytes, structural, raws) = invented_file();
+    let mut repo = TagRepo::create(dir).unwrap();
+    let mut named = Vec::new();
+    for (o, l) in raws {
+        let b = &bytes[o as usize..(o + l) as usize];
+        named.push((o, l, repo.put_raw(b).unwrap()));
+    }
+    let file = hex(&sha256(&bytes));
+    let parts = partition(bytes.len() as u64, &structural, &named);
+    let mut read =
+        |o: u64, l: u64| -> Result<Vec<u8>> { Ok(bytes[o as usize..(o + l) as usize].to_vec()) };
+    let report = repo
+        .put_skeleton("level", &file, bytes.len() as u64, &parts, &mut read)
+        .unwrap();
+    (repo, bytes, report)
+}
+
+/// Reads across extent borders equal the file at every offset class: the
+/// start and end of every part, across each border, the whole file, and
+/// past the end.
+#[test]
+fn a_store_file_reassembles_an_invented_map() {
+    let dir = TempDir::new("skel-reassemble");
+    let (repo, bytes, report) = store_invented(&dir.0);
+    let len = bytes.len() as u64;
+    assert_eq!(report.len, len);
+    assert_eq!(report.skeleton.0, 0x800 + 0x900 + 0x700 + 0x1800);
+    assert_eq!(report.named, (3, 0x300 + 0x1234 + 0x10));
+    assert_eq!(
+        report.skeleton.0 + report.named.1 + report.unnamed.1,
+        len,
+        "every byte is in one part"
+    );
+    assert!(repo.has_skeleton("level"));
+    let mut f = repo.store_file("level").unwrap();
+    assert_eq!(f.len(), len);
+    let mut borders = vec![0u64, len];
+    for p in partition(len, &invented_file().1, &[]) {
+        borders.push(p.range().0);
+    }
+    for e in StoreFile::extents(&dir.0, "level").unwrap().extents {
+        borders.extend([e.offset, e.offset + e.len]);
+    }
+    for b in borders {
+        for start in [b.saturating_sub(3), b, b + 1] {
+            for n in [1usize, 7, 0x401] {
+                let mut buf = vec![0u8; n];
+                let got = f.read_at(start, &mut buf).unwrap();
+                let want = (len.saturating_sub(start) as usize).min(n);
+                assert_eq!(got, want, "at {start:#x} +{n}");
+                assert_eq!(
+                    &buf[..got],
+                    &bytes[start.min(len) as usize..start.min(len) as usize + got],
+                    "at {start:#x} +{n}"
+                );
+            }
+        }
+    }
+    let mut whole = vec![0u8; bytes.len() + 10];
+    assert_eq!(f.read_at(0, &mut whole).unwrap(), bytes.len());
+    assert_eq!(&whole[..bytes.len()], &bytes[..]);
+    assert_eq!(f.read_at(len, &mut whole).unwrap(), 0);
+    // Read and Seek, as a map reader uses them.
+    let mut back = Vec::new();
+    f.seek(std::io::SeekFrom::Start(0)).unwrap();
+    f.read_to_end(&mut back).unwrap();
+    assert_eq!(back, bytes);
+    // reassemble and its check.
+    let mut out = Vec::new();
+    let hash = repo.reassemble("level", &mut out).unwrap();
+    assert_eq!(out, bytes);
+    assert_eq!(hash, hex(&sha256(&bytes)));
+    repo.check_reassembly("level", &hash).unwrap();
+    assert!(repo.check_reassembly("level", &h(0)).is_err());
+    let st = skeleton::status(&dir.0);
+    assert!(st.exists);
+    assert_eq!(st.maps.len(), 1);
+    assert_eq!(st.maps[0].len, len);
+    assert_eq!(st.maps[0].file, hash);
+}
+
+/// A raw file the extent table names that is gone is a named error.
+#[test]
+fn a_missing_raw_file_is_a_named_error() {
+    let dir = TempDir::new("skel-missing");
+    let (repo, bytes, _) = store_invented(&dir.0);
+    let gone = hex(&sha256(&bytes[0x1000..0x1000 + 0x1234]));
+    std::fs::remove_file(dir.0.join("raw").join(&gone[..2]).join(&gone)).unwrap();
+    let mut f = repo.store_file("level").unwrap();
+    // Bytes before it still read.
+    let mut buf = [0u8; 16];
+    assert_eq!(f.read_at(0, &mut buf).unwrap(), 16);
+    match f.read_at(0x1100, &mut buf) {
+        Err(Error::MissingRaw {
+            map,
+            hash,
+            offset,
+            len,
+        }) => {
+            assert_eq!((map.as_str(), offset, len), ("level", 0x1000, 0x1234));
+            assert_eq!(hash, gone);
+        }
+        other => panic!("{other:?}"),
+    }
+    let e = repo.reassemble("level", &mut std::io::sink()).unwrap_err();
+    assert!(e.to_string().contains(&gone), "{e}");
+    // A raw file of the wrong length is refused, naming it.
+    std::fs::write(dir.0.join("raw").join(&gone[..2]).join(&gone), b"short").unwrap();
+    let mut f = repo.store_file("level").unwrap();
+    let e = f.read_at(0x1100, &mut buf).unwrap_err();
+    assert!(e.to_string().contains(&gone), "{e}");
+}
+
+/// Extraction writes each map's skeleton and extent table and checks the
+/// reassembled file; a map lacking them is taken again whole.
+#[test]
+fn extraction_writes_skeletons_and_the_plan_retakes_a_map_lacking_one() {
+    let dir = TempDir::new("skel-extract");
+    let schema = Schema::parse(SCHEMA).unwrap();
+    let mut d = disc(&[("alpha", 1), ("beta", 2)]);
+    // Bytes past beta's declared size: an unnamed range.
+    d.get_mut("beta").unwrap().extend_from_slice(&[0xab; 0x123]);
+    let mut repo = TagRepo::create(&dir.0).unwrap();
+    run_update(&mut repo, &schema, &d, &[]).1.unwrap();
+    for (stem, bytes) in &d {
+        assert!(repo.has_skeleton(stem));
+        let mut out = Vec::new();
+        let hash = repo.reassemble(stem, &mut out).unwrap();
+        assert_eq!(&out, bytes, "{stem}");
+        assert_eq!(hash, extract::file_hash(Cursor::new(bytes)).unwrap());
+        // The bitmap's pixels are a named extent.
+        let x = StoreFile::extents(&dir.0, stem).unwrap();
+        let pixels: Vec<u8> = (0..300u32).map(|i| (i * 7) as u8).collect();
+        assert!(
+            x.extents.iter().any(|e| e.hash == hex(&sha256(&pixels))),
+            "{stem}"
+        );
+    }
+    std::fs::remove_file(dir.0.join("maps").join("beta.extents")).unwrap();
+    let (plan, done) = run_update(&mut repo, &schema, &d, &[]);
+    let redo: Vec<_> = plan
+        .maps
+        .iter()
+        .map(|w| (w.map.as_str(), w.why.clone(), w.groups.is_none()))
+        .collect();
+    assert_eq!(redo, [("beta", extract::Why::Skeleton, true)]);
+    done.unwrap();
+    assert!(repo.has_skeleton("beta"));
+    assert!(run_update(&mut repo, &schema, &d, &[]).0.is_empty());
+}
+
+// --- Extraction on compile (`compile::prepare`) ---
+
+use compile::{DiscMap, Input, Options};
+
+/// An invented disc on disk: each map is `<stem>.map` in `dir`.
+fn disc_on_disk(dir: &std::path::Path, maps: &[(&str, Vec<u8>)]) -> Vec<DiscMap> {
+    std::fs::create_dir_all(dir).unwrap();
+    maps.iter()
+        .map(|(stem, bytes)| {
+            let path = dir.join(format!("{stem}.map"));
+            std::fs::write(&path, bytes).unwrap();
+            DiscMap {
+                stem: (*stem).to_owned(),
+                path,
+                base: 0,
+                len: bytes.len() as u64,
+            }
+        })
+        .collect()
+}
+
+/// `prepare` and the maps it did, in order.
+fn prepare_run(
+    root: &std::path::Path,
+    schema: &Schema,
+    disc: Option<&[DiscMap]>,
+) -> Result<(compile::Prepared, Vec<String>)> {
+    let mut done = Vec::new();
+    let p = compile::prepare(
+        root,
+        schema,
+        disc,
+        &Options::default(),
+        &mut |_| {},
+        &mut |_, _| {},
+        &mut |w, _| done.push(w.map.clone()),
+    )?;
+    Ok((p, done))
+}
+
+fn plan_maps(plan: &extract::Plan) -> Vec<(&str, extract::Why)> {
+    plan.maps
+        .iter()
+        .map(|w| (w.map.as_str(), w.why.clone()))
+        .collect()
+}
+
+fn reassembled(root: &std::path::Path, stem: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    TagRepo::create(root)
+        .unwrap()
+        .reassemble(stem, &mut out)
+        .unwrap();
+    out
+}
+
+/// Unchanged input opens no map and reads no map file: the stamps give
+/// the hashes. A touched file (same bytes, new time) is hashed once and
+/// plans nothing; a changed one is hashed once and taken alone.
+#[test]
+fn compile_trusts_stamps_and_takes_a_changed_map_alone() {
+    let dir = TempDir::new("compile-stamps");
+    let schema = Schema::parse(SCHEMA).unwrap();
+    let disc = disc_on_disk(
+        &dir.0.join("disc"),
+        &[("alpha", invented_map(1)), ("beta", invented_map(2))],
+    );
+    let root = dir.0.join("store");
+    let (p, done) = prepare_run(&root, &schema, Some(&disc)).unwrap();
+    assert_eq!((p.input, p.hashed, p.opened), (Input::Disc, 2, 2));
+    assert_eq!(done, ["alpha", "beta"]);
+
+    let before = snapshot(&root);
+    let (p, done) = prepare_run(&root, &schema, Some(&disc)).unwrap();
+    assert!(p.plan.is_empty() && p.updated.is_none());
+    assert_eq!((p.hashed, p.opened), (0, 0));
+    assert!(done.is_empty());
+    assert_eq!(snapshot(&root), before, "an empty plan wrote nothing");
+
+    // Touched: the time moves, the bytes do not.
+    let f = std::fs::File::options()
+        .write(true)
+        .open(&disc[1].path)
+        .unwrap();
+    f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+        .unwrap();
+    drop(f);
+    let (p, _) = prepare_run(&root, &schema, Some(&disc)).unwrap();
+    assert!(p.plan.is_empty());
+    assert_eq!((p.hashed, p.opened), (1, 0));
+    assert_eq!(prepare_run(&root, &schema, Some(&disc)).unwrap().0.hashed, 0);
+
+    // Changed: beta alone, hashed once, taken whole.
+    let mut disc = disc;
+    let nine = invented_map(9);
+    std::fs::write(&disc[1].path, &nine).unwrap();
+    disc[1].len = nine.len() as u64;
+    let (p, done) = prepare_run(&root, &schema, Some(&disc)).unwrap();
+    assert_eq!(plan_maps(&p.plan), [("beta", extract::Why::FileChanged)]);
+    assert_eq!((p.hashed, p.opened), (1, 1));
+    assert_eq!(done, ["beta"]);
+    for d in &disc {
+        assert_eq!(
+            reassembled(&root, &d.stem),
+            std::fs::read(&d.path).unwrap(),
+            "{}",
+            d.stem
+        );
+    }
+    assert!(
+        prepare_run(&root, &schema, Some(&disc))
+            .unwrap()
+            .0
+            .plan
+            .is_empty()
+    );
+}
+
+/// A run stopped at a map the disc could not give is finished by the
+/// next one, which takes only that map.
+#[test]
+fn compile_resumes_an_interrupted_run() {
+    let dir = TempDir::new("compile-resume");
+    let schema = Schema::parse(SCHEMA).unwrap();
+    let mut maps = vec![
+        ("alpha", invented_map(1)),
+        ("beta", invented_map(2)),
+        ("gamma", vec![0u8; 64]),
+    ];
+    let disc = disc_on_disk(&dir.0.join("disc"), &maps);
+    let root = dir.0.join("store");
+    assert!(
+        prepare_run(&root, &schema, Some(&disc)).is_err(),
+        "gamma is not a map"
+    );
+    let rec = TagRepo::create(&root)
+        .unwrap()
+        .extract_record()
+        .unwrap()
+        .unwrap();
+    assert_eq!(rec.maps.keys().collect::<Vec<_>>(), ["alpha", "beta"]);
+
+    maps[2].1 = invented_map(3);
+    let disc = disc_on_disk(&dir.0.join("disc"), &maps);
+    let (p, done) = prepare_run(&root, &schema, Some(&disc)).unwrap();
+    assert!(!p.plan.reset);
+    assert_eq!(plan_maps(&p.plan), [("gamma", extract::Why::New)]);
+    assert_eq!(done, ["gamma"]);
+    assert!(
+        prepare_run(&root, &schema, Some(&disc))
+            .unwrap()
+            .0
+            .plan
+            .is_empty()
+    );
+}
+
+/// With no disc the maps come from the store: a moved layout hash
+/// re-extracts that group from the skeleton and extents.
+#[test]
+fn compile_re_extracts_a_moved_layout_from_the_store() {
+    let dir = TempDir::new("compile-store-layout");
+    let a = Schema::parse(SCHEMA).unwrap();
+    let b = schema_with_matg_word();
+    let disc = disc_on_disk(
+        &dir.0.join("disc"),
+        &[("alpha", invented_map(1)), ("beta", invented_map(2))],
+    );
+    let root = dir.0.join("store");
+    prepare_run(&root, &a, Some(&disc)).unwrap();
+    std::fs::remove_dir_all(dir.0.join("disc")).unwrap();
+    let (p, done) = prepare_run(&root, &b, None).unwrap();
+    assert_eq!(p.input, Input::Store);
+    assert!(!p.plan.reset);
+    assert_eq!(done, ["alpha", "beta"]);
+    for w in &p.plan.maps {
+        assert_eq!(w.why, extract::Why::Layouts);
+        assert_eq!(w.groups, Some(BTreeSet::from([g(b"matg")])));
+    }
+    assert!(prepare_run(&root, &b, None).unwrap().0.plan.is_empty());
+    for (stem, tweak) in [("alpha", 1u8), ("beta", 2)] {
+        assert_eq!(reassembled(&root, stem), invented_map(tweak), "{stem}");
+    }
+}
+
+/// An extractor version change empties the tree, and the whole store is
+/// taken again from its own skeletons, with no disc. A run stopped after
+/// the reset leaves the stash the next one reads.
+#[test]
+fn compile_re_extracts_everything_from_the_store_after_a_reset() {
+    let dir = TempDir::new("compile-store-reset");
+    let schema = Schema::parse(SCHEMA).unwrap();
+    let disc = disc_on_disk(
+        &dir.0.join("disc"),
+        &[("alpha", invented_map(1)), ("beta", invented_map(2))],
+    );
+    let root = dir.0.join("store");
+    prepare_run(&root, &schema, Some(&disc)).unwrap();
+    std::fs::remove_dir_all(dir.0.join("disc")).unwrap();
+
+    let mut repo = TagRepo::create(&root).unwrap();
+    let mut rec = repo.extract_record().unwrap().unwrap();
+    rec.extractor -= 1;
+    repo.put_extract_record(&rec).unwrap();
+    // A stopped run: stashed and reset, nothing extracted.
+    compile::stash(&root, &["alpha".to_owned(), "beta".to_owned()]).unwrap();
+    repo.reset(extract::EXTRACT_VERSION, format::VERSION)
+        .unwrap();
+    assert!(!repo.has_skeleton("alpha"));
+
+    let (p, done) = prepare_run(&root, &schema, None).unwrap();
+    assert_eq!(p.input, Input::Store);
+    assert_eq!(
+        plan_maps(&p.plan),
+        [("alpha", extract::Why::New), ("beta", extract::Why::New)]
+    );
+    assert_eq!(done, ["alpha", "beta"]);
+    assert!(
+        !root.join(compile::STASH_DIR).exists(),
+        "the stash is removed"
+    );
+    let repo = TagRepo::create(&root).unwrap();
+    let recorded = repo.extract_record().unwrap().unwrap();
+    for (stem, tweak) in [("alpha", 1u8), ("beta", 2)] {
+        assert_eq!(reassembled(&root, stem), invented_map(tweak), "{stem}");
+        assert!(repo.has_manifest(stem));
+        assert_eq!(
+            recorded.maps[stem].file,
+            extract::file_hash(Cursor::new(invented_map(tweak))).unwrap()
+        );
+    }
+    assert!(prepare_run(&root, &schema, None).unwrap().0.plan.is_empty());
+}
+
+/// A store with no skeleton for a map, and no disc, says it needs the disc
+/// and changes nothing; an empty store with no disc says so too.
+#[test]
+fn compile_without_a_disc_names_what_needs_one() {
+    let dir = TempDir::new("compile-needs-disc");
+    let schema = Schema::parse(SCHEMA).unwrap();
+    let root = dir.0.join("store");
+    let e = prepare_run(&root, &schema, None).unwrap_err().to_string();
+    assert!(e.contains("no disc"), "{e}");
+
+    let disc = disc_on_disk(
+        &dir.0.join("disc"),
+        &[("alpha", invented_map(1)), ("beta", invented_map(2))],
+    );
+    prepare_run(&root, &schema, Some(&disc)).unwrap();
+    std::fs::remove_file(root.join("maps").join("beta.extents")).unwrap();
+    let before = snapshot(&root);
+    let e = prepare_run(&root, &schema, None).unwrap_err().to_string();
+    assert!(e.contains("beta") && e.contains("disc image"), "{e}");
+    assert_eq!(snapshot(&root), before);
+}

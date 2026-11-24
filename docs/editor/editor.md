@@ -721,9 +721,10 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   dynamic light). A material draws only when nothing it reads is left
   out: a pass that reads a view constant the camera does not give
   (`program::CAMERA_GIVEN`), an input the game-free run state does not
-  give, a palettized stage bitmap (no stage palettes), an animated
-  constant or its own fog is refused, and `view.stats` counts it by
-  cause. The other modes draw the base look alone.
+  give, a palettized stage bitmap (no stage palettes), a missing
+  animation input or its own fog is refused, and `view.stats` counts it by
+  cause. The BSP samples animated pixel and vertex constants at time zero.
+  The Shader tab takes its sample at the preview clock. The other modes draw the base look alone.
   Clicking skips hidden placement categories and hidden structure.
 - **Gameplay layers.** Spawn points have a team-coloured pawn and an
   arrow pointing along the spawn facing. Netgame flags have a team tint
@@ -907,6 +908,10 @@ its own game otherwise, or leaves the edits pending for a manual load in
 a foreign game. F5 leaves the Edit switch as set. A foreign game asks before receiving edits or switching
 maps. The other choice in the map prompt opens the game's map here.
 `play::playtest::decide` supplies the bar, Game menu and socket API.
+
+`game.start` ([agent-api.md](agent-api.md)) starts the same game with
+`--editor` added: no window of its own, shown in the Game panel
+([game-view.md](game-view.md), "Own mode"). F5 still opens the window.
 
 **Stop** (Shift+F5) closes the game the editor started. With no game,
 Play launches the copy in its own window:

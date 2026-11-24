@@ -191,6 +191,54 @@ impl Art {
             .as_ref()
     }
 
+    /// Where bitmap `id`'s sequence `seq` is ([`sprite_at`]), without
+    /// decoding its pixels: what the overlay stage names
+    /// ([`crate::overlay`]).
+    pub fn sprite_place<R: Read + Seek>(
+        &mut self,
+        map: &mut Map<R>,
+        id: TagId,
+        seq: i8,
+    ) -> Result<SpriteAt, String> {
+        let b = self
+            .bitmap(map, id)
+            .ok_or_else(|| format!("{id} is not a readable bitmap"))?;
+        sprite_at(b, seq)
+    }
+
+    /// Image `image` of bitmap `id` whole, decoded once: its top level's
+    /// width, height and RGBA texels (straight alpha). What a renderer
+    /// that names the image (the overlay stage) uploads.
+    pub fn image<R: Read + Seek>(
+        &mut self,
+        map: &mut Map<R>,
+        id: TagId,
+        image: usize,
+    ) -> Result<(u32, u32, &[u8]), String> {
+        let img = self
+            .bitmap(map, id)
+            .ok_or_else(|| format!("{id} is not a readable bitmap"))?
+            .images
+            .get(image)
+            .ok_or_else(|| format!("image {image} is not in the bitmap"))?
+            .clone();
+        let files = &mut self.files;
+        let decoded = self.images.entry((id, image)).or_insert_with(|| {
+            let d = assets::decode_image(&img, files).map_err(|e| e.to_string())?;
+            let l = d
+                .levels
+                .into_iter()
+                .find(|l| l.face == 0 && l.level == 0)
+                .ok_or("no top level")?;
+            let n = (l.width * l.height * 4) as usize;
+            Ok((l.width, l.height, l.rgba.get(..n).ok_or("short level")?.to_vec()))
+        });
+        match decoded {
+            Ok((w, h, rgba)) => Ok((*w, *h, rgba.as_slice())),
+            Err(e) => Err(e.clone()),
+        }
+    }
+
     /// Bitmap `id`'s sequence `seq` as a widget draws it ([`sprite_at`]).
     pub fn sprite<R: Read + Seek>(
         &mut self,
@@ -208,22 +256,7 @@ impl Art {
             mut note,
         } = sprite_at(b, seq)?;
         let px = size.map(|v| v.round().max(0.0) as u32);
-        let img = b.images[image].clone();
-        let decoded = self
-            .images
-            .entry((id, image))
-            .or_insert_with(|| {
-                let d = assets::decode_image(&img, &mut self.files).map_err(|e| e.to_string())?;
-                let l = d
-                    .levels
-                    .into_iter()
-                    .find(|l| l.face == 0 && l.level == 0)
-                    .ok_or("no top level")?;
-                let n = (l.width * l.height * 4) as usize;
-                Ok((l.width, l.height, l.rgba.get(..n).ok_or("short level")?.to_vec()))
-            })
-            .clone();
-        let rgba = match decoded {
+        let rgba = match self.image(map, id, image) {
             Ok((w, h, rgba)) => {
                 let x0 = (bounds[0] * w as f32).round() as u32;
                 let y0 = (bounds[2] * h as f32).round() as u32;
@@ -350,6 +383,66 @@ impl Fonts {
         }
         Some((b, f.line_height()))
     }
+}
+
+impl Fonts {
+    /// `text` in engine font `index` laid out as [`Fonts::render`] draws
+    /// it ([`font::layout`]), and the line height: where each glyph goes,
+    /// for a renderer with its own glyph atlas.
+    pub fn layout(&self, index: i16, text: &str) -> Option<(font::Layout, i32)> {
+        let f = self.font(index)?;
+        let units: Vec<u16> = text.encode_utf16().collect();
+        Some((font::layout(&f, &units).ok()?, f.line_height()))
+    }
+}
+
+/// Whether widget `w` of HUD `h` is shown, and the point it is placed
+/// from (the frame's centre, with a note, when its anchor is not a
+/// corner): the start of the preview's walk and the overlay's.
+pub(crate) fn shown_and_point(
+    frame: &Frame,
+    mode: Mode,
+    masks: [u16; 4],
+    st: &HudState,
+    (h, answers): (usize, &dyn Answers),
+    w: &Widget,
+    notes: &mut Vec<String>,
+) -> (bool, Option<[f32; 2]>) {
+    let shown = answers
+        .shown(h, w)
+        .unwrap_or_else(|| !st.gate || state::shown(w.state(), masks));
+    let point = place::widget_point(frame, w.anchor(), w.offset(mode));
+    let point = point.or_else(|| {
+        notes.push(format!(
+            "anchor {} is not a corner: drawn at the frame's centre",
+            w.anchor()
+        ));
+        place::widget_point(frame, 4, w.offset(mode))
+    });
+    (shown, point)
+}
+
+/// The fill a bitmap widget shows when it is a meter, 0 to 1: a meter
+/// shader reads `hud_input1`; the shield meter (special type 5) the
+/// shield, through its shader's span of the arc's gradient
+/// (docs/halo1/health.md). `None` for a widget that is not a meter.
+pub(crate) fn meter_fill<R: Read + Seek>(
+    map: &Map<R>,
+    w: &Widget,
+    st: &HudState,
+    (h, answers): (usize, &dyn Answers),
+) -> Option<f32> {
+    if let Some(f) = answers.fill(h, w) {
+        return Some(f);
+    }
+    if w.special() == SPECIAL_SHIELD {
+        return Some(0.2156 + st.shield.clamp(0.0, 1.0) * (0.992 - 0.2156));
+    }
+    let shader = w
+        .shader()
+        .and_then(|s| map.tag(s).ok().and_then(|t| t.name.clone()))
+        .unwrap_or_default();
+    shader.contains("meter").then(|| st.input(w.inputs()[0]).0)
 }
 
 /// The colour text widgets are drawn in: a stand-in (how the engine gets
@@ -581,18 +674,9 @@ pub fn draw_answered<R: Read + Seek>(
     let masks = st.masks();
     for (h, hud) in huds.iter().enumerate() {
         for w in &hud.widgets {
-            let shown = answers
-                .shown(h, w)
-                .unwrap_or_else(|| !st.gate || state::shown(w.state(), masks));
             let mut notes = Vec::new();
-            let point = place::widget_point(&frame, w.anchor(), w.offset(mode));
-            let point = point.or_else(|| {
-                notes.push(format!(
-                    "anchor {} is not a corner: drawn at the frame's centre",
-                    w.anchor()
-                ));
-                place::widget_point(&frame, 4, w.offset(mode))
-            });
+            let (shown, point) =
+                shown_and_point(&frame, mode, masks, st, (h, answers), w, &mut notes);
             let mut p = Placed {
                 hud: h,
                 key: w.key,
@@ -656,22 +740,7 @@ fn draw_bitmap<R: Read + Seek>(
     if !p.shown {
         return;
     }
-    // The fill a meter shows: a meter shader reads hud_input1; the shield
-    // meter (special type 5) the shield, through its shader's span of the
-    // arc's gradient (docs/halo1/health.md).
-    let shader = w
-        .shader()
-        .and_then(|s| map.tag(s).ok().and_then(|t| t.name.clone()))
-        .unwrap_or_default();
-    let fill = if let Some(f) = answers.fill(h, w) {
-        Some(f)
-    } else if w.special() == SPECIAL_SHIELD {
-        Some(0.2156 + st.shield.clamp(0.0, 1.0) * (0.992 - 0.2156))
-    } else if shader.contains("meter") {
-        Some(st.input(w.inputs()[0]).0)
-    } else {
-        None
-    };
+    let fill = meter_fill(map, w, st, (h, answers));
     let flags = w.flags();
     let [x0, y0] = [rect.x0.round() as i32, rect.y0.round() as i32];
     let [pw, ph] = sprite.px;

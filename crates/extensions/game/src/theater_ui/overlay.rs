@@ -18,6 +18,8 @@ use crate::theater::SeekTaps;
 
 const REFRESH: Duration = Duration::from_millis(150);
 const LONG_PRESS: Duration = Duration::from_millis(500);
+/// Ticks the bar keeps a monitor look sentence: six seconds of film.
+const MONITOR_NOTICE_TICKS: u64 = 180;
 pub(super) const SPEEDS: [f64; 5] = [0.25, 0.5, 1.0, 2.0, 4.0];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -89,6 +91,8 @@ struct AgentState {
     #[serde(default)]
     camera_seat: Option<u8>,
     camera_fallback: Option<api::CameraFallback>,
+    #[serde(default)]
+    monitor_looks: Vec<api::MonitorLookSource>,
     players: Option<Vec<Player>>,
     kills: Option<Vec<u64>>,
     bookmarks: Option<Vec<u64>>,
@@ -127,6 +131,10 @@ pub(super) struct Track {
     pub jump: Option<Jump>,
     pub seeking: bool,
     pub divergence: Option<Divergence>,
+    /// The seats whose unseen look the bar has said, and the sentence of
+    /// the latest with the tick it was said at.
+    monitor_seen: std::collections::BTreeSet<u8>,
+    monitor_notice: Option<(String, u64)>,
     range: Option<(u64, u64)>,
 }
 
@@ -164,11 +172,29 @@ impl Track {
             jump: None,
             seeking: false,
             divergence: None,
+            monitor_seen: std::collections::BTreeSet::new(),
+            monitor_notice: None,
             range: entry
                 .clip
                 .as_ref()
                 .map(|clip| (clip.from_tick, clip.to_tick)),
         }
+    }
+
+    /// A look the film recorded that this machine cannot draw: the bar says
+    /// it once, when its seat first appears.
+    pub(super) fn note_monitor_look(&mut self, look: &api::MonitorLookSource) {
+        if self.monitor_seen.insert(look.seat) {
+            self.monitor_notice = Some((super::adapter::monitor_sentence(look), self.tick));
+        }
+    }
+
+    /// The sentence for a monitor look this machine cannot draw, for a few
+    /// seconds after its seat first appears.
+    pub(super) fn monitor_notice(&self) -> Option<&str> {
+        let (sentence, at) = self.monitor_notice.as_ref()?;
+        let shown = self.tick >= *at && self.tick - *at < MONITOR_NOTICE_TICKS;
+        shown.then_some(sentence.as_str())
     }
 
     pub(super) fn bounds(&self) -> (u64, u64) {
@@ -295,6 +321,9 @@ impl Track {
             self.kills.extend(kills);
             self.kills.sort_unstable();
             self.kills.dedup();
+        }
+        for look in &s.monitor_looks {
+            self.note_monitor_look(look);
         }
         if let Some(bookmarks) = s.bookmarks {
             self.bookmarks = bookmarks;
@@ -1335,6 +1364,30 @@ mod tests {
             clip: None,
             archive_clip: None,
         })
+    }
+
+    #[test]
+    fn a_monitor_look_the_machine_cannot_draw_is_said_once_when_its_seat_appears() {
+        let state = |tick: u64| -> AgentState {
+            serde_json::from_value(json!({
+                "tick": tick,
+                "monitor_looks": [
+                    {"seat": 2, "map": "invented_map", "reason": "monitor_look_source"}
+                ]
+            }))
+            .unwrap()
+        };
+        let mut track = sample_track();
+        track.read(AgentState::default());
+        assert!(track.monitor_notice().is_none());
+        track.read(state(300));
+        let said = track.monitor_notice().expect("said when the seat appears").to_owned();
+        assert!(said.contains("Seat 2") && said.contains("invented_map"), "{said}");
+        // The state repeats the look; the bar does not say it again.
+        track.tick = 300 + MONITOR_NOTICE_TICKS;
+        assert!(track.monitor_notice().is_none());
+        track.read(state(300 + MONITOR_NOTICE_TICKS));
+        assert!(track.monitor_notice().is_none());
     }
 
     #[test]

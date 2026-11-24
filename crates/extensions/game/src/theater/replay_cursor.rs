@@ -14,6 +14,8 @@ pub(super) struct ReplayCursor {
     saw_actions: bool,
     last_pause: Option<bool>,
     pause_edges: Box<[bool]>,
+    /// The monitor looks and poses read so far.
+    monitors: super::forge_film::Snapshot,
 }
 
 impl ReplayCursor {
@@ -37,6 +39,7 @@ impl Session {
             saw_actions: engine.saw_actions,
             last_pause: engine.last_pause,
             pause_edges: engine.pause_edges.clone().into_boxed_slice(),
+            monitors: super::forge_film::snapshot(),
         })
     }
 
@@ -46,6 +49,8 @@ impl Session {
             bail!("a ring restore requires film playback");
         };
         tape.resume_cursor(cursor.tape)?;
+        // Before the pending tick is read again: its records feed the same.
+        super::forge_film::restore(&cursor.monitors);
         let engine = state.engine.as_mut().context("missing film input track")?;
         engine.track.resume_after_tick(cursor.tick)?;
         engine.pending = None;

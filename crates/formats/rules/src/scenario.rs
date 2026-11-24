@@ -43,6 +43,11 @@ pub struct Scenario {
     /// `round_time_left()` at tick 0, counted down one a tick to 0.
     #[serde(default)]
     pub round_time_left: i32,
+    /// Pairs of objects with nothing solid between them, `[from, to]`: what
+    /// `sees(from, to)` answers true once traced (the fake's sight test).
+    /// Any other pair is blocked.
+    #[serde(default)]
+    pub sight: Vec<[u32; 2]>,
     #[serde(default)]
     pub ticks: Vec<ScenarioTick>,
 }
@@ -63,6 +68,22 @@ pub struct ScenarioPlayer {
     /// `leave` naming it moves the player in or out of the zone.
     #[serde(default)]
     pub unit: Option<u32>,
+    /// What the player's biped is doing at the start: what `airborne`,
+    /// `crouching` and `primed` read until a `touchdown` lands it.
+    #[serde(default)]
+    pub body: ScenarioBody,
+}
+
+/// A biped's physics reads in a scenario.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScenarioBody {
+    #[serde(default)]
+    pub airborne: bool,
+    #[serde(default)]
+    pub crouching: bool,
+    #[serde(default)]
+    pub primed: bool,
 }
 
 /// One thing of the map: a labelled object, zone or starting location.
@@ -266,6 +287,13 @@ pub enum ScenarioEvent {
         by: Option<u8>,
         amount: i32,
     },
+    /// `player`'s biped touched down, falling at `down` and rising at `up`
+    /// (`fixed` raw values, world units a second).
+    Touchdown {
+        player: u8,
+        down: i32,
+        up: i32,
+    },
     RoundEnd,
 }
 
@@ -307,6 +335,7 @@ impl ScenarioEvent {
                 class,
             },
             ScenarioEvent::Damage { object, by, amount } => Input::Damage { object, by, amount },
+            ScenarioEvent::Touchdown { player, down, up } => Input::Touchdown { player, down, up },
             ScenarioEvent::RoundEnd => Input::RoundEnd,
         }
     }
@@ -523,7 +552,10 @@ pub fn game_of(ir: &Ir, scenario: &Scenario) -> Result<FakeGame, RunError> {
         if let Some(unit) = p.unit {
             game.units.insert(unit, p.slot);
         }
+        let b = p.body;
+        game.set_body(p.slot, b.airborne, b.crouching, b.primed);
     }
+    game.clear_sight.extend(scenario.sight.iter().map(|&[a, b]| (a, b)));
     Ok(game)
 }
 
@@ -602,6 +634,7 @@ on kill(victim, killer) {
             score: 0,
             lives: 0,
             unit: None,
+            body: ScenarioBody::default(),
         }
     }
 

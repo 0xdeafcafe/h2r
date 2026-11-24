@@ -6,12 +6,14 @@
 //! attachments. Only display hands its final target to the presenter.
 
 pub mod display_rate;
+mod cones;
 mod inputs;
 pub use inputs::{freeze_display_inputs, freeze_scaled_inputs};
 mod lighting;
 mod markers;
 mod private;
 mod sun;
+pub use cones::ConeDraws;
 pub use lighting::{E3Report, PassWork};
 pub use sun::{RECEIVER_DEPTH_BIAS, SunSkip};
 
@@ -215,15 +217,32 @@ fn record(
         .unwrap_or_default();
     let mut rows = rows.into_iter().enumerate().peekable();
     let mut observer = observer;
+    // Ranges of the chosen lights' stages this draw recorded (`e3.lights`).
+    let mut chosen = 0u32;
+    // The cone shadows the shadowed chosen lights read (`cones`).
+    let cone_replay = cones::plan(scene, frame, lighting);
     let ran = (|| -> Result<(), String> {
         for (i, (at, op)) in frame.ops.iter().enumerate() {
             let named = |e: String| format!("view {} {} op {i}: {e}", at.view, at.slot.name());
             // A display frame between ticks: the op on the blended camera.
             let moved = retarget.as_deref_mut().map(|r| r.op(*at, op));
             let op = moved.as_ref().map_or(op, Retargeted::get);
+            // A stage of one lighting mode (the renderer's chosen lights
+            // beyond the guest's) draws only in that mode.
+            let mode = stage_mode(op);
+            let other_mode = mode.is_some_and(|m| m != lighting);
+            // A shadowed chosen light whose cone is not drawn is kept.
+            let cone_kept = cone_replay.as_ref().is_some_and(|c| c.skip.contains(&i));
             // An admitted object shadow's ops: its sun stage stands in.
-            if !sun_replay.as_ref().is_some_and(|s| s.skip[i]) {
+            if !other_mode && !cone_kept && !sun_replay.as_ref().is_some_and(|s| s.skip[i]) {
+                // A shadowed chosen light: its cone's term first.
+                if let Some(stage) = cone_replay.as_ref().and_then(|c| c.before.get(&i)) {
+                    pass.apply(stage).map_err(named)?;
+                }
                 pass.apply(op).map_err(named)?;
+                if let (Some(_), ReplayOp::Stage(stage)) = (mode, op) {
+                    chosen += stage.plan.ranges as u32;
+                }
             }
             for stage in sun_replay.as_ref().and_then(|s| s.after.get(&i)).into_iter().flatten() {
                 pass.apply(stage).map_err(named)?;
@@ -257,9 +276,24 @@ fn record(
         report.add_sun(s.work());
     }
     if let Some(report) = e3.as_mut() {
-        report.add_choice(&crate::light_choice::choose(scene));
+        let lit = crate::light_choice::choose(scene);
+        report.add_choice(&lit);
+        report.add_cones(crate::cone_shadows::choose(scene, &lit).work);
+        report.add_chosen(chosen);
+        if let Some(c) = &cone_replay {
+            report.add_cone_draws(c.work());
+        }
     }
     Ok(e3)
+}
+
+/// The one lighting mode `op` draws in: a scene stage whose pass names
+/// one (`d3d::ExternalPass::lighting_only`). `None` for every other op.
+fn stage_mode(op: &ReplayOp) -> Option<Lighting> {
+    let ReplayOp::Stage(stage) = op else {
+        return None;
+    };
+    stage.pass.lock().ok()?.lighting_only()
 }
 
 /// Re-render this scene to an isolated target. No present hook or
@@ -413,7 +447,11 @@ pub fn draw_display_at_rate(
     let shown = display.at_swap(pass.backend_mut(), scene, replay, scale, lighting);
     let (flags, gamma) = (replay.flags, replay.gamma.as_deref());
     let outputs = match shown {
-        Some(image) => pass.present_with_outputs_showing(flags, gamma, image)?,
+        // The window places the marks with the cameras the display frame
+        // drew (`display_rate::marks_present`).
+        Some(shown) => d3d::present_camera::with(Some(shown.marks), || {
+            pass.present_with_outputs_showing(flags, gamma, shown.image)
+        })?,
         None => pass.present_with_outputs(flags, gamma)?,
     };
     Ok((
@@ -451,7 +489,9 @@ pub fn draw_scaled_display_at_rate(
     let shown = display.at_swap(pass.view_mut(), scene, replay, scale, lighting);
     let (flags, gamma) = (replay.flags, replay.gamma.as_deref());
     let (after, outputs) = match shown {
-        Some(image) => pass.present_showing(flags, gamma, image)?,
+        Some(shown) => d3d::present_camera::with(Some(shown.marks), || {
+            pass.present_showing(flags, gamma, shown.image)
+        })?,
         None => pass.present(flags, gamma)?,
     };
     Ok((

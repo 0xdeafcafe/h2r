@@ -1,5 +1,6 @@
-//! Guest adapters for native point and location queries, and the
-//! differential BSP segment, cluster flood and object visit kernels. See
+//! Guest adapters for native point and location queries, the MOPP box
+//! query, and the differential BSP segment, cluster flood and object visit
+//! kernels. See
 //! docs/engine/collision-queries.md.
 //!
 //! Each adapter reads the entry's arguments and the live guest words its
@@ -18,11 +19,13 @@
 mod cluster;
 mod flood;
 pub mod layout;
+mod mopp_box;
 mod point;
 mod preflight;
 mod sources;
 mod topology;
 pub use flood::{cluster_flood, object_spatial_visit};
+pub use mopp_box::mopp_box;
 pub use point::{location, point_to_leaf};
 pub use preflight::CollisionMemory;
 use preflight::Outputs;

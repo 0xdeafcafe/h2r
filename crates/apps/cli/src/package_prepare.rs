@@ -8,6 +8,8 @@
 //! (`workspace::convert`). A package whose converter finds no disc and has
 //! converted nothing before is off at boot, with the reason.
 //!
+//! The asset store is brought up to date first (`store_prepare`).
+//!
 //! `map` and `map-patch` items build at boot (`boot::packages::prepare_maps`).
 //! The other `h2 package` commands run in `h2-tools`; this one runs the
 //! converters, which link the game's disc readers, so it stays in `h2`
@@ -101,6 +103,10 @@ pub fn summary(out: &Converted, offs: bool) -> Vec<String> {
 /// Before the game boots. Never fails: a problem is a line, and the game
 /// starts with what is there.
 pub fn before_boot(disc: &Path, data: &Path, no_halo1: bool, no_mappack: bool) {
+    // The store first: a stale one extracts (from the disc image, or from
+    // itself with no image), a current one costs a stat of each map file
+    // (docs/engine/asset-store.md, "Extraction on compile").
+    crate::store_prepare::before_boot(disc, data);
     let o = Opts {
         force: false,
         halo1: crate::h1_import::auto_enabled(no_halo1),

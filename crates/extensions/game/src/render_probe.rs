@@ -42,6 +42,8 @@ fn display_rate_of(s: native_render::frame_graph::display_rate::DisplayRateStats
         moved_draws: s.moved_draws,
         moved_stages: s.moved_stages,
         held_stages: s.held_stages,
+        marks_moved: s.marks_moved,
+        marks_held: s.marks_held,
     }
 }
 
@@ -56,8 +58,10 @@ fn render_counters(summary: &timeline::phase::Summary) -> Value {
     counters.insert("line".into(), json!(summary.short_line()));
     for (index, label) in timeline::phase::counter_columns() {
         let mean = summary.count_mean[index];
-        if label == "shadow_walk_layers" || (label.starts_with("native_scene_lists_")
-            && (mean != 0.0 || label.ends_with("_native") || label.ends_with("_fallback"))) {
+        if label == "shadow_walk_layers"
+            || label.starts_with("native_ui_overlay_")
+            || (label.starts_with("native_scene_lists_")
+                && (mean != 0.0 || label.ends_with("_native") || label.ends_with("_fallback"))) {
             counters.insert(label.into(), json!(mean));
         }
     }
@@ -87,6 +91,8 @@ mod tests {
                 "native_scene_lists_object_shadow_caster_native" => 4,
                 "native_scene_lists_object_shadow_caster_fallback" |
                 "native_scene_lists_object_shadow_caster_residency" => 1,
+                "native_ui_overlay_items" => 6,
+                "native_ui_overlay_batches" => 2,
                 _ => 0,
             };
         }
@@ -97,6 +103,10 @@ mod tests {
         assert_eq!(counters["native_scene_lists_object_shadow_caster_residency"], 0.5);
         assert_eq!(counters["native_scene_lists_object_shadow_list_fallback"], 0.0);
         assert_eq!(counters["shadow_walk_layers"], 0.0);
+        assert_eq!(counters["native_ui_overlay_items"], 3.0);
+        assert_eq!(counters["native_ui_overlay_batches"], 1.0);
+        assert_eq!(counters["native_ui_overlay_refused_texture"], 0.0, "every overlay counter, zero or not");
+        assert!(counters.get("native_ui_items").is_none(), "the guest-draw UI counters stay in profile.counters");
     }
 
     #[test]
@@ -108,6 +118,8 @@ mod tests {
             moved_draws: 40,
             moved_stages: 5,
             held_stages: 6,
+            marks_moved: 11,
+            marks_held: 2,
         });
         let v = serde_json::to_value(v).unwrap();
         assert_eq!(v["rate_hz"], 120);
@@ -117,5 +129,6 @@ mod tests {
         assert_eq!((&v["between_newest"], &v["failed"], &v["resets"]), (&json!(2), &json!(1), &json!(4)));
         assert_eq!(v["avg_cost_us"], 850);
         assert_eq!((&v["moved_draws"], &v["moved_stages"], &v["held_stages"]), (&json!(40), &json!(5), &json!(6)));
+        assert_eq!((&v["marks_moved"], &v["marks_held"]), (&json!(11), &json!(2)));
     }
 }

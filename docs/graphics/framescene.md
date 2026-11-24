@@ -972,7 +972,7 @@ to the guest's draws (**Code**):
   `boot::native_world_layers_glue`; the first person's per item at
   issue). With the entry replaced nothing is resolved. What a stage
   needs to draw a layer pass from the scene alone is extracted and
-  planned, and the structure's static items and the objects' items of
+  planned, and the structure's items with resolved constants and the objects' items of
   layers 1, 7, 8 and 20 draw from the plan (`frame-scene.layers`,
   below).
   - **Material inputs** (`frame_scene::LayerInputs`, read at the layer
@@ -1008,8 +1008,8 @@ to the guest's draws (**Code**):
     (`0x00017550`: time over period, wrapped unless periodic, the
     function `0x0013b390`, mapped onto its range). An item that cannot
     be planned has a named cause (`LayerRefusal::name`): an input the
-    scene does not give, an animation driven by an object function or of
-    a bitmap or state, a material or pass that does not resolve.
+    scene does not give, an object-function or state animation, an
+    unsupported bitmap property, or a material or pass that does not resolve.
   - **The stage** (`frame-scene.layers`, on with the native renderer,
     `=off` its off arm; `render_bridge::native_layers`, its host
     `boot::native_layers_glue`). At the world's load (only with the
@@ -1046,9 +1046,14 @@ to the guest's draws (**Code**):
     layer's pass from guest memory and the host plans it
     (`render_bridge::native_layers::caller`). A structure item (the
     scene's caller only) is drawn when it is a cluster's or a
-    placement's, its draw is static (no animation, no per-draw inputs:
-    what the compiled programs hold) and the layer's set draws its part
-    with its shader. An object item is drawn when extraction names no
+    placement's and the layer's set draws its part with its shader.
+    The set compiles game-time constant bindings with a time-zero sample
+    to check the registers the program reads. At each layer call the
+    planner samples the material at the render time. The packet uploads
+    its vertex defaults, vertex constants and combiner colours alongside
+    the view constants, placement rows and fog. The compiled shader
+    modules and pipelines are shared across samples. Materials requiring
+    per-draw resolution of engine inputs stay on the D3D path. An object item is drawn when extraction names no
     cause, its model is resident in the caller's set, and each of its
     material's passes in the layer
     plans (`LitObjects::plan_layer_item`, `plan_layer_part`: per pass
@@ -1107,8 +1112,8 @@ to the guest's draws (**Code**):
     (`ALWAYS`, reference 0, `REPLACE` on pass), takes that state in its
     pipelines and its reference in its packets, and the pass reports a
     depth-stencil write when a draw writes. Everything else keeps its D3D
-    draws and so the indexed-draw admission: animated or per-draw items,
-    and every item after the first one the
+    draws and so the indexed-draw admission, including per-draw engine
+    inputs, unsupported animations and every item after the first one the
     stage cannot draw. Each ask's outcomes are counted in `render.scene`
     as `layer_plan_<layer>_taken` and
     `layer_plan_<layer>_refused_<cause>` (the first person's as
@@ -1127,7 +1132,7 @@ to the guest's draws (**Code**):
     `object_model` (the item's model is not uploaded), `object_plan`
     (a pass does not plan; the first of each reason is logged),
     `object_texaccum`, `object_fog`, `object_stencil`,
-    `object_warming` (an object pipeline not built yet), `animated`,
+    `object_warming` (an object pipeline not built yet),
     `stencil` (the device's stencil does not read, tests or writes it on
     a depth with no stencil aspect, or layer 1's stencil is off and the
     device is not in mode 1), `warming`, `palettes`, `device`, `program`
@@ -1143,9 +1148,9 @@ to the guest's draws (**Code**):
     another is refused, named with the register) and no stage palettes.
     `layers_load::plan_without_game` plans each compiled material as one
     structure item over `layer_inputs::without_game`, and draws it when
-    the plan takes it, its draw is static and its own fog words leave fog
-    off; every other material is counted by cause (`program`, the plan's
-    names, `animated`, `fog`). `layers_load::upload_static` uploads the
+    the plan supplies the pass constants at the preview time and its own
+    fog words leave fog off. Every other material is counted by cause
+    (`program`, the plan's refusal names, `fog`). `layers_load::upload_static` uploads the
     drawn materials, and `GpuWorld::prepare_layer` and `encode_layer`
     draw them in a pass of their own.
   - **Tests** (synthetic). `every_view_input_reads_as_its_selector_computes_it`,
@@ -1596,20 +1601,33 @@ D3D reference with all native stages disabled.
   `d3d::threaded::owner::DisplayRate` (the render thread's idle turns) and
   `native_render::frame_graph::display_rate` (the draws, `render.stats`'
   `display_rate`). `graphics.fps` drives it; no switch. There is no
-  D3D-side interpolation.
+  D3D-side interpolation. Each display frame is presented with
+  synthetic present metadata, so the window projects the world marks
+  with the cameras the frame drew ([high-framerate.md](../game/high-framerate.md),
+  "World marks on made frames"). Above 1x a frame with fixed-size
+  attachments beside the display grid draws them at their own size on
+  fresh targets (`d3d::scaled::private_scene::MixedPrivatePass::into_image`),
+  with no sun tile. At a render scale that is not a whole number the
+  scaled owner declines the frame (`ScaledBackend::can_draw_scene`:
+  sealed scenes replay on integer grids only), so the loop sees no owned
+  Swap and draws nothing between.
 - **Code to write.** Object palette rows, node matrices and lights from
   `Blended` on the carried and typed draws (objects are drawn at `B`
   today), visible-cluster unions, shadow re-rendering from blended
   casters, typed stages other than the indexed world, object and
-  transparent passes, display frames on mixed-size targets above 1x,
-  display frames into the agent's clip slots, and extraction's
+  transparent passes, owned frames and display frames at render scales
+  that are not whole numbers, display frames into the agent's clip slots, and extraction's
   scripted-cut and distance flags.
 - **Tests.** Blend: identity at 0 and 1 (bitwise at 1), slerp against
   known rotations, every snap rule, unmatched and re-ordered
   instances. Pacer (`frame-scene/src/pace.rs`). The loop
   (`frame-scene/src/display.rs`): 30 fps, the first scene, 60 and 120 fps
   sequences, cuts and gaps, resets, the headroom cap. The render thread's
-  idle turns (`d3d` `threaded/owner/tests/display_rate.rs`). Retargeting
+  idle turns and the guest image a draw sees (`d3d`
+  `threaded/owner/tests/display_rate.rs`). The marks' metadata
+  (`d3d` `present_camera`, `native-render` `frame_graph::display_rate`).
+  A display frame on mixed-size targets at 2x against the private
+  capture (`native-render` `a_scaled_display_frame_draws_mixed_size_attachments`). Retargeting
   (`d3d` `tests/scene_camera.rs`). To add: a two-scene render at
   `alpha = 1` equals the one-scene render.
 - **Gate.** Hash series identical at `--fps 30`, `60` and `120`. The

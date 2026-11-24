@@ -2473,6 +2473,7 @@ dependencies = [
  "hot-render",
  "hot-tags",
  "hs",
+ "hud-edit",
  "hud-kit-core",
  "iced-x86",
  "indexmap",
@@ -3233,6 +3234,7 @@ dependencies = [
  "anyhow",
  "assets",
  "font",
+ "frame-scene",
  "h1-assets",
  "h1map",
  "hud-edit",
@@ -6631,6 +6633,7 @@ dependencies = [
 name = "sim-collision"
 version = "0.1.0"
 dependencies = [
+ "mopp",
  "sim-core",
 ]
 
@@ -7132,6 +7135,7 @@ dependencies = [
  "dear-imguizmo",
  "editor-core",
  "firefight-kit",
+ "forge",
  "forge-doc",
  "geometry-edit",
  "gfx",
@@ -7258,6 +7262,7 @@ dependencies = [
 name = "tags"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "map",
  "sha2 0.10.9",
  "thiserror 2.0.21",
@@ -7991,6 +7996,7 @@ dependencies = [
  "libc",
  "memmap2",
  "rustix 1.1.6",
+ "tags",
  "thiserror 2.0.21",
  "xiso",
 ]

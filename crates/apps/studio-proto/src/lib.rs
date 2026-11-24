@@ -158,6 +158,11 @@ pub mod method {
     pub const SHADER_PREVIEW: &str = "shader.preview";
     // The Code section (slice S4): a pass's programs as text.
     pub const SHADER_CODE: &str = "shader.code";
+    // WGSL overrides from the editor (slice S5): a pass's program edited,
+    // pushed to the paired game as an override file, and reverted.
+    pub const SHADER_OVERRIDE: &str = "shader.override";
+    pub const SHADER_PUSH: &str = "shader.push";
+    pub const SHADER_REVERT: &str = "shader.revert";
 
     pub const SOUND_READ: &str = "sound.read";
     pub const SOUND_PLAY: &str = "sound.play";
@@ -236,6 +241,7 @@ pub mod method {
     pub const VARIANT_RENAME: &str = "variant.rename";
     pub const VARIANT_COPY: &str = "variant.copy";
     pub const VARIANT_EXPORT: &str = "variant.export";
+    pub const VARIANT_MAPS: &str = "variant.maps";
     pub const VARIANT_IMPORT: &str = "variant.import";
     pub const VARIANT_DELETE: &str = "variant.delete";
 
@@ -289,6 +295,9 @@ pub mod method {
 
     pub const GAME_STATUS: &str = "game.status";
     pub const GAME_SNAPSHOT: &str = "game.snapshot";
+    pub const GAME_START: &str = "game.start";
+    pub const GAME_STOP: &str = "game.stop";
+    pub const GAME_MODE: &str = "game.mode";
 
     pub const MIRROR_STATUS: &str = "mirror.status";
     pub const MIRROR_PENDING: &str = "mirror.pending";
@@ -368,6 +377,9 @@ pub mod method {
     pub const SCRIPT_DOC: &str = "script.doc";
     pub const SCRIPT_EXTERNAL: &str = "script.external";
     pub const SCRIPT_WORKING: &str = "script.working";
+    pub const SCRIPT_COMPILE: &str = "script.compile";
+    pub const SCRIPT_UNDO: &str = "script.undo";
+    pub const SCRIPT_EVAL: &str = "script.eval";
 
     // The game type script editor (docs/editor/editor-guide.md, "Game
     // type scripts").

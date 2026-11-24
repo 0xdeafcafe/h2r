@@ -5,7 +5,12 @@
 //! duration and the levels `sound.measure` gives it, the picked one's waveform, **Play** and
 //! **Stop**, a click on the waveform to play from there, and under the
 //! waveform the permutation's mouth curve as a filled track on the same
-//! time axis — read even when the audio itself cannot be decoded.
+//! time axis — read even when the audio itself cannot be decoded. A drag
+//! on the track redraws the curve (one stroke, one undo step), **From the
+//! sound** fills it from the sound's loudness at the window's gain and
+//! smoothing, **Revert** gives the file's back and **Undo** takes the last
+//! redraw back; they are `App::sound_mouth_*` ([`crate::app::sound_mouth`]),
+//! which `sound.mouth` shares, and save with the map.
 //! Decoding and playing are the app's ([`crate::app::audition`]); the
 //! agent API's `sound.read`, `sound.play` and `sound.mouth` use the same
 //! calls.
@@ -53,6 +58,20 @@ pub struct SoundUi {
     peaks: Option<((Key, (usize, usize), usize), Vec<[i16; 2]>)>,
     problem: Option<String>,
     face: Face,
+    /// The curve being drawn (one stroke), and the last tick the stroke
+    /// touched.
+    draft: Option<(Vec<u8>, usize)>,
+    /// **From the sound**'s gain and smoothing.
+    gain: f32,
+    smoothing: f32,
+}
+
+impl SoundUi {
+    /// The window's state with **From the sound**'s numbers at their
+    /// defaults.
+    pub fn new() -> Self {
+        Self { gain: 1.0, smoothing: 0.3, ..Self::default() }
+    }
 }
 
 /// The picker that **Preview on** opens.
@@ -186,8 +205,9 @@ fn body(ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, st: &mut SoundUi, id: TagId, 
     let ck = (key.clone(), st.pick);
     if st.clip.as_ref().map(|c| &c.0) != Some(&ck) {
         st.clip = Some((ck.clone(), app.sound_clip(id, range, permutation)));
-        st.mouth = Some((ck, app.sound_mouth(id, range, permutation)));
     }
+    // Read each frame: a redraw (here or by the API) shows at once.
+    st.mouth = Some((ck, app.sound_mouth(id, range, permutation)));
     let clip = match st.clip.as_ref().map(|c| &c.1) {
         Some(Ok(clip)) => Some(clip.clone()),
         Some(Err(e)) => {
@@ -281,8 +301,8 @@ fn body(ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, st: &mut SoundUi, id: TagId, 
     }
 
     // The mouth track, under the waveform on the same time axis: one
-    // filled column per 30 Hz tick, the playhead over it, a click plays
-    // from there. A permutation with no curve leaves it out; it shows even
+    // filled column per 30 Hz tick, the playhead over it, a drag redraws it.
+    // A permutation with no curve leaves it out; it shows even
     // when the audio cannot be decoded here.
     let mouth = match st.mouth.as_ref().map(|m| &m.1) {
         Some(Ok(m)) => m.clone(),
@@ -298,10 +318,34 @@ fn body(ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, st: &mut SoundUi, id: TagId, 
         // The sound's length when the clip is decoded, the curve's own
         // when it is not.
         let span = clip.as_ref().map_or(curve_ms, |c| c.duration_ms()).max(1);
-        ui.text_disabled(format!("mouth  {} ticks at {MOUTH_HZ} Hz", ticks));
+        ui.text_disabled(format!(
+            "mouth  {} ticks at {MOUTH_HZ} Hz{}",
+            ticks,
+            if app.sound_mouth_is_edited(id, range, permutation) { "  redrawn, not saved" } else { "" }
+        ));
         let origin = ui.cursor_screen_pos();
-        ui.dummy([width, MOUTH_HEIGHT]);
-        let hovered = ui.is_item_hovered() && clip.is_some();
+        // Drawing: hold the button and drag along the track. The stroke
+        // shows as it goes and is one write, one undo step, on release.
+        ui.invisible_button("##mouth-draw", [width, MOUTH_HEIGHT]);
+        let drawing = ui.is_item_active() && ui.is_mouse_down(MouseButton::Left);
+        let tick_w = 1000.0 / MOUTH_HZ as f32 / span as f32 * width;
+        if drawing {
+            let [mx, my] = ui.io().mouse_pos();
+            let tick = (((mx - origin[0]) / tick_w) as isize).clamp(0, ticks as isize - 1) as usize;
+            let level = ((1.0 - (my - origin[1]) / MOUTH_HEIGHT).clamp(0.0, 1.0) * 255.0).round() as u8;
+            let (draft, last) = st.draft.get_or_insert_with(|| (curve.to_vec(), tick));
+            let (lo, hi) = (tick.min(*last), tick.max(*last));
+            for t in lo..=hi {
+                draft[t] = level;
+            }
+            *last = tick;
+        } else if let Some((draft, _)) = st.draft.take() {
+            match app.sound_mouth_write(id, range, permutation, &draft) {
+                Ok(_) => st.problem = None,
+                Err(e) => st.problem = Some(e.to_string()),
+            }
+        }
+        let shown: &[u8] = st.draft.as_ref().map_or(&curve[..], |(d, _)| d.as_slice());
         let dl = ui.get_window_draw_list();
         dl.add_rect(
             origin,
@@ -311,8 +355,7 @@ fn body(ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, st: &mut SoundUi, id: TagId, 
         .filled(true)
         .build();
         let base = origin[1] + MOUTH_HEIGHT;
-        let tick_w = 1000.0 / MOUTH_HZ as f32 / span as f32 * width;
-        for (tick, &aperture) in curve.iter().enumerate() {
+        for (tick, &aperture) in shown.iter().enumerate() {
             let x = origin[0] + tick as f32 * tick_w;
             let top = base - f32::from(aperture) / 255.0 * MOUTH_HEIGHT;
             dl.add_rect([x, top], [x + tick_w, base], theme::OK)
@@ -329,14 +372,31 @@ fn body(ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, st: &mut SoundUi, id: TagId, 
             .filled(true)
             .build();
         }
-        if hovered && ui.is_mouse_clicked(MouseButton::Left) {
-            let x = ((ui.io().mouse_pos()[0] - origin[0]) / width).clamp(0.0, 1.0);
-            let from = (x as f64 * span as f64) as u64;
-            match app.sound_play(id, range, permutation, from) {
+        // From the sound: the curve of the sound's own loudness.
+        let decoded = clip.is_some();
+        ui.slider_f32("Gain##mouth-gain", &mut st.gain, 0.0, 4.0);
+        ui.slider_f32("Smoothing##mouth-smooth", &mut st.smoothing, 0.0, 0.95);
+        let off = ui.begin_disabled_with_cond(!decoded);
+        if ui.button("From the sound##mouth-from") {
+            match app.sound_mouth_from_sound(id, range, permutation, st.gain, st.smoothing) {
                 Ok(_) => st.problem = None,
                 Err(e) => st.problem = Some(e.to_string()),
             }
         }
+        drop(off);
+        ui.same_line();
+        if ui.button("Revert##mouth-revert") {
+            match app.sound_mouth_revert(id, range, permutation) {
+                Ok(_) => st.problem = None,
+                Err(e) => st.problem = Some(e.to_string()),
+            }
+        }
+        ui.same_line();
+        let off = ui.begin_disabled_with_cond(!app.sound_mouth_can_undo());
+        if ui.button("Undo##mouth-undo") {
+            app.sound_mouth_undo();
+        }
+        drop(off);
     }
     if let Some(p) = &st.problem {
         ui.text_colored(theme::ERROR, format!("{} {p}", icon::ALERT));

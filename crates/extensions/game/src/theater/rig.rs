@@ -121,6 +121,19 @@ impl ReplayCamera {
         (self.pose, self.lens) = (Some(view.0), view.1);
     }
 
+    /// The camera on a monitor seat (`forge_film`): first person looks from
+    /// the monitor's own pose, follow and orbit stand off from it as they do
+    /// from a body.
+    pub(super) fn resolve_monitor(&mut self, mode: CameraMode, subject: Pose) -> Pose {
+        let pose = if mode == CameraMode::FirstPerson {
+            subject
+        } else {
+            self.offset(mode, subject)
+        };
+        self.pose = Some(pose);
+        pose
+    }
+
     pub(super) fn resolve(
         &mut self,
         mode: CameraMode,

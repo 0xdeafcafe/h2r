@@ -55,7 +55,11 @@ impl State {
         };
         if self.header.meta.source == Source::Host
             && self.engine.is_some()
-            && seat.is_some_and(|seat| roster_seats & (1 << seat) == 0 && !replay.camera.has_seat(seat))
+            && seat.is_some_and(|seat| {
+                roster_seats & (1 << seat) == 0
+                    && !replay.camera.has_seat(seat)
+                    && !super::forge_film::is_monitor(seat)
+            })
         {
             return Err(unavailable("that seat is absent from the film roster and current view"));
         }
@@ -198,6 +202,7 @@ impl Session {
                         camera_player: camera.player,
                         camera_pose: camera.pose,
                         camera_fallback: camera.fallback,
+                        monitor_looks: monitor_looks(),
                         hud: s.presentation.hud,
                         bar: s.presentation.bar,
                         kills: s.presentation.kills.iter().copied().collect(),
@@ -207,6 +212,14 @@ impl Session {
             );
         }
     }
+}
+
+/// The recorded monitor looks this machine cannot draw, from what playback
+/// has read, as `theater.state` reports them (`monitor_look_source`).
+fn monitor_looks() -> Vec<api::MonitorLookSource> {
+    super::compatibility::monitor_look_sources(&super::forge_film::unseen(
+        &crate::forge_glue::can_draw(),
+    ))
 }
 
 /// Installed modules accepted by exact film playback, in preference order.

@@ -626,6 +626,7 @@ fn validate(s: &Scenario) -> Result<(), String> {
             | Input::Press(p, _)
             | Input::Bounced(p)
             | Input::Bounce { player: p, .. }
+            | Input::Touchdown { player: p, .. }
             | Input::Edit(p, _) => player(*p),
             Input::ActorKill { killer, .. } => killer.is_none_or(player),
             Input::ActorAssist { killer, assist, .. } => {
@@ -728,6 +729,11 @@ fn kind_words(kind: ErrorKind) -> String {
         ErrorKind::Movers => format!(
             "more than {} objects are moving at once; stop takes one off",
             vm::MAX_MOVERS
+        ),
+        ErrorKind::Sight => format!(
+            "more than {} pairs are asked to sees within {} ticks",
+            vm::MAX_SIGHT_PAIRS,
+            vm::SIGHT_KEEP
         ),
     }
 }

@@ -32,6 +32,9 @@
 #[cfg(feature = "gpu")]
 pub mod base_look;
 pub mod camera;
+pub mod cone_shadows;
+#[cfg(feature = "gpu")]
+pub mod cone_shadows_gpu;
 pub mod cull;
 pub mod decal;
 #[cfg(feature = "gpu")]
@@ -92,6 +95,7 @@ pub mod object_program_gpu;
 #[cfg(feature = "gpu")]
 pub mod object_state;
 pub mod object_streams;
+pub mod overlay;
 #[cfg(feature = "gpu")]
 pub mod particle_gpu;
 pub mod particles;
@@ -105,6 +109,8 @@ pub mod program;
 pub mod screen_gpu;
 #[cfg(feature = "gpu")]
 pub mod screen_look;
+#[cfg(feature = "gpu")]
+pub mod shadow_chain;
 #[cfg(feature = "gpu")]
 pub mod shadow_filter_gpu;
 #[cfg(feature = "gpu")]

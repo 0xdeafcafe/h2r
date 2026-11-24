@@ -86,6 +86,8 @@ pub mod host_mem;
 pub mod host_perf;
 pub mod hot_glue;
 pub mod hud;
+#[cfg(feature = "gpu")]
+pub mod hud_overlay;
 pub mod hud_kit;
 pub mod hud_kit_world;
 pub mod hud_swap;
@@ -145,6 +147,8 @@ pub mod native_hud_glue;
 pub mod native_lights_glue;
 #[cfg(feature = "gpu")]
 pub mod native_map;
+#[cfg(feature = "gpu")]
+pub mod native_shadow_chain;
 #[cfg(feature = "gpu")]
 pub mod native_shadows_draw;
 #[cfg(feature = "gpu")]

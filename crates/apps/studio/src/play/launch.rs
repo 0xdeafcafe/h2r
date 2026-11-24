@@ -171,12 +171,15 @@ pub struct Launch {
     pub socket: PathBuf,
     /// A directory holding `<level>.map`, the editor's bytes.
     pub map_dir: Option<PathBuf>,
+    /// `--editor`: the game Studio holds, with no window of its own
+    /// (docs/editor/game-view.md, "Own mode").
+    pub editor: bool,
 }
 
 impl Launch {
     /// The program, its arguments and the environment it adds.
     pub fn command(&self) -> (PathBuf, Vec<String>, Vec<(String, String)>) {
-        let args = vec![
+        let mut args = vec![
             "play".to_owned(),
             self.disc.display().to_string(),
             "--data".to_owned(),
@@ -186,6 +189,9 @@ impl Launch {
             "--title".to_owned(),
             format!("Halo 2 - {} (h2-editor)", self.level),
         ];
+        if self.editor {
+            args.push("--editor".to_owned());
+        }
         let mut env = vec![(
             agent_proto::ENV.to_owned(),
             self.socket.display().to_string(),
@@ -392,6 +398,7 @@ mod tests {
             level: "ascension".into(),
             socket: "/c/editor-1-0.sock".into(),
             map_dir: Some("/tmp/play/maps".into()),
+            editor: false,
         };
         let (prog, args, env) = l.command();
         assert_eq!(prog, PathBuf::from("/home/u/.cargo/bin/h2"));
@@ -415,8 +422,27 @@ mod tests {
             ),
             "{line}"
         );
+        assert!(!args.iter().any(|a| a == "--editor"));
         let l = Launch { map_dir: None, ..l };
         assert!(!l.command().2.iter().any(|(k, _)| k == "H2_MAP_DIR"));
+    }
+
+    #[test]
+    fn an_editor_launch_adds_the_flag_after_the_level_and_title() {
+        let l = Launch {
+            h2: "/h2".into(),
+            disc: "/d.iso".into(),
+            data: "/data".into(),
+            level: "ascension".into(),
+            socket: "/c/editor-1-1.sock".into(),
+            map_dir: None,
+            editor: true,
+        };
+        let (_, args, env) = l.command();
+        assert_eq!(args.last().map(String::as_str), Some("--editor"));
+        assert_eq!(args.iter().filter(|a| *a == "--level").count(), 1);
+        assert!(env.contains(&("H2_AGENT".into(), "/c/editor-1-1.sock".into())));
+        assert!(l.shell_line().ends_with(" --editor"));
     }
 
     #[test]

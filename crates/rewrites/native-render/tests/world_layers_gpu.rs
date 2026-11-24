@@ -672,3 +672,6 @@ mod sun_tiles;
 
 #[path = "world_layers_gpu/flares.rs"]
 mod flares;
+
+#[path = "world_layers_gpu/cone_shadows.rs"]
+mod cone_shadows;

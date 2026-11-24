@@ -108,6 +108,17 @@ pub struct FakeGame {
     /// The steps the VM's movers made, in order: the object, where it was
     /// put and its velocity.
     pub steps: Vec<(u32, [i32; 3], [i32; 3])>,
+    /// The players whose biped is off the ground, crouched, or primed:
+    /// what `airborne`, `crouching` and `primed` read. A `touchdown`
+    /// lands the player (takes it out of `airborne`).
+    pub airborne: BTreeSet<u8>,
+    pub crouching: BTreeSet<u8>,
+    pub primed: BTreeSet<u8>,
+    /// The `(from, to)` pairs with nothing solid between them: what the
+    /// fake's sight test answers true for ([`Game::trace_sight`]).
+    pub clear_sight: BTreeSet<(u32, u32)>,
+    /// Each sight trace the VM asked for, in order.
+    pub traces: Vec<(u32, u32)>,
     /// The tick [`FakeGame::begin_tick`] last began: a flight starts on it.
     pub tick: u32,
     /// Where placed objects are, in 16.16 world units: a path's points,
@@ -350,6 +361,22 @@ impl FakeGame {
             );
         }
         g
+    }
+
+    /// Sets what a player's biped reads: off the ground, crouched,
+    /// primed.
+    pub fn set_body(&mut self, slot: u8, airborne: bool, crouching: bool, primed: bool) {
+        for (set, on) in [
+            (&mut self.airborne, airborne),
+            (&mut self.crouching, crouching),
+            (&mut self.primed, primed),
+        ] {
+            if on {
+                set.insert(slot);
+            } else {
+                set.remove(&slot);
+            }
+        }
     }
 
     /// The actions made with entry `name`, in order.
@@ -655,6 +682,10 @@ impl FakeGame {
                     self.inside.remove(&(p, zone));
                 }
             }
+            // A landing ends the flight.
+            Input::Touchdown { player, .. } => {
+                self.airborne.remove(&player);
+            }
             // The shield takes the damage first, then the body.
             Input::Damage { object, amount, .. } => {
                 let mut left = amount.max(0);
@@ -801,6 +832,17 @@ impl Game for FakeGame {
                     _ => 0,
                 }
             }
+            id::AIRBORNE | id::CROUCHING | id::PRIMED => match call.args.first() {
+                Some(Arg::Player(Some(p))) => {
+                    let set = match call.entry.id {
+                        id::AIRBORNE => &self.airborne,
+                        id::CROUCHING => &self.crouching,
+                        _ => &self.primed,
+                    };
+                    (self.players.contains_key(p) && set.contains(p)) as i32
+                }
+                _ => 0,
+            },
             id::IS_OBJECTIVE => object(0).is_some_and(|o| self.objectives.contains_key(&o)) as i32,
             id::CARRIER_OF => object(0)
                 .and_then(|o| self.objectives.get(&o).copied().flatten())
@@ -1017,6 +1059,11 @@ impl Game for FakeGame {
             }
             _ => {}
         }
+    }
+
+    fn trace_sight(&mut self, from: u32, to: u32) -> bool {
+        self.traces.push((from, to));
+        self.clear_sight.contains(&(from, to))
     }
 
     fn step_object(&mut self, object: u32, at: [i32; 3], velocity: [i32; 3]) {

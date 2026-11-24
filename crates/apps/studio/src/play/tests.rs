@@ -1592,3 +1592,4 @@ fn playtest_reloads_for_failed_object_edits_and_resumes_for_receipts() {
 }
 
 mod conflict_paths;
+mod shader_override;

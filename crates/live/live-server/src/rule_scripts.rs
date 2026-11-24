@@ -382,6 +382,11 @@ enum WireEvent {
         by: Option<u8>,
         amount: i32,
     },
+    Touchdown {
+        player: u8,
+        down: i32,
+        up: i32,
+    },
 }
 
 impl From<WireEvent> for Input {
@@ -419,6 +424,7 @@ impl From<WireEvent> for Input {
                 Input::ActorAssist { killer, assist, class }
             }
             WireEvent::Damage { object, by, amount } => Input::Damage { object, by, amount },
+            WireEvent::Touchdown { player, down, up } => Input::Touchdown { player, down, up },
         }
     }
 }
@@ -456,6 +462,7 @@ impl From<&Input> for WireEvent {
                 class,
             },
             Input::Damage { object, by, amount } => WireEvent::Damage { object, by, amount },
+            Input::Touchdown { player, down, up } => WireEvent::Touchdown { player, down, up },
         }
     }
 }

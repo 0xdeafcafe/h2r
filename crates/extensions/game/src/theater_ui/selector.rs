@@ -274,6 +274,9 @@ impl Entry {
             lines.push(text_fit::line(&match_info.join(" / "), 280));
         }
         lines.push(self.film.source_badge().to_owned());
+        if let Some(note) = self.film.monitor_note() {
+            lines.push(text_fit::line(&note, 280));
+        }
         lines.join("\n")
     }
 }

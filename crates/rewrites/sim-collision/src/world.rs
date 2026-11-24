@@ -7,10 +7,11 @@
 //! matters to bookkeeping; the tree walk always follows guest node order.
 use crate::bsp::{Bsp, Consts, HEADER_WORDS};
 use crate::flood::{Topology, TopologyKey};
+use crate::mopp::{self, Tree};
 use crate::structure::{LeafTable, Structure, TableVersion};
 use crate::{BAILS, Bail, GuestRead};
 use sim_core::Epoch;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 mod slots;
 use slots::Slots;
 #[cfg(test)]
@@ -36,14 +37,19 @@ pub enum Entry {
     ClusterFlood,
     /// H: `0x000bb050`, the object spatial visit.
     ObjectVisit,
+    /// F: `0x00300150`, the integer MOPP box query.
+    MoppBox,
 }
 
-pub const ENTRIES: usize = 7;
+pub const ENTRIES: usize = 8;
 /// Retained map arrays, BSP owners and address index capacity.
 pub const MAP_BUDGET: u64 = 8 << 20;
 /// Bounds address-index bookkeeping independently of decoded array size:
 /// an empty or intrinsically malformed BSP still occupies a cache slot.
 const MAP_SLOTS: usize = 8192;
+/// Decoded MOPP programs held at once; a guest naming more bails
+/// [`Bail::Budget`] for the rest.
+const MOPP_SLOTS: usize = 4096;
 /// Covers the BSP owner, its inline header, Rust container descriptors,
 /// reference counts and alignment, irrespective of host lock layout.
 pub(crate) const BSP_OWNER_BYTES: u64 = 512;
@@ -60,6 +66,7 @@ impl Entry {
         Entry::InstanceTrace,
         Entry::ClusterFlood,
         Entry::ObjectVisit,
+        Entry::MoppBox,
     ];
 
     pub fn name(self) -> &'static str {
@@ -71,6 +78,7 @@ impl Entry {
             Entry::InstanceTrace => "instance_trace",
             Entry::ClusterFlood => "cluster_flood",
             Entry::ObjectVisit => "object_visit",
+            Entry::MoppBox => "mopp_box",
         }
     }
 
@@ -83,6 +91,7 @@ impl Entry {
             Entry::InstanceTrace => 0x0024_4980,
             Entry::ClusterFlood => 0x0014_a5b0,
             Entry::ObjectVisit => 0x000b_b050,
+            Entry::MoppBox => 0x0030_0150,
         }
     }
 }
@@ -109,9 +118,12 @@ pub struct Stats {
     pub flushes: u64,
     /// Decoded BSPs held now.
     pub bsps: u64,
+    /// Decoded MOPP programs held now.
+    pub mopps: u64,
     /// Charged resident map data, including the address index and BSP owners.
     pub bytes: u64,
-    /// Decoded array allocations, including the packed cluster table.
+    /// Decoded array allocations, including the packed cluster table and
+    /// the MOPP trees.
     pub array_bytes: u64,
     pub budget_bytes: u64,
     /// Times a generation crossed its budget and switched to scalar ring walks.
@@ -165,6 +177,12 @@ struct Counters {
     x87_control: [WordCounts<u16>; ENTRIES],
 }
 
+/// A decoded MOPP program and the source revision it was last checked at.
+struct MoppSlot {
+    tree: Arc<Tree>,
+    revision: u64,
+}
+
 enum Slot {
     Built(Arc<Bsp>),
     Failed {
@@ -189,6 +207,8 @@ struct Inner {
     ring_fallbacks: u64,
     cluster_budget_reads: u64,
     bytes: u64,
+    mopps: HashMap<u32, MoppSlot>,
+    mopp_bytes: u64,
     decodes: u64,
     decode_failures: u64,
     flushes: u64,
@@ -203,8 +223,18 @@ impl Inner {
         }
     }
 
+    /// Starts a new generation when the map epoch moved. The memory
+    /// revision belongs to the BSP sources and is left alone.
+    fn select_epoch(&mut self, epoch: u64) {
+        if self.seen != epoch {
+            self.flush();
+            self.seen = epoch;
+        }
+    }
+
     fn array_bytes(&self) -> u64 {
         self.bytes
+            + self.mopp_bytes
             + self.structure.as_ref().map_or(0, |s| s.footprint() as u64)
             + self.topology_bytes()
     }
@@ -266,10 +296,10 @@ impl Inner {
 
     fn cluster_room(&mut self, limit: u64, table: LeafTable) -> bool {
         // One active table, so the new table replaces the old one.
-        if self.bytes + self.metadata_bytes() + table.footprint() > limit {
+        if self.bytes + self.mopp_bytes + self.metadata_bytes() + table.footprint() > limit {
             self.discard_rings();
         }
-        if self.bytes + self.metadata_bytes() + table.footprint() > limit {
+        if self.bytes + self.mopp_bytes + self.metadata_bytes() + table.footprint() > limit {
             self.cluster_budget_reads += 1;
             return false;
         }
@@ -279,7 +309,11 @@ impl Inner {
     fn flush(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.scalar_rings = false;
-        if !self.bsps.is_empty() || self.structure.is_some() || self.topology.is_some() {
+        if !self.bsps.is_empty()
+            || self.structure.is_some()
+            || self.topology.is_some()
+            || !self.mopps.is_empty()
+        {
             self.flushes += 1;
         }
         self.structure = None;
@@ -288,6 +322,8 @@ impl Inner {
         self.bsps.clear();
         self.built = 0;
         self.bytes = 0;
+        self.mopps.clear();
+        self.mopp_bytes = 0;
     }
 }
 
@@ -483,6 +519,72 @@ impl CollisionWorld {
         topology
     }
 
+    /// The decoded MOPP program at code object `code`, decoding it the
+    /// first time. `revision` is the reader's version of the bytes under
+    /// the program (the engine's write watch, or a constant): a held tree
+    /// whose header still matches is used at once while it is unchanged,
+    /// and compared with the guest's bytes again when it moved. A program
+    /// that unfolds past the decode bound is held as `guest_only`.
+    pub fn mopp(&self, g: &impl GuestRead, code: u32, revision: u64) -> Result<Arc<Tree>, Bail> {
+        let epoch = self.epoch.get();
+        let header = mopp::Header::read(g, code)?;
+        let (generation, held) = {
+            let mut inner = self.lock();
+            if self.epoch.get() != epoch {
+                return Err(Bail::Data);
+            }
+            inner.select_epoch(epoch);
+            let held = match inner.mopps.get(&code) {
+                Some(slot) if slot.tree.source().matches(&header) => {
+                    if slot.revision == revision {
+                        return Ok(slot.tree.clone());
+                    }
+                    Some(slot.tree.clone())
+                }
+                _ => None,
+            };
+            (inner.generation, held)
+        };
+        let (_, source) = mopp::Source::read(g, code)?;
+        let (tree, decoded) = match held {
+            Some(tree) if *tree.source() == source => (tree, false),
+            _ => (Arc::new(Tree::decode(code, source)), true),
+        };
+        let mut inner = self.lock();
+        if decoded {
+            inner.decodes += 1;
+            if tree.guest_only() {
+                inner.decode_failures += 1;
+            }
+        }
+        if epoch != self.epoch.get() || generation != inner.generation {
+            return Err(Bail::Data);
+        }
+        let size = tree.footprint() as u64;
+        let old = inner
+            .mopps
+            .get(&code)
+            .map_or(0, |slot| slot.tree.footprint() as u64);
+        if old == 0 && inner.mopps.len() >= MOPP_SLOTS {
+            return Err(Bail::Budget);
+        }
+        if inner.resident() - old + size > self.budget {
+            inner.discard_rings();
+        }
+        if inner.resident() - old + size > self.budget {
+            return Err(Bail::Budget);
+        }
+        inner.mopp_bytes = inner.mopp_bytes - old + size;
+        inner.mopps.insert(
+            code,
+            MoppSlot {
+                tree: tree.clone(),
+                revision,
+            },
+        );
+        Ok(tree)
+    }
+
     /// Drop every decoded BSP.
     pub fn clear(&self) {
         let mut inner = self.lock();
@@ -534,6 +636,7 @@ impl CollisionWorld {
             decode_failures: inner.decode_failures,
             flushes: inner.flushes,
             bsps: inner.built,
+            mopps: inner.mopps.len() as u64,
             bytes: inner.resident(),
             array_bytes: inner.array_bytes(),
             budget_bytes: self.budget,

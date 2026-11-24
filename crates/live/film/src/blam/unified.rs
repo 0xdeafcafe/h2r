@@ -28,8 +28,9 @@ impl RecordData {
         }
     }
 
-    /// A Forge entry record: `subtype` is [`stream::FORGE_WELCOME`] or
-    /// [`stream::FORGE_ITEM`] and `bytes` the message
+    /// A Forge entry record: `subtype` is [`stream::FORGE_WELCOME`],
+    /// [`stream::FORGE_ITEM`], [`stream::FORGE_LOOK`] or
+    /// [`stream::FORGE_POSE`] and `bytes` the message
     /// (docs/game/forge-design.md, "Films and determinism").
     pub fn forge(subtype: u8, bytes: &[u8]) -> Self {
         let mut payload = Vec::with_capacity(1 + bytes.len());
@@ -204,7 +205,12 @@ pub(super) fn decode(raw: &[u8], first: u64, count: usize) -> Result<VecDeque<Ti
                     ensure!(
                         matches!(
                             record.payload.first(),
-                            Some(&stream::FORGE_WELCOME | &stream::FORGE_ITEM)
+                            Some(
+                                &stream::FORGE_WELCOME
+                                    | &stream::FORGE_ITEM
+                                    | &stream::FORGE_LOOK
+                                    | &stream::FORGE_POSE
+                            )
                         ),
                         "invalid film Forge record"
                     );

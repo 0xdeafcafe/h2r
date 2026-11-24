@@ -188,7 +188,8 @@ pub(super) fn bar(track: &Track, ready: bool, notice: Option<&str>) -> ScreenSpe
                 )
             })
         })
-        .or_else(|| notice.map(str::to_owned));
+        .or_else(|| notice.map(str::to_owned))
+        .or_else(|| track.monitor_notice().map(str::to_owned));
     let clip = track.marks.0.map(|start| {
         let end = track
             .marks

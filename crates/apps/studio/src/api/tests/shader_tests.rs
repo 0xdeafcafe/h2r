@@ -265,3 +265,103 @@ fn shader_code_lists_both_programs_of_a_pass() {
         .unwrap_err();
     assert_eq!(e.code, code::REFUSED, "{e}");
 }
+
+/// S2: `shader.read` and `shader.preview` take the preview clock; the
+/// invented shader has no animated property, so the clock changes no
+/// value, and a time out of range is refused by name.
+#[test]
+fn the_preview_clock_is_read_and_checked() {
+    let t = Temp::new("shader-clock");
+    let (mut api, mut app) = open(&t, fixture::LAYERED_LAYER);
+    let r = call(&mut api, &mut app, m::SHADER_READ, json!({"tag": SHADER, "time": 1.5}));
+    assert_eq!(r["time"], 1.5);
+    assert_eq!(r["clock_length"], 1.0);
+    assert_eq!(r["animations"], json!([]));
+    let p = call(
+        &mut api,
+        &mut app,
+        m::SHADER_PREVIEW,
+        json!({"tag": SHADER, "size": [32, 32], "time": 0.25, "out": t.path("out/clock.png").display().to_string()}),
+    );
+    assert_eq!(p["time"], 0.25);
+    assert_eq!(p["animation"], json!([]));
+    for bad in [json!(-1.0), json!(90000.0), json!("soon")] {
+        for method in [m::SHADER_READ, m::SHADER_PREVIEW] {
+            let e = api
+                .call(&mut app, method, json!({"tag": SHADER, "time": bad}))
+                .unwrap_err();
+            assert_eq!(e.code, code::INVALID_PARAMS, "{method} {bad}: {e}");
+        }
+    }
+}
+
+/// S5: `shader.override` reads the linked program, keeps a draft, checks
+/// it with its place, and discards it.
+#[test]
+fn shader_override_keeps_a_draft_and_checks_it() {
+    let t = Temp::new("shader-override");
+    let (mut api, mut app) = open(&t, fixture::LAYERED_LAYER);
+    let r = call(&mut api, &mut app, m::SHADER_OVERRIDE, json!({"tag": SHADER}));
+    let base = r["base"].as_str().unwrap().to_owned();
+    assert!(base.contains("fn vs_main") && base.contains("fn fs_main"), "{r}");
+    assert_eq!((r["text"].clone(), r["edited"].clone(), r["check"].clone()), (json!(null), json!(false), json!(null)));
+    assert_eq!(r["pushed"], json!([]));
+    // The base as the draft parses and is not an edit.
+    let r = call(&mut api, &mut app, m::SHADER_OVERRIDE, json!({"tag": SHADER, "text": base}));
+    assert_eq!((r["edited"].clone(), r["check"].clone()), (json!(false), json!({"ok": true})));
+    // A broken draft names its line.
+    let broken = format!("{base}\nfn broken() -> f32 {{\n  return nope;\n}}\n");
+    let r = call(&mut api, &mut app, m::SHADER_OVERRIDE, json!({"tag": SHADER, "text": broken}));
+    assert_eq!((r["edited"].clone(), r["check"]["ok"].clone()), (json!(true), json!(false)));
+    assert!(r["check"]["line"].as_u64().is_some_and(|l| l > 1), "{r}");
+    assert!(r["check"]["error"].is_string(), "{r}");
+    // Discarded.
+    let r = call(&mut api, &mut app, m::SHADER_OVERRIDE, json!({"tag": SHADER, "text": null}));
+    assert_eq!((r["text"].clone(), r["check"].clone()), (json!(null), json!(null)));
+    // Params are checked.
+    for p in [json!({"text": 3}), json!({"pass": 1}), json!({"implementation": 2})] {
+        let mut params = json!({"tag": SHADER});
+        params.as_object_mut().unwrap().extend(p.as_object().unwrap().clone());
+        assert!(api.call(&mut app, m::SHADER_OVERRIDE, params).is_err(), "{p}");
+    }
+}
+
+/// S5: a push needs a draft that parses and a program id; it queues the
+/// file for the link and a revert queues its removal.
+#[test]
+fn shader_push_and_revert_queue_for_the_link() {
+    let t = Temp::new("shader-push");
+    let (mut api, mut app) = open(&t, fixture::LAYERED_LAYER);
+    let dir = t.path("overrides");
+    let push = |program: &str| json!({"tag": SHADER, "program": program, "dir": dir.display().to_string()});
+    // No draft: refused.
+    let e = api.call(&mut app, m::SHADER_PUSH, push("00abcdef01234567")).unwrap_err();
+    assert_eq!(e.code, code::REFUSED, "{e}");
+    let r = call(&mut api, &mut app, m::SHADER_OVERRIDE, json!({"tag": SHADER}));
+    let base = r["base"].as_str().unwrap().to_owned();
+    // A draft that does not parse is refused with its line, and queues nothing.
+    call(&mut api, &mut app, m::SHADER_OVERRIDE, json!({"tag": SHADER, "text": "fn vs_main() { nope }"}));
+    let e = api.call(&mut app, m::SHADER_PUSH, push("00abcdef01234567")).unwrap_err();
+    assert!(e.message.contains("line 1"), "{e}");
+    assert!(!app.shader_overrides.waiting());
+    // A good draft; the program must be 16 hex digits.
+    call(&mut api, &mut app, m::SHADER_OVERRIDE, json!({"tag": SHADER, "text": base}));
+    let e = api.call(&mut app, m::SHADER_PUSH, push("abc")).unwrap_err();
+    assert_eq!(e.code, code::INVALID_PARAMS, "{e}");
+    let r = call(&mut api, &mut app, m::SHADER_PUSH, push("00abcdef01234567"));
+    assert_eq!(r["program"], "00abcdef01234567");
+    assert!(r["queued"].as_str().unwrap().ends_with("00abcdef01234567_studio.wgsl"), "{r}");
+    let r = call(&mut api, &mut app, m::SHADER_OVERRIDE, json!({"tag": SHADER}));
+    assert_eq!(r["pushed"][0]["state"], "queued", "{r}");
+    // Nothing is written until the link sends it.
+    assert!(!dir.join("00abcdef01234567_studio.wgsl").exists());
+    // A revert of a program that was not pushed is refused; the pushed one queues.
+    let e = api
+        .call(&mut app, m::SHADER_REVERT, json!({"tag": SHADER, "program": "1111111111111111"}))
+        .unwrap_err();
+    assert_eq!(e.code, code::REFUSED, "{e}");
+    let r = call(&mut api, &mut app, m::SHADER_REVERT, json!({"tag": SHADER}));
+    assert_eq!(r["queued"].as_array().unwrap().len(), 1, "{r}");
+    let r = call(&mut api, &mut app, m::SHADER_OVERRIDE, json!({"tag": SHADER}));
+    assert_eq!(r["pushed"][0]["state"], "reverting", "{r}");
+}

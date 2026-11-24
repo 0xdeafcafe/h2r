@@ -917,6 +917,9 @@ fn e3_reports_its_choice_of_sixteen_lights_from_twenty() {
         let e3 = draw_private(&mut backend, &scene, &frame, 1, Lighting::E3).unwrap();
         let report = e3.report.e3.unwrap();
         assert_eq!((report.lights_lit, report.lights_over_cap), (16, 4));
+        // The guest drew none of them; with no chosen-light stage in the
+        // replay, `e3.lights` has no draws.
+        assert_eq!(report.lights_beyond_guest, 16);
         assert_eq!(report.lights.draws, 0);
         assert_eq!(e3.rgba, retail.rgba);
     }
@@ -1188,5 +1191,217 @@ fn a_caster_behind_the_camera_shadows_the_ground_in_view() {
         (1, 1, 1)
     );
     set_models(EPOCH, None);
+    set_world(EPOCH, None);
+}
+
+/// A chosen light's stage as the frame step queues one the renderer
+/// shadows: E3 alone, naming its cone, drawing nothing of its own here.
+struct ShadowedChosen(u32);
+
+impl d3d::ExternalPass for ShadowedChosen {
+    fn replays_scene(&self) -> bool {
+        true
+    }
+
+    fn lighting_only(&self) -> Option<Lighting> {
+        Some(Lighting::E3)
+    }
+
+    fn cone_shadow(&self) -> Option<u32> {
+        Some(self.0)
+    }
+
+    fn record_encoded(
+        &mut self,
+        _target: &d3d::backend::ExternalAttachments,
+        _request: ExternalPassRequest,
+    ) -> Option<Result<gfx::external::ExternalEncoded, &'static str>> {
+        Some(Ok(gfx::external::ExternalEncoded {
+            ranges: 1,
+            draws: 0,
+            passes: 0,
+            commands: Box::new(|_| {}),
+        }))
+    }
+}
+
+fn shadowed_chosen(handle: u32) -> ReplayOp {
+    ReplayOp::Stage(SceneStage {
+        surfaces: ExternalSurfaces {
+            color: MAIN,
+            depth: Z,
+            sampled: vec![],
+            slots: vec![],
+            slot_sizes: vec![],
+        },
+        request: ExternalPassRequest {
+            rect: (0, 0, SIZE, SIZE),
+            surface_size: (SIZE, SIZE),
+            display_projection_factor: 1.0,
+            z_scale: 16_777_215.0,
+        },
+        plan: ExternalPlan {
+            stage: timeline::native::Stage::Lights,
+            view: 0,
+            ranges: 1,
+            slots: vec![],
+        },
+        pass: Arc::new(Mutex::new(Box::new(ShadowedChosen(handle)))),
+    })
+}
+
+/// The design's game check on an invented scene (L7 joined to L6b): a
+/// lamp the content flagged no-shadow hangs at (0.5, 0, 0.9) over a floor,
+/// with a board under it at z = 0.45. The camera looks down from z = 1, so
+/// the floor's shadow (x in 0.3..0.7) shows beside the board. The lamp's
+/// chosen stage names its cone: under E3 the cone stage before it writes
+/// the shadow term into the scene's alpha, about zero on the shadowed
+/// floor and whole on the lit floor across the axis, and the light's own
+/// stage then draws. Retail applies neither. A stage naming a light the
+/// renderer did not shadow is kept: not applied, alpha untouched.
+#[test]
+fn a_shadowed_chosen_light_reads_its_cone_in_e3_and_not_in_retail() {
+    use frame_scene::{Light, LightCandidate, LightVolume, RenderCamera, ViewKey, ViewKind};
+    use native_render::cone_shadows::{FRUSTUM, NO_SHADOW};
+    use native_render::sun_casters::{SunWorld, set_world};
+    use native_render::world::{Owner, PartInput, Placement, SectionInput, WorldBuilder};
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(ctx) = test_gpu() else { return };
+    const EPOCH: u64 = 0x5e3_0107;
+    const LAMP: u32 = 0xe100_0007;
+    let camera = RenderCamera {
+        position: [0., 0., 1.],
+        forward: [0., 0., -1.],
+        up: [0., 1., 0.],
+        fov: std::f32::consts::FRAC_PI_2,
+        projection_xy: None,
+        viewport: [0, 0, SIZE as i16, SIZE as i16],
+        near: 0.1,
+        far: 100.,
+    };
+    let mut b = SceneBuilder::new(FreeList::new());
+    b.begin(SceneId {
+        map_epoch: EPOCH,
+        tick: 1,
+        frame: 1,
+    });
+    b.open_view(
+        ViewKey {
+            kind: ViewKind::Game,
+            player: 0,
+            view: 0,
+        },
+        camera,
+    )
+    .unwrap();
+    b.set_clusters([0]).unwrap();
+    let lamp = Light {
+        handle: LAMP,
+        definition_flags: NO_SHADOW,
+        candidate: Some(LightCandidate {
+            position: [0.5, 0., 0.9],
+            forward: [0., 0., -1.],
+            up: [1., 0., 0.],
+            colour_a: [1.; 3],
+            colour_b: [1.; 3],
+            intensity: 1.,
+            bounds: ([0.5, 0., 0.4], 1.5),
+            owner: None,
+            definition_kind: FRUSTUM,
+            volume: Some(LightVolume::Projected {
+                kind: FRUSTUM,
+                origin: [0.5, 0., 0.9],
+                axis: [0., 0., -1.],
+                near: 0.1,
+                far: 1.0,
+                far_extent: [2.0, 2.0],
+            }),
+            view_eligible: Some(true),
+            priority: Some(1.),
+            weight: 1.,
+            gel_bitmap: None,
+            gel_shader: None,
+            constants: None,
+        }),
+        ..Default::default()
+    };
+    b.add_light_candidates(vec![lamp]).unwrap();
+    let scene = b.seal(Stamp::default()).unwrap();
+    let mut world = WorldBuilder::new();
+    let (f, h) = (1.5, 0.1);
+    let floor_and_board = SectionInput {
+        positions: vec![
+            [-f, -f, 0.],
+            [f, -f, 0.],
+            [f, f, 0.],
+            [-f, f, 0.],
+            [0.5 - h, -h, 0.45],
+            [0.5 + h, -h, 0.45],
+            [0.5 + h, h, 0.45],
+            [0.5 - h, h, 0.45],
+        ],
+        normals: vec![[0., 0., 1.]; 8],
+        uvs: vec![[0.; 2]; 8],
+        parts: vec![
+            PartInput {
+                material: 0,
+                transparent: false,
+                triangles: vec![[0, 1, 2], [0, 2, 3]],
+            },
+            PartInput {
+                material: 0,
+                transparent: false,
+                triangles: vec![[4, 5, 6], [4, 6, 7]],
+            },
+        ],
+        ..Default::default()
+    };
+    world.add_section(Owner::Cluster(0), &floor_and_board, &Placement::IDENTITY, None);
+    set_world(EPOCH, Some(Arc::new(SunWorld::new(&world.finish()))));
+    let frame_naming = |handle: u32| {
+        let mut frame = replay();
+        op(&mut frame, Slot::Opaque, bind());
+        op(
+            &mut frame,
+            Slot::Opaque,
+            ReplayOp::Clear {
+                colour: MAIN,
+                depth: Z,
+                clear: Clear {
+                    depth: Some(1.0 / camera.far),
+                    ..Clear::all([1.; 4])
+                },
+            },
+        );
+        op(&mut frame, Slot::AfterLights, shadowed_chosen(handle));
+        frame
+    };
+    let mut backend = GfxBackend::new(ctx);
+    let frame = frame_naming(LAMP);
+    let retail = draw_private(&mut backend, &scene, &frame, 1, Lighting::Retail).unwrap();
+    let e3 = draw_private(&mut backend, &scene, &frame, 1, Lighting::E3).unwrap();
+    // The floor at x = 0.5 and x = -0.5, at a quarter of the frame from
+    // each side on the middle row.
+    let (near_x, far_x) = (3 * SIZE / 4, SIZE / 4);
+    for x in [near_x, far_x] {
+        assert_eq!(rgba(&retail, x, SIZE / 2), [255; 4]);
+    }
+    let alphas = [near_x, far_x].map(|x| rgba(&e3, x, SIZE / 2)[3]);
+    assert!(
+        alphas.iter().min().unwrap() < &40 && alphas.iter().max().unwrap() == &255,
+        "one floor pixel in the shadow, the other lit: {alphas:?}"
+    );
+    assert_eq!(rgba(&e3, near_x, SIZE / 2)[..3], [255; 3], "RGB is kept");
+    let work = e3.report.e3.unwrap();
+    assert_eq!((work.cones_drawn, work.cones_kept), (1, 0));
+    assert_eq!(work.lights.draws, 1, "the light's stage drew after it");
+    assert!(work.tiles.draws >= 1 && work.marks.draws >= 1);
+
+    let other = frame_naming(0xe100_0001);
+    let kept = draw_private(&mut backend, &scene, &other, 1, Lighting::E3).unwrap();
+    let work = kept.report.e3.unwrap();
+    assert_eq!((work.cones_drawn, work.cones_kept), (0, 1));
+    assert_eq!(work.lights.draws, 0, "the kept light's stage is not applied");
+    assert_eq!(kept.rgba, retail.rgba);
     set_world(EPOCH, None);
 }

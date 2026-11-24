@@ -251,7 +251,20 @@ file, so it carries no signature.
   name rules below), none listed twice. The field is absent when empty, so
   a bundle without suggestions keeps its bytes and id. `Bundle::with_maps`
   sets them and `portable::read` refuses a file over the cap, by
-  name. A suggestion only focuses a map variant in the lobby's picker
+  name. Two writers set them. Studio's variant tool has a **Suggest map
+  variants** section under Export: it lists this machine's map variants
+  (`forge::files::variants::suggestable`: every map's, saved then
+  fetched, the map tier and other builders' files left out), ticks up to
+  eight in order, and Export then writes a version-2 file
+  (`VariantEditor::export_current_with`, `Action::ExportVariantWith`);
+  with none ticked it writes the version-1 text it always did. A record
+  that names its engine's built-in script carries it in the file
+  (`portable::builtin_attach`); a record that names another is refused by
+  name, as its blob is not at hand. `variant.maps` lists the same choices and `variant.export`
+  takes `maps` (variant ids). In the game, `Store::set_maps` writes a
+  kept game variant's suggestions into its own file
+  (`game_variants::suggest` lists the choices); a Live variant is
+  refused, because Live keeps its own copy. A suggestion only focuses a map variant in the lobby's picker
   ([forge-map-variants.md](../game/forge-map-variants.md), "How a pick names a map variant");
   the record is untouched.
 - **Reading** (`portable::read`) checks a version-2 file's integrity:
@@ -340,7 +353,7 @@ update in place, but new saves cannot be named).
   (a settings-table row, the way the `hx` extras are edited),
   `copy_builtin(name)`, `new_variant(type)`, `open_builtin`/`open_saved`,
   `delete`,
-  `export_current`/`import`, `current`, `origin`, `issues`, `status`.
+  `export_current`/`export_current_with(maps)`/`import`, `current`, `origin`, `issues`, `status`.
 
 Built-ins are read-only; `copy_builtin(name)` (the editor's **Copy**)
 makes a named copy and clears the built-in flag like the game's Edit.
