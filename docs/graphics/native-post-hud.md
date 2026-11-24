@@ -431,11 +431,14 @@ taken), `render_bridge::native_hud::ui_overlay` reads the list from the
 frame and asks the host whether it draws menus now (`Host::ui_overlay`;
 the game's answer is the UI scope's order). It claims nothing unless the
 screen quads' viewport (`0x00485648`, top, left, bottom, right) is 0, 0,
-480, 640, and nothing on a screen that mismatched before. Each drawn
+480, 640, both floating-point units round to nearest, and the screen has
+no earlier mismatch on this map. Each drawn
 entry's widget is read (`scene_extract::ui::read_widget`: the header, and
 what its draw makes by the function its vtable's `+0x10` names) and listed
 alone (`draw_list`). Consecutive drawn entries that list are a run; an
-entry outside the window does not end one, a refused entry does.
+entry outside the window does not end one, a refused entry does. After a
+guest draw, the next run rereads its entries at placement so guest changes
+to focus, colours or resource state reach that pass.
 
 At the sorted call of a run's first entry, the host places one overlay
 pass with the run's items (`Host::ui_pass`, `game::hud_overlay::place_menu`,
@@ -458,16 +461,36 @@ the list can read, so the list leaves it to the game: it ends a run and
 is not refused, and its quad is drawn from the overlay at the shader quad
 ([The HUD on the overlay](#the-hud-on-the-overlay)). Every other draw is
 the game's, counted by what is not read (`render.stats`,
-`native_ui_overlay_menu_*`):
+`native_ui_overlay_menu_*`), except these, which the class readers in
+`render_bridge::native_hud::ui_overlay` list:
 
-| Reason | Draw | What reading it needs |
+- Text and button labels use the live UTF-16 interface, font, justification,
+  colour, clipping rectangle, shadow and flash. The shaper uses the game
+  font's advances and kerning to wrap and justify each line. Each pass
+  fills the same glyph pages as the HUD before the guest draw is skipped.
+  [Text draw and interface reads](notes/2026-11-24-menu-text.md)
+- The list emits scroll arrows using the bound first and last rows, live
+  row occupancy and the active skin. The sorted children carry the row
+  layout and animated highlight. A button's bitmap uses its focus state
+  and precedes its label in the same claim.
+  [List and button draws](notes/2026-11-24-menu-list-button.md)
+- An idle model scene or a selection without objects or lights can
+  produce an empty claim. At the nested camera call an active scene
+  records its viewport, camera and ordered object handles as a
+  `ModelView`. Its geometry still draws through the model material hooks.
+  [Model selection and camera](notes/2026-11-24-menu-model-selection.md)
+
+The remaining guest draws count by reason in `render.stats`:
+
+| Reason | Draw | What keeps it on the guest |
 |---|---|---|
 | `bitmap_meter` | `0x002b07e2` | the meter's own quads |
 | `bitmap_scroll` | `0x00235f31` | the scrolling quad's coordinates from the widget's `+0x7c` state |
 | `bitmap_state` | `0x002b0565` | a draw the overlay does not make as the game does: the debug labels on, an image set from elsewhere, an image not resident, a stage constant not white, the quads turned off |
-| `text` | `0x002538f5` | the string as the interface holds it, its font and justification, and the colour product the draw writes into the interface (its `+0x3c` slot) for the interface's own draw; then the glyph pages (`native_render::overlay::GlyphPages`) |
-| `model` | `0x002b0baa` | a stage that draws a `ModelView` |
-| `draw` | a list's `0x0024bda2`, a button's `0x00253ea8`, a screen's own | those draws read |
+| `text` | text or button label | interface overrides, reveal updates, substitution, custom tabs or an unsupported transform |
+| `model` | model scene | active nested view, light processing or unresolved selection semantics |
+| `draw` | list, button or custom draw | unsupported class-specific lookup, placement or guest side effects |
+| `unlisted`, `pass` | any listed class | layout or pass preparation fails, including unavailable font pages or bitmap assets |
 
 The fade, the bars and the loading screen are drawn from the overlay at
 their producers ([The fade, the bars and the loading
@@ -564,6 +587,64 @@ path (`screen_fallback`). Per draw (Code, `h2 disasm`):
 The typed `UiDraw::Fade`, `Rect` and `Bitmap` of `scene_extract::ui` are
 not filled from these draws: a fade's combiner is not one of the
 overlay's fixed ones.
+
+##### The blur under a dialog
+
+Under a dialog the window stack's render fills the screen with the
+backdrop colour and calls `0x00235756` (`points::UI_MODAL_BLUR`, from
+`0x00235128`) with the screen's transition fraction in XMM0 (Code,
+`h2 disasm`). It multiplies the fraction by `[0x0045de14]` and calls the
+Kawase blur `0x000211a0` with EAX 0 and the words: those steps, scale
+1.0, growth 1.0, dest 1, other -1, last 0, combine 1, 0, the strength
+`[0x0045dc20]` and `y` 0.0. That call returns to `0x00235794`; the
+wrapper then returns with a bare RET.
+
+So the blur reads target 0 and ping-pongs between targets 1 and 0
+(`engine::glow::blur`): each step's spread is its fraction times the
+scale, and each scale is the last times `1 - growth + growth *
+[0x0045dc0c]`, the whole spread factor since the growth is 1. An odd
+count of draws ends in target 1, which `0x000351a0` copies back to 0
+with one more quad of `0x00034a90` (one tap, the texture's colour).
+Each draw is a full-target quad of four bilinear taps, tap `k` moved by
+the spread times `[0x0045dbbc]` for `k & 1` in x and `k & 2` in y, else
+`[0x0045dbc4]`, its negative (`native_render::glow::quad`).
+
+The strength selects `0x00020f30`'s eight-stage combiner
+(`engine::glow::blur_combiner`). Its colour is not the taps' mean: stage
+0 makes `clamp(4 * (t0 - t1))`, stage 1 the weight `(d * c + 1) / 2`
+with `c` the strength packed to a byte in each stage's first constant,
+stage 2 `w * t0 + (1 - w) * t1`; stages 3 to 5 the same for `t2` and
+`t3`, stages 6 and 7 and the final combiner the same for the two
+results. Each pair leans to its brighter tap: its weight moves from a
+half by up to half of `c`. The alpha is the mean of the four. A strength of 0 gives
+the three-stage plain mean.
+
+`render_bridge::native_hud::modal_blur` observes the blur's entry when
+its return is `0x00235794`, reads the ten words and computes the draws and
+the combiner as the guest will (`read`). The overlay's `Blur` item carries
+the steps' spreads, the tap and the combiner's constant over 255
+(`OverlayBlur::pick`, 0 for the plain form). The host arms the device
+(`Host::modal_blur`, `game::modal_blur_glue`): the game's code runs
+whole, so its target binds, texture stage writes, combiner block and
+dirty bits are its own. The device holds back its quads, the copy's
+included (`Device::swallow`: slot 0 the target bound at the call, the
+UI's, slot 1 target 1). At the
+wrapper's return (`Host::finish_modal_blur`) the quads are checked
+(unblended, every channel written, each sampling the target the plan
+names, whole; targets 0 and 1 the same size). The overlay's blur is then
+drawn into target 0 by `OverlayGpu` in their place: the copy, the steps
+in scratch targets, the result written back into every channel. The
+item joins `FrameScene::overlay`. A quad off the plan, a check that
+fails or a pass that does not record gives the game's quads back in
+order (`overlay_modal_blur_replayed`).
+
+`render.stats` counts the blurs drawn (`overlay_modal_blurs`), those
+given back, those the host did not arm (`overlay_modal_blur_refused_pass`:
+the UI scope's order did not hold) and those not read, by reason:
+`overlay_modal_blur_refused_arguments` (a word not the one the wrapper
+pushes), `_steps` (past `engine::glow::MAX_BLUR_STEPS`), `_combiner` (the
+`y` form or another stage count) and `_targets` (a draw outside targets 0
+and 1).
 
 ### Post admission
 

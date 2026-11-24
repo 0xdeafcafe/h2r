@@ -1494,6 +1494,17 @@ other drawn widgets the game keeps by the draw not read
 `_unlisted`), and lists or runs whose pass was not placed
 (`menu_refused_pass`;
 [native-post-hud.md](../graphics/native-post-hud.md#the-menus-on-the-overlay)).
+A list's scroll arrows and a button's image and label belong to the
+widget's claim. A failed glyph-page fill or bitmap decode leaves the
+whole run on the game renderer and counts under `menu_refused_pass`.
+An active model widget can contribute a camera and object handles to the
+scene overlay while its geometry draws in the nested model view.
+The blur under a dialog counts as `modal_blurs` where the overlay's blur
+replaced its quads, `modal_blur_replayed` where the game's quads were
+given back, `modal_blur_refused_pass` where the host did not arm it, and
+`modal_blur_refused_arguments`, `_steps`, `_combiner` and `_targets` for
+calls not read
+([the blur under a dialog](../graphics/native-post-hud.md#the-blur-under-a-dialog)).
 The object-shadow list, row gather and caster each count calls to their own
 entry ([native-light-gather.md](../graphics/native-light-gather.md), L7).
 `counters` is `null` where the frame-stats window is not running.

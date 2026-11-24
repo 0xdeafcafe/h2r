@@ -5,6 +5,7 @@
 
 mod backdrop;
 pub mod hud_overlay;
+pub mod modal_blur;
 mod model;
 mod outline;
 mod ui;
@@ -162,10 +163,34 @@ pub trait Host: Send + Sync {
         None
     }
 
+    /// Whether the host has its own sorted-draw replacement for this widget.
+    fn ui_custom_widget(&self, _mem: &dyn GuestMemory, _widget: u32) -> bool {
+        false
+    }
+
+    /// The loaded map's menu font layout and shared overlay glyph pages.
+    fn ui_text(&self, _mem: &dyn GuestMemory) -> Option<Box<dyn ui_overlay::UiText>> {
+        None
+    }
+
     /// Draws `part`, the items of a run of a list's widgets, from the
     /// overlay stage, placed at this point in the frame. True: placed, and
     /// the run's widget draws are left out; false: the game draws them.
     fn ui_pass(&self, _mem: &mut dyn GuestMemory, _part: &frame_scene::Overlay) -> bool {
+        false
+    }
+
+    /// The blur under a dialog is about to run (`modal_blur`): true when
+    /// the host has armed its draws to be left out and `call.blur` drawn
+    /// from the overlay in their place at the wrapper's return.
+    fn modal_blur(&self, _mem: &mut dyn GuestMemory, _call: &modal_blur::ModalBlur) -> bool {
+        false
+    }
+
+    /// The armed blur's wrapper returned (`esp` its return slot): true when
+    /// the overlay's blur replaced its draws; false when the game's draws
+    /// were given back.
+    fn finish_modal_blur(&self, _mem: &mut dyn GuestMemory, _esp: u32) -> bool {
         false
     }
 
@@ -220,7 +245,11 @@ pub(crate) fn menu_item(c: &mut hooks::Call<'_>, mem: &mut dyn GuestMemory, stac
         Item::Game => return None,
         Item::Skip => {}
         Item::Place(run) => {
-            let part = ui_overlay::run_part(frame, run)?;
+            let Some(part) = ui_overlay::run_part(frame, run, mem) else {
+                ui_overlay::placed(frame, run, false);
+                MenuRefusal::Pass.counter().count();
+                return None;
+            };
             // A run of containers has nothing to draw: it needs no pass.
             let placed = part.is_empty() || host().is_some_and(|host| host.ui_pass(mem, &part));
             ui_overlay::placed(frame, run, placed);
@@ -258,6 +287,7 @@ impl Feature for NativeHud {
             return Ok(());
         }
         ui::place(b);
+        modal_blur::place(b);
         // The menus on the overlay (`ui_overlay`): a list's claim opens
         // when it is sorted and closes, checked, when its draws are done.
         // A claimed draw is left out by resuming after its call: without
@@ -266,6 +296,10 @@ impl Feature for NativeHud {
             let rt = Arc::clone(c.ctx.runtime());
             let continuation = engine::points::ui_render::ITEM_CONTINUATION;
             if !rt.read_dispatch(|dispatch| dispatch.has_resume(continuation)) {
+                return Ok(Flow::Continue);
+            }
+            if c.cpu.x87.control & 0x0c00 != 0 || c.cpu.mxcsr & 0x6000 != 0 {
+                MenuRefusal::Frame.counter().count();
                 return Ok(Flow::Continue);
             }
             let mut mem = rt.memory();
