@@ -1515,8 +1515,10 @@ includes it for the corresponding draw. Its `passes` array contains
 `name`, submitted `draws` and `gpu_ns` (null for an empty or unmeasured
 stage). Snapshot indices refer to the attachment runs in the frame
 record. The per-frame counters are `lights_lit`, `lights_shadowed`,
-`lights_over_cap`, `lights_beyond_guest`, `sun_tiles`, `sun_tiles_redrawn`, `sun_tiles_offscreen`, `atlas_halved` and
-`tiles_refused`. They count the E3 renderer's selections and atlas work.
+`lights_over_cap`, `lights_beyond_guest`, `sun_tiles`, `sun_tiles_redrawn`, `sun_tiles_offscreen`, `atlas_halved`,
+`tiles_refused`, `cones_shadowed`, `cones_flagged_off`, `flashlight_shadowed`,
+`shadows_over_cap` and `cones_refused`. They count the E3 renderer's
+selections and atlas work.
 The graph draws the guest's shadow maps as tiles
 ([e3-lighting.md](../graphics/e3-lighting.md), "Shadows from local
 lights"): `e3.tiles` counts the caster draws into them, `e3.marks` the
@@ -1529,7 +1531,12 @@ own choice of lights from the scene's candidates (e3-lighting.md,
 its cap of 16 left out. `lights_beyond_guest` counts the chosen game
 lights the guest did not draw, and `e3.lights` the ranges of the stages
 that draw them (layers 12 and 13 over the structure each light meets),
-which only an E3 draw records. `sun_tiles_offscreen` counts offscreen casters for which the graph
+which only an E3 draw records. The five cone counters are the renderer's
+choice of shadowed lights from those it lit (e3-lighting.md, "Built: the
+shadowed cones"): the cones it shadows itself, the shadowed lights whose
+content flag was off, the views whose flashlight holds a slot, the lit
+cones its four slots left out, and the lit lights whose frustum makes no
+projection. Their tiles are not drawn in a game frame yet. `sun_tiles_offscreen` counts offscreen casters for which the graph
 submits a receiver draw, summed across views. A cached tile can have
 receiver draws with no redraw. The
 guest's light selections are in `render.scene.views`.

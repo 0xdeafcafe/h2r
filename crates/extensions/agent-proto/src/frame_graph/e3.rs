@@ -43,4 +43,19 @@ pub struct E3Report {
     /// Shadow maps left at the guest's size with retail's comparison.
     #[serde(default)]
     pub tiles_refused: u32,
+    /// Cones the renderer shadows itself, one atlas slot each.
+    #[serde(default)]
+    pub cones_shadowed: u32,
+    /// Shadowed lights whose content flag was off.
+    #[serde(default)]
+    pub cones_flagged_off: u32,
+    /// Views whose own flashlight holds a shadow slot.
+    #[serde(default)]
+    pub flashlight_shadowed: u32,
+    /// Lit cones the four shadow slots left unshadowed.
+    #[serde(default)]
+    pub shadows_over_cap: u32,
+    /// Lit lights whose frustum makes no projection.
+    #[serde(default)]
+    pub cones_refused: u32,
 }

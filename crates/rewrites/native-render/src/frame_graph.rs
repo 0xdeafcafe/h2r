@@ -266,7 +266,9 @@ fn record(
         report.add_sun(s.work());
     }
     if let Some(report) = e3.as_mut() {
-        report.add_choice(&crate::light_choice::choose(scene));
+        let lit = crate::light_choice::choose(scene);
+        report.add_choice(&lit);
+        report.add_cones(crate::cone_shadows::choose(scene, &lit).work);
         report.add_chosen(chosen);
     }
     Ok(e3)

@@ -3,6 +3,7 @@
 
 use d3d::gfx_backend::TileWork;
 
+use crate::cone_shadows::ConeWork;
 use crate::light_choice::LightChoice;
 use crate::sun_tiles::SunWork;
 
@@ -40,6 +41,16 @@ pub struct E3Report {
     /// Shadow maps the mode left at the guest's size with retail's
     /// comparison (`TileWork::refused`).
     pub tiles_refused: u32,
+    /// The renderer's choice of shadowed cones (`crate::cone_shadows`):
+    /// those it shadows itself, those of every shadowed light whose
+    /// content flag was off, the views whose flashlight holds a slot, the
+    /// lit cones the four slots left unshadowed, and the lit lights whose
+    /// frustum is degenerate.
+    pub cones_shadowed: u32,
+    pub cones_flagged_off: u32,
+    pub flashlight_shadowed: u32,
+    pub shadows_over_cap: u32,
+    pub cones_refused: u32,
 }
 
 impl E3Report {
@@ -78,6 +89,15 @@ impl E3Report {
     /// draw a range, the light's parts in layers 12 and 13.
     pub fn add_chosen(&mut self, ranges: u32) {
         self.lights.draws += ranges;
+    }
+
+    /// The renderer's choice of shadowed cones (`crate::cone_shadows`).
+    pub fn add_cones(&mut self, work: ConeWork) {
+        self.cones_shadowed += work.cones_shadowed;
+        self.cones_flagged_off += work.cones_flagged_off;
+        self.flashlight_shadowed += work.flashlight_shadowed;
+        self.shadows_over_cap += work.shadows_over_cap;
+        self.cones_refused += work.cones_refused;
     }
 }
 
@@ -141,5 +161,36 @@ mod tests {
         );
         assert_eq!(report.tiles_refused, 1);
         assert_eq!(report.marks, PassWork::default());
+    }
+
+    /// The cone choice's counters sum into the report and touch no pass
+    /// row.
+    #[test]
+    fn cone_work_fills_its_counters() {
+        let mut report = E3Report::default();
+        let work = ConeWork {
+            cones_shadowed: 2,
+            cones_flagged_off: 3,
+            flashlight_shadowed: 1,
+            shadows_over_cap: 4,
+            cones_refused: 1,
+        };
+        report.add_cones(work);
+        report.add_cones(work);
+        assert_eq!(
+            (
+                report.cones_shadowed,
+                report.cones_flagged_off,
+                report.flashlight_shadowed,
+                report.shadows_over_cap,
+                report.cones_refused
+            ),
+            (4, 6, 2, 8, 2)
+        );
+        assert_eq!(
+            (report.tiles, report.lights),
+            (PassWork::default(), PassWork::default())
+        );
+        assert_eq!(report.lights_shadowed, 0);
     }
 }
