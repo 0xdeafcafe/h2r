@@ -313,6 +313,17 @@ pub fn view(mem: &dyn GuestMemory) -> Option<Camera> {
     open_view(mem).map(|v| v.camera)
 }
 
+/// Additions from the base layer of this same view. A late-layer hook may
+/// run without a new base view, so check its camera and view index.
+pub(crate) fn late_display_visibility(mem: &dyn GuestMemory) -> Option<Arc<frame_scene::DisplayVisibility>> {
+    with_step(|step| {
+        let view = step.builder.view()?;
+        let extra = view.display_visibility.as_ref()?;
+        (view.key.kind == ViewKind::Game && u32::from(view.key.view) == mem.u32(VIEW_INDEX).ok()?
+            && view.camera == extract::camera(&Ro(mem))?).then(|| Arc::clone(extra))
+    })
+}
+
 /// [`view`], returning the view itself (a copy: its ranges index the
 /// scene being written).
 pub fn open_view(mem: &dyn GuestMemory) -> Option<View> {

@@ -236,13 +236,14 @@ struct Glue<B: d3d::backend::Backend + Send + 'static> {
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
-    fn ask(&self, mem: &mut dyn GuestMemory) -> Option<native_render::skip::Cleared> {
+    fn ask(&self, mem: &mut dyn GuestMemory, display_clusters: &[u16]) -> Option<native_render::skip::Cleared> {
         use timeline::native::{Metric, Stage};
         let ready = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             Arc::clone(current_ready(&state, mem)?)
         };
         let (water, palettes) = ready.water.get()?;
+        if water.parts.is_empty() { return None; }
         let Ok(mut d) = self.device.lock() else { return None };
         if !d.can_external_pass()
             || !d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()?
@@ -283,6 +284,41 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             render_bridge::native_layers::count(WATER_LATE_LAYER.into(), "refused_fog_words_view", 1);
             return None;
         };
+        let writes_depth = water
+            .programs
+            .values()
+            .any(|passes| passes.iter().any(|p| p.state.depth_write));
+        let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
+        let plan = |ranges| d3d::ExternalPlan { stage: Stage::Water, view, ranges, slots: Vec::new() };
+        let run = u64::from(d.swap_count()).wrapping_add(1);
+        let pass = |selected, fogs, display_only| -> Box<dyn d3d::ExternalPass> {
+            Box::new(WaterViewPass {
+                ready: Arc::clone(&ready),
+                selected,
+                fogs,
+                display_only,
+                headers: headers.clone(),
+                samples_view: water.samples_view,
+                view: None,
+                w_clip: None,
+                writes_depth,
+                run,
+            })
+        };
+        if !display_clusters.is_empty() {
+            let selected = water_cluster_parts(display_clusters, water.parts.iter().map(|&(part, _)| part));
+            if !selected.is_empty() {
+                let target = d.external_ready(&ReadMemory(mem), false).ok()?;
+                if d.projection_factor_for_target(target.surface_size) < 1.0 {
+                    ready.with_pipeline_target(&d, mem, |gpu, device, color, depth| {
+                        gpu.prewarm_water(device, color, depth).then_some(())
+                    })?;
+                    let plan = plan(selected.len());
+                    let display = pass(selected, crate::native_fog_glue::late_fogs(&materials), true);
+                    let _ = d.draw_display_stage(&mut crate::native_lights_glue::DeviceMemory(mem), plan, display);
+                }
+            }
+        }
         // The skip over a preview: nothing touches the guest until the
         // reservation has recorded on every copy.
         let read = ReadMemory(mem);
@@ -311,33 +347,21 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let fogs = crate::native_fog_glue::late_fogs(&late.materials);
         let selected = crate::native_fog_glue::late_selected(&late.parts);
         let ranges = selected.len();
-        let writes_depth = water
-            .programs
-            .values()
-            .any(|passes| passes.iter().any(|p| p.state.depth_write));
-        let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
-        let plan = d3d::ExternalPlan { stage: Stage::Water, view, ranges, slots: Vec::new() };
-        let run = u64::from(d.swap_count()).wrapping_add(1);
-        let pass = || -> Box<dyn d3d::ExternalPass> {
-            Box::new(WaterViewPass {
-                ready: Arc::clone(&ready),
-                selected: selected.clone(),
-                fogs: fogs.clone(),
-                headers: headers.clone(),
-                samples_view: water.samples_view,
-                view: None,
-                w_clip: None,
-                writes_depth,
-                run,
-            })
-        };
         drop(planning);
-        if !crate::native_fog_glue::commit_late(&mut d, mem, &self.state, &ready, scene, plan, &pass, &masks) {
+        if !crate::native_fog_glue::commit_late(&mut d, mem, &self.state, &ready, scene, plan(ranges), &|| pass(selected.clone(), fogs.clone(), false), &masks) {
             return None;
         }
         render_bridge::scene_step::late_drawn(late.key, WATER_LATE_LAYER);
         Some(cleared)
     }
+}
+
+/// The portal gather stores its display additions in sorted cluster order.
+fn water_cluster_parts(clusters: &[u16], parts: impl Iterator<Item = (Owner, u8)>) -> Vec<(Owner, u8)> {
+    parts.filter(|(owner, _)| match owner {
+        Owner::Cluster(id) => u16::try_from(*id).is_ok_and(|id| clusters.binary_search(&id).is_ok()),
+        Owner::Instance(_) => false,
+    }).collect()
 }
 
 /// The water's layer, as the scene names it.
@@ -355,6 +379,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
 
 /// One view's water replacement.
 struct WaterViewPass {
+    display_only: bool,
     ready: Arc<Ready>,
     /// The parts the masks surrendered, in the layer's item order.
     selected: Vec<(Owner, u8)>,
@@ -436,6 +461,7 @@ impl WaterViewPass {
 }
 
 impl d3d::ExternalPass for WaterViewPass {
+    fn display_only(&self) -> bool { self.display_only }
     // The selection and constants belong to this view. Ready pins the BSP,
     // and each recording binds the target copy passed to it by the renderer.
     fn replays_scene(&self) -> bool { true }
@@ -549,6 +575,14 @@ mod tests {
     use wgpu::{TextureFormat, TextureUsages};
 
     #[test]
+    fn layer_six_adds_water_parts_from_the_display_only_cluster_in_part_order() {
+        let side = Owner::Cluster(7);
+        let parts = [(Owner::Cluster(2), 0), (side, 3), (Owner::Instance(7), 0), (side, 1)];
+        assert_eq!(water_cluster_parts(&[7], parts.into_iter()), [(side, 3), (side, 1)]);
+        assert!(water_cluster_parts(&[], parts.into_iter()).is_empty());
+    }
+
+    #[test]
     fn target_header_uses_the_embedded_texture_of_a_live_target() {
         let mut mem = FlatMemory::new(TARGETS, (2 * TARGET_STRIDE) as usize);
         let descriptor = TARGETS + TARGET_STRIDE;
@@ -596,6 +630,7 @@ mod tests {
                     .into_iter()
                     .collect();
                 let mut pass = WaterViewPass {
+                    display_only: false,
                     ready: Arc::new(Ready::default()),
                     selected: Vec::new(),
                     fogs: HashMap::new(),
