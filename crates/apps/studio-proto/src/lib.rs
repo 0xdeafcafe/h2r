@@ -158,6 +158,11 @@ pub mod method {
     pub const SHADER_PREVIEW: &str = "shader.preview";
     // The Code section (slice S4): a pass's programs as text.
     pub const SHADER_CODE: &str = "shader.code";
+    // WGSL overrides from the editor (slice S5): a pass's program edited,
+    // pushed to the paired game as an override file, and reverted.
+    pub const SHADER_OVERRIDE: &str = "shader.override";
+    pub const SHADER_PUSH: &str = "shader.push";
+    pub const SHADER_REVERT: &str = "shader.revert";
 
     pub const SOUND_READ: &str = "sound.read";
     pub const SOUND_PLAY: &str = "sound.play";

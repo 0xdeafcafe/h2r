@@ -53,6 +53,10 @@ pub struct PassCode {
     pub implementations: usize,
     pub vertex: ProgramCode,
     pub pixel: ProgramCode,
+    /// The two programs linked into the one module the game's renderer
+    /// builds a draw from (`shaders::link`, default options), the text an
+    /// override replaces; or why they do not link.
+    pub linked: Result<String, String>,
 }
 
 /// A vertex program's text from its microcode (`'x'`, kind, count,
@@ -109,6 +113,66 @@ pub fn pixel_code(def: &[u8; PSDEF_SIZE]) -> ProgramCode {
     }
 }
 
+/// The vertex and pixel programs of one pass linked into one module with
+/// `vs_main` and `fs_main`, translated with default options (the game's own
+/// carry the draw's state, so its module can differ in details), or why
+/// they do not link.
+pub fn linked_code(microcode: Option<&[u8]>, def: &[u8; PSDEF_SIZE]) -> Result<String, String> {
+    let bytes = microcode.ok_or_else(|| {
+        format!("the vertex shader has no {VERTEX_CLASSIFICATION} classification program")
+    })?;
+    let program = vsh::Program::parse(bytes).map_err(|e| format!("the vertex program does not decode: {e}"))?;
+    let vs = vsh::translate(&program, &VertexOptions::default()).map_err(|e| e.to_string())?;
+    let def = PixelShaderDef::from_bytes(def).map_err(|e| format!("the pixel shader does not decode: {e:?}"))?;
+    let ps = psh::translate(&def, &Default::default());
+    shaders::link(&vs, &ps).map_err(|e| e.to_string())
+}
+
+/// The entry points a program module must have to stand in for the
+/// renderer's program.
+pub const ENTRY_POINTS: [&str; 2] = ["vs_main", "fs_main"];
+
+/// Why an override's text is refused, with where when naga says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WgslError {
+    pub message: String,
+    /// 1-based, from naga's report.
+    pub line: Option<usize>,
+    pub column: Option<usize>,
+}
+
+/// The `wgsl:<line>:<column>` naga's report points at.
+fn position(report: &str) -> (Option<usize>, Option<usize>) {
+    let Some(at) = report.find("wgsl:") else {
+        return (None, None);
+    };
+    let mut parts = report[at + 5..]
+        .split(|c: char| !c.is_ascii_digit())
+        .map(|d| d.parse::<usize>().ok());
+    (parts.next().flatten(), parts.next().flatten())
+}
+
+/// Checks an override's text as the game would parse it: naga parses and
+/// validates it, and it has the entry points. (The game also compares its
+/// interface with the program it replaces, `hot_render::iface::check`,
+/// and answers for that.)
+pub fn check_override(text: &str) -> Result<(), WgslError> {
+    let (module, _) = shaders::validate(text).map_err(|e| {
+        let (line, column) = position(&e.0);
+        WgslError { message: e.0, line, column }
+    })?;
+    for name in ENTRY_POINTS {
+        if !module.entry_points.iter().any(|e| e.name == name) {
+            return Err(WgslError {
+                message: format!("no entry point `{name}`"),
+                line: None,
+                column: None,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// The programs of pass number `pass` (counted across the layers of the
 /// first level of detail, in layer order) and implementation
 /// `implementation` of `shader` in `map`. `Err` is why the material does
@@ -156,6 +220,7 @@ pub fn pass_code<R: Read + Seek>(
         implementations: p.implementations.len(),
         vertex: vertex_code(microcode.as_deref()),
         pixel: pixel_code(&imp.pixel_shader),
+        linked: linked_code(microcode.as_deref(), &imp.pixel_shader),
     })
 }
 
@@ -214,5 +279,43 @@ mod tests {
         assert!(p.warnings[0].contains("does not decode"), "{:?}", p.warnings);
         let p = vertex_code(None);
         assert!(p.warnings[0].contains("no world classification"), "{:?}", p.warnings);
+    }
+
+    /// The two programs of the invented pass link into one module with
+    /// both entry points, and that module is a valid override as it is.
+    #[test]
+    fn the_linked_module_is_a_valid_override() {
+        let c = pass_code(&mut map(LAYERED_LAYER), fixture::id(6), 0, 0).unwrap();
+        let module = c.linked.unwrap();
+        assert!(module.contains("fn vs_main") && module.contains("fn fs_main"));
+        assert_eq!(check_override(&module), Ok(()));
+    }
+
+    /// A program that is missing or does not decode does not link, and says why.
+    #[test]
+    fn a_pass_that_does_not_link_says_why() {
+        let def = [0u8; PSDEF_SIZE];
+        let e = linked_code(None, &def).unwrap_err();
+        assert!(e.contains("no world classification"), "{e}");
+        let e = linked_code(Some(&[1, 2, 3, 4]), &def).unwrap_err();
+        assert!(e.contains("does not decode"), "{e}");
+    }
+
+    /// A compile error is named with its line; a module without the
+    /// entry points is refused by name.
+    #[test]
+    fn a_broken_override_is_refused_with_its_place() {
+        let e = check_override("fn vs_main() -> f32 {\n  return nope;\n}\n").unwrap_err();
+        assert_eq!(e.line, Some(2), "{e:?}");
+        assert!(e.column.is_some(), "{e:?}");
+        let e = check_override("fn helper() -> f32 { return 1.0; }\n").unwrap_err();
+        assert!(e.message.contains("vs_main"), "{e:?}");
+        assert_eq!(e.line, None);
+    }
+
+    #[test]
+    fn a_position_is_read_from_nagas_report() {
+        assert_eq!(position("error\n  ┌─ wgsl:12:7\n"), (Some(12), Some(7)));
+        assert_eq!(position("no place"), (None, None));
     }
 }
