@@ -972,12 +972,37 @@ impl Api {
         true
     }
 
+    /// Runs the **Preview in game** ask the window's button left, as the
+    /// `pair.preview` call it stands for: the job is `pair.result`'s, and
+    /// a refusal (paused game, no pairing) goes to the log.
+    pub fn run_preview_asks(&mut self, app: &mut App) {
+        let Some(doc) = app.preview.ask.take() else {
+            return;
+        };
+        let params = match app.game_preview(doc) {
+            Ok(g) => g.params(),
+            Err(why) => return app.error(why),
+        };
+        match self.call(app, m::PAIR_PREVIEW, params) {
+            Ok(v) => {
+                app.preview.last_job = v["id"].as_u64();
+                app.info(format!(
+                    "previewing {} in the game (pair.result {})",
+                    app.doc_title(doc),
+                    v["id"]
+                ));
+            }
+            Err(e) => app.error(e.message),
+        }
+    }
+
     /// Answers every request waiting on `rx`; returns how many.
     pub fn pump(
         &mut self,
         app: &mut App,
         rx: &std::sync::mpsc::Receiver<server::Incoming>,
     ) -> usize {
+        self.run_preview_asks(app);
         let mut n = 0;
         while let Ok(inc) = rx.try_recv() {
             inc.answer(self.handle(app, inc.request.clone()));

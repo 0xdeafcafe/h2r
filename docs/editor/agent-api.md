@@ -301,6 +301,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `variant` | `list`, `get` (with `script`), `set {setting \| option, value}`, `rename`, `copy`, `export`, `import`, `delete` |
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
 | `ui` | `palette {query, run?}`, `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}`, `select_folder {folder \| root}`, `sheet {folder?, root?, states?, columns?, out?}`; the shown screen's edits, of our screens or a retail one: `select {id?}`, `move {id, dx, dy}`, `set_rect {id, rect}`, `set_text {id, text}`, `revert {id?}`, `undo`, `redo`, `edits`, `save`, `animate {phase, frames?, out?}` ([ui-builder.md](../game/ui-builder.md#editing-in-the-editor)); `check {screen?, state?, aspect?}` ([Content checks](#content-checks)) |
+| `preview` | `target {doc?, target?}`: a document's preview switch and what Preview in game asks of the game ([The preview switch](#the-preview-switch)) |
 | `pair` | `list`, `status`, `connect {socket?}`, `disconnect {leave?}`, `auto {enabled?}`, `play`, `stop`, `control {action, ticks?}`, `edit {enabled}`, `preview {what, target?, ...}`, `audio {seconds?, every_ms?, call?}`, `result {id?}` ([Previewing content in the paired game](#previewing-content-in-the-paired-game)) |
 | `mirror` | `status`, `objects {kind?, near?, limit?, at_tick?}`, `pick {from? \| ray?}`, `aim_select {enabled?}`, `camera {mode?, target?}`, `player {to, facing?}`, `pending`, `apply {what, at?, peers?}` |
 | `view` | `camera {yaw, pitch, distance, target, focus, all, fly_speed}`, `snapshot {out, size, camera}`, `stats`, `layers {set?, preset?, xray?}` |
@@ -1118,6 +1119,42 @@ Notes on some:
   third). Another mode is `INVALID_PARAMS`. To check a
   map: `h2 studio open mainmenu`, `h2 studio render-stats`, then
   `h2 studio snapshot` and look at the PNG.
+
+### The preview switch
+
+`preview.target {doc?, target?}` reads or sets where a document's preview
+shows (docs/editor/studio-redesign.md, "Preview and the paired game";
+`app/preview_switch.rs`, `api/preview.rs`). `doc` is a `shell.tabs` id
+(the front tab without it). `target` is `studio` (the native view or the
+kind's own renderer, the default), `game` (a game Studio started) or
+`attached` (a game someone else started). A game target needs a paired
+game of that kind, else it is `REFUSED` with the reason. The answer is
+`{doc, target, targets: [{id, label, available, why?}], game, why?}`.
+`game` is the `pair.preview` params the document's kind takes, or null
+with `why`:
+
+| Document | `game` |
+|---|---|
+| a `weap` tag | `{what: "weapon", target: <tag name>}` |
+| a `vehi`, `bipd`, `scen` or `eqip` tag | `{what: "object", target: "<group>:<tag name>"}` |
+| a `wgit` or `wgtz` tag, or the screen in the UI Screens tool | `{what: "ui", target: <screen name>}` |
+| a `nhdt` tag, or the HUD tool's document | `{what: "hud"}` |
+| any other tag, the map, a variant or a playlist file | null, with why (a sound is heard with `pair.audio`) |
+
+The **Preview** menu holds the three targets and **Preview in game**
+(Cmd/Ctrl+Enter). The click is `Action::PreviewInGame`: it runs
+`pair.preview` with the front document's `game` params, so the job is the
+one `pair.result` reads, and a refusal (a paused game, no pairing, a kind
+with no preview) goes to the log with the message the API gives. The
+target menu is `Action::SetPreviewTarget`, the command `preview.target`
+runs. Through the API, call `pair.preview` with `game`.
+
+```sh
+h2 studio preview.target '{"target":"attached"}'
+```
+
+The tests are `api/preview/tests.rs`' `switch` module, on the invented
+game.
 
 ### Previewing content in the paired game
 

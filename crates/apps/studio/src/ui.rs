@@ -16,6 +16,7 @@ mod palette;
 mod play;
 mod playlists;
 pub mod problems;
+mod preview_switch;
 mod sound;
 mod anim;
 mod announcer;
@@ -336,6 +337,9 @@ impl Studio {
         if cmd && ui.is_key_pressed(Key::Q) {
             actions.push(Action::Quit);
         }
+        if cmd && ui.is_key_pressed(Key::Enter) {
+            actions.push(Action::PreviewInGame(None));
+        }
         if !bar::is_map(app.tool) {
             return;
         }
@@ -556,6 +560,9 @@ impl Studio {
             if ui.menu_item("Reset layout") {
                 self.reset_layout = true;
             }
+        }
+        if let Some(_m) = ui.begin_menu("Preview") {
+            preview_switch::menu(ui, app, actions);
         }
         self.play.menu(ui, app);
     }

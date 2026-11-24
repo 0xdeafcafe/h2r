@@ -422,3 +422,165 @@ fn brightness_tells_a_black_frame_from_a_lit_one() {
     assert!((l.mean_luma - 200.0 / 255.0).abs() < 1e-6);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+mod switch {
+    //! The preview switch and **Preview in game**: each document kind asks
+    //! the invented game for the calls its `what` lists, over a map of
+    //! invented tags.
+
+    use super::*;
+    use crate::app::preview_switch::plan_for_tag;
+    use crate::app::shell_tests::{self as tabbed, Temp};
+    use crate::app::tag_tests::weap_id;
+    use crate::app::{Action, Doc};
+
+    fn refused(r: crate::api::Reply) -> i64 {
+        r.unwrap_err().code
+    }
+
+    fn weap_name(app: &App) -> String {
+        app.tags.tag(weap_id()).unwrap().name.clone()
+    }
+
+    fn app_with_tags(game: &Game, t: &Temp) -> App {
+        let mut app = tabbed::app(&t.0);
+        app.pairing.published = game.app().pairing.published;
+        app
+    }
+
+    fn logged(app: &App, part: &str) -> bool {
+        app.log().iter().any(|l| l.status.text().contains(part))
+    }
+
+    /// The window's click: the ask, then the API run between frames.
+    fn click(api: &mut Api, app: &mut App, doc: Option<Doc>) -> Option<u64> {
+        app.preview.last_job = None;
+        app.dispatch(Action::PreviewInGame(doc));
+        api.run_preview_asks(app);
+        app.preview.last_job
+    }
+
+    #[test]
+    fn a_kind_asks_for_the_preview_its_what_lists() {
+        let tag = |g: &[u8; 4], name: &str| plan_for_tag(map::FourCC(*g), name);
+        let p = tag(b"weap", "objects\\w\\rifle").unwrap();
+        assert_eq!((p.what, p.target.as_deref()), ("weapon", Some("objects\\w\\rifle")));
+        for g in [b"vehi", b"bipd", b"scen", b"eqip"] {
+            let p = tag(g, "objects\\x").unwrap();
+            let want = format!("{}:objects\\x", std::str::from_utf8(g).unwrap());
+            assert_eq!((p.what, p.target.as_deref()), ("object", Some(want.as_str())));
+        }
+        let p = tag(b"wgit", "ui\\screens\\main_menu").unwrap();
+        assert_eq!((p.what, p.target.as_deref()), ("ui", Some("main_menu")));
+        let p = tag(b"nhdt", "ui\\hud\\a").unwrap();
+        assert_eq!((p.what, p.target), ("hud", None));
+        assert_eq!(p.params(), json!({"what": "hud"}));
+        for g in [b"snd!", b"proj", b"hlmt", b"mode", b"bitm", b"itmc"] {
+            assert!(tag(g, "x").is_err(), "{g:?}");
+        }
+        assert!(tag(b"snd!", "x").unwrap_err().contains("pair.audio"));
+    }
+
+    #[test]
+    fn the_target_switch_follows_the_pairing_and_names_the_game_call() {
+        let game = Game::start("switch");
+        let t = Temp::new("pv-switch");
+        let mut app = app_with_tags(&game, &t);
+        let mut api = Api::new();
+        // Nothing open but the map: the map has no game preview.
+        let r = api.call(&mut app, m::PREVIEW_TARGET, json!({})).unwrap();
+        assert_eq!((r["doc"].as_str(), r["target"].as_str()), (Some("map"), Some("studio")));
+        assert!(r["why"].as_str().unwrap().contains("Playtest"), "{r}");
+
+        app.dispatch(Action::OpenDoc(Doc::Tag(weap_id())));
+        let name = weap_name(&app);
+        let r = api.call(&mut app, m::PREVIEW_TARGET, json!({})).unwrap();
+        assert_eq!(r["game"], json!({"what": "weapon", "target": name}));
+        let ids: Vec<(&str, bool)> = r["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| (t["id"].as_str().unwrap(), t["available"].as_bool().unwrap()))
+            .collect();
+        // A game someone else started is paired.
+        assert_eq!(ids, [("studio", true), ("game", false), ("attached", true)]);
+        assert_eq!(refused(api.call(&mut app, m::PREVIEW_TARGET, json!({"target": "game"}))), code::REFUSED);
+        assert_eq!(
+            refused(api.call(&mut app, m::PREVIEW_TARGET, json!({"target": "moon"}))),
+            code::INVALID_PARAMS
+        );
+        let r = api.call(&mut app, m::PREVIEW_TARGET, json!({"target": "attached"})).unwrap();
+        assert_eq!(r["target"], "attached");
+        assert_eq!(app.preview_target(Doc::Tag(weap_id())), crate::app::preview_switch::PreviewTarget::Attached);
+        // The switch is per document.
+        let r = api.call(&mut app, m::PREVIEW_TARGET, json!({"doc": "map"})).unwrap();
+        assert_eq!(r["target"], "studio");
+
+        // Unpaired, a game target is refused and studio stays.
+        let mut alone = tabbed::app(&Temp::new("pv-alone").0);
+        assert_eq!(
+            refused(api.call(&mut alone, m::PREVIEW_TARGET, json!({"target": "attached"}))),
+            code::REFUSED
+        );
+    }
+
+    #[test]
+    fn preview_in_game_sends_each_kinds_calls() {
+        let game = Game::start("click");
+        let t = Temp::new("pv-click");
+        let mut app = app_with_tags(&game, &t);
+        let mut api = Api::new();
+
+        // A weapon tag: the tab in front, Cmd+Enter's action.
+        app.dispatch(Action::OpenDoc(Doc::Tag(weap_id())));
+        let name = weap_name(&app);
+        let id = click(&mut api, &mut app, None).expect("a job started");
+        let r = finish(&mut api, &mut app, id);
+        assert_eq!((r["what"].as_str(), r["state"].as_str()), (Some("weapon"), Some("done")), "{r}");
+        assert_eq!(game.calls("sim.give"), [json!({"player": "player.0", "weapon": name})]);
+
+        // The HUD tool's document.
+        let id = click(&mut api, &mut app, Some(Doc::Hud)).expect("a job started");
+        let r = finish(&mut api, &mut app, id);
+        assert_eq!(r["what"], "hud");
+        assert!(!game.calls("cheat.list").is_empty());
+
+        // The screens tool's document: the menu is read, not opened.
+        let id = click(&mut api, &mut app, Some(Doc::Ui)).expect("a job started");
+        let r = finish(&mut api, &mut app, id);
+        assert_eq!(r["what"], "ui");
+        assert!(!game.calls("ui.audit").is_empty());
+
+        // An object kind's params are the ones pair.preview takes for it.
+        let p = plan_for_tag(map::FourCC(*b"scen"), "scen:crate").unwrap().params();
+        let id = api.call(&mut app, m::PAIR_PREVIEW, p).unwrap()["id"].as_u64().unwrap();
+        let r = finish(&mut api, &mut app, id);
+        assert_eq!(r["what"], "object");
+        assert_eq!(game.calls("sim.spawn").len(), 1);
+    }
+
+    #[test]
+    fn a_kind_with_no_game_preview_and_a_paused_game_refuse_with_their_message() {
+        let game = Game::start("click-refused");
+        let t = Temp::new("pv-click-refused");
+        let mut app = app_with_tags(&game, &t);
+        let mut api = Api::new();
+
+        // The map has none: the click is refused at once, nothing runs.
+        assert_eq!(click(&mut api, &mut app, None), None);
+        assert!(logged(&app, "Playtest"), "{:?}", app.log().last().map(|l| l.status.text()));
+
+        // The game is paused: the built message, and no call made.
+        app.dispatch(Action::OpenDoc(Doc::Tag(weap_id())));
+        app.pairing.published.as_mut().unwrap()["paused"] = json!(true);
+        assert_eq!(click(&mut api, &mut app, None), None);
+        assert!(logged(&app, "the paired game is paused: resume it (pair.control) to preview"));
+        assert!(game.calls("sim.give").is_empty());
+
+        // Not paired at all.
+        let mut alone = tabbed::app(&Temp::new("pv-click-alone").0);
+        alone.dispatch(Action::OpenDoc(Doc::Tag(weap_id())));
+        assert_eq!(click(&mut api, &mut alone, None), None);
+        assert!(logged(&alone, "pair with a game first") || logged(&alone, "previews run in the editor window"));
+    }
+}

@@ -89,6 +89,8 @@ pub mod method {
     pub const ASSET_COPY: &str = "asset.copy";
     // The Problems panel (docs/editor/studio-redesign.md; api/problems.rs).
     pub const PROBLEMS_LIST: &str = "problems.list";
+    // The preview switch (docs/editor/studio-redesign.md; api/preview.rs).
+    pub const PREVIEW_TARGET: &str = "preview.target";
     // The tag workspace (docs/editor/tag-workspace.md, "Interfaces";
     // api/workspace.rs).
     pub const WORKSPACE_STATUS: &str = "workspace.status";
