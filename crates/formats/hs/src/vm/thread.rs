@@ -24,6 +24,44 @@ pub enum Category {
     External,
 }
 
+/// A scheduler pass reads its tick once. Each lookup starts past the last
+/// inspected slot, including after a script mutates the pool or wakes a peer.
+#[derive(Debug, Clone, Copy)]
+pub struct Schedule {
+    tick: i32,
+    next_slot: usize,
+}
+
+/// The fields the scheduler needs from an occupied slot. The payload is the
+/// caller's identity for dispatch (a VM slot or a salted guest handle).
+pub struct ScheduleSlot<T> {
+    pub index: usize,
+    pub external: bool,
+    pub wake: i32,
+    pub thread: T,
+}
+
+impl Schedule {
+    pub fn new(tick: i32) -> Self {
+        Self { tick, next_slot: 0 }
+    }
+
+    /// `occupied(start)` returns the first occupied slot at or above `start`.
+    /// Read the pool again on each call so a later slot can run immediately.
+    pub fn next_ready<T, E>(
+        &mut self,
+        mut occupied: impl FnMut(usize) -> Result<Option<ScheduleSlot<T>>, E>,
+    ) -> Result<Option<T>, E> {
+        while let Some(slot) = occupied(self.next_slot)? {
+            self.next_slot = slot.index + 1;
+            if !slot.external && (0..=self.tick).contains(&slot.wake) {
+                return Ok(Some(slot.thread));
+            }
+        }
+        Ok(None)
+    }
+}
+
 /// Thread flag bits (`+3`).
 pub(crate) const FIRST_ENTRY: u8 = 1;
 pub(crate) const SAVED_SLEEP: u8 = 2;
