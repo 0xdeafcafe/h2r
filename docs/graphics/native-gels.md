@@ -37,7 +37,8 @@ remains in charge when production is refused.
   the generated target for this light. While that byte is set, texture
   10 instead takes the definition's bitmap, avoiding feedback.
 
-The feature hooks the template and quad helper, both context-only. It
+The feature hooks the template and quad helper, all three hooks context-only; the quad helper's exit hook
+runs after the body, so that chain stays off the render thread. It
 never hooks a D3D-owned entry. At the helper it drains preceding commands
 through `begin_external_boundary` and arms admission for the helper's
 ordered mip draws. At exit it drains any queued last draw and clears the

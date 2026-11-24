@@ -534,6 +534,7 @@ impl WaterSet {
 pub fn sorted_pool(template: Option<&str>, material: &tags::shader::TemplatePostprocess) -> bool {
     template.is_some_and(|name| name.rsplit('\\').next().is_some_and(|leaf|
         leaf.eq_ignore_ascii_case("water_pool") || leaf.eq_ignore_ascii_case("water_pool_static")))
+        && material.lods.first().is_some_and(|lod| usize::from(lod.layers.count) > 15)
         && material.layer_passes(0, 15).is_some_and(|passes| !passes.is_empty())
 }
 

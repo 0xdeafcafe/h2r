@@ -1,0 +1,337 @@
+//! Whole collision query (entry J). All marks and result bytes are planned in
+//! private storage. The agent query and the runtime comparison use the same walk.
+use super::{CollisionMemory, CollisionWorld, Read, consts, layout};
+use runtime::CpuAbi;
+use sim_collision::{Bail, Bsp, GuestRead, Hit, Segment, bsp::NONE};
+use sim_core::det::{self, Fp};
+use std::sync::Arc;
+
+mod batch;
+pub use batch::{Trace, trace_batch};
+mod clusters;
+mod guards;
+pub(super) use guards::Guard;
+mod parity;
+mod relocate;
+pub use parity::{PendingQuery, Prediction, observe};
+
+const SEGMENT_BSP: u32 = 0x004e_0340;
+const BREAKABLES: u32 = 0x004e_d280;
+const SEGMENT_LIMIT: u32 = 0x0044_aed4;
+const DEFAULT_MATERIAL: u32 = 0x0047_d8e0;
+const BSP_SIDES: u32 = 3 << 23;
+const FIRST_HIT: u32 = 1 << 28;
+const RELOCATE: u32 = 1 << 29;
+const RECORD_SIZE: usize = 0x5c;
+
+#[derive(Clone, Copy, Debug)]
+pub struct Location {
+    pub leaf: u32,
+    pub cluster: i16,
+    pub bsp: i16,
+}
+
+#[derive(Clone, Debug)]
+pub struct QueryResult {
+    pub hit_type: u32,
+    pub fraction: u32,
+    pub position: [u32; 3],
+    pub locations: [Location; 2],
+    pub plane: Option<[u32; 4]>,
+    pub material: Option<u16>,
+    pub cluster_epoch: Option<u32>,
+    pub instance_epoch: Option<u32>,
+    pub object_epoch: Option<u32>,
+    pub cluster_marks: Vec<u32>,
+    pub instance_marks: Vec<u32>,
+    pub object_marks: Vec<u32>,
+}
+
+#[derive(Clone, Copy)]
+struct Ray {
+    start: [u32; 3],
+    delta: [u32; 3],
+    flags: u32,
+    ignore: [u32; 2],
+}
+
+impl Ray {
+    fn filter(self) -> u32 {
+        (self.flags >> 23) & 63
+    }
+
+    fn position(self, fraction: u32) -> Result<[u32; 3], Bail> {
+        let mut fp = Fp::new();
+        let pos = std::array::from_fn(|i| {
+            let d = fp.mul(self.delta[i], fraction);
+            fp.add(d, self.start[i])
+        });
+        fp.exact().then_some(pos).ok_or(Bail::Float)
+    }
+}
+
+struct Record([u8; RECORD_SIZE]);
+
+impl Record {
+    fn store(&mut self, offset: u32, bytes: &[u8]) {
+        self.0[offset as usize..offset as usize + bytes.len()].copy_from_slice(bytes);
+    }
+
+    fn word(&self, offset: usize) -> u32 {
+        u32::from_le_bytes(self.0[offset..offset + 4].try_into().unwrap())
+    }
+
+    fn half(&self, offset: usize) -> u16 {
+        u16::from_le_bytes(self.0[offset..offset + 2].try_into().unwrap())
+    }
+
+    fn put(&mut self, offset: u32, value: u32) {
+        self.store(offset, &value.to_le_bytes());
+    }
+
+    fn put_location(&mut self, offset: u32, loc: Location) {
+        self.put(offset, loc.leaf);
+        self.store(offset + 4, &loc.cluster.to_le_bytes());
+        self.store(offset + 6, &loc.bsp.to_le_bytes());
+    }
+
+    fn location(&self, offset: usize) -> Location {
+        Location {
+            leaf: self.word(offset),
+            cluster: self.half(offset + 4) as i16,
+            bsp: self.half(offset + 6) as i16,
+        }
+    }
+
+    fn plane(&self) -> [u32; 4] {
+        std::array::from_fn(|i| self.word(0x28 + 4 * i))
+    }
+
+    fn put_plane(&mut self, p: [u32; 4], flip: bool) -> Result<(), Bail> {
+        let mut fp = Fp::new();
+        for (i, x) in p.into_iter().enumerate() {
+            let x = if flip { fp.sub(0, x) } else { x };
+            self.put(0x28 + 4 * i as u32, x);
+        }
+        fp.exact().then_some(()).ok_or(Bail::Float)
+    }
+
+    fn structure_hit(&mut self, g: &impl GuestRead, structure: u32, h: Hit) -> Result<(), Bail> {
+        let material = match h.material as i16 {
+            -1 => DEFAULT_MATERIAL,
+            n if n >= 0 => g
+                .u32(structure.wrapping_add(0x10))?
+                .wrapping_add(n as u32 * 20 + 8),
+            _ => return Err(Bail::Data),
+        };
+        self.put(0, 1);
+        self.put(4, h.fraction);
+        self.store(0x24, &g.u16(material)?.to_le_bytes());
+        self.put_plane(plane_at(g, h.plane_addr)?, h.plane & 0x8000 != 0)?;
+        self.put(0x4c, h.leaf);
+        self.put(0x50, h.surface);
+        self.put(0x54, h.plane);
+        self.store(0x58, &[h.flags, h.breakable]);
+        self.store(0x5a, &h.material.to_le_bytes());
+        Ok(())
+    }
+
+    fn set_position(&mut self, pos: [u32; 3]) {
+        for (i, x) in pos.into_iter().enumerate() {
+            self.put(8 + i as u32 * 4, x);
+        }
+    }
+}
+
+fn plane_at(g: &impl GuestRead, at: u32) -> Result<[u32; 4], Bail> {
+    let bytes = g.bytes(at, 16)?;
+    Ok(std::array::from_fn(|i| {
+        u32::from_le_bytes(bytes[4 * i..4 * i + 4].try_into().unwrap())
+    }))
+}
+
+fn bsp(g: &mut impl CollisionMemory, world: &CollisionWorld, addr: u32) -> Result<Arc<Bsp>, Bail> {
+    let rev = g.bsp_revision(addr)?;
+    let m = Read(&*g, rev);
+    world.bsp(&m, addr, || consts(&m))
+}
+
+fn location(g: &impl GuestRead, structure: u32, index: i16, leaf: u32) -> Result<Location, Bail> {
+    let cluster = if leaf == NONE {
+        -1
+    } else {
+        let table = g.u32(structure.wrapping_add(layout::STRUCTURE_LEAVES))?;
+        g.u16(table.wrapping_add(leaf.wrapping_mul(8)))? as i16
+    };
+    Ok(Location {
+        leaf,
+        cluster,
+        bsp: index,
+    })
+}
+
+struct Plan {
+    record: Record,
+    flags: u32,
+    marks: clusters::Marks,
+}
+
+fn plan(
+    cpu: &CpuAbi,
+    g: &mut impl CollisionMemory,
+    world: &CollisionWorld,
+    mut ray: Ray,
+    mut record: Record,
+) -> Result<Plan, Bail> {
+    if g.trapped() {
+        return Err(Bail::Trap);
+    }
+    super::vector_env(cpu)?;
+    // Shape and model transforms can use forward string stores.
+    if cpu.eflags & (1 << 10) != 0 {
+        return Err(Bail::Env);
+    }
+    if ray.flags & BSP_SIDES == 0 {
+        ray.flags |= BSP_SIDES;
+    }
+
+    let m = Read(&*g, (0, 0));
+    let structure = m.u32(layout::ACTIVE_STRUCTURE)?;
+    let index = m.u16(layout::BSP_INDEX)? as i16;
+    let one = m.u32(layout::ONE)?;
+    let limit = m.u32(SEGMENT_LIMIT)?;
+    let mut fp = Fp::new();
+    fp.check(limit);
+    fp.check(one);
+    if !fp.exact() {
+        return Err(Bail::Float);
+    }
+    let addr = m.u32(SEGMENT_BSP)?;
+    let mask = m
+        .u32(BREAKABLES)?
+        .wrapping_add((i32::from(index) as u32).wrapping_mul(32))
+        .wrapping_add(1);
+    let fraction = if det::compare(limit, 0).is_lt() {
+        0
+    } else {
+        limit
+    };
+    let t1 = if det::compare(fraction, one).is_gt() {
+        one
+    } else {
+        fraction
+    };
+    let query = Segment {
+        flags: ray.filter(),
+        start: ray.start,
+        delta: ray.delta,
+        fraction,
+        mask,
+        breakable_count: 256,
+        listed: 0,
+        prev_leaf: NONE,
+        prev_kind: 0,
+        plane: NONE,
+    };
+    let b = bsp(g, world, addr)?;
+    let m = Read(&*g, (0, 0));
+    let outcome = b.vector_test(&m, &query, 0, 0, t1)?;
+    record.put(0, 0);
+    record.put(4, one);
+    let nowhere = location(&m, structure, index, NONE)?;
+    record.put_location(0x14, nowhere);
+    record.put_location(0x1c, nowhere);
+    for offset in [0x38, 0x3c, 0x40] {
+        record.put(offset, NONE);
+    }
+    if let Some(hit) = outcome.hit.filter(|_| ray.flags & 1 != 0) {
+        record.structure_hit(&m, structure, hit)?;
+    }
+    // R's overflow slot is outside the list J consumes. After 256 leaves
+    // even the last location is the 256th listed leaf, not the overflow.
+    let leaves = &outcome.leaves[..outcome
+        .leaves
+        .len()
+        .min(sim_collision::bsp::segment::LEAF_LIST as usize)];
+    let mut marks = clusters::Marks::default();
+    let mut hit_bsp = None;
+    if let (Some(&first), Some(&last)) = (leaves.first(), leaves.last()) {
+        record.put_location(0x14, location(&m, structure, index, first)?);
+        record.put_location(0x1c, location(&m, structure, index, last)?);
+        if ray.flags & 14 != 0 && !(ray.flags & FIRST_HIT != 0 && record.word(0) != 0) {
+            if ray.flags & 8 != 0 && ray.flags & 0x1fff0 == 0 {
+                ray.flags |= 0x1fff0;
+            }
+            marks.walk(
+                cpu,
+                g,
+                world,
+                structure,
+                index,
+                ray,
+                leaves,
+                &mut record,
+                &mut hit_bsp,
+            )?;
+        }
+    }
+    record.set_position(ray.position(record.word(4))?);
+    if ray.flags & RELOCATE != 0 && record.word(0) != 0 {
+        relocate::nudge(g, world, ray, structure, index, hit_bsp, &mut record)?;
+    }
+    Ok(Plan {
+        record,
+        flags: ray.flags,
+        marks,
+    })
+}
+
+/// Read-only gameplay query using nearest-even guest arithmetic. Hit fields
+/// use binary32 bits and locations refer to original guest indices.
+pub fn trace(
+    g: &mut impl CollisionMemory,
+    world: &CollisionWorld,
+    start: [u32; 3],
+    delta: [u32; 3],
+    flags: u32,
+    ignore: [u32; 2],
+) -> Result<QueryResult, Bail> {
+    let cpu = CpuAbi {
+        mxcsr: 0x1fa0,
+        ..CpuAbi::xbox_thread()
+    };
+    let p = plan(
+        &cpu,
+        g,
+        world,
+        Ray {
+            start,
+            delta,
+            flags,
+            ignore,
+        },
+        Record([0; RECORD_SIZE]),
+    )?;
+    Ok(p.into_result())
+}
+
+impl Plan {
+    fn into_result(self) -> QueryResult {
+        let r = self.record;
+        let hit_type = r.word(0);
+        QueryResult {
+            hit_type,
+            fraction: r.word(4),
+            position: std::array::from_fn(|i| r.word(8 + 4 * i)),
+            locations: [r.location(0x14), r.location(0x1c)],
+            plane: (hit_type != 0).then(|| r.plane()),
+            material: (hit_type != 0).then(|| r.half(0x24)),
+            cluster_epoch: self.marks.cluster_epoch,
+            instance_epoch: self.marks.instance_epoch,
+            object_epoch: self.marks.object_epoch,
+            cluster_marks: self.marks.clusters,
+            instance_marks: self.marks.instances,
+            object_marks: self.marks.objects,
+        }
+    }
+}

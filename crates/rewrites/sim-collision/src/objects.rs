@@ -13,6 +13,9 @@ use sim_core::det::{Checked, checked, checked_inputs};
 use std::collections::HashSet;
 use std::sync::Arc;
 
+mod packet;
+use packet::Candidate;
+
 /// A reference list, by the two globals that point at it: the per-cluster
 /// head table (a datum word per cluster, `-1` for none) and the datum array
 /// its records live in (`+0x24` record size, `+0x44` records). Both are
@@ -110,15 +113,46 @@ struct State<'q, G> {
 }
 
 impl<G: GuestRead> State<'_, G> {
-    fn read(&mut self, addr: u32, len: u32) -> Result<Vec<u8>, Bail> {
-        let b = self.g.bytes(addr, len as usize)?;
-        self.out.reads.push((addr, len));
+    fn read<const N: usize>(&mut self, addr: u32) -> Result<[u8; N], Bail> {
+        let mut b = [0; N];
+        self.g.read(addr, &mut b)?;
+        self.out.reads.push((addr, N as u32));
         Ok(b)
     }
 
     fn u32(&mut self, addr: u32) -> Result<u32, Bail> {
-        let b = self.read(addr, 4)?;
-        Ok(u32::from_le_bytes(b[..4].try_into().unwrap()))
+        Ok(u32::from_le_bytes(self.read(addr)?))
+    }
+
+    /// The live handle and next link, then the mark and bounds only for
+    /// a reference whose type passes and whose object is new to this visit.
+    fn reference(&mut self, at: u32) -> Result<(u32, Option<Candidate>), Bail> {
+        let fields = self.read::<{layout::READ as usize}>(at.wrapping_add(layout::HANDLE))?;
+        let word = |offset: u32| {
+            let i = (offset - layout::HANDLE) as usize;
+            u32::from_le_bytes(fields[i..i + 4].try_into().unwrap())
+        };
+        let handle = word(layout::HANDLE);
+        if handle == u32::MAX {
+            return Ok((u32::MAX, None));
+        }
+        let next = word(layout::NEXT);
+        let kind = fields[(layout::BOUNDS - layout::HANDLE) as usize];
+        if self.types & 1u32.wrapping_shl(u32::from(kind)) == 0 {
+            return Ok((next, None));
+        }
+        let slot = handle as u16;
+        if u32::from(slot) >= self.q.slots {
+            return Err(Bail::Data);
+        }
+        let mark = self.q.object_marks.wrapping_add(4 * u32::from(slot));
+        if self.marked.contains(&slot) || self.g.u32(mark)? == self.generation {
+            return Ok((next, None));
+        }
+        self.marked.insert(slot);
+        self.out.marks.push(slot);
+        let bounds = std::array::from_fn(|i| word(layout::BOUNDS + 4 + i as u32 * 4));
+        Ok((next, Some(Candidate {handle, bounds})))
     }
 
     /// One cluster's list `k` (`0x000b8940` for the first list,
@@ -135,50 +169,60 @@ impl<G: GuestRead> State<'_, G> {
         let size = self.u32(array.wrapping_add(layout::ELEMENT_SIZE))?;
         let data = self.u32(array.wrapping_add(layout::DATA))?;
         let record = |datum: u32| data.wrapping_add((datum & 0xffff).wrapping_mul(size));
-        let mut at = record(head);
-        let mut fields = self.read(at.wrapping_add(layout::HANDLE), layout::READ)?;
-        loop {
-            let w = |o: u32| {
-                let o = (o - layout::HANDLE) as usize;
-                u32::from_le_bytes(fields[o..o + 4].try_into().unwrap())
-            };
-            let (handle, next) = (w(layout::HANDLE), w(layout::NEXT));
-            let kind = fields[(layout::BOUNDS - layout::HANDLE) as usize];
-            if self.types & 1u32.wrapping_shl(u32::from(kind)) != 0 {
-                let slot = handle as u16;
-                if u32::from(slot) >= self.q.slots {
-                    return Err(Bail::Data);
+        let mut next = head;
+        let mut records = HashSet::new();
+        while next != u32::MAX {
+            let room = i32::from(self.q.capacity as i16) - self.out.handles.len() as i32;
+            // With four slots available, even four hits cannot stop the
+            // walk. Near capacity process a single record before following
+            // its link: the first extra hit ends H without reading beyond it.
+            let width = if room >= 4 && sim_core::lanes::enabled() { 4 } else { 1 };
+            let mut batch = [Candidate::default(); 4];
+            let mut count = 0;
+            let mut error = None;
+            while next != u32::MAX && count < width {
+                let at = record(next);
+                if !records.insert(at) {
+                    error = Some(Bail::Data);
+                    break;
                 }
-                let mark = self
-                    .q
-                    .object_marks
-                    .wrapping_add(4 * u32::from(slot));
-                if !self.marked.contains(&slot) && self.g.u32(mark)? != self.generation {
-                    // Marked before the bounds test: a later reference to
-                    // the same object is skipped even when this one missed.
-                    self.marked.insert(slot);
-                    self.out.marks.push(slot);
-                    let b = |i: u32| f32::from_bits(w(layout::BOUNDS + 4 + 4 * i));
-                    if self.overlaps(k, [b(0), b(1), b(2)], b(3))? {
-                        let count = self.out.handles.len() as u16 as i16;
-                        if count >= self.q.capacity as i16 {
-                            self.out.full = Some(handle);
-                            return Ok(Walk::Full);
+                match self.reference(at) {
+                    Ok((link, candidate)) => {
+                        next = link;
+                        if let Some(item) = candidate {
+                            batch[count] = item;
+                            count += 1;
                         }
-                        self.out.handles.push(handle);
+                    }
+                    Err(why) => {
+                        error = Some(why);
+                        break;
                     }
                 }
             }
-            if next == u32::MAX {
-                return Ok(Walk::Done);
+            let packed = if count == 4 { packet::overlaps(self.q, k, &batch) } else { None };
+            for (i, item) in batch[..count].iter().enumerate() {
+                let hit = match packed {
+                    Some(bits) => bits[i],
+                    None => {
+                        let [x,y,z,r] = item.bounds.map(f32::from_bits);
+                        self.overlaps(k, [x,y,z], r)?
+                    }
+                };
+                if hit {
+                    if self.out.handles.len() as i32 >= i32::from(self.q.capacity as i16) {
+                        self.out.full = Some(item.handle);
+                        return Ok(Walk::Full);
+                    }
+                    self.out.handles.push(item.handle);
+                }
             }
-            at = record(next);
-            fields = self.read(at.wrapping_add(layout::HANDLE), layout::READ)?;
-            let handle = u32::from_le_bytes(fields[..4].try_into().unwrap());
-            if handle == u32::MAX {
-                return Ok(Walk::Done);
-            }
+            // A preceding scalar fallback can set a floating-point fault.
+            // The enclosing checked region must see it even when the next
+            // link is bad.
+            if let Some(why) = error { return Err(why); }
         }
+        Ok(Walk::Done)
     }
 
     /// `(r_ref + r)^2 >= |c_ref - c|^2`, SSE. The two lists sum the

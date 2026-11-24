@@ -1,19 +1,15 @@
 # HaloScript VM (`hs::vm`)
 
-Status: Partly built. The VM runs scenario scripts against a mock `Engine`;
-nothing in `crates/apps/boot` or `crates/hooking/hooks` calls it, and the game still runs
-the recompiled interpreter. Code: `crates/formats/hs/src/vm`. Tests:
-`crates/formats/hs/src/tests.rs`, `crates/formats/hs/tests/vm_disc.rs` (`#[ignore]`).
-Switch: none.
+Status: Partly built. The recompiled interpreter drives campaign scripts.
+The Rust VM predicts supported script executions and checks individual VM
+operations against the guest under the [HaloScript switch](../runtime/switches.md).
+`hs.parity` reports the results. Campaign run parity and promotion are open.
 
-A native Rust runtime for compiled HaloScript, in `crates/formats/hs/src/vm`. It runs
-a decoded `hs::Scenario` against the XBE's `hs::Catalog` and an `Engine`
-trait. It follows the retail interpreter's own structure, so the semantics
-come from the evaluators: threads with frame stacks, evaluators re-entered
-once per loop iteration, value slots cast through the retail table, and the
-scheduler's slot-order tick. Decoding and table provenance are in
-[haloscript.md](../formats/haloscript.md). It is not wired into the game;
-see "Not verified".
+`crates/formats/hs/src/vm` runs a decoded `hs::Scenario` against the
+XBE's `hs::Catalog` and an `Engine` trait. Rust owns thread frames,
+value slots, globals, and the slot-order scheduler. The live comparison
+reads the guest's checkpointed state and leaves execution to the guest.
+The decoder and table provenance are in [haloscript.md](../formats/haloscript.md).
 
 Evidence is `h2 disasm` of the owner's `default.xbe` (SHA-256 `03215919…935d`).
 Some functions were read through Ghidra decompilation and checked against
@@ -223,6 +219,36 @@ leaves the others running:
 - argument type mismatches, which the guest would read as garbage;
 - an initializer that sleeps.
 
+## Live comparison
+
+The HaloScript arm in `crates/rewrites/sim-bridge/src/sim_native.rs` installs
+read-only observers when the image exports the map initializer and all six
+execution entries below. An incomplete image lists the missing entries at
+startup. A declined comparison leaves the call out of the match count.
+
+| Counter | Guest entry | What Rust compares |
+|---|---|---|
+| `scheduler` | update `0x00209310`, execute `0x00209850` | The ordered salted thread handles through the end of one update. The scheduler captures the entry tick and reads the pool again after each dispatched thread. |
+| `thread` | execute `0x00209850` | An ordinary script starting at its root frame. A separate `Vm` runs the same scalar expression to completion or its first self-sleep, seeded with the live globals it reaches; a sleep scales its duration with the live tick rate, and the caller's x87 rounding must be nearest for the conversion's `fistp`. The observer compares the frame chain (parent, expression and cursor of each frame), the top frame, the wake state, the result bits and those globals. |
+| `evaluator` | evaluate `0x002099f0` | A literal or scenario-global atom and its cast into the destination, or the parent's destination, new frame, expression and first-entry flag for a call. |
+| `dispatch` | evaluate arguments `0x00209d50` | The signature of the builtin selected by the expression, the argument block pointer, next argument and frame cursor, and the child frame for a nested call. |
+| `globals` | read `0x00209bc0` | The checkpointed cell and the returned value. External reads account for narrow stores, null bindings and the guest's empty-string pointer. |
+| `global_store` | write back `0x0020a490` | The declared bytes of a bound scalar external after a store. Object marking and object-list traversal still require a guest-backed engine. |
+
+The whole-thread check accepts up to 64 node visits, including static
+script calls. It reads the active definition, nodes, signatures and global
+types against the cached map program before using it. Map initialization
+discards the cache. External bindings, engine calls and the thread-facing
+builtins (`sleep` with a named script target, `sleep_forever`,
+`sleep_until`, `wake`, `begin_random`) lie outside this check. The
+scheduler and the individual VM comparisons also observe calls made by
+those scripts.
+
+Read [`hs.parity`](../runtime/agent-api.md#hsparity) before and after a
+campaign encounter. A counter needs observed matches to establish coverage.
+Record the change in each counter and the first mismatch. The guest still
+supplies the answer on every call, including a mismatch.
+
 ## Validation
 
 `crates/formats/hs/tests/vm_disc.rs`, `#[ignore]`, reads `H2_DISC` (and optionally
@@ -240,13 +266,26 @@ performed and the share of scripts started are in
 printed by the test; they come from map tokens, so they are not reproduced
 here.
 
+The synthetic guest differential in
+`crates/rewrites/sim-bridge/src/sim_native/hs_differential.rs` runs the
+owner's lifted map initializer and five updates on invented tables. Its
+Rust arm receives the same ticks and engine query answers. It compares
+salted thread slots, frame depth, wake state, globals, dispatch counts and
+the ordered engine calls after initialization and each tick. The
+individual boundary tests exercise sparse slots, nested calls and external
+global widths. The fixture data is independent of the executable used
+for the lifted instructions.
+
 ## Not verified
 
 Open items, in the order the game wiring needs them:
 
-1. Differential check against the generated code. Run `hs_update` lifted or
-   recompiled and the VM from the same guest state, then compare thread
-   records, global cells and the order of engine calls.
+1. Verify the lifted differentials with the owner's XBE. Measure coverage
+   on both census B levels, including sleeps, cutscenes, checkpoint
+   restore and encounter transitions. Repeat the campaign runs with
+   caches cold. Promotion requires matching thread and global state,
+   engine effects and identical arena hashes on both architectures per
+   the [verification ladder](sim-rewrite.md#verification-ladder-every-phase-climbs-all-of-it).
 2. Define the guest adapter contract. `EngineCall` suits synchronous Rust
    bodies and mocks, but two things are missing before recompiled
    evaluators can sit behind it:

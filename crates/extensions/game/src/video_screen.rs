@@ -703,7 +703,7 @@ mod tests {
         );
         assert_eq!(drawn(&m, LIST, 3), s("Lighting", "Retail"));
         assert_eq!(drawn(&m, LIST, 4), s("HUD Position", "Pinned"));
-        assert_eq!(drawn(&m, LIST, 5), s("LOD Distance", "1x"));
+        assert_eq!(drawn(&m, LIST, 5), s("LOD Distance", "Highest"));
         assert_eq!(drawn(&m, LIST, 6), None);
         assert_eq!(drawn(&m, LIST, -1), None);
     }

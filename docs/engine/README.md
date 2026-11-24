@@ -19,7 +19,7 @@ evidence. No disassembly listings or game data.
 | [sim-effects.md](sim-effects.md) | phase 6: the effect clock, particle update and birth, contrail clock and release, decal clock and bucket links | ports behind `impl.sim.native.effects`, default off |
 | [object-update.md](object-update.md) | object update callouts, flag setters, register liveness at entries and call sites | contracts read from the lifted code; the slice 1 bodies (walks, per-object updates, type dispatchers, wake leaves) behind `impl.sim.native.objects`, default off |
 | [shadow-exec.md](shadow-exec.md) | the native sim ports (`sim.native`, `sim.physics`) | shadow checks against the lifted original in a running game (`shadow.*`), the shared `lifted` test crate, the disc gate |
-| [hs_vm.md](hs_vm.md) | HaloScript interpreter `0x207c20–0x20a490`, scheduler `0x209310` | native Rust VM in `crates/formats/hs` (`hs::vm`); not yet wired into the game |
+| [hs_vm.md](hs_vm.md) | HaloScript interpreter `0x207c20–0x20a490`, scheduler `0x209310` | native Rust VM in `crates/formats/hs` with live guest comparisons and a synthetic lifted differential |
 | [sim-tier-experiment.md](sim-tier-experiment.md) | compose `0x142a60`, pose `0x1421f0`, MOPP box `0x2ff8b0`, BSP segment `0x1de6d0`, solver `0x31c940` | experiment: `emit::sim` against the reference tier and the hand ports |
 | [sim-tier-writes.md](sim-tier-writes.md) | everything `game_tick` `0x137fe0` reaches | method: static census of the tick's stores |
 | [anim-sampling.md](anim-sampling.md) | animation sampling `0x2798a0` and everything below it | Rust (`sim-anim`) + adapter behind `impl.sim.native.anim`, default off |
