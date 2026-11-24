@@ -33,6 +33,8 @@ pub struct InterpStats {
     /// Auxiliary colour draws and clears kept at guest Swap because a later
     /// draw on the presented colour uses their depth/stencil attachment.
     pub shared_depth_ops: u64,
+    /// Blended guest frames that included an auxiliary depth/stencil producer.
+    pub shared_depth_blended_frames: u64,
     /// In-between frames replayed between presents.
     pub replays: u64,
     /// Draws replayed with substituted constants, over all replays.
@@ -1434,16 +1436,17 @@ impl<B: Backend> InterpBackend<B> {
                     // The present is the guest's own (its frame boundary
                     // and any wait): not the replay's cost.
                     self.timed(t);
-                    let mut st = self.stats.lock().unwrap();
-                    st.blended_frames += 1;
-                    st.substituted_draws += s.draws as u64;
-                    st.held_draw(&s);
-                    st.snapped += s.snapped as u64;
-                    drop(st);
                     let metadata = self.synthetic_metadata(a);
                     crate::present_camera::with(Some(metadata), || {
                         self.inner.present_with_gamma(p, flags, gamma)
                     })?;
+                    let mut st = self.stats.lock().unwrap();
+                    st.blended_frames += 1;
+                    st.shared_depth_blended_frames += u64::from(shared_depth_ops != 0);
+                    st.substituted_draws += s.draws as u64;
+                    st.held_draw(&s);
+                    st.snapped += s.snapped as u64;
+                    drop(st);
                     if slots == 0 {
                         self.last = Some((id, a));
                         self.schedule.shown_at(now, period);

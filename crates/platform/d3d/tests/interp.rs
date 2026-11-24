@@ -1490,7 +1490,8 @@ fn replay_keeps_the_worlds_shared_depth_prepass_at_60_and_120_hz() {
             r.b.present(r.color, 4).unwrap();
         }
 
-        assert_eq!(r.b.stats().lock().unwrap().shared_depth_ops, 4);
+        let stats = *r.b.stats().lock().unwrap();
+        assert_eq!((stats.shared_depth_ops, stats.shared_depth_blended_frames), (4, 1));
         let slots = u64::from(fps / 30);
         for slot in 1..slots {
             let before = r.calls();

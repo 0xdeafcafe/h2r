@@ -1461,10 +1461,12 @@ appear with no change here; `counters` is the frame-stats
 window's line. Each is `null` where that piece is not running.
 
 `interp.shared_depth_ops` counts auxiliary-colour draws and clears retained
-at guest Swap for later depth/stencil tests on the displayed target. Compare
-its increase with `blended_frames` and `replays` over the same interval.
-In a `render.frame` capture, the corresponding passes have different colour
-targets and the same depth attachment.
+at guest Swap for later depth/stencil tests on the displayed target.
+`interp.shared_depth_blended_frames` counts guest frames successfully
+presented with those operations in a blended image. A rising first count
+and a flat second count means the renderer sees the dependency while
+holding those frames. In a `render.frame` capture the corresponding passes
+have different colour targets and the same depth attachment.
 
 `display_frame` gives the identity, lighting and backend counter deltas
 when the worker's latest presentation used the native graph. An
