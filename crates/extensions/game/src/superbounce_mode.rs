@@ -1478,10 +1478,10 @@ fn on_tick(o: &hooks::Obs) {
         .filter_map(|p| Some((p.slot, p.user?)))
         .min_by_key(|(_, user)| *user);
     let tick = live.tick.unwrap_or_else(|| TICKS.load(Ordering::Relaxed));
-    let (awards, medals, physics) = {
+    let (awards, medals, physics, bodies) = {
         let mut m = lock(&MEDALS);
         let awards = m.step(tick, &players, &every);
-        (awards, m.view(), m.physics().to_vec())
+        (awards, m.view(), m.physics().to_vec(), m.bodies().to_vec())
     };
     keep_awards(&awards);
     // In the flight after a bounce, the seams it can reach, the best
@@ -1594,7 +1594,7 @@ fn on_tick(o: &hooks::Obs) {
         crate::superbounce_ghost::tick(m, tick, &players, &awards, map.as_deref(), &spots, chosen);
         // A rules script hears the tick's touchdowns, launches and ends
         // of runs, then each bounce on the tick it is filed.
-        crate::rules::feature::bounces(m, &physics, &awards);
+        crate::rules::feature::bounces(m, &bodies, &physics, &awards);
         // The Pogo Stick's riders, on the chain's verdicts
         // (docs/game/pogo-stick.md, "Phases and tricks").
         // The local players' pistons are heard (pogo_sound.rs).

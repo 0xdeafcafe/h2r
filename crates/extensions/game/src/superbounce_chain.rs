@@ -204,6 +204,17 @@ pub enum Physics {
     Grounded,
 }
 
+/// What a step read of a player's biped, for the rules script's reads
+/// `p.airborne` and `p.primed` (docs/game/rules-world-api.md, "Physics").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Body {
+    pub slot: u8,
+    /// Biped flags bit 0 ([`PlayerTick::airborne`]).
+    pub airborne: bool,
+    /// The level pair's word is the primed one ([`primed`]).
+    pub primed: bool,
+}
+
 /// The previous tick, for the touchdown and the unit's change.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Prev {
@@ -510,6 +521,8 @@ pub struct Medals {
     seq: u64,
     /// What the last step saw of each player's physics, by slot.
     heard: Vec<(u8, Physics)>,
+    /// The bodies of the players with a unit at the last step, by slot.
+    bodies: Vec<Body>,
 }
 
 impl Medals {
@@ -522,6 +535,7 @@ impl Medals {
             recent: VecDeque::new(),
             seq: 0,
             heard: Vec::new(),
+            bodies: Vec::new(),
         }
     }
 
@@ -541,12 +555,20 @@ impl Medals {
         }
         let mut out = Vec::new();
         self.heard.clear();
+        self.bodies.clear();
         for slot in 0..SLOTS {
             let s = seen.iter().find(|s| usize::from(s.slot) == slot);
             if let Some(s) = s {
                 self.users[slot] = s.user;
             }
             let t = s.and_then(|s| s.tick);
+            if let Some(t) = t {
+                self.bodies.push(Body {
+                    slot: slot as u8,
+                    airborne: t.airborne,
+                    primed: t.word.is_some_and(primed),
+                });
+            }
             let event = self.chains[slot].step(t.as_ref(), spots);
             let saw = self.chains[slot].physics();
             self.heard.extend(saw.iter().map(|p| (slot as u8, *p)));
@@ -626,6 +648,12 @@ impl Medals {
             r.chain = c.count();
             r.live = c.live();
         }
+    }
+
+    /// What the last [`Medals::step`] read of each player's biped that had
+    /// a unit, by slot: a rules script's `p.airborne` and `p.primed`.
+    pub fn bodies(&self) -> &[Body] {
+        &self.bodies
     }
 
     /// What the last [`Medals::step`] saw of the players' physics, slot
