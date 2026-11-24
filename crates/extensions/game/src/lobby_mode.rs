@@ -335,7 +335,7 @@ pub fn map_variant_pick(
     let mut blocked = vec![false];
     blocked.extend(listed.iter().map(|v| v.sentence.is_some()));
     // The held pick; else the game variant's suggestion, so the picker
-    // opens on it (docs/game/forge-map-variants.md, "Who picks"); else
+    // opens on it (docs/game/forge-map-variants.md, "How a pick names a map variant"); else
     // Original. The order stays Original, then by name.
     let held = current
         .and_then(|c| listed.iter().position(|v| v.file == c).map(|i| i + 1))

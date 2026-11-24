@@ -103,7 +103,7 @@ pub struct ScriptPart {
 }
 
 /// A map variant the game variant's author made it for
-/// (docs/game/forge-map-variants.md, "Who picks"): the base map's
+/// (docs/game/forge-map-variants.md, "How a pick names a map variant"): the base map's
 /// SHA-256, the map variant's document id and its name, for people.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MapSuggestion {

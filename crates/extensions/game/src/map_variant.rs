@@ -151,7 +151,7 @@ pub fn installed(map: &str) -> Option<Sha256> {
 /// document id a suggestion on the base map `base` (this machine's
 /// SHA-256 of it) names. Suggestions for another base, or for a variant
 /// not on this machine, mark nothing. `game` only suggests: the pick is
-/// not changed (docs/game/forge-map-variants.md, "Who picks").
+/// not changed (docs/game/forge-map-variants.md, "How a pick names a map variant").
 pub fn suggest(
     listed: &mut [crate::lobby_mode::VariantEntry],
     game: &variants::portable::Bundle,

@@ -252,7 +252,7 @@ file, so it carries no signature.
   a bundle without suggestions keeps its bytes and id. `Bundle::with_maps`
   sets them and `portable::read` refuses a file over the cap, by
   name. A suggestion only focuses a map variant in the lobby's picker
-  ([forge-map-variants.md](../game/forge-map-variants.md), "Who picks");
+  ([forge-map-variants.md](../game/forge-map-variants.md), "How a pick names a map variant");
   the record is untouched.
 - **Reading** (`portable::read`) checks a version-2 file's integrity:
   the record decodes, `engine` and `name` match it, and a script is
