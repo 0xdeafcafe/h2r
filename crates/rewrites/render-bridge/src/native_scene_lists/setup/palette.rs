@@ -134,6 +134,7 @@ pub(super) fn object_pose(
     model: u32,
     body: u32,
     slot: u32,
+    definition: u32,
     hlmt: u32,
     sections: &[u8],
 ) -> Result<u32> {
@@ -149,7 +150,9 @@ pub(super) fn object_pose(
                 }
             }
         }
-        if m.u8(at(slot, 3)?)? <= 1 && animated_actor(m, body)? {
+        if m.u8(at(slot, 3)?)? <= 1
+            && (animated_actor(m, body)? || adjusts_unit_nodes(m, body, definition)?)
+        {
             return Err(Refusal::Palette);
         }
     }
@@ -167,8 +170,29 @@ pub(super) fn object_pose(
     at(body, position as u32)
 }
 
-// These two conditions select the actor pose overlay helpers. If neither
-// applies, the cached node matrices remain the input to the palette.
+// After the actor overlays, the unit pose tail (0x000bd934) can still
+// write two individual matrices. Its predicate is 0x00113260.
+pub(super) const UNIT_NODE_ADJUSTMENTS_ENABLED: u32 = 0x0046_86a4;
+
+fn adjusts_unit_nodes(m: &dyn GuestMemory, body: u32, definition: u32) -> Result<bool> {
+    if m.u32(at(definition, 0xbc)?)? & (1 << 11) != 0
+        || m.u16(at(body, 0x1f6)?)? == u16::MAX
+        || (m.u16(at(body, 0x148)?)? & 0x8000 == 0 && m.u8(at(body, 0x137)?)? & 1 == 0)
+        || m.u8(UNIT_NODE_ADJUSTMENTS_ENABLED)? == 0
+    {
+        return Ok(false);
+    }
+    let offset = m.u16(at(body, 0x12a)?)? as i16;
+    if offset < 0 {
+        return Err(Refusal::Palette);
+    }
+    let animation = at(body, offset as u32)?;
+    Ok(m.u32(at(animation, 0x68)?)? != NONE
+        && m.u32(animation)? != NONE
+        && m.u16(at(animation, 6)?)? != u16::MAX)
+}
+
+// The two actor pose overlay helpers called before the unit pose tail.
 fn animated_actor(m: &dyn GuestMemory, body: u32) -> Result<bool> {
     let offset = m.u16(at(body, 0x33e)?)? as i16;
     if offset < 0 {

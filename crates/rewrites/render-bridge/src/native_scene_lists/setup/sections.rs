@@ -303,7 +303,7 @@ fn prepare_model(
             pose
         } else {
             let object_slot = scene.objects.slot(m, owner)?;
-            palette::object_pose(m, model, owner_body, object_slot, hlmt, &selected.sections)?
+            palette::object_pose(m, model, owner_body, object_slot, definition, hlmt, &selected.sections)?
         };
         palette::fill(m, model, chosen, &selected.sections, pose, offset, count)?;
         lighting::refresh(
