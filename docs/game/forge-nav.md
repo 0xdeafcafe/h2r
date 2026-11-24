@@ -41,7 +41,9 @@ generator, so what the overlay shows is what a bot would walk.
    solid that does not compile or merge is left out and named.
 5. **The mesh.** `bots::cache::build` makes the mesh and walls over the
    merged BSP: walkable polygons (the sectors), walks between neighbours,
-   and step, drop and jump links. Each teleporter pair whose two ends
+   and step, drop and jump links. The merge keeps the level's polygons
+   whole, so a floor has no side where a solid stands on it; `generate`
+   gives each walk that has no way back the reverse walk. Each teleporter pair whose two ends
    stand on the mesh becomes a `Teleporter` link. `mark_out_of_map` marks
    the polygons no player start reaches.
 6. **The report.** The session keeps `NavReport` beside the document:
