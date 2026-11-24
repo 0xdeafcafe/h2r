@@ -217,13 +217,13 @@ pub fn install_headless(
 /// Boot selects the presenting backend after network and film registration.
 pub fn window_targets(
     _store: &settings::Store,
-    native_size: crate::run_opts::NativeSize,
+    native_target: crate::run_opts::NativeTarget,
     display_size: impl Fn((u32, u32)) -> (u32, u32) + Send + Sync + 'static,
     reference: impl FnOnce() -> d3d::GfxBackend,
     display: impl FnOnce() -> d3d::GfxBackend,
 ) -> (d3d::GfxBackend, crate::run_opts::DisplayView) {
     let (main, backend) = (reference(), Some(display()));
-    (main, crate::run_opts::DisplayView { backend, native_size, viewer_output: None, display_size: Arc::new(display_size) })
+    (main, crate::run_opts::DisplayView { backend, native_target, viewer_output: None, display_size: Arc::new(display_size) })
 }
 
 /// A locked retail target has no live raster edits. It can present directly
@@ -364,7 +364,8 @@ pub fn install_headless_with_scenes(
                     .filter(|&n| n > 0)
                     .unwrap_or(30),
             };
-            let (width, height) = output_size(settings, Arc::new(|| crate::setting_defs::GUEST_FRAME))?();
+            let native = Arc::new(|| settings::NativeTarget::windowed(crate::setting_defs::GUEST_FRAME));
+            let (width, height) = output_size(settings, native)?();
             let scale = d3d::scaled::RenderScale::for_output(width, height).map_err(anyhow::Error::msg)?;
             let lighting = d3d::scaled::lighting().map_err(anyhow::Error::msg)?;
             let ctx = gfx::GfxContext::headless()

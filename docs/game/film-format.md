@@ -792,8 +792,8 @@ a cinematic, death or vehicle camera the window shows the recorded frame.
 
 A playerless host has no local director, first-person weapon or HUD. For
 a rendered host film the desktop player opens a separate GPU view at the
-viewer's selected resolution. Native follows the physical drawable within the default 4K pixel budget, including
-a resize while paused. The presented aspect sets the observer's horizontal
+viewer's selected resolution. Native follows the physical viewport, including
+a resize while paused, with a 4K pixel budget in fullscreen. The presented aspect sets the observer's horizontal
 field of view. The BSP and posed objects use the same projection for drawing
 and culling. The observer uses the selected unit’s posed camera
 marker, aim and unzoomed field of view. When the marker is unavailable,

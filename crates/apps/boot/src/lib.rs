@@ -477,17 +477,17 @@ fn run_configured(
     let protected_readbacks = d3d_glue::protected_readbacks(_live.is_some(), film.is_some(), lockstep_on);
     let mut features = hooks::Registry::new(registration::profile_switches(switches, host_light));
     #[cfg(feature = "gpu")]
-    let native_size: run_opts::NativeSize = host.gfx_view.as_ref().map(|view| view.native_size.clone())
-        .unwrap_or_else(|| Arc::new(|| setting_defs::GUEST_FRAME));
+    let native_target: run_opts::NativeTarget = host.gfx_view.as_ref().map(|view| view.native_target.clone())
+        .unwrap_or_else(|| Arc::new(|| settings::NativeTarget::windowed(setting_defs::GUEST_FRAME)));
     #[cfg(not(feature = "gpu"))]
-    let native_size: run_opts::NativeSize = Arc::new(|| setting_defs::GUEST_FRAME);
+    let native_target: run_opts::NativeTarget = Arc::new(|| settings::NativeTarget::windowed(setting_defs::GUEST_FRAME));
     #[cfg(feature = "gpu")]
     let output_size = if opts.d3d && ((!host_light && sim_mode.is_none()) || rendered_replay)
         && (host.gfx_view.is_some() || (host.gfx.is_none() && std::env::var_os("H2_BOOT_GFX").is_some()))
     {
         match host.gfx_view.as_ref().and_then(|v| v.viewer_output.clone()) {
             Some(output) => Some(output),
-            None => Some(d3d_glue::output_size(host.settings.as_deref(), native_size.clone())?),
+            None => Some(d3d_glue::output_size(host.settings.as_deref(), native_target.clone())?),
         }
     } else {
         None
@@ -744,10 +744,10 @@ fn run_configured(
             // The guest draws the picker's labels. Replay those observations
             // independently of the viewer's presentation size.
             let menu_size = match &film {
-                Some(session) => session.video_menu_size(native_size, &store)?,
-                None => native_size,
+                Some(session) => session.video_menu_size(native_target.clone(), &store)?,
+                None => native_target.clone(),
             };
-            Some(Arc::new(video_screen::model_with_native_size(
+            Some(Arc::new(video_screen::model_with_native_target(
                 store, video_screen::Switches::PLATFORM, menu_size,
             ).map_err(anyhow::Error::msg)?))
         }
@@ -948,6 +948,9 @@ fn run_configured(
         && let Some(view) = &mut host.gfx_view && view.viewer_output.is_none()
         && let Some(display) = view.backend.take()
     {
+        let (width, height) = setting_defs::GUEST_FRAME;
+        let (dw, dh) = native_target().drawable;
+        eprintln!("d3d: rendering at {width}x{height}; drawable {dw}x{dh}; single copy {single}");
         host.gfx = Some(display.as_only_display());
     }
     #[cfg(feature = "gpu")]
@@ -979,7 +982,8 @@ fn run_configured(
                 let (width, height) = output();
                 let scale = d3d::scaled::RenderScale::for_output(width, height).map_err(anyhow::Error::msg)?;
                 let mut b = d3d::ScaledBackend::with_resolution(b, view, scale, single).map_err(anyhow::Error::msg)?;
-                eprintln!("d3d: rendering at {width}x{height}; single copy {single}");
+                let (dw, dh) = native_target().drawable;
+                eprintln!("d3d: rendering at {width}x{height}; drawable {dw}x{dh}; single copy {single}");
                 // The Video screen's Resolution row changes the scale at the
                 // next frame boundary (docs/graphics/high-resolution.md).
                 // The Lighting row (docs/graphics/e3-lighting-setting.md)

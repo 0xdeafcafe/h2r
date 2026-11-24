@@ -3,17 +3,19 @@
 Status: Built. The renderer supports independently sized horizontal and vertical raster grids.
 Code: `crates/platform/gfx/src/raster.rs`, `crates/platform/d3d/src/scaled.rs`,
 `crates/platform/d3d/src/scaled/single.rs`, `crates/extensions/game/src/d3d_glue.rs`.
+The startup D3D log shows the configured raster and drawable. The window's
+performance overlay shows the latest presented raster and current drawable.
 Tests: `crates/platform/d3d/tests/render_scale.rs`, `crates/platform/gfx/src/raster.rs`,
 `crates/extensions/game/src/render_aspect.rs` and `crates/extensions/game/src/lod_distance.rs`.
 Switch: Resolution, HUD, LOD distance, single-copy readbacks and glyph smoothing
 are listed in [switches.md](../runtime/switches.md#settings).
 
 The play window opens at the primary monitor’s aspect within 1280 × 960 logical
-points. Native follows the physical drawable, including Retina backing pixels, with
-a default internal budget of 3840 × 2160 pixels. It scales both dimensions
-together to preserve the display aspect. On a 5120x2880 Studio Display,
-the fullscreen Resolution row reads **Native (3840x2160)**. Choosing **5120x2880** renders at full panel
-resolution. Both 3440x1440 and 5120x1440 fit within the budget at native size.
+points. Native uses the physical viewport, including Retina backing pixels,
+at the full window size. In fullscreen it scales both dimensions together
+if the viewport exceeds the 3840 × 2160 pixel budget. On a 5120x2880 Studio
+Display the fullscreen Resolution row reads **Native (3840x2160)**.
+Choosing **5120x2880** renders at full panel resolution.
 Explicit sizes stay fixed on resize and support up to 8192 on each axis.
 The desktop shell redraws the latest frame to the resized drawable
 (`Shell::redraw`, `crates/apps/app/src/shell.rs`) while the game prepares
@@ -290,9 +292,8 @@ from the view and `frame-NNNNN-1x.png` from the reference
 
 ### Changing the scale during a run
 
-At each present, `ScaledBackend::follow_resolution` checks for a change. An
-explicit resolution takes effect at this boundary. Native waits for the
-drawable size to hold steady for 150 ms
+At each present, `ScaledBackend::follow_resolution` samples the latest
+Native target or explicit setting for the next frame
 (`crates/extensions/game/src/d3d_glue/output_size.rs`). The window redraws
 the latest published raster at each resize. For Source aspect and Fit
 scaling, Native takes its presentation aspect from the current physical

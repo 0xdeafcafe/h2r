@@ -175,14 +175,17 @@ pub type VfsReady = Box<dyn FnOnce(&Arc<std::sync::Mutex<vfs::Vfs>>) + Send>;
 /// [`Host::between_slices`]: true to keep running.
 pub type BetweenSlices = Box<dyn FnMut(&kernel::Kernel) -> bool>;
 
-/// Physical drawable pixels, read when sizing the view or opening the Video picker.
+/// A live extent in render or display pixels.
 pub type NativeSize = Arc<dyn Fn() -> (u32, u32) + Send + Sync>;
+
+/// The host's physical drawable, fitted viewport and fullscreen mode.
+pub type NativeTarget = Arc<dyn Fn() -> settings::NativeTarget + Send + Sync>;
 
 #[cfg(feature = "gpu")]
 pub struct DisplayView {
     /// Absent when both resolution and lighting are locked to retail.
     pub backend: Option<d3d::GfxBackend>,
-    pub native_size: NativeSize,
+    pub native_target: NativeTarget,
     /// Playback uses the viewer's chosen raster while the guest uses its recorded settings.
     pub viewer_output: Option<NativeSize>,
     /// Physical presentation rectangle for an internal render resolution.

@@ -294,6 +294,7 @@ dependencies = [
  "objc2-quartz-core 0.3.2",
  "png",
  "pollster",
+ "settings",
  "thiserror 2.0.21",
  "timeline",
  "wgpu",

@@ -369,13 +369,14 @@ impl Shell {
         let size = metal_resize
             .as_ref()
             .map_or(size, |metal| metal.drawable_size());
-        let surface = WindowSurface::new(
+        let mut surface = WindowSurface::new(
             &ctx,
             surface,
             (size.width, size.height),
             &self.config,
             SurfaceKind::Window,
         )?;
+        surface.resize((size.width, size.height), window.fullscreen().is_some());
         eprintln!(
             "app: {} ({:?}), surface {:?}",
             info.name, info.backend, surface.config.format
@@ -481,12 +482,11 @@ impl Shell {
             .as_ref()
             .map(|metal| metal.drawable_size())
             .or(size);
-        if let Some(size) = size {
-            if size.width == 0 || size.height == 0 {
-                return;
-            }
-            g.surface.resize((size.width, size.height));
+        let size = size.unwrap_or_else(|| g.window.inner_size());
+        if size.width == 0 || size.height == 0 {
+            return;
         }
+        g.surface.resize((size.width, size.height), g.window.fullscreen().is_some());
         let size = g.surface.size();
         #[cfg(target_os = "macos")]
         let transaction = g
@@ -599,6 +599,12 @@ impl Shell {
             }
             if let Some(t) = &self.watermark_text {
                 let mut panels = t.panels.clone();
+                if let Some(f) = &frame {
+                    let (rw, rh) = f.size;
+                    let (dw, dh) = size;
+                    panels.live.push(format!("raster {rw}x{rh}"));
+                    panels.live.push(format!("drawable {dw}x{dh}"));
+                }
                 if menu_open {
                     panels.cheats.clear();
                 }
@@ -836,6 +842,7 @@ impl Shell {
                 None => Some(Fullscreen::Borderless(None)),
             };
             g.window.set_fullscreen(next);
+            g.window.request_redraw();
         }
     }
 
@@ -948,6 +955,11 @@ impl ApplicationHandler<UserEvent> for Shell {
             WindowEvent::CloseRequested => self.close(event_loop, "window closed"),
             WindowEvent::Resized(size) => self.redraw(Some(size)),
             WindowEvent::RedrawRequested | WindowEvent::Occluded(false) => self.redraw(None),
+            WindowEvent::ScaleFactorChanged { .. } => {
+                if let Some(g) = &self.gpu {
+                    g.window.request_redraw();
+                }
+            }
             WindowEvent::Focused(focused) => {
                 if !focused && let Some(theater) = &self.config.theater {
                     theater.0.release_keys();

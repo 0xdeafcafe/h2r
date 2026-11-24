@@ -338,10 +338,9 @@ impl GuestHost {
         })
     }
 
-    /// Reads the native render extent in physical pixels. Explicit display
-    /// aspects fit inside the drawable. The handle follows window resizes
-    /// and can move to the render thread.
-    pub fn native_size(&self) -> impl Fn() -> (u32, u32) + Clone + Send + Sync + 'static + use<> {
+    /// Reads the physical drawable, fitted viewport and fullscreen mode
+    /// together. The handle follows window resizes on the render thread.
+    pub fn native_target(&self) -> impl Fn() -> settings::NativeTarget + Clone + Send + Sync + 'static + use<> {
         let size = self.native_size.clone();
         move || size.get()
     }

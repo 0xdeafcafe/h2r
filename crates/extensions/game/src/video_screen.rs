@@ -145,20 +145,22 @@ pub const VOICE_NAME: &str = "Voice";
 #[path = "video_screen_resolution.rs"]
 pub(crate) mod resolution;
 
-use crate::run_opts::NativeSize;
+use crate::run_opts::NativeTarget;
 
 /// The model of our rows: the Video and Voice screens from the settings that
 /// name them, the Video and Voice rows that open them on the Settings list
 /// (Voice left out when its screen has no rows), and the controller options
 /// on Controls.
 pub fn model(store: Arc<Store>, on: Switches) -> Result<Model, String> {
-    model_with_native_size(store, on, Arc::new(|| crate::setting_defs::GUEST_FRAME))
+    model_with_native_target(
+        store, on, Arc::new(|| settings::NativeTarget::windowed(crate::setting_defs::GUEST_FRAME)),
+    )
 }
 
-pub fn model_with_native_size(
+pub fn model_with_native_target(
     store: Arc<Store>,
     on: Switches,
-    native: NativeSize,
+    native: NativeTarget,
 ) -> Result<Model, String> {
     let mut video = Screen::new(SCREEN).title(VIDEO_NAME);
     if on.video_screen {
@@ -227,7 +229,7 @@ pub fn model_with_native_size(
         extensions,
         vec![MODEL_IDS, MORE_MODEL_IDS],
     )
-    .map(|m| m.with_native_size(native))
+    .map(|m| m.with_native_target(native))
 }
 
 /// The Voice screen's id and list.
@@ -851,9 +853,13 @@ mod tests {
     #[test]
     fn native_follows_a_resize_and_an_open_pick_keeps_its_values() {
         use crate::ui_kit::picker;
-        let dims = Arc::new(std::sync::Mutex::new((5120, 2880)));
+        let studio = settings::NativeTarget {
+            fullscreen: true,
+            ..settings::NativeTarget::windowed((5120, 2880))
+        };
+        let dims = Arc::new(std::sync::Mutex::new(studio));
         let read = Arc::clone(&dims);
-        let m = model_with_native_size(
+        let m = model_with_native_target(
             Arc::new(Store::defaults(ALL)),
             Switches::ALL,
             Arc::new(move || *read.lock().unwrap()),
@@ -862,13 +868,12 @@ mod tests {
         let row = m.row(LIST, 2).unwrap();
         let slot = m.texts(row)[1].1;
         m.bind_resolution_slot(&[(slot, 0x8000)]);
-        let native = |w, h| resolution::label(settings::Resolution::Native, (w, h));
-        let studio = native(5120, 2880);
+        let studio = resolution::label(settings::Resolution::Native, studio);
         assert_eq!(m.resolution_write(), Some((0x8000, format!("{studio}\0").into_bytes())));
         assert_eq!(m.line(row), format!("Resolution: {studio}"));
         assert_eq!(m.press(row), Chosen::Open(picker::NAME));
         let open = picker::current().unwrap();
-        *dims.lock().unwrap() = (2560, 1600);
+        *dims.lock().unwrap() = settings::NativeTarget::windowed((2560, 1600));
         assert_eq!(
             m.resolution_write(),
             Some((0x8000, b"Native (2560x1600)\0".to_vec()))
