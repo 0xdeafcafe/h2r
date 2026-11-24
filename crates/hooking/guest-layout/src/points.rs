@@ -1698,6 +1698,14 @@ points! { ALL;
     SOUND_SUBMIX_CUTOFF @ 0x0021_e270: [fn(frequency: stack 0) ret 4], Optional; "docs/audio/dsound.md";
     /// Convert the submix filter resonance to its coefficient word.
     SOUND_SUBMIX_RESONANCE @ 0x0021_e2d0: [fn(resonance: stack 0) ret 4], Optional; "docs/audio/dsound.md";
+    /// Construct the spatial descriptor consumed by the channel mixer.
+    SOUND_CHANNEL_SPATIAL @ 0x0012_9aa0: [fn(channel: eax, gain: stack 0, output: stack 1) ret 8], Optional; "docs/audio/dsound.md";
+    /// Gather the sound instance parameters and submit the channel update.
+    SOUND_CHANNEL_UPDATE @ 0x0012_8ca0: [fn(channel: stack 0, gain: stack 1, listener: stack 2) ret 12], Optional; "docs/engine/sim-rewrite.md";
+    /// Collect a listener's cluster ambience candidates.
+    SOUND_CLUSTER_AMBIENCE @ 0x0018_d730: [fn(bsp: stack 0, cluster: stack 1, position: stack 2, fallback_radius: stack 3, palettes: stack 4, gains: stack 5, portals: stack 6, clusters: stack 7, count: stack 8) ret 36], Optional; "docs/formats/structure-bsp.md";
+    /// Compare two candidate distances during ambience selection.
+    SOUND_AMBIENCE_FARTHER @ 0x0018_ae50: [fn(a: stack 0, b: stack 1, distances: stack 2) -> eax ret 12], Optional; "docs/formats/structure-bsp.md";
     /// The sound frame service, once a frame after the render: among
     /// other things, one listener per mapped local user (`0x125c93`).
     SOUND_UPDATE @ 0x0012_5b40: [fn() ret 0]; "docs/engine/engine-map.md";

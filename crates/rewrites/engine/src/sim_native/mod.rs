@@ -15,7 +15,7 @@ pub mod object_base;
 pub(crate) mod plan;
 pub mod pose;
 pub mod root;
-mod ray;
+pub(crate) mod ray;
 pub mod stream;
 pub mod unit;
 
