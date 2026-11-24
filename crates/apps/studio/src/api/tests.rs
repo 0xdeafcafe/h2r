@@ -1016,7 +1016,7 @@ fn tag_uses_lists_the_placements_and_tags_that_reach_a_tag() {
     assert_eq!(
         blocks(&kit),
         [
-            ("netgame_items".to_owned(), 0),
+            ("netgame_equipment".to_owned(), 0),
             ("weapons".to_owned(), 0),
             ("weapons".to_owned(), 1),
         ]
@@ -1045,7 +1045,7 @@ fn tag_uses_lists_the_placements_and_tags_that_reach_a_tag() {
     call(&mut api, &mut app, m::TAG_SET, json!({ "tag": weap, "path": "parts[0].item", "value": null }));
     let cut = call(&mut api, &mut app, m::TAG_USES, json!({ "tag": itmc }));
     assert!(tags(&cut).is_empty());
-    assert_eq!(blocks(&cut), [("netgame_items".to_owned(), 0)]);
+    assert_eq!(blocks(&cut), [("netgame_equipment".to_owned(), 0)]);
     app.dispatch(Action::Undo);
     let back = call(&mut api, &mut app, m::TAG_USES, json!({ "tag": itmc }));
     assert_eq!(tags(&back), [weap.clone()]);
