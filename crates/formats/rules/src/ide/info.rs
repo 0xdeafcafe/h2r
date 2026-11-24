@@ -101,6 +101,27 @@ pub(crate) const LANG: &[Lang] = &[
         doc: "Whether a player holds a grant of a capability.",
         snippet: "granted(${1:p}, ${2:forge.place})",
     },
+    Lang {
+        name: "vec",
+        params: &["x: fixed", "y: fixed", "z: fixed"],
+        result: "vec",
+        doc: "A point or an offset in world units. It is the value of an expression or a `let`, never stored in a variable: `a + b`, `a - b`, `v * k`, `v.x`, `o.position`, `o.velocity`.",
+        snippet: "vec(${1:0.0}, ${2:0.0}, ${3:0.0})",
+    },
+    Lang {
+        name: "length",
+        params: &["v: vec"],
+        result: "fixed",
+        doc: "A vec's length in world units, exact to the 16.16 step.",
+        snippet: "length(${1:v})",
+    },
+    Lang {
+        name: "distance",
+        params: &["a: vec", "b: vec"],
+        result: "fixed",
+        doc: "The distance between two points: `length(a - b)`.",
+        snippet: "distance(${1:a}, ${2:b})",
+    },
 ];
 
 pub(crate) fn lang_index(name: &str) -> Option<usize> {
@@ -113,6 +134,7 @@ const P: &[&str] = &["p"];
 const P_O: &[&str] = &["p", "o"];
 const ZONE_O: &[&str] = &["zone", "o"];
 const T_ARG: &[&str] = &["t"];
+const O_ARG: &[&str] = &["o"];
 const S: &[&str] = &["s"];
 const KILLER_CLASS: &[&str] = &["killer", "class"];
 const BOUNCE: &[&str] = &["p", "spot", "chain", "monster"];
@@ -154,6 +176,7 @@ pub(crate) fn event_info(ev: Event) -> (&'static [&'static str], &'static str) {
         Event::Quit => (P, "A player quit."),
         Event::RoundEnd => (NO_ARGS, "At the end of each round."),
         Event::Bounced => (P, "A player fell out of the map during a bounce: the Bounced medal."),
+        Event::Arrive => (O_ARG, "A mover reached the end of its `move_to`, on the tick its time ran out."),
     }
 }
 

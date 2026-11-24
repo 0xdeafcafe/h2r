@@ -723,6 +723,10 @@ fn kind_words(kind: ErrorKind) -> String {
             vm::MAX_SHOWN_AREAS
         ),
         ErrorKind::Hud => "a HUD call names a widget or waypoint the script does not declare".into(),
+        ErrorKind::Movers => format!(
+            "more than {} objects are moving at once; stop takes one off",
+            vm::MAX_MOVERS
+        ),
     }
 }
 

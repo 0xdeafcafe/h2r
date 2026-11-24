@@ -502,10 +502,13 @@ pub enum Event {
     /// A fall out of the map during a bounce: the superbounce medal chain's
     /// Bounced (`superbounce_chain::Event::Bounced`).
     Bounced,
+    /// A mover reached the end of its `move_to` (`on arrive(o)`): the VM's
+    /// own event, fired on the tick the mover ends.
+    Arrive,
 }
 
 impl Event {
-    pub const ALL: [Event; 21] = [
+    pub const ALL: [Event; 22] = [
         Event::Init,
         Event::RoundStart,
         Event::Tick,
@@ -527,6 +530,7 @@ impl Event {
         Event::RoundEnd,
         Event::ActorAssist,
         Event::Bounced,
+        Event::Arrive,
     ];
 
     pub fn code(self) -> u8 {
@@ -561,6 +565,7 @@ impl Event {
             Event::RoundEnd => "round_end",
             Event::ActorAssist => "actor_assist",
             Event::Bounced => "bounced",
+            Event::Arrive => "arrive",
         }
     }
 
@@ -581,6 +586,7 @@ impl Event {
             // whether it was a Monster Bounce.
             Event::Bounce => &[Ty::Player, Ty::Object, Ty::Int, Ty::Bool],
             Event::Enter | Event::Leave => &[Ty::Object, Ty::Object],
+            Event::Arrive => &[Ty::Object],
             Event::SquadDead => &[Ty::Squad],
             Event::ActorKill => &[Ty::Player, Ty::Class],
             Event::ActorAssist => &[Ty::Player, Ty::Player, Ty::Class],
@@ -609,6 +615,8 @@ impl Event {
             | Event::ActorAssist => 16,
             Event::Enter | Event::Leave => 64,
             Event::SquadDead => 16,
+            // One a mover, and a script has at most 16 movers.
+            Event::Arrive => 16,
             _ => 1,
         }
     }

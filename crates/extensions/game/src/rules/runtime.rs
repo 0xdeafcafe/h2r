@@ -106,6 +106,8 @@ pub const DELIVERED: &[Event] = &[
     Event::Death,
     Event::Enter,
     Event::Leave,
+    // The VM's own, when a mover ends (`Vm::update`).
+    Event::Arrive,
 ];
 /// The read entries this runtime answers.
 pub const READS: &[u16] = &[
@@ -130,6 +132,9 @@ pub const READS: &[u16] = &[
     // The zone test and the roster's units (`super::world::zones`).
     id::INSIDE,
     id::PLAYER_OF,
+    // An object's position and velocity (`super::world::objects`).
+    id::OBJECT_POS,
+    id::OBJECT_VEL,
 ];
 /// The action entries this runtime makes.
 pub const ACTIONS: &[u16] = &[
@@ -177,6 +182,11 @@ pub const ACTIONS: &[u16] = &[
     id::HUD_SHOW,
     id::MARK,
     id::UNMARK,
+    // Put at the boundary (`super::world::objects`); the VM keeps a mover
+    // and tells the game each tick's step.
+    id::TELEPORT,
+    id::MOVE_TO,
+    id::STOP,
 ];
 
 /// Where the `RULES` record lives: the process's `SimExt` blob in the
@@ -406,6 +416,9 @@ pub enum Call {
         primary: Option<String>,
         secondary: Option<String>,
     },
+    /// `teleport`, or a mover's step: the object put at a place
+    /// (`super::world::objects`).
+    Put(super::world::objects::Place),
 }
 
 impl Call {
@@ -429,6 +442,7 @@ impl Call {
             Call::Message(_) => "message",
             Call::SoundTo { .. } | Call::Play { .. } => "sound",
             Call::SetLoadout { .. } => "set_loadout",
+            Call::Put(_) => "put_object",
         }
     }
 }
@@ -683,6 +697,7 @@ impl Game for GuestGame<'_> {
             id::KILLS => on_player(guest::kills),
             id::DEATHS => on_player(guest::deaths),
             id::LIVES => on_player(guest::lives),
+            id::OBJECT_POS | id::OBJECT_VEL => super::world::objects::read(m, call),
             id::TEAM_SCORE => match call.args.first() {
                 Some(Arg::Team(Some(t))) => guest::team_score(m, *t).unwrap_or(0),
                 _ => 0,
@@ -795,6 +810,9 @@ impl Game for GuestGame<'_> {
             // The VM keeps the show state; the HUDs are drawn from it
             // (`super::world::hud`).
             id::HUD_VALUE | id::HUD_FILL | id::HUD_STYLE | id::HUD_TEXT | id::HUD_SHOW | id::MARK | id::UNMARK => None,
+            // The VM keeps the mover; each tick's step is `step_object`.
+            id::MOVE_TO | id::STOP => None,
+            id::TELEPORT => super::world::objects::plan(call).map(Call::Put),
             id::SET_LOADOUT => {
                 let tag = |n: usize| match call.args.get(n) {
                     Some(Arg::Tag(t)) => t.clone(),
@@ -823,6 +841,12 @@ impl Game for GuestGame<'_> {
         if let Some(c) = made {
             self.calls.push(c);
         }
+    }
+
+    /// A mover's step is made at the boundary like a `teleport`.
+    fn step_object(&mut self, object: u32, at: [i32; 3], _velocity: [i32; 3]) {
+        self.calls
+            .push(Call::Put(super::world::objects::Place::of_fixed(object, at)));
     }
 
     fn script_error(&mut self, error: &ScriptError) {
@@ -2016,6 +2040,7 @@ pub async fn make_calls(cx: &Cx, work: &Work) -> (Option<bool>, Vec<(String, Str
                 ref primary,
                 ref secondary,
             } => super::world::loadout::give(cx, player, primary.as_deref(), secondary.as_deref()).await,
+            Call::Put(place) => super::world::objects::put(cx, place).await,
         };
         if let Err(e) = result {
             refused.push((call.name().to_string(), e.to_string()));

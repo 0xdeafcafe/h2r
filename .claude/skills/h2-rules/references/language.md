@@ -59,6 +59,7 @@ in a module prints with the module's path and its line.
 | `tag` | a tag path string (a table column or `set_loadout` argument) |
 | `weapon` | a tag path that must be a weapon's (checked against the weapon group at load); goes where a `tag` is wanted |
 | `sound` | a tag path that must be a sound's (`snd!`); the start gate blocks a map that lacks it, by name; goes where a `tag` is wanted |
+| `vec` | a point or an offset in world units: `vec(x, y, z)` of three `fixed`, `a + b`, `a - b`, `v * k`, `v.x`, `o.position`, `o.velocity`, `length(v)`, `distance(a, b)`. The value of an expression or a `let`; never stored in a variable, option, table, parameter or result, and no `==`, order or `/` |
 | `T?` | `player?`, `team?`, `object?`, `zone?`, `tag?`, `weapon?`: a handle that may be `none` |
 | `Class` | a kit class name string, for `place_squad` and `on actor_kill` |
 | `text` | a string-table index: `text 3` or a string |
@@ -209,6 +210,7 @@ An `on` handler names its arguments in order; the count must match.
 | `on actor_assist(killer, assist, class)` | player?, player?, Class | after its kill |
 | `on bounce(p, spot, chain, monster)` | player, zone, int, bool | `chain` is its place in its chain (1 a single bounce); `monster` a Monster Bounce |
 | `on bounced(p)` | player | a fall out of the map during a bounce |
+| `on arrive(o)` | object | a `move_to` reached its end, on its end tick, after the timers and before `on tick` |
 | `on edit(p, o)` | player, object | a granted power was used |
 
 A handler runs to completion. `on timer` handlers run in slot order, then
@@ -279,6 +281,11 @@ game answers it from its `enter` and `leave` events.
 | `hud_show` | widget, bool | none | now | named |
 | `mark`, `unmark` | waypoint (an `int`: a `waypoint` declaration's name), zone; waypoint | none | now | named (a navpoint over a zone with the distance); needs `hud.waypoints` |
 | `side_of`, `slot_of` | player | int | now | named (the team's index in a game with teams, 16 and the slot in one without; the slot) |
+| `object_pos`, `object_vel` | object, int axis (0 x, 1 y, 2 z) | none | read, fixed | named (`o.position`, `o.velocity` and `o.speed` are three reads each and a `vec_length`) |
+| `vec_length` | fixed, fixed, fixed | none | VM, fixed | `length(v)`, `distance(a, b)`, `o.speed`; exact over any 16.16 vector |
+| `teleport` | object, vec, or object, or object and vec offset | `objects.move` | queued | named (a position outside the world is a refused call, recorded, that moves nothing) |
+| `move_to` | object, vec or object, time | `objects.move` | now | named (a mover in the VM's state, at most 16, one a second for an object, stepped each tick, `on arrive(o)` on its end tick; a time of 0 is one tick) |
+| `stop` | object | `objects.move` | now | named (ends the object's mover with no `on arrive`) |
 
 `hud name: text at koth.hill` declares a widget at a HUD kit element (kinds
 `text`, `banner`, `meter`; at most 16), `waypoint name [at koth.mark]` a
@@ -326,7 +333,7 @@ the tick's 100,000 ops ran out (`Budget`), a table row out of range
 than 128 queued calls (`Queue`), `squad(n)` outside 0 to 15 (`Squad`),
 more than 32 zones asked about by `ticks_held` (`Zones`), a `set_body` tag
 that is no player body (`Body`; one written in the call is a compile
-error, `body.unknown`).
+error, `body.unknown`), more than 16 movers at once (`Movers`).
 `h2 rules run` prints `script error <kind> at tick T, handler H, op P` and
 exits 1.
 
@@ -343,6 +350,9 @@ exits 1.
 | `unknown name`, `unknown function`, `unknown variable` | a typo, or a name out of scope (inside a `fn`, handler locals are not visible) |
 | `X is a let or a parameter and cannot be assigned` / `option X is read-only` | assigned a `let`, a parameter or an option |
 | `a set is only allowed in for each, count, first and pick` | a set used as a value |
+| `a vec is the value of an expression, not a type to store` | a `vec` variable, option, column, parameter or result: keep x, y and z as `fixed` |
+| `<move_along, face, attach, detach> is not built: ...` | a name of the objects slice that waits on research or the drop-ship slice |
+| `teleport moves an object, and x is a player ... (R9)` | `teleport` or `move_to` of a player |
 | `fn x calls itself; recursion is not allowed` | recursion |
 | `an int option needs a range: int 1..5` | `option n: int = 3` |
 | `can't compare time with int in "p.held >= 1". Write 1s for a second or 30t for ticks.` (`unit.mix`) | a `time` mixed with an `int`; also a `timer` set from an `int` option |

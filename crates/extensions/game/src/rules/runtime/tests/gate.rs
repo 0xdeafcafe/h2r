@@ -265,3 +265,23 @@ fn label_reads_labelled_sets_and_zone_tests_are_hostable() {
     // A script with labels is no longer refused for them.
     assert_eq!(host_refusal(&needing("goal")), None);
 }
+
+#[test]
+fn objects_in_motion_are_hostable() {
+    for name in ["object_pos", "object_vel"] {
+        let e = caps::entry_named(name).unwrap();
+        assert!(e.status.hostable(), "{name}");
+        assert!(READS.contains(&e.id), "{name}");
+    }
+    for name in ["teleport", "move_to", "stop"] {
+        let e = caps::entry_named(name).unwrap();
+        assert!(e.status.hostable(), "{name}");
+        assert!(ACTIONS.contains(&e.id), "{name}");
+    }
+    assert!(DELIVERED.contains(&Event::Arrive));
+    let src = "rules \"M\" 1\ntype slayer\nrequires objects.move\nlabel pad: object\n\
+               on arrive(o) { stop(o) }\n\
+               on tick { move_to(pad, pad.position + vec(0.0, 0.0, 1.0), 5t)\n teleport(pad, vec(0.0, 0.0, 0.0)) }\n";
+    let ir = ::rules::compile(src).unwrap();
+    assert_eq!(host_refusal(&ir), None);
+}

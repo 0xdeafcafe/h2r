@@ -98,6 +98,9 @@ types. A test asserts each front-end signature erases to its entry's
 | `hud_value(w, n)`, `hud_fill(w, f)`, `hud_style(w, n)`, `hud_text(w, "…")`, `hud_show(w, on)` | `int` (a widget's number, the name of its `hud` declaration), then `int`; `fixed`; `int`; `text`; `bool` |
 | `mark(wp, z)`, `unmark(wp)` | `int` (a waypoint's number, the name of its `waypoint` declaration), then `zone`; `int` |
 | `side_of(p)`, `slot_of(p)` | `player -> int`: the player's team index in a game with teams and 16 and its roster slot in one without; the roster slot |
+| `teleport(o, at)`, `move_to(o, at, t)`, `object_pos`, `object_vel` | `object, vec`; `object, vec, time`; `object, int -> fixed` (a `vec` is three `fixed` registers in the IR, `Type::width`; `at` may also be an object, and `teleport(o, at, offset)` an object and a `vec`) |
+| `vec(x, y, z)`, `length(v)`, `distance(a, b)`, `v.x`, `o.position`, `o.velocity`, `o.speed` | `fixed, fixed, fixed -> vec`; `vec -> fixed`; `vec, vec -> fixed`; `vec -> fixed`; `-> vec`; `-> vec`; `-> fixed` |
+| `on arrive(o)` | `object` |
 | `place_squad(s, c, n, at)` | `squad, class, int, objects` |
 | `round_time_left()`, `now()`, `seconds(n)` | `-> time`; `int -> time` |
 | `on kill(victim, killer)` | `player, player?` |

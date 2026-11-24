@@ -6,6 +6,7 @@ pub mod body;
 pub mod bots;
 pub mod hud;
 pub mod loadout;
+pub mod objects;
 pub mod show;
 pub mod spawns;
 pub mod walls;

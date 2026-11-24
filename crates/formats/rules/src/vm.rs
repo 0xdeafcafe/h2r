@@ -33,6 +33,8 @@ pub const MAX_OBJECT_RECORDS: usize = MAX_LABELLED;
 pub const MAX_HELD_ZONES: usize = 32;
 /// Areas `show_area` keeps drawn at once.
 pub const MAX_SHOWN_AREAS: usize = 8;
+/// Movers (`move_to`) running at once.
+pub const MAX_MOVERS: usize = 16;
 
 /// A value handed to the game, resolved from the blob's tables.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -99,6 +101,11 @@ pub trait Game {
     /// An action entry, made now (an `Order::Now` entry, or a queued one
     /// from [`Vm::flush_queue`]).
     fn act(&mut self, call: &Call);
+    /// A mover's step for this tick: `object` set to `at` (16.16 world
+    /// units) and moving at `velocity` (16.16 world units a second; all
+    /// zero on the tick it arrives). The VM makes one for each running
+    /// mover every tick ([`Vm::update`]).
+    fn step_object(&mut self, _object: u32, _at: [i32; 3], _velocity: [i32; 3]) {}
     /// The VM stopped on a script error: end the round with the outcome
     /// "script error" through `GAME_END`.
     fn script_error(&mut self, error: &ScriptError);
@@ -209,6 +216,8 @@ pub enum ErrorKind {
     /// A `hud_*`, `mark` or `unmark` call named a widget or waypoint the
     /// script does not declare.
     Hud,
+    /// More than [`MAX_MOVERS`] movers running at once (`move_to`).
+    Movers,
 }
 
 impl ErrorKind {
@@ -227,6 +236,7 @@ impl ErrorKind {
             6 => ErrorKind::Body,
             7 => ErrorKind::Areas,
             8 => ErrorKind::Hud,
+            9 => ErrorKind::Movers,
             _ => return None,
         })
     }
@@ -301,6 +311,56 @@ pub struct RulesExt {
     /// state every machine that runs the VM draws from
     /// ([`crate::show::view`]) and a film's keyframe restores.
     pub show: crate::show::State,
+    /// The movers a script runs (`move_to`), in the order started, at most
+    /// [`MAX_MOVERS`]. The VM steps each every tick ([`Vm::update`]), so a
+    /// checkpoint, a film's keyframe and the sim hash carry them and every
+    /// machine that runs the VM moves the same objects the same way.
+    pub movers: Vec<Mover>,
+}
+
+/// An object moving in a straight line between two points in a stated
+/// number of ticks (`move_to(o, at, t)`): the record the VM steps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mover {
+    pub object: u32,
+    /// Where the object was when `move_to` was called, 16.16 world units.
+    pub from: [i32; 3],
+    pub to: [i32; 3],
+    /// The tick `move_to` was called on.
+    pub start: u32,
+    /// Ticks from `start` to arriving, at least 1.
+    pub duration: u32,
+}
+
+impl Mover {
+    /// The tick the mover arrives on, and `on arrive` runs.
+    pub fn end(&self) -> u32 {
+        self.start.saturating_add(self.duration)
+    }
+
+    /// The position on `tick`: the straight line, in 64-bit integer steps
+    /// truncated toward `from`, and exactly `to` from the end tick on.
+    pub fn at(&self, tick: u32) -> [i32; 3] {
+        let k = i64::from(tick.saturating_sub(self.start).min(self.duration));
+        let d = i64::from(self.duration);
+        let mut out = [0; 3];
+        for i in 0..3 {
+            let delta = i64::from(self.to[i]) - i64::from(self.from[i]);
+            out[i] = (i64::from(self.from[i]) + delta * k / d).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+        }
+        out
+    }
+
+    /// The velocity while moving, in 16.16 world units a second.
+    pub fn velocity(&self) -> [i32; 3] {
+        let d = i64::from(self.duration);
+        let mut out = [0; 3];
+        for i in 0..3 {
+            let delta = i64::from(self.to[i]) - i64::from(self.from[i]);
+            out[i] = (delta * i64::from(caps::TICKS_PER_SECOND) / d).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+        }
+        out
+    }
 }
 
 /// A team's spawn rule: the starting locations its players' spawns may
@@ -341,8 +401,9 @@ pub enum StateError {
 
 const STATE_MAGIC: [u8; 4] = *b"H2RX";
 /// 2 added the `ticks_held` counters; 3 the teams' spawn rules and
-/// bodies; 4 the script role mask and the shown areas; 5 the show state.
-const STATE_VERSION: u8 = 5;
+/// bodies; 4 the script role mask and the shown areas; 5 the show state;
+/// 6 the movers.
+const STATE_VERSION: u8 = 6;
 
 impl RulesExt {
     /// Whether `player` holds `cap` (an index into `requires`) with uses
@@ -466,6 +527,14 @@ impl RulesExt {
         let show = self.show.encode();
         w.push(show.len() as u8);
         w.extend_from_slice(&show);
+        w.push(self.movers.len() as u8);
+        for m in &self.movers {
+            w.extend_from_slice(&m.object.to_le_bytes());
+            i32s(&mut w, &m.from);
+            i32s(&mut w, &m.to);
+            w.extend_from_slice(&m.start.to_le_bytes());
+            w.extend_from_slice(&m.duration.to_le_bytes());
+        }
         w
     }
 
@@ -626,6 +695,30 @@ impl RulesExt {
         let at = r.at;
         let n = r.u8()? as usize;
         let show = crate::show::State::decode(r.take(n)?).map_err(|_| StateError::Malformed(at))?;
+        let at = r.at;
+        let n = r.u8()? as usize;
+        if n > MAX_MOVERS {
+            return Err(StateError::Malformed(at));
+        }
+        let mut movers: Vec<Mover> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let at = r.at;
+            let object = r.u32()?;
+            let from = [r.i32()?, r.i32()?, r.i32()?];
+            let to = [r.i32()?, r.i32()?, r.i32()?];
+            let start = r.u32()?;
+            let duration = r.u32()?;
+            if object_id(object as i32).is_none() || duration == 0 || movers.iter().any(|m| m.object == object) {
+                return Err(StateError::Malformed(at));
+            }
+            movers.push(Mover {
+                object,
+                from,
+                to,
+                start,
+                duration,
+            });
+        }
         if r.at != bytes.len() {
             return Err(StateError::Malformed(r.at));
         }
@@ -647,6 +740,7 @@ impl RulesExt {
             bodies,
             shown,
             show,
+            movers,
         })
     }
 }
@@ -806,6 +900,7 @@ impl Vm {
             bodies: [None; MAX_TEAMS],
             shown: Vec::new(),
             show: crate::show::State::default(),
+            movers: Vec::new(),
         };
         Ok(Vm {
             role_traits: role_traits(&ir, options),
@@ -841,6 +936,7 @@ impl Vm {
                 .iter()
                 .flatten()
                 .all(|w| w.text.is_none_or(|t| (t as usize) < ir.strings.len()))
+            && ext.movers.len() <= MAX_MOVERS
             && ext.spawns.iter().all(|r| match r {
                 Some(Spawns::Areas { label, .. }) => (*label as usize) < ir.labels.len(),
                 _ => true,
@@ -997,10 +1093,46 @@ impl Vm {
                 return Fired::Stopped;
             }
         }
+        if self.step_movers(game) == Fired::Stopped {
+            return Fired::Stopped;
+        }
         match self.handler(Event::Tick, None) {
             Some(hi) => self.run(game, hi, &[]),
             None => Fired::NoHandler,
         }
+    }
+
+    /// Steps each running mover for this tick, in the order started: the
+    /// game is told the object's place and velocity, and a mover whose end
+    /// tick this is is told its end, leaves the list, and then `on arrive`
+    /// runs for each such object in that order (a handler may start its
+    /// object moving again). A mover takes no step on the tick it was
+    /// started on.
+    fn step_movers(&mut self, game: &mut dyn Game) -> Fired {
+        let tick = self.ext.tick;
+        let mut arrived = Vec::new();
+        let mut i = 0;
+        while i < self.ext.movers.len() {
+            let m = self.ext.movers[i];
+            if tick <= m.start {
+                i += 1;
+            } else if tick >= m.end() {
+                game.step_object(m.object, m.to, [0; 3]);
+                arrived.push(m.object);
+                self.ext.movers.remove(i);
+            } else {
+                game.step_object(m.object, m.at(tick), m.velocity());
+                i += 1;
+            }
+        }
+        for object in arrived {
+            if let Some(hi) = self.handler(Event::Arrive, None)
+                && self.run(game, hi, &[object_value(object)]) == Fired::Stopped
+            {
+                return Fired::Stopped;
+            }
+        }
+        Fired::Ran
     }
 
     /// Makes the queued calls in program order. The host calls it from its
@@ -1167,6 +1299,7 @@ impl Vm {
                 self.ext.bodies = [None; MAX_TEAMS];
                 self.ext.shown.clear();
                 self.ext.show = crate::show::State::default();
+                self.ext.movers.clear();
             }
             _ => {}
         }
@@ -1182,6 +1315,11 @@ impl Vm {
             }),
             Spawns::Near { zone, count } => Some(SpawnRule::Near { zone, count }),
         }
+    }
+
+    /// The movers running (`move_to`), in the order started.
+    pub fn movers(&self) -> &[Mover] {
+        &self.ext.movers
     }
 
     /// The areas shown in play (`show_area`): each zone object and the team
@@ -1655,6 +1793,7 @@ impl<'a> Run<'a> {
                         }
                     }
                     caps::id::NOW => i32::try_from(self.ext.tick).unwrap_or(i32::MAX),
+                    caps::id::VEC_LENGTH => fixed::length(raw[0], raw[1], raw[2]),
                     caps::id::RANDOM => {
                         if raw[0] > 0 {
                             (splitmix64(&mut self.ext.rng) % raw[0] as u64) as i32
@@ -1694,6 +1833,7 @@ impl<'a> Run<'a> {
             Kind::Action => {
                 match e.order {
                     Order::Now => {
+                        self.mover(game, e.id, &raw)?;
                         self.stand(e.id, &raw)?;
                         let mut call = self.resolve(e, &raw);
                         if caps::is_message(e.id) {
@@ -1716,6 +1856,48 @@ impl<'a> Run<'a> {
                 Ok(None)
             }
         }
+    }
+
+    /// `move_to` and `stop`: the movers in the VM's state. `move_to` starts
+    /// the object moving from where the game reads it now, in a straight
+    /// line, arriving `t` ticks on (at least 1); the object's earlier mover
+    /// is replaced, with no `on arrive`. `stop` ends the object's mover,
+    /// with none. `none` for the object does nothing; a seventeenth mover
+    /// is a script error.
+    fn mover(&mut self, game: &mut dyn Game, entry: u16, raw: &[i32]) -> Result<(), ErrorKind> {
+        match (entry, raw) {
+            (caps::id::MOVE_TO, &[object, x, y, z, ticks]) => {
+                let Some(object) = object_id(object) else {
+                    return Ok(());
+                };
+                let at = |game: &mut dyn Game, entry: u16, axis: i32| {
+                    game.read(&Call {
+                        entry: &caps::ENTRIES[entry as usize],
+                        args: vec![Arg::Object(Some(object)), Arg::Int(axis)],
+                    })
+                };
+                let from = [0, 1, 2].map(|axis| at(game, caps::id::OBJECT_POS, axis));
+                let mover = Mover {
+                    object,
+                    from,
+                    to: [x, y, z],
+                    start: self.ext.tick,
+                    duration: ticks.max(1) as u32,
+                };
+                match self.ext.movers.iter_mut().find(|m| m.object == object) {
+                    Some(m) => *m = mover,
+                    None if self.ext.movers.len() >= MAX_MOVERS => return Err(ErrorKind::Movers),
+                    None => self.ext.movers.push(mover),
+                }
+            }
+            (caps::id::STOP, &[object]) => {
+                if let Some(object) = object_id(object) {
+                    self.ext.movers.retain(|m| m.object != object);
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     /// The standing rules an action sets in the VM's state, which the host
@@ -2016,6 +2198,13 @@ mod tests {
                 show.waypoints[1] = Some(crate::show::Waypoint { at: 0x4001_0003, audience: 3 });
                 show
             },
+            movers: vec![Mover {
+                object: 0x4001_0009,
+                from: [1, -2, 3],
+                to: [-65_536, 65_536, 0],
+                start: 7,
+                duration: 30,
+            }],
         }
     }
 
@@ -2209,6 +2398,57 @@ mod tests {
     }
 
     #[test]
+    fn a_mover_walks_a_straight_line_and_ends_exactly_on_its_target() {
+        let m = Mover {
+            object: 1,
+            from: [0, 65_536, -65_536],
+            to: [10 * 65_536, 65_536, 65_536],
+            start: 4,
+            duration: 10,
+        };
+        assert_eq!(m.end(), 14);
+        assert_eq!(m.at(4), m.from);
+        assert_eq!(m.at(9), [5 * 65_536, 65_536, 0]);
+        assert_eq!(m.at(14), m.to);
+        assert_eq!(m.at(1_000), m.to, "past the end it stays on the target");
+        // 10 units in 10 ticks at 30 ticks a second: 30 units a second.
+        assert_eq!(m.velocity(), [30 * 65_536, 0, 6 * 65_536]);
+        // A third of a unit is rounded toward the start, the same on every
+        // machine.
+        let third = Mover {
+            object: 2,
+            from: [0; 3],
+            to: [10, -10, 0],
+            start: 0,
+            duration: 3,
+        };
+        assert_eq!(third.at(1), [3, -3, 0]);
+        assert_eq!(third.at(2), [6, -6, 0]);
+    }
+
+    #[test]
+    fn state_refuses_a_mover_with_no_time_none_for_an_object_twice_or_too_many() {
+        let bad = |f: &dyn Fn(&mut Vec<Mover>)| {
+            let mut e = ext();
+            f(&mut e.movers);
+            assert!(RulesExt::decode(&e.encode()).is_err());
+        };
+        bad(&|m| m[0].duration = 0);
+        bad(&|m| m[0].object = u32::MAX);
+        bad(&|m| {
+            let again = m[0];
+            m.push(again);
+        });
+        bad(&|m| {
+            *m = (0..MAX_MOVERS as u32 + 1)
+                .map(|o| Mover { object: o, ..m[0] })
+                .collect()
+        });
+        let e = ext();
+        assert_eq!(RulesExt::decode(&e.encode()).unwrap().movers, e.movers);
+    }
+
+    #[test]
     fn state_refuses_unsorted_grants() {
         let mut e = ext();
         e.grants.swap(0, 1);
@@ -2263,6 +2503,15 @@ mod tests {
                 waypoints: [Some(crate::show::Waypoint { at: u32::MAX, audience: u16::MAX });
                     crate::show::MAX_WAYPOINTS],
             },
+            movers: (0..MAX_MOVERS as u32)
+                .map(|o| Mover {
+                    object: o,
+                    from: [i32::MIN; 3],
+                    to: [i32::MAX; 3],
+                    start: u32::MAX,
+                    duration: u32::MAX,
+                })
+                .collect(),
         };
         let bytes = e.encode();
         assert!(bytes.len() <= MAX_STATE_BYTES, "{} bytes", bytes.len());
