@@ -8,14 +8,36 @@ use std::sync::Arc;
 
 mod manager_arm;
 mod manager_fusion;
+#[cfg(test)]
+mod hs_differential;
+mod hs_dispatch;
+mod hs_eval;
+mod hs_globals;
+pub mod hs_parity;
+mod hs_scheduler;
+mod hs_thread;
+
+const HS: &str = "sim.native.hs";
+const HS_POINTS: &[&points::Point] = &[
+    &points::SCRIPT_UPDATE,
+    &points::HS_THREAD_EXECUTE,
+    &points::HS_GLOBAL_READ,
+    &points::HS_GLOBAL_STORED,
+    &points::HS_EVALUATE,
+    &points::HS_EVALUATE_ARGUMENTS,
+    &points::HS_NEW_MAP,
+];
 
 pub struct SimNative {
+    missing_hs_entries: Vec<&'static str>,
     exported_anim: Vec<AnimBody>,
 }
 
 impl SimNative {
     pub fn new(runtime: &runtime::Runtime) -> Self {
         runtime.read_dispatch(|d| Self {
+            missing_hs_entries: HS_POINTS.iter().filter(|p| !d.has_generated(p.base))
+                .map(|p| p.name).collect(),
             exported_anim: ANIM_BODIES.iter().copied().filter(|body| {
                 d.has_generated(body.point.base) && body.sites.iter().all(|&pc| d.has_resume(pc))
             }).collect(),
@@ -25,7 +47,7 @@ impl SimNative {
     /// An image with all animation resume selectors.
     #[cfg(test)]
     pub(crate) fn for_tests() -> Self {
-        Self { exported_anim: ANIM_BODIES.to_vec() }
+        Self { missing_hs_entries: Vec::new(), exported_anim: ANIM_BODIES.to_vec() }
     }
 }
 
@@ -109,6 +131,18 @@ impl Feature for SimNative {
                         original(cpu, ctx, addr)
                     })
                     .context_only();
+            }
+        }
+        if b.switches().implementation(HS, false) {
+            if self.missing_hs_entries.is_empty() {
+                hs_scheduler::install(b);
+                hs_thread::install(b);
+                hs_eval::install(b);
+                hs_globals::install(b);
+                hs_dispatch::install(b);
+            } else {
+                eprintln!("HaloScript parity requires these generated entries: {}",
+                    self.missing_hs_entries.join(", "));
             }
         }
         if anim {
@@ -558,6 +592,33 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn hs_switch_installs_guest_observers_for_the_complete_image() {
+        let plan_for = |spec, feature: SimNative| {
+            let mut registry = Registry::new(Switches::parse(spec).unwrap());
+            registry.add(&feature).unwrap();
+            registry.build(&Base).unwrap()
+        };
+        for (spec, installed) in [
+            ("", false),
+            ("impl.sim.native.hs", true),
+            ("-impl.sim.native", false),
+            ("impl.sim.native,-impl.sim.native.hs", false),
+            ("-impl.sim.native,impl.sim.native.hs", true),
+        ] {
+            let plan = plan_for(spec, SimNative::for_tests());
+            for point in HS_POINTS {
+                let observed = plan.chains.get(&point.base).is_some_and(|chain| {
+                    chain.implement.is_none() && !chain.observe_before.is_empty()
+                });
+                assert_eq!(observed, installed, "{spec}: {}", point.name);
+            }
+        }
+        let mut incomplete = SimNative::for_tests();
+        incomplete.missing_hs_entries.push(points::HS_THREAD_EXECUTE.name);
+        assert!(plan_for("impl.sim.native.hs", incomplete).chains.is_empty());
     }
 
     #[test]

@@ -90,6 +90,8 @@ pub const TABLE: &[Switch] = &[
         "the skeleton walk of bd090 in one Rust call (docs/engine/skeleton-walk.md): deleted when phase 1b's run ladder is clean"),
     sw("impl.sim.native.collision", Off, "sim", "2026-11-20",
         "collision queries (sim-collision): on in the lane that lands it, then deleted"),
+    sw("impl.sim.native.hs", Off, "sim", "2026-11-25",
+        "HaloScript VM: retire after the campaign parity and timing ladder"),
     sw("impl.sim.native.objects", Off, "sim", "2026-11-20",
         "the object update (sim-objects): on in the lane that lands it, then deleted"),
     sw("impl.sim.native.effects", Off, "sim", "2026-11-25",

@@ -20,10 +20,11 @@ pub mod mock;
 mod thread;
 mod value;
 
-pub use convert::{Cast, PureCast, classify, cvttss2si, fistp};
+pub use convert::{Cast, PureCast, apply as apply_pure_cast, classify, cvttss2si, fistp};
 pub use engine::{Binding, Bindings, Engine, EngineCall, EngineError, Override, ScenarioGlobals};
+pub use eval::{ArgumentStep, argument_step};
 pub use image::{Native, SLEEP_UNTIL_INDEX, VmImage};
-pub use thread::{Category, DORMANT, FINISHED, Thread, ThreadState};
+pub use thread::{Category, DORMANT, FINISHED, Schedule, ScheduleSlot, Thread, ThreadState};
 pub use value::{Cell, HsType, StringRef, Value};
 
 use crate::{Catalog, Datum, Node, Scenario};
@@ -323,14 +324,23 @@ impl<'a> Vm<'a> {
             }
         }
         self.pool.delete(t);
-        for (i, s) in self.scenario.scripts.iter().enumerate() {
-            if s.kind <= 2 {
-                self.pool
-                    .allocate(Category::Script, Some(i as u16), s.kind == 1)
-                    .ok_or(VmError::ThreadPoolFull)?;
+        for i in 0..self.scenario.scripts.len() {
+            if self.scenario.scripts[i].kind <= 2 {
+                self.create_script_thread(i as u16)?;
             }
         }
         Ok(())
+    }
+
+    /// Create an ordinary script thread at its root frame. Map initialization
+    /// does this for every scheduled definition; a VM checking one guest
+    /// thread can load its globals and create only that definition.
+    pub fn create_script_thread(&mut self, script: u16) -> VmResult<usize> {
+        let definition = self.scenario.scripts.get(usize::from(script))
+            .filter(|s| s.kind <= 2)
+            .ok_or_else(|| VmError::Node("expected an ordinary script definition".into()))?;
+        self.pool.allocate(Category::Script, Some(script), definition.kind == 1)
+            .ok_or(VmError::ThreadPoolFull)
     }
 
     fn initialize_global(&mut self, e: &mut dyn Engine, t: usize, i: usize) -> VmResult<()> {
@@ -366,17 +376,21 @@ impl<'a> Vm<'a> {
             return;
         }
         self.stats.updates += 1;
-        let now = e.game_time();
-        let mut slot = self.pool.next(0);
-        while let Some(i) = slot {
-            let t = self.pool.slots[i].as_ref().unwrap();
-            if t.category != Category::External && t.wake >= 0 && t.wake <= now {
-                self.run(e, i);
-            }
-            slot = self.pool.next(i + 1);
-            if !self.enabled {
-                break;
-            }
+        let mut schedule = Schedule::new(e.game_time());
+        while self.enabled {
+            let Ok(next) = schedule.next_ready(|start| {
+                Ok::<_, std::convert::Infallible>(self.pool.next(start).map(|i| {
+                    let thread = self.pool.slots[i].as_ref().unwrap();
+                    ScheduleSlot {
+                        index: i,
+                        external: thread.category == Category::External,
+                        wake: thread.wake,
+                        thread: i,
+                    }
+                }))
+            });
+            let Some(i) = next else { break };
+            self.run(e, i);
         }
         e.after_update();
     }
@@ -690,7 +704,7 @@ impl<'a> Vm<'a> {
         let slot = self.global_slot(word)?;
         if word & 0x8000 != 0 {
             let ty = self.global_type(word)?;
-            if ty.size() != 0 && !(57..=61).contains(&ty.0) {
+            if ty.external_storage_width() != 0 {
                 let v = e
                     .external_global_read(word & 0x7fff, ty)
                     .unwrap_or(Cell(ty.unbound_external()));

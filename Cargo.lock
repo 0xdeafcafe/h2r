@@ -6627,6 +6627,8 @@ version = "0.1.0"
 dependencies = [
  "engine",
  "hooks",
+ "hs",
+ "ir",
  "lifted",
  "runtime",
  "sim-ext",
