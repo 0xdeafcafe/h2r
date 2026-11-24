@@ -720,7 +720,7 @@ impl App {
     }
 
     /// `workspace.prune` (docs/editor/tag-workspace.md, "Size and
-    /// cleanup"): raw resources nothing names, generated layers no
+    /// cleanup"): raw resources nothing names (no tag, manifest or extent table), generated layers no
     /// project asks for, and build caches unused for a week. The tree
     /// itself is never pruned in part. With `dry_run`, what would go.
     /// Project outputs are the projects' (W2) and are not pruned yet.
@@ -962,7 +962,7 @@ fn newest(dir: &Path) -> Option<SystemTime> {
     files.or_else(|| std::fs::metadata(dir).ok().and_then(|m| m.modified().ok()))
 }
 
-/// The hashes every tag file and manifest in the tree names: the raw
+/// The hashes every tag file, manifest and extent table in the tree names: the raw
 /// resources that stay.
 fn named_raws(root: &Path) -> Result<HashSet<String>, String> {
     let mut named = HashSet::new();
@@ -984,6 +984,11 @@ fn named_raws(root: &Path) -> Result<HashSet<String>, String> {
             if let Some(h) = m.low_detail {
                 named.insert(h);
             }
+        }
+        // A map's extent table names every raw file its map file is
+        // served from.
+        if let Ok(x) = repo::skeleton::Extents::parse(&text) {
+            named.extend(x.extents.into_iter().map(|e| e.hash));
         }
     }
     Ok(named)
