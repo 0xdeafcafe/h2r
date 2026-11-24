@@ -24,6 +24,7 @@ pub mod flood;
 pub mod mem;
 pub mod objects;
 pub mod mopp;
+pub mod sphere;
 pub mod structure;
 mod world;
 

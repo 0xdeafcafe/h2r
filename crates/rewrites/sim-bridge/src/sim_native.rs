@@ -382,7 +382,7 @@ type CollisionBody = fn(
     &engine::sim_collision::CollisionWorld,
 ) -> Result<Option<TransferAbi>, GuestFault>;
 
-const COLLISION_ENTRIES: [(&points::Point, Entry, CollisionBody); 3] = [
+const COLLISION_ENTRIES: [(&points::Point, Entry, CollisionBody); 4] = [
     (
         &points::COLLISION_POINT_TO_LEAF,
         Entry::PointToLeaf,
@@ -397,6 +397,11 @@ const COLLISION_ENTRIES: [(&points::Point, Entry, CollisionBody); 3] = [
         &points::COLLISION_MOPP_BOX,
         Entry::MoppBox,
         engine::sim_collision::mopp_box,
+    ),
+    (
+        &points::COLLISION_GEOMETRY_TEST,
+        Entry::ObjectSphere,
+        engine::sim_collision::object_sphere_pretest,
     ),
 ];
 
@@ -781,8 +786,7 @@ mod tests {
         );
         assert_eq!(plan.save_sections(), vec![("sim-native", Vec::new())]);
 
-        // With the per-function ports also on, the subsystem owns the
-        // shared points and the other ports still install.
+        // The subsystem owns the shared points when both switches are on.
         let switches = Switches::defaults()
             .with(&key, true)
             .with("impl.sim.native_point_to_leaf", true)
@@ -794,10 +798,7 @@ mod tests {
         assert_eq!(plan.chains[&points::COLLISION_POINT_TO_LEAF.base].implement.as_ref().unwrap().label, COLLISION);
         assert!(plan.chains[&points::COLLISION_BSP_SEGMENT.base].implement.is_none());
         let geometry = &plan.chains[&points::COLLISION_GEOMETRY_TEST.base];
-        assert_eq!(
-            geometry.implement.as_ref().unwrap().label,
-            "sim.native_geometry_test"
-        );
+        assert_eq!(geometry.implement.as_ref().unwrap().label, COLLISION);
 
         // Off by default.
         let mut registry = Registry::new(Switches::defaults());
@@ -854,7 +855,7 @@ mod tests {
             let env = Bail::Env as usize;
             assert_eq!(
                 new.bails[env] - old.bails[env],
-                u64::from(matches!(entry, Entry::PointToLeaf | Entry::Location | Entry::MoppBox))
+                u64::from(COLLISION_ENTRIES.iter().any(|(_, native, _)| *native == entry))
             );
         }
     }

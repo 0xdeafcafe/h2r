@@ -24,12 +24,14 @@ pub mod mopp_ray;
 mod point;
 mod preflight;
 mod sources;
+mod sphere;
 mod topology;
 pub mod vector_parity;
 pub use flood::{cluster_flood, object_spatial_visit};
 pub use mopp_box::mopp_box;
 pub use point::{location, point_to_leaf};
 pub use preflight::CollisionMemory;
+pub use sphere::object_sphere_pretest;
 use preflight::Outputs;
 
 use crate::sim_native::Memory;

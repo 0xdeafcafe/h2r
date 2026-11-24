@@ -5524,8 +5524,9 @@ a call count. Each map counts its own register independently. For
 `vector_test`, `vector_context`, `instance_trace`, `cluster_flood`,
 `object_visit` and `mopp_ray`, only the frequency maps accumulate; `cluster_flood` also
 counts the flood's recursive entries. An image without an observed entry
-leaves its row empty. `array_bytes` counts the decoded BSP allocations, the
-packed cluster table, the portal graph and the decoded MOPP trees (`mopps`
+leaves its row empty. The `object_sphere` row counts native answers at the
+whole query's object-reference pretest. `array_bytes` counts the decoded
+BSP allocations, the packed cluster table, the portal graph and the decoded MOPP trees (`mopps`
 of them; `decodes` and `decode_failures` include MOPP programs, a failure
 being one left to the guest). `bytes` adds the reserved space for BSP owners and address-index
 capacity. `budget_bytes` limits that total to 8 MiB per loaded map.
