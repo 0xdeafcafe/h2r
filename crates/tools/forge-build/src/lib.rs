@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 mod entry;
+mod ground;
 mod kit;
 mod links;
 mod placement;
@@ -28,6 +29,7 @@ use scenario_edit::{MapSource, Session, layout, package::geometry_hash, save};
 
 pub use entry::{base_fields, base_print, entry_fields, tag_key};
 pub use forge_doc::Printed;
+pub use ground::GroundReport;
 pub use kit::Reservation;
 
 /// Versions pinned by an F2 document. Geometry-changing generators have no
@@ -77,6 +79,11 @@ pub enum Error {
     Kit(&'static str),
     #[error("forge_links: {0}")]
     Links(&'static str),
+    /// The AI ground could not be built from the document's marks and
+    /// recipe: a mark with a team that is neither side, a kit of another
+    /// version, a map with no room for it.
+    #[error("forge_ground: {0}")]
+    Ground(String),
     /// The disc's entry is not the one an edit was made on: its typed
     /// fields give another print (docs/game/forge-map-variants.md, "Rules
     /// and limits"). Nothing is built.
@@ -94,6 +101,8 @@ pub struct Built {
     document: String,
     map: Vec<u8>,
     pub reserves: Vec<Reservation>,
+    /// What the AI ground build made, for a document that asks for it.
+    pub ground: Option<GroundReport>,
     /// Every base entry the document names with a print, each compared
     /// with the disc's row and found equal, by block then index.
     pub prints: Vec<Printed>,
@@ -176,6 +185,13 @@ pub fn build(
         check_map(donor, &source, false)?;
     }
     let needs_kit = requests_kit(&doc.recipes)?;
+    let asked = doc.ground_recipe()?;
+    if needs_kit && asked.is_some() {
+        return Err(Error::Recipe(format!(
+            "{} and {KIT_RECIPE} are not built together: the ground is built over the play form",
+            forge_doc::GROUND_RECIPE
+        )));
+    }
 
     let mut session = Session::new();
     session.build_scenes = false;
@@ -214,6 +230,32 @@ pub fn build(
         // the kit's metadata growth before writing those tables.
         (output, reserves) = kit::reserve(output, &new_strings)?;
     }
+    // The ground is built over the materialised map, from the marks the
+    // finished scenario's flags carry. Its bytes are the map.
+    let mut report = None;
+    if let Some(recipe) = asked {
+        let marks = doc.ground_marks(&limits.base_counts)?;
+        let labels = ground::labels(
+            session
+                .scenario()
+                .ok_or(scenario_edit::Error::Invalid("scenario is not open"))?,
+            &marks,
+        )?;
+        let built = firefight_kit::ground::build(
+            &output,
+            &doc.base.map,
+            &labels,
+            &ground::recipe(recipe),
+        )
+        .map_err(|e| Error::Ground(format!("{e:#}")))?;
+        report = Some(GroundReport {
+            zones: built.zones,
+            squads: built.squads,
+            problems: built.problems,
+            receipt: built.receipt,
+        });
+        output = built.bytes;
+    }
     let geometry = geometry_hash(&mut Map::from_reader(Cursor::new(output.as_slice()))?)?;
     if let Some(expect) = doc.expect
         && expect.geometry != geometry
@@ -243,6 +285,7 @@ pub fn build(
         document: doc.canonical_json()?,
         map: output,
         reserves,
+        ground: report,
         prints,
     })
 }
@@ -272,6 +315,9 @@ fn requests_kit(recipes: &[Recipe]) -> Result<bool, Error> {
                 }
                 requested = true;
             }
+            // Built after the scenario (`GroundReport`); the document's
+            // check has already refused one that is malformed.
+            Recipe::Generate { generator, .. } if generator == forge_doc::GROUND_RECIPE => {}
             Recipe::Generate { generator, .. } => {
                 return Err(Error::Recipe(format!(
                     "generator {generator:?} is unavailable"

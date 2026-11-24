@@ -1,8 +1,8 @@
 use std::io::{Read, Seek};
 
 use forge_doc::{
-    Apply, BlockKind, F32, FieldWrite, Links, Placement, Printed, Refusal, TagKey, TagWrite, Value,
-    WorldBounds,
+    Apply, BlockKind, F32, FieldWrite, Labels, Links, Placement, Printed, Refusal, TagKey, TagWrite,
+    Value, WorldBounds,
 };
 use map::{FourCC, Map, Tag, TagQuery};
 use scenario_edit::{
@@ -184,6 +184,13 @@ impl<R: Read + Seek> Apply for Materialiser<'_, R> {
     fn links(&mut self, links: &Links) -> forge_doc::Result<()> {
         crate::links::teleporters(self.session, &links.teleporters)?;
         self.device_groups.clone_from(&links.device_groups);
+        Ok(())
+    }
+
+    /// Labels are document data with no scenario bytes. The ground build
+    /// reads the ground labels back from the finished scenario
+    /// (`crate::ground`), so nothing is kept here.
+    fn labels(&mut self, _: &Labels) -> forge_doc::Result<()> {
         Ok(())
     }
 

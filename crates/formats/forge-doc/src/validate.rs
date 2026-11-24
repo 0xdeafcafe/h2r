@@ -200,6 +200,9 @@ fn validate_recipe(
                 token("parameter name", &write.field)?;
                 value(&write.value)
             })?;
+            if generator == crate::GROUND_RECIPE {
+                crate::GroundRecipe::from_parameters(parameters)?;
+            }
         }
         Recipe::Import { slot } => {
             if !imports.contains(slot) {
