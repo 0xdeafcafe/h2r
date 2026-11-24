@@ -65,8 +65,8 @@ struct State {
     /// The offers last asked for, as their strings.
     key: Option<Vec<(u8, String, Vec<String>)>>,
     queue: VecDeque<Ask>,
-    /// The tick the open picker was asked at.
-    open_since: Option<u32>,
+    /// The tick the open picker was asked at and its slot.
+    open: Option<(u32, u8)>,
     reports: Vec<Report>,
 }
 
@@ -115,7 +115,7 @@ pub fn plan_from(now: Vec<(u8, String, Vec<String>)>, seats: &[(u8, u32)], tick:
         }
         if s.key.as_ref() != Some(&now) {
             s.queue.clear();
-            s.open_since = None;
+            s.open = None;
             for &(player, port) in seats {
                 for (slot, title, rows) in &now {
                     if !rows.is_empty() {
@@ -125,21 +125,21 @@ pub fn plan_from(now: Vec<(u8, String, Vec<String>)>, seats: &[(u8, u32)], tick:
             }
             s.key = Some(now);
         }
-        next_ask(&mut s.queue, &mut s.open_since, tick)
+        next_ask(&mut s.queue, &mut s.open, tick)
     })
 }
 
 /// The ask the queue yields at `tick`, held back while the open picker
 /// waits for its player.
-fn next_ask(queue: &mut VecDeque<Ask>, open_since: &mut Option<u32>, tick: u32) -> Option<Ask> {
-    if let Some(since) = *open_since {
+fn next_ask(queue: &mut VecDeque<Ask>, open: &mut Option<(u32, u8)>, tick: u32) -> Option<Ask> {
+    if let Some((since, _)) = *open {
         if tick.wrapping_sub(since) < OPEN_TICKS {
             return None;
         }
-        *open_since = None;
+        *open = None;
     }
     let ask = queue.pop_front()?;
-    *open_since = Some(tick);
+    *open = Some((tick, ask.slot));
     Some(ask)
 }
 
@@ -149,7 +149,7 @@ pub fn report(player: u8, slot: u8, row: usize) -> bool {
     let Ok(row) = u8::try_from(row) else { return false };
     with_state(|s| {
         s.reports.push(Report { player, slot, row });
-        s.open_since = None;
+        s.open = None;
     });
     true
 }
@@ -230,9 +230,9 @@ pub fn seats(m: &dyn GuestMemory) -> Vec<(u8, u32)> {
 /// asked and the tick the open picker was asked at.
 #[derive(Default)]
 struct ClientState {
-    key: Option<Vec<(u8, String, Vec<String>)>>,
+    offers: BTreeMap<u8, (String, Vec<String>)>,
     queue: VecDeque<Ask>,
-    open_since: Option<u32>,
+    open: Option<(u32, u8)>,
 }
 
 #[cfg(not(test))]
@@ -309,7 +309,7 @@ fn ready() -> bool {
 /// a picker open. The client's tick boundary runs while it is
 /// (`crate::actor_net::client`), so the asking advances.
 pub fn client_busy() -> bool {
-    let busy = |s: &mut ClientState| !s.queue.is_empty() || s.open_since.is_some();
+    let busy = |s: &mut ClientState| !s.queue.is_empty() || s.open.is_some();
     ready() && (with_received(|r| r.is_some()) || with_client(busy))
 }
 
@@ -319,59 +319,41 @@ pub fn client_busy() -> bool {
 /// pickers added or taken away extend or trim the asking in place, so
 /// the cues of one tick do not reopen the first picker.
 pub fn client_plan(tick: u32, seats: &[(u8, u32)]) -> Option<Ask> {
-    let Some(now) = with_received(|r| std::mem::take(r)) else {
-        return with_client(|s| next_ask(&mut s.queue, &mut s.open_since, tick));
+    let Some(received) = with_received(|r| std::mem::take(r)) else {
+        return with_client(|s| next_ask(&mut s.queue, &mut s.open, tick));
     };
-    // The pickers offered now, in slot order, the taken ones away.
-    let mut set: BTreeMap<u8, (String, Vec<String>)> = BTreeMap::new();
-    for (slot, title, rows) in now {
-        if rows.is_empty() {
-            set.remove(&slot);
-        } else {
-            set.insert(slot, (title, rows));
-        }
-    }
-    let now: Vec<(u8, String, Vec<String>)> = set
-        .into_iter()
-        .map(|(slot, (title, rows))| (slot, title, rows))
-        .collect();
     with_client(|s| {
-        if now.is_empty() {
-            if s.key.take().is_some() {
-                s.queue.clear();
-                s.open_since = None;
+        // Cues for separate slots can arrive at different boundaries.
+        let mut now = s.offers.clone();
+        for (slot, title, rows) in received {
+            if rows.is_empty() {
+                now.remove(&slot);
+            } else {
+                now.insert(slot, (title, rows));
             }
-            return None;
         }
-        let replaced = match &s.key {
-            None => true,
-            Some(key) => now.iter().any(|(slot, title, rows)| {
-                key.iter().any(|(k, kt, kr)| k == slot && (kt != title || kr != rows))
-            }),
-        };
+
+        let replaced = now.iter().any(|(slot, offer)| {
+            s.offers.get(slot).is_some_and(|previous| previous != offer)
+        });
         if replaced {
             s.queue.clear();
-            s.open_since = None;
-            for &(player, port) in seats {
-                for (slot, title, rows) in &now {
-                    if !rows.is_empty() {
-                        s.queue.push_back(Ask { player, port, slot: *slot, title: title.clone(), rows: rows.clone() });
-                    }
-                }
-            }
+            s.open = None;
         } else {
-            for (slot, title, rows) in &now {
-                if rows.is_empty() {
-                    s.queue.retain(|ask| ask.slot != *slot);
-                } else if s.key.as_ref().is_none_or(|key| key.iter().all(|(k, _, _)| k != slot)) {
-                    for &(player, port) in seats {
-                        s.queue.push_back(Ask { player, port, slot: *slot, title: title.clone(), rows: rows.clone() });
-                    }
+            s.queue.retain(|ask| now.contains_key(&ask.slot));
+            if s.open.is_some_and(|(_, slot)| !now.contains_key(&slot)) {
+                s.open = None;
+            }
+        }
+        for &(player, port) in seats {
+            for (&slot, (title, rows)) in &now {
+                if replaced || !s.offers.contains_key(&slot) {
+                    s.queue.push_back(Ask { player, port, slot, title: title.clone(), rows: rows.clone() });
                 }
             }
         }
-        s.key = Some(now);
-        next_ask(&mut s.queue, &mut s.open_since, tick)
+        s.offers = now;
+        next_ask(&mut s.queue, &mut s.open, tick)
     })
 }
 
@@ -395,7 +377,7 @@ pub async fn client_tick(cx: &Cx, tick: u32) {
 /// A press on a client: the picker closed, so the next player's may open
 /// whether or not the send went out.
 fn remote_reported() {
-    with_client(|s| s.open_since = None);
+    with_client(|s| s.open = None);
 }
 
 #[cfg(test)]
@@ -517,6 +499,11 @@ mod tests {
         let again = client_plan(4, &seats).unwrap();
         assert_eq!(again.slot, 0);
         assert_eq!(again.rows.len(), 3);
+        // A repeated cue leaves both the open picker and the queue alone.
+        offered(0, "LOADOUT", &["A", "B", "C"]);
+        assert_eq!(client_plan(5, &seats), None);
+        remote_reported();
+        assert_eq!(client_plan(6, &seats).unwrap().slot, 1);
     }
 
     #[test]
@@ -527,14 +514,18 @@ mod tests {
         offered(1, "WEAPON", &["RIFLE"]);
         let ask = client_plan(1, &seats).unwrap();
         assert_eq!((ask.player, ask.slot), (0, 0));
+        // Retracting the open picker releases its wait and removes its
+        // queued asks while leaving the other picker in order.
+        offered(0, "", &[]);
+        let next = client_plan(2, &seats).unwrap();
+        assert_eq!((next.player, next.slot), (0, 1));
         // The round ended: the host took both pickers away, and the
         // asking resets so the next round's are asked afresh.
-        offered(0, "", &[]);
         offered(1, "", &[]);
         assert!(client_busy(), "the retracts wait for the boundary");
-        assert_eq!(client_plan(2, &seats), None);
+        assert_eq!(client_plan(3, &seats), None);
         assert!(!client_busy());
         offered(0, "LOADOUT", &["A"]);
-        assert_eq!(client_plan(3, &seats).unwrap().slot, 0);
+        assert_eq!(client_plan(4, &seats).unwrap().slot, 0);
     }
 }
