@@ -110,14 +110,14 @@ pub const ORACLES: &[Port] = {
     ]
 };
 
-pub(crate) fn push(c: &mut CpuAbi, g: &mut Guest, word: u32) -> Result<()> {
+pub(crate) fn push(c: &mut CpuAbi, g: &mut impl crate::sim_native::Memory, word: u32) -> Result<()> {
     let sp = c.esp.wrapping_sub(4);
     g.set_u32(sp, word)?;
     c.esp = sp;
     Ok(())
 }
 
-pub(crate) fn pop(c: &mut CpuAbi, g: &Guest) -> Result<u32> {
+pub(crate) fn pop(c: &mut CpuAbi, g: &impl crate::sim_native::Memory) -> Result<u32> {
     let v = g.u32(c.esp)?;
     c.esp = c.esp.wrapping_add(4);
     Ok(v)
@@ -151,7 +151,7 @@ pub(crate) fn arithmetic(c: &mut CpuAbi, a: u32, b: u32, sub: bool) -> u32 {
     v
 }
 
-fn call_arg(c: &mut CpuAbi, g: &mut Guest, arg: u32, target: u32, site: u32) -> Result<TransferAbi> {
+fn call_arg(c: &mut CpuAbi, g: &mut impl crate::sim_native::Memory, arg: u32, target: u32, site: u32) -> Result<TransferAbi> {
     push(c, g, arg)?;
     g.call(c, target, site)
 }

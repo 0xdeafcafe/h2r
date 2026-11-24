@@ -7,10 +7,9 @@ use x87::abi as fp;
 mod aim_overlays;
 mod angles;
 mod layers;
-mod plan;
 mod tail;
 
-pub use plan::PoseMemory;
+pub use super::plan::SegmentMemory as PoseMemory;
 
 /// Return selectors of all the calls made by the base-image unit pose body.
 pub const SITES: &[u32] = &[
@@ -58,21 +57,10 @@ pub fn run(
     g: &mut impl PoseMemory,
     pc: u32,
 ) -> std::result::Result<Option<TransferAbi>, GuestFault> {
-    if !supported(c)
-        || (pc != crate::points::SIM_UNIT_POSE.base && SITES.binary_search(&pc).is_err())
-    {
-        return Ok(None);
-    }
-    let mut cpu = *c;
-    let Some(mut plan) = plan::Plan::new(g) else {
-        return Ok(None);
-    };
-    let Ok(transfer) = drive(&mut cpu, &mut plan, pc) else {
-        return Ok(None);
-    };
-    plan.commit()?;
-    *c = cpu;
-    Ok(Some(transfer))
+    super::plan::segment::<64, _>(
+        c, g, pc, crate::points::SIM_UNIT_POSE.base..0x112dbb, SITES,
+        |cpu, plan, site| drive(cpu, plan, site),
+    )
 }
 
 // Decide whether this aim channel differs enough from its neutral pose.

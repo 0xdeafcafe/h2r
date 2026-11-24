@@ -1,4 +1,4 @@
-//! Buffer one pose segment's stores until every input and destination is
+//! Buffer one animation segment's stores until every input and destination is
 //! known. Later loads see earlier stores, including through physical aliases.
 use super::Memory;
 use runtime::{
@@ -8,12 +8,12 @@ use runtime::{
 
 /// Memory held exclusively throughout a segment. A successful write check
 /// guarantees the same write will succeed at commit. Loads must be plain RAM.
-pub trait PoseMemory: Memory {
+pub trait SegmentMemory: Memory {
     /// Physical start of a contiguous range with the requested access.
     fn checked_offset(&self, addr: u32, len: usize, access: Access, alignment: u32) -> Option<u32>;
 }
 
-impl PoseMemory for Guest {
+impl SegmentMemory for Guest {
     fn checked_offset(&self, addr: u32, len: usize, access: Access, alignment: u32) -> Option<u32> {
         if self.has_trap() {
             return None;
@@ -42,15 +42,11 @@ struct Store {
     alignment: u32,
 }
 
-// The decoded body ends just past its ret 16. Immediates and x87 FOP
-// come from the text, so a writable alias into it needs the original.
-const TEXT_START: u32 = crate::points::SIM_UNIT_POSE.base;
-const TEXT_LEN: usize = (0x112dbb - TEXT_START) as usize;
-
-pub(super) struct Plan<'a, M> {
+pub(crate) struct Plan<'a, M, const N: usize> {
     text: std::ops::Range<u64>,
+    inline_text: std::ops::Range<u64>,
     ram: &'a mut M,
-    stores: [Store; 64],
+    stores: [Store; N],
     count: usize,
 }
 
@@ -63,18 +59,30 @@ fn decline(addr: u32, len: usize, access: Access) -> GuestFault {
     }
 }
 
-impl<'a, M: PoseMemory> Plan<'a, M> {
-    pub(super) fn new(ram: &'a mut M) -> Option<Self> {
-        let text = u64::from(ram.checked_offset(TEXT_START, TEXT_LEN, Access::Read, 1)?);
+impl<'a, M: SegmentMemory, const N: usize> Plan<'a, M, N> {
+    fn new(ram: &'a mut M, start: u32, end: u32) -> Option<Self> {
+        let len = end.checked_sub(start)?;
+        let text = u64::from(ram.checked_offset(start, len as usize, Access::Read, 1)?);
         Some(Self {
             ram,
-            text: text..text + TEXT_LEN as u64,
-            stores: [Store::default(); 64],
+            text: text..text + u64::from(len),
+            inline_text: 0..0,
+            stores: [Store::default(); N],
             count: 0,
         })
     }
 
-    pub(super) fn commit(self) -> Result<(), GuestFault> {
+    /// Called before executing the segment. If the leaf has no contiguous
+    /// instruction mapping it cannot run inline (its own gather checks this).
+    pub(crate) fn protect_inline_text(&mut self, start: u32, end: u32) {
+        let len = end - start;
+        if let Some(offset) = self.ram.checked_offset(start, len as usize, Access::Read, 1) {
+            let lo = u64::from(offset);
+            self.inline_text = lo..lo + u64::from(len);
+        }
+    }
+
+    fn commit(self) -> Result<(), GuestFault> {
         for store in &self.stores[..self.count] {
             self.ram.write_bytes(
                 store.addr,
@@ -86,7 +94,11 @@ impl<'a, M: PoseMemory> Plan<'a, M> {
     }
 }
 
-impl<M: PoseMemory> Memory for Plan<'_, M> {
+impl<M: SegmentMemory, const N: usize> Memory for Plan<'_, M, N> {
+    fn physical_read(&self, addr: u32, len: usize) -> Option<u32> {
+        self.ram.checked_offset(addr, len, Access::Read, 1)
+    }
+
     fn read_bytes(&self, addr: u32, dst: &mut [u8], alignment: u32) -> Result<(), GuestFault> {
         let physical = self
             .ram
@@ -115,7 +127,10 @@ impl<M: PoseMemory> Memory for Plan<'_, M> {
             .checked_offset(addr, src.len(), Access::Write, alignment)
             .ok_or_else(err)?;
         let start = u64::from(physical);
-        if start < self.text.end && self.text.start < start + src.len() as u64 {
+        let end = start + src.len() as u64;
+        if (start < self.text.end && self.text.start < end)
+            || (start < self.inline_text.end && self.inline_text.start < end)
+        {
             return Err(err());
         }
         let slot = self.stores.get_mut(self.count).ok_or_else(err)?;
@@ -130,24 +145,54 @@ impl<M: PoseMemory> Memory for Plan<'_, M> {
     }
 }
 
+/// Enter only on a declared boundary. Hold the RAM borrow through scatter
+/// so checked destinations cannot be remapped after the calculation.
+pub(crate) fn segment<const N: usize, M: SegmentMemory>(
+    cpu: &mut runtime::CpuAbi,
+    ram: &mut M,
+    pc: u32,
+    text: std::ops::Range<u32>,
+    sites: &[u32],
+    body: impl FnOnce(&mut runtime::CpuAbi, &mut Plan<'_, M, N>, u32) -> super::Result,
+) -> Result<Option<runtime::TransferAbi>, GuestFault> {
+    if !super::supported(cpu) || (pc != text.start && sites.binary_search(&pc).is_err()) {
+        return Ok(None);
+    }
+    let Some(mut plan) = Plan::new(ram, text.start, text.end) else {
+        return Ok(None);
+    };
+    let mut next = *cpu;
+    let Ok(transfer) = body(&mut next, &mut plan, pc) else {
+        return Ok(None);
+    };
+    plan.commit()?;
+    *cpu = next;
+    Ok(Some(transfer))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::sim_native::unit;
+    const TEXT_START: u32 = crate::points::SIM_UNIT_POSE.base;
+    const TEXT_LEN: u32 = 0x112dbb - TEXT_START;
     use runtime::{CpuAbi, guest::Permissions};
 
     #[test]
     fn overlapping_stores_forward_through_a_second_mapping() {
         let mut ram = Guest::new();
-        ram.map(TEXT_START, TEXT_LEN as u32, 0x4000, Permissions::RX)
+        ram.map(TEXT_START, TEXT_LEN, 0x4000, Permissions::RX)
             .unwrap();
         for addr in [0x10000, 0x20000] {
             ram.map(addr, 0x1000, 0, Permissions::RW).unwrap();
         }
-        ram.map(0x30000, TEXT_LEN as u32, 0x4000, Permissions::RW)
+        ram.map(0x30000, TEXT_LEN, 0x4000, Permissions::RW)
             .unwrap();
-        let mut plan = Plan::new(&mut ram).unwrap();
+        let mut plan = Plan::<_, 64>::new(&mut ram, TEXT_START, TEXT_START + TEXT_LEN).unwrap();
         assert!(plan.set_u8(0x30002, 0xf1).is_err());
+        // A parent can spill into another mapping of its inlined leaf.
+        plan.protect_inline_text(0x20080, 0x200c0);
+        assert!(plan.set_u32(0x1007e, 0xf1).is_err());
         plan.set_u32(0x10002, 0x44332211).unwrap();
         plan.set_u8(0x20004, 0xfa).unwrap();
         assert_eq!(plan.u32(0x20001).unwrap(), 0xfa221100);
@@ -159,7 +204,7 @@ mod tests {
     #[test]
     fn late_protected_push_discards_frame_store_and_cpu() {
         let mut ram = Guest::new();
-        ram.map(TEXT_START, TEXT_LEN as u32, 0x4000, Permissions::RX)
+        ram.map(TEXT_START, TEXT_LEN, 0x4000, Permissions::RX)
             .unwrap();
         let sp = 0x20000;
         ram.map(sp - 0x1000, 0x1000, 0, Permissions::READ).unwrap();

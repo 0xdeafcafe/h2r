@@ -31,8 +31,8 @@ pub(super) fn load_fpu(c: &CpuAbi) -> X87 {
 
 // Only the final x87 instruction and the most recent memory operand
 // survive at a transfer. Read FOP from the mapped instruction.
-pub(super) fn finish_fpu(c: &mut CpuAbi, g: &Guest, x: X87, pc: u32, operand: u32) -> Result<()> {
-    let [op, modrm] = g.read::<2>(pc)?;
+pub(super) fn finish_fpu(c: &mut CpuAbi, g: &impl crate::sim_native::Memory, x: X87, pc: u32, operand: u32) -> Result<()> {
+    let [op, modrm] = g.load::<2>(pc)?;
     c.x87.st = x.0.st;
     c.x87.status = x.0.status;
     c.x87.tag = x.0.tag;
