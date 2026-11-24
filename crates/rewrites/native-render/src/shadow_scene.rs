@@ -34,7 +34,7 @@ impl From<light_scene::Refusal> for Refusal {
     }
 }
 
-fn validate(group: &LightGroup) -> Result<(), Refusal> {
+pub(crate) fn validate(group: &LightGroup) -> Result<(), Refusal> {
     let pass = group.pass.ok_or(Refusal::State)?;
     if pass.size.contains(&0) || pass.stencil_mode != 0 {
         return Err(Refusal::State);

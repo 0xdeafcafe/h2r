@@ -66,6 +66,7 @@ pub mod layers_load;
 pub mod light_choice;
 #[cfg(feature = "gpu")]
 pub mod light_gpu;
+pub mod light_graph;
 pub mod light_list;
 #[cfg(feature = "gpu")]
 pub mod light_look;
