@@ -3236,6 +3236,8 @@ dependencies = [
  "assets",
  "font",
  "map",
+ "serde",
+ "serde_yaml_ng",
  "tags",
 ]
 
@@ -8853,6 +8855,7 @@ name = "workspace"
 version = "0.1.0"
 dependencies = [
  "content",
+ "hud-kit-core",
  "map",
  "png",
  "pogo-kit",

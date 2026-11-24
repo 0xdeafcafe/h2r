@@ -88,8 +88,9 @@ pub fn builder(kind: Kind) -> Option<&'static Builder> {
     REGISTRY.iter().find(|b| b.kind == kind)
 }
 
-/// Whether an item of `kind` changes the map it is built on. A `hud` item
-/// does not: the game compiles its records at install, so a package of
+/// Whether an item of `kind` changes the map it is built on. A `hud`,
+/// `sound` or `data` item does not: the game compiles a HUD's records at
+/// install and plays or reads the others from the package, so a package of
 /// nothing else leaves every map as it was and the rewrite serves none
 /// of them anew.
 pub fn changes_map(kind: Kind) -> bool {

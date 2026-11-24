@@ -115,6 +115,10 @@ def root_exports():
         name = "content",
         srcs = [
             "content/README.md",
+            "content/forge/huds/forge-readout.hud.yaml",
+            "content/forge/package.toml",
+            "content/modes/huds/firefight.hud.yaml",
+            "content/modes/package.toml",
             "content/pogo/README.md",
             "content/pogo/data/poses.yaml",
             "content/pogo/models/covenant.png",
@@ -130,6 +134,10 @@ def root_exports():
             "content/pogo/tags/pogo_covenant.weap.yaml",
             "content/pogo/tags/pogo_forerunner.weap.yaml",
             "content/pogo/tags/pogo_unsc.weap.yaml",
+            "content/superbounce/huds/pill-block.hud.yaml",
+            "content/superbounce/huds/superbounce-readout.hud.yaml",
+            "content/superbounce/huds/superbounce.hud.yaml",
+            "content/superbounce/package.toml",
         ],
         visibility = ["PUBLIC"],
     )
