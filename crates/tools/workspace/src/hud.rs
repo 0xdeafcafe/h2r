@@ -49,6 +49,7 @@ pub fn huds(packages: &[Loaded]) -> Vec<(String, Hud)> {
             let job = Job {
                 item,
                 source: bytes,
+                files: &loaded.files,
             };
             if let Ok(hud) = read(&job) {
                 out.push((manifest.package.id.clone(), hud));
