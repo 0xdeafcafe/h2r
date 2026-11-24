@@ -23,7 +23,7 @@ use native_render::camera::GuestRead;
 use native_render::glow::{self, Blend, Draw, GlowTarget, GpuGlow, Plan, Surface};
 use native_render::screen_gpu::{
     self, ConvolutionDraw, ConvolutionGrid, Dest, QuadFrame, ScreenConvolution, ScreenDraw,
-    ScreenKey, ScreenTarget, StripRaster, StripVertex,
+    ScreenKey, ScreenTarget, PostRaster, StripVertex,
 };
 use native_render::screen_look::{CombinerInputs, ScreenStage};
 use render_bridge::native_post::{
@@ -702,7 +702,12 @@ fn swallow_call(site: CallSite) -> d3d::SwallowCall {
 struct ScreenPass {
     effects: Arc<ScreenEffects>,
     call: ScreenCall,
-    raster: OnceLock<Vec<StripRaster>>,
+    raster: OnceLock<Vec<ScreenRaster>>,
+}
+
+struct ScreenRaster {
+    strip: PostRaster,
+    convolutions: Vec<PostRaster>,
 }
 
 impl ScreenPass {
@@ -722,7 +727,7 @@ impl ScreenPass {
             .raster
             .get()
             .ok_or(screen_gpu::ScreenRefused::NoProgram)?;
-        for ((key, dest, strips, convolutions), &raster) in self.call.passes.iter().zip(raster) {
+        for ((key, dest, strips, convolutions), raster) in self.call.passes.iter().zip(raster) {
             let program = self
                 .effect(*key)
                 .ok_or(screen_gpu::ScreenRefused::NoProgram)?;
@@ -730,10 +735,11 @@ impl ScreenPass {
                 key: *key,
                 program,
                 strips,
-                raster,
+                raster: raster.strip,
                 dest: *dest,
                 values: self.call.values,
                 convolutions,
+                convolution_rasters: &raster.convolutions,
             });
         }
         let images = &self.effects.images;
@@ -854,15 +860,18 @@ impl d3d::SwallowPass for ScreenPass {
                     return Err("screen strip raster state changed within the pass".into());
                 }
             }
-            raster.push(pass_raster.ok_or("the screen pass has no strips")?);
+            let strip = pass_raster.ok_or("the screen pass has no strips")?;
+            let mut convolution_rasters = Vec::new();
             for q in convolutions.iter().flat_map(|c| &c.draws) {
+                let frame = self.call.frame.as_ref().ok_or("missing convolution frame")?;
+                let inputs = CombinerInputs::read(&shaders::PixelShaderDef::from_words(&frame.combiner));
+                let mut grid_raster = None;
                 for _ in 0..q.grid.as_ref().map_or(1, |g| g.strips.len()) {
                     let original = originals.next().ok_or("missing convolution draw")?;
-                    if !matches_colour_state(original.draw, None, wgpu::ColorWrites::ALL, None) {
-                        return Err(format!(
-                            "screen effect {:#010x}: live convolution colour state differs",
-                            self.call.egor.0
-                        ));
+                    let live = strip_raster(original.draw, None, Some(inputs))
+                        .map_err(|why| format!("screen convolution into {}: {why}", q.dest))?;
+                    if grid_raster.replace(live).is_some_and(|first| first != live) {
+                        return Err("screen convolution raster state changed within the grid".into());
                     }
                     for stage in 0..4 {
                         if original.sampled[stage] {
@@ -870,7 +879,9 @@ impl d3d::SwallowPass for ScreenPass {
                         }
                     }
                 }
+                convolution_rasters.push(grid_raster.ok_or("the convolution has no strips")?);
             }
+            raster.push(ScreenRaster { strip, convolutions: convolution_rasters });
             drawn
                 .pass(program, *dest, convolutions)
                 .map_err(|e| format!("{e:?}"))?;
@@ -1048,7 +1059,7 @@ fn strip_raster(
     draw: &d3d::ResolvedDraw,
     alpha: Option<(wgpu::CompareFunction, u8)>,
     planned_inputs: Option<CombinerInputs>,
-) -> Result<StripRaster, &'static str> {
+) -> Result<PostRaster, &'static str> {
     use gfx::state::{CompareFunc, FillMode, ShadeMode};
     let state = &draw.state.render;
     let live_alpha =
@@ -1085,13 +1096,12 @@ fn strip_raster(
             return Err("the colour quad requires a rejected guest state");
         }
     }
-    if state.fill_mode != FillMode::Solid {
-        return Err("the post draw requires non-solid front fill");
-    }
-    // The host translator uses front fill for both faces. The other
-    // colour-quad clients retain their narrower original contract.
-    if planned_inputs.is_none() && state.back_fill_mode != FillMode::Solid {
-        return Err("the colour quad requires non-solid back fill");
+    // The post pipelines use the host translator's front fill. The other
+    // colour-quad clients build fixed solid pipelines.
+    if planned_inputs.is_none()
+        && (state.fill_mode != FillMode::Solid || state.back_fill_mode != FillMode::Solid)
+    {
+        return Err("the colour quad requires solid front and back fill");
     }
     if draw.ui_fit.is_some() || draw.retail_constants.is_some() {
         return Err("the post draw requires copy-specific projection");
@@ -1105,13 +1115,14 @@ fn strip_raster(
         wgpu::PrimitiveTopology::TriangleStrip,
         gfx::translate::Capabilities::from_features(wgpu::Features::empty()),
     );
-    Ok(StripRaster {
+    Ok(PostRaster {
         blend: gfx::translate::blend_state(state),
         blend_constant: gfx::translate::blend_constant(state),
         writes: gfx::translate::color_writes(state.color_write),
         front_face: primitive.front_face,
         cull: primitive.cull_mode,
         depth_clamp: state.depth_clamp,
+        fill: state.fill_mode,
         opaque_view: [false; 4],
         clip: (!clip.is_whole(draw.target.width, draw.target.height)).then_some([
             clip.x,
@@ -1169,7 +1180,7 @@ pub const QUAD: (PrimitiveType, usize) = (PrimitiveType::TriangleFan, 4);
 
 /// The native glow, recorded against the call's view and blur levels.
 struct GlowPass {
-    colours: OnceLock<Vec<glow::QuadColour>>,
+    raster: OnceLock<Vec<PostRaster>>,
     plan: Plan,
     gpu: Arc<Mutex<GpuGlow>>,
 }
@@ -1218,7 +1229,7 @@ impl GlowPass {
     fn prepare(&self, t: PostCopy<'_>) -> Option<glow::GlowCommands> {
         let view = slot(t.slots, 0)?;
         let intermediates = [1, 2].map(|i| slot(t.slots, i).map(glow::PostSurface::from));
-        let result = self.gpu.lock().unwrap_or_else(|e| e.into_inner()).prepare_colours(
+        let result = self.gpu.lock().unwrap_or_else(|e| e.into_inner()).prepare_raster(
             GlowTarget {
                 device: t.device,
                 queue: t.queue,
@@ -1228,7 +1239,7 @@ impl GlowPass {
                 intermediates,
             },
             &self.plan,
-            Some(self.colours.get()?),
+            Some(self.raster.get()?),
         );
         result
             .map_err(|error| log_rejection(|| format!("glow on live target: {error:?}")))
@@ -1249,18 +1260,11 @@ impl d3d::SwallowPass for GlowPass {
         if originals.len() != self.plan.draws.len() {
             return Err("glow quad count differs from plan".into());
         }
-        let mut colours = Vec::with_capacity(originals.len());
+        let mut rasters = Vec::with_capacity(originals.len());
         for (i, (original, want)) in originals.iter().zip(&self.plan.draws).enumerate() {
             let inputs = CombinerInputs::read(&shaders::PixelShaderDef::from_words(&want.combiner));
             let raster = strip_raster(original.draw, None, Some(inputs))?;
-            if raster.cull.is_some() || raster.clip.is_some() {
-                return Err(format!("glow into {:?}: quad requires culling or clipping", want.dest));
-            }
-            colours.push(glow::QuadColour {
-                blend: raster.blend,
-                constant: raster.blend_constant,
-                writes: raster.writes,
-            });
+            rasters.push(raster);
             for stage in 0..4 {
                 if original.sampled[stage] {
                     let source = want.stages[stage];
@@ -1274,7 +1278,7 @@ impl d3d::SwallowPass for GlowPass {
                 }
             }
         }
-        self.colours.set(colours).map_err(|_| "glow colours already captured".to_owned())
+        self.raster.set(rasters).map_err(|_| "glow raster already captured".to_owned())
     }
 }
 
@@ -1396,7 +1400,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         };
         let targets = targets(&plan);
         let pass: Box<dyn d3d::SwallowPass> = Box::new(GlowPass {
-            colours: OnceLock::new(),
+            raster: OnceLock::new(),
             plan,
             gpu: Arc::clone(&self.gpu),
         });
@@ -3027,7 +3031,7 @@ mod tests {
             draws: vec![],
         };
         let glow = GlowPass {
-            colours: OnceLock::new(),
+            raster: OnceLock::new(),
             plan: plan.clone(),
             gpu: Arc::new(Mutex::new(GpuGlow::new())),
         };

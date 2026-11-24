@@ -664,10 +664,10 @@ uses D3D for that call.
 
 | Effect | Native admission |
 |---|---|
-| Colour pass glow | The plan reads the view size and each blur target’s dimensions independently. The window, combiners and blur steps must plan successfully. Each matched quad uses the live blend, blend constant and channel write mask. A colour-only draw accepts inherited depth and stencil settings when they have no effect. |
+| Colour pass glow | The plan reads the view size and each blur target’s dimensions independently. The window, combiners and blur steps must plan successfully. Each matched quad uses the live blend, blend constant, channel write mask, winding, cull, front fill and scissor. A colour-only draw accepts inherited depth and stencil settings when they have no effect. |
 | Screen strips into target 0 or target 1 | All drawn layer-15 passes must have loaded programs and supported bindings. A target 1 read requires an earlier write in the same call. Framebuffer stages may read stored alpha and X8 alpha in the same pass. A resolved side-target input needs no framebuffer copy. |
 | Kept convolution | It emits no draws. Its result names the pass's target. |
-| Blur and wide convolutions | The quads or grids must plan successfully and match the live attachments and colour state. |
+| Blur and wide convolutions | The quads or grids must plan successfully and match the live attachments. Each quad or grid uses the live raster state. |
 | Template pass skipped by `0x00016610` | The host leaves that pass and its convolutions out of the plan. An unreadable gate refuses the call. |
 | Layer 17 | `frame-scene.layers` ([framescene.md](framescene.md), slice 4): its structure and object items from the scene's plan, as layers 1, 5, 7, 8 and 20 (`layer_pass::BLOOM_LAYER`). |
 | `0x0002df00`, `0x0002dd30` | Carried: the D3D draws, or an owned frame's replay of them with its own counts. The fade, UI and HUD are the native UI, above. |
@@ -679,6 +679,12 @@ implicit final stage can depend on inherited fog and specular state.
 Rejected state words in unused texture stages and fixed-function texture
 operations do not affect a programmable post draw. A live depth or
 stencil operation requires the original depth attachment.
+
+The glow and screen effects use the same pipeline translation for
+colour writes, blending, facing, culling, front fill and depth clamp.
+A quad strip preserves the guest fan's winding and diagonal. Each
+scissor is scaled from the destination's guest size to its physical
+copy. A convolution grid uses the raster shared by its strips.
 
 ### The post hooks
 
