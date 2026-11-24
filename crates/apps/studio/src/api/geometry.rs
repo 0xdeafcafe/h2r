@@ -40,13 +40,13 @@ const fn def(
 }
 
 /// `target` is `kind:tag:index` (`cluster:e1000004:0`, `instance_def:…`,
-/// `mode_section:…`); the target in edit mode otherwise.
+/// `mode_section:…`, `coll_bsp:…`); the target in edit mode otherwise.
 const METHODS: &[MethodDef] = &[
     def(
         m::GEOMETRY_LIST,
         "The open map's editable geometry: every structure BSP's clusters and instanced definitions, and a render model's sections when `model` names one (its tag id), with counts, whether the raw data is the map's own and whether it is open",
         r#"{"model?":"string"}"#,
-        r#"[{"target":"string","kind":"cluster|instance_def|mode_section","tag":"string","name":"string","vertices":"integer","triangles":"integer","parts":"integer","local":"boolean","open":"boolean"}]"#,
+        r#"[{"target":"string","kind":"cluster|instance_def|mode_section|coll_bsp","tag":"string","name":"string","vertices":"integer","triangles":"integer","parts":"integer","local":"boolean","open":"boolean"}]"#,
         r#"{}"#,
     ),
     def(
@@ -76,6 +76,13 @@ const METHODS: &[MethodDef] = &[
         r#"{"target?":"string"}"#,
         r#"{"targets":"[{target,class,verts,faces,moved,lightmap_stale,ops,refused}]","allow_unverified":"boolean","save_refusal":"string|null"}"#,
         r#"{}"#,
+    ),
+    def(
+        m::GEOMETRY_LOWER_LODS,
+        "Use for lower LODs: point every lower level of detail of each permutation that draws an open model section (`mode_section:…`) at it (`on`, default true), or leave them as the file has them (false): one undo step, saved as patches of the permutations' LOD indices. A target that is not a model section is refused",
+        r#"{"target?":"string","on?":"boolean"}"#,
+        r#"{"target":"string","on":"boolean","changed":"boolean"}"#,
+        r#"{"target":"mode_section:e1000002:0"}"#,
     ),
     def(
         m::GEOMETRY_COLLISION_ADD_BOX,
@@ -312,6 +319,17 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 "allow_unverified": app.modeling.allow_unverified,
                 "save_refusal": save_refusal,
             }))
+        }
+        m::GEOMETRY_LOWER_LODS => {
+            let t = open_target(app, p)?;
+            let on = match p.get("on") {
+                None | Some(Value::Null) => true,
+                Some(_) => p.bool("on")?,
+            };
+            run(app, ModelAction::Seal)?;
+            let was = app.modeling.session.uses_for_lower_lods(t);
+            run(app, ModelAction::UseForLowerLods { target: t, on })?;
+            Ok(json!({ "target": t.id(), "on": on, "changed": was != on }))
         }
         m::GEOMETRY_COLLISION_ADD_BOX => {
             let structure = parse_tag(p.str("structure")?)?;

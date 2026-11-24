@@ -3,16 +3,16 @@
 Status: Partly built. The mesh kernel (slice 1), the in-place
 geometry path (slices 2 and 3, for clusters, instanced definitions and
 `mode` sections), grown raw writes (slice 7, with
-`MapEditor::append_raw` and **Use for lower LODs** in the session), the
-collision compiler with `coll` BSPs as meshes (slice 8, the crate only),
+`MapEditor::append_raw` and **Use for lower LODs**, a checkbox on a model
+section and `geometry.lower_lods`), the collision compiler with `coll`
+BSPs as meshes and as `coll_bsp` targets (slice 8),
 adding solids to a structure's level collision (slice 11, with a box
 solid as the editor's one control) and the Textures tool (slices 5 and 6: painting,
 exporting, and writing the edited images with the map's save) are
 implemented; the Modeling window is a section of the map inspector with
-buttons, not yet the gizmo, overlays and keymap below, and has no control
-or API method for **Use for lower LODs** yet. A `coll` BSP and a
-structure's collision are not yet `geometry-edit` targets, so the mesh
-session does not reach them. The one level collision edit is a box:
+buttons, not yet the gizmo, overlays and keymap below. A structure's
+level collision is not a `geometry-edit` target, so the mesh session does
+not reach it; a `coll` BSP is (`coll_bsp:<tag>:<n>`). The one level collision edit is a box:
 **Add collision box** in the section (two corners) and
 `geometry.collision.add_box` add a closed box solid to the picked
 target's structure (`ModelAction::AddCollisionBox`), onto the boxes added
@@ -23,6 +23,7 @@ level's collision and markers are designs.
 Code: `crates/tools/mesh-edit`, `crates/tools/geometry-edit`,
 `crates/tools/collision-build`,
 `crates/tools/collision-build/src/{merge,level}.rs`,
+`crates/tools/geometry-edit/src/coll_target.rs`,
 `crates/tools/geometry-edit/src/level_collision.rs`,
 `crates/formats/tags/src/geometry_write.rs`,
 `crates/formats/map/src/writer.rs` (`append_raw`, `append_metadata`),
@@ -36,6 +37,7 @@ Tests: `crates/tools/mesh-edit/tests`,
 `crates/tools/bitmap-edit/tests`,
 `crates/tools/geometry-edit/src/{session,write,grow,level_collision}_tests.rs`,
 `crates/tools/collision-build/src/{build,coll,merge}_tests.rs`,
+`crates/tools/geometry-edit/src/coll_target_tests.rs`,
 `crates/formats/tags/src/geometry_write_tests.rs`, the `append*raw*`
 tests in `crates/formats/map/src/tests.rs`,
 `a_geometry_raw_append_*`, `a_geometry_grown_block_*` and `bitmap_changes_*` in
@@ -315,6 +317,22 @@ its writes and stage start from the file's blocks. `box_solid` is the
 closed box the editor adds (`LevelSource::add_box`, `LevelEdit::add_box`;
 a box with no volume or a corner not finite is refused by target).
 
+**As a target** (`geometry-edit/src/coll_target.rs`). `geometry.list`
+gives each BSP of each `coll` as `coll_bsp:<tag>:<n>`, `n` counting
+region, permutation, BSP in order; `geometry.open` opens it as
+`mesh_from_bsp`'s mesh, which has no source triangles, so nothing is
+welded or passed through. `CollSource::read` walks the tag for each
+block, slot box and slot MOPP in the ordinary metadata. A save runs
+`rebuild` on the mesh's polygons and writes the eight blocks as
+patches where the count holds, else as grown blocks
+(`Patches::grown`, saved as `GeometryGrown`, pairs at `element + 4 + 8k`),
+the slot's box as patches and its MOPP over the old program when it fits
+(`LevelWrites::mopp`). A BSP whose polygons are as imported writes
+nothing, so an undone edit is unedited. A compile the tag cannot hold (a
+material past its list, the limits) refuses the save naming the target. A
+paired game is not patched half way: the live path freezes geometry with
+a `reload` row until the map is reloaded.
+
 **From render** (`from_render.rs`): weld, drop degenerate and repeated
 triangles (one drawn both ways becomes two-sided), then join neighbours
 across shared edges, of one material and flags, within 0.5 degrees and
@@ -346,7 +364,9 @@ classes, named in the status bar and by `geometry.check`: **in place**
 writes until a game run has loaded one), **grown raw** (a
 new raw block; behind Allow unverified geometry writes until a game run
 has loaded one) and **grown blocks** (a tag block with more elements;
-behind Allow growing full blocks as well).
+behind Allow growing full blocks as well). A `coll` BSP edit is always
+the last, named `grown_blocks`: the BSP is compiled whole, a block whose
+count holds is patched and one that changed is appended.
 
 ## Texture editing (`bitmap-edit`)
 
@@ -589,10 +609,10 @@ pages open read-only.
 What is built (Code): every Modeling command is
 `Action::Model(ModelAction)` (`app/modeling.rs`): open, close, apply a
 list of `MeshOp`s as one undo step (or one merged step per `merge` key),
-seal, undo and redo, and a collision box added to a structure's level
+seal, undo and redo, **Use for lower LODs** on a model section, and a collision box added to a structure's level
 collision or the structure's boxes cleared. The provider `api/geometry.rs`
 answers `geometry.list {model?}`, `geometry.open`, `geometry.close`,
-`geometry.read`, `geometry.check`, `geometry.collision.add_box
+`geometry.read`, `geometry.check`, `geometry.lower_lods {target?, on?}`, `geometry.collision.add_box
 {structure, lo, hi, material?}`, `geometry.collision.clear {structure}`,
 `mesh.mode`, `mesh.select {ids, op |
 all | none | invert}`, `mesh.transform {translate | matrix, pivot?,
@@ -631,6 +651,7 @@ namespace (player models and looks) is separate and unchanged.
 
 | Method | Does |
 |---|---|
+| `geometry.lower_lods {target?, on?}` | **Use for lower LODs** on an open model section: its permutations' lower levels point at it (`on`, default true) or are left as the file has them; one undo step; `changed` says whether anything did |
 | `geometry.list {kind?}` | targets with kind (`cluster`, `instance_def`, `instance`, `structure_collision`, `mode_section`, `marker`, `coll_bsp`, `phmo_shape`), counts, write class, stale marks |
 | `geometry.open {target}`, `geometry.close {target}` | enter or leave Edit mode on a target; `open` returns the mesh's element counts |
 | `geometry.read {target, verts?, faces?, range?}` | positions, faces as vert ids, materials, groups; bounded by `range` |
