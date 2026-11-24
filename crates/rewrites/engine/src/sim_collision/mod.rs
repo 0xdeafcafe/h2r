@@ -19,7 +19,7 @@
 mod cluster;
 mod flood;
 pub mod layout;
-mod mopp_box;
+pub mod mopp_box;
 pub mod mopp_ray;
 mod point;
 mod preflight;
