@@ -358,7 +358,8 @@ camera and tool take no input (`forge_screens::ui_up`, published to
 | Forge options | a row of the Forge menu | a list page on the Controller Settings host | U4 |
 | Controls | a row of Forge options | a list page made from the bindings table | U4 |
 | Coordinates | a row of Properties | a list page on the same host; A opens the keyboard | P1 |
-| Placed objects, Map limits | rows of Forge options | `kit.picker.game`; a list page of facts | P4 |
+| Placed objects | a row of Forge options | `kit.picker.game` over the objects placed, each flying the monitor to it | built |
+| Map limits | a row of Forge options | a list page of facts | P4 |
 
 - **Object menu.** Each picker has its six rows, scroll arrows and
   description block. The groups come from a table

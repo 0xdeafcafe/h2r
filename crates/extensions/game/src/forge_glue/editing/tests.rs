@@ -142,6 +142,44 @@ fn palette_to_properties_to_confirmed_engine_handle() {
     assert_eq!(e.session.objects()[0].handle, 32);
 }
 
+/// The placed objects browser lists what is placed, and choosing a row
+/// flies the monitor to that object and faces it.
+#[test]
+fn the_placed_objects_browser_flies_the_monitor_to_the_chosen_object() {
+    let mut e = editor();
+    e.tool.monitor = true;
+    assert!(e.placed().is_empty());
+    let frame = Frame {
+        position: [3., 0., 0.],
+        rotation: [0.; 3],
+    };
+    e.command(1, Command::Place { item: 0, frame }).unwrap();
+    let (ticket, _) = calls::lock(&e.calls).drain().pop().unwrap();
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[31]})));
+    e.poll(2);
+    let placed = e.placed();
+    assert_eq!(placed.len(), 1);
+    assert_eq!(placed[0].name, "shelf");
+    assert_eq!(placed[0].id, e.session.objects()[0].id);
+    e.tool.camera = Some(forge::camera::Camera {
+        position: [13., 0., 0.],
+        yaw: 0.,
+        pitch: 0.,
+    });
+    e.choose(3, Choice::FlyTo(placed[0].id)).unwrap();
+    let eye = e.tool.camera.unwrap();
+    assert!((eye.position[0] - 8.).abs() < 1e-4, "{:?}", eye.position);
+    let at = eye.point(FLY_DISTANCE);
+    assert!((at[0] - 3.).abs() < 1e-3 && at[1].abs() < 1e-3 && at[2].abs() < 1e-3);
+    // A gone object is refused by name, and the view stays.
+    let gone = forge_doc::OpId(999);
+    assert_eq!(e.choose(4, Choice::FlyTo(gone)), Err("That object is gone.".into()));
+    assert_eq!(e.tool.camera, Some(eye));
+    // With no monitor view there is nothing to fly.
+    e.tool.camera = None;
+    assert!(e.choose(5, Choice::FlyTo(placed[0].id)).is_err());
+}
+
 /// The tools and their settings are screens of their own; a choice on
 /// them sets the tool, and the screens' facts follow it.
 #[test]

@@ -66,6 +66,9 @@ const GROUND_REACH: f32 = 100.;
 /// How far in front of the monitor a ground marker is placed, in world
 /// units.
 const MARKER_REACH: f32 = 3.;
+/// How far from an object the placed objects browser's fly-to stands, in
+/// world units.
+const FLY_DISTANCE: f32 = 5.;
 
 pub(super) struct Editor {
     pub session: Arc<Session>,
@@ -728,7 +731,24 @@ impl Editor {
             }),
             saved: self.saved.clone(),
             filename: self.filename.clone(),
+            placed: self.placed(),
         });
+    }
+
+    /// The added objects as the placed objects browser lists them.
+    fn placed(&self) -> Vec<sheet::Placed> {
+        let palette = self.session.palette();
+        let names = groups(palette);
+        let objects: Vec<_> = self
+            .session
+            .objects()
+            .iter()
+            .filter_map(|o| {
+                let (group, name) = names.get(palette.iter().position(|p| *p == o.item)?)?;
+                Some((o.id, *group, name.clone(), o.frame.position))
+            })
+            .collect();
+        sheet::placed_rows(&objects)
     }
 
     fn busy(&self) -> bool {
@@ -1010,6 +1030,18 @@ impl Editor {
                     rotation: [eye.yaw, 0., 0.],
                 };
                 return self.command(tick, Command::Marker { label, frame });
+            }
+            Choice::FlyTo(id) => {
+                let at = self
+                    .session
+                    .objects()
+                    .iter()
+                    .find(|o| o.id == id)
+                    .ok_or("That object is gone.")?
+                    .frame
+                    .position;
+                let eye = self.tool.camera.ok_or("The monitor has no view.")?;
+                self.tool.camera = Some(eye.toward(at, FLY_DISTANCE));
             }
             Choice::BuildGround => return self.command(tick, Command::BuildGround),
             Choice::TestWaves => return self.command(tick, Command::TestWaves),

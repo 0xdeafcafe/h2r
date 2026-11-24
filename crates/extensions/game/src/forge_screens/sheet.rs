@@ -250,6 +250,9 @@ pub enum Choice {
     BuildGround,
     /// **Test waves**: build the ground when it is not current.
     TestWaves,
+    /// The placed objects browser: fly the monitor to an added object and
+    /// look at it.
+    FlyTo(forge::OpId),
     /// Set a value to value `i` of its row's values.
     Set(Prop, usize),
     /// A number typed on the game's keyboard.
@@ -889,8 +892,8 @@ pub struct OptionDef {
 }
 
 /// Forge options, in order (docs/game/forge-firefight-ui.md "The screens").
-/// Monitor look joins when it is built; Placed objects and Map limits in
-/// P4, Generate nav in F9, Players in F5, Map settings and Publish in F14.
+/// Monitor look joins when it is built; Map limits in P4 (Placed objects is
+/// [`placed_row`], after these), Generate nav in F9, Players in F5, Map settings and Publish in F14.
 pub const OPTIONS: &[OptionDef] = &[
     OptionDef {
         label: "Tool settings...",
@@ -906,6 +909,81 @@ pub const OPTIONS: &[OptionDef] = &[
 
 /// The Forge options page.
 pub fn options() -> Sheet {
+    options_with(&[])
+}
+
+/// An added object of the map, a row of the placed objects browser.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Placed {
+    pub id: forge::OpId,
+    pub group: Group,
+    /// What the row says: the object's name, numbered when the map has
+    /// more than one of it ("Beacon 2").
+    pub name: String,
+    /// The row's line in the picker: its group and where it stands.
+    pub line: String,
+}
+
+/// The browser's rows for `objects` (an id, a group, a name and a
+/// position each, in the order the session holds them): grouped as the
+/// object menu groups ([`GROUPS`]), then by name, then in the order
+/// placed; an object of a name the map holds more than once is numbered
+/// in that order.
+pub fn placed_rows(objects: &[(forge::OpId, Group, String, [f32; 3])]) -> Vec<Placed> {
+    let mut rows: Vec<(usize, &(forge::OpId, Group, String, [f32; 3]))> =
+        objects.iter().enumerate().collect();
+    rows.sort_by(|(ia, a), (ib, b)| (a.1, &a.2, ia).cmp(&(b.1, &b.2, ib)));
+    let mut out = Vec::with_capacity(rows.len());
+    for (i, (_, (id, group, name, at))) in rows.iter().enumerate() {
+        let same = |j: usize| rows[j].1.1 == *group && rows[j].1.2 == *name;
+        let first = (0..=i).find(|j| same(*j)).unwrap_or(i);
+        let many = first < i || rows.get(i + 1).is_some_and(|_| same(i + 1));
+        out.push(Placed {
+            id: *id,
+            group: *group,
+            name: if many {
+                format!("{name} {}", i - first + 1)
+            } else {
+                name.clone()
+            },
+            line: format!(
+                "{}. At {}, {}, {}.",
+                group.def().one,
+                number(at[0]),
+                number(at[1]),
+                number(at[2])
+            ),
+        });
+    }
+    out
+}
+
+/// The Placed objects row: A opens a picker over every added object, each
+/// flying the monitor to it. With none placed it is a fact.
+pub fn placed_row(placed: &[Placed]) -> SheetRow {
+    const HELP: &str = "Fly the monitor to an object you placed.";
+    if placed.is_empty() {
+        return SheetRow::new("Placed objects", Act::Info)
+            .value("None")
+            .describe("Nothing is placed yet. Place one from the object menu.");
+    }
+    let pick = PickSpec {
+        title: "Placed objects".into(),
+        values: placed.iter().map(|p| p.name.clone()).collect(),
+        current: 0,
+        details: placed.iter().map(|p| p.line.clone()).collect(),
+        description: String::new(),
+        choices: placed.iter().map(|p| Choice::FlyTo(p.id)).collect(),
+        closes: false,
+    };
+    SheetRow::new("Placed objects", Act::Pick(pick))
+        .value(&placed.len().to_string())
+        .describe(HELP)
+}
+
+/// The Forge options page with the placed objects browser over `placed`
+/// ([`placed_rows`]).
+pub fn options_with(placed: &[Placed]) -> Sheet {
     Sheet {
         kind: Kind::Options,
         title: "FORGE OPTIONS".into(),
@@ -914,6 +992,7 @@ pub fn options() -> Sheet {
             .iter()
             .map(|o| SheetRow::new(o.label, Act::Open(o.opens)).describe(o.description))
             .chain([
+                placed_row(placed),
                 SheetRow::new("Build AI ground", Act::Choose(Choice::BuildGround))
                     .describe("Build the nav mesh and zones for the placed labels now."),
                 SheetRow::new("Test waves", Act::Choose(Choice::TestWaves))
