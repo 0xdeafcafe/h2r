@@ -23,11 +23,11 @@ pub struct SortedItem {
 }
 
 impl SortedItem {
-    /// The standard handler's stream, pose and binding at this sorted slot.
+    /// The standard handler's stream, pose, binding and guest index address.
     pub fn scene_entry(
         &self,
         mem: &dyn GuestRead,
-    ) -> Result<(frame_scene::LightEntry, Vec<frame_scene::Row>), &'static str> {
+    ) -> Result<(frame_scene::LightEntry, Vec<frame_scene::Row>, u32), &'static str> {
         use scene_extract::light_groups::{Cause, dispatched_entry};
         dispatched_entry(mem, self.slot, self.handler_item).map_err(|cause| match cause {
             Cause::Memory => "unreadable gathered light entry",

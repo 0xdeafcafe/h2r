@@ -207,22 +207,29 @@ fn material(mem: &dyn GuestRead, shader: u32) -> R<()> {
 /// One sorted entry of the list whose items are at `items`, with the
 /// node rows of an object's pose.
 pub fn entry(mem: &dyn GuestRead, items: u32, sorted: Sorted) -> R<(LightEntry, Vec<Row>)> {
-    entry_at(mem, index(items, u32::from(sorted.index), ITEM_SIZE)?, sorted)
+    let (entry, rows, _) = entry_at(mem, index(items, u32::from(sorted.index), ITEM_SIZE)?, sorted)?;
+    Ok((entry, rows))
 }
 
 /// The loop has already resolved the item address and omitted excluded
 /// dispatches. The sorted slot supplies the implementation and vertex
-/// class the handler actually received.
-pub fn dispatched_entry(mem: &dyn GuestRead, slot: u32, item: u32) -> R<(LightEntry, Vec<Row>)> {
+/// class the handler actually received. The third result is the guest
+/// index address for this full-part emission, before D3D rebases indices.
+pub fn dispatched_entry(mem: &dyn GuestRead, slot: u32, item: u32) -> R<(LightEntry, Vec<Row>, u32)> {
     let sorted = Sorted {
         index: half(mem, slot)?,
         implementation: byte(mem, at(slot, 4)?)?,
         vertex_class: half(mem, at(slot, 8)?)?,
     };
-    entry_at(mem, item, sorted)
+    let (entry, rows, data) = entry_at(mem, item, sorted)?;
+    let indices = ptr(mem, data, 0x24)?;
+    let address = index(indices, entry.stream.first_index, 2)?;
+    index(address, entry.stream.index_count - 1, 2)?.checked_add(1).ok_or(Cause::Range)?;
+    Ok((entry, rows, address))
 }
 
-fn entry_at(mem: &dyn GuestRead, item: u32, sorted: Sorted) -> R<(LightEntry, Vec<Row>)> {
+/// Decode the entry once and retain its section data for the emitter.
+fn entry_at(mem: &dyn GuestRead, item: u32, sorted: Sorted) -> R<(LightEntry, Vec<Row>, u32)> {
     if word(mem, item)? != GEOMETRY_BUILD || word(mem, at(item, 4)?)? != GEOMETRY_DRAW {
         return Err(Cause::Callback);
     }
@@ -331,7 +338,7 @@ fn entry_at(mem: &dyn GuestRead, item: u32, sorted: Sorted) -> R<(LightEntry, Ve
             implementation: sorted.implementation,
         },
     };
-    Ok((entry, rows))
+    Ok((entry, rows, data))
 }
 
 /// The shadow projection block as nine registers; `None` when a word
@@ -690,15 +697,19 @@ mod tests {
         m.w(slot, 0xbeef_0002);
         m.w(slot + 4, 0xaabb_cc03);
         m.w(slot + 8, 0xface_0101);
-        let got = dispatched_entry(&m, slot, item).unwrap();
-        assert_eq!(got, entry(&m, ITEMS, Sorted {
+        m.w(DATA + 0x24, 0x0068_0000);
+        let (draw, rows, address) = dispatched_entry(&m, slot, item).unwrap();
+        assert_eq!(address, 0x0068_0000 + 16 * 2);
+        assert_eq!(draw.owner, LayerOwner::Object(InstanceKey(handle)));
+        assert_eq!((draw.binding.selector, draw.binding.variant), (1, 2));
+        assert_eq!(rows.len(), 3);
+        assert_eq!((draw, rows), entry(&m, ITEMS, Sorted {
             index: 2,
             implementation: 3,
             vertex_class: 0x101,
         }).unwrap());
-        assert_eq!(got.0.owner, LayerOwner::Object(InstanceKey(handle)));
-        assert_eq!((got.0.binding.selector, got.0.binding.variant), (1, 2));
-        assert_eq!(got.1.len(), 3);
+        m.w(DATA + 0x24, 0);
+        assert_eq!(dispatched_entry(&m, slot, item), Err(Cause::Section));
 
         m.w(RENDER_RECORDS + 3 * RENDER_RECORD_SIZE, 1 << 11);
         assert_eq!(dispatched_entry(&m, slot, item), Err(Cause::State));
