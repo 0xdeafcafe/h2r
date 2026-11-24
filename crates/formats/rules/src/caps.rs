@@ -346,6 +346,7 @@ pub mod id {
     pub const CROUCHING: u16 = 118;
     pub const PRIMED: u16 = 119;
     pub const SEES: u16 = 120;
+    pub const SET_OPEN: u16 = 121;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -640,6 +641,14 @@ pub const ENTRIES: &[Entry] = &[
     // traced at the next tick boundary through `Game::trace_sight`, and
     // answers from then on, false until its first trace.
     Entry { status: NotBuilt, ..vm(id::SEES, "sees", &[Object, Object], Bool) },
+    // `set_open(o, open)`: a barrier opened or closed. The VM keeps each
+    // open barrier's closed place (`vm::RulesExt::gates`, at most
+    // `vm::MAX_GATES`) and, when it opens one, steps it to the place
+    // `vm::GATE_DROP` below that, which is the engine's own
+    // `OBJECT_SET_TRANSFORM` put a `teleport` makes; closing steps it back.
+    // A barrier already in the state asked for does nothing. The host adds
+    // no call of its own.
+    act(id::SET_OPEN, "set_open", &[Object, Bool], Some("objects.move"), Now, Named),
 ];
 
 /// The word `message(to, text)` takes for everyone.
@@ -1096,7 +1105,7 @@ mod tests {
 
     #[test]
     fn objects_in_motion_are_gated_by_objects_move() {
-        for name in ["teleport", "move_to", "stop"] {
+        for name in ["teleport", "move_to", "stop", "set_open"] {
             let e = entry_named(name).unwrap();
             assert_eq!(e.kind, Kind::Action, "{name}");
             assert_eq!(e.cap, Some("objects.move"), "{name}");
@@ -1104,6 +1113,8 @@ mod tests {
         }
         assert_eq!(entry_named("teleport").unwrap().order, Order::Queued);
         assert_eq!(entry_named("move_to").unwrap().order, Order::Now);
+        assert_eq!(entry_named("set_open").unwrap().order, Order::Now);
+        assert_eq!(entry(id::SET_OPEN, API_VERSION).unwrap().args, &[Object, Bool]);
         assert_eq!(entry(id::TELEPORT, API_VERSION).unwrap().args, &[Object, Fixed, Fixed, Fixed]);
         assert_eq!(entry(id::MOVE_TO, API_VERSION).unwrap().args, &[Object, Fixed, Fixed, Fixed, Int]);
         for name in ["object_pos", "object_vel"] {

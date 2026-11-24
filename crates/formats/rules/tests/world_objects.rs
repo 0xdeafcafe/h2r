@@ -4,7 +4,7 @@
 
 use rules::fake::FakeGame;
 use rules::ty::fixed;
-use rules::vm::{ErrorKind, Input, MAX_MOVERS, Mover, RulesExt};
+use rules::vm::{ErrorKind, GATE_DROP, Gate, Input, MAX_GATES, MAX_MOVERS, Mover, RulesExt};
 use rules::{Severity, Vm, compile, diagnose};
 
 const PLATFORM: u32 = 0x4001_0000;
@@ -462,4 +462,93 @@ fn on_arrive_names_its_object() {
     assert!(c.diagnostics.iter().any(|d| d.code == "event.args"), "{:#?}", c.diagnostics);
     let ok = format!("{HEAD}on arrive(a) {{ }}\n");
     assert!(compile(&ok).is_ok());
+}
+
+/// A script that opens its barriers at the round's start and closes them
+/// on a global's say-so.
+const GATES: &str = "rules \"Gates\" 1
+type slayer
+requires objects.move
+label barrier: objects
+global var shut: bool = false
+on round_start { for each barrier b { set_open(b, true) } }
+on tick { if shut { for each barrier b { set_open(b, false) } } }
+";
+
+fn gates(n: u32) -> (Vm, FakeGame) {
+    let mut g = FakeGame::with_players(1);
+    for i in 0..n {
+        g.label("barrier", PLATFORM + i, i as i32, 1);
+        g.object_positions.insert(PLATFORM + i, at(i as i32, 5, 2));
+    }
+    (Vm::new(compile(GATES).unwrap(), 0, 0).unwrap(), g)
+}
+
+#[test]
+fn set_open_steps_a_barrier_down_and_back_to_the_place_it_closed_at() {
+    let (mut vm, mut g) = gates(1);
+    vm.begin_tick(0);
+    vm.fire(&mut g, Input::RoundStart);
+    let home = at(0, 5, 2);
+    let open = [home[0], home[1], home[2] - GATE_DROP];
+    assert_eq!(vm.gates(), [Gate { object: PLATFORM, home }]);
+    assert_eq!(g.steps, [(PLATFORM, open, [0; 3])], "put below its closed place");
+    // Asking again changes nothing, and the home is not read from the
+    // lowered place.
+    vm.begin_tick(1);
+    vm.fire(&mut g, Input::RoundStart);
+    assert_eq!(vm.gates().len(), 1);
+    assert_eq!(g.steps.len(), 1);
+    assert_eq!(vm.gates()[0].home, home);
+    // Closing steps it back and forgets it; closing a closed one is nothing.
+    vm.set_global("shut", 1);
+    run_to(&mut vm, &mut g, 2, 3);
+    assert!(vm.gates().is_empty());
+    assert_eq!(g.steps, [(PLATFORM, open, [0; 3]), (PLATFORM, home, [0; 3])]);
+    assert_eq!(g.object_positions[&PLATFORM], home);
+    assert_eq!(g.script_error, None);
+}
+
+#[test]
+fn opening_then_closing_in_one_tick_ends_where_it_began() {
+    let src = "rules \"Blink\" 1
+type slayer
+requires objects.move
+label barrier: objects
+on round_start { for each barrier b { set_open(b, true)
+ set_open(b, false) } }
+";
+    let mut g = FakeGame::with_players(1);
+    g.label("barrier", PLATFORM, 0, 1);
+    g.object_positions.insert(PLATFORM, at(1, 2, 3));
+    let mut vm = Vm::new(compile(src).unwrap(), 0, 0).unwrap();
+    vm.begin_tick(0);
+    vm.fire(&mut g, Input::RoundStart);
+    assert_eq!(g.steps.last().map(|s| s.1), Some(at(1, 2, 3)));
+    assert!(vm.gates().is_empty());
+}
+
+#[test]
+fn a_seventeenth_open_barrier_stops_the_script_and_the_state_round_trips() {
+    for (n, error) in [(MAX_GATES as u32, None), (MAX_GATES as u32 + 1, Some(ErrorKind::Gates))] {
+        let (mut vm, mut g) = gates(n);
+        vm.begin_tick(0);
+        vm.fire(&mut g, Input::RoundStart);
+        assert_eq!((vm.gates().len(), g.script_error.map(|e| e.kind)), (MAX_GATES, error));
+        let ext = RulesExt::decode(&vm.ext().encode()).unwrap();
+        assert_eq!(ext.gates, vm.gates());
+    }
+}
+
+#[test]
+fn the_rounds_end_closes_every_open_barrier() {
+    let (mut vm, mut g) = gates(2);
+    vm.begin_tick(0);
+    vm.fire(&mut g, Input::RoundStart);
+    assert_eq!(vm.gates().len(), 2);
+    vm.begin_tick(1);
+    vm.fire(&mut g, Input::RoundEnd);
+    assert!(vm.gates().is_empty());
+    assert_eq!(g.object_positions[&PLATFORM], at(0, 5, 2), "back where it closed");
+    assert_eq!(g.object_positions[&(PLATFORM + 1)], at(1, 5, 2));
 }

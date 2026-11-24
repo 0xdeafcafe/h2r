@@ -1019,8 +1019,9 @@ impl Game for FakeGame {
             }
             return;
         }
-        if matches!(call.entry.id, id::MOVE_TO | id::STOP) {
-            // The VM keeps the mover; the steps arrive as `step_object`.
+        if matches!(call.entry.id, id::MOVE_TO | id::STOP | id::SET_OPEN) {
+            // The VM keeps the mover or the open barrier; the steps arrive as
+            // `step_object`.
             return;
         }
         if call.entry.id == id::SET_BODY

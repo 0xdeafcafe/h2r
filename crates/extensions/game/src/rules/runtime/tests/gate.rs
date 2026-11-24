@@ -273,7 +273,7 @@ fn objects_in_motion_are_hostable() {
         assert!(e.status.hostable(), "{name}");
         assert!(READS.contains(&e.id), "{name}");
     }
-    for name in ["teleport", "move_to", "stop"] {
+    for name in ["teleport", "move_to", "stop", "set_open"] {
         let e = caps::entry_named(name).unwrap();
         assert!(e.status.hostable(), "{name}");
         assert!(ACTIONS.contains(&e.id), "{name}");
@@ -281,7 +281,7 @@ fn objects_in_motion_are_hostable() {
     assert!(DELIVERED.contains(&Event::Arrive));
     let src = "rules \"M\" 1\ntype slayer\nrequires objects.move\nlabel pad: object\n\
                on arrive(o) { stop(o) }\n\
-               on tick { move_to(pad, pad.position + vec(0.0, 0.0, 1.0), 5t)\n teleport(pad, vec(0.0, 0.0, 0.0)) }\n";
+               on tick { move_to(pad, pad.position + vec(0.0, 0.0, 1.0), 5t)\n teleport(pad, vec(0.0, 0.0, 0.0))\n set_open(pad, true) }\n";
     let ir = ::rules::compile(src).unwrap();
     assert_eq!(host_refusal(&ir), None);
 }
