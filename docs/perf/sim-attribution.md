@@ -429,8 +429,27 @@ the session writes its files. Run the attribution command above on
 
 Read from it: the AI, actor, pathfinding and HaloScript rows (0.5% here),
 the co-op session's networking row, and whether object, animation and Havok
-shares hold with thirty actors on the map. That fixes the order after
-phase 3.
+shares hold with thirty actors on the map. Census B has no recorded results for either campaign level. Waterworks has
+no actors and cannot rank campaign work.
+
+For each level, keep the build and image stamp, difficulty, player count,
+start and end ticks, encounter reached, and profiled guest CPU alongside
+the sample counts. Record the opening cinematic and the two active
+encounters separately. Record three unprofiled runs over the same route
+for the timing median. Use the profile to assign work within that window.
+
+The owner map groups actor decisions and path searches under `ai` and
+also places some script-facing builtins in that group. To order the two
+rewrite candidates, inspect the stacks in the campaign capture. Charge
+a sample to the innermost identified operation: VM scheduling and
+evaluation, an engine-facing builtin, actor decisions, or path searches.
+Retain the caller separately, so a search requested by a scripted AI
+action counts once. Leave samples without an identified operation in an
+unresolved row. Record counts, share of game-thread samples and ms per
+tick for each row and level in a dated perf note with the capture command
+and commit. Rank the two AI phases by measured active-encounter cost. If
+the unresolved share could reverse the ranking, identify its hottest
+callers before assigning either phase.
 
 Not verified here: that `h2 coop test --dry-run` prints lines that work when
 started by hand without the harness's driver, and that `h2 play` writes the
