@@ -206,6 +206,8 @@ fn source(dump: bool) -> Result<SceneReply, String> {
             carried_checkpoint: checkpoint,
             carried_activation: ACTIVATION.get().cloned(),
             visibility_first_mismatch: render_bridge::scene_step::visibility_first_mismatch(),
+            light_visibility_first_mismatch: render_bridge::scene_step::light_visibility_first_mismatch(),
+            view_record_first_mismatch: render_bridge::scene_step::view_record_first_mismatch(),
             ..SceneReply::default()
         });
     };
@@ -365,6 +367,8 @@ fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>, summary: Option<&C
         carried_checkpoint: None,
         carried_activation: None,
         visibility_first_mismatch: render_bridge::scene_step::visibility_first_mismatch(),
+        light_visibility_first_mismatch: render_bridge::scene_step::light_visibility_first_mismatch(),
+        view_record_first_mismatch: render_bridge::scene_step::view_record_first_mismatch(),
         dump: None,
     }
 }

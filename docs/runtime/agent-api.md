@@ -1838,7 +1838,7 @@ h2 agent render.parity '{"arm": true}'
 | `render.spawn_view` | act | `{index, yaw_offset?}` or `{reset: true}` | `{index, count, position: [x,y,z], yaw}` or `{reset: true}` |
 | `render.view` | act | `{eye: [x,y,z], yaw, pitch, fov?}` or `{reset: true}` | `{eye, yaw, pitch, fov}` or `{reset: true}` |
 | `render.capture` | read | `{tick?, pass?, lighting?, game_id?}` | `{path, tick, present, pass?, lighting?, scene_hash, source?}` |
-| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, carried_census?, carried_activation?, carried_checkpoint?, visibility_first_mismatch?, dump?, display_frame?, private_frame?}` |
+| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, carried_census?, carried_activation?, carried_checkpoint?, visibility_first_mismatch?, light_visibility_first_mismatch?, view_record_first_mismatch?, dump?, display_frame?, private_frame?}` |
 | `render.parity` | act | `{arm: true}` | `render.compare`'s fields plus `tick` |
 | `sim.hashes` | read | `{from_tick?, max?}` | `{rows: [{tick, gameplay, arena?}], dropped, resets, truncated?}` |
 
@@ -2004,6 +2004,12 @@ h2 agent render.parity '{"arm": true}'
   loaded whose Rust visibility differed from the guest's: its key, frame
   and tick, the first difference (`cluster 12 guest only`, `object
   0x00050002 rust only`) and the counts each way.
+  `light_visibility_first_mismatch` does the same for the first light
+  whose Rust visibility differed from its struct's lists, and
+  `view_record_first_mismatch` names the first game view whose
+  Rust-built records differed from the guest's and the first field that
+  did (`position`, `forward`, `up`, `fov`, `viewport`, `near`, `far`,
+  `projection`, `start cluster`, `mode`).
   The top-level `counters` include
   the visibility differential's `scene_visibility_checked` (game views
   whose Rust sets were made and compared), `scene_visibility_equal`,
@@ -2011,8 +2017,12 @@ h2 agent render.parity '{"arm": true}'
   `scene_visibility_objects_differ`, `scene_visibility_rust_taken` (views
   that carry the Rust sets), `scene_visibility_ns` (time in the Rust
   computation) and `scene_visibility_declined_<reason>` (`unread`,
-  `layout`, `mode`, `frusta`, `overflow`, `computed_pvs`, `camera`,
-  `not_main`: views it made no sets for). They also include
+  `layout`, `mode`, `frusta`, `overflow`, `camera`, `not_main`: views it
+  made no sets for); the light views' `scene_light_visibility_checked`,
+  `_equal`, `_differ`, `_ns` and `_declined_<reason>` (the same reasons);
+  and the view records' `scene_view_record_checked`, `_equal`, `_differ`
+  and `_declined_<reason>` (`unread`, `layout`, `cinematic`,
+  `no_observer`, `override`). They also include
   (`scenes_sealed`, `scenes_unsealed`, `scene_views`, `scene_no_camera`,
   `scene_refused_writes`, `scene_layers`, `scene_layer_items`,
   `scene_layer_remainder`, `scene_layers_unread` (layer draws whose list

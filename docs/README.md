@@ -94,7 +94,7 @@ are under [Reviews](#reviews).
 - [Shader animation writes at draw time](graphics/notes/2026-11-24-shader-constant-animation.md) traces the pixel and vertex constant bindings.
 - [HUD shader selection and constant upload](graphics/notes/2026-11-24-hud-shader-setup.md) traces bitmap and glyph shader setup.
 - [Retail lens-flare draws](graphics/notes/2026-11-24-lens-flares.md) traces the visibility callback, reflections and intermediate filter targets.
-- [native-visibility.md](graphics/native-visibility.md): the main view's portal flood and object set in Rust (retire-d3d R4), compared with the guest's as sets and taken when equal
+- [native-visibility.md](graphics/native-visibility.md): visibility and the main view's records in Rust (retire-d3d R4): every mode's clusters and objects, the window frusta, the light views, compared with the guest's and taken when equal
 - [native-world.md](graphics/native-world.md): native renderer stage 1: the static world
 - [native-objects.md](graphics/native-objects.md): native renderer stage 2: objects and skinning
 - [native-decorators.md](graphics/native-decorators.md): native decorators: the BSP's model decorators typed into the scene and drawn instanced

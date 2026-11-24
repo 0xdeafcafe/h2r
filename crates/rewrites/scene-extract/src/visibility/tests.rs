@@ -12,9 +12,11 @@ use frame_scene::scene::ClusterGather;
 use super::flood::tests::camera_at;
 use super::graph::tests::two_rooms;
 use super::guest::{
-    ACTIVE_STRUCTURE, ACTIVE_VIS, CLUSTER_OBJECTS, MERGE, OPEN_PORTALS, SKY_CLUSTER_ENABLED,
-    STRADDLE, WIDEN, vis,
+    ACTIVE_STRUCTURE, ACTIVE_VIS, CLUSTER_OBJECTS, FRUSTUM_BOUNDS, FRUSTUM_NEGATIVE_UNIT,
+    FRUSTUM_UNIT, MERGE, NORMALIZE_EPSILON, OPEN_PORTALS, PROJECTION_ROWS, SKY_CLUSTER_ENABLED,
+    SPHERE_FLOOD_MIN, STRADDLE, VIS_SPHERE_CENTRE, VIS_SPHERE_RADIUS, WIDEN, view_frustum, vis,
 };
+use super::sphere::tests::ROWS;
 use super::*;
 use crate::testing::Mem;
 
@@ -62,6 +64,17 @@ fn scene() -> Mem {
     m.w(STRADDLE + 4, (straddle >> 32) as u32);
     m.f(WIDEN, 0.05);
     m.f(MERGE, 0.8);
+    // The window frusta's values and the view frustum, no clip plane.
+    let inputs = frusta::tests::INPUTS;
+    m.f(FRUSTUM_UNIT, inputs.unit);
+    m.f(FRUSTUM_NEGATIVE_UNIT, inputs.negative_unit);
+    m.f(NORMALIZE_EPSILON, inputs.epsilon);
+    m.w(FRUSTUM_BOUNDS, 0xf400);
+    for (i, v) in inputs.bounds.into_iter().enumerate() {
+        m.f(0xf400 + 4 * i as u32, v);
+    }
+    m.w(MAIN_VIS, 0xf000);
+    m.w(0xf000 + view_frustum::FIRST + view_frustum::HAS_CLIP_PLANE, 0);
     m.w(OPEN_PORTALS, OPEN);
     m.w(OPEN, 1);
     m.w(VIEW_PLAYER, NONE);
@@ -185,15 +198,59 @@ fn mode_two_takes_the_visible_set_and_does_not_clip_objects() {
     let sets = run(&m).unwrap();
     assert_eq!(sets.clusters, [0, 1]);
     assert_eq!(sets.objects, [0x0001_0001, 0x0001_0002, 0x0001_0003]);
-    // Room 1's set is computed at run time: not ported.
+    // Room 1's set is computed at run time: from its own row (the
+    // structure has one table) through portals that join computed sets,
+    // of which the fixture's one portal is not.
     m.w(MAIN_VIS + vis::START_CLUSTER, 1);
-    assert_eq!(run(&m), Err(Decline::ComputedPvs));
+    let sets = run(&m).unwrap();
+    assert_eq!(sets.clusters, [1]);
+    assert_eq!(sets.objects, [0x0001_0002, 0x0001_0003]);
+}
+
+#[test]
+fn the_sphere_mode_floods_through_the_portal_and_lists_the_objects_its_sphere_reaches() {
+    let mut m = scene();
+    m.w(MAIN_VIS + vis::MODE, 1);
+    for (i, v) in [3.5, 0.0, 0.0].into_iter().enumerate() {
+        m.f(MAIN_VIS + VIS_SPHERE_CENTRE + 4 * i as u32, v);
+    }
+    m.f(MAIN_VIS + VIS_SPHERE_RADIUS, 1.2);
+    for (r, [a, b]) in ROWS.into_iter().enumerate() {
+        let at = PROJECTION_ROWS + 6 * r as u32;
+        // Rows of three halves: `a` and `b` lead each, the third is unused.
+        let word = |m: &Mem, w: u32| m.0.get(&w).copied().unwrap_or(0);
+        for (k, v) in [a, b].into_iter().enumerate() {
+            let addr = at + 2 * k as u32;
+            let shift = (addr & 2) * 8;
+            let old = word(&m, addr & !3);
+            m.w(addr & !3, (old & !(0xffff << shift)) | (u32::from(v) << shift));
+        }
+    }
+    m.f(SPHERE_FLOOD_MIN, 0.0);
+    // Room 0's object 1 at (2, 0, 0) is within 1.2 + 0.5 of the centre;
+    // room 1's are not.
+    assert_eq!(
+        run(&m).unwrap(),
+        VisibilitySets {
+            clusters: vec![0, 1],
+            objects: vec![0x0001_0001]
+        }
+    );
+    // A deliberate mismatch: the guest listed object 2 as well.
+    let p = compare(
+        &run(&m).unwrap(),
+        &guest_lists(vec![0, 1], vec![0x0001_0001, 0x0001_0002]),
+    );
+    assert_eq!(p.first, Some(Mismatch::ObjectGuestOnly(0x0001_0002)));
+    // Not above the flood's minimum: the start cluster alone.
+    m.f(SPHERE_FLOOD_MIN, 2.0);
+    assert_eq!(run(&m).unwrap().clusters, [0]);
 }
 
 #[test]
 fn views_it_does_not_cover_decline_by_name() {
     let mut m = scene();
-    m.w(MAIN_VIS + vis::MODE, 1);
+    m.w(MAIN_VIS + vis::MODE, 3);
     assert_eq!(run(&m), Err(Decline::Mode));
     let mut m = scene();
     m.w(MAIN_VIS + vis::FRUSTA, 2);
@@ -204,7 +261,7 @@ fn views_it_does_not_cover_decline_by_name() {
     let mut m = scene();
     m.w(OPEN_PORTALS, 0);
     assert_eq!(run(&m), Err(Decline::Unread));
-    assert_eq!(Decline::ALL.map(Decline::name).len(), 8);
+    assert_eq!(Decline::ALL.map(Decline::name).len(), 7);
 }
 
 #[test]

@@ -632,6 +632,15 @@ pub struct SceneReply {
     /// how (`scene_visibility_*` count them; docs/graphics/native-visibility.md).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visibility_first_mismatch: Option<String>,
+    /// The first light whose Rust visibility differed from its guest lists
+    /// (`scene_light_visibility_*` count them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub light_visibility_first_mismatch: Option<String>,
+    /// The first view whose Rust-built records (camera, projection, start
+    /// cluster, mode) differed from the guest's, and in which field
+    /// (`scene_view_record_*` count them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_record_first_mismatch: Option<String>,
     /// The JSON file written when `dump` was asked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dump: Option<String>,
