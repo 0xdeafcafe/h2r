@@ -65,6 +65,7 @@ use ::rules::ir::{Event, Ir, Op, TagGroup};
 use ::rules::vm::{Arg, Call as VmCall, Fired, Game, Input, Placed, RulesExt, ScriptError, TICK_BUDGET, Vm};
 use ::rules::policy::{self, Context};
 use ::rules::{Sha256, verify};
+use ::rules::types::Type;
 use agent_proto::rules as wire;
 use engine::GuestMemory;
 use engine::entry::{Cx, EntryError, GuestCall, Ret};
@@ -344,6 +345,7 @@ impl Source {
 /// One engine call a handler made, made at the next tick boundary.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Call {
+    StartLine(Type),
     Score { player: u8, delta: i32 },
     SetLives { player: u8, lives: i32 },
     Respawn(u8),
@@ -378,6 +380,7 @@ impl Call {
     /// The API entry's name.
     pub fn name(&self) -> &'static str {
         match self {
+            Call::StartLine(_) => "start_line",
             Call::Score { .. } => "score",
             Call::SetLives { .. } => "set_lives",
             Call::Respawn(_) => "respawn",
@@ -524,6 +527,7 @@ fn runtime_refusal(ir: &Ir) -> Option<String> {
 pub struct GuestGame<'a> {
     pub m: &'a dyn GuestMemory,
     pub calls: &'a mut Vec<Call>,
+    start_line: Option<Type>,
     /// The script error the VM stopped on, if it did.
     pub error: Option<ScriptError>,
     /// The map's labelled things; none reads as a map with none.
@@ -542,6 +546,7 @@ impl<'a> GuestGame<'a> {
         Self {
             m,
             calls,
+            start_line: None,
             error: None,
             table: None,
             film: false,
@@ -591,6 +596,10 @@ fn player(call: &VmCall, n: usize) -> Option<u8> {
 }
 
 impl Game for GuestGame<'_> {
+    fn start_line(&mut self, ty: Type) {
+        self.start_line = Some(ty);
+    }
+
     fn players(&self) -> Vec<u8> {
         self.roster().into_iter().map(|(slot, _, _)| slot).collect()
     }
@@ -759,6 +768,10 @@ impl Game for GuestGame<'_> {
 /// One game's script.
 pub struct Running {
     pub vm: Vm,
+    /// The type of the record's script, including a settings-only variant.
+    game_type: Type,
+    /// Wait for the players' machines to enter the round before posting it.
+    start_line: Option<Type>,
     pub hash: Sha256,
     pub source: Source,
     pub options: u32,
@@ -1176,6 +1189,7 @@ impl Runtime {
         // the built-in script of the type it uses under the record
         // (its settings, its score limit). From here on `ir` is the
         // built-in's; every refusal names the carried script too.
+        let game_type = ir.header.game_type;
         let (ir, hash, source, carried) = match ir.header.uses {
             None => (ir, hash, source, None),
             Some(_) => match used_builtin(&ir) {
@@ -1233,7 +1247,7 @@ impl Runtime {
             Err(e) => return self.refuse(full, format!("the VM refused the blob: {e}")),
         };
         let mut pending = Vec::new();
-        let error = {
+        let (error, start_line) = {
             let mut g = GuestGame::new(m, &mut pending)
                 .with_table(&table)
                 .with_zones(&zones)
@@ -1244,12 +1258,14 @@ impl Runtime {
             // round's comes from [`Runtime::round_start`].
             vm.fire(&mut g, Input::Init);
             if g.error.is_none() {
-                vm.fire(&mut g, Input::RoundStart);
+                vm.round_start_as(&mut g, game_type);
             }
-            g.error
+            (g.error, g.start_line)
         };
         let mut running = Running {
             vm,
+            game_type,
+            start_line,
             hash,
             source,
             options,
@@ -1373,7 +1389,13 @@ impl Runtime {
             Some(false) => Vec::new(),
         };
         let ask_authority = r.authority.is_none();
-        let calls = rest;
+        let mut calls = rest;
+        if let Some(ty) = r.start_line
+            && super::start_line::players_ready(m)
+        {
+            calls.push(Call::StartLine(ty));
+            r.start_line = None;
+        }
         r.pending = held;
         (ask_authority || !calls.is_empty()).then_some(Work {
             tick,
@@ -1408,6 +1430,9 @@ impl Runtime {
                 .with_zones(zones)
                 .with_film(self.film);
             f(vm, &mut g);
+            if let Some(ty) = g.start_line {
+                r.start_line = Some(ty);
+            }
             g.error
         };
         let saved = save(r, &mut *self.store);
@@ -1431,8 +1456,9 @@ impl Runtime {
     /// `ENGINE_ROUND_RESET`): `on round_start`, with its calls kept for
     /// the next tick boundary. The first round's is [`Runtime::start`]'s.
     pub fn round_start(&mut self, m: &dyn GuestMemory) {
+        let Some(ty) = self.running().map(|r| r.game_type) else { return };
         self.run(m, |vm, g| {
-            vm.fire(g, Input::RoundStart);
+            vm.round_start_as(g, ty);
         });
     }
 
@@ -1593,6 +1619,12 @@ impl Runtime {
         let mut table = r.table.clone();
         table.relabel(&ir);
         r.vm.swap_program(ir).map_err(|e| e.to_string())?;
+        if r.carried.is_none() {
+            r.game_type = r.vm.ir().header.game_type;
+            if r.start_line.is_some() {
+                r.start_line = Some(r.game_type);
+            }
+        }
         r.table = table;
         r.hash = hash;
         if let Err(why) = save(r, &mut *self.store) {
@@ -1735,6 +1767,7 @@ pub async fn make_calls(cx: &Cx, work: &Work) -> (Option<bool>, Vec<(String, Str
     }
     for call in &work.calls {
         let result = match *call {
+            Call::StartLine(ty) => super::start_line::post(cx, work.tick, ty).await,
             Call::Score { player, delta } => guest::score(cx, player, delta).await,
             Call::SetLives { player, lives } => guest::set_lives(cx, player, lives).await,
             Call::Respawn(player) => crate::firefight::guest::respawn(cx, player).await,

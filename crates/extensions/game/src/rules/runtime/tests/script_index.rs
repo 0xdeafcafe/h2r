@@ -116,3 +116,59 @@ fn a_record_of_the_script_index_with_no_script_runs_nothing() {
     assert!(!state.running);
     assert_eq!(state.refused.as_deref(), Some("the record names no script"));
 }
+
+#[test]
+fn each_ready_round_posts_the_record_scripts_line_on_the_host() {
+    // CTF's category and line on an index-6 record running Slayer's handlers.
+    let source = CARRIED.replace("type slayer", "type ctf");
+    let store = Local::default();
+    let (s, mut m, _, line, _) = carried(&store, &source, SCRIPT);
+    assert!(s.lock().state().running, "{line}");
+
+    // The roster exists while its machines are still joining.
+    let work = s.lock().pre_tick(&m).unwrap();
+    assert!(work.calls.is_empty());
+    drive(&s, m.clone(), work, true);
+    let players = engine::view::players::array(&m).unwrap().unwrap();
+    for slot in 0..2 {
+        players.get_absolute(&m, slot).unwrap().unwrap().set_flags(&mut m, 1).unwrap();
+    }
+
+    const SP: u32 = 0x3400_0100;
+    m.map(SP - 0x100, 0x100);
+    for round in 0..2 {
+        if round > 0 {
+            s.lock().round_start(&m);
+        }
+        m.put_u32(GAME_TIME + 8, TICK + 1 + 2 * round);
+        let work = s.lock().pre_tick(&m).expect("the ready round's line");
+        assert_eq!(work.calls, [Call::StartLine(Type::Ctf)]);
+        let shared = s.clone();
+        let entry = move |cx: Cx| -> EntryFuture {
+            Box::pin(run_work(cx, Arc::clone(&shared), work.clone()))
+        };
+        let run = testing::run(&entry, m, Regs { esp: SP, ..Regs::default() }, |_, _| Regs::default());
+        assert_eq!(run.result, Ok(Ret::new(0, 0)));
+        let event = SP - 0x24;
+        assert_eq!(run.calls, [
+            GuestCall::new(points::GAME_EVENT_NEW.base)
+                .eax(event).ecx(3).edx(0).reserve(0x24),
+            GuestCall::new(points::GAME_EVENT_POST.base).eax(event).reserve(0x24),
+            GuestCall::new(points::GAME_TICK.base),
+        ]);
+        m = run.guest;
+        m.put_u32(GAME_TIME + 8, TICK + 2 + 2 * round);
+        assert!(s.lock().pre_tick(&m).is_none(), "the round already spoke");
+    }
+
+    let (client, mut m, _, _, _) = carried(&Local::default(), &source, SCRIPT);
+    let players = engine::view::players::array(&m).unwrap().unwrap();
+    for slot in 0..2 {
+        players.get_absolute(&m, slot).unwrap().unwrap().set_flags(&mut m, 1).unwrap();
+    }
+    let work = client.lock().pre_tick(&m).unwrap();
+    assert_eq!(drive(&client, m, work, false), [
+        GuestCall::new(points::GAME_ENGINE_AUTHORITATIVE.base),
+        GuestCall::new(points::GAME_TICK.base),
+    ]);
+}

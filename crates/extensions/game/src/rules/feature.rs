@@ -376,6 +376,12 @@ impl hooks::Feature for Rules {
             let m: &dyn GuestMemory = &*mem;
             s.lock().post_tick(m);
         });
+        let s = Arc::clone(&self.shared);
+        super::start_line::replace_carrier(
+            b,
+            move || super::scoring::script_scores(&s.lock()),
+            Some(crate::firefight::feature::FEATURE),
+        );
         super::scoring::register(b, &self.shared);
         super::record::register(b);
         super::engine_object::register(b)?;

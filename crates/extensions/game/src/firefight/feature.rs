@@ -182,6 +182,15 @@ impl hooks::Feature for Firefight {
             let mut mem = o.guest();
             sim_state::events(|events| s.lock().post_tick(&mut *mem, events));
         });
+        #[cfg(feature = "rules")]
+        {
+            let s = Arc::clone(&self.0);
+            crate::rules::start_line::replace_carrier(
+                b,
+                move || s.lock().running().is_some_and(|game| game.announce_type),
+                None,
+            );
+        }
         let live = Arc::clone(&self.0);
         b.snapshot(hooks::SnapshotPolicy::forbid_while(move || {
             live.lock().running().map(|m| {

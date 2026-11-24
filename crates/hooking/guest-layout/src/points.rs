@@ -700,6 +700,13 @@ points! { ALL;
     /// clears the player's role bit) and posts an engine event
     /// (`0x19eb30`). No engine, nothing.
     ENGINE_PLAYER_LEFT @ 0x0015_7de0: [fn(player: esi) ret 0], Optional; "docs/engine/notes/2026-11-23-round-start-and-player-quit.md";
+    /// Initialize an untargeted game-engine event in the caller's record.
+    GAME_EVENT_NEW @ 0x0019_ebb0: [fn(event: eax, kind: ecx, index: edx) ret 0]; "docs/game/notes/2026-11-24-game-type-engine-reads.md";
+    /// Posts an event to the simulation's remote machines and shows it locally.
+    GAME_EVENT_POST @ 0x0019_eb90: [fn(event: eax) ret 0]; "docs/game/notes/2026-11-24-game-type-engine-reads.md";
+    /// Network and local delivery of a game-engine event.
+    GAME_EVENT_SEND @ 0x000a_7c50: [fn(event: edx) ret 0]; "docs/game/notes/2026-11-24-game-type-engine-reads.md";
+    GAME_EVENT_SHOW @ 0x0019_eb30: [fn(event: edi) ret 0]; "docs/game/notes/2026-11-24-game-type-engine-reads.md";
     /// The per-tick slot `+0x48` that CTF and Assault share (vtable
     /// `0x459d18`). Their capture scoring `0x242e00` runs from the
     /// per-player slot `+0x3c` and from `0x242741`, not from here.
