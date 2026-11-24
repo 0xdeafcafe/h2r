@@ -567,6 +567,8 @@ pub struct Audition {
     tables: Option<(String, Arc<wma::Tables>)>,
     loaded: Option<Loaded>,
     now: Option<(TagId, usize, usize)>,
+    /// The mouth curves redrawn and not yet saved (`app::sound_mouth`).
+    pub(super) mouth: super::sound_mouth::Edits,
 }
 
 impl Audition {
@@ -607,7 +609,7 @@ impl Audition {
 }
 
 impl App {
-    fn sound_key(&self, id: TagId) -> (String, TagId) {
+    pub(super) fn sound_key(&self, id: TagId) -> (String, TagId) {
         let source = self
             .source
             .as_ref()
@@ -760,6 +762,53 @@ impl App {
     /// then kept; it needs no executable, so it is read even when the
     /// audio is not decoded.
     pub fn sound_mouth(
+        &mut self,
+        id: TagId,
+        range: usize,
+        permutation: usize,
+    ) -> Result<Option<Arc<[u8]>>, SoundError> {
+        let stored = self.sound_mouth_stored(id, range, permutation)?;
+        // A redrawn curve shows in place of the stored one until it is
+        // saved or reverted.
+        Ok(self.mouth_edited(id, range, permutation).or(stored))
+    }
+
+    /// Where permutation `permutation` of range `range` of sound `id` keeps
+    /// its mouth curve, with the sound's header and the permutation, for a
+    /// write: the file's own bytes, never an edit's. `None` when unvoiced.
+    pub(super) fn sound_mouth_place(
+        &mut self,
+        id: TagId,
+        range: usize,
+        permutation: usize,
+    ) -> Result<Option<(tags::sound::MouthSpan, Permutation)>, SoundError> {
+        self.ensure_sound(id)?;
+        let (header, p) = {
+            let l = self.audition.loaded.as_ref().expect("loaded");
+            let p = *l
+                .sound
+                .ranges
+                .get(range)
+                .ok_or_else(|| SoundError::Failed(format!("no pitch range {range}")))?
+                .permutations
+                .get(permutation)
+                .ok_or_else(|| {
+                    SoundError::Failed(format!("no permutation {permutation} in range {range}"))
+                })?;
+            (l.header.clone(), p)
+        };
+        let mut files = self.shown_raw_files()?;
+        let l = self.audition.loaded.as_ref().expect("loaded");
+        let span = l
+            .gestalt
+            .mouth_span(&header, &p, &mut Raw(&mut files))
+            .map_err(|e| SoundError::Failed(e.to_string()))?;
+        Ok(span.map(|s| (s, p)))
+    }
+
+    /// The curve as the file stores it ([`Self::sound_mouth`] without the
+    /// redrawn ones).
+    fn sound_mouth_stored(
         &mut self,
         id: TagId,
         range: usize,

@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 pub mod announcer;
 pub mod anim;
 pub mod audition;
+pub mod sound_mouth;
 pub mod bot_nav;
 pub mod ground;
 pub mod commands;
@@ -2094,6 +2095,8 @@ pub(crate) mod tag_tests;
 mod tag_data_tests;
 #[cfg(test)]
 mod audition_tests;
+#[cfg(test)]
+mod sound_mouth_tests;
 #[cfg(test)]
 pub(crate) mod map_cards_tests;
 #[cfg(test)]

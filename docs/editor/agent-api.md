@@ -792,8 +792,20 @@ Notes on some:
   `{ticks, curve}` with one aperture value, 0 to 1, per 30 Hz tick, or
   `curve: null` for an unvoiced permutation (the sound has no extra
   info, its descriptor index is negative, or the mouth entry is
-  zero-length). The window's Sound window draws the same curve under
-  the waveform and calls the same `App::sound_*` methods. `sound.face`
+  zero-length). With `curve` (one value 0 to 1 per tick, exactly the
+  stored count), `from_sound` (`{gain?, smoothing?}`: the curve of the
+  sound's own loudness), `revert` or `undo` (the last redraw of the shown
+  map; no `tag` needed; the reply's `undone` names it or is null)
+  `sound.mouth` redraws the curve in place: one undo step, shown by every
+  read at once (`edited` is true while it differs from the file), saved
+  with the map as a patch of those bytes in the raw data, the checksum
+  aside. `written` is `{ticks, changed, edited}`. It is `REFUSED`, by
+  name, for a sound whose data is in a shared cache, a permutation that
+  is a split chain, an unvoiced one, a curve of another length and a
+  browsed map; `INVALID_PARAMS` for a value outside 0 to 1 or more than
+  one of `curve`, `from_sound` and `revert`. The window's Sound window
+  draws the same curve under the waveform, draws with a drag on it and
+  calls the same `App::sound_*` methods. `sound.face`
   is the face preview: the weight the curve gives `at_ms` into a
   permutation (the byte of that 30 Hz tick over 255, 0 past the end;
   the playhead by default while that permutation plays), or a `weight`

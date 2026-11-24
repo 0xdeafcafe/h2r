@@ -154,7 +154,7 @@ impl Studio {
             browser: browser::BrowserUi::default(),
             problems: problems::ProblemsUi::default(),
             map_list: map_list::MapListUi::default(),
-            sound: sound::SoundUi::default(),
+            sound: sound::SoundUi::new(),
             anim: anim::AnimUi::default(),
             announcer: announcer::AnnouncerUi::default(),
             workspace: workspace::WorkspaceUi::default(),

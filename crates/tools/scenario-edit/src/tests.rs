@@ -3199,3 +3199,54 @@ fn bitmap_changes_save_beside_the_modeling_tools_and_a_refusal_refuses_the_save(
     assert!(e.to_string().contains("bitmap: image 0: not written"), "{e}");
     assert!(sink.into_inner().is_empty());
 }
+
+#[test]
+fn sound_changes_save_beside_the_other_tools_and_a_refusal_refuses_the_save() {
+    use crate::scenario::{GeometryChanges, RawPatch};
+    let src = fixture_with_textured_bsp();
+    let mut s = read(src.clone());
+    let block = map::RawPointer {
+        file: map::ResourceFile::Local,
+        offset: TEX_BLOCK_FILE as u32,
+    };
+    let before = s.changes();
+    s.set_sound_changes(GeometryChanges {
+        raw_patches: vec![RawPatch {
+            block,
+            block_size: 0x40,
+            offset: 0x20,
+            bytes: vec![9, 8, 7],
+        }],
+        ..GeometryChanges::default()
+    })
+    .unwrap();
+    assert_ne!(s.changes(), before);
+    let out = write(&src, &s);
+    let ranges: Vec<_> = diff(&src, &out)
+        .into_iter()
+        .filter(|&(a, _)| !(0x2d0..0x2d4).contains(&a))
+        .collect();
+    assert_eq!(ranges, [(TEX_BLOCK_FILE + 0x20, TEX_BLOCK_FILE + 0x23)]);
+    // A mouth curve edit writes raw bytes in place and nothing else.
+    assert!(
+        s.set_sound_changes(GeometryChanges {
+            patches: vec![(META + SCNR as u32, vec![1])],
+            ..GeometryChanges::default()
+        })
+        .is_err()
+    );
+    // An empty set is the source again.
+    s.set_sound_changes(GeometryChanges::default()).unwrap();
+    assert_eq!(s.changes(), before);
+    assert_eq!(write(&src, &s), src);
+    // A refusal names the sound and stops the save before it writes.
+    s.set_sound_changes(GeometryChanges {
+        refusal: Some("its data is in a shared cache".into()),
+        ..GeometryChanges::default()
+    })
+    .unwrap();
+    let mut sink = Cursor::new(Vec::new());
+    let e = save::write_patched(&mut open(src.clone()), &s, &mut sink).unwrap_err();
+    assert!(e.to_string().contains("sound: its data is in a shared cache"), "{e}");
+    assert!(sink.into_inner().is_empty());
+}
