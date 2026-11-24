@@ -229,9 +229,11 @@ pub fn values(v: &View) -> Values {
 /// The notifications the change from `before` to `now` sends: a round
 /// that starts ("Round 2 of 3"), each skull switched on, lowest index
 /// first ("Mythic skull on", its name from `skull_name`; a skull with no
-/// name sends none), and lives lost ("A life lost", "2 lives lost"). None
-/// from no view (the match's first: the skulls on from the start are the
-/// lobby's), and none once it is over.
+/// name sends none), lives lost ("A life lost", "2 lives lost") and lives
+/// gained, the round's bonus ("Bonus life", "4 bonus lives"). The match's
+/// end sends one note, the rounds cleared ([`results_note`]), and the
+/// notes stop after it. None from no view (the match's first: the skulls
+/// on from the start are the lobby's).
 pub fn notes(
     before: Option<&View>,
     now: &View,
@@ -241,7 +243,11 @@ pub fn notes(
         return Vec::new();
     };
     if now.stage.over() {
-        return Vec::new();
+        return if b.stage.over() {
+            Vec::new()
+        } else {
+            results_note(now).into_iter().collect()
+        };
     }
     let mut out = Vec::new();
     if now.round > b.round {
@@ -257,15 +263,34 @@ pub fn notes(
             out.push(format!("{name} skull on"));
         }
     }
-    if let (Some(was), Some(is)) = (b.lives, now.lives)
-        && is < was
-    {
-        out.push(match was - is {
-            1 => "A life lost".to_owned(),
-            n => format!("{n} lives lost"),
-        });
+    if let (Some(was), Some(is)) = (b.lives, now.lives) {
+        if is < was {
+            out.push(match was - is {
+                1 => "A life lost".to_owned(),
+                n => format!("{n} lives lost"),
+            });
+        } else if is > was {
+            out.push(match is - was {
+                1 => "Bonus life".to_owned(),
+                n => format!("{n} bonus lives"),
+            });
+        }
     }
     out
+}
+
+/// The note the match's end sends beside its banner: the rounds cleared of
+/// the rounds there are ("Cleared 2/3"), all of them for a one-team win.
+/// None for the two-team ends, where the banner names the winner and a
+/// team can win a round the other never finished, and for a match the
+/// director left without an outcome.
+pub fn results_note(v: &View) -> Option<String> {
+    let cleared = match v.stage {
+        Stage::Won => v.rounds,
+        Stage::Lost => v.round.min(v.rounds),
+        _ => return None,
+    };
+    Some(format!("Cleared {cleared}/{}", v.rounds))
 }
 
 /// The named states: each stage, a boss wave, a round's end, the lives at
@@ -583,17 +608,38 @@ mod tests {
             notes(Some(&a), &both, name),
             ["Round 3 of 3", "Mythic skull on", "A life lost"]
         );
-        // A life given back is no note.
-        assert!(notes(Some(&hit), &a, name).is_empty());
+        // Lives gained are the round's bonus, one note.
+        assert_eq!(notes(Some(&hit), &a, name), ["Bonus life"]);
+        let more = View {
+            round: 2,
+            lives: Some(8),
+            ..a.clone()
+        };
+        assert_eq!(
+            notes(Some(&a), &more, name),
+            ["Round 3 of 3", "4 bonus lives"]
+        );
+        // The end sends the rounds cleared once, then nothing.
         let end = View {
             lives: Some(0),
             ..view(Stage::Lost)
         };
-        assert!(notes(Some(&a), &end, name).is_empty());
+        assert_eq!(notes(Some(&a), &end, name), ["Cleared 1/3"]);
+        assert!(notes(Some(&end), &end, name).is_empty());
+        let won = View {
+            round: 2,
+            ..view(Stage::Won)
+        };
+        assert_eq!(notes(Some(&a), &won, name), ["Cleared 3/3"]);
+        for stage in [Stage::Team0Won, Stage::Team1Won, Stage::Draw, Stage::Over] {
+            assert!(notes(Some(&a), &view(stage), name).is_empty(), "{stage:?}");
+        }
         for t in [
             "Round 12 of 12",
             "A life lost",
             "65535 lives lost",
+            "65535 bonus lives",
+            "Cleared 12/12",
             "Unlimited Grenades skull on",
         ] {
             assert_eq!(message_fault(t), None, "{t}");

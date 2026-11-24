@@ -619,6 +619,21 @@ fn a_rounds_skull_is_a_note_from_the_blob() {
     assert!(round < skull, "{:?}", played.notes);
 }
 
+/// The end of a won match sends the rounds cleared once, from the blob
+/// alone, after the round's skull note.
+#[test]
+fn a_won_match_ends_with_the_rounds_cleared() {
+    let played = play(director(small_def(true, 2)), &[0], 0);
+    assert_eq!(played.finished, Some(Outcome::Won));
+    assert_eq!(played.notes.last().map(String::as_str), Some("Cleared 2/2"));
+    assert_eq!(
+        played.notes.iter().filter(|n| n.starts_with("Cleared")).count(),
+        1,
+        "{:?}",
+        played.notes
+    );
+}
+
 /// Split screen: each local user's feed views the blob at its own roster
 /// slot, so each sees its own lives and gets its own notes; a user with no
 /// player is hidden.
