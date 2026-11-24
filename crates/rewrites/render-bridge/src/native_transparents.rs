@@ -23,7 +23,9 @@ use points::scene_effects::{
 const GEOMETRY_RANGE_TAIL: u32 = 0x0004_dae0;
 const GEOMETRY_EMITTER_CALLER: u32 = 0x0004_d626;
 const TRANSPARENT_DRAW_CALLER: u32 = 0x0004_1010;
-const LAYER_DRAW_CALLER: u32 = 0x0003_bc90;
+const LAYER_DRAW_CALLER: u32 = native_render::light_list::HANDLER_RETURN;
+const LAYER_ENTRIES_FRAME: u32 = 0xf094;
+const LAYER_ENTRIES_RETURN: u32 = 0x0004_45b7;
 const LAYER_DRAW_FRAME: u32 = 0xf0a4;
 const SORTED_HANDLER_RETURN: u32 = 0x0001_e3f3;
 const LIST_COUNT: u32 = 0x004b_6280;
@@ -84,6 +86,28 @@ thread_local! {
     static WALK_DATA: Cell<Option<u32>> = const { Cell::new(None) };
 }
 
+/// The standard handler saves the signed record index at its ESP+0x3c
+/// (0x4d131) and keeps the corresponding record pointer in EBP (0x4d141).
+/// The emitter saves that EBP before reusing it. Its frame includes the
+/// handler's three arguments and return address. The handler has already
+/// reused the original packed part argument by this point (0x4d147).
+fn emits_object(mem: &dyn GuestRead, esp: u32) -> Option<bool> {
+    use native_render::{objects::RECORD_MODEL, skip::{RENDER_RECORDS, RENDER_RECORD_SIZE}};
+    const RECORD_COUNT: u32 = 0x004c_0b78;
+    const RECORD_CAPACITY: u32 = 0x352;
+    let index = mem.read_u32(esp.checked_add(0x64)?)?;
+    if index >= mem.read_u32(RECORD_COUNT)?.min(RECORD_CAPACITY) {
+        return None;
+    }
+    let record = RENDER_RECORDS + index * RENDER_RECORD_SIZE;
+    if mem.read_u32(esp.checked_add(8)?)? != record {
+        return None;
+    }
+    // 0x4d157 selects model geometry by this datum, including unlit
+    // objects for which a lighting-cache owner cannot be recovered.
+    Some(mem.read_u32(record + RECORD_MODEL)? != u32::MAX)
+}
+
 fn walk_stage(mem: &dyn GuestRead, esp: u32) -> Option<Stage> {
     let word = |offset| mem.read_u32(esp.checked_add(offset)?);
     if word(0x18)? != GEOMETRY_EMITTER_CALLER {
@@ -101,21 +125,35 @@ fn walk_stage(mem: &dyn GuestRead, esp: u32) -> Option<Stage> {
             (WALK_DATA.get() == Some(frame_data)).then_some(Stage::Transparents)
         }
         LAYER_DRAW_CALLER => {
-            use native_render::world_layers::{Site, layer_site};
+            use native_render::world_layers::{Site, layer_site, sorted_site};
             let caller = word(LAYER_DRAW_FRAME)?;
             // The layer's sorted dispatcher has already applied the pass and
             // chosen this range. Claim only the scene's own late-layer calls.
             if scene_extract::late::scene_layer_call(layer, caller)
                 && mem.read_u32(native_render::skip::CURRENT_LAYER) == Some(layer)
-                && word(0xf094) == Some(0x0004_45b7)
+                && word(LAYER_ENTRIES_FRAME) == Some(LAYER_ENTRIES_RETURN)
             {
                 return Some(if layer == 16 { Stage::Fog } else { Stage::Water });
             }
-            let first_person_layer = layer_site(layer, caller) == Site::FirstPerson;
+            let site = layer_site(layer, caller);
             let list = mem.read_u32(native_render::skip::CURRENT_LIST)?;
-            (first_person_layer && list != 0
-                && mem.read_u32(list.checked_add(0x14)?)? == crate::native_first_person::FIRST_PERSON_ITEMS)
-                .then_some(Stage::FirstPerson)
+            if list == 0 { return None; }
+            let items = mem.read_u32(list.checked_add(0x14)?)?;
+            if items == crate::native_first_person::FIRST_PERSON_ITEMS {
+                return (site == Site::FirstPerson).then_some(Stage::FirstPerson);
+            }
+            // Resident plans consume their ranges before the emitter.
+            // A residual model draw reaches this point with its streams,
+            // constants and render states already bound by the handler.
+            if items != 0 && (matches!(site, Site::Scene | Site::AlternateView) || sorted_site(layer, caller).is_some())
+                && mem.read_u32(native_render::skip::CURRENT_LAYER) == Some(layer)
+                && word(LAYER_ENTRIES_FRAME) == Some(LAYER_ENTRIES_RETURN)
+                && emits_object(mem, esp)?
+            {
+                Some(Stage::Objects)
+            } else {
+                None
+            }
         }
         _ => None,
     }
@@ -139,7 +177,7 @@ impl IndexRange {
         // Both indexed backends consume the full list and rasterize its
         // complete triangles. Preserve the tail in the device snapshot.
         self.indices != 0 && self.count >= 3
-            && (matches!(stage, Stage::Transparents | Stage::FirstPerson) || !matches!(self.topology, IndexTopology::List)
+            && (matches!(stage, Stage::Transparents | Stage::FirstPerson | Stage::Objects) || !matches!(self.topology, IndexTopology::List)
                 || self.count % 3 == 0)
     }
 }
@@ -586,6 +624,44 @@ mod walk_tests {
             mem.set_u32(native_render::skip::CURRENT_LAYER, 3).unwrap();
             assert_eq!(classify(&mem), None);
         }
+    }
+
+    #[test]
+    fn residual_objects_require_the_emitters_live_model_record_and_layer() {
+        use native_render::skip::{CURRENT_LAYER, RENDER_RECORDS, RENDER_RECORD_SIZE};
+        let mut mem = FlatMemory::new(0x0040_0000, 0x0020_0000);
+        let (sp, list) = (0x005a_0000, 0x004a_0000);
+        let record = RENDER_RECORDS + RENDER_RECORD_SIZE;
+        for (at, word) in [
+            (sp + 0x18, GEOMETRY_EMITTER_CALLER), (sp + 0x68, LAYER_DRAW_CALLER),
+            (sp + LAYER_ENTRIES_FRAME, LAYER_ENTRIES_RETURN),
+            (CURRENT_LIST, list), (list + 0x14, 0x0052_0000),
+            (0x004c_0b78, 2), (sp + 0x64, 1), (sp + 8, record),
+            (record + 4, 0xface_0009),
+        ] {
+            mem.set_u32(at, word).unwrap();
+        }
+        let classify = |mem: &FlatMemory| walk_stage(&ReadMemory(mem), sp);
+        for (layer, caller) in [(1, 0x0002_be4a), (3, 0x0002_bed5), (3, 0x0002_bd74),
+            (17, 0x0002_c30b), (18, 0x0004_2015), (19, 0x0004_205f), (21, 0x0004_2721)]
+        {
+            mem.set_u32(CURRENT_LAYER, layer).unwrap();
+            mem.set_u32(sp + 0x78, layer).unwrap();
+            mem.set_u32(sp + LAYER_DRAW_FRAME, caller).unwrap();
+            assert_eq!(classify(&mem), Some(Stage::Objects), "layer {layer}");
+        }
+        for (at, invalid) in [
+            (sp + 0x18, 0), (sp + 0x68, 0), (sp + LAYER_ENTRIES_FRAME, 0), (sp + LAYER_DRAW_FRAME, 0),
+            (CURRENT_LAYER, 1), (sp + 8, RENDER_RECORDS), (0x004c_0b78, 1),
+            (sp + 0x64, u32::MAX), (record + 4, u32::MAX), (list + 0x14, crate::native_first_person::FIRST_PERSON_ITEMS),
+        ] {
+            let original = mem.u32(at).unwrap();
+            mem.set_u32(at, invalid).unwrap();
+            assert_eq!(classify(&mem), None, "at {at:#x}");
+            mem.set_u32(at, original).unwrap();
+        }
+        assert!(IndexRange { indices: 0x4000, count: 5, topology: IndexTopology::List }
+            .has_indices_for(Stage::Objects));
     }
 
     #[test]
