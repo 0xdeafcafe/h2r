@@ -6,6 +6,11 @@ Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.m
 
 The guest keeps all particle, beam and contrail simulation, property evaluation and geometry construction. The stage reads the completed geometry and replaces only the draw packet. Part of [native-renderer.md](native-renderer.md).
 
+
+The device prints one `native-particles` refusal summary per 100 presents
+with activity. Counts are grouped by producer and reason for admission
+and by target copy and reason for GPU preparation.
+
 ## How it works
 
 ### Particle boundary

@@ -6,6 +6,10 @@ Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.m
 
 A light's gel is a shader drawn into render target 13 before the light passes sample it as engine texture 10. The stage replaces that quad draw. The ordered handoff records the quad on both required target copies, then commits before it suppresses the original packet. Any preparation, resource, validation or range-count failure retains the original packet. Part of [native-renderer.md](native-renderer.md).
 
+The device prints one `native-gels` production refusal summary per 100
+presents with activity, with counts by reason. The original D3D draw
+remains in charge when production is refused.
+
 ## How it works
 
 ### Production order

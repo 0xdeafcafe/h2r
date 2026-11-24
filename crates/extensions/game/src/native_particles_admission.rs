@@ -38,6 +38,43 @@ impl Source {
         }
     }
 }
+static REFUSALS: crate::native_refusals::Counts = crate::native_refusals::Counts::new();
+
+pub(crate) fn report_refusals() {
+    REFUSALS.report("native-particles");
+}
+
+fn producer_label(producer: Producer) -> &'static str {
+    match producer {
+        Producer::Particle => "Particle",
+        Producer::Dynamic => "Dynamic",
+        Producer::Immediate(_) => "Immediate",
+        Producer::Flare(_) => "Flare",
+    }
+}
+
+fn refusal_label(why: Refused) -> &'static str {
+    match why {
+        Refused::Identity => "Identity",
+        Refused::Target => "Target",
+        Refused::Scissor => "Scissor",
+        Refused::Geometry => "Geometry",
+        Refused::Effect(reason) => reason,
+        Refused::State => "State",
+        Refused::Texture(_) => "Texture",
+        Refused::Shader(_) => "Shader",
+    }
+}
+
+fn refuse_copy(copy: d3d::TargetCopy, why: Refused) -> &'static str {
+    let copy = match copy {
+        d3d::TargetCopy::Reference => "Reference",
+        d3d::TargetCopy::Display => "Display",
+    };
+    REFUSALS.count(copy, refusal_label(why));
+    "particle resources"
+}
+
 #[derive(Clone)]
 struct Pending {
     source: Source,
@@ -442,25 +479,13 @@ impl Admission {
             None
         };
         if let Some(reason) = refusal {
-            static LOGGED: AtomicU64 = AtomicU64::new(0);
-            if LOGGED.fetch_add(1, Ordering::Relaxed) < 32 {
-                eprintln!(
-                    "native-particles-refused: producer={:?} reason={reason}",
-                    pending.source.producer()
-                );
-            }
+            REFUSALS.count(producer_label(pending.source.producer()), reason);
             return None;
         }
         let (vertices, raw_vertices, indices) = match geometry(snapshot.draw, &pending.source) {
             Ok(geometry) => geometry,
             Err(reason) => {
-                static LOGGED: AtomicU64 = AtomicU64::new(0);
-                if LOGGED.fetch_add(1, Ordering::Relaxed) < 32 {
-                    eprintln!(
-                        "native-particles-refused: producer={:?} reason={reason:?}",
-                        pending.source.producer()
-                    );
-                }
+                REFUSALS.count(producer_label(pending.source.producer()), refusal_label(reason));
                 return None;
             }
         };
@@ -661,16 +686,7 @@ impl ExternalPass for Pass {
         let mut renderer = renderer.lock().unwrap_or_else(|e| e.into_inner());
         let (id, renderer) = renderer_for(&mut renderer, target.device);
         renderer.begin_frame(self.frame);
-        let refusal = |why: Refused| {
-            static LOGGED: AtomicU64 = AtomicU64::new(0);
-            if LOGGED.fetch_add(1, Ordering::Relaxed) < 16 {
-                eprintln!(
-                    "native-particles-refused: call={} copy={:?} reason={why:?}",
-                    self.id, target.copy
-                );
-            }
-            "particle resources"
-        };
+        let refusal = |why| refuse_copy(target.copy, why);
         let snapshot = self
             .snapshot(&CopyView::of_target(target), renderer, id)
             .map_err(&refusal)?;
@@ -701,16 +717,7 @@ impl ExternalPass for Pass {
         let mut renderer = renderer.lock().unwrap_or_else(|e| e.into_inner());
         let (id, renderer) = renderer_for(&mut renderer, &t.device);
         renderer.begin_frame(self.frame);
-        let refusal = |why: Refused| {
-            static LOGGED: AtomicU64 = AtomicU64::new(0);
-            if LOGGED.fetch_add(1, Ordering::Relaxed) < 16 {
-                eprintln!(
-                    "native-particles-refused: call={} copy={:?} reason={why:?}",
-                    self.id, t.copy
-                );
-            }
-            "particle resources"
-        };
+        let refusal = |why| refuse_copy(t.copy, why);
         let snapshot = match self.snapshot(&view, renderer, id) {
             Ok(s) => s,
             Err(why) => return Some(Err(refusal(why))),
