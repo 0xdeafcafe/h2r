@@ -45,6 +45,59 @@ const STATE: u32 = 0x006a_2000;
 const MATERIAL: u32 = 0x006a_3000;
 const EPOCH: u32 = 71;
 
+/// A single marked, breakable instance surface, also used by the whole-query differential.
+pub(super) fn populate_instance_cluster(m: &mut Ram<'_>, scale: f32) {
+    // A rotated, translated wall, local x=0. A world +y ray
+    // crosses it through the centre of its square.
+    let mut bsp = Builder::default();
+    bsp.planes.push([1., 0., 0., 0.]);
+    bsp.nodes.push((0, synth::leaf(0), synth::SOLID));
+    bsp.leaves.push((0, 1, 0));
+    bsp.refs.push((0, synth::surface(0)));
+    let ring = bsp.ring(
+        0,
+        &[[0., -4., -4.], [0., 4., -4.], [0., 4., 4.], [0., -4., 4.]],
+        false,
+    );
+    let surface_flags = 8;
+    bsp.surfaces.push((0, ring, surface_flags, 0, 0));
+
+    bsp.write(DEF + 0x70, |at, bytes| m.store(at, bytes));
+    m.word(layout::ACTIVE_STRUCTURE, STRUCTURE);
+    m.store(layout::BSP_INDEX, &0u16.to_le_bytes());
+    m.word(STRUCTURE + 0xc, 1);
+    m.word(STRUCTURE + 0x10, MATERIAL);
+    m.store(MATERIAL + 8, &1309u16.to_le_bytes());
+    m.word(STRUCTURE + 0x9c, 1);
+    m.word(STRUCTURE + 0xa0, CLUSTERS);
+    m.word(CLUSTERS + 0xa8, 1);
+    m.word(CLUSTERS + 0xac, CODE);
+    m.word(STRUCTURE + 0x138, 1);
+    m.word(STRUCTURE + 0x13c, DEF);
+    m.word(STRUCTURE + 0x140, 1);
+    m.word(STRUCTURE + 0x144, PLACE);
+    m.word(instance::MARK_BASE - 4, EPOCH);
+    m.word(instance::MARK_BASE, 19);
+    m.word(0x004e_d280, STATE);
+    m.word(STATE + 0x201, 1);
+    m.float(PLACE, scale);
+    put_vector(m, PLACE + 4, [0., 1., 0.]);
+    put_vector(m, PLACE + 0x10, [-1., 0., 0.]);
+    put_vector(m, PLACE + 0x1c, [0., 0., 1.]);
+    put_vector(m, PLACE + 0x28, [3., 5., 2.]);
+    m.store(PLACE + 0x34, &0u16.to_le_bytes());
+    put_vector(m, PLACE + 0x3c, [3., 5., 2.]);
+    m.float(PLACE + 0x48, 64.);
+    let code = mopp::Code {
+        offset: [0.; 3],
+        scale: 1.,
+        info: 37,
+        bytecode: vec![0x30],
+    };
+    m.store(CODE, &code.to_block());
+    m.word(CODE + 0x24, 4);
+}
+
 #[test]
 fn populated_instance_cluster_against_the_lifted_callbacks() {
     with_oracle("populated instance cluster", |oracle, image| {
@@ -59,41 +112,21 @@ fn populated_instance_cluster_against_the_lifted_callbacks() {
                 "outside",
                 "broken",
             ] {
-                // A rotated, translated wall, local x=0. A world +y ray
-                // crosses it through the centre of its square.
-                let mut bsp = Builder::default();
-                bsp.planes.push([1., 0., 0., 0.]);
-                bsp.nodes.push((0, synth::leaf(0), synth::SOLID));
-                bsp.leaves.push((0, 1, 0));
-                bsp.refs.push((0, synth::surface(0)));
-                let ring = bsp.ring(
-                    0,
-                    &[[0., -4., -4.], [0., 4., -4.], [0., 4., 4.], [0., -4., 4.]],
-                    false,
-                );
-                let surface_flags = if case == "filtered" { 0x10 } else { 8 };
-                bsp.surfaces.push((0, ring, surface_flags, 0, 0));
-
                 let mut m = fresh(image);
-                bsp.write(DEF + 0x70, |at, bytes| m.store(at, bytes));
-                m.word(layout::ACTIVE_STRUCTURE, STRUCTURE);
-                m.store(layout::BSP_INDEX, &0u16.to_le_bytes());
-                m.word(STRUCTURE + 0xc, 1);
-                m.word(STRUCTURE + 0x10, MATERIAL);
-                m.store(MATERIAL + 8, &1309u16.to_le_bytes());
-                m.word(STRUCTURE + 0x9c, 1);
-                m.word(STRUCTURE + 0xa0, CLUSTERS);
-                m.word(CLUSTERS + 0xa8, 1);
-                m.word(CLUSTERS + 0xac, CODE);
-                m.word(STRUCTURE + 0x138, 1);
-                m.word(STRUCTURE + 0x13c, DEF);
-                m.word(STRUCTURE + 0x140, 1);
-                m.word(STRUCTURE + 0x144, PLACE);
-                m.word(instance::MARK_BASE - 4, EPOCH);
-                m.word(
-                    instance::MARK_BASE,
-                    if case == "already marked" { EPOCH } else { 19 },
-                );
+                populate_instance_cluster(&mut m, scale);
+                if case == "already marked" {
+                    m.word(instance::MARK_BASE, EPOCH);
+                }
+                if case == "broken" {
+                    m.word(STATE + 0x201, 0);
+                }
+                if case == "outside" {
+                    m.float(PLACE + 0x48, 0.25);
+                }
+                if case == "filtered" {
+                    let surfaces = sim::Memory::u32(&m, DEF + 0x9c).unwrap();
+                    m.store(surfaces + 4, &[0x10]);
+                }
                 if case == "table" {
                     m.word(STRUCTURE + 0xc4, 1);
                     m.word(STRUCTURE + 0xc8, STATE + 0x400);
@@ -101,28 +134,10 @@ fn populated_instance_cluster_against_the_lifted_callbacks() {
                     m.word(STATE + 0x444, STATE + 0x450);
                     m.store(STATE + 0x450, &u16::MAX.to_le_bytes());
                 }
-                m.word(0x004e_d280, STATE);
-                m.word(STATE + 0x201, u32::from(case != "broken"));
-                m.float(PLACE, scale);
-                put_vector(&mut m, PLACE + 4, [0., 1., 0.]);
-                put_vector(&mut m, PLACE + 0x10, [-1., 0., 0.]);
-                put_vector(&mut m, PLACE + 0x1c, [0., 0., 1.]);
-                put_vector(&mut m, PLACE + 0x28, [3., 5., 2.]);
-                m.store(PLACE + 0x34, &0u16.to_le_bytes());
-                put_vector(&mut m, PLACE + 0x3c, [3., 5., 2.]);
-                m.float(PLACE + 0x48, if case == "outside" { 0.25 } else { 64. });
                 let start = [if case == "outside" { 33. } else { 3. }, 3., 2.];
                 let delta = [0., 4., 0.];
                 put_vector(&mut m, START, start);
                 put_vector(&mut m, DELTA, delta);
-                let code = mopp::Code {
-                    offset: [0.; 3],
-                    scale: 1.,
-                    info: 37,
-                    bytecode: vec![0x30],
-                };
-                m.store(CODE, &code.to_block());
-                m.word(CODE + 0x24, 4);
                 let flags = match case {
                     "first hit" => 1 << 28,
                     "table" => 0x40000,

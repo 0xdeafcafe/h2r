@@ -122,3 +122,58 @@ impl PlacementMatrix {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ONE: u32 = 1.0f32.to_bits();
+
+    #[test]
+    fn inverse_translation_uses_the_guest_accumulation_order() {
+        // The two large terms cancel before the unit term is added.
+        // Adding in column order loses the translation completely.
+        let source = [
+            1., 1., 1., 1., 0., 1., 0., 0., 0., 1., -33554432., -1., 33554432.,
+        ]
+        .map(f32::to_bits);
+        let m = PlacementMatrix::from_words(source);
+        let inv = m.inverse(ONE).unwrap().words();
+        assert_eq!(inv[10], ONE);
+        assert_eq!(&inv[1..10], &[ONE, 0, 0, ONE, ONE, 0, ONE, 0, ONE]);
+        assert_eq!(m.words(), source);
+    }
+
+    #[test]
+    fn zero_scale_consumes_no_basis_or_translation_operands() {
+        let mut source = [f32::NAN.to_bits(); 13];
+        source[0] = (-0.0f32).to_bits();
+        let m = PlacementMatrix::from_words(source);
+        assert_eq!(m.inverse(ONE).unwrap().words(), [0; 13]);
+        assert_eq!(
+            m.local_ray(ONE, [ONE; 3], [ONE; 3]).unwrap(),
+            ([0; 3], [0; 3])
+        );
+        source[0] = f32::NAN.to_bits();
+        assert!(matches!(
+            PlacementMatrix::from_words(source).inverse(ONE),
+            Err(Bail::Float)
+        ));
+    }
+
+    #[test]
+    fn flipped_plane_subtracts_from_zero_after_scaling_distance() {
+        let m = PlacementMatrix::from_words(
+            [2., 0., 1., 0., -1., 0., 0., 0., 0., 1., 3., 5., 2.].map(f32::to_bits),
+        );
+        let p = [ONE, 0, 0, 3.0f32.to_bits()];
+        assert_eq!(
+            m.plane(p, false).unwrap(),
+            [0., 1., 0., 11.].map(f32::to_bits)
+        );
+        assert_eq!(
+            m.plane(p, true).unwrap(),
+            [0., -1., 0., -11.].map(f32::to_bits)
+        );
+    }
+}
