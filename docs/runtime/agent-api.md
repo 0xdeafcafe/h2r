@@ -1839,7 +1839,7 @@ h2 agent render.parity '{"arm": true}'
 | `render.spawn_view` | act | `{index, yaw_offset?}` or `{reset: true}` | `{index, count, position: [x,y,z], yaw}` or `{reset: true}` |
 | `render.view` | act | `{eye: [x,y,z], yaw, pitch, fov?}` or `{reset: true}` | `{eye, yaw, pitch, fov}` or `{reset: true}` |
 | `render.capture` | read | `{tick?, pass?, lighting?, game_id?}` | `{path, tick, present, pass?, lighting?, scene_hash, source?}` |
-| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, carried_census?, carried_activation?, carried_checkpoint?, visibility_first_mismatch?, light_visibility_first_mismatch?, view_record_first_mismatch?, dump?, display_frame?, private_frame?}` |
+| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, carried_census?, carried_activation?, carried_checkpoint?, visibility_first_mismatch?, light_visibility_first_mismatch?, first_person_visibility_first_mismatch?, view_record_first_mismatch?, dump?, display_frame?, private_frame?}` |
 | `render.parity` | act | `{arm: true}` | `render.compare`'s fields plus `tick` |
 | `sim.hashes` | read | `{from_tick?, max?}` | `{rows: [{tick, gameplay, arena?}], dropped, resets, truncated?}` |
 
@@ -2006,7 +2006,12 @@ h2 agent render.parity '{"arm": true}'
   and tick, the first difference (`cluster 12 guest only`, `object
   0x00050002 rust only`) and the counts each way.
   `light_visibility_first_mismatch` does the same for the first light
-  whose Rust visibility differed from its struct's lists, and
+  whose Rust visibility differed from its struct's lists.
+  `first_person_visibility_first_mismatch` identifies the first differing
+  first-person slot count, handle, record count or record in replay order.
+  Its counters are `scene_first_person_visibility_checked`, `_equal`,
+  `_differ`, `_declined_unread` and `_declined_layout`.
+
   `view_record_first_mismatch` names the first game view whose
   Rust-built records differed from the guest's and the first field that
   did (`position`, `forward`, `up`, `fov`, `viewport`, `near`, `far`,

@@ -31,6 +31,8 @@ pub struct Inputs {
     /// The box the frustum's bounds start from (min x, max x, min y, max y,
     /// min z, max z; the six floats `[0x004687e0]` points at).
     pub bounds: [f32; 6],
+    /// Distance used for the four window corners and the far plane.
+    pub far: f32,
     /// The view frustum's clip plane (`+0x74`), when its byte at `+0x6c`
     /// is set: negated, it replaces the eye plane.
     pub clip_plane: Option<[f32; 4]>,
@@ -93,7 +95,7 @@ fn normalize(v: [f32; 3], inputs: &Inputs) -> [f32; 3] {
 
 impl Frustum {
     /// `0x00163db0`: the frustum through the eye and the window `rect`
-    /// (tangent units), out to the lens's far distance. `None` when the
+    /// (tangent units), out to the view frustum's far distance. `None` when the
     /// rectangle is empty (max not above min, or NaN), as the guest
     /// returns false there.
     pub fn build(rect: [f32; 4], lens: &Lens, inputs: &Inputs) -> Option<Self> {
@@ -103,7 +105,7 @@ impl Frustum {
             return None;
         }
         let basis = Basis::new(lens);
-        let k = lens.far;
+        let k = inputs.far;
         let (x0k, x1k, y0k, y1k, back) = (x0 * k, x1 * k, y0 * k, y1 * k, 0.0 - k);
         let corners = [
             [x0k, y1k, back],
@@ -199,6 +201,7 @@ pub(crate) mod tests {
 
     /// Invented values for the image's.
     pub(crate) const INPUTS: Inputs = Inputs {
+        far: 1000.0,
         unit: 1.0,
         negative_unit: -1.0,
         epsilon: 1e-4,

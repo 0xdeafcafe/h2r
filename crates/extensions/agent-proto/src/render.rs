@@ -636,6 +636,9 @@ pub struct SceneReply {
     /// (`scene_light_visibility_*` count them).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub light_visibility_first_mismatch: Option<String>,
+    /// First differing slot or replay record of a first-person light view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_person_visibility_first_mismatch: Option<String>,
     /// The first view whose Rust-built records (camera, projection, start
     /// cluster, mode) differed from the guest's, and in which field
     /// (`scene_view_record_*` count them).

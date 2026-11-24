@@ -18,6 +18,7 @@
 mod additional;
 pub mod chosen;
 mod first_person;
+pub mod slot_visibility;
 mod frame;
 mod handoff;
 pub mod host;
@@ -314,6 +315,7 @@ pub fn new_view() {
 /// not the memory they were read from. Takes no device lock (unlike
 /// [`new_view`], which asks the host for the next view's target).
 pub fn forget_runs() {
+    slot_visibility::forget();
     passes::forget();
     first_person::forget();
     handoff::forget();
@@ -493,7 +495,7 @@ fn open_light(
             .inputs(mem, c.flags, c.definition_flags)
             .ok_or("unreadable light layer mask")?;
         let steps = light_passes::steps(&inputs);
-        crate::scene_step::light(mem, scene_light(&light, &inputs), steps.as_slice());
+        crate::scene_step::light(mem, scene_light(&light, &inputs), steps.as_slice(), call);
         let shader_gel = if c.animated_gel {
             if light.definition != source.definition {
                 return Err("light definition differs from the constants call");
@@ -818,8 +820,9 @@ impl Feature for NativeLights {
         first_person::install(b);
         object_shadows::install(b);
         b.raw()
-            .observe_before(&points::RENDER_DYNAMIC_LIGHTS, "native_lights_view", |_| {
+            .observe_before(&points::RENDER_DYNAMIC_LIGHTS, "native_lights_view", |o| {
                 if !Stage::Lights.standing_down() {
+                    slot_visibility::begin(&*o.guest());
                     new_view();
                 }
             })

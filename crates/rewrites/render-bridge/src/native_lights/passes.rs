@@ -130,6 +130,11 @@ fn at_constants(c: &mut Call<'_>) -> Option<TransferAbi> {
     let rt = Arc::clone(c.ctx.runtime());
     let call = {
         let mem = rt.memory();
+        if !Stage::Lights.standing_down()
+            && passes::caller(&*mem, c.cpu.esp) == Some(passes::site::CONSTANTS)
+        {
+            super::slot_visibility::collect(&*mem, c.cpu.edx);
+        }
         passes::ConstantsCall::read(&*mem, c.cpu.esp).ok()??
     };
     let pending = PENDING.take()?;

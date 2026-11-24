@@ -166,6 +166,23 @@ impl Lens {
         })
     }
 
+    /// A light frustum already supplies its world axes and bounds in tangent units.
+    pub(super) fn from_tangents(
+        position: [f32; 3],
+        [right, up, forward]: [[f32; 3]; 3],
+        [left, right_edge, bottom, top]: [f32; 4],
+        near: f32,
+        far: f32,
+    ) -> Option<Self> {
+        let scale = [2.0 / (right_edge - left), 2.0 / (top - bottom)];
+        let offset = [(right_edge + left) * 0.5 * scale[0], (top + bottom) * 0.5 * scale[1]];
+        let finite = [position, right, up, forward].into_iter().flatten().all(f32::is_finite)
+            && offset.into_iter().all(f32::is_finite)
+            && scale.into_iter().all(|s| s.is_finite() && s > 0.0);
+        (finite && near.is_finite() && near > 0.0 && far.is_finite() && far > 0.0)
+            .then_some(Self { position, right, up, forward, scale, offset, near, far })
+    }
+
     /// World to `(x, y, w)`.
     pub fn to_view(&self, p: [f32; 3]) -> [f32; 3] {
         let d = sub(p, self.position);

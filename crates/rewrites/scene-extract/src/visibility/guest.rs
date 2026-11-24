@@ -368,6 +368,8 @@ pub const FRUSTUM_BOUNDS: u32 = 0x0046_87e0;
 /// (`0x1bc` bytes).
 pub mod view_frustum {
     pub const FIRST: u32 = 0x4;
+    pub const TEST_PORTAL_FAR: u32 = 0x84;
+    pub const FAR: u32 = 0x88;
     /// A byte: the eye plane is replaced by [`CLIP_PLANE`], negated.
     pub const HAS_CLIP_PLANE: u32 = 0x6c;
     pub const CLIP_PLANE: u32 = 0x74;
@@ -382,10 +384,9 @@ fn floats<const N: usize>(mem: &dyn GuestRead, base: u32) -> Result<[f32; N], De
     Ok(out)
 }
 
-/// The main view's [`super::frusta::Inputs`].
-pub fn frustum_inputs(mem: &dyn GuestRead) -> Result<super::frusta::Inputs, Decline> {
+/// Main-view window inputs and the flood's optional portal distance limit.
+pub fn frustum_inputs(mem: &dyn GuestRead) -> Result<(super::frusta::Inputs, Option<f32>), Decline> {
     let u = Decline::Unread;
-    let bounds = floats(mem, ptr_at(mem, FRUSTUM_BOUNDS).ok_or(u)?)?;
     let view = ptr_at(mem, MAIN_VIS)
         .and_then(|f| at(f, view_frustum::FIRST))
         .ok_or(u)?;
@@ -395,14 +396,27 @@ pub fn frustum_inputs(mem: &dyn GuestRead) -> Result<super::frusta::Inputs, Decl
     } else {
         None
     };
+    let far = f32_at(mem, at(view, view_frustum::FAR).ok_or(u)?).ok_or(u)?;
+    let test_far = u8_at(mem, at(view, view_frustum::TEST_PORTAL_FAR).ok_or(u)?).ok_or(u)?;
+    Ok((window_inputs(mem, far, clip_plane)?, (test_far != 0).then_some(far)))
+}
+
+pub(super) fn window_inputs(
+    mem: &dyn GuestRead,
+    far: f32,
+    clip_plane: Option<[f32; 4]>,
+) -> Result<super::frusta::Inputs, Decline> {
+    let u = Decline::Unread;
+    let bounds = floats(mem, ptr_at(mem, FRUSTUM_BOUNDS).ok_or(u)?)?;
     let inputs = super::frusta::Inputs {
+        far,
         unit: f32_at(mem, FRUSTUM_UNIT).ok_or(u)?,
         negative_unit: f32_at(mem, FRUSTUM_NEGATIVE_UNIT).ok_or(u)?,
         epsilon: f32_at(mem, NORMALIZE_EPSILON).ok_or(u)?,
         bounds,
         clip_plane,
     };
-    if inputs.unit.is_finite() && inputs.negative_unit.is_finite() && inputs.epsilon.is_finite() {
+    if far.is_finite() && inputs.unit.is_finite() && inputs.negative_unit.is_finite() && inputs.epsilon.is_finite() {
         Ok(inputs)
     } else {
         Err(Decline::Layout)

@@ -51,6 +51,7 @@ pub const CAMERA_OVERRIDE: u32 = 0x004e_6948;
 /// The near and far planes `0x0002f800` stores.
 pub const NEAR: u32 = 0x0048_5ad4;
 pub const FAR: u32 = 0x0048_5ad8;
+const PLAYER_GLOBALS: u32 = 0x004e_8c20;
 /// The whole screen's viewport (`i16` top, left, bottom, right).
 pub const SCREEN: u32 = 0x0048_5a8a;
 /// `0x0002f800`'s field-of-view factors: by default, and for a view whose
@@ -237,15 +238,62 @@ fn override_active(mem: &dyn GuestRead) -> Result<bool, Decline> {
     Ok(on != 0 && kind == 3)
 }
 
-/// `0x0002f800`'s factor: the view's shape against the screen's, as
-/// `(width share · 100) / height share` in whole numbers; 200 and 50 take
-/// their own factors. The guest takes the shares from its view grid
-/// (`0x0002f600`, `0x0002f640`); these are the viewport's.
-fn fov_factor(mem: &dyn GuestRead, viewport: [i16; 4]) -> Result<f32, Decline> {
-    let [t, l, b, r] = rect_at(mem, SCREEN)?.map(i64::from);
-    let [vt, vl, vb, vr] = viewport.map(i64::from);
-    let (w, h, vw, vh) = (r - l, b - t, vr - vl, vb - vt);
-    let ratio = (vw * h * 100).checked_div(vh * w).unwrap_or(0);
+/// The camera viewport uses the outer screen at its edges and splits the
+/// inner rectangle (SCREEN + 8) at whole-cell boundaries (0x0002f6b0).
+/// The FOV ratio uses cell shares, before any rounding to pixels.
+fn viewport_layout(
+    mem: &dyn GuestRead,
+    index: u32,
+    lens: &LensInputs,
+) -> Result<([i16; 4], i32), Decline> {
+    let count = if lens.display_flag {
+        1
+    } else {
+        let globals = ptr_at(mem, PLAYER_GLOBALS).ok_or(Decline::Unread)?;
+        i32::from(half_at(mem, at(globals, 8).ok_or(Decline::Layout)?)?).clamp(1, 4)
+    };
+    if index >= count as u32 {
+        return Err(Decline::Layout);
+    }
+    let index = index as i32;
+    let stacked = lens.override_lens || !lens.widescreen;
+    let (cols, rows) = match count {
+        1 => (1, 1),
+        2 if stacked => (1, 2),
+        2 => (2, 1),
+        _ => (2, 2),
+    };
+    // Three players share four cells. View zero spans two; the other
+    // players occupy the remaining column or row (0x0002f640).
+    let (col, row, width, height) = if count == 3 && stacked {
+        if index == 0 {
+            (0, 0, 2, 1)
+        } else {
+            (index - 1, 1, 1, 1)
+        }
+    } else if count == 3 {
+        if index == 0 {
+            (0, 0, 1, 2)
+        } else {
+            (1, index - 1, 1, 1)
+        }
+    } else {
+        (index % cols, index / cols, 1, 1)
+    };
+    let outer = rect_at(mem, SCREEN)?;
+    let [top, left, bottom, right] = rect_at(mem, SCREEN + 8)?.map(i32::from);
+    let cell_width = (right - left) / cols;
+    let cell_height = (bottom - top) / rows;
+    let viewport = [
+        if row == 0 { outer[0] } else { (top + row * cell_height) as i16 },
+        if col == 0 { outer[1] } else { (left + col * cell_width) as i16 },
+        if row + height == rows { outer[2] } else { (top + (row + height) * cell_height) as i16 },
+        if col + width == cols { outer[3] } else { (left + (col + width) * cell_width) as i16 },
+    ];
+    Ok((viewport, width * rows * 100 / (height * cols)))
+}
+
+fn fov_factor(mem: &dyn GuestRead, ratio: i32) -> Result<f32, Decline> {
     f32_read(
         mem,
         match ratio {
@@ -424,9 +472,9 @@ pub fn build(mem: &dyn GuestRead, guest: &RenderCamera) -> Result<(ViewRecord, V
     }
     let obs = OBSERVER_CAMERAS + OBSERVER_CAMERA_SIZE * player as u32;
     let v3 = |o: u32| vec3_at(mem, obs + o).ok_or(u);
-    let viewport = rect_at(mem, rec + record::VIEWPORT)?;
-    let fov = f32_read(mem, obs + observer::FOV)? * fov_factor(mem, viewport)?;
     let lens = LensInputs::read(mem)?;
+    let (viewport, ratio) = viewport_layout(mem, index, &lens)?;
+    let fov = f32_read(mem, obs + observer::FOV)? * fov_factor(mem, ratio)?;
     let camera = RenderCamera {
         position: v3(observer::POSITION)?,
         forward: v3(observer::FORWARD)?,
@@ -586,8 +634,8 @@ mod tests {
         m.w(VIEW_INDEX, 0);
         m.w(VIEW_RECORDS + record::CINEMATIC, 0);
         m.w(VIEW_RECORDS + record::PLAYER, 0);
-        m.w(VIEW_RECORDS + record::VIEWPORT, 0);
-        m.w(VIEW_RECORDS + record::VIEWPORT + 4, 480 | (640 << 16));
+        m.w(PLAYER_GLOBALS, 0x7100);
+        m.w(0x7108, 1);
         m.w(CAMERA_OVERRIDE, 0);
         for (i, v) in [1.0, 2.0, 3.0].into_iter().enumerate() {
             m.f(OBSERVER_CAMERAS + observer::POSITION + 4 * i as u32, v);
@@ -602,7 +650,9 @@ mod tests {
         // The screen at 0x485a8a: top, left, bottom, right.
         m.w(SCREEN & !3, 0);
         m.w((SCREEN & !3) + 4, 480 << 16);
-        m.w((SCREEN & !3) + 8, 640);
+        m.w((SCREEN & !3) + 8, 640 | (9 << 16));
+        m.w((SCREEN & !3) + 12, 7 | (470 << 16));
+        m.w((SCREEN & !3) + 16, 630);
         m.f(FOV_FACTOR, 1.0);
         m.f(FOV_FACTOR_50, 0.75);
         m.f(NEAR, 0.0625);
@@ -673,12 +723,41 @@ mod tests {
     }
 
     #[test]
+    fn three_players_split_the_inner_screen_and_keep_the_outer_edges() {
+        let mut m = scene();
+        m.w(0x7108, 3);
+        let stacked = lens_inputs();
+        let wide = LensInputs { widescreen: true, ..stacked };
+        assert_eq!(viewport_layout(&m, 0, &stacked), Ok(([0, 0, 239, 640], 200)));
+        assert_eq!(viewport_layout(&m, 2, &stacked), Ok(([239, 318, 480, 640], 100)));
+        assert_eq!(viewport_layout(&m, 0, &wide), Ok(([0, 0, 480, 318], 50)));
+        assert_eq!(viewport_layout(&m, 1, &wide), Ok(([0, 318, 239, 640], 100)));
+        assert_eq!(viewport_layout(&m, 3, &wide), Err(Decline::Layout));
+        m.w(0x7108, 5); // The guest caps the player count at four.
+        assert_eq!(viewport_layout(&m, 0, &wide), Ok(([0, 0, 239, 318], 100)));
+        assert_eq!(viewport_layout(&m, 3, &wide), Ok(([239, 318, 480, 640], 100)));
+        let single = LensInputs { display_flag: true, ..wide };
+        assert_eq!(viewport_layout(&m, 0, &single), Ok(([0, 0, 480, 640], 100)));
+    }
+
+    #[test]
+    fn a_wrong_guest_viewport_is_named_and_kept() {
+        let bad = RenderCamera { viewport: [2, 3, 411, 527], ..guest_camera() };
+        let (rust, guest) = build(&scene(), &bad).unwrap();
+        let (camera, parity) = arm(&rust, &guest);
+        assert_eq!((parity.first, parity.differ), (Some(Field::Viewport), 1));
+        assert_eq!(camera, bad);
+    }
+
+    #[test]
     fn a_split_view_takes_its_factor_and_views_it_does_not_build_decline() {
         let mut m = scene();
         // Side by side: half the width, the whole height: ratio 50.
-        m.w(VIEW_RECORDS + record::VIEWPORT + 4, 480 | (320 << 16));
+        m.w(0x7108, 2);
+        m.w(lens::WIDESCREEN & !3, 1 << 16);
         let (rust, _) = build(&m, &guest_camera()).unwrap();
         assert_eq!(rust.camera.fov, 1.2 * 0.75);
+        assert_eq!(rust.camera.viewport, [0, 0, 480, 318]);
         let mut m = scene();
         m.w(VIEW_RECORDS + record::CINEMATIC, 1);
         assert_eq!(build(&m, &guest_camera()), Err(Decline::Cinematic));

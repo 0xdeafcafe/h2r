@@ -27,6 +27,7 @@ pub mod frusta;
 pub mod graph;
 pub mod guest;
 pub mod light;
+mod light_frusta;
 pub mod objects;
 pub mod parity;
 pub mod pvs;
@@ -50,10 +51,9 @@ pub enum Decline {
     Unread,
     /// A count, index or link out of the bounds the guest's arrays have.
     Layout,
-    /// A mode it does not port: an unknown one, or a light view's
-    /// frusta (mode 0).
+    /// A visibility mode it does not port.
     Mode,
-    /// More than one view frustum.
+    /// An unsupported frustum shape or count.
     Frusta,
     /// A node, window, region or list limit reached: the guest drops by its
     /// own order there.
@@ -154,8 +154,10 @@ pub fn compute(
             } else {
                 let tuning = guest::tuning(mem)?;
                 let open = guest::open_portals(mem, graph.portals.len())?;
+                let (inputs, portal_far) = guest::frustum_inputs(mem)?;
+                let mut lens = lens;
+                lens.far = portal_far.unwrap_or(f32::INFINITY);
                 let reached = flood::flood(graph, &lens, &tuning, &open, view.start)?;
-                let inputs = guest::frustum_inputs(mem)?;
                 let frusta = frusta::WindowFrusta::build(&reached.windows, &lens, &inputs);
                 (reached, frusta)
             };
