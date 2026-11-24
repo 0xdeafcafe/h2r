@@ -196,6 +196,12 @@ A new index is not possible without rewriting four retail paths:
 | Wire codec decode `0x7d520` | decodes the type area per engine through a jump table, then runs the clean-up; a changed record is a failed decode | **E**, game-options.md |
 | Lobby protocol map `0x161c90` | synchronous protocol for the two deprecated indexes and anything out of range | **E**, [live-coop.md](../live/live-coop.md) |
 
+The script index (`rules::SCRIPT_INDEX`, 6) is the index of ours that
+replaces them: the clean-up and the protocol map are answered natively
+for it, and the codec and the engine table are the slices still to come
+([game-types-without-carriers.md](game-types-without-carriers.md#no-retail-engine-object)).
+No script record carries it yet.
+
 **Design.** The script names its game type (`type`), and the type's row carries the index
 ([game-types-without-carriers.md](game-types-without-carriers.md#the-header)):
 

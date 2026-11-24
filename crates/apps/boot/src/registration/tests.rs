@@ -594,6 +594,37 @@ fn the_rules_runtime_answers_the_carriers_scoring_unless_turned_off() {
     assert!(befores("-rules").is_empty());
 }
 
+/// With the rules runtime on, the record clean-up and the protocol map
+/// each have the runtime's `before` (`rules::record`), and no other
+/// feature's; off, neither is hooked.
+#[cfg(feature = "rules")]
+#[test]
+fn the_rules_runtime_answers_the_record_paths_unless_turned_off() {
+    const PATHS: [&str; 2] = ["VARIANT_CLEAN_UP", "VARIANT_PROTOCOL"];
+    let hooks = |switches: &str| {
+        let plan = plan(&Case::full(switches)).unwrap();
+        let mut at: Vec<_> = plan
+            .chains
+            .values()
+            .filter(|chain| PATHS.contains(&chain.point.name))
+            .flat_map(|chain| {
+                chain
+                    .hooks()
+                    .map(move |hook| (chain.point.name, hook.feature, hook.kind().as_str()))
+            })
+            .collect();
+        at.sort_unstable();
+        at
+    };
+    let want: Vec<_> = PATHS
+        .iter()
+        .map(|&p| (p, crate::rules::feature::FEATURE, "before"))
+        .collect();
+    assert_eq!(hooks("rules"), want);
+    assert_eq!(hooks(""), want);
+    assert!(hooks("-rules").is_empty());
+}
+
 /// The features `run_hosted_with_live` adds around `register_core` and
 /// `register_late`, present in the full case's plan.
 #[test]

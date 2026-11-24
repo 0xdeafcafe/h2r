@@ -651,7 +651,7 @@ pub fn check(v: &GameVariant) -> Vec<Problem> {
         );
     }
     let engine = v.u32_at(ENGINE_AT) as i32;
-    if !matches!(engine, 1..=4 | 7..=9) {
+    if !matches!(engine, 1..=4 | 7..=9) && engine != SCRIPT_INDEX {
         c.bad(
             ENGINE_AT,
             format!("engine {engine} is not a playable game type"),
@@ -723,9 +723,96 @@ pub fn check(v: &GameVariant) -> Vec<Problem> {
             c.i16_in(0xf2, 1, 0x7fff);
             c.i16_in(0xf4, 1, 0x7fff);
         }
+        SCRIPT_INDEX => {
+            if v.raw[TYPE_AREA].iter().any(|&b| b != 0) {
+                c.bad(
+                    TYPE_AREA.start,
+                    "a script game's type area must be zero".into(),
+                );
+            }
+        }
         _ => {}
     }
     c.out
+}
+
+/// The script index as the record stores it (`rules::SCRIPT_INDEX`).
+pub const SCRIPT_INDEX: i32 = rules::SCRIPT_INDEX as i32;
+
+/// What the record clean-up (`0x19d650`) does with a record, answered
+/// natively for the script index (docs/game/game-types-without-carriers.md,
+/// "No retail engine object"). The game's own body clamps every field,
+/// clamps the index to 1..9, and when anything changed overwrites the whole
+/// record with a default Slayer record and returns AL 0; otherwise AL 1. It
+/// knows no type area for index 6 and resets every record of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CleanUp {
+    /// Not a script record: the game's own clean-up runs.
+    Retail,
+    /// A script record [`check`] keeps: AL 1, nothing written.
+    Clean,
+    /// A script record whose only fault is a non-zero type area: the area
+    /// is zeroed in place and the answer is AL 0 (changed), as the game's
+    /// answer for any record it changes. The index, the name, the common
+    /// settings and the script reference in the `hx` block stay.
+    TypeAreaCleared,
+    /// A script record that breaks one of the common rules: its index is
+    /// set to Slayer's and the game's own clean-up runs, which resets it to
+    /// its default Slayer record (AL 0), as it does any broken record.
+    ResetAsSlayer,
+}
+
+/// The clean-up's answer for `raw`, applied to it: [`CleanUp`]. Common
+/// settings are held to the same rules as every engine's (those of
+/// [`check`] outside the engine index and the type area).
+pub fn clean_up(raw: &mut [u8; RECORD_SIZE]) -> CleanUp {
+    let v = GameVariant { raw: *raw };
+    if v.u32_at(ENGINE_AT) as i32 != SCRIPT_INDEX {
+        return CleanUp::Retail;
+    }
+    let problems = check(&v);
+    if problems.is_empty() {
+        return CleanUp::Clean;
+    }
+    if problems.iter().all(|p| p.offset == TYPE_AREA.start) {
+        raw[TYPE_AREA].fill(0);
+        return CleanUp::TypeAreaCleared;
+    }
+    raw[ENGINE_AT..ENGINE_AT + 4].copy_from_slice(&GameType::Slayer.engine().to_le_bytes());
+    CleanUp::ResetAsSlayer
+}
+
+/// The registers the clean-up leaves when it returns without changing the
+/// record (`0x19de4b`): EAX 1, and ECX and EDX 0 from the compare loop and
+/// the routine's zero register. A native answer that returns leaves these,
+/// with EAX 0 when it changed the record.
+pub const CLEAN_UP_EXIT: [u32; 3] = [1, 0, 0];
+
+/// The distributed lobby protocol, which the protocol map (`0x161c90`,
+/// docs/live/live-coop.md section 1.1) gives every engine that shipped.
+/// The game gives the synchronous one to the two deprecated indexes (5,
+/// and 6, the script index) and to anything out of 1..9; the native
+/// answer gives the script index distributed.
+pub const DISTRIBUTED: u32 = 2;
+/// The synchronous protocol (the campaign's).
+pub const SYNCHRONOUS: u32 = 1;
+
+/// The protocol map's native answer for engine index `engine`, with the
+/// registers the game's body leaves: `(eax, ecx, edx)`. The body loads the
+/// index into ECX and decrements it; in 1..9 it loads the byte of its
+/// two-entry jump table into EDX (0 distributed, 1 synchronous), and out of
+/// range it leaves EDX as it was (`None`).
+pub fn protocol(engine: i32) -> (u32, u32, Option<u32>) {
+    let ecx = (engine as u32).wrapping_sub(1);
+    let answer = if matches!(engine, 1..=4 | 7..=9) || engine == SCRIPT_INDEX {
+        DISTRIBUTED
+    } else {
+        SYNCHRONOUS
+    };
+    let edx = (1..=9)
+        .contains(&engine)
+        .then_some(u32::from(answer == SYNCHRONOUS));
+    (answer, ecx, edx)
 }
 
 /// Team count (setting 93, `+0xb4`): how many teams the game makes. The
@@ -1188,5 +1275,107 @@ mod tests {
             "its own type-area settings"
         );
         assert!(ids.contains(&89), "common settings");
+    }
+
+    /// A script record: Slayer's stock common settings on the script
+    /// index, an empty type area and a script reference in the `hx`
+    /// block's reserved bytes.
+    fn script_record() -> [u8; RECORD_SIZE] {
+        let mut b = GameVariant::stock(GameType::Slayer).unwrap().to_bytes();
+        b[ENGINE_AT..ENGINE_AT + 4].copy_from_slice(&SCRIPT_INDEX.to_le_bytes());
+        b[TYPE_AREA].fill(0);
+        for (i, x) in b[0x11f..0x12c].iter_mut().enumerate() {
+            *x = 0x40 + i as u8;
+        }
+        b
+    }
+
+    #[test]
+    fn the_script_index_is_headhunters_slot() {
+        assert_eq!(SCRIPT_INDEX, 6);
+        assert_eq!(
+            GameType::from_engine(SCRIPT_INDEX),
+            GameType::Other(SCRIPT_INDEX)
+        );
+        assert!(!GameType::ALL.iter().any(|t| t.engine() == SCRIPT_INDEX));
+    }
+
+    #[test]
+    fn check_keeps_a_script_record_with_an_empty_type_area() {
+        let b = script_record();
+        let v = GameVariant::from_bytes(&b).unwrap();
+        assert!(check(&v).is_empty(), "{:?}", check(&v));
+
+        let mut noisy = b;
+        noisy[TYPE_AREA.start + 5] = 1;
+        let p = check(&GameVariant::from_bytes(&noisy).unwrap());
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert_eq!(p[0].offset, TYPE_AREA.start);
+
+        // The common rules are every engine's.
+        let mut shields = b;
+        shields[0x88] = 3;
+        let p = check(&GameVariant::from_bytes(&shields).unwrap());
+        assert_eq!(p.iter().map(|p| p.offset).collect::<Vec<_>>(), [0x88]);
+
+        // Race (5) stays a refused index.
+        let mut race = b;
+        race[ENGINE_AT] = 5;
+        let p = check(&GameVariant::from_bytes(&race).unwrap());
+        assert_eq!(p.iter().map(|p| p.offset).collect::<Vec<_>>(), [ENGINE_AT]);
+    }
+
+    #[test]
+    fn the_clean_up_keeps_cleans_or_resets_a_script_record() {
+        let b = script_record();
+        let mut r = b;
+        assert_eq!(clean_up(&mut r), CleanUp::Clean);
+        assert_eq!(r, b, "a clean record is not written");
+
+        let mut r = b;
+        r[TYPE_AREA.start] = 7;
+        r[TYPE_AREA.end - 1] = 0xff;
+        assert_eq!(clean_up(&mut r), CleanUp::TypeAreaCleared);
+        assert_eq!(r, b, "only the type area changed, back to zero");
+        assert_eq!(r[ENGINE_AT], 6, "the index stays");
+        assert_eq!(r[0x11f..0x12c], b[0x11f..0x12c], "the reference stays");
+
+        let mut r = b;
+        r[0x4c] = 7; // rounds 0..=6
+        r[TYPE_AREA.start] = 1;
+        assert_eq!(clean_up(&mut r), CleanUp::ResetAsSlayer);
+        let mut want = b;
+        want[0x4c] = 7;
+        want[TYPE_AREA.start] = 1;
+        want[ENGINE_AT] = 2;
+        assert_eq!(
+            r, want,
+            "only the index is written; the game resets the rest"
+        );
+
+        for ty in GameType::ALL {
+            let mut r = GameVariant::stock(ty).unwrap().to_bytes();
+            let was = r;
+            assert_eq!(clean_up(&mut r), CleanUp::Retail, "{ty:?}");
+            assert_eq!(r, was);
+        }
+        let mut race = b;
+        race[ENGINE_AT] = 5;
+        assert_eq!(clean_up(&mut race), CleanUp::Retail);
+    }
+
+    #[test]
+    fn the_protocol_map_answers_distributed_for_the_script_index() {
+        for ty in GameType::ALL {
+            let (eax, ecx, edx) = protocol(ty.engine());
+            assert_eq!(eax, DISTRIBUTED, "{ty:?}");
+            assert_eq!(ecx, ty.engine() as u32 - 1);
+            assert_eq!(edx, Some(0));
+        }
+        assert_eq!(protocol(SCRIPT_INDEX), (DISTRIBUTED, 5, Some(0)));
+        assert_eq!(protocol(5), (SYNCHRONOUS, 4, Some(1)));
+        assert_eq!(protocol(0), (SYNCHRONOUS, u32::MAX, None));
+        assert_eq!(protocol(10), (SYNCHRONOUS, 9, None));
+        assert_eq!(protocol(-1), (SYNCHRONOUS, 0xffff_fffe, None));
     }
 }

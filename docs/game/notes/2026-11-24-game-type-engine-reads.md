@@ -390,3 +390,54 @@ An index outside 1..4 and 7..9 must not reach it.
 | 4 | Post-game report | `0x195a40`, `0x232d77` (`0x233049`, `0x23397a`) | keyed on the record's engine index copied at game start (`0x510e2c`); per-engine stat rows written only by engine code | **E** |
 | 5 | Carried objectives | `0x10ca80`, `0x15e250`, `0x15e460` | the weapon system attaches; the engine is told through `+0x5c`, `+0x60` and keeps a registry | **E** |
 | 6 | Engine chosen | `0x137dd0`, `0x1574c0` (`0x1574ec`) | `E+0xc14` from `G+0x180` at the engine's subsystem start; swap at `GAME_ACTIVATE` entry on every machine | **E** |
+
+## 2026-11-24: GE1 and GE3, the clean-up's exit, the protocol map and the decode's type area
+
+Commit `ed7a7da50`; the same image and tools as above. Static reading
+only; the differential test
+`crates/rewrites/engine/tests/variant_record_differential.rs` checks the
+first two against the lifted original.
+
+**Reproduce.**
+
+```sh
+h2 disasm disc/default.xbe 0x19d650 40      # the clean-up's entry copy
+h2 disasm disc/default.xbe 0x19d9b4 20      # the index clamp and type-area jump
+h2 disasm disc/default.xbe 0x19dcb3 60      # the compare and the reset
+h2 disasm disc/default.xbe 0x19de10 20      # the two exits
+h2 disasm disc/default.xbe 0x161c90 20      # the protocol map
+h2 disasm disc/default.xbe 0x137dd0 22      # the options copy's call
+h2 disasm disc/default.xbe 0x7d7f0 40       # the decode's type-area jump
+h2 disasm disc/default.xbe 0x7d990 80       # the decode's tail and exits
+h2 disasm disc/default.xbe 0x1959c0 70      # the bit reader
+```
+
+- **The clean-up's exits.** EBX the record, no stack arguments, ESI, EDI
+  and EBP saved. It copies the record to its frame, clamps in place, and
+  compares (`0x19dcc7`). Unchanged, it returns at `0x19de4b` with EAX 1
+  (EAX was zeroed for the compare), ECX 0 (the compare ran out) and EDX
+  0 (the routine's zero register from `0x19d678`). Changed, it builds a
+  default Slayer record in its frame (a localized name through
+  `0x1a0180` when `[0x4e034c]` has a string table, flags
+  `& 0xffff8f9a | 0xf9a`, `+0x44` 2) and copies it over the record,
+  returning AL 0 (`0x19de43`). An index clamped to 1..9 that changed skips
+  the type area (`0x19d9d4`); 5 and 6 reach the type-area jump and are
+  written 10 (`0x19dcb3`), which fails the compare.
+- **The options copy ignores the answer.** `0x137dd0` calls the clean-up
+  on `G+0x13c` (`0x137e05`) and goes on with the record as cleaned.
+- **The protocol map** is ECX the record, `+0x44` minus 1 in ECX, EAX 1;
+  in range (0..8 after the decrement) EDX is the byte at `0x161cbc + n`
+  and the jump goes through the two-entry table at `0x161cb4` (0 to
+  `0x161cac`, EAX 2; 1 to the `ret`). The bytes are 0 for 1..4 and 7..9
+  and 1 for 5 and 6. Out of range EDX is untouched.
+- **The decode's type area.** After the common fields (the last is
+  `+0xd7` at `0x7d824`) it loads `+0x44`, decrements it and jumps to the
+  failure exit `0x7da13` (AL 0) above 8 (`0x7d82a`..`0x7d831`), else
+  through the table at `0x7da38`: 5 and 6 are the failure exit too. Each
+  engine's reads end in the shared tail `0x7d9a8`, which copies the
+  record to the frame, runs the clean-up on the copy (`0x7d9b7`) and
+  returns its AL. An index of 0 zeroes the record and returns AL 1
+  (`0x7da1f`). The bit reader `0x1959c0` is EDI the reader (`+0` the
+  words, `+4` the size in bytes, `+0x10` the bit position), the count on
+  the stack (`ret 4`): it reads LSB first, up to the bits left, and
+  advances the position by the full count.

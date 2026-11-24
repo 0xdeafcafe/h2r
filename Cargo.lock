@@ -2028,6 +2028,7 @@ dependencies = [
  "sim-objects",
  "simd",
  "tags",
+ "variants",
  "x87",
  "xbe",
  "xiso",

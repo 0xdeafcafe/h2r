@@ -36,6 +36,18 @@ pub use ty::Ty;
 pub use verify::{Refusal, Report, load, verify};
 pub use vm::{Call, Fired, Game, Input, RulesExt, ScriptError, Vm};
 
+/// The game-engine index (record `+0x44`) of a script game with no retail
+/// engine object under it: 6, the slot of the deprecated Headhunter
+/// engine. It is inside every retail range check (the clean-up clamps to
+/// 1..9, the protocol map's table covers 1..9), it fits the codec's 4-bit
+/// field, its engine table entry is never written by the game, and every
+/// retail path left unanswered fails safe on it: the clean-up resets the
+/// record to Slayer, the codec refuses it, the protocol map answers
+/// synchronous. The record clean-up and the protocol map answer it
+/// natively (`variants::record::clean_up`, `variants::record::protocol`).
+/// See docs/game/game-types-without-carriers.md, "No retail engine object".
+pub const SCRIPT_INDEX: u8 = 6;
+
 /// Why source did not become a runnable blob.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum BuildError {

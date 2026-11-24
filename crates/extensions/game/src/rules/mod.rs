@@ -12,7 +12,8 @@
 //! outside its rules (the superbounce mode, our game type rows); `census` reads the
 //! map's labelled things, for the start gate and the script's label reads;
 //! `gate` is the lobby's start gate, which holds Start Game on a map that
-//! lacks what the variant's script needs.
+//! lacks what the variant's script needs; `record` answers the record
+//! clean-up and the protocol map for the script index.
 
 pub mod census;
 pub mod feature;
@@ -20,6 +21,7 @@ pub mod gate;
 pub mod guest;
 pub mod header;
 pub mod objectives;
+pub mod record;
 pub mod reload;
 pub mod roles;
 pub mod runtime;

@@ -711,6 +711,19 @@ points! { ALL;
     /// (record flag bit 2), 2 extra damage (bit 12), 3 damage resistance
     /// (bit 13). The slot is called at `0x15b28e`, `0x2404ad`, `0x2bc967`.
     ENGINE_TRAIT_QUERY @ 0x0024_dda0: [fn(engine: ecx, player: stack 0, trait: stack 1) -> al ret 8], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// The game variant record clean-up: EBX the `0x130`-byte record.
+    /// Clamps every field, the engine index (`+0x44`) to 1..9 and the type
+    /// area by engine (`0x19de54`; 5 and 6 always fail), then compares the
+    /// record with its copy from entry: unchanged, AL 1 (EAX 1, ECX and EDX
+    /// 0, `0x19de4b`); changed, the whole record becomes a default Slayer
+    /// record and AL 0. Called by the codec's decode (`0x7d9b7`), the
+    /// options copy at game start (`0x137e05`) and the content reads.
+    VARIANT_CLEAN_UP @ 0x0019_d650: [fn(record: ebx) -> al ret 0], Optional; "docs/game/notes/2026-11-24-game-type-engine-reads.md";
+    /// The lobby protocol map: ECX the variant record; EAX 2 (distributed)
+    /// for `+0x44` 1..4 and 7..9, 1 (synchronous) for 5, 6 and anything out
+    /// of range, through a byte table (`0x161cbc`). Called from the
+    /// protocol choice `0x64060` (`0x640a7`) and `0x71480` (`0x7155d`).
+    VARIANT_PROTOCOL @ 0x0016_1c90: [fn(record: ecx) -> eax ret 0], Optional; "docs/live/live-coop.md";
     /// Juggernaut's role setter: sets (ECX's low byte nonzero) or clears
     /// the player's bit of the role mask `[JUGGERNAUT_GLOBALS]+0` (`u16`;
     /// EAX the salted player datum, its index the bit). Setting posts the

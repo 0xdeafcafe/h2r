@@ -1,7 +1,7 @@
 # Game types without carriers
 
-Status: Design, with GT0 (the reads, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md)), GT1 (the header) and GM1 built (`crates/tools/firefight-kit/src/ground.rs`), and GM3's document, session and screens built (the builder hook is not wired, below); "What the carrier supplies" is the state of the code and the slices are the order to change the rest in.
-Code: `crates/formats/rules/src` (`ir.rs` the header, `types.rs` the type table, `lang/check.rs`, `caps.rs`, `builtin/`), `crates/extensions/game/src/rules/` (`runtime.rs`, `scoring.rs`, `objectives.rs`, `roles.rs`), `crates/formats/variants/src/portable.rs` (`record_for`), `crates/extensions/game/src/community_variants.rs`. Tests: `crates/formats/rules/tests/engines.rs`, `tests/modes.rs`.
+Status: Design, with GT0 (the reads, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md)), GT1 (the header), GE1 and GE3 (the record clean-up and the protocol map for the script index) and GM1 built (`crates/tools/firefight-kit/src/ground.rs`), and GM3's document, session and screens built (the builder hook is not wired, below); "What the carrier supplies" is the state of the code and the slices are the order to change the rest in.
+Code: `crates/formats/rules/src` (`ir.rs` the header, `types.rs` the type table, `lang/check.rs`, `caps.rs`, `builtin/`), `crates/extensions/game/src/rules/` (`runtime.rs`, `scoring.rs`, `objectives.rs`, `roles.rs`), `crates/formats/variants/src/portable.rs` (`record_for`), `crates/formats/variants/src/record.rs` (`check`, `clean_up`, `protocol`), `crates/extensions/game/src/rules/record.rs` (the hooks), `crates/extensions/game/src/community_variants.rs`. Tests: `crates/formats/rules/tests/engines.rs`, `tests/modes.rs`, `crates/rewrites/engine/tests/variant_record_differential.rs`.
 Switch: none (the `rules` feature).
 
 A game type is a rules script and nothing else. Slayer, Capture the Flag,
@@ -141,17 +141,42 @@ A script whose options do not fit is refused.
 
 Index 2 still puts a retail Slayer object under every game. The end
 state has none: a script game's record carries an index of ours,
-`rules::SCRIPT_INDEX`, and the four retail paths that need a retail
-index are answered by native bodies of ours. Which number the index is
-(one of the two deprecated slots, Race and Headhunter, or a new one) is
-decided by GE0's read of the table.
+`rules::SCRIPT_INDEX`, and the retail paths that need a retail index are
+answered by native bodies of ours.
 
-| Path | Native body | **E first** |
+**The script index is 6**, the slot of the deprecated Headhunter engine
+(`rules::SCRIPT_INDEX`, `variants::record::SCRIPT_INDEX`). From the reads
+in [the GT0 note](notes/2026-11-24-game-type-engine-reads.md), "Owning
+the four paths":
+
+- It is inside every range the game checks: the clean-up clamps `+0x44`
+  to 1..9 and the protocol map's table covers 1..9, so a path we have
+  not answered sees a deprecated engine, never another type. Index 10,
+  the only other free entry of the engine table, is clamped to 9 by the
+  clean-up and would turn into Assault.
+- Its engine table entry (`0x55e4e8`) is in `.bss` and nothing writes it,
+  so the engine object of GE4 goes there without replacing a retail
+  object or racing the table's initializer (`0x378500`, which writes
+  index 10).
+- It fits the codec's 4-bit engine field.
+- Every retail path left unanswered fails safe on it: the clean-up
+  resets the record to Slayer, the decode refuses it, the protocol map
+  answers synchronous, as for Race and Headhunter today.
+
+Race (5) has the same answers on every path read; 6 is taken so that 5
+stays an index every path refuses.
+
+| Path | Native body | State |
 |---|---|---|
-| Record clean-up `0x19d650` | `variants::record::check`, which mirrors it, taught the script index: a script record's common settings are cleaned as Slayer's are and its type area must be zero | every caller, and what each does with a changed record |
-| Wire codec, encode `0x7cc50` and decode `0x7d520` | our codec over the same bit layout, with an empty type area for the script index, then the native clean-up | the per-engine jump table's bounds check and the type area's bit position |
-| Lobby protocol map `0x161c90` | answers distributed for the script index | every caller, and whether anything but the protocol choice hangs on the answer |
-| Engine table `0x55e4d0[index]` and the engine start `0x1574c0` | a host-owned engine object for the script index whose 51 slots are the bodies every engine shares (the empty tick, the fallback trait query); the rules runtime takes its events from the common paths (`PLAYER_KILLED`, `ENGINE_UPDATE`, the objective registry) and answers no engine's slot | every reader of the table and of `E+0xc14`; which of Slayer's 51 slots are its own and which the base class's, and whether the image holds a base vtable; what a client does with a globals entity type (slot `+0x9c`) it does not know |
+| Record clean-up `0x19d650` (`VARIANT_CLEAN_UP`) | `variants::record::clean_up`: a script record that `check` keeps returns AL 1 with the registers of the game's clean exit; one whose only fault is a non-zero type area has the area zeroed and returns AL 0; one that breaks a common rule gets Slayer's index and the game's body, which resets it to its default Slayer record. `check` takes the script index: common rules as every engine's, a type area of zero | built (GE1); every caller is in [the GT0 note](notes/2026-11-24-game-type-engine-reads.md); the decode and the content reads treat AL 0 as a failed read, the options copy keeps the cleaned record |
+| Wire codec, encode `0x7cc50` and decode `0x7d520` | our codec over the same bit layout, with an empty type area for the script index, then the native clean-up | the decode's per-engine jump table (`0x7da38`) is bounds-checked (`0x7d82a`) and sends 5 and 6 to its failure exit; the type area is read last, before the copy and the clean-up at `0x7d9a8` ([the GT0 note](notes/2026-11-24-game-type-engine-reads.md), "GE1 and GE3"); the encoder is not read |
+| Lobby protocol map `0x161c90` (`VARIANT_PROTOCOL`) | `variants::record::protocol`: the game's table, with the script index distributed, and the registers the game's body leaves | built (GE3); its two callers choose the protocol only (`0x640a7`, `0x7155d`) |
+| Engine table `0x55e4d0[index]` and the engine start `0x1574c0` | a host-owned engine object for the script index whose 51 slots are the bodies every engine shares (the empty tick, the fallback trait query); the rules runtime takes its events from the common paths (`PLAYER_KILLED`, `ENGINE_UPDATE`, the objective registry) and answers no engine's slot | readers and slot calls in [the GT0 note](notes/2026-11-24-game-type-engine-reads.md); **E first**: which of Slayer's 51 slots are its own and which the base class's, and whether the image holds a base vtable; what a client does with a globals entity type (slot `+0x9c`) it does not know |
+| Content category `0x216a50` | the script's `type` (GT5) | jumps on `+0x44` with no bounds check, so a script record must not reach it on save or on the built-in add |
+
+Both answers are `before`s of the `rules` feature (`rules/record.rs`),
+on every machine, so a record of the script index is kept by the host
+and by each guest's decode alike.
 
 With the object ours, `rules/scoring.rs` answers nothing: `SLAYER_KILL`
 and `scoring::CARRIER_SCORE_SITES` are never reached, since no retail
@@ -324,9 +349,9 @@ with tests, M under 2,500. Tests are headless on `rules::fake::FakeGame`.
 | GT6 | **The display**: a HUD kit HUD per objective type, the `points` label on the scoreboard and post-game | M | GT3, GT4, GT0; PK11 of studio-redesign | each HUD compiles and shows its state from an invented script state; the label reaches the fake scoreboard |
 | GT7 | **Retail records**: a no-script record of another engine starts as its type's built-in on index 2, type-area settings mapped | M | GT3, GT4, GT0 | each retail engine's invented record maps to a script record whose settings read back equal; the stored record's bytes are unchanged |
 | GE0 | **The engine-object reads** (**E**), a note beside GT0's: the "E first" column of "No retail engine object"; the table's slots for the deprecated indexes; which number `SCRIPT_INDEX` is | S | nothing | the note lists every reader and caller with its address, the 51 slots marked own or shared, and the chosen index with its reason |
-| GE1 | **The record**: `variants::record::check` and the native clean-up at `0x19d650` take the script index | M | GE0 | on invented records the native body equals `check` for every retail index; a script record keeps its index and reference; a non-zero type area on one is cleaned |
+| GE1 (built) | **The record**: `variants::record::check` and the native clean-up at `0x19d650` take the script index | M | GE0 | on invented records the native body equals `check` for every retail index; a script record keeps its index and reference; a non-zero type area on one is cleaned |
 | GE2 | **The codec**: native encode and decode with an empty type area for the script index | M | GE1 | every invented record of a retail index encodes to the bytes the model in `crates/formats/variants` gives and decodes back; a script record round-trips; an out-of-range index fails the decode |
-| GE3 | **The protocol map**: the native answer at `0x161c90` | S | GE0 | the script index answers distributed; every retail index answers as the table of [live-coop.md](../live/live-coop.md) says |
+| GE3 (built) | **The protocol map**: the native answer at `0x161c90` | S | GE0 | the script index answers distributed; every retail index answers as the table of [live-coop.md](../live/live-coop.md) says |
 | GE4 | **The engine object**: a host-owned object of shared bodies for the script index; the runtime's events from the common paths; `rules/scoring.rs`' in-place answers deleted | L | GE0, GT3, GT4 | on the fake game a script game starts with the script index and its object; a kill reaches `on kill` with no engine slot answered; no retail scoring site is hooked |
 | GE5 | **Every script game on the script index**: `record_for`, the retail-record swap, films and the session; the base HUD (score, time) as a HUD kit HUD | M | GE1 to GE4, GT6, GT7 | `tests/modes.rs` and `tests/engines.rs` pass on script-index records; no built-in's record is index 2; the base HUD compiles and shows an invented score and clock |
 | GM1 (built) | **Ground as a build step**: `firefight_kit`'s generator behind `ground::build(map, labels, recipe)`, labels in place of found bases and picked drops, the stale rule, the receipt | M | nothing | on the kit's invented court: no labels gives the tags `build_package` gives; a moved `ff_drop` moves its zone; the same inputs give the same bytes; over headroom is refused with its biggest part |

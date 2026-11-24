@@ -73,7 +73,10 @@ rule changed the record; otherwise it overwrites the whole record with a
 default Slayer and the load fails. So an edited record must satisfy every
 rule. `record::check` reports the broken ones:
 
-- `+0` only bit 0; `+0x42` (last name unit) 0; engine 1..=4 or 7..=9;
+- `+0` only bit 0; `+0x42` (last name unit) 0; engine 1..=4 or 7..=9,
+  or the script index 6, whose type area must be all zero (the game's
+  body refuses 6; the `rules` feature answers it natively,
+  `record::clean_up`, [game-types-without-carriers.md](../game/game-types-without-carriers.md#no-retail-engine-object));
   `+0x48` below bit 15; `+0xb0` 0.
 - i32 `+0x4c` 0..6; `+0x50`, `+0x54`, `+0x7c`, `+0x80`, `+0x84`, `+0xac`
   0..0x7fff; `+0x58`, `+0x88`, `+0xa4`, `+0xa8` 0..2; `+0x74`, `+0x78`
