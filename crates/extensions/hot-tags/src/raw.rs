@@ -1,11 +1,15 @@
-//! Live writes to raw data: section vertices and indices, and bitmap
-//! pixels (docs/editor/realtime-edits.md, "Four write primitives").
+//! Live writes to raw data: section vertices and indices, bitmap pixels
+//! and the metadata region of a structure BSP that is not loaded
+//! (docs/editor/realtime-edits.md, "Four write primitives" and "Inactive
+//! BSPs").
 //!
 //! A raw write names its **owner**, the record whose raw pointer locates
 //! the bytes in a map file: a section (`sbsp` cluster or instanced
 //! definition, `mode` section), one LOD chain of a bitmap image, or one
 //! sample chunk of a `snd!` permutation (its record in the map's `ugh!`
-//! gestalt; docs/formats/sound.md). The
+//! gestalt; docs/formats/sound.md), or one of the scenario's structure BSP
+//! descriptors, whose file offset and size
+//! locate that BSP's region. The
 //! editor resolves the pointer from the guest's own tag bytes, then at one
 //! boundary adds an overlay entry ([`RawFiles`], the file view both the
 //! guest's page-ins and the native loaders read) and writes the resident
@@ -146,6 +150,22 @@ const INFO_HANDLE: u32 = 0x20;
 /// runtime section pointer names the section struct after it.
 const BLOCK_HEADER: u32 = 8;
 
+/// The scenario's structure BSP block and its descriptors: file offset at
+/// `+0`, size at `+4`, virtual base at `+8` (docs/formats/map-format.md,
+/// "BSP and lightmap metadata").
+const SCENARIO_BSPS: u32 = 0x210;
+const BSP_STRIDE: u32 = 0x44;
+const BSP_FILE_OFFSET: u32 = 0;
+const BSP_SIZE: u32 = 4;
+const BSP_VIRTUAL_BASE: u32 = 8;
+
+/// The loaded structure BSP's index in the scenario's block (`-1` before
+/// one loads; `engine::sim_collision::layout::BSP_INDEX`): the one BSP
+/// whose region is in guest memory. `None` when it can't be read.
+pub fn loaded_bsp(g: &Guest) -> Option<i16> {
+    g.u16(engine::sim_collision::layout::BSP_INDEX).ok().map(|v| v as i16)
+}
+
 /// A raw write's or eviction's owner, by datum.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Owner {
@@ -155,6 +175,9 @@ pub enum Owner {
     /// `permutation` count within the sound, `chunk` within the
     /// permutation.
     Sound { tag: u32, range: u32, permutation: u32, chunk: u32 },
+    /// The region of the scenario's structure BSP `index`, from its first
+    /// byte; only while another BSP is loaded.
+    Bsp { index: u32 },
 }
 
 impl Owner {
@@ -167,18 +190,14 @@ impl Owner {
             Owner::Sound { tag, range, permutation, chunk } => json!({"sound": {
                 "tag": format!("{tag:#010x}"), "range": range,
                 "permutation": permutation, "chunk": chunk}}),
+            Owner::Bsp { index } => json!({"bsp": {"index": index}}),
         }
     }
 
-    fn tag(&self) -> u32 {
-        match *self {
-            Owner::Section { tag, .. } | Owner::Pixels { tag, .. } | Owner::Sound { tag, .. } => tag,
-        }
-    }
-
-    /// The native refresh an edit of this owner needs; none for sounds,
-    /// whose only host reader (DirectSound) re-reads guest sample memory
-    /// at `Unlock` and `Play`.
+    /// What the native renderer re-reads after a write; nothing for sounds,
+    /// whose only host reader (DirectSound) re-reads guest sample memory at
+    /// `Unlock` and `Play`. A BSP that is not loaded needs nothing: the
+    /// switch to it loads the world from the overlaid file.
     fn refresh(&self, grown: bool) -> Option<Refresh> {
         Some(match *self {
             Owner::Section { tag, kind: SectionKind::Mode, .. } => Refresh::Model { tag },
@@ -189,7 +208,7 @@ impl Owner {
                 grown,
             },
             Owner::Pixels { tag, image, .. } => Refresh::Image { bitmap: tag, image },
-            Owner::Sound { .. } => return None,
+            Owner::Sound { .. } | Owner::Bsp { .. } => return None,
         })
     }
 }
@@ -453,15 +472,29 @@ impl Editor {
                 chunk: num(s, "chunk")?,
             });
         }
+        if let Some(b) = v.get("bsp") {
+            return Ok(Owner::Bsp { index: num(b, "index")? });
+        }
         Err(Error::invalid(
-            "owner: {section: {tag, kind, index}}, {pixels: {tag, image, lod}} or \
-             {sound: {tag, range, permutation, chunk}}",
+            "owner: {section: {tag, kind, index}}, {pixels: {tag, image, lod}}, \
+             {sound: {tag, range, permutation, chunk}} or {bsp: {index}}",
         ))
     }
 
     /// Where `owner`'s raw block is, from its tag's bytes now.
     pub(crate) fn locate_owner(&self, g: &Guest, idx: &index::TagIndex, owner: Owner) -> Result<Located> {
-        let e = index::by_datum(g, idx, owner.tag()).map_err(Error::invalid)?;
+        let tag = match owner {
+            Owner::Section { tag, .. } | Owner::Pixels { tag, .. } | Owner::Sound { tag, .. } => tag,
+            Owner::Bsp { index } => {
+                let d = bsp_descriptor(g, idx, index)?;
+                let (base, size) = (guest_u32(g, d + BSP_FILE_OFFSET)?, guest_u32(g, d + BSP_SIZE)?);
+                if base == 0 || size == 0 {
+                    return Err(Error::invalid(format!("owner: BSP {index} has no region in this map")));
+                }
+                return Ok(Located { owner, file: ResourceFile::Local, base, size, info: None });
+            }
+        };
+        let e = index::by_datum(g, idx, tag).map_err(Error::invalid)?;
         let element = |block: u32, stride: u32, i: u32, what: &str| -> Result<u32> {
             let count = guest_u32(g, e.address + block)?;
             if i >= count {
@@ -496,6 +529,7 @@ impl Editor {
                 let c = gestalt_element(g, gestalt, GESTALT_CHUNKS, run, chunk, "chunk")?;
                 (c, c + CHUNK_SIZE, None, Some(c + CHUNK_RUNTIME))
             }
+            Owner::Bsp { .. } => unreachable!("located above"),
         };
         let raw = RawPointer::decode(guest_u32(g, pointer_at)?)
             .ok_or_else(|| Error::invalid("owner: it has no raw block"))?;
@@ -526,6 +560,15 @@ impl Editor {
         let mut planned: Vec<Planned> = Vec::new();
         for w in &batch.raw {
             let owner = self.owner(g, idx, &w.owner)?;
+            if let Owner::Bsp { index } = owner
+                && loaded_bsp(g).is_some_and(|l| i64::from(l) == i64::from(index))
+            {
+                // Its region is guest memory now; the overlay alone would
+                // leave the game reading the old bytes until the next switch.
+                return Err(Error::invalid(format!(
+                    "owner: BSP {index} is the loaded one: write its fields with at"
+                )));
+            }
             let loc = self.locate_owner(g, idx, owner)?;
             let len = w.bytes.len() as u32;
             if len == 0 || u64::from(w.offset) + u64::from(len) > u64::from(loc.size) {
@@ -620,7 +663,9 @@ impl Editor {
             let refresh = p.loc.owner.refresh(grown(&p.loc.owner));
             replies.push(json!({"owner": p.loc.owner.json(), "offset": p.offset,
                 "resident": resident.is_some(), "refresh": refresh.map(refresh_json)}));
-            if let Some(refresh) = refresh.filter(|r| !refreshes.contains(r)) {
+            if let Some(refresh) = refresh
+                && !refreshes.contains(&refresh)
+            {
                 refreshes.push(refresh);
             }
             self.raw_journal.push(RawChange::Write {
@@ -639,7 +684,9 @@ impl Editor {
         for loc in evict {
             evict_located(g, &loc)?;
             evicted.push(loc.owner.json());
-            if let Some(refresh) = loc.owner.refresh(true).filter(|r| !refreshes.contains(r)) {
+            if let Some(refresh) = loc.owner.refresh(true)
+                && !refreshes.contains(&refresh)
+            {
                 refreshes.push(refresh);
             }
             self.raw_journal.push(RawChange::Evict { id, scenario, owner: loc.owner });
@@ -727,6 +774,25 @@ impl Editor {
                     self.raw_files()?.restore(g, file, at, len, &held);
                     let mut restored = false;
                     let mut why = None;
+                    if let Owner::Bsp { index } = owner
+                        && loaded_bsp(g).is_some_and(|l| i64::from(l) == i64::from(index))
+                    {
+                        // Switched to since: guest memory holds the region
+                        // as the switch read it, the write included.
+                        let old = self
+                            .raw_files()?
+                            .read(g, file, at, len as usize)
+                            .map_err(Error::unavailable)?;
+                        let addr = bsp_descriptor(g, &idx, index)
+                            .and_then(|d| guest_u32(g, d + BSP_VIRTUAL_BASE))?
+                            + offset;
+                        if read_bytes(g, addr, len as u32)? == new {
+                            g.write_bytes(addr, &old, 1).map_err(fault)?;
+                            restored = true;
+                        } else {
+                            why = Some("the loaded BSP's bytes changed since; the overlay was put back");
+                        }
+                    }
                     if let Some(old) = resident {
                         // Find the resident copy again: a BSP switch can move it.
                         let now = self
@@ -747,7 +813,9 @@ impl Editor {
                             }
                         }
                     }
-                    if let Some(r) = owner.refresh(false).filter(|r| !refreshes.contains(r)) {
+                    if let Some(r) = owner.refresh(false)
+                        && !refreshes.contains(&r)
+                    {
                         refreshes.push(r);
                     }
                     reverted.push(json!({"id": id, "raw": owner.json(), "offset": offset,
@@ -757,7 +825,9 @@ impl Editor {
                     if let Ok(loc) = self.locate_owner(g, &idx, owner) {
                         evict_located(g, &loc)?;
                     }
-                    if let Some(r) = owner.refresh(true).filter(|r| !refreshes.contains(r)) {
+                    if let Some(r) = owner.refresh(true)
+                        && !refreshes.contains(&r)
+                    {
                         refreshes.push(r);
                     }
                     reverted.push(json!({"id": id, "evict": owner.json()}));
@@ -782,6 +852,17 @@ impl Editor {
             r.clear();
         }
     }
+}
+
+/// The address of descriptor `index` in the loaded scenario's structure
+/// BSP block, as guest memory holds the scenario.
+fn bsp_descriptor(g: &Guest, idx: &index::TagIndex, index: u32) -> Result<u32> {
+    let scenario = index::by_datum(g, idx, idx.scenario).map_err(Error::unavailable)?;
+    let count = guest_u32(g, scenario.address + SCENARIO_BSPS)?;
+    if index >= count {
+        return Err(Error::invalid(format!("owner: BSP {index} past the scenario's {count}")));
+    }
+    Ok(guest_u32(g, scenario.address + SCENARIO_BSPS + 4)? + index * BSP_STRIDE)
 }
 
 /// A checked raw write, ready to apply.

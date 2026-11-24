@@ -12,7 +12,7 @@ use super::{raw_sync, sync};
 use crate::app::live::{Change, Class, Host, Route, Target, View};
 use crate::app::{App, TagDoc};
 use agent_proto::hot::encode_base64;
-use map::TagId;
+use map::{AddressSpace, TagId};
 use scenario_edit::BspPatch;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -188,6 +188,106 @@ impl TagBaseline {
     pub fn wrote(&mut self, at: u32, bytes: &[u8]) {
         self.bytes.extend((at..).zip(bytes.iter().copied()));
     }
+
+    /// The game took a BSP region's patches ([`RegionWrite`]): they are
+    /// what it holds of that region now.
+    pub fn took_bsp(&mut self, space: AddressSpace, patches: Vec<BspPatch>) {
+        self.bsp_patches.retain(|p| p.space != space);
+        self.bsp_patches.extend(patches);
+    }
+}
+
+/// What the paired game says of its structure BSPs
+/// (docs/editor/realtime-edits.md, "Inactive BSPs"): the loaded one's
+/// index (`edit.map`'s `bsp`) and the regions whose writes it refused,
+/// by file offset, with why.
+#[derive(Clone, Debug, Default)]
+pub struct BspLive {
+    pub loaded: Option<i16>,
+    pub refused: BTreeMap<u64, String>,
+}
+
+/// One region's changes of a structure BSP the game has not loaded, sent
+/// as `edit.batch` `raw` entries with a `{bsp: {index}}` owner: the game
+/// puts them in its overlay and reads them when it switches to the BSP.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegionWrite {
+    pub space: AddressSpace,
+    /// In the scenario's structure BSP block.
+    pub index: usize,
+    /// `(offset from the region's start, bytes, was)` per changed run.
+    pub runs: Vec<(u32, Vec<u8>, Vec<u8>)>,
+    /// The document's patches of the region, the baseline's once taken.
+    pub patches: Vec<BspPatch>,
+}
+
+impl RegionWrite {
+    pub fn wire(&self) -> impl Iterator<Item = Value> + '_ {
+        self.runs.iter().map(|(offset, bytes, was)| {
+            json!({"owner": {"bsp": {"index": self.index}}, "offset": offset,
+                "bytes": encode_base64(bytes), "was": encode_base64(was)})
+        })
+    }
+}
+
+/// A changed BSP region as a [`RegionWrite`], or why it waits for a
+/// reload: the game's loaded BSP is not known or is this one (its region
+/// is guest memory, built at map load), or the game refused it.
+fn region_write(
+    doc: &TagDoc,
+    space: AddressSpace,
+    now: &[BspPatch],
+    was: &[&BspPatch],
+    live: &BspLive,
+) -> Result<Option<RegionWrite>, String> {
+    const BUILT: &str = "geometry or collision is built at map load";
+    if let Some(why) = live.refused.get(&space.file_offset) {
+        return Err(why.clone());
+    }
+    let loaded = live.loaded.ok_or(BUILT)?;
+    let index = doc
+        .bsp_index(space)
+        .ok_or("the region is not in the scenario's structure BSP block")?;
+    if usize::try_from(loaded).ok() == Some(index) {
+        return Err(BUILT.into());
+    }
+    let mut want = BTreeMap::new();
+    for p in now {
+        want.extend((p.address..).zip(p.bytes.iter().copied()));
+    }
+    let mut holds = BTreeMap::new();
+    for p in was {
+        holds.extend((p.address..).zip(p.bytes.iter().copied()));
+    }
+    let addresses: BTreeSet<u32> = want.keys().chain(holds.keys()).copied().collect();
+    let mut runs: Vec<(u32, Vec<u8>, Vec<u8>)> = Vec::new();
+    for at in addresses {
+        let src = doc
+            .read_bsp_source(space, at, 1)
+            .and_then(|b| b.first().copied())
+            .ok_or("the region's bytes are not in the loaded file")?;
+        let (n, w) = (
+            want.get(&at).copied().unwrap_or(src),
+            holds.get(&at).copied().unwrap_or(src),
+        );
+        if n == w {
+            continue;
+        }
+        let offset = at - space.virtual_base;
+        match runs.last_mut() {
+            Some((o, b, wb)) if *o + b.len() as u32 == offset => {
+                b.push(n);
+                wb.push(w);
+            }
+            _ => runs.push((offset, vec![n], vec![w])),
+        }
+    }
+    Ok((!runs.is_empty()).then(|| RegionWrite {
+        space,
+        index,
+        runs,
+        patches: now.to_vec(),
+    }))
 }
 
 pub struct Write {
@@ -358,7 +458,22 @@ fn field_at<'a>(
     None
 }
 
+/// [`diff_live`] with nothing known of the game's BSPs: every BSP region
+/// change waits for a reload.
 pub fn diff(base: &TagBaseline, doc: &TagDoc) -> (Vec<Write>, Vec<Value>) {
+    let (writes, _, rows) = diff_live(base, doc, &BspLive::default());
+    (writes, rows)
+}
+
+/// The field writes, the region writes of BSPs the game has not loaded
+/// (`live`) and the pending rows that take `doc` from what the game holds
+/// (`base`).
+pub fn diff_live(
+    base: &TagBaseline,
+    doc: &TagDoc,
+    live: &BspLive,
+) -> (Vec<Write>, Vec<RegionWrite>, Vec<Value>) {
+    let mut regions = Vec::new();
     let mut addresses: BTreeSet<u32> = base.bytes.keys().copied().collect();
     for (at, bytes) in doc.patches() {
         addresses.extend((at..).take(bytes.len()));
@@ -371,16 +486,25 @@ pub fn diff(base: &TagBaseline, doc: &TagDoc) -> (Vec<Write>, Vec<Value>) {
         .map(|p| p.space)
         .collect();
     for space in spaces {
-        let now = bsp_patches.iter().filter(|p| p.space == space);
-        let was = base.bsp_patches.iter().filter(|p| p.space == space);
-        if !now.eq(was) {
-            rows.push(row(
-                "tags",
-                Value::Null,
-                &format!("BSP region at file offset {:#x}", space.file_offset),
-                Effect::Reload,
-                "geometry or collision is built at map load",
-            ));
+        let now: Vec<BspPatch> = bsp_patches.iter().filter(|p| p.space == space).cloned().collect();
+        let was: Vec<&BspPatch> = base.bsp_patches.iter().filter(|p| p.space == space).collect();
+        if now.iter().eq(was.iter().copied()) {
+            continue;
+        }
+        let path = format!("BSP region at file offset {:#x}", space.file_offset);
+        match region_write(doc, space, &now, &was, live) {
+            Ok(None) => {}
+            Ok(Some(w)) => {
+                rows.push(row(
+                    "tags",
+                    Value::Null,
+                    &path,
+                    Effect::NextUse,
+                    "read when the game switches to this BSP",
+                ));
+                regions.push(w);
+            }
+            Err(why) => rows.push(row("tags", Value::Null, &path, Effect::Reload, &why)),
         }
     }
     let mut excluded = Vec::new();
@@ -524,7 +648,7 @@ pub fn diff(base: &TagBaseline, doc: &TagDoc) -> (Vec<Write>, Vec<Value>) {
             });
         }
     }
-    (writes, rows)
+    (writes, regions, rows)
 }
 
 /// The most bytes of elements a move carries; a larger block waits for a
@@ -1161,6 +1285,96 @@ mod tests {
         refused.hold(&mut changed, &mut rows);
         assert_eq!(changed.len(), 1);
         assert!(rows[0].get("refused").is_none());
+    }
+
+    /// Applies `runs` (offsets from the region's start) to `held`, the
+    /// bytes at `start`, checking each run's `was` first.
+    fn apply_runs(held: &mut [u8], start: u32, runs: &[(u32, Vec<u8>, Vec<u8>)]) {
+        for (offset, bytes, was) in runs {
+            let i = (offset - start) as usize;
+            assert_eq!(&held[i..i + bytes.len()], was.as_slice());
+            held[i..i + bytes.len()].copy_from_slice(bytes);
+        }
+    }
+
+    /// Slice R17 (docs/editor/realtime-edits.md, "Inactive BSPs"): a
+    /// change to a BSP the game has not loaded is a region write for its
+    /// index, at its offset in the region, checked against the file's
+    /// bytes; the loaded BSP's change waits for a reload; once the game
+    /// takes the write nothing is left, and undo sends the file's bytes
+    /// back over what the game holds. A refused region waits for a reload
+    /// with the game's reason.
+    #[test]
+    fn an_inactive_bsp_change_is_a_region_write_and_the_loaded_one_waits_for_reload() {
+        use crate::app::Action;
+        let t = crate::play::testing::Temp::new("tag-sync-region");
+        let (bytes, [first, second, _]) = tag_tests::bsp_fixture();
+        let (mut app, _, _) =
+            tag_tests::app_with_registry(&t.0, bytes, tags::registry::Registry::builtin());
+        let a = app.tags.tag(first).unwrap().clone();
+        let space = app.tags.tag(second).unwrap().bsp.unwrap().space;
+        let radius = app.tags.pair(first, a.address + 0x8c).unwrap().1 + 0xc;
+        for (id, n) in [(first, 9.0f32), (second, 19.0)] {
+            app.dispatch(crate::fields::write_action(
+                id,
+                radius,
+                n.to_le_bytes().to_vec(),
+                "bounding_sphere_radius",
+            ));
+        }
+        let live = BspLive { loaded: Some(0), ..Default::default() };
+        let mut base = TagBaseline::default();
+        let (writes, regions, rows) = diff_live(&base, &app.tags, &live);
+        assert!(writes.is_empty());
+        assert_eq!(regions.len(), 1);
+        let w = &regions[0];
+        assert_eq!((w.index, w.space), (1, space));
+        let start = radius - space.virtual_base;
+        let mut held = app.tags.read_bsp_source(space, radius, 4).unwrap().to_vec();
+        assert_eq!(held, 17.0f32.to_le_bytes());
+        apply_runs(&mut held, start, &w.runs);
+        assert_eq!(held, 19.0f32.to_le_bytes());
+        let wire: Vec<Value> = w.wire().collect();
+        assert_eq!(wire.len(), w.runs.len());
+        assert_eq!(wire[0]["owner"], json!({"bsp": {"index": 1}}));
+        let of = |rows: &[Value], at: u64| {
+            rows.iter()
+                .find(|r| r["path"] == format!("BSP region at file offset {at:#x}"))
+                .and_then(Effect::of_row)
+        };
+        let loaded = a.bsp.unwrap().space.file_offset;
+        assert_eq!(rows.len(), 2);
+        assert_eq!(of(&rows, loaded), Some(Effect::Reload));
+        assert_eq!(of(&rows, space.file_offset), Some(Effect::NextUse));
+
+        // The game took it: only the loaded BSP's row is left.
+        base.took_bsp(space, w.patches.clone());
+        let (_, regions, rows) = diff_live(&base, &app.tags, &live);
+        assert!(regions.is_empty());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(of(&rows, loaded), Some(Effect::Reload));
+
+        // Undo: the file's bytes go back over the game's.
+        app.dispatch(Action::Undo);
+        let (_, regions, _) = diff_live(&base, &app.tags, &live);
+        assert_eq!(regions.len(), 1);
+        apply_runs(&mut held, start, &regions[0].runs);
+        assert_eq!(held, 17.0f32.to_le_bytes());
+
+        // Refused, or the loaded BSP not known: a reload.
+        let mut refused = live.clone();
+        refused.refused.insert(space.file_offset, "the game refused it".into());
+        for live in [refused, BspLive::default()] {
+            let (_, regions, rows) = diff_live(&base, &app.tags, &live);
+            assert!(regions.is_empty());
+            assert_eq!(of(&rows, space.file_offset), Some(Effect::Reload));
+        }
+        let (_, _, rows) = diff_live(&base, &app.tags, &BspLive {
+            refused: [(space.file_offset, "the game refused it".to_owned())].into(),
+            ..live
+        });
+        let row = rows.iter().find(|r| Effect::is_reload(r) && r["why"] == "the game refused it");
+        assert!(row.is_some(), "{rows:?}");
     }
 }
 

@@ -282,7 +282,7 @@ fn scene_owned_scenario_blocks_are_read_only_in_the_panel() {
     assert!(shown["fields"]["weapons"][0]["position"].is_array());
 }
 
-fn bsp_fixture() -> (Vec<u8>, [TagId; 3]) {
+pub(crate) fn bsp_fixture() -> (Vec<u8>, [TagId; 3]) {
     use map::CacheType;
     use map::build::{Block, BspField, FixupKind, TagPayload, TagSet};
 

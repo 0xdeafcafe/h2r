@@ -27,6 +27,8 @@ pub(super) struct Batch {
     placements: Vec<sync::Write>,
     /// Block moves go in a batch of their own.
     moves: Vec<tag_sync::BlockMove>,
+    /// Regions of BSPs the game has not loaded (`raw` with `bsp` owners).
+    regions: Vec<tag_sync::RegionWrite>,
 }
 
 const RELOAD_TIMEOUT: Duration = Duration::from_secs(30);
@@ -101,6 +103,8 @@ pub(super) struct Edits {
     pub(super) restore_after_batch: bool,
     taking: Option<u64>,
     tags: TagBaseline,
+    /// The game's loaded BSP and the BSP regions it refused.
+    pub(super) bsp: tag_sync::BspLive,
     pub(super) sent: Option<Batch>,
     next: u64,
     conflicts: Vec<Value>,
@@ -163,6 +167,7 @@ impl Play {
     pub(super) fn retry_refused_fields(&mut self) {
         self.edits.refused = issues::Refusals::default();
         self.edits.refused_moves = Default::default();
+        self.edits.bsp.refused.clear();
         self.edits.raw.retry();
         self.edits.collision.retry();
         self.edits.last_diff = None;
@@ -246,6 +251,12 @@ impl Play {
             self.abandon_spawn(app, "the loaded map changed before the player could be moved");
         }
         self.scenario_tag = v["scenario"].as_str().map(str::to_owned);
+        let bsp = v["bsp"].as_i64().and_then(|n| i16::try_from(n).ok());
+        if self.edits.bsp.loaded != bsp {
+            // A switch: the regions it refused may take writes now.
+            self.edits.bsp = tag_sync::BspLive { loaded: bsp, ..Default::default() };
+            self.edits.last_diff = None;
+        }
         let session =
             serde_json::from_value::<SessionView>(v["session"].clone()).unwrap_or_default();
         self.session = Some(session.kind);
@@ -304,6 +315,7 @@ impl Play {
             self.edits.conflicts.clear();
             self.edits.refused = issues::Refusals::default();
             self.edits.refused_moves = Default::default();
+            self.edits.bsp.refused.clear();
             self.edits.confirmed = None;
             self.edits.journal_ready = false;
             self.edits.reverting = false;
@@ -497,16 +509,18 @@ impl Play {
         if self.edits.world != Some(app.session.world_rev()) {
             self.edits.refused = issues::Refusals::default();
             self.edits.refused_moves = Default::default();
+            self.edits.bsp.refused.clear();
             self.edits.conflicts.clear();
         }
         let empty = TagBaseline::default();
-        let (mut tags, mut pending) = tag_sync::diff(
+        let (mut tags, regions, mut pending) = tag_sync::diff_live(
             if base.is_some() {
                 &self.edits.tags
             } else {
                 &empty
             },
             &app.tags,
+            &self.edits.bsp,
         );
         let tag = json!(self.scenario_tag);
         for b in &self.reload {
@@ -603,6 +617,7 @@ impl Play {
                 tags: Vec::new(),
                 placements: Vec::new(),
                 moves,
+                regions: Vec::new(),
             });
             return;
         }
@@ -612,7 +627,7 @@ impl Play {
                 |w| json!({"tag":tag,"group":"scnr","path":w.path,"value":w.value,"was":w.was}),
             ),
         );
-        if writes.is_empty() {
+        if writes.is_empty() && regions.is_empty() {
             // Geometry and pixels go when no field write is waiting, and
             // level collision when neither is.
             match raw {
@@ -627,16 +642,17 @@ impl Play {
         }
         self.edits.next += 1;
         let id = self.edits.next;
-        self.call(
-            hot::EDIT_BATCH,
-            json!({"epoch":self.edits.epoch,"confirm_peers":self.edits.confirmed,"writes":writes}),
-            Purpose::Edit(id),
-        );
+        let mut params = json!({"epoch":self.edits.epoch,"confirm_peers":self.edits.confirmed,"writes":writes});
+        if !regions.is_empty() {
+            params["raw"] = regions.iter().flat_map(tag_sync::RegionWrite::wire).collect();
+        }
+        self.call(hot::EDIT_BATCH, params, Purpose::Edit(id));
         self.edits.sent = Some(Batch {
             id,
             tags,
             placements: d.writes,
             moves: Vec::new(),
+            regions,
         });
     }
 
@@ -651,15 +667,25 @@ impl Play {
             self.edits.restore_after_batch = false;
             return;
         }
+        let runs: usize = batch.regions.iter().map(|r| r.runs.len()).sum();
+        let refuse_regions = |bsp: &mut tag_sync::BspLive, why: &str| {
+            for r in &batch.regions {
+                bsp.refused.insert(r.space.file_offset, why.to_owned());
+            }
+        };
         match result {
             Ok(v)
                 if v["applied"].as_u64()
                     == Some((batch.tags.len() + batch.placements.len()) as u64)
-                    && v["moves"].as_array().map_or(0, Vec::len) == batch.moves.len() =>
+                    && v["moves"].as_array().map_or(0, Vec::len) == batch.moves.len()
+                    && v["raw"].as_array().map_or(0, Vec::len) == runs =>
             {
                 self.edits.tags.moved(&batch.moves, &v);
                 for w in batch.tags {
                     self.edits.tags.wrote(w.at, &w.value);
+                }
+                for r in batch.regions {
+                    self.edits.tags.took_bsp(r.space, r.patches);
                 }
                 if let Some((_, base)) = &mut self.baseline {
                     for w in batch.placements {
@@ -673,6 +699,9 @@ impl Play {
             }
             Err(e) if e.code == agent_proto::code::MISMATCH && batch.moves.is_empty() => {
                 self.waiting = Waiting::Idle;
+                if e.data.as_ref().is_some_and(|d| d["raw"].as_array().is_some_and(|a| !a.is_empty())) {
+                    refuse_regions(&mut self.edits.bsp, "the game's file holds other bytes in this BSP region");
+                }
                 let message = e.message;
                 self.edits.conflicts = e
                     .data
@@ -720,6 +749,7 @@ impl Play {
                 );
                 if batch.moves.is_empty() {
                     self.edits.refused.record(&batch.tags, &batch.placements, &why);
+                    refuse_regions(&mut self.edits.bsp, &why);
                 } else {
                     self.edits.refused_moves.record(&batch.moves, &why);
                 }
@@ -786,6 +816,7 @@ impl Play {
                 self.edits.conflicts.clear();
                 self.edits.refused = issues::Refusals::default();
                 self.edits.refused_moves = Default::default();
+                self.edits.bsp.refused.clear();
                 self.edits.raw.reverted();
                 self.edits.last_diff = None;
                 self.next_push = None;

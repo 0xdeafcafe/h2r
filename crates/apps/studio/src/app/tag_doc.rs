@@ -668,6 +668,21 @@ impl TagDoc {
             .src_range(self.tag(tag)?.region(), address, len)
     }
 
+    /// The loaded file's bytes of a structure BSP region (`space`) at a
+    /// virtual address in it.
+    pub(crate) fn read_bsp_source(&self, space: AddressSpace, address: u32, len: u32) -> Option<&[u8]> {
+        self.loaded.as_ref()?.src_range(Region::Bsp(space), address, len)
+    }
+
+    /// The scenario's structure BSP index of the region `space`.
+    pub(crate) fn bsp_index(&self, space: AddressSpace) -> Option<usize> {
+        self.tags()
+            .iter()
+            .filter_map(|t| t.bsp)
+            .find(|b| b.space == space)
+            .and_then(|b| b.index)
+    }
+
     pub(crate) fn read_metadata_source(&self, address: u32, len: u32) -> Option<&[u8]> {
         self.loaded
             .as_ref()?

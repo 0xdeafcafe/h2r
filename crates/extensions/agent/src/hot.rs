@@ -380,7 +380,7 @@ pub fn add_edit_methods(
             let idx = hot_tags::index::index(g).map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
             let mut reply = json!({"at":ctx.at,"name":ctx.at.map,"file":cached_file.as_ref().and_then(|(_, file)| file.as_ref()),
                 "checksum":checksum,"scenario":format!("{:#010x}",idx.scenario),"epoch":ctx.epoch,
-                "session":probe(g,ctx)});
+                "session":probe(g,ctx),"bsp":hot_tags::raw::loaded_bsp(g)});
             if p.get("known_epoch").is_some_and(|e| e.as_u64() != Some(ctx.epoch)) {
                 let entries = hot_tags::index::all(g,&idx).map_err(|e| RpcError::new(code::UNAVAILABLE,e))?;
                 reply["loaded"] = json!(entries.into_iter().map(|e| e.datum).collect::<Vec<_>>());

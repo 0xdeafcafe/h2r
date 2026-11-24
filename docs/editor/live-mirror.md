@@ -526,7 +526,7 @@ by `session.methods`, documented in
 | `live.key` | read | `{stream}` | `{at, seq}`: the next frame is a key frame, taken now when paused |
 | `live.status` | read | none | `{map: {name, checksum, epoch, activation}, streams: [{stream, layers, every, frames, bytes, dropped, skipped, queue}], capture_us: {p50, p99, budget}, shed: [name]}` |
 | `live.close` | read | `{stream}` | `{closed}`; closing the stream's connection does the same |
-| `edit.map` | read | `{known_epoch?}` | `{at, name, file, checksum, scenario, epoch, session, loaded?}` |
+| `edit.map` | read | `{known_epoch?}` | `{at, name, file, checksum, scenario, epoch, session, bsp, loaded?}` |
 | `edit.batch` | act | `{writes, label?, epoch?, confirm_peers?}`. A write is `{tag, group?, path, value, was?}` or `{at, value, was?}` with hex bytes | `{id, applied, changes}`: all written at one tick boundary as one journal entry, or none, with `MISMATCH` and `data.fields` (`path`, `was`, `holds`) |
 | `world.object.set` | act | `{id, pos?, forward?, up?, epoch?, confirm_peers?}` | `{at, object}` after the next tick, through the engine's object move |
 | `world.object.delete` | act | `{id, epoch?, confirm_peers?}` | `{at, deleted}` through `OBJECT_DELETE` |
