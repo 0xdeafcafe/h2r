@@ -12,26 +12,44 @@
 //! E3 frame and skips it in any other, so the scene and the guest's own
 //! work are the same whatever the mode.
 //!
+//! A chosen light the renderer shadows (slice L7: a cone it chooses
+//! for one of the view's shadow slots, `native_render::cone_shadows::view_shadows`)
+//! is drawn from its shadowed constants with the shadow flag set
+//! ([`SHADOW_FLAGS`]): the guest's flag code clears that flag for a light
+//! the content flagged no-shadow. Its parts then take the shadowed
+//! implementations, which read layer 11's term from the destination
+//! alpha, and its pass names the light
+//! (`d3d::ExternalPass::cone_shadow`) so the frame graph writes the cone's
+//! term there just before it.
+//!
 //! A light is left undrawn, and counted unread, when its candidate holds
 //! no constants or its gel is drawn by a shader into target 13 (that
-//! producer is the guest's passes', which did not run for it). No shadow
-//! map is made for it (slice L7) and no first-person part is lit.
+//! producer is the guest's passes', which did not run for it). No
+//! first-person part is lit.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use engine::light_passes::flag;
 use frame_scene::SceneLight;
-use native_render::light_choice;
+use native_render::{cone_shadows, light_choice};
 
 use super::{LightConstants, Stage, VIEW_TARGET};
 
+/// The flags a shadowed chosen light's constants carry: the shadow bit
+/// and the bit the flag code sets with it (`engine::light_passes::flag`).
+pub const SHADOW_FLAGS: u32 = flag::SHADOW | flag::SHADOW_B;
+
 /// One chosen light ready to draw: its datum, the sphere its passes
-/// light, and its constants.
+/// light, its constants, and whether the renderer shadows it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChosenLight {
     pub handle: u32,
     pub origin: [f32; 3],
     pub radius: f32,
     pub constants: LightConstants,
+    /// Drawn with the shadowed implementations over the renderer's cone
+    /// shadow; `constants` are the shadowed set with [`SHADOW_FLAGS`].
+    pub shadowed: bool,
 }
 
 /// What the host is asked to draw: each light's layers 12 and 13, in the
@@ -42,11 +60,20 @@ pub struct ChosenDraw<'a> {
     pub view_target: [u32; 8],
 }
 
-/// `light`'s draw, or `None` when its constants are missing or its gel
-/// needs the guest's target-13 producer.
-pub fn ready(light: &SceneLight) -> Option<ChosenLight> {
+/// `light`'s draw, `shadowed` when the renderer shadows it, or `None`
+/// when its constants are missing or its gel needs the guest's target-13
+/// producer.
+pub fn ready(light: &SceneLight, shadowed: bool) -> Option<ChosenLight> {
     let c = light.candidate.as_ref()?;
-    let constants = c.constants.as_ref()?.unshadowed;
+    let variants = c.constants.as_ref()?;
+    let constants = if shadowed {
+        LightConstants {
+            flags: variants.shadowed.flags | SHADOW_FLAGS,
+            ..variants.shadowed
+        }
+    } else {
+        variants.unshadowed
+    };
     let (origin, radius) = c.bounds;
     if constants.animated_gel || !radius.is_finite() || radius <= 0.0 {
         return None;
@@ -56,19 +83,24 @@ pub fn ready(light: &SceneLight) -> Option<ChosenLight> {
         origin,
         radius,
         constants,
+        shadowed,
     })
 }
 
 /// The view's lights beyond the guest's under `cap`, `lights` the open
-/// view's: the ones ready to draw, in draw order, and how many were not.
-pub fn beyond_guest(lights: &[SceneLight], cap: usize) -> (Vec<ChosenLight>, usize) {
+/// view's, with `slots` its share of the shadow slots
+/// (`cone_shadows::slot_share_of`): the ones ready to draw, in draw
+/// order, each shadowed when the renderer shadows it, and how many were
+/// not ready.
+pub fn beyond_guest(lights: &[SceneLight], cap: usize, slots: usize) -> (Vec<ChosenLight>, usize) {
     let choice = light_choice::choose_view(lights, 0, cap);
+    let shadows = cone_shadows::view_shadows(lights, 0, &choice.lit, slots);
     let mut unread = 0;
     let made = choice
         .beyond_guest
         .iter()
         .filter_map(|&i| {
-            let made = ready(&lights[i as usize]);
+            let made = ready(&lights[i as usize], shadows.contains(&i));
             unread += usize::from(made.is_none());
             made
         })
@@ -87,6 +119,10 @@ pub fn draw(
     if lights.is_empty() || Stage::Lights.standing_down() {
         return 0;
     }
+    CHOSEN_SHADOWED.fetch_add(
+        lights.iter().filter(|l| l.shadowed).count() as u64,
+        Ordering::Relaxed,
+    );
     let Some(view_target) = VIEW_TARGET.get() else {
         super::refused("light view target unavailable");
         return 0;
@@ -116,6 +152,13 @@ pub fn draw(
 static CHOSEN_DRAWN: AtomicU64 = AtomicU64::new(0);
 static CHOSEN_KEPT: AtomicU64 = AtomicU64::new(0);
 static CHOSEN_UNREAD: AtomicU64 = AtomicU64::new(0);
+static CHOSEN_SHADOWED: AtomicU64 = AtomicU64::new(0);
+
+/// Chosen lights handed to the host with their shadowed implementations
+/// (`scene_e3_lights_shadowed`).
+pub fn shadowed() -> u64 {
+    CHOSEN_SHADOWED.load(Ordering::Relaxed)
+}
 
 /// Chosen lights the host queued as E3 stages (`scene_e3_lights_drawn`).
 pub fn drawn() -> u64 {
@@ -197,7 +240,7 @@ mod tests {
         let lights: Vec<SceneLight> = (0..6)
             .map(|k| light(k, 1.0 + k as f32, k == 5, false))
             .collect();
-        let (made, unread) = beyond_guest(&lights, 4);
+        let (made, unread) = beyond_guest(&lights, 4, 4);
         assert_eq!(unread, 0);
         assert_eq!(
             made.iter().map(|l| l.handle & 0xffff).collect::<Vec<_>>(),
@@ -206,6 +249,49 @@ mod tests {
         assert_eq!(made[0].origin, [4.0, 0.0, 0.0]);
         assert_eq!(made[0].radius, 3.0);
         assert_eq!(made[0].constants.flags, 1, "no shadow");
+        assert!(made.iter().all(|l| !l.shadowed), "spheres cast no shadow");
+    }
+
+    /// `light` as a cone the content flagged no-shadow: a frustum down
+    /// -z from one unit above its position, ten deep.
+    fn cone(mut light: SceneLight) -> SceneLight {
+        light.definition_flags |= cone_shadows::NO_SHADOW;
+        let c = light.candidate.as_mut().unwrap();
+        c.definition_kind = cone_shadows::FRUSTUM;
+        let at = c.position;
+        c.forward = [0.0, 0.0, -1.0];
+        c.up = [1.0, 0.0, 0.0];
+        c.volume = Some(frame_scene::LightVolume::Projected {
+            kind: cone_shadows::FRUSTUM,
+            origin: [at[0], at[1], at[2] + 1.0],
+            axis: [0.0, 0.0, -1.0],
+            near: 0.0,
+            far: 10.0,
+            far_extent: [5.0, 5.0],
+        });
+        light
+    }
+
+    /// Three no-shadow cones beyond the guest's with one shadow slot: the
+    /// highest in score is drawn from its shadowed constants with the
+    /// shadow flag set again, the others unshadowed.
+    #[test]
+    fn the_cone_the_renderer_shadows_is_drawn_shadowed() {
+        let lights: Vec<SceneLight> = (0..3)
+            .map(|k| cone(light(k, 1.0 + k as f32, false, false)))
+            .collect();
+        let (made, unread) = beyond_guest(&lights, 16, 1);
+        assert_eq!(unread, 0);
+        let got: Vec<(u32, bool, u32)> = made
+            .iter()
+            .map(|l| (l.handle & 0xffff, l.shadowed, l.constants.flags))
+            .collect();
+        assert_eq!(
+            got,
+            [(2, true, 5 | SHADOW_FLAGS), (1, false, 1), (0, false, 1)]
+        );
+        let (none, _) = beyond_guest(&lights, 16, 0);
+        assert!(none.iter().all(|l| !l.shadowed), "no slot, no shadow");
     }
 
     /// A lit light with no constants, or with a shader-drawn gel, is
@@ -228,7 +314,7 @@ mod tests {
             light(2, 2.0, false, false),
             SceneLight::host_light(1, [0.0; 3], [1.0; 3], 2.0),
         ];
-        let (made, unread) = beyond_guest(&lights, 16);
+        let (made, unread) = beyond_guest(&lights, 16, 4);
         assert_eq!(unread, 2);
         assert_eq!(
             made.iter().map(|l| l.handle & 0xffff).collect::<Vec<_>>(),

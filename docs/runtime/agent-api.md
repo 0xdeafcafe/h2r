@@ -1517,8 +1517,8 @@ stage). Snapshot indices refer to the attachment runs in the frame
 record. The per-frame counters are `lights_lit`, `lights_shadowed`,
 `lights_over_cap`, `lights_beyond_guest`, `sun_tiles`, `sun_tiles_redrawn`, `sun_tiles_offscreen`, `atlas_halved`,
 `tiles_refused`, `cones_shadowed`, `cones_flagged_off`, `flashlight_shadowed`,
-`shadows_over_cap` and `cones_refused`. They count the E3 renderer's
-selections and atlas work.
+`shadows_over_cap`, `cones_refused`, `cones_drawn` and `cones_kept`. They
+count the E3 renderer's selections and atlas work.
 The graph draws the guest's shadow maps as tiles
 ([e3-lighting.md](../graphics/e3-lighting.md), "Shadows from local
 lights"): `e3.tiles` counts the caster draws into them, `e3.marks` the
@@ -1536,7 +1536,10 @@ choice of shadowed lights from those it lit (e3-lighting.md, "Built: the
 shadowed cones"): the cones it shadows itself, the shadowed lights whose
 content flag was off, the views whose flashlight holds a slot, the lit
 cones its four slots left out, and the lit lights whose frustum makes no
-projection. Their tiles are not drawn in a game frame yet. `sun_tiles_offscreen` counts offscreen casters for which the graph
+projection. A chosen light the renderer shadows reads its cone's term:
+`cones_drawn` counts the cone tiles drawn for those lights (their caster
+draws join `e3.tiles`, their receivers `e3.marks`) and `cones_kept` the
+lights left undrawn because their cone could not be. `sun_tiles_offscreen` counts offscreen casters for which the graph
 submits a receiver draw, summed across views. A cached tile can have
 receiver draws with no redraw. The
 guest's light selections are in `render.scene.views`.
@@ -1969,10 +1972,11 @@ h2 agent render.parity '{"arm": true}'
   `scene_host_lights_drawn`, `scene_host_lights_kept` and
   `scene_host_lights_unread` (the host's own lights, ML5, drawn by the
   light passes, made but kept, and whose constants did not read),
-  `scene_e3_lights_drawn`, `scene_e3_lights_kept` and
-  `scene_e3_lights_unread` (E3's chosen lights beyond the guest's,
-  queued as E3 stages, ready but not queued, and with no constants to
-  draw from),
+  `scene_e3_lights_drawn`, `scene_e3_lights_kept`,
+  `scene_e3_lights_unread` and `scene_e3_lights_shadowed` (E3's chosen
+  lights beyond the guest's, queued as E3 stages, ready but not queued,
+  with no constants to draw from, and handed to the host with their
+  shadowed implementations over the renderer's cone shadow),
   `scene_light_entries` and
   `scene_light_entry_remainder_<cause>` (sorted entries left to the
   guest's handlers, by `scene_extract::light_groups::Cause`: `memory`,

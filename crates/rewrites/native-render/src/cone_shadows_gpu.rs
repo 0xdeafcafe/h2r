@@ -13,7 +13,8 @@
 //!    ([`ConeShadows::prepare_receivers`]), which is what retail's layer 11
 //!    writes for the light's later passes to read (`0x00031348`; the
 //!    shadowed implementation of layer 12 reads it, **S**). The term
-//!    multiplies the alpha; RGB is kept.
+//!    replaces the alpha, so an earlier light's term is not read again;
+//!    RGB is kept.
 //!
 //! The term follows the sun's receiver (`sun_tiles_gpu`): a vertex gate
 //! of the world normal dotted with the direction to the apex, clamped to
@@ -405,20 +406,11 @@ impl ConeShadows {
                         compilation_options: Default::default(),
                         targets: &[Some(wgpu::ColorTargetState {
                             format: colour,
-                            // The destination alpha times the term; RGB
-                            // is kept.
-                            blend: Some(wgpu::BlendState {
-                                color: wgpu::BlendComponent {
-                                    src_factor: wgpu::BlendFactor::Zero,
-                                    dst_factor: wgpu::BlendFactor::One,
-                                    operation: wgpu::BlendOperation::Add,
-                                },
-                                alpha: wgpu::BlendComponent {
-                                    src_factor: wgpu::BlendFactor::Zero,
-                                    dst_factor: wgpu::BlendFactor::SrcAlpha,
-                                    operation: wgpu::BlendOperation::Add,
-                                },
-                            }),
+                            // The term in the destination alpha; RGB is
+                            // kept. Each shadowed light's passes read
+                            // their own term, not a product with the
+                            // light before.
+                            blend: None,
                             write_mask: wgpu::ColorWrites::ALPHA,
                         })],
                     }),
@@ -486,8 +478,8 @@ impl ConeShadows {
     }
 
     /// The receivers of `tile` on a frame whose attachments have
-    /// `formats` (colour, depth): each multiplies the destination alpha
-    /// by its shadow term. `None` when there is no receiver.
+    /// `formats` (colour, depth): each writes its shadow term into the
+    /// destination alpha. `None` when there is no receiver.
     pub fn prepare_receivers(
         &mut self,
         device: &wgpu::Device,
@@ -583,7 +575,7 @@ impl ConeReceiverPass {
         self.draws.len()
     }
 
-    /// Multiplies `colour`'s alpha where `depth` holds the receivers.
+    /// Writes `colour`'s alpha where `depth` holds the receivers.
     pub fn record(
         &self,
         encoder: &mut wgpu::CommandEncoder,

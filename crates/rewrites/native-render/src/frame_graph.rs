@@ -6,12 +6,14 @@
 //! attachments. Only display hands its final target to the presenter.
 
 pub mod display_rate;
+mod cones;
 mod inputs;
 pub use inputs::{freeze_display_inputs, freeze_scaled_inputs};
 mod lighting;
 mod markers;
 mod private;
 mod sun;
+pub use cones::ConeDraws;
 pub use lighting::{E3Report, PassWork};
 pub use sun::{RECEIVER_DEPTH_BIAS, SunSkip};
 
@@ -217,6 +219,8 @@ fn record(
     let mut observer = observer;
     // Ranges of the chosen lights' stages this draw recorded (`e3.lights`).
     let mut chosen = 0u32;
+    // The cone shadows the shadowed chosen lights read (`cones`).
+    let cone_replay = cones::plan(scene, frame, lighting);
     let ran = (|| -> Result<(), String> {
         for (i, (at, op)) in frame.ops.iter().enumerate() {
             let named = |e: String| format!("view {} {} op {i}: {e}", at.view, at.slot.name());
@@ -227,8 +231,14 @@ fn record(
             // beyond the guest's) draws only in that mode.
             let mode = stage_mode(op);
             let other_mode = mode.is_some_and(|m| m != lighting);
+            // A shadowed chosen light whose cone is not drawn is kept.
+            let cone_kept = cone_replay.as_ref().is_some_and(|c| c.skip.contains(&i));
             // An admitted object shadow's ops: its sun stage stands in.
-            if !other_mode && !sun_replay.as_ref().is_some_and(|s| s.skip[i]) {
+            if !other_mode && !cone_kept && !sun_replay.as_ref().is_some_and(|s| s.skip[i]) {
+                // A shadowed chosen light: its cone's term first.
+                if let Some(stage) = cone_replay.as_ref().and_then(|c| c.before.get(&i)) {
+                    pass.apply(stage).map_err(named)?;
+                }
                 pass.apply(op).map_err(named)?;
                 if let (Some(_), ReplayOp::Stage(stage)) = (mode, op) {
                     chosen += stage.plan.ranges as u32;
@@ -270,6 +280,9 @@ fn record(
         report.add_choice(&lit);
         report.add_cones(crate::cone_shadows::choose(scene, &lit).work);
         report.add_chosen(chosen);
+        if let Some(c) = &cone_replay {
+            report.add_cone_draws(c.work());
+        }
     }
     Ok(e3)
 }

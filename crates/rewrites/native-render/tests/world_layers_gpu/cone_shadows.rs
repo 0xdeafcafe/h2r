@@ -5,7 +5,7 @@
 //!
 //! A lamp hangs over the ground: a frustum with its apex at z = 11,
 //! looking down, reaching the ground (z = 0) with half extents of five.
-//! The receivers' shadow term multiplies the frame's destination alpha,
+//! The receivers' shadow term replaces the frame's destination alpha,
 //! which the light's own passes then read; RGB is kept.
 
 use gfx::GfxContext;
@@ -115,12 +115,23 @@ fn texture(
     })
 }
 
-/// Clears the frame to [`GREY`], lays the receivers' depth, and with a
+/// Clears the frame to [`GREY`] ([`render_over`]: to another colour), lays the receivers' depth, and with a
 /// tile at `rect` draws `casters` into it and its receivers' term; with
 /// none, draws no shadow at all, as retail draws for a no-shadow light.
 /// Returns the pixels and the tile and receiver draws.
 fn render(
     ctx: &GfxContext,
+    rect: Option<[u32; 4]>,
+    casters: &[&Geometry],
+    receivers: &[&Geometry],
+) -> (Vec<u8>, usize, usize) {
+    render_over(ctx, GREY, rect, casters, receivers)
+}
+
+/// [`render`] on a frame cleared to `clear`.
+fn render_over(
+    ctx: &GfxContext,
+    clear: [u8; 4],
     rect: Option<[u32; 4]>,
     casters: &[&Geometry],
     receivers: &[&Geometry],
@@ -135,7 +146,7 @@ fn render(
     let depth = depth_texture.create_view(&Default::default());
     let mut enc = ctx.device.create_command_encoder(&Default::default());
     {
-        let [r, g, b, a] = GREY.map(|c| f64::from(c) / 255.0);
+        let [r, g, b, a] = clear.map(|c| f64::from(c) / 255.0);
         let _clear = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("cone test clear"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -270,4 +281,27 @@ fn a_tile_reads_only_its_own_slot() {
         &[&ground, &board],
     );
     assert_eq!(first, second);
+}
+
+/// The term replaces the alpha an earlier light left: on a frame whose
+/// alpha is a quarter, the lit receivers read whole and the shadowed
+/// ground about zero, as a second shadowed light's passes must read their
+/// own term alone. Pixels no receiver covers keep the alpha.
+#[test]
+fn a_receivers_term_replaces_the_alpha_before_it() {
+    let Some(ctx) = test_gpu() else { return };
+    let ground = Geometry::square(3.0, 0.0);
+    let board = Geometry::square(1.0, 5.0);
+    let dim = [200, 200, 200, 64];
+    let (pixels, ..) = render_over(
+        &ctx,
+        dim,
+        Some([0, 0, 256, 256]),
+        &[&board],
+        &[&ground, &board],
+    );
+    assert_eq!(px(&pixels, 32, 32), GREY, "the board's lit top");
+    assert_eq!(px(&pixels, 52, 32), GREY, "lit ground");
+    assert!(px(&pixels, 43, 32)[3] < 12, "ground in the shadow");
+    assert_eq!(px(&pixels, 63, 32), dim, "no receiver there");
 }

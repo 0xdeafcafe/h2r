@@ -319,30 +319,7 @@ pub fn choose(scene: &FrameScene, lit: &LightChoice) -> ConeChoice {
             .map_or(0, |k| caps[k]);
         let earlier = first_slots.iter().position(|(k, _)| *k == view.key);
         let mut work = ConeWork::default();
-        let mut cones: Vec<(u8, usize, &Light, Cone)> = Vec::new();
-        for (order, &index) in choice.lit.iter().enumerate() {
-            let Some(light) = scene.lights.get(index as usize) else {
-                continue;
-            };
-            if light.host.is_some() {
-                continue;
-            }
-            match Cone::of(light) {
-                Ok(cone) => {
-                    let rank = if own(light) {
-                        0
-                    } else if guest_shadowed(light) {
-                        1
-                    } else {
-                        2
-                    };
-                    cones.push((rank, order, light, cone));
-                }
-                Err(ConeRefusal::Degenerate) => work.cones_refused += 1,
-                Err(_) => {}
-            }
-        }
-        cones.sort_by_key(|(rank, order, ..)| (*rank, *order));
+        let cones = ranked(|i| scene.lights.get(i as usize), &choice.lit, &mut work);
         let mut taken = 0usize;
         let mut mine = Vec::new();
         for (rank, order, light, cone) in cones {
@@ -409,6 +386,81 @@ pub fn choose(scene: &FrameScene, lit: &LightChoice) -> ConeChoice {
         out.cones.extend(mine);
     }
     out
+}
+
+/// A view's lit cones in slot order, as `(rank, order, light, cone)`:
+/// `lit` is its choice of lit lights (into `FrameScene::lights`, which
+/// `light` reads), `order` the place in it. The view's own flashlight
+/// ranks 0, a light the guest shadowed 1, the rest 2, each rank in the lit
+/// order. A host light is left out, and a frustum that makes no
+/// projection counted in `work.cones_refused`.
+fn ranked<'a>(
+    light: impl Fn(u32) -> Option<&'a Light>,
+    lit: &[u32],
+    work: &mut ConeWork,
+) -> Vec<(u8, usize, &'a Light, Cone)> {
+    let mut cones = Vec::new();
+    for (order, &index) in lit.iter().enumerate() {
+        let Some(light) = light(index) else {
+            continue;
+        };
+        if light.host.is_some() {
+            continue;
+        }
+        match Cone::of(light) {
+            Ok(cone) => {
+                let rank = if own(light) {
+                    0
+                } else if guest_shadowed(light) {
+                    1
+                } else {
+                    2
+                };
+                cones.push((rank, order, light, cone));
+            }
+            Err(ConeRefusal::Degenerate) => work.cones_refused += 1,
+            Err(_) => {}
+        }
+    }
+    cones.sort_by_key(|(rank, order, ..)| (*rank, *order));
+    cones
+}
+
+/// The lights one view shadows, as [`choose`] chooses them for the
+/// view's first record: `lights` is the view's slice of
+/// `FrameScene::lights` from index `first`, `lit` its choice
+/// (`light_choice::choose_view`) and `slots` its share of [`SHADOW_CAP`]
+/// ([`slot_share_of`]). Returns indices into `FrameScene::lights`, in slot
+/// order, the guest's shadowed lights among them. The frame step asks
+/// this of the lights it draws itself
+/// (`render_bridge::native_lights::chosen`), before the scene is sealed.
+pub fn view_shadows(lights: &[Light], first: u32, lit: &[u32], slots: usize) -> Vec<u32> {
+    let light = |i: u32| i.checked_sub(first).and_then(|k| lights.get(k as usize));
+    let mut work = ConeWork::default();
+    let mut taken = 0usize;
+    let mut out = Vec::new();
+    for (_, order, light, _) in ranked(light, lit, &mut work) {
+        if taken >= slots && !guest_shadowed(light) {
+            continue;
+        }
+        taken += 1;
+        out.push(lit[order]);
+    }
+    out
+}
+
+/// `key`'s share of [`SHADOW_CAP`] among `keys` (in the scene's order,
+/// repeats ignored), as [`choose`] gives it; a key not in `keys` is
+/// counted after them.
+pub fn slot_share_of(keys: &[ViewKey], key: ViewKey) -> usize {
+    let mut distinct: Vec<ViewKey> = Vec::new();
+    for k in keys.iter().copied().chain([key]) {
+        if !distinct.contains(&k) {
+            distinct.push(k);
+        }
+    }
+    let at = distinct.iter().position(|k| *k == key).unwrap_or(0);
+    slot_caps(distinct.len())[at]
 }
 
 /// The guest ran `light`'s passes with its shadow (flag bit 2).
@@ -827,6 +879,48 @@ mod tests {
             receivers(&s, &cone),
             [InstanceKey(0xa), InstanceKey(0xb), InstanceKey(0xc)]
         );
+    }
+
+    /// The frame step's view-at-a-time choice is the scene's: for each
+    /// view's first record, the lights `view_shadows` gives from the
+    /// view's slice and its slot share are those `choose` shadows there,
+    /// in the same order.
+    #[test]
+    fn a_views_shadows_from_its_slice_match_the_frames() {
+        let many = |base: u32| {
+            let mut v: Vec<Light> = (0..5)
+                .map(|k| cone_light(base + k, 1.0 + k as f32, [k as f32 * 20.0, 0.0, 10.0]))
+                .collect();
+            v[0].guest_selected = true;
+            v[0].flags |= 4;
+            v
+        };
+        let s = Scene {
+            views: vec![(0, many(0), Vec::new()), (1, many(10), Vec::new())],
+        }
+        .build();
+        let lit = light_choice::choose(&s);
+        let got = choose(&s, &lit);
+        let keys: Vec<ViewKey> = s.views.iter().map(|v| v.key).collect();
+        for (index, v) in s.views.iter().enumerate() {
+            let slice = &s.lights[v.lights.start as usize..v.lights.end as usize];
+            let mine = view_shadows(
+                slice,
+                v.lights.start,
+                &lit.views[index].lit,
+                slot_share_of(&keys, v.key),
+            );
+            let want: Vec<u32> = got
+                .cones
+                .iter()
+                .filter(|c| c.view == index as u32)
+                .map(|c| c.light)
+                .collect();
+            assert_eq!(mine, want, "view {index}");
+        }
+        assert_eq!(slot_share_of(&keys, keys[1]), 2);
+        assert_eq!(slot_share_of(&keys[..1], keys[1]), 2, "a new key counts");
+        assert_eq!(slot_share_of(&[], keys[0]), SHADOW_CAP);
     }
 
     #[test]

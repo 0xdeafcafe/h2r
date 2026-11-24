@@ -128,6 +128,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 fallback: None,
                 colour_only: false,
                 lighting_only: None,
+                cone_shadow: None,
             };
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if !current_ready(&state, mem).is_some_and(|current| Arc::ptr_eq(current, &ready)) {

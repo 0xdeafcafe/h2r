@@ -138,7 +138,7 @@ struct WorldMeshes(HashMap<usize, (Arc<CasterMesh>, SunMesh)>);
 static WORLD_MESHES: Mutex<Vec<(wgpu::Device, WorldMeshes)>> = Mutex::new(Vec::new());
 
 /// A structure part's `mesh` on `device`, uploaded at its first frame.
-fn world_mesh(device: &wgpu::Device, mesh: &Arc<CasterMesh>) -> Result<SunMesh, SunSkip> {
+pub(super) fn world_mesh(device: &wgpu::Device, mesh: &Arc<CasterMesh>) -> Result<SunMesh, SunSkip> {
     let mut all = WORLD_MESHES.lock().unwrap_or_else(|e| e.into_inner());
     let at = match all.iter().position(|(d, _)| d == device) {
         Some(at) => at,
@@ -285,7 +285,7 @@ fn kept_inside(op: &ReplayOp) -> bool {
 
 /// World to clip as the sun program's rows: the camera's column-major
 /// view-projection, transposed.
-fn clip_rows(m: &frame_scene::Mat4) -> [[f32; 4]; 4] {
+pub(super) fn clip_rows(m: &frame_scene::Mat4) -> [[f32; 4]; 4] {
     let mut rows = [[0.0; 4]; 4];
     for (r, row) in rows.iter_mut().enumerate() {
         for (c, v) in row.iter_mut().enumerate() {

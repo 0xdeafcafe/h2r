@@ -502,6 +502,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             fallback: None,
             colour_only: false,
             lighting_only: None,
+            cone_shadow: None,
         };
         d.prepare_external_bound(&mut DeviceMemory(mem), plan, Box::new(pass), Vec::new())
             .map_err(|_| Keep::Unsupported("device error preparing the scene light pass"))?
@@ -701,6 +702,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             fallback: None,
             colour_only: colour_mask,
             lighting_only: None,
+            cone_shadow: None,
         };
         d.prepare_external_bound(&mut DeviceMemory(mem), plan, Box::new(pass), Vec::new())
             .map_err(|_| Keep::Unsupported("device error preparing the scene shadow pass"))?
@@ -1078,6 +1080,7 @@ impl d3d::DrawAdmission for LightAdmission {
             fallback: Some(Arc::new(draw.clone())),
             colour_only: false,
             lighting_only: None,
+            cone_shadow: None,
         };
         Some((plan, Box::new(pass)))
     }
@@ -2308,6 +2311,10 @@ struct RunPass {
     /// E3's chosen lights draw only in an E3 frame
     /// (`render_bridge::native_lights::chosen`).
     lighting_only: Option<d3d::Lighting>,
+    /// A chosen light drawn with its shadowed implementation: its handle,
+    /// whose cone shadow the frame graph writes into the destination
+    /// alpha before the pass (`d3d::ExternalPass::cone_shadow`).
+    cone_shadow: Option<u32>,
 }
 
 impl RetainedLight {
@@ -2348,6 +2355,10 @@ impl d3d::ExternalPass for RunPass {
 
     fn lighting_only(&self) -> Option<d3d::Lighting> {
         self.lighting_only
+    }
+
+    fn cone_shadow(&self) -> Option<u32> {
+        self.cone_shadow
     }
 
     fn uses_validated_resources(&self) -> bool {

@@ -58,4 +58,10 @@ pub struct E3Report {
     /// Lit lights whose frustum makes no projection.
     #[serde(default)]
     pub cones_refused: u32,
+    /// Cone tiles drawn for the shadowed chosen lights in a game frame.
+    #[serde(default)]
+    pub cones_drawn: u32,
+    /// Shadowed chosen lights left undrawn: their cone could not be drawn.
+    #[serde(default)]
+    pub cones_kept: u32,
 }

@@ -32,6 +32,8 @@ pub(super) fn e3_report(frame: &FrameReport) -> Option<E3Report> {
         flashlight_shadowed: work.flashlight_shadowed,
         shadows_over_cap: work.shadows_over_cap,
         cones_refused: work.cones_refused,
+        cones_drawn: work.cones_drawn,
+        cones_kept: work.cones_kept,
     })
 }
 
@@ -86,6 +88,8 @@ mod tests {
             flashlight_shadowed: 1,
             shadows_over_cap: 3,
             cones_refused: 0,
+            cones_drawn: 1,
+            cones_kept: 0,
         });
         assert_eq!(
             json!(e3_report(&frame)),
@@ -101,7 +105,7 @@ mod tests {
                 "sun_tiles":4, "sun_tiles_offscreen":2, "sun_tiles_redrawn":1, "atlas_halved":2,
                 "tiles_refused":1,
                 "cones_shadowed":2, "cones_flagged_off":2, "flashlight_shadowed":1,
-                "shadows_over_cap":3, "cones_refused":0
+                "shadows_over_cap":3, "cones_refused":0, "cones_drawn":1, "cones_kept":0
             })
         );
     }

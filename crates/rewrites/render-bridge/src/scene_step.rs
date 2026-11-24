@@ -545,8 +545,9 @@ struct ViewLights {
 
 /// The open view's chosen lights beyond the guest's
 /// ([`crate::native_lights::chosen::beyond_guest`]), under its share of
-/// the cap among the views of this scene so far and the scene before
-/// ([`native_render::light_choice::share_of`]): the share the render
+/// the cap and of the shadow slots among the views of this scene so far
+/// and the scene before ([`native_render::light_choice::share_of`],
+/// [`native_render::cone_shadows::slot_share_of`]): the shares the render
 /// thread's choice gives it when the frame has the views the last one
 /// had.
 fn chosen_lights(
@@ -562,7 +563,8 @@ fn chosen_lights(
         .chain(builder.previous_views().iter().copied())
         .collect();
     let cap = native_render::light_choice::share_of(&keys, view.key);
-    crate::native_lights::chosen::beyond_guest(scene.lights_of(view), cap)
+    let slots = native_render::cone_shadows::slot_share_of(&keys, view.key);
+    crate::native_lights::chosen::beyond_guest(scene.lights_of(view), cap, slots)
 }
 
 /// A light's passes begin: until [`light`] puts it in the view, its
@@ -1075,6 +1077,10 @@ pub fn counters() -> Vec<(&'static str, u64)> {
         (
             "scene_e3_lights_unread",
             crate::native_lights::chosen::unread(),
+        ),
+        (
+            "scene_e3_lights_shadowed",
+            crate::native_lights::chosen::shadowed(),
         ),
         (
             "scene_first_person_light_layers_alone",

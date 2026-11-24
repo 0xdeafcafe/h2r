@@ -294,6 +294,13 @@ pub trait ExternalPass: Send {
     /// nothing ([`Backend::run_scene_stage`]).
     fn lighting_only(&self) -> Option<crate::Lighting> { None }
 
+    /// The light, by handle, whose cone shadow this pass's layers read
+    /// from the destination alpha, drawn by the renderer
+    /// (docs/graphics/e3-lighting.md, "Built: the shadowed cones"): the
+    /// frame graph draws the cone's tile and its receivers' term just
+    /// before the pass. `None` for a pass that reads no such term.
+    fn cone_shadow(&self) -> Option<u32> { None }
+
     fn indexed_tail(&self) -> Option<IndexedTail> { None }
 
     /// All these ranges share the textures resolved at the first draw.

@@ -14,7 +14,13 @@
 //! draw the same way from the constants extraction made for them, each
 //! queued as a scene stage of E3 alone (`d3d::ExternalPass::lighting_only`)
 //! with its materials, gel and geometry retained, so the frame graph
-//! records it in an E3 frame and skips it in any other.
+//! records it in an E3 frame and skips it in any other. A chosen light
+//! the renderer shadows (`native_render::cone_shadows::view_shadows`)
+//! comes with its shadowed constants, so its parts take the shadowed
+//! implementations, and its pass names the light
+//! (`d3d::ExternalPass::cone_shadow`): the frame graph writes the cone's
+//! shadow term into the destination alpha just before it, as retail's
+//! layer 11 would.
 use super::*;
 use render_bridge::native_lights::chosen::{ChosenDraw, ChosenLight};
 use render_bridge::native_lights::host::{HostDraw, HostLight};
@@ -26,6 +32,9 @@ pub(super) struct Sphere<'a> {
     pub origin: [f32; 3],
     pub radius: f32,
     pub constants: &'a LightConstants,
+    /// The light whose cone shadow its passes read (a chosen light the
+    /// renderer shadows), by handle.
+    pub cone: Option<u32>,
 }
 
 impl<'a> From<&'a HostLight> for Sphere<'a> {
@@ -34,6 +43,7 @@ impl<'a> From<&'a HostLight> for Sphere<'a> {
             origin: l.origin,
             radius: l.radius,
             constants: &l.constants,
+            cone: None,
         }
     }
 }
@@ -44,6 +54,7 @@ impl<'a> From<&'a ChosenLight> for Sphere<'a> {
             origin: l.origin,
             radius: l.radius,
             constants: &l.constants,
+            cone: l.shadowed.then_some(l.handle),
         }
     }
 }
@@ -247,6 +258,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             fallback: None,
             colour_only: false,
             lighting_only: (issue == Issue::E3Stage).then_some(d3d::Lighting::E3),
+            cone_shadow: light.cone.filter(|_| issue == Issue::E3Stage),
         };
         if issue == Issue::E3Stage {
             // Queued for the render thread; the frame graph records it in

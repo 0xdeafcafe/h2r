@@ -3,6 +3,7 @@
 
 use d3d::gfx_backend::TileWork;
 
+use super::cones::ConeDraws;
 use crate::cone_shadows::ConeWork;
 use crate::light_choice::LightChoice;
 use crate::sun_tiles::SunWork;
@@ -51,6 +52,11 @@ pub struct E3Report {
     pub flashlight_shadowed: u32,
     pub shadows_over_cap: u32,
     pub cones_refused: u32,
+    /// The renderer's cone tiles drawn for the shadowed chosen lights
+    /// (`super::cones`), and those lights left undrawn because their
+    /// cone could not be.
+    pub cones_drawn: u32,
+    pub cones_kept: u32,
 }
 
 impl E3Report {
@@ -89,6 +95,15 @@ impl E3Report {
     /// draw a range, the light's parts in layers 12 and 13.
     pub fn add_chosen(&mut self, ranges: u32) {
         self.lights.draws += ranges;
+    }
+
+    /// The cones drawn for the shadowed chosen lights (`super::cones`):
+    /// their caster draws are `e3.tiles`, their receivers `e3.marks`.
+    pub fn add_cone_draws(&mut self, work: ConeDraws) {
+        self.tiles.draws += work.tile_draws;
+        self.marks.draws += work.receiver_draws;
+        self.cones_drawn += work.cones_drawn;
+        self.cones_kept += work.cones_kept;
     }
 
     /// The renderer's choice of shadowed cones (`crate::cone_shadows`).
@@ -192,5 +207,21 @@ mod tests {
             (PassWork::default(), PassWork::default())
         );
         assert_eq!(report.lights_shadowed, 0);
+    }
+
+    /// The cones drawn for shadowed chosen lights join the local lights'
+    /// tile and receiver rows and count their tiles and kept lights.
+    #[test]
+    fn cone_draws_join_the_tile_rows() {
+        let mut report = E3Report::default();
+        report.add_cone_draws(ConeDraws {
+            cones_drawn: 2,
+            cones_kept: 1,
+            tile_draws: 5,
+            receiver_draws: 7,
+        });
+        assert_eq!((report.tiles.draws, report.marks.draws), (5, 7));
+        assert_eq!((report.cones_drawn, report.cones_kept), (2, 1));
+        assert_eq!(report.lights_shadowed, 0, "the guest's tiles alone");
     }
 }
