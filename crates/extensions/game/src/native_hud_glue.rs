@@ -78,17 +78,18 @@ impl Admission {
         &self,
         snapshot: &DrawSnapshot<'_>,
         frame: u32,
+        stage: Stage,
         siblings: Arc<[IndexedStreams]>,
     ) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
         let draw = snapshot.draw;
         if snapshot.color_header == 0 {
             Ui::Target.count();
-            Stage::Ui.count(Metric::RefusedResources, 1);
+            stage.count(Metric::RefusedResources, 1);
             return None;
         }
         Some((
             ExternalPlan {
-                stage: Stage::Ui,
+                stage,
                 view: 4,
                 ranges: 1 + siblings.len(),
                 slots: Vec::new(),
@@ -103,6 +104,11 @@ impl Admission {
     }
 }
 
+// Both frame-tail helpers draw through the pushed fan in 0x00034420.
+fn tail_fan(entry: &str, primitive: PrimitiveType, vertices: u32) -> bool {
+    entry == "inline Begin/End" && primitive == PrimitiveType::TriangleFan && vertices == 4
+}
+
 impl DrawAdmission for Admission {
     fn admit(
         &self,
@@ -113,11 +119,18 @@ impl DrawAdmission for Admission {
             Ui::ModelGuestBuilderDraw.count();
             return None;
         }
+        if scope.kind == UiScope::FrameTail {
+            let draw = snapshot.draw;
+            if scope.eligible && tail_fan(draw.entry, draw.primitive, draw.vertex_count) {
+                return self.plan(snapshot, scope.frame, Stage::Post, Vec::new().into());
+            }
+            return None;
+        }
         Ui::GuestBuilderDraw.count();
         if !scope.eligible {
             return None;
         }
-        self.plan(snapshot, scope.frame, Vec::new().into())
+        self.plan(snapshot, scope.frame, Stage::Ui, Vec::new().into())
     }
 }
 
@@ -138,7 +151,7 @@ impl DrawAdmission for Direct<'_> {
         &self,
         snapshot: &DrawSnapshot<'_>,
     ) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
-        self.admission.plan(snapshot, self.frame, self.siblings.clone())
+        self.admission.plan(snapshot, self.frame, Stage::Ui, self.siblings.clone())
     }
 }
 
@@ -532,6 +545,14 @@ pub fn install<B: d3d::Backend + Send + 'static>(device: &d3d::abi::SharedDevice
 mod tests {
     use super::*;
     use engine::testing::FakeGuest;
+
+    #[test]
+    fn frame_tail_admits_only_the_pushed_screen_fan() {
+        assert!(tail_fan("inline Begin/End", PrimitiveType::TriangleFan, 4));
+        assert!(!tail_fan("D3DDevice_End", PrimitiveType::TriangleFan, 4));
+        assert!(!tail_fan("inline Begin/End", PrimitiveType::TriangleStrip, 4));
+        assert!(!tail_fan("inline Begin/End", PrimitiveType::TriangleFan, 3));
+    }
 
     #[test]
     fn ui_scope_pairs_require_the_same_callback_and_stack() {

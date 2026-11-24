@@ -199,8 +199,7 @@ glyphs, the glyph cache mirrored as a texture). The HUD's bitmaps are
 shader draws: native, they need the shader's program (the stage 3
 compiler) with the HUD's engine bitmap, in screen space.
 
-**The end of the frame** (for the present's owner; Code, not changed
-here). `0x00013b90` calls `0x0001fd20`, then, when `0x0001dc40` and
+**The end of the frame.** `0x00013b90` calls `0x0001fd20`, then, when `0x0001dc40` and
 `0x0001de20` say so, copies the view's target `[0x004858b8]` through
 `0x000351a0`, then `0x0001fd00`, `0x0001fcd0` and `0x00022070`.
 `0x00013cd0` (`ret 4`) commits the state (`0x0001cf50`), writes push
@@ -1093,7 +1092,7 @@ Its numbers are ported: `engine::colour_pass`
 
 - Each post call commits one complete replacement or draws all its originals. A plan with an unsupported input or an unavailable live target uses D3D for that call.
 - Under render scaling, a replacement that uses a reference-only intermediate together with a live display target falls back.
-- `0x0002df00` and `0x0002dd30` separate flare colour from visibility. The native flare stage records eligible colour fans. The visibility draw is carried. The tests' counts are answered through `GetVisibilityTestResult` from the backend's counter ([d3d.md](d3d.md), "Visibility tests"), and an owned frame's graph replays the counted draws and installs its counts under the guest's tickets ([framescene.md](framescene.md), slice 6). A typed test would need a counted native draw inside the guest's test: the external pass draws into no visibility counter. Layer 17's items are drawn as the other scene layers' are; the clear before them is the guest's. The end of the frame (`0x00013b90`, `0x00013cd0`, the present `0x00013f10`) is D3D.
+- `0x0002df00` and `0x0002dd30` separate flare colour from visibility. The native flare stage records eligible colour fans. The visibility draw is carried. The tests' counts are answered through `GetVisibilityTestResult` from the backend's counter ([d3d.md](d3d.md), "Visibility tests"), and an owned frame's graph replays the counted draws and installs its counts under the guest's tickets ([framescene.md](framescene.md), slice 6). A typed test would need a counted native draw inside the guest's test: the external pass draws into no visibility counter. Layer 17's items are drawn as the other scene layers' are; the clear before them is the guest's. The frame tail draws supported copy and composite fans through the native screen-space pass. State commit (`0x00013cd0`) and present (`0x00013f10`) use D3D.
 
 ## Not verified
 

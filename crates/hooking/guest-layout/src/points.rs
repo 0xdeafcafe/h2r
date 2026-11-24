@@ -249,6 +249,14 @@ pub mod ui_render {
     pub const HUD_RETURN: Point = Point::new("UI_HUD_RETURN", 0x0013_96b9, Sig::Site, DOC);
     pub const HUD_HIDDEN_RETURN: Point =
         Point::new("UI_HUD_HIDDEN_RETURN", 0x0013_96c6, Sig::Site, DOC);
+    // The frame tail calls both helpers with two stack arguments. Each
+    // return site is before RET 8, with ESP back at its entry value.
+    pub const TAIL_COPY: Point = Point::new("TAIL_COPY", 0x0003_51a0, Sig::Site, DOC);
+    pub const TAIL_COPY_END: Point = Point::new("TAIL_COPY_END", 0x0003_52da, Sig::Site, DOC);
+    pub const TAIL_COMPOSITE: Point = Point::new("TAIL_COMPOSITE", 0x0002_2070, Sig::Site, DOC);
+    pub const TAIL_COMPOSITE_END: Point = Point::new("TAIL_COMPOSITE_END", 0x0002_229d, Sig::Site, DOC);
+    pub const TAIL_COPY_CALLER: u32 = 0x0001_3bf7;
+    pub const TAIL_COMPOSITE_CALLER: u32 = 0x0001_3c16;
     pub const FADE_RETURN: Point = Point::new("UI_FADE_RETURN", 0x0004_0dbf, Sig::Site, DOC);
     pub const OVERLAY_RECT_RETURN: Point =
         Point::new("UI_OVERLAY_RECT_RETURN", 0x0013_c1db, Sig::Site, DOC);
