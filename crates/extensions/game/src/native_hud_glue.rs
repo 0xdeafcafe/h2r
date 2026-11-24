@@ -49,9 +49,12 @@ impl ScopeStack {
         self.active(owner).is_none_or(|scope| scope.eligible)
     }
 
-    fn widget_overlay(&self, owner: u64) -> bool {
-        self.active(owner).is_some_and(|scope| scope.eligible
-            && matches!(scope.kind, UiScope::Hud | UiScope::Layers | UiScope::Widget))
+    fn screen_source(&self, owner: u64) -> Option<ScreenDraw> {
+        match self.active(owner).filter(|scope| scope.eligible)?.kind {
+            UiScope::Hud | UiScope::Layers | UiScope::Widget => Some(ScreenDraw::Widget),
+            UiScope::Loading => Some(ScreenDraw::Loading),
+            UiScope::Model | UiScope::Overlay => None,
+        }
     }
 
     fn position(&self, scope: Scope) -> Option<usize> {
@@ -303,8 +306,8 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
     }
 
     fn draw_quad(&self, mem: &mut dyn GuestMemory, vertices: &HudVertices) -> bool {
-        (SCOPES.with(|s| s.borrow().widget_overlay(self.admission.owner))
-            && self.screen_overlay(mem, ScreenDraw::Widget, vertices))
+        SCOPES.with(|s| s.borrow().screen_source(self.admission.owner))
+            .is_some_and(|source| self.screen_overlay(mem, source, vertices))
             || self.fan(mem, vertices, None)
     }
 
@@ -333,10 +336,10 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
     }
 
     fn screen_fan(&self, mem: &mut dyn GuestMemory, vertices: &HudVertices) -> bool {
-        if SCOPES.with(|s| s.borrow().widget_overlay(self.admission.owner)) {
+        if let Some(source) = SCOPES.with(|s| s.borrow().screen_source(self.admission.owner)) {
             let layout = self.device.lock().ok().map(|device| device.config().layout);
             if layout.is_some_and(|layout| inline_space(mem, layout, SCREEN_FAN_PUSH_BYTES, false))
-                && crate::hud_overlay::draw_screen(&self.device, mem, ScreenDraw::Widget, |d, m, a| {
+                && crate::hud_overlay::draw_screen(&self.device, mem, source, |d, m, a| {
                     d.try_native_pushed_draw(m, PrimitiveType::TriangleFan, vertices, a)
                 })
             {
@@ -558,21 +561,40 @@ mod tests {
     }
 
     #[test]
-    fn widget_overlay_tracks_the_innermost_eligible_producer() {
+    fn screen_source_tracks_the_innermost_eligible_producer() {
         let mut scopes = ScopeStack::default();
         let hud = Scope { owner: 1, kind: UiScope::Hud, stack: 0x9000, frame: 1, eligible: true };
-        assert!(!scopes.widget_overlay(1));
+        assert_eq!(scopes.screen_source(1), None);
         scopes.enter(hud);
-        assert!(scopes.widget_overlay(1));
-        assert!(!scopes.widget_overlay(2));
-        for (kind, expected) in [(UiScope::Layers, true), (UiScope::Widget, true),
-            (UiScope::Model, false), (UiScope::Overlay, false), (UiScope::Loading, false)] {
+        assert_eq!(scopes.screen_source(1), Some(ScreenDraw::Widget));
+        assert_eq!(scopes.screen_source(2), None);
+        for (kind, expected) in [
+            (UiScope::Layers, Some(ScreenDraw::Widget)),
+            (UiScope::Widget, Some(ScreenDraw::Widget)),
+            (UiScope::Model, None),
+            (UiScope::Overlay, None),
+            (UiScope::Loading, Some(ScreenDraw::Loading)),
+        ] {
             scopes.enter(Scope { kind, stack: 0x8000, ..hud });
-            assert_eq!(scopes.widget_overlay(1), expected);
+            assert_eq!(scopes.screen_source(1), expected);
         }
         scopes.enter(Scope { eligible: false, ..hud });
         scopes.enter(Scope { kind: UiScope::Widget, stack: 0x8000, ..hud });
-        assert!(!scopes.widget_overlay(1));
+        assert_eq!(scopes.screen_source(1), None);
+    }
+
+    #[test]
+    fn loading_resumes_after_a_nested_fade_or_bar() {
+        let mut scopes = ScopeStack::default();
+        let loading = Scope { owner: 5, kind: UiScope::Loading, stack: 0x9000, frame: 1, eligible: true };
+        scopes.enter(loading);
+        let child = Scope { kind: UiScope::Overlay, stack: 0x8000, ..loading };
+        scopes.enter(child);
+        assert_eq!(scopes.screen_source(5), None);
+        scopes.0.truncate(scopes.position(child).unwrap());
+        assert_eq!(scopes.screen_source(5), Some(ScreenDraw::Loading));
+        scopes.enter(Scope { eligible: false, ..loading });
+        assert_eq!(scopes.screen_source(5), None);
     }
 
     #[test]

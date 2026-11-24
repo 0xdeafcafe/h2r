@@ -367,7 +367,7 @@ pub const REGISTRY: &[Row] = &[
     Row {
         name: "loading",
         entry: 0x0002_89e0,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "outside",
     },
 ];
@@ -1412,6 +1412,7 @@ mod tests {
                         | "hud"
                         | "ui"
                         | "fade"
+                        | "loading"
                         | "dynamic_lights"
                         | "light_passes"
                 ) {
