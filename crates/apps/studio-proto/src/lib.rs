@@ -207,6 +207,7 @@ pub mod method {
     pub const PLAYTEST_STATUS: &str = "playtest.status";
     pub const PLAYTEST_RESULT: &str = "playtest.result";
     pub const PLAYTEST_CANCEL: &str = "playtest.cancel";
+    pub const PLAYTEST_COMPARE: &str = "playtest.compare";
 
     pub const VARIANT_LIST: &str = "variant.list";
     pub const VARIANT_OPEN: &str = "variant.open";

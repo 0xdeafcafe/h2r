@@ -123,7 +123,9 @@ tabs in the centre.
   check and build error (`problems.list`); a double-click on a row opens
   its tag and field, its package or its tool. **Timeline** shows when the front document has time (an
   animation, a sound, a recording, a playtest run) and hides otherwise.
-  **Pending**, **Game** and **Log** are the built panels.
+  **Pending**, **Game** and **Log** are the built panels, and so is
+  **Playtest** (`ui/playtest.rs`), the result of the last playtest run
+  ([playtest.md](playtest.md#the-layers-and-the-panel)).
 - **Go to anything** (`ui/palette.rs`) searches every tag, package and
   command.
 

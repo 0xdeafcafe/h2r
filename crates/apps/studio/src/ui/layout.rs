@@ -31,6 +31,7 @@ pub(super) struct Keys {
     pub inspector: WindowKey,
     pub log: WindowKey,
     pub problems: WindowKey,
+    pub playtest: WindowKey,
     pub game: WindowKey,
     pub pending_edits: WindowKey,
     pub bytes: WindowKey,
@@ -58,6 +59,7 @@ impl Keys {
             inspector: key("inspector", icon::SLIDERS, "Inspector"),
             log: key("log", icon::LOG, "Log"),
             problems: key("problems", icon::ALERT, "Problems"),
+            playtest: key("playtest", icon::CROSSHAIR, "Playtest"),
             game: key("game", icon::ZAP, "Game"),
             pending_edits: key("pending_edits", icon::SLIDERS, "Pending"),
             bytes: key("tag-bytes", icon::INFO, "Data and bytes"),
@@ -103,6 +105,7 @@ impl Keys {
                 &self.game,
                 &self.log,
                 &self.problems,
+                &self.playtest,
                 &self.pending_edits,
                 &self.bytes,
             ]),
@@ -157,7 +160,7 @@ impl Keys {
         seed(&self.inspector, tools.map(|t| &t.inspector));
         seed(
             &self.log,
-            [&self.game, &self.problems, &self.pending_edits, &self.bytes],
+            [&self.game, &self.problems, &self.playtest, &self.pending_edits, &self.bytes],
         );
     }
 }

@@ -25,6 +25,7 @@ pub mod map_cards;
 pub mod map_pack;
 pub mod modeling;
 pub mod playtest;
+pub mod playtest_shown;
 pub mod playtest_static;
 pub mod external;
 pub mod rules_edit;
@@ -654,6 +655,9 @@ pub struct App {
     pub tags: TagDoc,
     /// The Problems list as last read (`app::problems`).
     pub problems: problems::Problems,
+    /// The playtest result the layers draw and the Playtest panel lists
+    /// (`app::playtest_shown`).
+    pub playtest: playtest_shown::Shown,
     /// Each document's preview target and the Preview in game ask
     /// (`app::preview_switch`).
     pub preview: preview_switch::PreviewSwitch,
@@ -716,6 +720,7 @@ impl App {
             saved_path: None,
             tool: ToolKind::Scenario,
             problems: Default::default(),
+            playtest: Default::default(),
             preview: Default::default(),
             fly_speed: crate::camera::DEFAULT_SPEED,
             session: Session::new(),

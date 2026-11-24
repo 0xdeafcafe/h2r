@@ -124,21 +124,48 @@ pub fn layers(app: &mut App, p: &P) -> Reply {
     if p.has("xray") {
         next.xray = p.bool("xray")?;
     }
+    if let Some(v) = p.get("diff") {
+        let want = match v {
+            Value::Bool(true) => Some("default"),
+            Value::Bool(false) | Value::Null => None,
+            Value::String(s) if !s.is_empty() => Some(s.as_str()),
+            _ => {
+                return Err(err(
+                    code::INVALID_PARAMS,
+                    "diff must be true, false, a run id or \"baseline\"",
+                ));
+            }
+        };
+        let before = app.playtest.diff_with().map(str::to_owned);
+        if let Err(why) = app.playtest.set_diff(want) {
+            // Nothing to compare: leave the layers as they were.
+            let _ = app.playtest.set_diff(before.as_deref());
+            return Err(err(code::REFUSED, why));
+        }
+    }
     if next != app.layers {
         app.perform(Action::SetLayers(next), false)
             .map_err(super::scenario::refused)?;
     }
     let rows: Vec<Value> = LayerId::all()
-        .map(|id| json!({
-            "name": id.id(),
-            "label": id.label(),
-            "group": id.group(),
-            "on": app.layers.visible(id),
-            "count": app.layer_count(id),
-            "color": crate::theme::layer_color(id),
-        }))
+        .map(|id| {
+            let mut row = json!({
+                "name": id.id(),
+                "label": id.label(),
+                "group": id.group(),
+                "on": app.layers.visible(id),
+                "count": app.layer_count(id),
+                "color": crate::theme::layer_color(id),
+            });
+            // A playtest layer whose measure had too few events says so.
+            if let LayerId::Playtest(layer) = id {
+                row["refused"] = json!(crate::viewport::playtest::refused_shown(layer, &app.playtest));
+            }
+            row
+        })
         .collect();
-    Ok(json!({ "layers": rows, "xray": app.layers.xray }))
+    let diff = app.playtest.diff().map(|c| json!({"a": c.a, "b": c.b, "game_type": c.game_type}));
+    Ok(json!({ "layers": rows, "xray": app.layers.xray, "diff": diff }))
 }
 
 pub fn snapshot(gpu: &Gpu, app: &mut App, p: &P) -> Reply {

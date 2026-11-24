@@ -26,6 +26,11 @@ pub struct World {
     pub cancels: u32,
     /// Matches that end at the next poll.
     pub ended: Vec<Finished>,
+    /// Kills in each match's trace.
+    pub kills: usize,
+    /// A seed adds its remainder by three to the kills, so the seeds
+    /// have a spread.
+    pub jitter: bool,
 }
 
 #[derive(Clone)]
@@ -40,6 +45,7 @@ impl Fake {
             parallel: 2,
             image: "img1".into(),
             bots: "bots1".into(),
+            kills: KILLS,
             ..World::default()
         })))
     }
@@ -51,10 +57,14 @@ impl Fake {
 
     /// Ends `job` with a trace.
     pub fn end(&self, job: &JobId) {
+        let (kills, jitter) = {
+            let w = self.w();
+            (w.kills, w.jitter)
+        };
         self.w().ended.push(Finished {
             job: job.clone(),
             wall_s: 10.0,
-            trace: Ok(trace(job)),
+            trace: Ok(trace(job, kills, jitter)),
         });
     }
 
@@ -145,8 +155,9 @@ fn party(player: u8, at: Place) -> Party {
 /// victims. Every other measure has too few events.
 pub const KILLS: usize = 12;
 
-pub fn trace(job: &JobId) -> Trace {
-    let events = (0..KILLS)
+pub fn trace(job: &JobId, kills: usize, jitter: bool) -> Trace {
+    let kills = kills + if jitter { (job.seed % 3) as usize } else { 0 };
+    let events = (0..kills)
         .map(|i| Event::Kill {
             tick: 100 + 10 * i as u32,
             killer: Some(party(0, place(0.0, 0))),

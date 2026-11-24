@@ -785,9 +785,9 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::VIEW_LAYERS,
-        "Read the viewport legend, or apply a preset, layer switches and X-ray to the window and snapshots",
-        r#"{"set?":"{layer name: boolean}","preset?":"art|gameplay|collision|navigation|everything","xray?":"boolean"}"#,
-        r#"{"layers":"[{name,label,group,on,count,color}]","xray":"boolean"}"#,
+        "Read the viewport legend, or apply a preset, layer switches and X-ray to the window and snapshots. diff draws the playtest layers as the difference between the shown run and another (true: its compare_to, else the baseline; or a run id; false: the result itself); refused when there is nothing to compare, and the sightlines have no difference layer",
+        r#"{"set?":"{layer name: boolean}","preset?":"art|gameplay|collision|navigation|playtest|everything","xray?":"boolean","diff?":"boolean|run id|baseline"}"#,
+        r#"{"layers":"[{name,label,group,on,count,color,refused?}]","xray":"boolean","diff":"{a,b,game_type}|null"}"#,
         r#"{"preset":"everything","set":{"fog":false},"xray":true}"#,
     ),
     def(
