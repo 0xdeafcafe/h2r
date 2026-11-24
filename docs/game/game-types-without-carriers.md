@@ -1,6 +1,6 @@
 # Game types without carriers
 
-Status: Design, with GM1 built (`crates/tools/firefight-kit/src/ground.rs`); "What the carrier supplies" is the state of the code and the slices are the order to change the rest in.
+Status: Design, with GM1 built (`crates/tools/firefight-kit/src/ground.rs`) and GM3's document, session and screens built (the builder hook is not wired, below); "What the carrier supplies" is the state of the code and the slices are the order to change the rest in.
 Code: `crates/formats/rules/src` (`ir.rs` the header, `lang/check.rs`, `caps.rs`, `builtin/`), `crates/extensions/game/src/rules/` (`runtime.rs`, `scoring.rs`, `objectives.rs`, `roles.rs`), `crates/formats/variants/src/portable.rs` (`record_for`), `crates/extensions/game/src/community_variants.rs`. Tests: `crates/formats/rules/tests/engines.rs`, `tests/modes.rs`.
 Switch: none (the `rules` feature).
 
@@ -182,29 +182,37 @@ script's required labels is refused in the lobby by name.
 
 ### In Forge
 
-The monitor's Objects tool gains an **AI and objectives** palette page
-with the labels above ([forge-features.md](forge-features.md)); a
-marker is placed, moved and deleted like any object and is a label op in
-the document (`crates/formats/forge-doc/src/labels.rs`). **Game Type**
-in the Forge menu picks which script's labels are shown.
+The monitor's Objects tool has an **AI and objectives** palette page
+with the labels above (`forge_screens::sheet::objects_with_ai`); a
+marker is a netgame flag the document adds with a label op
+(`crates/formats/forge-doc/src/ground.rs`), placed in front of the
+monitor, and moved and removed through the session
+([forge-map-variants.md](forge-map-variants.md), "AI ground"). The page
+offers every label; a script's own list narrows it when the Game Type
+row picks one.
 
 Ground is built when it is asked for, never while placing:
 
-1. **Build AI ground** in the Forge menu (and **Test waves**, which
-   builds first when the ground is stale). The session marks the ground
-   stale on any op that moves a label, or adds, moves or removes
-   something with collision.
+1. **Build AI ground** on the Forge options page (and **Test waves**,
+   which builds first when the ground is stale or never built). The
+   session marks the ground stale on any op that moves a label, or adds,
+   moves or removes something with collision
+   (`ForgeDoc::ground_stamp`, `Session::ground_state`).
 2. The build runs off the game thread: the generator over the base's
    collision plus the session's solid objects
    ([forge-design.md](forge-design.md), slice F9), zones and firing
    positions from the labels, sixteen squad slots, the characters.
-3. Pathfinding in `sbsp` is a Rebuild change, so the session
-   materialises and reloads the map, keeping the document, the monitor's
-   position and the tool; the overlay then draws sectors, drops and
-   problems (a drop with no path to a base, a site off the ground, the
-   headroom refusal with its biggest part).
-4. **Save** builds first when the ground is stale, so a saved variant
-   always has ground that matches it.
+3. Pathfinding in `sbsp` is a Rebuild change, so the builder
+   (`forge::GroundBuilder`) materialises the play form, which builds the
+   ground over it (`forge_build::build`), and reloads the map, keeping
+   the document, the monitor's position and the tool; the report
+   (`GroundReport`) lists the problems the overlay draws (a drop with no
+   path to a base, a site off the ground, the headroom refusal with its
+   biggest part).
+4. **Save** builds first when the ground was built and is stale
+   (`Session::save_building`), so a saved variant always has ground
+   that matches it; a build that fails stops the save. A session that
+   never built ground saves as it is.
 
 ### In Studio
 
@@ -260,9 +268,10 @@ Studio and `h2 firefight kit` call it, and it runs only when asked.
 The ground is made from the disc map's collision, so it is disc-derived
 and is stored nowhere but in the built map on each machine.
 
-- **A Forge map variant** stores the labels and a `ground` recipe (the
-  generator's settings and `firefight_kit::KIT_VERSION`) in the
-  document, beside the kit's recipe; `Tier::Variant` allows it. The
+- **A Forge map variant** stores the labels and an `ai_ground` recipe
+  (`forge_doc::GroundRecipe`: the kit's version, the home team and the
+  mode) in the document, beside the kit's recipe; `Tier::Variant` allows
+  it. The
   built ground is in the materialised package,
   `<data>/maps/forge-<id>/`, whose receipt covers the recipe.
 - **A Studio map** stores the same in its package: the labels as edit
@@ -316,7 +325,7 @@ with tests, M under 2,500. Tests are headless on `rules::fake::FakeGame`.
 | GE5 | **Every script game on the script index**: `record_for`, the retail-record swap, films and the session; the base HUD (score, time) as a HUD kit HUD | M | GE1 to GE4, GT6, GT7 | `tests/modes.rs` and `tests/engines.rs` pass on script-index records; no built-in's record is index 2; the base HUD compiles and shows an invented score and clock |
 | GM1 (built) | **Ground as a build step**: `firefight_kit`'s generator behind `ground::build(map, labels, recipe)`, labels in place of found bases and picked drops, the stale rule, the receipt | M | nothing | on the kit's invented court: no labels gives the tags `build_package` gives; a moved `ff_drop` moves its zone; the same inputs give the same bytes; over headroom is refused with its biggest part |
 | GM2 | **Studio**: the AI and objectives group, **Build AI ground**, `ground.status`, `ground.build`, the Navigation layers, the `map` item's `ground` | M | GM1, PK9 of studio-redesign | a label placed in the window and by `scenario.add` make the same document; a build on an invented map lists its sectors; an edit that moves collision marks it stale |
-| GM3 | **Forge**: the palette page, the `ground` recipe in the document and `Tier::Variant`, **Build AI ground**, the rebuild and reload, build on save, the overlay | M | GM1 | a variant with labels and a recipe validates as a variant; materialising it equals GM1's build of the same inputs; a save with stale ground builds first |
+| GM3 (built) | **Forge**: the palette page, the `ground` recipe in the document and `Tier::Variant`, **Build AI ground**, the rebuild and reload, build on save, the overlay | M | GM1 | a variant with labels and a recipe validates as a variant; materialising it equals GM1's build of the same inputs; a save with stale ground builds first |
 | GM4 | **Labels the scripts read**: Firefight's director and `siege.rules` take their places from labels; the lobby's refusal for a map without them | S | GM1, GT1 | on the fake game a wave lands at a placed drop; Siege's sites are the placed ones; a map with no required label is refused by name |
 
 GT1, GT0, GE0 and GM1 start together. Index 2 (GT2) is the step that

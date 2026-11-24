@@ -363,6 +363,65 @@ engines, or all of them.
   goals through the same census (`forge_doc::labelled`, which reads
   the document's flags with the map's).
 
+### AI ground
+
+A Firefight or Siege map is made in Forge as well as in Studio: the
+author places labelled markers and asks for the ground
+([game-types-without-carriers.md](game-types-without-carriers.md), "Maps
+for scripted games"). The document holds the places and the recipe and
+never what the build makes, since the ground is derived from the disc's
+collision and each machine builds its own.
+
+- **A marker** is a netgame flag the document adds
+  (`Placement::Add` on `netgame_flags` with `position`, `facing` and
+  `team`) with a label op naming it, one of `ff_drop`, `ff_base`,
+  `ff_cover`, `siege_site`, `siege_goal` and `siege_line`
+  (`forge_doc::GroundLabel`). A `siege_line`'s number is its phase. A
+  map's own flag labelled the same way is a marker too. A ground label
+  on any other block, or a `siege_line` with no phase, is refused by name
+  (`ForgeDoc::ground_marks`). A session adds a marker as a flag with no
+  object, so it places nothing in the world
+  (`Session::place_marker`, `crates/extensions/forge/src/scene.rs`
+  `Marker`).
+- **The recipe** is a `generate` recipe named `ai_ground`
+  (`forge_doc::GROUND_RECIPE`) with the kit's version, the home team and
+  the mode (`GroundRecipe`). `ForgeDoc::tier` allows it, so a variant
+  with markers and a recipe is a map variant (`Tier::Variant`); the
+  validator refuses a malformed one and a second. A session keeps the
+  recipe beside its document, not in it, so the log's chain is
+  untouched: a save writes the document with the recipe
+  (`Session::ground_form`) and a load takes it out again.
+- **Materialising.** `forge_build::build` reads each marker's position,
+  facing and team from the finished scenario and hands them, with the
+  recipe, to `firefight_kit::ground::build` over the materialised map.
+  The bytes it makes are the map, and `Built::ground` reports the zones,
+  squad slots, problems and receipt (`crates/tools/forge-build/src/ground.rs`).
+  The build equals the kit's own over the same labels. `ai_ground` and
+  `forge_kit` are not built together: the ground is built over the play
+  form.
+- **When it is built.** Never while placing. **Build AI ground** on the
+  Forge options page builds now; **Test waves** builds when the ground is
+  stale or was never built; a save builds first when it was built and is
+  stale, and a build that fails stops the save with its reason
+  (`Session::{build_ground, ensure_ground, save_building}`).
+- **Stale** (`ForgeDoc::ground_stamp`): the stamp is a digest of the
+  recipe, the markers and every op that moves one or that adds, moves or
+  removes something solid (scenery, crates, machines, vehicles). The
+  session compares it with the stamp of its last build
+  (`Session::ground_state`: `NotBuilt`, `Current`, `Stale`). An edit
+  that touches none of those, a weapon or a title, leaves it current.
+- **The builder** is the game's (`forge::GroundBuilder`): it builds
+  over the play form, off the game thread, and reloads the map keeping
+  the document, the monitor's place and the tool. The session holds no
+  generator, and `forge_glue::ground::install` is where the app supplies
+  it; with none, both rows refuse by name.
+- **The palette page.** The Objects menu's last row, **AI and
+  objectives**, lists the six labels with how many are placed; choosing
+  one places the next marker in front of the monitor
+  (`sheet::objects_with_ai`, `Command::Marker`). A base or a siege line
+  takes the team the placed ones leave short, and a siege line the phase
+  of its pair.
+
 ### The map variant file
 
 A map variant is a Forge document, in the form a game is played from.
@@ -376,7 +435,7 @@ A map variant is a Forge document, in the form a game is played from.
   `Tier::Variant` or `Tier::Map`, in
   `crates/formats/forge-doc/src/variant.rs`). A variant holds
   `Placement::Add`, `EntryOp`, link, unlink and label ops, and nothing
-  else: no recipe but the kit's, no import slot, no source map, no
+  else: no recipe but the kit's and the AI ground's, no import slot, no source map, no
   placement set or removal by running index, no tag-field, mesh or
   bitmap op. So a variant
   changes the scenario's placement blocks and no tag, its build is a
@@ -532,12 +591,16 @@ Every machine builds the map from its own disc; no built byte travels
   `Apply::prints`, `Refusal::Print`, `games::{GameSet,
   GamesError, ENGINES, encode, decode, flag_games}`, `Tier`, `ForgeDoc::{tier, check_variant}`,
   `Refusal::Tier`, `play_form`, `session_form`, `KIT_RECIPE`,
-  `variant_name`.
+  `variant_name`, `GroundLabel`, `GroundRecipe`, `GROUND_RECIPE`,
+  `ForgeDoc::{ground_recipe, with_ground, ground_marks, ground_stamp}`.
 - **`forge`**: `Thing {id: Endpoint, block, kind, own, frame, fields,
   changed}`, `ThingKind`, `BaseRows`,
   `Session::{with_base, left_out, things, thing, move_thing, hold,
   release, set_field, remove, reset}`, and on `World`: `base_move`,
   `base_field`, `base_inert`, `base_restore`. The tool's
+  `Session::{place_marker, place_marker_next, move_marker, remove_marker,
+  markers, ground_state, build_ground, ensure_ground, save_building}`,
+  `GroundBuilder`,
   `Tool::{aimed_thing, held_thing, game, show}`, `Show`, `in_game`,
   `MARK_RADIUS` and `Command::{MoveThing, Remove}`.
   `forge::props` is the table of properties by name: the kinds

@@ -396,9 +396,12 @@ camera and tool take no input (`forge_screens::ui_up`, published to
   tool settings.") and Controls ("Every Forge control, with its
   button."), `sheet::OPTIONS`, each with its help and each opening
   above it so B comes back; Monitor
-  look... joins when it is built, and the rows later slices bring:
-  Placed objects, Map limits (P4), Generate nav (F9), Players (F5), Map
-  settings and Publish (F14).
+  look... joins when it is built, **Build AI ground** and **Test waves**
+  ([forge-map-variants.md](forge-map-variants.md), "AI ground"; they act
+  and close the page), and the rows later slices bring:
+  Placed objects, Map limits (P4), Players (F5), Map settings and
+  Publish (F14). The object menu's last row is **AI and objectives**,
+  the ground labels (`sheet::objects_with_ai`).
 - **Controls.** A row a control of the bindings table, its pad button
   as the value and its keys in the description; up and down, and undo
   and redo, share a row (`bindings::PAIRS`), so the page fits the
