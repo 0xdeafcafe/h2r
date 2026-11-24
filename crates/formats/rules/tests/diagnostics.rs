@@ -933,10 +933,11 @@ fn carrier_list_and_scoring_lines_are_refused_with_their_replacement() {
     // With the old carrier line beside it, the uses line names that game.
     let m = retired("rules \"V\" 1\ncarrier oddball\nscoring carrier\n");
     assert!(m[1].starts_with("scoring carrier is gone: write `uses oddball`"), "{m:?}");
-    // The old header alone: every line is named, and the type is missing.
+    // The old header alone: every line is named, and the carrier line's own
+    // error says which type to write, so no second error asks for it.
     let c = diagnose("rules \"V\" 1\ncarrier slayer\nlist research\nscoring carrier\n");
     let codes: Vec<&str> = c.errors().map(|d| d.code).collect();
-    assert_eq!(codes, ["decl", "header.retired", "header.retired", "header.retired"]);
+    assert_eq!(codes, ["header.retired", "header.retired", "header.retired"]);
 }
 
 #[test]

@@ -1,6 +1,8 @@
-//! `asset.*` over an invented tags tree of two maps and one package
-//! (docs/editor/studio-redesign.md, "The browser"): no game data. The
-//! tree's files hold placeholder bytes, which the browser never decodes.
+//! `asset.*` over an invented tags tree of two maps and one local package,
+//! `kit-test` (docs/editor/studio-redesign.md, "The browser"): no game
+//! data. The tree's files hold placeholder bytes, which the browser never
+//! decodes. The baked packages (`pogo`) are in the set too, so a count of
+//! every row is taken of a package or a map, not of the whole tree.
 
 use super::*;
 use map::FourCC;
@@ -61,18 +63,18 @@ pub(super) fn package(dir: &std::path::Path) {
         dir.join("package.toml"),
         r#"[package]
 format = 1
-id = "pogo"
-name = "Pogo"
+id = "kit-test"
+name = "Kit test"
 
 [[item]]
 kind = "tag"
-source = "tags/pogo_new.weap.yaml"
-tag = "objects\\weapons\\pogo_new"
+source = "tags/kit_new.weap.yaml"
+tag = "objects\\weapons\\kit_new"
 maps = ["beta"]
 
 [[item]]
 kind = "edits"
-source = "edits/pogo.yaml"
+source = "edits/kit.yaml"
 
 [[item]]
 kind = "bitmap"
@@ -82,12 +84,12 @@ tag = "ui\\icon"
     )
     .unwrap();
     std::fs::write(
-        dir.join("tags/pogo_new.weap.yaml"),
+        dir.join("tags/kit_new.weap.yaml"),
         "like: 'weap:objects\\weapons\\rifle'\n",
     )
     .unwrap();
     std::fs::write(
-        dir.join("edits/pogo.yaml"),
+        dir.join("edits/kit.yaml"),
         "- tag: 'weap:objects\\weapons\\rifle'\n  set:\n    - {path: x, value: 1}\n",
     )
     .unwrap();
@@ -99,7 +101,7 @@ fn setup(name: &str) -> (Temp, App, Api) {
     let mut app = App::new();
     app.set_data_root(t.path("data"));
     tree(&app.tags_root());
-    package(&t.path("data/packages/pogo"));
+    package(&t.path("data/packages/kit-test"));
     (t, app, Api::new())
 }
 
@@ -125,8 +127,8 @@ fn a_shared_tag_is_one_row_and_a_differing_one_lists_its_variants() {
     assert_eq!(r[0]["maps"], json!(["alpha", "beta"]));
     assert_eq!(r[0]["variants"], json!([]));
     // The package's edit line touches it: its badge says so.
-    assert_eq!(r[0]["badge"], "edited by pogo");
-    assert_eq!(r[0]["packages"], json!(["pogo"]));
+    assert_eq!(r[0]["badge"], "edited by kit-test");
+    assert_eq!(r[0]["packages"], json!(["kit-test"]));
 
     let v = call(
         &mut api,
@@ -172,7 +174,7 @@ fn kind_map_and_query_narrow_the_tree() {
     );
     assert_eq!(
         paths(&v),
-        ["objects\\weapons\\pogo_new", "objects\\weapons\\rifle"]
+        ["objects\\weapons\\kit_new", "objects\\weapons\\rifle"]
     );
     assert_eq!(v["maps"], json!(["alpha", "beta"]));
 
@@ -187,16 +189,16 @@ fn kind_map_and_query_narrow_the_tree() {
     );
     assert!(paths(&list(&mut api, &mut app, json!({"query": "rifle nothing"}))).is_empty());
     // The package id is a word of its tags.
-    let v = list(&mut api, &mut app, json!({"query": "pogo weap"}));
+    let v = list(&mut api, &mut app, json!({"query": "kit-test weap"}));
     assert_eq!(
         paths(&v),
-        ["objects\\weapons\\pogo_new", "objects\\weapons\\rifle"]
+        ["objects\\weapons\\kit_new", "objects\\weapons\\rifle"]
     );
 
     // A package's own filter, and the limit.
-    let v = list(&mut api, &mut app, json!({"package": "pogo"}));
+    let v = list(&mut api, &mut app, json!({"package": "kit-test"}));
     assert_eq!(v["total"], 3);
-    let v = list(&mut api, &mut app, json!({"package": "pogo", "limit": 1}));
+    let v = list(&mut api, &mut app, json!({"package": "kit-test", "limit": 1}));
     assert_eq!(
         (v["total"].clone(), v["truncated"].clone()),
         (json!(3), json!(true))
@@ -211,13 +213,13 @@ fn a_package_tag_is_new_in_its_package() {
         &mut api,
         &mut app,
         m::ASSET_LIST,
-        json!({"query": "pogo_new"}),
+        json!({"query": "kit_new"}),
     );
     let r = rows(&v);
     assert_eq!(r.len(), 1, "{v}");
     assert_eq!(r[0]["new"], true);
     assert_eq!(r[0]["origin"], "package");
-    assert_eq!(r[0]["badge"], "new in pogo");
+    assert_eq!(r[0]["badge"], "new in kit-test");
     assert_eq!(r[0]["maps"], json!([]));
 }
 
@@ -230,23 +232,23 @@ fn the_packages_root_lists_the_set_and_a_package_its_items() {
         m::ASSET_LIST,
         json!({"root": "packages"}),
     );
-    let pogo = rows(&v)
+    let kit = rows(&v)
         .into_iter()
-        .find(|r| r["id"] == "pogo")
+        .find(|r| r["id"] == "kit-test")
         .unwrap_or_else(|| panic!("{v}"));
-    assert_eq!(pogo["asset"], "package:pogo");
-    assert_eq!(pogo["on"], true);
-    assert_eq!(pogo["origin"], "local");
+    assert_eq!(kit["asset"], "package:kit-test");
+    assert_eq!(kit["on"], true);
+    assert_eq!(kit["origin"], "local");
 
     let v = call(
         &mut api,
         &mut app,
         m::ASSET_LIST,
-        json!({"root": "packages", "package": "pogo"}),
+        json!({"root": "packages", "package": "kit-test"}),
     );
     let kinds: Vec<_> = rows(&v).iter().map(|r| r["kind"].clone()).collect();
     assert_eq!(kinds, [json!("tag"), json!("edits"), json!("bitmap")]);
-    assert_eq!(rows(&v)[0]["asset"], "item:pogo:0");
+    assert_eq!(rows(&v)[0]["asset"], "item:kit-test:0");
 
     let e = api
         .call(
@@ -280,12 +282,12 @@ fn a_tree_that_is_not_there_is_refused_with_the_way_to_make_it() {
 #[test]
 fn copy_into_writes_a_like_item_with_no_bytes_of_the_source() {
     let (t, mut app, mut api) = setup("assets-copy");
-    let dir = t.path("data/packages/pogo");
+    let dir = t.path("data/packages/kit-test");
     let v = call(
         &mut api,
         &mut app,
         m::ASSET_COPY,
-        json!({"asset": "tag:weap:objects\\weapons\\rifle", "package": "pogo"}),
+        json!({"asset": "tag:weap:objects\\weapons\\rifle", "package": "kit-test"}),
     );
     assert_eq!(v["tag"], "tag:weap:objects\\weapons\\rifle_copy");
     assert_eq!(v["source"], "tags/objects/weapons/rifle_copy.weap.yaml");
@@ -312,11 +314,11 @@ fn copy_into_writes_a_like_item_with_no_bytes_of_the_source() {
         m::ASSET_LIST,
         json!({"query": "rifle_copy"}),
     );
-    assert_eq!(rows(&v)[0]["badge"], "new in pogo");
+    assert_eq!(rows(&v)[0]["badge"], "new in kit-test");
 
     // The same copy again is refused, as is a tag the tree lacks, a
     // package that is not there and a malformed asset.
-    let again = json!({"asset": "tag:weap:objects\\weapons\\rifle", "package": "pogo"});
+    let again = json!({"asset": "tag:weap:objects\\weapons\\rifle", "package": "kit-test"});
     assert_eq!(
         code_of(api.call(&mut app, m::ASSET_COPY, again)),
         code::REFUSED
@@ -325,7 +327,7 @@ fn copy_into_writes_a_like_item_with_no_bytes_of_the_source() {
         code_of(api.call(
             &mut app,
             m::ASSET_COPY,
-            json!({"asset": "tag:weap:objects\\nothing", "package": "pogo"})
+            json!({"asset": "tag:weap:objects\\nothing", "package": "kit-test"})
         )),
         code::REFUSED
     );
@@ -341,7 +343,7 @@ fn copy_into_writes_a_like_item_with_no_bytes_of_the_source() {
         code_of(api.call(
             &mut app,
             m::ASSET_COPY,
-            json!({"asset": "nonsense", "package": "pogo"})
+            json!({"asset": "nonsense", "package": "kit-test"})
         )),
         code::INVALID_PARAMS
     );
@@ -350,7 +352,7 @@ fn copy_into_writes_a_like_item_with_no_bytes_of_the_source() {
         &mut api,
         &mut app,
         m::ASSET_COPY,
-        json!({"asset": "tag:weap:objects\\weapons\\rifle", "package": "pogo", "to": "mine/rifle2"}),
+        json!({"asset": "tag:weap:objects\\weapons\\rifle", "package": "kit-test", "to": "mine/rifle2"}),
     );
     assert_eq!(v["tag"], "tag:weap:mine\\rifle2");
 }
@@ -363,12 +365,12 @@ fn a_thumbnail_is_a_packages_png_and_a_tag_has_none_yet() {
         &mut api,
         &mut app,
         m::ASSET_THUMB,
-        json!({"asset": "item:pogo:2", "out": out.display().to_string()}),
+        json!({"asset": "item:kit-test:2", "out": out.display().to_string()}),
     );
     assert_eq!(v["path"], json!(out.display().to_string()));
     assert_eq!(std::fs::read(&out).unwrap(), PNG);
     // An item that is not a PNG bitmap, and a tag: not drawn yet.
-    for asset in ["item:pogo:0", "tag:weap:objects\\weapons\\rifle"] {
+    for asset in ["item:kit-test:0", "tag:weap:objects\\weapons\\rifle"] {
         let e = api
             .call(&mut app, m::ASSET_THUMB, json!({"asset": asset}))
             .unwrap_err();

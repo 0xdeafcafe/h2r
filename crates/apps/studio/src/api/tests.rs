@@ -178,9 +178,9 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             );
         }
         m::ASSET_LIST | m::ASSET_THUMB | m::ASSET_COPY => {
-            // An invented tags tree of two maps and a package `pogo`.
+            // An invented tags tree of two maps and a package `kit-test`.
             assets_tests::tree(&app.tags_root());
-            assets_tests::package(&t.path("data/packages/pogo"));
+            assets_tests::package(&t.path("data/packages/kit-test"));
         }
         m::SOUND_READ | m::SOUND_PLAY | m::SOUND_STOP | m::SOUND_MEASURE => {
             // A map with a sound, played to the headless output.

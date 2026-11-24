@@ -157,8 +157,17 @@ fn check_borrow(def: &StructDef, group: FourCC, b: &Borrow) -> Result<(), String
     Ok(())
 }
 
-fn text_is(rec: &Record, path: &str, want: &str) -> bool {
-    matches!(rec.at(path), Some(Val::String(Str::Text(t))) if t == want)
+/// Whether the string field at `path` is `want`: its text, or, for a tag the
+/// base map lays out anew (whose string IDs are the map's own words), the
+/// text the map's string table gives the word.
+fn text_is(rec: &Record, path: &str, want: &str, strings: &[Option<String>]) -> bool {
+    match rec.at(path) {
+        Some(Val::String(Str::Text(t))) => t == want,
+        Some(Val::String(Str::Index(w))) => {
+            tags::StringId(*w).resolve(strings).ok().flatten() == Some(want)
+        }
+        _ => false,
+    }
 }
 
 /// Take `b`'s fields into `rec` from a tag of the map.
@@ -200,7 +209,7 @@ fn borrow(
             .filter_map(|(k, v)| Some((k.as_str()?, v.as_str()?)))
             .collect();
         let found = candidates.iter().find(|r| {
-            pairs.iter().all(|(k, v)| text_is(r, k, v))
+            pairs.iter().all(|(k, v)| text_is(r, k, v, &cx.set.strings))
                 && b.take.iter().all(|p| match r.at(p) {
                     Some(Val::Block(e)) => !e.is_empty(),
                     Some(_) => true,

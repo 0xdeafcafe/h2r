@@ -450,7 +450,9 @@ fn a_posed_two_bone_model_gives_the_expected_node_transforms() {
     assert!(close(&nodes[1]["translation"], &[1.0, 0.0, 0.0], 1e-6));
     assert_eq!(nodes[1]["has"]["rotation"], true);
     assert_eq!(nodes[1]["has"]["translation"], true);
-    assert_eq!(nodes[1]["has"]["scale"], false);
+    // A base animation carries every channel of every node (its static
+    // stream holds the default scale of 1).
+    assert_eq!(nodes[1]["has"]["scale"], true);
     assert_eq!(nodes[1]["scale"], 1.0);
     assert!(close(
         world_column(&nodes[1], 0),

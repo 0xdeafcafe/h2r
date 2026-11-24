@@ -65,9 +65,18 @@ pub(crate) fn registry() -> &'static Registry {
 }
 
 /// Where the invented function blobs are (the metadata past the
-/// collection tag, one 0x100 slot each).
+/// collection tag, one after another: a blob is as long as its type, up to
+/// 272 bytes).
 const BLOB: u32 = fixture::META + 0x1300;
 const BLOB_FILE: usize = fixture::META_FILE + 0x1300;
+
+/// Where blob `i` starts, past `BLOB`: after the blobs before it.
+fn slot(i: usize) -> usize {
+    FIELDS[..i.min(FIELDS.len())]
+        .iter()
+        .map(|(_, kind)| invented(*kind).len().next_multiple_of(4))
+        .sum()
+}
 
 /// Build a blob: header + payload words.
 fn blob(kind: u8, flags: u8, subs: [u8; 2], range: [f32; 2], words: &[f32]) -> Vec<u8> {
@@ -107,18 +116,17 @@ pub(crate) fn curve_map() -> Vec<u8> {
     putf(&mut b, w, 2.5);
     for (i, (_, kind)) in FIELDS.iter().enumerate() {
         let bytes = invented(*kind);
-        let at = BLOB_FILE + i * 0x100;
+        let at = BLOB_FILE + slot(i);
         b[at..at + bytes.len()].copy_from_slice(&bytes);
         put(&mut b, w + 0x8 + i * 8, bytes.len() as u32);
-        put(&mut b, w + 0x8 + i * 8 + 4, BLOB + (i * 0x100) as u32);
+        put(&mut b, w + 0x8 + i * 8 + 4, BLOB + slot(i) as u32);
     }
     // The plain reference: eight zero bytes, not a function blob.
-    let at = BLOB_FILE + FIELDS.len() * 0x100;
     put(&mut b, w + 0x8 + FIELDS.len() * 8, 8);
     put(
         &mut b,
         w + 0x8 + FIELDS.len() * 8 + 4,
-        BLOB + (FIELDS.len() * 0x100) as u32,
+        BLOB + slot(FIELDS.len()) as u32,
     );
     b
 }
@@ -396,7 +404,7 @@ fn an_edit_round_trips_through_to_bytes() {
         json!({"tag": "weap", "path": "linear", "sets": [{"slope": 2.0}]}),
     );
     assert_eq!(r["sets"][0], json!({"slope": 2.0, "intercept": 1.25}));
-    let at = BLOB + (4 * 0x100) as u32;
+    let at = BLOB + slot(4) as u32;
     let bytes = app.tags.read(weap_id(), at, 68).unwrap();
     let word = |k: usize| {
         f32::from_le_bytes(
