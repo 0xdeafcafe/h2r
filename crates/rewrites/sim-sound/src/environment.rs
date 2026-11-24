@@ -79,7 +79,10 @@ mod tests {
     #[test]
     fn equal_and_unordered_select_the_new_gain() {
         let mut mxcsr = 0x1f80;
-        assert_eq!(portal_max(&mut mxcsr, 0, (-0.0f32).to_bits()), (-0.0f32).to_bits());
+        assert_eq!(
+            portal_max(&mut mxcsr, 0, (-0.0f32).to_bits()),
+            (-0.0f32).to_bits()
+        );
         assert_eq!(portal_max(&mut mxcsr, f32::NAN.to_bits(), 0), 0);
         assert_ne!(mxcsr & 1, 0);
     }
@@ -88,9 +91,57 @@ mod tests {
     fn zero_db_pushes_unity_above_the_previous_gain() {
         let mut stack = X87Abi::default();
         abi::ld_f32(&mut stack, 7.5f32.to_bits());
-        let curve = GainCurve { decibel_scale: 0.25f32.to_bits(), exponent_scale: 3.0f32.to_bits() };
+        let curve = GainCurve {
+            decibel_scale: 0.25f32.to_bits(),
+            exponent_scale: 3.0f32.to_bits(),
+        };
         curve.linear(0, &mut stack);
         assert_eq!(stack.st(0), Some(x87::F80::ONE));
         assert_eq!(abi::st_f32(&stack, 1).1.value, 7.5f32.to_bits());
+    }
+}
+
+/// An unordered pair of cluster IDs addresses one byte in the BSP's
+/// upper-triangular table, with the diagonal omitted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClusterPair {
+    pub upper: i32,
+    pub skipped: i32,
+    pub row_bias: i32,
+}
+
+impl ClusterPair {
+    pub fn new(a: i32, b: i32, count: i32) -> Self {
+        let (lower, upper) = (a.min(b), a.max(b));
+        let skipped = lower.wrapping_add(1).wrapping_mul(lower) / 2;
+        let row_bias = count
+            .wrapping_sub(1)
+            .wrapping_mul(lower)
+            .wrapping_sub(skipped);
+        Self {
+            upper,
+            skipped,
+            row_bias,
+        }
+    }
+}
+
+#[cfg(test)]
+mod distance_tests {
+    use super::*;
+
+    #[test]
+    fn triangular_storage_visits_each_distinct_pair_once() {
+        for count in 2..33 {
+            let mut offset = 0;
+            for first in 0..count {
+                for second in first + 1..count {
+                    let p = ClusterPair::new(first, second, count);
+                    assert_eq!(p, ClusterPair::new(second, first, count));
+                    assert_eq!(p.upper - 1 + p.row_bias, offset);
+                    offset += 1;
+                }
+            }
+        }
     }
 }
