@@ -343,7 +343,10 @@ impl World {
         self.u32(OUT)
     }
     fn wait(&mut self, h: u32) -> u32 {
-        let limit = Instant::now() + Duration::from_secs(6);
+        self.wait_for(h, Duration::from_secs(6))
+    }
+    fn wait_for(&mut self, h: u32, timeout: Duration) -> u32 {
+        let limit = Instant::now() + timeout;
         loop {
             let result = self.call("XOnlineTaskContinue", &[h]);
             if result != 0 {
@@ -2237,7 +2240,35 @@ fn a_clanker_doubles_lobby_registers_its_round_for_each_console_of_the_party() {
     host.logon();
     server.until(|| host.hle.clanker_hoppers().contains(HOPPER));
 
-    attr(&host, MATCH_ATTR, attr_id::HOPPER, u64::from(HOPPER));
+    let path = host.storage_path("9809", "multiplayer_hopper.dat");
+    let download = host.storage_start(path, 0x20000);
+    assert_eq!(host.wait(download), TASK_SUCCESS);
+    assert_eq!(host.storage_results(download), OK);
+    let file = live_proto::hopper::HopperFile::parse(&host.bytes(
+        host.u32(OUT), host.u32(OUT + 4) as usize,
+    )).unwrap();
+    assert_eq!(host.call("XOnlineTaskClose", &[download]), OK);
+    let marks = host.hle.clanker_hoppers();
+    let selected = marks.hoppers.iter().find(|m| {
+        file.text(m.hopper_id as usize).unwrap().title == "Clanker Doubles"
+    }).expect("Clanker Doubles in the downloaded lineup");
+    assert_eq!((selected.hopper_id, selected.playlist_id), (HOPPER, 11));
+    // The playlist press searches with the descriptor index from the row.
+    // A Clanker search is held empty before the title creates its target.
+    for (i, value) in [Some(selected.hopper_id), Some(1), None, None, Some(1),
+        None, None, None, None, None, None, None].into_iter().enumerate()
+    {
+        attr(&host, MATCH_ATTR + i as u32 * 16,
+             if value.is_some() { 0 } else { 0x00f0_0000 }, u64::from(value.unwrap_or(0)));
+    }
+    let cap = host.call("XOnlineMatchSearchResultsLen", &[50, 7, MATCH_SPEC]);
+    assert_eq!(host.call("XOnlineMatchSearch", &[1, 50, 12, MATCH_ATTR, cap, 0, OUT]), OK);
+    let search = host.u32(OUT);
+    assert_eq!(host.wait_for(search, Duration::from_secs(25)), TASK_SUCCESS);
+    assert_eq!(host.call("XOnlineMatchSearchGetResults", &[search, OUT, OUT + 4]), OK);
+    assert_eq!(host.u32(OUT + 4), 0, "an empty search lets the title host");
+    assert_eq!(host.call("XOnlineTaskClose", &[search]), OK);
+    attr(&host, MATCH_ATTR, attr_id::HOPPER, u64::from(selected.hopper_id));
     attr(&host, MATCH_ATTR + 16, attr_id::OPEN, 2);
     assert_eq!(
         host.call(

@@ -2132,7 +2132,7 @@ mod tests {
         let id = started["game_id"].as_str().unwrap().to_string();
         let (_, g) = call("GET", format!("/v1/games/{id}"), None, String::new()).await;
         assert_eq!(g["kind"], "clankermatch", "{g}");
-        assert_eq!(g["playlist"], "Rumble Pit", "{g}");
+        assert_eq!(g["playlist"], "Clanker Rumble", "{g}");
         let (_, list) = call("GET", "/v1/games".into(), None, String::new()).await;
         let item = list["items"]
             .as_array()

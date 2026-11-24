@@ -189,7 +189,7 @@ async fn a_clankermatch_game_reads_back_as_its_own_kind_and_ranks() {
         .clone();
     assert_eq!(item["kind"], "clankermatch");
     assert_eq!(item["playlist_id"], "8");
-    assert_eq!(item["playlist"], "Rumble Pit");
+    assert_eq!(item["playlist"], "Clanker Rumble");
     let page = h.get(&format!("/v1/games/{id}")).await;
     assert_eq!(page.status, StatusCode::OK);
     assert_eq!(page.json()["kind"], "clankermatch");
@@ -415,7 +415,7 @@ async fn a_clanker_doubles_match_reaches_its_game_for_a_party_of_one_or_two() {
         assert_eq!(page.status, StatusCode::OK);
         let page = page.json();
         assert_eq!(page["kind"], "clankermatch");
-        assert_eq!(page["playlist"], "Team Skirmish");
+        assert_eq!(page["playlist"], "Clanker Doubles");
         // Each person ranks in Team Skirmish.
         for (name, u) in &people {
             let events = h

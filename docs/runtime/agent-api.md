@@ -2571,7 +2571,7 @@ h2 agent live.join.status
 ### Matchmaking transitions
 
 `live.matchmaking.trace` takes no parameters. `transitions` holds up to 128
-changes in capture order. Call it after a match starts or returns to the
+changes in capture order. `hopper_failures` holds the last block-read failure per descriptor during this process, with the hopper index, guest caller and message. An empty rotation names the unavailable map IDs. Call it after a match starts or returns to the
 party. The history is retained across the lifecycle change.
 
 Each row has a `sequence`, an `event` and a `state`. Events are `frame`,

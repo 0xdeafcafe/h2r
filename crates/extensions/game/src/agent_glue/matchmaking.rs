@@ -332,7 +332,7 @@ pub(super) fn install(registry: &mut hooks::Registry, agent: &agent::Agent) -> a
                 if !params.is_null() && !params.as_object().is_some_and(|fields| fields.is_empty()) {
                     return Err(RpcError::new(code::INVALID_PARAMS, "Expected no parameters."));
                 }
-                Ok(json!({ "transitions": observer.lock().rows }))
+                Ok(json!({ "transitions": observer.lock().rows, "hopper_failures": crate::live_hopper::failures() }))
             },
         );
     }

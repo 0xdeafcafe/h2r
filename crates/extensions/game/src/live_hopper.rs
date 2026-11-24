@@ -16,7 +16,36 @@ const PICKER_READ_RETURN: u32 = 0x0019_2ed1;
 pub struct MapPackRotation(pub Arc<live_hle::Hle>);
 
 /// The block each guest thread inside the read will filter, by thread.
-type Pending = Mutex<BTreeMap<u32, u32>>;
+struct Read {
+    hopper: u32,
+    block: u32,
+    base_only: bool,
+    caller: u32,
+}
+
+type Pending = Mutex<BTreeMap<u32, Read>>;
+
+/// Last block failure per descriptor (and one slot for invalid indices).
+/// Kept for the agent after a dialog has replaced the playlist screen.
+#[derive(Clone, serde::Serialize)]
+pub(crate) struct Failure {
+    hopper: u32,
+    caller: u32,
+    message: String,
+}
+
+static FAILURES: Mutex<BTreeMap<u32, Failure>> = Mutex::new(BTreeMap::new());
+
+pub(crate) fn failures() -> Vec<Failure> {
+    FAILURES.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect()
+}
+
+fn failed(hopper: u32, caller: u32, message: String) {
+    eprintln!("live: playlist {hopper} ({caller:#x}): {message}");
+    let slot = hopper.min(live_proto::hopper::HOPPERS as u32);
+    FAILURES.lock().unwrap_or_else(|e| e.into_inner())
+        .insert(slot, Failure { hopper, caller, message });
+}
 
 /// Why a snapshot can't be taken: a thread is between the read's before
 /// and after, so the block it will filter is held here. The machine's own
@@ -68,33 +97,45 @@ impl Feature for MapPackRotation {
                 !hle.has_map_pack()
             };
             let mut writes = writes.lock().unwrap_or_else(|e| e.into_inner());
-            if filter {
-                writes.insert(c.ctx.thread_id, block);
-            } else {
-                writes.remove(&c.ctx.thread_id);
-            }
+            writes.insert(c.ctx.thread_id, Read { hopper, block, base_only: filter, caller });
             Ok(Flow::Continue)
         });
         b.raw().after(&HOPPER_BLOCK_READ, "keep only the base-disc entries when needed", move |c| {
-            let block = pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&c.ctx.thread_id);
-            let Some(block) = block.filter(|_| c.cpu.eax & 0xff != 0) else {
+            let read = pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&c.ctx.thread_id);
+            let Some(Read { hopper, block, base_only, caller }) = read else {
                 return Ok(());
             };
-            let mut bytes = vec![0; BLOCK];
+            if c.cpu.eax & 0xff == 0 {
+                failed(hopper, caller, "Could not read the playlist block from multiplayer_hopper.dat.".into());
+                return Ok(());
+            }
             let mut mem = c.ctx.memory();
+            let listed = crate::mod_slots::listed_ids(&*mem);
+            if !base_only && listed.is_none() {
+                return Ok(());
+            }
+            let mut bytes = vec![0; BLOCK];
             mem.read_bytes(block, &mut bytes, 1)?;
-            let mut have_base_map = false;
+            let mut eligible = false;
+            let mut unavailable = Vec::new();
             let changed = retain_block_maps(&mut bytes, |id| {
-                let base = is_base_map(id);
-                have_base_map |= base;
-                base
+                let keep = (!base_only || is_base_map(id))
+                    && listed.as_ref().is_none_or(|ids| ids.contains(&id));
+                if !keep && !unavailable.contains(&id) {
+                    unavailable.push(id);
+                }
+                eligible |= keep;
+                keep
             });
             match changed {
-                Ok(_) if !have_base_map => c.cpu.eax &= !0xff,
+                Ok(_) if !eligible => {
+                    failed(hopper, caller, format!("No playable maps in the rotation. Unavailable map IDs: {unavailable:?}."));
+                    c.cpu.eax &= !0xff;
+                }
                 Ok(true) => mem.write_bytes(block, &bytes, 1)?,
                 Ok(false) => {}
                 Err(e) => {
-                    eprintln!("live: invalid hopper rotation: {e}");
+                    failed(hopper, caller, format!("Invalid rotation in multiplayer_hopper.dat: {e}"));
                     c.cpu.eax &= !0xff;
                 }
             }
@@ -112,7 +153,7 @@ mod tests {
     fn a_snapshot_waits_only_for_a_read_in_flight() {
         let pending: Pending = Mutex::new(BTreeMap::new());
         assert_eq!(read_in_flight(&pending), None);
-        pending.lock().unwrap().insert(2, 0x1234);
+        pending.lock().unwrap().insert(2, Read { hopper: 0, block: 0x1234, base_only: true, caller: 0 });
         assert_eq!(
             read_in_flight(&pending).as_deref(),
             Some("a hopper block read is in flight on thread 2")
