@@ -1,6 +1,6 @@
 # Native light gather and passes
 
-Status: Design. Nothing on this page is built. The leaf ports it starts from (the visible-light list, the geometry flags, the extra caster, the light constants, the pass flags, the shadow projection, the gathered groups) are built and are described in [native-lights.md](native-lights.md) and [native-renderer.md](native-renderer.md), "Scene list builders".
+Status: Partly built. Slice L1 is built: the model's rows and histories and the leaves (the visible-light list, the geometry flags, the extra caster, the light volume) in `engine::render::light_gather`, which the seams of [native-renderer.md](native-renderer.md), "Scene list builders", call. L2 on are design. The other leaf ports it starts from (the light constants, the pass flags, the shadow projection, the gathered groups) are described in [native-lights.md](native-lights.md).
 Code: `crates/rewrites/engine/src/render/light_gather.rs` and `light_gather/` (the model and the bodies), `crates/rewrites/render-bridge/src/native_lights/frame.rs` (the install), `crates/rewrites/render-bridge/src/native_scene_lists/lights.rs` (the leaf seams that stay for the fallback). Tests: `crates/rewrites/engine/tests/light_gather_differential.rs`, `light_gather.rs`, `crates/rewrites/render-bridge/tests/native_lights.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md). No slice adds a switch.
 
@@ -46,12 +46,13 @@ All of it lives in `engine::render::light_gather`. Floats that the guest
 only copies are kept as their bits, so NaNs and stale words survive.
 
 ```rust
-/// One row of the visible list (0x14 bytes at the guest's buffer).
+/// One row of the visible list (0x14 bytes at the guest's buffer). The
+/// four bytes are kept as written: the ranking tests each against zero.
 pub struct VisibleLight {
-    pub local_owner: bool,   // +0
-    pub first_person: bool,  // +1: definition bit 5
-    pub owner_kind_2: bool,  // +2: the owner's object type byte is 2
-    pub keep: bool,          // +3: definition bit 20
+    pub local_owner: u8,     // +0
+    pub first_person: u8,    // +1: definition bit 5
+    pub owner_kind_2: u8,    // +2: the owner's object type byte is 2
+    pub keep: u8,            // +3: definition bit 20
     pub light: u32,          // +4: the light datum
     pub root_owner: u32,     // +8
     pub weight: u32,         // +0xc, f32 bits: the record's on the way in, the faded one on the way out
@@ -60,15 +61,18 @@ pub struct VisibleLight {
 
 /// One row of a per-view history (0x24 bytes).
 pub struct HistoryRow {
-    pub visible: VisibleLight, // +0..+0x14, raw byte 3 kept
+    pub visible: VisibleLight, // +0..+0x14
     pub rate: u32,             // +0x14
     pub weight: u32,           // +0x18
     pub seen: u32,             // +0x1c: the render frame it was last a candidate
     pub first: u32,            // +0x20: the render frame it entered
 }
 
-/// A view's history: up to 32 rows, the count at `+0x480`.
-pub struct History { pub rows: ArrayVec<HistoryRow, 32> }
+/// A view's history: up to 32 rows, the count at `+0x480`. A removal
+/// copies the last live row over the removed one, so a slot past the
+/// count keeps what was last written there: `slots` is every slot
+/// written since the decode, the first `count` live.
+pub struct History { pub slots: Vec<HistoryRow>, pub count: usize }
 
 /// What one call of `0x00031c80` decides, in draw order.
 pub struct LightFrame {
@@ -156,12 +160,12 @@ struct `0x0054aa68`.
 
 | # | Step | Reads | Writes | Guest function |
 |---|---|---|---|---|
-| 1 | The list | as `VISIBLE_LIGHT_LIST` reads (`native_scene_lists::lights::read_visible`) | the view's history and its count; the rows at `S+0xb0` | `0x00031910` (`0x0004a7c0`, `0x0004ac30`): Rust |
+| 1 | The list | as `light_gather::visible::list` reads | the view's history and its count; the rows at `S+0xb0` | `0x00031910` (`0x0004a7c0`, `0x0004ac30`): Rust |
 | 2 | Per row: drawn | row `+0xc` against the word at `0x0045dc58` (`comiss`, `jbe`: a NaN is not drawn) | none | inline |
 | 3 | Record and definition | `[0x004e030c]+0x44`, `L+4`, the tag table `[0x004e3b44]` | none | inline |
 | 4 | Owner and root | `L+0x54` (i16), `L+0x4c`, the object headers `[0x004e0300]+0x44` (stride `0xc`), each body `+0x14` | none | inline |
 | 5 | Re-pose, when `L+0x54` is not -1 and `D` has bit 5 without bit 18 | the marker name of the owner's attachment `L+0x54`; the first-person state `0x0016640f` reads | `L+0x84`, `L+0xac`, `L+0xb8` when the lookup answers; always `L+0x90..+0x98` = `+0x84` + `+0xac`, and `L+0xb8` made orthogonal to `+0xac` and normalised | `0x000b8c40` (ECX owner, AX the index), `0x0016640f` (ECX owner; marker, `&L+0x84`, `&L+0xac`, `&L+0xb8`; `ret 0x10`), `0x00031b40` (EAX `&L+0xb8`, ECX `&L+0xac`; x87, tail call to `0x00030bf0`) |
-| 6 | Volume | as `scene_extract::lights::volume::read` | `S+0x34` | `0x000c17f0` (EAX `S+0x34`, EDX the datum, one stack word 1, `ret 4`); AL is ignored |
+| 6 | Volume | as `light_gather::volume::light_volume` reads | `S+0x34` | `0x000c17f0` (EAX `S+0x34`, EDX the datum, one stack word 1, `ret 4`); AL is ignored |
 | 7 | First-person slot | `[0x00509440]` | when below 8: `[0x004c6b00 + 0x408·n]` = the datum, `[0x00509440]` = n+1 | inline |
 | 8 | Shadow | `D` bit 3 clear, the byte `[0x004ba020]`, `L+0xf8` above the zero word, the volume's kind not 0; the byte `[0x004ba010]` (set: no source visibility) | `S+0x10` | inline |
 | 9 | Cluster | `L+0x48` (i16); when -1 and `D` has bits 5 and 18: `[0x004b9ee4]` | none | inline |
@@ -326,12 +330,15 @@ coordinator runs them.
 
 - **Build.** `engine::render::light_gather::{visible, history}`:
   `VisibleLight`, `HistoryRow`, `History` with `decode`/`encode`, and
-  `merge`, `rank_and_fade(limit, step)` and the candidate tests moved
-  from `native_scene_lists/lights.rs` unchanged in behaviour. A `Writes`
-  list (address, bytes) is the output type; the seams in
-  `native_scene_lists` convert it to their `Output`. `geometry_flags`,
-  `extra_caster` and the volume (`scene_extract::lights::volume`) move
-  beside them as functions of `(memory, typed arguments)`.
+  `merge`, `rank_and_fade(limit, step)` and the candidate tests, moved
+  from `native_scene_lists/lights.rs` unchanged in behaviour;
+  `visible::list` is `0x00031910`. A `Writes` list (address, bytes) is
+  the output type; the seams in `native_scene_lists` convert it to their
+  `Output`. `geometry::flags` (`0x00031660`) and `extra_caster::list`
+  (`0x00031c20`) move beside them as functions of `(memory, typed
+  arguments)`. `volume::pose` is the pose of `0x000c19f0` and
+  `0x000c1a80` (`scene_extract::lights::volume` calls it), and
+  `volume::light_volume` is `0x000c17f0`: its gates, the pose and AL.
 - **Guest state.** None new: the seams' reads and writes are unchanged.
 - **Tests.** Differential roots `0x00031910` (its tree `0x0004a7c0`,
   `0x0004ac30`, `0x0004b160`, `0x00031590`, `0x0003e9c0` lifted, no
@@ -568,9 +575,9 @@ and the attachment walk `0x00041c80`.
 
 - **E.** The step tables are the instruction ranges named in their
   headings, read with `h2 disasm`.
-- **Code.** The built leaves: `native_scene_lists/lights.rs`
-  (`read_visible`, `merge_history`, `rank_and_fade`, `geometry_flags`,
-  `extra_caster_list`), `scene_extract/src/lights/volume.rs`,
+- **Code.** The built leaves: `engine::render::light_gather`
+  (`visible::list`, `history::merge`, `history::rank_and_fade`,
+  `geometry::flags`, `extra_caster::list`, `volume::light_volume`),
   `engine::light_constants`, `engine::light_passes`,
   `engine::shadow_constants`, `engine::render_loop::world_walk`,
   `render_bridge::native_world::section`.

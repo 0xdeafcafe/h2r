@@ -23,13 +23,17 @@ The light path in the order the game draws it ([e3-lighting.md](e3-lighting.md),
   remaining rows by projected size and fades their weights towards a
   budget of three. Lights fading out can still draw. For each
   light above the weight threshold (`[0x0045dc58]`) it re-poses an attached light
-  (`0x00031dac`), records it for the first-person pass (`0x004c6b00`,
-  stride `0x408`, at most eight, count `[0x00509440]`), decides the
-  shadow (`0x00031e02`), gathers the light's geometry into the light's
-  list `0x004c1a60` (`0x000c1d90`, `0x001320f0`, `0x00031660`, and the
-  extra call `0x00031c20` for definition bit 22), runs the objects'
-  render records for it (`0x00133390`, `0x00133520`, `0x00133720`), and
-  calls `render_light_passes` once.
+  (`0x00031dac`), poses its volume (`0x000c17f0`), takes a slot of the
+  first-person table for it (the table at `0x004c6700`, eight slots of
+  `0x408` bytes, the datum at `+0x400`, count `[0x00509440]`), decides
+  the shadow (`0x00031e02`), fills the light's visibility struct
+  `0x0054aa68` (`0x000c1d90`, `0x001320f0`, `0x00031660`, and the extra
+  call `0x00031c20` for definition bit 22), writes its render records
+  (`0x0002cb30`, `0x00133390`, `0x00133520`, `0x00133720`) and their
+  part visibility (`0x00044720`), and calls `render_light_passes` once.
+  The passes fill the light's item lists `0x004c1a60` and `0x004c1a78`
+  from those records (`0x00040e90`). Step by step in
+  [native-light-gather.md](native-light-gather.md).
 - **One light's passes.** `0x00031170` (`points::RENDER_LIGHT_PASSES`; its
   only caller is `0x00031f26`): EAX the `ligh` datum, ECX a context from
   `0x000c17f0` (the posed light volume, decoded by
