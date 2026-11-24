@@ -251,6 +251,13 @@ pub fn set_live(hle: Option<Arc<live_hle::Hle>>) {
     *LIVE.lock().unwrap_or_else(|e| e.into_inner()) = hle;
 }
 
+pub(crate) fn clanker_playlist(hopper: u32) -> bool {
+    LIVE.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|live| crate::clankermatch::is_clanker(hopper, &live.clanker_hoppers()))
+}
+
 /// Reads the lobby; `None` while its session cannot be read.
 pub fn read(m: &dyn GuestMemory) -> Option<Reading> {
     let networking = m.u8(lobby::NETWORKING).ok()? != 0;
@@ -263,12 +270,7 @@ pub fn read(m: &dyn GuestMemory) -> Option<Reading> {
     let clanker = (retail == RetailMode::Matchmaking)
         .then(|| held_hopper(m))
         .flatten()
-        .map(|h| {
-            LIVE.lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .as_ref()
-                .is_some_and(|live| crate::clankermatch::is_clanker(h, &live.clanker_hoppers()))
-        });
+        .map(clanker_playlist);
     Some(Reading {
         place,
         leader,

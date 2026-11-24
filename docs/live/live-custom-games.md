@@ -298,7 +298,8 @@ row hooks show them in this order (`custom_games::Menu::layout`):
 
 | Row | Shows | Text | Press | Pane |
 |---:|---|---|---|---|
-| 0–1 | Quickmatch, OptiMatch | retail | retail | retail 0–1 |
+| 0 | Quickmatch | retail | Search the saved human playlist, or open the playlist picker without a usable selection | retail 0 |
+| 1 | OptiMatch | retail | Open the full playlist picker | retail 1 |
 | 2 | Clankermatch | ours | OptiMatch's ([bots.md](../game/bots.md) §8.3) | 4 |
 | 3 | Co-op Campaign (with Live) | ours | co-op ([live-coop.md](live-coop.md) §10) | 6 |
 | 4 | Custom Games | ours | retail row 2's, CUSTOM GAMES asked for | 7 |
@@ -307,9 +308,11 @@ row hooks show them in this order (`custom_games::Menu::layout`):
 | 7 | Custom Game Browser | ours | Live browser (§2) | 5 |
 | 8 | Mods | ours, or the mod repository's | Mods screen, else Map Pack dialog | 3 |
 
+The playlist picker (screen `0xdb`) takes its header from the opening action: Quickmatch, OptiMatch or Clankermatch.
+
 A row that is off leaves the list and the rows under it close up. Rows
 past 1 never reach the retail row text. Custom Games, Forge and
-Firefight rewrite the press record to retail row 2 and run retail's
+Firefight pass the menu list’s handle for retail row 2 to retail’s
 Custom Game press (a Live squad session, then the custom lobby), then
 ask for their mode (`lobby_tabs::request`), which the lobby switches to
 at its first panel update. The retail press remembers rows 0 to 2 for

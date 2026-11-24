@@ -69,7 +69,7 @@ describe("rank sums", () => {
     expect(playlistName("17")).toBe("Playlist 17");
     expect(playlistName("3", { "3": "Snipers Only" })).toBe("Snipers Only");
     expect(Object.keys(DEFAULT_PLAYLISTS)).toHaveLength(16);
-    expect(playlistName("8")).toBe("Rumble Pit");
+    expect(playlistName("8")).toBe("Clanker Rumble");
     expect(winRate(st({ games: 4, wins: 3 }))).toBe("75%");
     expect(winRate(st())).toBe("–");
   });
@@ -90,7 +90,7 @@ describe("the playlist menu", () => {
       .toEqual(["Rumble Pit", "Team Slayer", "Team Skirmish", "Team Snipers", "Big Team Battle", "Team Objective"]);
     expect(menu.filter((p) => p.group === "unranked").map((p) => p.name)).toEqual(["Free for All", "Unranked Teams"]);
     expect(menu.filter((p) => p.group === "clanker").map((p) => p.name)).toEqual([
-      "Rumble Pit", "Team Slayer", "Team Skirmish", "Team Snipers", "Big Team Battle",
+      "Clanker Rumble", "Clanker Slayer", "Clanker Doubles", "Clanker Snipers", "Clanker BTB",
       "BTB Heavies", "Solo Training", "Team Training",
     ]);
     expect(menu[1]).toMatchObject({ id: "1", size: "2 teams of 3–4", games: ["Team Slayer"] });

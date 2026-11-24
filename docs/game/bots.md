@@ -4705,7 +4705,7 @@ stats rank cache use `0x00192df0`/`0x001934f0` directly.
 hopper `0x001902de` answers (ECX the local player; `[0x54e9dc +
 player*0xc70]`, or -1 when flag bit 4 of `[0x54e8e0 + player*0xc70]` is
 clear; its one caller `0x00231056`), through `0x001943d0` at
-`0x00231066`, which fails for -1 so nothing starts. A playlist press
+`0x00231066`, when the saved hopper is usable. The Live menu opens the playlist picker for an unset, out-of-range or Clanker selection. A playlist press
 saves its hopper there (`0x002b21e3`: `push edi` (the hopper), `push
 [ebp+0Ch]` (the player), `call 0x001902fc`, `ret 8`; its only caller).
 Two hooks keep Quickmatch on human hoppers
@@ -5098,12 +5098,12 @@ actions in step 8 separately.
    opens as before, and back from it lands on Custom Game Browser
    (`custom games: opening the browser`); the same for Co-op Campaign.
    Mods opens as Content Download did.
-3. OptiMatch lists the eight human playlists and no Clanker one.
-4. Clankermatch lists Rumble Pit, Team Slayer, Team Skirmish, Team Snipers,
-   Big Team Battle, BTB Heavies, Solo Training and Team Training (the
+3. OptiMatch lists human and Clanker playlists in descriptor order.
+4. Clankermatch lists Clanker Rumble, Clanker Slayer, Clanker Doubles, Clanker Snipers,
+   Clanker BTB, BTB Heavies, Solo Training and Team Training (the
    log: `clankermatch: the playlists are the clanker hoppers`; at logon
    `live: clankermatch: clanker hoppers [8, 9, 10, 11, 12, 13, 14, 15]`).
-5. Pick Rumble Pit: the retail search screen runs for 4 to 20 s
+5. Pick Clanker Rumble: the retail search screen runs for 4 to 20 s
    (`live: clankermatch: searching clanker playlist 8 ...`), then the
    game hosts its own lobby (does it? in every type: FFA and teams).
 6. The match lobby fills with rostered phantoms (seven for Slayer), the
@@ -5137,7 +5137,7 @@ actions in step 8 separately.
      and seat after entry (§11.4).
 9. Leave after the game: the bots go within 30 s (`clankermatch: the game
    is over: the bots go`). Back on the Live menu, Quickmatch starts the
-   human playlist picked last in OptiMatch, or nothing if none
+   human playlist picked last in OptiMatch, or opens its playlist picker if none
    (`clankermatch: hopper 8 not saved for Quickmatch` at the pick).
 10. With a server that has no clanker marks: OptiMatch as retail,
     Clankermatch's list empty (say how the empty list looks).

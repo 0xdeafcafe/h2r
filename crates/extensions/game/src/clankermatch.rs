@@ -11,8 +11,8 @@
 //! descriptor index, AL the answer) once per hopper and stores the index in
 //! each row. A `before` on it answers "not listed" for a hopper outside
 //! the [`Scope`] the opening press set: Clankermatch only the server's
-//! clanker hoppers (`live_hle::Hle::clanker_hoppers`), OptiMatch only the
-//! others, and the party lobby's MULTIPLAYER mode both on one page
+//! clanker hoppers (`live_hle::Hle::clanker_hoppers`), OptiMatch and the
+//! party lobby's MULTIPLAYER mode both kinds on one page
 //! (docs/game/party-lobby.md, "The modes"). A hopper it lets through
 //! still goes to the game's own check.
 //!
@@ -78,6 +78,8 @@ pub enum Scope {
     /// Both, on one page: the party lobby's MULTIPLAYER mode and its Change
     /// Playlist... row (docs/game/party-lobby.md, "The modes").
     All,
+    /// First-time Quickmatch opens the combined picker under its own title.
+    QuickMatch,
 }
 
 impl Scope {
@@ -86,12 +88,14 @@ impl Scope {
             Scope::Players => 0,
             Scope::Clankers => 1,
             Scope::All => 2,
+            Scope::QuickMatch => 3,
         }
     }
     const fn of_byte(b: u8) -> Scope {
         match b {
             1 => Scope::Clankers,
             2 => Scope::All,
+            3 => Scope::QuickMatch,
             _ => Scope::Players,
         }
     }
@@ -115,7 +119,7 @@ pub fn set_scope(scope: Scope) {
             match scope {
                 Scope::Players => "the playlists are the human hoppers",
                 Scope::Clankers => "the playlists are the clanker hoppers",
-                Scope::All => "the playlists are every hopper, human and clanker",
+                Scope::QuickMatch | Scope::All => "the playlists are every hopper, human and clanker",
             }
         );
     }
@@ -126,17 +130,10 @@ pub fn active() -> bool {
     scope() == Scope::Clankers
 }
 
-/// From the Live menu's press: `on` for the Clankermatch row.
-pub fn set_active(on: bool) {
-    set_scope(if on { Scope::Clankers } else { Scope::Players });
-}
-
-/// Whether the playlist list shows hopper `index` in `scope`: a clanker
-/// hopper only for Clankermatch, any other only for OptiMatch, and every
-/// hopper on the party lobby's one page.
+/// Which descriptors the opening menu action includes on the playlist list.
 pub fn listed(index: u32, marks: &ClankerHoppers, scope: Scope) -> bool {
     match scope {
-        Scope::All => true,
+        Scope::QuickMatch | Scope::All => true,
         Scope::Clankers => marks.contains(index),
         Scope::Players => !marks.contains(index),
     }

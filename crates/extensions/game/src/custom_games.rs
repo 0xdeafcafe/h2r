@@ -97,6 +97,8 @@ pub const FIREFIGHT_ROW: i16 = 6;
 pub const BROWSER_ROW: i16 = 7;
 pub const MODS_ROW: i16 = 8;
 const RETAIL_DOWNLOAD_ROW: i16 = 3;
+/// The Quickmatch row, using the pressing player’s saved selection.
+pub const RETAIL_QUICKMATCH_ROW: i16 = 0;
 /// Retail row 1, OptiMatch (`0x231025`: the playlist screen's loader
 /// `0x230c8d` through `0x149f1e`). The Clankermatch row runs it with
 /// `crate::clankermatch::active` set.
@@ -198,6 +200,24 @@ pub const MODS_TEXT_ID: u32 = MODE_IDS.id(6);
 pub const MODS_TEXT: &str = "Mods";
 pub const MAPPACK_HELP_ID: u32 = MODE_IDS.id(7);
 pub const MAPPACK_HELP: &str = "Add the Multiplayer Map Pack's maps to your game.";
+
+/// The retail playlist screen and the header string on its screen definition.
+pub const PLAYLIST_SCREEN: i16 = 0xdb;
+const PLAYLIST_HEADER: u32 = 0x2c;
+const QUICKMATCH_TITLE: u32 = MODE_IDS.id(8);
+const OPTIMATCH_TITLE: u32 = MODE_IDS.id(9);
+
+pub fn playlist_header<M: Gm>(m: &mut M, tag: u32, scope: crate::clankermatch::Scope) {
+    use crate::clankermatch::Scope;
+    if m.u16(tag + 4) == Some(PLAYLIST_SCREEN as u16) {
+        let id = match scope {
+            Scope::QuickMatch => QUICKMATCH_TITLE,
+            Scope::Clankers => CLANKERMATCH_TEXT_ID,
+            Scope::All | Scope::Players => OPTIMATCH_TITLE,
+        };
+        m.set_u32(tag + PLAYLIST_HEADER, id);
+    }
+}
 
 /// The screen, its list handler's vtable and its retail item widgets.
 pub const SCREEN_ID: i16 = 0xba;
@@ -339,8 +359,7 @@ impl Menu {
             .unwrap_or(Row::Retail)
     }
 
-    /// Where `kind` is in this menu, if it is there (the first of the two
-    /// retail rows for [`Row::Retail`]).
+    /// Where `kind` is in this menu, if it is there.
     pub fn row_of(self, kind: Row) -> Option<i16> {
         self.layout()
             .iter()
@@ -368,7 +387,7 @@ impl Menu {
 /// What a row of the grown Xbox Live menu is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Row {
-    /// Quickmatch or OptiMatch: the retail functions handle it.
+    /// The retail Quickmatch or OptiMatch row, or an unknown row.
     Retail,
     /// Ours: OptiMatch's path, with the clanker hoppers
     /// (`crate::clankermatch`).
@@ -425,6 +444,37 @@ impl Row {
             Row::Retail | Row::Mods => None,
         }
     }
+}
+
+/// The displayed menu owns the salted handles passed to its press callback.
+pub(crate) fn press_handle(m: &runtime::Guest, receiver: u32, player: u32, row: i16) -> Option<u32> {
+    let list = if m.u32(receiver).ok() == Some(HANDLER_VTABLE) {
+        receiver
+    } else {
+        [crate::ui_watch::SHARED, player].into_iter().find_map(|slot| {
+            let stack = crate::ui_watch::stack(m, 5, slot)?;
+            let &(screen, _) = stack.list.iter().find(|(screen, id)| {
+                *screen == stack.active && *id == Some(SCREEN_ID as u32)
+            })?;
+            let list = screen.checked_add(MENU_LIST)?;
+            (m.u32(list).ok()? == HANDLER_VTABLE).then_some(list)
+        })?
+    };
+    crate::retail_rows::retail_handle(m, list, row)
+}
+
+/// The profile field read by retail Quickmatch. Without a saved descriptor
+/// Quickmatch needs the playlist picker before it can start a search.
+pub fn quickmatch_selection<M: Gm>(m: &M, player: u32) -> Option<u32> {
+    use crate::skulls::{LOCAL_PLAYERS, SLOTS, SLOT_SIGNED_IN, SLOT_STRIDE};
+    if player >= LOCAL_PLAYERS {
+        return None;
+    }
+    let slot = SLOTS + player * SLOT_STRIDE;
+    if m.u32(slot)? & SLOT_SIGNED_IN == 0 {
+        return None;
+    }
+    m.u32(slot + 0xfc).filter(|&id| id < live_proto::hopper::HOPPERS as u32)
 }
 
 /// Labels for our rows; `mods` is the mod repository's label for the Mods
@@ -621,6 +671,8 @@ pub fn install_cursor(registry: &mut hooks::Registry) -> anyhow::Result<()> {
 /// The strings the rows and the dialog show, as `(id, text)`.
 pub fn strings() -> Vec<(u32, &'static str)> {
     vec![
+        (QUICKMATCH_TITLE, "Quickmatch"),
+        (OPTIMATCH_TITLE, "OptiMatch"),
         (TEXT_ID, TEXT),
         (HELP_ID, HELP),
         (COOP_TEXT_ID, COOP_TEXT),
@@ -1003,6 +1055,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn quickmatch_uses_only_a_saved_descriptor_of_the_pressing_player() {
+        let mut m = Fake::default();
+        let slot = crate::skulls::SLOTS + crate::skulls::SLOT_STRIDE;
+        m.set_u32(slot + 0xfc, 3);
+        assert_eq!(quickmatch_selection(&m, 1), None);
+        m.set_u32(slot, crate::skulls::SLOT_SIGNED_IN);
+        assert_eq!(quickmatch_selection(&m, 1), Some(3));
+        assert_eq!(quickmatch_selection(&m, 0), None);
+        m.set_u32(slot + 0xfc, 16);
+        assert_eq!(quickmatch_selection(&m, 1), None);
+    }
+
+    #[test]
+    fn playlist_picker_header_follows_its_opener() {
+        use crate::clankermatch::Scope;
+        let mut m = Fake::default();
+        let tag = 0x1000;
+        m.set_u16(tag + 4, PLAYLIST_SCREEN as u16);
+        for (scope, title) in [(Scope::Clankers, CLANKERMATCH_TEXT_ID),
+            (Scope::QuickMatch, QUICKMATCH_TITLE), (Scope::All, OPTIMATCH_TITLE)] {
+            playlist_header(&mut m, tag, scope);
+            assert_eq!(m.u32(tag + PLAYLIST_HEADER), Some(title));
+        }
+    }
+
     fn regular_menu(coop: bool) -> Menu {
         Menu {
             coop,
@@ -1052,7 +1130,7 @@ mod tests {
         assert_eq!(CLANKERMATCH_ROW, RETAIL_OPTIMATCH_ROW + 1);
         for menu in [Menu::ALL, regular_menu(false)] {
             for r in 0..2 {
-                assert_eq!(menu.row_kind(r), Retail, "row {r}");
+                assert_eq!(menu.row_kind(r), Retail);
                 assert_eq!(menu.row_text_id(r), None, "row {r} keeps the retail text");
             }
             let rows = menu.rows() as i16;
