@@ -9,6 +9,7 @@ use scene_extract::visibility::{self, GraphCache, flood, guest};
 use super::*;
 
 const GATHER_RETURN: u32 = 0x0013_2157;
+const GEOMETRY_RETURN: u32 = 0x0013_219a;
 const WINDOW_BUILD: u32 = 0x0016_3db0;
 const CAMERA_BYTES: u32 = 0x1bc;
 const REGION_COUNT: u32 = 0xa6c;
@@ -18,6 +19,10 @@ const ORDER: u32 = 0x1770;
 const WINDOW_COUNT: u32 = 0x1970;
 const WINDOWS: u32 = 0x1974;
 const WINDOW_STRIDE: u32 = 0x108;
+
+// The window builder writes the view index, rectangle, then corners,
+// bounds, planes and edge vectors. The gaps keep their old contents.
+const WINDOW_FIELDS: [(u32, usize); 3] = [(0, 4), (0x10, 0x10), (0x24, 0x108 - 0x24)];
 
 struct Read<'a>(&'a dyn GuestMemory);
 
@@ -82,8 +87,27 @@ impl Plan {
         {
             return Ok(false);
         }
+        if mem.bytes(self.camera, CAMERA_BYTES as usize)?
+            != mem.bytes(at(base, 4)?, CAMERA_BYTES as usize)?
+        {
+            return Ok(false);
+        }
+        let rect = at(self.camera, 0xa0)?;
+        let has_window = count > 1
+            && mem.f32(at(rect, 4)?)? > mem.f32(rect)?
+            && mem.f32(at(rect, 12)?)? > mem.f32(at(rect, 8)?)?;
+        let first = at(base, WINDOWS)?;
         for (i, &id) in self.selection.clusters.iter().enumerate() {
             let i = i as u32;
+            if has_window && i > 0 {
+                for (offset, len) in WINDOW_FIELDS {
+                    if mem.bytes(at(first, offset)?, len)?
+                        != mem.bytes(at(first, i * WINDOW_STRIDE + offset)?, len)?
+                    {
+                        return Ok(false);
+                    }
+                }
+            }
             let r = at(base, REGIONS + i * REGION_STRIDE)?;
             if mem.u16(r)? != id
                 || mem.u16(at(r, 2)?)? != 1
@@ -134,16 +158,30 @@ impl Plan {
             }
             Ok(())
         })?;
-        for i in 0..u32::from(count) {
-            // This leaf writes the complete window payload, including the
-            // camera corners and clipping data the set differential omits.
-            cx.call(
-                GuestCall::new(WINDOW_BUILD)
-                    .ecx(self.camera + 0xa0)
-                    .edi(base + WINDOWS + i * WINDOW_STRIDE)
-                    .args([self.camera, 0]),
-            )
-            .await?;
+        if count > 0 {
+            let first = base + WINDOWS;
+            let result = cx
+                .call(
+                    GuestCall::new(WINDOW_BUILD)
+                        .ecx(self.camera + 0xa0)
+                        .edi(first)
+                        .args([self.camera, 0]),
+                )
+                .await?;
+            // An empty rectangle exits the leaf without writing. For a
+            // valid rectangle the input and view index are identical for
+            // every selected region. Its diagnostic flag clears at most once.
+            if result.eax as u8 != 0 && count > 1 {
+                cx.write(|m| -> std::result::Result<(), MemFault> {
+                    for (offset, len) in WINDOW_FIELDS {
+                        let bytes = m.bytes(first + offset, len)?;
+                        for i in 1..u32::from(count) {
+                            m.write(first + i * WINDOW_STRIDE + offset, &bytes)?;
+                        }
+                    }
+                    Ok(())
+                })?;
+            }
         }
         // GATHER_RETURN discards the volatile registers.
         Ok(Ret::new(0, 4))
@@ -155,7 +193,7 @@ struct State {
     bsp: Option<(u64, u32)>,
     graph: GraphCache,
     verified: HashMap<u32, Selection>,
-    pending: HashMap<(u32, u32), Plan>,
+    pending: HashMap<u32, (u32, Plan)>,
 }
 
 impl State {
@@ -198,8 +236,7 @@ pub(super) fn install(b: &mut Builder) {
                     return Ok(Flow::Continue);
                 }
                 let mut state = entry_state.lock().unwrap_or_else(|e| e.into_inner());
-                let call = (c.ctx.thread_id, c.cpu.esp.wrapping_add(8));
-                state.pending.remove(&call);
+                state.pending.remove(&c.ctx.thread_id);
                 let candidate = (|| {
                     if c.cpu.eflags & (1 << 10) != 0 {
                         return Err(Refusal::Unsupported);
@@ -229,14 +266,17 @@ pub(super) fn install(b: &mut Builder) {
                     }
                 };
                 if !state.verified(&plan.selection) {
-                    state.pending.insert(call, plan);
+                    state.pending.insert(c.ctx.thread_id, (c.cpu.esp, plan));
                     SceneList::PvsRegions.count(SceneListResult::Fallback);
                     return Ok(Flow::Continue);
                 }
                 plan
             };
             if !plan.selection.clusters.is_empty()
-                && !runtime.read_dispatch(|dispatch| dispatch.has_generated(WINDOW_BUILD))
+                && !runtime.read_dispatch(|dispatch| {
+                    dispatch.has_generated(WINDOW_BUILD)
+                        && dispatch.override_name(WINDOW_BUILD).is_none()
+                })
             {
                 SceneList::PvsRegions.count(SceneListResult::Fallback);
                 SceneList::PvsRegions.count(SceneListResult::Layout);
@@ -253,22 +293,37 @@ pub(super) fn install(b: &mut Builder) {
         .optional()
         .context_only();
     b.raw()
-        .observe_after(&points::VIEW_PVS_REGIONS, "compare PVS regions", move |o| {
-            let mem = o.guest();
-            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(plan) = state.pending.remove(&(o.thread_id, o.cpu.esp))
-                && state
-                    .bsp
-                    .is_some_and(|(epoch, _)| epoch == crate::native_map_work::bsp_generation())
-            {
-                SceneList::PvsRegions.count(SceneListResult::Compared);
-                match state.observe(plan, &*mem) {
-                    Ok(true) => (),
-                    Ok(false) => SceneList::PvsRegions.count(SceneListResult::Mismatch),
-                    Err(_) => SceneList::PvsRegions.count(SceneListResult::Memory),
+        .observe_before(
+            &points::SCENE_GEOMETRY_GATHER,
+            "compare PVS regions",
+            move |o| {
+                if o.cpu.esi != objects::MAIN_VIS {
+                    return;
                 }
-            }
-        })
+                let mem = o.guest();
+                if mem.u32(o.cpu.esp).ok() != Some(GEOMETRY_RETURN) {
+                    return;
+                }
+                let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+                // Both calls have one stack argument and originate in the
+                // same frame. The caller only advances its placement epoch
+                // between the region producer and this geometry gather.
+                if let Some((esp, plan)) = state.pending.remove(&o.thread_id)
+                    && esp == o.cpu.esp
+                    && mem.u32(objects::MAIN_VIS).ok() == Some(plan.output)
+                    && state
+                        .bsp
+                        .is_some_and(|(epoch, _)| epoch == crate::native_map_work::bsp_generation())
+                {
+                    SceneList::PvsRegions.count(SceneListResult::Compared);
+                    match state.observe(plan, &*mem) {
+                        Ok(true) => (),
+                        Ok(false) => SceneList::PvsRegions.count(SceneListResult::Mismatch),
+                        Err(_) => SceneList::PvsRegions.count(SceneListResult::Memory),
+                    }
+                }
+            },
+        )
         .optional()
         .context_only();
 }
@@ -295,9 +350,17 @@ mod tests {
     }
 
     fn published(ids: &[u16]) -> testing::Run {
+        publish_view(ids, true)
+    }
+
+    fn publish_view(ids: &[u16], valid_rect: bool) -> testing::Run {
         let mut mem = FakeGuest::new();
         mem.put(CAMERA, &vec![0x6b; CAMERA_BYTES as usize]);
         mem.put(BASE, &vec![0xa7; (WINDOWS + 5 * WINDOW_STRIDE) as usize]);
+        mem.put_f32(CAMERA + 0xa0, -1.0)
+            .put_f32(CAMERA + 0xa4, if valid_rect { 1.0 } else { -1.0 });
+        mem.put_f32(CAMERA + 0xa8, -1.5).put_f32(CAMERA + 0xac, 1.5);
+        mem.put_u32(BASE + WINDOWS + WINDOW_STRIDE + 4, 0x1234);
         let ids = ids.to_vec();
         testing::run(
             &move |cx| Box::pin(plan(&ids).publish(cx)),
@@ -308,32 +371,45 @@ mod tests {
                 assert_eq!(call.target, WINDOW_BUILD);
                 assert_eq!(call.ecx, Some(CAMERA + 0xa0));
                 assert_eq!(call.args, [CAMERA, 0]);
+                if !valid_rect {
+                    return Regs::default();
+                }
                 m.set_u32(call.edi.unwrap(), 177).unwrap();
-                Regs::default()
+                Regs {
+                    eax: 1,
+                    ..Regs::default()
+                }
             },
         )
+    }
+
+    #[test]
+    fn both_pvs_hooks_run_on_the_render_executor() {
+        use hooks::{Registry, plan::Base};
+        let mut registry = Registry::new(Switches::parse("").unwrap());
+        registry.add(&NativeSceneLists).unwrap();
+        let plan = registry.build(&Base).unwrap();
+        for address in [
+            points::VIEW_PVS_REGIONS.base,
+            points::SCENE_GEOMETRY_GATHER.base,
+        ] {
+            let chain = &plan.chains[&address];
+            assert!(chain.render_thread().is_ok());
+        }
     }
 
     #[test]
     fn publishes_each_selected_cluster_with_one_window_and_leaves_spare_slots_alone() {
         let run = published(&[1, 4, 9]);
         assert_eq!(run.result, Ok(Ret::new(0, 4)));
-        assert_eq!(
-            run.calls
-                .iter()
-                .map(|call| call.edi.unwrap())
-                .collect::<Vec<_>>(),
-            [
-                BASE + WINDOWS,
-                BASE + WINDOWS + WINDOW_STRIDE,
-                BASE + WINDOWS + 2 * WINDOW_STRIDE
-            ]
-        );
+        assert_eq!(run.calls.len(), 1);
+        assert_eq!(run.calls[0].edi, Some(BASE + WINDOWS));
         let m = run.guest;
         assert_eq!(
             m.bytes(BASE + 4, CAMERA_BYTES as usize).unwrap(),
-            vec![0x6b; CAMERA_BYTES as usize]
+            m.bytes(CAMERA, CAMERA_BYTES as usize).unwrap()
         );
+        assert_eq!(m.u32(BASE + WINDOWS + WINDOW_STRIDE + 4).unwrap(), 0x1234);
         assert_eq!(m.u16(BASE + 2).unwrap(), 0xa7a7);
         assert!(plan(&[1, 4, 9]).matches(&m).unwrap());
         for i in 0..3 {
@@ -345,6 +421,17 @@ mod tests {
         }
         assert_eq!(m.u16(BASE + REGIONS + 3 * REGION_STRIDE).unwrap(), 0xa7a7);
         assert_eq!(m.u32(BASE + ORDER + 3 * 4).unwrap(), 0xa7a7a7a7);
+        let invalid = publish_view(&[1, 4], false);
+        assert_eq!(invalid.calls.len(), 1);
+        assert!(plan(&[1, 4]).matches(&invalid.guest).unwrap());
+        assert_eq!(invalid.guest.u32(BASE + WINDOWS).unwrap(), 0xa7a7a7a7);
+        assert_eq!(
+            invalid
+                .guest
+                .u32(BASE + WINDOWS + WINDOW_STRIDE + 4)
+                .unwrap(),
+            0x1234
+        );
         let empty = published(&[]);
         assert_eq!(empty.result, Ok(Ret::new(0, 4)));
         assert!(empty.calls.is_empty());
@@ -371,6 +458,15 @@ mod tests {
         mem.set_u16(BASE + REGIONS + 0xe, 1).unwrap();
         assert!(!state.observe(plan(&[1, 4]), &mem).unwrap());
         mem.set_u16(BASE + REGIONS + 0xe, 0).unwrap();
+        assert!(state.observe(plan(&[1, 4]), &mem).unwrap());
+        mem.set_u32(BASE + WINDOWS + WINDOW_STRIDE + 0x78, 0x55)
+            .unwrap();
+        assert!(
+            !state.observe(plan(&[1, 4]), &mem).unwrap(),
+            "a different clipping plane cannot be replicated"
+        );
+        mem.set_u32(BASE + WINDOWS + WINDOW_STRIDE + 0x78, 0xa7a7a7a7)
+            .unwrap();
         assert!(state.observe(plan(&[1, 4]), &mem).unwrap());
         state.enter_bsp((10, 27));
         assert!(!state.verified(&selection));

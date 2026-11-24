@@ -153,6 +153,24 @@ from the running image each frame (`guest::tuning`), never committed: the
 straddle distance (`0x0045e060`, a double), the widening (`0x0045dfa0`)
 and the merge factor (`0x0043ff08`).
 
+### Portal traversal at the guest call
+
+`native_scene_lists::portal_walk` handles the main view's single-frustum
+walk at `0x00172840`. Rust reads the active frustum's tangent-space root
+polygon and transform, the BSP graph and the open-door bits. It emits the
+ordered node pool with each path's parent, portal, depth, polygon and
+crossed bits, the per-cluster chains and the drained queue. The caller
+retains its frustum indexing, window merge and region setup boundaries.
+
+At the merge entry the reference arm checks the guest's active records
+bit for bit, including repeated visits to a cluster, polygon order and
+signed zero. The next call can publish the Rust walk when its complete
+frustum, starting cluster, BSP generation and live input words match the
+checked call. Moving the camera or changing a door reopens the comparison.
+The hook validates the freshly seeded root, scratch layout and floating
+point environment before admission. `native_scene_lists_portal_walk_*`
+counts comparisons, mismatches, native publications and guest fallbacks.
+
 ### The window frusta
 
 `0x00172ee0` builds one frustum per window left after the merge with
@@ -214,12 +232,15 @@ At the mode-2 producer (`0x001733e0`, called by `0x00132152`),
 `render_bridge::native_scene_lists::regions` uses the caller's start
 argument. The sentinel selects an empty list even when the view has a
 resolved start cluster. On the first call for a start, the original
-producer runs. Rust compares the ordered region IDs, the sorted ordinal
-table, both counts and the link from each region to its window. On a
+producer runs. At the following geometry gather Rust compares the camera copy, ordered
+region IDs, sorted ordinals, counts, window links and the fields shared
+by all valid windows. On a
 match, Rust owns those records on subsequent calls with the same start,
 computed row and open-portal bits. A BSP activation or reload clears
-the comparison. Each window's complete camera-dependent payload still
-comes from the guest frustum builder at `0x00163db0`.
+the comparison. A nonempty list calls the guest frustum builder at
+`0x00163db0` for the first window. For a valid rectangle Rust copies its
+view index, rectangle, corners, bounds, planes and edge vectors into
+each following window, preserving padding in every destination.
 `native_scene_lists_pvs_regions_` counters report comparisons,
 mismatches, native calls and fallbacks.
 
