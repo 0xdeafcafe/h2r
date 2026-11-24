@@ -220,6 +220,7 @@ fn square(c: Vec3, half: f32) -> Hill {
             [c[0] + half, c[1] - half, c[2]],
             [c[0] - half, c[1] + half, c[2]],
         ],
+        ..Default::default()
     }
 }
 

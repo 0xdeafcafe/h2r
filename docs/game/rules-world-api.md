@@ -387,10 +387,16 @@ script adds and removes none.
 No capability: core entries with a host half but no group of their own
 (`world/zones.rs`). A zone is a labelled netgame flag — the host's census
 has no Forge document at a game's start, so no zone is a trigger volume.
-The flags that share a label and a number, three or more of them (a
-King of the Hill hill's corners), are one zone: the convex hull of their
-positions across the floor; every other flag is an upright cylinder
-around it. The sizes are ours ("Not verified"). A body is a living
+A zone's shape is an area round its flag
+([gametype-markers.md](gametype-markers.md), "In a script"), from the
+first of three that applies: the flag's own area, stored in the Forge
+document of a map variant and carried by the census (`Thing::area`), a
+radius or a path at its own heights; else the flags that share a label
+and a number, three or more of them (a King of the Hill hill's corners),
+as one zone, `Area::of_corners`: the convex hull of their positions
+across the floor; else `Area::default` around the flag, an upright
+cylinder. `rules.zones` reports each zone's source (`area`, `corners`
+or `default`). The default's sizes are ours ("Not verified"). A body is a living
 player's unit; the event order and the 64 zone events a tick are the
 host runtime's ([rules-engine.md](rules-engine.md#the-host-runtime)).
 

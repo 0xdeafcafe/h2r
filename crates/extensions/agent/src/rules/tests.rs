@@ -39,6 +39,12 @@ struct Fake {
 }
 
 impl Source for Fake {
+    fn zones(&self) -> agent_proto::rules::Zones {
+        agent_proto::rules::Zones {
+            zones: if self.running { vec![Fake::zone()] } else { Vec::new() },
+        }
+    }
+
     fn state(&self) -> State {
         if !self.running {
             return State {
@@ -69,6 +75,20 @@ impl Source for Fake {
                 error: "the engine took no score for slot 3".into(),
             }],
             ..Default::default()
+        }
+    }
+}
+
+impl Fake {
+    fn zone() -> agent_proto::rules::Zone {
+        agent_proto::rules::Zone {
+            id: 0x8_0001,
+            label: "hill_corner".into(),
+            number: Some(0),
+            shape: "area".into(),
+            area: json!({"radius": 4.0, "below": 0.5, "above": 1.5}),
+            at: [10.0, 0.0, 0.0],
+            reports: true,
         }
     }
 }
@@ -131,6 +151,25 @@ fn state_names_a_refusal() {
     assert_eq!(s["running"], false);
     assert_eq!(s["refused"], "no blob with hash prefix 0102030405060708");
     assert!(s.get("script").is_none() && s.get("budget").is_none(), "{s}");
+}
+
+#[test]
+fn zones_report_each_zones_shape_and_area() {
+    let (h, mut g) = (Harness::new(true), game());
+    let r = h.call(&mut g, method::ZONES, Value::Null);
+    assert!(r["error"].is_null(), "{r}");
+    let z = &r["result"]["zones"][0];
+    assert_eq!(z["label"], "hill_corner");
+    assert_eq!(z["shape"], "area");
+    assert_eq!(z["area"]["radius"], 4.0);
+    assert_eq!(z["at"], json!([10.0, 0.0, 0.0]));
+    assert_eq!(z["reports"], true);
+    let r = h.call(&mut g, method::ZONES, json!({"label": "x"}));
+    assert_eq!(r["error"]["code"], code::INVALID_PARAMS);
+    // No script, no zones.
+    let h = Harness::new(false);
+    let r = h.call(&mut g, method::ZONES, json!({}));
+    assert_eq!(r["result"]["zones"], json!([]));
 }
 
 /// A runtime that answers each reload by its `source` text, and records

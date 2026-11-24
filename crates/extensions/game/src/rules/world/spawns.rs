@@ -166,6 +166,7 @@ mod tests {
             designator: None,
             block,
             index,
+            area: None,
         }
     }
 

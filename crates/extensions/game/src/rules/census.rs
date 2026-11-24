@@ -100,6 +100,9 @@ pub struct Thing {
     pub designator: Option<u8>,
     pub block: BlockKind,
     pub index: u32,
+    /// The area on a netgame flag, which the flag's zone takes
+    /// (`super::world::zones`).
+    pub area: Option<forge_doc::Area>,
 }
 
 impl Thing {
@@ -134,6 +137,7 @@ impl Table {
                     designator: l.team,
                     block: l.block,
                     index: l.index,
+                    area: l.area.as_ref().and_then(|a| forge_doc::Area::try_from(a).ok()),
                 })
                 .collect(),
         };
@@ -177,6 +181,16 @@ impl Table {
                 placement: t.id(),
                 object: t.handle(),
             })
+            .collect()
+    }
+
+    /// The area of each netgame flag that has one, as `(flag index, area)`:
+    /// what the bots read a hill from (`bots::objective::set_flag_areas`).
+    pub fn flag_areas(&self) -> Vec<(u32, game_markers::Area)> {
+        self.things
+            .iter()
+            .filter(|t| t.block == BlockKind::NetgameFlags)
+            .filter_map(|t| Some((t.index, t.area.as_ref()?.marker_area())))
             .collect()
     }
 
@@ -276,6 +290,7 @@ mod tests {
             designator: None,
             block: BlockKind::NetgameFlags,
             index,
+            area: None,
         }
     }
 

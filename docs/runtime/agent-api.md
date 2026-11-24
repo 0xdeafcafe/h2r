@@ -109,7 +109,7 @@ connection to hold `session.claim`.
 | `forge.capacity`, `forge.probe` | read, act | [Forge probes](#forge-probes) |
 | `firefight.state`, `firefight.kit` | read | [Firefight](#firefight) |
 | `firefight.command` | act | [Firefight](#firefight) |
-| `rules.state`, `rules.reload` | read, act | [Rules scripts](#rules-scripts) |
+| `rules.state`, `rules.zones`, `rules.reload` | read, act | [Rules scripts](#rules-scripts) |
 | `variants.quick`, `variants.quick.set` | read, act | [Game variants](#game-variants) |
 | `match.status`, `match.report`, `match.stop`, `sim.guest_census` | read, read, act, read | [Sim matches](#sim-matches) |
 | `debug.views`, `debug.view` | read, act | [World debug views](#world-debug-views) |
@@ -4728,6 +4728,7 @@ builds with the `rules` cargo feature; with the `rules` switch off
 | Method and access | Parameters | Result |
 |---|---|---|
 | `rules.state` (read) | `{}` or omitted | `{running, refused?, script?, version?, hash?, source?, carrier?, scoring?, options?, authority?, stopped?, budget?, pending, errors, last_reload?, blocked?, labelled?}` |
+| `rules.zones` (read) | `{}` or omitted | `{zones: [{id, label, number?, shape: "area" \| "corners" \| "default", area, at, reports}]}` |
 | `rules.reload` (act) | `{ir_b64 \| source, mode?: auto \| in_place \| restart}` | `{mode: in_place \| restarted, hash, reasons, tick}` |
 
 `running` is false with the switch off, outside a multiplayer game, for
@@ -4772,6 +4773,18 @@ check a map against a script, choose both in the lobby as its leader,
 or start a game with them, and read `rules.state`; there is no separate
 census method, since the host's census is the loaded game's.
 
+`rules.zones` lists the zones the host built for the running script, in
+`id` order (empty when no script runs): each netgame flag's `id` (the
+placement id `zone.id` reads), `label` and `number`, `shape` (the step
+of the zone order that made it: the flag's own `area`, a hill's
+`corners`, or the `default` cylinder), `area` in plain numbers
+(`{radius, below, above}` or `{path: [[x, y], ...], below, above}`, a
+path in offsets from `at`), `at` (the centre marker in world units) and
+`reports` (this zone reports its enters and leaves; a hill's other
+corners name the same zone and report none)
+([gametype-markers.md](../game/gametype-markers.md), "In a script";
+`Runtime::zones` in `crates/extensions/game/src/rules/runtime.rs`).
+
 `rules.reload` puts a new script into the running game
 ([rules-engine.md](../game/rules-engine.md#reloading-a-running-script);
 `crates/extensions/game/src/rules/reload.rs`). Give the blob
@@ -4790,6 +4803,7 @@ that this host cannot run; a Live custom game reloads in place only.
 
 ```sh
 h2 agent rules.state
+h2 agent rules.zones
 h2 agent rules.reload '{"source":"rules \"Mine\" 1\ntype slayer\nuses slayer\n..."}'
 h2 agent rules.reload '{"ir_b64":"...","mode":"in_place"}'
 ```

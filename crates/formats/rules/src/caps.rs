@@ -377,8 +377,8 @@ pub const ENTRIES: &[Entry] = &[
     // neutral (8) reads as none.
     read(id::OBJECT_TEAM, "object_team", &[Object], Team, Named),
     // The player's living unit inside a zone object: the host's zone test
-    // (`game::rules::world::zones`), a flag's cylinder or the polygon of a
-    // numbered label's corners.
+    // (`game::rules::world::zones`): the flag's area, else the hull of a
+    // numbered label's corners, else a cylinder.
     read(id::INSIDE, "inside", &[Player, Object], Bool, Named),
     // The player whose unit an object is: the roster's units (the player
     // datum's unit), so no unit field is read.

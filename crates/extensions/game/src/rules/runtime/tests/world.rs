@@ -148,6 +148,24 @@ fn a_unit_entering_a_flags_zone_is_told_once_and_held_by_its_team() {
     assert_eq!(global(&s, "inside_now"), 0);
 }
 
+/// `rules.zones` reports each flag's zone with where its shape came from.
+#[test]
+fn the_zones_report_names_each_flags_shape() {
+    let ir = ::rules::compile(ZONES).unwrap();
+    let flags = [([0.0, 0.0, 0.0], TERRITORY, 0), ([20.0, 0.0, 3.0], TERRITORY, 0)];
+    let (m, s, _) = world(&ir, &flags, [[0.2, 0.0, 0.5], [10.0, 0.0, 0.0]]);
+    assert!(s.lock().zones().zones.is_empty(), "no script runs yet");
+    let line = s.lock().start(&m, false);
+    assert!(s.lock().state().running, "{line}");
+    let report = s.lock().zones();
+    assert_eq!(report.zones.len(), 2);
+    let z = &report.zones[1];
+    assert_eq!((z.label.as_str(), z.shape.as_str(), z.reports), ("territory", "default", true));
+    assert_eq!(z.at, [20.0, 0.0, 3.0]);
+    assert_eq!(z.area, serde_json::json!({"radius": 1.0, "below": 0.5, "above": 1.5}));
+    assert!(report.zones[0].id < z.id);
+}
+
 const KIT: &str = r#"
 rules "Kit" 1
 type slayer

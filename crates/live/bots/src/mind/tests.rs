@@ -1431,6 +1431,7 @@ fn in_the_hill_it_stays_and_out_of_it_it_goes_there() {
                 [c[0] + 3.0, c[1] + 3.0, 0.0],
                 [c[0] - 3.0, c[1] + 3.0, 0.0],
             ],
+            ..Default::default()
         }),
     };
     let mut m = Mind::new(Skill::Normal, 3);

@@ -3,20 +3,27 @@
 //! and `on death` read in the running game.
 //!
 //! A zone is a labelled netgame flag ([`super::super::census::Table`]): the
-//! host's census has no Forge document at a game's start, so every zone is
-//! a flag. Its shape comes from the map's own flags:
+//! host's census has no trigger volumes, so every zone is a flag. Its
+//! shape is an [`Area`] round the flag, from the first of these that
+//! applies (docs/game/gametype-markers.md, "In a script"):
 //!
-//! - The flags that share a label and a number (a King of the Hill hill's
-//!   corners, `hill_corner` 0 to 7), when there are three or more, are one
-//!   polygon: the convex hull of their positions across the floor, from
-//!   [`BELOW`] under the lowest corner to [`ABOVE`] over the highest. Each
-//!   corner names the same zone, and the first corner by handle reports its
-//!   enters and leaves, so a hill reports each body once.
-//! - Any other flag is an upright cylinder of [`RADIUS`] around it, from
-//!   [`BELOW`] under it to [`ABOVE`] over it.
+//! 1. The flag's own area, when the census has one (the Forge document's
+//!    area on the flag, `Thing::area`): a radius or a path, at its own
+//!    heights. The zone's [`Source`] is [`Source::Area`].
+//! 2. The flags that share a label and a number (a King of the Hill hill's
+//!    corners, `hill_corner` 0 to 7), when there are three or more: the
+//!    area [`Area::of_corners`] makes of them, the convex hull of their
+//!    positions across the floor, from [`BELOW`] under the lowest corner to
+//!    [`ABOVE`] over the highest. Each corner names the same zone, and the
+//!    first corner by handle reports its enters and leaves, so a hill
+//!    reports each body once. [`Source::Corners`].
+//! 3. Any other flag: [`Area::default`] round it, an upright cylinder of
+//!    [`RADIUS`] from [`BELOW`] under it to [`ABOVE`] over it.
+//!    [`Source::Default`].
 //!
-//! The sizes are ours: retail's capture radius and height (Territories'
-//! marker `T+0/+0x20/+0x40`) are not traced, so they are "Not verified".
+//! The sizes of the default are ours: retail's capture radius and height
+//! (Territories' marker `T+0/+0x20/+0x40`) are not traced, so they are
+//! "Not verified".
 //!
 //! A body is a living player's unit ([`bodies`]): its roster slot, team,
 //! unit datum and position. [`Zones::occupancy`] is who is in which zone
@@ -29,105 +36,68 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use engine::GuestMemory;
 use forge_doc::BlockKind;
+use game_markers::Area;
 
 use crate::firefight::runtime::read_players;
 use crate::rules::census::Table;
 
-/// A flag's cylinder radius, in world units. Not verified.
-pub const RADIUS: f32 = 1.0;
-/// How far a zone reaches over its highest flag, in world units. Not
+/// A lone flag's cylinder radius, in world units (`Area::default`). Not
 /// verified.
-pub const ABOVE: f32 = 1.5;
+pub const RADIUS: f32 = game_markers::area::DEFAULT_RADIUS;
+/// How far a lone flag's zone reaches over it, in world units. Not
+/// verified.
+pub const ABOVE: f32 = game_markers::area::DEFAULT_ABOVE;
 /// How far a zone reaches under its lowest flag, in world units. Not
 /// verified.
-pub const BELOW: f32 = 0.5;
+pub const BELOW: f32 = game_markers::area::DEFAULT_BELOW;
 /// The roster slots a game has.
 pub const SLOTS: u8 = 16;
 
 /// A zone's shape.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Shape {
-    /// An upright cylinder of [`RADIUS`] around one flag.
-    Cylinder { at: [f32; 3] },
-    /// A convex polygon across the floor (counter-clockwise), between two
-    /// heights.
-    Polygon {
-        corners: Vec<[f32; 2]>,
-        low: f32,
-        high: f32,
-    },
+    /// An area round a centre marker's place (a flag, or a hill's corners'
+    /// middle).
+    Area { at: [f32; 3], area: Area },
 }
 
 impl Shape {
-    /// The zone's middle: a cylinder's flag, or a polygon's corners'
-    /// mean across the floor halfway between its heights. `spawn_near`
-    /// measures from it (`super::spawns`).
+    /// The zone's middle (`Area::middle`). `spawn_near` measures from it
+    /// (`super::spawns`).
     pub fn middle(&self) -> [f32; 3] {
         match self {
-            Shape::Cylinder { at } => *at,
-            Shape::Polygon { corners, low, high } => {
-                let n = corners.len().max(1) as f32;
-                let x = corners.iter().map(|c| c[0]).sum::<f32>() / n;
-                let y = corners.iter().map(|c| c[1]).sum::<f32>() / n;
-                [x, y, (low + high) / 2.0]
-            }
+            Shape::Area { at, area } => area.middle(*at),
         }
     }
 
-    /// Whether `p` is inside, edges included.
+    /// Whether `p` is inside, edges included (`Area::contains`).
     pub fn contains(&self, p: [f32; 3]) -> bool {
         match self {
-            Shape::Cylinder { at } => {
-                let (dx, dy) = (p[0] - at[0], p[1] - at[1]);
-                dx * dx + dy * dy <= RADIUS * RADIUS && p[2] >= at[2] - BELOW && p[2] <= at[2] + ABOVE
-            }
-            Shape::Polygon { corners, low, high } => {
-                if p[2] < *low || p[2] > *high {
-                    return false;
-                }
-                let n = corners.len();
-                (0..n).all(|i| {
-                    let (a, b) = (corners[i], corners[(i + 1) % n]);
-                    cross(a, b, [p[0], p[1]]) >= 0.0
-                })
-            }
+            Shape::Area { at, area } => area.contains(*at, p),
         }
     }
 }
 
-/// `(b - a) x (c - a)`: positive when `c` is left of `a -> b`.
-fn cross(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f32 {
-    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+/// Where a zone's shape came from: the step of the order that made it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    /// The flag's own area.
+    Area,
+    /// A hill's corners.
+    Corners,
+    /// The default cylinder round a lone flag.
+    Default,
 }
 
-/// The convex hull of `points`, counter-clockwise (Andrew's monotone
-/// chain). Fewer than three points, or all in a line, give fewer than
-/// three corners.
-pub fn hull(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
-    let mut p: Vec<[f32; 2]> = points.to_vec();
-    p.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
-    p.dedup();
-    if p.len() < 3 {
-        return p;
-    }
-    let mut lower: Vec<[f32; 2]> = Vec::new();
-    for &q in &p {
-        while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], q) <= 0.0 {
-            lower.pop();
+impl Source {
+    /// The name `rules.zones` reports.
+    pub fn name(self) -> &'static str {
+        match self {
+            Source::Area => "area",
+            Source::Corners => "corners",
+            Source::Default => "default",
         }
-        lower.push(q);
     }
-    let mut upper: Vec<[f32; 2]> = Vec::new();
-    for &q in p.iter().rev() {
-        while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], q) <= 0.0 {
-            upper.pop();
-        }
-        upper.push(q);
-    }
-    lower.pop();
-    upper.pop();
-    lower.extend(upper);
-    lower
 }
 
 /// One zone: its shape and the handle that reports its enters and leaves.
@@ -135,6 +105,8 @@ pub fn hull(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
 pub struct Zone {
     pub shape: Shape,
     pub reporter: u32,
+    /// Which step of the order made the shape.
+    pub source: Source,
 }
 
 /// Every flag's zone in a game, by handle.
@@ -201,9 +173,11 @@ impl Zones {
     /// flag with no position has no zone.
     pub fn new(table: &Table, flags: &[[f32; 3]]) -> Zones {
         let at = |index: u32| flags.get(index as usize).copied();
+        // The flags with no area of their own that share a label and a
+        // number: a hill's corners.
         let mut groups: BTreeMap<(&str, i32), Vec<(u32, [f32; 3])>> = BTreeMap::new();
         for t in table.things() {
-            if t.block != BlockKind::NetgameFlags {
+            if t.block != BlockKind::NetgameFlags || t.area.is_some() {
                 continue;
             }
             if let (Some(n), Some(p)) = (t.number, at(t.index)) {
@@ -216,18 +190,36 @@ impl Zones {
                 continue;
             }
             let Some(p) = at(t.index) else { continue };
-            let group = t.number.and_then(|n| groups.get(&(t.text.as_str(), n)));
-            let polygon = group.filter(|g| g.len() >= 3).and_then(|g| {
-                let corners = hull(&g.iter().map(|(_, q)| [q[0], q[1]]).collect::<Vec<_>>());
-                (corners.len() >= 3).then(|| {
-                    let low = g.iter().map(|(_, q)| q[2]).fold(f32::INFINITY, f32::min) - BELOW;
-                    let high = g.iter().map(|(_, q)| q[2]).fold(f32::NEG_INFINITY, f32::max) + ABOVE;
-                    let reporter = g.iter().map(|(h, _)| *h).min().unwrap_or(t.handle());
-                    (Shape::Polygon { corners, low, high }, reporter)
-                })
+            let own = t.area.as_ref().map(|a| Zone {
+                shape: Shape::Area {
+                    at: p,
+                    area: a.marker_area(),
+                },
+                reporter: t.handle(),
+                source: Source::Area,
             });
-            let (shape, reporter) = polygon.unwrap_or((Shape::Cylinder { at: p }, t.handle()));
-            zones.insert(t.handle(), Zone { shape, reporter });
+            let corners = || {
+                let group = t.number.and_then(|n| groups.get(&(t.text.as_str(), n)))?;
+                if group.len() < 3 {
+                    return None;
+                }
+                let places: Vec<[f32; 3]> = group.iter().map(|(_, q)| *q).collect();
+                let (centre, area) = Area::of_corners(&places)?;
+                Some(Zone {
+                    shape: Shape::Area { at: centre, area },
+                    reporter: group.iter().map(|(h, _)| *h).min().unwrap_or(t.handle()),
+                    source: Source::Corners,
+                })
+            };
+            let zone = own.or_else(corners).unwrap_or_else(|| Zone {
+                shape: Shape::Area {
+                    at: p,
+                    area: Area::default(),
+                },
+                reporter: t.handle(),
+                source: Source::Default,
+            });
+            zones.insert(t.handle(), zone);
         }
         Zones { zones }
     }
@@ -248,6 +240,11 @@ impl Zones {
 
     pub fn is_empty(&self) -> bool {
         self.zones.is_empty()
+    }
+
+    /// Every zone, by handle.
+    pub fn iter(&self) -> impl Iterator<Item = (u32, &Zone)> {
+        self.zones.iter().map(|(&h, z)| (h, z))
     }
 
     /// Whether `at` is inside `zone`; a handle with no zone holds nothing.
@@ -395,9 +392,16 @@ mod tests {
         }
     }
 
+    fn cylinder(at: [f32; 3]) -> Shape {
+        Shape::Area {
+            at,
+            area: Area::default(),
+        }
+    }
+
     #[test]
     fn a_flag_is_a_cylinder_around_it() {
-        let s = Shape::Cylinder { at: [10.0, 0.0, 2.0] };
+        let s = cylinder([10.0, 0.0, 2.0]);
         assert!(s.contains([10.0, 0.0, 2.0]));
         assert!(s.contains([10.0 + RADIUS, 0.0, 2.0]));
         assert!(s.contains([10.5, 0.5, 2.0 + ABOVE]));
@@ -405,27 +409,30 @@ mod tests {
         assert!(!s.contains([10.0 + RADIUS + 0.01, 0.0, 2.0]));
         assert!(!s.contains([10.0, 0.0, 2.0 + ABOVE + 0.01]));
         assert!(!s.contains([10.0, 0.0, 2.0 - BELOW - 0.01]));
+        assert_eq!(s.middle(), [10.0, 0.0, 2.0 + (ABOVE - BELOW) / 2.0]);
     }
 
     #[test]
     fn the_hull_of_a_square_and_its_middle_is_the_square() {
-        let h = hull(&[[0.0, 0.0], [4.0, 0.0], [2.0, 2.0], [4.0, 4.0], [0.0, 4.0]]);
-        assert_eq!(h, vec![[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]]);
+        let (centre, area) = Area::of_corners(&[
+            [0.0, 0.0, 1.0],
+            [4.0, 0.0, 1.0],
+            [2.0, 2.0, 1.0],
+            [4.0, 4.0, 1.0],
+            [0.0, 4.0, 1.0],
+        ])
+        .unwrap();
         // Too few, or in a line: no polygon.
-        assert!(hull(&[[0.0, 0.0], [1.0, 1.0]]).len() < 3);
-        assert!(hull(&[[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]]).len() < 3);
-        let p = Shape::Polygon {
-            corners: h,
-            low: -1.0,
-            high: 3.0,
-        };
-        assert!(p.contains([2.0, 2.0, 0.0]));
-        assert!(p.contains([0.0, 0.0, 0.0]), "an edge is inside");
-        assert!(!p.contains([5.0, 2.0, 0.0]));
-        assert!(!p.contains([2.0, 2.0, 3.5]));
+        assert!(Area::of_corners(&[[0.0; 3], [1.0, 1.0, 0.0]]).is_none());
+        assert!(Area::of_corners(&[[0.0; 3], [1.0, 1.0, 0.0], [2.0, 2.0, 0.0]]).is_none());
+        let p = Shape::Area { at: centre, area };
+        assert!(p.contains([2.0, 2.0, 1.0]));
+        assert!(p.contains([0.0, 0.0, 1.0]), "an edge is inside");
+        assert!(!p.contains([5.0, 2.0, 1.0]));
+        assert!(!p.contains([2.0, 2.0, 1.0 + ABOVE + 0.5]));
     }
 
-    /// A hill's four corners make one polygon that the first corner
+    /// A hill's four corners make one zone that the first corner
     /// reports; a territory is a cylinder; a flag of another hill is its
     /// own.
     #[test]
@@ -448,7 +455,7 @@ mod tests {
         for &h in &hill {
             let z = zones.get(h).unwrap();
             assert_eq!(z.reporter, first);
-            assert!(matches!(z.shape, Shape::Polygon { .. }));
+            assert_eq!(z.source, Source::Corners);
             assert!(zones.contains(h, [3.0, 3.0, 1.2]));
             assert!(!zones.contains(h, [7.0, 3.0, 1.2]));
             // From under the lowest corner to over the highest.
@@ -458,7 +465,8 @@ mod tests {
         }
         let lone = corners[4].object;
         assert_eq!(zones.get(lone).unwrap().reporter, lone);
-        assert!(matches!(zones.get(lone).unwrap().shape, Shape::Cylinder { .. }));
+        assert_eq!(zones.get(lone).unwrap().source, Source::Default);
+        assert_eq!(zones.get(lone).unwrap().shape, cylinder([50.0, 0.0, 0.0]));
         let site = t.labelled("territory")[0].object;
         assert!(zones.contains(site, [30.5, 30.0, 0.5]));
         assert!(!zones.contains(site, [32.0, 30.0, 0.5]));
@@ -475,6 +483,61 @@ mod tests {
         // A zone whose label the script does not declare reports nothing.
         let only_sites = zones.occupancy(&bodies, |h| h == site);
         assert_eq!(only_sites, BTreeSet::from([(site, bodies[1].unit)]));
+    }
+
+    /// A flag's own area is its zone, a concave path's notch is outside it,
+    /// and a flag with no area, or a hill's corners, are as before.
+    #[test]
+    fn a_flags_area_is_its_zone_before_corners_and_the_default() {
+        use engine::objectives::kind;
+        let m = flag_map(&[
+            ([10.0, 0.0, 0.0], kind::HILL, 0),
+            ([30.0, 0.0, 0.0], kind::HILL + 1, 0),
+            ([50.0, 0.0, 0.0], kind::TERRITORY, 0),
+        ]);
+        let mut things = census::things(&m).unwrap();
+        // An L: its notch is the corner over x > 0, y > 0 (offsets).
+        let l = Area::path(vec![
+            [-4.0, -4.0],
+            [4.0, -4.0],
+            [4.0, 0.0],
+            [0.0, 0.0],
+            [0.0, 4.0],
+            [-4.0, 4.0],
+        ]);
+        assert_eq!(l.validate(), Ok(()));
+        let hill = things.iter_mut().find(|t| t.index == 0).unwrap();
+        hill.area = Some(l);
+        let ir = ::rules::compile(
+            "rules \"T\" 1\ntype slayer\nlabel territory: zones at least 1\n\non tick { }\n",
+        )
+        .unwrap();
+        let t = Table::new(&things, &ir);
+        let zones = Zones::read(&m, &t);
+        let shaped = t.things().iter().find(|t| t.index == 0).unwrap().handle();
+        let z = zones.get(shaped).unwrap();
+        assert_eq!((z.source, z.reporter), (Source::Area, shaped));
+        assert!(zones.contains(shaped, [8.0, -2.0, 0.0]));
+        assert!(zones.contains(shaped, [8.0, 2.0, 0.0]));
+        assert!(!zones.contains(shaped, [12.0, 2.0, 0.0]), "the notch");
+        assert!(!zones.contains(shaped, [8.0, -2.0, 1.6]), "over its reach");
+        assert!(!zones.contains(shaped, [14.5, 0.0, 0.0]), "past the path");
+        assert_eq!(
+            z.shape.middle(),
+            Area::path(vec![
+                [-4.0, -4.0],
+                [4.0, -4.0],
+                [4.0, 0.0],
+                [0.0, 0.0],
+                [0.0, 4.0],
+                [-4.0, 4.0]
+            ])
+            .middle([10.0, 0.0, 0.0])
+        );
+        // The others have none: a lone flag is the default cylinder.
+        let lone = t.things().iter().find(|t| t.index == 1).unwrap().handle();
+        assert_eq!(zones.get(lone).unwrap().source, Source::Default);
+        assert!(zones.contains(lone, [30.5, 0.0, 0.0]));
     }
 
     #[test]

@@ -426,16 +426,33 @@ pub(super) fn territory_markers(m: &dyn GuestMemory) -> Result<Vec<Vec3>, MemFau
         .collect())
 }
 
-/// The lowest-numbered hill's corners (flag types 11 to 18), the hill a
-/// game starts on (`0x2bd20b`).
-pub(super) fn first_hill(flags: &[(Vec3, u16, u16)]) -> Option<Hill> {
+/// The lowest-numbered hill (flag types 11 to 18), the hill a game starts
+/// on (`0x2bd20b`): the area of its first flag that has one in `areas`
+/// (flag index and area), else its corners when there are three or more.
+pub(super) fn first_hill(
+    flags: &[(Vec3, u16, u16)],
+    areas: &[(u32, game_markers::Area)],
+) -> Option<Hill> {
     (0..kind::HILLS).find_map(|n| {
+        let shaped = flags.iter().enumerate().find_map(|(i, f)| {
+            let area = areas.iter().find(|(a, _)| *a as usize == i)?;
+            (f.1 == kind::HILL + n).then(|| (f.0, area.1.clone()))
+        });
+        if let Some((at, area)) = shaped {
+            return Some(Hill {
+                corners: vec![at],
+                area: Some((at, area)),
+            });
+        }
         let corners: Vec<Vec3> = flags
             .iter()
             .filter(|f| f.1 == kind::HILL + n)
             .map(|f| f.0)
             .collect();
-        (corners.len() >= 3).then_some(Hill { corners })
+        (corners.len() >= 3).then_some(Hill {
+            corners,
+            area: None,
+        })
     })
 }
 

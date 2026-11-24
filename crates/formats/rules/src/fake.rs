@@ -47,6 +47,14 @@ pub struct FakeGame {
     /// `(player, zone object)` pairs: a player whose unit is inside the
     /// zone. `inside` and the zone test read the living ones.
     pub inside: BTreeSet<(u8, u32)>,
+    /// The area of each zone object a scenario shapes, with its centre
+    /// marker (docs/game/gametype-markers.md, "In a script"):
+    /// [`FakeGame::move_to`] puts a player inside the zones whose area
+    /// holds it. A zone with no area is moved in and out by `enter` and
+    /// `leave` alone.
+    pub areas: BTreeMap<u32, ([f32; 3], game_markers::Area)>,
+    /// Where [`FakeGame::move_to`] last put each player.
+    pub positions: BTreeMap<u8, [f32; 3]>,
     /// Actions made, as `(entry name, args)`.
     pub calls: Vec<(&'static str, Vec<Arg>)>,
     /// Reads made, by entry name.
@@ -214,6 +222,37 @@ impl FakeGame {
             .or_default()
             .push(Placed { placement, object });
         self.numbers.insert(object, number);
+    }
+
+    /// Gives the zone object `zone` an area round the marker at `centre`.
+    pub fn set_area(&mut self, zone: u32, centre: [f32; 3], area: game_markers::Area) {
+        self.areas.insert(zone, (centre, area));
+    }
+
+    /// Puts player `p` at `at` and returns the `enter` and `leave` inputs
+    /// the engine reports for it, `leave`s first, in zone order: the
+    /// shaped zones ([`FakeGame::areas`]) whose area holds `at` against
+    /// the ones the player was in. A player with no unit is moved and
+    /// reports nothing. Apply and fire each input, as [`crate::scenario::step`]
+    /// does.
+    pub fn move_to(&mut self, p: u8, at: [f32; 3]) -> Vec<Input> {
+        self.positions.insert(p, at);
+        let Some((&object, _)) = self.units.iter().find(|(_, q)| **q == p) else {
+            return Vec::new();
+        };
+        let mut leaves = Vec::new();
+        let mut enters = Vec::new();
+        for (&zone, (centre, area)) in &self.areas {
+            let was = self.inside.contains(&(p, zone));
+            let now = area.contains(*centre, at);
+            if was && !now {
+                leaves.push(Input::Leave { zone, object });
+            } else if now && !was {
+                enters.push(Input::Enter { zone, object });
+            }
+        }
+        leaves.extend(enters);
+        leaves
     }
 
     /// A new tick begins: the round clock counts down one, to 0.
