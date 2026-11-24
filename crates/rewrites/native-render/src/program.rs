@@ -2309,7 +2309,7 @@ impl ProgramSet {
     ) -> Option<wgpu::BindGroup> {
         let gpu = self.materials.get(&material)?;
         let supplied = gpu.program.texaccum_stages().into_iter().enumerate()
-            .filter_map(|(n, on)| on.then(|| (n, target.clone()))).collect();
+            .filter(|(_, on)| *on).map(|(n, _)| (n, target.clone())).collect();
         gpu.textures_supplied(device, page, &supplied)
     }
 

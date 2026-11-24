@@ -40,10 +40,8 @@ pub enum Stage {
     /// The section's lightmap page through its palette.
     Lightmap,
     /// An engine texture by id (`0x00019530`'s table): supplied per view,
-    /// never decoded at load. The look refuses these
-    /// ([`Refusal::EngineTexture`]); the stages that supply them (the
-    /// water edge blend's scene copy and reflections,
-    /// `crate::water_gpu`) build their own look with them.
+    /// never decoded at load. Layer 3 can bind target 1. The water and
+    /// fog passes supply their own per-view resources.
     Engine(u8),
     /// An image a host with no game keys itself ([`HostStage`]): never a
     /// tag, so it cannot stand for one. Bound as a bitmap stage is, from
@@ -107,7 +105,7 @@ pub enum Refusal {
     MissingImplementation(usize),
     /// The implementation has no vertex program.
     NoVertexShader,
-    /// A stage samples an engine texture other than the lightmap.
+    /// The pass has no binding for this engine texture.
     EngineTexture(u8),
     /// A stage samples what the previous draw left.
     UnsetSlot(u8),
@@ -298,7 +296,7 @@ fn layer3_selected(material: &Material) -> Result<(TagId, &ResolvedImplementatio
 /// why it stays on the D3D path: its vertex program, stage textures and
 /// instance constants, nothing animated or computed per draw.
 pub fn implementation_look(pass: TagId, imp: &ResolvedImplementation) -> Result<PassLook, Refusal> {
-    look_with_engine(pass, imp, None, None)
+    look_with_engine(pass, imp, None, None, false)
 }
 
 /// The image of the rasterizer data's `+0x14` bitmap that engine texture
@@ -316,7 +314,7 @@ pub fn rasterizer_image(id: u8) -> u32 {
 pub fn implementation_look_with_rasterizer(
     pass: TagId, imp: &ResolvedImplementation, rasterizer: Option<TagId>,
 ) -> Result<PassLook, Refusal> {
-    look_with_engine(pass, imp, None, rasterizer)
+    look_with_engine(pass, imp, None, rasterizer, false)
 }
 
 /// Target 1 is a live render texture. Its size bindings can share a row
@@ -346,40 +344,24 @@ fn texaccum_dimensions(imp: &ResolvedImplementation) -> Vec<(tags::material::Eng
 fn world_implementation_look(
     pass: TagId, imp: &ResolvedImplementation, normalization: Option<TagId>,
 ) -> Result<PassLook, Refusal> {
-    use crate::object_program::TEXACCUM_TEXTURE;
-    if !imp.textures.iter().flatten().any(|t| t.source == TextureSource::Engine(TEXACCUM_TEXTURE)) {
-        return look_with_engine(pass, imp, normalization, None);
-    }
-    let mut resolved = imp.clone();
-    let mut stages = [false; 4];
-    for (n, stage) in resolved.textures.iter_mut().enumerate() {
-        if let Some(t) = stage && t.source == TextureSource::Engine(TEXACCUM_TEXTURE) {
-            stages[n] = true;
-            t.source = TextureSource::None;
-        }
-    }
-    for r in &mut resolved.vertex_constants {
-        if imp.dimension_bindings.iter().any(|d| d.bank == 1 && 18 + d.reg == r.index
-            && usize::from(d.stage).checked_sub(1).is_some_and(|n| stages.get(n) == Some(&true))) {
-            // Per-draw scalar/vector dependencies still refuse at compile.
-            r.origin = Origin::Instance;
-        }
-    }
-    let mut look = look_with_engine(pass, &resolved, normalization, None)?;
-    for (stage, accum) in look.textures.iter_mut().zip(stages) {
-        if accum { *stage = Stage::Engine(TEXACCUM_TEXTURE); }
-    }
-    Ok(look)
+    look_with_engine(pass, imp, normalization, None, true)
 }
 
 fn look_with_engine(
     pass: TagId, imp: &ResolvedImplementation, normalization: Option<TagId>, rasterizer: Option<TagId>,
+    world_accumulation: bool,
 ) -> Result<PassLook, Refusal> {
+    use crate::object_program::TEXACCUM_TEXTURE;
     let vertex_shader = imp.vertex_shader.ok_or(Refusal::NoVertexShader)?;
     if !imp.animated.is_empty() {
         return Err(Refusal::Animated);
     }
-    if let Some(r) = imp.vertex_constants.iter().find(|r| r.origin == Origin::Engine) {
+    let accumulation_size = |r: &Register| world_accumulation && imp.dimension_bindings.iter().any(|d| {
+        d.bank == 1 && 18 + d.reg == r.index && usize::from(d.stage).checked_sub(1)
+            .and_then(|stage| imp.textures.get(stage)).copied().flatten()
+            .is_some_and(|t| t.source == TextureSource::Engine(TEXACCUM_TEXTURE))
+    });
+    if let Some(r) = imp.vertex_constants.iter().find(|r| r.origin == Origin::Engine && !accumulation_size(r)) {
         return Err(Refusal::EngineVertexConstant(r.index));
     }
     let mut textures = [Stage::Empty; 4];
@@ -388,6 +370,7 @@ fn look_with_engine(
             None | Some(TextureSource::None) => Stage::Empty,
             Some(TextureSource::Bitmap { bitmap, image, .. }) => Stage::Bitmap { bitmap, image },
             Some(TextureSource::Lightmap) => Stage::Lightmap,
+            Some(TextureSource::Engine(TEXACCUM_TEXTURE)) if world_accumulation => Stage::Engine(TEXACCUM_TEXTURE),
             Some(TextureSource::Engine(1)) => Stage::Bitmap {
                 bitmap: normalization.ok_or(Refusal::EngineTexture(1))?, image: 0,
             },
