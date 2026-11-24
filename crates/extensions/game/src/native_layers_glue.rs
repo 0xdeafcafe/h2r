@@ -1,5 +1,5 @@
 //! The host of `frame-scene.layers` (docs/graphics/framescene.md, slice 4):
-//! the scene's world layers 1, 5, 7, 8, 20, 2 and 17, the first person's
+//! the scene's world layers 1, 5, 7, 8, 20, 2 and 17, the alternate view's layer 2, the first person's
 //! layers 1, 7, 8, 20 and 2, and the sorted handlers' layers 18 and 19
 //! (camouflage) and 21 (hologram) (docs/graphics/native-water-fog.md),
 //! drawn from the scene's plan
@@ -21,7 +21,7 @@
 //!   view or of the first person): the bridge extracts the layer's pass
 //!   from guest memory (`render_bridge::native_layers::extract`); the plan
 //!   takes each item or names why not. A structure item (a cluster's or
-//!   a placement's, the scene's caller only) draws when the set holds its
+//!   a placement's, the main and alternate scene callers) draws when the set holds its
 //!   shader and part and the plan supplies its constants. Game-time
 //!   animation updates the compiled passes' uniforms at the layer call.
 //!   An object item is drawn when extraction names no cause
@@ -117,9 +117,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     fn ask(&self, mem: &mut dyn GuestMemory, layer: u32, caller: LayerCaller, scene: &FrameScene) -> Option<native_render::skip::Cleared> {
         let l = u8::try_from(layer).ok()?;
         let pass = scene.layer_passes.first()?;
-        // The world's layer sets: the scene's caller only.
+        // The world's layer sets: the main and alternate scene callers.
         let ready = match caller {
-            LayerCaller::Scene => {
+            LayerCaller::Scene | LayerCaller::AlternateView => {
                 let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
                 Some(Arc::clone(current_ready(&state, mem)?))
             }
@@ -161,7 +161,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 let why = match caller {
                     LayerCaller::FirstPerson => "first_person_structure",
                     LayerCaller::Sorted(_) => "sorted_structure",
-                    LayerCaller::Scene => "program",
+                    LayerCaller::Scene | LayerCaller::AlternateView => "program",
                 };
                 *outcomes.entry(why).or_default() += structure as u64;
             }
@@ -342,7 +342,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }
         let view_index = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
         let stage = match caller {
-            LayerCaller::Scene => timeline::native::Stage::World,
+            LayerCaller::Scene | LayerCaller::AlternateView => timeline::native::Stage::World,
             LayerCaller::FirstPerson => timeline::native::Stage::FirstPerson,
             LayerCaller::Sorted(_) => timeline::native::Stage::Objects,
         };
@@ -391,7 +391,7 @@ fn plan_objects<B: d3d::backend::Backend>(
         None
     };
     let models = match caller {
-        LayerCaller::Scene | LayerCaller::Sorted(_) => crate::native_objects_glue::layer_models(d, mem),
+        LayerCaller::Scene | LayerCaller::AlternateView | LayerCaller::Sorted(_) => crate::native_objects_glue::layer_models(d, mem),
         LayerCaller::FirstPerson => crate::native_first_person_glue::layer_models(d, mem),
     };
     let Some(models) = models else { return all("object_models") };
