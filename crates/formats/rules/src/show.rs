@@ -73,11 +73,31 @@ pub struct Message {
 pub enum Cue {
     Message(Message),
     StartClip(Type),
+    /// The areas the script shows in play (`show_area`;
+    /// `vm::RulesExt::shown`), whole: each zone object and the team of
+    /// its wall's colour (`None` for neutral). The authority sends it when
+    /// the list changes and every [`WALLS_REPEAT`] ticks while it is not
+    /// empty, so a machine that joins late has it within a few seconds; an
+    /// empty list takes every wall off.
+    Walls(Vec<(u32, Option<u8>)>),
 }
 
 /// The kind byte of a message cue in the `Cue` record's payload.
 pub const MESSAGE: u8 = 0;
 pub const START_CLIP: u8 = 1;
+pub const WALLS: u8 = 2;
+
+/// A zone object is a netgame flag's labelled thing: its handle is this
+/// base (the handle bit and the flags' block) with the flag's index
+/// (`game::rules::census::Thing::handle`). The index is what a walls cue
+/// carries.
+pub const ZONE_BASE: u32 = 0x4001_0000;
+/// The most walls a cue holds: the VM's shown areas.
+pub const MAX_WALLS: usize = crate::vm::MAX_SHOWN_AREAS;
+/// How often the authority repeats a non-empty walls cue, in ticks.
+pub const WALLS_REPEAT: u32 = 90;
+/// A wall's team on the wire when it is neutral.
+const NEUTRAL: u16 = 0xf;
 
 impl Cue {
     /// The kind byte of the `Cue` record's payload.
@@ -85,6 +105,7 @@ impl Cue {
         match self {
             Cue::Message(_) => MESSAGE,
             Cue::StartClip(_) => START_CLIP,
+            Cue::Walls(_) => WALLS,
         }
     }
 
@@ -94,6 +115,7 @@ impl Cue {
             Cue::Message(message) => message.encode(),
             Cue::StartClip(ty) if ty.row().start == StartLine::Ours => Ok(vec![ty.code()]),
             Cue::StartClip(ty) => Err(CueError::NoStartClip(ty.code())),
+            Cue::Walls(walls) => encode_walls(walls),
         }
     }
 
@@ -114,9 +136,61 @@ impl Cue {
                 [] => Err(CueError::Truncated),
                 _ => Err(CueError::TrailingBytes),
             },
+            WALLS => decode_walls(bytes).map(Cue::Walls),
             kind => Err(CueError::UnknownKind(kind)),
         }
     }
+}
+
+/// A walls cue's payload: the count, then a `u16` for each wall, the flag's
+/// index in the low 12 bits and the team (`0xf` for neutral) above.
+fn encode_walls(walls: &[(u32, Option<u8>)]) -> Result<Vec<u8>, CueError> {
+    if walls.len() > MAX_WALLS {
+        return Err(CueError::TooManyWalls(walls.len()));
+    }
+    let mut out = vec![walls.len() as u8];
+    for (n, &(zone, team)) in walls.iter().enumerate() {
+        let index = zone.wrapping_sub(ZONE_BASE);
+        if zone & !0xffff != ZONE_BASE || index >= 0x1000 {
+            return Err(CueError::BadZone(zone));
+        }
+        if walls[..n].iter().any(|(z, _)| *z == zone) {
+            return Err(CueError::DuplicateWall(zone));
+        }
+        let team = match team {
+            None => NEUTRAL,
+            Some(t) if (t as usize) < MAX_TEAMS => u16::from(t),
+            Some(t) => return Err(CueError::BadTeam(t)),
+        };
+        out.extend((index as u16 | team << 12).to_le_bytes());
+    }
+    Ok(out)
+}
+
+fn decode_walls(bytes: &[u8]) -> Result<Vec<(u32, Option<u8>)>, CueError> {
+    let mut r = Reader(bytes);
+    let count = usize::from(r.u8()?);
+    if count > MAX_WALLS {
+        return Err(CueError::TooManyWalls(count));
+    }
+    let mut walls: Vec<(u32, Option<u8>)> = Vec::with_capacity(count);
+    for _ in 0..count {
+        let word = r.u16()?;
+        let zone = ZONE_BASE | u32::from(word & 0x0fff);
+        let team = match word >> 12 {
+            NEUTRAL => None,
+            t if (t as usize) < MAX_TEAMS => Some(t as u8),
+            t => return Err(CueError::BadTeam(t as u8)),
+        };
+        if walls.iter().any(|(z, _)| *z == zone) {
+            return Err(CueError::DuplicateWall(zone));
+        }
+        walls.push((zone, team));
+    }
+    if !r.0.is_empty() {
+        return Err(CueError::TrailingBytes);
+    }
+    Ok(walls)
 }
 
 /// Why a cue does not encode or decode.
@@ -147,6 +221,13 @@ pub enum CueError {
     BadTeam(u8),
     /// An enum value outside the blob's string table.
     BadEnum(u16),
+    /// A wall's zone is no netgame flag's object, or its index is past
+    /// the 12 bits the wire has.
+    BadZone(u32),
+    /// More than [`MAX_WALLS`] walls.
+    TooManyWalls(usize),
+    /// A zone twice in one walls cue.
+    DuplicateWall(u32),
 }
 
 impl std::fmt::Display for CueError {
@@ -511,6 +592,46 @@ mod tests {
             Cue::decode(MESSAGE, &[0, 0, 1, 0, 1, 9, 0], &strings),
             Err(CueError::BadEnum(9))
         );
+    }
+
+    #[test]
+    fn a_walls_cue_round_trips_and_the_largest_fits_the_bound() {
+        let walls: Vec<(u32, Option<u8>)> = (0..MAX_WALLS as u32)
+            .map(|n| (ZONE_BASE | (n * 7 + 3), if n % 3 == 0 { None } else { Some(n as u8 % 8) }))
+            .collect();
+        let cue = Cue::Walls(walls);
+        let bytes = cue.encode().unwrap();
+        assert!(bytes.len() <= MAX_CUE_BYTES, "{} bytes", bytes.len());
+        assert_eq!(cue.kind(), WALLS);
+        assert_eq!(Cue::decode(WALLS, &bytes, &[]), Ok(cue));
+        // None shown is a cue too: it takes every wall off.
+        let none = Cue::Walls(Vec::new());
+        assert_eq!(Cue::decode(WALLS, &none.encode().unwrap(), &[]), Ok(none));
+    }
+
+    #[test]
+    fn the_codec_refuses_each_bad_walls_cue() {
+        let zone = ZONE_BASE | 5;
+        let enc = |w: Vec<(u32, Option<u8>)>| Cue::Walls(w).encode();
+        assert_eq!(enc(vec![(7, None)]), Err(CueError::BadZone(7)));
+        assert_eq!(enc(vec![(ZONE_BASE | 0x1000, None)]), Err(CueError::BadZone(ZONE_BASE | 0x1000)));
+        assert_eq!(enc(vec![(zone, Some(8))]), Err(CueError::BadTeam(8)));
+        assert_eq!(enc(vec![(zone, None), (zone, Some(1))]), Err(CueError::DuplicateWall(zone)));
+        assert_eq!(enc(vec![(zone, None); 9]), Err(CueError::TooManyWalls(9)));
+        let good = enc(vec![(zone, Some(1)), (zone + 1, None)]).unwrap();
+        // Cut short, with a byte too many, a count over the bound, a team
+        // past the eight, and the same zone twice.
+        assert_eq!(Cue::decode(WALLS, &good[..good.len() - 1], &[]), Err(CueError::Truncated));
+        let mut more = good.clone();
+        more.push(0);
+        assert_eq!(Cue::decode(WALLS, &more, &[]), Err(CueError::TrailingBytes));
+        assert_eq!(Cue::decode(WALLS, &[9], &[]), Err(CueError::TooManyWalls(9)));
+        let mut bad = good.clone();
+        bad[2] = 0x8f;
+        assert_eq!(Cue::decode(WALLS, &bad, &[]), Err(CueError::BadTeam(8)));
+        let mut twice = good.clone();
+        twice[3..5].copy_from_slice(&good[1..3]);
+        assert_eq!(Cue::decode(WALLS, &twice, &[]), Err(CueError::DuplicateWall(zone)));
     }
 
     #[test]

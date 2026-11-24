@@ -429,3 +429,53 @@ fn a_shown_area_is_a_wall_of_the_zones_shape_until_it_is_hidden() {
     tick(&s, &mut m, 3);
     assert!(s.lock().walls().is_empty(), "hidden");
 }
+
+/// A client that is not the authority draws the walls the host's script
+/// shows: the cue carries the shown areas, and the client's own copy of the
+/// map gives each its shape, so the two machines have the same walls.
+#[test]
+fn a_client_reads_the_hosts_shown_areas_into_the_same_walls() {
+    use crate::rules::world::walls;
+    use ::rules::show::{Cue, WALLS as WALLS_KIND};
+    let ir = ::rules::compile(WALLS).unwrap();
+    let flags = [([0.0, 0.0, 0.0], TERRITORY, 0), ([20.0, 0.0, 0.0], TERRITORY, 0)];
+    let (mut m, s, _) = world(&ir, &flags, [[0.2, 0.0, 0.5], [10.0, 0.0, 0.0]]);
+    s.lock().start(&m, false);
+    tick(&s, &mut m, 1);
+    tick(&s, &mut m, 2);
+    let host = s.lock().walls();
+    assert_eq!(host.len(), 2);
+    let shown = s.lock().running().unwrap().vm.shown_areas().to_vec();
+
+    // Over the wire and back, then read on a machine with no VM.
+    let bytes = Cue::Walls(shown.clone()).encode().unwrap();
+    let Cue::Walls(received) = Cue::decode(WALLS_KIND, &bytes, &[]).unwrap() else {
+        panic!("a walls cue")
+    };
+    assert_eq!(received, shown);
+    assert_eq!(walls::client(&m, &received), host);
+    // A zone the client's map has no flag for has no wall.
+    assert!(walls::client(&m, &[(::rules::show::ZONE_BASE | 9, None)]).is_empty());
+    // The whole list, none shown included, takes the walls off.
+    assert!(walls::client(&m, &[]).is_empty());
+}
+
+#[test]
+fn the_authority_sends_the_walls_when_they_change_and_repeats_them() {
+    let shown = vec![(::rules::show::ZONE_BASE | 1, Some(0))];
+    let none: Vec<(u32, Option<u8>)> = Vec::new();
+    let sent = |list: &[(u32, Option<u8>)], at: u32| Some((list.to_vec(), at));
+    // Nothing shown and nothing sent is nothing to say.
+    assert!(!walls_due(None, &none, 5));
+    // A first list, and a changed one, go at once.
+    assert!(walls_due(None, &shown, 5));
+    let other = vec![(::rules::show::ZONE_BASE | 1, None)];
+    assert!(walls_due(sent(&shown, 5).as_ref(), &other, 6));
+    // The same list waits out the repeat, so a late joiner has it.
+    let repeat = ::rules::show::WALLS_REPEAT;
+    assert!(!walls_due(sent(&shown, 5).as_ref(), &shown, 5 + repeat - 1));
+    assert!(walls_due(sent(&shown, 5).as_ref(), &shown, 5 + repeat));
+    // An emptied list goes once, then stays quiet.
+    assert!(walls_due(sent(&shown, 5).as_ref(), &none, 6));
+    assert!(!walls_due(sent(&none, 6).as_ref(), &none, 6 + repeat * 3));
+}

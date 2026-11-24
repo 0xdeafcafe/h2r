@@ -167,3 +167,70 @@ fn a_lone_hill_flag_edits_the_default_area_and_a_bomb_spawn_has_none() {
     s.set_area(0, Some(Area::radius(5.0)), None).unwrap();
     assert_eq!(s.editable_area(0).unwrap().2, crate::AreaFrom::Stored);
 }
+
+/// A saved map carries its areas at the end of its file, and the next open
+/// reads them back onto the flags they belong to, as no edit
+/// (docs/game/gametype-markers.md, "Areas saved with a map").
+#[test]
+fn areas_are_saved_in_the_map_and_read_back_onto_their_flags() {
+    let dir = std::env::temp_dir().join(format!("scenario-edit-saved-areas-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = session("saved-areas");
+    assert!(!s.is_dirty());
+    s.set_area(0, Some(Area::radius(3.0)), None).unwrap();
+    assert!(s.is_dirty(), "an area is a change");
+    let out = dir.join("with.map");
+    s.save_as(&out).unwrap();
+    assert!(!s.is_dirty(), "saved");
+
+    // The file ends in the record; the map before it is the fixture's.
+    let bytes = std::fs::read(&out).unwrap();
+    let rows = game_markers::record::read_tail(&mut std::io::Cursor::new(&bytes)).unwrap().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].area, Area::radius(3.0));
+
+    let mut again = crate::Session::new();
+    again.open(MapSource::file(&out)).unwrap();
+    assert_eq!(again.scenario().unwrap().area(0), Some(&Area::radius(3.0)));
+    assert!(!again.is_dirty(), "areas read from the map are not edits");
+    // Saving it again writes the same bytes.
+    let twice = dir.join("twice.map");
+    again.save_as(&twice).unwrap();
+    assert_eq!(std::fs::read(&twice).unwrap(), bytes);
+
+    // Taking the area off is a change; undoing it is not; saving it
+    // leaves a map with no record, which is the fixture's bytes.
+    again.set_area(0, None, None).unwrap();
+    assert!(again.is_dirty());
+    assert!(again.undo());
+    assert!(!again.is_dirty());
+    again.set_area(0, None, None).unwrap();
+    let bare = dir.join("bare.map");
+    again.save_as(&bare).unwrap();
+    assert_eq!(std::fs::read(&bare).unwrap(), fixture());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A row finds its flag by what the flag was when the area was saved: a
+/// flag moved since loses it, and the status says how many.
+#[test]
+fn an_area_whose_flag_moved_since_the_save_is_not_read() {
+    let dir = std::env::temp_dir().join(format!("scenario-edit-moved-areas-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = session("moved-areas");
+    s.set_area(0, Some(Area::radius(3.0)), None).unwrap();
+    let out = dir.join("with.map");
+    s.save_as(&out).unwrap();
+    // Another tool moved the flag in the saved map's bytes: a stale row.
+    let mut scenario = {
+        let mut m = MapSource::file(&out).open().unwrap();
+        Scenario::read(&mut m).unwrap()
+    };
+    let rows = MapSource::file(&out).areas().unwrap();
+    scenario
+        .set(FLAGS, 0, "position", Value::Vec3([50.0, 50.0, 50.0]))
+        .unwrap();
+    assert_eq!(scenario.load_areas(&rows), 1);
+    assert_eq!(scenario.area(0), None);
+    std::fs::remove_dir_all(&dir).ok();
+}
