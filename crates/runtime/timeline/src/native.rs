@@ -409,6 +409,7 @@ const SCENE_LIST_START: usize = WORLD_SECTION_BASE + WORLD_SECTION_COLUMNS.len()
 const SCENE_LISTS: &[&str] = &[
     "view_objects",
     "light_objects",
+    "portal_walk",
     "object_order",
     "object_setup",
     "object_record",
@@ -457,6 +458,7 @@ const SCENE_LIST_RESULTS: [&str; 11] = [
 pub enum SceneList {
     ViewObjects,
     LightObjects,
+    PortalWalk,
     ObjectOrder,
     ObjectSetup,
     ObjectRecord,

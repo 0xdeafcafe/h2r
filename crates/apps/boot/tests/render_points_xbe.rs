@@ -26,6 +26,7 @@ fn the_native_renderers_points_are_discovered_functions() {
         &points::PORTAL_WINDOW_MERGE,
         &points::PORTAL_WINDOW_REGIONS,
         &points::SCENE_CLUSTER_GATHER,
+        &points::PORTAL_WINDOW_WALK,
         &points::SCENE_GEOMETRY_GATHER,
         &points::VIEW_PVS_REGIONS,
         &points::SCENE_OBJECT_ORDER,

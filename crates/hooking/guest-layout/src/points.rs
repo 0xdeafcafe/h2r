@@ -1090,6 +1090,8 @@ points! { ALL;
     /// each entry through `SetRenderState_Simple`, the D3D shadow and
     /// dirty bits, or a per-state setter.
     RENDER_STATES @ 0x0001_a170: [fn(context: ebx, list: stack 0) ret 4]; "docs/graphics/render-loop.md";
+    /// Flood a single frustum into the caller's portal-node and cluster scratch.
+    PORTAL_WINDOW_WALK @ 0x0017_2840: [fn(view: stack 0, nodes: stack 1, clusters: stack 2, queue: stack 3, projection: stack 4) -> al ret 20]; "docs/graphics/native-visibility.md";
     /// Merge portal windows by cluster in the current flood's node pool.
     PORTAL_WINDOW_MERGE @ 0x0017_2c70: [fn(chains: esi, pool: stack 0) ret 4]; "docs/graphics/native-visibility.md";
     /// Materialize regions and frusta from the merged node pool.

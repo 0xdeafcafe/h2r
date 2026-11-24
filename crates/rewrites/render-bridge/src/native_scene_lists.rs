@@ -7,6 +7,7 @@ mod portal_merge;
 mod lights;
 mod objects;
 mod object_lod;
+mod portal_walk;
 mod records;
 mod setup;
 pub use setup::{DisplaySection, display_model};
@@ -90,6 +91,7 @@ impl Feature for ScaledSceneLists {
         if !enabled(b.switches()) {
             return Ok(());
         }
+        portal_walk::install(b);
         install(
             b,
             Seam::Function(&points::SCENE_CLUSTER_GATHER, 4),
