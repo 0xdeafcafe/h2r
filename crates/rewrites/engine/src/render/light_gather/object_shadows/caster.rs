@@ -105,6 +105,16 @@ pub fn plan(m: &dyn GuestMemory, entry_esp: u32, fpu: Fpu) -> Result<Plan> {
     {
         return Err(Refusal::Unsupported);
     }
+    // A root cannot inherit eligibility from a parent. Its definition
+    // either allows all object types or just bipeds and vehicles.
+    let datum = m.u32(body)?;
+    let tag = guest::at(guest::ptr(m, guest::TAGS)?, (datum & 0xffff) << 4)?;
+    let definition = guest::ptr(m, guest::at(tag, 8)?)?;
+    let mode = m.u16(guest::at(definition, 0x18)?)?;
+    let kind = m.u8(body + 0xaa)?;
+    if !(mode == 2 || (mode == 0 && matches!(kind, 0 | 1))) {
+        return Err(Refusal::Unsupported);
+    }
     let lighting = sample(m, body, object)?;
     let strength = m.f32(guest::at(lighting, 0x1c)?)?;
     m.vec3(guest::at(lighting, 0xc)?)?;
@@ -646,4 +656,45 @@ async fn layers(cx: &Cx, p: &Plan, s: u32) -> Result<u32, EntryError> {
     }
     let tail = GuestCall::new(0x0004_a780).esi(esi).edi(edi).ebx(ebx);
     Ok(p.call(cx, 0x0003_29e3, tail).await?.eax)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::FlatMemory;
+
+    #[test]
+    fn an_unowned_or_unlit_cache_entry_stays_with_the_guest() {
+        let mut m = FlatMemory::new(0, 0x510000);
+        let (body, object, pool, entry) = (0x1000, 0x0001_0005, 0x2000, 0x3000);
+        m.set_u32(body + 0xcc, 0x0010_0000).unwrap();
+        m.set_u32(0x0050_9434, pool).unwrap();
+        m.set_u32(pool + 0x44, entry).unwrap();
+        m.set_u8(entry + 3, 1).unwrap();
+        assert_eq!(sample(&m, body, object), Err(Refusal::Residency));
+        m.set_u32(entry + 4, object).unwrap();
+        m.set_u8(entry + 3, 0).unwrap();
+        assert_eq!(sample(&m, body, object), Err(Refusal::Residency));
+        m.set_u8(entry + 3, 1).unwrap();
+        assert_eq!(sample(&m, body, object), Ok(entry + 0x54));
+    }
+
+    #[test]
+    fn creatures_refuse_before_reading_a_mask_sample() {
+        let mut m = FlatMemory::new(0, 0x500000);
+        let (esp, pool, header, body) = (0x8000, 0x1000, 0x2000, 0x3000);
+        m.set_u32(esp + 4, 0x0001_0000).unwrap();
+        m.set_f32(esp + 8, 0.75).unwrap();
+        m.set_u32(guest::OBJECTS, pool).unwrap();
+        m.set_u32(pool + 0x44, header).unwrap();
+        m.set_u32(header + 8, body).unwrap();
+        m.set_u32(body + 0x14, guest::NONE).unwrap();
+        m.set_u8(body + 0xaa, 12).unwrap();
+        m.set_u8(SHADOWS_ENABLED, 1).unwrap();
+        let fpu = Fpu {
+            mxcsr: 0x1f80,
+            x87_control: 0x027f,
+        };
+        assert!(matches!(plan(&m, esp, fpu), Err(Refusal::Unsupported)));
+    }
 }
