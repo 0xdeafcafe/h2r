@@ -36,10 +36,12 @@
 mod common;
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 use common::{IMAGE_SHA256, sha256, xbe_path};
 use engine::light_constants::Fpu;
 use engine::memory::{GuestMemory, MemFault};
+use engine::render::light_gather::frame::{self, LightFrame};
 use engine::render::light_gather::{self as gather, LIGHT_VIS, extra_caster, geometry, history, visible, volume};
 use ir::IrInsn;
 use ir::interp::{self, Cpu, FlatMemory};
@@ -803,4 +805,408 @@ fn a_refused_leaf_names_its_reason() {
     let m = Ram(FlatMemory::new(0, 0x1000));
     assert_eq!(visible::list(&m, 0, Fpu { mxcsr: 0x1f80, x87_control: 0x037f }).err(), Some(gather::Refusal::Unsupported));
     assert_eq!(visible::list(&m, 0, FPU).err(), Some(gather::Refusal::Memory));
+}
+
+// ---------------------------------------------------------------------
+// L2: the frame.
+
+const DYNAMIC_LIGHTS: u32 = 0x0003_1c80;
+const STUB_RETURN: u32 = 0xFFFF_FFF0;
+const FIRST_PERSON_COUNT: u32 = frame::FIRST_PERSON_COUNT;
+const NO_SOURCE_VIS: u32 = 0x004b_a010;
+const SHADOWS_ON: u32 = 0x004b_a020;
+const VIEW_CLUSTER: u32 = 0x004b_9ee4;
+const RECORDS_VIS: u32 = 0x004c_0b80;
+const RECORDS: u32 = 0x030b_0000;
+const STUB_SCRATCH: u32 = 0x030c_0000;
+
+/// The callees the frame calls that are not ported: target, the
+/// registers it is handed (`Cpu::gpr` indices: EAX 0, ECX 1, EDX 2,
+/// EBX 3, ESI 6), its stack arguments and the bytes it pops.
+const STUBS: [(u32, &[usize], u32, u32); 11] = [
+    (frame::call::REPOSE_MARKER, &[0, 1], 3, 0),
+    (frame::call::FIRST_PERSON_MARKER, &[1], 4, 16),
+    (frame::call::REPOSE_BASIS, &[0, 1], 0, 0),
+    (frame::call::LIGHT_FRUSTA, &[0, 1, 2, 6], 4, 16),
+    (frame::call::SCENE_VISIBILITY, &[0, 1, 2, 6], 7, 28),
+    (frame::call::RESET_RECORDS, &[3], 0, 0),
+    (frame::call::CLUSTER_RECORDS, &[3], 0, 0),
+    (frame::call::PLACEMENT_RECORDS, &[3], 1, 4),
+    (frame::call::OBJECT_RECORDS, &[0, 3], 1, 4),
+    (frame::call::PART_VISIBILITY, &[3], 0, 0),
+    (frame::call::LIGHT_PASSES, &[0, 1, 3], 4, 16),
+];
+
+/// The L1 leaves: lifted in both runs, so not in the transcript.
+const LEAVES: [u32; 3] = [GEOMETRY_FLAGS, EXTRA_CASTER, LIGHT_VOLUME];
+
+fn stub(target: u32) -> Option<(&'static [usize], u32, u32)> {
+    STUBS.iter().find(|s| s.0 == target).map(|&(_, regs, args, pop)| (regs, args, pop))
+}
+
+/// One call out of the frame: the target, its return site, the
+/// registers it is handed and its stack arguments.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Callout {
+    target: u32,
+    site: u32,
+    regs: Vec<u32>,
+    args: Vec<u32>,
+}
+
+/// The stub's effect, seeded by the call's place in the transcript: the
+/// memory a real callee would change that the frame reads after it, and
+/// EAX and EDX.
+fn stub_effect(seed: u64, k: usize, c: &Callout, m: &mut FlatMemory) -> (u32, u32) {
+    let mut r = Rng(seed ^ ((k as u64) << 32) ^ u64::from(c.target));
+    let reg = |i: usize| {
+        let (regs, _, _) = stub(c.target).unwrap();
+        c.regs[regs.iter().position(|&x| x == i).unwrap()]
+    };
+    let floats = |m: &mut FlatMemory, r: &mut Rng, at: u32| {
+        for i in 0..3 {
+            putf(m, at + 4 * i, r.float(-1.0, 1.0));
+        }
+    };
+    match c.target {
+        frame::call::REPOSE_MARKER => return (r.u32() & 0xffff, r.u32()),
+        frame::call::FIRST_PERSON_MARKER => {
+            for &at in &c.args[1..] {
+                floats(m, &mut r, at);
+            }
+        }
+        frame::call::REPOSE_BASIS => {
+            floats(m, &mut r, reg(0));
+            floats(m, &mut r, reg(1));
+        }
+        frame::call::LIGHT_FRUSTA => {
+            put16(m, c.args[3], r.below(7) as u16);
+            for i in 0..8 {
+                put(m, c.args[2] + 4 * i, r.u32());
+            }
+        }
+        frame::call::SCENE_VISIBILITY => return (LIGHT_VIS, r.u32()),
+        frame::call::LIGHT_PASSES => {
+            // A later row's weight: the frame reads each row when it
+            // reaches it.
+            let rows = reg(1) - 0x34 + frame::slot::ROWS;
+            let j = r.below(32);
+            let weight = match r.below(4) {
+                0 => f32::NAN,
+                1 => 0.0,
+                _ => r.float(-0.5, 1.0),
+            };
+            putf(m, rows + 0x14 * j + 0xc, weight);
+        }
+        _ => put(m, STUB_SCRATCH + 4 * k as u32, r.u32()),
+    }
+    (r.u32(), r.u32())
+}
+
+/// The frame's private spills, which the port does not keep: the saved
+/// registers, the row cursor and S+0x1c..S+0x34.
+fn private(s: u32) -> [std::ops::Range<u32>; 3] {
+    [s..s + 0x10, s + 0x14..s + 0x18, s + 0x1c..s + 0x34]
+}
+
+/// The first byte where `a` and `b` differ, outside the dead stack below
+/// `s` and the private spills.
+fn frame_difference(a: &FlatMemory, b: &FlatMemory, s: u32) -> Option<u32> {
+    let mut masked = vec![STACK_LOW..s];
+    masked.extend(private(s));
+    masked.sort_by_key(|r| r.start);
+    let mut from = 0u32;
+    let check = |lo: u32, hi: u32| {
+        let (x, y) = (&a.bytes[lo as usize..hi as usize], &b.bytes[lo as usize..hi as usize]);
+        (x != y).then(|| lo + x.iter().zip(y).position(|(p, q)| p != q).unwrap() as u32)
+    };
+    for range in masked {
+        if let Some(at) = check(from, range.start) {
+            return Some(at);
+        }
+        from = range.end;
+    }
+    check(from, a.bytes.len() as u32)
+}
+
+/// A frozen history of `weights.len()` rows over the pool's lights, all
+/// seen this frame, and no candidates: the visible list is these rows.
+fn frozen_rows(w: &mut World, r: &mut Rng, weights: &[f32]) {
+    w.candidates(r, 0);
+    let view = (word(&w.mem, VIEW_INDEX) as i32).clamp(0, 3) as u32;
+    let frame = word(&w.mem, FRAME);
+    let base = history::LIGHTS + view * history::STRIDE;
+    for (i, &weight) in weights.iter().enumerate() {
+        let row = base + i as u32 * 0x24;
+        for b in 0..4 {
+            put8(&mut w.mem, row + b, r.below(2) as u8);
+        }
+        put(&mut w.mem, row + 4, light_datum(r.below(w.lights)));
+        put(&mut w.mem, row + 8, NONE);
+        putf(&mut w.mem, row + 0xc, r.float(0.0, 1.0));
+        putf(&mut w.mem, row + 0x10, r.float(0.0, 50.0));
+        putf(&mut w.mem, row + 0x14, 0.0);
+        putf(&mut w.mem, row + 0x18, weight);
+        put(&mut w.mem, row + 0x1c, frame);
+        put(&mut w.mem, row + 0x20, frame);
+    }
+    put(&mut w.mem, base + history::COUNT, weights.len() as u32);
+    put(&mut w.mem, OVERRIDE, OVERRIDE_STRUCT);
+    put8(&mut w.mem, OVERRIDE_STRUCT + 5, 1);
+}
+
+/// The gather's globals.
+fn frame_globals(w: &mut World, r: &mut Rng) {
+    put(&mut w.mem, FIRST_PERSON_COUNT, r.below(11));
+    put8(&mut w.mem, NO_SOURCE_VIS, r.below(2) as u8);
+    put8(&mut w.mem, SHADOWS_ON, r.below(2) as u8);
+    put(&mut w.mem, VIEW_CLUSTER, r.below(64));
+    put(&mut w.mem, RECORDS_VIS, RECORDS);
+    w.light_vis(r);
+}
+
+/// `0x00031c80` lifted, its unported callees stubbed. Returns the
+/// transcript and EAX.
+fn original_frame(lifted: &mut Lifted<'_>, m: &mut FlatMemory, cpu: &mut Cpu, esp: u32, seed: u64) -> Result<(Vec<Callout>, u32), String> {
+    put(m, esp, HARNESS_EXIT);
+    cpu.gpr[4] = esp;
+    cpu.eip = DYNAMIC_LIGHTS;
+    let mut transcript = Vec::new();
+    lifted.run(cpu, m, &[HARNESS_EXIT], |pc, cpu, m| {
+        let Some((regs, args, pop)) = stub(pc) else {
+            return false;
+        };
+        let sp = cpu.gpr[4];
+        let c = Callout {
+            target: pc,
+            site: word(m, sp),
+            regs: regs.iter().map(|&i| cpu.gpr[i]).collect(),
+            args: (0..args).map(|i| word(m, sp + 4 + 4 * i)).collect(),
+        };
+        let (eax, edx) = stub_effect(seed, transcript.len(), &c, m);
+        cpu.gpr[0] = eax;
+        cpu.gpr[2] = edx;
+        cpu.gpr[4] = sp + 4 + pop;
+        cpu.eip = c.site;
+        transcript.push(c);
+        true
+    })?;
+    if cpu.gpr[4] != esp + 4 {
+        return Err(format!("esp {:#x} after the frame", cpu.gpr[4]));
+    }
+    Ok((transcript, cpu.gpr[0]))
+}
+
+/// The body, driven as the runtime drives it: each guest call is made at
+/// [`GuestCall::esp`]; a leaf runs lifted, any other callee is the stub.
+fn port_frame(
+    lifted: &mut Lifted<'_>,
+    m: FlatMemory,
+    mut cpu: Cpu,
+    esp: u32,
+    plan: frame::Plan,
+    seed: u64,
+) -> (Vec<Callout>, engine::entry::EntryResult, Option<LightFrame>, FlatMemory) {
+    use engine::entry::{Cx, EntryFuture, GuestCall, Regs, Step, poll, resume};
+    let mem = Arc::new(Mutex::new(Ram(m)));
+    let cx = Cx::new(Arc::clone(&mem), Regs { esp, ..Regs::default() });
+    let out = Arc::new(Mutex::new(None));
+    let body = cx.clone();
+    let kept = Arc::clone(&out);
+    let mut fut: EntryFuture = Box::pin(async move {
+        let (ret, light_frame) = frame::run(&body, plan).await?;
+        *kept.lock().unwrap() = Some(light_frame);
+        Ok::<_, engine::entry::EntryError>(ret)
+    });
+    let mut transcript = Vec::new();
+    let result = loop {
+        match poll(&mut fut, &cx) {
+            Step::Done(r) => break r,
+            Step::Call(c) => {
+                let mut g = mem.lock().unwrap();
+                let m = &mut g.0;
+                let sp = c.esp(esp);
+                let set = |c: &GuestCall, i: usize| match i {
+                    0 => c.eax,
+                    1 => c.ecx,
+                    2 => c.edx,
+                    3 => c.ebx,
+                    6 => c.esi,
+                    7 => c.edi,
+                    _ => None,
+                };
+                let regs = if LEAVES.contains(&c.target) {
+                    for (i, &a) in c.args.iter().enumerate() {
+                        put(m, sp + 4 + 4 * i as u32, a);
+                    }
+                    put(m, sp, HARNESS_EXIT);
+                    for i in [0, 1, 2, 3, 6, 7] {
+                        if let Some(v) = set(&c, i) {
+                            cpu.gpr[i] = v;
+                        }
+                    }
+                    cpu.gpr[4] = sp;
+                    cpu.eip = c.target;
+                    lifted
+                        .run(&mut cpu, m, &[HARNESS_EXIT], |_, _, _| false)
+                        .unwrap_or_else(|e| panic!("leaf {:#x}: {e}", c.target));
+                    cpu.gpr
+                } else {
+                    let (declared, _, _) = stub(c.target).unwrap_or_else(|| panic!("an unknown callee {:#x}", c.target));
+                    for (i, &a) in c.args.iter().enumerate() {
+                        put(m, sp + 4 + 4 * i as u32, a);
+                    }
+                    put(m, sp, STUB_RETURN);
+                    let callout = Callout {
+                        target: c.target,
+                        site: frame::call_site().unwrap_or(0),
+                        regs: declared.iter().map(|&i| set(&c, i).unwrap_or(0xdead_beef)).collect(),
+                        args: c.args.clone(),
+                    };
+                    let (eax, edx) = stub_effect(seed, transcript.len(), &callout, m);
+                    transcript.push(callout);
+                    let mut gpr = cpu.gpr;
+                    gpr[0] = eax;
+                    gpr[2] = edx;
+                    gpr
+                };
+                drop(g);
+                resume(
+                    &cx,
+                    Regs {
+                        eax: regs[0],
+                        ecx: regs[1],
+                        edx: regs[2],
+                        ebx: regs[3],
+                        esp,
+                        ebp: regs[5],
+                        esi: regs[6],
+                        edi: regs[7],
+                        xmm0: 0,
+                    },
+                );
+            }
+        }
+    };
+    drop(fut);
+    drop(cx);
+    let light_frame = out.lock().unwrap().take();
+    let m = Arc::try_unwrap(mem).ok().expect("the body kept no memory").into_inner().unwrap().0;
+    (transcript, result, light_frame, m)
+}
+
+/// Equal transcripts (target, return site, the declared registers, the
+/// stack arguments), equal EAX, and equal memory outside the dead stack
+/// and the frame's private spills, for seeded frames: 0, 1, 8, 9 and 32
+/// drawn lights, NaN and threshold weights, each branch of steps 5, 8
+/// and 9, and frames ranked from candidates.
+#[test]
+fn frame_transcripts_match_the_lifted_original() {
+    if !with_image(frame_cases) {
+        eprintln!("SKIPPED frame_transcripts_match_the_lifted_original: no XBE (set H2_XBE)");
+    }
+}
+
+fn frame_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
+    let threshold = wordf(image, DRAWN_THRESHOLD);
+    let mut tally = Tally::default();
+    for seed in seeds() {
+        for n in 0..60u32 {
+            let mut r = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ u64::from(n) ^ 0x1c80);
+            let mut w = World::new(image, &mut r, [8, 40, 160][(n % 3) as usize]);
+            frame_globals(&mut w, &mut r);
+            let drawn = [0, 1, 8, 9, 32, r.below(33)][(n % 6) as usize];
+            if n % 7 == 6 {
+                // Ranked from candidates, as a frame without the override.
+                let count = 10 + r.below(50);
+                w.candidates(&mut r, count);
+                let rows = r.below(33);
+                w.history(&mut r, rows);
+            } else {
+                let rows = (drawn + r.below(4)).min(32);
+                let mut weights: Vec<f32> = (0..rows)
+                    .map(|i| if i < drawn { threshold + r.float(0.05, 1.0) } else { [threshold, f32::NAN, threshold - 0.5][r.below(3) as usize] })
+                    .collect();
+                // Drawn and undrawn rows interleave.
+                for i in (1..weights.len()).rev() {
+                    weights.swap(i, r.below(i as u32 + 1) as usize);
+                }
+                frozen_rows(&mut w, &mut r, &weights);
+            }
+            let label = format!("seed {seed} case {n}");
+            let mut c = cpu(&mut r);
+            let esp = c.gpr[4] - 4;
+            let s = esp - frame::FRAME;
+            let case_seed = r.next();
+
+            let plan = match frame::plan(&Ram(w.mem.clone()), esp, FPU) {
+                Ok(plan) => plan,
+                Err(why) => {
+                    tally.add(format!("refused {why:?}"));
+                    continue;
+                }
+            };
+            let port_cpu = c.clone();
+            let (port_calls, result, light_frame, port) = port_frame(&mut lifted, w.mem.clone(), port_cpu, esp, plan, case_seed);
+
+            let mut a = w.mem;
+            let (calls, eax) =
+                original_frame(&mut lifted, &mut a, &mut c, esp, case_seed).unwrap_or_else(|e| panic!("{label}: {e}"));
+            for (i, (x, y)) in calls.iter().zip(&port_calls).enumerate() {
+                assert_eq!(x, y, "{label}: callout {i} (original, then port)");
+            }
+            assert_eq!(calls.len(), port_calls.len(), "{label}: the number of callouts");
+            assert_eq!(result.map(|ret| (ret.eax, ret.pop)), Ok((eax, 0)), "{label}: the return");
+            if let Some(at) = frame_difference(&a, &port, s) {
+                panic!(
+                    "{label}: memory differs first at {at:#x} (S{:+#x}): {:#04x} (original) vs {:#04x} (port)",
+                    at.wrapping_sub(s) as i32,
+                    a.bytes[at as usize],
+                    port.bytes[at as usize]
+                );
+            }
+            tally.add("native");
+            let light_frame = light_frame.expect("the frame");
+            let drawn = light_frame.lights.iter().filter(|l| l.drawn).count();
+            tally.add(format!("{drawn} drawn"));
+            for g in light_frame.lights.iter().filter_map(|l| l.gathered.as_ref()) {
+                tally.add(match g.repose {
+                    frame::Repose::None => "no re-pose",
+                    frame::Repose::Asked { .. } => "a re-pose",
+                });
+                tally.add(if g.shadow { "shadowed" } else { "unshadowed" });
+                tally.add(if g.source_vis { "the main view's clusters" } else { "no source visibility" });
+                if g.cluster == word(&a, VIEW_CLUSTER) as i32 && word(&a, g.record + 0x48) as i16 == -1 {
+                    tally.add("the view's cluster");
+                }
+                if g.slot.is_none() {
+                    tally.add("no first-person slot");
+                }
+                for (step, by) in [("volume", Some(g.volume)), ("geometry", Some(g.geometry)), ("extra caster", g.extra_caster)] {
+                    if let Some(by) = by {
+                        tally.add(format!("{step} {by:?}"));
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("frame: {:#?}", tally.0);
+    assert!(tally.get("native") >= 120, "too few frames answered: {:#?}", tally.0);
+    for need in [
+        "0 drawn",
+        "1 drawn",
+        "8 drawn",
+        "9 drawn",
+        "32 drawn",
+        "a re-pose",
+        "no re-pose",
+        "shadowed",
+        "unshadowed",
+        "the main view's clusters",
+        "no source visibility",
+        "the view's cluster",
+        "no first-person slot",
+    ] {
+        assert!(tally.get(need) > 0, "never {need}: {:#?}", tally.0);
+    }
 }

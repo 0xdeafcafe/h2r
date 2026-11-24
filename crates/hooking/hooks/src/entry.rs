@@ -237,7 +237,7 @@ fn poll_memory<M: GuestMemory>(
     loop {
         let step = with_render_memory(mem, || entry::poll(&mut r.fut, &r.cx));
         let (Step::Call(c), Some(setter)) = (&step, &r.setter) else { return step };
-        if c.target != setter.address || !c.args.is_empty()
+        if c.target != setter.address || !c.args.is_empty() || c.reserve != 0
             || c.eax.is_some() || c.ebx.is_some() || c.esi.is_some() || c.edi.is_some()
             || c.xmm0.is_some() || c.xmm1.is_some() || c.xmm2.is_some()
         {
@@ -295,6 +295,8 @@ fn transfer(
         }
         Step::Call(c) => {
             let sp = cpu.esp;
+            // The body's frame below its entry ESP (GuestCall::reserve).
+            cpu.esp = cpu.esp.wrapping_sub(c.reserve);
             for a in c.args.iter().rev() {
                 cpu.esp = cpu.esp.wrapping_sub(4);
                 mem.set_u32(cpu.esp, *a)?;

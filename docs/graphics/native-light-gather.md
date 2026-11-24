@@ -1,6 +1,6 @@
 # Native light gather and passes
 
-Status: Partly built. Slice L1 is built: the model's rows and histories and the leaves (the visible-light list, the geometry flags, the extra caster, the light volume) in `engine::render::light_gather`, which the seams of [native-renderer.md](native-renderer.md), "Scene list builders", call. L2 on are design. The other leaf ports it starts from (the light constants, the pass flags, the shadow projection, the gathered groups) are described in [native-lights.md](native-lights.md).
+Status: Partly built. Slices L1 and L2 are built: the model's rows and histories and the leaves (the visible-light list, the geometry flags, the extra caster, the light volume) in `engine::render::light_gather`, which the seams of [native-renderer.md](native-renderer.md), "Scene list builders", call; and the frame body of `0x00031c80` (`light_gather::frame`), which `render_bridge::native_lights::frame` installs at `RENDER_DYNAMIC_LIGHTS`. L3 on are design. The other leaf ports it starts from (the light constants, the pass flags, the shadow projection, the gathered groups) are described in [native-lights.md](native-lights.md).
 Code: `crates/rewrites/engine/src/render/light_gather.rs` and `light_gather/` (the model and the bodies), `crates/rewrites/render-bridge/src/native_lights/frame.rs` (the install), `crates/rewrites/render-bridge/src/native_scene_lists/lights.rs` (the leaf seams that stay for the fallback). Tests: `crates/rewrites/engine/tests/light_gather_differential.rs`, `light_gather.rs`, `crates/rewrites/render-bridge/tests/native_lights.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md). No slice adds a switch.
 
@@ -140,18 +140,23 @@ differential transcripts are equal. With `E` the entry `ESP` and
 
 | At | Holds |
 |---|---|
-| `S+0x10` | the shadow byte; `0x00031660` is handed its address, `0x00031170` its dword |
+| `S+0x10` | the shadow byte; `0x00031660` is handed its address, `0x00031170` its dword, whose upper bytes are those of `S+0xb0`, the visible list's argument pushed there (**E** `0x00031c91`) |
 | `S+0x18` | the frusta count `0x000c1d90` writes (i16) |
 | `S+0x34` | the posed volume, `0x7c` bytes |
 | `S+0xb0` | the visible rows, up to 128 of `0x14` bytes |
 | `S+0xab0` | the frusta, up to six of `0x1bc` bytes |
 
 `Cx::call` places a call's frame at the entry `ESP`, which would
-overwrite these. `GuestCall` gains `reserve(bytes)`: the call is made
-with `ESP` lowered by that much first
-(`crates/hooking/guest-layout/src/entry.rs`, the driver in
-`crates/hooking/hooks/src/entry.rs`, and `entry::testing::run`). Every
-call a light body makes reserves its frame.
+overwrite these. `GuestCall::reserve(bytes)` makes the call with `ESP`
+lowered by that much first (`crates/hooking/guest-layout/src/entry.rs`,
+the driver in `crates/hooking/hooks/src/entry.rs`, and
+`entry::testing::run`, which writes the arguments where the driver
+pushes them). Every call a light body makes reserves its frame.
+
+The rest of the frame is private: the saved registers (`S..S+0x10`),
+the row cursor (`S+0x14`) and `S+0x1c..S+0x34` (`D`, the cluster, the
+root, the rows left, the source visibility, the datum). No callee is
+handed them and the body keeps them in Rust.
 
 ### The dynamic lights, step by step (E `0x00031c80`..`0x00031f4f`)
 
@@ -295,10 +300,12 @@ New named points, all `[fn]` with the signatures above:
 `0x00040e90`, `RECORD_ITEMS` `0x00044ac0`, `LIGHT_REPOSE_BASIS`
 `0x00031b40`, `FIRST_PERSON_MARKER` `0x0016640f`.
 
-The scene takes its lights from the model. `FrameScene::lights` is
-filled from `LightFrame` (`guest_selected`, `guest_weight`, `flags`,
-`steps`), which replaces the observation at the passes' entry
-(`render_bridge::native_lights::begin_light`, `read_light`). The groups
+The scene takes its lights from the observation at the passes' entry
+(`render_bridge::native_lights::begin_light`, `read_light`) until L5:
+the frame body calls `0x00031170` as a guest call, so the observation
+sees each drawn light as it does under the guest loop. L5 fills
+`FrameScene::lights` from `LightFrame` (`guest_selected`,
+`guest_weight`, `flags`, `steps`) and removes the observation. The groups
 keep their type (`frame_scene::LightGroup`); `GroupSite` gains
 `FirstPerson`.
 
@@ -306,8 +313,12 @@ Counters follow the scene lists' scheme
 (`timeline::native::SceneList`, `SceneListResult`): stages
 `light_frame`, `light_passes`, `first_person_lights`,
 `object_shadow_list` and `object_shadow_caster`, each with `_native`,
-`_fallback` and a reason; and `light_step_guest_<step>` for a step a
-running body gave to the guest. `render.scene` and `render.stats`
+`_fallback` and a reason. A step a running body gives to the guest
+counts as its own stage's `_fallback` and reason: `light_volume` from
+the frame body, `light_geometry` and `light_extra_caster` from their
+seams, which run inside the guest call. A frame the body makes counts
+`light_frame_native` and `visible_lights_native`, and each step it makes
+in Rust its stage's `_native`. `render.scene` and `render.stats`
 report them ([agent-api.md](../runtime/agent-api.md)). The producers of
 `render.residual` are `dynamic_lights`, `light_passes`,
 `object_shadows`, `object_shadow` and `first_person`
@@ -353,24 +364,46 @@ coordinator runs them.
 ### L2: the frame body (M)
 
 - **Build.** `GuestCall::reserve`. `light_gather::frame::plan` (pure):
-  step 1 into a `LightFrame` and a `Writes`, then for every drawn row
-  steps 2 to 4 and the checks that step 5 can run (owner not -1 when a
-  re-pose is due, record and tag read). `frame::run(cx, plan)`:
-  publishes the writes, then steps 5 to 16 per drawn light in order.
-  Steps 6, 12 and 13 call the Rust functions of L1 and give the step to
-  the guest function when they refuse. Steps 7 to 9 are inline. Steps 5,
-  10, 11, 14, 15 and 16 are guest calls (their existing hooks run
-  inside them). `render_bridge::native_lights::frame` installs it and
-  fills the scene's lights from the frame.
+  the float state, the frame's stack, step 1 whole (`visible::list`
+  into `S+0xb0`, its `Writes`), and for every drawn row steps 2 to 4
+  and the check that step 5 can run (an owner when a re-pose is due),
+  with the record fields and globals the steps read. `frame::run(cx,
+  plan)` writes the `S+0x10` dword the guest's push leaves, publishes
+  step 1, then makes steps 2 to 16 per row in order, reading each row,
+  record and global when the guest does, and returns a `LightFrame`
+  (per row: drawn, and per drawn light the owner, root, re-pose,
+  first-person slot, shadow, source, cluster, frusta count, `V`, and
+  how steps 6, 12 and 13 were made). Steps 6, 12 and 13 call the Rust
+  functions of L1 and give the step to the guest function when they
+  refuse. Steps 7 to 9 are inline. Steps 5, 10, 11, 14, 15 and 16 are
+  guest calls (their existing hooks run inside them).
+  `render_bridge::native_lights::frame` installs it with `implement` at
+  `RENDER_DYNAMIC_LIGHTS` (one implementation; the observers before and
+  after keep running), on the render thread (`context_only`), and runs
+  the original when the lights stage stands down or the plan refuses.
+  The scene's lights stay the passes' observation until L5.
+- **Call sites.** A hook that tests its caller's return address sees
+  the body's continuation instead. While the body makes a guest call,
+  `frame::call_site` names the guest's return site for it (per thread).
+  `lod_distance.rs` takes its record-reset caller from it, so a light's
+  records keep the world caller `0x00031ef5`
+  ([occlusion-culling.md](occlusion-culling.md)).
 - **Guest state.** The table above, every row.
-- **Tests.** Differential root `0x00031c80`. Its tree is the root and
-  the leaves of L1, lifted; every other callee is a seeded stub. Equal
-  transcripts (so equal pointers and equal `S`-relative bytes) over 0,
-  1, 8, 9 and 32 drawn lights, a NaN weight, each branch of steps 5, 8
-  and 9. Unit, over `entry::testing::run`:
+- **Tests.** Differential root `0x00031c80`
+  (`frame_transcripts_match_the_lifted_original`). Its tree is the root
+  and the leaves of L1, lifted; every other callee is a seeded stub that
+  writes what the frame reads after it (the re-posed frame, the frusta
+  count, a later row's weight). Equal transcripts (target, return site,
+  the registers each callee is handed, its stack arguments), equal EAX
+  and equal memory outside the dead stack and the private spills, over
+  0, 1, 8, 9 and 32 drawn lights, NaN and threshold weights, each
+  branch of steps 5, 8 and 9, and frames ranked from candidates. Unit,
+  over `entry::testing::run` (`crates/rewrites/engine/tests/light_gather.rs`):
   `a_light_frame_calls_the_gather_in_the_guests_order`,
   `the_ninth_light_takes_no_first_person_slot`,
-  `a_refused_plan_writes_nothing`.
+  `a_refused_plan_writes_nothing`. The reserve:
+  `a_reserved_call_is_made_below_the_reserved_bytes` (guest-layout) and
+  `a_reserved_guest_call_leaves_the_bodys_frame_alone` (hooks).
 - **Live check.** `light_frame_native` per view per frame on a lit
   interior, `light_frame_fallback` zero; `render.scene` lists the same
   lights, weights and shadow flags as master's observation;
@@ -398,8 +431,8 @@ coordinator runs them.
   light's `V` (the record writer `0x0002cbf0` lifted). Unit:
   `a_lights_records_start_at_the_main_views_end`,
   `a_lights_walk_leaves_the_main_count`.
-- **Live check.** `light_step_guest_records` zero outside cold
-  sections; hash gate; `render.parity`.
+- **Live check.** The light's cluster and placement walks native
+  outside cold sections in `render.stats`; hash gate; `render.parity`.
 - **Refusal.** A walk that refuses (a cold section, a layout it does
   not read) gives that walk to its guest function, whose hooks retry
   row by row as in the main view.
@@ -575,9 +608,10 @@ and the attachment walk `0x00041c80`.
 
 - **E.** The step tables are the instruction ranges named in their
   headings, read with `h2 disasm`.
-- **Code.** The built leaves: `engine::render::light_gather`
+- **Code.** The built leaves and the frame: `engine::render::light_gather`
   (`visible::list`, `history::merge`, `history::rank_and_fade`,
-  `geometry::flags`, `extra_caster::list`, `volume::light_volume`),
+  `geometry::flags`, `extra_caster::list`, `volume::light_volume`,
+  `frame::plan`, `frame::run`),
   `engine::light_constants`, `engine::light_passes`,
   `engine::shadow_constants`, `engine::render_loop::world_walk`,
   `render_bridge::native_world::section`.

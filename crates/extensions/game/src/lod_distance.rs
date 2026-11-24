@@ -103,7 +103,7 @@ impl Feature for LodDistance {
                     if c.addr == points::RESET_SCENE_RECORDS.base {
                         let factor = setting.multiplier();
                         let mut mem = c.ctx.runtime().memory();
-                        let caller = mem.u32(c.cpu.esp)?;
+                        let caller = caller(mem.u32(c.cpu.esp)?);
                         reset_view(&mut mem, saved, caller, factor)?;
                     }
                     Ok(Flow::Continue)
@@ -146,6 +146,18 @@ impl Feature for LodDistance {
             )
             .context_only();
         Ok(())
+    }
+}
+
+/// The guest return address of a `RESET_SCENE_RECORDS` call. The light
+/// frame body (docs/graphics/native-light-gather.md, L2) makes the call
+/// in place of `0x00031c80` with a continuation as its return address,
+/// and names the guest's own site while it does.
+fn caller(return_address: u32) -> u32 {
+    use engine::render::light_gather::frame::{call_site, site};
+    match call_site() {
+        Some(at) if at == site::RESET_RECORDS => at,
+        _ => return_address,
     }
 }
 
@@ -253,6 +265,12 @@ mod tests {
             3.0,
             "object records retain this view's factor"
         );
+    }
+
+    #[test]
+    fn outside_the_light_frame_body_the_caller_is_the_return_address() {
+        assert_eq!(caller(0x0002_cbcc), 0x0002_cbcc);
+        assert_eq!(caller(0x1234), 0x1234);
     }
 
     #[test]

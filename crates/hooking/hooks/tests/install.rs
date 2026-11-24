@@ -447,6 +447,53 @@ fn an_entry_awaits_guest_calls_and_returns_as_stdcall() {
     assert_eq!(cpu.xmm[2], 19u128.to_le_bytes());
 }
 
+/// A guest call with a reserve is made below the body's frame: the
+/// callee starts at the entry ESP less the reserve, the argument and the
+/// return token, and a word the body keeps just below its entry ESP
+/// survives the call.
+#[test]
+fn a_reserved_guest_call_leaves_the_bodys_frame_alone() {
+    use guest_layout::memory::GuestMemory;
+    use hooks::{EntryFuture, GuestCall, Ret};
+    let rt = runtime();
+    let mut r = Registry::new(Switches::defaults());
+    let placed = Arc::new(AtomicU32::new(0));
+    let callee = Arc::new(Mutex::new(Vec::new()));
+    {
+        let (placed, callee) = (Arc::clone(&placed), Arc::clone(&callee));
+        r.add(&from_fn("framed", move |b| {
+            let callee = Arc::clone(&callee);
+            b.raw().observe_before(&points::GAME_TICK, "callee esp", move |o| {
+                let esp = o.cpu.esp;
+                let arg = o.guest().u32(esp + 4).unwrap();
+                callee.lock().unwrap().push((esp, arg));
+            });
+            let at = b.entry("framed", move |cx| -> EntryFuture {
+                Box::pin(async move {
+                    let esp = cx.entry().esp;
+                    cx.write(|m| m.set_u32(esp - 8, 0xfeed))?;
+                    let a = cx.call(GuestCall::new(LEAF).reserve(0x40).args([0x77])).await?;
+                    Ok(Ret::new(a.eax + cx.read(|m| m.u32(esp - 8))?, 0))
+                })
+            })?;
+            placed.store(at, Ordering::SeqCst);
+            Ok(())
+        }))
+        .unwrap();
+    }
+    r.build(&at(&points::GAME_TICK)).unwrap().install(&rt).unwrap();
+    let at = placed.load(Ordering::SeqCst);
+
+    rt.memory().set_u32(STACK, HARNESS_EXIT).unwrap();
+    let mut cpu = CpuAbi { esp: STACK, ..Default::default() };
+    let mut ctx = ExecCtx::new(Arc::clone(&rt), 1);
+    let t = Runner::default().run(&mut cpu, &mut ctx, at);
+    assert!(matches!(ctx.event(t.event_id), Some(Event::HarnessExit)), "{:?}", ctx.event(t.event_id));
+    assert_eq!(cpu.eax, 41 + 0xfeed, "the leaf answered and the frame word is the body's");
+    assert_eq!(cpu.esp, STACK + 4);
+    assert_eq!(*callee.lock().unwrap(), [(STACK - 0x40 - 4 - 4, 0x77)]);
+}
+
 /// The same body as a point's implementation.
 #[test]
 fn an_async_implementation_is_a_chains_body() {

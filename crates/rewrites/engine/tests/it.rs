@@ -19,6 +19,8 @@ mod layer_differential;
 mod light_constants;
 #[path = "light_constants_differential.rs"]
 mod light_constants_differential;
+#[path = "light_gather.rs"]
+mod light_gather;
 #[path = "light_gather_differential.rs"]
 mod light_gather_differential;
 #[path = "light_passes.rs"]

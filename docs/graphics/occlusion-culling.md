@@ -155,7 +155,10 @@ the original pixel size at every resolution. See the
   `reset_view` writes factor 1.0 there, so the widget's models, records
   and structure keep retail detail at every resolution and LOD Distance.
   A reset from any caller other than the three world callers also writes
-  1.0. Test:
+  1.0. Under the light frame body (native-light-gather.md, L2) the reset's
+  return address is the body's continuation, so `lod_distance.rs` takes
+  the caller from `light_gather::frame::call_site`, which names
+  `0x00031ef5` while the body makes that call. Test:
   `a_menu_model_view_keeps_retail_detail_and_the_world_still_scales`.
 - **BSP clusters and placements.** The record reset at `0x0002cb30` samples
   the LOD factor once per view. Guest and native record builders read that

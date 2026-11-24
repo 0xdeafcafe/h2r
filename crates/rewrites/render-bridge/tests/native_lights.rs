@@ -29,6 +29,8 @@ fn its_chains_run_on_the_render_thread() {
     let text = plan.text();
     assert!(text.contains("native_lights_geometry"), "{text}");
     assert!(text.contains("native_lights_view"), "{text}");
+    // The light frame body is the implementation at RENDER_DYNAMIC_LIGHTS.
+    assert!(text.contains("implement native-lights:native_lights_frame"), "{text}");
     for point in ["RENDER_LIGHT_PASSES", "RENDER_DYNAMIC_LIGHTS", "LAYER_DRAW", "LIGHT_GEOMETRY_DRAW", "LAYER_END"] {
         let chain = plan
             .chains

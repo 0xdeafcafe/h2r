@@ -8,12 +8,15 @@
 //! - [`extra_caster`]: the extra caster (`0x00031c20`).
 //! - [`volume`]: the posed light volume (`0x000c17f0`, `0x000c19f0`,
 //!   `0x000c1a80`).
+//! - [`frame`]: the frame body of `0x00031c80`, which makes the steps
+//!   in the guest's order and calls the guest for the steps not ported.
 //!
 //! The leaves are functions of guest memory and typed arguments. They
 //! write nothing: each returns the guest's writes as [`Writes`], in the
 //! guest's order, for the caller to publish.
 
 pub mod extra_caster;
+pub mod frame;
 pub mod geometry;
 mod guest;
 pub mod history;
