@@ -269,8 +269,9 @@ What scales in the view: surfaces made with `create_surface` at the frame
 size (the first colour surface's, the back buffer), `PersistDisplay`'s copy,
 back-buffer-sized render-to-texture levels
 (`ScaleView::create_scaled_texture_target`) and depth aliases of the whole
-depth buffer (`ScaleStats::scaled_depth_aliases`). Other levels live only in
-the reference and the view samples the reference's textures of them.
+depth buffer (`ScaleStats::scaled_depth_aliases`). Smaller render targets
+keep their guest dimensions. Exact mode gives each camera its own contents,
+including the downsample and blur levels used by the final composite.
 Scissors and clears are scaled inside `GfxBackend` for a scaled surface.
 
 A view failure (a draw it cannot make, an allocation that fails at 4K) does
@@ -342,9 +343,12 @@ once at guest size: `ScaledBackend::guest_image` samples the scaled
 partner to its guest-size handle (`ScaleStats::downsamples`), and a scaled
 partner that the draw modified is transferred back on the GPU
 (`crates/platform/d3d/src/scaled/single.rs`, `draw_single`). In exact mode the
-reference draws every guest-size target from its own 1x surfaces and the view
-samples the reference's result, so no resolve is needed. The view never reads
-back to the CPU.
+reference and display each draw the chain from their own frame. Both
+downsample to the same guest dimensions. The display then composites its
+own blurred image, keeping highlights aligned with their sources at each
+raster resolution. The guest texture header supplies the texel dimensions
+for UV normalization. The compositor supplies the final drawable extent
+after the frame is complete.
 
 ### Depth as a texture
 
