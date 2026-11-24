@@ -36,7 +36,9 @@ the game, **D** assumed here.
     globals that name it) and `read` (a HUD's widgets as their bytes at
     their metadata addresses).
   - `render`: the preview canvas from the map's bitmaps (`tags` decode,
-    `assets::decode_image`) and the disc's fonts (`font`), and where each
+    `assets::decode_image`) and the disc's fonts (`font`: `Fonts`, by
+    table line, found with `find` in a disc image or a folder or taken
+    with `served` as a running game serves them), and where each
     widget landed (`Placed`: point, rectangle, shown, covered pixels).
     `draw_answered` takes `Answers` in place of a widget's gate, fill,
     text, colour, turn, a bitmap's look (`Look`: alpha scaled,
