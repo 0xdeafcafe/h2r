@@ -77,6 +77,18 @@ pub mod method {
     pub const DOC_REDO: &str = "doc.redo";
     pub const DOC_CLOSE: &str = "doc.close";
 
+    // The document tabs (docs/editor/studio-redesign.md, "The shell").
+    pub const SHELL_TABS: &str = "shell.tabs";
+    pub const SHELL_OPEN: &str = "shell.open";
+    pub const SHELL_FOCUS: &str = "shell.focus";
+    pub const SHELL_CLOSE: &str = "shell.close";
+    // The tag workspace (docs/editor/tag-workspace.md, "Interfaces";
+    // api/workspace.rs).
+    pub const WORKSPACE_STATUS: &str = "workspace.status";
+    pub const WORKSPACE_EXTRACT: &str = "workspace.extract";
+    pub const WORKSPACE_IMPORT: &str = "workspace.import";
+    pub const WORKSPACE_PRUNE: &str = "workspace.prune";
+
     pub const TAG_LIST: &str = "tag.list";
     pub const TAG_FIELDS: &str = "tag.fields";
     pub const TAG_VIEW: &str = "tag.view";
@@ -102,9 +114,15 @@ pub mod method {
     pub const TAG_EXPORT: &str = "tag.export";
     pub const TAG_IMPORT: &str = "tag.import";
 
+    // Curve functions of a function field (api/curves.rs).
+    pub const FUNCTION_READ: &str = "function.read";
+    pub const FUNCTION_SET: &str = "function.set";
+    pub const FUNCTION_SAMPLE: &str = "function.sample";
+
     pub const SOUND_READ: &str = "sound.read";
     pub const SOUND_PLAY: &str = "sound.play";
     pub const SOUND_STOP: &str = "sound.stop";
+    pub const SOUND_MOUTH: &str = "sound.mouth";
     pub const SOUND_MEASURE: &str = "sound.measure";
 
     // The Announcer: lines said by a voice (api/voice.rs).

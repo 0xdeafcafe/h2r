@@ -51,7 +51,23 @@ limited by each known engine maximum and by the writer's tag memory and
 file size bounds. Blocks are allocated in ascending scenario root offset,
 with fewer slots when a block would exceed a bound. A normal play
 document omits this recipe. Other generators, transplants, variants and
-imports return named errors pending their own slices.
+imports return named errors pending their own slices. The `ai_ground`
+generator is built as the next section says.
+
+## AI ground
+
+A document whose recipes include `ai_ground` (`forge_doc::GroundRecipe`)
+has the Firefight kit's ground built over the materialised map: each
+ground label of `forge_doc::GroundLabel` on a netgame flag gives the
+build a marker from the finished scenario's flag (position, facing, team;
+the label's number is a `siege_line`'s phase), and
+`firefight_kit::ground::build` makes the bytes, which are the map.
+`Built::ground` reports its zones, squad slots, problems and receipt.
+The document stores only the labels and the recipe, so each machine builds
+its own from its own disc. A kit of another version, a team that is not
+red or blue, a map with no room, or `ai_ground` beside `forge_kit` stops
+the build as `Error::Ground` or `Error::Recipe`. Labels of any other
+sort are accepted and kept by nothing: they are document data.
 
 ## Entry ops
 

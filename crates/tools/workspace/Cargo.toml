@@ -1,0 +1,32 @@
+[package]
+name = "workspace"
+description = "The package build: the builder registry, Layered tag sources and the build of a package set onto a map's TagSet (docs/editor/studio-redesign.md, \"Packages\")"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.h2]
+doc = ["editor/studio-redesign.md", "editor/tag-workspace.md"]
+status = "in progress"
+
+[dependencies]
+# Manifest, lock, PackageId and the set's order (PK1), Sha256 and canonical JSON.
+content.workspace = true
+# The tag set the build changes.
+map.workspace = true
+# Tag definitions (`defs`), the loose tag sources (`repo`), the relocator
+# and the bitmap writer.
+tags.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# The `tag` and `edits` item files.
+serde_yaml_ng.workspace = true
+# The `bitmap` builder's input.
+png = { workspace = true }
+thiserror.workspace = true
+# `PackageRewrite` is the VFS's rewrite of the game's maps.
+vfs.workspace = true
+
+[lints]
+workspace = true

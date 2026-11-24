@@ -10,6 +10,10 @@
 //!   `0x000c1a80`).
 //! - [`frame`]: the frame body of `0x00031c80`, which makes the steps
 //!   in the guest's order and calls the guest for the steps not ported.
+//!   A light's cluster and placement records are
+//!   [`crate::render_loop::world_walk`] in the light's kind.
+//! - [`items`]: a light's two item lists and the first-person table
+//!   (`0x00040e90` in the light's kind, `0x00044ac0`).
 //!
 //! The leaves are functions of guest memory and typed arguments. They
 //! write nothing: each returns the guest's writes as [`Writes`], in the
@@ -20,6 +24,7 @@ pub mod frame;
 pub mod geometry;
 mod guest;
 pub mod history;
+pub mod items;
 pub mod visible;
 pub mod volume;
 
@@ -39,6 +44,8 @@ pub enum Refusal {
     Layout,
     /// A case the port does not take (a float state, a view, a range).
     Unsupported,
+    /// A resource is not resident; the guest's function requests it.
+    Residency,
 }
 
 impl From<MemFault> for Refusal {

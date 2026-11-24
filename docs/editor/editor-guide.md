@@ -92,9 +92,26 @@ it and the Log says so; your edited map still plays.
 With no disc found, use **Open a disc or map...** in the centre of the
 Map tool, or drop a disc image, `.map` file or folder onto the window.
 
+**The first start.** With no tags tree yet, the editor opens a **First
+start** window over the panels: choose the disc to extract every tag
+from (an `.iso` image, a `.map` file or a folder of them — `H2_DISC` and
+`disc/halo2.iso` are offered), see how big it is, and press **Extract
+every map**. The tree it writes is game data under the data folder
+(about 2.65 GB for the retail disc, a minute and a half, never
+committed; a folder of your choosing when `tags_root` is set, which is
+kept with the window layout); a bar in the status line shows the
+progress and you can work while it fills. Press **Not now** to skip it
+for this run. On later starts the editor re-extracts in the background
+what a changed disc or a better layout made stale — the same bar in the
+status line — and maps already extracted keep working while it runs. The
+agent API's `workspace.status`, `workspace.extract` and
+`workspace.prune` are the same thing
+([agent-api.md](agent-api.md#the-tag-workspace)).
+
 ![The editor at first run with no disc open](../images/editor/first-run.jpg)
 
-*The first run with no disc found: every panel is there, waiting for a disc.*
+*The first run with no disc found: the First start window asks for the
+disc, every panel waiting behind it.*
 
 ![The Maps browser with a disc open, its source path and its maps](../images/editor/maps-list.png)
 
@@ -109,8 +126,11 @@ Map tool, or drop a disc image, `.map` file or folder onto the window.
 The window is made of panels that dock together:
 
 - **Tool bar** (under the menu): click **Map**, **Variants**,
-  **Playlists**, **UI**, **HUD** or **Textures** to switch workspaces. The middle names
-  the open document. A `*` marks unsaved changes. The **game link** is at
+  **Playlists**, **UI**, **HUD** or **Textures** to switch workspaces. The middle
+  holds a tab for each open document: the map, the variant, the playlist
+  file, the screen, the HUD map, and each tag you open. Click a tab to
+  show it in its editor, or its **x** to close it; tabs that do not fit
+  are under **More**. A `*` marks unsaved changes. The **game link** is at
   the right end in every tool: click the pill to pair, manage the link or
   choose a running game. Play, Stop, Pause, Step, Resume and the Edit
   switch appear beside it as available.
@@ -404,8 +424,8 @@ went. **F** frames it.
    objects such as weapons and vehicles).
 5. Save it (below) and start the game.
 
-After an edit, **Map** and the document name show a `*` in the tool
-bar. The window title has the same mark.
+After an edit, **Map** and the map's tab show a `*` in the tool bar.
+The window title has the same mark.
 
 ### Add and remove objects
 
@@ -1516,7 +1536,9 @@ packages, or a converted Halo 1 map), then select the **Tags** tab beside **Scen
   find tags outside the walk from the scenario and globals. If that walk
   is incomplete, the section says so and leaves the list empty.
   A `*` marks an edit. `[Pending]` marks edited tag metadata waiting
-  to reach a paired game. Shared-cache marks show where the data lives,
+  to reach a paired game. Double-click a tag to open it as a tab in the
+  tool bar, in the editor its kind gets (a bitmap in **Textures**, the
+  scenario in **Map**, the rest here); each tag's tab has its own undo. Shared-cache marks show where the data lives,
   such as `[shared]` for resources and `[in shared]` for tag fields.
 - **The fields** (Inspector) are the selected tag's fields, top to bottom.
   Fields we have a name for show it in white; the rest show grey, named
@@ -1672,7 +1694,10 @@ announcer line. [voice-cloning.md](voice-cloning.md) has the details.
 ## 10. Undo and redo
 
 Each tool has its own history; **Edit > Undo** and **Edit > Redo** (and
-Cmd+Z, Cmd+Shift+Z) act on the tool you're in.
+Cmd+Z, Cmd+Shift+Z) act on the tool you're in. A tag you opened as a tab
+has a history of its own: while its tab is in front and **Tags** shows
+it, Undo takes back that tag's last edit even if you edited another tag
+since. Closing a tag's tab keeps its edits; they save with the map.
 
 - One drag of the gizmo is one step. Typing into one field, or dragging
   one number, is one step.

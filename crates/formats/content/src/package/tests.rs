@@ -427,3 +427,32 @@ fn set_file_round_trips() {
     assert_eq!(SetFile::from_toml(&f.to_toml()).unwrap(), f);
     assert_eq!(SetFile::from_toml("").unwrap(), SetFile::default());
 }
+
+#[test]
+fn core_and_ui_are_always_on() {
+    for name in ALWAYS_ON {
+        let text = format!("off = [\"{name}\"]\n");
+        assert_eq!(
+            SetFile::from_toml(&text).unwrap_err(),
+            SetError::AlwaysOn(name.into())
+        );
+        let err = Set::new(vec![pkg(name, &[], &[])], &file(&[], &[name])).unwrap_err();
+        assert_eq!(err, SetError::AlwaysOn(name.into()));
+        assert!(err.to_string().contains(&format!("{name:?}")), "{err}");
+    }
+    // Nothing they could lack can disable them.
+    let err = Set::new(vec![pkg("core", &["a"], &[])], &SetFile::default()).unwrap_err();
+    assert_eq!(
+        err,
+        SetError::AlwaysOnRequires {
+            package: "core".into(),
+            requires: "a".into()
+        }
+    );
+    let set = Set::new(
+        vec![pkg("a", &["core"], &[]), pkg("core", &[], &[])],
+        &file(&[], &["a"]),
+    )
+    .unwrap();
+    assert_eq!(names(&set), ["core"]);
+}

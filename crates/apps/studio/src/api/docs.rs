@@ -16,7 +16,7 @@ use super::scenario::refused;
 use super::{P, Reply, err};
 use crate::App;
 use crate::app::map_cards::MapEntry;
-use crate::app::{Action, SaveTarget, ToolKind};
+use crate::app::{Action, Doc, SaveTarget, ToolKind};
 
 /// A `doc` param as a tool (default: the tool shown).
 pub fn doc_kind(app: &App, p: &P) -> Result<ToolKind, RpcError> {
@@ -120,8 +120,23 @@ fn name_of(app: &App, t: ToolKind) -> Option<String> {
     }
 }
 
-/// `doc.list`.
+/// `doc.list`: each tool's document, then each tag tab's.
 pub fn list(app: &App) -> Value {
+    let tags = app.tabs().iter().filter_map(|tab| match tab.doc {
+        Doc::Tag(_) => {
+            let (u, r) = app.doc_can(tab.doc);
+            Some(json!({
+                "doc": app.doc_id(tab.doc),
+                "open": true,
+                "name": app.doc_title(tab.doc),
+                "dirty": app.doc_dirty(tab.doc),
+                "can_undo": u,
+                "can_redo": r,
+                "shown": app.front_doc() == Some(tab.doc) && app.tool == app.doc_tool(tab.doc),
+            }))
+        }
+        _ => None,
+    });
     Value::Array(
         ToolKind::ALL
             .into_iter()
@@ -147,8 +162,21 @@ pub fn list(app: &App) -> Value {
                 }
                 v
             })
+            .chain(tags)
             .collect(),
     )
+}
+
+/// A `doc` param naming an open tag tab (`group:path` or `0x...`).
+fn tag_tab(app: &mut App, p: &P) -> Result<Option<Doc>, RpcError> {
+    let Some(id) = p.opt_str("doc")? else {
+        return Ok(None);
+    };
+    if parse_doc(id).is_ok() {
+        return Ok(None);
+    }
+    app.sync_tabs();
+    Ok(app.find_doc(id).filter(|d| matches!(d, Doc::Tag(_))))
 }
 
 fn run(app: &mut App, a: Action, discard: bool) -> Result<Vec<String>, RpcError> {
@@ -220,8 +248,23 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
         }
         m::DOC_DIFF => diff(app, map_for_tags(doc_kind(app, p)?)),
         m::DOC_UNDO | m::DOC_REDO => {
-            let t = doc_kind(app, p)?;
             let undo = method == m::DOC_UNDO;
+            if let Some(doc) = tag_tab(app, p)? {
+                let before = app.doc_can(doc);
+                let action = if undo {
+                    Action::UndoDoc(doc)
+                } else {
+                    Action::RedoDoc(doc)
+                };
+                let log = app.perform(action, false).map_err(|r| match r {
+                    crate::app::Refused::Failed(e) => err(code::REFUSED, e),
+                    other => refused(other),
+                })?;
+                let done = if undo { before.0 } else { before.1 };
+                let (u, r) = app.doc_can(doc);
+                return Ok(json!({ "done": done, "can_undo": u, "can_redo": r, "log": log }));
+            }
+            let t = doc_kind(app, p)?;
             let before = can(app, t);
             let action = if undo {
                 Action::UndoIn(t)
@@ -234,6 +277,10 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
             Ok(json!({ "done": done, "can_undo": u, "can_redo": r, "log": log }))
         }
         m::DOC_CLOSE => {
+            if let Some(doc) = tag_tab(app, p)? {
+                run(app, Action::CloseDoc(doc), false)?;
+                return Ok(json!({ "closed": true }));
+            }
             let t = parse_doc(p.str("doc")?)?;
             if app.tool_dirty(t) && !p.bool("discard")? {
                 return Err(err(
@@ -245,6 +292,7 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 ));
             }
             app.close_tool(t);
+            app.sync_tabs();
             Ok(json!({ "closed": true }))
         }
         _ => Err(err(code::METHOD_NOT_FOUND, format!("no method {method}"))),

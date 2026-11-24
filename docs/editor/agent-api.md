@@ -127,7 +127,43 @@ map: its widget edits, with their own undo stack and save), `scripts`
 (the Scripts tool's view of the open map: read only, never dirty;
 `doc.save` and `doc.save_as` refuse it). Without one, a `doc.*` call means the tool shown.
 `doc.list` says, for each, whether it is open, its name, dirty, and
-whether it can undo and redo.
+whether it can undo and redo. An open tag tab (below) is a document too:
+its id is a `doc`, and `doc.list` lists it after the tools' documents.
+
+### Document tabs
+
+Every open document is a tab in the bar (`app/shell.rs`,
+`ui/doc_tabs.rs`). A tool's document (`map`, `variant`, `playlists`,
+`ui`, `hud`) gets its tab when its tool opens it and loses it when the
+tool closes it. A tag of the open map gets a tab from `shell.open` or a
+double-click in the Tags tree; its id is its `group:path`, as `tag.*`
+takes it, and its editor is the one its group's row of the kind registry
+names (`tag.kinds`): bitmaps open in the Textures tool, the scenario tag
+is the map's own tab, the rest open in the Tags tool's field panel. A
+tag tab belongs to the map it was opened on and closes with it.
+
+Each tab has its own undo stack. A tag's is its tag's steps of the map's
+tag document (`TagDoc::undo_tag`): two tag tabs undo and redo their own
+edits in any order, and a new edit drops its own tag's redo and keeps
+the others'. An undo is `REFUSED` while a later edit of another tag
+writes the same bytes, or both added strings; that one is undone first.
+Undo and Redo in the window take the front tab's stack while the Tags
+tool shows its tag, else the tool's. Closing a tag tab keeps its edits:
+they are the map's, saved or dropped with it.
+
+| Method | Does |
+|---|---|
+| `shell.tabs` | the tabs in order and the `front` one; per tab its `doc` id, `kind`, `title`, the `tool` it shows in, `dirty`, `can_undo`, `can_redo`, and for a tag its `editor`, `id`, `group` and `map` |
+| `shell.open {tag?, map?, discard?}` | opens a tag of the open map (with `map`, that map opens first; refused over unsaved edits unless `discard`), or brings a map's tab forward; answers the `tab`, the `front` and the `log` |
+| `shell.focus {doc}` | brings a tab forward: its document shows in its editor |
+| `shell.close {doc, discard?}` | closes a tab: a tool's document closes (`UNSAVED` over edits unless `discard`), a tag's tab closes keeping its edits; the nearest tab left open, to its left first, comes forward |
+
+The tab strip's clicks run the same commands (`Action::OpenDoc`,
+`FocusDoc`, `CloseDoc`, `UndoDoc`, `RedoDoc`), so the window and the API
+leave the same tabs
+(`api::tests::shell_tests::the_window_commands_and_shell_calls_leave_the_same_state`,
+`headless::tests::the_tab_strip_clicks_and_shell_calls_leave_the_same_state`).
+Short forms: `tabs`, `focus <doc>`, `close <doc>`.
 
 `doc.save_as` takes a path. `doc.save` writes a variant to its save
 storage under the data root or a playlist file to its own path. For a
@@ -251,7 +287,9 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `session` | `status`, `methods`, `log` |
 | `host` | `memory {report?}`, `memory.history {since_ms?}`, `memory.heap {top?}`, `memory.gpu`, `memory.diff {from_ms}`, `memory.postmortem {pid?}`: the editor process's watchdog and flight recorder, answered on the connection thread as the game answers them ([Finding a leak after the fact](../runtime/agent-api.md#finding-a-leak-after-the-fact)) |
 | `source` | `open {path}`, `maps` |
-| `doc` | `list`, `open {map \| path \| package \| variant \| playlists}` (`variant` is `{builtin}`, `{saved}`, `{new}` or `{script}`), `save`, `save_as {path}`, `diff`, `undo`, `redo`, `close` |
+| `workspace` | `status`, `extract {disc?, maps?, verify?, root?}`, `prune {dry_run?}` ([The tag workspace](#the-tag-workspace)); `import {map \| path, name}` (planned) |
+| `doc` | `list`, `open {map \| path \| package \| variant \| playlists}` (`variant` is `{builtin}`, `{saved}`, `{new}` or `{script}`), `save`, `save_as {path}`, `diff`, `undo`, `redo`, `close` (`undo`, `redo` and `close` also take a tag tab's id) |
+| `shell` | `tabs`, `open {tag?, map?, discard?}`, `focus {doc}`, `close {doc, discard?}`: the document tabs ([Document tabs](#document-tabs)) |
 | `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `fields {tag, path?}`, `tree {root?, depth?}`, `refs {tag, limit?}`, `kinds {group?}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
 | `sound` | `read {tag, range?, permutation?, bins?}`, `play {tag, range?, permutation?, from_ms?}`, `stop`, `measure {tag \| clip \| path, range?, permutation?, class?, limit?}` ([Content checks](#content-checks)) |
 | `scenario` | `blocks`, `list {block}`, `get`, `set {block, index, field, value}`, `add {block, like, position}`, `move {block, index, position, ypr}`, `delete`, `duplicate`, `select` |
@@ -389,7 +427,10 @@ Notes on some:
     `Choice`, `Switches`, `Name`, `Tag reference`, `List`, `Bytes`,
     `Internal value`, `Unnamed value`, `Padding`), `unit` (or null) and
     `view` (the definition's `view=` word, such as `rgb` or `function`,
-    else null; [rich-editors.md](rich-editors.md));
+    else null; [rich-editors.md](rich-editors.md)); a `function` view's
+    row also carries `function: {type, ranged, range, length}`, its
+    curve's shape (null when the data is not a function blob, and the
+    row says why);
   - `editable`, and `read_only`, the reason as a sentence when not;
   - `edited` (the value differs from the loaded file) and `file_value`
     (the file's value when edited, else null);
@@ -418,6 +459,36 @@ Notes on some:
   A block's value is its element count. Scalar values follow
   `tag.read`. The rows use the open or browsed tag document and include
   its pending edits (`api/tag_fields.rs`).
+- **Curves.** `function.read {tag, path}` reads the function blob a
+  `view=function` data field points at
+  ([rich-editors.md](rich-editors.md), "Curves"; `api/curves.rs`):
+  the type word (`identity`, `constant`, `transition`, `periodic`,
+  `linear`, `linear_key`, `multi_linear_key`, `spline`, `multi_spline`,
+  `exponent`, `spline_2`, `unknown_<byte>`), whether it is ranged, the
+  two sub-type bytes (set 0's and set 1's wave or shape), the output
+  range, the blob's length, and `sets`: the two sets' typed values, the
+  words the engine's evaluator reads named as the curve editor's
+  handles (`shape`, `from`, `to` for a transition; `wave`,
+  `frequency`, `phase`, `minimum`, `maximum` for a periodic; `slope`,
+  `intercept`; `base` and three `keys` of `value`, `position`,
+  `inverse_span`; `points` and `coefficients`; `minimum`, `maximum`,
+  `power`; a constant's, type 6's and type 8's words as `words`; `{}`
+  for identity), null for a type with no layout. `editable` is false
+  and `read_only` says why for a type the game evaluates as 0 or a
+  tag that may not be written. `function.set {tag, path, type?,
+  ranged?, range?, sets?}` edits the curve, same length, as one undo
+  step through the Tags tool's own command: `ranged` turns the second
+  set on or off, `range` sets the output range, and each set object's
+  keys present are written (its `shape` or `wave` writes the header
+  byte, as the dialog's picker rows do); the answer is the new
+  `function.read`. A type change is refused (the length would change;
+  F2 writes it), and so is anything the Curves section refuses.
+  `function.sample {tag, path, inputs, range_input?}` returns
+  `{outputs}` from `Function::evaluate` itself (the ported engine
+  evaluator) at each input, `range_input` blending the two sets of a
+  ranged function (default 0, set 0); types the engine does not
+  evaluate give 0. A path that is not a function curve field is
+  `REFUSED`.
 - **The field panel.** `tag.view {tag?, path?, field?, search?,
   changed?, unnamed?, show_as?}` drives the Tags tool's panel and
   returns what it shows. `tag` selects a tag in the Tags tool. `path`,
@@ -614,17 +685,24 @@ Notes on some:
   (`encoded_bytes`, `chunks`), and for the permutation asked for (range 0,
   permutation 0 by default) its decoded `channels`, `rate`, `frames`,
   `duration_ms` and `bins` waveform columns of `[low, high]` 16-bit
-  peaks. A permutation that cannot be decoded gives `refusal` in place of
-  those (a codec stream without the game's executable says `This sound
-  needs the game's executable to decode.`) or `error` (a bad length, a
-  missing resource file). It also gives `playback`: whether something
-  plays, which, `position_ms` and the `output`. `sound.play` plays a
-  permutation from `from_ms` through the host's default audio output,
-  opened on the first call, and returns at once; a refusal is `REFUSED`,
-  no device or an unreadable resource `FAILED`. `sound.stop` stops it. The
+  peaks, and its `mouth` curve. A permutation that cannot be decoded
+  gives `refusal` in place of those (a codec stream without the game's
+  executable says `This sound needs the game's executable to decode.`)
+  or `error` (a bad length, a missing resource file); `mouth` is given
+  either way, because the curve needs no executable. It also gives
+  `playback`: whether something plays, which, `position_ms` and the
+  `output`. `sound.play` plays a permutation from `from_ms` through the
+  host's default audio output, opened on the first call, and returns at
+  once; a refusal is `REFUSED`, no device or an unreadable resource
+  `FAILED`. `sound.stop` stops it. `sound.mouth` reads one permutation's
+  mouth curve from the sound's extra-info resource in the map's `ugh!`:
+  `{ticks, curve}` with one aperture value, 0 to 1, per 30 Hz tick, or
+  `curve: null` for an unvoiced permutation (the sound has no extra
+  info, its descriptor index is negative, or the mouth entry is
+  zero-length). The window's Sound window draws the same curve under
+  the waveform and calls the same `App::sound_*` methods. The
   executable comes from the source: the disc's `default.xbe`, or the one
-  beside a loose map or folder (`H2_XBE` names another). The window's
-  Sound window calls the same `App::sound_*` methods.
+  beside a loose map or folder (`H2_XBE` names another).
 - **Placements.** `scenario.set` takes a number, `[x, y, z]`, or for a tag
   reference `{"id": "0x..."}` (or `null` for none). The scenario checks it
   first: read-only fields, integer ranges, finite floats, palette indices,
@@ -1269,6 +1347,52 @@ h2 studio image.apply '{"id":3}'
 h2 studio doc.save '{"doc":"bitmaps"}'
 ```
 
+### The tag workspace
+
+The tags tree (docs/editor/tag-workspace.md): every tag of the disc as
+loose files under the data root, what every map is built from.
+`workspace.status` reports it: the root (the `tags_root` setting,
+`<data>/tags/` unless set, saved with the window layout), the maps
+extracted with their lossy and refused counts, the plan's stale parts,
+an extraction in progress and what the last one did, the sizes of
+everything the workspace holds (the tree, each layer under
+`<data>/workspace/`, each project's build cache, each package under
+`<data>/maps/`), and `start_page`, whether the first start's window is
+showing. `workspace.extract {disc}` runs the plan: `disc` is an image, a
+`.map` file or a folder of maps (the recorded disc, `H2_DISC` or
+`disc/halo2.iso` when not given), `maps` limits it to those, `verify`
+reads every stored file back, and `root` sets the tree's root — refused
+inside a Git checkout, for the tree is game data and never sits in a
+repository. It answers at once with the maps it will read; the progress
+is in `workspace.status` and the window's status line, and work
+continues while the tree fills. An unchanged disc is a no-op, and a
+later start of the editor runs the plan against the recorded disc in the
+background. `workspace.prune {dry_run}` removes raw resources no tag
+file or manifest names, generated layers no project asks for and build
+caches unused for a week — with `dry_run`, what would go; the outputs of
+deleted projects are the projects' and are not pruned. The tree itself
+is never pruned in part: it is deleted whole and extracted again.
+`workspace.import` (planned) stores a map as an import layer (W9).
+
+The window's first start — no tree, no source open other than a disc
+image — is one step: choose the disc (`H2_DISC` and `disc/halo2.iso`
+offered), see the size and the time, extract every map with the status
+line's progress bar. It makes the same calls.
+
+```sh
+h2 studio workspace
+h2 studio workspace.extract '{"disc":"/Volumes/halo2.iso"}'
+h2 studio workspace
+h2 studio workspace.prune '{"dry_run": true}'
+```
+
+The first start and the plan run headless on an invented map
+(`app::workspace::tests`: a root inside a Git checkout refused, the
+background plan extracting a changed disc, the sizes walked, prune
+keeping what a tag file or a manifest names); the API's tests
+(`api/tests.rs`) do the same through the dispatcher, and every method's
+example runs in `every_method_in_methods_has_a_test`.
+
 ### Errors
 
 The JSON-RPC codes (`-32700` parse, `-32601` no such method, `-32602`
@@ -1534,6 +1658,13 @@ the window and the API stay one path.
   for `script.*`, over `app/scripts.rs`'s `Loaded`; `script.source`,
   `script.follow` and `script.doc` are `Action::Script` through
   `App::perform`.
+- **Curves (rich editors F1).** `api/curves.rs` registers `Curves` for
+  `function.read`, `function.set` and `function.sample`, over
+  `tags::effects::function` (`Set`, `Function::set_values`,
+  `Function::write_set`) and the curve editor's own helpers
+  (`fields/curve.rs`); `function.set` is a `TagAction::Write` of the
+  same length at the data's start through `App::perform`, one undo
+  step, exactly as the dialog's drags write.
 - **Game type scripts.** `api/game_script.rs` registers `GameScript` for
   `rules.*`, over `App::rules` (`app/rules_edit.rs`), the state the
   window draws; `rules.reload` leaves the blob in its outbox and
@@ -1845,7 +1976,10 @@ actions and the API's make identical profiles.
   `api/checks.rs`: the content checks. `api/models.rs`: `model.*` (its
   renders through `scenario_edit::native_view::preview`).
   `api/playtest.rs`: the playtest checks (`app/playtest_static.rs`) and
-  the runner's methods (`app/playtest.rs`).
+  the runner's methods (`app/playtest.rs`). `api/workspace.rs` (with
+  `app/workspace.rs`: the tree's root, the plan, the extraction thread,
+  the sizes and prune; `ui/workspace.rs`: the first start's page and the
+  status line's bar): the tag workspace.
   host methods). `api/sound_measure.rs` (with `sound_measure/meter.rs`),
   `api/ui_check.rs` and `api/checks.rs`: the content checks. `api/voice.rs`
   (with `app/announcer.rs` and `src/voice*`): the Announcer.

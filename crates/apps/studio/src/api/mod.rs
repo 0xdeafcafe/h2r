@@ -28,6 +28,7 @@ use crate::App;
 mod bitmaps;
 mod checks;
 mod collision;
+mod curves;
 mod docs;
 mod game_script;
 mod geometry;
@@ -45,6 +46,7 @@ mod playtest;
 mod scenario;
 mod scripts;
 pub mod seams;
+mod shell;
 pub mod server;
 mod sound;
 mod strings;
@@ -63,6 +65,7 @@ mod variants;
 mod view;
 mod voice;
 mod voice_clone;
+mod workspace;
 
 #[cfg(test)]
 mod tests;
@@ -203,10 +206,31 @@ pub const METHODS: &[MethodDef] = &[
         "null",
     ),
     def(
-        m::DOC_LIST,
-        "Every document: open, its name, dirty, undo and redo",
+        m::WORKSPACE_STATUS,
+        "The tag workspace: the tree (root, maps, lossy counts), the plan's stale parts, an extraction in progress, the last one's outcome, the sizes of everything it holds, and whether the start page shows",
         "{}",
-        r#"[{"doc":"map|variant|playlists|ui","open":"boolean","name":"string|null","dirty":"boolean","can_undo":"boolean","can_redo":"boolean","path?":"string"}]"#,
+        r#"{"root":"path","has_tree":"boolean","tree":"{maps,tags,lossy,refused,variants,extractor,format}|null","disc":"path|null","stale":"{reset,maps:[{map,why,groups}]}|null","extracting":"{disc,root,maps_total,maps_done,last}|null","last":"object|{error}|null","sizes":"{tree,layers,projects,outputs,total}","start_page":"boolean"}"#,
+        "null",
+    ),
+    def(
+        m::WORKSPACE_EXTRACT,
+        "Run the plan against the disc (an image, a .map or a folder of maps; the recorded one, H2_DISC or disc/halo2.iso when not given) and extract every map, or only `maps` of it; `root` sets the tree's root (refused inside a Git checkout). Progress in workspace.status",
+        r#"{"disc?":"string","maps?":"[string]","verify?":"boolean","root?":"string"}"#,
+        r#"{"disc":"path","root":"path","maps":"[string]","verify":"boolean"}"#,
+        r#"{"disc":"$DISC"}"#,
+    ),
+    def(
+        m::WORKSPACE_PRUNE,
+        "Remove what the workspace no longer needs: raw resources no tag file or manifest names, generated layers no project asks for and build caches unused for a week; `dry_run` reports without removing",
+        r#"{"dry_run?":"boolean"}"#,
+        r#"{"dry_run":"boolean","raw_removed":"integer","raw":"[hash]","generated_removed":"[string]","generated_kept":"[string]","caches_removed":"[{name,unused_days}]","outputs_removed":"[string]","bytes":"integer"}"#,
+        r#"{"dry_run": true}"#,
+    ),
+    def(
+        m::DOC_LIST,
+        "Every document: each tool's, then each open tag tab's (its own undo stack); open, its name, dirty, undo and redo",
+        "{}",
+        r#"[{"doc":"map|variant|playlists|ui|... or a tag tab's group:path","open":"boolean","name":"string|null","dirty":"boolean","can_undo":"boolean","can_redo":"boolean","path?":"string"}]"#,
         "null",
     ),
     def(
@@ -239,15 +263,15 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::DOC_UNDO,
-        "Undo the document's last edit",
-        r#"{"doc?":"map|variant|playlists (default: the tool shown)"}"#,
+        "Undo the document's last edit; a tag tab's id undoes in that tag's own stack",
+        r#"{"doc?":"map|variant|playlists|... or a tag tab's id (default: the tool shown)"}"#,
         r#"{"done":"boolean","can_undo":"boolean","can_redo":"boolean","log":"[string]"}"#,
         r#"{"doc":"map"}"#,
     ),
     def(
         m::DOC_REDO,
-        "Redo the document's last undone edit",
-        r#"{"doc?":"map|variant|playlists (default: the tool shown)"}"#,
+        "Redo the document's last undone edit; a tag tab's id redoes in that tag's own stack",
+        r#"{"doc?":"map|variant|playlists|... or a tag tab's id (default: the tool shown)"}"#,
         r#"{"done":"boolean","can_undo":"boolean","can_redo":"boolean","log":"[string]"}"#,
         r#"{"doc":"map"}"#,
     ),
@@ -257,6 +281,34 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"doc":"map|variant|playlists","discard?":"boolean"}"#,
         r#"{"closed":"boolean"}"#,
         r#"{"doc":"playlists","discard":true}"#,
+    ),
+    def(
+        m::SHELL_TABS,
+        "The document tabs in order and the one in front: each tab's id (what doc.* takes), kind, title, the tool it shows in, its editor for a tag, dirty, and its own undo and redo",
+        "{}",
+        r#"{"front":"string|null","tool":"string","tabs":"[{doc,kind,title,tool,dirty,can_undo,can_redo,front,editor?,id?,group?,map?}]"}"#,
+        "null",
+    ),
+    def(
+        m::SHELL_OPEN,
+        "Open a tag of the open map as a tab, in the editor its group gets (the scenario tag is the map's own tab), and bring it to the front. With map, that map opens first (refused over unsaved edits unless discard); a map alone brings its tab forward",
+        r#"{"tag?":"string|integer (an id, group:path, path.group or a group with one tag)","map?":"string","discard?":"boolean"}"#,
+        r#"{"tab":"{doc,kind,title,tool,dirty,can_undo,can_redo,front,...}","front":"string|null","log":"[string]"}"#,
+        r#"{"tag":"itmc:objects\\test\\kit"}"#,
+    ),
+    def(
+        m::SHELL_FOCUS,
+        "Bring a tab to the front: its document shows in its editor, and Undo takes its own stack",
+        r#"{"doc":"string (a tab id from shell.tabs)"}"#,
+        r#"{"tab":"{doc,...}","front":"string|null","log":"[string]"}"#,
+        r#"{"doc":"map"}"#,
+    ),
+    def(
+        m::SHELL_CLOSE,
+        "Close a tab. A tool's document closes (refused over unsaved edits unless discard); a tag's tab closes and its edits stay the map's. The tab to its left comes to the front",
+        r#"{"doc":"string (a tab id from shell.tabs)","discard?":"boolean"}"#,
+        r#"{"closed":"boolean","front":"string|null","log":"[string]"}"#,
+        r#"{"doc":"map"}"#,
     ),
     def(
         m::TAG_LIST,
@@ -655,6 +707,12 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"biped":"string","region":"string","permutation":"string"}"#,
         "customisation (later)",
     ),
+    planned(
+        m::WORKSPACE_IMPORT,
+        "Store a map as an import layer, so only what differs from the tree is held",
+        r#"{"map?":"string (a .map file)","path?":"string (a folder of them)","name":"string"}"#,
+        "imports as layers (W9)",
+    ),
 ];
 
 /// The parsed shape: field name, required.
@@ -783,6 +841,7 @@ impl Api {
         match method.split('.').next().unwrap_or("") {
             "session" => self.session(app, method, &p),
             "source" | "doc" => docs::call(app, method, &p),
+            "shell" => shell::call(app, method, &p),
             "tag" => tags::call(app, method, &p),
             "scenario" => scenario::call(app, method, &p),
             "volume" => scenario::volume(app, method, &p),
@@ -793,6 +852,7 @@ impl Api {
                 ui_kit::call(app, method, &p)
             }
             "ui" => ui_screens::call(app, method, &p),
+            "workspace" => workspace::call(app, method, &p),
             "view" => self.view(app, method, &p),
             _ => Err(err(code::METHOD_NOT_FOUND, format!("no method {method}"))),
         }
@@ -869,6 +929,9 @@ impl Api {
         }
         play.update(app);
         app.poll_bot_nav();
+        // The workspace's background extraction, as the window polls it
+        // each frame.
+        app.poll_workspace();
         // Outside editors' saves, as the window polls them each frame.
         app.poll_external(std::time::Instant::now());
         true

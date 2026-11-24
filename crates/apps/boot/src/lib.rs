@@ -11,6 +11,8 @@
 pub use game::*;
 mod controller_lights;
 mod idle_audio;
+// The game's content packages and `packages.list` (packages.rs).
+pub mod packages;
 // maps.test.*: test maps from recipes (docs/game/test-maps.md).
 pub mod registration;
 #[cfg(feature = "test-maps")]
@@ -625,8 +627,18 @@ fn run_configured(
         .switches()
         .feature(game::pogo_mode::FEATURE, true)
         .then(|| pogo_kit::rewrite::PogoRewrite::new().with_cache(&opts.data_root));
+    // The game's content packages: their per-map items through one rewrite,
+    // after the others, cached under <data>/packages/cache
+    // (docs/editor/studio-redesign.md, "How the game consumes packages").
+    let content_packages = {
+        let switches = features.switches();
+        packages::at_boot(&opts.data_root, &|name| switches.feature(name, true))
+    };
     let rewrites = Some(vfs::Chain(
-        vfs::Chain(vfs::Chain(vfs::Chain(fonts, cards), ui_screens), pogo),
+        vfs::Chain(
+            vfs::Chain(vfs::Chain(vfs::Chain(fonts, cards), ui_screens), pogo),
+            content_packages.rewrite,
+        ),
         superbounce_font::Capture,
     ));
     let mounted = map_override::mount_for_agent(
@@ -1360,6 +1372,14 @@ fn run_configured(
             &opts.disc,
             &opts.data_root,
             k.vfs(),
+        );
+    }
+    // packages.list: the content set and each map read (packages.rs).
+    if let Some(a) = &agent {
+        packages::install(
+            &a.agent,
+            Arc::clone(&content_packages.set),
+            content_packages.served.clone(),
         );
     }
     // game.menu: leave the game for the main menu through the agent's

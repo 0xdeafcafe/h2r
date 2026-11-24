@@ -62,6 +62,8 @@ pub enum Source {
     TeamStarts,
     /// The two clusters of all starting locations farthest apart.
     StartClusters,
+    /// The placed `ff_base` labels, one for each team.
+    Labels,
 }
 
 /// The two bases, index 0 the home base.
@@ -153,6 +155,19 @@ pub(crate) fn find(starts: &[StartRow], flags: &[FlagRow], home: Team) -> Option
     Some(Bases {
         points,
         source,
+        home,
+    })
+}
+
+/// The bases the `ff_base` labels place: team 0's and team 1's point. None
+/// when the two are less than a unit apart.
+pub(crate) fn from_labels(red: V3, blue: V3, home: Team) -> Option<Bases> {
+    (distance2(red, blue) >= SAME_POINT.powi(2)).then_some(Bases {
+        points: match home {
+            Team::Red => [red, blue],
+            Team::Blue => [blue, red],
+        },
+        source: Source::Labels,
         home,
     })
 }

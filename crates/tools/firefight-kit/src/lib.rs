@@ -18,17 +18,20 @@ use tags::pathfinding::SBSP_PATHFINDING_FIELD;
 
 mod ai;
 mod bases;
+pub mod ground;
 mod nav;
 /// An invented map the kit builds on, for tests here and in other crates.
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;
 
 pub use bases::{Bases, Config, Source, Team};
+pub use ground::{Ground, Labels, Problem, Receipt, Recipe};
 
 /// The kit's version: the `firefight` crate's, which session data names.
 pub const KIT_VERSION: u32 = firefight::KIT_VERSION;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Mode {
     Kit,
     Probe,
@@ -119,6 +122,7 @@ struct Built {
     zones: usize,
     squads: usize,
     bases: Bases,
+    problems: Vec<Problem>,
 }
 
 struct Field {
@@ -203,7 +207,23 @@ fn starts_in_place(set: &mut TagSet, scenario: TagId, rows: &[Vec<u8>]) -> Resul
     Ok(true)
 }
 
+/// The kit on `base` with no labels placed: the generator picks the bases
+/// and the drops.
+#[cfg(any(test, feature = "testkit"))]
 fn build(base: &[u8], base_name: &str, mode: Mode, config: &Config) -> Result<Built> {
+    build_with(base, base_name, mode, config, &Labels::default())
+}
+
+/// The kit on `base`, taking its places from `labels` where any are placed
+/// (`ground::build`, docs/game/game-types-without-carriers.md, "Maps for
+/// scripted games"). `labels` is the canonical set (`Labels::canonical`).
+fn build_with(
+    base: &[u8],
+    base_name: &str,
+    mode: Mode,
+    config: &Config,
+    labels: &Labels,
+) -> Result<Built> {
     let mut map = Map::from_reader(Cursor::new(base))?;
     ensure!(
         map.header().cache_type == CacheType::Multiplayer,
@@ -215,9 +235,10 @@ fn build(base: &[u8], base_name: &str, mode: Mode, config: &Config) -> Result<Bu
     );
     let base_memory = map.header().meta_size;
     let scenario = map.scenario().context("missing scenario")?.id;
-    let nav = nav::prepare(&mut map, config)?;
+    let nav = nav::prepare(&mut map, config, labels)?;
     let zones = nav.zones.len();
     let bases = nav.bases;
+    let problems = nav.problems;
     let mut set = TagSet::from_map(&mut map)?;
     ensure!(
         set.find(FourCC(*b"char"), ai::ELITE_PATH).is_none(),
@@ -325,7 +346,41 @@ fn build(base: &[u8], base_name: &str, mode: Mode, config: &Config) -> Result<Bu
         zones,
         squads,
         bases,
+        problems,
     })
+}
+
+/// Write `bytes` (the kit's map on `base`) as a versioned file patch
+/// package; its id.
+fn install(
+    base: &[u8],
+    base_name: &str,
+    mode: Mode,
+    bytes: &[u8],
+    maps_dir: &Path,
+    package_dir: &str,
+    replace: bool,
+) -> Result<MapId> {
+    let mut manifest = Manifest::retail(&base_name.to_ascii_lowercase(), Sha256::of(base));
+    manifest.package.name = match mode {
+        Mode::Kit => format!("Firefight – {base_name}"),
+        Mode::Probe => format!("Firefight Probe – {base_name}"),
+    };
+    let patch = content::patch::diff(base, bytes, &format!("Firefight kit v{KIT_VERSION}"));
+    let sha256 = Sha256::of(&patch.bytes);
+    let file = format!("kit-{sha256}.{}", patch.format.extension());
+    manifest.patches.push(Layer {
+        file: file.clone(),
+        sha256,
+    });
+    content::store::write_package(
+        maps_dir,
+        package_dir,
+        &manifest,
+        &[(&file, &patch.bytes)],
+        replace,
+    )?;
+    Ok(manifest.map_id())
 }
 
 /// Install a versioned file patch in the standard map library. The source
@@ -340,28 +395,18 @@ pub fn build_package(
     package_dir: &str,
     replace: bool,
 ) -> Result<Package> {
-    let built = build(base, base_name, mode, config)?;
-    let mut manifest = Manifest::retail(&base_name.to_ascii_lowercase(), Sha256::of(base));
-    manifest.package.name = match mode {
-        Mode::Kit => format!("Firefight – {base_name}"),
-        Mode::Probe => format!("Firefight Probe – {base_name}"),
-    };
-    let patch = content::patch::diff(base, &built.bytes, &format!("Firefight kit v{KIT_VERSION}"));
-    let sha256 = Sha256::of(&patch.bytes);
-    let file = format!("kit-{sha256}.{}", patch.format.extension());
-    manifest.patches.push(Layer {
-        file: file.clone(),
-        sha256,
-    });
-    content::store::write_package(
+    let built = build_with(base, base_name, mode, config, &Labels::default())?;
+    let id = install(
+        base,
+        base_name,
+        mode,
+        &built.bytes,
         maps_dir,
         package_dir,
-        &manifest,
-        &[(&file, &patch.bytes)],
         replace,
     )?;
     Ok(Package {
-        id: manifest.map_id(),
+        id,
         costs: built.costs,
         zones: built.zones,
         squads: built.squads,

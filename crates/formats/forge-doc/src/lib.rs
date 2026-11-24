@@ -8,6 +8,7 @@
 mod document;
 mod entry;
 pub mod games;
+mod ground;
 mod labels;
 mod links;
 mod log;
@@ -19,6 +20,7 @@ mod wire;
 pub use content::{MapId, Sha256};
 pub use document::*;
 pub use entry::{EntryOp, PROPERTY_TEAMS, Print, Property, check_print, print, teams};
+pub use ground::*;
 pub use labels::*;
 pub use links::*;
 pub use log::*;

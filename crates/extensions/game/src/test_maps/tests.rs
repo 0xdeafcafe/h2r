@@ -241,6 +241,74 @@ impl Client {
 }
 
 #[test]
+fn maps_load_finds_a_package_written_while_the_game_runs() {
+    let t = temp("load-rescan");
+    let data = t.join("data");
+    std::fs::create_dir_all(data.join("maps")).unwrap();
+    // The game's VFS as booted: the shared content maps, nothing
+    // installed, no packages under <data>/maps.
+    let offers = crate::new_maps::mounted_packages();
+    offers.replace(std::iter::empty::<(String, vfs::ContentMap)>());
+    let mut cfg = vfs::Config::new(&data, crate::new_maps::HALO2_TITLE);
+    cfg.content_maps = offers.clone();
+    let vfs = Arc::new(Mutex::new(vfs::Vfs::with_storage(cfg).unwrap()));
+    let root = vfs::Config::new(&data, crate::new_maps::HALO2_TITLE)
+        .title_data_dir()
+        .join(vfs::CONTENT_DIR);
+
+    // A package is written while the game runs.
+    crate::new_maps::tests::package(
+        &data,
+        "coldsnap-1",
+        "coldsnap",
+        &crate::new_maps::tests::body(3),
+        "",
+    );
+    let id = content::Library::open(&data.join("maps")).packages()[0].id;
+
+    // It is not found while nothing installs it: the catalogue under the
+    // content root is what the list reads.
+    assert!(
+        installed_slot(&vfs, &root, &id, &|| {}).is_none(),
+        "not installed yet"
+    );
+
+    // The rescan installs it as the game's does (a fake disc here; the
+    // real one reads its mainmenu), publishes its mount to the shared
+    // content maps and reloads the VFS's map packages: the second look
+    // finds the slot.
+    let rescan = || {
+        let mut disc = crate::new_maps::tests::disc();
+        let report = crate::new_maps::install(&data, &mut disc).unwrap();
+        assert_eq!(report.installed.len(), 1, "{report:?}");
+        offers.replace(report.mounts.clone());
+        vfs.lock().unwrap_or_else(|e| e.into_inner()).rescan_maps();
+    };
+    let listed = installed_slot(&vfs, &root, &id, &rescan).expect("found after the rescan");
+    let path = listed.path.to_ascii_lowercase();
+    assert!(path.starts_with("t:\\$c\\"), "{path}");
+    assert!(path.ends_with("\\coldsnap"), "{path}");
+
+    // And once installed, the first look finds it with no rescan: the
+    // no-op one would leave a miss as a miss.
+    assert!(installed_slot(&vfs, &root, &id, &|| {}).is_some());
+
+    // The map reads through the VFS at the slot `maps.load` would queue.
+    let name = crate::map_slots::slot_file(&listed.path).expect("a content slot path");
+    let served = {
+        let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
+        let handle = v.open(&name, vfs::OpenOptions::default()).unwrap().handle;
+        let len = v.query_information(handle).unwrap().metadata.end_of_file;
+        let mut bytes = vec![0; len as usize];
+        v.read(handle, vfs::Offset::Absolute(0), &mut bytes).unwrap();
+        v.close(handle).unwrap();
+        bytes
+    };
+    assert_eq!(served, crate::new_maps::tests::body(3));
+    std::fs::remove_dir_all(&t).unwrap();
+}
+
+#[test]
 fn the_methods_list_build_and_remove_through_the_dispatcher() {
     let d = temp("methods");
     let agent = Agent::new();

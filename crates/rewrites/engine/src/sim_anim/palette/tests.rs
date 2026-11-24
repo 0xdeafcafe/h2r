@@ -228,7 +228,7 @@ fn steps_off_the_gather_decline_untouched() {
     declines(
         &Case {
             nodes: NODES_MAX as i32 + 1,
-            ..case(6, 3, [1, 1])
+            ..case(7, 3, [1, 1])
         },
         |_, _| {},
         Decline::Count,

@@ -205,6 +205,10 @@ struct Step {
     strings: Vec<String>,
     /// The step changed a block's count or a data reference's length.
     shape: bool,
+    /// The tag the step edits: its document's undo stack
+    /// ([`TagDoc::undo_tag`]). `None` for a step over several tags (an
+    /// import squashed into one).
+    tag: Option<TagId>,
 }
 
 impl Step {
@@ -224,6 +228,22 @@ impl Step {
             .map(|((_, a), _, after)| (*a, after.len() as u32))
             .collect()
     }
+}
+
+/// Two steps that may not be undone or redone out of order: one writes
+/// bytes the other writes, or both add strings (string IDs are numbered
+/// in the order they were added).
+fn conflicts(a: &Step, b: &Step) -> bool {
+    if !a.strings.is_empty() && !b.strings.is_empty() {
+        return true;
+    }
+    a.writes.iter().any(|((ra, aa), _, wa)| {
+        b.writes.iter().any(|((rb, ab), _, wb)| {
+            let (a0, a1) = (u64::from(*aa), u64::from(*aa) + wa.len() as u64);
+            let (b0, b1) = (u64::from(*ab), u64::from(*ab) + wb.len() as u64);
+            ra == rb && a0 < b1 && b0 < a1
+        })
+    })
 }
 
 /// The open map's tags and the edits over them.
@@ -778,11 +798,11 @@ impl TagDoc {
         self.put(at, &w.bytes);
         let label = format!("set {}", w.label);
         self.changed(Class::Field, Some(w.tag), vec![(w.address, len)], &label);
-        self.redo.clear();
         if let Some(last) = self.undo.last_mut()
             && !self.sealed
             && w.merge.is_some()
             && last.merge == w.merge
+            && last.tag == Some(w.tag)
             && last
                 .writes
                 .first()
@@ -801,9 +821,11 @@ impl TagDoc {
                 label: format!("set {}", w.label),
                 writes: vec![(at, before, w.bytes)],
                 merge: w.merge,
+                tag: Some(w.tag),
                 ..Step::default()
             });
         }
+        self.forget_redo_against_last();
         self.sealed = w.merge.is_none();
         Ok(())
     }
@@ -882,8 +904,7 @@ impl TagDoc {
             ));
         }
         self.changed_tag_step(tag, &step);
-        self.undo.push(step);
-        self.redo.clear();
+        self.push_step(tag, step);
         self.sealed = true;
         self.shape_rev += 1;
         Ok(())
@@ -957,8 +978,7 @@ impl TagDoc {
                 .collect(),
         ));
         self.changed_tag_step(tag, &step);
-        self.undo.push(step);
-        self.redo.clear();
+        self.push_step(tag, step);
         self.sealed = true;
         self.shape_rev += 1;
         Ok(())
@@ -1119,8 +1139,7 @@ impl TagDoc {
                 .collect(),
         ));
         self.changed_tag_step(tag, &step);
-        self.undo.push(step);
-        self.redo.clear();
+        self.push_step(tag, step);
         self.sealed = true;
         self.shape_rev += 1;
         Ok(())
@@ -1147,7 +1166,14 @@ impl TagDoc {
     }
     /// Undo the last step; returns its label.
     pub fn undo(&mut self) -> Option<String> {
-        let step = self.undo.pop()?;
+        let last = self.undo.len().checked_sub(1)?;
+        Some(self.undo_at(last))
+    }
+
+    /// Undo step `i` of the undo stack: the last, or one whose later
+    /// steps write none of its bytes ([`Self::undo_tag`]).
+    fn undo_at(&mut self, i: usize) -> String {
+        let step = self.undo.remove(i);
         for (at, before, _) in step.writes.iter().rev() {
             self.put(*at, before);
         }
@@ -1160,10 +1186,17 @@ impl TagDoc {
         self.redo.push(step);
         self.sealed = true;
         self.shape_rev += 1;
-        Some(label)
+        label
     }
     pub fn redo(&mut self) -> Option<String> {
-        let step = self.redo.pop()?;
+        let last = self.redo.len().checked_sub(1)?;
+        Some(self.redo_at(last))
+    }
+
+    /// Redo step `i` of the redo stack: the last, or one that no step
+    /// undone after it writes the same bytes as ([`Self::redo_tag`]).
+    fn redo_at(&mut self, i: usize) -> String {
+        let step = self.redo.remove(i);
         for (at, _, after) in &step.writes {
             self.put(*at, after);
         }
@@ -1175,8 +1208,70 @@ impl TagDoc {
         self.undo.push(step);
         self.sealed = true;
         self.shape_rev += 1;
-        Some(label)
+        label
     }
+
+    /// `tag`'s own undo stack holds a step: its document tab can undo.
+    pub fn can_undo_tag(&self, tag: TagId) -> bool {
+        self.undo.iter().any(|s| s.tag == Some(tag))
+    }
+    pub fn can_redo_tag(&self, tag: TagId) -> bool {
+        self.redo.iter().any(|s| s.tag == Some(tag))
+    }
+
+    /// Undo `tag`'s last step, leaving every other tag's edits as they
+    /// are: each tag's document has its own undo stack over the map's
+    /// one overlay (docs/editor/studio-redesign.md, "The shell"). Refused
+    /// while a later step of another tag writes the same bytes, or adds a
+    /// string after one this step added: that one is undone first.
+    /// `Ok(None)` when the tag has nothing to undo.
+    pub fn undo_tag(&mut self, tag: TagId) -> Result<Option<String>, String> {
+        let Some(i) = self.undo.iter().rposition(|s| s.tag == Some(tag)) else {
+            return Ok(None);
+        };
+        if let Some(later) = self.undo[i + 1..].iter().find(|l| conflicts(l, &self.undo[i])) {
+            return Err(format!(
+                "a later edit ({}) writes the same bytes: undo it first",
+                later.label
+            ));
+        }
+        Ok(Some(self.undo_at(i)))
+    }
+
+    /// Redo `tag`'s last undone step. Refused while a step undone after it
+    /// (made before it) writes the same bytes and is still undone.
+    pub fn redo_tag(&mut self, tag: TagId) -> Result<Option<String>, String> {
+        let Some(i) = self.redo.iter().rposition(|s| s.tag == Some(tag)) else {
+            return Ok(None);
+        };
+        if let Some(earlier) = self.redo[i + 1..].iter().find(|e| conflicts(e, &self.redo[i])) {
+            return Err(format!(
+                "an earlier edit ({}) writes the same bytes and is undone: redo it first",
+                earlier.label
+            ));
+        }
+        Ok(Some(self.redo_at(i)))
+    }
+
+    /// Push a new step of `tag`'s and drop the redo steps it makes wrong.
+    fn push_step(&mut self, tag: TagId, mut step: Step) {
+        step.tag = Some(tag);
+        self.undo.push(step);
+        self.forget_redo_against_last();
+    }
+
+    /// A new edit drops the redo steps of its own tag, and any other's it
+    /// conflicts with (the same bytes, or both adding strings); the rest
+    /// keep their redo. A step over several tags drops every redo step.
+    fn forget_redo_against_last(&mut self) {
+        let Some(new) = self.undo.last() else {
+            return;
+        };
+        self.redo.retain(|r| {
+            new.tag.is_some() && r.tag.is_some() && r.tag != new.tag && !conflicts(r, new)
+        });
+    }
+
     pub fn seal(&mut self) {
         self.sealed = true;
     }
@@ -1209,7 +1304,11 @@ impl TagDoc {
             label,
             ..Step::default()
         };
+        one.tag = steps.first().and_then(|s| s.tag);
         for s in steps {
+            if s.tag != one.tag {
+                one.tag = None;
+            }
             one.shape |= s.shape;
             one.reload.extend(s.reload);
             one.writes.extend(s.writes);
@@ -1434,8 +1533,7 @@ impl TagDoc {
             self.rev += 1;
         }
         self.changed_tag_step(tag, &step);
-        self.undo.push(step);
-        self.redo.clear();
+        self.push_step(tag, step);
         self.sealed = true;
         Ok(())
     }
@@ -1463,5 +1561,65 @@ impl TagDoc {
             Some(t) => format!("{}: {}", tags::defs::fourcc_text(t.group), t.name),
             None => format!("missing {id:#010x}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::*;
+
+    fn step(tag: u32, at: u32, len: usize) -> Step {
+        Step {
+            label: format!("step of {tag}"),
+            writes: vec![((Region::Metadata, at), vec![0; len], vec![1; len])],
+            tag: Some(TagId(tag)),
+            ..Step::default()
+        }
+    }
+
+    /// Steps of two tags may be undone out of order only when neither
+    /// writes the other's bytes and they do not both add strings.
+    #[test]
+    fn steps_conflict_on_shared_bytes_or_two_new_strings() {
+        assert!(conflicts(&step(1, 0x10, 4), &step(2, 0x12, 4)));
+        assert!(!conflicts(&step(1, 0x10, 4), &step(2, 0x14, 4)));
+        let space = AddressSpace {
+            virtual_base: 0,
+            file_offset: 0x100,
+            size: 0x100,
+        };
+        let bsp = Step {
+            writes: vec![((Region::Bsp(space), 0x10), vec![0; 4], vec![1; 4])],
+            ..step(2, 0x10, 4)
+        };
+        assert!(!conflicts(&step(1, 0x10, 4), &bsp), "another region");
+        let mut a = step(1, 0x10, 4);
+        a.strings.push("a".into());
+        let mut b = step(2, 0x40, 4);
+        b.strings.push("b".into());
+        assert!(conflicts(&a, &b));
+        assert!(!conflicts(&a, &step(2, 0x40, 4)));
+    }
+
+    /// A tag's undo under a later step that writes its bytes is refused,
+    /// naming that step; so is a redo over an earlier step still undone.
+    #[test]
+    fn an_out_of_order_step_over_the_same_bytes_is_refused() {
+        let mut doc = TagDoc::default();
+        assert_eq!(doc.undo_tag(TagId(1)), Ok(None));
+        doc.undo.push(step(1, 0x10, 4));
+        doc.undo.push(step(2, 0x12, 4));
+        assert!(doc.can_undo_tag(TagId(1)) && doc.can_undo_tag(TagId(2)));
+        let e = doc.undo_tag(TagId(1)).unwrap_err();
+        assert!(e.contains("step of 2"), "{e}");
+        assert_eq!(doc.undo.len(), 2, "nothing undone");
+
+        let mut doc = TagDoc::default();
+        // Undone in order: the later step first.
+        doc.redo.push(step(2, 0x12, 4));
+        doc.redo.push(step(1, 0x10, 4));
+        let e = doc.redo_tag(TagId(2)).unwrap_err();
+        assert!(e.contains("step of 1"), "{e}");
+        assert!(doc.can_redo_tag(TagId(2)) && !doc.can_undo_tag(TagId(2)));
     }
 }

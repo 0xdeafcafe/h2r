@@ -3,7 +3,7 @@
 //! "The map variant file").
 //!
 //! A map variant holds scenario edits only: placement adds, entry ops, links
-//! and labels. Its build is a scenario patch, so it fits every map the kit
+//! and labels, and may ask for AI ground ([`crate::GroundRecipe`]). Its build is a scenario patch, so it fits every map the kit
 //! fits. A document with anything more (a recipe, an import slot, a source
 //! map, a tag-field write, a placement set or removal by running index) is a
 //! Forge map. The tier is computed from the ops, never declared, and judged
@@ -42,7 +42,10 @@ impl Tier {
 impl ForgeDoc {
     /// The document's tier, judged on its play form.
     pub fn tier(&self) -> Tier {
-        let recipes = self.recipes.iter().all(is_kit);
+        let recipes = self
+            .recipes
+            .iter()
+            .all(|r| is_kit(r) || crate::ground::is_ground(r));
         let ops = self.ops.iter().all(|op| match &op.edit {
             Edit::Placement(Placement::Add { .. }) | Edit::Entry(_) => true,
             Edit::Forge(Forge::Link(_) | Forge::Unlink { .. } | Forge::Label { .. }) => true,

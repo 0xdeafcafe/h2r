@@ -149,3 +149,180 @@ fn oversized_declared_permutation_is_refused_before_allocation() {
     // In-file but over the in-memory cap: refused without reading.
     assert!(g.read_encoded(&p, &mut Reject(false)).is_err());
 }
+
+/// The extra-info resource as an `hklb` block, laid out as the converter
+/// writes it and retail holds it: a header, the curve data and the
+/// descriptors, each found by its locator.
+fn mouth_resource(curves: &[&[u8]]) -> Vec<u8> {
+    let mut data = Vec::new();
+    let mut descriptors = Vec::new();
+    for curve in curves {
+        descriptors.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        descriptors.extend_from_slice(&(curve.len() as u32).to_le_bytes());
+        // No facial sequence.
+        descriptors.extend_from_slice(&[0; 8]);
+        data.extend_from_slice(curve);
+    }
+    let block_start = (4 + data.len()).next_multiple_of(4) + 4;
+    let resource_size = block_start + descriptors.len();
+    let mut raw = b"hklb".to_vec();
+    for value in [resource_size as u32, data.len() as u32, 0, curves.len() as u32, 0] {
+        raw.extend_from_slice(&value.to_le_bytes());
+    }
+    raw.extend_from_slice(b"crsr");
+    raw.extend_from_slice(&data);
+    raw.resize(24 + block_start - 4, 0);
+    raw.extend_from_slice(b"crsr");
+    raw.extend_from_slice(&descriptors);
+    raw.extend_from_slice(b"fklb");
+    raw
+}
+
+/// The local resource file: the extra info's pointer names 0x1000.
+struct Resource(Vec<u8>);
+impl ResourceReader for Resource {
+    fn check(&self, p: RawPointer, size: u32) -> Result<()> {
+        let end = u64::from(p.offset) + u64::from(size);
+        if p.file != map::ResourceFile::Local
+            || p.offset != 0x1000
+            || end > 0x1000 + self.0.len() as u64
+        {
+            return Err(Error::Invalid("outside the resource file"));
+        }
+        Ok(())
+    }
+    fn read_raw(&mut self, p: RawPointer, size: u32) -> Result<Vec<u8>> {
+        self.check(p, size)?;
+        Ok(self.0[p.offset as usize - 0x1000..][..size as usize].to_vec())
+    }
+}
+
+/// Where the extra-info element and its locators sit in the bytes below.
+const EXTRA_AT: usize = 0x84;
+const LOCATORS_AT: usize = EXTRA_AT + 0x2c;
+
+/// An invented gestalt: one range, two permutations (descriptor indices 0
+/// and 1) and one extra info whose pointer names 0x1000. `curves[0]` and
+/// `curves[1]` are their mouth curves; an empty one is unvoiced. Returns
+/// the gestalt bytes and the resource.
+fn mouth_gestalt(curves: &[&[u8]]) -> (Vec<u8>, Vec<u8>) {
+    let resource = mouth_resource(curves);
+    let mut b = vec![0u8; GESTALT_HEADER];
+    let put_block = |b: &mut Vec<u8>, idx: usize, body: &[u8]| {
+        let addr = BASE + b.len() as u32;
+        b[idx * 8..idx * 8 + 4].copy_from_slice(&1u32.to_le_bytes());
+        b[idx * 8 + 4..idx * 8 + 8].copy_from_slice(&addr.to_le_bytes());
+        b.extend_from_slice(body);
+    };
+    let mut range = vec![0u8; 8];
+    range.extend([0, 0, 2, 0]); // two permutations
+    put_block(&mut b, BLOCK_PITCH_RANGES, &range);
+    let mut perms = Vec::new();
+    for i in 0u8..2 {
+        let mut e = [0u8; 16];
+        e[5] = i; // the extra-info descriptor index
+        perms.extend_from_slice(&e);
+    }
+    put_block(&mut b, BLOCK_PERMUTATIONS, &perms);
+    // The extra-info element lands at 0x84, its locators after it.
+    assert_eq!(b.len(), EXTRA_AT);
+    let data_len: u32 = curves.iter().map(|c| c.len() as u32).sum();
+    let descriptors_len = (curves.len() * 16) as u32;
+    let block_start = (4 + data_len as usize).next_multiple_of(4) + 4;
+    let mut e = [0u8; 0x2c];
+    e[8..12].copy_from_slice(&0x1000u32.to_le_bytes());
+    e[0xc..0x10].copy_from_slice(&(resource.len() as u32).to_le_bytes());
+    e[0x10..0x14].copy_from_slice(&16u32.to_le_bytes());
+    e[0x14..0x18].copy_from_slice(&((block_start + descriptors_len as usize) as u32).to_le_bytes());
+    e[0x18..0x1c].copy_from_slice(&2u32.to_le_bytes());
+    e[0x1c..0x20].copy_from_slice(&(BASE + LOCATORS_AT as u32).to_le_bytes());
+    e[0x24..0x28].copy_from_slice(&0x0100_fff8u32.to_le_bytes());
+    e[0x28..0x2c].copy_from_slice(&u32::MAX.to_le_bytes());
+    b.extend_from_slice(&e);
+    for (head, size, offset) in [
+        ([1, 2, 0, 0, 0, 0, 0xff, 0xff], data_len, 4u32),
+        ([0, 2, 8, 0, 8, 0, 16, 0], descriptors_len, block_start as u32),
+    ] {
+        b.extend_from_slice(&head);
+        b.extend_from_slice(&size.to_le_bytes());
+        b.extend_from_slice(&offset.to_le_bytes());
+    }
+    b[BLOCK_EXTRA_INFOS * 8..BLOCK_EXTRA_INFOS * 8 + 4].copy_from_slice(&1u32.to_le_bytes());
+    b[BLOCK_EXTRA_INFOS * 8 + 4..BLOCK_EXTRA_INFOS * 8 + 8]
+        .copy_from_slice(&(BASE + EXTRA_AT as u32).to_le_bytes());
+    (b, resource)
+}
+
+fn mouth_header(extra_info: u16) -> SoundHeader {
+    let mut b = [0u8; 20];
+    b[10] = 1; // one pitch range
+    b[0xe..0x10].copy_from_slice(&extra_info.to_le_bytes());
+    SoundHeader::decode(&b).unwrap()
+}
+
+#[test]
+fn one_voiced_and_one_unvoiced_permutation_give_one_curve_and_one_null() {
+    let (bytes, resource) = mouth_gestalt(&[&[10, 200, 255], &[]]);
+    let g = Gestalt::decode(&bytes, BASE).unwrap();
+    let h = mouth_header(0);
+    assert_eq!(h.extra_info, 0);
+    let mut r = Resource(resource);
+    assert_eq!(g.mouth_curve(&h, &g.permutations[0], &mut r).unwrap(), Some(vec![10, 200, 255]));
+    assert_eq!(g.mouth_curve(&h, &g.permutations[1], &mut r).unwrap(), None);
+}
+
+#[test]
+fn a_sound_without_extra_info_or_a_negative_descriptor_has_no_curve() {
+    let (bytes, resource) = mouth_gestalt(&[&[7], &[]]);
+    let g = Gestalt::decode(&bytes, BASE).unwrap();
+    // 0xffff is none.
+    let none = mouth_header(u16::MAX);
+    assert_eq!(
+        g.mouth_curve(&none, &g.permutations[0], &mut Resource(resource.clone())).unwrap(),
+        None
+    );
+    // A negative descriptor index is no descriptor.
+    let h = mouth_header(0);
+    let mut p = g.permutations[0];
+    p.raw[5] = 0xff;
+    assert_eq!(g.mouth_curve(&h, &p, &mut Resource(resource)).unwrap(), None);
+}
+
+#[test]
+fn a_bad_extra_info_or_resource_is_refused_by_name() {
+    let (bytes, resource) = mouth_gestalt(&[&[1, 2, 3], &[]]);
+    let g = Gestalt::decode(&bytes, BASE).unwrap();
+    let h = mouth_header(0);
+    // The index is out of the block.
+    let out = mouth_header(4);
+    assert!(g.mouth_curve(&out, &g.permutations[0], &mut Resource(resource.clone())).is_err());
+    // The descriptor index is out of the table.
+    let mut p = g.permutations[0];
+    p.raw[5] = 5;
+    assert!(g.mouth_curve(&h, &p, &mut Resource(resource.clone())).is_err());
+    // A resource that is not an hklb block.
+    let mut not_hklb = resource.clone();
+    not_hklb[0] = b'X';
+    assert!(g.mouth_curve(&h, &g.permutations[0], &mut Resource(not_hklb)).is_err());
+    // A curve that runs outside the data: descriptor 0's length word. The
+    // descriptors start after the resource's header (24), the data and the
+    // second crsr: 24 + block_start.
+    let mut long = resource.clone();
+    let block_start = (4usize + 3).next_multiple_of(4) + 4;
+    let at = 24 + block_start + 4;
+    long[at..at + 4].copy_from_slice(&9u32.to_le_bytes());
+    assert!(g.mouth_curve(&h, &g.permutations[0], &mut Resource(long)).is_err());
+    // A locator that is not the known one.
+    let mut wrong_head = bytes.clone();
+    wrong_head[LOCATORS_AT] = 9;
+    let g = Gestalt::decode(&wrong_head, BASE).unwrap();
+    assert!(g.mouth_curve(&h, &g.permutations[0], &mut Resource(resource)).is_err());
+}
+
+#[test]
+fn an_extra_info_with_an_unknown_child_block_is_refused() {
+    let (mut bytes, _) = mouth_gestalt(&[&[1], &[]]);
+    // The child block at +0 has no known layout: present is refused.
+    bytes[EXTRA_AT..EXTRA_AT + 4].copy_from_slice(&1u32.to_le_bytes());
+    assert!(Gestalt::decode(&bytes, BASE).is_err());
+}

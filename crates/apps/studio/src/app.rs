@@ -28,6 +28,7 @@ pub mod external;
 pub mod rules_edit;
 pub mod scripts;
 pub mod shared_refs;
+pub mod shell;
 pub mod tag_api;
 pub mod tag_browse;
 pub mod tag_bundle;
@@ -36,6 +37,7 @@ pub mod tag_tree;
 pub mod textures;
 pub mod ui_screens;
 pub mod voices;
+pub mod workspace;
 pub use commands::{PlaylistEdit, Refused};
 pub use convert::{
     Built, Converter, Input as ConvertInput, Running, Written, explain, from_scratch,
@@ -45,6 +47,7 @@ pub use h1convert::convert::Sandbox as ConvertSandbox;
 pub use library::{Compare, block_of, kind_of, markers as library_markers, tris as library_tris};
 pub use hud::HudTool;
 pub use scripts::{ScriptAction, ScriptsTool};
+pub use shell::{Doc, Tab};
 pub use navigation::{NavAction, NavHistory, NavLocation};
 pub use tag_doc::{BlockOp, TagAction, TagDoc, TagWrite};
 pub use ui_screens::{Pick, UiScreens};
@@ -278,6 +281,19 @@ pub enum Action {
     /// Show another tool.
     SetTool(ToolKind),
 
+    // Document tabs (`shell`).
+    /// Open a document as a tab and bring it to the front: a tag of the
+    /// open map in the editor its group gets, or an open tool document.
+    OpenDoc(Doc),
+    /// Bring a tab to the front, showing its document in its editor.
+    FocusDoc(Doc),
+    /// Close a tab: a tool's document (asking about its edits first), or a
+    /// tag's tab (its edits stay the map's).
+    CloseDoc(Doc),
+    /// Undo or redo in a tab's own undo stack.
+    UndoDoc(Doc),
+    RedoDoc(Doc),
+
     // Game variants.
     /// Open a list entry (a built-in or a save).
     OpenVariant(Origin),
@@ -440,6 +456,8 @@ impl Action {
                 dirty(ToolKind::Playlists)
             }
             Action::HudOpenMap(_) | Action::HudOpenPackage(_) => dirty(ToolKind::Hud),
+            Action::CloseDoc(Doc::Map) => dirty_map(),
+            Action::CloseDoc(doc) => doc.holder().and_then(dirty),
             _ => None,
         }
     }
@@ -593,6 +611,11 @@ pub struct App {
     pub voices: voices::Voices,
     /// The game type script editor (`rules_edit`).
     pub rules: rules_edit::RulesEditor,
+    /// The document tabs and the one in front (`shell`).
+    tabs: shell::Tabs,
+    /// The tag workspace: the tree's root, the plan, extraction and
+    /// prune (`app::workspace`, docs/editor/tag-workspace.md).
+    pub workspace: workspace::Workspace,
 }
 
 impl Default for App {
@@ -670,6 +693,8 @@ impl App {
             announcer: Default::default(),
             voices: Default::default(),
             rules: Default::default(),
+            tabs: Default::default(),
+            workspace: Default::default(),
         }
     }
 
@@ -989,7 +1014,13 @@ impl App {
         }
     }
 
+    /// Run one action, then give the tabs what it opened or closed.
     fn run(&mut self, action: Action) {
+        self.run_action(action);
+        self.sync_tabs();
+    }
+
+    fn run_action(&mut self, action: Action) {
         match action {
             Action::OpenSource(path) => self.open_source(&path),
             // Re-picking the open map keeps it (and its edits).
@@ -1037,8 +1068,19 @@ impl App {
                     self.opened_package = Some(dir);
                 }
             }
-            Action::Undo => self.undo_redo(self.tool, true),
-            Action::Redo => self.undo_redo(self.tool, false),
+            Action::Undo => match self.undo_target() {
+                Some(doc) => self.undo_redo_doc(doc, true),
+                None => self.undo_redo(self.tool, true),
+            },
+            Action::Redo => match self.undo_target() {
+                Some(doc) => self.undo_redo_doc(doc, false),
+                None => self.undo_redo(self.tool, false),
+            },
+            Action::OpenDoc(doc) => self.open_doc(doc),
+            Action::FocusDoc(doc) => self.focus_doc(doc),
+            Action::CloseDoc(doc) => self.close_doc(doc),
+            Action::UndoDoc(doc) => self.undo_redo_doc(doc, true),
+            Action::RedoDoc(doc) => self.undo_redo_doc(doc, false),
             Action::UndoIn(tool) => self.undo_redo(tool, true),
             Action::RedoIn(tool) => self.undo_redo(tool, false),
             Action::SetField {
@@ -1200,7 +1242,10 @@ impl App {
             Action::Model(a) => self.run_model(a),
             Action::Bitmap(a) => self.run_bitmap(a),
             Action::Image(a) => self.run_image(a),
-            Action::SetTool(tool) => self.set_tool(tool),
+            Action::SetTool(tool) => {
+                self.set_tool(tool);
+                self.follow_tool(tool);
+            }
             Action::Quit => self.quit = true,
             Action::UiPick(pick) => {
                 self.sync_ui_disc();
@@ -1943,5 +1988,7 @@ mod audition_tests;
 pub(crate) mod map_cards_tests;
 #[cfg(test)]
 mod map_pack_tests;
+#[cfg(test)]
+pub(crate) mod shell_tests;
 #[cfg(test)]
 mod tests;

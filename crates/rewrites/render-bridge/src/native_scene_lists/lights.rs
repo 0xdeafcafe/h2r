@@ -20,6 +20,7 @@ impl From<gather::Refusal> for Refusal {
             gather::Refusal::Memory => Self::Memory,
             gather::Refusal::Layout => Self::Layout,
             gather::Refusal::Unsupported => Self::Unsupported,
+            gather::Refusal::Residency => Self::Residency,
         }
     }
 }
@@ -153,13 +154,25 @@ impl<'a> Candidates<'a> {
     }
 }
 
-pub(super) fn candidate_eligible(m: &dyn GuestMemory, light: u32, definition: u32, flags: u32) -> Result<bool> {
+pub(super) fn candidate_eligible(
+    m: &dyn GuestMemory,
+    light: u32,
+    definition: u32,
+    flags: u32,
+) -> Result<bool> {
     Ok(visible::candidate_eligible(m, light, definition, flags)?)
 }
 
 fn read_visible(m: &dyn GuestMemory, cpu: &CpuAbi) -> Result<Output> {
     let output_addr = stack(m, cpu, 4)?;
-    let list = visible::list(m, output_addr, Fpu { mxcsr: cpu.mxcsr, x87_control: cpu.x87.control })?;
+    let list = visible::list(
+        m,
+        output_addr,
+        Fpu {
+            mxcsr: cpu.mxcsr,
+            x87_control: cpu.x87.control,
+        },
+    )?;
     let mut out = Output::default();
     out.writes(list.writes);
     out.eax = Some(list.count);
@@ -179,7 +192,11 @@ pub(super) fn extra_caster(m: &dyn GuestMemory, cpu: &CpuAbi) -> (SceneList, Res
 }
 
 fn extra_caster_list(m: &dyn GuestMemory, cpu: &CpuAbi) -> Result<Output> {
-    let vis = if cpu.ecx == NONE { 0 } else { stack(m, cpu, 4)? };
+    let vis = if cpu.ecx == NONE {
+        0
+    } else {
+        stack(m, cpu, 4)?
+    };
     let mut out = Output::default();
     out.writes(extra_caster::list(m, cpu.eax as u8, cpu.ecx, vis)?);
     Ok(out)

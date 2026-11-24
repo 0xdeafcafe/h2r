@@ -359,6 +359,15 @@ fn tag_rows(
         }) {
             view.select(t.id, None, actions);
         }
+        // A double-click opens the tag as a document tab, in the editor
+        // its group gets (docs/editor/studio-redesign.md). The row reports
+        // its click on release; the double-click is the second press.
+        if !view.browse
+            && ui.is_item_hovered()
+            && ui.is_mouse_double_clicked(dear_imgui_rs::MouseButton::Left)
+        {
+            actions.push(Action::OpenDoc(crate::app::Doc::Tag(t.id)));
+        }
     });
 }
 

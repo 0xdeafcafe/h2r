@@ -7,11 +7,15 @@ license.workspace = true
 
 [dependencies]
 content.workspace = true
+firefight-kit = { path = "../firefight-kit" }
 forge-doc.workspace = true
 map.workspace = true
 scenario-edit = { path = "../scenario-edit" }
 tags.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+firefight-kit = { path = "../firefight-kit", features = ["testkit"] }
 
 [lints]
 workspace = true

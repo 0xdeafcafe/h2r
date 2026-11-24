@@ -23,10 +23,25 @@ impl From<&PlacedObject> for Object {
     }
 }
 
+/// A ground marker the document adds: a netgame flag with no object. It
+/// places nothing in the world, since the AI ground is built from the
+/// document (docs/game/forge-map-variants.md, "AI ground").
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Marker {
+    pub id: OpId,
+    /// Its index in the netgame flags after every op.
+    pub index: u32,
+    /// Position and facing (`rotation[0]`).
+    pub frame: Frame,
+    pub team: u8,
+}
+
 /// The added objects a document leaves, and where each is.
 pub(crate) struct Scene {
     /// By block, then by index in the block.
     pub objects: Vec<Object>,
+    /// The added ground markers.
+    pub markers: Vec<Marker>,
     /// Each added object's index in its block after every op: the running
     /// index a placement op by index names it at.
     pub index: BTreeMap<OpId, u32>,
@@ -37,6 +52,7 @@ pub(crate) struct Scene {
 enum Row {
     Own,
     Added(Object),
+    Marker(Marker),
 }
 
 /// Follow every block an op names through its appends and swap-removes, as
@@ -73,6 +89,25 @@ pub(crate) fn project(
             .entry(block)
             .or_insert_with(|| (0..base).map(|_| Row::Own).collect());
         match placement {
+            Placement::Add { like, fields, .. }
+                if block == forge_doc::GROUND_BLOCK
+                    && !fields.iter().any(|f| f.field == "palette index") =>
+            {
+                if like.is_some() {
+                    return Err("Copying an existing placement needs a rebuild.".into());
+                }
+                let mut marker = Marker {
+                    id: op.id,
+                    index: 0,
+                    frame: Frame::default(),
+                    team: 0,
+                };
+                for field in fields {
+                    update_marker(&mut marker, field)?;
+                }
+                in_bounds(limits, marker.frame)?;
+                rows.push(Row::Marker(marker));
+            }
             Placement::Add { like, fields, .. } => {
                 if like.is_some() {
                     return Err("Copying an existing placement needs a rebuild.".into());
@@ -102,6 +137,10 @@ pub(crate) fn project(
                         in_bounds(limits, object.frame)?;
                     }
                 }
+                Some(Row::Marker(marker)) => {
+                    update_marker(marker, write)?;
+                    in_bounds(limits, marker.frame)?;
+                }
                 // The map's own entry: its fields are the loaded scenario's,
                 // not an object of this tool.
                 Some(Row::Own) if entry => {}
@@ -123,13 +162,22 @@ pub(crate) fn project(
     }
     let mut scene = Scene {
         objects: Vec::new(),
+        markers: Vec::new(),
         index: BTreeMap::new(),
     };
     for rows in blocks.into_values() {
         for (i, row) in rows.into_iter().enumerate() {
-            if let Row::Added(object) = row {
-                scene.index.insert(object.id, i as u32);
-                scene.objects.push(object);
+            match row {
+                Row::Added(object) => {
+                    scene.index.insert(object.id, i as u32);
+                    scene.objects.push(object);
+                }
+                Row::Marker(mut marker) => {
+                    marker.index = i as u32;
+                    scene.index.insert(marker.id, i as u32);
+                    scene.markers.push(marker);
+                }
+                Row::Own => {}
             }
         }
     }
@@ -178,6 +226,23 @@ fn update(frame: &mut Frame, write: &FieldWrite) -> Result<(), String> {
         return Err("Object transform requires three coordinates.".into());
     };
     *target = v.map(F32::get);
+    Ok(())
+}
+
+/// A marker's field: its position, facing and team. Its type and channel
+/// are the netgame flag's own and have no meaning to a marker.
+fn update_marker(marker: &mut Marker, write: &FieldWrite) -> Result<(), String> {
+    match (write.field.as_str(), &write.value) {
+        ("position", Value::Vec3(v)) => marker.frame.position = v.map(F32::get),
+        ("facing", Value::Float(f)) => marker.frame.rotation[0] = f.get(),
+        ("team", Value::Int(t)) => {
+            marker.team = u8::try_from(*t)
+                .ok()
+                .filter(|t| *t < 2)
+                .ok_or("A marker's team is 0 (red) or 1 (blue).")?;
+        }
+        (name, _) => return Err(format!("A marker has no {name} to set here.")),
+    }
     Ok(())
 }
 

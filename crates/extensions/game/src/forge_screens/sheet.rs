@@ -241,6 +241,13 @@ pub struct TypeSpec {
 pub enum Choice {
     /// Hold a new object: palette index `i` (the object menu).
     Select(usize),
+    /// Place the next ground marker of a label (the AI and objectives
+    /// page).
+    Marker(forge::GroundLabel),
+    /// **Build AI ground**.
+    BuildGround,
+    /// **Test waves**: build the ground when it is not current.
+    TestWaves,
     /// Set a value to value `i` of its row's values.
     Set(Prop, usize),
     /// A number typed on the game's keyboard.
@@ -520,6 +527,56 @@ pub fn objects(items: &[Item], selected: usize) -> Option<Sheet> {
         rows,
         focus,
     })
+}
+
+/// The name of the object menu's page of ground labels
+/// (docs/game/game-types-without-carriers.md, "In Forge").
+pub const AI_PAGE: &str = "AI and objectives";
+
+/// A ground label on the AI and objectives page, and how many are placed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AiItem {
+    pub label: forge::GroundLabel,
+    pub placed: usize,
+}
+
+/// A label's line on the page: what it is and how many are placed.
+pub fn ai_line(item: &AiItem) -> String {
+    let placed = match item.placed {
+        0 => "None placed".to_string(),
+        n => format!("{n} placed"),
+    };
+    format!("{}. {placed}", item.label.text())
+}
+
+/// [`objects`] with the AI and objectives page after the map's groups: one
+/// row, opening the value picker on the labels, each choice a
+/// [`Choice::Marker`]. With no labels it is [`objects`], and a map with
+/// nothing to place still has the page.
+pub fn objects_with_ai(items: &[Item], selected: usize, ai: &[AiItem]) -> Option<Sheet> {
+    let sheet = objects(items, selected);
+    if ai.is_empty() {
+        return sheet;
+    }
+    let pick = PickSpec {
+        title: AI_PAGE.into(),
+        values: ai.iter().map(|a| a.label.title().to_string()).collect(),
+        current: 0,
+        details: ai.iter().map(ai_line).collect(),
+        description: String::new(),
+        choices: ai.iter().map(|a| Choice::Marker(a.label)).collect(),
+        closes: true,
+    };
+    let page = SheetRow::new(AI_PAGE, Act::Pick(pick)).describe(&format!("{} markers.", ai.len()));
+    let mut sheet = sheet.unwrap_or(Sheet {
+        kind: Kind::Objects,
+        title: "OBJECTS".into(),
+        body: String::new(),
+        rows: Vec::new(),
+        focus: 0,
+    });
+    sheet.rows.push(page);
+    Some(sheet)
 }
 
 /// `angle` in degrees as the rows write it: "45 degrees", "1 degree",
@@ -803,6 +860,12 @@ pub fn options() -> Sheet {
         rows: OPTIONS
             .iter()
             .map(|o| SheetRow::new(o.label, Act::Open(o.opens)).describe(o.description))
+            .chain([
+                SheetRow::new("Build AI ground", Act::Choose(Choice::BuildGround))
+                    .describe("Build the nav mesh and zones for the placed labels now."),
+                SheetRow::new("Test waves", Act::Choose(Choice::TestWaves))
+                    .describe("Build the AI ground if it is stale, then test."),
+            ])
             .collect(),
         focus: 0,
     }

@@ -878,6 +878,12 @@ points! { ALL;
     /// context, stack `(light datum, &position, shadow byte, weight)`,
     /// `ret 0x10`; its only caller is `RENDER_DYNAMIC_LIGHTS`.
     RENDER_LIGHT_PASSES @ 0x0003_1170: [fn(definition: eax, context: ecx, light: stack 0, position: stack 1, shadow: stack 2, weight: stack 3) ret 16]; "docs/graphics/e3-lighting.md";
+    /// `0x00040e90`: the item lists of the visibility struct the records
+    /// were written for (`[0x004c0b80]`); EAX the mode (0: every record).
+    /// In the main view's kind (`[vis+0x2a78]` 0) list 0; in a light's,
+    /// lists 1 and 2 and the first-person table. `RENDER_LIGHT_PASSES`
+    /// calls it first, with EAX 0.
+    SCENE_ITEMS @ 0x0004_0e90: [fn(mode: eax) ret 0]; "docs/graphics/native-light-gather.md";
     /// `render_screen_effects`: the view's post passes, the last call of
     /// `render_scene_passes` (`0x0002c322`, after layer 17 and
     /// `0x00020770`): the colour pass over the view's target (`0x000214f0`,

@@ -9,7 +9,10 @@
 //! *pitch ranges* inside the map's single `ugh!` tag (the "sound cache file
 //! gestalt"); each pitch range owns a run of *permutations*; each permutation
 //! owns a run of *chunks*, and a chunk is a `(raw pointer, size)` span of
-//! encoded sample data in the current map or one of the shared maps.
+//! encoded sample data in the current map or one of the shared maps. A sound
+//! whose dialogue is lip-synced also names an *extra info* element of the
+//! gestalt, whose raw resource holds the mouth curves: one jaw-aperture byte
+//! per 30 Hz tick per permutation, read by [`Gestalt::mouth_curve`].
 use crate::{Error, Result, wire::TagBlock};
 use map::{FourCC, Map, RawPointer, TagId};
 use std::io::{Read, Seek};
@@ -94,8 +97,11 @@ pub struct SoundHeader {
     pub first_pitch_range: u16,
     /// Number of pitch ranges (+0xa).
     pub pitch_range_count: u8,
-    /// +0xb..+0x10, uninterpreted.
-    pub unknown: [u8; 5],
+    /// +0xb..+0xe, uninterpreted (scale, promotion, custom playback).
+    pub unknown: [u8; 3],
+    /// Index into the gestalt's extra-info block (+0xe): the lip-sync
+    /// resource of this sound's permutations. `0xffff` is none.
+    pub extra_info: u16,
     /// Maximum play time (+0x10); milliseconds (see docs/formats/sound.md).
     pub max_play_time: u32,
 }
@@ -131,7 +137,8 @@ impl SoundHeader {
             playback_index: u16_at(b, 6),
             first_pitch_range: u16_at(b, 8),
             pitch_range_count: b[10],
-            unknown: b[11..16].try_into().expect("slice length"),
+            unknown: b[11..14].try_into().expect("slice length"),
+            extra_info: u16_at(b, 0xe),
             max_play_time: u32_at(b, 0x10),
         })
     }
@@ -148,12 +155,23 @@ pub struct PitchRange {
 /// `ugh!` permutation, 16 bytes. Only size and chunk run are interpreted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Permutation {
-    /// +0..+8 raw (name index, skip fraction, gain, permutation-order bytes).
+    /// +0..+8 raw (name index, skip fraction, gain, permutation-order bytes;
+    /// `+5` is the extra-info descriptor while the sound has one).
     pub raw: [u8; 8],
     /// Total encoded bytes over this permutation's chunks (+8).
     pub encoded_size: u32,
     pub first_chunk: u16,
     pub chunk_count: u16,
+}
+
+impl Permutation {
+    /// The signed extra-info descriptor index at `+5`: which element of the
+    /// sound's extra-info resource holds this permutation's mouth curve. A
+    /// negative index is no descriptor. Meaningless while the sound has no
+    /// extra info, where the byte is the permutation order instead.
+    pub fn extra_info_descriptor(&self) -> Option<usize> {
+        usize::try_from(i8::from_le_bytes([self.raw[5]])).ok()
+    }
 }
 /// `ugh!` chunk, 12 bytes: a raw-resource span of encoded samples.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,18 +186,61 @@ pub struct Chunk {
     pub runtime: u32,
 }
 
+/// `ugh!` extra info (block 10, element `0x2c`): the lip-sync resource one
+/// sound's `snd!` `+0xe` index names. Held as one `hklb` raw resource
+/// (docs/halo1/sounds.md, "Dialogue mouth curves").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExtraInfo {
+    /// `+8`: the resource's raw pointer (file selector in the top two bits).
+    pub pointer: RawPointer,
+    /// `+0xc`: the resource's whole byte length.
+    pub size: u32,
+    /// The `+0x18` child block: one element per buffer of the resource.
+    pub locators: Vec<Locator>,
+}
+
+/// One buffer of an extra-info resource (a `0x10` element of the `+0x18`
+/// child block): 8 head bytes the loader reads, then the buffer's length
+/// and where it starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Locator {
+    /// `+0`: kind and fields, raw.
+    pub head: [u8; 8],
+    /// `+8`: the buffer's byte length.
+    pub size: u32,
+    /// `+0xc`: the offset of the buffer from the resource's data section
+    /// (its first `crsr`, at `+0x18`).
+    pub offset: u32,
+}
+
 /// The decoded parts of a map's `ugh!` tag this stage needs.
 #[derive(Clone, Debug, Default)]
 pub struct Gestalt {
     pub pitch_ranges: Vec<PitchRange>,
     pub permutations: Vec<Permutation>,
     pub chunks: Vec<Chunk>,
+    pub extra_infos: Vec<ExtraInfo>,
 }
 
 const GESTALT_HEADER: usize = 0x58;
 const BLOCK_PITCH_RANGES: usize = 4;
 const BLOCK_PERMUTATIONS: usize = 5;
 const BLOCK_CHUNKS: usize = 8;
+const BLOCK_EXTRA_INFOS: usize = 10;
+/// An extra-info element (`ugh!` block 10).
+const EXTRA_INFO_LEN: usize = 0x2c;
+/// A locator element of an extra-info's `+0x18` child block.
+const LOCATOR_LEN: usize = 0x10;
+/// The mouth curve's rate: one aperture byte per tick at 30 Hz (E, the
+/// sampler at `0x218e50` scales it by 1/255; docs/halo1/sounds.md,
+/// "Dialogue mouth curves").
+pub const MOUTH_HZ: u32 = 30;
+/// The head of the locator that finds an extra-info's curve data buffer
+/// (V, retail 01b; as the converter writes, h1-assets `sounds::mouth`).
+const DATA_LOCATOR: [u8; 8] = [1, 2, 0, 0, 0, 0, 0xff, 0xff];
+/// The head of the locator that finds the 16-byte mouth descriptors (V,
+/// retail 01b; as the converter writes).
+const DESCRIPTOR_LOCATOR: [u8; 8] = [0, 2, 8, 0, 8, 0, 16, 0];
 
 fn block(
     bytes: &[u8],
@@ -204,6 +265,19 @@ fn block(
     Ok((s, b.count))
 }
 
+/// A run of `count` elements of `stride` bytes at a map `address`.
+fn run(bytes: &[u8], base: u32, count: u32, address: u32, stride: usize) -> Result<&[u8]> {
+    if count == 0 {
+        return Ok(&[]);
+    }
+    let size = u64::from(count) * stride as u64;
+    let start = address.checked_sub(base).ok_or(Error::Bounds { address, size })? as usize;
+    let end = start
+        .checked_add(size as usize)
+        .ok_or(Error::Bounds { address, size })?;
+    bytes.get(start..end).ok_or(Error::Bounds { address, size })
+}
+
 impl Gestalt {
     /// Decode from the raw payload bytes of an `ugh!` tag loaded at `base`.
     pub fn decode(bytes: &[u8], base: u32) -> Result<Self> {
@@ -213,6 +287,35 @@ impl Gestalt {
         let (r, _) = block(bytes, base, BLOCK_PITCH_RANGES, 12)?;
         let (p, _) = block(bytes, base, BLOCK_PERMUTATIONS, 16)?;
         let (c, _) = block(bytes, base, BLOCK_CHUNKS, 12)?;
+        let (x, _) = block(bytes, base, BLOCK_EXTRA_INFOS, EXTRA_INFO_LEN)?;
+        let extra_infos = x
+            .as_chunks::<EXTRA_INFO_LEN>()
+            .0
+            .iter()
+            .map(|e| {
+                // The child block at +0 has no element on any retail map and
+                // no known layout: present is refused, not skipped.
+                if u32_at(e, 0) != 0 {
+                    return Err(Error::Invalid("an extra info has a child block of unknown layout"));
+                }
+                let locators = run(bytes, base, u32_at(e, 0x18), u32_at(e, 0x1c), LOCATOR_LEN)?
+                    .as_chunks::<LOCATOR_LEN>()
+                    .0
+                    .iter()
+                    .map(|l| Locator {
+                        head: l[..8].try_into().expect("slice length"),
+                        size: u32_at(l, 8),
+                        offset: u32_at(l, 12),
+                    })
+                    .collect();
+                Ok(ExtraInfo {
+                    pointer: RawPointer::decode(u32_at(e, 8))
+                        .ok_or(Error::Invalid("null extra-info resource pointer"))?,
+                    size: u32_at(e, 0xc),
+                    locators,
+                })
+            })
+            .collect::<Result<_>>()?;
         Ok(Self {
             pitch_ranges: r
                 .as_chunks::<12>()
@@ -249,6 +352,7 @@ impl Gestalt {
                     })
                 })
                 .collect::<Result<_>>()?,
+            extra_infos,
         })
     }
 
@@ -358,6 +462,75 @@ impl Gestalt {
             out.extend(r.read_raw(c.pointer, c.size)?);
         }
         Ok(out)
+    }
+
+    /// The mouth curve of permutation `p` of the sound with header `h`: one
+    /// jaw-aperture byte per 30 Hz tick ([`MOUTH_HZ`]), read out of the
+    /// extra-info resource `h`'s index names, as the loader follows it: both
+    /// locators (the curve data, then the 16-byte descriptors), the
+    /// descriptor the permutation's signed `+5` index picks, then that
+    /// descriptor's span of the data. `Ok(None)` when the permutation is
+    /// unvoiced: the sound has no extra info, the descriptor index is
+    /// negative, or the descriptor's mouth length is zero.
+    pub fn mouth_curve(
+        &self,
+        h: &SoundHeader,
+        p: &Permutation,
+        r: &mut dyn ResourceReader,
+    ) -> Result<Option<Vec<u8>>> {
+        if h.extra_info == u16::MAX {
+            return Ok(None);
+        }
+        let Some(descriptor) = p.extra_info_descriptor() else {
+            return Ok(None);
+        };
+        let e = self
+            .extra_infos
+            .get(usize::from(h.extra_info))
+            .ok_or(Error::Invalid("extra info index out of gestalt"))?;
+        r.check(e.pointer, e.size)?;
+        let raw = r.read_raw(e.pointer, e.size)?;
+        // The resource is one `hklb` block: a 0x18-byte header, then the
+        // data section (each buffer preceded by `crsr`), ending in `fklb`.
+        if raw.len() < 0x20 || raw[..4] != *b"hklb" || raw[raw.len() - 4..] != *b"fklb" {
+            return Err(Error::Invalid("the extra-info resource is not an hklb block"));
+        }
+        if raw.len() != 0x1c + u32_at(&raw, 4) as usize {
+            return Err(Error::Invalid("the extra-info resource disagrees with its size word"));
+        }
+        if e.locators.len() != 2 {
+            return Err(Error::Invalid(
+                "the extra-info resource does not have two locators (the data and the descriptor)",
+            ));
+        }
+        let buffer = |l: &Locator, head: &[u8; 8]| -> Result<&[u8]> {
+            if &l.head != head {
+                return Err(Error::Invalid(
+                    "an extra-info locator is not the data or descriptor one the loader follows",
+                ));
+            }
+            let start = 0x18 + l.offset as usize;
+            let end = start.saturating_add(l.size as usize);
+            let s = raw
+                .get(start..end)
+                .ok_or(Error::Invalid("an extra-info buffer runs outside the resource"))?;
+            if raw.get(start - 4..start) != Some(&b"crsr"[..]) {
+                return Err(Error::Invalid("an extra-info buffer does not follow a crsr"));
+            }
+            Ok(s)
+        };
+        let data = buffer(&e.locators[0], &DATA_LOCATOR)?;
+        let descriptors = buffer(&e.locators[1], &DESCRIPTOR_LOCATOR)?;
+        let d = descriptors
+            .as_chunks::<16>()
+            .0
+            .get(descriptor)
+            .ok_or(Error::Invalid("extra info descriptor index out of the resource"))?;
+        let start = u32_at(d, 0) as usize;
+        let curve = data
+            .get(start..start.saturating_add(u32_at(d, 4) as usize))
+            .ok_or(Error::Invalid("a mouth curve runs outside the extra-info data"))?;
+        Ok((!curve.is_empty()).then(|| curve.to_vec()))
     }
 }
 
