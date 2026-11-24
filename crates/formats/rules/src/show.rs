@@ -12,6 +12,7 @@
 
 use crate::caps;
 use crate::ty::{MAX_PLAYERS, MAX_TEAMS};
+use crate::types::{StartLine, Type};
 
 /// The most bytes one cue's payload encodes to: the `Cue` record's bound
 /// (the actor channel's `MAX_CUE_BYTES`).
@@ -67,20 +68,23 @@ pub struct Message {
     pub values: Vec<HoleValue>,
 }
 
-/// A one-shot show event. Sounds and medal lines join in their slices.
+/// A one-shot show event. The host names custom round-start audio by script type.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Cue {
     Message(Message),
+    StartClip(Type),
 }
 
 /// The kind byte of a message cue in the `Cue` record's payload.
 pub const MESSAGE: u8 = 0;
+pub const START_CLIP: u8 = 1;
 
 impl Cue {
     /// The kind byte of the `Cue` record's payload.
     pub fn kind(&self) -> u8 {
         match self {
             Cue::Message(_) => MESSAGE,
+            Cue::StartClip(_) => START_CLIP,
         }
     }
 
@@ -88,6 +92,8 @@ impl Cue {
     pub fn encode(&self) -> Result<Vec<u8>, CueError> {
         match self {
             Cue::Message(message) => message.encode(),
+            Cue::StartClip(ty) if ty.row().start == StartLine::Ours => Ok(vec![ty.code()]),
+            Cue::StartClip(ty) => Err(CueError::NoStartClip(ty.code())),
         }
     }
 
@@ -100,6 +106,14 @@ impl Cue {
         }
         match kind {
             MESSAGE => Message::decode(bytes, strings).map(Cue::Message),
+            START_CLIP => match bytes {
+                [code] => Type::from_code(*code)
+                    .filter(|ty| ty.row().start == StartLine::Ours)
+                    .map(Cue::StartClip)
+                    .ok_or(CueError::NoStartClip(*code)),
+                [] => Err(CueError::Truncated),
+                _ => Err(CueError::TrailingBytes),
+            },
             kind => Err(CueError::UnknownKind(kind)),
         }
     }
@@ -110,6 +124,8 @@ impl Cue {
 pub enum CueError {
     /// The kind byte is no cue's.
     UnknownKind(u8),
+    /// The type byte names no custom round-start clip.
+    NoStartClip(u8),
     /// The payload is over [`MAX_CUE_BYTES`].
     TooLong(usize),
     /// The payload ends inside a field.
@@ -372,6 +388,24 @@ mod tests {
             // What decodes encodes to the same bytes.
             assert_eq!(back.encode().unwrap(), bytes);
         }
+    }
+
+    #[test]
+    fn round_start_cues_name_only_types_with_our_audio() {
+        for row in crate::types::TABLE {
+            let cue = Cue::StartClip(row.ty);
+            let code = row.ty.code();
+            if row.start == StartLine::Ours {
+                let bytes = cue.encode().unwrap();
+                assert_eq!(Cue::decode(cue.kind(), &bytes, &[]), Ok(cue));
+            } else {
+                assert_eq!(cue.encode(), Err(CueError::NoStartClip(code)));
+                assert_eq!(Cue::decode(START_CLIP, &[code], &[]), Err(CueError::NoStartClip(code)));
+            }
+        }
+        assert_eq!(Cue::decode(START_CLIP, &[255], &[]), Err(CueError::NoStartClip(255)));
+        assert_eq!(Cue::decode(START_CLIP, &[], &[]), Err(CueError::Truncated));
+        assert_eq!(Cue::decode(START_CLIP, &[1, 2], &[]), Err(CueError::TrailingBytes));
     }
 
     /// The largest message, four int holes, fits the record's bound.
