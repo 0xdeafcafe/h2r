@@ -249,7 +249,12 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             // Invented maps and the fake sidecar (never Python).
             super::voice_clone::test_setup(app, false, false);
         }
-        m::VOICE_CLONE_TRAIN | m::VOICE_CLONE_SAY => {
+        m::VOICE_CLONE_TRAIN
+        | m::VOICE_CLONE_SAY
+        | m::VOICE_SAY_BATCH
+        | m::VOICE_BATCH_STATUS
+        | m::VOICE_BATCH_RUN
+        | m::VOICE_BATCH_SAVE => {
             // The fake sidecar installed and Cortana's dataset built.
             super::voice_clone::test_setup(app, true, true);
         }

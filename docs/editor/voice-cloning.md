@@ -1,7 +1,7 @@
 # Voice cloning: new lines in a game character's voice
 
 Status: Partly built. The dataset builder, the jobs, the provider and the API are built and tested on invented maps and a fake sidecar; the Python sidecar, the tag-path rules and the subtitle pairing are not yet run against a disc.
-Code: `crates/apps/studio/src/voice/dataset.rs` (`build`), `voice/clone.rs` (`CloneVoice`), `voice/sidecar.rs` (`Managed`, `Process`), `crates/apps/studio/sidecar/voice_clone.py`, `app/voices.rs` (`AppLines`, the jobs), `app/announcer.rs` (`App::voice_say` with `Engine::Clone`), `api/voice_clone.rs`, `ui/announcer.rs` (the Voices window). Tests: `voice/dataset/tests.rs`, `voice/tests.rs`, `api/voice_clone/tests.rs`.
+Code: `crates/apps/studio/src/voice/dataset.rs` (`build`), `voice/clone.rs` (`CloneVoice`), `voice/sidecar.rs` (`Managed`, `Process`), `crates/apps/studio/sidecar/voice_clone.py`, `app/voices.rs` (`AppLines`, the jobs), `app/announcer.rs` (`App::voice_say` with `Engine::Clone`), `app/voice_batch.rs` (the batch), `api/voice_clone.rs`, `ui/announcer.rs` (the Voices window). Tests: `voice/dataset/tests.rs`, `voice/tests.rs`, `api/voice_clone/tests.rs`.
 Switch: none.
 
 Studio makes new dialogue in the voice of a game character (Master Chief,
@@ -140,13 +140,36 @@ line nearest 7 s, else the longest line with text up to 12 s).
 - Agent API: `voice.characters`, `voice.dataset.build`,
   `voice.dataset.status`, `voice.clone.train`, `voice.clone.say`
   ([agent-api.md](agent-api.md), "Voices").
-- The Voices window (View > Voices): the engine (the announcer's Fish
-  Audio voice, or a character's clone), the character, Build dataset,
-  Fine-tune, the job's progress, the reference line, and the line view
-  shared with the announcer.
+- Agent API: the batch, `voice.say_batch`, `voice.batch.status`,
+  `voice.batch.run`, `voice.batch.save` (agent-api.md, "Voices").
+- The Voices window (View > Voices): the announcer's Fish Audio voice says
+  one line; a character's clone says a batch, in the flow below. The
+  dataset, the fine-tune and the model's jobs are under "Voice setup".
 - `voice::sidecar::Launcher` and `Sidecar` are the seam the tests replace
   (`voice::fake::FakeLauncher`); `voice::dataset::LineSource` the one the
   dataset builder reads through (`voice::fake::FakeLines`).
+
+## The batch
+
+`app/voice_batch.rs` holds the rows the window and the API share. A row
+is a line, its voice (its own, else the batch's), an output name (a clip
+id) and optionally the `snd!` tag it replaces. Rows are added one at a
+time, pasted (one per line; `name<Tab>text` names a row) or imported from a
+text file of at most 1 MB. **Say all** (`Batch::queue`) fails a row with
+a problem at once (no text, no voice, a bad or repeated output name) and
+queues the rest; `App::poll_voice_batch` then moves one step per call: a
+queued row becomes `running`, the next call says it with
+`App::voice_say` and `Engine::Clone` (not played), so each row is cached,
+trimmed and levelled as `voice.clone.say` does it. The window calls it once
+a frame; `voice.say_batch {wait}` runs it to the end. A row that fails
+(for example, the model not installed yet, whose install starts) fails
+alone with why, and **Say all** asks the failed rows again. **Re-run**
+asks the model again instead of the cache. **Keep all done lines**
+(`App::voice_batch_save`) copies each done row with an output name to
+`art/announcer/<name>.wav` of the checkout (an existing clip only with
+**Replace**), and puts a row with a tag into the edit target package as a
+`sound` item, as `voice.commit` does. The picker for the tag lists the
+open map's dialogue sounds; a tag names a sound, not one permutation.
 
 ## Rules and limits
 

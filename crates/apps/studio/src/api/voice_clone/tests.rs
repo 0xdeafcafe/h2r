@@ -542,3 +542,173 @@ fn a_small_dataset_trains_once_the_floor_is_lowered_and_the_zero_shot_model_need
     assert!(!last["reference"]["text"].as_str().unwrap().is_empty());
     assert!(app.voice_clone_train("cortana", None, Some(0.0)).is_err());
 }
+
+#[test]
+fn a_batch_of_lines_is_said_row_by_row_each_with_its_own_state() {
+    let t = Temp::new("batch");
+    let mut app = test_app(&t);
+    let mut api = Api::new();
+    let fake = test_setup(&mut app, true, true);
+    let r = call(
+        &mut api,
+        &mut app,
+        m::VOICE_SAY_BATCH,
+        json!({
+            "character": "cortana",
+            "rows": [
+                {"text": "Hold on, Chief.", "clip": "cortana-hold"},
+                {"text": "", "clip": "cortana-empty"},
+                {"text": "Bounce.", "clip": "Not A Clip"},
+                {"text": "Dup.", "clip": "cortana-hold"},
+                {"text": "Wake up.", "character": "johnson"},
+            ],
+        }),
+    );
+    // Queued, not said: the window's frames (or `wait`) do that.
+    assert_eq!(r["added"], 5, "{r}");
+    assert_eq!(r["queued"], 2, "{r}");
+    assert_eq!(r["rows"][1]["state"], "failed");
+    assert_eq!(r["rows"][1]["why"], "no text");
+    assert_eq!(r["rows"][2]["state"], "failed");
+    assert!(r["rows"][3]["why"].as_str().unwrap().contains("line 1"), "{r}");
+    assert_eq!(fake.calls_of("say").len(), 0);
+
+    // A step starts a row running, the next says it.
+    assert!(app.poll_voice_batch());
+    let s = call(&mut api, &mut app, m::VOICE_BATCH_STATUS, json!({}));
+    assert_eq!(s["counts"]["running"], 1, "{s}");
+    assert_eq!(s["rows"][0]["state"], "running");
+    assert_eq!(s["active"], true);
+    // A second say_batch is refused while rows are left.
+    let e = fails(api.call(&mut app, m::VOICE_SAY_BATCH, json!({"lines": "More."})));
+    assert_eq!(e.code, code::REFUSED);
+    app.voice_batch_run();
+
+    let s = call(&mut api, &mut app, m::VOICE_BATCH_STATUS, json!({"ids": [1]}));
+    assert_eq!(s["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(s["rows"][0]["state"], "done", "{s}");
+    assert_eq!(s["rows"][0]["cached"], false);
+    let file = PathBuf::from(s["rows"][0]["file"].as_str().unwrap());
+    assert!(file.ends_with("voices/cortana/clips/cortana-hold.wav"), "{file:?}");
+    assert!(file.is_file());
+    assert_eq!(s["counts"]["done"], 1);
+    assert_eq!(s["counts"]["failed"], 4);
+    assert_eq!(s["active"], false);
+    // Johnson has no dataset: that row fails with why, the others do not.
+    let all = call(&mut api, &mut app, m::VOICE_BATCH_STATUS, json!({}));
+    assert_eq!(all["rows"][4]["state"], "failed", "{all}");
+    assert!(all["rows"][4]["why"].as_str().unwrap().contains("dataset"), "{all}");
+    assert_eq!(fake.calls_of("say").len(), 1);
+}
+
+#[test]
+fn pasted_lines_and_files_become_rows_and_a_rerun_asks_the_model_again() {
+    let t = Temp::new("batch-paste");
+    let mut app = test_app(&t);
+    let mut api = Api::new();
+    let fake = test_setup(&mut app, true, true);
+    let file = t.0.join("lines.txt");
+    std::fs::write(&file, "From a file.\n\n  \nAnd another.\n").unwrap();
+    let r = call(
+        &mut api,
+        &mut app,
+        m::VOICE_SAY_BATCH,
+        json!({
+            "character": "cortana",
+            "lines": "First.\ncortana-second\tSecond, with a name.\n",
+            "file": file.display().to_string(),
+            "wait": true,
+        }),
+    );
+    assert_eq!(r["added"], 4, "{r}");
+    assert_eq!(r["counts"]["done"], 4, "{r}");
+    assert_eq!(r["rows"][1]["clip"], "cortana-second");
+    assert_eq!(r["rows"][1]["text"], "Second, with a name.");
+    assert_eq!(fake.calls_of("say").len(), 4);
+
+    // The same row again is a new take, not the cache.
+    let r = call(&mut api, &mut app, m::VOICE_BATCH_RUN, json!({"ids": [1], "wait": true}));
+    assert_eq!(r["queued"], 1);
+    assert_eq!(r["rows"][0]["state"], "done");
+    assert_eq!(r["rows"][0]["cached"], false);
+    assert_eq!(fake.calls_of("say").len(), 5);
+
+    // A bad param adds nothing.
+    let e = fails(api.call(
+        &mut app,
+        m::VOICE_SAY_BATCH,
+        json!({"append": true, "rows": [{"text": "x", "character": "Bad Id"}]}),
+    ));
+    assert_eq!(e.code, code::INVALID_PARAMS);
+    assert_eq!(app.voices.batch.rows.len(), 4);
+    let e = fails(api.call(&mut app, m::VOICE_SAY_BATCH, json!({"character": "cortana"})));
+    assert_eq!(e.code, code::INVALID_PARAMS);
+}
+
+#[test]
+fn a_failing_model_fails_its_rows_and_the_done_ones_are_saved_together() {
+    let t = Temp::new("batch-save");
+    let mut app = test_app(&t);
+    let mut api = Api::new();
+    test_setup(&mut app, true, true);
+    call(
+        &mut api,
+        &mut app,
+        m::VOICE_SAY_BATCH,
+        json!({
+            "character": "cortana",
+            "rows": [
+                {"text": "One.", "clip": "cortana-one"},
+                {"text": "Two.", "clip": "cortana-two"},
+                {"text": "Three."},
+            ],
+            "wait": true,
+        }),
+    );
+    let repo = t.0.join("repo");
+    std::fs::create_dir_all(repo.join("art/announcer")).unwrap();
+    let r = call(
+        &mut api,
+        &mut app,
+        m::VOICE_BATCH_SAVE,
+        json!({"repo": repo.display().to_string()}),
+    );
+    assert_eq!(r["saved"], 2, "{r}");
+    assert_eq!(r["failed"], 1, "{r}");
+    assert!(r["rows"][2]["why"].as_str().unwrap().contains("output name"));
+    assert!(repo.join("art/announcer/cortana-one.wav").is_file());
+    assert!(repo.join("art/announcer/cortana-two.wav").is_file());
+    let s = call(&mut api, &mut app, m::VOICE_BATCH_STATUS, json!({}));
+    assert!(s["rows"][0]["saved"].as_str().unwrap().ends_with("cortana-one.wav"));
+    assert!(s["rows"][2]["save_failed"].is_string());
+
+    // A second save does not replace what the checkout has, unless asked.
+    let r = call(
+        &mut api,
+        &mut app,
+        m::VOICE_BATCH_SAVE,
+        json!({"repo": repo.display().to_string(), "ids": [1]}),
+    );
+    assert_eq!(r["failed"], 1, "{r}");
+    assert!(r["rows"][0]["why"].as_str().unwrap().contains("replace"));
+    let r = call(
+        &mut api,
+        &mut app,
+        m::VOICE_BATCH_SAVE,
+        json!({"repo": repo.display().to_string(), "ids": [1], "replace": true}),
+    );
+    assert_eq!(r["saved"], 1, "{r}");
+
+    // A row that fails in the model says why and does not stop the rest.
+    let mut fake = crate::voice::fake::FakeLauncher::ready();
+    fake.fail_say = Some("out of memory".into());
+    app.voices.set_launcher(std::sync::Arc::new(fake));
+    let r = call(
+        &mut api,
+        &mut app,
+        m::VOICE_SAY_BATCH,
+        json!({"character": "cortana", "lines": "Hm.\nHmm.", "wait": true}),
+    );
+    assert_eq!(r["counts"]["failed"], 2, "{r}");
+    assert!(r["rows"][1]["why"].as_str().unwrap().contains("out of memory"));
+}
