@@ -13,7 +13,7 @@ use live_proto::hopper::{MAX_DESCRIPTION, MAX_RECORDS, MAX_TITLE};
 use scenario_edit::layout::{self, Role};
 use scenario_edit::{BlockKind, Command, Value};
 
-use super::{Action, App, NavAction, Selection, ToolKind, tag_tree};
+use super::{Action, App, NavAction, Selection, Surface, ToolKind, tag_tree};
 
 /// Commands that the menus and the palette can dispatch directly.
 #[derive(Clone, Copy)]
@@ -295,6 +295,17 @@ pub(crate) fn palette(app: &mut App, query: &str) -> Palette {
         }
     }
 
+    // The editors and windows the View menu opens, so every one is found
+    // by name (docs/editor/studio-flow.md, "One way in").
+    for (surface, name) in Surface::EDITORS {
+        let label = format!("Open editor: {name}");
+        if words_match(query, &label, OPEN_DETAIL) {
+            results.add(Kind::Command, label, OPEN_DETAIL, Action::Show(surface));
+        }
+    }
+    if words_match(query, VOICES_LABEL, VOICES_DETAIL) {
+        results.add(Kind::Command, VOICES_LABEL, VOICES_DETAIL, Action::ShowVoices);
+    }
     for command in MenuCommand::ALL {
         let item = command.item(app);
         if let Some(action) = item.action
@@ -305,6 +316,13 @@ pub(crate) fn palette(app: &mut App, query: &str) -> Palette {
     }
     results
 }
+
+/// The detail line of the palette's editor entries.
+const OPEN_DETAIL: &str = "View > Editors";
+/// The palette's entry for the Voices window, and the words it is also
+/// found by.
+pub(crate) const VOICES_LABEL: &str = "Open: Voices";
+const VOICES_DETAIL: &str = "announcer lines, character voice clone, dialogue";
 
 /// One playlist edit, applied to the working copy as one undo step. The
 /// playlist table's row buttons and weight drags, and `playlist.*` calls,

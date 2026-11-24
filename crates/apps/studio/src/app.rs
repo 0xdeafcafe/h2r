@@ -332,6 +332,8 @@ pub enum Action {
     /// Show an editor's surface: the View menu's editors and a document
     /// brought forward.
     Show(Surface),
+    /// Bring the Voices window forward (`app::voices::Show`).
+    ShowVoices,
     /// Open a browser row's tag (an asset id, `tag:<group>:<path>`) in its
     /// editor: on `map` (opened first when it is not the open one), else
     /// on the open map (`app::assets`).
@@ -1367,6 +1369,11 @@ impl App {
                 let tool = surface.tool();
                 self.set_tool(tool);
                 self.follow_tool(tool);
+            }
+            Action::ShowVoices => {
+                if self.voices.show.is_none() {
+                    self.voices.show = Some(voices::Show::Window);
+                }
             }
             Action::Quit => self.quit = true,
             Action::UiPick(pick) => {

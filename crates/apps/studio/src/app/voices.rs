@@ -90,6 +90,17 @@ impl Job {
     }
 }
 
+/// What asked for the Voices window (docs/editor/studio-flow.md, "Voices
+/// and the announcer"). The window takes it when it next draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Show {
+    /// The window as it was left.
+    Window,
+    /// The window on the character batch, where a line for a game sound
+    /// is a row.
+    Lines,
+}
+
 /// The Voices state in the [`App`].
 pub struct Voices {
     launcher: Arc<dyn Launcher>,
@@ -102,6 +113,10 @@ pub struct Voices {
     next_job: u64,
     /// The lines of the Voices window's batch ([`super::voice_batch`]).
     pub batch: super::voice_batch::Batch,
+    /// The Voices window asked to the front: by Go to anything
+    /// ([`super::Action::ShowVoices`]) or by a sound's editor
+    /// ([`App::voices_line_for`]).
+    pub show: Option<Show>,
 }
 
 impl Default for Voices {
@@ -130,6 +145,7 @@ impl Voices {
             jobs: Vec::new(),
             next_job: 1,
             batch: Default::default(),
+            show: None,
         }
     }
 
@@ -384,6 +400,22 @@ impl App {
     /// `<data root>/voices`.
     pub fn voices_dir(&self) -> PathBuf {
         self.data_root().join("voices")
+    }
+
+    /// Starts a new line for the game sound `tag` (a `snd!` tag's path):
+    /// the batch gets a row that replaces it, unless one already does, and
+    /// the Voices window is asked to the front on the batch. The row's id.
+    pub fn voices_line_for(&mut self, tag: &str) -> u64 {
+        self.voices.show = Some(Show::Lines);
+        let batch = &mut self.voices.batch;
+        if let Some(row) = batch.rows.iter().find(|r| r.tag.as_deref() == Some(tag)) {
+            return row.id;
+        }
+        let id = batch.add("", None, "");
+        if let Some(row) = batch.rows.iter_mut().find(|r| r.id == id) {
+            row.tag = Some(tag.to_owned());
+        }
+        id
     }
 
     /// The rules for `character`: the given paths, else the table's.

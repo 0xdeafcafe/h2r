@@ -198,6 +198,8 @@ group. `maps` remains the array of Halo 2 file stems in source order.
 ## Go to anything
 
 `ui.palette {query}` returns `{entries, totals}` from `app::commands::palette`.
+The commands are the menus' own, one `Open editor: <name>` per editor of
+View > Editors, and `Open: Voices` (`Action::ShowVoices`).
 Entries are `{kind, label, detail}` in the order shown by Cmd/Ctrl+P:
 `map`, `tag`, `placement`, then `command`. Each kind has at most 20
 entries. `totals` counts all matches by kind before that cap. Each word

@@ -210,7 +210,9 @@ Keyboard shortcuts (Cmd on macOS, Ctrl elsewhere):
 | Cmd+Q | Quit |
 
 Use **Edit > Go to anything...** to search maps, tags, placements and
-menu commands from one box. Type any words from the name or detail line.
+menu commands from one box. Every editor of **View > Editors** is a
+command there (`Open editor: HUD`), and so is the Voices window (`Open:
+Voices`). Type any words from the name or detail line.
 Use Up and Down to highlight a result, Enter to open or run it, and Esc
 to close the search.
 
@@ -1634,6 +1636,9 @@ the map like any other edit. What to know:
 ### Announcer lines
 
 **View > Voices** opens a window that makes announcer lines from text.
+**Go to anything** opens it too (type `voices` or `announcer`), and so
+does **New line in Voices** at the top of a sound's editor, which adds a
+line that replaces that sound to the character batch below.
 Type the line, give a clip id (such as `superbounce`) if it is for one,
 and press **Say it**. The voice says it, Studio trims the silence, brings
 it to the loudness of the retail announcer lines of the open map and plays
