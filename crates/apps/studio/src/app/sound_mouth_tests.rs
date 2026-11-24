@@ -9,7 +9,10 @@ use super::sound_mouth::{check_writable, envelope};
 
 fn span(file: ResourceFile, len: usize) -> MouthSpan {
     MouthSpan {
-        resource: RawPointer { file, offset: 0x4000 },
+        resource: RawPointer {
+            file,
+            offset: 0x4000,
+        },
         resource_size: 0x200,
         offset: 0x40,
         curve: vec![1; len],
@@ -18,15 +21,24 @@ fn span(file: ResourceFile, len: usize) -> MouthSpan {
 
 #[test]
 fn a_same_length_curve_in_the_local_file_may_be_written() {
-    assert_eq!(check_writable(&span(ResourceFile::Local, 4), 1, &[9, 9, 9, 9]), Ok(()));
+    assert_eq!(
+        check_writable(&span(ResourceFile::Local, 4), 1, &[9, 9, 9, 9]),
+        Ok(())
+    );
     // No chunks (a sound with no audio) is not a chain.
-    assert_eq!(check_writable(&span(ResourceFile::Local, 2), 0, &[0, 0]), Ok(()));
+    assert_eq!(
+        check_writable(&span(ResourceFile::Local, 2), 0, &[0, 0]),
+        Ok(())
+    );
 }
 
 #[test]
 fn a_shared_cache_a_split_chain_and_another_length_are_refused_by_name() {
     let why = check_writable(&span(ResourceFile::Shared, 4), 1, &[0; 4]).unwrap_err();
-    assert!(why.contains("shared cache") && why.contains("never writes"), "{why}");
+    assert!(
+        why.contains("shared cache") && why.contains("never writes"),
+        "{why}"
+    );
     let why = check_writable(&span(ResourceFile::MainMenu, 4), 1, &[0; 4]).unwrap_err();
     assert!(why.contains("MainMenu"), "{why}");
     let why = check_writable(&span(ResourceFile::Local, 4), 3, &[0; 4]).unwrap_err();
@@ -36,7 +48,11 @@ fn a_shared_cache_a_split_chain_and_another_length_are_refused_by_name() {
 }
 
 fn clip(rate: u32, pcm: &[i16]) -> Clip {
-    Clip { rate, channels: 1, pcm: Arc::from(pcm) }
+    Clip {
+        rate,
+        channels: 1,
+        pcm: Arc::from(pcm),
+    }
 }
 
 #[test]
@@ -60,6 +76,10 @@ fn the_envelope_keeps_the_asked_length_and_a_silent_clip_is_closed() {
     let c = clip(30, &[1000, 1000]);
     assert_eq!(envelope(&c, 5, 1.0, 0.0), vec![255, 255, 0, 0, 0]);
     // A stereo frame is the average of its channels.
-    let c = Clip { rate: 30, channels: 2, pcm: Arc::from(&[1000i16, -1000, 2000, 2000][..]) };
+    let c = Clip {
+        rate: 30,
+        channels: 2,
+        pcm: Arc::from(&[1000i16, -1000, 2000, 2000][..]),
+    };
     assert_eq!(envelope(&c, 2, 1.0, 0.0), vec![0, 255]);
 }

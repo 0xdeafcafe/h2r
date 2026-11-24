@@ -137,7 +137,11 @@ impl App {
         permutation: usize,
     ) -> Option<Arc<[u8]>> {
         let slot = (self.sound_key(id).0, id, range, permutation);
-        self.audition.mouth.edits.get(&slot).map(|e| e.drawn.clone())
+        self.audition
+            .mouth
+            .edits
+            .get(&slot)
+            .map(|e| e.drawn.clone())
     }
 
     /// Whether the permutation's curve is redrawn and not yet saved.
@@ -188,7 +192,10 @@ impl App {
             .map_or_else(|| span.curve.as_slice().into(), |e| e.drawn.clone());
         let changed = shown.iter().zip(curve).filter(|(a, b)| a != b).count();
         let before = self.mouth_edited(id, range, permutation);
-        self.audition.mouth.undo.push((slot.clone(), span.clone(), before));
+        self.audition
+            .mouth
+            .undo
+            .push((slot.clone(), span.clone(), before));
         // Permutations that share a descriptor share the bytes: the last
         // drawing wins for all of them.
         let at = span.offset;
@@ -198,15 +205,22 @@ impl App {
             .retain(|s, e| *s == slot || !(s.1 == id && e.span.offset == at));
         let edited = curve != span.curve.as_slice();
         if edited {
-            self.audition
-                .mouth
-                .edits
-                .insert(slot, Edit { span, drawn: curve.into() });
+            self.audition.mouth.edits.insert(
+                slot,
+                Edit {
+                    span,
+                    drawn: curve.into(),
+                },
+            );
         } else {
             self.audition.mouth.edits.remove(&slot);
         }
         self.push_sound_changes();
-        Ok(MouthWrite { ticks: curve.len(), changed, edited })
+        Ok(MouthWrite {
+            ticks: curve.len(),
+            changed,
+            edited,
+        })
     }
 
     /// Give the permutation the curve of its own loudness
@@ -241,7 +255,10 @@ impl App {
         let Some(old) = self.audition.mouth.edits.remove(&slot) else {
             return Ok(false);
         };
-        self.audition.mouth.undo.push((slot, old.span, Some(old.drawn)));
+        self.audition
+            .mouth
+            .undo
+            .push((slot, old.span, Some(old.drawn)));
         self.push_sound_changes();
         Ok(true)
     }
@@ -250,11 +267,19 @@ impl App {
     /// `None` when there is nothing to undo.
     pub fn sound_mouth_undo(&mut self) -> Option<(TagId, usize, usize)> {
         let key = self.sound_key(TagId(0)).0;
-        let i = self.audition.mouth.undo.iter().rposition(|(s, ..)| s.0 == key)?;
+        let i = self
+            .audition
+            .mouth
+            .undo
+            .iter()
+            .rposition(|(s, ..)| s.0 == key)?;
         let (slot, span, before) = self.audition.mouth.undo.remove(i);
         match before {
             Some(drawn) => {
-                self.audition.mouth.edits.insert(slot.clone(), Edit { span, drawn });
+                self.audition
+                    .mouth
+                    .edits
+                    .insert(slot.clone(), Edit { span, drawn });
             }
             None => {
                 self.audition.mouth.edits.remove(&slot);
