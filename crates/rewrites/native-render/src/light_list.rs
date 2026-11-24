@@ -22,6 +22,27 @@ pub struct SortedItem {
     pub implementation: u8,
 }
 
+impl SortedItem {
+    /// The standard handler's stream, pose and binding at this sorted slot.
+    pub fn scene_entry(
+        &self,
+        mem: &dyn GuestRead,
+    ) -> Result<(frame_scene::LightEntry, Vec<frame_scene::Row>), &'static str> {
+        use scene_extract::light_groups::{Cause, dispatched_entry};
+        dispatched_entry(mem, self.slot, self.handler_item).map_err(|cause| match cause {
+            Cause::Memory => "unreadable gathered light entry",
+            Cause::Callback => "nonstandard gathered light geometry callback",
+            Cause::Owner => "gathered light render record has no live owner",
+            Cause::Section => "gathered light section or part unavailable",
+            Cause::Range => "gathered light index span outside its section",
+            Cause::State => "gathered light handler toggles per-part state",
+            Cause::Subparts => "gathered light handler selects visible subparts",
+            Cause::Material => "gathered light shader needs handler state or is unreadable",
+            Cause::Pose => "gathered light model node palette unavailable",
+        })
+    }
+}
+
 #[derive(Debug)]
 pub struct SortedLayer {
     pub entries: Vec<SortedItem>,

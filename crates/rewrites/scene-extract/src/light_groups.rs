@@ -207,7 +207,22 @@ fn material(mem: &dyn GuestRead, shader: u32) -> R<()> {
 /// One sorted entry of the list whose items are at `items`, with the
 /// node rows of an object's pose.
 pub fn entry(mem: &dyn GuestRead, items: u32, sorted: Sorted) -> R<(LightEntry, Vec<Row>)> {
-    let item = index(items, u32::from(sorted.index), ITEM_SIZE)?;
+    entry_at(mem, index(items, u32::from(sorted.index), ITEM_SIZE)?, sorted)
+}
+
+/// The loop has already resolved the item address and omitted excluded
+/// dispatches. The sorted slot supplies the implementation and vertex
+/// class the handler actually received.
+pub fn dispatched_entry(mem: &dyn GuestRead, slot: u32, item: u32) -> R<(LightEntry, Vec<Row>)> {
+    let sorted = Sorted {
+        index: half(mem, slot)?,
+        implementation: byte(mem, at(slot, 4)?)?,
+        vertex_class: half(mem, at(slot, 8)?)?,
+    };
+    entry_at(mem, item, sorted)
+}
+
+fn entry_at(mem: &dyn GuestRead, item: u32, sorted: Sorted) -> R<(LightEntry, Vec<Row>)> {
     if word(mem, item)? != GEOMETRY_BUILD || word(mem, at(item, 4)?)? != GEOMETRY_DRAW {
         return Err(Cause::Callback);
     }
@@ -656,6 +671,33 @@ mod tests {
         assert_eq!(object.stream.section, 0);
         assert_eq!(rows.len(), 3, "a rigid record's one matrix");
         assert_eq!(rows[0], [0.0, 3.0, 6.0, 9.0]);
+    }
+
+    #[test]
+    fn dispatched_model_uses_the_sorted_class_and_the_same_pose_as_the_gather() {
+        let mut m = fixture();
+        let handle = placement_and_object(&mut m);
+        let slot = 0x0067_0000;
+        let item = ITEMS + 2 * ITEM_SIZE;
+        m.w(slot, 0xbeef_0002);
+        m.w(slot + 4, 0xaabb_cc03);
+        m.w(slot + 8, 0xface_0101);
+        let got = dispatched_entry(&m, slot, item).unwrap();
+        assert_eq!(got, entry(&m, ITEMS, Sorted {
+            index: 2,
+            implementation: 3,
+            vertex_class: 0x101,
+        }).unwrap());
+        assert_eq!(got.0.owner, LayerOwner::Object(InstanceKey(handle)));
+        assert_eq!((got.0.binding.selector, got.0.binding.variant), (1, 2));
+        assert_eq!(got.1.len(), 3);
+
+        m.w(RENDER_RECORDS + 3 * RENDER_RECORD_SIZE, 1 << 11);
+        assert_eq!(dispatched_entry(&m, slot, item), Err(Cause::State));
+        m.w(item + 4, 0x1234);
+        assert_eq!(dispatched_entry(&m, slot, item), Err(Cause::Callback));
+        m.0.remove(&(slot + 8));
+        assert_eq!(dispatched_entry(&m, slot, item), Err(Cause::Memory));
     }
 
     #[test]
