@@ -245,7 +245,7 @@ fn sample_equals_the_evaluator_for_every_type() {
 fn read_gives_the_typed_sets() {
     let t = Temp::new("read");
     let (mut app, mut api) = open(&t);
-    let read = |path: &str| {
+    let mut read = |path: &str| {
         call(
             &mut api,
             &mut app,
@@ -261,7 +261,7 @@ fn read_gives_the_typed_sets() {
     assert_eq!(r["sub_types"], json!([3, 1]));
     assert_eq!(r["range"], json!([0.0, 1.0]));
     assert_eq!(r["length"], 36);
-    assert_eq!((r["editable"], r["read_only"]), (json!(true), Value::Null));
+    assert_eq!((r["editable"].clone(), r["read_only"].clone()), (json!(true), Value::Null));
     let sets = r["sets"].as_array().unwrap();
     assert_eq!(sets.len(), 2);
     assert_eq!(sets[0], json!({"shape": 3, "from": 0.0, "to": 0.25}));

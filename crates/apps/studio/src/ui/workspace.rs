@@ -129,7 +129,7 @@ pub fn start_page(ui: &Ui, app: &mut App, st: &mut WorkspaceUi, fonts: &Fonts, d
                         ui.text_disabled(format!(
                             "{} maps, {:.1} GB to read: {}",
                             maps.len(),
-                            bytes as f64 / 1_073_741_824.0,
+                            *bytes as f64 / 1_073_741_824.0,
                             maps.join(", ")
                         ));
                     }

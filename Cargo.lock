@@ -7099,6 +7099,7 @@ dependencies = [
  "winit",
  "wma",
  "xbe",
+ "xiso",
 ]
 
 [[package]]

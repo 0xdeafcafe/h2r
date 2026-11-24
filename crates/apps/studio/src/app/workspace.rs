@@ -19,7 +19,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use serde_json::{Value, json};
-use tags::repo::extract::{self, MapWork, Plan, PutReport, Why};
+use tags::repo::extract::{self, MapWork, Plan, Why};
+use tags::repo::store::PutReport;
 use tags::repo::store::Manifest;
 use tags::repo::{self, TagRepo};
 use tags::schema::Schema;
@@ -166,6 +167,7 @@ pub struct Extracting {
 }
 
 /// Why an extraction cannot start ([`App::workspace_extract`]).
+#[derive(Debug)]
 pub enum ExtractRefusal {
     /// The tree's root would sit inside a Git checkout: the tree is game
     /// data, and none of it is committed.
@@ -225,8 +227,8 @@ fn tree_stats(root: &Path) -> Option<TreeStats> {
     for m in record.maps.values() {
         for g in m.groups.values() {
             stats.tags += g.tags;
-            stats.lossy += g.lossy();
-            stats.refused += g.refused();
+            stats.lossy += g.lossy;
+            stats.refused += g.refused;
         }
     }
     stats.variants = std::fs::read_to_string(root.join("conflicts.txt"))
@@ -247,7 +249,7 @@ struct Source {
 
 impl Source {
     fn open(&self) -> repo::Result<map::Map<BufReader<File>>> {
-        map::Map::from_region(BufReader::new(File::open(&self.path)?), self.base, self.len)
+        Ok(map::Map::from_region(BufReader::new(File::open(&self.path)?), self.base, self.len)?)
     }
 
     /// SHA-256 of the map file's bytes (hex): the disc's identity.
@@ -255,7 +257,7 @@ impl Source {
         use std::io::{Read, Seek, SeekFrom};
         let mut f = File::open(&self.path)?;
         f.seek(SeekFrom::Start(self.base))?;
-        extract::file_hash(f.take(self.len))
+        extract::file_hash(f.take(self.len)).map_err(std::io::Error::other)
     }
 }
 
@@ -328,7 +330,7 @@ fn sources(disc: &Path) -> Result<Vec<Source>, String> {
             }
         }
     } else {
-        let iso = xiso::Xiso::open(BufReader::new(
+        let mut iso = xiso::Xiso::open(BufReader::new(
             File::open(disc).map_err(|e| format!("{}: {e}", disc.display()))?,
         ))
         .map_err(|e| format!("{}: {e}", disc.display()))?;
@@ -674,7 +676,7 @@ impl App {
                     "groups": w.groups.as_ref().map(|g| g.iter()
                         .map(|g| String::from_utf8_lossy(&g.0).into_owned())
                         .collect::<Vec<_>>()),
-                })),
+                })).collect::<Vec<_>>(),
             })
         };
         let (extracting, stale) = match &self.workspace.job {
@@ -767,10 +769,10 @@ impl App {
                 continue;
             }
             bytes += size;
-            generated_removed.push(name);
             if !dry_run {
                 let _ = std::fs::remove_dir_all(workspace.join("generated").join(&name));
             }
+            generated_removed.push(name);
         }
         // Build caches unused for a week.
         let mut caches = Vec::new();

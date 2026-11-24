@@ -193,7 +193,7 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             let map = t.path("curve.map");
             std::fs::write(&map, super::curves::tests::curve_map()).unwrap();
             app.tags = crate::app::TagDoc::new(super::curves::tests::registry());
-            c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+            call(api, app, m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
         }
         m::VOICE_CHARACTERS | m::VOICE_DATASET_BUILD | m::VOICE_DATASET_STATUS => {
             // Invented maps and the fake sidecar (never Python).

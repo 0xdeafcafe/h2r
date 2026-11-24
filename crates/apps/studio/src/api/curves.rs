@@ -271,8 +271,9 @@ fn merge_set(
             .and_then(Value::as_u64)
             .ok_or_else(|| bad(format!("{k}: a whole number")))?;
         u8::try_from(n)
+            .ok()
             .filter(|s| *s <= max)
-            .map_err(|_| bad(format!("{k}: 0 to {max}")))
+            .ok_or_else(|| bad(format!("{k}: 0 to {max}")))
     };
     // A key this type does not take is refused by name.
     let allowed = |keys: &[&str]| -> Result<(), agent_proto::RpcError> {

@@ -306,7 +306,7 @@ fn editor(ui: &Ui, doc: &TagDoc, open: &mut Open, actions: &mut Vec<Action>) -> 
     let read_only = doc.refusal(open.tag).is_some() || !f.kind.is_evaluated();
     if let Some(reason) = doc
         .refusal(open.tag)
-        .or(!f.kind.is_evaluated().then_some(EVALUATED_AS_ZERO))
+        .or((!f.kind.is_evaluated()).then_some(EVALUATED_AS_ZERO))
     {
         ui.text_colored(theme::WARN, reason);
     }
@@ -738,8 +738,8 @@ fn choices(
         }
         Pick::Selector { set } => {
             let (label, count, name, waves) = match f.kind {
-                FunctionType::Transition => ("Shape", 6, shape_name, false),
-                _ => ("Wave", 12, wave_name, true),
+                FunctionType::Transition => ("Shape", 6, shape_name as fn(u8) -> String, false),
+                _ => ("Wave", 12, wave_name as fn(u8) -> String, true),
             };
             ui.text_disabled(label);
             for sub in 0..count {

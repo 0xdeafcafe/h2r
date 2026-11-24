@@ -79,7 +79,7 @@ fn invented_disc(t: &Temp) -> PathBuf {
     disc
 }
 
-fn app(t: &Temp) -> App {
+fn fresh_app(t: &Temp) -> App {
     let mut app = App::new();
     app.set_data_root(t.path("data"));
     app
@@ -93,14 +93,14 @@ fn extract(app: &mut App, disc: &Path) -> Extracting {
 #[test]
 fn the_start_page_shows_until_the_tree_is_extracted() {
     let t = Temp::new("start");
-    let mut app = app(&t);
+    let mut app = fresh_app(&t);
     assert!(app.workspace_start_page());
     extract(&mut app, &invented_disc(&t));
     app.wait_workspace();
     assert!(!app.workspace_start_page());
     // A source open works without a tree: the page does not nag.
     let t2 = Temp::new("start-source");
-    let mut with_source = app(&t2);
+    let mut with_source = fresh_app(&t2);
     std::fs::write(t2.path("loose.map"), scenario_edit::fixture::fixture()).unwrap();
     with_source.dispatch(crate::app::Action::OpenSource(t2.path("loose.map")));
     assert!(!with_source.workspace_start_page());
@@ -109,7 +109,7 @@ fn the_start_page_shows_until_the_tree_is_extracted() {
 #[test]
 fn extraction_records_the_tree_and_an_unchanged_disc_is_a_no_op() {
     let t = Temp::new("extract");
-    let mut app = app(&t);
+    let mut app = fresh_app(&t);
     let disc = invented_disc(&t);
     let started = extract(&mut app, &disc);
     assert_eq!(started.maps, ["example"]);
@@ -137,7 +137,7 @@ fn extraction_records_the_tree_and_an_unchanged_disc_is_a_no_op() {
 #[test]
 fn a_changed_disc_file_is_extracted_again_by_the_background_plan() {
     let t = Temp::new("update");
-    let mut app = app(&t);
+    let mut app = fresh_app(&t);
     let disc = invented_disc(&t);
     extract(&mut app, &disc);
     app.wait_workspace();
@@ -155,7 +155,7 @@ fn a_changed_disc_file_is_extracted_again_by_the_background_plan() {
     assert_eq!(status["last"]["variants"], json!(0), "{status}");
     // A start with no tree does nothing (the start page shows).
     let t2 = Temp::new("update-bare");
-    let mut bare = app(&t2);
+    let mut bare = fresh_app(&t2);
     bare.start_workspace();
     assert!(bare.workspace.job.is_none());
 }
@@ -163,7 +163,7 @@ fn a_changed_disc_file_is_extracted_again_by_the_background_plan() {
 #[test]
 fn a_root_inside_a_git_checkout_is_refused_and_not_recorded() {
     let t = Temp::new("checkout");
-    let mut app = app(&t);
+    let mut app = fresh_app(&t);
     let disc = invented_disc(&t);
     std::fs::create_dir_all(t.path("checkout/.git")).unwrap();
     let root = t.path("checkout/tags");
@@ -181,7 +181,7 @@ fn a_root_inside_a_git_checkout_is_refused_and_not_recorded() {
 #[test]
 fn an_unknown_map_name_and_a_missing_disc_are_refused() {
     let t = Temp::new("params");
-    let mut app = app(&t);
+    let mut app = fresh_app(&t);
     let disc = invented_disc(&t);
     match app.workspace_extract(Some(disc), Some(vec!["nope".into()]), false, None) {
         Err(ExtractRefusal::Params(m)) => assert!(m.contains("nope.map")),
@@ -198,7 +198,7 @@ fn an_unknown_map_name_and_a_missing_disc_are_refused() {
 #[test]
 fn sizes_walk_the_tree_the_layers_the_caches_and_the_packages() {
     let t = Temp::new("sizes");
-    let mut app = app(&t);
+    let mut app = fresh_app(&t);
     extract(&mut app, &invented_disc(&t));
     app.wait_workspace();
     let write = |dir: &str, bytes: usize| {
@@ -227,7 +227,7 @@ fn sizes_walk_the_tree_the_layers_the_caches_and_the_packages() {
 #[test]
 fn prune_removes_unnamed_raws_unused_caches_and_unasked_for_layers() {
     let t = Temp::new("prune");
-    let mut app = app(&t);
+    let mut app = fresh_app(&t);
     let root = app.tags_root();
     TagRepo::create(&root).unwrap();
     // A tag file that names a raw: the resource stays.
@@ -269,7 +269,7 @@ fn prune_removes_unnamed_raws_unused_caches_and_unasked_for_layers() {
     std::fs::write(root.join(format!("raw/{}/{}", &low[..2], low)), [6, 7]).unwrap();
     let manifest = tags::repo::store::Manifest {
         map: "example".into(),
-        low_detail: Some(low),
+        low_detail: Some(low.clone()),
         ..Default::default()
     };
     std::fs::write(root.join("maps/example.txt"), manifest.to_text()).unwrap();
@@ -359,7 +359,7 @@ fn the_settings_round_trip_through_the_ini() {
 #[test]
 fn the_status_reports_the_extraction_while_it_runs() {
     let t = Temp::new("status");
-    let mut app = app(&t);
+    let mut app = fresh_app(&t);
     let disc = invented_disc(&t);
     extract(&mut app, &disc);
     // Before it finishes: the extraction is in progress, with the disc
