@@ -58,6 +58,7 @@ mod strings;
 pub(crate) mod sound_measure;
 mod tag_fields;
 mod tag_io;
+mod tag_names;
 mod tags;
 mod ui_check;
 mod ui_kit;

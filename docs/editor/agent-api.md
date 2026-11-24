@@ -553,6 +553,15 @@ Notes on some:
   out; `limit` cuts the hits and sets `truncated`, with `why` only for
   the budget. A `path` that names no element is refused with
   `INVALID_PARAMS`.
+- **Names.** `tag.names {group?}` returns `{groups: [{group, title,
+  named, unnamed, described, with_unit, with_effect}]}`, one line per tag
+  group (`api/tag_names.rs`): the fields the definitions name, the typed
+  or unknown fields they do not (padding is not counted), and how many
+  fields have a description, a `unit=` and an `applies=`. A block's
+  element is counted once. With `group` (a group code) the one line also
+  has `unnamed_fields: [{path, type, size}]`, the largest first, with each
+  path from the root (`+0x14`, `parts[].+0x6`). A code that is not a
+  group is refused with `INVALID_PARAMS`.
 - **List elements.** `tag.elements {tag, path, filter?, offset?, limit?}`
   returns a list's elements as the panel's rows show them (`1  scope`):
   `{count, capacity, elements: [{index, title, path}], truncated}`. The

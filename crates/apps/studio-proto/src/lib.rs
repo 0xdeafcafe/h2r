@@ -103,6 +103,7 @@ pub mod method {
     pub const TAG_VIEW: &str = "tag.view";
     pub const TAG_FIND: &str = "tag.find";
     pub const TAG_CHOICES: &str = "tag.choices";
+    pub const TAG_NAMES: &str = "tag.names";
     pub const TAG_BYTES: &str = "tag.bytes";
     pub const TAG_RESET: &str = "tag.reset";
     pub const TAG_ELEMENTS: &str = "tag.elements";
