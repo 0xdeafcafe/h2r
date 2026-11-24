@@ -1233,9 +1233,10 @@ impl GpuWorld {
         uploads: &mut gfx::ring::EncoderUploads<'_>,
         view: &ViewInputs,
         fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
+        samples: &crate::fog_gpu::LayerSamples,
     ) {
         if let Some(set) = self.fog.as_ref() {
-            set.prepare(uploads, view, fogs);
+            set.prepare_layer(uploads, view, fogs, samples);
         }
     }
 
@@ -1309,6 +1310,7 @@ impl GpuWorld {
         selected: &[(Owner, u8)],
         view: &ViewInputs,
         fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
+        samples: &crate::fog_gpu::LayerSamples,
     ) -> Result<gfx::external::ExternalDraws, &'static str> {
         let Self { fog, packet_pipelines, program_vertices, indices, .. } = self;
         let set = fog.as_mut().ok_or("fog materials unavailable")?;
@@ -1316,7 +1318,7 @@ impl GpuWorld {
         if packet_pipelines.len() > 4096 {
             packet_pipelines.clear();
         }
-        set.draws(packet_pipelines, program_vertices, indices, color_format, depth_format, target_size, selected, view, fogs)
+        set.draws(packet_pipelines, program_vertices, indices, color_format, depth_format, target_size, selected, view, fogs, samples)
     }
 
     /// Draws lights with `set` from now on.

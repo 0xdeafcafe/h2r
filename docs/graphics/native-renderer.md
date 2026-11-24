@@ -317,7 +317,9 @@ needs a matching A/B. See [render-loop.md](render-loop.md).
 The world stands down when its BSP loads yield no drawable native parts.
 The lights stand down when the native world is disabled or its BSPs yield
 no native lit parts. Fog and water stand down when their translated passes
-yield no drawable parts. A BSP-backed stage stays eligible while any BSP
+yield no drawable parts. This applies to whole-list replacement. Indexed fog ranges still
+use the live shader and geometry after the guest handler sets them up. Planar
+world passes sample the current view’s combiner colour and fade weights. A BSP-backed stage stays eligible while any BSP
 has work or has yet to be checked.
 
 Objects stand down only when the map's tag index contains no object

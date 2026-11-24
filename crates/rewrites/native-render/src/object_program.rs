@@ -750,7 +750,7 @@ pub fn object_pixel_uniforms(
 }
 
 /// `packed`'s lanes in `mask` into combiner constant `slot` of C1 or C0.
-fn put_packed(u: &mut PixelUniforms, c1: bool, slot: u8, mask: u32, packed: u32) {
+pub(crate) fn put_packed(u: &mut PixelUniforms, c1: bool, slot: u8, mask: u32, packed: u32) {
     let bank = if c1 { &mut u.c1 } else { &mut u.c0 };
     if let Some(c) = bank.get_mut(usize::from(slot)) {
         *c = shaders::psh::argb((crate::light_look::repack(*c) & !mask) | (packed & mask));

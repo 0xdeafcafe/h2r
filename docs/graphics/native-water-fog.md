@@ -18,7 +18,7 @@ gates the player chain after):
 
 | Calls | What | Evidence |
 |---|---|---|
-| `0x00025d50`, then the layer draw of 16 | **Planar fog.** `0x25d50` (no stack cleanup) runs between the state call at `0x0002c0bc`'s return and the layer-16 begin at `0x0002c0d6`; the layer draw is at `0x0002c0e0` (returns `0x0002c0e9`). Its content is not read (S: the fog render states and any per-view constants; whatever it pushes is in the device's state before the layer begins, so a native pass asked at the layer draw reads it after the drain). | Code: the block machine `0x0002c0cc`..`0x0002c0ee` |
+| `0x00025d50`, then the layer draw of 16 | **Planar fog.** `0x25d50` (no stack cleanup) runs between the state call at `0x0002c0bc`'s return and the layer-16 begin call at `0x0002c0db`; the layer draw is at `0x0002c0e4` (returns `0x0002c0e9`). When the fog byte at `0x00485a75` is clear, it selects a callback from the view mode (`0x00026520` for modes 2/3 on the branch at `0x00025d77`, `0x00025e50` on the other setup branch) and submits through `0x00034420`. | Code: the block machine `0x0002c0cc`..`0x0002c0ee` |
 | `0x0003ba90(esi, ecx=6)`, the layer draw of 6, `0x0003c3c0(al, 1)` | **The water edge blend.** Unless bit 4 of `[0x004b9fe0]` is set, when `0x0003c3c0(0, 0)` runs instead and layer 6 does not draw. `0x0003ba90` (`ret 4`) returns AL, stored and passed back to `0x0003c3c0` (`ret 8`). `0x0003c3c0` contains the alpha-only clear `0x3c515` with EAX `0x10` (d3d.md, "Channels"): the teardown clears the bound target's alpha, so the water edge blend's mask is the alpha channel the draws before it left. The teardown can also issue an indexed quad draw at `0x0003c598` and continues with resource updates. | Code: `0x0002c0ee`..`0x0002c137`; d3d.md |
 
 - **Layer 16's own gate** (Code, the layer-draw port `0x00044582`): the
@@ -58,7 +58,7 @@ the cached pipelines with their own uniforms and sampled textures.
   reads the fog register" that layer 3's `world_parity` refuses: its
   colour is `SET_FOG_COLOR` and its factor the fog unit's, both device
   state at the layer). It refuses what layer 3 refuses — per-draw
-  engine inputs, engine textures other than the lightmap, animated
+  engine inputs outside the planar combiner bindings below, unsupplied engine textures, animated
   passes, engine-driven states from a source other than the instance's
   scalar 21 or a driven fog colour with the fog on
   (`engine_states::apply_static`), a definition without
@@ -69,6 +69,17 @@ the cached pipelines with their own uniforms and sampled textures.
   refusal, the fog words taken out of the decode): a pass that leaves
   blend to the previous draw while writing colour, or inherits depth writes while depth is enabled, stays on the D3D path. `CULLMODE`
   is the exception, below.
+- **Planar combiner inputs.** In deltatowers, cyclotron, mainmenu and lockout,
+  implementation 2 of the planar pass binds vector 31 to RGB and scalars
+  35 and 36 to alpha. The selectors read RGB at `MATERIAL + 0x84`, strength
+  at `MATERIAL + 0x90` and fade at `FADE`. The two weights are
+  `(1 - fade) * strength` and `fade * strength`
+  (`scene_extract::layout::layer_inputs`). The host samples these at the
+  layer call. Each pass applies its binding's transform, half-range packing
+  and channel mask to the combiner bank and slot named by the material.
+  The program takes its plane and camera calculations from the device's
+  vertex constants. Each target copy uses its own projection for position.
+  The display's horizontal projection scale does not multiply the weights.
 - **The implementation** (`fog::layer_implementation`, Code `0x0004cbf0`).
   Layer 16's passes carry four implementations. The geometry build has
   its own case for layer 16 (jump table `0x0004d054`, byte table
@@ -129,7 +140,10 @@ the cached pipelines with their own uniforms and sampled textures.
   The fog and water mask walk only surrenders a list when the stage can
   draw every entry. A mixed list keeps all its masks for the guest sort.
   The native range hook then offers each supported geometry range, including selected subparts, at its
-  original draw position, after the handler commits its state. A refused
+  original draw position, after the handler commits its state. The first-person
+  call returning to `0x00040289` ordinarily begins layer 2 (`0x00040276`).
+  It can supply an indexed fog range when both the live handler argument
+  and current layer identify 16 and the emitter and entry-loop returns match. A refused
   range continues through its guest draw. The hook restores a surrendered
   list's bits at the next layer draw. A placement's part draws with its pass's
   rigid classification (the `vrtx` tag's classification 1, the model
@@ -272,7 +286,7 @@ the cached pipelines with their own uniforms and sampled textures.
 
 - The meaning of the render record's `+0` bits 7 and 8 and of `[0x004ba004]` (only their use in layer 16's build is read), the fog implementations 0 and 1 (views with a fog byte set stay on D3D), and that no draw between a layer's setup and the native passes changes the cull (read from the layer draw's order, not a captured trace).
 - Pixel parity of fog and the water edge blend against D3D, including the alpha channel the teardown clears.
-- The content of `0x00025d50` (what the fog render states and per-view constants it pushes).
+- The full effects of the callbacks submitted by `0x00025d50`.
 - Pixel parity of layers 18, 19 and 21 against D3D (19 drawn into render target 3): the view copy is made once before the layer, so a later item reads the target as it was before the earlier items drew, where the D3D path samples the target it draws into; and that the camouflage and hologram shaders' engine inputs are ones the object path supplies (their refusals are logged at load).
 - What `0x00015680` sets from the layer descriptor's `+0x18` (read from the device at the call, not from the descriptor).
 
