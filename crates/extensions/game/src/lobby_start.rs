@@ -166,6 +166,10 @@ pub struct State {
     /// The map variant of the lobby's map the match plays (`None`:
     /// Original), set with [`crate::map_variant`].
     pub map_variant: Option<content::MapId>,
+    /// The lobby's kit map's base name (`beavercreek`), as the Firefight
+    /// page's Wave set row reads it between redraws ([`kit_map`]); the
+    /// lobby panel keeps it ([`crate::lobby_mode`]).
+    pub kit_map: Option<String>,
 }
 
 impl State {
@@ -182,6 +186,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     mode: Mode::Multiplayer,
     forge_map: None,
     map_variant: None,
+    kit_map: None,
 });
 
 #[cfg(not(test))]
@@ -198,6 +203,7 @@ thread_local! {
             mode: Mode::Multiplayer,
             forge_map: None,
             map_variant: None,
+            kit_map: None,
         })
     };
 }
@@ -254,6 +260,29 @@ pub fn map_variant() -> Option<content::MapId> {
 /// The lobby's map variant ([`crate::map_variant`] sets it with its pick).
 pub fn set_map_variant(id: Option<content::MapId>) {
     with_state(|s| s.map_variant = id);
+}
+
+/// The lobby's kit map's base name, as it stood at the panel's last draw
+/// ([`crate::lobby_mode`]): the Wave set row reads it between redraws.
+pub fn kit_map() -> Option<String> {
+    with_state(|s| s.kit_map.clone())
+}
+
+/// Keeps the lobby's kit map's base name ([`kit_map`]).
+pub fn set_kit_map(map: Option<String>) {
+    with_state(|s| s.kit_map = map);
+}
+
+/// The lobby map's base name now (`beavercreek`), when it carries the
+/// kit: the lobby's map in the catalogue, named `Firefight – <map>`
+/// ([`KIT_NAME_PREFIX`]). `None` when the list is not read, there is no
+/// lobby map, or it is not a kit map (the probe's `Firefight Probe –
+/// <map>` is not one).
+pub fn kit_map_name(m: &dyn engine::memory::GuestMemory) -> Option<String> {
+    let id = m.u32(crate::h1_options_row::LOBBY_MAP).ok()?;
+    let catalogue = crate::map_select::current()?;
+    let map = catalogue.all().find(|map| map.id == id)?;
+    map.name.strip_prefix(KIT_NAME_PREFIX).map(str::to_owned)
 }
 
 /// The lobby as a snapshot held it.

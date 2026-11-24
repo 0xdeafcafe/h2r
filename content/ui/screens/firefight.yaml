@@ -34,8 +34,8 @@ rows:
     kind: value
     text: "Wave set"
     help: "Which set of waves you fight."
-    setting: firefight.waveset
-    explain: "Holdout is steady. Attrition sends more for fewer lives. Last Stand is hardest. Crossfire pits two teams against the waves and each other."
+    bind: waveset
+    explain: "The map's own set comes first when it has one. Holdout is steady. Attrition sends more for fewer lives. Last Stand is hardest. Crossfire pits two teams against the waves and each other."
   row.2:
     kind: value
     text: "Teams"

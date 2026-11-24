@@ -78,10 +78,11 @@ type Get<T> = Arc<dyn Fn() -> T + Send + Sync>;
 
 /// A row's behaviour, registered by name ([`Bindings`]).
 pub enum Bound {
-    /// A value row not in the store: its values, the held index, and the
-    /// setter (what to log).
+    /// A value row not in the store: the values it offers now, the held
+    /// index, and the setter (what to log). The values are made as the
+    /// row is drawn or pressed ([`Bindings::menu`]).
     Value {
-        values: Vec<String>,
+        values: Get<Vec<String>>,
         get: Get<usize>,
         set: Arc<dyn Fn(usize) -> String + Send + Sync>,
     },
@@ -124,10 +125,22 @@ impl Bindings {
         get: impl Fn() -> usize + Send + Sync + 'static,
         set: impl Fn(usize) -> String + Send + Sync + 'static,
     ) -> Self {
+        self.menu(name, move || values.clone(), get, set)
+    }
+    /// A [`Self::value`] row whose offered values are made as the row is
+    /// drawn or pressed (the wave sets a lobby's map offers): `values` is
+    /// the list now.
+    pub fn menu(
+        mut self,
+        name: &'static str,
+        values: impl Fn() -> Vec<String> + Send + Sync + 'static,
+        get: impl Fn() -> usize + Send + Sync + 'static,
+        set: impl Fn(usize) -> String + Send + Sync + 'static,
+    ) -> Self {
         self.binds.push((
             name,
             Bound::Value {
-                values,
+                values: Arc::new(values),
                 get: Arc::new(get),
                 set: Arc::new(set),
             },
@@ -359,14 +372,21 @@ fn row(
         }
         ("value", None, Some(b)) => match binds.take(b) {
             Some(Bound::Value { values, get, set }) => {
+                let now = (values)();
                 if let Some(v) = &r.values
-                    && v.len() != values.len()
+                    && v.len() != now.len()
                 {
-                    return Err((at("values"), format!("{} values for {b}'s {}", v.len(), values.len())));
+                    return Err((at("values"), format!("{} values for {b}'s {}", v.len(), now.len())));
                 }
-                let values = r.values.clone().unwrap_or(values);
-                let values: Vec<&str> = values.iter().map(String::as_str).collect();
-                Row::value(label, &values, move || get(), move |i| set(i))
+                match &r.values {
+                    // The doc pins the offered values: they are its own.
+                    Some(pinned) => {
+                        let values: Vec<&str> = pinned.iter().map(String::as_str).collect();
+                        Row::value(label, &values, move || get(), move |i| set(i))
+                    }
+                    // The binding's list, made as the row is drawn.
+                    None => Row::menu(label, values, move || get(), move |i| set(i)),
+                }
             }
             _ => return Err((at("bind"), format!("no value binding {b:?}"))),
         },

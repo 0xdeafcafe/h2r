@@ -71,7 +71,9 @@ struct LiveHelp {
 enum Kind {
     Action(Get<Then>),
     Value {
-        values: Vec<String>,
+        /// The offered values, made as the row is drawn or pressed (the
+        /// wave sets a lobby's map offers, the choices a setting has).
+        values: Get<Vec<String>>,
         get: Get<usize>,
         set: Arc<dyn Fn(usize) -> String + Send + Sync>,
     },
@@ -127,10 +129,22 @@ impl Row {
         get: impl Fn() -> usize + Send + Sync + 'static,
         set: impl Fn(usize) -> String + Send + Sync + 'static,
     ) -> Self {
+        let values: Vec<String> = values.iter().map(|v| v.to_string()).collect();
+        Self::menu(label, Arc::new(move || values.clone()), get, set)
+    }
+    /// [`Row::value`] whose offered values are made as the row is drawn or
+    /// pressed (the wave sets a lobby's map offers): `values` is the list
+    /// now. Left and right step through it as they come.
+    pub fn menu(
+        label: &str,
+        values: Get<Vec<String>>,
+        get: impl Fn() -> usize + Send + Sync + 'static,
+        set: impl Fn(usize) -> String + Send + Sync + 'static,
+    ) -> Self {
         Self::of(
             label,
             Kind::Value {
-                values: values.iter().map(|v| v.to_string()).collect(),
+                values,
                 get: Arc::new(get),
                 set: Arc::new(set),
             },
@@ -239,6 +253,7 @@ impl Row {
         let (row, loaded) = match &self.kind {
             Kind::Action(_) => (RowSpec::action(&self.label), true),
             Kind::Value { values, get, .. } => {
+                let values = (values)();
                 let choices: Vec<&str> = values.iter().map(String::as_str).collect();
                 (RowSpec::value(&self.label, &choices, get()), true)
             }
@@ -1051,7 +1066,7 @@ impl Rows for KitScreen {
             Kind::Value { values, get, set } => {
                 let pick = crate::ui_kit::picker::Pick::new(
                     &r.label,
-                    values.clone(),
+                    (values)(),
                     get(),
                     r.explain
                         .as_deref()
@@ -1113,7 +1128,7 @@ impl Rows for KitScreen {
         let Kind::Value { values, get, set } = &r.kind else {
             return None;
         };
-        let n = values.len().max(1);
+        let n = (values)().len().max(1);
         let next = if right {
             (get() + 1) % n
         } else {
