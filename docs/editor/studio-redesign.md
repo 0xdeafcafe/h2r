@@ -32,7 +32,7 @@ before its slice starts.
 | Sound audition (A1), sound measurement | built | `app/audition.rs`, `ui/sound.rs`, `api/sound.rs`, `api/sound_measure.rs` |
 | Announcer lines and voice cloning | built | [announcer.md](announcer.md), [voice-cloning.md](voice-cloning.md) |
 | Animation graphs read and sampled, every retail codec | built, no view | `crates/formats/tags/src/anim.rs`, `anim_sample.rs` ([animation.md](../formats/animation.md)) |
-| A `jmad` writer (static stream and the 8-byte quantised codec) | built, inside the Halo 1 converter | `crates/tools/h1-assets/src/models/jmad.rs` |
+| A `jmad` stream encoder (static stream and the 8-byte quantised codec), which the Halo 1 converter calls | built (AN2) | `crates/formats/tags/src/anim_write.rs`; the converter's graph assembly stays in `crates/tools/h1-assets/src/models/jmad.rs` |
 | An Xbox ADPCM encoder; a `snd!` writer with the gestalt merge | built, the second inside the converter | `crates/platform/audio/src/adpcm.rs` (`encode`), `crates/tools/h1-assets/src/sounds/merge.rs` |
 | Layers, projects, kits as build steps, edit files | design | [tag-workspace.md](tag-workspace.md) |
 
@@ -755,7 +755,7 @@ cut to the package model; PK4, PK5 and PK9 to PK12 are W8's migrations.
 | PK14 | **Live, game and Studio**: install, the content set in a session, the join check, the Mods screens, `package.publish` and `package.install`; `h2 live mods import` writes packages | M | PK13, PK3 | on the fake server: a joiner missing one package fetches it and joins; a blocked one fails before the map load with the reason; an imported pack holds patches and credit only |
 | M1 | **Model poses** (rich-editors) | M | nothing | as there |
 | AN1 | **The Animation workspace, read**: `anim.read`, the timeline rows, scrub, loop, the key reduction | M | M1, SH1 | an invented two-bone clip lists its channels; reduce then bake is within the tolerance at every frame |
-| AN2 | **The encoder**: `tags::anim_write` (codecs 1 and 3) lifted from `h1-assets`, which calls it | M | nothing | `decode(encode(c))` equals `c` within quantisation on invented clips; the converter's `jmad` tests pass unchanged |
+| AN2 | **The encoder** (built): `tags::anim_write` (codecs 1 and 3) lifted from `h1-assets`, which calls it | M | nothing | `decode(encode(c))` equals `c` within quantisation on invented clips; the converter's `jmad` tests pass unchanged |
 | AN3 | **Keys and curves**: `crates/tools/anim-edit`, `AnimDoc`, `anim.key`, gizmo keying, the Curves tab, `anim.new`, `anim.duplicate`, `anim.check` | M | AN1 | a key set by the gizmo and by `anim.key` make the same document; a drag is one undo step; a rotation survives the angle view unchanged |
 | AN4 | **Write back**: the `animation` builder, replace and add in a `jmad`, the refusals, the live flush | M | AN2, AN3, X2, PK2 | an invented graph with one animation replaced differs only in that record and stream; an added one is reachable by its action; an inheriting graph is refused by name |
 | AN5 | **Retarget and glTF**: `anim.retarget`, `anim.import`, the node table | M | AN3 | a clip retargeted to a skeleton with one renamed and one longer bone keeps the end position within a bound; unmatched nodes are listed |

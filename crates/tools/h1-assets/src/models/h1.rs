@@ -817,22 +817,7 @@ impl AnimNode {
     }
 }
 
-/// One node's transform at one frame, in its parent's space.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Transform {
-    pub rotation: [f32; 4],
-    pub translation: [f32; 3],
-    pub scale: f32,
-}
-impl Default for Transform {
-    fn default() -> Self {
-        Self {
-            rotation: [0.0, 0.0, 0.0, 1.0],
-            translation: [0.0; 3],
-            scale: 1.0,
-        }
-    }
-}
+pub use tags::anim_write::Transform;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Animation {
