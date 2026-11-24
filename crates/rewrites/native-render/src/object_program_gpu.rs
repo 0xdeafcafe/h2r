@@ -3215,7 +3215,7 @@ mod tests {
     }
 
     #[test]
-    fn a_materials_overlay_layer_2_pass_compiles_with_its_multiply_blend() {
+    fn a_material_with_only_overlay_parts_compiles_without_a_base_pass() {
         use crate::object_program::tests::{lit, rigid_program};
         use tags::material::{ResolvedLayer, ResolvedPass};
         let mut bytes = Vec::new();
@@ -3235,8 +3235,6 @@ mod tests {
             subparts: HashMap::new(),
             listed: HashMap::new(),
         };
-        let mut opaque = lit();
-        opaque.render_states = vec![state(RenderStateType::AlphaBlendEnable, 0), state(RenderStateType::ZWriteEnable, 1)];
         // The destination times the source: DestColor, Zero.
         let mut multiply = lit();
         multiply.render_states = vec![
@@ -3251,7 +3249,6 @@ mod tests {
             template: map::TagId(0xe000_0021),
             inputs: Default::default(),
             layers: vec![
-                ResolvedLayer { lod: 0, layer: crate::look::LIGHTMAP_LAYER, passes: vec![pass(vec![opaque])] },
                 ResolvedLayer { lod: 0, layer: usize::from(crate::layer_pass::OVERLAY_LAYER), passes: vec![pass(vec![multiply])] },
             ],
         };
@@ -3261,13 +3258,14 @@ mod tests {
         let mut vertex = |_: map::TagId, _: u16, _: u8| Ok::<_, String>((rigid_program(), vec![0u16, 3, 2]));
         let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
         let build = lit_model(&[section], &materials, &formats(), &EngineStages::default(), &mut vertex, &mut image);
-        assert_eq!(build.taken, vec![0], "{:?}", build.refused);
+        assert!(build.input.parts.is_empty());
+        assert!(!build.input.is_empty());
         assert!(build.layer_refused.is_empty(), "{:?}", build.layer_refused);
         assert_eq!(build.input.layers.len(), 1, "layer 2's part");
         let p = &build.input.layers[0];
         assert_eq!((p.layer, p.section, p.part, p.shader_tag), (crate::layer_pass::OVERLAY_LAYER, 1, 0, 0xe000_0020));
         let (program, buffer) = p.passes[0].implementations[0].expect("compiled");
-        assert_eq!(buffer, 0, "over layer 3's buffer");
+        assert_eq!((program, buffer), (0, 0));
         assert!(build.input.programs[program].pass.program.state.as_ref().unwrap().blend.is_some(), "its blend kept");
         assert!(build.input.valid_draw_references());
     }
