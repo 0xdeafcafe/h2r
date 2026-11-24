@@ -263,6 +263,8 @@ pub struct RulesExt {
     pub objects: BTreeMap<u32, Vec<i32>>,
     /// Sorted by player, then capability.
     pub grants: Vec<Grant>,
+    /// Players holding the script role, one bit per player slot.
+    pub role_mask: u16,
     pub queue: Vec<Queued>,
     /// `ticks_held`'s counters: per zone object a script has named, the
     /// ticks each team held it alone, by team index. Counting starts the
@@ -318,8 +320,8 @@ pub enum StateError {
 
 const STATE_MAGIC: [u8; 4] = *b"H2RX";
 /// 2 added the `ticks_held` counters; 3 the teams' spawn rules and
-/// bodies.
-const STATE_VERSION: u8 = 3;
+/// bodies; 4 the script role mask.
+const STATE_VERSION: u8 = 4;
 
 impl RulesExt {
     /// Whether `player` holds `cap` (an index into `requires`) with uses
@@ -357,6 +359,7 @@ impl RulesExt {
         w.extend_from_slice(&self.tick.to_le_bytes());
         w.extend_from_slice(&self.ops.to_le_bytes());
         w.push(self.zone_events);
+        w.extend_from_slice(&self.role_mask.to_le_bytes());
         match self.stopped {
             None => w.push(0),
             Some(e) => {
@@ -450,6 +453,7 @@ impl RulesExt {
         let tick = r.u32()?;
         let ops = r.u32()?;
         let zone_events = r.u8()?;
+        let role_mask = r.u16()?;
         let stopped = match r.u8()? {
             0 => None,
             1 => {
@@ -579,6 +583,7 @@ impl RulesExt {
             tick,
             ops,
             zone_events,
+            role_mask,
             stopped,
             globals,
             players,
@@ -698,6 +703,7 @@ pub enum ProposalRefusal {
 #[derive(Clone, Debug)]
 pub struct Vm {
     ir: Ir,
+    role_traits: [bool; 3],
     options: u32,
     ext: RulesExt,
     /// Each slot's position within its scope.
@@ -706,6 +712,19 @@ pub struct Vm {
     inits: [Vec<i32>; 4],
     warnings: Vec<Warning>,
     report: verify::Report,
+}
+
+/// The three booleans the game queries for a role holder. A script may
+/// expose any of them as ordinary variant options.
+fn role_traits(ir: &Ir, options: u32) -> [bool; 3] {
+    [("role_active_camo", false), ("role_extra_damage", true), ("role_damage_resistance", false)]
+        .map(|(name, default)| {
+            if ir.options.iter().enumerate().any(|(i, o)| o.ty == Ty::Bool && ir.option_name(i) == name) {
+                ir.option_value(options, name).is_some_and(|v| v != 0)
+            } else {
+                default
+            }
+        })
 }
 
 impl Vm {
@@ -723,6 +742,7 @@ impl Vm {
             players: vec![inits[1].clone(); MAX_PLAYERS],
             teams: vec![inits[2].clone(); MAX_TEAMS],
             objects: BTreeMap::new(),
+            role_mask: 0,
             grants: Vec::new(),
             queue: Vec::new(),
             held: BTreeMap::new(),
@@ -730,6 +750,7 @@ impl Vm {
             bodies: [None; MAX_TEAMS],
         };
         Ok(Vm {
+            role_traits: role_traits(&ir, options),
             ir,
             options,
             ext,
@@ -765,6 +786,7 @@ impl Vm {
             return Err(StateError::Shape);
         }
         Ok(Vm {
+            role_traits: role_traits(&ir, options),
             ir,
             options,
             ext,
@@ -786,6 +808,7 @@ impl Vm {
         carry(&self.ir, &ir, &mut self.ext);
         let (pos, inits) = layout(&ir);
         self.ext.stopped = None;
+        self.role_traits = role_traits(&ir, self.options);
         self.ir = ir;
         self.pos = pos;
         self.inits = inits;
@@ -799,6 +822,15 @@ impl Vm {
 
     pub fn ext(&self) -> &RulesExt {
         &self.ext
+    }
+
+    pub fn has_role(&self, slot: u8) -> bool {
+        slot < MAX_PLAYERS as u8 && self.ext.role_mask & (1 << slot) != 0
+    }
+
+    /// The role holder's active camo, extra damage or damage resistance.
+    pub fn role_trait(&self, trait_id: u32) -> Option<bool> {
+        self.role_traits.get(trait_id.checked_sub(1)? as usize).copied()
     }
 
     pub fn report(&self) -> &verify::Report {
@@ -1045,9 +1077,15 @@ impl Vm {
     /// `ticks_held` counters and the spawn rules end at the round's end.
     fn after(&mut self, input: &Input) {
         match *input {
-            Input::Quit(p) => self.ext.grants.retain(|g| g.player != p),
+            Input::Quit(p) => {
+                self.ext.grants.retain(|g| g.player != p);
+                if p < MAX_PLAYERS as u8 {
+                    self.ext.role_mask &= !(1 << p);
+                }
+            }
             Input::RoundEnd => {
                 self.ext.grants.clear();
+                self.ext.role_mask = 0;
                 self.ext.held.clear();
                 self.ext.spawns = [None; MAX_TEAMS];
                 self.ext.bodies = [None; MAX_TEAMS];
@@ -1597,6 +1635,17 @@ impl<'a> Run<'a> {
     /// `none` gives the team its own bodies. A `set_body` tag that is no
     /// body is a script error.
     fn stand(&mut self, entry: u16, raw: &[i32]) -> Result<(), ErrorKind> {
+        if entry == caps::id::ROLE_TRAITS {
+            if (0..MAX_PLAYERS as i32).contains(&raw[0]) {
+                let bit = 1u16 << raw[0];
+                if raw[1] != 0 {
+                    self.ext.role_mask |= bit;
+                } else {
+                    self.ext.role_mask &= !bit;
+                }
+            }
+            return Ok(());
+        }
         let Some(team) = raw
             .first()
             .and_then(|&t| usize::try_from(t).ok())
@@ -1764,6 +1813,7 @@ mod tests {
             players: vec![vec![0]; MAX_PLAYERS],
             teams: vec![vec![]; MAX_TEAMS],
             objects: [(3u32, vec![7, 8]), (9, vec![1, 2])].into_iter().collect(),
+            role_mask: 0x8002,
             grants: vec![
                 Grant {
                     player: 0,
@@ -1930,6 +1980,7 @@ mod tests {
             objects: (0..MAX_OBJECT_RECORDS as u32)
                 .map(|i| (i, vec![0; MAX_OBJECT_SLOTS]))
                 .collect(),
+            role_mask: u16::MAX,
             grants: (0..MAX_PLAYERS as u8)
                 .flat_map(|p| {
                     (0..4u8).map(move |c| Grant {

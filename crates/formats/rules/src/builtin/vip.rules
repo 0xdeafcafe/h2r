@@ -6,7 +6,7 @@
 //
 // Entries a host cannot make yet (`verify::unhostable`): none.
 // Not covered: the VIP has no mark over its head and no traits of its own
-// (`role_traits` is untraced); the powers of "Roles, powers and
+// (this script uses its own VIP role); the powers of "Roles, powers and
 // capabilities" wait on the match edit log (roadmap phase 14), so their
 // grants live in the VIP test script of `tests/scripts.rs`.
 rules "VIP" 1
