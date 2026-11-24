@@ -270,7 +270,7 @@ Studio ([agent-api.md](agent-api.md)):
 | `project.build` | act | `{project, sources?}` builds; `{map_id, file, took_ms, rebuilt, reused, costs, problems}` |
 | `project.play` | act | builds, then loads the output in the paired game |
 | `doc.open {project}` | act | opens a project's last build as the document; saves write edit lines |
-| `import.model`, `import.bitmap`, `import.sound` | act | an importer on a source file, into the authored layer |
+| `import.model`, `import.bitmap`, `import.sound` | act | an importer on a source file, into the authored layer (`import.bitmap` and `import.sound` are built) |
 
 The CLI gains `h2 tags extract --update`, `h2 tags build --project
 FILE` and `h2 tags import`, over the same crate, for the coordinator
