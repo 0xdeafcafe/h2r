@@ -253,6 +253,18 @@ pub enum Choice {
     /// The placed objects browser: fly the monitor to an added object and
     /// look at it.
     FlyTo(forge::OpId),
+    /// The placed objects browser: fly the monitor to the centre of a
+    /// group and look at it.
+    FlyToGroup(forge::OpId),
+    /// Add a thing to the selection, or take it out
+    /// (docs/game/forge-editing.md, "Selection, groups and prefabs").
+    ToggleSelected(forge::Endpoint),
+    /// **Group selection**: one group of everything selected.
+    GroupSelection,
+    /// **Ungroup**: end a group.
+    Ungroup(forge::OpId),
+    /// **Lock group** (true) or **Unlock group** (false).
+    LockGroup(forge::OpId, bool),
     /// Set a value to value `i` of its row's values.
     Set(Prop, usize),
     /// A number typed on the game's keyboard.
@@ -958,32 +970,140 @@ pub fn placed_rows(objects: &[(forge::OpId, Group, String, [f32; 3])]) -> Vec<Pl
     out
 }
 
-/// The Placed objects row: A opens a picker over every added object, each
-/// flying the monitor to it. With none placed it is a fact.
+/// A group of the map, a folder row of the placed objects browser.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Folder {
+    /// The op that made the group.
+    pub id: forge::OpId,
+    /// The group's name.
+    pub name: String,
+    /// What the row says in the picker: how many objects, and whether the
+    /// group is locked.
+    pub line: String,
+}
+
+/// The browser's folder rows for the active groups, in the order made.
+pub fn folder_rows(groups: &[forge::GroupInfo]) -> Vec<Folder> {
+    groups
+        .iter()
+        .map(|g| Folder {
+            id: g.id,
+            name: g.name.clone(),
+            line: format!(
+                "Group. {} objects{}.",
+                g.members.len(),
+                if g.locked { ", locked" } else { "" }
+            ),
+        })
+        .collect()
+}
+
+/// The Placed objects row: A opens a picker over every group, then every
+/// added object, each flying the monitor to it. With none placed and no
+/// group it is a fact.
 pub fn placed_row(placed: &[Placed]) -> SheetRow {
-    const HELP: &str = "Fly the monitor to an object you placed.";
-    if placed.is_empty() {
+    placed_row_with(&[], placed)
+}
+
+/// [`placed_row`] with the groups listed first.
+pub fn placed_row_with(folders: &[Folder], placed: &[Placed]) -> SheetRow {
+    const HELP: &str = "Fly the monitor to a group or an object you placed.";
+    if placed.is_empty() && folders.is_empty() {
         return SheetRow::new("Placed objects", Act::Info)
             .value("None")
             .describe("Nothing is placed yet. Place one from the object menu.");
     }
     let pick = PickSpec {
         title: "Placed objects".into(),
-        values: placed.iter().map(|p| p.name.clone()).collect(),
+        values: folders
+            .iter()
+            .map(|f| f.name.clone())
+            .chain(placed.iter().map(|p| p.name.clone()))
+            .collect(),
         current: 0,
-        details: placed.iter().map(|p| p.line.clone()).collect(),
+        details: folders
+            .iter()
+            .map(|f| f.line.clone())
+            .chain(placed.iter().map(|p| p.line.clone()))
+            .collect(),
         description: String::new(),
-        choices: placed.iter().map(|p| Choice::FlyTo(p.id)).collect(),
+        choices: folders
+            .iter()
+            .map(|f| Choice::FlyToGroup(f.id))
+            .chain(placed.iter().map(|p| Choice::FlyTo(p.id)))
+            .collect(),
         closes: false,
     };
     SheetRow::new("Placed objects", Act::Pick(pick))
-        .value(&placed.len().to_string())
+        .value(&(folders.len() + placed.len()).to_string())
         .describe(HELP)
+}
+
+/// What the Properties page knows of selection and groups for the thing
+/// it is on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupFacts {
+    /// The thing the page is on.
+    pub thing: forge::Endpoint,
+    /// The thing is in the selection.
+    pub selected: bool,
+    /// How many things are selected.
+    pub selection: usize,
+    /// The thing's group: its op, its name and whether it is locked.
+    pub group: Option<(forge::OpId, String, bool)>,
+}
+
+/// The Properties page's rows for selecting and grouping, after the doc's
+/// rows: a thing in a group shows the group and ends or locks it; any
+/// other can be selected, and two or more selected can be grouped.
+pub fn group_rows(f: &GroupFacts) -> Vec<SheetRow> {
+    if let Some((id, name, locked)) = &f.group {
+        return vec![
+            SheetRow::new("Group", Act::Info)
+                .value(name)
+                .describe("The group this object moves with."),
+            SheetRow::new(
+                if *locked {
+                    "Unlock group"
+                } else {
+                    "Lock group"
+                },
+                Act::Choose(Choice::LockGroup(*id, !locked)),
+            )
+            .describe(if *locked {
+                "Aim at the group's objects again."
+            } else {
+                "Stop aiming at the group's objects."
+            }),
+            SheetRow::new("Ungroup", Act::Choose(Choice::Ungroup(*id)))
+                .describe("Let the objects move on their own."),
+        ];
+    }
+    let mut rows = vec![
+        SheetRow::new(
+            if f.selected { "Deselect" } else { "Select" },
+            Act::Choose(Choice::ToggleSelected(f.thing)),
+        )
+        .describe("Choose this object to group with others."),
+    ];
+    if f.selection >= forge::MIN_GROUP_MEMBERS {
+        rows.push(
+            SheetRow::new("Group selection", Act::Choose(Choice::GroupSelection))
+                .value(&f.selection.to_string())
+                .describe("Move the selected objects as one."),
+        );
+    }
+    rows
 }
 
 /// The Forge options page with the placed objects browser over `placed`
 /// ([`placed_rows`]).
 pub fn options_with(placed: &[Placed]) -> Sheet {
+    options_with_groups(&[], placed)
+}
+
+/// [`options_with`] with the groups' folders listed first.
+pub fn options_with_groups(folders: &[Folder], placed: &[Placed]) -> Sheet {
     Sheet {
         kind: Kind::Options,
         title: "FORGE OPTIONS".into(),
@@ -992,7 +1112,7 @@ pub fn options_with(placed: &[Placed]) -> Sheet {
             .iter()
             .map(|o| SheetRow::new(o.label, Act::Open(o.opens)).describe(o.description))
             .chain([
-                placed_row(placed),
+                placed_row_with(folders, placed),
                 SheetRow::new("Build AI ground", Act::Choose(Choice::BuildGround))
                     .describe("Build the nav mesh and zones for the placed labels now."),
                 SheetRow::new("Test waves", Act::Choose(Choice::TestWaves))

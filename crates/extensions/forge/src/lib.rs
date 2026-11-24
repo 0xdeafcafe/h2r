@@ -16,11 +16,11 @@ pub mod tool;
 
 pub use files::{load_saved, saved_names};
 pub use forge_doc::{BlockKind, Endpoint, OpId, TagKey, Value};
-pub use forge_doc::{GroundLabel, GroundRecipe};
+pub use forge_doc::{GroundLabel, GroundRecipe, MIN_GROUP_MEMBERS};
 pub use links::{Linkable, Teleporter};
 pub use session::{
-    GroundBuilder, GroundProblem, GroundReceipt, GroundReport, GroundState, Outgoing, PlacedMarker,
-    SHARED_PROPOSE, SHARED_REDO, Session, SessionAdmit,
+    GroundBuilder, GroundProblem, GroundReceipt, GroundReport, GroundState, GroupInfo, Outgoing,
+    PlacedMarker, SHARED_PROPOSE, SHARED_REDO, Session, SessionAdmit,
 };
 pub use things::{BaseRow, BaseRows, LEFT_OUT_SENTENCE, Thing, ThingKind};
 

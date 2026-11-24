@@ -154,6 +154,11 @@ pub fn resolve(ops: &[Op], base_counts: &BTreeMap<BlockKind, u32>) -> Result<Res
                 resolved.lowered.insert(op.id, lowered);
             }
             Edit::Forge(Forge::Label { target, .. }) => record(&mut prints, *target)?,
+            Edit::Forge(Forge::Group(group)) => {
+                for end in &group.members {
+                    record(&mut prints, *end)?;
+                }
+            }
             Edit::Forge(Forge::Link(link)) => {
                 for end in Link::endpoints(link) {
                     record(&mut prints, end)?;

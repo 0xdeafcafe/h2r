@@ -11,15 +11,18 @@ pub const DOCUMENT_FORMAT: u32 = 1;
 /// The document version a document with Forge labels takes.
 pub const DOCUMENT_FORMAT_LABELS: u32 = 2;
 /// The document version a document with an entry edit or an entry print
-/// takes (docs/game/forge-map-variants.md, "The ops"). A package may carry
-/// any of the three versions.
+/// takes (docs/game/forge-map-variants.md, "The ops").
 pub const DOCUMENT_FORMAT_ENTRIES: u32 = 3;
+/// The document version a document with an object group takes
+/// (docs/game/forge-editing.md, "Selection, groups and prefabs"). A package
+/// may carry any of the four versions.
+pub const DOCUMENT_FORMAT_GROUPS: u32 = 4;
 
 /// Whether a package's resolver reads documents of this version.
 pub fn reads_document_format(format: u32) -> bool {
     matches!(
         format,
-        DOCUMENT_FORMAT | DOCUMENT_FORMAT_LABELS | DOCUMENT_FORMAT_ENTRIES
+        DOCUMENT_FORMAT | DOCUMENT_FORMAT_LABELS | DOCUMENT_FORMAT_ENTRIES | DOCUMENT_FORMAT_GROUPS
     )
 }
 /// Largest canonical document accepted inside a package.
@@ -109,14 +112,14 @@ mod tests {
     }
 
     #[test]
-    fn formats_past_3_are_refused() {
-        for format in [1, 2, 3] {
+    fn formats_past_4_are_refused() {
+        for format in [1, 2, 3, 4] {
             assert!(reads_document_format(format));
         }
-        let four = ENTRIES.replace("\"format\":3", "\"format\":4");
+        let five = ENTRIES.replace("\"format\":3", "\"format\":5");
         assert_eq!(
-            read_header(four.as_bytes()).err(),
-            Some("unsupported document format 4".to_string())
+            read_header(five.as_bytes()).err(),
+            Some("unsupported document format 5".to_string())
         );
         let zero = ENTRIES.replace("\"format\":3", "\"format\":0");
         assert!(read_header(zero.as_bytes()).is_err());

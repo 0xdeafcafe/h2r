@@ -13,6 +13,8 @@ pub const FORMAT: u32 = content::forge::DOCUMENT_FORMAT;
 pub const FORMAT_LABELS: u32 = content::forge::DOCUMENT_FORMAT_LABELS;
 /// The wire version of a document with an entry op or a print.
 pub const FORMAT_ENTRIES: u32 = content::forge::DOCUMENT_FORMAT_ENTRIES;
+/// The wire version of a document with an object group op.
+pub const FORMAT_GROUPS: u32 = content::forge::DOCUMENT_FORMAT_GROUPS;
 /// The maximum wire size of a document in bytes.
 pub const MAX_DOC_BYTES: usize = content::forge::MAX_DOCUMENT_BYTES;
 
@@ -46,7 +48,7 @@ pub struct ForgeDoc {
 
 impl ForgeDoc {
     /// The wire version this document's ops need, the highest any op
-    /// needs: [`FORMAT_ENTRIES`] for an entry op or an endpoint with a
+    /// needs: [`FORMAT_GROUPS`] for a group op, [`FORMAT_ENTRIES`] for an entry op or an endpoint with a
     /// print, [`FORMAT_LABELS`] for an op that sets or clears a label,
     /// otherwise [`FORMAT`]. Validation refuses any other `format`, so a
     /// document has one spelling, and a document without the newer ops
@@ -59,6 +61,9 @@ impl ForgeDoc {
             .iter()
             .map(|op| match &op.edit {
                 Edit::Entry(_) => FORMAT_ENTRIES,
+                Edit::Forge(Forge::Group(_) | Forge::Ungroup { .. } | Forge::GroupLock { .. }) => {
+                    FORMAT_GROUPS
+                }
                 Edit::Forge(Forge::Label { target, .. }) if printed(&[*target]) => FORMAT_ENTRIES,
                 Edit::Forge(Forge::Label { .. }) => FORMAT_LABELS,
                 Edit::Forge(Forge::Link(link)) if printed(&Link::endpoints(link)[..]) => {

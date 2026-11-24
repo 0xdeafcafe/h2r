@@ -44,6 +44,7 @@ replay parity on its invented cache.
   removed entry, the removal of a linked entry, a flag in two roles or on
   two channels, a repeated link and a device link whose lower endpoint is
   not first.
+- A group (`Forge::Group`) names 2 to 256 entries of any block by endpoint, with a name of 1 to 32 characters, a pivot flag and a lock flag; `Forge::Ungroup` ends it and `Forge::GroupLock` sets its lock. An entry is in one group, so the validator refuses a second group, a missing or removed member, a repeated member, and the removal of a grouped entry. `ForgeDoc::groups` resolves the active groups to final indices, `ForgeDoc::group_targets` by identity, and `replay` hands them to `Apply::groups`. A group has no scenario bytes, and a document with a group op is format 4 (`FORMAT_GROUPS`).
 - A label is a string of 1 to 32 bytes from lowercase ASCII, digits, `_`,
   `-` and `.`, plus an optional `i32` number. `Forge::Label` sets or
   clears one on a placement named by an endpoint, as links do, so it

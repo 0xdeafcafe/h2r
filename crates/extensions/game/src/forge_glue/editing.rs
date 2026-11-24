@@ -295,7 +295,7 @@ impl Editor {
             "teleporters":self.session.teleporters().iter().map(|t| json!({
                 "flag":t.index, "sender":t.sender, "channel":t.channel, "position":t.position,
             })).collect::<Vec<_>>(),
-            "links":self.links_json(),
+            "links":self.links_json(), "groups":self.groups_json(), "selection":self.tool.selection(),
             "budget":{"used":self.session.objects().len(),"limit":self.session.budget()},
             "palette":self.session.palette().len(), "palette_refused":self.refused,
             "ground":ground_api::status(&self.session, self.ground_facts()),
@@ -408,6 +408,30 @@ impl Editor {
             thing.block,
             self.tool.ghost.unwrap_or(thing.frame),
         ))
+    }
+
+    /// What the Properties page says of selecting and grouping `id`.
+    fn group_facts(&self, id: Endpoint) -> sheet::GroupFacts {
+        sheet::GroupFacts {
+            thing: id.identity(),
+            selected: self.tool.is_selected(id),
+            selection: self.tool.selection().len(),
+            group: self.session.group_of(id).map(|g| (g.id, g.name, g.locked)),
+        }
+    }
+
+    /// The active groups with their members, for `forge.status`.
+    fn groups_json(&self) -> Vec<Value> {
+        self.session
+            .groups()
+            .iter()
+            .map(|g| {
+                json!({
+                    "id":g.id, "name":g.name, "locked":g.locked, "pivot":if g.pivot_first { "first" } else { "centre" },
+                    "members":g.members,
+                })
+            })
+            .collect()
     }
 
     /// The active links with their ends' final indices, for `forge.status`.
@@ -732,6 +756,7 @@ impl Editor {
             saved: self.saved.clone(),
             filename: self.filename.clone(),
             placed: self.placed(),
+            folders: sheet::folder_rows(&self.session.groups()),
         });
     }
 
@@ -852,8 +877,14 @@ impl Editor {
                         .ok_or("Aim at a thing of the map.")?;
                     self.session.thing(id).ok_or("The thing is gone.")?
                 };
-                let sheet = sheet::properties_sheet(&name, &thing, frame.rotation[0].to_degrees())
-                    .ok_or_else(|| format!("{name} has no properties to set."))?;
+                let mut sheet =
+                    sheet::properties_sheet(&name, &thing, frame.rotation[0].to_degrees())
+                        .ok_or_else(|| format!("{name} has no properties to set."))?;
+                if self.tool.placing.is_none() {
+                    sheet
+                        .rows
+                        .extend(sheet::group_rows(&self.group_facts(thing.id)));
+                }
                 let target = if let Some(item) = self.tool.placing {
                     CoordinateTarget::New(item)
                 } else {
@@ -1042,6 +1073,52 @@ impl Editor {
                     .position;
                 let eye = self.tool.camera.ok_or("The monitor has no view.")?;
                 self.tool.camera = Some(eye.toward(at, FLY_DISTANCE));
+            }
+            Choice::FlyToGroup(id) => {
+                let group = self
+                    .session
+                    .groups()
+                    .into_iter()
+                    .find(|g| g.id == id)
+                    .ok_or("That group is gone.")?;
+                let at: Vec<[f32; 3]> = group
+                    .members
+                    .iter()
+                    .filter_map(|m| self.session.thing(*m))
+                    .map(|t| t.frame.position)
+                    .collect();
+                if at.is_empty() {
+                    return Err("That group is gone.".into());
+                }
+                let n = at.len() as f32;
+                let centre: [f32; 3] =
+                    std::array::from_fn(|i| at.iter().map(|p| p[i]).sum::<f32>() / n);
+                let spread = at
+                    .iter()
+                    .map(|p| {
+                        (0..3)
+                            .map(|i| (p[i] - centre[i]).powi(2))
+                            .sum::<f32>()
+                            .sqrt()
+                    })
+                    .fold(0., f32::max);
+                let eye = self.tool.camera.ok_or("The monitor has no view.")?;
+                self.tool.camera = Some(eye.toward(centre, FLY_DISTANCE + spread));
+            }
+            Choice::ToggleSelected(id) => self.tool.toggle_selected(id),
+            Choice::GroupSelection => {
+                let members = self.tool.selection().to_vec();
+                let taken: Vec<String> =
+                    self.session.groups().into_iter().map(|g| g.name).collect();
+                let name = (taken.len() + 1..)
+                    .map(|n| format!("Group {n}"))
+                    .find(|name| !taken.contains(name))
+                    .ok_or("No name is free.")?;
+                return self.command(tick, Command::Group { name, members });
+            }
+            Choice::Ungroup(group) => return self.command(tick, Command::Ungroup { group }),
+            Choice::LockGroup(group, locked) => {
+                return self.command(tick, Command::LockGroup { group, locked });
             }
             Choice::BuildGround => return self.command(tick, Command::BuildGround),
             Choice::TestWaves => return self.command(tick, Command::TestWaves),
@@ -1239,6 +1316,9 @@ fn run(s: &mut Session, w: &mut ForgeWorld, tick: u32, cmd: Command) -> Result<(
         Remove { id } => s.remove(w, tick, id),
         Link { from, to } => s.link(w, tick, from, to).map(|_| ()),
         Unlink { link } => s.unlink(w, tick, link),
+        Group { name, members } => s.group(w, tick, &name, &members, false).map(|_| ()),
+        Ungroup { group } => s.ungroup(w, tick, group),
+        LockGroup { group, locked } => s.set_group_locked(w, tick, group, locked),
         Undo => s.undo(w, tick),
         Redo => s.redo(w, tick),
         Marker { label, frame } => s.place_marker_next(w, tick, label, frame).map(|_| ()),

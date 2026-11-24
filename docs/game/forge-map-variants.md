@@ -172,7 +172,8 @@ the new entry's name.
 - **Format.** A document with an `EntryOp` op or a print has `format` 3
   (`content::forge::DOCUMENT_FORMAT_ENTRIES`).
   `ForgeDoc::required_format` is the highest number its ops need, so a
-  document without them keeps its number and its identity.
+  document without them keeps its number and its identity. A group op
+  needs 4 (`DOCUMENT_FORMAT_GROUPS`).
 - **Validation without a map** (`validate.rs`, and the identity pass in
   `links.rs`): a base target carries its print; the block has the
   field and the layout marks it editable; the value's type is the

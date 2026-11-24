@@ -4,6 +4,7 @@ mod area;
 mod bounds;
 mod entry;
 mod ground;
+mod groups;
 mod labels;
 mod links;
 mod log;

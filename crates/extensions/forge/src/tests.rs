@@ -361,3 +361,6 @@ mod tool_tests;
 
 #[path = "link_tests.rs"]
 mod link_tests;
+
+#[path = "group_tests.rs"]
+mod group_tests;

@@ -326,6 +326,20 @@ pub enum Command {
     Unlink {
         link: OpId,
     },
+    /// Group things under a name ([`crate::Session::group`]).
+    Group {
+        name: String,
+        members: Vec<Endpoint>,
+    },
+    /// End a group ([`crate::Session::ungroup`]).
+    Ungroup {
+        group: OpId,
+    },
+    /// Lock or unlock a group ([`crate::Session::set_group_locked`]).
+    LockGroup {
+        group: OpId,
+        locked: bool,
+    },
     Undo,
     Redo,
     /// Place the next ground marker of this label at a frame
@@ -381,6 +395,10 @@ pub struct Tool {
     pub aimed_link: Option<Linkable>,
     /// The first end of a link being made.
     pub link_from: Option<Linkable>,
+    /// The things chosen to be grouped, in the order chosen: tool state,
+    /// never in the document (docs/game/forge-editing.md, "Selection,
+    /// groups and prefabs").
+    selection: Vec<Endpoint>,
     /// Degrees between turn snaps.
     rotation_step: f32,
     pub(crate) rotation: [f32; 3],
@@ -418,6 +436,7 @@ impl Default for Tool {
             links: false,
             aimed_link: None,
             link_from: None,
+            selection: Vec::new(),
             rotation_step: 15.0,
             rotation: [0.; 3],
             extents: Arc::from(Vec::new()),
@@ -488,6 +507,32 @@ impl Tool {
             self.show = show;
             self.clear_selection();
         }
+    }
+
+    /// The things chosen to be grouped, in the order chosen.
+    pub fn selection(&self) -> &[Endpoint] {
+        &self.selection
+    }
+
+    /// Add a thing to the selection, or take it out when it is in.
+    pub fn toggle_selected(&mut self, id: Endpoint) {
+        let id = id.identity();
+        match self.selection.iter().position(|s| *s == id) {
+            Some(i) => {
+                self.selection.remove(i);
+            }
+            None => self.selection.push(id),
+        }
+    }
+
+    /// Whether the thing is in the selection.
+    pub fn is_selected(&self, id: Endpoint) -> bool {
+        self.selection.contains(&id.identity())
+    }
+
+    /// Let the selection go (B with nothing held).
+    pub fn clear_selected(&mut self) {
+        self.selection.clear();
     }
 
     pub fn select(&mut self, index: usize) {
@@ -603,6 +648,9 @@ impl Tool {
         ) {
             self.clear_selection();
         }
+        if matches!(command, Command::Group { .. } | Command::Ungroup { .. }) {
+            self.selection.clear();
+        }
     }
 
     pub fn update(
@@ -651,6 +699,16 @@ impl Tool {
             return Ok(None);
         }
         let previewing = self.placing.is_some() || self.held_thing.is_some();
+        // A thing that is gone (undone, deleted, loaded over) leaves the
+        // selection.
+        self.selection.retain(|id| session.thing(*id).is_some());
+        // A locked group's things are not aimed at.
+        let locked: Vec<Endpoint> = session
+            .groups()
+            .into_iter()
+            .filter(|g| g.locked)
+            .flat_map(|g| g.members)
+            .collect();
         let extent = self.extent(session).unwrap_or_default();
         let mut hit = None;
         if let Some(camera) = &mut self.camera {
@@ -674,6 +732,7 @@ impl Tool {
                 .things()
                 .into_iter()
                 .filter(|thing| self.shows(thing))
+                .filter(|thing| !locked.iter().any(|m| m.identity() == thing.id.identity()))
                 .filter_map(|thing| {
                     let radius = self.thing_extent(session, &thing).radius;
                     aim(&eye, forward, max_distance, thing.frame.position, radius)
@@ -714,8 +773,12 @@ impl Tool {
                 self.cancel();
                 None
             }
-            // B with nothing held is nothing: the Forge menu is Start's.
-            Some(A::Back) => None,
+            // B with nothing held lets the selection go; the Forge menu is
+            // Start's.
+            Some(A::Back) => {
+                self.selection.clear();
+                None
+            }
             Some(A::Tools) => Some(C::Tools),
             Some(A::Settings) => Some(C::Settings),
             Some(A::Overlays) => Some(C::Overlays),
