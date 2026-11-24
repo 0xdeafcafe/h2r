@@ -257,6 +257,8 @@ texts (`lobby_status::custom_game_text`).
 
 ### The lobby by tab
 
+With Theater installed, Game Setup also offers **Theater** in the party lobby, including when the party returns from a game. It opens Recent for the selecting controller.
+
 | Mode | Pane | Game Setup's rows | Panel | Start Game |
 |---|---|---|---|---|
 | MULTIPLAYER | matchmaking | Change Playlist... (retail's action 9; the Clanker and the human playlists on one page) | retail's playlist lines | starts the search; a Clanker playlist's search hosts and its Clankers fill the lobby (`clankers::Driver::tick_match`) |

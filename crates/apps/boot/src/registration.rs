@@ -261,7 +261,7 @@ pub(crate) fn register_core_film(
     features
         .add(&crate::h1_recordings::Playback)
         .map_err(|e| anyhow::anyhow!("recorded animation playback: {e}"))?;
-    layout_glue::install(rt, features, i.model, i.theater).context("installing the button layouts")?;
+    layout_glue::install(rt, features, i.model, i.theater.clone()).context("installing the button layouts")?;
     features
         .add(&crate::list_class::ScrollArrowLayout)
         .map_err(|e| anyhow::anyhow!("list scroll arrows: {e}"))?;
@@ -494,6 +494,7 @@ pub(crate) fn register_core_film(
         crate::lobby_mode::install(
             features,
             crate::lobby_mode::LobbyMode {
+                theater: i.theater,
                 offer,
                 store: Some(Arc::clone(store)),
                 data: i.data_root.to_path_buf(),
