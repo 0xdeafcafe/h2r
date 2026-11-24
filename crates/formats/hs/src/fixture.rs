@@ -275,6 +275,12 @@ impl Tables {
         })
     }
 
+    /// Give node `d` the type `ty` its parent wants, keeping its own
+    /// (a literal's source type, a call's opcode): a cast.
+    pub fn retype(&mut self, d: Datum, ty: u16) {
+        self.scenario.nodes[d.slot()].value_type = ty;
+    }
+
     /// A call of builtin `index`, spelled `name`, of type `ty`.
     pub fn call(&mut self, index: u16, name: &str, ty: u16, args: &[Datum]) -> Datum {
         self.calls(index, name, ty, 8, args)
