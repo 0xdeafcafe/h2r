@@ -481,8 +481,10 @@ pages open read-only.
   of two (no DXT, no mips). `A8`, `Y8`, `AY8` and `A8Y8` are masks and greys
   on purpose and are kept. The answer is always a format the encoder writes
   and `reshaped` takes at that size. Resize's **Auto** button and `"auto"` as
-  `bitmap.reshape`'s `format` ask for it (`App::suggest_bitmap_format`,
-  looking at the layers resampled to the size asked for).
+  `bitmap.reshape`'s or `bitmap.image.resize`'s `format` ask for it
+  (`App::suggest_bitmap_format`, looking at the layers resampled to the
+  size asked for). Leaving a dimension or format out keeps the current
+  value, including any pending reshape.
 - **Adding images and sequences.** `bitmap.image.add` (the inspector's
   **Add image**) appends an image after the bitmap's last: its `0x74`
   record copied from an existing 2D image (`from`, default 0) at a size

@@ -127,6 +127,14 @@ pub fn walls(tick: u32, shown: Vec<(u32, Option<u8>)>) {
     push(tick, Cue::Walls(shown));
 }
 
+/// The authority's pickers' offer cue at `tick`: one picker's offer,
+/// whole (`::rules::show::Cue::Pick`; an empty one takes the picker's
+/// offer away on the clients, where a player picks and the pick goes
+/// back up the channel, `super::pick`).
+pub fn pick_offer(tick: u32, offer: ::rules::vm::PickOffer) {
+    push(tick, Cue::Pick(offer));
+}
+
 /// The cues waiting for the channel.
 pub fn take_cues() -> Vec<PendingCue> {
     std::mem::take(&mut lock(&CHANNEL).cues)
@@ -573,9 +581,39 @@ fn present_walls(cx: &Cx, cue: &ReceivedCue) -> Result<(), String> {
     Ok(())
 }
 
+/// A pickers' offer cue on a client: the offer's strings read from the
+/// running script's blob and held for the next tick boundary, when this
+/// machine's local players are asked (`super::pick::client_tick`). An
+/// offer with no rows takes the picker's offer away.
+fn present_pick(cx: &Cx, cue: &ReceivedCue) -> Result<(), String> {
+    let (_, strings, _) = cx
+        .read(script_context)
+        .ok_or_else(|| "the running script's blob is not on this machine".to_string())?;
+    let Cue::Pick(offer) = Cue::decode(cue.kind, &cue.bytes, &strings).map_err(|e| e.to_string())? else {
+        return Err("not an offer cue".into());
+    };
+    let text = |i: u16| {
+        strings
+            .get(usize::from(i))
+            .cloned()
+            .ok_or_else(|| format!("text {i} is not in the script's string table"))
+    };
+    let title = text(offer.title)?;
+    let rows = offer
+        .rows
+        .iter()
+        .map(|&r| text(r))
+        .collect::<Result<Vec<_>, _>>()?;
+    super::pick::client_offer(offer.slot, title, rows);
+    Ok(())
+}
+
 async fn present_one(cx: &Cx, cue: &ReceivedCue) -> Result<(), String> {
     if cue.kind == show::WALLS {
         return present_walls(cx, cue);
+    }
+    if cue.kind == show::PICK {
+        return present_pick(cx, cue);
     }
     let (ty, strings, tags) = cx
         .read(script_context)
@@ -597,6 +635,7 @@ async fn present_one(cx: &Cx, cue: &ReceivedCue) -> Result<(), String> {
         }
         Cue::Message(message) => message,
         Cue::Walls(_) => return Err("a walls cue is read before the blob".into()),
+        Cue::Pick(_) => return Err("an offer cue is read before the blob".into()),
     };
     let roster = cx.read(roster);
     let name = named(&roster);
@@ -762,14 +801,15 @@ mod tests {
     #[test]
     fn a_show_state_is_checked_against_the_blob_it_names() {
         let ir = ::rules::compile(
-            "rules \"C\" 1\ntype slayer\nrequires hud.widgets\n\
-             hud row: text at koth.hill\nwaypoint spot at ctf.mark\n",
+            "rules \"C\" 1\ntype slayer\nrequires hud.widgets, hud.waypoints\n\
+             hud row: text at koth.hill\nwaypoint spot at ctf.mark\n\
+             on round_start { hud_text(row, \"Ready\") }\n",
         )
         .unwrap();
         let mut state = State::default();
         *state.widget(0).unwrap() = ::rules::show::Widget {
             shown: true,
-            text: Some(0),
+            text: Some(ir.strings.iter().position(|s| s == "Ready").unwrap() as u16),
             ..::rules::show::Widget::default()
         };
         state.waypoints[0] = Some(::rules::show::Waypoint {

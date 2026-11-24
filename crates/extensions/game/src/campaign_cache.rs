@@ -3,7 +3,7 @@
 //! for the per-type limit. Slot initialization at 0x2139d4 and slot selection
 //! at 0x214bd0 both read {first slot, last slot, capacity} from 0x448f98.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Result, ensure};
 use hooks::{BuildError, Builder, Flow, Manifest};
@@ -39,9 +39,11 @@ pub fn reload_limits(
 
 /// Both asset variants and loose maps can be selected during a session.
 /// Reserve enough room for the largest at boot, rounded up to a MiB.
-fn slot_size(maps: &[(String, PathBuf)], overrides: Option<&Path>) -> u32 {
-    let variants = crate::h1_variants::campaign_alternates(maps);
-    let installed = maps.iter().chain(&variants).map(|(_, p)| p.clone());
+fn slot_size<'a>(
+    maps: impl Iterator<Item = &'a vfs::MapSource>,
+    overrides: Option<&Path>,
+) -> u32 {
+    let installed = maps.filter_map(vfs::MapSource::len_on_disk);
     // A loose map can have a retail filename and a converted header name.
     let loose = overrides
         .and_then(|dir| dir.read_dir().ok())
@@ -49,8 +51,7 @@ fn slot_size(maps: &[(String, PathBuf)], overrides: Option<&Path>) -> u32 {
         .flatten()
         .filter_map(|e| e.ok().map(|entry| entry.path()))
         .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("map")));
-    let largest = installed
-        .chain(loose)
+    let loose_sizes = loose
         .filter_map(|path| {
             let meta = path.metadata().ok()?;
             if !meta.is_file() || meta.len() <= u64::from(RETAIL) {
@@ -64,10 +65,8 @@ fn slot_size(maps: &[(String, PathBuf)], overrides: Option<&Path>) -> u32 {
             };
             let name = crate::map_override::header_name(&file)?;
             is_h1_level(name.as_bytes()).then_some(file.len)
-        })
-        .max()
-        .unwrap_or(0);
-    capacity(largest)
+        });
+    capacity(installed.chain(loose_sizes).max().unwrap_or(0))
 }
 
 fn capacity(bytes: u64) -> u32 {
@@ -162,10 +161,14 @@ pub fn configure(
     features: &mut hooks::Registry,
     rt: &runtime::Runtime,
     cfg: &mut vfs::Config,
-    maps: &[(String, PathBuf)],
+    maps: &[(String, vfs::MapSource)],
     overrides: Option<&Path>,
 ) -> Result<()> {
-    let size = slot_size(maps, overrides);
+    let variants = crate::campaigns::halo2_maps(&cfg.data_root);
+    let sources = maps.iter().flat_map(|(name, source)| {
+        std::iter::once(source).chain(variants.get(name))
+    });
+    let size = slot_size(sources, overrides);
     if size > RETAIL && features.add(&CampaignLimit).map_err(anyhow::Error::msg)? {
         resize_slots(&mut rt.memory(), size)?;
         // N: holds both campaign slots. XAPI may choose any utility partition.
@@ -177,6 +180,7 @@ pub fn configure(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn converted_cache_capacity_matches_whole_mib_within_native_bounds() {
@@ -211,8 +215,8 @@ mod tests {
         let primary = dir.0.join("a30.map");
         write(primary.clone(), "a30", RETAIL + 1);
         write(dir.0.join("h2/a30.map"), "a30", RETAIL + (2 << 20));
-        let maps = vec![("a30".into(), primary)];
-        assert_eq!(slot_size(&maps, None), RETAIL + (2 << 20));
+        let maps = [primary.into(), dir.0.join("h2/a30.map").into()];
+        assert_eq!(slot_size(maps.iter(), None), RETAIL + (2 << 20));
         let loose = dir.0.join("loose");
         write(
             loose.join("large.map"),
@@ -220,7 +224,7 @@ mod tests {
             NATIVE_CAMPAIGN_FILE_LIMIT,
         );
         write(loose.join("override.MAP"), "a10", RETAIL + (3 << 20));
-        assert_eq!(slot_size(&maps, Some(&loose)), RETAIL + (3 << 20));
+        assert_eq!(slot_size(maps.iter(), Some(&loose)), RETAIL + (3 << 20));
     }
 
     #[test]

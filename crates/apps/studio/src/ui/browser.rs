@@ -3,15 +3,20 @@
 //! (`app::assets`). Three roots: **Tags** (every tag of the tags tree by
 //! path, with the variants of a tag that maps hold differently), **Packages**
 //! (the set, and a package's items) and **Live**. **Kind** and **Map**
-//! narrow the Tags root, and every word of the search must match.
+//! narrow the Tags root, and **Kind** narrows a package's items (**Game
+//! types**, **Playlists** beside the tag kinds); every word of the
+//! search must match.
 //!
 //! The **Voices** kind lists each character and the announcer with its
 //! dataset state; a double-click opens the voice document
 //! ([`Action::OpenAsset`] on `voice:<id>`).
 //!
 //! A double-click on a tag opens it in the editor its group gets, on the
-//! map that holds it ([`Action::OpenAsset`]); right-click offers **Open**
-//! and **Copy into package**, the call `asset.copy` makes
+//! map that holds it ([`Action::OpenAsset`]); a double-click on a package
+//! item opens the editor of what it builds
+//! (docs/editor/studio-flow.md, "Everything is an asset"), on the map its
+//! `maps` name when they do; right-click offers **Open** and, for a tag,
+//! **Copy into package**, the call `asset.copy` makes
 //! ([`Action::CopyAsset`]).
 use dear_imgui_rs::{ListClipper, MouseButton, Ui};
 use serde_json::Value;
@@ -103,7 +108,7 @@ fn load(app: &App, st: &BrowserUi) -> Listing {
     let q = Query {
         root: st.root,
         package: (st.root == Root::Packages).then(|| st.package.clone()).flatten(),
-        kind: st.kind.clone().filter(|_| tags),
+        kind: st.kind.clone(),
         map: st.map.clone().filter(|_| tags),
         text: st.query.clone(),
         limit: LIMIT,
@@ -325,6 +330,11 @@ fn pickers(ui: &Ui, st: &mut BrowserUi, list: &Listing) {
             combo(ui, "map", "Any map", &mut st.map, &list.maps);
         }
         Root::Packages => {
+            // The Kind picker names the items too: **Game types**,
+            // **Playlists** beside the tag kinds (`app::assets`).
+            if st.package.is_none() {
+                combo(ui, "kind", "Any kind", &mut st.kind, &list.kinds);
+            }
             if let Some(p) = st.package.clone() {
                 ui.align_text_to_frame_padding();
                 ui.text(format!("{} {p}", icon::PACKAGE_OPEN));
@@ -332,6 +342,8 @@ fn pickers(ui: &Ui, st: &mut BrowserUi, list: &Listing) {
                 if ui.small_button("All packages##browser-package-back") {
                     st.package = None;
                 }
+                ui.same_line();
+                combo(ui, "kind", "Any kind", &mut st.kind, &list.kinds);
             }
         }
         Root::Live => {}
@@ -385,6 +397,8 @@ fn glyph(row: &Value) -> &'static str {
         "Models" | "Objects" => icon::BOX,
         "Screens" | "HUDs" => icon::LAYERS,
         "Sounds" | "Voices" => icon::SOUND,
+        "Game types" => icon::SWORDS,
+        "Playlists" => icon::LOG,
         _ => icon::FILE,
     }
 }
@@ -439,6 +453,8 @@ fn row(
         if ui.is_mouse_double_clicked(MouseButton::Left) {
             if tag {
                 open(actions, asset, open_map(app, row));
+            } else if asset.starts_with("item:") {
+                open(actions, asset, item_map(app, row));
             } else if row["root"] == "voices" {
                 open(actions, asset, None);
             } else if row["root"] == "packages" && asset.starts_with("package:") {
@@ -453,6 +469,10 @@ fn row(
                 open(actions, asset, open_map(app, row));
             }
             copy_menu(ui, list, asset, actions);
+        } else if asset.starts_with("item:") {
+            if ui.menu_item(format!("{} Open", icon::FILE)) {
+                open(actions, asset, item_map(app, row));
+            }
         } else if row["root"] == "voices" {
             if ui.menu_item(format!("{} Open", icon::SOUND)) {
                 open(actions, asset, None);
@@ -461,6 +481,19 @@ fn row(
             st.package = row["id"].as_str().map(str::to_owned);
         }
     }
+}
+
+/// The map an item row opens on: the item's own map names (the open one
+/// first), none when its `maps` is a scope word.
+fn item_map(app: &App, row: &Value) -> Option<String> {
+    let maps: Vec<&str> = row["maps"]
+        .as_array()
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    if maps.is_empty() {
+        return None;
+    }
+    open_map_of(app, &maps)
 }
 
 fn tooltip(ui: &Ui, row: &Value) {

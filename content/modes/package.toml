@@ -152,6 +152,13 @@ source = "firefight/last-stand.firefight.json"
 kind = "rules"
 source = "firefight/crossfire.firefight.json"
 
+# The map-specific wave sets, in map order then file order
+# (firefight::builtin::MAP_SETS; the lobby offers the map's own first).
+
+[[item]]
+kind = "rules"
+source = "firefight/maps/beavercreek/basin.firefight.json"
+
 [[item]]
 kind = "playlist"
 source = "playlists/default.toml"

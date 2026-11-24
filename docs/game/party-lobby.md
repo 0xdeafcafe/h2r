@@ -329,8 +329,9 @@ The feature has no section of its own. The lobby's mode is derived, the
 widgets are guest memory, and `lobby_start::State` is in the
 `party-lobby` section (`lobby_mode::save_state`). Whether the playlist
 is a Clanker one is read from the lobby's hopper, which is guest
-memory. A snapshot is refused while a switch's guest calls are in
-flight (`SnapshotPolicy::section_forbid_while`).
+memory. Restoring the section clears the cached Firefight kit map.
+The lobby panel reads it again on redraw. A snapshot is refused while
+a switch's guest calls are in flight (`SnapshotPolicy::section_forbid_while`).
 The reason line's timer and a Live menu row's request are not saved.
 
 ## Interfaces

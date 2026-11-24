@@ -187,6 +187,7 @@ impl Studio {
         }
         self.menu_bar(ui, app, &mut actions);
         // Asked for by the frame before (once its tabs exist).
+        self.focus_game |= std::mem::take(&mut app.preview.focus_game);
         let focus_game = self.focus_game;
         bar::draw(ui, app, &mut self.play, &self.fonts, &mut actions);
         let reset = self.dockspace(ui);
@@ -319,29 +320,10 @@ impl Studio {
             self.open_source_dialog(actions);
         }
         if cmd && ui.is_key_pressed(Key::S) {
-            match app.surface() {
-                Surface::Scene | Surface::Tags | Surface::Scripts if shift => {
-                    self.save_map_dialog(app, actions)
-                }
-                Surface::Scene | Surface::Tags | Surface::Scripts => {
-                    actions.extend(MenuCommand::Save.item(app).action);
-                }
-                Surface::Variants => actions.push(Action::SaveVariant),
-                Surface::Playlists if app.hoppers.is_open() => {
-                    if shift {
-                        if let Some(path) = playlists::save_dialog(self.dialogs, app) {
-                            actions.push(Action::SaveHopperAs(path));
-                        }
-                    } else {
-                        playlists::save(app, self.dialogs, actions);
-                    }
-                }
-                Surface::Hud => {
-                    if let Some(p) = hud::save_dialog(self.dialogs, app) {
-                        actions.push(Action::HudSaveAs(p));
-                    }
-                }
-                Surface::Playlists | Surface::UiScreens | Surface::Textures => {}
+            if shift && app.surface().is_map() {
+                self.save_map_dialog(app, actions);
+            } else if !shift {
+                actions.extend(app.front_doc().and_then(|doc| app.doc_save_action(doc)));
             }
         }
         if cmd && ui.is_key_pressed(Key::Q) {
@@ -455,7 +437,10 @@ impl Studio {
             self.tool_file_menu(ui, app, actions);
             ui.separator();
             let map_tool = app.surface().is_map();
-            menu_action(ui, app, MenuCommand::Save, Some(icon::SAVE), false, actions);
+            let save = app.front_doc().and_then(|doc| app.doc_save_action(doc));
+            if ui.menu_item_enabled_selected_with_shortcut("Save", "Cmd+S", false, save.is_some()) {
+                actions.extend(save);
+            }
             if ui.menu_item_enabled_selected_with_shortcut(
                 "Export map...",
                 if map_tool { "Shift+Cmd+S" } else { "" },
@@ -509,21 +494,6 @@ impl Studio {
             }
         }
         if let Some(_m) = ui.begin_menu("View") {
-            // The editors that have no tab until a document is open in
-            // them: the window has no tool tabs.
-            if let Some(_e) = ui.begin_menu("Editors") {
-                for (surface, name) in Surface::EDITORS {
-                    let here = if surface == Surface::Scene {
-                        app.surface().is_map()
-                    } else {
-                        app.surface() == surface
-                    };
-                    if ui.menu_item_enabled_selected_no_shortcut(name, here, true) {
-                        actions.push(Action::Show(surface));
-                    }
-                }
-            }
-            ui.separator();
             menu_action(ui, app, MenuCommand::FrameAll, Some(icon::MAXIMIZE), false, actions);
             menu_action(ui, app, MenuCommand::FocusSelected, Some(icon::FOCUS), false, actions);
             ui.separator();
@@ -642,8 +612,8 @@ impl Studio {
             Surface::Hud => {
                 let can = app.hud.session.as_ref().is_some_and(|s| !s.edited().is_empty());
                 if ui.menu_item_enabled_selected_with_shortcut(
-                    format!("{} Save map with HUD edits as...", icon::SAVE),
-                    "Cmd+S",
+                    format!("{} Export map with HUD edits...", icon::SAVE),
+                    "",
                     false,
                     can,
                 ) && let Some(p) = hud::save_dialog(self.dialogs, app)
@@ -654,7 +624,6 @@ impl Studio {
             Surface::Textures => textures::file_menu(ui, app, self.dialogs, actions),
             Surface::Scene | Surface::UiScreens | Surface::Tags | Surface::Scripts => {}
             Surface::Variants => {
-                menu_action(ui, app, MenuCommand::SaveVariant, Some(icon::SAVE), false, actions);
                 if ui.menu_item(format!("{} Import variant...", icon::PACKAGE_OPEN))
                     && let Some(p) = variants::import_dialog(self.dialogs)
                 {
@@ -670,23 +639,14 @@ impl Studio {
                     actions.push(Action::OpenHopper(p));
                 }
                 let open = app.hoppers.is_open();
-                let save = MenuCommand::SavePlaylist.item(app);
                 if ui.menu_item_enabled_selected_with_shortcut(
-                    format!("{} {}", icon::SAVE, save.label),
-                    save.shortcut,
-                    false,
-                    open,
-                ) {
-                    playlists::save(app, self.dialogs, actions);
-                }
-                if ui.menu_item_enabled_selected_with_shortcut(
-                    "Save playlist file as...",
-                    "Shift+Cmd+S",
+                    "Export playlist file...",
+                    "",
                     false,
                     open,
                 ) && let Some(p) = playlists::save_dialog(self.dialogs, app)
                 {
-                    actions.push(Action::SaveHopperAs(p));
+                    actions.push(Action::ExportPlaylist(p));
                 }
             }
         }
@@ -1219,7 +1179,7 @@ impl Studio {
 
     fn modals(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {
         // Unsaved changes.
-        if app.pending().is_some() && !ui.is_popup_open(UNSAVED) {
+        if app.pending().is_some() && app.edits.picker.is_none() && !ui.is_popup_open(UNSAVED) {
             ui.open_popup(UNSAVED);
         }
         if let Some(_m) = ui
@@ -1282,14 +1242,8 @@ impl Studio {
                     d.end();
                 }
                 Surface::Playlists => {
-                    if app.hoppers.path().is_some() {
-                        if ui.button(format!("{} Save", icon::SAVE)) {
-                            answer = Some(Answer::Save);
-                        }
-                    } else if ui.button(format!("{} Save as...", icon::SAVE))
-                        && let Some(p) = playlists::save_dialog(self.dialogs, app)
-                    {
-                        answer = Some(Answer::SaveAs(p));
+                    if ui.button(format!("{} Save", icon::SAVE)) {
+                        answer = Some(Answer::Save);
                     }
                 }
                 Surface::Hud => {
@@ -1311,7 +1265,7 @@ impl Studio {
             }
             if let Some(a) = answer {
                 app.resolve(a);
-                if app.pending().is_none() {
+                if app.pending().is_none() || app.edits.picker.is_some() {
                     ui.close_current_popup();
                 }
             }
@@ -1330,7 +1284,6 @@ impl Studio {
                 None => ui.close_current_popup(),
                 Some(mut picker) => {
                     ui.text("Which package gets your edits?");
-                    ui.text_disabled("Each change becomes an edit line in it.");
                     ui.spacing();
                     let mut answer = None;
                     for (id, name) in app.local_packages() {

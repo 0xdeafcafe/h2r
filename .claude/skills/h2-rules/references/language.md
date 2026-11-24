@@ -295,8 +295,8 @@ game answers it from its `enter` and `leave` events.
 | `set_open` | object, bool | `objects.move` | now | named (a barrier put 64 units below its place and back; a put the world refuses closes it again in the state) |
 | `offer_pick`, `pick_row` | int picker (0 or 1), text | `player.pick` | now | named (a picker of at most 6 rows the host opens for each local player at the round's start; the round's end takes it) |
 | `picked` | player, int picker | none | VM, int | named (the row the player picked, or -1: none made, none offered, or a player on another machine) |
-| `airborne`, `crouching`, `primed` | player | none | read, bool | `airborne` and `primed` are the host's while the superbounce mode steps the chain, `crouching` is not built on a host (`p.airborne`, `p.crouching`, `p.primed`: the biped is off the ground, crouched, or its level pair is in the state a landing bounces from; the fake answers from the scenario's `body`) |
-| `sees` | object, object | none | VM, bool | not built on a host (`sees(a, b)`: nothing solid between two objects. A read of the VM's sight table: a pair asked in one tick is traced at that tick's end through `Game::trace_sight` and answers from the next, false until then; a pair not asked in 30 ticks is dropped; a 33rd pair is a script error) |
+| `airborne`, `crouching`, `primed` | player | none | read, bool | named (`p.airborne`, `p.crouching`, `p.primed` read the biped's airborne bit, crouch request or primed pair word; the host needs `requires hud.superbounce`; the fake answers from the scenario's `body`) |
+| `sees` | object, object | none | VM, bool | named (`sees(a, b)`: nothing solid between two live objects. The first request reads false. The host traces retained pairs at the next tick boundary before handlers run, so the first answer takes one tick. The VM drops a pair after 30 ticks without a request. A 33rd pair is a script error.) |
 
 `push`, `launch` and `set_velocity` have no entry: they wait on R9 (how a
 client's own predicted biped takes a host-set velocity), so a script that

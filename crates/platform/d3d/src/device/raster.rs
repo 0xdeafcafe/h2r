@@ -1712,39 +1712,52 @@ impl<B: Backend> Device<B> {
             x2: (v.x as i64 + v.width as i64).min(i32::MAX as i64) as i32,
             y2: (v.y as i64 + v.height as i64).min(i32::MAX as i64) as i32,
         };
-        let mut effective = Vec::new();
-        if count == 0 {
-            effective.push(vp);
-        } else {
-            if count > MAX_CLEAR_RECTS {
-                return Err(D3dError::invalid(E, format!("{count} rectangles")));
-            }
-            for i in 0..count {
-                let r = crate::guest::read_array::<4>(mem, at(rects, 16 * i as u64)?)?;
-                effective.push(Rect {
-                    x1: (r[0] as i32).max(vp.x1),
-                    y1: (r[1] as i32).max(vp.y1),
-                    x2: (r[2] as i32).min(vp.x2),
-                    y2: (r[3] as i32).min(vp.y2),
-                });
-            }
+        if count > MAX_CLEAR_RECTS {
+            return Err(D3dError::invalid(E, format!("{count} rectangles")));
         }
-        // Clip to the target as well; drop what is left empty.
-        let pixels: Vec<PixelRect> = effective
-            .iter()
-            .filter_map(|r| {
-                let x1 = r.x1.max(0) as i64;
-                let y1 = r.y1.max(0) as i64;
-                let x2 = (r.x2 as i64).min(w as i64);
-                let y2 = (r.y2 as i64).min(h as i64);
+        let mut rect_list = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let [x1, y1, x2, y2] = crate::guest::read_array::<4>(mem, at(rects, 16 * i as u64)?)?;
+            rect_list.push(Rect {
+                x1: x1 as i32,
+                y1: y1 as i32,
+                x2: x2 as i32,
+                y2: y2 as i32,
+            });
+        }
+        let bounds = (
+            i64::from(vp.x1.max(0)),
+            i64::from(vp.y1.max(0)),
+            i64::from(vp.x2).min(i64::from(w)),
+            i64::from(vp.y2).min(i64::from(h)),
+        );
+        // The union planner partitions both axes at rectangle edges. Bound
+        // its grid on long guest lists and keep the linear per-rect path.
+        const MAX_UNION_RECTS: u32 = 8;
+        let native = self.residual.enabled && count <= MAX_UNION_RECTS;
+        // A tiled depth clear must stay scissored: the depth attachment
+        // can extend beyond the colour target, including on its scaled copy.
+        let writes_zs = flags & (clear_flags::ZBUFFER | clear_flags::STENCIL) != 0;
+        let pixels = if native && (count == 0 || count > 1 && !writes_zs) {
+            scissor_region(bounds, &rect_list, false)
+        } else {
+            if count == 0 {
+                rect_list.push(vp);
+            }
+            rect_list.iter().filter_map(|r| {
+                let x1 = i64::from(r.x1).max(bounds.0);
+                let y1 = i64::from(r.y1).max(bounds.1);
+                let x2 = i64::from(r.x2).min(bounds.2);
+                let y2 = i64::from(r.y2).min(bounds.3);
                 (x1 < x2 && y1 < y2).then(|| PixelRect {
-                    x: x1 as u32,
-                    y: y1 as u32,
-                    width: (x2 - x1) as u32,
-                    height: (y2 - y1) as u32,
+                    x: x1 as u32, y: y1 as u32,
+                    width: (x2 - x1) as u32, height: (y2 - y1) as u32,
                 })
-            })
-            .collect();
+            }).collect()
+        };
+        if self.residual.enabled && !native {
+            self.stats.clear_refused_rect_count += 1;
+        }
         if pixels.is_empty() {
             return Ok(());
         }
@@ -1764,6 +1777,9 @@ impl<B: Backend> Device<B> {
                 stencil,
             };
             self.backend.clear(c, d, clear).map_err(D3dError::Backend)?;
+            if native {
+                self.stats.native_rect_clears += 1;
+            }
             if clear.color.is_some() {
                 self.present_cameras.color_written(c);
             }
@@ -1792,6 +1808,9 @@ impl<B: Backend> Device<B> {
             .map_err(D3dError::Backend)?
         {
             DrawOutcome::Drawn => {
+                if native {
+                    self.stats.native_rect_clears += 1;
+                }
                 if rc.color.is_some() {
                     self.present_cameras.color_written(c);
                 }

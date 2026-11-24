@@ -361,7 +361,7 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::PROBLEMS_LIST,
-        "The Problems panel's list, read again: every source or one. `check` is check.run's models and sounds, `ui` is ui.check, `hud` is hud.check and the HUD kit's, `package` is the manifest checks over the packages under <data>/packages/, `build` is what the game's package set refuses to load; the open script's diagnostics are `check` rows of area `scripts`, with their `line` and `col`. `asset` (an asset id) keeps the rows about that asset, as the count on the header's Check is. Worst first; each row names what opens it (`asset`: a tag, a package or an item; `field`; or the `tool` that holds a screen or a HUD). A check that cannot run is under `skipped`",
+        "The Problems panel's list, read again: every source or one. `check` is check.run's models and sounds, `ui` is ui.check, `hud` is hud.check and the HUD kit's, `package` is the manifest checks over the packages under <data>/packages/, `build` is what the game's package set refuses to load; the open script's diagnostics are `check` rows of area `scripts`, with their `line` and `col`. `asset` (an asset id) keeps the rows about that asset, as the count on the header's Check is. For a package item it refreshes package checks and open-script diagnostics. Worst first; each row names what opens it (`asset`: a tag, a package or an item; `field`; or the `tool` that holds a screen or a HUD). A check that cannot run is under `skipped`",
         r#"{"source?":"check|ui|hud|package|build","asset?":"string"}"#,
         r#"{"problems":"[{source,area,code,severity,message,target,path?,asset?,field?,tool?,line?,col?}]","counts":"{error,warning,note,total,by_source:{source:integer}}","ran":"[{source,check,findings}]","skipped":"[{source,check,why}]"}"#,
         r#"{"source":"package"}"#,
@@ -403,9 +403,9 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::DOC_SAVE,
-        "Save to the document's destination; for a source map the edits are lines in the edit target, and with none set the call answers NO_TARGET",
-        r#"{"doc?":"map|variant|playlists (default: the tool shown)"}"#,
-        r#"{"saved":"boolean","path?":"string","bytes?":"integer","edit_target?":"string","log":"[string]"}"#,
+        "Save a variant, rules script or playlist as an item of the edit target (NO_TARGET when unset). Save a map to its destination or record its edit lines in the edit target",
+        r#"{"doc?":"map|variant|rules|playlists (default: the tool shown)"}"#,
+        r#"{"saved":"boolean","path?":"string","bytes?":"integer","edit_target?":"string","log?":"[string]","reload?":"object|null"}"#,
         r#"{"doc":"map"}"#,
     ),
     def(
@@ -1109,27 +1109,22 @@ impl Api {
         true
     }
 
-    /// Runs the **Preview in game** ask the window's button left, as the
-    /// `pair.preview` call it stands for: the job is `pair.result`'s, and
-    /// a refusal (paused game, no pairing) goes to the log.
+    /// Runs the window's preview action through the document form of
+    /// `pair.preview` and keeps its result visible in the Game panel.
     pub fn run_preview_asks(&mut self, app: &mut App) {
-        let Some(doc) = app.preview.ask.take() else {
-            return;
-        };
-        let params = match app.game_preview(doc) {
-            Ok(g) => g.params(),
-            Err(why) => return app.error(why),
-        };
-        match self.call(app, m::PAIR_PREVIEW, params) {
-            Ok(v) => {
-                app.preview.last_job = v["id"].as_u64();
-                app.info(format!(
-                    "previewing {} in the game (pair.result {})",
-                    app.doc_title(doc),
-                    v["id"]
-                ));
+        if let Some(doc) = app.preview.ask.take() {
+            let id = app.doc_id(doc);
+            if let Err(e) = self.call(app, m::PAIR_PREVIEW, json!({"doc": id})) {
+                app.error(e.message);
             }
-            Err(e) => app.error(e.message),
+        }
+        if let Some(id) = app.preview.last_job
+            && app.preview.report.as_ref().is_some_and(|r| matches!(r["state"].as_str(), Some("sending" | "running")))
+        {
+            match self.call(app, m::PAIR_RESULT, json!({"id": id})) {
+                Ok(report) => app.preview.report = Some(report),
+                Err(e) => app.preview.report = Some(json!({"state": "failed", "why": e.message})),
+            }
         }
     }
 

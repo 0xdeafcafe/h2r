@@ -22,6 +22,39 @@ fn press(action: Action) -> Input {
 }
 
 #[test]
+fn selecting_toggles_an_aimed_free_thing_without_picking_it_up() {
+    let mut s = session(3);
+    let mut w = Fake::default();
+    let at = |x| Frame {
+        position: [x, 0., 0.],
+        rotation: [0.; 3],
+    };
+    let a = crate::Endpoint::Added(s.place(&mut w, 1, 0, at(5.)).unwrap());
+    let b = crate::Endpoint::Added(s.place(&mut w, 1, 0, at(9.)).unwrap());
+    let mut tool = Tool::default();
+    tool.update(&s, 2, press(Action::Toggle)).unwrap();
+    tool.camera = Some(eye());
+    let count = s.document().ops.len();
+    assert_eq!(tool.update(&s, 3, press(Action::Select)).unwrap(), None);
+    assert_eq!(tool.selection(), &[a]);
+    assert_eq!(tool.held_thing, None);
+    assert_eq!(tool.update(&s, 4, press(Action::Select)).unwrap(), None);
+    assert!(tool.selection().is_empty());
+    assert_eq!(s.document().ops.len(), count);
+
+    tool.update(&s, 5, press(Action::Accept)).unwrap();
+    assert_eq!(tool.held_thing, Some(a));
+    tool.update(&s, 6, press(Action::Select)).unwrap();
+    assert_eq!(tool.held_thing, Some(a));
+    assert!(tool.selection().is_empty());
+    tool.update(&s, 7, press(Action::Back)).unwrap();
+    s.group(&mut w, 8, "Pair", &[a, b], false).unwrap();
+    tool.update(&s, 9, press(Action::Select)).unwrap();
+    assert_eq!(tool.aimed_thing, Some(a));
+    assert!(tool.selection().is_empty());
+}
+
+#[test]
 fn preview_moves_and_turns_before_one_drop_and_cancel_discards_it() {
     let mut session = session(2);
     let mut world = Fake::default();
@@ -669,35 +702,26 @@ fn reset_orientation_uprights_the_hold_and_take_up_holds_a_new_thing() {
     assert_ne!(tool.ghost.unwrap().rotation, [0.; 3]);
     tool.set_orientation(0.75);
     assert_eq!(tool.ghost.unwrap().rotation, [0.75, 0., 0.]);
-    let Command::MoveThing { frame, .. } = tool
+    let Command::Move { id, frame } = tool
         .update(&session, 5, press(Action::Accept))
         .unwrap()
         .unwrap()
     else {
         panic!("the drop")
     };
+    assert_eq!(Endpoint::Added(id), first);
     assert_eq!(frame.rotation, [0.75, 0., 0.], "the reset is what drops");
     // The copy of another object is held where the add put it.
     let mut world = base::Fake::default();
-    let second = session
-        .place(
-            &mut world,
-            6,
-            0,
-            Frame {
-                position: [0., 0., -4.],
-                rotation: [0.; 3],
-            },
-        )
-        .unwrap();
     let at = Frame {
         position: [1., 0., -3.],
         rotation: [0.25, 0., 0.],
     };
+    let second = session.place(&mut world, 6, 0, at).unwrap();
     tool.take_up(&session, Endpoint::Added(second), Some(second), at);
     assert_eq!(tool.held_thing, Some(Endpoint::Added(second)));
     assert_eq!(tool.held, Some(second));
-    assert_eq!(tool.ghost.unwrap().rotation, [0.25, 0., 0.]);
+    assert_eq!(tool.ghost, Some(at));
     let Command::Move { id, frame } = tool
         .update(&session, 7, press(Action::Accept))
         .unwrap()

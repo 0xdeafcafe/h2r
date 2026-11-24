@@ -189,14 +189,35 @@ pub struct Request {
     /// Campaign only.
     pub difficulty: Difficulty,
     pub kind: Kind,
+    pub variant: Option<BootVariant>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BootVariant {
+    record: variants::GameVariant,
+    pub script: Option<Vec<u8>>,
 }
 
 impl Request {
+    /// Use the supplied portable record for a local multiplayer boot.
+    pub fn set_variant(&mut self, text: &str) -> Result<()> {
+        if self.kind != Kind::Multiplayer {
+            bail!("a game variant needs a multiplayer level");
+        }
+        let bundle = variants::portable::read(text)?;
+        let record = bundle.variant()?;
+        if let Some(problem) = variants::record::refused(&record).first() {
+            bail!("the game variant is invalid: {}", problem.what);
+        }
+        self.variant = Some(BootVariant { record, script: bundle.ir()? });
+        Ok(())
+    }
+
     /// What the `requesting` line says after the name.
     pub fn game(&self) -> String {
         match self.kind {
             Kind::Campaign => self.difficulty.to_string(),
-            Kind::Multiplayer => "slayer".into(),
+            Kind::Multiplayer => self.variant.as_ref().map_or_else(|| "slayer".into(), |v| v.record.name()),
         }
     }
 }
@@ -424,6 +445,7 @@ pub fn resolve_in(disc: &Path, data_root: Option<&Path>, name: &str, difficulty:
         map,
         difficulty,
         kind: level.kind,
+        variant: None,
     })
 }
 
@@ -431,7 +453,7 @@ pub fn resolve_in(disc: &Path, data_root: Option<&Path>, name: &str, difficulty:
 /// scenario path: the start record's campaign id, map id and scenario path
 /// as [`crate::campaigns`] builds them, so the game opens
 /// `d:\maps\<map>.map`, which `vfs::CampaignMapsBackend` serves from the
-/// campaign's folder.
+/// tag store for Halo 1 levels.
 pub fn campaign_request(built: &[cl::Built], name: &str, difficulty: Difficulty) -> Option<Request> {
     let n = name.trim().trim_end_matches(".map");
     built.iter().find_map(|b| {
@@ -445,6 +467,7 @@ pub fn campaign_request(built: &[cl::Built], name: &str, difficulty: Difficulty)
                 map: l.map_id,
                 difficulty,
                 kind: Kind::Campaign,
+                variant: None,
             })
     })
 }
@@ -659,6 +682,13 @@ pub fn game_steps(req: &Request) -> Option<Vec<GameStep>> {
                 );
                 continue;
             }
+            Step::Variant if let Some(variant) = &req.variant => {
+                out.push(GameStep::Write {
+                    offset: OPT_VARIANT,
+                    bytes: variant.record.bytes().to_vec(),
+                });
+                continue;
+            }
             Step::Variant => call(
                 VARIANT_DEFAULTS,
                 vec![
@@ -840,8 +870,15 @@ fn run_from(
     let rt = Arc::clone(ctx.runtime());
     let mut mem = rt.memory();
     while let Some(step) = todo.pop_front() {
-        if step == Step::Fill {
-            if !fill_options(&mut *mem, BUFFER, &req) {
+        let written = match step {
+            Step::Fill => Some(fill_options(&mut *mem, BUFFER, &req)),
+            Step::Variant => req.variant.as_ref().map(|variant| {
+                Gm::wr(&mut *mem, BUFFER + OPT_VARIANT, variant.record.bytes())
+            }),
+            _ => None,
+        };
+        if let Some(written) = written {
+            if !written {
                 // The hook is spent, so this reaches the original.
                 eprintln!("level boot: could not write the options; loading the main menu");
                 cpu.esi = entry.esi;
@@ -972,6 +1009,7 @@ mod tests {
             map: 7,
             difficulty,
             kind: Kind::Campaign,
+            variant: None,
         }
     }
 
@@ -983,6 +1021,7 @@ mod tests {
             map: 80,
             difficulty: Difficulty::Normal,
             kind: Kind::Multiplayer,
+            variant: None,
         }
     }
 
@@ -1337,6 +1376,7 @@ mod tests {
                 map: 0x1002,
                 difficulty: Difficulty::Heroic,
                 kind: Kind::Campaign,
+                variant: None,
             }
         );
         assert_eq!(campaign_request(&built, r"scenarios\solo\d40\d40", Difficulty::Easy).unwrap().map, 0x100a);

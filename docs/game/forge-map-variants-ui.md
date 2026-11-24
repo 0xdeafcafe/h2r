@@ -1,6 +1,6 @@
 # Forge map variants: the editor's HUD, world marks and screens
 
-Status: Design, slices K5, H1, H3, S1, S2, S3, S4, S5 and S6 built (S3's picker description lacks the game types with goals, and S5's dialog has no Upload to Xbox Live: the game has no Live client for it). The Forge screens in the game (slice U4), the HUD kit, its world marks and the superbounce readout this page copies are built, and so are `Shape::Line`, `Style::Team` and `Describe::never_with` (K5) and the readout's description with its fourteen states (H1), including the `fgr.zone` marks, the readout's `never_with` declaration and the team-coloured near marks. The runtime (H3, `forge_readout.rs`) registers the HUD, feeds it each tick from the session's aimed or held thing and its bodiless things, chooses the near pool and poses the marks; it has no ring feed yet (below), and its guide row says a refusal's sentence and, while an added thing is held with a tenth or less left, the binding limit (S6). The Properties page's rows are the doc's `props:` block (S1), with **Game types...** on an item spawner, which opens the Game types dialog (`forge.games`, S2; `forge_screens/games.rs`), and the acts **Reset orientation** and **Duplicate** (P1; `Session::duplicate` holds the copy, a kind that needs the kit waits for P2); the rows of the other slices are not built. `Session::budget_for` (S6; `extensions/forge/src/{budget.rs, session/budget.rs}`) is the budget's one source. Everything else named here as new is not built.
+Status: Design, slices K5, H1, H3, S1, S2, S3, S4, S5 and S6 built (S3's picker description lacks the game types with goals, and S5's dialog has no Upload to Xbox Live: the game has no Live client for it). The Forge screens in the game (slice U4), the HUD kit, its world marks and the superbounce readout this page copies are built, and so are `Shape::Line`, `Style::Team` and `Describe::never_with` (K5) and the readout's description with its fourteen states (H1), including the `fgr.zone` marks, the readout's `never_with` declaration and the team-coloured near marks. The runtime (H3, `forge_readout.rs`) registers the HUD, feeds it each tick from the session's aimed or held thing and its bodiless things, chooses the near pool and poses the marks; it has no ring feed yet (below), and its guide row says a refusal's sentence and, while an added thing is held with a tenth or less left, the binding limit (S6). The Properties page's rows are the doc's `props:` block (S1), with **Game types...** on an item spawner, which opens the Game types dialog (`forge.games`, S2; `forge_screens/games.rs`), and the acts **Reset orientation** and **Duplicate** (P1; `Session::duplicate` holds the copy, a kind that needs the kit waits for P2); the rows of the other slices are not built. `Session::budget_for` (S6; `extensions/forge/src/{budget.rs, session/budget.rs}`) is the budget's one source. The Map limits page (P4) lists the object pool and scenario counts on Forge options.
 Code: `crates/extensions/game/src/forge_screens/` (the screens), `content/ui/screens/forge.*.yaml` (their docs), `crates/rewrites/hud-kit-core/src/{world.rs, views/}` (the HUD kit's model), `crates/extensions/game/src/hud_kit_world.rs` (the world-line source), `crates/extensions/game/src/forge_readout.rs` (the readout's runtime), `crates/extensions/game/src/forge_screens/props.rs` (the Properties rows). Tests: named per slice below.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
@@ -91,6 +91,7 @@ nudge and nothing else.
 | Object | Object... | a picker of its group's palette | the palette entry | M6 |
 | Object | Game types... | the Game types dialog | the `games` property | G1 |
 | Any thing | Label, Label number, Clear label | the keyboard on the text, the keyboard on the number, and an act; `forge.properties` rows `label`, `label number` and `clear label` (`open: keyboard` and `open: act`) | the label ([rules-engine.md](rules-engine.md#forge-labels)) | built; a picker of a script's declared labels is design |
+| Group member in a local session | Pivot | a picker: Centre, First member | replaces the group op in one undo step | built (P5) |
 | Object the session placed | Save as prefab | the keyboard on the prefab's name; the row `prefab` | `<data>/forge/prefabs/<name>.h2prefab` ([forge-editing.md](forge-editing.md), "Selection, groups and prefabs") | built |
 | Item spawner | Item... | the object menu's item groups, as a picker | `item` | M6 |
 | Item spawner | Respawn time | a picker: Map default, then seconds | `respawn time` | M6 |
@@ -241,9 +242,9 @@ limit and which limit binds: the session's object budget (for a block
 whose entries make objects) or the block's count against the engine's
 limit (`map::scenario_layout`), whichever has less left; a tie binds the
 block, and a block with neither has no budget. A removal gives its row
-back, and a move or a field of an own entry costs nothing. The kit rows
-left for a kind that needs the kit and the object pool (`forge.capacity`,
-the game's, not the session's) are not limits here yet.
+back, and a move or a field of an own entry costs nothing. Kit additions
+also check their reserved rows through `Session::kit_left`. The live object
+pool is measured separately through `forge.capacity`.
 
 `Session::place` refuses an add to a full block with the budget's
 sentence (`Budget::full`: "Item spawners are full (100).").
@@ -253,8 +254,16 @@ sentence (`Budget::full`: "Item spawners are full (100).").
 | `forge.budget.count`, `.meter` (the monitor HUD's pill) | with nothing held, the session's objects left and the share used; holding or aiming, the same for that thing's kind. It flashes from 90% (`Pulse::TimeWarning`) |
 | `fgr.guide` | when a hold starts with a tenth or less left: the binding limit by name, "3 item spawners left" |
 | The object menu's description | placed and left, by the object's kind ([forge-editing.md](forge-editing.md), "The object menu") |
-| **Map limits** (Forge options, slice P4) | a row a limit with used and limit in the value column: Objects, Scenery, Crates, Machines, Item spawners, Starting points, Goals |
+| **Map limits** (Forge options, P4) | Objects, Scenery, Crates, Machines, Item spawners, Starting points and Goals, with each count and its engine limit where known |
 | A refused edit | `forge.notice` with the limit named: "Item spawners are full (100)." |
+
+**Map limits** (`forge.map-limits`, `forge_screens/map_limits.rs`)
+opens a read-only list over Forge options. It shares the live object pool
+and scenario block readers with `forge.capacity`. Objects counts live
+datums across the game. The scenario rows count entries in their respective
+blocks, with Goals counting the netgame flags block. Starting points and
+Goals show their counts alone. A failed read shows **Unavailable** in its
+row. Each opening takes the latest published counts.
 
 The budget is a count, as Halo 3's is a counter
 ([forge-editing.md](forge-editing.md), "The object menu"). Moving,
@@ -406,7 +415,7 @@ they start with `assets/` or `docs/`.
 | **S3** (built) | The map variant picker and the lobby's row | `content/ui/screens/kit.picker.map-variant.yaml` (in place of `kit.picker.forge-map.yaml`), `extensions/game/src/{lobby_mode.rs, lobby_options.rs}`, one line of `ui_kit/screens.rs` | `Page` tables for Game Setup in CUSTOM GAMES and FORGE; Original is first; an unusable variant shows its sentence and cannot be chosen; a map change clears the panel line | `h2 ui preview kit.picker.map-variant`. Needs V1, V2 |
 | **S4** | Save, Save as and Load on the store, with their questions and notices | `extensions/game/src/forge_screens/{variants.rs (new), game_menu.rs}`, `extensions/game/src/forge_glue/editing.rs`, `content/ui/screens/forge.question.yaml` | a table of flows: unnamed Save opens the keyboard; a taken name asks; No is focused; Load with edits asks first; each ends in its notice | tests pass. Needs V1 |
 | **S5** (built) | Map variants and a variant's actions | `content/ui/screens/{forge.variants.yaml, forge.variant.yaml}`, `extensions/game/src/forge_screens/variants.rs`, `forge_screens/sheet.rs` (`OPTIONS`), two lines of `ui_kit/screens.rs` | `Page` tables; rename to a taken name writes nothing; the open variant's Delete is absent; Upload is absent when signed out | previews in every state. Needs S4 |
-| **S6** (built, but the Map limits rows are P4's, and the kit rows and the pool are not limits) | The budget by kind: `Session::budget_for`, the pill's feed, the guide line, the refusal's sentence | `extensions/forge/src/session.rs`, `extensions/forge/src/tests.rs`, `extensions/game/src/forge_readout.rs` | a table of counts and which limit binds; the sentence names it; an own entry's move costs nothing | tests pass. Needs M5, H3 |
+| **S6** (built) | The budget by kind: `Session::budget_for`, the pill's feed, the guide line, the refusal's sentence | `extensions/forge/src/session.rs`, `extensions/forge/src/tests.rs`, `extensions/game/src/forge_readout.rs` | a table of counts and which limit binds; the sentence names it; an own entry's move costs nothing | tests pass. Needs M5, H3 |
 
 K5 and H1 need nothing built here and can start at once. S2, S3 and
 S5 each add a name to `ui_kit::screens::NAMES`, which shifts later

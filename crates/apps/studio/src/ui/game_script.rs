@@ -164,15 +164,16 @@ fn toolbar(ui: &Ui, app: &mut App, dialogs: bool) {
         open(app, &path);
     }
     ui.same_line();
-    if ui.button(format!("{} Save", icon::SAVE)) {
-        save(app, dialogs, false);
+    if ui.button("Export script...")
+        && let Some(path) = save_dialog(dialogs, &app.rules)
+    {
+        match std::fs::write(&path, &app.rules.text) {
+            Ok(()) => app.info(format!("Exported {}", path.display())),
+            Err(why) => app.error(format!("{}: {why}", path.display())),
+        }
     }
     ui.same_line();
-    if ui.button("Save as") {
-        save(app, dialogs, true);
-    }
-    ui.same_line();
-    if ui.button("Save as game variant") {
+    if ui.button("Export game variant...") {
         save_game_variant(app, dialogs);
     }
     if ui.is_item_hovered() {
@@ -231,10 +232,6 @@ fn toolbar(ui: &Ui, app: &mut App, dialogs: bool) {
         ui.tooltip_text("Rename the name at the cursor and every use of it (F2).");
     }
     ui.same_line();
-    if ui.button("Reload") {
-        reload(app);
-    }
-    ui.same_line();
     ui.set_next_item_width(110.0);
     if let Some(_combo) = ui.begin_combo("##rules-mode", mode_label(app.rules.mode)) {
         for mode in [ReloadMode::Auto, ReloadMode::InPlace, ReloadMode::Restart] {
@@ -260,11 +257,8 @@ fn toolbar(ui: &Ui, app: &mut App, dialogs: bool) {
     let io = ui.io();
     let cmd = io.key_ctrl() || io.key_super();
     if app.rules.typing && ui.is_window_focused_with_flags(FocusedFlags::CHILD_WINDOWS) && cmd {
-        if ui.is_key_pressed(Key::S) {
-            save(app, dialogs, io.key_shift());
-        }
-        if ui.is_key_pressed(Key::R) {
-            reload(app);
+        if ui.is_key_pressed(Key::S) && !io.key_shift() {
+            app.dispatch(crate::app::Action::SaveRules);
         }
     }
 }
@@ -375,28 +369,6 @@ fn open(app: &mut App, path: &std::path::Path) {
     }
 }
 
-/// Saves (as a new file when `as_new` or when it has none), then reloads
-/// it into the game when reload on save is on.
-fn save(app: &mut App, dialogs: bool, as_new: bool) {
-    let to = if as_new || app.rules.path.is_none() {
-        match save_dialog(dialogs, &app.rules) {
-            Some(p) => Some(p),
-            None => return,
-        }
-    } else {
-        None
-    };
-    match app.rules.save(to.as_deref()) {
-        Ok(path) => {
-            app.info(format!("Saved {}", path.display()));
-            if app.rules.reload_on_save {
-                reload(app);
-            }
-        }
-        Err(why) => app.error(why),
-    }
-}
-
 /// Writes the script's own variant to a `.h2variant` file the user picks.
 fn save_game_variant(app: &mut App, dialogs: bool) {
     let (name, _) = match rules_edit::game_variant_file(&app.rules.text) {
@@ -442,7 +414,7 @@ fn save_dialog(dialogs: bool, r: &RulesEditor) -> Option<PathBuf> {
     }
     let name = rules_edit::script_file_name(&r.title);
     rfd::FileDialog::new()
-        .set_title("Save the game type script")
+        .set_title("Export the game type script")
         .add_filter("Game type script", &[rules_edit::EXTENSION])
         .set_file_name(name)
         .save_file()
@@ -872,17 +844,13 @@ fn doc_blocks(ui: &Ui, fonts: &Fonts, blocks: &[HoverBlock], width: f32) {
     }
 }
 
-/// Under the text: the signature, the problems, the check report and the
-/// reload.
+/// Under the text: the signature, the problems and the check report.
 fn below(ui: &Ui, app: &mut App) {
     if let Some(sig) = app.rules.typing.then(|| app.rules.signature()).flatten() {
         ui.text_colored(theme::DIM, sig);
     }
     problems(ui, &mut app.rules);
     report(ui, &app.rules);
-    if let Some((tone, line)) = app.rules.reload_line() {
-        ui.text_colored(theme::reload_colour(tone), line);
-    }
 }
 
 /// Every error and warning, errors first: a click puts the cursor on it,

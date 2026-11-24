@@ -47,6 +47,7 @@ fn tick(at: Vec3, vz: f32, airborne: bool) -> PlayerTick {
         position: at,
         velocity: [0.0, 0.0, vz],
         airborne,
+        crouching: false,
         word: Some(MINUS_3),
     }
 }
@@ -588,6 +589,7 @@ fn under_map(n: usize) -> Vec<PlayerTick> {
             position: [10.0 + 0.06 * i as f32, 0.0, -3.4],
             velocity: [1.8, 0.0, 0.0],
             airborne: false,
+            crouching: false,
             word: None,
         })
         .collect()

@@ -175,3 +175,21 @@ fn a_reextraction_of_the_disc_empties_the_converted_levels() {
     assert!(read_level(&store, "h1_one") == bytes);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_converter_resumes_an_incomplete_level_it_owns() {
+    let dir = temp("conv-resume");
+    let store = dir.join("tags");
+    let stem = "h1_one";
+    let bytes = output(&[A]);
+    store_converted(&store, stem, &bytes, &NoDisc, "halo1").unwrap();
+    let marker = marker_path(&store, stem);
+    let pending = marker.with_extension("converting");
+    std::fs::rename(&marker, &pending).unwrap();
+    let error = store_converted(&store, stem, &bytes, &NoDisc, "other").unwrap_err();
+    assert!(error.contains(stem) && error.contains("halo1"), "{error}");
+    let done = store_converted(&store, stem, &bytes, &NoDisc, "halo1").unwrap();
+    assert!(is_stored(&store, stem, &done.file));
+    assert!(!pending.exists());
+    let _ = std::fs::remove_dir_all(dir);
+}

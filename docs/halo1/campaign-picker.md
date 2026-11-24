@@ -98,26 +98,12 @@ path starting `t:\` or `w:\` becomes `<path>.map`; anything else becomes
 path into the options, so a level's map file is named by the basename of
 its record's path.
 
-Halo 1's converted maps go in `<data>/campaigns/halo1/`; `h2 import
-halo1`, or `h2 play` with `halo1.iso` beside the disc, writes them there
-([campaign.md](campaign.md) §10).
-Choices:
-
-1. **The VFS serves them as `maps\<name>.map`** (chosen). The records keep
-   `scenarios\solo\<map>\<map>`; the game copies the map into a cache slot
-   exactly as it does a Halo 2 level. The VFS already serves `maps\` from
-   packages ([maps.md](../game/maps.md)); it gains names the disc lacks, from an
-   installed campaign's folder. Halo 1's names (`a10` ... `d40`) don't
-   meet any Halo 2 name, and the manifest refuses a map named twice.
-   **Built:** `vfs::CampaignMapsBackend`, directly over the disc (so map
-   packages still apply over it). A level whose map the disc lacks is
-   served from `<data>/campaigns/<key>/<map>.map` with the disc's
-   `mainmenu.map` metadata resized; a name the disc has is never shadowed.
-   A level is listed only when one of the two exists.
-2. A `t:\` path (the title's own data partition, as Map Pack packages
-   are). No VFS change, but the maps would have to live under the emulated
-   hard disk, and they would load through the content path rather than the
-   one Halo 2's own levels use. Rejected.
+`h2 import halo1` and the automatic import store the converted levels
+under distinct names for each asset choice ([campaign.md](campaign.md)
+§10). `vfs::CampaignMapsBackend` serves them as `maps\<name>.map` using
+the disc's `mainmenu.map` metadata resized to the selected level's
+length. The records keep `scenarios\solo\<map>\<map>` and the game
+copies the map into a campaign cache slot.
 
 ## What we do
 
@@ -145,10 +131,10 @@ picture = "01b_spacestation"  # optional: a Halo 2 level whose picture it shows
 `campaign_list::HALO1` is Halo 1's: a10, a30, a50, b30, b40, c10, c20,
 c40, d20, d40 with their names; their pictures are Halo 1's own ("Pictures", below). `campaign_list::FIXTURE`
 is a **test campaign** of three retail Halo 2 levels (Outskirts, Delta
-Halo, Gravemind, named "(2)", each with its own picture), for use alongside an installed Halo 1 campaign. At boot the Halo 1 manifest must parse, match the folder key and have at least one listed local map. Only then does `campaigns::boot_state` read the Halo 2 disc. An additional campaign is listed when its manifest parses,
-its key is its folder's name, and at least one level has a map (in its
-folder, or on the disc); levels with no map yet are left out and the log
-says how many. The picker uses the files on disk and does not read the
+Halo, Gravemind, named "(2)", each with its own picture), for use alongside an installed Halo 1 campaign. At boot the Halo 1 manifest must parse, match the folder key and have at least one listed level in the store. Only then does `campaigns::boot_state` read the Halo 2 disc. An additional campaign is listed when its manifest parses,
+its key matches the folder name, and at least one level is available.
+Halo 1 needs a verified store entry and other campaigns use disc maps.
+The log gives the count of missing levels. The picker uses this list and does not read the
 import stamp. A failed level leaves any successfully imported levels
 available. The Halo 2-assets files in `halo1/h2/` are alternates for
 levels listed by their main maps.

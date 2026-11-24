@@ -257,9 +257,13 @@ fn selecting_two_objects_groups_them_and_the_browser_lists_the_group_first() {
     e.tool.aimed_thing = Some(a);
     e.command(27, Command::Properties).unwrap();
     let rows = labels();
-    for want in ["Group", "Lock group", "Ungroup"] {
+    for want in ["Group", "Lock group", "Pivot", "Ungroup"] {
         assert!(rows.contains(&want.to_string()), "{rows:?}");
     }
+    e.choose(28, Choice::SetGroupPivot(groups[0].id, true)).unwrap();
+    e.poll(28);
+    let groups = e.session.groups();
+    assert!(groups[0].pivot_first);
     // The browser lists the group first, and choosing it flies to its centre.
     let folders = sheet::folder_rows(&e.session.groups());
     assert_eq!(folders[0].name, "Group 1");

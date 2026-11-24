@@ -64,7 +64,7 @@ const SAY: MethodDef = def(
 
 const SAY_BATCH: MethodDef = def(
     m::VOICE_SAY_BATCH,
-    "Say many lines in game characters' voices as one batch, the way the Voices window's \"Say all\" does: each row is said exactly as voice.clone.say says a line (cached, trimmed, brought to the character's loudness, saved under <data root>/voices/<character>, never played). Rows come from `rows` (each {text, character?, clip?, tag?}: `character` defaults to the batch's, `clip` is the output name that voice.batch.save copies to art/announcer/<clip>.wav, `tag` a snd! path that voice.batch.save puts in the edit target package instead), from `lines` (one row per line of the text; a tab splits an output name from the text) and from `file` (a text file of lines, at most 1 MB). The previous batch is replaced, unless `append`, and is REFUSED while rows are still queued or running. A row with a problem (no text, no voice, a bad or repeated output name) is failed at once with why; the others are queued. With `wait` the call returns when every row has ended; without it the Voices window's frames say one row each, so poll voice.batch.status. A row's model failure fails that row only. The model is `backend`",
+    "Say many lines in game characters' voices as one batch, the way the Voices window's \"Say all\" does: each row is said exactly as voice.clone.say says a line (cached, trimmed, brought to the character's loudness, saved under <data root>/voices/<character>, never played). Rows come from `rows` (each {text, character?, clip?, tag?}: `character` defaults to the batch's, `clip` names a standalone sound item, `tag` is a target snd! path), from `lines` (one row per line of the text; a tab splits an output name from the text) and from `file` (a text file of lines, at most 1 MB). The previous batch is replaced, unless `append`, and is REFUSED while rows are still queued or running. A row with a problem (no text, no voice, a bad or repeated output name) is failed at once with why; the others are queued. With `wait` the call returns when every row has ended; without it the Voices window's frames say one row each, so poll voice.batch.status. A row's model failure fails that row only. The model is `backend`",
     r#"{"character?":"string (the batch's default voice; an id of voice.characters)","rows?":"[{text,character?,clip?,tag?}]","lines?":"string","file?":"string","append?":"boolean","wait?":"boolean (default false)","backend?":"string (f5-mlx or qwen3-tts)"}"#,
     r#"{"added":"integer","queued":"integer","counts":"{idle,queued,running,done,failed}","active":"boolean","rows":"[row of voice.batch.status]"}"#,
     r#"{"character":"cortana","rows":[{"text":"Hold on, Chief.","clip":"cortana-hold"}],"wait":true}"#,
@@ -85,10 +85,10 @@ const BATCH_RUN: MethodDef = def(
 );
 const BATCH_SAVE: MethodDef = def(
     m::VOICE_BATCH_SAVE,
-    "Keep the done rows in one step, as voice.commit does for one: a row with a `tag` becomes a sound item of `package` (default the edit target; its row fails with the NO_TARGET message with none), one with an output name `clip` is copied to art/announcer/<clip>.wav of the checkout `repo` (default the one the editor runs in), replacing a clip the checkout has only with `replace`; a row with neither fails. Each row's result is its `saved` or `save_failed`. It runs no git and edits no CLIPS; `ids` limits it. Nothing is uploaded",
+    "Save done rows as sound items of the edit target or an explicit local package, updating the same tag or named clip. Answers NO_TARGET with neither. An explicit repo exports untagged clips; replace permits overwriting an exported clip. ids limits the rows",
     r#"{"ids?":"[integer]","repo?":"string","package?":"string","replace?":"boolean"}"#,
     r#"{"saved":"integer","failed":"integer","rows":"[{id,saved?,why?}]"}"#,
-    "{}",
+    r#"{"repo":"$OUT"}"#,
 );
 
 /// The error, with what to do next for a clone that is not ready.
@@ -362,11 +362,14 @@ fn batch_run(app: &mut App, p: &P) -> Reply {
 fn batch_save(app: &mut App, p: &P) -> Reply {
     app.voices.batch.replace = flag(p, "replace", false)?;
     let ids = ids(p)?;
-    let rows = app.voice_batch_save(
-        ids.as_deref(),
-        p.opt_str("repo")?.map(std::path::Path::new),
-        p.opt_str("package")?,
-    );
+    let repo = p.opt_str("repo")?.map(std::path::Path::new);
+    let package = p.opt_str("package")?;
+    let target = if repo.is_none() {
+        Some(super::packages::save_target(app, package)?)
+    } else {
+        package.map(str::to_owned)
+    };
+    let rows = app.voice_batch_save(ids.as_deref(), repo, target.as_deref());
     let saved = rows.iter().filter(|(_, r)| r.is_ok()).count();
     Ok(json!({
         "saved": saved,

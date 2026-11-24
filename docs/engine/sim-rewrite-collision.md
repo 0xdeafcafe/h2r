@@ -2,9 +2,9 @@
 
 The phase 2 design uses a Rust-owned collision world behind the native
 collision switch. A, B and F have native adapters. C–E, G and H record
-their entry controls and run lifted; G and H have native adapters checked
-by the differential only. The vector kernels are tested directly until
-their transitive scratch-state contract is closed. The [entry contracts](collision-queries.md)
+their entry controls and run lifted. C and D compare the native vector test with
+the lifted hit byte and result record. D also compares the outer walk’s context. The offline differential checks G
+and H’s native adapters. The vector entries keep the lifted scratch state. The [entry contracts](collision-queries.md)
 describe the implemented arithmetic, stack and register comparisons.
 Remaining slices are specified below. Bar E requires the guest-visible
 bits to match the lifted path, and contract D requires the same bits on

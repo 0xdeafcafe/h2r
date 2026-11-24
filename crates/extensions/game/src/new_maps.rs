@@ -2,7 +2,7 @@
 //! each offer's `patch.lvl` to a free slot (docs/game/map-pack.md §8).
 //! The VFS resolves the map at that offer's path on demand.
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs::File,
     io::BufReader,
     path::{Path, PathBuf},
@@ -181,18 +181,71 @@ fn alias(id: u32, package: MapId) -> String {
 
 /// Installs one content record per package using the remaining slots.
 /// Existing `active.toml` and source files are left in place.
+fn stored_halo1(
+    root: &Path,
+    sandbox: &str,
+) -> Vec<(Package, vfs::VariantPair)> {
+    use tags::repo::converted::{halo1_metadata, halo1_mp_stem, levels, verified};
+    let hashes: BTreeMap<_, _> = levels(root)
+        .into_iter()
+        .filter_map(|mark| Some((mark.stem.clone(), verified(root, &mark, "halo1")?)))
+        .collect();
+    let Ok(dirs) = std::fs::read_dir(halo1_metadata(root)) else {
+        return Vec::new();
+    };
+    let mut packages: Vec<_> = dirs.flatten().filter_map(|dir| {
+        let dir = dir.path();
+        let full = content::Manifest::from_toml(
+            &std::fs::read_to_string(dir.join(content::manifest::MANIFEST_FILE)).ok()?,
+        ).ok()?;
+        let map = &full.base.map;
+        if dir.file_name()?.to_str()? != map.as_str() {
+            return None;
+        }
+        let load = |sandbox| {
+            let stem = halo1_mp_stem(map, sandbox);
+            let hash = hashes.get(&stem).copied().filter(|hash| {
+                full.variant(sandbox).is_some_and(|v| v.sha256 == *hash && v.origin.game == "halo1")
+            });
+            vfs::VariantFile {
+                file: vfs::MapSource::Stored { root: root.to_owned(), stem, hash },
+                id: hash.map(|_| full.select_variant(Some(sandbox)).map_id()),
+            }
+        };
+        let pair = vfs::VariantPair { h1: load("h1"), h2: load("h2") };
+        let fallback = if pair.h1.id.is_some() { "h1" } else { "h2" };
+        let display = match sandbox {
+            "h1" if pair.h1.id.is_some() => "h1",
+            "h2" if pair.h2.id.is_some() => "h2",
+            _ => fallback,
+        };
+        let manifest = full.select_variant(Some(display));
+        let id = pair.h1.id.or(pair.h2.id)?;
+        Some((Package { dir, id: manifest.map_id(), list_key: full.variants_key().unwrap_or(id), manifest }, pair))
+    }).collect();
+    packages.sort_by(|(a, _), (b, _)| a.dir.cmp(&b.dir));
+    packages
+}
+
 pub fn install(data_root: &Path, disc: &mut dyn Disc) -> Result<Report> {
     let cfg = vfs::Config::new(data_root, HALO2_TITLE);
     let content_root = cfg.title_data_dir().join(vfs::CONTENT_DIR);
     let maps = crate::map_override::packages_dir(data_root);
     let mut report = Report::default();
     let mut keep = BTreeSet::new();
-    if maps.is_dir() {
-        let (store, _) = crate::setting_defs::load(data_root, &[]);
-        let sandbox = crate::setting_defs::halo1_sandbox(&store);
+    {
+        let (settings, _) = crate::setting_defs::load(data_root, &[]);
+        let sandbox = crate::setting_defs::halo1_sandbox(&settings);
         let mut library = Library::open_with_sandbox(&maps, Some(sandbox));
-        report.notices.extend(library.take_notices());
-        let packages = library.packages();
+        if maps.is_dir() {
+            report.notices.extend(library.take_notices());
+        }
+        let stored = stored_halo1(&data_root.join("tags"), sandbox);
+        let mut packages: Vec<_> = library.packages().iter()
+            .filter(|p| !(p.manifest.base.derived && p.manifest.base.map.starts_with("h1_")))
+            .map(|p| (p, None))
+            .collect();
+        packages.extend(stored.iter().map(|(p, pair)| (p, Some(pair))));
         if !packages.is_empty() {
             let slots = disc.slots().context("reading mainmenu.map's map list")?;
             let bases: Vec<_> = slots
@@ -200,7 +253,7 @@ pub fn install(data_root: &Path, disc: &mut dyn Disc) -> Result<Report> {
                 .filter_map(|s| BaseEntry::from_slot(s).map(|b| (b, s.as_slice())))
                 .collect();
             let existing = existing_content(&content_root);
-            let keys: Vec<_> = packages.iter().map(|p| p.list_key).collect();
+            let keys: Vec<_> = packages.iter().map(|(p, _)| p.list_key).collect();
             let (ids, free) = slot_plan(&slots, &existing, &keys);
             let existing_bases: Vec<_> = existing
                 .iter()
@@ -222,12 +275,12 @@ pub fn install(data_root: &Path, disc: &mut dyn Disc) -> Result<Report> {
             let first_slot = bases.iter().min_by_key(|(b, _)| (b.sort, b.map_id));
             let mut frame: Option<Option<Vec<u8>>> = None;
             let mut name_counts = HashMap::new();
-            for p in packages {
+            for (p, _) in &packages {
                 *name_counts
                     .entry(p.manifest.base.map.to_ascii_lowercase())
                     .or_insert(0) += 1;
             }
-            for (p, id) in packages.iter().zip(ids) {
+            for ((p, stored), id) in packages.into_iter().zip(ids) {
                 let base_name = &p.manifest.base.map;
                 let base = if p.manifest.base.derived {
                     None
@@ -245,7 +298,11 @@ pub fn install(data_root: &Path, disc: &mut dyn Disc) -> Result<Report> {
                     || existing_bases
                         .iter()
                         .any(|(b, _)| b.map.eq_ignore_ascii_case(base_name))
-                    || name_counts[&base_name.to_ascii_lowercase()] > 1;
+                    || (stored.is_none() && name_counts[&base_name.to_ascii_lowercase()] > 1);
+                if needs_alias && stored.is_some() {
+                    report.skipped.push(format!("{base_name}: the map name is already in use"));
+                    continue;
+                }
                 let alias = needs_alias.then(|| alias(id, p.id));
                 let map = alias.as_deref().unwrap_or(base_name);
                 if map.len() > MAX_MAP_NAME {
@@ -319,20 +376,18 @@ pub fn install(data_root: &Path, disc: &mut dyn Disc) -> Result<Report> {
                     Ok(offer) => {
                         keep.insert(offer);
                         let path = content_path(offer, map);
-                        if alias.is_none()
-                            && let Some(pair) = variant_pair(p)
-                        {
-                            report.variants.push((path.clone(), pair));
-                        }
                         report.installed.push((map.to_owned(), offer, id));
-                        report.mounts.push((
-                            path,
-                            vfs::ContentMap {
-                                package: p.clone(),
-                                base,
-                                alias,
-                            },
-                        ));
+                        if let Some(pair) = stored {
+                            report.variants.push((path, pair.clone()));
+                        } else {
+                            if alias.is_none() && let Some(pair) = variant_pair(p) {
+                                report.variants.push((path.clone(), pair));
+                            }
+                            report.mounts.push((
+                                path,
+                                vfs::ContentMap { package: p.clone(), base, alias },
+                            ));
+                        }
                     }
                     Err(e) => report.skipped.push(format!("{}: {e:#}", p.dir_name())),
                 }
@@ -376,7 +431,7 @@ pub fn variant_pair(p: &Package) -> Option<vfs::VariantPair> {
         let v = full.variant(sandbox)?;
         let file = p.dir.join(content::manifest::relative(&v.file).ok()?);
         file.is_file().then(|| vfs::VariantFile {
-            file,
+            file: file.into(),
             id: Some(full.select_variant(Some(sandbox)).map_id()),
         })
     };

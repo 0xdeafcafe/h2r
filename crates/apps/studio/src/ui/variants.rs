@@ -713,7 +713,6 @@ pub fn inspector(
     };
     let current = e.current();
     let saved = matches!(e.origin(), Some(Origin::Saved(_)));
-    let can_save = e.is_dirty() && !e.is_read_only();
     let button = |label: String, enabled: bool, tip: &str| -> bool {
         let d = ui.begin_disabled_with_cond(!enabled);
         let clicked = ui.button(label);
@@ -721,14 +720,6 @@ pub fn inspector(
         ui.set_item_tooltip(tip);
         clicked
     };
-    if button(
-        format!("{} Save", icon::SAVE),
-        can_save,
-        "Write it to the game's save storage (Cmd+S)",
-    ) {
-        actions.push(Action::SaveVariant);
-    }
-    ui.same_line();
     if button(
         format!("{} Revert", icon::UNDO),
         e.has_changes(),

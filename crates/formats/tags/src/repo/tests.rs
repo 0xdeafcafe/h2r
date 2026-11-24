@@ -1916,7 +1916,10 @@ fn prepare_writes_the_catalogue_and_leaves_a_current_one_alone() {
     assert_eq!(c.of_key(&TagKey::new(g(b"bitm"), "a\\pixels")).len(), 1);
     assert_eq!(
         c.users(&TagKey::new(g(b"bitm"), "a\\pixels")).unwrap(),
-        &BTreeSet::from([TagKey::new(g(b"matg"), "globals\\globals")])
+        &BTreeSet::from([
+            TagKey::new(g(b"bitm"), "a\\same_pixels"),
+            TagKey::new(g(b"matg"), "globals\\globals"),
+        ])
     );
     // Nothing stale: the catalogue is not written again.
     let before = snapshot(&root);
@@ -1925,6 +1928,13 @@ fn prepare_writes_the_catalogue_and_leaves_a_current_one_alone() {
     assert_eq!(snapshot(&root), before);
     // Deleted, it is written again by the next run.
     std::fs::remove_file(root.join(catalogue::CATALOGUE_FILE)).unwrap();
+    let (p, _) = prepare_run(&root, &schema, Some(&disc)).unwrap();
+    assert!(p.catalogue.is_some());
+    assert_eq!(catalogue::read(&root).unwrap().unwrap(), c);
+    // One that does not read (an older format) is written again, not an error.
+    let old = c.to_text().replace('\t', " ");
+    std::fs::write(root.join(catalogue::CATALOGUE_FILE), old).unwrap();
+    assert!(catalogue::read(&root).is_err());
     let (p, _) = prepare_run(&root, &schema, Some(&disc)).unwrap();
     assert!(p.catalogue.is_some());
     assert_eq!(catalogue::read(&root).unwrap().unwrap(), c);

@@ -146,13 +146,24 @@ fn the_open_script_lists_its_diagnostics_and_a_row_opens_its_line() {
     // Nothing is listed while no script is open.
     app.refresh_problems_over(Some("check"), &[]);
     assert_eq!(app.problems.of(Some("check")).count(), 0);
+    let package = app.data_root().join("packages/mode-test");
+    write(
+        &package.join("package.toml"),
+        "[package]\nformat = 1\nid = \"mode-test\"\nname = \"Mode test\"\n\n[[item]]\nkind = \"rules\"\nsource = \"sample.rules\"\n",
+    );
+    let script = package.join("sample.rules");
+    write(&script, "this is not a script {{{ ((");
+    app.rules.path = Some(script);
     app.rules.set_text("this is not a script {{{ ((".into());
     app.rules.opened = true;
-    app.refresh_problems_over(Some("check"), &[]);
+    let narrowed = app
+        .refresh_asset_problems("item:mode-test:0", Some("check"), INVENTED)
+        .unwrap();
     let expected = super::rules_edit::problems(&app.rules.text, &app.rules.analysis.diagnostics);
     assert!(!expected.is_empty());
     let rows: Vec<_> = app.problems.of(Some("check")).filter(|p| p.area == "scripts").collect();
     assert_eq!(rows.len(), expected.len());
+    assert_eq!(narrowed.rows.iter().collect::<Vec<_>>(), rows);
     assert!(rows.iter().all(|p| p.at.is_some() && p.tool == Some(ToolKind::Variants)));
     // The header of the script reads the same rows.
     assert_eq!(app.doc_problem_count(Doc::Rules), expected.len());

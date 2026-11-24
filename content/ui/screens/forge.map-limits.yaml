@@ -1,0 +1,19 @@
+screen: forge.map-limits
+kind: list
+layout: controls
+backing: shell
+scrolls: true
+states:
+  open:
+    focus: 0
+  last:
+    focus: 6
+  unavailable:
+    focus: 0
+widgets:
+  title:
+    component: title
+    text: "MAP LIMITS"
+  legend:
+    component: legend
+    prompts: [[B, "BACK"]]

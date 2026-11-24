@@ -64,6 +64,10 @@ pub struct Tally {
     pub state_words: u64,
     pub copies: u64,
     pub uploads: u64,
+    pub native_guest_binds: u64,
+    pub guest_bind_refused_destroy: u64,
+    pub native_rect_clears: u64,
+    pub clear_refused_rect_count: u64,
 }
 
 /// One guest call of a D3D entry, as the adapter files it.
@@ -127,6 +131,10 @@ pub struct Work {
     pub binds: u64,
     pub copies: u64,
     pub uploads: u64,
+    pub native_guest_binds: u64,
+    pub guest_bind_refused_destroy: u64,
+    pub native_rect_clears: u64,
+    pub clear_refused_rect_count: u64,
     pub locks: u64,
     pub queries: u64,
     pub presents: u64,
@@ -143,6 +151,10 @@ impl Work {
         self.state_words += t.state_words;
         self.copies += t.copies;
         self.uploads += t.uploads;
+        self.native_guest_binds += t.native_guest_binds;
+        self.guest_bind_refused_destroy += t.guest_bind_refused_destroy;
+        self.native_rect_clears += t.native_rect_clears;
+        self.clear_refused_rect_count += t.clear_refused_rect_count;
     }
 
     /// A drain outside every entry (a producer boundary's).
@@ -227,7 +239,7 @@ pub struct Row {
 /// ([`Producer::Layer`], its status [`layer_status`]). Every row is `d3d`
 /// until the slice that replaces it changes it, in the same commit as its
 /// test. Callers the inventory
-/// names that have no point yet (movies, the flares, target selection,
+/// names that have no point yet (movies, the flares,
 /// the untraced `Begin` callers, the first person's own entry) are filed
 /// under the producer around them or `unknown`, and the `callers` table
 /// names their functions.
@@ -255,6 +267,18 @@ pub const REGISTRY: &[Row] = &[
         entry: engine::points::RENDER_SKY.base,
         status: Status::Partial,
         slot: "after_lights",
+    },
+    Row {
+        name: "scene_clear",
+        entry: 0x0001_4b60,
+        status: Status::Partial,
+        slot: "opaque",
+    },
+    Row {
+        name: "target_select",
+        entry: 0x0001_cd30,
+        status: Status::Partial,
+        slot: "opaque",
     },
     Row {
         name: "object_shadows",
@@ -313,7 +337,7 @@ pub const REGISTRY: &[Row] = &[
     Row {
         name: "screen_effect",
         entry: 0x0002_d140,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "transparents",
     },
     Row {
@@ -958,6 +982,18 @@ pub fn install(b: &mut hooks::Builder) {
             "residual_census_sky_end",
         ),
         (
+            &points::SCENE_CLEAR,
+            "scene_clear",
+            "residual_census_scene_clear",
+            "residual_census_scene_clear_end",
+        ),
+        (
+            &points::SCENE_TARGET_SELECT,
+            "target_select",
+            "residual_census_target_select",
+            "residual_census_target_select_end",
+        ),
+        (
             &points::OBJECT_SHADOW_LIST,
             "object_shadows",
             "residual_census_object_shadows",
@@ -1345,7 +1381,10 @@ mod tests {
         for r in REGISTRY {
             assert_eq!(
                 r.status,
-                if matches!(r.name, "water_teardown" | "sky") {
+                if matches!(
+                    r.name,
+                    "water_teardown" | "sky" | "scene_clear" | "target_select" | "screen_effect"
+                ) {
                     Status::Partial
                 } else {
                     Status::D3d
@@ -1357,6 +1396,42 @@ mod tests {
         let sky = Producer::Fixed(row("sky").unwrap());
         assert_eq!(sky.status(), Status::Partial);
         assert_eq!(sky.slot(), "after_lights");
+    }
+
+    #[test]
+    fn scene_attachment_helpers_count_device_entries_under_the_open_helper() {
+        let mut c = open(true, 1);
+        c.frame_begin();
+        for (name, device_entry, tally) in [
+            ("scene_clear", "D3DDevice_Clear", Tally { native_rect_clears: 1, ..Tally::default() }),
+            ("target_select", "D3DDevice_SetRenderTarget", Tally { guest_bind_refused_destroy: 1, ..Tally::default() }),
+        ] {
+            let helper = Producer::Fixed(row(name).unwrap());
+            c.enter(helper);
+            c.call(&entry(device_entry, 0x1100, tally), None);
+            c.leave(|p| p == helper);
+        }
+        c.frame_end();
+        let rows = close(c, 8).producers.unwrap();
+        let clear = rows[&Producer::Fixed(row("scene_clear").unwrap())].work;
+        let bind = rows[&Producer::Fixed(row("target_select").unwrap())].work;
+        assert_eq!((clear.clears, clear.binds, clear.native_rect_clears), (1, 0, 1));
+        assert_eq!((bind.clears, bind.binds, bind.guest_bind_refused_destroy), (0, 1, 1));
+    }
+
+    #[test]
+    fn screen_effects_charge_claimed_and_guest_draws_to_the_partial_producer() {
+        let effect = Producer::Fixed(row("screen_effect").unwrap());
+        let mut c = open(true, 1);
+        c.frame_begin();
+        c.enter(effect);
+        c.call(&entry(DRAW, 0x1200, tally(3, 2, 1, 0)), None);
+        c.leave(|p| p == effect);
+        c.frame_end();
+        let report = close(c, 8);
+        let work = report.producers.unwrap()[&effect].work;
+        assert_eq!(effect.status(), Status::Partial);
+        assert_eq!((work.draws, work.claimed, work.residual), (3, 2, 1));
     }
 
     #[test]

@@ -401,7 +401,7 @@ fn shows_are_coalesced_to_five_a_second_and_a_key_carries_one_whole() {
     // Offered every tick, a state is admitted at most five a second; the
     // drops do not queue: each new second starts its own five.
     let mut admitted = 0;
-    let mut per_window: Vec<usize> = Vec::new();
+    let mut per_window = [0; 2];
     for tick in 0..2 * TICKS_PER_SECOND {
         let sent = budget.schedule(tick, &[show()]).unwrap();
         let shows = sent
@@ -413,9 +413,7 @@ fn shows_are_coalesced_to_five_a_second_and_a_key_carries_one_whole() {
             })
             .unwrap_or(0);
         admitted += shows;
-        if tick % TICKS_PER_SECOND == TICKS_PER_SECOND - 1 {
-            per_window.push(shows);
-        }
+        per_window[(tick / TICKS_PER_SECOND) as usize] += shows;
     }
     assert_eq!(admitted, 2 * SHOWS_PER_SECOND);
     assert_eq!(per_window, [SHOWS_PER_SECOND; 2]);
@@ -428,13 +426,14 @@ fn shows_are_coalesced_to_five_a_second_and_a_key_carries_one_whole() {
     // A state that rides a key is never refused for the rate, even after
     // the second's five are spent.
     let mut budget = Budget::default();
-    for tick in 0..TICKS_PER_SECOND {
+    for tick in 0..TICKS_PER_SECOND - 1 {
         budget.schedule(tick, &[show()]).unwrap();
     }
+    assert_eq!(budget.stats().shows, SHOWS_PER_SECOND as u64);
     let sent = budget
-        .schedule(TICKS_PER_SECOND, &[key(), show()])
+        .schedule(TICKS_PER_SECOND - 1, &[key(), show()])
         .unwrap()
         .unwrap();
     assert_eq!(sent.records.first(), Some(&key()));
-    assert!(matches!(sent.records[1], Record::Show(_)));
+    assert_eq!(sent.records.get(1), Some(&show()));
 }

@@ -131,11 +131,9 @@ object var lit: bool = false
 global var lights: int = 0
 // The site taken this tick, if any, whose line the spawns move to.
 global var front: zone? = none
-// The zone the HUD follows (and its id), the banner's ticks left, and the last whole
+// The zone the HUD follows, the banner's ticks left, and the last whole
 // second of the clock a warning was weighed at.
 global var focus: zone? = none
-global var focus_id: int = -1
-global var stays: bool = false
 global var banner_left: int = 0
 global var seen: int = -1
 
@@ -181,21 +179,23 @@ fn show_front() {
         }
     }
     // A site someone is on stays the front, contested or not.
-    stays = false
     if phase < needed {
-        for each site s where not s.taken and s.id == focus_id {
-            if count(players p where p.alive and inside(p, s)) > 0 { stays = true }
+        if let z = focus {
+            if z.taken or count(players p where p.alive and inside(p, z)) == 0 {
+                focus = none
+            }
         }
-        if not stays {
-            focus = first(site s where not s.taken and ticks_held(s, team 0) > 0t)
+        if focus == none {
+            // Capture time accumulates even after attackers leave a site.
+            // The mark follows living attackers, including on a contested site.
+            focus = first(site s where not s.taken and
+                count(players p where p.alive and p.team == team 0 and inside(p, s)) > 0)
             if focus == none { focus = first(site s where not s.taken) }
         }
     } else {
         focus = last_stand
     }
-    focus_id = -1
     if let z = focus {
-        focus_id = z.id
         mark(front_mark, z)
         let here = count(players p where p.alive and p.team == team 0 and inside(p, z))
         pushers = here
@@ -259,6 +259,7 @@ fn release(side: team) {
 
 on round_start {
     over = false
+    focus = none
     offer_pick(0, "LOADOUT")
     pick_row(0, "STANDARD")
     pick_row(0, "CLOSE QUARTERS")

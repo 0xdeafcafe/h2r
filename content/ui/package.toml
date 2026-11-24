@@ -43,6 +43,7 @@ inputs = [
     "screens/forge.controls.yaml",
     "screens/forge.games.yaml",
     "screens/forge.link.yaml",
+    "screens/forge.map-limits.yaml",
     "screens/forge.objects.yaml",
     "screens/forge.options.yaml",
     "screens/forge.properties.yaml",

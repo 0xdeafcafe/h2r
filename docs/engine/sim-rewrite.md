@@ -2,11 +2,14 @@
 
 Status: plan, 2026-11-20. The `SimExt` blob (section 2) is partly built,
 with tests only. Phase 1b's skeleton walk in `bd090` is built, with tests
-only ([skeleton-walk.md](skeleton-walk.md)); `1dd1c0` is not. The phase 1c bodies cover
+only ([skeleton-walk.md](skeleton-walk.md)). Its graph walk `1dd1c0` is
+built and runs as an arm, the guest answering and the Rust result compared
+with it at every call. The phase 1c bodies cover
 [markers](markers.md), the [first-person palette](palette.md), the
 [unit pose](unit-pose.md), unit aim (`c7840`) and the
 [first-person filters](first-person-filters.md) (`166d75`, including
 `11eed0`). Slice 1d implements the [channel manager and graph lookups](animation-manager.md). Run parity and the cumulative timing gate remain open.
+Phase 2 compares the BSP vector test’s hit byte and result record against the guest under the collision switch ([entries C and D](collision-queries.md)). The outer BSP walk also compares the returned context.
 The plan replaces the verdict in
 [feature-engine.md](feature-engine.md) ("Subsystem map and ranking", rows
 15-18) that objects, AI and physics "stay recompiled". The user asked on
@@ -606,10 +609,17 @@ It touches nothing owned by Live, bots, theater or film.
 is inline in `bd090`, whose register-level port runs it; at the loop's
 entry the port calls `sim_anim::build_matrices` through
 `engine::sim_anim::skeleton`, so one Rust call builds every matrix of an
-object ([skeleton-walk.md](skeleton-walk.md)). `1dd1c0` runs the same loop
-for the animation graph's own callers (219 and 182 visible samples into
-`1421f0` and `142a60`) and is 1b's remaining part; `native_transform_compose`
-and `native_pose_matrix` retire with it.
+object ([skeleton-walk.md](skeleton-walk.md)). `1dd1c0` runs the same
+leaves for the animation graph's own callers (219 and 182 visible samples
+into `1421f0` and `142a60`) over a queue of child and sibling links.
+`sim_anim::graph_matrices` computes it in one call
+([skeleton-walk.md](skeleton-walk.md#the-graph-walk-1dd1c0)). Under
+`impl.sim.native.anim` it runs as an arm: `engine::sim_anim::graph_walk`
+plans each call at the entry, the guest answers, and the plan is compared
+with the guest's result, counted and the first mismatch named
+(`anim.graph_walk`). The body that answers without the guest replaces the
+arm once the arm shows no mismatch over the ladder's runs;
+`native_transform_compose` and `native_pose_matrix` retire then.
 
 1c's marker slice follows the same shape: the marker port
 (`sim_native::marker`, `b8d30`) stays the vehicle, and where it would

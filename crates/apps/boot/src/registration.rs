@@ -210,6 +210,12 @@ pub(crate) fn register_core_film(
             if let Err(error) = result {
                 eprintln!("actor-net: sending host tick {tick}: {error}");
             }
+            // The picks a client's players made, back up the channel into
+            // the host's VM (docs/game/rules-world-api.md, "Pickers").
+            #[cfg(feature = "rules")]
+            for (bytes, seats) in crate::actor_net_link::take_picks(live.as_deref()) {
+                crate::actor_net::pick::receive(&bytes, &seats);
+            }
             // actors.net's view of each peer's budget.
             crate::actor_net::report::publish_host(tick, link.peers());
         },
@@ -224,6 +230,19 @@ pub(crate) fn register_core_film(
         });
         if client.take_key_request() && !crate::actor_net_link::request_key(inbox.as_deref()) {
             eprintln!("actor-net: tick {tick}: no actor tunnel to ask the host for a key");
+        }
+        // This machine's players' picks, back up the channel
+        // (docs/game/rules-world-api.md, "Pickers"), and whether the
+        // tunnel carries them at all.
+        #[cfg(feature = "rules")]
+        crate::rules::world::pick::client_ready(crate::actor_net_link::pick_upstream(
+            inbox.as_deref(),
+        ));
+        #[cfg(feature = "rules")]
+        for bytes in crate::actor_net::pick::take_outbox() {
+            if !crate::actor_net_link::send_pick(inbox.as_deref(), &bytes) {
+                eprintln!("actor-net: tick {tick}: no actor tunnel carries a pick upstream");
+            }
         }
     });
     features
@@ -340,7 +359,12 @@ pub(crate) fn register_core_film(
     // A campaign level in place of the main menu (`h2 play --level`,
     // H2_LEVEL) and the level-loaded mark H2_PERF_FROM=level waits on
     // (docs/runtime/level-boot.md).
-    level_boot::install(rt, features, i.level, i.perf_level).context("installing the level boot")?;
+    let mut level = i.level;
+    let preview_script = level
+        .as_mut()
+        .and_then(|level| level.variant.as_mut())
+        .and_then(|variant| variant.script.take());
+    level_boot::install(rt, features, level, i.perf_level).context("installing the level boot")?;
     // Campaign skulls kept per profile: a pickup is remembered and a
     // campaign start turns on the profile's chosen skulls (docs/game/skulls.md).
     // Headless runs (no settings store) leave skulls as retail. Hooks on
@@ -368,6 +392,13 @@ pub(crate) fn register_core_film(
         },
     )
     .context("installing the game-variant store")?;
+    if let Some(blob) = preview_script {
+        crate::game_variants::store()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .add_script(blob)
+            .map_err(anyhow::Error::msg)?;
+    }
     if let Some(hle) = i.live.clone() {
         features
             .add(&crate::live_hopper::MapPackRotation(hle))

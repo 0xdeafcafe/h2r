@@ -1498,7 +1498,7 @@ fn go_to_anything_finds_every_voice_and_every_editor() {
     assert_eq!(app.voices.doc.as_deref(), Some("cortana"));
     assert_eq!(app.voices.pane, voices::Pane::Setup);
 
-    // Each editor of View > Editors is a command.
+    // Each editor has a command in Go to anything.
     let editors = palette(&mut app, "open editor:");
     assert_eq!(editors.total(Kind::Command), Surface::EDITORS.len());
     let variants = palette(&mut app, "open editor game variants").entries.remove(0);
@@ -1644,9 +1644,11 @@ fn go_to_anything_finds_a_tag_a_package_an_item_and_a_command_with_no_map_open()
     assert_eq!(app.loaded_map(), Some("fixture"));
     assert_eq!(app.front_doc(), Some(Doc::Map));
 
-    // The package's and the item's documents are slices to come (FL10
-    // the package document, FL4 items): their rows already carry the
-    // `OpenAsset` those slices teach to open, which says why it cannot yet.
+    // The package's document is a slice to come (FL10 the package
+    // document): its row already carries the `OpenAsset` FL10 teaches to
+    // open. The item's opens now (FL4 items); this one is a `tag` item
+    // whose tag no map holds (the package adds it), so it refuses here
+    // and names the tag.
     let why = app.perform(package.action, false).unwrap_err();
     assert!(
         matches!(&why, Refused::Failed(m) if m.contains("package:map-kit")),
@@ -1654,7 +1656,7 @@ fn go_to_anything_finds_a_tag_a_package_an_item_and_a_command_with_no_map_open()
     );
     let why = app.perform(item.action, false).unwrap_err();
     assert!(
-        matches!(&why, Refused::Failed(m) if m.contains("item:map-kit:0")),
+        matches!(&why, Refused::Failed(m) if m.contains("map_kit") && m.contains("not in the open map")),
         "{why:?}"
     );
 }
@@ -1678,5 +1680,199 @@ fn go_to_anything_opens_a_tree_tag_by_opening_its_map_first() {
         matches!(app.front_doc(), Some(Doc::Tag(_))),
         "{:?}",
         app.front_doc()
+    );
+}
+
+// ---------- Items open ----------
+
+/// The map registry the items open on: the scenario, and the sound
+/// (`crate::api::sound::tests::mouth_map` keeps the invented cache's own
+/// tags, with the weapon's slot a `snd!` now).
+fn items_registry() -> &'static tags::registry::Registry {
+    static R: std::sync::OnceLock<tags::registry::Registry> = std::sync::OnceLock::new();
+    R.get_or_init(|| {
+        let schema =
+            tags::schema::Schema::parse("group scnr 0x10 align 4\ngroup snd! 0x14 align 4\n")
+                .unwrap();
+        let mut defs = tags::defs::Defs::default();
+        defs.parse_into(
+            "test",
+            "\
+group snd! 0x14
+  0x0 pad 0x6
+  0x6 u16 playback_index
+  0x8 pad 0xc
+",
+        )
+        .unwrap();
+        tags::registry::Registry::build(&schema, &defs)
+    })
+}
+
+/// One local package, `items`, whose items open the editors of what they
+/// build: a `rules` script, a `variant` of it, a `sound` item whose tag
+/// the map holds, and an `edits` item naming that sound.
+fn items_package(dir: &Path) {
+    std::fs::create_dir_all(dir.join("scripts")).unwrap();
+    std::fs::create_dir_all(dir.join("edits")).unwrap();
+    std::fs::create_dir_all(dir.join("sound/invented")).unwrap();
+    // Opening the item uses the sound already in the fixture map.
+    std::fs::write(dir.join("sound/invented/line.wav"), b"unused fixture").unwrap();
+    std::fs::write(
+        dir.join("package.toml"),
+        r#"[package]
+format = 1
+id = "items"
+name = "Items"
+
+[[item]]
+kind = "rules"
+source = "scripts/hill.rules"
+
+[[item]]
+kind = "variant"
+source = "scripts/hill.variant.rules"
+
+[[item]]
+kind = "sound"
+source = "sound/invented/line.wav"
+tag = "objects\\test\\blaster"
+
+[[item]]
+kind = "edits"
+source = "edits/blaster.yaml"
+"#,
+    )
+    .unwrap();
+    // The opening lines of a script (docs/game/rules-engine.md): a name,
+    // a type, what it requires.
+    for name in ["hill.rules", "hill.variant.rules"] {
+        std::fs::write(
+            dir.join("scripts").join(name),
+            "rules \"Hill\" 1\ntype party\n\nrequires hud.message\n",
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        dir.join("edits/blaster.yaml"),
+        "- tag: 'snd!:objects\\test\\blaster'\n  set:\n    - {path: playback_index, value: 1}\n",
+    )
+    .unwrap();
+}
+
+/// The invented sound open as the map (`mouth_map`'s `snd!` tag is the
+/// weapon's slot), with the package in place: everything an item's
+/// double-click reads.
+fn items_app(t: &Temp) -> App {
+    let (mut app, _, _) = tag_tests::app_with_registry(
+        &t.0,
+        crate::api::sound::tests::mouth_map(),
+        items_registry(),
+    );
+    items_package(&t.0.join("data/packages/items"));
+    app
+}
+
+/// An item row's double-click (`Action::OpenAsset`, the way in the
+/// browser and Go to anything push) opens the editor of what the item
+/// builds, and the tab carries the item's id
+/// (docs/editor/studio-flow.md, "Everything is an asset").
+#[test]
+fn an_items_double_click_opens_the_editor_of_what_it_builds() {
+    let t = Temp::new("items-open");
+    let mut app = items_app(&t);
+    let open = |asset: &str| Action::OpenAsset {
+        asset: asset.to_owned(),
+        map: None,
+    };
+
+    // The `rules` item opens the script editor on the package's file, as
+    // a tab of the item.
+    app.dispatch(open("item:items:0"));
+    assert_eq!(app.front_doc(), Some(Doc::Rules));
+    assert!(app.rules.opened);
+    assert_eq!(app.doc_id(Doc::Rules), "item:items:0");
+    assert_eq!(app.doc_title(Doc::Rules), "hill.rules");
+    assert_eq!(app.doc_tool(Doc::Rules), ToolKind::Variants);
+
+    // The `variant` item of the same script opens the variant's
+    // settings, as a tab of the item.
+    app.dispatch(open("item:items:1"));
+    assert_eq!(app.front_doc(), Some(Doc::Variant));
+    assert!(app.variants.as_ref().is_some_and(|e| e.current().is_some()));
+    assert_eq!(app.doc_id(Doc::Variant), "item:items:1");
+
+    // The `sound` item opens the `snd!` it builds in the sound editor.
+    app.dispatch(open("item:items:2"));
+    let front = app.front_doc().unwrap();
+    assert!(matches!(front, Doc::Tag(_)), "{front:?}");
+    let tag = app
+        .tags
+        .tag(match front {
+            Doc::Tag(id) => id,
+            _ => unreachable!(),
+        })
+        .unwrap();
+    assert_eq!(
+        format!("{}:{}", tags::defs::fourcc_text(tag.group), tag.name),
+        r"snd!:objects\test\blaster",
+        "the tag the item builds"
+    );
+    assert_eq!(super::kinds::kind(tag.group).editor, super::kinds::Editor::Audition, "the sound editor");
+
+    // The `edits` item opens the tag its file names.
+    app.dispatch(open("item:items:3"));
+    let front = app.front_doc().unwrap();
+    assert!(matches!(front, Doc::Tag(_)), "{front:?}");
+
+    // An item whose tag no map holds refuses and names the item.
+    let before = app.log().len();
+    app.dispatch(open("item:items:99"));
+    assert_eq!(app.front_doc(), Some(front), "the edits item stays in front");
+    assert!(app.log().len() > before);
+    assert!(
+        app.status()
+            .is_some_and(|s| s.text().contains("item:items:99")),
+        "{:?}",
+        app.status()
+    );
+
+    // The script and the variant keep their item ids after the other
+    // items opened.
+    assert_eq!(app.doc_id(Doc::Rules), "item:items:0");
+    assert_eq!(app.doc_id(Doc::Variant), "item:items:1");
+}
+
+/// A variant opened another way loses the item id: the tab answers its
+/// tool name again, and the item id comes back only from the item.
+#[test]
+fn a_variant_opened_another_way_answers_no_item() {
+    let t = Temp::new("items-variant-replaced");
+    let mut app = items_app(&t);
+    app.dispatch(Action::OpenAsset {
+        asset: "item:items:1".into(),
+        map: None,
+    });
+    assert_eq!(app.doc_id(Doc::Variant), "item:items:1");
+    app.dispatch(Action::NewVariant(variants::GameType::Slayer));
+    assert_eq!(
+        app.doc_id(Doc::Variant),
+        "variant",
+        "the new variant is no item's"
+    );
+
+    // A script opened from the starters answers no item any more: the
+    // editor holds no file, and the tab's id says so.
+    app.dispatch(Action::OpenAsset {
+        asset: "item:items:0".into(),
+        map: None,
+    });
+    assert_eq!(app.doc_id(Doc::Rules), "item:items:0");
+    app.rules.open_starter("slayer").unwrap();
+    app.dispatch(Action::FocusDoc(Doc::Rules));
+    assert_eq!(
+        app.doc_id(Doc::Rules),
+        "rules",
+        "a starter is no item's script"
     );
 }

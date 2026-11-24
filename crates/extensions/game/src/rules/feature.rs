@@ -224,6 +224,10 @@ impl hooks::Feature for Rules {
             ::runtime::guest::Permissions::RW,
         )?;
         super::world::loadout::set_scratch(scratch);
+        let sight_scratch = b.guest_alloc(
+            super::world::physics::SIGHT_SCRATCH_SIZE,
+            ::runtime::guest::Permissions::RW,
+        )?;
         let s = Arc::clone(&self.shared);
         let hle = self.hle.clone();
         let scripts = Arc::clone(&self.scripts);
@@ -324,7 +328,7 @@ impl hooks::Feature for Rules {
                     };
                     let s = Arc::clone(&s);
                     c.answer_async(move |cx| -> EntryFuture {
-                        Box::pin(runtime::run_work(cx, s, work))
+                        Box::pin(runtime::run_work(cx, s, work, sight_scratch))
                     })
                 },
             )
@@ -562,8 +566,7 @@ pub fn bounces(
 ) {
     if let Some(s) = SHARED.get() {
         let mut rt = s.lock();
-        // The reads `p.airborne` and `p.primed` are the chain's latest view
-        // of each biped, set on every step so none goes stale.
+        // Set the biped reads from every chain step, even without events.
         rt.bodies(bodies);
         if awards.is_empty() && physics.is_empty() {
             return;

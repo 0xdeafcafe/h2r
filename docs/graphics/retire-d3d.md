@@ -65,7 +65,7 @@ these per caller with every stage on: the column "Count" says what exists.
 | Sorted transparents `0x0001e370` (also `0x00040870`), layer 15 | indexed; per-handler immediate | vertex bindings of indexed draws; the Rust sort | every handler's setup; multi-range branches; unknown effect builders | 2.58 ms, 1,010 entries [a] |
 | Particles `0x0023ed5c`, decals `0x00044161`, effect quads and contrails `0x0004b252`, `0x0004b28c` | inline quads and strips | the draw packet | iteration, property evaluation, ribbon construction, the per-view update `0x00174420`; unknown builders | not broken out |
 | Lens flares: writer `0x00020bb0`, reader `0x00020770` | a counted draw between an inline begin and `EndVisibilityTest` | the pixel counter, on the GPU | the counted draw, the report slots, `GetVisibilityTestResult` | none |
-| Post: `0x00013870`, colour pass `0x000214f0`, screen effect `0x0002d140` | strips into side targets | glow, screen strips, blur and convolutions, as one transaction per call | a call with an unsupported input or a missing live target; a reference-only intermediate under scaling | 0.76 ms, 164 entries [a] |
+| Post: `0x00013870`, colour pass `0x000214f0`, screen effect `0x0002d140` | strips into side targets | glow, screen strips, blur and convolutions, as one transaction per call, including a final strip or convolution into a side target | a call with an unsupported input or a missing live target; a reference-only intermediate under scaling | 0.76 ms, 164 entries [a] |
 | `0x0002dd30`, `0x0002df00` (the flares' tests and draws) | a counted visibility fan, reflection billboards and a filtered composite | six colour fan sites ([retail trace](notes/2026-11-24-lens-flares.md)) | visibility test and feedback, guest queue and target changes, refused colour fans | committed fan ranges per copy in `render.scene` |
 | Layer 17 `0x0002c30b` (S: bloom) | indexed | its structure and object items from the scene's plan (`frame-scene.layers`) | what layers 1, 5, 7, 8 and 20 refuse | none |
 | HUD `0x001917eb` (tail `0x0013954b`), shader quad `0x0022a664` | immediate quads through a shader | the quad's vertices | the shader draw `0x0001bbf0` per quad; uncovered widget helpers (`guest_builder_draw`); the built-in diffuse shader | none: the HUD is outside the timed scene-pass sites |
@@ -75,7 +75,7 @@ these per caller with every stage on: the column "Count" says what exists.
 | Loading `0x000289e0`, spinner `0x0002a1f4`, bitmaps `0x0002ae60` | immediate fans | each fan | the animation's clears, binds and presents | none |
 | Movies: tick `0x00156040`, blit `0x001568d0`, quad `0x00156960` | a texture lock and upload, one quad | none | all of it ([bink-hle.md](../audio/bink-hle.md)) | none |
 | Alternate view `0x0002c790` (`0x0002c863`, `0x0002c884`, `0x0002c889`), fallback view `0x002232a0` | whatever its scene and UI draw | as the callers above | view setup and finish | none |
-| Target selection `0x0001cd30` (five base sites `0x0002bde2` to `0x0002bfe3`), clears `0x00014b60` | binds, clears | whole-viewport clears as load operations; binds among device surfaces | partial clears, title-owned surfaces, the viewport reset | none |
+| Target selection `0x0001cd30` (five base sites `0x0002bde2` to `0x0002bfe3`), clears `0x00014b60` | binds, clears | attachment loads and clipped rectangle plans up to eight rectangles, device binds and title-surface reference transactions | longer rectangle lists, final resource destruction, the viewport reset | none |
 | Frame end `0x00013b90`, `0x00013cd0`; present `0x00013f10` | a target copy, push words, an optional surface lock, `Swap` | none | all of it | none |
 | Outside the render call: boot, the resource caches, the sim | `CreateDevice`, `AddRef`, `Release`, `IsBusy`, `BlockOnResource`, fences | none | all of it; about 0.1 call a frame from the sim [d] | 0.1 a frame [d] |
 
@@ -230,12 +230,20 @@ caller, what the guest front-end still asks `d3d` to do.
   `presents`, and `d3d_ms`.
 - **`producers`**, at most `top`, by `residual` then `entries`:
   `{producer, status, slot, calls, draws, claimed, residual, entries,
-  push_words, state_words, clears, binds, copies, uploads, d3d_ms,
+  push_words, state_words, clears, binds, native_rect_clears, clear_refused_rect_count,
+  native_guest_binds, guest_bind_refused_destroy, copies, uploads, d3d_ms,
   guest_ms}`. `status` is `native`, `d3d` or `unknown` from the registry
-  below, or `partial` for the sky and for a layer draw whose items a native stage draws
-  in part from the scene, skipping their guest draws. `guest_ms` is the producer's exclusive guest time and is `null`
-  without `render-timing`. A stage's refusals are not filed by producer;
+  below. Sky, water teardown, clear, target selection and screen effects
+  are `partial`, as are layer draws where a native stage draws some items
+  from the scene and skips their guest draws. `guest_ms` is the producer's
+  exclusive guest time and is `null` without `render-timing`. A stage's refusals are not filed by producer;
   the capture's `native_<stage>_refused_*` counters give them by stage.
+  The totals and producer rows count committed native rectangle plans
+  (`native_rect_clears`) and lists above the eight-rectangle bound
+  (`clear_refused_rect_count`). Title binds that complete without a
+  destruction increment `native_guest_binds`; final releases increment
+  `guest_bind_refused_destroy`. The helper rows are `scene_clear` and
+  `target_select`.
 - **`callers`**, at most `top`: `{function, sites, entries, draws,
   inline_draws, residual, d3d_ms}`. `function` is the analysed guest
   function that holds the return address of the entry call, named as
@@ -259,7 +267,7 @@ row per caller in the inventory table that has a named point, each with
 its entry point, its name, its status and its slot, and the layer draw by
 site and layer as `render_bridge::entry_census` names it. Work goes to the
 innermost open producer, so the rows sum to `totals`. Callers with no
-point yet (movies, the flares, target selection, the untraced `Begin`
+point yet (movies, the flares, the untraced `Begin`
 callers, the first person's own entry) fall to the producer around them
 or to `unknown`, and `callers` names their functions. `outside_render` is
 every entry call made with no render frame open (boot, the caches, the
@@ -343,8 +351,8 @@ classified readers, 73 read run state and 30 start from it.
 
 | Subsystem | Guest code that stops running | Replacement | State today |
 |---|---|---|---|
-| Views and cameras | `0x002234e0`, `0x00223080` | `scene-extract` builds the view records from the observer cameras and writes them, since other code reads them | read today, not built |
-| Visibility | `0x00040e90`, the portal traversal, the light frustum setup `0x000c1d90` | a Rust traversal over the BSP's clusters and portals; the Rust scene lists consume it | lists built; the main view's traversal and object set built beside the guest's, compared as sets, and carried by the view when equal ([native-visibility.md](native-visibility.md)); the guest's traversal still runs and the light views' is not built |
+| Views and cameras | `0x002234e0`, `0x00223080` | `scene-extract` builds the view records from the observer cameras and writes them, since other code reads them | the main view's viewport layout, render camera, projection terms, start cluster and mode built beside the guest's and compared field by field; the visibility takes the Rust camera when equal ([native-visibility.md](native-visibility.md#the-view-records)). Cinematic and override cameras remain guest-owned. The comparison writes nothing |
+| Visibility | `0x00040e90`, the portal traversal, the light frustum setup `0x000c1d90` | a Rust traversal over the BSP's clusters and portals; the Rust scene lists consume it | lists built; every game view's traversal (portal flood, sphere mode, the visible set and its run-time rows) and object set, tested against the guest's window frusta, built beside the guest's, compared as sets, and carried by the view when equal; the sphere and frustum light views compared ([native-visibility.md](native-visibility.md)); the guest's traversal still runs and owns the source-window overlap records |
 | World | the layer draws of 1, 3, 5, 7, 8, 20 over structure | `native_render::world` and `layer_pass` from tags, whole-call (framescene.md slice 4) | built for layer 3; for 1, 5, 7, 8 and 20 the structure's static items, and objects' items of 1, 5, 7, 8 and 20 |
 | Objects | `OBJECT_RENDER_SETUP` `0x00133790`, the layer-3 handlers, the first person | the Rust object setup and typed instances; a part the walk cannot read is a named drop, not a guest draw | built, with a remainder |
 | Decorators | builds `0x0004de20`, draw `0x0004e260` | `native_render::decorators` ([native-decorators.md](native-decorators.md)) | built, not verified |
@@ -587,6 +595,6 @@ reference page.
 - [render-loop.md](render-loop.md) and [native-post-hud.md](native-post-hud.md): the front-end's call tree, the HUD and the UI.
 - [sim-rewrite.md](../engine/sim-rewrite.md): who owns state; the effects phase R2 shares.
 - [e3-lighting.md](e3-lighting.md): the lighting that draws from the same scene.
-- [native-visibility.md](native-visibility.md): R4's traversal and object set, and their differential.
+- [native-visibility.md](native-visibility.md): R4's view records, traversals, frusta and object sets, and their differentials.
 - [notes/scene-pass-timing.md](notes/scene-pass-timing.md), [notes/native-ab.md](notes/native-ab.md): the measurements cited above.
 - [agent-api.md](../runtime/agent-api.md), [lab.md](../runtime/lab.md): the methods and the laptop runs.

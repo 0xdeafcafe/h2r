@@ -430,7 +430,7 @@ fn line_of_sight_passes_both_points_and_reads_al() {
             m,
             |cx| {
                 Box::pin(async move {
-                    line_of_sight(&cx, SCRATCH, [1.0, 2.0, 3.0], [4.0, 5.0, 6.0], 0xabcd_0001).await
+                    line_of_sight(&cx, SCRATCH, [1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [0xabcd_0001, 0xabcd_0002]).await
                 })
             },
             returns(eax),
@@ -442,7 +442,7 @@ fn line_of_sight_passes_both_points_and_reads_al() {
                 .esi(SCRATCH)
                 .edi(SCRATCH + 12)
                 .edx(0xabcd_0001)
-                .ecx(u32::MAX)]
+                .ecx(0xabcd_0002)]
         );
         assert_eq!(m.vec3(SCRATCH).unwrap(), [1.0, 2.0, 3.0]);
         assert_eq!(m.vec3(SCRATCH + 12).unwrap(), [4.0, 5.0, 6.0]);

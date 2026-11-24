@@ -349,29 +349,14 @@ fn the_sight_table_is_state_and_ends_with_the_round() {
 }
 
 #[test]
-fn a_host_refuses_what_its_game_side_lacks_by_name() {
-    for (src, name) in [
-        (
-            "on tick { for each players p { if p.crouching { score(p, 1) } } }",
-            "crouching",
-        ),
-        ("on tick { if sees(eye, target) { end_round(team 0) } }", "sees"),
-    ] {
-        let full =
-            format!("rules \"H\" 1\ntype slayer\nlabel eye: object\nlabel target: object\n{src}\n");
-        let (ir, _) = build(&full).unwrap();
-        assert_eq!(unhostable(&ir).map(|e| e.name), Some(name));
-    }
-    for e in [id::CROUCHING, id::SEES] {
-        assert!(!caps::ENTRIES[e as usize].status.hostable());
-    }
-    // `airborne` and `primed` are the host's (the superbounce chain's view
-    // of each biped), so a script that reads them runs.
+fn physics_reads_have_named_host_entries() {
     for (src, e) in [
+        ("on tick { for each players p { if p.crouching { score(p, 1) } } }", id::CROUCHING),
         ("on tick { for each players p { if p.primed { score(p, 1) } } }", id::PRIMED),
         ("on tick { for each players p { if airborne(p) { score(p, 1) } } }", id::AIRBORNE),
+        ("on tick { if sees(eye, target) { end_round(team 0) } }", id::SEES),
     ] {
-        let full = format!("rules \"H\" 1\ntype slayer\n{src}\n");
+        let full = format!("rules \"H\" 1\ntype slayer\nlabel eye: object\nlabel target: object\n{src}\n");
         let (ir, _) = build(&full).unwrap();
         assert_eq!(unhostable(&ir), None);
         assert!(caps::ENTRIES[e as usize].status.hostable());

@@ -247,6 +247,12 @@ pub fn package_sources(
         {
             continue;
         }
+        // A portable record names a script via its extension block.
+        if item.kind == Kind::Variant
+            && item.source.as_deref().is_some_and(|s| s.ends_with(".h2variant"))
+        {
+            continue;
+        }
         let role = match item.kind {
             Kind::Rules if manifest.package.id == "core" => Role::Retail,
             Kind::Rules => Role::Rules,

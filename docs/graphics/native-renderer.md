@@ -334,6 +334,10 @@ It still requires the compiled alpha test to match, and checks the actual
 strip attributes against the plan by bits. Each strip in one pass must
 have the same raster state. Other shaders, effects and raster states keep
 their original draws when the native pass cannot reproduce them.
+The replacement uses one depth scale across its pinned targets. A change
+in scale between held draws replays the call, including its side-target writes.
+A call that only writes side targets can run without a framebuffer slot when
+its stages and convolutions are independent of framebuffer pixels and size.
 
 A linear X8 alias of the framebuffer samples alpha as one. The native
 feedback copy applies that alpha rule on its own scratch texture, as
@@ -418,11 +422,18 @@ replaces stencil on passing fragments. Replay retains the sky pass beside its
 original strip and records it against the replay's own attachments and textures.
 If extraction, admission or recording fails, the original strip draws in order.
 
-**Clears, binds and visibility.** A whole-viewport, unmasked clear uses the
-attachment load operations directly; partial or channel-masked clears use the
-rectangle renderer. Target binds among device-owned surfaces skip reference
-staging but keep surface lookup, write-back order and viewport behaviour;
-title-owned surfaces keep the usual rules. Visibility issuance and results
+**Clears, binds and visibility.** A whole-viewport, unmasked clear uses an
+attachment load. For up to eight explicit colour rectangles, the native
+planner clips their union to the viewport and target. A full union can use
+a load, and a masked clear writes only its selected channels. Depth and
+stencil tiles keep their individual scissors because the depth surface may
+extend beyond the colour target. Longer lists use the linear rectangle path.
+
+Device-owned targets skip reference staging. Title-owned surfaces reuse
+transaction storage while reading current guest reference counts, parent
+links and GPU lock stamps on each bind. Final releases queue the original
+resource destructor. Both bind forms retain their viewport behaviour.
+Visibility issuance and results
 use the GPU pixel counter and report slots; the inline begin still drains
 before the counted draw, and finish and result calls keep index validation,
 pending answers, timestamps and write order. A one-use marker lets these

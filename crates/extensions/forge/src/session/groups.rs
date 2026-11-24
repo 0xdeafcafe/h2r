@@ -195,6 +195,39 @@ impl Session {
         self.edit(world, tick, ops, None)
     }
 
+    /// Change the pivot in one local undo step using existing group ops.
+    pub fn set_group_pivot(
+        &mut self,
+        world: &mut impl World,
+        tick: u32,
+        group: OpId,
+        pivot_first: bool,
+    ) -> Result<(), String> {
+        // Shared proposals settle one at a time. A refusal of the second
+        // op could otherwise leave the group dissolved on every peer.
+        if self.seat().is_some() {
+            return Err("The group pivot can only be changed in a local session.".into());
+        }
+        let info = self
+            .groups()
+            .into_iter()
+            .find(|g| g.id == group)
+            .ok_or("No such group.")?;
+        if info.pivot_first == pivot_first {
+            return Ok(());
+        }
+        let ops = self.ops(vec![
+            Edit::Forge(Forge::Ungroup { group }),
+            Edit::Forge(Forge::Group(Group {
+                name: info.name,
+                members: info.members,
+                locked: info.locked,
+                pivot_first,
+            })),
+        ])?;
+        self.edit(world, tick, ops, None)
+    }
+
     /// Whether the thing `id` names is in a locked group.
     pub fn locked(&self, id: Endpoint) -> bool {
         self.group_of(id).is_some_and(|g| g.locked)

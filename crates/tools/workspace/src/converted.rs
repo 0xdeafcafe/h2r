@@ -37,7 +37,7 @@
 //! `maps/` ([`tags::repo::TagRepo::reset`]), markers included, so
 //! [`is_stored`] then says no and the converter's unit is converted again.
 use std::io::Cursor;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use content::Sha256;
 use map::{Map, ResourceFile};
@@ -49,8 +49,8 @@ use tags::schema::Schema;
 
 use crate::maps::BaseMaps;
 
-/// Extension of a converted level's marker, in `<store>/maps/`.
-pub const MARKER_EXT: &str = "converted";
+pub use tags::repo::converted::*;
+use tags::repo::converted::{marker_text, parse_marker};
 
 /// The shared caches a map reads resources from, by file stem.
 const SHARED: [(&str, ResourceFile); 3] = [
@@ -79,76 +79,8 @@ pub struct Converted {
     pub skeleton: Option<SkeletonReport>,
 }
 
-/// A converted level in the store, as [`levels`] lists it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Marked {
-    pub stem: String,
-    pub converter: String,
-    /// The SHA-256 of the map the converter wrote (hex).
-    pub file: String,
-}
-
 fn err(stem: &str, e: impl std::fmt::Display) -> String {
     format!("converted level {stem}: {e}")
-}
-
-/// `<store>/maps/<stem>.converted`.
-pub fn marker_path(store: &Path, stem: &str) -> PathBuf {
-    store.join("maps").join(format!("{stem}.{MARKER_EXT}"))
-}
-
-fn marker_text(converter: &str, file: &Sha256) -> String {
-    format!("converter {converter}\nfile {file}\n")
-}
-
-fn parse_marker(stem: &str, text: &str) -> Option<Marked> {
-    let (mut converter, mut file) = (None, None);
-    for line in text.lines() {
-        match line.split_once(' ') {
-            Some(("converter", v)) => converter = Some(v.to_owned()),
-            Some(("file", v)) => file = Some(v.to_owned()),
-            _ => {}
-        }
-    }
-    Some(Marked {
-        stem: stem.to_owned(),
-        converter: converter?,
-        file: file?,
-    })
-}
-
-/// The marker of `stem`, when it has one that reads.
-pub fn marked(store: &Path, stem: &str) -> Option<Marked> {
-    parse_marker(
-        stem,
-        &std::fs::read_to_string(marker_path(store, stem)).ok()?,
-    )
-}
-
-/// Every converted level of the store, by stem.
-pub fn levels(store: &Path) -> Vec<Marked> {
-    let Ok(dir) = std::fs::read_dir(store.join("maps")) else {
-        return Vec::new();
-    };
-    let mut out: Vec<Marked> = dir
-        .flatten()
-        .filter_map(|e| {
-            let name = e.file_name().into_string().ok()?;
-            let stem = name.strip_suffix(&format!(".{MARKER_EXT}"))?;
-            marked(store, stem)
-        })
-        .collect();
-    out.sort_by(|a, b| a.stem.cmp(&b.stem));
-    out
-}
-
-/// Whether the store holds `stem` as the converted level whose map file is
-/// `file`: the marker names it and the level's extent table says the same
-/// file. A converter's unit whose level is not stored is converted again.
-pub fn is_stored(store: &Path, stem: &str, file: &Sha256) -> bool {
-    let want = file.to_string();
-    marked(store, stem).is_some_and(|m| m.file == want)
-        && StoreFile::extents(store, stem).is_ok_and(|e| e.file == want)
 }
 
 /// A stem the store can name a level by: lower case letters, digits and
@@ -190,6 +122,16 @@ pub fn store_converted(
     }
     let file = Sha256::of(bytes);
     let len = bytes.len() as u64;
+    let marker = marker_path(store, stem);
+    let pending = marker.with_extension("converting");
+    let owner = marked(store, stem).or_else(|| {
+        parse_marker(stem, &std::fs::read_to_string(&pending).ok()?)
+    });
+    if let Some(owner) = &owner
+        && owner.converter != converter
+    {
+        return Err(err(stem, format!("already owned by {}", owner.converter)));
+    }
     if is_stored(store, stem, &file) {
         return Ok(Converted {
             stem: stem.to_owned(),
@@ -201,8 +143,7 @@ pub fn store_converted(
         });
     }
     let mut repo = TagRepo::create(store).map_err(|e| err(stem, e))?;
-    let marker = marker_path(store, stem);
-    if marked(store, stem).is_none() && StoreFile::exists(store, stem) {
+    if owner.is_none() && StoreFile::exists(store, stem) {
         return Err(err(
             stem,
             format!(
@@ -211,7 +152,10 @@ pub fn store_converted(
             ),
         ));
     }
-    // A stopped run leaves no marker: the level is converted again.
+    // Record ownership before touching the level. A stopped run leaves
+    // no completion marker, and the same converter can replace its extents.
+    content::store::write_atomic(&pending, marker_text(converter, &file).as_bytes())
+        .map_err(|e| err(stem, format!("writing {}: {e}", pending.display())))?;
     match std::fs::remove_file(&marker) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -264,6 +208,7 @@ pub fn store_converted(
     repo.settle().map_err(|e| err(stem, e))?;
     content::store::write_atomic(&marker, marker_text(converter, &file).as_bytes())
         .map_err(|e| err(stem, format!("writing {}: {e}", marker.display())))?;
+    let _ = std::fs::remove_file(&pending);
     let skeleton = put.skeleton.clone();
     Ok(Converted {
         stem: stem.to_owned(),

@@ -131,7 +131,13 @@ fn a_spawner_is_one_of_the_items_the_maps_spawners_name() {
     let mut w = Fake::default();
     assert_eq!(s.kit_items(), [rifles()]);
     assert_eq!(kit::item_group(&rifles()), kit::ItemGroup::Weapons);
-    s.place_item(&mut w, 1, &rifles(), frame(2., 0.)).unwrap();
+    // Check the item refusal while the kit still has room for a spawner.
+    let err = s
+        .place_item(&mut w, 1, &tag("itmc", r"fixture\other"), frame(2., 0.))
+        .unwrap_err();
+    assert!(err.contains("not an item this map's spawners use"), "{err}");
+    assert!(w.calls.is_empty());
+    s.place_item(&mut w, 2, &rifles(), frame(2., 0.)).unwrap();
     // Every game type, then where it is and what it is.
     assert_eq!(
         w.calls,
@@ -149,11 +155,6 @@ fn a_spawner_is_one_of_the_items_the_maps_spawners_name() {
             ]),
         )]
     );
-    let err = s
-        .place_item(&mut w, 2, &tag("itmc", r"fixture\other"), frame(2., 0.))
-        .unwrap_err();
-    assert!(err.contains("not an item this map's spawners use"), "{err}");
-    assert_eq!(w.calls.len(), 1);
 }
 
 #[test]

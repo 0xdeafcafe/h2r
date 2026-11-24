@@ -128,11 +128,11 @@ pub trait Game {
     fn step_object(&mut self, _object: u32, _at: [i32; 3], _velocity: [i32; 3]) {}
     /// The sight test behind `sees`: whether nothing solid is between the
     /// two objects. The VM asks once a tick for each pair in its sight
-    /// table, at the tick's end ([`Vm::update`]), never from a handler, so
-    /// a host may trace in its own boundary. A game with no trace answers
-    /// false.
-    fn trace_sight(&mut self, _from: u32, _to: u32) -> bool {
-        false
+    /// table at the tick's end ([`Vm::update`]). A host that traces at
+    /// the next boundary returns `None` to keep the previous result until
+    /// it can call [`Vm::record_sight`]. A game with no trace answers false.
+    fn trace_sight(&mut self, _from: u32, _to: u32) -> Option<bool> {
+        Some(false)
     }
     /// The VM stopped on a script error: end the round with the outcome
     /// "script error" through `GAME_END`.
@@ -1347,7 +1347,9 @@ impl Vm {
         let tick = self.ext.tick;
         self.ext.sight.retain(|t| tick.saturating_sub(t.asked) < SIGHT_KEEP);
         for t in &mut self.ext.sight {
-            t.clear = game.trace_sight(t.from, t.to);
+            if let Some(clear) = game.trace_sight(t.from, t.to) {
+                t.clear = clear;
+            }
         }
     }
 
@@ -1488,6 +1490,15 @@ impl Vm {
         let slot = self.slot_named(name, Scope::Player)?;
         let row = self.ext.players.get(player as usize)?;
         Some(row[self.pos[slot] as usize])
+    }
+
+    /// Reads an object variable by name, including its default before the
+    /// first write to the object.
+    pub fn object_var(&self, object: u32, name: &str) -> Option<i32> {
+        let slot = self.slot_named(name, Scope::Object)?;
+        Some(self.ext.objects.get(&object).map_or(self.ir.slots[slot].init, |row| {
+            row[self.pos[slot] as usize]
+        }))
     }
 
     /// Writes a global by name, between ticks, for a host that holds the
@@ -1646,6 +1657,13 @@ impl Vm {
     /// The sight table (`sees`), in the order its pairs were first asked.
     pub fn sight(&self) -> &[Sight] {
         &self.ext.sight
+    }
+
+    /// Records a boundary trace if the ordered pair is still in the table.
+    pub fn record_sight(&mut self, from: u32, to: u32, clear: bool) {
+        if let Some(pair) = self.ext.sight.iter_mut().find(|p| p.from == from && p.to == to) {
+            pair.clear = clear;
+        }
     }
 
     /// The areas shown in play (`show_area`): each zone object and the team

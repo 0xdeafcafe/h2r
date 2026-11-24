@@ -622,6 +622,14 @@ impl Runtime {
             return None;
         }
         let chosen = (self.options)().ok();
+        // The match resolves the Wave set value on the map it starts on:
+        // a map-specific set plays only on its own (`builtin::resolve`).
+        let on_map = map_name(m);
+        let on_map = (!on_map.is_empty()).then_some(on_map);
+        let chosen = chosen.map(|mut o| {
+            o.map = on_map.clone();
+            o
+        });
         let kit = guest::read_kit(&*m).ok().flatten().is_some();
         // Every multiplayer start: a game that is not Firefight clears the
         // last one's.
@@ -652,7 +660,13 @@ impl Runtime {
             return "firefight: idle: not a multiplayer game".into();
         }
         let map = map_name(&*m);
-        let chosen = match (self.options)().and_then(|o| o.definition().map(|d| (o, d))) {
+        let mut read = (self.options)();
+        // The match resolves the Wave set value on this map (a
+        // map-specific set plays only on its own).
+        if let Ok(o) = read.as_mut() {
+            o.map = (!map.is_empty()).then(|| map.clone());
+        }
+        let chosen = match read.and_then(|o| o.definition().map(|d| (o, d))) {
             Ok(chosen) => chosen,
             Err(why) => {
                 let why = format!("reading Game Setup's Firefight choices: {why}");
@@ -1198,7 +1212,7 @@ pub async fn make_calls(
             for (i, &zone) in s.zones.iter().enumerate() {
                 for &(from, unit) in &s.from {
                     // A failed test counts as no sight.
-                    if guest::line_of_sight(cx, scratch, from, zone, unit)
+                    if guest::line_of_sight(cx, scratch, from, zone, [unit, u32::MAX])
                         .await
                         .unwrap_or(false)
                     {

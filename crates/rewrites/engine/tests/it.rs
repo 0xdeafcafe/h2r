@@ -41,6 +41,8 @@ mod shadow_constants;
 mod shadow_constants_differential;
 #[path = "sim_anim_differential.rs"]
 mod sim_anim_differential;
+#[path = "sim_anim_graph_differential.rs"]
+mod sim_anim_graph_differential;
 #[path = "sim_collision_differential.rs"]
 mod sim_collision_differential;
 #[path = "sim_objects_differential.rs"]

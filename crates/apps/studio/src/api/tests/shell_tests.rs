@@ -181,3 +181,105 @@ fn shell_open_focus_and_close_answer_with_the_tab() {
         .collect();
     assert_eq!(ids, ["map", KIT]);
 }
+
+/// One local package, `items`, whose items open the editors of what they
+/// build: a `rules` script and a `variant` of it (the window fixture
+/// `app::tests::items_package` is the same invention).
+fn items_app(t: &tabbed::Temp) -> App {
+    std::fs::create_dir_all(t.0.join("data/packages/items/scripts")).unwrap();
+    std::fs::write(
+        t.0.join("data/packages/items/package.toml"),
+        r#"[package]
+format = 1
+id = "items"
+name = "Items"
+
+[[item]]
+kind = "rules"
+source = "scripts/hill.rules"
+
+[[item]]
+kind = "variant"
+source = "scripts/hill.variant.rules"
+"#,
+    )
+    .unwrap();
+    for name in ["hill.rules", "hill.variant.rules"] {
+        std::fs::write(
+            t.0.join("data/packages/items/scripts").join(name),
+            "rules \"Hill\" 1\ntype party\n\nrequires hud.message\n",
+        )
+        .unwrap();
+    }
+    let mut app = App::new();
+    app.set_data_root(t.0.join("data"));
+    app
+}
+
+/// `shell.open {asset}` for a package item runs the way in the window's
+/// double-click runs ([`Action::OpenAsset`]), so both leave the same
+/// tabs, with the item's id as the tab's id
+/// (docs/editor/studio-flow.md, "One way in").
+#[test]
+fn shell_open_of_an_item_leaves_the_windows_tabs() {
+    let (ta, tb) = (
+        tabbed::Temp::new("items-window"),
+        tabbed::Temp::new("items-agent"),
+    );
+    let mut window = items_app(&ta);
+    let mut agent = items_app(&tb);
+    let mut api = Api::new();
+    for asset in ["item:items:0", "item:items:1"] {
+        window.dispatch(Action::OpenAsset {
+            asset: asset.to_owned(),
+            map: None,
+        });
+        let opened = call(
+            &mut api,
+            &mut agent,
+            m::SHELL_OPEN,
+            json!({ "asset": asset, "discard": true }),
+        );
+        assert_eq!(opened["tab"]["doc"], asset, "{opened}");
+        assert_eq!(opened["front"], asset);
+    }
+    let tabs = |app: &mut App| call(&mut Api::new(), app, m::SHELL_TABS, Value::Null);
+    assert_eq!(tabs(&mut window), tabs(&mut agent), "the two ways agree");
+    let tabs = tabs(&mut agent);
+    let ids: Vec<&str> = tabs["tabs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["doc"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["item:items:0", "item:items:1"]);
+    assert_eq!(tabs["front"], "item:items:1");
+    assert_eq!(tabs["tabs"][0]["kind"], "rules");
+
+    // The tab the two ways left answers `shell.focus` by the item's id
+    // and by the tool document's name.
+    call(
+        &mut api,
+        &mut agent,
+        m::SHELL_FOCUS,
+        json!({"doc": "rules"}),
+    );
+    assert_eq!(agent.front_doc(), Some(Doc::Rules));
+    call(
+        &mut api,
+        &mut agent,
+        m::SHELL_FOCUS,
+        json!({"doc": "item:items:0"}),
+    );
+    assert_eq!(agent.front_doc(), Some(Doc::Rules));
+
+    // An item the set does not hold is refused by name.
+    let why = api
+        .call(
+            &mut agent,
+            m::SHELL_OPEN,
+            json!({ "asset": "item:items:9" }),
+        )
+        .unwrap_err();
+    assert_eq!(why.code, code::REFUSED, "{}", why.message);
+}

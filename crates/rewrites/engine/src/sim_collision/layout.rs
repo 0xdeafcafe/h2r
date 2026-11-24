@@ -23,45 +23,12 @@ pub const ZERO: u32 = 0x0045_dbd8;
 pub const ONE: u32 = 0x0045_dbc0;
 
 /// The vector test's result record R (entries C and D).
-pub mod record {
-    /// `f32`: the hit fraction; `max(limit, 0)` before the walk.
-    pub const FRACTION: u32 = 0x00;
-    /// The hit plane's guest address.
-    pub const PLANE: u32 = 0x04;
-    /// The leaf the surface was found in, then the surface index.
-    pub const LEAF: u32 = 0x08;
-    pub const SURFACE: u32 = 0x0c;
-    /// The surface's plane word, sign-extended (bit 15: flipped).
-    pub const SURFACE_PLANE: u32 = 0x10;
-    /// Surface flags `u8`, breakable index `u8`, material `i16`.
-    pub const FLAGS: u32 = 0x14;
-    pub const BREAKABLE: u32 = 0x15;
-    pub const MATERIAL: u32 = 0x16;
-    /// `u32` leaves listed, then up to 256 leaf indices.
-    pub const COUNT: u32 = 0x18;
-    pub const LEAVES: u32 = 0x1c;
-    /// The last leaf visited once the list is full.
-    pub const OVERFLOW: u32 = 0x418;
-    pub const SIZE: u32 = 0x41c;
-}
+pub use sim_collision::bsp::segment::record;
 
-/// The vector test's 40-byte context (entry D's first argument; entry C
-/// builds one in its own frame).
-pub mod context {
-    pub const FLAGS: u32 = 0x00;
-    pub const BSP: u32 = 0x04;
-    /// `u16`.
-    pub const BREAKABLE_COUNT: u32 = 0x08;
-    pub const MASK: u32 = 0x0c;
-    pub const START: u32 = 0x10;
-    pub const DELTA: u32 = 0x14;
-    pub const RECORD: u32 = 0x18;
-    pub const PREV_LEAF: u32 = 0x1c;
-    /// `u8`.
-    pub const PREV_KIND: u32 = 0x20;
-    pub const PLANE: u32 = 0x24;
-    pub const SIZE: u32 = 0x28;
-}
+pub use sim_collision::bsp::segment::context;
+
+/// Return site of the BSP walk's near-child self-call.
+pub const CONTEXT_RECURSIVE_RETURN: u32 = 0x001d_e7dd;
 
 /// A near-child call enters 0x28 bytes below its parent. The deepest leaf
 /// uses another 0x30 to enter the matcher, 0x48 to call the ring test and

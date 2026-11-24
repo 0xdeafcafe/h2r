@@ -51,6 +51,18 @@ pub struct Stats {
     /// Entry I's parity arm: the native ray walk against the guest's.
     #[serde(default)]
     pub ray: RayParity,
+    #[serde(default)]
+    pub vector: VectorParity,
+    #[serde(default)]
+    pub context: VectorParity,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct VectorParity {
+    pub matched: u64,
+    pub mismatched: u64,
+    pub unverified: BTreeMap<String, u64>,
+    pub first_mismatch: Option<String>,
 }
 
 /// Queries of the general MOPP ray (entry I) the native walk was compared

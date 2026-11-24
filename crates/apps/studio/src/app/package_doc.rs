@@ -22,7 +22,7 @@ use ::workspace::{
     check_set, forbidden_files, lock_findings, read_lock, scope_of, store_findings,
 };
 use content::package::{
-    ALWAYS_ON, Credit, Header, Item, LOCK_FILE, MANIFEST_FILE, Manifest, MapScope, PACKAGE_FORMAT,
+    ALWAYS_ON, Credit, Header, Item, Kind, LOCK_FILE, MANIFEST_FILE, Manifest, MapScope, PACKAGE_FORMAT,
     SET_FILE, Set, SetFile, valid_slug,
 };
 use serde_json::{Value, json};
@@ -438,19 +438,139 @@ fn commit(data: &Path, dir: &Path, manifest: &Manifest) -> Res<Loaded> {
     let path = dir.join(MANIFEST_FILE);
     let old =
         std::fs::read_to_string(&path).map_err(|e| Failed(format!("{}: {e}", path.display())))?;
-    std::fs::write(&path, manifest.to_toml())
+    content::store::write_atomic(&path, manifest.to_toml().as_bytes())
         .map_err(|e| Failed(format!("{}: {e}", path.display())))?;
     let undo = |why: Refusal| {
-        let _ = std::fs::write(&path, &old);
+        let _ = content::store::write_atomic(&path, old.as_bytes());
         why
     };
     let loaded = Loaded::from_dir(dir).map_err(|e| undo(Refused(e.to_string())))?;
     let file = set_file(data).map_err(&undo)?;
     ordered(&known(data), &file).map_err(&undo)?;
     let lock = dir.join(LOCK_FILE);
-    std::fs::write(&lock, loaded.package.lock.to_toml())
-        .map_err(|e| Failed(format!("{}: {e}", lock.display())))?;
+    content::store::write_atomic(&lock, loaded.package.lock.to_toml().as_bytes())
+        .map_err(|e| undo(Failed(format!("{}: {e}", lock.display()))))?;
     Ok(loaded)
+}
+
+/// Save an editor's source, updating its original item when it belongs to
+/// this target. A new document gets an unused path even if the title matches.
+pub(super) fn put_document(
+    data: &Path,
+    id: &str,
+    kind: Kind,
+    origin: Option<&Path>,
+    suggested: &str,
+    bytes: &[u8],
+) -> Res<PathBuf> {
+    put_source(data, id, kind, origin, suggested, None, bytes)
+}
+
+/// Sounds have an identity even across sessions: their target tag or clip id.
+pub(super) fn put_sound(
+    data: &Path,
+    id: &str,
+    clip: &str,
+    tag: Option<&str>,
+    bytes: &[u8],
+) -> Res<PathBuf> {
+    let tag = tag.map(|t| t.trim().replace('/', "\\"));
+    if let Some(t) = &tag
+        && (t.is_empty() || t.contains("..") || t.starts_with('\\') || t.contains('\0'))
+    {
+        return Err(Params(format!("{t:?} is not a tag path")));
+    }
+    let source = match &tag {
+        Some(t) => format!(
+            "sounds/{}-{}.wav",
+            super::sound_import::file_stem(t, "sound"),
+            &content::Sha256::of(t.to_ascii_lowercase().as_bytes()).to_string()[..16],
+        ),
+        None => format!("sounds/{clip}.wav"),
+    };
+    let wav = ::workspace::import::read_wav(bytes).map_err(|e| Refused(e.to_string()))?;
+    ::workspace::import::encode(&wav).map_err(|e| Refused(e.to_string()))?;
+    let dir = known(data).local(id)?.1;
+    put_source(data, id, Kind::Sound, Some(&dir.join(&source)), &source, tag, bytes)
+}
+
+fn put_source(
+    data: &Path,
+    id: &str,
+    kind: Kind,
+    origin: Option<&Path>,
+    suggested: &str,
+    tag: Option<String>,
+    bytes: &[u8],
+) -> Res<PathBuf> {
+    let k = known(data);
+    let (loaded, dir) = k.local(id)?;
+    let mut manifest = loaded.package.manifest.clone();
+    let at = manifest.items.iter().position(|i| {
+        i.kind == kind && (i.source.as_ref().is_some_and(|p| origin.is_some_and(|path| path == dir.join(p)))
+            || (kind == Kind::Sound && tag.as_ref().zip(i.tag.as_ref()).is_some_and(|(a, b)| a.eq_ignore_ascii_case(b))))
+    });
+    let existing = at.map(|i| &manifest.items[i]);
+    let source = if let Some(item) = existing {
+        if kind == Kind::Sound && item.tag != tag
+            && !item.tag.as_ref().zip(tag.as_ref()).is_some_and(|(a, b)| a.eq_ignore_ascii_case(b))
+        {
+            return Err(Refused(format!("{suggested} belongs to another sound")));
+        }
+        item.source.clone().ok_or_else(|| Refused("the item has no source".into()))?
+    } else {
+        let used = |s: &str| loaded.files.contains_key(s) || dir.join(s).symlink_metadata().is_ok();
+        if kind == Kind::Sound && used(suggested) {
+            return Err(Refused(format!("{suggested} already exists")));
+        }
+        let mut source = suggested.to_owned();
+        let (stem, extension) = suggested.rsplit_once('.').expect("editor sources have extensions");
+        let mut suffix = 2;
+        while used(&source) {
+            source = format!("{stem}-{suffix}.{extension}");
+            suffix += 1;
+        }
+        source
+    };
+    if !safe_path(&source) || bytes.len() as u64 > ::workspace::MAX_FILE_BYTES {
+        return Err(Refused(format!("invalid package source {source:?}")));
+    }
+    if manifest.items.iter().enumerate().any(|(i, item)| {
+        Some(i) != at && (item.source.as_deref() == Some(&source) || item.inputs.contains(&source))
+    }) {
+        return Err(Refused(format!("{source} is shared by another item")));
+    }
+    let path = dir.join(&source);
+    let root = root(data);
+    for entry in path.ancestors().take_while(|p| p.starts_with(&root)) {
+        match entry.symlink_metadata() {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(Refused(format!("{} is a symlink", entry.display())));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(Failed(format!("{}: {e}", entry.display()))),
+        }
+    }
+    if existing.is_none() {
+        manifest.items.push(Item {
+            kind, source: Some(source.clone()), inputs: Vec::new(), tag,
+            maps: Default::default(), replaces: None, was: None,
+        });
+    }
+    let write = |bytes: &[u8]| content::store::write_atomic(&path, bytes);
+    write(bytes).map_err(|e| Failed(format!("{}: {e}", path.display())))?;
+    if let Err(why) = commit(data, &dir, &manifest) {
+        let restored = match loaded.files.get(&source) {
+            Some(old) => write(old),
+            None => std::fs::remove_file(&path),
+        };
+        return Err(match restored {
+            Ok(()) => why,
+            Err(e) => Failed(format!("{why}. Could not restore {}: {e}", path.display())),
+        });
+    }
+    Ok(path)
 }
 
 fn changed(id: &str, loaded: &Loaded) -> Value {

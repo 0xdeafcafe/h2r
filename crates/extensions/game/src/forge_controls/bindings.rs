@@ -65,8 +65,8 @@ pub enum Side {
 /// Where on the pad a row is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pad {
-    /// A press of the button. When the same button also has a [`Pad::Hold`]
-    /// row, a release before [`HOLD`].
+    /// A press of the button. When a matching [`Pad::Hold`] applies,
+    /// a release before [`HOLD`].
     Tap(HostButton),
     /// The button held for [`HOLD`]; fires once.
     Hold(HostButton),
@@ -195,6 +195,13 @@ pub const BINDINGS: &[Binding] = &[
         "the left mouse button",
     ),
     row(
+        act(Action::Select),
+        "Select",
+        Pad::Hold(B::South),
+        &[],
+        "select in Properties",
+    ),
+    row(
         Does::Hold(Held::Manipulate),
         "Move a held object",
         Pad::Trigger(Side::Right),
@@ -312,6 +319,7 @@ pub fn controls() -> Vec<(String, String, String)> {
 /// pad names together are wider than the column.
 pub const PAIRS: &[(Does, Does)] = &[
     (Does::Hold(Held::Rise), Does::Hold(Held::Fall)),
+    (act(Action::Accept), act(Action::Select)),
     (act(Action::Settings), act(Action::Overlays)),
 ];
 
@@ -388,6 +396,7 @@ mod tests {
     const NAMED: &[Action] = &[
         Action::Toggle,
         Action::Accept,
+        Action::Select,
         Action::Back,
         Action::Delete,
         Action::Undo,

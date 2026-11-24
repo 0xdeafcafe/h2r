@@ -346,8 +346,13 @@ impl Session {
         self.restore(world)?;
         let thing = self.thing(id).ok_or(NO_THING)?;
         if thing.kind != ThingKind::Object {
+            let article = if thing.kind == ThingKind::ItemSpawner {
+                "an"
+            } else {
+                "a"
+            };
             return Err(format!(
-                "Duplicating a {} needs a kit session.",
+                "Duplicating {article} {} needs a kit session.",
                 thing.kind.name()
             ));
         }

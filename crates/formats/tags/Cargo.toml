@@ -5,6 +5,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+content.workspace = true
 map.workspace = true
 thiserror.workspace = true
 sha2 = { workspace = true }

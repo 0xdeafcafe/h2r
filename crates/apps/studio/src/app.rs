@@ -45,6 +45,7 @@ pub mod tag_doc;
 pub mod assets;
 pub mod links;
 pub mod edit_lines;
+mod doc_save;
 pub mod edit_target;
 pub mod mods;
 pub mod package_doc;
@@ -170,6 +171,10 @@ pub enum Action {
     /// Save the map to its current destination, or write the edit lines to
     /// the edit target (asking for one first when there is none).
     Save,
+    SaveRules,
+    SaveAnimation { doc: u64, placement: Option<anim::DraftPlacement> },
+    SaveVoiceLines(Vec<u64>),
+    SaveVoiceClip { file: PathBuf, clip: String },
     /// **Export map...**: write the edited map as a whole `.map` file.
     SaveMapAs(PathBuf),
     /// The answer to the first-edit picker.
@@ -488,10 +493,11 @@ pub enum Action {
     NewHopper,
     /// Start from the Live server's built-in lineup.
     NewDefaultHopper,
-    /// Save the playlist file in place.
+    /// Save the playlist as an item of the edit target.
     SaveHopper,
     /// Save the playlist file to a path (and edit that from now on).
     SaveHopperAs(PathBuf),
+    ExportPlaylist(PathBuf),
     /// Give a playlist entry a game variant (one undo step).
     SetEntryVariant(usize, usize, Box<GameVariant>),
     /// Open a playlist entry's variant in the variant tool, as a new copy.
@@ -1074,6 +1080,15 @@ impl App {
         let Some((action, tool)) = self.pending.take() else {
             return;
         };
+        if matches!(answer, Answer::Save)
+            && self.edits.uses_target()
+            && matches!(tool, ToolKind::Variants | ToolKind::Playlists)
+            && self.edit_target().is_none()
+        {
+            self.pending = Some((action, tool));
+            self.hold_prompt_save();
+            return;
+        }
         match answer {
             Answer::Cancel => return,
             Answer::Discard => self.close_tool(tool),
@@ -1165,6 +1180,11 @@ impl App {
                     self.saved_path = Some(path);
                 }
             }
+            Action::SaveVariant | Action::SaveHopper if self.edits.uses_target() => {
+                self.save_to_target(action);
+            }
+            Action::SaveRules | Action::SaveAnimation { .. } | Action::SaveVoiceLines(_)
+            | Action::SaveVoiceClip { .. } => self.save_to_target(action),
             Action::ChooseEditTarget(choice) => self.choose_edit_target(choice),
             Action::OpenPackageEntry(key) => self.open_package_entry(&key),
             Action::OpenMapPack(key) => self.open_pack_map(&key),
@@ -1526,7 +1546,9 @@ impl App {
             | Action::ExportVariant(_)
             | Action::ExportVariantWith(..)
             | Action::ImportVariantFile(_)
-            | Action::ImportVariantText(_)) => self.run_variant(a),
+            | Action::ImportVariantText(_)) => {
+                self.run_variant(a);
+            }
             a => self.run_playlist(a),
         }
     }
@@ -1776,7 +1798,20 @@ impl App {
         }
     }
 
-    fn run_variant(&mut self, action: Action) {
+    fn run_variant(&mut self, action: Action) -> bool {
+        // The actions that replace the document: its tab loses the
+        // `item:` id it answered (`app::assets::open_item` sets it again
+        // when the item opened it).
+        let replaces = matches!(
+            action,
+            Action::OpenVariant(_)
+                | Action::NewVariant(_)
+                | Action::NewVariantFromScript(_)
+                | Action::CopyBuiltin(_)
+                | Action::ImportVariantFile(_)
+                | Action::ImportVariantText(_)
+                | Action::DeleteVariant
+        );
         self.ensure_variants();
         let e = self.variants.as_mut().expect("built");
         let r: Result<Option<String>, String> = match action {
@@ -1860,12 +1895,17 @@ impl App {
                 .map_err(|e| e.to_string()),
             _ => unreachable!("not a variant action"),
         };
+        let opened = r.is_ok();
+        if opened && replaces {
+            self.set_tab_item(Doc::Variant, None, None);
+        }
         match r {
             Ok(Some(msg)) => self.info(msg),
             Ok(None) => {}
             Err(msg) => self.error(msg),
         }
         self.variant_status();
+        opened
     }
 
     /// Read the playlist tool's map list and variant choices for the
@@ -1876,6 +1916,14 @@ impl App {
     }
 
     fn run_playlist(&mut self, action: Action) {
+        // A new file replaces the document: its tab loses the `item:` id
+        // it answered.
+        if matches!(
+            action,
+            Action::OpenHopper(_) | Action::NewHopper | Action::NewDefaultHopper
+        ) {
+            self.set_tab_item(Doc::Playlists, None, None);
+        }
         match action {
             Action::OpenHopper(path) => match self.hoppers.open_path(&path) {
                 Ok(format) => {
@@ -1902,6 +1950,17 @@ impl App {
                 self.hopper_preset = None;
                 self.refresh_playlist_sources();
                 self.info("new playlist file from the Live server's built-in lineup");
+            }
+            Action::ExportPlaylist(path) => {
+                let result = self.hoppers.build().and_then(|file| {
+                    let bytes = hopper_edit::write_file(&file, self.hoppers.format().expect("built"))?;
+                    std::fs::write(&path, bytes)?;
+                    Ok(())
+                });
+                match result {
+                    Ok(()) => self.info(format!("exported {}", path.display())),
+                    Err(why) => self.error(why.to_string()),
+                }
             }
             Action::SaveHopper => match self.hoppers.path().map(Path::to_owned) {
                 Some(path) => self.run_playlist(Action::SaveHopperAs(path)),
@@ -1930,6 +1989,7 @@ impl App {
                 match editor.import(&variants::portable::export(&v)) {
                     Ok(()) => {
                         self.tool = ToolKind::Variants;
+                        self.set_tab_item(Doc::Variant, None, None);
                         self.info(format!("editing a copy of {:?}", v.name()));
                     }
                     Err(err) => self.error(format!("cannot open the variant: {err}")),

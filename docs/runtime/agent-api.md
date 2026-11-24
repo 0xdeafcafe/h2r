@@ -122,6 +122,7 @@ connection to hold `session.claim`.
 | `editor.marks` | read | [Paired editor](#editor-a-paired-editor) |
 | `theater.*` | read or act | [Theater transport](#theater-transport) |
 | `collision.stats` | read | [`collision`](#collision-the-native-collision-world) |
+| `anim.graph_walk` | read | [`anim`](#anim-the-animation-graph-walk) |
 | `input.list`, `input.log.read` | read | [Input logs](#input-act-like-a-player) |
 | `trace.*`, `flight.*` | read | [Tick traces and the flight recorder](#tick-traces-and-the-flight-recorder) |
 | `shadow.enable`, `shadow.disable`, `shadow.status` | act, act, read | [Shadow checks](#shadow-checks) |
@@ -1838,7 +1839,7 @@ h2 agent render.parity '{"arm": true}'
 | `render.spawn_view` | act | `{index, yaw_offset?}` or `{reset: true}` | `{index, count, position: [x,y,z], yaw}` or `{reset: true}` |
 | `render.view` | act | `{eye: [x,y,z], yaw, pitch, fov?}` or `{reset: true}` | `{eye, yaw, pitch, fov}` or `{reset: true}` |
 | `render.capture` | read | `{tick?, pass?, lighting?, game_id?}` | `{path, tick, present, pass?, lighting?, scene_hash, source?}` |
-| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, carried_census?, carried_activation?, carried_checkpoint?, visibility_first_mismatch?, dump?, display_frame?, private_frame?}` |
+| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, carried_census?, carried_activation?, carried_checkpoint?, visibility_first_mismatch?, light_visibility_first_mismatch?, first_person_visibility_first_mismatch?, view_record_first_mismatch?, dump?, display_frame?, private_frame?}` |
 | `render.parity` | act | `{arm: true}` | `render.compare`'s fields plus `tick` |
 | `sim.hashes` | read | `{from_tick?, max?}` | `{rows: [{tick, gameplay, arena?}], dropped, resets, truncated?}` |
 
@@ -2004,6 +2005,17 @@ h2 agent render.parity '{"arm": true}'
   loaded whose Rust visibility differed from the guest's: its key, frame
   and tick, the first difference (`cluster 12 guest only`, `object
   0x00050002 rust only`) and the counts each way.
+  `light_visibility_first_mismatch` does the same for the first light
+  whose Rust visibility differed from its struct's lists.
+  `first_person_visibility_first_mismatch` identifies the first differing
+  first-person slot count, handle, record count or record in replay order.
+  Its counters are `scene_first_person_visibility_checked`, `_equal`,
+  `_differ`, `_declined_unread` and `_declined_layout`.
+
+  `view_record_first_mismatch` names the first game view whose
+  Rust-built records differed from the guest's and the first field that
+  did (`position`, `forward`, `up`, `fov`, `viewport`, `near`, `far`,
+  `projection`, `start cluster`, `mode`).
   The top-level `counters` include
   the visibility differential's `scene_visibility_checked` (game views
   whose Rust sets were made and compared), `scene_visibility_equal`,
@@ -2011,8 +2023,12 @@ h2 agent render.parity '{"arm": true}'
   `scene_visibility_objects_differ`, `scene_visibility_rust_taken` (views
   that carry the Rust sets), `scene_visibility_ns` (time in the Rust
   computation) and `scene_visibility_declined_<reason>` (`unread`,
-  `layout`, `mode`, `frusta`, `overflow`, `computed_pvs`, `camera`,
-  `not_main`: views it made no sets for). They also include
+  `layout`, `mode`, `frusta`, `overflow`, `camera`, `not_main`: views it
+  made no sets for); the light views' `scene_light_visibility_checked`,
+  `_equal`, `_differ`, `_ns` and `_declined_<reason>` (the same reasons);
+  and the view records' `scene_view_record_checked`, `_equal`, `_differ`
+  and `_declined_<reason>` (`unread`, `layout`, `cinematic`,
+  `no_observer`, `override`). They also include
   (`scenes_sealed`, `scenes_unsealed`, `scene_views`, `scene_no_camera`,
   `scene_refused_writes`, `scene_layers`, `scene_layer_items`,
   `scene_layer_remainder`, `scene_layers_unread` (layer draws whose list
@@ -2097,7 +2113,11 @@ h2 agent render.parity '{"arm": true}'
   `sky_plan_admitted` counts strips offered to the device after extraction and
   material checks. `sky_plan_refused_<cause>` counts failures by site, geometry,
   material, transform, view, range, stencil or device. GPU reservation and
-  replay outcomes appear under `native_sky_*` in the frame counters. Unless
+  replay outcomes appear under `native_sky_*` in the frame counters.
+  `post_effect_refused_<cause>` counts screen-effect preflight refusals.
+  A call that needs the view but has no view strip increments `view_target`. A missing or empty
+  target 1 size increments `pass_target`.
+  Unless
   `frame-scene.layers=off` is in `H2_FEATURES`, `layer_plan_asked`, `layer_plan_drawn`,
   `layer_plan_items` and the plan's outcomes by layer,
   `layer_plan_<layer>_taken` and `layer_plan_<layer>_refused_<cause>`,
@@ -2336,6 +2356,12 @@ h2 agent render.residual '{"top": 500}'        # the last finished window
   `copies` (frame-buffer copies), `uploads` (texture uploads), `locks`
   (`BlockOnResource`, `BlockOnTime`, `IsBusy`), `queries` (visibility
   tests and results), `presents`, and `d3d_ms` (time in the adapter).
+  Totals and producer rows also count committed native rectangle plans
+  (`native_rect_clears`) and longer lists using the linear path
+  (`clear_refused_rect_count`). Title binds that complete without resource
+  destruction increment `native_guest_binds`. Final releases increment
+  `guest_bind_refused_destroy`. The helper rows are `scene_clear` and
+  `target_select`.
 - **`callers`**, at most `top`, by `residual`, then calls:
   `{function, sites, entries, draws, inline_draws, residual, d3d_ms}`.
   A caller is the analysed guest function holding the entry calls' return
@@ -2349,27 +2375,30 @@ h2 agent render.residual '{"top": 500}'        # the last finished window
   `sites_full` is true.
 - **`producers`**, at most `top`, by `residual`, then `entries`:
   `{producer, status, slot, calls, draws, claimed, residual, entries,
-  push_words, state_words, clears, binds, copies, uploads, d3d_ms,
+  push_words, state_words, clears, binds, native_rect_clears, clear_refused_rect_count,
+  native_guest_binds, guest_bind_refused_destroy, copies, uploads, d3d_ms,
   guest_ms}`. Only with `frame-scene.census` in `H2_FEATURES`, which
   places an entry and an exit observer on each producer in
-  `residual_census::REGISTRY` (the views, the scene passes, the sky, the object
-  shadows, decals, the lights, the water teardown, the transparents, the post calls, the HUD,
-  the UI, the fade, the frame end and the loading screen) and on the layer
-  draw (`layer.<site>.<layer>`, as `render.scene`'s entry census names
-  them); without it `producers` is absent. Work goes to the innermost
+  `residual_census::REGISTRY` (the views, scene passes, sky, object shadows,
+  decals, lights, water teardown, clears, target selection, transparents,
+  screen effects, post calls, HUD, UI, fade, frame end and loading screen)
+  and on the layer draw (`layer.<site>.<layer>`, as `render.scene`'s entry
+  census names them). The census switch controls whether `producers` is
+  present. Work goes to the innermost
   open producer, so the rows sum to `totals`. Inside a render frame with
   none open it is `unknown` (status `unknown`); outside every render
   frame it is `outside_render`. At each boundary the device first decodes
   the push buffer, so an inline draw is charged to the producer open when
   its words were written. `status` is `native` or `d3d` from the
-  registry, and `partial` for the sky and for a layer draw a native stage draws some
-  items of from the scene, skipping their guest draws
-  (`residual_census::PARTIAL_LAYERS` lists the scene's layers 1, 2, 3, 5, 6, 7,
-  8, 16, 17 and 20, the alternate view's 2 and the first person's 1, 2, 3, 7, 8 and 20).
-  The fixed producer `water_teardown` is also `partial`. It can surrender its indexed
-  composite and still owns its guest state changes and alpha clear.
-  The `residual` is what the stages leave. `slot` is the carried slot the work lands in. `guest_ms` is
-  the producer's exclusive time less its D3D time, `null` without
+  registry. Sky, clear, target selection, screen effects and `water_teardown`
+  are `partial`. Water teardown can hand off its indexed composite and still
+  owns its guest state changes and alpha clear. A layer draw is `partial`
+  when a native stage draws some items from the scene and skips their guest
+  draws. `residual_census::PARTIAL_LAYERS` lists the scene's layers 1, 2, 3,
+  5, 6, 7, 8, 16, 17 and 20, the alternate view's 2 and the first person's
+  1, 2, 3, 7, 8 and 20. The `residual` is what the stages leave. `slot` is
+  the carried slot the work lands in. `guest_ms` is the producer's exclusive
+  time less its D3D time, `null` without
   `render-timing`; it ranks producers and is not a frame time.
   `unbalanced` counts producer exits with nothing to end and producers
   dropped unended.
@@ -4806,12 +4835,13 @@ feature is enabled.
 | `forge.look.set` (act) | `{reset?, save?, model?, variant?, primary?, secondary?, tint?, light?, light_colour?}` | `{look, changed, saved, drawn_as}`: the look as accepted. `reset: true` is the default look (the marker in the seat's colour) and takes no field. `variant: null` clears the variant. `save: true` also writes the profile (`not_saved` says why when the file was not written). A refusal is an error whose `data` is `{code, message, ...fields}`: `monitor_look_invalid` (`field`, `reason`), `monitor_look_locked` (`field`, `reason`) or `monitor_look_no_session` outside a Forge session; the look stays as it was |
 | `forge.status.monitors` (read) | `{}` or omitted | `{monitors: [{seat, name, monitor, pose, look, drawn_as, peers_see, seen_ticks_ago}]}`. Offline it holds seat 0 once a session is open and is empty before. `pose` is `{position, yaw, pitch}` while the monitor camera exists. `drawn_as` is how the seat looks in its own view, always `hidden` with the reason; `peers_see` is what another machine draws |
 
-The input queue accepts `toggle`, `accept`, `back`, `delete`, `palette`,
+The input queue accepts `toggle`, `accept`, `select`, `back`, `delete`, `palette`,
 `properties`, `tools`, `settings`, `overlays`, `undo`, `redo` and `link`. `palette`
 opens the object menu and `properties` the aimed or held thing's
 Properties, as X does by what is aimed at. In the Objects tool `accept`
-picks up the thing aimed at, own or added, mark or body, and drops it,
-and `delete` removes it; `tools` opens the Tools
+picks up the thing aimed at, own or added, mark or body, and drops it.
+With empty hands `select` toggles selection of the ungrouped thing under
+the reticle, like holding A. `delete` removes the thing; `tools` opens the Tools
 picker, `settings` the Tool settings and `overlays` the Overlays page. `link` switches to the Links
 tool; there `accept` starts a link on the aimed teleporter flag or
 placed machine and makes it on the second, `delete` removes the aimed
@@ -5439,6 +5469,39 @@ h2 agent theater.step '{"ticks":1}' --socket "$film_run/play.sock"
 h2 agent theater.play '{}' --socket "$film_run/play.sock"
 ```
 
+## `anim`: the animation graph walk
+
+Under `impl.sim.native.anim` the animation graph's node walk `1dd1c0`
+runs as an arm: the guest answers each call, and the Rust result planned
+at the entry is compared with what the guest left
+([skeleton-walk.md](../engine/skeleton-walk.md#the-graph-walk-1dd1c0)).
+The game method reads process counters at a tick boundary. Code:
+`crates/extensions/agent/src/anim.rs`, wire types in
+`crates/extensions/agent-proto/src/anim.rs`.
+
+| Method | Access | Params and result |
+|---|---|---|
+| `anim.graph_walk` | read | No parameters. Returns `switch`, `addr` (`001dd1c0`), `arm` and `body`. |
+
+`arm` has `checked`, `matched` and `mismatched` calls, `dropped` plans
+(calls that entered and never returned), `declined` by reason (`float`,
+`fault`, `count`, `queue`, `alias`, `parent`; the guest ran unchecked)
+and `first`: the first mismatch since start, or absent. `first.what`
+names the register or byte (`ecx`, `xmm3`, `matrix 2 +0x10`, `stack
+entry-0x3f8 (queue entry 1)`), `plan` and `guest` give both values in hex,
+and `entry` the general registers and MXCSR at that call's entry. `body`
+counts calls the Rust body answered without the guest (`native`, `nodes`
+posed, `declined`); it stays zero while the arm is installed. The counters
+are zero with the switch off. Sample before and after a scenario and
+subtract to isolate that run.
+
+```sh
+h2 agent anim.graph_walk
+```
+
+Parity is `mismatched` 0 over the run ladder's matches, with `declined`
+small against `checked`.
+
 ## `collision`: the native collision world
 
 The collision switch enables counters for native entries A, B and F,
@@ -5450,7 +5513,7 @@ bail reasons are in [collision-queries.md](../engine/collision-queries.md).
 
 | Method | Access | Params and result |
 |---|---|---|
-| `collision.stats` | read | No parameters. Returns `switch`, `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `mopps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, `precision` (aggregate single, reserved, double and extended x87 calls at C and D), and `ray` (I's parity arm, below). |
+| `collision.stats` | read | No parameters. Returns `switch`, `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `mopps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, `precision` (aggregate single, reserved, double and extended x87 calls at C and D), `vector` (C’s result parity), `context` (D’s outer walk parity), and `ray` (I’s parity arm, below). |
 
 Each row in `entries` gives the `name` and eight-digit guest `addr`, the
 count of `native` answers, and `bails` by reason. Two frequency maps count
@@ -5470,6 +5533,12 @@ capacity. `budget_bytes` limits that total to 8 MiB per loaded map.
 `cluster_budget_reads` counts lookups that need the live cluster word
 because the packed table would exceed the budget. Sample before and after
 a scenario and subtract the counters to isolate that run.
+
+`vector` counts entry C’s `matched` and `mismatched` returns and
+`unverified` queries by bail reason. `first_mismatch` identifies AL or the
+first differing byte offset in the result record, with expected and guest values.
+`context` uses the same counters for entry D. It compares AL, R and the
+40-byte context, counting each outer walk once across its recursive calls.
 
 `ray` counts the MOPP ray queries the native walk followed while the
 guest answered them: `matched` (every interpreter call, and every key

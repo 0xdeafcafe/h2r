@@ -11,8 +11,8 @@
 //! clipped to the node's window; three or more corners left make a node in
 //! the cluster across. A cluster is visible when a node reaches it. Each
 //! cluster's windows are then merged pairwise where their union is not much
-//! larger than the two, and the windows left are what objects are tested
-//! against.
+//! larger than the two, and each window left makes a frustum objects are
+//! tested against ([`super::frusta`]).
 //!
 //! The arithmetic is Rust's own: screen units are the projection's
 //! normalised device coordinates, the near clip is the camera's near plane,
@@ -166,6 +166,23 @@ impl Lens {
         })
     }
 
+    /// A light frustum already supplies its world axes and bounds in tangent units.
+    pub(super) fn from_tangents(
+        position: [f32; 3],
+        [right, up, forward]: [[f32; 3]; 3],
+        [left, right_edge, bottom, top]: [f32; 4],
+        near: f32,
+        far: f32,
+    ) -> Option<Self> {
+        let scale = [2.0 / (right_edge - left), 2.0 / (top - bottom)];
+        let offset = [(right_edge + left) * 0.5 * scale[0], (top + bottom) * 0.5 * scale[1]];
+        let finite = [position, right, up, forward].into_iter().flatten().all(f32::is_finite)
+            && offset.into_iter().all(f32::is_finite)
+            && scale.into_iter().all(|s| s.is_finite() && s > 0.0);
+        (finite && near.is_finite() && near > 0.0 && far.is_finite() && far > 0.0)
+            .then_some(Self { position, right, up, forward, scale, offset, near, far })
+    }
+
     /// World to `(x, y, w)`.
     pub fn to_view(&self, p: [f32; 3]) -> [f32; 3] {
         let d = sub(p, self.position);
@@ -180,29 +197,18 @@ impl Lens {
         ]
     }
 
-    /// Whether a sphere (world centre, radius) reaches the volume behind
-    /// `window`: between the near and far planes and inside the four
-    /// planes through the eye and the window's edges.
-    pub fn admits(&self, window: &Rect, centre: [f32; 3], radius: f32) -> bool {
-        let [x, y, w] = self.to_view(centre);
-        if self.near - w > radius || w - self.far > radius {
-            return false;
-        }
-        let [x0, x1, y0, y1] = window.0;
-        let [sx, sy] = self.scale;
-        let [ox, oy] = self.offset;
-        // Screen x <= x1 is sx·x − (x1 + ox)·w <= 0, and so on: each a plane
-        // through the eye, its distance the value over the normal's length.
-        let planes = [
-            (sx * x - (x1 + ox) * w, sx, x1 + ox),
-            ((x0 + ox) * w - sx * x, sx, x0 + ox),
-            (sy * y - (y1 + oy) * w, sy, y1 + oy),
-            ((y0 + oy) * w - sy * y, sy, y0 + oy),
-        ];
-        planes.into_iter().all(|(value, a, b)| {
-            let length = (a * a + b * b).sqrt();
-            length > 0.0 && value / length <= radius
-        })
+    /// The view's right, up and forward axes.
+    pub fn axes(&self) -> [[f32; 3]; 3] {
+        [self.right, self.up, self.forward]
+    }
+
+    /// A screen point in tangent units (`x / w`, `y / w`): the inverse of
+    /// [`Self::to_screen`]'s divide, what the window frusta are built from.
+    pub fn tangent(&self, [x, y]: Point) -> Point {
+        [
+            (x + self.offset[0]) / self.scale[0],
+            (y + self.offset[1]) / self.scale[1],
+        ]
     }
 }
 
@@ -399,8 +405,8 @@ impl OpenPortals {
 pub struct Reached {
     /// Visible clusters, in the order they were first reached.
     pub clusters: Vec<u16>,
-    /// The windows left after merging: each cluster's clip for objects.
-    /// Empty for the potentially visible set, which does not clip.
+    /// The windows left after merging, which the object frusta are built
+    /// from. Empty for the potentially visible set, which does not clip.
     pub windows: Vec<(u16, Rect)>,
 }
 
@@ -542,21 +548,21 @@ fn merge(nodes: &[Node], tuning: &Tuning) -> Vec<(u16, Rect)> {
         .collect()
 }
 
-/// Mode 2: the start cluster's row of the potentially visible set,
-/// ascending, at most [`MAX_REGIONS`] (`0x001733e0` stops adding there).
-pub fn potentially_visible(graph: &PortalGraph, start: u16) -> Result<Reached, Decline> {
-    let cluster = graph
-        .clusters
-        .get(usize::from(start))
-        .ok_or(Decline::Layout)?;
-    if cluster.computed_pvs {
-        return Err(Decline::ComputedPvs);
-    }
-    if graph.pvs.is_empty() {
+/// Mode 2: the start cluster's row of the potentially visible set
+/// (`0x0016de20`, computed at run time for a cluster that asks for it:
+/// [`super::pvs::row`]), ascending, at most [`MAX_REGIONS`] (`0x001733e0`
+/// stops adding there).
+pub fn potentially_visible(
+    graph: &PortalGraph,
+    start: u16,
+    open: &OpenPortals,
+) -> Result<Reached, Decline> {
+    if usize::from(start) >= graph.clusters.len() || graph.pvs.is_empty() {
         return Err(Decline::Layout);
     }
+    let row = super::pvs::row(graph, open, start)?;
     let clusters = (0..graph.clusters.len() as u16)
-        .filter(|&c| graph.potentially_visible(start, c) == Some(true))
+        .filter(|&c| row[usize::from(c) / 32] & (1u32 << (c % 32)) != 0)
         .take(MAX_REGIONS)
         .collect();
     Ok(Reached {
@@ -597,6 +603,7 @@ pub(crate) mod tests {
             clusters: [back, front],
             plane: [1.0, 0.0, 0.0, x],
             flags: 0,
+            sphere: [x, y, z, h * std::f32::consts::SQRT_2],
             vertices: vec![
                 [x, y - h, z - h],
                 [x, y + h, z - h],
@@ -630,6 +637,7 @@ pub(crate) mod tests {
             portals,
             pvs_words: 0,
             pvs: Vec::new(),
+            pvs_alt: Vec::new(),
         }
     }
 
@@ -758,6 +766,7 @@ pub(crate) mod tests {
             portals,
             pvs_words: 0,
             pvs: Vec::new(),
+            pvs_alt: Vec::new(),
         };
         let r = reach(&g, &camera_at([0.0, 0.0, 0.0], [1.0, 0.0, 0.0]), 0).unwrap();
         assert_eq!(r.clusters, [0, 1]);
@@ -798,32 +807,16 @@ pub(crate) mod tests {
         let mut g = corridor(&[0.0, 0.0, 0.0]);
         g.pvs_words = 1;
         g.pvs = vec![0b0011, 0b1110, 0b0110, 0b1000];
-        assert_eq!(potentially_visible(&g, 1).unwrap().clusters, [1, 2, 3]);
-        assert_eq!(potentially_visible(&g, 3).unwrap().clusters, [3]);
+        let open = OpenPortals::all(3);
+        assert_eq!(potentially_visible(&g, 1, &open).unwrap().clusters, [1, 2, 3]);
+        assert_eq!(potentially_visible(&g, 3, &open).unwrap().clusters, [3]);
+        // Room 1's row is computed: from the second table through the open
+        // portals that join computed sets, masked by its own row.
         g.clusters[1].computed_pvs = true;
-        assert_eq!(potentially_visible(&g, 1), Err(Decline::ComputedPvs));
-        assert_eq!(potentially_visible(&g, 9), Err(Decline::Layout));
-    }
-
-    #[test]
-    fn a_window_admits_spheres_in_its_wedge_and_refuses_others() {
-        let lens = Lens::new(&camera_at([0.0, 0.0, 0.0], [1.0, 0.0, 0.0])).unwrap();
-        // The right half of the screen: x = depth, y = left, so screen x is −y.
-        let right = Rect([0.0, 1.0, -1.0, 1.0]);
-        assert!(lens.admits(&right, [10.0, -3.0, 0.0], 0.5));
-        assert!(!lens.admits(&right, [10.0, 3.0, 0.0], 0.5));
-        assert!(
-            lens.admits(&right, [10.0, 0.3, 0.0], 0.5),
-            "it reaches over the edge"
-        );
-        assert!(
-            !lens.admits(&right, [-10.0, -3.0, 0.0], 0.5),
-            "behind the camera"
-        );
-        assert!(
-            !lens.admits(&Rect::SCREEN, [2000.0, 0.0, 0.0], 1.0),
-            "beyond the far plane"
-        );
+        g.pvs_alt = vec![0b0001, 0b0010, 0b0100, 0b1000];
+        g.portals[1].flags = portal_flags::JOINS_COMPUTED_PVS;
+        assert_eq!(potentially_visible(&g, 1, &open).unwrap().clusters, [1, 2]);
+        assert_eq!(potentially_visible(&g, 9, &open), Err(Decline::Layout));
     }
 
     #[test]

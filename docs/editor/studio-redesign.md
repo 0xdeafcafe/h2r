@@ -55,7 +55,7 @@ the calls before it):
 
 | Content | Source in Git | How it gets in |
 |---|---|---|
-| Halo 1 maps and campaign | the recipe, `content/halo1/convert/` (the bytes are the user's disc) | the `halo1` package's `convert` item, run before boot by `package_prepare::before_boot` (PK10, "Conversions"), writes `<data>/maps/h1_<map>/` and `<data>/campaigns/halo1/`; `campaigns::boot_state` and `new_maps::install_at_boot` list them |
+| Halo 1 maps and campaign | the recipe, `content/halo1/convert/` (the bytes are the user's disc) | the `halo1` package's `convert` item, run before boot by `package_prepare::before_boot` (PK10, "Conversions"), writes converted levels to the tag store and campaign metadata to `<data>/campaigns/halo1/`; `campaigns::boot_state` and `new_maps::install_at_boot` list them |
 | Pogo Stick | `content/pogo/` (the `pogo` package) | `workspace::PackageRewrite` (PK4; `pogo_kit::served` reads the weapons it left) |
 | Menu screens, retail screen edits | `content/ui/` (the `ui` package) | `workspace::PackageRewrite` (PK5) |
 | HUD kit HUDs | `hud` items (`content/{superbounce,forge,modes}/huds/`); their states in Rust (`crates/rewrites/hud-kit-core/src/views/`) | `hud_kit::install` in `boot/src/registration.rs`, compiled against the loaded map |
@@ -223,12 +223,12 @@ Every document's preview has one target switch, the three views of
 kind's own renderer), **My game** (a game Studio started) and
 **Attached** (a game someone else started). The link pill, pairing and
 Pending are the built ones ([live-mirror.md](live-mirror.md)). The
-**Game** panel shows the game's frames once
-[game-view.md](game-view.md)'s panel is built. **Preview in game**
-(Cmd/Ctrl+Enter, in the **Preview** menu) runs `pair.preview` for the
-front document's kind; the job is `pair.result`'s, and a refusal goes to
-the log. [agent-api.md](agent-api.md), "The preview switch", has the
-kinds.
+[Game panel](game-view.md) shows the game's frames and the preview
+result. **In game** (Cmd/Ctrl+Enter) in the header and **Preview** menu
+runs the document form of `pair.preview`. On a variant it starts
+Studio's own game with the open record. On a script it reloads into
+Studio's own game, starting it if needed. The
+[agent API](agent-api.md#the-preview-switch) lists the paired kinds.
 
 ### The editor follows the tag
 
@@ -268,8 +268,8 @@ them and go when another document is in front; nothing else moves.
 **Scripts.** A `.rules` file opens in the built script editor
 (`app/rules_edit.rs`, `ui/game_script.rs`: completion, rename, the
 formatter, problems), with its options as a form, its check and
-simulation reports (`rules::workbench`) and **Reload into game**
-(`rules.reload`). The same file is edited in VS Code or Zed through the
+simulation reports (`rules::workbench`) and the header's **In game**
+(`rules.reload` on Studio's own game). The same file is edited in VS Code or Zed through the
 extensions ([rules-editors.md](rules-editors.md)); **Open in editor**
 (`app/external.rs`) goes there and Studio follows the file on disk.
 
@@ -398,8 +398,8 @@ maps = "multiplayer"
 | `hud` | HUD kit YAML (a `hud_kit_core::model::Hud` as data) | HUD kit records | client |
 | `strings` | YAML by name and language | `unic` rows | client |
 | `rules` | `.rules`; `inputs` are joined after the source (CTF and Assault are a header then the shared body) | a compiled script in the rules registry (built: checked at build, read by `workspace::script_registry`; a `rules` item of `core` is a retail type's game) | sim |
-| `variant` | a settings or scripted `.rules` file (built; `.h2variant` is not read yet) | a built-in list entry, in manifest order | sim |
-| `playlist` | a hopper fragment, TOML (`content::playlist::Fragment`): named map lists, playlists and entries by map name or `MapId`, a variant by the key of a matchmaking script | rows of the default hopper (built: parsed and checked; the server reads `workspace::hopper_fragments`) | Live |
+| `variant` | a settings or scripted `.rules` file or a portable `.h2variant` record | the boot list reads script-based entries in manifest order | sim |
+| `playlist` | a TOML hopper fragment (`content::playlist::Fragment`) or an edited `multiplayer_hopper.dat` | the server reads TOML fragments through `workspace::hopper_fragments` | Live |
 | `map` | `map.toml`: `mode` (`fresh`, `onto`), `base`, the new map's `name`, `scenario` and `kits` (`fresh`), and `ground` when it has AI; the items it takes are those whose `maps` names it | a derived map package under `<data>/maps/`, built at prepare, or when first picked if it has `ground` (built: `workspace::prepare`) | sim |
 | `map-patch` | a PPF, IPS or BPS file, and in `inputs` one TOML file with the base's `map` name and `sha256` | a map package with that layer, the one `h2 live maps import` writes for the patch (built) | sim |
 | `convert` | a recipe, `<name>.convert.toml`: a `converter` (`halo1`, `map-pack`) and its `[settings]`; the input is the user's own disc | map packages and campaign files under the data root, at prepare (built: `workspace::convert`, "Conversions") | sim |
@@ -1029,7 +1029,7 @@ checked on a running game.
 | `anim.read {tag, animation, tolerance?, keys?}` or `anim.read {doc, keys?}` | the source reduction and its document ID, or the document's current keys |
 | `anim.key {doc, node, channel, frame, value?, interp?, remove?}` | set or remove a key |
 | `anim.new {tag, name, frames}`, `anim.duplicate {tag, animation, name}` or `anim.duplicate {doc, name}` | create a new animation document |
-| `anim.save {doc, package, mode?, class?, weapon_type?, action?}` | save a map-scoped `.anim.yaml` item in a local package |
+| `anim.save {doc, package?, mode?, class?, weapon_type?, action?}` | save a map-scoped `.anim.yaml` item in the edit target or a specified local package |
 | `anim.check {doc, model?}` | per-node codec quantisation and loop seam, and feet under the model-space ground plane |
 | `anim.retarget {from, to, map?, name?, from_model?, to_model?, preview?}` | retarget an open document onto a graph; the node table and unmatched nodes |
 | `anim.import {file, to?, clip?, map?, name?, to_model?, preview?}` | import a glTF clip onto a graph through the same retarget |
@@ -1213,7 +1213,7 @@ Rows are in build order.
 | PK6 (built: `app/package_doc.rs`, `api/packages.rs`) | **The package document and `package.*`**: list, read, new, set, items, target, enable, order, check, build, play, over the always-on rule `content::package::Set` keeps | M | PK2, SH1 | every method's example runs; a `set.toml` or a call that turns `core` off is refused by name; a reorder that breaks `requires` is refused; `package.check` names a cache map, a bundle and a dataset folder put in an invented package |
 | PK7 (built: `app/edit_target.rs`, `app/edit_lines.rs`; the game's and Live's readers of `active.toml` stand) | **Edits go to the edit target**: the journal as edit lines, the first-edit picker, **Export map...**; the package form and `active.toml` deleted | M | PK6 | a field set in the window and by `tag.set` write the same line; undo across a save removes it; with no target the API answers `NO_TARGET` |
 | SH3 | **Problems** (built: `app/problems.rs`, `ui/problems.rs`, `problems.list`): one panel and `problems.list` over `check.run`, `ui.check`, `hud.check`, `package.check` and build errors, each row opening its asset | S | SH1 | findings from two invented sources list together; opening a row focuses the document and the field |
-| SH4 | **The preview switch** (built: `app/preview_switch.rs`, `ui/preview_switch.rs`, `api/preview.rs`; the Problems rows for a finished preview wait for the Game panel): `preview.target`, **Preview in game** by kind over `pair.preview` | S | SH1 | on the fake game each kind sends the calls its `what` lists; a paused game refuses with the built message |
+| SH4 | **The preview switch** (built: `app/preview_switch.rs`, `ui/preview_switch.rs`, `api/preview.rs`; the Game panel shows the preview state and warnings): `preview.target`, **Preview in game** by kind over `pair.preview` | S | SH1 | on the fake game each kind sends the calls its `what` lists; a paused game refuses with the built message |
 | GT0 to GT7, GE0 to GE5, GM1 to GM4 | **Game types without carriers**, no retail engine object, and maps for scripted games ([game-types-without-carriers.md](../game/game-types-without-carriers.md)) | S to L | GT6 needs PK11; GM2 needs PK9 | as there |
 | PK8 (built: the items, `Registry`, `community_variants`' list from the set and the fragment's parse and tests; the default hopper in `live-proto` still builds its lineup in Rust) | **Rules, variants and playlists as items**: `content/core/` and `content/modes/`; the registry from the set; `community_variants` and the default hopper read it | M | PK3 | `crates/formats/rules/tests/modes.rs` pass with scripts from the set; a package off removes its list entries; the hopper built from fragments equals `hopper/defaults.rs`'s |
 | PK9 (built) | **Whole maps** (`workspace::prepare`, `stage_kit::fresh::StageFresh`, `workspace::scenario_edits`, boot's `packages::prepare_maps`): `map` and `map-patch` items to map packages at prepare; the stage and the test-map recipes as packages | M | PK2 | an invented `fresh` and an invented `onto` item build; the `MapId` of a `map-patch` item equals the id of the map package the importer writes for the same patch |

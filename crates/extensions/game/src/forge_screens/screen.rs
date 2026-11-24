@@ -228,7 +228,7 @@ impl ForgeScreen {
 
     fn inputs(&self) -> Vec<Input> {
         match self.kind {
-            Kind::Controls => vec![Input::Up, Input::Down, Input::B],
+            Kind::Controls | Kind::MapLimits => vec![Input::Up, Input::Down, Input::B],
             _ => vec![Input::Up, Input::Down, Input::A, Input::B],
         }
     }
