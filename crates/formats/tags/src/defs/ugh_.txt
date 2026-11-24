@@ -2,7 +2,7 @@
 # Evidence: crates/formats/tags/src/sound.rs (Gestalt), docs/formats/sound.md, crates/tools/h1-assets/src/sounds/gestalt.rs
 # and docs/halo1/sounds.md ("The Halo 2 gestalt"). Fields whose only source is a public
 # description (marked S there: playback/scale/pitch-range-parameter fields, promotions,
-# custom playbacks, extra infos) stay unnamed.
+# custom playbacks) stay unnamed.
 group ugh! 0x58 align 4
   0x0 block playbacks 0x38 align 4 -- E snd! flags 0x400/0x800 take the distances from the sound class instead of playback +0x0/+0x4 (0x00124fc0, 0x00125010, 0x0012ac20); stride V (docs/halo1/sounds.md:134,158; h1sounds gestalt.rs:39)
     0x0 f32 minimum_distance -- E 0x00124fc0/0x0012ac20 read in place of the class minimum unless snd! flag 0x400 (docs/halo1/sounds.md:158)
@@ -19,7 +19,8 @@ group ugh! 0x58 align 4
     0x8 u16 first_permutation -- V every run in range, chunk sums exact (sound.rs:205; sound.md:32)
     0xa u16 permutation_count -- V (sound.rs:206; sound.md:32)
   0x28 block permutations 0x10 align 4 -- V stride 16 (sound.rs:163,196; sound.md:33)
-    0x0 unknown 0x6
+    0x0 unknown 0x5 -- S name index, skip fraction, gain (sound.rs Permutation); the permutation order while the sound has no extra info (h1sounds convert.rs)
+    0x5 i8 extra_info_descriptor -- E the signed index of a descriptor in the sound's extra-info resource: mouth offset, mouth length, facial-sequence offset and length (0x0018c720..0x0018ca20; sound.rs Permutation::extra_info_descriptor; docs/halo1/sounds.md "Dialogue mouth curves")
     0x6 u16 length_ms -- E 0x00218c60 returns it x0.001 as a playing impulse's length in campaign; V 03a dialogue (docs/halo1/sounds.md:188-191)
     0x8 u32 encoded_size -- V equals the sum of its chunks' sizes for every permutation (sound.rs:215,287; sound.md:33)
     0xc u16 first_chunk -- V (sound.rs:216; sound.md:33)
@@ -42,12 +43,14 @@ group ugh! 0x58 align 4
     0x8 block block_8 0x4 align 4
       0x0 unknown 0x4
     0x10 unknown 0xc
-  0x50 block block_50 0x2c align 4
-    0x0 unknown 0x8
-    0x8 raw raw_8
-    0xc rawsize raw_size_c of=0x8
-    0x10 unknown 0x8
-    0x18 block block_18 0x10 align 4
-      0x0 unknown 0x10
-    0x20 datum datum_20
+  0x50 block extra_infos 0x2c align 4 -- V stride 0x2c by coverage; E the extra-info resource a speaking unit's sound class requests for lip sync, named by snd! +0xe (0x0018c630; docs/halo1/sounds.md "The Halo 2 gestalt", "Dialogue mouth curves")
+    0x0 unknown 0x8 -- V a child block no retail element has and whose layout is unknown; present is refused (h1sounds gestalt.rs:67; sound.rs Gestalt::decode)
+    0x8 raw resource -- V an hklb block: the mouth curves and their descriptors (sound.rs ExtraInfo; docs/halo1/sounds.md "Dialogue mouth curves")
+    0xc rawsize resource_size of=0x8 -- V the resource's whole byte length (h1sounds tests/sounds/real_disc.rs mouth_resource)
+    0x10 unknown 0x8 -- V 16 and the resource's own size word (real_disc.rs mouth_resource; h1sounds mouth.rs)
+    0x18 block locators 0x10 align 4 -- E the loader follows both locators: the curve data first, the descriptors second (real_disc.rs mouth_resource; h1sounds mouth.rs; sound.rs Gestalt::mouth_curve)
+      0x0 unknown 0x8 -- V the locator's head: kind and fields, raw (real_disc.rs mouth_resource)
+      0x8 u32 size -- V the buffer's byte length
+      0xc u32 offset -- V from the resource's first crsr at +0x18 (real_disc.rs mouth_resource)
+    0x20 datum owner -- V the ugh! that owns the resource (real_disc.rs a10_dialogue_mouth_curves_reach_the_retail_resource_layout; h1sounds gestalt.rs)
     0x24 unknown 0x8

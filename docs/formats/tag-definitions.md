@@ -339,9 +339,12 @@ summary:
 - **`jmad`**: [animation.md](animation.md), E fields of the animation
   record, events, modes, classes and actions (`0x001db170`), and static
   poses (`0x001dd8f0`).
-- **`snd!`**: the sample rate, encoding, compression (E `0x0021e421`) and
-  pitch ranges. Flags, class and playback index stay unknown (nothing of
-  ours supports their meaning).
+- **`snd!`**: the sample rate, encoding, compression (E `0x0021e421`),
+  pitch ranges and the extra-info index (E the engine requests the
+  sound's extra-info resource for lip sync, V the index names an `ugh!`
+  extra info or is `ffff`; [sounds.md](../halo1/sounds.md)). Flags, class
+  and playback index stay unknown (nothing of ours supports their
+  meaning).
 - **`lsnd`**: the Halo 2 layout the Halo 1 sound converter writes
   (`h1sounds::looping`), D.
 
@@ -362,7 +365,10 @@ file in the meaning text:
   `cli::extract_shaders`.
 - `ugh!`: `tags::sound` and [sound.md](sound.md). The playback distances
   and the permutation length come from
-  [halo1/sounds.md](../halo1/sounds.md) (E). The fields that doc marks S
+  [halo1/sounds.md](../halo1/sounds.md) (E). The extra-info names — the
+  permutation's descriptor index, the block, its resource, its locators
+  and the owner datum — come from the lip-sync read there ("Dialogue
+  mouth curves", E and V). The fields that doc marks S
   stay unnamed.
 - `pmov`: `tags::effects::movement`, with the property layout from
   `effects::mem`.

@@ -614,17 +614,24 @@ Notes on some:
   (`encoded_bytes`, `chunks`), and for the permutation asked for (range 0,
   permutation 0 by default) its decoded `channels`, `rate`, `frames`,
   `duration_ms` and `bins` waveform columns of `[low, high]` 16-bit
-  peaks. A permutation that cannot be decoded gives `refusal` in place of
-  those (a codec stream without the game's executable says `This sound
-  needs the game's executable to decode.`) or `error` (a bad length, a
-  missing resource file). It also gives `playback`: whether something
-  plays, which, `position_ms` and the `output`. `sound.play` plays a
-  permutation from `from_ms` through the host's default audio output,
-  opened on the first call, and returns at once; a refusal is `REFUSED`,
-  no device or an unreadable resource `FAILED`. `sound.stop` stops it. The
+  peaks, and its `mouth` curve. A permutation that cannot be decoded
+  gives `refusal` in place of those (a codec stream without the game's
+  executable says `This sound needs the game's executable to decode.`)
+  or `error` (a bad length, a missing resource file); `mouth` is given
+  either way, because the curve needs no executable. It also gives
+  `playback`: whether something plays, which, `position_ms` and the
+  `output`. `sound.play` plays a permutation from `from_ms` through the
+  host's default audio output, opened on the first call, and returns at
+  once; a refusal is `REFUSED`, no device or an unreadable resource
+  `FAILED`. `sound.stop` stops it. `sound.mouth` reads one permutation's
+  mouth curve from the sound's extra-info resource in the map's `ugh!`:
+  `{ticks, curve}` with one aperture value, 0 to 1, per 30 Hz tick, or
+  `curve: null` for an unvoiced permutation (the sound has no extra
+  info, its descriptor index is negative, or the mouth entry is
+  zero-length). The window's Sound window draws the same curve under
+  the waveform and calls the same `App::sound_*` methods. The
   executable comes from the source: the disc's `default.xbe`, or the one
-  beside a loose map or folder (`H2_XBE` names another). The window's
-  Sound window calls the same `App::sound_*` methods.
+  beside a loose map or folder (`H2_XBE` names another).
 - **Placements.** `scenario.set` takes a number, `[x, y, z]`, or for a tag
   reference `{"id": "0x..."}` (or `null` for none). The scenario checks it
   first: read-only fields, integer ranges, finite floats, palette indices,

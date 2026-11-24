@@ -1,7 +1,10 @@
 //! Sound audition as the agent API ([`super::Provider`], registered in
-//! [`super::seams`]): `sound.read`, `sound.play` and `sound.stop`, over the
-//! Tags tool's own audition (`app::audition`), so the window and the API
-//! are one path. docs/editor/agent-api.md, docs/editor/rich-editors.md.
+//! [`super::seams`]): `sound.read`, `sound.play`, `sound.stop` and
+//! `sound.mouth`, over the Tags tool's own audition (`app::audition`), so
+//! the window and the API are one path. docs/editor/agent-api.md,
+//! docs/editor/rich-editors.md.
+
+use std::sync::Arc;
 
 use map::TagId;
 use serde_json::{Value, json};
@@ -20,10 +23,17 @@ pub struct Sound;
 
 const READ: MethodDef = def(
     m::SOUND_READ,
-    "A snd! tag of the map the Tags tool shows: its header, every pitch range and permutation, and for one permutation (range 0, permutation 0 by default) its decoded format, length and waveform peaks, or why it is not decoded (a codec stream needs the game's executable from the source). Also what plays now. Nothing plays",
+    "A snd! tag of the map the Tags tool shows: its header, every pitch range and permutation, and for one permutation (range 0, permutation 0 by default) its decoded format, length and waveform peaks, or why it is not decoded (a codec stream needs the game's executable from the source), and its mouth curve: one aperture value 0 to 1 per 30 Hz tick, null when the permutation is unvoiced (the curve is read even when the audio is not). Also what plays now. Nothing plays",
     r#"{"tag":"string","range?":"integer","permutation?":"integer","bins?":"integer (waveform columns, default 64, at most 4096)"}"#,
-    r#"{"tag":"string","sample_rate":"integer|null","encoding":"string","compression":"string","max_play_time_ms":"integer","ranges":"[{permutations:[{encoded_bytes,chunks}]}]","selected":"{range,permutation,channels,rate,frames,duration_ms,peaks:[[low,high]]}|{range,permutation,refusal}|{range,permutation,error}","playback":"{playing,tag?,range,permutation,position_ms,output?}"}"#,
+    r#"{"tag":"string","sample_rate":"integer|null","encoding":"string","compression":"string","max_play_time_ms":"integer","ranges":"[{permutations:[{encoded_bytes,chunks}]}]","selected":"{range,permutation,channels,rate,frames,duration_ms,peaks:[[low,high]],mouth:{ticks,curve}|null}|{range,permutation,refusal,mouth}|{range,permutation,error,mouth}","playback":"{playing,tag?,range,permutation,position_ms,output?}"}"#,
     r#"{"tag":"snd!:objects\\test\\blaster","bins":32}"#,
+);
+const MOUTH: MethodDef = def(
+    m::SOUND_MOUTH,
+    "A permutation's mouth curve, read from the sound's extra-info resource in the map's ugh!: {ticks, curve} with one aperture value, 0 to 1, per 30 Hz tick. An unvoiced permutation (the sound has no extra info, its descriptor index is negative, or the mouth entry is zero-length) gives a null curve. The Sound window draws the same curve under the waveform. Writing it is a later slice",
+    r#"{"tag":"string","range?":"integer","permutation?":"integer"}"#,
+    r#"{"ticks":"integer","curve":"number[]|null"}"#,
+    r#"{"tag":"snd!:objects\\test\\blaster"}"#,
 );
 const PLAY: MethodDef = def(
     m::SOUND_PLAY,
@@ -58,6 +68,20 @@ fn playback(s: &PlayState) -> Value {
     })
 }
 
+/// One mouth curve as the API gives it: the tick count and one aperture
+/// value 0 to 1 per 30 Hz tick, `null` when unvoiced, `error` when it
+/// could not be read.
+fn mouth(r: &Result<Option<Arc<[u8]>>, SoundError>) -> Value {
+    match r {
+        Ok(Some(curve)) => json!({
+            "ticks": curve.len(),
+            "curve": curve.iter().map(|&b| f32::from(b) / 255.0).collect::<Vec<_>>(),
+        }),
+        Ok(None) => json!({"ticks": 0, "curve": null}),
+        Err(e) => json!({"error": e.to_string()}),
+    }
+}
+
 /// The `tag` param as a sound of the document the Tags tool shows.
 fn sound_tag(app: &mut App, p: &P) -> Result<TagId, agent_proto::RpcError> {
     super::tag_fields::resolve(app, p)
@@ -81,13 +105,20 @@ fn read(app: &mut App, p: &P) -> Reply {
             "frames": clip.frames(),
             "duration_ms": clip.duration_ms(),
             "peaks": clip.peaks(bins),
+            "mouth": mouth(&app.sound_mouth(id, range, permutation)),
         }),
-        Err(SoundError::Refused(why)) => {
-            json!({"range": range, "permutation": permutation, "refusal": why})
-        }
-        Err(SoundError::Failed(why)) => {
-            json!({"range": range, "permutation": permutation, "error": why})
-        }
+        Err(SoundError::Refused(why)) => json!({
+            "range": range,
+            "permutation": permutation,
+            "refusal": why,
+            "mouth": mouth(&app.sound_mouth(id, range, permutation)),
+        }),
+        Err(SoundError::Failed(why)) => json!({
+            "range": range,
+            "permutation": permutation,
+            "error": why,
+            "mouth": mouth(&app.sound_mouth(id, range, permutation)),
+        }),
     };
     let name = app
         .shown_tags()
@@ -130,9 +161,17 @@ fn play(app: &mut App, p: &P) -> Reply {
     }))
 }
 
+fn mouth_read(app: &mut App, p: &P) -> Reply {
+    let id = sound_tag(app, p)?;
+    let range = p.opt_usize("range")?.unwrap_or(0);
+    let permutation = p.opt_usize("permutation")?.unwrap_or(0);
+    let m = app.sound_mouth(id, range, permutation).map_err(failed)?;
+    Ok(mouth(&Ok(m)))
+}
+
 impl Provider for Sound {
     fn methods(&self) -> Vec<MethodDef> {
-        vec![READ, PLAY, STOP]
+        vec![READ, PLAY, STOP, MOUTH]
     }
 
     fn call(&mut self, app: &mut App, method: &str, params: &Value) -> Option<Reply> {
@@ -141,6 +180,7 @@ impl Provider for Sound {
             m::SOUND_READ => read(app, &p),
             m::SOUND_PLAY => play(app, &p),
             m::SOUND_STOP => Ok(json!({ "stopped": app.sound_stop() })),
+            m::SOUND_MOUTH => mouth_read(app, &p),
             _ => return None,
         })
     }

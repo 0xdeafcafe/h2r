@@ -171,6 +171,12 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
             app.audition.headless = true;
         }
+        m::SOUND_MOUTH => {
+            // The same sound with a mouth curve on permutation 0.
+            let map = t.path("mouth.map");
+            std::fs::write(&map, super::sound::tests::mouth_map()).unwrap();
+            c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+        }
         m::VOICE_CHARACTERS | m::VOICE_DATASET_BUILD | m::VOICE_DATASET_STATUS => {
             // Invented maps and the fake sidecar (never Python).
             super::voice_clone::test_setup(app, false, false);
