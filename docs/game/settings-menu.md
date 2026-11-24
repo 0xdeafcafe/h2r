@@ -175,19 +175,20 @@ and **Voice**. Selecting Video opens the display options below.
 |---|---|---|---|---|
 | Field of View | 70 to 120 in steps of 5 | `[graphics] fov` | at once | `H2_FOV` |
 | Frame Rate | 30, 60, 120, Uncapped | `[graphics] fps` | at once | `--fps`, `H2_FPS` |
-| Resolution | Native (budgeted render width x height), then sizes at the drawable aspect | `[graphics] resolution` (`"native"` or `"WxH"`) | next frame | `H2_RESOLUTION`, legacy `H2_RENDER_SCALE` |
+| Resolution | Native (render width x height), then fixed sizes at the viewport aspect | `[graphics] resolution` (`"native"` or `"WxH"`) | next frame | `H2_RESOLUTION`, legacy `H2_RENDER_SCALE` |
 | Lighting | Retail, E3 (default Retail). A [BSP review launch](../graphics/relighting-review.md) displays its locked lamp state | `[graphics] lighting` (`"retail"`, `"e3"`) | next frame | `H2_LIGHTING` |
 | HUD Position | Pinned (default), Centered | `[graphics] hud_position` (`"pinned"`, `"centered"`) | live | `H2_HUD_POSITION` |
 | LOD Distance | Retail, 0.5x, 1x (default), 1.5x, 2x, 3x, 4x | `[graphics] lod_distance` (number or `"retail"`) | next view | `H2_LOD_DISTANCE` |
 
 A on Resolution, HUD Position or LOD Distance opens a select dialog. A confirms the
 highlighted option and saves it to `<data>/settings.toml`. B cancels. Native
-tracks the physical window size. Choosing a numbered size fixes the render
-target at that size, including after a window resize. At 5120x2880 the
-select dialog offers Native, 1280x720, 1920x1080, 2560x1440, 3840x2160 and
+follows the physical viewport on each frame, including the backing pixels
+on Retina. Choosing a numbered size fixes the render target at that size.
+At 5120x2880 the select dialog offers Native, 1280x720, 1920x1080, 2560x1440, 3840x2160 and
 5120x2880. The saved integer `graphics.render_scale` and its launch override
-select the corresponding fixed multiple of 640x480. Native uses a 4K
-pixel budget. The explicit 5120x2880 option uses the full panel raster.
+select the corresponding fixed multiple of 640x480. In 5K fullscreen, the
+4K pixel budget gives **Native (3840x2160)**. The explicit **5120x2880**
+option uses the full panel raster.
 
 In offline play, LOD Distance at 1x matches the render height. A higher
 multiplier retains model detail farther away. Retail uses 480-line

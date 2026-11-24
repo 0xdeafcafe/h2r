@@ -5,6 +5,7 @@
 //! widescreen setting is on). The display aspect is therefore a setting, not
 //! something derived from the back-buffer size.
 
+use settings::NativeTarget;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -70,8 +71,8 @@ impl std::fmt::Debug for NativeFit {
     }
 }
 
-/// Physical render extent shared by the shell and the render thread. Publish
-/// both axes together so a reader cannot observe half of a resize.
+/// Drawable size and fullscreen state shared by the shell and render thread.
+/// Publish them together so a reader cannot observe half of a transition.
 #[derive(Clone)]
 pub(crate) struct NativeSize {
     aspect: DisplayAspect,
@@ -88,7 +89,7 @@ impl NativeSize {
             pixels: Arc::new(AtomicU64::new(0)),
             native_fit: None,
         };
-        size.update(drawable);
+        size.update(drawable, false);
         size
     }
 
@@ -97,28 +98,34 @@ impl NativeSize {
         self
     }
 
-    pub(crate) fn update(&self, (w, h): (u32, u32)) {
+    // Surface dimensions are bounded by MAX_FRAME_DIMENSION, leaving the
+    // high bit free to publish the window mode with the pixels.
+    const FULLSCREEN: u64 = 1 << 63;
+
+    pub(crate) fn update(&self, (w, h): (u32, u32), fullscreen: bool) {
         if w != 0 && h != 0 {
-            self.pixels.store((u64::from(w) << 32) | u64::from(h), Ordering::Relaxed);
+            let mode = if fullscreen { Self::FULLSCREEN } else { 0 };
+            self.pixels.store(mode | (u64::from(w) << 32) | u64::from(h), Ordering::Relaxed);
         }
     }
 
-    fn drawable(&self) -> Option<(u32, u32)> {
-        let size = self.pixels.load(Ordering::Relaxed);
-        (size != 0).then_some(((size >> 32) as u32, size as u32))
+    fn surface(&self) -> Option<((u32, u32), bool)> {
+        let sample = self.pixels.load(Ordering::Relaxed);
+        let pixels = sample & !Self::FULLSCREEN;
+        (pixels != 0).then_some((((pixels >> 32) as u32, pixels as u32), sample != pixels))
     }
 
-    /// Raster size for Native. Stretch fills the drawable, other modes
-    /// fit the requested aspect.
-    pub(crate) fn get(&self) -> (u32, u32) {
-        let Some(drawable) = self.drawable() else {
-            return (640, 480);
+    pub(crate) fn get(&self) -> NativeTarget {
+        let Some((drawable, fullscreen)) = self.surface() else {
+            return NativeTarget::windowed((640, 480));
         };
-        if self.aspect == DisplayAspect::Source || self.scaling == Scaling::Stretch {
-            return drawable;
-        }
-        let viewport = fit(self.aspect.ratio(drawable), drawable);
-        (viewport.width, viewport.height)
+        let viewport = if self.aspect == DisplayAspect::Source || self.scaling == Scaling::Stretch {
+            drawable
+        } else {
+            let fitted = fit(self.aspect.ratio(drawable), drawable);
+            (fitted.width, fitted.height)
+        };
+        NativeTarget { drawable, viewport, fullscreen }
     }
 
     pub(crate) fn viewport(&self, src: (u32, u32), drawable: (u32, u32), loading: bool) -> Viewport {
@@ -138,7 +145,7 @@ impl NativeSize {
 
     /// Compositor's physical destination for a source of this size.
     pub(crate) fn display_size(&self, src: (u32, u32)) -> (u32, u32) {
-        let Some(drawable) = self.drawable() else {
+        let Some((drawable, _)) = self.surface() else {
             return src;
         };
         let viewport = self.viewport(src, drawable, false);
@@ -267,40 +274,64 @@ mod tests {
         assert_eq!(limit_drawable((5120, 2880), 8192), (5120, 2880));
     }
 
+    #[cfg(not(any(target_os = "tvos", target_os = "ios")))]
     #[test]
-    fn native_drawable_tracks_physical_pixels_across_resizes() {
-        let size = NativeSize::new(DisplayAspect::Source, Scaling::Fit, (5120, 2880));
+    fn retina_native_target_tracks_physical_pixels_and_window_mode() {
+        use settings::Resolution;
+        use winit::dpi::LogicalSize;
+
+        let backing = |(w, h)| {
+            let pixels = LogicalSize::new(w, h).to_physical::<u32>(2.0);
+            (pixels.width, pixels.height)
+        };
+        let opening = initial_monitor_window((1280, 960), (2560, 1440));
+        let size = NativeSize::new(DisplayAspect::Source, Scaling::Fit, backing(opening))
+            .with_native_fit(Some(NativeFit::new(|| true)));
         let reader = size.clone();
-        assert_eq!(reader.get(), (5120, 2880));
-        size.update((3440, 1440));
-        assert_eq!(reader.get(), (3440, 1440));
-        size.update((0, 1440));
-        size.update((3440, 0));
-        assert_eq!(reader.get(), (3440, 1440));
-        size.update((1233, 857));
-        assert_eq!(reader.get(), (1233, 857));
+        assert_eq!(reader.get(), NativeTarget::windowed((2560, 1440)));
+        for (points, fullscreen, raster) in [
+            ((1392, 864), false, (2784, 1728)), // user resize
+            ((2560, 1400), false, (5120, 2800)), // maximize
+            ((2560, 1440), true, (3840, 2160)), // fullscreen
+            ((2560, 1440), false, (5120, 2880)), // mode-only change
+            ((1392, 864), false, (2784, 1728)), // restore
+        ] {
+            let drawable = backing(points);
+            size.update(drawable, fullscreen);
+            let sample = reader.get();
+            assert_eq!(
+                sample,
+                NativeTarget { drawable, viewport: drawable, fullscreen },
+            );
+            assert_eq!(Resolution::Native.size(sample), raster);
+            assert_eq!(reader.display_size(raster), drawable);
+        }
+        size.update((0, 1728), false);
+        assert_eq!(reader.get(), NativeTarget::windowed((2784, 1728)));
     }
 
     #[test]
     fn native_drawable_fits_an_explicit_aspect() {
         let size = NativeSize::new(DisplayAspect::Standard, Scaling::Fit, (0, 0));
-        assert_eq!(size.get(), (640, 480));
-        size.update((5120, 2880));
-        assert_eq!(size.get(), (3840, 2880));
+        assert_eq!(size.get(), NativeTarget::windowed((640, 480)));
+        size.update((5120, 2880), true);
+        assert_eq!(size.get(), NativeTarget {
+            drawable: (5120, 2880), viewport: (3840, 2880), fullscreen: true,
+        });
         let wide = NativeSize::new(DisplayAspect::Widescreen, Scaling::Fit, (2560, 1600));
-        assert_eq!(wide.get(), (2560, 1440));
+        assert_eq!(wide.get().viewport, (2560, 1440));
     }
 
     #[test]
     fn display_size_tracks_the_compositor_for_fixed_and_native_resolutions() {
         let wide = NativeSize::new(DisplayAspect::Widescreen, Scaling::Fit, (3440, 1440));
         assert_eq!(wide.display_size((640, 480)), (2560, 1440));
-        wide.update((1920, 1200));
-        assert_eq!(wide.display_size(wide.get()), (1920, 1080));
+        wide.update((1920, 1200), false);
+        assert_eq!(wide.display_size(wide.get().viewport), (1920, 1080));
 
         let stretched = NativeSize::new(DisplayAspect::Standard, Scaling::Stretch, (3440, 1440));
         assert_eq!(stretched.display_size((640, 480)), (3440, 1440));
-        assert_eq!(stretched.get(), (3440, 1440));
+        assert_eq!(stretched.get().viewport, (3440, 1440));
 
         let integer = NativeSize::new(DisplayAspect::Source, Scaling::Integer, (1920, 1080));
         assert_eq!(integer.display_size((640, 480)), (1280, 960));
@@ -320,7 +351,7 @@ mod tests {
             ((900, 1200), (900, 1200)),
             ((5120, 2880), (3840, 2160)),
         ] {
-            size.update(target);
+            size.update(target, false);
             let viewport = Viewport {
                 x: 0,
                 y: 0,

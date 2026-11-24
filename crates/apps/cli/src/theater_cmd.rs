@@ -438,7 +438,7 @@ fn child_with_start(
                     gfx: Some(boot::d3d_glue::offscreen_film_reference()?),
                     gfx_view: Some(boot::run_opts::DisplayView {
                         backend: None,
-                        native_size: retail.clone(),
+                        native_target: std::sync::Arc::new(|| settings::NativeTarget::windowed(boot::setting_defs::GUEST_FRAME)),
                         viewer_output: Some(retail),
                         display_size: std::sync::Arc::new(|size| size),
                     }),
@@ -500,7 +500,7 @@ fn child_with_start(
             if let Some(input) = window.take_input() {
                 controller.attach_input(input);
             }
-            let native: boot::run_opts::NativeSize = std::sync::Arc::new(window.native_size());
+            let native: boot::run_opts::NativeTarget = std::sync::Arc::new(window.native_target());
             let raster = boot::d3d_glue::output_size(Some(&settings), native.clone())?;
             let film_media = export::media(
                 media_options,
@@ -547,7 +547,7 @@ fn child_with_start(
                     Some(d3d::GfxBackend::new(window.gfx_context())),
                     Some(boot::run_opts::DisplayView {
                         backend: Some(d3d::GfxBackend::new(window.gfx_context()).on_present(present)),
-                        native_size: native,
+                        native_target: native,
                         viewer_output: Some(raster),
                         display_size: std::sync::Arc::new(window.display_size()),
                     }),

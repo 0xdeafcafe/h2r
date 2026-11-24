@@ -86,12 +86,12 @@ impl WindowSurface {
         })
     }
 
-    pub(crate) fn resize(&mut self, size: (u32, u32)) {
+    pub(crate) fn resize(&mut self, size: (u32, u32), fullscreen: bool) {
         if size.0 == 0 || size.1 == 0 {
             return;
         }
         let size = limit_drawable(size, self.dimension_limit);
-        self.native_size.update(size);
+        self.native_size.update(size, fullscreen);
         if size == self.size() {
             return;
         }
@@ -271,7 +271,7 @@ mod tests {
         window.set_vsync(&ctx, false);
         assert!(!layer.displaySyncEnabled());
         assert!(!window.needs_configure());
-        window.resize((128, 64));
+        window.resize((128, 64), false);
         window.set_vsync(&ctx, true);
         assert!(layer.displaySyncEnabled());
         assert!(window.needs_configure());

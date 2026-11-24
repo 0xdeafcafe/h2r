@@ -163,7 +163,7 @@ impl Settings {
         let effective = |key: &str| self.locked.get(key).or_else(|| self.values.get(key));
         let size = LEGACY_SCALE.parse(effective(LEGACY_SCALE.key)?).ok()?;
         let units = LOD_DISTANCE.parse(effective(LOD_DISTANCE.key)?).ok()?.as_int()?;
-        Some(lod_pixel_multiplier(size.size(GUEST_FRAME).1, units as u32))
+        Some(lod_pixel_multiplier(size.size(settings::NativeTarget::windowed(GUEST_FRAME)).1, units as u32))
     }
 
     // Only keys and value types from this build's schema may reach the private

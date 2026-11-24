@@ -90,7 +90,7 @@ pub(crate) const LEGACY_SCALE: settings::LegacyScale = settings::LegacyScale {
 pub static RESOLUTION: Def = Def {
     key: "graphics.resolution",
     label: "Resolution",
-    help: "Native follows the window up to the pixel count of 4K. Pick a size to render at that resolution.",
+    help: "Native follows the window in pixels. Fullscreen Native uses up to 4K pixels. Pick a size to fix the resolution.",
     kind: Kind::Resolution(LEGACY_SCALE),
     default: Value::Int(0),
     env: Some("H2_RESOLUTION"),

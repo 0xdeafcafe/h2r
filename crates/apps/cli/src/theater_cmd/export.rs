@@ -339,7 +339,10 @@ pub(super) fn host(
             Some(reference),
             Some(boot::run_opts::DisplayView {
                 backend: Some(view),
-                native_size: raster.clone(),
+                native_target: {
+                    let raster = raster.clone();
+                    Arc::new(move || settings::NativeTarget::windowed(raster()))
+                },
                 viewer_output: Some(raster),
                 display_size: Arc::new(|size| size),
             }),
