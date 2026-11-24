@@ -1,7 +1,7 @@
 # Game type markers
 
-Status: Partly built. The marker set and the area model exist (MK1), Studio draws the markers and answers `markers.list` and `markers.render` (MK4), Forge draws them as world lines and answers `render.markers` (MK6), and the Forge document stores areas, which `forge.things` and `forge.propose` carry (MK2); the zone read, the skin and the editing are design.
-Code: `crates/formats/game-markers/src/lib.rs` (`Marker::mesh`), `crates/formats/game-markers/src/area.rs` (`Area`), `crates/tools/scenario-edit/src/marker_view.rs` (`placed`, `overlays`), `crates/apps/studio/src/api/markers.rs`, `crates/extensions/game/src/forge_glue/markers_world.rs` (Forge's source, `render.markers`), `crates/formats/forge-doc/src/{area,entry,links}.rs`, `crates/extensions/forge/src/session.rs`, `crates/extensions/agent/src/forge/local.rs`. Tests: `crates/formats/game-markers/src/tests.rs`, `marker_view.rs`, `crates/apps/studio/src/api/tests/markers_tests.rs`, `crates/extensions/game/src/forge_glue/markers_world/tests.rs`, `crates/formats/forge-doc/src/tests/area.rs`, `crates/extensions/forge/src/base_tests.rs`, `crates/extensions/agent/src/forge/tests.rs`.
+Status: Partly built. The marker set and the area model exist (MK1), Studio draws the markers and answers `markers.list` and `markers.render` (MK4), Forge draws them as world lines and answers `render.markers` (MK6), the Forge document stores areas, which `forge.things` and `forge.propose` carry (MK2), and a script's zone reads them (MK3); the skin and the editing are design.
+Code: `crates/formats/game-markers/src/lib.rs` (`Marker::mesh`), `crates/formats/game-markers/src/area.rs` (`Area`), `crates/tools/scenario-edit/src/marker_view.rs` (`placed`, `overlays`), `crates/apps/studio/src/api/markers.rs`, `crates/extensions/game/src/forge_glue/markers_world.rs` (Forge's source, `render.markers`), `crates/formats/forge-doc/src/{area,entry,links}.rs`, `crates/extensions/forge/src/session.rs`, `crates/extensions/agent/src/forge/local.rs`, `crates/extensions/game/src/rules/world/zones.rs` (`Zones::new`), `crates/formats/rules/src/fake.rs` (`FakeGame::set_area`, `move_to`), `crates/live/bots/src/objective/zones.rs` (`first_hill`), `crates/extensions/agent-proto/src/rules.rs` (`rules.zones`). Tests: `crates/formats/game-markers/src/tests.rs`, `marker_view.rs`, `crates/apps/studio/src/api/tests/markers_tests.rs`, `crates/extensions/game/src/forge_glue/markers_world/tests.rs`, `crates/formats/forge-doc/src/tests/area.rs`, `crates/extensions/forge/src/base_tests.rs`, `crates/extensions/agent/src/forge/tests.rs`, `zones.rs`' `a_flags_area_is_its_zone_before_corners_and_the_default`, `crates/formats/rules/tests/area_zones.rs`, `crates/live/bots/src/objective/zones/tests.rs`, `crates/extensions/agent/src/rules/tests.rs`.
 Switch: none.
 
 A game type's parts are rows of a scenario with no body: a player
@@ -31,11 +31,11 @@ plus **C**: the retail games as publicly documented.
 | Trigger volume, kill trigger, BSP switch | the scenario's trigger volumes and the blocks that name them (`scenario_edit::volumes`) | nothing | a `Volume` marker box by kind (`LayerId::Volume`) |
 | Script label | a label op on a netgame flag (`forge_doc::GroundLabel`; [rules-engine.md](rules-engine.md#forge-labels)) | the label's marker (`ff_drop`, `siege_site`, ...), in orange when the last ground build could not honour it | not drawn |
 
-A script's zone is made of the flags alone (`game::rules::world::zones`):
-three or more flags of one label and number are the convex hull of
-their places, and any other flag is a cylinder of one world unit
-([rules-world-api.md](rules-world-api.md), "Zones"). No tool shows that
-zone, and nothing but a hill's corners can shape one.
+A script's zone is made of the flags and their areas
+(`game::rules::world::zones`): a flag's own area, else three or more
+flags of one label and number as the convex hull of their places, else a
+cylinder of one world unit ([rules-world-api.md](rules-world-api.md),
+"Zones"). `rules.zones` reports each zone and the step that made it.
 
 ## The markers
 
@@ -192,8 +192,8 @@ A script reads nothing new: `koth.rules` declares
 host's zone builder (`game::rules::world::zones`) makes each zone's
 shape in this order:
 
-1. the flag's area, when the census gives it one: `zones::Shape::Area
-   { at, area }` (new), tested with `Area::contains`;
+1. the flag's area, when the census gives it one (`Thing::area`):
+   `zones::Shape::Area { at, area }`, tested with `Area::contains`;
 2. three or more flags of one label and number: the hull, as
    `Area::of_corners` gives it;
 3. any other flag: `Area::default()` round it.
@@ -201,10 +201,13 @@ shape in this order:
 So one test serves all three, a retail map plays as it does, and a hill
 shaped in Forge is the hill the script scores. `Shape::middle` is
 `Area::middle`, which `spawn_near` and the bots' `bot_hold` measure
-from. `rules::fake::FakeGame` takes an area on a labelled flag, so a
-scenario tests a path hill headless. The bots' own zone read
-(`bots::objective::zones`) takes the area through the census the same
-way.
+from. `rules::fake::FakeGame` takes an area on a zone object
+(`set_area`) and moves a player through it (`move_to` answers the
+`enter` and `leave` the engine reports), so a test plays a path hill
+headless. The bots' own zone read (`bots::objective::zones::first_hill`)
+takes a hill's flag area from the host's census
+(`bots::objective::set_flag_areas`) and keeps its corners' own test for
+a retail hill.
 
 The host has the document's areas where it has the document's labels:
 the census of a materialised map variant
@@ -367,7 +370,7 @@ of a window ([agent API rules](../../AGENTS.md)).
 | `forge.things` | game | each netgame flag reports `area` in the document spelling, or `null` |
 | `forge.propose` | game | accepts an op with `"edit":{"entry":{"area":{target, area}}}` and reports refusals by name |
 | `render.markers` | game | what the last capture drew: `{shown, hidden_by_budget, markers: [{thing, kind, team, anchor, lines, faded}]}`, `anchor` in world units, `kind` filtering the list ([agent-api.md](../runtime/agent-api.md), "`render.markers`"); the walls shown in play join it with MK8 |
-| `rules.zones` | game | each zone the host built: `{label, number, shape: "area" \| "corners" \| "default", area, at}`, so a test reads the hill a script scores |
+| `rules.zones` (built) | game | each zone the host built: `{label, number, shape: "area" \| "corners" \| "default", area, at}`, so a test reads the hill a script scores |
 
 `markers.render` is the content render of this page's shapes, as
 `model.render` is a model's
@@ -398,7 +401,7 @@ lines with tests, M under 2,500.
 |---|---|---|---|---|
 | MK1 (built) | **The marker set and the area**: `game_markers`, every `Kind`'s mesh, `Palette`, `Area` with `validate`, `contains`, `outline`, `of_corners` | S | nothing | `every_kind_has_its_lines_faces_and_bounds` gives each kind's lines, triangles and box; a marker is its team's colour; a bow tie, a spike, points in a line and a radius out of range are refused by name; an L holds its inside and not its notch; a hill's corners give the hull the host makes |
 | MK2 (built) | **The area in the document**: `EntryOp::Area`, its wire form, the validator's refusals, `ForgeDoc::areas`, `LabelledThing::area`, `Session::set_area`, `forge.propose` and `forge.things` | S | MK1 | an area op round-trips canonical JSON; a crossing path is refused with `AreaError`'s sentence; an area follows its flag through a swap-remove; a document with an area is format 3 and a map variant; a hill with corners refuses an area |
-| MK3 | **The zone read**: `zones::Shape::Area`, the three-step order, `FakeGame`'s areas, `bots::objective::zones`, `rules.zones` | S | MK2 | on the fake game `koth.rules` scores a player inside a path hill and not one in its notch; a retail hill's zone holds the same points before and after; a lone flag is the default cylinder |
+| MK3 (built) | **The zone read**: `zones::Shape::Area`, the three-step order, `FakeGame`'s areas, `bots::objective::zones`, `rules.zones` | S | MK2 | on the fake game `koth.rules` scores a player inside a path hill and not one in its notch; a retail hill's zone holds the same points before and after; a lone flag is the default cylinder |
 | MK4 (built) | **Studio draws them**: `scenario_edit::marker_view`, the layers' overlays in place of the glyphs, outlines and volume boxes, `markers.list`, `markers.render` | M | MK1 | on the invented cache each placement block gives its kind and team; a hill's corners give one `Hill`; `markers.render` writes the sheet with every kind of `Kind::samples`; `view.snapshot` of a spawn differs from the background where its mesh projects |
 | MK5 | **Studio edits areas**: the gizmo handles, the inspector rows, `markers.area.set`, **Convert to area**, the `markers` check | M | MK2, MK4 | a rim drag writes one area op; an edge handle adds a point; a refused drag leaves the document as it was; converting a hill's corners gives a zone that holds the same points; the check names an overlapping pair |
 | MK6 (built) | **Forge draws them**: `forge_glue::markers_world` as a world-line source, the fades and the budget, the label text, `render.markers`; the HUD-canvas rings for ground labels removed | M | MK1 | on an invented session every thing gives its marker's lines with the monitor on and none with it off; a marker of another game type is faded; the 257th marker is counted and not drawn |

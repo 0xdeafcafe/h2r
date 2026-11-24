@@ -485,7 +485,10 @@ fn the_hill_is_contested_while_firing_and_a_defender_stays_inside() {
         me: 0,
         items: vec![],
         spots: vec![],
-        hill: Some(Hill { corners }),
+        hill: Some(Hill {
+            corners,
+            ..Default::default()
+        }),
     });
     let mut m = Mind::new(Skill::Legendary, 4);
     m.step(&p, None);
@@ -621,7 +624,10 @@ fn a_contested_hill_draws_fire_to_the_opponent_scoring_in_it() {
         me: 0,
         items: vec![],
         spots: vec![],
-        hill: Some(Hill { corners }),
+        hill: Some(Hill {
+            corners,
+            ..Default::default()
+        }),
     });
     let mut m = Mind::new(Skill::Heroic, 5);
     m.step(&p, None);
@@ -709,6 +715,7 @@ fn a_dry_bot_holds_a_scoring_hill_with_the_only_gun_outside() {
         spots: vec![],
         hill: Some(Hill {
             corners: square(-2.0, -2.0, 4.0).verts,
+            ..Default::default()
         }),
     });
     let mut m = Mind::new(Skill::Normal, 3);

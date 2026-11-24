@@ -600,6 +600,10 @@ impl agent::rules::Source for AgentSource {
         }
     }
 
+    fn zones(&self) -> wire::Zones {
+        self.shared.as_ref().map(|s| s.lock().zones()).unwrap_or_default()
+    }
+
     fn reload(
         &self,
         m: &mut dyn GuestMemory,

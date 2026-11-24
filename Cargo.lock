@@ -732,6 +732,7 @@ dependencies = [
  "background",
  "content",
  "engine",
+ "game-markers",
  "guest-layout",
  "h1map",
  "host-dirs",
@@ -5863,6 +5864,7 @@ name = "rules"
 version = "0.1.0"
 dependencies = [
  "content",
+ "game-markers",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

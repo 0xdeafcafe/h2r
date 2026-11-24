@@ -41,6 +41,7 @@ fn square(c: Vec3, half: f32) -> Hill {
             [c[0] + half, c[1] + half, c[2]],
             [c[0] - half, c[1] + half, c[2]],
         ],
+        ..Default::default()
     }
 }
 const CALM: Temper = Temper {
@@ -325,9 +326,38 @@ fn without_engine_globals_the_flags_give_the_first_hill_and_the_ball_spawns() {
         ([30.0, 0.0, 0.0], kind::HILL + 2, 8),
     ];
     assert_eq!(ball_spawns(&flags), vec![[0.0; 3]]);
-    let h = first_hill(&flags).expect("hill 1");
+    let h = first_hill(&flags, &[]).expect("hill 1");
     assert_eq!(h.corners.len(), 3);
-    assert!(first_hill(&flags[..2]).is_none());
+    assert!(first_hill(&flags[..2], &[]).is_none());
+}
+
+/// A flag with an area is the hill, and the area decides who is in it, a
+/// notch of a concave path included (docs/game/gametype-markers.md, "In a
+/// script").
+#[test]
+fn a_flag_with_an_area_is_the_first_hill_and_the_area_is_its_zone() {
+    use game_markers::Area;
+    let flags = [
+        ([0.0; 3], kind::BALL_SPAWN, 8),
+        ([20.0, 0.0, 0.0], kind::HILL + 1, 8),
+        ([30.0, 0.0, 0.0], kind::HILL + 2, 8),
+    ];
+    // An L: the notch is the corner over x > 0, y > 0 (offsets).
+    let l = Area::path(vec![[-4.0, -4.0], [4.0, -4.0], [4.0, 0.0], [0.0, 0.0], [0.0, 4.0], [-4.0, 4.0]]);
+    assert_eq!(l.validate(), Ok(()));
+    let areas = [(1, l.clone())];
+    let h = first_hill(&flags, &areas).expect("hill 1");
+    assert_eq!(h.corners, vec![[20.0, 0.0, 0.0]]);
+    assert!(h.contains([18.0, -2.0, 0.0]));
+    assert!(h.contains([18.0, 2.0, 0.0]));
+    assert!(!h.contains([22.0, 2.0, 0.0]), "the notch");
+    assert!(!h.contains([18.0, -2.0, 3.0]), "over its reach");
+    assert_eq!(h.center(), l.middle([20.0, 0.0, 0.0]));
+    assert!(h.radius() > 0.0);
+    // An area on a later hill's flag makes that the first hill; with no
+    // area a lone flag is no hill.
+    assert!(first_hill(&flags, &[(2, l)]).is_some_and(|h| h.area.is_some()));
+    assert!(first_hill(&flags, &[]).is_none());
 }
 
 #[test]

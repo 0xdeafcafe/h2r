@@ -1234,6 +1234,8 @@ impl Runtime {
         }
         let census = census::census(&things);
         let zones = Zones::read(m, &table);
+        // The bots read a hill from the same areas (`bots::objective`).
+        ::bots::objective::set_flag_areas(table.flag_areas());
         // The record's option bits are its script's; a carried script has
         // no options, so the built-in plays its own defaults.
         let options = if script.mode == Mode::Rules && carried.is_none() {
@@ -1645,6 +1647,37 @@ impl Runtime {
                 r.pending.len()
             )
         })
+    }
+
+    /// `rules.zones`: the running script's zones; none when no script
+    /// runs.
+    pub fn zones(&self) -> wire::Zones {
+        let Some(r) = self.running() else {
+            return wire::Zones::default();
+        };
+        let mut out = Vec::new();
+        for (handle, z) in r.zones.iter() {
+            let Some(t) = r.table.get(handle) else { continue };
+            let zones::Shape::Area { at, area } = &z.shape;
+            let mut plain = serde_json::Map::new();
+            match &area.shape {
+                game_markers::Shape::Radius(radius) => plain.insert("radius".into(), (*radius).into()),
+                game_markers::Shape::Path(points) => plain.insert("path".into(), serde_json::json!(points)),
+            };
+            plain.insert("below".into(), area.below.into());
+            plain.insert("above".into(), area.above.into());
+            out.push(wire::Zone {
+                id: t.id(),
+                label: t.text.clone(),
+                number: t.number,
+                shape: z.source.name().into(),
+                area: plain.into(),
+                at: *at,
+                reports: z.reporter == handle,
+            });
+        }
+        out.sort_by_key(|z| z.id);
+        wire::Zones { zones: out }
     }
 
     /// `rules.state`.
