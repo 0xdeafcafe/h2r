@@ -405,40 +405,52 @@ fn a_completed_host_match_is_listed_and_uploads_under_its_lease() {
     assert!(session.upload.lock().unwrap().is_none());
 
     let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut reader = BufReader::new(&mut stream);
-        let mut line = String::new();
-        reader.read_line(&mut line).unwrap();
-        assert_eq!(line.trim_end(), "POST /v1/games/hl-fixture/film HTTP/1.1");
-        let mut length = None;
-        let mut authorised = false;
-        loop {
-            line.clear();
-            let bytes = reader.read_line(&mut line).unwrap();
-            if bytes == 0 || line.trim_end().is_empty() {
-                break;
+        // The stats stream, then the film file beside it.
+        let mut bodies = Vec::new();
+        for target in [
+            "POST /v1/games/hl-fixture/film HTTP/1.1",
+            "POST /v1/games/hl-fixture/film?object=film HTTP/1.1",
+        ] {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(&mut stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            assert_eq!(line.trim_end(), target);
+            let mut length = None;
+            let mut authorised = false;
+            loop {
+                line.clear();
+                let bytes = reader.read_line(&mut line).unwrap();
+                if bytes == 0 || line.trim_end().is_empty() {
+                    break;
+                }
+                let (name, value) = line.split_once(':').unwrap();
+                if name.eq_ignore_ascii_case("content-length") {
+                    length = Some(value.trim().parse().unwrap());
+                }
+                if name.eq_ignore_ascii_case("authorization") {
+                    authorised = value.trim() == "Bearer test-token";
+                }
             }
-            let (name, value) = line.split_once(':').unwrap();
-            if name.eq_ignore_ascii_case("content-length") {
-                length = Some(value.trim().parse().unwrap());
-            }
-            if name.eq_ignore_ascii_case("authorization") {
-                authorised = value.trim() == "Bearer test-token";
-            }
+            assert!(authorised);
+            let mut body = vec![0; length.unwrap()];
+            reader.read_exact(&mut body).unwrap();
+            drop(reader);
+            stream
+                .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            bodies.push(body);
         }
-        assert!(authorised);
-        let mut body = vec![0; length.unwrap()];
-        reader.read_exact(&mut body).unwrap();
-        let uploaded = Reader::new(Cursor::new(body)).unwrap();
+        let film_bytes = bodies.pop().unwrap();
+        let uploaded = Reader::new(Cursor::new(bodies.pop().unwrap())).unwrap();
         assert!(uploaded.finalized);
+        assert!(uploaded.header.inputs_in_film);
         assert_eq!(uploaded.header.meta.map, "lockout");
         assert_eq!(uploaded.header.meta.length_ticks, 30);
-        stream
-            .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
-            .unwrap();
+        assert!(film::file::FilmReader::open(Cursor::new(film_bytes)).unwrap().sealed);
     });
     // A disconnect can close the match without the retail game-end latch.
     // Feed the observer the same final event as Telemetry::close_film.
@@ -807,7 +819,8 @@ fn malformed_viewer_observations_leave_a_seekable_film_and_count_at_seal() {
     assert!(observed.contains(&1) && !observed.contains(&2) && observed.contains(&3));
     assert!((poses.scene().hill.unwrap().corners[0][0] - 2.0).abs() < 0.002);
     assert_eq!(poses.extras().unwrap().tick, 3);
-    let mut replay = film::blam::TrackReader::open(path).unwrap();
+    // A host's actions are in the film file beside its stats stream.
+    let mut replay = film::blam::TrackReader::open_with_film(path).unwrap();
     for tick in 1..=3 {
         assert_eq!(replay.step().unwrap().unwrap().tick, tick);
     }

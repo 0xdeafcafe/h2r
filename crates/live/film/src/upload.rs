@@ -13,8 +13,30 @@ pub const MAX_UPLOAD: u64 = MAX_UPLOAD_BYTES;
 /// The supervisor waits this long for the whole upload across all requests.
 pub const UPLOAD_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
-/// A completed host film, sent after the match using its telemetry.ingest token.
+/// A completed host match, sent after it using its telemetry.ingest token:
+/// the stats stream at `path`, then the film file beside it
+/// ([`crate::file::beside`]) when the recording has one. Live stores the
+/// two as separate objects (docs/live/live-api.md, "Theater").
 pub fn upload(live_url: &str, token: &str, game_id: &str, path: impl AsRef<Path>) -> Result<()> {
+    let path = path.as_ref();
+    upload_object(live_url, token, game_id, path, None)?;
+    let film = crate::file::beside(path);
+    if film.is_file() {
+        upload_object(live_url, token, game_id, &film, Some("film"))
+            .context("upload the film file")?;
+    }
+    Ok(())
+}
+
+/// One object of the upload: the stats stream (`object` `None`) or the
+/// film file (`Some("film")`), in one POST or in numbered parts.
+fn upload_object(
+    live_url: &str,
+    token: &str,
+    game_id: &str,
+    path: &Path,
+    object: Option<&str>,
+) -> Result<()> {
     let mut url = url::Url::parse(live_url)?;
     ensure!(
         matches!(url.scheme(), "http" | "https")
@@ -35,6 +57,9 @@ pub fn upload(live_url: &str, token: &str, game_id: &str, path: impl AsRef<Path>
         .map_err(|_| anyhow::anyhow!("invalid Live URL"))?
         .pop_if_empty()
         .extend(["v1", "games", game_id, "film"]);
+    if let Some(object) = object {
+        url.query_pairs_mut().append_pair("object", object);
+    }
     let mut file = File::open(path)?;
     let size = file.metadata()?.len();
     ensure!(size <= MAX_UPLOAD, "film exceeds 2 GiB");

@@ -264,7 +264,7 @@ header (`inputs_in_film`); `TrackReader::open_with_film` opens it with the
 film file beside it, and a reader without one refuses to step. A tick's digest in a chunk is the low 16
 bits of its gameplay digest and the chunk's closing hash is the last
 tick's whole digest. A seat that joins, leaves or quits is a seat record on
-its tick. A default recording (`Recording::film` in `theater.rs`) feeds
+its tick. A default recording and a host's (`Recording::film` in `theater.rs`) feed
 the file one tick at a time from `post_tick`, mirrors the container's
 machine chunks into it, and writes a checkpoint of the open chunk
 (`FilmWriter::checkpoint`, a block of kind 3 that a reader of an unsealed
@@ -272,8 +272,9 @@ file takes as its last chunk) before each capture mark. A game's cut
 forks the container and the film file together (`autorecord::cut`). A
 hard-killed recording is sealed at its last capture mark's tick by
 `film::recover_tape`, which seals the film file at the same tick
-(`film::file::recover_beside`). Host and explicit recordings are one
-container with their actions inline.
+(`film::file::recover_beside`). A host seals its film file with its
+container at the match's end, and `film::upload` sends both to Live. An
+explicit recording is one container with its actions inline.
 
 The length, the trailer offset and the sealed flag are zero while a film
 is being written or streamed; a reader of such a file walks the blocks.
@@ -423,15 +424,21 @@ at every length and corrupt it at random.
 In a Live game the host forwards the film to every client as it is made,
 so each client records the engine film and no network tape.
 
-- **What is sent.** The film's blocks, unchanged: the seed when a client
-  joins, then each tick chunk as it closes, every 256 ticks. Nothing is
-  encoded twice, and a client's file equals the host's.
+- **What is sent.** The film's bytes, unchanged, as numbered pieces: the
+  header and seed when a client joins, then what the file gained as each
+  tick chunk closed (the chunk and any machine envelope before it), every
+  256 ticks, and at the seal the trailer and the sealed header. Nothing
+  is encoded twice, and a client's file equals the host's. `film::side`
+  holds the frame format and both ends: `Forwarder` on the host and
+  `Assembler` on the client.
 - **Where it rides.** A frame kind of the Live datagram tunnel
   (`live_proto::tunnel`, `crates/live/live-hle/src/tunnel_host.rs`,
   `tunnel_client.rs`), beside the game's datagrams and outside the
   guest's sockets. The guest sends and receives what it did before, so
-  the simulation contract does not move. A frame carries the game id, the
-  chunk index, a part number and the bytes.
+  the simulation contract does not move. A frame carries the film id, the
+  piece index, the piece's offset and length in the file, a part number
+  and the bytes, in at most one tunnel payload. The tunnel frame kind and
+  the 16 KiB a second pacing are not built.
 - **Bandwidth** (**Estimate**, from the sizes above). 16 seats: 43,200
   bytes a minute of actions, 3,650 of digests and 280 of framing, 47,100
   in all: 785 bytes a second, 6.3 kbit/s to each client, and 94 kbit/s
@@ -440,10 +447,10 @@ so each client records the engine film and no network tape.
 - **Bound.** A client is sent at most 16 KiB a second of film. A chunk
   over 64 KiB stored is not forwarded. The host keeps the last eight
   stored chunks, at most 512 KiB, for resends.
-- **Loss.** A client that sees a gap in the chunk index asks the host for
-  that chunk again. A chunk the host no longer holds, or would not send,
-  is fetched after the game from the host's film on Live, by the byte
-  range its trailer gives. A film with a gap is unsealed until the gap is
+- **Loss.** A client that sees a gap in the piece index asks the host for
+  that piece again. For a piece the host no longer holds, or would not
+  send, the host names its byte range, and the client fetches it after
+  the game from the host's film on Live. A film with a gap is unsealed until the gap is
   filled, and is not offered for Watch.
 - **Check.** Each chunk ends with the arena hash, and the sealed film's
   digest is in the game's Live record; the client compares both.
@@ -487,9 +494,11 @@ so the host gives them a start point.
 
 ### On Live
 
-Live stores a film as the bytes it was sent and serves it by byte range.
-It reads the header and the seed, checks that every block's stored size
-stays inside the file, and inflates no tick chunk. A film needs no scrub:
+Live stores a film as the bytes it was sent and serves it by byte range
+(`crates/live/live-server/src/films/upload/film_file.rs`). It reads the
+header and the seed, checks that every block's stored size stays inside
+the file and that the trailer lists exactly the tick chunks it found, and
+inflates no tick chunk. A film needs no scrub:
 Live issues the seat and machine identifiers afresh for each game, and
 the seed's roster holds the game id and gamertags. A clip is a pair of
 ticks; playing it needs the film from its first byte to the end of the
