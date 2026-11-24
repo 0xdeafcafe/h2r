@@ -57,9 +57,10 @@ Eligibility and projection have separate tests:
   The per-view history (`0x0003359b`, `0x000335ad`) targets four
   objects with a fade step of 0.005 and returns its current fade in the
   row. Fading entries can still reach the draw. Before accepting
-  `0x00032350`, the observer verifies the gather caller, both mode
-  bytes, the return address, the ESI cursor and EDI countdown, and both
-  arguments against words +8 and +12 (caster and fade).
+  `0x00032350`, the observer verifies the list’s caster return site and both mode
+  bytes. It checks ESI and the EDI countdown against the ranked rows above
+  the saved registers in this call’s frame and matches both arguments
+  against row words +8 and +12 (caster and fade).
 - `0x00032350` tests eligibility again, requires a root object (body
   +0x14 is the none handle) and requires shadows enabled. The visibility
   check `0x0003d7c0` rejects a chain with object-header +2 bit 4 or
