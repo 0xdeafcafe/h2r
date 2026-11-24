@@ -11,6 +11,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, mpsc};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use map::TagId;
 use native_render::gpu::Image;
@@ -24,9 +25,22 @@ use tags::model::RenderModelGeometry;
 
 use crate::native_world_glue::{Raw, StagePalettes, light_image};
 
+/// Identity of one decoded set of model buffers, programs and stage images.
+/// Live edits replace the set within the same map generation.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(super) struct ModelSetId(u64);
+
+impl Default for ModelSetId {
+    fn default() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
 /// What the light passes draw a map's models with.
 #[derive(Default)]
 pub struct ModelLights {
+    pub(super) id: ModelSetId,
     retire: Option<crate::native_map::RetireQueue>,
     pub models: LightModels,
     model_entries: Option<mem_watch::Gauge>,
@@ -222,6 +236,7 @@ fn load(
         .map(|t| t.id)
         .collect();
     let mut out = ModelLights {
+        id: ModelSetId::default(),
         retire: Some(crate::native_map::retire_queue().map_err(|e| e.to_string())?),
         models: LightModels::default(),
         model_entries: None,

@@ -15,7 +15,7 @@ use native_render::light_look::{
 };
 use tags::material::{EngineInputs, ShaderLibrary};
 
-use super::{Compiled, Keep, LitMaterial, models::ModelLights};
+use super::{Compiled, Keep, LitMaterial, models::{ModelLights, ModelSetId}};
 
 const CAPACITY: usize = 512;
 const QUEUE_DEPTH: usize = 64;
@@ -63,6 +63,14 @@ struct Variant {
     selection: Option<(u8, u8)>,
 }
 
+/// World resources belong to this BSP resolver. Model resources can be
+/// replaced independently, including while draws still hold the old images.
+type ResourceKey<T> = (Option<ModelSetId>, T);
+
+fn resource_key<T>(model: Option<&ModelLights>, value: T) -> ResourceKey<T> {
+    (model.map(|resources| resources.id), value)
+}
+
 type ResultSlot = OnceLock<(u64, Result<Resolved, Keep>)>;
 
 struct Job {
@@ -75,8 +83,8 @@ struct Job {
 
 #[derive(Default)]
 struct Variants {
-    slots: HashMap<Variant, Arc<ResultSlot>>,
-    order: VecDeque<Variant>,
+    slots: HashMap<ResourceKey<Variant>, Arc<ResultSlot>>,
+    order: VecDeque<ResourceKey<Variant>>,
 }
 
 impl Variants {
@@ -88,7 +96,8 @@ impl Variants {
         instance: &EngineInputs,
         model: Option<&Arc<ModelLights>>,
     ) -> Result<Resolved, Keep> {
-        if let Some(slot) = self.slots.get(&key) {
+        let scoped = resource_key(model.map(Arc::as_ref), key);
+        if let Some(slot) = self.slots.get(&scoped) {
             let (_, result) = slot
                 .get()
                 .filter(|(frame, _)| *frame < timeline::frames())
@@ -109,8 +118,8 @@ impl Variants {
             slot: Arc::downgrade(&slot),
         };
         sender.try_send(job).map_err(|_| LOADING)?;
-        self.order.push_back(key);
-        self.slots.insert(key, slot);
+        self.order.push_back(scoped);
+        self.slots.insert(scoped, slot);
         Err(LOADING)
     }
 
@@ -396,7 +405,7 @@ struct Worker {
     device: wgpu::Device,
     queue: wgpu::Queue,
     layout: wgpu::BindGroupLayout,
-    uploaded: HashMap<(bool, u64), (Weak<LightProgram>, Weak<Mutex<LightGpu>>)>,
+    uploaded: HashMap<ResourceKey<u64>, (Weak<LightProgram>, Weak<Mutex<LightGpu>>)>,
     shared: Arc<Shared>,
 }
 
@@ -499,9 +508,7 @@ impl Worker {
             _ => return Err(Keep::Unsupported("light geometry unavailable")),
         };
         let program = Arc::new(program.map_err(|why| Keep::Refused(why.into()))?);
-        // A model load may have used different stage palettes from the BSP.
-        // Keep their expanded images in distinct GPU entries.
-        let id = (model.is_some(), light_gpu_key(&program));
+        let id = resource_key(model, light_gpu_key(&program));
         let gpu = self.uploaded.get(&id).and_then(|(original, gpu)| {
             same_gpu_pass(original.upgrade()?.as_ref(), &program)
                 .then(|| gpu.upgrade())
@@ -577,6 +584,43 @@ mod tests {
     }
 
     #[test]
+    fn model_reload_requests_fresh_variants_and_uploads_for_the_same_light_pass() {
+        let old = Arc::new(ModelLights::default());
+        let reloaded = Arc::new(ModelLights::default());
+        let mut variants = Variants::default();
+        let (send, recv) = mpsc::sync_channel(2);
+        let instance = EngineInputs::default();
+        for layer in [10, 11, 12, 13, 14] {
+            let key = Variant {
+                shader: TagId(27),
+                inputs: None,
+                layer,
+                implementation: 2,
+                model: Some((5, 3)),
+                vertex_class: 4,
+                selection: None,
+            };
+            // Two draws against the old buffers share one request. The same
+            // shader + section after reload must enqueue another.
+            for resources in [&old, &old, &reloaded] {
+                assert_eq!(variants.request(&send, key, None, &instance, Some(resources)).err(), Some(LOADING));
+            }
+            let jobs: Vec<_> = recv.try_iter().collect();
+            assert_eq!(jobs.len(), 2);
+            assert!(Arc::ptr_eq(jobs[0].model.as_ref().unwrap(), &old));
+            assert!(Arc::ptr_eq(jobs[1].model.as_ref().unwrap(), &reloaded));
+        }
+
+        let same_program_hash = 16_u64;
+        let uploaded = HashMap::from([
+            (resource_key(None, same_program_hash), "world palette"),
+            (resource_key(Some(&old), same_program_hash), "original palette"),
+        ]);
+        assert_eq!(uploaded[&resource_key(Some(&old), same_program_hash)], "original palette");
+        assert!(!uploaded.contains_key(&resource_key(Some(&reloaded), same_program_hash)));
+    }
+
+    #[test]
     fn a_cold_material_keeps_the_guest_draw_and_a_full_queue_retries() {
         let (send, recv) = mpsc::sync_channel(1);
         let key = |layer| Variant {
@@ -611,7 +655,7 @@ mod tests {
         );
         assert_eq!(request(&mut variants, 13), Some(LOADING));
         assert!(
-            !variants.slots.contains_key(&key(13)),
+            !variants.slots.contains_key(&resource_key(None, key(13))),
             "a full queue does not retain an unbuilt slot"
         );
 
