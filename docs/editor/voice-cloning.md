@@ -123,7 +123,17 @@ flow-matching loss of `model(mel_spec, text=, lens=)` as
 (default `max(2000, 4 × lines)` steps). The trainable parameters are saved
 to `model/model.safetensors` and recorded in `model/trained.json`; `say`
 loads them over the base model. It needs 10 minutes of speech with text
-unless `min_minutes` says otherwise.
+(`MIN_TRAIN_MINUTES`) unless `min_minutes` says otherwise; a small dataset
+(the announcer's lines come to a few minutes) can give an unstable voice.
+
+In the Voices window the dataset's minutes are shown, and while they are
+under 10 the button reads "Train anyway" and a "Least minutes" field
+(default 10, 0 or more) is the `min_minutes` it sends. The "Model" picker
+beside it chooses the backend that says and trains. `qwen3-tts` clones
+from a reference line with no fine-tune: a character with a dataset
+whose lines have text (the build transcribes the rest) is cloned by
+"Say it" with no training, from a dataset clip (default: the subtitled
+line nearest 7 s, else the longest line with text up to 12 s).
 
 ## Interfaces
 

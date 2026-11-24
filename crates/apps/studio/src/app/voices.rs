@@ -146,6 +146,11 @@ impl Voices {
         self.clone.backend
     }
 
+    /// Makes `b` the model that says and trains from now on.
+    pub fn set_backend(&mut self, b: Backend) {
+        self.clone.backend = b;
+    }
+
     fn busy(&self) -> Option<&Job> {
         self.jobs.iter().find(|j| j.running())
     }
