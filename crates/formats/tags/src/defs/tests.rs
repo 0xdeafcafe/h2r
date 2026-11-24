@@ -599,3 +599,70 @@ fn an_unknown_view_word_or_a_wrong_type_fails_with_the_line() {
         assert_eq!(error.line, 2, "{line}");
     }
 }
+
+/// Every `applies=` in the checked-in definitions carries the engine or
+/// disc evidence it rests on: an `E` or a `V` word in the meaning.
+#[test]
+fn builtin_applies_lines_carry_evidence() {
+    fn walk(path: &str, def: &StructDef, found: &mut u32, bad: &mut Vec<String>) {
+        for field in &def.fields {
+            let here = format!("{path}.{}", field.name);
+            if field.applies.is_some() {
+                *found += 1;
+                let evidenced = field
+                    .meaning
+                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .any(|w| w == "E" || w == "V");
+                if !evidenced {
+                    bad.push(here.clone());
+                }
+            }
+            if let Kind::Block(child) | Kind::Struct(child) = &field.kind {
+                walk(&here, child, found, bad);
+            }
+        }
+    }
+    let defs = Defs::builtin();
+    let (mut found, mut bad) = (0, Vec::new());
+    for (g, def) in &defs.groups {
+        walk(&fourcc_text(*g), def, &mut found, &mut bad);
+    }
+    assert!(bad.is_empty(), "applies without evidence: {bad:?}");
+    assert!(found > 100, "the realtime coverage definitions are present");
+}
+
+/// The groups R13 covers hold their timings: HUD widgets and particle
+/// draw fields per frame, emitter and effect-part fields when used, and
+/// object creation fields at creation.
+#[test]
+fn builtin_applies_timings_for_the_covered_groups() {
+    let defs = Defs::builtin();
+    let at = |g: &[u8; 4], path: &str| {
+        let mut def = defs.group(FourCC(*g)).unwrap();
+        let mut parts = path.split('.').peekable();
+        while let Some(name) = parts.next() {
+            let field = def.field(name).unwrap_or_else(|| panic!("{path}"));
+            if parts.peek().is_none() {
+                return field.applies;
+            }
+            def = match &field.kind {
+                Kind::Block(c) | Kind::Struct(c) => c.as_ref(),
+                _ => panic!("{path}"),
+            };
+        }
+        None
+    };
+    assert_eq!(at(b"nhdt", "bitmap_widgets.offset_full"), Some("frame"));
+    assert_eq!(at(b"nhdt", "text_widgets.font_full"), Some("frame"));
+    assert_eq!(at(b"nhdt", "bitmap_widgets.name"), None);
+    assert_eq!(at(b"prt3", "color"), Some("frame"));
+    assert_eq!(at(b"prt3", "postprocess.colors.color"), Some("frame"));
+    assert_eq!(at(b"prt3", "death_effect"), Some("use"));
+    assert_eq!(at(b"effe", "events.parts.reference"), Some("use"));
+    assert_eq!(at(b"effe", "events.parts.location"), Some("use"));
+    assert_eq!(at(b"effe", "events.accelerations.acceleration"), None);
+    assert_eq!(at(b"ligh", "diffuse_colour_lower"), Some("frame"));
+    assert_eq!(at(b"proj", "inverse_velocity_change_distance"), Some("frame"));
+    assert_eq!(at(b"matg", "player_control.slowdown"), Some("frame"));
+    assert_eq!(at(b"matg", "player_representations.unit"), Some("creation"));
+}

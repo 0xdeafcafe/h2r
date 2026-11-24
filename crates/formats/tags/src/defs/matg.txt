@@ -36,8 +36,8 @@ group matg 0x284 align 16
     0x0 tagref tagref_0
     0x8 unknown 0xc
   0xf0 block player_control 0x80 align 4 -- E 0x00185be0 player-control update; boot/src/aim_assist.rs:71; aim-assist.md:124
-    0x0 f32 slowdown -- E 0x0018622b: how much the crosshair slows over a target, capped at 1.0 (0x00186252); boot/src/aim_assist.rs:73-74
-    0x4 f32 follow -- E 0x0018622b: how much the crosshair follows a target, capped at 1.0; boot/src/aim_assist.rs:73-75
+    0x0 f32 slowdown applies=frame -- E 0x0018622b: how much the crosshair slows over a target, capped at 1.0 (0x00186252); boot/src/aim_assist.rs:73-74
+    0x4 f32 follow applies=frame -- E 0x0018622b: how much the crosshair follows a target, capped at 1.0; boot/src/aim_assist.rs:73-75
     0x8 unknown 0x6c
     0x74 block block_74 0x4 align 4
       0x0 unknown 0x4
@@ -107,7 +107,7 @@ group matg 0x284 align 16
     0x0 tagref first_person_hands groups=mode -- E 0x001676aa: first-person arms model; V; h1convert/src/globals.rs:44-50
     0x8 tagref first_person_body -- V every retail element names its fp_body here; h1convert/src/globals.rs:48
     0x10 unknown 0xa0
-    0xb0 tagref unit -- E 0x0014f0c2: the unit a player spawns as; h1convert/src/globals.rs:12-14,42
+    0xb0 tagref unit applies=creation -- E 0x0014f0c2: the unit a player spawns as; h1convert/src/globals.rs:12-14,42
     0xb8 unknown 0x4
   0x140 block block_140 0x68 align 4
     0x0 unknown 0x10
