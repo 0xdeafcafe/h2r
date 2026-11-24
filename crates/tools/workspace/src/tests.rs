@@ -384,11 +384,11 @@ fn a_kind_with_no_builder_stops_by_name() {
     let p = pkg(
         "p",
         &[],
-        &[("animation", "m.yaml", Some("invented\\m"), "all")],
-        &[("m.yaml", b"")],
+        &[("rules", "m.rules", None, "all")],
+        &[("m.rules", b"")],
     );
     let err = build(&mut base(), &[p.clone()], &target(), None).unwrap_err();
-    assert_eq!(err.kind, Kind::Animation);
+    assert_eq!(err.kind, Kind::Rules);
     assert!(err.why.contains("no builder"), "{err}");
     assert!(check_package(&p)[0].what.contains("no builder"));
     let kinds: Vec<Kind> = registry().iter().map(|b| b.kind).collect();
@@ -399,6 +399,7 @@ fn a_kind_with_no_builder_stops_by_name() {
             Kind::Edits,
             Kind::Bitmap,
             Kind::Model,
+            Kind::Animation,
             Kind::Sound,
             Kind::Data,
             Kind::Hud,

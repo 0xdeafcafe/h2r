@@ -18,6 +18,7 @@ use crate::theme::{self, icon};
 use crate::viewport::Gpu;
 
 mod edit;
+mod save;
 
 const PICTURE: [u32; 2] = [480, 360];
 
@@ -74,6 +75,7 @@ pub struct AnimUi {
     read: Option<(usize, Result<AnimRead, AnimError>)>,
     picture: Option<Picture>,
     edit: edit::State,
+    save: save::State,
     gizmo: Option<Gizmo>,
     name: String,
     new_frames: i32,
@@ -91,6 +93,7 @@ impl Default for AnimUi {
             read: None,
             picture: None,
             edit: edit::State::default(),
+            save: save::State::default(),
             gizmo: None,
             name: String::new(),
             new_frames: 30,
@@ -216,6 +219,7 @@ fn body(ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, st: &mut AnimUi, id: TagId) {
             if let Ok(clip) = app.anim_doc_mut(doc) {
                 st.edit.controls(ui, clip);
             }
+            st.save.draw(ui, app, doc, source.is_some());
         }
         picture(ui, app, gpu, st, id, &info, doc);
         if let Some(doc) = doc

@@ -276,14 +276,11 @@ impl Editor {
                 notices.field(c.tag, c.addr, c.new_bytes.len() as u32);
             }
         }
-        for p in &moves {
-            notices.root(p.tag, p.root);
-        }
         let mut reply = json!({"id":self.next_id,"applied":changes.len(),"changes":changes});
         self.journal
             .extend(changes.into_iter().filter(|c| c.old_bytes != c.new_bytes));
         if !moves.is_empty() {
-            match self.apply_moves(g, idx.scenario, self.next_id, moves, extents) {
+            match self.apply_moves(g, idx.scenario, self.next_id, moves, extents, &mut notices) {
                 Ok(moved) => reply["moves"] = json!(moved),
                 Err(e) => {
                     self.send_notices(g, notices);
@@ -439,6 +436,7 @@ impl Editor {
         id: u64,
         moves: Vec<PlannedMove>,
         extents: Vec<arena::Extent>,
+        notices: &mut notice::Notices,
     ) -> Result<Vec<Value>> {
         let mut out = Vec::new();
         for (p, e) in moves.into_iter().zip(extents) {
@@ -446,6 +444,7 @@ impl Editor {
             block.resize(e.len as usize, 0);
             g.write_bytes(e.at, &block, 1).map_err(fault)?;
             g.write_bytes(p.root, &pair(p.count, e.at), 1).map_err(fault)?;
+            notices.root(p.tag, p.root, p.old);
             out.push(json!({"root": p.root, "tag": format!("{:#010x}", p.tag), "path": p.path,
                 "count": p.count, "address": e.at, "capacity": e.capacity}));
             self.moves.push(Moved {
@@ -470,7 +469,7 @@ impl Editor {
     /// Reverts the moves of `id` (all with `None`), newest first: a root
     /// that still points at its extent gets its old pair back and the
     /// extent is freed; one pointed elsewhere since is left alone. The
-    /// `(tag, root)` of each pair put back.
+    /// notice includes each pair put back and the extent it displaced.
     pub(crate) fn revert_moves(
         &mut self,
         g: &mut Guest,
@@ -478,8 +477,8 @@ impl Editor {
         scenario: Option<u32>,
         reverted: &mut Vec<Value>,
         dropped: &mut Vec<Value>,
-    ) -> Result<Vec<(u32, u32)>> {
-        let mut back = Vec::new();
+        notices: &mut notice::Notices,
+    ) -> Result<()> {
         let mut i = self.moves.len();
         while i > 0 {
             i -= 1;
@@ -502,13 +501,13 @@ impl Editor {
                 continue;
             }
             g.write_bytes(m.root, &pair(m.old.0, m.old.1), 1).map_err(fault)?;
-            back.push((m.tag, m.root));
+            notices.root(m.tag, m.root, now);
             if let Some(a) = &self.arena {
                 arena::lock(a).free(m.extent);
             }
             reverted.push(json!({"id": m.id, "move": m.json()}));
         }
-        Ok(back)
+        Ok(())
     }
 }
 

@@ -17,6 +17,8 @@ use tags::anim_keys::{Kind, Tolerance};
 
 #[path = "anim/edit.rs"]
 mod edit;
+#[path = "anim/save.rs"]
+mod save;
 
 const LIST: MethodDef = def(
     m::ANIM_LIST,
@@ -319,6 +321,7 @@ impl Provider for Anim {
             edit::DUPLICATE,
             edit::KEY,
             edit::CHECK,
+            save::SAVE,
         ]
     }
 
@@ -332,6 +335,7 @@ impl Provider for Anim {
             m::ANIM_DUPLICATE => edit::duplicate(app, &p),
             m::ANIM_KEY => edit::key(app, &p),
             m::ANIM_CHECK => edit::check(app, &p),
+            m::ANIM_SAVE => save::save(app, &p),
             _ => return None,
         })
     }

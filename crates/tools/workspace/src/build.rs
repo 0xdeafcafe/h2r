@@ -64,6 +64,10 @@ impl Target<'_> {
 pub trait Unpin {
     /// The tag as a block tree, the base map untouched.
     fn tree(&self, id: TagId) -> Result<Block, String>;
+    /// A tree that includes copies of arrays packed into other tags.
+    fn owned_tree(&self, id: TagId) -> Result<Block, String> {
+        self.tree(id)
+    }
     /// Move the tag out of its old bytes: afterwards `set` holds a
     /// [`TagPayload::Built`] tag in its place.
     fn relocate(&self, set: &mut TagSet, id: TagId) -> Result<(), String>;
@@ -269,9 +273,25 @@ impl Cx<'_> {
     /// The tag's block tree: its own, or laid out anew from the base's
     /// bytes. The map is not changed.
     pub fn read_block(&self, id: TagId) -> Result<Block, String> {
+        self.read_block_with(id, false)
+    }
+
+    /// Read a tag for a builder that edits arrays which may be shared.
+    pub(crate) fn read_owned_block(&self, id: TagId) -> Result<Block, String> {
+        self.read_block_with(id, true)
+    }
+
+    fn read_block_with(&self, id: TagId, own_arrays: bool) -> Result<Block, String> {
         match self.set.tag(id).map(|t| &t.payload) {
             Some(TagPayload::Built(b)) => Ok(b.clone()),
-            Some(TagPayload::Pinned { .. }) => self.state.reader(self.unpin)?.tree(id),
+            Some(TagPayload::Pinned { .. }) => {
+                let unpin = self.state.reader(self.unpin)?;
+                if own_arrays {
+                    unpin.owned_tree(id)
+                } else {
+                    unpin.tree(id)
+                }
+            }
             Some(TagPayload::Empty) => Err("the tag has no data".into()),
             Some(TagPayload::Alias { .. }) => Err("the tag shares another tag's bytes".into()),
             None => Err("the tag is not in the map".into()),

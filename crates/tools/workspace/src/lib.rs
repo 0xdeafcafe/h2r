@@ -8,7 +8,8 @@
 //!   `tag` a `snd!` and its gestalt rows: [`import`]), `data`
 //!   (a file a game feature reads) and `hud` (a HUD kit YAML, read by the
 //!   game's install; [`huds`] lists a set's), `screens` and `screen-edits`
-//!   (UI screens and changes to the map's screens). A package's `[[item]]` names
+//!   (UI screens and changes to the map's screens) and `animation` (authored
+//!   keys baked to a `jmad` resource). A package's `[[item]]` names
 //!   one by its `kind`.
 //! - [`build`]: an ordered list of [`Loaded`] packages applied to a map's
 //!   [`map::build::TagSet`] for one [`Target`]. A tag path added twice stops
@@ -26,6 +27,7 @@
 //!
 //! Nothing here reads a disc: the base map is the caller's (the VFS's, for
 //! the rewrite), and the tests build their own.
+mod animation;
 mod bitmap;
 mod build;
 mod builders;

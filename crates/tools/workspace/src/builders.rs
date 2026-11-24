@@ -9,7 +9,7 @@ use crate::build::{Cx, Failure};
 
 /// Bumped when a builder's output for the same source changes, so that
 /// every cached build is stale ([`crate::cache_key`]).
-pub const BUILDERS_VERSION: u32 = 2;
+pub const BUILDERS_VERSION: u32 = 3;
 
 /// One item to build: the manifest's entry, its source file's bytes
 /// (empty for an item with no source) and the package's files by path, for a
@@ -31,7 +31,7 @@ pub struct Builder {
     pub check: fn(&Job<'_>) -> Result<(), Failure>,
 }
 
-static REGISTRY: [Builder; 9] = [
+static REGISTRY: [Builder; 10] = [
     Builder {
         kind: Kind::Tag,
         name: "tag",
@@ -55,6 +55,12 @@ static REGISTRY: [Builder; 9] = [
         name: "model",
         apply: crate::model::apply,
         check: crate::model::check,
+    },
+    Builder {
+        kind: Kind::Animation,
+        name: "animation",
+        apply: crate::animation::apply,
+        check: crate::animation::check,
     },
     Builder {
         kind: Kind::Sound,

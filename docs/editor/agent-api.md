@@ -2139,7 +2139,7 @@ with the saved map's name reads the edit.
 on the model that uses it (rich-editors.md, "Model poses", slice M1) and
 lists a clip's channels as keys. The Animation window and the API share
 the same editable documents in `app::anim`. See the animation editor
-in [studio-redesign.md](studio-redesign.md) (AN1 and AN3). `tag` takes
+in [studio-redesign.md](studio-redesign.md) (AN1, AN3 and AN4). `tag` takes
 the same form as `sound.*`. Document IDs last for the Studio session,
 and edits live in memory.
 
@@ -2229,6 +2229,17 @@ and edits live in memory.
   govern the segment to the next key. A new key defaults to linear.
   `remove: true` takes neither `value` nor `interp`. The reply is
   `{doc, revision, changed, key}` with the current key or null.
+- `anim.save {doc, package, mode?, class?, weapon_type?, action?}`
+  writes an `animation` item into a local package for the Tags tool's
+  current map. A document opened from a source clip replaces that clip
+  and keeps its action. New and duplicate documents require an
+  `action`. Their mode, class and weapon type each default to `any`.
+  The reply is `{doc, package, tag, map, source, item}`, with the
+  package-relative `.anim.yaml` path and the zero-based manifest item
+  index. Saving the same clip again updates its item and lock. The
+  package builder checks the graph and writes its records and raw
+  stream when the package builds. The game takes the rebuilt graph on
+  map load.
 - `anim.check {doc, model?}` returns `{doc, nodes, feet_checked,
   feet_below_ground, loop_seam}`. Each `nodes` row has
   `{node, rotation_degrees, translation, scale}` and records the
@@ -2323,6 +2334,8 @@ documents, including gizmo/RPC equivalence and single-step drag undo.
 `crates/tools/anim-edit/src/tests.rs` covers interpolation, history,
 diagnostics and angle display. `ui/anim/edit.rs` tests that plotting
 the rotation leaves its stored quaternions unchanged.
+`api/tests/anim_save_tests.rs` verifies source clip replacement,
+map scoping, lock updates and key round-trips through `anim.save`.
 
 ## Code
 

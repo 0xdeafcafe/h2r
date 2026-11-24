@@ -71,6 +71,7 @@ fn a_field_batch_sends_one_notice_per_tag_and_a_revert_another() {
             size: 0x100,
             range: SHAD_AT + 0x10..SHAD_AT + 0x42,
             spans: vec![SHAD_AT + 0x10..SHAD_AT + 0x14, SHAD_AT + 0x40..SHAD_AT + 0x42],
+            moved_blocks: Vec::new(),
             revert: false,
         }
     );

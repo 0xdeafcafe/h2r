@@ -3,6 +3,7 @@
 //! per-node flag arrays, in the layouts [`crate::anim_sample`] decodes
 //! (`docs/formats/animation.md`).
 
+use crate::anim_keys::Kind;
 use crate::anim_sample::flag_array_bytes;
 
 pub const CODEC_STATIC: u8 = 1;
@@ -46,15 +47,41 @@ pub fn put32(b: &mut [u8], at: usize, v: u32) {
 pub type Channels = [u64; 3];
 
 pub fn ranks(mask: u64, nodes: usize) -> Vec<usize> {
-    (0..nodes).filter(|&n| mask >> n & 1 != 0).collect()
+    (0..nodes.min(u64::BITS as usize))
+        .filter(|&n| mask >> n & 1 != 0)
+        .collect()
+}
+
+/// Nodes driven by each channel kind, as sorted, unique node indices.
+/// This form also covers graph nodes past the converter's 64-bit masks.
+pub type SelectedChannels = [Vec<usize>; 3];
+
+fn components(pose: Transform, kind: Kind) -> [f32; 4] {
+    match kind {
+        Kind::Rotation => pose.rotation,
+        Kind::Translation => [
+            pose.translation[0],
+            pose.translation[1],
+            pose.translation[2],
+            0.0,
+        ],
+        Kind::Scale => [pose.scale, 0.0, 0.0, 0.0],
+    }
 }
 
 /// Codec 1: one value per channel.
-
-/// Codec 1: one value per channel.
 pub fn static_stream(pose: &[Transform], ch: Channels) -> Vec<u8> {
-    let n = pose.len();
-    let [r, t, s] = ch.map(|m| ranks(m, n));
+    static_stream_selected(&ch.map(|m| ranks(m, pose.len())), |node, kind| {
+        components(pose[node], kind)
+    })
+}
+
+/// Codec 1 with node indices and a value provider for the selected channels.
+pub fn static_stream_selected(
+    ch: &SelectedChannels,
+    mut sample: impl FnMut(usize, Kind) -> [f32; 4],
+) -> Vec<u8> {
+    let [r, t, s] = ch;
     let trans_at = 0x20 + 8 * r.len();
     let scale_at = trans_at + 12 * t.len();
     let mut b = vec![0u8; scale_at + 4 * s.len()];
@@ -63,19 +90,20 @@ pub fn static_stream(pose: &[Transform], ch: Channels) -> Vec<u8> {
     put32(&mut b, 0xc, trans_at as u32);
     put32(&mut b, 0x10, scale_at as u32);
     for (i, &node) in r.iter().enumerate() {
-        b[0x20 + 8 * i..0x28 + 8 * i].copy_from_slice(&q16(pose[node].rotation));
+        b[0x20 + 8 * i..0x28 + 8 * i].copy_from_slice(&q16(sample(node, Kind::Rotation)));
     }
     for (i, &node) in t.iter().enumerate() {
-        for a in 0..3 {
-            put32(
-                &mut b,
-                trans_at + 12 * i + 4 * a,
-                pose[node].translation[a].to_bits(),
-            );
+        let value = sample(node, Kind::Translation);
+        for (a, v) in value[..3].iter().enumerate() {
+            put32(&mut b, trans_at + 12 * i + 4 * a, v.to_bits());
         }
     }
     for (i, &node) in s.iter().enumerate() {
-        put32(&mut b, scale_at + 4 * i, pose[node].scale.to_bits());
+        put32(
+            &mut b,
+            scale_at + 4 * i,
+            sample(node, Kind::Scale)[0].to_bits(),
+        );
     }
     b
 }
@@ -86,9 +114,24 @@ pub fn static_stream(pose: &[Transform], ch: Channels) -> Vec<u8> {
 /// `0x0028c710` reads four floats at `+0x20 + i * [+0x14] + frame * 16`;
 /// translation and scale are codec 3's functions).
 pub fn animated_stream(frames: &[Vec<Transform>], ch: Channels, screen: bool) -> Vec<u8> {
-    let n = frames[0].len();
-    let f = frames.len();
-    let [r, t, s] = ch.map(|m| ranks(m, n));
+    animated_stream_selected(
+        frames.len(),
+        &ch.map(|m| ranks(m, frames[0].len())),
+        screen,
+        |node, kind, frame| components(frames[frame][node], kind),
+    )
+}
+
+/// Codec 3 or 8 with a value provider for the selected channels. The
+/// provider is called in stream order, one channel at a time, so sparse
+/// clips can bake to the stream without a second dense frame buffer.
+pub fn animated_stream_selected(
+    f: usize,
+    ch: &SelectedChannels,
+    screen: bool,
+    mut sample: impl FnMut(usize, Kind, usize) -> [f32; 4],
+) -> Vec<u8> {
+    let [r, t, s] = ch;
     let rot = if screen { 16 } else { 8 };
     let trans_at = 0x20 + rot * f * r.len();
     let scale_at = trans_at + 12 * f * t.len();
@@ -105,31 +148,33 @@ pub fn animated_stream(frames: &[Vec<Transform>], ch: Channels, screen: bool) ->
     put32(&mut b, 0x18, (12 * f) as u32);
     put32(&mut b, 0x1c, (4 * f) as u32);
     for (i, &node) in r.iter().enumerate() {
-        for (k, pose) in frames.iter().enumerate() {
+        for k in 0..f {
             let at = 0x20 + i * rot * f + k * rot;
+            let value = sample(node, Kind::Rotation, k);
             if screen {
-                for (a, x) in pose[node].rotation.iter().enumerate() {
+                for (a, x) in value.into_iter().enumerate() {
                     put32(&mut b, at + 4 * a, x.to_bits());
                 }
             } else {
-                b[at..at + 8].copy_from_slice(&q16(pose[node].rotation));
+                b[at..at + 8].copy_from_slice(&q16(value));
             }
         }
     }
     for (i, &node) in t.iter().enumerate() {
-        for (k, pose) in frames.iter().enumerate() {
-            for a in 0..3 {
+        for k in 0..f {
+            let value = sample(node, Kind::Translation, k);
+            for (a, v) in value[..3].iter().enumerate() {
                 let at = trans_at + i * 12 * f + k * 12 + 4 * a;
-                put32(&mut b, at, pose[node].translation[a].to_bits());
+                put32(&mut b, at, v.to_bits());
             }
         }
     }
     for (i, &node) in s.iter().enumerate() {
-        for (k, pose) in frames.iter().enumerate() {
+        for k in 0..f {
             put32(
                 &mut b,
                 scale_at + i * 4 * f + k * 4,
-                pose[node].scale.to_bits(),
+                sample(node, Kind::Scale, k)[0].to_bits(),
             );
         }
     }
@@ -137,10 +182,15 @@ pub fn animated_stream(frames: &[Vec<Transform>], ch: Channels, screen: bool) ->
 }
 
 pub fn flag_set(ch: Channels, nodes: usize) -> Vec<u8> {
+    flag_set_selected(&ch.map(|m| ranks(m, nodes)), nodes)
+}
+
+/// The three per-node flag arrays for an ordered channel selection.
+pub fn flag_set_selected(ch: &SelectedChannels, nodes: usize) -> Vec<u8> {
     let a = flag_array_bytes(nodes);
     let mut b = vec![0u8; 3 * a];
-    for (k, mask) in ch.iter().enumerate() {
-        for n in ranks(*mask, nodes) {
+    for (k, indices) in ch.iter().enumerate() {
+        for &n in indices {
             b[k * a + n / 8] |= 1 << (n % 8);
         }
     }

@@ -213,7 +213,7 @@ pub enum AnimationType {
     Unknown(u8),
 }
 impl AnimationType {
-    fn from_u8(v: u8) -> Self {
+    pub fn from_u8(v: u8) -> Self {
         match v {
             0 => Self::Base,
             1 => Self::Overlay,

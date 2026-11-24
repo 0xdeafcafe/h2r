@@ -32,6 +32,7 @@
 //! into the same arena.
 
 use std::io::{Read, Seek, SeekFrom};
+use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
 use map::ResourceFile;
@@ -294,6 +295,8 @@ impl MetaGlue {
 
 const SBSP: u32 = u32::from_be_bytes(*b"sbsp");
 const JMAD: u32 = u32::from_be_bytes(*b"jmad");
+/// `jmad` header's animation block pair (docs/formats/animation.md, "Tag layout").
+const ANIMATION_BLOCK: u32 = 0x2c;
 const NHDT: u32 = u32::from_be_bytes(*b"nhdt");
 
 /// The host subscribers of a tag-write notice
@@ -302,17 +305,19 @@ const NHDT: u32 = u32::from_be_bytes(*b"nhdt");
 ///
 /// * every tag: `native_edits::Edit::Tag`, for the native copies (a
 ///   `shad`, `stem`, `spas` or `vrtx` is queued as `Edit::Shader`, R10);
-/// * `jmad`: the clip store drops the clips keyed inside the tag;
+/// * `jmad`: the clip store drops the graph's animation records, including
+///   a previous array displaced by a move or revert;
 /// * `nhdt`: the HUD kit copies the edited widget records again;
 /// * `weap`, `matg`: aim assist adopts the edited fields as retail;
 /// * `sbsp`: the bots' data is marked stale.
 fn tag_written(g: &mut runtime::Guest, n: &hot_tags::TagWrite) {
     let group = n.group.as_u32();
     render_bridge::native_edits::push(render_bridge::native_edits::Edit::Tag { group, tag: n.tag });
-    let tag_end = n.address.saturating_add(n.size);
     match group {
         JMAD => {
-            engine::sim_anim::STORE.flush_range(n.address, tag_end);
+            for range in animation_clip_ranges(g, n) {
+                engine::sim_anim::STORE.flush_range(range.start, range.end);
+            }
         }
         NHDT => {
             if let Err(e) = crate::hud_kit::tag_written(g, n.range.start, n.range.end) {
@@ -325,6 +330,38 @@ fn tag_written(g: &mut runtime::Guest, n: &hot_tags::TagWrite) {
         SBSP => bots::cache::mark_stale(format!("a live edit wrote sbsp {:#010x}", n.tag)),
         _ => {}
     }
+}
+
+/// The cache key is in an animation record, not the graph header. The
+/// records can be shared metadata or in the edit arena after a move.
+fn animation_clip_ranges(g: &runtime::Guest, notice: &hot_tags::TagWrite) -> Vec<Range<u32>> {
+    if notice.size < ANIMATION_BLOCK + 8 {
+        return Vec::new();
+    }
+    let Some(pair_end) = notice.address.checked_add(ANIMATION_BLOCK + 8) else {
+        return Vec::new();
+    };
+    let root = pair_end - 8;
+    let current = g.u32(root).ok().zip(g.u32(root + 4).ok());
+    current
+        .into_iter()
+        .chain(
+            notice
+                .moved_blocks
+                .iter()
+                .filter(|m| m.root == root)
+                .map(|m| m.previous),
+        )
+        .filter_map(|(count, at)| {
+            if count == 0 || at == 0 {
+                return None;
+            }
+            let len = count.checked_mul(tags::anim::ANIMATION_SIZE as u32)?;
+            let end = at.checked_add(len)?;
+            g.check(at, len as usize, runtime::guest::Access::Read, 1).ok()?;
+            Some(at..end)
+        })
+        .collect()
 }
 
 fn native_edit(r: hot_tags::Refresh) -> render_bridge::native_edits::Edit {
