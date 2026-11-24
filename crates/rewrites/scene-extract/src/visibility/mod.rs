@@ -1,16 +1,21 @@
 //! Visibility in Rust (docs/graphics/native-visibility.md; slice R4 of
-//! docs/graphics/retire-d3d.md): the main view's visible clusters and its
-//! object list, computed from the structure's portal graph, the camera and
-//! the sim's object references, beside the guest's portal flood and object
-//! gather.
+//! docs/graphics/retire-d3d.md): the main view's and the lights' visible
+//! clusters and object lists, and the main view's records, computed from
+//! the structure's portal graph, the observer camera and the sim's object
+//! references, beside the guest's.
 //!
 //! - [`graph`] decodes the structure's clusters, portals and potentially
 //!   visible set once into Rust-owned arrays ([`GraphCache`]).
 //! - [`flood`] is the portal flood (mode 0) and the visible-set row
-//!   (mode 2).
+//!   (mode 2), [`pvs`] a row computed at run time, [`sphere`] the sphere
+//!   mode (1).
+//! - [`frusta`] builds the windows' frusta mode 0 tests objects against.
 //! - [`objects`] is the object set over [`objects::ObjectWorld`], the
 //!   references and spheres [`guest`] reads.
-//! - [`parity`] compares the result with the guest's lists as sets.
+//! - [`view`] builds the main view's render camera, projection, start
+//!   cluster and mode, and compares them with the guest's.
+//! - [`light`] is a light view's sets against its struct's lists.
+//! - [`parity`] compares sets with the guest's lists.
 //!
 //! The scene step runs [`compute`] for every game view after the guest's
 //! gather, compares, counts, and puts the Rust sets in the view's
@@ -18,17 +23,23 @@
 //! guest memory, so the sim's hashes cannot move.
 
 pub mod flood;
+pub mod frusta;
 pub mod graph;
 pub mod guest;
+pub mod light;
 pub mod objects;
 pub mod parity;
+pub mod pvs;
 mod read;
+pub mod sphere;
+pub mod view;
 
 pub use parity::{Mismatch, Parity, VisibilitySets, compare};
 
 use frame_scene::RenderCamera;
 
 use crate::GuestRead;
+use engine::render_loop::occlusion::guest::MAIN_VIS;
 use graph::PortalGraph;
 
 /// Why the Rust visibility made no sets for a view. The view keeps the
@@ -39,15 +50,14 @@ pub enum Decline {
     Unread,
     /// A count, index or link out of the bounds the guest's arrays have.
     Layout,
-    /// The sphere mode (1) or an unknown one.
+    /// A mode it does not port: an unknown one, or a light view's
+    /// frusta (mode 0).
     Mode,
     /// More than one view frustum.
     Frusta,
     /// A node, window, region or list limit reached: the guest drops by its
     /// own order there.
     Overflow,
-    /// The start cluster's visible set is computed at run time.
-    ComputedPvs,
     /// The camera does not make a lens.
     Camera,
     /// The active visibility struct is not the main view's.
@@ -55,13 +65,12 @@ pub enum Decline {
 }
 
 impl Decline {
-    pub const ALL: [Decline; 8] = [
+    pub const ALL: [Decline; 7] = [
         Self::Unread,
         Self::Layout,
         Self::Mode,
         Self::Frusta,
         Self::Overflow,
-        Self::ComputedPvs,
         Self::Camera,
         Self::NotMain,
     ];
@@ -73,7 +82,6 @@ impl Decline {
             Self::Mode => "mode",
             Self::Frusta => "frusta",
             Self::Overflow => "overflow",
-            Self::ComputedPvs => "computed_pvs",
             Self::Camera => "camera",
             Self::NotMain => "not_main",
         }
@@ -141,20 +149,39 @@ pub fn compute(
             if view.frusta != 1 {
                 return Err(Decline::Frusta);
             }
-            let reached = if none {
-                flood::Reached::default()
+            let (reached, frusta) = if none {
+                (flood::Reached::default(), frusta::WindowFrusta::default())
             } else {
                 let tuning = guest::tuning(mem)?;
                 let open = guest::open_portals(mem, graph.portals.len())?;
-                flood::flood(graph, &lens, &tuning, &open, view.start)?
+                let reached = flood::flood(graph, &lens, &tuning, &open, view.start)?;
+                let inputs = guest::frustum_inputs(mem)?;
+                let frusta = frusta::WindowFrusta::build(&reached.windows, &lens, &inputs);
+                (reached, frusta)
             };
-            (reached, objects::Clip::Windows(&lens))
+            (reached, objects::Clip::Frusta(frusta))
+        }
+        1 => {
+            let (centre, radius) = guest::view_sphere(mem, MAIN_VIS)?;
+            let clusters = if none {
+                Vec::new()
+            } else {
+                let rows = guest::projection_rows(mem)?;
+                let flood_min = guest::sphere_flood_min(mem)?;
+                sphere::view_clusters(graph, &rows, view.start, centre, radius, flood_min)?
+            };
+            let reached = flood::Reached {
+                clusters,
+                ..flood::Reached::default()
+            };
+            (reached, objects::Clip::Sphere { centre, radius })
         }
         2 => {
             let reached = if none {
                 flood::Reached::default()
             } else {
-                flood::potentially_visible(graph, view.start)?
+                let open = guest::open_portals(mem, graph.portals.len())?;
+                flood::potentially_visible(graph, view.start, &open)?
             };
             (reached, objects::Clip::All)
         }

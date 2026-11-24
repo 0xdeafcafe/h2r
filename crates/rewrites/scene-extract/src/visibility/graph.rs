@@ -25,8 +25,11 @@ pub mod layout {
     pub const COLLISION_BSP: u32 = 0x18;
     pub const BSP_PLANE_COUNT: u32 = 0x8;
     pub const BSP_PLANES: u32 = 0xc;
-    /// The potentially visible set: a bit row of `(clusters + 31) / 32`
-    /// words per cluster.
+    /// The potentially visible set's byte size (`+0x54`) and data
+    /// (`+0x58`): a bit row of `(clusters + 31) / 32` words per cluster,
+    /// and, when the size holds more than one table, a second table of the
+    /// same shape that `0x0016e150` reads for a computed row.
+    pub const PVS_SIZE: u32 = 0x54;
     pub const PVS: u32 = 0x58;
     pub const PORTAL_COUNT: u32 = 0x5c;
     pub const PORTALS: u32 = 0x60;
@@ -43,6 +46,7 @@ pub mod layout {
     /// count, `+0x20` the vertices (12-byte points).
     pub const PORTAL_STRIDE: u32 = 36;
     pub const PORTAL_PLANE: u32 = 0x4;
+    pub const PORTAL_SPHERE: u32 = 0x8;
     pub const PORTAL_FLAGS: u32 = 0x18;
     pub const PORTAL_VERTEX_COUNT: u32 = 0x1c;
     pub const PORTAL_VERTICES: u32 = 0x20;
@@ -54,6 +58,8 @@ pub mod portal_flags {
     pub const CLOSED_FROM_BACK: u32 = 0x2;
     /// Closed to a camera on the plane's positive side.
     pub const CLOSED_FROM_FRONT: u32 = 0x10;
+    /// A computed visible set crosses it (`0x0016de20`'s test of bit 2).
+    pub const JOINS_COMPUTED_PVS: u32 = 0x4;
 }
 
 /// One portal between two clusters.
@@ -64,6 +70,9 @@ pub struct Portal {
     /// `nx, ny, nz, d`: a point `p` is in front when `n · p - d > 0`.
     pub plane: [f32; 4],
     pub flags: u32,
+    /// The bounding sphere: centre and radius (`+8`), which the sphere
+    /// flood tests first.
+    pub sphere: [f32; 4],
     /// The polygon, world space.
     pub vertices: Vec<[f32; 3]>,
 }
@@ -98,6 +107,9 @@ pub struct PortalGraph {
     pub pvs_words: usize,
     /// One bit row per cluster; empty when the structure has none.
     pub pvs: Vec<u32>,
+    /// The second table of the same shape, where a computed row starts
+    /// (`0x0016e150`); empty when the set's size holds only the first.
+    pub pvs_alt: Vec<u32>,
 }
 
 impl PortalGraph {
@@ -110,6 +122,22 @@ impl PortalGraph {
         }
         let word = self.pvs.get(from * self.pvs_words + to / 32)?;
         Some(word & (1u32 << (to % 32)) != 0)
+    }
+
+    /// Cluster `from`'s row of the first table.
+    pub fn pvs_row(&self, from: u16) -> Option<&[u32]> {
+        let at = usize::from(from).checked_mul(self.pvs_words)?;
+        self.pvs.get(at..at + self.pvs_words)
+    }
+
+    /// Cluster `from`'s row as `0x0016e150` picks it: the second table's
+    /// when the structure has one, else the first's.
+    pub fn pvs_alt_row(&self, from: u16) -> Option<&[u32]> {
+        if self.pvs_alt.is_empty() {
+            return self.pvs_row(from);
+        }
+        let at = usize::from(from).checked_mul(self.pvs_words)?;
+        self.pvs_alt.get(at..at + self.pvs_words)
     }
 
     /// The graph's identity for the cache: what a new structure at the same
@@ -157,6 +185,8 @@ pub fn read(mem: &dyn GuestRead, structure: u32) -> Result<PortalGraph, Decline>
                 at(planes, plane_index.checked_mul(16).ok_or(Decline::Layout)?).ok_or(unread)?;
             let [nx, ny, nz] = vec3_at(mem, plane_at).ok_or(unread)?;
             let d = f32_at(mem, at(plane_at, 12).ok_or(unread)?).ok_or(unread)?;
+            let [sx, sy, sz] = vec3_at(mem, at(p, PORTAL_SPHERE).ok_or(unread)?).ok_or(unread)?;
+            let sr = f32_at(mem, at(p, PORTAL_SPHERE + 12).ok_or(unread)?).ok_or(unread)?;
             let flags = u32_at(mem, at(p, PORTAL_FLAGS).ok_or(unread)?).ok_or(unread)?;
             let count =
                 u32_at(mem, at(p, PORTAL_VERTEX_COUNT).ok_or(unread)?).ok_or(unread)? as usize;
@@ -174,6 +204,7 @@ pub fn read(mem: &dyn GuestRead, structure: u32) -> Result<PortalGraph, Decline>
                 clusters,
                 plane: [nx, ny, nz, d],
                 flags,
+                sphere: [sx, sy, sz, sr],
                 vertices,
             });
         }
@@ -207,18 +238,33 @@ pub fn read(mem: &dyn GuestRead, structure: u32) -> Result<PortalGraph, Decline>
         }
     }
     let pvs_words = cluster_count.div_ceil(32);
-    let pvs = match ptr_at(mem, at(structure, PVS).ok_or(unread)?) {
-        Some(rows) if cluster_count != 0 => (0..(cluster_count * pvs_words) as u32)
-            .map(|w| u32_at(mem, at(rows, 4 * w)?))
+    let table = (cluster_count * pvs_words) as u32;
+    let rows = |first: u32| -> Result<Vec<u32>, Decline> {
+        let data = ptr_at(mem, at(structure, PVS).ok_or(unread)?).ok_or(unread)?;
+        (first..first + table)
+            .map(|w| u32_at(mem, at(data, 4 * w)?))
             .collect::<Option<Vec<u32>>>()
-            .ok_or(unread)?,
-        _ => Vec::new(),
+            .ok_or(unread)
     };
+    let (mut pvs, mut pvs_alt) = (Vec::new(), Vec::new());
+    if cluster_count != 0 && ptr_at(mem, at(structure, PVS).ok_or(unread)?).is_some() {
+        pvs = rows(0)?;
+        // `0x0016e150` reads the second table when the size is above one
+        // table's bytes; a size short of two tables would read past it.
+        let size = u32_at(mem, at(structure, PVS_SIZE).ok_or(unread)?).ok_or(unread)?;
+        if size > 4 * table {
+            if size < 8 * table {
+                return Err(Decline::Layout);
+            }
+            pvs_alt = rows(table)?;
+        }
+    }
     Ok(PortalGraph {
         clusters,
         portals,
         pvs_words,
         pvs,
+        pvs_alt,
     })
 }
 
@@ -243,6 +289,10 @@ pub(crate) mod tests {
         m.w(structure + layout::PORTALS, portals);
         m.w(portals, 1 << 16); // back 0, front 1
         m.w(portals + layout::PORTAL_PLANE, 1);
+        // Its bounding sphere: the square's centre, radius sqrt 2.
+        for (i, v) in [4.0, 0.0, 0.0, std::f32::consts::SQRT_2].into_iter().enumerate() {
+            m.f(portals + layout::PORTAL_SPHERE + 4 * i as u32, v);
+        }
         m.w(portals + layout::PORTAL_FLAGS, 0x10);
         m.w(portals + layout::PORTAL_VERTEX_COUNT, 4);
         m.w(portals + layout::PORTAL_VERTICES, vertices);
@@ -264,6 +314,7 @@ pub(crate) mod tests {
         }
         m.w(links, 0);
         m.w(structure + layout::PVS, pvs);
+        m.w(structure + layout::PVS_SIZE, 8);
         m.w(pvs, 0b11);
         m.w(pvs + 4, 0b10);
     }
@@ -285,6 +336,23 @@ pub(crate) mod tests {
         assert_eq!(g.potentially_visible(0, 1), Some(true));
         assert_eq!(g.potentially_visible(1, 0), Some(false));
         assert_eq!(g.potentially_visible(2, 0), None);
+        assert_eq!(p.sphere, [4.0, 0.0, 0.0, std::f32::consts::SQRT_2]);
+        assert!(g.pvs_alt.is_empty(), "the size holds one table");
+        assert_eq!(g.pvs_alt_row(1), Some(&[0b10][..]), "the first table's row");
+    }
+
+    #[test]
+    fn a_second_table_is_read_when_the_size_holds_two_and_declines_when_it_is_short() {
+        let mut m = Mem::default();
+        two_rooms(&mut m, 0x8000);
+        m.w(0x8000 + layout::PVS_SIZE, 16);
+        m.w(0x9708, 0b01);
+        m.w(0x970c, 0b11);
+        let g = read(&m, 0x8000).unwrap();
+        assert_eq!(g.pvs_alt, [0b01, 0b11]);
+        assert_eq!((g.pvs_row(1), g.pvs_alt_row(1)), (Some(&[0b10][..]), Some(&[0b11][..])));
+        m.w(0x8000 + layout::PVS_SIZE, 12);
+        assert_eq!(read(&m, 0x8000), Err(Decline::Layout));
     }
 
     #[test]

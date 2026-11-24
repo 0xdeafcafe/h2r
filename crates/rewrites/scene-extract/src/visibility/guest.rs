@@ -37,6 +37,10 @@ pub const SKY_CLUSTER_PREDICATE: u32 = 0x0046_86c4;
 pub const SKY_CLUSTER_INDEX: u32 = 0x004b_9eec;
 /// An object body's type byte.
 pub const BODY_TYPE: u32 = 0xaa;
+/// The second sphere a view of kind not 0 tests (`0x001330bc`): centre and
+/// radius.
+pub const BODY_LIGHT_SPHERE_CENTER: u32 = 0x50;
+pub const BODY_LIGHT_SPHERE_RADIUS: u32 = 0x5c;
 
 /// Offsets in the visibility struct (`0x00132b80` fills them).
 pub mod vis {
@@ -66,17 +70,24 @@ pub struct ViewInputs {
 }
 
 pub fn view(mem: &dyn GuestRead) -> Result<ViewInputs, Decline> {
-    let u = Decline::Unread;
     if u32_at(mem, ACTIVE_VIS) != Some(MAIN_VIS) || u32_at(mem, MAIN_VIS + VIS_KIND) != Some(0) {
         return Err(Decline::NotMain);
     }
-    let list = ptr_at(mem, MAIN_VIS + VIS_OBJECTS).ok_or(u)?;
+    view_at(mem, MAIN_VIS)
+}
+
+/// The visibility inputs of the struct at `struct_at`, whichever view it
+/// is: the caller checks that it is the one it means.
+pub fn view_at(mem: &dyn GuestRead, struct_at: u32) -> Result<ViewInputs, Decline> {
+    let u = Decline::Unread;
+    let field = |offset: u32| at(struct_at, offset).ok_or(Decline::Layout);
+    let list = ptr_at(mem, field(VIS_OBJECTS)?).ok_or(u)?;
     Ok(ViewInputs {
         structure: ptr_at(mem, ACTIVE_STRUCTURE).ok_or(u)?,
-        mode: u32_at(mem, MAIN_VIS + vis::MODE).ok_or(u)?,
-        start: u16_at(mem, MAIN_VIS + vis::START_CLUSTER).ok_or(u)?,
-        frusta: u16_at(mem, MAIN_VIS + vis::FRUSTA).ok_or(u)?,
-        flags: u32_at(mem, MAIN_VIS + vis::FLAGS).ok_or(u)?,
+        mode: u32_at(mem, field(vis::MODE)?).ok_or(u)?,
+        start: u16_at(mem, field(vis::START_CLUSTER)?).ok_or(u)?,
+        frusta: u16_at(mem, field(vis::FRUSTA)?).ok_or(u)?,
+        flags: u32_at(mem, field(vis::FLAGS)?).ok_or(u)?,
         capacity: u32_at(mem, list).ok_or(u)? as usize,
     })
 }
@@ -190,7 +201,29 @@ fn sky_cluster(mem: &dyn GuestRead, structure: u32) -> Result<Option<u16>, Decli
     Ok((cluster != u16::MAX).then_some(cluster))
 }
 
-fn object(mem: &dyn GuestRead, objects: &Pool, handle: u32) -> Result<ObjectInfo, Decline> {
+/// Which of a body's two spheres a view tests (`0x00133050`): the main
+/// view's `+0x30`/`+0x3c`, every other kind's `+0x50`/`+0x5c`.
+#[derive(Clone, Copy)]
+struct SphereAt {
+    centre: u32,
+    radius: u32,
+}
+
+const MAIN_SPHERE: SphereAt = SphereAt {
+    centre: BODY_SPHERE_CENTER,
+    radius: BODY_SPHERE_RADIUS,
+};
+const LIGHT_SPHERE: SphereAt = SphereAt {
+    centre: BODY_LIGHT_SPHERE_CENTER,
+    radius: BODY_LIGHT_SPHERE_RADIUS,
+};
+
+fn object(
+    mem: &dyn GuestRead,
+    objects: &Pool,
+    handle: u32,
+    sphere: SphereAt,
+) -> Result<ObjectInfo, Decline> {
     let u = Decline::Unread;
     if handle & 0xffff >= MAX_OBJECT_INDEX {
         return Err(Decline::Layout);
@@ -198,8 +231,8 @@ fn object(mem: &dyn GuestRead, objects: &Pool, handle: u32) -> Result<ObjectInfo
     let slot = objects.slot(mem, handle)?;
     let body = ptr_at(mem, at(slot, HEADER_BODY).ok_or(u)?).ok_or(u)?;
     Ok(ObjectInfo {
-        centre: vec3_at(mem, at(body, BODY_SPHERE_CENTER).ok_or(u)?).ok_or(u)?,
-        radius: f32_at(mem, at(body, BODY_SPHERE_RADIUS).ok_or(u)?).ok_or(u)?,
+        centre: vec3_at(mem, at(body, sphere.centre).ok_or(u)?).ok_or(u)?,
+        radius: f32_at(mem, at(body, sphere.radius).ok_or(u)?).ok_or(u)?,
         kind: u8_at(mem, at(body, BODY_TYPE).ok_or(u)?).ok_or(u)?,
     })
 }
@@ -211,8 +244,7 @@ pub fn object_world(
     view: &ViewInputs,
     clusters: &[u16],
 ) -> Result<ObjectWorld, Decline> {
-    let u = Decline::Unread;
-    let player = u32_at(mem, VIEW_PLAYER).ok_or(u)?;
+    let player = u32_at(mem, VIEW_PLAYER).ok_or(Decline::Unread)?;
     let mut world = ObjectWorld {
         view_flags: view.flags,
         player: (player != NONE).then_some(player),
@@ -223,6 +255,39 @@ pub fn object_world(
         return Ok(world);
     }
     world.sky = sky_cluster(mem, view.structure)?;
+    references_into(mem, &mut world, clusters, MAIN_SPHERE)?;
+    Ok(world)
+}
+
+/// [`object_world`] for a light's view (kind not 0): each object's second
+/// sphere, no sky cluster (`0x00132220` adds it only in kind 0) and no
+/// player unit (`0x0003f33c` appends it to the main view's list only).
+pub fn light_object_world(
+    mem: &dyn GuestRead,
+    view: &ViewInputs,
+    clusters: &[u16],
+) -> Result<ObjectWorld, Decline> {
+    let mut world = ObjectWorld {
+        view_flags: view.flags,
+        capacity: view.capacity,
+        ..ObjectWorld::default()
+    };
+    if view.flags & super::objects::view_flags::NO_OBJECTS != 0 || clusters.is_empty() {
+        return Ok(world);
+    }
+    references_into(mem, &mut world, clusters, LIGHT_SPHERE)?;
+    Ok(world)
+}
+
+/// The references of `clusters` and of `world.sky` into `world`, with the
+/// objects they name.
+fn references_into(
+    mem: &dyn GuestRead,
+    world: &mut ObjectWorld,
+    clusters: &[u16],
+    sphere: SphereAt,
+) -> Result<(), Decline> {
+    let u = Decline::Unread;
     let objects = Pool::read(mem, ptr_at(mem, OBJECTS).ok_or(u)?).ok_or(Decline::Layout)?;
     if objects.stride != HEADER_SIZE {
         return Err(Decline::Layout);
@@ -237,15 +302,109 @@ pub fn object_world(
         ];
         for &handle in lists.iter().flatten() {
             if !world.objects.contains_key(&handle) {
-                world.objects.insert(handle, object(mem, &objects, handle)?);
+                world.objects.insert(handle, object(mem, &objects, handle, sphere)?);
             }
         }
         world.refs.insert(cluster, lists);
     }
-    Ok(world)
+    Ok(())
 }
 
 /// The guest's own sets for the main view, from its lists.
 pub fn guest_sets(gather: &frame_scene::scene::ClusterGather) -> super::VisibilitySets {
     super::VisibilitySets::new(gather.visible.clone(), gather.objects.clone())
+}
+
+/// The image's projection rows (`0x00440b94`: six rows of three `i16`),
+/// of which the sphere flood takes each row's first two axes.
+pub const PROJECTION_ROWS: u32 = 0x0044_0b94;
+/// The radius at or under which the sphere mode takes the start cluster
+/// alone (`0x00132d60`'s `comiss`).
+pub const SPHERE_FLOOD_MIN: u32 = 0x0045_dbd8;
+/// The view sphere in the visibility struct: centre and radius.
+pub const VIS_SPHERE_CENTRE: u32 = 0x2a68;
+pub const VIS_SPHERE_RADIUS: u32 = 0x2a74;
+
+pub fn projection_rows(mem: &dyn GuestRead) -> Result<super::sphere::Rows, Decline> {
+    let mut rows = [[0u8; 2]; 6];
+    for (r, row) in rows.iter_mut().enumerate() {
+        for (k, axis) in row.iter_mut().enumerate() {
+            let a = u16_at(mem, PROJECTION_ROWS + 6 * r as u32 + 2 * k as u32)
+                .ok_or(Decline::Unread)? as i16;
+            *axis = u8::try_from(a)
+                .ok()
+                .filter(|&a| a < 3)
+                .ok_or(Decline::Layout)?;
+        }
+    }
+    Ok(rows)
+}
+
+pub fn sphere_flood_min(mem: &dyn GuestRead) -> Result<f32, Decline> {
+    f32_at(mem, SPHERE_FLOOD_MIN).ok_or(Decline::Unread)
+}
+
+/// The view sphere of the struct at `vis` (`0x00132b80` stores the
+/// position and radius it was given).
+pub fn view_sphere(mem: &dyn GuestRead, vis: u32) -> Result<([f32; 3], f32), Decline> {
+    let u = Decline::Unread;
+    let field = |offset: u32| at(vis, offset).ok_or(Decline::Layout);
+    Ok((
+        vec3_at(mem, field(VIS_SPHERE_CENTRE)?).ok_or(u)?,
+        f32_at(mem, field(VIS_SPHERE_RADIUS)?).ok_or(u)?,
+    ))
+}
+
+/// The values the window frusta read from the image (`0x00163db0` and its
+/// normalise `0x00030bf0`; see [`super::frusta::Inputs`]).
+pub const FRUSTUM_UNIT: u32 = 0x0045_dbc0;
+pub const FRUSTUM_NEGATIVE_UNIT: u32 = 0x0045_dbcc;
+pub const NORMALIZE_EPSILON: u32 = 0x0045_dbdc;
+/// Points at the six floats a window frustum's box starts from.
+pub const FRUSTUM_BOUNDS: u32 = 0x0046_87e0;
+
+/// The view frustum the flood starts from: `[vis]` points at the frusta
+/// struct (`0x00173130` fills it), its first view frustum at `+4`
+/// (`0x1bc` bytes).
+pub mod view_frustum {
+    pub const FIRST: u32 = 0x4;
+    /// A byte: the eye plane is replaced by [`CLIP_PLANE`], negated.
+    pub const HAS_CLIP_PLANE: u32 = 0x6c;
+    pub const CLIP_PLANE: u32 = 0x74;
+}
+
+fn floats<const N: usize>(mem: &dyn GuestRead, base: u32) -> Result<[f32; N], Decline> {
+    let mut out = [0.0; N];
+    for (i, v) in out.iter_mut().enumerate() {
+        let addr = at(base, 4 * i as u32).ok_or(Decline::Layout)?;
+        *v = f32_at(mem, addr).ok_or(Decline::Unread)?;
+    }
+    Ok(out)
+}
+
+/// The main view's [`super::frusta::Inputs`].
+pub fn frustum_inputs(mem: &dyn GuestRead) -> Result<super::frusta::Inputs, Decline> {
+    let u = Decline::Unread;
+    let bounds = floats(mem, ptr_at(mem, FRUSTUM_BOUNDS).ok_or(u)?)?;
+    let view = ptr_at(mem, MAIN_VIS)
+        .and_then(|f| at(f, view_frustum::FIRST))
+        .ok_or(u)?;
+    let clip_plane = if u8_at(mem, at(view, view_frustum::HAS_CLIP_PLANE).ok_or(u)?).ok_or(u)? != 0
+    {
+        Some(floats(mem, at(view, view_frustum::CLIP_PLANE).ok_or(u)?)?)
+    } else {
+        None
+    };
+    let inputs = super::frusta::Inputs {
+        unit: f32_at(mem, FRUSTUM_UNIT).ok_or(u)?,
+        negative_unit: f32_at(mem, FRUSTUM_NEGATIVE_UNIT).ok_or(u)?,
+        epsilon: f32_at(mem, NORMALIZE_EPSILON).ok_or(u)?,
+        bounds,
+        clip_plane,
+    };
+    if inputs.unit.is_finite() && inputs.negative_unit.is_finite() && inputs.epsilon.is_finite() {
+        Ok(inputs)
+    } else {
+        Err(Decline::Layout)
+    }
 }
