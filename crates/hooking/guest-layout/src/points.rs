@@ -544,6 +544,18 @@ points! { ALL;
     HAVOK_WELD_CONTACTS @ 0x002f_a2f0: [opaque], Hot; "docs/perf/sim-budget.md";
     HAVOK_SOLVER @ 0x0031_c940: [opaque], Hot; "docs/perf/sim-budget.md";
     HAVOK_SUPPORT_VERTICES @ 0x0030_48a0: [opaque], Hot; "docs/perf/sim-budget.md";
+    /// The Havok world step: collide, then integrate, each phase a guest
+    /// call resumed inside the wrapper (sim-rewrite-havok.md §2).
+    HAVOK_WORLD_STEP @ 0x0031_1100: [fn(world: ecx, step: stack 0) ret 4], Hot; "docs/engine/sim-rewrite-havok.md";
+    HAVOK_ISLAND_COLLIDE @ 0x0031_7d30: [fn(island: ecx, broadphase: stack 0, input: stack 1) ret 8], Hot; "docs/engine/sim-rewrite-havok.md";
+    HAVOK_ISLAND_INTEGRATE @ 0x0031_6a20: [fn(island: ecx, input: stack 0) ret 4], Hot; "docs/engine/sim-rewrite-havok.md";
+    /// The world broadphase's batch update, the sweep's virtual at slot
+    /// `+0x14` of the broadphase behind `W+0xc4`.
+    HAVOK_BROADPHASE_BATCH @ 0x002e_0350: [opaque], Hot; "docs/engine/sim-rewrite-havok.md";
+    /// The two shared unconstrained-motion methods, vtable slots `+0x04`
+    /// and `+0x08` of a dynamic motion.
+    HAVOK_MOTION_FORCES @ 0x0031_b060: [opaque], Hot; "docs/engine/sim-rewrite-havok.md";
+    HAVOK_MOTION_POSE @ 0x0031_b1c0: [opaque], Hot; "docs/engine/sim-rewrite-havok.md";
     OBJECT_SPATIAL_VISIT @ 0x000b_b050: [fn(lists: stack 0, types: stack 1, location: stack 2, center: stack 3, radius: stack 4, out: stack 5, capacity: stack 6) ret 28], Hot; "docs/perf/sim-budget.md";
     OBSERVER_RESULT @ 0x0017_1d90: [fn(observer: esi) ret 0], Hot; "docs/perf/sim-budget.md";
     OBJECT_SPATIAL_PORTAL @ 0x0014_a370: [fn(portal: eax, center: ecx, bsp: edx, radius: stack 0) -> al ret 4], Hot; "docs/perf/sim-budget.md";
