@@ -35,6 +35,10 @@ pub const MAX_HELD_ZONES: usize = 32;
 pub const MAX_SHOWN_AREAS: usize = 8;
 /// Movers (`move_to`) running at once.
 pub const MAX_MOVERS: usize = 16;
+/// Pairs of objects the sight table (`sees`) keeps at once.
+pub const MAX_SIGHT_PAIRS: usize = 32;
+/// A sight pair nobody asked for in this many ticks is dropped.
+pub const SIGHT_KEEP: u32 = 30;
 
 /// A value handed to the game, resolved from the blob's tables.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -106,6 +110,14 @@ pub trait Game {
     /// zero on the tick it arrives). The VM makes one for each running
     /// mover every tick ([`Vm::update`]).
     fn step_object(&mut self, _object: u32, _at: [i32; 3], _velocity: [i32; 3]) {}
+    /// The sight test behind `sees`: whether nothing solid is between the
+    /// two objects. The VM asks once a tick for each pair in its sight
+    /// table, at the tick's end ([`Vm::update`]), never from a handler, so
+    /// a host may trace in its own boundary. A game with no trace answers
+    /// false.
+    fn trace_sight(&mut self, _from: u32, _to: u32) -> bool {
+        false
+    }
     /// The VM stopped on a script error: end the round with the outcome
     /// "script error" through `GAME_END`.
     fn script_error(&mut self, error: &ScriptError);
@@ -153,6 +165,9 @@ pub enum Input {
         by: Option<u8>,
         amount: i32,
     },
+    /// A player's biped touched down: the speed it fell at on the tick
+    /// before and its vertical speed now, `fixed` world units a second.
+    Touchdown { player: u8, down: i32, up: i32 },
 }
 
 impl Input {
@@ -178,6 +193,7 @@ impl Input {
             Input::Quit(_) => Event::Quit,
             Input::Bounced(_) => Event::Bounced,
             Input::Damage { .. } => Event::Damage,
+            Input::Touchdown { .. } => Event::Touchdown,
         }
     }
 }
@@ -226,6 +242,9 @@ pub enum ErrorKind {
     Hud,
     /// More than [`MAX_MOVERS`] movers running at once (`move_to`).
     Movers,
+    /// More than [`MAX_SIGHT_PAIRS`] pairs asked to `sees` within
+    /// [`SIGHT_KEEP`] ticks.
+    Sight,
 }
 
 impl ErrorKind {
@@ -245,6 +264,7 @@ impl ErrorKind {
             7 => ErrorKind::Areas,
             8 => ErrorKind::Hud,
             9 => ErrorKind::Movers,
+            10 => ErrorKind::Sight,
             _ => return None,
         })
     }
@@ -324,6 +344,25 @@ pub struct RulesExt {
     /// checkpoint, a film's keyframe and the sim hash carry them and every
     /// machine that runs the VM moves the same objects the same way.
     pub movers: Vec<Mover>,
+    /// The sight table (`sees`): each pair a script asked for within the
+    /// last [`SIGHT_KEEP`] ticks, in the order first asked, with the
+    /// answer of its latest trace. The VM traces each at every tick's end
+    /// ([`Vm::update`]), so a read answers what the tick before the
+    /// asking ended with; the state carries it so every machine, a
+    /// checkpoint and a film's keyframe read the same.
+    pub sight: Vec<Sight>,
+}
+
+/// One pair of the sight table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sight {
+    pub from: u32,
+    pub to: u32,
+    /// The last tick a script asked for the pair.
+    pub asked: u32,
+    /// Whether the latest trace found nothing solid between them; false
+    /// until the first trace.
+    pub clear: bool,
 }
 
 /// An object moving in a straight line between two points in a stated
@@ -410,8 +449,8 @@ pub enum StateError {
 const STATE_MAGIC: [u8; 4] = *b"H2RX";
 /// 2 added the `ticks_held` counters; 3 the teams' spawn rules and
 /// bodies; 4 the script role mask and the shown areas; 5 the show state;
-/// 6 the movers.
-const STATE_VERSION: u8 = 6;
+/// 6 the movers; 7 the sight table.
+const STATE_VERSION: u8 = 7;
 
 impl RulesExt {
     /// Whether `player` holds `cap` (an index into `requires`) with uses
@@ -542,6 +581,13 @@ impl RulesExt {
             i32s(&mut w, &m.to);
             w.extend_from_slice(&m.start.to_le_bytes());
             w.extend_from_slice(&m.duration.to_le_bytes());
+        }
+        w.push(self.sight.len() as u8);
+        for t in &self.sight {
+            w.extend_from_slice(&t.from.to_le_bytes());
+            w.extend_from_slice(&t.to.to_le_bytes());
+            w.extend_from_slice(&t.asked.to_le_bytes());
+            w.push(t.clear as u8);
         }
         w
     }
@@ -727,6 +773,26 @@ impl RulesExt {
                 duration,
             });
         }
+        let at = r.at;
+        let n = r.u8()? as usize;
+        if n > MAX_SIGHT_PAIRS {
+            return Err(StateError::Malformed(at));
+        }
+        let mut sight: Vec<Sight> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let at = r.at;
+            let (from, to, asked) = (r.u32()?, r.u32()?, r.u32()?);
+            let clear = match r.u8()? {
+                0 => false,
+                1 => true,
+                _ => return Err(StateError::Malformed(at)),
+            };
+            let known = |o: u32| object_id(o as i32).is_some();
+            if !known(from) || !known(to) || sight.iter().any(|t| t.from == from && t.to == to) {
+                return Err(StateError::Malformed(at));
+            }
+            sight.push(Sight { from, to, asked, clear });
+        }
         if r.at != bytes.len() {
             return Err(StateError::Malformed(r.at));
         }
@@ -749,6 +815,7 @@ impl RulesExt {
             shown,
             show,
             movers,
+            sight,
         })
     }
 }
@@ -909,6 +976,7 @@ impl Vm {
             shown: Vec::new(),
             show: crate::show::State::default(),
             movers: Vec::new(),
+            sight: Vec::new(),
         };
         Ok(Vm {
             role_traits: role_traits(&ir, options),
@@ -945,6 +1013,7 @@ impl Vm {
                 .flatten()
                 .all(|w| w.text.is_none_or(|t| (t as usize) < ir.strings.len()))
             && ext.movers.len() <= MAX_MOVERS
+            && ext.sight.len() <= MAX_SIGHT_PAIRS
             && ext.spawns.iter().all(|r| match r {
                 Some(Spawns::Areas { label, .. }) => (*label as usize) < ir.labels.len(),
                 _ => true,
@@ -1104,9 +1173,24 @@ impl Vm {
         if self.step_movers(game) == Fired::Stopped {
             return Fired::Stopped;
         }
-        match self.handler(Event::Tick, None) {
+        let fired = match self.handler(Event::Tick, None) {
             Some(hi) => self.run(game, hi, &[]),
             None => Fired::NoHandler,
+        };
+        if fired != Fired::Stopped {
+            self.trace_sight(game);
+        }
+        fired
+    }
+
+    /// The tick's end: each pair of the sight table is traced again, so a
+    /// read on the next tick answers from this one, and a pair nobody
+    /// asked for in [`SIGHT_KEEP`] ticks leaves the table.
+    fn trace_sight(&mut self, game: &mut dyn Game) {
+        let tick = self.ext.tick;
+        self.ext.sight.retain(|t| tick.saturating_sub(t.asked) < SIGHT_KEEP);
+        for t in &mut self.ext.sight {
+            t.clear = game.trace_sight(t.from, t.to);
         }
     }
 
@@ -1308,6 +1392,7 @@ impl Vm {
                 self.ext.shown.clear();
                 self.ext.show = crate::show::State::default();
                 self.ext.movers.clear();
+                self.ext.sight.clear();
             }
             _ => {}
         }
@@ -1328,6 +1413,11 @@ impl Vm {
     /// The movers running (`move_to`), in the order started.
     pub fn movers(&self) -> &[Mover] {
         &self.ext.movers
+    }
+
+    /// The sight table (`sees`), in the order its pairs were first asked.
+    pub fn sight(&self) -> &[Sight] {
+        &self.ext.sight
     }
 
     /// The areas shown in play (`show_area`): each zone object and the team
@@ -1396,6 +1486,7 @@ impl Vm {
                 class,
             } => vec![op(*killer), op(*assist), self.class(class)],
             Input::Damage { object, by, amount } => vec![o(*object), op(*by), *amount],
+            Input::Touchdown { player, down, up } => vec![p(*player), *down, *up],
         }
     }
 
@@ -1803,6 +1894,27 @@ impl<'a> Run<'a> {
                     }
                     caps::id::NOW => i32::try_from(self.ext.tick).unwrap_or(i32::MAX),
                     caps::id::VEC_LENGTH => fixed::length(raw[0], raw[1], raw[2]),
+                    // The table's answer: a pair asked for the first time
+                    // reads false and is traced at this tick's end. A
+                    // `none` or an object that is gone sees nothing.
+                    caps::id::SEES => {
+                        let (Some(from), Some(to)) = (object_id(raw[0]), object_id(raw[1])) else {
+                            return Ok(Some(0));
+                        };
+                        let tick = self.ext.tick;
+                        let full = self.ext.sight.len() >= MAX_SIGHT_PAIRS;
+                        match self.ext.sight.iter_mut().find(|t| t.from == from && t.to == to) {
+                            Some(t) => {
+                                t.asked = tick;
+                                t.clear as i32
+                            }
+                            None if full => return Err(ErrorKind::Sight),
+                            None => {
+                                self.ext.sight.push(Sight { from, to, asked: tick, clear: false });
+                                0
+                            }
+                        }
+                    }
                     caps::id::RANDOM => {
                         if raw[0] > 0 {
                             (splitmix64(&mut self.ext.rng) % raw[0] as u64) as i32
@@ -2230,6 +2342,10 @@ mod tests {
                 start: 7,
                 duration: 30,
             }],
+            sight: vec![
+                Sight { from: 0x4001_0001, to: 0x4001_0002, asked: 40, clear: true },
+                Sight { from: 0x4001_0002, to: 0x4001_0001, asked: 41, clear: false },
+            ],
         }
     }
 
@@ -2279,7 +2395,8 @@ mod tests {
         let held = 1 + 2 * (4 + 4 * MAX_TEAMS)
             + (1 + 2 * (4 + 1))
             + (1 + e.show.encode().len())
-            + (1 + 36 * e.movers.len());
+            + (1 + 36 * e.movers.len())
+            + (1 + 13 * e.sight.len());
         let rules = (1 + 2 + 4) + (MAX_TEAMS - 2) + (1 + 4 + 1);
         let first = bytes.len() - held - MAX_TEAMS - rules;
         assert_eq!(bytes[first], 1, "team 0 has an Areas rule");
@@ -2545,6 +2662,9 @@ mod tests {
                     start: u32::MAX,
                     duration: u32::MAX,
                 })
+                .collect(),
+            sight: (0..MAX_SIGHT_PAIRS as u32)
+                .map(|o| Sight { from: o, to: o + 1, asked: u32::MAX, clear: true })
                 .collect(),
         };
         let bytes = e.encode();

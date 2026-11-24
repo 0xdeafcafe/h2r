@@ -51,6 +51,7 @@ fn pilot() -> ScenarioPlayer {
         score: 0,
         lives: 0,
         unit: Some(100),
+        body: Default::default(),
     }
 }
 

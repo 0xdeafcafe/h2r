@@ -190,7 +190,11 @@ error (`scenario: unknown field ...`) and every field is optional.
   declaration order from bit 0. Absent, every option takes its default.
 - `players`: `slot` (0 to 15), `team` (default 0), `alive` (true), `score`
   (0), `lives` (0), `unit` (the player's unit object, so `enter` and
-  `leave` naming it move the player in and out of a zone). `teams`
+  `leave` naming it move the player in and out of a zone), `body`
+  (`{"airborne": true, "crouching": false, "primed": true}`: what
+  `p.airborne`, `p.crouching` and `p.primed` read; a `touchdown` lands
+  the player). `sight` is a list of `[from, to]` object pairs with
+  nothing solid between them, the only pairs `sees` answers true for. `teams`
   defaults to `[0, 1]`.
 - `variant`: record fields by name (`{"team_play": 1, "score_limit":
   25}`); a field left out reads the stock record of the script's engine
@@ -212,7 +216,8 @@ error (`scenario: unknown field ...`) and every field is optional.
   `{"press": {"player": 0, "object": 0}}`, `{"pickup": {"player": 0,
   "object": 5}}`, `{"drop": {...}}`, `{"bounce": {"player": 0, "object":
   0, "chain": 2, "monster": false}}` (`chain` 1 and `monster` false when
-  left out), `{"bounced": 0}`, `{"edit": {"player": 0, "object": 7}}`, `{"squad_dead": 2}`,
+  left out), `{"bounced": 0}`, `{"touchdown": {"player": 0, "down":
+  589824, "up": 786432}}` (raw `fixed`, world units a second), `{"edit": {"player": 0, "object": 7}}`, `{"squad_dead": 2}`,
   `{"actor_kill": {"killer": 0, "class": "elite"}}`, `{"actor_assist":
   {"killer": 0, "assist": 1, "class": "elite"}}`, `"round_end"`.
 - A kill marks the victim dead and counts its death and the killer's
@@ -399,7 +404,10 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
 - **Known runtime gaps.** A host refuses a script, by name, if it calls an
   entry that is not `named` or VM-only: `set_team`, `give`,
   `take`, `create`, `register_objective`,
-  `spawn_objective`. `check` lists these as unhostable. The host runtime
+  `spawn_objective`, and the physics reads `airborne`, `crouching`,
+  `primed` and `sees` (the game side of W4 is not built; `on touchdown`
+  runs on the fake only, and a host refuses it by name). `push` and
+  `launch` have no entry until R9. `check` lists these as unhostable. The host runtime
   also delivers only `init`, `round_start`, `kill`, `quit`, `timer`,
   `tick`, `bounce`, `bounced`, `spawn`, `death`, `enter`, `leave` and `arrive`;
   reads only scores, kills, deaths, `alive`, `team_of`, `lives`,

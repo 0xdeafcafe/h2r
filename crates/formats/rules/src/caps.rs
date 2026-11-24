@@ -342,6 +342,10 @@ pub mod id {
     pub const SQUAD_FIGHTING: u16 = 114;
     pub const SQUAD_STRENGTH: u16 = 115;
     pub const HUD_VALUE_FOR: u16 = 116;
+    pub const AIRBORNE: u16 = 117;
+    pub const CROUCHING: u16 = 118;
+    pub const PRIMED: u16 = 119;
+    pub const SEES: u16 = 120;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -622,6 +626,20 @@ pub const ENTRIES: &[Entry] = &[
     // the Territories HUD's held count is. One widget at a time reads per
     // viewer; the show state keeps the table (`show::PerViewer`).
     act(id::HUD_VALUE_FOR, "hud_value_for", &[Int, Player, Int], Some("hud.widgets"), Now, Named),
+    // Physics reads (docs/game/rules-world-api.md, "Physics"), no
+    // capability. A player's biped is off the ground, crouched, or primed
+    // (its level pair is in the state a landing bounces from); a player
+    // who is gone, dead or in no biped reads false. The game side
+    // (`game::rules::world::physics`) is not built, so a host refuses a
+    // script that reads any of them by name.
+    read(id::AIRBORNE, "airborne", &[Player], Bool, NotBuilt),
+    read(id::CROUCHING, "crouching", &[Player], Bool, NotBuilt),
+    read(id::PRIMED, "primed", &[Player], Bool, NotBuilt),
+    // `sees(a, b)`: nothing solid between two objects. A VM read of its
+    // sight table (`vm::RulesExt::sight`): a pair asked for in one tick is
+    // traced at the next tick boundary through `Game::trace_sight`, and
+    // answers from then on, false until its first trace.
+    Entry { status: NotBuilt, ..vm(id::SEES, "sees", &[Object, Object], Bool) },
 ];
 
 /// The word `message(to, text)` takes for everyone.
@@ -1095,6 +1113,21 @@ mod tests {
         }
         let len = entry(id::VEC_LENGTH, API_VERSION).unwrap();
         assert_eq!((len.kind, len.result), (Kind::VmOnly, Some(Fixed)));
+    }
+
+    #[test]
+    fn physics_reads_need_no_capability_and_wait_on_the_game_side() {
+        for name in ["airborne", "crouching", "primed"] {
+            let e = entry_named(name).unwrap();
+            assert_eq!((e.kind, e.result, e.cap), (Kind::Read, Some(Bool), None), "{name}");
+            assert_eq!(e.args, &[Player], "{name}");
+            assert!(!e.status.hostable(), "{name}");
+        }
+        let sees = entry(id::SEES, API_VERSION).unwrap();
+        assert_eq!((sees.kind, sees.result, sees.cap), (Kind::VmOnly, Some(Bool), None));
+        assert_eq!(sees.args, &[Object, Object]);
+        assert!(!sees.status.hostable());
+        assert!(entry_named("push").is_none() && entry_named("launch").is_none(), "R9 is open");
     }
 
     #[test]

@@ -212,6 +212,7 @@ An `on` handler names its arguments in order; the count must match.
 | `on bounce(p, spot, chain, monster)` | player, zone, int, bool | `chain` is its place in its chain (1 a single bounce); `monster` a Monster Bounce |
 | `on bounced(p)` | player | a fall out of the map during a bounce |
 | `on arrive(o)` | object | a `move_to` reached its end, on its end tick, after the timers and before `on tick` |
+| `on touchdown(p, down, up)` | player, fixed, fixed | a player's biped landed: the speed it fell at on the tick before (`down`, positive) and its vertical speed now (`up`, positive for rising), world units a second; at most 16 a tick. The fake lands the player; a host does not deliver it yet |
 | `on edit(p, o)` | player, object | a granted power was used |
 
 A handler runs to completion. `on timer` handlers run in slot order, then
@@ -288,6 +289,12 @@ game answers it from its `enter` and `leave` events.
 | `teleport` | object, vec, or object, or object and vec offset | `objects.move` | queued | named (a position outside the world is a refused call, recorded, that moves nothing) |
 | `move_to` | object, vec or object, time | `objects.move` | now | named (a mover in the VM's state, at most 16, one a second for an object, stepped each tick, `on arrive(o)` on its end tick; a time of 0 is one tick) |
 | `stop` | object | `objects.move` | now | named (ends the object's mover with no `on arrive`) |
+| `airborne`, `crouching`, `primed` | player | none | read, bool | not built on a host (`p.airborne`, `p.crouching`, `p.primed`: the biped is off the ground, crouched, or its level pair is in the state a landing bounces from; the fake answers from the scenario's `body`) |
+| `sees` | object, object | none | VM, bool | not built on a host (`sees(a, b)`: nothing solid between two objects. A read of the VM's sight table: a pair asked in one tick is traced at that tick's end through `Game::trace_sight` and answers from the next, false until then; a pair not asked in 30 ticks is dropped; a 33rd pair is a script error) |
+
+`push`, `launch` and `set_velocity` have no entry: they wait on R9 (how a
+client's own predicted biped takes a host-set velocity), so a script that
+names one is a compile error.
 
 `hud name: text at koth.hill` declares a widget at a HUD kit element (kinds
 `text`, `banner`, `meter`; at most 16), `waypoint name [at koth.mark]` a
@@ -342,7 +349,7 @@ the tick's 100,000 ops ran out (`Budget`), a table row out of range
 than 128 queued calls (`Queue`), `squad(n)` outside 0 to 15 (`Squad`),
 more than 32 zones asked about by `ticks_held` (`Zones`), a `set_body` tag
 that is no player body (`Body`; one written in the call is a compile
-error, `body.unknown`), more than 16 movers at once (`Movers`).
+error, `body.unknown`), more than 16 movers at once (`Movers`), more than 32 sight pairs asked within 30 ticks (`Sight`).
 `h2 rules run` prints `script error <kind> at tick T, handler H, op P` and
 exits 1.
 
