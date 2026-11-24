@@ -282,9 +282,9 @@ fn the_built_in_list_is_read_from_the_game() {
     ctf.set_name("CTF Classic").unwrap();
     let mut odd = GameVariant::blank(GameType::Oddball);
     odd.set_name("Rockets Oddball").unwrap();
-    let mut script = GameVariant::blank(GameType::Script);
-    script.set_name("My Siege").unwrap();
-    script.set_ext(&crate::community_variants::listed_named("Siege").unwrap().ext()).unwrap();
+    let siege = ::rules::compile(::rules::builtin::SIEGE).unwrap();
+    let script = variants::portable::record_for_named(&siege, "My Siege", &[]).unwrap();
+    assert_eq!(script.game_type(), GameType::Script);
     g.put_u32(BUILTIN_LIST, RECORDS).put_u32(RECORDS, 3);
     for (i, v) in [&ctf, &odd, &script].into_iter().enumerate() {
         let at = RECORDS + 4 + i as u32 * BUILTIN_RECORD + BUILTIN_VARIANT;

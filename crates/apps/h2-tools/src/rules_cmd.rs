@@ -505,13 +505,12 @@ pub fn check_text(label: &str, src: &str) -> Result<String, String> {
     let h = &ir.header;
     let _ = writeln!(
         s,
-        "{label}: \"{}\" version {}, type {}{}, points {:?}, engine {}, {}",
+        "{label}: \"{}\" version {}, type {}{}, points {:?}, {}",
         h.name,
         h.version,
         h.game_type.name(),
         h.uses.map_or_else(String::new, |u| format!(" using {}", u.name())),
         h.points,
-        h.engine(),
         match h.teams {
             0 => "any number of teams".to_string(),
             n => format!("{n} teams"),
@@ -594,33 +593,38 @@ pub fn check_text(label: &str, src: &str) -> Result<String, String> {
         return Err(s);
     }
     // Settings that make a record the game would not keep.
-    if let Err(e) = variants::portable::settings_record(&ir) {
-        let _ = writeln!(s, "{label}: refused: {e}");
-        return Err(s);
+    match variants::portable::settings_record(&ir) {
+        Ok(record) => {
+            let ty = record.game_type();
+            let _ = writeln!(s, "record engine: {} ({})", ty.engine(), ty.label());
+        }
+        Err(e) => {
+            let _ = writeln!(s, "{label}: refused: {e}");
+            return Err(s);
+        }
     }
     Ok(s)
 }
 
 /// What `h2 rules settings` prints: the record of the script's own
 /// variant (`variants::portable::record_for`, the script's option
-/// defaults). Every row of `rules::settings::TABLE` that applies to the
-/// carrier, in table order, with its value and `script` or `stock`; then
-/// the record's settings of the carrier that no row names, which have the
-/// stock value.
+/// defaults). Each row of `rules::settings::TABLE` that applies to the
+/// generated record appears in table order with its value and `script`
+/// or `stock`. The remaining record settings have their stock values.
 pub fn settings_text(label: &str, src: &str) -> Result<String, String> {
     use rules::settings::{TABLE, carrier_label, value_label};
     use variants::record;
     let (ir, _) = compile(label, src)?;
     let v = variants::portable::record_for(&ir, &[]).map_err(|e| format!("{label}: refused: {e}\n"))?;
-    let carrier = ir.header.engine();
+    let engine = v.game_type().engine() as u8;
     let set: Vec<u16> = ir.settings.iter().map(|x| x.index).collect();
     let mut rows = Vec::new();
     for (i, row) in TABLE.iter().enumerate() {
-        if !row.applies(carrier) {
+        if !row.applies(engine) {
             continue;
         }
         let at = i as u16;
-        let value = variants::portable::setting_value(&v, row, carrier)
+        let value = variants::portable::setting_value(&v, row, engine)
             .ok_or_else(|| format!("{label}: {} has no place in the record\n", row.name))?;
         let from = if set.contains(&at) { "script" } else { "stock" };
         rows.push((row, value_label(at, value), from));
@@ -630,7 +634,7 @@ pub fn settings_text(label: &str, src: &str) -> Result<String, String> {
         s,
         "{label}: \"{}\" on {}, {} settings, {} set by the script",
         ir.header.name,
-        carrier_label(carrier),
+        carrier_label(engine),
         rows.len(),
         set.len()
     );
@@ -652,7 +656,7 @@ pub fn settings_text(label: &str, src: &str) -> Result<String, String> {
     for (row, text, from) in &rows {
         let _ = writeln!(s, "  {:name_w$}  {text:text_w$}  {from}", row.name);
     }
-    let named: Vec<u32> = TABLE.iter().filter_map(|r| r.setting(carrier)).collect();
+    let named: Vec<u32> = TABLE.iter().filter_map(|r| r.setting(engine)).collect();
     let others: Vec<_> = v
         .known_settings()
         .into_iter()
@@ -1061,7 +1065,8 @@ settings {
     fn settings_prints_the_whole_record_and_who_set_each() {
         let text = settings_text("swat.rules", SWAT).unwrap();
         let first = text.lines().next().unwrap();
-        assert!(first.starts_with("swat.rules: \"SWAT\" on Slayer, "), "{text}");
+        assert!(first.starts_with("swat.rules: \"SWAT\" on Script, "), "{text}");
+        assert!(check_text("swat.rules", SWAT).unwrap().contains("record engine: 6 (Script)"));
         assert!(first.ends_with(", 4 set by the script"), "{text}");
         assert!(text.contains("quick options: score_limit, starting_weapon\n"), "{text}");
         assert_eq!(row_words(&text, "score_limit"), ["score_limit", "50", "script"]);

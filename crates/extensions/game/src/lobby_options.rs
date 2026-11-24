@@ -533,6 +533,7 @@ mod tests {
 
         let ir = ::rules::compile(::rules::builtin::SUPERBOUNCE).unwrap();
         let record = variants::portable::record_for(&ir, &[]).unwrap();
+        assert_eq!(record.game_type(), variants::GameType::Script);
         let lines = crate::variant_quick::lines(&record).unwrap();
         assert_eq!(lines.len(), ir.quick.len());
         assert_eq!(lines[0], "Respawn Time: 3 seconds");

@@ -103,7 +103,15 @@ fn port_saved(store: &Store, v: &GameVariant, name: &str, script: &PortScript) -
             source: None,
             options: Some(saved.options),
         };
-        return Bundle::new(v, name, "", Some(attach)).map_err(|e| e.to_string());
+        let mut bundle = Bundle::new(v, name, "", Some(attach)).map_err(|e| e.to_string())?;
+        // Attaching a new script starts with its defaults. This save already
+        // names the script and can carry the player's edits to those extras.
+        let saved_hex = super::hex(v.bytes());
+        if bundle.record_hex != saved_hex {
+            bundle.record_hex = saved_hex;
+            bundle.check().map_err(|e| e.to_string())?;
+        }
+        return Ok(bundle);
     }
     port(v, name, "", script.clone())
 }

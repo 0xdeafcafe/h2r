@@ -301,8 +301,8 @@ fn superbounce_is_filed_under_research_by_its_script() {
     let sb = listed_named("Superbounce").unwrap();
     assert_eq!(
         sb.record.game_type(),
-        GameType::Slayer,
-        "played as Slayer underneath"
+        GameType::Script,
+        "the record is independent of the Research row"
     );
     assert_eq!(Row::of_type(sb.game_type), Some(Row::Research));
     let ext = sb.ext();
@@ -422,7 +422,7 @@ fn every_listed_record_gets_its_block_at_load() {
             &mut g,
             rec(1 + k as u32),
             &l.display_name(),
-            l.record.game_type(),
+            GameType::from_list_index(l.list_type).unwrap(),
         );
     }
     put_builtin(&mut g, rec(n - 1), &all[0].display_name(), GameType::Ctf);
@@ -441,6 +441,7 @@ fn every_listed_record_gets_its_block_at_load() {
         let r = rec(1 + k as u32);
         let block = record_block(&g, r).unwrap();
         assert_eq!(block, l.block(), "{}", l.name);
+        assert_eq!(crate::tweakers::record_engine(&g, r), Some(l.record.game_type().engine()), "{}", l.name);
         // A game on it finds its script.
         let script = Ext::in_effect(&block).script;
         assert_eq!(script.mode, variants::ext::Mode::Rules, "{}", l.name);
