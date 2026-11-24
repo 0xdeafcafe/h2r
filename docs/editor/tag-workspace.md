@@ -140,7 +140,9 @@ edits are edit lines on the `scnr`.
 
 ### Projects
 
-A project is a small file naming one map to build:
+A project is a small file naming one map to build. In the package
+model of [studio-redesign.md](studio-redesign.md), "Packages", it is a
+`map` item of a package and its fields are these:
 
 ```toml
 # art/stage/project.toml, or <data>/workspace/projects/<name>.toml
@@ -181,7 +183,10 @@ loads it by its id, or as a play copy of a disc level
 
 ### Kits are build steps
 
-`content::kit::ContentKit` is the one shape for content added by code:
+`content::kit::ContentKit` is the one shape for content added by code.
+A package names one as a builder, and `KitRewrite` runs the whole
+package set ([studio-redesign.md](studio-redesign.md), "How the game
+consumes packages"):
 
 ```rust
 pub trait ContentKit {
@@ -418,6 +423,7 @@ A wave's slices are independent of each other.
 
 ## Related
 
+- [studio-redesign.md](studio-redesign.md): packages, the unit this build runs on, and the window around it
 - [content-stage.md](content-stage.md): the first project, and how content is checked on it
 - [live-editors.md](live-editors.md), [game-view.md](game-view.md), [playtest.md](playtest.md): the rest of the suite
 - [tag-repo.md](../formats/tag-repo.md), [tag-schema.md](../formats/tag-schema.md), [map-builder.md](../formats/map-builder.md), [tag-definitions.md](../formats/tag-definitions.md): the tree, layouts, the builder, typed fields
