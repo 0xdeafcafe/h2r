@@ -158,5 +158,5 @@ fn a_swapped_in_script_is_held_to_the_maps_tags() {
     assert!(why.contains("the map does not have what the script needs"), "{why}");
     assert!(why.contains("props/gone"), "{why}");
     // One the map satisfies swaps in.
-    assert!(s.lock().swap(compile(READS)).is_ok());
+    s.lock().swap(compile(READS)).unwrap();
 }

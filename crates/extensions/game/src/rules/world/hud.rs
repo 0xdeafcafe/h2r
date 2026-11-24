@@ -330,7 +330,7 @@ mod tests {
     #[test]
     fn the_huds_a_script_feeds_are_named_by_its_slots_first_word() {
         let (ir, _) = ::rules::build(
-            "rules \"X\" 1\ntype slayer\nuses slayer\nrequires hud.widgets\n\
+            "rules \"X\" 1\ntype slayer\nrequires hud.widgets\non kill(v, k) { }\n\
              hud a: text at ctf.own\nhud b: text at odd.time\nhud c: text at elsewhere.row\n\
              hud d: text at ctf.enemy\n",
         )

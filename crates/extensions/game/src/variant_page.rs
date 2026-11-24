@@ -205,8 +205,8 @@ impl Slot {
 
     pub fn name(self) -> &'static str {
         match self {
-            Slot::Primary => "Other Primary",
-            Slot::Secondary => "Other Secondary",
+            Slot::Primary => "Primary",
+            Slot::Secondary => "Secondary",
         }
     }
 
@@ -250,7 +250,7 @@ impl Slot {
         IDS.id(self.ids_at() + 1 + i as u32)
     }
 
-    /// Step `i`'s label, such as "Other Primary: Spiker".
+    /// Step `i`'s label, such as "Primary: Spiker".
     pub fn label(self, i: usize) -> String {
         let id = ext_weapons::id_at(i);
         format!("{}: {}", self.name(), ext_weapons::name(id))
@@ -1535,11 +1535,11 @@ mod tests {
             assert_eq!(p.description(sl.row()), Some(sl.description_id()));
             assert_eq!(p.press(sl.row()), Chosen::Open(picker::NAME));
         }
-        assert_eq!(Slot::Primary.label(0), "Other Primary: Not Used");
+        assert_eq!(Slot::Primary.label(0), "Primary: Not Used");
         let hammer = ext_weapons::TABLE[1];
         assert_eq!(
             Slot::Secondary.label(2),
-            format!("Other Secondary: {}", hammer.label)
+            format!("Secondary: {}", hammer.label)
         );
         // Right steps up the table and stops at its end; left comes back.
         let last = ext_weapons::TABLE.len();
@@ -1553,13 +1553,13 @@ mod tests {
         assert_eq!(p.ext().primary, ext_weapons::TABLE[last - 2].id);
         assert_eq!(
             p.sideways(Slot::Secondary.row(), false).as_deref(),
-            Some("variant options: other secondary weapon stays Not Used")
+            Some("variant options: secondary stays Not Used")
         );
         // A choice the picker makes sets the slot; one past the table is refused.
         assert!(p.choose_weapon(Slot::Secondary, |_| 2).contains("Gravity Hammer"));
         assert_eq!(p.ext().secondary, hammer.id);
         assert!(p.choose_weapon(Slot::Secondary, |_| 99).contains("no other secondary weapon choice"));
-        assert!(p.describe(ROWS).unwrap().contains(&format!("[8] \"Other Secondary: {}\"", hammer.label)));
+        assert!(p.describe(ROWS).unwrap().contains(&format!("[8] \"Secondary: {}\"", hammer.label)));
         // Every label and description is served.
         let served = strings();
         for sl in Slot::ALL {
