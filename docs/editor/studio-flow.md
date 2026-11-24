@@ -1,7 +1,7 @@
 # Studio's flow: one way from any asset to its editors and to what it touches
 
-Status: Partly built. The ways to Voices (slice FL0) are built: Go to anything lists every editor and the Voices window, and a sound's editor starts a Voices line that replaces it. The rest is design.
-Code: `crates/apps/studio/src/app/commands.rs` (`palette`), `app/voices.rs` (`Show`, `App::voices_line_for`), `ui/sound.rs` (**New line in Voices**), `ui/announcer.rs` (`window`). Tests: `app/tests.rs` (`go_to_anything_opens_the_voices_window_and_every_editor`, `a_sound_starts_one_voices_row_that_replaces_it`).
+Status: Partly built. The ways to Voices (slice FL0) are built: Go to anything lists every editor and the Voices window, and a sound's editor starts a Voices line that replaces it. Go to anything searches the same rows the Browser lists (slice FL3): every tag of the tree, the set's packages and their items, with no map open. The rest is design.
+Code: `crates/apps/studio/src/app/commands.rs` (`palette`, `palette_assets`), `app/voices.rs` (`Show`, `App::voices_line_for`), `ui/palette.rs`, `ui/sound.rs` (**New line in Voices**), `ui/announcer.rs` (`window`), `api/ui_screens.rs` (`ui.palette`). Tests: `app/tests.rs` (`go_to_anything_opens_the_voices_window_and_every_editor`, `go_to_anything_finds_a_tag_a_package_an_item_and_a_command_with_no_map_open`, `go_to_anything_opens_a_tree_tag_by_opening_its_map_first`, `a_sound_starts_one_voices_row_that_replaces_it`).
 Switch: none.
 
 Studio's editors were built one at a time, and each brought its own way
@@ -236,7 +236,7 @@ nothing unbuilt and run together.
 | FL0 (built) | **Ways to Voices**: the editors and Voices in Go to anything; **New line in Voices** on a sound | S | nothing | `app/commands.rs`, `app/voices.rs`, `app.rs`, `ui/sound.rs`, `ui/announcer.rs` | `go_to_anything_opens_the_voices_window_and_every_editor`; `a_sound_starts_one_voices_row_that_replaces_it` |
 | FL1 | **The link table**: `app/links.rs`, `asset.links`; tag references by role, packages of a tag, variant and script, sound and voice, package and items | M | nothing | `app/links.rs` (new), `api/assets.rs`, `api/tests/links_tests.rs` (new) | on an invented map and package: a weapon lists its model under Model and its sound under Sounds; the model lists the weapon under Used by; a variant lists its script and the script the variant; a tag an edit line touches lists the package; a sound under an invented character's path lists that voice |
 | FL2 | **The document header**: the strip on every surface, with the trail, the origin, the edit target, **Links** and **Open with** drawn from FL1 | M | FL1 | `ui/doc_header.rs` (new), `ui.rs`, `ui/tags.rs`, `ui/variants.rs`, `ui/playlists.rs`, `ui/ui_screens.rs`, `ui/hud.rs`, `ui/textures.rs`, `headless.rs` | each kind's document draws the header at 1000 by 420 with no stray child window; the header's text for an invented weapon names its package and its roles; following a link and going Back returns the first tab with its selection |
-| FL3 | **Go to anything over everything**: the rows of `asset.list` for every root, packages and items, and every menu command | S | nothing | `app/commands.rs`, `ui/palette.rs`, `api/ui_screens.rs`, `app/tests.rs` | with no map open, a query finds a tag of an invented tree, a package, an item and a command, each under its kind; running each opens its document |
+| FL3 (built) | **Go to anything over everything**: the rows of `asset.list` for every root, packages and items, and every menu command | S | nothing | `app/commands.rs`, `ui/palette.rs`, `api/ui_screens.rs`, `app/tests.rs` | with no map open, a query finds a tag of an invented tree, a package, an item and a command, each under its kind; running each opens its document |
 | FL4 | **Items open**: item rows open the editor of what they build; the **Game types** and **Playlists** kinds; scripts, variants and playlists as tabs with `item:` ids; **View > Editors** removed | M | FL2 | `app/assets.rs`, `ui/browser.rs`, `app/shell.rs`, `app/rules_edit.rs`, `ui.rs`, `api/shell.rs` | a double-click on an invented package's `rules`, `variant`, `sound` and `edits` items opens the script editor, the variant's settings, the sound editor and the edited tag; `shell.open {asset: "item:..."}` leaves the same tabs |
 | FL5 | **Voices as documents**: `Doc::Voice`, the **Voices** kind, the voice document (Setup, Lines), the sound document's Lines pane with the two waveforms; the floating window and **View > Voices** removed | M | FL2, FL4 | `ui/announcer.rs` split into `ui/voices/{setup,lines}.rs`, `ui/sound.rs`, `app/shell.rs`, `app/assets.rs`, `app/voice_batch.rs`, `api/voice_clone.rs` | with the fake sidecar: the Voices kind lists every character with its dataset state; a line said from an invented sound's Lines pane is a row whose target is that sound and whose levels draw under the original's; a voice with no dataset opens on Setup |
 | FL6 | **One check**: `check.run {asset}`, **Check** in the header with the count, the editors' lists drawn from Problems | M | FL2 | `app/problems.rs`, `ui/problems.rs`, `api/checks.rs`, `ui/hud.rs`, `ui/ui_screens.rs`, `ui/game_script.rs` | a finding on an invented HUD shows once, in Problems and in the HUD document, with the same text; the header's count for an asset equals `problems.list` filtered to it; a script error is a Problems row that opens its line |
@@ -272,6 +272,13 @@ nothing unbuilt and run together.
 - Go to anything lists the editors and Voices, and running the entry
   asks for the window: **Test**
   `go_to_anything_opens_the_voices_window_and_every_editor`.
+- With no map open, one query finds a tag of an invented tree, a
+  package, an item and a command, each under its kind; the tag's and the
+  command's entries open their documents (a package's and an item's
+  carry the `OpenAsset` that FL4 and FL10 teach to open theirs): **Test**
+  `go_to_anything_finds_a_tag_a_package_an_item_and_a_command_with_no_map_open`.
+- A tag of the tree opens by opening the map that holds it first:
+  **Test** `go_to_anything_opens_a_tree_tag_by_opening_its_map_first`.
 - A sound's **New line in Voices** makes one row per sound and asks for
   the batch: **Test** `a_sound_starts_one_voices_row_that_replaces_it`.
 - The header, the link roles, the four patterns and the voice document:

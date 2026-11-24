@@ -94,7 +94,7 @@ What goes through actions, from both sides:
 | Navigate tag fields | `Navigate` | inspector links and breadcrumbs | `nav.go`, `nav.back`, `nav.forward` |
 | Undo, redo | `Undo`, `Redo` (the tool shown), `UndoIn(tool)`, `RedoIn(tool)` | Edit menu, keys | `doc.undo`, `doc.redo` |
 | Save | `Save`, `SaveMapAs`, `SaveVariant`, `SaveHopper(As)`, `ExportVariant` | File menu, shortcuts, prompt | `doc.save`, `doc.save_as` |
-| Go to anything | `GoTo` for tags and placements, existing map-open and menu actions for the other entries | Edit menu, Cmd/Ctrl+P | `ui.palette {query, run?}` |
+| Go to anything | `OpenAsset` for tags, packages and items, `GoTo` for placements, existing map-open and menu actions for the other entries | Edit menu, Cmd/Ctrl+P | `ui.palette {query, run?}` |
 | Variant edits | `OpenVariant`, `NewVariant`, `NewVariantFromScript`, `CopyBuiltin`, `SetVariantName`, `SetSetting`, `SetScriptOption`, `ImportVariant*`, `DeleteVariant` | the variant tool | `doc.open`, `variant.*` |
 | Playlist edits | `EditPlaylist(PlaylistEdit)`, `SetEntryVariant` | the title and description fields, the table's row buttons, weights, Add, the unused slot's "Make a … playlist" buttons and "Remove playlist" apply the same `PlaylistEdit`s | `playlist.set`, `playlist.entry`, `playlist.entry_variant` |
 | UI screens | `UiPick`, `UiPress`, `UiBrowse` | the UI Screens tool | `ui.pick`, `ui.press`, `ui.select_folder` |
@@ -198,16 +198,24 @@ group. `maps` remains the array of Halo 2 file stems in source order.
 ## Go to anything
 
 `ui.palette {query}` returns `{entries, totals}` from `app::commands::palette`.
-The commands are the menus' own, one `Open editor: <name>` per editor of
-View > Editors, and `Open: Voices` (`Action::ShowVoices`).
+The asset rows are what `asset.list` answers for the query — every tag
+of the tags tree, the set's packages and the items of each package that
+is on (`app::commands::palette_assets`), with no map open. The commands
+are the menus' own, one `Open editor: <name>` per editor of View >
+Editors, and `Open: Voices` (`Action::ShowVoices`).
 Entries are `{kind, label, detail}` in the order shown by Cmd/Ctrl+P:
-`map`, `tag`, `placement`, then `command`. Each kind has at most 20
-entries. `totals` counts all matches by kind before that cap. Each word
-of the query must match and case is ignored.
+`map`, then the asset rows `tag`, `package`, `item`, then `placement`
+and `command`. Each kind has at most 20 entries. `totals` counts all
+matches by kind before that cap. Each word of the query must match the
+commands' labels and details, and is the same search `asset.list` runs
+on the asset rows.
 
 Pass `run` with a zero-based index into the displayed entries to run the
 action and return its index as `ran`. An out-of-range index returns
-`INVALID_PARAMS`. Actions that would discard edits return `UNSAVED`.
+`INVALID_PARAMS`. Actions that would discard edits return `UNSAVED`. A
+tag entry opens on the map that holds it (`Action::OpenAsset`); a
+package's and an item's rows carry the same action, which opens their
+documents as the slices of docs/editor/studio-flow.md teach it to.
 
 ## The design system
 
