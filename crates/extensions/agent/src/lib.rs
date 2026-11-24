@@ -65,6 +65,8 @@ pub mod ai;
 pub mod anim;
 mod capture;
 pub mod collision;
+pub mod collision_sources;
+pub mod collision_trace_query;
 mod collision_traces;
 pub use collision_traces::{CollisionTrace, CollisionTraces};
 pub mod compare;

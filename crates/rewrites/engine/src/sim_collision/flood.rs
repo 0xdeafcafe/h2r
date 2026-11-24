@@ -4,12 +4,10 @@
 //! Both read their arguments and the live words they need, run the kernel
 //! over the structure's decoded portal graph, and only then write what the
 //! original leaves: the output array, the epochs, the active bytes and the
-//! marks, each mark with the value retail stores. They are differential
-//! oracles until their call-site scans close: scratch GPRs, XMM registers,
-//! x87 condition codes and last-instruction words, and the dead stack below
-//! `esp` and in the argument slots are not replayed. The x87 precision flag
-//! must already be sticky, so the flag word the original leaves is the one
-//! it found.
+//! marks. The runtime dispatch in [`spatial_parity`] replays the full
+//! scratch state of the no-portal-test flood and the no-cluster visit.
+//! Other admitted calls compare the kernel's predictions with the guest.
+//! A flood requires a sticky x87 precision flag.
 use super::preflight::{CollisionMemory, Outputs};
 use super::{Read, consts, finish, layout};
 use crate::sim_native::{Memory, add_flags, logic_flags};
@@ -19,6 +17,8 @@ use sim_collision::objects::{List, Visit, VisitQuery, object_visit};
 use sim_collision::{Bail, CollisionWorld, Entry, GuestRead};
 use sim_core::det::{self, checked_inputs};
 use std::sync::Arc;
+
+pub mod spatial_parity;
 
 /// The x87 state the flood's sequences reproduce: masked, nearest, single
 /// or double precision, two free registers, and PE already sticky.
@@ -85,6 +85,7 @@ struct FloodPlan {
     target: u32,
     out: u32,
     epoch: u32,
+    structure: u32,
     flood: Flood,
 }
 
@@ -138,6 +139,7 @@ fn plan_flood(
         target: outputs.target,
         out,
         epoch,
+        structure: t.key().structure,
         flood,
     })
 }
@@ -151,7 +153,9 @@ fn commit_flood(c: &mut CpuAbi, g: &mut impl Memory, p: FloodPlan) -> Result<Tra
         g.set_u32(layout::CLUSTER_MARKS + 4 * u32::from(cluster), p.epoch)?;
     }
     c.eax = u32::from(f.count());
-    c.ecx = f.portal_count;
+    // The slot saved by PUSH ECX is reused for the active structure;
+    // POP ECX loads that pointer after the last comparison.
+    c.ecx = p.structure;
     if f.portal_count as i32 <= 0 {
         // `test ecx, ecx` before the empty loop.
         logic_flags(c, f.portal_count);
@@ -183,6 +187,10 @@ struct VisitPlan {
     out: u32,
     flood_epoch: u32,
     generation: u32,
+    empty_location: bool,
+    lists: u32,
+    types: u32,
+    radius: u32,
     visit: Visit,
 }
 
@@ -272,6 +280,10 @@ fn plan_visit(
         out,
         flood_epoch,
         generation,
+        empty_location: cluster == u16::MAX,
+        lists,
+        types,
+        radius,
         visit,
     })
 }

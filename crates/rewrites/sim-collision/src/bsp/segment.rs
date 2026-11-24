@@ -67,10 +67,28 @@ pub struct Hit {
     pub material: u16,
 }
 
+/// Last plane visited before an unsplit segment reaches its leaf. These
+/// four binary32 results also survive in registers or the D caller's frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlaneDistances {
+    pub distance: u32,
+    pub delta: u32,
+    pub start: u32,
+    pub end: u32,
+}
+
+/// An unsplit walk that does not enter a surface lookup. A direct leaf
+/// starts without a plane, leaving the incoming XMM registers intact.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StraightWalk {
+    pub last: Option<PlaneDistances>,
+}
+
 /// What the walk leaves in R and the context.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Outcome {
     pub hit: Option<Hit>,
+    pub straight: Option<StraightWalk>,
     /// Leaves appended to R's list, in order, starting at the entry
     /// `listed`; once the list holds [`LEAF_LIST`] the rest go to the
     /// overflow slot `+0x418`, the last one staying.
@@ -218,6 +236,7 @@ impl Bsp {
             fp: Fp::new(),
             nodes_left: self.nodes.len(),
             out: Outcome {
+                straight: Some(StraightWalk::default()),
                 prev_leaf: q.prev_leaf,
                 prev_kind: q.prev_kind,
                 plane: q.plane,
@@ -290,10 +309,14 @@ impl<G: GuestRead> Walk<'_, G> {
             }
             let (a, b) = (non_negative(s0), non_negative(s1));
             if a == b {
+                if let Some(straight) = &mut self.out.straight {
+                    straight.last = Some(PlaneDistances { distance: dist, delta, start: s0, end: s1 });
+                }
                 child = Self::child(&n, a)?;
                 continue;
             }
             // Opposite signs at the ends: delta is nonzero.
+            self.out.straight = None;
             let increasing = above(delta, 0);
             let split = det::x87_neg_quotient(dist, delta);
             self.out.inexact |= split.inexact;
@@ -340,6 +363,10 @@ impl<G: GuestRead> Walk<'_, G> {
         } else {
             (None, false)
         };
+        // Even a table lookup of NONE uses additional stack slots.
+        if lookup.is_some() {
+            self.out.straight = None;
+        }
         if let Some(lookup) = lookup.filter(|&l| l != NONE) {
             let s = self.matcher(lookup, t0, two_sided)?;
             if s != NONE {

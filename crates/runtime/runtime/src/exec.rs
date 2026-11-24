@@ -46,6 +46,7 @@ pub struct ExecCtx {
     /// Who raised the last few memory faults, by event id (`fault_census`).
     pub(crate) fault_sources: Vec<(u32, crate::fault_census::FaultSource)>,
     continuations: Continuations,
+    pub(crate) return_observers: Vec<crate::return_observers::Observation>,
     pub(crate) frames: crate::frames::ShadowStack,
     pub(crate) interrupts_masked: bool,
     /// Return token of the delivered interrupt callback, if one is running.
@@ -155,6 +156,7 @@ impl ExecCtx {
             open_fault: None,
             fault_sources: Vec::new(),
             continuations: Continuations::default(),
+            return_observers: Vec::new(),
             frames: Default::default(),
             interrupts_masked: false,
             interrupt_token: None,
@@ -417,6 +419,7 @@ impl ExecCtx {
     /// Drop all saved callback state during thread termination or a complete
     /// unwind. The caller must discard the corresponding guest stack frames.
     pub fn clear_continuations(&mut self) -> usize {
+        self.clear_return_observers();
         self.continuations.clear()
     }
     /// Callback continuations still waiting for their guest call to
@@ -431,6 +434,8 @@ impl ExecCtx {
     /// against this context, and exchange the pools back before either
     /// executor resumes its original stack.
     pub fn swap_callback_stack(&mut self, other: &mut ExecCtx) {
+        self.clear_return_observers();
+        other.clear_return_observers();
         std::mem::swap(&mut self.continuations, &mut other.continuations);
         std::mem::swap(&mut self.interrupt_token, &mut other.interrupt_token);
     }
@@ -450,7 +455,9 @@ impl ExecCtx {
         layout: &crate::ContinuationLayout,
         rebuild: impl FnMut(&str, u32, [u32; 4]) -> Option<(&'static str, crate::Continuation)>,
     ) -> Result<(), crate::continuation::LayoutError> {
-        self.continuations.restore(layout, rebuild)
+        self.continuations.restore(layout, rebuild)?;
+        self.clear_return_observers();
+        Ok(())
     }
     /// A delivered interrupt callback is running on this context: the
     /// interrupted CPU state is held host-side until it returns.
@@ -483,6 +490,7 @@ impl ExecCtx {
     }
     /// Forget the recorded call chain, e.g. after a thread's stack is reset.
     pub fn clear_backtrace(&mut self) {
+        self.clear_return_observers();
         self.frames.clear();
     }
 

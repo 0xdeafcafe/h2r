@@ -122,6 +122,8 @@ connection to hold `session.claim`.
 | `editor.marks` | read | [Paired editor](#editor-a-paired-editor) |
 | `theater.*` | read or act | [Theater transport](#theater-transport) |
 | `collision.stats` | read | [`collision`](#collision-the-native-collision-world) |
+| `collision.trace` | read | [`collision`](#collision-the-native-collision-world) |
+| `collision.sources`, `collision.sources.clear` | read, claim | [`collision`](#collision-the-native-collision-world) |
 | `anim.graph_walk`, `anim.manager` | read | [`anim`](#anim-the-animation-graph-walk) |
 | `input.list`, `input.log.read` | read | [Input logs](#input-act-like-a-player) |
 | `trace.*`, `flight.*` | read | [Tick traces and the flight recorder](#tick-traces-and-the-flight-recorder) |
@@ -5551,27 +5553,41 @@ h2 agent anim.manager
 
 ## `collision`: the native collision world
 
-The collision switch enables counters for native entries A, B and F,
-before-call observers for the lifted vector and instance traces C–E, the
-cluster flood G and the object visit H, and the parity arm of the lifted
-general MOPP ray I. The game
-method reads process counters at a tick boundary. The entry addresses and
-bail reasons are in [collision-queries.md](../engine/collision-queries.md).
+The collision switch counts admitted native answers, declined queries,
+floating-point environments and comparisons with lifted returns. The
+game exposes these counters at a tick boundary. See the
+[entry addresses and admission rules](../engine/collision-queries.md).
 
 | Method | Access | Params and result |
 |---|---|---|
-| `collision.stats` | read | No parameters. Returns `switch`, `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `mopps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, `precision` (aggregate single, reserved, double and extended x87 calls at C and D), `vector` (C’s result parity), `context` (D’s outer walk parity), and `ray` (I’s parity arm, below). |
+| `collision.stats` | read | No parameters. Returns `switch`, `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `mopps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, `precision` (aggregate single, reserved, double and extended x87 calls at C and D), `vector` (C’s result parity), `context` (D’s outer walk parity), `instance`, `flood`, `visit`, `query` (E, G, H and J’s return comparisons), and `ray` (I’s walk and callbacks). |
+| `collision.trace` | read | `{start, delta, flags}` where `start` and `delta` are three finite binary32 world coordinates and `flags` is an unsigned 32-bit whole-query mask. |
+| `collision.sources` | read | No parameters. Checks the source fingerprints of each resident native BSP and MOPP against guest RAM. |
+| `collision.sources.clear` | claim | No parameters. Returns the same check and drops all resident entries from the collision world at that tick boundary. |
+
+`collision.trace` evaluates entry J at a tick boundary on the active
+structure. The segment ends at `start + delta`. Both ignore handles are
+empty. The reply gives the tick stamp, numeric `hit_type` (zero for a
+miss), `fraction`, world `position`, optional `material` and `plane`, and
+the first and last `locations` as `{leaf, cluster, bsp}`. The arrays
+`cluster_marks`, `instance_marks` and `object_marks` give the slots J
+would mark in traversal order. The query leaves guest memory untouched.
+A path outside the native kernel returns `UNAVAILABLE` with the bail
+name in `error.data.reason`.
+
+```sh
+h2 agent collision.trace '{"start":[0,0,1],"delta":[0,0,-2],"flags":1}'
+```
 
 Each row in `entries` gives the `name` and eight-digit guest `addr`, the
 count of `native` answers, and `bails` by reason. Two frequency maps count
 the control words at entry, including calls that fall back at the first
 environment check. Keys are lowercase hexadecimal strings with leading
 zeros: eight digits for `mxcsr` and four for `x87_control`. Each value is
-a call count. Each map counts its own register independently. For
-`vector_test`, `vector_context`, `instance_trace`, `cluster_flood`,
-`object_visit` and `mopp_ray`, only the frequency maps accumulate; `cluster_flood` also
-counts the flood's recursive entries. An image without an observed entry
-leaves its row empty. The `object_sphere` row counts native answers at the
+a call count. Each map counts its own register independently. `cluster_flood` includes recursive entries in
+its environment census. The `mopp_ray` and `query` rows count the
+environment while their comparison records report the lifted outcomes.
+An image without an observed entry leaves its row empty. The `object_sphere` row counts native answers at the
 whole query's object-reference pretest. `array_bytes` counts the decoded
 BSP allocations, the packed cluster table, the portal graph and the decoded MOPP trees (`mopps`
 of them; `decodes` and `decode_failures` include MOPP programs, a failure
@@ -5588,6 +5604,12 @@ first differing byte offset in the result record, with expected and guest values
 `context` uses the same counters for entry D. It compares AL, R and the
 40-byte context, counting each outer walk once across its recursive calls.
 
+`instance`, `flood`, `visit` and `query` use the same comparison counters.
+An admitted native exit counts under `entries[].native`. A comparison
+counts only after the guest returns. A declined prediction is
+`unverified`. For J the comparison covers AL, flags, the result including
+padding, and the active mark tables and generations.
+
 `ray` counts the MOPP ray queries the native walk followed while the
 guest answered them: `matched` (every interpreter call, and every key
 where the instanced collection shows it, equal), `mismatched` with
@@ -5595,7 +5617,8 @@ where the instanced collection shows it, equal), `mismatched` with
 and both sides), `unverified` by bail reason (the walk could not follow
 the query exactly, or its environment is one it does not model), and
 `fraction_moved` (no key was visible and a terminal lowered the fraction).
-Parity is `mismatched` zero over a match.
+Read `matched`, `mismatched` and `unverified` together to distinguish
+a covered query from one the walker could not follow.
 
 ```sh
 h2 agent collision.stats
@@ -5605,6 +5628,48 @@ The bail audit (under 0.1% of calls bailing) reads `bails` against
 `native`. For `mopp_box`, `grow` counts answers that did not fit the
 key array's room. A reason that appears on one architecture only is a determinism
 bug.
+
+### Checking a cold collision world
+
+At a tick boundary, `collision.sources` returns `sources` sorted by
+`kind` and guest `address`, with `cached` and `live` 64-bit hexadecimal
+fingerprints. A BSP fingerprint covers the live header, all eight blocks,
+the projection table and the zero used by the matcher. A MOPP fingerprint
+covers origin, scale, program length and bytecode. A failed live read
+returns `live: null` and the `bail` reason. The reply counts `mismatched`
+and `unreadable` separately. An empty list means no BSP or MOPP is
+resident. A debugger memory trap makes the method unavailable.
+
+For the cache-cold parity arm, `collision.sources.clear` gives the
+pre-clear readings and drops the BSPs, MOPPs, leaf table and portal graph.
+The next queries repopulate the world from current guest sources. The
+read-only form leaves the warm world's entries in place.
+
+Start each arm from the same match state and input with
+`impl.sim.native.collision` and `impl.sim.arena-hash` enabled.
+Use one claimed connection per arm. This example captures 1,800 cold ticks.
+Replace `collision.sources.clear` with `collision.sources` for the warm
+run and save its JSON lines separately.
+
+```sh
+{
+  echo claim
+  echo pause
+  echo collision.sources.clear
+  for tick in $(seq 1 1800); do
+    echo 'step 1'
+    echo collision.sources.clear
+  done
+  echo sim.hashes
+  echo release
+} | h2 agent -
+```
+
+Compare tick stamps and the sampled gameplay and arena rows from
+`sim.hashes`. At each tick, match the cold sources to warm sources of the
+same kind and address, and compare fingerprints. A warm world may retain
+entries from earlier ticks. Inspect unreadable sources, missing counterparts
+and cached/live differences before treating a run as clean.
 
 ## Tick traces and the flight recorder
 

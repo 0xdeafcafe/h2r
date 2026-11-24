@@ -1,6 +1,6 @@
 # sim-collision
 
-The collision world holds decoded BSPs for native point-to-leaf and location queries, and decoded MOPP programs for the box query. It also supplies the segment kernels used in differential tests. The engine adapter commits accepted results to guest memory.
+The collision world decodes BSPs, MOPP programs and portal graphs for segment, point, box, ray and object queries. The engine adapters select exact native exits and compare the other candidate results against lifted returns.
 
 ## Where it sits
 
@@ -9,7 +9,10 @@ The collision world holds decoded BSPs for native point-to-leaf and location que
 ## Layout
 
 - `src/bsp/`: the decoded BSP and its tree walks.
-- `src/mopp/`: MOPP programs decoded into flat trees, and the integer box query (entry F), single and packet.
+- `src/mopp/`: MOPP programs decoded into flat trees, the integer box query (entry F), and the float ray walker (entry I).
+- `src/model.rs` and `src/instance.rs`: object model rays and placement transforms.
+- `src/batch.rs`: ordered visit batches and box packets.
+- `src/store.rs`: shared backing for immutable decoded columns.
 - `src/world.rs`: decoded BSPs, map invalidation, memory accounting and entry counters.
 - `src/flood.rs`: the structure's portal graph and the sphere cluster flood (entry G).
 - `src/objects.rs`: the object spatial visit over the live reference lists (entry H).

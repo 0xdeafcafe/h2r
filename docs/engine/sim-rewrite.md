@@ -11,13 +11,14 @@ with it at every call. The phase 1c bodies cover
 `11eed0`). Slice 1d compares all six [channel manager and graph entries](animation-manager.md)
 with the guest at their entry and return selectors. The guest supplies the
 result. The verification ladder and cumulative 1.2 ms/tick gate remain open.
-Under the collision switch, phase 2 compares the BSP vector test's hit
-byte and result record against the guest ([entries C and D](collision-queries.md)).
-The outer BSP walk also compares the returned context. The native matcher
-caches edge origins and deltas for short surface rings and tests them
-four at a time ([ring layout](sim-rewrite-collision.md#44-rings-and-the-inside-test)).
-The whole query's object-reference sphere pretest runs through the Rust
-sphere kernel at its guest call site ([sphere pretest](collision-queries.md#object-reference-sphere-pretest)).
+Phase 2 answers point, location and MOPP box queries, the object-reference
+sphere pretest and exact exits in the BSP walk, instance trace, cluster
+flood and object visit. The whole-query planner follows structure,
+liquid, instances and object models. It compares its answer at the
+lifted return and supplies the read-only `collision.trace` method.
+The general Havok ray remains under live parity. The exit ladder includes
+run hashes, a cold-cache comparison, cross-architecture results and timing.
+[Collision entry contracts](collision-queries.md)
 The plan replaces the verdict in
 [feature-engine.md](feature-engine.md) ("Subsystem map and ranking", rows
 15-18) that objects, AI and physics "stay recompiled". The user asked on
@@ -357,8 +358,8 @@ as runtime before).
   - surfaces, planes and leaves as flat arrays;
   - MOPP programs pre-decoded (the `mopp` crate already holds the interpreter
     as a query model and an offline compiler);
-  - an object spatial index that replaces the `bb050` visit-mark walk on the
-    Rust side, while still writing the guest's visit stamps.
+  - a decoded portal graph and a per-query traversal of the live object
+    reference lists, preserving visit order and guest stamps.
 - *Entries:*
   - collision query `1697c0`;
   - BSP segment `1de630` and `1de6d0`;
@@ -372,8 +373,9 @@ as runtime before).
     ([collision-queries.md](collision-queries.md), "Entry I");
   - the datum walk `b89b0`;
   - spatial query `14a370` and the cluster walk `14a5b0`.
-- *Not in this phase.* The integer MOPP box query `2ff8b0` is called only
-  from the world step's contact agents (0.79%). It moves with Havok.
+- *Havok boxes.* The collision world answers the box wrapper `300150`.
+  Its inner integer interpreter `2ff8b0` and contact-agent callers also
+  belong to the Havok world-step census in phase 5.
 - *Callers.* The observer camera asks for 32% of the queries and 82% of the
   ray casts (`16f280` → `170fd0` → `171830`), sound 19% (listener leaf
   `11bed0`, obstruction `221e30`), the object spatial marks 24% and aim
@@ -474,7 +476,7 @@ still uses them.
 | **1b** | Node-matrix build (`1421f0`, `142a60`, `141e10`, the loop that drives them in `bd090`'s pose step, and `1dd1c0`). 2.9%. | same switch; the `bd090` walk also has `impl.sim.native.anim.skeleton` (on) | Ladder clean. Cumulative ≥ 0.6 ms. Retires `native_transform_compose` and `native_pose_matrix`. |
 | **1c** | Unit pose and overlays (`112070` with its aim channels and aim angles), the unit aim update `c7840`, first-person pose and filters (`16760c`, `166d75` with its filter step `11eed0`), model nodes and marker transforms (`b8d30`, `1d8f00`, `1d8f50`). 3.9%. | same switch | Ladder clean. Cumulative ≥ 0.9 ms. Retires `native_unit_pose`, `native_marker_transforms`, `native_first_person_pose`, `native_first_person_filters` and `native_unit_aim`. |
 | **1d** | Animation manager and graph resolve (`1c66a0`, `1c6f60`, `1cd590`, `1daea0`, `1dd9d0`, `1ddb40`). 3.4%. | same switch | Ladder clean. Cumulative **≥ 1.2 ms**. The animation switch owns graph resolution. |
-| **2** | Collision world and queries, with the Havok ray path | `impl.sim.native.collision` | Ladder clean. ≥ 0.45 ms more. Retires `native_point_to_leaf`, `native_geometry_test`, `native_bsp_segment`, `native_collision_query`, `native_mopp_ray`, `native_spatial_visit` and `native_spatial_portal`. |
+| **2** | Collision world and queries, with the Havok ray path | `impl.sim.native.collision` | Ladder clean. ≥ 0.45 ms more. Retires `native_point_to_leaf`, `native_geometry_test`, `native_bsp_segment`, `native_collision_query`, `native_mopp_ray`, `native_spatial_visit` and `native_spatial_portal`. The subsystem owns collision dispatch and the per-function bodies serve as differential oracles. |
 | **3** | Object update walk, function evaluator, lights, per-type callbacks type by type (units, then bipeds, vehicles, weapons) | `impl.sim.native.objects` | Ladder clean. ≥ 1.5 ms more. Retires `native_object_import`, `native_object_value`, `native_base_object_import`, `native_object_pre_update`, `native_object_post_update`, `native_objects_pre_physics`, `native_objects_post_physics`, `native_object_change_colors`, `native_unit_update`, `native_light_record` and `static-light`. |
 | **4** | Sound sim | `impl.sim.native.sound` | Ladder clean, with voice start and completion order compared per tick. ≥ 0.6 ms more. Retires `submix-fx`. |
 | **5** | Havok world and glue, with the MOPP box query | `impl.sim.native.physics` | Bar E (decision 8.1). Behaviour suites pass. Cross-arch hashes identical. ≥ 1.0 ms more. Retires `native_havok_solver`, `native_havok_support_vertices`, `native_havok_weld` and `native_mopp_box`. |

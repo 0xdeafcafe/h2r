@@ -42,6 +42,7 @@ pub enum Outcome {
         guest: Option<Event>,
         native: Option<Event>,
         what: &'static str,
+        setup_byte: Option<(usize, u8, u8)>,
     },
 }
 
@@ -53,10 +54,19 @@ impl fmt::Display for Outcome {
             Outcome::Unverified(Unverified::Bail(why)) => write!(f, "unverified: {}", why.name()),
             Outcome::Unverified(Unverified::Fraction) => f.write_str("unverified: fraction"),
             Outcome::Mismatch {
+                what,
+                setup_byte: Some((offset, expected, actual)),
+                ..
+            } => write!(
+                f,
+                "{what} at VM+{offset:#x}: expected {expected:#04x}, guest {actual:#04x}"
+            ),
+            Outcome::Mismatch {
                 at,
                 guest,
                 native,
                 what,
+                ..
             } => write!(
                 f,
                 "{what} at observation {at}: guest {}; native {}",
@@ -103,6 +113,20 @@ impl<B: AsRef<[u8]>> RayCheck<B> {
                 guest: None,
                 native: None,
                 what,
+                setup_byte: None,
+            });
+        }
+    }
+
+    /// First differing byte of the VM as seen by the root interpreter.
+    pub fn expect_byte(&mut self, offset: usize, expected: u8, actual: u8) {
+        if self.done.is_none() && expected != actual {
+            self.done = Some(Outcome::Mismatch {
+                at: self.seen,
+                guest: None,
+                native: None,
+                what: "ray VM setup",
+                setup_byte: Some((offset, expected, actual)),
             });
         }
     }
@@ -135,6 +159,7 @@ impl<B: AsRef<[u8]>> RayCheck<B> {
                     guest: Some(guest),
                     native,
                     what: "different step",
+                    setup_byte: None,
                 })
             }
         }
@@ -156,6 +181,7 @@ impl<B: AsRef<[u8]>> RayCheck<B> {
                 guest: None,
                 native,
                 what: "native walk goes on",
+                setup_byte: None,
             },
         }
     }

@@ -73,8 +73,6 @@ pub const PORTS: &[Port] = {
         // The pose root runs under the pose-matrix switch: it inlines that
         // leaf and transform composition for the whole skeleton walk.
         port(&OBJECT_NODE_MATRICES, "sim.native_pose_matrix", Sse, &node_matrices::SITES, node_matrices::update),
-        port(&OBJECT_SPATIAL_VISIT, "sim.native_spatial_visit", Sse, &visit::SITES, visit::objects),
-        port(&OBJECT_SPATIAL_PORTAL, "sim.native_spatial_portal", Mixed, &spatial::SITES, spatial::portal),
         port(&UNIT_AIM_UPDATE, "sim.native_unit_aim", Trig, unit_aim::SITES, unit_aim::aim),
         port(&FIRST_PERSON_POSE_UPDATE, "sim.native_first_person_pose", Mixed, first_person::POSE_SITES, first_person::pose),
         port(&FIRST_PERSON_FILTER_UPDATE, "sim.native_first_person_filters", Mixed, first_person::FILTER_SITES, first_person::filters),
@@ -96,6 +94,8 @@ pub const ORACLES: &[Port] = {
     use Controls::*;
     use points::*;
     &[
+        port(&OBJECT_SPATIAL_VISIT, "oracle.spatial_visit", Sse, &visit::SITES, visit::objects),
+        port(&OBJECT_SPATIAL_PORTAL, "oracle.spatial_portal", Mixed, &spatial::SITES, spatial::portal),
         port(&OBJECTS_PRE_PHYSICS, "oracle.objects_pre_physics", Integer, &objects::PRE_SITES, objects::pre),
         port(&OBJECTS_POST_PHYSICS, "oracle.objects_post_physics", Integer, &objects::POST_SITES, objects::post),
         port(&OBJECT_PRE_UPDATE, "oracle.object_pre_update", Integer, &object_update::PRE, object_update::pre),

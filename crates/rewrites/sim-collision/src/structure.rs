@@ -1,6 +1,6 @@
 //! The active structure's leaf-to-cluster table. A source version identifies
 //! the contents of an entire readable table under a single guest memory guard.
-use crate::{Bail, GuestRead, bsp::MAX_COUNT};
+use crate::{Bail, GuestRead, bsp::MAX_COUNT, store::Column};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A producer keeps this token only while the table has the same bytes.
@@ -54,16 +54,23 @@ impl LeafTable {
 /// collision BSP's leaf numbering and signed cluster sentinel.
 pub struct Structure {
     pub(crate) source: LeafTable,
-    leaf_cluster: Box<[i16]>,
+    leaf_cluster: Column<i16>,
 }
 
 impl Structure {
-    pub(crate) fn decode(g: &impl GuestRead, source: LeafTable) -> Result<Self, Bail> {
+    pub(crate) fn decode(
+        g: &impl GuestRead,
+        source: LeafTable,
+        directory: Option<&std::path::Path>,
+    ) -> Result<Self, Bail> {
         let raw = g.bytes(source.addr, source.len as usize)?;
-        let leaf_cluster = raw
+        let mut leaf_cluster: Column<i16> = raw
             .chunks_exact(8)
             .map(|row| i16::from_le_bytes([row[0], row[1]]))
             .collect();
+        if let Some(dir) = directory {
+            leaf_cluster.share(dir);
+        }
         Ok(Self {
             source,
             leaf_cluster,
