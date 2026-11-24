@@ -1603,6 +1603,7 @@ pub fn counters() -> Vec<(&'static str, u64)> {
     .chain(scene_extract::decorators::PlacementSource::ALL.map(|source| {
         (source.counter(), DECORATOR_PLACEMENTS[source as usize].load(Ordering::Relaxed))
     }))
+    .chain(crate::native_world::geometry_list_counters())
     .chain(light_visibility_counters())
     .chain(crate::native_lights::slot_visibility::counters())
     .chain(

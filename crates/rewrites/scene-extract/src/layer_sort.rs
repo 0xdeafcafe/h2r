@@ -44,3 +44,48 @@ pub fn sort<T: Copy>(mut slots: &mut [T], after: &impl Fn(T, T) -> bool) {
         slots.swap(largest, end);
     }
 }
+
+/// The dispatch order of world and object sort slots. Layer 5 compares the
+/// inherited distance word, packed model/section and source index. The other
+/// opaque layers compare the selected program, shader, group and vertex class.
+pub fn geometry(slots: &mut [[u8; 24]], layer: u32) {
+    let half = |s: &[u8; 24], at| u16::from_le_bytes([s[at], s[at + 1]]);
+    let word = |s: &[u8; 24], at| u32::from_le_bytes(s[at..at + 4].try_into().unwrap());
+    if layer == 5 {
+        let key = |s: &[u8; 24]| (s[5], half(s, 6), word(s, 16), half(s, 2), word(s, 12), half(s, 0));
+        sort(slots, &|a, b| key(&a) > key(&b));
+    } else {
+        let key = |s: &[u8; 24]| (word(s, 16), half(s, 2), s[5], half(s, 8));
+        sort(slots, &|a, b| key(&a) > key(&b));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn distance_order_uses_inherited_words_and_breaks_final_ties_by_source_slot() {
+        let mut entries = [[0u8; 24]; 4];
+        for (s, (id, distance, model_section)) in entries.iter_mut().zip([
+            (9u16, 31u16, 1u32), (4, 7, 2), (5, 7, 1), (2, 7, 1),
+        ]) {
+            s[..2].copy_from_slice(&id.to_le_bytes());
+            s[6..8].copy_from_slice(&distance.to_le_bytes());
+            s[12..16].copy_from_slice(&model_section.to_le_bytes());
+        }
+        geometry(&mut entries, 5);
+        assert_eq!(entries.map(|s| s[0]), [2, 5, 4, 9]);
+    }
+
+    #[test]
+    fn opaque_program_order_preserves_the_partition_swaps_for_equal_keys() {
+        let mut entries: [[u8; 24]; 9] = std::array::from_fn(|i| {
+            let mut slot = [0u8; 24];
+            slot[0] = i as u8;
+            slot
+        });
+        geometry(&mut entries, 3);
+        assert_eq!(entries.map(|s| s[0]), [4, 1, 2, 3, 0, 5, 6, 7, 8]);
+    }
+}

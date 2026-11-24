@@ -53,6 +53,7 @@ pub fn on(switches: &hooks::Switches) -> bool {
 }
 
 mod layer_build;
+pub(crate) use layer_build::counters as geometry_list_counters;
 mod opaque;
 mod opaque_handler;
 mod opaque_material;

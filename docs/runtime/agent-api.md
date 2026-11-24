@@ -2026,6 +2026,9 @@ h2 agent render.parity '{"arm": true}'
   `layout`, `mode`, `frusta`, `overflow`, `camera`, `not_main`: views it
   made no sets for); the light views' `scene_light_visibility_checked`,
   `_equal`, `_differ`, `_ns` and `_declined_<reason>` (the same reasons);
+  the complete world/model geometry lists' `scene_geometry_lists_equal`,
+  `scene_geometry_lists_differ` and `scene_geometry_lists_taken` (whole lists
+  dispatched from a verified Rust result for the current inputs);
   and the view records' `scene_view_record_checked`, `_equal`, `_differ`
   and `_declined_<reason>` (`unread`, `layout`, `cinematic`,
   `no_observer`, `override`). They also include

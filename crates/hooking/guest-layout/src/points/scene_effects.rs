@@ -13,6 +13,10 @@ pub const PORTAL_WINDOW_READY: Point = Point::new("PORTAL_WINDOW_READY", 0x0017_
 const PARTICLES: &str = "docs/graphics/native-particles.md";
 const DECALS: &str = "docs/graphics/native-decals-research.md";
 
+/// Ordered layer entries are complete. EAX holds the count and the caller
+/// owns the sort buffer at ESP+8, before the first geometry handler.
+pub const LAYER_BUILT: Point = Point::new("LAYER_BUILT", 0x0003_bc4f, Sig::Site, RENDERER);
+
 /// End of one complete BSP material walk, before the record cursor advances.
 pub const WORLD_SECTION_END: Point = Point::new("WORLD_SECTION_END", 0x0004_4c6c, Sig::Site, RENDERER);
 
@@ -111,6 +115,7 @@ pub fn instruction_entries() -> impl Iterator<Item = u32> {
         &FLARE_COMPOSITE,
     ];
     [
+        LAYER_BUILT.base,
         DECAL_RENDER_END.base,
         WORLD_SECTION_END.base,
         GEOMETRY_RANGE_READY.base,
