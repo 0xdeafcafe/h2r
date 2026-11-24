@@ -1,0 +1,124 @@
+//! Uniform scale, three basis columns and translation, as stored in a
+//! structure instance. Keep the accumulation order of the three guest
+//! routines: inverse (141590), local ray (1691a0), world plane (168b40).
+use crate::Bail;
+use sim_core::det::{self, Fp};
+use std::cmp::Ordering;
+
+type V = [u32; 3];
+
+#[derive(Clone, Copy)]
+pub struct PlacementMatrix {
+    scale: u32,
+    basis: [V; 3],
+    translation: V,
+}
+
+impl PlacementMatrix {
+    pub fn from_words(words: [u32; 13]) -> Self {
+        Self {
+            scale: words[0],
+            basis: std::array::from_fn(|i| std::array::from_fn(|j| words[1 + 3 * i + j])),
+            translation: [words[10], words[11], words[12]],
+        }
+    }
+
+    pub fn words(&self) -> [u32; 13] {
+        let mut words = [0; 13];
+        words[0] = self.scale;
+        words[1..10].copy_from_slice(self.basis.as_flattened());
+        words[10..].copy_from_slice(&self.translation);
+        words
+    }
+
+    pub fn inverse(&self, one: u32) -> Result<Self, Bail> {
+        let mut fp = Fp::new();
+        let inverted = self.invert(one, &mut fp);
+        fp.exact().then_some(inverted).ok_or(Bail::Float)
+    }
+
+    fn invert(&self, one: u32, fp: &mut Fp) -> Self {
+        fp.check(self.scale);
+        fp.check(one);
+        if det::compare(self.scale, 0) == Ordering::Equal {
+            return Self {
+                scale: 0,
+                basis: [[0; 3]; 3],
+                translation: [0; 3],
+            };
+        }
+        let unit = det::compare(self.scale, one) == Ordering::Equal;
+        let scale = if unit { one } else { fp.div(one, self.scale) };
+        let t = self.translation.map(|v| {
+            let neg = fp.sub(0, v);
+            if unit { neg } else { fp.mul(scale, neg) }
+        });
+        let basis: [V; 3] = std::array::from_fn(|i| std::array::from_fn(|j| self.basis[j][i]));
+        let translation = std::array::from_fn(|i| {
+            let x = fp.mul(basis[0][i], t[0]);
+            let z = fp.mul(basis[2][i], t[2]);
+            let xz = fp.add(x, z);
+            let y = fp.mul(basis[1][i], t[1]);
+            fp.add(xz, y)
+        });
+        Self {
+            scale,
+            basis,
+            translation,
+        }
+    }
+
+    fn rotate(&self, v: V, fp: &mut Fp) -> V {
+        std::array::from_fn(|i| {
+            let z = fp.mul(self.basis[2][i], v[2]);
+            let y = fp.mul(self.basis[1][i], v[1]);
+            let zy = fp.add(z, y);
+            let x = fp.mul(self.basis[0][i], v[0]);
+            fp.add(zy, x)
+        })
+    }
+
+    pub fn local_ray(&self, one: u32, start: V, delta: V) -> Result<(V, V), Bail> {
+        let mut fp = Fp::new();
+        let inv = self.invert(one, &mut fp);
+        let mut transform = |mut v: V, point: bool| {
+            if det::compare(inv.scale, one) != Ordering::Equal {
+                v = v.map(|x| fp.mul(inv.scale, x));
+            }
+            let mut v = inv.rotate(v, &mut fp);
+            if point {
+                for (x, t) in v.iter_mut().zip(inv.translation) {
+                    *x = fp.add(*x, t);
+                }
+            }
+            v
+        };
+        let ray = (transform(start, true), transform(delta, false));
+        if fp.exact() {
+            Ok(ray)
+        } else {
+            Err(Bail::Float)
+        }
+    }
+
+    pub fn plane(&self, p: [u32; 4], flipped: bool) -> Result<[u32; 4], Bail> {
+        let mut fp = Fp::new();
+        let [x, y, z] = self.rotate([p[0], p[1], p[2]], &mut fp);
+        let tz = fp.mul(self.translation[2], z);
+        let scaled = fp.mul(p[3], self.scale);
+        let mut d = fp.add(tz, scaled);
+        let ty = fp.mul(self.translation[1], y);
+        d = fp.add(d, ty);
+        let tx = fp.mul(x, self.translation[0]);
+        d = fp.add(d, tx);
+        let mut out = [x, y, z, d];
+        if flipped {
+            out = out.map(|n| fp.sub(0, n));
+        }
+        if fp.exact() {
+            Ok(out)
+        } else {
+            Err(Bail::Float)
+        }
+    }
+}
