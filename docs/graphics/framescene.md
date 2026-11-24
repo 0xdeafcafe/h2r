@@ -20,8 +20,9 @@ of sealed scenes and an opt-in display owner for eligible game views.
 Paced display still queues guest-visible writes in order. Default ownership
 depends on the scheduling, corpus, parity and timing gates
 in [slice 6](#slice-6-the-renderer-owns-game-view-frames). Of slice 8
-the pure blend (`frame-scene::blend`) is built and unit-tested; the
-render thread's display-rate loop is not. Slices 7, 9 and 10 are planned.
+the pure blend (`frame-scene::blend`) and the frame owner's display-rate
+loop are built; the loop blends view cameras, and objects stay at the
+newer tick. Slices 7, 9 and 10 are planned.
 
 Evidence labels as in [feature-engine.md](../engine/feature-engine.md):
 **Code** (read in this repository or in the disassembly), **S**
@@ -51,8 +52,10 @@ game data.
 - `native-render` depends on `d3d`, reads guest memory through
   `dyn GuestRead` in about 19 of its modules, and is wrapped in about 30,000
   lines of glue in `boot` and `feature`.
-- 60 fps today is E1, reprojection inside `d3d::interp`
-  ([high-framerate.md](../game/high-framerate.md)). 120 is not built.
+- 60 and 120 fps are display frames between the last two sealed scenes,
+  drawn by the frame owner on the render thread (section 7, slice 8).
+  Without a paced frame owner (`frame-scene.sink` off, a headless or
+  locked run) every scene is shown once, at 30 fps.
 
 ## 2. Decisions
 
@@ -91,7 +94,7 @@ that and from the two reviews.
    then the switch goes too. Diagnostics are agent API methods.
 6. **Interpolation is a property of the renderer.** With two scenes in
    hand the render thread draws any number of frames between them.
-   `d3d::interp` (D and E1) is deleted when that works.
+   There is no D3D-side interpolation.
 7. **The open items are not patched on the tenant path unless they block
    a slice.** Deferring side passes above 1x is not done at all: slice 6
    removes the second copy, and with it the problem. The object-walk
@@ -471,8 +474,24 @@ sample tick `B`'s scene copy.
 **Pacing.** One frame per vsync at the display's rate, capped by
 `graphics.fps` (`H2_FPS`, `h2 play --fps`); 30 means one frame per
 scene. Alpha is computed for the predicted display time. On a
-variable-refresh display, present when ready up to the cap. The
-predictor and its counters come over from `d3d::interp::pacing`.
+variable-refresh display, present when ready up to the cap. The pacer
+is `frame-scene::pace` (rate, schedule, headroom cap and alpha) and the
+loop over it `frame-scene::display::DisplayLoop`.
+
+**The loop.** It runs in the frame owner on the render thread
+(`native_render::frame_graph::display_rate`, through
+`d3d::threaded::owner::DisplayRate`), only for a paced owner
+(`frame-scene.sink`, mailbox `Paced`). At an owned Swap the newer scene
+`B` is drawn on the live attachments, so the guest's outputs are exact,
+and the window is shown a display frame toward it: `B`'s frame drawn
+again on private targets (`GuestDrawPass::new_lit`) with each game view's
+camera blended from `A` (`d3d::scene_sink::Retarget` rewrites the four
+view rows of carried draws with `CameraUse::View`, and moves a typed
+stage's draw through `ExternalPass::with_draw`). While nothing is queued
+the render thread asks the loop for the frames after, which it shows as
+host-only presents (`GfxBackend::show_between`). A Swap that goes out
+without the graph drops the pair. `render.stats`' `display_rate` reports
+the loop ([agent-api.md](../runtime/agent-api.md)).
 
 **Latency.** One tick, as D. Visual aim prediction (rotating the drawn
 camera by the turn the next tick will apply) stays optional and later;
@@ -676,7 +695,7 @@ commands are for the coordinator.
     `Device::queues_scene_stages(stage)` says whether one is taken now:
     a render thread whose backend records them
     (`Backend::runs_scene_stages`: `GfxBackend`, `ScaledBackend` when
-    both copies do, `InterpBackend` while it is not replaying), and the
+    both copies do), and the
     stage has not stood down. `Device::reserve_scene_stage` resolves the
     bound targets, the request and the view's constants and W clip, and
     makes here the checks that would refuse it on the render thread (the
@@ -704,8 +723,8 @@ commands are for the coordinator.
     stage stands down: from then on it reserves on the sim thread, where
     a refusal leaves the items to the guest. One frame at most is short
     of the stage's items.
-  - **Where nothing is queued.** Without a render thread, while
-    interpolation replays, and after a stand-down, the stages reserve on
+  - **Where nothing is queued.** Without a render thread and after a
+    stand-down, the stages reserve on
     the sim thread through `Device::prepare_external_bound`.
   - **Inputs by value.** A stage carries the inputs it reads (the
     world's camera and parts, the objects' planned draws), not an `Arc`
@@ -1550,19 +1569,30 @@ D3D reference with all native stages disabled.
   a row that is sheared, mirrored or moved over `MAX_MOVE` (5 units) keeps B's
   value, as does a teleported, unmatched, re-modelled or re-noded instance.
   The first person view's nodes and rows blend in camera space and return
-  through the blended camera. Not built: visible-cluster unions, shadow
-  re-rendering from blended casters, the carried draws' rebuilt view block and
-  extraction's scripted-cut and distance flags.
-- **Code to write.** The render thread's display-rate loop, alpha
-  from publish times, the pacer moved from `d3d::interp::pacing`. Cut
-  detection in extraction. `graphics.fps` drives it; no switch.
-  `d3d/src/interp`, `impl.render.interpolate`, `impl.render.reproject`
-  and `impl.render.reproject_ahead` are deleted.
+  through the blended camera.
+- **Built.** The display-rate loop (section 7): `frame-scene::pace` (the
+  pacer), `frame-scene::display::DisplayLoop` (what to draw at a Swap and
+  between, alpha from publish stamps), `d3d::scene_sink::Retarget` (carried
+  draws' and indexed typed stages' view rows from the blended camera),
+  `d3d::threaded::owner::DisplayRate` (the render thread's idle turns) and
+  `native_render::frame_graph::display_rate` (the draws, `render.stats`'
+  `display_rate`). `graphics.fps` drives it; no switch. There is no
+  D3D-side interpolation.
+- **Code to write.** Object palette rows, node matrices and lights from
+  `Blended` on the carried and typed draws (objects are drawn at `B`
+  today), visible-cluster unions, shadow re-rendering from blended
+  casters, typed stages other than the indexed world, object and
+  transparent passes, display frames on mixed-size targets above 1x,
+  display frames into the agent's clip slots, and extraction's
+  scripted-cut and distance flags.
 - **Tests.** Blend: identity at 0 and 1 (bitwise at 1), slerp against
   known rotations, every snap rule, unmatched and re-ordered
-  instances, the union of cluster sets. Pacer: the existing interp
-  pacing tests, moved. A two-scene render at `alpha = 1` equals the
-  one-scene render.
+  instances. Pacer (`frame-scene/src/pace.rs`). The loop
+  (`frame-scene/src/display.rs`): 30 fps, the first scene, 60 and 120 fps
+  sequences, cuts and gaps, resets, the headroom cap. The render thread's
+  idle turns (`d3d` `threaded/owner/tests/display_rate.rs`). Retargeting
+  (`d3d` `tests/scene_camera.rs`). To add: a two-scene render at
+  `alpha = 1` equals the one-scene render.
 - **Gate.** Hash series identical at `--fps 30`, `60` and `120`. The
   super-bounce test passes at all three. `alpha = 1` captures are
   identical to 30 fps captures. Render-thread time per display frame
@@ -1599,7 +1629,7 @@ uses move to `native-render` or `scene-extract` and stay.
 | Slice 5 | `boot/src/native_{fog,water,post}_glue.rs`, `feature/src/native_{fog,water,post}.rs` | 5,000 |
 | Slice 6 | `DrawAdmission`, `ExternalPass`, `ExternalPlan`, reservations and `device/admission_scope.rs`; `gfx_backend/native_runs.rs`; the scene-stage command of slice 2; the remaining `boot/src/native_*_glue.rs` and `feature/src/native_*` except the scene lists | 7,800 |
 | Slice 7 | nothing yet: the old stack is still what `native=off` selects | |
-| Slice 8 | `d3d/src/interp/` and its three switches | 5,600 |
+| Slice 8 | `d3d/src/interp/` and its three switches (deleted) | 5,600 |
 | Slice 10, step 1 | `impl.render.native` itself and everything only `=off` reaches: `d3d/src/threaded.rs`, `scaled.rs` and `scaled/` except the view mapping, the `Backend` implementations other than `SceneSink`, `gfx_backend.rs`'s surface, write-back and present code, `device/{mirror,display,snap}.rs`'s render-target half, lazy depth, alias mirrors, the visibility poll, and the "old-behaviour opt-out" variables of render-switches.md that configure them; `render.parity` | 8,000 |
 | Slice 10, step 2 | what is left of `engine/src/render_loop` that no typed stage uses | |
 | Slice 10, step 3 | the `Backend` trait, reduced to what `SceneSink` implements, then folded into `Device` | |
@@ -1759,10 +1789,9 @@ for both arms, the counters above, the hash result.
 - **Change 5 (the layout crate) is not built.** `scene-extract` starts
   with a private `layout` module. If change 5 lands first, slice 1
   uses it directly.
-- **E1 was the user's choice for 60 fps.** Slice 8 replaces it with the
-  two-scene blend. E1 could be rebuilt on the native frame as a cheap
-  mode if the blend does not fit a display frame at some scale; it is
-  not planned.
+- **Display frames cost a whole draw of `B`.** The headroom cap
+  (`frame-scene::pace::Headroom`) holds the rate at 60 when a display
+  frame does not fit; `render.stats`' `display_rate.capped` says so.
 - **Sim mode and dedicated hosts** skip the frame step with stubs
   today. Running the step without extraction on a host is a follow-up
   for the session that owns hosts.

@@ -8,19 +8,19 @@ use frame_types::{Camera, Slot, SlotAt, ViewKey, ViewKind};
 
 use super::replay::{ReplayFrame, ReplayOp};
 use crate::backend::{ResolvedDraw, Viewport};
-use crate::interp::epilogue::{self, Position};
-use crate::interp::screen_space;
+use crate::clip_space::epilogue::{self, Position};
+use crate::clip_space::pass_through::pass_through;
 use crate::shader::{Microcode, VertexProcessing};
 
-struct ViewBlock {
-    index: u8,
+pub(super) struct ViewBlock {
+    pub(super) index: u8,
     rect: [u32; 4],
     // In hardware register order, including the sign of each zero.
-    words: [[u32; 4]; 4],
+    pub(super) words: [[u32; 4]; 4],
 }
 
 impl ViewBlock {
-    fn from_view((key, cam): (ViewKey, &Camera)) -> Option<Self> {
+    pub(super) fn from_view((key, cam): (ViewKey, &Camera)) -> Option<Self> {
         if key.kind != ViewKind::Game {
             return None;
         }
@@ -62,14 +62,14 @@ fn position(program: &Microcode) -> Position {
     match epilogue::position(program) {
         // Fixed also includes programs which never write a usable position.
         // Only label pixels passed straight through their input as screen.
-        Position::Fixed if screen_space::pass_through(program).is_none() => Position::Unknown,
+        Position::Fixed if pass_through(program).is_none() => Position::Unknown,
         other => other,
     }
 }
 
 // `Microcode`'s interior cache takes no part in its Hash or Eq.
 #[allow(clippy::mutable_key_type)]
-fn classify(
+pub(super) fn classify(
     draw: &ResolvedDraw,
     at: SlotAt,
     views: &[ViewBlock],

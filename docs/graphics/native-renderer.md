@@ -120,8 +120,7 @@ cannot be resolved on one required copy refuses the entire replacement.
 
 Recording takes place during prepare. Partial recordings are discarded.
 Commit splices only previously sealed command buffers into the D3D submission
-order. Commit has no remaining stage callbacks or target lookups. With interpolated
-presentation active, confirmed replacements keep the guest draw for replay.
+order. Commit has no remaining stage callbacks or target lookups.
 
 A confirmed admission on the threaded backend needs a synchronous worker
 round trip. `encode_pending` closes the preceding merged D3D pass, and each
@@ -407,8 +406,9 @@ through the common adapter.
   BSPs, which it was not run over
   ([high-resolution.md](high-resolution.md), "Subpixel snapping and cracks").
 - What reads the stencil marks of modes 1 and 2.
-- Reprojected frames: a replayed frame must redraw the native pass with its
-  warped camera; the interpolating backend records draws, not passes.
+- Display frames between scenes (framescene.md, section 7): typed
+  stages other than the indexed world, object and transparent passes are
+  drawn at their tick's camera (`render.stats`' `display_rate.held_stages`).
 - Split screen: one native pass per view with the view's camera.
 - Which 03a templates have a layer-1 texaccum pass that layer 3 samples in
   screen space; those need the texaccum target bound to the native pass.

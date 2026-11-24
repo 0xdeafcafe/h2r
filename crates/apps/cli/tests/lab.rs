@@ -56,7 +56,7 @@ if [ "$cmd" = agent ]; then
   case "$1" in
     wait) echo '{"at":{"phase":"gameplay","map_ticks":31}}';;
     capture) printf '{"frames":%s,"fps":24.0,"budget_ms":33.3,"over_budget":1,"complete":true,"busy_ms":{"p50":8.0,"p95":12.5},"phases":{"cpu":{"mean":2.0},"render":{"mean":4.0},"pace":{"mean":9.0}},"csv":"a,b\\n1,2\\n"}\n' "$2";;
-    render) echo '{"interp":0}';;
+    render) echo '{"counters":null}';;
     counters) echo '{"draws":100}';;
     flight) printf '%s\n' "$@";;
     socket) printf '%s\n' "$sock";;

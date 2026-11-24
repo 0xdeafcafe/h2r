@@ -226,6 +226,13 @@ impl<'a> ScaledScenePass<'a> {
             .freeze_view_inputs(self.frame, self.targets, names)
     }
 
+    /// The view's backend, which draws a display frame on its own targets
+    /// before this frame presents (`native_render::frame_graph::
+    /// draw_scaled_display_at_rate`).
+    pub fn view_mut(&mut self) -> &mut GfxBackend {
+        &mut self.backend.view
+    }
+
     pub fn apply(&mut self, op: &ReplayOp) -> Result<(), String> {
         let scale = self.backend.scale.uniform_integer().ok_or("the scene grid is no longer an integer scale")?;
         self.commands
@@ -258,15 +265,37 @@ impl<'a> ScaledScenePass<'a> {
     }
 
     pub fn present(
+        self,
+        flags: u32,
+        gamma: Option<&[u8; 768]>,
+    ) -> Result<(BatchStats, Outputs<Texture>), String> {
+        self.present_inner(flags, gamma, None)
+    }
+
+    /// [`Self::present`], with `image` (a display frame the view drew on
+    /// its own targets, `GuestDrawPass::into_image`) going to the window in
+    /// place of this frame's own view image. The reference and the guest's
+    /// attachments are this frame's as ever.
+    pub fn present_showing(
+        self,
+        flags: u32,
+        gamma: Option<&[u8; 768]>,
+        image: gfx::surface::SurfaceId,
+    ) -> Result<(BatchStats, Outputs<Texture>), String> {
+        self.present_inner(flags, gamma, Some(image))
+    }
+
+    fn present_inner(
         mut self,
         flags: u32,
         gamma: Option<&[u8; 768]>,
+        showing: Option<gfx::surface::SurfaceId>,
     ) -> Result<(BatchStats, Outputs<Texture>), String> {
         let shown = *self
             .targets
             .get(&self.frame.presented)
             .ok_or("missing scene present target")?;
-        let image = self.backend.image(shown);
+        let image = showing.unwrap_or_else(|| self.backend.image(shown));
         if self.backend.lighting == Lighting::E3 {
             // Feed the original E3 view when it retakes its attachments.
             // At 1x it holds separate frame-sized copies. An off-screen
@@ -329,6 +358,9 @@ impl<'a> ScaledScenePass<'a> {
             false,
             self.backend.lighting,
         )?;
+        if let Some(image) = showing {
+            self.backend.view.retain_shown(image);
+        }
         if self.backend.scale == RenderScale::ONE && self.backend.lighting == Lighting::E3 {
             self.backend
                 .scene_coherent

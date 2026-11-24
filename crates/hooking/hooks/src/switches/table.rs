@@ -71,12 +71,6 @@ pub const TABLE: &[Switch] = &[
     // Rendering.
     sw("impl.render.native", On, "render", "2026-11-14",
         "the native renderer owns the frame (review 4.3): delete with the D3D path"),
-    sw("impl.render.interpolate", On, "render", "2026-11-14",
-        "the presentation snapshot (sim-review lane 7) replaces it: delete"),
-    sw("impl.render.reproject", Off, "render", "2026-11-18",
-        "the presentation snapshot (sim-review lane 7) replaces it: delete"),
-    sw("impl.render.reproject_ahead", Off, "render", "2026-11-18",
-        "the presentation snapshot (sim-review lane 7) replaces it: delete"),
     // Engine leaves (the per-function keys are `crate::leaves`').
     sw("impl.engine", Group, "engine", "2026-11-16", "goes with its last group"),
     sw("impl.engine.locale", On, "engine", "2026-11-16", EXACT),

@@ -1584,24 +1584,6 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         Ok(())
     }
 
-    fn warp_surface(
-        &mut self,
-        src: Self::Surface,
-        dst: Self::Surface,
-        h: [[f32; 3]; 3],
-    ) -> Result<bool, String> {
-        self.scene_coherent.clear();
-        if self.single() {
-            return self.view.warp_surface(self.image(src), self.image(dst), h);
-        }
-        // Host-only: the view shows it when it has both surfaces; the
-        // reference's copy is what shows otherwise.
-        let warped = self.reference.warp_surface(src.reference, dst.reference, h)?;
-        match (self.live(src.view), self.live(dst.view)) {
-            (Some(s), Some(d)) if !self.frame_failed => self.view.warp_surface(s, d, h),
-            _ => Ok(warped),
-        }
-    }
 
     fn measure_present_raster(&mut self, surface: Option<Self::Surface>) -> crate::backend::RasterMeasurement {
         // The same display view handles a scaled target, a sleeping view's
@@ -1668,20 +1650,6 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         }
     }
 
-    fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
-        if self.single() { return self.view.gpu_fence(); }
-        // Both are on one queue (`ScaleView`): the later fence covers the
-        // other's work too once both have submitted.
-        let reference = self.reference.gpu_fence();
-        if !self.awake() {
-            return reference;
-        }
-        let view = self.view.gpu_fence();
-        match (reference, view) {
-            (Some(r), Some(v)) => Some(Box::new(move || r() && v())),
-            (r, v) => r.or(v),
-        }
-    }
 
     fn present_replay(
         &mut self,
@@ -1689,7 +1657,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         gamma: Option<&[u8; 768]>,
     ) -> Result<(), String> {
         if self.single() { return self.view.present_replay(self.image(surface), gamma); }
-        // A host-only frame (crate::interp): shown by the view when it has
+        // A host-only frame (a display frame): shown by the view when it has
         // the surface; not a frame boundary (no scale or lighting change).
         match self.live(surface.view) {
             Some(v) if !self.frame_failed => self.view.present_replay(v, gamma),

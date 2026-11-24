@@ -14,14 +14,14 @@
 //!   since the last publish, under the `vsync` setting.
 //! * `uncapped` redraws as fast as the event loop turns, with vsync off.
 //!
-//! Above 30 the render thread publishes in-between frames
-//! (`d3d::interp`) on its own schedule. Each publish is drawn once: if the
+//! Above 30 the render thread publishes display frames between scenes
+//! (`native_render::frame_graph::display_rate`) on its own schedule. Each publish is drawn once: if the
 //! window sampled the mailbox on a grid of its own instead, two clocks at
 //! about the same rate would beat, dropping one made frame and repeating
 //! another several times a second (motion that stutters and lurches
 //! forward). A gap filler repeats the newest picture, so the overlay and
 //! marks still move at the display rate when no frame is made (menus,
-//! held frames, the replay off).
+//! held frames, the display-rate loop off).
 //!
 //! The target can change while the window runs: [`FpsControl`] carries a
 //! new one from another thread (the Video screen's Frame Rate row), and

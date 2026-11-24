@@ -254,6 +254,9 @@ pub struct Worker<B: Backend> {
     /// Emptied draw boxes of this batch, returned to
     /// [`Shared::spent_boxes`] at its end.
     spent_boxes: Vec<DrawBox>,
+    /// Display frames between owned presents
+    /// ([`ThreadedBackend::with_display_rate`]).
+    display_rate: Option<Box<dyn owner::DisplayRate<B>>>,
 }
 
 #[derive(Default)]
@@ -661,10 +664,11 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                     spent: Vec::new(),
                     spent_constants: Vec::new(),
                     spent_boxes: Vec::new(),
+                    display_rate: None,
                 };
-                // When the inner backend wants its idle step
-                // (`Backend::idle`: host-only work such as interpolated
-                // frames). It runs only with nothing queued, so the
+                // When the display-rate loop wants its next frame
+                // (`owner::DisplayRate`: display frames between owned
+                // presents). It runs only with nothing queued, so the
                 // guest's commands always go first.
                 let mut wake: Option<std::time::Instant> = None;
                 'batches: loop {
@@ -680,7 +684,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                                 Ok(b) => b,
                                 Err(mpsc::RecvTimeoutError::Timeout) => {
                                     let t = std::time::Instant::now();
-                                    wake = w.inner.idle();
+                                    wake = w.display_idle();
                                     let ns = t.elapsed().as_nanos() as u64;
                                     w.shared.busy_ns.fetch_add(ns, Ordering::Relaxed);
                                     BUSY_NS.fetch_add(ns, Ordering::Relaxed);
@@ -718,8 +722,9 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                     w.return_spent();
                     w.shared.scene_stages.store(w.inner.runs_scene_stages(), Ordering::Relaxed);
                     // Ask once nothing is queued: a batch already waiting
-                    // is taken first (a zero timeout). Backends without
-                    // idle work answer `None` and the loop blocks again.
+                    // is taken first (a zero timeout). Without a display
+                    // frame due the answer is `None` and the loop blocks
+                    // again.
                     wake = Some(std::time::Instant::now());
                 }
             })?;
@@ -1218,9 +1223,6 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         self.presents += 1;
         self.first_frame_ticket = self.next_ticket;
         let n = self.presents;
-        // The arrival, read on the guest's thread (the render thread may
-        // reach this present a frame later).
-        let at = std::time::Instant::now();
         let metadata = crate::present_camera::current();
         let owned = self.frame_owner.is_some();
         if owned {
@@ -1233,12 +1235,11 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             let generation = events.generation();
             let candidate = (owner.select)(n, generation);
             self.push(Cmd::OwnerPresent(Box::new(owner::Present {
-                n, surface, at, flags, gamma, candidate, generation, events, metadata,
+                n, surface, flags, gamma, candidate, generation, events, metadata,
             })));
         } else {
             self.post(move |w| {
                 let raster = w.measure_present_raster(surface);
-                w.inner.stamp_present(at);
                 let r = w.surface(surface).and_then(|s| crate::present_camera::with(metadata, || {
                     w.inner.present_with_gamma(s, flags, gamma.as_deref())
                 }));

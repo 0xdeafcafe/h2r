@@ -192,3 +192,45 @@ fn screen_draws_and_unknown_programs_keep_distinct_labels() {
     assert_eq!(frame.camera_counts(1), [2, 0, 2]);
     assert_eq!(frame.camera_counts(0), [0, 0, 0]);
 }
+
+fn rows_at(op: &ReplayOp) -> [[f32; 4]; 4] {
+    let ReplayOp::Draw { draw, .. } = op else { panic!("{op:?}") };
+    let first = usize::from(FIRST);
+    draw.shader.constants[first..first + 4].try_into().unwrap()
+}
+
+#[test]
+fn a_display_frame_moves_only_verified_view_draws_onto_the_blended_camera() {
+    use d3d::scene_sink::{Retarget, Retargeted};
+    let cam = camera(0);
+    let b = scene(&[(1, cam)]);
+    let draw = mapped_draw(&cam);
+    let mut replay = ReplayFrame::default();
+    push(&mut replay, Slot::Opaque, 1, draw.clone());
+    push(&mut replay, Slot::Overlay, 1, draw.clone());
+    replay.classify_cameras(b.view_cameras());
+    assert_eq!(labels(&replay)[1], CameraUse::Unknown, "the overlay is not the view's");
+
+    let turned = Camera { forward: [0.0, 1.0, 0.0], ..cam };
+    let key = ViewKey { kind: ViewKind::Game, player: 1, view: 1 };
+    let mut moved = Retarget::new(b.view_cameras(), [(key, &turned)]);
+    assert!(!moved.is_empty());
+    let (at, op) = &replay.ops[0];
+    let out = moved.op(*at, op);
+    assert!(matches!(out, Retargeted::Moved(_)));
+    let want = turned.view_projection();
+    let want: [[f32; 4]; 4] = std::array::from_fn(|row| want.map(|column| column[row]));
+    assert_eq!(rows_at(out.get()), want, "the blended camera's view block");
+    assert_eq!(rows_at(op), rows_at(&ReplayOp::Draw {
+        draw: Arc::new(mapped_draw(&cam)),
+        textures: Default::default(),
+        camera: CameraUse::Unknown,
+    }), "the sealed frame keeps the tick's");
+    let (at, op) = &replay.ops[1];
+    assert!(matches!(moved.op(*at, op), Retargeted::Same(_)), "unverified: drawn as the tick drew it");
+    assert_eq!(moved.counts().draws, 1);
+
+    // The same camera moves nothing.
+    let still = Retarget::new(b.view_cameras(), [(key, &cam)]);
+    assert!(still.is_empty());
+}

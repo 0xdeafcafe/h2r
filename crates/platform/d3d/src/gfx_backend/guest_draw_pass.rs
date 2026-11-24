@@ -379,6 +379,11 @@ impl<'a> GuestDrawPass<'a> {
         self.gpu
     }
 
+    /// The integer scale this frame's attachments render at.
+    pub fn scale(&self) -> u32 {
+        self.scale
+    }
+
     /// Applies an op in its slot. Merely changing slots does not close
     /// the pending pass; writes, copies and samples order themselves via
     /// the recording backend.
@@ -428,7 +433,7 @@ impl<'a> GuestDrawPass<'a> {
     /// guest Swap finish wait. Retain the shown target until the next
     /// display swap: callers may read the most recently presented surface.
     pub fn present(mut self, flags: u32, gamma: Option<&[u8; 768]>) -> Result<(), String> {
-        self.publish(flags, gamma)
+        self.publish(flags, gamma, None)
     }
 
     /// Submit and transfer the canonical frame's reports to its guest
@@ -438,18 +443,52 @@ impl<'a> GuestDrawPass<'a> {
         flags: u32,
         gamma: Option<&[u8; 768]>,
     ) -> Result<crate::threaded::owner::Outputs<HostTexture>, String> {
-        self.publish(flags, gamma)?;
+        self.publish(flags, gamma, None)?;
         Ok(std::mem::take(&mut self.commands.outputs))
     }
 
-    fn publish(&mut self, flags: u32, gamma: Option<&[u8; 768]>) -> Result<(), String> {
+    /// [`Self::present_with_outputs`], with `shown` going to the window in
+    /// place of this frame's own target: the display frame of this Swap
+    /// drawn on its own targets ([`Self::into_image`]). The guest's
+    /// attachments, tickets and samples are this frame's as ever.
+    pub fn present_with_outputs_showing(
+        mut self,
+        flags: u32,
+        gamma: Option<&[u8; 768]>,
+        shown: SurfaceId,
+    ) -> Result<crate::threaded::owner::Outputs<HostTexture>, String> {
+        self.publish(flags, gamma, Some(shown))?;
+        Ok(std::mem::take(&mut self.commands.outputs))
+    }
+
+    /// Completes a frame drawn on its own targets and hands its presented
+    /// target to the caller, which shows it ([`GfxBackend::show_between`])
+    /// or presents it for a Swap ([`Self::present_with_outputs_showing`]).
+    pub fn into_image(mut self) -> Result<SurfaceId, String> {
+        if !self.owns_targets {
+            return Err("a display frame draws on its own targets".into());
+        }
+        self.commands.check_private_lightmaps()?;
+        self.gpu.flush()?;
+        self.targets
+            .remove(&self.presented)
+            .ok_or_else(|| format!("missing scene target {:?}", self.presented))
+    }
+
+    fn publish(&mut self, flags: u32, gamma: Option<&[u8; 768]>, shown: Option<SurfaceId>) -> Result<(), String> {
         if !self.display {
             return Err("a private scene capture cannot be presented".into());
         }
-        let target = self.surface(self.presented)?;
+        let target = match shown {
+            Some(image) => image,
+            None => self.surface(self.presented)?,
+        };
         self.gpu
             .submit_present(None, target, flags, gamma, false, self.lighting)?;
-        let retained = if self.owns_targets {
+        if let Some(image) = shown {
+            self.gpu.retain_shown(image);
+        }
+        let retained = if self.owns_targets && shown.is_none() {
             self.targets.remove(&self.presented)
         } else {
             None

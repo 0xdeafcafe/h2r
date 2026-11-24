@@ -1,6 +1,6 @@
 //! What the agent's `render.stats` reads (crates/extensions/agent's `render`): the
-//! in-between frames' counters and the frame-stats window. The pieces register here when
-//! they are built; each reads as `null` when it isn't running.
+//! frame owner's display-rate loop and the frame-stats window. Each reads as
+//! `null` (or is absent) when it isn't running.
 //!
 //! `render.frame` needs nothing here: the draw diagnostics wrapper
 //! (`d3d_diag`) feeds `agent::render::PROBE` itself.
@@ -15,44 +15,34 @@ pub use private_frame::{OwnedFrame, PrivateFrame};
 #[cfg(feature = "gpu")]
 pub use agent::render::private_graph::{display_declined as owner_declined, display_stopped as owner_stopped};
 
-#[cfg(feature = "gpu")]
-use std::sync::Mutex;
-#[cfg(feature = "gpu")]
-use std::sync::Arc;
-
 use serde_json::{Value, json};
 
 #[cfg(feature = "gpu")]
-static INTERP: Mutex<Option<Arc<Mutex<d3d::interp::InterpStats>>>> = Mutex::new(None);
-#[cfg(feature = "gpu")]
-static HOLDS: Mutex<Option<Arc<Mutex<d3d::interp::HoldLog>>>> = Mutex::new(None);
-
-#[cfg(feature = "gpu")]
-/// The interpolated replay's counters (`d3d::InterpBackend::stats`).
-pub fn set_interp(stats: Arc<Mutex<d3d::interp::InterpStats>>) {
-    *INTERP.lock().unwrap_or_else(|e| e.into_inner()) = Some(stats);
+/// The frame owner's display-rate loop
+/// (`native_render::frame_graph::display_rate`): `render.stats`'
+/// `display_rate`.
+fn display_rate() -> Option<agent_proto::DisplayRateStats> {
+    native_render::frame_graph::display_rate::stats().map(display_rate_of)
 }
 
 #[cfg(feature = "gpu")]
-/// E1's hold log (`d3d::InterpBackend::holds`): `interp.holds`.
-pub fn set_interp_holds(holds: Arc<Mutex<d3d::interp::HoldLog>>) {
-    *HOLDS.lock().unwrap_or_else(|e| e.into_inner()) = Some(holds);
-}
-
-#[cfg(feature = "gpu")]
-fn interp() -> Option<Value> {
-    let s = INTERP.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
-    let s = *s.lock().unwrap_or_else(|e| e.into_inner());
-    let mut v = agent::render::debug_fields(&format!("{s:?}"));
-    let holds = HOLDS.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    if let (Some(h), Value::Object(m)) = (holds, &mut v) {
-        let log = h.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        m.insert(
-            "holds".into(),
-            serde_json::to_value(&log).unwrap_or(Value::Null),
-        );
+fn display_rate_of(s: native_render::frame_graph::display_rate::DisplayRateStats) -> agent_proto::DisplayRateStats {
+    let f = s.frames;
+    agent_proto::DisplayRateStats {
+        rate_hz: f.rate_hz,
+        shown_hz: f.shown_hz,
+        capped: f.capped,
+        swaps: f.swaps,
+        blended: f.blended,
+        swap_blends: f.swap_blends,
+        between_newest: f.between_newest,
+        failed: f.failed,
+        resets: f.resets,
+        avg_cost_us: f.avg_cost_us,
+        moved_draws: s.moved_draws,
+        moved_stages: s.moved_stages,
+        held_stages: s.held_stages,
     }
-    Some(v)
 }
 
 /// The frame-stats window's per-frame means of the render counters
@@ -77,9 +67,9 @@ fn render_counters(summary: &timeline::phase::Summary) -> Value {
 pub fn sources() -> agent::render::RenderSources {
     agent::render::RenderSources {
         #[cfg(feature = "gpu")]
-        interp: Box::new(interp),
+        display_rate: Box::new(display_rate),
         #[cfg(not(feature = "gpu"))]
-        interp: Box::new(|| None),
+        display_rate: Box::new(|| None),
         counters: Box::new(counters),
     }
 }
@@ -110,29 +100,22 @@ mod tests {
     }
 
     #[test]
-    fn registered_pieces_read_as_json() {
-        let stats = Arc::new(Mutex::new(d3d::interp::InterpStats {
-            frames: 12,
-            unsure_camera: 3,
-            ..Default::default()
-        }));
-        set_interp(Arc::clone(&stats));
-        let v = interp().unwrap();
-        assert_eq!(v["frames"], 12);
-        assert_eq!(v["unsure_camera"], 3);
-        assert_eq!(v["dropped"], 0, "every field, zero or not");
-        stats.lock().unwrap().dropped = 2;
-        assert_eq!(interp().unwrap()["dropped"], 2, "read live");
-        assert!(
-            interp().unwrap().get("holds").is_none(),
-            "no hold log registered"
-        );
-        let holds = Arc::new(Mutex::new(d3d::interp::HoldLog::default()));
-        set_interp_holds(Arc::clone(&holds));
-        holds.lock().unwrap().frames = 5;
-        let v = interp().unwrap();
-        assert_eq!(v["holds"]["frames"], 5, "the hold log beside the counters");
-        assert_eq!(v["holds"]["kinds"], serde_json::json!([]));
-        assert_eq!(v["frames"], 12);
+    fn the_display_rate_reaches_the_wire_field_for_field() {
+        use frame_scene::display::DisplayStats;
+        use native_render::frame_graph::display_rate::DisplayRateStats;
+        let v = display_rate_of(DisplayRateStats {
+            frames: DisplayStats { rate_hz: 120, shown_hz: 60, capped: true, swaps: 9, blended: 7, swap_blends: 3, between_newest: 2, failed: 1, resets: 4, avg_cost_us: 850 },
+            moved_draws: 40,
+            moved_stages: 5,
+            held_stages: 6,
+        });
+        let v = serde_json::to_value(v).unwrap();
+        assert_eq!(v["rate_hz"], 120);
+        assert_eq!(v["shown_hz"], 60);
+        assert_eq!(v["capped"], true);
+        assert_eq!((&v["swaps"], &v["blended"], &v["swap_blends"]), (&json!(9), &json!(7), &json!(3)));
+        assert_eq!((&v["between_newest"], &v["failed"], &v["resets"]), (&json!(2), &json!(1), &json!(4)));
+        assert_eq!(v["avg_cost_us"], 850);
+        assert_eq!((&v["moved_draws"], &v["moved_stages"], &v["held_stages"]), (&json!(40), &json!(5), &json!(6)));
     }
 }

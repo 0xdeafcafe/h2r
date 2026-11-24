@@ -61,7 +61,7 @@ pub use load::{LoadParams, LoadRecord, LoadSegment, Loads};
 pub use pad::{AtTick, Now, PAD_BUTTONS, PadParams, PadStep};
 pub use render::{
     CaptureCamera, CaptureLighting, CaptureReply, CaptureSource, CompareParams, CompareReply, DepthRecord,
-    DrawLayout, DrawRecord, FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals,
+    DisplayRateStats, DrawLayout, DrawRecord, FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals,
     LayoutTexture, MarkersParams, OpRecord, ParityParams, ParityReply, PassRecord, RenderStats, ResidualArm,
     ResidualCaller, ResidualParams, ResidualProducer, ResidualReply, ResidualTotals,
     ResidualUnattributed, ResidualWindow, SceneCarried,

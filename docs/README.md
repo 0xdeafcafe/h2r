@@ -205,7 +205,7 @@ are under [Reviews](#reviews).
 - [bounce-search.md](game/bounce-search.md): the bots learn each superbounce spot by a per-spot knob search in headless sims (design): the knobs, the search, `<map>.learned`, `h2 sim train`
 - [map-pack.md](game/map-pack.md): the Multiplayer Map Pack disc, `h2 import-mappack` and how 1.0 lists its maps
 - [map-select.md](game/map-select.md): Change Map categories for Halo 2, Map Pack, Mods and Halo: CE, with separate retail and mod slots
-- [high-framerate.md](game/high-framerate.md): 60 and 120 fps with the 30 Hz tick exact (`H2_FPS`): the determinism harness, the interpolated replay and reprojection (built, not yet run in game)
+- [high-framerate.md](game/high-framerate.md): 60 and 120 fps with the 30 Hz tick exact (`H2_FPS`): the determinism harness and display frames between two scenes (built, not yet run in game)
 - [theater.md](game/theater.md): the in-game film library, host-film playback and seeking, with real-host verification pending
 - [Theater seek measurements](game/notes/theater-seek.md): cold launch, keyframe capture and tape size procedure
 - [film-format.md](game/film-format.md): the `.h2film` container a host records and Theater replays: layout, keyframes, seeking, determinism checks
