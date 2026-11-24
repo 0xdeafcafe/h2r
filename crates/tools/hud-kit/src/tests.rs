@@ -1049,6 +1049,7 @@ fn a_crop_is_its_part_of_the_frag_pill() {
         count: [(0, 0); 3],
         panel: 103.0,
         frag: [53.0, 50.0],
+        step: [(53, 0); 3],
     };
     assert_eq!(row.crop(PillPart::End), [96.0 / 103.0, 1.0, 0.0, 1.0]);
     row.frag = [0.0, 50.0];
@@ -1804,4 +1805,38 @@ fn the_preview_draws_a_gizmo_segment_in_its_axis_colour() {
     let text = Element::text("t", Font::Hud, Justify::Start, "AB", bl(10, -150));
     assert!(texts(text, Style::Axis(1), None).iter().any(|t| t == "t is a text in axis 1's colour, a world mark's alone"));
     assert_eq!(Style::Axis(2).name(), "axis 2");
+}
+
+/// The monitor's HUD (`Describe::monitor`) on the synthetic map: drawn
+/// over the motion tracker alone, the retail check meets nothing else,
+/// and its budget pill is the grenade row's first place (the panel's
+/// left end, where the retail pills would be), not one step past the
+/// frag pill.
+#[test]
+fn the_monitor_hud_is_over_the_tracker_alone_and_its_pill_is_the_rows_first() {
+    use crate::views::forge::{BUDGET_PILL, Forge};
+    assert!(Forge.monitor() && !PillBlock.monitor());
+    let mut src = synthetic();
+    let mut retail = hud_edit::model::read(&mut src.map, src.player).unwrap();
+    assert!(retail.widgets.iter().any(|w| w.name != "motion_sensor"));
+    preview::monitor_retail(&mut retail);
+    assert!(!retail.widgets.is_empty());
+    assert!(retail.widgets.iter().all(|w| w.name == "motion_sensor"));
+    let r = check::hud(&mut src, &Forge, &[Mode::Full]).unwrap();
+    assert_eq!(r.of(Check::Retail).count(), 0, "{:?}", r.findings);
+    let s = r
+        .shots
+        .iter()
+        .find(|s| s.element(BUDGET_PILL).is_some_and(|d| d.drawn))
+        .expect("a state that shows the budget");
+    assert!(s.retail.iter().all(|p| p.name == "motion_sensor"));
+    let f = Frame::for_mode(Mode::Full);
+    let at = s.element(BUDGET_PILL).unwrap().rect.unwrap().pixels();
+    assert_eq!(
+        [at[0], at[1]],
+        [
+            i32::from(f.left + synthetic::PANEL_AT.0),
+            i32::from(f.top + synthetic::PANEL_AT.1)
+        ]
+    );
 }

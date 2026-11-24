@@ -54,6 +54,7 @@ fn templates(art_list: Vec<(Art, Result<ArtTemplate, String>)>) -> Templates {
             count: [(118, -1), (90, -2), (70, -3)],
             panel: 103.0,
             frag: [53.0, 50.0],
+            step: [(53, 0), (40, 0), (30, 0)],
         }),
     }
 }
@@ -949,4 +950,47 @@ mod forge_readout_tests {
         // leaves no gap.
         assert_eq!(start("Red team", ""), "Starting point  Red team");
     }
+}
+
+/// A monitor's HUD (`Describe::monitor`) sees the grenade row with the
+/// retail pills gated off: its next pill and count are the row's first
+/// place, one step back from the frag's (the plasma pill's and count's),
+/// in every mode; the pills' crop is the frag pill's still.
+#[test]
+fn a_monitors_grenade_row_is_its_first_place() {
+    let hud = block_and_bar();
+    let t = templates::resolve(&mut Invented, TagId(0xe000_0001), &hud);
+    let row = *t.row.as_ref().unwrap();
+    assert_eq!(row.step[0], (53, 0));
+    let first = row.first();
+    assert_eq!((first.pill[0], first.count[0]), ((0, 0), (12, -1)));
+    for i in 0..3 {
+        let (s, p, c) = (row.step[i], row.pill[i], row.count[i]);
+        assert_eq!(first.pill[i], (p.0 - 2 * s.0, p.1 - 2 * s.1));
+        assert_eq!(first.count[i], (c.0 - 2 * s.0, c.1 - 2 * s.1));
+    }
+    assert_eq!((first.panel, first.frag), (row.panel, row.frag));
+    let m = t.for_monitor();
+    assert_eq!(*m.row.as_ref().unwrap(), first);
+    let at = Place::in_grenade_row(Origin::NextGrenadePill);
+    assert_eq!(records::placed(&at, &m).unwrap().1[0], (0, 0));
+}
+
+/// The retail bitmap widgets a monitor keeps are named by
+/// `MONITOR_KEEPS`, counted among the bitmap widgets alone: a text widget
+/// of the same name, or a bitmap of another, is not kept.
+#[test]
+fn a_monitor_keeps_the_motion_tracker_alone() {
+    let hud = RawHud {
+        name: "invented".into(),
+        widgets: vec![
+            widget(WidgetKind::Bitmap, "shield", 0, 0, (0, 0), 1),
+            widget(WidgetKind::Text, "motion_sensor", 0, 0, (0, 0), 0),
+            widget(WidgetKind::Bitmap, "motion_sensor", 0, 0, (0, 0), 2),
+            widget(WidgetKind::Bitmap, "grenade", 0, 0, (0, 0), 3),
+            widget(WidgetKind::Bitmap, "motion_sensor", 0, 0, (0, 0), 4),
+        ],
+    };
+    assert_eq!(templates::monitor_keeps(&hud), [1, 3]);
+    assert_eq!(MONITOR_KEEPS, ["motion_sensor"]);
 }

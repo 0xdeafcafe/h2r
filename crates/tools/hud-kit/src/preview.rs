@@ -974,19 +974,35 @@ fn world_mark(
     d
 }
 
+/// The retail player HUD as a user in monitor mode sees it: the bitmap
+/// widgets `model::MONITOR_KEEPS` names alone (the motion tracker), as the
+/// runtime's gate leaves them (`hud_kit::retail_gate` in the game crate).
+pub fn monitor_retail(retail: &mut hud_edit::Hud) {
+    retail.widgets.retain(|w| {
+        w.key.kind == hud_edit::model::WidgetKind::Bitmap
+            && crate::model::MONITOR_KEEPS.contains(&w.name.as_str())
+    });
+}
+
 /// `hud` (compiled as `compiled`) at `values` over the retail player HUD
-/// at `st`, its world marks at the sample poses `world`
-/// (`Describe::world` for the state).
+/// at `st` (for a `monitor` HUD, `Describe::monitor`, its motion tracker
+/// alone: [`monitor_retail`]), its world marks at the sample poses
+/// `world` (`Describe::world` for the state).
+#[allow(clippy::too_many_arguments)]
 pub fn shot(
     src: &mut Source,
     hud: &Hud,
     compiled: &Compiled,
+    monitor: bool,
     state: &str,
     values: &Values,
     world: &[(&'static str, Pose)],
     st: &HudState,
 ) -> Result<Shot> {
-    let retail = hud_edit::model::read(&mut src.map, src.player)?;
+    let mut retail = hud_edit::model::read(&mut src.map, src.player)?;
+    if monitor {
+        monitor_retail(&mut retail);
+    }
     let kit = compiled.as_hud_edit(KIT_BASE);
     let mode = st.mode;
     let answers = KitAnswers {

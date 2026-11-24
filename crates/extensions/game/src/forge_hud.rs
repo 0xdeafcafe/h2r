@@ -23,8 +23,9 @@
 //!   distances, which the view shows as the navpoints' numbers.
 //!
 //! It is presentation: it reads the session and never writes it. The
-//! monitor has no reticle until the kit's `forge.reticle` is built. The
-//! retail widgets are not hidden in a monitor yet (slice K1).
+//! monitor has no reticle until the kit's `forge.reticle` is built. While
+//! the monitor is up the user's retail widgets are off but the motion
+//! tracker (`hud_kit::Handle::retail`, slice K1).
 
 use std::collections::BTreeSet;
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -311,6 +312,9 @@ impl Live {
     fn tick(&mut self) {
         let p = lock(&PUBLISHED).clone().unwrap_or_default();
         let (values, notice) = frame(&p, &mut self.teaching, &mut self.sent, &buttons());
+        // A monitor has no shield, weapon or grenades: the retail widgets
+        // are off while it is up, the motion tracker kept.
+        self.handle.retail(USER, !p.view.monitor);
         if self.last.as_ref() != Some(&values) {
             self.handle.publish(values.clone());
             self.last = Some(values);

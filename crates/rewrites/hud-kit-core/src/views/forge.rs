@@ -656,6 +656,12 @@ impl Describe for Forge {
             super::firefight::NAME,
         ]
     }
+
+    /// Shown only in the monitor, whose retail widgets are off but the
+    /// motion tracker: its pills take the grenade row's first place.
+    fn monitor(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]
