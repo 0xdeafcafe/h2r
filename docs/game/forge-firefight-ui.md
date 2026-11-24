@@ -192,7 +192,7 @@ back by `h1_options_row::rewrite_rows`):
 |---|---|
 | CUSTOM GAMES | retail's, with ours as they are, and Map Variant... (action 15) after Change Map... while the `forge` feature is on |
 | FORGE | Change Map..., Map Variant... (action 15), then the rest with Clanker Options...; Firefight Options... is hidden |
-| FIREFIGHT | Change Map..., Firefight Options..., then the rest with Clanker Options...; the game type row is hidden |
+| Custom Games with Firefight selected | Change Map... lists compatible kits. Change Rules opens the game types and variants. |
 
 Every mode's list loses the Switch To rows: the GAME MODE picker changes the mode
 ([party-lobby.md](party-lobby.md#the-lobby-by-tab)). Clanker Options...
@@ -211,15 +211,11 @@ seats its Clankers in all three modes
   (`rules::gate`, `variants::load`); in CUSTOM GAMES it is the variant the
   game is built from (`map_variant::pick_installed`), and the variant
   panel's line under the map's is its name.
-- **Change Map...** opens the map select on the mode's category: the
-  original maps for Forge, a **Firefight** category of kit maps for
-  Firefight ([map-select.md](map-select.md), `map_select::mode_category`).
-  B from those maps returns to Game Setup. A switch to the mode puts the
-  lobby's map inside the category ([party-lobby.md](party-lobby.md),
-  "Switching"). With no kit map installed FIREFIGHT still opens: the
-  Firefight category is empty, so Change Map opens the retail map list,
-  and the panel and Start Game say no installed map supports Firefight
-  yet ([party-lobby.md](party-lobby.md), "Where each mode runs").
+- **Change Map...** opens the installed multiplayer catalogue. A selected
+  Firefight variant opens its compatible kit maps directly. B from those
+  maps returns to Game Setup. With no compatible kit installed, the list
+  is empty and Start Game reports the missing kit
+  ([map-select.md](map-select.md)).
 - **The game type row** in Forge picks the engine the session runs, and
   so which goals the object menu offers
   ([forge-editing.md](forge-editing.md), "The object menu"). It is
@@ -232,8 +228,8 @@ seats its Clankers in all three modes
   FIREFIGHT ([party-lobby.md](party-lobby.md), "The header and the
   prompt").
 - **Start Game** is retail's. Forge takes the chosen draft through
-  `forge_glue::request_draft` when the game starts; Firefight holds the
-  `firefight` setting on for the game, which switching to the mode sets.
+  `forge_glue::request_draft` when the game starts. A Firefight record
+  starts the director with the wave set named by its hash.
 - **With players on other machines.** Firefight in a hosted lobby is the
   custom game it is with the setting on ([firefight.md](firefight.md),
   "Live"). Forge with a remote member needs the session log on the

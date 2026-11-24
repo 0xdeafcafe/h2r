@@ -293,7 +293,7 @@ Quickmatch, OptiMatch, Custom Game and Content Download. Content Download
 asks to leave for the dashboard (`0x19b5af`, error `0xa3`, then
 `0x230e98`).
 
-The list hook makes it nine rows (eight without the co-op row), and the
+The list hook makes it eight rows (seven without the co-op row), and the
 row hooks show them in this order (`custom_games::Menu::layout`):
 
 | Row | Shows | Text | Press | Pane |
@@ -361,7 +361,7 @@ rows stand closer together:
 - The screen-tag hook (`0x22f871`) gives the tag copies of its panes
   (`custom_games::extend_tag`). They move nothing. They raise the list's
   visible count to seven, and add a pane per row of ours whichever rows
-  are on (ten panes, `custom_games::ALL_PANES`): a copy of the Custom
+  are on (nine panes, `custom_games::ALL_PANES`): a copy of the Custom
   Game pane, its picture included, with our help text in place of the
   one text that differs between panes. The Content Download pane, which
   Mods shows, gets our help the same way.
@@ -478,7 +478,7 @@ friends. Then check:
    - Retail's scroll arrows show while the list scrolls, and the down
      arrow is not over the hint text.
    - Custom Games and Forge each open the custom game lobby,
-     its header CUSTOM GAMES, FORGE and FIREFIGHT; B back lands on the
+     its header CUSTOM GAMES or FORGE; B back lands on the
      row pressed.
    - "Custom Game Browser" fits on its row without being cut off.
    - Moving onto Custom Game Browser shows the Custom Game picture with our
@@ -487,8 +487,8 @@ friends. Then check:
      picture with our help.
    - Leaving the menu and coming back (and after playing a game, which
      reloads the main menu) still shows the same rows.
-   - stderr says `custom games: xbox live menu tag has 10 panes and shows
-     7 of 9 rows`, `custom games: xbox live menu rows 24 apart (7 rows, 6
+   - stderr says `custom games: xbox live menu tag has 9 panes and shows
+     7 of 8 rows`, `custom games: xbox live menu rows 24 apart (7 rows, 6
      moved)`, `speaker row: add items active` and `custom games: row text`
      the first time.
    - If only four rows show and the list scrolls, the added item widgets

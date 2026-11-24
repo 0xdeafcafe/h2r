@@ -4,12 +4,9 @@
 //! sorted. A on a map makes it the lobby's map and goes back to Game Setup;
 //! B on the maps comes back to the categories, B there to Game Setup.
 //!
-//! **By the lobby's mode** ([`crate::lobby_start::Mode`]): a Forge lobby's
-//! Change Map opens the original maps (Halo 2) and a Firefight lobby's the
-//! **Firefight** category, the installed maps that carry the kit
-//! ([`crate::lobby_start::is_kit_map`]), straight to their maps; B there
-//! goes back to Game Setup. The Firefight category is never one of a
-//! Multiplayer lobby's ([`Catalogue::categories`]).
+//! Forge and Custom Games open the installed map catalogue. A Firefight
+//! variant opens its compatible kit maps directly. Script variants apply
+//! the lobby start gate's map requirements to the catalogue.
 //!
 //! - The model is pure: [`category_of`] reads a map's category from the
 //!   path the game loads it from, [`Catalogue`] groups and sorts.
@@ -308,9 +305,7 @@ impl Catalogue {
         c.label().to_owned()
     }
 
-    /// The categories a Multiplayer lobby's Change Map lists: every one
-    /// with maps but Firefight, which only a Firefight lobby opens
-    /// ([`mode_category`]).
+    /// Categories with maps that passed the selected variant's requirements.
     pub fn categories(&self) -> Vec<Category> {
         Category::ALL
             .into_iter()
@@ -940,10 +935,9 @@ fn write_ours(
     mode: Mode,
     region: u32,
 ) -> Option<u32> {
-    let retail = mem.u32(LEVEL_ARRAY).unwrap_or(0);
-    let flags = read_flags(&*mem, retail);
-    let flag = |id: u32| flags.iter().find(|(i, _)| *i == id).map_or(0, |(_, f)| *f);
-    let items = list_for(cat, mode, &flag);
+    // The catalogue already contains the maps supported by this variant.
+    // Retail profile unlocks must not remove rows from only this picker.
+    let items = list_for(cat, mode, &|_| 0);
     let slots: Vec<u32> = crate::mod_slots::read_slots(&crate::layout_glue::ReadGm(&*mem))
         .iter()
         .map(crate::mod_slots::Slot::id)
@@ -1446,12 +1440,6 @@ impl Sources {
     /// Read the catalogue after registering the installed offers.
     pub fn read(&self, overflow: usize) -> anyhow::Result<Catalogue> {
         let content_root = self.content_root();
-        let any = std::fs::read_dir(&content_root)
-            .map(|d| d.flatten().any(|e| e.path().join("patch.lvl").is_file()))
-            .unwrap_or(false);
-        if !any && overflow == 0 {
-            return Ok(Catalogue::default());
-        }
         let slots = {
             let mut cached = lock(&self.slots);
             if cached.is_none() {
@@ -1486,7 +1474,7 @@ pub fn prepare_at_boot(data_root: &Path, disc: &Path, overflow: usize) -> Option
         }
     };
     match cat.categories().len() {
-        0 | 1 => eprintln!("map select: one category; the retail list"),
+        0 => eprintln!("map select: no installed maps"),
         _ => eprintln!("map select: by category ({})", summary(&cat)),
     }
     let index = PackIndex::read(data_root);
