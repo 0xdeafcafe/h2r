@@ -10,9 +10,9 @@
 //!   what drains the tick's events calls it and fires the inputs.
 //! - [`DefsSchema`] resolves a script's `tag_int` and `tag_fixed` field
 //!   paths against our typed tag definitions (`tags::defs`) at load, for
-//!   the start gate (`::rules::fields::check`). The read of a tag instance
-//!   from the loaded map is not built, so a host refuses a script that
-//!   calls either entry (`caps::Status::NotBuilt`).
+//!   the start gate (`::rules::fields::check`, called by
+//!   `Runtime::start`). `super::map_tags` finds the tag by its path and
+//!   reads the field from the tag's data in guest memory.
 
 use ::rules::Input;
 use ::rules::fields::{Field, Kind, Schema, valid_path};

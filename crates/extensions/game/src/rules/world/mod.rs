@@ -5,6 +5,7 @@ pub mod body;
 pub mod bots;
 pub mod data;
 pub mod loadout;
+pub mod map_tags;
 pub mod show;
 pub mod spawns;
 pub mod walls;

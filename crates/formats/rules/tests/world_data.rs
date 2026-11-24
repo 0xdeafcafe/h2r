@@ -110,21 +110,21 @@ fn a_damage_handler_costs_the_cap_of_sixteen_a_tick() {
 
 #[test]
 fn a_host_refuses_what_has_no_entry_behind_it() {
-    // Health and shield have a host half.
-    for e in [id::OBJECT_HEALTH, id::OBJECT_SHIELD] {
+    // Health, shield and the tag reads have a host half.
+    for e in [id::OBJECT_HEALTH, id::OBJECT_SHIELD, id::TAG_INT, id::TAG_FIXED] {
         assert_eq!(caps::entry(e, caps::API_VERSION).unwrap().status, Status::Named);
     }
-    // Squad state past `squad_alive` is not traced and tag reads have no
-    // host half: each is refused by name.
+    // Squad state past `squad_alive` is not traced: each is refused by
+    // name. A script that reads a tag field is hostable.
     let strength_only = BOSS.replace("    fighting = squad_fighting(squad(3))\n", "");
     for (src, name) in [
         (BOSS, "squad_fighting"),
         (strength_only.as_str(), "squad_strength"),
-        (TAGS, "tag_fixed"),
     ] {
         let ir = compile(src).unwrap();
         assert_eq!(unhostable(&ir).map(|e| e.name), Some(name), "{name}");
     }
+    assert_eq!(unhostable(&compile(TAGS).unwrap()), None);
 }
 
 const TAGS: &str = r#"
