@@ -1208,7 +1208,8 @@ to the guest's draws (**Code**):
   block. The additional casters' layers 10 and 11 are groups of their
   own site (`GroupSite::AdditionalCasters`), and each object shadow's
   layers 10 and 11 groups of its `ObjectShadow` in the view
-  (`GroupSite::ObjectShadow`). An `ObjectShadow` also marks a creature
+  (`GroupSite::ObjectShadow`); a first-person light's layers 12 and 13
+  are groups of `GroupSite::FirstPerson`. An `ObjectShadow` also marks a creature
   caster, which takes the ground-shadow branch `0x00032ce0`, and keeps
   the light weight read at its layer 11, for E3's sun tiles
   ([e3-lighting.md](e3-lighting.md), "Sun shadows from objects"). The

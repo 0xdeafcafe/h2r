@@ -1,7 +1,7 @@
 # Native light gather and passes
 
-Status: Partly built. Slices L1 to L5 are built: the model's rows and histories and the leaves (the visible-light list, the geometry flags, the extra caster, the light volume) in `engine::render::light_gather`, which the seams of [native-renderer.md](native-renderer.md), "Scene list builders", call; the frame body of `0x00031c80` (`light_gather::frame`), which `render_bridge::native_lights::frame` installs at `RENDER_DYNAMIC_LIGHTS`; a light's cluster and placement records (`engine::render_loop::world_walk::records` in the light's kind), which the frame body makes; a light's item lists and the first-person table (`light_gather::items`), which `render_bridge::native_lights::items` installs at `SCENE_ITEMS`; and the scene's dynamic lights, made from the frame body's hand-off (`frame::Passes`) and the item body's lists (`render_bridge::native_lights::handoff`); and one light's passes, `0x00031170` (`light_gather::passes`), which `render_bridge::native_lights::passes` installs at `RENDER_LIGHT_PASSES`. L6 on are design. The other leaf ports it starts from (the light constants, the pass flags, the shadow projection, the gathered groups) are described in [native-lights.md](native-lights.md).
-Code: `crates/rewrites/engine/src/render/light_gather.rs` and `light_gather/` (the model and the bodies), `crates/rewrites/engine/src/render_loop/world_walk.rs` (the record walks), `crates/rewrites/render-bridge/src/native_lights/frame.rs` and `items.rs` and `passes.rs` (the installs), `handoff.rs` (the scene's lights), `crates/rewrites/render-bridge/src/native_scene_lists/lights.rs` (the leaf seams that stay for the fallback). Tests: `crates/rewrites/engine/tests/light_gather_differential.rs`, `light_gather.rs`, the unit tests of `world_walk.rs` and `native_lights/handoff.rs`, `crates/rewrites/render-bridge/tests/native_lights.rs`.
+Status: Partly built. Slices L1 to L6 are built: the model's rows and histories and the leaves (the visible-light list, the geometry flags, the extra caster, the light volume) in `engine::render::light_gather`, which the seams of [native-renderer.md](native-renderer.md), "Scene list builders", call; the frame body of `0x00031c80` (`light_gather::frame`), which `render_bridge::native_lights::frame` installs at `RENDER_DYNAMIC_LIGHTS`; a light's cluster and placement records (`engine::render_loop::world_walk::records` in the light's kind), which the frame body makes; a light's item lists and the first-person table (`light_gather::items`), which `render_bridge::native_lights::items` installs at `SCENE_ITEMS`; and the scene's dynamic lights, made from the frame body's hand-off (`frame::Passes`) and the item body's lists (`render_bridge::native_lights::handoff`); one light's passes, `0x00031170` (`light_gather::passes`), which `render_bridge::native_lights::passes` installs at `RENDER_LIGHT_PASSES`; and the first-person lights, `0x000404b0` and each slot's record replay `0x000402b0` (`light_gather::first_person`), which `render_bridge::native_lights::first_person` installs at `FIRST_PERSON_LIGHTS` and `FIRST_PERSON_LIGHT_RECORDS`. L7 on are design. The other leaf ports it starts from (the light constants, the pass flags, the shadow projection, the gathered groups) are described in [native-lights.md](native-lights.md).
+Code: `crates/rewrites/engine/src/render/light_gather.rs` and `light_gather/` (the model and the bodies), `crates/rewrites/engine/src/render_loop/world_walk.rs` (the record walks), `crates/rewrites/render-bridge/src/native_lights/frame.rs` and `items.rs` and `passes.rs` and `first_person.rs` (the installs), `handoff.rs` (the scene's lights), `crates/rewrites/render-bridge/src/native_scene_lists/lights.rs` (the leaf seams that stay for the fallback). Tests: `crates/rewrites/engine/tests/light_gather_differential.rs`, `light_gather.rs`, the unit tests of `world_walk.rs` and `native_lights/handoff.rs`, `crates/rewrites/render-bridge/tests/native_lights.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md). No slice adds a switch.
 
 Slice R3 of [retire-d3d.md](retire-d3d.md): the guest's light front-end
@@ -232,19 +232,35 @@ draws) then, for each slot with records:
 2. `0x000402b0` (EDX the slot, one stack word the mode): zeroes both
    lists, copies the slot's records to `0x004ba138` from index
    `[0x004c0b7c]`, sets `[0x004c0b78]` past them, and gives each
-   record's visible parts to `0x00041040` in the light's kind. The mode
-   picks the record filter (0: every record; 2 and others: one bit
-   each);
+   record's visible parts to `0x00041040` in the light's kind 1, with
+   its fifth argument 1, so a part whose level has no layer but bit 15
+   is still appended (**E** `0x00040457`, `0x000412ad`). The mode picks
+   the record filter, as in `0x00040e90`: 0 every record, 2 the bit
+   `0x10`, any other `0x20` (**E** `0x0004033a`..`0x0004035d`). The
+   record tests read the slot's record; the part calls read the copy;
 3. sets the constants with shadow 0 and weight one
-   (`0x0004a1e0`, EDX the light datum);
+   (`0x0004a1e0`, EDX the light datum; the weight and the scale are the
+   image's pushed words at `0x00040566` and `0x0004056d`);
 4. sets the flags: bit 0 for a kind-0 volume, bit 1 for a colour B
-   component above zero, bits 2 to 5 clear;
+   component above zero (`comiss`, `ja`: a NaN is not), bits 2 to 5
+   clear, and the passes byte `[0x004ba018]`;
 5. draws layers 11, 14, 12 and, with bits 0 and 1, 13 on list 1, each
    only when the list's mask has its bit; no layer 10 and no additional
-   casters;
-6. runs the passes' tail.
+   casters. Layer 11 is reached whatever the flags;
+6. runs the passes' tail, with the depth range inline: the device's
+   range words and dirty bit, `0x003faae0` when its push buffer is full,
+   and `0x003f6190` (**E** `0x000407bd`..`0x0004080f`).
 
-Two things the port keeps (**S** until the differential shows them):
+The loop keeps the slot index at `E-0x84` and the slot's datum address
+at `E-0x80` (`E` its entry `ESP`), the volume at `E-0x7c` and the draw
+byte at `E-0x85`. The layer-draw hook reads the index and the address
+from that frame (`native_lights::first_person_entry`), so the body
+writes them where the guest does. `0x000402b0` pushes the dword at its
+`E-0x3c`, whose low byte is the record's pixel byte and whose upper
+bytes are what that stack held, to `0x00041040`, and overwrites its own
+argument slot `E+4` with the slot record it reached.
+
+Two things the port keeps (**S** until the differentials run them):
 
 - After eight lights, step 7 of the gather stops adding slots while
   `0x00044ac0` keeps copying into the slot of `[0x00509440] - 1`, so a
@@ -289,13 +305,14 @@ visibility, lists, constants, projection, layer 10, the filter
 | `RENDER_DYNAMIC_LIGHTS` | `0x00031c80` | `light_gather::frame::run` | the guest function, with the leaf seams of `native_scene_lists` |
 | `SCENE_ITEMS` | `0x00040e90` | `light_gather::items::run` in a light's kind, installed by `render_bridge::native_lights::items` | the guest function: the main view's kind, a refused plan |
 | `RENDER_LIGHT_PASSES` | `0x00031170` | `light_gather::passes::run`, called by the frame body and installed at the point for the fallback loop | the guest function |
-| `FIRST_PERSON_LIGHTS` (new) | `0x000404b0` | `light_gather::first_person::run` | the guest function |
+| `FIRST_PERSON_LIGHTS` | `0x000404b0` | `light_gather::first_person::run`, installed by `render_bridge::native_lights::first_person` | the guest function: a refused plan |
+| `FIRST_PERSON_LIGHT_RECORDS` | `0x000402b0` | `light_gather::first_person::run_records`, called by the first-person body and installed at the point | the guest function: a refused plan |
 | `OBJECT_SHADOW_LIST` | `0x000335e0` | `light_gather::object_shadows::run` | the guest function |
 | `OBJECT_SHADOW` | `0x00032350` | `light_gather::object_shadows::caster` | the guest function |
 
-New named points, all `[fn]` with the signatures above:
-`FIRST_PERSON_LIGHTS` `0x000404b0`, `FIRST_PERSON_LIGHT_RECORDS`
-`0x000402b0`, `FIRST_PERSON_RESET` `0x0003fd70`, `LIGHT_VOLUME`
+`FIRST_PERSON_LIGHTS` and `FIRST_PERSON_LIGHT_RECORDS` are named points
+(`crates/hooking/guest-layout/src/points.rs`). Named points to come, all
+`[fn]` with the signatures above: `FIRST_PERSON_RESET` `0x0003fd70`, `LIGHT_VOLUME`
 `0x000c17f0`, `LIGHT_FRUSTA` `0x000c1d90`, `SCENE_VISIBILITY`
 `0x001320f0`, `SCENE_PART_VISIBILITY` `0x00044720`, `SCENE_ITEMS`
 `0x00040e90`, `RECORD_ITEMS` `0x00044ac0`, `LIGHT_REPOSE_BASIS`
@@ -321,12 +338,15 @@ stack words, the scene flags and both masks. At the passes' entry the
 masks are the last light's, which is why the hand-off waits for the
 lists. The groups are still the layer builds' sorted entries
 (`walk`, `scene_extract::light_groups`) and keep their type
-(`frame_scene::LightGroup`); L6 adds `GroupSite::FirstPerson`.
+(`frame_scene::LightGroup`). A first-person light goes into the first
+person's view at its first layer draw, read from the loop's frame
+(`native_lights::first_person_layer`), and its groups are of their own
+site, `GroupSite::FirstPerson`.
 
 Counters follow the scene lists' scheme
 (`timeline::native::SceneList`, `SceneListResult`): stages
 `light_frame`, `light_passes`, `first_person_lights`,
-`object_shadow_list` and `object_shadow_caster`, each with `_native`,
+`first_person_records`, `object_shadow_list` and `object_shadow_caster`, each with `_native`,
 `_fallback` and a reason. A step a running body gives to the guest
 counts as its own stage's `_fallback` and reason: `light_volume` and
 `light_records` from the frame body, `light_geometry` and
@@ -339,7 +359,13 @@ light that passes the walk's filters: `_native` for one appended in
 Rust, `_fallback` and the reason for one the guest's part calls make,
 and a call whose plan refuses. `light_passes` counts each passes call:
 `_native` for one the passes body runs, `_fallback` and the reason for
-a plan that refuses (the original runs whole). `light_handoff` counts each light
+a plan that refuses (the original runs whole). `first_person_lights`
+counts each call of `0x000404b0`: `_native` for one the body runs,
+`_fallback` and the reason for a plan that refuses. `first_person_records`
+counts each slot record that passes the mode's filter, as `light_items`
+counts a light's: `_native` for one appended in Rust, `_fallback` and the
+reason for one the guest's part calls make, and a call whose plan
+refuses. `light_handoff` counts each light
 the frame body hands over: `_native` for one the scene takes from the
 hand-off, `_fallback` and the reason for one it reads from memory (the
 item body declined, or no item lists' call took the hand-off:
@@ -620,24 +646,68 @@ The hand-off and the passes body are built.
   passes body: a plan that refuses runs the original whole, counted;
   none after entry, every step has its guest call.
 
-### L6: the first-person lights (M)
+### L6: the first-person lights (M, built)
 
-- **Build.** `light_gather::first_person::run`: the six steps above
-  from `FirstPersonLights`, the record replay through L4's append, the
-  lights and groups into the scene (`GroupSite::FirstPerson`), and the
-  layers through the same guest layer calls, so `Glue::alone` draws a
-  whole group of layer 12 or 13.
-- **Guest state.** The table, `[0x00509440]`, the record tail and both
-  byte arrays, both lists, the light globals and flag words.
-- **Tests.** Differential roots `0x000402b0` and `0x000404b0` (callees
-  stubbed): the three modes, an empty slot, a slot of 32. Unit:
-  `a_replayed_record_reads_the_bytes_at_its_new_index`.
-- **Live check.** `first_person_lights_native` on a level with a
-  flashlight or a muzzle light; the `first_person` producer's entries in
-  `render.residual` fall by the lights' share; `render.parity` over the
-  weapon's rectangle.
-- **Refusal.** Before the first slot: the guest function. After: per
-  step, as L4 and L5.
+- **Build.** `light_gather::first_person`. `plan` reads and refuses
+  before any write: the float state, the frame, a count past the eight
+  slots, each slot's light and the globals. `run` makes the six steps
+  above per slot with records: the volume by the Rust leaf
+  (`volume::light_volume`, its guest function when it refuses), the
+  record replay `0x000402b0` as a guest call, the constants as a guest
+  call, the flags inline, the layer blocks as the passes body makes them
+  (each a guest call of the target, clip, blend, stencil, draw and end,
+  so `Glue::alone` draws a whole group of layer 12 or 13 as before) and
+  the tail with the depth range inline. `plan_records` and
+  `run_records` are `0x000402b0`: a slot past the eighth, a count above
+  32, a tail past `0x8000` or over the table refuse. A record that
+  passes the filter is `items::record_items_with` in kind 1 with the
+  fifth argument set, or the guest's per-part calls (`0x000449e0`,
+  `0x00045ce0`, `0x000460d0`, `0x00041040`) with the guest's registers
+  and stack words when the port does not take it (an object's record, an
+  override shader). `render_bridge::native_lights::first_person`
+  installs both with `implement`, on the render thread, and runs the
+  original when the lights stage stands down or a plan refuses. The
+  groups of a first-person light's layers are `GroupSite::FirstPerson`.
+- **Return sites.** Every call the first-person body makes names the
+  guest's return site for its slot (`passes::named`, read through
+  `passes::caller`), so the layer-draw hook (`first_person_site`) and
+  the walk's layer builds see the guest's `0x00040642`, `0x000406ab`,
+  `0x00040718` and `0x0004079c`. A call named inside another (the record
+  replay's body inside the first-person body's call) puts the outer
+  naming back when it returns.
+- **Guest state.** The table and `[0x00509440]` (read), the record tail
+  and `[0x004c0b78]`, both lists, the light globals and flag words, the
+  layer words and targets, the device's depth range and put pointer,
+  and the frame's index, slot address and draw byte.
+- **Tests.** Differential (`engine/tests/light_gather_differential.rs`):
+  `first_person_lights_match_the_lifted_original`, root `0x000404b0`
+  with every callee stubbed but the light volume (lifted in both runs),
+  over no slot, one, eight and a count a callee changes, empty and
+  negative slots, each layer's mask bit, a kind-0 volume, colour B dark,
+  negative, NaN or bright, and a full push buffer;
+  `first_person_records_match_the_lifted_original`, root `0x000402b0`
+  with its part calls lifted over the item lists' synthetic structure
+  (records appended in Rust) and stubbed over objects' records (the
+  transcripts), over the three modes, an empty slot, a slot of 32 and a
+  negative count. Unit (`engine/tests/light_gather.rs`, `first_person_body`):
+  `the_first_person_lights_call_the_guest_in_its_order`,
+  `a_full_push_buffer_asks_for_room_first`,
+  `no_slots_draw_nothing_and_more_than_eight_are_the_guests`,
+  `a_replayed_record_reads_the_bytes_at_its_new_index`,
+  `an_empty_slot_zeroes_the_lists_and_returns_its_count`; and
+  `a_call_named_inside_another_puts_the_outer_naming_back`
+  (`light_gather/passes.rs`).
+- **Live check.** `native_scene_lists_first_person_lights_native` once
+  per view with a first-person weapon, `_fallback` zero, and
+  `native_scene_lists_first_person_records_native` with its `_fallback`
+  only from objects' records, on a level with a flashlight or a muzzle
+  light; `scene_first_person_light_layers_alone` unchanged; the
+  `first_person` producer's entries in `render.residual` unchanged
+  (layers 11 and 14 stay D3D); `render.parity` over the weapon's
+  rectangle.
+- **Refusal.** A plan that refuses runs the guest function whole. After
+  it, every step is a guest call or a write; a record the port does not
+  take is the guest's part calls for that record.
 
 ### L7: the object shadows (M)
 
@@ -744,7 +814,8 @@ and the attachment walk `0x00041c80`.
 - **Code.** The built leaves and the frame: `engine::render::light_gather`
   (`visible::list`, `history::merge`, `history::rank_and_fade`,
   `geometry::flags`, `extra_caster::list`, `volume::light_volume`,
-  `frame::plan`, `frame::run`, `frame::run_with`),
+  `frame::plan`, `frame::run`, `frame::run_with`, `first_person::run`,
+  `first_person::run_records`),
   `render_bridge::native_lights::handoff` (the scene's lights; the
   passes' item lists call at `0x00031192`, the shadow byte at
   `0x0003119b`),
