@@ -85,6 +85,10 @@ fn enter(
         }
         // The virtual call consumes its already-pushed argument.
         let stack = cpu.esp.checked_add(4)?;
+        // A widget the overlay draws (`super::ui_overlay`) is left out.
+        if draw.is_some() && let Some(transfer) = super::menu_item(c, &mut *mem, stack) {
+            return Some(transfer);
+        }
         if draw.is_some() && let Some(transfer) = replaced(c, &mut *mem, stack) {
             return Some(transfer);
         }

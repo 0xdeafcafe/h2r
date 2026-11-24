@@ -13,7 +13,7 @@ Guest memory to `FrameScene`: the only render code that knows guest offsets. It 
 - `src/guest.rs`: the `GuestRead` trait that the stages share.
 - `src/light_groups.rs`, `src/decorators.rs`, `src/late.rs`: extraction per scene part.
 - `src/testing.rs`: synthetic guest memory for tests.
-- `src/ui.rs`: the menus, loading screen, fade and bars as overlay items, from typed UI state (slice R7 of [retire-d3d.md](../../../docs/graphics/retire-d3d.md)).
+- `src/ui.rs`: the menus, loading screen, fade and bars as overlay items, from typed UI state (slice R7 of [retire-d3d.md](../../../docs/graphics/retire-d3d.md)); the guest's widget sort and a widget's read.
 
 ## Tests
 

@@ -529,7 +529,7 @@ impl SceneList {
     }
 }
 
-const UI_COLUMNS: [&str; Ui::OverlayHudRefusedPass as usize + 1] = [
+const UI_COLUMNS: [&str; Ui::OverlayMenuRefusedPass as usize + 1] = [
     "items",
     "item_refused",
     "fallback_geometry",
@@ -585,6 +585,20 @@ const UI_COLUMNS: [&str; Ui::OverlayHudRefusedPass as usize + 1] = [
     "overlay_hud_refused_frame",
     "overlay_hud_refused_loading",
     "overlay_hud_refused_pass",
+    "overlay_menu_claimed",
+    "overlay_menu_skipped",
+    "overlay_menu_passes",
+    "overlay_menu_mismatch",
+    "overlay_menu_refused_frame",
+    "overlay_menu_refused_mismatched",
+    "overlay_menu_refused_bitmap",
+    "overlay_menu_refused_shader",
+    "overlay_menu_refused_text",
+    "overlay_menu_refused_model",
+    "overlay_menu_refused_draw",
+    "overlay_menu_refused_unreadable",
+    "overlay_menu_refused_unlisted",
+    "overlay_menu_refused_pass",
 ];
 const UI_OFFSET: usize = SCENE_LIST_START + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len();
 pub(crate) const COLUMNS: usize = UI_OFFSET + UI_COLUMNS.len();
@@ -667,6 +681,32 @@ pub enum Ui {
     OverlayHudRefusedFrame,
     OverlayHudRefusedLoading,
     OverlayHudRefusedPass,
+    /// Menu widget draws the overlay claimed at their sorted list
+    /// (docs/graphics/native-post-hud.md, "The menus on the overlay").
+    OverlayMenuClaimed,
+    /// The game's widget draws left out because the overlay drew them.
+    OverlayMenuSkipped,
+    /// Overlay passes placed for runs of claimed widgets with items.
+    OverlayMenuPasses,
+    /// Lists whose left-out draws did not match their claim; that screen
+    /// is not claimed again on the map.
+    OverlayMenuMismatch,
+    /// Lists the game draws whole: the screen quads' viewport not the
+    /// full screen; a screen that mismatched before.
+    OverlayMenuRefusedFrame,
+    OverlayMenuRefusedMismatched,
+    /// Drawn widgets the game keeps, by the draw not read yet: a bitmap,
+    /// a shader bitmap, text, a model scene, another draw (a list's, a
+    /// button's); one that did not read; one the overlay refused.
+    OverlayMenuRefusedBitmap,
+    OverlayMenuRefusedShader,
+    OverlayMenuRefusedText,
+    OverlayMenuRefusedModel,
+    OverlayMenuRefusedDraw,
+    OverlayMenuRefusedUnreadable,
+    OverlayMenuRefusedUnlisted,
+    /// Lists or runs whose pass the host did not place.
+    OverlayMenuRefusedPass,
 }
 
 impl Ui {
@@ -901,8 +941,13 @@ mod tests {
         assert_eq!(columns[ui].1, "native_ui_items");
         assert_eq!(
             columns[phase::Counter::ALL.len() + COLUMNS - 1].1,
+            "native_ui_overlay_menu_refused_pass"
+        );
+        assert_eq!(
+            columns[ui + Ui::OverlayHudRefusedPass as usize].1,
             "native_ui_overlay_hud_refused_pass"
         );
+        assert_eq!(columns[ui + Ui::OverlayMenuClaimed as usize].1, "native_ui_overlay_menu_claimed");
         assert_eq!(columns[ui + Ui::OverlayRefusedTexture as usize].1, "native_ui_overlay_refused_texture");
         assert_eq!(columns[ui + Ui::OverlayModelViews as usize].1, "native_ui_overlay_model_views");
         assert_eq!(columns[ui + Ui::OverlayRefusedBlur as usize].1, "native_ui_overlay_refused_blur");

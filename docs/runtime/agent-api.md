@@ -1477,6 +1477,15 @@ left-out quads were not the items drawn (`hud_mismatch`), and the HUD draws
 left to the game's quads by their first reason (`hud_refused_shader`,
 `_text`, `_effects`, `_anchor`, `_unlisted`, `_frame`, `_loading`, `_pass`;
 [native-post-hud.md](../graphics/native-post-hud.md#the-hud-on-the-overlay)).
+The menus' (`menu_*`) are the widget draws claimed at their sorted list
+(`menu_claimed`), those left out (`menu_skipped`), the passes placed for
+runs with items (`menu_passes`), lists whose left-out draws did not match
+(`menu_mismatch`), lists the game draws whole (`menu_refused_frame`,
+`_mismatched`), drawn widgets the game keeps by the draw not read
+(`menu_refused_bitmap`, `_shader`, `_text`, `_model`, `_draw`,
+`_unreadable`, `_unlisted`), and lists or runs whose pass was not placed
+(`menu_refused_pass`;
+[native-post-hud.md](../graphics/native-post-hud.md#the-menus-on-the-overlay)).
 The object-shadow list, row gather and caster each count calls to their own
 entry ([native-light-gather.md](../graphics/native-light-gather.md), L7).
 `counters` is `null` where the frame-stats window is not running.

@@ -180,8 +180,8 @@ index`, `0x0054d76c + 0x38 * index`, `0x0054d884 + 0x38 * index`); index
 4 also draws the screen managers around them (`0x00234f8c` on
 `0x0054d5c4` and `0x0054dba8`, `0x0023583e` on `0x0054d9e0`,
 `0x00234f8c` on `0x0054d99c`). Those collect and sort the screen's widgets
-(`0x002353a5`, docs/formats/ui.md, "Draw order") and call each
-widget's draw. Last, a fade-in by the clock at `0x0054d5b8` against
+(`0x002353a5`, [The menus on the overlay](#the-menus-on-the-overlay))
+and call each widget's draw. Last, a fade-in by the clock at `0x0054d5b8` against
 `0x0054d5c0` (3 s and 4 s windows).
 
 **The draw primitives under them.** Every draw the HUD and the menus
@@ -369,6 +369,73 @@ shader's. Translating a HUD shader needs, per template the HUDs use
   items have no slot for yet;
 - a program per template in `ui_gpu` keyed by the shader, and a parity
   check of its pixels against the game's quads on the lab.
+
+#### The menus on the overlay
+
+The overlay stage draws a menu widget in place of its draw when the
+widget lists exactly. One list is one call of `0x002353a5` on one screen
+(Code, `h2 disasm`):
+
+1. `0x0023566a` collects the screen's widgets from the root: a widget
+   whose vtable's `+0x40` slot answers false is skipped with its
+   children; each shown widget is added after its children (first child
+   `+0x14`, next sibling `+0x18`), as an entry of `0xc` bytes (the
+   widget, its depth from `+0x60` by `0x0022e9aa`, its bias from `+0x6a`),
+   at most 256.
+2. The C runtime's `qsort` (`0x00321460`: median of three, an explicit
+   stack, partitions of at most 8 by a selection sort) sorts them with
+   `0x002356d8`: depths more than 0.001 (`[0x0045dc70]`) apart put the
+   deeper first; tied depths put the smaller bias first, then the larger
+   widget type. The sort is not stable.
+3. The screen's `+0x58` slot runs, then the window: the near depth
+   `[0x0054d5ac] - [0x0054d5b0]` at `[ebp-8]`, the far `[0x0054d5b4] -
+   [0x0054d5b0]` at `[ebp-0xc]`.
+4. Each entry whose depth is inside the window has its draw (`+0x10`)
+   called at `0x00235445` with the user argument; then the screen's
+   `+0x5c` slot.
+
+`scene_extract::ui` ports the collection (`collect`), the comparator
+(`compare`), the sort (`crt_qsort`, `sort_widgets`) and the window
+(`in_window`). The hooks read the guest's own sorted list, so their
+order is the guest's whatever the port does.
+
+At `0x00235428` (`points::ui_render::LIST_READY`, after the window is
+taken), `render_bridge::native_hud::ui_overlay` reads the list from the
+frame and asks the host whether it draws menus now (`Host::ui_overlay`;
+the game's answer is the UI scope's order). It claims nothing unless the
+screen quads' viewport (`0x00485648`, top, left, bottom, right) is 0, 0,
+480, 640, and nothing on a screen that mismatched before. Each drawn
+entry's widget is read (`scene_extract::ui::read_widget`: the header, and
+what its draw makes by the function its vtable's `+0x10` names) and listed
+alone (`draw_list`). Consecutive drawn entries that list are a run; an
+entry outside the window does not end one, a refused entry does.
+
+At the sorted call of a run's first entry, the host places one overlay
+pass with the run's items (`Host::ui_pass`, `game::hud_overlay::place_menu`,
+over the map's overlay assets) and the items join `FrameScene::overlay`;
+a run with no items needs no pass. Each entry of a placed run resumes at
+`0x00235448` with its draw skipped, as a host-drawn widget's is. A run
+whose pass is not placed is the game's. At `0x0023545c`
+(`LIST_DONE`) the claim closes; one whose left-out draws are not its
+claimed ones counts `menu_mismatch` and its screen is the game's until
+the next map. A list drawn inside another's draw has its own frame and
+closes inside out.
+
+What `read_widget` lists today is the containers: a widget whose draw is
+the base's `ret 4` (`0x00333105`: the screen's, list item's, page
+selector's and table's) has no pixels. Every other draw is the game's,
+counted by what is not read (`render.stats`, `native_ui_overlay_menu_*`):
+
+| Reason | Draw | What reading it needs |
+|---|---|---|
+| `bitmap` | `0x002b0540` | the meter path `0x002b07e2`; for the bitmap path `0x002b0565`, the tint (`+0x28` to `+0x30` and the alpha, each times 255 and rounded by `fistp` to ARGB), the parent's offset (`0x002363d4`), the bitmap's frame (`0x002b0b19`), the rectangle (`0x0022ea81`), and the quad (`0x00235e5e`, or `0x00235f31` when the definition scrolls) as an overlay material |
+| `shader` | `0x002b11c9` | the HUD shader quad's translation ([The HUD on the overlay](#the-hud-on-the-overlay)) |
+| `text` | `0x002538f5` | the string as the interface holds it, its font and justification, and the colour product the draw writes into the interface (its `+0x3c` slot) for the interface's own draw; then the glyph pages (`native_render::overlay::GlyphPages`) |
+| `model` | `0x002b0baa` | a stage that draws a `ModelView` |
+| `draw` | a list's `0x0024bda2`, a button's `0x00253ea8`, a screen's own | those draws read |
+
+The fade, the bars and the loading screen are drawn by the producers
+above and are not on the overlay.
 
 ### Post admission
 

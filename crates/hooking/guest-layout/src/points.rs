@@ -232,6 +232,13 @@ pub mod ui_render {
     pub const MODEL_GEOMETRY_EMITTER: u32 = 0x0004_daa0;
     pub const MODEL_TEXTURE_COMMIT: u32 = 0x0001_cf50;
     pub const ITEM_CONTINUATION: u32 = 0x0023_5448;
+    /// `0x002353a5` with its widget list sorted, the screen's pre-draw
+    /// callback run and the depth window at `[ebp-8]`, `[ebp-0xc]`:
+    /// before its first widget draw. Reached only with widgets listed.
+    pub const LIST_READY: Point = Point::new("UI_LIST_READY", 0x0023_5428, Sig::Site, DOC);
+    /// `0x002353a5`'s draws done, before its post-draw callback: the
+    /// empty list and the end of the loop join here.
+    pub const LIST_DONE: Point = Point::new("UI_LIST_DONE", 0x0023_545c, Sig::Site, DOC);
     pub const OUTLINE_VERTICES: Point =
         Point::new("UI_OUTLINE_VERTICES", 0x0001_ed98, Sig::Site, DOC);
     pub const OUTLINE_VERTICES_TAIL: u32 = 0x0001_ee3a;

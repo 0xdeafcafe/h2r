@@ -115,6 +115,8 @@ pub fn instruction_entries() -> impl Iterator<Item = u32> {
         LAYERS_RETURN.base,
         ITEM_CALL.base,
         ITEM_RETURN.base,
+        LIST_READY.base,
+        LIST_DONE.base,
         HUD_RETURN.base,
         HUD_HIDDEN_RETURN.base,
         LOADING_RETURN.base,

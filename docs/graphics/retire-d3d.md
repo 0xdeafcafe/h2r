@@ -356,7 +356,7 @@ classified readers, 73 read run state and 30 start from it.
 | Lens flares | `0x00020bb0`, `0x00020770`, the visibility entries | a native query pass; the flare's own fade state is advanced in Rust from its result | GPU counter and native colour fans built, fade state guest-owned |
 | Post | `0x00013870`, `0x000214f0`, `0x0002d140`, `0x0002dd30`, `0x0002df00`, layer 17 | typed post from the scenario's screen effects and the camera's parameters | glow and screen effects built |
 | HUD | `0x001917eb`, `0x0013954b`, the widgets `0x0022b397` to `0x0022bca4` | a Rust HUD that walks the HUD definitions against the unit's and weapon's state and emits a draw list. It is the same HUD kit the added HUD pieces use | the walk emits the overlay's items (`hud_edit::overlay::draw_list`, from a `HudState` read from the user's unit and weapon and the engine's gate words); a HUD draw every shown widget of which is exact is drawn from the overlay in place of its quads. No retail HUD is yet: its bitmap widgets are drawn by tag shaders, which do not translate, and its text's colour is its shader's |
-| Menus and UI | `0x00147af1`, the widget sort `0x002353a5`, each widget's draw | a Rust walk of the guest's screens and widgets (the UI's logic, input and state stay the guest's) that emits a draw list: bitmaps, text runs, model widgets, the backdrop's blur chain | the walk emits the overlay's items (`scene_extract::ui::draw_list`, from a `UiFrame`); the guest's widgets are not read into it, and the game still draws its menus as quads |
+| Menus and UI | `0x00147af1`, the widget sort `0x002353a5`, each widget's draw | a Rust walk of the guest's screens and widgets (the UI's logic, input and state stay the guest's) that emits a draw list: bitmaps, text runs, model widgets, the backdrop's blur chain | the walk emits the overlay's items (`scene_extract::ui::draw_list`, from a `UiFrame`); at each sorted list the guest's widgets are read and runs of exact ones drawn from the overlay with their draws skipped ([native-post-hud.md](native-post-hud.md#the-menus-on-the-overlay)). Only containers read exactly yet, so every menu pixel is still the game's quads |
 | Text | glyph decode `0x0001f5c0`, the glyph cache, one quad per glyph | Rust shaping from the font data ([fonts.md](../formats/fonts.md)) into the renderer's own atlas, one draw per run | not built |
 | Movies | `0x00156040`'s blit and quad, `BinkCopyToBuffer` | the decoder's host frame goes to the renderer as a scene item; no guest texture is locked | not built |
 | Loading, fade, bars | `0x000289e0`, `0x00040890`, `0x00052ce7` | draw-list items from the same state words the guest reads | items from a `UiFrame` (`scene_extract::ui`); the state words are not read into it |
@@ -428,14 +428,24 @@ of `0x00147af1`, each screen with its widgets' headers (type, depth,
 bias, rectangle, animated offset, alpha) and what each draws (a bitmap,
 a shader bitmap, text, a model view, or nothing for a container). Each
 screen's widgets are drawn in the order of the guest's comparator
-`0x002356d8` (`sort_widgets`: depth, ties within 0.001, then bias, then
-type; the guest's sort algorithm is not traced), and a dialog's screen
-first draws its backdrop as a fill and a blur. Text is laid out by the
-caller's fonts (`UiText`), clipped to the widget's rectangle. A shader
-bitmap names its shader, so it is refused until tag shaders translate.
-The sim-thread read of the guest's widgets and state words into a
-`UiFrame` is R7's remaining work, and until it lands the menus draw as
-the quads of [native-post-hud.md](native-post-hud.md).
+`0x002356d8` as the C runtime's `qsort` applies it (`sort_widgets`: the
+deeper first, ties within 0.001 by bias, smaller first, then by type,
+larger first; not stable), and a dialog's screen first draws its backdrop
+as a fill and a blur. Text is laid out by the caller's fonts (`UiText`),
+clipped to the widget's rectangle. A shader bitmap names its shader, so
+it is refused until tag shaders translate.
+
+The game reads the guest's widgets on the sim thread at each sorted list
+(`render_bridge::native_hud::ui_overlay`), in the guest's own sorted
+order: each drawn widget is read (`scene_extract::ui::read_widget`) and
+listed, consecutive exact ones are drawn by one overlay pass placed at
+the first one's draw, their draws are skipped, and the list's skipped
+draws are checked against its claim ([native-post-hud.md](native-post-hud.md#the-menus-on-the-overlay)).
+`read_widget` reads containers only; bitmaps, shader bitmaps, text,
+model scenes, lists and buttons stay the game's, counted by reason
+(`native_ui_overlay_menu_refused_*`). The fade, bars and loading screen
+are not read into a `UiFrame` yet; their quads are the producers of
+[native-post-hud.md](native-post-hud.md#native-ui).
 
 ### What stays the same, and the proof
 
