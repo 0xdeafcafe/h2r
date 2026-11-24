@@ -153,18 +153,34 @@ pub(crate) fn open(vfs: &Mutex<vfs::Vfs>, loaded: &Loaded) -> Result<Opened, Str
 }
 
 fn open_checked(vfs: &Mutex<vfs::Vfs>, loaded: &Loaded) -> anyhow::Result<Opened> {
-    let source = {
+    // The one package Forge opens is the lobby's new map with the kit
+    // (`map_variant::kit_start`): its document is the base's empty draft,
+    // so the base is the installed map, not the package's bytes.
+    let (source, base) = {
         let mut vfs = vfs.lock().unwrap_or_else(|e| e.into_inner());
+        let package = vfs.map_id(&loaded.path);
+        let kit = package.is_some() && package == crate::map_variant::kit_start();
         ensure!(
-            vfs.map_id(&loaded.path).is_none(),
+            package.is_none() || kit,
             "Forge needs the original map. This slot serves a package or an override."
         );
+        let base = if kit {
+            Some(
+                crate::map_variant::installed(&loaded.base_name)
+                    .context("The installed map the kit was built on is unknown.")?,
+            )
+        } else {
+            None
+        };
         ensure!(
             vfs.map_ranges(&loaded.path)?.is_none(),
             "Forge needs the complete map. This slot serves a sparse copy."
         );
-        vfs.file_source(&loaded.path)
-            .context("The active map file is unavailable.")?
+        (
+            vfs.file_source(&loaded.path)
+                .context("The active map file is unavailable.")?,
+            base,
+        )
     };
     let max = map::writer::cache_size_limit(CacheType::Multiplayer)?;
     match source {
@@ -173,7 +189,7 @@ fn open_checked(vfs: &Mutex<vfs::Vfs>, loaded: &Loaded) -> anyhow::Result<Opened
                 bytes.len() as u64 <= max,
                 "The map exceeds the multiplayer cache size limit."
             );
-            decode(&bytes, loaded)
+            decode(&bytes, loaded, base)
         }
         vfs::FileSource::Host(f) => {
             ensure!(
@@ -184,12 +200,14 @@ fn open_checked(vfs: &Mutex<vfs::Vfs>, loaded: &Loaded) -> anyhow::Result<Opened
             file.seek(SeekFrom::Start(f.offset))?;
             let mut bytes = vec![0; usize::try_from(f.len)?];
             file.read_exact(&mut bytes)?;
-            decode(&bytes, loaded)
+            decode(&bytes, loaded, base)
         }
     }
 }
 
-fn decode(bytes: &[u8], loaded: &Loaded) -> anyhow::Result<Opened> {
+/// `base` is the hash of the installed map a kit package was built on;
+/// the original map is its own base.
+fn decode(bytes: &[u8], loaded: &Loaded, base: Option<Sha256>) -> anyhow::Result<Opened> {
     let mut map = Map::from_reader(Cursor::new(bytes))?;
     let header = map.header();
     ensure!(
@@ -273,6 +291,7 @@ fn decode(bytes: &[u8], loaded: &Loaded) -> anyhow::Result<Opened> {
         extents.push(extent);
     }
     let teleporters = teleporters(&view, &root)?;
+    let room = kit_room(&mut map, &view)?;
     let names = map
         .tags()
         .iter()
@@ -293,7 +312,7 @@ fn decode(bytes: &[u8], loaded: &Loaded) -> anyhow::Result<Opened> {
         builder: BuilderVersions::CURRENT,
         base: MapRef {
             map: loaded.base_name.clone(),
-            sha256: Sha256::of(bytes),
+            sha256: base.unwrap_or_else(|| Sha256::of(bytes)),
         },
         title: loaded.name.clone(),
         author: loaded.author.clone(),
@@ -310,16 +329,45 @@ fn decode(bytes: &[u8], loaded: &Loaded) -> anyhow::Result<Opened> {
         base_counts,
         ..Default::default()
     };
+    let session = Session::new(doc, limits, palette, loaded.free_slots)
+        .and_then(|s| s.with_teleporters(teleporters))
+        .map_err(anyhow::Error::msg)?;
+    // A map with spare rows past its blocks' counts has the kit.
+    let session = if room.values().any(|&n| n > 0) {
+        session.with_kit(room).map_err(anyhow::Error::msg)?
+    } else {
+        session
+    };
     Ok(Opened {
-        session: Session::new(doc, limits, palette, loaded.free_slots)
-            .and_then(|s| s.with_teleporters(teleporters))
-            .map_err(anyhow::Error::msg)?,
+        session,
         tags,
         extents,
         refused,
         walls,
         names,
     })
+}
+
+/// The spare rows the kit's blocks have past their counts: the rows after
+/// each count that read in the kit's spare form (`forge::kit::room`).
+fn kit_room<R: Read + Seek>(
+    map: &mut Map<R>,
+    view: &TagView<'_>,
+) -> anyhow::Result<BTreeMap<BlockKind, u32>> {
+    let mut room = BTreeMap::new();
+    for block in forge::kit::BLOCKS {
+        let def = scenario_layout::block(block);
+        let pair = view.at(def.offset as usize, 8)?;
+        let count = u32::from_le_bytes(pair[..4].try_into()?);
+        let address = u32::from_le_bytes(pair[4..].try_into()?);
+        let spare = forge::kit::room(block, count, |n| {
+            let at = address.checked_add(n.checked_mul(def.stride)?)?;
+            let offset = map.file_offset(at, def.stride).ok()?;
+            map.read_file_range(offset, def.stride.into()).ok()
+        });
+        room.insert(block, spare);
+    }
+    Ok(room)
 }
 
 /// The object definition header (`obje`, docs/formats/objects.md): its

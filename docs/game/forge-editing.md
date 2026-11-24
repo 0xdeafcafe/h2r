@@ -111,7 +111,7 @@ the tool in use.
 
 | Tool | Aims at | Slice |
 |---|---|---|
-| Objects | placed objects; the map's own objects, item spawners, starting points and goals ([forge-map-variants.md](forge-map-variants.md), "Things"); and, in a kit session, new spawns, goals and item entries | built for placed objects and the map's own things (M5 to M9); P2 |
+| Objects | placed objects; the map's own objects, item spawners, starting points and goals ([forge-map-variants.md](forge-map-variants.md), "Things"); and, in a kit session, new spawns, goals, teleporters and item spawners | built (M5 to M9, P2) |
 | Links | teleporter flags and machines, then every port | built (F6); F7 |
 | Volumes | trigger volumes, boundaries, barriers | F7, F8 |
 | Emitters | emitters | F7 |
@@ -193,11 +193,11 @@ block's objects have a group (`Group::of_block`).
 
 | Group | Lists | Made as | Slice |
 |---|---|---|---|
-| Weapons, Vehicles, Equipment | the map's item and vehicle tags | in a kit session a netgame equipment entry, which the game spawns and respawns (**E**, [forge.md](forge.md) 1.2); otherwise a scenario placement made once | built as placements; P2 |
+| Weapons, Vehicles, Equipment | the map's item and vehicle tags | in a kit session a netgame equipment entry, which the game spawns and respawns (**E**, [forge.md](forge.md) 1.2), of one of the collections the map's own spawners name; otherwise a scenario placement made once | built (P2) |
 | Scenery, Crates, Machines | the tags in the scenario's palettes (`forge::PaletteItem`) | a scenario placement | built |
-| Teleporters | Sender, Receiver | netgame flags of the two teleporter types | P2 |
-| Spawns | Starting point, by team | a player starting location | P2 |
-| Goals | Hill, Territory and Siege site | one centre flag and its default area | MK7. Other goal placements are P2 |
+| Teleporters | Sender, Receiver | netgame flags of the two teleporter types (kit session) | built (P2) |
+| Spawns | Starting point, by team | a player starting location (kit session) | built (P2) |
+| Goals | Hill, Territory and Siege site, those the session's game type reads | one centre flag and its default area | built (MK7, P2) |
 | Structure | the kit's block-out pieces and barriers | generated kit tags | F8 |
 | Lights | the kit's lights | a generated kit tag | P6 |
 | Prefabs | the player's saved prefabs whose every tag this map holds | the pieces as placements, their labels, and a group | built |
@@ -209,18 +209,46 @@ block's objects have a group (`Group::of_block`).
 - The budget is a count of objects, as Halo 3's is a counter (**C**).
   A cost per item is a design option of
   [forge-features.md](forge-features.md), "Objects".
-- **Goal areas.** Hill, Territory and Siege site are available for
-  authoring. Placing a goal of another game type switches the monitor
-  to show all game types so the goal can be aimed at. **Edit area** in
+- **Goal areas.** The Goals group lists the goals the session's game
+  type reads (`Session::goals`): a Hill with King of the Hill, a
+  Territory with Territories, and Siege site always. **Edit area** in
   Properties opens the draft radius or path
   editor ([gametype-markers.md](gametype-markers.md#forge)).
 - **Kit sessions.** Spawns, teleporters and item entries are
-  rows of scenario blocks that cannot grow in a loaded map. A session
-  started from the lobby in Forge mode runs on the draft materialised
-  with the `forge_kit` recipe, whose spare entries make these Kit edits
-  ([forge-design.md](forge-design.md), "The kit"). A session on a map
-  without the kit lists those groups with the count left at zero and
-  the reason in the description.
+  rows of scenario blocks that cannot grow in a loaded map. A game
+  started from the lobby in Forge mode runs on the base map's empty draft
+  materialised with the `forge_kit` recipe
+  (`map_variant::pick_kit`, `lobby_mode::variant_hold`), whose spare rows
+  make these Kit edits ([forge-design.md](forge-design.md), "The kit").
+  `forge_map::open` reads the spare rows past each kit block's count
+  (`forge::kit::room`) and gives the session the kit
+  (`Session::with_kit`), which puts the `forge_kit` recipe in its
+  document.
+  - An add is one `Placement::Add` and one `World::kit_add`: the block's
+    next spare row is written (a zeroed row with the add's fields, as the
+    materialiser's new entry) and the block's count raised past it. A
+    move or a field of an added row is `base_move` and `base_field` on
+    it; a removal, or the undo of the add, is `World::kit_drop`, which
+    writes the spare form back and lowers the count
+    (`forge::session::entries::reconcile`, `agent::forge::base`).
+  - An item spawner takes one of the collections the map's own spawners
+    name (`Session::kit_items`, filed by `kit::item_group`: a vehicle
+    collection under Vehicles, a path naming powerups or equipment under
+    Equipment, any other under Weapons), for every game type.
+  - A starting point is for a team of the Spawns picker. A teleporter
+    sender takes the lowest channel no teleporter uses; a receiver takes
+    the channel of the latest sender the session added that has no
+    receiver, else a free one.
+  - A block's room is its spare rows less the entries the document adds;
+    the engine's count for the block (100 spawners) also binds. An add
+    past either is refused with the block's name.
+  - A map without the kit refuses the add as `forge_no_kit`: "This map
+    has no kit, so it has no room for another ...". So does a document
+    that adds these entries, loaded where there is no kit. A goal added
+    where there is no kit stays in the document alone, as before; with
+    the kit it takes a spare flag row.
+  - A game with no map builder (`map_variant::install`) has no kit start:
+    Forge runs on the map as it is.
 
 ## Properties
 
@@ -240,7 +268,7 @@ opens a picker; an action row acts and closes.
 | goal, spawn | Team | the flag's or location's team | built | P2 |
 | goal | Role | the netgame flag's type | built | P2 |
 | goal | Order | the flag's identifier, for hills and territories | built | P2 |
-| teleporter | Channel | the flag's identifier, through a link (`forge_doc::Forge::Link`) | Kit; built for the map's own flags | F6, P2 |
+| teleporter | Channel | the flag's identifier, through a link (`forge_doc::Forge::Link`); a teleporter the session added has its channel from the add | Kit; built for the map's own flags | F6, P2 |
 | scenery, crate, machine | Physics: Normal, Fixed | **S**: no placement field that pins a physical object is known | | after a probe |
 | any thing | Label, Label number, Clear label | a label and number in the document ([rules-engine.md](rules-engine.md#forge-labels)): `Forge::Label` | none: scripts read it | built |
 | object the session placed | Save as prefab | `<data>/forge/prefabs/<name>.h2prefab` | none | built |

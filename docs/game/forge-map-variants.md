@@ -605,6 +605,12 @@ the map variant the session opens.
    `Building <name>...`) or is refused (the table's sentence). A pick is
    cleared by a change of the lobby's map (`map_variant::sync`, read
    where the lobby's state is read), by Original and by leaving the lobby.
+   In FORGE mode with no pick, `map_variant::follow_mode` (called by
+   `lobby_mode::variant_hold`) picks the map's empty draft with the
+   kit (`pick_kit`): the package carries the `forge_kit` spare rows, and
+   `kit_start` names it for the load, where `forge_map::open` lets a
+   session open on it and reads its spare rows into the session's kit
+   ([forge-editing.md](forge-editing.md), "The object menu").
    Without a builder in the game (`game::map_variant::install`) a pick
    is `variant_build`. `variant_member` is `Refusal::member`; V3 sends it.
 

@@ -381,6 +381,23 @@ pub enum Command {
         goal: crate::Goal,
         frame: Frame,
     },
+    /// Add a starting point for a team in a kit session
+    /// ([`crate::Session::place_spawn`]).
+    Spawn {
+        team: u8,
+        frame: Frame,
+    },
+    /// Add a teleporter sender or receiver in a kit session
+    /// ([`crate::Session::place_teleporter`]).
+    Teleporter {
+        sender: bool,
+        frame: Frame,
+    },
+    /// Add an item spawner of a kit item ([`crate::Session::place_item`]).
+    Item {
+        item: forge_doc::TagKey,
+        frame: Frame,
+    },
     /// **Test waves**: build the ground if it is not current.
     TestWaves,
     Palette,
@@ -675,6 +692,9 @@ impl Tool {
                 | Command::Link { .. }
                 | Command::Unlink { .. }
                 | Command::Goal { .. }
+                | Command::Spawn { .. }
+                | Command::Teleporter { .. }
+                | Command::Item { .. }
                 | Command::PlacePrefab { .. }
                 | Command::Undo
                 | Command::Redo

@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 use crate::{BlockKind, Frame, OpId, PaletteItem, PlacedObject, World};
 use forge_doc::{Edit, F32, FieldWrite, ForgeDoc, Limits, Placement, Value};
+use map::scenario_layout as layout;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Object {
@@ -36,12 +37,27 @@ pub(crate) struct Marker {
     pub identifier: i16,
 }
 
+/// A starting location or netgame equipment entry the document adds: a
+/// row of the kit. It has no live object in the session.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Entry {
+    pub id: OpId,
+    pub block: BlockKind,
+    /// Its index in its block after every op.
+    pub index: u32,
+    /// The fields an add or a set wrote, by layout name, in the layout's
+    /// order. Any other field is as a zeroed row has it.
+    pub set: Vec<(&'static str, Value)>,
+}
+
 /// The added objects a document leaves, and where each is.
 pub(crate) struct Scene {
     /// By block, then by index in the block.
     pub objects: Vec<Object>,
     /// The added netgame flags.
     pub markers: Vec<Marker>,
+    /// The added starting locations and netgame equipment entries.
+    pub entries: Vec<Entry>,
     /// Each added object's index in its block after every op: the running
     /// index a placement op by index names it at.
     pub index: BTreeMap<OpId, u32>,
@@ -53,6 +69,7 @@ enum Row {
     Own,
     Added(Object),
     Marker(Marker),
+    Entry(Entry),
 }
 
 /// Follow every block an op names through its appends and swap-removes, as
@@ -110,6 +127,23 @@ pub(crate) fn project(
                 in_bounds(limits, marker.frame)?;
                 rows.push(Row::Marker(marker));
             }
+            Placement::Add { like, fields, .. } if crate::kit::is_block(block) => {
+                // Starting locations and netgame equipment (the flags are
+                // the marker arm's) are rows of the kit.
+                if like.is_some() {
+                    return Err("Copying an existing placement needs a rebuild.".into());
+                }
+                let mut entry = Entry {
+                    id: op.id,
+                    block,
+                    index: 0,
+                    set: Vec::new(),
+                };
+                for field in fields {
+                    update_entry(&mut entry, field)?;
+                }
+                rows.push(Row::Entry(entry));
+            }
             Placement::Add { like, fields, .. } => {
                 if like.is_some() {
                     return Err("Copying an existing placement needs a rebuild.".into());
@@ -143,6 +177,7 @@ pub(crate) fn project(
                     update_marker(marker, write)?;
                     in_bounds(limits, marker.frame)?;
                 }
+                Some(Row::Entry(entry)) => update_entry(entry, write)?,
                 // The map's own entry: its fields are the loaded scenario's,
                 // not an object of this tool.
                 Some(Row::Own) if entry => {}
@@ -165,6 +200,7 @@ pub(crate) fn project(
     let mut scene = Scene {
         objects: Vec::new(),
         markers: Vec::new(),
+        entries: Vec::new(),
         index: BTreeMap::new(),
     };
     for rows in blocks.into_values() {
@@ -178,6 +214,11 @@ pub(crate) fn project(
                     marker.index = i as u32;
                     scene.index.insert(marker.id, i as u32);
                     scene.markers.push(marker);
+                }
+                Row::Entry(mut entry) => {
+                    entry.index = i as u32;
+                    scene.index.insert(entry.id, i as u32);
+                    scene.entries.push(entry);
                 }
                 Row::Own => {}
             }
@@ -246,6 +287,32 @@ fn update_marker(marker: &mut Marker, write: &FieldWrite) -> Result<(), String> 
             marker.identifier = i16::try_from(*id).map_err(|_| "A flag's identifier is out of range.")?;
         }
         (name, _) => return Err(format!("A marker has no {name} to set here.")),
+    }
+    Ok(())
+}
+
+/// One field of an added kit entry: the layout's editable field of that
+/// name, kept in the layout's order.
+fn update_entry(entry: &mut Entry, write: &FieldWrite) -> Result<(), String> {
+    let def = layout::block(entry.block);
+    let at = def
+        .fields
+        .iter()
+        .position(|f| f.name == write.field && f.editable)
+        .ok_or_else(|| format!("A {} has no {} to set here.", crate::noun(entry.block).0, write.field))?;
+    let name = def.fields[at].name;
+    match entry.set.iter_mut().find(|(n, _)| *n == name) {
+        Some((_, value)) => *value = write.value.clone(),
+        None => {
+            let next = entry
+                .set
+                .iter()
+                .position(|(n, _)| {
+                    def.fields.iter().position(|f| f.name == *n).is_some_and(|i| i > at)
+                })
+                .unwrap_or(entry.set.len());
+            entry.set.insert(next, (name, write.value.clone()));
+        }
     }
     Ok(())
 }

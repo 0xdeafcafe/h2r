@@ -4823,7 +4823,14 @@ carries its name in `data.code` (`agent_proto::forge::refusal`):
 | `forge_was` | the target's value is not the one `was` names |
 | `forge_left_out` | the entry's block did not read when the session opened (`forge.things` `left_out`) |
 | `forge_object_gone`, `forge_object_kind`, `forge_object_held` | the game call's: the live object no longer resolves, its block has no live objects, or the own entry's object is held or attached |
+| `forge_no_kit` | an add or a drop of a starting location, netgame flag or netgame equipment row, on a map whose next row is not in the kit's spare form: the map has no kit (or its spare rows are used) |
 | `forge_refused` | any other: the message says why |
+
+A kit session adds those rows: the document's `Add` of such an entry is
+one `Add` base step, which writes the block's next spare row and raises
+its root count, and its removal or undo is one `Drop` step, which writes
+the spare form back and lowers the count (`agent::forge::base`). A batch
+is checked in order; a refusal changes nothing.
 
 An area op names a netgame flag, own or added, and sets its
 [document area](../game/gametype-markers.md#in-the-document). Send

@@ -1089,7 +1089,8 @@ async fn run_forge(
                 (None, None)
             }
             ForgeStep::Base(base_step) => {
-                if let Err(e) = cx.read(|m| crate::forge::base::plan(m, guard.scenario, base_step))
+                if let Err(e) =
+                    cx.read(|m| crate::forge::base::plan_ahead(m, guard.scenario, base_step))
                 {
                     return Ok(Err(e));
                 }
