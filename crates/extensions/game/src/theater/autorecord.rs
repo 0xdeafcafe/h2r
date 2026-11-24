@@ -145,6 +145,7 @@ pub(super) fn cut(
     start: u64,
 ) -> anyhow::Result<PathBuf> {
     use anyhow::Context;
+    rec.meta.finish_map()?;
     let mut summary = rec.meta.summary(tick);
     rec.unified.summary_medals(&mut summary.players);
     summary.dropped_samples = rec.unified.drop_counts();
@@ -189,7 +190,6 @@ pub(super) fn cut(
         };
         let mut track = rec.track.clone();
         writer.chunk(film::HEAD, &header)?;
-        rec.meta.finish_map()?;
         track.finish(&mut writer, rec.meta.descriptor(), &summary)?;
         writer.chunk(film::MARK, &film::tape::Mark::End { slices, tick, calls })?;
         writer.finish()?.sync_all()?;

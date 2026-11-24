@@ -23,7 +23,6 @@ impl Library for FilmLibrary {
         let entries = self.0.list().map_err(|e| e.to_string())?;
         Ok(entries
             .into_iter()
-            .filter(is_game_film)
             .map(|entry| {
                 let compatibility = installation.compatibility(&entry);
                 let recording = entry.path.clone();
@@ -48,19 +47,6 @@ impl Library for FilmLibrary {
     fn delete(&self, id: &str) -> Result<(), String> {
         self.0.delete(id).map_err(|e| e.to_string())
     }
-}
-
-/// Whether a film is a game's: the library lists games only. A film with no
-/// map and no players (a session's menus, a tape sealed after a hard kill,
-/// whose descriptor died with the session) names nothing to watch.
-pub(crate) fn is_game_film(entry: &film::LibraryEntry) -> bool {
-    entry.meta.source == film::Source::Host
-        || !entry.meta.map.is_empty()
-        || !entry.meta.players.is_empty()
-        || entry
-            .summary
-            .as_ref()
-            .is_some_and(|s| !s.level.is_empty() || !s.players.is_empty())
 }
 
 /// Both the library selector and the playback transport use the sealed header
@@ -281,14 +267,14 @@ mod tests {
 
     #[test]
     fn the_library_lists_games_not_nameless_films() {
-        assert!(!is_game_film(&local_entry("")), "no map, no players");
-        assert!(is_game_film(&local_entry("zanzibar")));
+        assert!(!local_entry("").is_game(), "no map, no players");
+        assert!(local_entry("zanzibar").is_game());
         let mut scored = local_entry("");
         scored.meta.players.push(film::Player { name: "Chief".into(), team: 0, score: 1 });
-        assert!(is_game_film(&scored));
+        assert!(scored.is_game());
         let mut summarised = local_entry("");
         summarised.summary = Some(film::blam::Summary { level: "a30".into(), ..Default::default() });
-        assert!(is_game_film(&summarised));
+        assert!(summarised.is_game());
     }
 
     #[test]

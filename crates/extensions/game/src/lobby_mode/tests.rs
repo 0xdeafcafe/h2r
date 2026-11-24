@@ -697,6 +697,7 @@ fn the_header_has_its_own_panel_hook_inside_lobby_options() {
         ))
         .unwrap();
         r.add(&LobbyMode {
+            theater: None,
             offer: ALL,
             store: Some(store),
             data: std::env::temp_dir(),
@@ -736,6 +737,7 @@ fn the_rows_go_after_the_other_rows_on_the_plan() {
     r.add(&page.class()).unwrap();
     r.add(&ff::SetupRow { page }).unwrap();
     r.add(&LobbyMode {
+        theater: None,
         offer: ALL,
         store: Some(ff_store),
         data: std::env::temp_dir(),
@@ -787,6 +789,7 @@ fn the_arrangement_runs_after_every_row_is_added() {
     r.add(&page.class()).unwrap();
     r.add(&ff::SetupRow { page }).unwrap();
     r.add(&LobbyMode {
+        theater: None,
         offer: ALL,
         store: Some(ff_store),
         data: std::env::temp_dir(),

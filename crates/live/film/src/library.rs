@@ -22,6 +22,14 @@ pub struct LibraryEntry {
     pub path: PathBuf,
 }
 impl LibraryEntry {
+    /// A local menu-only recording has no game to select.
+    pub fn is_game(&self) -> bool {
+        self.meta.source == crate::Source::Host
+            || !self.meta.map.is_empty()
+            || !self.meta.players.is_empty()
+            || self.summary.as_ref().is_some_and(|s| !s.level.is_empty() || !s.players.is_empty())
+    }
+
     fn split(path: &Path, file: &mut fs::File) -> Result<Self> {
         let (header, layout, seed) = crate::share::read_seed(file)?;
         let stats = match fs::File::open(path.with_extension("h2stats")) {
@@ -197,14 +205,16 @@ impl Library {
         });
         Ok(rows)
     }
-    /// Recent (25) plus any older pinned films. Listing never removes a file.
+    /// The newest 25 unsaved games and every saved game, in date order.
     pub fn list(&self) -> Result<Vec<LibraryEntry>> {
-        Ok(self
-            .entries()?
-            .into_iter()
-            .enumerate()
-            .filter_map(|(i, r)| (i < 25 || r.saved).then_some(r))
-            .collect())
+        let mut recent = 0;
+        Ok(self.entries()?.into_iter().filter(LibraryEntry::is_game).filter(|entry| {
+            if entry.saved {
+                return true;
+            }
+            recent += 1;
+            recent <= 25
+        }).collect())
     }
     pub fn get(&self, id: &str) -> Result<LibraryEntry> {
         let mut matches = self.entries()?.into_iter().filter(|r| r.meta.id == id);

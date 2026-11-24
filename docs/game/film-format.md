@@ -110,8 +110,9 @@ rules live in `crates/extensions/game/src/theater/autorecord.rs`.
   `theater.status` reports the same while it runs: the tape, whether a
   game is on it, the films cut, the last discard reason, the notes and any
   failure ([agent API](../runtime/agent-api.md#theater-transport)).
-- **Local only.** Default films stay in the local library. Only films the
-  player names are queued for the signed-in account's archive.
+- **Local recordings.** Both automatic and explicitly named machine recordings
+  stay on the player’s computer. The account archive accepts shareable split
+  input films. A dedicated host uploads its match through its lease.
 - **The tape records games.** Machine keyframes, D3D barriers and the
   local keyframe cache belong to games: outside one (main menu, lobby,
   pregame, Theater, settings) no capture is attempted and no capture mark
@@ -150,6 +151,8 @@ rules live in `crates/extensions/game/src/theater/autorecord.rs`.
   listed; a tape with no such mark —
   a session that died outside a game — is deleted, as a session that
   played no game leaves no film.
+
+Recent lists up to 25 unsaved games. Saving a film moves it to Saved. Opening Theater reads the local library even when Live has no archive entry for the game.
 
 What Theater's Recent tab shows:
 
@@ -488,6 +491,13 @@ million entries. JSON payloads are UTF-8.
 | `SUMM` | Menu JSON, up to 128 KiB. Contains level, game type, mode, variant name, match duration in ticks and player results including score and medal counts. Player turnover can produce multiple results for the same seat. |
 | `TIDX` | Tick directory for independently decodable input blocks and keyframes. |
 | `INDX` | JSON array of `{tag, offset, size}` for every preceding chunk. A tag is four byte values and size excludes the eight-byte chunk prefix. |
+
+An encoded call over 1 MiB occupies consecutive `TPAR` chunks of at most
+1 MiB each. Its terminating `TAPE` chunk contains byte 0xc8, the call
+index and the part count (both little-endian u64). Playback and seek read
+the parts as one indexed call. Argument and guest-write counts vary by
+service operation. The recorder validates a call before buffering it so a
+rejected call leaves the preceding batch available to the final cut.
 
 A `TEXT` call uses operation `VirtualKeyboard`. Its six u32 arguments give
 the screen address, buffer address, caret address, capacity in UTF-16

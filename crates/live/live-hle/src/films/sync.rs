@@ -110,6 +110,15 @@ impl Remote for Archive {
     }
 }
 
+/// The local player's machine tape contains private guest state. Its
+/// library entry stays local even when a previous session queued it.
+fn machine_tape(path: &Path) -> Result<bool, String> {
+    use std::io::Read;
+    let mut magic = [0; 8];
+    File::open(path).and_then(|mut f| f.read_exact(&mut magic)).map_err(|e| e.to_string())?;
+    Ok(magic == live_proto::film::range::MAGIC || &magic[..4] == b"HEAD")
+}
+
 fn prepare_job(dir: &Path, job: &mut Job) -> Result<(), String> {
     if job.upload.is_none() {
         let stats = job.source.with_extension("h2stats");
@@ -254,6 +263,9 @@ impl Sync {
     }
 
     pub fn enqueue(&self, id: &str, source: &Path) -> Result<(), String> {
+        if machine_tape(source)? {
+            return Err("Machine recordings can be saved and watched locally".into());
+        }
         let dir = self.dir(id)?;
         if dir.join("state.json").is_file() {
             return Ok(());
@@ -392,7 +404,7 @@ impl Sync {
             let _lock = lock(&dir)?;
             let mut job = read(&dir)?;
             apply_local_change(&intent, &dir, &mut job)?;
-            if !pending(&job) {
+            if !pending(&job) || (job.upload.is_none() && !job.removed && machine_tape(&job.source) == Ok(true)) {
                 continue;
             }
             if !job.done

@@ -272,9 +272,9 @@ dedicated match.
 
 ### In-game Theater
 
-Select **THEATER** directly below **Xbox Live** on the main menu. The
-entry in `crates/extensions/game/src/layout_glue.rs` opens the film
-library for the controller that selects it. Left and Right switch between
+Select **THEATER** between **System Link** and **Settings** on the main menu. The
+main menu and **Game Setup → Theater** in the post-game party lobby open
+the same library for the controller that selects it. Left and Right switch between
 the **Recent**, **Saved** and **Clips** tabs from any row. The active tab
 and its film count sit above the list and the details pane.
 
@@ -302,15 +302,15 @@ simulation change. A summary without a recording also shows its reason
 there. **Watch** appears for playable films and host films awaiting their
 first download.
 
-Recent combines the local library and the signed-in Live account's
-archive. `h2 play` records each session into the local library, one
+Recent combines the newest 25 unsaved local games and the signed-in Live
+account's unsaved games. `h2 play` records each session into the local library, one
 film per game, so each game played on this console appears there and
 opens at its own start; the account's archive adds
 games whose dedicated host recorded a film
 ([Recording every game](film-format.md#recording-every-game) lists what
 each kind of game shows). Saved includes local and account pins. Clips includes local
 in/out ranges and clips authored by the account. Use **Save** or **Unsave**
-to change a pin. Local films and authored clips offer **Delete** with a
+to move the film between Recent and Saved. Local films and authored clips offer **Delete** with a
 second press to confirm. The selector takes its data from the library
 and the Live listing. Older recordings and archives can leave some fields
 blank.

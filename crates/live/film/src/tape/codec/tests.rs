@@ -136,17 +136,7 @@ fn a_batch_the_encoder_would_not_write_is_refused() {
     assert!(encode_batch(&[]).is_err());
     let long = "x".repeat(65);
     assert!(encode_batch(&[call(0, &long, &[], Ok(0), &[])]).is_err());
-    assert!(encode_batch(&[call(0, "Op", &[0; 33], Ok(0), &[])]).is_err());
-    assert!(
-        encode_batch(&[call(
-            0,
-            "Op",
-            &[],
-            Ok(0),
-            &[&[], &[], &[], &[], &[], &[], &[], &[], &[]]
-        )])
-        .is_err()
-    );
+    round_trip(&[call(0, "Op", &[0; 65], Ok(0), &[b"x"; 129])]);
 }
 
 #[test]
@@ -203,12 +193,12 @@ fn a_declared_length_past_the_bytes_left_is_refused_without_allocating_it() {
         put(&mut bytes, field);
     }
     bytes.push(RAW);
-    put(&mut bytes, MAX_OUTPUT);
+    put(&mut bytes, 16 << 20);
     assert!(decode_batch(&bytes).is_err());
     let at = bytes.len() - 5;
     bytes.truncate(at);
     bytes.push(RAW);
-    put(&mut bytes, MAX_OUTPUT + 1);
+    put(&mut bytes, u64::MAX);
     assert!(decode_batch(&bytes).is_err());
 }
 

@@ -132,7 +132,7 @@ pub fn recover_tape(path: &Path) -> Result<bool> {
                 Ok(Mark::Lobby { .. }) => entry.offset < mark_offset,
                 _ => false,
             },
-            crate::tape::TAPE => entry.offset < mark_offset,
+            crate::tape::TAPE | crate::tape::TAPE_PART => entry.offset < mark_offset,
             KEYF => crate::read_bytes(&mut source, entry, crate::MAX_CHUNK)
                 .ok()
                 .and_then(|raw| range::key_tick(&raw).ok())
@@ -156,14 +156,24 @@ pub fn recover_tape(path: &Path) -> Result<bool> {
     let mut calls = 0;
     for entry in rest.iter().filter(|e| e.offset > mark_offset) {
         if entry.tag == crate::tape::TAPE {
-            let batch = crate::tape::decode_batch(&crate::read_bytes(&mut source, entry, crate::MAX_CHUNK)?)?;
+            let raw = crate::read_bytes(&mut source, entry, crate::MAX_CHUNK)?;
+            if let Some((index, _)) = crate::tape::fragments(&raw)? {
+                calls = index;
+                break;
+            }
+            let batch = crate::tape::decode_batch(&raw)?;
             calls = batch.first().context("an empty film call batch")?.index;
             break;
         }
     }
     if calls == 0 {
         for entry in kept.iter().filter(|e| e.tag == crate::tape::TAPE) {
-            let batch = crate::tape::decode_batch(&crate::read_bytes(&mut source, entry, crate::MAX_CHUNK)?)?;
+            let raw = crate::read_bytes(&mut source, entry, crate::MAX_CHUNK)?;
+            if let Some((index, _)) = crate::tape::fragments(&raw)? {
+                calls = index.checked_add(1).context("invalid tape index")?;
+                continue;
+            }
+            let batch = crate::tape::decode_batch(&raw)?;
             if let Some(last) = batch.last() {
                 calls = last.index + 1;
             }
