@@ -39,6 +39,7 @@ pub mod assets;
 pub mod preview_switch;
 pub mod problems;
 pub mod sound_import;
+pub mod bitmap_import;
 pub mod tag_tree;
 pub mod textures;
 pub mod ui_screens;

@@ -1577,6 +1577,27 @@ The build is `workspace::build` (`h2 package build`); the tests
 (`api/tests/import_tests.rs`, `workspace/src/import_tests.rs`) run over
 invented tones and an invented map.
 
+### Pictures into a package
+
+`import.bitmap {file, package, tag}` (`api/import.rs`,
+`app/bitmap_import.rs`) adds a PNG to a local package as a `bitmap` item
+that writes the new `bitm` `tag`. The PNG (any bit depth and colour type) is
+copied unchanged to `bitmaps/<last segment of tag>.png`, the item is added
+to `package.toml` and `package.lock` is rewritten. The answer is what the
+`bitmap` builder writes (`workspace::bitmap`): one linear `argb8888` image
+of the PNG's `width` and `height` with one mip, `bytes` of pixels, and
+`class: "shape"`, because a new tag reaches a game by a build and a load,
+never by a push ([live-editors.md](live-editors.md)). A package that is
+baked, a tag the package adds already or a file that is not a PNG is
+refused; a tag that is not a path is `invalid params`. A bitmap with mips or
+another format is made by `bitmap.reshape` on the built tag.
+
+```sh
+h2 studio import.bitmap '{"file":"/tmp/icon.png","package":"my-pack","tag":"ui\\icon"}'
+```
+
+The tests are in `api/tests/import_tests.rs`, over an invented PNG.
+
 ### Errors
 
 The JSON-RPC codes (`-32700` parse, `-32601` no such method, `-32602`

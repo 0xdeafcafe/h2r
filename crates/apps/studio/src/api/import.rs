@@ -1,4 +1,4 @@
-//! `import.sound` ([`super::Provider`], registered in [`super::seams`]): a
+//! `import.sound` and `import.bitmap` ([`super::Provider`], registered in [`super::seams`]): a
 //! WAV file added to a local package as a `sound` item, over
 //! `app::sound_import`. docs/editor/agent-api.md, "Sounds".
 
@@ -21,14 +21,40 @@ const SOUND: MethodDef = def(
     r#"{"file":"$OUT/clip.wav","package":"mine","tag":"sounds\\clip"}"#,
 );
 
+const BITMAP: MethodDef = def(
+    m::IMPORT_BITMAP,
+    "Import a PNG into a package as a `bitmap` item that writes the new `bitm` `tag`: the file is copied into the package under bitmaps/ and the build decodes it (any bit depth or colour type, to RGBA8) and writes one linear ARGB8888 image with no mips, sized for interface and HUD art. Answers what the build will write. A new tag is a Shape change: a game takes it by a build and a load. Refused for a package that is built in, a tag the package adds already, or a file that is not a PNG",
+    r#"{"file":"string (a PNG path)","package":"string (a local package's id)","tag":"string (the bitm path, e.g. ui\\pogo\\icon)"}"#,
+    r#"{"package":"string","tag":"string (tag:bitm:<path>)","source":"string","item":"integer","dir":"string","width":"integer","height":"integer","format":"string","mips":"integer","bytes":"integer","class":"string (shape)"}"#,
+    r#"{"file":"$OUT/pic.png","package":"mine","tag":"ui\\pic"}"#,
+);
+
 impl Provider for Import {
     fn methods(&self) -> Vec<MethodDef> {
-        vec![SOUND]
+        vec![SOUND, BITMAP]
     }
 
     fn call(&mut self, app: &mut App, method: &str, params: &Value) -> Option<Reply> {
-        (method == m::IMPORT_SOUND).then(|| sound(app, &P(params)))
+        match method {
+            m::IMPORT_SOUND => Some(sound(app, &P(params))),
+            m::IMPORT_BITMAP => Some(bitmap(app, &P(params))),
+            _ => None,
+        }
     }
+}
+
+fn bitmap(app: &mut App, p: &P) -> Reply {
+    crate::app::bitmap_import::import_bitmap(
+        &app.data_root(),
+        std::path::Path::new(p.str("file")?),
+        p.str("package")?,
+        p.str("tag")?,
+    )
+    .map_err(|e| match e {
+        CopyRefusal::Params(m) => err(code::INVALID_PARAMS, m),
+        CopyRefusal::Refused(m) => err(code::REFUSED, m),
+        CopyRefusal::Failed(m) => err(code::FAILED, m),
+    })
 }
 
 fn sound(app: &mut App, p: &P) -> Reply {

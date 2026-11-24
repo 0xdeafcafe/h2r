@@ -137,6 +137,8 @@ pub mod method {
     pub const SOUND_MEASURE: &str = "sound.measure";
     // A WAV imported into a package as a `sound` item (api/import.rs).
     pub const IMPORT_SOUND: &str = "import.sound";
+    // A PNG imported into a package as a `bitmap` item (api/import.rs).
+    pub const IMPORT_BITMAP: &str = "import.bitmap";
 
     // The Announcer: lines said by a voice (api/voice.rs).
     pub const VOICE_SAY: &str = "voice.say";

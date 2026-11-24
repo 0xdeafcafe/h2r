@@ -167,3 +167,80 @@ fn import_refuses_what_it_cannot_build() {
     assert_eq!(manifest(&t).items.len(), 1);
     assert!(!t.path("data/packages/mine/sounds/b.wav").exists());
 }
+
+/// An RGBA PNG of `w` x `h` invented pixels.
+pub(super) fn png(w: u32, h: u32) -> Vec<u8> {
+    let rgba: Vec<u8> = (0..w * h * 4).map(|i| (i * 7) as u8).collect();
+    let mut out = Vec::new();
+    {
+        let mut e = png::Encoder::new(&mut out, w, h);
+        e.set_color(png::ColorType::Rgba);
+        e.set_depth(png::BitDepth::Eight);
+        let mut writer = e.write_header().unwrap();
+        writer.write_image_data(&rgba).unwrap();
+        writer.finish().unwrap();
+    }
+    out
+}
+
+#[test]
+fn a_png_import_copies_it_in_and_the_item_checks_clean() {
+    let (t, mut app, mut api) = setup("import-bitmap");
+    let bytes = png(3, 2);
+    std::fs::write(t.path("pic.png"), &bytes).unwrap();
+    let v = call(
+        &mut api,
+        &mut app,
+        m::IMPORT_BITMAP,
+        json!({"file": t.path("pic.png").display().to_string(), "package": "mine", "tag": "ui/pogo/icon"}),
+    );
+    assert_eq!(v["tag"], "tag:bitm:ui\\pogo\\icon");
+    assert_eq!(v["source"], "bitmaps/icon.png");
+    assert_eq!((v["width"].clone(), v["height"].clone()), (json!(3), json!(2)));
+    assert_eq!((v["format"].clone(), v["bytes"].clone()), (json!("argb8888"), json!(24)));
+    // A new tag is a Shape change.
+    assert_eq!(v["class"], "shape");
+    let dir = t.path("data/packages/mine");
+    assert_eq!(std::fs::read(dir.join("bitmaps/icon.png")).unwrap(), bytes);
+    let man = manifest(&t);
+    assert_eq!(man.items.len(), 1);
+    assert_eq!(man.items[0].kind, content::package::Kind::Bitmap);
+    assert_eq!(man.items[0].tag.as_deref(), Some("ui\\pogo\\icon"));
+    assert!(std::fs::read_to_string(dir.join("package.lock")).unwrap().contains("bitmaps/icon.png"));
+    let loaded = ::workspace::Loaded::from_dir(&dir).unwrap();
+    assert_eq!(::workspace::check_package(&loaded), vec![]);
+}
+
+#[test]
+fn a_png_import_refuses_what_it_cannot_build() {
+    let (t, mut app, mut api) = setup("import-bitmap-refuse");
+    let pic = t.path("pic.png").display().to_string();
+    std::fs::write(t.path("pic.png"), png(2, 2)).unwrap();
+    let ok = json!({"file": pic, "package": "mine", "tag": "ui\\a"});
+    call(&mut api, &mut app, m::IMPORT_BITMAP, ok.clone());
+    let refused = |api: &mut Api, app: &mut App, p: Value| code_of(api.call(app, m::IMPORT_BITMAP, p));
+    // The same tag again.
+    assert_eq!(refused(&mut api, &mut app, ok), code::REFUSED);
+    // Not a PNG.
+    std::fs::write(t.path("bad.png"), b"not a png").unwrap();
+    assert_eq!(
+        refused(&mut api, &mut app, json!({"file": t.path("bad.png").display().to_string(), "package": "mine", "tag": "ui\\b"})),
+        code::REFUSED
+    );
+    // A file that is not there.
+    assert_eq!(
+        refused(&mut api, &mut app, json!({"file": t.path("none.png").display().to_string(), "package": "mine", "tag": "ui\\b"})),
+        code::FAILED
+    );
+    // A package that is not, a path that is not one.
+    for bad in [
+        json!({"file": pic, "package": "nope", "tag": "ui\\b"}),
+        json!({"file": pic, "package": "mine", "tag": "..\\b"}),
+        json!({"file": pic, "package": "mine", "tag": ""}),
+    ] {
+        assert_eq!(refused(&mut api, &mut app, bad), code::INVALID_PARAMS);
+    }
+    // Nothing the refusals wrote is left in the package.
+    assert_eq!(manifest(&t).items.len(), 1);
+    assert!(!t.path("data/packages/mine/bitmaps/b.png").exists());
+}

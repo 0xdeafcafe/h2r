@@ -16,7 +16,7 @@ use tags::repo::TagKey;
 use super::assets::{CopyRefusal, read_set};
 
 /// Characters of a tag's last segment a file name keeps.
-fn file_stem(tag: &str) -> String {
+pub(super) fn file_stem(tag: &str, fallback: &str) -> String {
     let leaf = tag.rsplit('\\').next().unwrap_or(tag);
     let s: String = leaf
         .chars()
@@ -28,7 +28,24 @@ fn file_stem(tag: &str) -> String {
             }
         })
         .collect();
-    if s.is_empty() { "sound".into() } else { s }
+    if s.is_empty() { fallback.into() } else { s }
+}
+
+/// The directory of the local package `package`; a package that is built
+/// in has none to write to.
+pub(super) fn package_dir(data_root: &Path, package: &str) -> Result<std::path::PathBuf, CopyRefusal> {
+    use CopyRefusal::{Params, Refused};
+    let set = read_set(data_root);
+    set.listed
+        .iter()
+        .find(|l| l.id == package)
+        .ok_or_else(|| Params(format!("no package {package:?}")))
+        .and_then(|l| match &l.dir {
+            Some(d) => Ok(std::path::PathBuf::from(d)),
+            None => Err(Refused(format!(
+                "package {package:?} is built in: import into a package under <data>/packages/"
+            ))),
+        })
 }
 
 /// Add the WAV at `file` to the local package `package` as a `sound` item
@@ -50,18 +67,7 @@ pub fn import_sound(
         .map(|c| class_of(c).map(|n| (c.trim().to_owned(), n)))
         .transpose()
         .map_err(|e| Params(format!("class: {e}")))?;
-    let set = read_set(data_root);
-    let dir = set
-        .listed
-        .iter()
-        .find(|l| l.id == package)
-        .ok_or_else(|| Params(format!("no package {package:?}")))
-        .and_then(|l| match &l.dir {
-            Some(d) => Ok(std::path::PathBuf::from(d)),
-            None => Err(Refused(format!(
-                "package {package:?} is built in: import into a package under <data>/packages/"
-            ))),
-        })?;
+    let dir = package_dir(data_root, package)?;
     let bytes = std::fs::read(file).map_err(|e| Failed(format!("{}: {e}", file.display())))?;
     let clip = read_wav(&bytes).map_err(|e| Refused(format!("{}: {e}", file.display())))?;
     let encoded = encode(&clip).map_err(|e| Refused(format!("{}: {e}", file.display())))?;
@@ -81,7 +87,7 @@ pub fn import_sound(
             "package {package:?} adds snd!:{tag} already"
         )));
     }
-    let source = format!("sounds/{}.wav", file_stem(&tag));
+    let source = format!("sounds/{}.wav", file_stem(&tag, "sound"));
     let side = sidecar_path(&source);
     let target = dir.join(&source);
     if target.exists() {
