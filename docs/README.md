@@ -245,6 +245,7 @@ Halo 1 (Xbox) running in the Halo 2 engine: its data read from your own `halo1.i
 - Notes: [shared-map.md](halo1/notes/shared-map.md) (what the converted maps repeat, and the room in the shared caches)
 - Notes: [sky.md](halo1/notes/sky.md) (a10's grey slab under the space sky)
 - Notes: [sounds.md](halo1/notes/sounds.md) (the sound audit of a10 on the Delta Approach base)
+- Notes: [models.md](halo1/notes/models.md) (the model and animation round trips: skinning error, geometry error)
 
 Reading and converting Halo 1 data:
 
