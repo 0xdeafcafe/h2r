@@ -135,7 +135,7 @@ fn page_tables() {
 
 #[test]
 fn no_is_focused_on_every_question() {
-    for ask in [Ask::DeleteLinked, Ask::Overwrite, Ask::Leave] {
+    for ask in [Ask::DeleteLinked, Ask::Overwrite, Ask::Leave, Ask::Load] {
         let s = sheet::question(ask, "Courtyard");
         assert_eq!(s.rows[s.focus].label, "No", "{ask:?}");
         assert_eq!(

@@ -276,6 +276,11 @@ impl Drop for Files {
     }
 }
 
+fn variant_path(data: &std::path::Path, stem: &str) -> PathBuf {
+    data.join("map-variants/testroom")
+        .join(format!("{stem}.h2mapvariant"))
+}
+
 #[test]
 fn canonical_save_loads_at_its_document_head_and_compensates_failed_loads() {
     let data = Files::new();
@@ -285,75 +290,84 @@ fn canonical_save_loads_at_its_document_head_and_compensates_failed_loads() {
     let id = a.place(&mut world, 1, 0, frame(1., 0.)).unwrap();
     a.move_object(&mut world, 2, id, frame(2., 0.2)).unwrap();
     a.place(&mut world, 3, 0, frame(5., 0.)).unwrap();
-    a.save(&data.0, "our-room").unwrap();
-    let bytes = fs::read(data.0.join("forge/our-room.h2forge")).unwrap();
+    let stem = a.save_variant(&data.0, "Our Room", false).unwrap();
+    assert_eq!(stem, "Our_Room");
+    let bytes = fs::read(variant_path(&data.0, &stem)).unwrap();
+    let mut want = forge_doc::play_form(&forge_doc::fold(&base, a.log()).unwrap());
+    want.title = "Our Room".into();
+    assert_eq!(bytes, want.canonical_json().unwrap().into_bytes());
+    let listed = files::variants::list(&data.0, "testroom", None).unwrap();
     assert_eq!(
-        bytes,
-        forge_doc::fold(&base, a.log())
-            .unwrap()
-            .canonical_json()
-            .unwrap()
-            .into_bytes()
+        listed.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(),
+        vec!["Our Room"]
     );
-    assert_eq!(saved_names(&data.0).unwrap(), vec!["our-room"]);
+
+    let saved = ForgeDoc::from_bytes(&bytes, &Limits::default()).unwrap();
     let mut b = session(3);
     let mut second = Fake {
         refuse_at: Some(1),
         ..Default::default()
     };
-    assert!(b.load(&mut second, 4, &data.0, "our-room").is_err());
+    assert!(b.load_variant(&mut second, 4, saved.clone()).is_err());
     assert_eq!(b.document(), &base);
     assert!(second.objects.is_empty());
     assert!(b.objects().is_empty());
-    b.load(&mut second, 5, &data.0, "our-room").unwrap();
-    assert_eq!(b.document(), a.document());
-    assert_eq!(b.head().hash, a.document().id().unwrap());
+    b.load_variant(&mut second, 5, saved).unwrap();
+    let mut expected = a.document().clone();
+    expected.title = "Our Room".into();
+    assert_eq!(b.document(), &expected);
+    assert_eq!(b.head().hash, expected.id().unwrap());
     assert!(b.log().is_empty());
     assert_eq!(
         b.objects().iter().map(|o| o.frame).collect::<Vec<_>>(),
         vec![frame(2., 0.2), frame(5., 0.)]
     );
     b.delete(&mut second, 6, id).unwrap();
-    assert_eq!(
-        forge_doc::fold(a.document(), b.log()).unwrap(),
-        *b.document()
-    );
+    assert_eq!(forge_doc::fold(&expected, b.log()).unwrap(), *b.document());
 }
 
 #[test]
-fn saves_refuse_path_components_and_linked_worktrees() {
+fn saves_sanitise_names_and_refuse_linked_worktrees() {
     let data = Files::new();
     let s = session(1);
-    assert!(s.save(&data.0, "../outside").is_err());
+    // A name is never a path: it becomes a stem inside the map's directory.
+    let stem = s.save_variant(&data.0, "../outside", false).unwrap();
+    assert!(!stem.contains('/') && !stem.contains('.'));
+    assert!(variant_path(&data.0, &stem).is_file());
+    assert!(!data.0.join("outside").exists());
     fs::write(data.0.join(".git"), "gitdir: synthetic").unwrap();
-    assert!(s.save(&data.0.join("missing/data"), "room").is_err());
+    assert!(
+        s.save_variant(&data.0.join("missing/data"), "Room", false)
+            .is_err()
+    );
     assert!(!data.0.join("missing").exists());
 }
 
 #[test]
-fn save_as_allocates_unique_complete_files_concurrently() {
+fn a_taken_name_is_refused_unless_replacing() {
     let files = Files::new();
-    let base = "q".repeat(64);
     let mut a = session(3);
     let b = session(3);
     a.place(&mut Fake::default(), 1, 0, frame(1., 0.)).unwrap();
-    let (a_name, b_name) = std::thread::scope(|scope| {
-        let first = scope.spawn(|| a.save_new(&files.0, &base).unwrap());
-        let second = scope.spawn(|| b.save_new(&files.0, &base).unwrap());
-        (first.join().unwrap(), second.join().unwrap())
-    });
-    assert_ne!(a_name, b_name);
-    assert_eq!(a_name.len(), 64);
-    assert_eq!(b_name.len(), 64);
-    let mut names = [a_name.clone(), b_name.clone()];
-    names.sort();
-    assert_eq!(saved_names(&files.0).unwrap(), names);
-    for (name, doc) in [(a_name, a.document()), (b_name, b.document())] {
-        assert_eq!(
-            fs::read(files.0.join("forge").join(format!("{name}.h2forge"))).unwrap(),
-            doc.canonical_json().unwrap().into_bytes()
-        );
-    }
+    let first = a.save_variant(&files.0, "Arena", false).unwrap();
+    assert_eq!(
+        b.save_variant(&files.0, "ARENA", false),
+        Err(files::variants::Error::NameTaken("ARENA".into()))
+    );
+    let again = b.save_variant(&files.0, "ARENA", true).unwrap();
+    assert_eq!(again, first);
+    let mut want = b.variant_form("ARENA");
+    want.expect = None;
+    assert_eq!(
+        fs::read(variant_path(&files.0, &first)).unwrap(),
+        want.canonical_json().unwrap().into_bytes()
+    );
+    assert_eq!(
+        files::variants::list(&files.0, "testroom", None)
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[path = "tool_tests.rs"]

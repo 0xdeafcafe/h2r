@@ -253,10 +253,17 @@ fn game_setup_has_no_mode_row() {
 
 #[test]
 fn the_forge_map_picker_offers_new_and_the_saved_maps() {
-    let pick = forge_map_pick(Ok(vec!["Castle".into(), "Towers".into()]), Some("Towers"));
-    assert_eq!(pick.values, [NEW_MAP, "Castle", "Towers"]);
+    let saved = vec![
+        ("Castle".to_owned(), "Castle".to_owned()),
+        ("Two_Towers".to_owned(), "Two Towers".to_owned()),
+    ];
+    let pick = forge_map_pick(Ok(saved), Some("Two_Towers"));
+    // The row shows names; the lobby holds the file stem.
+    assert_eq!(pick.values, [NEW_MAP, "Castle", "Two Towers"]);
     assert_eq!(pick.current, 2);
     assert_eq!(pick.title, "FORGE MAP");
+    assert_eq!((pick.set)(2), "lobby mode: Forge map Two_Towers");
+    assert_eq!(lobby_start::forge_map().as_deref(), Some("Two_Towers"));
     assert_eq!((pick.set)(1), "lobby mode: Forge map Castle");
     assert_eq!(lobby_start::forge_map().as_deref(), Some("Castle"));
     assert_eq!((pick.set)(0), "lobby mode: a new Forge map");
@@ -413,7 +420,7 @@ fn the_copy_has_no_colon_values_or_repeated_spaces() {
         assert!(!t.contains("  "), "{t:?} has two spaces");
         assert!(!t.trim_end_matches("...").contains("..."), "{t:?}");
     }
-    let picks = [forge_map_pick(Ok(vec!["Castle".into()]), None)];
+    let picks = [forge_map_pick(Ok(vec![("Castle".into(), "Castle".into())]), None)];
     for p in &picks {
         assert!(!p.description.contains("  "), "{}", p.description);
         assert!(p.values.iter().all(|v| !v.contains(':')), "{:?}", p.values);
@@ -1014,4 +1021,11 @@ mod gate {
         g::annotate(&mut s);
         assert!(s.blocked.is_empty());
     }
+}
+
+#[test]
+fn the_forge_map_list_names_a_lobby_map_it_does_not_know() {
+    let dir = std::env::temp_dir();
+    let why = forge_map_list(&dir, None).unwrap_err();
+    assert!(why.contains("not known"), "{why}");
 }

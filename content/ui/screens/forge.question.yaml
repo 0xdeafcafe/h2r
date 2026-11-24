@@ -10,6 +10,8 @@ states:
     focus: 1
   leave:
     focus: 1
+  load:
+    focus: 1
 widgets:
   title:
     component: title

@@ -200,9 +200,11 @@ seats its Clankers in all three modes
 ([party-lobby.md](party-lobby.md#clankers-by-tab)).
 
 - **Forge Map...** opens the value picker (`kit.picker.forge-map`) over
-  Game Setup with New and the saved maps (`forge::saved_names`); its
-  help line names the chosen map. The pick is the draft the session
-  opens with (`lobby_start::forge_map`).
+  Game Setup with New and the map variants of the lobby's map that can be
+  used (`lobby_mode::forge_map_list`, over `forge::files::variants::list`);
+  its help line names the chosen map. The pick is the variant's file stem,
+  the draft the session opens with (`lobby_start::forge_map`) and the
+  start gate's census applies (`rules::gate`, `variants::load`).
 - **Change Map...** opens the map select on the mode's category: the
   original maps for Forge, a **Firefight** category of kit maps for
   Firefight ([map-select.md](map-select.md), `map_select::mode_category`).
@@ -365,9 +367,12 @@ camera and tool take no input (`forge_screens::ui_up`, published to
   (`forge_screens::game_menu::ROWS`). The list's constructor makes its
   rows, then `put_first` adds ours and moves the action words so ours
   come first; the rows' array is grown for them at `LIST_DATA_NEW`
-  (`forge_screens::game_menu_count`). Load opens the picker over the
-  saved maps; Save as the keyboard, then the overwrite question when
-  the name is saved. Rebuild map is refused by name, as the session
+  (`forge_screens::game_menu_count`). Load opens the picker over this
+  map's saved variants, then asks before it replaces unsaved edits;
+  Save opens the keyboard for a session with no name; Save as the
+  keyboard, then the replace question when the name is taken
+  ([forge-map-variants-ui.md](forge-map-variants-ui.md), "Saving,
+  loading and renaming"). Rebuild map is refused by name, as the session
   cannot rebuild yet. Leave Game is retail's, behind the unsaved
   question. These are the rows Halo 3's Start has (**C**); everything
   else is one screen down so that GAME MENU never scrolls.

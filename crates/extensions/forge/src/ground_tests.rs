@@ -133,6 +133,12 @@ fn at(x: f32, yaw: f32) -> Frame {
     }
 }
 
+/// Where the store keeps the variant `title` of the fixture's map.
+fn variant_file(dir: &std::path::Path, title: &str) -> PathBuf {
+    dir.join("map-variants/court")
+        .join(format!("{title}.h2mapvariant"))
+}
+
 fn temp_dir() -> PathBuf {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     std::env::temp_dir().join(format!(
@@ -314,10 +320,12 @@ fn a_save_with_stale_ground_builds_first_and_one_with_none_does_not() {
     session
         .place_marker(&mut world, 1, GroundLabel::Drop, at(1., 0.), 0, None)
         .unwrap();
-    session.save_building(&dir, "plain", &mut kit).unwrap();
+    session
+        .save_building(&dir, "Plain", false, &mut kit)
+        .unwrap();
     assert!(kit.built.is_empty());
     let plain = forge_doc::ForgeDoc::from_bytes(
-        &fs::read(dir.join("forge").join("plain.h2forge")).unwrap(),
+        &fs::read(variant_file(&dir, "Plain")).unwrap(),
         &limits(),
     )
     .unwrap();
@@ -329,11 +337,13 @@ fn a_save_with_stale_ground_builds_first_and_one_with_none_does_not() {
         .place_marker(&mut world, 2, GroundLabel::Cover, at(2., 0.), 0, None)
         .unwrap();
     assert_eq!(session.ground_state(), GroundState::Stale);
-    session.save_building(&dir, "waves", &mut kit).unwrap();
+    session
+        .save_building(&dir, "Waves", false, &mut kit)
+        .unwrap();
     assert_eq!(kit.built.len(), 2);
     assert_eq!(session.ground_state(), GroundState::Current);
     let saved = forge_doc::ForgeDoc::from_bytes(
-        &fs::read(dir.join("forge").join("waves.h2forge")).unwrap(),
+        &fs::read(variant_file(&dir, "Waves")).unwrap(),
         &limits(),
     )
     .unwrap();
@@ -345,9 +355,12 @@ fn a_save_with_stale_ground_builds_first_and_one_with_none_does_not() {
         .place_marker(&mut world, 3, GroundLabel::Site, at(3., 0.), 0, None)
         .unwrap();
     kit.refuse = true;
-    let error = session.save_building(&dir, "waves", &mut kit).unwrap_err();
+    let error = session
+        .save_building(&dir, "Waves", true, &mut kit)
+        .unwrap_err()
+        .to_string();
     assert!(error.contains("nothing was saved"), "{error}");
-    let still = fs::read(dir.join("forge").join("waves.h2forge")).unwrap();
+    let still = fs::read(variant_file(&dir, "Waves")).unwrap();
     assert_eq!(
         forge_doc::ForgeDoc::from_bytes(&still, &limits()).unwrap(),
         saved
@@ -365,11 +378,18 @@ fn a_load_takes_the_recipe_back_out_and_builds_nothing() {
         .place_marker(&mut world, 1, GroundLabel::Goal, at(1., 0.), 0, None)
         .unwrap();
     first.build_ground(&mut kit).unwrap();
-    first.save(&dir, "stand").unwrap();
+    let stem = first.save_variant(&dir, "Stand", false).unwrap();
 
     let mut second = session();
     let mut world = Counting::default();
-    second.load(&mut world, 1, &dir, "stand").unwrap();
+    let doc = files::variants::load(
+        &dir,
+        "court",
+        &stem,
+        Some(&Sha256::of(b"an invented court")),
+    )
+    .unwrap();
+    second.load_variant(&mut world, 1, doc).unwrap();
     assert_eq!(second.ground_recipe(), Some(recipe()));
     assert_eq!(second.ground_state(), GroundState::NotBuilt);
     assert_eq!(second.markers().unwrap().len(), 1);

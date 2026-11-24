@@ -150,8 +150,9 @@ integer-only implementation of RFC 8785. Floats are eight lowercase
 hexadecimal digits of their `f32` bits. The document's identity is the
 SHA-256 of its canonical form with the entire `expect` block omitted.
 Use `ForgeDoc::from_bytes` to read the 8 MiB
-bounded format and `ForgeDoc::canonical_json` to write it. The saved
-file is `<data>/forge/<name>.h2forge`. A draft can omit `expect`.
+bounded format and `ForgeDoc::canonical_json` to write it. The editor saves
+map variants in the variant store ([forge-map-variants.md](forge-map-variants.md),
+"The map variant file"); `h2 forge build` reads a `.h2forge` path. A draft can omit `expect`.
 The `format` is 1, or 2 when an op sets or clears a label; validation
 refuses the other number, so a document has one spelling and every
 document without labels keeps its identity.
@@ -487,11 +488,11 @@ in Split Screen, in a hosted System Link game and in an Xbox Live
 custom game, which the Xbox Live menu's Forge row opens in it
 (forge-firefight-ui.md, "The lobbies"). In Forge Game Setup has
 **Change Map...** (the original maps), **Forge Map...** (New, or a
-draft saved under `<data>/forge`, `forge::saved_names`) and the game
+map variant of the lobby's map, `forge::files::variants::list`) and the game
 type, which picks the goals the session edits. Start Game is the
 game's; the draft is loaded as the session opens
-(`forge_glue::request_draft`), and one saved on another map is refused
-with the editor's notice. The main menu has no Forge row: its six rows
+(`forge_glue::request_draft`), and a variant that fails the store's checks is refused with the
+editor's notice. The main menu has no Forge row: its six rows
 are the retail five and Theater.
 
 **In a session** there are three layers.

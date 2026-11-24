@@ -953,25 +953,39 @@ impl Session {
         Ok(())
     }
 
-    /// Allocate a new file without overwriting another session's save.
-    pub fn save_new(&self, data_dir: &Path, base: &str) -> Result<String, String> {
-        self.write_ground_form_new(data_dir, base)
+    /// The document a save writes under `title`: the play form with the
+    /// ground recipe and without the session's kit.
+    pub fn variant_form(&self, title: &str) -> ForgeDoc {
+        let mut doc = self.ground_form();
+        doc.title = title.to_owned();
+        doc.expect = None;
+        forge_doc::play_form(&doc)
     }
 
-    pub fn save(&self, data_dir: &Path, name: &str) -> Result<(), String> {
-        self.write_ground_form(data_dir, name)
+    /// Save the session as the map variant `title` in the variant store
+    /// and answer the file's stem. A name another variant of the map has
+    /// is `NameTaken` unless `replace` is set.
+    pub fn save_variant(
+        &self,
+        data_dir: &Path,
+        title: &str,
+        replace: bool,
+    ) -> Result<String, files::variants::Error> {
+        files::variants::save(data_dir, &self.variant_form(title), replace)
     }
 
-    /// Load the folded document as a fresh log checkpoint. Verify the whole
-    /// file and project its final objects before asking the game to change.
-    pub fn load(
+    /// Load a variant read from the store (`files::variants::load`) as a
+    /// fresh log checkpoint. Verify the whole document and project its
+    /// final objects before asking the game to change. The document is in
+    /// its play form; the session's kit is put back.
+    pub fn load_variant(
         &mut self,
         world: &mut impl World,
         _tick: u32,
-        data_dir: &Path,
-        name: &str,
+        doc: ForgeDoc,
     ) -> Result<(), String> {
-        let loaded = files::load(data_dir, name, &self.limits)?;
+        let loaded = forge_doc::session_form(&doc);
+        forge_doc::validate(&loaded, &self.limits).map_err(reason)?;
         let (doc, ground) = Self::take_ground(loaded.clone())?;
         if doc.base != self.doc.base
             || doc.builder != self.doc.builder
