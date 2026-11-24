@@ -1,7 +1,7 @@
 # Rich editors: shaders, colours, curves, scripts, sounds and recordings
 
-Status: Design, except the seam (X1), "Data that changes length", sound audition (A1), mouth curves, read (A2), Scripts, read (H1), the curve editor, same length (F1), curve type changes (F2) and Model poses (M1), which are built; each section names the format code it stands on and the gaps in it.
-Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/fields/rich.rs` (the seam), `crates/formats/tags/src/defs/attrs.rs` (`FieldView`), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/apps/studio/src/fields/curve.rs` and `crates/apps/studio/src/api/curves.rs` (F1), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/formats/hs/src/script_doc.rs`, `crates/apps/studio/src/app/scripts.rs`, `crates/apps/studio/src/ui/scripts.rs`, `crates/apps/studio/src/api/scripts.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`. Tests: `defs/tests.rs`, `registry/tests.rs`, `fields::rich::tests` and `api/tests.rs` (X1), `effects::function::tests` and `api/curves/tests.rs` (F1), `app/tag_data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1), `app::scripts::tests`, `hs::script_doc::tests` and `hs::source::each_tests` (H1); each other slice names its own, `crates/apps/studio/src/app/anim.rs`, `crates/apps/studio/src/ui/anim.rs` (M1), `api/anim/tests.rs`, `anim_tests.rs`.
+Status: Design, except the seam (X1), "Data that changes length", sound audition (A1), mouth curves, read (A2), Scripts, read (H1), Recordings, read (K1), the curve editor, same length (F1), curve type changes (F2) and Model poses (M1), which are built; each section names the format code it stands on and the gaps in it.
+Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/fields/rich.rs` (the seam), `crates/formats/tags/src/defs/attrs.rs` (`FieldView`), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/apps/studio/src/fields/curve.rs` and `crates/apps/studio/src/api/curves.rs` (F1), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/formats/hs/src/script_doc.rs`, `crates/formats/hs/src/recording.rs`, `crates/apps/studio/src/app/recordings.rs`, `crates/apps/studio/src/api/recordings.rs`, `crates/apps/studio/src/app/scripts.rs`, `crates/apps/studio/src/ui/scripts.rs`, `crates/apps/studio/src/api/scripts.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`. Tests: `defs/tests.rs`, `registry/tests.rs`, `fields::rich::tests` and `api/tests.rs` (X1), `effects::function::tests` and `api/curves/tests.rs` (F1), `app/tag_data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1), `app::scripts::tests`, `hs::script_doc::tests` and `hs::source::each_tests` (H1), `hs::recording::tests` and `app/recordings_tests.rs` (K1); each other slice names its own, `crates/apps/studio/src/app/anim.rs`, `crates/apps/studio/src/ui/anim.rs` (M1), `api/anim/tests.rs`, `anim_tests.rs`.
 Switch: none.
 
 A rich editor shows a tag, or part of one, as the thing it is: a material
@@ -522,25 +522,45 @@ converted Halo 1 campaign carries them
 ([campaign.md](../halo1/campaign.md)). The editor is for converted and
 custom maps; on a retail map it shows `This map has no recordings.`
 
-**What the user does.** A **Recordings** tool tab lists the map's
-recordings (name, length in ticks, control version) and which scripts
-play each. Selecting one shows a timeline: one lane per control (throttle,
-facing, aiming, looking, weapon, control flags, animation state), events
-as marks, a tick ruler and a scrub bar. With a game connected, **Play on
-unit...** opens a picker of the map's units and plays the recording on
-one in the game; the Scene viewport draws the unit moving through the
-live mirror and keeps the path as a line.
+**What the user does.** The Scripts tab's **Recordings** section lists
+the map's recordings (name, length in ticks, event count, or `does not
+read`). Selecting one shows its stream and control versions, the scripts
+that play it, the unit control state it starts from, and every event as a
+line: tick, type name, values. A stream that does not read shows the
+reason with the offset of the event that broke it; a map with an empty
+block shows `This map has no recordings.`. Without the executable the
+list still shows and says that the scripts that play each need it. The
+lanes, the scrub bar and **Play on unit...** are not built (slice K2 adds
+the play); with a game connected the Scene viewport would draw the unit
+moving through the live mirror and keep the path as a line.
 
 **The data.** The element is `defs/recorded_animation.txt` (name,
-version, control version, ticks, the stream).
-`h1campaign::recordings::walk` frames a stream into `Event` values and
-checks payload lengths against the handler table (24 Halo 2 types);
+version, control version, ticks, the stream). `hs::recording` reads the
+block (`read` over a map, `decode` over a scenario payload; the count
+and sizes are bounded by `MAX_RECORDINGS` and `MAX_STREAM`, which are
+sanity limits, not the engine's) and frames and types a stream:
+`walk` frames it into `Event` values and checks payload lengths against
+the handler table (24 Halo 2 types), and `decode_stream` gives the
+initial state by field and each payload as named values (`Value`:
+unsigned, signed or floats, by the field's width), keeping the payload
+bytes beside them. `h1campaign::recordings` re-exports the walker and
+holds the converter and the evidence for the layout;
 `map::recording` and `crates/extensions/game/src/h1_recordings.rs` hold
-the converted-campaign extensions. Gaps: payload values are not decoded
-into typed fields, and nothing encodes a stream. Slice K1 moves the
-walker into a format crate (`crates/formats/hs` is the natural home,
-beside the scripts that play them) and adds the typed model; K3 adds the
-encoder with `encode(decode(s)) == s`.
+the converted-campaign extensions. Two readings are by width only: the
+eight, twelve and four-byte unit control fields are shown as floats
+(throttle two, facing, aiming and looking three) or integers, and the
+byte and short deltas (types 7 to 22) show their `channel` (the type's
+position in its run) and two values: which control each channel moves
+is not read. Gaps: nothing encodes a stream (slice K3), and only version 4
+streams are read. Halo 2's player reads the stream; a Halo 1 stream in a
+converted map has already been rewritten to Halo 2's widths.
+
+**Scripts that play them.** A script names a recording with a value of
+type `cutscene_recording`: by its spelling, matched without case, or by
+a number, the recording's index. `Entry::recordings` collects them from
+each script's source, `Loaded::recording_uses` matches them to a row, and
+`script.uses {kind: "recording"}` and the `played_by` of `recording.list`
+give the result.
 
 **Preview.** A recording holds control input, not positions: where the
 unit goes depends on the simulation. The editor does not integrate
@@ -620,7 +640,7 @@ already a namespace there (player models and looks), so poses use `anim.*`.
 | `script.source` | `{name?}` | `{name, item, kind, type, source, links: [{span, kind, name, target, why?}]}` |
 | `script.follow` | `{name?, link}` | `{kind, name, target, tool, log}`: what a click on the link does |
 | `script.compile` | `{name, source, apply?}` | `{ok, errors: [{line, column, text}], nodes, new_strings, grows}`; with `apply`, one undo step |
-| `script.uses` | `{kind, name}` | `{uses: [{name, item, count}]}`: the definitions that name a script, global, object name, volume or tag; `recording` is refused until slice K1 |
+| `script.uses` | `{kind, name}` | `{uses: [{name, item, count}]}`: the definitions that name a script, global, object name, volume, tag or recording |
 | `script.builtins` | `{filter?, unnamed?}` | `{builtins: [{index, name, label, from, returns, parameters, own_arguments, call, usage}], named_by_map, named_by_doc, unnamed, doc}` |
 | `script.doc` | `{path}` | `{path, doc, log}`: names builtins from the listing at `path` (`null`: none) |
 | `script.external` | `{name?, editor?, launch?}` | `{path, context, line, editor, commands, launched, working}`: writes the working copy and opens it in `code`, `zed` or any editor (`auto`) at the definition |
@@ -630,8 +650,8 @@ already a namespace there (player models and looks), so poses use `anim.*`.
 | `sound.stop` | `{}` | `{stopped}` |
 | `sound.mouth` | `{tag, range?, permutation?}`; `curve?` or `from_sound?: {gain, smoothing}` to write are A4 | `{ticks, curve}` (0 to 1 per tick; `curve` null when unvoiced) |
 | `anim.list`, `anim.pose` | `{tag}`; `{tag, animation, frame?, overlay?: {animation, weight}, model?, size?, out?}` | the animations with types, frame counts and codecs, and the models that use the graph; the posed node transforms (local and world, which channels the animation supplied), and the posed model drawn to a PNG |
-| `recording.list` | none | `{recordings: [{name, ticks, control_version, played_by}]}` |
-| `recording.read` | `{name}` | `{initial, events: [{tick, kind, fields}]}` |
+| `recording.list` | none | `{recordings: [{name, ticks, version, control_version, stream_bytes, events, problem?, played_by}], note?}` |
+| `recording.read` | `{name, limit?, offset?}` | `{initial: {fields, trailer}, events: [{tick, at, delay, kind, name, fields, payload}], total, truncated, ...}`; a stream that does not read is `REFUSED` with the offset |
 | `recording.write` | `{name, initial?, events}` | the new `recording.read`; one undo step |
 | `recording.play`, `recording.capture` | `{name, unit}`; `{name, unit, start?, stop?}` | forwarded to the paired game; `NOT_PAIRED` without one |
 
@@ -715,7 +735,7 @@ the first one whose needs are met.
 | H2 | **Script compiler**: `hs::compile` (parser, names, types and casts, literals, allocator), messages with positions | L | H1 | `compile(decompile(s))` equals the nodes for every construct of the synthetic fixtures; each error class has a test; the `#[ignore]`d disc run reports the share of scripts that round-trip |
 | H3 | **Scripts, write**: Edit and Compile in the tool, the session ops, free-slot reuse, growth, strings, the three validations, `script.compile` | M | H2, X2 | one changed script changes only its nodes and new strings in the saved map; a compile past the node limit is refused with both counts; undo restores the table |
 | A4 | **Mouth curves, write**: drawing, **From the sound**, the in-place raw write | M | A2; modeling 3 | a redrawn invented curve changes only its bytes and the checksum; a shared-cache sound and a split chain are refused |
-| K1 | **Recordings, read**: the stream crate, typed events, the tool and timeline, `recording.list`, `recording.read` | M | H1 | every Halo 2 event type decodes from an invented stream; a bad type or length is an error with its offset |
+| K1 (built) | **Recordings, read**: the stream crate, typed events, the tool and timeline, `recording.list`, `recording.read` | M | H1 | every Halo 2 event type decodes from an invented stream; a bad type or length is an error with its offset |
 | K2 | **Recordings, play**: the game's `recording.play`, the path in Scene | M | K1; live-mirror | on the fake game, **Play on unit...** sends the call and the streamed positions draw a path |
 | H4 | **`hs.eval`** in the game, and an expression box in the Scripts tool | M | H1 | the agent crate's test evaluates an invented expression through the evaluator entry; a parse error returns the evaluator's text |
 | K3 | **Recordings, write**: the encoder, event edits, `recording.write`, the converted-map overlay | M | K1, X2 | `encode(decode(s)) == s`; an edited stream saves and walks clean; removing a played recording is refused |

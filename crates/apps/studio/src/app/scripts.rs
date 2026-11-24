@@ -90,6 +90,9 @@ pub struct Entry {
     pub type_name: String,
     /// The node slots the definition's source shows.
     pub nodes: usize,
+    /// The recordings its source names (values of type
+    /// `cutscene_recording`), once per mention.
+    pub recordings: Vec<super::recordings::Key>,
 }
 
 /// The read tables.
@@ -113,6 +116,8 @@ pub struct ScriptsTool {
     /// The session revision read (`None`: no map open).
     pub(crate) for_rev: Option<Option<u64>>,
     pub state: Option<Result<Loaded, String>>,
+    /// The map's recordings, read with the tables (`app::recordings`).
+    pub recordings: Option<Result<Vec<super::recordings::Row>, String>>,
     pub selected: Option<Item>,
     /// The script documentation listing to name builtins from.
     pub doc_path: Option<PathBuf>,
@@ -243,6 +248,25 @@ impl Loaded {
         }
     }
 
+    /// The definitions that name recording `index` of `rows` (by its name
+    /// or its number), with how many times.
+    pub fn recording_uses(
+        &self,
+        rows: &[super::recordings::Row],
+        index: usize,
+    ) -> Vec<(Item, &str, usize)> {
+        let Some(row) = rows.get(index) else {
+            return Vec::new();
+        };
+        self.entries
+            .iter()
+            .filter_map(|e| {
+                let n = e.recordings.iter().filter(|k| row.named_by(index, k)).count();
+                (n > 0).then_some((e.source.item, e.source.name.as_str(), n))
+            })
+            .collect()
+    }
+
     /// The definitions that name `name` as a `kind`, with how many times.
     pub fn uses(&self, kind: LinkKind, name: &str) -> Vec<(Item, &str, usize)> {
         self.entries
@@ -326,10 +350,16 @@ fn entry(tables: &hs::Scenario, catalog: &Catalog, source: ItemSource) -> Result
     };
     let mut slots = std::collections::BTreeSet::new();
     let mut links = Vec::new();
+    let mut recordings = Vec::new();
     for t in &source.tokens {
         slots.insert(t.datum);
         if t.head {
             slots.insert(hs::Datum(tables.node(t.datum).map_err(fail)?.data()));
+        }
+        if !t.head
+            && let Some(k) = recording_key(tables, catalog, t.datum).map_err(fail)?
+        {
+            recordings.push(k);
         }
         if let Some((kind, name, raw)) = classify(tables, catalog, t.datum, t.head).map_err(fail)? {
             links.push(Link {
@@ -344,9 +374,36 @@ fn entry(tables: &hs::Scenario, catalog: &Catalog, source: ItemSource) -> Result
     Ok(Entry {
         nodes: slots.len(),
         links,
+        recordings,
         kind,
         type_name,
         source,
+    })
+}
+
+/// The recording an atom of type `cutscene_recording` names.
+fn recording_key(
+    tables: &hs::Scenario,
+    catalog: &Catalog,
+    datum: hs::Datum,
+) -> hs::Result<Option<super::recordings::Key>> {
+    use super::recordings::Key;
+    let Expression::Atom {
+        source_type,
+        literal,
+        ..
+    } = tables.expression(datum)?
+    else {
+        return Ok(None);
+    };
+    if catalog.type_name(source_type)? != "cutscene_recording" {
+        return Ok(None);
+    }
+    Ok(match literal {
+        Literal::Symbol { spelling, .. } => Some(Key::Name(spelling.to_owned())),
+        Literal::Short(n) => Some(Key::Index(n.into())),
+        Literal::Long(n) => Some(Key::Index(n.into())),
+        _ => None,
     })
 }
 
@@ -399,6 +456,7 @@ impl super::App {
         self.scripts.for_rev = Some(rev);
         self.scripts.selected = None;
         self.scripts.state = rev.map(|_| self.read_scripts());
+        self.scripts.recordings = rev.map(|_| self.read_recordings());
         match &self.scripts.state {
             Some(Err(e)) => {
                 let e = format!("scripts: {e}");

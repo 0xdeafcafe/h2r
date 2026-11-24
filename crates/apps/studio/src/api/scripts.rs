@@ -229,10 +229,25 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
             let kind = p.str("kind")?;
             let name = p.str("name")?;
             if kind == "recording" {
-                return Err(err(
-                    code::REFUSED,
-                    "recordings are not read yet: the recordings slice (K1) adds them",
-                ));
+                let l = loaded(app)?;
+                let rows = app.recordings_loaded().map_err(|why| err(code::REFUSED, why))?;
+                let index = rows
+                    .iter()
+                    .position(|r| r.recorded.name.eq_ignore_ascii_case(name))
+                    .ok_or_else(|| {
+                        err(
+                            code::INVALID_PARAMS,
+                            format!("name: no recording {name:?} (recording.list lists them)"),
+                        )
+                    })?;
+                let uses: Vec<Value> = l
+                    .recording_uses(rows, index)
+                    .into_iter()
+                    .map(|(item, user, count)| {
+                        json!({"name": user, "item": item_kind(item), "count": count})
+                    })
+                    .collect();
+                return Ok(json!({ "kind": kind, "name": name, "uses": uses }));
             }
             let k = LinkKind::parse(kind).ok_or_else(|| {
                 err(

@@ -28,6 +28,7 @@ pub mod playtest;
 pub mod playtest_static;
 pub mod external;
 pub mod rules_edit;
+pub mod recordings;
 pub mod scripts;
 pub mod shared_refs;
 pub mod shell;

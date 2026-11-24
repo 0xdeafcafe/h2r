@@ -42,6 +42,8 @@
 //! - **Scripts** (the open map's scripts, read): `script.list`,
 //!   `script.source`, `script.follow`, `script.uses`, `script.builtins` and
 //!   `script.doc` through `Action::Script` ([`super::scripts`]).
+//! - **Recordings** (the open map's recorded animations, read):
+//!   `recording.list` and `recording.read` ([`super::recordings`]).
 //! - **game type scripts** (`app::rules_edit`): `rules.open`, `rules.get`,
 //!   `rules.set`, `rules.save`, `rules.format` and `rules.reload`
 //!   ([`super::game_script`]).
@@ -102,6 +104,8 @@ pub fn register(api: &mut Api) {
     // Sound audition: decode, play and the waveform of a snd! tag.
     api.register(Box::new(super::sound::Sound));
     api.register(Box::new(super::tags::TagGraph));
+    // The Recordings tool (read): recording.list and recording.read.
+    api.register(Box::new(super::recordings::Recordings));
     // strings.list: every unic string by name and language, searched.
     api.register(Box::new(super::strings::Strings));
     // studio-hud: the HUD tool's HUDs, widgets, picture, checks and save.

@@ -310,6 +310,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `mirror` | `status`, `objects {kind?, near?, limit?, at_tick?}`, `pick {from? \| ray?}`, `aim_select {enabled?}`, `camera {mode?, target?}`, `player {to, facing?}`, `pending`, `apply {what, at?, peers?}` |
 | `view` | `camera {yaw, pitch, distance, target, focus, all, fly_speed}`, `snapshot {out, size, camera}`, `stats`, `layers {set?, preset?, xray?}` |
 | `script` | `list {filter?}`, `source {name?}`, `follow {name?, link}`, `uses {kind, name}`, `builtins {filter?, unnamed?}`, `doc {path}` ([rich-editors.md](rich-editors.md#scripts)) |
+| `recording` | `list`, `read {name, limit?, offset?}`: the open map's recorded animations and each stream, typed ([rich-editors.md](rich-editors.md#recordings)) |
 | `strings` | `list {tag?, language?, query?, limit?, offset?}`: every `unic` string of the open map by name and language ([rich-editors.md](rich-editors.md#strings)) |
 | `rules` | `open {path? \| starter? \| source?, discard?}`, `get {text?}`, `set {source}`, `save {path?, reload?}`, `format`, `reload {mode?}`: the game type script editor ([editor-guide.md](editor-guide.md#game-type-scripts)) |
 | `hud` | `list {map \| package}`, `read {hud, state}`, `set {hud, widget, field, value, merge}`, `move {hud, widget, x, y, mode, merge}`, `render {hud, state, out}`, `check {hud, state}`, `save_as {path}` |
@@ -335,8 +336,9 @@ Notes on some:
   (`{script}`, `{global}`, `{block, index}`, `{volume}`, `{tag}`) or
   `null` and `why`. `script.follow` does what a click on the link does
   and is `REFUSED` with the same `why` for a link that goes nowhere.
-  `script.uses {kind: "recording"}` is `REFUSED` until recordings are
-  read. `script.builtins` gives each builtin's `name` and `from` (`map`,
+  `script.uses {kind: "recording"}` gives the scripts that name the
+  recording (a value of type `cutscene_recording`, by name or index).
+  `script.builtins` gives each builtin's `name` and `from` (`map`,
   `doc` or `null`), its `label` (the name or `#builtin:<index>`) and its
   call form. `script.doc {path}` names builtins from the user's script
   documentation listing, read from that path now and not stored
@@ -1970,6 +1972,27 @@ the window and the API stay one path.
   A span that falls outside its table is named in `problems` and its
   language is left out of that tag. A map with no readable locale tables
   answers with no rows and `unavailable` giving the reason.
+- **Recordings (rich editors K1).** `api/recordings.rs` registers
+  `Recordings` for `recording.list` and `recording.read`, over
+  `hs::recording` and `app/recordings.rs`; both are reads and need a
+  map (`NO_DOCUMENT` without one). `recording.list` answers
+  `{recordings}`, one row per element of the scenario's recorded
+  animations: `name`, `ticks`, `version`, `control_version`,
+  `stream_bytes`, `events` (the count, `null` when the stream does not
+  read, with `problem` saying why and at which offset) and `played_by`
+  (`[{name, item, count}]` of the scripts that name it, `null` when the
+  scripts do not read, with `played_by_unavailable` giving the reason).
+  An empty block answers `note: "This map has no recordings."`.
+  `recording.read {name}` (case-insensitive) answers the stream as
+  Halo 2's player reads it: `initial.fields` (the unit control state the
+  stream starts from, by field) and `initial.trailer` (the twelve bytes
+  copied as they are, hex), then `events`: `tick` (since the start),
+  `at` (the header's offset in the stream), `delay`, `kind`, `name`,
+  `fields` and `payload` (hex). `limit` (default 1000, at most 20000)
+  and `offset` page the events and `truncated` says more follow;
+  `walked_ticks` is the stream's own length, `ticks` the element's. A
+  stream that does not read, or whose version is not 4, is `REFUSED`
+  with the reason; an unknown name is `INVALID_PARAMS`.
 - **Scripts (rich editors H1).** `api/scripts.rs` registers `Scripts`
   for `script.*`, over `app/scripts.rs`'s `Loaded`; `script.source`,
   `script.follow` and `script.doc` are `Action::Script` through

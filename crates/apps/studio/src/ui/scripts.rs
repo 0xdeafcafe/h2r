@@ -19,6 +19,8 @@ use crate::theme::{self, Fonts, icon};
 pub struct ScriptsUi {
     pub filter: String,
     pub builtins: String,
+    /// The recording shown under Recordings (an index into the block).
+    pub recording: Option<usize>,
 }
 
 /// The left tab: counts, the search, the definitions, the builtins and
@@ -42,6 +44,9 @@ pub fn list(
             ui.same_line();
             ui.text_wrapped(&why);
             ui.spacing();
+            if ui.collapsing_header("Recordings##scripts-recordings", TreeNodeFlags::NONE) {
+                recordings(ui, app, None, st);
+            }
             doc_row(ui, app, None, dialogs, actions);
             return;
         }
@@ -99,7 +104,120 @@ pub fn list(
     if ui.collapsing_header("Builtins##scripts-builtins", TreeNodeFlags::NONE) {
         builtins(ui, l, st);
     }
+    if ui.collapsing_header("Recordings##scripts-recordings", TreeNodeFlags::NONE) {
+        recordings(ui, app, Some(l), st);
+    }
     doc_row(ui, app, Some(l), dialogs, actions);
+}
+
+/// The map's recorded animations: each with its length, and for the picked
+/// one the scripts that play it, its initial state and every event. Read
+/// only (docs/editor/rich-editors.md, "Recordings").
+fn recordings(ui: &Ui, app: &App, l: Option<&Loaded>, st: &mut ScriptsUi) {
+    use crate::app::recordings::NONE;
+    let rows = match app.recordings_loaded() {
+        Ok(rows) => rows,
+        Err(why) => {
+            ui.text_disabled(why);
+            return;
+        }
+    };
+    if rows.is_empty() {
+        ui.text_disabled(NONE);
+        return;
+    }
+    for (i, r) in rows.iter().enumerate() {
+        let events = match &r.decoded {
+            Ok(d) => format!("{} events", d.events.len()),
+            Err(_) => "does not read".to_owned(),
+        };
+        let label = format!(
+            "{}  {} ticks · {events}##recording-{i}",
+            r.recorded.name, r.recorded.ticks
+        );
+        if ui
+            .selectable_config(label)
+            .selected(st.recording == Some(i))
+            .build()
+        {
+            st.recording = Some(i);
+        }
+    }
+    let Some((i, r)) = st
+        .recording
+        .and_then(|i| rows.get(i).map(|r| (i, r)))
+    else {
+        return;
+    };
+    theme::section(ui, &r.recorded.name);
+    ui.text_disabled(format!(
+        "stream version {} · control version {} · {} bytes",
+        r.recorded.version,
+        r.recorded.control_version,
+        r.recorded.stream.len()
+    ));
+    let users = l.map(|l| l.recording_uses(rows, i));
+    if users.as_ref().is_none_or(Vec::is_empty) {
+        ui.text_disabled(if users.is_some() {
+            "No script plays it."
+        } else {
+            "Which scripts play it needs the scripts, which need the game's executable."
+        });
+    } else if let Some(users) = users {
+        ui.text_disabled(format!(
+            "Played by {}",
+            users
+                .iter()
+                .map(|(_, name, n)| format!("{name} ×{n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    let d = match &r.decoded {
+        Ok(d) => d,
+        Err(why) => {
+            ui.text_colored(theme::ERROR, icon::ALERT);
+            ui.same_line();
+            ui.text_wrapped(why);
+            return;
+        }
+    };
+    ui.text_disabled(format!(
+        "Starts from: {}",
+        fields_text(&d.initial.fields)
+    ));
+    let clipper = ListClipper::new(d.events.len()).begin(ui);
+    for k in clipper.iter() {
+        let e = &d.events[k];
+        ui.text(format!(
+            "{:>5}  {}  {}",
+            e.tick,
+            e.name,
+            fields_text(&e.fields)
+        ));
+    }
+    if d.trailing > 0 {
+        ui.text_disabled(format!("{} bytes follow the end event.", d.trailing));
+    }
+}
+
+fn fields_text(fields: &[hs::recording::Named]) -> String {
+    use hs::recording::Value;
+    fields
+        .iter()
+        .map(|(name, v)| {
+            let v = match v {
+                Value::Unsigned(n) => format!("{n:#x}"),
+                Value::Signed(n) => n.to_string(),
+                Value::Reals(r) => format!(
+                    "({})",
+                    r.iter().map(|f| format!("{f:.3}")).collect::<Vec<_>>().join(", ")
+                ),
+            };
+            format!("{name} {v}")
+        })
+        .collect::<Vec<_>>()
+        .join("  ")
 }
 
 /// "Open in VS Code" and "Open in Zed", and the working copy's state.

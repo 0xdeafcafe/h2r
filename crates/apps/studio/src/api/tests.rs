@@ -265,6 +265,8 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         | m::SCRIPT_BUILTINS
         | m::SCRIPT_DOC
         | m::SCRIPT_EXTERNAL
+        | m::RECORDING_LIST
+        | m::RECORDING_READ
         | m::SCRIPT_WORKING => {
             // The invented map with scripts and the invented executable.
             let dir = t.path("scripts");
