@@ -151,8 +151,10 @@ pub const CHEST: f32 = 0.4;
 /// The head, for sight (section 3.1): a player is seen by its chest or
 /// its head, so a head over a parapet is seen.
 pub const HEAD: f32 = EYE;
-/// Notices an enemy within this angle of its aim, or this close anywhere.
-pub const NOTICE_CONE: f32 = 65.0 * std::f32::consts::PI / 180.0;
+/// Notices an enemy within this angle of its aim, or this close anywhere:
+/// the corner of a Halo 2 screen (70 degrees across, a 4:3 frame) is about
+/// 41 degrees off its centre, and a person sees nothing past it.
+pub const NOTICE_CONE: f32 = 40.0 * std::f32::consts::PI / 180.0;
 pub const NOTICE_NEAR: f32 = 3.0;
 /// Forgets a last known position after this long.
 pub const MEMORY_TICKS: u32 = 300;
@@ -1733,6 +1735,12 @@ impl Mind {
                     })
                     .map_or(1.0, |w| 0.7 + 0.8 * w.grenades),
         );
+        // A camouflaged target that shows nothing (perceive::Cues) is
+        // tracked with a worse hand: more error, a slower lock.
+        let cloaked = track.is_some_and(|(id, _, _)| {
+            crate::perceive::Cues::of(p, id).cloaked()
+        });
+        self.hand.obscure(self.skill, cloaked);
         // Aiming a throw: the hand turns to the throw's line instead of the
         // target (tracked still, so the flick and lag are the same hand's).
         match (track, nade.look) {

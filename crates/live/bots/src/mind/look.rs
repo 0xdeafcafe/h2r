@@ -290,7 +290,25 @@ pub(super) struct Hand {
     listen_after: Option<u32>,
     corner: Option<Glance>,
     corner_after: Option<u32>,
+    /// The target this tick is under active camouflage: its tracking
+    /// error is this many times the skill's ([`camo_aim`]), and the thumb
+    /// engages it at [`CAMO_ENGAGE`] of its pace. 1 for a plain target.
+    obscured: f32,
 }
+
+/// A camouflaged target's tracking error, in times the skill's: a shimmer
+/// is hard to hold the crosshair on, the better hand less so.
+pub(crate) fn camo_aim(skill: Skill) -> f32 {
+    match skill {
+        Skill::Easy => 2.5,
+        Skill::Normal => 2.2,
+        Skill::Heroic => 1.9,
+        Skill::Legendary => 1.6,
+    }
+}
+/// The thumb's pace onto a camouflaged target, as a fraction of its own:
+/// a slower lock.
+pub(crate) const CAMO_ENGAGE: f32 = 0.6;
 
 impl Hand {
     pub(super) fn new(seed: u64) -> Self {
@@ -314,6 +332,7 @@ impl Hand {
             listen_after: None,
             corner: None,
             corner_after: None,
+            obscured: 1.0,
         }
     }
 
@@ -335,6 +354,14 @@ impl Hand {
         self.listen_after = None;
         self.corner = None;
         self.corner_after = None;
+        self.obscured = 1.0;
+    }
+
+    /// Whether the target the hand tracks this tick is camouflaged
+    /// (`perceive::Cues::cloaked`) at `skill`: set before each
+    /// [`track`](Self::track).
+    pub(super) fn obscure(&mut self, skill: Skill, cloaked: bool) {
+        self.obscured = if cloaked { camo_aim(skill) } else { 1.0 };
     }
 
     /// Visibility is required for consecutive bearing samples. On the
@@ -537,7 +564,7 @@ impl Hand {
     /// spread), a little white noise and the occasional misread, all
     /// scaled down with range ([`spread_scale`]).
     fn error(&mut self, skill: Skill, handling: Handling, tick: u32, distance: f32) -> [f32; 2] {
-        let base = skill.aim().error;
+        let base = skill.aim().error * self.obscured;
         let range = spread_scale(distance);
         let spread = base * range;
         for (axis, drift) in self.drift.iter_mut().enumerate() {
@@ -575,7 +602,8 @@ impl Hand {
             return (0.0, 0.0);
         };
         let ticks = dt.clamp(1, 2) as f32;
-        let mut step = Handling::of(skill).engage * ticks;
+        let pace = if self.obscured > 1.0 { CAMO_ENGAGE } else { 1.0 };
+        let mut step = Handling::of(skill).engage * ticks * pace;
         let want = match net {
             Some((seen, features)) if seen == [yaw, pitch] => {
                 let [yaw, pitch] = aim_net::turn(&features);
@@ -593,7 +621,7 @@ impl Hand {
                 let edge = if resting { REST_EXIT * band } else { band };
                 self.resting = size < edge;
                 if on && size > FLICK_ERROR {
-                    step = step.max(FLICK_STEP * ticks);
+                    step = step.max(FLICK_STEP * ticks * pace);
                 }
                 if self.resting {
                     [0.0; 2]

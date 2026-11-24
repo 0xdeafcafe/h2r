@@ -341,11 +341,48 @@ The brain reads game state the way telemetry already does
 the nav mesh comes from. A bot sees an enemy only when all three hold:
 
 - a ray reaches the enemy's head or chest;
-- that part is inside the bot's view cone;
+- that part is inside the bot's view cone and its visual range;
 - a reaction delay has passed (§3.4).
 
 A head over a parapet is seen. The bot aims at the part it sees: the
 chest, or the head when only the head is clear (`mind::sight_point`).
+
+#### Visual range
+
+A bot sees what a person sees on the screen (`perceive::notice_range`),
+applied to players and Firefight actors alike before the mind gets
+them:
+
+- **The view.** The cone is 40 degrees off the aim
+  (`mind::NOTICE_CONE`), the corner of Halo 2's 70-degree, 4:3 frame.
+  Past it only a player within 3 units (`mind::NOTICE_NEAR`) is noticed.
+- **Distance.** In the centre of the view (15 degrees, `perceive::CENTRE`)
+  a player is noticed out to the skill's range; toward the cone's edge
+  the range falls to 0.4 of it (`EDGE_SIGHT`). A crouched player is
+  noticed at 0.75 of the range (`CROUCHED_SIGHT`).
+
+  | | Easy | Normal | Heroic | Legendary |
+  |---|---|---|---|---|
+  | sight range (world units, `perceive::sight_range`) | 25 | 35 | 45 | 55 |
+  | camouflage, still (`perceive::camo_range`) | 1.5 | 2 | 2.5 | 3 |
+  | camouflage tracking error (times the skill's, `look::camo_aim`) | 2.5 | 2.2 | 1.9 | 1.6 |
+
+- **A scope.** A held gun with zoom levels reaches 1.5 times as far per
+  level (`SCOPE_SIGHT`), only within 6 degrees of the aim
+  (`SCOPE_CONE`): a sniper sees a far player down its own line once it
+  has looked there, never off to the side, and never through a wall.
+- **Active camouflage.** A player with camouflage on (player `+0x198`,
+  §3.6) is noticed only at arm's length, twice that while it moves
+  faster than the motion tracker's threshold (`CAMO_MOVING`). Firing
+  (within `sound::HEARD_TICKS`) or a broken shield shows it at the full
+  range, as the camouflage flickers in Halo 2. A tracked camouflaged
+  target is aimed at with the larger error in the table and engaged at
+  0.6 of the thumb's pace (`look::CAMO_ENGAGE`). The motion tracker
+  still shows it moving (§3.1, "The motion tracker").
+
+The host reads each living player's motion and recent fire as slot masks
+(`Observations::moving`, `firing`); perception keeps only the bits of
+players it sees.
 
 #### Visibility grid (`bots::vis`)
 
@@ -5615,9 +5652,10 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
      7. Note any spot where a bot still gets stuck for good (map, roughly
         where) and send the `bots:` lines.
 3. **Combat.** Built: `bots::mind` (`Mind`, the phantom's decision loop).
-   - **Seeing.** An enemy is seen when it is inside 65 degrees of the
-     aim, or within 3 units anywhere, and the walls leave a clear line from
-     the bot's eye to its chest or head. Teammates in a team game are never
+   - **Seeing.** An enemy is seen when it is inside 40 degrees of the
+     aim, or within 3 units anywhere, within the skill's visual range
+     (§3.1, "Visual range"), and the walls leave a clear line from the
+     bot's eye to its chest or head. Teammates in a team game are never
      targets.
    - **Deciding**, every frame: fight the target it has while it is still
      seen, else the nearest seen; with no one seen, chase the last place it

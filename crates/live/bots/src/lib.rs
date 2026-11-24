@@ -815,6 +815,7 @@ impl Brain {
         let map_data = map.map(|m| m.as_ref());
         observation.visible_players = Some(perceive::observe_for_brain(
             p,
+            self.mind.skill,
             &mut observation.vehicles,
             &mut observation.kills,
             map_data,
@@ -852,6 +853,7 @@ impl Brain {
         self.vehicle_seats.clear_sight(&mut observation.vehicles);
         observation.visible_players = Some(perceive::observe_for_brain(
             &mut observation.perception,
+            self.mind.skill,
             &mut observation.vehicles,
             &mut observation.kills,
             map.map(|m| m.as_ref()),

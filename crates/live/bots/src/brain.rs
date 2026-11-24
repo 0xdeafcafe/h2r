@@ -76,6 +76,13 @@ pub struct Observations {
     pub radar: Vec<Vec3>,
     /// The tracker disc's horizontal radius while the tracker shows.
     pub radar_range: Option<f32>,
+    /// The player slots (`perceive::player_bit`) moving faster than the
+    /// motion tracker's threshold, and those that fired within
+    /// `sound::HEARD_TICKS`: what shows through active camouflage
+    /// (docs/game/bots.md section 3.1, "Visual range"). Read for every
+    /// living player; perception keeps only what it sees.
+    pub moving: u16,
+    pub firing: u16,
     /// Loose frag/plasma equipment that the observer can see.
     pub ground_grenades: Vec<(Vec3, crate::grenades::Kind)>,
     /// An empty successful pickup scan can indicate that a weapon was taken.
