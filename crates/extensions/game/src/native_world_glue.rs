@@ -80,6 +80,8 @@ pub struct Ready {
     /// The parts the native pass draws, with their shaders: what the skip
     /// clears.
     parts: Arc<PartSet>,
+    /// Resident layer-3 parts in each rigid placement or cluster, in section order.
+    section_parts: HashMap<Owner, Vec<u8>>,
     /// Each drawn part's world bounds, what the guest's admission culls
     /// by; a live edit's refresh recomputes an edited section's
     /// ([`refresh_world`]).
@@ -301,7 +303,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }))
     }
 
-    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, scene_view: &frame_scene::View, plan: &StencilPlan) -> Option<native_render::skip::Cleared> {
+    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, scene_view: &frame_scene::View, plan: &StencilPlan, claim_guest: bool) -> Option<native_render::skip::Cleared> {
         let ready = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             Arc::clone(current_ready(&state, mem)?)
@@ -366,10 +368,48 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let target = d.external_ready(&ReadMemory(mem), false).ok()?;
         // Admit the union of both lenses. Exact readback renders the retail
         // projection, and hardware clips a submitted part outside either copy.
-        let admission_camera = native_render::camera::display_camera(
-            scene_view.camera, d.projection_factor_for_target(target.surface_size).min(1.),
-        );
+        let factor = d.projection_factor_for_target(target.surface_size);
+        let admission_camera = native_render::camera::display_camera(scene_view.camera, factor.min(1.));
         let frustum = GpuWorld::draw_frustum(&admission_camera.view_projection(), true);
+        let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
+        let run = u64::from(d.swap_count()).wrapping_add(1);
+        let (device, color, depth) = d.external_pipeline_target(&ReadMemory(mem))?;
+        let time = native_render::layer_pass::render_time(&ReadMemory(mem));
+        let select = |parts: &[(Owner, u8)], display_only| {
+            let mut guard = if display_only || ready.owns_display_lightmaps() {
+                ready.gpu()
+            } else {
+                ready.gpu.try_lock().ok()?
+            };
+            let gpu = guard.as_mut()?;
+            configure_world(gpu, depth, cull, &stencil);
+            let mut selection = gpu.select_parts(parts, &admission_camera)?;
+            gpu.animate_selection(&mut selection, time).ok()?;
+            gpu.prewarm_world(&device, color, depth, &selection).then(|| Arc::new(selection))
+        };
+        let world_pass = |selection, display_only| WorldPass {
+            selection, display_only,
+            ready: Arc::clone(&ready),
+            camera: scene_view.camera,
+            view: None,
+            w_clip: None,
+            stencil: stencil.clone(),
+            cull,
+            run,
+        };
+        if factor < 1.0 && let Some(visibility) = &scene_view.display_visibility && (!visibility.clusters.is_empty() || !visibility.placements.is_empty()) {
+            let sections = visibility.clusters.iter().map(|&id| Owner::Cluster(u32::from(id)))
+                .chain(visibility.placements.iter().copied().filter(|&id| {
+                    engine::render_loop::world_walk::fully_visible_placement(mem, bsp, id) == Some(true)
+                }).map(|id| Owner::Instance(u32::from(id))));
+            let parts = display_section_parts(sections, &ready.section_parts,
+                &ready.part_bounds.read().unwrap_or_else(|e| e.into_inner()), &frustum);
+            if !parts.is_empty() && let Some(selection) = select(&parts, true) {
+                let plan = d3d::ExternalPlan { stage: timeline::native::Stage::World, view, ranges: parts.len(), slots: Vec::new() };
+                let _ = d.draw_display_stage(&mut crate::native_lights_glue::DeviceMemory(mem), plan, Box::new(world_pass(selection, true)));
+            }
+        }
+        if !claim_guest { return None; }
         let (masks, cleared, selected) = {
             let bounds = ready.part_bounds.read().unwrap_or_else(|e| e.into_inner());
             render_bridge::native_world::plan_parts(
@@ -380,37 +420,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         };
         let ranges = selected.len();
         if ranges == 0 { return None; }
-        let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
         let plan = d3d::ExternalPlan { stage: timeline::native::Stage::World, view, ranges, slots: Vec::new() };
         let counted = timeline::phase::enabled().then(|| selected.iter().map(|p| p.0).collect::<Vec<_>>());
-        let run = u64::from(d.swap_count()).wrapping_add(1);
-        let selection = {
-            let (device, color, depth) = d.external_pipeline_target(&ReadMemory(mem))?;
-            // A worker encoding the previous frame still owns the same
-            // atlas. Wait for its short recording section in relit mode.
-            let mut guard = if ready.owns_display_lightmaps() {
-                ready.gpu()
-            } else {
-                ready.gpu.try_lock().ok()?
-            };
-            let gpu = guard.as_mut()?;
-            configure_world(gpu, depth, cull, &stencil);
-            let mut selection = gpu.select_parts(&selected, &admission_camera)?;
-            // Animated materials take their registers at the render clock;
-            // one whose clock does not read leaves the view to D3D.
-            gpu.animate_selection(&mut selection, native_render::layer_pass::render_time(&ReadMemory(mem))).ok()?;
-            gpu.prewarm_world(&device, color, depth, &selection).then(|| Arc::new(selection))?
-        };
-        let pass = || Box::new(WorldPass {
-            selection: Arc::clone(&selection),
-            ready: Arc::clone(&ready),
-            camera: scene_view.camera,
-            view: None,
-            w_clip: None,
-            stencil: stencil.clone(),
-            cull,
-            run,
-        });
+        let selection = select(&selected, false)?;
+        let pass = || Box::new(world_pass(Arc::clone(&selection), false));
         drop(planning);
         // A scene stage: queued now, prepared and recorded when the render
         // thread reaches it. Not taken, the pass is reserved here as before.
@@ -987,8 +1000,25 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
     shadows
 }
 
+/// The flood supplies newly visible clusters and fully opaque rigid placements.
+fn display_section_parts(
+    sections: impl Iterator<Item = Owner>, resident: &HashMap<Owner, Vec<u8>>,
+    bounds: &HashMap<(Owner, u8), native_render::world::Aabb>, frustum: &native_render::cull::Frustum,
+) -> Vec<(Owner, u8)> {
+    let mut selected = Vec::new();
+    for owner in sections {
+        for &part in resident.get(&owner).into_iter().flatten() {
+            if bounds.get(&(owner, part)).is_some_and(|b| frustum.may_see(b)) {
+                selected.push((owner, part));
+            }
+        }
+    }
+    selected
+}
+
 /// One view's world pass.
 struct WorldPass {
+    display_only: bool,
     selection: Arc<WorldSelection>,
     ready: Arc<Ready>,
     camera: RenderCamera,
@@ -1052,6 +1082,7 @@ fn world_lighting(copy: d3d::TargetCopy, lighting: d3d::Lighting) -> d3d::Lighti
 }
 
 impl d3d::ExternalPass for WorldPass {
+    fn display_only(&self) -> bool { self.display_only }
     // The selection and constants belong to this view. Ready pins the BSP,
     // and each recording binds the target copy passed to it by the renderer.
     fn replays_scene(&self) -> bool { true }
@@ -1395,6 +1426,11 @@ fn load_ready(
     } else { 0 };
     let world = keep_draws(world, &accepts);
     let parts = part_set(&world, &shaders);
+    let mut section_parts = HashMap::<Owner, Vec<u8>>::new();
+    for &(owner, part) in parts.keys() {
+        section_parts.entry(owner).or_default().push(part);
+    }
+    for group in section_parts.values_mut() { group.sort_unstable(); }
     let part_bounds = RwLock::new(world.draws.iter().map(|d| ((d.owner, d.part), d.bounds)).collect());
     let empty_world = parts.is_empty() && opaque.is_empty();
     let stage_bitmap = |images: &StageImages, stage: Stage| match stage {
@@ -1439,7 +1475,7 @@ fn load_ready(
     };
     if !send(StageReady::World(Arc::new(Ready {
         relit: AtomicBool::new(gpu.has_relight()),
-        retire: Some(retire), opaque, part_bounds, bsp_tag: Some(bsp_tag), gpu: Mutex::new(Some(gpu)), parts: Arc::new(parts),
+        retire: Some(retire), opaque, part_bounds, bsp_tag: Some(bsp_tag), gpu: Mutex::new(Some(gpu)), parts: Arc::new(parts), section_parts,
         shaders: refresh_shaders_list, no_lightmap_group: lightmap_bitmap_missing, pages: page_set,
         upload_device: Some((device.clone(), queue.clone())), palettes: decoder.used().clone(),
         fog: OnceLock::new(), water: OnceLock::new(), layers: OnceLock::new(),
@@ -1822,6 +1858,23 @@ pub fn light_image<R: std::io::Read + std::io::Seek>(
 mod tests {
     use super::*;
     use native_render::world::{Owner, PartInput, Placement, SectionInput, WorldBuilder};
+
+    #[test]
+    fn the_display_flood_selects_only_resident_parts_inside_its_frustum() {
+        use native_render::{cull::Frustum, world::Aabb};
+        let resident = HashMap::from([(Owner::Cluster(2), vec![0, 1, 2]), (Owner::Cluster(3), vec![0])]);
+        let point = |x| Aabb { min: [x, 0., 0.5], max: [x, 0., 0.5] };
+        let bounds = HashMap::from([
+            ((Owner::Cluster(2), 0), point(1.25)),
+            ((Owner::Cluster(2), 1), point(1.75)),
+            ((Owner::Cluster(3), 0), point(1.25)),
+        ]);
+        let frustum = |scale| Frustum::from_view_projection(&[
+            [scale, 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [0., 0., 0., 1.],
+        ]);
+        assert!(display_section_parts([Owner::Cluster(2)].into_iter(), &resident, &bounds, &frustum(1.)).is_empty());
+        assert_eq!(display_section_parts([Owner::Cluster(2)].into_iter(), &resident, &bounds, &frustum(0.75)), [(Owner::Cluster(2), 0)]);
+    }
 
     #[test]
     fn relit_bsp_ownership_survives_an_encoding_worker_holding_the_gpu() {

@@ -33,6 +33,7 @@ use native_render::program::ViewInputs;
 use crate::native_map::{self, NativeMap};
 use crate::native_world_glue::{Raw, StageDecoder, StageImages, StagePalettes, palettes_hold, scene_load_palettes};
 
+mod display;
 mod palette;
 pub(crate) use palette::{palette_counters, palette_ready};
 
@@ -67,6 +68,7 @@ impl PartRange {
 }
 
 struct ModelCoverage {
+    display_parts: HashMap<u16, Vec<(u8, u32)>>,
     nodes: usize,
     assets: Arc<palette::GpuAssets>,
     all_parts: bool,
@@ -445,6 +447,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }
     }
 
+    fn draw_display_objects(&self, mem: &mut dyn GuestMemory, view: &View) {
+        let _ = self.draw_display_models(mem, view);
+    }
+
     fn draw_walk(
         &self, mem: &mut dyn GuestMemory, view: Option<(&FrameScene, &View)>, first: usize, run: &[Entry],
         consume: &mut dyn FnMut(&mut dyn GuestMemory) -> bool,
@@ -494,7 +500,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let promise = d3d::ExternalPlan { stage: Stage::Objects, view, ranges, slots: Vec::new() };
         let batch = u64::from(device.swap_count()).wrapping_add(1);
         let pass = |draws: Vec<(u32, PlannedDraw)>| {
-            Box::new(ObjectsPass { models: Arc::clone(&models), draws, texaccum, view: None, w_clip: None, run: batch })
+            Box::new(ObjectsPass { display_only: false, models: Arc::clone(&models), draws, texaccum, view: None, w_clip: None, run: batch })
         };
         drop(planning);
         // The load the run was planned against, held to the commit.
@@ -1251,7 +1257,18 @@ fn load_model(o: &mut Opened, mode: TagId) -> Result<(CpuModel, ModelCoverage, R
         })
     });
     let assets = Arc::new(palette::GpuAssets::default());
-    let cover = ModelCoverage { nodes: geo.nodes.len(), assets, all_parts, ranges };
+    // A display-only record has a selected section but no sorted item list.
+    // Require coverage of every drawn part before admitting that section.
+    let mut display_parts = HashMap::new();
+    for (i, s) in geo.sections.iter().enumerate() {
+        let Ok(section) = u16::try_from(i) else { continue };
+        let keys = lit.parts.iter().filter(|p| p.section == section)
+            .map(|p| (p.part, p.shader_tag)).collect::<Vec<_>>();
+        if !keys.is_empty() && s.geometry.parts.iter().filter(|p| p.is_drawn()).count() == keys.len() {
+            display_parts.insert(section, keys);
+        }
+    }
+    let cover = ModelCoverage { display_parts, nodes: geo.nodes.len(), assets, all_parts, ranges };
     let cpu = CpuModel { lit, normalization: o.normalization.clone().flatten() };
     Ok((cpu, cover, geo))
 }
@@ -1493,6 +1510,7 @@ fn object_vertex_program(o: &mut Opened, vs: TagId, geometry: u16, influences: u
 /// One sorted run's objects: the draws planned at the walk, in the list's
 /// order.
 struct ObjectsPass {
+    display_only: bool,
     models: Arc<Models>,
     /// The planned draws with their model index.
     draws: Vec<(u32, PlannedDraw)>,
@@ -1512,6 +1530,10 @@ struct ObjectsPass {
 }
 
 impl d3d::ExternalPass for ObjectsPass {
+    fn display_only(&self) -> bool { self.display_only }
+
+    fn replays_scene(&self) -> bool { self.display_only }
+
     fn batch_key(&self) -> Option<u64> { Some(self.run) }
 
     fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {

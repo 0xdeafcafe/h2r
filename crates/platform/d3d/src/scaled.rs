@@ -1037,6 +1037,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
         self.stats.scale = scale.vertical_rounded();
         self.stats.output = scale.size(640, 480);
         self.stats.rescales += 1;
+        eprintln!("d3d: render resolution {old} -> {scale}");
         self.remapped = true;
         for (i, v) in made.into_iter().enumerate() {
             let old = std::mem::replace(&mut self.scaled[i].current, v);

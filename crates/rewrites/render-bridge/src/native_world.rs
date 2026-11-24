@@ -146,9 +146,11 @@ pub trait Host: Send + Sync {
     /// Before layer 3 of a view (`mem` the guest, read only): `bsp` the active BSP's address, `view`
     /// the frame step's open view (its camera; [`crate::scene_step`]), `stencil` how the layer's items switch
     /// the stencil. Asks for the native pass when a world for `bsp` is
-    /// ready and the device can draw it; returns the parts it draws, or
+    /// ready and the device can draw it. When `claim_guest` is false
+    /// only the extra display clusters can draw, with no guest masks.
+    /// Returns the guest parts it draws, or
     /// `None` to leave the world to the D3D path.
-    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, view: &View, stencil: &StencilPlan) -> Option<Cleared>;
+    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, view: &View, stencil: &StencilPlan, claim_guest: bool) -> Option<Cleared>;
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -243,17 +245,18 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     };
     use native_render::world_layers::{Site, layer_site};
     let site = layer_site(LIGHTMAP_LAYER, ret);
-    if site == Site::Scene
-        && let Some(bsp) = m.read_u32(ACTIVE_BSP)
-        && host.use_resolved_scene(m.0, bsp)
-    {
+    let Some(bsp) = m.read_u32(ACTIVE_BSP) else { return; };
+    let resolved = site == Site::Scene && host.use_resolved_scene(m.0, bsp);
+    let has_world = !resolved && skip::has_structure_items(&m, LIGHTMAP_LAYER) == Some(true);
+    if !has_world && site != Site::Scene {
+        WITHOUT_WORLD.fetch_add(1, Ordering::Relaxed);
         return;
     }
-    // A layer 3 that draws no BSP item is not the world's (the first-person
-    // render's, `skip::has_structure_items`): the native pass would draw
-    // the whole world again over the finished scene.
-    if skip::has_structure_items(&m, LIGHTMAP_LAYER) != Some(true) {
-        WITHOUT_WORLD.fetch_add(1, Ordering::Relaxed);
+    let kind = if site == Site::AlternateView { frame_scene::ViewKind::Alternate } else { frame_scene::ViewKind::Game };
+    let Some(mut view) = crate::scene_step::open_kind(&*m.0, kind) else { return; };
+    if site != Site::Scene { view.display_visibility = None; }
+    let claim_guest = has_world && !resolved;
+    if !claim_guest && view.display_visibility.as_ref().is_none_or(|v| v.clusters.is_empty() && v.placements.is_empty()) {
         return;
     }
     // How the layer's items switch the stencil (0x0004d640/0x0004d720):
@@ -265,11 +268,7 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         }
         return;
     };
-    let kind = if site == Site::AlternateView { frame_scene::ViewKind::Alternate } else { frame_scene::ViewKind::Game };
-    let (Some(view), Some(bsp)) = (crate::scene_step::open_kind(&*m.0, kind), m.read_u32(ACTIVE_BSP)) else {
-        return;
-    };
-    if let Some(c) = host.ask(m.0, bsp, &view, &stencil) {
+    if let Some(c) = host.ask(m.0, bsp, &view, &stencil, claim_guest) {
         DRAWN.fetch_add(1, Ordering::Relaxed);
         ITEMS.fetch_add(c.items.len() as u64, Ordering::Relaxed);
         let views = VIEWS.load(Ordering::Relaxed);

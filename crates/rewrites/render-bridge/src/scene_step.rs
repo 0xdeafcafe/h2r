@@ -115,6 +115,7 @@ struct Step {
     shadow_open: bool,
     /// The structure's portal graph for the Rust visibility, decoded once.
     visibility: scene_extract::visibility::GraphCache,
+    visibility_lens: VisibilityLens,
 }
 
 static STEP: Mutex<Option<Step>> = Mutex::new(None);
@@ -243,6 +244,21 @@ fn with_step<R>(f: impl FnOnce(&mut Step) -> R) -> R {
     f(step.get_or_insert_with(Step::default))
 }
 
+/// Horizontal lens used by the view's portal flood and object planes.
+#[derive(Clone, Copy, Default)]
+pub enum VisibilityLens {
+    #[default]
+    Retail,
+    /// Bounds applied in the single-copy guest frustum builder.
+    Guest(f32),
+    /// Extra visible space on the exact-mode display copy.
+    Display(f32),
+}
+
+pub fn set_visibility_lens(lens: VisibilityLens) {
+    with_step(|step| step.visibility_lens = lens);
+}
+
 fn tick(m: &Ro<'_>) -> u32 {
     m.read_u32(points::GAME_TIME.base)
         .and_then(|t| m.read_u32(t.checked_add(GAME_TIME_TICK)?))
@@ -357,7 +373,18 @@ fn open_kind_at_layer(mem: &dyn GuestMemory, kind: ViewKind, layer_hook: bool) -
                 .and_then(|()| {
                     if kind == ViewKind::Game && let Some(gather) = extract::cluster_gather(&m) {
                         let lens = view_record_arm(&m, &camera, key);
-                        let gather = visibility_arm(&m, &lens, key, &mut step.visibility, gather);
+                        let guest_lens = match step.visibility_lens {
+                            VisibilityLens::Guest(factor) => native_render::camera::display_camera(lens, factor),
+                            _ => lens,
+                        };
+                        let display_factor = match step.visibility_lens {
+                            VisibilityLens::Display(factor) => Some(factor),
+                            _ => None,
+                        };
+                        let (gather, extra) = visibility_arm(&m, &guest_lens, key, &mut step.visibility, gather, display_factor);
+                        if let Some(extra) = extra {
+                            step.builder.set_display_visibility(extra)?;
+                        }
                         step.builder.set_cluster_gather(gather)?;
                     }
                     Ok(())
@@ -1108,6 +1135,7 @@ fn reset_timeline(why: Cut) {
             UNSEALED.fetch_add(1, Ordering::Relaxed);
         }
         step.builder.discard(why);
+        step.visibility_lens = VisibilityLens::Retail;
         step.tick = None;
         SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
         LAST.lock().unwrap_or_else(|e| e.into_inner()).take();
@@ -1140,6 +1168,28 @@ pub fn forget() {
     crate::native_hud::ui_overlay::forget();
 }
 
+/// Rerun the portal flood with the display lens, keeping only geometry
+/// absent from both the retail projection and the actual guest lists.
+fn display_additions(
+    mem: &Ro<'_>, gather: &frame_scene::scene::ClusterGather, camera: Camera,
+    factor: f32, cache: &mut scene_extract::visibility::GraphCache,
+    retail: &scene_extract::visibility::frusta::WindowFrusta,
+    baseline: &scene_extract::visibility::VisibilitySets,
+) -> Option<frame_scene::DisplayVisibility> {
+    if gather.mode != 0 {
+        return None;
+    }
+    let display = native_render::camera::display_camera(camera, factor);
+    let (mut visible, windows) = scene_extract::visibility::compute_with_windows(
+        mem, &display, cache, crate::native_map_work::generation(),
+    ).ok()?;
+    let placements = windows.as_ref().and_then(|w| cache.display_placements(mem, retail, w)).unwrap_or_default();
+    visible.retain_display_additions(baseline, gather);
+    (!visible.clusters.is_empty() || !visible.objects.is_empty() || !placements.is_empty()).then_some(frame_scene::DisplayVisibility {
+        clusters: visible.clusters, objects: visible.objects, placements,
+    })
+}
+
 /// The Rust visibility beside the guest's for one game view
 /// (docs/graphics/native-visibility.md): computed, compared as sets with
 /// the guest's `gather`, counted, and returned in place of the guest's
@@ -1150,20 +1200,24 @@ fn visibility_arm(
     key: ViewKey,
     cache: &mut scene_extract::visibility::GraphCache,
     gather: frame_scene::scene::ClusterGather,
-) -> frame_scene::scene::ClusterGather {
+    display_factor: Option<f32>,
+) -> (frame_scene::scene::ClusterGather, Option<frame_scene::DisplayVisibility>) {
     use scene_extract::visibility::{self, Decline};
     let start = Instant::now();
-    let rust = visibility::compute(m, camera, cache, crate::native_map_work::generation());
+    let rust = visibility::compute_with_windows(m, camera, cache, crate::native_map_work::generation());
     VISIBILITY_NS.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
-    let rust = match rust {
+    let (rust, windows) = match rust {
         Ok(rust) => rust,
         Err(why) => {
             let i = Decline::ALL.iter().position(|&d| d == why).unwrap_or(0);
             VISIBILITY_DECLINED[i].fetch_add(1, Ordering::Relaxed);
-            return gather;
+            return (gather, None);
         }
     };
     VISIBILITY_CHECKED.fetch_add(1, Ordering::Relaxed);
+    let extra = display_factor.and_then(|factor| {
+        display_additions(m, &gather, *camera, factor, cache, windows.as_ref()?, &rust)
+    });
     let (gather, parity) = visibility::arm(gather, rust);
     if let Some(first) = parity.first {
         VISIBILITY_DIFFER.fetch_add(1, Ordering::Relaxed);
@@ -1185,13 +1239,13 @@ fn visibility_arm(
                 parity.objects_rust_only,
             )
         });
-        return gather;
+        return (gather, extra);
     }
     VISIBILITY_EQUAL.fetch_add(1, Ordering::Relaxed);
     if gather.source == frame_scene::VisibilitySource::Rust {
         VISIBILITY_TAKEN.fetch_add(1, Ordering::Relaxed);
     }
-    gather
+    (gather, extra)
 }
 
 /// The main view's records in Rust beside the guest's

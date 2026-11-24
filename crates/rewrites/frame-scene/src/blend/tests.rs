@@ -34,6 +34,7 @@ fn view(kind: ViewKind, camera: Camera, instances: Range<u32>, lights: Range<u32
         order: 0..0,
         world: Default::default(),
         remainder: 0,
+        display_visibility: None,
         aux_depth: None,
         lights,
         layers: 0..0,

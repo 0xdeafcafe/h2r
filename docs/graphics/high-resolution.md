@@ -8,10 +8,11 @@ Tests: `crates/platform/d3d/tests/render_scale.rs`, `crates/platform/gfx/src/ras
 Switch: Resolution, HUD, LOD distance, single-copy readbacks and glyph smoothing
 are listed in [switches.md](../runtime/switches.md#settings).
 
-Native follows the physical drawable, including Retina backing pixels, with
+The play window opens at the primary monitor’s aspect within 1280 × 960 logical
+points. Native follows the physical drawable, including Retina backing pixels, with
 a default internal budget of 3840 × 2160 pixels. It scales both dimensions
 together to preserve the display aspect. On a 5120x2880 Studio Display,
-Native renders at 3840x2160. Choosing **5120x2880** renders at full panel
+the fullscreen Resolution row reads **Native (3840x2160)**. Choosing **5120x2880** renders at full panel
 resolution. Both 3440x1440 and 5120x1440 fit within the budget at native size.
 Explicit sizes stay fixed on resize and support up to 8192 on each axis.
 The desktop shell redraws the latest frame to the resized drawable
@@ -74,8 +75,8 @@ and to its raster position. Its sprite UVs keep their authored range.
 On a perspective draw that samples scene colour or depth with a bump matrix,
 both coefficients contributing to horizontal displacement take the display
 lens. Asset-space bump matrices keep their material values.
-The exact reference draws both at the retail coordinates. The vertical field of view, depth, simulation
-camera and guest visibility records keep their retail values. Orthographic
+The exact reference draws both at the retail coordinates. The display keeps the
+vertical field of view and depth of the simulation camera. Orthographic
 menu widgets use a uniform fit inside each player's viewport. A menu quad
 is background art when, along the fitted axis, it reaches both edges of the
 viewport, or it reaches one edge and its whole bitmap at its drawn scale is
@@ -111,15 +112,25 @@ groups can use the fitted rectangle or the viewport edges. If the game already
 uses the Xbox widescreen HUD layout, its artwork receives only the remaining
 aspect correction. At 16:9 the Pinned layout retains the retail widescreen fit.
 
-**Live visibility is incomplete at the sides.** A wider lens shows more of
-the geometry the guest submitted, including triangles crossing the retail
-frustum. A cluster or object missing from the guest's record list can still
-disappear at the retail boundary. Rendering everything in the extra field
-requires a separate gather from immutable scene data. Widening the retail
-gather can advance gameplay RNG, as described under [determinism](#determinism).
-The player FOV setting feeds the observer before `0x000441b0` builds the
-guest frustum. Both the horizontal and vertical extent follow that setting.
-The display's aspect correction scales clip X alone. To locate a missing
+The main portal gather starts from the tangent rectangle in the render
+projection. The single-copy hook at `VIEW_FRUSTUM_RECT` in
+`crates/extensions/game/src/render_aspect.rs` scales its horizontal extent
+around the lens centre before the guest builds the root polygon and side
+planes. The BSP flood clips each open portal to the parent window. Objects
+must pass a sphere test against one of their cluster's window frusta.
+The player FOV setting supplies the vertical extent through the observer.
+
+Exact mode keeps the guest gather and visibility readbacks at the retail
+lens. The scene step walks the open portals with both the retail and display
+cameras, including their off-centre projections. It excludes geometry
+already admitted by the retail lens or submitted by the guest. Each rigid
+BSP placement needs to intersect a portal window in a cluster that references
+it. Layer 3 draws resident cluster parts and fully opaque rigid placements.
+For objects, it builds the model sections and node palettes on a private
+copy of the record writes. Materials without native layer-3 support, fades,
+attachments and objects that require guest animation code can still leave
+gaps at the sides. The guest’s flare visibility count comes from its own
+reference depth and query. To locate a missing
 BSP cluster, compare its ID in the guest visibility list, the structure
 list and the layer-3 list for the same view. The sealed scene includes
 all three and its camera. The display frame recorder includes the final
@@ -285,7 +296,8 @@ The compositor and the guest's display-size query share this placement
 rule (`crates/apps/app/src/scale.rs`).
 
 The backend applies a new scale at the frame boundary on the thread that
-presents (the render thread under `ThreadedBackend`). It recreates each
+presents (the render thread under `ThreadedBackend`). D3D logs each accepted
+raster change, including a fullscreen transition. It recreates each
 scaled surface at the new size, fills it from the reference, and maps the
 device's surface handles onto the new allocations. At 640×480 with retail
 lighting and 4:3 presentation, the view sleeps and the compositor shows the reference
@@ -722,7 +734,7 @@ position supply neither of those inputs. Headless sim and dedicated hosts
 install no display-aspect hook. See [aim assist](../game/aim-assist.md) and
 [field of view](../game/settings-menu.md#field-of-view).
 
-The original object gather must stay authoritative. Per-visible-object
+In exact mode the original object gather stays authoritative. Per-visible-object
 setup can reach animation variant selection through
 `0x00133790`, `0x000bd610` and `0x001cb410`. With the animation manager's
 gameplay RNG bit set, the selector writes the shared seed at `0x001dd6e1`.

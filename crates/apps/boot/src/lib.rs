@@ -1059,7 +1059,7 @@ fn run_configured(
                 Arc::new(move || position)
             }
         };
-        render_aspect::install(&mut features, projected_size, hud, device.ui_layout.clone())?;
+        render_aspect::install(&mut features, projected_size, single, hud, device.ui_layout.clone())?;
     }
     // Vblanks on the 60 Hz logical clock (docs/graphics/d3d.md "Vertical blank"),
     // delivered as DPCs; the frame wait above is the clocked one.

@@ -1,5 +1,6 @@
 //! Display aspect on captured GPU constants and the retail callbacks
 //! that own on-screen UI packets. All guest coordinates remain 640 × 480.
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use d3d::backend::{PixelRect, UiFit};
@@ -42,6 +43,7 @@ impl<B: d3d::Backend + Send> UiLayoutSink for Mutex<d3d::Device<B>> {
 
 struct RenderAspect {
     size: Size,
+    single_copy: bool,
     position: Position,
     sink: Arc<dyn UiLayoutSink>,
 }
@@ -49,12 +51,14 @@ struct RenderAspect {
 pub fn install(
     registry: &mut hooks::Registry,
     size: Size,
+    single_copy: bool,
     position: Position,
     sink: Arc<dyn UiLayoutSink>,
 ) -> anyhow::Result<()> {
     registry
         .add(&RenderAspect {
             size,
+            single_copy,
             position,
             sink,
         })
@@ -94,6 +98,36 @@ fn projection_factor(mem: &impl GuestMemory, output: (u32, u32)) -> f32 {
         1.0
     };
     retail / pixel
+}
+
+// 0x441b0 copies the projection's tangent rectangle into the root polygon
+// and builds its bounds and planes from the same rectangle. Feed both uses
+// the local copy at +0xa0, the rectangle field of the output frustum. The
+// portal flood and its per-window sphere tests inherit these side planes.
+fn display_frustum_rect(
+    mem: &mut impl GuestMemory,
+    source: u32,
+    frustum: u32,
+    factor: f32,
+) -> Option<u32> {
+    if factor == 1.0 || !factor.is_finite() || factor <= 0.0 {
+        return None;
+    }
+    let mut rect = [0; 16];
+    mem.read(source, &mut rect).ok()?;
+    let left = f32::from_le_bytes(rect[..4].try_into().ok()?);
+    let right = f32::from_le_bytes(rect[4..8].try_into().ok()?);
+    let centre = (left + right) * 0.5;
+    let half = (right - left) * 0.5 / factor;
+    let (left, right) = (centre - half, centre + half);
+    if !left.is_finite() || !right.is_finite() || left >= right {
+        return None;
+    }
+    rect[..4].copy_from_slice(&left.to_le_bytes());
+    rect[4..8].copy_from_slice(&right.to_le_bytes());
+    let local = frustum.checked_add(0xa0)?;
+    mem.write(local, &rect).ok()?;
+    Some(local)
 }
 
 fn viewport(mem: &impl GuestMemory, address: u32) -> Option<PixelRect> {
@@ -443,14 +477,48 @@ impl Feature for RenderAspect {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), hooks::BuildError> {
+        let view_lens = Arc::new(AtomicU32::new(1.0f32.to_bits()));
+        let single_copy = self.single_copy;
         for point in [&points::RENDER_GAME_VIEW, &points::RENDER_ALTERNATE_VIEW] {
-            let (size, sink) = (self.size.clone(), self.sink.clone());
+            let (size, sink, lens) = (self.size.clone(), self.sink.clone(), view_lens.clone());
             b.raw()
                 .observe_before(point, "select the GPU projection", move |o| {
-                    sink.set_projection_factor(projection_factor(&*o.guest(), size()));
+                    let factor = projection_factor(&*o.guest(), size());
+                    lens.store(factor.to_bits(), Ordering::Relaxed);
+                    sink.set_projection_factor(factor);
+                    #[cfg(feature = "desktop-runtime")]
+                    {
+                        use render_bridge::scene_step::{VisibilityLens, set_visibility_lens};
+                        set_visibility_lens(if !single_copy && factor < 1.0 {
+                            VisibilityLens::Display(factor)
+                        } else {
+                            VisibilityLens::Retail
+                        });
+                    }
                 })
                 // Reads this view's guest memory and tells the sink, as the
                 // UI-fit hooks below do (all context-only).
+                .context_only()
+                .optional();
+        }
+
+        if single_copy {
+            b.raw()
+                .before(&points::render_aspect::VIEW_FRUSTUM_RECT, "fit the main visibility frustum", move |c| {
+                    let mut mem = c.ctx.memory();
+                    let caller = c.cpu.esp.checked_add(8).and_then(|sp| GuestMemory::u32(&*mem, sp).ok());
+                    if caller == Some(points::render_aspect::VIEW_FRUSTUM_CALL_RETURN) {
+                        let factor = f32::from_bits(view_lens.load(Ordering::Relaxed));
+                        if let Some(rect) = display_frustum_rect(&mut *mem, c.cpu.ecx, c.cpu.esi, factor) {
+                            c.cpu.ecx = rect;
+                            #[cfg(feature = "desktop-runtime")]
+                            render_bridge::scene_step::set_visibility_lens(
+                                render_bridge::scene_step::VisibilityLens::Guest(factor),
+                            );
+                        }
+                    }
+                    Ok(Flow::Continue)
+                })
                 .context_only()
                 .optional();
         }
@@ -835,6 +903,28 @@ mod tests {
             .put_u16(0x1002, 2)
             .put_u32(0x1008, 3);
         close(projection_factor(&m, (1920, 1080)), 0.75);
+    }
+
+    #[test]
+    fn main_gather_uses_the_display_edges_and_keeps_the_off_centre_lens() {
+        let mut mem = FakeGuest::new();
+        let src = 0x1000;
+        let frustum = 0x2000;
+        mem.map(frustum, 0x1bc);
+        for (i, bound) in [-0.75, 1.25, -0.6, 0.5].into_iter().enumerate() {
+            mem.put_f32(src + 4 * i as u32, bound);
+        }
+        for output in [(1920, 1080), (3440, 1440), (900, 1200)] {
+            let factor = projection_factor(&mem, output);
+            let rect = display_frustum_rect(&mut mem, src, frustum, factor).unwrap();
+            for (offset, ndc) in [(0, -1.0), (4, 1.0)] {
+                close((mem.f32(rect + offset).unwrap() - 0.25) * factor, ndc);
+            }
+            assert_eq!(mem.f32(rect + 8), mem.f32(src + 8));
+            assert_eq!(mem.f32(rect + 12), mem.f32(src + 12));
+        }
+        assert_eq!(mem.f32(src).unwrap(), -0.75);
+        assert_eq!(display_frustum_rect(&mut mem, src, frustum, 1.0), None);
     }
 
     fn physical(fit: Option<UiFit>, output: (u32, u32), xy: [f32; 2]) -> [f32; 2] {

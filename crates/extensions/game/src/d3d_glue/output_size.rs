@@ -85,6 +85,19 @@ mod tests {
     }
 
     #[test]
+    fn retina_window_fullscreen_and_restore_track_the_native_pixel_budget() {
+        let start = Instant::now();
+        let window = (2560, 1440);
+        let fullscreen = (5120, 2880);
+        let mut size = RasterSize::new(Resolution::Native, window);
+        assert_eq!(size.sample(Resolution::Native, fullscreen, start), window);
+        let settled = start + RESIZE_QUIET;
+        assert_eq!(size.sample(Resolution::Native, fullscreen, settled), (3840, 2160));
+        assert_eq!(size.sample(Resolution::Native, window, settled), (3840, 2160));
+        assert_eq!(size.sample(Resolution::Native, window, settled + RESIZE_QUIET), window);
+    }
+
+    #[test]
     fn settings_apply_immediately_and_cancel_pending_resizes() {
         let start = Instant::now();
         let native = (3440, 1440);

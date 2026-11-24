@@ -161,6 +161,41 @@ fn ptr(m: &dyn GuestMemory, at: u32) -> Option<u32> {
     (p != 0).then_some(p)
 }
 
+fn projection_depth(m: &dyn GuestMemory) -> Option<[f32; 4]> {
+    Some([
+        m.f32(PROJECTION_DEPTH).ok()?,
+        m.f32(PROJECTION_DEPTH + 12).ok()?,
+        m.f32(PROJECTION_DEPTH + 24).ok()?,
+        m.f32(PROJECTION_DEPTH + 36).ok()?,
+    ])
+}
+
+fn placement_fade(
+    m: &dyn GuestMemory, at: u32, depth: [f32; 4], near: f32, scale: f32, double: f32,
+) -> Option<(f32, f32)> {
+    let p = m.vec3(at.checked_add(0x3c)?).ok()?;
+    let r = m.f32(at.checked_add(0x48)?).ok()?;
+    let z = ((depth[1] * p[1] + depth[2] * p[2]) + depth[0] * p[0]) + depth[3];
+    let mut size = (r / z.abs().max(near)) * scale * double;
+    if r < m.f32(SMALL_RADIUS).ok()? {
+        size *= m.f32(SMALL_SCALE).ok()?;
+    }
+    let fade = (size - m.f32(FADE_START).ok()?) * m.f32(FADE_SLOPE).ok()?;
+    let fade = fade.max(0.).min(m.f32(ONE).ok()?);
+    Some((size, fade))
+}
+
+/// The extra display draw can use the resident rigid material directly
+/// only at full opacity. The ordinary record walk supplies partial fade.
+pub fn fully_visible_placement(m: &dyn GuestMemory, bsp: u32, id: u16) -> Option<bool> {
+    let id = u32::from(id);
+    if id >= m.u32(bsp.checked_add(0x140)?).ok()? || id >= 0x7ff { return None; }
+    let at = ptr(m, bsp.checked_add(0x144)?)?.checked_add(id * 0x58)?;
+    let (_, fade) = placement_fade(m, at, projection_depth(m)?, m.f32(MIN_DEPTH).ok()?,
+        m.f32(PIXEL_SCALE).ok()?, m.f32(TWO).ok()?)?;
+    Some(f64::from(fade) * f64::from(m.f32(FADE_RANGE).ok()?) == f64::from(u8::MAX))
+}
+
 // The x87 sphere-radius block rounds each operation at the guest's precision.
 fn cluster_sphere(m: &dyn GuestMemory, section: u32, mode: Mode) -> Option<([f32; 3], f32)> {
     let half = m.f32(HALF).ok()?;
@@ -244,12 +279,7 @@ fn fill(
     let mut cursor = m.u32(COUNT).ok()?;
     let mut main = m.u32(MAIN_COUNT).ok()?;
     let mut used = m.u16(vis + SUBPART_WORDS_USED).ok()?;
-    let depth = [
-        m.f32(PROJECTION_DEPTH).ok()?,
-        m.f32(PROJECTION_DEPTH + 12).ok()?,
-        m.f32(PROJECTION_DEPTH + 24).ok()?,
-        m.f32(PROJECTION_DEPTH + 36).ok()?,
-    ];
+    let depth = projection_depth(m)?;
     let scale = m.f32(PIXEL_SCALE).ok()?;
     let near = m.f32(MIN_DEPTH).ok()?;
     let double = m.f32(TWO).ok()?;
@@ -307,15 +337,7 @@ fn fill(
                 }
                 let section =
                     ptr(m, bsp.checked_add(0x13c)?)?.checked_add(definition.checked_mul(0xc8)?)?;
-                let p = m.vec3(at.checked_add(0x3c)?).ok()?;
-                let r = m.f32(at.checked_add(0x48)?).ok()?;
-                let z = ((depth[1] * p[1] + depth[2] * p[2]) + depth[0] * p[0]) + depth[3];
-                let mut size = (r / z.abs().max(near)) * scale * double;
-                if r < m.f32(SMALL_RADIUS).ok()? {
-                    size *= m.f32(SMALL_SCALE).ok()?;
-                }
-                let fade = (size - m.f32(FADE_START).ok()?) * m.f32(FADE_SLOPE).ok()?;
-                let fade = fade.max(0.).min(m.f32(ONE).ok()?);
+                let (size, fade) = placement_fade(m, at, depth, near, scale, double)?;
                 let alpha = x87::mul(
                     F80::from_f32_bits(fade.to_bits()),
                     F80::from_f32_bits(m.f32(FADE_RANGE).ok()?.to_bits()),

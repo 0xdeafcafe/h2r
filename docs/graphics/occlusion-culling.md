@@ -125,8 +125,9 @@ reads only AL: non-zero with view kind 1 re-runs the same index.
   multiplies the viewport aspect by the anamorphic factor at `0x0045dfdc`.
   The subsequent test of byte `+5` at `[0x00510c50]` can change the
   vertical tangent or frustum extents independently of this width factor.
-  The caller may also supply off-centre extents. The live guest gather
-  uses this retail lens. Its per-object setup can advance gameplay RNG,
+  The caller may also supply off-centre extents. The exact-mode guest gather
+  uses this retail lens. Single-copy play adjusts the horizontal bounds of
+  the main view frustum at `VIEW_FRUSTUM_RECT`. The per-object setup can advance gameplay RNG,
   so a wider host projection can expose regions for which the guest
   supplied no object records. See [high resolution](high-resolution.md#determinism).
 - The projection `0x004b9e14` (built by `0x0002fd90`): world-to-view 4x3

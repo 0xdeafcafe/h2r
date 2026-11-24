@@ -120,6 +120,10 @@ pub fn object_set(
     reached: &Reached,
     clip: Clip,
 ) -> Result<Vec<u32>, Decline> {
+    object_set_with_clip(world, reached, &clip)
+}
+
+pub(super) fn object_set_with_clip(world: &ObjectWorld, reached: &Reached, clip: &Clip) -> Result<Vec<u32>, Decline> {
     let mut set = Set {
         world,
         listed: Vec::new(),

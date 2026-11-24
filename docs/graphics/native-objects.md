@@ -26,6 +26,17 @@ and shader implementations. The draw handler has yet to upload the
 mesh streams and node rows, evaluate shader parameters, set render
 state, or issue any D3D draw for that part.
 
+The display gather supplies additional object handles for the wider view.
+At the scene's layer-3 call, `native_scene_lists::display_model` runs
+section selection, lighting, palette construction and record emission
+against a private overlay of guest memory. The display uses the record's
+chosen permutation, LOD, implementation and skinning rows. Hidden objects
+and the first-person owner are suppressed. `native_objects_glue/display.rs`
+submits resident opaque parts only to the display attachments. An object
+whose setup needs an animation update, effect overlay or attachment walk,
+or whose selected section has an unsupported material, can still be
+absent at the sides in protected sessions.
+
 The stack holds the remaining entry count at handler ESP + `0x28`, with
 the array immediately after it. The entry contains its item index, the
 selected implementation byte at `+4`, vertex classification at `+8` and

@@ -104,7 +104,8 @@ impl Host for Stub {
         self.resolved.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, view: &frame_scene::View, stencil: &StencilPlan) -> Option<native_render::skip::Cleared> {
+    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, view: &frame_scene::View, stencil: &StencilPlan, claim_guest: bool) -> Option<native_render::skip::Cleared> {
+        assert!(claim_guest);
         self.asked.lock().unwrap().push((bsp, view.camera, stencil.clone()));
         let mut mem = native_world::Mem(mem);
         let (masks, cleared, _) = native_world::plan_parts(&mem, &self.parts, |_, _| true)?;

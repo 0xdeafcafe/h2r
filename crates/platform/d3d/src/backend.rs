@@ -276,6 +276,10 @@ impl IndexedTail {
 /// world. The device decides where (the bound targets and viewport); the
 /// backend gives the pass its encoder and the targets' views.
 pub trait ExternalPass: Send {
+    /// Supplemental geometry seen only through the display lens. The game
+    /// has no draw for it. Only display attachments may receive a recording.
+    fn display_only(&self) -> bool { false }
+
     /// The scene may retain this pass after presentation and record it again
     /// on other attachments of the same device. Its selections, view and
     /// material inputs must stay valid for the lifetime of the pass. It
@@ -812,6 +816,9 @@ pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
     let mut failure = None;
     let mut prepared = [None, None];
     for (slot, target) in prepared.iter_mut().zip(targets) {
+        if pass.display_only() && target.copy == TargetCopy::Reference {
+            continue;
+        }
         let result = if let Some(draws) = pass.record_draws(target, request) {
             draws.map(Prepared::Draws).map_err(|_| Metric::RefusedInputs)
         } else if let Some(encoded) = pass.record_encoded(target, request) {
@@ -1735,10 +1742,19 @@ pub trait Backend: Send {
             if pass.lock().map_err(|_| "native pass poisoned")?.lighting_only().is_some() {
                 return Ok(true);
             }
+            let display_only = pass.lock().map_err(|_| "native pass poisoned")?.display_only();
             let Some(recordings) = self.prepare_external(surfaces, request, [None; 4], &plan, TargetCopy::Reference, pass)? else {
                 return Ok(false);
             };
-            if !crate::device::complete_recordings(&plan, &recordings) {
+            // A reference-only backend has nothing to submit for a display
+            // supplement. The scene sink can still retain it for display replay.
+            let complete = if display_only {
+                matches!(recordings.as_slice(), [] | [_])
+                    && recordings.iter().all(|r| r.copy == TargetCopy::Display && plan.complete(r.copy, r.ranges))
+            } else {
+                crate::device::complete_recordings(&plan, &recordings)
+            };
+            if !complete {
                 return Ok(false);
             }
             for recording in recordings {

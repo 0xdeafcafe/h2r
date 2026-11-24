@@ -321,7 +321,14 @@ fn host_shot(
 
 impl Shell {
     fn init(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
-        let (w, h) = self.config.window_size;
+        let mut initial = self.config.window_size;
+        if self.config.window_matches_monitor_aspect
+            && let Some(monitor) = event_loop.primary_monitor()
+        {
+            let logical = monitor.size().to_logical::<u32>(monitor.scale_factor());
+            initial = crate::scale::initial_monitor_window(initial, (logical.width, logical.height));
+        }
+        let (w, h) = initial;
         let mut attrs = Window::default_attributes()
             .with_title(self.config.title.clone())
             .with_inner_size(LogicalSize::new(w.max(160), h.max(120)))

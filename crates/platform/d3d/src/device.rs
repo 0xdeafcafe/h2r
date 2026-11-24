@@ -2349,6 +2349,34 @@ impl<B: Backend> Device<B> {
         self.backend.queues_scene_stages() && !crate::scene_stage::stood_down(stage)
     }
 
+    /// Issue geometry absent from the guest gather at a drained boundary.
+    /// The display owns the writes. No guest surface header or mask changes.
+    pub fn draw_display_stage(
+        &mut self, mem: &mut dyn GuestMemory, plan: crate::ExternalPlan, mut pass: Box<dyn crate::ExternalPass>,
+    ) -> Result<bool, D3dError> {
+        if !pass.display_only() || !pass.replays_scene() || !self.backend.accepts_scene_pass(&*pass) {
+            return Ok(false);
+        }
+        let Ok(binding) = self.bind_external(mem, &plan, &mut *pass, None) else {
+            return Ok(false);
+        };
+        for &(_, surface) in &binding.colors {
+            self.materialize_display_copy(surface)?;
+        }
+        let queued = self.queues_scene_stages(plan.stage);
+        let stage = crate::SceneStage {
+            surfaces: binding.surfaces,
+            request: binding.request,
+            plan,
+            pass: Arc::new(std::sync::Mutex::new(pass)),
+        };
+        if queued {
+            Ok(self.backend.queue_scene_stage(stage))
+        } else {
+            self.backend.run_scene_stage(stage).map_err(D3dError::Backend)
+        }
+    }
+
     /// At a drained boundary, reserves `pass` as a scene stage: the bound
     /// targets by slot, the request, and the view's constants and W clip as
     /// a pass issued now takes them, with every check that would refuse it
