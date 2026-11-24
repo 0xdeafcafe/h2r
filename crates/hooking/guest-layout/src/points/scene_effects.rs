@@ -10,6 +10,9 @@ const RENDERER: &str = "docs/graphics/native-renderer.md";
 const PARTICLES: &str = "docs/graphics/native-particles.md";
 const DECALS: &str = "docs/graphics/native-decals-research.md";
 
+/// End of one complete BSP material walk, before the record cursor advances.
+pub const WORLD_SECTION_END: Point = Point::new("WORLD_SECTION_END", 0x0004_4c6c, Sig::Site, RENDERER);
+
 pub const DECAL_RENDER_END: Point = Point::new("DECAL_RENDER_END", 0x0004_41aa, Sig::Site, DECALS);
 
 // The contiguous-range branch of the standard geometry emitter, after
@@ -106,6 +109,7 @@ pub fn instruction_entries() -> impl Iterator<Item = u32> {
     ];
     [
         DECAL_RENDER_END.base,
+        WORLD_SECTION_END.base,
         GEOMETRY_RANGE_READY.base,
         SCENE_TRANSPARENTS_END.base,
         WATER_INDEX_READY.base,

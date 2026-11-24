@@ -150,6 +150,7 @@ pub(super) struct SectionCache {
     materials: Materials,
     outputs: Vec<u8>,
     sources: Sources,
+    compare_transparents: bool,
 }
 
 /// Clean watched pages let the scene walk use decoded resources directly.
@@ -173,6 +174,8 @@ impl Sources {
 impl SectionCache {
     pub(super) fn append_guest(&mut self, m: &mut runtime::Guest, sp: u32, index: u32)
         -> Option<(u32, bool)> {
+        self.compare_transparents = true;
+        crate::native_scene_lists::transparent_bsp::parity::reset_visit();
         const OWNER: &str = "native-world-section-sources";
         let generation = crate::native_map_work::bsp_generation();
         let (layout, revision) = m.write_watch_epoch();
@@ -347,6 +350,16 @@ fn append_cached(m: &mut dyn GuestMemory, sp: u32, index: u32, cache: &mut Secti
         let mut writes: Vec<(u32, &[u8])> = vec![(rows_at, rows), (count_at, &next_count)];
         if !outputs.is_empty() {
             writes.extend([(dst, outputs.as_slice()), (SCENE_LIST + 4, header.as_slice())]);
+        }
+        if cache.compare_transparents {
+            // Check the opaque count and mask even for a section that should
+            // add only transparents. Scratch bytes outside both live tails
+            // have no consumer.
+            let mut verify = writes.clone();
+            if outputs.is_empty() { verify.push((SCENE_LIST+4, &header)); }
+            if !crate::native_scene_lists::transparent_bsp::parity::admit(
+                generation, geometry, m.u32(record+12).ok()?, sp.checked_add(12)?, index, &verify,
+            ) { return None; }
         }
         // A later read-only destination must leave both queues intact for
         // the guest to retry the entire section. GuestMemory writes each

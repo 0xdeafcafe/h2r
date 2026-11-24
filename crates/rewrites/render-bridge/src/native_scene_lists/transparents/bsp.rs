@@ -2,6 +2,8 @@
 //! the authored part centre for clusters and the placement sphere centre
 //! for instances. Its BSP sort radius is zero in both cases.
 
+pub(crate) mod parity;
+
 use super::*;
 
 pub(crate) struct Bounds {

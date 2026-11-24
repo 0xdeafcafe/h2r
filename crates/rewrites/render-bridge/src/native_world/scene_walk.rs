@@ -65,6 +65,7 @@ pub(super) fn install(b: &mut Builder) {
         Ok(Flow::Continue)
     }).context_only();
 
+    crate::native_scene_lists::transparent_bsp::parity::install(b);
     let sections = std::sync::Mutex::new(super::section::SectionCache::default());
     b.raw().before(&points::WORLD_PART_MATERIAL, "native_world_build_section", move |c| {
         if c.cpu.edi != 0 || c.cpu.mxcsr & 0xffc0 != 0x1f80 { return Ok(Flow::Continue); }

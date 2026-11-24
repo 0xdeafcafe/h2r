@@ -150,6 +150,9 @@ fn effect_entry(m: &dyn GuestMemory, cpu: &CpuAbi, polygon: bool) -> Result<Outp
 }
 
 pub(super) fn geometry(m: &dyn GuestMemory, cpu: &CpuAbi) -> (SceneList, Result<Output>) {
+    if bsp::parity::checking() {
+        return (SceneList::TransparentGeometry, Err(Refusal::Unsupported));
+    }
     (SceneList::TransparentGeometry, geometry_entry(m, cpu))
 }
 
