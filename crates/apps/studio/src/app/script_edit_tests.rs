@@ -7,7 +7,7 @@ use studio_proto::{code, method as m};
 use crate::api::Api;
 use crate::app::map_cards_tests::Temp;
 use crate::app::scripts::tests as scripts;
-use crate::app::{Action, App};
+use crate::app::{Action, App, Doc, ToolKind};
 
 fn open(t: &Temp, executable: bool) -> App {
     let map = scripts::scripted_source(&t.0, executable);
@@ -115,16 +115,18 @@ fn a_compile_that_fits_is_in_place_one_undo_step_and_saves() {
     again.dispatch(Action::OpenSource(out.join("example.map")));
     assert!(source_of(&mut api, &mut again, "helper").contains("invented_watch zone"));
 
-    // Undo puts the table and the writes back; redo does it again.
+    // Undo puts the table and the writes back; redo does it again. The
+    // last save holds the edit: the undone map differs from it, and the
+    // redone one is the saved state again.
     let u = call(&mut api, &mut app, m::SCRIPT_UNDO, json!({}));
     assert_eq!(u["changed"], true);
     assert_eq!(u["depth"], json!({"undo": 0, "redo": 1}));
     assert!(source_of(&mut api, &mut app, "helper").contains("invented_select door"));
-    assert!(!app.session.is_dirty(), "undone to the source");
+    assert!(app.session.is_dirty(), "undone from the saved map");
     assert_eq!(call(&mut api, &mut app, m::SCRIPT_UNDO, json!({}))["changed"], false);
     assert_eq!(call(&mut api, &mut app, m::SCRIPT_UNDO, json!({"redo": true}))["changed"], true);
     assert!(source_of(&mut api, &mut app, "helper").contains("invented_watch zone"));
-    assert!(app.session.is_dirty());
+    assert!(!app.session.is_dirty(), "the saved state again");
 }
 
 #[test]
@@ -266,4 +268,35 @@ fn the_tools_compile_action_reports_in_the_tab_and_undoes() {
     assert_eq!(app.scripts.compiles, 2);
     app.dispatch(Action::Script(crate::app::ScriptAction::CompileUndo { redo: false }));
     assert!(!app.session.is_dirty());
+
+    // The compiles are the map document's steps while the Scripts surface
+    // shows it (docs/editor/studio-flow.md, "Shared patterns"): the button's
+    // `UndoDoc` and the shortcut's `Undo` both take the compile.
+    app.dispatch(Action::Script(crate::app::ScriptAction::CompileUndo {
+        redo: true,
+    }));
+    assert!(app.session.is_dirty());
+    app.dispatch(Action::SetTool(ToolKind::Scripts));
+    assert_eq!(app.doc_can(Doc::Map), (true, false));
+    assert_eq!((app.can_undo(), app.can_redo()), (true, false));
+    app.dispatch(Action::UndoDoc(Doc::Map));
+    assert!(!app.session.is_dirty());
+    assert_eq!(app.doc_can(Doc::Map), (false, true));
+    // With nothing to undo, the button logs what the shortcut does.
+    app.dispatch(Action::UndoDoc(Doc::Map));
+    assert!(!app.session.is_dirty());
+    assert_eq!(app.doc_can(Doc::Map), (false, true));
+    assert!(
+        app.status()
+            .is_some_and(|s| s.text().contains("no compile to undo")),
+        "{:?}",
+        app.log()
+            .iter()
+            .map(|l| l.status.text())
+            .collect::<Vec<_>>()
+    );
+    // Cmd+Shift+Z in the surface redoes the compile.
+    app.dispatch(Action::Redo);
+    assert!(app.session.is_dirty());
+    assert_eq!(app.doc_can(Doc::Map), (true, false));
 }

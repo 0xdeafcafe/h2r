@@ -553,7 +553,15 @@ pub fn start_refused(m: &dyn GuestMemory) -> bool {
 /// of the table failed ([`crate::map_variant::hold`]). A pick made on
 /// another map is cleared first.
 pub fn variant_hold(m: &dyn GuestMemory) -> Option<String> {
-    crate::map_variant::sync(m.u32(crate::h1_options_row::LOBBY_MAP).ok());
+    let map = m.u32(crate::h1_options_row::LOBBY_MAP).ok();
+    crate::map_variant::sync(map);
+    // A Forge lobby's map is built with the kit before Start.
+    crate::map_variant::follow_mode(
+        lobby_start::mode() == Mode::Forge,
+        map,
+        map.and_then(crate::map_select::short_name_of).as_deref(),
+        || crate::skulls::profile_or_default(&crate::layout_glue::ReadGm(m), 0),
+    );
     crate::map_variant::hold()
 }
 

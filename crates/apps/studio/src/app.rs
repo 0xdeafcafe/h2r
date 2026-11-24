@@ -43,8 +43,10 @@ pub mod tag_browse;
 pub mod tag_bundle;
 pub mod tag_doc;
 pub mod assets;
+pub mod links;
 pub mod edit_lines;
 pub mod edit_target;
+pub mod mods;
 pub mod package_doc;
 pub mod preview_switch;
 pub mod problems;
@@ -333,12 +335,18 @@ pub enum Action {
     /// brought forward.
     Show(Surface),
     /// Open a browser row's tag (an asset id, `tag:<group>:<path>`) in its
-    /// editor: on `map` (opened first when it is not the open one), else
+    /// editor, or a voice (`voice:<id>`) in the voice document: on `map` (opened first when it is not the open one), else
     /// on the open map (`app::assets`).
     OpenAsset { asset: String, map: Option<String> },
     /// Copy a browser row's tag into a local package, as `asset.copy`
     /// does (`app::assets`).
     CopyAsset { asset: String, package: String },
+    /// **Fork for this map**: the asset's edit lines for the open map, in
+    /// the edit target (`app::mods`).
+    ForkAsset { asset: String },
+    /// **Revert for this map**: take the open map's fork of the asset out
+    /// of the edit target (`app::mods`).
+    RevertAsset { asset: String },
     /// Read the Problems list again: every source, or one of
     /// [`problems::SOURCES`] (`app::problems`).
     RefreshProblems(Option<String>),
@@ -543,7 +551,7 @@ impl Action {
             Action::HudOpenMap(_) | Action::HudOpenPackage(_) => dirty(ToolKind::Hud),
             Action::CloseDoc(Doc::Map) => dirty_map(),
             // The script's text stays in the editor when its tab closes.
-            Action::CloseDoc(Doc::Rules) => None,
+            Action::CloseDoc(Doc::Rules | Doc::Voice) => None,
             Action::CloseDoc(doc) => doc.holder().and_then(dirty),
             _ => None,
         }
@@ -692,6 +700,8 @@ pub struct App {
     /// shared cache), beside the open map's document ([`Self::tags`]).
     pub(crate) tag_browse: Option<tag_browse::Browse>,
     nav: NavHistory,
+    /// The documents brought to the front, for the header's Back and Forward.
+    doc_trail: navigation::DocTrail,
     /// The bitmap preview of the open map's document (the browsed map's
     /// is its own): the tag and the picture, or why there is none.
     tag_preview: Option<(map::TagId, Result<std::sync::Arc<map_pack::Picture>, String>)>,
@@ -788,6 +798,7 @@ impl App {
             tag_homes: Default::default(),
             tag_browse: None,
             nav: NavHistory::default(),
+            doc_trail: Default::default(),
             tag_preview: None,
             last_tag_export: None,
             last_tag_import: None,
@@ -908,8 +919,13 @@ impl App {
     pub fn variant_origin(&self) -> Option<&Origin> {
         self.variants.as_ref().and_then(|e| e.origin())
     }
-    /// The active tool can undo or redo.
+    /// The active tool can undo or redo: the document `Self::undo_target`
+    /// names (a tag tab in front, the bitmap on the Textures canvas), else
+    /// the tool's own stack.
     pub fn can_undo(&self) -> bool {
+        if let Some(doc) = self.undo_target() {
+            return self.doc_can(doc).0;
+        }
         match self.tool {
             ToolKind::Scenario if self.modeling.session.active.is_some() => {
                 self.modeling.session.can_undo()
@@ -920,11 +936,15 @@ impl App {
             ToolKind::UiScreens => self.ui_can_undo_redo(false),
             ToolKind::Hud => self.hud.session.as_ref().is_some_and(|s| s.can_undo()),
             ToolKind::Tags => self.tags.can_undo(),
-            ToolKind::Scripts => false,
+            // The compiles into the map's scripts.
+            ToolKind::Scripts => self.scripts.edit.as_ref().is_some_and(|d| d.depth().0 > 0),
             ToolKind::Textures => self.textures.can_undo(),
         }
     }
     pub fn can_redo(&self) -> bool {
+        if let Some(doc) = self.undo_target() {
+            return self.doc_can(doc).1;
+        }
         match self.tool {
             ToolKind::Scenario if self.modeling.session.active.is_some() => {
                 self.modeling.session.can_redo()
@@ -935,7 +955,7 @@ impl App {
             ToolKind::UiScreens => self.ui_can_undo_redo(true),
             ToolKind::Hud => self.hud.session.as_ref().is_some_and(|s| s.can_redo()),
             ToolKind::Tags => self.tags.can_redo(),
-            ToolKind::Scripts => false,
+            ToolKind::Scripts => self.scripts.edit.as_ref().is_some_and(|d| d.depth().1 > 0),
             ToolKind::Textures => self.textures.can_redo(),
         }
     }
@@ -1174,6 +1194,8 @@ impl App {
             },
             Action::OpenAsset { asset, map } => self.open_asset(&asset, map.as_deref()),
             Action::CopyAsset { asset, package } => self.copy_asset(&asset, &package),
+            Action::ForkAsset { asset } => self.fork_asset(&asset),
+            Action::RevertAsset { asset } => self.revert_asset(&asset),
             Action::RefreshProblems(source) => self.refresh_problems(source.as_deref()),
             Action::OpenProblem(index) => self.open_problem(index),
             Action::PreviewInGame(doc) => self.preview_in_game(doc),
@@ -1543,7 +1565,13 @@ impl App {
                 }
             }
             ToolKind::UiScreens => self.ui_undo_redo(undo),
-            ToolKind::Scripts => false,
+            // The map's scripts are the map document's while the Scripts
+            // surface shows them: a compile is its step, and the action logs
+            // its own result.
+            ToolKind::Scripts => {
+                self.run(Action::Script(ScriptAction::CompileUndo { redo: !undo }));
+                return;
+            }
             ToolKind::Textures => self.textures_undo(undo),
             ToolKind::Hud => self.hud_undo_redo(undo),
             ToolKind::Tags => {

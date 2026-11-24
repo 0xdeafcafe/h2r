@@ -1,8 +1,9 @@
 //! Voices: game characters cloned from the user's own disc. The dataset
 //! builder over the source's maps ([`AppLines`], the Tags tool's audition
 //! decoder), the clone's install, transcription and training as background
-//! jobs over the sidecar, and the state the Voices window and the agent
+//! jobs over the sidecar, and the state the voice document and the agent
 //! API's `voice.characters`, `voice.dataset.*` and `voice.clone.*` share.
+//! A voice is a document (`Doc::Voice`): [`App::open_voice`].
 //! Saying a line is `App::voice_say` with `Engine::Clone`
 //! (`app::announcer`). docs/editor/voice-cloning.md.
 //!
@@ -19,6 +20,7 @@ use map::TagId;
 use serde_json::{Value, json};
 
 use super::App;
+use super::shell::Doc;
 use crate::voice::clone::{CloneVoice, TRAINED};
 use crate::voice::dataset::{
     self, CHARACTERS, Decoded, DialogueSound, LineSource, Options, Rules, TextFrom,
@@ -90,6 +92,84 @@ impl Job {
     }
 }
 
+/// The id of the announcer's voice: the Fish Audio voice that says one
+/// line at a time, beside the characters' clones.
+pub const ANNOUNCER: &str = "announcer";
+
+/// The pane of the voice document in front (docs/editor/studio-flow.md,
+/// "Voices and the announcer").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Pane {
+    /// The dataset, the model, the fine-tune and the jobs' progress.
+    Setup,
+    /// The lines the voice says.
+    #[default]
+    Lines,
+}
+
+/// What a voice's row says: whether it can say lines yet, and what is
+/// left to set up. A character's comes from its directory under
+/// `<data root>/voices`; the announcer's has nothing to set up here.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VoiceStatus {
+    pub id: &'static str,
+    pub name: &'static str,
+    /// The dataset is built.
+    pub built: bool,
+    /// Minutes of speech with text.
+    pub minutes: f64,
+    /// Clips waiting for a transcript.
+    pub pending: usize,
+    /// A fine-tune is trained for the picked model.
+    pub tuned: bool,
+}
+
+impl VoiceStatus {
+    /// The announcer (not a clone) has no setup.
+    pub fn is_announcer(&self) -> bool {
+        self.id == ANNOUNCER
+    }
+
+    /// The voice cannot say lines until its Setup is done.
+    pub fn needs_setup(&self) -> bool {
+        !self.is_announcer() && !self.built
+    }
+
+    /// The state in one word: `no dataset`, `dataset`, `fine-tuned` or
+    /// `announcer`.
+    pub fn state(&self) -> &'static str {
+        if self.is_announcer() {
+            "announcer"
+        } else if !self.built {
+            "no dataset"
+        } else if self.tuned {
+            "fine-tuned"
+        } else {
+            "dataset"
+        }
+    }
+
+    /// `12.3 min of speech, fine-tuned`, or why it is not ready.
+    pub fn label(&self) -> String {
+        if self.is_announcer() {
+            return "Fish Audio, one line at a time".into();
+        }
+        if !self.built {
+            return "no dataset yet (Setup)".into();
+        }
+        format!(
+            "{:.1} min of speech{}{}",
+            self.minutes,
+            if self.tuned { ", fine-tuned" } else { "" },
+            if self.pending > 0 {
+                format!(", {} lines to transcribe", self.pending)
+            } else {
+                String::new()
+            }
+        )
+    }
+}
+
 /// The Voices state in the [`App`].
 pub struct Voices {
     launcher: Arc<dyn Launcher>,
@@ -102,6 +182,11 @@ pub struct Voices {
     next_job: u64,
     /// The lines of the Voices window's batch ([`super::voice_batch`]).
     pub batch: super::voice_batch::Batch,
+    /// The voice the voice document shows (`Doc::Voice`): a character id
+    /// or [`ANNOUNCER`]. `None` while no voice is open.
+    pub doc: Option<String>,
+    /// The pane of that document.
+    pub pane: Pane,
 }
 
 impl Default for Voices {
@@ -130,6 +215,8 @@ impl Voices {
             jobs: Vec::new(),
             next_job: 1,
             batch: Default::default(),
+            doc: None,
+            pane: Pane::default(),
         }
     }
 
@@ -384,6 +471,136 @@ impl App {
     /// `<data root>/voices`.
     pub fn voices_dir(&self) -> PathBuf {
         self.data_root().join("voices")
+    }
+
+    /// Starts a new line for the game sound `tag`: the batch gets a row
+    /// whose target is it, said by the voice its path maps to, unless a
+    /// row already targets it (one row per sound, however often this is
+    /// asked). The sound document's Lines pane shows it. The row's id.
+    pub fn sound_new_line(&mut self, tag: &str) -> u64 {
+        let voice = super::links::voice_of(tag);
+        let batch = &mut self.voices.batch;
+        if let Some(row) = batch.rows.iter().find(|r| r.tag.as_deref() == Some(tag)) {
+            return row.id;
+        }
+        let id = batch.add("", voice, "");
+        if let Some(row) = batch.rows.iter_mut().find(|r| r.id == id) {
+            row.tag = Some(tag.to_owned());
+        }
+        id
+    }
+
+    /// The batch's rows whose target is the game sound `tag`.
+    pub fn sound_lines(&self, tag: &str) -> Vec<&super::voice_batch::Row> {
+        self.voices
+            .batch
+            .rows
+            .iter()
+            .filter(|r| r.tag.as_deref() == Some(tag))
+            .collect()
+    }
+
+    /// What a voice's row says (`voice:<id>`): `None` for an id that is
+    /// no character and not [`ANNOUNCER`].
+    pub fn voice_status(&self, id: &str) -> Option<VoiceStatus> {
+        if id == ANNOUNCER {
+            return Some(VoiceStatus {
+                id: ANNOUNCER,
+                name: "Announcer",
+                built: true,
+                minutes: 0.0,
+                pending: 0,
+                tuned: false,
+            });
+        }
+        let c = dataset::character(id)?;
+        let dir = self.voices_dir().join(c.id);
+        let lines = dataset::read_manifest(&dir.join(dataset::MANIFEST)).ok();
+        let s = lines.as_deref().map(dataset::summarize);
+        Some(VoiceStatus {
+            id: c.id,
+            name: c.name,
+            built: lines.is_some(),
+            minutes: s.as_ref().map_or(0.0, |s| s.minutes()),
+            pending: s.as_ref().map_or(0, |s| s.pending_asr),
+            tuned: crate::voice::clone::trained(&dir, self.voices.backend()).is_some(),
+        })
+    }
+
+    /// Every voice: each character of the table, then the announcer.
+    pub fn voice_statuses(&self) -> Vec<VoiceStatus> {
+        CHARACTERS
+            .iter()
+            .map(|c| c.id)
+            .chain([ANNOUNCER])
+            .filter_map(|id| self.voice_status(id))
+            .collect()
+    }
+
+    /// The **Voices** kind of `asset.list`: a row per voice with its
+    /// dataset state, every word of `text` matching its name, id, state
+    /// or what a voice is for (voice, clone, dialogue). The answer has the shape of `assets::list`'s.
+    pub fn voice_asset_list(&self, text: &str, limit: usize) -> Value {
+        let words: Vec<String> = text.split_whitespace().map(str::to_lowercase).collect();
+        let rows: Vec<Value> = self
+            .voice_statuses()
+            .into_iter()
+            .filter(|v| {
+                // Also found by what a voice is for.
+                let hay = format!("{} {} {} voice voices clone dialogue", v.name, v.id, v.state())
+                    .to_lowercase();
+                words.iter().all(|w| hay.contains(w.as_str()))
+            })
+            .map(|v| {
+                json!({
+                    "asset": format!("voice:{}", v.id),
+                    "root": "voices",
+                    "kind": "Voices",
+                    "name": v.name,
+                    "id": v.id,
+                    "state": v.state(),
+                    "badge": v.state(),
+                    "built": v.built,
+                    "minutes": v.minutes,
+                    "pending_asr": v.pending,
+                    "tuned": v.tuned,
+                    "label": v.label(),
+                })
+            })
+            .collect();
+        let total = rows.len();
+        let shown: Vec<Value> = rows.into_iter().take(limit).collect();
+        json!({
+            "root": "voices",
+            "rows": shown,
+            "total": total,
+            "limit": limit,
+            "truncated": total > limit,
+            "maps": [],
+            "kinds": super::assets::kind_names(),
+            "problems": [],
+        })
+    }
+
+    /// Opens the voice document of `id` (a character or [`ANNOUNCER`]) and
+    /// brings it to the front. A voice that is not set up opens on its
+    /// Setup, one that is on its Lines; the one already open keeps its
+    /// pane. The voice becomes the batch's default, so a line added in the
+    /// document is said by it.
+    pub fn open_voice(&mut self, id: &str) {
+        let Some(status) = self.voice_status(id) else {
+            return self.error(format!(
+                "{id:?} is not a voice: a character of the Voices kind, or {ANNOUNCER}"
+            ));
+        };
+        if self.voices.doc.as_deref() != Some(id) {
+            self.voices.pane = if status.needs_setup() { Pane::Setup } else { Pane::Lines };
+        }
+        if !status.is_announcer() {
+            self.voices.batch.default_character = id.to_owned();
+        }
+        self.voices.doc = Some(id.to_owned());
+        self.open_doc(Doc::Voice);
     }
 
     /// The rules for `character`: the given paths, else the table's.

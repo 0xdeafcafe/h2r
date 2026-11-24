@@ -305,3 +305,174 @@ fn a_block_with_no_objects_takes_row_writes_alone() {
         inert_row(BlockKind::NetgameFlags)
     );
 }
+
+/// A map with the kit: the starting location block at `0x100` holds one
+/// active entry and two spare rows, in the spare form the kit gives them.
+const START: usize = 0x34;
+const SCENARIO: u32 = 0x8100_0000;
+const STARTS: u32 = 0x8200_0000;
+
+fn kit_world(spare_rows: u32) -> World {
+    let mut w = world();
+    w.g.put_u32(guest_layout::global::SCENARIO.base, SCENARIO)
+        .put_u32(SCENARIO + 0x100, 1)
+        .put_u32(SCENARIO + 0x104, STARTS)
+        .map(STARTS, 0x100);
+    let spare = inert_row(BlockKind::StartingLocations);
+    for i in 0..spare_rows {
+        w.g.put(STARTS + (1 + i) * START as u32, &spare);
+    }
+    w
+}
+
+fn start_row(team: i64) -> RowBytes {
+    let f = |v: f32| forge_doc::F32::new(v).unwrap();
+    crate::forge::base::new_row(
+        BlockKind::StartingLocations,
+        &[
+            (
+                "position",
+                forge_doc::Value::Vec3([f(5.0), f(6.0), f(7.0)]),
+            ),
+            ("facing", forge_doc::Value::Float(f(1.5))),
+            ("team", forge_doc::Value::Int(team)),
+        ],
+        |_| Ok(0),
+    )
+    .unwrap()
+}
+
+fn add(index: u32, team: i64) -> BaseStep {
+    BaseStep::Add {
+        block: BlockKind::StartingLocations,
+        index,
+        row: start_row(team),
+    }
+}
+
+#[test]
+fn a_kit_add_writes_the_spare_row_then_raises_the_count() {
+    let (out, calls, g) = one(kit_world(2), call(add(1, 2)), |_, _| {
+        panic!("a kit row needs no guest call")
+    });
+    assert_eq!(out.unwrap()["handles"], json!([]));
+    assert!(calls.is_empty());
+    assert_eq!(g.u32(SCENARIO + 0x100).unwrap(), 2);
+    let row = STARTS + START as u32;
+    assert_eq!(g.bytes(row, START).unwrap(), start_row(2).as_slice());
+    assert_eq!(vec3(&g, row), [5.0, 6.0, 7.0]);
+    assert_eq!(g.f32(row + 0x0c).unwrap(), 1.5);
+    assert_eq!(g.u16(row + 0x10).unwrap(), 2);
+    // The player type is the zero a materialised entry has, not the spare -1.
+    assert_eq!(g.u16(row + 0x2c).unwrap(), 0);
+    // The entry before it is as it was.
+    assert_eq!(g.bytes(STARTS, START).unwrap(), vec![0; START]);
+}
+
+#[test]
+fn a_batch_of_kit_adds_names_rows_past_the_count_in_order() {
+    let steps = vec![
+        ForgeStep::Base(add(1, 0)),
+        ForgeStep::Base(add(2, 1)),
+    ];
+    let (out, _, g) = one(
+        kit_world(2),
+        Call::Forge {
+            guard: guard(),
+            steps,
+        },
+        |_, _| panic!("a kit row needs no guest call"),
+    );
+    assert!(out.is_ok());
+    assert_eq!(g.u32(SCENARIO + 0x100).unwrap(), 3);
+    assert_eq!(g.u16(STARTS + 2 * START as u32 + 0x10).unwrap(), 1);
+}
+
+/// A kit world whose block already counts `rows` of the session's own
+/// entries after the map's one.
+fn counted(rows: u32) -> World {
+    let mut w = kit_world(2);
+    w.g.put_u32(SCENARIO + 0x100, 1 + rows);
+    for i in 0..rows {
+        w.g.put(STARTS + (1 + i) * START as u32, start_row(2).as_slice());
+    }
+    w
+}
+
+fn drop_row(index: u32) -> ForgeStep {
+    ForgeStep::Base(BaseStep::Drop {
+        block: BlockKind::StartingLocations,
+        index,
+    })
+}
+
+#[test]
+fn a_kit_drop_writes_the_spare_form_back_and_lowers_the_count() {
+    let (out, _, g) = one(counted(1), call(BaseStep::Drop {
+        block: BlockKind::StartingLocations,
+        index: 1,
+    }), |_, _| panic!("a kit row needs no guest call"));
+    assert!(out.is_ok());
+    assert_eq!(g.u32(SCENARIO + 0x100).unwrap(), 1);
+    assert_eq!(
+        g.bytes(STARTS + START as u32, START).unwrap(),
+        inert_row(BlockKind::StartingLocations)
+    );
+
+    // Drops go last row first, in one batch.
+    let (out, _, g) = one(
+        counted(2),
+        Call::Forge {
+            guard: guard(),
+            steps: vec![drop_row(2), drop_row(1)],
+        },
+        |_, _| panic!("a kit row needs no guest call"),
+    );
+    assert!(out.is_ok());
+    assert_eq!(g.u32(SCENARIO + 0x100).unwrap(), 1);
+
+    // Only the last row goes: the first of two is not the kit's to drop,
+    // and nothing is written.
+    let (out, _, g) = one(
+        counted(2),
+        Call::Forge {
+            guard: guard(),
+            steps: vec![drop_row(1)],
+        },
+        |_, _| panic!("a kit row needs no guest call"),
+    );
+    assert!(out.unwrap_err().message.contains("last starting_locations row is 2, not 1"));
+    assert_eq!(g.u32(SCENARIO + 0x100).unwrap(), 3);
+}
+
+#[test]
+fn a_map_without_the_kit_refuses_the_add_and_writes_nothing() {
+    let (out, _, g) = one(kit_world(0), call(add(1, 2)), |_, _| panic!("no guest call"));
+    let error = out.unwrap_err();
+    assert_eq!(error.code, REFUSED);
+    assert!(
+        error.message.starts_with(crate::forge::local::NO_KIT),
+        "{}",
+        error.message
+    );
+    assert_eq!(g.u32(SCENARIO + 0x100).unwrap(), 1);
+    assert_eq!(
+        g.bytes(STARTS + START as u32, START).unwrap(),
+        vec![0; START]
+    );
+}
+
+#[test]
+fn a_kit_add_names_the_next_row_and_a_kit_block() {
+    let (out, _, g) = one(kit_world(2), call(add(2, 0)), |_, _| panic!("no guest call"));
+    assert!(out.unwrap_err().message.contains("next starting_locations row is 1, not 2"));
+    assert_eq!(g.u32(SCENARIO + 0x100).unwrap(), 1);
+
+    // Weapons are placements, not kit rows.
+    let step = BaseStep::Drop {
+        block: BlockKind::Weapons,
+        index: 0,
+    };
+    let (out, _, _) = one(kit_world(2), call(step), |_, _| panic!("no guest call"));
+    assert!(out.unwrap_err().message.contains("the kit has no weapons rows"));
+}

@@ -11,7 +11,10 @@
 //!    file's size, modification time and place are as recorded, by reading
 //!    it otherwise ([`Prepared::hashed`] counts those);
 //! 3. runs [`extract::plan`] and, when it is not empty, [`extract::update`].
-//!    With nothing stale no map is opened ([`Prepared::opened`] is 0).
+//!    With nothing stale no map is opened ([`Prepared::opened`] is 0);
+//! 4. writes the asset catalogue ([`catalogue::update`]) when it is not
+//!    current, and after every extraction, since a file can change while
+//!    no manifest does ([`Prepared::catalogue`]).
 //!
 //! With no disc ([`prepare`] given `None`) the maps are read from the store
 //! itself: [`StoreFile`] is the same bytes as the disc's file, so a layout
@@ -20,6 +23,7 @@
 //! first copied to `<store>/reextract/`, which a stopped run leaves for the
 //! next one and a finished run removes. A map the store has no skeleton for
 //! needs the disc, and the error says so.
+use super::catalogue;
 use super::extract::{self, Layouts, MapWork, Plan, SharedFiles, Updated};
 use super::skeleton::{Extents, Skeleton, StoreFile};
 use super::store::{PutReport, is_shared_cache, write_atomic};
@@ -333,6 +337,8 @@ pub struct Prepared {
     pub opened: usize,
     /// What the extraction did; `None` when the plan was empty.
     pub updated: Option<Updated>,
+    /// What building the catalogue did; `None` when it was current.
+    pub catalogue: Option<catalogue::Built>,
 }
 
 /// Bring the store at `root` up to date. `disc` is the disc's map files, or
@@ -401,12 +407,14 @@ pub fn prepare(
     let plan = extract::plan(&repo, &layouts, &ident, opts.force)?;
     on_plan(&plan, input);
     if plan.is_empty() {
+        let catalogue = catalogue::update(root, schema, false)?;
         return Ok(Prepared {
             plan,
             input,
             hashed,
             opened: 0,
             updated: None,
+            catalogue,
         });
     }
     if input == Input::Store {
@@ -463,11 +471,13 @@ pub fn prepare(
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),
     }
+    let catalogue = catalogue::update(root, schema, true)?;
     Ok(Prepared {
         plan,
         input,
         hashed,
         opened: opened.get(),
         updated: Some(updated),
+        catalogue,
     })
 }

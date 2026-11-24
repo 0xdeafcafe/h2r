@@ -246,7 +246,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             .unwrap_or_else(|e| e.into_inner())
             .take()?;
         let mut device = self.device.lock().ok()?;
-        let plan = plan_view(&gpu, &objects, &items, &models, &entry);
+        // An animated pass samples its constants at the render clock.
+        let time = native_render::layer_pass::render_time(&Ro(mem));
+        let plan = plan_view(&gpu, &objects, &items, &models, &entry, time);
         let ranges = plan.draws.len();
         if ranges == 0 {
             return None;
@@ -460,6 +462,7 @@ fn plan_view(
     items: &[ItemDraw],
     record_models: &HashMap<u16, u32>,
     entry: &LayerEntry,
+    time: Option<f64>,
 ) -> ViewPlan {
     let mut out = ViewPlan::default();
     let Ok(lit) = models.lit.try_lock() else {
@@ -473,7 +476,7 @@ fn plan_view(
                 return Err("the device's draws are not W-buffered".into());
             }
             let lit = lit.as_ref().ok_or("no first-person model is uploaded")?;
-            let draw = lit.plan_item(model, frame, item, &entry.states)?;
+            let draw = lit.plan_item(model, frame, item, &entry.states, time)?;
             if draw.texaccum {
                 return Err(
                     "it samples the texture accumulation target, which this pass does not bind"

@@ -6,7 +6,10 @@
 //!
 //! An asset is named by an id: `tag:<group>:<path>` for a tag of the tree
 //! or one a package adds, `package:<id>` for a package, and
-//! `item:<package>:<n>` for the n-th item of a package's manifest.
+//! `item:<package>:<n>` for the n-th item of a package's manifest, and
+//! `voice:<id>` for a voice (a character of `voice::dataset::CHARACTERS`,
+//! or `announcer`), which the **Voices** kind lists
+//! ([`App::voice_asset_list`]).
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -44,6 +47,15 @@ const KINDS: &[(&str, &[&str])] = &[
     ("Strings", &["unic", "ustr", "str#"]),
 ];
 
+/// The kind of the voices (`voice:<id>` rows): not a tag group, so it is
+/// listed by [`App::voice_asset_list`] rather than from the tree.
+pub const VOICES_KIND: &str = "Voices";
+
+/// The Kind is the Voices kind.
+pub fn is_voices_kind(kind: Option<&str>) -> bool {
+    kind.is_some_and(|k| k.trim().eq_ignore_ascii_case(VOICES_KIND))
+}
+
 /// The kind a group belongs to.
 pub fn kind_of(group: &str) -> &'static str {
     if group.starts_with("rm") && group.len() == 4 {
@@ -57,7 +69,11 @@ pub fn kind_of(group: &str) -> &'static str {
 
 /// The Kind picker's choices.
 pub fn kind_names() -> Vec<&'static str> {
-    KINDS.iter().map(|(k, _)| *k).chain(["Other"]).collect()
+    KINDS
+        .iter()
+        .map(|(k, _)| *k)
+        .chain(["Other", VOICES_KIND])
+        .collect()
 }
 
 /// Which root a list reads.
@@ -96,13 +112,15 @@ pub enum AssetId {
     Tag(TagKey),
     Package(String),
     Item(String, usize),
+    /// A voice: a character id or `announcer`.
+    Voice(String),
 }
 
 impl AssetId {
     pub fn parse(s: &str) -> Result<Self, String> {
         let bad = || {
             format!(
-                "{s:?} is not an asset id (tag:<group>:<path>, package:<id> or item:<package>:<n>)"
+                "{s:?} is not an asset id (tag:<group>:<path>, package:<id>, item:<package>:<n> or voice:<id>)"
             )
         };
         let (kind, rest) = s.split_once(':').ok_or_else(bad)?;
@@ -116,6 +134,9 @@ impl AssetId {
                 Ok(Self::Tag(TagKey::new(group, path.replace('/', "\\"))))
             }
             "package" if !rest.is_empty() => Ok(Self::Package(rest.to_owned())),
+            "voice" if crate::voice::dataset::character(rest).is_some() || rest == super::voices::ANNOUNCER => {
+                Ok(Self::Voice(rest.to_owned()))
+            }
             "item" => {
                 let (p, n) = rest.rsplit_once(':').ok_or_else(bad)?;
                 Ok(Self::Item(p.to_owned(), n.parse().map_err(|_| bad())?))
@@ -132,21 +153,21 @@ pub fn tag_id(key: &TagKey) -> String {
 
 /// What the packages do to the tree.
 #[derive(Default)]
-struct Overlay {
+pub(super) struct Overlay {
     /// A tag a package adds: the package and where.
-    added: BTreeMap<TagKey, Vec<(String, Maps)>>,
+    pub(super) added: BTreeMap<TagKey, Vec<(String, Maps)>>,
     /// A tag an edit line touches: the packages, in load order.
-    edited: BTreeMap<TagKey, Vec<(String, Maps)>>,
+    pub(super) edited: BTreeMap<TagKey, Vec<(String, Maps)>>,
     /// Edit files that did not read.
-    problems: Vec<String>,
+    pub(super) problems: Vec<String>,
 }
 
-fn group_ref(text: &str) -> Option<TagKey> {
+pub(super) fn group_ref(text: &str) -> Option<TagKey> {
     let (g, path) = text.split_once(':')?;
     Some(TagKey::new(parse_fourcc(g)?, path.replace('/', "\\")))
 }
 
-fn overlay(set: &GameSet) -> Overlay {
+pub(super) fn overlay(set: &GameSet) -> Overlay {
     let mut out = Overlay::default();
     for e in &set.on {
         let m = &e.loaded.package.manifest;
@@ -272,6 +293,11 @@ fn badge(o: &Overlay, key: &TagKey) -> (Value, Value) {
         return (json!(format!("edited by {}", ids.join(", "))), json!(ids));
     }
     (Value::Null, json!([]))
+}
+
+/// The Browser's origin label for a tag, shared with the document header.
+pub(crate) fn badge_for(set: &GameSet, key: &TagKey) -> String {
+    badge(&overlay(set), key).0.as_str().unwrap_or("on the disc").to_owned()
 }
 
 fn words_match(words: &[String], hay: &str) -> bool {
@@ -619,6 +645,8 @@ pub fn copy(
         source: Some(source.clone()),
         tag: Some(new_path.clone()),
         maps: Maps::default(),
+        replaces: None,
+        was: None,
     });
     let undo = |e: String| {
         let _ = std::fs::remove_file(&file);
@@ -671,13 +699,15 @@ impl App {
         }
     }
 
-    /// [`super::Action::OpenAsset`]: open the map that holds the tag (a
+    /// [`super::Action::OpenAsset`]: a voice opens its document
+    /// ([`App::open_voice`]); a tag opens the map that holds it (a
     /// Halo 1 map shows read-only, with no document), then the tag in the
     /// editor its group gets. A scenario tag is the map's own tab.
     pub(super) fn open_asset(&mut self, asset: &str, map: Option<&str>) {
         let key = match AssetId::parse(asset) {
             Ok(AssetId::Tag(key)) => key,
-            Ok(_) => return self.error(format!("{asset} is not a tag: only a tag opens in an editor")),
+            Ok(AssetId::Voice(id)) => return self.open_voice(&id),
+            Ok(_) => return self.error(format!("{asset} is not a tag or a voice: only those open in an editor yet")),
             Err(e) => return self.error(e),
         };
         if let Some(name) = map {
@@ -707,7 +737,12 @@ impl App {
         self.sync_tags();
         let text = format!("{}:{}", fourcc_text(key.group), key.path);
         match tag_api::find_tag(&self.tags, &text) {
-            Some(id) => self.open_doc(Doc::Tag(id)),
+            Some(id) => {
+                if let Err(e) = self.navigate(super::NavAction::Open(vec![id])) {
+                    return self.error(e);
+                }
+                self.open_doc(Doc::Tag(id));
+            }
             None => self.error(format!("{text} is not in the open map")),
         }
     }

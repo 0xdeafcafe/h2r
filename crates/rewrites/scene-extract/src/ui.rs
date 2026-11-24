@@ -62,7 +62,10 @@ pub enum UiContent {
     /// A container (screen, list, list item, page selector, table): no
     /// pixels of its own.
     None,
-    /// A bitmap widget (type 8); its `rect` is ignored for the widget's.
+    /// A bitmap widget (type 8): the quad its draw makes. Its `rect` is
+    /// where the draw puts it (the header's rectangle projected by its
+    /// depth and moved by the view's offset), and its `color` the draw's
+    /// tint, the widget's alpha in it; neither is the header's again.
     Bitmap(UiBitmap),
     /// A shader bitmap (type 9): the shader's own program over `uv`.
     Shader {
@@ -454,10 +457,14 @@ mod header {
 /// a [`UiContent`] yet, or its header did not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unread {
-    /// A bitmap widget: its tint's rounding, the bitmap's frame
-    /// (`0x002b0b19`), the scrolling (`0x00235f31`) and meter paths.
+    /// A bitmap widget: its draw reads more than the guest's widget
+    /// (the view's rectangle, the bitmap tag's images, the blend tables),
+    /// so the caller reads it (`render_bridge::native_hud::ui_overlay::
+    /// bitmaps`) over this header ([`read_header`]).
     Bitmap,
-    /// A shader bitmap: tag shaders do not translate.
+    /// A shader bitmap: its combiner is set at its quad, not held at the
+    /// list, so its quad is taken there (`render_bridge::native_hud::
+    /// hud_overlay::menu_shader_quad`).
     Shader,
     /// A text widget: the string, its font and the interface's colour.
     Text,
@@ -487,14 +494,26 @@ pub fn read_widget(mem: &dyn GuestRead, widget: u32, depth: f32) -> Result<UiWid
 
 /// The virtual draw invoked by the sorted item call.
 pub fn widget_draw(mem: &dyn GuestRead, widget: u32) -> Result<u32, Unread> {
-    let vtable = mem.read_u32(widget).ok_or(Unread::Unreadable)?;
-    vtable.checked_add(header::DRAW_SLOT)
-        .and_then(|slot| mem.read_u32(slot))
-        .ok_or(Unread::Unreadable)
+    draw_of(mem, widget).ok_or(Unread::Unreadable)
 }
 
 /// Combines the common widget header with its class-specific draw content.
 pub fn read_widget_header(mem: &dyn GuestRead, widget: u32, depth: f32, content: UiContent) -> Result<UiWidget, Unread> {
+    Ok(UiWidget {
+        content,
+        ..read_header(mem, widget, depth)?
+    })
+}
+
+/// The draw the vtable of the widget at `widget` names (its `+0x10`
+/// slot, [`draws`]).
+pub fn draw_of(mem: &dyn GuestRead, widget: u32) -> Option<u32> {
+    mem.read_u32(mem.read_u32(widget)?.checked_add(header::DRAW_SLOT)?)
+}
+
+/// The header of the widget at `widget` (`depth` is the list entry's),
+/// with no content.
+pub fn read_header(mem: &dyn GuestRead, widget: u32, depth: f32) -> Result<UiWidget, Unread> {
     let word = |offset: u32| {
         widget
             .checked_add(offset)
@@ -514,7 +533,7 @@ pub fn read_widget_header(mem: &dyn GuestRead, widget: u32, depth: f32, content:
             f32::from_bits(word(header::OFFSET + 4)?),
         ],
         alpha: f32::from_bits(word(header::ALPHA)?),
-        content,
+        content: UiContent::None,
     })
 }
 
@@ -594,7 +613,7 @@ fn widget(overlay: &mut Overlay, text: &dyn UiText, w: &UiWidget) -> Result<Opti
     let all = ClipRect::full(overlay.size);
     match &w.content {
         UiContent::None => Ok(None),
-        UiContent::Bitmap(b) => bitmap(overlay, b, rect, w.alpha).map(Some).map_err(refused),
+        UiContent::Bitmap(b) => bitmap(overlay, b, b.rect, 1.0).map(Some).map_err(refused),
         UiContent::Shader {
             tag,
             uv,
@@ -1013,7 +1032,11 @@ mod tests {
         };
         title.alpha = 0.5;
         let mut panel = w(8, 0.0, 0);
-        panel.content = UiContent::Bitmap(art(0xe001_0001));
+        let mut panel_art = art(0xe001_0001);
+        panel_art.rect = [300.0, 220.0, 340.0, 260.0];
+        panel_art.color = [1.0, 1.0, 1.0, 0.5];
+        panel.alpha = 0.25;
+        panel.content = UiContent::Bitmap(panel_art);
         let mut picture = w(7, 0.1, 0);
         let camera = OverlayCamera {
             position: [0.0, -1.0, 0.0],
@@ -1113,6 +1136,12 @@ mod tests {
                 height: 20
             }
         );
+        let quad = o.vertices_of(&o.items[8]);
+        assert_eq!(
+            (quad[0].position, quad[2].position, quad[0].color[3]),
+            ([300.0, 220.0], [340.0, 260.0], 0.5),
+            "a bitmap widget's quad and tint are its draw's, not the header's"
+        );
         assert_eq!(o.check(), Ok(()));
     }
 
@@ -1141,12 +1170,17 @@ mod tests {
         let mut o = Overlay::default();
         let listed = draw_list(&frame, &Cells, &mut o);
         assert!(o.is_empty());
-        assert!(listed[0].note.as_deref().unwrap().contains("font 2"));
+        // Deeper first: the off-canvas widget at depth 0.1 lists before
+        // the text at 0.0.
         assert!(
-            listed[1].note.as_deref().unwrap().contains("Clip"),
+            listed[0].note.as_deref().unwrap().contains("Clip"),
             "a viewport off the canvas"
         );
+        assert!(listed[1].note.as_deref().unwrap().contains("font 2"));
         let none = draw_list(&frame, &NoText, &mut o);
-        assert!(none[0].item.is_none() && none[0].note.is_some());
+        assert!(
+            none[1].item.is_none() && none[1].note.is_some(),
+            "no fonts at all refuses the text too"
+        );
     }
 }

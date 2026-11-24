@@ -112,6 +112,8 @@ pub fn import_sound(
         source: Some(source.clone()),
         tag: Some(tag.clone()),
         maps: Maps::default(),
+        replaces: None,
+        was: None,
     });
     if let Some((name, _)) = &class {
         let path = dir.join(&side);
@@ -124,6 +126,8 @@ pub fn import_sound(
             source: Some(side.clone()),
             tag: None,
             maps: Maps::default(),
+            replaces: None,
+            was: None,
         });
     }
     manifest

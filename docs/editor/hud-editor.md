@@ -52,8 +52,10 @@ the game, **D** assumed here.
     `draw_list` adds a quad over each bitmap widget's image and a text run
     of each text widget's glyphs (`Fonts::layout`), and says why a widget
     has none. Its `Shading` is the preview's (a plain sprite on the fixed
-    texture combiner) or the engine's (every bitmap widget by its shader,
-    no text); each listed widget says why it is not what the engine draws
+    texture combiner, text in a stand-in colour) or the engine's (every
+    bitmap widget by its shader, text in the colour its shader's capture
+    gives, `Answers::shader_colour`, from the string the game resolved,
+    `Answers::text`); each listed widget says why it is not what the engine draws
     (`Inexact`), and `first_inexact` gives the first, which is how the
     game decides whether the overlay draws a HUD
     ([native-post-hud.md](../graphics/native-post-hud.md#the-hud-on-the-overlay)).

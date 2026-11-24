@@ -903,10 +903,84 @@ mod tests {
             h.frames(&mut app, 4).unwrap();
             assert_eq!(app.front_doc(), Some(doc));
             assert!(h.scene.find("##studio-bar>###doc-tab-").is_ok(), "the tab strip");
+            for label in ["Undo", "Links", "Open with"] {
+                assert!(h.scene.find(label).is_ok(), "{} missing {label}", app.doc_id(doc));
+            }
             check(&h, &app.doc_id(doc));
         }
         drop(turn);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn following_a_link_and_back_restores_the_document_and_selection() {
+        use crate::app::{Doc, NavAction, shell_tests, tag_tests};
+        let dir = shell_tests::Temp::new("header-back");
+        let mut app = shell_tests::app(&dir.0);
+        let weapon = tag_tests::weap_id();
+        let target = shell_tests::kit_id();
+        app.dispatch(Action::OpenDoc(Doc::Tag(weapon)));
+        app.dispatch(Action::Navigate(NavAction::Go {
+            tag: weapon, path: Some("parts[0].item".into()), element: None,
+        }));
+        let selection = app.nav_location();
+        let tag = app.tags.tag(target).unwrap();
+        let id = format!("tag:{}:{}", tags::defs::fourcc_text(tag.group), tag.name);
+        app.dispatch(Action::OpenAsset { asset: id, map: None });
+        assert_eq!(app.front_doc(), Some(Doc::Tag(target)));
+        app.dispatch(Action::Navigate(NavAction::Back));
+        assert_eq!(app.front_doc(), Some(Doc::Tag(weapon)));
+        assert_eq!(app.nav_location(), selection);
+    }
+
+    /// The header over an invented weapon and a fake tags repository: the
+    /// Links menu, drawn, lists the model the weapon names, and the path
+    /// names the tag. Skipped without a wgpu adapter.
+    #[test]
+    fn the_header_menu_lists_the_links_of_a_weapon_in_a_fake_repository() {
+        use crate::app::{Doc, shell_tests, tag_tests};
+        use ::tags::repo::{Body, LooseTag, Node, Region, TagKey, TagRepo, Tree, Value as Field};
+        let Some((_turn, mut h)) = tags_headless() else {
+            return;
+        };
+        let dir = shell_tests::Temp::new("header-links");
+        let mut app = shell_tests::app(&dir.0);
+        let key = |g: &[u8; 4], p: &str| TagKey::new(map::FourCC(*g), p);
+        let weapon = key(b"weap", "objects\\test\\blaster");
+        let model = key(b"hlmt", "objects\\test\\blaster_model");
+        let tag = |k: &TagKey, refs: Vec<(u32, TagKey)>| LooseTag {
+            key: k.clone(),
+            body: Body::Tree(Tree {
+                region: Region::Metadata,
+                nodes: vec![Node {
+                    bytes: vec![0; 32],
+                    count: 1,
+                    size: 32,
+                    align: 4,
+                    fields: refs.into_iter().map(|(at, r)| (at, Field::Ref(r))).collect(),
+                }],
+                raws: Vec::new(),
+                losses: Vec::new(),
+            }),
+        };
+        let mut repo = TagRepo::create(&app.tags_root()).unwrap();
+        repo.put(&tag(&weapon, vec![(0, model.clone())])).unwrap();
+        repo.put(&tag(&model, Vec::new())).unwrap();
+        app.dispatch(Action::OpenDoc(Doc::Tag(tag_tests::weap_id())));
+        assert_eq!(
+            app.doc_asset(Doc::Tag(tag_tests::weap_id())).as_deref(),
+            Some("tag:weap:objects\\test\\blaster")
+        );
+        let c = crate::ui::doc_header_crumbs(&app, "tag:weap:objects\\test\\blaster").unwrap();
+        assert_eq!((c.origin.as_str(), c.kind.as_str()), ("Disc", "Objects"));
+        h.frames(&mut app, 4).unwrap();
+        h.step(&mut app, &Step::Click("Links".into(), Button::Left)).unwrap();
+        h.frames(&mut app, 3).unwrap();
+        assert!(
+            h.scene.find("tag:hlmt:objects\\test\\blaster_model").is_ok(),
+            "the Links menu lists the weapon's model"
+        );
+        assert!(h.scene.find("Show all in the Browser").is_ok());
     }
 
     /// The tab strip's clicks (a double-click in the Tags tree, a tab, a

@@ -270,3 +270,26 @@ fn the_sidecar_is_installed_only_by_a_matching_stamp() {
     assert!(Backend::parse("whisper").is_err());
     assert!(SCRIPT.contains("HF_HUB_OFFLINE"));
 }
+
+#[test]
+fn a_library_failure_is_said_as_a_sentence_not_a_traceback() {
+    use super::readable;
+    // The MLX call that took a tuple it could not read.
+    let raw = "TypeError: normal(): incompatible function arguments. The following argument \
+               types are supported: 1. normal(shape: Sequence[int] = [], dtype: Dtype | None = \
+               float32, loc: scalar | array | None = None) Invoked with types: tuple";
+    let said = readable(raw);
+    assert!(said.contains("reinstall the model"), "{said}");
+    assert!(said.contains("normal"), "{said}");
+    assert!(!said.contains("Sequence[int]"), "{said}");
+    assert_eq!(VoiceError::Model(raw.into()).readable(), said);
+    // A traceback keeps its last line.
+    let tb = "Traceback (most recent call last):\n  File \"x.py\", line 3, in say\n    boom()\nValueError: bad shape\n";
+    assert_eq!(readable(tb), "The local voice model failed: ValueError: bad shape");
+    // Memory, and a long plain text.
+    assert!(readable("RuntimeError: Out of memory").contains("shorter line"));
+    let long = "word ".repeat(200);
+    assert!(readable(&long).chars().count() <= 243);
+    // Other errors are said as they are.
+    assert_eq!(VoiceError::Invalid("a .wav file".into()).readable(), "a .wav file");
+}

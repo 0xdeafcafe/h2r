@@ -65,13 +65,23 @@ impl Geometry {
             .extend([0, 1, 2, 0, 2, 3].into_iter().map(|k| first + k));
     }
 
-    /// A horizontal square of half side `h` at height `z`, facing up.
+    /// A horizontal square of half side `h` at height `z`, facing up, in
+    /// cells of at most half a unit: the receiver's gate is a vertex
+    /// value, so one quad would carry its corners' gate across the whole
+    /// floor, as a real floor's triangles do not.
     fn square(h: f32, z: f32) -> Self {
         let mut g = Self::default();
-        g.quad(
-            [[-h, -h, z], [h, -h, z], [h, h, z], [-h, h, z]],
-            [0.0, 0.0, 1.0],
-        );
+        let n = ((2.0 * h) / 0.5).ceil().max(1.0) as usize;
+        let at = |k: usize| -h + 2.0 * h * k as f32 / n as f32;
+        for i in 0..n {
+            for j in 0..n {
+                let (x0, x1, y0, y1) = (at(i), at(i + 1), at(j), at(j + 1));
+                g.quad(
+                    [[x0, y0, z], [x1, y0, z], [x1, y1, z], [x0, y1, z]],
+                    [0.0, 0.0, 1.0],
+                );
+            }
+        }
         g
     }
 

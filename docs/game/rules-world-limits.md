@@ -59,6 +59,8 @@ passed at run time is a **script error**, which ends the round.
 | `teleport` of an object | 16 | 64 | one per object a tick |
 | `teleport` of a player | 1 per player | 4 per player | |
 | `move_to`, `move_along` started | 8 | 32 | 16 movers alive, 4 of them vehicles |
+| `set_open` | 8 | 32 | 16 barriers open; a call for the state a barrier is already in puts nothing |
+| `offer_pick`, `pick_row` | 1 and 6 per picker | | 2 pickers of 6 rows; the round's end takes them; the host opens one picker at a time and holds the next player's back 30 s at most |
 | `set_velocity`, `push` | 16 | 120 | 50 world units a second; one per object a tick |
 | `launch` of a player | 1 per player | 10 per player | 50 world units a second |
 | squad orders | 16 | 64 | one per squad a tick |
@@ -162,7 +164,8 @@ numbers). An op is about 18 ns on an M-series host (rules-engine.md
 | a `vec` read; `distance` | 3; 4 | three reads; six and an integer square root |
 | `sees`, a pair in the table; a new pair | 2; 64 | a table lookup; one trace at the next boundary |
 | `tag_int`, `tag_fixed` | 2 | one read at an offset resolved at load |
-| `teleport`, `face`, `set_velocity`, `push`, `launch` | 16 | one guest call at the boundary |
+| `teleport`, `face`, `set_velocity`, `push`, `launch`, `set_open` | 16 | one guest call at the boundary |
+| `offer_pick`, `pick_row`; `picked` | 4; 2 | a state write; a table lookup |
 | `move_to`, `move_along` | 16, then 4 a tick while it runs | two guest calls a tick per mover |
 | a squad or bot order; `seat`, `eject`, `unload` | 32 | one guest call, or one message to a brain |
 | `place_squad_in` | 64 | the squad entry's placement |
@@ -186,7 +189,7 @@ allocations after the first tick.
 
 | Item | Per client | Host with 15 clients | Evidence |
 |---|---:|---:|---|
-| Show channel cap: its own `actor_net::Budget`, 600 bytes in any 30 ticks, tags included | 0.6 KB/s | 9 KB/s | **Design** |
+| Show channel cap: at most 5 `Show` records a second and a state of 255 bytes, tags included; a target of 600 bytes in any 30 ticks | 0.6 KB/s | 9 KB/s | **Design**; the rate and the bound are built in the channel's `actor_net::Budget` |
 | One moved object: about 20 bytes at 10 updates a second | 200 B/s | 3 KB/s | **S**, ai-networking.md "Bandwidth" |
 | 16 movers and one drop ship with 8 riders | 5 KB/s | 75 KB/s | **S** |
 | Actors, as budgeted | 8 KB/s | 120 KB/s | **Design**, ai-networking.md |

@@ -1470,3 +1470,213 @@ fn real_map_pack_opens_beside_the_disc_and_saves_a_package() {
     app.save_map_package(&form);
     assert!(t.0.join("data/maps").join(&form.dir).is_dir());
 }
+
+#[test]
+fn go_to_anything_finds_every_voice_and_every_editor() {
+    use commands::{Kind, palette};
+
+    let t = Temp::new("palette-voices");
+    let mut app = app_with(&t);
+    // A voice is found by its name and by what it is for, under its own
+    // kind, and the old window command is gone.
+    for query in ["voices", "announcer", "character clone"] {
+        let found = palette(&mut app, query);
+        assert!(found.total(Kind::Voice) > 0, "{query}");
+        assert_eq!(found.total(Kind::Command), 0, "{query}");
+    }
+    let found = palette(&mut app, "cortana");
+    let entry = found
+        .entries
+        .iter()
+        .find(|e| e.kind == Kind::Voice)
+        .cloned()
+        .expect("a voice row for cortana");
+    assert!(matches!(&entry.action, Action::OpenAsset { asset, .. } if asset == "voice:cortana"));
+    // Running it opens the voice document, on Setup: no dataset is built.
+    app.dispatch(entry.action);
+    assert_eq!(app.front_doc(), Some(Doc::Voice));
+    assert_eq!(app.voices.doc.as_deref(), Some("cortana"));
+    assert_eq!(app.voices.pane, voices::Pane::Setup);
+
+    // Each editor of View > Editors is a command.
+    let editors = palette(&mut app, "open editor:");
+    assert_eq!(editors.total(Kind::Command), Surface::EDITORS.len());
+    let variants = palette(&mut app, "open editor game variants").entries.remove(0);
+    app.dispatch(variants.action);
+    assert_eq!(app.surface(), Surface::Variants);
+}
+
+#[test]
+fn a_sound_starts_one_line_row_that_targets_it() {
+    let t = Temp::new("voices-line-for");
+    let mut app = app_with(&t);
+    let tag = r"sound\dialog\invented\line_one";
+    let id = app.sound_new_line(tag);
+    assert_eq!(app.voices.batch.rows.len(), 1);
+    assert_eq!(app.voices.batch.rows[0].tag.as_deref(), Some(tag));
+    assert_eq!(app.sound_lines(tag).len(), 1);
+    // Asked again for the same sound: the same row, not a second one.
+    assert_eq!(app.sound_new_line(tag), id);
+    assert_eq!(app.voices.batch.rows.len(), 1);
+    // Another sound is another row, and a sound's pane lists only its own.
+    let other = r"sound\dialog\invented\line_two";
+    assert_ne!(app.sound_new_line(other), id);
+    assert_eq!(app.voices.batch.rows.len(), 2);
+    assert_eq!(app.sound_lines(tag).len(), 1);
+    assert_eq!(app.sound_lines(other).len(), 1);
+    // No window is asked for: a line is made in the sound's own document.
+    assert_eq!(app.front_doc(), None);
+}
+
+// ---------- Go to anything over every asset ----------
+
+/// The invented tags tree the palette's tag rows come from: one map,
+/// `fixture`, holding the invented cache's own tags, so a tree row opens
+/// on a map the app can open. The files hold placeholder bytes, which
+/// the palette never decodes (as `api/tests/assets_tests.rs` builds).
+fn palette_tree(root: &Path) {
+    use map::FourCC;
+    use tags::repo::store::Manifest;
+    use tags::repo::{TagKey, TagRepo};
+    let key = |g: [u8; 4], path: &str| TagKey::new(FourCC(g), path);
+    let mut repo = TagRepo::create(root).unwrap();
+    let place = |repo: &TagRepo, k: &TagKey| {
+        let p = repo.path_of(k, None);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, b"placeholder").unwrap();
+    };
+    let scenario = key(*b"scnr", "levels\\test\\fixture");
+    let blaster = key(*b"weap", "objects\\test\\blaster");
+    let kit = key(*b"itmc", "objects\\test\\kit");
+    for k in [&scenario, &blaster, &kit] {
+        place(&repo, k);
+    }
+    repo.put_manifest(
+        &Manifest {
+            map: "fixture".to_owned(),
+            name: "fixture".to_owned(),
+            scenario: Some(scenario.clone()),
+            tags: vec![(scenario, None), (blaster, None), (kit, None)],
+            ..Default::default()
+        },
+        b"header",
+    )
+    .unwrap();
+}
+
+/// One local package, `map-kit`, whose item adds a weapon: a package and
+/// an item for the palette to find.
+fn palette_package(dir: &Path) {
+    std::fs::create_dir_all(dir.join("tags")).unwrap();
+    std::fs::write(
+        dir.join("package.toml"),
+        r#"[package]
+format = 1
+id = "map-kit"
+name = "Map kit"
+
+[[item]]
+kind = "tag"
+source = "tags/map_kit.weap.yaml"
+tag = "objects\\weapons\\map_kit"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("tags/map_kit.weap.yaml"),
+        "like: 'weap:objects\\test\\blaster'\n",
+    )
+    .unwrap();
+}
+
+/// The fixture map in a folder as the source (listed, nothing picked),
+/// the tree and the package in place: everything the palette reads,
+/// before any map is open.
+fn palette_app(t: &Temp) -> App {
+    let folder = t.0.join("maps");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("fixture.map"), fixture::fixture()).unwrap();
+    let mut app = app_with(t);
+    palette_tree(&app.tags_root());
+    palette_package(&t.0.join("data/packages/map-kit"));
+    app.dispatch(Action::OpenSource(folder));
+    app
+}
+
+/// The palette's entry of one kind under one label.
+fn palette_entry(found: &commands::Palette, kind: commands::Kind, label: &str) -> commands::Entry {
+    found
+        .entries
+        .iter()
+        .find(|e| e.kind == kind && e.label == label)
+        .unwrap_or_else(|| panic!("no {label:?} under {}", kind.title()))
+        .clone()
+}
+
+#[test]
+fn go_to_anything_finds_a_tag_a_package_an_item_and_a_command_with_no_map_open() {
+    use commands::{Kind, palette};
+
+    let t = Temp::new("palette-assets");
+    let mut app = palette_app(&t);
+    assert_eq!(app.loaded_map(), None, "the map is listed, not open");
+
+    // One query reaches all four kinds, with nothing open. The baked
+    // packages are in the set too, so kinds are counted, not named.
+    let found = palette(&mut app, "map");
+    for kind in [Kind::Tag, Kind::Package, Kind::Item, Kind::Command] {
+        assert!(found.total(kind) > 0, "{} has no entries", kind.title());
+    }
+    // The scenario tag of the tree (its kind is Maps), the package, its
+    // item and the map editor's command, each under its kind.
+    let scenario = palette_entry(&found, Kind::Tag, "fixture");
+    let package = palette_entry(&found, Kind::Package, "Map kit");
+    let item = palette_entry(&found, Kind::Item, "tags/map_kit.weap.yaml");
+    let command = palette_entry(&found, Kind::Command, "Open editor: Map");
+
+    // Running the command opens its editor.
+    app.dispatch(command.action);
+    assert_eq!(app.surface(), Surface::Scene);
+
+    // Running the scenario tag opens the map: a scenario tag is the
+    // map's own tab.
+    app.dispatch(scenario.action);
+    assert_eq!(app.loaded_map(), Some("fixture"));
+    assert_eq!(app.front_doc(), Some(Doc::Map));
+
+    // The package's and the item's documents are slices to come (FL10
+    // the package document, FL4 items): their rows already carry the
+    // `OpenAsset` those slices teach to open, which says why it cannot yet.
+    let why = app.perform(package.action, false).unwrap_err();
+    assert!(
+        matches!(&why, Refused::Failed(m) if m.contains("package:map-kit")),
+        "{why:?}"
+    );
+    let why = app.perform(item.action, false).unwrap_err();
+    assert!(
+        matches!(&why, Refused::Failed(m) if m.contains("item:map-kit:0")),
+        "{why:?}"
+    );
+}
+
+#[test]
+fn go_to_anything_opens_a_tree_tag_by_opening_its_map_first() {
+    use commands::{Kind, palette};
+
+    let t = Temp::new("palette-tree-tag");
+    let mut app = palette_app(&t);
+    let found = palette(&mut app, "blaster");
+    let entry = palette_entry(&found, Kind::Tag, "blaster");
+    assert!(matches!(entry.action, Action::OpenAsset { .. }));
+    app.dispatch(entry.action);
+    assert_eq!(
+        app.loaded_map(),
+        Some("fixture"),
+        "the map holding the tag opened first"
+    );
+    assert!(
+        matches!(app.front_doc(), Some(Doc::Tag(_))),
+        "{:?}",
+        app.front_doc()
+    );
+}

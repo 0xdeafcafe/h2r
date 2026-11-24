@@ -179,6 +179,13 @@ pub struct MaterialProgram {
     /// draws the material's instanced placements ([`compile_rigid`]);
     /// `None` leaves them to the D3D path.
     pub rigid: Option<RigidProgram>,
+    /// A world layer-3 pass's animated constants
+    /// ([`crate::look::layer3_pass_sampled`]): its uniforms hold them at
+    /// clock 0, and each frame's selection samples them at the render
+    /// clock ([`crate::gpu::GpuWorld::animate_selection`]). `None` for a
+    /// pass that animates nothing and for the other paths' programs,
+    /// which keep their animation themselves.
+    pub animation: Option<crate::layer_pass::PassAnimation>,
 }
 
 /// A world pass linked with its vertex program's rigid classification
@@ -316,6 +323,7 @@ fn compile_with_textures(
         state: None,
         inherits_cull: false,
         rigid: None,
+        animation: None,
     })
 }
 
@@ -2459,11 +2467,18 @@ impl ProgramSet {
         view: &ViewInputs,
         selection: &crate::gpu::WorldSelection,
     ) {
+        // A sampled material's blocks are written whole, its view parts in.
+        for (buffer, offset, bytes) in self.sampled_writes(view, selection) {
+            uploads.write(&buffer, offset, &bytes);
+        }
         let (source, start) = uploads
             .arena
             .stage(uploads.device, uploads.queue, &view_bytes(view));
         let viewport = start + VIEW_PREFIX as u64;
         for material in selection.materials.keys() {
+            if selection.constants.contains_key(material) {
+                continue;
+            }
             uploads.copy(
                 &source,
                 viewport + 32,
@@ -2473,6 +2488,9 @@ impl ProgramSet {
             );
         }
         for &(material, instance) in &selection.vertices {
+            if selection.constants.contains_key(&material) {
+                continue;
+            }
             let (buffer, offset) = if let Some(n) = instance {
                 let r = &self.rigid[&material];
                 (&r.buffer, u64::from(r.offset(n).expect("selected slot")))
@@ -2494,9 +2512,11 @@ impl ProgramSet {
         let bytes = view_bytes(view);
         let (prefix, rest) = bytes.split_at(VIEW_PREFIX);
         let (viewport, pixel) = rest.split_at(32);
-        let mut writes =
-            Vec::with_capacity(selection.materials.len() + 2 * selection.vertices.len());
+        let mut writes = self.sampled_writes(view, selection);
         for material in selection.materials.keys() {
+            if selection.constants.contains_key(material) {
+                continue;
+            }
             writes.push((
                 self.materials[material].pixel_buffer.clone(),
                 PIXEL_TAIL as u64,
@@ -2504,6 +2524,9 @@ impl ProgramSet {
             ));
         }
         for &(material, instance) in &selection.vertices {
+            if selection.constants.contains_key(&material) {
+                continue;
+            }
             let (buffer, offset) = if let Some(n) = instance {
                 let r = &self.rigid[&material];
                 (&r.buffer, u64::from(r.offset(n).expect("selected slot")))
@@ -2516,6 +2539,65 @@ impl ProgramSet {
                 offset + VERTEX_VIEW as u64,
                 viewport.to_vec(),
             ));
+        }
+        writes
+    }
+
+    /// The selected materials' animated constants at the render clock
+    /// `time` ([`MaterialProgram::animation`]) into `selection`, which
+    /// [`ProgramSet::write_selected`] and [`ProgramSet::selected_writes`]
+    /// then write whole for those materials. Counted in
+    /// `native_shader_animation_layer3_*`; an error is how many selected
+    /// materials' animation refused (the clock did not read), and leaves
+    /// none sampled.
+    pub(crate) fn animate(&self, selection: &mut crate::gpu::WorldSelection, time: Option<f64>) -> Result<(), usize> {
+        use timeline::native::ShaderAnimation;
+        selection.constants.clear();
+        let mut refused = 0;
+        for material in selection.materials.keys() {
+            let Some(animation) = self.materials.get(material).and_then(|g| g.program.animation.as_ref()) else {
+                continue;
+            };
+            match animation.sample(time) {
+                Ok(c) => {
+                    selection.constants.insert(*material, c);
+                }
+                Err(_) => refused += 1,
+            }
+        }
+        if refused > 0 {
+            ShaderAnimation::Layer3Refused.count(refused as u64);
+            selection.constants.clear();
+            return Err(refused);
+        }
+        ShaderAnimation::Layer3Drawn.count(selection.constants.len() as u64);
+        Ok(())
+    }
+
+    /// The whole blocks of the selection's sampled materials
+    /// ([`ProgramSet::animate`]) with `view` in: the material's pixel
+    /// block, its clusters' vertex block, and each selected placement's
+    /// slot with its rows.
+    fn sampled_writes(&self, view: &ViewInputs, selection: &crate::gpu::WorldSelection) -> Vec<(wgpu::Buffer, u64, Vec<u8>)> {
+        let mut writes = Vec::new();
+        for (material, s) in &selection.constants {
+            let g = &self.materials[material];
+            writes.push((g.pixel_buffer.clone(), 0, frame_pixel(&s.pixel(&g.program.pixel), view).to_bytes()));
+        }
+        for &(material, instance) in &selection.vertices {
+            let Some(s) = selection.constants.get(&material) else { continue };
+            match instance {
+                Some(n) => {
+                    let r = &self.rigid[&material];
+                    let slot = r.slots.binary_search_by_key(&n, |s| s.0).expect("selected slot");
+                    let vertex = rigid_vertex(&s.vertex(&r.program.vertex), view, &r.slots[slot].1);
+                    writes.push((r.buffer.clone(), r.stride * slot as u64, vertex.to_bytes()));
+                }
+                None => {
+                    let g = &self.materials[&material];
+                    writes.push((g.vertex_buffer.clone(), 0, frame_vertex(&s.vertex(&g.program.vertex), view).to_bytes()));
+                }
+            }
         }
         writes
     }

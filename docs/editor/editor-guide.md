@@ -123,6 +123,8 @@ disc, every panel waiting behind it.*
 
 *The window's regions: (1) the menu bar, (2) the bar of document tabs and the game link, (3) Scene, (4) the Viewport, (5) the Inspector, (6) the Log and (7) the status bar.*
 
+Each document has a header above its editor. It shows the trail and edit target, with Preview, Check, Undo, Redo, Save, Links and Open with controls. Links lists what the asset uses and what uses it; choose a row to open it, or show the list in the Browser.
+
 The window is made of panels that dock together:
 
 - **The bar** (under the menu) holds a tab for each open document: the
@@ -205,12 +207,15 @@ Keyboard shortcuts (Cmd on macOS, Ctrl elsewhere):
 | Cmd+S | Save the map, variant, playlist file or HUD edits in the front editor |
 | Shift+Cmd+S | Choose a path for the map or playlist file |
 | Cmd+P | Open Go to anything |
-| Cmd+Z | Undo in the tool you're in |
+| Cmd+Z | Undo in the front document: the tool's, or the tag's tab in front |
 | Cmd+Shift+Z or Cmd+Y | Redo |
 | Cmd+Q | Quit |
 
-Use **Edit > Go to anything...** to search maps, tags, placements and
-menu commands from one box. Type any words from the name or detail line.
+Use **Edit > Go to anything...** to search maps, tags, voices, placements
+and menu commands from one box. Every editor of **View > Editors** is a
+command there (`Open editor: HUD`), and every voice is a row under
+**Voices** that opens its document. Type any words from the name or
+detail line.
 Use Up and Down to highlight a result, Enter to open or run it, and Esc
 to close the search.
 
@@ -354,7 +359,9 @@ its model tag or **Render model** for the mesh tag. For a netgame item,
 open the item collection and then a **Collection entry**. Other links
 appear under **All references**. A tag edit affects every placement
 and tag that uses it. **Undo tag edit** and **Redo tag edit** step
-through tag edits. Saving the map includes both tag and placement edits.
+through the tag's history: its fields, and what its editor changed, such
+as a sound's mouth curve. Saving the map includes both tag and placement
+edits.
 Use **Show in** on a shared tag to open its cache read-only.
 
 Use a reference field's **Show this tag** button or a node's **Focus
@@ -627,15 +634,23 @@ shape. The outliner lists the map's bitmaps (an edited one marked `*`);
 click one and the centre is its canvas, the inspector the image's
 format and budget.
 
-- **Painting.** Brush, eraser, line, fill, eyedropper, clone, selection
-  and the colour adjustments paint at mip 0; every edit is one undo
-  step on the Textures document (Cmd+Z). With a game paired and **Edit**
+- **Painting.** Brush, eraser, clone, fill, eyedropper, selection and
+  the colour adjustments (invert, levels, hue, saturation and value,
+  **Copy channel**, flip and the quarter turns) work at mip 0; every
+  edit is one undo step on the Textures document (Cmd+Z). Keys: B brush,
+  E eraser, S clone, G fill, I eyedropper, `[` and `]` size, X swap
+  colours; Shift+click draws a line from the last point, and the middle
+  button pans. With **Clone**, the first click sets the source (a cross;
+  Alt+click moves it) and a drag copies from it. Fill, adjust, copy and
+  turn take the whole image or the rectangle dragged with **Select**.
+  With a game paired and **Edit**
   on, a stroke shows in the game as you paint (above). **PNG** imports
   a picture into the image and exports one; **Generate...** makes a
   picture from a prompt ([Generating an image](#generating-an-image)).
 - **Resize.** Type a width, height and format and press **Resize**: the
   image saves at that size and format, every layer resampled and every
-  mip written again. One undo step. The line under it says what the
+  mip written again. **Auto** fills the format in for the picture: the one
+  it has when that holds its alpha, else DXT1 or DXT5. One undo step. The line under it says what the
   image saves as against what is stored.
 - **Add image** appends an image after the bitmap's last, the size and
   format of the one shown, transparent until you paint, import or
@@ -1633,7 +1648,11 @@ the map like any other edit. What to know:
 
 ### Announcer lines
 
-**View > Voices** opens a window that makes announcer lines from text.
+A voice is a document. The Browser's **Voices** kind lists the announcer
+and every game character, each with its minutes of speech and whether it
+is fine-tuned; double-click one, or find it in **Go to anything** (type
+`voices` or `announcer`), to open it. It has two panes, **Setup** and
+**Lines**. The announcer's **Lines** pane makes announcer lines from text.
 Type the line, give a clip id (such as `superbounce`) if it is for one,
 and press **Say it**. The voice says it, Studio trims the silence, brings
 it to the loudness of the retail announcer lines of the open map and plays
@@ -1656,17 +1675,25 @@ there. [announcer.md](announcer.md) has the rest.
 
 ### Lines in a game character's voice
 
-In the same window, pick **Game character (local clone)**. The window
-goes top to bottom: **1 Voice** (a picker with a search, each character
-showing its minutes of speech and whether it is fine-tuned, and the model),
-**2 Lines** (type or paste many lines, one per line, or import a text file;
-each row can have its own voice, an output name, and the game sound it
-replaces), **3 Say** (**Say all** says every row in turn; each row shows
+Open a character from the **Voices** kind. A voice with no dataset opens
+on **Setup**, one that can say lines on **Lines**. **Lines** goes top to
+bottom: **Lines** (type or paste many lines, one per line, or import a
+text file; each row has an output name and the game sound it replaces),
+**Say** (**Say all** says every row of this voice in turn; each row shows
 queued, running, done or why it failed, plays, and re-runs on its own),
-and **5 Use** (**Keep all done lines** copies them into the checkout or the
+and **Keep** (**Keep all done lines** copies them into the checkout or the
 edit target package in one step). Buttons that are off say why.
 
-The first time, open **Voice setup**: **Build dataset** reads that
+A line for one sound is also made from the sound itself. A dialogue
+sound's editor ends with a **Lines** pane: **New line** adds a line that
+replaces that sound, said by the voice its path maps to. Type what is
+said and press **Say**; the said line's waveform draws under the sound's
+own on the same time axis, with its loudness beside it, so the two are
+easy to compare. **Save** makes the line a `sound` item of the edit
+target. A voice that is not set up says so on the row, and **Open its
+Setup** opens the voice on **Setup**.
+
+The first time, open the voice's **Setup**: the model picker, then **Build dataset** reads that
 character's lines from your disc, cuts them into clean clips and pairs each
 with its subtitle; the lines with no subtitle are transcribed on your Mac.
 Studio also installs the voice model (a few GB, once); the window shows the
@@ -1683,11 +1710,17 @@ announcer line. [voice-cloning.md](voice-cloning.md) has the details.
 
 ## 10. Undo and redo
 
-Each tool has its own history; **Edit > Undo** and **Edit > Redo** (and
-Cmd+Z, Cmd+Shift+Z) act on the tool you're in. A tag you opened as a tab
-has a history of its own: while its tab is in front and **Tags** shows
-it, Undo takes back that tag's last edit even if you edited another tag
-since. Closing a tag's tab keeps its edits; they save with the map.
+Each document has its own history, and **Edit > Undo** and **Edit > Redo**
+(Cmd+Z, Cmd+Shift+Z) act on the one in front: the tool's, or a tag you
+opened as a tab while **Tags** shows it. A tag's history holds every step
+you made to it, in the order you made them: its fields, a sound's mouth
+curve, a bitmap's paint, an animation graph's keys. The **Undo** and
+**Redo** buttons in an editor take the same steps as Cmd+Z, so **Undo tag
+edit** and the Sound, Textures and Animation windows' **Undo** each step
+back through the tag's whole history, even if you edited another tag
+since. In Modeling, Undo steps through the geometry while the target is
+in edit mode; in the Scripts tab, through the compiles. Closing a tag's
+tab keeps its edits; they save with the map.
 
 - One drag of the gizmo is one step. Typing into one field, or dragging
   one number, is one step.
@@ -1720,7 +1753,7 @@ uses, `~/Library/Application Support/h2recomp/data`.
 | Scripts opened in VS Code or Zed | `<data>/scripts/<name>.rules` (a game type script with no file of its own); `<data>/scripts/<map>/<map>.hsc` and `h2hs.json` (a map's scripts) | Not directly: a game type script reloads into the paired game; a map's scripts are read back into the Scripts tab only. [Scripts in VS Code and Zed](#scripts-in-vs-code-and-zed) |
 | Exported tags (tag bundles) | Wherever you save the `.h2tag` (never inside a Git checkout); `<data>/tag-bundles/` when an agent gives no path | Not directly: import it in the Tags tool and save the map. |
 | Playlists | Wherever you save the `.dat` | Through your Live server (`h2 live hopper import`). |
-| Announcer lines | `<data>/announcer/` (`cache/`, `lines/`, `clips/`) | Not directly: copy one into `art/announcer/` of a checkout with the Voices window or `voice.commit`, then build. |
+| Announcer lines | `<data>/announcer/` (`cache/`, `lines/`, `clips/`) | Not directly: copy one into `art/announcer/` of a checkout from the announcer's **Lines** pane or `voice.commit`, then build. |
 | Character voices | `<data>/voices/<character>/` (`dataset/`, `manifest.jsonl`, `model/`, `cache/`, `lines/`, `clips/`); the model's install in Studio's caches (`voice-clone/`) | Not directly: they are built from your disc and stay on your Mac. A line with a clip id copies into a checkout like an announcer line. |
 | The window layout | `~/Library/Application Support/h2recomp/data/h2-editor.ini` | (The editor's own.) |
 

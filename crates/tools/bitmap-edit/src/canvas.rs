@@ -147,6 +147,15 @@ impl Canvas {
         [t[o], t[o + 1], t[o + 2], t[o + 3]]
     }
 
+    /// The pixel at (`x`, `y`), a place that may be off the canvas on any
+    /// side; transparent black there.
+    pub fn pixel_at(&self, x: i64, y: i64) -> [u8; 4] {
+        if x < 0 || y < 0 || x >= i64::from(self.width) || y >= i64::from(self.height) {
+            return [0; 4];
+        }
+        self.pixel(x as u32, y as u32)
+    }
+
     /// Writes one pixel (ignored outside the canvas).
     pub fn set_pixel(&mut self, x: u32, y: u32, px: [u8; 4]) {
         if x >= self.width || y >= self.height {

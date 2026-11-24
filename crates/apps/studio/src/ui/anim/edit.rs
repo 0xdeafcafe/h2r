@@ -1,4 +1,6 @@
 //! The timeline and the frame-based curve view of one animation document.
+//! Undo and Redo are the graph's tab's (`Action::UndoDoc`): a document's
+//! keys are steps of it beside the tag's own writes.
 
 use std::ops::RangeInclusive;
 
@@ -7,9 +9,11 @@ use anim_edit::{
     tangent_from_angles, tangent_to_angles,
 };
 use dear_imgui_rs::{MouseButton, Ui};
+use map::TagId;
 use tags::anim_keys::Kind;
 
 use crate::app::anim::{AnimRead, Transport};
+use crate::app::{Action, Doc};
 use crate::fields::curve::Plot;
 use crate::theme;
 
@@ -135,17 +139,24 @@ impl State {
         self.problem = result.err();
     }
 
-    pub fn controls(&mut self, ui: &Ui, doc: &mut AnimDoc) {
-        let disabled = ui.begin_disabled_with_cond(!doc.can_undo());
+    /// Undo and Redo, and the gizmo's channel. The graph's tab is the
+    /// document: Undo takes the newest of its steps, this document's key or
+    /// the tag's own write, as Cmd+Z does (docs/editor/studio-flow.md,
+    /// "Shared patterns"), so the buttons run `Action::UndoDoc` and
+    /// `Action::RedoDoc` on it; `can` is what it can do. The action asked
+    /// for.
+    pub fn controls(&mut self, ui: &Ui, tag: TagId, can: (bool, bool)) -> Option<Action> {
+        let mut asked = None;
+        let disabled = ui.begin_disabled_with_cond(!can.0);
         if ui.button("Undo##anim") {
-            doc.undo();
+            asked = Some(Action::UndoDoc(Doc::Tag(tag)));
             self.problem = None;
         }
         drop(disabled);
         ui.same_line();
-        let disabled = ui.begin_disabled_with_cond(!doc.can_redo());
+        let disabled = ui.begin_disabled_with_cond(!can.1);
         if ui.button("Redo##anim") {
-            doc.redo();
+            asked = Some(Action::RedoDoc(Doc::Tag(tag)));
             self.problem = None;
         }
         drop(disabled);
@@ -161,6 +172,7 @@ impl State {
                 self.select_track(self.node, kind);
             }
         }
+        asked
     }
 
     pub fn draw(

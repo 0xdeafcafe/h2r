@@ -1471,19 +1471,27 @@ the draws recorded (`batches`) and the items dropped, by reason
 (`refused_material`, `refused_clip`, `refused_glyph`, `refused_texture`,
 `refused_model_view`, `refused_blur`;
 [retire-d3d.md](../graphics/retire-d3d.md#what-replaces-each-subsystem)).
-The HUD's own (`hud_*`) are the HUD draws the overlay drew (`hud_claimed`),
-the game's widget quads it left out (`hud_quads_skipped`), claims whose
-left-out quads were not the items drawn (`hud_mismatch`), and the HUD draws
-left to the game's quads by their first reason (`hud_refused_shader`,
-`_text`, `_effects`, `_anchor`, `_unlisted`, `_frame`, `_loading`, `_pass`;
-[native-post-hud.md](../graphics/native-post-hud.md#the-hud-on-the-overlay)).
+The HUD counters measure reservations of bitmap quads (`hud_tag_quads`)
+and glyph quads (`hud_text_quads`), with `hud_tag_fallback` and
+`hud_text_fallback` for declined submissions. `hud_tag_recorded` counts
+display-copy recordings for both kinds and `hud_tag_record_failed` counts
+failed attempts per target copy, for every draw the overlay captures.
+See [the HUD on the overlay](../graphics/native-post-hud.md#the-hud-on-the-overlay).
+Menu shader bitmaps' quads count as `menu_shader_quads`, with
+`menu_shader_fallback` for those the UI fan path kept. The fade's, the
+bars' and the loading screen's draws count as `fade_quads`, `bar_quads`
+and `loading_quads`, with `screen_fallback` for those the UI fan path kept
+([the fade, the bars and the loading screen](../graphics/native-post-hud.md#the-fade-the-bars-and-the-loading-screen)).
 The menus' (`menu_*`) are the widget draws claimed at their sorted list
 (`menu_claimed`), those left out (`menu_skipped`), the passes placed for
 runs with items (`menu_passes`), lists whose left-out draws did not match
 (`menu_mismatch`), lists the game draws whole (`menu_refused_frame`,
-`_mismatched`), drawn widgets the game keeps by the draw not read
-(`menu_refused_bitmap`, `_shader`, `_text`, `_model`, `_draw`,
-`_unreadable`, `_unlisted`), and lists or runs whose pass was not placed
+`_mismatched`), drawn bitmap widgets the game keeps (a meter,
+`menu_refused_bitmap_meter`; a scrolling bitmap, `_bitmap_scroll`; any
+other state the overlay does not draw as the game does, `_bitmap_state`),
+other drawn widgets the game keeps by the draw not read
+(`menu_refused_text`, `_model`, `_draw`, `_unreadable`,
+`_unlisted`), and lists or runs whose pass was not placed
 (`menu_refused_pass`;
 [native-post-hud.md](../graphics/native-post-hud.md#the-menus-on-the-overlay)).
 A list's scroll arrows and a button's image and label belong to the
@@ -4746,7 +4754,7 @@ feature is enabled.
 | Method and access | Parameters | Result |
 |---|---|---|
 | `forge.status` (read) | `{}` or omitted | The local session, role, log head, budget, monitor camera, aimed and held IDs, screen and focus, pending call or file work, and last notice. Tool settings: `rotation_snap` (degrees), `movement_snap` (world units, 0 for off) and `axes` (`world` or `local`). `overlays`: each overlay (`markers`, `monitors`, `gizmo`, `nav`) to whether it is on. Links fields: `tool` (`objects` or `links`), `aimed_link` and `link_from` (`{teleporter: flag}` or `{object: id}`), `teleporters` (`{flag, sender, channel, position}` with the channel the document gives), `links` (`{id, kind:"teleporter", sender, receiver, channel}` or `{id, kind:"device", machines, applies:"rebuild"}`, final indices) and `pending_rebuild`, the active device links. Palette fields: `palette` (the Objects palette's item count) and `palette_refused` (each scenario palette entry left out, as `"path: reason"`). `parked`: the hex handle of the biped the monitor parks and hides, or `null` while none is. Groups fields: `groups` (`{id, name, locked, pivot, members}`, `pivot` `centre` or `first`, `members` the things' endpoints) and `selection` (the endpoints chosen to group). Labels and prefabs: `labels` (`{thing, text, number}`, the active labels) and `prefabs` (`{name, pieces, grouped, fits, reason}`, the saved prefabs, and why one is refused on this map). Things fields: `aimed_thing` and `held_thing`, the thing's endpoint as `forge.things` gives it (an own entry's or an added one's; `aimed` and `held` are an added object's op ID only), `game` (the variant record's engine index the tool reads, or `null`) and `show` (`this_game_type` or `all_game_types`). `variant`: `{name, title, id, tier, dirty}`, the session's document as a map variant saves it: `name` the file it was saved or loaded as (`null` before), `id` the play form's identity (`null`, with `id_refused`, when it does not compute), `tier` `variant` or `map`, and `dirty` edits since the last save or load. `ground`: `{state, building, available, loaded, markers, problems, zones?, squads?}`, the AI ground in brief (`forge.ground` has the rest): `state` is `not_built`, `current` or `stale`, `available` whether this game has a builder, `loaded` whether the last build's map is the running one, `markers` how many labels are placed and `problems` how many labels the last build could not honour. `nav`: `{state, available, generating, problems, sectors?, out_of_map?}`, the last **Generate nav** in brief (`forge.nav` has the rest). An inactive session returns `{session:"inactive", reason}` |
-| `forge.ground` (read) | `{}` or omitted | The AI ground (docs/game/forge-map-variants.md, "AI ground"): `{state, building, available, loaded, recipe, counts, markers, problems, report}`. `state` is `not_built`, `current` or `stale`; `building` is true while a build runs (edits wait for it); `available` is whether this game has a builder; `loaded` is whether the last build's map is the running one (false while the game cannot load a built map). `recipe` is `{kit_version, home, probe}` or null before the first build. `counts` maps each label (`ff_drop`, `ff_base`, `ff_cover`, `siege_site`, `siege_goal`, `siege_line`) to how many are placed, and `markers` lists them as `{id, label, number, position, facing, team}`. `problems` is each label the last build could not honour, `{label, position, reason}`. `report` is null before a build, else `{zones, squads, problems, receipt}`, with `receipt` `{base, labels, kit_version}` as hex digests of the inputs the build covers |
+| `forge.ground` (read) | `{}` or omitted | The AI ground (docs/game/forge-map-variants.md, "AI ground"): `{state, building, available, loaded, recipe, counts, markers, problems, report}`. `state` is `not_built`, `current` or `stale`; `building` is true while a build runs (edits wait for it); `available` is whether this game has a builder; `loaded` is whether the last build's map is the running one (false while the game cannot load a built map). `recipe` is `{kit_version, home, probe}` or null before the first build. `counts` maps each label (`ff_drop`, `ff_base`, `ff_cover`, `siege_site`, `siege_goal`, `siege_line`, `siege_barrier`) to how many are placed (a `siege_barrier` is a label on a placed object, not a flag, so it is counted and is not in `markers`), and `markers` lists the flags as `{id, label, number, position, facing, team}`. `problems` is each label the last build could not honour, `{label, position, reason}`. `report` is null before a build, else `{zones, squads, problems, receipt}`, with `receipt` `{base, labels, kit_version}` as hex digests of the inputs the build covers |
 | `forge.ground.build` (act) | `{if_stale?}` or omitted | **Build AI ground**, or with `if_stale: true` **Test waves** (build only when the ground is stale or was never built). Answers when the build has ended with `forge.ground`'s reply plus `built`, whether it built. The build runs off the game thread over a copy of the session, and edits wait meanwhile. Refused as `forge_refused` when this game has no builder (`This game cannot build AI ground.`), in a shared session, while another edit or file job waits, and with the build's own sentence when it fails (a map with no room for the ground names its cost and its biggest part); a failed build changes nothing |
 | `forge.nav` (act) | `{generate?}` or omitted | **Generate nav** ([forge-nav.md](../game/forge-nav.md)): `{state, available, generating, counts, problems, overlay}`. `state` is `not_built`, `current` or `stale`; `available` is whether this game has a generator; `generating` is true while one runs (edits wait for it). `counts` is null before a generation, else `{sectors, links, out_of_map, solids}`, `links` mapping each link kind (`walk`, `drop`, `jump`, `crouch_jump`, `teleporter`, `lift`, `elevator`) to its count. `problems` lists `{kind, what, position, reason}`, `kind` one of `start_off_mesh`, `teleporter_off_mesh` and `solid_left_out`. `overlay` lists `{kind, a, b}` lines: each sector's sides (`sector`, or `out_of_map` where no start reaches) and each link but a walk, by its kind. With `generate: true` (a local multiplayer tick) it generates first and answers when it has ended; refused as `forge_refused` when this game has no generator (`This game cannot generate nav.`), in a shared session, while another edit or file job waits, and with the generator's sentence when it fails; a failed generation changes nothing |
 | `forge.things` (read) | `{kind?, changed?}` or omitted | `{things, left_out}`. `things` is every thing of the session (the map's own entries in block and index order, then the added ones), or those of one `kind` (`object`, `item_spawner`, `starting_point`, `goal`, `teleporter`), or with `changed` those an entry op changes (`true`, which includes every added one) or not (`false`). Each is `{id, block, kind, own, changed, position, rotation, fields}`: `id` is the endpoint an entry op's `target` names, `{base:{block, index, print}}` or `{added: op}`; `fields` maps each layout field name to its value as the document writes one. Each netgame flag also has `area` in the document spelling, or `null` for an unshaped flag. An active area marks its flag as changed. A removed entry is not listed. `left_out` is each block of the map that did not read, as `"block: reason"`; its entries are not things |
@@ -4828,7 +4836,14 @@ carries its name in `data.code` (`agent_proto::forge::refusal`):
 | `forge_was` | the target's value is not the one `was` names |
 | `forge_left_out` | the entry's block did not read when the session opened (`forge.things` `left_out`) |
 | `forge_object_gone`, `forge_object_kind`, `forge_object_held` | the game call's: the live object no longer resolves, its block has no live objects, or the own entry's object is held or attached |
+| `forge_no_kit` | an add or a drop of a starting location, netgame flag or netgame equipment row, on a map whose next row is not in the kit's spare form: the map has no kit (or its spare rows are used) |
 | `forge_refused` | any other: the message says why |
+
+A kit session adds those rows: the document's `Add` of such an entry is
+one `Add` base step, which writes the block's next spare row and raises
+its root count, and its removal or undo is one `Drop` step, which writes
+the spare form back and lowers the count (`agent::forge::base`). A batch
+is checked in order; a refusal changes nothing.
 
 An area op names a netgame flag, own or added, and sets its
 [document area](../game/gametype-markers.md#in-the-document). Send
@@ -5682,9 +5697,13 @@ game read got from them ([studio-redesign.md](../editor/studio-redesign.md),
   packages on with a `sim` item), or `null` when the set did not order.
 - `local_only`: why a Live or System Link session would be refused with
   this set (an unsigned package with a `sim` item, named), or `null`.
-- `maps`: by map name, each map the rewrite was asked for: `scope` (its
+- `maps`: by map name, each map the rewrite was asked for (or, with
+  `store-maps`, each level opened from the store): `scope` (its
   header's class), `packages` applied in order, `held` (packages whose
-  tags the map has already, left out), `key` (the cache key; with
+  tags the map has already, left out), `refused` when packages are off
+  for this map (each `package` and `why`: a `from`, `was` or `replaces`
+  that does not match what the map holds, a clash with an earlier
+  package, or a `requires` that is off), `key` (the cache key; with
   `store-maps`, the level's `LevelId`, empty for a level with nothing
   over it), `hits` and `builds`, `added` and `changed` tag counts, and
   `error` when the map was served without its packages.

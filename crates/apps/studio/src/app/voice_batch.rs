@@ -25,6 +25,18 @@ use crate::voice::{Engine, VoiceError};
 /// The most a text file imported into the batch may be.
 const MAX_IMPORT: u64 = 1 << 20;
 
+/// The columns a said line covers when it is drawn under an original on
+/// one time axis: the original (`axis_ms` long) fills `width` columns, so
+/// a line of `line_ms` covers its share of them, and a longer one is cut
+/// where the axis ends. The sound document's Lines pane draws with it.
+pub fn axis_columns(axis_ms: u64, line_ms: u64, width: usize) -> usize {
+    if axis_ms == 0 {
+        return 0;
+    }
+    let cols = (u128::from(line_ms) * width as u128 / u128::from(axis_ms)) as usize;
+    cols.min(width)
+}
+
 /// Where a row is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RowState {
@@ -210,6 +222,22 @@ impl Batch {
             && let Err(e) = super::announcer::check_clip_id(&r.clip)
         {
             return Some(e.to_string());
+        }
+        None
+    }
+
+    /// Why the window will not say `r` yet, or `None`: a problem of its
+    /// own ([`Batch::problem`]), or no output name and no game line to
+    /// replace, so nothing could name or place the result. The API's
+    /// `queue` does not ask for a name; the Voices window does.
+    pub fn blocked(&self, r: &Row) -> Option<String> {
+        if let Some(p) = self.problem(r) {
+            return Some(p);
+        }
+        if r.clip.is_empty() && r.tag.is_none() {
+            return Some(
+                "give the line an output name, or pick the game line it replaces".into(),
+            );
         }
         None
     }

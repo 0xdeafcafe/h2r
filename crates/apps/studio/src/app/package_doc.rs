@@ -19,7 +19,7 @@ use std::time::Instant;
 
 use ::workspace::{
     Loaded, PACKAGES_DIR, Target, added_tag, build_map, builder, changes_map, check_package,
-    check_set, forbidden_files, lock_findings, read_lock, scope_of,
+    check_set, forbidden_files, lock_findings, read_lock, scope_of, store_findings,
 };
 use content::package::{
     ALWAYS_ON, Credit, Header, Item, LOCK_FILE, MANIFEST_FILE, Manifest, MapScope, PACKAGE_FORMAT,
@@ -269,8 +269,10 @@ fn scope_word(s: content::package::ItemScope) -> &'static str {
     }
 }
 
-/// The findings `h2 package check` makes about one package, as rows.
-fn findings(k: &Known, id: &str) -> Res<Vec<Value>> {
+/// The findings `h2 package check` makes about one package, as rows. With
+/// `store`, the tag store's root, a file that is a raw resource or a tag
+/// file of that store is a finding too (`workspace::store_findings`).
+fn findings(k: &Known, id: &str, store: Option<&Path>) -> Res<Vec<Value>> {
     let (loaded, dir) = k.need(id)?;
     let mut out: Vec<Value> = Vec::new();
     let row = |kind: &str, message: String| json!({ "kind": kind, "message": message });
@@ -289,6 +291,14 @@ fn findings(k: &Known, id: &str) -> Res<Vec<Value>> {
         }
         for f in forbidden_files(dir) {
             out.push(row("files", f));
+        }
+    }
+    if let Some(store) = store {
+        for f in store_findings(store, loaded) {
+            let mut r = row("store", f.what.clone());
+            r["item"] = json!(f.item);
+            r["file"] = json!(f.file);
+            out.push(r);
         }
     }
     for f in check_package(loaded) {
@@ -325,6 +335,11 @@ fn findings(k: &Known, id: &str) -> Res<Vec<Value>> {
 /// `package.read`: the manifest, each item with what it builds, the lock
 /// and the findings.
 pub fn read(data: &Path, id: &str) -> Res {
+    read_with(data, id, None)
+}
+
+/// [`read`], with the findings over `store` (the tag store's root).
+pub fn read_with(data: &Path, id: &str, store: Option<&Path>) -> Res {
     let k = known(data);
     let (loaded, dir) = k.need(id)?;
     let manifest = &loaded.package.manifest;
@@ -352,7 +367,7 @@ pub fn read(data: &Path, id: &str) -> Res {
         .collect();
     let listed = read_set(data);
     let row = listed.listed.iter().find(|l| l.id == id);
-    let problems = findings(&k, id)?;
+    let problems = findings(&k, id, store)?;
     Ok(json!({
         "id": id,
         "package_id": loaded.package.id.to_string(),
@@ -375,8 +390,15 @@ pub fn read(data: &Path, id: &str) -> Res {
 /// an item with no builder, a missing source, a source its builder refuses),
 /// and its conflicts with the rest of the set.
 pub fn check(data: &Path, id: &str) -> Res {
+    check_with(data, id, None)
+}
+
+/// [`check`], with the findings over `store` (the tag store's root): a
+/// file of the package that is a raw resource or a tag file of the user's
+/// own store.
+pub fn check_with(data: &Path, id: &str, store: Option<&Path>) -> Res {
     let k = known(data);
-    let found = findings(&k, id)?;
+    let found = findings(&k, id, store)?;
     Ok(json!({
         "id": id,
         "ok": found.is_empty(),
@@ -630,16 +652,39 @@ pub fn put_edits(data: &Path, id: &str, map: &str, text: &str) -> Res<bool> {
             "map {map:?} cannot name a file: letters, digits, '_' and '-'"
         )));
     }
+    put_edits_at(
+        data,
+        id,
+        &edits_file(map),
+        content::package::Maps::Names(vec![map.to_owned()]),
+        text,
+    )
+}
+
+/// [`put_edits`] for any file of the package: `rel` is the file and the
+/// `edits` item's source, `maps` the item's scope when the item is made.
+/// Empty text removes the file and its item.
+pub fn put_edits_at(
+    data: &Path,
+    id: &str,
+    rel: &str,
+    maps: content::package::Maps,
+    text: &str,
+) -> Res<bool> {
+    if !safe_path(rel) {
+        return Err(Refused(format!(
+            "{rel:?} is not a path inside the package: no .., no drive or leading slash"
+        )));
+    }
     let k = known(data);
     let (loaded, dir) = k.local(id)?;
-    let rel = edits_file(map);
-    let path = dir.join(&rel);
+    let path = dir.join(rel);
     let at = loaded
         .package
         .manifest
         .items
         .iter()
-        .position(|i| i.kind == content::package::Kind::Edits && i.source.as_deref() == Some(&rel));
+        .position(|i| i.kind == content::package::Kind::Edits && i.source.as_deref() == Some(rel));
     let relock = |dir: &Path| -> Res<()> {
         let l = Loaded::from_dir(dir).map_err(|e| Refused(e.to_string()))?;
         let lock = dir.join(LOCK_FILE);
@@ -676,10 +721,12 @@ pub fn put_edits(data: &Path, id: &str, map: &str, text: &str) -> Res<bool> {
     let mut manifest = loaded.package.manifest.clone();
     manifest.items.push(Item {
         kind: content::package::Kind::Edits,
-        source: Some(rel),
+        source: Some(rel.to_owned()),
         inputs: Vec::new(),
         tag: None,
-        maps: content::package::Maps::Names(vec![map.to_owned()]),
+        maps,
+        replaces: None,
+        was: None,
     });
     if let Err(e) = commit(data, &dir, &manifest) {
         let _ = std::fs::remove_file(&path);
@@ -785,6 +832,36 @@ fn scope_at(base: &BaseMap) -> Result<MapScope, String> {
     };
     let h = map::Header::read_region(&mut f, at, len).map_err(|e| format!("not a map: {e}"))?;
     Ok(scope_of(h.cache_type))
+}
+
+/// The class of `base`'s map, read from its header.
+pub fn scope_of_base(base: &BaseMap) -> Result<MapScope, String> {
+    scope_at(base)
+}
+
+/// The package `id` as loaded, built in or local: its manifest and files.
+pub fn loaded(data: &Path, id: &str) -> Res<Loaded> {
+    Ok(known(data).need(id)?.0.clone())
+}
+
+/// The local package `id` as loaded, with its folder; a built-in one is
+/// refused.
+pub fn loaded_local(data: &Path, id: &str) -> Res<(Loaded, PathBuf)> {
+    let k = known(data);
+    let (l, dir) = k.local(id)?;
+    Ok((l.clone(), dir))
+}
+
+/// Every package the set has on, in load order: what a level is built over.
+pub fn in_order(data: &Path) -> Res<Vec<Loaded>> {
+    let k = known(data);
+    let file = set_file(data)?;
+    let set = ordered(&k, &file)?;
+    Ok(set
+        .loaded
+        .iter()
+        .filter_map(|p| k.get(p.name()).map(|(l, _)| l.clone()))
+        .collect())
 }
 
 /// The packages a build of `id` applies, in load order: `id` and what it

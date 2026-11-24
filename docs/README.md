@@ -92,6 +92,7 @@ are under [Reviews](#reviews).
 - [high-resolution.md](graphics/high-resolution.md): native and fixed output sizes, per-axis raster scaling, and widescreen projection
 - [native-renderer.md](graphics/native-renderer.md): the native GPU renderer (`impl.render.native`, `crates/rewrites/native-render`): the frame, the stages and how a frame is checked
 - [Shader animation writes at draw time](graphics/notes/2026-11-24-shader-constant-animation.md) traces the pixel and vertex constant bindings.
+- [HUD shader selection and constant upload](graphics/notes/2026-11-24-hud-shader-setup.md) traces bitmap and glyph shader setup.
 - [Retail lens-flare draws](graphics/notes/2026-11-24-lens-flares.md) traces the visibility callback, reflections and intermediate filter targets.
 - [native-world.md](graphics/native-world.md): native renderer stage 1: the static world
 - [native-objects.md](graphics/native-objects.md): native renderer stage 2: objects and skinning
@@ -342,8 +343,9 @@ Reading and converting Halo 1 data:
 - [game-view.md](editor/game-view.md): design for the game's picture inside Studio: the frame ring and stream (`render.picture`), editor mode and Studio's own game, attached mode, input and cameras
 - [Game view cost and latency](editor/notes/game-view.md) records how to measure the Studio frame stream.
 - [studio-redesign.md](editor/studio-redesign.md): design for Studio redone as one window over the tag tree of every map, where opening a tag opens the editor for its kind; packages as the one format for all added content (manifest, item kinds, load order, the game's single rewrite, Live sharing, signing and credit) with each current content path mapped onto one; the animation editor and the sound editor; where the other editors dock; and the build slices
+- [studio-flow.md](editor/studio-flow.md): design for one way through Studio: every asset opens its editors from a shared header, links to what it uses and what uses it, one preview, check, save and undo for every kind, voices and the announcer as assets, and the slices
 - [playtest.md](editor/playtest.md): design for headless bot matches on the map being edited: static checks, the spatial trace, heatmaps, spawn, flow, sightline, item and stuck-spot overlays, seeds, before and after, and what a fresh map needs
-- Notes: [2026-11-23-realtime-survey.md](editor/notes/2026-11-23-realtime-survey.md) (what a live edit of each tag group does today and what realtime needs, sized), [game-view.md](editor/notes/game-view.md) (the game view's cost and latency, not yet measured), [tag-field-names.md](editor/notes/tag-field-names.md) (the sources of tag field names, their links and licences)
+- Notes: [2026-11-24-studio-flow-survey.md](editor/notes/2026-11-24-studio-flow-survey.md) (three journeys through Studio read from the code, and where each loses the person), [2026-11-23-realtime-survey.md](editor/notes/2026-11-23-realtime-survey.md) (what a live edit of each tag group does today and what realtime needs, sized), [game-view.md](editor/notes/game-view.md) (the game view's cost and latency, not yet measured), [tag-field-names.md](editor/notes/tag-field-names.md) (the sources of tag field names, their links and licences)
 
 ## Working on the repository (`dev/`)
 

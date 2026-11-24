@@ -14,7 +14,7 @@ use crate::app::anim::{
     AnimError, AnimInfo, AnimRead, GraphKey, HZ, PoseAnswer, PoseModel, PoseNode,
     RetargetOptions, Transport,
 };
-use crate::app::{App, ToolKind};
+use crate::app::{Action, App, Doc, ToolKind};
 use crate::theme::{self, icon};
 use crate::viewport::Gpu;
 
@@ -219,8 +219,12 @@ fn body(ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, st: &mut AnimUi, id: TagId) {
         }
         transport(ui, st, animation.frames, animation.aim_grid);
         if let Some(doc) = doc {
-            if let Ok(clip) = app.anim_doc_mut(doc) {
-                st.edit.controls(ui, clip);
+            // The graph's tab is the document (docs/editor/studio-flow.md,
+            // "Shared patterns"): its steps are this document's keys and the
+            // tag's own writes, taken newest first.
+            let can = app.doc_can(Doc::Tag(id));
+            if let Some(action) = st.edit.controls(ui, id, can) {
+                app.dispatch(action);
             }
             st.save.draw(ui, app, doc, source.is_some());
         }

@@ -12,13 +12,14 @@
 //! `<data>/store/images/`; docs/engine/asset-store.md, "Runtime assembly"),
 //! and the rewrite rebuilds no map.
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use agent::{Access, Agent};
 use agent_proto::method;
 use vfs::Backend as _;
-use workspace::{GameSet, KitInputs, PackageRewrite, Served};
+use workspace::{GameSet, KitInputs, Origin, PackageRewrite, Served};
 
 mod baked {
     include!(concat!(env!("OUT_DIR"), "/packages_baked.rs"));
@@ -75,7 +76,16 @@ pub fn at_boot(
     // read them from what the game is handed, for the loadout.
     // The superbounce world labels' HUD font is read from the fonts as the
     // game is handed them, after the `glyphs` kit.
-    let mut rewrite = PackageRewrite::new(set.loaded());
+    // Our own packages: a refusal of one for a map (a `from`, `was` or
+    // `replaces` that does not match the base) stops the map's build, where
+    // an installed package refused is off for that map with its reason.
+    let ours: BTreeSet<String> = set
+        .on
+        .iter()
+        .filter(|e| e.origin == Origin::Baked)
+        .map(|e| e.loaded.package.name().to_owned())
+        .collect();
+    let mut rewrite = PackageRewrite::new(set.loaded()).strict(ours.clone());
     if store.is_some() {
         rewrite = rewrite.levels_from_store();
     } else {
@@ -96,6 +106,7 @@ pub fn at_boot(
             set.loaded(),
             served.clone(),
         )
+        .strict(ours.clone())
         .shared()
     });
     let rewrite = (!rewrite.is_empty()).then_some(rewrite);

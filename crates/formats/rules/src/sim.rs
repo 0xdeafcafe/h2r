@@ -237,6 +237,8 @@ pub fn emits(ir: &Ir) -> Vec<Event> {
         Event::Bounce,
         Event::Edit,
         Event::Touchdown,
+        Event::Launch,
+        Event::Grounded,
         Event::Quit,
     ] {
         if w.on(e) {
@@ -738,6 +740,23 @@ impl Director {
             let up = crate::ty::fixed::from_int(self.below(14) as i32);
             out.push(Input::Touchdown { player: self.bots[i].slot, down, up });
         }
+        if self.wants.on(Event::Launch)
+            && self.below(8 * u64::from(TPS)) < n
+            && let Some(i) = self.any(&living)
+        {
+            // Most launches come off a marked strip; one in six off a seam
+            // no strip accounts for. 8 to 17 world units a second up, so
+            // now and then over a Monster's 16.
+            let spot = (self.below(6) != 0).then(|| SPOT_BASE + self.below(6) as u32);
+            let speed = crate::ty::fixed::from_int(8 + self.below(10) as i32);
+            out.push(Input::Launch { player: self.bots[i].slot, spot, speed });
+        }
+        if self.wants.on(Event::Grounded)
+            && self.below(12 * u64::from(TPS)) < n
+            && let Some(i) = self.any(&living)
+        {
+            out.push(Input::Grounded(self.bots[i].slot));
+        }
         if self.wants.on(Event::Edit)
             && self.below(15 * u64::from(TPS)) < n
             && let Some(i) = self.any(&living)
@@ -1202,6 +1221,8 @@ pub fn to_file(s: &Scenario) -> (file::Scenario, Vec<String>) {
             },
             Input::Damage { object, by, amount } => file::ScenarioEvent::Damage { object, by, amount },
             Input::Touchdown { player, down, up } => file::ScenarioEvent::Touchdown { player, down, up },
+            Input::Launch { player, spot, speed } => file::ScenarioEvent::Launch { player, spot, speed },
+            Input::Grounded(player) => file::ScenarioEvent::Grounded(player),
         };
         if let Some(t) = ticks.get_mut(step.tick as usize) {
             t.events.push(event);

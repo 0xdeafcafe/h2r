@@ -143,6 +143,8 @@ impl Opened {
                 source: Some(source.to_owned()),
                 tag: None,
                 maps: Maps::default(),
+                replaces: None,
+                was: None,
             });
         }
     }

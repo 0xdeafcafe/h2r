@@ -392,6 +392,13 @@ collision and each machine builds its own.
   `team`) with a label op naming it, one of `ff_drop`, `ff_base`,
   `ff_cover`, `siege_site`, `siege_goal` and `siege_line`
   (`forge_doc::GroundLabel`). A `siege_line`'s number is its phase. A
+  seventh label, `siege_barrier`, is the one that marks an object, not a
+  flag: scenery, a crate, a machine or a vehicle, numbered by the phase it
+  opens in (no number is open from the start). The AI and objectives page
+  offers it (`Session::label_barrier` labels the object the monitor aims
+  at, opening in phase 1), Properties still takes it typed, and the ground
+  build and the stamp do not read it, so labelling a barrier leaves the
+  ground current. A
   map's own flag labelled the same way is a marker too. A ground label
   on any other block, or a `siege_line` with no phase, is refused by name
   (`ForgeDoc::ground_marks`). A session adds a marker as a flag with no
@@ -605,6 +612,12 @@ the map variant the session opens.
    `Building <name>...`) or is refused (the table's sentence). A pick is
    cleared by a change of the lobby's map (`map_variant::sync`, read
    where the lobby's state is read), by Original and by leaving the lobby.
+   In FORGE mode with no pick, `map_variant::follow_mode` (called by
+   `lobby_mode::variant_hold`) picks the map's empty draft with the
+   kit (`pick_kit`): the package carries the `forge_kit` spare rows, and
+   `kit_start` names it for the load, where `forge_map::open` lets a
+   session open on it and reads its spare rows into the session's kit
+   ([forge-editing.md](forge-editing.md), "The object menu").
    Without a builder in the game (`game::map_variant::install`) a pick
    is `variant_build`. `variant_member` is `Refusal::member`; V3 sends it.
 

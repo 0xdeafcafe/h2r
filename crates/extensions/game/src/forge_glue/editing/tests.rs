@@ -92,7 +92,7 @@ fn palette_to_properties_to_confirmed_engine_handle() {
     assert_eq!(work.len(), 1);
     let (ticket, call) = work.into_iter().next().unwrap();
     assert!(
-        matches!(call, calls::Call::Forge { steps, .. } if steps == [
+        matches!(&call, calls::Call::Forge { steps, .. } if *steps == [
             calls::ForgeStep::Make { tag: 42, frame },
         ])
     );
@@ -112,7 +112,7 @@ fn palette_to_properties_to_confirmed_engine_handle() {
     e.command(10, Command::Delete { id }).unwrap();
     let (ticket, call) = calls::lock(&e.calls).drain().pop().unwrap();
     assert!(
-        matches!(call, calls::Call::Forge { steps, .. } if steps == [
+        matches!(&call, calls::Call::Forge { steps, .. } if *steps == [
             calls::ForgeStep::Delete { target: live },
         ])
     );
@@ -139,7 +139,7 @@ fn palette_to_properties_to_confirmed_engine_handle() {
     e.command(14, Command::Undo).unwrap();
     let (ticket, call) = calls::lock(&e.calls).drain().pop().unwrap();
     assert!(
-        matches!(call, calls::Call::Forge { steps, .. } if steps == [
+        matches!(&call, calls::Call::Forge { steps, .. } if *steps == [
             calls::ForgeStep::Make { tag: 42, frame },
         ])
     );
@@ -1181,4 +1181,100 @@ mod nav {
         assert_eq!(e.choose(5, Choice::GenerateNav), Err(NO_GENERATOR.into()));
         assert!(!e.busy());
     }
+}
+
+/// **Reset orientation** and **Duplicate** on the Properties page of a
+/// placed shelf: one uprighting move, then one add in front of the
+/// monitor whose copy the monitor holds at once.
+#[test]
+fn reset_orientation_and_duplicate_on_the_properties_page() {
+    let mut e = editor();
+    calls::lock(&e.calls).arm();
+    e.tool.monitor = true;
+    e.choose(1, Choice::Select(0)).unwrap();
+    let frame = Frame {
+        position: [3., 0., 0.],
+        rotation: [0.7, 0.3, 0.2],
+    };
+    e.tool.ghost = Some(frame);
+    e.command(2, Command::Place { item: 0, frame }).unwrap();
+    let (ticket, _) = calls::lock(&e.calls).drain().pop().unwrap();
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[31]})));
+    e.poll(3);
+    let id = e.session.objects()[0].id;
+    let added = Endpoint::Added(id);
+    e.tool.camera = Some(forge::camera::Camera {
+        position: [0.; 3],
+        yaw: 0.,
+        pitch: 0.,
+    });
+    e.tool.aimed_thing = Some(added);
+    e.tool.aimed = Some(id);
+    e.command(4, Command::Properties).unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    let labels = || -> Vec<String> {
+        screens::screen(Kind::Properties)
+            .sheet()
+            .rows
+            .iter()
+            .map(|r| r.label.clone())
+            .collect()
+    };
+    assert!(
+        labels().contains(&"Reset orientation".to_string()),
+        "{:?}",
+        labels()
+    );
+    assert!(
+        labels().contains(&"Duplicate".to_string()),
+        "{:?}",
+        labels()
+    );
+    // Reset orientation: one move upright at the 45 degree snap, where it
+    // stands.
+    e.choose(5, Choice::ResetOrientation).unwrap();
+    let (ticket, call) = calls::lock(&e.calls).drain().pop().unwrap();
+    let upright = Frame {
+        position: [3., 0., 0.],
+        rotation: [45f32.to_radians(), 0., 0.],
+    };
+    assert!(
+        matches!(&call, calls::Call::Forge { steps, .. } if *steps == [
+            calls::ForgeStep::Move {
+                target: calls::ForgeTarget::Live(agent_proto::ObjectId {
+                    kind: agent_proto::Kind::Crate,
+                    key: 31,
+                }),
+                frame: upright,
+            },
+        ]),
+        "{call:?}"
+    );
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[]})));
+    e.poll(6);
+    assert_eq!(e.session.log().len(), 2);
+    // Duplicate: one add in front of the monitor, and the copy is held at
+    // once.
+    e.choose(7, Choice::Duplicate(added)).unwrap();
+    let (ticket, call) = calls::lock(&e.calls).drain().pop().unwrap();
+    let copy = Frame {
+        position: [3., 0., 0.],
+        rotation: [0.; 3],
+    };
+    assert!(
+        matches!(&call, calls::Call::Forge { steps, .. } if *steps == [
+            calls::ForgeStep::Make { tag: 42, frame: copy },
+        ]),
+        "{call:?}"
+    );
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[32]})));
+    e.poll(8);
+    assert_eq!(e.session.log().len(), 3);
+    assert_eq!(e.session.objects()[1].frame, copy);
+    assert_eq!(
+        e.tool.held_thing,
+        Some(Endpoint::Added(e.session.objects()[1].id))
+    );
+    assert_eq!(e.tool.held, Some(e.session.objects()[1].id));
+    assert_eq!(e.tool.ghost, Some(copy));
 }

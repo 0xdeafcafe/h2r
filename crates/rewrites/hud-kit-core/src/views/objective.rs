@@ -425,6 +425,8 @@ pub mod koth {
     pub const NAME: &str = "koth";
     pub const HILL: &str = "koth.hill";
     pub const TIME: &str = "koth.time";
+    /// The seconds left on a phase's clock, for a script with phases.
+    pub const PHASE: &str = "koth.phase";
     pub const MARK: &str = "koth.mark";
     pub const BANNER: &str = "koth.banner";
 
@@ -441,6 +443,8 @@ pub mod koth {
         pub hill: Hill,
         /// Seconds your side has held the hill.
         pub held: Option<u32>,
+        /// Seconds left on the phase's clock.
+        pub phase: Option<u32>,
         pub mark: Option<u16>,
         pub banner: Option<&'static str>,
     }
@@ -459,6 +463,7 @@ pub mod koth {
         };
         v.set(HILL, Value::text(format!("Hill: {word}")));
         v.set(TIME, row(s.held.map(|t| format!("Held {}", clock(t)))));
+        v.set(PHASE, row(s.phase.map(|t| format!("Phase {}", clock(t)))));
         v.set(MARK, mark(s.mark));
         v.set(BANNER, banner(s.banner));
         v
@@ -467,7 +472,7 @@ pub mod koth {
     /// The HUD a script feeds: the hill's widget (`koth.hill`) is style 0
     /// open, 1 held (the value is the holding side, so it is "yours" when
     /// you are on it) or 2 contested; `koth.time` counts the seconds your
-    /// side has held it.
+    /// side has held it; `koth.phase` counts the seconds a phase has left.
     pub fn feed(f: &Fed) -> Values {
         let hill = f.widget(HILL).map(|w| match w.style {
             1 if w.mine => Hill::Yours,
@@ -478,6 +483,7 @@ pub mod koth {
         let state = State {
             hill: hill.unwrap_or(Hill::Open),
             held: f.seconds(TIME),
+            phase: f.seconds(PHASE),
             mark: f.distance(MARK),
             banner: None,
         };
@@ -490,12 +496,12 @@ pub mod koth {
     }
 
     pub(super) fn views() -> Vec<(&'static str, State)> {
-        let s = |hill, held, mark, banner| State { hill, held, mark, banner };
+        let s = |hill, held, phase, mark, banner| State { hill, held, phase, mark, banner };
         vec![
-            ("open", s(Hill::Open, None, Some(150), Some("HILL MOVED"))),
-            ("yours", s(Hill::Yours, Some(41), Some(0), None)),
-            ("theirs", s(Hill::Theirs, Some(41), Some(75), None)),
-            ("contested", s(Hill::Contested, Some(41), Some(3), None)),
+            ("open", s(Hill::Open, None, None, Some(150), Some("HILL MOVED"))),
+            ("yours", s(Hill::Yours, Some(41), None, Some(0), None)),
+            ("theirs", s(Hill::Theirs, Some(41), None, Some(75), None)),
+            ("contested", s(Hill::Contested, Some(41), Some(179), Some(3), None)),
         ]
     }
 }
@@ -712,6 +718,7 @@ mod tests {
                 &[
                     (koth::HILL, widget(1, 1, true)),
                     (koth::TIME, widget(41, 0, false)),
+                    (koth::PHASE, widget(179, 0, false)),
                     (koth::BANNER, banner_widget("HILL MOVED")),
                 ],
                 &[(koth::MARK, 75)],
@@ -720,11 +727,13 @@ mod tests {
         .unwrap();
         assert_eq!(at(&koth, koth::HILL).as_deref(), Some("Hill: Yours"));
         assert_eq!(at(&koth, koth::TIME).as_deref(), Some("Held 0:41"));
+        assert_eq!(at(&koth, koth::PHASE).as_deref(), Some("Phase 2:59"));
         assert_eq!(at(&koth, koth::MARK).as_deref(), Some("75"));
         assert_eq!(at(&koth, koth::BANNER).as_deref(), Some("HILL MOVED"));
         let theirs = feed("koth", &fed(&[(koth::HILL, widget(1, 1, false))], &[])).unwrap();
         assert_eq!(at(&theirs, koth::HILL).as_deref(), Some("Hill: Held by the enemy"));
         assert_eq!(at(&theirs, koth::TIME), None);
+        assert_eq!(at(&theirs, koth::PHASE), None);
         assert_eq!(at(&theirs, koth::MARK), None);
         assert_eq!(at(&theirs, koth::BANNER), None);
 

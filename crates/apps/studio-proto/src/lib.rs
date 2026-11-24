@@ -89,6 +89,9 @@ pub mod method {
     pub const ASSET_LIST: &str = "asset.list";
     pub const ASSET_THUMB: &str = "asset.thumb";
     pub const ASSET_COPY: &str = "asset.copy";
+    pub const ASSET_LINKS: &str = "asset.links";
+    pub const ASSET_FORK: &str = "asset.fork";
+    pub const ASSET_REVERT: &str = "asset.revert";
     // The package document (api/packages.rs).
     pub const PACKAGE_LIST: &str = "package.list";
     pub const PACKAGE_READ: &str = "package.read";
@@ -103,6 +106,7 @@ pub mod method {
     pub const PACKAGE_CHECK: &str = "package.check";
     pub const PACKAGE_BUILD: &str = "package.build";
     pub const PACKAGE_PLAY: &str = "package.play";
+    pub const PACKAGE_DIFF: &str = "package.diff";
     // The Problems panel (docs/editor/studio-redesign.md; api/problems.rs).
     pub const PROBLEMS_LIST: &str = "problems.list";
     // The preview switch (docs/editor/studio-redesign.md; api/preview.rs).
@@ -351,6 +355,8 @@ pub mod method {
     pub const BITMAP_SPRITE_ADD: &str = "bitmap.sprite.add";
     pub const BITMAP_SPRITE_SET: &str = "bitmap.sprite.set";
     pub const BITMAP_SPRITE_REMOVE: &str = "bitmap.sprite.remove";
+    pub const BITMAP_CHANNEL_COPY: &str = "bitmap.channel_copy";
+    pub const BITMAP_TURN: &str = "bitmap.turn";
 
     // Image generation (docs/editor/agent-api.md, "Generating images").
     pub const IMAGE_GENERATE: &str = "image.generate";

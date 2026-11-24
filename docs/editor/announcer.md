@@ -1,14 +1,14 @@
 # The Announcer: announcer lines from text, in Studio
 
 Status: Built, unproven against the live service (the tests use a fake voice).
-Code: `crates/apps/studio/src/voice.rs` (the `VoiceSource` trait, the request, the cache), `voice/fish.rs` (Fish Audio), `voice/key.rs` (the Keychain), `voice/audio.rs` (trim, normalise, WAV), `crates/apps/studio/src/app/announcer.rs` (the pipeline), `api/voice.rs` (`voice.*`), `ui/announcer.rs` (the window). Tests: `voice/tests.rs`, `api/voice/tests.rs`.
+Code: `crates/apps/studio/src/voice.rs` (the `VoiceSource` trait, the request, the cache), `voice/fish.rs` (Fish Audio), `voice/key.rs` (the Keychain), `voice/audio.rs` (trim, normalise, WAV), `crates/apps/studio/src/app/announcer.rs` (the pipeline), `api/voice.rs` (`voice.*`), `ui/voices.rs` and `ui/voices/lines.rs` (the voice document). Tests: `voice/tests.rs`, `api/voice/tests.rs`.
 Switch: none. The key is read from the Keychain; there is no environment variable.
 
 Studio makes an announcer line from text: a voice says it, Studio trims
 it, brings it to the loudness of the retail announcer, saves it in the
 format of our announcer clips (`art/announcer/README.md`), plays it and
-says how it sits against the retail lines. The Voices window (View >
-Voices, the announcer engine) and the agent API (`voice.say`, `voice.list`,
+says how it sits against the retail lines. The announcer's voice document (the Browser's **Voices** kind, or Go to
+anything; the announcer engine) and the agent API (`voice.say`, `voice.list`,
 `voice.commit`, in [agent-api.md](agent-api.md)) go through the same `App`
 methods. The same pipeline says a game character's lines with a local
 clone (`Engine::Clone`, `voice.clone.say`); that engine, its dataset and

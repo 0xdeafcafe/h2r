@@ -54,6 +54,8 @@
 
 /// Pure resolved-draw shader inputs for transactional native recording.
 pub mod resolved;
+mod hud;
+pub use hud::overlay_vertices;
 
 use std::collections::HashMap;
 
@@ -645,7 +647,8 @@ fn view_dim(d: TextureDim) -> wgpu::TextureViewDimension {
     }
 }
 
-fn alpha_func(f: CompareFunc) -> AlphaFunc {
+/// The pixel translator's comparison for the device alpha-test state.
+pub fn alpha_func(f: CompareFunc) -> AlphaFunc {
     match f {
         CompareFunc::Never => AlphaFunc::Never,
         CompareFunc::Less => AlphaFunc::Less,
@@ -676,14 +679,44 @@ pub fn guest_def(
     texture_modes: u32,
     final_latch: bool,
 ) -> PixelShaderDef {
-    let mut words = *psdef;
-    words[..57].copy_from_slice(combiner_state);
-    words[54] = texture_modes;
-    // Straight from the words: the judge builds one per draw on the
-    // guest's thread.
+    let words = combiner_words(psdef, combiner_state, texture_modes);
     let mut def = PixelShaderDef::from_words(&words);
     def.explicit_final = final_latch;
     def
+}
+
+fn combiner_words(psdef: &[u32; 60], states: &[u32; 57], modes: u32) -> [u32; 60] {
+    let mut words = *psdef;
+    words[..57].copy_from_slice(states);
+    words[54] = modes;
+    words
+}
+
+/// Register combiners and their constants at this draw, suitable for
+/// carrying in a scene overlay without retaining the device or the draw.
+pub fn overlay_shader_words(draw: &ResolvedDraw) -> Option<[u32; 60]> {
+    static TABLE: std::sync::LazyLock<RenderStateTable> =
+        std::sync::LazyLock::new(RenderStateTable::default);
+    if polygon_stipple(&TABLE, draw) { return None; }
+    let words = combiner_words(
+        draw.shader.pixel_shader.as_deref()?,
+        &draw.shader.combiner_state,
+        draw.raw.render[slot::PS_TEXTURE_MODES as usize],
+    );
+    overlay_final(words, draw.shader.final_combiner_latch, draw.state.render.fog_enable,
+        raw(&TABLE, draw, rs::SPECULARENABLE) != 0)
+}
+
+fn overlay_final(mut words: [u32; 60], latch: bool, fog: bool, specular: bool) -> Option<[u32; 60]> {
+    if words[8] == 0 && words[9] == 0 {
+        // An explicitly programmed zero final needs the latch to distinguish
+        // it from an absent final. The overlay carries only the 60 words.
+        if latch {
+            return None;
+        }
+        (words[8], words[9]) = psh::d3d_default_final_combiner(fog, specular);
+    }
+    Some(words)
 }
 
 /// The fog coordinate of pre-transformed (`XYZRHW`) vertices: what the
@@ -1932,6 +1965,26 @@ fn translate(key: &ProgramKey) -> Result<Translation, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn overlay_reads_live_registers_and_keeps_definition_mappings() {
+        let stored = std::array::from_fn(|i| 2000 + i as u32);
+        let live = std::array::from_fn(|i| 5000 + i as u32);
+        let words = super::combiner_words(&stored, &live, 73);
+        assert_eq!(words[..54], live[..54]);
+        assert_eq!(words[54], 73);
+        assert_eq!(words[55..57], live[55..]);
+        assert_eq!(words[57..], stored[57..]);
+        assert_eq!(super::overlay_final(words, true, false, false), Some(words));
+    }
+
+    #[test]
+    fn overlay_final_observes_the_bind_time_latch() {
+        let words = [0; 60];
+        assert!(super::overlay_final(words, true, false, false).is_none());
+        let defaulted = super::overlay_final(words, false, false, false).unwrap();
+        assert_eq!((defaulted[8], defaulted[9]), shaders::psh::d3d_default_final_combiner(false, false));
+    }
+
     #[test]
     fn a_map_change_scopes_its_own_programs_but_the_boot_menu_keeps_the_startup_set() {
         use super::next_scope;

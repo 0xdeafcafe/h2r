@@ -20,6 +20,8 @@ mod image_gen_tests;
 mod markers_tests;
 mod script_variants_tests;
 mod assets_tests;
+mod links_tests;
+mod mods_tests;
 mod packages_tests;
 mod edit_target_tests;
 mod problems_tests;
@@ -185,10 +187,24 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
                 json!({"block": "starting_locations", "index": 1}),
             );
         }
-        m::ASSET_LIST | m::ASSET_THUMB | m::ASSET_COPY => {
+        m::ASSET_LIST | m::ASSET_THUMB | m::ASSET_COPY | m::ASSET_LINKS => {
             // An invented tags tree of two maps and a package `kit-test`.
             assets_tests::tree(&app.tags_root());
             assets_tests::package(&t.path("data/packages/kit-test"));
+        }
+        m::ASSET_FORK | m::ASSET_REVERT => {
+            // The invented tree and package `kit-test`, whose edit item
+            // sets the rifle for every map; a revert has a fork to take out.
+            assets_tests::tree(&app.tags_root());
+            assets_tests::package(&t.path("data/packages/kit-test"));
+            if name == m::ASSET_REVERT {
+                call(
+                    api,
+                    app,
+                    m::ASSET_FORK,
+                    json!({"tag": "weap:objects\\weapons\\rifle", "map": "example", "package": "kit-test"}),
+                );
+            }
         }
         n if n.starts_with("package.") => {
             // The invented package `kit-test`, and the file its example adds.
@@ -250,7 +266,41 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             // template's one pass in layer 5 reads.
             let map = t.path("shader.map");
             std::fs::write(&map, shader_tests::material_map(fixture::LAYERED_LAYER)).unwrap();
-            c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+            call(
+                api,
+                app,
+                m::SOURCE_OPEN,
+                json!({"path": map.display().to_string()}),
+            );
+            // A push sends a draft and a revert removes what one sent: the
+            // linked program is the draft, pushed to a directory of the test's.
+            if matches!(name, m::SHADER_PUSH | m::SHADER_REVERT) {
+                let r = call(
+                    api,
+                    app,
+                    m::SHADER_OVERRIDE,
+                    json!({"tag": shader_tests::SHADER}),
+                );
+                let base = r["base"].as_str().expect("the pass links").to_owned();
+                call(
+                    api,
+                    app,
+                    m::SHADER_OVERRIDE,
+                    json!({"tag": shader_tests::SHADER, "text": base}),
+                );
+            }
+            if name == m::SHADER_REVERT {
+                call(
+                    api,
+                    app,
+                    m::SHADER_PUSH,
+                    json!({
+                        "tag": shader_tests::SHADER,
+                        "program": "00abcdef01234567",
+                        "dir": t.path("out/overrides").display().to_string(),
+                    }),
+                );
+            }
         }
         m::TAG_COLOURS => {
             // A map whose weapon tag has an invented colour field of
@@ -372,7 +422,9 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         | m::BITMAP_SPRITES
         | m::BITMAP_SPRITE_ADD
         | m::BITMAP_SPRITE_SET
-        | m::BITMAP_SPRITE_REMOVE => {
+        | m::BITMAP_SPRITE_REMOVE
+        | m::BITMAP_CHANNEL_COPY
+        | m::BITMAP_TURN => {
             // The invented textured map: its floor bitmap is 4 by 4,
             // one `A8R8G8B8` colour.
             let map = t.path("textured.map");
@@ -580,19 +632,45 @@ fn ui_palette_lists_and_runs_fixture_maps_tags_and_placements() {
     let map = t.path("blaster.map");
     std::fs::write(&map, fixture::fixture()).unwrap();
     app.dispatch(Action::OpenSource(map));
+    // The tag rows are asset.list's: a tree whose one tag is the blaster
+    // weapon the fixture map also holds, in a manifest under the open
+    // map's name, so the row opens on the map that is open.
+    use ::tags::repo::store::Manifest;
+    use ::tags::repo::{TagKey, TagRepo};
+    let key = TagKey::new(map::FourCC(*b"weap"), r"objects\test\blaster");
+    TagRepo::create(app.tags_root())
+        .unwrap()
+        .put_manifest(
+            &Manifest {
+                map: "blaster".into(),
+                name: "blaster".into(),
+                tags: vec![(key, None)],
+                ..Default::default()
+            },
+            b"header",
+        )
+        .unwrap();
     let mut api = Api::new();
 
     let list = call(&mut api, &mut app, m::UI_PALETTE, json!({"query":"blast"}));
     let entries = list["entries"].as_array().unwrap();
     let kinds: Vec<_> = entries.iter().map(|e| e["kind"].as_str().unwrap()).collect();
     assert_eq!(kinds, ["map", "tag", "placement", "placement"]);
-    assert_eq!(list["totals"], json!({"map":1, "tag":1, "placement":2, "command":0}));
+    assert_eq!(
+        list["totals"],
+        json!({"map":1, "tag":1, "package":0, "item":0, "placement":2, "command":0})
+    );
     assert_eq!(entries[0]["label"], "blaster");
-    assert_eq!(entries[1]["label"], "objects\\test\\blaster");
+    // The tag row: the file name as its label, the path in its detail.
+    assert_eq!(entries[1]["label"], "blaster");
+    assert_eq!(entries[1]["detail"], "weap · objects\\test\\blaster");
     assert_eq!(entries[2]["label"], "0: blaster");
 
     let filtered = call(&mut api, &mut app, m::UI_PALETTE, json!({"query":"WEAP bla"}));
-    assert_eq!(filtered["totals"], json!({"map":0, "tag":1, "placement":2, "command":0}));
+    assert_eq!(
+        filtered["totals"],
+        json!({"map":0, "tag":1, "package":0, "item":0, "placement":2, "command":0})
+    );
     let result = call(
         &mut api, &mut app, m::UI_PALETTE, json!({"query":"blast", "run":1}),
     );

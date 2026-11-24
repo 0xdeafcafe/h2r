@@ -9,7 +9,7 @@ use rules::builtin::{Registry, package_sources};
 use rules::fake::FakeSpawns;
 use rules::ir::OptionValue;
 use rules::labels::Class;
-use rules::scenario::{self, RunResult, Scenario, ScenarioEvent, ScenarioLabel, ScenarioTick};
+use rules::scenario::{self, RunResult, Scenario, ScenarioEvent, ScenarioLabel, ScenarioPick, ScenarioTick};
 use rules::vm::Arg;
 
 const SIEGE_ATTACKERS_WIN: &str = include_str!("scenarios/siege_attackers_win.json");
@@ -378,6 +378,338 @@ fn siege_with_no_flag_stand_wins_at_the_last_site() {
     assert_eq!(calls(&r, "end_round").len(), 1);
     assert_eq!(r.game.players[&0].score, 1);
     assert_eq!(r.game.players[&1].score, 0);
+}
+
+/// The phase's clock reads on the HUD: `koth.phase`, the third widget,
+/// set to the seconds left, once for each second that passes.
+#[test]
+fn siege_shows_the_phase_clock_a_second_at_a_time() {
+    let (ir, _) = siege(&[]);
+    let s: Scenario = serde_json::from_str(SIEGE_ATTACKERS_WIN).unwrap();
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    let phase: Vec<i32> = calls(&r, "hud_value")
+        .into_iter()
+        .filter_map(|(_, a)| match a {
+            [Arg::Int(2), Arg::Int(left)] => Some(*left),
+            _ => None,
+        })
+        .collect();
+    assert!((179..=180).contains(&phase[0]), "{phase:?}");
+    // A phase runs 180 s and the first takes 15: the clock counts down a
+    // second at a time through them, then the next phase starts again from
+    // the full clock.
+    assert!(phase.windows(2).take(14).all(|w| w[1] == w[0] - 1), "{phase:?}");
+    assert!(phase.contains(&170), "{phase:?}");
+    assert!(phase.iter().filter(|&&n| n == 180).count() >= 2, "each phase's clock starts full");
+    let shown: Vec<bool> = calls(&r, "hud_show")
+        .into_iter()
+        .filter_map(|(_, a)| match a {
+            [Arg::Int(2), Arg::Bool(on)] => Some(*on),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(shown.first(), Some(&false), "hidden at the round's start");
+    assert_eq!(shown.last(), Some(&false), "and when the round ends");
+    assert!(shown.contains(&true));
+}
+
+/// A scenario with one attacker (unit 100) walking into the first site at
+/// `tick`, over 60 s phases and 10 s captures.
+fn overtime_scenario(options: Option<u32>, enter: usize, ticks: usize) -> Scenario {
+    let mut s: Scenario = serde_json::from_str(SIEGE_ATTACKERS_WIN).unwrap();
+    s.options = options;
+    s.ticks = vec![ScenarioTick::default(); ticks];
+    s.ticks[0].events = vec![ScenarioEvent::Spawn(0), ScenarioEvent::Spawn(1)];
+    s.ticks[enter].events = vec![ScenarioEvent::Enter { zone: 10, object: 100 }];
+    s
+}
+
+fn overtime_options() -> (rules::Ir, Option<u32>) {
+    siege(&[("phase_time", 60), ("capture_time", 10)])
+}
+
+const OVERTIME: &str = "Overtime: the attackers are still on the objective";
+
+/// An attacker midway through a capture when the clock runs out holds the
+/// phase open, and finishing the capture takes the site.
+#[test]
+fn siege_runs_a_phase_on_while_an_attacker_is_capturing() {
+    let (ir, options) = overtime_options();
+    let s = overtime_scenario(options, 1700, 2100);
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    assert_eq!(
+        lines(&r),
+        [
+            "Sites to take: 2. Then the defenders' flag",
+            OVERTIME,
+            "The attackers took a site",
+        ]
+    );
+    assert_eq!(r.ended_at, None, "the round goes on");
+    assert_eq!(calls(&r, "end_round").len(), 0);
+    // The overtime banner, said once.
+    let banners: Vec<&[Arg]> = calls(&r, "hud_text")
+        .into_iter()
+        .filter(|(_, a)| a[1] == Arg::Text("OVERTIME".into()))
+        .map(|(_, a)| a)
+        .collect();
+    assert_eq!(banners.len(), 1);
+}
+
+/// The attackers leaving the objective in overtime ends the phase for the
+/// defenders at once.
+#[test]
+fn siege_ends_an_overtime_when_the_attackers_leave() {
+    let (ir, options) = overtime_options();
+    let mut s = overtime_scenario(options, 1700, 2100);
+    s.ticks[1900].events = vec![ScenarioEvent::Leave { zone: 10, object: 100 }];
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    assert_eq!(
+        lines(&r),
+        [
+            "Sites to take: 2. Then the defenders' flag",
+            OVERTIME,
+            "The defenders held",
+        ]
+    );
+    let end = r.ended_at.expect("the defenders win");
+    assert!((1899..=1903).contains(&end), "{end}");
+    assert_eq!(r.game.players[&1].score, 1);
+}
+
+/// A contested objective stops the capture but not the overtime, which is
+/// bounded: it runs its own clock out and the defenders win.
+#[test]
+fn siege_bounds_an_overtime_the_defenders_contest() {
+    let (ir, options) = overtime_options();
+    let mut s = overtime_scenario(options, 1700, 2800);
+    s.ticks[1700].events.push(ScenarioEvent::Enter { zone: 10, object: 101 });
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    assert_eq!(
+        lines(&r),
+        [
+            "Sites to take: 2. Then the defenders' flag",
+            OVERTIME,
+            "The defenders held",
+        ]
+    );
+    // 60 s of phase, then the 30 s overtime.
+    let end = r.ended_at.expect("the overtime runs out");
+    assert!((2697..=2703).contains(&end), "{end}");
+}
+
+/// No attacker on the objective at the clock: no overtime, as before.
+#[test]
+fn siege_gives_no_overtime_to_an_empty_objective() {
+    let (ir, options) = overtime_options();
+    let s = overtime_scenario(options, 2000, 2100);
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(lines(&r), ["Sites to take: 2. Then the defenders' flag", "The defenders held"]);
+    assert!((1795..=1801).contains(&r.ended_at.unwrap()));
+}
+
+/// A barrier the author numbered for a phase stands open from that phase:
+/// the first at the round's start, the second as the first site falls, the
+/// third as the second does. Each opens once, through `set_open`.
+#[test]
+fn siege_opens_the_map_with_the_phases() {
+    let (ir, _) = siege(&[]);
+    let mut s: Scenario = serde_json::from_str(SIEGE_ATTACKERS_WIN).unwrap();
+    for (object, number) in [(40, 0), (41, 1), (42, 2)] {
+        s.map.as_mut().unwrap().push(ScenarioLabel {
+            number: Some(number),
+            class: Some(Class::Object),
+            ..ScenarioLabel::new("siege_barrier", object)
+        });
+    }
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    // Each barrier is put below its closed place once, in phase order; the
+    // fake reads every place as the origin.
+    let drop = -(64 << 16);
+    assert_eq!(
+        r.game.steps,
+        [
+            (40, [0, 0, drop], [0; 3]),
+            (41, [0, 0, drop], [0; 3]),
+            (42, [0, 0, drop], [0; 3]),
+        ]
+    );
+    // The opens come with the phases, at the round's start and as each
+    // site falls (a barrier already open is asked again with no effect).
+    let first_open = |o: u32| {
+        calls(&r, "set_open")
+            .into_iter()
+            .filter(|(_, a)| a[0] == Arg::Object(Some(o)) && a[1] == Arg::Bool(true))
+            .map(|(t, _)| t)
+            .min()
+            .unwrap()
+    };
+    assert_eq!(first_open(40), 0);
+    assert!((449..=453).contains(&first_open(41)), "{}", first_open(41));
+    assert!((899..=905).contains(&first_open(42)), "{}", first_open(42));
+}
+
+/// A map with no barriers plays as before, and a barrier numbered past
+/// the last phase never opens.
+#[test]
+fn siege_leaves_a_barrier_for_a_later_phase_closed() {
+    let (ir, _) = siege(&[]);
+    let mut s: Scenario = serde_json::from_str(SIEGE_ATTACKERS_WIN).unwrap();
+    s.map.as_mut().unwrap().push(ScenarioLabel {
+        number: Some(3),
+        class: Some(Class::Object),
+        ..ScenarioLabel::new("siege_barrier", 43)
+    });
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    assert!(r.game.steps.is_empty(), "{:?}", r.game.steps);
+    assert!(calls(&r, "set_open").iter().all(|(_, a)| a[1] == Arg::Bool(false)));
+}
+
+/// The lobby's loadout set picks each side's weapons: close quarters or
+/// long range, from the multiplayer list.
+#[test]
+fn siege_gives_each_side_the_loadout_set_the_lobby_chose() {
+    let weapons = |kit: &str| {
+        let ir = rules::compile(script("siege")).unwrap();
+        let bits = ir
+            .pack_options(&[("kits".to_string(), OptionValue::Name(kit.into()))])
+            .unwrap();
+        let mut s: Scenario = serde_json::from_str(SIEGE_ATTACKERS_WIN).unwrap();
+        s.options = Some(bits);
+        s.ticks.truncate(2);
+        let r = scenario::run(ir, &s).unwrap();
+        assert_eq!(r.script_error, None);
+        calls(&r, "set_loadout").into_iter().map(|(_, a)| a.to_vec()).collect::<Vec<_>>()
+    };
+    let kit = |slot: u8, a: &str, b: &str| vec![Arg::Player(Some(slot)), tag(a), tag(b)];
+    assert_eq!(
+        weapons("close"),
+        [
+            kit(0, "objects/weapons/rifle/shotgun/shotgun", MAGNUM),
+            kit(1, "objects/weapons/rifle/brute_plasma_rifle/brute_plasma_rifle", "objects/weapons/pistol/needler/needler"),
+        ]
+    );
+    assert_eq!(
+        weapons("ranged"),
+        [
+            kit(0, "objects/weapons/rifle/sniper_rifle/sniper_rifle", "objects/weapons/rifle/smg/smg"),
+            kit(1, "objects/weapons/rifle/beam_rifle/beam_rifle", "objects/weapons/pistol/plasma_pistol/plasma_pistol"),
+        ]
+    );
+    assert_eq!(
+        weapons("standard"),
+        [kit(0, BR, MAGNUM), kit(1, CARBINE, PLASMA_RIFLE)]
+    );
+}
+
+/// Siege offers a loadout picker at the round's start: one picker of three
+/// rows, in the order the lobby's `kits` option names the sets.
+#[test]
+fn siege_offers_a_loadout_picker_at_the_rounds_start() {
+    let (ir, _) = siege(&[]);
+    let mut s: Scenario = serde_json::from_str(SIEGE_ATTACKERS_WIN).unwrap();
+    s.ticks.truncate(2);
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    let text = |t: &str| Arg::Text(t.into());
+    assert_eq!(calls(&r, "offer_pick"), [(0, &[Arg::Int(0), text("LOADOUT")][..])]);
+    let rows: Vec<_> = calls(&r, "pick_row")
+        .into_iter()
+        .map(|(tick, a)| (tick, a.to_vec()))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (0, vec![Arg::Int(0), text("STANDARD")]),
+            (0, vec![Arg::Int(0), text("CLOSE QUARTERS")]),
+            (0, vec![Arg::Int(0), text("LONG RANGE")]),
+        ]
+    );
+}
+
+/// A player's pick takes the lobby's set's place from its next spawn; a
+/// player who picked nothing keeps the lobby's.
+#[test]
+fn siege_gives_a_player_the_loadout_it_picked() {
+    // Spawned at the start on the lobby's set; player 0 picks long range
+    // and player 1 picks standard (over a lobby of close quarters) after
+    // tick 1, and both spawn again at tick 3.
+    let respawned = |lobby: &str, picks: Vec<ScenarioPick>| {
+        let ir = rules::compile(script("siege")).unwrap();
+        let bits = ir
+            .pack_options(&[("kits".to_string(), OptionValue::Name(lobby.into()))])
+            .unwrap();
+        let mut s: Scenario = serde_json::from_str(SIEGE_ATTACKERS_WIN).unwrap();
+        s.options = Some(bits);
+        s.ticks.truncate(5);
+        s.ticks[1].picks = picks;
+        s.ticks[3].events = vec![ScenarioEvent::Spawn(0), ScenarioEvent::Spawn(1)];
+        let r = scenario::run(ir, &s).unwrap();
+        assert_eq!(r.script_error, None);
+        assert!(r.refused_picks.is_empty());
+        calls(&r, "set_loadout")
+            .into_iter()
+            .map(|(t, a)| (t, a.to_vec()))
+            .collect::<Vec<_>>()
+    };
+    let kit = |slot: u8, a: &str, b: &str| vec![Arg::Player(Some(slot)), tag(a), tag(b)];
+    let sniper = ("objects/weapons/rifle/sniper_rifle/sniper_rifle", "objects/weapons/rifle/smg/smg");
+    let picks = vec![
+        ScenarioPick { player: 0, slot: 0, row: 2 },
+        ScenarioPick { player: 1, slot: 0, row: 0 },
+    ];
+    let got = respawned("close", picks);
+    let shotgun = "objects/weapons/rifle/shotgun/shotgun";
+    let brute = "objects/weapons/rifle/brute_plasma_rifle/brute_plasma_rifle";
+    let needler = "objects/weapons/pistol/needler/needler";
+    assert_eq!(
+        got,
+        [
+            // The lobby's close quarters at the first spawn.
+            (0, kit(0, shotgun, MAGNUM)),
+            (0, kit(1, brute, needler)),
+            // Then each player's own pick.
+            (3, kit(0, sniper.0, sniper.1)),
+            (3, kit(1, CARBINE, PLASMA_RIFLE)),
+        ]
+    );
+    // Nobody picks: the lobby's set again at the second spawn.
+    let got = respawned("ranged", vec![]);
+    assert_eq!(got[0].1, got[2].1);
+    assert_eq!(got[1].1, got[3].1);
+}
+
+/// A pick that is not one of the three rows is refused, and the player
+/// keeps the lobby's set.
+#[test]
+fn siege_refuses_a_pick_past_its_rows() {
+    let (ir, _) = siege(&[]);
+    let mut s: Scenario = serde_json::from_str(SIEGE_ATTACKERS_WIN).unwrap();
+    s.ticks.truncate(5);
+    s.ticks[1].picks = vec![ScenarioPick { player: 0, slot: 0, row: 3 }];
+    s.ticks[3].events = vec![ScenarioEvent::Spawn(0)];
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.refused_picks, [(1, ScenarioPick { player: 0, slot: 0, row: 3 })]);
+    let loadouts = calls(&r, "set_loadout");
+    assert_eq!(loadouts.len(), 3);
+    assert_eq!(loadouts[2].1, loadouts[0].1, "the lobby's standard set");
+}
+
+/// Siege's options fit the record's 32 bits and its worst tick fits the
+/// op budget with the HUD, overtime and barriers it carries.
+#[test]
+fn siege_fits_its_option_bits_and_tick_budget() {
+    let ir = rules::compile(script("siege")).unwrap();
+    let bits: u32 = ir.options.iter().map(rules::ir::OptionDef::bits).sum();
+    assert!(bits <= rules::ir::OPTION_BITS, "{bits} bits");
+    let report = rules::verify::verify(&ir).unwrap();
+    assert!(report.fits(), "worst tick {}", report.worst_tick);
 }
 
 /// A thing the author placed: a flag with a label, a team and a number.

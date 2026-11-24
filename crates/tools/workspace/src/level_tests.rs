@@ -18,7 +18,7 @@ use crate::{BuiltMap, Loaded, Report, Served, build_map};
 const D: &str = "invented\\dmg\\d";
 
 /// A fresh folder under the system's temp dir.
-fn temp(name: &str) -> PathBuf {
+pub(crate) fn temp(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("workspace-as4-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
@@ -37,7 +37,7 @@ fn adds(id: &str, path: &str, maps: &str) -> Loaded {
 
 /// The invented map with one raw resource: its bytes and the resource's
 /// (offset, length).
-fn base_with_raw() -> (Vec<u8>, (u64, u64)) {
+pub(crate) fn base_with_raw() -> (Vec<u8>, (u64, u64)) {
     let mut set = base();
     set.raw.push(RawBlob {
         bytes: (0..0x1800u32).map(|i| (i * 7 + i / 251) as u8).collect(),
@@ -50,7 +50,7 @@ fn base_with_raw() -> (Vec<u8>, (u64, u64)) {
 /// Keep `bytes` in the store at `root` as the map `name`, as the extractor
 /// does: the raw resource at `raw` an extent of its own file, everything
 /// else the skeleton.
-fn put_store(root: &Path, name: &str, bytes: &[u8], raw: (u64, u64)) -> String {
+pub(crate) fn put_store(root: &Path, name: &str, bytes: &[u8], raw: (u64, u64)) -> String {
     let mut repo = TagRepo::create(root).unwrap();
     let len = bytes.len() as u64;
     let (o, l) = raw;
@@ -65,16 +65,16 @@ fn put_store(root: &Path, name: &str, bytes: &[u8], raw: (u64, u64)) -> String {
     h
 }
 
-struct Store {
-    root: PathBuf,
-    tags: PathBuf,
-    images: PathBuf,
-    bytes: Vec<u8>,
-    raw: (u64, u64),
-    raw_hash: String,
+pub(crate) struct Store {
+    pub(crate) root: PathBuf,
+    pub(crate) tags: PathBuf,
+    pub(crate) images: PathBuf,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) raw: (u64, u64),
+    pub(crate) raw_hash: String,
 }
 
-fn store(name: &str) -> Store {
+pub(crate) fn store(name: &str) -> Store {
     let root = temp(name);
     let tags = root.join("tags");
     let (bytes, raw) = base_with_raw();
@@ -95,7 +95,7 @@ impl Drop for Store {
     }
 }
 
-fn read_image(s: &Store, id: &LevelId) -> Vec<u8> {
+pub(crate) fn read_image(s: &Store, id: &LevelId) -> Vec<u8> {
     let (_, mut f) = open_image(&s.images, &s.tags.join("raw"), id).expect("the image opens");
     let mut out = Vec::new();
     f.read_to_end(&mut out).unwrap();

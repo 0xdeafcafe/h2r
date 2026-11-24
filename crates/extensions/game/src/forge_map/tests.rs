@@ -148,7 +148,7 @@ fn opening_binds_the_selected_files_hash_palette_and_budget() {
         scenario: 1,
         free_slots: 17,
     };
-    let opened = decode(&bytes, &loaded).unwrap();
+    let opened = decode(&bytes, &loaded, None).unwrap();
     assert_eq!(opened.tags, [item.0]);
     assert_eq!(opened.session.palette().len(), 1);
     assert_eq!(opened.session.palette()[0].tag.path, "test\\shelf");
@@ -164,9 +164,14 @@ fn opening_binds_the_selected_files_hash_palette_and_budget() {
     assert_eq!(opened.session.document().base.sha256, Sha256::of(&bytes));
     assert_eq!(opened.session.budget(), 17);
     assert_eq!(opened.walls.len(), 1);
+    assert!(!opened.session.has_kit(), "an original map has no kit");
+    // A kit package's base is the installed map it was built on.
+    let installed = Sha256::of(b"the installed map");
+    let kit = decode(&bytes, &loaded, Some(installed)).unwrap();
+    assert_eq!(kit.session.document().base.sha256, installed);
     loaded.checksum ^= 1;
     assert!(
-        decode(&bytes, &loaded)
+        decode(&bytes, &loaded, None)
             .err()
             .unwrap()
             .to_string()

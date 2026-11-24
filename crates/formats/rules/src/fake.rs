@@ -108,9 +108,16 @@ pub struct FakeGame {
     /// The steps the VM's movers made, in order: the object, where it was
     /// put and its velocity.
     pub steps: Vec<(u32, [i32; 3], [i32; 3])>,
+    /// The steps the world refused (a place past [`FakeGame::world_limit`]):
+    /// the object and the place. Each is in [`FakeGame::steps`] and
+    /// [`FakeGame::refused`] too, and changed nothing; `scenario::step` tells the VM
+    /// at the next tick's start, as the host does at its boundary
+    /// (`Vm::put_refused`).
+    pub refused_steps: Vec<(u32, [i32; 3])>,
     /// The players whose biped is off the ground, crouched, or primed:
     /// what `airborne`, `crouching` and `primed` read. A `touchdown`
-    /// lands the player (takes it out of `airborne`).
+    /// lands the player (takes it out of `airborne`), and a `launch` puts
+    /// it back.
     pub airborne: BTreeSet<u8>,
     pub crouching: BTreeSet<u8>,
     pub primed: BTreeSet<u8>,
@@ -682,9 +689,12 @@ impl FakeGame {
                     self.inside.remove(&(p, zone));
                 }
             }
-            // A landing ends the flight.
+            // A landing ends the flight; a launch starts one.
             Input::Touchdown { player, .. } => {
                 self.airborne.remove(&player);
+            }
+            Input::Launch { player, .. } => {
+                self.airborne.insert(player);
             }
             // The shield takes the damage first, then the body.
             Input::Damage { object, amount, .. } => {
@@ -770,6 +780,14 @@ impl Game for FakeGame {
 
     fn teams(&self) -> Vec<u8> {
         self.teams.iter().rev().copied().collect()
+    }
+
+    fn players_of_team(&self, team: u8) -> Vec<u8> {
+        self.players
+            .iter()
+            .filter(|(_, p)| p.team == team)
+            .map(|(&slot, _)| slot)
+            .collect()
     }
 
     fn labelled(&self, label: &str) -> Vec<Placed> {
@@ -1019,8 +1037,9 @@ impl Game for FakeGame {
             }
             return;
         }
-        if matches!(call.entry.id, id::MOVE_TO | id::STOP) {
-            // The VM keeps the mover; the steps arrive as `step_object`.
+        if matches!(call.entry.id, id::MOVE_TO | id::STOP | id::SET_OPEN) {
+            // The VM keeps the mover or the open barrier; the steps arrive as
+            // `step_object`.
             return;
         }
         if call.entry.id == id::SET_BODY
@@ -1068,6 +1087,11 @@ impl Game for FakeGame {
 
     fn step_object(&mut self, object: u32, at: [i32; 3], velocity: [i32; 3]) {
         self.steps.push((object, at, velocity));
+        if self.world_limit.is_some_and(|w| at.iter().any(|c| c.unsigned_abs() > w.unsigned_abs())) {
+            self.refused.push(("put_object", format!("{at:?} is outside the world")));
+            self.refused_steps.push((object, at));
+            return;
+        }
         self.object_positions.insert(object, at);
         self.object_velocities.insert(object, velocity);
     }

@@ -187,8 +187,8 @@ A script whose options do not fit is refused.
   (`base`) shows the score under the game's `points` label and the clock.
   Each type's objective parts are a HUD kit HUD of the kit's own: `ctf`
   (both flags' places), `assault` (the bomb, with its fuse once armed),
-  `oddball` (the holder and your held time), `koth` (the hill's state and
-  held time) and `territories` (those held of the total), each with a
+  `oddball` (the holder and your held time), `koth` (the hill's state, held
+  time and a phase's seconds left) and `territories` (those held of the total), each with a
   navpoint over the objective and a banner for the moment it changes hands.
   The HUDs are YAML (`content/modes/huds/`, `BUILTIN` in
   `hud-kit-core/src/data.rs`); `hud-kit-core/src/views/objective.rs` holds
@@ -301,6 +301,7 @@ game variant's (the script and its options), not the map's.
 | `ff_cover` | a firing position | a marker with a facing | sampled from the sectors |
 | `siege_site` | a site the attackers take | a territory flag, as `siege.rules` reads now | the map's own territories |
 | `siege_goal`, `siege_line` | the final stand; where each side spawns per phase | a flag stand; markers with a phase and a team | the map's CTF stands |
+| `siege_barrier` | an object that stands open from a phase on (`set_open`) | scenery, a crate, a machine or a vehicle labelled from the AI and objectives page, numbered by its phase | none: the map plays as before |
 
 A script declares the labels it reads, so the tools offer exactly those
 for the game type the author is building for, and a map with none of a

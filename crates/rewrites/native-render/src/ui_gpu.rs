@@ -4,6 +4,10 @@
 //! [`OverlayGpu`] draws the scene's overlay stage (`frame_scene::overlay`,
 //! planned by [`crate::overlay`]) with named programs for the fixed
 //! combiners and the blur, over no guest state at all.
+mod hud_shader;
+pub use hud_shader::{glyph_colour, hud_shader_supported};
+use hud_shader::{HudPipeline, HudPipelineKey};
+
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -311,6 +315,20 @@ fn fs_blur(i: Out) -> @location(0) vec4<f32> {
 pub trait OverlayTextures {
     /// A 2D, filterable view of `texture`; `None` when it is not resident.
     fn view(&self, texture: frame_scene::OverlayTexture) -> Option<&wgpu::TextureView>;
+
+    fn stage(&self, _stage: usize, texture: frame_scene::OverlayTexture) -> Option<&wgpu::TextureView> {
+        self.view(texture)
+    }
+
+    fn stage_sampler(&self, _stage: usize, texture: frame_scene::OverlayTexture) -> Option<&wgpu::Sampler> {
+        self.sampler(texture)
+    }
+
+    /// The device sampler for a live HUD texture, including its mip and
+    /// addressing state. Atlas pages and offline sprites use the material.
+    fn sampler(&self, _texture: frame_scene::OverlayTexture) -> Option<&wgpu::Sampler> {
+        None
+    }
 }
 
 /// No textures: only flat items draw.
@@ -341,11 +359,59 @@ pub fn overlay_blend(blend: frame_scene::OverlayBlend) -> Result<Option<wgpu::Bl
     Ok(Some(wgpu::BlendState { color: component, alpha: component }))
 }
 
+/// An item's blend constant (`OverlayItem::blend_constant`) as the pass
+/// sets it.
+pub fn blend_color([r, g, b, a]: [f32; 4]) -> wgpu::Color {
+    wgpu::Color { r: f64::from(r), g: f64::from(g), b: f64::from(b), a: f64::from(a) }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct OverlayPipelineKey {
+    color_write: u32,
     combiner: frame_scene::Combiner,
     blend: frame_scene::OverlayBlend,
     format: wgpu::TextureFormat,
+}
+
+fn overlay_pipeline(
+    device: &wgpu::Device,
+    module: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    fragment: &str,
+    color_write: u32,
+    format: wgpu::TextureFormat,
+    blend: Option<wgpu::BlendState>,
+) -> wgpu::RenderPipeline {
+    let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x2, 4 => Float32x2, 5 => Float32x2];
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("native overlay"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[Some(wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<crate::overlay::PlanVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &attributes,
+            })],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module,
+            entry_point: Some(fragment),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend,
+                write_mask: gfx::translate::color_writes(gfx::state::ColorWriteMask::from_xbox(color_write)),
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 /// The overlay stage's programs, pipelines and samplers on one device.
@@ -356,6 +422,7 @@ pub struct OverlayGpu {
     pipelines: HashMap<OverlayPipelineKey, wgpu::RenderPipeline>,
     samplers: HashMap<frame_scene::Sampler, wgpu::Sampler>,
     white: wgpu::TextureView,
+    hud: HashMap<HudPipelineKey, Option<HudPipeline>>,
     blur_module: wgpu::ShaderModule,
     blur_group_layout: wgpu::BindGroupLayout,
     blur_layout: wgpu::PipelineLayout,
@@ -474,6 +541,7 @@ impl OverlayGpu {
             pipelines: HashMap::new(),
             samplers: HashMap::new(),
             white: white.create_view(&Default::default()),
+            hud: HashMap::new(),
             blur_module,
             blur_group_layout,
             blur_layout,
@@ -588,37 +656,7 @@ impl OverlayGpu {
                 frame_scene::Combiner::TextureAlpha => "fs_texture_alpha",
                 frame_scene::Combiner::TextureGrey => "fs_texture_grey",
             };
-            let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4];
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("native overlay"),
-                layout: Some(layout),
-                vertex: wgpu::VertexState {
-                    module,
-                    entry_point: Some("vs_main"),
-                    compilation_options: Default::default(),
-                    buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<crate::overlay::PlanVertex>() as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &attributes,
-                    })],
-                },
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module,
-                    entry_point: Some(fragment),
-                    compilation_options: Default::default(),
-                    // The screen-quad begin writes colour without alpha.
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: key.format,
-                        blend,
-                        write_mask: wgpu::ColorWrites::COLOR,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
+            overlay_pipeline(device, module, layout, fragment, key.color_write, key.format, blend)
         }).clone()
     }
 
@@ -662,49 +700,84 @@ impl OverlayGpu {
         let mut stats = plan.stats;
         struct Draw {
             batch: usize,
+            stages: Option<wgpu::BindGroup>,
             pipeline: wgpu::RenderPipeline,
             group: wgpu::BindGroup,
             scissor: crate::overlay::Scissor,
             indices: std::ops::Range<u32>,
+            blend_constant: wgpu::Color,
         }
         let mut draws = Vec::with_capacity(plan.batches.len());
         for (index, batch) in plan.batches.iter().enumerate() {
-            let frame_scene::Program::Fixed(combiner) = batch.material.program else {
-                stats.refused_material += batch.items;
-                continue;
-            };
             let Ok(blend) = overlay_blend(batch.material.blend) else {
                 stats.refused_texture += batch.items;
                 continue;
             };
-            let view = if batch.material.sampled() {
-                match textures.view(batch.material.texture) {
-                    Some(view) if view.texture().dimension() == wgpu::TextureDimension::D2
-                        && filterable(view.texture().format(), device.features()) => view.clone(),
-                    _ => {
+            let sampler = self.sampler(device, batch.material.sampler);
+            let (pipeline, group, stages) = match batch.material.program {
+                frame_scene::Program::Fixed(combiner) => {
+                    let view = if batch.material.sampled() {
+                        match textures.view(batch.material.texture) {
+                            Some(view) if view.texture().dimension() == wgpu::TextureDimension::D2
+                                && filterable(view.texture().format(), device.features()) => view.clone(),
+                            _ => {
+                                stats.refused_texture += batch.items;
+                                continue;
+                            }
+                        }
+                    } else {
+                        self.white.clone()
+                    };
+                    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("native overlay stage"),
+                        layout: &self.group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+                        ],
+                    });
+                    let key = OverlayPipelineKey { combiner, color_write: batch.color_write, blend: batch.material.blend, format };
+                    (self.pipeline(device, key, blend), group, None)
+                }
+                frame_scene::Program::Shader { .. } => {
+                    let Some(words) = batch.shader_words.as_deref().and_then(|s| s.try_into().ok()) else {
+                        stats.refused_material += batch.items;
+                        continue;
+                    };
+                    let mut def = shaders::psh::PixelShaderDef::from_words(words);
+                    let (c0, c1) = def.embedded_constants();
+                    // Fill changes update the uniforms and reuse the same pipeline.
+                    def.constant0 = [0; 8];
+                    def.constant1 = [0; 8];
+                    def.final_constant0 = 0;
+                    def.final_constant1 = 0;
+                    let key = HudPipelineKey {
+                        def, format, glyph: batch.glyph_cache, color_write: batch.color_write,
+                        blend: batch.material.blend, alpha_kill: batch.alpha_kill,
+                        alpha_func: batch.alpha_test.map(|(func, _)| func),
+                    };
+                    let entry = self.hud.entry(key);
+                    let Some(program) = entry.or_insert_with_key(|key| HudPipeline::new(device, key, blend)) else {
+                        stats.refused_material += batch.items;
+                        continue;
+                    };
+                    let mut pixel = PixelUniforms { c0, c1, ..Default::default() };
+                    if let Some((_, reference)) = batch.alpha_test {
+                        pixel.alpha_ref[0] = f32::from(reference);
+                    }
+                    let Some((group, stages)) = program.bind(device, textures, batch, &sampler, &pixel) else {
                         stats.refused_texture += batch.items;
                         continue;
-                    }
+                    };
+                    (program.pipeline.clone(), group, Some(stages))
                 }
-            } else {
-                self.white.clone()
             };
-            let sampler = self.sampler(device, batch.material.sampler);
-            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("native overlay stage"),
-                layout: &self.group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
-                ],
-            });
-            let key = OverlayPipelineKey { combiner, blend: batch.material.blend, format };
             draws.push(Draw {
                 batch: index,
-                pipeline: self.pipeline(device, key, blend),
-                group,
+                pipeline, group, stages,
                 scissor: batch.scissor,
                 indices: batch.first_index..batch.first_index + batch.index_count,
+                blend_constant: blend_color(batch.blend_constant),
             });
         }
         stats.batches = draws.len() as u32;
@@ -738,6 +811,7 @@ impl OverlayGpu {
             position: [x, y],
             uv: [u, v],
             color: [1.0; 4],
+            extra_uv: [[0.0; 2]; 3],
         };
         plan_vertices.extend([
             corner(-1.0, 1.0, 0.0, 0.0),
@@ -748,6 +822,7 @@ impl OverlayGpu {
         plan_indices.extend(crate::overlay::QUAD_INDICES.map(|i| base + i));
         let write_back = (!blurs.is_empty()).then(|| {
             let key = OverlayPipelineKey {
+                color_write: frame_scene::OverlayItem::RGB_WRITE,
                 combiner: frame_scene::Combiner::Texture,
                 blend: frame_scene::OverlayBlend::Off,
                 format,
@@ -801,7 +876,9 @@ impl OverlayGpu {
                         while let Some(d) = draws.get(*next).filter(|d| d.batch < until) {
                             pass.set_pipeline(&d.pipeline);
                             pass.set_bind_group(0, &d.group, &[]);
+                            if let Some(stages) = &d.stages { pass.set_bind_group(1, stages, &[]); }
                             pass.set_scissor_rect(d.scissor.x, d.scissor.y, d.scissor.width, d.scissor.height);
+                            pass.set_blend_constant(d.blend_constant);
                             pass.draw_indexed(d.indices.clone(), 0, 0..1);
                             *next += 1;
                         }
@@ -975,7 +1052,7 @@ impl OverlayResidency {
 impl OverlayTextures for OverlayResidency {
     fn view(&self, texture: frame_scene::OverlayTexture) -> Option<&wgpu::TextureView> {
         match texture {
-            frame_scene::OverlayTexture::None => None,
+            frame_scene::OverlayTexture::None | frame_scene::OverlayTexture::Bound { .. } => None,
             frame_scene::OverlayTexture::Bitmap { tag, image } => self.images.get(&(tag, image)),
             frame_scene::OverlayTexture::Glyphs { font } => self.glyphs.get(&font).map(|(_, _, view)| view),
         }
@@ -1100,13 +1177,23 @@ mod tests {
         overlay.push_fill(ClipRect::full([2, 2]), [0.0, 0.0, 2.0, 2.0], [1.0, 0.0, 0.0, 1.0], OverlayBlend::Off).unwrap();
         overlay.push_quad(sprite(7), ClipRect { x: 1, y: 0, width: 1, height: 2 }, whole).unwrap();
         overlay.push_quad(sprite(8), ClipRect::full([2, 2]), whole).unwrap();
+        // Synthetic template: the final combiner copies final c0 into RGB.
+        let mut words = [0u32; 60];
+        words[8] = shaders::psh::bits::inputs(0, 0, 0, shaders::psh::bits::REG_C0);
+        words[9] = shaders::psh::bits::final_efg(0, 0, shaders::psh::bits::REG_C0 | shaders::psh::bits::CHAN_ALPHA, 0);
+        words[43] = 0x83_37_42_a8;
+        let material = OverlayMaterial { program: Program::Shader { tag: 9 }, texture: OverlayTexture::None, ..sprite(7) };
+        let item = overlay.push_quad(material, ClipRect { x: 0, y: 1, width: 1, height: 1 }, whole).unwrap();
+        overlay.items[item as usize].shader_words = Some(words.into());
+        overlay.items[item as usize].color_write = gfx::state::ColorWriteMask::ALL.xbox_value();
+
         let plan = crate::overlay::OverlayPlan::new(&overlay, [4, 4], &crate::overlay::NoGlyphs);
-        assert_eq!(plan.batches.len(), 3);
+        assert_eq!(plan.batches.len(), 4);
         let mut gpu = OverlayGpu::new(&ctx.device, &ctx.queue);
         let view = target.create_view(&Default::default());
         let (encoded, stats) = gpu.prepare(&ctx.device, &view, &plan, &textures).unwrap();
-        assert_eq!((stats.batches, stats.refused_texture, stats.items), (2, 1, 3));
-        assert_eq!((encoded.draws, encoded.passes), (2, 1));
+        assert_eq!((stats.batches, stats.refused_texture, stats.items), (3, 1, 4));
+        assert_eq!((encoded.draws, encoded.passes), (3, 1));
         let mut encoder = ctx.device.create_command_encoder(&Default::default());
         (encoded.commands)(&mut encoder);
         ctx.queue.submit([encoder.finish()]);
@@ -1116,12 +1203,15 @@ mod tests {
             [pixels[i], pixels[i + 1], pixels[i + 2]]
         };
         for y in 0..4 {
-            assert_eq!(rgb(0, y), [255, 0, 0], "row {y}: the fill");
-            assert_eq!(rgb(1, y), [255, 0, 0], "row {y}: left of the clip");
+            let left = if y < 2 { [255, 0, 0] } else { [0x37, 0x42, 0xa8] };
+            assert_eq!(rgb(0, y), left);
+            assert_eq!(rgb(1, y), left);
             assert_eq!(rgb(2, y), [0, 255, 0], "row {y}: the sprite");
             assert_eq!(rgb(3, y), [0, 255, 0], "row {y}: the sprite");
         }
-        assert!(pixels.chunks(4).all(|p| p[3] == 0), "colour writes leave alpha alone");
+        for (i, p) in pixels.chunks_exact(4).enumerate() {
+            assert_eq!(p[3], if i / 4 >= 2 && i % 4 < 2 { 0x83 } else { 0 });
+        }
         let wrong = crate::overlay::OverlayPlan::new(&overlay, [8, 8], &crate::overlay::NoGlyphs);
         assert!(gpu.prepare(&ctx.device, &view, &wrong, &textures).is_err(), "the plan is for another size");
     }
@@ -1196,7 +1286,8 @@ mod tests {
         overlay.push_text_run(red, ClipRect::full([2, 2]), [1.0, 0.0, 0.0, 1.0], &added).unwrap();
         let plan = OverlayPlan::new(&overlay, [4, 4], &assets.glyphs);
         let (encoded, stats) = gpu.prepare(&ctx.device, &view, &plan, &residency).unwrap();
-        assert_eq!((stats.batches, stats.refused_glyph), (3, 0));
+        // The two text runs share their material, clip and indices: one batch.
+        assert_eq!((stats.batches, stats.refused_glyph), (2, 0));
         let mut encoder = ctx.device.create_command_encoder(&Default::default());
         (encoded.commands)(&mut encoder);
         ctx.queue.submit([encoder.finish()]);

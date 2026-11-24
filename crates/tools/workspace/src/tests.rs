@@ -412,6 +412,7 @@ fn a_kind_with_no_builder_stops_by_name() {
             Kind::MapPatch,
             Kind::Convert,
             Kind::Kit,
+            Kind::TagDelta,
         ]
     );
 }

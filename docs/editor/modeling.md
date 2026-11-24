@@ -33,6 +33,7 @@ Code: `crates/tools/mesh-edit`, `crates/tools/geometry-edit`,
 `crates/apps/studio/src/api/geometry.rs`,
 `crates/apps/studio/src/ui/modeling.rs`.
 Tests: `crates/tools/mesh-edit/tests`,
+`crates/tools/bitmap-edit/tests`,
 `crates/tools/geometry-edit/src/{session,write,grow,level_collision}_tests.rs`,
 `crates/tools/collision-build/src/{build,coll,merge}_tests.rs`,
 `crates/formats/tags/src/geometry_write_tests.rs`, the `append*raw*`
@@ -353,7 +354,8 @@ Status: built (`crates/tools/bitmap-edit`, `crates/platform/assets/src/{encode,w
 `tags::bitmap_grow`, `app/textures.rs`, `ui/textures.rs`, `api/bitmaps.rs`).
 Edits live in the
 editor until a save, which encodes what changed and writes it with the map.
-The live preview is the canvas; the 3D viewport does not show them yet. P8
+The canvas shows every edit as it is made; the 3D viewport and
+`view.snapshot` draw a painted base map again ("Preview" below). P8
 pages open read-only.
 
 - **Decode.** `assets::bitmap::decode_image` gives every level, face and
@@ -364,12 +366,32 @@ pages open read-only.
   `assets::FORMAT_TABLE`).
 - **Canvas.** One RGBA8 layer per face or slice at mip 0, in tiles of
   256, each an `Arc`, so an undo snapshot shares every tile a stroke did
-  not touch. Tools: brush and eraser (size, hardness, opacity, spacing;
-  round stamp, linear-light blend), line, fill (flood by tolerance, or
-  the whole selection), rectangle selection, eyedropper, clone, levels
-  (black, white, gamma per channel), hue, saturation and value, invert,
-  channel copy (alpha is often a mask, so channels paint apart), flip
-  and rotate by quarter turns. **Import** replaces an image, a face or a
+  not touch. Every tool writes only the ticked channels (alpha is often a
+  mask, so channels paint apart). Tools:
+  - Brush and eraser (size, hardness, opacity, spacing; round stamp,
+    linear-light blend). A stroke through points stamps at every point
+    and at most the spacing apart between them, the last on the next
+    point, so two points are a line; in the window **Shift+click** draws
+    that line from the last point painted (`BitmapAction::Line`).
+  - Clone. A source point on the layer (in the window a click of the
+    clone tool, Alt+click to move it; a cross marks it). Each stamp
+    copies the pixels under it at the offset from the source to the
+    stroke's first point, in whole pixels, read from the layer as it was
+    when the stroke began, so a stroke never copies what it has painted;
+    past the source's edge nothing is painted. `bitmap.paint` takes the
+    source as `source` and reads another image, face or slice with
+    `from`. A clone stroke copies: it never erases.
+  - Fill (flood by tolerance, or the whole selection), rectangle
+    selection, eyedropper.
+  - Levels (black, white, gamma), hue, saturation and value, invert;
+    **Copy channel** (`bitmap.channel_copy`) writes a channel, or the
+    Rec. 601 luma of the colour (what an `L8` image stores), into the
+    ticked channels; **flip** and the **quarter turns** (`bitmap.turn`)
+    move the pixels of the selection or the whole layer without
+    resampling, and a quarter turn needs a square.
+
+  A stroke, a turn or a copy that changes no pixel is no undo step and
+  marks no tile edited. **Import** replaces an image, a face or a
   selection from a PNG, resampled (box down, bilinear up) when sizes
   differ; **Export** writes a PNG outside any Git checkout, as every
   render does ([agent-api.md](agent-api.md), "Documents").
@@ -431,6 +453,16 @@ pages open read-only.
   than the edit) is the session's `bitmap_refusal`: the save fails by
   name before it writes. A map that cannot take a new raw block
   (`raw_append_refusal`) refuses a shared-cache copy or a reshape.
+- **Format choice** (`assets::write::suggest_format`). The format a picture
+  saves in is the one it has when that holds the painted alpha (DXT1 and
+  A1R5G5B5 hold opaque and cut-out pictures, the colour-only formats opaque
+  ones, the rest anything), else DXT1 for an opaque or cut-out picture and
+  DXT5 for a blended one, or X8R8G8B8 and A8R8G8B8 when a side is not a power
+  of two (no DXT, no mips). `A8`, `Y8`, `AY8` and `A8Y8` are masks and greys
+  on purpose and are kept. The answer is always a format the encoder writes
+  and `reshaped` takes at that size. Resize's **Auto** button and `"auto"` as
+  `bitmap.reshape`'s `format` ask for it (`App::suggest_bitmap_format`,
+  looking at the layers resampled to the size asked for).
 - **Adding images and sequences.** `bitmap.image.add` (the inspector's
   **Add image**) appends an image after the bitmap's last: its `0x74`
   record copied from an existing 2D image (`from`, default 0) at a size
@@ -474,18 +506,23 @@ pages open read-only.
   stored images' in-place pixel patches still patch their own raw
   blocks, and every other tag keeps its bytes. References to the tag
   are by datum and do not move.
-- **Preview.** The viewport's texture for the bitmap
-  (`scenario_edit::scene`) is updated from the canvas after each stamp
-  (`Queue::write_texture` on the touched rectangle, mips at the stroke's
-  end), at full size for the bitmap being painted, so a stroke shows on
-  every surface and model using it. **Paint in the viewport** casts the
-  cursor's ray (`Session::surface_hit`, or the edit mesh), takes the
-  hit's texture coordinate and stamps there; it paints through the same
-  canvas.
+- **Preview.** The canvas shows each edit as it is made, from the
+  bitmap's dirty rectangles. The 3D viewport and `view.snapshot` draw a
+  painted base map again: an open bitmap whose pixels changed is
+  uploaded as the base map of every material of the level that took it
+  ([realtime-edits.md](realtime-edits.md), R15;
+  `crates/apps/studio/src/viewport/paint.rs`). The placed objects'
+  models and textures, a shader's other stage images and a material's
+  constants do not follow in the viewport yet. **Paint in the viewport**
+  (casting the cursor's ray, `Session::surface_hit` or the edit mesh, and
+  stamping at the hit's texture coordinate through the same canvas) is
+  design, not built.
 - **Deferred.** Layers, text, packing sprites onto a sheet, a UV
   editor, the low-detail copy (header `+0x158`), which stays as the
-  source's (and so goes stale when the picture changes), and a
-  LOD 1 or 2 where the map stored no LOD 0.
+  source's (and so goes stale when the picture changes), a
+  LOD 1 or 2 where the map stored no LOD 0, a mip picker and channel view
+  toggles for the canvas (it shows mip 0, every channel) and the outliner
+  listing bitmaps by the selected object's shaders.
 
 ## The tools in the window
 
@@ -516,10 +553,16 @@ pages open read-only.
   A budget line in the status bar: vertices of 65,535, the block's
   bytes against its in-place size, the write class, the map's headroom
   under its file and tag-memory bounds.
-- **Textures** (`ToolKind::Textures`). The outliner lists bitmaps (by
-  shader use of the selected object when one is selected), the centre is
-  the 2D canvas with zoom, pan, channel toggles, mip and face pickers,
-  the inspector the tool's settings and the image's format and budget,
+- **Textures** (`ToolKind::Textures`). The outliner lists the map's
+  bitmaps, filtered by a substring, an edited one marked `*` (listing
+  them by shader use of the selected object is design). The centre is
+  the 2D canvas at mip 0: the tool buttons, zoom (the slider or
+  Ctrl+wheel), the scrollbars and a drag with the middle button to pan,
+  and image, face and slice pickers. The inspector has the tool's
+  settings with the channels it writes and the clone tool's source, the
+  selection, **Adjust** (invert, levels, hue, saturation and value,
+  **Copy channel** and a button each for the flip and the quarter turns,
+  over the selection or the whole layer), the image's format and budget,
   a **Resize** control for the image's size and format, **Add image**
   and **New image, generated...** after it, and the bitmap's sequences
   with **Add a sequence** for the selected image ("Adding images and
@@ -536,8 +579,10 @@ pages open read-only.
   frame. *Editor* keeps W, E, R and X as the scenario tool has them and
   puts every op on the toolbar and the context menu. The camera is
   unchanged (right button to fly; Alt+left drag orbits, and a click
-  without a drag is the loop select). Textures: B brush, E eraser, G
-  fill, I eyedropper, `[` and `]` size, X swap colours.
+  without a drag is the loop select). Textures: B brush, E eraser, S
+  clone, G fill, I eyedropper, `[` and `]` size, X swap colours;
+  Shift+click a line from the last point, Alt+click moves the clone
+  source, the middle button pans.
 
 ## Interfaces
 
@@ -613,9 +658,11 @@ namespace (player models and looks) is separate and unchanged.
 | `bitmap.sprites {bitmap, sequence?}`, `bitmap.sprite.add`, `.set`, `.remove` | a sequence's sprites (image, bounds, registration) and their edits, one undo step each |
 | `bitmap.spans {bitmap, image?, face?, slice?, rect?}` | the stored bytes the edits change, by LOD and offset; nothing is written |
 | `bitmap.export {bitmap, image?, mip?, out}`, `bitmap.import {bitmap, image?, path, rect?}` | PNG out and in |
-| `bitmap.paint {bitmap, image?, points, color, size, hardness?, opacity?, erase?}` | one stroke through pixel points, one undo step |
+| `bitmap.paint {bitmap, image?, points, color, size, hardness?, opacity?, spacing?, erase?, source?, from?}` | one stroke through pixel points, a stamp at each and at most the spacing apart between them, so two points are a line; with `source` a clone stroke that reads the layer `from` (the one painted without it). One undo step |
 | `bitmap.fill {bitmap, image?, at \| rect, color, tolerance?}` | |
 | `bitmap.adjust {bitmap, image?, levels? \| hsv? \| invert?, rect?, channels?}` | |
+| `bitmap.channel_copy {bitmap, image?, from, to, rect?}` | a channel (`r`, `g`, `b`, `a`, `luma`) into the channels `to` (letters of rgba) over `rect`, the whole layer by default |
+| `bitmap.turn {bitmap, image?, by, rect?}` | `flip_horizontal`, `flip_vertical`, `quarter`, `half` or `three_quarters` of `rect`, the whole layer by default, in place |
 | `bitmap.pixels {bitmap, image?, rect}` | RGBA of a small rectangle, for tests |
 
 Each op answers with the element counts after it, the ids it made and
@@ -701,9 +748,9 @@ more. Every acceptance test is on invented data; a disc test is
 | 1 | **Mesh kernel**: arenas, `validate`, selection, `Transform`, `ExtrudeFaces`, `ExtrudeEdges`, `Duplicate`, `Delete`, `Merge`, `Weld`, `Fill`, `Flip`, `RecalcNormals`, `Triangulate`, `MeshOp`, import and stable export | L | nothing | every op's count row on a cube, a plane grid, an open shell and a three-face edge; `validate` after every op of a seeded random op sequence; an unedited import exports the source; replaying the op log reproduces the mesh; an op that fails changes nothing |
 | 2 | **Preview, no write**: `geometry-edit` targets for a `mode` section and a cluster; `tags::geometry_write::encode_section`; the Modeling tool (object and edit mode, overlays, gizmo, keymap); `geometry.*` and `mesh.*`; `doc` `geometry` with undo | L | 1 | `decode(encode(x)) == x` and `encode(decode(block)) == block` on invented sections of both layouts; every method's example runs (`every_method_in_methods_has_a_test`); the window's path and the API's make the same mesh; undo and redo through `doc.*`; a save with geometry edits is refused with a named reason; headless snapshot differs after an extrude |
 | 3 | **Write, in place**: `MapEditor::patch_raw`; moved vertices for clusters, instance definitions and `mode` sections; compression box growth; part and cluster bounds; instance placements and markers; stale marks | M | 2 | the saved map differs from the source only in the moved vertices' bytes, the bounds and the checksum; it reads back to the edited positions within quantisation; a box growth rewrites every section at its own size; a count change is refused; package round trip (PPF3) |
-| 4 | **Loop tools**: `SelectLoop`, `SelectRing`, `LoopCut`, `TrisToQuads`, `Dissolve`; then `Bevel` and `Inset` | M | 1 | counts on a quad cylinder (closed ring) and a strip (open ring); loops stop at a pole and at a three-face edge; interpolated coordinates and weights (sum 255); join then triangulate restores an untouched pair |
-| 5 | **Textures, paint and export**: `bitmap-edit` canvas, tools, PNG in and out, the Textures tool, live preview, `bitmap.*` without write | M | nothing | stamp and fill pixel tests; an undo snapshot shares untouched tiles; import resample; `bitmap.pixels` after `bitmap.paint`; export refused in a Git checkout |
-| 6 | **Textures, write**: `assets::encode` (linear, swizzled, DXT1/3/5, mips, cube faces), same-size in place; then new size or format and shared-cache copies through `MapEditor::append_raw` | M | 5; 3 for `patch_raw` | the encode tests above; a painted corner changes only its blocks and their mips in the saved map; a resized image reads back through `assets::bitmap::decode_image` with every level |
+| 4 | **Loop tools**: `SelectLoop`, `SelectRing`, `LoopCut`, `TrisToQuads`, `Dissolve`; then `Bevel` and `Inset` | M | 1 | built in `crates/tools/mesh-edit` with synthetic fixtures: counts on a quad cylinder and open strip; loops stop at poles and three-face edges; cut attributes interpolate, including weights normalised to 255; joining and triangulating restores an untouched pair |
+| 5 | **Textures, paint and export**: `bitmap-edit` canvas, tools, PNG in and out, the Textures tool, live preview, `bitmap.*` without write | M | nothing | built in `crates/tools/bitmap-edit` and Studio on invented bitmaps: stamp, line, clone, fill, channel copy and turn pixel tests (`tests/stamp_fill.rs`); an undo snapshot shares untouched tiles and an edit that changed nothing is no step (`tests/history.rs`); import resample (`tests/import.rs`); `bitmap.pixels` after `bitmap.paint` with a line and a clone stroke, and the window's own line and clone drag (`api/tests/bitmaps_tests.rs`); export refused in a Git checkout |
+| 6 | **Textures, write**: `assets::encode` (linear, swizzled, DXT1/3/5, mips, cube faces), same-size in place; then new size or format and shared-cache copies through `MapEditor::append_raw` | M | 5; 3 for `patch_raw` | built in `assets::{encode, write}` and Studio (`encode_tests.rs`, `api/tests/bitmaps_tests.rs`): the encode tests above, every colour format reshaped and read back at every level, the last mip the picture's mean, sizes a format refuses named, a cube reshaped, `suggest_format`; a painted corner changes only its blocks and their mips in the saved map; a resized image reads back through `assets::bitmap::decode_image` with every level |
 | 7 | **Write, grown raw**: `MapEditor::append_raw`; topology changes for clusters and `mode` sections; section counts, visibility MOPP and table, frames; LOD repointing; behind Allow unverified geometry writes | L | 3 | the saved map validates and reads back to the exported mesh; `check_visibility` passes on every written cluster; the old block is unreferenced; a bucket-lit section and a sky strip are refused; the metadata still ends the file and a scenario block can still grow; package round trip (BPS) with a changed geometry hash |
 | 8 | **Collision compiler and `coll`**: `collision-build`; `coll` BSPs as meshes; BSP physics slots; **From render** | L | 1 | `Bsp::validate`; centroid and reference-side walks; random segments against brute force on a box, a concave room, a ramp and a two-sided sheet; limits refused; a saved `coll` reads back and its slot code emits each surface once |
 | 9 | **`phmo` primitives** in place | S | 2 | a radius, a box and a hull vertex change only their bytes; a hull made concave is refused |
@@ -725,6 +772,12 @@ Slices 4 and 5 need nothing from 2 and 3 and can run beside them.
   the new chain still holds) and how the mips of a reshaped image are
   filtered (box, in the stored encoding) are choices, not measured
   against the engine's own tools.
+- **Design**: a stroke through points stamps at every point and at most
+  the spacing apart between them, so two points are a line that reaches
+  its second point; a clone stroke reads its source as it was when the
+  stroke began (so it never smears) at a whole-pixel offset; a flip or a
+  turn moves pixels without resampling, so a quarter turn needs a square;
+  an edit that changes no pixel is no undo step.
 - **V** ([bitmaps.md](../formats/bitmaps.md)): each of an image's three
   LOD pointers is a whole chain; DXT chains stop at one block; LOD sizes
   round up to 128 bytes; linear rows pad to 64.

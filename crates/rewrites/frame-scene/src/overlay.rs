@@ -99,6 +99,8 @@ pub enum OverlayTexture {
     None,
     /// A bitmap tag's image.
     Bitmap { tag: u32, image: u16 },
+    /// The texture header bound when this shader draw was recorded.
+    Bound { header: u32 },
     /// The renderer's glyph atlas of engine font `font`.
     Glyphs { font: u16 },
 }
@@ -145,7 +147,10 @@ impl OverlayMaterial {
 
     /// Whether the program samples [`Self::texture`].
     pub fn sampled(&self) -> bool {
-        !matches!(self.program, Program::Fixed(Combiner::Flat))
+        match self.program {
+            Program::Fixed(c) => c != Combiner::Flat,
+            Program::Shader { .. } => self.texture != OverlayTexture::None,
+        }
     }
 }
 
@@ -235,9 +240,33 @@ pub struct OverlayItem {
     /// A text run's colour (RGBA, 0 to 1); a quad's and a fill's are on
     /// their corners.
     pub color: [f32; 4],
+    /// Xbox per-channel framebuffer write mask.
+    pub color_write: u32,
+    /// Texture stages sampling the live glyph cache.
+    pub glyph_cache: u8,
+    /// Alpha compare and reference (0 through 255) when enabled.
+    pub alpha_test: Option<(u32, u8)>,
+    /// Stages discarding samples whose alpha is zero.
+    pub alpha_kill: u8,
+    /// The four shader inputs for this HUD widget.
+    pub hud_input: [f32; 4],
+    /// The blend's constant colour (RGBA, 0 to 1) for a blend whose factors
+    /// name it (the fade's modes 3 to 6); zero otherwise, as D3D's default.
+    pub blend_constant: [f32; 4],
+    /// Runtime pixel shader definition, including its evaluated combiner constants.
+    pub shader_words: Option<Box<[u32]>>,
+    /// Bindings of the tag shader, in Xbox texture stage order.
+    pub shader_stages: [Option<OverlayTexture>; 4],
+    /// Each corner's four normalized texture coordinates after the vertex program.
+    pub stage_uv: Option<Box<[[[f32; 2]; 4]; 4]>>,
     /// A blur's index in [`Overlay::blurs`] or a model view's in
     /// [`Overlay::model_views`]; `None` for the other kinds.
     pub detail: Option<u32>,
+}
+
+impl OverlayItem {
+    /// The screen-quad batch's blue, green and red write channels.
+    pub const RGB_WRITE: u32 = 1 | (1 << 8) | (1 << 16);
 }
 
 /// Why the list refused an item. The list is left as it was.
@@ -364,6 +393,15 @@ impl Overlay {
             vertices: v..v + 4,
             glyphs: g..g,
             color: [1.0; 4],
+            alpha_test: None,
+            alpha_kill: 0,
+            glyph_cache: 0,
+            color_write: OverlayItem::RGB_WRITE,
+            hud_input: [0.0; 4],
+            blend_constant: [0.0; 4],
+            shader_words: None,
+            shader_stages: [None; 4],
+            stage_uv: None,
             detail: None,
         });
         Ok(self.items.len() as u32 - 1)
@@ -420,6 +458,15 @@ impl Overlay {
             vertices: v..v,
             glyphs: g..g + glyphs.len() as u32,
             color,
+            alpha_test: None,
+            alpha_kill: 0,
+            glyph_cache: 0,
+            color_write: OverlayItem::RGB_WRITE,
+            hud_input: [0.0; 4],
+            blend_constant: [0.0; 4],
+            shader_words: None,
+            shader_stages: [None; 4],
+            stage_uv: None,
             detail: None,
         });
         Ok(self.items.len() as u32 - 1)
@@ -436,6 +483,15 @@ impl Overlay {
             vertices: v..v,
             glyphs: g..g,
             color: [1.0; 4],
+            alpha_test: None,
+            alpha_kill: 0,
+            glyph_cache: 0,
+            color_write: OverlayItem::RGB_WRITE,
+            hud_input: [0.0; 4],
+            blend_constant: [0.0; 4],
+            shader_words: None,
+            shader_stages: [None; 4],
+            stage_uv: None,
             detail: Some(detail),
         });
         self.items.len() as u32 - 1
@@ -591,18 +647,10 @@ pub(crate) fn summary_words(overlay: &Overlay, word: &mut dyn FnMut(u32)) {
             word(x.to_bits());
         }
     }
-    for item in &overlay.items {
-        word(item.kind as u32);
-        let m = &item.material;
-        match m.program {
-            Program::Fixed(c) => word(c as u32),
-            Program::Shader { tag } => {
-                word(0x100);
-                word(tag);
-            }
-        }
-        match m.texture {
+    fn texture_word(word: &mut dyn FnMut(u32), texture: OverlayTexture) {
+        match texture {
             OverlayTexture::None => word(0),
+            OverlayTexture::Bound { header } => { word(3); word(header); }
             OverlayTexture::Bitmap { tag, image } => {
                 word(1);
                 word(tag);
@@ -611,6 +659,38 @@ pub(crate) fn summary_words(overlay: &Overlay, word: &mut dyn FnMut(u32)) {
             OverlayTexture::Glyphs { font } => {
                 word(2);
                 word(u32::from(font));
+            }
+        }
+    }
+    for item in &overlay.items {
+        word(item.kind as u32);
+        let m = &item.material;
+        match m.program {
+            Program::Fixed(c) => word(c as u32),
+            Program::Shader { tag } => {
+                word(0x100);
+                word(tag);
+                word(item.glyph_cache.into());
+                word(item.alpha_kill.into());
+                if let Some((func, value)) = item.alpha_test {
+                    word(func);
+                    word(value.into());
+                }
+                floats(word, &item.hud_input);
+                if let Some(words) = &item.shader_words {
+                    for &w in words.iter() { word(w); }
+                }
+            }
+        }
+        texture_word(word, m.texture);
+        if matches!(m.program, Program::Shader { .. }) {
+            for stage in item.shader_stages {
+                texture_word(word, stage.unwrap_or_default());
+            }
+            if let Some(all) = &item.stage_uv {
+                for corner in all.iter() {
+                    for uv in corner { floats(word, uv); }
+                }
             }
         }
         word(u32::from(m.sampler.wrap) | u32::from(m.sampler.point) << 1);
@@ -623,10 +703,16 @@ pub(crate) fn summary_words(overlay: &Overlay, word: &mut dyn FnMut(u32)) {
                 word(equation);
             }
         }
+        // Only a constant blend adds words, so other items hash as before.
+        if item.blend_constant != [0.0; 4] {
+            word(0x200);
+            floats(word, &item.blend_constant);
+        }
         let c = item.clip;
         for w in [c.x, c.y, c.width, c.height] {
             word(w);
         }
+        word(item.color_write);
         floats(&mut *word, &item.color);
         for v in overlay.vertices_of(item) {
             floats(&mut *word, &v.position);

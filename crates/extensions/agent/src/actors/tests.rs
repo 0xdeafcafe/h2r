@@ -17,6 +17,7 @@ fn host() -> Report {
                 keys: 2,
                 digests: 10,
                 records: 120,
+                shows: 4,
                 dropped: 3,
             },
             Peer {
@@ -45,6 +46,7 @@ fn host_reports_per_client_rates() {
             "keys": 2,
             "digests": 10,
             "records": 120,
+            "shows": 4,
             "dropped": 3,
         })
     );

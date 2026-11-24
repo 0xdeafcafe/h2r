@@ -54,6 +54,7 @@ pub const CAPABILITIES: &[Capability] = &[
     cap("player.weapons", "gives and takes weapons", false),
     cap("player.disguise", "hides or changes a player's body", false),
     cap("player.camera", "changes the camera", false),
+    cap("player.pick", "asks each player to pick from a short list before the round", false),
     cap("objects.create", "makes objects", false),
     cap("objects.delete", "removes objects", false),
     cap("objects.move", "moves objects", false),
@@ -346,6 +347,12 @@ pub mod id {
     pub const CROUCHING: u16 = 118;
     pub const PRIMED: u16 = 119;
     pub const SEES: u16 = 120;
+    pub const SET_OPEN: u16 = 121;
+    pub const MARK_PLAYER: u16 = 122;
+    pub const MARK_TEAM: u16 = 123;
+    pub const OFFER_PICK: u16 = 124;
+    pub const PICK_ROW: u16 = 125;
+    pub const PICKED: u16 = 126;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -640,24 +647,50 @@ pub const ENTRIES: &[Entry] = &[
     // traced at the next tick boundary through `Game::trace_sight`, and
     // answers from then on, false until its first trace.
     Entry { status: NotBuilt, ..vm(id::SEES, "sees", &[Object, Object], Bool) },
+    // `set_open(o, open)`: a barrier opened or closed. The VM keeps each
+    // open barrier's closed place (`vm::RulesExt::gates`, at most
+    // `vm::MAX_GATES`) and, when it opens one, steps it to the place
+    // `vm::GATE_DROP` below that, which is the engine's own
+    // `OBJECT_SET_TRANSFORM` put a `teleport` makes; closing steps it back.
+    // A barrier already in the state asked for does nothing. The host adds
+    // no call of its own.
+    act(id::SET_OPEN, "set_open", &[Object, Bool], Some("objects.move"), Now, Named),
+    // `mark(wp, at, p)` and `mark(wp, at, t)`: the waypoint's audience,
+    // the player's slot's bit or the bits of the team's seated players,
+    // resolved in the VM from the roster every machine holds
+    // (docs/game/rules-world-api.md, "HUD"). `mark(wp, at)` is every
+    // viewer; `mark(wp, at, all)` is spelled the same and is `mark`.
+    act(id::MARK_PLAYER, "mark_player", &[Int, Object, Player], Some("hud.waypoints"), Now, Named),
+    act(id::MARK_TEAM, "mark_team", &[Int, Object, Team], Some("hud.waypoints"), Now, Named),
+    // `offer_pick(n, title)`, `pick_row(n, label)`: a picker the host opens
+    // for each player at the round's start, and a row of it. The VM keeps
+    // the offers (`vm::RulesExt::picks`, at most `vm::MAX_PICKS` of at most
+    // `vm::MAX_PICK_ROWS` rows) and each player's pick (`vm::Vm::choose`,
+    // reported by the host); `picked(p, n)` reads the row, or -1. The host
+    // adds no call of its own: it reads the offers after the tick.
+    act(id::OFFER_PICK, "offer_pick", &[Int, Text], Some("player.pick"), Now, Named),
+    act(id::PICK_ROW, "pick_row", &[Int, Text], Some("player.pick"), Now, Named),
+    vm(id::PICKED, "picked", &[Player, Int], Int),
 ];
 
 /// The word `message(to, text)` takes for everyone.
 pub const EVERYONE: &str = "all";
 
 /// The name the language spells an entry with: `message` for each of the
-/// three forms of `message(to, text)`, its own name for the rest.
+/// three forms of `message(to, text)`, `mark` for each of the audience
+/// forms of `mark(wp, at, to)`, its own name for the rest.
 pub fn spelled(e: &Entry) -> &'static str {
     match e.id {
         id::MESSAGE_TEAM | id::MESSAGE_ALL => "message",
+        id::MARK_PLAYER | id::MARK_TEAM => "mark",
         _ => e.name,
     }
 }
 
 /// An entry a script names only through another's spelling: the team and
-/// everyone forms of `message`, and the `fmt_*` entries of its holes.
-/// Completion leaves it out, and calling it by its own name is an unknown
-/// function.
+/// everyone forms of `message`, the audience forms of `mark`, and the
+/// `fmt_*` entries of its holes. Completion leaves it out, and calling it
+/// by its own name is an unknown function.
 pub fn is_form(e: &Entry) -> bool {
     spelled(e) != e.name || Hole::of_entry(e.id).is_some()
 }
@@ -665,6 +698,11 @@ pub fn is_form(e: &Entry) -> bool {
 /// Whether `entry` is one of the three forms of `message(to, text)`.
 pub fn is_message(entry: u16) -> bool {
     matches!(entry, id::MESSAGE | id::MESSAGE_TEAM | id::MESSAGE_ALL)
+}
+
+/// Whether `entry` is one of the three forms of `mark(wp, at, to)`.
+pub fn is_mark(entry: u16) -> bool {
+    matches!(entry, id::MARK | id::MARK_PLAYER | id::MARK_TEAM)
 }
 
 /// The values one message shows at most.
@@ -1096,7 +1134,7 @@ mod tests {
 
     #[test]
     fn objects_in_motion_are_gated_by_objects_move() {
-        for name in ["teleport", "move_to", "stop"] {
+        for name in ["teleport", "move_to", "stop", "set_open"] {
             let e = entry_named(name).unwrap();
             assert_eq!(e.kind, Kind::Action, "{name}");
             assert_eq!(e.cap, Some("objects.move"), "{name}");
@@ -1104,6 +1142,8 @@ mod tests {
         }
         assert_eq!(entry_named("teleport").unwrap().order, Order::Queued);
         assert_eq!(entry_named("move_to").unwrap().order, Order::Now);
+        assert_eq!(entry_named("set_open").unwrap().order, Order::Now);
+        assert_eq!(entry(id::SET_OPEN, API_VERSION).unwrap().args, &[Object, Bool]);
         assert_eq!(entry(id::TELEPORT, API_VERSION).unwrap().args, &[Object, Fixed, Fixed, Fixed]);
         assert_eq!(entry(id::MOVE_TO, API_VERSION).unwrap().args, &[Object, Fixed, Fixed, Fixed, Int]);
         for name in ["object_pos", "object_vel"] {

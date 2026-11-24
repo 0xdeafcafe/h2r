@@ -1,13 +1,15 @@
 # Rules world API: Firefight and Superbounce as scripts
 
-Status: Design. `content/modes/rules/superbounce.rules` exists (the mode's switch, its options and bounce scoring); `firefight.rules` does not, and the sketches below wait on the slices of [rules-world-api.md](rules-world-api.md#implementation-plan).
-Code: `superbounce.rules` only. The plan names `content/modes/rules/firefight.rules` (new). Tests: `crates/formats/firefight/tests` and `crates/extensions/game/src/superbounce_chain_tests.rs`, the modes' own.
+Status: Design, with Superbounce's chain built. `content/modes/rules/superbounce.rules` keeps the medal chain's count and its scores on the host's physics events (`on launch`, `on grounded`); `firefight.rules` does not exist, and the Firefight sketch and the rest of the Superbounce sketch wait on the slices of [rules-world-api.md](rules-world-api.md#implementation-plan).
+Code: `superbounce.rules`, with `crates/extensions/game/src/superbounce_chain_twin.rs` (the script beside the Rust chain in every chain scenario). The plan names `content/modes/rules/firefight.rules` (new). Tests: `crates/formats/firefight/tests` and `crates/extensions/game/src/superbounce_chain_tests.rs`, the modes' own.
 Switch: none of its own; the `rules` feature of `H2_FEATURES` ([switches.md](../runtime/switches.md)).
 
 Firefight's game rules run as a generated script today
 ([firefight.md](firefight.md#the-director-as-a-rules-script)); what is
 engine-specific is its compiler and host, its HUD view and its entries.
-Superbounce's medal chain is engine code. Over the world API of
+Superbounce's landing judge and Bounced test are engine code, and its
+chain's count and scores are a script on the host's physics events.
+Over the world API of
 [rules-world-api.md](rules-world-api.md) each is a script like any
 other, written by hand over the generic entries. This page lists what
 each needs from that API and sketches each
@@ -28,7 +30,7 @@ matchmade hopper denies.
 | Mode | Engine-specific code | Entries only it uses |
 |---|---|---|
 | Firefight | the compiler that builds its IR and runs it (`crates/formats/firefight/src/script.rs`, `ScriptDirector`); the interface types (`src/director.rs`) and the kill-point math its tests check against (`src/scoring.rs`); the host and its log (`crates/extensions/game/src/firefight/host.rs`); the mode blob and HUD view (`firefight/hud.rs`); the sight pass | `ff_round`, `ff_wave`, `ff_skull`, `ff_lives`, `ff_score`, `ff_respawn`, `ff_finish`, `ff_target`, `ff_team_lives`, `ff_player_score`, `ff_team_finish`, `zone_seen`, `zone_distance`, `zone_team_distance`, `place_squad_at`; capability `firefight.director` |
-| Superbounce | the medal chain and its rule (`crates/extensions/game/src/superbounce_chain.rs`); the mode's HUD states and navpoint choice (`superbounce_mode.rs`, `superbounce_hud.rs`); the mode switch behind `hud.superbounce`, a capability that gates no entry | `on bounce`, `on bounced` |
+| Superbounce | the landing judge, the fall through a strip's floor and the Bounced test of the medal chain, and the medals the HUD and the records show (`crates/extensions/game/src/superbounce_chain.rs`); the mode's HUD states and navpoint choice (`superbounce_mode.rs`, `superbounce_hud.rs`); the mode switch behind `hud.superbounce`, a capability that gates no entry | `on launch`, `on grounded`, `on bounced` (and `on bounce`, which Bounce Hunt and Bounce Practice use) |
 
 ## Firefight
 
@@ -133,12 +135,24 @@ entries and `firefight.director` are deleted.
 
 | The mode needs | From the API |
 |---|---|
-| a landing, with its speeds | `on touchdown(p, down, up)` |
+| a landing, with its speeds | `on touchdown(p, down, up)` (**built**, from the host while the mode runs) |
+| a landing the host judged a bounce, its strip and its launch | `on launch(p, spot, speed)` (**built**) |
+| the end of a run of bounces | `on grounded(p)` (**built**) |
 | whether the player was primed the tick before | `p.primed`, kept in a player variable each tick |
 | whether the landing was on a strip | the scanner's strips as a built-in label (`label strip: zones = "sb_strip"`), a label source beside the netgame flags in `rules/census.rs`; `distance` |
-| chains and a fall out of the map | player variables, `on kill` |
+| chains and a fall out of the map | player variables, `on launch`, `on grounded`, `on bounced` (**built**: `superbounce.rules`) |
 | the priming pill, the next spot's navpoint | `hud_show`, `mark` |
 | medals | `medal` |
+
+The built script (`content/modes/rules/superbounce.rules`) keeps the
+chain on the host's verdicts: `on launch` adds one to the player's
+`chain` while `flying` and starts it at 1 otherwise, `on grounded` clears
+`flying`, and a launch over 16 world units a second is a Monster. Its
+counts and scores equal the Rust chain's on every tick of
+`superbounce_chain_tests.rs` (`superbounce_chain_twin.rs`). The sketch
+below is the step after it, which judges a landing in the script from
+`on touchdown`, `p.primed` and the strips as a label; it waits on the
+reads' host half and the `sb_strip` label source.
 
 ```text
 rules "Superbounce" 1
@@ -200,9 +214,10 @@ the world, which this page does not design.
 ## Rules and limits
 
 - The generated Firefight director stays until slice W6 of the API page
-  shows a hand-written script its equal on every scenario, and the Rust
-  medal chain until W4 does the same for Superbounce. Nothing is deleted
-  on a sketch.
+  shows a hand-written script its equal on every scenario. The Rust
+  medal chain stays while the HUD's medals, the records, the ghosts and
+  the Pogo Stick read its awards and while the script cannot judge a
+  landing against the strips. Nothing is deleted on a sketch.
 - `firefight.rules` passes the verifier's worst-tick op and write
   estimates with a `ff_drop` label declared `at most 12`; the generated
   director of `firefight::script` does not fit today (firefight.md "The

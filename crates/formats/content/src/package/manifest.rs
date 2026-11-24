@@ -84,6 +84,14 @@ pub struct Item {
     /// Where it is added. Omitted is `all`.
     #[serde(default)]
     pub maps: Maps,
+    /// `replaces = "<hex>"`: the asset hash of the asset this item overrides
+    /// whole. `tag` then names an asset the map has, not a free path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaces: Option<String>,
+    /// `was = "<hex>"`, on a `tag-delta` item: the asset hash of the base
+    /// its patch was made on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub was: Option<String>,
 }
 
 impl Item {
@@ -92,6 +100,16 @@ impl Item {
             .as_deref()
             .into_iter()
             .chain(self.inputs.iter().map(String::as_str))
+    }
+
+    /// Whether a `replaces` on an item of this kind means anything: the
+    /// kinds that make an asset of their own from an authored source. (A
+    /// builder may still refuse it: `workspace::overrides_whole`.)
+    pub(super) fn may_replace(kind: Kind) -> bool {
+        matches!(
+            kind,
+            Kind::Tag | Kind::Model | Kind::Bitmap | Kind::Sound | Kind::Animation
+        )
     }
 }
 
@@ -117,6 +135,7 @@ pub enum Kind {
     Convert,
     Data,
     Kit,
+    TagDelta,
 }
 
 /// Who needs an item: the builder's choice, not the author's.
@@ -136,9 +155,8 @@ impl Kind {
     pub fn scope(self) -> ItemScope {
         use Kind::*;
         match self {
-            Tag | Edits | Model | Animation | Rules | Variant | Map | MapPatch | Convert => {
-                ItemScope::Sim
-            }
+            Tag | Edits | Model | Animation | Rules | Variant | Map | MapPatch | Convert
+            | TagDelta => ItemScope::Sim,
             Bitmap | Sound | Screens | ScreenEdits | Hud | Strings => ItemScope::Client,
             Playlist => ItemScope::Live,
             Data | Kit => ItemScope::PerFeature,
@@ -260,9 +278,27 @@ pub enum ManifestError {
     #[error("item {index}: maps lists no map, or {name:?} is not a map name")]
     BadMaps { index: usize, name: String },
     #[error(
+        "item {index} ({kind:?}): `replaces` is for an item that makes an asset of its own (tag, model, bitmap, sound, animation)"
+    )]
+    Replaces { index: usize, kind: Kind },
+    #[error("item {index} ({kind:?}): `was` is for a `tag-delta` item")]
+    Was { index: usize, kind: Kind },
+    #[error("item {index}: {field} {text:?} is not a SHA-256 hex digest of an asset")]
+    Hash {
+        index: usize,
+        field: &'static str,
+        text: String,
+    },
+    #[error(
         "{path:?}: a package never holds {what} (cache maps, tag bundles and disc bytes stay out)"
     )]
     Forbidden { path: String, what: &'static str },
+}
+
+/// An asset hash as a manifest holds it (`replaces`, `was`): 64 hex
+/// digits in either case, as its lowercase text.
+pub(crate) fn asset_hash(text: &str) -> Option<String> {
+    text.parse::<crate::Sha256>().ok().map(|h| h.to_string())
 }
 
 /// Lowercase letters, digits and `-`; no `-` at either end; 1 to 64 long.
@@ -412,6 +448,32 @@ impl Manifest {
                         name: name.clone(),
                     });
                 }
+            }
+            if let Some(text) = &item.replaces {
+                if !Item::may_replace(item.kind) {
+                    return Err(ManifestError::Replaces {
+                        index,
+                        kind: item.kind,
+                    });
+                }
+                asset_hash(text).ok_or_else(|| ManifestError::Hash {
+                    index,
+                    field: "replaces",
+                    text: text.clone(),
+                })?;
+            }
+            if let Some(text) = &item.was {
+                if item.kind != Kind::TagDelta {
+                    return Err(ManifestError::Was {
+                        index,
+                        kind: item.kind,
+                    });
+                }
+                asset_hash(text).ok_or_else(|| ManifestError::Hash {
+                    index,
+                    field: "was",
+                    text: text.clone(),
+                })?;
             }
         }
         Ok(())

@@ -30,9 +30,11 @@
 //!   (`ENGINE_ROUND_RESET`) as each later round begins: `on round_start`.
 //! - [`Runtime::quit`] at the engine's player-left notice
 //!   (`ENGINE_PLAYER_LEFT`): `on quit`.
-//! - [`Runtime::bounces`] after each game tick, from the superbounce
-//!   mode's medal chain: `on bounce` and `on bounced`, each bounce and
-//!   Bounced on the tick its chain files it.
+//! - [`Runtime::physics`] and then [`Runtime::bounces`] after each game
+//!   tick, from the superbounce mode's medal chain: `on touchdown`, `on
+//!   launch` and `on grounded` for what the chain saw of each player's
+//!   physics (`super::world::physics`), then `on bounce` and `on bounced`,
+//!   each bounce and Bounced on the tick its chain files it.
 //! - [`Runtime::post_tick`] after each game tick: the roster's and the
 //!   zones' changes (`on death`, `on spawn`, `on leave`, `on enter`;
 //!   `super::world::zones`), then timers, then `on tick`.
@@ -104,6 +106,11 @@ pub const DELIVERED: &[Event] = &[
     Event::Tick,
     Event::Bounce,
     Event::Bounced,
+    // From the superbounce mode's medal chain, while it runs
+    // (`super::world::physics`).
+    Event::Touchdown,
+    Event::Launch,
+    Event::Grounded,
     // From the roster and the zones at each tick's end
     // (`super::world::zones`).
     Event::Spawn,
@@ -197,12 +204,22 @@ pub const ACTIONS: &[u16] = &[
     id::HUD_TEXT,
     id::HUD_SHOW,
     id::MARK,
+    id::MARK_PLAYER,
+    id::MARK_TEAM,
     id::UNMARK,
     // Put at the boundary (`super::world::objects`); the VM keeps a mover
     // and tells the game each tick's step.
     id::TELEPORT,
     id::MOVE_TO,
     id::STOP,
+    // The VM keeps the open barriers and steps each to its place
+    // ([`step_object`](Game::step_object)), so no call is made of its own.
+    id::SET_OPEN,
+    // Kept in the VM's state (`RulesExt::picks`); the boundary opens the
+    // picker for each local player from it (`super::world::pick`), so no
+    // call is made of the entry's own.
+    id::OFFER_PICK,
+    id::PICK_ROW,
 ];
 
 /// Where the `RULES` record lives: the process's `SimExt` blob in the
@@ -442,6 +459,9 @@ pub enum Call {
     /// `teleport`, or a mover's step: the object put at a place
     /// (`super::world::objects`).
     Put(super::world::objects::Place),
+    /// `offer_pick`: the value picker opened for one local player with the
+    /// offer's rows (`super::world::pick`).
+    OfferPick(super::world::pick::Ask),
 }
 
 impl Call {
@@ -467,6 +487,7 @@ impl Call {
             Call::SoundTo { .. } | Call::Play { .. } => "sound",
             Call::SetLoadout { .. } => "set_loadout",
             Call::Put(_) => "put_object",
+            Call::OfferPick(_) => "offer_pick",
         }
     }
 }
@@ -699,6 +720,16 @@ impl Game for GuestGame<'_> {
         teams
     }
 
+    /// The roster slots seated on `team`, for a waypoint's audience
+    /// (`mark(wp, at, team)`).
+    fn players_of_team(&self, team: u8) -> Vec<u8> {
+        self.roster()
+            .into_iter()
+            .filter(|&(_, _, t)| t == team)
+            .map(|(slot, _, _)| slot)
+            .collect()
+    }
+
     /// The map's things with this label ([`Table::labelled`]).
     fn labelled(&self, label: &str) -> Vec<Placed> {
         self.table.map_or_else(Vec::new, |t| t.labelled(label))
@@ -865,9 +896,13 @@ impl Game for GuestGame<'_> {
             id::SHOW_AREA | id::HIDE_AREA => None,
             // The VM keeps the show state; the HUDs are drawn from it
             // (`super::world::hud`).
-            id::HUD_VALUE | id::HUD_FILL | id::HUD_STYLE | id::HUD_TEXT | id::HUD_SHOW | id::MARK | id::UNMARK => None,
+            id::HUD_VALUE | id::HUD_FILL | id::HUD_STYLE | id::HUD_TEXT | id::HUD_SHOW
+            | id::MARK | id::MARK_PLAYER | id::MARK_TEAM | id::UNMARK => None,
             // The VM keeps the mover; each tick's step is `step_object`.
-            id::MOVE_TO | id::STOP => None,
+            id::MOVE_TO | id::STOP | id::SET_OPEN => None,
+            // The VM keeps the offers; the boundary asks the players
+            // (`super::world::pick::plan`).
+            id::OFFER_PICK | id::PICK_ROW => None,
             id::TELEPORT => super::world::objects::plan(call).map(Call::Put),
             id::SET_LOADOUT => {
                 let tag = |n: usize| match call.args.get(n) {
@@ -1583,6 +1618,12 @@ impl Runtime {
             return None;
         }
         r.vm.begin_tick(tick);
+        // The picks the local players made since the last boundary
+        // (`super::world::pick`); one for a picker the script no longer
+        // offers is refused by the VM and dropped.
+        for pick in super::world::pick::take() {
+            r.vm.choose(pick.player, pick.slot, pick.row);
+        }
         {
             let Running {
                 vm,
@@ -1633,6 +1674,14 @@ impl Runtime {
         let ask_authority = r.authority.is_none();
         let mut calls = rest;
         calls.extend(plays);
+        // The next local player to ask for a pick, on the authority and
+        // never in a film, which replays the picks it recorded.
+        if r.authority == Some(true)
+            && !self.film
+            && let Some(ask) = super::world::pick::plan(&r.vm, &super::world::pick::seats(m), tick)
+        {
+            calls.push(Call::OfferPick(ask));
+        }
         if let Some(ty) = r.start_line
             && super::start_line::players_ready(m)
         {
@@ -1760,6 +1809,28 @@ impl Runtime {
         });
     }
 
+    /// What one tick's medal chain saw of the players' physics
+    /// (`superbounce_chain::Medals::physics`), in order: `on touchdown`,
+    /// `on launch` and `on grounded` (`super::world::physics::inputs`),
+    /// with their calls kept for the next tick boundary.
+    pub fn physics(&mut self, m: &dyn GuestMemory, physics: &[(u8, crate::superbounce_chain::Physics)]) {
+        let wants = |r: &Running| {
+            r.vm.ir()
+                .handlers
+                .iter()
+                .any(|h| matches!(h.event, Event::Touchdown | Event::Launch | Event::Grounded))
+        };
+        if physics.is_empty() || !self.running().is_some_and(wants) {
+            return;
+        }
+        let inputs = super::world::physics::inputs(physics);
+        self.run(m, |vm, g| {
+            for input in inputs {
+                vm.fire(g, input);
+            }
+        });
+    }
+
     /// One tick's medal awards (`superbounce_chain::Medals::step`), in
     /// order: each bounce as [`Runtime::bounce`] with its chain's count
     /// and whether it was a Monster, each Bounced as [`Runtime::bounced`].
@@ -1815,7 +1886,27 @@ impl Runtime {
         }
         self.publish_walls();
         self.publish_hud(Some(m));
+        self.send_show();
         self.send_walls(tick);
+    }
+
+    /// Offers the running script's show state to the actor channel's
+    /// `Show` record (`super::world::show::offer_state`), from the
+    /// authority that runs the script. A film's run offers none: it has
+    /// no channel. Anything else forgets what was offered, so the channel
+    /// retracts the last state from its peers.
+    fn send_show(&mut self) {
+        if matches!(
+            &self.status,
+            Status::Running(r) if r.authority == Some(true) && !self.film
+        ) {
+            let Status::Running(r) = &self.status else {
+                unreachable!("matched above")
+            };
+            super::world::show::offer_state(r.vm.show().encode());
+        } else {
+            super::world::show::forget_state();
+        }
     }
 
     /// Feeds the objective HUDs from the running script's show state, for
@@ -1868,9 +1959,15 @@ impl Runtime {
 
     /// The async body's outcome: what the authority check answered, and
     /// the calls the engine refused (entry name, error).
-    pub fn finish(&mut self, tick: u32, authority: Option<bool>, refused: Vec<(String, String)>) {
-        for (call, error) in refused {
-            self.error(tick, &call, error);
+    pub fn finish(&mut self, tick: u32, authority: Option<bool>, refused: Vec<Refused>) {
+        for r in refused {
+            self.error(tick, &r.call, &r.error);
+            // A put the world refused did not move the barrier the VM
+            // thinks it opened: the VM closes it in its state again
+            // (`Vm::put_refused`), saved with the next tick's state.
+            if let (Some(place), Status::Running(run)) = (r.put, &mut self.status) {
+                run.vm.put_refused(place.object, place.at);
+            }
         }
         // A machine that is not the authority ends no blocked game: its host
         // decides.
@@ -2119,16 +2216,29 @@ fn tell(vm: &mut Vm, g: &mut GuestGame<'_>, seen: &mut Seen) {
     }
 }
 
+/// A call the engine refused: the entry's name and the reason, and for a put
+/// the place it was refused at.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Refused {
+    pub call: String,
+    pub error: String,
+    pub put: Option<super::world::objects::Place>,
+}
+
 /// Before the tick: the authority check when asked, then each call in
 /// order. Returns the answer and the calls the engine refused.
-pub async fn make_calls(cx: &Cx, work: &Work) -> (Option<bool>, Vec<(String, String)>) {
+pub async fn make_calls(cx: &Cx, work: &Work) -> (Option<bool>, Vec<Refused>) {
     let mut refused = Vec::new();
     let mut authority = None;
     if work.ask_authority {
         match guest::authoritative(cx).await {
             Ok(a) => authority = Some(a),
             Err(e) => {
-                refused.push(("authority".to_string(), e.to_string()));
+                refused.push(Refused {
+                    call: "authority".to_string(),
+                    error: e.to_string(),
+                    put: None,
+                });
                 authority = Some(false);
             }
         }
@@ -2164,9 +2274,20 @@ pub async fn make_calls(cx: &Cx, work: &Work) -> (Option<bool>, Vec<(String, Str
                 ref secondary,
             } => super::world::loadout::give(cx, player, primary.as_deref(), secondary.as_deref()).await,
             Call::Put(place) => super::world::objects::put(cx, place).await,
+            Call::OfferPick(ref ask) => super::world::pick::open(cx, ask).await,
         };
         if let Err(e) = result {
-            refused.push((call.name().to_string(), e.to_string()));
+            // The VM is told a refused put, so a barrier it holds open at a
+            // place the world would not take is closed in its state again.
+            let put = match call {
+                Call::Put(place) => Some(*place),
+                _ => None,
+            };
+            refused.push(Refused {
+                call: call.name().to_string(),
+                error: e.to_string(),
+                put,
+            });
         }
     }
     (authority, refused)

@@ -1,8 +1,9 @@
 //! The Textures tool as the agent API's `bitmap.*` ([`super::Provider`],
 //! registered in [`super::seams`]): the open map's bitmaps, their images,
-//! PNG export and import, strokes, fills and adjustments, and a read of
-//! pixels. Every edit goes through `Action::Bitmap`, so an agent's edit is
-//! the window's undo step; docs/editor/modeling.md ("Texture editing"),
+//! PNG export and import, strokes (a clone stamp with `source`), fills,
+//! adjustments, channel copy and the turns, and a read of pixels. Every
+//! edit goes through `Action::Bitmap`, so an agent's edit is the
+//! window's undo step; docs/editor/modeling.md ("Texture editing"),
 //! docs/editor/agent-api.md.
 //!
 //! Edits stay in the editor until a save: `doc.save` and `doc.save_as` on
@@ -17,7 +18,7 @@
 use std::path::PathBuf;
 
 use agent_proto::RpcError;
-use bitmap_edit::{Adjust, BitmapOp, Brush, Channels, LayerId, Rect};
+use bitmap_edit::{Adjust, BitmapOp, Brush, Channel, Channels, LayerId, Rect, Turn};
 use map::TagId;
 use serde_json::{Value, json};
 use studio_proto::{code, method as m};
@@ -88,8 +89,8 @@ const METHODS: &[MethodDef] = &[
     ),
     def(
         m::BITMAP_PAINT,
-        "One stroke through `points` (pixel coordinates; a pixel's centre is at x + 0.5): a round brush of `size` pixels, `hardness` 0 to 1 (default 0.8), `opacity` 0 to 1 of each stamp (default 1), `spacing` as a fraction of the size (0.25); blended in linear light. `erase` takes alpha away instead. `channels` limits it (`rgba`, `a`, `rgb`, ...). One undo step",
-        r#"{"bitmap":"string","image?":"integer","face?":"integer","slice?":"integer","points":"[[x,y]]","color?":"[r,g,b,a?]|#rrggbb[aa]","size":"number","hardness?":"number","opacity?":"number","spacing?":"number","erase?":"boolean","channels?":"string"}"#,
+        "One stroke through `points` (pixel coordinates; a pixel's centre is at x + 0.5): a stamp at every point and at most `spacing` apart between them (the spacing as a fraction of the size, 0.25), so two points are a line. A round brush of `size` pixels, `hardness` 0 to 1 (default 0.8), `opacity` 0 to 1 of each stamp (default 1), blended in linear light. `erase` takes alpha away instead. `channels` limits it (`rgba`, `a`, `rgb`, ...). With `source` ([x, y]) the stroke is a clone stamp: each stamp copies the pixels under it from the layer `from` (`image`, `face`, `slice`; the layer painted without it) at the offset from `source` to the first point, and `color` is not needed. One undo step",
+        r#"{"bitmap":"string","image?":"integer","face?":"integer","slice?":"integer","points":"[[x,y]]","color?":"[r,g,b,a?]|#rrggbb[aa]","size":"number","hardness?":"number","opacity?":"number","spacing?":"number","erase?":"boolean","channels?":"string","source?":"[x,y]","from?":"{image?,face?,slice?}"}"#,
         r#"{"bitmap":"string","layer":"string","dirty":"{x,y,w,h}|null","tiles":"integer","edited":"boolean"}"#,
         r#"{"bitmap":"floor","points":[[1,1],[2,2]],"color":[255,0,0,255],"size":2}"#,
     ),
@@ -108,8 +109,22 @@ const METHODS: &[MethodDef] = &[
         r#"{"bitmap":"floor","invert":true,"channels":"rgb"}"#,
     ),
     def(
+        m::BITMAP_CHANNEL_COPY,
+        "Copy one channel of every pixel of `rect` (the whole layer by default) into the channels `to` (letters of rgba); `from` is `r`, `g`, `b`, `a` or `luma` (Rec. 601 of the colour, as an L8 image stores it). The other channels stay. One undo step",
+        r#"{"bitmap":"string","image?":"integer","face?":"integer","slice?":"integer","from":"string","to":"string","rect?":"{x,y,w,h}"}"#,
+        r#"{"bitmap":"string","layer":"string","dirty":"{x,y,w,h}|null","tiles":"integer","edited":"boolean"}"#,
+        r#"{"bitmap":"floor","from":"luma","to":"a"}"#,
+    ),
+    def(
+        m::BITMAP_TURN,
+        "Flip or turn the pixels of `rect` (the whole layer by default) in place, without resampling; the rest of the layer stays. `by` is `flip_horizontal`, `flip_vertical`, `quarter` (clockwise), `half` or `three_quarters`; a quarter turn needs a square rectangle and is refused otherwise. One undo step",
+        r#"{"bitmap":"string","image?":"integer","face?":"integer","slice?":"integer","by":"string","rect?":"{x,y,w,h}"}"#,
+        r#"{"bitmap":"string","layer":"string","dirty":"{x,y,w,h}|null","tiles":"integer","edited":"boolean"}"#,
+        r#"{"bitmap":"floor","by":"flip_horizontal"}"#,
+    ),
+    def(
         m::BITMAP_RESHAPE,
-        "Ask for a new size and/or format for an image (`format`: a8, y8, ay8, a8y8, rgb565, argb1555, argb4444, xrgb8888, argb8888, dxt1, dxt3 or dxt5; what is left out keeps its value). A save writes the image whole at that size: every layer resampled, every LOD it stores re-encoded and appended to the map, the record's size, format, flags and mips patched. A cube stays square, DXT needs power of two sides, a side that is not a power of two is linear without mips. Refused now when the save would refuse. One undo step; `doc.close` with `discard` drops it. Giving the image's own size and format clears it",
+        "Ask for a new size and/or format for an image (`format`: a8, y8, ay8, a8y8, rgb565, argb1555, argb4444, xrgb8888, argb8888, dxt1, dxt3, dxt5, or `auto`, which keeps the image's format when it holds the painted alpha and otherwise takes dxt1 for opaque and cut-out pictures and dxt5 for blended ones, or x8r8g8b8/a8r8g8b8 when a side is not a power of two; what is left out keeps its value). A save writes the image whole at that size: every layer resampled, every LOD it stores re-encoded and appended to the map, the record's size, format, flags and mips patched. A cube stays square, DXT needs power of two sides, a side that is not a power of two is linear without mips. Refused now when the save would refuse. One undo step; `doc.close` with `discard` drops it. Giving the image's own size and format clears it",
         r#"{"bitmap":"string","image?":"integer","width?":"integer","height?":"integer","format?":"string"}"#,
         r#"{"bitmap":"string","image":"integer","reshape":"{width,height,format}|null","edited":"boolean"}"#,
         r#"{"bitmap":"floor","width":8,"height":8,"format":"dxt1"}"#,
@@ -225,6 +240,18 @@ fn layer(p: &P) -> Result<LayerId, RpcError> {
         Ok(p.opt_u64(k)?.unwrap_or(0).min(u64::from(u32::MAX)) as u32)
     };
     Ok(LayerId::new(n("image")?, n("face")?, n("slice")?))
+}
+
+/// One of a `from` layer's `image`, `face` and `slice`: 0 when left out.
+fn part(v: &Value, k: &str) -> Result<u32, RpcError> {
+    match v.get(k) {
+        None | Some(Value::Null) => Ok(0),
+        Some(n) => n
+            .as_u64()
+            .filter(|n| *n <= u64::from(u32::MAX))
+            .map(|n| n as u32)
+            .ok_or_else(|| bad(format!("from.{k}: a whole number of 0 or more"))),
+    }
 }
 
 fn rect_of(v: &Value) -> Result<Rect, RpcError> {
@@ -414,6 +441,45 @@ fn format_of(s: &str) -> Result<PixelFormat, RpcError> {
                     .join(", ")
             ))
         })
+}
+
+/// A `format` parameter: a format's name, or `auto` for what
+/// `App::suggest_bitmap_format` picks at the size asked for.
+fn auto_or_format(
+    app: &mut App,
+    tag: TagId,
+    image: usize,
+    format: Option<&str>,
+    width: Option<u32>,
+    height: Option<u32>,
+) -> Result<Option<PixelFormat>, RpcError> {
+    let Some(f) = format else {
+        return Ok(None);
+    };
+    if !f.eq_ignore_ascii_case("auto") {
+        return format_of(f).map(Some);
+    }
+    let size = match (width, height) {
+        (None, None) => None,
+        (w, h) => {
+            let (cw, ch) = app
+                .textures
+                .reshape
+                .get(&(tag, image))
+                .map(|r| (r.width, r.height))
+                .or_else(|| {
+                    app.textures.open.get(&tag).and_then(|o| {
+                        let d = o.images.get(image)?.source.as_ref()?.dimensions;
+                        Some((u32::from(d[0]), u32::from(d[1])))
+                    })
+                })
+                .ok_or_else(|| bad("the bitmap is not open"))?;
+            Some((w.unwrap_or(cw), h.unwrap_or(ch)))
+        }
+    };
+    app.suggest_bitmap_format(tag, image, size)
+        .map(Some)
+        .map_err(bad)
 }
 
 fn images_json(app: &App, tag: TagId, only: Option<usize>) -> Value {
@@ -610,7 +676,7 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
             let tag = bitmap(app, p)?;
             let from = p.opt_usize("from")?;
             let (width, height) = size_of(p)?;
-            let format = p.opt_str("format")?.map(format_of).transpose()?;
+            let format = auto_or_format(app, tag, from.unwrap_or(0), p.opt_str("format")?, width, height)?;
             run(
                 app,
                 BitmapAction::AddImage {
@@ -622,7 +688,10 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 },
             )?;
             let open = &app.textures.open[&tag];
-            let i = open.images.last().ok_or_else(|| bad("the bitmap has no image"))?;
+            let i = open
+                .images
+                .last()
+                .ok_or_else(|| bad("the bitmap has no image"))?;
             Ok(json!({
                 "bitmap": super::scenario::tag_id(tag),
                 "image": i.index,
@@ -826,10 +895,33 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             let erase = p.bool("erase")?;
+            let source = match p.get("source") {
+                None => None,
+                Some(v) => match v.as_array().map(Vec::as_slice) {
+                    Some([x, y]) => Some([num(x, "source")?, num(y, "source")?]),
+                    _ => return Err(bad("source: [x, y]")),
+                },
+            };
+            let from = match p.get("from") {
+                None => None,
+                Some(v) if v.is_object() => Some(LayerId::new(
+                    part(v, "image")?,
+                    part(v, "face")?,
+                    part(v, "slice")?,
+                )),
+                Some(_) => return Err(bad("from: {image?, face?, slice?}")),
+            };
+            if erase && source.is_some() {
+                return Err(bad("a clone stroke copies: give source or erase, not both"));
+            }
             let color = match p.get("color") {
                 Some(v) => color_of(v)?,
-                None if erase => [0, 0, 0, 255],
-                None => return Err(bad("color is required (unless erase is true)")),
+                None if erase || source.is_some() => [0, 0, 0, 255],
+                None => {
+                    return Err(bad(
+                        "color is required (unless erase is true or source is given)",
+                    ));
+                }
             };
             let size = p.opt_f32("size")?.ok_or_else(|| bad("size is required"))?;
             let d = Brush::default();
@@ -843,16 +935,21 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 channels: channels(p)?,
             };
             brush.validate().map_err(|e| bad(e.to_string()))?;
-            edit(
-                app,
-                tag,
-                l,
-                BitmapOp::Paint {
+            let op = match source {
+                Some(source) => BitmapOp::Clone {
+                    layer: l,
+                    from,
+                    source,
+                    points,
+                    brush,
+                },
+                None => BitmapOp::Paint {
                     layer: l,
                     points,
                     brush,
                 },
-            )
+            };
+            edit(app, tag, l, op)
         }
         m::BITMAP_FILL => {
             let tag = bitmap(app, p)?;
@@ -924,6 +1021,61 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 },
             )
         }
+        m::BITMAP_CHANNEL_COPY => {
+            let tag = bitmap(app, p)?;
+            let l = layer(p)?;
+            let from = p
+                .opt_str("from")?
+                .ok_or_else(|| bad("from is required: r, g, b, a or luma"))?;
+            let from = Channel::parse(from)
+                .ok_or_else(|| bad(format!("from: {from:?} is not r, g, b, a or luma")))?;
+            let to = p
+                .opt_str("to")?
+                .ok_or_else(|| bad("to is required: letters of rgba (\"a\", \"rgb\")"))?;
+            let to = Channels::parse(to).ok_or_else(|| {
+                bad(format!(
+                    "to: {to:?} is not letters of rgba (\"rgb\", \"a\")"
+                ))
+            })?;
+            edit(
+                app,
+                tag,
+                l,
+                BitmapOp::CopyChannel {
+                    layer: l,
+                    from,
+                    to,
+                    rect: opt_rect(p)?,
+                },
+            )
+        }
+        m::BITMAP_TURN => {
+            let tag = bitmap(app, p)?;
+            let l = layer(p)?;
+            let by = p.opt_str("by")?.ok_or_else(|| {
+                bad("by is required: flip_horizontal, flip_vertical, quarter, half or three_quarters")
+            })?;
+            let turn = Turn::parse(by).ok_or_else(|| {
+                bad(format!(
+                    "by: {by:?} is not one of {}",
+                    Turn::ALL
+                        .into_iter()
+                        .map(|t| t.name())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            })?;
+            edit(
+                app,
+                tag,
+                l,
+                BitmapOp::Turn {
+                    layer: l,
+                    turn,
+                    rect: opt_rect(p)?,
+                },
+            )
+        }
         m::BITMAP_RESHAPE => {
             let tag = bitmap(app, p)?;
             let image = p.opt_usize("image")?.unwrap_or(0);
@@ -933,7 +1085,7 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
                     .transpose()
             };
             let (width, height) = (dim("width")?, dim("height")?);
-            let format = p.opt_str("format")?.map(format_of).transpose()?;
+            let format = auto_or_format(app, tag, image, p.opt_str("format")?, width, height)?;
             if width.is_none() && height.is_none() && format.is_none() {
                 return Err(bad("give width, height and/or format"));
             }

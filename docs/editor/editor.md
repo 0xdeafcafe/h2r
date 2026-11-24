@@ -200,9 +200,11 @@ Scene, viewport, inspector, Log and status bar.*
   the Tags tool's panel (`fields::panel`). Named links lead to the object
   model and other dependencies, with other links under **All references**.
   The **Show in** button opens a tag whose metadata lives in a shared cache
-  in the Tags tool, read-only. An edit affects every use of the tag. Use
-  **Undo tag edit** and **Redo tag edit** for the tag history. The map
-  save includes the tag edits alongside the placement edits.
+  in the Tags tool, read-only. An edit affects every use of the tag. **Undo
+  tag edit** and **Redo tag edit** step through the tag's history, its
+  fields and its editor's steps alike ([studio-flow.md](studio-flow.md),
+  "Shared patterns"). The map save includes the tag edits alongside the
+  placement edits.
   A reference field's **Show this tag** button focuses the target in the
   inspector and keeps the placement selected. Breadcrumbs lead back to
   any ancestor. **Back** and **Forward**, Alt+Left and Alt+Right, and the
@@ -223,7 +225,7 @@ Scene, viewport, inspector, Log and status bar.*
 Shortcuts include Cmd/Ctrl+O to open, Cmd/Ctrl+S to save, Shift+Cmd/Ctrl+S
 to export a map or save a playlist to a chosen path, Cmd/Ctrl+P to open Go to
 anything, Cmd/Ctrl+Z to undo and Shift+Cmd/Ctrl+Z or
-Cmd/Ctrl+Y redo (in the active tool), F5 Play, Shift+F5 stop the
+Cmd/Ctrl+Y redo (in the front document), F5 Play, Shift+F5 stop the
 game the editor started, and Cmd/Ctrl+Q quit. In the scenario tool,
 Cmd/Ctrl+D duplicate and Delete or Backspace delete (the whole
 selection), F frame the selection, Home frame all, W/E/R gizmo mode, X
@@ -723,8 +725,9 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   (`program::CAMERA_GIVEN`), an input the game-free run state does not
   give, a palettized stage bitmap (no stage palettes), a missing
   animation input or its own fog is refused, and `view.stats` counts it by
-  cause. The BSP samples animated pixel and vertex constants at time zero.
-  The Shader tab takes its sample at the preview clock. The other modes draw the base look alone.
+  cause. The BSP and its layer 3 (`layers_load::plan_layer3`) sample
+  animated pixel and vertex constants at time zero. The Shader tab takes
+  its sample at the preview clock. The other modes draw the base look alone.
   Clicking skips hidden placement categories and hidden structure.
 - **Gameplay layers.** Spawn points have a team-coloured pawn and an
   arrow pointing along the spawn facing. Netgame flags have a team tint
@@ -909,16 +912,17 @@ a foreign game. F5 leaves the Edit switch as set. A foreign game asks before rec
 maps. The other choice in the map prompt opens the game's map here.
 `play::playtest::decide` supplies the bar, Game menu and socket API.
 
-`game.start` ([agent-api.md](agent-api.md)) starts the same game with
-`--editor` added: no window of its own, shown in the Game panel
-([game-view.md](game-view.md), "Own mode"). F5 still opens the window.
+`game.start` ([agent-api.md](agent-api.md)) and a launching F5 are the same
+start (`Play::start_own`): the game runs with `--editor`, no window of its
+own, and is shown in the Game panel ([game-view.md](game-view.md), "Own
+mode").
 
 **Stop** (Shift+F5) closes the game the editor started. With no game,
-Play launches the copy in its own window:
+Play launches the copy in editor mode, with no window of its own:
 
 ```
 H2_AGENT=<cache>/h2recomp/editor-<pid>-<n>.sock H2_MAP_DIR=$TMPDIR/h2-editor-play-<pid>/maps \
-  h2 play <disc> --data <data root> --level <map> --title 'Halo 2 - <map> (h2-editor)'
+  h2 play <disc> --data <data root> --level <map> --title 'Halo 2 - <map> (h2-editor)' --editor
 ```
 
 - `h2` is the path in Game > Advanced, else `$H2_BIN`, else the `h2` beside the
