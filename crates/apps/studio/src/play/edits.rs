@@ -25,6 +25,8 @@ pub(super) struct Batch {
     id: u64,
     tags: Vec<tag_sync::Write>,
     placements: Vec<sync::Write>,
+    /// Block moves go in a batch of their own.
+    moves: Vec<tag_sync::BlockMove>,
 }
 
 const RELOAD_TIMEOUT: Duration = Duration::from_secs(30);
@@ -103,6 +105,8 @@ pub(super) struct Edits {
     next: u64,
     conflicts: Vec<Value>,
     refused: issues::Refusals,
+    /// Block moves the game refused.
+    refused_moves: tag_sync::MoveRefusals,
     /// Geometry and pixels (`raw_sync`).
     pub(super) raw: raw_sync::RawSync,
     /// Level collision (`collision_sync`).
@@ -158,6 +162,7 @@ impl Play {
 
     pub(super) fn retry_refused_fields(&mut self) {
         self.edits.refused = issues::Refusals::default();
+        self.edits.refused_moves = Default::default();
         self.edits.raw.retry();
         self.edits.collision.retry();
         self.edits.last_diff = None;
@@ -298,6 +303,7 @@ impl Play {
             }
             self.edits.conflicts.clear();
             self.edits.refused = issues::Refusals::default();
+            self.edits.refused_moves = Default::default();
             self.edits.confirmed = None;
             self.edits.journal_ready = false;
             self.edits.reverting = false;
@@ -490,6 +496,7 @@ impl Play {
         self.reload = d.reload;
         if self.edits.world != Some(app.session.world_rev()) {
             self.edits.refused = issues::Refusals::default();
+            self.edits.refused_moves = Default::default();
             self.edits.conflicts.clear();
         }
         let empty = TagBaseline::default();
@@ -537,6 +544,16 @@ impl Play {
             !absent
         });
         self.edits.refused.hold(&mut pending, &mut tags, &mut d.writes);
+        let (mut moves, move_rows) = tag_sync::block_moves(
+            if base.is_some() {
+                &self.edits.tags
+            } else {
+                &empty
+            },
+            &app.tags,
+        );
+        pending.extend(move_rows);
+        self.edits.refused_moves.hold(&mut moves, &mut pending);
         for c in &self.edits.conflicts {
             if let Err(why) = self.check_conflict(app, c) {
                 let mut stale = c.clone();
@@ -569,6 +586,26 @@ impl Play {
         {
             return;
         }
+        if !moves.is_empty() {
+            // Moves go alone: a refusal or a mismatch names them, and the
+            // field writes follow on the next diff.
+            self.edits.next += 1;
+            let id = self.edits.next;
+            let wire: Vec<_> = moves.iter().map(tag_sync::BlockMove::wire).collect();
+            self.call(
+                hot::EDIT_BATCH,
+                json!({"epoch":self.edits.epoch,"confirm_peers":self.edits.confirmed,
+                    "writes":[],"moves":wire}),
+                Purpose::Edit(id),
+            );
+            self.edits.sent = Some(Batch {
+                id,
+                tags: Vec::new(),
+                placements: Vec::new(),
+                moves,
+            });
+            return;
+        }
         let mut writes: Vec<_> = tags.iter().map(tag_sync::Write::wire).collect();
         writes.extend(
             d.writes.iter().map(
@@ -599,6 +636,7 @@ impl Play {
             id,
             tags,
             placements: d.writes,
+            moves: Vec::new(),
         });
     }
 
@@ -616,8 +654,10 @@ impl Play {
         match result {
             Ok(v)
                 if v["applied"].as_u64()
-                    == Some((batch.tags.len() + batch.placements.len()) as u64) =>
+                    == Some((batch.tags.len() + batch.placements.len()) as u64)
+                    && v["moves"].as_array().map_or(0, Vec::len) == batch.moves.len() =>
             {
+                self.edits.tags.moved(&batch.moves, &v);
                 for w in batch.tags {
                     self.edits.tags.wrote(w.at, &w.value);
                 }
@@ -631,7 +671,7 @@ impl Play {
                     self.finish_playtest(app);
                 }
             }
-            Err(e) if e.code == agent_proto::code::MISMATCH => {
+            Err(e) if e.code == agent_proto::code::MISMATCH && batch.moves.is_empty() => {
                 self.waiting = Waiting::Idle;
                 let message = e.message;
                 self.edits.conflicts = e
@@ -678,7 +718,11 @@ impl Play {
                     |e| e.data.as_ref().and_then(|data| data["why"].as_str())
                         .map(str::to_owned).unwrap_or(e.message),
                 );
-                self.edits.refused.record(&batch.tags, &batch.placements, &why);
+                if batch.moves.is_empty() {
+                    self.edits.refused.record(&batch.tags, &batch.placements, &why);
+                } else {
+                    self.edits.refused_moves.record(&batch.moves, &why);
+                }
                 self.feedback.problem(app, format!("edit.batch: {why}"));
             }
         }
@@ -741,6 +785,7 @@ impl Play {
                 }
                 self.edits.conflicts.clear();
                 self.edits.refused = issues::Refusals::default();
+                self.edits.refused_moves = Default::default();
                 self.edits.raw.reverted();
                 self.edits.last_diff = None;
                 self.next_push = None;

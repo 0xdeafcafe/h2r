@@ -324,7 +324,14 @@ pub(crate) mod fake {
                         }));
                     }
                 }
-                let reply = json!({"id":1,"applied":writes.len(),"changes":writes});
+                let mut reply = json!({"id":1,"applied":writes.len(),"changes":writes});
+                if let Some(moves) = params["moves"].as_array() {
+                    // Each moved block lands in a place of its own.
+                    reply["moves"] = json!(moves.iter().enumerate().map(|(i, m)| json!({
+                        "root": m["root"], "count": m["count"],
+                        "address": 0xe200_0000u32 + 0x1000 * i as u32,
+                    })).collect::<Vec<_>>());
+                }
                 if let Some(release) = state.release_batch_reply.take() {
                     let held = reply.clone();
                     ctx.defer(600, Box::new(move |_| {

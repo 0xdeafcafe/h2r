@@ -842,8 +842,10 @@ fn map_identity_accepts_case_differences_for_live_edits() {
     });
 }
 
+/// A copy of the first element shifts the second, which other blocks may
+/// index, so the block is not given to the game as a move.
 #[test]
-fn a_grown_tag_block_stays_under_reload() {
+fn a_grown_tag_block_that_shifts_elements_stays_under_reload() {
     use crate::app::tag_tests::{WEAP, weap_id};
     let (_t, game, mut app, mut play) = tag_pair("grow-tag");
     play.apply_edits(&mut app, Apply::Send).unwrap();
@@ -857,7 +859,7 @@ fn a_grown_tag_block_stays_under_reload() {
         tag: weap_id(),
         pair: WEAP + 8,
         layout: layout.clone(),
-        op: crate::app::BlockOp::Add,
+        op: crate::app::BlockOp::Duplicate(0),
     }));
     play.push_edits(&mut app);
     assert!(app.pairing.pending.iter().any(tag_sync::Effect::is_reload));
@@ -1508,7 +1510,7 @@ fn send_confirmation_covers_the_step_and_both_edit_revisions() {
         tag,
         pair: crate::app::tag_tests::WEAP + 8,
         layout: layout.clone(),
-        op: crate::app::BlockOp::Add,
+        op: crate::app::BlockOp::Duplicate(0),
     }));
     assert!(play.playtest(&mut app, Some((before_layout, "send".into()))).is_err());
     play.playtest(&mut app, None).unwrap();

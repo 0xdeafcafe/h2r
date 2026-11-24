@@ -194,6 +194,21 @@ impl TagEntry {
     }
 }
 
+/// A block a block operation changed, and whether a running game can be
+/// given the result by an `edit.batch` move (docs/editor/realtime-edits.md,
+/// "The editor"): the tag is a live one, the pair lies in the
+/// loaded metadata, and the operation shifts no element another block may
+/// index (an append, or the removal or copy of the last element).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockEdit {
+    pub tag: TagId,
+    /// The `(count, address)` pair's address.
+    pub pair: u32,
+    /// Bytes per element.
+    pub size: u32,
+    pub live: bool,
+}
+
 #[derive(Clone, Debug, Default)]
 struct Step {
     label: String,
@@ -209,6 +224,8 @@ struct Step {
     /// ([`TagDoc::undo_tag`]). `None` for a step over several tags (an
     /// import squashed into one).
     tag: Option<TagId>,
+    /// The block a block operation changed ([`TagDoc::live_blocks`]).
+    blocks: Vec<BlockEdit>,
 }
 
 impl Step {
@@ -894,7 +911,13 @@ impl TagDoc {
         for (at, _, after) in &step.writes {
             self.put(*at, after);
         }
-        if self.tag(tag).is_some_and(|t| t.bsp.is_none()) {
+        step.blocks.push(BlockEdit {
+            tag,
+            pair,
+            size,
+            live: self.block_live(tag, pair, op, n),
+        });
+        if self.tag(tag).is_some_and(|t| t.bsp.is_none()) && !step.blocks[0].live {
             step.reload.push((
                 step.label.clone(),
                 step.writes
@@ -908,6 +931,34 @@ impl TagDoc {
         self.sealed = true;
         self.shape_rev += 1;
         Ok(())
+    }
+
+    /// Whether a running game can be given `op`'s result as a block move:
+    /// a live tag's block in the loaded metadata, and an operation that
+    /// leaves every element's index where it was (the definitions do not
+    /// say which blocks other blocks index, so only an append and the
+    /// removal or copy of the last element qualify).
+    fn block_live(&self, tag: TagId, pair: u32, op: &BlockOp, n: u32) -> bool {
+        self.tag(tag).is_some_and(|t| {
+            t.bsp.is_none() && !matches!(&t.group.0, b"sbsp" | b"ltmp" | b"coll" | b"phmo")
+        }) && !self.is_grown_room(pair)
+            && match *op {
+                BlockOp::Add => true,
+                BlockOp::Duplicate(i) | BlockOp::Remove(i) => i + 1 == n,
+            }
+    }
+
+    /// The blocks the undo stack's block operations changed, once each; a
+    /// block is live when every operation on it is.
+    pub fn live_blocks(&self) -> Vec<BlockEdit> {
+        let mut blocks: BTreeMap<(u32, u32), BlockEdit> = BTreeMap::new();
+        for b in self.undo.iter().flat_map(|s| &s.blocks) {
+            blocks
+                .entry((b.tag.0, b.pair))
+                .and_modify(|held| held.live &= b.live)
+                .or_insert(*b);
+        }
+        blocks.into_values().collect()
     }
 
     /// Add or duplicate past the block's room: copy its elements, with the
@@ -955,9 +1006,16 @@ impl TagDoc {
         l.grown.insert(pair, size);
         let mut pair_bytes = (n + 1).to_le_bytes().to_vec();
         pair_bytes.extend(at.to_le_bytes());
+        let live = self.block_live(tag, pair, op, n);
         let mut step = Step {
             label,
             shape: true,
+            blocks: vec![BlockEdit {
+                tag,
+                pair,
+                size,
+                live,
+            }],
             ..Step::default()
         };
         for (to, after) in [(at, bytes), (pair, pair_bytes)] {
@@ -970,13 +1028,15 @@ impl TagDoc {
         for (to, _, after) in &step.writes {
             self.put(*to, after);
         }
-        step.reload.push((
-            step.label.clone(),
-            step.writes
-                .iter()
-                .map(|((_, a), _, b)| (*a, b.len() as u32))
-                .collect(),
-        ));
+        if !live {
+            step.reload.push((
+                step.label.clone(),
+                step.writes
+                    .iter()
+                    .map(|((_, a), _, b)| (*a, b.len() as u32))
+                    .collect(),
+            ));
+        }
         self.changed_tag_step(tag, &step);
         self.push_step(tag, step);
         self.sealed = true;
