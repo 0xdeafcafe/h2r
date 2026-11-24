@@ -217,7 +217,9 @@ impl hooks::Feature for Weapons {
                 c.cpu.eax = tag;
                 c.ret(ARG_BYTES).map(Flow::Return)
             },
-        );
+        )
+        // A Superbounce game's stick answers the secondary pick first.
+        .after_feature(crate::pogo_mode::FEATURE);
         // The table is read again from the map's file when the map or
         // scenario differs; nothing here a snapshot would miss.
         b.snapshot(hooks::SnapshotPolicy::Stateless);
