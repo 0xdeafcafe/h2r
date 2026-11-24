@@ -13,6 +13,7 @@ use rules::{Fired, Input, Ir, Vm, build, compile};
 
 const BALL: &str = "objects/weapons/multiplayer/ball/ball";
 const FLAG: &str = "objects/weapons/multiplayer/flag/flag";
+const BOMB: &str = "objects/weapons/multiplayer/assault_bomb/assault_bomb";
 
 fn player(p: u8) -> Arg {
     Arg::Player(Some(p))
@@ -243,8 +244,13 @@ on pickup(p, o) {
 
 // ---- Oddball ----
 
+/// An object the weapon system made, in the registry and carried by none.
+fn made(g: &mut FakeGame, o: u32) {
+    g.objectives.insert(o, None);
+}
+
 #[test]
-fn oddball_scores_time_held_and_resets_a_dropped_ball() {
+fn oddball_makes_its_balls_one_at_a_time_and_scores_time_held() {
     let mut g = FakeGame::with_players(2);
     g.labelled.insert(
         "oddball_spawn".into(),
@@ -253,34 +259,66 @@ fn oddball_scores_time_held_and_resets_a_dropped_ball() {
             Placed { placement: 1, object: 41 },
         ],
     );
+    // The type area's ball count is zero on the script index, and the
+    // record's own field is ignored: the script's option says how many.
     g.variant.insert("oddball_ball_count".into(), 1);
-    let mut vm = start(builtin::ODDBALL, &mut g, 3);
+    let mut vm = start_scripted(builtin::ODDBALL, &mut g, 3, &[("ball_count", 2)]);
+    // The first ball is made at the round's start, at the first spawn, and
+    // the second once the first is seen, at the second.
     vm.flush_queue(&mut g);
-    // One ball, at the first spawn.
     assert_eq!(
         g.calls_to("spawn_objective"),
         vec![&vec![Arg::Tag(Some(BALL.into())), object(40), Arg::Team(None)]]
     );
+    made(&mut g, 100);
+    ticks(&mut vm, &mut g, 2, 1);
+    vm.flush_queue(&mut g);
+    assert_eq!(
+        g.calls_to("spawn_objective"),
+        vec![
+            &vec![Arg::Tag(Some(BALL.into())), object(40), Arg::Team(None)],
+            &vec![Arg::Tag(Some(BALL.into())), object(41), Arg::Team(None)],
+        ]
+    );
+    made(&mut g, 101);
+    ticks(&mut vm, &mut g, 3, 1);
+    vm.flush_queue(&mut g);
+    assert_eq!(g.calls_to("spawn_objective").len(), 2);
 
-    g.objectives.insert(100, None);
+    // Held, a ball scores each second.
     vm.fire(&mut g, Input::Pickup(1, 100));
     g.objectives.insert(100, Some(1));
     assert_eq!(g.calls_to("role_traits"), vec![&vec![player(1), Arg::Bool(true)]]);
-    ticks(&mut vm, &mut g, 2, 29);
+    ticks(&mut vm, &mut g, 4, 29);
     assert!(scores(&g).is_empty());
-    ticks(&mut vm, &mut g, 31, 1);
+    ticks(&mut vm, &mut g, 33, 1);
     assert_eq!(scores(&g), vec![(1, 1)]);
 
-    // Dropped: no more points, and the ball returns after the reset time.
-    vm.fire(&mut g, Input::Drop(1, 100));
-    g.objectives.insert(100, None);
-    ticks(&mut vm, &mut g, 32, 30 * 30 - 1);
+    // The second ball is picked up and dropped: no points, and it returns
+    // after the reset time, by the script, to its own spawn.
+    vm.fire(&mut g, Input::Pickup(0, 101));
+    vm.fire(&mut g, Input::Drop(0, 101));
+    g.objectives.insert(101, None);
+    ticks(&mut vm, &mut g, 34, 30 * 30 - 1);
     vm.flush_queue(&mut g);
+    assert!(g.calls_to("delete").is_empty());
+    ticks(&mut vm, &mut g, 34 + 899, 1);
+    vm.flush_queue(&mut g);
+    assert_eq!(g.calls_to("delete"), vec![&vec![object(101)]]);
+    assert_eq!(
+        g.calls_to("spawn_objective").last(),
+        Some(&&vec![Arg::Tag(Some(BALL.into())), object(41), Arg::Team(None)])
+    );
     assert!(g.calls_to("reset_objective").is_empty());
-    ticks(&mut vm, &mut g, 32 + 899, 1);
+    assert_eq!(scores(&g).first(), Some(&(1, 1)));
+
+    // The old object may stay in the registry; it is ignored, and the
+    // replacement takes the spawn the old one had.
+    made(&mut g, 102);
+    ticks(&mut vm, &mut g, 934, 2000);
     vm.flush_queue(&mut g);
-    assert_eq!(g.calls_to("reset_objective"), vec![&vec![object(100)]]);
-    assert_eq!(scores(&g), vec![(1, 1)]);
+    assert_eq!(g.calls_to("delete"), vec![&vec![object(101)]]);
+    assert_eq!(g.calls_to("spawn_objective").len(), 3);
 }
 
 // ---- Juggernaut ----
@@ -406,19 +444,21 @@ fn king_moves_the_hill_on_its_own_option() {
     g.numbers.extend([(500, 0), (510, 1)]);
     let mut vm = start_scripted(builtin::KING, &mut g, 5, &[("move_time", 2)]);
     assert_eq!(vm.global("hill"), Some(0));
-    ticks(&mut vm, &mut g, 2, 119);
+    // Two seconds are 60 ticks at 30 ticks a second (`caps::TICKS_PER_SECOND`);
+    // the timer set at tick 1 runs out at tick 61.
+    ticks(&mut vm, &mut g, 2, 57);
     assert_eq!(vm.global("hill"), Some(0));
-    ticks(&mut vm, &mut g, 121, 2);
+    ticks(&mut vm, &mut g, 59, 5);
     assert_eq!(vm.global("hill"), Some(1));
 }
 
 // ---- CTF and Assault ----
 
-#[test]
-fn ctf_capture_scores_and_returns_the_flag() {
+/// Two teams' flag stands (objects 10 and 11) and a game on the script
+/// index, whose type area is zero.
+fn ctf_game() -> FakeGame {
     let mut g = FakeGame::with_players(2);
     g.players.get_mut(&1).unwrap().team = 1;
-    g.variant.insert("engine".into(), 1);
     g.variant.insert("team_play".into(), 1);
     g.labelled.insert(
         "ctf_flag_spawn".into(),
@@ -428,69 +468,167 @@ fn ctf_capture_scores_and_returns_the_flag() {
         ],
     );
     g.object_teams.extend([(10, 0), (11, 1)]);
-    let mut vm = start(builtin::CTF, &mut g, 2);
+    g
+}
+
+fn flag_at(o: u32, team: u8, g: &mut FakeGame) {
+    g.objectives.insert(o, None);
+    g.object_teams.insert(o, team);
+}
+
+fn made_at(tag: &str, at: u32, team: Option<u8>) -> Vec<Arg> {
+    vec![Arg::Tag(Some(tag.into())), object(at), Arg::Team(team)]
+}
+
+#[test]
+fn ctf_capture_scores_and_returns_the_flag() {
+    let mut g = ctf_game();
+    // The record's own fields are ignored on the script index.
+    g.variant.insert("ctf_touch_return".into(), 1);
+    let mut vm = start_scripted(builtin::CTF, &mut g, 2, &[]);
     vm.flush_queue(&mut g);
     assert_eq!(
         g.calls_to("spawn_objective"),
-        vec![
-            &vec![Arg::Tag(Some(FLAG.into())), object(10), Arg::Team(Some(0))],
-            &vec![Arg::Tag(Some(FLAG.into())), object(11), Arg::Team(Some(1))],
-        ]
+        vec![&made_at(FLAG, 10, Some(0)), &made_at(FLAG, 11, Some(1))]
     );
 
     // Team 1's flag is object 21; player 0 takes it.
-    g.objectives.insert(21, None);
-    g.object_teams.insert(21, 1);
+    flag_at(21, 1, &mut g);
     vm.fire(&mut g, Input::Pickup(0, 21));
     g.objectives.insert(21, Some(0));
     assert_eq!(g.calls_to("role_traits"), vec![&vec![player(0), Arg::Bool(true)]]);
     ticks(&mut vm, &mut g, 2, 5);
     assert!(scores(&g).is_empty());
 
-    // At its own flag's spawn: a capture, and the flag goes home.
+    // At its own flag's spawn: a capture, and the flag goes home: the old
+    // object is removed and another is made at team 1's stand.
     g.inside.insert((0, 10));
     ticks(&mut vm, &mut g, 7, 1);
     vm.flush_queue(&mut g);
     assert_eq!(scores(&g), vec![(0, 1)]);
-    assert_eq!(g.calls_to("reset_objective"), vec![&vec![object(21)]]);
+    assert_eq!(g.calls_to("delete"), vec![&vec![object(21)]]);
+    assert_eq!(g.calls_to("spawn_objective").last(), Some(&&made_at(FLAG, 11, Some(1))));
+    assert!(g.calls_to("reset_objective").is_empty());
     assert_eq!(g.calls_to("role_traits").last(), Some(&&vec![player(0), Arg::Bool(false)]));
-    g.inside.clear();
+
+    // The removed object may stay in the registry still held; it scores
+    // nothing more.
+    ticks(&mut vm, &mut g, 8, 10);
+    vm.flush_queue(&mut g);
+    assert_eq!(scores(&g), vec![(0, 1)]);
+    assert_eq!(g.calls_to("delete").len(), 1);
+}
+
+#[test]
+fn ctf_returns_a_dropped_flag_by_time_and_by_touch() {
+    let mut g = ctf_game();
+    let mut vm = start_scripted(
+        builtin::CTF,
+        &mut g,
+        2,
+        &[("reset_time", 2), ("touch_return", 1)],
+    );
+    vm.flush_queue(&mut g);
 
     // Dropped, it returns after the reset time.
-    g.variant.insert("ctf_reset_time".into(), 2);
+    flag_at(21, 1, &mut g);
     vm.fire(&mut g, Input::Pickup(0, 21));
     vm.fire(&mut g, Input::Drop(0, 21));
     g.objectives.insert(21, None);
-    ticks(&mut vm, &mut g, 8, 59);
+    ticks(&mut vm, &mut g, 2, 59);
     vm.flush_queue(&mut g);
-    assert_eq!(g.calls_to("reset_objective").len(), 1);
-    ticks(&mut vm, &mut g, 67, 1);
+    assert!(g.calls_to("delete").is_empty());
+    ticks(&mut vm, &mut g, 61, 1);
     vm.flush_queue(&mut g);
-    assert_eq!(g.calls_to("reset_objective").len(), 2);
+    assert_eq!(g.calls_to("delete"), vec![&vec![object(21)]]);
+    assert_eq!(g.calls_to("spawn_objective").last(), Some(&&made_at(FLAG, 11, Some(1))));
+    // It is not returned twice.
+    ticks(&mut vm, &mut g, 62, 120);
+    vm.flush_queue(&mut g);
+    assert_eq!(g.calls_to("delete").len(), 1);
 
     // With touch return, its own team's touch returns it at once.
-    g.variant.insert("ctf_touch_return".into(), 1);
+    flag_at(22, 1, &mut g);
+    vm.fire(&mut g, Input::Pickup(0, 22));
+    vm.fire(&mut g, Input::Drop(0, 22));
+    g.objectives.insert(22, None);
+    vm.fire(&mut g, Input::Pickup(1, 22));
+    vm.flush_queue(&mut g);
+    assert_eq!(g.calls_to("delete"), vec![&vec![object(21)], &vec![object(22)]]);
+    assert_eq!(g.calls_to("spawn_objective").len(), 4);
+    assert!(scores(&g).is_empty());
+
+    // Without it, the touch changes nothing.
+    let mut g = ctf_game();
+    let mut vm = start_scripted(builtin::CTF, &mut g, 2, &[("reset_time", 0)]);
+    flag_at(21, 1, &mut g);
     vm.fire(&mut g, Input::Pickup(0, 21));
     vm.fire(&mut g, Input::Drop(0, 21));
     vm.fire(&mut g, Input::Pickup(1, 21));
+    ticks(&mut vm, &mut g, 2, 1000);
     vm.flush_queue(&mut g);
-    assert_eq!(g.calls_to("reset_objective").len(), 3);
+    assert!(g.calls_to("delete").is_empty());
+}
+
+#[test]
+fn ctf_flag_at_home_needs_the_teams_own_flag_at_its_stand() {
+    let mut g = ctf_game();
+    let mut vm = start_scripted(
+        builtin::CTF,
+        &mut g,
+        2,
+        &[("flag_at_home", 1), ("touch_return", 1)],
+    );
+    // Team 0's flag is out with player 1; player 0 holds team 1's flag at
+    // team 0's stand, and cannot capture.
+    flag_at(20, 0, &mut g);
+    flag_at(21, 1, &mut g);
+    vm.fire(&mut g, Input::Pickup(1, 20));
+    g.objectives.insert(20, Some(1));
+    vm.fire(&mut g, Input::Pickup(0, 21));
+    g.objectives.insert(21, Some(0));
+    g.inside.insert((0, 10));
+    ticks(&mut vm, &mut g, 2, 5);
+    assert!(scores(&g).is_empty());
+
+    // Dropped and touched by team 0, the flag returns, and the capture scores.
+    vm.fire(&mut g, Input::Drop(1, 20));
+    g.objectives.insert(20, None);
+    vm.fire(&mut g, Input::Pickup(0, 20));
+    g.objectives.insert(20, None);
+    ticks(&mut vm, &mut g, 7, 1);
+    vm.flush_queue(&mut g);
     assert_eq!(scores(&g), vec![(0, 1)]);
+    assert_eq!(g.calls_to("delete"), vec![&vec![object(20)], &vec![object(21)]]);
+}
+
+#[test]
+fn ctf_with_one_flag_makes_only_the_defenders() {
+    let mut g = ctf_game();
+    let mut vm = start_scripted(builtin::CTF, &mut g, 2, &[("flag_type", 1)]);
+    vm.flush_queue(&mut g);
+    // The defender swaps at each round start, from team 1 to team 0 first.
+    assert_eq!(g.calls_to("spawn_objective"), vec![&made_at(FLAG, 10, Some(0))]);
+    assert_eq!(vm.global("defender"), Some(0));
+    vm.fire(&mut g, Input::RoundStart);
+    vm.flush_queue(&mut g);
+    assert_eq!(g.calls_to("spawn_objective").last(), Some(&&made_at(FLAG, 11, Some(1))));
+    assert_eq!(g.calls_to("spawn_objective").len(), 2);
 }
 
 #[test]
 fn assault_arms_a_bomb_on_the_enemy_plate() {
     let mut g = FakeGame::with_players(2);
     g.players.get_mut(&1).unwrap().team = 1;
-    g.variant.insert("engine".into(), 9);
-    g.variant.insert("assault_arm_time".into(), 1);
     g.labelled.insert("assault_bomb_spawn".into(), vec![Placed { placement: 0, object: 10 }]);
     g.labelled.insert("assault_bomb_return".into(), vec![Placed { placement: 1, object: 12 }]);
     g.object_teams.extend([(10, 0), (12, 1)]);
-    let mut vm = start(builtin::ASSAULT, &mut g, 2);
+    let mut vm = start_scripted(builtin::ASSAULT, &mut g, 2, &[("arm_time", 1)]);
+    vm.flush_queue(&mut g);
+    assert_eq!(g.calls_to("spawn_objective"), vec![&made_at(BOMB, 10, Some(0))]);
     // Player 0 carries team 0's bomb onto team 1's plate.
+    flag_at(30, 0, &mut g);
     g.objectives.insert(30, Some(0));
-    g.object_teams.insert(30, 0);
     vm.fire(&mut g, Input::Pickup(0, 30));
     g.inside.insert((0, 12));
     ticks(&mut vm, &mut g, 2, 29);
@@ -498,7 +636,46 @@ fn assault_arms_a_bomb_on_the_enemy_plate() {
     ticks(&mut vm, &mut g, 31, 1);
     vm.flush_queue(&mut g);
     assert_eq!(scores(&g), vec![(0, 1)]);
-    assert_eq!(g.calls_to("reset_objective"), vec![&vec![object(30)]]);
+    assert_eq!(g.calls_to("delete"), vec![&vec![object(30)]]);
+    assert_eq!(g.calls_to("spawn_objective").last(), Some(&&made_at(BOMB, 10, Some(0))));
+    assert!(g.calls_to("reset_objective").is_empty());
+}
+
+#[test]
+fn assault_with_one_bomb_is_neutral_and_armed_on_the_defenders_plate() {
+    let mut g = FakeGame::with_players(2);
+    g.players.get_mut(&1).unwrap().team = 1;
+    g.labelled.insert("assault_bomb_spawn".into(), vec![Placed { placement: 0, object: 14 }]);
+    g.labelled.insert(
+        "assault_bomb_return".into(),
+        vec![Placed { placement: 1, object: 12 }, Placed { placement: 2, object: 13 }],
+    );
+    g.object_teams.extend([(12, 0), (13, 1)]);
+    let mut vm = start_scripted(
+        builtin::ASSAULT,
+        &mut g,
+        2,
+        &[("flag_type", 1), ("arm_time", 1)],
+    );
+    vm.flush_queue(&mut g);
+    // One neutral bomb, and team 0 defends the first round.
+    assert_eq!(g.calls_to("spawn_objective"), vec![&made_at(BOMB, 14, None)]);
+    assert_eq!(vm.global("defender"), Some(0));
+    // The attacker, player 1, carries it onto the defenders' plate only.
+    flag_at(31, 0, &mut g);
+    g.object_teams.remove(&31);
+    vm.fire(&mut g, Input::Pickup(1, 31));
+    g.objectives.insert(31, Some(1));
+    g.inside.insert((1, 13));
+    ticks(&mut vm, &mut g, 2, 60);
+    assert!(scores(&g).is_empty());
+    g.inside.clear();
+    g.inside.insert((1, 12));
+    ticks(&mut vm, &mut g, 62, 31);
+    vm.flush_queue(&mut g);
+    assert_eq!(scores(&g), vec![(1, 1)]);
+    assert_eq!(g.calls_to("delete"), vec![&vec![object(31)]]);
+    assert_eq!(g.calls_to("spawn_objective").last(), Some(&&made_at(BOMB, 14, None)));
 }
 
 // ---- Territories ----

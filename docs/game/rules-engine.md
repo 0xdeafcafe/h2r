@@ -1382,7 +1382,7 @@ Actions:
 | `create(tag, at)`, `delete(o)` | `OBJECT_DELETE` `0xb8540`; creation as Forge's ([forge.md](forge.md)) | named; traced | `objects.create`, `objects.delete` |
 | `register_objective(o, team)`, unregister, picked up, dropped | `0x15e050` (object, team; no check for a duplicate), `0x15e130`, `0x15e250`, `0x15e460`; every object a host script can name is already registered, since Forge labels are not built | traced | core |
 | `spawn_objective(tag, at, team)`: create an objective at a placement and register it | as Oddball's `0x2bc1f0` does: placement `0xb7930`, `0xb7b40`, `0x15e050`, `0xa7870`. Not built: the host resolves no tag path to a tag datum (the loaded map's names are only in its file), and has no `at` but a registered objective | traced | core |
-| `reset_objective(o)`: return an objective to where it spawned | Oddball: `ODDBALL_BALL_RETURN` `0x2bc340`, the ball's spawn flag through `OBJECTIVE_RETURN` `0x15e360`. CTF's flag return reaches `0x15e360` at `0x242b41` from a routine whose start is not read | named on Oddball | core |
+| `reset_objective(o)`: return an objective to where it spawned | Oddball: `ODDBALL_BALL_RETURN` `0x2bc340`, the ball's spawn flag through `OBJECTIVE_RETURN` `0x15e360`. CTF's flag return reaches `0x15e360` at `0x242b41` from a routine whose start is not read. `ctf.rules` and `oddball.rules` do not call it: a script returns an object with `delete` and `spawn_objective` | named on Oddball | core |
 | `role_traits(p, on)`: give or take the script role | the VM's player mask and the host's answers at `ENGINE_TRAIT_QUERY` and the retail overrides | named | core |
 | barriers and other map changes | create and delete at labels, as above; a barrier is a labelled placement (forge-features.md "Invisible barriers") | not built | `objects.create`, `objects.delete` |
 | `place_squad(s, class, n, label)` from the palette with its team, `hunt(s)`, erase | `AI_SQUAD_PLACE` `0x201520`, `AI_SET_TEAM` `0x275b60`, `AI_SET_ORDERS` `0x275cb0`, `AI_ERASE` `0x2736c0`, through `actor_net::squads::SquadEntry` (firefight.md "Guest boundary") | named; game runs R1, R2 pending | `ai.squads` |
@@ -2005,10 +2005,10 @@ tests only.
 | Script | Waits on | Not reproduced |
 |---|---|---|
 | Slayer | nothing | |
-| Oddball | `spawn_objective` | the Oddball globals; the reset delay is a script option |
+| Oddball | `spawn_objective` | the Oddball globals; the carrier's speed and toughness; the reset delay and the ball count are script options; a dropped ball returns by `delete` and a new ball at its spawn |
 | King of the Hill | the record's `king_moving_hill`, whose offset the host does not read | the KotH globals; how the next hill is chosen (the script takes the next number); the type area's other King settings |
 | Juggernaut | nothing | who takes the role after a suicide or a quit (the script draws one); whether the kill that takes the role scores; the record's own Juggernaut settings (the script's options take their defaults); a Juggernaut out of lives keeps the role |
-| CTF and Assault | `spawn_objective`; `reset_objective`, made only on Oddball | sudden death; the CTF and Assault globals; a team's second plate; detonation after arming |
+| CTF and Assault | `spawn_objective` | sudden death; the CTF and Assault globals; a team's second plate; detonation after arming; the flag type, reset time, touch return, flag at home and arming time are script options, and a flag or bomb returns by `delete` and a new one at its stand |
 | Territories | `register_objective` | the Territories globals; the marker's index as its registration team; a capture's decay; the score interval is a script option |
 
 **Parity method.** The lifted engine is the oracle. A headless match is

@@ -838,6 +838,11 @@ pub struct Carried {
     pub name: String,
 }
 
+/// Whether `hash` is one of the built-in ports ([`builtins`]).
+fn is_builtin(hash: &Sha256) -> bool {
+    builtins().iter().any(|b| b.id == *hash)
+}
+
 /// The built-in script a `uses` script's game runs: the one of the type
 /// it uses ([`builtins`], `rules::builtin::of_type`). A type with none is
 /// refused by name.
@@ -1265,11 +1270,25 @@ impl Runtime {
         // The bots read a hill from the same areas (`bots::objective`).
         ::bots::objective::set_flag_areas(table.flag_areas());
         // The record's option bits are its script's; a carried script has
-        // no options, so the built-in plays its own defaults.
-        let options = if script.mode == Mode::Rules && carried.is_none() {
+        // no options, so the built-in plays its own defaults. A built-in under a retail record (no script, or a `uses` script's
+        // settings) takes its type-area settings as options
+        // ([`guest::retail_options`]); a record on the script index has no
+        // type area and keeps the record's options.
+        let base = if script.mode == Mode::Rules && carried.is_none() {
             script.options
         } else {
             ir.default_options()
+        };
+        let options = if is_builtin(&hash) {
+            match guest::retail_options(m, &ir) {
+                Ok(Some(options)) => options,
+                Ok(None) => base,
+                Err(why) => {
+                    return self.refuse(full, format!("the record's settings do not fit the built-in: {why}"));
+                }
+            }
+        } else {
+            base
         };
         let name = ir.header.name.clone();
         let mut vm = match Vm::new(ir, options, SEED) {

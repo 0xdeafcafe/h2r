@@ -2,41 +2,69 @@
 // second a player holds one, carrier traits, and a dropped ball's reset.
 // docs/game/rules-engine.md, "Porting the seven engines".
 //
+// The script owns its balls: it makes them one at a time at the spawns,
+// and returns a dropped one by removing it and making another at its spawn,
+// so the Oddball engine's own ball return (`reset_objective`) never runs.
+// The record's type area is zero on the script index, so the ball count is
+// a script option. The weapon system attaches a carried item and keeps the
+// objective registry (`o.carrier`, `is_objective`); no engine slot runs.
 // Entries a host cannot make yet (`verify::unhostable`):
 //   spawn_objective  traced (Oddball's ball spawn 0x2bc1f0)
 // Not reproduced: the Oddball globals `[0x51ecc4]` (each ball's spawn index)
-// are not written; retail takes the ball tag from the globals tag's
+// are not written; the carrier's speed and toughness settings are not
+// options yet; retail takes the ball tag from the globals tag's
 // multiplayer block, this script names the path; the reset delay is a
 // script option, as retail's is not traced.
 rules "Oddball" 1
 type oddball
+requires objects.delete
 
 label oddball_spawn: objects
 
 // Retail's init takes at most three type-4 spawns (0x2bc2e0).
 const most_balls = 3
 
+option ball_count: int 1..3 = 1 "Ball count" "How many balls are in play"
 option reset_time: time 5s..60s = 30s "Ball reset" "How long a dropped ball lies before it returns"
 
+// A ball's spawn, by its place in the label's order. A made ball is not
+// an object the script can name until the next tick, so one is made at a
+// time (`pending` is the spawn of the one on its way) and the next tick
+// gives it its spawn.
+object var slot: int = -1
+object var gone: bool = false
 object var moved: bool = false
 object var idle: time = 0t
 player var held: time = 0t
-global var placed: int = 0
+global var made: int = 0
+global var pending: int = -1
+global var walk: int = 0
 
-on round_start {
-    placed = 0
-    for each players p { p.held = 0t }
-    let balls = clamp(variant.oddball_ball_count, 1, most_balls)
+fn make(n: int) {
+    pending = n
+    walk = 0
     for each oddball_spawn s {
-        if placed < balls {
-            spawn_objective("objects/weapons/multiplayer/ball/ball", s, none)
-            placed = placed + 1
-        }
+        if walk == n { spawn_objective("objects/weapons/multiplayer/ball/ball", s, none) }
+        walk = walk + 1
     }
 }
 
+on round_start {
+    made = 0
+    pending = -1
+    for each players p { p.held = 0t }
+    // A ball left from the last round goes.
+    for each objectives b where not b.gone {
+        b.gone = true
+        delete(b)
+    }
+    // The first ball at once; the others as each is seen.
+    made = 1
+    make(0)
+}
+
 on pickup(p, o) {
-    if is_objective(o) {
+    if is_objective(o) and not o.gone {
         o.moved = true
         o.idle = 0t
         role_traits(p, true)
@@ -44,11 +72,20 @@ on pickup(p, o) {
 }
 
 on drop(p, o) {
-    if is_objective(o) { role_traits(p, false) }
+    if is_objective(o) and not o.gone { role_traits(p, false) }
 }
 
 on tick {
-    for each objectives b {
+    // The ball made last tick takes the spawn it was made at.
+    for each objectives b where not b.gone and b.slot < 0 {
+        b.slot = pending
+        pending = -1
+    }
+    if pending < 0 and made < clamp(ball_count, 1, most_balls) {
+        make(made)
+        made = made + 1
+    }
+    for each objectives b where not b.gone {
         let p = b.carrier
         if p != none {
             p.held = p.held + 1t
@@ -58,10 +95,11 @@ on tick {
             }
         } else if b.moved {
             b.idle = b.idle + 1t
-            if b.idle >= reset_time {
-                reset_objective(b)
+            if b.idle >= reset_time and pending < 0 {
+                b.gone = true
                 b.moved = false
-                b.idle = 0t
+                delete(b)
+                make(b.slot)
             }
         }
     }
