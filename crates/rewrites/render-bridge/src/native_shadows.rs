@@ -187,7 +187,7 @@ fn filter_refused(why: &'static str) {
 /// Replace the current object shadow's filter with its scene's native
 /// quads. Refusal leaves every guest quad in place.
 pub fn filter(mem: &mut dyn GuestMemory, esp: u32, mxcsr: u32, x87_control: u16) -> bool {
-    let Some(filter) = crate::scene_step::shadow_filter(mem, esp, mxcsr, x87_control) else {
+    let Some(filter) = crate::scene_step::shadow_filter(mem, mxcsr, x87_control) else {
         filter_refused("program");
         return false;
     };
@@ -394,7 +394,8 @@ impl Feature for NativeShadows {
             .observe_before(&points::OBJECT_SHADOW_FILTER, "object shadow filter", |o| {
                 let esp = o.cpu.esp;
                 let mut mem = o.guest();
-                if o.cpu.eax == 10 && mem.u32(esp).ok() == Some(0x0003_29de) {
+                use engine::render::light_gather::{object_shadows::caster::FILTER_RETURN, passes};
+                if passes::caller(&*mem, esp) == Some(FILTER_RETURN) {
                     filter(&mut *mem, esp, o.cpu.mxcsr, o.cpu.x87.control);
                 }
             })
@@ -404,7 +405,8 @@ impl Feature for NativeShadows {
             "object shadow filter end",
             |o| {
                 let mut mem = o.guest();
-                finish_filter(&mut *mem, o.cpu.esp);
+                // The wrapper's bare RET pops its return slot.
+                finish_filter(&mut *mem, o.cpu.esp.wrapping_sub(4));
             },
         );
         b.raw()
