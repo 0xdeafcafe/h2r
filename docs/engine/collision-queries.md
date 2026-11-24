@@ -320,8 +320,10 @@ compare:
   `|ny| >= |nx|`, else x. The `u`, `v` axes come from the guest's table at
   `0x440b94`, read at decode time. The breakable check is inside it:
   `mask != 0`, surface flag 8, and `(breakable as i16) < (count as i16)`,
-  with bit `mask[b >> 5] & (1 << (b & 31))`. Edges are visited in retail
-  order, scalar. The 8-lane form is not built yet.
+  with bit `mask[b >> 5] & (1 << (b & 31))`. Short cached rings use
+  four-edge groups with precomputed deltas and the reference's projection
+  row. A packed range failure replays the scalar test in guest order to
+  preserve early rejection. Long or uncached rings use the scalar test.
 
 ## Floats
 
@@ -601,8 +603,8 @@ H2_DISC=/path/to/halo2.iso H2_XBE=/path/to/default.xbe cargo test --release -p e
 ## Gaps
 
 The segment disc sweep, the MOPP sweep over cluster, `coll` and `phmo`
-programs, debug round-robin source checks and the packed ring test are
-later slices. G and H are differential-only until their callers' use of
+programs and debug round-robin source checks are later slices.
+G and H are differential-only until their callers' use of
 the scratch state is read. Their FP observers count each recursive G
 entry, so the census includes recursion. The 512-cluster and
 0x800-object-slot bounds come from the globals that follow the mark

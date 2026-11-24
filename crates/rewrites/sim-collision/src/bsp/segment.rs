@@ -436,11 +436,9 @@ impl<G: GuestRead> Walk<'_, G> {
 
     /// `0x1debd0`: a breakable surface whose bit is clear is never inside;
     /// otherwise the point is inside when no edge has
-    /// `(Bv - Av) * (pu - Au) - (pv - Av) * (Bu - Au) > 0`. The edges are
-    /// tested in ring order and the first rejection ends the test, as in
-    /// the guest.
-    fn inside(&mut self, s: u32, [ua, va]: [usize; 2], u: u32, v: u32) -> Result<bool, Bail> {
-        let surface = *self.bsp.surfaces.get(s as usize).ok_or(Bail::Data)?;
+    /// `(Bv - Av) * (pu - Au) - (pv - Av) * (Bu - Au) > 0`.
+    fn inside(&mut self, s: u32, axes: [usize; 2], u: u32, v: u32) -> Result<bool, Bail> {
+        let surface = self.bsp.surfaces.get(s as usize).ok_or(Bail::Data)?;
         let q = self.q;
         if q.mask != 0
             && surface.flags & 8 != 0
@@ -453,26 +451,6 @@ impl<G: GuestRead> Walk<'_, G> {
                 return Ok(false);
             }
         }
-        let fp = &mut self.fp;
-        self.bsp.with_surface_ring(self.g, s, &surface, |ring| {
-            for e in ring {
-                let (au, av) = (e.a[ua], e.a[va]);
-                let (bu, bv) = (e.b[ua], e.b[va]);
-                let pu = fp.sub(u, au);
-                let pv = fp.sub(v, av);
-                let ev = fp.sub(bv, av);
-                let eu = fp.sub(bu, au);
-                let left = fp.mul(ev, pu);
-                let right = fp.mul(pv, eu);
-                let cross = fp.sub(left, right);
-                if !fp.exact() {
-                    return Err(Bail::Float);
-                }
-                if above(cross, 0) {
-                    return Ok(false);
-                }
-            }
-            Ok(true)
-        })
+        self.bsp.ring_contains(self.g, s, surface, axes, [u, v], &mut self.fp)
     }
 }
