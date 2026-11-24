@@ -777,6 +777,23 @@ impl GpuWorld {
         held
     }
 
+    /// Rewrite the textures that hold material `material`'s base map (the
+    /// editor's base look, `HostStage::BaseMap`) with `image`, as
+    /// [`GpuWorld::rewrite_image`] does for a tag's image: the viewport
+    /// follows a painted bitmap. Returns how many textures were written;
+    /// a different size, level count or format refuses them all.
+    pub fn rewrite_base_map(&self, queue: &wgpu::Queue, material: u16, image: &Image) -> Result<usize, ImageRefusal> {
+        let want = crate::look::Stage::Host(crate::look::HostStage::BaseMap(material));
+        let mut held = Vec::new();
+        let mut layers: Vec<_> = self.layers.iter().collect();
+        layers.sort_by_key(|(l, _)| **l);
+        for (_, f) in layers {
+            held.extend(f.held_stage(want));
+        }
+        let decoded = held_stages(&held).into_iter().map(|n| (n, image.clone())).collect();
+        rewrite_held(queue, &held, &decoded)
+    }
+
     /// The stages of the world's textures that sample image `image` of
     /// `bitmap`, ascending, each once: what [`GpuWorld::rewrite_image`]
     /// needs decoded (a palettized image expands through its stage's

@@ -555,7 +555,13 @@ impl FogSet {
     /// Every texture the passes' stages sample as image `image` of
     /// `bitmap`, with the stage and its signed channels, each once.
     pub fn held(&self, bitmap: map::TagId, image: u32) -> Vec<crate::gpu::Held> {
-        let want = Stage::Bitmap { bitmap, image };
+        self.held_stage(Stage::Bitmap { bitmap, image })
+    }
+
+    /// Every texture the passes' stages sample as `want`, with the stage
+    /// and its signed channels, each once: [`FogSet::held`] for a stage
+    /// no tag names (the editor's base maps, `HostStage::BaseMap`).
+    pub fn held_stage(&self, want: Stage) -> Vec<crate::gpu::Held> {
         let mut materials: Vec<_> = self.materials.iter().collect();
         materials.sort_by_key(|(m, _)| **m);
         let mut out = Vec::new();

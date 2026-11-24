@@ -10,6 +10,7 @@ pub(crate) mod area;
 pub(crate) mod mirror;
 pub(crate) mod nav;
 pub(crate) mod playtest;
+mod paint;
 
 use std::collections::BTreeSet;
 use dear_imgui_rs::{Key, MouseButton, TextureId, Ui};
@@ -24,6 +25,13 @@ use scenario_edit::{BlockKind, Session, geometry};
 use crate::app::{Action, App};
 use crate::camera;
 use crate::play::select;
+
+/// Draws the Textures tool's painted bitmaps in `vp`'s native level, as the
+/// live viewport does (`view.snapshot` builds its own): how many textures
+/// were written (docs/editor/realtime-edits.md, R15).
+pub(crate) fn follow_paint(vp: &mut Viewport, queue: &wgpu::Queue, app: &App) -> usize {
+    paint::Painted::default().sync(vp, queue, app).written
+}
 
 /// The gizmo's operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,6 +145,8 @@ pub struct ViewportView {
     /// first placed after the map opened gives the session new ones.
     /// The geometry session revision the native world last redrew.
     modeling_rev: Option<u64>,
+    /// The painted bitmaps the native level has drawn (R15).
+    painted: paint::Painted,
     native_models: Option<std::sync::Arc<scenario_edit::native_view::NativeModels>>,
     linked: BTreeSet<(BlockKind, usize)>,
     overlay_rev: Option<u64>,
@@ -187,6 +197,7 @@ impl ViewportView {
             sky_rev: None,
             markers_rev: None,
             modeling_rev: None,
+            painted: Default::default(),
             native_models: None,
             linked: BTreeSet::new(),
             overlay_rev: None,
@@ -255,6 +266,7 @@ impl ViewportView {
             let native = session.native_world().map_or(&[][..], |n| n.as_slice());
             vp.set_native(gpu.device, gpu.queue, native);
             self.world_rev = Some(session.world_rev());
+            self.painted.reset();
         }
         // The sky tag's sun and fog, as the document has them: a sun
         // direction written in the field panel moves the viewport's sun
@@ -280,6 +292,13 @@ impl ViewportView {
         if vp.lighting() != app.lighting {
             let native = session.native_world().map_or(&[][..], |n| n.as_slice());
             vp.set_lighting(gpu.device, gpu.queue, native, app.lighting);
+            self.painted.reset();
+        }
+        // The Textures tool's painted pixels, drawn over the base maps the
+        // upload made (docs/editor/realtime-edits.md, R15). Dropped edits
+        // upload the level again from the map as saved, on the next frame.
+        if self.painted.sync(vp, gpu.queue, app).reload {
+            self.world_rev = None;
         }
         // Its placed objects too, again whenever the session reads a new
         // tag's model; the scene draws only those with no native model.
