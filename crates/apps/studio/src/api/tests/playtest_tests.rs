@@ -445,3 +445,76 @@ fn playtest_run_names_what_a_map_lacks() {
     assert!(fake.w().batches.is_empty());
     assert_eq!(fake.w().builds, 0);
 }
+
+/// The playtest layers (slice PT5): hidden and empty before a run, each
+/// counting its marks once the matches end, a refused measure counting
+/// none and saying why, and shown ones changing the snapshot.
+#[test]
+fn playtest_layers_count_the_result_and_draw_in_the_snapshot() {
+    let t = Temp::new("playtest-layers");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    ready_map(&t, &mut api, &mut app);
+    let (mut p, fake) = provider(&t);
+    let names = [
+        "playtest_kills",
+        "playtest_deaths",
+        "playtest_spawns",
+        "playtest_traffic",
+        "playtest_flow",
+        "playtest_unvisited",
+        "playtest_sightlines",
+        "playtest_weapon_use",
+        "playtest_stuck",
+    ];
+    let rows = |api: &mut Api, app: &mut App| -> Vec<Value> {
+        let r = call(api, app, m::VIEW_LAYERS, Value::Null);
+        names
+            .iter()
+            .map(|n| r["layers"].as_array().unwrap().iter().find(|x| x["name"] == *n).unwrap().clone())
+            .collect()
+    };
+    for row in rows(&mut api, &mut app) {
+        assert_eq!((row["on"].clone(), row["count"].clone(), row["group"].clone()), (json!(false), json!(0), json!("Playtest")));
+        assert_eq!(row["refused"], Value::Null);
+    }
+
+    ok(&mut p, &mut app, m::PLAYTEST_RUN, json!({"preset": "probe", "seeds": 2}));
+    fake.end_all();
+    ok(&mut p, &mut app, m::PLAYTEST_STATUS, json!({}));
+    let r = rows(&mut api, &mut app);
+    // The invented matches have twelve kills each at one place, victims on
+    // three polygons; every other measure had too few events.
+    assert_eq!((r[0]["count"].clone(), r[1]["count"].clone()), (json!(1), json!(3)), "{r:?}");
+    assert_eq!(r[0]["refused"], Value::Null);
+    for row in &r[2..] {
+        assert_eq!(row["count"], 0, "{row}");
+        assert!(row["refused"].as_str().is_some_and(|s| s.contains("too few")), "{row}");
+    }
+
+    // The same result for a named game type; the result stays on show.
+    ok(&mut p, &mut app, m::PLAYTEST_RESULT, json!({"game_type": "slayer"}));
+    assert_eq!(app.playtest.game_type, "slayer");
+
+    // The layers draw over the map.
+    let out = t.path("playtest.png");
+    let params = json!({
+        "out": out, "size": [128, 96],
+        "camera": {"target": [0, 1, 0], "distance": 12, "yaw": 30, "pitch": 60}
+    });
+    call(&mut api, &mut app, m::VIEW_LAYERS, json!({"set": {"structure": false}}));
+    match api.call(&mut app, m::VIEW_SNAPSHOT, params.clone()) {
+        Err(e) if e.code == code::NO_GPU => return,
+        Ok(_) => {}
+        Err(e) => panic!("view.snapshot: {e}"),
+    }
+    let hidden = png_pixels(&out);
+    call(&mut api, &mut app, m::VIEW_LAYERS, json!({"set": {"playtest_kills": true, "playtest_deaths": true}}));
+    call(&mut api, &mut app, m::VIEW_SNAPSHOT, params.clone());
+    let shown = png_pixels(&out);
+    assert!(shown != hidden, "the kill and death layers must draw marks");
+    // A new result with nothing in it clears them.
+    ok(&mut p, &mut app, m::PLAYTEST_RUN, json!({"preset": "probe", "seeds": 3}));
+    call(&mut api, &mut app, m::VIEW_SNAPSHOT, params);
+    assert!(png_pixels(&out) == hidden, "a run with no match ended draws nothing");
+}

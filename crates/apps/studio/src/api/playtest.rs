@@ -116,9 +116,9 @@ impl Provider for Playtest {
         Some(match method {
             m::PLAYTEST_STATIC => run_static(app, &p),
             m::PLAYTEST_RUN => self.start(app, &p),
-            m::PLAYTEST_STATUS => self.status(&p),
-            m::PLAYTEST_RESULT => self.result(&p),
-            m::PLAYTEST_CANCEL => self.cancel(&p),
+            m::PLAYTEST_STATUS => self.status(app, &p),
+            m::PLAYTEST_RESULT => self.result(app, &p),
+            m::PLAYTEST_CANCEL => self.cancel(app, &p),
             _ => return None,
         })
     }
@@ -160,6 +160,7 @@ impl Playtest {
             .runner
             .start(source, &spec, &ready, now)
             .map_err(|e| err(code::FAILED, e))?;
+        self.publish(app, None);
         Ok(json!({
             "run": s.run,
             "build": s.build,
@@ -175,8 +176,19 @@ impl Playtest {
             .map_err(|e| err(code::INVALID_PARAMS, e))
     }
 
-    fn status(&mut self, p: &P) -> Reply {
+    /// Hands the newest run's result to the viewport's playtest layers and
+    /// the panel (`app::playtest_shown`), for `game_type` or the first
+    /// played.
+    fn publish(&self, app: &mut App, game_type: Option<&str>) {
+        match self.runner.run(None).ok().flatten() {
+            Some(r) => app.playtest.show(r, game_type),
+            None => app.playtest.clear(),
+        }
+    }
+
+    fn status(&mut self, app: &mut App, p: &P) -> Reply {
         self.pump();
+        self.publish(app, None);
         Ok(match self.the_run(p)? {
             None => json!({
                 "run": null, "state": "none", "preset": null, "build": null, "done": 0, "total": 0,
@@ -186,7 +198,7 @@ impl Playtest {
         })
     }
 
-    fn result(&mut self, p: &P) -> Reply {
+    fn result(&mut self, app: &mut App, p: &P) -> Reply {
         self.pump();
         let measure = p.opt_str("measure")?;
         if let Some(n) = measure
@@ -212,10 +224,12 @@ impl Playtest {
                 ),
             ));
         }
-        Ok(result_json(r, game_type, measure))
+        let reply = result_json(r, game_type, measure);
+        self.publish(app, game_type);
+        Ok(reply)
     }
 
-    fn cancel(&mut self, p: &P) -> Reply {
+    fn cancel(&mut self, app: &mut App, p: &P) -> Reply {
         let id = p.opt_str("run")?;
         let Some(source) = self.source.as_deref_mut() else {
             return Ok(json!({"cancelled": false}));
@@ -224,6 +238,7 @@ impl Playtest {
             .runner
             .cancel(source, id)
             .map_err(|e| err(code::INVALID_PARAMS, e))?;
+        self.publish(app, None);
         Ok(json!({"cancelled": cancelled}))
     }
 }

@@ -689,7 +689,7 @@ pub const METHODS: &[MethodDef] = &[
     def(
         m::VIEW_LAYERS,
         "Read the viewport legend, or apply a preset, layer switches and X-ray to the window and snapshots",
-        r#"{"set?":"{layer name: boolean}","preset?":"art|gameplay|collision|navigation|everything","xray?":"boolean"}"#,
+        r#"{"set?":"{layer name: boolean}","preset?":"art|gameplay|collision|navigation|playtest|everything","xray?":"boolean"}"#,
         r#"{"layers":"[{name,label,group,on,count,color}]","xray":"boolean"}"#,
         r#"{"preset":"everything","set":{"fog":false},"xray":true}"#,
     ),

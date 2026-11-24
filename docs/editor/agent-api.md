@@ -912,8 +912,8 @@ Notes on some:
   Counts include hidden entries. For example,
   `view.layers {"preset":"everything","set":{"fog":false},"xray":true}`
   shows every layer except fog and draws occluded overlays at quarter
-  strength. Presets are `art`, `gameplay`, `collision`, `navigation` and
-  `everything`.
+  strength. Presets are `art`, `gameplay`, `collision`, `navigation`,
+  `playtest` and `everything`.
   Individual switches apply after the preset. An invalid name or value
   rejects the entire request. The window and `view.snapshot` share these
   settings.
@@ -929,6 +929,13 @@ Notes on some:
   `kill_volumes`. The Navigation rows are `pathfinding`, `bot_nav` and
   `bot_spots`, counting sectors, bot polygons and spots; the bot rows
   count 0 until the bots' data has loaded (`nav.bots`).
+  The Playtest rows are `playtest_kills`, `playtest_deaths`,
+  `playtest_spawns`, `playtest_traffic`, `playtest_flow`,
+  `playtest_unvisited`, `playtest_sightlines`, `playtest_weapon_use` and
+  `playtest_stuck`; they start hidden and the Playtest and Everything
+  presets show them. Each `count` is its marks in the result `playtest.*`
+  last published (below), 0 with none; a row also has `refused`, the
+  measure's refusal text when it had too few events, else null.
 - **Trigger volumes.** `volume.list {}` returns `{volumes, kill_triggers,
   bsp_switches, selected, error}`. Each volume has its `index` in the
   scenario's trigger volume block, `name` (the string ID's text, or null),
@@ -1073,7 +1080,12 @@ Notes on some:
   too few. With `measure` it answers that one in full: `ok` and `value`
   (its bins) or `refused`. `playtest.cancel` stops the running run, or
   the one named, and answers `{cancelled}`; what came back stays. A call
-  names a run by its id (`r1`), or the newest.
+  names a run by its id (`r1`), or the newest. Each of `run`, `status`,
+  `result` and `cancel` publishes the newest run's result (for the
+  `game_type` of a `result` call, else the one already shown, else the
+  first played) to the viewport's playtest layers and the Playtest panel
+  (`app::playtest_shown`); `view.layers` counts them and `view.snapshot`
+  draws them.
 - **Renders.** `ui.render` draws on the CPU (no GPU needed); `view.snapshot`
   renders the open map offscreen through the viewport's own renderer
   (wgpu, no window) and answers `NO_GPU` on a machine without an adapter.

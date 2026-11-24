@@ -15,6 +15,7 @@ mod outliner;
 mod palette;
 mod play;
 mod playlists;
+pub mod playtest;
 pub mod problems;
 mod preview_switch;
 mod sound;
@@ -253,6 +254,7 @@ impl Studio {
         self.play.pending_window(ui, app, &self.keys.pending_edits);
         self.log_window(ui, app);
         self.problems_window(ui, app, &mut actions);
+        ui.window(&self.keys.playtest).build(|| playtest::draw(ui, app, &mut actions));
         if bar::is_map(app.tool) {
             ui.window(&self.keys.bytes).build(|| {
                 tags::hex(ui, app, &self.tags, &self.fonts, gpu, &mut self.map_list, &mut actions);

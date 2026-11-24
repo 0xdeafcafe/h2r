@@ -163,8 +163,27 @@ pub fn layer_color(id: scenario_edit::layers::LayerId) -> [f32; 3] {
         LayerId::Pathfinding => [0.3, 0.85, 0.7],
         LayerId::BotNav => [0.5, 0.6, 1.0],
         LayerId::BotSpots => [1.0, 0.5, 0.85],
+        LayerId::Playtest(layer) => playtest_color(layer),
         LayerId::Halo1 => [1.0, 0.55, 0.15],
         LayerId::Live => [0.42, 0.8, 0.55],
+    }
+}
+
+/// The playtest layers' colours: heat in red and violet, spawns graded
+/// green to red by the layer itself (this is its base), traffic and flow
+/// in blues, the lines in gold and white.
+pub fn playtest_color(layer: scenario_edit::layers::PlaytestLayer) -> [f32; 3] {
+    use scenario_edit::layers::PlaytestLayer as L;
+    match layer {
+        L::Kills => [1.0, 0.3, 0.2],
+        L::Deaths => [0.7, 0.3, 1.0],
+        L::Spawns => [0.4, 0.95, 0.4],
+        L::Traffic => [0.25, 0.65, 1.0],
+        L::Flow => [0.6, 0.9, 1.0],
+        L::Unvisited => [0.8, 0.8, 0.3],
+        L::Sightlines => [1.0, 0.85, 0.3],
+        L::WeaponUse => [0.3, 1.0, 0.85],
+        L::Stuck => [1.0, 0.55, 0.1],
     }
 }
 

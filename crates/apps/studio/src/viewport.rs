@@ -8,6 +8,7 @@
 //! a new entry where the cursor meets the level.
 pub(crate) mod mirror;
 pub(crate) mod nav;
+pub(crate) mod playtest;
 
 use std::collections::BTreeSet;
 use dear_imgui_rs::{Key, MouseButton, TextureId, Ui};
@@ -136,6 +137,9 @@ pub struct ViewportView {
     native_models: Option<std::sync::Arc<scenario_edit::native_view::NativeModels>>,
     linked: BTreeSet<(BlockKind, usize)>,
     overlay_rev: Option<u64>,
+    /// The playtest result and whether the bots' mesh was there when the
+    /// playtest layers last uploaded.
+    playtest_rev: Option<(u64, bool)>,
     layers: Option<Layers>,
     labels: Vec<mirror::Label>,
     live_scene: mirror::SceneCache,
@@ -177,6 +181,7 @@ impl ViewportView {
             native_models: None,
             linked: BTreeSet::new(),
             overlay_rev: None,
+            playtest_rev: None,
             layers: None,
             labels: Vec::new(),
             live_scene: Default::default(),
@@ -277,13 +282,16 @@ impl ViewportView {
             vp.set_layers(&app.layers);
             self.layers = Some(app.layers.clone());
         }
+        let playtest_rev = (app.playtest.rev, session.bot_nav().is_some());
         if world_changed || models_changed || layers_changed
+            || self.playtest_rev != Some(playtest_rev)
             || self.markers_rev != Some(session.markers_rev())
             || self.linked != live.linked
         {
             upload_placements(vp, gpu.device, app, &live.linked);
             self.labels = mirror::gameplay_labels(app);
             self.markers_rev = Some(session.markers_rev());
+            self.playtest_rev = Some(playtest_rev);
             self.linked.clone_from(&live.linked);
         }
         if world_changed || live_changed {
@@ -795,6 +803,7 @@ pub(crate) fn upload_placements(
     }
     upload_collision(vp, device, app);
     nav::upload(vp, device, app);
+    playtest::upload(vp, device, app);
 }
 
 /// A collision surface as the status line and inspector name it.

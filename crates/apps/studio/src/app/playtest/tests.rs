@@ -416,3 +416,33 @@ fn a_running_run_is_not_answered_from_the_cache_and_a_new_call_replaces_it() {
     assert_eq!(r.run(Some("r1")).unwrap().unwrap().state, State::Cancelled);
     assert_eq!(f.w().cancels, 1);
 }
+
+/// The result on show (slice PT5): taken from the run's matches that ended,
+/// again only when one more ends, dimmed by a stale mark, cleared with no run.
+#[test]
+fn the_shown_result_follows_the_run_and_marks_stale() {
+    use crate::app::playtest_shown::Shown;
+    let (_t, f, mut r) = setup("shown");
+    let mut shown = Shown::default();
+    assert!(!shown.is_shown());
+    go(&mut r, &f, &Spec { seeds: Some(2), ..Spec::default() }, &["Slayer"], 0.0).unwrap();
+    shown.show(r.run(None).unwrap().unwrap(), None);
+    assert!(shown.is_shown() && shown.measures.is_none() && shown.partial);
+    let first = shown.rev;
+    // The same run again changes nothing.
+    shown.show(r.run(None).unwrap().unwrap(), None);
+    assert_eq!(shown.rev, first);
+    // A match ends: measures, and a new revision for the viewport.
+    f.end(&f.jobs()[0]);
+    pump(&mut r, &f, 1.0);
+    shown.show(r.run(None).unwrap().unwrap(), None);
+    assert!(shown.measures.is_some() && shown.rev > first);
+    assert_eq!((shown.game_type.as_str(), shown.stale, shown.coarse), ("slayer", false, true));
+    // A newer build marks it stale, keeping the measures.
+    let before = shown.rev;
+    r.mark_stale("b2");
+    shown.show(r.run(None).unwrap().unwrap(), None);
+    assert!(shown.stale && shown.measures.is_some() && shown.rev > before);
+    shown.clear();
+    assert!(!shown.is_shown() && shown.measures.is_none());
+}

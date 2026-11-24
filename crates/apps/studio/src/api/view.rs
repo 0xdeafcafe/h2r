@@ -129,14 +129,22 @@ pub fn layers(app: &mut App, p: &P) -> Reply {
             .map_err(super::scenario::refused)?;
     }
     let rows: Vec<Value> = LayerId::all()
-        .map(|id| json!({
-            "name": id.id(),
-            "label": id.label(),
-            "group": id.group(),
-            "on": app.layers.visible(id),
-            "count": app.layer_count(id),
-            "color": crate::theme::layer_color(id),
-        }))
+        .map(|id| {
+            let mut row = json!({
+                "name": id.id(),
+                "label": id.label(),
+                "group": id.group(),
+                "on": app.layers.visible(id),
+                "count": app.layer_count(id),
+                "color": crate::theme::layer_color(id),
+            });
+            // A playtest layer whose measure had too few events says so.
+            if let LayerId::Playtest(layer) = id {
+                row["refused"] = json!(app.playtest.measures.as_ref()
+                    .and_then(|m| crate::viewport::playtest::refused(layer, m)));
+            }
+            row
+        })
         .collect();
     Ok(json!({ "layers": rows, "xray": app.layers.xray }))
 }
