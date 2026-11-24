@@ -266,6 +266,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `mirror` | `status`, `objects {kind?, near?, limit?, at_tick?}`, `pick {from? \| ray?}`, `aim_select {enabled?}`, `camera {mode?, target?}`, `player {to, facing?}`, `pending`, `apply {what, at?, peers?}` |
 | `view` | `camera {yaw, pitch, distance, target, focus, all, fly_speed}`, `snapshot {out, size, camera}`, `stats`, `layers {set?, preset?, xray?}` |
 | `script` | `list {filter?}`, `source {name?}`, `follow {name?, link}`, `uses {kind, name}`, `builtins {filter?, unnamed?}`, `doc {path}` ([rich-editors.md](rich-editors.md#scripts)) |
+| `strings` | `list {tag?, language?, query?, limit?, offset?}`: every `unic` string of the open map by name and language ([rich-editors.md](rich-editors.md#strings)) |
 | `rules` | `open {path? \| starter? \| source?, discard?}`, `get {text?}`, `set {source}`, `save {path?, reload?}`, `format`, `reload {mode?}`: the game type script editor ([editor-guide.md](editor-guide.md#game-type-scripts)) |
 | `hud` | `list {map \| package}`, `read {hud, state}`, `set {hud, widget, field, value, merge}`, `move {hud, widget, x, y, mode, merge}`, `render {hud, state, out}`, `check {hud, state}`, `save_as {path}` |
 | `geometry` | `list {model?}`, `open {target}`, `close {target?}`, `read {target?}`, `check {target?}` |
@@ -1505,6 +1506,24 @@ the window and the API stay one path.
   `api/tags.rs` registers `TagGraph` for `tag.tree`, `tag.refs` and
   `tag.kinds` (over `app/kinds.rs`).
   The tree and `tag.follow` share the reference reader with `tag.refs`.
+- **Strings (rich editors N1).** `api/strings.rs` registers `Strings` for
+  `strings.list`, a read of `tags::Localization` over the open map's
+  `unic` tags. It returns `{languages, tags, total, offset, limit,
+  truncated, strings, problems}`. `languages` lists the nine codes (`en`,
+  `ja`, `de`, `fr`, `es`, `it`, `ko`, `zh`, `pt`). `tags` has one row per
+  `unic` tag, `{tag, name, counts}`, with the number of strings each
+  language's span holds. `strings` has one row per string key of a tag,
+  `{tag, tag_name, id, name, texts}`: `id` is the packed string ID in hex,
+  `name` the identifier it resolves to (`null` when the map's name list
+  has none), and `texts` maps a language code to the text in that
+  language's span (a language without the key is absent). `tag` picks one
+  `unic` tag (an ID or name; another group is refused), `language` shows
+  one language's strings only, and `query` keeps the keys whose name, ID
+  or shown text contains it, case-insensitively. `limit` (default 200,
+  at most 5000) and `offset` page the rows; `truncated` says more follow.
+  A span that falls outside its table is named in `problems` and its
+  language is left out of that tag. A map with no readable locale tables
+  answers with no rows and `unavailable` giving the reason.
 - **Scripts (rich editors H1).** `api/scripts.rs` registers `Scripts`
   for `script.*`, over `app/scripts.rs`'s `Loaded`; `script.source`,
   `script.follow` and `script.doc` are `Action::Script` through

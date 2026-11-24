@@ -526,13 +526,28 @@ naming the script. On a converted Halo 1 map the conversion owns the
 scenario, so edits save as an overlay the converter applies, the way
 [modeling.md](modeling.md), "Converted Halo 1 maps" does for geometry.
 
+### Strings
+
+`strings.list {tag?, language?, query?, limit?, offset?}` lists the open
+map's `unic` strings (`api/strings.rs`, over `tags::Localization`;
+[agent-api.md](agent-api.md)). A `unic` tag holds no text: it selects, for
+each of the nine languages, a span of that language's locale table, and a
+string key can repeat across tags with different text. The list therefore
+groups by tag and key: one row per key of a tag, its identifier name
+resolved through the map's string list, and its text in each language the
+key has. `language` narrows the languages shown, `query` searches names,
+IDs and the shown texts, and `tag` narrows to one tag. Text is decoded the
+way the engine does, so a lossy character is U+FFFD. The write stays
+unbuilt for the reason in the table above. There is no Strings tool view
+yet; the method is the viewer.
+
 ### Other editors worth building
 
 | Editor | Payoff | Stands on | Blocked by |
 |---|---|---|---|
 | **Model poses and animations**: pick an animation, scrub it on the model | high: it is the preview every character, weapon and vehicle edit wants, and the face preview needs it | `tags::anim::AnimationGraph`, `anim_sample` (every retail codec), the native view | nothing; slice M1. Editing animation data is out of scope ([modeling.md](modeling.md)) |
 | **Sound audition**: play any sound, loop or dialogue line | high for little work | as "Sounds" | nothing; slice A1 |
-| **Strings**: every `unic` string by name and language, searched | medium: the first thing a map author changes | `tags::localization` (read only) | writing: string bytes live in the cache's language tables, outside the metadata, and no writer exists. Slice N1 is the viewer; the write is named, not sliced |
+| **Strings**: every `unic` string by name and language, searched | medium: the first thing a map author changes | `tags::localization` (read only) | writing: string bytes live in the cache's language tables, outside the metadata, and no writer exists. Slice N1 is the read, `strings.list` ([below](#strings)); the write is named, not sliced |
 | **Effects, particles, lights and flares** with a preview | high, but large | `tags::effects::{effect, particle, movement, contrail, light, lens}`, curves and colours from this page | a preview needs effect drawing in the native view, which is the game renderer's work first |
 | **Sky and fog** | medium | `tags::lighting`; the viewport already uses the sky's colour, sun and fog | nothing beyond colours and the field panel; no slice of its own |
 | **Damage, ballistics, weapon tuning** | medium | definitions only | these are number sheets: tag-editing's units and names serve them better than a custom view |

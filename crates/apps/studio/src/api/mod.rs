@@ -47,6 +47,7 @@ mod scripts;
 pub mod seams;
 pub mod server;
 mod sound;
+mod strings;
 pub(crate) mod sound_measure;
 mod tag_fields;
 mod tag_io;

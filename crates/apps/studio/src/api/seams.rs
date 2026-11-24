@@ -87,6 +87,8 @@ pub fn register(api: &mut Api) {
     // Sound audition: decode, play and the waveform of a snd! tag.
     api.register(Box::new(super::sound::Sound));
     api.register(Box::new(super::tags::TagGraph));
+    // strings.list: every unic string by name and language, searched.
+    api.register(Box::new(super::strings::Strings));
     // studio-hud: the HUD tool's HUDs, widgets, picture, checks and save.
     api.register(Box::new(super::hud::Hud));
     // studio-modeling: the Modeling tool's targets, meshes, edits and check.
