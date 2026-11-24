@@ -1844,7 +1844,11 @@ fn a_variant_opened_another_way_answers_no_item() {
         map: None,
     });
     assert_eq!(app.doc_id(Doc::Variant), "item:items:1");
-    app.dispatch(Action::NewVariant(variants::GameType::Slayer));
+    let new_variant = Action::NewVariant(variants::GameType::Slayer);
+    app.dispatch(new_variant.clone());
+    assert_eq!(app.pending(), Some(&new_variant));
+    assert_eq!(app.doc_id(Doc::Variant), "item:items:1");
+    app.resolve(Answer::Discard);
     assert_eq!(
         app.doc_id(Doc::Variant),
         "variant",

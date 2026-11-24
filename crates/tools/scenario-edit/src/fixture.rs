@@ -883,9 +883,12 @@ fn textured_bsp(with_collision: bool) -> Vec<u8> {
         put(&mut b, 0x1c, end as u32);
         classes.push(*b"coll");
         payloads.push((coll, OBJ_COLL_SIZE));
-        let (materials, region, perm, bsp) = (coll + 0x3e0, coll + 0x40, coll + 0x50, coll + 0x70);
+        // Leave room for the cube's encoded BSP blocks before the materials.
+        let (materials, region, perm, bsp) = (coll + 0x400, coll + 0x40, coll + 0x50, coll + 0x70);
+        let material_count = 6;
+        assert!(materials + material_count as usize * 4 <= end);
         for (field, count, block) in [
-            (coll + 0x14, 6, materials),
+            (coll + 0x14, material_count, materials),
             (coll + 0x1c, 1, region),
             (region + 4, 1, perm),
             (perm + 4, 1, bsp),
