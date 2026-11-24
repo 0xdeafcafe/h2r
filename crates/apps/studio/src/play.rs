@@ -21,6 +21,7 @@ pub mod link;
 pub mod pair;
 pub mod objects;
 pub mod playtest;
+pub mod recording_path;
 pub(crate) mod presence;
 pub(crate) mod collision_sync;
 pub(crate) mod raw_sync;
@@ -834,6 +835,10 @@ impl Play {
                 app.pairing.latest || self.paused,
                 &mut app.pairing.shown,
             );
+            let pairing = &mut app.pairing;
+            if let Some(sample) = &pairing.shown {
+                pairing.path.record(sample);
+            }
             if let Some(sample) = &app.pairing.shown
                 && (previous_epoch != Some(sample.epoch) || now >= self.next_live_status)
             {

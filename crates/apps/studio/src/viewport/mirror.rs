@@ -292,7 +292,13 @@ pub(crate) struct Scene {
     glyphs: Vec<(Vec3, f32, bool)>,
     /// Each game view's apex and far corners ([`frustum`]).
     pub(crate) frustums: Vec<[Vec3; 5]>,
+    /// The path a played recording's unit has taken
+    /// ([`crate::play::recording_path`]).
+    path: Vec<Vec3>,
 }
+
+/// The path of a played recording's unit.
+const PATH_COLOR: [u8; 3] = [96, 220, 160];
 
 /// How far the drawn pyramid reaches along a view, in world units, when
 /// the view's far plane is further.
@@ -482,6 +488,7 @@ impl Scene {
                 .filter_map(|v| frustum(v, FRUSTUM_DEPTH))
                 .collect();
         }
+        scene.path = app.pairing.path.points.clone();
         scene
     }
 
@@ -622,7 +629,11 @@ impl Scene {
                 Some(Mark::Line(project(p)?, project(q)?, [255, 200, 64], 1.0))
             })
         });
-        glyphs.chain(links).chain(players).chain(frustums)
+        let path = self
+            .path
+            .windows(2)
+            .filter_map(move |w| Some(Mark::Line(project(w[0])?, project(w[1])?, PATH_COLOR, 2.0)));
+        glyphs.chain(links).chain(players).chain(frustums).chain(path)
     }
 
     pub(super) fn overlay(&self, ui: &dear_imgui_rs::Ui, cam: &Camera, rect: [f32; 4]) {

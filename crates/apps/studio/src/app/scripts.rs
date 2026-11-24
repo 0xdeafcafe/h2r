@@ -137,6 +137,9 @@ pub enum ScriptAction {
     /// Write the working copy and open it in `code`, `zed` or (`None`)
     /// any editor, at the shown definition.
     OpenInEditor(Option<&'static str>),
+    /// Play the recording `name` on `player`'s unit in the paired game
+    /// and keep the path it takes (`recording.play`).
+    PlayRecording { name: String, player: u16 },
 }
 
 impl Loaded {
@@ -521,6 +524,12 @@ impl super::App {
                 match line {
                     Ok(m) => self.info(format!("script documentation: {m}")),
                     Err(e) => self.error(format!("script documentation: {e}")),
+                }
+            }
+            ScriptAction::PlayRecording { name, player } => {
+                match crate::api::recordings::play_on(self, &name, player, None) {
+                    Ok(_) => self.info(format!("recording {name}: playing on player {player}")),
+                    Err(e) => self.error(format!("recording {name} not played: {}", e.message)),
                 }
             }
             ScriptAction::OpenInEditor(only) => {

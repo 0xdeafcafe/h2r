@@ -1843,6 +1843,18 @@ the window and the API stay one path.
   `walked_ticks` is the stream's own length, `ticks` the element's. A
   stream that does not read, or whose version is not 4, is `REFUSED`
   with the reason; an unknown name is `INVALID_PARAMS`.
+  **Playing (rich editors K2).** `recording.play {name, unit?, mode?}`
+  asks the paired game to play the recording on `unit` (`player.<n>`,
+  default `player.0`; `mode` `play`, `delete` or `hover`) through the
+  game's [`recording.play`](../runtime/agent-api.md#recordingplay), on a
+  connection of its own, and starts the path: the unit's position from
+  each streamed tick (`play::recording_path`), which the Scene viewport
+  draws. It is `REFUSED` with no pairing, a paused game, a game that
+  does not list the method, or the game's own refusal (its reason in
+  the message); an unknown name, a unit that is no `player.<n>` and a
+  bad mode are `INVALID_PARAMS`. `recording.path {clear?, limit?}` reads
+  the path (`recording`, `player`, `count`, the last `limit` `points`,
+  `truncated`) and with `clear` drops it.
 - **Scripts (rich editors H1).** `api/scripts.rs` registers `Scripts`
   for `script.*`, over `app/scripts.rs`'s `Loaded`; `script.source`,
   `script.follow` and `script.doc` are `Action::Script` through
@@ -2147,7 +2159,7 @@ with the saved map's name reads the edit.
 ### Model poses
 
 `anim.*` reads a `jmad` tag of the map the Tags tool shows, poses it
-on the model that uses it (rich-editors.md, "Model poses", slice M1) and
+on the model that uses it (slice M1 of rich-editors.md) and
 lists a clip's channels as keys. The Animation window and the API share
 the same editable documents in `app::anim`. See the animation editor
 in [studio-redesign.md](studio-redesign.md) (AN1 and AN3). `tag` takes

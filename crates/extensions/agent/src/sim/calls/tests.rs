@@ -1728,3 +1728,43 @@ fn a_sound_the_game_does_not_start_is_an_error() {
     );
     assert!(out.unwrap_err().message.contains("started no sound"));
 }
+
+#[test]
+fn a_recording_is_played_by_the_recording_player_with_the_units_index_and_flags() {
+    let w = world();
+    let unit = w.unit;
+    let (out, calls, _) = one(
+        w,
+        Call::Recording {
+            unit,
+            index: 3,
+            flags: 8,
+        },
+        |c, _| {
+            assert_eq!(c.target, addr::RECORDING_PLAYER);
+            al(1)
+        },
+    );
+    assert_eq!(out.unwrap()["index"], 3);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].eax, Some(unit));
+    assert_eq!(calls[0].ecx, Some(3));
+    // The play flags are the one stack argument, after the return slot.
+    assert_eq!(calls[0].args, [8]);
+}
+
+#[test]
+fn a_recording_the_player_refuses_is_an_error() {
+    let w = world();
+    let unit = w.unit;
+    let (out, _, _) = one(
+        w,
+        Call::Recording {
+            unit,
+            index: 9,
+            flags: 0,
+        },
+        |_, _| al(0x7700),
+    );
+    assert!(out.unwrap_err().message.contains("started no recording 9"));
+}

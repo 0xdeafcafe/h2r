@@ -45,7 +45,7 @@ pub fn list(
             ui.text_wrapped(&why);
             ui.spacing();
             if ui.collapsing_header("Recordings##scripts-recordings", TreeNodeFlags::NONE) {
-                recordings(ui, app, None, st);
+                recordings(ui, app, None, st, actions);
             }
             doc_row(ui, app, None, dialogs, actions);
             return;
@@ -105,7 +105,7 @@ pub fn list(
         builtins(ui, l, st);
     }
     if ui.collapsing_header("Recordings##scripts-recordings", TreeNodeFlags::NONE) {
-        recordings(ui, app, Some(l), st);
+        recordings(ui, app, Some(l), st, actions);
     }
     doc_row(ui, app, Some(l), dialogs, actions);
 }
@@ -113,7 +113,13 @@ pub fn list(
 /// The map's recorded animations: each with its length, and for the picked
 /// one the scripts that play it, its initial state and every event. Read
 /// only (docs/editor/rich-editors.md, "Recordings").
-fn recordings(ui: &Ui, app: &App, l: Option<&Loaded>, st: &mut ScriptsUi) {
+fn recordings(
+    ui: &Ui,
+    app: &App,
+    l: Option<&Loaded>,
+    st: &mut ScriptsUi,
+    actions: &mut Vec<Action>,
+) {
     use crate::app::recordings::NONE;
     let rows = match app.recordings_loaded() {
         Ok(rows) => rows,
@@ -173,6 +179,7 @@ fn recordings(ui: &Ui, app: &App, l: Option<&Loaded>, st: &mut ScriptsUi) {
                 .join(", ")
         ));
     }
+    play_row(ui, app, r, actions);
     let d = match &r.decoded {
         Ok(d) => d,
         Err(why) => {
@@ -199,6 +206,30 @@ fn recordings(ui: &Ui, app: &App, l: Option<&Loaded>, st: &mut ScriptsUi) {
     if d.trailing > 0 {
         ui.text_disabled(format!("{} bytes follow the end event.", d.trailing));
     }
+}
+
+/// **Play on unit** (the first player's): the paired game plays the
+/// recording and the Scene viewport draws the path the unit takes.
+fn play_row(ui: &Ui, app: &App, r: &crate::app::recordings::Row, actions: &mut Vec<Action>) {
+    let paired = app
+        .pairing
+        .published
+        .as_ref()
+        .is_some_and(|s| s["state"] == "connected");
+    let disabled = ui.begin_disabled_with_cond(!paired || r.decoded.is_err());
+    if ui.button(format!("{} Play on unit##recording-play", icon::RUN)) {
+        actions.push(Action::Script(ScriptAction::PlayRecording {
+            name: r.recorded.name.clone(),
+            player: 0,
+        }));
+    }
+    disabled.end();
+    ui.same_line();
+    ui.text_disabled(if paired {
+        "on player 0, in the paired game"
+    } else {
+        "pair with a game to play it"
+    });
 }
 
 fn fields_text(fields: &[hs::recording::Named]) -> String {

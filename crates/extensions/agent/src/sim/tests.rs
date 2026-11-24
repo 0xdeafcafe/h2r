@@ -2003,3 +2003,55 @@ fn audio_play_queues_the_sound_start_at_the_players_unit_and_refuses_what_is_no_
         assert_eq!(e["code"], want, "{p}: {e}");
     }
 }
+
+#[test]
+fn recording_play_finds_the_recording_by_name_and_queues_the_players_call() {
+    let (h, q) = with_calls();
+    let mut game = game();
+    game.g.put_u32(0x8110_0000 + 0x110, 2);
+    game.g.put_u32(0x8110_0000 + 0x114, 0x8111_0000);
+    game.g.put(0x8111_0000, b"arrive\0");
+    game.g.put(0x8111_0000 + 0x34, b"leave\0");
+    h.deferred(
+        &mut game,
+        method::RECORDING_PLAY,
+        json!({"recording": "LEAVE", "mode": "hover"}),
+    );
+    let unit_h = engine::view::players::array(&game.g)
+        .unwrap()
+        .unwrap()
+        .get_absolute(&game.g, 0)
+        .unwrap()
+        .unwrap()
+        .unit(&game.g)
+        .unwrap()
+        .unwrap()
+        .raw();
+    let calls = the_game_makes(&q, |c| {
+        assert_eq!(
+            *c,
+            super::calls::Call::Recording {
+                unit: unit_h,
+                index: 1,
+                flags: 0x10
+            }
+        );
+        Ok(json!({"unit": "00010001", "index": 1}))
+    });
+    assert_eq!(calls.len(), 1);
+    h.agent.on_tick(&mut game);
+    let r = h.reply();
+    assert!(r["error"].is_null(), "{r}");
+    assert_eq!(r["result"]["recording"], "leave");
+    assert_eq!(r["result"]["index"], 1);
+    assert_eq!(r["result"]["player"], "player.0");
+    // A name the scenario lacks and a mode that is none are refused.
+    for (p, want) in [
+        (json!({"recording": "depart"}), code::INVALID_PARAMS),
+        (json!({"recording": "arrive", "mode": "kill"}), code::INVALID_PARAMS),
+        (json!({"recording": "arrive", "player": "player.1"}), code::GONE),
+    ] {
+        let e = h.err(&mut game, method::RECORDING_PLAY, p.clone());
+        assert_eq!(e["code"], want, "{p}: {e}");
+    }
+}
