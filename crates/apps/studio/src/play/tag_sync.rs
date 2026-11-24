@@ -9,7 +9,7 @@
 use super::link::Purpose;
 use super::playtest::{self, Waiting};
 use super::{raw_sync, sync};
-use crate::app::live::{Change, Class, Host, Route, Target};
+use crate::app::live::{Change, Class, Host, Route, Target, View};
 use crate::app::{App, TagDoc};
 use map::TagId;
 use scenario_edit::BspPatch;
@@ -223,6 +223,30 @@ pub fn effect(doc: &TagDoc, tag: TagId, at: u32, field: &Field) -> (Effect, &'st
         Effect::Reload | Effect::NotKnown => "when the game reads this field is not known",
     };
     (effect, why)
+}
+
+/// The fields a change wrote and when the game reads each: the field's
+/// name and its [`Effect`], once per field (the subject's follow-ups,
+/// docs/editor/live-editors.md). A range that no field covers is
+/// [`Effect::NotKnown`], named by its address.
+pub(crate) fn change_effects(doc: &TagDoc, change: &Change) -> Vec<(Effect, String)> {
+    let mut out: Vec<(Effect, String)> = Vec::new();
+    let Some(tag) = change.tag else {
+        return out;
+    };
+    let (Some(entry), Some(layout)) = (doc.tag(tag), doc.layout(tag)) else {
+        return out;
+    };
+    for &(at, _) in &change.ranges {
+        let item = match field_at(doc, tag, entry.address, layout, at, 12) {
+            Some((start, field, _)) => (effect(doc, tag, start, field).0, field.name.to_string()),
+            None => (Effect::NotKnown, format!("{at:#x}")),
+        };
+        if !out.contains(&item) {
+            out.push(item);
+        }
+    }
+    out
 }
 
 /// Find a field in a tag's root or a reachable block. Resource payloads and
@@ -514,7 +538,11 @@ impl super::Play {
         if target == Target::Off {
             app.live.owed = Default::default();
         }
+        let mut written = Vec::new();
         for d in app.live.flush() {
+            if target == Target::Own && d.view == View::Game && d.route == Route::EditBatch {
+                written.push(d.change.clone());
+            }
             match d.route {
                 Route::Reread | Route::Pending => {}
                 // An attached game in Edit takes these by its own push.
@@ -558,6 +586,9 @@ impl super::Play {
             }
         }
         publish_held(app);
+        // What the game does not show of its own after the writes it took.
+        self.subject_follow(app, &written);
+        self.subject_update(app);
     }
 }
 

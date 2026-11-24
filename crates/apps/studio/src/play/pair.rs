@@ -293,6 +293,15 @@ pub struct Bridge {
     pub stream_map: Value,
     /// A Play copy may include edits. Its checksum belongs to this open document.
     pub(super) play_copy: Option<(u64, u32)>,
+    /// What the subject can stand in, as `Play` last saw it
+    /// (`app::subject`).
+    pub scene: crate::app::subject::Scene,
+    /// The subject's follow-ups and the object standing for it, as `Play`
+    /// last published them (`tag.subject`); null with no game of its own.
+    pub subject: Value,
+    /// Left by `tag.open`: the tag to stand (and, for a sound, play) in
+    /// the own game, taken once a frame.
+    pub opened: Option<map::TagId>,
 }
 
 impl Default for Bridge {
@@ -325,6 +334,9 @@ impl Default for Bridge {
             counters: None,
             stream_map: Value::Null,
             play_copy: None,
+            scene: crate::app::subject::Scene::Nowhere,
+            subject: Value::Null,
+            opened: None,
         }
     }
 }

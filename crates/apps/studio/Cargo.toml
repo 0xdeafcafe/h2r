@@ -44,6 +44,8 @@ hud-kit = { path = "../../tools/hud-kit" }
 # model.* on a map with the Pogo Stick's kit added as the game serves it
 # (api/models.rs). `boot` already depends on it.
 pogo-kit = { path = "../../tools/pogo-kit" }
+# The content stage's subject pad (src/app/subject.rs; docs/editor/live-editors.md).
+stage-kit = { path = "../../tools/stage-kit" }
 variants = { path = "../../formats/variants" }
 # The game type script editor: the language intelligence (`rules::ide`),
 # the check report and the compiler (src/app/rules_edit.rs).

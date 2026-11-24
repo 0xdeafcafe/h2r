@@ -31,6 +31,7 @@ pub mod tag_sync;
 mod capabilities;
 mod edits;
 mod feedback;
+mod subject;
 pub use edits::Apply;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -282,6 +283,8 @@ pub struct Play {
     feedback: feedback::Feedback,
     /// UI requests taken at the next update.
     queue: Vec<Request>,
+    /// The object standing for the tag being edited, in the own game.
+    subject: subject::State,
 }
 
 impl Default for Play {
@@ -341,6 +344,7 @@ impl Play {
             unpaired: auto::Unpaired::default(),
             feedback: feedback::Feedback::default(),
             queue: Vec::new(),
+            subject: Default::default(),
         }
     }
 
@@ -1247,6 +1251,7 @@ impl Play {
                 app.info(format!("game: {what}"));
             }
             (Purpose::Rules, result) => self.rules_answer(app, result),
+            (Purpose::Subject(ticket), result) => self.subject_answer(app, ticket, result),
             (Purpose::Other, _) if method == agent_proto::editor::method::MARKS => {}
             (_, Err(e)) => self.feedback.problem(app, format!("{method}: {e}")),
             (Purpose::Other, Ok(v)) => app.info(format!("{method}: {v}")),

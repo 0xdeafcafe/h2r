@@ -576,3 +576,20 @@ fn the_package_is_refused_inside_a_git_checkout() {
     let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     assert!(crate::map::git_checkout(here).is_some());
 }
+
+#[test]
+fn the_subject_place_is_the_pad_facing_the_spawn() {
+    let flat = crate::subject_place("flat").unwrap();
+    let day = crate::subject_place("day").unwrap();
+    assert_eq!(flat.bay, "flat");
+    // The pad is 3 units ahead of the spawn, which faces +x; a thing on
+    // it faces back, towards -x.
+    assert_eq!(flat.point[..2], [3.0, 0.0]);
+    assert!((flat.facing - std::f32::consts::PI).abs() < 1e-6);
+    assert_eq!(day.point[0] - flat.point[0], 80.0);
+    assert_eq!(layout().subject_place("flat").unwrap(), flat);
+    assert!(matches!(
+        crate::subject_place("nowhere"),
+        Err(Error::Layout(_))
+    ));
+}

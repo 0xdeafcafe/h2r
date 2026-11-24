@@ -31,7 +31,19 @@ pub mod mesh;
 pub mod texture;
 
 pub use self::map::{Base, Built, Project, build};
-pub use layout::{Layout, Player};
+pub use layout::{Layout, Player, SubjectPlace};
+
+/// The subject pad of the bay `bay` in the shipped layout. The pad does
+/// not depend on the player's size, so a stand-in player parses the
+/// layout; a caller that needs the pad (Studio's subject placement,
+/// docs/editor/live-editors.md) does not need a disc to ask for it.
+pub fn subject_place(bay: &str) -> Result<SubjectPlace> {
+    const STAND_IN: Player = Player {
+        height: 0.7,
+        radius: 0.2,
+    };
+    Layout::builtin(STAND_IN)?.subject_place(bay)
+}
 
 /// The stage's build version: part of every build key. Bump it when the
 /// same sources would give other bytes.

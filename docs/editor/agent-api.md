@@ -621,6 +621,24 @@ Notes on some:
   `group` (up to four characters, as `tag.list` writes it) the reply is
   that group's line alone; a group no row names gets the default. It
   needs no open map.
+- **Subject.** `tag.open {tag}` opens the tag in the editor its kind
+  gets (as `shell.open` does) and makes it the subject
+  ([live-editors.md](live-editors.md), "The subject"). It returns `tag`,
+  `group`, `name`, `kind`, `editor`, `preview`, `front` and `subject`,
+  the place the subject has in the scene Studio's play last saw:
+  `{rule, show, scene, at, yaw, note}`. `scene` is `level` (an own game
+  runs the open level; `at` is the viewport camera's focus), `stage` (the
+  own game runs the content stage; `at` is its flat bay's subject pad and
+  `yaw` faces the spawn) or `nowhere`; `show` is `object`, `swatch`,
+  `loop`, `play` or `nothing`; `note` says what is missing. The own game
+  stands an object subject at its next frame and plays a sound subject.
+  `tag.subject` reads what the own game holds: `own`, `tag`, `place`,
+  `object` (the standing object's id), `owed` (`respawn`, `retrigger`:
+  follow-ups waiting for the write's batch), `unread` (fields written
+  that no definition says when the game reads), `refusal` (why no object
+  stands), `failure` (the last call the game refused), `busy` (the call
+  in flight) and `calls` (the spawns, deletes, respawns and retriggers
+  made). With no own game `own` is false and the rest is the registry's.
 - **References.** `tag.refs {tag, limit?}` lists direct links in the
   open map, including in-memory tag edits and current scenario-owned
   reference fields. Each result has `to` (the target ID),
@@ -1922,7 +1940,8 @@ the window and the API stay one path.
   `tag.browse`, `tag.resources`, `tag.export` and `tag.import` through
   `Action::BrowseTags`, `Action::TagExport` and `Action::TagImport`.
   `api/tags.rs` registers `TagGraph` for `tag.tree`, `tag.refs` and
-  `tag.kinds` (over `app/kinds.rs`).
+  `tag.kinds` (over `app/kinds.rs`), `tag.open` and `tag.subject` (over
+  `app/subject.rs` and `play/subject.rs`).
   The tree and `tag.follow` share the reference reader with `tag.refs`.
 - **Strings (rich editors N1).** `api/strings.rs` registers `Strings` for
   `strings.list`, a read of `tags::Localization` over the open map's
