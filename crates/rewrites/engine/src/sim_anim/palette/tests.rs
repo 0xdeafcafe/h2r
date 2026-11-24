@@ -152,6 +152,12 @@ fn first_difference(a: &[u8], b: &[u8]) -> Option<usize> {
 /// The step with the kernel on and off: both must agree on every byte
 /// and every register, and the kernel must not decline.
 fn equal(c: &Case) {
+    if c.df {
+        // The guest's copies run downward and write below each record;
+        // the kernel leaves such a step to the port's loops.
+        declines(c, |_, _| {}, Decline::Direction);
+        return;
+    }
     let _guard = SWITCH.lock().unwrap();
     set_enabled(false);
     let (mut loop_cpu, mut loop_run) = machine(c);

@@ -74,10 +74,10 @@ The step declines, writing nothing (the port's loops run), when:
   the three-and-a-half turns the counter's signed-word compare takes
   past `0x7fff`);
 - a write overlaps another write or a read, as virtual addresses
-  (`Alias`). The direction flag makes the guest's `rep movsd` and word
-  copies order-sensitive exactly when the palette overlaps its inputs;
-  with no overlap the direction cannot change a byte, so the kernel
-  needs no direction of its own.
+  (`Alias`);
+- the direction flag is set (`Direction`): the guest's `rep movsd` and
+  word copies then run downward from each record's first word and write
+  below it, a window the kernel does not model.
 
 ## Evidence
 

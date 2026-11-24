@@ -16,10 +16,10 @@
 //!
 //! The step is pure copying, so there is no float decline. It declines
 //! before writing anything (the port's loops run) when a read faults,
-//! when a count passes the gather bound, or when a write overlaps a
-//! range it reads — the direction flag makes the guest's copies
-//! order-sensitive exactly when the palette overlaps its inputs, and
-//! with no overlap the direction cannot change a byte.
+//! when a count passes the gather bound, when a write overlaps a
+//! range it reads, or when the direction flag is set (the guest's
+//! copies then run downward from each record's first word and write
+//! below it, a window the kernel does not model).
 use crate::function_eval::constant::ONE;
 use crate::sim_native::Memory;
 use ::sim_anim::palette::{self, Overlay};
@@ -77,9 +77,12 @@ pub enum Decline {
     Count,
     /// A write overlaps a range the step reads.
     Alias,
+    /// The direction flag is set: the guest's `movsd` copies then run
+    /// downward from each record's first word, writing below it.
+    Direction,
 }
 
-const DECLINES: usize = 3;
+const DECLINES: usize = 4;
 
 /// Call counts since start, for timing and the fallback rate.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -191,6 +194,9 @@ struct Plan {
 }
 
 fn plan(c: &CpuAbi, g: &impl Memory) -> Step<Plan> {
+    if c.eflags & 0x400 != 0 {
+        return Err(Decline::Direction);
+    }
     let frame = c.ebp;
     let above = |off: u32| read(g.u32(frame.wrapping_add(off)));
     let below = |off: u32| read(g.u32(frame.wrapping_sub(off)));
