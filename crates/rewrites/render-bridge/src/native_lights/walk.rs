@@ -526,10 +526,15 @@ const HANDLER_FRAME: u32 = 0x78;
 const LIGHT_TAIL_RETURN: u32 = 0x0003_1508;
 const BUILDER_TO_LAYER_CALLER: u32 = 0xf02c;
 
-/// Whether the gathered walk is on: with the native renderer, which also
-/// turns on the lights and shadows it serves.
+const ID: &str = "native-light-walk";
+
+/// The whole-layer route whose entry loop returns zero handlers. An
+/// explicit walk opt-out also leaves the per-light body on its guest
+/// layer calls, as does timing those calls.
 pub fn on(switches: &hooks::Switches) -> bool {
     hooks::switches::native_render_on(switches)
+        && switches.feature(ID, true)
+        && !switches.feature(crate::render_timing::ID, false)
 }
 
 pub(super) fn reset() {
@@ -830,15 +835,12 @@ pub struct NativeLightWalk;
 
 impl Feature for NativeLightWalk {
     fn manifest(&self) -> Manifest {
-        Manifest::new(
-            "native-light-walk",
-            "Walk gathered light and caster geometry",
-        )
-        .doc("docs/graphics/native-renderer.md")
+        Manifest::new(ID, "Walk gathered light and caster geometry")
+            .doc("docs/graphics/native-renderer.md")
     }
 
     fn build(&self, b: &mut Builder) -> std::result::Result<(), BuildError> {
-        if on(b.switches()) && !b.switches().feature(crate::render_timing::ID, false) {
+        if on(b.switches()) {
             install(b);
             b.snapshot(hooks::SnapshotPolicy::section(Vec::new, |_, _| {
                 reset();
@@ -941,6 +943,18 @@ mod tests {
         }
         m.write(BUFFER, &[0x55; 72]).unwrap();
         m
+    }
+
+    #[test]
+    fn the_whole_layer_route_requires_the_walk_and_untimed_native_rendering() {
+        use hooks::Switches;
+        assert!(on(&Switches::default()));
+        for switch in [ID, hooks::switches::NATIVE] {
+            assert!(!on(&Switches::default().with(switch, false)));
+        }
+        assert!(!on(
+            &Switches::default().with(crate::render_timing::ID, true)
+        ));
     }
 
     #[test]

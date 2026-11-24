@@ -17,11 +17,12 @@ use super::frame::{original, refused};
 use crate::native_map_work::Stage;
 
 pub(super) fn install(b: &mut Builder) {
+    let walk = super::walk::on(b.switches());
     b.raw()
         .implement(
             &points::RENDER_LIGHT_PASSES,
             "native_lights_passes",
-            |cpu, ctx, addr| {
+            move |cpu, ctx, addr| {
                 if addr != points::RENDER_LIGHT_PASSES.base || Stage::Lights.standing_down() {
                     return original(cpu, ctx, addr);
                 }
@@ -45,7 +46,7 @@ pub(super) fn install(b: &mut Builder) {
                 hooks::entry::start_render(cpu, ctx, addr, move |cx: Cx| -> EntryFuture {
                     Box::pin(async move {
                         let (ret, _) = passes::run_with(&cx, plan, |mem, p| {
-                            if !typed_fpu {
+                            if !walk || !typed_fpu || Stage::Lights.standing_down() {
                                 refused(SceneList::TypedLightPasses, engine::render::light_gather::Refusal::Unsupported);
                                 return Ok(None);
                             }

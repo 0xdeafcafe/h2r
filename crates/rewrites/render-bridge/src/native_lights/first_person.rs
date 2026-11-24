@@ -27,11 +27,12 @@ use super::{Ro, SceneGroup};
 use crate::native_map_work::Stage;
 
 pub(super) fn install(b: &mut Builder) {
+    let walk = super::walk::on(b.switches());
     b.raw()
         .implement(
             &points::FIRST_PERSON_LIGHTS,
             "native_lights_first_person",
-            |cpu, ctx, addr| {
+            move |cpu, ctx, addr| {
                 if addr != points::FIRST_PERSON_LIGHTS.base || Stage::Lights.standing_down() {
                     return original(cpu, ctx, addr);
                 }
@@ -56,7 +57,7 @@ pub(super) fn install(b: &mut Builder) {
                 hooks::entry::start_render(cpu, ctx, addr, move |cx: Cx| -> EntryFuture {
                     Box::pin(async move {
                         let (ret, _) = first_person::run_with(&cx, plan, &mut |mem, p, call| {
-                            if !typed_fpu {
+                            if !walk || !typed_fpu || Stage::Lights.standing_down() {
                                 refused(SceneList::TypedFirstPerson, Refusal::Unsupported);
                                 return Ok(None);
                             }
