@@ -116,6 +116,7 @@ struct Step {
     /// The structure's portal graph for the Rust visibility, decoded once.
     visibility: scene_extract::visibility::GraphCache,
     visibility_lens: VisibilityLens,
+    decorator_windows: Option<scene_extract::visibility::frusta::WindowFrusta>,
 }
 
 static STEP: Mutex<Option<Step>> = Mutex::new(None);
@@ -279,6 +280,7 @@ fn begin_step(step: &mut Step, m: &Ro<'_>) {
     }
     step.sequence = step.sequence.wrapping_add(1);
     step.builder.begin(id(m));
+    step.decorator_windows = None;
     step.light_open = false;
     step.shadow_open = false;
     SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
@@ -356,6 +358,7 @@ fn open_kind_at_layer(mem: &dyn GuestMemory, kind: ViewKind, layer_hook: bool) -
             }
             VIEWS.fetch_add(1, Ordering::Relaxed);
             step.based = false;
+            step.decorator_windows = None;
             step.light_open = false;
             step.shadow_open = false;
         }
@@ -381,7 +384,8 @@ fn open_kind_at_layer(mem: &dyn GuestMemory, kind: ViewKind, layer_hook: bool) -
                             VisibilityLens::Display(factor) => Some(factor),
                             _ => None,
                         };
-                        let (gather, extra) = visibility_arm(&m, &guest_lens, key, &mut step.visibility, gather, display_factor);
+                        let (gather, extra, windows) = visibility_arm(&m, &guest_lens, key, &mut step.visibility, gather, display_factor);
+                        step.decorator_windows = windows;
                         if let Some(extra) = extra {
                             step.builder.set_display_visibility(extra)?;
                         }
@@ -1201,7 +1205,11 @@ fn visibility_arm(
     cache: &mut scene_extract::visibility::GraphCache,
     gather: frame_scene::scene::ClusterGather,
     display_factor: Option<f32>,
-) -> (frame_scene::scene::ClusterGather, Option<frame_scene::DisplayVisibility>) {
+) -> (
+    frame_scene::scene::ClusterGather,
+    Option<frame_scene::DisplayVisibility>,
+    Option<scene_extract::visibility::frusta::WindowFrusta>,
+) {
     use scene_extract::visibility::{self, Decline};
     let start = Instant::now();
     let rust = visibility::compute_with_windows(m, camera, cache, crate::native_map_work::generation());
@@ -1211,7 +1219,7 @@ fn visibility_arm(
         Err(why) => {
             let i = Decline::ALL.iter().position(|&d| d == why).unwrap_or(0);
             VISIBILITY_DECLINED[i].fetch_add(1, Ordering::Relaxed);
-            return (gather, None);
+            return (gather, None, None);
         }
     };
     VISIBILITY_CHECKED.fetch_add(1, Ordering::Relaxed);
@@ -1239,13 +1247,13 @@ fn visibility_arm(
                 parity.objects_rust_only,
             )
         });
-        return (gather, extra);
+        return (gather, extra, None);
     }
     VISIBILITY_EQUAL.fetch_add(1, Ordering::Relaxed);
     if gather.source == frame_scene::VisibilitySource::Rust {
         VISIBILITY_TAKEN.fetch_add(1, Ordering::Relaxed);
     }
-    (gather, extra)
+    (gather, extra, windows)
 }
 
 /// The main view's records in Rust beside the guest's
