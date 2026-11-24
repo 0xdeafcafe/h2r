@@ -13,9 +13,12 @@
 //! map's labelled things, for the start gate and the script's label reads;
 //! `gate` is the lobby's start gate, which holds Start Game on a map that
 //! lacks what the variant's script needs; `record` answers the record
-//! clean-up, the wire codec and the protocol map for the script index.
+//! clean-up, the wire codec and the protocol map for the script index;
+//! `engine_object` puts the script index's engine object in the engine
+//! table and answers the spawn gather's jump on it.
 
 pub mod census;
+pub mod engine_object;
 pub mod feature;
 pub mod gate;
 pub mod guest;

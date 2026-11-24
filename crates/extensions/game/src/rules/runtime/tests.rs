@@ -19,6 +19,8 @@ mod hosted;
 mod gate;
 /// Zones, the roster's events and loadouts.
 mod world;
+/// A script game on the script index and its engine object.
+mod script_index;
 
 const GAME_GLOBALS: u32 = 0x1000_0000;
 const GAME_TIME: u32 = 0x1000_2000;

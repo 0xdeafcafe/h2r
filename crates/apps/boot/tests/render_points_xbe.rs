@@ -99,9 +99,7 @@ fn render_aspect_sites_are_dispatch_blocks_in_the_build_tiers_analysis() {
     let (analysis, _) =
         recomp::analyze_cached(&xbe, recomp::analysis_cache(&data).as_deref()).unwrap();
     let builder = analyze::cfg::CfgBuilder::new(&analysis, &xbe);
-    for pc in points::render_aspect::instruction_entries()
-        .chain(points::scene_effects::instruction_entries())
-    {
+    for pc in boot::image_entries() {
         assert!(
             analysis.functions.contains_key(&pc),
             "missing render hook entry {pc:#010x}"

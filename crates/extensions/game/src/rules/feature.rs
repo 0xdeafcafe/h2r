@@ -39,6 +39,11 @@
 //!   `VARIANT_PROTOCOL`, `before`s in the default class: a record of the
 //!   script index is kept by the clean-up, crosses the wire with no type
 //!   area and plays distributed ([`super::record`]).
+//! - `GAME_ACTIVATE`, a `before` in the last class: the script index's
+//!   engine object goes in the engine table; and `SPAWN_TYPE_MASK`, a
+//!   `before` in the default class: the spawn gather's unchecked jump on
+//!   the engine index is answered as Slayer's case for the script index
+//!   ([`super::engine_object`]).
 //!
 //! A script with a `uses` line (docs/game/rules-variants.md, "A script
 //! that keeps its carrier's rules") runs the built-in script of the type it
@@ -372,6 +377,7 @@ impl hooks::Feature for Rules {
         });
         super::scoring::register(b, &self.shared);
         super::record::register(b);
+        super::engine_object::register(b)?;
         register_spawns(b, &self.shared);
         register_bodies(b, &self.shared);
         let s = Arc::clone(&self.shared);

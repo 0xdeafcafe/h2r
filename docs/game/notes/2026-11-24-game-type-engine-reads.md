@@ -499,3 +499,74 @@ python3 -I words.py disc/default.xbe 0x7da38 9   # the decode's
   value still goes out masked. Word fields are sign-extended first, so a
   16-bit one above `0x7fff` takes the warning. Nothing else follows from
   it.
+
+## 2026-11-24: GE4, the engine object and the spawn gather
+
+The same image and tools, at `d2102d16c`.
+`crates/extensions/game/src/rules/engine_object.rs` is the object;
+`runtime/tests/script_index.rs` and the boot registration test
+`the_rules_runtime_puts_in_the_script_index_engine_object_unless_turned_off`
+check it.
+
+**Reproduce.**
+
+```sh
+for v in 0x459d18 0x45c6d8 0x45c7a8 0x45c878 0x453d38 0x45c948; do
+  python3 -I words.py disc/default.xbe $v 51; done   # the six vtables
+h2 disasm disc/default.xbe 0x23b170 200      # the starting-location gather
+h2 disasm disc/default.xbe 0x2bbf50 120      # Slayer's own slots +0x04..+0x24
+```
+
+- **Own and shared slots.** Comparing Slayer's 51 slots with the five
+  other vtables, slot by slot: Slayer's body is also another engine's
+  in every slot but `+0x00`, `+0x04`, `+0x14`, `+0x18`, `+0x24`,
+  `+0x38`, `+0x48`, `+0x78`, `+0x8c` and `+0x9c`. Of those, `+0x38`
+  (`0x24dc60`), `+0x48` (`0x175f40`, a bare `ret`) and `+0x8c`
+  (`0x24dda0`, the trait query) are in the run of base bodies from
+  `0x24dc40` that the other engines override, so they are the base
+  class's. `+0x00` and `+0x9c`
+  are constant answers (2, and 0). That leaves four rule bodies of
+  Slayer's own: `+0x14` (`0x2bbf70`, `ret 4`, writes -1 to the player's
+  `+0x1b8`), `+0x18` (`0x2bbfa0`, `ret 4`, posts the type 2 start event
+  through `0xa7c50` and `0x19eb30`), `+0x24` (`0x2bc110`, `ret 8`, a walk
+  of the players) and `+0x78` (`0x2bc000`, `ret 0x10`, the kill scoring,
+  three `SCORE_ADD` calls). Each has an empty body of the same pop in
+  another vtable: `0x72c70` (`ret 4`) for `+0x14` and `+0x18`, `0x24dc50`
+  (`ret 8`) for `+0x24`, Territories' `0x2ed7f0` (`ret 0x10`) for
+  `+0x78`. The image has no base vtable of its own; the object is
+  Slayer's with those four replaced.
+- **`+0x04` stays.** Slayer's start zeroes `E+0xfc`..`E+0x108` and points
+  `[0x51ecc0]` at them; the shared entity bodies `+0xb0`..`+0xb8`
+  (`0x2bcdd0`.., Oddball's and Slayer's) read that block.
+- **The entity type.** `+0x9c` answers 0 Slayer, 1 CTF and Assault, 2
+  Oddball, 3 KotH, 4 Territories, 5 Juggernaut (`0x99810`, `0x9c7c0`,
+  `0x9bec0`, `0x9a280`, `0x9cd90`, `0x31a860`). A client applies the
+  engine-globals entity after its own `+0x9c` matches the host's (GT0,
+  question 3). Every machine that decodes a script-index record has the
+  `rules` feature, so has the object and answers 0; a build without it
+  refuses the record at the decode (`0x7d82a`) and never starts the game.
+  Settled by reading; a guest's run is "Not verified" in the design.
+- **The spawn gather.** `0x23b170` (from `0x23bc40`, which
+  `PLAYER_SPAWN_LOCATION` calls at `0x14ef6c`) walks the starting
+  locations; for one with a nonzero per-type mask (`[edi+8]`) it loads
+  `E+0xc14` and jumps through `0x23b3c0` with no bounds check
+  (`0x23b2dc`). The table's cases pick the type's mask bit: CTF and
+  Assault bit 3, Slayer bit 0, Oddball bit 1, KotH bit 2, Juggernaut bit
+  6, Territories bit 7; 5 and 6 are zero entries. A zero engine table
+  entry does not avoid it (`0x23b1f9` skips only the team test before
+  it), so index 6 jumps to 0 on the first spawn whatever the object.
+  The `rules` feature answers the site for the script index as Slayer's
+  case (`0x23b2ea`, the mask's bit 0), with ESI the index less one as
+  the jump leaves it. ESI is reloaded before its next read (`0x23b397`).
+- **Other unguarded jumps.** A scan of every `jmp [reg*4+table]` whose
+  fourteen preceding instructions read `+0xc14` finds only `0x23b2e3`.
+  The ones on a record's `+0x44` are the codec (`0x7d151`, `0x7d837`),
+  the protocol map (`0x161ca5`), the clean-up (`0x19d9e4`) and the
+  content category (`0x216a54`); every other is bounded (`0x22d47f`
+  `cmp 9`, `0xd50b2` `cmp 8` on `G+0x180`).
+- **The table entry.** `0x55e4e8` is `.bss` and no instruction stores to
+  it (the 287 loads are all `[reg*4+0x55e4d0]`; the only direct stores
+  near it are to `0x55e4fc`). The object goes in at `GAME_ACTIVATE`
+  entry, in the last class of `before`s, ahead of the engine start's
+  copy at `0x1574c0`; an entry that already names another object is
+  refused.

@@ -1153,7 +1153,10 @@ impl Runtime {
             );
         }
         let full = Some(hash.to_string());
-        if i32::from(ir.header.engine()) != engine {
+        // A record of the script index carries any script: its engine
+        // object makes no rules of a retail engine's (`super::engine_object`).
+        let script_index = engine == i32::from(::rules::SCRIPT_INDEX) && script.mode == Mode::Rules;
+        if i32::from(ir.header.engine()) != engine && !script_index {
             return self.refuse(
                 full,
                 format!(
