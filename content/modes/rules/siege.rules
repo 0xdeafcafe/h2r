@@ -147,9 +147,6 @@ fn open_map() {
     for each barrier b { set_open(b, b.number <= phase) }
 }
 
-// Who of either side stands in a zone.
-fn occupied(z: object) -> int = count(players p where p.alive and inside(p, z))
-
 // The HUD each tick: the mark and the state row follow the site the
 // attackers are on, else the first site still to take, then the final
 // stand; the banner shows for two ticks and the kit times it from there;
@@ -181,7 +178,7 @@ fn show_front() {
     stays = false
     if phase < needed {
         for each site s where not s.taken and s.id == focus_id {
-            if occupied(s) > 0 { stays = true }
+            if count(players p where p.alive and inside(p, s)) > 0 { stays = true }
         }
         if not stays {
             focus = first(site s where not s.taken and ticks_held(s, team 0) > 0t)
