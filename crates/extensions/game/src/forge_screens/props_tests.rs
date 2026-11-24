@@ -158,6 +158,108 @@ fn every_row_of_the_shipped_doc_binds() {
     ] {
         let t = thing(block, kind, fields);
         let wanted = d.props.values().filter(|p| is_for(p, kind)).count();
-        assert_eq!(rows(&d, &t, 0.0).len(), wanted, "{kind:?}");
+        // With a label and objects to save, every row of the doc binds.
+        let all = Extras {
+            labellable: true,
+            label: Some(("checkpoint".into(), Some(3))),
+            savable: 2,
+        };
+        assert_eq!(rows_with(&d, &t, 0.0, &all).len(), wanted, "{kind:?}");
     }
+}
+
+fn labels_with(thing: &Thing, extras: &Extras) -> Vec<String> {
+    rows_with(&doc(), thing, 0.0, extras)
+        .into_iter()
+        .map(|r| r.label)
+        .collect()
+}
+
+#[test]
+fn label_and_prefab_rows_come_with_what_the_session_says_of_the_thing() {
+    let object = thing(BlockKind::Scenery, ThingKind::Object, &[]);
+    let plain = Extras {
+        labellable: true,
+        ..Extras::default()
+    };
+    assert_eq!(
+        labels_with(&object, &plain),
+        ["Coordinates...", "Heading", "Label"]
+    );
+    let savable = Extras {
+        savable: 3,
+        ..plain.clone()
+    };
+    assert_eq!(
+        labels_with(&object, &savable),
+        ["Coordinates...", "Heading", "Label", "Save as prefab"]
+    );
+    let labelled = Extras {
+        label: Some(("hill".into(), None)),
+        ..savable
+    };
+    assert_eq!(
+        labels_with(&object, &labelled),
+        [
+            "Coordinates...",
+            "Heading",
+            "Label",
+            "Label number",
+            "Clear label",
+            "Save as prefab"
+        ]
+    );
+    // Only an object is saved as a prefab; any thing is labelled.
+    let goal = thing(
+        BlockKind::NetgameFlags,
+        ThingKind::Goal,
+        &[("type", 0), ("team", 0), ("identifier", 0)],
+    );
+    assert!(!labels_with(&goal, &labelled).contains(&"Save as prefab".to_string()));
+    assert!(labels_with(&goal, &labelled).contains(&"Label".to_string()));
+    // The default has none of them.
+    assert_eq!(labels(&object), ["Coordinates...", "Heading"]);
+}
+
+#[test]
+fn the_label_rows_show_their_values_and_open_the_keyboard_or_act() {
+    let object = thing(BlockKind::Scenery, ThingKind::Object, &[]);
+    let extras = Extras {
+        labellable: true,
+        label: Some(("checkpoint".into(), Some(3))),
+        savable: 2,
+    };
+    let rows = rows_with(&doc(), &object, 0.0, &extras);
+    let by = |name: &str| rows.iter().find(|r| r.label == name).unwrap();
+    let Act::Type(t) = &by("Label").act else {
+        panic!("the keyboard")
+    };
+    assert_eq!(
+        (t.field, t.initial.as_str()),
+        (NumberField::Label, "checkpoint")
+    );
+    assert_eq!(by("Label").value.as_deref(), Some("checkpoint"));
+    let Act::Type(t) = &by("Label number").act else {
+        panic!("the keyboard")
+    };
+    assert_eq!(
+        (t.field, t.initial.as_str()),
+        (NumberField::LabelNumber, "3")
+    );
+    assert_eq!(
+        by("Clear label").act,
+        Act::Choose(Choice::ClearLabel(object.id))
+    );
+    let Act::Type(t) = &by("Save as prefab").act else {
+        panic!("the keyboard")
+    };
+    assert_eq!((t.field, t.initial.as_str()), (NumberField::PrefabName, ""));
+    assert_eq!(by("Save as prefab").value.as_deref(), Some("2 objects"));
+    // No label: the Label row says so.
+    let none = Extras {
+        labellable: true,
+        ..Extras::default()
+    };
+    let rows = rows_with(&doc(), &object, 0.0, &none);
+    assert_eq!(rows[2].value.as_deref(), Some("None"));
 }

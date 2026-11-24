@@ -286,6 +286,113 @@ fn selecting_two_objects_groups_them_and_the_browser_lists_the_group_first() {
     );
 }
 
+/// A label is typed from the Properties page, set in one op and cleared;
+/// a prefab of the placed objects is listed by the object menu when the map
+/// holds its tags, and placing it is one edit.
+#[test]
+fn labels_are_typed_and_the_object_menu_places_a_saved_prefab() {
+    let mut e = editor();
+    e.tool.monitor = true;
+    let frame = Frame {
+        position: [3., 0., 0.],
+        rotation: [0.; 3],
+    };
+    e.command(1, Command::Place { item: 0, frame }).unwrap();
+    let (ticket, _) = calls::lock(&e.calls).drain().pop().unwrap();
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[31]})));
+    e.poll(2);
+    let a = Endpoint::Added(e.session.objects()[0].id);
+    let rows = |e: &Editor| -> Vec<String> {
+        let _ = e;
+        screens::screen(Kind::Properties)
+            .sheet()
+            .rows
+            .iter()
+            .map(|r| r.label.clone())
+            .collect()
+    };
+    e.tool.aimed_thing = Some(a);
+    e.command(3, Command::Properties).unwrap();
+    let before = rows(&e);
+    assert!(before.contains(&"Label".to_string()), "{before:?}");
+    assert!(before.contains(&"Save as prefab".to_string()), "{before:?}");
+    assert!(!before.contains(&"Clear label".to_string()));
+    // Typed text is lowercased, a number is typed on its own, and the
+    // page then offers to clear it.
+    e.choose(
+        4,
+        Choice::Number(sheet::NumberField::Label, "Checkpoint".into()),
+    )
+    .unwrap();
+    e.poll(5);
+    assert_eq!(e.session.label_of(a).unwrap().text, "checkpoint");
+    e.choose(
+        6,
+        Choice::Number(sheet::NumberField::LabelNumber, "3".into()),
+    )
+    .unwrap();
+    e.poll(7);
+    assert_eq!(e.session.label_of(a).unwrap().number, Some(3));
+    assert!(
+        e.choose(
+            8,
+            Choice::Number(sheet::NumberField::LabelNumber, "x".into())
+        )
+        .is_err()
+    );
+    assert!(
+        e.choose(
+            9,
+            Choice::Number(sheet::NumberField::Label, "Has Space".into())
+        )
+        .is_err()
+    );
+    e.command(10, Command::Properties).unwrap();
+    let after = rows(&e);
+    for want in ["Label number", "Clear label"] {
+        assert!(after.contains(&want.to_string()), "{after:?}");
+    }
+    let status = e.status();
+    assert_eq!(status["labels"][0]["text"], "checkpoint");
+    e.choose(11, Choice::ClearLabel(a)).unwrap();
+    e.poll(12);
+    assert_eq!(e.session.label_of(a), None);
+    // A prefab of the object is on the object menu, and placing it adds one.
+    let prefab = e.session.capture_prefab("post", &[a]).unwrap();
+    e.prefabs.push(prefab);
+    let menu = sheet::with_prefabs(None, &e.prefab_items()).unwrap();
+    let row = menu.rows.iter().find(|r| r.label == "Prefabs").unwrap();
+    let sheet::Act::Pick(pick) = &row.act else {
+        panic!("the prefabs are picked");
+    };
+    assert_eq!(pick.values, ["post"]);
+    assert_eq!(pick.details, ["Prefab. 1 object."]);
+    assert_eq!(pick.choices, [Choice::PlacePrefab(0)]);
+    assert!(pick.closes);
+    assert_eq!(e.status()["prefabs"][0]["fits"], true);
+    e.tool.camera = Some(forge::camera::Camera {
+        position: [0., 0., 0.],
+        yaw: 0.,
+        pitch: 0.,
+    });
+    e.choose(13, Choice::PlacePrefab(0)).unwrap();
+    let (ticket, _) = calls::lock(&e.calls).drain().pop().unwrap();
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[32]})));
+    e.poll(14);
+    assert_eq!(e.session.objects().len(), 2);
+    // A prefab naming a tag the map lacks is not listed, is refused by
+    // name when asked for, and says so in the status.
+    let mut other = e.prefabs[0].clone();
+    other.pieces[0].tag.path = r"elsewhere\crate".into();
+    other.name = "far".into();
+    e.prefabs.push(other);
+    assert_eq!(e.prefab_items().len(), 1);
+    let error = e.choose(15, Choice::PlacePrefab(1)).unwrap_err();
+    assert!(error.contains(r"elsewhere\crate"), "{error}");
+    assert_eq!(e.status()["prefabs"][1]["fits"], false);
+    assert_eq!(e.session.objects().len(), 2);
+}
+
 /// The tools and their settings are screens of their own; a choice on
 /// them sets the tool, and the screens' facts follow it.
 #[test]

@@ -364,3 +364,6 @@ mod link_tests;
 
 #[path = "group_tests.rs"]
 mod group_tests;
+
+#[path = "prefab_tests.rs"]
+mod prefab_tests;

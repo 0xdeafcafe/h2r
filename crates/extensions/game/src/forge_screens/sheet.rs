@@ -229,6 +229,12 @@ impl Coordinate {
 pub enum NumberField {
     Coordinate(Coordinate),
     RespawnTime,
+    /// A thing's label text (the keyboard takes it as typed).
+    Label,
+    /// A thing's label number; empty takes the number off.
+    LabelNumber,
+    /// The name a prefab is saved as.
+    PrefabName,
 }
 
 /// A row that opens the game's keyboard for a number.
@@ -265,6 +271,11 @@ pub enum Choice {
     Ungroup(forge::OpId),
     /// **Lock group** (true) or **Unlock group** (false).
     LockGroup(forge::OpId, bool),
+    /// **Clear label**: take the label off a thing.
+    ClearLabel(forge::Endpoint),
+    /// Place prefab `i` (the object menu's Prefabs row) in front of the
+    /// monitor.
+    PlacePrefab(usize),
     /// Set a value to value `i` of its row's values.
     Set(Prop, usize),
     /// A number typed on the game's keyboard.
@@ -596,6 +607,67 @@ pub fn objects_with_ai(items: &[Item], selected: usize, ai: &[AiItem]) -> Option
     Some(sheet)
 }
 
+/// A prefab of the object menu's Prefabs row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrefabItem {
+    /// Its index among the prefabs the editor holds: what
+    /// [`Choice::PlacePrefab`] sends.
+    pub index: usize,
+    pub name: String,
+    pub line: String,
+}
+
+/// The name of the object menu's row of prefabs.
+pub const PREFABS_PAGE: &str = "Prefabs";
+
+/// A prefab's line in the picker: how many objects, and whether it places
+/// as a group.
+pub fn prefab_line(pieces: usize, grouped: bool) -> String {
+    let count = if pieces == 1 {
+        "1 object".to_string()
+    } else {
+        format!("{pieces} objects")
+    };
+    format!("Prefab. {count}{}.", if grouped { ", grouped" } else { "" })
+}
+
+/// `sheet` with the Prefabs row after the groups: one row, opening the
+/// value picker on the prefabs that fit this map, each choice a
+/// [`Choice::PlacePrefab`]. With none it is `sheet`, and a map with
+/// nothing to place still has the row.
+pub fn with_prefabs(sheet: Option<Sheet>, prefabs: &[PrefabItem]) -> Option<Sheet> {
+    if prefabs.is_empty() {
+        return sheet;
+    }
+    let pick = PickSpec {
+        title: PREFABS_PAGE.into(),
+        values: prefabs.iter().map(|p| p.name.clone()).collect(),
+        current: 0,
+        details: prefabs.iter().map(|p| p.line.clone()).collect(),
+        description: String::new(),
+        choices: prefabs
+            .iter()
+            .map(|p| Choice::PlacePrefab(p.index))
+            .collect(),
+        closes: true,
+    };
+    let count = if prefabs.len() == 1 {
+        "1 prefab.".to_string()
+    } else {
+        format!("{} prefabs.", prefabs.len())
+    };
+    let row = SheetRow::new(PREFABS_PAGE, Act::Pick(pick)).describe(&count);
+    let mut sheet = sheet.unwrap_or(Sheet {
+        kind: Kind::Objects,
+        title: "OBJECTS".into(),
+        body: String::new(),
+        rows: Vec::new(),
+        focus: 0,
+    });
+    sheet.rows.push(row);
+    Some(sheet)
+}
+
 /// `angle` in degrees as the rows write it: "45 degrees", "1 degree",
 /// "17.5 degrees".
 pub fn degrees(angle: f32) -> String {
@@ -653,13 +725,39 @@ pub(super) fn int_of(thing: &Thing, name: &str) -> i64 {
         .unwrap_or(0)
 }
 
+/// What the Properties page reads from the session and not from the thing
+/// itself: its label, and how many objects Save as prefab would take. With
+/// the default the page has no Label or Save as prefab rows
+/// (docs/game/forge-editing.md, "Properties").
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Extras {
+    /// The thing can be labelled.
+    pub labellable: bool,
+    /// Its label's text and number.
+    pub label: Option<(String, Option<i32>)>,
+    /// How many objects Save as prefab saves: the thing's group, or the
+    /// selection it is in, or itself; none when one of them is not an
+    /// object the session placed.
+    pub savable: usize,
+}
+
 /// Properties of `object` (its name, the header), heading `heading` in
 /// degrees: the rows of `forge.properties`' doc for the thing's kind, each
 /// showing its value ([`super::props::rows`]). `None` when no row is for
 /// it or the page has no doc.
 pub fn properties_sheet(object: &str, thing: &Thing, heading: f32) -> Option<Sheet> {
+    properties_sheet_with(object, thing, heading, &Extras::default())
+}
+
+/// [`properties_sheet`] with the rows that read `extras`.
+pub fn properties_sheet_with(
+    object: &str,
+    thing: &Thing,
+    heading: f32,
+    extras: &Extras,
+) -> Option<Sheet> {
     let doc = crate::ui_kit::data::screen(Kind::Properties.screen())?;
-    let rows = super::props::rows(&doc, thing, heading);
+    let rows = super::props::rows_with(&doc, thing, heading, extras);
     (!rows.is_empty()).then(|| Sheet {
         kind: Kind::Properties,
         title: object.to_uppercase(),

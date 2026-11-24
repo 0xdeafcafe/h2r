@@ -195,6 +195,26 @@ impl ForgeDoc {
         Pass::run(&self.ops, base_counts, None, None)?.resolve_labels()
     }
 
+    /// The active labels with their placements named by identity, for a
+    /// live session whose base things still use their original indices.
+    pub fn label_targets(
+        &self,
+        base_counts: &BTreeMap<BlockKind, u32>,
+    ) -> Result<BTreeMap<Endpoint, Label>> {
+        if !self
+            .ops
+            .iter()
+            .any(|op| matches!(op.edit, Edit::Forge(Forge::Label { .. })))
+        {
+            return Ok(BTreeMap::new());
+        }
+        Ok(Pass::run(&self.ops, base_counts, None, None)?
+            .labels
+            .into_iter()
+            .map(|(end, (_, label))| (end, label))
+            .collect())
+    }
+
     /// Resolve the active groups to final indices. The map's base count is
     /// needed for each block a group names.
     pub fn groups(&self, base_counts: &BTreeMap<BlockKind, u32>) -> Result<GroupSet> {

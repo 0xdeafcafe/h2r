@@ -10,8 +10,8 @@
 use forge::{Thing, ThingKind};
 
 use super::sheet::{
-    Act, Kind, NumberField, Prop, SheetRow, TypeSpec, degrees, int_of, nearest_heading,
-    text_value_row, value_row,
+    Act, Choice, Extras, Kind, NumberField, Prop, SheetRow, TypeSpec, degrees, int_of,
+    nearest_heading, text_value_row, value_row,
 };
 use crate::ui_kit::data::{PropDoc, ScreenDoc};
 use crate::ui_kit::forge::HEADINGS;
@@ -42,14 +42,21 @@ fn has(p: &PropDoc, thing: &Thing) -> bool {
 /// The doc rows for `thing`, in the doc's order. `heading` is its yaw in
 /// degrees.
 pub fn rows(doc: &ScreenDoc, thing: &Thing, heading: f32) -> Vec<SheetRow> {
+    rows_with(doc, thing, heading, &Extras::default())
+}
+
+/// [`rows`] with the rows that read the session: Label, Label number,
+/// Clear label and Save as prefab, each only where `extras` says the thing
+/// has it.
+pub fn rows_with(doc: &ScreenDoc, thing: &Thing, heading: f32, extras: &Extras) -> Vec<SheetRow> {
     doc.props
         .values()
         .filter(|p| is_for(p, thing.kind) && has(p, thing))
-        .filter_map(|p| row(p, thing, heading))
+        .filter_map(|p| row(p, thing, heading, extras))
         .collect()
 }
 
-fn row(p: &PropDoc, thing: &Thing, heading: f32) -> Option<SheetRow> {
+fn row(p: &PropDoc, thing: &Thing, heading: f32, extras: &Extras) -> Option<SheetRow> {
     let help = p.help.as_deref().unwrap_or("");
     let values = p.values.as_deref().unwrap_or(&[]);
     let last = values.len().saturating_sub(1);
@@ -89,6 +96,58 @@ fn row(p: &PropDoc, thing: &Thing, heading: f32) -> Option<SheetRow> {
                 .describe(help),
             )
         }
+        ("keyboard", "label") if extras.labellable => {
+            let text = extras.label.as_ref().map_or("", |(text, _)| text.as_str());
+            Some(
+                SheetRow::new(
+                    &p.text,
+                    Act::Type(TypeSpec {
+                        field: NumberField::Label,
+                        initial: text.into(),
+                    }),
+                )
+                .value(if text.is_empty() { "None" } else { text })
+                .describe(help),
+            )
+        }
+        ("keyboard", "label number") => {
+            let (_, number) = extras.label.as_ref()?;
+            let text = number.map(|n| n.to_string());
+            Some(
+                SheetRow::new(
+                    &p.text,
+                    Act::Type(TypeSpec {
+                        field: NumberField::LabelNumber,
+                        initial: text.clone().unwrap_or_default(),
+                    }),
+                )
+                .value(text.as_deref().unwrap_or("None"))
+                .describe(help),
+            )
+        }
+        ("act", "clear label") => {
+            extras.label.as_ref()?;
+            Some(SheetRow::new(&p.text, Act::Choose(Choice::ClearLabel(thing.id))).describe(help))
+        }
+        ("keyboard", "prefab") if extras.savable > 0 => {
+            let value = if extras.savable == 1 {
+                "1 object".to_string()
+            } else {
+                format!("{} objects", extras.savable)
+            };
+            Some(
+                SheetRow::new(
+                    &p.text,
+                    Act::Type(TypeSpec {
+                        field: NumberField::PrefabName,
+                        initial: String::new(),
+                    }),
+                )
+                .value(&value)
+                .describe(help),
+            )
+        }
+        ("keyboard", "label" | "prefab") => None,
         (screen, _) => {
             let kind = Kind::of_screen(screen)?;
             Some(SheetRow::new(&p.text, Act::Open(kind)).describe(help))

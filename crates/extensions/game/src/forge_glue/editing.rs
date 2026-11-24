@@ -43,8 +43,12 @@ struct Pending {
 }
 
 enum FileResult {
-    /// The saved maps, for Load.
-    Names(Vec<String>),
+    /// The saved maps, for Load, the saved prefabs, and a line for each
+    /// prefab file that did not read.
+    Listed(Vec<String>, Vec<forge::Prefab>, Vec<String>),
+    /// A prefab was saved as this name; the prefabs after, and the files
+    /// that did not read.
+    Prefab(String, Vec<forge::Prefab>, Vec<String>),
     /// Saved as this name; the saved maps after.
     Saved(String, Vec<String>),
     Loaded(Pending),
@@ -101,6 +105,9 @@ pub(super) struct Editor {
     saved_head: LogHead,
     /// The saved maps, for Load.
     saved: Vec<String>,
+    /// The saved prefabs, which the object menu lists when the map holds
+    /// their tags.
+    prefabs: Vec<forge::Prefab>,
     /// They were asked for, at the first tick.
     listed: bool,
     /// A screen is up, ours or the game's.
@@ -148,6 +155,7 @@ impl Editor {
             overwrite_asked: None,
             saved_head,
             saved: Vec::new(),
+            prefabs: Vec::new(),
             listed: false,
             ui_up: false,
             refused: opened.refused,
@@ -296,6 +304,7 @@ impl Editor {
                 "flag":t.index, "sender":t.sender, "channel":t.channel, "position":t.position,
             })).collect::<Vec<_>>(),
             "links":self.links_json(), "groups":self.groups_json(), "selection":self.tool.selection(),
+            "labels":self.labels_json(), "prefabs":self.prefabs_json(),
             "budget":{"used":self.session.objects().len(),"limit":self.session.budget()},
             "palette":self.session.palette().len(), "palette_refused":self.refused,
             "ground":ground_api::status(&self.session, self.ground_facts()),
@@ -418,6 +427,85 @@ impl Editor {
             selection: self.tool.selection().len(),
             group: self.session.group_of(id).map(|g| (g.id, g.name, g.locked)),
         }
+    }
+
+    /// What the Properties page reads of the session for `id`: its label,
+    /// and how many objects Save as prefab would take.
+    fn property_extras(&self, id: Endpoint) -> sheet::Extras {
+        sheet::Extras {
+            labellable: true,
+            label: self.session.label_of(id).map(|l| (l.text, l.number)),
+            savable: self.prefab_members(id).len(),
+        }
+    }
+
+    /// The things Save as prefab takes for `id`: its group, else the
+    /// selection when it is in it with another, else itself. Nothing when
+    /// one is not an object the session placed.
+    fn prefab_members(&self, id: Endpoint) -> Vec<Endpoint> {
+        let members: Vec<Endpoint> = match self.session.group_of(id) {
+            Some(group) => group.members,
+            None if self.tool.selection().len() >= 2 && self.tool.is_selected(id) => {
+                self.tool.selection().to_vec()
+            }
+            None => vec![id],
+        };
+        if members
+            .iter()
+            .all(|m| matches!(m.identity(), Endpoint::Added(op) if self.session.objects().iter().any(|o| o.id == op)))
+        {
+            members
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The prefabs the object menu lists: those whose every tag the map
+    /// holds ([`Session::prefab_fits`] names a tag it lacks when one is
+    /// placed).
+    fn prefab_items(&self) -> Vec<sheet::PrefabItem> {
+        self.prefabs
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| {
+                p.missing(|block, tag| {
+                    self.session
+                        .palette()
+                        .iter()
+                        .any(|i| i.block == block && i.tag == *tag)
+                })
+                .is_none()
+            })
+            .map(|(index, p)| sheet::PrefabItem {
+                index,
+                name: p.name.clone(),
+                line: sheet::prefab_line(p.pieces.len(), p.grouped),
+            })
+            .collect()
+    }
+
+    /// The prefabs for `forge.status`, each with whether this map takes it
+    /// and why not.
+    fn prefabs_json(&self) -> Vec<Value> {
+        self.prefabs
+            .iter()
+            .map(|p| {
+                let fit = self.session.prefab_fits(p);
+                json!({
+                    "name":p.name, "pieces":p.pieces.len(), "grouped":p.grouped,
+                    "fits":fit.is_ok(), "reason":fit.err(),
+                })
+            })
+            .collect()
+    }
+
+    /// The active labels, for `forge.status`.
+    fn labels_json(&self) -> Vec<Value> {
+        self.session
+            .labels()
+            .into_iter()
+            .map(|(thing, l)| json!({"thing":thing, "text":l.text, "number":l.number}))
+            .collect()
     }
 
     /// The active groups with their members, for `forge.status`.
@@ -675,8 +763,14 @@ impl Editor {
         if !self.listed && !self.busy() {
             self.listed = true;
             let data = self.data.clone();
-            if let Err(reason) = self.file(move || forge::saved_names(&data).map(FileResult::Names))
-            {
+            if let Err(reason) = self.file(move || {
+                let (prefabs, skipped) = forge::load_prefabs(&data)?;
+                Ok(FileResult::Listed(
+                    forge::saved_names(&data)?,
+                    prefabs,
+                    skipped,
+                ))
+            }) {
                 self.notice = Some((reason, tick));
             }
         }
@@ -802,7 +896,25 @@ impl Editor {
         };
         self.file_job = None;
         match result {
-            Ok(FileResult::Names(names)) => self.saved = names,
+            Ok(FileResult::Listed(names, prefabs, skipped)) => {
+                self.saved = names;
+                self.prefabs = prefabs;
+                if let Some(first) = skipped.first() {
+                    self.notice = Some((format!("Not a prefab, {first}"), tick));
+                }
+            }
+            Ok(FileResult::Prefab(name, prefabs, skipped)) => {
+                let replaced = self.prefabs.iter().any(|p| p.name == name);
+                self.notice = Some((
+                    match skipped.first() {
+                        Some(first) => format!("Saved prefab {name}. Not a prefab, {first}"),
+                        None if replaced => format!("Saved prefab {name}, replacing it."),
+                        None => format!("Saved prefab {name}."),
+                    },
+                    tick,
+                ));
+                self.prefabs = prefabs;
+            }
             Ok(FileResult::Saved(name, names)) => {
                 self.notice = Some((format!("Saved {name}."), tick));
                 self.filename = Some(name);
@@ -840,8 +952,11 @@ impl Editor {
         use Command::*;
         match cmd {
             Palette => {
-                let sheet = sheet::objects_with_ai(&self.items(), self.selected, &self.ai_items())
-                    .ok_or("This map has nothing to place.")?;
+                let sheet = sheet::with_prefabs(
+                    sheet::objects_with_ai(&self.items(), self.selected, &self.ai_items()),
+                    &self.prefab_items(),
+                )
+                .ok_or("This map has nothing to place.")?;
                 screens::open(sheet)?;
             }
             Properties if self.tool.links => {
@@ -877,9 +992,18 @@ impl Editor {
                         .ok_or("Aim at a thing of the map.")?;
                     self.session.thing(id).ok_or("The thing is gone.")?
                 };
-                let mut sheet =
-                    sheet::properties_sheet(&name, &thing, frame.rotation[0].to_degrees())
-                        .ok_or_else(|| format!("{name} has no properties to set."))?;
+                let extras = if self.tool.placing.is_none() {
+                    self.property_extras(thing.id)
+                } else {
+                    sheet::Extras::default()
+                };
+                let mut sheet = sheet::properties_sheet_with(
+                    &name,
+                    &thing,
+                    frame.rotation[0].to_degrees(),
+                    &extras,
+                )
+                .ok_or_else(|| format!("{name} has no properties to set."))?;
                 if self.tool.placing.is_none() {
                     sheet
                         .rows
@@ -1106,6 +1230,20 @@ impl Editor {
                 self.tool.camera = Some(eye.toward(centre, FLY_DISTANCE + spread));
             }
             Choice::ToggleSelected(id) => self.tool.toggle_selected(id),
+            Choice::ClearLabel(id) => {
+                return self.command(tick, Command::SetLabel { id, label: None });
+            }
+            Choice::PlacePrefab(i) => {
+                let prefab = self.prefabs.get(i).ok_or("That prefab is gone.")?;
+                self.session.prefab_fits(prefab)?;
+                let eye = self.tool.camera.ok_or("The monitor has no view.")?;
+                let frame = forge::Frame {
+                    position: eye.point(MARKER_REACH),
+                    rotation: [eye.yaw, 0., 0.],
+                };
+                let prefab = Box::new(prefab.clone());
+                return self.command(tick, Command::PlacePrefab { prefab, frame });
+            }
             Choice::GroupSelection => {
                 let members = self.tool.selection().to_vec();
                 let taken: Vec<String> =
@@ -1205,6 +1343,56 @@ impl Editor {
                 sheet::NumberField::Coordinate(axis) => {
                     return self.coordinate_number(tick, axis, &text);
                 }
+                sheet::NumberField::Label => {
+                    let id = self.property_target()?;
+                    let text = text.to_ascii_lowercase();
+                    if text.is_empty() {
+                        return Err("Type a label, or use Clear label.".into());
+                    }
+                    let number = self.session.label_of(id).and_then(|l| l.number);
+                    let label = forge::Label::new(text, number).map_err(|e| e.to_string())?;
+                    return self.command(
+                        tick,
+                        Command::SetLabel {
+                            id,
+                            label: Some(label),
+                        },
+                    );
+                }
+                sheet::NumberField::LabelNumber => {
+                    let id = self.property_target()?;
+                    let have = self.session.label_of(id).ok_or("This has no label.")?;
+                    let number = match text.trim() {
+                        "" => None,
+                        n => Some(
+                            n.parse::<i32>()
+                                .map_err(|_| "Type a whole number.".to_string())?,
+                        ),
+                    };
+                    let label = forge::Label::new(have.text, number).map_err(|e| e.to_string())?;
+                    return self.command(
+                        tick,
+                        Command::SetLabel {
+                            id,
+                            label: Some(label),
+                        },
+                    );
+                }
+                sheet::NumberField::PrefabName => {
+                    let id = self.property_target()?;
+                    let members = self.prefab_members(id);
+                    if members.is_empty() {
+                        return Err(
+                            "Only objects placed in this session can be saved as a prefab.".into(),
+                        );
+                    }
+                    let (data, session) = (self.data.clone(), self.session.clone());
+                    return self.file(move || {
+                        let prefab = session.save_prefab(&data, &text, &members)?;
+                        let (list, skipped) = forge::load_prefabs(&data)?;
+                        Ok(FileResult::Prefab(prefab.name, list, skipped))
+                    });
+                }
                 sheet::NumberField::RespawnTime => {
                     let value = text
                         .parse::<i64>()
@@ -1286,6 +1474,14 @@ impl Editor {
         Ok(())
     }
 
+    /// The thing a Properties row acts on: the one held or aimed at.
+    fn property_target(&self) -> Result<Endpoint, String> {
+        self.tool
+            .held_thing
+            .or(self.tool.aimed_thing)
+            .ok_or_else(|| "Aim at a thing of the map.".to_string())
+    }
+
     /// Saves as `name`, or as a new name from the map's when none.
     fn save(&mut self, name: Option<String>) -> Result<(), String> {
         let data = self.data.clone();
@@ -1319,6 +1515,8 @@ fn run(s: &mut Session, w: &mut ForgeWorld, tick: u32, cmd: Command) -> Result<(
         Group { name, members } => s.group(w, tick, &name, &members, false).map(|_| ()),
         Ungroup { group } => s.ungroup(w, tick, group),
         LockGroup { group, locked } => s.set_group_locked(w, tick, group, locked),
+        SetLabel { id, label } => s.set_label(w, tick, id, label),
+        PlacePrefab { prefab, frame } => s.place_prefab(w, tick, &prefab, frame).map(|_| ()),
         Undo => s.undo(w, tick),
         Redo => s.redo(w, tick),
         Marker { label, frame } => s.place_marker_next(w, tick, label, frame).map(|_| ()),

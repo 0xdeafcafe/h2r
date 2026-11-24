@@ -2275,6 +2275,11 @@ the hill number 0 to 7 as its number. Types 0, 1, 4, 7, 8, 10 and 11 to
 The `RulesExt` table applies a placement's own label first and the
 built-in label of its flag type otherwise.
 
+The Forge session sets, replaces and clears a label from the Properties
+page (`Session::set_label`; "Selection, groups and prefabs" in
+[forge-editing.md](forge-editing.md)), reads them with `Session::label_of`,
+and a saved prefab carries its pieces' labels.
+
 **Ground labels.** The labels Forge and Studio place for a scripted game
 (`forge_doc::GroundLabel`: `ff_drop`, `ff_base`, `ff_cover`,
 `siege_site`, `siege_goal`, `siege_line`; "Maps for scripted games" in

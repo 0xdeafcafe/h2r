@@ -58,3 +58,24 @@ props:
     on: [spawner]
     prop: "respawn time"
     open: keyboard
+  prop.7:
+    text: "Label"
+    help: "A name a game type script finds this by. Lowercase letters, digits, - _ and ."
+    prop: label
+    open: keyboard
+  prop.8:
+    text: "Label number"
+    help: "Tells things with one label apart. Empty takes the number off."
+    prop: "label number"
+    open: keyboard
+  prop.9:
+    text: "Clear label"
+    help: "Take the label off."
+    prop: "clear label"
+    open: act
+  prop.10:
+    text: "Save as prefab"
+    help: "Save this object, its group or the selection to place again."
+    on: [object]
+    prop: prefab
+    open: keyboard
