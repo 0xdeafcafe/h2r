@@ -1,9 +1,9 @@
 # The first-person bone palette (`16760c`'s palette step)
 
 Status: Partly built. The identity fill and the model-node overlay run as
-one Rust call wherever the first-person pose port runs; the filters
-`166d75`, the layer blending after the palette and the rest of phase 1c
-do not. Code: `crates/rewrites/sim-anim/src/palette.rs` (`build`),
+one Rust call wherever the first-person pose port runs; the layer
+blending after the palette and the rest of phase 1c do not (the filter
+step is [first-person-filters.md](first-person-filters.md)). Code: `crates/rewrites/sim-anim/src/palette.rs` (`build`),
 `crates/rewrites/engine/src/sim_anim/palette.rs` (`run`). Tests:
 `crates/rewrites/sim-anim/src/palette_tests.rs`,
 `crates/rewrites/engine/src/sim_anim/palette/tests.rs`,
@@ -105,6 +105,8 @@ The step declines, writing nothing (the port's loops run), when:
 ## Related
 
 - [sim-rewrite.md](sim-rewrite.md), section 5, phase 1c.
-- [markers.md](markers.md): the other phase 1c slice.
+- [markers.md](markers.md): the marker slice of phase 1c.
+- [first-person-filters.md](first-person-filters.md): the filter step
+  of the first-person filter port.
 - [anim-sampling.md](anim-sampling.md): the node records the palette's
   shape comes from.

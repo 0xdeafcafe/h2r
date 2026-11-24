@@ -213,7 +213,9 @@ fn damp(c:&mut CpuAbi,g:&mut Guest)->Result<TransferAbi>{
         if off==8 {g.set_u32(c.ebp-28,c.edi)?;}
     }
     finish_fpu(c,g,x,0x1673f7,c.esp)?;c.edx &= !255;logic(c,0,128);
-    g.call(c,0x11eed0,0x1673ff)
+    // Phase 1c: the filter step as one Rust call (engine::sim_anim::filter).
+    if crate::sim_anim::filter::run(c,g,0x1673ff)? {return idle(c,g,0x1673ff);}
+    g.call(c,crate::sim_anim::filter::FILTER,0x1673ff)
 }
 fn idle(c:&mut CpuAbi,g:&mut Guest,mut pc:u32)->Result<TransferAbi>{
     loop {pc=match pc {
