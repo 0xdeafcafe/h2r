@@ -30,20 +30,25 @@
 //!   `0x0045dcc0`) unless its function is periodic (type 3); the range
 //!   input is 0 without a lighting record, else the record's callback's
 //!   (not carried: a ranged function on an object item refuses). The
-//!   function `0x0013b390` ([`Function::evaluate`]), then, unless the
+//!   function `0x0013b390` ([`tags::effects::function::Function::evaluate`]), then, unless the
 //!   function's flags have a bit of `0xf0`, the result clamped to 0..1
 //!   and mapped onto the function's range. A property driven by an object
 //!   function calls the lighting record's callbacks and refuses.
 //!
 //! The stage applies the values of pixel- and vertex-constant animations;
-//! a bitmap, render-state or stage-state animation refuses
+//! a bitmap frame, render-state or stage-state animation refuses
 //! ([`LayerRefusal::Animation`]).
+
+mod animation;
+mod pixel;
+mod texture_transform;
+
+pub use animation::{property_value, sample_constants};
 
 use std::ops::Range;
 use std::sync::Arc;
 
 use frame_scene::{FrameScene, LayerInputs, LayerItem, LayerOwner, LayerPass, Lighting};
-use tags::effects::function::{Function, FunctionType};
 use tags::material::{AnimationKind, EngineInputs, InputReads, Material, ResolvedImplementation};
 use tags::shader::AnimatedProperty;
 
@@ -102,18 +107,6 @@ pub struct PassDraw {
     pub implementation: usize,
 }
 
-/// The value of one animated target's property components, in its
-/// properties' order.
-#[derive(Clone, Debug, PartialEq)]
-pub struct AnimatedValue {
-    pub pass: usize,
-    /// Index into the implementation's `animated`.
-    pub target: usize,
-    pub kind: AnimationKind,
-    /// `(component, value)` per property reference.
-    pub values: Vec<(i16, f32)>,
-}
-
 /// One item's draw, planned.
 #[derive(Clone, Debug)]
 pub struct LayerDraw {
@@ -124,11 +117,12 @@ pub struct LayerDraw {
     pub part: u8,
     pub shader: u32,
     pub layer: u8,
-    /// The material resolved with [`Self::inputs`].
+    /// The baseline resolved with [`Self::inputs`]. Use [`Self::implementation`] for the draw.
     pub material: Arc<Material>,
     pub passes: Vec<PassDraw>,
     pub inputs: EngineInputs,
-    pub animation: Vec<AnimatedValue>,
+    /// Only passes with animated constants need a private register image.
+    sampled: Vec<(PassDraw, ResolvedImplementation)>,
     /// An object item's palette rows (into [`FrameScene::rows`]).
     pub rows: Range<u32>,
 }
@@ -136,12 +130,8 @@ pub struct LayerDraw {
 impl LayerDraw {
     /// The implementation drawn for `pass`.
     pub fn implementation(&self, pass: &PassDraw) -> Option<&ResolvedImplementation> {
-        self.material
-            .layers
-            .iter()
-            .find(|l| l.lod == 0 && l.layer == usize::from(self.layer))
-            .and_then(|l| l.passes.get(pass.pass))
-            .and_then(|p| p.implementations.get(pass.implementation))
+        self.sampled.iter().find(|(p, _)| p == pass).map(|(_, imp)| imp)
+            .or_else(|| implementation(&self.material, self.layer, pass))
     }
 }
 
@@ -169,14 +159,18 @@ pub enum LayerRefusal {
     Implementation { pass: usize, count: usize, wanted: usize },
     /// A pass reads an input the scene does not give.
     Input { pass: usize, input: Input },
-    /// A pass animates a bitmap, a render state or a stage state.
+    /// A binding cannot be applied, e.g. an animated frame or pipeline state.
     Animation { pass: usize, kind: AnimationKind },
+    /// A vertex binding needs texture-slot fields the pass does not supply.
+    TextureTransform { pass: usize, slot: u8, mode: u8 },
     /// An animated property is driven by an object function, or is ranged
     /// on an object item: its inputs are the lighting record's callbacks.
     ObjectAnimation { property: usize },
     /// An animated target names a property the instance does not have, or
     /// a function that does not parse.
     Property { property: usize },
+    /// A periodic curve needs a wave table unavailable to the native evaluator.
+    Wave { property: usize, wave: u8 },
     /// The render time did not read.
     NoTime,
 }
@@ -194,6 +188,8 @@ impl LayerRefusal {
             LayerRefusal::Animation { .. } => "animation",
             LayerRefusal::ObjectAnimation { .. } => "object_animation",
             LayerRefusal::Property { .. } => "property",
+            LayerRefusal::TextureTransform { .. } => "texture_transform",
+            LayerRefusal::Wave { .. } => "wave",
             LayerRefusal::NoTime => "time",
         }
     }
@@ -244,20 +240,12 @@ pub fn plan_item(pass: &LayerPass, item: &LayerItem, materials: &mut dyn Materia
     }
     let material = if per_draw { materials.material(shader, Some(&inputs)).map_err(LayerRefusal::Material)? } else { own };
     let passes = passes_of(&material, pass.layer, item.key.implementation)?;
-    let mut animation = Vec::new();
+    let mut sampled = Vec::new();
     for p in &passes {
         let imp = implementation(&material, pass.layer, p).expect("planned from this material");
-        for (target, a) in imp.animated.iter().enumerate() {
-            if !matches!(a.kind, AnimationKind::PixelConstant | AnimationKind::VertexConstant) {
-                return Err(LayerRefusal::Animation { pass: p.pass, kind: a.kind });
-            }
-            let mut values = Vec::with_capacity(a.properties.len());
-            for r in &a.properties {
-                let index = usize::try_from(r.property).map_err(|_| LayerRefusal::Property { property: usize::MAX })?;
-                let property = instance.properties.get(index).ok_or(LayerRefusal::Property { property: index })?;
-                values.push((r.component, property_value(property, index, pass.inputs.time, object)?));
-            }
-            animation.push(AnimatedValue { pass: p.pass, target, kind: a.kind, values });
+        if !imp.animated.is_empty() {
+            let at_time = sample_constants(imp, &instance.properties, pass.inputs.time, object, p.pass)?;
+            sampled.push((*p, at_time));
         }
     }
     Ok(LayerDraw {
@@ -270,7 +258,7 @@ pub fn plan_item(pass: &LayerPass, item: &LayerItem, materials: &mut dyn Materia
         material,
         passes,
         inputs,
-        animation,
+        sampled,
         rows: item.rows.clone(),
     })
 }
@@ -364,32 +352,6 @@ fn bits(mut mask: u64) -> impl Iterator<Item = u32> {
         mask &= mask - 1;
         Some(n)
     })
-}
-
-/// An animated property's value at render time `time` (`0x00017550`
-/// through `0x0001b230`), or why not. `object`: the item has a lighting
-/// record, whose callbacks give the range input.
-pub fn property_value(property: &AnimatedProperty, index: usize, time: Option<f64>, object: bool) -> Result<f32, LayerRefusal> {
-    if property.input != 0 {
-        return Err(LayerRefusal::ObjectAnimation { property: index });
-    }
-    let function = Function::parse(&property.function).map_err(|_| LayerRefusal::Property { property: index })?;
-    if object && function.is_ranged() {
-        return Err(LayerRefusal::ObjectAnimation { property: index });
-    }
-    let time = time.ok_or(LayerRefusal::NoTime)?;
-    let period = f32::from_bits(property.input_b);
-    let mut x = (time / f64::from(period)) as f32;
-    if function.kind != FunctionType::Periodic {
-        x = (f64::from(x) % 1.0) as f32;
-    }
-    let v = function.evaluate(x, 0.0);
-    if function.is_raw_output() {
-        return Ok(v);
-    }
-    let v = v.clamp(0.0, 1.0);
-    let [lo, hi] = function.range;
-    Ok((hi - lo) * v + lo)
 }
 
 /// One structure item of a layer draw's list as the skip sees it.
@@ -645,13 +607,6 @@ pub fn world_owner(owner: LayerOwner) -> Option<crate::world::Owner> {
     }
 }
 
-/// Whether a planned draw is static: the material as resolved at the load
-/// (no input read per draw) and no animation. Only these draw with the
-/// programs compiled at the load (`crate::fog_gpu::FogSet`).
-pub fn is_static(draw: &LayerDraw) -> bool {
-    draw.animation.is_empty() && draw.passes.iter().all(|p| draw.implementation(p).is_some_and(|i| !i.per_draw_inputs))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -874,6 +829,7 @@ mod tests {
     fn animated(kind: AnimationKind, refs: &[(i16, i16)]) -> AnimatedTarget {
         AnimatedTarget {
             kind,
+            pixel_register: (kind == AnimationKind::PixelConstant).then_some((false, 0)),
             binding: AnimationBinding { target: 0, b1: 0, b2: 0, properties: 0 },
             properties: refs.iter().map(|&(property, component)| PropertyRef { property, component }).collect(),
         }
@@ -881,13 +837,22 @@ mod tests {
 
     #[test]
     fn constant_animations_take_their_values_and_other_kinds_are_named() {
-        let a = animated(AnimationKind::VertexConstant, &[(0, 0), (1, 2)]);
+        // Only the first reference feeds a direct constant. The register and
+        // component come entirely from the target word (c[18].z here).
+        let mut a = animated(AnimationKind::VertexConstant, &[(0, 3), (99, 2)]);
+        a.binding.target = 0x50;
+        a.binding.b2 = 0xff;
         let m = material(8, vec![vec![implementation(0, InputReads::default(), vec![a])]], own_inputs());
         let mut lib = library(m);
-        lib.instance.properties = vec![timed(4.0, identity([0.0, 2.0], 0)), timed(10.0, identity([0.0, 1.0], 0))];
-        let d = plan_item(&pass(8, view_inputs()), &item(LayerOwner::Cluster(1), 0, None), &mut lib).unwrap();
-        assert_eq!(d.animation.len(), 1);
-        assert_eq!(d.animation[0].values, [(0, 1.0), (2, 0.0)], "2.5 wraps to 0.5 of 0..2; 1.0 wraps to 0");
+        lib.instance.properties = vec![timed(4.0, identity([0.0, 2.0], 0))];
+        let item0 = item(LayerOwner::Cluster(1), 0, None);
+        for (seconds, expected) in [(10., 1.), (11., 1.5), (8., 0.)] {
+            let mut pass = pass(8, view_inputs());
+            pass.inputs.time = Some(seconds);
+            let d = plan_item(&pass, &item0, &mut lib).unwrap();
+            assert_eq!(d.implementation(&d.passes[0]).unwrap().vertex_constants[0].value, [0., 0., expected, 0.]);
+            assert_eq!(d.material.layers[0].passes[0].implementations[0].vertex_constants[0].value, [0.; 4]);
+        }
         let b = animated(AnimationKind::Bitmap, &[(0, 0)]);
         let m = material(8, vec![vec![implementation(0, InputReads::default(), vec![b])]], own_inputs());
         let mut lib = library(m);
@@ -898,6 +863,37 @@ mod tests {
         let m = material(8, vec![vec![implementation(0, InputReads::default(), vec![c])]], own_inputs());
         let r = plan_item(&pass(8, view_inputs()), &item(LayerOwner::Cluster(1), 0, None), &mut library(m)).unwrap_err();
         assert_eq!(r, LayerRefusal::Property { property: 5 }, "the instance has no property 5");
+    }
+
+    #[test]
+    fn colour_and_scalar_bindings_share_a_default_and_preserve_each_others_lanes() {
+        let mut rgb = animated(AnimationKind::VertexConstant, &[(0, 99)]);
+        rgb.binding.target = (4 << 5) | 9;
+        let mut alpha = animated(AnimationKind::VertexConstant, &[(1, 99)]);
+        alpha.binding.target = (3 << 5) | 9;
+        let imp = implementation(0, InputReads::default(), vec![alpha, rgb]);
+        let mut palette = identity([f32::from_bits(0xff00_8000), 0.], 0x20);
+        palette[16..20].copy_from_slice(&0xff80_0080u32.to_le_bytes());
+        let props = [timed(2., palette), timed(2., identity([2., 8.], 0))];
+        let out = sample_constants(&imp, &props, Some(1.), false, 0).unwrap();
+        let reg = out.vertex_defaults[0];
+        assert_eq!((reg.index, reg.written), (9, 15));
+        assert_eq!(reg.value, [64.0 / 255.0, 64.0 / 255.0, 64.0 / 255.0, 5.0]);
+    }
+
+    #[test]
+    fn transform_binding_uses_the_bitmap_slots_fields_without_sampling_its_own_property() {
+        let mut slot = animated(AnimationKind::Bitmap, &[(0, 3), (1, 6)]);
+        slot.binding.target = 3;
+        let mut vertex = animated(AnimationKind::VertexConstant, &[(9, 0)]);
+        let word: u16 = 4 | 16 | (20 << 5) | (3 << 10);
+        [vertex.binding.target, vertex.binding.b1] = word.to_le_bytes();
+        let props = [timed(2., identity([3., 5.], 0)), timed(2., identity([8., 12.], 0))];
+        let imp = implementation(0, InputReads::default(), vec![slot, vertex]);
+        let out = sample_constants(&imp, &props, Some(1.), false, 0).unwrap();
+        let reg = out.vertex_constants.iter().find(|r| r.index == 22).unwrap();
+        assert_eq!(reg.value, [0., 0., 4., 10.]);
+        assert_eq!(reg.written, 15);
     }
 
     #[test]

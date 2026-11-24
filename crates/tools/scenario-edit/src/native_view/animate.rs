@@ -30,6 +30,7 @@ pub fn value_at(property: &AnimatedProperty, index: usize, time: f64) -> Result<
     property_value(property, index, Some(time), false).map_err(|e| match e {
         LayerRefusal::ObjectAnimation { .. } => OBJECT_DRIVEN.to_owned(),
         LayerRefusal::Property { .. } => UNREADABLE.to_owned(),
+        LayerRefusal::Wave { wave, .. } => format!("periodic wave {wave} needs an engine lookup table"),
         other => format!("not evaluated ({})", other.name()),
     })
 }

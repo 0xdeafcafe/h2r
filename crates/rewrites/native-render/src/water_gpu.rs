@@ -267,7 +267,7 @@ impl WaterSet {
                 let mut pixel = g.program.pixel;
                 pixel.fog = fog.uniform();
                 pixel.fog_color = *color;
-                g.prepare_with(uploads, view, &pixel);
+                g.prepare_with(uploads, view, &g.program.vertex, &pixel);
             }
         }
     }
@@ -467,7 +467,7 @@ impl WaterSet {
                 let mut pixel = g.program.pixel;
                 pixel.fog = fog.uniform();
                 pixel.fog_color = *color;
-                writes.extend(g.prepare_writes(view, &pixel));
+                writes.extend(g.prepare_writes(view, &g.program.vertex, &pixel));
             }
         }
         Ok(writes)

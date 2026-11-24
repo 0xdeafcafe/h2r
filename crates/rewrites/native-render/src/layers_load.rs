@@ -78,8 +78,8 @@ pub struct LayerData {
     pub words: HashMap<u16, FogWords>,
     /// The parts the set draws, in the world's draw order.
     pub parts: Vec<Part>,
-    /// Each drawn part with its material's shader datum.
-    pub part_set: HashMap<(Owner, u8), u32>,
+    /// Each drawn part with its material index and shader datum.
+    pub part_set: HashMap<(Owner, u8), (u16, u32)>,
     /// Whether any pass's state writes depth.
     pub writes_depth: bool,
     /// Why each material that has passes of the layer does not draw, with
@@ -206,7 +206,8 @@ pub fn load_with<R: std::io::Read + std::io::Seek>(
             {
                 continue; // the layer draws nothing of it
             }
-            match compile(map, files, &lib, images, decoder, material, layer, selection, given) {
+            let properties = out.instances.get(&material.shader.0).map_or(&[][..], |i| i.properties.as_slice());
+            match compile(map, files, &lib, images, decoder, material, layer, selection, given, properties) {
                 Ok(p) => {
                     data.words
                         .insert(m, p.first().map(|p| p.words).unwrap_or_default());
@@ -247,7 +248,7 @@ pub fn load_with<R: std::io::Read + std::io::Seek>(
         data.part_set = data
             .parts
             .iter()
-            .filter_map(|&(k, (_, _, _, m))| Some((k, shaders.get(usize::from(m))?.0)))
+            .filter_map(|&(k, (_, _, _, m))| Some((k, (m, shaders.get(usize::from(m))?.0))))
             .collect();
         if !data.programs.is_empty() || !refused.is_empty() {
             eprintln!(
@@ -276,8 +277,9 @@ fn compile<R: std::io::Read + std::io::Seek>(
     layer: u8,
     selection: fog_gpu::Selection,
     given: Option<&[u8; program::VIEW_CONSTANTS]>,
+    properties: &[tags::shader::AnimatedProperty],
 ) -> Result<Vec<FogProgram>, String> {
-    let passes = fog_gpu::layer_passes_selected(material, usize::from(layer), selection).map_err(|r| r.describe())?;
+    let passes = fog_gpu::sampled_layer_passes(material, usize::from(layer), selection, properties).map_err(|r| r.describe())?;
     let mut out = Vec::with_capacity(passes.len());
     for p in &passes {
         let code = look::world_program(map, lib.metadata(), p.look.vertex_shader)
@@ -306,19 +308,19 @@ fn compile<R: std::io::Read + std::io::Seek>(
 
 /// What a host with no game (the editor) draws of one loaded layer
 /// ([`plan_without_game`]).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct StaticLayer {
     /// The materials whose passes of the layer compiled.
     pub compiled: usize,
-    /// Those the plan takes as static draws with fog off: what the host
-    /// draws.
+    /// The materials the plan accepts with fog off.
     pub drawn: BTreeSet<u16>,
+    /// Sampled uniforms for the drawn materials with animated constants.
+    pub constants: fog_gpu::LayerSamples,
     /// The parts of the drawn materials, in the world's draw order.
     pub parts: Vec<Part>,
     /// Why each other material with passes of the layer does not draw,
     /// as `cause: detail`, with how many materials: the load's refusals
-    /// as `program`, the plan's by [`refusal_name`], `animated` and
-    /// `fog`.
+    /// as `program`, the plan's by [`refusal_name`], and `fog`.
     pub refused: BTreeMap<String, usize>,
     /// Layer 3's parts of a drawn material that do not take its pass
     /// ([`plan_layer3`]), by cause, with how many parts: the host draws
@@ -331,9 +333,8 @@ pub struct StaticLayer {
 /// a cluster's and a placement's items draw with no lighting), through
 /// [`layer_pass::plan_item`] with the game-free layer inputs
 /// (`scene_extract::layout::layer_inputs::without_game` at `time`). A
-/// material draws when the plan takes it, its draw is static (what the
-/// compiled programs hold: no animation, no per-draw resolution) and its
-/// own fog words leave fog off, as the game-free run state has no fog.
+/// material draws when the plan accepts its inputs and its own fog words
+/// leave fog off. Animated pass constants enter the plan at `time`.
 /// Every other material is named with its cause; nothing is drawn with
 /// an input, a constant or a fog the host does not give.
 pub fn plan_without_game(
@@ -393,14 +394,14 @@ pub fn plan_without_game(
             .is_some_and(|w| w.enable.is_some_and(|e| e != 0));
         let why = match layer_pass::plan_item(&pass, &item, &mut Resolved(view)) {
             Err(r) => format!("{}: {r:?}", refusal_name(&r)),
-            Ok(d) if !layer_pass::is_static(&d) => {
-                "animated: a pass animates a constant the compiled programs hold".to_owned()
-            }
             Ok(_) if fogged => {
                 "fog: the material enables fog, which the game-free run state does not give"
                     .to_owned()
             }
-            Ok(_) => {
+            Ok(draw) => {
+                if let Some(constants) = fog_gpu::sampled_constants(&draw) {
+                    out.constants.insert(m, constants);
+                }
                 out.drawn.insert(m);
                 continue;
             }
@@ -518,7 +519,7 @@ pub fn load_layer3<R: std::io::Read + std::io::Seek>(
         .data
         .parts
         .iter()
-        .filter_map(|&(k, (_, _, _, m))| Some((k, shaders.get(usize::from(m))?.0)))
+        .filter_map(|&(k, (_, _, _, m))| Some((k, (m, shaders.get(usize::from(m))?.0))))
         .collect();
     out
 }
@@ -648,6 +649,7 @@ pub fn plan_layer3(layer: &Layer3) -> StaticLayer {
     StaticLayer {
         compiled: data.programs.len(),
         drawn: data.programs.keys().copied().collect(),
+        constants: Default::default(),
         parts: data.parts.clone(),
         refused: data
             .refused

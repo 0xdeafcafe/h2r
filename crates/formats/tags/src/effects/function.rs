@@ -223,7 +223,7 @@ pub struct Function {
     /// Header floats at +4 and +8 (**E**): output range, applied by the
     /// property wrapper when `flags & 0xF0 == 0`.
     pub range: [f32; 2],
-    /// Header +0xc..+0x14: not read by the engine.
+    /// Header +0xc..+0x14: retained as bytes. Shader colour outputs can use both words as packed colours.
     pub unknown_0c: [u8; 8],
     /// Everything after the header (two sets).
     pub payload: Vec<u8>,
@@ -280,6 +280,43 @@ impl Function {
     /// True when the property wrapper uses the output unmapped.
     pub fn is_raw_output(&self) -> bool {
         self.flags & 0xf0 != 0
+    }
+
+    /// Packed ARGB from a shader colour property (0x0013bc00). The high
+    /// nibble selects how many colours the function header supplies.
+    pub fn output_colour(&self, raw: f32) -> u32 {
+        let [a, b] = self.range.map(f32::to_bits);
+        let c = u32::from_le_bytes(self.unknown_0c[..4].try_into().unwrap());
+        let d = u32::from_le_bytes(self.unknown_0c[4..].try_into().unwrap());
+        let kind = self.flags >> 4;
+        if self.kind == FunctionType::Constant && (!self.is_ranged() || kind <= 1) {
+            return a;
+        }
+        let x = raw.clamp(0.0, 1.0);
+        let stops: &[u32] = match kind {
+            0 => {
+                let grey = (x * 255.0).round_ties_even() as u32;
+                return 0xff00_0000 | grey * 0x010101;
+            }
+            1 => return a,
+            2 => &[a, d],
+            3 => &[a, b, d],
+            4 => &[a, b, c, d],
+            _ => return u32::MAX,
+        };
+        let at = x * (stops.len() - 1) as f32;
+        let i = (at as usize).min(stops.len() - 2);
+        // The MMX interpolation scales the weight to 14 fractional bits.
+        let weight = ((at - i as f32) * 16384.0).round_ties_even() as i32;
+        let [left, right] = [stops[i], stops[i + 1]];
+        let mut colour = 0;
+        for shift in [0, 8, 16, 24] {
+            let lo = ((left >> shift) & 255) as i32;
+            let hi = ((right >> shift) & 255) as i32;
+            let channel = lo + (((hi - lo) * weight + 8192) >> 14);
+            colour |= (channel.clamp(0, 255) as u32) << shift;
+        }
+        colour
     }
 
     /// Set `i`'s typed values (0 or 1), from the words the engine's
@@ -891,6 +928,24 @@ mod tests {
         }
         v
     }
+    #[test]
+    fn shader_colour_interpolates_the_header_stops_selected_by_the_high_nibble() {
+        let mut bytes = blob(0, 0x40, [0; 2], [0.; 2], &[]);
+        for (i, c) in [0xff00_0000u32, 0xff40_8020, 0xff10_2030, 0xff80_8040].into_iter().enumerate() {
+            bytes[4 + 4*i..8 + 4*i].copy_from_slice(&c.to_le_bytes());
+        }
+        let mut f = Function::parse(&bytes).unwrap();
+        assert_eq!(f.output_colour(0.5), 0xff28_5028);
+        f.flags = 0x30;
+        assert_eq!(f.output_colour(0.5), 0xff40_8020);
+        f.flags = 0x20;
+        assert_eq!(f.output_colour(1.), 0xff80_8040);
+        f.flags = 0x10;
+        assert_eq!(f.output_colour(1.), 0xff00_0000);
+        f.flags = 0;
+        assert_eq!(f.output_colour(0.5), 0xff80_8080);
+    }
+
     fn pad(words: &mut Vec<f32>, n: usize) {
         words.resize(n, 0.0);
     }

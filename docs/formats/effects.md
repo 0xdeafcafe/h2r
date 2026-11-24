@@ -69,7 +69,7 @@ wrapper `0x00246cd0`; table in [engine-map.md](../engine/engine-map.md)), **V** 
 | `+1` | flags: bit 0 ranged (use set 1, blend by range input); any of `0xf0` = output used raw, not mapped onto the header range | E; V: bits `0x01`, `0x10`, `0x20` observed |
 | `+2`, `+3` | wave / shape selector for set 0 and set 1 (types 2 and 3 only) | E; V |
 | `+4`, `+8` | output range (min, max), mapped when `flags & 0xf0 == 0` | E (`0x00246cd0`); V |
-| `+0xc..+0x14` | not read by the engine (kept as `unknown_0c`; observed zero, `ffffffff`, or stale bytes) | E |
+| `+0xc..+0x14` | preserved by the scalar evaluator as `unknown_0c`. The shader colour evaluator reads packed gradient stops here ([shader-instances.md](shader-instances.md)) | E |
 | `+0x14` | two sets of `T[type]` words each | E, V |
 
 Blob length is exactly `0x14 + 8 * T[type]` words-per-set: 20, 28, 36, 52, 68,

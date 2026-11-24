@@ -365,11 +365,16 @@ pub struct PropertyRef {
 /// shad +0x54 (stride 4): one animation binding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AnimationBinding {
-    /// byte 0: target (texture slot, state table index, or register).
+    /// Byte 0: texture slot or state table index. For a constant this is
+    /// the low byte of its destination word (`target | b1 << 8`).
     pub target: u8,
-    /// byte 1: kind-specific (render-state animations: 1 = scalar output).
+    /// Byte 1: high byte of the constant destination. A pixel word packs
+    /// fragment, selector, register and C1 in bits 0..2, 3..5, 6..9 and
+    /// 10. A vertex word packs register, bank, mode and texture slot
+    /// in bits 0..3, 4, 5..9 and 10..12. Render-state kind 1 is scalar.
     pub b1: u8,
-    /// byte 2: kind-specific (colour: channel mask & transform).
+    /// Byte 2: pixel component mode in bits 0..2 and scalar transform in
+    /// bits 3..5 (`0x000176e3`). Vertex constants use only the word.
     pub b2: u8,
     /// byte 3: index into `property_ranges`.
     pub properties: u8,

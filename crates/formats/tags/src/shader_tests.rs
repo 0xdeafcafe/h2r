@@ -477,6 +477,20 @@ fn builds_variant_combiners_from_engine_inputs() {
 }
 
 #[test]
+fn a_resolved_pixel_write_updates_the_final_register_and_its_dirty_bit() {
+    let mut m = library(&fixture()).material(SHAD_ID, None).unwrap();
+    let imp = &mut m.layers[0].passes[0].implementations[0];
+    let final_c1 = 44 * 4;
+    imp.pixel_shader[final_c1..final_c1 + 4].copy_from_slice(&0x3564_a1b2u32.to_le_bytes());
+    let c0 = imp.c0_written;
+    let c1 = imp.c1_written;
+    imp.write_pixel_constant((true, 8), 0x0000_ff00, 0x00ff_7eff).unwrap();
+    assert_eq!(&imp.pixel_shader[final_c1..final_c1 + 4], &0x3564_7eb2u32.to_le_bytes());
+    assert_eq!((imp.c0_written, imp.c1_written), (c0, c1 | (1 << 8)));
+    assert!(imp.write_pixel_constant((true, 9), u32::MAX, 0).is_err());
+}
+
+#[test]
 fn aliased_blocks_resolve_across_the_region() {
     // Two shad postprocess blocks share one array that lives outside the tag.
     let mut a = Arena::default();
@@ -803,6 +817,7 @@ fn animation_targets_follow_the_instance_tree() {
         imps[1].animated,
         vec![AnimatedTarget {
             kind: AnimationKind::VertexConstant,
+            pixel_register: None,
             binding: AnimationBinding {
                 target: 3,
                 b1: 0,
@@ -814,13 +829,30 @@ fn animation_targets_follow_the_instance_tree() {
                     property: 0,
                     component: 1
                 },
-                PropertyRef {
-                    property: 0,
-                    component: 2
-                },
             ],
         }]
     );
+    // Direct constant writers mask off the count and dereference the start.
+    let range_at = target(&f, sp + 0x4c);
+    w16(&mut f.arena.b, range_at, range(1, 0));
+    let m = library(&f).material(SHAD_ID, None).unwrap();
+    assert_eq!(m.layers[0].passes[0].implementations[1].animated[0].properties,
+        [PropertyRef { property: 0, component: 2 }]);
+    // Feed the same references into two pixel constants of fragment 1.
+    // The first matches its selected variant. The second requires variant 0.
+    let leaf = target(&f, sp + 0x34) + 10;
+    w16(&mut f.arena.b, leaf + 8, 0);
+    w16(&mut f.arena.b, leaf + 6, range(0, 2));
+    let anims = f.arena.put(&[9, 4, 2, 0, 1, 2, 4, 0]);
+    blk(&mut f.arena.b, sp + 0x54, 2, anims);
+    let destinations = |inputs| {
+        let m = library(&f).material(SHAD_ID, inputs).unwrap();
+        m.layers[0].passes[0].implementations[1].animated.iter()
+            .map(|a| a.pixel_register).collect::<Vec<_>>()
+    };
+    assert_eq!(destinations(None), [Some((true, 1)), None]);
+    assert_eq!(destinations(Some(EngineInputs::default())), [None, Some((false, 8))]);
+
     // A clear layer bit means no animation (0x000174d0).
     let lod_at = target(&f, sp + 0x1c);
     w32(&mut f.arena.b, lod_at, 1 << 1);

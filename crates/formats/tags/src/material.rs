@@ -131,6 +131,9 @@ pub struct VectorBinding {
 pub struct AnimatedTarget {
     pub kind: AnimationKind,
     pub binding: AnimationBinding,
+    /// Active pixel destination (C1, slot) after fragment selection. Slot
+    /// 8 is the final combiner. Inactive and non-pixel bindings have none.
+    pub pixel_register: Option<(bool, u8)>,
     /// The property components feeding it.
     pub properties: Vec<PropertyRef>,
 }
@@ -141,6 +144,22 @@ pub enum AnimationKind {
     StageState,
     PixelConstant,
     VertexConstant,
+}
+
+impl AnimationKind {
+    /// Direct constants dereference the range start even when its count is
+    /// zero. Texture transform modes use the bitmap slot instead.
+    pub fn property_refs(self, sp: &ShaderPostprocess, binding: AnimationBinding) -> &[PropertyRef] {
+        let Some(range) = sp.property_ranges.get(usize::from(binding.properties)) else { return &[] };
+        let word = u16::from_le_bytes([binding.target, binding.b1]);
+        match self {
+            Self::VertexConstant if (word >> 5) & 31 >= 5 => &[],
+            Self::VertexConstant | Self::PixelConstant => {
+                sp.property_refs.get(usize::from(range.start)).map_or(&[], std::slice::from_ref)
+            }
+            _ => sp.property_refs.get(range.indices()).unwrap_or(&[]),
+        }
+    }
 }
 
 /// One resolved implementation of a pass: everything a D3D/WGSL layer needs.
@@ -804,12 +823,19 @@ impl ShaderLibrary {
             ] {
                 work.charge(usize::from(r.count))?;
                 for binding in &sp.animations[r.indices()] {
-                    let pr = sp.property_ranges[usize::from(binding.properties)];
-                    work.charge(usize::from(pr.count))?;
+                    let refs = kind.property_refs(sp, *binding);
+                    work.charge(refs.len())?;
+                    let pixel_register = if kind == AnimationKind::PixelConstant {
+                        let w = u16::from_le_bytes([binding.target, binding.b1]);
+                        colour_register(w, spas, imp, &frag_offset, inputs)?
+                    } else {
+                        None
+                    };
                     animated.push(AnimatedTarget {
+                        pixel_register,
                         kind,
                         binding: *binding,
-                        properties: sp.property_refs[pr.indices()].to_vec(),
+                        properties: refs.to_vec(),
                     });
                 }
             }
@@ -1065,14 +1091,28 @@ fn apply_color(
     frag_offset: &[u8; 8],
     inputs: &EngineInputs,
 ) -> Result<Option<(bool, u8)>> {
+    let Some(register) = colour_register(w, spas, imp, frag_offset, inputs)? else {
+        return Ok(None);
+    };
+    write_colour(ps, c0w, c1w, register, mask, color)?;
+    Ok(Some(register))
+}
+
+/// Shared by instance, engine and animated combiner-constant writes.
+fn colour_register(
+    w: u16,
+    spas: &PassPostprocess,
+    imp: &Implementation,
+    frag_offset: &[u8; 8],
+    inputs: &EngineInputs,
+) -> Result<Option<(bool, u8)>> {
     let c1 = w & 0x400 != 0;
     let fin = w & 0x3c0 == 0x200;
     let mut reg = usize::from((w >> 6) & 0xf);
     if !imp.fragments.is_empty() {
         let frag = usize::from(w & 7);
-        let f = spas
-            .fragments
-            .get(usize::from(imp.fragments.start) + frag)
+        let f = spas.fragments[imp.fragments.indices()]
+            .get(frag)
             .ok_or(Error::Invalid("colour binding names a missing fragment"))?;
         if f.selector != -1 {
             let s = usize::try_from(f.selector)
@@ -1089,21 +1129,41 @@ fn apply_color(
             reg += usize::from(frag_offset[frag]);
         }
     }
-    let (idx, bit) = if fin {
-        (if c1 { PS_FINAL_C1 } else { PS_FINAL_C0 }, 8)
-    } else if reg < 8 {
-        (if c1 { PS_C1 } else { PS_C0 } + reg, reg)
-    } else {
+    if !fin && reg >= 8 {
         return Err(Error::Invalid("colour binding register above 8"));
+    }
+    Ok(Some((c1, if fin { 8 } else { reg as u8 })))
+}
+
+fn write_colour(
+    ps: &mut [u8; PSDEF_SIZE],
+    c0w: &mut u16,
+    c1w: &mut u16,
+    (c1, slot): (bool, u8),
+    mask: u32,
+    color: u32,
+) -> Result<()> {
+    let idx = match slot {
+        0..=7 => (if c1 { PS_C1 } else { PS_C0 }) + usize::from(slot),
+        8 => if c1 { PS_FINAL_C1 } else { PS_FINAL_C0 },
+        _ => return Err(Error::Invalid("colour binding register above 8")),
     };
     let old = word(ps, idx);
     set_word(ps, idx, (old & !mask) | (color & mask));
     if c1 {
-        *c1w |= 1 << bit;
+        *c1w |= 1 << slot;
     } else {
-        *c0w |= 1 << bit;
+        *c0w |= 1 << slot;
     }
-    Ok(Some((c1, bit as u8)))
+    Ok(())
+}
+
+impl ResolvedImplementation {
+    /// Merge the selected ARGB lanes into one resolved combiner constant and
+    /// mark the constant for upload. Slot 8 selects the final combiner.
+    pub fn write_pixel_constant(&mut self, register: (bool, u8), mask: u32, color: u32) -> Result<()> {
+        write_colour(&mut self.pixel_shader, &mut self.c0_written, &mut self.c1_written, register, mask, color)
+    }
 }
 
 /// `0x00019ca0`'s packing of an engine value into an ARGB combiner
@@ -1399,16 +1459,18 @@ fn stage_dims(textures: &[Option<StageTexture>; 4], stage: usize) -> (f32, f32) 
 /// complement, 2..5 a cosine or sine wave over one period, scaled into
 /// 0..1 and clamped; anything else the value itself.
 pub fn engine_scalar(x: f32, transform: usize) -> f32 {
-    use std::f32::consts::TAU;
+    // The guest multiplies two singles on the x87 stack and keeps the
+    // angle there through the trig operation. Narrow only the result.
+    let angle = f64::from(std::f32::consts::TAU) * f64::from(x);
     let y = match transform {
-        1 => 1.0 - x,
-        2 => ((TAU * x).cos() + 1.0) * 0.5,
-        3 => 0.5 - (TAU * x).cos() * 0.5,
-        4 => ((TAU * x).sin() + 1.0) * 0.5,
-        5 => 0.5 - (TAU * x).sin() * 0.5,
-        _ => x,
+        1 => return 1.0 - x,
+        2 => (angle.cos() + 1.0) * 0.5,
+        3 => 0.5 - angle.cos() * 0.5,
+        4 => (angle.sin() + 1.0) * 0.5,
+        5 => 0.5 - angle.sin() * 0.5,
+        _ => return x,
     };
-    if (2..=5).contains(&transform) { y.clamp(0.0, 1.0) } else { y }
+    y.clamp(0.0, 1.0) as f32
 }
 
 fn eval_engine(

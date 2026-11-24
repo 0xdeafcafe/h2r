@@ -260,6 +260,31 @@ Integer inputs: 4 and 5 come from the `shad` root, 0-3 from engine globals,
 and 6-7 are flags. Scalar 21 comes from the `shad` root. Vector inputs 23,
 24 and 35 use the object-function callback at `0x485a58`.
 
+### Animated constants
+
+Both constant bindings use `word = target | (b1 << 8)`. Byte 3 indexes
+the property range. A direct constant takes only its first reference's
+property. The destination comes from the binding itself. Bitmap slot
+bindings consume every reference and use its component.
+
+| Program | Destination | Source and conversion |
+|---|---|---|
+| Pixel | Word bits 6–9 select stage 0–7 or final combiner 8. Bit 10 selects C1. For a fragmented program, bits 0–2 select the fragment and bits 3–5 its required selector value. Active general stages add the fragment's starting stage. | `b2 & 7` selects R, G, B, A, RGB, R, G or B. Modes 0–3 apply the engine scalar transform above, selected by `(b2 >> 3) & 7`. Mode 4 takes the curve's RGB output. Modes 5–7 clear their selected channel. All writes clamp and round to ARGB bytes, preserving the other channels. |
+| Vertex | Word bits 0–3 select a register. Bit 4 selects a hardware constant `c[18+n]` when set and an attribute default `v[n]` when clear. | Bits 5–9 select x, y, z, w (modes 0–3), RGB in xyz (4), or a texture transform (5–20). The transform reads the slot in bits 10–12. Byte 2 is unused. Writes preserve the other lanes. |
+
+For a scalar, the curve's high flag nibble selects raw output when nonzero.
+Otherwise the writer clamps the raw value to [0, 1] and maps it to the
+header's float range. For RGB, the same nibble selects how the raw value
+indexes the header's packed colour stops. Vertex RGB is in units of
+1/255. See the [instruction trace and texture-transform mode table](../graphics/notes/2026-11-24-shader-constant-animation.md).
+
+The native structure layer planner samples the selected passes at the render
+clock after resolving their instance and engine constants. Studio uses the
+same planner with its preview clock. A texture transform may use any slot
+fields supplied by this draw. A required inherited field, an animated
+bitmap frame or pipeline state, an unavailable wave table, or a curve
+requiring an object callback leaves the affected draw with its refusal.
+
 ## Element budgets and aliasing
 
 The cache deduplicates identical child data. **D:** of 134,919 nonempty
@@ -316,7 +341,9 @@ implementation of its `spas`, because the caller picks one per draw. Each
   and constants patched, plus masks of the constants written
 - vertex constants `c[18..34]` and vertex defaults `v[0..16]`, each tagged
   `Instance` or `Engine`
-- the animated targets, which are listed but not evaluated
+- the animation bindings and property references, with the active pixel
+  destination after fragment selection. `layer_pass::sample_constants`
+  applies their values to a copy for the draw
 - the raw engine render-state and sampler-state bindings
 
 `EngineInputs::for_shader` is the default input set. It is zero except for
@@ -350,14 +377,6 @@ that column's condition. [Shadow census](../graphics/notes/e3-lighting.md).
 
 ## Open items
 
-- **Animated values are evaluated, not placed.** Targets and property
-  references are decoded, and a game-time property's value at a time is the
-  game's own (`native_render::layer_pass::property_value`, the evaluator
-  `0x0013b390`; `scenario_edit::native_view::animate`). Where an animated
-  pixel or vertex constant lands in a compiled program is not read (the
-  binding's `target`, `b1` and `b2` against `0x000176a0` and `0x00017960`), so
-  the editor's preview does not apply it. A property driven by an object
-  function needs the object-function callback.
 - **Engine texture sources** (`0x00019530`: 1, 3, 5, 8-10, 13-20, 24, 26 and
   27 occur) are reported by id. Which render target or global texture each
   id means is not mapped.

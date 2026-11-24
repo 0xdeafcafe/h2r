@@ -22,7 +22,7 @@ use scenario_edit::native_view::animate;
 use scenario_edit::native_view::code::{self, PassCode};
 use scenario_edit::native_view::preview::{self, MaterialDraws, MaterialPreview, Shape};
 use serde_json::{Value, json};
-use tags::material::ShaderLibrary;
+use tags::material::{AnimationKind, ShaderLibrary};
 use tags::shader::{
     AnimatedProperty, IndexRange, PassPostprocess, ShaderPostprocess, TemplatePostprocess,
 };
@@ -162,25 +162,17 @@ pub struct Animated {
     pub input: Option<u32>,
     pub period: Option<f32>,
     pub function_bytes: usize,
-    /// In words: `pixel constant 8 of pass 0 in layer 5`.
+    /// For example, `final combiner c0 of pass 0 in layer 5`.
     pub drives: Vec<String>,
-    /// The kinds of target it drives (`bitmap`, `render state`, `stage
-    /// state`, `pixel constant`, `vertex constant`), each once.
+    /// The kinds of target it drives, including texture transforms feeding
+    /// vertex constants. Each appears once.
     pub kinds: Vec<&'static str>,
 }
 
 /// The kinds of target the layer plan does not animate
 /// (`native_render::layer_pass::LayerRefusal::Animation`): it applies
-/// pixel- and vertex-constant animations only.
+/// pixel and vertex constants, including bitmap-slot texture transforms.
 const UNAPPLIED_KINDS: [&str; 3] = ["bitmap", "render state", "stage state"];
-
-/// Why the preview draws no pass that animates a constant, at any time:
-/// the editor's plan draws the constants the compiled programs hold
-/// (`native_render::layers_load::plan_without_game`), and where an
-/// animated constant lands in a program is not decoded
-/// (docs/formats/shader-instances.md, "Open items").
-pub const CONSTANTS_HELD: &str =
-    "An animated constant is not applied by the preview: the pass that holds it is left out and named.";
 
 impl Animated {
     /// The path of the property's function curve, the field the curve
@@ -373,18 +365,22 @@ fn animated(sp: &ShaderPostprocess, counts: &BTreeMap<usize, usize>) -> Vec<Anim
                 let Some(a) = sp.animation_leaf(LOD, layer, pi, k) else {
                     break;
                 };
-                for (kind, range) in [
-                    ("bitmap", a.bitmaps),
-                    ("render state", a.render_states),
-                    ("stage state", a.stage_states),
-                    ("pixel constant", a.pixel_constants),
-                    ("vertex constant", a.vertex_constants),
+                for (target_kind, kind, range) in [
+                    (AnimationKind::Bitmap, "bitmap", a.bitmaps),
+                    (AnimationKind::RenderState, "render state", a.render_states),
+                    (AnimationKind::StageState, "stage state", a.stage_states),
+                    (AnimationKind::PixelConstant, "pixel constant", a.pixel_constants),
+                    (AnimationKind::VertexConstant, "vertex constant", a.vertex_constants),
                 ] {
                     for b in get(&sp.animations, range) {
-                        let Some(&pr) = sp.property_ranges.get(usize::from(b.properties)) else {
-                            continue;
-                        };
-                        for r in get(&sp.property_refs, pr) {
+                        let word = u16::from_le_bytes([b.target, b.b1]);
+                        let refs = target_kind.property_refs(sp, *b);
+                        for r in refs {
+                            let kind = if kind == "bitmap" && (1..=7).contains(&r.component) {
+                                "texture transform"
+                            } else {
+                                kind
+                            };
                             let Ok(p) = usize::try_from(r.property) else {
                                 continue;
                             };
@@ -392,10 +388,14 @@ fn animated(sp: &ShaderPostprocess, counts: &BTreeMap<usize, usize>) -> Vec<Anim
                             if !seen.contains(&kind) {
                                 seen.push(kind);
                             }
-                            drives.entry(p).or_default().push(format!(
-                                "{kind} {} of pass {pi} in layer {layer}",
-                                b.target
-                            ));
+                            let dst = match kind {
+                                "vertex constant" => vector_reads(word),
+                                "pixel constant" if word & 0x3c0 == 0x200 => colour_reads(word),
+                                "pixel constant" => format!("{} before fragment selection", colour_reads(word)),
+                                "texture transform" => format!("texture slot {} transform component {}", b.target, r.component),
+                                _ => format!("{kind} {}", b.target),
+                            };
+                            drives.entry(p).or_default().push(format!("{dst} of pass {pi} in layer {layer}"));
                         }
                     }
                 }
