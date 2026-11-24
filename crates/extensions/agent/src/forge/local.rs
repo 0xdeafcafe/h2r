@@ -167,7 +167,6 @@ pub fn things_reply(session: &Session, params: &ThingsParams) -> Result<Value, R
     let things: Vec<Value> = session
         .things()
         .into_iter()
-        .chain(session.added_flags())
         .filter(|t| {
             params
                 .kind

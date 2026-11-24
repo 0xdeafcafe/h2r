@@ -31,6 +31,12 @@ enum Event {
     Agent(Input),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AreaMode {
+    Radius,
+    Path,
+}
+
 /// What the session tells the gate and the keys each tick.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct State {
@@ -47,6 +53,9 @@ pub struct State {
     /// B has something to cancel: an object held or placing, a link
     /// started. Without it Escape reaches the game (its GAME MENU).
     pub cancel: bool,
+    /// While editing a draft, Y and Start address the area. Path mode
+    /// takes A's down and up edges to distinguish a tap from a drag.
+    pub area: Option<AreaMode>,
 }
 
 #[derive(Default)]
@@ -156,13 +165,20 @@ impl Bridge {
                 if g == Gesture::Do(Action::Back) && !s.cancel {
                     return false;
                 }
-                if down && !repeat {
+                if !repeat && g == Gesture::Do(Action::Accept) && s.area == Some(AreaMode::Path) {
+                    self.path_accept(down);
+                } else if down && !repeat {
                     self.gesture(g);
                 }
                 true
             }
             Does::Game => false,
         }
+    }
+
+    fn path_accept(&mut self, down: bool) {
+        let action = if down { Action::AreaGrab } else { Action::AreaRelease };
+        self.push(Event::Action(action));
     }
 
     /// Whether a held control is down on the pad or the keys.
@@ -210,7 +226,9 @@ pub fn mouse_button(left: bool, down: bool) -> bool {
         return false;
     }
     if left {
-        if down {
+        if b.state.area == Some(AreaMode::Path) {
+            b.path_accept(down);
+        } else if down {
             b.push(Event::Action(Action::Accept));
         }
     } else {
@@ -236,6 +254,12 @@ impl Bridge {
         }
         if input.action == Some(Action::Menu) {
             return Err("The Forge menu is the game's GAME MENU; open it with Start.".into());
+        }
+        if s.area.is_none()
+            && matches!(input.action, Some(Action::AreaShape | Action::AreaClose |
+                Action::AreaGrab | Action::AreaRelease))
+        {
+            return Err("Edit area is not open.".into());
         }
         if self.events.len() >= 64 {
             return Err("The Forge input queue is full.".into());
@@ -348,6 +372,8 @@ fn buttons() -> Vec<Button> {
 #[derive(Default)]
 struct Gate {
     previous: HostButtons,
+    /// A Start press handled by the area editor stays there until release.
+    area_start: bool,
     /// When each of [`buttons`]'s went down, while a hold may follow.
     held: [Option<Instant>; BINDINGS.len()],
 }
@@ -411,11 +437,22 @@ impl Gate {
             }
         }
         let pressed = pad.buttons;
+        self.area_start = pressed.contains(H::Start)
+            && (self.area_start || (b.state.area.is_some() && !b.state.screen));
         if b.state.screen {
             // The screen has the pad; a press that began under it is its.
             self.reset();
         } else {
+            if b.state.area.is_some() {
+                self.area_buttons(b, pressed);
+            }
             for (i, button) in buttons().iter().enumerate() {
+                if (b.state.area.is_some() && button.button == H::North)
+                    || (b.state.area == Some(AreaMode::Path) && button.button == H::South)
+                {
+                    self.held[i] = None;
+                    continue;
+                }
                 let down = pressed.contains(button.button);
                 let was = self.previous.contains(button.button);
                 let Some(Does::Act(g)) = Self::fire(&mut self.held[i], button, down, was, now)
@@ -430,6 +467,22 @@ impl Gate {
         self.previous = pressed;
         b.pad = pad;
     }
+
+    fn area_buttons(&self, b: &mut Bridge, pressed: HostButtons) {
+        use HostButton as H;
+        let tap = |button| pressed.contains(button) && !self.previous.contains(button);
+        if tap(H::North) {
+            b.push(Event::Action(Action::AreaShape));
+        }
+        if b.state.area == Some(AreaMode::Path) {
+            if tap(H::Start) {
+                b.push(Event::Action(Action::AreaClose));
+            }
+            if pressed.contains(H::South) != self.previous.contains(H::South) {
+                b.path_accept(pressed.contains(H::South));
+            }
+        }
+    }
 }
 impl PadGate for Gate {
     fn filter(&mut self, pads: &mut [GatedPad]) {
@@ -440,6 +493,7 @@ impl PadGate for Gate {
                 .map(|p| p.pad.state.buttons)
                 .unwrap_or_default();
             self.reset();
+            self.area_start = false;
             return;
         }
         // Player one is the first host pad. The desktop fallback merges
@@ -451,8 +505,8 @@ impl PadGate for Gate {
             if b.state.screen {
                 // The screen up (ours or the game's) takes the whole pad.
             } else if b.state.monitor {
-                // Start still reaches the game: it opens the GAME MENU.
-                let start = p.pad.state.buttons.contains(HostButton::Start);
+                // Start reaches the Forge menu outside area editing.
+                let start = !self.area_start && p.pad.state.buttons.contains(HostButton::Start);
                 p.pad.state = HostPadState::default();
                 p.pad.state.buttons.set(HostButton::Start, start);
             } else {
@@ -674,6 +728,31 @@ mod tests {
         assert_eq!(next(&mut bridge), None);
         assert!(!bridge.key(Key::Accept, true, false), "and the keys");
         assert!(bridge.sample(Instant::now()).dialog);
+    }
+
+    #[test]
+    fn path_edit_takes_the_a_edges_y_and_start() {
+        let mut gate = Gate::default();
+        let mut bridge = monitor();
+        bridge.state.area = Some(AreaMode::Path);
+        let mut pad = HostPadState::default();
+        let now = Instant::now();
+        for (button, down, action) in [
+            (HostButton::South, true, Action::AreaGrab),
+            (HostButton::South, false, Action::AreaRelease),
+            (HostButton::North, true, Action::AreaShape),
+            (HostButton::Start, true, Action::AreaClose),
+        ] {
+            pad.buttons.set(button, down);
+            gate.controls(&mut bridge, pad, now);
+            assert_eq!(next(&mut bridge), Some(action));
+        }
+        bridge.state.area = None;
+        gate.controls(&mut bridge, pad, now);
+        assert!(gate.area_start, "the same Start press does not open the menu");
+        pad.buttons.set(HostButton::Start, false);
+        gate.controls(&mut bridge, pad, now);
+        assert!(!gate.area_start);
     }
 
     #[test]

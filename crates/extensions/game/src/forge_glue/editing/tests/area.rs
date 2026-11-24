@@ -1,0 +1,317 @@
+use std::sync::mpsc::{Receiver, Sender, channel, sync_channel};
+use std::time::Duration;
+
+use agent::{Agent, ConnId, GameStatus, Reader};
+use engine::{GuestMemory, testing::FakeGuest};
+use forge::look::{Refusal, monitors::Who};
+use forge_doc::{Edit, EntryOp};
+use game_markers::{Area, AreaError, Shape};
+
+use super::*;
+
+struct InputHost(Sender<Input>);
+
+impl local_api::LocalApi for InputHost {
+    fn who(&self, _: Option<&dyn GuestMemory>) -> Who {
+        unreachable!()
+    }
+    fn look(&self, _: &Who, _: Option<u64>) -> Result<Value, Refusal> {
+        unreachable!()
+    }
+    fn look_set(&self, _: &Who, _: Value) -> Result<Value, Refusal> {
+        unreachable!()
+    }
+    fn monitors(&self, _: &Who) -> Value {
+        unreachable!()
+    }
+    fn status(&self) -> Result<Value, String> {
+        unreachable!()
+    }
+    fn session(&self) -> Result<Arc<Session>, String> {
+        unreachable!()
+    }
+    fn document(&self) -> Result<ForgeDoc, String> {
+        unreachable!()
+    }
+    fn log(&self, _: u32) -> Result<Vec<Entry>, String> {
+        unreachable!()
+    }
+    fn propose(&self, _: u32, _: Op, _: Option<Sha256>) -> Result<ProposalReply, String> {
+        unreachable!()
+    }
+    fn input(&self, _: &dyn GuestMemory, input: Input) -> Result<(), String> {
+        self.0.send(input).map_err(|error| error.to_string())
+    }
+}
+
+struct Game {
+    memory: FakeGuest,
+    tick: u32,
+}
+
+impl Reader for Game {
+    fn status(&mut self) -> GameStatus {
+        GameStatus {
+            tick: Some(u64::from(self.tick)),
+            map: Some("testroom".into()),
+            bsp: Some(0),
+            mode: Some("multiplayer".into()),
+        }
+    }
+
+    fn objects(&mut self) -> Result<Vec<agent_proto::Object>, String> {
+        Ok(Vec::new())
+    }
+
+    fn with_guest(&mut self, f: &mut dyn FnMut(&mut dyn GuestMemory)) -> bool {
+        f(&mut self.memory);
+        true
+    }
+}
+
+struct Script {
+    agent: Agent,
+    conn: ConnId,
+    replies: Receiver<String>,
+    inputs: Receiver<Input>,
+    game: Game,
+}
+
+impl Script {
+    fn new() -> Self {
+        let agent = Agent::new();
+        let (send, inputs) = channel();
+        local_api::install(&agent, InputHost(send));
+        let (send, replies) = sync_channel(1);
+        let conn = agent.connect(send);
+        Self {
+            agent,
+            conn,
+            replies,
+            inputs,
+            game: Game {
+                memory: FakeGuest::new(),
+                tick: 2,
+            },
+        }
+    }
+
+    fn input(&mut self, editor: &mut Editor, params: Value) -> Result<(), String> {
+        self.game.tick += 1;
+        let request = json!({"jsonrpc":"2.0", "id":1, "method":"forge.input", "params":params});
+        self.agent.submit(self.conn, &request.to_string());
+        self.agent.on_tick(&mut self.game);
+        let reply: Value =
+            serde_json::from_str(&self.replies.recv_timeout(Duration::from_secs(1)).unwrap())
+                .unwrap();
+        assert_eq!(reply["result"]["queued"], true, "{reply}");
+        editor.take_input(self.game.tick, self.inputs.try_recv().unwrap(), Some(0));
+        editor.poll(self.game.tick);
+        match &editor.notice {
+            Some((text, at)) if *at == self.game.tick => Err(text.clone()),
+            _ => Ok(()),
+        }
+    }
+
+    fn press(&mut self, editor: &mut Editor, action: &str) -> Result<(), String> {
+        self.input(editor, json!({"action":action}))
+    }
+}
+
+fn hill() -> (Editor, Endpoint) {
+    let mut e = editor();
+    let limits = Limits {
+        world: e.session.limits().world,
+        base_counts: [(BlockKind::NetgameFlags, 0)].into(),
+        ..Limits::default()
+    };
+    e.session = Arc::new(Session::new(e.session.document().clone(), limits, vec![], 0).unwrap());
+    e.tool.monitor = true;
+    e.tool.camera = Some(Camera {
+        position: [-3., 0., 0.],
+        yaw: 0.,
+        pitch: 0.,
+    });
+    let menu = sheet::with_goals(None);
+    let sheet::Act::Pick(picker) = &menu.rows[0].act else {
+        panic!("Goals opens its picker")
+    };
+    assert_eq!(menu.rows[0].label, "Goals");
+    assert_eq!(picker.values, ["Hill", "Territory", "Siege site"]);
+    e.choose(1, picker.choices[0].clone()).unwrap();
+    e.poll(1);
+    let flags = e.session.things();
+    assert_eq!(flags.len(), 1, "one centre flag");
+    assert_eq!(e.session.document().ops.len(), 2, "one add and one area op");
+    let id = flags[0].id;
+    assert_eq!(
+        e.session.areas().unwrap()[&id].marker_area(),
+        Area::default()
+    );
+    e.walls = vec![bots::los::Walls::new(vec![
+        [[-10., -10., 0.], [10., -10., 0.], [10., 10., 0.]],
+        [[-10., -10., 0.], [10., 10., 0.], [-10., 10., 0.]],
+    ])];
+    (e, id)
+}
+
+fn aim_at_floor(e: &mut Editor, [x, y]: [f32; 2]) {
+    e.tool.camera = Some(Camera {
+        position: [x - 4., y, 4.],
+        yaw: 0.,
+        pitch: -std::f32::consts::FRAC_PI_4,
+    });
+}
+
+#[test]
+fn forge_input_closes_four_points_in_one_op_and_cancel_keeps_the_last_area() {
+    let (mut e, id) = hill();
+    let mut script = Script::new();
+    // The first X aims at the flag and opens its Properties. Select the
+    // screen's actual Edit area row, then send the world input over RPC.
+    script.press(&mut e, "properties").unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    let sheet = screens::screen(Kind::Properties).sheet();
+    let row = sheet
+        .rows
+        .iter()
+        .find(|row| row.label == "Edit area")
+        .unwrap();
+    let sheet::Act::Choose(choice) = &row.act else {
+        panic!("Edit area starts a draft")
+    };
+    e.choose(2, choice.clone()).unwrap();
+    script.press(&mut e, "area_shape").unwrap();
+
+    let expected = [[0., 0.], [4., 0.], [4., 4.], [0., 4.]];
+    for p in expected {
+        aim_at_floor(&mut e, p);
+        script.press(&mut e, "accept").unwrap();
+    }
+    let draft = e.status()["area_edit"].clone();
+    let preview = e.marker_entries();
+    assert_eq!(preview.len(), 1);
+    assert!(preview[0].draft_path);
+    aim_at_floor(&mut e, [2., -1.]);
+    let refused = script.press(&mut e, "accept").unwrap_err();
+    assert_eq!(refused, AreaError::Crosses(0, 3).to_string());
+    assert_eq!(e.status()["notice"], refused);
+    assert_eq!(e.status()["area_edit"], draft);
+    assert_eq!(e.session.document().ops.len(), 2);
+
+    script.press(&mut e, "area_close").unwrap();
+    let saved = e.session.document().clone();
+    let [_, _, last] = saved.ops.as_slice() else {
+        panic!("close writes one op")
+    };
+    let Edit::Entry(EntryOp::Area {
+        target,
+        area: Some(area),
+    }) = &last.edit
+    else {
+        panic!("close writes an area op")
+    };
+    assert_eq!(*target, id);
+    let Shape::Path(points) = area.marker_area().shape else {
+        panic!("the op holds the path")
+    };
+    assert_eq!(points.len(), 4);
+    for (actual, expected) in points.iter().zip(expected) {
+        for (a, b) in actual.iter().zip(expected) {
+            assert!((a - b).abs() < 0.001, "{points:?}");
+        }
+    }
+    assert!(!e.marker_entries()[0].draft_path);
+
+    e.choose(11, Choice::EditArea(id)).unwrap();
+    script.press(&mut e, "area_shape").unwrap();
+    let radius = e.status()["area_edit"]["radius"].as_f64().unwrap();
+    assert!((radius - (16. / std::f64::consts::PI).sqrt()).abs() < 0.001);
+    script.press(&mut e, "back").unwrap();
+    e.choose(11, Choice::EditArea(id)).unwrap();
+    aim_at_floor(&mut e, [4., 0.]);
+    script.press(&mut e, "area_grab").unwrap();
+    aim_at_floor(&mut e, [5., 0.]);
+    script.press(&mut e, "area_release").unwrap();
+    let point = e.status()["area_edit"]["points"][1][0].as_f64().unwrap();
+    assert!((point - 5.).abs() < 0.001);
+    script.press(&mut e, "properties").unwrap();
+    assert_eq!(
+        e.status()["area_edit"]["points"].as_array().unwrap().len(),
+        3
+    );
+    script.press(&mut e, "back").unwrap();
+    assert!(e.status()["area_edit"].is_null());
+    assert_eq!(e.session.document(), &saved);
+    let stored = e.session.areas().unwrap()[&id].clone();
+    e.command(
+        20,
+        Command::MoveThing {
+            id,
+            frame: Frame {
+                position: [1., 2., 0.],
+                rotation: [0.5, 0., 0.],
+            },
+        },
+    )
+    .unwrap();
+    e.poll(20);
+    assert_eq!(e.session.areas().unwrap()[&id], stored);
+    assert_eq!(e.marker_entries()[0].place.at, [1., 2., 0.]);
+    assert!(
+        e.session.document().ops[3..]
+            .iter()
+            .all(|op| { matches!(op.edit, Edit::Entry(EntryOp::Set { .. })) })
+    );
+}
+
+#[test]
+fn radius_steps_with_movement_snap_and_typed_dimensions_commit_together() {
+    let (mut e, id) = hill();
+    let mut script = Script::new();
+    e.choose(2, Choice::EditArea(id)).unwrap();
+    script.input(&mut e, json!({"movement":[0, 1, 0]})).unwrap();
+    assert_eq!(e.status()["area_edit"]["radius"], json!(1.25));
+    e.choose(3, Choice::Set(Prop::MovementSnap, 5)).unwrap();
+    script
+        .input(&mut e, json!({"movement":[0, -1, 0]}))
+        .unwrap();
+    assert_eq!(e.status()["area_edit"]["radius"], json!(0.25));
+    script.press(&mut e, "properties").unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    let sheet = screens::screen(Kind::Properties).sheet();
+    let fields: Vec<_> = sheet.rows.iter().map(|row| row.label.as_str()).collect();
+    assert_eq!(fields, ["Radius", "Below", "Above"]);
+    for (field, value) in [
+        (sheet::AreaField::Radius, "2.75"),
+        (sheet::AreaField::Below, "0.75"),
+        (sheet::AreaField::Above, "2"),
+    ] {
+        e.choose(
+            5,
+            Choice::Number(sheet::NumberField::Area(field), value.into()),
+        )
+        .unwrap();
+    }
+    let bad = e
+        .choose(
+            6,
+            Choice::Number(
+                sheet::NumberField::Area(sheet::AreaField::Radius),
+                "NaN".into(),
+            ),
+        )
+        .unwrap_err();
+    assert_eq!(bad, AreaError::NotFinite.to_string());
+    assert_eq!(e.session.document().ops.len(), 2);
+    script.press(&mut e, "accept").unwrap();
+    assert_eq!(e.session.document().ops.len(), 3);
+    assert_eq!(
+        e.session.areas().unwrap()[&id].marker_area(),
+        Area {
+            shape: Shape::Radius(2.75),
+            below: 0.75,
+            above: 2.0
+        }
+    );
+}

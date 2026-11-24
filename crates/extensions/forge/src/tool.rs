@@ -189,6 +189,10 @@ pub enum Action {
     Tools,
     /// Open the Tool settings.
     Settings,
+    AreaShape,
+    AreaClose,
+    AreaGrab,
+    AreaRelease,
 }
 
 impl Action {
@@ -209,6 +213,10 @@ impl Action {
             "link" => Self::Link,
             "tools" => Self::Tools,
             "settings" => Self::Settings,
+            "area_shape" => Self::AreaShape,
+            "area_close" => Self::AreaClose,
+            "area_grab" => Self::AreaGrab,
+            "area_release" => Self::AreaRelease,
             _ => return None,
         })
     }
@@ -278,6 +286,10 @@ pub enum Command {
     },
     /// **Build AI ground**: build it now.
     BuildGround,
+    Goal {
+        goal: crate::Goal,
+        frame: Frame,
+    },
     /// **Test waves**: build the ground if it is not current.
     TestWaves,
     Palette,
@@ -536,6 +548,7 @@ impl Tool {
                 | Command::Remove { .. }
                 | Command::Link { .. }
                 | Command::Unlink { .. }
+                | Command::Goal { .. }
                 | Command::Undo
                 | Command::Redo
         ) {
@@ -608,10 +621,17 @@ impl Tool {
             let max_distance = surface.unwrap_or(MAX_HOLD).min(MAX_HOLD);
             let forward = camera.forward();
             let eye = *camera;
+            let labels = session.labels().unwrap_or_default();
             hit = session
                 .things()
                 .into_iter()
-                .filter(|thing| self.shows(thing))
+                .filter(|thing| {
+                    self.shows(thing)
+                        || (thing.block == BlockKind::NetgameFlags
+                            && labels.get(&thing.id.identity()).is_some_and(|label| {
+                                forge_doc::GroundLabel::of(&label.text).is_some()
+                            }))
+                })
                 .filter_map(|thing| {
                     let radius = self.thing_extent(session, &thing).radius;
                     aim(&eye, forward, max_distance, thing.frame.position, radius)
@@ -621,10 +641,7 @@ impl Tool {
                 // session's order of things.
                 .reduce(|best, next| if next.1 < best.1 { next } else { best });
             self.aimed_thing = hit.as_ref().map(|(thing, _)| thing.id);
-            self.aimed = match self.aimed_thing {
-                Some(Endpoint::Added(id)) => Some(id),
-                _ => None,
-            };
+            self.aimed = hit.as_ref().and_then(|(thing, _)| object_id(thing));
             if previewing {
                 // A new object is carried at its hold distance and a
                 // picked-up one where it was taken, each pushed and pulled
@@ -658,27 +675,30 @@ impl Tool {
             Some(A::Settings) => Some(C::Settings),
             Some(A::Undo) => Some(C::Undo),
             Some(A::Redo) => Some(C::Redo),
-            Some(A::Delete) => match self.held_thing.or(self.aimed_thing) {
-                Some(Endpoint::Added(id)) => Some(C::Delete { id }),
-                Some(id) => Some(C::Remove { id }),
-                None => None,
-            },
+            Some(A::Delete) => {
+                let (target, object) = if self.held_thing.is_some() {
+                    (self.held_thing, self.held)
+                } else {
+                    (self.aimed_thing, self.aimed)
+                };
+                target.map(|id| match object {
+                    Some(id) => C::Delete { id },
+                    None => C::Remove { id },
+                })
+            }
             Some(A::Accept) => {
                 if let (Some(item), Some(frame)) = (self.placing, self.ghost) {
                     Some(C::Place { item, frame })
                 } else if let (Some(id), Some(frame)) = (self.held_thing, self.ghost) {
-                    Some(match id {
-                        Endpoint::Added(id) => C::Move { id, frame },
-                        id => C::MoveThing { id, frame },
+                    Some(match self.held {
+                        Some(id) => C::Move { id, frame },
+                        None => C::MoveThing { id, frame },
                     })
                 } else if let (Some((thing, distance)), Some(camera)) = (hit, self.camera) {
                     let near = self.thing_extent(session, &thing).near();
                     let distance = distance.max(near);
                     self.held_thing = Some(thing.id);
-                    self.held = match thing.id {
-                        Endpoint::Added(id) => Some(id),
-                        _ => None,
-                    };
+                    self.held = object_id(&thing);
                     self.distance = distance;
                     let p = camera.point(distance);
                     self.offset =
@@ -764,6 +784,13 @@ impl Tool {
             Some(A::Redo) => Some(C::Redo),
             _ => None,
         }
+    }
+}
+
+fn object_id(thing: &Thing) -> Option<OpId> {
+    match thing.id {
+        Endpoint::Added(id) if thing.block != BlockKind::NetgameFlags => Some(id),
+        _ => None,
     }
 }
 

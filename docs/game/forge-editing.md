@@ -177,7 +177,7 @@ block's objects have a group (`Group::of_block`).
 | Scenery, Crates, Machines | the tags in the scenario's palettes (`forge::PaletteItem`) | a scenario placement | built |
 | Teleporters | Sender, Receiver | netgame flags of the two teleporter types | P2 |
 | Spawns | Starting point, by team | a player starting location | P2 |
-| Goals | the flag types the chosen game type reads: flag, bomb, ball, hill, territory | netgame flags by type and team | P2 |
+| Goals | Hill, Territory and Siege site | one centre flag and its default area | MK7. Other goal placements are P2 |
 | Structure | the kit's block-out pieces and barriers | generated kit tags | F8 |
 | Lights | the kit's lights | a generated kit tag | P6 |
 | Prefabs | the player's saved prefabs that fit this map | a group of placements | P5 |
@@ -189,12 +189,12 @@ block's objects have a group (`Group::of_block`).
 - The budget is a count of objects, as Halo 3's is a counter (**C**).
   A cost per item is a design option of
   [forge-features.md](forge-features.md), "Objects".
-- **Goals follow the game type.** The Forge lobby's game type is the
-  engine the session runs ([forge-firefight-ui.md](forge-firefight-ui.md),
-  "The lobbies"), so its goals are live in the session and the Goals
-  group lists only what that engine reads. This is Halo 3's Change game
-  type and Reach's lobby choice (**C**).
-- **Kit sessions.** Spawns, goals, teleporters and item entries are
+- **Goal areas.** Hill, Territory and Siege site are available for
+  authoring. Placing a goal of another game type switches the monitor
+  to show all game types so the goal can be aimed at. **Edit area** in
+  Properties opens the draft radius or path
+  editor ([gametype-markers.md](gametype-markers.md#forge)).
+- **Kit sessions.** Spawns, teleporters and item entries are
   rows of scenario blocks that cannot grow in a loaded map. A session
   started from the lobby in Forge mode runs on the draft materialised
   with the `forge_kit` recipe, whose spare entries make these Kit edits

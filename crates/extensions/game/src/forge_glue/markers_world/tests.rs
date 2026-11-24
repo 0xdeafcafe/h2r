@@ -73,10 +73,14 @@ fn spawner(index: u32, group: &str, path: &str) -> Thing {
 }
 
 fn facts<'a>(things: &'a [Thing]) -> Facts<'a> {
+    static LABELS: BTreeMap<Endpoint, forge_doc::Label> = BTreeMap::new();
+    static AREAS: BTreeMap<Endpoint, forge_doc::Area> = BTreeMap::new();
     Facts {
         monitor: true,
         things,
         ground: &[],
+        labels: &LABELS,
+        areas: &AREAS,
         problems: &[],
         game: None,
         show: Show::ThisGameType,

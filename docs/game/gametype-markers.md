@@ -1,7 +1,7 @@
 # Game type markers
 
+Status: Partly built. The marker set and the area model exist (MK1), Studio draws the markers and answers `markers.list` and `markers.render` (MK4), Forge draws them as world lines and answers `render.markers` (MK6), the Forge document stores areas, which `forge.things` and `forge.propose` carry (MK2), a script's zone reads them (MK3), Studio edits them (MK5) and Forge places and edits them in the monitor (MK7); the boundary in play, the skin and Studio's saved map are design.
 Status: Partly built. The marker set and the area model exist (MK1), Studio draws the markers and answers `markers.list` and `markers.render` (MK4), Forge draws them as world lines and answers `render.markers` (MK6), the Forge document stores areas, which `forge.things` and `forge.propose` carry (MK2), a script's zone reads them (MK3), and Studio edits them (MK5); the skin, Forge's editing and the saved map are design.
-Code: `crates/formats/game-markers/src/lib.rs` (`Marker::mesh`), `crates/formats/game-markers/src/area.rs` (`Area`), `crates/tools/scenario-edit/src/marker_view.rs` (`placed`, `overlays`), `crates/apps/studio/src/api/markers.rs`, `crates/apps/studio/src/api/markers_check.rs` (the `markers` check), `crates/tools/scenario-edit/src/area_edit.rs` (handles, drag), `crates/tools/scenario-edit/src/session/area.rs` (`set_area`, `convert_hill`), `crates/apps/studio/src/viewport/area.rs`, `crates/apps/studio/src/ui/inspector/area.rs`, `crates/extensions/game/src/forge_glue/markers_world.rs` (Forge's source, `render.markers`), `crates/formats/forge-doc/src/{area,entry,links}.rs`, `crates/extensions/forge/src/session.rs`, `crates/extensions/agent/src/forge/local.rs`, `crates/extensions/game/src/rules/world/zones.rs` (`Zones::new`), `crates/formats/rules/src/fake.rs` (`FakeGame::set_area`, `move_to`), `crates/live/bots/src/objective/zones.rs` (`first_hill`), `crates/extensions/agent-proto/src/rules.rs` (`rules.zones`). Tests: `crates/formats/game-markers/src/tests.rs`, `marker_view.rs`, `crates/apps/studio/src/api/tests/markers_tests.rs`, `crates/tools/scenario-edit/src/area_tests.rs`, `area_edit.rs`, `crates/apps/studio/src/viewport/area.rs`, `crates/extensions/game/src/forge_glue/markers_world/tests.rs`, `crates/formats/forge-doc/src/tests/area.rs`, `crates/extensions/forge/src/base_tests.rs`, `crates/extensions/agent/src/forge/tests.rs`, `zones.rs`' `a_flags_area_is_its_zone_before_corners_and_the_default`, `crates/formats/rules/tests/area_zones.rs`, `crates/live/bots/src/objective/zones/tests.rs`, `crates/extensions/agent/src/rules/tests.rs`.
 Switch: none.
 
 A game type's parts are rows of a scenario with no body: a player
@@ -304,8 +304,9 @@ moves; `territories.rules` and `siege.rules` show each site in its
 holder's colour. The host keeps at most eight shown areas in `RulesExt`
 (a zone handle and a team, so a client and a film draw the same), and
 the same world-line source draws the wall alone, with no pip and no
-label. It is on by default in the built-in scripts and a script that
-never calls it draws nothing.
+label. In-play walls default to on for the built-in King of the Hill,
+Territories and Siege scripts. A script that never calls `show_area`
+draws no walls.
 
 ## Editing
 
@@ -314,26 +315,24 @@ make the same document.
 
 ### Forge
 
-- **Placing.** The Objects menu's Goals group lists **Hill**,
-  **Territory** and the script's site labels
-  ([forge-editing.md](forge-editing.md), "The object menu"). A places
-  the centre marker with the default area: a radius of 1.
-- **Radius.** With an area's marker aimed at, **Edit area** on its
-  Properties page (X) holds the area: the left stick's up and down
-  grows and shrinks the radius by the movement snap (0.25 with snap
-  off), the wall drawn live, and typed in Properties as **Radius**,
-  **Below** and **Above**. A writes one `EntryOp::Area`; B drops the
-  change.
-- **Path.** In **Edit area**, Y changes the shape to **Path**. The
-  monitor then flies, and each A drops a point on the floor under the
-  reticle, joined to the last by the wall; the closing edge draws
-  dashed. X removes the last point; aiming at a point and holding A
-  drags it. A point that would make the path cross itself or run past
-  the limits is refused with `AreaError`'s sentence as the notice and is
-  not added. With three or more points, Start (or A on the first point)
-  closes the path and writes the one op. B leaves with the area as it
-  was. Y on a path returns to a radius: the circle with the path's
-  floor.
+- **Placing.** The Objects menu's Goals group offers **Hill**,
+  **Territory** and **Siege site**. A places a centre flag with a
+  radius of 1 in one undo step. A custom hill uses one centre flag of
+  an unused hill type and one area op
+  ([forge-editing.md](forge-editing.md), "The object menu").
+- **Radius.** Choose **Edit area** in an aimed or held goal's
+  Properties (X). The left stick grows or shrinks the radius by the
+  movement snap, or by 0.25 with snap off. The wall follows the draft.
+  X opens the typed **Radius**, **Below** and **Above** rows. Close the
+  rows to return to the draft. A writes one `EntryOp::Area`. B cancels.
+- **Path.** Y switches to a path. Fly the monitor and press A to drop
+  each point on the floor under the reticle. The closing edge is
+  dashed. X removes the last point and holding A on a point drags it.
+  Invalid additions and drags leave the last valid points in place
+  and show the `AreaError` sentence. Start or a tap of A on the first
+  point closes a valid path and writes one area op. B cancels. Y
+  makes a circle with the same floor area, or restores the radius
+  from before the switch if the path has fewer than three points.
 - **Moving the marker** moves the area with it and writes no area op.
 - **Undo** is the op's inverse, as for any entry op.
 
@@ -410,7 +409,7 @@ lines with tests, M under 2,500.
 | MK4 (built) | **Studio draws them**: `scenario_edit::marker_view`, the layers' overlays in place of the glyphs, outlines and volume boxes, `markers.list`, `markers.render` | M | MK1 | on the invented cache each placement block gives its kind and team; a hill's corners give one `Hill`; `markers.render` writes the sheet with every kind of `Kind::samples`; `view.snapshot` of a spawn differs from the background where its mesh projects |
 | MK5 (built) | **Studio edits areas**: the gizmo handles, the inspector rows, `markers.area.set`, **Convert to area**, the `markers` check | M | MK2, MK4 | a rim drag writes one area op; an edge handle adds a point; a refused drag leaves the document as it was; converting a hill's corners gives a zone that holds the same points; the check names an overlapping pair |
 | MK6 (built) | **Forge draws them**: `forge_glue::markers_world` as a world-line source, the fades and the budget, the label text, `render.markers`; the HUD-canvas rings for ground labels removed | M | MK1 | on an invented session every thing gives its marker's lines with the monitor on and none with it off; a marker of another game type is faded; the 257th marker is counted and not drawn |
-| MK7 | **Forge edits areas**: **Edit area**, radius by stick and typed, the path's drop, drag, remove and close, the notices | M | MK2, MK6 | scripted pad input (`forge.input`) that drops four points and closes writes one op with those points; a crossing fifth point is refused with its sentence and the path is unchanged; B leaves the document as it was |
+| MK7 (built) | **Forge edits areas**: **Edit area**, radius by stick and typed, the path's drop, drag, remove and close, the notices | M | MK2, MK6 | scripted pad input (`forge.input`) that drops four points and closes writes one op with those points; a crossing fifth point is refused with its sentence and the path is unchanged; B leaves the document as it was |
 | MK8 | **The boundary in play**: `show_area`, `hide_area`, the eight shown areas in `RulesExt`, the built-ins' calls, the wall from the same source | S | MK3, MK6 | on the fake game `koth.rules` shows the hill in play and one area at a time as the hill moves; the shown areas are equal on a host and a client after a tick; a script that never calls it shows none |
 | MK9 | **The skin**: `native_render::markers`, the translucent faces with depth, the X-ray lines | M | MK6 | on the renderer's headless target a hill's wall changes pixels in front of a floor and none behind a nearer wall; with `impl.render.native=off` the lines draw alone |
 

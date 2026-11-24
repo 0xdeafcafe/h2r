@@ -19,8 +19,9 @@ pub use forge_doc::{BlockKind, Endpoint, OpId, TagKey, Value};
 pub use forge_doc::{GroundLabel, GroundRecipe};
 pub use links::{Linkable, Teleporter};
 pub use session::{
-    GroundBuilder, GroundProblem, GroundReceipt, GroundReport, GroundState, Outgoing, PlacedMarker,
-    SHARED_PROPOSE, SHARED_REDO, Session, SessionAdmit,
+    Goal, GroundBuilder, GroundProblem, GroundReceipt, GroundReport, GroundState, Outgoing,
+    PlacedMarker,
+    SHARED_PROPOSE, SHARED_REDO, Session, SessionAdmit, flag_label,
 };
 pub use things::{BaseRow, BaseRows, LEFT_OUT_SENTENCE, Thing, ThingKind};
 

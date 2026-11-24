@@ -1,3 +1,5 @@
+mod area;
+
 use super::*;
 use agent::forge::local::OBJECT_GONE;
 use forge::{BlockKind, Frame, TagKey};

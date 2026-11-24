@@ -6,7 +6,8 @@ use super::{GENERATION, admitted, controls};
 use agent::forge::ground as ground_api;
 use agent::forge::local::{self as local_api, ForgeEdit, ForgeWorld, Guard, ProposalReply};
 use agent::sim::calls;
-use forge::tool::{Axes, Command, Extent, Tool};
+use forge::camera::Camera;
+use forge::tool::{Action, Axes, Command, Extent, Input, Show, Tool};
 use forge::{BlockKind, Linkable, OpId, PaletteItem, Session, Thing, ThingKind};
 use forge_doc::{ActiveLink, Endpoint, Entry, Link as DocLink, LogHead, Op, Sha256};
 use serde_json::{Value, json};
@@ -25,12 +26,14 @@ use crate::ui_kit::{
     spec::ScreenSpec,
 };
 
+mod area;
 mod net;
 
 pub(crate) use net::MonitorStart;
 
 enum After {
     Tool(Command),
+    Area,
     /// Items of a shared session's stream.
     Shared(Vec<forge::net::Stamped>),
     Load(String),
@@ -71,6 +74,7 @@ pub(super) struct Editor {
     pub session: Arc<Session>,
     tags: Arc<[u32]>,
     walls: Vec<bots::los::Walls>,
+    bsp: Option<usize>,
     guard: Guard,
     calls: calls::Shared,
     tool: Tool,
@@ -87,6 +91,7 @@ pub(super) struct Editor {
     local_axes: bool,
     /// The Coordinates target and its current frame, while its screen is up.
     coordinates: Option<(CoordinateTarget, forge::Frame)>,
+    area: Option<area::Draft>,
     notice: Option<(String, u32)>,
     /// The link the Link dialog shows.
     link_dialog: Option<OpId>,
@@ -122,6 +127,7 @@ impl Editor {
             session: Arc::new(opened.session),
             tags: opened.tags.into(),
             walls: opened.walls,
+            bsp: None,
             guard: Guard {
                 scenario,
                 generation: GENERATION.load(Ordering::Acquire),
@@ -139,6 +145,7 @@ impl Editor {
             hold_height: None,
             local_axes: false,
             coordinates: None,
+            area: None,
             notice: None,
             link_dialog: None,
             delete_asked: None,
@@ -275,6 +282,7 @@ impl Editor {
             "aimed":self.tool.aimed, "held":self.tool.held, "placing":self.tool.placing,
             "aimed_thing":self.tool.aimed_thing, "held_thing":self.tool.held_thing,
             "show":self.tool.show.name(), "game":self.tool.game,
+            "area_edit":self.area.as_ref().map(area::Draft::status),
             "variant":local_api::variant_status(self.session.document(), self.filename.as_deref(), self.dirty()),
             "screen":screen, "head":self.session.head(), "pending_rebuild":self.session.pending_rebuild(),
             "tool":if self.tool.links { "links" } else { "objects" }, "fine":controls::fine(),
@@ -357,31 +365,58 @@ impl Editor {
     /// problem the last ground build found
     /// ([`super::markers_world::entries`]). None with the monitor off.
     pub fn marker_entries(&self) -> Vec<super::markers_world::Entry> {
-        use super::markers_world::{Facts, entries};
+        use super::markers_world::{Facts, entries, with_area};
         if !self.tool.monitor {
             return Vec::new();
         }
         let placed = self.session.ground_counts().iter().sum::<usize>() > 0;
-        let ground = placed
+        let mut ground = placed
             .then(|| self.session.markers().unwrap_or_default())
             .unwrap_or_default();
+        let mut things = self.session.things();
+        if let Some((id, frame)) = self.tool.held_thing.zip(self.tool.ghost) {
+            if let Some(t) = things.iter_mut().find(|t| t.id.identity() == id.identity()) {
+                t.frame = frame;
+            }
+            if let Endpoint::Added(id) = id
+                && let Some(m) = ground.iter_mut().find(|m| m.id == id)
+            {
+                m.frame = frame;
+            }
+        }
         let problems = self
             .session
             .ground_report()
             .map_or(&[][..], |r| r.problems.as_slice());
-        entries(&Facts {
+        let mut entries = entries(&Facts {
             monitor: true,
-            things: &self.session.things(),
+            things: &things,
             ground: &ground,
+            labels: &self.session.labels().unwrap_or_default(),
+            areas: &self.session.areas().unwrap_or_default(),
             problems,
             game: self.tool.game,
             show: self.tool.show,
-        })
+        });
+        if let Some(draft) = &self.area
+            && let Some(entry) = entries.iter_mut().find(|e| e.id == Some(draft.id))
+        {
+            entry.marker.kind = with_area(entry.marker.kind.clone(), draft.area.clone());
+            entry.draft_path = matches!(draft.area.shape, game_markers::Shape::Path(_));
+        }
+        entries
+    }
+
+    pub fn marker_preview(&self) -> bool {
+        self.area.is_some() || self.tool.held_thing.is_some()
     }
 
     /// The things aimed at and held, which their markers draw selected.
     pub fn marker_pins(&self) -> (Option<Endpoint>, Option<Endpoint>) {
-        (self.tool.aimed_thing, self.tool.held_thing)
+        (
+            self.tool.aimed_thing,
+            self.area.as_ref().map(|area| area.id).or(self.tool.held_thing),
+        )
     }
 
     /// What is placed, held or aimed at: its name, block and frame (the
@@ -504,7 +539,12 @@ impl Editor {
                 notice: self.notice.as_ref().map(|(text, _)| text.clone()),
             };
         }
-        let mode = if self.tool.placing.is_some() {
+        let mode = if let Some(area) = &self.area {
+            match area.mode() {
+                controls::AreaMode::Radius => Mode::AreaRadius,
+                controls::AreaMode::Path => Mode::AreaPath,
+            }
+        } else if self.tool.placing.is_some() {
             Mode::Placing
         } else if self.tool.held_thing.is_some() {
             Mode::Holding
@@ -515,7 +555,11 @@ impl Editor {
         };
         Hud {
             mode,
-            target: self.target().map_or_else(String::new, |(name, _, _)| name),
+            target: if let Some(area) = &self.area {
+                area.title()
+            } else {
+                self.target().map_or_else(String::new, |(name, _, _)| name)
+            },
             used: self.session.objects().len(),
             limit: self.session.budget(),
             rebuild: self.session.pending_rebuild(),
@@ -538,7 +582,9 @@ impl Editor {
     /// What X opens: Properties with something aimed at or held, else the
     /// object menu (the Links tool: the aimed thing's Link dialog).
     fn x_properties(&self) -> bool {
-        if self.tool.links {
+        if self.area.is_some() {
+            true
+        } else if self.tool.links {
             self.tool.link_from.is_none() && self.tool.aimed_link.is_some()
         } else {
             self.tool.aimed_thing.is_some()
@@ -549,7 +595,8 @@ impl Editor {
 
     /// Whether B has something to cancel.
     fn cancellable(&self) -> bool {
-        self.tool.held_thing.is_some()
+        self.area.is_some()
+            || self.tool.held_thing.is_some()
             || self.tool.placing.is_some()
             || self.tool.link_from.is_some()
     }
@@ -599,8 +646,19 @@ impl Editor {
                 self.session = Arc::new(session);
                 match after {
                     After::Shared(items) => self.shared_applied(&items),
-                    After::Tool(command) => self.tool.applied(&command),
+                    After::Tool(command) => {
+                        self.tool.applied(&command);
+                        if let Command::Goal { goal, .. } = command
+                            && self.tool.show == Show::ThisGameType
+                            && !goal.in_game(self.tool.game)
+                        {
+                            self.tool.set_show(Show::AllGameTypes);
+                            self.say("Showing all game types so the new goal is visible.".into(), tick);
+                        }
+                    }
+                    After::Area => self.area = None,
                     After::Load(name) => {
+                        self.area = None;
                         self.notice = Some((format!("Loaded {name}."), tick));
                         self.filename = Some(name);
                         self.saved_head = self.session.head();
@@ -633,9 +691,11 @@ impl Editor {
     /// Objects tool aims at.
     pub fn tick(&mut self, tick: u32, bsp: Option<usize>, ui_up: bool, game: Option<i32>) {
         self.now = tick;
+        self.bsp = bsp;
         self.ui_up = ui_up;
         if self.tool.game != game {
             self.tool.game = game;
+            self.area = None;
             self.tool.clear_selection();
         }
         if !self.listed && !self.busy() {
@@ -669,20 +729,8 @@ impl Editor {
             }
             let mut input = controls::sample();
             input.dialog = self.ui_up;
+            self.take_input(tick, input, bsp);
             let walls = bsp.and_then(|i| self.walls.get(i));
-            let update = self
-                .tool
-                .update_with_surface(&self.session, tick, input, |c| {
-                    walls?.hit(c.position, c.point(80.)).map(|(t, _)| t * 80.)
-                });
-            let result = update.and_then(|cmd| match cmd {
-                Some(cmd) => self.command(tick, cmd),
-                None => Ok(()),
-            });
-            let walls = bsp.and_then(|i| self.walls.get(i));
-            if let Err(error) = result {
-                self.notice = Some((error, tick));
-            }
             self.hold_height = match (self.tool.held_thing, self.tool.ghost, walls) {
                 (Some(_), Some(ghost), Some(walls)) => {
                     let [x, y, z] = ghost.position;
@@ -697,6 +745,36 @@ impl Editor {
         self.publish();
     }
 
+    fn take_input(&mut self, tick: u32, input: Input, bsp: Option<usize>) {
+        if let Err(error) = self.drive_input(tick, input, bsp) {
+            self.say(error, tick);
+        }
+    }
+
+    /// Pad, keyboard and forge.input use the same tick and BSP ray.
+    fn drive_input(&mut self, tick: u32, input: Input, bsp: Option<usize>) -> Result<(), String> {
+        let walls = bsp.and_then(|i| self.walls.get(i));
+        let surface = |camera| surface_hit(walls, camera);
+        if input.action == Some(Action::Toggle) && !input.dialog {
+            self.area = None;
+        }
+        if let Some(draft) = &mut self.area {
+            let next = draft.input(
+                &mut self.tool.camera,
+                input,
+                sheet::MOVE_STEPS[self.movement_step],
+                surface,
+            )?;
+            return self.apply_area_input(tick, next);
+        }
+        if let Some(cmd) = self.tool.update_with_surface(&self.session, tick, input, |camera| {
+            surface(camera).map(|(dist, _)| dist)
+        })? {
+            self.command(tick, cmd)?;
+        }
+        Ok(())
+    }
+
     /// The session's state for the input bridge and the screens.
     fn publish(&self) {
         controls::publish(controls::State {
@@ -706,6 +784,7 @@ impl Editor {
             camera: self.tool.camera,
             x_properties: self.x_properties(),
             cancel: self.cancellable(),
+            area: self.area.as_ref().map(area::Draft::mode),
         });
         screens::publish(Facts {
             active: true,
@@ -788,9 +867,11 @@ impl Editor {
         use Command::*;
         match cmd {
             Palette => {
-                let sheet = sheet::objects_with_ai(&self.items(), self.selected, &self.ai_items())
-                    .ok_or("This map has nothing to place.")?;
-                screens::open(sheet)?;
+                let mut menu = sheet::objects_with_ai(&self.items(), self.selected, &self.ai_items());
+                if self.session.can_place_goals() {
+                    menu = Some(sheet::with_goals(menu));
+                }
+                screens::open(menu.ok_or("This map has nothing to place.")?)?;
             }
             Properties if self.tool.links => {
                 let thing = self
@@ -825,7 +906,7 @@ impl Editor {
                         .ok_or("Aim at a thing of the map.")?;
                     self.session.thing(id).ok_or("The thing is gone.")?
                 };
-                let sheet = sheet::properties_sheet(&name, &thing, frame.rotation[0].to_degrees())
+                let mut sheet = sheet::properties_sheet(&name, &thing, frame.rotation[0].to_degrees())
                     .ok_or_else(|| format!("{name} has no properties to set."))?;
                 let target = if let Some(item) = self.tool.placing {
                     CoordinateTarget::New(item)
@@ -837,6 +918,9 @@ impl Editor {
                             .ok_or("Aim at a thing of the map.")?,
                     )
                 };
+                if self.area_goal(&thing).is_some() {
+                    sheet::add_area_row(&mut sheet, thing.id);
+                }
                 self.coordinates = Some((target, frame));
                 screens::screen(Kind::Coordinates).show(sheet::coordinates_sheet(&name, frame))?;
                 screens::open(sheet)?;
@@ -944,6 +1028,25 @@ impl Editor {
         self.command(tick, cmd)
     }
 
+    fn goal_frame(&self) -> Result<forge::Frame, String> {
+        let mut frame = self.marker_frame()?;
+        let eye = self.tool.camera.ok_or("The monitor has no view.")?;
+        if let Some((distance, normal)) = surface_hit(self.bsp.and_then(|i| self.walls.get(i)), eye)
+            && normal[2] >= area::FLOOR_NORMAL
+        {
+            frame.position = eye.point(distance);
+        }
+        Ok(frame)
+    }
+
+    fn marker_frame(&self) -> Result<forge::Frame, String> {
+        let eye = self.tool.camera.ok_or("The monitor has no view.")?;
+        Ok(forge::Frame {
+            position: eye.point(MARKER_REACH),
+            rotation: [eye.yaw, 0., 0.],
+        })
+    }
+
     /// The ground labels the AI and objectives page offers, each with how
     /// many are placed.
     fn ai_items(&self) -> Vec<sheet::AiItem> {
@@ -995,12 +1098,16 @@ impl Editor {
                 self.selected = i;
                 self.tool.select(i);
             }
+            Choice::Goal(goal) => {
+                let frame = self.goal_frame()?;
+                return self.command(tick, Command::Goal { goal, frame });
+            }
+            Choice::EditArea(id) => return self.begin_area(id),
+            Choice::Marker(forge::GroundLabel::Site) => {
+                return self.choose(tick, Choice::Goal(forge::Goal::Site));
+            }
             Choice::Marker(label) => {
-                let eye = self.tool.camera.ok_or("The monitor has no view.")?;
-                let frame = forge::Frame {
-                    position: eye.point(MARKER_REACH),
-                    rotation: [eye.yaw, 0., 0.],
-                };
+                let frame = self.marker_frame()?;
                 return self.command(tick, Command::Marker { label, frame });
             }
             Choice::BuildGround => return self.command(tick, Command::BuildGround),
@@ -1032,9 +1139,9 @@ impl Editor {
                     let id = self.tool.aimed_thing.ok_or("Aim at a thing of the map.")?;
                     let (_, _, mut frame) = self.target().ok_or("The thing is gone.")?;
                     frame.rotation[0] = yaw;
-                    let cmd = match id {
-                        Endpoint::Added(id) => Command::Move { id, frame },
-                        id => Command::MoveThing { id, frame },
+                    let cmd = match self.tool.aimed {
+                        Some(id) => Command::Move { id, frame },
+                        None => Command::MoveThing { id, frame },
                     };
                     return self.command(tick, cmd);
                 }
@@ -1082,6 +1189,7 @@ impl Editor {
                 sheet::NumberField::Coordinate(axis) => {
                     return self.coordinate_number(tick, axis, &text);
                 }
+                sheet::NumberField::Area(field) => return self.area_number(field, &text),
                 sheet::NumberField::RespawnTime => {
                     let value = text
                         .parse::<i64>()
@@ -1179,6 +1287,12 @@ impl Editor {
     }
 }
 
+fn surface_hit(walls: Option<&bots::los::Walls>, camera: Camera) -> Option<(f32, [f32; 3])> {
+    walls?
+        .hit(camera.position, camera.point(forge::tool::MAX_HOLD))
+        .map(|(t, normal)| (t * forge::tool::MAX_HOLD, normal))
+}
+
 /// A tool command's edit of the session: the same path the pad, the agent
 /// and a peer take.
 fn run(s: &mut Session, w: &mut ForgeWorld, tick: u32, cmd: Command) -> Result<(), String> {
@@ -1196,6 +1310,7 @@ fn run(s: &mut Session, w: &mut ForgeWorld, tick: u32, cmd: Command) -> Result<(
         Undo => s.undo(w, tick),
         Redo => s.redo(w, tick),
         Marker { label, frame } => s.place_marker_next(w, tick, label, frame).map(|_| ()),
+        Goal { goal, frame } => s.place_goal(w, tick, goal, frame).map(|_| ()),
         _ => Err("A screen's command is not an edit.".into()),
     }
 }

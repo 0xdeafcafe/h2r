@@ -13,8 +13,11 @@ use crate::{
     World, files, links, props, scene,
 };
 
+mod area;
 mod ground;
 mod shared;
+
+pub use area::{Goal, flag_label};
 
 pub use ground::{
     GroundBuilder, GroundProblem, GroundReceipt, GroundReport, GroundState, PlacedMarker,
@@ -129,22 +132,11 @@ impl Session {
     /// added ones in scenario order. A removed entry is not listed.
     pub fn things(&self) -> Vec<Thing> {
         let mut out = things::own_things(&self.base, &self.own);
-        out.extend(self.added().iter().map(added_thing));
+        if let Ok(scene) = scene::project(&self.doc, &self.limits, &self.palette, self.budget) {
+            out.extend(scene.objects.iter().map(added_thing));
+            out.extend(scene.markers.iter().map(added_flag));
+        }
         out
-    }
-
-    /// The added objects as the document leaves them.
-    fn added(&self) -> Vec<scene::Object> {
-        scene::project(&self.doc, &self.limits, &self.palette, self.budget)
-            .map(|scene| scene.objects)
-            .unwrap_or_default()
-    }
-
-    /// Document-added netgame flags, which have no live object to pick up.
-    pub fn added_flags(&self) -> Vec<Thing> {
-        scene::project(&self.doc, &self.limits, &self.palette, self.budget)
-            .map(|scene| scene.markers.iter().map(added_flag).collect())
-            .unwrap_or_default()
     }
 
     /// The thing `id` names, by identity: an own entry with or without its
@@ -409,6 +401,10 @@ impl Session {
         self.restore(world)?;
         let thing = self.thing(id).ok_or(NO_THING)?;
         match thing.id {
+            Endpoint::Added(_) if thing.block == BlockKind::NetgameFlags => {
+                scene::in_bounds(&self.limits, frame)?;
+                things::frame_writes(thing.block, frame)?;
+            }
             Endpoint::Added(op) => {
                 scene::in_bounds(&self.limits, frame)?;
                 things::frame_writes(thing.block, frame)?;

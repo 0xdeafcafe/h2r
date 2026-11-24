@@ -25,6 +25,8 @@ pub enum Mode {
     Aimed,
     Holding,
     Placing,
+    AreaRadius,
+    AreaPath,
     /// The Links tool has a link's first end.
     Linking,
 }
@@ -44,7 +46,11 @@ pub struct Hud {
 
 impl Hud {
     pub fn spec(&self) -> ScreenSpec {
-        let tool = if self.links { "LINKS" } else { "OBJECTS" };
+        let tool = match self.mode {
+            Mode::AreaRadius | Mode::AreaPath => "EDIT AREA",
+            _ if self.links => "LINKS",
+            _ => "OBJECTS",
+        };
         let title = match self.rebuild {
             0 => tool.to_string(),
             n => format!("{tool}   REBUILD {n}"),
@@ -116,6 +122,19 @@ impl Hud {
                 p.push(Prompt::new(&[Glyph::Y], "Properties"));
                 p.push(Prompt::new(&[Glyph::B], "Cancel"));
             }
+            Mode::AreaRadius => return vec![
+                Prompt::new(&[Glyph::A], "Save"),
+                Prompt::new(&[Glyph::B], "Cancel"),
+                Prompt::new(&[Glyph::X], "Dimensions"),
+                Prompt::new(&[Glyph::Y], "Path"),
+            ],
+            Mode::AreaPath => return vec![
+                Prompt::new(&[Glyph::A], "Point / hold to drag"),
+                Prompt::new(&[Glyph::B], "Cancel"),
+                Prompt::new(&[Glyph::X], "Remove last"),
+                Prompt::new(&[Glyph::Y], "Radius"),
+                Prompt::new(&[Glyph::Start], "Close"),
+            ],
             Mode::Idle | Mode::Linking => {}
         }
         if matches!(self.mode, Mode::Idle | Mode::Aimed) {
