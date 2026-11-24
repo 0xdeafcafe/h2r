@@ -1,8 +1,8 @@
 // Clint Eastwood: a tough, fast Juggernaut against shotguns and magnums.
 // docs/game/community-gametypes.md.
 rules "Clint Eastwood" 1
-carrier juggernaut
-scoring carrier
+type juggernaut
+uses juggernaut
 about "No shields, a shotgun and a magnum. The Juggernaut is tough and fast. Best on Ascension."
 quick score_limit, time_limit, juggernaut_movement, juggernaut_damage_resistance, starting_weapon
 

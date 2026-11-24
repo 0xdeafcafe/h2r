@@ -1,9 +1,8 @@
 // Glitch Hunt: explore the maps with a sword and rockets, no score and no
 // clock. docs/game/community-gametypes.md.
 rules "Glitch Hunt" 1
-carrier slayer
-list research
-scoring carrier
+type research
+uses slayer
 about "Explore the maps and find their secrets: sword flying, rocket and grenade jumps, tough players, no score and no clock."
 quick starting_weapon, secondary_weapon, shields, damage_resistance, time_limit
 

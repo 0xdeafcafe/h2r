@@ -231,7 +231,7 @@ fn a_batch_summarises_its_matches() {
 #[test]
 fn a_batch_flags_what_looks_wrong() {
     // Nothing scores, the only way out is a timer nothing starts.
-    let idle = "rules \"Idle\" 1\ncarrier slayer\nglobal var t: timer\non timer(t) { end_round(none) }\n";
+    let idle = "rules \"Idle\" 1\ntype slayer\nglobal var t: timer\non timer(t) { end_round(none) }\n";
     let s = Setup {
         length: Some(5),
         ..setup(4, 0, 1)
@@ -247,7 +247,7 @@ fn a_batch_flags_what_looks_wrong() {
     assert!(b.rows.iter().all(|r| r.winner == Winner::Draw));
 
     // Every death costs a point.
-    let cruel = "rules \"Cruel\" 1\ncarrier slayer\non kill(victim, killer) { score(victim, -1) }\n";
+    let cruel = "rules \"Cruel\" 1\ntype slayer\non kill(victim, killer) { score(victim, -1) }\n";
     let b = sim::batch(cruel, &setup(8, 0, 1), 2).unwrap();
     let f = b.summary.flags.iter().find(|f| f.kind == "negative_score").unwrap();
     assert_eq!((f.seed, f.matches), (1, 2));
@@ -279,7 +279,7 @@ fn the_scenario_file_holds_the_match() {
     assert_eq!(scores, m.trace.scores);
 
     // Labelled objects with their teams, and the events past the engine's.
-    const BASES: &str = "rules \"Bases\" 1\ncarrier slayer\nlabel bases: zones per team\non tick {\n    for each bases b { }\n}\n";
+    const BASES: &str = "rules \"Bases\" 1\ntype slayer\nlabel bases: zones per team\non tick {\n    for each bases b { }\n}\n";
     let m = sim::simulate(BASES, &setup(4, 2, 2)).unwrap();
     let (file, left) = sim::to_file(&m.scenario);
     assert!(left.is_empty(), "{left:?}");
@@ -341,7 +341,7 @@ fn a_seated_score_limit_ends_the_run() {
 
 #[test]
 fn a_player_entering_a_labelled_object_is_inside_it() {
-    let src = "rules \"Pad\" 1\ncarrier slayer\nlabel pad: zones\non tick {\n    for each pad z {\n        for each players p where inside(p, z) { score(p, 1) }\n    }\n}\n";
+    let src = "rules \"Pad\" 1\ntype slayer\nlabel pad: zones\non tick {\n    for each pad z {\n        for each players p where inside(p, z) { score(p, 1) }\n    }\n}\n";
     let zone = |tick, enter: bool, slot: u8| Step {
         tick,
         input: if enter {

@@ -7,6 +7,7 @@
 use content::Sha256;
 
 use crate::ty::{Sizes, Ty};
+use crate::types::Type;
 
 /// The blob's first four bytes.
 pub const MAGIC: [u8; 4] = *b"H2RL";
@@ -80,14 +81,19 @@ pub struct Header {
     pub name: String,
     /// The script's own version number (`rules "Name" 1`).
     pub version: u16,
-    /// The retail engine index the game rides.
-    pub carrier: u8,
+    /// The game type (`type slayer`): the game type list's row, the
+    /// announcer's line at the start and the default of `points`.
+    pub game_type: Type,
+    /// The built-in game whose rules the script plays under its own record
+    /// (`uses slayer`): the script holds settings only. One of the retail
+    /// types. See `docs/game/game-types-without-carriers.md`, "The header".
+    pub uses: Option<Type>,
     /// Teams the script needs; 0 is any.
     pub teams: u8,
-    /// Where the game type list files a variant of the script (`list`).
-    pub list: List,
-    /// Who scores the game (`scoring carrier`).
-    pub scoring: Scoring,
+    /// What a point is (`points "Captures"`), for the scoreboard and the
+    /// post-game: the type's default when the script names none. At most
+    /// [`crate::types::MAX_POINTS_BYTES`].
+    pub points: String,
     /// The description (`about "..."`), at most [`MAX_ABOUT_UNITS`]
     /// UTF-16 units; empty when the script has none.
     pub about: String,
@@ -95,36 +101,18 @@ pub struct Header {
     pub requires: Vec<String>,
 }
 
-/// Who scores the game: the script, or with `scoring carrier` the
-/// carrier's engine, the script holding settings only. See
-/// `docs/game/rules-variants.md`, "A script that keeps its carrier's
-/// rules".
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Scoring {
-    /// The script is the game's one scorer.
-    #[default]
-    Script,
-    /// The carrier engine scores the game; the script has no handlers, no
-    /// variables and no options.
-    Carrier,
-}
-
-impl Scoring {
-    fn code(self) -> u8 {
-        match self {
-            Scoring::Script => 0,
-            Scoring::Carrier => 1,
-        }
-    }
-
-    fn from_code(c: u8) -> Option<Scoring> {
-        match c {
-            0 => Some(Scoring::Script),
-            1 => Some(Scoring::Carrier),
-            _ => None,
-        }
+impl Header {
+    /// The retail engine index the script's record is on: the `uses`
+    /// game's, else the type's ([`Type::engine`]). Every script record
+    /// moves to index 2 in GT2 of
+    /// `docs/game/game-types-without-carriers.md`.
+    pub fn engine(&self) -> u8 {
+        self.uses.unwrap_or(self.game_type).engine()
     }
 }
+
+/// The header byte of a script with no `uses` line.
+const NO_USES: u8 = 0xff;
 
 /// One setting of the `settings` block: a [`crate::settings::TABLE`]
 /// index and the value the record stores.
@@ -150,59 +138,6 @@ impl Quick {
             Quick::Setting(i) => (0, i),
             Quick::Option(i) => (1, i),
         }
-    }
-}
-
-/// Where the game type list files a variant of a script: under its
-/// carrier's game type (no `list` line), or under a row the header names
-/// (`list research`, `list party`). See `docs/game/rules-engine.md`,
-/// "The language".
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum List {
-    #[default]
-    GameType,
-    /// Research and Devolution, after Territories: practice and technical
-    /// guides (Superbounce, Bounce Practice, Glitch Hunt).
-    Research,
-    /// Party Games, after Research and Devolution: Zombies, Jousting and
-    /// the other party modes.
-    PartyGames,
-}
-
-impl List {
-    /// The names a `list` line takes.
-    pub const NAMED: &'static [List] = &[List::Research, List::PartyGames];
-
-    fn code(self) -> u8 {
-        match self {
-            List::GameType => 0,
-            List::Research => 1,
-            List::PartyGames => 2,
-        }
-    }
-
-    fn from_code(c: u8) -> Option<List> {
-        Some(match c {
-            0 => List::GameType,
-            1 => List::Research,
-            2 => List::PartyGames,
-            _ => return None,
-        })
-    }
-
-    /// The name a `list` line gives; `None` for [`List::GameType`], which
-    /// has no line.
-    pub fn name(self) -> Option<&'static str> {
-        match self {
-            List::GameType => None,
-            List::Research => Some("research"),
-            List::PartyGames => Some("party"),
-        }
-    }
-
-    /// The list a `list` line names.
-    pub fn named(name: &str) -> Option<List> {
-        List::NAMED.iter().copied().find(|l| l.name() == Some(name))
     }
 }
 
@@ -774,10 +709,10 @@ impl Ir {
         w.u16(h.api_version);
         w.str(&h.name);
         w.u16(h.version);
-        w.u8(h.carrier);
+        w.u8(h.game_type.code());
+        w.u8(h.uses.map_or(NO_USES, Type::code));
         w.u8(h.teams);
-        w.u8(h.list.code());
-        w.u8(h.scoring.code());
+        w.str(&h.points);
         w.str(&h.about);
         w.len(h.requires.len());
         for r in &h.requires {
@@ -886,18 +821,20 @@ impl Ir {
         let api_version = r.u16("the header")?;
         let name = r.str("the header")?;
         let version = r.u16("the header")?;
-        let carrier = r.u8("the header")?;
+        let ty = r.u8("the header")?;
+        let game_type = Type::from_code(ty).ok_or(DecodeError::Invalid {
+            what: "the header's type",
+            value: ty as u32,
+        })?;
+        let uses = match r.u8("the header")? {
+            NO_USES => None,
+            c => Some(Type::from_code(c).ok_or(DecodeError::Invalid {
+                what: "the header's uses",
+                value: c as u32,
+            })?),
+        };
         let teams = r.u8("the header")?;
-        let list = r.u8("the header")?;
-        let list = List::from_code(list).ok_or(DecodeError::Invalid {
-            what: "the header's list",
-            value: list as u32,
-        })?;
-        let scoring = r.u8("the header")?;
-        let scoring = Scoring::from_code(scoring).ok_or(DecodeError::Invalid {
-            what: "the header's scoring",
-            value: scoring as u32,
-        })?;
+        let points = r.str("the header")?;
         let about = r.str("the header")?;
         let n = r.len("the requires list")?;
         let mut requires = Vec::with_capacity(n.min(64));
@@ -909,10 +846,10 @@ impl Ir {
             api_version,
             name,
             version,
-            carrier,
+            game_type,
+            uses,
             teams,
-            list,
-            scoring,
+            points,
             about,
             requires,
         };
@@ -1728,10 +1665,10 @@ pub(crate) mod tests {
                 api_version: crate::caps::API_VERSION,
                 name: "Sample".into(),
                 version: 1,
-                carrier: 2,
+                game_type: Type::Research,
+                uses: None,
                 teams: 0,
-                list: List::Research,
-                scoring: Scoring::Script,
+                points: "Points".into(),
                 about: "A sample.".into(),
                 requires: vec!["forge.move".into()],
             },
@@ -1829,33 +1766,55 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_list_round_trips_and_an_unknown_one_is_refused() {
+    fn the_type_and_uses_round_trip_and_an_unknown_one_is_refused() {
         let mut ir = sample();
-        for list in [List::GameType, List::Research, List::PartyGames] {
-            ir.header.list = list;
-            let bytes = ir.encode();
-            assert_eq!(Ir::decode(&bytes).unwrap().header.list, list);
+        for row in crate::types::TABLE {
+            ir.header.game_type = row.ty;
+            ir.header.uses = Some(row.ty);
+            let back = Ir::decode(&ir.encode()).unwrap();
+            assert_eq!((back.header.game_type, back.header.uses), (row.ty, Some(row.ty)));
         }
         let mut other = sample();
-        other.header.list = List::GameType;
-        assert_ne!(sample().id(), other.id(), "the list is part of the hash");
-        // The list byte follows the name, version, carrier and teams.
+        other.header.game_type = Type::Party;
+        assert_ne!(sample().id(), other.id(), "the type is part of the hash");
+        let mut other = sample();
+        other.header.uses = Some(Type::Slayer);
+        assert_ne!(sample().id(), other.id(), "uses is part of the hash");
+        let mut other = sample();
+        other.header.points = "Laps".into();
+        assert_ne!(sample().id(), other.id(), "the points label is part of the hash");
+        // The type byte follows the name and version, then the uses byte.
+        let at = 4 + 2 + 2 + 2 + "Sample".len() + 2;
         let mut bytes = sample().encode();
-        let at = 4 + 2 + 2 + 2 + "Sample".len() + 2 + 1 + 1;
-        assert_eq!(bytes[at], 1);
-        bytes[at] = 7;
+        assert_eq!((bytes[at], bytes[at + 1]), (Type::Research.code(), NO_USES));
+        bytes[at] = 11;
         assert_eq!(
             Ir::decode(&bytes),
             Err(DecodeError::Invalid {
-                what: "the header's list",
-                value: 7
+                what: "the header's type",
+                value: 11
             })
         );
-        assert_eq!(List::named("research"), Some(List::Research));
-        assert_eq!(List::named("party"), Some(List::PartyGames));
-        assert_eq!(List::named("tweakers"), None);
-        assert_eq!(List::named("slayer"), None);
-        assert_eq!(List::GameType.name(), None);
+        let mut bytes = sample().encode();
+        bytes[at + 1] = 11;
+        assert_eq!(
+            Ir::decode(&bytes),
+            Err(DecodeError::Invalid {
+                what: "the header's uses",
+                value: 11
+            })
+        );
+    }
+
+    #[test]
+    fn the_engine_is_the_uses_games_else_the_types() {
+        let mut h = sample().header;
+        assert_eq!(h.engine(), 2);
+        h.game_type = Type::Ctf;
+        assert_eq!(h.engine(), 1);
+        h.game_type = Type::Party;
+        h.uses = Some(Type::Juggernaut);
+        assert_eq!(h.engine(), 7);
     }
 
     #[test]
@@ -1866,10 +1825,7 @@ pub(crate) mod tests {
         let back = Ir::decode(&ir.encode()).unwrap();
         assert_eq!(back.settings, ir.settings);
         assert_eq!(back.quick, ir.quick);
-        assert_eq!((back.header.scoring, back.header.about.as_str()), (Scoring::Script, "A sample."));
-        let mut carrier = sample();
-        carrier.header.scoring = Scoring::Carrier;
-        assert_eq!(Ir::decode(&carrier.encode()).unwrap().header.scoring, Scoring::Carrier);
+        assert_eq!((back.header.uses, back.header.about.as_str()), (None, "A sample."));
 
         // Out of order, and one index twice: the encoding is not canonical.
         let mut disorder = sample();
@@ -1900,18 +1856,6 @@ pub(crate) mod tests {
                 value: 6
             })
         );
-        // The scoring byte follows the list byte; 2 is no scoring.
-        let mut bytes = sample().encode();
-        let at = 4 + 2 + 2 + 2 + "Sample".len() + 2 + 1 + 1 + 1;
-        assert_eq!(bytes[at], 0);
-        bytes[at] = 2;
-        assert_eq!(
-            Ir::decode(&bytes),
-            Err(DecodeError::Invalid {
-                what: "the header's scoring",
-                value: 2
-            })
-        );
     }
 
     #[test]
@@ -1923,7 +1867,7 @@ pub(crate) mod tests {
             |ir| ir.quick.reverse(),
             |ir| ir.quick.clear(),
             |ir| ir.header.about = "Another.".into(),
-            |ir| ir.header.scoring = Scoring::Carrier,
+            |ir| ir.header.uses = Some(Type::Slayer),
         ];
         for (i, change) in changes.iter().enumerate() {
             let mut ir = sample();

@@ -26,8 +26,8 @@
 //! medals and statistics, the objective engines' kill callbacks (they post
 //! events only), their objects and their traits. A refused or idle script,
 //! a guest and a film's replayed non-authority leave every routine to the
-//! engine. A `scoring carrier` script's game runs its carrier's built-in
-//! script, which is the one scorer as any script is.
+//! engine. A `uses` script's game runs the built-in script it uses, which
+//! is the one scorer as any script is.
 //! The evidence is in
 //! docs/engine/notes/2026-11-22-script-scoring-and-roles.md.
 

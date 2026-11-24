@@ -11,8 +11,8 @@
 // Not covered: the start is wherever a player spawns (`spawn_areas` is
 // untraced); Halo 1's race track points are dropped at conversion.
 rules "Race" 1
-carrier slayer
-list party
+type party
+points "Laps"
 requires hud.message
 about "Run the map's hills in order, from the lowest, and back to it for a lap. The first to finish the laps wins. Plays on every map with hills."
 quick laps, time_limit, respawn_time

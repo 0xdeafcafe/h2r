@@ -9,8 +9,10 @@ the same source. Where this page and
 
 ```text
 rules "Name" 1            // name 1 to 128 bytes, version 0 to 65535
-carrier slayer            // required
+type slayer               // required: the game type
 teams 2                   // optional, 1 to 8
+points "Kills"            // optional, 1 to 32 bytes; the type's word by default
+uses slayer               // optional: play that built-in game's rules
 requires player.weapons, hud.message   // optional, at most 32, no repeats
 ```
 
@@ -21,15 +23,18 @@ take `\"`, `\\` and `\n`. A number with a fraction (`0.5`, `1.25`) is a
 `fixed`; a whole number is an `int`. A number followed by `s` or `t` is a
 `time`: `5s`, `300t`, `1.5s` (a whole number of ticks, 30 a second).
 
-Keywords (not usable as names): `rules carrier teams requires option
+Keywords (not usable as names): `rules teams requires option
 palette enum global var table fn on if else for each where let and or not
 const match true false none label is text budget`. Field and enum-variant names may be
 keywords (`enum Role { none, vip }`). Type and kind words (`zone`,
 `weapon`, `objects`, `numbered`, `per`) are read by place and stay names.
 
-Carriers (`caps::CARRIERS`): `ctf` 1, `slayer` 2, `oddball` 3, `king` 4,
-`juggernaut` 7, `territories` 8, `assault` 9. `variant.engine` is a `carrier`:
-compare it with `carrier.assault`, not `9`.
+Types (`rules::types::TABLE`): `slayer ctf assault oddball koth juggernaut
+territories` (the retail ones, each with a built-in script `uses` may name)
+and `research party firefight siege`. `type`, `uses` and `points` are header
+words only at the start of a line; in a handler they are names. A script
+with `uses` holds header lines, `settings`, `quick` and `about` only.
+`carrier`, `list` and `scoring` lines are refused (`header.retired`).
 
 ## Types
 
@@ -43,7 +48,6 @@ compare it with `carrier.assault`, not `9`.
 | `squad` | a kit squad slot 0 to 15, `squad(n)` |
 | `time` | a duration in ticks: `5s`, `300t`; `seconds(n)` from an `int`, `whole_seconds(t)` and `ticks(t)` to an `int` |
 | `timer` | a global variable of ticks left; 0 is stopped; read and written as `time` |
-| `carrier` | the built-in enum of `variant.engine`: `carrier.ctf`, `carrier.assault`, ... |
 | `tag` | a tag path string (a table column or `set_loadout` argument) |
 | `weapon` | a tag path that must be a weapon's (checked against the weapon group at load); goes where a `tag` is wanted |
 | `T?` | `player?`, `team?`, `object?`, `zone?`, `tag?`, `weapon?`: a handle that may be `none` |
@@ -137,7 +141,7 @@ for each objectives o { ... }                 // the objective registry, at most
 for each barrier o where cond { ... }        // a declared objects or zones label
 if let k = killer and k != victim { ... }    // binds a T? as T, then tests
 for each pick(players, n) p { ... }           // n members, drawn with the VM generator
-match victim.role {                           // an enum or carrier value
+match victim.role {                           // an enum value
     Role.vip { ... }
     Role.a, Role.b { ... }                    // several variants in one arm
     else { ... }                              // the rest; without it every variant needs an arm
@@ -168,7 +172,7 @@ Fields (read through an owner):
 | `team` | `score` |
 | `object` | `number`, `id`, `carrier` (`player?`), `team` (`team?`) |
 | `squad` | `alive` |
-| `variant` | `team_play`, `score_limit`, `time_limit`, `lives`, `respawn_time`, `friendly_fire`, `rounds`, `engine`, `oddball_ball_count`, `king_moving_hill`, `ctf_flag_type`, `ctf_reset_time`, `ctf_touch_return`, `ctf_flag_at_home`, `assault_arm_time`, `territories_count`, `territories_contest_time` |
+| `variant` | `team_play`, `score_limit`, `time_limit`, `lives`, `respawn_time`, `friendly_fire`, `rounds`, `oddball_ball_count`, `king_moving_hill`, `ctf_flag_type`, `ctf_reset_time`, `ctf_touch_return`, `ctf_flag_at_home`, `assault_arm_time`, `territories_count`, `territories_contest_time` |
 
 `variant.<field>` types are bool for `team_play`, `friendly_fire`,
 `ctf_touch_return`, `ctf_flag_at_home` and int for the rest. A read through
@@ -306,7 +310,9 @@ exits 1.
 
 | Message | Cause |
 |---|---|
-| `a script names its carrier: carrier slayer` | no `carrier` line |
+| `a script names its game type: type slayer` | no `type` line |
+| ``carrier is gone: write `type koth`...`` | a retired `carrier`, `list` or `scoring` line |
+| `with uses X the built-in game scores, ...` | handlers, variables or options in a `uses` script |
 | `unknown capability X` / `capability X is not in requires` | misspelled name, or a `grant` of one not declared |
 | `<entry> needs capability <cap>: add it to requires` | call without the declaration |
 | `capability X cannot be granted` | only `forge.*` can be |

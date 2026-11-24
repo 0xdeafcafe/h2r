@@ -42,7 +42,7 @@ const USAGE: &str = "usage: h2 rules check <file.rules>
   up (who wins, how games end, the worst tick, warnings). -o writes the
   match as a scenario file for run.
   settings prints the record of the script's own variant: every setting
-  of its carrier a script may name, with its value and whether the script
+  of its record's game a script may name, with its value and whether the script
   or the stock record set it, then the record's settings no script names.
   It exits 1 for a script check refuses or a record the game would not
   keep.
@@ -505,10 +505,13 @@ pub fn check_text(label: &str, src: &str) -> Result<String, String> {
     let h = &ir.header;
     let _ = writeln!(
         s,
-        "{label}: \"{}\" version {}, carrier engine {}, {}",
+        "{label}: \"{}\" version {}, type {}{}, points {:?}, engine {}, {}",
         h.name,
         h.version,
-        h.carrier,
+        h.game_type.name(),
+        h.uses.map_or_else(String::new, |u| format!(" using {}", u.name())),
+        h.points,
+        h.engine(),
         match h.teams {
             0 => "any number of teams".to_string(),
             n => format!("{n} teams"),
@@ -609,7 +612,7 @@ pub fn settings_text(label: &str, src: &str) -> Result<String, String> {
     use variants::record;
     let (ir, _) = compile(label, src)?;
     let v = variants::portable::record_for(&ir, &[]).map_err(|e| format!("{label}: refused: {e}\n"))?;
-    let carrier = ir.header.carrier;
+    let carrier = ir.header.engine();
     let set: Vec<u16> = ir.settings.iter().map(|x| x.index).collect();
     let mut rows = Vec::new();
     for (i, row) in TABLE.iter().enumerate() {
@@ -679,7 +682,7 @@ fn unhostable(ir: &Ir) -> Vec<&'static caps::Entry> {
         for op in &hd.code {
             if let rules::ir::Op::Call { entry, .. } = op
                 && let Some(e) = caps::entry(*entry, ir.header.api_version)
-                && !e.hostable_on(ir.header.carrier)
+                && !e.hostable_on(ir.header.engine())
                 && !out.iter().any(|o| o.id == e.id)
             {
                 out.push(e);
@@ -834,7 +837,7 @@ mod tests {
 
     const GOOD: &str = r#"
 rules "Count" 1
-carrier slayer
+type slayer
 
 on kill(victim, killer) {
     if killer == none or killer == victim { score(victim, -1) } else { score(killer, 1) }
@@ -848,7 +851,7 @@ on kill(victim, killer) {
 
     #[test]
     fn a_compile_error_prints_as_file_line_col_message() {
-        let err = check_text("x.rules", "rules \"A\" 1\ncarrier slayer\non kill(a, b) { nope(a) }\n")
+        let err = check_text("x.rules", "rules \"A\" 1\ntype slayer\non kill(a, b) { nope(a) }\n")
             .unwrap_err();
         let first = err.lines().next().unwrap();
         let mut parts = first.splitn(4, ':');
@@ -862,7 +865,7 @@ on kill(victim, killer) {
     fn check_prints_every_error_not_only_the_first() {
         let err = check_text(
             "x.rules",
-            "rules \"A\" 1\ncarrier slayer\non kill(a, b) { nope(a) }\non death(v) { gone(v) }\n",
+            "rules \"A\" 1\ntype slayer\non kill(a, b) { nope(a) }\non death(v) { gone(v) }\n",
         )
         .unwrap_err();
         let lines: Vec<&str> = err.lines().filter(|l| l.starts_with("x.rules:")).collect();
@@ -982,7 +985,7 @@ on kill(victim, killer) {
         assert!(parse_sim(&words("--players 4")).is_err());
         assert!(parse_sim(&words("m.rules --fast")).is_err());
 
-        let err = sim_text("x.rules", "rules \"A\" 1\ncarrier slayer\non kill(a, b) { nope(a) }\n", &SimArgs::default())
+        let err = sim_text("x.rules", "rules \"A\" 1\ntype slayer\non kill(a, b) { nope(a) }\n", &SimArgs::default())
             .unwrap_err();
         assert!(err.starts_with("x.rules:3:"), "{err}");
         let many = SimArgs { setup: sim::Setup { players: 17, ..sim::Setup::default() }, ..SimArgs::default() };
@@ -1021,7 +1024,7 @@ on kill(victim, killer) {
     }
 
     /// 16 players times 16 times 16, once per kill: over the budget.
-    const HEAVY: &str = "rules \"Heavy\" 1\ncarrier slayer\nglobal var n: int = 0\n\
+    const HEAVY: &str = "rules \"Heavy\" 1\ntype slayer\nglobal var n: int = 0\n\
                          on kill(v, k) { for each players a { for each players b { for each players c { n = n + 1 } } } }\n";
 
     #[test]
@@ -1034,8 +1037,8 @@ on kill(victim, killer) {
     }
 
     const SWAT: &str = "rules \"SWAT\" 1
-carrier slayer
-scoring carrier
+type slayer
+uses slayer
 quick score_limit, starting_weapon
 settings {
     score_limit = 50
@@ -1070,7 +1073,7 @@ settings {
         assert_eq!(row_words(&text, "secondary_weapon"), ["secondary_weapon", "Map", "Default", "stock"]);
         assert_eq!(row_words(&text, "damage"), ["damage", "100%", "stock"]);
         assert_eq!(row_words(&text, "friendly_fire"), ["friendly_fire", "On", "stock"]);
-        // Only the carrier's settings.
+        // Only the record's game's settings.
         assert!(!text.contains("juggernaut_movement"), "{text}");
         assert!(!text.contains("ctf_flag_type"), "{text}");
         // The record's other settings, which no script names.
@@ -1082,7 +1085,7 @@ settings {
         assert_eq!(settings_text("swat.rules", SWAT).unwrap(), text);
 
         // A Juggernaut script lists the Juggernaut rows and its own score.
-        let jugg = "rules \"J\" 1\ncarrier juggernaut\nscoring carrier\nsettings { juggernaut_movement = slow }\n";
+        let jugg = "rules \"J\" 1\ntype juggernaut\nuses juggernaut\nsettings { juggernaut_movement = slow }\n";
         let text = settings_text("j.rules", jugg).unwrap();
         assert_eq!(row_words(&text, "juggernaut_movement"), ["juggernaut_movement", "Slow", "script"]);
         assert_eq!(row_words(&text, "score_limit"), ["score_limit", "15", "stock"]);
@@ -1091,7 +1094,7 @@ settings {
 
     #[test]
     fn settings_and_check_refuse_a_record_the_game_would_not_keep() {
-        let src = "rules \"J\" 1\ncarrier juggernaut\nscoring carrier\nsettings { team_play = true }\n";
+        let src = "rules \"J\" 1\ntype juggernaut\nuses juggernaut\nsettings { team_play = true }\n";
         let err = settings_text("j.rules", src).unwrap_err();
         assert_eq!(
             err,
@@ -1103,7 +1106,7 @@ settings {
             "{err}"
         );
         // A compile error prints as check prints it.
-        let err = settings_text("x.rules", "rules \"A\" 1\ncarrier slayer\nscoring carrier\nsettings { nope = 1 }\n")
+        let err = settings_text("x.rules", "rules \"A\" 1\ntype slayer\nuses slayer\nsettings { nope = 1 }\n")
             .unwrap_err();
         assert!(err.starts_with("x.rules:4:"), "{err}");
     }

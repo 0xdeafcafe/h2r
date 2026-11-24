@@ -1,7 +1,11 @@
-//! Built-in scripts, compiled into every build and found by engine index
-//! for a record with no mode, and the payoff modes as example scripts. See
+//! Built-in scripts, compiled into every build: one per retail game type,
+//! found by type (a `uses` line) and by engine index (a record with no
+//! mode), and the payoff modes as example scripts. See
 //! `docs/game/rules-engine.md`, "A record with no mode", "Porting the
-//! seven engines" and "Payoff".
+//! seven engines" and "Payoff", and
+//! `docs/game/game-types-without-carriers.md`.
+
+use crate::types::Type;
 
 /// Slayer (engine index 2): kill, suicide and betrayal scoring.
 pub const SLAYER: &str = include_str!("slayer.rules");
@@ -14,20 +18,21 @@ pub const JUGGERNAUT: &str = include_str!("juggernaut.rules");
 /// Territories (engine index 8): held territories score.
 pub const TERRITORIES: &str = include_str!("territories.rules");
 // The headers `ctf.rules` gets for CTF and Assault: macros, so `concat!`
-// takes them and [`sources_of`] uses the same text.
+// takes them and [`sources_of`] uses the same text. `const assault` tells
+// the shared body which game it plays.
 macro_rules! ctf_header {
     () => {
-        "rules \"Capture the Flag\" 1\ncarrier ctf\n"
+        "rules \"Capture the Flag\" 1\ntype ctf\nconst assault = 0\n"
     };
 }
 macro_rules! assault_header {
     () => {
-        "rules \"Assault\" 1\ncarrier assault\n"
+        "rules \"Assault\" 1\ntype assault\nconst assault = 1\n"
     };
 }
 
 /// Capture the Flag (engine index 1). `ctf.rules` serves CTF and Assault;
-/// each gets its own header, so each rides its own engine index.
+/// each gets its own header, so each is its own type.
 pub const CTF: &str = concat!(ctf_header!(), include_str!("ctf.rules"));
 /// Assault (engine index 9), from the same body as [`CTF`].
 pub const ASSAULT: &str = concat!(assault_header!(), include_str!("ctf.rules"));
@@ -62,7 +67,7 @@ pub const BOUNCE_HUNT: &str = include_str!("bounce_hunt.rules");
 pub const SUPERBOUNCE: &str = include_str!("superbounce.rules");
 
 // The listed variants, the community's classics: each a settings script
-// (`scoring carrier`) except Superbounce. See `LISTED`.
+// (`uses`) except Superbounce. See `LISTED`.
 /// Zombies: honour rules, in `about`.
 pub const ZOMBIES: &str = include_str!("zombies.rules");
 /// Hide and Seek.
@@ -91,8 +96,7 @@ pub const GLITCH_HUNT: &str = include_str!("glitch_hunt.rules");
 pub const BUMPER_CARS: &str = include_str!("bumper_cars.rules");
 
 /// The built-in scripts of the default Live lineup, in lineup order: each a
-/// settings script (`scoring carrier`) of its engine, so the carrier's own
-/// rules score the game. A hopper entry's variant is the record of one
+/// settings script that `uses` its type's built-in game, which scores it. A hopper entry's variant is the record of one
 /// (`variants::portable::record_for`), which is mode 2 and names the script
 /// by its hash. `key` is the name Live's admin API gives the variant
 /// (`live_proto::hopper::defaults::builtin_variants`).
@@ -114,13 +118,13 @@ pub const MATCHMAKING: &[Matchmaking] = &[
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Matchmaking {
     pub key: &'static str,
-    /// The carrier's engine index.
+    /// The engine index its record is on (`ir::Header::engine`).
     pub engine: u8,
     pub source: &'static str,
 }
 
-/// A built-in script: its name, the retail engine index it rides and its
-/// source.
+/// A built-in script: its name, the engine index its record is on
+/// (`ir::Header::engine`) and its source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Builtin {
     pub name: &'static str,
@@ -141,7 +145,7 @@ pub const ALL: &[Builtin] = &[
 
 /// The scripts that are built-in variants, in list order: the entries the
 /// game's variant list gets at load (`docs/game/rules-variants.md`,
-/// "Built-in list entries"). `engine` is the carrier's engine index. The
+/// "Built-in list entries"). `engine` is its record's engine index. The
 /// scripted modes after the settings scripts (Superbounce, Siege, Gun Game, Race, VIP) are
 /// examples too, so `examples()` names them by key.
 pub const LISTED: &[Builtin] = &[
@@ -180,6 +184,11 @@ pub fn builtin(engine_index: u8) -> Option<&'static str> {
     }
 }
 
+/// The built-in script of a retail type: the game a `uses` line plays.
+pub fn of_type(ty: Type) -> Option<&'static str> {
+    if ty.is_retail() { builtin(ty.engine()) } else { None }
+}
+
 /// The payoff modes, by name: example scripts, not built-ins by engine.
 /// A variant names one by its blob's hash.
 pub fn examples() -> &'static [(&'static str, &'static str)] {
@@ -203,7 +212,9 @@ mod tests {
         for index in 0..=u8::MAX {
             let Some(src) = builtin(index) else { continue };
             let ir = crate::lang::compile(src).unwrap();
-            assert_eq!(ir.header.carrier, index);
+            assert_eq!(ir.header.engine(), index);
+            assert_eq!(ir.header.uses, None, "engine {index}");
+            assert_eq!(of_type(ir.header.game_type), Some(src), "engine {index}");
             let report = crate::verify::verify(&ir).unwrap();
             assert!(report.fits(), "engine {index}: worst tick {}", report.worst_tick);
             // A port declares nothing: it does what its retail engine does.
@@ -226,11 +237,11 @@ mod tests {
     }
 
     #[test]
-    fn every_matchmaking_script_is_a_settings_script_of_its_engine() {
+    fn every_matchmaking_script_is_a_settings_script_of_its_type() {
         for m in MATCHMAKING {
             let ir = crate::lang::compile(m.source).unwrap_or_else(|e| panic!("{}: {e}", m.key));
-            assert_eq!(ir.header.carrier, m.engine, "{}", m.key);
-            assert_eq!(ir.header.scoring, crate::ir::Scoring::Carrier, "{}", m.key);
+            assert_eq!(ir.header.engine(), m.engine, "{}", m.key);
+            assert_eq!(ir.header.uses, Some(ir.header.game_type), "{}", m.key);
             assert!(crate::verify::verify(&ir).unwrap().fits(), "{}", m.key);
             // The key is the name's snake case.
             assert_eq!(ir.header.name.to_lowercase().replace(' ', "_"), m.key);
@@ -251,6 +262,63 @@ mod tests {
         hashes.sort();
         hashes.dedup();
         assert_eq!(hashes.len(), MATCHMAKING.len(), "two scripts are one blob");
+    }
+
+    #[test]
+    fn every_listed_and_example_script_has_its_type_and_engine() {
+        for b in LISTED {
+            let ir = crate::lang::compile(b.source).unwrap_or_else(|e| panic!("{}: {e}", b.name));
+            assert_eq!(ir.header.engine(), b.engine, "{}", b.name);
+        }
+        let ty = |src: &str| crate::lang::compile(src).unwrap().header.game_type;
+        assert_eq!(ty(SIEGE), Type::Siege);
+        assert_eq!(ty(SUPERBOUNCE), Type::Research);
+        assert_eq!(ty(ZOMBIES), Type::Party);
+        assert_eq!(ty(SWAT), Type::Slayer);
+        let race = crate::lang::compile(RACE).unwrap();
+        assert_eq!(race.header.points, "Laps");
+        assert_eq!(crate::lang::compile(CTF).unwrap().header.points, "Captures");
+        let hide = crate::lang::compile(HIDE_AND_SEEK).unwrap();
+        assert_eq!((hide.header.game_type, hide.header.uses), (Type::Party, Some(Type::Juggernaut)));
+        for t in crate::types::TABLE {
+            assert_eq!(of_type(t.ty).is_some(), t.ty.is_retail(), "{}", t.name);
+        }
+    }
+
+    /// The option bits a script's record carries (`ir::OPTION_BITS`).
+    fn option_bits(ir: &crate::Ir) -> u32 {
+        ir.options.iter().map(crate::ir::OptionDef::bits).sum()
+    }
+
+    #[test]
+    fn each_retail_game_fits_its_type_area_in_the_option_bits() {
+        // GT7 of docs/game/game-types-without-carriers.md reads a retail
+        // record's type-area settings into the script's options. Each
+        // type-area row of the settings table, at the record's own range,
+        // and the built-in's options must fit the record's 32 option bits
+        // together (docs/game/notes/2026-11-24-game-type-engine-reads.md).
+        let width = |(lo, hi): (i32, i32)| 64 - ((hi - lo).max(0) as u64).leading_zeros();
+        let mut counted = Vec::new();
+        for b in ALL {
+            let ir = crate::lang::compile(b.source).unwrap();
+            let area: u32 = crate::settings::TABLE
+                .iter()
+                .filter(|r| !r.carriers.is_empty() && r.applies(b.engine))
+                .map(|r| width(r.kind.range()))
+                .sum();
+            let total = option_bits(&ir) + area;
+            assert!(total <= crate::ir::OPTION_BITS, "{}: {total} bits", b.name);
+            counted.push((b.engine, option_bits(&ir), area));
+        }
+        // (engine, the built-in's options, the type area).
+        assert_eq!(
+            counted,
+            [(1, 3, 19), (2, 4, 0), (3, 6, 5), (4, 0, 15), (7, 5, 6), (8, 4, 18), (9, 3, 22)]
+        );
+        for b in LISTED.iter().chain(&[Builtin { name: "Infection", engine: 2, source: INFECTION }]) {
+            let ir = crate::lang::compile(b.source).unwrap();
+            assert!(option_bits(&ir) <= crate::ir::OPTION_BITS, "{}", b.name);
+        }
     }
 
     #[test]

@@ -10,14 +10,13 @@
 // capabilities" wait on the match edit log (roadmap phase 14), so their
 // grants live in the VIP test script of `tests/scripts.rs`.
 rules "VIP" 1
-carrier slayer
+type party
 teams 2
-list party
 requires hud.message
 about "Each team has a VIP. Kill theirs for extra points and keep yours alive: when a VIP dies, a teammate takes the role."
 quick vip_points, score_limit, time_limit
 
-// The script scores and ends the round, so the carrier's limit never
+// The script scores and ends the round, so the engine's limit never
 // gets there first; `variant.score_limit` is the target.
 settings {
     team_play = true

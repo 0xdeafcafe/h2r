@@ -130,7 +130,7 @@ mod tests {
 
     fn table(m: &dyn GuestMemory) -> Table {
         let ir = ::rules::compile(
-            "rules \"T\" 1\ncarrier slayer\n\non kill(victim, killer) { if killer != none { score(killer, 1) } }\n",
+            "rules \"T\" 1\ntype slayer\n\non kill(victim, killer) { if killer != none { score(killer, 1) } }\n",
         )
         .unwrap();
         Table::new(&census::things(m).unwrap(), &ir)

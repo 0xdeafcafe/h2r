@@ -11,7 +11,7 @@
 // multiplayer block, this script names the path; the reset delay is a
 // script option, as retail's is not traced.
 rules "Oddball" 1
-carrier oddball
+type oddball
 
 label oddball_spawn: objects
 

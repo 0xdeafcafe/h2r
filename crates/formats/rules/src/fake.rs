@@ -162,7 +162,6 @@ pub fn stock_variant(carrier: u8) -> BTreeMap<String, i32> {
         ("lives", 0),
         ("respawn_time", if team { 10 } else { 5 }),
         ("rounds", 0),
-        ("engine", i32::from(carrier)),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
@@ -735,7 +734,6 @@ mod tests {
         };
         assert_eq!(g.variant("team_play"), 1);
         assert_eq!(g.variant("score_limit"), 3);
-        assert_eq!(g.variant("engine"), 1);
         g.variant.insert("score_limit".into(), 5);
         assert_eq!(g.variant("score_limit"), 5);
         g.carrier = 2;

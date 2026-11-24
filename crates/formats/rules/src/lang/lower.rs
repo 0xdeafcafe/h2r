@@ -18,7 +18,7 @@ use super::ast::*;
 use super::check::{Checked, SECONDS_SUFFIX};
 use super::types::{Handle, Type};
 use super::{CompileError, Pos};
-use crate::caps::{self, CARRIERS, Kind, TICKS_PER_SECOND, VARIANT_FIELDS};
+use crate::caps::{self, Kind, TICKS_PER_SECOND, VARIANT_FIELDS};
 use crate::ir::*;
 use crate::ty::{NONE, Ty, fixed};
 
@@ -246,20 +246,12 @@ impl<'s> Cx<'s> {
     fn script(&mut self, script: &'s Script) -> R<Ir> {
         let pos = script.pos;
         let version = u16::try_from(script.version).or_else(|_| internal(pos, "version"))?;
-        let Some((carrier_name, cpos)) = &script.carrier else {
-            return internal(pos, "no carrier");
-        };
-        let Some(carrier) = CARRIERS.iter().find(|(n, _)| n == carrier_name).map(|&(_, i)| i) else {
-            return internal(*cpos, "unknown carrier");
+        let Some(game_type) = self.c.game_type else {
+            return internal(pos, "no type");
         };
         let teams = script.teams.map_or(0, |(n, _)| n as u8);
-        let list = match &script.list {
-            None => List::GameType,
-            Some((name, lpos)) => match List::named(name) {
-                Some(l) => l,
-                None => return internal(*lpos, "unknown list"),
-            },
-        };
+        // What a point is: the script's, else the type's.
+        let points = script.points.as_ref().map_or(game_type.points(), |(p, _)| p.as_str()).to_string();
         self.requires = script.requires.iter().map(|(n, _)| n.clone()).collect();
 
         // Declarations first, so their order does not matter to handlers.
@@ -326,10 +318,10 @@ impl<'s> Cx<'s> {
                 api_version: caps::API_VERSION,
                 name: script.name.clone(),
                 version,
-                carrier,
+                game_type,
+                uses: self.c.uses,
                 teams,
-                list,
-                scoring: self.c.scoring,
+                points,
                 about: script.about.as_ref().map(|(a, _)| a.clone()).unwrap_or_default(),
                 requires: self.requires.clone(),
             },
@@ -1216,13 +1208,6 @@ impl<'s> Cx<'s> {
                         };
                         let ty = Ty::Enum(i as u8);
                         return Ok((f.konst(ty, k as i32, pos)?, ty));
-                    }
-                    // `carrier.assault`: the engine index, an int.
-                    if b == "carrier" {
-                        let Some(&(_, index)) = CARRIERS.iter().find(|(n, _)| *n == field) else {
-                            return internal(pos, "an unknown carrier");
-                        };
-                        return Ok((f.konst(Ty::Int, index as i32, pos)?, Ty::Int));
                     }
                 }
             },

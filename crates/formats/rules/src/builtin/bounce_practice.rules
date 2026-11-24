@@ -5,10 +5,9 @@
 // medals, and the bots practising), as it does for Superbounce.
 // docs/game/community-gametypes.md.
 rules "Bounce Practice" 1
-carrier slayer
-list research
+type research
 requires hud.superbounce
-scoring carrier
+uses slayer
 about "Practice super bounces and crouch jumps with a magnum: no score, no time limit, tough players, quick respawns and nothing to pick up."
 quick respawn_time, starting_weapon, shields, damage_resistance, time_limit
 

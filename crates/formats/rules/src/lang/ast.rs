@@ -8,12 +8,18 @@ pub struct Script {
     pub name: String,
     pub version: i64,
     pub pos: Pos,
-    pub carrier: Option<(String, Pos)>,
+    /// `type slayer`: the game type's word.
+    pub game_type: Option<(String, Pos)>,
     pub teams: Option<(i64, Pos)>,
-    /// `list research`: the list's name.
-    pub list: Option<(String, Pos)>,
-    /// `scoring carrier`: the word after `scoring`.
-    pub scoring: Option<(String, Pos)>,
+    /// `points "Captures"`: what a point is.
+    pub points: Option<(String, Pos)>,
+    /// `uses slayer`: the built-in game whose rules the script plays.
+    pub uses: Option<(String, Pos)>,
+    /// Header lines the language no longer has (`carrier slayer`, `list
+    /// party`, `scoring carrier`): the word, the word after it and the
+    /// line's position. The checker refuses each, naming the line to write
+    /// instead.
+    pub retired: Vec<(String, String, Pos)>,
     /// `about "..."`: the description.
     pub about: Option<(String, Pos)>,
     /// `quick a, b, c`: the names, and the line's position.

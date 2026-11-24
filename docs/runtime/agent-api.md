@@ -4690,13 +4690,13 @@ built-in script has hash prefix ..., and fetching a blob from Live is
 not built"). `hash` is the blob's SHA-256 in hex, or the record's
 16-digit prefix when no blob was found. While a script runs: `script`
 and `version` are its header's, `source` is `builtin` or `live`,
-`carrier` the engine index it rides, `scoring` who scores the game,
+`carrier` the engine index it rides (the wire's name for the type's engine), `scoring` who scores the game,
 `options` the record's option bits, and `authority` what
 `GAME_ENGINE_AUTHORITATIVE` answered at the first tick boundary (absent
 before it). `scoring` is `script`: the running script's VM scores. A
-`scoring carrier` script's game
+script with a `uses` line has `scoring` `carrier`; its game
 ([rules-variants.md](../game/rules-variants.md#a-script-that-keeps-its-carriers-rules))
-runs its carrier's built-in script, so `script`, `hash`, `source` and
+runs the used type's built-in script, so `script`, `hash`, `source` and
 `options` are the built-in's. `stopped` names the script error that
 stopped the VM. `budget` is the VM's tick (`tick`), the ops it has used
 (`ops`) against `limit` (20,000), and the verifier's `worst_tick`
@@ -4741,7 +4741,7 @@ that this host cannot run; a Live custom game reloads in place only.
 
 ```sh
 h2 agent rules.state
-h2 agent rules.reload '{"source":"rules \"Mine\" 1\ncarrier slayer\n..."}'
+h2 agent rules.reload '{"source":"rules \"Mine\" 1\ntype slayer\nuses slayer\n..."}'
 h2 agent rules.reload '{"ir_b64":"...","mode":"in_place"}'
 ```
 

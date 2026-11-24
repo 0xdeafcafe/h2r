@@ -1,5 +1,5 @@
 rules "Slayer" 1
-carrier slayer
+type slayer
 
 option kill_points: int 1..5 = 1 "Kill points" "Points for each kill"
 option suicide_costs: bool = true "Suicide penalty" "A suicide costs a point"

@@ -65,7 +65,7 @@ const METHODS: &[MethodDef] = &[
         "Replace the open script's text (unsaved) and check it",
         r#"{"source":"string"}"#,
         STATE,
-        r#"{"source":"rules \"Mine\" 1\ncarrier slayer\nscoring carrier\n"}"#,
+        r#"{"source":"rules \"Mine\" 1\ntype slayer\nuses slayer\n"}"#,
     ),
     def(
         m::RULES_SAVE,
@@ -466,7 +466,7 @@ mod tests {
         assert_eq!(v["check"]["ok"], true, "{v}");
         assert!(v["check"]["report"]["budget"].as_u64().unwrap() > 0);
         assert_eq!(v["reload"]["state"], "idle");
-        assert!(v["text"].as_str().unwrap().contains("carrier slayer"));
+        assert!(v["text"].as_str().unwrap().contains("type slayer"));
         assert!(v["starters"].as_array().unwrap().iter().any(|s| s == "Slayer (built in)"));
 
         // The report lists the script's settings and its Quick Options marks.

@@ -714,7 +714,7 @@ mod gate {
     use super::*;
     use crate::rules::gate::{self as g, Input, Sources, Verdict};
 
-    const POINTS: &str = "rules \"Double Points\" 1\ncarrier slayer\n\non kill(victim, killer) { if killer != none { score(killer, 2) } }\n";
+    const POINTS: &str = "rules \"Double Points\" 1\ntype slayer\n\non kill(victim, killer) { if killer != none { score(killer, 2) } }\n";
     const SLAYER: u32 = 2;
     const VARIANT: u32 = 0x0070_0000;
     const MAP: u32 = 0x10;

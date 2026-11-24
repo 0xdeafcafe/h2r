@@ -117,9 +117,6 @@ pub enum Type {
     Fixed,
     /// A duration or a tick count, in ticks (`5s`, `300t`).
     Time,
-    /// The built-in enum of carrier engines (`carrier.assault`), which
-    /// `variant.engine` reads as.
-    Carrier,
     Bool,
     Squad,
     Class,
@@ -143,7 +140,7 @@ impl Type {
     /// The IR type; a set has none (its argument is a `Label` constant).
     pub fn erase(self) -> Option<Ty> {
         Some(match self {
-            Type::Int | Type::Time | Type::Carrier => Ty::Int,
+            Type::Int | Type::Time => Ty::Int,
             Type::Fixed => Ty::Fixed,
             Type::Bool => Ty::Bool,
             Type::Squad => Ty::Squad,
@@ -274,7 +271,6 @@ impl Type {
             Type::Int => "int".into(),
             Type::Fixed => "fixed".into(),
             Type::Time => "time".into(),
-            Type::Carrier => "carrier".into(),
             Type::Bool => "bool".into(),
             Type::Squad => "squad".into(),
             Type::Class => "Class".into(),
@@ -318,7 +314,6 @@ mod tests {
         assert_eq!(Type::named("int", true, &[]), None);
         assert_eq!(Type::named("time", false, &[]), Some(Type::Time));
         assert_eq!(Type::Time.erase(), Some(Ty::Int));
-        assert_eq!(Type::Carrier.erase(), Some(Ty::Int));
         assert_eq!(Type::from_ir(Ty::Timer), Some(Type::Time));
         assert!(!Type::Time.fits(Type::Int));
         assert!(!Type::Int.fits(Type::Time));

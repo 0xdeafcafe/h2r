@@ -371,7 +371,7 @@ fn an_unknown_hash_is_refused_by_name_and_the_game_plays_its_own_rules() {
     let s = shared(&store, Box::new(no_fetch));
     let (m, _) = guest(block([9; 8], 0), SLAYER);
     let line = s.lock().start(&m, false);
-    assert!(line.contains("the carrier engine's own rules"), "{line}");
+    assert!(line.contains("the record engine's own rules"), "{line}");
     let state = s.lock().state();
     assert!(!state.running);
     let why = state.refused.unwrap();
@@ -392,11 +392,11 @@ fn an_unknown_hash_is_refused_by_name_and_the_game_plays_its_own_rules() {
 fn a_script_the_host_cannot_run_is_refused_by_the_entry_or_event_it_names() {
     for (src, want) in [
         (
-            "rules \"Teams\" 1\ncarrier slayer\nrequires player.team\n\non kill(victim, killer) { set_team(victim, team 1) }\n",
+            "rules \"Teams\" 1\ntype slayer\nrequires player.team\n\non kill(victim, killer) { set_team(victim, team 1) }\n",
             "the script calls set_team, whose engine entry is untraced",
         ),
         (
-            "rules \"Picker\" 1\ncarrier slayer\n\non pickup(p, o) { score(p, 1) }\n",
+            "rules \"Picker\" 1\ntype slayer\n\non pickup(p, o) { score(p, 1) }\n",
             "the script answers on pickup, which this host runtime does not deliver yet",
         ),
     ] {
@@ -419,7 +419,7 @@ fn a_script_the_host_cannot_run_is_refused_by_the_entry_or_event_it_names() {
 
 #[test]
 fn a_ranked_game_refuses_a_script_that_grants_edits_by_the_capability() {
-    let src = "rules \"Builder\" 1\ncarrier slayer\nrequires forge.move\n\non kill(victim, killer) { if killer != none { score(killer, 1) } }\n";
+    let src = "rules \"Builder\" 1\ntype slayer\nrequires forge.move\n\non kill(victim, killer) { if killer != none { score(killer, 1) } }\n";
     let ir = ::rules::compile(src).unwrap();
     let blob = ir.encode();
     let id = ir.id();
@@ -566,7 +566,7 @@ use crate::game_variants::GameScripts;
 use crate::game_variants::store::{Origin, Store as VariantStore};
 use live_hle::game_variants::LiveVariant;
 
-const POINTS: &str = "rules \"Double Points\" 1\ncarrier slayer\n\non kill(victim, killer) { if killer != none { score(killer, 2) } }\n";
+const POINTS: &str = "rules \"Double Points\" 1\ntype slayer\n\non kill(victim, killer) { if killer != none { score(killer, 2) } }\n";
 
 type Answer = Box<dyn Fn(&str, std::time::Duration) -> Result<Vec<u8>, String> + Send + Sync>;
 
@@ -772,7 +772,7 @@ fn an_in_place_swap_keeps_the_state_and_the_next_kill_runs_the_new_handler() {
 
 /// A script whose kill handler orders the killer to follow the victim
 /// (docs/game/rules-world-api.md, "Bots").
-const BOT_ORDERS: &str = "rules \"Bot Orders\" 1\ncarrier slayer\nrequires bots.orders\n\non kill(victim, killer) { if killer != none { bot_follow(killer, victim) } }\n";
+const BOT_ORDERS: &str = "rules \"Bot Orders\" 1\ntype slayer\nrequires bots.orders\n\non kill(victim, killer) { if killer != none { bot_follow(killer, victim) } }\n";
 
 /// A runtime over the record of a game playing `src`, with the script
 /// served by the fetch.
@@ -863,14 +863,14 @@ fn a_film_makes_no_bot_order() {
     assert_eq!(work.calls, []);
 }
 
-// ---- scoring carrier (docs/game/rules-variants.md, "A script that keeps
+// ---- a `uses` script (docs/game/rules-variants.md, "A script that keeps
 // its carrier's rules") ----
 
 /// A settings-only Slayer script: its game runs the built-in Slayer.
-const CARRIED: &str = "rules \"SWAT\" 1\ncarrier slayer\nscoring carrier\nabout \"One headshot kills.\"\nsettings {\n    score_limit = 50\n}\n";
+const CARRIED: &str = "rules \"SWAT\" 1\ntype slayer\nuses slayer\nabout \"One headshot kills.\"\nsettings {\n    score_limit = 50\n}\n";
 
 /// A settings-only Slayer script that asks for the superbounce mode.
-const CARRIED_BOUNCES: &str = "rules \"Bounce Slayer\" 1\ncarrier slayer\nrequires hud.superbounce\nscoring carrier\nsettings {\n    score_limit = 25\n}\n";
+const CARRIED_BOUNCES: &str = "rules \"Bounce Slayer\" 1\ntype slayer\nrequires hud.superbounce\nuses slayer\nsettings {\n    score_limit = 25\n}\n";
 
 /// A runtime whose fetch answers `src`'s blob, started on a game of
 /// `engine` whose record names it, with team play on and a score limit of
@@ -878,7 +878,7 @@ const CARRIED_BOUNCES: &str = "rules \"Bounce Slayer\" 1\ncarrier slayer\nrequir
 /// game, the players' datums, the start's line and the script's hash.
 fn carried(store: &Local, src: &str, engine: i32) -> (Arc<Shared>, FakeGuest, [u32; 2], String, Sha256) {
     let ir = ::rules::compile(src).unwrap();
-    assert_eq!(ir.header.scoring, Scoring::Carrier);
+    assert!(ir.header.uses.is_some());
     let (blob, id) = (ir.encode(), ir.id());
     let s = shared(store, Box::new(move |_: [u8; 8]| Ok::<_, String>(blob.clone())));
     let (mut m, datums) = guest(block(prefix(&id), 0), engine);
@@ -895,7 +895,7 @@ fn a_carrier_scored_slayer_script_runs_the_builtin_slayer_under_its_record() {
     let store = Local::default();
     let (s, m, datums, line, id) = carried(&store, CARRIED, SLAYER);
     assert!(line.starts_with("rules: Slayer ("), "{line}");
-    assert!(line.ends_with(&format!(", for SWAT ({id}) from live, scoring carrier")), "{line}");
+    assert!(line.ends_with(&format!(", for SWAT ({id}) from live, which uses it")), "{line}");
     // The built-in runs, with its own default options: the carried script
     // has none, so the record's option bits are not read.
     let state = s.lock().state();
@@ -968,7 +968,7 @@ fn a_carrier_whose_builtin_this_host_cannot_run_is_refused_by_name() {
     let why = state.refused.unwrap();
     assert!(
         why.starts_with(
-            "Sun King is scoring carrier and plays the built-in King of the Hill script, which this host cannot run yet: "
+            "Sun King uses the built-in King of the Hill script, which this host cannot run yet: "
         ),
         "{why}"
     );
@@ -982,15 +982,15 @@ fn a_carrier_whose_builtin_this_host_cannot_run_is_refused_by_name() {
     assert!(!scoring::script_scores(&s.lock()));
 }
 
-/// Every listed `scoring carrier` script runs its carrier's built-in or is
-/// refused in words that name it; none is blocked or left to the carrier
-/// in silence. The nine on Slayer all run.
+/// Every listed `uses` script runs the built-in it uses or is refused in
+/// words that name it; none is blocked or left to the engine in silence.
+/// The nine on Slayer all run.
 #[test]
 fn every_listed_carrier_script_runs_its_builtin_or_is_refused_by_name() {
     let mut slayers = Vec::new();
     for b in ::rules::builtin::LISTED {
         let ir = ::rules::compile(b.source).unwrap();
-        if ir.header.scoring != Scoring::Carrier {
+        if ir.header.uses.is_none() {
             continue;
         }
         let name = ir.header.name.clone();
@@ -1011,7 +1011,7 @@ fn every_listed_carrier_script_runs_its_builtin_or_is_refused_by_name() {
         } else {
             let why = state.refused.unwrap();
             assert!(
-                why.starts_with(&format!("{name} is scoring carrier and plays the built-in ")),
+                why.starts_with(&format!("{name} uses the built-in ")),
                 "{name}: {why}"
             );
             assert!(line.starts_with("rules: refused"), "{line}");
@@ -1045,7 +1045,7 @@ fn a_carried_game_takes_no_carrier_program_in_place_and_ends_with_the_game() {
     let (s, _m, _, _, _) = carried(&store, CARRIED, SLAYER);
     // A program with no handlers would leave the game with no scorer.
     let why = s.lock().swap(::rules::compile(CARRIED).unwrap()).unwrap_err();
-    assert!(why.contains("scoring carrier"), "{why}");
+    assert!(why.contains("uses line"), "{why}");
     assert_eq!(s.lock().state().script.as_deref(), Some("Slayer"));
     s.lock().ended();
     let state = s.lock().state();

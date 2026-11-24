@@ -8,7 +8,7 @@
 // scores the kill that takes the role is not traced: `take_points` is 0 by
 // default, so only the Juggernaut scores.
 rules "Juggernaut" 1
-carrier juggernaut
+type juggernaut
 
 option kill_points: int 1..5 = 1 "Juggernaut kill points" "Points for each kill the Juggernaut makes"
 option take_points: int 0..3 = 0 "Takeover points" "Points for killing the Juggernaut"

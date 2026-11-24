@@ -6,7 +6,7 @@
 // Entries a host cannot make yet (`verify::unhostable`):
 //   set_team         untraced (player `+0xc0`, no entry known)
 rules "Infection" 1
-carrier slayer
+type slayer
 teams 2
 requires player.team, player.weapons
 

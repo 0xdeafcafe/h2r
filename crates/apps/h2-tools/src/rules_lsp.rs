@@ -35,9 +35,9 @@ const CODES_DOC: &str =
     "https://github.com/0xdeafcafe/h2recomp/blob/master/docs/game/rules-language-types.md#diagnostics-and-the-editor";
 
 /// The words after which a typed space asks for completions: what comes
-/// next is a label, an event, a carrier, a capability, a set, a palette or
-/// a game type list, a `scoring` word or a Quick Options mark.
-const SPACE_TRIGGER_WORDS: &[&str] = &["is", "on", "carrier", "requires", "each", "palette", "list", "scoring", "quick"];
+/// next is a label, an event, a game type, a capability, a set, a palette,
+/// a built-in game or a Quick Options mark.
+const SPACE_TRIGGER_WORDS: &[&str] = &["is", "on", "type", "requires", "each", "palette", "uses", "quick"];
 
 /// Serves until the client shuts the server down.
 pub fn run() -> Result<()> {
@@ -508,7 +508,7 @@ mod tests {
     use lsp_server::RequestId;
 
     const URI: &str = "file:///t.rules";
-    const SRC: &str = "rules \"T\" 1\ncarrier slayer\non kill(k, v) {\n    score(k, 1)\n}\n";
+    const SRC: &str = "rules \"T\" 1\ntype slayer\non kill(k, v) {\n    score(k, 1)\n}\n";
 
     fn note(method: &str, params: Value) -> Message {
         Message::Notification(Notification::new(method.to_string(), params))
@@ -586,14 +586,14 @@ mod tests {
         assert_eq!(v, json!([]));
 
         // A change replaces the text and publishes again.
-        let messy = "rules \"T\" 1\ncarrier slayer\non kill(v,k){score(k, )}\n";
+        let messy = "rules \"T\" 1\ntype slayer\non kill(v,k){score(k, )}\n";
         let change = json!({"textDocument": {"uri": URI, "version": 2}, "contentChanges": [{"text": messy}]});
         let d = published(s.handle(note("textDocument/didChange", change)));
         assert_eq!(d[0]["severity"], 1);
         assert_eq!(d[0]["codeDescription"]["href"], CODES_DOC);
         assert!(d[0].get("fixes").is_none(), "{d}");
         let v = result(s.handle(req(9, "textDocument/formatting", doc())));
-        assert_eq!(v[0]["newText"], "rules \"T\" 1\ncarrier slayer\non kill(v, k) {\n    score(k,)\n}\n");
+        assert_eq!(v[0]["newText"], "rules \"T\" 1\ntype slayer\non kill(v, k) {\n    score(k,)\n}\n");
         assert_eq!(v[0]["range"]["end"], json!({"line": 3, "character": 0}));
 
         // An unknown method; a closed document clears its diagnostics and
@@ -609,7 +609,7 @@ mod tests {
     #[test]
     fn code_actions_and_rename_answer_with_workspace_edits() {
         let mut s = Server::default();
-        let src = "rules \"T\" 1\ncarrier slayer\nlabel barrier: objects\non tick { for each barier b { } }\n";
+        let src = "rules \"T\" 1\ntype slayer\nlabel barrier: objects\non tick { for each barier b { } }\n";
         let d = open(&mut s, src);
         assert!(d.as_array().unwrap().iter().any(|x| x["code"] == "label.unknown"), "{d}");
 
@@ -658,7 +658,7 @@ mod tests {
             "textDocument": {"uri": URI, "version": 2},
             "contentChanges": [
                 {"range": {"start": {"line": 1, "character": 6}, "end": {"line": 1, "character": 7}}, "text": "y"},
-                {"range": {"start": {"line": 2, "character": 0}, "end": {"line": 2, "character": 0}}, "text": "carrier slayer\n"},
+                {"range": {"start": {"line": 2, "character": 0}, "end": {"line": 2, "character": 0}}, "text": "type slayer\n"},
                 {"range": {"start": {"line": 0, "character": 7}, "end": {"line": 0, "character": 8}}, "text": "Tag"},
             ],
         });
@@ -667,7 +667,7 @@ mod tests {
             [Message::Notification(n)] => assert_eq!(n.params["version"], 2),
             other => panic!("not one notification: {other:?}"),
         }
-        assert_eq!(s.docs[URI].text, "rules \"Tag\" 1\n// \u{1F600} y\ncarrier slayer\n");
+        assert_eq!(s.docs[URI].text, "rules \"Tag\" 1\n// \u{1F600} y\ntype slayer\n");
         // A change with no range is the whole text.
         let change = json!({"textDocument": {"uri": URI, "version": 3}, "contentChanges": [{"text": SRC}]});
         published(s.handle(note("textDocument/didChange", change)));
@@ -678,7 +678,7 @@ mod tests {
     #[test]
     fn highlights_folding_and_range_formatting_answer() {
         let mut s = Server::default();
-        let src = "rules \"T\" 1\ncarrier slayer\n// one\n// two\non kill(k, v) {\n    score(k, 1)\n    score(v,  1)\n}\n";
+        let src = "rules \"T\" 1\ntype slayer\n// one\n// two\non kill(k, v) {\n    score(k, 1)\n    score(v,  1)\n}\n";
         open(&mut s, src);
 
         let v = result(s.handle(req(1, "textDocument/documentHighlight", at(5, 10))));
@@ -712,14 +712,14 @@ mod tests {
     #[test]
     fn a_typed_space_completes_only_where_a_word_wants_one() {
         let mut s = Server::default();
-        let src = "rules \"T\" 1\ncarrier \nlabel goal: zone\nlabel ball: objects\non enter(goal, o) {\n    if o is \n    \n}\n";
+        let src = "rules \"T\" 1\ntype \nlabel goal: zone\nlabel ball: objects\non enter(goal, o) {\n    if o is \n    \n}\n";
         open(&mut s, src);
         let typed = |line: u32, character: u32| {
             let mut p = at(line, character);
             p["context"] = json!({"triggerKind": 2, "triggerCharacter": " "});
             p
         };
-        let v = result(s.handle(req(1, "textDocument/completion", typed(1, 8))));
+        let v = result(s.handle(req(1, "textDocument/completion", typed(1, 5))));
         assert!(v.as_array().unwrap().iter().any(|i| i["label"] == "slayer"), "{v}");
         // `o` is an object: the object label fits, the zone label does not.
         let v = result(s.handle(req(2, "textDocument/completion", typed(5, 12))));

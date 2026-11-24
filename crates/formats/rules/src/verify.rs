@@ -11,11 +11,7 @@ use crate::caps::{self, Kind, VARIANT_FIELDS};
 use crate::ir::*;
 use crate::settings;
 use crate::ty::{MAX_ENUM_VARIANTS, MAX_ENUMS, Sizes, Ty};
-
-/// Engine indices a script may ride (`caps::CARRIERS`).
-fn carrier_known(index: u8) -> bool {
-    caps::CARRIERS.iter().any(|&(_, i)| i == index)
-}
+use crate::types::{self, Type};
 
 /// Why a blob was refused.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -26,8 +22,8 @@ pub enum Refusal {
     IrVersion(u16),
     #[error("API version {0} is unsupported (this build has {api})", api = caps::API_VERSION)]
     ApiVersion(u16),
-    #[error("engine index {0} cannot carry a script")]
-    Carrier(u8),
+    #[error("uses names {}, which is no built-in game", .0.name())]
+    Uses(Type),
     #[error("the script needs {0} teams; at most 8 exist")]
     Teams(u8),
     #[error("{what} exceeds its limit of {max}")]
@@ -67,8 +63,8 @@ pub enum Refusal {
     Setting { index: u16, reason: &'static str },
     #[error("quick mark {index}: {reason}")]
     Quick { index: usize, reason: &'static str },
-    #[error("the carrier scores this script, so it may have no {0}")]
-    ScoringCarrier(&'static str),
+    #[error("the script uses a built-in game's rules, so it may have no {0}")]
+    UsesHolds(&'static str),
     #[error("handler {handler}, op {pc}: {fault}")]
     Op {
         handler: usize,
@@ -192,8 +188,10 @@ pub fn verify(ir: &Ir) -> Result<Report, Refusal> {
     if h.api_version != caps::API_VERSION {
         return Err(Refusal::ApiVersion(h.api_version));
     }
-    if !carrier_known(h.carrier) {
-        return Err(Refusal::Carrier(h.carrier));
+    if let Some(u) = h.uses
+        && !u.is_retail()
+    {
+        return Err(Refusal::Uses(u));
     }
     if h.teams as usize > crate::ty::MAX_TEAMS {
         return Err(Refusal::Teams(h.teams));
@@ -203,6 +201,13 @@ pub fn verify(ir: &Ir) -> Result<Report, Refusal> {
             table: "the name",
             index: 0,
             max: MAX_TEXT_BYTES,
+        });
+    }
+    if h.points.is_empty() || h.points.len() > types::MAX_POINTS_BYTES {
+        return Err(Refusal::Text {
+            table: "the points label",
+            index: 0,
+            max: types::MAX_POINTS_BYTES,
         });
     }
     if h.requires.len() > MAX_REQUIRES {
@@ -558,7 +563,7 @@ fn enum_known(t: Ty, sizes: &Sizes) -> bool {
 /// 32 [`label_char`]s that no other entry has, and requirements a map can
 /// meet.
 /// The description, the settings, the quick marks and the scorer: what the
-/// compiler holds a `settings` block, a `quick` line and `scoring carrier`
+/// compiler holds a `settings` block, a `quick` line and a `uses` line
 /// to (`docs/game/rules-variants.md`, "The IR").
 fn settings_and_marks(ir: &Ir) -> Result<(), Refusal> {
     let h = &ir.header;
@@ -574,8 +579,8 @@ fn settings_and_marks(ir: &Ir) -> Result<(), Refusal> {
         let Some(row) = settings::row_at(s.index) else {
             return bad("is not in the settings table");
         };
-        if !row.applies(h.carrier) {
-            return bad("does not apply to the header's carrier");
+        if !row.applies(h.engine()) {
+            return bad("does not apply to the header's game");
         }
         if !row.in_range(s.value) {
             return bad("has a value outside its range");
@@ -594,8 +599,8 @@ fn settings_and_marks(ir: &Ir) -> Result<(), Refusal> {
         }
         match *q {
             Quick::Setting(s) => match settings::row_at(s) {
-                Some(row) if row.is_record() && row.applies(h.carrier) => {}
-                Some(row) if row.is_record() => return bad("names a setting of another carrier"),
+                Some(row) if row.is_record() && row.applies(h.engine()) => {}
+                Some(row) if row.is_record() => return bad("names a setting of another game"),
                 Some(_) => return bad("names no record setting"),
                 None => return bad("names no setting"),
             },
@@ -606,15 +611,15 @@ fn settings_and_marks(ir: &Ir) -> Result<(), Refusal> {
             }
         }
     }
-    if h.scoring == Scoring::Carrier {
+    if h.uses.is_some() {
         if !ir.handlers.is_empty() {
-            return Err(Refusal::ScoringCarrier("handlers"));
+            return Err(Refusal::UsesHolds("handlers"));
         }
         if !ir.slots.is_empty() {
-            return Err(Refusal::ScoringCarrier("variables"));
+            return Err(Refusal::UsesHolds("variables"));
         }
         if !ir.options.is_empty() {
-            return Err(Refusal::ScoringCarrier("options"));
+            return Err(Refusal::UsesHolds("options"));
         }
     }
     Ok(())
@@ -943,15 +948,15 @@ impl Cx<'_> {
     }
 }
 
-/// The first entry a blob calls that a host cannot make on the blob's
-/// carrier ([`caps::Entry::hostable_on`]). A host refuses such a script by
+/// The first entry a blob calls that a host cannot make on the engine the
+/// blob's record is on ([`Header::engine`], [`caps::Entry::hostable_on`]). A host refuses such a script by
 /// that entry's name.
 pub fn unhostable(ir: &Ir) -> Option<&'static caps::Entry> {
     for hd in &ir.handlers {
         for op in &hd.code {
             if let Op::Call { entry, .. } = *op
                 && let Some(e) = caps::entry(entry, ir.header.api_version)
-                && !e.hostable_on(ir.header.carrier)
+                && !e.hostable_on(ir.header.engine())
             {
                 return Some(e);
             }
@@ -993,8 +998,27 @@ mod tests {
         assert_eq!(verify(&ir), Err(Refusal::ApiVersion(9)));
 
         let mut ir = sample();
-        ir.header.carrier = 5;
-        assert_eq!(verify(&ir), Err(Refusal::Carrier(5)));
+        ir.header.uses = Some(Type::Party);
+        ir.handlers.clear();
+        ir.slots.clear();
+        ir.options.clear();
+        ir.quick.retain(|q| matches!(q, Quick::Setting(_)));
+        assert_eq!(verify(&ir), Err(Refusal::Uses(Type::Party)));
+        ir.header.uses = Some(Type::Slayer);
+        assert!(verify(&ir).is_ok());
+
+        for points in [String::new(), "x".repeat(types::MAX_POINTS_BYTES + 1)] {
+            let mut ir = sample();
+            ir.header.points = points;
+            assert_eq!(
+                verify(&ir),
+                Err(Refusal::Text {
+                    table: "the points label",
+                    index: 0,
+                    max: types::MAX_POINTS_BYTES
+                })
+            );
+        }
     }
 
     /// The table index of a setting, by name.
@@ -1003,7 +1027,7 @@ mod tests {
     }
 
     #[test]
-    fn a_setting_on_the_wrong_carrier_is_refused() {
+    fn a_setting_of_another_game_is_refused() {
         // The sample rides Slayer; Juggernaut's movement is Juggernaut's.
         let mut ir = sample();
         ir.settings.push(Setting {
@@ -1014,19 +1038,19 @@ mod tests {
         let index = row("juggernaut_movement");
         let refusal = Refusal::Setting {
             index,
-            reason: "does not apply to the header's carrier",
+            reason: "does not apply to the header's game",
         };
         assert_eq!(load(&ir.encode()).unwrap_err(), refusal);
-        ir.header.carrier = 7;
+        ir.header.game_type = Type::Juggernaut;
         assert!(load(&ir.encode()).is_ok(), "{:?}", load(&ir.encode()));
-        // A quick mark of another carrier's setting is refused too.
+        // A quick mark of another game's setting is refused too.
         let mut ir = sample();
         ir.quick.push(Quick::Setting(index));
         assert_eq!(
             load(&ir.encode()).unwrap_err(),
             Refusal::Quick {
                 index: 2,
-                reason: "names a setting of another carrier"
+                reason: "names a setting of another game"
             }
         );
     }
@@ -1130,16 +1154,16 @@ mod tests {
     }
 
     #[test]
-    fn scoring_carrier_takes_no_handlers() {
+    fn a_uses_script_takes_no_handlers() {
         let mut ir = sample();
-        ir.header.scoring = Scoring::Carrier;
-        assert_eq!(load(&ir.encode()).unwrap_err(), Refusal::ScoringCarrier("handlers"));
+        ir.header.uses = Some(Type::Slayer);
+        assert_eq!(load(&ir.encode()).unwrap_err(), Refusal::UsesHolds("handlers"));
         ir.handlers.clear();
-        assert_eq!(verify(&ir), Err(Refusal::ScoringCarrier("variables")));
+        assert_eq!(verify(&ir), Err(Refusal::UsesHolds("variables")));
         ir.slots.clear();
         // The sample's quick line marks its option.
         ir.quick.retain(|q| matches!(q, Quick::Setting(_)));
-        assert_eq!(verify(&ir), Err(Refusal::ScoringCarrier("options")));
+        assert_eq!(verify(&ir), Err(Refusal::UsesHolds("options")));
         ir.options.clear();
         let report = load(&ir.encode()).unwrap().1;
         assert_eq!(report.worst_tick, 0);
@@ -1556,11 +1580,9 @@ mod tests {
     }
 
     #[test]
-    fn an_entry_one_engine_makes_is_unhostable_on_another_carrier() {
-        let src = |carrier: &str| {
-            format!(
-                "rules \"Crown\" 1\ncarrier {carrier}\n\non kill(victim, killer) {{ role_traits(victim, false) }}\n"
-            )
+    fn an_entry_one_engine_makes_is_unhostable_on_another_type() {
+        let src = |ty: &str| {
+            format!("rules \"Crown\" 1\ntype {ty}\n\non kill(victim, killer) {{ role_traits(victim, false) }}\n")
         };
         let on_juggernaut = crate::compile(&src("juggernaut")).unwrap();
         assert_eq!(unhostable(&on_juggernaut), None);

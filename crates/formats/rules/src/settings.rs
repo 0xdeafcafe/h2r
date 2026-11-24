@@ -846,12 +846,9 @@ mod tests {
                 );
             }
         }
-        // Every variant field but the engine index is a setting of the
-        // same name.
+        // Every variant field is a setting of the same name.
         for (name, _) in VARIANT_FIELDS {
-            if *name != "engine" {
-                assert!(named(name).is_some(), "variant.{name} has no row");
-            }
+            assert!(named(name).is_some(), "variant.{name} has no row");
         }
     }
 

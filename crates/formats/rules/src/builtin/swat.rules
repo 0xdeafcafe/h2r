@@ -1,8 +1,8 @@
 // SWAT: no shields, battle rifles and magnums.
 // docs/game/community-gametypes.md.
 rules "SWAT" 1
-carrier slayer
-scoring carrier
+type slayer
+uses slayer
 about "No shields, no motion sensor, battle rifles and magnums. One headshot kills. 50 points to win."
 quick score_limit, time_limit, starting_weapon, secondary_weapon, shields
 

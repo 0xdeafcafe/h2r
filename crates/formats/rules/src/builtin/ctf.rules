@@ -1,7 +1,7 @@
-// Capture the Flag (engine index 1) and Assault (engine index 9): one port
-// serves both, as one engine object does (0x459d18). `builtin/mod.rs`
-// puts the `rules` and `carrier` lines in front of this file, once per
-// engine; the script tells the two apart by `variant.engine`.
+// Capture the Flag and Assault: one body serves both, as one engine object
+// does (0x459d18). `builtin/mod.rs` puts each game's header in front of
+// this file (`rules`, `type`, `points`, `teams`) with `const assault`, 0 for
+// CTF and 1 for Assault, which tells the two apart.
 // docs/game/rules-engine.md, "Porting the seven engines".
 //
 // CTF: each team's flag at its spawn (type 0, "ctf_flag_spawn"); an enemy
@@ -55,7 +55,7 @@ fn home(o: object) {
 on round_start {
     if defender == team 0 { defender = team 1 } else { defender = team 0 }
     for each teams t { t.at_home = true }
-    let bomb = variant.engine == carrier.assault
+    let bomb = assault == 1
     let one = variant.ctf_flag_type == 1
     let neutral = first(bomb_spawn s where s.team == none)
     if bomb and one and neutral != none {
@@ -74,7 +74,7 @@ on round_start {
 on pickup(p, o) {
     if is_objective(o) {
         let f = o.team
-        let bomb = variant.engine == carrier.assault
+        let bomb = assault == 1
         // A team touching its own flag, or an enemy's bomb, returns it.
         if (not bomb and f == p.team) or (bomb and f != none and f != p.team) {
             if variant.ctf_touch_return and o.moved { home(o) }
@@ -92,7 +92,7 @@ on drop(p, o) {
 }
 
 on tick {
-    let bomb = variant.engine == carrier.assault
+    let bomb = assault == 1
     let one = variant.ctf_flag_type == 1
     for each objectives o {
         let p = o.carrier

@@ -100,12 +100,18 @@ pub enum Row {
 impl Row {
     pub const ALL: [Row; 2] = [Row::Research, Row::PartyGames];
 
-    /// The row a rules script's `list` line names.
-    pub fn of_list(list: ::rules::ir::List) -> Option<Row> {
-        match list {
-            ::rules::ir::List::GameType => None,
-            ::rules::ir::List::Research => Some(Row::Research),
-            ::rules::ir::List::PartyGames => Some(Row::PartyGames),
+    /// The row of ours a rules script's `type` files it under; `None` for
+    /// a retail type, whose variants are filed under the record's game
+    /// type. Until Firefight and Siege have rows of their own (GT5 of
+    /// docs/game/game-types-without-carriers.md) each stays where it is
+    /// filed now: Siege under Party Games, Firefight under its record's
+    /// game type (Slayer).
+    pub fn of_type(ty: ::rules::types::Type) -> Option<Row> {
+        use ::rules::types::Type;
+        match ty {
+            Type::Research => Some(Row::Research),
+            Type::Party | Type::Siege => Some(Row::PartyGames),
+            _ => None,
         }
     }
 
@@ -191,9 +197,10 @@ pub struct Listed {
     pub name: String,
     /// `header.about`: the entry's description.
     pub about: String,
-    /// `header.carrier` as a list type (its place in `GameType::ALL`).
+    /// The record's game type (`header.engine()`) as a list type (its
+    /// place in `GameType::ALL`).
     pub list_type: u32,
-    /// `header.list`: the row of ours its variants are filed under.
+    /// `header.game_type`'s row of ours its variants are filed under.
     pub row: Option<Row>,
     /// The record of the script (`variants::portable::record_for`, the
     /// default options): its settings, and the `hx` block that names it.

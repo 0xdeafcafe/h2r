@@ -47,7 +47,7 @@ matchmade hopper denies.
 
 ```text
 rules "Holdout" 1
-carrier slayer
+type firefight
 teams 1
 requires ai.squads, vehicles.drive, hud.widgets, hud.message, audio.play
 
@@ -142,8 +142,7 @@ entries and `firefight.director` are deleted.
 
 ```text
 rules "Superbounce" 1
-carrier slayer
-list research
+type research
 requires hud.widgets, hud.waypoints
 
 label strip: zones = "sb_strip"

@@ -1,6 +1,6 @@
 // Superbounce: the superbounce mode's guide (the HUD, the marks over the
 // map, priming and the medals), which the host turns on for `requires
-// hud.superbounce`, and scoring by bounces alone. `list research` files
+// hud.superbounce`, and scoring by bounces alone. `type research` files
 // its variants under Research and Devolution. Its settings block (no score
 // or time limit, 3 s respawn, overshields, a magnum, nothing on the map)
 // is what a new variant of the script starts with. A kill scores nothing. A bounce
@@ -15,8 +15,7 @@
 //
 // Entries a host cannot make yet (`verify::unhostable`): none.
 rules "Superbounce" 1
-carrier slayer
-list research
+type research
 requires hud.superbounce
 about "Bounce practice with a guide: a plate shows whether your crouch has primed the bounce, and lines mark the strips that launch you."
 quick respawn_time, starting_weapon, shields, bounce_points, suicide_costs

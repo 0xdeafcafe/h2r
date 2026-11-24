@@ -11,7 +11,7 @@
 // traced; the type area's other King settings (38, 39, 41, 42, 101) are not
 // read.
 rules "King of the Hill" 1
-carrier king
+type koth
 
 label hill_corner: zones numbered
 

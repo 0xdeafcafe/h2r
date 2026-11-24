@@ -30,7 +30,7 @@ use rules::workbench::{self, Check};
 use serde_json::{Value, json};
 
 /// A new script's text.
-pub const BLANK: &str = "rules \"New game type\" 1\ncarrier slayer\n\noption kill_points: int 1..5 = 1 \"Kill points\" \"Points for each kill\"\n\non kill(victim, killer) {\n    if killer != none and killer != victim {\n        score(killer, kill_points)\n    }\n}\n";
+pub const BLANK: &str = "rules \"New game type\" 1\ntype slayer\n\noption kill_points: int 1..5 = 1 \"Kill points\" \"Points for each kill\"\n\non kill(victim, killer) {\n    if killer != none and killer != victim {\n        score(killer, kill_points)\n    }\n}\n";
 
 /// The file extension of a script.
 pub const EXTENSION: &str = "rules";
@@ -321,7 +321,7 @@ pub fn script_section(check: &Check) -> Option<ScriptSection> {
                     "{}. {}: {} ({})",
                     i + 1,
                     q.label,
-                    q.value.as_deref().unwrap_or("the carrier's stock value"),
+                    q.value.as_deref().unwrap_or("the record's stock value"),
                     q.kind
                 )
             })

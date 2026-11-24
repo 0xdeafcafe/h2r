@@ -2,9 +2,9 @@
 // none` is one of our added choices; without `variant_options` the entry
 // is left out. docs/game/game-options.md.
 rules "Bumper Cars" 1
-carrier slayer
-list party
-scoring carrier
+type party
+points "Kills"
+uses slayer
 about "No weapons at all, only Warthogs and Ghosts. Splatter everyone else. Try Coagulation or Burial Mounds."
 quick score_limit, time_limit, light_vehicle, second_light_vehicle, respawn_time
 

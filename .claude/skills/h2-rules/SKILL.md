@@ -6,8 +6,9 @@ description: Use when writing, checking, testing or shipping a game type script 
 # Write, test and ship a game type script
 
 A game type is a `.rules` script in our own small language. It compiles
-to a verified IR blob whose SHA-256 names it, and it plays as a game of one
-retail engine (its carrier). You write it, check it, run it over a scenario
+to a verified IR blob whose SHA-256 names it. Its `type` line names its
+game type (the list row it is filed in and its start line); a `uses` line
+plays a built-in game's rules under the script's settings. You write it, check it, run it over a scenario
 on a fake game, then ship it as a game variant. The design is
 [docs/game/rules-engine.md](../../../docs/game/rules-engine.md); this
 skill is the working loop.
@@ -42,9 +43,11 @@ h2 rules build my_mode.rules -o my_mode.rir         # the verified blob and its 
    examples (`example <key>: <name>`: infection, gun_game, vip, siege,
    race, bounce_hunt). `h2 rules builtin slayer` prints one, by name
    (any case), engine index or example key.
-2. **Write the `.rules` file**: a header (`rules "Name" 1`, `carrier
-   slayer`, optional `teams n` and `requires ...`), options, variables,
-   functions, handlers. A new mode carries `slayer`.
+2. **Write the `.rules` file**: a header (`rules "Name" 1`, `type
+   slayer`, optional `teams n`, `points "Label"`, `uses <game>` and
+   `requires ...`), options, variables, functions, handlers. The type is
+   one of `slayer ctf assault oddball koth juggernaut territories research
+   party firefight siege`; a new mode picks the row it belongs in.
 3. **`h2 rules check`.** Fix every error and read the report.
 4. **`h2 rules sim`** first: it plays whole matches made up from what
    the script handles and says who won, how each match ended, the
@@ -82,7 +85,7 @@ The extensions live in `editors/`; their tests and packaging run in CI
 ## Read the check report
 
 ```text
-x.rules: "Count" version 1, carrier engine 2, 2 teams
+x.rules: "Count" version 1, type slayer, points "Kills", engine 2, 2 teams
 worst tick: 112 ops of 100000 budget (fits)
 costliest handler: on kill (7 ops a run)
 IR: 214 bytes of 65536
@@ -190,8 +193,8 @@ error (`scenario: unknown field ...`) and every field is optional.
   `leave` naming it move the player in and out of a zone). `teams`
   defaults to `[0, 1]`.
 - `variant`: record fields by name (`{"team_play": 1, "score_limit":
-  25}`); a field left out reads the stock record of the script's carrier
-  (a Slayer carrier is free-for-all, score limit 25, time limit 480).
+  25}`); a field left out reads the stock record of the script's engine
+  (Slayer's is free-for-all, score limit 25, time limit 480).
 - `map`: `[{"label": "hill", "object": 40, "number": 1, "class":
   "volume"}]`, what the game holds that the script labels, and what
   the members of the script's `label hill: ...`
@@ -244,8 +247,8 @@ h2 variants port my_record.bin --script my_mode.rules -o out/
 
 - The input is a record: a raw 0x130-byte record, a saved-variant file, a
   hopper slot (0x37c bytes) or a `.h2variant`. Its engine must be the
-  script's carrier, or the port fails with `the record is engine N; the
-  script rides engine M`.
+  script's (`h2 rules check` prints it), or the port fails with `the
+  record is engine N; the script's record is engine M`.
 - `--name NAME` and `--description TEXT` replace the record's name and the
   input file's description (one input only). `--option key=value`, once
   per option, sets a script option by name: an int (whole seconds for a
@@ -260,7 +263,7 @@ h2 variants port my_record.bin --script my_mode.rules -o out/
   canonical bytes, and the same input and script give the same id. Exit is
   nonzero if any input failed.
 - With no record at hand, use Live's `/v1/variants/bundle`, which starts
-  from the carrier engine's stock record.
+  from the script's engine's stock record.
 - A `.h2variant` placed in the game's `game-variants` data folder joins
   Custom Games' variant list with its script (the in-game store is built
   and tested, not yet played).
@@ -275,7 +278,7 @@ client address, refilled at 2 a second (429 past it).
 | `POST /v1/rules/run` `{source, scenario}` | none | a trace, or `{ok: false, errors}` when it does not build; a bad scenario is 400 |
 | `POST /v1/rules/simulate` `{source, players, teams, seed, matches}` | none | generated matches: `{ok, teams, summary, rows, match}`; `match` holds the first seed's `scenario` (the run's shape) and `trace`; a batch costs 2 tokens and 1 more per further 25 matches |
 | `POST /v1/rules/ide` `{source, op, line, character}` | none | one editor answer (complete, hover, signature, definition, references, tokens, symbols, format, diagnostics) |
-| `GET /v1/rules/builtin` | read | `{items: [{name, engine, source, hash, example, key?}]}`: the engine ports, then the examples (`example: true`, `engine` their carrier) |
+| `GET /v1/rules/builtin` | read | `{items: [{name, engine, source, hash, example, key?}]}`: the engine ports, then the examples (`example: true`, `engine` their record's engine) |
 | `POST /v1/rules` `{source}` | token, `content.write` | saves a script whose check is `ok` (it fits the budget); 201 new, 200 saved already |
 | `GET /v1/rules/{hash}`, `/{hash}/ir`, `GET /v1/rules?author=` | read | the source, the blob, an author's list |
 | `POST /v1/variants/bundle` `{script_hash or source, name, description, options}` | none | `{id, file_name, bundle}`, unpublished |
@@ -343,7 +346,7 @@ h2 agent rules.state     # last_reload: mode, hash, tick, reasons
 ```
 
 - **In place** when the new script keeps the old one's state shape: the
-  same carrier, teams, capabilities, options (kind, range, default),
+  same type, `uses`, teams, capabilities, options (kind, range, default),
   enums, variables per scope (names, types, order), labels and palettes.
   New handler code and new starting values are fine; every value and
   score carries on.
@@ -376,10 +379,14 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
   division by zero gives 0 with a warning.
 - **Host-only.** Only the host runs the script. Guests fetch it only to
   show its name, option labels and messages, and a film stores the blob.
-- **A script game rides an engine index.** A new mode carries `slayer`; a
-  port carries its own engine (`ctf`, `oddball`, `king`, `juggernaut`,
-  `territories`, `assault`), and a variant file's record must be that
-  engine. Retail settings (score and time limits, lives, team play) stay in
+- **A script names a type, not an engine.** `type` files the variant and
+  picks its start line; `points` names what a point is. A retail type's
+  record is that game's engine (`ctf`, `assault`, `oddball`, `koth`,
+  `juggernaut`, `territories`); `research`, `party`, `firefight` and
+  `siege` are on Slayer's, and a variant file's record must be that
+  engine. `carrier`, `list` and `scoring` lines are refused
+  (`header.retired`), each naming its replacement
+  ([docs/game/game-types-without-carriers.md](../../../docs/game/game-types-without-carriers.md)). Retail settings (score and time limits, lives, team play) stay in
   the record: read them as `variant.score_limit` and so on rather than
   re-implementing them. `score(p, n)` already adds the team score and
   tests the score limit.
@@ -411,7 +418,7 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
   labelled netgame flag (`game::rules::world::zones`). Calls land at the
   next tick boundary, so a score read back in the same handler is the
   old one; a script that ends on a total counts it in a variable. While
-  a mode 2 script scores, the carrier's own scoring is answered in place
+  a mode 2 script scores, the engine's own scoring is answered in place
   (docs/game/rules-engine.md, "One scorer"). The listed scripted modes
   (Superbounce, Siege, Gun Game, Race, VIP) run on a host; the rest is
   proven by scenario. Name the entries

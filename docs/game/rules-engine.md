@@ -156,7 +156,7 @@ and the file carries the script that prefix names, as its IR blob
 (base64) and, when it was made from source, the source. Reading one
 checks that the IR hashes to the file's hash, that the hash starts with
 the record's prefix, that `rules::verify::load` takes the IR and that
-its carrier is the record's engine; a record with mode 2 and no script
+its type's engine (`Header::engine`) is the record's engine; a record with mode 2 and no script
 is refused. So a variant file plays with no server, and Live keeps game
 variants as these files ([live-api.md](../live/live-api.md#game-variants)).
 
@@ -196,7 +196,8 @@ A new index is not possible without rewriting four retail paths:
 | Wire codec decode `0x7d520` | decodes the type area per engine through a jump table, then runs the clean-up; a changed record is a failed decode | **E**, game-options.md |
 | Lobby protocol map `0x161c90` | synchronous protocol for the two deprecated indexes and anything out of range | **E**, [live-coop.md](../live/live-coop.md) |
 
-**Design.** The script names its carrier:
+**Design.** The script names its game type (`type`), and the type's row carries the index
+([game-types-without-carriers.md](game-types-without-carriers.md#the-header)):
 
 - **A new mode rides Slayer (index 2).** Slayer has the least behaviour
   of its own, scores through the statborg, and gets the distributed
@@ -324,34 +325,34 @@ Firefight's, until the session carries one), `on init` runs, then the
 first round's `on round_start` (that round's reset ran inside
 `GAME_ACTIVATE`, before the start observer), and its state becomes the
 `RULES` record. **A refused script is logged
-("refused, the game plays the carrier engine's own rules: ...") and kept
+("refused, the game plays the record engine's own rules: ...") and kept
 with its reason for `rules.state`, and the game plays as the record's
 own engine.** Nothing runs with a call stubbed out.
 
-**A `scoring carrier` script** ([rules-variants.md](rules-variants.md#a-script-that-keeps-its-carriers-rules))
-runs its carrier engine's built-in script under the variant's own
+**A `uses` script** ([rules-variants.md](rules-variants.md#a-script-that-keeps-its-carriers-rules))
+runs the built-in script of the type it uses under the variant's own
 record. It passes the same prefix, engine and policy checks; then the
-runtime takes the carrier's built-in (`runtime::carrier_builtin`, the
-compiled-in `rules::builtin::builtin` of `header.carrier`) and every
+runtime takes that built-in (`runtime::used_builtin`, the
+compiled-in `rules::builtin::of_type` of `header.uses`) and every
 later step is the built-in's: the host checks, the start gate, the VM,
 `on init` and the `RULES` record. The VM reads the record's settings as
 any script does, and starts with the built-in's default options (the
-carried script has none, so the record's option bits are not read). The
-carried script's name, hash and source stay with the running game
+script has none, so the record's option bits are not read). The
+`uses` script's name, hash and source stay with the running game
 (`Running::carried`, `runtime::Carried`); everything else reports the
-built-in: `rules.state` (`scoring: script`), `Runtime::hash` (the Live
+built-in: `rules.state` (`scoring: carrier`, the wire's word for a `uses` script), `Runtime::hash` (the Live
 session's script, which every build has built in) and the "One scorer"
 answers. Its `requires` still turn their modes on, since those are read
 from the record's script reference
 (`rules::header::script_asks_superbounce`). A built-in this host cannot
 run yet (`runtime::host_refusal`) is refused before the start gate, so a
 map without the built-in's labels does not end the game; the reason
-names both scripts ("Sun King is scoring carrier and plays the built-in
+names both scripts ("Sun King uses the built-in
 King of the Hill script, which this host cannot run yet: ..."), and the
-game plays as a refused script's does. A carrier with no built-in is
-refused as "`<name>` is scoring carrier, and its carrier `<carrier>` has
-no built-in script". The log line is the built-in's with `, for <name>
-(<hash>) from <source>, scoring carrier` after it. Which community
+game plays as a refused script's does. A type with no built-in is
+refused as "`<name>` uses `<type>`, which has no built-in script". The
+log line is the built-in's with `, for <name>
+(<hash>) from <source>, which uses it` after it. Which community
 variants run and which are refused is in
 [rules-variants.md](rules-variants.md#a-script-that-keeps-its-carriers-rules).
 
@@ -746,14 +747,17 @@ script.
 
 A source file is a header, a settings block, options, variables,
 functions and handlers. The header names the script, its version, its
-carrier, its teams, the game type list row its variants are filed under,
-who scores the game, its description, its Quick Options marks and the
-capabilities it requires: `requires player.weapons, hud.message`.
+game type (`type`, which files its variants in a row of the game type
+list), the built-in game it plays if it plays one (`uses`), what a point
+is called (`points`), its teams, its description, its Quick Options
+marks and the capabilities it requires: `requires player.weapons,
+hud.message`. The design is
+[game-types-without-carriers.md](game-types-without-carriers.md#the-header).
 
 ```text
 rules "SWAT" 1
-carrier slayer
-scoring carrier
+type slayer
+uses slayer
 about "No shields, no motion sensor, battle rifles and magnums. One headshot kills. 50 points to win."
 quick score_limit, starting_weapon, secondary_weapon
 
@@ -766,21 +770,39 @@ settings {
 }
 ```
 
-`settings`, `quick`, `scoring` and `about` are header words only at the
+`type`, `uses`, `points`, `settings`, `quick` and `about` are header words only at the
 start of a top-level line (`Parser::header_word` in `lang/parse.rs`), so
 a handler may still use them as names. Each is given at most once.
 
-**The list row.** `list research` files a variant naming the script
-under Research and Devolution and `list party` under Party Games, our rows
-after Territories ([community-gametypes.md](community-gametypes.md#tweakers));
-with no `list` line it is under its carrier's game type. These are the
-only names (`ir::List::NAMED`); any other is refused by name ("unknown
-list slayer: a list is research, party"), and a second `list` line is
-refused too. Our rows hold Slayer and Juggernaut variants, so a `list`
-line on any other carrier is the error `list.carrier`. The IR header
-carries it as one byte, `ir::List` (0 none, 1 `research`, 2 `party`),
-which a blob with any other value fails to decode by ("the header's
-list").
+**The type.** `type <word>` is required and given once. The word is
+a row of the closed table in `crates/formats/rules/src/types.rs`
+(`rules::types::TABLE`): `slayer`, `ctf`, `assault`, `oddball`, `koth`,
+`juggernaut` and `territories` (the seven retail types) and `research`,
+`party`, `firefight` and `siege` (ours). A row holds the word, the list
+label, what a point is called when the script has no `points` line, where
+the start line comes from (retail's announcer, one of ours, or none) and
+the engine index the record is on. A retail type keeps its engine's
+index (ctf 1, slayer 2, oddball 3, koth 4, juggernaut 7, territories 8,
+assault 9); our types ride Slayer's, 2. `Header::engine` reads it. The
+type files a variant under its row of the game type list: `research`
+under Research and Devolution, `party` and `siege` under Party Games,
+the others under their own row (`header::list_row`,
+`community_variants::Row::of_type`, [community-gametypes.md](community-gametypes.md#tweakers)).
+A script with no `type` line is the error "a script names its game type:
+type slayer", and an unknown word is refused by name ("unknown type x: a
+type is slayer, ctf, ..."). The IR header carries the type as one byte.
+
+**Uses.** `uses <type>` names a retail type and says the game plays that
+built-in game's rules under this script's settings (see "Who scores").
+`points "Label"` is what a point is called in the scoreboard and the
+announcer text, 1 to 32 bytes (`points is 1 to 32 bytes`); with no line
+it is the type's.
+
+**Retired lines.** `carrier X`, `list X` and `scoring X` are refused
+with `header.retired`, and each message names the line that replaces it
+(`carrier is gone: write `type slayer`...`, `list is gone: write `type
+party`...`, `scoring carrier is gone: write `uses slayer`...`). `king`
+is written `koth`.
 
 **The settings block.** `settings { name = value ... }` names the record
 settings a new variant of the script starts with, one a line; a setting
@@ -806,31 +828,31 @@ its index. The kinds:
 `score_limit`, `time_limit` and `king_moving_hill` take `none` for 0.
 A value may be a constant (`time_limit = hold * 2`). A game-type setting
 carries its type in its name (`juggernaut_movement`,
-`oddball_ball_speed`, `ctf_flag_type`) and applies on that carrier only.
+`oddball_ball_speed`, `ctf_flag_type`) and applies on that type's record only.
 The checker (`Cx::settings_block` in `lang/check.rs`) refuses a name not
 in the table (`setting.unknown`, with the nearest name), one that does
-not apply to the carrier (`setting.carrier`: "juggernaut_movement is a
-Juggernaut setting; this script's carrier is slayer"), one named twice
+not apply to the type (`setting.type`: "juggernaut_movement is a
+Juggernaut setting; this script's record is Slayer's"), one named twice
 (`setting.twice`) and a value not of the row's kind or outside its range
 (`setting.value`).
 
 **Quick Options marks.** `quick a, b, c` names what the lobby's Quick
 Options shows, in order: at most five (`ir::MAX_QUICK`, `quick.many`),
-each a record setting of the table that applies to the carrier (not an
+each a record setting of the table that applies to the type (not an
 `hx` field) or one of the script's options (`quick.unknown`), named once
 (`quick.twice`). A marked setting need not be in the settings block.
 Options and settings share one namespace: an option named like a setting
 is `option.setting`.
 
-**Who scores.** With no `scoring` line the script is the game's one
-scorer. `scoring carrier` says the game plays its carrier's rules (the
-carrier engine's built-in script, run on the host under the variant's
-record; "The host runtime") and the script holds settings only: it may have `requires`, `list`,
-`settings`, `quick` and `about`, and any declaration or handler is the
-error `scoring.handlers`. A script with no handler and no `scoring
-carrier` scores nothing, the error `scoring.none` ("this script scores
-nothing. Write `scoring carrier` to play Slayer's rules."), which the
-checker reports once the script has no other error (`Cx::scorer`).
+**Who scores.** With no `uses` line the script is the game's one
+scorer. `uses <type>` says the game plays that retail type's built-in
+script (run on the host under the variant's record; "The host runtime")
+and the script holds header lines, settings, `quick` and `about` only:
+any declaration or handler is the error `uses.handlers`. A script with
+no handler and no `uses` line scores nothing, the error `scoring.none`
+(``this script scores nothing. Write `uses slayer` to play Slayer's
+rules.``), which the checker reports once the script has no other error
+(`Cx::scorer`).
 
 **About.** `about "..."` is the description of a variant of the script,
 at most 150 UTF-16 units (`ir::MAX_ABOUT_UNITS`, the `limit` error) and
@@ -842,8 +864,7 @@ volume: a Forge trigger volume, or a netgame flag with its capture
 volume), `squad`, `tag` (a tag path), `weapon` (a tag path that must be a
 weapon's), `time` (a duration in ticks: `5s`, `300t`, `1.5s`), `timer`
 (a global variable that counts ticks down, then fires `on timer`; it
-reads and writes as `time`), `enum` types a script declares, and the
-built-in enum `carrier` (`variant.engine == carrier.assault`). A zone is
+reads and writes as `time`), and `enum` types a script declares. A zone is
 an object and a weapon is a tag; nothing else converts. `time` adds,
 subtracts and compares with `time`, multiplies and divides by `int`,
 and `time / time` is an `int`; `seconds(n)` makes one from an `int`, and
@@ -870,7 +891,7 @@ parentheses (`a = b + c * 2`), `if` / `else if` / `else`, `and` binding
 tighter than `or`; both short-circuit. A statement ends at a line break,
 `;` or `}`. A `let` or a parameter is not assigned again; a `let` may
 state its type (`let heir: player? = none`), and `let x = none` with no
-type is refused. `match` takes an enum or `carrier` value and runs the
+type is refused. `match` takes an enum value and runs the
 arm of its variant; an arm may name several (`Role.a, Role.b { }`), and
 a variant with no arm and no `else` arm is an error. These are the
 things the ReachVariantTool dialect lacks ("Prior art").
@@ -990,7 +1011,7 @@ editor's page labels, not from a reader.
 
 ```text
 rules "Slayer" 1
-carrier slayer
+type slayer
 
 option kill_points: int 1..5 = 1
 option suicide_costs: bool = true
@@ -1014,7 +1035,7 @@ script has no limit check.
 
 ```text
 rules "Infection" 1
-carrier slayer
+type slayer
 teams 2
 requires player.team, player.weapons
 
@@ -1053,7 +1074,7 @@ entry ("The engine API"); Infection waits on it.
 
 ```text
 rules "Holdout" 1
-carrier slayer
+type firefight
 teams 1
 requires ai.squads
 
@@ -1170,8 +1191,8 @@ type's handlers run first.
 ## The IR and the VM
 
 **Shape.** The blob is: a header (magic, IR version, API version,
-name, version, carrier, team requirement, list row, the scoring byte (0
-the script, 1 the carrier, `ir::Scoring`), the `about` text, and the
+name, version, type byte, the `uses` byte (the retail type, `0xff` for
+none), team requirement, the `points` label, the `about` text, and the
 required capabilities by name, at most 32, "Roles, powers and
 capabilities"); a string table; an option table (type, range, default,
 label); the settings (`ir::Setting`: a `u16` index into
@@ -1192,15 +1213,15 @@ entry. There is no backward jump and no indirect jump, so termination is
 a property of the format, and the verifier needs no fixpoint.
 
 **Settings and marks.** `Ir::decode` refuses settings out of order or
-named twice, more than five marks, a mark kind other than 0 or 1 and a
-scoring byte other than 0 or 1. The verifier (`verify::settings_and_marks`)
+named twice, more than five marks, a mark kind other than 0 or 1, a type
+byte past the table and a `uses` byte that is not a retail type or `0xff`. The verifier (`verify::settings_and_marks`)
 refuses an `about` over 150 UTF-16 units, a setting index past the
-table, a setting that does not apply to the header's carrier or whose
+table, a setting that does not apply to the header's type or whose
 value is outside its row's range, a mark that names no record setting of
-the carrier or no option, a mark twice, and a `scoring carrier` blob with
+the type or no option, a mark twice, and a `uses` blob with
 handlers, slots or options. So a blob from anywhere holds to the rules
 the compiler applied. `Ir::id` hashes the whole encoding, so the
-settings, the marks, the description and the scoring byte are part of
+settings, the marks, the description and the `uses` byte are part of
 the script's identity.
 
 **Ops** (IR version 1, `crates/formats/rules/src/ir.rs`): `Const`,
@@ -1601,8 +1622,8 @@ Tooling:
     document highlights, `semanticTokens/full`, document symbols,
     folding ranges, formatting and range formatting, quick fix code
     actions, `prepareRename` and rename from `rules::ide`. A typed space
-    asks for completions only after `is`, `on`, `carrier`, `requires`,
-    `each`, `palette`, `list`, `scoring`, `quick`, a `:` or a `,`
+    asks for completions only after `is`, `on`, `type`, `requires`,
+    `each`, `palette`, `uses`, `quick`, a `:` or a `,`
     (`SPACE_TRIGGER_WORDS`).
   - `h2 rules editors [status|install [vscode|zed] [--build]]` installs
     the VS Code extension and prints the Zed steps, or says what is
@@ -1633,20 +1654,20 @@ Tooling:
     game's and is not renamed.
   - `complete` reads the tokens before the place: declarations and
     their snippets at the start of a top-level line; event names, with
-    their arguments as a snippet, after `on`; carriers after `carrier`;
+    their arguments as a snippet, after `on`; type words after `type` and `uses`;
     capabilities on a `requires` line and as the second argument of
     `grant`, `revoke` and `granted`; types after `:`; after a `.`, the
     `variant` fields, an enum's variants, a table row's columns, or a
     player's, team's or object's variables and built-in fields;
     palettes after `palette`, and sets, the declared labels among them,
     after `each` and in `count`, `first` and `pick`. Inside `settings { }`
-    it offers the setting names of the script's carrier that the block
+    it offers the setting names of the script's type that the block
     does not set (each as `name = ` with its values as the snippet's
     choice), and after an `=` that setting's values: a choice's names, a
     bool's two, `none` where zero is none, a number's place. After
     `quick` it offers the script's options, then the settings its block
-    sets, then the carrier's other record settings; after `scoring`,
-    `carrier`. The header words `scoring`, `about`, `quick` and
+    sets, then the type's other record settings. The header words `type`,
+    `points`, `uses`, `about`, `quick` and
     `settings` are among the top-level snippets. In a body it offers the locals
     in scope, the script's globals, options, tables, enums and
     functions, every API entry and language built-in as a snippet, and
@@ -1724,7 +1745,7 @@ Tooling:
   `seed`, `options` (bits; the blob's defaults when absent), `players`
   (`slot`, `team`, `alive`, `score`, `lives`, and `unit`, the object
   that is the player's unit), `teams`, `variant` (record fields by name;
-  each one left out reads the stock record of the script's carrier,
+  each one left out reads the stock record of the script's type,
   `fake::stock_variant`), `map` (the things the game holds that a script
   labels: `label`, `object`, `number`, `placement`, `team` and `class`,
   below; what a declared label's set visits and `o.number` reads;
@@ -1790,7 +1811,7 @@ Game Types**. The layout, its states and its copy are described in
   registers the `h2rules` language: a Monarch grammar from the lexer's
   tokens and the parser's words (comments, keywords, `const` and its
   name, `match`, `on` and its event, scoped `var`, `for each`, `team n`,
-  `text n`, `carrier.<engine>`, the type words, a label's kinds and
+  `text n`, the type words, a label's kinds and
   requirement words, time literals such as `30s`, `1.5s` and `300t`, and
   the other literals), brackets,
   auto-closing pairs, indentation and folding, and a dark theme from the
@@ -1908,7 +1929,7 @@ Game Types**. The layout, its states and its copy are described in
 - **Game variants.** **Make a game variant** turns the current script
   into a game variant: a name, a description, a visibility and a value
   for each option the script declares (the check report lists them),
-  over the stock record of the script's carrier engine
+  over the stock record of the script's type
   (`hopper::variant::VariantRecord::stock`). The record's block gets mode
   2, the IR's hash prefix and the options packed in declaration order
   (`game_variants::pack_options`). **Download** asks Live's
@@ -1941,8 +1962,9 @@ All layout facts are **E** from bots.md section 3.7.
 `crates/formats/rules/src/builtin/`, found by `builtin::builtin(engine
 index)`: `slayer.rules`, `oddball.rules`, `koth.rules`,
 `juggernaut.rules`, `territories.rules`, and `ctf.rules`, which serves
-CTF and Assault (`builtin/mod.rs` gives it a header per engine, and the
-script reads `variant.engine`). Each declares no capability: the
+CTF and Assault (`builtin/mod.rs` puts a header in front of it for each,
+`type ctf` or `type assault`, and sets `const assault` to 0 or 1, which
+the script reads). Each declares no capability: the
 objective entries and `role_traits` are `core`, since they do only what
 the retail engine does with the record's own settings. Each file's header
 names the entries a host cannot make yet and what the port does not
@@ -2081,7 +2103,7 @@ scores bounces is not yet a parity game.
 
 **The Superbounce game type is a script**,
 `crates/formats/rules/src/builtin/superbounce.rules`, an example
-(`builtin::examples`): `carrier slayer`, `list research`,
+(`builtin::examples`): `type research`,
 `requires hud.superbounce`, no kill rule (a kill scores nothing), and
 four options: `suicide_costs` (default on), a point off for a death with
 no killer or by the player's own hand; `bounce_points` (0 to 5, default 1), times the
@@ -2099,7 +2121,7 @@ through `rules::header`:
 | Header | What it turns on | Game side |
 |---|---|---|
 | `requires hud.superbounce`, a capability that gates no entry | the superbounce mode: HUD, marks, priming, medals | `header::script_asks_superbounce` over the block's script reference, in `variant_ext::Decision::superbounce`, so a guest that applies its host's block turns the mode on too, and the mode needs no running script |
-| `list research`, `list party` | a place under Research and Devolution or Party Games ([community-gametypes.md](community-gametypes.md#tweakers)) | `header::list_row`; `community_variants::row_of` asks it of a mode 2 block's script through `header::block_row` |
+| `type research`, `type party` | a place under Research and Devolution or Party Games ([community-gametypes.md](community-gametypes.md#tweakers)) | `header::list_row` (`Row::of_type`); `community_variants::row_of` asks it of a mode 2 block's script through `header::block_row` |
 
 Both find the script by the record's prefix among the compiled-in
 scripts (`runtime::compiled_in`) and in the game-variant store. With the
@@ -2356,7 +2378,7 @@ No source derived from a leaked build is used.
 
 ## Related
 
-- [game-types-without-carriers.md](game-types-without-carriers.md): the design that removes the `carrier` line
+- [game-types-without-carriers.md](game-types-without-carriers.md): the design behind the `type` and `uses` lines
 - [firefight.md](firefight.md): the template for a host-side director over engine entries
 - [forge-design.md](forge-design.md), [forge-features.md](forge-features.md): `SimExt`, `ForgeExt`, the logic graph, edit classes and the edit log
 - [game-options.md](game-options.md): the variant record, the `hx` block and its Live transport

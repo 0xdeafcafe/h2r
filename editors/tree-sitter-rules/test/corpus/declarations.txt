@@ -3,9 +3,10 @@ Header lines
 ================================================================================
 
 rules "Slayer" 1
-carrier slayer
+type research
 teams 2
-list research
+uses slayer
+points "Bounces"
 requires hud.message, player.weapons
 
 --------------------------------------------------------------------------------
@@ -15,12 +16,15 @@ requires hud.message, player.weapons
     (string
       (string_content))
     (integer))
-  (carrier_declaration
+  (type_declaration
     (identifier))
   (teams_declaration
     (integer))
-  (list_declaration
+  (uses_declaration
     (identifier))
+  (points_declaration
+    (string
+      (string_content)))
   (requires_declaration
     (capability
       (identifier)

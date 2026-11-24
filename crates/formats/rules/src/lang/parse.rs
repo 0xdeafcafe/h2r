@@ -46,10 +46,11 @@ pub fn parse_recovering(tokens: &[Token]) -> (Script, Vec<CompileError>) {
                 name: String::new(),
                 version: 0,
                 pos: Pos { line: 1, col: 1 },
-                carrier: None,
+                game_type: None,
                 teams: None,
-                list: None,
-                scoring: None,
+                points: None,
+                uses: None,
+                retired: Vec::new(),
                 about: None,
                 quick: None,
                 settings: None,
@@ -92,7 +93,7 @@ impl<'a> Parser<'a> {
         if self.scope_word().is_some() {
             return true;
         }
-        // `carrier.assault` is a value, not the header line.
+        // `carrier.assault` is an expression, not the retired line.
         if self.is_word("carrier") && matches!(self.peek2().tok, Tok::Punct(".")) {
             return false;
         }
@@ -103,9 +104,10 @@ impl<'a> Parser<'a> {
             "rules" | "carrier" | "teams" | "list" | "requires" | "option" | "palette" | "enum" | "table" | "fn" | "label" | "const" | "on"))
     }
 
-    /// `settings`, `quick`, `scoring` or `about` where it starts a header
-    /// line: followed by `{`, a name, a name or a string. They are not
-    /// keywords, so a handler may still use them as names.
+    /// `settings`, `quick`, `type`, `uses`, `scoring`, `points` or `about`
+    /// where it starts a header line: followed by `{`, a name (`quick`,
+    /// `type`, `uses`, `scoring`) or a string (`points`, `about`). They are
+    /// not keywords, so a handler may still use them as names.
     fn header_word(&self) -> Option<&'static str> {
         let Tok::Ident(s) = &self.peek().tok else {
             return None;
@@ -114,7 +116,10 @@ impl<'a> Parser<'a> {
         match s.as_str() {
             "settings" if matches!(next, Tok::Punct("{")) => Some("settings"),
             "quick" if matches!(next, Tok::Ident(_)) => Some("quick"),
+            "type" if matches!(next, Tok::Ident(_)) => Some("type"),
+            "uses" if matches!(next, Tok::Ident(_)) => Some("uses"),
             "scoring" if matches!(next, Tok::Ident(_)) => Some("scoring"),
+            "points" if matches!(next, Tok::Str(_)) => Some("points"),
             "about" if matches!(next, Tok::Str(_)) => Some("about"),
             _ => None,
         }
@@ -389,10 +394,11 @@ impl<'a> Parser<'a> {
             name: String::new(),
             version: 0,
             pos,
-            carrier: None,
+            game_type: None,
             teams: None,
-            list: None,
-            scoring: None,
+            points: None,
+            uses: None,
+            retired: Vec::new(),
             about: None,
             quick: None,
             settings: None,
@@ -444,21 +450,36 @@ impl<'a> Parser<'a> {
     /// One header line, declaration or handler, to the end of its line.
     fn item(&mut self, script: &mut Script) -> R<()> {
         let pos = self.pos();
-        if self.eat_word("carrier") {
-            if script.carrier.is_some() {
-                return Err(CompileError::at(pos, "the carrier is named twice"));
+        let header = self.header_word();
+        if self.is_word("carrier") || self.is_word("list") || header == Some("scoring") {
+            // Retired lines: kept for the checker, which names the line
+            // to write instead.
+            let word = self.word()?;
+            let arg = self.word()?;
+            script.retired.push((word, arg, pos));
+        } else if header == Some("type") {
+            self.bump();
+            if script.game_type.is_some() {
+                return Err(CompileError::at(pos, "the type is named twice"));
             }
-            script.carrier = Some((self.word()?, pos));
+            script.game_type = Some((self.word()?, pos));
+        } else if header == Some("uses") {
+            self.bump();
+            if script.uses.is_some() {
+                return Err(CompileError::at(pos, "uses is given twice"));
+            }
+            script.uses = Some((self.word()?, pos));
+        } else if header == Some("points") {
+            self.bump();
+            if script.points.is_some() {
+                return Err(CompileError::at(pos, "points is given twice"));
+            }
+            script.points = Some((self.string()?, pos));
         } else if self.eat_word("teams") {
             if script.teams.is_some() {
                 return Err(CompileError::at(pos, "teams is given twice"));
             }
             script.teams = Some((self.int()?, pos));
-        } else if self.eat_word("list") {
-            if script.list.is_some() {
-                return Err(CompileError::at(pos, "the list is named twice"));
-            }
-            script.list = Some((self.word()?, pos));
         } else if self.eat_word("requires") {
             loop {
                 let at = self.pos();
@@ -472,11 +493,6 @@ impl<'a> Parser<'a> {
                     break;
                 }
             }
-        } else if self.eat_word("scoring") {
-            if script.scoring.is_some() {
-                return Err(CompileError::at(pos, "scoring is given twice"));
-            }
-            script.scoring = Some((self.word()?, pos));
         } else if self.eat_word("about") {
             if script.about.is_some() {
                 return Err(CompileError::at(pos, "about is given twice"));
@@ -1182,10 +1198,11 @@ impl<'a> Parser<'a> {
                             "a set is only allowed in for each, count, first and pick",
                         ));
                     }
-                    // The built-in enum of carriers: `carrier.assault`.
                     "carrier" if matches!(self.peek2().tok, Tok::Punct(".")) => {
-                        self.bump();
-                        return Ok(at(ExprKind::Name("carrier".into())));
+                        return Err(CompileError::at(
+                            pos,
+                            "a script names no engine, so there are no carrier values; a script that serves two games keeps the difference in a const each header sets",
+                        ));
                     }
                     _ => {}
                 }
@@ -1265,7 +1282,7 @@ mod tests {
 
     #[test]
     fn statements_end_at_line_breaks() {
-        let toks = lex("rules \"T\" 1\ncarrier slayer\non tick { a = 1\n b = 2; c = 3 }\n").unwrap();
+        let toks = lex("rules \"T\" 1\ntype slayer\non tick { a = 1\n b = 2; c = 3 }\n").unwrap();
         let s = parse(&toks).unwrap();
         match &s.items[0] {
             Item::On { body, .. } => assert_eq!(body.len(), 3),
@@ -1278,10 +1295,11 @@ mod tests {
 
     #[test]
     fn the_settings_header_lines_parse_and_their_words_stay_names_in_a_handler() {
-        let src = "rules \"T\" 1\ncarrier slayer\nscoring carrier\nabout \"A game.\"\nquick score_limit, lives\n\
+        let src = "rules \"T\" 1\ntype slayer\nuses slayer\nabout \"A game.\"\nquick score_limit, lives\n\
                    settings {\n    score_limit = 50\n    shields = none; lives = 3\n    time_limit = 300s\n}\n";
         let s = parse(&lex(src).unwrap()).unwrap();
-        assert_eq!(s.scoring.as_ref().map(|s| s.0.as_str()), Some("carrier"));
+        assert_eq!(s.game_type.as_ref().map(|s| s.0.as_str()), Some("slayer"));
+        assert_eq!(s.uses.as_ref().map(|s| s.0.as_str()), Some("slayer"));
         assert_eq!(s.about.as_ref().map(|a| a.0.as_str()), Some("A game."));
         let quick: Vec<&str> = s.quick.as_ref().unwrap().0.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(quick, ["score_limit", "lives"]);
@@ -1291,7 +1309,7 @@ mod tests {
         assert_eq!(block.lines[1].value.kind, ExprKind::None);
         assert_eq!(block.lines[0].pos.line, 7);
         // In a handler the four words are names.
-        let src = "rules \"T\" 1\ncarrier slayer\nglobal var quick: int = 0\n\
+        let src = "rules \"T\" 1\ntype slayer\nglobal var quick: int = 0\n\
                    on tick {\n    let about = 1\n    let settings = 2\n    quick = about + settings\n}\n";
         let (s, errors) = recovering(src);
         assert!(errors.is_empty(), "{errors:?}");
@@ -1300,9 +1318,9 @@ mod tests {
             Item::On { body, .. } => assert_eq!(body.len(), 3),
             other => panic!("{other:?}"),
         }
-        let twice = "rules \"T\" 1\ncarrier slayer\nsettings { lives = 1 }\nsettings { lives = 2 }\n";
+        let twice = "rules \"T\" 1\ntype slayer\nsettings { lives = 1 }\nsettings { lives = 2 }\n";
         assert!(parse(&lex(twice).unwrap()).unwrap_err().message.contains("given twice"));
-        let two_on_a_line = "rules \"T\" 1\ncarrier slayer\nsettings {\n    lives = 1 rounds = 2\n}\n";
+        let two_on_a_line = "rules \"T\" 1\ntype slayer\nsettings {\n    lives = 1 rounds = 2\n}\n";
         assert_eq!(parse(&lex(two_on_a_line).unwrap()).unwrap_err().line, 4);
     }
 
@@ -1312,7 +1330,7 @@ mod tests {
 
     #[test]
     fn recovery_skips_a_bad_statement_and_keeps_the_rest() {
-        let src = "rules \"T\" 1\ncarrier slayer\non tick {\n    a = 1\n    b = \n    score(, )\n    c = 3\n}\non init { d = 4 }\n";
+        let src = "rules \"T\" 1\ntype slayer\non tick {\n    a = 1\n    b = \n    score(, )\n    c = 3\n}\non init { d = 4 }\n";
         let (s, errors) = recovering(src);
         // `b =` reads `score` from the next line as its value, then stops
         // at `(`; the recovery skips the rest of line 6.
@@ -1323,7 +1341,7 @@ mod tests {
             Item::On { body, .. } => assert_eq!(body.len(), 2),
             other => panic!("{other:?}"),
         }
-        let src = "rules \"T\" 1\ncarrier slayer\non tick {\n    score(, )\n    c = 3\n    d = )\n}\n";
+        let src = "rules \"T\" 1\ntype slayer\non tick {\n    score(, )\n    c = 3\n    d = )\n}\n";
         let (s, errors) = recovering(src);
         let lines: Vec<u32> = errors.iter().map(|e| e.line).collect();
         assert_eq!(lines, vec![4, 6], "{errors:?}");
@@ -1335,7 +1353,7 @@ mod tests {
 
     #[test]
     fn recovery_ends_an_open_block_at_the_next_declaration() {
-        let src = "rules \"T\" 1\ncarrier slayer\non tick {\n    a = 1\non spawn(p) { b = 2 }\nfn f( {\n}\noption o: int 1..2 = 1\n";
+        let src = "rules \"T\" 1\ntype slayer\non tick {\n    a = 1\non spawn(p) { b = 2 }\nfn f( {\n}\noption o: int 1..2 = 1\n";
         let (s, errors) = recovering(src);
         let lines: Vec<u32> = errors.iter().map(|e| e.line).collect();
         assert_eq!(lines, vec![5, 6], "{errors:?}");
@@ -1352,10 +1370,29 @@ mod tests {
     }
 
     #[test]
+    fn type_points_and_uses_are_header_lines_and_names_in_a_handler() {
+        let src = "rules \"T\" 1\ntype ctf\npoints \"Captures\"\nteam var points: int = 0\n\
+                   on tick {\n    let type = 1\n    let uses = type\n    points = uses\n}\n";
+        let s = parse(&lex(src).unwrap()).unwrap();
+        assert_eq!(s.game_type.as_ref().map(|t| t.0.as_str()), Some("ctf"));
+        assert_eq!(s.points.as_ref().map(|p| p.0.as_str()), Some("Captures"));
+        assert!(s.uses.is_none());
+        assert_eq!(s.items.len(), 2);
+        // The retired lines parse, for the checker to refuse by name.
+        let src = "rules \"T\" 1\ncarrier king\nlist party\nscoring carrier\non tick { }\n";
+        let s = parse(&lex(src).unwrap()).unwrap();
+        let retired: Vec<(&str, &str)> = s.retired.iter().map(|(w, a, _)| (w.as_str(), a.as_str())).collect();
+        assert_eq!(retired, [("carrier", "king"), ("list", "party"), ("scoring", "carrier")]);
+        // `carrier.assault` is no value.
+        let e = parse(&lex("rules \"T\" 1\ntype ctf\non tick { let a = carrier.assault }\n").unwrap()).unwrap_err();
+        assert!(e.message.contains("no carrier values"), "{e}");
+    }
+
+    #[test]
     fn recovery_survives_a_bad_header_and_agrees_with_parse_on_clean_source() {
-        let (s, errors) = recovering("rules oops\ncarrier slayer\non init { }\n");
+        let (s, errors) = recovering("rules oops\ntype slayer\non init { }\n");
         assert_eq!(errors.len(), 1);
-        assert_eq!(s.carrier.as_ref().map(|c| c.0.as_str()), Some("slayer"));
+        assert_eq!(s.game_type.as_ref().map(|c| c.0.as_str()), Some("slayer"));
         assert_eq!(s.items.len(), 1);
         for b in crate::builtin::ALL {
             let toks = lex(b.source).unwrap();

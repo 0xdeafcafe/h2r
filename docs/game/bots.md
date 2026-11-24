@@ -1814,7 +1814,7 @@ it has found itself):
 A fault leaves `Perception::objective` `None`: the bot plays as in Slayer.
 Script games ride a retail engine index (rules-engine.md, "Which engine
 index a script rides") and keep its objective registry, so the same reads
-serve a `.rules` game on the CTF or Assault carrier.
+serve a `.rules` game on the CTF or Assault engine.
 
 **Without the engine's globals.** A rules script that keeps no per-engine
 globals (docs/game/rules-engine.md, "Porting the seven engines") still

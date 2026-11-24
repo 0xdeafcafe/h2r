@@ -134,7 +134,7 @@ offers, except the unarmed start of Bumper Cars, Siege and Gun Game, one of our 
 teams on death) were honour rules then and are in the description now.
 
 Each row is one script in `crates/formats/rules/src/builtin/` (a
-`settings` block, `scoring carrier` but for Superbounce and the scripted modes, and its
+`settings` block, a `type` line, `uses <type>` but for Superbounce and the scripted modes, and its
 description as `about`). Settings a script does not name have the stock
 value of its game type (`GameVariant::stock`); the list entry carries
 every setting the editor offers, so the disc's per-type defaults never
@@ -257,10 +257,10 @@ the same way from its script (`rules::builtin::LISTED`, in that order;
 | Part of the entry | From |
 |---|---|
 | name | the script's `rules` name, a space and U+E006, at name id `+i` |
-| game type | the script's `carrier` as a list type |
+| game type | the script's engine (`Header::engine`) as a list type |
 | pairs | the record of the script (`variants::portable::record_for`, default options): its value of every setting of its type the `sily` pages offer (`game_variants::inject::pairs`, the store's rule) |
 | description | the script's `about`, at description number `40 + i` (`community_variants::DESCRIPTION_BASE`) |
-| row | the script's `list` line ([Tweakers](#tweakers)) |
+| row | the script's `type` line ([Tweakers](#tweakers)) |
 
 A script with a value the editor does not offer is left out by name,
 with a line ("community variants: SWAT left out: setting 89 is 3, which
@@ -356,26 +356,26 @@ chosen with A like the game types above it.
 Code: `crates/extensions/game/src/tweakers.rs` (feature `tweakers`, on by
 default, [switches](../runtime/switches.md)). A variant is under a row
 when its block names a rules script (mode 2) whose header names the row
-(`list research` or `list party`,
+(`type research`, `type party` or `type siege`,
 [rules-engine.md](rules-engine.md#the-language)), or, with no script in
 its block, when its name is a listed built-in's as the list holds it
 (the name and U+E006; `community_variants::row_of`): a built-in record
 before its block is written. The script is found by the record's prefix
 among the scripts compiled into the game (the ports, the examples and
 the listed scripts) and in the game-variant store
-(`rules::header::block_row`); one this machine lacks lists under its
-carrier's game type. Our rows hold
+(`rules::header::block_row`); one this machine lacks lists under the
+row of its record's engine. Our rows hold
 Slayer and Juggernaut variants (`tweakers::record_row` checks the
 record's engine), so a row's list is Slayer's and Juggernaut's variant
 lists filtered: its defaults, copies and saves are Slayer's. Every
 built-in's record names its script ("The merged block"), and saving or
 editing it keeps the block, so the copy stays under its row. Hide and
-Seek's script says `list party` and it is a Juggernaut variant, so it
+Seek's script says `type party` and it is a Juggernaut variant, so it
 and its copies are under Party Games, on the lobby's list and the pause
 menu's, and off Juggernaut's own list. A row's list asks Slayer's content
 category and then Juggernaut's (`tweakers::JUGGERNAUT_CATEGORY`, 5) and
-filters both; Create New stays dropped on it. Clint Eastwood's script has
-no `list` line, so it stays under Juggernaut.
+filters both; Create New stays dropped on it. Clint Eastwood's script says
+`type juggernaut`, so it stays under Juggernaut.
 
 Hooks, all on retail's own screens (static reading of the XBE, 2026-11-21):
 

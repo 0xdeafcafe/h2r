@@ -400,8 +400,8 @@ pub fn rename(src: &str, pos: Position, new_name: &str) -> Result<Vec<TextEdit>,
 }
 
 /// The completions at `pos`, by context, ranked: declarations at the top
-/// level, event names after `on`, capabilities after `requires`, carriers
-/// after `carrier`, types after `:`, label kinds and requirements on a
+/// level, event names after `on`, capabilities after `requires`, game types
+/// after `type` and `uses`, types after `:`, label kinds and requirements on a
 /// `label` line, fields after `.`, labels after `is`, and in a body names,
 /// API entries and statements, those of the type the place wants first.
 pub fn complete(src: &str, pos: Position) -> Vec<CompletionItem> {

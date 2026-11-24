@@ -19,10 +19,10 @@ pub fn asks_superbounce(ir: &Ir) -> bool {
     ir.header.requires.iter().any(|c| c == SUPERBOUNCE)
 }
 
-/// The row of ours a script's header files it under: `list research`
-/// or `list party`.
+/// The row of ours a script's header files it under: its `type`, when
+/// that is one of ours (`type research`, `type party`).
 pub fn list_row(header: &Header) -> Option<Row> {
-    Row::of_list(header.list)
+    Row::of_type(header.game_type)
 }
 
 /// The script a record's prefix names, when this machine has it: a

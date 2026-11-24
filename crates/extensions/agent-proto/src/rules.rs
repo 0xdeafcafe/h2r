@@ -43,14 +43,14 @@ pub struct State {
     /// Where the blob came from: `builtin` or `live`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
-    /// The retail engine index the game rides.
+    /// The retail engine index the game's record is on
+    /// (`rules::ir::Header::engine`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carrier: Option<u8>,
     /// Who scores the game the script runs in: `script` when its VM
-    /// runs, `carrier` for a `scoring carrier` script, which runs no VM
-    /// and leaves the carrier engine's own scoring to answer as retail
-    /// (docs/game/rules-variants.md, "A script that keeps its carrier's
-    /// rules").
+    /// runs. A `uses` script's game runs the built-in it uses, which is a
+    /// script too (docs/game/rules-variants.md, "A script that keeps its
+    /// carrier's rules").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scoring: Option<Scoring>,
     /// The packed option bits from the record.
@@ -94,7 +94,7 @@ pub struct State {
 pub enum Scoring {
     /// The script's VM is the game's one scorer.
     Script,
-    /// `scoring carrier`: the carrier engine scores; no VM runs.
+    /// The record's engine scores; no VM runs.
     Carrier,
 }
 

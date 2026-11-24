@@ -375,12 +375,12 @@ pub fn compile(def: &Def) -> Result<Ir, ScriptRefusal> {
             api_version: ::rules::caps::API_VERSION,
             name: def.name.clone(),
             version: 1,
-            // Slayer, the engine Firefight's match rides, on one or two
+            // The Firefight type rides Slayer's engine, on one or two
             // player teams; the actors' team is the host's.
-            carrier: 2,
+            game_type: ::rules::types::Type::Firefight,
+            uses: None,
             teams: def.teams,
-            list: ::rules::ir::List::GameType,
-            scoring: ::rules::ir::Scoring::Script,
+            points: ::rules::types::Type::Firefight.points().into(),
             about: String::new(),
             requires: vec!["ai.squads".into(), "firefight.director".into()],
         },

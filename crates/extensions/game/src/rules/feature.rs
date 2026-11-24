@@ -36,9 +36,9 @@
 //!   the carrier's own scoring and role-making return at once
 //!   ([`super::scoring`]).
 //!
-//! A `scoring carrier` script (docs/game/rules-variants.md, "A script that
-//! keeps its carrier's rules") runs its carrier engine's built-in script
-//! under the record ([`runtime::carrier_builtin`]): every hook above treats
+//! A script with a `uses` line (docs/game/rules-variants.md, "A script
+//! that keeps its carrier's rules") runs the built-in script of the type it
+//! uses under the record ([`runtime::used_builtin`]): every hook above treats
 //! it as that script, and the Live session names the built-in's hash. Its
 //! `requires` turn their modes on through the record's script reference
 //! (`super::header`), as for any script.

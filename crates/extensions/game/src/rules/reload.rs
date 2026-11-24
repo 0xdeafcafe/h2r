@@ -89,10 +89,10 @@ pub fn restart_refusal(s: &Situation, new: &Ir) -> Option<String> {
         return Some(why.into());
     }
     match s.engine {
-        Some(e) if e == i32::from(new.header.carrier) => None,
+        Some(e) if e == i32::from(new.header.engine()) => None,
         Some(e) => Some(format!(
             "the script rides engine {}, and the variant is engine {e}",
-            new.header.carrier
+            new.header.engine()
         )),
         None => Some("the active variant record could not be read".into()),
     }

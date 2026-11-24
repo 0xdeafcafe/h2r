@@ -1,7 +1,7 @@
 # Game types without carriers
 
-Status: Design, with GM1 built (`crates/tools/firefight-kit/src/ground.rs`) and GM3's document, session and screens built (the builder hook is not wired, below); "What the carrier supplies" is the state of the code and the slices are the order to change the rest in.
-Code: `crates/formats/rules/src` (`ir.rs` the header, `lang/check.rs`, `caps.rs`, `builtin/`), `crates/extensions/game/src/rules/` (`runtime.rs`, `scoring.rs`, `objectives.rs`, `roles.rs`), `crates/formats/variants/src/portable.rs` (`record_for`), `crates/extensions/game/src/community_variants.rs`. Tests: `crates/formats/rules/tests/engines.rs`, `tests/modes.rs`.
+Status: Design, with GT0 (the reads, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md)), GT1 (the header), GM1 (`crates/tools/firefight-kit/src/ground.rs`) and GM3's document, session and screens built (the builder hook is not wired, below); "What the carrier supplies" is the state of the code and the slices are the order to change the rest in.
+Code: `crates/formats/rules/src` (`ir.rs` the header, `types.rs` the type table, `lang/check.rs`, `caps.rs`, `builtin/`), `crates/extensions/game/src/rules/` (`runtime.rs`, `scoring.rs`, `objectives.rs`, `roles.rs`), `crates/formats/variants/src/portable.rs` (`record_for`), `crates/extensions/game/src/community_variants.rs`. Tests: `crates/formats/rules/tests/engines.rs`, `tests/modes.rs`.
 Switch: none (the `rules` feature).
 
 A game type is a rules script and nothing else. Slayer, Capture the Flag,
@@ -17,22 +17,22 @@ Evidence labels are those of [docs-style.md](../meta/docs-style.md).
 
 ## What the carrier supplies
 
-A script names a carrier, one of the seven retail engines, and its
-record carries that engine's index ([rules-engine.md](rules-engine.md),
-"Which engine index a script rides"; `ir::Header::carrier`). The carrier
-gives a script game these things:
+A script's record carries one of the seven retail engines' indexes,
+its type's or its `uses` game's ([rules-engine.md](rules-engine.md),
+"Which engine index a script rides"; `ir::Header::engine`, from the
+script's `type` or `uses`). The carrier gives a script game these things:
 
 | What | How the carrier gives it | Evidence | What replaces it |
 |---|---|---|---|
-| A record the game accepts | four retail paths refuse or reset an unknown engine index (the engine table, the record clean-up, the wire codec, the lobby protocol map) | **E**, rules-engine.md | first index 2 (Slayer, GT2), then an index of ours with the four paths answered natively and no retail engine object ("No retail engine object") |
+| A record the game accepts | four retail paths refuse or reset an unknown engine index (the engine table, the record clean-up, the wire codec, the lobby protocol map), and a fifth files saved variants by it (the content category) | **E**, rules-engine.md, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md) | first index 2 (Slayer, GT2), then an index of ours with the four paths answered natively and no retail engine object ("No retail engine object") |
 | Scoring | per-engine routines: the kill callbacks, and `SCORE_ADD` from ten carrier sites; a script game answers them in place (`rules/scoring.rs`, "One scorer") | **Code**; **E** | `score(who, n)` from the script is the only source of points; with one index only Slayer's kill callback is left to answer |
 | Objectives | the flag, bomb, ball, hill and territories are run by the carrier's per-tick, per-player and objective slots, which still run in a script game | **E**, rules-engine.md | the script owns them: objects it spawns and tracks, zones it tests ([rules-world-api.md](rules-world-api.md)) |
 | Player traits by role | the trait query slot; a host makes `role_traits` on its own carrier only | **Code**, `rules/roles.rs` | the host answers the trait query itself for any script (Slayer's query is every engine's fallback, `ENGINE_TRAIT_QUERY`) |
 | The type area of the record | each engine's own settings and editor pages (`oddball_ball_speed`, `ctf_flag_type`), applying on that carrier only (`rules::settings::TABLE`) | **Code** | script options and settings; the type area is Slayer's and unused |
-| The menu category | a variant is filed under its record's game type, or a `list` row of ours on Slayer and Juggernaut (`ir::List`) | **Code**, [community-gametypes.md](community-gametypes.md) | the script's `type` |
-| The announcer's line at the start | not traced | rules-engine.md, "Not verified" | the script's `type`; **E first** |
-| The HUD's objective parts and the scoreboard's labels | not traced: the replicated engine-globals entity (types 0 to 5), the engine event or the client's engine vtable | the same | HUD kit HUDs fed by script state ([hud-kit.md](hud-kit.md)); labels from `type`; **E first** |
-| The post-game report | the statborg carries scores for every engine; per-engine columns are not traced | **E**, [firefight.md](firefight.md), "The game engine underneath" | the statborg as it is; labels from `type`; **E first** |
+| The menu category | the script's `type` picks the row (`header::Row::of_type`): `research` and `party` (and `siege`) rows of ours, any other type its record engine's row; the retail list files a saved variant by a content category computed from the record's engine index (`0x216a50`) | **Code**, [community-gametypes.md](community-gametypes.md); **E**, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md) | the script's `type` |
+| The announcer's line at the start | the engine's start slot (`+0x18`, Slayer `0x2bbfa0`) posts a game-engine event of its own event type (2 Slayer to 10 Assault), which each client looks up in the multiplayer globals and plays; a Slayer game can post another type's event | **E**, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md); that index 0 is the type's name line **S** | the script's `type` |
+| The HUD's objective parts and the scoreboard's labels | the replicated engine-globals entity is applied by each client's own engine slots after a type match (`0xa45e0`..`0xa4910`); events and the statborg need no engine; the HUD widget state (`0x13a050`) reads no engine; which widget shows which engine's state is not traced | **E**, partial, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md) | HUD kit HUDs fed by script state ([hud-kit.md](hud-kit.md)); labels from `type`; **E first** for the widget map |
+| The post-game report | the statborg carries scores for every engine; the report's per-engine part is keyed on the record's engine index copied at game start (`0x195a40`, the build at `0x232d77`), and its per-engine stat rows are written only by engine code | **E**, [firefight.md](firefight.md), "The game engine underneath"; [the GT0 note](notes/2026-11-24-game-type-engine-reads.md) | the statborg as it is; labels from `type` |
 
 Firefight already works this way: it is a Slayer game whose rules the
 host makes ([firefight.md](firefight.md)), and its director is a rules
@@ -68,12 +68,12 @@ teams 2
   "Packages"); a community script picks from the table.
 - **`points "<label>"`** names what a point is, for the scoreboard and
   the post-game. It is display only.
-- **`uses <script>`** replaces `scoring carrier`: a script with settings
-  and no handlers plays the named built-in's rules under its own record
-  (SWAT `uses slayer`). `runtime::carrier_builtin` becomes a lookup by
-  name.
-- `carrier` is refused with the line to write instead. The IR header
-  loses `carrier` and `List` and gains the type byte and the label.
+- **`uses <type>`** replaces `scoring carrier`: a script with settings
+  and no handlers plays that retail type's built-in rules under its own
+  record (SWAT `uses slayer`; `runtime::used_builtin`).
+- `carrier`, `list` and `scoring` lines are refused (`header.retired`)
+  with the line to write instead. The IR header holds the type byte, the
+  `uses` byte and the `points` label (`ir::Header`).
 
 ### One scoring model
 
@@ -97,7 +97,7 @@ flag stand now. What the port of each objective type needs:
 | Need | State |
 |---|---|
 | Zones from flag polygons, occupants, contest | built for Siege and the King and Territories ports (`tests/engines.rs`) on the fake game |
-| A carried objective: pick up, drop, the holder, return to its stand | **E first**: whether carrying the flag, bomb and ball is the weapon system's (the object is a weapon the player holds) with the engine's slots only told about it, or the engine's slots do the attaching |
+| A carried objective: pick up, drop, the holder, return to its stand | the weapon system's: the object is a weapon item the player holds (`0x10ca80`), and the engine's slots (`+0x5c`, `+0x60`) are only told and keep a registry (**E**, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md)) |
 | Holder traits (speed, no vehicle, the damage of a ball) | the host's trait answer, above |
 | The waypoint over an objective | a HUD kit world mark (`hud-kit-core/src/world.rs`) |
 
@@ -108,25 +108,30 @@ a player's saved CTF variant, a hopper slot) is turned into a script
 game when the game starts: the host makes the index 2 record of the
 built-in script of that type (`variants::portable::record_for`), with
 the record's common settings kept and its type-area settings read into
-the script's options. Where that swap can happen before the engine
-object is chosen is **E first** (the engine pointer is written at game
-start, rules-engine.md). The record on disk and on the wire is not
+the script's options. The swap happens at `GAME_ACTIVATE` entry, before the engine's
+subsystem start copies the engine pointer from the options
+(`0x1574c0`), and every machine makes the same swap (**E**, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md)). The record on disk and on the wire is not
 changed, so the clean-up and the codec see what they expect.
 
 A script's options are 32 bits in the record
 (rules-engine.md, "Carrying a script"). CTF's and Assault's type areas
-hold more choices than Slayer's; whether each built-in's options fit is
-counted in GT1, and a script whose options do not fit is refused there.
+hold more choices than Slayer's. Counted over the settings table's
+type-area rows at the record's full range, plus each built-in's own
+options: CTF needs 22 bits and Assault 25, so both fit
+(`builtin::tests::each_retail_game_fits_its_type_area_in_the_option_bits`).
+A script whose options do not fit is refused.
 
 ### The display
 
 - **Menu.** `community_variants` files each built-in under its `type`'s
-  row. Where the list groups saved variants by engine index is **E
-  first**; until it is ours, a script variant of a retail type is filed
-  by a row of ours with that name.
+  row. The retail list files a saved variant by a content category
+  computed from the record's engine index when the variant is added or
+  saved (`0x216a50`; **E**, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md)); until that is ours, a script
+  variant of a retail type is filed by a row of ours with that name.
 - **Start line.** The host plays the type's line when the round starts.
-  What plays the retail lines today, and whether a Slayer game can be
-  made to say another type's line, is **E first**.
+  The retail line is a game-engine event of the type's event type,
+  which each client plays from the multiplayer globals; a Slayer game
+  posts another type's event through the same path (**E**, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md)).
 - **HUD and scoreboard.** Slayer's HUD shows score and time. Each type's
   objective parts (flag state, the hill, the ball's holder) are a HUD
   kit HUD in the type's package, fed by the script's replicated state.
@@ -139,7 +144,7 @@ state has none: a script game's record carries an index of ours,
 `rules::SCRIPT_INDEX`, and the four retail paths that need a retail
 index are answered by native bodies of ours. Which number the index is
 (one of the two deprecated slots, Race and Headhunter, or a new one) is
-decided by GE0's read of the table.
+decided by GE0's read of the table. The reads of the four paths, with their callers and the five sites that call through the table with no null test, are in [the GT0 note](notes/2026-11-24-game-type-engine-reads.md), "Owning the four paths".
 
 | Path | Native body | **E first** |
 |---|---|---|
@@ -292,8 +297,9 @@ and is stored nowhere but in the built map on each machine.
   script index no retail scorer is reachable.
 - A type is display and filing. It changes no rule, and two scripts of
   one type need share nothing else.
-- A script names no engine. `variant.engine` is removed; `ctf.rules`
-  becomes two scripts (CTF and Assault) over one shared body.
+- A script names no engine. `variant.engine` is removed; CTF and
+  Assault are two scripts over one shared body (`builtin/ctf.rules`
+  under two headers in `builtin/mod.rs`, with `const assault`).
 - Films and Live name a script by hash, so a script rewritten for this
   has a new hash; nothing published depends on the old ones.
 - AI ground is map content, built on demand and kept only in built
@@ -309,8 +315,8 @@ with tests, M under 2,500. Tests are headless on `rules::fake::FakeGame`.
 
 | # | Slice | Size | Needs | Accepted when |
 |---|---|---|---|---|
-| GT0 | **The reads** (**E**), as a note in `docs/game/notes/`: what plays the start line; where the game type list groups by engine; what each engine's HUD and scoreboard draw from; the post-game's per-engine parts; who attaches a carried flag, bomb or ball; where the engine object is chosen at game start | S | nothing | the note gives each a guest address and a verdict, or says the disc has no such path |
-| GT1 | **The header**: `type`, `points`, `uses`; `carrier`, `list` and `scoring carrier` refused; the IR header; `rules::types::TABLE`; every built-in rewritten; the option count per built-in | M | nothing | every file of `builtin/` compiles with a type; `carrier slayer` is an error naming `type`; an unknown type is refused by name; `tests/modes.rs` passes |
+| GT0 (built) | **The reads** (**E**), as a note in `docs/game/notes/`: what plays the start line; where the game type list groups by engine; what each engine's HUD and scoreboard draw from; the post-game's per-engine parts; who attaches a carried flag, bomb or ball; where the engine object is chosen at game start | S | nothing | the note gives each a guest address and a verdict, or says the disc has no such path |
+| GT1 (built) | **The header**: `type`, `points`, `uses`; `carrier`, `list` and `scoring carrier` refused; the IR header; `rules::types::TABLE`; every built-in rewritten; the option count per built-in | M | nothing | every file of `builtin/` compiles with a type; `carrier slayer` is an error naming `type`; an unknown type is refused by name; `tests/modes.rs` passes |
 | GT2 | **One index**: every script record is index 2 (`record_for`); `role_traits` for any script through the trait query; the refusals by carrier deleted from `rules/runtime.rs` | M | GT1 | on the fake game a Juggernaut script passes the role and its traits on an index 2 record; no code path reads a carrier |
 | GT3 | **Zones**: King of the Hill and Territories as scripts that own their hills and territories | M | GT2 | the two engines' core rules in `tests/engines.rs` pass with no carrier slot delivered |
 | GT4 | **Carried objectives**: the flag, bomb and ball as script objects; CTF, Assault and Oddball | M | GT2, GT0 | a capture scores and the flag returns, by time and by touch; a bomb armed on the plate scores; time held scores; with no carrier slot delivered |
@@ -338,8 +344,9 @@ every game off it.
 - The four paths that need a retail index, the engine slots and the
   in-place answers are **E** and **Code** in
   [rules-engine.md](rules-engine.md).
-- How a client shows objective state, labels and announcer lines is not
-  traced (rules-engine.md, "Not verified"); GT0 is that read.
+- The start line, the list's filing, the post-game's keying, carried
+  objectives, where the engine is chosen and the four paths: [the GT0 note](notes/2026-11-24-game-type-engine-reads.md).
+  Which HUD widget shows which engine's state is not traced.
 - No port of a retail engine has had a parity run (rules-engine.md,
   "Porting the seven engines").
 

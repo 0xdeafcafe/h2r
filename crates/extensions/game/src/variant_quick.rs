@@ -159,7 +159,7 @@ fn setting_row(
     // `verify::load` holds every mark to a row that applies to the
     // carrier, and the table to `record::field`, so neither is missed.
     let row = row_at(index)?;
-    let setting = row.setting(ir.header.carrier)?;
+    let setting = row.setting(ir.header.engine())?;
     let value = record.get(SettingId(setting))?;
     let mut values: Vec<(i32, String)> = Vec::new();
     for &v in offered.and_then(|o| o.get(&setting)).into_iter().flatten() {

@@ -1990,8 +1990,8 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
   declares none), for the game variant form ([Game
   variants](#game-variants)).
 - A check that is `ok` also says what a variant of the script starts
-  from: `scoring` (`script`, or `carrier` when the carrier's engine
-  scores the game), `about` (the script's description; omitted when it
+  from: `scoring` (`script`, or `carrier` for a script with a `uses`
+  line, whose built-in game scores), `about` (the script's description; omitted when it
   has none), `settings` (`[{name, label, value}]`, the `settings` block
   in table order, `value` as text: `15`, `Magnum`, `On`, `5 minutes`;
   omitted when empty) and `quick` (`[{kind, name, label}]`, the Quick
