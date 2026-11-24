@@ -226,6 +226,7 @@ fn a_display_frame_moves_only_verified_view_draws_onto_the_blended_camera() {
         draw: Arc::new(mapped_draw(&cam)),
         textures: Default::default(),
         camera: CameraUse::Unknown,
+        external: None,
     }), "the sealed frame keeps the tick's");
     let (at, op) = &replay.ops[1];
     assert!(matches!(moved.op(*at, op), Retargeted::Same(_)), "unverified: drawn as the tick drew it");
