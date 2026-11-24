@@ -104,12 +104,16 @@ fn fades_gain_and_normalise_apply() {
     );
     assert_eq!(v["count"], 0);
     // The bare ramp is slow, so the K-weighting's high pass leaves it under
-    // the meter's -70 LUFS gate; lift it first so it reads as a signal.
-    edit(&mut api, &mut app, json!({"op": "gain", "db": 25}));
-    let v = edit(&mut api, &mut app, json!({"op": "normalise", "lufs": -30}));
-    assert_eq!(v["edits"][1], json!({"op": "normalise", "lufs": -30.0, "ceiling_dbfs": -1.0}));
+    // the meter's -70 LUFS gate; lift it first so it reads as a signal. The
+    // high pass also leaves it quiet for its peak (-7 dBFS after the lift), so
+    // a target far above what it reads is held by the -1 dBFS ceiling: ask for
+    // 3 dB over the lifted reading, which the ceiling leaves room for.
+    let v = edit(&mut api, &mut app, json!({"op": "gain", "db": 25}));
+    let target = (v["render"]["lufs"].as_f64().unwrap() + 3.0).round();
+    let v = edit(&mut api, &mut app, json!({"op": "normalise", "lufs": target}));
+    assert_eq!(v["edits"][1], json!({"op": "normalise", "lufs": target, "ceiling_dbfs": -1.0}));
     let lufs = v["render"]["lufs"].as_f64().unwrap();
-    assert!((lufs - -30.0).abs() <= 0.1, "{v}");
+    assert!((lufs - target).abs() <= 0.1, "{v}");
 }
 
 #[test]
