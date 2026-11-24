@@ -254,6 +254,21 @@ selection time and ownership refusals automatically. New stage implementations u
 `gfx::churn::{create_buffer, create_buffer_init, create_bind_group, create_render_pipeline, upload_bytes}`
 for resource accounting. Legacy enqueues have no suppression promise.
 
+## Render front-end plan
+
+1. Compare the Rust portal and object gather with the guest for each view.
+   A set match admits membership tests. A consumer that draws in list
+   order also needs matching order and multiplicity.
+2. Build world and object draw lists from those regions, placements and
+   object records. Compare the ordered draw keys and per-draw setup before
+   selecting a Rust list under `impl.render.native`.
+3. Build sorted transparent entries, including layer 15 for BSP geometry
+   visible only through the display lens. Check the shared entries against
+   the reference queue and keep display-only entries on the display copy.
+4. Resolve decorator placements and instance ranges from the scene.
+   Compare each placement, its order and its instance data at the draw
+   boundary. Keep the guest path for any input the Rust builder declines.
+
 ## Scene list builders
 
 The scene lists go off with the rest of the native renderer. This stage publishes the engine's original
