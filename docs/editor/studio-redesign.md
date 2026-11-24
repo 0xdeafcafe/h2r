@@ -345,11 +345,11 @@ maps = "multiplayer"
 | `rules` | `.rules` | a compiled script in the rules registry | sim |
 | `variant` | `.h2variant` or a script name | a built-in list entry | sim |
 | `playlist` | a hopper fragment: playlists and entries by map name or `MapId` | rows of the default hopper | Live |
-| `map` | `map.toml`: `mode` (`fresh`, `onto`), `base`, `scenario`, the items it takes | a map package under `<data>/maps/` | sim |
+| `map` | `map.toml`: `mode` (`fresh`, `onto`), `base`, `scenario`, the items it takes, and `ground` when it has AI | a map package under `<data>/maps/`, built at prepare, or when first picked if it has `ground` | sim |
 | `map-patch` | a PPF, IPS or BPS file with the base's name and SHA-256 | a map package with that layer | sim |
 | `convert` | a recipe: a converter name and its settings; the input is the user's own disc | map packages and campaign files | sim |
 | `data` | a file a named game feature reads (the Pogo's pose set) | handed to the feature at boot | per feature |
-| `kit` | a named code builder's settings (`ai-ground`, `campaign-cards`, `glyphs`); first-party packages only | what that builder adds | per builder |
+| `kit` | a named code builder's settings (`campaign-cards`, `glyphs`); first-party packages only | what that builder adds | per builder |
 
 **Scope** is the builder's, not the author's: `sim` items change what the
 simulation reads, so every peer of a networked game needs them; `client`
@@ -379,7 +379,9 @@ the retail list, as it does for maps ([maps.md](../game/maps.md) section
 - **Order**: a topological sort over `requires` and `after`, ties broken
   by the user's order (`<data>/packages/set.toml`, which also holds what
   is switched off), then by id. A cycle is refused, naming its members.
-  Every package is on unless the set file turns it off.
+  Every package is on unless the set file turns it off. `core` and `ui`
+  are always on: the set file cannot name them, and no other package's
+  absence disables them.
 - **Conflicts.** Two packages that add the same tag path stop the build,
   naming both. Two edit lines on the same field: the later package wins
   and Problems lists the override. An edit whose path or `was` hash does
@@ -430,9 +432,9 @@ as its unit: a project is a `map` item, a `ContentKit` is a builder, and
 
 | Package | Items | Replaces |
 |---|---|---|
-| `core` | `rules` (the seven retail types), `strings`, `kit: glyphs` (icon fonts, the gear), `kit: ai-ground` | `rules::builtin`'s engine constants, `icons::font_rewrite`, `bot_mark::GearRewrite`, `firefight_kit::build_package`'s callers |
+| `core` | `rules` (the seven retail types), `strings`, `kit: glyphs` (icon fonts, the gear) | `rules::builtin`'s engine constants, `icons::font_rewrite`, `bot_mark::GearRewrite` |
 | `ui` | `screens`, `screen-edits`, `bitmap` | `assets/ui/`, `ScreensRewrite` |
-| `modes` | `rules` (the community modes, Siege, Firefight's director with its wave sets), `variant`, `playlist`, `hud`, `sound` (start lines) | the rest of `rules/src/builtin/`, `community_variants`' table of scripts, `crates/formats/firefight`'s built-in sets, `huds/firefight.rs` |
+| `modes` | `rules` (the community modes, Siege, Firefight's director with its wave sets), `variant`, `playlist`, `hud`, `sound` (start lines), `map` (our Firefight and Siege maps, with `ground`) | the rest of `rules/src/builtin/`, `community_variants`' table of scripts, `crates/formats/firefight`'s built-in sets, `huds/firefight.rs` |
 | `superbounce` | `rules`, `hud`, `sound` (the announcer clips), `screens` | `hud-kit-core/src/huds/superbounce*.rs`, `art/announcer/` |
 | `pogo` | `model`, `bitmap`, `tag`, `sound`, `data` (the pose set `pogo_pose.rs` reads) | `art/pogo/`, `pogo_kit::{kit, inject, rewrite}`; `pogo_kit::mesh` becomes the `model` builder |
 | `halo1` | `convert` (converter `halo1`: every multiplayer map in both sandboxes, the campaign), `kit: campaign-cards`, `screens` | `h1_import.rs`'s entry points, `CardRewrite` |
@@ -445,10 +447,13 @@ as its unit: a project is a `map` item, a `ContentKit` is a builder, and
 Slayer: a script that awards points and declares its `type`, with no
 retail game type under it
 ([game-types-without-carriers.md](../game/game-types-without-carriers.md)).
-Firefight has no kit of its own. What it needs from a multiplayer map
-(sectors, zones, squad slots, characters;
-[firefight.md](../game/firefight.md), "The kit") is the `ai-ground`
-builder in `core`, there for any script that asks for AI.
+Firefight has no kit and nothing is added to a map at boot for it. A
+Firefight or Siege map is made in Forge or in Studio, and the AI ground
+it needs (sectors, zones, squad slots, characters) is built on demand
+when that map is made, edited or first picked
+([game-types-without-carriers.md](../game/game-types-without-carriers.md),
+"Maps for scripted games"). In Studio it is a `map` item with a
+`ground` table; `firefight_kit`'s generator is its build step.
 
 **Forge is not a package.** It is an engine feature
 (`crates/extensions/forge`, [forge-design.md](../game/forge-design.md)):
@@ -504,8 +509,8 @@ A package opens as a document; the browser's Packages root is the set:
 ```
 +----------------+---------------------------------------------------+-----------------+
 | PACKAGES       | pogo  x                                           | INSPECTOR       |
-| [x] core       | Pogo Stick             id pogo    [Check] [Build] | models/unsc.yaml|
-| [x] ui         | requires: core         features: pogo             | kind   model    |
+|     core       | Pogo Stick             id pogo    [Check] [Build] | models/unsc.yaml|
+|     ui         | requires: core         features: pogo             | kind   model    |
 | [x] modes      +---------------------------------------------------+ tag    ...\pogo_|
 | [x] superbounce| Items (14)                    kind     maps       |        unsc     |
 | [x] pogo    *  |  models/unsc.yaml             model    multiplayer| maps   multipl. |
@@ -520,7 +525,8 @@ A package opens as a document; the browser's Packages root is the set:
 ```
 
 The list is the load order; dragging a row reorders within what
-`requires` allows. A greyed row says why it is off.
+`requires` allows. A greyed row says why it is off. `core` and `ui`
+have no checkbox.
 
 | Method | Does |
 |---|---|
@@ -528,7 +534,7 @@ The list is the load order; dragging a row reorders within what
 | `package.read {id}` | the manifest, items with what each builds, the lock, problems |
 | `package.new {id, name}`, `package.set {id, path, value}`, `package.item.add`, `package.item.remove` | edits the manifest |
 | `package.target {id?}` | reads or sets the edit target |
-| `package.enable {id, on}`, `package.order {ids}` | writes `set.toml` |
+| `package.enable {id, on}`, `package.order {ids}` | writes `set.toml`; `core` and `ui` are refused (`ALWAYS_ON`) |
 | `package.check {id}` | the refusals above, missing sources, unknown builders, conflicts with the rest of the set |
 | `package.build {id?, map?}` | builds what the package gives a map, or every map it touches; `{maps: [{map, took_ms, tags, bytes, problems}]}` |
 | `package.play {id, map}` | builds, then loads the map in the paired game |
@@ -789,15 +795,15 @@ Rows are in build order.
 | PK11 | **HUDs as data**: the `hud` builder, HUD kit YAML for the superbounce and Firefight HUDs; `hud-kit-core/src/huds/*.rs` deleted | M | PK3 | each YAML compiles to the records its Rust definition compiled to (`hud-kit-core/src/tests.rs`' fixtures) |
 | PK4 | **Pogo as a package**: `content/pogo/`, the `model` and `sound` builders, the weapon as a `tag` item; `PogoRewrite` deleted | M | PK3 | on `pogo_kit::fixture`'s map the package builds the tags `pogo_kit::inject::add_pogo` built, compared group by group |
 | PK5 | **Screens as a package**: `content/ui/`, the `screens` and `screen-edits` builders over `ui_kit::inject::tag::add_screens`; `ScreensRewrite` deleted; `ui.save` writes into the edit target | M | PK3 | `ui_kit::inject::tests` pass through the package; a screen saved from the window is a changed file in the package and nowhere else |
-| PK6 | **The package document and `package.*`**: list, read, new, set, items, target, enable, order, check, build, play | M | PK2, SH1 | every method's example runs; a reorder that breaks `requires` is refused; `package.check` names a cache map, a bundle and a dataset folder put in an invented package |
+| PK6 | **The package document and `package.*`**: list, read, new, set, items, target, enable, order, check, build, play; `core` and `ui` always on in `content::package::Set` | M | PK2, SH1 | every method's example runs; a `set.toml` or a call that turns `core` off is refused by name; a reorder that breaks `requires` is refused; `package.check` names a cache map, a bundle and a dataset folder put in an invented package |
 | PK7 | **Edits go to the edit target**: the journal as edit lines, the first-edit picker, **Export map...**; the package form and `active.toml` deleted | M | PK6 | a field set in the window and by `tag.set` write the same line; undo across a save removes it; with no target the API answers `NO_TARGET` |
 | SH3 | **Problems**: one panel and `problems.list` over `check.run`, `ui.check`, `hud.check`, `package.check` and build errors, each row opening its asset | S | SH1 | findings from two invented sources list together; opening a row focuses the document and the field |
 | SH4 | **The preview switch**: `preview.target`, **Preview in game** by kind over `pair.preview` | S | SH1 | on the fake game each kind sends the calls its `what` lists; a paused game refuses with the built message |
-| GT0 to GT7 | **Game types without carriers** ([game-types-without-carriers.md](../game/game-types-without-carriers.md)) | S and M | GT6 needs PK11 | as there |
+| GT0 to GT7, GE0 to GE5, GM1 to GM4 | **Game types without carriers**, no retail engine object, and maps for scripted games ([game-types-without-carriers.md](../game/game-types-without-carriers.md)) | S to L | GT6 needs PK11; GM2 needs PK9 | as there |
 | PK8 | **Rules, variants and playlists as items**: `content/core/` and `content/modes/`; the registry from the set; `community_variants` and the default hopper read it | M | PK3 | `crates/formats/rules/tests/modes.rs` pass with scripts from the set; a package off removes its list entries; the hopper built from fragments equals `hopper/defaults.rs`'s |
 | PK9 | **Whole maps**: `map` and `map-patch` items to map packages at prepare; the stage and the test-map recipes as packages | M | PK2 | an invented `fresh` and an invented `onto` item build; the `MapId` of a `map-patch` item equals the id of the map package the importer writes for the same patch |
 | PK10 | **Conversions**: `convert` items, `h2 package prepare`, stamps; `content/halo1/` and `content/map-pack/` over the existing converters | M | PK9 | with an invented converter: no disc leaves the package off with its reason; a stale stamp reruns one map; an interrupted run resumes |
-| PK12 | **Kits**: `kit: ai-ground`, `campaign-cards`, `glyphs`; Firefight's director and wave sets as `rules` items of `modes`; boot's chain is `PackageRewrite` alone | M | PK9 | per kit, the map through the package equals the one its own caller made; `boot/src/lib.rs` builds no other rewrite |
+| PK12 | **Kits**: `kit: campaign-cards`, `glyphs`; Firefight's director and wave sets as `rules` items of `modes`; `firefight_kit::build_package`'s boot and host-bundle callers go (GM1 of game-types-without-carriers builds ground on demand); boot's chain is `PackageRewrite` alone | M | PK9 | per kit, the map through the package equals the one its own caller made; `boot/src/lib.rs` builds no other rewrite |
 | PK13 | **Live, server**: `/v1/packages`, the signed manifest and lock, the upload checks, credit, the model flag, both homes | M | PK1 | the parity suite: a bad signature, a lock hash that does not match, a retail hash and a model item without the flag are each refused; an admin's credit outranks the manifest's |
 | PK14 | **Live, game and Studio**: install, the content set in a session, the join check, the Mods screens, `package.publish` and `package.install`; `h2 live mods import` writes packages | M | PK13, PK3 | on the fake server: a joiner missing one package fetches it and joins; a blocked one fails before the map load with the reason; an imported pack holds patches and credit only |
 | M1 | **Model poses** (rich-editors) | M | nothing | as there |
