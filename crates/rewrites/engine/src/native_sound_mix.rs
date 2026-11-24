@@ -6,6 +6,16 @@ use crate::sim_objects::{Body, Cx, Next, Result, frame, sse};
 use crate::sim_physics::{arithmetic, byte, logic};
 use sim_sound::mix::{BinAction, BinChanges};
 
+mod update;
+mod route;
+mod levels;
+use update::{load_x87, store_x87};
+
+enum Step {
+    To(u32),
+    Call(Next),
+}
+
 const DOC: &str = "docs/audio/dsound.md";
 const BINS_SIG: Sig = Sig::Fn {
     args: &[("previous", Loc::Eax), ("requested", Loc::Stack(0)), ("voice", Loc::Stack(1))],
@@ -21,7 +31,14 @@ static ADD_SEND: Point = Point::new(
     DOC,
 );
 
+static UPDATE: Point = Point::new(
+    "SOUND_STREAM_PARAMETERS", 0x21fa80,
+    Sig::Fn { args: &[("parameters", Loc::Edi), ("stream", Loc::Stack(0)),
+        ("effects", Loc::Stack(1)), ("skip_pitch", Loc::Stack(2))], ret: None, pop: 12 }, DOC,
+);
+
 pub const BODIES: &[Body] = &[
+    Body { point: &UPDATE, sites: update::SITES, run: update::update },
     Body { point: &STREAM_BINS, sites: &[0x2216b7, 0x2216dc], run: stream_bins },
     Body { point: &BUFFER_BINS, sites: &[0x2217d7, 0x2217fc], run: buffer_bins },
     Body { point: &ADD_SEND, sites: &[0x21e249], run: add_send },

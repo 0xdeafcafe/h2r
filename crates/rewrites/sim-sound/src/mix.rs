@@ -2,6 +2,8 @@
 //! The driver can submit a shorter descriptor of unique bins if the routing
 //! stays the same. A duplicate whose gain differs can require a full rebind.
 
+pub mod levels;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BinChanges {
     pub seen: u32,
@@ -16,7 +18,7 @@ pub enum BinAction {
 }
 
 impl BinChanges {
-    /// `previous_gain` is the comparison scratch indexed by the **row**
+    /// Duplicate gains are compared to scratch indexed by the **row**
     /// (22165a). The first occurrence is stored by bin number (221689).
     pub fn visit(&mut self, bin: u32, gain_changed: bool, duplicate_gain_agrees: bool) -> BinAction {
         let bit = 1u32.wrapping_shl(bin);
