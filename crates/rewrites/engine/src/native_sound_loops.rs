@@ -31,6 +31,12 @@ pub static LINK_INSTANCE: Point = Point::new(
     DOC,
 );
 
+pub static TRACK_FADE_OUT: Point = Point::new(
+    "SOUND_TRACK_FADE_OUT",
+    0x21bd00,
+    crate::point_sig!(fn(seconds: stack 0, head: stack 1) ret 8),
+    DOC,
+);
 pub static TRACK_FADE_IN: Point = Point::new(
     "SOUND_TRACK_FADE_IN",
     0x21be20,
@@ -39,6 +45,11 @@ pub static TRACK_FADE_IN: Point = Point::new(
 );
 
 pub const BODIES: &[Body] = &[
+    Body {
+        point: &TRACK_FADE_OUT,
+        sites: &[0x21bdd4],
+        run: fade_out,
+    },
     Body {
         point: &TRACK_FADE_IN,
         sites: &[0x21be9c],
@@ -269,4 +280,83 @@ fn fade_in(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
     c.ebp = frame::pop(c, g)?;
     c.esp = arithmetic(c, c.esp, 12, false);
     Ok(Next::Ret { pop: 8 })
+}
+
+fn tag_definition(g: &Guest, entries: u32, datum: u32) -> Result<u32> {
+    g.u32(entries.wrapping_add((datum & 0xffff) * 16).wrapping_add(8))
+}
+
+/// Fade each instance from its current gain. Its sound class chooses the
+/// ramp mode. The callback sees the same active track and frame each time.
+fn fade_out(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
+    let (c, g) = (&mut *cx.cpu, &mut *cx.g);
+    if pc == TRACK_FADE_OUT.base {
+        c.ecx = frame::slot(c, g, 8)?;
+        c.esp = arithmetic(c, c.esp, 12, true);
+        if c.ecx == EMPTY {
+            c.esp = arithmetic(c, c.esp, 12, false);
+            return Ok(Next::Ret { pop: 8 });
+        }
+        frame::push(c, g, c.ebp)?;
+        c.ebp = g.u32(points::TAG_ENTRIES.base)?;
+        frame::push(c, g, c.edi)?;
+        frame::push(c, g, c.ebx)?;
+        c.edi = c.ecx;
+        c.edx = 0;
+        frame::push(c, g, c.esi)?;
+    } else {
+        sse::load(c, 0, frame::slot(c, g, 0x20)?);
+        let duration = sse::ss(c, sse::Ss::Mul, 0, g.u32(0x45dccc)?);
+        c.edx = frame::slot(c, g, 0x18)?;
+        c.ecx = frame::slot(c, g, 0x24)?;
+        g.set_u32(c.esi.wrapping_add(0xb0), c.eax)?;
+        c.eax = sse::cvttss2si(c, duration);
+        g.set_u16(c.esi.wrapping_add(0xae), c.ebx as u16)?;
+        g.set_u32(c.esi.wrapping_add(0xb4), c.eax)?;
+        g.set_u32(c.esi.wrapping_add(0xb8), EMPTY)?;
+        let flags = c.esi.wrapping_add(4);
+        g.set_u8(flags, g.u8(flags)? | 0x80)?;
+    }
+    if (c.edx as i32) > 0 && c.edi != EMPTY {
+        let pool = g.u32(points::SOUND_INSTANCES.base)?;
+        let records = g.u32(pool.wrapping_add(DATA))?;
+        c.eax = instance(records, c.edi).wrapping_add(0x5c);
+        let next = g.u32(c.eax.wrapping_add(0x10))?;
+        c.edi = TrackRing::new(c.ecx).following(next).unwrap_or(EMPTY);
+    }
+    c.edx = c.edx.wrapping_add(1);
+    frame::set_slot(c, g, 0x18, c.edx)?;
+    if c.edi == EMPTY {
+        c.esi = frame::pop(c, g)?;
+        c.ebx = frame::pop(c, g)?;
+        c.edi = frame::pop(c, g)?;
+        c.ebp = frame::pop(c, g)?;
+        c.esp = arithmetic(c, c.esp, 12, false);
+        return Ok(Next::Ret { pop: 8 });
+    }
+    let pool = g.u32(points::SOUND_INSTANCES.base)?;
+    c.esi = instance(g.u32(pool.wrapping_add(DATA))?, c.edi);
+    let tag = tag_definition(g, c.ebp, g.u32(SoundInstance::TAG.at(c.esi))?)?;
+    let class = i32::from(g.u8(tag.wrapping_add(2))? as i8) as u32;
+    let globals = g.u32(points::GLOBALS_TAG.base)?;
+    let class_ref = if g.u32(globals.wrapping_add(0xc0))? != 0 {
+        g.u32(globals.wrapping_add(0xc4))?
+    } else {
+        0
+    };
+    let classes = tag_definition(g, c.ebp, g.u32(class_ref.wrapping_add(4))?)?;
+    c.ecx = g.u32(classes.wrapping_add(4))?;
+    let flags = g.u16(
+        c.ecx
+            .wrapping_add(class.wrapping_mul(0x5c))
+            .wrapping_add(0xa),
+    )?;
+    c.edx = u32::from(flags & (1 << 10) == 0);
+    logic(c, c.edx, 0x80);
+    c.ebx = (c.ebx & 0xffff0000) | c.edx;
+    c.eax = c.edi;
+    Ok(Next::Call {
+        target: 0x12a810,
+        site: 0x21bdd4,
+    })
 }

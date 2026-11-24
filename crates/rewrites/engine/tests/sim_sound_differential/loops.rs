@@ -70,6 +70,29 @@ fn setup(g: &mut Guest, c: &mut Cpu, seed: u32) {
                 g.set_u32(row(HEAD) + 0x70, HEAD).unwrap();
             }
         }
+        0x21bd00 => {
+            let entries = ARENA + 0x7000;
+            let globals = ARENA + 0x7100;
+            let refs = ARENA + 0x7300;
+            let classes = ARENA + 0x7400;
+            let rows = ARENA + 0x7600;
+            let sound = ARENA + 0x8000;
+            g.set_u32(engine::points::TAG_ENTRIES.base, entries)
+                .unwrap();
+            g.set_u32(engine::points::GLOBALS_TAG.base, globals)
+                .unwrap();
+            g.set_u32(entries + (TAG & 0xffff) * 16 + 8, sound).unwrap();
+            g.set_u8(sound + 2, 2).unwrap();
+            g.set_u32(globals + 0xc0, 1).unwrap();
+            g.set_u32(globals + 0xc4, refs).unwrap();
+            g.set_u32(refs + 4, 7).unwrap();
+            g.set_u32(entries + 7 * 16 + 8, classes).unwrap();
+            g.set_u32(classes + 4, rows).unwrap();
+            g.set_u16(rows + 2 * 0x5c + 0xa, if seed == 1 { 0 } else { 1 << 10 })
+                .unwrap();
+            g.set_u32(STACK + 4, 0.375_f32.to_bits()).unwrap();
+            g.set_u32(STACK + 8, head).unwrap();
+        }
         0x21be20 => {
             c.gpr[3] = head;
             g.set_u32(STACK + 4, 0x9675).unwrap();
@@ -114,7 +137,7 @@ pub(super) fn cases(entry: u32) -> Vec<Case> {
         0x21b870 => 6,
         0x21b910 => 2,
         0x21bc80 => 3,
-        0x21be20 => 5,
+        0x21be20 | 0x21bd00 => 5,
         _ => 0,
     };
     (0..count).map(|seed| Case { setup, reply, seed }).collect()
