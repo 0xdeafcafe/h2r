@@ -9,8 +9,12 @@
 //! walk over [`Node`]s with integer compares on the full-precision box and
 //! no state copies. `mopp::boxvm` stays the bit model the tests compare
 //! against.
+//!
+//! The float ray (entry I, `0x00301800`) walks the same program's bytecode
+//! from the tree's [`Source`] with the retail float sequence ([`ray`]).
 pub mod boxq;
 mod decode;
+pub mod ray;
 
 pub use boxq::{Corners, Found};
 pub use decode::{NONE, Node, Tree};

@@ -35,7 +35,7 @@ pub use bsp::{Bsp, Consts};
 pub use flood::{Flood, FloodQuery, Topology, TopologyKey};
 pub use mem::{Fault, GuestRead};
 pub use objects::{Visit, VisitQuery};
-pub use world::{CollisionWorld, Entry, EntryStats, Stats};
+pub use world::{CollisionWorld, Entry, EntryStats, RayParity, Stats};
 
 /// Why a query was left to the lifted code. Nothing was written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

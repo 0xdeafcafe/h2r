@@ -304,11 +304,13 @@ Two conditions make the table exact, and both are checked per query:
 
 **The ray view.** The float interpreter (`0x003009e0`) cannot be lifted the
 same way: a rescale subtracts and scales the segment endpoints in `f32`, and
-that rounding feeds every later test. So the ray walker replays the retail
-float sequence per node, using the `rescale` entry (the three operand bytes
-as floats, and `2^k`) and the frame-space operands `ray_lo`, `ray_hi`
-(`Lop * m - k` and `Hop * m - k`, exact in `f32`). What it saves is the
-decode, the dispatch, the state copies and the guest call per split.
+that rounding feeds every later test. So the ray walker
+(`sim_collision::mopp::ray`) replays the retail float sequence per opcode,
+walking the bytecode the `Tree` keeps: the rescale bytes as floats and
+`2^k`, and the split thresholds `Lop * m - k` and `Hop * m - k`, exact in
+`f32`. What it saves is the dispatch, the state copies and the guest call
+per split. Walking the folded nodes instead (thresholds and rescales
+converted once) is S8's layout work.
 
 ### 4.4 Rings and the inside test
 
@@ -500,16 +502,22 @@ are x87: `w = left / (left - right)`, stored single. The walker is
 pull-style:
 
 ```rust
-pub struct RayWalk<'t> { /* explicit stack of (node, start, end, frame) */ }
-impl RayWalk<'_> {
-    pub fn next(&mut self, fraction: f32) -> Result<Option<u32 /* key */>, Bail>;
+pub struct RayWalk<B: AsRef<[u8]>> { /* the bytecode, an explicit stack of levels */ }
+impl<B: AsRef<[u8]>> RayWalk<B> {
+    /// Each interpreter call (pc, frame, segment) and each terminal key.
+    pub fn next(&mut self, fraction: u32) -> Result<Option<Event>, Bail>;
 }
 ```
 
 The caller handles a terminal and passes the updated fraction to the next
-call. Entry E drives it with the native instance test. Entry I drives it
-from an `async` adapter that awaits the guest filter and child-shape calls
-(feature-engine.md, "Calling code that is still recompiled").
+call. Entry E drives it with the native instance test. Entry I runs lifted
+with a parity arm (`RayCheck`): observers at its entry, at each
+interpreter call, at the instanced collection's key method and at its
+return compare the guest with the walk and count the outcome
+(collision-queries.md, "Entry I"). Its native answer, an `async` adapter
+that awaits the guest filter and child-shape calls (feature-engine.md,
+"Calling code that is still recompiled"), follows once the arm shows no
+mismatch on a running match.
 
 **Ray VM at entry I** (E, `0x002df74d`, `0x00301800`). The tree shape's
 slot `+0x24` (`0x002df720`) constructs a VM on its stack and passes the
@@ -804,8 +812,11 @@ For each entry in 5.2, recorded in `docs/engine/collision-queries.md`:
      fail-closed cases; `Tree` box results equal `mopp::boxvm::query_box`
      key for key on random programs from `mopp::build` and on hand-written
      programs with diagonals, rescales and `29..2b`;
-   - ray walker against a direct transcription of the port's state machine
-     on random programs and rays, in single and double `Chain` modes;
+   - ray walker: every opcode family by hand, misses, ends on a threshold,
+     the fraction cutting a walk short, and random programs against a
+     recursive transcription of the interpreter, in single and double
+     precision; the parity arm on a matching, a mismatching and an
+     unfollowable guest;
    - `det`: each flag forces a bail on this host; `Chain` against the `x87`
      crate for both precision modes; lanes against the scalar loop;
    - batch: `trace_batch` equals serial calls, including the mark lists;
@@ -821,7 +832,9 @@ For each entry in 5.2, recorded in `docs/engine/collision-queries.md`:
    lane settings. The existing ports run as a third arm on the entries they
    cover: `point_to_leaf`, `bsp::segment`, `collision::query`,
    `mopp_query::{box_query, ray_query}`, `geometry_test`, `spatial::portal`,
-   `visit::objects`.
+   `visit::objects`. Entry I runs the lifted query with its parity arm and
+   invented callbacks; the arm must match or name why it cannot, and the
+   collection must get the keys the walk gives.
 3. **Disc sweep** (`-- --ignored`, owner's disc, results local). Every
    structure BSP, every `coll` BSP, every MOPP program (structure, cluster,
    `coll` slot, `phmo`):
@@ -870,7 +883,7 @@ on the coordinator's integration pass.
 | S3 | MOPP decode, ray walker, instance trace | `mopp/decode`, `mopp/ray`, `structure` instances, `instance`; entry E | ≥ 437 visible; most of the 1,644 family | unit, differential E, disc sweep rays and inverses |
 | S4 | MOPP box | `mopp/boxq` single and packet; entry F; bail-rate report | 509 (`2ff8b0`, `300150`) | unit against `boxvm`, differential F, disc sweep boxes |
 | S5 | Cluster flood and object visit | `flood`, `objects`; entries G and H; `120850` and `23a160` in the kernel | 1,012 | unit, differential G and H with the two ports as third arms; adapters built, not installed |
-| S6 | General MOPP ray | `async` adapter for entry I on `RayWalk` | the rest of the 1,644 | differential I with fake and real callees |
+| S6 | General MOPP ray | `mopp::ray` (`RayWalk` over the bytecode); entry I's parity arm, the guest's answer kept; `collision.stats` `ray` | none until I answers natively | unit, recursive transcription, differential I with invented callees, a deliberate mismatch |
 | S7 | Whole query | port `169510`, `1eff40` and helpers (object models through node matrices); entry J as one call; `collision.trace`; batch API with the reference-list lanes | 1,025 | unit, differential J, run parity |
 | S8 | Layout tuning | DFS re-layout with a guest-index map, two-level point treelets, only where a profile pair shows a gain | — | cold/warm and re-layout on/off give equal bits |
 | S9 | Census entries | `1ddea0`, `16a8e0`, the structure child shapes `1ef950`/`1edd00` (with the Havok lane), by campaign census | 318 + campaign | as S2 |

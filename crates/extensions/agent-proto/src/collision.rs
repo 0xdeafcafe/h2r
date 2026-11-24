@@ -48,6 +48,25 @@ pub struct Stats {
     pub cluster_budget_reads: u64,
     /// The x87 precision control seen at the vector-test entries.
     pub precision: Precision,
+    /// Entry I's parity arm: the native ray walk against the guest's.
+    #[serde(default)]
+    pub ray: RayParity,
+}
+
+/// Queries of the general MOPP ray (entry I) the native walk was compared
+/// on. The guest's result is the answer in every case.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RayParity {
+    /// Every interpreter call (and every key, where seen) matched.
+    pub matched: u64,
+    pub mismatched: u64,
+    /// Queries not compared to the end, by reason (the bail names of
+    /// [`EntryStats::bails`]).
+    pub unverified: BTreeMap<String, u64>,
+    /// Queries whose fraction moved at a terminal the arm could not see.
+    pub fraction_moved: u64,
+    /// The first mismatch: the observation and both sides.
+    pub first_mismatch: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
