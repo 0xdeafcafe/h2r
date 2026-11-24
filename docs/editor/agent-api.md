@@ -1706,10 +1706,17 @@ browser"; `app/assets.rs`). An asset is named by an id: `tag:<group>:<path>`
 
 `asset.list {root?, package?, kind?, map?, query?, limit?}` answers
 `{rows, total, limit, truncated, maps, kinds, problems}`. With `root`
-`tags` (the default) a row is one tag path of the tags tree: a tag every
-map holds alike is one row with `variants: []`; where maps hold
-different versions the row's `variants` lists each (`variant`, null for
-the main file, and its `maps`). A tag a package adds is in the same list
+`tags` (the default) a row is one tag path of the tags tree. A tag every
+map holds alike is one row with `variants: []`; where maps hold different
+contents the row's `variants` lists each with its `maps`. While the
+store's catalogue (`assets.idx`) is current, a content is an asset by
+asset hash (`hash` on a row with one; `hash`, `files`, `variant` and
+`maps` on each entry of `variants`), so two files that differ only in
+what ties them to their map are one content, and `used` names the keys
+whose tags reference the tag. Without a catalogue, or with a stale one (a
+line in `problems`), a content is a file and an entry of `variants` is
+(`variant`, null for the main file, and its `maps`). A tag a package
+adds is in the same list
 (`new: true`, `origin: "package"`, badge `new in <package>`); a tag an
 edit line of a package on touches has badge `edited by <package>` and
 the packages in `packages`. `kind` is one of `kinds` (Maps, Objects,

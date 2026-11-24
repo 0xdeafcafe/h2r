@@ -377,3 +377,145 @@ fn a_thumbnail_is_a_packages_png_and_a_tag_has_none_yet() {
         assert_eq!(e.code, code::NOT_YET, "{asset}");
     }
 }
+
+/// A tree whose files are real tags, with a catalogue: each content is an
+/// asset by hash (and `used` names the keys that reference the tag), until
+/// a manifest changes and the catalogue is stale.
+#[test]
+fn with_a_catalogue_the_rows_carry_assets_and_where_used() {
+    let t = Temp::new("assets-catalogue");
+    let mut app = App::new();
+    app.set_data_root(t.path("data"));
+    let root = app.tags_root();
+    let mut repo = TagRepo::create(&root).unwrap();
+    // A tag of one word that names `names` (a datum at +4).
+    let tag = |group: &[u8; 4], path: &str, word: u32, names: Option<&TagKey>| {
+        let mut bytes = word.to_le_bytes().to_vec();
+        bytes.extend([0; 4]);
+        let fields = names
+            .map(|k| vec![(4, tags::repo::Value::Ref(k.clone()))])
+            .unwrap_or_default();
+        tags::repo::LooseTag {
+            key: key(group, path),
+            body: tags::repo::Body::Tree(tags::repo::Tree {
+                nodes: vec![tags::repo::Node {
+                    bytes,
+                    count: 1,
+                    size: 8,
+                    align: 4,
+                    fields,
+                }],
+                ..Default::default()
+            }),
+        }
+    };
+    let form = |t: &tags::repo::LooseTag| {
+        let mut tables = tags::repo::normal::Tables::none();
+        tags::repo::normal::form(t, &mut tables).unwrap()
+    };
+    let rifle = key(b"weap", "objects\\weapons\\rifle");
+    let pixels = key(b"bitm", "objects\\pixels");
+    let (alpha, beta) = (
+        key(b"scnr", "scenarios\\alpha"),
+        key(b"scnr", "scenarios\\beta"),
+    );
+    for t in [
+        tag(b"weap", "objects\\weapons\\rifle", 1, Some(&pixels)),
+        tag(b"bitm", "objects\\pixels", 1, None),
+        tag(b"scnr", "scenarios\\alpha", 3, Some(&rifle)),
+    ] {
+        repo.put(&t).unwrap();
+    }
+    // The other map holds the bitmap as another file and its own scenario.
+    let stored = repo.put(&tag(b"bitm", "objects\\pixels", 2, None)).unwrap();
+    let ::tags::repo::store::Stored::Variant(v2) = stored else {
+        panic!("the other bitmap is a variant: {stored:?}")
+    };
+    repo.put(&tag(b"scnr", "scenarios\\beta", 4, Some(&rifle)))
+        .unwrap();
+    for (stem, scenario, variant) in [("alpha", &alpha, None), ("beta", &beta, Some(v2.clone()))] {
+        repo.put_manifest(
+            &Manifest {
+                map: stem.into(),
+                scenario: Some(scenario.clone()),
+                tags: vec![
+                    (rifle.clone(), None),
+                    (pixels.clone(), variant),
+                    (scenario.clone(), None),
+                ],
+                ..Default::default()
+            },
+            b"header",
+        )
+        .unwrap();
+    }
+    let (c, report) =
+        tags::repo::catalogue::build(&root, &tags::schema::Schema::default()).unwrap();
+    assert!(report.problems.is_empty(), "{:?}", report.problems);
+    tags::repo::catalogue::write(&root, &c).unwrap();
+
+    let mut api = Api::new();
+    let row = |api: &mut Api, app: &mut App, query: &str| {
+        call(api, app, m::ASSET_LIST, json!({"query": query}))["rows"][0].clone()
+    };
+    // One content: its hash, and the keys whose tags reference it.
+    let r = row(&mut api, &mut app, "rifle");
+    let rifle_tag = tag(b"weap", "objects\\weapons\\rifle", 1, Some(&pixels));
+    assert_eq!(
+        r["hash"],
+        json!(tags::repo::hex(&tags::repo::normal::hash(&form(
+            &rifle_tag
+        ))))
+    );
+    assert_eq!(r["maps"], json!(["alpha", "beta"]));
+    assert_eq!(r["variants"], json!([]));
+    assert_eq!(
+        r["used"],
+        json!(["scnr:scenarios\\alpha", "scnr:scenarios\\beta"])
+    );
+    // Two contents: one entry per asset, with the files it is read from.
+    let p = row(&mut api, &mut app, "pixels");
+    assert_eq!(p["hash"], Value::Null);
+    assert_eq!(p["maps"], json!(["alpha", "beta"]));
+    let variants = p["variants"].as_array().unwrap().clone();
+    assert_eq!(variants.len(), 2);
+    let of = |maps: &str| {
+        variants
+            .iter()
+            .find(|v| v["maps"] == json!([maps]))
+            .unwrap()
+    };
+    assert_eq!(of("alpha")["files"], json!([null]));
+    assert_eq!(of("alpha")["variant"], Value::Null);
+    assert_eq!(of("beta")["files"], json!([v2.clone()]));
+    assert_eq!(of("beta")["variant"], json!(v2));
+    assert_eq!(of("alpha")["hash"].as_str().unwrap().len(), 64);
+    assert_ne!(of("alpha")["hash"], of("beta")["hash"]);
+    assert_eq!(p["used"], json!(["weap:objects\\weapons\\rifle"]));
+    assert!(row(&mut api, &mut app, "scenarios\\beta")["used"].is_null());
+
+    // A manifest that changes leaves the catalogue stale: a content is a
+    // file again, and the list says so.
+    let mut renamed = repo.manifest("alpha").unwrap();
+    renamed.name = "renamed".into();
+    repo.write_manifest(&renamed).unwrap();
+    let v = call(
+        &mut api,
+        &mut app,
+        m::ASSET_LIST,
+        json!({"query": "pixels"}),
+    );
+    assert_eq!(
+        v["rows"][0]["variants"],
+        json!([
+            {"variant": null, "maps": ["alpha"]},
+            {"variant": v2, "maps": ["beta"]},
+        ])
+    );
+    assert!(v["rows"][0]["used"].is_null() && v["rows"][0]["hash"].is_null());
+    let stale = v["problems"].as_array().unwrap().iter().any(|p| {
+        p.as_str()
+            .is_some_and(|p| p.contains("assets.idx") && p.contains("stale"))
+    });
+    assert!(stale, "{v}");
+}
