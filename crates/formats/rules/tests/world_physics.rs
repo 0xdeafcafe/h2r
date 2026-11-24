@@ -435,3 +435,104 @@ fn a_scenario_sets_the_bodies_the_sight_and_a_touchdown() {
         serde_json::from_str(r#"{"players":[{"slot":0,"body":{"flying":true}}]}"#);
     assert!(bad.is_err(), "an unknown body field is an error");
 }
+
+#[test]
+fn launch_and_grounded_are_events_with_their_arguments_and_caps() {
+    for (e, name, args) in [
+        (
+            Event::Launch,
+            "launch",
+            &[rules::Ty::Player, rules::Ty::Object, rules::Ty::Fixed][..],
+        ),
+        (Event::Grounded, "grounded", &[rules::Ty::Player][..]),
+    ] {
+        assert_eq!(Event::from_code(e.code()), Some(e));
+        assert_eq!(Event::named(name), Some(e));
+        assert_eq!(e.args(), args);
+        assert_eq!(e.worst_per_tick(), 16);
+    }
+    // The strip is a zone that may be `none`; the launch a `fixed`.
+    compile(
+        "rules \"L\" 1\ntype slayer\non launch(p, spot, speed) { if spot == none and speed > 8.0 { score(p, 1) } }\n",
+    )
+    .unwrap();
+    assert!(compile("rules \"L\" 1\ntype slayer\non launch(p, spot, speed, x) { }\n").is_err());
+    assert!(compile("rules \"L\" 1\ntype slayer\non grounded(p, x) { }\n").is_err());
+}
+
+/// A script's chain on the host's events: a launch in a run adds to it, a
+/// launch after the ground starts it again, and a launch off no marked
+/// strip hears `none`.
+const RUN: &str = r#"
+rules "Run" 1
+type slayer
+player var chain: int = 0
+player var flying: bool = false
+player var unmarked: int = 0
+on launch(p, spot, speed) {
+    if p.flying { p.chain = p.chain + 1 } else { p.chain = 1 }
+    p.flying = true
+    if spot == none { p.unmarked = p.unmarked + 1 }
+    score(p, p.chain)
+}
+on grounded(p) { p.flying = false }
+"#;
+
+#[test]
+fn a_run_of_launches_counts_until_the_ground() {
+    let (ir, _) = build(RUN).unwrap();
+    let mut vm = Vm::new(ir, 0, 0).unwrap();
+    let mut g = FakeGame::with_players(2);
+    let launch = |player: u8, spot: Option<u32>| Input::Launch {
+        player,
+        spot,
+        speed: fixed_at(12),
+    };
+    vm.begin_tick(0);
+    for input in [
+        launch(0, Some(77)),
+        launch(0, None),
+        launch(1, Some(77)),
+        Input::Grounded(0),
+        launch(0, Some(78)),
+    ] {
+        assert!(g.apply(&input));
+        assert_eq!(vm.fire(&mut g, input), Fired::Ran);
+    }
+    assert_eq!(vm.player_var(0, "chain"), Some(1));
+    assert_eq!(vm.player_var(0, "unmarked"), Some(1));
+    assert_eq!(vm.player_var(1, "chain"), Some(1));
+    let points: Vec<_> = g.calls_to("score").into_iter().map(|a| a[1].clone()).collect();
+    assert_eq!(
+        points,
+        [Arg::Int(1), Arg::Int(2), Arg::Int(1), Arg::Int(1)]
+    );
+    assert!(g.airborne.contains(&0), "the fake puts a launched player in the air");
+}
+
+#[test]
+fn a_scenario_carries_launch_and_grounded() {
+    let json = r#"{"players":[{"slot":0}],
+                   "ticks":[{"events":[{"launch":{"player":0,"spot":77,"speed":786432}},
+                                       {"launch":{"player":0,"speed":786432}}]},
+                            {"events":[{"grounded":0},{"launch":{"player":0,"spot":77,"speed":786432}}]}]}"#;
+    let s: Scenario = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        s.ticks[0].events[1],
+        ScenarioEvent::Launch {
+            player: 0,
+            spot: None,
+            speed: fixed_at(12)
+        }
+    );
+    assert_eq!(s.ticks[1].events[0].input(), Input::Grounded(0));
+    let (ir, _) = build(RUN).unwrap();
+    let r = scenario::run(ir, &s).unwrap();
+    let points: Vec<_> = r
+        .game
+        .calls_to("score")
+        .into_iter()
+        .map(|a| a[1].clone())
+        .collect();
+    assert_eq!(points, [Arg::Int(1), Arg::Int(2), Arg::Int(1)]);
+}

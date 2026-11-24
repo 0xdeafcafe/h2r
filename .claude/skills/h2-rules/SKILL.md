@@ -217,7 +217,9 @@ error (`scenario: unknown field ...`) and every field is optional.
   "object": 5}}`, `{"drop": {...}}`, `{"bounce": {"player": 0, "object":
   0, "chain": 2, "monster": false}}` (`chain` 1 and `monster` false when
   left out), `{"bounced": 0}`, `{"touchdown": {"player": 0, "down":
-  589824, "up": 786432}}` (raw `fixed`, world units a second), `{"edit": {"player": 0, "object": 7}}`, `{"squad_dead": 2}`,
+  589824, "up": 786432}}` (raw `fixed`, world units a second),
+  `{"launch": {"player": 0, "spot": 77, "speed": 786432}}` (`spot` `none`
+  when left out), `{"grounded": 0}`, `{"edit": {"player": 0, "object": 7}}`, `{"squad_dead": 2}`,
   `{"actor_kill": {"killer": 0, "class": "elite"}}`, `{"actor_assist":
   {"killer": 0, "assist": 1, "class": "elite"}}`, `"round_end"`.
 - A kill marks the victim dead and counts its death and the killer's
@@ -405,11 +407,14 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
   entry that is not `named` or VM-only: `set_team`, `give`,
   `take`, `create`, `register_objective`,
   `spawn_objective`, and the physics reads `airborne`, `crouching`,
-  `primed` and `sees` (the game side of W4 is not built; `on touchdown`
-  runs on the fake only, and a host refuses it by name). `push` and
+  `primed` and `sees` (their game side is not built). `on touchdown`,
+  `on launch` and `on grounded` come from the superbounce mode's medal
+  chain, so a host delivers them only to a script that `requires
+  hud.superbounce`. `push` and
   `launch` have no entry until R9. `check` lists these as unhostable. The host runtime
   also delivers only `init`, `round_start`, `kill`, `quit`, `timer`,
-  `tick`, `bounce`, `bounced`, `spawn`, `death`, `enter`, `leave` and `arrive`;
+  `tick`, `bounce`, `bounced`, `touchdown`, `launch`, `grounded`, `spawn`,
+  `death`, `enter`, `leave`, `arrive` and `damage`;
   reads only scores, kills, deaths, `alive`, `team_of`, `lives`,
   `round_time_left`, `is_objective`, `carrier_of`, the label reads,
   `inside`, `player_of`, `object_pos` and `object_vel`; makes only `score`, `end_round`, `set_lives`,

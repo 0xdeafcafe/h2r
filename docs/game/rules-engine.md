@@ -322,7 +322,8 @@ game (`Status::Blocked`, below), and no rules play, the carrier's
 included. Last, a script is refused when it needs what this runtime does
 not do yet (`runtime::host_refusal`): an event other than `init`,
 `round_start`, `kill`, `quit`, `timer`, `tick`, `bounce`, `bounced`,
-`spawn`, `death`, `enter`, `leave` and `arrive`; a read other than the scores,
+`touchdown`, `launch`, `grounded`, `spawn`, `death`, `enter`, `leave`,
+`arrive` and `damage`; a read other than the scores,
 kills, deaths, `alive`, `team_of`, `lives`, `round_time_left`,
 `is_objective`, `carrier_of`, the label reads (`label_number`,
 `label_of`, `zone_id`, `object_team`), `inside`, `player_of`, `object_pos` and `object_vel`; an
@@ -435,7 +436,7 @@ Firefight sits inside.
 | `on kill` | an observer before `PLAYER_KILLED` (`0x15ce70`): the attacker and victim player datums at `[esp+4]` and `[esp+8]`, as live telemetry reads them | at the next tick boundary |
 | `on round_start`, each round after the first | an observer after `ENGINE_ROUND_RESET` (`0x157ae0`), the engine's round reset, which the round state machine `0x15c550` calls as a round begins | at the next tick boundary |
 | `on quit` | an observer before `ENGINE_PLAYER_LEFT` (`0x157de0`): the player's salted datum in ESI, the player already off the roster (player `+2` bit 1) | at the next tick boundary |
-| `on bounce`, `on bounced` | the superbounce mode's tick observer, after `GAME_TICK`: each bounce and Bounced its medal chain files that tick (`rules::feature::bounces`, "Firefight, AI and bounces") | at the next tick boundary |
+| `on touchdown`, `on launch`, `on grounded`, then `on bounce`, `on bounced` | the superbounce mode's tick observer, after `GAME_TICK`: what its medal chain saw of each player's physics that tick, slot by slot (`Runtime::physics`, `world::physics`; [rules-world-api.md](rules-world-api.md#physics)), then each bounce and Bounced the chain files (`rules::feature::bounces`, "Firefight, AI and bounces") | at the next tick boundary |
 | `on death`, `on spawn`, `on leave`, `on enter`, then `on timer`, then `on tick` | an observer after `GAME_TICK`: the roster's and the zones' changes since the last tick (`runtime::tell`, `world::zones::events`), then the per-tick group | at the next tick boundary |
 | `on init`, then the first `on round_start` | the start observer | at the first tick boundary |
 
@@ -613,10 +614,10 @@ built-in Slayer starting from a record and setting the record, a kill
 making a `SCORE_ADD` call at the next boundary, a suicide's negative
 score, a machine that is not the authority, a refusal for an unknown
 hash and for System Link, refusals by entry and by event, the
-compiled-in Superbounce example found by its prefix, a bounce reaching
-`on bounce` and scoring at the next boundary, awards reaching `on bounce`
-with their chain's count and Monster flag and a Bounced reaching
-`on bounced`, another
+compiled-in Superbounce example found by its prefix, a launch reaching
+`on launch` and scoring at the next boundary, the script's chain on the
+host's launches and ends of runs with a Monster's double, and a Bounced
+reaching `on bounced`, another
 engine's record, a record with no mode, the record removed at the game's
 end, a reverted record resuming the VM, a stored script running with no
 Live client and on System Link, a Live variant's script fetched by its
@@ -1018,6 +1019,12 @@ chain, 1 for a single bounce; `monster` a Monster Bounce),
 `on touchdown(p, down, up)` (a player's biped landed; `down` the speed it
 fell at the tick before and `up` its vertical speed now, `fixed` world
 units a second; at most 16 a tick),
+`on launch(p, spot, speed)` (a landing the host judged a superbounce, as
+its launch window closed; `spot` the strip, a `zone?`, `none` off every
+marked strip; `speed` the launch, `fixed` world units a second up; at
+most 16 a tick),
+`on grounded(p)` (the player's run of bounces with no ground between them
+ended; at most 16 a tick),
 `on edit(p, o)` (a granted power was used),
 `on join(p)`, `on quit(p)`, `on round_end`. A handler names its event's
 arguments in order and may leave out trailing ones (`on bounce(p, spot)`);
@@ -1340,7 +1347,7 @@ land at the point in the tick where the lifted engine's did:
 |---|---|---|
 | `on kill`, and each event the carrier engine has a callback for (per port: death, spawn, pickup, drop, join, quit, round start and end) | synchronously, in place of that callback | made at once |
 | `on enter`, `on leave`, `on press`, `on timer` (slot order), then `on tick` | synchronously, in place of the carrier's per-tick update (`0x15c150`) | made at once |
-| `on squad_dead`, `on actor_kill`, `on actor_assist`, `on damage`, `on bounce`, `on bounced`; `on init` | after `GAME_TICK`, from what the tick's observers gathered; `init` after `GAME_ACTIVATE` | queued |
+| `on squad_dead`, `on actor_kill`, `on actor_assist`, `on damage`, `on touchdown`, `on launch`, `on grounded`, `on bounce`, `on bounced`; `on init` | after `GAME_TICK`, from what the tick's observers gathered; `init` after `GAME_ACTIVATE` | queued |
 
 An event the carrier has no callback for runs with the per-tick group.
 Some calls are queued from any handler and made in program order by the
@@ -1418,7 +1425,7 @@ Reads:
 | events of the tick | `PLAYER_KILLED` `0x15ce70` for `on kill`; the roster's units each tick for `on spawn` and `on death` (`runtime::tell`); `SimRead::events` once sim-rewrite section 7 exists | named |
 | squads: actors alive, `on squad_dead`, `on actor_kill`, `on actor_assist` | `actor_net::squads::count_by_squad` and the kill list Firefight's `Observed` carries (`crates/extensions/game/src/actor_net/squads.rs`, `crates/formats/firefight/src/director.rs`) | named |
 | `zone_seen(z)`, `zone_distance(z)`, `zone_team_distance(z, team)`: Firefight's drop zones, the objects labelled `ff_drop` in kit order, and a zone's distance from one player team | the zone visibility and distance Firefight's `Observed` carries (`ZoneSeen`) | named |
-| `on bounce(p, spot, chain, monster)`, `on bounced(p)` | a detector of the traced signature: capsule below the floor, then +8 to +13 units/s upward the next tick ([superbounce.md](superbounce.md#summary), **Trace**); the launch rule itself is Open there | traced; detector not built |
+| `on bounce(p, spot, chain, monster)`, `on bounced(p)`; `on touchdown(p, down, up)`, `on launch(p, spot, speed)`, `on grounded(p)` | the superbounce mode's medal chain (`superbounce_chain.rs`): its awards, and what each step saw of the player's physics (`Physics`); the touchdown rule and the landing judge of [superbounce.md](superbounce.md#medals) | named; delivered while the superbounce mode runs |
 | bounce and crouch spots, as zones | the scanner's spots per map and BSP (`crates/live/superbounce`); candidates, none traced as a real bounce | named |
 
 Actions:
@@ -1455,7 +1462,7 @@ Actions:
 | `camera(p, mode)`: first or third person | no entry known | untraced | `player.camera` |
 | `teleport(o, at)`, `move_to(o, at, t)`, `stop(o)`; `o.position`, `o.velocity`, `o.speed`; `on arrive(o)` | `OBJECT_SET_TRANSFORM` `0xb7430` for a put and a mover's step each tick; the movers in the VM's state (`RulesExt::movers`); the object datum's position and velocity for the reads (`rules/world/objects.rs`, [rules-world-api.md](rules-world-api.md#objects)) | named; whether a client sees the move is not researched (R2, R3) | `objects.move` |
 | device power | Forge's sinks (forge-features.md) | not built | `objects.move` |
-| `p.airborne`, `p.crouching`, `p.primed`; `on touchdown(p, down, up)`; `sees(a, b)` | a biped's flags (`game::superbounce_charge`), the touchdown rule run for every player, and `AI_LINE_OF_SIGHT` traced at the tick boundary for the VM's sight table (`RulesExt::sight`, `Game::trace_sight`); [rules-world-api.md](rules-world-api.md#physics) | built on the fake; a host refuses a script that uses any by name | none |
+| `p.airborne`, `p.crouching`, `p.primed`; `sees(a, b)`; `on touchdown(p, down, up)`, `on launch(p, spot, speed)`, `on grounded(p)` | a biped's flags (`game::superbounce_charge`), `AI_LINE_OF_SIGHT` traced at the tick boundary for the VM's sight table (`RulesExt::sight`, `Game::trace_sight`), and the medal chain's physics for every player (`superbounce_chain::Physics`, `game::rules::world::physics`); [rules-world-api.md](rules-world-api.md#physics) | the reads and `sees` built on the fake, and a host refuses a script that uses any by name; the three events delivered by the host while the superbounce mode runs | none |
 | `message(to, text)`: `to` is a player, a team or `all` (everyone); the compiler picks one of three entries by its type (`message`, `message_team`, `message_all`), all spelled `message`. A text written in the call may hold up to four `{name}` holes, each a player, team, int, time or enum in scope (`{{` is a brace); the call reaches the game with the holes' values after its own arguments ([rules-language-types.md](rules-language-types.md#messages)). The host shows it to its local users in the audience through the notification insert (`hud_kit::NOTIFY`) and sends it to clients as a show cue ([rules-world-api.md](rules-world-api.md#the-show-channel)). Scoreboard text, announcer, waypoint | the notification queue (`0x24cbee`), per local user (hud-kit.md "Messages"); the centred text (`0x24cc73`) is not used | named | `hud.message` |
 | `hud_text(w, "…")`, `hud_value(w, n)`, `hud_fill(w, f)`, `hud_style(w, style)`, `hud_show(w, on)`, `hud_value_for(w, p, n)`; `mark(wp, at)`, `mark(wp, at, to)`, `unmark(wp)` | the VM's show state (`RulesExt::show`), drawn from the objective HUDs after each tick (`rules/world/hud.rs`); a mark's audience is a player's slot's bit or the team's seated players' bits, resolved in the VM from the roster (`Game::players_of_team`); the state rides the show channel's `Show` record ([rules-world-api.md](rules-world-api.md#the-show-channel)) | named | `hud.widgets`, `hud.waypoints` |
 | `place_squad_at(s, class, n, zone, tier)`: a squad at a kit zone index with a weapon tier | Firefight's `PlaceSquad` command, through the same squad entry | named | `ai.squads` |
@@ -1834,7 +1841,7 @@ Tooling:
   (`slot`, `team`, `alive`, `score`, `lives`, `unit`, the object
   that is the player's unit, and `body`: `airborne`, `crouching` and
   `primed`, what the physics reads answer until a `touchdown` lands the
-  player), `sight` (`[from, to]` pairs of objects with nothing solid
+  player or a `launch` puts it in the air), `sight` (`[from, to]` pairs of objects with nothing solid
   between them, what `sees` answers true for), `teams`, `variant` (record fields by name;
   each one left out reads the stock record of the script's type,
   `fake::stock_variant`), `map` (the things the game holds that a script
@@ -1849,7 +1856,8 @@ Tooling:
   player), `squad_dead`, `actor_kill` (`killer`,
   `class`), `actor_assist` (`killer`, `assist`, `class`), `damage`
   (`object`, `by`, `amount`, a raw `fixed`), `touchdown` (`player`,
-  `down`, `up`, raw `fixed`) and
+  `down`, `up`, raw `fixed`), `launch` (`player`, `spot`, `none` when
+  absent, `speed`, a raw `fixed`), `grounded` (the player) and
   `round_end`. Tick 0 reports `init` and `round_start` first; each tick
   ends with the per-tick group; queued calls are made at the start of
   the next tick and after the last. The fake game is the one the
@@ -2166,7 +2174,9 @@ players like any other to a script.
 
 **Bounces are observed, not made.** Physics stays the engine's: Havok at
 an exact 30 Hz tick ([high-framerate.md](high-framerate.md)). A script
-hears `on bounce(p, spot, chain, monster)` and `on bounced(p)`, reads the scanner's spots as zones, scores
+hears `on bounce(p, spot, chain, monster)` and `on bounced(p)`, or the
+physics events under them (`on touchdown`, `on launch`, `on grounded`,
+[rules-world-api.md](rules-world-api.md#physics)), reads the scanner's spots as zones, scores
 and times them, and sets traits. That makes Bounce Practice and a trick
 or parkour mode real scripts, and the superbounce mode a script's own
 choice (`requires hud.superbounce`). The detector's rule is a traced
@@ -2175,8 +2185,10 @@ or over-report until it is checked in play.
 
 **Code**, tests only. The detector is the superbounce mode's medal chain
 (`superbounce_chain`, [superbounce.md](superbounce.md#medals)): each
-tick its observer after `GAME_TICK` steps every player's chain, and each
-bounce it files goes to the running script as `on bounce`, and each
+tick its observer after `GAME_TICK` steps every player's chain. What
+each step saw of the player's physics goes to the running script first,
+as `on touchdown`, `on launch` and `on grounded` (`Runtime::physics`);
+then each bounce it files goes as `on bounce`, and each
 Bounced (a fall out of the map during a bounce) as `on bounced`
 (`rules::feature::bounces`, `Runtime::bounces`), on that tick, with
 their calls made at the next tick boundary as `on kill`'s are. A
@@ -2204,7 +2216,12 @@ bounce's place in its chain up to 6; `bounced_costs` (default on), a
 point off for a Bounced; and `monster_double` (default on), a Monster
 Bounce's points doubled after the cap
 ([superbounce.md](superbounce.md#the-superbounce-game-type) has the
-table). The built-in Superbounce variant's
+table). It keeps the chain itself, on the host's physics events: `on
+launch` adds one to the player's `chain` while `flying` and starts it at
+1 otherwise, `on grounded` clears `flying`, and a launch over 16 world
+units a second is a Monster; its counts and scores match the Rust
+chain's on every tick of the chain's test scenarios
+([rules-world-api.md](rules-world-api.md#physics)). The built-in Superbounce variant's
 record names it (mode 2, its hash prefix and default options); the
 record comes from `record_for` on the script, written into the built-in
 entry at list load (`community_variants::write_blocks`), and its other

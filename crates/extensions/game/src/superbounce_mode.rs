@@ -36,8 +36,10 @@
 //! **The medals** (docs/game/superbounce.md, "Medals") are on it too:
 //! every player's chain of bounces ([`crate::superbounce_chain`]), stepped
 //! each tick for every listed player, bots included, published as
-//! [`State::medals`]. Each bounce they file goes to the running rules
-//! script as `on bounce` ([`crate::rules::feature::bounces`]).
+//! [`State::medals`]. What they see of each player's physics goes to the
+//! running rules script as `on touchdown`, `on launch` and `on grounded`,
+//! and each bounce they file as `on bounce`
+//! ([`crate::rules::feature::bounces`]).
 //!
 //! **The Pogo Stick's riders** (docs/game/pogo-stick.md) are stepped from
 //! here too, with the same players and awards ([`crate::pogo_ride`]).
@@ -1476,10 +1478,10 @@ fn on_tick(o: &hooks::Obs) {
         .filter_map(|p| Some((p.slot, p.user?)))
         .min_by_key(|(_, user)| *user);
     let tick = live.tick.unwrap_or_else(|| TICKS.load(Ordering::Relaxed));
-    let (awards, medals) = {
+    let (awards, medals, physics) = {
         let mut m = lock(&MEDALS);
         let awards = m.step(tick, &players, &every);
-        (awards, m.view())
+        (awards, m.view(), m.physics().to_vec())
     };
     keep_awards(&awards);
     // In the flight after a bounce, the seams it can reach, the best
@@ -1590,8 +1592,9 @@ fn on_tick(o: &hooks::Obs) {
             .filter(|n| n.kind == NavKind::Strip)
             .map(|n| n.at);
         crate::superbounce_ghost::tick(m, tick, &players, &awards, map.as_deref(), &spots, chosen);
-        // A rules script hears each bounce on the tick it is filed.
-        crate::rules::feature::bounces(m, &awards);
+        // A rules script hears the tick's touchdowns, launches and ends
+        // of runs, then each bounce on the tick it is filed.
+        crate::rules::feature::bounces(m, &physics, &awards);
         // The Pogo Stick's riders, on the chain's verdicts
         // (docs/game/pogo-stick.md, "Phases and tricks").
         // The local players' pistons are heard (pogo_sound.rs).

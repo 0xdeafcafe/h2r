@@ -110,7 +110,8 @@ pub struct FakeGame {
     pub steps: Vec<(u32, [i32; 3], [i32; 3])>,
     /// The players whose biped is off the ground, crouched, or primed:
     /// what `airborne`, `crouching` and `primed` read. A `touchdown`
-    /// lands the player (takes it out of `airborne`).
+    /// lands the player (takes it out of `airborne`), and a `launch` puts
+    /// it back.
     pub airborne: BTreeSet<u8>,
     pub crouching: BTreeSet<u8>,
     pub primed: BTreeSet<u8>,
@@ -682,9 +683,12 @@ impl FakeGame {
                     self.inside.remove(&(p, zone));
                 }
             }
-            // A landing ends the flight.
+            // A landing ends the flight; a launch starts one.
             Input::Touchdown { player, .. } => {
                 self.airborne.remove(&player);
+            }
+            Input::Launch { player, .. } => {
+                self.airborne.insert(player);
             }
             // The shield takes the damage first, then the body.
             Input::Damage { object, amount, .. } => {

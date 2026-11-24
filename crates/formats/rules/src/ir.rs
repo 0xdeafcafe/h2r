@@ -518,10 +518,18 @@ pub enum Event {
     /// before and its vertical speed now, both `fixed` world units a
     /// second, `down` positive for a fall and `up` positive for rising.
     Touchdown,
+    /// A landing the host judged a superbounce, on the tick its launch
+    /// window closed: the strip it came off (`none` off every marked
+    /// strip) and the launch, `fixed` world units a second up.
+    Launch,
+    /// A player's run of bounces with no ground between them ended: a
+    /// landing that did not bounce, the ground from the third tick after a
+    /// bounce, a teleport, a new unit or a fall through a strip's floor.
+    Grounded,
 }
 
 impl Event {
-    pub const ALL: [Event; 24] = [
+    pub const ALL: [Event; 26] = [
         Event::Init,
         Event::RoundStart,
         Event::Tick,
@@ -546,6 +554,8 @@ impl Event {
         Event::Arrive,
         Event::Damage,
         Event::Touchdown,
+        Event::Launch,
+        Event::Grounded,
     ];
 
     pub fn code(self) -> u8 {
@@ -583,6 +593,8 @@ impl Event {
             Event::Arrive => "arrive",
             Event::Damage => "damage",
             Event::Touchdown => "touchdown",
+            Event::Launch => "launch",
+            Event::Grounded => "grounded",
         }
     }
 
@@ -595,9 +607,12 @@ impl Event {
     pub fn args(self) -> &'static [Ty] {
         match self {
             Event::Kill => &[Ty::Player, Ty::Player],
-            Event::Spawn | Event::Death | Event::Join | Event::Quit | Event::Bounced => {
-                &[Ty::Player]
-            }
+            Event::Spawn
+            | Event::Death
+            | Event::Join
+            | Event::Quit
+            | Event::Bounced
+            | Event::Grounded => &[Ty::Player],
             Event::Pickup | Event::Drop | Event::Press | Event::Edit => &[Ty::Player, Ty::Object],
             // The chain's count (1 for a single bounce, 2 for a double) and
             // whether it was a Monster Bounce.
@@ -607,6 +622,7 @@ impl Event {
             Event::SquadDead => &[Ty::Squad],
             Event::Damage => &[Ty::Object, Ty::Player, Ty::Fixed],
             Event::Touchdown => &[Ty::Player, Ty::Fixed, Ty::Fixed],
+            Event::Launch => &[Ty::Player, Ty::Object, Ty::Fixed],
             Event::ActorKill => &[Ty::Player, Ty::Class],
             Event::ActorAssist => &[Ty::Player, Ty::Player, Ty::Class],
             Event::Init | Event::RoundStart | Event::Tick | Event::Timer | Event::RoundEnd => &[],
@@ -633,7 +649,9 @@ impl Event {
             | Event::ActorKill
             | Event::ActorAssist
             | Event::Damage
-            | Event::Touchdown => 16,
+            | Event::Touchdown
+            | Event::Launch
+            | Event::Grounded => 16,
             Event::Enter | Event::Leave => 64,
             Event::SquadDead => 16,
             // One a mover, and a script has at most 16 movers.

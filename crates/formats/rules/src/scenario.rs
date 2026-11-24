@@ -294,6 +294,17 @@ pub enum ScenarioEvent {
         down: i32,
         up: i32,
     },
+    /// A landing the host judged a superbounce off strip `spot` (`none`
+    /// when absent), launching at `speed` (a `fixed` raw value, world
+    /// units a second up).
+    Launch {
+        player: u8,
+        #[serde(default)]
+        spot: Option<u32>,
+        speed: i32,
+    },
+    /// `player`'s run of bounces with no ground between them ended.
+    Grounded(u8),
     RoundEnd,
 }
 
@@ -336,6 +347,8 @@ impl ScenarioEvent {
             },
             ScenarioEvent::Damage { object, by, amount } => Input::Damage { object, by, amount },
             ScenarioEvent::Touchdown { player, down, up } => Input::Touchdown { player, down, up },
+            ScenarioEvent::Launch { player, spot, speed } => Input::Launch { player, spot, speed },
+            ScenarioEvent::Grounded(p) => Input::Grounded(p),
             ScenarioEvent::RoundEnd => Input::RoundEnd,
         }
     }

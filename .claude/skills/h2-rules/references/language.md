@@ -191,7 +191,7 @@ Fields (read through an owner):
 
 ## Events
 
-An `on` handler names its arguments in order; the count must match.
+An `on` handler names its arguments in order and may leave out trailing ones; naming more is an error.
 
 | Handler | Arguments | When |
 |---|---|---|
@@ -212,7 +212,9 @@ An `on` handler names its arguments in order; the count must match.
 | `on bounce(p, spot, chain, monster)` | player, zone, int, bool | `chain` is its place in its chain (1 a single bounce); `monster` a Monster Bounce |
 | `on bounced(p)` | player | a fall out of the map during a bounce |
 | `on arrive(o)` | object | a `move_to` reached its end, on its end tick, after the timers and before `on tick` |
-| `on touchdown(p, down, up)` | player, fixed, fixed | a player's biped landed: the speed it fell at on the tick before (`down`, positive) and its vertical speed now (`up`, positive for rising), world units a second; at most 16 a tick. The fake lands the player; a host does not deliver it yet |
+| `on touchdown(p, down, up)` | player, fixed, fixed | a player's biped landed: the speed it fell at on the tick before (`down`, positive) and its vertical speed now (`up`, positive for rising), world units a second; at most 16 a tick. The host delivers it while the superbounce mode runs (`requires hud.superbounce`); the fake lands the player |
+| `on launch(p, spot, speed)` | player, zone?, fixed | a landing the host judged a superbounce, as its launch window closed (3 ticks after the touchdown): the strip (`none` off every marked strip) and the launch, world units a second up; over 16 is a Monster. Superbounce keeps its chain on it; at most 16 a tick |
+| `on grounded(p)` | player | the run of bounces with no ground between them ended (a landing that did not bounce, the ground from the third tick after a bounce, a teleport, a new unit, a fall through a strip); follows the run's last `launch`; at most 16 a tick |
 | `on edit(p, o)` | player, object | a granted power was used |
 
 A handler runs to completion. `on timer` handlers run in slot order, then

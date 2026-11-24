@@ -13,6 +13,13 @@
 //! It is not in a snapshot: after a state load or a Theater seek a chain
 //! in flight starts again at 1.
 //!
+//! Each step also says what the chain saw of the player's physics
+//! ([`Physics`]): every touchdown, each landing judged a bounce with its
+//! launch, and the end of a run of bounces. A rules script hears them as
+//! `on touchdown`, `on launch` and `on grounded` (docs/game/rules-world-api.md,
+//! "Physics") and keeps its own chain on them; the Superbounce script's
+//! chain is this one's, step for step (`superbounce_chain_tests.rs`).
+//!
 //! Each award of a tick is recorded for the film and Live through
 //! [`record`]: a bounce as `Telemetry::superbounce`, a Bounced as
 //! `Telemetry::bounced`, on the console whose simulation is the game's,
@@ -175,6 +182,28 @@ impl Event {
     }
 }
 
+/// What a step saw of the player's physics, in the order it saw it: the
+/// host half of the world API's physics events
+/// (docs/game/rules-world-api.md, "Physics"). A rules script that keeps
+/// a chain on [`Physics::Launch`] and [`Physics::Grounded`] counts as
+/// [`Chain`] does: the count grows on a launch while the run is live and
+/// starts at 1 otherwise, and a Grounded comes after every launch whose
+/// run then ends, before the next launch.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Physics {
+    /// A landing ([`touchdown`]): the fall before (units/s, positive) and
+    /// the vertical speed on the touchdown tick (units/s, up positive).
+    /// None is seen while a touchdown's launch window is open, or under a
+    /// strip's floor after a fall through it.
+    Touchdown { down: f32, up: f32 },
+    /// A landing judged a bounce, when its launch window closed: the strip
+    /// ([`spot_id`], `None` off every marked strip) and the launch (the
+    /// best vertical speed of its window, units/s).
+    Launch { spot: Option<u32>, speed: f32 },
+    /// The run of bounces ended: [`Chain::live`] went from true to false.
+    Grounded,
+}
+
 /// The previous tick, for the touchdown and the unit's change.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Prev {
@@ -210,6 +239,8 @@ pub struct Chain {
     /// A fall through a strip's floor, awarding a Bounced when the unit
     /// goes.
     armed: Option<Armed>,
+    /// What the last step saw ([`Chain::physics`]).
+    seen: Vec<Physics>,
 }
 
 impl Chain {
@@ -227,6 +258,11 @@ impl Chain {
     /// unit going within [`BOUNCED_TICKS`] earns it.
     pub fn armed(&self) -> bool {
         self.armed.is_some()
+    }
+
+    /// What the last [`Chain::step`] saw of the player's physics, in order.
+    pub fn physics(&self) -> &[Physics] {
+        &self.seen
     }
 
     /// Ends the chain (the count stays, for the record).
@@ -260,9 +296,14 @@ impl Chain {
         self.count = if self.live { self.count + 1 } else { 1 };
         self.live = true;
         self.since = LAUNCH_TICKS;
+        let spot = j.spot.map(|i| spot_id(&spots[i]));
+        self.seen.push(Physics::Launch {
+            spot,
+            speed: p.launch,
+        });
         Some(Event::Bounce {
             chain: self.count,
-            spot: j.spot.map(|i| spot_id(&spots[i])),
+            spot,
             monster: p.launch > MONSTER_VZ,
             strips: strips_near(spots, p.at).min(255) as u8,
         })
@@ -291,7 +332,25 @@ impl Chain {
     /// A fall through a strip's floor (`superbounce_charge::through`) drops
     /// the touchdown it follows, ends the chain and arms a Bounced for
     /// [`BOUNCED_TICKS`]; a bounce or a teleport disarms it.
+    ///
+    /// What the step saw of the player's physics is [`Chain::physics`]
+    /// after it: a [`Physics::Grounded`] whenever the chain was live, or
+    /// went live in the step, and is not after it.
     pub fn step(&mut self, t: Option<&PlayerTick>, spots: &[Spot]) -> Option<Event> {
+        self.seen.clear();
+        let was = self.live;
+        let event = self.step_inner(t, spots);
+        let launched = self
+            .seen
+            .iter()
+            .any(|p| matches!(p, Physics::Launch { .. }));
+        if (was || launched) && !self.live {
+            self.seen.push(Physics::Grounded);
+        }
+        event
+    }
+
+    fn step_inner(&mut self, t: Option<&PlayerTick>, spots: &[Spot]) -> Option<Event> {
         let Some(t) = t else {
             let prev = self.prev.take();
             return self.gone(prev, spots);
@@ -357,6 +416,10 @@ impl Chain {
                 self.armed = None;
             }
         } else if !sunk && touchdown(p.airborne, p.vz, t.airborne, now.vz) {
+            self.seen.push(Physics::Touchdown {
+                down: -p.vz,
+                up: now.vz,
+            });
             if self.live || p.word.is_some_and(primed) {
                 self.pending = Some(Pending::new(p.word, p.position, p.vz, 0, now.vz));
             } else {
@@ -445,6 +508,8 @@ pub struct Medals {
     records: BTreeMap<u8, Record>,
     recent: VecDeque<Award>,
     seq: u64,
+    /// What the last step saw of each player's physics, by slot.
+    heard: Vec<(u8, Physics)>,
 }
 
 impl Medals {
@@ -456,6 +521,7 @@ impl Medals {
             records: BTreeMap::new(),
             recent: VecDeque::new(),
             seq: 0,
+            heard: Vec::new(),
         }
     }
 
@@ -474,6 +540,7 @@ impl Medals {
             *self = Medals::new();
         }
         let mut out = Vec::new();
+        self.heard.clear();
         for slot in 0..SLOTS {
             let s = seen.iter().find(|s| usize::from(s.slot) == slot);
             if let Some(s) = s {
@@ -481,6 +548,8 @@ impl Medals {
             }
             let t = s.and_then(|s| s.tick);
             let event = self.chains[slot].step(t.as_ref(), spots);
+            let saw = self.chains[slot].physics();
+            self.heard.extend(saw.iter().map(|p| (slot as u8, *p)));
             let slot = slot as u8;
             if let Some(e) = event {
                 out.push(self.award(slot, tick, e.chain(), e.medals(), e.spot(), e.strips()));
@@ -557,6 +626,13 @@ impl Medals {
             r.chain = c.count();
             r.live = c.live();
         }
+    }
+
+    /// What the last [`Medals::step`] saw of the players' physics, slot
+    /// by slot and in order within a slot ([`Chain::physics`]): what a
+    /// rules script hears as `on touchdown`, `on launch` and `on grounded`.
+    pub fn physics(&self) -> &[(u8, Physics)] {
+        &self.heard
     }
 
     /// The players that have earned a medal this game, by slot.
