@@ -70,7 +70,11 @@ def run():
     film = wait("the local game's film", new_film)
     print(json.dumps(film), flush=True)
     # Close the carnage report when it is in front of the post-game lobby.
-    audit = agent("ui.audit")
+    def postgame_surface():
+        audit = agent("ui.audit")
+        return audit if audit.get("active") and audit.get("target") else None
+
+    audit = wait("post-game menu", postgame_surface)
     labels = [r.get("text") for p in (audit["active"] or {}).get("panes", [])
               for l in p["lists"] for r in l["rows"]]
     if not any((s or "").lower() in ("game setup", "theater") for s in labels):
@@ -94,8 +98,12 @@ def run():
 
     wait("Watch to start the selected film", playing)
     held = agent("theater.pause")["tick"]
-    agent("theater.camera", mode="free")
-    agent("theater.camera", mode="follow", seat=0)
+    for mode in ("free", "follow"):
+        params = {"mode": mode}
+        if mode == "follow":
+            params["seat"] = 0
+        agent("theater.camera", **params)
+        wait(mode + " camera", lambda: player_state().get("camera") == mode)
     agent("theater.step", ticks=1)
     wait("one paused step", lambda: agent("theater.state")["tick"] == held + 1)
     agent("theater.seek", tick=held)
