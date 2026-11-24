@@ -217,11 +217,12 @@ pub struct LightLook {
 /// Why a light's pass stays on the D3D path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LightRefusal {
-    /// The template draws nothing in the layer at the first level of
-    /// detail (the engine builds no entry either: draw nothing).
+    /// The requested level of detail has no draws in this layer.
     NoLayer,
-    /// More than one pass in the layer.
+    /// A host light without a pass selector found multiple passes.
     Passes(usize),
+    /// No pass at the gathered selector.
+    NoPass(u8),
     /// The chosen implementation is not in the pass.
     NoImplementation(usize),
     NoVertexShader,
@@ -250,14 +251,34 @@ pub fn light_look(
     layer: usize,
     implementation: usize,
 ) -> Result<LightLook, LightRefusal> {
+    selected_light_look(material, layer, implementation, None)
+}
+
+/// A gathered entry selects a particular template LOD and pass within the
+/// layer. A host light without that binding can only issue a single pass.
+pub fn selected_light_look(
+    material: &Material,
+    layer: usize,
+    implementation: usize,
+    selection: Option<(u8, u8)>,
+) -> Result<LightLook, LightRefusal> {
+    let lod = selection.map_or(0, |(variant, _)| usize::from(variant));
     let l = material
         .layers
         .iter()
-        .find(|l| l.lod == 0 && l.layer == layer)
+        .find(|l| l.lod == lod && l.layer == layer)
         .filter(|l| !l.passes.is_empty())
         .ok_or(LightRefusal::NoLayer)?;
-    let [pass] = l.passes.as_slice() else {
-        return Err(LightRefusal::Passes(l.passes.len()));
+    let pass = match selection {
+        Some((_, selector)) => l.passes.iter()
+            .find(|pass| pass.index == usize::from(selector))
+            .ok_or(LightRefusal::NoPass(selector))?,
+        None => {
+            let [pass] = l.passes.as_slice() else {
+                return Err(LightRefusal::Passes(l.passes.len()));
+            };
+            pass
+        }
     };
     let imp = pass
         .implementations
@@ -738,6 +759,31 @@ mod tests {
             light_look(&m, SPECULAR_LAYER, 0).unwrap_err(),
             LightRefusal::NoLayer
         );
+    }
+
+    #[test]
+    fn a_gathered_light_selects_the_exact_lod_pass_and_implementation() {
+        let mut m = material(DIFFUSE_LAYER, vec![implementation(0, TextureSource::Engine(9))]);
+        let mut lod = m.layers[0].clone();
+        lod.lod = 2;
+        let second = ResolvedPass {
+            index: 1,
+            pass: TagId(75),
+            implementations: vec![implementation(1, TextureSource::Engine(10))],
+        };
+        lod.passes.push(second.clone());
+        m.layers[0].passes.push(second);
+        m.layers.push(lod);
+        m.layers[0].passes[1].pass = TagId(25);
+
+        let select = |lod, pass, imp| selected_light_look(&m, DIFFUSE_LAYER, imp, Some((lod, pass)));
+        let look = select(2, 1, 1).unwrap();
+        assert_eq!((look.pass, look.textures[3]), (TagId(75), LightStage::Gel));
+        assert_eq!(select(0, 1, 1).unwrap().pass, TagId(25));
+        assert_eq!(select(1, 1, 1).unwrap_err(), LightRefusal::NoLayer);
+        assert_eq!(select(2, 2, 1).unwrap_err(), LightRefusal::NoPass(2));
+        assert_eq!(select(2, 1, 0).unwrap_err(), LightRefusal::NoImplementation(0));
+        assert_eq!(light_look(&m, DIFFUSE_LAYER, 0).unwrap_err(), LightRefusal::Passes(2));
     }
 
     #[test]

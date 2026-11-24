@@ -11,7 +11,7 @@ use native_render::gpu::Image;
 use native_render::light_gpu::{LightGpu, light_gpu_key, same_gpu_pass};
 use native_render::light_look::{
     InputKey, LightInputs, LightProgram, LightRefusal, LightStage, compile_light,
-    compile_light_model, engine_inputs, light_look,
+    compile_light_model, engine_inputs, selected_light_look,
 };
 use tags::material::{EngineInputs, ShaderLibrary};
 
@@ -22,7 +22,7 @@ const QUEUE_DEPTH: usize = 64;
 const LOADING: Keep = Keep::MaterialPending;
 
 type Images = HashMap<(usize, TagId, u32), Image>;
-type Programs = HashMap<TagId, Vec<u8>>;
+type Programs = HashMap<(TagId, u32), Vec<u8>>;
 
 /// What a live edit of an image reaches: the light passes the worker has
 /// built (by whether they belong to a model part) and the images it
@@ -58,7 +58,9 @@ struct Variant {
     implementation: usize,
     // A structure part uses WorldVertex. Model programs depend on the actual
     // shader-selected stream in the section and its classification.
-    model: Option<(u32, u16, u32)>,
+    model: Option<(u32, u16)>,
+    vertex_class: u32,
+    selection: Option<(u8, u8)>,
 }
 
 type ResultSlot = OnceLock<(u64, Result<Resolved, Keep>)>;
@@ -265,12 +267,16 @@ impl Resolver {
         inputs: LightInputs,
         layer: usize,
         implementation: usize,
+        vertex_class: u32,
+        selection: Option<(u8, u8)>,
     ) -> Result<Resolved, Keep> {
         let key = Variant {
             shader: material.shader,
             inputs: Some(inputs.key()),
             layer,
             implementation,
+            vertex_class,
+            selection,
             model: None,
         };
         self.request(key, &material.instance, Some(inputs), None)
@@ -281,12 +287,15 @@ impl Resolver {
         &self,
         material: &LitMaterial,
         implementation: usize,
+        vertex_class: u32,
     ) -> Result<Resolved, Keep> {
         let key = Variant {
             shader: material.shader,
             inputs: None,
             layer: native_render::shadow_look::CASTER_LAYER,
             implementation,
+            vertex_class,
+            selection: None,
             model: None,
         };
         self.request(key, &material.instance, None, None)
@@ -298,12 +307,15 @@ impl Resolver {
         material: &LitMaterial,
         layer: usize,
         implementation: usize,
+        vertex_class: u32,
     ) -> Result<Resolved, Keep> {
         let key = Variant {
             shader: material.shader,
             inputs: None,
             layer,
             implementation,
+            vertex_class,
+            selection: None,
             model: None,
         };
         self.request(key, &material.instance, None, None)
@@ -323,11 +335,9 @@ impl Resolver {
             inputs: None,
             layer,
             implementation: usize::from(entry.binding.implementation),
-            model: Some((
-                entry.model,
-                entry.stream.section,
-                u32::from(entry.stream.vertex_class),
-            )),
+            model: Some((entry.model, entry.stream.section)),
+            vertex_class: u32::from(entry.stream.vertex_class),
+            selection: None,
         };
         self.request(key, instance, None, Some(lights))
     }
@@ -341,17 +351,16 @@ impl Resolver {
         implementation: usize,
         lights: &Arc<ModelLights>,
         entry: &LightEntry,
+        selection: Option<(u8, u8)>,
     ) -> Result<Resolved, Keep> {
         let key = Variant {
             shader,
             inputs: Some(inputs.key()),
             layer,
             implementation,
-            model: Some((
-                entry.model,
-                entry.stream.section,
-                u32::from(entry.stream.vertex_class),
-            )),
+            model: Some((entry.model, entry.stream.section)),
+            vertex_class: u32::from(entry.stream.vertex_class),
+            selection,
         };
         self.request(key, instance, Some(inputs), Some(lights))
     }
@@ -369,11 +378,9 @@ impl Resolver {
             inputs: None,
             layer: native_render::shadow_look::CASTER_LAYER,
             implementation: usize::from(entry.binding.implementation),
-            model: Some((
-                entry.model,
-                entry.stream.section,
-                u32::from(entry.stream.vertex_class),
-            )),
+            model: Some((entry.model, entry.stream.section)),
+            vertex_class: u32::from(entry.stream.vertex_class),
+            selection: None,
         };
         self.request(key, instance, None, Some(lights))
     }
@@ -417,7 +424,7 @@ impl Worker {
         ) {
             native_render::shadow_look::receiver_look(&material, key.layer, key.implementation)
         } else {
-            light_look(&material, key.layer, key.implementation)
+            selected_light_look(&material, key.layer, key.implementation, key.selection)
         }
         .map_err(|reason| match reason {
             LightRefusal::NoLayer => {
@@ -426,7 +433,8 @@ impl Worker {
             reason => Keep::Refused(format!("{reason:?}").into()),
         })?;
         let (program, buffer) = match (key.model, model) {
-            (Some((model, section, class)), Some(lights)) => {
+            (Some((model, section)), Some(lights)) => {
+                let class = key.vertex_class;
                 let section = lights
                     .models
                     .models
@@ -473,8 +481,8 @@ impl Worker {
             (None, None) => {
                 let code = self
                     .code
-                    .get(&look.vertex_shader)
-                    .ok_or(Keep::Unsupported("no world-space vertex program"))?;
+                    .get(&(look.vertex_shader, key.vertex_class))
+                    .ok_or(Keep::Unsupported("no structure light program for the selected classification"))?;
                 let program = if key.layer == native_render::shadow_look::CASTER_LAYER {
                     native_render::shadow_look::compile_shadow(&look, code)
                 } else if matches!(
@@ -576,6 +584,8 @@ mod tests {
             inputs: Some(InputKey([0; 5])),
             layer,
             implementation: 0,
+            vertex_class: 0,
+            selection: None,
             model: None,
         };
         let instance = EngineInputs::default();
