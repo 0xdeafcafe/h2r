@@ -2,8 +2,8 @@
 # lifi, ssce, crea, proj, and through unit and item: bipd, vehi, weap,
 # eqip, garb). Evidence: docs/formats/objects.md.
 struct obje 0xbc
-  0x0 enum16 object_type values=bipd|vehi|weap|eqip|garb|proj|scen|mach|ctrl|lifi|ssce|bloc|crea doc="Selects the object class dispatched by the engine." -- E 0x000b7b40: indexes the engine object type table at 0x00468630; must match the group
-  0x2 flags16 flags -- E bit 0 tested by object_new 0x000b7b40
+  0x0 enum16 object_type values=bipd|vehi|weap|eqip|garb|proj|scen|mach|ctrl|lifi|ssce|bloc|crea doc="Selects the object class dispatched by the engine." applies=creation -- E 0x000b7b40: indexes the engine object type table at 0x00468630; must match the group
+  0x2 flags16 flags applies=creation -- E bit 0 tested by object_new 0x000b7b40
   0x4 f32 bounding_radius doc="Sets the bounding sphere radius before object scale is applied." -- E multiplied by the object scale (0x000be075)
   0x8 f32[3] bounding_offset doc="Locates the centre of the bounding sphere relative to the root node." -- E transformed by the root node into the bounding-sphere centre (0x000bdfa9)
   0x14 f32 acceleration_scale
@@ -13,11 +13,11 @@ struct obje 0xbc
   0x1c flags32 runtime_object_flags doc="Holds the object's runtime flag bits."
   0x20 f32 light_volume_radius doc="Sets the radius of the object's dynamic lighting volume."
   0x24 f32[3] dynamic_light_sphere_offset
-  0x30 string default_variant doc="Selects the model variant when the caller supplies none." -- E 0x000ba571: the variant used when none is asked for, passed to the variant lookup 0x0016d180
-  0x34 tagref model groups=hlmt doc="Names the model definition resolved during object creation." -- E object_new 0x000b7b40 resolves the datum (+0x38) and reads the hlmt through it
+  0x30 string default_variant doc="Selects the model variant when the caller supplies none." applies=creation -- E 0x000ba571: the variant used when none is asked for, passed to the variant lookup 0x0016d180
+  0x34 tagref model groups=hlmt doc="Names the model definition resolved during object creation." applies=creation -- E object_new 0x000b7b40 resolves the datum (+0x38) and reads the hlmt through it
   0x3c tagref crate_object groups=bloc -- V: references a bloc where set (bloc, mach)
   0x44 tagref modifier_shader groups=shad -- V (objects.md): a shad reference; null on every disc instance of these groups
-  0x4c tagref creation_effect groups=effe doc="Names the effect started when this object is created." -- E object_new passes the datum (+0x50) to 0x00176780 once the object exists; null on the disc
+  0x4c tagref creation_effect groups=effe doc="Names the effect started when this object is created." applies=creation -- E object_new passes the datum (+0x50) to 0x00176780 once the object exists; null on the disc
   0x54 tagref material_effects groups=foot -- V: references a foot (material effects) where set
   0x5c block ai_properties 0x10 align 4 doc="Supplies per-object properties for AI." -- V: at most one element
     0x0 flags32 ai_object_flags doc="Configures how AI treats this object."

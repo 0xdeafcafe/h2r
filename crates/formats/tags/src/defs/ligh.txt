@@ -16,14 +16,14 @@ group ligh 0xe4 align 4
   0x28 f32 field_of_view -- V a cone's full angle, radians in the cache
   0x2c f32 falloff_distance -- V where a cone starts to fade
   0x30 f32 cutoff_distance -- V a cone's range
-  0x34 u32 interpolation -- E 0x000c0dc9: how the colours follow intensity
+  0x34 u32 interpolation applies=frame -- E 0x000c0dc9: how the colours follow intensity
   0x38 unknown 0x4 seen=4
   0x3c unknown 0x4 seen=4
-  0x40 f32[3] specular_colour_lower -- E record +0xe0 interpolates +0x40/+0x4c by intensity
-  0x4c f32[3] specular_colour_upper -- E as above
-  0x58 f32[3] diffuse_colour_lower -- E record +0xd4 interpolates +0x58/+0x64 by intensity
-  0x64 f32[3] diffuse_colour_upper -- E as above
-  0x70 f32[2] brightness -- E record +0xec, a scalar from these bounds
+  0x40 f32[3] specular_colour_lower applies=frame -- E record +0xe0 interpolates +0x40/+0x4c by intensity
+  0x4c f32[3] specular_colour_upper applies=frame -- E as above
+  0x58 f32[3] diffuse_colour_lower applies=frame -- E record +0xd4 interpolates +0x58/+0x64 by intensity
+  0x64 f32[3] diffuse_colour_upper applies=frame -- E as above
+  0x70 f32[2] brightness applies=frame -- E record +0xec, a scalar from these bounds
   0x78 tagref bitmap groups=bitm -- V class; the gel (D)
   0x80 unknown 0x4 seen=2
   0x84 unknown 0x4 seen=2
@@ -35,9 +35,9 @@ group ligh 0xe4 align 4
   0xa4 unknown 0x4 seen=3
   0xa8 unknown 0x4 seen=3
   0xac unknown 0x4 seen=4
-  0xb0 f32 duration -- E seconds; above zero makes the light timed (record flag 0x10)
+  0xb0 f32 duration applies=frame -- E seconds; above zero makes the light timed (record flag 0x10)
   0xb4 unknown 0x2 seen=zero
-  0xb6 u16 duration_falloff -- E the fade shape over the duration (0x000c0e53)
+  0xb6 u16 duration_falloff applies=frame -- E the fade shape over the duration (0x000c0e53)
   0xb8 unknown 0x4 seen=10
   0xbc unknown 0x4 seen=5
   0xc0 unknown 0x4 seen=2 -- E read by 0x000c0b00
