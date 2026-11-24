@@ -13,11 +13,13 @@
 //! string IDs edit as text (any string the map has); a tag reference
 //! shows its kind and name, with **Open** and **Change...** (the dialog,
 //! every tag of the allowed kinds); blocks list their elements with add,
-//! remove and duplicate; data shows (and edits) as hex. Counts, addresses
+//! remove and duplicate; data shows (and edits) as hex, a `view=function`
+//! data reference as its curve ([`curve`]). Counts, addresses
 //! and resource pointers are shown, never edited. Fields nothing names are
 //! labelled by type and offset and shown as their value suggests (a
 //! float, an integer or hex), with **Show as** (the dialog) to view them
 //! otherwise.
+pub mod curve;
 pub mod find;
 pub mod picker;
 pub mod rich;
@@ -31,7 +33,7 @@ use dear_imgui_rs::{
 };
 use map::{FourCC, TagId};
 use scenario_edit::{Role, Scenario};
-use tags::registry::{Field, Hint, Kind, Layout};
+use tags::registry::{Field, FieldView, Hint, Kind, Layout};
 
 pub use row::{Drawn, Link, Row, rows};
 
@@ -205,6 +207,8 @@ pub struct PanelState {
     pub open_alone: bool,
     /// The pick dialog, while open.
     pick: Option<picker::Open>,
+    /// The curve dialog, while open.
+    curve: Option<curve::Open>,
     /// The labels the pick dialog lists this frame (every one, clipped or
     /// not): what `tag.choices` returns.
     pub listed: Vec<String>,
@@ -403,6 +407,7 @@ pub(crate) fn panel_with_marks(
     let _id = ui.push_id(tag.0 as usize);
     cx.element(at, &layout);
     picker::draw(ui, doc, st, actions);
+    curve::draw(ui, doc, st, actions);
 }
 
 /// The `tag.set` path of the element at `path` with its trailing dot
@@ -1331,9 +1336,21 @@ impl Cx<'_, '_> {
         let ui = self.ui;
         let f = r.field;
         let (n, a) = (le(b, 0, 4) as u32, le(b, 4, 4) as u32);
+        // A function view: the curve row when the data parses as a
+        // function; else the bytes row, with the reason said.
+        if f.view == Some(FieldView::Function)
+            && n > 0
+            && let Some(bytes) = self.doc.read(self.tag, a, n)
+            && let Ok(fun) = tags::effects::function::Function::parse(&bytes)
+        {
+            return curve::row(self, at, layout, r, fun);
+        }
         let Some(_node) = self.node(at, layout, r, format!("dat{:x}", r.address)) else {
             return;
         };
+        if f.view == Some(FieldView::Function) {
+            ui.text_disabled(curve::not_a_function(self.doc, self.tag, n, a));
+        }
         if n == 0 {
             return;
         }

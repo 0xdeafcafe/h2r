@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 use map::TagId;
 use serde_json::{Value, json};
+use tags::defs::FieldView;
 use tags::registry::{Field, Hint, Kind, Layout, Unit};
 
 use crate::App;
@@ -804,6 +805,11 @@ impl Row<'_> {
             Kind::Block(_) => {
                 out["count"] = json!(self.list.map(|l| l.count));
                 out["capacity"] = json!(self.list.map(|l| l.capacity));
+            }
+            // A function row: its curve's shape (null when the data is not
+            // a function blob; the row says why).
+            Kind::Data if f.view.is_some_and(|v| v == FieldView::Function) => {
+                out["function"] = super::curve::row_json(doc, tag, self.address);
             }
             _ => {}
         }

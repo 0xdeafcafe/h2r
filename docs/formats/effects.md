@@ -77,6 +77,13 @@ Blob length is exactly `0x14 + 8 * T[type]` words-per-set: 20, 28, 36, 52, 68,
 all 3,600 distinct blobs reachable from `effe` emitters on the disc (399,177
 property uses over the 30 maps) have exactly this length and parse and round-trip
 through `Function::parse`/`to_bytes`; types 6, 8, 9 and above 10 do not occur.
+The per-set words the evaluator reads are also given typed, as the curve
+editor's handles: `Function::set_values`/`Function::write_set` over `Set`
+(from/to, frequency/phase/minimum/maximum, slope/intercept, the base and three
+keys, the points and coefficients, minimum/maximum/power; a constant's, type
+6's and type 8's words unnamed). A setter writes only the words its value
+names, so an edit round-trips through `to_bytes`
+([rich-editors.md](../editor/rich-editors.md), "Curves").
 
 | Type (names **S**) | Set layout (word index into payload, per set) | Evaluation (**E**) |
 |---|---|---|

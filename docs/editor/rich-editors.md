@@ -1,7 +1,7 @@
 # Rich editors: shaders, colours, curves, scripts, sounds and recordings
 
-Status: Design, except the seam (X1), "Data that changes length", sound audition (A1), mouth curves, read (A2) and Scripts, read (H1), which are built; each section names the format code it stands on and the gaps in it.
-Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/fields/rich.rs` (the seam), `crates/formats/tags/src/defs/attrs.rs` (`FieldView`), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/formats/hs/src/script_doc.rs`, `crates/apps/studio/src/app/scripts.rs`, `crates/apps/studio/src/ui/scripts.rs`, `crates/apps/studio/src/api/scripts.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`. Tests: `defs/tests.rs`, `registry/tests.rs`, `fields::rich::tests` and `api/tests.rs` (X1), `app/tag_data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1), `sound_tests.rs` and `api/sound/tests.rs` (A2), `app::scripts::tests`, `hs::script_doc::tests` and `hs::source::each_tests` (H1); each other slice names its own.
+Status: Design, except the seam (X1), "Data that changes length", sound audition (A1), mouth curves, read (A2), Scripts, read (H1) and the curve editor, same length (F1), which are built; each section names the format code it stands on and the gaps in it.
+Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/fields/rich.rs` (the seam), `crates/formats/tags/src/defs/attrs.rs` (`FieldView`), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/apps/studio/src/fields/curve.rs` and `crates/apps/studio/src/api/curves.rs` (F1), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/formats/hs/src/script_doc.rs`, `crates/apps/studio/src/app/scripts.rs`, `crates/apps/studio/src/ui/scripts.rs`, `crates/apps/studio/src/api/scripts.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`. Tests: `defs/tests.rs`, `registry/tests.rs`, `fields::rich::tests` and `api/tests.rs` (X1), `effects::function::tests` and `api/curves/tests.rs` (F1), `app/tag_data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1), `app::scripts::tests`, `hs::script_doc::tests` and `hs::source::each_tests` (H1); each other slice names its own.
 Switch: none.
 
 A rich editor shows a tag, or part of one, as the thing it is: a material
@@ -162,16 +162,26 @@ are picker rows.
 approximation. `Property::evaluate` maps the result onto the header
 range. Function fields are data references named `function*` in the
 definitions (`effe`, `ligh`, `lens`, `prt3`, `shad`, `pmov`, `obje`);
-`view=function` marks them. Gaps: types 6 and 8 have no evaluator in the
+`view=function` marks them. Types 6 and 8 have no evaluator in the
 engine and an unknown type has no layout, so all three are shown
-read-only with `The game evaluates this type as 0.`; the per-type payload
-is raw `payload` bytes with accessors only for evaluation, so slice F1
-adds typed getters and setters per type.
+read-only with `The game evaluates this type as 0.` The per-type payload
+has typed accessors: `Function::set_values` reads a set's own words
+(`Set`, named as the editor's handles) and `Function::write_set` writes
+them, keeping every word the type does not name, so a typed edit
+round-trips through `to_bytes`. The row's small plot and the dialog are
+`fields/curve.rs`; the plot samples `Function::evaluate` over `[0, 1]`
+(the two sets' curves faint when ranged, a wave without its engine
+tables says so), and every write is a same-length byte write at the
+data's start through `TagDoc::write`, a drag one undo step. The agent
+API's `function.*` (`api/curves.rs`) reads and writes the same blob
+through the Tags tool's own command; `function.sample` returns
+`Function::evaluate`'s own values.
 
 **Write.** Same type: same length, in place. A type change alters the
-length (`FunctionType::blob_len`) and goes through `TagDoc::resize_data`.
-Turning **Ranged** on or off keeps the length (both sets are always
-present).
+length (`FunctionType::blob_len`) and goes through `TagDoc::resize_data`;
+until F2 writes it, the type picker and `function.set`'s `type` refuse a
+change by name. Turning **Ranged** on or off keeps the length (both sets
+are always present).
 
 ### Shaders
 
@@ -590,7 +600,7 @@ already a namespace there (player models and looks), so poses use `anim.*`.
 | `tag.fields` (extended) | as tag-editing.md | a row with a field view gains `view: {kind, form?}`; a colour row gains `colour: {hex, rgba, intensity?}`; a function row gains `function: {type, ranged, range, length}` |
 | `tag.set` (extended) | a colour row's `value` may be `"#aarrggbb"` or `{rgba, intensity?}` | as built |
 | `tag.colours` | `{tag}` | every colour row of the tag: `{path, label, form, hex}` |
-| `function.read` | `{tag, path}` | `{type, ranged, sub_types, range, sets: [...], editable, read_only}` |
+| `function.read` | `{tag, path}` | `{type, ranged, sub_types, range, length, sets: [...], editable, read_only}` |
 | `function.set` | `{tag, path, type?, ranged?, range?, sets?}` | the new `function.read`; one undo step; refusals as "Curves" |
 | `function.sample` | `{tag, path, inputs: [x], range_input?}` | `{outputs}` from `Function::evaluate` |
 | `shader.read` | `{tag}` | `{template, lod, bitmaps, colours, vectors, animations, used_by, names_known, refusals}` |

@@ -178,6 +178,13 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             std::fs::write(&map, super::sound::tests::mouth_map()).unwrap();
             c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
         }
+        m::FUNCTION_READ | m::FUNCTION_SET | m::FUNCTION_SAMPLE => {
+            // A map whose weapon tag has invented function fields.
+            let map = t.path("curve.map");
+            std::fs::write(&map, super::curves::tests::curve_map()).unwrap();
+            app.tags = crate::app::TagDoc::new(super::curves::tests::registry());
+            c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+        }
         m::VOICE_CHARACTERS | m::VOICE_DATASET_BUILD | m::VOICE_DATASET_STATUS => {
             // Invented maps and the fake sidecar (never Python).
             super::voice_clone::test_setup(app, false, false);
