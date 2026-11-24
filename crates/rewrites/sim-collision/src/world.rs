@@ -622,7 +622,10 @@ impl CollisionWorld {
         let (_, source) = mopp::Source::read(g, code)?;
         let (tree, decoded) = match held {
             Some(tree) if *tree.source() == source => (tree, false),
-            _ => (Arc::new(Tree::decode(code, source)), true),
+            _ => (
+                Arc::new(Tree::decode_shared(code, source, self.store.as_deref(), self.budget)),
+                true,
+            ),
         };
         let mut inner = self.lock();
         if decoded {

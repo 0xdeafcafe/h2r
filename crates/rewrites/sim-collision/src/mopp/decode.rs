@@ -24,6 +24,8 @@
 //! A program that unfolds past [`super::NODES_PER_BYTE`] nodes per byte is
 //! `guest_only`: every query on it bails.
 use super::{HEADER_BYTES, NODES_PER_BYTE, Source};
+mod store;
+use store::Nodes;
 use ::mopp::boxvm::diagonal_plane;
 use ::mopp::code::{ROOT_SHIFT, terminal_key};
 
@@ -33,7 +35,8 @@ pub const NONE: u32 = u32::MAX;
 /// One decoded test. Thresholds are on the full-precision corners `lo`
 /// and `hi` the setup computes; children are node indices, the low child
 /// always the next index when present.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bytemuck::CheckedBitPattern)]
+#[repr(u8)]
 pub enum Node {
     /// The low child when `lo[axis] < below`, the high child when
     /// `hi[axis] >= above`, the low child's subtree first.
@@ -75,7 +78,7 @@ pub enum Node {
 pub struct Tree {
     code: u32,
     source: Source,
-    nodes: Vec<Node>,
+    nodes: Nodes,
     root: u32,
     guest_only: bool,
 }
@@ -348,7 +351,7 @@ impl Tree {
         Self {
             code,
             source,
-            nodes,
+            nodes: Nodes::Heap(nodes),
             root,
             guest_only,
         }
@@ -364,7 +367,7 @@ impl Tree {
     }
 
     pub fn nodes(&self) -> &[Node] {
-        &self.nodes
+        self.nodes.as_slice()
     }
 
     /// The first node, or [`NONE`] for a program that ends at once.
@@ -387,7 +390,7 @@ impl Tree {
     /// Bytes held: nodes and the bytecode kept to verify the source.
     pub fn footprint(&self) -> usize {
         std::mem::size_of::<Self>()
-            + self.nodes.capacity() * std::mem::size_of::<Node>()
+            + self.nodes.bytes()
             + self.source.bytecode.capacity()
     }
 }

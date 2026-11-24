@@ -2,18 +2,16 @@
 //! generation belong to the caller. Only guest indices and decoded values
 //! cross a process boundary.
 use super::{Bsp, Consts, HEADER_WORDS, Leaf, Node, Node2d, Ref, RingEdge, Surface, block, ring};
+use crate::store::atomic_write;
 use bytemuck::Pod;
 use memmap2::{Mmap, MmapOptions};
 use sha2::{Digest, Sha256};
 use std::{
-    fs::{self, File, OpenOptions},
-    io::{self, Write},
+    fs::File,
+    io,
     ops::{Deref, Range},
     path::{Path, PathBuf},
-    sync::{
-        Arc, RwLock,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, RwLock},
 };
 
 // Small objects cost more to map and index on disk than to decode privately.
@@ -82,7 +80,7 @@ impl Layout {
     }
 
     fn fits(&self, room: u64) -> bool {
-        (self.overhead() + self.optional_len) as u64 <= room
+        self.overhead() as u64 + self.optional_len as u64 <= room
     }
 
     fn new(header: &[u32; HEADER_WORDS], edges: u32, groups: u32) -> Option<Self> {
@@ -263,40 +261,14 @@ impl Key {
     }
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    fs::create_dir_all(path.parent().unwrap())?;
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    // PID and sequence distinguish simultaneous publishers. Skip leftovers
-    // from terminated processes that had the same PID.
-    let (tmp, mut file) = loop {
-        let number = NEXT.fetch_add(1, Ordering::Relaxed);
-        let tmp = path.with_extension(format!("{}.{number}.tmp", std::process::id()));
-        match options.open(&tmp) {
-            Ok(file) => break (tmp, file),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e),
-        }
-    };
-    let result = file.write_all(bytes);
-    drop(file);
-    let result = result.and_then(|_| fs::rename(&tmp, path));
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    result
-}
-
 #[cfg(all(test, target_endian = "little"))]
 mod tests {
     use super::*;
     use crate::synth::{self, Builder, CONSTS, Image, Rng};
+    use std::{
+        fs,
+        sync::atomic::{AtomicU64, Ordering},
+    };
 
     fn fixture(at: u32, b: &Builder) -> Image {
         let mut image = Image::new(at, b.size() as usize);
