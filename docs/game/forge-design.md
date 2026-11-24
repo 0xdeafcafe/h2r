@@ -507,6 +507,11 @@ are the retail five and Theater.
    monitors and on a link's ends, the axis gizmo, and the volume, nav
    and barrier overlays.
 
+A Forge lobby with the default Slayer variant starts with an unscored
+game record. The lobby keeps its selected variant when the player switches
+back to Custom Games. Explicit rules scripts remain available for testing
+in the editor.
+
 The buttons are Halo 3's: D-pad Up swaps monitor and player, A picks up
 and drops, X opens the object menu or the Properties of the thing aimed
 at, hold Y deletes, B cancels, RT held turns and pushes a held object,

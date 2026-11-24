@@ -129,7 +129,6 @@ pub struct Reading {
     pub place: Place,
     pub leader: bool,
     pub retail: RetailMode,
-    /// The lobby's map carries the Firefight kit.
     /// The lobby's playlist is a Clanker one (`None` with no playlist
     /// held).
     pub clanker: Option<bool>,

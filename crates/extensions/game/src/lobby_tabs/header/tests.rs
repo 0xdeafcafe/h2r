@@ -224,7 +224,7 @@ fn ui_lobby_tabs_answers_each_mode_with_its_state_and_reason() {
     assert_eq!(v["header"], "CUSTOM GAMES", "the header names the mode");
     assert_eq!(v["notice"], "Matchmaking needs Xbox Live.");
     let tabs = v["tabs"].as_array().unwrap();
-    assert_eq!(tabs.len(), 5);
+    assert_eq!(tabs.len(), 4);
     assert_eq!(tabs[0]["tab"], "multiplayer");
     assert_eq!(tabs[0]["label"], "MULTIPLAYER");
     assert_eq!(tabs[0]["state"], "off");
@@ -233,11 +233,8 @@ fn ui_lobby_tabs_answers_each_mode_with_its_state_and_reason() {
     assert_eq!(tabs[1]["label"], "CUSTOM GAMES");
     assert!(tabs[1]["reason"].is_null());
     assert_eq!(tabs[2]["state"], "on");
-    assert_eq!(tabs[3]["tab"], "firefight");
-    assert_eq!(tabs[3]["state"], "on", "on with no kit map installed");
-    assert!(tabs[3]["reason"].is_null());
-    assert_eq!(tabs[4]["tab"], "co_op");
-    assert_eq!(tabs[4]["state"], "on", "Split Screen's co-op is retail's");
+    assert_eq!(tabs[3]["tab"], "co_op");
+    assert_eq!(tabs[3]["state"], "on", "Split Screen's co-op is retail's");
     assert!(v["clanker"].is_null(), "not on MULTIPLAYER");
     assert!(json_of(&s, None)["notice"].is_null());
 }

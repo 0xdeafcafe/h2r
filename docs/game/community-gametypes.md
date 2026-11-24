@@ -344,7 +344,7 @@ The pause menu lists each type that has a variant, in the same order.
 |---|---|---|
 | `research` | Research and Devolution | Bounce Practice, Glitch Hunt, Superbounce |
 | `party` | Party Games | Zombies, Gun Game, Hide and Seek |
-| `firefight` | Firefight | Firefight variants, including director records |
+| `firefight` | Firefight | Director wave sets, including map-specific variants such as Basin on Beaver Creek |
 | `siege` | Siege | Siege |
 
 `community_variants::filed_type` reads the type of the script named by

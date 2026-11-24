@@ -211,19 +211,12 @@ actors, gaps of 450 ticks, ten lives with three back a round, Catch,
 Angry and Ghost. Squads still drop at the edges, away from both bases;
 a map set carries the map's tuning, not its own drop zones.
 
-The lobby's Wave set row offers `builtin::menu(map)`: the map's own
-sets first, then the built-ins — a map with none of its own offers the
-built-ins alone, as does any map the build has no sets for. The store's
-`firefight.waveset` names a set, not a row position: a built-in by its
-position (0 Holdout to 3 Crossfire), a map set by
-`builtin::MAP_SET_BASE` (4) plus its place in the map's list. What a
-value plays is `builtin::resolve(value, map)`: a map-set value on a map
-that does not carry it — another map, or no map known — falls back to
-the built-ins, Holdout first. The page's row reads the lobby's kit map
-(`lobby_start::kit_map_name`, kept from the lobby panel's read of the
-map list), the runtime resolves the match on the map it starts on
-(`map_name`), and a value no set the build ships names is refused with
-the setting named. Hoppers keep naming built-in sets only ([Live](#live)).
+Change Rules → Firefight lists the built-in sets and each map-specific
+variant. The record identifies its wave set by hash. Change Map filters by
+that record, so Basin offers the Beaver Creek kit. At start the director
+resolves the same hash. The direct-boot setting `firefight.waveset` uses
+the built-in index (0 to 3), or `builtin::MAP_SET_BASE` plus the map-specific
+index. See [Live](#live) for hopper records.
 
 ### The director
 

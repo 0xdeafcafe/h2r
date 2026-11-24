@@ -463,6 +463,17 @@ impl Selection {
     pub fn catalogue(&self) -> Arc<Catalogue> {
         Arc::clone(&lock(&self.catalogue))
     }
+    /// Start a visit from any multiplayer Select Map entry point. Child
+    /// screens and Back use this same snapshot until the next visit.
+    fn begin_picker(&self, lobby: crate::lobby_start::Mode, record: Option<&variants::GameVariant>) -> OpenList {
+        let mode = variant_mode(lobby, record);
+        let category = mode_category(mode);
+        let catalogue = self.catalogue().for_variant(mode, record);
+        self.direct_firefight.store(category == Some(Category::Firefight), std::sync::atomic::Ordering::Relaxed);
+        *lock(&self.picker) = Some(catalogue);
+        OpenList { mode: category.map_or(Mode::Categories, Mode::Maps), focus: None }
+    }
+
     fn picker_catalogue(&self) -> Arc<Catalogue> {
         lock(&self.picker).clone().unwrap_or_else(|| self.catalogue())
     }
@@ -640,9 +651,6 @@ fn screen_spec(name: &str, title: &str, footer: u32) -> ScreenSpec {
 
 // ---- the retail Select Map, in two modes ----
 
-/// Game Setup's Change Map (`0x2bb8ac`): its request for Select Map's
-/// loader `0x2bb2db` (`0x149f49`, window 3, slot 4), returning here.
-pub const CHANGE_MAP_REQUEST_RET: u32 = 0x002b_b8d7;
 pub const CHANGE_MAP_LOADER: u32 = points::SELECT_MAP_LOAD.base;
 /// Where the Select Map list's constructor asks for the level array
 /// (`0x2c9980`, list handler in ESI).
@@ -1007,37 +1015,10 @@ impl hooks::Feature for MapSelect {
     fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         use engine::points::{
             GAME_TICK, LOBBY_SET_MAP, MAP_LIST_ROW_CHOSEN, MAP_LIST_ROW_TEXT, MAP_SCREEN_FREE,
-            MP_LEVEL_ARRAY, MP_LEVEL_NAME, SCREEN_REQUEST,
+            MP_LEVEL_ARRAY, MP_LEVEL_NAME,
         };
         use hooks::Flow as F;
         let region = b.guest_alloc(REGION, runtime::guest::Permissions::RW)?;
-
-        // Change Map: arm the next Select Map for the lobby mode's one
-        // category's maps (Forge, Firefight), or for the categories when
-        // there are two or more (else the retail list).
-        let (nav, sel) = (Arc::clone(&self.navigation), Arc::clone(&self.sel));
-        b.raw().observe_before(
-            &SCREEN_REQUEST,
-            "change map arms the categories",
-            move |o| {
-                let mem = o.guest();
-                let word = |n: u32| mem.u32(o.cpu.esp + 4 * n).ok();
-                if word(0) != Some(CHANGE_MAP_REQUEST_RET) || word(4) != Some(CHANGE_MAP_LOADER) {
-                    return;
-                }
-                let variant = crate::pause_change_map::lobby_variant(&*mem);
-                drop(mem);
-                let mode = variant_mode(crate::lobby_start::mode(), variant.as_ref());
-                let catalogue = sel.catalogue().for_variant(mode, variant.as_ref());
-                let direct = mode_category(mode);
-                sel.direct_firefight.store(direct == Some(Category::Firefight), std::sync::atomic::Ordering::Relaxed);
-                *lock(&sel.picker) = Some(catalogue);
-                match direct {
-                    Some(category) => nav.maps.pick(category),
-                    None => nav.maps.categories(None),
-                }
-            },
-        );
 
         if let Some(hle) = self.live.clone() {
             b.raw()
@@ -1093,12 +1074,19 @@ impl hooks::Feature for MapSelect {
                 if mem.u32(c.cpu.esp).ok() != Some(LIST_ARRAY_RET) {
                     return Ok(F::Continue);
                 }
-                let Some(open) = nav.maps.opening() else {
-                    return Ok(F::Continue);
-                };
                 if mem.u32(LEVEL_ARRAY).unwrap_or(0) == 0 {
                     return Ok(F::Continue);
                 }
+                let open = match nav.maps.opening() {
+                    Some(parent_or_child) => parent_or_child,
+                    None => {
+                        let variant = crate::pause_change_map::lobby_variant(&*mem);
+                        drop(mem);
+                        let first = sel.begin_picker(crate::lobby_start::mode(), variant.as_ref());
+                        mem = rt.memory();
+                        first
+                    }
+                };
                 let catalogue = sel.picker_catalogue();
                 match write_ours(&mut *mem, &catalogue, open.mode, region) {
                     Some(at) => {

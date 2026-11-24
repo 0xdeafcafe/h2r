@@ -16,6 +16,7 @@ focused. From the categories, **B** or **Back** closes the picker.
 | Map Pack | Maps installed by `h2 import-mappack` | The game's order |
 | Mods | Community packages, including mods based on disc and Map Pack maps | Name, then list ID |
 | Halo: CE | Converted Halo 1 maps | Name, then list ID |
+| Firefight | Installed kit maps | Name, then list ID |
 
 The pregame picker opens the catalogue even with a single category. A full
 Mods category can show an overflow notice even when no mod fits.
@@ -109,17 +110,16 @@ Both steps are the retail Select Map dialog (screen `0xce`, loader
 instance lists an array of ours, and the row texts and presses are hooked
 for those instances only (`map_select::MapSelect`, feature `map-select`).
 
-- **Arming.** Game Setup's Change Map row (`0x2bb8ac`) asks `0x149f49`
-  for loader `0x2bb2db` (window 3, slot 4), returning to `0x2bb8d7`. An
-  observer there (`SCREEN_REQUEST`) arms the next Select Map for the
-  categories. It only observes, so the campaign picker's `before` on the
-  same point needs no order with it.
+- **Opening.** The multiplayer Select Map constructor snapshots the catalogue
+  and the selected variant on entry from any lobby. An explicit child or Back
+  request reuses the snapshot and chooses its category or pack.
+
 - **The list's array** (`MP_LEVEL_ARRAY`, `0x19c6a0`). The Select Map list's
   constructor (`0x2c9928`, handler in ESI) asks it for `[0x4ee4e4]` at
   `0x2c9980`, then copies every element into its own list (handler
   `+0x70`): the lock byte at `+2` (it skips a locked map unless the
   profiles' progress allows it, `0x2c99cc`) and the map id at `+4`, then
-  the map's picture. Called from `0x2c9985` while armed, it returns an
+  the map's picture. Called from `0x2c9985`, it returns an
   array of ours instead (`write_list`: a data array in our memory with the
   retail array's shape, 8-byte elements, filled as `0x19c7e0` fills the
   retail one) and records the handler's mode:
