@@ -193,3 +193,15 @@ mod ray_tests {
         }
     }
 }
+
+/// Convert a portal distance to obstruction with the mixer's reciprocal
+/// curve. All intermediate operations use the current x87 precision.
+pub fn portal_obstruction(stack: &mut X87Abi, distance: u32, unit: u32, offset: u64) -> u32 {
+    abi::ld_f32(stack, distance);
+    abi::arith(stack, arith_op::ADD, 0, src_kind::F32, unit.into());
+    abi::arith(stack, arith_op::DIVR, 0, src_kind::F32, unit.into());
+    abi::arith(stack, arith_op::SUBR, 0, src_kind::F64, offset);
+    let (_, result) = abi::st_f32(stack, 0);
+    abi::store_commit(stack, result.status, true);
+    result.value
+}

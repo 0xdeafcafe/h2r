@@ -78,7 +78,30 @@ pub const SOURCE_ENVIRONMENT: Point = Point::new(
     DOC,
 )
 .with_flags(&[Flag::Optional]);
+pub const PORTAL_RESPONSE: Point = Point::new(
+    "SOUND_PORTAL_RESPONSE",
+    0x222150,
+    Sig::Fn {
+        args: &[
+            ("listener", Loc::Esi),
+            ("out", Loc::Ebx),
+            ("cluster", Loc::Ecx),
+            ("weights", Loc::Stack(0)),
+            ("position", Loc::Stack(1)),
+            ("source_cluster", Loc::Stack(2)),
+        ],
+        ret: None,
+        pop: 12,
+    },
+    DOC,
+)
+.with_flags(&[Flag::Optional]);
 pub const BODIES: &[Body] = &[
+    Body {
+        point: &PORTAL_RESPONSE,
+        sites: &[0x222162, 0x222188],
+        run: rays::portal_response,
+    },
     Body {
         point: &SOURCE_ENVIRONMENT,
         sites: rays::SITES,

@@ -57,7 +57,7 @@ fn environment(c: &mut CpuAbi, g: &mut Guest) -> Result<Next> {
                     frame::push(c, g, c.edx)?;
                     c.ebx = c.esp.wrapping_add(0x1c);
                     return Ok(Next::Call {
-                        target: 0x222150,
+                        target: super::PORTAL_RESPONSE.base,
                         site: PORTAL,
                     });
                 }
@@ -252,4 +252,61 @@ pub(super) fn update(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
         }
     }
     environment(c, g)
+}
+
+pub(super) fn portal_response(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
+    let (c, g) = (&mut *cx.cpu, &mut *cx.g);
+    match pc {
+        0x222162 => {
+            arithmetic(c, c.eax, u32::MAX, true);
+            if c.eax != u32::MAX {
+                let portals = g.u32(c.edi.wrapping_add(0x60))?;
+                c.ecx = portals.wrapping_add(c.eax.wrapping_mul(36));
+                c.eax = frame::slot(c, g, 0x14)?;
+                let weights = frame::slot(c, g, 0xc)?;
+                sse::load(c, 7, g.u32(weights.wrapping_add(c.eax.wrapping_mul(4)))?);
+                c.edx = frame::slot(c, g, 0x10)?;
+                c.eax = c.edi;
+                return Ok(Next::Call {
+                    target: 0x14b240,
+                    site: 0x222188,
+                });
+            }
+            let unit = g.u32(ONE)?;
+            sse::load(c, 0, unit);
+            g.set_u32(c.ebx, unit)?;
+            sse::zero(c, 0);
+            g.set_u32(c.ebx.wrapping_add(4), 0)?;
+            c.edi = frame::pop(c, g)?;
+        }
+        0x222188 => {
+            let distance = sse::lane0(c, 0);
+            frame::set_slot(c, g, 0x14, distance)?;
+            let mut fpu = spatial::load_fpu(c);
+            g.set_u32(c.ebx.wrapping_add(4), sse::lane0(c, 7))?;
+            let unit = g.u32(ONE)?;
+            c.edi = frame::pop(c, g)?;
+            let obstruction = sim_sound::environment::portal_obstruction(
+                &mut fpu.0,
+                distance,
+                unit,
+                g.u64(0x0045_dcc0)?,
+            );
+            g.set_u32(c.ebx, obstruction)?;
+            spatial::finish_fpu(c, g, fpu, 0x2221aa, c.ebx)?;
+        }
+        _ => {
+            frame::push(c, g, c.ecx)?;
+            frame::push(c, g, c.edi)?;
+            c.edi = g.u32(BSP)?;
+            c.eax = c.esp.wrapping_add(4);
+            frame::push(c, g, c.eax)?;
+            return Ok(Next::Call {
+                target: 0x18cfd0,
+                site: 0x222162,
+            });
+        }
+    }
+    c.ecx = frame::pop(c, g)?;
+    Ok(Next::Ret { pop: 12 })
 }
