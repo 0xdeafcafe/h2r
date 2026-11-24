@@ -52,7 +52,7 @@ use super::items::{self, LIST, LISTS, Made};
 use super::passes::{self, Layer};
 use super::{Refusal, Result, visible, volume};
 use crate::entry::{Cx, EntryError, GuestCall, Ret};
-use crate::light_constants::Fpu;
+use crate::light_constants::{Call, Fpu};
 use crate::light_passes::{flag, global as lp};
 use crate::memory::{GuestMemory, MemFault};
 
@@ -296,10 +296,34 @@ fn regs(target: u32, l: &Light, ebx: u32) -> GuestCall {
     GuestCall::new(target).esi(l.record).edi(l.datum).ebx(ebx)
 }
 
+/// Layer results from an admitted first-person graph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SlotPasses {
+    pub flags: u32,
+    pub reached: u32,
+    pub drawn: u32,
+}
+
+/// Called after replaying this slot's records and before its first device
+/// call. `None` leaves the complete passes and tail to this body. `Some`
+/// means the graph, its guest globals and its device tail all committed.
+pub type OnPasses<'a> = dyn FnMut(&mut dyn GuestMemory, &Plan, &Call) -> Result<Option<SlotPasses>, EntryError>
+    + Send
+    + 'a;
+
 /// Makes the call. Returns as `0x000404b0` does (`ret 4`, AL 1 over the
 /// slot pointer past the last slot, or over the count when it is not
 /// above zero) with what it did.
 pub async fn run(cx: &Cx, plan: Plan) -> Result<(Ret, FirstPersonLights), EntryError> {
+    run_with(cx, plan, &mut |_, _, _| Ok(None)).await
+}
+
+/// Offer each slot's prepared lists and call to the graph in draw order.
+pub async fn run_with(
+    cx: &Cx,
+    plan: Plan,
+    on_passes: &mut OnPasses<'_>,
+) -> Result<(Ret, FirstPersonLights), EntryError> {
     let p = &plan;
     cx.write(|m| m.set_u32(p.at(slot::INDEX), 0))?;
     let n = cx.read(|m| m.i32(FIRST_PERSON_COUNT))?;
@@ -315,7 +339,8 @@ pub async fn run(cx: &Cx, plan: Plan) -> Result<(Ret, FirstPersonLights), EntryE
     cx.write(|m| m.set_u32(p.at(slot::ENTRY), entry))?;
     loop {
         if cx.read(|m| m.u16(entry.wrapping_add(4)))? as i16 > 0 {
-            out.lights.push(light(cx, p, index, entry).await?);
+            out.lights
+                .push(light(cx, p, index, entry, on_passes).await?);
         }
         index = index.wrapping_add(1);
         entry = entry.wrapping_add(FIRST_PERSON_SLOT);
@@ -331,7 +356,13 @@ pub async fn run(cx: &Cx, plan: Plan) -> Result<(Ret, FirstPersonLights), EntryE
 }
 
 /// Steps 1 to 6 for the slot `index`, its light datum at `entry`.
-async fn light(cx: &Cx, p: &Plan, index: u32, entry: u32) -> Result<FirstPersonLight, EntryError> {
+async fn light(
+    cx: &Cx,
+    p: &Plan,
+    index: u32,
+    entry: u32,
+    on_passes: &mut OnPasses<'_>,
+) -> Result<FirstPersonLight, EntryError> {
     let e = p.entry_esp;
     let l = cx.read(|m| Light::read(m, entry))?;
     let volume_at = p.at(slot::VOLUME);
@@ -364,8 +395,32 @@ async fn light(cx: &Cx, p: &Plan, index: u32, entry: u32) -> Result<FirstPersonL
     // 3: the constants, shadow 0 and weight one.
     let (weight, scale) =
         cx.read(|m| -> Result<_, MemFault> { Ok((m.u32(WEIGHT_WORD)?, m.u32(SCALE_WORD)?)) })?;
+    let constants = Call {
+        frame: l.record.wrapping_add(0x84),
+        context: volume_at,
+        light: l.datum,
+        definition: l.data,
+        shadow: 0,
+        weight,
+    };
+    if let Some(accepted) = cx.write(|m| on_passes(m, p, &constants))? {
+        let last = if accepted.reached & (1 << 13) != 0 {
+            13
+        } else {
+            12
+        };
+        cx.write(|m| m.set_u8(p.at(slot::DRAWS), ((accepted.drawn >> last) & 1) as u8))?;
+        return Ok(FirstPersonLight {
+            index,
+            light: l.datum,
+            volume: volume_by,
+            flags: accepted.flags,
+            reached: accepted.reached,
+            drawn: accepted.drawn,
+        });
+    }
     let request = regs(call::CONSTANTS, &l, l.data)
-        .eax(l.record.wrapping_add(0x84))
+        .eax(constants.frame)
         .ecx(volume_at)
         .edx(l.datum)
         .args([l.data, scale, 0, weight]);

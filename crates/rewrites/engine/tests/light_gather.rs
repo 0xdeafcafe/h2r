@@ -1188,6 +1188,89 @@ mod first_person_body {
     }
 
     #[test]
+    fn a_typed_slot_uses_its_replayed_lists_and_a_refused_slot_continues_at_constants() {
+        let mut g = guest(0);
+        g.put_u32(frame::FIRST_PERSON_COUNT, 2);
+        let second = TABLE + frame::FIRST_PERSON_SLOT;
+        g.put_u32(second + 0x400, LIGHT).put_u16(second + 0x404, 1);
+        let plan = first_person::plan(&g, E, FPU).unwrap();
+        let f = move |cx: Cx| -> EntryFuture {
+            let plan = plan.clone();
+            Box::pin(async move {
+                let mut seen = 0;
+                let (ret, lights) = first_person::run_with(&cx, plan, &mut |m, plan, call| {
+                    let index = m.u32(plan.entry_esp - first_person::slot::INDEX)?;
+                    assert_eq!(index, seen);
+                    assert_eq!(call.light, LIGHT);
+                    assert_eq!(call.frame, record(2) + 0x84);
+                    assert_eq!(call.context, E - first_person::slot::VOLUME);
+                    assert_eq!(call.definition, DATA);
+                    assert_eq!(call.shadow, 0);
+                    assert_eq!(call.weight, WEIGHT);
+                    let mask = m.u32(LIGHT_MASK)?;
+                    assert_eq!(mask, 1 << (12 + index));
+                    seen += 1;
+                    Ok((index == 0).then_some(first_person::SlotPasses {
+                        flags: 0,
+                        reached: (1 << 11) | (1 << 14) | (1 << 12),
+                        drawn: mask,
+                    }))
+                })
+                .await?;
+                assert_eq!(seen, 2);
+                assert_eq!(lights.lights.len(), 2);
+                assert_eq!(lights.lights[0].drawn, 1 << 12);
+                Ok(ret)
+            })
+        };
+        let mut replayed = 0;
+        let run = testing::run(
+            &f,
+            g,
+            Regs {
+                esp: E,
+                ..Default::default()
+            },
+            |c, m| {
+                if c.target == call::RECORDS {
+                    m.set_u32(LIGHT_MASK, 1 << (12 + replayed)).unwrap();
+                    replayed += 1;
+                }
+                if c.target == call::LIGHT_VOLUME && replayed == 1 {
+                    assert_eq!(m.u8(E - first_person::slot::DRAWS).unwrap(), 1);
+                }
+                Regs::default()
+            },
+        );
+        assert!(run.result.is_ok());
+        let calls: Vec<_> = run.calls.iter().map(|c| c.target).collect();
+        assert_eq!(
+            &calls[..5],
+            &[
+                call::LIGHT_VOLUME,
+                call::RECORDS,
+                call::LIGHT_VOLUME,
+                call::RECORDS,
+                call::CONSTANTS
+            ]
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|&&target| target == call::CONSTANTS)
+                .count(),
+            1
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|&&target| target == call::PUSH_STATE)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn the_first_person_lights_call_the_guest_in_its_order() {
         let ran = run_lights(guest(1 << 11 | 1 << 12));
         assert_eq!(
