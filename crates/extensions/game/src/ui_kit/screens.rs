@@ -457,8 +457,11 @@ pub fn picker_sample() -> crate::ui_kit::picker::Pick {
 pub fn lobby_pick_sample(name: &str) -> Option<crate::ui_kit::picker::Pick> {
     match name {
         FORGE_MAP_PICKER => Some(crate::lobby_mode::forge_map_pick(
-            Ok(vec!["Castle Keep".into(), "Lockout Towers".into()]),
-            Some("Lockout Towers"),
+            Ok(vec![
+                ("castle-keep".into(), "Castle Keep".into()),
+                ("lockout-towers".into(), "Lockout Towers".into()),
+            ]),
+            Some("lockout-towers"),
         )),
         MODE_PICKER => {
             use crate::lobby_tabs::{Facts, Place, Present, Tab, header::Shown, row};
