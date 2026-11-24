@@ -4,8 +4,9 @@
 //! or an object's model (a picker dialog chooses); then the slots in
 //! folding sections: **Bitmaps** with thumbnails and a bitmap picker that
 //! shows them, **Colours** as the panel's own colour rows (the C1 dialog),
-//! **Vectors** as four numbers, **Animation** as what each animated
-//! property drives, **Code** as each pass's vertex and pixel programs
+//! **Vectors** as four numbers, **Animation** as the preview clock and, per
+//! animated property, its curve (the curve editor's plot and dialog), its
+//! value at the clock and what it drives (slice S2), **Code** as each pass's vertex and pixel programs
 //! (listing, translated WGSL and the translator's warnings; slice S4,
 //! read only). Each row has its `Used by` line.
 //!
@@ -26,11 +27,12 @@ use scenario_edit::native_view::preview::{self as material, Shape};
 use serde_json::{Value, json};
 
 use super::rich::{FIELDS_TAB, ViewCx};
-use super::{PanelState, colour, picker};
+use super::{PanelState, colour, curve, picker};
 use crate::App;
 use crate::app::map_pack::Picture;
 use crate::app::shader::{
-    BACKGROUND, NAMES_NOT_READ, PreviewPasses, ShaderRead, Slot, SlotKind, SlotValue,
+    Animated, BACKGROUND, CONSTANTS_HELD, NAMES_NOT_READ, PreviewPasses, ShaderRead, Slot,
+    SlotKind, SlotValue,
 };
 use crate::app::{Action, NavAction, TagAction, TagDoc, tag_api};
 use crate::theme::{self, icon};
@@ -91,6 +93,11 @@ pub struct ShaderUi {
     thumbs_map: Option<String>,
     pick: Option<Pick>,
     shape_pick: Option<ShapePick>,
+    /// The preview clock in seconds, and whether it runs. The picture is
+    /// drawn at `drawn_time`; it is not redrawn while the clock runs.
+    time: f64,
+    playing: bool,
+    drawn_time: f64,
     /// The Code section's passes read so far, by pass number
     /// (implementation 0), for one document revision.
     code: Option<(Key, HashMap<usize, Result<PassCode, String>>)>,
@@ -162,25 +169,105 @@ pub fn draw(ui: &Ui, app: &App, tag: TagId, cx: &mut ViewCx<'_, '_>, actions: &m
             TreeNodeFlags::empty(),
         )
     {
-        for a in &read.animations {
-            let input = match a.input {
-                Some(s) => format!("driven by {}", doc.string(s).unwrap_or("an object function")),
-                None => match a.period {
-                    Some(p) => format!("game time, every {p} s"),
-                    None => "game time".to_owned(),
-                },
-            };
-            ui.text(format!("Property {}: {input}", a.index));
-            for d in &a.drives {
-                ui.text_disabled(format!("    drives {d}"));
-            }
+        clock(ui, cx.shader, &read);
+        let values = read.values_at(cx.shader.time);
+        for (a, v) in read.animations.iter().zip(&values) {
+            animation_row(ui, doc, &read, a, v, cx.shader.time, cx.panel);
         }
-        ui.text_disabled("Animated properties are edited as curves in the Fields tab.");
+        ui.text_disabled(CONSTANTS_HELD);
     }
     code_section(ui, app, &read, &key, cx.shader);
     bitmap_picker(ui, app, &read, cx, actions);
     shape_picker(ui, app, cx.shader);
     colour::draw(ui, doc, cx.panel, actions);
+    curve::draw(ui, doc, cx.panel, actions);
+}
+
+/// The preview clock: play or pause, and the time in the loop. Dragging
+/// it stops it; the picture is redrawn at the time it is left at.
+fn clock(ui: &Ui, st: &mut ShaderUi, read: &ShaderRead) {
+    let length = read.clock_length();
+    if st.playing {
+        st.time = (st.time + f64::from(ui.io().delta_time())) % length;
+    } else {
+        st.time = st.time.clamp(0.0, length);
+    }
+    if ui.button(if st.playing {
+        "Pause##shader-clock"
+    } else {
+        "Play##shader-clock"
+    }) {
+        st.playing = !st.playing;
+    }
+    ui.same_line();
+    let mut t = st.time as f32;
+    if ui
+        .slider_config("Preview clock (s)##shader-clock-time", 0.0, length as f32)
+        .build(&mut t)
+    {
+        st.time = f64::from(t);
+        st.playing = false;
+    }
+}
+
+/// One animated property: what drives it, its curve (the small plot with
+/// the clock's place marked, and **Edit curve...**), its value at the
+/// clock, what it drives and any target the plan does not animate.
+fn animation_row(
+    ui: &Ui,
+    doc: &TagDoc,
+    read: &ShaderRead,
+    a: &Animated,
+    value: &Result<f32, String>,
+    time: f64,
+    panel: &mut PanelState,
+) {
+    let _id = ui.push_id(format!("shader-animation-{}", a.index));
+    let input = match a.input {
+        Some(s) => format!("driven by {}", doc.string(s).unwrap_or("an object function")),
+        None => match a.period {
+            Some(p) => format!("game time, every {p} s"),
+            None => "game time".to_owned(),
+        },
+    };
+    ui.text(format!("Property {}: {input}", a.index));
+    let path = a.path();
+    match tag_api::resolve(doc, read.tag, &path) {
+        Ok((at, layout, field)) => {
+            let address = at + field.offset;
+            match curve::function(doc, read.tag, address) {
+                Ok((_, _, f)) => {
+                    let marker = a
+                        .period
+                        .filter(|p| p.is_finite() && *p > 0.0)
+                        .map(|p| ((time / f64::from(p)) % 1.0) as f32);
+                    curve::animation_plot(ui, &f, marker);
+                    ui.same_line();
+                    if ui.small_button("Edit curve...##shader-curve") {
+                        panel.curve = Some(curve::Open::new(
+                            read.tag,
+                            address,
+                            &field,
+                            &layout,
+                            &format!("Property {}", a.index),
+                        ));
+                    }
+                }
+                Err(e) => ui.text_disabled(format!("    No curve: {e}")),
+            }
+        }
+        Err(e) => ui.text_disabled(format!("    No curve: {e}")),
+    }
+    match value {
+        Ok(v) => ui.text_disabled(format!("    {v:.3} at {time:.2} s")),
+        Err(why) => ui.text_disabled(format!("    No value: {why}")),
+    }
+    for d in &a.drives {
+        ui.text_disabled(format!("    drives {d}"));
+    }
+    if let Some(why) = a.refusal() {
+        ui.text_colored(theme::WARN, format!("{} {why}", icon::ALERT));
+    }
 }
 
 /// The **Code** section: a node per pass, read when it is opened.
@@ -312,12 +399,14 @@ fn preview(
     let stale = st
         .preview
         .as_ref()
-        .is_none_or(|(k, s, _)| k != key || *s != st.shape);
+        .is_none_or(|(k, s, _)| k != key || *s != st.shape)
+        || (!st.playing && st.drawn_time != st.time);
     if stale {
         if let Some((_, _, Ok(old))) = st.preview.take() {
             let _ = cx.gpu.renderer.unregister_external_texture(old.id);
         }
-        let drawn = render(cx.gpu, app, read, st.shape);
+        let drawn = render(cx.gpu, app, read, st.shape, st.time);
+        st.drawn_time = st.time;
         st.preview = Some((key.clone(), st.shape, drawn));
     }
     ui.text(format!("Preview on {}", shape_words(app, st.shape)));
@@ -348,8 +437,14 @@ fn preview(
 }
 
 /// The preview drawn and put on the GPU for the window.
-fn render(gpu: &mut Gpu<'_>, app: &App, read: &ShaderRead, shape: Shape) -> Result<Preview, String> {
-    let p = app.shader_preview(read.tag, shape)?;
+fn render(
+    gpu: &mut Gpu<'_>,
+    app: &App,
+    read: &ShaderRead,
+    shape: Shape,
+    time: f64,
+) -> Result<Preview, String> {
+    let p = app.shader_preview(read.tag, shape, time)?;
     let texture = material::render_material(gpu.device, gpu.queue, &p, PICTURE, BACKGROUND);
     let view = texture.create_view(&Default::default());
     let id = gpu

@@ -265,3 +265,32 @@ fn shader_code_lists_both_programs_of_a_pass() {
         .unwrap_err();
     assert_eq!(e.code, code::REFUSED, "{e}");
 }
+
+/// S2: `shader.read` and `shader.preview` take the preview clock; the
+/// invented shader has no animated property, so the clock changes no
+/// value, and a time out of range is refused by name.
+#[test]
+fn the_preview_clock_is_read_and_checked() {
+    let t = Temp::new("shader-clock");
+    let (mut api, mut app) = open(&t, fixture::LAYERED_LAYER);
+    let r = call(&mut api, &mut app, m::SHADER_READ, json!({"tag": SHADER, "time": 1.5}));
+    assert_eq!(r["time"], 1.5);
+    assert_eq!(r["clock_length"], 1.0);
+    assert_eq!(r["animations"], json!([]));
+    let p = call(
+        &mut api,
+        &mut app,
+        m::SHADER_PREVIEW,
+        json!({"tag": SHADER, "size": [32, 32], "time": 0.25, "out": t.path("out/clock.png").display().to_string()}),
+    );
+    assert_eq!(p["time"], 0.25);
+    assert_eq!(p["animation"], json!([]));
+    for bad in [json!(-1.0), json!(90000.0), json!("soon")] {
+        for method in [m::SHADER_READ, m::SHADER_PREVIEW] {
+            let e = api
+                .call(&mut app, method, json!({"tag": SHADER, "time": bad}))
+                .unwrap_err();
+            assert_eq!(e.code, code::INVALID_PARAMS, "{method} {bad}: {e}");
+        }
+    }
+}

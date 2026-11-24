@@ -746,6 +746,22 @@ pub fn material<R: Read + Seek>(
     shader: TagId,
     shape: Shape,
 ) -> Result<MaterialPreview, String> {
+    material_at(map, files, shader, shape, 0.0)
+}
+
+/// [`material`] planned at render time `time` seconds, the preview
+/// clock: a pass's animated properties are evaluated there
+/// (`layers_load::plan_without_game`). A pass that animates a constant is
+/// still left out and named, whatever the time: the editor's plan draws
+/// the constants the compiled programs hold (`layers_load`'s `animated`
+/// refusal).
+pub fn material_at<R: Read + Seek>(
+    map: &mut Map<R>,
+    files: &mut ResourceFiles,
+    shader: TagId,
+    shape: Shape,
+    time: f64,
+) -> Result<MaterialPreview, String> {
     let section = match shape {
         Shape::Sphere => sphere(),
         Shape::Quad => quad(),
@@ -765,7 +781,7 @@ pub fn material<R: Read + Seek>(
         base.insert(0u16, image);
     }
     let pages = HashMap::new();
-    let layers = NativeLayers::read(map, files, &[shader], &world, &pages, true);
+    let layers = NativeLayers::read_at(map, files, &[shader], &world, &pages, true, time);
     let mut load = NativeLoad::new(shader, world, base, pages);
     load.layers = Some(Arc::new(layers));
     let (yaw, pitch) = shape.view();

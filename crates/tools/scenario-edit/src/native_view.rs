@@ -484,6 +484,21 @@ impl NativeLayers {
         pages: &HashMap<LightmapKey, Image>,
         unlit_bsp: bool,
     ) -> Self {
+        Self::read_at(map, files, shaders, world, pages, unlit_bsp, 0.0)
+    }
+
+    /// [`Self::read`] with each layer planned at render time `time`
+    /// seconds (the Shader tab's preview clock): the plan evaluates a
+    /// pass's animated properties there.
+    pub fn read_at<R: Read + Seek>(
+        map: &mut Map<R>,
+        files: &mut ResourceFiles,
+        shaders: &[TagId],
+        world: &World,
+        pages: &HashMap<LightmapKey, Image>,
+        unlit_bsp: bool,
+        time: f64,
+    ) -> Self {
         let world = World {
             draws: world.draws.clone(),
             batches: world.batches.clone(),
@@ -517,7 +532,7 @@ impl NativeLayers {
         let mut plans: BTreeMap<u8, StaticLayer> = native_render::layer_pass::LAYERS
             .into_iter()
             .map(|layer| {
-                let plan = layers_load::plan_without_game(&view, shaders, layer, 0.0);
+                let plan = layers_load::plan_without_game(&view, shaders, layer, time);
                 (layer, editor_plan(layer, plan))
             })
             .collect();
@@ -1483,6 +1498,7 @@ impl NativeObjects {
     }
 }
 
+pub mod animate;
 pub mod code;
 pub mod preview;
 
