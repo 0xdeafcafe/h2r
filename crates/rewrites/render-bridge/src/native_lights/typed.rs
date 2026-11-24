@@ -128,6 +128,21 @@ fn plan(mem: &dyn GuestMemory, p: &passes::Plan) -> Result<Dynamic, Refusal> {
     if !crate::scene_step::current_light_matches(&scene_light, steps.as_slice()) {
         return Err(Refusal::Layout);
     }
+    // The equivalent scene-alone walk would return no entries to the
+    // guest handlers only when this exact candidate still owns every draw.
+    if steps.drawn() != 0
+        && !CANDIDATE.with_borrow(|candidate| {
+            candidate.as_ref().is_some_and(|c| {
+                !c.first_person
+                    && c.inside.is_none()
+                    && c.layers == steps.drawn()
+                    && c.light.handle == p.light
+                    && c.light.constants == Some(constants)
+            })
+        })
+    {
+        return Err(Refusal::Layout);
+    }
     let tail = typed_tail::plan_dynamic(mem, p, globals.flags, steps.drawn())
         .ok_or(Refusal::Unsupported)?;
     // The same-target tail only covers direct view draws. Additional
