@@ -231,12 +231,14 @@ fn a_bitmaps_tab_undoes_its_own_steps_and_the_map_keeps_its_own() {
     app.textures.brush.size = 1.0;
     app.textures.brush.hardness = 1.0;
     // One dab at the left of the last row, then a stroke across it.
-    for x in [0.5, 3.5] {
+    for xs in [&[0.5][..], &[0.5, 3.5][..]] {
         app.dispatch(Action::Bitmap(BitmapAction::StrokeBegin {
             tag: floor,
             layer,
         }));
-        app.dispatch(Action::Bitmap(BitmapAction::StrokeTo { x, y: 3.5 }));
+        for &x in xs {
+            app.dispatch(Action::Bitmap(BitmapAction::StrokeTo { x, y: 3.5 }));
+        }
         app.dispatch(Action::Bitmap(BitmapAction::StrokeEnd));
     }
     let row = json!([0, 3, 4, 1]);

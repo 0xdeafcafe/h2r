@@ -1428,7 +1428,8 @@ fn a_sound_at_two_indices_of_two_gestalts_is_one_asset() {
         &nodes[0].bytes[0x14 + 8 + 8..0x14 + 8 + 8 + 4],
         &1u32.to_le_bytes()
     );
-    let extra = nodes.last().unwrap();
+    // The extra info row, opened before the array its block names.
+    let extra = &nodes[5];
     assert_eq!(extra.size, 0x2c);
     assert_eq!(
         extra.fields,
