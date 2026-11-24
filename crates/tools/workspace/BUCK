@@ -18,6 +18,7 @@ crate_tree(
     name = "lib-tree",
     files = [
         ":src",
+        "//:content",
     ],
 )
 
@@ -25,6 +26,7 @@ crate_tree(
     name = "test-tree",
     files = [
         ":all",
+        "//:content",
     ],
 )
 
@@ -43,6 +45,7 @@ workspace_library(
         "//crates/formats/map:map",
         "//crates/formats/tags:tags",
         "//crates/runtime/vfs:vfs",
+        "//crates/tools/pogo-kit:pogo-kit",
         "//third-party/rust:png",
         "//third-party/rust:serde",
         "//third-party/rust:serde_json",
@@ -66,6 +69,7 @@ workspace_test(
         "//crates/formats/map:map",
         "//crates/formats/tags:tags",
         "//crates/runtime/vfs:vfs",
+        "//crates/tools/pogo-kit:pogo-kit",
         "//third-party/rust:png",
         "//third-party/rust:serde",
         "//third-party/rust:serde_json",

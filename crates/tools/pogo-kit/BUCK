@@ -18,7 +18,7 @@ crate_tree(
     name = "lib-tree",
     files = [
         ":src",
-        "//:art",
+        "//:content",
     ],
 )
 
@@ -26,7 +26,7 @@ crate_tree(
     name = "test-tree",
     files = [
         ":all",
-        "//:art",
+        "//:content",
     ],
 )
 
@@ -34,7 +34,7 @@ workspace_library(
     name = "pogo-kit",
     crate = "pogo_kit",
     crate_root = "crates/tools/pogo-kit/src/lib.rs",
-    description = "The Pogo Stick's models, built from art/pogo into each multiplayer map",
+    description = "The Pogo Stick's models, built from content/pogo into each multiplayer map",
     features = [
         "fixture",
     ],
@@ -64,7 +64,7 @@ workspace_test(
     name = "unit-tests",
     crate = "pogo_kit",
     crate_root = "crates/tools/pogo-kit/src/lib.rs",
-    description = "The Pogo Stick's models, built from art/pogo into each multiplayer map",
+    description = "The Pogo Stick's models, built from content/pogo into each multiplayer map",
     features = [
         "fixture",
     ],
