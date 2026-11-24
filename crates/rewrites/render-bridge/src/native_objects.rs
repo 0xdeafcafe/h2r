@@ -108,6 +108,9 @@ pub trait Host: Send + Sync {
     /// Start the tag-index load on map activation or a snapshot's first view.
     fn preload(&self, _mem: &dyn GuestMemory) {}
 
+    /// Draw objects reached only by the presentation lens into the display attachments.
+    fn draw_display_objects(&self, _mem: &mut dyn GuestMemory, _view: &View) {}
+
     /// Reserve and commit all of a sorted run (`run`, the walk's entries
     /// from slot `first`). `view` is the frame step's open view with the
     /// scene it is in ([`crate::scene_step`]): the camera, and each
@@ -155,6 +158,12 @@ fn begin_walk(mem: &mut dyn GuestMemory, ret: u32) {
     let Some(host) = host() else { return };
     // Use the same map generation check as activation on snapshot loads.
     host.preload(mem);
+    if kind == ViewKind::Game
+        && let Some(view) = crate::scene_step::open_view(mem)
+        && view.display_visibility.as_ref().is_some_and(|v| !v.objects.is_empty())
+    {
+        host.draw_display_objects(mem, &view);
+    }
     let Some(list) = Mem(mem).read_u32(native_render::skip::CURRENT_LIST) else {
         return;
     };
