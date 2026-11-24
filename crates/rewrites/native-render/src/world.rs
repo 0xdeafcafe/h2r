@@ -5,7 +5,7 @@
 
 use bytemuck::{Pod, Zeroable};
 
-/// One world vertex (76 bytes): what the lightmap pass reads. The first
+/// One world vertex: what the lightmap pass reads. The first
 /// four fields are what stage 1's own program reads; the rest are what the
 /// game's world programs read (docs/graphics/native-world.md, "What a
 /// world pass reads"): `v2..v4` the tangent frame, `v5` the lighting
@@ -28,6 +28,8 @@ pub struct WorldVertex {
     /// material programs read `v2..v5` from these and decode them in the
     /// shader as the D3D translation does (`crate::program::INPUTS`).
     pub packed: [u32; 4],
+    /// Per-vertex light, stored in RGBA order for a normalized byte fetch.
+    pub baked_color: [u8; 4],
 }
 
 /// `v` as a `NORMPACKED3` word (signed 11:11:10, x in the low bits): each
@@ -124,9 +126,13 @@ pub struct WorldDraw {
     /// position always, `v1` the texture coordinate, `v2..v4` the
     /// normal, binormal and tangent, `v5` the lighting vector, `v6` the
     /// lightmap coordinate; each only when the section has it for every
-    /// vertex (the rest read zero, or the default normal).
+    /// vertex. [`BAKED_COLOR_INPUT`] marks the colour alternative for v6.
     pub inputs: u16,
 }
+
+/// Required stream bit for a classified program that takes baked colour
+/// at v6. The ordinary v6 stream bit denotes lightmap UVs.
+pub const BAKED_COLOR_INPUT: u16 = 1 << 7;
 
 /// [`WorldDraw::inputs`] of a section with `n` vertices.
 fn section_inputs(s: &SectionInput, lit: bool) -> u16 {
@@ -140,6 +146,7 @@ fn section_inputs(s: &SectionInput, lit: bool) -> u16 {
         has(s.tangents.len()),
         has(s.lighting.len()),
         lit,
+        has(s.baked_colors.len()),
     ]
     .iter()
     .enumerate()
@@ -191,6 +198,10 @@ pub struct SectionInput {
     pub tangents: Vec<[f32; 3]>,
     /// The signed lighting vectors (stream `30`); empty without them.
     pub lighting: Vec<[f32; 3]>,
+    /// A baked RGBA colour per vertex when this stream is bound.
+    pub baked_colors: Vec<[u8; 4]>,
+    /// A bucket descriptor overrides the definition's colour stream.
+    pub bucket_colors: bool,
     pub parts: Vec<PartInput>,
 }
 
@@ -284,6 +295,8 @@ pub struct SectionRun {
     pub first_vertex: u32,
     pub vertex_count: u32,
     pub place: Placement,
+    bucket_colors: bool,
+    has_baked_colors: bool,
 }
 
 impl World {
@@ -347,6 +360,9 @@ impl World {
         if section.positions.len() != n {
             return Err(SectionRefusal::VertexCount);
         }
+        if !run.bucket_colors && (section.baked_colors.len() == n) != run.has_baked_colors {
+            return Err(SectionRefusal::ColorStream);
+        }
         let base = run.first_vertex;
         let ranges = self
             .draws
@@ -371,11 +387,13 @@ impl World {
             let (mut placed, mut program) = section_vertex(section, &run.place, lit, i);
             if keep_lighting {
                 let old = self.vertices[first + i];
+                if run.bucket_colors { placed.baked_color = old.baked_color; }
                 placed.lightmap_uv = old.lightmap_uv;
                 placed.lighting = old.lighting;
                 placed.packed = pack_frame(placed.normal, placed.binormal, placed.tangent, placed.lighting);
                 if programs {
                     let old = self.program_vertices[first + i];
+                    if run.bucket_colors { program.baked_color = old.baked_color; }
                     program.lightmap_uv = old.lightmap_uv;
                     program.lighting = old.lighting;
                     program.packed = pack_frame(program.normal, program.binormal, program.tangent, program.lighting);
@@ -424,6 +442,8 @@ pub enum SectionRefusal {
     NoSection,
     /// The vertex count changed.
     VertexCount,
+    /// Rebuild classifications when a section colour stream appears or disappears.
+    ColorStream,
     /// A part the world draws has other triangles, or is gone.
     Triangles,
 }
@@ -482,6 +502,7 @@ fn section_vertex(section: &SectionInput, place: &Placement, lit: bool, i: usize
     let (binormal, tangent, lighting) = (own(&section.binormals), own(&section.tangents), own(&section.lighting));
     let uv = section.uvs.get(i).copied().unwrap_or([0.0; 2]);
     let lightmap_uv = if lit { section.lightmap_uvs[i] } else { [0.0; 2] };
+    let baked_color = section.baked_colors.get(i).copied().unwrap_or_default();
     let program = WorldVertex {
         position: section.positions[i],
         uv,
@@ -491,6 +512,7 @@ fn section_vertex(section: &SectionInput, place: &Placement, lit: bool, i: usize
         tangent,
         lighting,
         packed: pack_frame(normal, binormal, tangent, lighting),
+        baked_color,
     };
     let (placed_normal, placed_binormal, placed_tangent, placed_lighting) = (
         place.normal(normal),
@@ -517,6 +539,7 @@ fn section_vertex(section: &SectionInput, place: &Placement, lit: bool, i: usize
         // together).
         lighting: placed_lighting,
         packed: pack_frame(placed_normal, placed_binormal, placed_tangent, placed_lighting),
+        baked_color,
     };
     (placed, program)
 }
@@ -560,6 +583,8 @@ impl WorldBuilder {
             first_vertex: base,
             vertex_count: n as u32,
             place: *place,
+            bucket_colors: section.bucket_colors,
+            has_baked_colors: inputs & BAKED_COLOR_INPUT != 0,
         });
         for i in 0..n {
             let (placed, program) = section_vertex(section, place, lit, i);
@@ -622,21 +647,8 @@ impl WorldBuilder {
 
     /// Sorts the draws by (material, lightmap, owner) and groups them.
     pub fn finish(mut self) -> World {
-        self.draws
-            .sort_by_key(|d| (d.material, d.lightmap, d.owner, d.first_index));
-        let mut batches: Vec<Batch> = Vec::new();
-        for (i, d) in self.draws.iter_mut().enumerate() {
-            match batches.last_mut() {
-                Some(b) if b.material == d.material && b.lightmap == d.lightmap => b.draw_count += 1,
-                _ => batches.push(Batch {
-                    material: d.material,
-                    lightmap: d.lightmap,
-                    first_draw: i as u32,
-                    draw_count: 1,
-                }),
-            }
-            d.batch = batches.len() as u32 - 1;
-        }
+        let mut batches = Vec::new();
+        sort_and_batch(&mut self.draws, &mut batches);
         let mut bounds = Aabb::EMPTY;
         for d in &self.draws {
             bounds.add(d.bounds.min);
@@ -666,23 +678,38 @@ impl WorldBuilder {
 /// game, the editor, Theater's host view).
 pub fn keep_draws(mut world: World, keep: &dyn Fn(&WorldDraw) -> bool) -> World {
     world.draws.retain(|d| keep(d));
-    world.batches.clear();
-    for (i, d) in world.draws.iter_mut().enumerate() {
-        match world.batches.last_mut() {
+    rebuild_batches(&mut world.draws, &mut world.batches);
+    world
+}
+
+fn sort_and_batch(draws: &mut [WorldDraw], batches: &mut Vec<Batch>) {
+    draws.sort_by_key(|d| (d.material, d.lightmap, d.owner, d.first_index));
+    rebuild_batches(draws, batches);
+}
+
+fn rebuild_batches(draws: &mut [WorldDraw], batches: &mut Vec<Batch>) {
+    batches.clear();
+    for (i, d) in draws.iter_mut().enumerate() {
+        match batches.last_mut() {
             Some(b) if b.material == d.material && b.lightmap == d.lightmap => b.draw_count += 1,
-            _ => world.batches.push(Batch {
+            _ => batches.push(Batch {
                 material: d.material,
                 lightmap: d.lightmap,
                 first_draw: i as u32,
                 draw_count: 1,
             }),
         }
-        d.batch = world.batches.len() as u32 - 1;
+        d.batch = batches.len() as u32 - 1;
     }
-    world
 }
 
 impl World {
+    /// Regroup the resident layer-3 draws after assigning a program slot
+    /// to each (BSP material, lighting implementation) pair.
+    pub fn regroup_draws(&mut self) {
+        sort_and_batch(&mut self.draws, &mut self.batches);
+    }
+
     /// The lightmap pages the draws and the transparent parts use, in a
     /// fixed order: index `i` is layer `i` of the lightmap array.
     pub fn lightmap_keys(&self) -> Vec<LightmapKey> {
@@ -846,16 +873,26 @@ mod tests {
         // replace them.
         let mut own = quad(0, false, true);
         own.lightmap_uvs = vec![[0.125; 2]; 4];
+        own.baked_colors = vec![[12, 21, 42, 129]; 4];
+        own.bucket_colors = true;
         let mut w = build(&quad(0, false, true), &own);
         let mut def = edited.clone();
         def.lightmap_uvs = vec![[0.9; 2]; 4];
         let mut moved = edited.clone();
         moved.lightmap_uvs = own.lightmap_uvs.clone();
+        moved.baked_colors = own.baked_colors.clone();
         let want = build(&quad(0, false, true), &moved);
         assert!(w.replace_section(Owner::Instance(3), &def).is_ok());
         assert_eq!(w.vertices, want.vertices);
         assert_eq!(w.draws, want.draws);
 
+        let mut from_section = own.clone();
+        from_section.bucket_colors = false;
+        let mut edited_colors = build(&quad(0, false, true), &from_section);
+        assert_eq!(edited_colors.replace_section(Owner::Instance(3), &def), Err(SectionRefusal::ColorStream));
+        def.baked_colors = vec![[7, 11, 13, 17]; 4];
+        assert!(edited_colors.replace_section(Owner::Instance(3), &def).is_ok());
+        assert_eq!(edited_colors.program_vertices[4].baked_color, [7, 11, 13, 17]);
         let before = w.clone();
         let mut fewer = quad(0, false, true);
         fewer.positions.pop();
