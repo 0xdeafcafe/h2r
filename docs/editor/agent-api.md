@@ -356,9 +356,31 @@ Notes on some:
   differ from the map's (`changed`, `added`, `removed`), its `problems`
   against the context (`line`, `col` from 1, `severity`, `message`,
   `code`), and `stale` when the map's scripts changed while it held
-  edits; `{open: false}` when none is open. It needs no map. Nothing is
-  written into the map ([editor-guide.md, "Scripts in VS Code and
+  edits; `{open: false}` when none is open. It needs no map. It writes
+  nothing into the map ([editor-guide.md, "Scripts in VS Code and
   Zed"](editor-guide.md#scripts-in-vs-code-and-zed)).
+  `script.compile {source?, working?, name?, apply?}` compiles source into
+  the map's script tables (`hs::compile`): a definition named as one the
+  map has replaces it, any other is added, and only those definitions'
+  nodes change. `source` is the text; `working: true` takes the working
+  copy's changed and added definitions (it is `REFUSED` with no working
+  copy or no edits; give one of the two, else `INVALID_PARAMS`); `name`
+  requires the source to define it (`INVALID_PARAMS` otherwise). Without
+  `apply` nothing changes and the answer says what would. Problems are
+  an answer, not an error: `{ok: false, applied: false, errors: [{line,
+  column, span: [start, end], code, text}]}` (a compile past the node
+  limit has both counts in its `text`). Otherwise `{ok: true, applied,
+  definitions: [{name, item}], nodes, freed, reused, grown, new_strings,
+  grows, free_nodes, depth: {undo, redo}}`: nodes the definitions use,
+  slots freed and reused, slots added, string bytes added, whether a
+  table outgrows the map's (`grows`) and the free nodes left. With
+  `apply` the compile is one undo step, the Scripts tab and the unsaved
+  count follow, and a table that grows is `REFUSED` while **Allow growing
+  full blocks** is off. With no executable it is `REFUSED` with the
+  tool's sentence, and with no map `NO_DOCUMENT`. Names the map's scripts
+  do not already use do not resolve (`name.unresolved`).
+  `script.undo {redo?}` takes back (or redoes) the last applied compile:
+  `{changed, free_nodes, depth}`.
 - **Variants of a script.** `doc.open {variant: {script: <starter>}}` (a
   `rules.get` starter's name, or `open` for the script in the script
   window) opens a new, unsaved variant of it: the record

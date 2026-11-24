@@ -122,6 +122,12 @@ pub struct Drag {
 pub const GROWTH_REFUSAL: &str = "the block is full: growing it needs more tag memory, and the \
      engine's headroom for that is not established (docs/editor/scenario-editor.md §6)";
 
+/// Why a script table may not outgrow the map's.
+pub const SCRIPT_GROWTH_REFUSAL: &str = "a script table is longer than the map's: growing it \
+     appends a copy to the map's metadata, and the engine's headroom for more tag memory is not \
+     established (docs/editor/scenario-editor.md §6): turn on Edit > Allow growing full blocks \
+     to do it";
+
 /// Why a scenario data reference may not grow past the room its source
 /// had while growth is off.
 pub const DATA_GROWTH_REFUSAL: &str = "the data is longer than it was in the source. Growing it \
@@ -984,6 +990,22 @@ impl Session {
         }
         let doc = self.doc.as_mut().ok_or(Error::Save("no map is open"))?;
         doc.scenario.set_recording_changes(patches, grown)
+    }
+
+    /// Replace the script tables' writes (see
+    /// [`Scenario::set_script_changes`]), which save with the map and
+    /// count toward [`Self::is_dirty`]. A grown table is refused while
+    /// growth is off.
+    pub fn set_script_changes(
+        &mut self,
+        patches: Vec<(u32, Vec<u8>)>,
+        grown: Vec<crate::TagGrown>,
+    ) -> Result<()> {
+        if !grown.is_empty() && !self.allow_growth {
+            return Err(Error::Refused(SCRIPT_GROWTH_REFUSAL));
+        }
+        let doc = self.doc.as_mut().ok_or(Error::Save("no map is open"))?;
+        doc.scenario.set_script_changes(patches, grown)
     }
 
     /// Why the scenario's data reference at `pair` (the virtual address of

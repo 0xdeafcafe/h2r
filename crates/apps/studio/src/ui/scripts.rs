@@ -4,12 +4,18 @@
 //! definition's source with every name a link. Read only; each panel is
 //! one scrolling body. "Open in VS Code" and "Open in Zed" write the
 //! scripts as a working copy and open it there (`app::external`); what a
-//! save there changed shows under the buttons.
+//! save there changed shows under the buttons. **Edit** puts the shown
+//! definition's source in a text box and **Compile** writes it into the
+//! map's tables (`app::script_edit`); **Compile working copy** does the
+//! same for what a save in VS Code or Zed changed.
 
-use dear_imgui_rs::{ListClipper, MouseButton, MouseCursor, TreeNodeFlags, Ui};
+use dear_imgui_rs::{
+    InputTextMultilineFlags, ListClipper, MouseButton, MouseCursor, TreeNodeFlags, Ui,
+};
 use hs::{Item, NameFrom};
 use scenario_edit::layout;
 
+use crate::app::script_edit::{Outcome, Refusal};
 use crate::app::scripts::{LinkKind, Loaded, Target};
 use crate::app::{Action, App, ScriptAction};
 use crate::theme::{self, Fonts, icon};
@@ -21,6 +27,17 @@ pub struct ScriptsUi {
     pub builtins: String,
     /// The recording shown under Recordings (an index into the block).
     pub recording: Option<usize>,
+    /// The definition being edited and its text.
+    pub edit: Option<Edit>,
+}
+
+/// A definition's source in the text box.
+pub struct Edit {
+    pub item: Item,
+    pub text: String,
+    /// `ScriptsTool::compiles` when Compile was pressed: the edit closes
+    /// when a later compile applied.
+    pub sent: Option<u64>,
 }
 
 /// The left tab: counts, the search, the definitions, the builtins and
@@ -258,7 +275,7 @@ fn external_row(ui: &Ui, app: &App, l: &Loaded, actions: &mut Vec<Action>) {
     }
     if ui.is_item_hovered() {
         ui.tooltip_text(
-            "Write every script and global to a working copy and open it in VS Code\nat the one shown. The extension (h2 rules editors install) checks it\nagainst this map's builtins and names, and asks Studio where a name is\nused. Each save there comes back here. Writing scripts into the map\nneeds the script compiler, which is not built yet.",
+            "Write every script and global to a working copy and open it in VS Code\nat the one shown. The extension (h2 rules editors install) checks it\nagainst this map's builtins and names, and asks Studio where a name is\nused. Each save there comes back here; Compile working copy writes what\nit changed into the map.",
         );
     }
     ui.same_line();
@@ -278,6 +295,16 @@ fn external_row(ui: &Ui, app: &App, l: &Loaded, actions: &mut Vec<Action>) {
         ui.text_colored(
             theme::WARN,
             "The map's scripts changed since the working copy was written; Studio left your edits in it.",
+        );
+    }
+    let disabled = ui.begin_disabled_with_cond(w.changes.changed.is_empty() && w.changes.added.is_empty());
+    if ui.button("Compile working copy##scripts-compile-working") {
+        actions.push(Action::Script(ScriptAction::CompileWorking));
+    }
+    disabled.end();
+    if ui.is_item_hovered() {
+        ui.tooltip_text(
+            "Compile the definitions the file changed or added into the map's\nscripts. Ones it removed stay: the compiler adds and replaces.",
         );
     }
 }
@@ -418,7 +445,13 @@ fn doc_row(ui: &Ui, app: &App, l: Option<&Loaded>, dialogs: bool, actions: &mut 
 
 /// The Inspector: the selected definition's source, names as links, and
 /// the definitions that use it.
-pub fn source(ui: &Ui, app: &App, fonts: &Fonts, actions: &mut Vec<Action>) {
+pub fn source(
+    ui: &Ui,
+    app: &App,
+    st: &mut ScriptsUi,
+    fonts: &Fonts,
+    actions: &mut Vec<Action>,
+) {
     let l = match app.scripts_loaded() {
         Ok(l) => l,
         Err(why) => {
@@ -439,7 +472,11 @@ pub fn source(ui: &Ui, app: &App, fonts: &Fonts, actions: &mut Vec<Action>) {
     ui.text_disabled(
         "Decompiled from the map: comments, layout and the file it came from are not kept.",
     );
+    edit_row(ui, app, st, item, &e.source.source, actions);
     ui.separator();
+    if st.edit.as_ref().is_some_and(|x| x.item == item) {
+        return;
+    }
     let text = &e.source.source;
     let scenario = app.session.scenario();
     let mut links = e.links.iter().enumerate().peekable();
@@ -507,6 +544,116 @@ pub fn source(ui: &Ui, app: &App, fonts: &Fonts, actions: &mut Vec<Action>) {
         let label = format!("{user_name}  ×{n}##script-use-{user:?}");
         if ui.selectable(label) {
             actions.push(Action::Script(ScriptAction::Select(user)));
+        }
+    }
+}
+
+/// **Edit**, the text box with **Compile** and **Check**, the undo and
+/// redo of compiles, and how the last compile ended.
+fn edit_row(
+    ui: &Ui,
+    app: &App,
+    st: &mut ScriptsUi,
+    item: Item,
+    source: &str,
+    actions: &mut Vec<Action>,
+) {
+    let compiles = app.scripts.compiles;
+    if let Some(x) = &st.edit
+        && x.sent.is_some_and(|seen| compiles > seen)
+        && matches!(&app.scripts.compile, Some(Outcome::Done(r)) if r.applied)
+    {
+        st.edit = None;
+    }
+    let editing = st.edit.as_ref().is_some_and(|x| x.item == item);
+    if !editing {
+        if ui.button("Edit##script-edit") {
+            st.edit = Some(Edit {
+                item,
+                text: source.to_owned(),
+                sent: None,
+            });
+        }
+        if ui.is_item_hovered() {
+            ui.tooltip_text(
+                "Edit this definition's source here. Compile writes it into the\nmap's scripts: only its nodes change.",
+            );
+        }
+    } else if let Some(x) = &mut st.edit {
+        ui.input_text_multiline("##script-edit-text", &mut x.text, [-1.0, 180.0])
+            .flags(InputTextMultilineFlags::ALLOW_TAB_INPUT)
+            .build();
+        if ui.button("Compile##script-compile") {
+            x.sent = Some(compiles);
+            actions.push(Action::Script(ScriptAction::Compile {
+                source: x.text.clone(),
+                apply: true,
+            }));
+        }
+        if ui.is_item_hovered() {
+            ui.tooltip_text(
+                "Write the compiled source into the map as one undo step. A new\nstring, script or global, or more nodes than free slots, makes a table\ngrow, which needs Edit > Allow growing full blocks.",
+            );
+        }
+        ui.same_line();
+        if ui.button("Check##script-check") {
+            actions.push(Action::Script(ScriptAction::Compile {
+                source: x.text.clone(),
+                apply: false,
+            }));
+        }
+        ui.same_line();
+        if ui.button("Revert##script-revert") {
+            x.text = source.to_owned();
+        }
+        ui.same_line();
+        if ui.button("Close##script-edit-close") {
+            st.edit = None;
+        }
+    }
+    if let Some(doc) = &app.scripts.edit {
+        let (undo, redo) = doc.depth();
+        if undo + redo > 0 {
+            ui.same_line();
+            let off = ui.begin_disabled_with_cond(undo == 0);
+            if ui.button("Undo compile##script-undo") {
+                actions.push(Action::Script(ScriptAction::CompileUndo { redo: false }));
+            }
+            off.end();
+            ui.same_line();
+            let off = ui.begin_disabled_with_cond(redo == 0);
+            if ui.button("Redo compile##script-redo") {
+                actions.push(Action::Script(ScriptAction::CompileUndo { redo: true }));
+            }
+            off.end();
+        }
+    }
+    match &app.scripts.compile {
+        None => {}
+        Some(Outcome::Done(r)) => {
+            let names: Vec<&str> = r.definitions.iter().map(|(n, _)| n.as_str()).collect();
+            ui.text_colored(
+                theme::DIM,
+                format!(
+                    "{} {}: {} nodes ({} reused, {} added), {} new string bytes, {} free nodes{}",
+                    if r.applied { "Compiled" } else { "Checked" },
+                    names.join(", "),
+                    r.nodes,
+                    r.reused,
+                    r.grown,
+                    r.new_strings,
+                    r.free_nodes,
+                    if r.grows { "; a table grows" } else { "" },
+                ),
+            );
+        }
+        Some(Outcome::Failed(Refusal::Problems(messages))) => {
+            for m in messages {
+                ui.text_colored(theme::ERROR, format!("{} {m}", icon::ALERT));
+            }
+        }
+        Some(Outcome::Failed(other)) => {
+            ui.text_colored(theme::ERROR, format!("{} {}", icon::ALERT, other.line()));
         }
     }
 }

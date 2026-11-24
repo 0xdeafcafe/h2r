@@ -1,7 +1,7 @@
 # Rich editors: shaders, colours, curves, scripts, sounds and recordings
 
-Status: Design, except the seam (X1), "Data that changes length", sound audition (A1), mouth curves, read (A2), Scripts, read (H1), Recordings, read (K1), Recordings, play (K2), Recordings, write (K3), the curve editor, same length (F1), curve type changes (F2), Model poses (M1), the colour picker (C1) and the colour forms of `obje`, `deca`, `lens` and `sky ` (C2) and the Shader tab (S1), which are built; each section names the format code it stands on and the gaps in it.
-Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/fields/rich.rs` (the seam), `crates/formats/tags/src/defs/attrs.rs` (`FieldView`), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/tools/scenario-edit/src/scenario/data.rs` (the scenario's data that changes length), `crates/apps/studio/src/fields/colour.rs` and `crates/apps/studio/src/api/colours.rs` (C1), `crates/apps/studio/src/fields/curve.rs` and `crates/apps/studio/src/api/curves.rs` (F1), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/formats/hs/src/script_doc.rs`, `crates/formats/hs/src/recording.rs`, `crates/formats/hs/src/recording_edit.rs`, `crates/apps/studio/src/app/recordings.rs`, `crates/apps/studio/src/api/recordings.rs`, `crates/apps/studio/src/app/scripts.rs`, `crates/apps/studio/src/ui/scripts.rs`, `crates/apps/studio/src/api/scripts.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`, `crates/apps/studio/src/app/shader.rs`, `crates/apps/studio/src/fields/shader.rs`, `crates/apps/studio/src/api/shader.rs` and `crates/tools/scenario-edit/src/native_view/preview.rs` (`material`, S1). Tests: `defs/tests.rs`, `registry/tests.rs`, `fields::rich::tests` and `api/tests.rs` (X1), `effects::function::tests` and `api/curves/tests.rs` (F1), `app/tag_data_tests.rs` and scenario-edit's `data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1), `app::scripts::tests`, `hs::script_doc::tests` and `hs::source::each_tests` (H1), `hs::recording::tests`, `hs::recording_edit::tests` (`recording_edit_tests.rs`) and `app/recordings_tests.rs` (K1, K3), `fields/colour/tests.rs` and `api/colours/tests.rs` (C1), `scenario-edit`'s `the_recordings_blocks_writes_save_with_the_scenario` (K3), `app/shader_tests.rs`, `api/tests/shader_tests.rs` and `native_view::tests` (S1); each other slice names its own, `crates/apps/studio/src/app/anim.rs`, `crates/apps/studio/src/ui/anim.rs` (M1), `api/anim/tests.rs`, `anim_tests.rs`.
+Status: Design, except the seam (X1), "Data that changes length", sound audition (A1), mouth curves, read (A2), Scripts, read (H1), Recordings, read (K1), Recordings, play (K2), Recordings, write (K3), Scripts, write (H3), the curve editor, same length (F1), curve type changes (F2), Model poses (M1), the colour picker (C1) and the colour forms of `obje`, `deca`, `lens` and `sky ` (C2) and the Shader tab (S1), which are built; each section names the format code it stands on and the gaps in it.
+Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/fields/rich.rs` (the seam), `crates/formats/tags/src/defs/attrs.rs` (`FieldView`), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/tools/scenario-edit/src/scenario/data.rs` (the scenario's data that changes length), `crates/apps/studio/src/fields/colour.rs` and `crates/apps/studio/src/api/colours.rs` (C1), `crates/apps/studio/src/fields/curve.rs` and `crates/apps/studio/src/api/curves.rs` (F1), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/formats/hs/src/script_doc.rs`, `crates/formats/hs/src/recording.rs`, `crates/formats/hs/src/recording_edit.rs`, `crates/apps/studio/src/app/recordings.rs`, `crates/apps/studio/src/api/recordings.rs`, `crates/apps/studio/src/app/scripts.rs`, `crates/apps/studio/src/app/script_edit.rs`, `crates/formats/hs/src/table_writes.rs`, `crates/apps/studio/src/ui/scripts.rs`, `crates/apps/studio/src/api/scripts.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`, `crates/apps/studio/src/app/shader.rs`, `crates/apps/studio/src/fields/shader.rs`, `crates/apps/studio/src/api/shader.rs` and `crates/tools/scenario-edit/src/native_view/preview.rs` (`material`, S1). Tests: `defs/tests.rs`, `registry/tests.rs`, `fields::rich::tests` and `api/tests.rs` (X1), `effects::function::tests` and `api/curves/tests.rs` (F1), `app/tag_data_tests.rs` and scenario-edit's `data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1), `app::scripts::tests`, `app/script_edit_tests.rs`, `hs/src/table_writes_tests.rs` and scenario-edit's `the_script_tables_writes_save_with_the_scenario` (H3), `hs::script_doc::tests` and `hs::source::each_tests` (H1), `hs::recording::tests`, `hs::recording_edit::tests` (`recording_edit_tests.rs`) and `app/recordings_tests.rs` (K1, K3), `fields/colour/tests.rs` and `api/colours/tests.rs` (C1), `scenario-edit`'s `the_recordings_blocks_writes_save_with_the_scenario` (K3), `app/shader_tests.rs`, `api/tests/shader_tests.rs` and `native_view::tests` (S1); each other slice names its own, `crates/apps/studio/src/app/anim.rs`, `crates/apps/studio/src/ui/anim.rs` (M1), `api/anim/tests.rs`, `anim_tests.rs`.
 Switch: none.
 
 A rich editor shows a tag, or part of one, as the thing it is: a material
@@ -390,15 +390,24 @@ builtin of the executable as its call form, `(name <short> <object>)`,
 with where the name comes from (below); an unnamed one is
 `(#builtin:<index> ...)`. **Script documentation** picks the listing
 builtin names may come from, with a file dialog, and says what it
-named. **Edit** and **Compile** (slice H3) are not built: the tab is read
-only. **Open in VS Code** and **Open in Zed** write every global and
-script to a working copy (`scripts/<map>/<map>.hsc` under the data root,
-with the `h2hs.json` context `h2 hs lsp` checks it against) and open it
-there; each save comes back to the tab as the definitions that differ
-from the map's and the file's problems (`app/external.rs`;
+named. **Edit** puts the shown definition's source in a text box; **Compile**
+writes it into the map's tables as one undo step, **Check** says what it
+would do without writing, and **Undo compile** and **Redo compile** step
+through the compiles. A definition the map has is replaced where it is; a
+new one is added at the end of its table; no other definition's nodes
+change. The result shows under the buttons: the definitions, nodes used,
+slots reused and added, new string bytes, free nodes left, and a line
+for each problem with its line and column. **Open in VS Code** and **Open
+in Zed** write every global and script to a working copy
+(`scripts/<map>/<map>.hsc` under the data root, with the `h2hs.json`
+context `h2 hs lsp` checks it against) and open it there; each save comes
+back to the tab as the definitions that differ from the map's and the
+file's problems (`app/external.rs`;
 [editor-guide.md, "Scripts in VS Code and Zed"](editor-guide.md#scripts-in-vs-code-and-zed)).
-Those edits reach the map once **Compile** (slice H3) writes the
-compiler's output into the session.
+**Compile working copy** compiles the definitions the file changed or
+added (the ones it holds unchanged are not recompiled, so their nodes are
+not touched). Removing a definition from the file removes nothing from the
+map.
 
 **The data.** `crates/formats/hs`: `Scenario::read` decodes the node
 table, string data, scripts, globals and tag references (`wire::Node`,
@@ -485,27 +494,53 @@ A changed script has the `reload` effect. Evaluating an expression in the
 running game needs a game method that does not exist (`hs.eval`, slice
 H4), and is not assumed.
 
-**Write.** Scripts compile one at a time. An unedited script's nodes are
-not touched, so a map with one changed script differs only in that
-script's nodes.
+**Write** (`crates/apps/studio/src/app/script_edit.rs`,
+`crates/formats/hs/src/table_writes.rs`). `App::script_compile(source,
+only, apply)` hands the source to `hs::compile` with the tool's catalog
+and builtin names, so a map with one changed script differs only in that
+script's nodes. The tables it returns go to `hs::table_writes::writes`,
+which says how the save writes each of the five the scenario header
+describes (nodes `+0x238`, string data `+0x1b0`, scripts `+0x1b8`,
+globals `+0x1c0`, tag references `+0x1c8`):
 
-- The old nodes of an edited script are freed (salt kept, marked free as
-  the source's free slots are); new nodes take free slots first.
-- More nodes than free slots grows the node block as any block grows
-  (appended on save, **Allow growing full blocks** on), up to
-  `hs::scenario::RETAIL_NODES`. Past that the compile is refused with
-  both counts.
-- New tokens are appended to `script_strings` through the scenario
-  session's form of `resize_data`; existing offsets never move.
-- A new script or global adds an element to its block. Removing a script
-  or a global another script uses is refused, naming the user.
-- Before the edit is accepted, the whole table passes
-  `Scenario::validate_graph`, `Scenario::validate` and
-  `verify_codec_symmetry`. A failure rejects the edit and leaves the
+- A table with no more elements than the map's is written in place: one
+  patch per run of changed bytes, and its count when that changed. The old
+  nodes of an edited script are freed (salt zero) and new nodes take free
+  slots first, so an edit that fits is node patches and nothing else.
+- A table with more elements (more nodes than free slots, a new string, a
+  new script or global) is written whole to a new place: a
+  `scenario_edit::TagGrown` at the header's pair, appended on save and the
+  pair pointed at the copy, the old bytes left unreferenced. Existing
+  string offsets never move, because new tokens are only appended. The
+  node count may not pass `hs::RETAIL_NODES` (or the scenario's own
+  size); past it the compile is refused with both counts, in the
+  compiler's `nodes.limit` message.
+- The session holds the writes beside the scenario's own
+  (`Session::set_script_changes`, `Scenario::set_script_changes`): they
+  save with the map, count as unsaved, and a grown table is refused while
+  **Edit > Allow growing full blocks** is off
+  (`SCRIPT_GROWTH_REFUSAL`).
+- Before anything is held, the compile passes `Scenario::validate` (in
+  `hs::compile`), and the new tables pass `Scenario::validate_graph` and
+  the codec's symmetry (`Scenario::verify_written`: written out, read
+  back, and every table encodes to the same bytes). A failure leaves the
   document as it was.
-- A scripted map already refuses the removal of a trigger volume
-  (`scenario_edit::scenario::is_scripted`). With the Scripts tool the
-  refusal names the scripts that use it.
+- The tool's tables become the compiler's (`Loaded::rebuilt`): the
+  source, links, free node count and **Used by** show the edit. The
+  working copy's differences are computed again. The undo stack
+  (`script_edit::Doc`) is the tables before each compile, and the writes
+  are always the diff of the map's tables against the current ones, so
+  undoing to the start clears them.
+- Names the map's scripts do not already use (an object, a trigger volume,
+  AI, an enum) do not resolve: the compile says `name.unresolved`.
+  `Options::resolve` is not given the scenario's blocks, because how a
+  scenario name's value is encoded in a node is not established (**E**);
+  nothing guesses it.
+- Removing a script or global is not a compile operation, so a removal
+  another script's call depends on cannot happen. A scripted map already
+  refuses the removal of a trigger volume
+  (`scenario_edit::scenario::is_scripted`); naming the scripts that use
+  it in that refusal is not built.
 
 ### Sounds and facial animation
 
@@ -781,7 +816,8 @@ already a namespace there (player models and looks), so poses use `anim.*`.
 | `script.list` | `{filter?}` | `{scripts: [{name, kind, type, nodes}], globals, free_nodes, node_limit}` |
 | `script.source` | `{name?}` | `{name, item, kind, type, source, links: [{span, kind, name, target, why?}]}` |
 | `script.follow` | `{name?, link}` | `{kind, name, target, tool, log}`: what a click on the link does |
-| `script.compile` | `{name, source, apply?}` | `{ok, errors: [{line, column, text}], nodes, new_strings, grows}`; with `apply`, one undo step |
+| `script.compile` | `{source?, working?, name?, apply?}` | `{ok, applied, definitions, nodes, freed, reused, grown, new_strings, grows, free_nodes, depth}`, or `{ok: false, errors: [{line, column, span, code, text}]}`; with `apply`, one undo step |
+| `script.undo` | `{redo?}` | `{changed, free_nodes, depth}` |
 | `script.uses` | `{kind, name}` | `{uses: [{name, item, count}]}`: the definitions that name a script, global, object name, volume, tag or recording |
 | `script.builtins` | `{filter?, unnamed?}` | `{builtins: [{index, name, label, from, returns, parameters, own_arguments, call, usage}], named_by_map, named_by_doc, unnamed, doc}` |
 | `script.doc` | `{path}` | `{path, doc, log}`: names builtins from the listing at `path` (`null`: none) |
@@ -880,7 +916,7 @@ the first one whose needs are met.
 | S3 | **Template parameter names**: read `stem`'s parameter and category blocks (**E** first), names on slots | S | S1 | an invented template names its slots; a template without the blocks shows the not-read sentence |
 | C3 | **Colour functions**: the read of which colours a function blends (**E**), gradient strips | M | F1, C1 | an invented colour property draws its strip; the note records the reader |
 | H2 (built) | **Script compiler**: `hs::compile` (parser, names, types and casts, literals, allocator), messages with positions | L | H1 | `compile(decompile(s))` equals the nodes for every construct of the synthetic fixtures; each error class has a test; the `#[ignore]`d disc run reports the share of scripts that round-trip |
-| H3 | **Scripts, write**: Edit and Compile in the tool, the session ops, free-slot reuse, growth, strings, the three validations, `script.compile` | M | H2, X2 | one changed script changes only its nodes and new strings in the saved map; a compile past the node limit is refused with both counts; undo restores the table |
+| H3 (built) | **Scripts, write**: Edit and Compile in the tool, the session ops, free-slot reuse, growth, strings, the three validations, `script.compile` | M | H2, X2 | one changed script changes only its nodes and new strings in the saved map; a compile past the node limit is refused with both counts; undo restores the table |
 | A4 | **Mouth curves, write**: drawing, **From the sound**, the in-place raw write | M | A2; modeling 3 | a redrawn invented curve changes only its bytes and the checksum; a shared-cache sound and a split chain are refused |
 | K1 (built) | **Recordings, read**: the stream crate, typed events, the tool and timeline, `recording.list`, `recording.read` | M | H1 | every Halo 2 event type decodes from an invented stream; a bad type or length is an error with its offset |
 | K2 (built) | **Recordings, play**: the game's `recording.play`, the path in Scene | M | K1; live-mirror | on the fake game, **Play on unit...** sends the call and the streamed positions draw a path |

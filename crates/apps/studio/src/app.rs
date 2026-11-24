@@ -30,6 +30,7 @@ pub mod playtest_static;
 pub mod external;
 pub mod rules_edit;
 pub mod recordings;
+pub mod script_edit;
 pub mod scripts;
 pub mod shared_refs;
 pub mod shader;

@@ -1635,6 +1635,50 @@ fn the_recordings_blocks_writes_save_with_the_scenario() {
 }
 
 #[test]
+fn the_script_tables_writes_save_with_the_scenario() {
+    let src = fixture_at_end();
+    let mut s = read(src.clone());
+    let base = META + SCNR as u32;
+    let root = base + 0xf20;
+    let g = crate::TagGrown {
+        root,
+        count: 2,
+        bytes: vec![9; 8],
+    };
+    // A pair outside the payload, one that is also patched and an empty
+    // table are refused, and nothing is written.
+    let elsewhere = crate::TagGrown {
+        root: META + 0x1100,
+        ..g.clone()
+    };
+    assert!(s.set_script_changes(vec![], vec![elsewhere]).is_err());
+    assert!(
+        s.set_script_changes(vec![(root + 4, vec![0])], vec![g.clone()])
+            .is_err()
+    );
+    let empty = crate::TagGrown {
+        bytes: vec![],
+        ..g.clone()
+    };
+    assert!(s.set_script_changes(vec![], vec![empty]).is_err());
+    assert!(!s.is_modified() && s.changes().is_empty());
+
+    s.set_script_changes(vec![(base + 0xf40, vec![7, 8])], vec![g])
+        .unwrap();
+    let c = s.changes();
+    assert!(c.patches.contains(&(base + 0xf40, vec![7, 8])));
+    assert_eq!(c.tag_grown.len(), 1);
+    assert_eq!(s.script_changes().1.len(), 1);
+    let out = write(&src, &s);
+    let word = |b: &[u8], o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+    assert_eq!(&out[sfile(0xf40)..sfile(0xf40) + 2], [7, 8]);
+    assert_eq!(word(&out, sfile(0xf20)), 2);
+    assert!(word(&out, sfile(0xf24)) > META);
+    assert_eq!(&out[src.len()..src.len() + 8], [9; 8]);
+    open(out).validate_checksum().unwrap();
+}
+
+#[test]
 fn a_grown_block_is_appended_and_nothing_else_moves() {
     let src = fixture_at_end();
     let mut s = read(src.clone());

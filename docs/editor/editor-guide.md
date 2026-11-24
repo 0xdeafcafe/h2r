@@ -1129,10 +1129,13 @@ Homebrew's `bin`, or inside the app in `/Applications` or
 - Each save comes back to the Scripts tab, which shows which definitions
   differ from the map's (edited, added, removed) and how many errors the
   file has.
-- The map itself is not changed: writing scripts into a map needs the
-  script compiler, which is not built yet
-  ([rich-editors.md, "Scripts"](rich-editors.md#scripts), slices H2 and
-  H3).
+- The map itself is not changed by a save. **Compile working copy** in
+  the Scripts tab compiles the definitions the file changed or added
+  into the map's scripts (one undo step, **Undo compile**); a new
+  script, global or string, or more nodes than the map has free, grows a
+  table, which needs **Edit > Allow growing full blocks**. A definition
+  removed from the file stays in the map
+  ([rich-editors.md, "Scripts"](rich-editors.md#scripts)).
 - When the map's scripts or names change in Studio, the context is
   written again, and so is the working copy while it holds no edits. A
   working copy with edits is left as it is, and the Scripts tab says it
@@ -1144,8 +1147,8 @@ Homebrew's `bin`, or inside the app in `/Applications` or
   both are code actions.
 
 Agents do the same through `rules.external`, `rules.run`,
-`rules.reload` with a `path`, `script.external` and `script.working`
-([agent-api.md](agent-api.md)).
+`rules.reload` with a `path`, `script.external`, `script.working`,
+`script.compile` and `script.undo` ([agent-api.md](agent-api.md)).
 
 ## 6. Playlists (hoppers)
 

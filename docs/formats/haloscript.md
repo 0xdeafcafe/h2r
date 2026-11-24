@@ -383,6 +383,14 @@ refused with both counts. Salts count up from the largest in the table,
 with bit 15 set. A token the string data already holds keeps its offset;
 new tokens are appended, and existing offsets never move.
 
+**Writing the result.** `hs::table_writes::writes(header, base, old,
+new)` turns two sets of tables into a save's writes, by the scenario
+header's five `(count, address)` pairs: a table no longer than the map's
+is patched in place, run by run, and one that grew is a whole copy for
+the save to append; it first checks that the new tables write out and read
+back as the same bytes and graph (`Scenario::verify_written`). The Studio
+side is in [rich-editors.md, "Scripts"](../editor/rich-editors.md#scripts).
+
 **Round trip.** `hs::first_difference` compares two expression trees in
 shape, opcode, type, flags and data (string literals by their bytes,
 function names by spelling). On invented tables every construct the

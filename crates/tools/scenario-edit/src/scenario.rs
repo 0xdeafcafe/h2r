@@ -449,6 +449,9 @@ pub struct Scenario {
     /// The recordings block's writes. See [`Self::set_recording_changes`].
     recording_patches: Vec<(u32, Vec<u8>)>,
     recording_grown: Vec<TagGrown>,
+    /// The script tables' writes. See [`Self::set_script_changes`].
+    script_patches: Vec<(u32, Vec<u8>)>,
+    script_grown: Vec<TagGrown>,
     /// The payload as read, for the source of a resized data reference.
     payload: std::sync::Arc<[u8]>,
     /// Resized data references: each one's whole current payload, by the
@@ -686,6 +689,8 @@ impl Scenario {
             tag_strings: Vec::new(),
             recording_patches: Vec::new(),
             recording_grown: Vec::new(),
+            script_patches: Vec::new(),
+            script_grown: Vec::new(),
             payload: bytes.into(),
             data: std::collections::BTreeMap::new(),
             geometry: GeometryChanges::default(),
@@ -974,6 +979,8 @@ impl Scenario {
         }
         out.patches.extend(self.recording_patches.iter().cloned());
         out.tag_grown.extend(self.recording_grown.iter().cloned());
+        out.patches.extend(self.script_patches.iter().cloned());
+        out.tag_grown.extend(self.script_grown.iter().cloned());
         out.patches.extend(self.geometry.patches.iter().cloned());
         out.bsp_patches
             .extend(self.geometry.bsp_patches.iter().cloned());
@@ -1177,6 +1184,46 @@ impl Scenario {
     /// The recordings block's in-place writes and grown streams.
     pub fn recording_changes(&self) -> (&[(u32, Vec<u8>)], &[TagGrown]) {
         (&self.recording_patches, &self.recording_grown)
+    }
+
+    /// Replace the script tables' writes (all of them, not a delta): the
+    /// patches to the nodes, string data, scripts, globals and references
+    /// the scenario's header describes, written in place, and the tables
+    /// that outgrew their source, appended at save with the header's
+    /// `(count, address)` pair pointed at the copy (`hs::table_writes`).
+    /// They are the scenario's bytes but no placement block's, so they go
+    /// out beside the blocks' own. Refused when a grown table's pair lies
+    /// outside the scenario's payload or a patch covers it.
+    pub fn set_script_changes(
+        &mut self,
+        patches: Vec<(u32, Vec<u8>)>,
+        grown: Vec<TagGrown>,
+    ) -> Result<()> {
+        let (lo, hi) = (self.address, self.address.saturating_add(self.size));
+        for g in &grown {
+            let end = g.root.saturating_add(8);
+            if g.root < lo || end > hi {
+                return Err(Error::Refused(
+                    "a grown script table's pair is outside the scenario's payload",
+                ));
+            }
+            if patches
+                .iter()
+                .any(|(a, b)| *a < end && g.root < a.saturating_add(b.len() as u32))
+            {
+                return Err(Error::Refused("a grown script table's pair is also patched"));
+            }
+            if g.bytes.is_empty() || g.count == 0 {
+                return Err(Error::Refused("a grown script table has no bytes"));
+            }
+        }
+        self.script_patches = patches;
+        self.script_grown = grown;
+        Ok(())
+    }
+    /// The script tables' in-place writes and grown tables.
+    pub fn script_changes(&self) -> (&[(u32, Vec<u8>)], &[TagGrown]) {
+        (&self.script_patches, &self.script_grown)
     }
 
     /// Replace the other tags' grown blocks (all of them, not a delta).
