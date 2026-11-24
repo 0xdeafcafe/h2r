@@ -35,6 +35,17 @@ pub enum GroundState {
     Stale,
 }
 
+impl GroundState {
+    /// The state as `forge.ground` spells it.
+    pub fn name(self) -> &'static str {
+        match self {
+            GroundState::NotBuilt => "not_built",
+            GroundState::Current => "current",
+            GroundState::Stale => "stale",
+        }
+    }
+}
+
 /// A label the ground build could not honour, as the overlay draws it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GroundProblem {
@@ -44,12 +55,25 @@ pub struct GroundProblem {
     pub reason: String,
 }
 
+/// The inputs a build covers, as digests (`firefight_kit::ground::Receipt`):
+/// what `forge.ground` reports, so two builds can be told apart.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GroundReceipt {
+    /// The materialised map the ground was built over, as hex.
+    pub base: String,
+    /// The canonical labels, as hex.
+    pub labels: String,
+    pub kit_version: u32,
+}
+
 /// What a build made, for the overlay and the HUD.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GroundReport {
     pub zones: usize,
     pub squads: usize,
     pub problems: Vec<GroundProblem>,
+    /// Absent from a builder that has none to give.
+    pub receipt: Option<GroundReceipt>,
 }
 
 /// The build, supplied by the game: the Firefight kit's ground over the

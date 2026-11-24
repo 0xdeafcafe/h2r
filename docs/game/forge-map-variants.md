@@ -410,11 +410,37 @@ collision and each machine builds its own.
   session compares it with the stamp of its last build
   (`Session::ground_state`: `NotBuilt`, `Current`, `Stale`). An edit
   that touches none of those, a weapon or a title, leaves it current.
-- **The builder** is the game's (`forge::GroundBuilder`): it builds
-  over the play form, off the game thread, and reloads the map keeping
-  the document, the monitor's place and the tool. The session holds no
-  generator, and `forge_glue::ground::install` is where the app supplies
-  it; with none, both rows refuse by name.
+- **The builder** is the app's (`forge::GroundBuilder`): the composition
+  root installs `boot::ground_builder::AppGround` through
+  `forge_glue::ground::install`, which runs `forge_build::build` over the
+  play form with the disc's maps and hands the session `Built::ground`'s
+  report (zones, squad slots, problems, receipt). The session holds no
+  generator. The editor runs the build as a file job
+  (`Editor::start_ground`): a worker builds on a copy of the session
+  with the installed builder, edits wait, and the editor takes the copy
+  back, so the game thread never waits for it. The HUD says
+  `AI ground built: N zones, M squad slots, P problems.`, or the build's
+  own sentence when it fails (a failed build changes nothing); with no
+  builder installed both rows and `forge.ground.build` refuse by name.
+  **The built map is not loaded yet**: the notice adds `The running map
+  is not changed.` until the app supplies a loader
+  (`forge_glue::ground::loads_map`, `AppGround::after`). A loader must
+  reload the running map with the build, and a session that opens on a
+  reloaded map must keep the document, the monitor's place and the tool
+  (below, "What is left").
+- **The overlay.** While the monitor is on, the play window rings each
+  placed marker (a drop green, a cover yellow, a base its team's colour,
+  the siege labels violet) and each label the last build could not
+  honour (orange, drawn first so it shows through a marker at the same
+  place), as it rings another seat's monitor (`Editor::ground_rings`,
+  `forge_glue::markers`). The sectors are not drawn: the report holds
+  their count, not their places.
+- **What is left.** Loading the built map. A session opens on the
+  original map (`forge_map::open` refuses a slot that serves a package or
+  an override), the document's edits are live in that map, and the build
+  has them baked in, so a reload needs the session to open over the built
+  map and keep its document as an edit log over the original. The
+  sectors' places need `forge_build::GroundReport` to carry them.
 - **The palette page.** The Objects menu's last row, **AI and
   objectives**, lists the six labels with how many are placed; choosing
   one places the next marker in front of the monitor
@@ -614,7 +640,10 @@ Every machine builds the map from its own disc; no built byte travels
   takes `EntryOp` ops, and a refused edit carries its name
   (`forge_print`, `forge_was`, `forge_left_out`, ...) in the error's
   `data.code`. `forge.status` reports the variant's name, id, tier and
-  whether it has unsaved edits (`variant`). `forge.variants {map?}`
+  whether it has unsaved edits (`variant`), and the ground in brief
+  (`ground`). `forge.ground` (read) and `forge.ground.build` (act) give
+  the ground's state, markers, problems and receipt, and build it
+  (`crates/extensions/agent/src/forge/ground.rs`). `forge.variants {map?}`
   (read, new) and `forge.variant.pick {map_id?}` (act, new) list the
   store and set the lobby's pick, for lobby and start-gate checks; they
   are V1 and V2's.

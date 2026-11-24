@@ -14,6 +14,7 @@ use crate::{Access, Agent, GameCtx};
 pub mod base;
 mod capacity;
 pub use capacity::object_pool;
+pub mod ground;
 pub mod local;
 pub mod net;
 

@@ -5,7 +5,9 @@ use std::sync::{Arc, mpsc};
 
 use ::forge::look::{Refusal, monitors::Who};
 use ::forge::{BlockKind, Frame, PaletteItem, Session, World};
-use agent_proto::forge::{THING_KINDS, ThingsParams, method, refusal};
+use agent_proto::forge::{
+    GROUND_WAIT_TICKS, GroundBuildParams, THING_KINDS, ThingsParams, method, refusal,
+};
 use agent_proto::{Boundary, Kind, ObjectId, RpcError, code};
 use engine::GuestMemory;
 use forge_doc::{Entry, ForgeDoc, Op, Sha256, TagKey};
@@ -450,6 +452,10 @@ fn spawned_handles(made: Value, expected: usize) -> Result<Vec<u32>, String> {
 /// Agent proposals complete through the same tick-boundary host as pad edits.
 pub type ProposalReply = mpsc::Receiver<Result<Entry, String>>;
 
+/// A ground build's answer: `forge.ground`'s reply with `built` set, or why
+/// the build did not happen.
+pub type GroundReply = mpsc::Receiver<Result<Value, String>>;
+
 pub trait LocalApi: Send + Sync + 'static {
     /// The profile and seat colour the monitor look methods speak for: the
     /// signed-in profile of local slot 0, from guest memory when there is
@@ -470,6 +476,19 @@ pub trait LocalApi: Send + Sync + 'static {
     fn log(&self, since: u32) -> Result<Vec<Entry>, String>;
     fn input(&self, m: &dyn GuestMemory, input: ::forge::tool::Input) -> Result<(), String>;
     fn propose(&self, tick: u32, op: Op, was: Option<Sha256>) -> Result<ProposalReply, String>;
+    /// `forge.ground`: the ground's state, markers and last report. The
+    /// default reads the session and says nothing the game alone knows.
+    fn ground(&self) -> Result<Value, String> {
+        Ok(super::ground::reply(
+            &self.session()?,
+            super::ground::Facts::default(),
+        ))
+    }
+    /// `forge.ground.build`: start a build (**Build AI ground**, or with
+    /// `if_stale` **Test waves**) and answer when it has finished.
+    fn ground_build(&self, _if_stale: bool) -> Result<GroundReply, String> {
+        Err(super::ground::NO_BUILDER.into())
+    }
     /// How many game ticks `forge.propose` waits for its answer. A shared
     /// session's goes to the host and back, and waits for the tick the
     /// stream applies the entry at.
@@ -630,6 +649,36 @@ pub fn install(agent: &Agent, backend: impl LocalApi) {
         let input = tool_input(v)?;
         ctx.with_guest(|m| host.input(m, input).map_err(refused))?;
         Ok(json!({"queued":true}))
+    });
+    let host = backend.clone();
+    agent.add_game_method(method::GROUND, Access::Read, move |v, _| {
+        empty(v)?;
+        host.ground().map_err(super::unavailable)
+    });
+    let host = backend.clone();
+    agent.add_game_method(method::GROUND_BUILD, Access::Act, move |v, ctx| {
+        if ctx.at.boundary != Boundary::Tick || ctx.at.mode.as_deref() != Some("multiplayer") {
+            return Err(super::unavailable(
+                "a ground build requires a local multiplayer tick",
+            ));
+        }
+        let p: GroundBuildParams = if v.is_null() {
+            GroundBuildParams::default()
+        } else {
+            serde_json::from_value(v).map_err(|e| super::invalid(e.to_string()))?
+        };
+        let reply = host.ground_build(p.if_stale).map_err(refused)?;
+        ctx.defer(
+            GROUND_WAIT_TICKS,
+            Box::new(move |_| match reply.try_recv() {
+                Ok(result) => Some(result.map_err(refused)),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Some(Err(super::unavailable("the Forge session ended")))
+                }
+            }),
+        );
+        Ok(Value::Null)
     });
     agent.add_game_method(method::PROPOSE, Access::Act, move |v, ctx| {
         if ctx.at.boundary != Boundary::Tick || ctx.at.mode.as_deref() != Some("multiplayer") {

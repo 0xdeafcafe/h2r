@@ -16,6 +16,8 @@ pub mod packages;
 // maps.test.*: test maps from recipes (docs/game/test-maps.md).
 pub mod registration;
 #[cfg(feature = "test-maps")]
+pub mod ground_builder;
+#[cfg(feature = "test-maps")]
 pub mod test_maps_recipes;
 
 use std::collections::BTreeMap;
@@ -1277,6 +1279,12 @@ fn run_configured(
             host.settings.clone(),
             _live.clone(),
         )?;
+        // Build AI ground and Test waves: the build over this disc's maps
+        // (ground_builder.rs); it does not load the map it builds.
+        #[cfg(feature = "test-maps")]
+        forge_glue::ground::install(Box::new(ground_builder::AppGround::disc(
+            opts.disc.clone(),
+        )));
     }
     if let Some(a) = &mut agent {
         a.configure_takeover(

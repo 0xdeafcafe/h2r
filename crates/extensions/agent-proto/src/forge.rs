@@ -18,6 +18,8 @@ pub mod method {
     pub const LOOK_SET: &str = "forge.look.set";
     pub const MONITORS: &str = "forge.status.monitors";
     pub const THINGS: &str = "forge.things";
+    pub const GROUND: &str = "forge.ground";
+    pub const GROUND_BUILD: &str = "forge.ground.build";
 }
 
 /// The kinds of thing `forge.things` names, as its `kind` filter and each
@@ -116,6 +118,19 @@ pub struct ThingsParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changed: Option<bool>,
 }
+
+/// `forge.ground.build`: **Build AI ground**, or with `if_stale` **Test
+/// waves** (build only when the ground is stale or was never built).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GroundBuildParams {
+    #[serde(default)]
+    pub if_stale: bool,
+}
+
+/// How many game ticks `forge.ground.build` waits for its answer: a build
+/// reads the base map and builds the ground over it.
+pub const GROUND_WAIT_TICKS: u64 = 3600;
 
 /// One monitor input. Directions are normalized axes in camera space.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
