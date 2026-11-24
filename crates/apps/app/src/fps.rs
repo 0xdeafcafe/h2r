@@ -27,7 +27,7 @@
 //! new one from another thread (the Video screen's Frame Rate row), and
 //! the window picks it up at its next turn ([`follow`]): the schedule is
 //! retargeted and, when vsync must change (uncapped and back), the window
-//! surface is configured again.
+//! changes its display sync setting.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};

@@ -26,6 +26,7 @@ pub(crate) struct WindowSurface {
     pub(crate) surface: wgpu::Surface<'static>,
     pub(crate) native_size: NativeSize,
     dimension_limit: u32,
+    distinct_vsync_modes: bool,
     pub(crate) config: wgpu::SurfaceConfiguration,
     /// The surface needs `configure` before the next acquire: the window
     /// was resized, or the last configure failed (wgpu could not wait for
@@ -68,6 +69,7 @@ impl WindowSurface {
             native_size: NativeSize::new(app.aspect, app.scaling, size)
                 .with_native_fit(app.native_fit.clone()),
             dimension_limit,
+            distinct_vsync_modes: distinct_vsync_modes(&caps.present_modes),
             config,
             stale: false,
             last_configure_error: None,
@@ -131,12 +133,32 @@ impl WindowSurface {
 
     /// Waits for the display's vblank (`true`) or not, from the next frame.
     #[cfg_attr(any(target_os = "tvos", target_os = "ios"), allow(dead_code))]
-    pub(crate) fn set_vsync(&mut self, vsync: bool) {
-        self.config.present_mode = if vsync {
+    pub(crate) fn set_vsync(&mut self, _ctx: &GfxContext, vsync: bool) {
+        let mode = if vsync {
             wgpu::PresentMode::AutoVsync
         } else {
             wgpu::PresentMode::AutoNoVsync
         };
+        if mode == self.config.present_mode {
+            return;
+        }
+        self.config.present_mode = mode;
+        if !self.distinct_vsync_modes {
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        if _ctx.adapter.get_info().backend == wgpu::Backend::Metal {
+            // SAFETY: the window thread borrows the configured layer under its HAL lock.
+            if let Some(surface) = unsafe { self.surface.as_hal::<wgpu::hal::api::Metal>() } {
+                // Metal implements FIFO and Immediate with this property alone.
+                // Older systems offer only FIFO. A pending resize still applies the
+                // saved mode as part of its full configuration.
+                if objc2::available!(macos = 10.13) {
+                    surface.render_layer().lock().setDisplaySyncEnabled(vsync);
+                }
+                return;
+            }
+        }
         // Deferred like a resize: the next acquire configures inside an
         // error scope, so a GPU that is slow to go idle cannot abort us.
         self.stale = true;
@@ -160,6 +182,13 @@ impl WindowSurface {
             }
         }
     }
+}
+
+/// Both wgpu automatic modes fall back to FIFO. AutoVsync prefers FifoRelaxed
+/// and AutoNoVsync prefers Immediate or Mailbox when the surface supports them.
+fn distinct_vsync_modes(modes: &[wgpu::PresentMode]) -> bool {
+    use wgpu::PresentMode::{FifoRelaxed, Immediate, Mailbox};
+    modes.iter().any(|mode| matches!(mode, FifoRelaxed | Immediate | Mailbox))
 }
 
 /// Vulkan drivers and compositors may list 10-bit or float formats first;
@@ -208,6 +237,46 @@ mod tests {
     /// compositor with and without `OPAQUE`.
     const VULKAN_ALPHA: &[A] = &[A::Opaque, A::PreMultiplied];
     const VULKAN_ALPHA_NO_OPAQUE: &[A] = &[A::PreMultiplied, A::Inherit];
+
+    #[test]
+    fn fifo_only_surfaces_keep_the_same_mode_at_every_cap() {
+        use wgpu::PresentMode::{Fifo, FifoRelaxed, Immediate, Mailbox};
+        assert!(!distinct_vsync_modes(&[Fifo]));
+        for other in [FifoRelaxed, Immediate, Mailbox] {
+            assert!(distinct_vsync_modes(&[Fifo, other]));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_cap_changes_update_display_sync_and_preserve_a_pending_resize() {
+        use objc2::rc::Retained;
+        use objc2_quartz_core::CAMetalLayer;
+
+        if !objc2::available!(macos = 10.13) {
+            return;
+        }
+        let layer = CAMetalLayer::new();
+        let instance = gfx::instance();
+        let target = wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(
+            Retained::as_ptr(&layer).cast_mut().cast(),
+        );
+        // SAFETY: layer outlives the surface and the device used to configure it.
+        let surface = unsafe { instance.create_surface_unsafe(target) }.unwrap();
+        let ctx = pollster::block_on(GfxContext::new(instance, Some(&surface))).unwrap();
+        let mut window = WindowSurface::new(
+            &ctx, surface, (64, 64), &AppConfig::default(), SurfaceKind::Window,
+        ).unwrap();
+
+        window.set_vsync(&ctx, false);
+        assert!(!layer.displaySyncEnabled());
+        assert!(!window.needs_configure());
+        window.resize((128, 64));
+        window.set_vsync(&ctx, true);
+        assert!(layer.displaySyncEnabled());
+        assert!(window.needs_configure());
+        assert_eq!(window.config.present_mode, wgpu::PresentMode::AutoVsync);
+    }
 
     #[test]
     fn the_surface_format_is_8_bit_unorm_when_listed() {
