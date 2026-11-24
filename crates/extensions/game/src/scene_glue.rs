@@ -300,13 +300,17 @@ fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>, summary: Option<&C
         views: scene
             .views
             .iter()
-            .map(|v| {
+            .enumerate()
+            .map(|(index, v)| {
+                let gather = scene.cluster_gathers.get(index).and_then(Option::as_ref);
                 let c = scene.counts(v);
                 let d = scene.decorator_counts(v);
                 SceneViewRecord {
                     key: v.key.to_string(),
                     cut: v.cut,
                     clusters: c.clusters,
+                    visibility_clusters: gather.map(|g| g.visible.len() as u32),
+                    structure_clusters: gather.map(|g| g.structure.len() as u32),
                     instances: c.instances,
                     parts: c.parts,
                     rows: c.rows,
@@ -471,6 +475,9 @@ mod tests {
         };
         b.open_view(ViewKey { kind: ViewKind::Game, player: 0, view: 0 }, camera).unwrap();
         b.set_clusters([1, 2]).unwrap();
+        b.set_cluster_gather(frame_scene::scene::ClusterGather {
+            mode: 0, visible: vec![1, 2, 3, 4], structure: vec![3, 1, 2],
+        }).unwrap();
         let nodes = [NodeMatrix::IDENTITY];
         let i = b
             .push_instance(InstanceInput {
@@ -525,6 +532,9 @@ mod tests {
         let v = &r.views[0];
         assert_eq!(v.key, "game:0:0");
         assert_eq!((v.clusters, v.instances, v.parts, v.rows, v.remainder), (2, 1, 2, 6, 1));
+        assert_eq!((v.visibility_clusters, v.structure_clusters), (Some(4), Some(3)));
+        let dump = serde_json::to_value(&*scene).unwrap();
+        assert_eq!(dump["cluster_gathers"][0]["structure"], serde_json::json!([3, 1, 2]));
         assert_eq!((v.lights, v.shadows), (2, 1));
         assert_eq!((v.lights_candidates, v.lights_with_constants), (2, 0));
         assert_eq!(v.light_layers, BTreeMap::from([("11".to_owned(), 1), ("12".to_owned(), 2)]));

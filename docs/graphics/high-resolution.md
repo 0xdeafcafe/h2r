@@ -109,6 +109,16 @@ frustum. A cluster or object missing from the guest's record list can still
 disappear at the retail boundary. Rendering everything in the extra field
 requires a separate gather from immutable scene data. Widening the retail
 gather can advance gameplay RNG, as described under [determinism](#determinism).
+The player FOV setting feeds the observer before `0x000441b0` builds the
+guest frustum. Both the horizontal and vertical extent follow that setting.
+The display's aspect correction scales clip X alone. To locate a missing
+BSP cluster, compare its ID in the guest visibility list, the structure
+list and the layer-3 list for the same view. The sealed scene includes
+all three and its camera. The display frame recorder includes the final
+scissor and projection factor.
+[FrameScene reads](../runtime/agent-api.md#framescene-checks-compare-capture-scene-parity-hashes)
+and [display raster](../runtime/agent-api.md#renderframe_layout).
+
 The playerless Theater observer has the whole BSP and object array. It
 uses the same Hor+ lens for projection and its own frustum test on both.
 See [the host film view](../game/film-format.md#choosing-a-players-view).

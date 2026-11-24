@@ -762,11 +762,13 @@ is copied, and H2V's addresses and structures differ.
 
 ### Why culling stays right and the simulation does not change
 
-- The value is changed where the game computes it, before the director,
-  the observer and the renderer see it, so the projection, the frustum the
-  renderer culls with, the observer's FOV scale (which particles read at
-  `0x248a31`) and the LOD all follow the same camera. Nothing on the host
-  side knows about FOV.
+- The director and observer apply the setting before the renderer builds
+  the view. The guest projection, portal frustum, particle scale
+  (`0x248a31`) and LOD follow that camera. The native BSP stage uses the
+  captured projection for its part bounds. A widescreen display can widen
+  the horizontal lens after the guest gathers clusters. The extra strip
+  can therefore show only geometry the guest submits.
+  [Display aspect and live visibility](../graphics/high-resolution.md).
 - `0x187130` has one caller, the first-person camera callback, which runs
   from `director_update` in the per-frame, variable-`dt` part of the main
   loop ([high-framerate.md](high-framerate.md), step 9), not in the 30 Hz
@@ -785,10 +787,11 @@ is copied, and H2V's addresses and structures differ.
   position. In `0xbd610`, the `+0x38` load at `0xbd67f` reads the object
   definition. The `+0x4c` load at `0xbd8d2` reads render-model node data.
   Both pointers come through tag instances.
-- Networked state: the observer and the director are per local player and
-  never serialised by the game; nothing here writes simulation memory. The
-  clamp global `0x55e488` is the one guest write, and only the camera
-  callback reads it.
+- The observer and director are local to each player. The camera hook's
+  only guest write is the clamp at `0x55e488`. Object setup during the
+  guest visibility walk can consume shared animation RNG, so the display
+  aspect correction runs after that walk.
+  [Render determinism](../graphics/high-resolution.md#determinism).
 
 Only the first-person camera follows the setting; the following camera
 (vehicles; `0x23bd70` stores `[0x54e854]` itself), dead and scripted

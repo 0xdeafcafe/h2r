@@ -1865,6 +1865,15 @@ h2 agent render.parity '{"arm": true}'
   positions through, `view` has the view's verified projection block
   and viewport, and `unknown` covers the other draws. The map is
   empty for other view kinds or without a retained matching scene.
+  For a game view, `visibility_clusters` counts the guest visibility list
+  and `structure_clusters` counts the subsequent BSP structure list. Both
+  fields are absent if extraction cannot read the main gather at layer 3.
+  A zero is a successfully read empty list. With `{"dump":true}`, the scene
+  file has the ordered BSP cluster IDs in `cluster_gathers[i].visible` and
+  `.structure` for `views[i]`. Its `mode` is 0 for a portal flood, 1 for
+  a sphere and 2 for all clusters. The view's `clusters` range selects the
+  layer-3 IDs from the top-level `clusters` array. `views[i].camera` gives
+  the vertical FOV in radians, guest projection terms and viewport.
   The top-level `counters` include
   (`scenes_sealed`, `scenes_unsealed`, `scene_views`, `scene_no_camera`,
   `scene_refused_writes`, `scene_layers`, `scene_layer_items`,

@@ -159,6 +159,49 @@ mod tests {
     }
 
     #[test]
+    fn wider_player_and_display_lenses_admit_bsp_clusters_at_their_edges() {
+        use crate::camera::display_camera;
+
+        // Ten units forward, with clusters in the centre, at the left edge,
+        // below the retail view, and beyond even the wider view.
+        let mut builder = WorldBuilder::new();
+        for (id, y, z) in [(0, 0., 0.), (1, 8.5, 0.), (2, 0., -8.), (3, -25., 0.)] {
+            let section = SectionInput {
+                positions: vec![[10., y, z], [10., y + 0.2, z], [10., y, z + 0.2]],
+                parts: vec![PartInput {
+                    material: 0,
+                    transparent: false,
+                    triangles: vec![[0, 1, 2]],
+                }],
+                ..Default::default()
+            };
+            builder.add_section(Owner::Cluster(id), &section, &Placement::IDENTITY, None);
+        }
+        let world = builder.finish();
+        let mut slots = indirect_slots(&world);
+        let lens = |horizontal: f32| RenderCamera {
+            // Player degrees describe a horizontal 4:3 lens; the render camera stores vertical FOV.
+            fov: 2.0 * ((horizontal.to_radians() * 0.5).tan() * 0.75).atan(),
+            viewport: [0, 0, 480, 640],
+            ..camera()
+        };
+        let retail = lens(70.);
+        for (view, visible) in [
+            (retail, vec![Owner::Cluster(0)]),
+            (lens(110.), vec![Owner::Cluster(0), Owner::Cluster(1), Owner::Cluster(2)]),
+            // The 16:9 display retains the 70-degree camera's vertical lens.
+            (display_camera(retail, 0.75), vec![Owner::Cluster(0), Owner::Cluster(1)]),
+        ] {
+            cull(&world, &Frustum::sides(&view.view_projection()), &mut slots);
+            let drawn: Vec<_> = world.draws.iter().zip(&slots)
+                .filter(|(_, slot)| slot.instance_count != 0)
+                .map(|(draw, _)| draw.owner)
+                .collect();
+            assert_eq!(drawn, visible);
+        }
+    }
+
+    #[test]
     fn slots_follow_the_draws_and_culling_flips_instance_counts() {
         let quad = |x: f32| SectionInput {
             positions: vec![[x, -1.0, -1.0], [x, 1.0, -1.0], [x, -1.0, 1.0]],
