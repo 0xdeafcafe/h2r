@@ -119,6 +119,27 @@ pub struct Census {
     pub tags: BTreeMap<String, ObjectType>,
 }
 
+/// The text a ground label reads when the map places none of its own: a
+/// script's `siege_site` is the map's `territory` flags when no
+/// `siege_site` is placed (docs/game/game-types-without-carriers.md,
+/// "Maps for scripted games"). Every other label has none.
+pub fn fallback(text: &str) -> Option<&'static str> {
+    match text {
+        "siege_site" => Some("territory"),
+        _ => None,
+    }
+}
+
+/// The text whose members a script's label `text` reads: its own when
+/// `has` says the map holds any, else its [`fallback`]. The census check,
+/// the host's table and the fake game all read a label through this.
+pub fn reads<'a>(text: &'a str, has: impl Fn(&str) -> bool) -> &'a str {
+    match fallback(text) {
+        Some(other) if !has(text) => other,
+        _ => text,
+    }
+}
+
 /// What is wrong, by the IR's label- or tag-table index.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProblemKind {
@@ -177,7 +198,8 @@ pub fn check(ir: &Ir, census: &Census, teams: &[u8]) -> Vec<Problem> {
 
 fn label(name: &str, index: u16, def: &LabelDef, census: &Census, teams: &[u8], out: &mut Vec<Problem>) {
     let text = def.text.as_str();
-    let all = census.labels.get(text).map_or(&[][..], Vec::as_slice);
+    let holds = |t: &str| census.labels.get(t).is_some_and(|m| !m.is_empty());
+    let all = census.labels.get(reads(text, holds)).map_or(&[][..], Vec::as_slice);
     let good: Vec<&Member> = all.iter().filter(|m| m.class.satisfies(def.kind)).collect();
     let wrong = all.iter().find(|m| !m.class.satisfies(def.kind));
     let one = noun(def.kind, 1);
@@ -615,6 +637,30 @@ mod tests {
                 "any number of objects labelled \"barrier\"",
             ]
         );
+    }
+
+    #[test]
+    fn siege_site_reads_the_territories_until_one_is_placed() {
+        let has = |held: &'static [&'static str]| move |t: &str| held.contains(&t);
+        assert_eq!(reads("siege_site", has(&["territory"])), "territory");
+        assert_eq!(reads("siege_site", has(&["territory", "siege_site"])), "siege_site");
+        assert_eq!(reads("territory", has(&[])), "territory");
+        assert_eq!(reads("ctf_flag_spawn", has(&[])), "ctf_flag_spawn");
+
+        let mut ir = sample();
+        ir.header.name = "Siege".into();
+        ir.labels = vec![def("siege_site", LabelKind::Zone, 1, 256, 0, 0, 0)];
+        let mut census = Census::default();
+        assert_eq!(
+            texts(&ir, &census),
+            vec!["the map has no zone labelled \"siege_site\"; Siege needs at least 1"]
+        );
+        // The map's territories stand in until a site is placed.
+        census.labels.insert("territory".into(), vec![member(Class::Flag, None, None)]);
+        assert_eq!(texts(&ir, &census), Vec::<String>::new());
+        // A placed site of the wrong class is still the label's problem.
+        census.labels.insert("siege_site".into(), vec![member(Class::Object, None, None)]);
+        assert_eq!(texts(&ir, &census).len(), 1);
     }
 
     #[test]

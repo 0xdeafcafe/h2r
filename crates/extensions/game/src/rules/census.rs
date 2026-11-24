@@ -21,7 +21,7 @@
 //! salted datum is (salts have bit 15 set, docs/engine/datum_new.md).
 
 use ::rules::ir::Ir;
-use ::rules::labels::{Census, Class};
+use ::rules::labels::{self, Census, Class};
 use ::rules::vm::Placed;
 use agent_proto::rules as wire;
 use engine::objectives::{self as objs, check_span};
@@ -149,11 +149,17 @@ impl Table {
 
     /// Points each thing at `ir`'s label of its text, after a swap.
     pub fn relabel(&mut self, ir: &Ir) {
+        // A label reads another text's things when the map places none of
+        // its own (`labels::reads`), and those things are its members.
+        let reads: Vec<String> = ir
+            .labels
+            .iter()
+            .map(|d| labels::reads(&d.text, |x| self.things.iter().any(|t| t.text == x)).to_string())
+            .collect();
         for t in &mut self.things {
-            t.label = ir
-                .labels
+            t.label = reads
                 .iter()
-                .position(|d| d.text == t.text)
+                .position(|r| *r == t.text)
                 .and_then(|i| u16::try_from(i).ok());
         }
     }
@@ -161,6 +167,9 @@ impl Table {
     /// The members of `objects labelled "<text>"`: every thing with the
     /// text but a starting location, which has nothing to visit.
     pub fn labelled(&self, text: &str) -> Vec<Placed> {
+        let text = labels::reads(text, |x| {
+            self.things.iter().any(|t| t.text == x && t.class != Class::Spawn)
+        });
         self.things
             .iter()
             .filter(|t| t.text == text && t.class != Class::Spawn)
@@ -252,4 +261,52 @@ pub fn object_team(
         .find(|r| r.object.raw() == object)
         .and_then(|r| u8::try_from(r.designator).ok())
         .filter(|&t| t < 8))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn flag(text: &str, index: u32) -> Thing {
+        Thing {
+            text: text.into(),
+            label: None,
+            number: None,
+            class: Class::Flag,
+            designator: None,
+            block: BlockKind::NetgameFlags,
+            index,
+        }
+    }
+
+    fn siege_ir() -> Ir {
+        let mut ir = ::rules::compile(::rules::builtin::SIEGE).unwrap();
+        ir.header.name = "Siege".into();
+        ir
+    }
+
+    fn objects(table: &Table, text: &str) -> Vec<u32> {
+        table.labelled(text).iter().map(|p| p.placement & 0xffff).collect()
+    }
+
+    /// Siege's sites are the territories until the author places one;
+    /// then they are the placed ones alone.
+    #[test]
+    fn siege_sites_are_the_placed_ones_else_the_territories() {
+        let ir = siege_ir();
+        let mut table = Table::from_things(vec![flag("territory", 0), flag("territory", 1)]);
+        table.relabel(&ir);
+        assert_eq!(objects(&table, "siege_site"), vec![0, 1]);
+        assert!(table.things().iter().all(|t| t.label.is_some()), "the territories are the site label's");
+
+        let mut table = Table::from_things(vec![
+            flag("territory", 0),
+            flag("siege_site", 1),
+            flag("territory", 2),
+        ]);
+        table.relabel(&ir);
+        assert_eq!(objects(&table, "siege_site"), vec![1]);
+        let declared: Vec<(&str, bool)> = table.things().iter().map(|t| (t.text.as_str(), t.label.is_some())).collect();
+        assert_eq!(declared, vec![("territory", false), ("siege_site", true), ("territory", false)]);
+    }
 }

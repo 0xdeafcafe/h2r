@@ -1,6 +1,6 @@
 # Game types without carriers
 
-Status: Design, with GT0 (the reads, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md)), GT1 (the header), GM1 (`crates/tools/firefight-kit/src/ground.rs`) and GM3's document, session, screens, builder, agent methods and overlay built (the built map is not loaded into the running game yet, below); "What the carrier supplies" is the state of the code and the slices are the order to change the rest in.
+Status: Design, with GT0 (the reads, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md)), GT1 (the header), GM1 (`crates/tools/firefight-kit/src/ground.rs`), GM4 (`siege.rules`'s labels, `rules::labels::reads`) and GM3's document, session, screens, builder, agent methods and overlay built (the built map is not loaded into the running game yet, below); "What the carrier supplies" is the state of the code and the slices are the order to change the rest in.
 Code: `crates/formats/rules/src` (`ir.rs` the header, `types.rs` the type table, `lang/check.rs`, `caps.rs`, `builtin/`), `crates/extensions/game/src/rules/` (`runtime.rs`, `scoring.rs`, `objectives.rs`, `roles.rs`), `crates/formats/variants/src/portable.rs` (`record_for`), `crates/extensions/game/src/community_variants.rs`. Tests: `crates/formats/rules/tests/engines.rs`, `tests/modes.rs`.
 Switch: none (the `rules` feature).
 
@@ -183,7 +183,23 @@ game variant's (the script and its options), not the map's.
 
 A script declares the labels it reads, so the tools offer exactly those
 for the game type the author is building for, and a map with none of a
-script's required labels is refused in the lobby by name.
+script's required labels is refused in the lobby by name. The declaration
+is the rules language's own `label` line, with no addition to the
+grammar: `siege.rules` declares `site` as `zones = "siege_site"`, `goal`
+as `zone? = "siege_goal"`, and `placed_line` as
+`zones at most 16 = "siege_line"` (a `siege_line`'s number is its phase,
+its team the side that spawns there). A script's `siege_site` reads the
+map's territory flags while none is placed, and a `siege_goal` or a
+`siege_line` is read ahead of the defenders' CTF stand and the phase's own
+site (`siege.rules`, `rules::labels::reads`; "Forge labels" in
+[rules-engine.md](rules-engine.md)). Siege and Firefight require none, as
+the table's last column says (every map plays); a script that does, such
+as a Holdout that declares `label ff_drop: objects at least 2`, is
+refused on a map short of them with `the map has no object labelled
+"ff_drop"; Holdout needs at least 2`
+(`crates/formats/rules/tests/scripts.rs`). Firefight's director reads its
+drops from the kit's `ff_drop_NN` zones, which the build makes one for
+each placed `ff_drop` (GM1), so a wave lands at a placed drop.
 
 ### In Forge
 
@@ -335,7 +351,7 @@ with tests, M under 2,500. Tests are headless on `rules::fake::FakeGame`.
 | GM1 (built) | **Ground as a build step**: `firefight_kit`'s generator behind `ground::build(map, labels, recipe)`, labels in place of found bases and picked drops, the stale rule, the receipt | M | nothing | on the kit's invented court: no labels gives the tags `build_package` gives; a moved `ff_drop` moves its zone; the same inputs give the same bytes; over headroom is refused with its biggest part |
 | GM2 | **Studio**: the AI and objectives group, **Build AI ground**, `ground.status`, `ground.build`, the Navigation layers, the `map` item's `ground` | M | GM1, PK9 of studio-redesign | a label placed in the window and by `scenario.add` make the same document; a build on an invented map lists its sectors; an edit that moves collision marks it stale |
 | GM3 (built, but for the reload) | **Forge**: the palette page, the `ground` recipe in the document and `Tier::Variant`, **Build AI ground**, the rebuild and reload (the build is built; the reload is not), build on save, the overlay | M | GM1 | a variant with labels and a recipe validates as a variant; materialising it equals GM1's build of the same inputs; a save with stale ground builds first |
-| GM4 | **Labels the scripts read**: Firefight's director and `siege.rules` take their places from labels; the lobby's refusal for a map without them | S | GM1, GT1 | on the fake game a wave lands at a placed drop; Siege's sites are the placed ones; a map with no required label is refused by name |
+| GM4 (built) | **Labels the scripts read**: Firefight's director and `siege.rules` take their places from labels; the lobby's refusal for a map without them | S | GM1, GT1 | on the fake game a wave lands at a placed drop; Siege's sites are the placed ones; a map with no required label is refused by name |
 
 GT1, GT0, GE0 and GM1 start together. Index 2 (GT2) is the step that
 lets GT3 to GT7 land before the engine object is ours; GE5 then moves

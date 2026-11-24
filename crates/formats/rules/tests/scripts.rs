@@ -942,3 +942,63 @@ fn each_listed_script_sets_what_the_table_set() {
         assert!(ir.quick.len() <= 5, "{}", want.name);
     }
 }
+
+// ---- Labels the scripts read ----
+
+/// A script that needs placed drops is refused on a map with none, by the
+/// label's name and the script's; a map with enough passes, and the wave
+/// is placed at the label the map's drops carry.
+#[test]
+fn a_map_with_no_placed_drop_is_refused_by_name() {
+    use rules::labels::{Census, Class, Member, check};
+
+    let src = HOLDOUT.replace("label ff_drop: objects", "label ff_drop: objects at least 2");
+    let ir = compile(&src).unwrap();
+    let drop = Member { class: Class::Flag, number: None, team: None };
+
+    let problems = check(&ir, &Census::default(), &[0]);
+    assert_eq!(problems.len(), 1);
+    assert!(
+        problems[0].text.contains("\"ff_drop\"") && problems[0].text.contains("Holdout"),
+        "{}",
+        problems[0].text
+    );
+
+    let mut census = Census::default();
+    census.labels.insert("ff_drop".into(), vec![drop]);
+    let one = check(&ir, &census, &[0]);
+    assert_eq!(one.len(), 1, "one drop is short of two: {one:?}");
+    census.labels.insert("ff_drop".into(), vec![drop, drop]);
+    assert_eq!(check(&ir, &census, &[0]), vec![]);
+}
+
+/// The drops a map places are what a wave is placed at: the fake game
+/// holds two placed `ff_drop` objects, the gate passes them, and the wave
+/// goes to the label they carry, which the host resolves to them.
+#[test]
+fn a_wave_lands_at_the_drops_the_map_places() {
+    use rules::labels::{Class, Member, check, Census};
+
+    let src = HOLDOUT.replace("label ff_drop: objects", "label ff_drop: objects at least 2");
+    let (ir, report) = build(&src).unwrap();
+    assert!(report.fits());
+    let mut census = Census::default();
+    let drop = Member { class: Class::Flag, number: None, team: None };
+    census.labels.insert("ff_drop".into(), vec![drop, drop]);
+    assert_eq!(check(&ir, &census, &[0]), vec![]);
+
+    let mut g = FakeGame::with_players(3);
+    g.label("ff_drop", 7, 0, 7);
+    g.label("ff_drop", 9, 0, 9);
+    let mut vm = Vm::new(ir, 0, 3).unwrap();
+    for tick in 1..=2 {
+        vm.begin_tick(tick);
+        vm.update(&mut g);
+    }
+    vm.flush_queue(&mut g);
+    let wave = g.calls_to("place_squad");
+    assert_eq!(wave.len(), 1);
+    assert_eq!(wave[0][3], Arg::Label("ff_drop".into()));
+    let placed = rules::vm::Game::labelled(&g, "ff_drop");
+    assert_eq!(placed.iter().map(|p| p.object).collect::<Vec<_>>(), vec![9, 7]);
+}
