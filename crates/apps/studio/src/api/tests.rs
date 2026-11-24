@@ -617,19 +617,45 @@ fn ui_palette_lists_and_runs_fixture_maps_tags_and_placements() {
     let map = t.path("blaster.map");
     std::fs::write(&map, fixture::fixture()).unwrap();
     app.dispatch(Action::OpenSource(map));
+    // The tag rows are asset.list's: a tree whose one tag is the blaster
+    // weapon the fixture map also holds, in a manifest under the open
+    // map's name, so the row opens on the map that is open.
+    use ::tags::repo::store::Manifest;
+    use ::tags::repo::{TagKey, TagRepo};
+    let key = TagKey::new(map::FourCC(*b"weap"), r"objects\test\blaster");
+    TagRepo::create(app.tags_root())
+        .unwrap()
+        .put_manifest(
+            &Manifest {
+                map: "blaster".into(),
+                name: "blaster".into(),
+                tags: vec![(key, None)],
+                ..Default::default()
+            },
+            b"header",
+        )
+        .unwrap();
     let mut api = Api::new();
 
     let list = call(&mut api, &mut app, m::UI_PALETTE, json!({"query":"blast"}));
     let entries = list["entries"].as_array().unwrap();
     let kinds: Vec<_> = entries.iter().map(|e| e["kind"].as_str().unwrap()).collect();
     assert_eq!(kinds, ["map", "tag", "placement", "placement"]);
-    assert_eq!(list["totals"], json!({"map":1, "tag":1, "placement":2, "command":0}));
+    assert_eq!(
+        list["totals"],
+        json!({"map":1, "tag":1, "package":0, "item":0, "placement":2, "command":0})
+    );
     assert_eq!(entries[0]["label"], "blaster");
-    assert_eq!(entries[1]["label"], "objects\\test\\blaster");
+    // The tag row: the file name as its label, the path in its detail.
+    assert_eq!(entries[1]["label"], "blaster");
+    assert_eq!(entries[1]["detail"], "weap · objects\\test\\blaster");
     assert_eq!(entries[2]["label"], "0: blaster");
 
     let filtered = call(&mut api, &mut app, m::UI_PALETTE, json!({"query":"WEAP bla"}));
-    assert_eq!(filtered["totals"], json!({"map":0, "tag":1, "placement":2, "command":0}));
+    assert_eq!(
+        filtered["totals"],
+        json!({"map":0, "tag":1, "package":0, "item":0, "placement":2, "command":0})
+    );
     let result = call(
         &mut api, &mut app, m::UI_PALETTE, json!({"query":"blast", "run":1}),
     );

@@ -2,8 +2,10 @@
 //! (docs/editor/studio-flow.md, "Links"): a weapon that names a model, a
 //! sound and a projectile, a dialogue sound under an invented character's
 //! folder, a tag file that does not decode, the assets_tests package
-//! `kit-test` (which edits the weapon) and a package `modes` whose
-//! `rules` and `variant` items share a script key. No game data.
+//! `kit-test` (which edits the weapon) and a package `modes-test` whose
+//! `rules` and `variant` items share a script key. No game data. The
+//! package id is not the built-in `modes`: a local package that takes a
+//! baked package's id stays out whole.
 
 use super::assets_tests;
 use super::*;
@@ -79,16 +81,16 @@ fn tree(root: &std::path::Path) {
     .unwrap();
 }
 
-/// `modes`: a script `hill` as a `rules` item and as a `variant` item,
-/// another script, and a requirement on `kit-test`.
+/// `modes-test`: a script `hill` as a `rules` item and as a `variant`
+/// item, another script, and a requirement on `kit-test`.
 fn modes(dir: &std::path::Path) {
     std::fs::create_dir_all(dir.join("scripts")).unwrap();
     std::fs::write(
         dir.join("package.toml"),
         r#"[package]
 format = 1
-id = "modes"
-name = "Modes"
+id = "modes-test"
+name = "Modes test"
 requires = ["kit-test"]
 
 [[item]]
@@ -116,7 +118,7 @@ fn setup(name: &str) -> (Temp, App, Api) {
     app.set_data_root(t.path("data"));
     tree(&app.tags_root());
     assets_tests::package(&t.path("data/packages/kit-test"));
-    modes(&t.path("data/packages/modes"));
+    modes(&t.path("data/packages/modes-test"));
     (t, app, Api::new())
 }
 
@@ -200,22 +202,22 @@ fn a_tag_an_edit_line_touches_lists_the_package_and_a_package_tag_its_adder() {
 #[test]
 fn a_variant_lists_its_script_and_the_script_its_variant() {
     let (_t, mut app, mut api) = setup("links-script");
-    let variant = links(&mut api, &mut app, "item:modes:1");
+    let variant = links(&mut api, &mut app, "item:modes-test:1");
     assert_eq!(
         pairs(&variant["uses"]),
-        [("Script".to_owned(), "item:modes:0".to_owned())],
+        [("Script".to_owned(), "item:modes-test:0".to_owned())],
         "{variant}"
     );
-    assert!(has(&variant["used_by"], "Package", "package:modes"));
-    let script = links(&mut api, &mut app, "item:modes:0");
+    assert!(has(&variant["used_by"], "Package", "package:modes-test"));
+    let script = links(&mut api, &mut app, "item:modes-test:0");
     assert_eq!(
         pairs(&script["used_by"]).into_iter().filter(|p| p.0 == "Variant").collect::<Vec<_>>(),
-        [("Variant".to_owned(), "item:modes:1".to_owned())],
+        [("Variant".to_owned(), "item:modes-test:1".to_owned())],
         "{script}"
     );
     // Another script shares no key: nothing links it to the variant.
-    let other = links(&mut api, &mut app, "item:modes:2");
-    assert!(!has(&other["used_by"], "Variant", "item:modes:1"), "{other}");
+    let other = links(&mut api, &mut app, "item:modes-test:2");
+    assert!(!has(&other["used_by"], "Variant", "item:modes-test:1"), "{other}");
 }
 
 #[test]
@@ -246,8 +248,8 @@ fn packages_and_items_link_to_each_other() {
     let (_t, mut app, mut api) = setup("links-items");
     let v = links(&mut api, &mut app, "package:kit-test");
     assert!(has(&v["uses"], "Package", "item:kit-test:1"), "{v}");
-    assert!(has(&v["used_by"], "Package", "package:modes"), "{v}");
-    let v = links(&mut api, &mut app, "package:modes");
+    assert!(has(&v["used_by"], "Package", "package:modes-test"), "{v}");
+    let v = links(&mut api, &mut app, "package:modes-test");
     assert!(has(&v["uses"], "Package", "package:kit-test"), "{v}");
 
     // The edits item uses the tag its line names; a tag item the tag it adds.
