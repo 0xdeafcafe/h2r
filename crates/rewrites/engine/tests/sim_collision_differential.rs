@@ -469,6 +469,12 @@ fn check(
         };
         assert_eq!(transfer.target_pc, HARNESS_EXIT, "{case} {label}");
         let reference = reference.get_or_insert_with(|| guest(oracle));
+        if e.point.base == VECTOR.point.base {
+            let mut entry = m.clone();
+            let p = adapter::vector_parity::Prediction::gather(c, &mut entry, &world).unwrap();
+            assert_eq!(entry.overlay, m.overlay, "{case}: parity gather wrote memory");
+            assert_eq!(p.compare(reference.0.gpr[0] as u8, &reference.1).unwrap(), None, "{case} {label}");
+        }
         let mut got_cpu = ir_cpu(&nc);
         got_cpu.eip = transfer.target_pc;
         compare(label, &got_cpu, &nm, reference);
