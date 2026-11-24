@@ -45,7 +45,7 @@ before its slice starts.
 | An Xbox ADPCM encoder; a `snd!` writer with the gestalt merge | built, the second inside the converter | `crates/platform/audio/src/adpcm.rs` (`encode`), `crates/tools/h1-assets/src/sounds/merge.rs` |
 | Packages: `content::package::{Manifest, Lock, PackageId, Set}`, validation, `requires`, `after`, `set.toml`, `core` and `ui` always on, the load order, the content set | built | `crates/formats/content/src/package/` |
 | The package build: the builder registry (`tag`, `edits`, `bitmap`, `model`, `animation`, `sound`, `data`, `hud`, `screens`, `screen-edits`, `rules`, `variant`, `playlist`), `build` of ordered packages on a `TagSet`, `build_map` on a map file, conflicts, the cache key, `Layered`, `h2 package check\|build` | built (PK2) | `crates/tools/workspace`, `crates/apps/h2-tools/src/package_cmd.rs` |
-| Mod patches: a `set` line's `from`, `replaces`, the `tag-delta` item, the conflict table (`build_map_settled`), the asset hashes a `was` names (`workspace::assets`), a file that is the store's refused (`h2 package check --store`) | built ([asset-store.md](../engine/asset-store.md), AS6) | `crates/tools/workspace/src/{assets,build,delta,edit,load,onto}.rs` |
+| Mod patches: a `set` line's `from`, `replaces`, the `tag-delta` item, the conflict table (`build_map_settled`), the asset hashes a `was` names (`workspace::assets`), a file that is the store's refused (`h2 package check --store`) | built ([asset-store.md](../engine/asset-store.md), AS6); Studio's side (fork, revert, diff, **Changed by**, conflict rows in Problems) is AS7, built | `crates/tools/workspace/src/{assets,build,delta,edit,load,onto}.rs` |
 | The game's side: the baked set (`content/`), `<data>/packages/`, `set.toml`, features, `PackageRewrite` with its cache, `packages.list` | built (PK3); `content/pogo` and `content/ui` supply per-map items | `crates/tools/workspace/src/{game,rewrite}.rs`, `crates/apps/boot/src/packages.rs`, `crates/apps/boot/build.rs` |
 | Projects, the other kits as build steps | design | [tag-workspace.md](tag-workspace.md) |
 
@@ -117,7 +117,10 @@ tabs in the centre.
   of its own gets the field panel full width.
 - **Inspector** (right). The field panel's rows (`fields::rows`) for the
   selection in the front document, with **Where used**, **In maps** and
-  **Changed by** (the packages whose edit lines touch the tag). Every
+  **Changed by** (the packages whose edit lines touch the tag, in load
+  order, with each field's value and the one that wins; **Fork for this
+  map** and **Revert for this map** act on the open map in the edit
+  target, `asset.fork` and `asset.revert`). Every
   editor is a second view of these rows, so any tag can always be edited
   field by field.
 - **Bottom dock.** **Problems** (`ui/problems.rs`) is one list for every

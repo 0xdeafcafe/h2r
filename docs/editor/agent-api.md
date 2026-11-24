@@ -1763,12 +1763,17 @@ the tree or the package already has is refused.
 
 `asset.links {asset}` answers what the asset uses, what uses it and which
 editors open it (docs/editor/studio-flow.md, "Links"; `app/links.rs`):
-`{asset, uses, used_by, editors, problems}`. A link is `{asset, role, via}`;
+`{asset, uses, used_by, changed_by, editors, problems}`. A link is `{asset, role, via}`;
 `role` groups it (Model, Animations, Sounds, HUD, Projectile, Variant,
 Voice, Package, or the target's kind). A tag's `uses` are the tags its file
 references (`via` is `node <n> +<offset>`) and, for a dialogue sound, the
 voice that says it (`voice:<character>`); its `used_by` are the tags that
-reference it and the packages that add or edit it. A `variant` item uses the
+reference it and the packages that add or edit it; its `changed_by` is every
+package with a patch on it in load order, each `{package, item, asset, change,
+maps, forked, blocks, fields: [{path, value, from?, wins}]}` (`change` is
+`edit`, `patch` for a `tag-delta` or `replaces`; `wins` is false for a field
+a later package sets or an asset a later package overrides whole;
+`app/mods.rs`). A `variant` item uses the
 `rules` item of its script key, which lists the variant under `used_by`.
 An item lists the tag it adds or edits and its package; a package lists its
 items and `requires`. `editors` is `[{id, label, why_not}]`. A tag file that
@@ -1782,8 +1787,28 @@ h2 studio asset.copy '{"asset":"tag:weap:objects\\weapons\\rifle","package":"my-
 h2 studio asset.links '{"asset":"tag:weap:objects\\weapons\\rifle"}'
 ```
 
-The tests (`api/tests/assets_tests.rs`, `api/tests/links_tests.rs`) run over
-an invented tree and local packages.
+`asset.fork {tag, map, package?, set?}` is Fork for this map
+(docs/engine/asset-store.md, "In Studio"; `app/mods.rs`). `tag` is
+`<group>:<path>` or `tag:<group>:<path>`; `package` is a local package, else
+the edit target (`NO_TARGET`). The tag's lines go into `edits/<map>.yaml` of
+the package, an `edits` item whose `maps` names `map` alone, so every other
+level reads the asset as it was. Without `set` the lines are the ones the
+package's other `edits` items that reach `map` have for the tag (the last to
+set a path wins); with `set`, a list of `{path, value, from?}`, those lines are
+put in by path. The answer is `{package, tag, map, file, item, lines,
+from_items, created}`. A tag with no line to fork, a tag forked for the map
+already (without `set`) and a built-in package are `REFUSED`; a map that cannot
+name a file (letters, digits, `_` and `-`) or a tag that is not one is
+`INVALID_PARAMS`. The lock is rewritten.
+
+`asset.revert {tag, map?, package?}` takes the tag's lines out of the
+package's `edits` items: with `map` only the item that names that map alone,
+without every `edits` item with an entry for the tag. An item left with no
+entry goes with its file. The answer is `{package, tag, map, removed: [{item,
+file, maps, lines, item_removed}]}`; a tag with no line is `REFUSED`.
+
+The tests (`api/tests/assets_tests.rs`, `api/tests/links_tests.rs`,
+`api/tests/mods_tests.rs`) run over an invented tree and local packages.
 
 ### Packages
 
@@ -1806,9 +1831,10 @@ under `<data>/packages/<id>/` with `package.toml`, its files and
 | `package.target {id?, clear?}` | the edit target, read, set to a local package, or cleared |
 | `package.enable {id, on}` | `set.toml`'s `off`; `left_out` lists the packages that `require` the one switched off |
 | `package.order {ids}` | `set.toml`'s `order`; `loaded` is the resulting load order |
-| `package.check {id?}` | `{ok, count, findings: [{kind, message, item?, file?, line?}]}`: `lock` (missing or stale), `files` (a cache map, a `.h2tag` bundle, disc files, model weights or a dataset folder), `item` (no builder, a missing or oversize source, a source its builder refuses), `set` (a requirement missing or off), `conflict` (a tag path another package adds) |
+| `package.check {id?}` | `{ok, count, findings: [{kind, message, item?, file?, line?}]}`: `lock` (missing or stale), `files` (a cache map, a `.h2tag` bundle, disc files, model weights or a dataset folder), `store` (a file that is a raw resource or a tag file of the user's tag store, by SHA-256; `package.read`'s `problems` and Problems list it too), `item` (no builder, a missing or oversize source, a source its builder refuses), `set` (a requirement missing or off), `conflict` (a tag path another package adds) |
 | `package.build {id?, map?, out?}` | for each map of the open source the package has an item for (or `map`), `{map, scope, touched, took_ms, tags, added, changed, overrides, bytes, problems}`; with `out`, each built map is written to `<out>/<map>.map` |
 | `package.play {id, map}` | the build for `map`, then `game.load` on the paired game |
+| `package.diff {id?, map?}` | `{id, map, assets, counts, levels, built, conflicts, problems}`: `assets` is one row per asset the package changes or adds, `{asset, item, item_asset, change, maps, forked, ...}` where `change` is `edit` (with `fields: [{path, to, from?}]`, `blocks: [{path, op}]` and `was?`), `patch` (a `tag-delta`, with `was`), `override` (a `replaces`, with its hash) or `added`; `counts` counts them and the forks; `levels` are the maps the package changes (the open source's maps by class, else the maps its items name). With `map` (of the open source) the whole set is built over it and `conflicts` is the conflict table's rows `{map, kind: refused \| override, package, why, involves, other?, tag?, path?}`; `built` is false, with the reason in `problems`, when the build did not run. A read that built keeps its rows as that level's in Problems |
 
 Each write puts the new manifest through the set before it keeps it: a
 manifest that does not read, a source that is not in the folder, a
@@ -1819,8 +1845,8 @@ and `package.order` refuse by name: `core` and `ui` cannot be switched off
 `requires` or follows names both. A `set.toml` written by hand that turns
 `core` off is named in `package.list`'s `problems` and stops every write to
 the set file. The edit calls that default `id` to the edit target answer
-`NO_TARGET` when none is set. `package.build` needs a source (`NO_DOCUMENT`)
-and refuses a package that is off. `package.play` needs a pairing and
+`NO_TARGET` when none is set. `package.build` needs a source (`NO_DOCUMENT`) and
+refuses a package that is off; `package.diff` needs one only for a `map`. `package.play` needs a pairing and
 refuses a game whose content hash (`packages.list`) differs from
 `package.list`'s: the game reads its set at boot.
 
@@ -1848,7 +1874,7 @@ tool?}`, worst first. The sources:
 | `check` | `check.run`'s `models` and `sounds` checks |
 | `ui` | `ui.check` |
 | `hud` | `hud.check` and the HUD kit's check |
-| `package` | the manifest checks `h2 package check` runs over the packages under `<data>/packages/`: an item with no builder, a missing or oversize source, a source its builder refuses, two items that add one tag path |
+| `package` | the manifest checks `h2 package check` runs over the packages under `<data>/packages/`: an item with no builder, a missing or oversize source, a source its builder refuses, two items that add one tag path, a file that is a raw resource or a tag file of the user's tag store (`workspace::store_findings`), and the conflict rows of the last `package.diff` with a `map` for each level (`package.refused`, a warning: the package is off for that level, with the reason; `package.override`, a note: a later package's value for a field or an asset wins; target `<map>: <package>`, asset `package:<id>`). A refresh keeps those rows; the next diff of the level replaces them |
 | `build` | what the game's package set refuses to load, as the boot log says it: an unreadable package, a refused id, a `requires` that is missing, a set that cannot be ordered |
 | `ground` | the last AI ground build of the open map: a label it could not honour (`ground.label`, a warning, target `<label>[<index>]`) or why it failed (`ground.build`, an error); the tool is the scenario ([AI ground](#ai-ground)) |
 

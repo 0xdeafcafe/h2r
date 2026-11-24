@@ -46,6 +46,7 @@ pub mod assets;
 pub mod links;
 pub mod edit_lines;
 pub mod edit_target;
+pub mod mods;
 pub mod package_doc;
 pub mod preview_switch;
 pub mod problems;
@@ -340,6 +341,12 @@ pub enum Action {
     /// Copy a browser row's tag into a local package, as `asset.copy`
     /// does (`app::assets`).
     CopyAsset { asset: String, package: String },
+    /// **Fork for this map**: the asset's edit lines for the open map, in
+    /// the edit target (`app::mods`).
+    ForkAsset { asset: String },
+    /// **Revert for this map**: take the open map's fork of the asset out
+    /// of the edit target (`app::mods`).
+    RevertAsset { asset: String },
     /// Read the Problems list again: every source, or one of
     /// [`problems::SOURCES`] (`app::problems`).
     RefreshProblems(Option<String>),
@@ -1187,6 +1194,8 @@ impl App {
             },
             Action::OpenAsset { asset, map } => self.open_asset(&asset, map.as_deref()),
             Action::CopyAsset { asset, package } => self.copy_asset(&asset, &package),
+            Action::ForkAsset { asset } => self.fork_asset(&asset),
+            Action::RevertAsset { asset } => self.revert_asset(&asset),
             Action::RefreshProblems(source) => self.refresh_problems(source.as_deref()),
             Action::OpenProblem(index) => self.open_problem(index),
             Action::PreviewInGame(doc) => self.preview_in_game(doc),

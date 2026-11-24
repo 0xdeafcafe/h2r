@@ -90,6 +90,8 @@ pub mod method {
     pub const ASSET_THUMB: &str = "asset.thumb";
     pub const ASSET_COPY: &str = "asset.copy";
     pub const ASSET_LINKS: &str = "asset.links";
+    pub const ASSET_FORK: &str = "asset.fork";
+    pub const ASSET_REVERT: &str = "asset.revert";
     // The package document (api/packages.rs).
     pub const PACKAGE_LIST: &str = "package.list";
     pub const PACKAGE_READ: &str = "package.read";
@@ -104,6 +106,7 @@ pub mod method {
     pub const PACKAGE_CHECK: &str = "package.check";
     pub const PACKAGE_BUILD: &str = "package.build";
     pub const PACKAGE_PLAY: &str = "package.play";
+    pub const PACKAGE_DIFF: &str = "package.diff";
     // The Problems panel (docs/editor/studio-redesign.md; api/problems.rs).
     pub const PROBLEMS_LIST: &str = "problems.list";
     // The preview switch (docs/editor/studio-redesign.md; api/preview.rs).

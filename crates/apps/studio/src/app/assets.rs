@@ -162,7 +162,7 @@ pub(super) struct Overlay {
     pub(super) problems: Vec<String>,
 }
 
-fn group_ref(text: &str) -> Option<TagKey> {
+pub(super) fn group_ref(text: &str) -> Option<TagKey> {
     let (g, path) = text.split_once(':')?;
     Some(TagKey::new(parse_fourcc(g)?, path.replace('/', "\\")))
 }

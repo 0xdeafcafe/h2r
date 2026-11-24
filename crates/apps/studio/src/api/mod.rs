@@ -248,6 +248,27 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"asset":"package:kit-test"}"#,
     ),
     def(
+        m::ASSET_FORK,
+        "Fork for this map: the lines of a tag as they are for one map, in an `edits` item of a package under <data>/packages/ (`package`, else the edit target) whose `maps` names that map alone (`edits/<map>.yaml`). It is never a copy of the tag: every other level reads the asset as it was. Without `set` the lines are the ones the package's other `edits` items that reach the map have for the tag (the last to set a path wins); a package with none is refused, and so is a tag already forked for the map. With `set`, those lines are put in by path. The lock is rewritten",
+        r#"{"tag":"string (<group>:<path> or tag:<group>:<path>)","map":"string","package?":"string","set?":"[{path,value,from?}]"}"#,
+        r#"{"package":"string","tag":"string","map":"string","file":"string","item":"integer|null","lines":"integer","from_items":"[integer]","created":"boolean"}"#,
+        r#"{"tag":"weap:objects\\weapons\\rifle","map":"example","package":"kit-test"}"#,
+    ),
+    def(
+        m::ASSET_REVERT,
+        "Take a tag's edit lines out of a package's `edits` items (`package`, else the edit target). With `map`, only the item that names that map alone (the fork `asset.fork` made); without, every `edits` item with an entry for the tag. An item left with no entry goes with its file, and the lock is rewritten. A tag with no line is refused",
+        r#"{"tag":"string (<group>:<path> or tag:<group>:<path>)","map?":"string","package?":"string"}"#,
+        r#"{"package":"string","tag":"string","map":"string|null","removed":"[{item,file,maps,lines,item_removed}]"}"#,
+        r#"{"tag":"weap:objects\\weapons\\rifle","map":"example","package":"kit-test"}"#,
+    ),
+    def(
+        m::PACKAGE_DIFF,
+        "What a package (`id`, else the edit target) does, per asset, for a map of the open source or for every map: `edit` rows hold each field's `to` (and `from` when the line names the value it replaces) and the block lines; `patch` (a tag-delta), `override` (a `replaces`) and `added` rows name the asset; `forked` marks an item that names maps. `levels` are the maps the package changes. With `map`, the whole set is built over that map and `conflicts` holds the conflict table's rows (a package off for the level with the reason, a field or an asset a later package takes), `involves` marking the ones that name this package; Problems lists them under `package` until the level is diffed again",
+        r#"{"id?":"string","map?":"string"}"#,
+        r#"{"id":"string","map":"string|null","assets":"[{asset,item,item_asset,change: edit|patch|override|added,maps,forked,fields?,blocks?,was?,replaces?}]","counts":"{edit,patch,override,added,forked}","levels":"[string]","built":"boolean","conflicts":"[{map,kind: refused|override,package,why,involves,other?,tag?,path?}]","problems":"[string]"}"#,
+        r#"{"id":"kit-test"}"#,
+    ),
+    def(
         m::PACKAGE_LIST,
         "The package set in load order, then the packages that are off: id, name, PackageId, origin (baked or local), dir, on or off and why, always_on, item counts by kind, scopes, whether it is the edit target and whether it is editable; the set's problems, its content hash and the edit target",
         "{}",
@@ -319,9 +340,9 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::PACKAGE_CHECK,
-        "What `h2 package check` says of one package (`id`, else the edit target): a missing or stale lock, a cache map, .h2tag bundle, disc file, voice dataset or model weights folder in its folder, an item with no builder, a missing or oversize source, a source its builder refuses, a requirement that is missing or off, and a tag path another package adds too",
+        "What `h2 package check` says of one package (`id`, else the edit target): a missing or stale lock, a cache map, .h2tag bundle, disc file, voice dataset or model weights folder in its folder, an item with no builder, a missing or oversize source, a source its builder refuses, a requirement that is missing or off, a tag path another package adds too, and a file that is a raw resource or a tag file of the tag store (`store`)",
         r#"{"id?":"string"}"#,
-        r#"{"id":"string","ok":"boolean","count":"integer","findings":"[{kind: lock|files|item|set|conflict, message, item?, file?, line?}]"}"#,
+        r#"{"id":"string","ok":"boolean","count":"integer","findings":"[{kind: lock|files|store|item|set|conflict, message, item?, file?, line?}]"}"#,
         r#"{"id":"kit-test"}"#,
     ),
     def(
