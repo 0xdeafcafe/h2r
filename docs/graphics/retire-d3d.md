@@ -344,7 +344,7 @@ classified readers, 73 read run state and 30 start from it.
 | Subsystem | Guest code that stops running | Replacement | State today |
 |---|---|---|---|
 | Views and cameras | `0x002234e0`, `0x00223080` | `scene-extract` builds the view records from the observer cameras and writes them, since other code reads them | read today, not built |
-| Visibility | `0x00040e90`, the portal traversal, the light frustum setup `0x000c1d90` | a Rust traversal over the BSP's clusters and portals; the Rust scene lists consume it | lists built, traversal not |
+| Visibility | `0x00040e90`, the portal traversal, the light frustum setup `0x000c1d90` | a Rust traversal over the BSP's clusters and portals; the Rust scene lists consume it | lists built; the main view's traversal and object set built beside the guest's, compared as sets, and carried by the view when equal ([native-visibility.md](native-visibility.md)); the guest's traversal still runs and the light views' is not built |
 | World | the layer draws of 1, 3, 5, 7, 8, 20 over structure | `native_render::world` and `layer_pass` from tags, whole-call (framescene.md slice 4) | built for layer 3; for 1, 5, 7, 8 and 20 the structure's static items, and objects' items of 1, 5, 7, 8 and 20 |
 | Objects | `OBJECT_RENDER_SETUP` `0x00133790`, the layer-3 handlers, the first person | the Rust object setup and typed instances; a part the walk cannot read is a named drop, not a guest draw | built, with a remainder |
 | Decorators | builds `0x0004de20`, draw `0x0004e260` | `native_render::decorators` ([native-decorators.md](native-decorators.md)) | built, not verified |
@@ -584,5 +584,6 @@ reference page.
 - [render-loop.md](render-loop.md) and [native-post-hud.md](native-post-hud.md): the front-end's call tree, the HUD and the UI.
 - [sim-rewrite.md](../engine/sim-rewrite.md): who owns state; the effects phase R2 shares.
 - [e3-lighting.md](e3-lighting.md): the lighting that draws from the same scene.
+- [native-visibility.md](native-visibility.md): R4's traversal and object set, and their differential.
 - [notes/scene-pass-timing.md](notes/scene-pass-timing.md), [notes/native-ab.md](notes/native-ab.md): the measurements cited above.
 - [agent-api.md](../runtime/agent-api.md), [lab.md](../runtime/lab.md): the methods and the laptop runs.

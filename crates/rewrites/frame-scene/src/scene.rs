@@ -284,10 +284,39 @@ pub struct PartDraw {
 /// IDs have the BSP's numbering in both lists and in the layer-3 cluster list.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ClusterGather {
-    /// Guest clipping mode (0 portal flood, 1 sphere, 2 all clusters).
+    /// Guest clipping mode (0 portal flood, 1 sphere, 2 the potentially
+    /// visible set).
     pub mode: u32,
+    /// The visible clusters: the guest's region order, or ascending when
+    /// [`VisibilitySource::Rust`] supplied them.
     pub visible: Vec<u16>,
     pub structure: Vec<u16>,
+    /// The view's object list (handles): the guest's list order, or
+    /// ascending when [`VisibilitySource::Rust`] supplied it.
+    pub objects: Vec<u32>,
+    /// Who computed `visible` and `objects` (docs/graphics/native-visibility.md).
+    pub source: VisibilitySource,
+}
+
+/// Which visibility a view's [`ClusterGather`] carries. The Rust sets are
+/// taken only for a view whose sets equal the guest's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VisibilitySource {
+    /// The guest's portal flood and object gather, read.
+    #[default]
+    Guest,
+    /// `scene_extract::visibility`, equal to the guest's for this view.
+    Rust,
+}
+
+impl VisibilitySource {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Guest => "guest",
+            Self::Rust => "rust",
+        }
+    }
 }
 
 /// A root object outside the frustum whose shadow can reach this view.

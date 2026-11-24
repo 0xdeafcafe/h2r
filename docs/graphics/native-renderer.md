@@ -259,8 +259,10 @@ the original entry with the incoming registers and memory. New resource
 I/O, synchronous waits, request reprioritization, resource relocation,
 live light-probe work, animated pose evaluation, and auxiliary model
 materials use that path. Portal traversal and dynamic light frustum
-setup (`0x000c1d90`) supply the inputs to the Rust gathers. Effect
-producers decide when effects are ready to queue.
+setup (`0x000c1d90`) supply the inputs to the Rust gathers. The main
+view's traversal and object set also run in Rust beside the guest's and
+are compared with them ([native-visibility.md](native-visibility.md)).
+Effect producers decide when effects are ready to queue.
 
 Frame stats record `native_scene_lists_<stage>_native`, `_fallback` and
 the associated `_memory`, `_layout` or `_unsupported` reason. Object
