@@ -1827,7 +1827,7 @@ h2 agent render.parity '{"arm": true}'
 | `render.spawn_view` | act | `{index, yaw_offset?}` or `{reset: true}` | `{index, count, position: [x,y,z], yaw}` or `{reset: true}` |
 | `render.view` | act | `{eye: [x,y,z], yaw, pitch, fov?}` or `{reset: true}` | `{eye, yaw, pitch, fov}` or `{reset: true}` |
 | `render.capture` | read | `{tick?, pass?, lighting?, game_id?}` | `{path, tick, present, pass?, lighting?, scene_hash, source?}` |
-| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, carried_census?, carried_activation?, carried_checkpoint?, dump?, display_frame?, private_frame?}` |
+| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, carried_census?, carried_activation?, carried_checkpoint?, visibility_first_mismatch?, dump?, display_frame?, private_frame?}` |
 | `render.parity` | act | `{arm: true}` | `render.compare`'s fields plus `tick` |
 | `sim.hashes` | read | `{from_tick?, max?}` | `{rows: [{tick, gameplay, arena?}], dropped, resets, truncated?}` |
 
@@ -1974,16 +1974,34 @@ h2 agent render.parity '{"arm": true}'
   positions through, `view` has the view's verified projection block
   and viewport, and `unknown` covers the other draws. The map is
   empty for other view kinds or without a retained matching scene.
-  For a game view, `visibility_clusters` counts the guest visibility list
-  and `structure_clusters` counts the subsequent BSP structure list. Both
-  fields are absent if extraction cannot read the main gather at layer 3.
+  For a game view, `visibility_clusters` counts the visible clusters,
+  `structure_clusters` the subsequent BSP structure list and
+  `visibility_objects` the view's object list; `visibility_source` is
+  `rust` when the Rust visibility equalled the guest's for the view and
+  supplied the clusters and objects, `guest` otherwise
+  ([native-visibility.md](../graphics/native-visibility.md)). All four
+  are absent if extraction cannot read the main gather at layer 3.
   A zero is a successfully read empty list. With `{"dump":true}`, the scene
-  file has the ordered BSP cluster IDs in `cluster_gathers[i].visible` and
-  `.structure` for `views[i]`. Its `mode` is 0 for a portal flood, 1 for
-  a sphere and 2 for all clusters. The view's `clusters` range selects the
+  file has the BSP cluster IDs in `cluster_gathers[i].visible`, the
+  object handles in `.objects` (the guest's order, or ascending when
+  `.source` is `rust`) and `.structure` for `views[i]`. Its `mode` is 0
+  for a portal flood, 1 for a sphere and 2 for the potentially visible
+  set. The view's `clusters` range selects the
   layer-3 IDs from the top-level `clusters` array. `views[i].camera` gives
   the vertical FOV in radians, guest projection terms and viewport.
+  `visibility_first_mismatch` names the first game view since the map
+  loaded whose Rust visibility differed from the guest's: its key, frame
+  and tick, the first difference (`cluster 12 guest only`, `object
+  0x00050002 rust only`) and the counts each way.
   The top-level `counters` include
+  the visibility differential's `scene_visibility_checked` (game views
+  whose Rust sets were made and compared), `scene_visibility_equal`,
+  `scene_visibility_differ`, `scene_visibility_clusters_differ`,
+  `scene_visibility_objects_differ`, `scene_visibility_rust_taken` (views
+  that carry the Rust sets), `scene_visibility_ns` (time in the Rust
+  computation) and `scene_visibility_declined_<reason>` (`unread`,
+  `layout`, `mode`, `frusta`, `overflow`, `computed_pvs`, `camera`,
+  `not_main`: views it made no sets for). They also include
   (`scenes_sealed`, `scenes_unsealed`, `scene_views`, `scene_no_camera`,
   `scene_refused_writes`, `scene_layers`, `scene_layer_items`,
   `scene_layer_remainder`, `scene_layers_unread` (layer draws whose list

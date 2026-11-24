@@ -36,10 +36,14 @@ pub fn world(mem: &dyn GuestRead) -> WorldState {
 
 /// Visibility records produced by the guest's main camera gather. The
 /// portal flood writes cluster ordinals at 0x00173130. The structure
-/// gather filters those to the IDs consumed by 0x00133390. A light view
-/// has separate lists and must never be attributed to the camera.
+/// gather filters those to the IDs consumed by 0x00133390, and the object
+/// gather `0x00132220` (with the view's player unit appended by
+/// `0x0003f33c`) fills the object list. A light view has separate lists and
+/// must never be attributed to the camera. The source is the guest's; the
+/// scene step swaps in the Rust sets when they equal these
+/// ([`crate::visibility`]).
 pub fn cluster_gather(mem: &dyn GuestRead) -> Option<frame_scene::scene::ClusterGather> {
-    use engine::render_loop::occlusion::guest::{LIST_COUNT, LIST_HANDLES, MAIN_VIS, VIS_KIND};
+    use engine::render_loop::occlusion::guest::{LIST_COUNT, LIST_HANDLES, MAIN_VIS, VIS_KIND, VIS_OBJECTS};
 
     const ACTIVE_VIS: u32 = 0x004c_0b80;
     const CLIP_MODE: u32 = 0x2a7c;
@@ -82,7 +86,24 @@ pub fn cluster_gather(mem: &dyn GuestRead) -> Option<frame_scene::scene::Cluster
         let handles = ptr(list.checked_add(LIST_HANDLES)?)?;
         ids(count, |i| mem.read_u32(handles.checked_add(4 * i)?))?
     };
-    Some(frame_scene::scene::ClusterGather { mode, visible, structure })
+    let list = ptr(MAIN_VIS + VIS_OBJECTS)?;
+    let count = half(list.checked_add(LIST_COUNT)?)?;
+    if count > mem.read_u32(list)? {
+        return None;
+    }
+    let objects = if count == 0 {
+        Vec::new()
+    } else {
+        let handles = ptr(list.checked_add(LIST_HANDLES)?)?;
+        (0..count).map(|i| mem.read_u32(handles.checked_add(4 * i)?)).collect::<Option<Vec<u32>>>()?
+    };
+    Some(frame_scene::scene::ClusterGather {
+        mode,
+        visible,
+        structure,
+        objects,
+        source: frame_scene::VisibilitySource::Guest,
+    })
 }
 
 /// The clusters the current list's `layer` items draw, each once, in the
@@ -379,9 +400,18 @@ mod tests {
         m.w(list + 4, 1);
         m.w(list + 0xc, handles);
         m.w(handles, 9);
+        let (objects, object_handles) = (0x3800, 0x3c00);
+        m.w(MAIN_VIS + 0x14, objects);
+        m.w(objects, 64);
+        m.w(objects + 4, 2);
+        m.w(objects + 0xc, object_handles);
+        m.w(object_handles, 0x0005_0002);
+        m.w(object_handles + 4, 0x0006_0001);
         let gather = cluster_gather(&m).unwrap();
         assert_eq!(gather.visible, [103, 9]);
         assert_eq!(gather.structure, [9]);
+        assert_eq!(gather.objects, [0x0005_0002, 0x0006_0001]);
+        assert_eq!(gather.source, frame_scene::VisibilitySource::Guest);
 
         m.w(list + 4, 0);
         assert!(cluster_gather(&m).unwrap().structure.is_empty());
