@@ -1,5 +1,8 @@
-//! The Sound window: audition the `snd!` tag selected in the Tags tool.
-//! A list of its permutations, the picked one's waveform, **Play** and
+//! The sound editor, the document of a `snd!` tag
+//! (docs/editor/studio-redesign.md, "The sound editor"): it draws the
+//! front tab's sound while the Tags tool shows it (else the selected one:
+//! a browsed map has no tabs). A row for each permutation with its
+//! duration and the levels `sound.measure` gives it, the picked one's waveform, **Play** and
 //! **Stop**, a click on the waveform to play from there, and under the
 //! waveform the permutation's mouth curve as a filled track on the same
 //! time axis — read even when the audio itself cannot be decoded.
@@ -15,7 +18,7 @@ use dear_imgui_rs::{Condition, MouseButton, Ui};
 use map::TagId;
 use tags::sound::MOUTH_HZ;
 
-use crate::app::audition::{Clip, SoundError, SoundInfo};
+use crate::app::audition::{Clip, SoundError, SoundInfo, SoundRow};
 use crate::app::{App, ToolKind};
 use crate::theme::{self, icon};
 
@@ -33,6 +36,8 @@ const MOUTH_HEIGHT: f32 = 48.0;
 #[derive(Default)]
 pub struct SoundUi {
     info: Option<(Key, Result<SoundInfo, SoundError>)>,
+    /// Each permutation's levels, measured once per sound.
+    rows: Option<(Key, Result<Vec<SoundRow>, SoundError>)>,
     /// Pitch range and permutation picked.
     pick: (usize, usize),
     clip: Option<((Key, (usize, usize)), Result<Arc<Clip>, SoundError>)>,
@@ -46,21 +51,42 @@ fn clock(ms: u64) -> String {
     format!("{}:{:02}.{}", ms / 60_000, ms / 1000 % 60, ms / 100 % 10)
 }
 
-/// The window, when the Tags tool has a sound selected.
-pub fn window(ui: &Ui, app: &mut App, st: &mut SoundUi) {
+/// A permutation's row: its place, length, levels (or why there are none)
+/// and mouth curve, the numbers `sound.measure` and `sound.mouth` give.
+pub fn row_text(row: &SoundRow) -> String {
+    let head = format!("[{}.{}]", row.range, row.permutation);
+    let mouth = row
+        .mouth_ticks
+        .map_or(String::new(), |t| format!("  mouth {t} ticks"));
+    match &row.levels {
+        Ok(l) => format!(
+            "{head}  {:.2} s  {:.1} LUFS  peak {:.1} dBFS{}{mouth}",
+            l.duration_ms as f64 / 1000.0,
+            l.lufs,
+            l.peak_dbfs,
+            if l.clipped > 0 { "  clipped" } else { "" },
+        ),
+        Err(why) => format!("{head}  {} bytes  {why}{mouth}", row.encoded_bytes),
+    }
+}
+
+/// The sound the editor draws: the front tab's while the Tags tool shows
+/// it, else the one selected there (a browsed map has no tabs). `None` for any
+/// other kind.
+pub fn target(app: &App) -> Option<(TagId, String)> {
     if app.tool != ToolKind::Tags {
-        return;
+        return None;
     }
-    let Some(id) = app.shown_tags().selected else {
+    let id = app.front_tag_doc().or(app.shown_tags().selected)?;
+    let entry = app.shown_tags().tag(id)?;
+    (entry.group.0 == *b"snd!").then(|| (id, entry.name.clone()))
+}
+
+/// The window, when the front document is a sound.
+pub fn window(ui: &Ui, app: &mut App, st: &mut SoundUi) {
+    let Some((id, name)) = target(app) else {
         return;
     };
-    let Some(entry) = app.shown_tags().tag(id) else {
-        return;
-    };
-    if entry.group.0 != *b"snd!" {
-        return;
-    }
-    let name = entry.name.clone();
     let key: Key = (app.shown_map_name().map(str::to_owned), id);
     ui.window("Sound###sound")
         .size([440.0, 380.0], Condition::FirstUseEver)
@@ -73,6 +99,7 @@ pub fn window(ui: &Ui, app: &mut App, st: &mut SoundUi) {
 fn body(ui: &Ui, app: &mut App, st: &mut SoundUi, id: TagId, key: Key) {
     if st.info.as_ref().map(|i| &i.0) != Some(&key) {
         st.info = Some((key.clone(), app.sound_info(id)));
+        st.rows = Some((key.clone(), app.sound_rows(id)));
         st.pick = (0, 0);
         st.clip = None;
         st.problem = None;
@@ -96,18 +123,21 @@ fn body(ui: &Ui, app: &mut App, st: &mut SoundUi, id: TagId, key: Key) {
         info.compression
     ));
     ui.separator();
-    for (r, perms) in info.ranges.iter().enumerate() {
-        for (p, perm) in perms.iter().enumerate() {
+    if let Some((_, Ok(rows))) = &st.rows {
+        for row in rows {
+            let pick = (row.range, row.permutation);
             let label = format!(
-                "pitch range {r}, permutation {p}  ({} bytes)##sound-perm-{r}-{p}",
-                perm.encoded_bytes
+                "{}##sound-perm-{}-{}",
+                row_text(row),
+                row.range,
+                row.permutation
             );
             if ui
                 .selectable_config(label)
-                .selected(st.pick == (r, p))
+                .selected(st.pick == pick)
                 .build()
             {
-                st.pick = (r, p);
+                st.pick = pick;
                 st.problem = None;
             }
         }
@@ -271,5 +301,120 @@ fn body(ui: &Ui, app: &mut App, st: &mut SoundUi, id: TagId, key: Key) {
     }
     if let Some(p) = &st.problem {
         ui.text_colored(theme::ERROR, format!("{} {p}", icon::ALERT));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use studio_proto::method as m;
+
+    use super::*;
+    use crate::api::Api;
+    use crate::app::{Action, Doc, tag_tests};
+
+    const SND: &str = r"snd!:objects\test\blaster";
+
+    fn open(name: &str) -> (App, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("h2s-sound-doc-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut app, ..) = tag_tests::app_with_registry(
+            &dir,
+            crate::api::sound::tests::sound_map(),
+            tag_tests::registry(),
+        );
+        app.audition.headless = true;
+        (app, dir)
+    }
+
+    /// An invented sound opens as a tab in the sound editor, which draws
+    /// it while the tab is in front and not for another kind of tag.
+    #[test]
+    fn an_invented_sound_opens_as_a_tab() {
+        let (mut app, dir) = open("tab");
+        assert_eq!(target(&app), None, "no tab is open");
+        app.dispatch(Action::OpenAsset {
+            asset: format!("tag:{SND}"),
+            map: None,
+        });
+        let Some(Doc::Tag(id)) = app.front_doc() else {
+            panic!("the sound has no tab: {:?}", app.tabs());
+        };
+        assert_eq!(target(&app).map(|t| t.0), Some(id));
+        let tab = app.tab_json(app.tabs().iter().find(|t| t.doc == Doc::Tag(id)).unwrap());
+        assert_eq!(
+            (tab["editor"].as_str(), tab["group"].as_str()),
+            (Some("audition"), Some("snd!"))
+        );
+        // The map's own tab in front: the sound editor is not drawn.
+        app.dispatch(Action::FocusDoc(Doc::Map));
+        assert_eq!(target(&app), None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Each permutation's row carries the numbers `sound.measure` gives
+    /// it, and its text says them.
+    #[test]
+    fn each_permutation_row_carries_sound_measures_numbers() {
+        let (mut app, dir) = open("rows");
+        let mut api = Api::new();
+        let measured = api
+            .call(&mut app, m::SOUND_MEASURE, json!({"tag": SND}))
+            .unwrap();
+        app.dispatch(Action::OpenAsset {
+            asset: format!("tag:{SND}"),
+            map: None,
+        });
+        let (id, _) = target(&app).unwrap();
+        let rows = app.sound_rows(id).unwrap();
+        let perms = measured["permutations"].as_array().unwrap();
+        assert_eq!(rows.len(), perms.len());
+        for (row, perm) in rows.iter().zip(perms) {
+            assert_eq!(
+                (row.range as u64, row.permutation as u64),
+                (
+                    perm["range"].as_u64().unwrap(),
+                    perm["permutation"].as_u64().unwrap()
+                )
+            );
+            let l = row.levels.as_ref().unwrap();
+            assert_eq!(
+                crate::api::sound_measure::levels_json(l),
+                perm["levels"],
+                "the row's levels are the API's"
+            );
+            let text = row_text(row);
+            assert!(text.contains(&format!("{:.1} LUFS", l.lufs)), "{text}");
+            assert!(
+                text.contains(&format!("peak {:.1} dBFS", l.peak_dbfs)),
+                "{text}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A permutation with a mouth curve says its length in its row.
+    #[test]
+    fn a_voiced_permutation_row_names_its_mouth_ticks() {
+        let dir = std::env::temp_dir().join(format!("h2s-sound-doc-mouth-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut app, ..) = tag_tests::app_with_registry(
+            &dir,
+            crate::api::sound::tests::mouth_map(),
+            tag_tests::registry(),
+        );
+        app.audition.headless = true;
+        app.dispatch(Action::OpenAsset {
+            asset: format!("tag:{SND}"),
+            map: None,
+        });
+        let (id, _) = target(&app).unwrap();
+        let rows = app.sound_rows(id).unwrap();
+        let ticks = app.sound_mouth(id, 0, 0).unwrap().unwrap().len();
+        assert_eq!(rows[0].mouth_ticks, Some(ticks));
+        assert!(row_text(&rows[0]).contains(&format!("mouth {ticks} ticks")));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -799,9 +799,15 @@ with editing around it.
 ```
 
 **Audition (built).** `app/audition.rs` decodes a permutation and plays
-it through the game's own sink; `ui/sound.rs` draws the waveform;
-`sound.read`, `sound.play`, `sound.stop` and `sound.measure` are the
-API. The floating window becomes this document.
+it through the game's own sink; `ui/sound.rs` is the sound document: it
+draws the front tab's `snd!` while the Tags tool shows it (a browsed
+map, which has no tabs, shows the sound selected there). A row for each
+permutation says its place, length, integrated loudness and peak, and the
+length of its mouth curve (`App::sound_rows`, the numbers
+`sound.measure` gives each permutation); a permutation that does not
+decode keeps its row with the reason. The waveform and the mouth track
+sit under the rows on one time axis. `sound.read`, `sound.play`,
+`sound.stop`, `sound.mouth` and `sound.measure` are the API.
 
 **Waveform editing.** Edits apply to a package's source WAV and are kept
 as a list in `<name>.sound.yaml`: trim, fade in, fade out, gain,
@@ -940,7 +946,7 @@ Rows are in build order.
 | AN5 | **Retarget and glTF**: `anim.retarget`, `anim.import`, the node table | M | AN3 | a clip retargeted to a skeleton with one renamed and one longer bone keeps the end position within a bound; unmatched nodes are listed |
 | AN6 | **Animation in the game**: the game's `world.object.animate` (**E first**), `pair.preview {what: "animation"}` | S | AN4 | on the fake game the preview sends spawn, animate, wait and capture in order |
 | A2, A3, A4 | **Mouth curves** (rich-editors) | S, S, M | A1; M1 for A3 | as there |
-| SN1 | **The sound editor as a document**: the audition as a document, permutations with loudness, the mouth track row | S | SH1 | an invented sound opens as a tab; each permutation row carries `sound.measure`'s numbers |
+| SN1 (built) | **The sound editor as a document** (built: `ui/sound.rs` draws the front sound tab, `App::sound_rows`, `App::front_tag_doc`): the audition as a document, permutations with loudness, the mouth track row | S | SH1 | an invented sound opens as a tab; each permutation row carries `sound.measure`'s numbers |
 | SN2 | **Import and encode**: `import.sound`, the `sound` builder, resample, ADPCM, the gestalt merge moved to `workspace::import` | M | PK2 | an invented WAV builds to a `snd!` that `app/audition.rs` decodes to the same samples within the codec's error; the gestalt of an invented map gains its rows and keeps the others |
 | SN3 | **Waveform edits**: `crates/tools/sound-edit`, the edit list, `sound.edit`, `sound.render`, permutations as files | M | SN1, SN2 | each op on an invented wave gives the expected samples; the source file's bytes never change; reorder and undo give the earlier render |
 | SN4 | **Voices into packages**: `voice.commit` and cloned lines to the edit target | S | PK7 | a committed line is a `sound` item; a dataset or weights path is refused |

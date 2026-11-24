@@ -237,7 +237,7 @@ pub const KINDS: &[KindRow] = &[
         preview: Preview::Waveform,
         subject: Subject::Play,
         classes: ALL_CLASSES,
-        missing: "import, levels and distances, mouth curves",
+        missing: "import, distances, waveform edits, drawing the mouth curve",
     },
     KindRow {
         label: "HUD",

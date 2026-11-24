@@ -50,7 +50,7 @@ mod scripts;
 pub mod seams;
 mod shell;
 pub mod server;
-mod sound;
+pub(crate) mod sound;
 mod strings;
 pub(crate) mod sound_measure;
 mod tag_fields;
