@@ -73,6 +73,8 @@ pub struct AppConfig {
     pub status_in_title: bool,
     /// Initial inner size in logical points.
     pub window_size: (u32, u32),
+    /// Fit the initial window inside `window_size` at the monitor aspect.
+    pub window_matches_monitor_aspect: bool,
     /// Column `.0` of `.1` across the primary screen ([`tile::tile`]),
     /// in place of `window_size` and the system's placement.
     pub tile: Option<(u32, u32)>,
@@ -157,6 +159,7 @@ impl Default for AppConfig {
             title: "h2recomp".into(),
             status_in_title: true,
             window_size: (1280, 960),
+            window_matches_monitor_aspect: false,
             tile: None,
             fullscreen: false,
             hidden: false,

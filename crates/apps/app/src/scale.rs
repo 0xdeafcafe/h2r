@@ -194,6 +194,16 @@ pub fn fit(aspect: f32, target: (u32, u32)) -> Viewport {
     }
 }
 
+/// Fit the opening play window in logical points using the monitor's shape.
+pub(crate) fn initial_monitor_window(bounds: (u32, u32), monitor: (u32, u32)) -> (u32, u32) {
+    if monitor.0 == 0 || monitor.1 == 0 {
+        return bounds;
+    }
+    let available = (bounds.0.min(monitor.0), bounds.1.min(monitor.1));
+    let window = fit(DisplayAspect::Source.ratio(monitor), available);
+    (window.width, window.height)
+}
+
 /// Where a frame of `src` pixels goes in a `target`-sized surface.
 pub fn place(
     src: (u32, u32),
@@ -239,6 +249,15 @@ pub fn place(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn play_window_opens_at_the_monitor_aspect_in_logical_points() {
+        let bounds = (1280, 960);
+        assert_eq!(initial_monitor_window(bounds, (2560, 1440)), (1280, 720));
+        assert_eq!(initial_monitor_window(bounds, (1200, 1920)), (600, 960));
+        assert_eq!(initial_monitor_window(bounds, (800, 600)), (800, 600));
+        assert_eq!(initial_monitor_window(bounds, (0, 0)), bounds);
+    }
 
     #[test]
     fn oversized_drawables_fit_the_texture_limit_in_both_axes() {

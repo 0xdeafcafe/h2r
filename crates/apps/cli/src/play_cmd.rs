@@ -579,6 +579,7 @@ pub(crate) fn run_with_theater(
         audio: false,
         title: "Halo 2".into(),
         aspect: app::DisplayAspect::Source,
+        window_matches_monitor_aspect: true,
         bindings: play_bindings(),
         // The run prints its report before the guest thread returns.
         shutdown_timeout: Duration::from_secs(10),

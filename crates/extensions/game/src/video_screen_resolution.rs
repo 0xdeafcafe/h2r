@@ -9,12 +9,15 @@ pub(crate) const VALUE_SLOT: &str = "                                ";
 
 pub(crate) fn label(choice: Resolution, native: (u32, u32)) -> String {
     match choice {
-        Resolution::Native => format!("Native ({}x{})", native.0, native.1),
+        Resolution::Native => {
+            let (w, h) = choice.size(native);
+            format!("Native ({w}x{h})")
+        }
         _ => choice.to_string(),
     }
 }
 
-/// The narrow value column shows the physical Native size. The picker's
+/// The narrow value column shows the budgeted Native size. The picker's
 /// help has room for the automatic raster and the full-size alternative.
 pub(crate) fn help(native: (u32, u32)) -> String {
     let (w, h) = Resolution::Native.size(native);
@@ -79,7 +82,7 @@ mod tests {
         assert_eq!(
             labels,
             [
-                "Native (5120x2880)",
+                "Native (3840x2160)",
                 "1280x720",
                 "1920x1080",
                 "2560x1440",

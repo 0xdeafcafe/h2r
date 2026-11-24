@@ -80,7 +80,7 @@ Also public: `app::pump_input` (below), `frame::{channel, FrameSink,
 FrameSource, Compositor}`, `pacing::{Pacer, PacePolicy, VBlank}`,
 `scale::{place, fit, DisplayAspect, Scaling}`, `keymap`, `lifecycle`.
 
-`AppConfig` (all have defaults): `title`, `window_size` (1280x960 points),
+`AppConfig` (all have defaults): `title`, `window_size` (1280x960 points, fitted to the primary monitor aspect by `h2 play`),
 `fullscreen`, `aspect` (`Standard` 4:3), `scaling` (`Fit`, `Integer`,
 `Stretch`), `filter` (`Linear`, `Nearest`), `vsync` (true), `fps`
 (`fps::FpsTarget::Thirty`; `H2_FPS`, below), `pause_on_focus_loss`
