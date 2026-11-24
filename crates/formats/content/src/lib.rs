@@ -38,7 +38,7 @@ pub mod store;
 
 pub use canonical::{NotInteger, canonicalize};
 pub use hash::{BadHex, Hasher, Sha256};
-pub use id::MapId;
+pub use id::{LEVEL_FORMAT, LevelId, LevelInputs, MapId};
 /// Cache map types used when resolving and validating package contents.
 pub use map;
 pub use manifest::{HudSwap, LevelHud, Manifest, ManifestError, Origin, Swap, Variant};

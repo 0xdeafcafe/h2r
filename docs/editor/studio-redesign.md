@@ -626,6 +626,14 @@ paths in "What exists":
    `PackageRewrite::observed` hands
    each map, as the game is given it, to the boot's hook, which records
    the pogo stick's weapons (`pogo_kit::served::publish`).
+   With the maps served from the tag store (`store-maps`), the per-map
+   items reach the game as level images instead: `vfs::store_map` asks
+   `workspace::level::StoreLevels` for each level it opens, which builds
+   the image with the same `build_map` and keeps it under
+   `<data>/store/images/` by its `LevelId`
+   ([asset-store.md](../engine/asset-store.md), "Runtime assembly"). The
+   rewrite is then `PackageRewrite::levels_from_store`: it rebuilds no map
+   and still runs the kits and the observers.
 3. **Set items**: `rules` items fill the script registry
    (`rules::builtin::Registry`, whose baked form is `rules::builtin`'s
    constants); `variant` items are the built-in list entries

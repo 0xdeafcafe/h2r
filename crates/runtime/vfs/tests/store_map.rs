@@ -270,3 +270,101 @@ fn map_changed_fires_when_a_levels_extents_change() {
     b.read_at(path, 0x900, &mut buf).unwrap();
     assert_eq!(&buf[..], &third[0x900..0x940]);
 }
+
+/// Levels for the tests: `stem` to what [`Levels::image`] answers.
+struct FakeLevels(
+    Vec<(
+        String,
+        std::result::Result<Option<store_map::LevelImage>, String>,
+    )>,
+);
+impl store_map::Levels for FakeLevels {
+    fn image(&mut self, stem: &str) -> std::result::Result<Option<store_map::LevelImage>, String> {
+        self.0
+            .iter()
+            .find(|(s, _)| s.eq_ignore_ascii_case(stem))
+            .map_or(Ok(None), |(_, r)| r.clone())
+    }
+}
+
+fn shared(l: FakeLevels) -> Option<store_map::SharedLevels> {
+    Some(store_map::SharedLevels(std::sync::Arc::new(
+        std::sync::Mutex::new(l),
+    )))
+}
+
+/// An image of `bytes` under `dir`: one extent at `raw` (offset, length)
+/// naming the store's raw file of those bytes, the rest its skeleton.
+fn image(dir: &std::path::Path, id: &str, bytes: &[u8], raw: (u64, u64)) -> store_map::LevelImage {
+    use tags::repo::skeleton::{Extent, Extents, Skeleton};
+    let len = bytes.len() as u64;
+    let (o, l) = raw;
+    let end = o + l;
+    let mut skel = Skeleton {
+        len,
+        ranges: vec![(0, o), (end, len - end)],
+        bytes: Vec::new(),
+    };
+    skel.bytes.extend_from_slice(&bytes[..o as usize]);
+    skel.bytes.extend_from_slice(&bytes[end as usize..]);
+    let ext = Extents {
+        file: tags::repo::hex(&tags::repo::sha256(bytes)),
+        len,
+        extents: vec![Extent {
+            offset: o,
+            len: l,
+            hash: tags::repo::hex(&tags::repo::sha256(&bytes[o as usize..end as usize])),
+        }],
+    };
+    let img = store_map::LevelImage {
+        id: id.to_owned(),
+        skeleton: dir.join(format!("{id}.img")),
+        extents: dir.join(format!("{id}.extents")),
+    };
+    std::fs::write(&img.skeleton, skel.encode().unwrap()).unwrap();
+    std::fs::write(&img.extents, ext.to_text()).unwrap();
+    img
+}
+
+/// A level with layers is served from its image, whose extents read the
+/// store's raw files; one with none, or whose image cannot be made, is the
+/// store's own bytes.
+#[test]
+fn a_layered_level_is_served_from_its_image() {
+    let dir = TempDir::new();
+    let base = level(1, LEN);
+    store(&dir.0, "level", &base);
+    store(&dir.0, "other", &level(4, 0x1000));
+    // The image: the base with its header changed and a tail added; the
+    // raw resource at 0x4000 is the store's file.
+    let mut built = base.clone();
+    built[0x10..0x20].fill(0x5a);
+    built.extend_from_slice(&[0xa5; 0x123]);
+    let img = image(&dir.0, "feed", &built, (0x4000, 0x1801));
+    let levels = FakeLevels(vec![
+        ("level".into(), Ok(Some(img))),
+        ("other".into(), Err("an invented failure".into())),
+    ]);
+    let mut b = StoreMapBackend::new(disc(), &dir.0).with_levels(shared(levels));
+    let path = "maps\\level.map";
+    assert_eq!(b.stat(path).unwrap().end_of_file, built.len() as u64);
+    let mut whole = vec![0u8; built.len()];
+    assert_eq!(b.read_at(path, 0, &mut whole).unwrap(), built.len());
+    assert_eq!(whole, built);
+    assert_eq!(b.level_of("level"), Some("feed"));
+    let listed: Vec<(String, u64)> = b
+        .read_directory("maps")
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.name, e.metadata.end_of_file))
+        .collect();
+    assert!(
+        listed.contains(&("level.map".to_owned(), built.len() as u64)),
+        "{listed:?}"
+    );
+    // A level whose image could not be made: the store's bytes.
+    let mut other = vec![0u8; 0x1000];
+    assert_eq!(b.read_at("maps\\other.map", 0, &mut other).unwrap(), 0x1000);
+    assert_eq!(other, level(4, 0x1000));
+    assert_eq!(b.level_of("other"), None);
+}

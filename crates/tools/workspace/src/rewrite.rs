@@ -138,6 +138,9 @@ pub struct PackageRewrite {
     kits: BTreeSet<Kit>,
     inputs: KitInputs,
     fonts: Option<FontObserver>,
+    /// The maps come from the tag store with the set already laid over
+    /// them ([`crate::level::StoreLevels`]): no map is rebuilt here.
+    levels: bool,
 }
 
 impl PackageRewrite {
@@ -169,7 +172,16 @@ impl PackageRewrite {
             kits,
             inputs: KitInputs::default(),
             fonts: None,
+            levels: false,
         }
+    }
+
+    /// The maps are the tag store's level images, which hold the set's
+    /// items already ([`crate::level`]): the rewrite rebuilds none, and
+    /// still runs the kits and the observers on what the game is handed.
+    pub fn levels_from_store(mut self) -> Self {
+        self.levels = true;
+        self
     }
 
     /// The inputs the set's kits run on. A kit with none does nothing.
@@ -296,43 +308,7 @@ impl PackageRewrite {
         let map = Map::from_reader(Cursor::new(original)).map_err(|e| format!("not a map: {e}"))?;
         let scope = scope_of(map.header().cache_type);
         let target = Target { name: &name, scope };
-        let mut applied = Vec::new();
-        let mut held = Vec::new();
-        // A map a `map` item built holds the items it took.
-        let cut;
-        let packages = if self.built.contains(&name) {
-            cut = crate::maps::without_taken(&self.packages, &name);
-            &cut
-        } else {
-            &self.packages
-        };
-        for p in packages {
-            let items: Vec<_> = p
-                .package
-                .manifest
-                .items
-                .iter()
-                .filter(|i| changes_map(i) && target.takes(&i.maps))
-                .collect();
-            if items.is_empty() {
-                continue;
-            }
-            let adds: Vec<_> = items.iter().filter_map(|i| added_tag(i)).collect();
-            let holds = !adds.is_empty()
-                && adds.iter().all(|k| {
-                    map.tags().iter().any(|t| {
-                        t.group == k.group
-                            && t.name
-                                .as_deref()
-                                .is_some_and(|n| n.eq_ignore_ascii_case(&k.path))
-                    })
-                });
-            if holds {
-                held.push(p.package.name().to_owned());
-            } else {
-                applied.push(p.clone());
-            }
-        }
+        let (applied, held) = applied_to(&self.packages, &self.built, &target, &map);
         drop(map);
         let mut record = ServedMap {
             scope: scope.word().to_owned(),
@@ -395,8 +371,60 @@ impl PackageRewrite {
     }
 }
 
+/// The packages of `packages` (load order) with an item for `target`,
+/// whose base is `map`: (the ones to apply, the names of those the map
+/// already holds). A package whose added tags are all in the map already
+/// is held, not applied; a map a `map` item built holds the items it took
+/// (`built`, [`crate::without_taken`]). The game's rewrite and the level
+/// images ([`crate::level::assemble`]) choose the same way.
+pub(crate) fn applied_to<R: std::io::Read + std::io::Seek>(
+    packages: &[Loaded],
+    built: &HashSet<String>,
+    target: &Target<'_>,
+    map: &Map<R>,
+) -> (Vec<Loaded>, Vec<String>) {
+    let name = target.name.to_ascii_lowercase();
+    let cut;
+    let packages = if built.contains(&name) {
+        cut = crate::maps::without_taken(packages, &name);
+        &cut
+    } else {
+        packages
+    };
+    let mut applied = Vec::new();
+    let mut held = Vec::new();
+    for p in packages {
+        let items: Vec<_> = p
+            .package
+            .manifest
+            .items
+            .iter()
+            .filter(|i| changes_map(i) && target.takes(&i.maps))
+            .collect();
+        if items.is_empty() {
+            continue;
+        }
+        let adds: Vec<_> = items.iter().filter_map(|i| added_tag(i)).collect();
+        let holds = !adds.is_empty()
+            && adds.iter().all(|k| {
+                map.tags().iter().any(|t| {
+                    t.group == k.group
+                        && t.name
+                            .as_deref()
+                            .is_some_and(|n| n.eq_ignore_ascii_case(&k.path))
+                })
+            });
+        if holds {
+            held.push(p.package.name().to_owned());
+        } else {
+            applied.push(p.clone());
+        }
+    }
+    (applied, held)
+}
+
 /// Fold `now` into the map's record, keeping the counts.
-fn merge(served: &Served, name: &str, mut now: ServedMap) {
+pub(crate) fn merge(served: &Served, name: &str, mut now: ServedMap) {
     let mut all = lock(served);
     if let Some(was) = all.get(name) {
         now.hits += was.hits;
@@ -438,11 +466,15 @@ impl vfs::Rewrite for PackageRewrite {
             None
         };
         let input = carded.as_deref().unwrap_or(original);
-        let out = match self.rebuild(&stem, input) {
-            Ok(r) => r.map(|r| r.bytes).or(carded),
-            Err(e) => {
-                self.name_once(&stem, &e);
-                carded
+        let out = if self.levels {
+            carded
+        } else {
+            match self.rebuild(&stem, input) {
+                Ok(r) => r.map(|r| r.bytes).or(carded),
+                Err(e) => {
+                    self.name_once(&stem, &e);
+                    carded
+                }
             }
         };
         if let Some(f) = &self.observer {
@@ -465,16 +497,20 @@ impl vfs::Rewrite for PackageRewrite {
             cards.skipped(path);
         }
         if let Some(stem) = stem_of(path) {
-            let why = "it is larger than a rewrite reads";
-            merge(
-                &self.served,
-                &stem,
-                ServedMap {
-                    error: Some(why.into()),
-                    ..ServedMap::default()
-                },
-            );
-            self.name_once(&stem, why);
+            // A level image holds the set already; its record is the
+            // level's.
+            if !self.levels {
+                let why = "it is larger than a rewrite reads";
+                merge(
+                    &self.served,
+                    &stem,
+                    ServedMap {
+                        error: Some(why.into()),
+                        ..ServedMap::default()
+                    },
+                );
+                self.name_once(&stem, why);
+            }
             if let Some(f) = &self.observer {
                 f(&stem, None);
             }

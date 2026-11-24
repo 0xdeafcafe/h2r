@@ -15,14 +15,68 @@
 //! A map's extent table changing (an extraction while the game runs) is a
 //! changed map: [`Backend::map_changed`] says so, and the new table is
 //! served from the next open with no handle on the old one.
+//!
+//! A level with packages laid over it is served from its image
+//! ([`StoreMapBackend::with_levels`]): the caller's [`Levels`]
+//! (`workspace::level::StoreLevels`) names the image's skeleton and extent
+//! table, and the image is a [`StoreFile`] over the same `raw/`. A level
+//! with nothing over it is the store's skeleton: the disc's bytes. A level
+//! whose image cannot be made is served as the store has it, with a line.
 
 use std::{
     collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 pub use tags::repo::StoreFile;
+use tags::repo::skeleton::{Extents, Skeleton};
 pub use tags::repo::skeleton::{MapStatus, StoreStatus, status};
+
+/// A level's image (docs/engine/asset-store.md, "Runtime assembly"): a
+/// skeleton file and an extent table whose extents are raw files of the
+/// store.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LevelImage {
+    /// The level's `LevelId` (hex), for the log.
+    pub id: String,
+    /// The image's skeleton (`<LevelId>.img`).
+    pub skeleton: PathBuf,
+    /// Its extent table (`<LevelId>.extents`).
+    pub extents: PathBuf,
+}
+
+/// Gives the image of a store level with layers over it.
+pub trait Levels: Send {
+    /// The image for the store's map `stem`: `Ok(None)` when nothing is
+    /// laid over it, `Err` why it could not be assembled.
+    fn image(&mut self, stem: &str) -> std::result::Result<Option<LevelImage>, String>;
+}
+
+/// [`Levels`] as [`crate::Config::store_levels`] holds it.
+#[derive(Clone)]
+pub struct SharedLevels(pub Arc<Mutex<dyn Levels>>);
+
+impl std::fmt::Debug for SharedLevels {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SharedLevels")
+    }
+}
+
+/// Open an image's parts as a store file reading `raw_root`.
+fn open_image(
+    stem: &str,
+    img: &LevelImage,
+    raw_root: PathBuf,
+) -> std::result::Result<StoreFile, String> {
+    let skel = std::fs::read(&img.skeleton)
+        .map_err(|e| format!("{}: {e}", img.skeleton.display()))
+        .and_then(|b| Skeleton::decode(&b).map_err(|e| e.to_string()))?;
+    let ext = std::fs::read_to_string(&img.extents)
+        .map_err(|e| format!("{}: {e}", img.extents.display()))
+        .and_then(|t| Extents::parse(&t).map_err(|e| e.to_string()))?;
+    StoreFile::from_parts(stem, skel, ext, raw_root).map_err(|e| e.to_string())
+}
 
 use crate::{
     ATTR_DIRECTORY, ATTR_READONLY, Backend, BasicInfo, DirectoryEntry, Error, HostFile, Metadata,
@@ -44,6 +98,8 @@ struct Held {
     stem: Option<String>,
     /// SHA-256 of the extent table it was loaded from.
     table: Option<String>,
+    /// The `LevelId` of the image it is served from, when it is.
+    level: Option<String>,
     /// Handles open on it.
     opens: usize,
     /// The error was reported on stderr.
@@ -57,6 +113,8 @@ pub struct StoreMapBackend<B> {
     root: PathBuf,
     /// By lower-case map name (no extension).
     held: HashMap<String, Held>,
+    /// The images of levels with layers over them.
+    levels: Option<SharedLevels>,
 }
 
 /// The store's stem for `key` (lower case): the map whose extent table is
@@ -98,7 +156,45 @@ impl<B: Backend> StoreMapBackend<B> {
             inner,
             root,
             held: HashMap::new(),
+            levels: None,
         }
+    }
+
+    /// Serve a level with layers over it from the image `levels` gives.
+    pub fn with_levels(mut self, levels: Option<SharedLevels>) -> Self {
+        self.levels = levels;
+        self
+    }
+
+    /// The image of `stem`, if it has layers and the image opens; a level
+    /// whose image cannot be made is named on stderr and served as the
+    /// store has it.
+    fn level_file(&self, stem: &str) -> Option<(String, StoreFile)> {
+        let levels = self.levels.as_ref()?;
+        let got = levels
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .image(stem);
+        let why = match got {
+            Ok(None) => return None,
+            Ok(Some(img)) => match open_image(stem, &img, self.root.join("raw")) {
+                Ok(f) => {
+                    eprintln!(
+                        "store maps: maps\\{stem}.map from its level image {} ({} bytes: {} in the image, {} extents)",
+                        img.id,
+                        f.len(),
+                        f.skeleton_bytes(),
+                        f.extent_count()
+                    );
+                    return Some((img.id, f));
+                }
+                Err(e) => format!("its level image {} does not read: {e}", img.id),
+            },
+            Err(e) => e,
+        };
+        eprintln!("store maps: maps\\{stem}.map is served without its packages: {why}");
+        None
     }
 
     /// The store's root.
@@ -115,11 +211,22 @@ impl<B: Backend> StoreMapBackend<B> {
                 )),
                 stem: None,
                 table: None,
+                level: None,
                 opens: 0,
                 told: false,
             };
         };
         let table = StoreFile::table_hash(&self.root, &stem);
+        if let Some((id, f)) = self.level_file(&stem) {
+            return Held {
+                loaded: Loaded::File(Box::new(f)),
+                stem: Some(stem),
+                table,
+                level: Some(id),
+                opens: 0,
+                told: false,
+            };
+        }
         let loaded = match StoreFile::open(&self.root, &stem) {
             Ok(f) => {
                 eprintln!(
@@ -136,6 +243,7 @@ impl<B: Backend> StoreMapBackend<B> {
             loaded,
             stem: Some(stem),
             table,
+            level: None,
             opens: 0,
             told: false,
         }
@@ -178,13 +286,33 @@ impl<B: Backend> StoreMapBackend<B> {
         e
     }
 
-    /// Lengths of every map the store holds, by file name (`<stem>.map`).
+    /// Lengths of every map the store holds, by file name (`<stem>.map`):
+    /// a map already served from its level image has the image's.
     fn listed(&self) -> Vec<(String, u64)> {
         status(&self.root)
             .maps
             .into_iter()
-            .map(|m| (format!("{}.map", m.map), m.len))
+            .map(|m| {
+                let len = match self.held.get(&m.map.to_ascii_lowercase()) {
+                    Some(Held {
+                        loaded: Loaded::File(f),
+                        ..
+                    }) => f.len(),
+                    _ => m.len,
+                };
+                (format!("{}.map", m.map), len)
+            })
             .collect()
+    }
+
+    /// The `LevelId` of the image `maps\<name>.map` is served from, once it
+    /// has been opened; `None` for a level the store serves as it has it.
+    pub fn level_of(&self, name: &str) -> Option<&str> {
+        let key = name
+            .strip_suffix(".map")
+            .unwrap_or(name)
+            .to_ascii_lowercase();
+        self.held.get(&key)?.level.as_deref()
     }
 }
 

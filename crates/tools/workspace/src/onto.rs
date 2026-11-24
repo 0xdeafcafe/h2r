@@ -4,7 +4,7 @@
 use std::io::Cursor;
 
 use content::package::MapScope;
-use map::build::TagSet;
+use map::build::{BuildLayout, TagSet};
 use map::{CacheType, Map};
 
 use crate::build::{Loaded, Report, Shading, Target, Unpin, build_with, wants_shading};
@@ -37,6 +37,28 @@ pub fn build_map(
     packages: &[Loaded],
     target: &Target<'_>,
 ) -> Result<(Vec<u8>, Report), String> {
+    build_map_laid_out(base, packages, target).map(|b| (b.bytes, b.report))
+}
+
+/// A map [`build_map_laid_out`] built, with where things went in it.
+#[derive(Debug)]
+pub struct BuiltMap {
+    pub bytes: Vec<u8>,
+    pub report: Report,
+    /// The builder's layout of the file.
+    pub layout: BuildLayout,
+    /// Each raw resource the build placed, as (file offset, length).
+    pub raw: Vec<(u64, u64)>,
+}
+
+/// [`build_map`], keeping the layout: the level images
+/// ([`crate::level`]) name the raw resources a build placed by where they
+/// went.
+pub fn build_map_laid_out(
+    base: &[u8],
+    packages: &[Loaded],
+    target: &Target<'_>,
+) -> Result<BuiltMap, String> {
     let mut map = Map::from_reader(Cursor::new(base)).map_err(|e| format!("not a map: {e}"))?;
     let unpin = MapUnpin::new(&mut map);
     let mut set = TagSet::from_map(&mut map).map_err(|e| format!("decomposing the map: {e}"))?;
@@ -59,6 +81,17 @@ pub fn build_map(
                 Err(why) => format!("{e} (the map's reader: {why})"),
             },
         )?;
-    let (bytes, _) = set.build().map_err(|e| format!("building the map: {e}"))?;
-    Ok((bytes, report))
+    let (bytes, layout) = set.build().map_err(|e| format!("building the map: {e}"))?;
+    let raw = layout
+        .raw
+        .iter()
+        .zip(&set.raw)
+        .map(|(&at, r)| (u64::from(at), r.bytes.len() as u64))
+        .collect();
+    Ok(BuiltMap {
+        bytes,
+        report,
+        layout,
+        raw,
+    })
 }

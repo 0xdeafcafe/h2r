@@ -1,4 +1,7 @@
 //! `MapId`: which map exactly, as a hash of what it is made from.
+//! `LevelId`: which assembled level exactly, as a hash of the assets and
+//! packages it is assembled from (docs/engine/asset-store.md, "Identity on
+//! the network and in films").
 use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -7,6 +10,7 @@ use crate::{
     Manifest, Sha256,
     hash::{BadHex, parse_hex32, write_hex},
     manifest::FORGE_FORMAT,
+    package::PackageId,
 };
 
 /// The SHA-256 of a manifest's identity in canonical JSON (RFC 8785).
@@ -128,6 +132,97 @@ impl Serialize for MapId {
     }
 }
 impl<'de> Deserialize<'de> for MapId {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+/// The format of [`LevelId`]'s identity: `"format"` in the JSON it hashes.
+pub const LEVEL_FORMAT: u32 = 1;
+
+/// What a level is assembled from: the identity [`LevelId`] hashes
+/// (docs/engine/asset-store.md, "Identity on the network and in films").
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LevelInputs {
+    /// The builders' version (`workspace::BUILDERS_VERSION`).
+    pub builders: u32,
+    /// The level's name (the store's map stem); lowercased in the identity.
+    pub level: String,
+    /// The SHA-256 of the map file the level's skeleton and extents give
+    /// back (the disc's file); `None` for a level built whole.
+    pub skeleton: Option<Sha256>,
+    /// Assets as (key, asset hash): the key as `<group>:<path>`. Sorted by
+    /// key in the identity, whatever their order here.
+    pub assets: Vec<(String, Sha256)>,
+    /// The packages laid over the level, in load order.
+    pub packages: Vec<PackageId>,
+}
+
+/// The SHA-256 of a level's [`LevelInputs`] in canonical JSON (RFC 8785):
+///
+/// ```json
+/// {"assets":[["<group>:<path>","<hex>"],...],"builders":7,"format":1,
+///  "level":"<name>","packages":["<hex>",...],"skeleton":"<hex>"}
+/// ```
+///
+/// with `skeleton` `null` for a level with none. Two levels with the same
+/// id are assembled from the same inputs by the same builders, so they hold
+/// the same image bytes. A level with nothing over it has one too; its file
+/// is the disc's, named by its retail [`MapId`].
+///
+/// Displays, parses and serialises as 64 lowercase hex digits.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct LevelId(pub [u8; 32]);
+
+impl LevelId {
+    /// The identity of `inputs`.
+    pub fn of(inputs: &LevelInputs) -> Self {
+        Self(Sha256::of(Self::canonical(inputs).as_bytes()).0)
+    }
+
+    /// The canonical JSON that [`LevelId::of`] hashes.
+    pub fn canonical(inputs: &LevelInputs) -> String {
+        let mut assets: Vec<(&str, String)> = inputs
+            .assets
+            .iter()
+            .map(|(k, h)| (k.as_str(), h.to_string()))
+            .collect();
+        assets.sort();
+        let value = serde_json::json!({
+            "assets": assets,
+            "builders": inputs.builders,
+            "format": LEVEL_FORMAT,
+            "level": inputs.level.to_ascii_lowercase(),
+            "packages": inputs.packages.iter().map(|p| p.to_string()).collect::<Vec<_>>(),
+            "skeleton": inputs.skeleton.map(|s| s.to_string()),
+        });
+        crate::canonical::canonicalize(&value).expect("identity holds no floats")
+    }
+}
+
+impl FromStr for LevelId {
+    type Err = BadHex;
+    fn from_str(s: &str) -> Result<Self, BadHex> {
+        parse_hex32(s).map(Self).ok_or_else(|| BadHex(s.to_owned()))
+    }
+}
+impl fmt::Display for LevelId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_hex(f, &self.0)
+    }
+}
+impl fmt::Debug for LevelId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "LevelId({self})")
+    }
+}
+impl Serialize for LevelId {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+impl<'de> Deserialize<'de> for LevelId {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = String::deserialize(d)?;
         s.parse().map_err(serde::de::Error::custom)
@@ -356,5 +451,92 @@ mod tests {
         assert_eq!(serde_json::from_str::<MapId>(&json).unwrap(), id);
         assert!(serde_json::from_str::<MapId>("\"00\"").is_err());
         assert_eq!(format!("{id:?}"), format!("MapId({s})"));
+    }
+
+    #[test]
+    fn level_id_golden_vectors() {
+        // Synthetic hashes only. If these change, every LevelId does.
+        let retail = LevelInputs {
+            builders: 7,
+            level: "Tiny".into(),
+            skeleton: Some(h(0x11)),
+            ..Default::default()
+        };
+        assert_eq!(
+            LevelId::canonical(&retail),
+            r#"{"assets":[],"builders":7,"format":1,"level":"tiny","packages":[],"skeleton":"1111111111111111111111111111111111111111111111111111111111111111"}"#
+        );
+        assert_eq!(
+            LevelId::of(&retail).to_string(),
+            "1f910bb4f1a952db3097ab1806ae1423ca46bcb556ea588a2130345cb8b76bd1"
+        );
+        let layered = LevelInputs {
+            builders: 7,
+            level: "tiny".into(),
+            skeleton: Some(h(0x11)),
+            // Out of order: the identity sorts them by key.
+            assets: vec![
+                ("jpt!:invented\\dmg\\c".into(), h(0x22)),
+                ("bitm:invented\\pic".into(), h(0x33)),
+            ],
+            packages: vec![PackageId([0x44; 32]), PackageId([0x55; 32])],
+        };
+        assert_eq!(
+            LevelId::of(&layered).to_string(),
+            "d1beae54142a827611b3f5d0c532ca30899c41ff27daa66c7a2a3c507994442e"
+        );
+        let whole = LevelInputs {
+            builders: 7,
+            level: "stage".into(),
+            skeleton: None,
+            assets: Vec::new(),
+            packages: vec![PackageId([0x44; 32])],
+        };
+        assert_eq!(
+            LevelId::canonical(&whole),
+            r#"{"assets":[],"builders":7,"format":1,"level":"stage","packages":["4444444444444444444444444444444444444444444444444444444444444444"],"skeleton":null}"#
+        );
+        assert_eq!(
+            LevelId::of(&whole).to_string(),
+            "7aa55e8c6d105391e2924db0a313b4e189bd48b75fafdc1a39ac680464fa7884"
+        );
+    }
+
+    #[test]
+    fn every_input_moves_the_level_id() {
+        let base = LevelInputs {
+            builders: 7,
+            level: "tiny".into(),
+            skeleton: Some(h(0x11)),
+            assets: vec![("jpt!:a".into(), h(0x22))],
+            packages: vec![PackageId([0x44; 32]), PackageId([0x55; 32])],
+        };
+        let id = LevelId::of(&base);
+        let mut v = Vec::new();
+        let mut m = base.clone();
+        m.builders = 8;
+        v.push(m);
+        let mut m = base.clone();
+        m.level = "other".into();
+        v.push(m);
+        let mut m = base.clone();
+        m.skeleton = None;
+        v.push(m);
+        let mut m = base.clone();
+        m.assets[0].1 = h(0x23);
+        v.push(m);
+        let mut m = base.clone();
+        m.packages.swap(0, 1);
+        v.push(m);
+        let mut m = base.clone();
+        m.packages.pop();
+        v.push(m);
+        for m in v {
+            assert_ne!(LevelId::of(&m), id, "{}", LevelId::canonical(&m));
+        }
+        let s = id.to_string();
+        assert_eq!(s.parse::<LevelId>().unwrap(), id);
+        assert_eq!(serde_json::to_string(&id).unwrap(), format!("\"{s}\""));
+        assert_eq!(format!("{id:?}"), format!("LevelId({s})"));
     }
 }

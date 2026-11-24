@@ -571,6 +571,7 @@ fn run_configured(
             &opts.data_root,
             &|name| switches.feature(name, true),
             workspace::KitInputs::default(),
+            None,
         )
     };
     // The maps those packages build (`map` and `map-patch` items) are written
@@ -664,8 +665,13 @@ fn run_configured(
                 cards,
                 icons: font_icons,
             },
+            cfg.store_maps.as_deref(),
         )
     };
+    // With `store-maps`, a level the set lays items over is served from its
+    // image under <data>/store/images (docs/engine/asset-store.md,
+    // "Runtime assembly").
+    cfg.store_levels = content_packages.levels.clone();
     let rewrites = content_packages.rewrite;
     let mounted = map_override::mount_for_agent(
         cfg.clone(),

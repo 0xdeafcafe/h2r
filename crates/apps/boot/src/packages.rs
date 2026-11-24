@@ -6,7 +6,11 @@
 //!
 //! The per-map items reach the game through one `vfs::Rewrite`,
 //! `workspace::PackageRewrite`, cached under `<data>/packages/cache/`;
-//! `packages.list` on the agent lists the set and each map read.
+//! `packages.list` on the agent lists the set and each map read. With the
+//! maps served from the tag store (`store-maps`), they reach it as level
+//! images instead (`workspace::level::StoreLevels`, under
+//! `<data>/store/images/`; docs/engine/asset-store.md, "Runtime assembly"),
+//! and the rewrite rebuilds no map.
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -43,16 +47,22 @@ pub struct Packages {
     pub served: Served,
     /// `None` when no package on has an item.
     pub rewrite: Option<PackageRewrite>,
+    /// The level images, when the maps are served from the tag store
+    /// (`vfs::Config::store_levels`).
+    pub levels: Option<vfs::store_map::SharedLevels>,
 }
 
 /// Read the set: baked, then `<data_root>/packages/`, `feature_on` saying
 /// which game features are on. `kits` is what the set's `kit` items run on:
-/// the campaigns' level pictures and the button icon sets. Every problem is
-/// a line on stderr.
+/// the campaigns' level pictures and the button icon sets. `store` is the
+/// tag store the maps are served from (`store-maps`), if they are: the
+/// set's map items then reach the game as level images. Every problem is a
+/// line on stderr.
 pub fn at_boot(
     data_root: &Path,
     feature_on: &dyn Fn(&str) -> bool,
     kits: KitInputs,
+    store: Option<&Path>,
 ) -> Packages {
     let (baked, mut problems) = workspace::baked(baked::BAKED);
     let mut set = GameSet::read(baked, data_root, feature_on);
@@ -65,8 +75,13 @@ pub fn at_boot(
     // read them from what the game is handed, for the loadout.
     // The superbounce world labels' HUD font is read from the fonts as the
     // game is handed them, after the `glyphs` kit.
-    let rewrite = PackageRewrite::new(set.loaded())
-        .with_cache(data_root)
+    let mut rewrite = PackageRewrite::new(set.loaded());
+    if store.is_some() {
+        rewrite = rewrite.levels_from_store();
+    } else {
+        rewrite = rewrite.with_cache(data_root);
+    }
+    let rewrite = rewrite
         .with_kits(kits)
         .observing_fonts(game::superbounce_font::Capture::keep)
         .observed(|stem, bytes| match bytes {
@@ -74,6 +89,15 @@ pub fn at_boot(
             None => pogo_kit::served::clear(stem),
         });
     let served = rewrite.served();
+    let levels = store.map(|root| {
+        workspace::level::StoreLevels::new(
+            root.to_path_buf(),
+            workspace::level::images_dir(data_root),
+            set.loaded(),
+            served.clone(),
+        )
+        .shared()
+    });
     let rewrite = (!rewrite.is_empty()).then_some(rewrite);
     // The built-in list entries are the `variant` items of the packages
     // that are on: a package off takes its entries out of the game's list.
@@ -85,6 +109,7 @@ pub fn at_boot(
         set,
         served,
         rewrite,
+        levels,
     }
 }
 
