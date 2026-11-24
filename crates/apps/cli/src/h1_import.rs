@@ -19,7 +19,9 @@
 //! what is missing, and an interrupted import resumes.
 //!
 //! `h2 play`, `h2 run`, `h2 serve` and `h2 play --follow` run it before
-//! booting when `halo1.iso` is next to the Halo 2 disc ([`auto_import`]).
+//! booting when `halo1.iso` is next to the Halo 2 disc: the `halo1`
+//! package's `convert` item, through [`package::Halo1`] and
+//! `crate::package_prepare`.
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -1012,7 +1014,7 @@ pub fn import(r: &Request, say: &mut dyn FnMut(String)) -> Result<Summary> {
 }
 
 // ---------------------------------------------------------------------------
-// Automatic import before the game starts.
+// Automatic import before the game starts (`package::Halo1`).
 
 /// Whether the automatic import runs: not with `--no-halo1`, and not with
 /// `H2_HALO1` set to `0`, `false`, `no` or `off`.
@@ -1067,57 +1069,8 @@ pub fn discover(game_disc: &Path) -> Option<PathBuf> {
         .find(|p| is_halo1(p))
 }
 
-/// Before the game starts: finds the Halo 1 disc beside `game_disc` and
-/// imports what is missing or stale into `data`, a line per map. Never
-/// fails: a problem is a warning and the game starts anyway.
-pub fn auto_import(game_disc: &Path, data: &Path) {
-    let r = catch_unwind(AssertUnwindSafe(|| try_auto(game_disc, data)))
-        .unwrap_or_else(|p| Err(anyhow!("panicked: {}", panic_text(&p))));
-    if let Err(e) = r {
-        eprintln!("halo1: not imported: {e:#}");
-    }
-}
-
-fn try_auto(game_disc: &Path, data: &Path) -> Result<()> {
-    let Some(h1) = discover(game_disc) else {
-        return Ok(());
-    };
-    // The bases come from the Halo 2 disc image; a bare default.xbe has
-    // none.
-    let is_iso = File::open(game_disc)
-        .ok()
-        .is_some_and(|f| Xiso::open(BufReader::new(f)).is_ok());
-    if !is_iso {
-        bail!(
-            "{} is not a disc image, and the conversion needs the Halo 2 disc's maps",
-            game_disc.display()
-        );
-    }
-    let name = h1
-        .file_name()
-        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-    let mut say = |s: String| eprintln!("halo1: {s}");
-    let sum = import(
-        &Request {
-            h1_iso: &h1,
-            h2_disc: game_disc,
-            data,
-            force: false,
-            dry_run: false,
-        },
-        &mut say,
-    )?;
-    if sum.converted == 0 && sum.failed == 0 {
-        println!("halo1: up to date ({} maps from {name})", sum.skipped);
-    } else {
-        println!(
-            "halo1: {} maps converted, {} failed, {} already there (from {name}); \
-             Campaign -> Halo: Combat Evolved, and h1_* maps in the multiplayer list",
-            sum.converted, sum.failed, sum.skipped
-        );
-    }
-    Ok(())
-}
+#[path = "h1_import_package.rs"]
+pub mod package;
 
 #[cfg(test)]
 #[path = "h1_import_tests.rs"]

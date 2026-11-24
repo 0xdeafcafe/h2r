@@ -2,10 +2,20 @@
 format = 1
 id = "halo1"
 name = "Halo 1"
-description = "Our campaigns' level pictures in the level select."
+description = "Halo: Combat Evolved's campaign and multiplayer maps, converted from your own disc, and our campaigns' level pictures in the level select."
 
 [credit]
 authors = ["Alexander Forbes-Reed"]
+
+# The Halo 1 import (h2 import halo1) as a recipe: which maps, which
+# sandboxes. The bytes come from the Halo 1 disc beside the game disc when
+# `h2 package prepare` (or h2 play, run or serve) runs, and the maps stay
+# under the data root. With no disc and nothing converted before, the
+# package is off and says why.
+
+[[item]]
+kind = "convert"
+source = "convert/halo1.convert.toml"
 
 # Each converted level's picture, found under the data root's campaigns
 # folder, added to mainmenu as a new bitmap shaped like retail's

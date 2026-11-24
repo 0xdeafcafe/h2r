@@ -739,11 +739,10 @@ pub(crate) fn run_with_theater(
         },
         gamepads: config.gamepads,
     };
-    // Before the level is resolved, so `--level a30` finds a level this
-    // converts.
-    if crate::h1_import::auto_enabled(no_halo1) {
-        crate::h1_import::auto_import(&disc, &data);
-    }
+    // The packages' convert items (the Map Pack and Halo 1 discs beside
+    // the game disc), before the level is resolved so `--level a30` finds
+    // a level this converts.
+    crate::package_prepare::before_boot(&disc, &data, no_halo1, no_mappack);
     // Before the build and the window, so a bad name stops here with the
     // disc's list.
     let level = match level_choice(
@@ -778,9 +777,6 @@ pub(crate) fn run_with_theater(
         full_speed_module: boot::tier::clang_dylib(&out),
         restart: restart_in_place(),
     });
-    if crate::mappack_cmd::auto_enabled(no_mappack) {
-        crate::mappack_cmd::auto_install(&disc, &data);
-    }
     let opts = boot::RunOpts {
         disc,
         data_root: data,

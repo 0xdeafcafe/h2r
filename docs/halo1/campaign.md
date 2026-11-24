@@ -891,19 +891,28 @@ bound is `0xc24000`; the base alone is `0xaed000`.
    the ten levels, the 13 multiplayer maps in two sandboxes, and then each
    level's Halo 2-assets variant (§5), `halo1: [37/46] campaign a10 (Halo 2
    assets): done`. Timing: [notes/campaign.md](notes/campaign.md). Later
-   starts print `halo1: up to date (46 maps from halo1.iso)` and go
-   straight on.
+   starts convert nothing and go straight on.
 3. Sign in, **Campaign**, then **Halo: Combat Evolved**, the picker's first row (Halo 2 is second):
    the ten levels, a10 to d40, as far as the profile has got. Halo 1's
    multiplayer maps are `h1_<map>` in the multiplayer map list (Custom
    Game, Xbox Live), named as in Halo 1 (docs/halo1/multiplayer.md
    "Importing"). `--level a30` starts a converted level directly.
 
-`--no-halo1` or `H2_HALO1=0` (also `false`, `no`, `off`) skips the check.
-A failure never stops the game: a map that fails is a line,
-`halo1: [5/36] campaign b40: failed: <why>`, and the others are still
-there; a problem before any map (an unreadable disc, a bare `default.xbe`
-as the game disc) is `halo1: not imported: <why>`.
+The start runs the `halo1` package's `convert` item
+(`content/halo1/convert/halo1.convert.toml`, whose settings pick the
+campaign, the Halo 2-assets variants, the multiplayer maps and the
+sandboxes) through `h1_import::package::Halo1`; `h2 package prepare`
+runs it alone ([studio-redesign.md](../editor/studio-redesign.md),
+"Conversions"). The package's stamp,
+`<data>/packages/stamps/halo1.toml`, sits beside the import stamp below,
+and both are written after every map. `--no-halo1` or `H2_HALO1=0` (also
+`false`, `no`, `off`) skips it. A failure never stops the game: a map
+that fails is a line, `halo1: [5/36] campaign b40: failed: <why>`, and
+the others are still there; a problem before any map (an unreadable
+disc) is `halo1: not imported: <why>`. With no Halo 1 disc, or a bare
+`default.xbe` as the game disc, and nothing converted before, the
+`halo1` package is off, and `packages.list` and `h2 package prepare` say
+why.
 
 By hand, the same import: `cargo h2 import halo1 [disc/halo1.iso]
 [--data DIR] [--disc disc/halo2.iso] [--force] [--dry-run]

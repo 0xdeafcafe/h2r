@@ -54,6 +54,9 @@ anyhow.workspace = true
 dhat = "0.3.3"
 sha2 = { workspace = true, optional = true }
 boot = { path = "../boot", default-features = false }
+# `h2 package prepare`: the convert items of the game's packages, run with
+# the Halo 1 and Map Pack converters (docs/editor/studio-redesign.md).
+workspace = { path = "../../tools/workspace" }
 # The headless host only places bundled Firefight kits; the desktop build's
 # `h2 host bundle` builds them (`host-data/firefight`).
 host-data = { path = "../../live/host-data", default-features = false }

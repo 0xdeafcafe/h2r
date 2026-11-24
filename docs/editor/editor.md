@@ -926,7 +926,8 @@ H2_AGENT=<cache>/h2recomp/editor-<pid>-<n>.sock H2_MAP_DIR=$TMPDIR/h2-editor-pla
   Before stopping its running game, the editor resolves the launch level
   with the same `level_boot::resolve_in` as `h2 play`. For a Map Pack map
   this is still the Halo 2 disc: `h2 play` installs the map pack itself from
-  `mappack.iso` beside that disc (`mappack_cmd::auto_install`) and the
+  `mappack.iso` beside that disc (the `map-pack` package's `convert` item,
+  `package_prepare::before_boot`) and the
   editor's copy plays through the override. When the open pack is
   elsewhere, the editor logs that `h2 play` will not install it (it does
   not run `h2 import-mappack` itself).

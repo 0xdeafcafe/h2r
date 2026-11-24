@@ -34,7 +34,7 @@ An `impl.` name is an implementation switch
 | `H2_STEAM_KEYBOARD=0` | on Linux under Steam, keeps Steam's on-screen keyboard closed when the game's virtual keyboard gains focus after controller input ([host-keyboard.md](../input/host-keyboard.md#steams-on-screen-keyboard)) |
 | `H2_LEVEL`, `H2_DIFFICULTY` | boot straight into a level ([level-boot.md](level-boot.md)) |
 | `H2_MAP_DIR` | Startup directory for disc map overrides. The first lookup, including a directory listing, selects the source for each map. A paired editor can request a separate play copy. [Map overrides](storage.md#map-overrides) |
-| `H2_MAPPACK=0`, `H2_HALO1=0` | Skip automatic import of the adjacent Map Pack or Halo 1 disc ([map pack](../game/map-pack.md), [Halo 1](../halo1/campaign.md)). |
+| `H2_MAPPACK=0`, `H2_HALO1=0` | Leave the `map-pack` or `halo1` converter out of the prepare before boot and of `h2 package prepare`, so the adjacent Map Pack or Halo 1 disc is not imported ([map pack](../game/map-pack.md), [Halo 1](../halo1/campaign.md), [conversions](../editor/studio-redesign.md)). |
 | `H2_MAPPACK_ISO`, `H2_MAPPACK_DATA` | Editor Map Pack ISO override and installed Map Pack test-data root (`crates/tools/editor-core/src/mappack.rs`, `crates/apps/studio/src/app/map_pack_tests.rs`). |
 | `H2_IMPORT_JOBS` | Parallel jobs for Halo 1 import (`crates/apps/cli/src/h1_import.rs`). |
 | `H2_CLOUD_SAVES=0` | Keep saves on this machine during Live play (`crates/apps/cli/src/play_cloud.rs`). |

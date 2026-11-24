@@ -160,7 +160,16 @@ If one is found and isn't installed yet, it runs the same import as
 import) and prints one line, such as
 `map pack: installed 9 maps and title update from mappack.iso`. When this
 disc's version has no update on the map pack, only the maps are installed
-and the line says so. Otherwise it prints `map pack: already installed`.
+and the line says so. Otherwise it prints nothing.
+
+This is the `map-pack` package's `convert` item
+(`content/map-pack/convert/map-pack.convert.toml`), run by
+`mappack_cmd::package::MapPack` before boot; `h2 package prepare` runs it
+alone ([studio-redesign.md](../editor/studio-redesign.md),
+"Conversions"). The disc installs as one unit, stamped in
+`<data>/packages/stamps/map-pack.toml` as well as `mappack.stamp`. With
+no Map Pack disc and nothing installed before, the `map-pack` package is
+off, and `packages.list` and `h2 package prepare` say why.
 
 "Installed" means `<data>/mappack.stamp` records the import's format
 version, the ISO's size, its modification time and the base disc's
@@ -174,7 +183,7 @@ map with our own `patch.lvl`; it removes disc-shaped packages from an
 older format, whose `patch.lvl` would take over the Lockout slot (8.5).
 
 It never stops the game from starting: a problem is printed as
-`map pack: not installed: <why>` and the game runs on. `--no-mappack` or
+`packages: map-pack item 0 maps: <why>` and the game runs on. `--no-mappack` or
 `H2_MAPPACK=0` (also `false`, `no`, `off`) skips the check.
 
 `h2 play --follow` runs `h2 play` as a child with the same disc path and

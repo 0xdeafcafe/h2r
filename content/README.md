@@ -18,3 +18,8 @@ matchmaking scripts (`rules` items) and the default hopper's playlists
 (`playlist`, `playlists/default.toml`). The `.rules` files are also what
 `rules::builtin` compiles in, so editing one changes the constants and the
 package together.
+
+`halo1` and `map-pack` hold recipes (`convert` items), not maps: the
+converters read the user's own Halo 1 and Map Pack discs at prepare time
+and write under the data root (`h2 package prepare`;
+docs/editor/studio-redesign.md, "Conversions").

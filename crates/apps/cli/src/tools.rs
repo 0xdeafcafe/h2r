@@ -45,13 +45,15 @@ const INSTALL: &str = "install it with `cargo install --locked --path crates/app
      `cargo build --release -p cli -p h2-tools`";
 
 /// Whether `h2 <cmd> <rest>` runs in `h2-tools`. `h2 maps install` runs
-/// the game's own installer and `h2 forge looks` reads the disc the way
-/// Live's art extractor does, so both stay in `h2`.
+/// the game's own installer, `h2 forge looks` reads the disc the way
+/// Live's art extractor does and `h2 package prepare` runs the Halo 1 and
+/// Map Pack converters, so those stay in `h2`.
 pub fn forwards(cmd: &str, rest: &[String]) -> bool {
     let first = rest.first().map(String::as_str);
     match cmd {
         "maps" if first == Some("install") => false,
         "forge" if first == Some("looks") => false,
+        "package" if first == Some("prepare") => false,
         _ => TOOLS.contains(&cmd),
     }
 }
@@ -202,6 +204,7 @@ mod tests {
         for (cmd, rest) in [
             ("maps", "install"),
             ("forge", "looks --json"),
+            ("package", "prepare --force"),
             ("play", ""),
             ("serve", ""),
             ("build", ""),
