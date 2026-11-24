@@ -25,6 +25,7 @@ mod point;
 mod preflight;
 mod sources;
 mod topology;
+pub mod vector_parity;
 pub use flood::{cluster_flood, object_spatial_visit};
 pub use mopp_box::mopp_box;
 pub use point::{location, point_to_leaf};
@@ -250,30 +251,10 @@ fn plan_context(
 }
 
 fn commit(c: &mut CpuAbi, g: &mut impl Memory, plan: Plan) -> Result<TransferAbi, GuestFault> {
-    use layout::record as r;
-    let at = |offset: u32| plan.record.wrapping_add(offset);
     let o = &plan.outcome;
-    if let Some(fraction) = plan.init {
-        g.set_u32(at(r::FRACTION), fraction)?;
-        g.set_u32(at(r::COUNT), 0)?;
-    }
-    let (count, writes) = o.list_writes(plan.listed);
-    for (offset, leaf) in writes {
-        g.set_u32(at(offset), leaf)?;
-    }
-    if count != plan.listed {
-        g.set_u32(at(r::COUNT), count)?;
-    }
-    if let Some(h) = o.hit {
-        g.set_u32(at(r::FRACTION), h.fraction)?;
-        g.set_u32(at(r::PLANE), h.plane_addr)?;
-        g.set_u32(at(r::LEAF), h.leaf)?;
-        g.set_u32(at(r::SURFACE), h.surface)?;
-        g.set_u32(at(r::SURFACE_PLANE), h.plane)?;
-        g.set_u8(at(r::FLAGS), h.flags)?;
-        g.set_u8(at(r::BREAKABLE), h.breakable)?;
-        g.set_u16(at(r::MATERIAL), h.material)?;
-    }
+    o.write_record(plan.init, plan.listed, |offset, bytes| {
+        g.write_bytes(plan.record.wrapping_add(offset), bytes, 1)
+    })?;
     if let Some(context) = plan.context {
         use layout::context as ctx;
         g.set_u32(context.wrapping_add(ctx::PREV_LEAF), o.prev_leaf)?;

@@ -459,6 +459,9 @@ fn install_collision(b: &mut Builder) {
                 if o.addr == point.base {
                     let world = &engine::sim_collision::WORLD;
                     world.observe_environment(entry, o.cpu.mxcsr, o.cpu.x87.control);
+                    if entry == Entry::VectorTest {
+                        engine::sim_collision::vector_parity::begin(o.thread_id, o.cpu, &mut *o.guest(), world);
+                    }
                     if entry == Entry::MoppRay {
                         engine::sim_collision::mopp_ray::begin(o.cpu, &mut *o.guest(), world);
                     }
@@ -466,6 +469,12 @@ fn install_collision(b: &mut Builder) {
             })
             .optional();
     }
+    let vector = &points::COLLISION_VECTOR_TEST;
+    b.raw().observe_after(vector, "collision-vector-end", move |o| {
+        if o.addr == vector.base {
+            engine::sim_collision::vector_parity::end(o.thread_id, o.cpu, &*o.guest(), &engine::sim_collision::WORLD);
+        }
+    }).optional();
     let ray = &points::COLLISION_MOPP_RAY;
     b.raw()
         .observe_after(ray, "collision-ray-end", move |o| {
@@ -737,8 +746,8 @@ mod tests {
             let chain = &plan.chains[&point.base];
             assert_eq!(chain.addr, entry.addr());
             assert!(chain.implement.is_none());
-            // Only the ray observes its return, through the shadow.
-            assert_eq!(chain.shadow.is_some(), entry == Entry::MoppRay);
+            // The two parity arms observe their returns through the shadow.
+            assert_eq!(chain.shadow.is_some(), matches!(entry, Entry::VectorTest | Entry::MoppRay));
             assert_eq!(chain.observe_before.len(), 1);
             assert!(chain.observe_before[0].optional);
         }

@@ -3,7 +3,7 @@
 The native collision world answers point and location queries (A/B)
 and the MOPP box query (F). The vector queries and instance trace (C–E),
 the cluster flood (G) and the object spatial visit (H) run lifted with
-entry FP observers. The general MOPP ray (I) runs lifted with a parity
+entry FP observers. C also snapshots the caller’s result record, applies the segment kernel’s stores to that copy, and compares AL and every record byte after the lifted return. The guest answer stands. The general MOPP ray (I) runs lifted with a parity
 arm: the native walk follows each query and is counted against it. The
 differential harness also exercises the C/D, G and H kernels. The entry adapters live in
 `crates/rewrites/engine/src/sim_collision`, the kernels in

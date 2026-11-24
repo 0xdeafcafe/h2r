@@ -5486,7 +5486,7 @@ bail reasons are in [collision-queries.md](../engine/collision-queries.md).
 
 | Method | Access | Params and result |
 |---|---|---|
-| `collision.stats` | read | No parameters. Returns `switch`, `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `mopps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, `precision` (aggregate single, reserved, double and extended x87 calls at C and D), and `ray` (I's parity arm, below). |
+| `collision.stats` | read | No parameters. Returns `switch`, `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `mopps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, `precision` (aggregate single, reserved, double and extended x87 calls at C and D), `vector` (C’s result parity), and `ray` (I’s parity arm, below). |
 
 Each row in `entries` gives the `name` and eight-digit guest `addr`, the
 count of `native` answers, and `bails` by reason. Two frequency maps count
@@ -5506,6 +5506,10 @@ capacity. `budget_bytes` limits that total to 8 MiB per loaded map.
 `cluster_budget_reads` counts lookups that need the live cluster word
 because the packed table would exceed the budget. Sample before and after
 a scenario and subtract the counters to isolate that run.
+
+`vector` counts entry C’s `matched` and `mismatched` returns and
+`unverified` queries by bail reason. `first_mismatch` identifies AL or the
+first differing byte offset in the result record, with expected and guest values.
 
 `ray` counts the MOPP ray queries the native walk followed while the
 guest answered them: `matched` (every interpreter call, and every key
