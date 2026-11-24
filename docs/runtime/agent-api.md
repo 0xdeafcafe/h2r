@@ -2033,7 +2033,9 @@ h2 agent render.parity '{"arm": true}'
   `scene_refused_writes`, `scene_layers`, `scene_layer_items`,
   `scene_layer_remainder`, `scene_layers_unread` (layer draws whose list
   did not read), `scene_decorator_draws`, `scene_decorator_instances`,
-  `scene_decorator_remainder`, and the decorator stage's
+  `scene_decorator_remainder`, and the decorator placement source by view
+  (`scene_decorator_placements_equal`, `_differ`, `_no_windows`, `_unread`,
+  `_nonresident`, `_virtual_shader`). The decorator stage reports
   `scene_decorator_views`, `scene_decorator_views_native`,
   `scene_decorator_items_skipped`, `scene_decorator_draws_unready`,
   `scene_decorator_draws_state` and `scene_decorator_views_declined`

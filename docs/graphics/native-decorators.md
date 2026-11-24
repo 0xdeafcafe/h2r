@@ -17,10 +17,10 @@ same reads, in the same order.
 
 ## How it works
 
-1. **The list** (`0x00041640`, Code). Per visible cluster (count
+1. **The list** (`0x00041640`, Code). Per visible decorator grid cell (count
    `[0x00509438]`, records of `0x10` bytes at `0x004c5700`, the origin at
-   `+4`), each placement of the cluster (BSP decorator block
-   `[[0x004e0348] + 0x238]`: clusters at `+0x24`, `0x18` bytes, a run of
+   `+4`), each placement of the cell (BSP decorator block
+   `[[0x004e0348] + 0x238]`: cells at `+0x24`, `0x18` bytes, a run of
    placements at `+0x14` and `+0x12`) that passes the culling is added to
    list 0 by `0x00040e30`. The build and draw come from the decorator
    class's type (class `+4`): type 0, models, build `0x0004de20` and draw
@@ -91,6 +91,27 @@ same reads, in the same order.
    guest's order. A placement whose memory does not read, or whose
    geometry is not resident (block info `+0x1e` clear), is the view's
    `decorator_remainder`.
+   For a game view whose reference portal windows pass R4, the extractor
+   builds the model list from the BSP. The grid walk (`0x0003f830`,
+   `0x0003f970`) intersects the main view bounds with the camera's draw
+   distance box, visits the eight children in storage order, and tests
+   each leaf against the view's six planes. It compares the resulting
+   cell indices and origin bits with the guest's visible cell table.
+   Each cell's model groups supply the set, class, permutation, shader,
+   sphere and BSP cluster. A group must meet a window of its BSP cluster
+   and its permutation's distance limit. The permutation supplies the
+   LOD packed into the argument. The shader template supplies the
+   projected-size detail level and layer mask.
+
+   Before using the Rust list, the extractor compares its model items
+   in append order with the layer's live model items, including duplicates,
+   shader, argument, mask, pass, detail level and draw callback. On equality
+   the Rust keys drive the draw and instance reads, with the matching guest
+   slots retained for masking. A difference or unavailable input keeps the
+   view on item extraction. Both guest producers still run for comparison
+   and cache requests. See `layout/decorators/cells.rs` and
+   `layout/decorators/placements.rs`.
+
 6. **The plan** (`native_render::decorators::plan`). The draws whose
    material (set, shader, the two item bytes, layer) the stage has; each
    run of consecutive instances with the same material, `c[53]` and index
@@ -193,6 +214,9 @@ same reads, in the same order.
   the guest because skipping them would change a render state the device
   holds) and `scene_decorator_views_declined` (views the
   host left to the D3D path) ([agent-api.md](../runtime/agent-api.md)).
+- `scene_decorator_placements_equal` and `_differ` count view comparisons.
+  `_no_windows`, `_unread`, `_nonresident` and `_virtual_shader` count
+  fallbacks before the list comparison.
 - The load prints one line (`native-decorators: … layer-3 passes load;
   on the D3D path: …`), and each reason a material stays on the D3D path
   is printed once.

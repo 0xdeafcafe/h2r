@@ -7,7 +7,6 @@ use crate::layout::skip::MAX_ITEMS;
 use crate::visibility::frusta::WindowFrusta;
 
 const ENABLED: u32 = 0x004b_a025;
-pub(super) const VISIBLE_COUNT: u32 = 0x0050_9438;
 const RADIUS_SCALE: u32 = 0x0045_e4d0;
 const LOD_DISTANCES: u32 = 0x0052_5980;
 // The projected size argument of the decorator shader selection call.
@@ -16,8 +15,9 @@ const SIZE_SCALE: u32 = 0x0048_5b28;
 const SIZE_OVERRIDE: u32 = 0x004b_a019;
 const OVERRIDE_SCALE: u32 = 0x0045_dc0c;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ModelItem {
+    pub origin: [f32; 3],
     pub shader: u32,
     pub argument: u32,
     pub variant: u8,
@@ -34,24 +34,6 @@ impl ModelItem {
             && mem.read_u32(item + 0x10) == Some(self.mask)
             && mem.read_u32(item + 0x14).map(|w| w & 0xffff) == Some(flags)
     }
-}
-
-// Read an index into a counted BSP or tag block before following its pointer.
-fn record(
-    mem: &dyn GuestRead,
-    owner: u32,
-    count_at: u32,
-    index: u32,
-    stride: u32,
-) -> Result<u32, Refusal> {
-    let count = word(mem, owner, count_at)? as i32;
-    if count < 0 || index >= count as u32 {
-        return Err(Refusal::Unread);
-    }
-    let base = word(mem, owner, count_at + 4)?;
-    base.checked_add(index.checked_mul(stride).ok_or(Refusal::Unread)?)
-        .filter(|p| base != 0 && p.checked_add(stride).is_some())
-        .ok_or(Refusal::Unread)
 }
 
 // 0x0001bf50 takes the first threshold the projected size reaches,
@@ -98,8 +80,7 @@ pub(crate) fn model_items(
     if byte(mem, ENABLED, 0)? == 0 {
         return Ok(items);
     }
-    let cells = word(mem, VISIBLE_COUNT, 0)?;
-    if cells > 256 || layer >= 32 {
+    if layer >= 32 {
         return Err(Refusal::Unread);
     }
     let bsp = word(mem, ACTIVE_BSP, 0)?;
@@ -107,9 +88,12 @@ pub(crate) fn model_items(
     let scenario = word(mem, SCENARIO, 0)?;
     let mut visited = 0;
     let mut levels = std::collections::HashMap::new();
-    for slot in 0..cells {
-        let visible = VISIBLE_CLUSTERS + 0x10 * slot;
-        let cell = record(mem, block, 0x20, word(mem, visible, 0)?, 0x18)?;
+    for (slot, visible) in cells::matched(mem, block, camera, k)?
+        .into_iter()
+        .enumerate()
+    {
+        let slot = slot as u32;
+        let cell = block_record(mem, block, 0x20, visible.index, 0x18)?;
         let count = half(mem, cell, 0x12)? as i16;
         if count <= 0 {
             continue;
@@ -123,10 +107,9 @@ pub(crate) fn model_items(
             .checked_add(count as u32)
             .filter(|end| *end <= 1 << 22)
             .ok_or(Refusal::Unread)?;
-        let [x, y, z] = [4, 8, 12].map(|offset| float(mem, visible, offset));
-        let origin = [x?, y?, z?].map(|v| v - k.origin_bias);
+        let origin = visible.origin.map(|v| v - k.origin_bias);
         for index in first..end {
-            let group = record(mem, block, BLOCK_PLACEMENTS - 4, index, PLACEMENT_SIZE)?;
+            let group = block_record(mem, block, BLOCK_PLACEMENTS - 4, index, PLACEMENT_SIZE)?;
             let palette = byte(mem, group, 0)? as i8;
             if palette < 0
                 || i32::from(palette) >= word(mem, scenario, SCENARIO_PALETTE - 4)? as i32
@@ -134,7 +117,7 @@ pub(crate) fn model_items(
             {
                 continue;
             }
-            let entry = record(mem, scenario, SCENARIO_PALETTE - 4, palette as u32, 8)?;
+            let entry = block_record(mem, scenario, SCENARIO_PALETTE - 4, palette as u32, 8)?;
             let set = word(mem, entry, 4)?;
             if set == u32::MAX {
                 continue;
@@ -144,7 +127,7 @@ pub(crate) fn model_items(
             if class as i32 >= word(mem, def, SET_CLASSES - 4)? as i32 {
                 continue;
             }
-            let class = record(mem, def, SET_CLASSES - 4, class, CLASS_SIZE)?;
+            let class = block_record(mem, def, SET_CLASSES - 4, class, CLASS_SIZE)?;
             if byte(mem, class, 4)? != 0 {
                 continue;
             }
@@ -152,12 +135,12 @@ pub(crate) fn model_items(
             if perm as i32 >= word(mem, class, CLASS_PERMUTATIONS - 4)? as i32 {
                 continue;
             }
-            let perm = record(mem, class, CLASS_PERMUTATIONS - 4, perm, PERMUTATION_SIZE)?;
+            let perm = block_record(mem, class, CLASS_PERMUTATIONS - 4, perm, PERMUTATION_SIZE)?;
             let shader = u32::from(byte(mem, perm, 4)?);
             if shader as i32 >= word(mem, def, 0)? as i32 {
                 continue;
             }
-            let shader = word(mem, record(mem, def, 0, shader, 8)?, 4)?;
+            let shader = word(mem, block_record(mem, def, 0, shader, 8)?, 4)?;
             if shader == u32::MAX {
                 continue;
             }
@@ -175,7 +158,7 @@ pub(crate) fn model_items(
             if !in_range(camera, centre, radius, float(mem, LOD_DISTANCES, 4 * lod)?) {
                 continue;
             }
-            let info = record(
+            let info = block_record(
                 mem,
                 block,
                 BLOCK_GEOMETRY - 4,
@@ -193,6 +176,7 @@ pub(crate) fn model_items(
             };
             if mask & (1 << layer) != 0 {
                 items.push(ModelItem {
+                    origin,
                     shader,
                     argument: lod << 30 | index << 8 | slot,
                     variant,

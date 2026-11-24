@@ -53,6 +53,7 @@ impl PlacementSource {
 impl From<Refusal> for PlacementSource {
     fn from(reason: Refusal) -> Self {
         match reason {
+            Refusal::GridMismatch => Self::Different,
             Refusal::Unread => Self::Unread,
             Refusal::NotResident => Self::NotResident,
             Refusal::Virtual => Self::VirtualShader,
@@ -147,7 +148,7 @@ pub fn extract_with_windows(
     let source = match selected {
         Ok(entries) => {
             for (key, slot) in entries {
-                publish(builder, &mut out, read_placement(mem, &k, slot, layer, key.shader, key.argument, key.pass, key.variant))?;
+                publish(builder, &mut out, read_placement(mem, &k, slot, layer, key.shader, key.argument, key.pass, key.variant, Some(key.origin)))?;
             }
             PlacementSource::Rust
         }
@@ -396,13 +397,33 @@ mod tests {
         let shader_refs = 0x0068_1000;
         m.w(0x004b_a024, 1 << 8);
         m.w(0x0050_9438, 2);
-        m.w(VISIBLE_CLUSTERS, 0);
-        m.w(VISIBLE_CLUSTERS + 0x10, 1);
-        m.w(BLOCK + 0x20, 2);
+        m.w(VISIBLE_CLUSTERS, 1);
+        m.w(VISIBLE_CLUSTERS + 0x10, 2);
+        for (axis, centre) in [101.0, 201.0, 300.0].into_iter().enumerate() {
+            m.f(BLOCK + 4 * axis as u32, centre);
+        }
+        for (axis, pos) in [100.5, 200.5, 299.5].into_iter().enumerate() {
+            m.f(VISIBLE_CLUSTERS + 4 + 4 * axis as u32, pos);
+        }
+        m.w(BLOCK + 0xc, 2);
+        m.w(BLOCK + 0x20, 3);
         m.w(BLOCK + 0x24, cells);
-        m.w(cells + 0x10, 0);
-        m.w(cells + 0x18 + 0x10, 1 << 16);
-        m.w(cells + 0x18 + 0x14, 2);
+        m.w(cells, 2 << 16 | 1);
+        for off in [4, 8, 12] { m.w(cells + off, u32::MAX); }
+        m.w(cells + 0x18 + 0x10, 0);
+        m.w(cells + 2 * 0x18 + 0x10, 1 << 16);
+        m.w(cells + 2 * 0x18 + 0x14, 2);
+        let frustum = 0x0068_2000;
+        m.w(engine::render_loop::occlusion::guest::MAIN_VIS, frustum);
+        for (i, v) in [-500.0, 500.0, -500.0, 500.0, -500.0, 500.0].into_iter().enumerate() {
+            m.f(frustum + 0xf4 + i as u32 * 4, v);
+        }
+        for i in 0..24 { m.f(frustum + 0x10c + i * 4, 0.0); }
+        m.f(0x0052_5930, 500.0);
+        m.f(0x0052_5924, 0.5);
+        m.f(0x0045_dbdc, 0.0001);
+        m.f(0x0045_ddfc, -0.0001);
+        m.f(0x0043_f9d0, 2.0);
         m.w(BLOCK + BLOCK_PLACEMENTS - 4, 3);
         m.w(BLOCK + BLOCK_GEOMETRY - 4, 1);
         m.w(SCENARIO_DATA + SCENARIO_PALETTE - 4, 2);
@@ -455,6 +476,32 @@ mod tests {
             let (out, source) = extract_with_windows(&m, 3, Some(&windows), &mut b).unwrap().unwrap();
             assert_eq!((source, out.draws), (PlacementSource::Different, 1));
         }
+    }
+
+    #[test]
+    fn the_cell_walk_preserves_order_and_origin_bits_and_rejects_a_touching_clip_plane() {
+        let mut m = Mem::default();
+        camera_record(&mut m, RENDER_CAMERA);
+        world(&mut m);
+        let windows = placement_inputs(&mut m);
+        let source = |m: &Mem| {
+            let mut b = SceneBuilder::default();
+            view(&mut b, m);
+            extract_with_windows(m, 3, Some(&windows), &mut b).unwrap().unwrap().1
+        };
+        m.w(VISIBLE_CLUSTERS, 2);
+        assert_eq!(source(&m), PlacementSource::Different, "the first slot addresses another leaf");
+        m.w(VISIBLE_CLUSTERS, 1);
+        m.w(VISIBLE_CLUSTERS + 4, 100.5f32.to_bits() + 1);
+        assert_eq!(source(&m), PlacementSource::Different, "one bit of the first origin differs");
+        // X distance to the plane is exactly the leaf extent times the
+        // plane scale. Both leaves are rejected; there are no model items.
+        let plane = 0x0068_2000 + 0x10c;
+        m.f(plane, 1.0);
+        m.f(plane + 12, 99.5);
+        m.w(0x0050_9438, 0);
+        m.w(LIST + 4, 1);
+        assert_eq!(source(&m), PlacementSource::Rust);
     }
 
     #[test]
