@@ -31,7 +31,7 @@ pub struct Builder {
     pub check: fn(&Job<'_>) -> Result<(), Failure>,
 }
 
-static REGISTRY: [Builder; 10] = [
+static REGISTRY: [Builder; 12] = [
     Builder {
         kind: Kind::Tag,
         name: "tag",
@@ -92,6 +92,18 @@ static REGISTRY: [Builder; 10] = [
         apply: crate::screens::apply_edits,
         check: crate::screens::check_edits,
     },
+    Builder {
+        kind: Kind::Rules,
+        name: "rules",
+        apply: crate::firefight_sets::apply,
+        check: crate::firefight_sets::check,
+    },
+    Builder {
+        kind: Kind::Kit,
+        name: "kit",
+        apply: crate::kits::apply,
+        check: crate::kits::check,
+    },
 ];
 
 /// Every builder this build has. The other kinds of "Contents" are named
@@ -107,14 +119,15 @@ pub fn builder(kind: Kind) -> Option<&'static Builder> {
 }
 
 /// Whether `item` changes the map it is built on. A `hud` or `data` item
-/// does not, nor does a `sound` item with no `tag`: the game compiles a
+/// does not, nor does a `rules` item (the game reads the script) or a `kit`
+/// item (the game runs it on its files, [`crate::kits`]), nor does a `sound` item with no `tag`: the game compiles a
 /// HUD's records at install and plays or reads the others from the package,
 /// so a package of nothing else leaves every map as it was and the rewrite
 /// serves none of them anew. A `sound` item with a `tag` writes a `snd!`
 /// and rows of the map's gestalt.
 pub fn changes_map(item: &Item) -> bool {
     match item.kind {
-        Kind::Hud | Kind::Data => false,
+        Kind::Hud | Kind::Data | Kind::Rules | Kind::Kit => false,
         Kind::Sound => item.tag.as_deref().is_some_and(|t| !t.is_empty()),
         _ => true,
     }

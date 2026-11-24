@@ -2208,9 +2208,9 @@ used. Labels are drawn in the disc's HUD font (font 6) with its button
 glyphs, in sentence case, numbers in whole metres. No letter shape is
 ours.
 
-**The font.** `superbounce_font::Capture`, chained after the font
-rewrites in the boot runner's VFS (`crates/apps/boot/src/lib.rs`),
-serves every file unchanged and keeps `font_table.txt` and the file on
+**The font.** `superbounce_font::Capture::keep`, called by
+`PackageRewrite::observing_fonts` after the `glyphs` kit
+(`crates/apps/boot/src/packages.rs`), keeps `font_table.txt` and the file on
 its line 6, counted from 0, as the game reads them: the HUD's font, with
 the icon sets' and bot mark's glyphs in it. The first frame that draws
 packs its printable ASCII and button glyphs (U+E100 to U+E111) into a

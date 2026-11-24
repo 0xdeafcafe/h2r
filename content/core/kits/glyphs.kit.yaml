@@ -1,0 +1,4 @@
+# The glyphs kit has no settings. The game adds the gear, the marks, the
+# arrows, the rings and the medals to every font it reads
+# (crates/extensions/game/src/bot_mark.rs).
+{}

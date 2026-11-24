@@ -78,15 +78,24 @@ impl Recipes for ScenarioRecipes {
             }
             Builder::FirefightProbe => {
                 let bytes = source.read_base().map_err(|e| e.to_string())?;
-                let saved = firefight_kit::build_package(
+                // The ground is a build step (docs/game/game-types-without-carriers.md,
+                // "Maps for scripted games"): the kit's own, no labels placed.
+                let recipe = firefight_kit::ground::Recipe::new(firefight_kit::Mode::Probe);
+                let saved = firefight_kit::ground::build(
                     &bytes,
                     &r.base,
-                    firefight_kit::Mode::Probe,
-                    &firefight_kit::Config::default(),
-                    &content::store::maps_dir(data_root),
-                    &r.package_dir(),
-                    replace,
+                    &firefight_kit::ground::Labels::default(),
+                    &recipe,
                 )
+                .and_then(|ground| {
+                    ground.install(
+                        &bytes,
+                        &r.base,
+                        &content::store::maps_dir(data_root),
+                        &r.package_dir(),
+                        replace,
+                    )
+                })
                 .map_err(|e| format!("{e:#}"))?;
                 Ok(Built {
                     map_id: saved.id.to_string(),

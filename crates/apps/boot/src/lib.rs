@@ -608,34 +608,34 @@ fn run_configured(
         campaign_cards::CardRewrite::new(cards, s.cards.clone())
             .map(|r| r.with_cache(&opts.data_root))
     });
-    // Every font gets the bot mark's gear (docs/game/bots.md, "Clanker appearance and Live player options"), after
-    // the icon sets.
-    #[cfg(feature = "desktop-runtime")]
-    let fonts = vfs::Chain(
-        icons.as_ref().map(|i| i.font_rewrite()),
-        bot_mark::GearRewrite,
-    );
-    #[cfg(not(feature = "desktop-runtime"))]
-    let fonts = bot_mark::GearRewrite;
-    // The superbounce world labels keep the HUD font as the game reads it,
-    // after the font rewrites (docs/game/superbounce.md, "Crouch spots in
-    // the world").
-    // The game's content packages: their per-map items through one rewrite,
-    // after the others, cached under <data>/packages/cache
+    // The game's content packages: their per-map items and kits through the
+    // one rewrite, cached under <data>/packages/cache
     // (docs/editor/studio-redesign.md, "How the game consumes packages").
     // The pogo stick is the `pogo` package (content/pogo), on while the
-    // `pogo` feature is.
+    // `pogo` feature is. The `campaign-cards` kit (content/halo1) adds our
+    // campaigns' level pictures to mainmenu and the `glyphs` kit (content/core)
+    // puts the button icon sets, then the bot mark's gear and the HUD's
+    // marks, in every font (docs/game/bots.md, "Clanker appearance and Live
+    // player options"); the superbounce world labels' font is read from
+    // them as served (docs/game/superbounce.md, "Crouch spots in the world").
+    #[cfg(feature = "desktop-runtime")]
+    let font_icons: Option<Box<dyn vfs::Rewrite>> = icons
+        .as_ref()
+        .map(|i| Box::new(i.font_rewrite()) as Box<dyn vfs::Rewrite>);
+    #[cfg(not(feature = "desktop-runtime"))]
+    let font_icons: Option<Box<dyn vfs::Rewrite>> = None;
     let content_packages = {
         let switches = features.switches();
-        packages::at_boot(&opts.data_root, &|name| switches.feature(name, true))
+        packages::at_boot(
+            &opts.data_root,
+            &|name| switches.feature(name, true),
+            workspace::KitInputs {
+                cards,
+                icons: font_icons,
+            },
+        )
     };
-    let rewrites = Some(vfs::Chain(
-        vfs::Chain(
-            vfs::Chain(fonts, cards),
-            content_packages.rewrite,
-        ),
-        superbounce_font::Capture,
-    ));
+    let rewrites = content_packages.rewrite;
     let mounted = map_override::mount_for_agent(
         cfg.clone(),
         &opts.disc,
