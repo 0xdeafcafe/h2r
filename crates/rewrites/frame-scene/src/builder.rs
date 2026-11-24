@@ -211,6 +211,7 @@ impl SceneBuilder {
             water: None,
             post: None,
         });
+        scene.cluster_gathers.push(None);
         self.open = Some(scene.views.len() - 1);
         Ok(scene.views.last().expect("just pushed"))
     }
@@ -247,6 +248,13 @@ impl SceneBuilder {
         scene.clusters.truncate(start as usize);
         scene.clusters.extend(clusters);
         scene.views[open].clusters = start..scene.clusters.len() as u32;
+        Ok(())
+    }
+
+    /// Record the main gather before the layer filters its cluster list.
+    pub fn set_cluster_gather(&mut self, gather: crate::scene::ClusterGather) -> Result<(), BuildError> {
+        let (scene, open) = self.open_mut()?;
+        scene.cluster_gathers[open] = Some(gather);
         Ok(())
     }
 

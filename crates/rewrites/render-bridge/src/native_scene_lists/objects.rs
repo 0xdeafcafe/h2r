@@ -817,6 +817,35 @@ mod tests {
     }
 
     #[test]
+    fn portal_gather_uses_the_wide_views_side_and_bottom_planes() {
+        // +X forward, +Z up, 4:3 viewport. Place one sphere in each strip
+        // exposed by widening the horizontal lens from 70 to 110 degrees.
+        let clusters = 0x1000;
+        let frustum = clusters + 0x1974;
+        let mut m = FlatMemory::new(clusters, 0x2000);
+        m.set_u16(clusters, 1).unwrap();
+        m.set_u16(clusters + 0xa70, 1).unwrap();
+        for i in 0..3 {
+            m.set_f32(frustum + 0x60 + i * 8, -100.).unwrap();
+            m.set_f32(frustum + 0x64 + i * 8, 100.).unwrap();
+        }
+        for (degrees, inside) in [(70f32, false), (110., true)] {
+            let h = (degrees.to_radians() * 0.5).tan();
+            let v = h * 0.75;
+            for (i, normal) in [[-h, 1., 0.], [-h, -1., 0.], [-v, 0., 1.], [-v, 0., -1.]].iter().enumerate() {
+                let length = (normal[0] * normal[0] + 1.).sqrt();
+                for (axis, component) in normal.iter().enumerate() {
+                    m.set_f32(frustum + 0x78 + i as u32 * 16 + axis as u32 * 4, component / length).unwrap();
+                }
+            }
+            for centre in [[10., 11., 0.], [10., -11., 0.], [10., 0., -8.]] {
+                let visible = Clip::Portals.admits(&m, clusters, 0, Sphere { centre, radius: 0.1 }, false).unwrap();
+                assert_eq!(visible != 0, inside, "{degrees} degree view at {centre:?}");
+            }
+        }
+    }
+
+    #[test]
     fn portals_reject_outside_and_keep_intersections() {
         let mut m = FlatMemory::new(0x1000, 0x200);
         for i in 0..3 {

@@ -136,7 +136,7 @@ pub struct HeldDraw {
     /// them (`None` for a clear, or a frame-wide reason).
     pub draw: Option<u32>,
     pub pass: Option<u32>,
-    /// The draw among the presented surface's (the recorded ones).
+    /// The draw among the replay's retained draws, including shared-depth passes.
     pub recorded: Option<usize>,
     /// The frame's recorded draws, those before the overlay, and the first
     /// overlay draw in the guest frame.

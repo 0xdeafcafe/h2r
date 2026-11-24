@@ -1467,6 +1467,14 @@ The object-shadow list, row gather and caster each count calls to their own
 entry ([native-light-gather.md](../graphics/native-light-gather.md), L7).
 Each source is `null` where that piece is not running.
 
+`interp.shared_depth_ops` counts auxiliary-colour draws and clears retained
+at guest Swap for later depth/stencil tests on the displayed target.
+`interp.shared_depth_blended_frames` counts guest frames successfully
+presented with those operations in a blended image. A rising first count
+and a flat second count means the renderer sees the dependency while
+holding those frames. In a `render.frame` capture the corresponding passes
+have different colour targets and the same depth attachment.
+
 `display_frame` gives the identity, lighting and backend counter deltas
 when the worker's latest presentation used the native graph. An
 original presentation clears it. The frame recorder can stay unarmed
@@ -1918,6 +1926,15 @@ h2 agent render.parity '{"arm": true}'
   positions through, `view` has the view's verified projection block
   and viewport, and `unknown` covers the other draws. The map is
   empty for other view kinds or without a retained matching scene.
+  For a game view, `visibility_clusters` counts the guest visibility list
+  and `structure_clusters` counts the subsequent BSP structure list. Both
+  fields are absent if extraction cannot read the main gather at layer 3.
+  A zero is a successfully read empty list. With `{"dump":true}`, the scene
+  file has the ordered BSP cluster IDs in `cluster_gathers[i].visible` and
+  `.structure` for `views[i]`. Its `mode` is 0 for a portal flood, 1 for
+  a sphere and 2 for all clusters. The view's `clusters` range selects the
+  layer-3 IDs from the top-level `clusters` array. `views[i].camera` gives
+  the vertical FOV in radians, guest projection terms and viewport.
   The top-level `counters` include
   (`scenes_sealed`, `scenes_unsealed`, `scene_views`, `scene_no_camera`,
   `scene_refused_writes`, `scene_layers`, `scene_layer_items`,
