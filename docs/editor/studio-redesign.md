@@ -1,6 +1,6 @@
 # Studio, redesigned: one tag tree, packages, and the animation and sound editors
 
-Status: Design. Nothing on this page is built except what "What exists" names; the slices at the end are the order to build it in.
+Status: Design. Nothing on this page is built except what "What exists" names and the slices marked built; the slices at the end are the order to build it in.
 Code: `crates/apps/studio/src` (the shell, `ui.rs`, `ui/layout.rs`, `app.rs`), `crates/apps/studio-proto/src` (the API's wire), `crates/formats/content/src/package/` (manifest, id, set), `crates/tools/workspace` (new: builders and the build), `crates/apps/boot/src/packages.rs` (new: the game's side). Tests: each slice names its own.
 Switch: none.
 
@@ -29,6 +29,7 @@ before its slice starts.
 |---|---|---|
 | The window: tool tabs (Map, Variants, Playlists, UI, HUD), a dock layout per tool, Go to anything, the game link bar | built | `ui/bar.rs`, `ui/layout.rs`, `ui/palette.rs`, `app::ToolKind` |
 | One command layer for the window and the API | built | `App::dispatch`, `App::perform` (`app.rs`), `api/mod.rs` |
+| Document tabs: a tab per open document, each with its own undo stack; a tag's editor from its group; `shell.tabs`, `shell.open`, `shell.focus`, `shell.close` (SH1) | built | `app/shell.rs`, `ui/doc_tabs.rs`, `api/shell.rs`, `TagDoc::undo_tag` |
 | The kind registry: which editor and preview a tag group gets | built | `app/kinds.rs`, `tag.kinds` |
 | The field panel and its row model | built | `fields.rs`, `fields/row.rs` |
 | Pairing, the live mirror, `pair.preview`, `pair.audio` | built | `play/`, `api/preview.rs`, `api/pair.rs` |
@@ -779,7 +780,7 @@ Rows are in build order.
 
 | # | Slice | Size | Needs | Accepted when |
 |---|---|---|---|---|
-| SH1 | **Document tabs and editors by kind**: `ToolKind` goes; a document id per open tag; the editor from `app::kinds::KINDS`; panels that follow the front document; `shell.tabs`, `shell.open`, `shell.focus`, `shell.close`; one layout | M | nothing | each kind's editor draws at 1000 by 420 with no stray child window (`every_panel_scrolls_as_a_whole_on_a_short_window`); two documents have two undo stacks; the Timeline shows for an invented sound and not for an invented weapon; the window's clicks and `shell.*` leave the same state |
+| SH1 | **Document tabs and editors by kind** (built: tabs, own undo, editor by group, `shell.*`; `ToolKind` still stands): `ToolKind` goes; a document id per open tag; the editor from `app::kinds::KINDS`; panels that follow the front document; `shell.tabs`, `shell.open`, `shell.focus`, `shell.close`; one layout | M | nothing | each kind's editor draws at 1000 by 420 with no stray child window (`every_panel_scrolls_as_a_whole_on_a_short_window`); two documents have two undo stacks; the Timeline shows for an invented sound and not for an invented weapon; the window's clicks and `shell.*` leave the same state |
 | W3 | **First start and the tree in Studio** (tag-workspace; it needs W1 only here) | M | nothing | as there |
 | PK1 | **Manifest and set** (built): `content::package::{Manifest, PackageId, Lock, Set}`, validation, the canonical id, `requires`, `after`, `set.toml`, the order | M | nothing | golden ids on invented hashes; unknown keys, a cycle and a missing `requires` are refused by name; display fields and credit do not move the id; the order is stable |
 | PK2 | **Builders and the build**: `crates/tools/workspace` with the registry, `Layered`, `build` on a `TagSet`, conflicts, the cache key, the `tag`, `edits` and `bitmap` builders, `h2 package check` and `build` | M | PK1 | on an invented map: two packages build in order; the same tag path twice stops naming both; a stale `was` stops with its line; `onto` output differs from its base only in changed tags |

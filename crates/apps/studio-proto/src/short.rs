@@ -26,6 +26,9 @@ pub const FORMS: &[(&str, &str)] = &[
     ("save-as <path> [doc]", "doc.save_as (map, playlists)"),
     ("diff [doc]", "doc.diff: what a save would write"),
     ("undo [doc] | redo [doc]", "doc.undo, doc.redo"),
+    ("tabs", "shell.tabs: the document tabs and the one in front"),
+    ("focus <doc>", "shell.focus: bring a tab to the front"),
+    ("close <doc>", "shell.close: close a tab"),
     ("tags [group] [name]", "tag.list"),
     ("tag <id|name>", "tag.read"),
     ("refs <id|name>", "tag.refs: the tags it references"),
@@ -156,6 +159,15 @@ pub fn parse_call(words: &[String]) -> Result<(String, Value), String> {
         "diff" => (m::DOC_DIFF, doc(a)),
         "undo" => (m::DOC_UNDO, doc(a)),
         "redo" => (m::DOC_REDO, doc(a)),
+        "tabs" => (m::SHELL_TABS, Value::Null),
+        "focus" => (
+            m::SHELL_FOCUS,
+            json!({ "doc": a.ok_or("focus needs a tab id (tabs lists them)")? }),
+        ),
+        "close" => (
+            m::SHELL_CLOSE,
+            json!({ "doc": a.ok_or("close needs a tab id (tabs lists them)")? }),
+        ),
         "tags" => {
             let mut p = json!({});
             if let Some(g) = a {

@@ -112,13 +112,18 @@ Scene, viewport, inspector, Log and status bar.*
   selection, and Esc to close. The result list is as tall as its rows, up
   to seven.
 - **The bar** (under the menu, `ui/bar.rs`), visible in every tool. Left:
-  the tools as tabs, Map, Variants, Playlists, UI and HUD. Middle: the
-  document name; a `*` marks unsaved edits. Right: the game link. Its
+  the tools as tabs, Map, Variants, Playlists, UI and HUD. Middle: a tab
+  per open document (`ui/doc_tabs.rs`, `app/shell.rs`): the map, the
+  variant, the playlist file, the screen, the HUD map and each tag opened
+  (a double-click in the Tags tree, or `shell.open`), each with its close
+  button and its own undo stack; a `*` marks unsaved edits, and tabs that
+  do not fit are under **More** ([agent-api.md](agent-api.md#document-tabs)).
+  Right: the game link. Its
   pill shows the pairing and whether tag and placement edits can reach
   the game.
   The controls beside it provide Play or Stop, Pause or Resume, Step and
   the Edit switch as they become available. The link's width is measured
-  first, and the document name is clipped to what the tabs and the link
+  first, and the document tabs take what the tool tabs and the link
   leave.
 - **Left dock**: Map has a full-height column with **Scene**, **Tags**
   and **Maps** tabs above the bottom dock. Other tools have their own

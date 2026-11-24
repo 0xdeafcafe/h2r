@@ -127,7 +127,43 @@ map: its widget edits, with their own undo stack and save), `scripts`
 (the Scripts tool's view of the open map: read only, never dirty;
 `doc.save` and `doc.save_as` refuse it). Without one, a `doc.*` call means the tool shown.
 `doc.list` says, for each, whether it is open, its name, dirty, and
-whether it can undo and redo.
+whether it can undo and redo. An open tag tab (below) is a document too:
+its id is a `doc`, and `doc.list` lists it after the tools' documents.
+
+### Document tabs
+
+Every open document is a tab in the bar (`app/shell.rs`,
+`ui/doc_tabs.rs`). A tool's document (`map`, `variant`, `playlists`,
+`ui`, `hud`) gets its tab when its tool opens it and loses it when the
+tool closes it. A tag of the open map gets a tab from `shell.open` or a
+double-click in the Tags tree; its id is its `group:path`, as `tag.*`
+takes it, and its editor is the one its group's row of the kind registry
+names (`tag.kinds`): bitmaps open in the Textures tool, the scenario tag
+is the map's own tab, the rest open in the Tags tool's field panel. A
+tag tab belongs to the map it was opened on and closes with it.
+
+Each tab has its own undo stack. A tag's is its tag's steps of the map's
+tag document (`TagDoc::undo_tag`): two tag tabs undo and redo their own
+edits in any order, and a new edit drops its own tag's redo and keeps
+the others'. An undo is `REFUSED` while a later edit of another tag
+writes the same bytes, or both added strings; that one is undone first.
+Undo and Redo in the window take the front tab's stack while the Tags
+tool shows its tag, else the tool's. Closing a tag tab keeps its edits:
+they are the map's, saved or dropped with it.
+
+| Method | Does |
+|---|---|
+| `shell.tabs` | the tabs in order and the `front` one; per tab its `doc` id, `kind`, `title`, the `tool` it shows in, `dirty`, `can_undo`, `can_redo`, and for a tag its `editor`, `id`, `group` and `map` |
+| `shell.open {tag?, map?, discard?}` | opens a tag of the open map (with `map`, that map opens first; refused over unsaved edits unless `discard`), or brings a map's tab forward; answers the `tab`, the `front` and the `log` |
+| `shell.focus {doc}` | brings a tab forward: its document shows in its editor |
+| `shell.close {doc, discard?}` | closes a tab: a tool's document closes (`UNSAVED` over edits unless `discard`), a tag's tab closes keeping its edits; the nearest tab left open, to its left first, comes forward |
+
+The tab strip's clicks run the same commands (`Action::OpenDoc`,
+`FocusDoc`, `CloseDoc`, `UndoDoc`, `RedoDoc`), so the window and the API
+leave the same tabs
+(`api::tests::shell_tests::the_window_commands_and_shell_calls_leave_the_same_state`,
+`headless::tests::the_tab_strip_clicks_and_shell_calls_leave_the_same_state`).
+Short forms: `tabs`, `focus <doc>`, `close <doc>`.
 
 `doc.save_as` takes a path. `doc.save` writes a variant to its save
 storage under the data root or a playlist file to its own path. For a
@@ -251,7 +287,8 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `session` | `status`, `methods`, `log` |
 | `host` | `memory {report?}`, `memory.history {since_ms?}`, `memory.heap {top?}`, `memory.gpu`, `memory.diff {from_ms}`, `memory.postmortem {pid?}`: the editor process's watchdog and flight recorder, answered on the connection thread as the game answers them ([Finding a leak after the fact](../runtime/agent-api.md#finding-a-leak-after-the-fact)) |
 | `source` | `open {path}`, `maps` |
-| `doc` | `list`, `open {map \| path \| package \| variant \| playlists}` (`variant` is `{builtin}`, `{saved}`, `{new}` or `{script}`), `save`, `save_as {path}`, `diff`, `undo`, `redo`, `close` |
+| `doc` | `list`, `open {map \| path \| package \| variant \| playlists}` (`variant` is `{builtin}`, `{saved}`, `{new}` or `{script}`), `save`, `save_as {path}`, `diff`, `undo`, `redo`, `close` (`undo`, `redo` and `close` also take a tag tab's id) |
+| `shell` | `tabs`, `open {tag?, map?, discard?}`, `focus {doc}`, `close {doc, discard?}`: the document tabs ([Document tabs](#document-tabs)) |
 | `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `fields {tag, path?}`, `tree {root?, depth?}`, `refs {tag, limit?}`, `kinds {group?}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
 | `sound` | `read {tag, range?, permutation?, bins?}`, `play {tag, range?, permutation?, from_ms?}`, `stop`, `measure {tag \| clip \| path, range?, permutation?, class?, limit?}` ([Content checks](#content-checks)) |
 | `scenario` | `blocks`, `list {block}`, `get`, `set {block, index, field, value}`, `add {block, like, position}`, `move {block, index, position, ypr}`, `delete`, `duplicate`, `select` |
