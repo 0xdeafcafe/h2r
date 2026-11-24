@@ -95,6 +95,8 @@ pub enum Doc {
     /// The voice open in the voice document (`app::voices`): the id is
     /// `Voices::doc`, the pane `Voices::pane`.
     Voice,
+    /// The focused package manifest and its items.
+    Package,
     /// A tag of the open map, in the editor its group gets.
     Tag(TagId),
     /// A package item shown from its authored source before it is in a map.
@@ -120,6 +122,7 @@ pub enum Surface {
     UiScreens,
     Hud,
     Textures,
+    Package,
 }
 
 impl Surface {
@@ -150,6 +153,7 @@ impl Surface {
             Surface::UiScreens => ToolKind::UiScreens,
             Surface::Hud => ToolKind::Hud,
             Surface::Textures => ToolKind::Textures,
+            Surface::Package => ToolKind::Package,
         }
     }
 }
@@ -165,12 +169,13 @@ impl From<ToolKind> for Surface {
             ToolKind::UiScreens => Surface::UiScreens,
             ToolKind::Hud => Surface::Hud,
             ToolKind::Textures => Surface::Textures,
+            ToolKind::Package => Surface::Package,
         }
     }
 }
 
 /// The tools' documents, in the order their tabs are first given.
-pub const TOOL_DOCS: [Doc; 7] = [
+pub const TOOL_DOCS: [Doc; 8] = [
     Doc::Map,
     Doc::Variant,
     Doc::Playlists,
@@ -178,6 +183,7 @@ pub const TOOL_DOCS: [Doc; 7] = [
     Doc::Hud,
     Doc::Rules,
     Doc::Voice,
+    Doc::Package,
 ];
 
 impl Doc {
@@ -195,6 +201,7 @@ impl Doc {
             // The voice document draws over the field panel's surface,
             // as the sound editor does (`ui::voices::window`).
             Doc::Voice => ToolKind::Tags,
+            Doc::Package => ToolKind::Package,
             Doc::Tag(_) => return None,
         })
     }
@@ -210,6 +217,7 @@ impl Doc {
             Doc::Rules => "rules",
             Doc::Voice => "voice",
             Doc::SourceAsset(_) => "item",
+            Doc::Package => "package",
             Doc::Tag(_) => return None,
         })
     }
@@ -369,6 +377,7 @@ impl App {
                 .as_ref()
                 .map_or_else(|| "HUD".to_owned(), |s| s.name.clone()),
             Doc::Rules => self.rules.title.clone(),
+            Doc::Package => self.package_document.name().unwrap_or("Package").to_owned(),
             Doc::Voice => self
                 .voices
                 .doc
@@ -430,7 +439,7 @@ impl App {
             Doc::Rules => (false, false),
             Doc::SourceAsset(_) => (false, false),
             // A voice's lines are rows: Remove takes one away.
-            Doc::Voice => (false, false),
+            Doc::Voice | Doc::Package => (false, false),
             Doc::Variant => self
                 .variants
                 .as_ref()
@@ -458,6 +467,7 @@ impl App {
             Doc::Hud => self.hud.session.is_some(),
             Doc::Rules => self.rules.opened,
             Doc::Voice => self.voices.doc.is_some(),
+            Doc::Package => self.package_document.id().is_some(),
             Doc::Tag(_) => false,
             Doc::SourceAsset(_) => false,
         }
@@ -618,6 +628,10 @@ impl App {
             Doc::Rules => self.rules.opened = false,
             // The batch keeps its rows for the next open.
             Doc::Voice => self.voices.doc = None,
+            Doc::Package => {
+                self.package_document.read = None;
+                self.package_document.result = None;
+            }
             other => self.close_tool(other.holder().expect("a tool document")),
         }
         self.tabs.remove(doc);
@@ -633,7 +647,12 @@ impl App {
             .find(|&d| self.tabs.has(d));
         match next {
             Some(next) => self.focus_doc(next),
-            None => self.tabs.front = None,
+            None => {
+                self.tabs.front = None;
+                if doc == Doc::Package {
+                    self.set_tool(ToolKind::Scenario);
+                }
+            }
         }
     }
 

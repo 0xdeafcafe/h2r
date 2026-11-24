@@ -214,6 +214,26 @@ Voices are assets, and making a line is part of editing a sound.
   its Setup says where the Fish Audio key lives, and its Lines pane says
   one line at a time.
 
+### The package document
+
+Double-click a package in the Packages root, choose it in Go to
+anything, or follow a package link to open its document. The document
+shows the manifest, credit, lock and items. An item opens through the same
+`item:` route as its Browser row. Local packages can be renamed in the
+manifest and set as the edit target.
+
+**Check**, **Build**, **Play** and **Export...** use the corresponding
+`package.*` calls and show their replies. Build takes a map of the open
+source or all applicable maps. Play takes one map and uses the paired
+game. Export creates a folder with the manifest, lock and named files.
+**Publish...** is disabled pending the Live package service (PK14 in
+[studio-redesign.md](studio-redesign.md)).
+
+**New package...** in the Packages root or the package document creates
+a local package, makes it the edit target and opens it. **Add to package**
+in the shared header adds a manifest item for a source already in the
+selected local package. A tag header supplies its tag path to the form.
+
 ### The three journeys in this model
 
 **A new weapon.** Browser > Objects > a weapon > **New from this...**
@@ -256,8 +276,9 @@ contains the built tags.
 - `asset.list` takes the kind `Voices` (built): a `voice:<id>` row for each
   character and the announcer, with `state`, `minutes`, `pending_asr` and
   `tuned`. `Game types` and `Playlists` come with FL4.
-- `shell.open {asset}` takes `voice:` and `tag:` ids (built), and `item:`
-  ids once FL4 opens them.
+- `shell.open {asset}` takes `voice:`, `tag:` and `package:` ids, and
+  `item:` ids once FL4 opens them. The package document uses the tab id
+  `package`.
 - `check.run` and `problems.list` take `asset` (built) and answer only that asset's rows (`App::asset_problems`).
 - `pair.preview {doc?}` (built) runs **In game** on the front or named tab. The paired kinds use the same plan as the explicit `pair.preview {what, ...}` form.
 - `ui.palette` lists every asset `asset.list` does, and every command.
@@ -287,7 +308,7 @@ nothing unbuilt and run together.
 | FL7 | **One save**: every document saves to the edit target; variants, scripts and playlists as items; voice lines as `sound` items only; the animation save picker removed | M | FL4 | `app/edit_target.rs`, `app/package_doc.rs`, `app/rules_edit.rs`, `app/voice_batch.rs`, `ui/anim/save.rs` (deleted), `ui/variants.rs`, `ui/playlists.rs` | with a target set, saving an invented variant, script, playlist, animation and voice line each adds or updates one item of the target and writes nothing outside `<data>/packages/`; with none, each asks through the one picker, and the API answers `NO_TARGET` |
 | FL8 (built) | **One undo**: the editors' own Undo buttons run `Action::UndoDoc` on the front document; the mouth curve, Modeling, Textures and Animation steps are steps of their tab | S | nothing | `app/shell.rs` (`Stack`, `undo_redo_doc`, `doc_can`), `app/tag_doc.rs` (`next_step`), `app/sound_mouth.rs`, `app/textures.rs`, `app/anim/document.rs`, `ui/sound.rs`, `ui/modeling.rs`, `ui/textures.rs`, `ui/anim/edit.rs`, `ui/inspector.rs`, `ui/scripts.rs`, `crates/tools/anim-edit` (`AnimDoc::share_steps`) | a mouth redraw and a field edit on one invented sound undo in the order made with Cmd+Z; two documents keep two stacks; no `ui/` module holds an undo button that is not `UndoDoc` |
 | FL9 (built) | **One preview**: the target switch and **In game** in the header and menu, with the Game panel showing the result | M | FL2 | `ui/preview_switch.rs`, `app/preview_switch.rs`, `api/preview.rs`, `play.rs`, `ui/game_script.rs` | the button and API queue the same unsaved variant record, and the launch uses it; the fake own game receives `rules.reload` for the open script; paired kinds use the plans from `preview.target` |
-| FL10 | **The package document**: the manifest, the items, **Check**, **Build**, **Play**, **Publish...**, **Export...**, **Set as edit target**, **New package...**, and **Add to package** from any header | M | FL4 | `ui/package.rs` (new), `app/package_doc.rs`, `ui/browser.rs`, `ui.rs` | every button runs the `package.*` method studio-redesign's "Studio's side" names, shown by the same result; a new package made in the window is the edit target and is listed by `package.list` |
+| FL10 (built) | **The package document**: the manifest, the items, **Check**, **Build**, **Play**, **Publish...**, **Export...**, **Set as edit target**, **New package...**, and **Add to package** from any header | M | FL4 | `ui/package.rs` (new), `app/package_doc.rs`, `ui/browser.rs`, `ui.rs` | local actions show their `package.*` replies; a new package made in the window is the edit target and is listed by `package.list`; Live publishing depends on PK14 |
 | FL11 (built) | **New from this**: **New from this...** on a Browser row and in the header (the window form of `asset.copy`), **Import sound...** (`import.sound`) and **Add model...** (`import.model`), each opening the new document | M | FL10 | `ui/browser.rs`, `ui/doc_header.rs`, `app/assets.rs`, `api/import.rs` | a weapon copied from an invented one opens as a tab marked **new in** the target and holds no bytes of its source; an imported WAV opens in the sound editor |
 | FL12 | **The guide by journey**: [editor-guide.md](editor-guide.md) and [editor.md](editor.md) describe the header, links and the four patterns, with the three journeys as walkthroughs | S | FL5 to FL10 | `docs/editor/editor-guide.md`, `docs/editor/editor.md`, `headless.rs` (the screenshots list) | `scripts/docs-check.py docs/editor` is clean; the screenshots regenerate from documents |
 
@@ -317,10 +338,15 @@ nothing unbuilt and run together.
   voice's entry opens its document: **Test**
   `go_to_anything_finds_every_voice_and_every_editor`.
 - With no map open, one query finds a tag of an invented tree, a
-  package, an item and a command, each under its kind; the tag's and the
-  command's entries open their documents (a package's and an item's
-  carry the `OpenAsset` that FL4 and FL10 teach to open theirs): **Test**
+  package, an item and a command, each under its kind. The package entry
+  opens its document through `OpenAsset`: **Test**
   `go_to_anything_finds_a_tag_a_package_an_item_and_a_command_with_no_map_open`.
+- New package selects the edit target and opens a tab. The window's
+  Check answers the same reply as `package.check`: **Test**
+  `the_new_package_command_opens_a_tab_and_sets_the_target`.
+- Export includes the manifest, lock and named sources and refuses an
+  existing destination: **Test**
+  `package_export_writes_only_the_manifest_lock_and_named_sources`.
 - A tag of the tree opens by opening the map that holds it first:
   **Test** `go_to_anything_opens_a_tree_tag_by_opening_its_map_first`.
 - A sound's **New line** makes one row per sound, targeting it: **Test**

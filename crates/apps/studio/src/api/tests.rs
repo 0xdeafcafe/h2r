@@ -206,6 +206,7 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
                 );
             }
         }
+        m::PACKAGE_EXPORT => c(m::PACKAGE_NEW, json!({"id": "export-example", "name": "Export example"})),
         n if n.starts_with("package.") => {
             // The invented package `kit-test`, and the file its example adds.
             let dir = t.path("data/packages/kit-test");

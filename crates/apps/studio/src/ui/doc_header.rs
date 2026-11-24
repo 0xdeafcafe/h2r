@@ -34,7 +34,7 @@ pub(crate) fn crumbs(app: &App, id: &str) -> Option<Crumbs> {
     }
 }
 
-fn button(ui: &Ui, label: &str, enabled: bool, reason: &str) -> bool {
+pub(super) fn button(ui: &Ui, label: &str, enabled: bool, reason: &str) -> bool {
     let guard = ui.begin_disabled_with_cond(!enabled);
     let clicked = ui.button(label);
     drop(guard);
@@ -68,8 +68,7 @@ fn link_rows(ui: &Ui, rows: &[links::Link], actions: &mut Vec<Action>, browser: 
         if *count > 20 { continue; }
         if *count == 1 { ui.separator(); ui.text_disabled(link_role(row)); }
         if ui.menu_item(&row.asset) {
-            // Only a tag opens in an editor; a package or an item shows its Browser row.
-            if row.asset.starts_with("tag:") {
+            if row.asset.starts_with("tag:") || row.asset.starts_with("package:") {
                 actions.push(Action::OpenAsset { asset: row.asset.clone(), map: None });
             } else {
                 browser.locate(&row.asset);
@@ -127,7 +126,12 @@ pub(super) fn draw(ui: &Ui, app: &App, actions: &mut Vec<Action>, browser: &mut 
     drop(disabled);
     super::preview_switch::explain(ui, &ready);
     if clicked && let Ok(action) = ready { actions.push(action); }
-    if ui.button(check_label(app.doc_problem_count(doc))) { actions.push(Action::RefreshProblems(None)); }
+    let check = check_label(app.doc_problem_count(doc));
+    if doc == Doc::Package && let Some(package) = app.package_document.id() {
+        super::package::check(ui, &check, package, actions);
+    } else if ui.button(check) {
+        actions.push(Action::RefreshProblems(None));
+    }
     ui.same_line();
     let (undo, redo) = app.doc_can(doc);
     if button(ui, "Undo", undo, "Nothing to undo") { actions.push(Action::UndoDoc(doc)); }
@@ -159,6 +163,7 @@ pub(super) fn draw(ui: &Ui, app: &App, actions: &mut Vec<Action>, browser: &mut 
             Some(Err(e)) => ui.text_disabled(e), None => ui.text_disabled("No asset for this document"),
         }
     }
+    super::package::add_item(ui, app, &mut browser.add_item, id.as_deref(), actions);
     ui.separator();
 }
 

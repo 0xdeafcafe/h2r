@@ -163,6 +163,29 @@ fn play(app: &mut App, p: &P) -> Reply {
 }
 
 pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
+    let result = handle(app, method, p);
+    if result.is_ok()
+        && matches!(
+            method,
+            m::PACKAGE_NEW | m::PACKAGE_SET | m::PACKAGE_ITEM_ADD | m::PACKAGE_ITEM_SET
+                | m::PACKAGE_ITEM_REMOVE | m::PACKAGE_TARGET | m::PACKAGE_ENABLE | m::PACKAGE_ORDER
+                | m::PACKAGE_CHECK
+        )
+    {
+        app.package_document.revision += 1;
+        if let Some(id) = app.package_document.id()
+            && let Ok(read) = doc::read_with(&app.data_root(), id, Some(&app.tags_root()))
+        {
+            app.package_document.read = Some(read);
+        }
+        if method == m::PACKAGE_CHECK {
+            app.refresh_problems(Some("package"));
+        }
+    }
+    result
+}
+
+fn handle(app: &mut App, method: &str, p: &P) -> Reply {
     let data = app.data_root();
     match method {
         m::PACKAGE_LIST => Ok(doc::list(&data)),
@@ -223,6 +246,11 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
         m::PACKAGE_DIFF => diff(app, p),
         m::PACKAGE_BUILD => build(app, p),
         m::PACKAGE_PLAY => play(app, p),
+        m::PACKAGE_EXPORT => {
+            let out = std::path::Path::new(p.str("out")?);
+            super::docs::outside_git(out)?;
+            doc::export(&data, &app.tags_root(), p.str("id")?, out).map_err(refuse)
+        }
         _ => Err(err(code::METHOD_NOT_FOUND, format!("no method {method}"))),
     }
 }
