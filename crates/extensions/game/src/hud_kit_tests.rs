@@ -244,6 +244,71 @@ fn the_gate_answers_kit_widgets_only() {
     assert_eq!(gate(&m, SP, meter + 8, &t, &on).unwrap(), None);
 }
 
+/// The records the motion tracker draws from are where the root points:
+/// the tag's own before an install, the copy after it (the retail records
+/// first, in the same order); an index past the block is skipped.
+#[test]
+fn the_kept_records_follow_the_root() {
+    let mut m = memory();
+    let b = records::BITMAP_SIZE as u32;
+    let roots = [(ROOT, vec![1, 9])];
+    assert_eq!(kept_records(&m, &roots).unwrap(), [RETAIL_BITMAPS + b]);
+    let (hud, c) = hud();
+    install(&mut m, &hud, &c);
+    let copy = m.u32(ROOT + records::ROOT_BITMAPS + 4).unwrap();
+    assert_eq!(kept_records(&m, &roots).unwrap(), [copy + b]);
+    let mut kept = vec![0; b as usize];
+    m.read(copy + b, &mut kept).unwrap();
+    assert_eq!(kept, vec![0xb1; b as usize], "the second retail record");
+}
+
+/// For a user in monitor mode a retail widget is not drawn, the player's
+/// copy or a weapon's, but the motion tracker's is left to the game, as
+/// are the kit's own widgets (the kit's gate answers them) and every
+/// widget of another user; another caller is not answered.
+#[test]
+fn a_monitor_user_draws_no_retail_widget_but_the_motion_tracker() {
+    let mut m = memory();
+    let (hud, c) = hud();
+    let mut t = install(&mut m, &hud, &c);
+    t.kept = kept_records(&m, &[(ROOT, vec![1])]).unwrap();
+    let copy = m.u32(ROOT + records::ROOT_BITMAPS + 4).unwrap();
+    let texts = m.u32(ROOT + records::ROOT_TEXTS + 4).unwrap();
+    let (shield, tracker) = (copy, copy + records::BITMAP_SIZE as u32);
+    let weapon = 0x0055_0000;
+    let meter = t.widgets[0].address;
+    m.set_u32(SP, GATE_RETURNS[1]).unwrap();
+    let off = 1 << 1;
+    for (widget, answer) in [
+        (shield, Some(false)),
+        (texts, Some(false)),
+        (weapon, Some(false)),
+        (tracker, None),
+        (meter, None),
+    ] {
+        assert_eq!(retail_gate(&m, SP, widget + 8, &t, off, 1).unwrap(), answer, "{widget:#x}");
+        assert_eq!(retail_gate(&m, SP, widget + 8, &t, off, 0).unwrap(), None, "user 0 {widget:#x}");
+    }
+    assert_eq!(retail_gate(&m, SP, shield + 8, &t, 0, 1).unwrap(), None);
+    assert_eq!(retail_gate(&m, SP, shield + 8, &t, u32::MAX, USERS).unwrap(), None);
+    m.set_u32(SP, 0x1234).unwrap();
+    assert_eq!(retail_gate(&m, SP, shield + 8, &t, off, 1).unwrap(), None);
+}
+
+/// `Handle::retail` turns one user's retail widgets off and on again,
+/// leaving the others; a user past the last is ignored.
+#[test]
+fn retail_is_per_user() {
+    let h = Handle(0);
+    h.retail(3, false);
+    assert!(!retail_shown(3));
+    assert!(retail_shown(2));
+    h.retail(USERS, false);
+    assert!(retail_shown(USERS));
+    h.retail(3, true);
+    assert!(retail_shown(3));
+}
+
 /// A widget whose element gives way to word D bits is hidden while the
 /// game's word D (the gate's third stack argument) has one, and shown at
 /// its value otherwise; a widget without such bits ignores the word.

@@ -779,6 +779,13 @@ impl Values {
     }
 }
 
+/// The retail bitmap widgets, by name string, a user in monitor mode
+/// still draws: the motion tracker's background (V: `ui\hud\masterchief`
+/// bitmap widgets 5 and 7, docs/halo1/hud.md, "The motion sensor's
+/// centre"). Its blips are the game's own draw (`0x1a2823`), not a widget,
+/// and stay with it (docs/game/forge-firefight-ui.md, decision 3).
+pub const MONITOR_KEEPS: &[&str] = &["motion_sensor"];
+
 /// A HUD of ours and the named states its preview sheet draws.
 pub trait Describe {
     fn hud(&self) -> Hud;
@@ -798,6 +805,16 @@ pub trait Describe {
     /// mode.
     fn never_with(&self) -> &'static [&'static str] {
         &[]
+    }
+    /// The HUD is a monitor's: shown only for a user in monitor mode
+    /// (docs/game/forge-firefight-ui.md, "The monitor HUD"). The retail
+    /// widgets are off for that user but the ones named in
+    /// [`MONITOR_KEEPS`] (the runtime's `Handle::retail`), so the HUD is
+    /// compiled and checked against those alone, and its grenade row
+    /// origins resolve to the row's first place
+    /// (`templates::Templates::for_monitor`).
+    fn monitor(&self) -> bool {
+        false
     }
     /// The sample poses of the HUD's world marks in the state `state`,
     /// for the preview and the checks: world units in a scene of the

@@ -477,6 +477,9 @@ pub trait Describe {
     /// The sample poses of the HUD's world marks in a state, for the
     /// preview and the checks.
     fn world(&self, _state: &str) -> Vec<(&'static str, Pose)> { Vec::new() }
+    /// A monitor's HUD: the retail widgets but MONITOR_KEEPS are off for
+    /// its user, and its grenade row origins are the row's first place.
+    fn monitor(&self) -> bool { false }
 }
 ```
 
@@ -703,7 +706,20 @@ does the rest:
    view fullscreen, two half, more quarter: `player_globals +8`), and
    none of its element's `hide_when_d` bits is set in the game's word D,
    the gate's third stack argument (`[esp+12]`, its low 16 bits). The
-   retail gate is skipped for it; a retail widget costs two loads.
+   retail gate is skipped for it; a retail widget costs two loads and
+   one more, of the monitor users' bits. For a local user in monitor
+   mode (`Handle::retail(user, false)`) every widget that is not the
+   kit's is hidden, the player `nhdt`'s retail records and the weapon's,
+   but the motion tracker's: the bitmap widgets named in
+   `model::MONITOR_KEEPS` (`motion_sensor`, V: docs/halo1/hud.md, "The
+   motion sensor's centre"), whose records' addresses the install keeps
+   in `Table::kept` (`hud_kit::kept_records`: the copy when the root
+   points at it, else the tag's own). The tracker's blips are not a
+   widget (`0x1a2823`) and draw as before. Another user's widgets are
+   left to the game's gate (`hud_kit::retail_gate`; tests
+   `a_monitor_user_draws_no_retail_widget_but_the_motion_tracker`,
+   `the_kept_records_follow_the_root`). Each install shows every user's
+   retail widgets again.
    The gate, the inputs, the string and the scale read the values of
    the local user whose HUD is being drawn: `[0x004b9ed8]`, which
    `UI_HUD_DRAW` reads and hands to its per-user draws (E `0x001917ed`,
@@ -1754,6 +1770,13 @@ chance field and shows no percentage beside the call.
 - A feature whose HUD is never shown with another's names it in
   `Describe::never_with`; the runtime hides the one whose user is not in
   its mode.
+- A monitor's HUD says so (`Describe::monitor`): it is compiled with the
+  grenade row's origins at the row's first place
+  (`Templates::for_monitor`, `GrenadeRow::first`: the frag pill's and
+  count's places less one step, the plasma's), and the preview and the
+  `retail` check draw it over the motion tracker alone
+  (`preview::monitor_retail`). Its feature turns the retail widgets of
+  its user off while the monitor is up, `Handle::retail(user, shown)`.
 - Guest points hooked: `HUD_WIDGET_GATE`, `HUD_WIDGET_INPUTS`,
   `HUD_WIDGET_STRING`, `HUD_WIDGET_SPRITE`, `HUD_WIDGET_EFFECTS`,
   `HUD_INTERACTION_VISIBLE`,

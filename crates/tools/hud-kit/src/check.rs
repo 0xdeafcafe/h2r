@@ -377,8 +377,12 @@ pub fn hud(src: &mut Source, d: &dyn Describe, modes: &[Mode]) -> Result<Report>
             }
         }
     }
-    // Templates.
-    let t = src.templates(&hud);
+    // Templates: a monitor's grenade row is its first place.
+    let monitor = d.monitor();
+    let mut t = src.templates(&hud);
+    if monitor {
+        t = t.for_monitor();
+    }
     for m in t.missing(&hud) {
         r.push(finding(Check::Templates, None, None, Vec::new(), m));
     }
@@ -403,12 +407,15 @@ pub fn hud(src: &mut Source, d: &dyn Describe, modes: &[Mode]) -> Result<Report>
             .push("retail: against the synthetic map's flat boxes, not the disc's art".into());
     }
     r.notes.push(src.words_note.clone());
-    let retail = hud_edit::model::read(&mut src.map, src.player)?;
+    let mut retail = hud_edit::model::read(&mut src.map, src.player)?;
+    if monitor {
+        preview::monitor_retail(&mut retail);
+    }
     for &mode in modes {
         let covers = retail_covers(src, &retail, mode);
         let st = preview::retail_states(mode, src.words).remove(0);
         for (s, v) in &states {
-            let shot = preview::shot(src, &hud, &compiled, s, v, &d.world(s), &st)?;
+            let shot = preview::shot(src, &hud, &compiled, monitor, s, v, &d.world(s), &st)?;
             per_shot(&mut r, src, &hud, v, &shot, &covers);
             r.shots.push(shot);
         }

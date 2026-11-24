@@ -91,6 +91,9 @@ pub struct GrenadeRow {
     pub panel: f32,
     /// Where the frag pill starts in it, and its width.
     pub frag: [f32; 2],
+    /// The step from the plasma count to the frag count, which is the
+    /// pills' step too, per screen mode.
+    pub step: [(i16, i16); 3],
 }
 
 impl GrenadeRow {
@@ -102,6 +105,23 @@ impl GrenadeRow {
             Origin::Anchor => None,
             Origin::NextGrenadePill => Some((self.pill_anchor, self.pill[m])),
             Origin::NextGrenadeCount => Some((self.count_anchor, self.count[m])),
+        }
+    }
+
+    /// The row as a monitor's HUD sees it, with the retail pills gated off
+    /// (`Describe::monitor`): the next pill and count are the row's first
+    /// place, the plasma pill's and count's, the frag's less one step.
+    pub fn first(&self) -> GrenadeRow {
+        let back = |at: [(i16, i16); 3]| {
+            std::array::from_fn(|i| {
+                let ((x, y), (sx, sy)) = (at[i], self.step[i]);
+                (x - 2 * sx, y - 2 * sy)
+            })
+        };
+        GrenadeRow {
+            pill: back(self.pill),
+            count: back(self.count),
+            ..*self
         }
     }
 
@@ -160,6 +180,14 @@ pub struct Templates {
 }
 
 impl Templates {
+    /// The templates of a monitor's HUD (`Describe::monitor`): the grenade
+    /// row's origins are its first place ([`GrenadeRow::first`]), since the
+    /// retail pills are not drawn there. The pills' art is unchanged.
+    pub fn for_monitor(mut self) -> Self {
+        self.row = self.row.map(|r| r.first());
+        self
+    }
+
     /// `a`'s template, or why there is none.
     pub fn art(&self, a: &Art) -> Result<&ArtTemplate, String> {
         match self.art.iter().find(|(x, _)| x == a) {
@@ -399,7 +427,20 @@ pub fn grenade_row(map: &mut dyn MapView, hud: &RawHud) -> Result<GrenadeRow, St
         count,
         panel,
         frag: [start, width],
+        step: steps,
     })
+}
+
+/// The indices, among `hud`'s bitmap widgets in block order, of the ones
+/// a user in monitor mode still draws ([`crate::model::MONITOR_KEEPS`]).
+pub fn monitor_keeps(hud: &RawHud) -> Vec<u32> {
+    hud.widgets
+        .iter()
+        .filter(|w| w.kind == WidgetKind::Bitmap)
+        .enumerate()
+        .filter(|(_, w)| crate::model::MONITOR_KEEPS.contains(&w.name.as_str()))
+        .map(|(i, _)| i as u32)
+        .collect()
 }
 
 fn text_template(map: &mut dyn MapView, hud: &RawHud) -> Result<TextTemplate, String> {
