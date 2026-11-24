@@ -20,7 +20,7 @@ use crate::app::tag_api;
 
 /// The shape of a slot row, as `shader.read` lists them and `shader.set`
 /// returns one.
-const SLOT: &str = "{kind, index, path, label, value (as tag.read gives the field), bitmap?, image?, hex?, vector?, used_by:[{layer, pass, implementation, reads}]}";
+const SLOT: &str = r#"{"kind":"bitmap|colour|vector","index":"integer","path":"string","label":"string","value":"as tag.read gives the field","bitmap?":"string","image?":"integer","hex?":"string","vector?":"[number]","used_by":"[{layer, pass, implementation, reads}]"}"#;
 
 const READ: MethodDef = def(
     m::SHADER_READ,
