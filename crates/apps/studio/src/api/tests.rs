@@ -418,7 +418,7 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             );
             c(m::DOC_OPEN, new_variant);
         }
-        m::VARIANT_GET | m::VARIANT_SET | m::VARIANT_RENAME | m::VARIANT_EXPORT => {
+        m::VARIANT_GET | m::VARIANT_SET | m::VARIANT_RENAME | m::VARIANT_EXPORT | m::VARIANT_MAPS => {
             c(m::DOC_OPEN, new_variant)
         }
         m::VARIANT_COPY => c(m::DOC_OPEN, json!({"variant": {"builtin": 0}})),
@@ -5587,4 +5587,81 @@ fn the_tags_tree_is_refused_inside_a_git_checkout() {
         .unwrap_err();
     assert_eq!(e.code, code::INVALID_PARAMS);
     assert!(e.message.contains("nope.map"), "{}", e.message);
+}
+
+/// A map variant document of an invented map, for `variant.maps`.
+fn map_variant_doc(title: &str) -> forge_doc::ForgeDoc {
+    use forge_doc::{BlockKind as B, BuilderVersions, Edit, ForgeDoc, MapRef, Op, OpId, Placement, Sha256};
+    let mut doc = ForgeDoc {
+        format: forge_doc::FORMAT,
+        builder: BuilderVersions::CURRENT,
+        base: MapRef {
+            map: "fixture".into(),
+            sha256: Sha256::of(b"an invented map"),
+        },
+        sources: vec![],
+        title: title.into(),
+        author: "Editor".into(),
+        description: String::new(),
+        recipes: vec![],
+        imports: vec![],
+        ops: vec![Op {
+            id: OpId(1),
+            edit: Edit::Placement(Placement::Add {
+                block: B::NetgameFlags,
+                like: None,
+                fields: vec![],
+            }),
+        }],
+        expect: None,
+    };
+    doc.format = doc.required_format();
+    doc
+}
+
+#[test]
+fn variant_export_suggests_the_map_variants_variant_maps_lists() {
+    let t = Temp::new("variant-maps");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let data = t.path("data");
+    // None on a machine with none.
+    let none = call(&mut api, &mut app, m::VARIANT_MAPS, json!({}));
+    assert_eq!(none["maps"], json!([]));
+    let castle = map_variant_doc("Castle");
+    forge::files::variants::save(&data, &castle, false).unwrap();
+    forge::files::variants::save(&data, &map_variant_doc("Tower"), false).unwrap();
+    let listed = call(&mut api, &mut app, m::VARIANT_MAPS, json!({}));
+    let maps = listed["maps"].as_array().unwrap();
+    assert_eq!(maps.len(), 2);
+    assert_eq!((maps[0]["name"].as_str(), maps[0]["map"].as_str()), (Some("Castle"), Some("fixture")));
+    assert_eq!(maps[0]["variant"], castle.id().unwrap().to_string());
+    assert_eq!(maps[0]["base"], castle.base.sha256.to_string());
+    assert_eq!(maps[0]["source"], "saved");
+
+    call(&mut api, &mut app, m::DOC_OPEN, json!({"variant": {"new": "slayer"}, "discard": true}));
+    let out = t.path("out/suggest.h2variant");
+    let r = call(
+        &mut api,
+        &mut app,
+        m::VARIANT_EXPORT,
+        json!({"path": out.display().to_string(), "maps": [maps[1]["variant"], maps[0]["variant"]]}),
+    );
+    assert_eq!(r["maps"], 2);
+    let b = ::variants::portable::read(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let got: Vec<_> = b.maps.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(got, ["Tower", "Castle"], "in the order asked");
+    assert_eq!(b.maps[1].base, castle.base.sha256.to_string());
+    // Without maps it is the version-1 file it was.
+    let plain = t.path("out/plain.h2variant");
+    call(&mut api, &mut app, m::VARIANT_EXPORT, json!({"path": plain.display().to_string()}));
+    assert!(std::fs::read_to_string(&plain).unwrap().contains("\"version\": 1"));
+    // An id this machine has no map variant of is refused by name.
+    let bad = api.call(
+        &mut app,
+        m::VARIANT_EXPORT,
+        json!({"path": t.path("out/bad.h2variant").display().to_string(), "maps": ["0".repeat(64)]}),
+    );
+    assert_eq!(code_of(bad), code::INVALID_PARAMS);
+    assert!(!t.path("out/bad.h2variant").exists());
 }

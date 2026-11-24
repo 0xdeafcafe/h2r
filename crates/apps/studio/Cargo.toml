@@ -95,6 +95,9 @@ serde_json.workspace = true
 # Playtest's static checks (src/app/playtest_static.rs): the start gate's
 # census of the open scenario (docs/game/rules-start-gate.md).
 forge-doc.workspace = true
+# The map variants on this machine a game variant may suggest
+# (`forge::files::variants::suggestable`; src/api/variants.rs).
+forge.workspace = true
 # AI ground built over the open map (src/app/ground.rs): GM1's build.
 firefight-kit = { path = "../../tools/firefight-kit" }
 # The announcer voice: Fish Audio's text to speech over HTTPS (src/voice/fish.rs).

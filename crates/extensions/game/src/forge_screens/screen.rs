@@ -196,6 +196,22 @@ impl ForgeScreen {
     /// only lists, and a sheet of facts alone (the Map variants page of a
     /// map with none).
     pub fn prompts(&self) -> Vec<Prompt> {
+        self.prompts_at(None)
+    }
+
+    /// The legend with row `row` focused. On a dialog a fact row takes no
+    /// A, so its legend is Back alone; a list keeps the screen's legend.
+    /// `None` is the screen's legend as it opens.
+    pub fn prompts_at(&self, row: Option<usize>) -> Vec<Prompt> {
+        let sheet = self.sheet();
+        let on_fact = self.kind.look() != Look::List
+            && row
+                .or(Some(sheet.focus))
+                .and_then(|i| sheet.rows.get(i))
+                .is_some_and(|r| matches!(r.act, Act::Info));
+        if on_fact {
+            return vec![Prompt::new(&[Glyph::B], "Back")];
+        }
         let facts_only = {
             let rows = self.sheet().rows;
             !rows.is_empty() && rows.iter().all(|r| matches!(r.act, Act::Info))
@@ -360,6 +376,13 @@ impl Rows for ForgeScreen {
     }
     fn content_spec(&self) -> Option<ScreenSpec> {
         Some(self.spec())
+    }
+    /// The footer follows the focused row, as the description does: a fact
+    /// row on a dialog takes no A, so its footer reads Back alone.
+    fn focused_footer(&self, row: Option<i16>) -> Option<u32> {
+        let row = row.and_then(|r| usize::try_from(r).ok());
+        let legend = crate::ui_kit::input::footer_legend(&self.prompts_at(row));
+        Some(self.texts.set(FOOTER, &legend))
     }
     fn texts(&self, row: i16) -> Vec<(u32, u32)> {
         let s = lock(&self.sheet);
@@ -563,11 +586,8 @@ impl Describe for ForgeScreen {
             .map(|r| row_spec(r, look == Look::Picker))
             .collect();
         s.focus = sheet.focus.min(s.rows.len().saturating_sub(1));
-        s.prompts = self.prompts();
         // A dialog's legend follows its focused row: a fact takes no A.
-        if look != Look::List && matches!(sheet.rows.get(sheet.focus).map(|r| &r.act), Some(Act::Info)) {
-            s.prompts = vec![Prompt::new(&[Glyph::B], "Back")];
-        }
+        s.prompts = self.prompts_at(Some(sheet.focus));
         s.inputs = self.inputs();
         s.footer = true;
         match look {

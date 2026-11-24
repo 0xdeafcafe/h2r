@@ -322,6 +322,80 @@ pub mod variants {
         Ok(out)
     }
 
+    /// One map variant on this machine, as a game variant's suggestion names
+    /// it (docs/game/forge-map-variants.md, "How a pick names a map variant").
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Suggestable {
+        pub source: Source,
+        /// The base map's name.
+        pub map: String,
+        /// The file's stem in the map's directory.
+        pub file: String,
+        /// The document's title.
+        pub name: String,
+        /// The base map's SHA-256.
+        pub base: Sha256,
+        /// The document's id.
+        pub id: Sha256,
+    }
+
+    /// Every map variant on this machine a game variant may suggest: of any
+    /// map, saved then fetched, by map and name without case. A file that
+    /// does not parse, is of the map tier, has another builder's form or
+    /// sits in another map's directory is left out: a suggestion names a
+    /// variant the lobby could pick. Whether this machine has the base map
+    /// is not asked; the lobby checks that when it picks.
+    pub fn suggestable(data: &Path) -> Result<Vec<Suggestable>, Error> {
+        let root = data.join(VARIANTS_DIR);
+        let entries = match fs::read_dir(&root) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(vec![]),
+            Err(e) => return Err(io(e)),
+        };
+        let mut maps = vec![];
+        for entry in entries {
+            let entry = entry.map_err(io)?;
+            if entry.file_type().map_err(io)?.is_dir()
+                && let Some(map) = entry.file_name().to_str()
+                && content::manifest::is_map_name(map)
+            {
+                maps.push(map.to_owned());
+            }
+        }
+        maps.sort_unstable();
+        let limits = Limits::default();
+        let mut out = vec![];
+        for map in maps {
+            let dir = root.join(&map);
+            for (source, dir) in [(Source::Saved, dir.clone()), (Source::Live, dir.join(LIVE_DIR))] {
+                let mut part = vec![];
+                for file in stems(&dir)? {
+                    let Ok(doc) = read_doc(&path_of(&dir, &file), &limits) else {
+                        continue;
+                    };
+                    // The checks of `problem_of` that do not need the installed map.
+                    let usable = doc.base.map == map
+                        && doc.tier() == Tier::Variant
+                        && doc.builder == BuilderVersions::CURRENT;
+                    let Some(id) = doc.id().ok().filter(|_| usable) else {
+                        continue;
+                    };
+                    part.push(Suggestable {
+                        source,
+                        map: map.clone(),
+                        file,
+                        name: doc.title.clone(),
+                        base: doc.base.sha256,
+                        id,
+                    });
+                }
+                part.sort_by_cached_key(|l| (l.name.to_lowercase(), l.file.clone()));
+                out.extend(part);
+            }
+        }
+        Ok(out)
+    }
+
     /// The file stem a name is saved under: its letters and digits, dashes and
     /// underscores, anything else an underscore.
     fn stem_for(name: &str) -> String {

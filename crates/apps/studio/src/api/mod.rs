@@ -655,10 +655,17 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::VARIANT_EXPORT,
-        "Write the open variant as a portable .h2variant file",
-        r#"{"path":"string"}"#,
-        r#"{"path":"string"}"#,
+        "Write the open variant as a portable .h2variant file; with maps (variant ids from variant.maps, at most 8) a version-2 file that suggests them",
+        r#"{"path":"string","maps?":["string"]}"#,
+        r#"{"path":"string","maps":"number"}"#,
         r#"{"path":"$OUT/v.h2variant"}"#,
+    ),
+    def(
+        m::VARIANT_MAPS,
+        "List this machine's map variants a game variant may suggest (any map, saved then fetched)",
+        r#"{}"#,
+        r#"{"maps":[{"map":"string","name":"string","base":"sha256","variant":"sha256","source":"saved|live"}]}"#,
+        r#"{}"#,
     ),
     def(
         m::VARIANT_IMPORT,

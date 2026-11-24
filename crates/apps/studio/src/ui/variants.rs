@@ -32,6 +32,14 @@ pub struct VariantsUi {
     copy_for: Option<Origin>,
     /// Pasted portable variant text.
     import_text: String,
+    /// The map variants on this machine a variant may suggest, read when
+    /// the "Suggest map variants" section opens (and by its Refresh).
+    suggestable: Option<Vec<forge::files::variants::Suggestable>>,
+    /// The ids of the ones ticked, in the order ticked: what Export writes
+    /// as the file's `maps` (the open variant changing clears them).
+    suggest: Vec<String>,
+    /// The variant the ticks were made for.
+    suggest_for: Option<Origin>,
     /// Open only the settings pages whose title contains this, once (the
     /// headless screenshots' `--page`).
     pub only_page: Option<String>,
@@ -45,6 +53,9 @@ impl Default for VariantsUi {
             copy_name: String::new(),
             copy_for: None,
             import_text: String::new(),
+            suggestable: None,
+            suggest: Vec::new(),
+            suggest_for: None,
             only_page: None,
         }
     }
@@ -739,7 +750,7 @@ pub fn inspector(
         "Write it as a portable .h2variant file to share",
     ) && let Some(p) = export_dialog(dialogs, current)
     {
-        actions.push(Action::ExportVariant(p));
+        actions.push(export_action(p, &st.suggest, st.suggestable.as_deref().unwrap_or_default()));
     }
     ui.same_line();
     if ui.button(format!("{} Import...", icon::PACKAGE_OPEN))
@@ -748,6 +759,7 @@ pub fn inspector(
         actions.push(Action::ImportVariantFile(p));
     }
     ui.set_item_tooltip("Open a .h2variant file as a new, unsaved variant");
+    suggest_section(ui, app, st);
     ui.separator();
 
     if let Some(v) = current {
@@ -832,4 +844,107 @@ pub fn import_dialog(dialogs: bool) -> Option<PathBuf> {
         .set_title("Open a game variant")
         .add_filter("Game variant", &[variants::portable::EXTENSION])
         .pick_file()
+}
+
+/// What Export writes: the plain file with nothing ticked, else a version-2
+/// file whose `maps` are the ticked map variants, in the order ticked.
+fn export_action(
+    path: PathBuf,
+    ticked: &[String],
+    known: &[forge::files::variants::Suggestable],
+) -> Action {
+    let maps: Vec<_> = ticked
+        .iter()
+        .filter_map(|id| known.iter().find(|s| s.id.to_string() == *id))
+        .map(|s| variants::portable::MapSuggestion {
+            base: s.base.to_string(),
+            variant: s.id.to_string(),
+            name: s.name.clone(),
+        })
+        .collect();
+    if maps.is_empty() {
+        Action::ExportVariant(path)
+    } else {
+        Action::ExportVariantWith(path, maps)
+    }
+}
+
+/// The "Suggest map variants" section: this machine's map variants, ticked
+/// for the next Export. A game variant only suggests: the lobby opens its
+/// Map Variant picker on one (docs/game/forge-map-variants.md).
+fn suggest_section(ui: &Ui, app: &App, st: &mut VariantsUi) {
+    let origin = app.variants.as_ref().and_then(|e| e.origin().cloned());
+    if st.suggest_for != origin {
+        st.suggest.clear();
+        st.suggest_for = origin;
+    }
+    if !ui.collapsing_header("Suggest map variants", TreeNodeFlags::NONE) {
+        return;
+    }
+    if st.suggestable.is_none() || ui.small_button("Refresh##suggest") {
+        st.suggestable = Some(
+            forge::files::variants::suggestable(&app.data_root()).unwrap_or_default(),
+        );
+    }
+    ui.text_wrapped(
+        "Tick the map variants this game variant was made for. The lobby's Map Variant picker opens on one; nothing is changed for the player.",
+    );
+    let known = st.suggestable.clone().unwrap_or_default();
+    if known.is_empty() {
+        ui.text_disabled("No saved map variants on this machine.");
+    }
+    for s in &known {
+        let id = s.id.to_string();
+        let mut on = st.suggest.contains(&id);
+        let full = st.suggest.len() >= variants::portable::MAX_MAPS && !on;
+        let d = ui.begin_disabled_with_cond(full);
+        if ui.checkbox(format!("{} ({})##map-{id}", s.name, s.map), &mut on) {
+            if on {
+                st.suggest.push(id.clone());
+            } else {
+                st.suggest.retain(|x| *x != id);
+            }
+        }
+        d.end();
+    }
+    if st.suggest.len() >= variants::portable::MAX_MAPS {
+        ui.text_disabled(format!("At most {} are suggested.", variants::portable::MAX_MAPS));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use forge::files::variants::{Source, Suggestable};
+    use forge_doc::Sha256;
+
+    fn known(name: &str) -> Suggestable {
+        Suggestable {
+            source: Source::Saved,
+            map: "fixture".into(),
+            file: name.into(),
+            name: name.into(),
+            base: Sha256::of(b"base"),
+            id: Sha256::of(name.as_bytes()),
+        }
+    }
+
+    #[test]
+    fn export_writes_the_ticked_map_variants_in_the_order_ticked() {
+        let all = [known("Castle"), known("Tower")];
+        let path = PathBuf::from("v.h2variant");
+        // Nothing ticked: the plain export.
+        assert!(matches!(export_action(path.clone(), &[], &all), Action::ExportVariant(_)));
+        let ticked = [all[1].id.to_string(), all[0].id.to_string()];
+        let Action::ExportVariantWith(p, maps) = export_action(path.clone(), &ticked, &all) else {
+            panic!("a tick makes a version-2 export");
+        };
+        assert_eq!(p, path);
+        let names: Vec<_> = maps.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["Tower", "Castle"]);
+        assert_eq!(maps[0].base, all[1].base.to_string());
+        // A tick whose map variant has gone from the list is dropped.
+        let gone = [Sha256::of(b"gone").to_string()];
+        assert!(matches!(export_action(path, &gone, &all), Action::ExportVariant(_)));
+    }
 }

@@ -495,6 +495,28 @@ impl VariantEditor {
         Some(portable::export(&v))
     }
 
+    /// The open variant as a version-2 file suggesting `maps`
+    /// ([`portable::Bundle::with_maps`]; at most [`portable::MAX_MAPS`]).
+    /// With none it is [`Self::export_current`]'s version-1 text, so a
+    /// variant that suggests nothing exports as it did. A record that names
+    /// a script is refused by name: this file carries no script
+    /// ([`portable::Bundle::new`]). `None` when no variant is open.
+    pub fn export_current_with(
+        &self,
+        maps: Vec<portable::MapSuggestion>,
+    ) -> Option<Result<String, EditError>> {
+        if maps.is_empty() {
+            return self.export_current().map(Ok);
+        }
+        let mut v = self.current()?.clone();
+        v.set_builtin_flag(false);
+        let bundle = portable::Bundle::new(&v, &v.name(), "", None).and_then(|b| b.with_maps(maps));
+        Some(match bundle {
+            Ok(b) => Ok(serde_json::to_string_pretty(&b).expect("plain data serializes")),
+            Err(e) => Err(e.into()),
+        })
+    }
+
     /// Opens a portable file as a new, unsaved variant.
     pub fn import(&mut self, text: &str) -> Result<(), EditError> {
         let (mut v, problems) = portable::import(text)?;
@@ -943,6 +965,36 @@ mod tests {
         e.import(&portable::export(&plain)).unwrap();
         assert_eq!(e.script_prefix(), Some(prefix));
         assert_eq!(e.current().unwrap().ext().script.mode, Mode::Rules);
+    }
+
+    #[test]
+    fn export_with_maps_writes_a_version_2_file_that_suggests_them() {
+        let suggestion = |n: u8, name: &str| portable::MapSuggestion {
+            base: format!("{:064x}", 1),
+            variant: format!("{n:064x}"),
+            name: name.into(),
+        };
+        let mut e = VariantEditor::new(schema(), None);
+        assert!(e.export_current_with(vec![suggestion(2, "Castle")]).is_none());
+        let mut plain = GameVariant::blank(GameType::Slayer);
+        plain.set_name("Plain").unwrap();
+        e.import(&portable::export(&plain)).unwrap();
+        // None suggested: the version-1 text it always wrote.
+        assert_eq!(
+            e.export_current_with(Vec::new()).unwrap().unwrap(),
+            e.export_current().unwrap()
+        );
+        let text = e
+            .export_current_with(vec![suggestion(2, "Castle"), suggestion(3, "Tower")])
+            .unwrap()
+            .unwrap();
+        let b = portable::read(&text).unwrap();
+        assert_eq!(b.version, portable::VERSION);
+        assert_eq!(b.name, "Plain");
+        assert_eq!(b.maps, [suggestion(2, "Castle"), suggestion(3, "Tower")]);
+        // The same map variant twice is refused by name, nothing written.
+        let twice = e.export_current_with(vec![suggestion(2, "A"), suggestion(2, "B")]).unwrap();
+        assert!(matches!(twice, Err(EditError::Import(PortableError::MapSuggestion(_)))));
     }
 
     #[test]

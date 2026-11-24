@@ -391,6 +391,10 @@ pub enum Action {
     DeleteVariant,
     /// Write the open variant as a portable `.h2variant` file.
     ExportVariant(PathBuf),
+    /// The same, suggesting these map variants
+    /// (`VariantEditor::export_current_with`): a version-2 file with
+    /// `maps`. None suggested is `ExportVariant`.
+    ExportVariantWith(PathBuf, Vec<variants::portable::MapSuggestion>),
     /// Open a portable `.h2variant` file as a new, unsaved variant.
     ImportVariantFile(PathBuf),
     /// The same, from pasted text.
@@ -1490,6 +1494,7 @@ impl App {
             | Action::RevertVariant
             | Action::DeleteVariant
             | Action::ExportVariant(_)
+            | Action::ExportVariantWith(..)
             | Action::ImportVariantFile(_)
             | Action::ImportVariantText(_)) => self.run_variant(a),
             a => self.run_playlist(a),
@@ -1799,6 +1804,13 @@ impl App {
             Action::ExportVariant(path) => match e.export_current() {
                 None => Err("no variant is open".into()),
                 Some(text) => std::fs::write(&path, text)
+                    .map(|()| Some(format!("exported {}", path.display())))
+                    .map_err(|err| format!("{}: {err}", path.display())),
+            },
+            Action::ExportVariantWith(path, maps) => match e.export_current_with(maps) {
+                None => Err("no variant is open".into()),
+                Some(Err(why)) => Err(why.to_string()),
+                Some(Ok(text)) => std::fs::write(&path, text)
                     .map(|()| Some(format!("exported {}", path.display())))
                     .map_err(|err| format!("{}: {err}", path.display())),
             },

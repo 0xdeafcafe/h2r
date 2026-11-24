@@ -524,8 +524,15 @@ A map variant is a Forge document, in the form a game is played from.
   with the `Problem` that bars it and its sentence; `load` refuses with
   the same one. Rename, duplicate and delete act on saved files, and on
   one that has a problem. Files are user output and stay out of Git
-  checkouts. The `.h2forge` store of Forge maps is the same module's
-  other half.
+  checkouts. `suggestable(data)` lists the files of every map that a
+  game variant may suggest: the variant tier, this build's builder, in
+  their own map's directory, with their base hash and document id. The
+  `.h2forge` store of Forge maps is the same module's
+  other half. On the Map variants dialogs a fact row (the page's "No map
+  variants", the open variant's "Open now") takes no A, and the footer
+  follows the focused row: A Select and B Back on an action, B Back
+  alone on a fact
+  ([forge-map-variants-ui.md](forge-map-variants-ui.md)).
 - **No game bytes.** The document rule holds unchanged: typed values an
   author set, tag keys, digests. A print and a `was` are digests. An
   own entry's position is never written unless the author moved it,
@@ -560,7 +567,12 @@ names it, and the format 2 `MapId`.
   saved document's id), the Map Variant picker opens on it, with Original
   still first and the rest by name, and its line ends "Made for
   <game variant>."; a held pick wins, and a suggested variant that fails
-  the store's checks is not opened on. What
+  the store's checks is not opened on. The suggestions are written by
+  Studio's variant tool (**Suggest map variants**, `variant.maps` and
+  `variant.export`) and by `game_variants::store::Store::set_maps` for a
+  game variant kept in the game's store, from the map variants on this
+  machine (`forge::files::variants::suggestable`); the retail editor
+  saves through the save storage, whose variants port with none. What
   a game variant *requires* of a map is its script's labels, which the
   start gate enforces.
 
