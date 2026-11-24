@@ -40,6 +40,10 @@ pub const MAX_GATES: usize = 16;
 /// How far below its closed place an open barrier stands, in 16.16 world
 /// units: far enough that nothing it blocks is on it.
 pub const GATE_DROP: i32 = 64 << 16;
+/// Pickers (`offer_pick`) a script offers at once, numbered from 0.
+pub const MAX_PICKS: usize = 2;
+/// Rows (`pick_row`) a picker holds.
+pub const MAX_PICK_ROWS: usize = 6;
 /// Pairs of objects the sight table (`sees`) keeps at once.
 pub const MAX_SIGHT_PAIRS: usize = 32;
 /// A sight pair nobody asked for in this many ticks is dropped.
@@ -252,6 +256,9 @@ pub enum ErrorKind {
     Sight,
     /// More than [`MAX_GATES`] barriers open at once (`set_open`).
     Gates,
+    /// A picker (`offer_pick`, `pick_row`) numbered past [`MAX_PICKS`], a
+    /// row for a picker never offered, or more than [`MAX_PICK_ROWS`] rows.
+    Picks,
 }
 
 impl ErrorKind {
@@ -273,6 +280,7 @@ impl ErrorKind {
             9 => ErrorKind::Movers,
             10 => ErrorKind::Sight,
             11 => ErrorKind::Gates,
+            12 => ErrorKind::Picks,
             _ => return None,
         })
     }
@@ -362,6 +370,29 @@ pub struct RulesExt {
     /// The barriers a script holds open (`set_open`), in the order opened,
     /// each with the place it closes back to, at most [`MAX_GATES`].
     pub gates: Vec<Gate>,
+    /// The pickers the script offers (`offer_pick`), in slot order.
+    pub picks: Vec<PickOffer>,
+    /// What each player picked in them, at most one row for each player and
+    /// picker, in the order made. The host reports a pick
+    /// ([`Vm::choose`]); `picked` reads it.
+    pub choices: Vec<Choice>,
+}
+
+/// One picker a script offers: its slot, and its title and rows as indexes
+/// of the script's string table.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PickOffer {
+    pub slot: u8,
+    pub title: u16,
+    pub rows: Vec<u16>,
+}
+
+/// One player's pick: the row of picker `slot`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Choice {
+    pub player: u8,
+    pub slot: u8,
+    pub row: u8,
 }
 
 /// One open barrier: the object and where it stands when closed, 16.16
@@ -475,8 +506,9 @@ pub enum StateError {
 const STATE_MAGIC: [u8; 4] = *b"H2RX";
 /// 2 added the `ticks_held` counters; 3 the teams' spawn rules and
 /// bodies; 4 the script role mask and the shown areas; 5 the show state;
-/// 6 the movers; 7 the sight table; 8 the open barriers.
-const STATE_VERSION: u8 = 8;
+/// 6 the movers; 7 the sight table; 8 the open barriers; 9 the pickers and
+/// what each player picked.
+const STATE_VERSION: u8 = 9;
 
 impl RulesExt {
     /// Whether `player` holds `cap` (an index into `requires`) with uses
@@ -619,6 +651,19 @@ impl RulesExt {
         for g in &self.gates {
             w.extend_from_slice(&g.object.to_le_bytes());
             i32s(&mut w, &g.home);
+        }
+        w.push(self.picks.len() as u8);
+        for o in &self.picks {
+            w.push(o.slot);
+            w.extend_from_slice(&o.title.to_le_bytes());
+            w.push(o.rows.len() as u8);
+            for row in &o.rows {
+                w.extend_from_slice(&row.to_le_bytes());
+            }
+        }
+        w.push(self.choices.len() as u8);
+        for c in &self.choices {
+            w.extend_from_slice(&[c.player, c.slot, c.row]);
         }
         w
     }
@@ -839,6 +884,44 @@ impl RulesExt {
             }
             gates.push(Gate { object, home });
         }
+        let at = r.at;
+        let n = r.u8()? as usize;
+        if n > MAX_PICKS {
+            return Err(StateError::Malformed(at));
+        }
+        let mut picks: Vec<PickOffer> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let at = r.at;
+            let slot = r.u8()?;
+            let title = r.u16()?;
+            let rows = r.u8()? as usize;
+            if slot as usize >= MAX_PICKS || rows > MAX_PICK_ROWS || picks.iter().any(|o| o.slot >= slot) {
+                return Err(StateError::Malformed(at));
+            }
+            let mut list = Vec::with_capacity(rows);
+            for _ in 0..rows {
+                list.push(r.u16()?);
+            }
+            picks.push(PickOffer { slot, title, rows: list });
+        }
+        let at = r.at;
+        let n = r.u8()? as usize;
+        if n > MAX_PLAYERS * MAX_PICKS {
+            return Err(StateError::Malformed(at));
+        }
+        let mut choices: Vec<Choice> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let at = r.at;
+            let c = Choice { player: r.u8()?, slot: r.u8()?, row: r.u8()? };
+            let offered = picks.iter().find(|o| o.slot == c.slot).is_some_and(|o| (c.row as usize) < o.rows.len());
+            if c.player as usize >= MAX_PLAYERS
+                || !offered
+                || choices.iter().any(|d| d.player == c.player && d.slot == c.slot)
+            {
+                return Err(StateError::Malformed(at));
+            }
+            choices.push(c);
+        }
         if r.at != bytes.len() {
             return Err(StateError::Malformed(r.at));
         }
@@ -863,6 +946,8 @@ impl RulesExt {
             movers,
             sight,
             gates,
+            picks,
+            choices,
         })
     }
 }
@@ -1025,6 +1110,8 @@ impl Vm {
             movers: Vec::new(),
             sight: Vec::new(),
             gates: Vec::new(),
+            picks: Vec::new(),
+            choices: Vec::new(),
         };
         Ok(Vm {
             role_traits: role_traits(&ir, options),
@@ -1063,6 +1150,10 @@ impl Vm {
             && ext.movers.len() <= MAX_MOVERS
             && ext.sight.len() <= MAX_SIGHT_PAIRS
             && ext.gates.len() <= MAX_GATES
+            && ext
+                .picks
+                .iter()
+                .all(|o| (o.title as usize) < ir.strings.len() && o.rows.iter().all(|&t| (t as usize) < ir.strings.len()))
             && ext.spawns.iter().all(|r| match r {
                 Some(Spawns::Areas { label, .. }) => (*label as usize) < ir.labels.len(),
                 _ => true,
@@ -1442,6 +1533,8 @@ impl Vm {
                 self.ext.show = crate::show::State::default();
                 self.ext.movers.clear();
                 self.ext.sight.clear();
+                self.ext.picks.clear();
+                self.ext.choices.clear();
                 // Every barrier still open stands where it closed.
                 for gate in std::mem::take(&mut self.ext.gates) {
                     game.step_object(gate.object, gate.home, [0; 3]);
@@ -1471,6 +1564,66 @@ impl Vm {
     /// The barriers held open (`set_open`), in the order opened.
     pub fn gates(&self) -> &[Gate] {
         &self.ext.gates
+    }
+
+    /// The host's put of `object` to `at` (world units) was refused, which
+    /// the engine does for a place outside the world. When it was the put
+    /// that opened a barrier ([`Gate::open_at`], read as the host reads a
+    /// 16.16 value), the barrier never moved: it is closed again here, so
+    /// the next `set_open(o, true)` tries again. Any other refused put
+    /// changes nothing; a barrier's closing put is not one to take back,
+    /// as the barrier is already forgotten. Returns whether a barrier was
+    /// closed.
+    pub fn put_refused(&mut self, object: u32, at: [f32; 3]) -> bool {
+        let world = |v: i32| (f64::from(v) / 65536.0) as f32;
+        let held = self
+            .ext
+            .gates
+            .iter()
+            .position(|g| g.object == object && g.open_at().map(world) == at);
+        match held {
+            Some(i) => {
+                self.ext.gates.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The pickers the script offers (`offer_pick`), in slot order.
+    pub fn picks(&self) -> &[PickOffer] {
+        &self.ext.picks
+    }
+
+    /// What the players picked, in the order made.
+    pub fn choices(&self) -> &[Choice] {
+        &self.ext.choices
+    }
+
+    /// A string of the script's table, as an offer names its title and rows.
+    pub fn string(&self, id: u16) -> Option<&str> {
+        self.ir.strings.get(id as usize).map(String::as_str)
+    }
+
+    /// The host reports that `player` picked `row` of picker `slot`. A
+    /// pick of a picker not offered, a row it does not hold or a player
+    /// outside the roster is refused (`false`); a player's second pick of
+    /// the picker replaces the first. A pick holds until the round's end.
+    pub fn choose(&mut self, player: u8, slot: u8, row: u8) -> bool {
+        let offered = self
+            .ext
+            .picks
+            .iter()
+            .find(|o| o.slot == slot)
+            .is_some_and(|o| (row as usize) < o.rows.len());
+        if !offered || player as usize >= MAX_PLAYERS {
+            return false;
+        }
+        match self.ext.choices.iter_mut().find(|c| c.player == player && c.slot == slot) {
+            Some(c) => c.row = row,
+            None => self.ext.choices.push(Choice { player, slot, row }),
+        }
+        true
     }
 
     /// The sight table (`sees`), in the order its pairs were first asked.
@@ -1973,6 +2126,17 @@ impl<'a> Run<'a> {
                             }
                         }
                     }
+                    // The player's row of the picker, or -1: none made, none
+                    // offered, or a player or picker out of range.
+                    caps::id::PICKED => match (u8::try_from(raw[0]), u8::try_from(raw[1])) {
+                        (Ok(player), Ok(slot)) => self
+                            .ext
+                            .choices
+                            .iter()
+                            .find(|c| c.player == player && c.slot == slot)
+                            .map_or(-1, |c| i32::from(c.row)),
+                        _ => -1,
+                    },
                     caps::id::RANDOM => {
                         if raw[0] > 0 {
                             (splitmix64(&mut self.ext.rng) % raw[0] as u64) as i32
@@ -2014,6 +2178,7 @@ impl<'a> Run<'a> {
                     Order::Now => {
                         self.mover(game, e.id, &raw)?;
                         self.gate(game, e.id, &raw)?;
+                        self.pick(e.id, &raw)?;
                         self.stand(e.id, &raw)?;
                         let mut call = self.resolve(e, &raw);
                         if caps::is_message(e.id) {
@@ -2113,6 +2278,44 @@ impl<'a> Run<'a> {
             (false, Some(i)) => {
                 let gate = self.ext.gates.remove(i);
                 game.step_object(object, gate.home, [0; 3]);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// `offer_pick` and `pick_row`: the pickers in the VM's state, which the
+    /// host opens for the players. `offer_pick(n, title)` makes picker `n`
+    /// (0 up to [`MAX_PICKS`]) with no rows, replacing one of that number
+    /// and the picks made in it; `pick_row(n, label)` adds a row to it, at
+    /// most [`MAX_PICK_ROWS`]. A picker out of range, or a row for a picker
+    /// not offered, is a script error. The round's end takes them all.
+    fn pick(&mut self, entry: u16, raw: &[i32]) -> Result<(), ErrorKind> {
+        let text = |v: i32| u16::try_from(v).ok().filter(|&t| (t as usize) < self.ir.strings.len());
+        match (entry, raw) {
+            (caps::id::OFFER_PICK, &[slot, title]) => {
+                let slot = u8::try_from(slot).ok().filter(|&s| (s as usize) < MAX_PICKS).ok_or(ErrorKind::Picks)?;
+                let title = text(title).ok_or(ErrorKind::Picks)?;
+                self.ext.choices.retain(|c| c.slot != slot);
+                let offer = PickOffer { slot, title, rows: Vec::new() };
+                match self.ext.picks.iter_mut().find(|o| o.slot == slot) {
+                    Some(o) => *o = offer,
+                    None => {
+                        self.ext.picks.push(offer);
+                        self.ext.picks.sort_by_key(|o| o.slot);
+                    }
+                }
+            }
+            (caps::id::PICK_ROW, &[slot, label]) => {
+                let label = text(label).ok_or(ErrorKind::Picks)?;
+                let offer = u8::try_from(slot)
+                    .ok()
+                    .and_then(|s| self.ext.picks.iter_mut().find(|o| o.slot == s))
+                    .ok_or(ErrorKind::Picks)?;
+                if offer.rows.len() >= MAX_PICK_ROWS {
+                    return Err(ErrorKind::Picks);
+                }
+                offer.rows.push(label);
             }
             _ => {}
         }
@@ -2444,6 +2647,14 @@ mod tests {
                 Sight { from: 0x4001_0002, to: 0x4001_0001, asked: 41, clear: false },
             ],
             gates: vec![Gate { object: 0x4001_0003, home: [65_536, -2, 3] }],
+            picks: vec![
+                PickOffer { slot: 0, title: 3, rows: vec![4, 5, 6] },
+                PickOffer { slot: 1, title: 7, rows: vec![8] },
+            ],
+            choices: vec![
+                Choice { player: 2, slot: 0, row: 2 },
+                Choice { player: 0, slot: 1, row: 0 },
+            ],
         }
     }
 
@@ -2495,7 +2706,9 @@ mod tests {
             + (1 + e.show.encode().len())
             + (1 + 36 * e.movers.len())
             + (1 + 13 * e.sight.len())
-            + (1 + 16 * e.gates.len());
+            + (1 + 16 * e.gates.len())
+            + (1 + e.picks.iter().map(|o| 4 + 2 * o.rows.len()).sum::<usize>())
+            + (1 + 3 * e.choices.len());
         let rules = (1 + 2 + 4) + (MAX_TEAMS - 2) + (1 + 4 + 1);
         let first = bytes.len() - held - MAX_TEAMS - rules;
         assert_eq!(bytes[first], 1, "team 0 has an Areas rule");
@@ -2766,6 +2979,12 @@ mod tests {
                 .map(|o| Sight { from: o, to: o + 1, asked: u32::MAX, clear: true })
                 .collect(),
             gates: (0..MAX_GATES as u32).map(|o| Gate { object: o, home: [i32::MIN; 3] }).collect(),
+            picks: (0..MAX_PICKS as u8)
+                .map(|slot| PickOffer { slot, title: u16::MAX, rows: vec![u16::MAX; MAX_PICK_ROWS] })
+                .collect(),
+            choices: (0..MAX_PICKS as u8)
+                .flat_map(|slot| (0..MAX_PLAYERS as u8).map(move |player| Choice { player, slot, row: MAX_PICK_ROWS as u8 - 1 }))
+                .collect(),
         };
         let bytes = e.encode();
         assert!(bytes.len() <= MAX_STATE_BYTES, "{} bytes", bytes.len());

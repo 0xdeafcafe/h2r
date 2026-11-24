@@ -407,6 +407,7 @@ fn a_scenario_sets_the_bodies_the_sight_and_a_touchdown() {
                     down: fixed_at(9),
                     up: fixed_at(12),
                 }],
+                ..ScenarioTick::default()
             },
         ],
         ..Scenario::default()

@@ -339,4 +339,14 @@ mod tests {
         let declared: Vec<(&str, bool)> = table.things().iter().map(|t| (t.text.as_str(), t.label.is_some())).collect();
         assert_eq!(declared, vec![("territory", false), ("siege_site", true), ("territory", false)]);
     }
+
+    /// The label Siege reads for its barriers is the one Forge's AI and
+    /// objectives page offers, so an author picks it instead of typing it.
+    #[test]
+    fn siege_reads_the_barrier_label_forge_offers() {
+        let ir = siege_ir();
+        let text = forge::GroundLabel::Barrier.text();
+        let def = ir.labels.iter().find(|l| l.text == text).expect("Siege declares the barrier label");
+        assert_eq!(def.text, "siege_barrier");
+    }
 }

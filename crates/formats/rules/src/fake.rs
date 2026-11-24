@@ -108,6 +108,12 @@ pub struct FakeGame {
     /// The steps the VM's movers made, in order: the object, where it was
     /// put and its velocity.
     pub steps: Vec<(u32, [i32; 3], [i32; 3])>,
+    /// The steps the world refused (a place past [`FakeGame::world_limit`]):
+    /// the object and the place. Each is in [`FakeGame::steps`] and
+    /// [`FakeGame::refused`] too, and changed nothing; `scenario::step` tells the VM
+    /// at the next tick's start, as the host does at its boundary
+    /// (`Vm::put_refused`).
+    pub refused_steps: Vec<(u32, [i32; 3])>,
     /// The players whose biped is off the ground, crouched, or primed:
     /// what `airborne`, `crouching` and `primed` read. A `touchdown`
     /// lands the player (takes it out of `airborne`).
@@ -1069,6 +1075,11 @@ impl Game for FakeGame {
 
     fn step_object(&mut self, object: u32, at: [i32; 3], velocity: [i32; 3]) {
         self.steps.push((object, at, velocity));
+        if self.world_limit.is_some_and(|w| at.iter().any(|c| c.unsigned_abs() > w.unsigned_abs())) {
+            self.refused.push(("put_object", format!("{at:?} is outside the world")));
+            self.refused_steps.push((object, at));
+            return;
+        }
         self.object_positions.insert(object, at);
         self.object_velocities.insert(object, velocity);
     }

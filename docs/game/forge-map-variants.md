@@ -392,6 +392,13 @@ collision and each machine builds its own.
   `team`) with a label op naming it, one of `ff_drop`, `ff_base`,
   `ff_cover`, `siege_site`, `siege_goal` and `siege_line`
   (`forge_doc::GroundLabel`). A `siege_line`'s number is its phase. A
+  seventh label, `siege_barrier`, is the one that marks an object, not a
+  flag: scenery, a crate, a machine or a vehicle, numbered by the phase it
+  opens in (no number is open from the start). The AI and objectives page
+  offers it (`Session::label_barrier` labels the object the monitor aims
+  at, opening in phase 1), Properties still takes it typed, and the ground
+  build and the stamp do not read it, so labelling a barrier leaves the
+  ground current. A
   map's own flag labelled the same way is a marker too. A ground label
   on any other block, or a `siege_line` with no phase, is refused by name
   (`ForgeDoc::ground_marks`). A session adds a marker as a flag with no

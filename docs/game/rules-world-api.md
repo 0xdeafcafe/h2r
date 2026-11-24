@@ -285,7 +285,7 @@ entries, signatures and fake of a group in
 `vehicles`, `squads`, `bots`, `audio`, `hud`, `physics`, `data` and
 `show`. The host's zone test (`world/zones.rs`, the labelled flags as
 cylinders and hill polygons, behind `inside`, `ticks_held`, `on enter`
-and `on leave`), `set_loadout` (`world/loadout.rs`), the spawn rules
+and `on leave`), `set_loadout` (`world/loadout.rs`), the pickers (`world/pick.rs`), the spawn rules
 (`world/spawns.rs`) and the bodies (`world/body.rs`) are guest halves of the core entries, with no group
 of their own
 ([rules-engine.md](rules-engine.md#the-host-runtime)).
@@ -334,7 +334,7 @@ other.
 | `move_to(o, at, t)`, `stop(o)`; `on arrive(o)` | `move_to(Object, Fixed, Fixed, Fixed, Int)` and `stop(Object)`, now; the VM's own event | a **mover**: a `RulesExt` record (object, from, to, start tick, duration; `vm::Mover`, at most 16) the VM steps every tick in the order started, telling the game the place on the straight line from where the object was when `move_to` was called, and `to` exactly on the end tick, when `on arrive(o)` runs. `t` of 0 or less is one tick. A second `move_to` for an object replaces its mover with no `on arrive`; `stop` ends it with none; a seventeenth mover is a script error; the round's end clears them. The host puts the object at each step (`OBJECT_SET_TRANSFORM`) at the next boundary; the velocity of a step is not pushed (`OBJECT_SET_VELOCITY` needs two vectors in guest memory, and what marks the entity is R2) | named (**Code**); **S** that a client sees the move (R2, R3) | position flag |
 | `move_along(o, path, t)` | | | refused by name: it needs the `path` label kind, which W8 builds; `move_to` takes one point | |
 | `attach(o, to)`, `detach(o)` | `attach`, `detach` | no entry read; the object datum has a parent field, and HaloScript's `objects_attach` evaluator is not traced | untraced | nothing generic: only a unit's parent vehicle replicates (**E**). Until traced, `move_to` with the parent's `at` each tick is the script's follow |
-| `set_open(o, open)` | `set_open(Object, Bool)`, now | a barrier opened or closed: the first `set_open(o, true)` notes where the object stands (`vm::Gate`, in `RulesExt::gates`, at most 16, the round's end closes them) and steps it 64 world units below, and `set_open(o, false)` steps it back and forgets it; asking for the state it is in does nothing, and a seventeenth open barrier is a script error. The steps are the host's puts (`OBJECT_SET_TRANSFORM`, as `teleport`), so the host adds no call; a put outside the world is a refused call that leaves the VM believing the barrier open | named (**Code**); whether the barrier stops blocking once put there and whether a client sees it move are R2 and R3 | position flag |
+| `set_open(o, open)` | `set_open(Object, Bool)`, now | a barrier opened or closed: the first `set_open(o, true)` notes where the object stands (`vm::Gate`, in `RulesExt::gates`, at most 16, the round's end closes them) and steps it 64 world units below, and `set_open(o, false)` steps it back and forgets it; asking for the state it is in does nothing, and a seventeenth open barrier is a script error. The steps are the host's puts (`OBJECT_SET_TRANSFORM`, as `teleport`), so the host adds no call; a put outside the world is a refused call, which the host tells the VM (`Vm::put_refused`, from `Runtime::finish`) when it was the put that opened a barrier: the VM forgets the barrier, so it stands closed in the state too and the next `set_open(o, true)` tries again | named (**Code**); whether the barrier stops blocking once put there and whether a client sees it move are R2 and R3 | position flag |
 | `set_power(o, f)`, `set_position(o, f)` on a device | `device_power`, `device_position` | Forge's device sinks ([forge-features.md](forge-features.md#teleporters-buttons-and-triggers)); the engine setters are not traced | untraced | the device entity (type 16, **E**) |
 
 `create` and `delete` are the existing entries. A created object has no
@@ -500,6 +500,39 @@ nothing.
 | Script | Entry | Engine | Status | Synced by |
 |---|---|---|---|---|
 | `set_loadout(p, primary, secondary)` | `set_loadout` | `STARTING_WEAPON_PICK` (`0x19eda0`) answers the value's tag from the map's multiplayer globals, as the spawn's weapon pass asks it; the weapon is made and added as a starting profile does (`placement_data_new`, `object_new`, `unit_add_weapon`, and `object_delete` when the unit refuses it) — the primary in mode 2, which empties the unit's weapon slots first and readies it, the secondary in mode 1 beside it (mode 2 when there is no primary) | named | the unit's weapon entities |
+
+### Pickers
+
+Capability `player.pick`. A script offers each local player a short list
+to pick from before the round, and reads the pick. The VM keeps the offers
+and the picks in its state (`RulesExt::picks`, at most 2 pickers numbered
+from 0 of at most 6 rows each; `RulesExt::choices`, a row for each player
+and picker), so a checkpoint, a film's keyframe and a joiner read them as
+they read every other record.
+
+| Script | Entry | Engine | Status | Synced by |
+|---|---|---|---|---|
+| `offer_pick(n, title)`, `pick_row(n, label)` | `offer_pick(Int, Text)`, `pick_row(Int, Text)`, now | `offer_pick` makes picker `n` with no rows, replacing a picker of that number and the picks made in it; `pick_row` adds a row. A picker past the second, a row for a picker not offered and a seventh row are script errors (`ErrorKind::Picks`). The round's end takes the offers and the picks. The host adds no call of its own | named (**Code**) | the state blob |
+| `picked(p, n)` | `picked`, a VM read | the row (from 0, in the order the rows were added) player `p` picked in picker `n`; -1 when none was made, none is offered or the player is outside the roster | named (**Code**) | the state blob |
+| the host's report | `Vm::choose(player, picker, row)` | a pick of a picker not offered, a row it does not hold or a player outside the roster is refused (`false`); a second pick replaces the first | named (**Code**) | the state blob |
+
+On the host (`rules/world/pick.rs`) the runtime reads the offers at each
+tick boundary on the authority, outside a film. For each new set of offers
+it asks this machine's local players one at a time, in roster order: a
+`Call::OfferPick` makes the game's value picker (`ui_kit::picker`, the
+`kit.picker.game` dialog in a game, a select dialog over the running game)
+over the player's controller, titled by the offer with its rows as the
+values. A press on a row is reported from the picker's setter and handed to
+`Vm::choose` at the next boundary; the next player's picker opens then, or
+after 30 seconds (B on the picker reports nothing). Picks made before the
+round's end reset are still handed over. The picker is the existing
+data-driven one, so no screen of its own and no per-script Rust.
+
+A player on another machine is not asked (it has no local user here), and
+a pick made on another machine is not carried, which needs a message on the
+actor channel; such a player reads -1 from `picked` and a script falls back
+to the lobby's option, as `siege.rules` does. A player who joins after the
+offers were made is not asked either.
 
 ### Spawns
 
