@@ -54,7 +54,7 @@ fn setup(g: &mut Guest, c: &mut Cpu, seed: u32) {
     g.set_u8(source + 4, if seed == 12 { 32 } else { 0 }).unwrap();
     g.set_u8(source + 6, if seed % 2 == 0 { 0 } else { 2 }).unwrap();
     g.set_u8(source + 0xa1, 2).unwrap();
-    g.set_u8(channel + 10, if seed < 3 { 0 } else { 1 + (seed % 2) as u8 }).unwrap();
+    g.set_u8(channel + 10, if seed < 4 { 0 } else { 1 + (seed % 2) as u8 }).unwrap();
     g.set_u8(TAG + 2, 0xf3).unwrap();
     let listener = GLOBALS + 0x88 + 2 * 0x48;
     for i in 0..9 {
