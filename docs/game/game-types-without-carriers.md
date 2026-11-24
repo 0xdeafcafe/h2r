@@ -1,6 +1,6 @@
 # Game types without carriers
 
-Status: Design, with GM1 built (`crates/tools/firefight-kit/src/ground.rs`) and GM3's document, session and screens built (the builder hook is not wired, below); "What the carrier supplies" is the state of the code and the slices are the order to change the rest in.
+Status: Design, with GM1 built (`crates/tools/firefight-kit/src/ground.rs`) and GM3's document, session, screens, builder, agent methods and overlay built (the built map is not loaded into the running game yet, below); "What the carrier supplies" is the state of the code and the slices are the order to change the rest in.
 Code: `crates/formats/rules/src` (`ir.rs` the header, `lang/check.rs`, `caps.rs`, `builtin/`), `crates/extensions/game/src/rules/` (`runtime.rs`, `scoring.rs`, `objectives.rs`, `roles.rs`), `crates/formats/variants/src/portable.rs` (`record_for`), `crates/extensions/game/src/community_variants.rs`. Tests: `crates/formats/rules/tests/engines.rs`, `tests/modes.rs`.
 Switch: none (the `rules` feature).
 
@@ -203,9 +203,12 @@ Ground is built when it is asked for, never while placing:
    ([forge-design.md](forge-design.md), slice F9), zones and firing
    positions from the labels, sixteen squad slots, the characters.
 3. Pathfinding in `sbsp` is a Rebuild change, so the builder
-   (`forge::GroundBuilder`) materialises the play form, which builds the
-   ground over it (`forge_build::build`), and reloads the map, keeping
-   the document, the monitor's position and the tool; the report
+   (`forge::GroundBuilder`, `boot::ground_builder::AppGround`)
+   materialises the play form, which builds the ground over it
+   (`forge_build::build`). It is meant to reload the map, keeping
+   the document, the monitor's position and the tool, and that
+   reload is not built ([forge-map-variants.md](forge-map-variants.md),
+   "AI ground"); the report
    (`GroundReport`) lists the problems the overlay draws (a drop with no
    path to a base, a site off the ground, the headroom refusal with its
    biggest part).
@@ -325,7 +328,7 @@ with tests, M under 2,500. Tests are headless on `rules::fake::FakeGame`.
 | GE5 | **Every script game on the script index**: `record_for`, the retail-record swap, films and the session; the base HUD (score, time) as a HUD kit HUD | M | GE1 to GE4, GT6, GT7 | `tests/modes.rs` and `tests/engines.rs` pass on script-index records; no built-in's record is index 2; the base HUD compiles and shows an invented score and clock |
 | GM1 (built) | **Ground as a build step**: `firefight_kit`'s generator behind `ground::build(map, labels, recipe)`, labels in place of found bases and picked drops, the stale rule, the receipt | M | nothing | on the kit's invented court: no labels gives the tags `build_package` gives; a moved `ff_drop` moves its zone; the same inputs give the same bytes; over headroom is refused with its biggest part |
 | GM2 | **Studio**: the AI and objectives group, **Build AI ground**, `ground.status`, `ground.build`, the Navigation layers, the `map` item's `ground` | M | GM1, PK9 of studio-redesign | a label placed in the window and by `scenario.add` make the same document; a build on an invented map lists its sectors; an edit that moves collision marks it stale |
-| GM3 (built) | **Forge**: the palette page, the `ground` recipe in the document and `Tier::Variant`, **Build AI ground**, the rebuild and reload, build on save, the overlay | M | GM1 | a variant with labels and a recipe validates as a variant; materialising it equals GM1's build of the same inputs; a save with stale ground builds first |
+| GM3 (built, but for the reload) | **Forge**: the palette page, the `ground` recipe in the document and `Tier::Variant`, **Build AI ground**, the rebuild and reload (the build is built; the reload is not), build on save, the overlay | M | GM1 | a variant with labels and a recipe validates as a variant; materialising it equals GM1's build of the same inputs; a save with stale ground builds first |
 | GM4 | **Labels the scripts read**: Firefight's director and `siege.rules` take their places from labels; the lobby's refusal for a map without them | S | GM1, GT1 | on the fake game a wave lands at a placed drop; Siege's sites are the placed ones; a map with no required label is refused by name |
 
 GT1, GT0, GE0 and GM1 start together. Index 2 (GT2) is the step that
