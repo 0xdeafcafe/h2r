@@ -3,8 +3,9 @@
 The native collision world answers point and location queries (A/B)
 and the MOPP box query (F). The vector queries and instance trace (C–E),
 the cluster flood (G) and the object spatial visit (H) run lifted with
-entry FP observers. The differential harness also exercises the C/D, G
-and H kernels. The entry adapters live in
+entry FP observers. The general MOPP ray (I) runs lifted with a parity
+arm: the native walk follows each query and is counted against it. The
+differential harness also exercises the C/D, G and H kernels. The entry adapters live in
 `crates/rewrites/engine/src/sim_collision`, the kernels in
 `crates/rewrites/sim-collision` and the installer in
 `crates/rewrites/sim-bridge/src/sim_native.rs`. See the
@@ -26,9 +27,12 @@ A declined query resumes the lifted entry from its original state.
 | F | `0x300150` MOPP box query | `COLLISION_MOPP_BOX` | `ecx` box VM; stack: code, AABB, key array; `ret 0xc` | the VM's `+0`, `+0x10..+0x28`, `+0x30`; keys at `data[size..]` and `size` (below) |
 | G | `0x14a5b0` cluster flood | `COLLISION_CLUSTER_FLOOD` | stack: cluster (`i16`), centre, radius, capacity, out; `ret 0x14`; count in `ax` | the `u16` cluster list, the cluster marks |
 | H | `0xbb050` object spatial visit | `OBJECT_SPATIAL_VISIT` | stack: list bits, type mask, location, centre, radius, out, capacity; `ret 0x1c`; count in `ax` | the handle list, the epochs, active bytes and marks described below |
+| I | `0x301800` MOPP ray | `COLLISION_MOPP_RAY` | `ecx` ray VM; stack: collection, code, ray input, parent body, collector; `ret 0x14` | none natively: the guest runs (below) |
 
-The installer gives the three implementations (A, B, F) and the five
-observers (C, D, E, G, H) to the collision switch. G and H have native
+The installer gives the three implementations (A, B, F) and the six
+entry observers (C, D, E, G, H, I) to the collision switch, with I's
+parity observers at `0x3009e0` (`SIM_MOPP_RAY`), at `0x244bb0`
+(`COLLISION_INSTANCE_CHILD`) and after I returns. G and H have native
 adapters (`sim_collision::flood`) that the differential runs; they are not
 installed. The implementations use the owning executor because they update shared caches and subscriptions. The older
 per-function switches (`native_point_to_leaf`, `native_bsp_segment`) are
@@ -165,6 +169,51 @@ those pages and moves whenever the engine wraps the code in a shape, so a
 dirty page does not drop the trees: it moves a generation, and a held
 tree compares its bytes with the guest's before its next use. A changed
 program decodes again.
+
+### Entry I — general MOPP ray
+
+The tree shape's ray slot (`0x2df720`) builds the ray VM on its stack and
+calls I with the shape's collection and code and its own three arguments.
+I fills the VM (sim-rewrite-collision.md, "Ray VM at entry I"), computes
+the root frame and segment, and calls the float interpreter `0x3009e0`
+with `ecx` the VM and the stack holding the frame, the bytecode pointer
+(`code + 0x30 + pc`) and the segment; `ret 0xc`. Each terminal calls the
+optional filter (input `+0x24`), the collection's child method (vtable
+slot `+0x34`, `key` and a buffer, `ret 8`) and the child's ray method
+(slot `+0x24`, `ret 0xc`), then reloads the fraction from the collector.
+
+The kernel is `sim_collision::mopp::ray`. `Ray::root` is the setup:
+`one / scale` stored, the root scale `scale * [0x45dcac]` stored, and both
+ends as `(p - origin) * root_scale` in packed binary32. `RayWalk` walks the
+bytecode the world holds for the code pointer (the same `Tree` and
+revision as F) and yields each interpreter call (`Event::Enter`: pc, frame,
+segment) and each terminal key; the caller passes the fraction the VM
+holds before each step. It replays the original's float sequences in the
+guest's x87 precision (single or double; extended declines) and bails
+`float` on any operand or result off the exact path (NaN, infinity,
+subnormal, an underflowed product or quotient).
+
+I is not answered natively: the callbacks are guest code the walk would
+have to await between steps. Its parity arm (`engine::sim_collision::mopp_ray`)
+observes the query and leaves every register and byte to the guest:
+
+1. Before I: check MXCSR, the x87 environment (three free registers) and
+   the precision, read the arguments, the code's tree, the constants, the
+   ray, the filter and the collector's fraction, and start a walk.
+2. At each interpreter entry whose `ecx` is the query's VM: the frame, pc
+   and segment must equal the walk's next call, given the VM's fraction.
+   The first also checks the VM's stored `one / scale`.
+3. At `0x244bb0` whose `ecx` is the query's collection, when the query has
+   no filter and that is the collection's child method: the key must equal
+   the walk's next key.
+4. After I returns: the walk must have ended too.
+
+Without observed keys the arm compares calls only, until the fraction
+moves; that query counts as `fraction_moved`. Queries nest (a child shape
+can run its own ray), so the open ones form a stack per thread and each
+observation goes to the innermost. `collision.stats` reports the outcomes
+under `ray`: matched, mismatched with the first mismatch described,
+unverified by bail reason, and `fraction_moved`.
 
 ### Entries G and H — cluster flood and object visit
 
@@ -498,6 +547,7 @@ cargo test -p sim-bridge sim_native
 cargo test -p agent collision
 cargo test -p guest-layout
 H2_XBE=/path/to/default.xbe cargo test -p engine --features differential --test it sim_collision_differential::
+H2_XBE=/path/to/default.xbe cargo test -p engine --features differential --test it sim_collision_differential::mopp_ray -- --nocapture
 ```
 
 The G and H cases (`cluster_flood_matches_the_guest`,
@@ -516,6 +566,17 @@ F's cases are random programs over every opcode class
 on frame-cell edges, and each decline path: PE clear, extended or
 directed rounding, NaN, inverted and far boxes, a full array, and a key
 area over the VM, the code or the dead stack.
+
+I's cases run the setup and the interpreter lifted, with the arm's
+observers where the installer puts them and invented callbacks answered
+by the run loop: the instanced collection method or one whose keys the
+arm cannot see, a child ray method that lowers the collector's fraction
+for some keys, and a filter that rejects some. Programs are random and
+hand-written over every opcode family, with rays on and across their
+thresholds, in single, double and extended precision. Each case must
+match or be unverified for a stated reason, and the collection must get
+the keys a native-only walk gives. A last case changes the bytecode under
+a warm world, and the arm must report the mismatch.
 
 The ignored disc sweep compares points on each structure and object BSP
 and locations on structure BSPs. It reports per-map decoded storage and
@@ -544,6 +605,8 @@ entry, so the census includes recursion. The 512-cluster and
 0x800-object-slot bounds come from the globals that follow the mark
 arrays, not from a measured map census. F's `grow` rate on a running match
 decides whether its adapter grows the array through `0x2d91d0` instead of
-bailing. Runtime verification includes arena
+bailing. I's parity on a running match (the `ray` counters with no
+mismatch) gates its native answer in S7, which owns the callbacks.
+Runtime verification includes arena
 parity, cache-cold runs, FP distributions and cross-architecture bail
 counts.

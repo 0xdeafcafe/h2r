@@ -374,6 +374,10 @@ points! { ALL;
     BASE_OBJECT_IMPORT @ 0x000b_cc20: [fn(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al ret 16], Hot; "docs/perf/sim-budget.md";
     /// The integer MOPP box query: setup, then the interpreter below.
     COLLISION_MOPP_BOX @ 0x0030_0150: [fn(vm: ecx, code: stack 0, aabb: stack 1, array: stack 2) ret 12], Hot; "docs/engine/collision-queries.md";
+    /// The general MOPP ray: setup, then the float interpreter below; the result goes through the collector.
+    COLLISION_MOPP_RAY @ 0x0030_1800: [fn(vm: ecx, collection: stack 0, code: stack 1, input: stack 2, parent: stack 3, collector: stack 4) ret 20], Hot; "docs/engine/collision-queries.md";
+    /// The instanced-geometry collection's child method, called once per accepted MOPP key.
+    COLLISION_INSTANCE_CHILD @ 0x0024_4bb0: [fn(collection: ecx, key: stack 0, buffer: stack 1) -> eax ret 8], Hot; "docs/engine/collision-queries.md";
     SIM_MOPP_BOX @ 0x002f_f8b0: [fn(query: ecx, state: stack 0, program: stack 1) ret 8], Hot; "docs/perf/sim-budget.md";
     SIM_MOPP_RAY @ 0x0030_09e0: [fn(query: ecx, state: stack 0, program: stack 1, segment: stack 2) ret 12], Hot; "docs/perf/sim-budget.md";
     OBJECT_TRANSFORM_COMPOSE @ 0x0014_2a60: [fn(parent: ecx, child: edx, out: stack 0) -> eax ret 4], Hot; "docs/perf/sim-budget.md";

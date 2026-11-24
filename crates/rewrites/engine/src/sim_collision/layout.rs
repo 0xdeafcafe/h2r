@@ -169,3 +169,34 @@ pub mod mopp_box {
     /// The x87 precision flag, which the conversions set when inexact.
     pub const X87_PE: u16 = 0x20;
 }
+
+/// Entry I, `0x00301800`, the general MOPP ray, and the interpreter call
+/// it makes (docs/engine/collision-queries.md, "Entry I").
+pub mod mopp_ray {
+    /// The ray VM: code pointer, the stored `one / scale`, the input's
+    /// two vectors, the early-out fraction, then the collector, parent
+    /// body and collection.
+    pub const CODE: u32 = 0x10;
+    pub const INVERSE_SCALE: u32 = 0x14;
+    pub const FRACTION: u32 = 0x54;
+    pub const COLLECTOR: u32 = 0x5c;
+    pub const COLLECTION: u32 = 0x64;
+    /// The ray input: from `+0x00`, to `+0x10`, the optional filter
+    /// `+0x24`.
+    pub const INPUT_TO: u32 = 0x10;
+    pub const INPUT_FILTER: u32 = 0x24;
+    /// `f32`: the collector's fraction, which the setup copies.
+    pub const COLLECTOR_FRACTION: u32 = 0x04;
+    /// The collection's child method, vtable slot `+0x34`.
+    pub const COLLECTION_CHILD: u32 = 0x34;
+    /// The bytecode starts this far into the code object.
+    pub const BYTECODE: u32 = 0x30;
+    /// The packed `1 - w` vector of the clip blends.
+    pub const UNIT: u32 = 0x0041_2420;
+    /// The factor of the root frame scale.
+    pub const ROOT_SCALE: u32 = 0x0045_dcac;
+    /// The instanced-geometry collection's child method (`key` at entry
+    /// ESP `+4`). Where a query's collection uses it with no filter, the
+    /// parity arm sees each key the guest accepts.
+    pub const INSTANCE_CHILD: u32 = 0x0024_4bb0;
+}

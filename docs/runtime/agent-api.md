@@ -5396,15 +5396,16 @@ h2 agent theater.play '{}' --socket "$film_run/play.sock"
 
 ## `collision`: the native collision world
 
-The collision switch enables counters for native entries A, B and F, and
+The collision switch enables counters for native entries A, B and F,
 before-call observers for the lifted vector and instance traces C–E, the
-cluster flood G and the object visit H. The game
+cluster flood G and the object visit H, and the parity arm of the lifted
+general MOPP ray I. The game
 method reads process counters at a tick boundary. The entry addresses and
 bail reasons are in [collision-queries.md](../engine/collision-queries.md).
 
 | Method | Access | Params and result |
 |---|---|---|
-| `collision.stats` | read | No parameters. Returns `switch`, `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `mopps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, and `precision` (aggregate single, reserved, double and extended x87 calls at C and D). |
+| `collision.stats` | read | No parameters. Returns `switch`, `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `mopps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, `precision` (aggregate single, reserved, double and extended x87 calls at C and D), and `ray` (I's parity arm, below). |
 
 Each row in `entries` gives the `name` and eight-digit guest `addr`, the
 count of `native` answers, and `bails` by reason. Two frequency maps count
@@ -5412,8 +5413,8 @@ the control words at entry, including calls that fall back at the first
 environment check. Keys are lowercase hexadecimal strings with leading
 zeros: eight digits for `mxcsr` and four for `x87_control`. Each value is
 a call count. Each map counts its own register independently. For
-`vector_test`, `vector_context`, `instance_trace`, `cluster_flood` and
-`object_visit`, only the frequency maps accumulate; `cluster_flood` also
+`vector_test`, `vector_context`, `instance_trace`, `cluster_flood`,
+`object_visit` and `mopp_ray`, only the frequency maps accumulate; `cluster_flood` also
 counts the flood's recursive entries. An image without an observed entry
 leaves its row empty. `array_bytes` counts the decoded BSP allocations, the
 packed cluster table, the portal graph and the decoded MOPP trees (`mopps`
@@ -5424,6 +5425,15 @@ capacity. `budget_bytes` limits that total to 8 MiB per loaded map.
 `cluster_budget_reads` counts lookups that need the live cluster word
 because the packed table would exceed the budget. Sample before and after
 a scenario and subtract the counters to isolate that run.
+
+`ray` counts the MOPP ray queries the native walk followed while the
+guest answered them: `matched` (every interpreter call, and every key
+where the instanced collection shows it, equal), `mismatched` with
+`first_mismatch` describing the first since start (the observation index
+and both sides), `unverified` by bail reason (the walk could not follow
+the query exactly, or its environment is one it does not model), and
+`fraction_moved` (no key was visible and a terminal lowered the fraction).
+Parity is `mismatched` zero over a match.
 
 ```sh
 h2 agent collision.stats
