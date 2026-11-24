@@ -747,10 +747,10 @@ fn the_lobbys_mode_picks_what_change_map_opens() {
         kit.clone(),
         probe.clone(),
     ]);
-    assert_eq!(cat.categories(), [Category::Halo2, Category::Mods]);
+    assert_eq!(cat.categories(), [Category::Halo2, Category::Mods, Category::Firefight]);
     assert_eq!(cat.maps(Category::Firefight), [kit]);
     assert_eq!(mode_category(Mode::Multiplayer), None);
-    assert_eq!(mode_category(Mode::Forge), Some(Category::Halo2));
+    assert_eq!(mode_category(Mode::Forge), None);
     assert_eq!(mode_category(Mode::Firefight), Some(Category::Firefight));
     assert_eq!(Category::Firefight.label(), "Firefight");
     // The Firefight label has its own string id, clear of the footers.
@@ -758,4 +758,13 @@ fn the_lobbys_mode_picks_what_change_map_opens() {
     let unique: std::collections::BTreeSet<_> = ids.iter().collect();
     assert_eq!(unique.len(), ids.len(), "every string has its own id");
     assert!(ids.iter().all(|&id| IDS.owns(id)));
+}
+
+#[test]
+fn the_picker_checks_the_selected_disc_or_package_file() {
+    let disc = map(1, "Arena", 0, r"scenarios\multi\arena\arena");
+    let offer = map(2, "Custom arena", 0, r"t:\$C\123456789abcdef0\arena.map");
+    assert_eq!(disc.slot_path(), crate::map_slots::slot_file(r"d:\maps\arena.map"));
+    assert_eq!(offer.slot_path(), crate::map_slots::slot_file(&offer.path));
+    assert_ne!(disc.slot_path(), offer.slot_path());
 }

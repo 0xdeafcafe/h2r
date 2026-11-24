@@ -1,9 +1,8 @@
 //! The local Objects tool opens the active cache slot on a worker. Only
 //! typed palette references and the base identity enter the Forge document.
 use std::collections::BTreeMap;
-use std::fs::File;
 use std::io::{Cursor, Read, Seek, SeekFrom};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, ensure};
 use bots::los::Walls;
@@ -47,9 +46,13 @@ pub(crate) fn admitted(m: &dyn GuestMemory) -> bool {
             && g.game_ended(m) == Ok(0)
             && g.options().mode(m) == Ok(MODE_MULTIPLAYER)
     }) && crate::coop_probe::read_sim(&ReadGm(m)).is_some_and(|sim| {
-        agent_proto::sim::SessionKind::from_sim_mode(sim.mode)
-            == agent_proto::sim::SessionKind::Local
-    }) && offline() == Some(true)
+        use agent_proto::sim::SessionKind;
+        let kind = SessionKind::from_sim_mode(sim.mode);
+        (kind == SessionKind::Local && offline() == Some(true))
+            || (matches!(kind, SessionKind::Local | SessionKind::MpHost)
+                && crate::lobby_start::mode() == crate::lobby_start::Mode::Forge
+                && crate::lobby_mode::remote_members(m) == Some(0))
+    })
 }
 
 /// A synchronous network game (co-op host or guest) on a multiplayer map,
@@ -96,7 +99,7 @@ impl Loaded {
         }
         let slot = map_slots::current_source(&ReadGm(m))
             .ok_or("The active map has no readable cache slot.")?;
-        let path = map_slots::slot_file(&slot).ok_or("The active map source is unavailable.")?;
+        let path = map_slots::recorded_file(&slot).ok_or("The active map source is unavailable.")?;
         let name = crate::health::loaded_map_name(m)
             .map_err(|_| "The loaded cache name is unavailable.")?;
         let base_name = slot
@@ -148,61 +151,33 @@ pub(crate) struct Opened {
 /// hashing or decoding. Bound the snapshot and hash the storage padding too,
 /// as the F2 materialiser does. Refuse sparse and layered sources whose bytes
 /// could not be reproduced by a peer opening the named base on its disc.
-pub(crate) fn open(vfs: &Mutex<vfs::Vfs>, loaded: &Loaded) -> Result<Opened, String> {
+pub(crate) fn open(vfs: &Arc<Mutex<vfs::Vfs>>, loaded: &Loaded) -> Result<Opened, String> {
     open_checked(vfs, loaded).map_err(|e| e.to_string())
 }
 
-fn open_checked(vfs: &Mutex<vfs::Vfs>, loaded: &Loaded) -> anyhow::Result<Opened> {
-    // The one package Forge opens is the lobby's new map with the kit
-    // (`map_variant::kit_start`): its document is the base's empty draft,
-    // so the base is the installed map, not the package's bytes.
-    let (source, base) = {
-        let mut vfs = vfs.lock().unwrap_or_else(|e| e.into_inner());
-        let package = vfs.map_id(&loaded.path);
-        let kit = package.is_some() && package == crate::map_variant::kit_start();
-        ensure!(
-            package.is_none() || kit,
-            "Forge needs the original map. This slot serves a package or an override."
-        );
-        let base = if kit {
-            Some(
-                crate::map_variant::installed(&loaded.base_name)
-                    .context("The installed map the kit was built on is unknown.")?,
-            )
-        } else {
-            None
-        };
-        ensure!(
-            vfs.map_ranges(&loaded.path)?.is_none(),
-            "Forge needs the complete map. This slot serves a sparse copy."
-        );
-        (
-            vfs.file_source(&loaded.path)
-                .context("The active map file is unavailable.")?,
-            base,
-        )
+fn open_checked(vfs: &Arc<Mutex<vfs::Vfs>>, loaded: &Loaded) -> anyhow::Result<Opened> {
+    // A materialised editing kit retains the original document's base.
+    // Other installed maps are bases in their own right, including two
+    // packages with the same disc basename and different logical bytes.
+    let package = {
+        let mut mounted = vfs.lock().unwrap_or_else(|e| e.into_inner());
+        ensure!(mounted.map_ranges(&loaded.path)?.is_none(), "Forge needs the complete map.");
+        mounted.map_id(&loaded.path)
     };
-    let max = map::writer::cache_size_limit(CacheType::Multiplayer)?;
-    match source {
-        vfs::FileSource::Memory(bytes) => {
-            ensure!(
-                bytes.len() as u64 <= max,
-                "The map exceeds the multiplayer cache size limit."
-            );
-            decode(&bytes, loaded, base)
-        }
-        vfs::FileSource::Host(f) => {
-            ensure!(
-                f.len <= max,
-                "The map exceeds the multiplayer cache size limit."
-            );
-            let mut file = File::open(f.path)?;
-            file.seek(SeekFrom::Start(f.offset))?;
-            let mut bytes = vec![0; usize::try_from(f.len)?];
-            file.read_exact(&mut bytes)?;
-            decode(&bytes, loaded, base)
-        }
-    }
+    let base = if package.is_some() && package == crate::map_variant::kit_start() {
+        Some(crate::map_variant::installed(&loaded.base_name)
+            .context("The installed map the kit was built on is unknown.")?)
+    } else {
+        None
+    };
+    let mut file = crate::bots_nav_auto::VfsFile::open(Arc::clone(vfs), &loaded.path)?;
+    let len = file.seek(SeekFrom::End(0))?;
+    ensure!(len <= map::writer::cache_size_limit(CacheType::Multiplayer)?,
+        "The map exceeds the multiplayer cache size limit.");
+    file.seek(SeekFrom::Start(0))?;
+    let mut bytes = vec![0; usize::try_from(len)?];
+    file.read_exact(&mut bytes)?;
+    decode(&bytes, loaded, base)
 }
 
 /// `base` is the hash of the installed map a kit package was built on;

@@ -4,7 +4,7 @@ Status: Partly built. Slices U1 (the main menu), U2 (the lobby modes), U3 (the m
 Code: `crates/extensions/game/src/forge_screens.rs` and `forge_screens/` (the Forge screens and GAME MENU rows), `forge_controls/bindings.rs` (the bindings table), `lobby_mode.rs` (Game Setup's Map Variant row, the start refusal), `lobby_start.rs` (the mode), `forge_hud.rs` (the monitor HUD's feed), `firefight/{hud,options}.rs`, `map_select.rs` (the Firefight category), `forge_glue/gizmo.rs` (the gizmo's ends), `hud_kit_core::views::forge` and `content/forge/huds/forge.hud.yaml` (the monitor HUD's elements), `theater_ui.rs` (`menu`, the main menu's rows), `crates/apps/cli/src/play_cmd/forge.rs` and `crates/apps/app/src/forge_overlay.rs` (the play window's keys and mouse, handed to the session). Tests: named per slice below.
 Switch: none of its own. `forge` and `firefight`, listed in [switches.md](../runtime/switches.md).
 
-Forge and Firefight are modes of the party lobby
+Forge is a lobby mode and Firefight is a game type of the party lobby
 ([party-lobby.md](party-lobby.md)), with a HUD each and, for Forge,
 screens and markers over the world. Theater is the one row added to the
 main menu. This page audits what
@@ -153,7 +153,7 @@ table's fits follow from the text box alone.
 
 ## The lobbies
 
-Forge and Firefight are modes of the party lobby
+Forge is a lobby mode and Firefight is a game type of the party lobby
 ([party-lobby.md](party-lobby.md)): the retail pregame lobby
 (`pregame_lobby`, screen 14) in its custom game mode, with a mode of
 ours on top (`lobby_start::Mode`). The roster, the map picture, Start
@@ -165,12 +165,12 @@ the lobby. Game Setup has no row that changes the mode.
 | Mode | `lobby_start::Mode` | Shown when | The session |
 |---|---|---|---|
 | CUSTOM GAMES | Multiplayer | always | retail's |
-| FORGE | Forge | the `forge` feature is on | a Forge session: D-pad Up enters the monitor ([forge-editing.md](forge-editing.md), "Controls") |
+| FORGE | Forge | the `forge` feature is on | a Forge session starts in the monitor; D-pad Up switches to the biped ([forge-editing.md](forge-editing.md), "Controls") |
 | FIREFIGHT | Firefight | the `firefight` feature is on and a settings store holds its choices | Firefight on a kit map ([firefight.md](firefight.md)) |
 
 - The modes are in every lobby that has Change Map: Split Screen, a
   System Link game being hosted, and an Xbox Live custom game, which
-  the Xbox Live menu's Custom Games, Forge and Firefight rows open in
+  the Xbox Live menu's Custom Games and Forge rows open in
   their mode. Only the party leader switches, so the mode is the
   leader's, as the map is.
 - The mode is held per lobby. Leaving the party (`PARTY_LEAVE`) clears

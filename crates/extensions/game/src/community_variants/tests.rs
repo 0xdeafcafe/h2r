@@ -8,7 +8,7 @@ fn the_built_in_line_names_the_focused_entrys_origin() {
     for n in [0, 38] {
         assert_eq!(origin_text(n), "Bungie Original");
     }
-    for n in [DESCRIPTION_BASE, DESCRIPTION_BASE + LISTED.len() as u32 - 1] {
+    for n in [DESCRIPTION_BASE, DESCRIPTION_BASE + listed().len() as u32 - 1] {
         assert_eq!(origin_text(n), "Community Classic");
     }
     for n in [94, 99, 100] {
@@ -16,7 +16,7 @@ fn the_built_in_line_names_the_focused_entrys_origin() {
     }
     // Past the listed scripts and short of the store's: nobody's.
     assert_eq!(
-        origin_text(DESCRIPTION_BASE + LISTED.len() as u32),
+        origin_text(DESCRIPTION_BASE + listed().len() as u32),
         "Bungie Original"
     );
     assert_eq!(origin_text(39), "Bungie Original");
@@ -111,8 +111,7 @@ fn world(n: u32, offer: &[(u32, Vec<i32>)]) -> Fake {
 fn all_listed() -> Vec<&'static Listed> {
     listed()
         .iter()
-        .zip(LISTED)
-        .map(|(l, b)| l.as_ref().unwrap_or_else(|why| panic!("{}: {why}", b.name)))
+        .map(|l| l.as_ref().unwrap())
         .collect()
 }
 
@@ -152,7 +151,7 @@ fn entries_are_built_from_the_listed_scripts() {
     let offer = offer_map(&all_offered());
     let (ours, lines) = entries(&offer);
     assert!(lines.is_empty(), "{lines:?}");
-    assert_eq!(ours.len(), LISTED.len());
+    assert_eq!(ours.len(), listed().len());
     for (i, (e, b)) in ours.iter().zip(LISTED).enumerate() {
         let ir = ::rules::compile(b.source).unwrap();
         // The name: the script's, a space and the icon, at our id.
@@ -163,7 +162,7 @@ fn entries_are_built_from_the_listed_scripts() {
         );
         // The game type: the list type of the record's engine.
         let ty = GameType::from_list_index(e.list_type).unwrap();
-        assert_eq!(ty.engine(), i32::from(ir.header.engine()), "{}", b.name);
+        assert_eq!(ty, listed()[i].as_ref().unwrap().record.game_type().menu_template(), "{}", b.name);
         // The pairs: the record of the script, every setting the editor
         // offers, not only the script's.
         let record = variants::portable::record_for(&ir, &[]).unwrap();
@@ -247,7 +246,7 @@ fn a_script_the_disc_does_not_offer_is_left_out_by_name() {
         lines.iter().any(|l| l.contains("SWAT left out")),
         "{lines:?}"
     );
-    assert_eq!(lines.len(), LISTED.len() - ours.len(), "one line each");
+    assert_eq!(lines.len(), listed().len() - ours.len(), "one line each");
 
     // With nothing to add the tag is unchanged.
     let mut m = world(3, &[]);
@@ -293,7 +292,7 @@ fn bumper_cars_needs_our_none_and_bounce_practice_has_a_magnum() {
     assert!(done.lists >= 1);
     let (ours, lines) = entries(&offered(&m, GOOF, TAGS).unwrap());
     assert!(lines.is_empty(), "{lines:?}");
-    assert_eq!(ours.len(), LISTED.len());
+    assert_eq!(ours.len(), listed().len());
 }
 
 #[test]
@@ -444,6 +443,12 @@ fn every_listed_record_gets_its_block_at_load() {
         assert_eq!(crate::tweakers::record_engine(&g, r), Some(l.record.game_type().engine()), "{}", l.name);
         // A game on it finds its script.
         let script = Ext::in_effect(&block).script;
+        if l.game_type == Type::Firefight {
+            assert_eq!(script.mode, variants::ext::Mode::Firefight);
+            assert_eq!(::firefight::builtin::by_prefix(script.prefix).unwrap().name, l.name);
+            assert_eq!(record_type(&g, r), Some(Type::Firefight));
+            continue;
+        }
         assert_eq!(script.mode, variants::ext::Mode::Rules, "{}", l.name);
         let found = crate::rules::runtime::compiled_in(script.prefix).expect("compiled in");
         assert_eq!(found.id.0[..8], script.prefix, "{}", l.name);
@@ -490,7 +495,7 @@ fn the_rows_texts_are_ours_and_apart_from_the_scripts() {
     for (k, id) in ids.iter().enumerate() {
         assert!(is_ours(*id));
         assert!(!ids[..k].contains(id), "{id:#x} twice");
-        assert!((0..LISTED.len()).all(|i| *id != name_id(i) && *id != description_id(i)));
+        assert!((0..listed().len()).all(|i| *id != name_id(i) && *id != description_id(i)));
     }
 }
 
@@ -522,14 +527,14 @@ fn string_ids_are_private_and_round_trip() {
         2,
         38,
         39,
-        DESCRIPTION_BASE + LISTED.len() as u32,
+        DESCRIPTION_BASE + listed().len() as u32,
         93,
         100,
     ] {
         assert_eq!(description_for(n), None, "{n}");
     }
     assert!(
-        DESCRIPTION_BASE + LISTED.len() as u32 <= inject::DESCRIPTION_BASE,
+        DESCRIPTION_BASE + listed().len() as u32 <= inject::DESCRIPTION_BASE,
         "the store's numbers start at 94"
     );
 }
@@ -560,7 +565,7 @@ fn extend_appends_after_retail_entries_unchanged() {
     );
 
     let n = m.u32(GOOF + GOOF_BUILTINS).unwrap();
-    assert_eq!(n as usize, 39 + LISTED.len());
+    assert_eq!(n as usize, 39 + listed().len());
     assert_eq!(m.u32(GOOF + GOOF_BUILTINS + 4), Some(ENTRIES_AT));
     // Retail entries: byte for byte, in place; the old block untouched.
     let mut b = vec![0; retail_before.len()];
@@ -575,9 +580,9 @@ fn extend_appends_after_retail_entries_unchanged() {
         assert_eq!(m.u32(e + 4), Some(want.list_type));
         let display = text(m.u32(e).unwrap()).unwrap();
         let template = GameType::from_list_index(m.u32(e + 4).unwrap()).unwrap();
-        let ty = ::rules::compile(LISTED[k].source).unwrap().header.game_type;
+        let l = listed()[k].as_ref().unwrap();
+        let ty = l.game_type;
         assert_eq!(filed_type(&display, &[0; ext::LEN], template), Some(ty), "{display}");
-        let l = listed_named(LISTED[k].name).unwrap();
         assert_eq!(filed_type("Renamed", &l.block(), GameType::Script), Some(ty), "{}", l.name);
         let (count, at) = (m.u32(e + 8).unwrap(), m.u32(e + 12).unwrap());
         let got: Vec<(u32, i32)> = (0..count)
@@ -649,5 +654,5 @@ fn every_listed_script_is_offered_on_the_retail_disc() {
         "left out on this disc:\n{}",
         lines.join("\n")
     );
-    assert_eq!(ours.len(), LISTED.len());
+    assert_eq!(ours.len(), listed().len());
 }

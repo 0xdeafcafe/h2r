@@ -35,9 +35,15 @@ pub fn is_kit_map(map: &Map) -> bool {
     map.name.starts_with(KIT_NAME_PREFIX)
 }
 
-/// The original maps Forge opens on: the disc's own, in the game's order.
+/// Kit packages on which a variant's director has a wave set.
+pub fn supports_wave(map: &Map, prefix: [u8; 8]) -> bool {
+    is_kit_map(map) && ::firefight::builtin::variant(prefix).is_some_and(|wave|
+        wave.map.is_none_or(|base| map.short_name().eq_ignore_ascii_case(base)))
+}
+
+/// The installed multiplayer maps in catalogue order.
 pub fn forge_maps(catalogue: &Catalogue) -> Vec<Map> {
-    catalogue.maps(Category::Halo2).to_vec()
+    catalogue.all().cloned().collect()
 }
 
 /// The installed maps that carry the Firefight kit.
@@ -366,8 +372,8 @@ mod tests {
         let forge: Vec<_> = forge_maps(&cat).into_iter().map(|m| m.id).collect();
         assert!(forge.contains(&10) && forge.contains(&11));
         assert!(
-            !forge.contains(&12) && !forge.contains(&13),
-            "a package is not an original"
+            forge.contains(&12) && forge.contains(&13),
+            "installed packages are selectable"
         );
         let kit: Vec<_> = kit_maps(&cat).into_iter().map(|m| m.id).collect();
         assert_eq!(kit, [12]);

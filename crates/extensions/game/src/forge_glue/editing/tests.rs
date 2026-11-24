@@ -1292,3 +1292,16 @@ fn reset_orientation_and_duplicate_on_the_properties_page() {
     assert_eq!(e.tool.held, Some(e.session.objects()[1].id));
     assert_eq!(e.tool.ghost, Some(copy));
 }
+
+#[test]
+fn live_forge_row_starts_in_the_monitor_with_the_hud() {
+    use crate::{custom_games, lobby_start, lobby_tabs};
+    let tab = custom_games::Menu::ALL.row_kind(custom_games::FORGE_ROW).mode().unwrap();
+    let plan = lobby_tabs::switch::plan(lobby_tabs::Tab::CustomGames, tab);
+    lobby_start::set_mode(plan.mode);
+    let e = editor();
+    assert!(e.monitor());
+    assert!(e.monitor_hud(0.0).view.monitor);
+    lobby_start::clear();
+    assert!(!editor().monitor());
+}

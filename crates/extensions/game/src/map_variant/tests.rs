@@ -305,6 +305,10 @@ fn the_lobbys_mode_keeps_the_kit_start_or_drops_it() {
     // Forge mode on the same map keeps it, and asks nothing of the author.
     follow_mode(true, Some(7), Some("fixture"), || panic!("no new pick"));
     assert_eq!(kit_start(), held);
+    // An installed offer opens in its own cache slot, with no disc kit.
+    follow_mode(true, Some(8), None, || panic!("offer keeps its own slot"));
+    assert_eq!(package(), None);
+    pick_kit("fixture", Some(7), "Builder", &maps).unwrap().join().unwrap();
     // Leaving Forge mode drops it.
     follow_mode(false, Some(7), Some("fixture"), || panic!("no new pick"));
     assert_eq!(kit_start(), None);

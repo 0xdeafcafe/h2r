@@ -297,7 +297,7 @@ pub fn avail(
     clankers: bool,
 ) -> Avail {
     Avail {
-        map: opening(mode, cat),
+        map: opening(map_select::variant_mode(mode, base), cat),
         rules: !matches!(mode, lobby_start::Mode::Firefight) && !variants.is_empty(),
         quick: base.is_some(),
         clankers,
@@ -513,6 +513,7 @@ impl Confirm {
 /// the pickers close.
 #[derive(Clone, Debug, Default)]
 pub struct VisitState {
+    maps: Arc<Catalogue>,
     pub avail: Avail,
     pub rules: Vec<game_types::Listed>,
     /// The lobby's variant when Game Setup opened.
@@ -535,8 +536,10 @@ pub struct Visit {
 impl Visit {
     /// A new visit for controller `port`: the draft starts empty.
     pub fn open(&self, port: u32, avail: Avail, rules: Vec<game_types::Listed>, base: Option<GameVariant>) {
+        let maps = catalogue().for_variant(lobby_start::mode(), base.as_ref());
         self.port.store(port, Ordering::SeqCst);
         *lock(&self.state) = VisitState {
+            maps,
             avail,
             rules,
             base,

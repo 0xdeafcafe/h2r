@@ -996,3 +996,23 @@ fn the_kit_director_announces_its_type_only_for_its_own_record() {
         assert_eq!(director_owns_line(&m), owns, "{engine}, {mode:?}");
     }
 }
+
+#[test]
+fn change_rules_crossfire_starts_its_director_with_the_stored_setting_off() {
+    use crate::pause_change_map::{Draft, game_types};
+
+    let listed = crate::community_variants::listed_named("Crossfire").unwrap();
+    let row = game_types::listed(listed.record.clone()).unwrap();
+    let mut draft = Draft::default();
+    draft.pick_rules(&row);
+    let variant = draft.variant.unwrap();
+    let (shared, _) = shared(false);
+    shared.lock().set_options(Box::new(|| Ok(Options { enabled: false, ..Options::default() })));
+    let (mut m, _) = guest(true, 1);
+    two_team_map(&mut m, true);
+    m.put(GAME_GLOBALS + bots::guest::OPTIONS + crate::variant_ext::OPTIONS_VARIANT, variant.bytes());
+    shared.lock().start(&mut m, false);
+    let state = shared.lock().state();
+    assert!(state.running, "{:?}", state.refused);
+    assert_eq!(state.director.unwrap().teams, 2);
+}

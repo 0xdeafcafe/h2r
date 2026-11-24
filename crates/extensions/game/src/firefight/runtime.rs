@@ -525,6 +525,36 @@ fn map_name(m: &dyn GuestMemory) -> String {
     String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
+/// Apply the wave set carried by the selected game variant to the match options.
+fn record_options(m: &dyn GuestMemory, at: u32, mut choices: Options) -> Result<Options, String> {
+    if crate::lobby_start::mode() == crate::lobby_start::Mode::Forge {
+        choices.enabled = false;
+        return Ok(choices);
+    }
+    let mut block = [0; variants::ext::LEN];
+    if m.read(at + variants::ext::AT as u32, &mut block).is_ok() {
+        let script = variants::ext::Ext::in_effect(&block).script;
+        match script.mode {
+            variants::ext::Mode::Firefight => {
+                let wave = ::firefight::builtin::variant(script.prefix)
+                    .ok_or_else(|| format!("unknown Firefight wave set {:02x?}", script.prefix))?;
+                if let Some(required) = wave.map
+                    && !map_name(m).eq_ignore_ascii_case(required)
+                {
+                    return Err(format!("{} requires the {required} kit map", wave.def.name));
+                }
+                choices.wave_set = wave.value;
+                choices.teams = None;
+                choices.enabled = true;
+            }
+            variants::ext::Mode::Rules => choices.enabled = false,
+            variants::ext::Mode::None if crate::lobby_start::state().lobby => choices.enabled = false,
+            _ => {}
+        }
+    }
+    Ok(choices)
+}
+
 /// The kit's director supplies the type for its legacy mode and its plain
 /// Slayer record. A record naming a rules variant has its own header.
 #[cfg(feature = "rules")]
@@ -621,7 +651,7 @@ impl Runtime {
         if film || m.u32(options).ok()? != MODE_MULTIPLAYER {
             return None;
         }
-        let chosen = (self.options)().ok();
+        let chosen = (self.options)().and_then(|o| record_options(m, options + crate::variant_ext::OPTIONS_VARIANT, o)).ok();
         // The match resolves the Wave set value on the map it starts on:
         // a map-specific set plays only on its own (`builtin::resolve`).
         let on_map = map_name(m);
@@ -660,7 +690,12 @@ impl Runtime {
             return "firefight: idle: not a multiplayer game".into();
         }
         let map = map_name(&*m);
-        let mut read = (self.options)();
+        let mut read = (self.options)().and_then(|o| {
+            match m.u32(points::GAME_GLOBALS.base).ok().filter(|g| *g != 0) {
+                Some(g) => record_options(m, g + bots::guest::OPTIONS + crate::variant_ext::OPTIONS_VARIANT, o),
+                None => Ok(o),
+            }
+        });
         // The match resolves the Wave set value on this map (a
         // map-specific set plays only on its own).
         if let Ok(o) = read.as_mut() {

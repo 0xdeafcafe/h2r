@@ -32,14 +32,14 @@ menu ([settings-menu.md](settings-menu.md#game-setup-from-the-pause-menu),
 | Mode | Change Map opens |
 |---|---|
 | Multiplayer | the categories above |
-| Forge | the **Halo 2** maps |
+| Forge | the same installed categories as Custom Games |
 | Firefight | the **Firefight** category: installed packages that carry the Firefight kit (`Firefight – <map>`, `lobby_start::is_kit_map`) |
 
-In Forge and Firefight the list opens on that category's maps, with no
-category dialog, and **B** or **Back** returns to Game Setup. Kit
-packages are listed only in the Firefight category. When the mode's
-category is empty, Change Map opens the regular map list and the log
-names the category.
+Selecting a Firefight variant opens its compatible kit maps directly.
+B or Back returns to Game Setup. A wave set with no compatible installed
+map has an empty list. Script variants with label or tag requirements
+filter the catalogue using the map census. The remaining maps retain
+their catalogue order.
 
 ## Separate slots for mods
 

@@ -5,8 +5,8 @@ coverage. Section 7 lists the in-game acceptance checks.
 
 What it adds:
 
-- Xbox Live menu rows for the custom lobby's modes: **Custom Games**,
-  **Forge** and **Firefight** each open the custom game lobby in that
+- Xbox Live menu rows for the custom lobby's modes: **Custom Games** and
+  **Forge** each open the custom game lobby in that
   mode ([party-lobby.md](../game/party-lobby.md), "The modes").
 - An Xbox Live menu row, **Custom Game Browser**, directly above Mods. It
   opens Halo 2's own System Link game browser in the Live mode the title
@@ -303,13 +303,11 @@ row hooks show them in this order (`custom_games::Menu::layout`):
 | 3 | Co-op Campaign (with Live) | ours | co-op ([live-coop.md](live-coop.md) §10) | 6 |
 | 4 | Custom Games | ours | retail row 2's, CUSTOM GAMES asked for | 7 |
 | 5 | Forge (with `forge`) | ours | retail row 2's, FORGE asked for | 8 |
-| 6 | Firefight (with `firefight`) | ours | retail row 2's, FIREFIGHT asked for | 9 |
-| 7 | Custom Game Browser | ours | Live browser (§2) | 5 |
-| 8 | Mods | ours, or the mod repository's | Mods screen, else Map Pack dialog | 3 |
+| 6 | Custom Game Browser | ours | Live browser (§2) | 5 |
+| 7 | Mods | ours, or the mod repository's | Mods screen, else Map Pack dialog | 3 |
 
 A row that is off leaves the list and the rows under it close up. Rows
-past 1 never reach the retail row text. Custom Games, Forge and
-Firefight rewrite the press record to retail row 2 and run retail's
+past 1 never reach the retail row text. Custom Games and Forge rewrite the press record to retail row 2 and run retail's
 Custom Game press (a Live squad session, then the custom lobby), then
 ask for their mode (`lobby_tabs::request`), which the lobby switches to
 at its first panel update. The retail press remembers rows 0 to 2 for
@@ -472,14 +470,14 @@ Nothing here ran in the game. With two consoles (or two instances, per the
 friends. Then check:
 
 1. **The rows.** Xbox Live menu: Quickmatch, OptiMatch, Clankermatch,
-   Co-op Campaign, Custom Games, Forge, Firefight, Custom Game Browser,
+   Co-op Campaign, Custom Games, Forge, Custom Game Browser,
    Mods. Seven show; Down past the seventh scrolls to the rest.
    - The rows are evenly spaced, 24 apart; the first row and the hint
      text and Y callout under the list are where retail has them, and
      the last row shown ends above the hint text. Nothing overlaps.
    - Retail's scroll arrows show while the list scrolls, and the down
      arrow is not over the hint text.
-   - Custom Games, Forge and Firefight each open the custom game lobby,
+   - Custom Games and Forge each open the custom game lobby,
      its header CUSTOM GAMES, FORGE and FIREFIGHT; B back lands on the
      row pressed.
    - "Custom Game Browser" fits on its row without being cut off.

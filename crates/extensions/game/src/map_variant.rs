@@ -394,6 +394,7 @@ pub fn follow_mode(
     let held = with_pick(|p| p.as_ref().filter(|p| p.kit).map(|p| p.lobby_map));
     match (forge, held) {
         (false, Some(_)) => clear(),
+        (true, Some(_)) if base.is_none() => clear(),
         (true, Some(map)) if map == lobby_map => {}
         (true, _) => {
             if let (Some(base), Some(maps)) = (base, with_maps(|m| m.clone())) {

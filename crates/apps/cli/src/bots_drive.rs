@@ -78,11 +78,11 @@ use crate::coop_drive::{
 
 /// The Xbox Live menu's Custom Games row (retail's Custom Game press). The
 /// rows, with ours (`game::custom_games`): 0 Quickmatch, 1 OptiMatch,
-/// 2 Clankermatch, 3 Co-op Campaign, 4 Custom Games, 5 Forge, 6 Firefight,
-/// 7 Custom Game Browser, 8 Mods.
+/// 2 Clankermatch, 3 Co-op Campaign, 4 Custom Games, 5 Forge, 6 Custom Game Browser,
+/// 7 Mods.
 pub const CUSTOM_GAME_ROW: u32 = 4;
 /// The Xbox Live menu's last row.
-pub const LIVE_LAST_ROW: u32 = 8;
+pub const LIVE_LAST_ROW: u32 = 7;
 /// The Xbox Live menu's list mask on its `ui: screen none` line
 /// (`list [0xf/...]`); the main menu's, the OptiMatch playlists' and the
 /// lobby's are `0x1` (run 20261119-003044).

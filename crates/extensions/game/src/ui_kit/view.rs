@@ -183,7 +183,6 @@ impl Opener {
             "Co-op Campaign",
             "Custom Games",
             "Forge",
-            "Firefight",
             "Custom Game Browser",
             "Mods",
         ],

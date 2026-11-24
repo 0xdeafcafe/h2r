@@ -110,7 +110,7 @@ fn kit_map() -> Map {
 fn change_map_opens_what_game_setups_change_map_opens() {
     let cat = map_select::sample();
     assert_eq!(opening(Mode::Multiplayer, &cat), Some(Opening::Categories));
-    assert_eq!(opening(Mode::Forge, &cat), Some(Opening::Maps(Category::Halo2)));
+    assert_eq!(opening(Mode::Forge, &cat), opening(Mode::Multiplayer, &cat));
     assert_eq!(opening(Mode::Firefight, &cat), None, "no kit map installed");
     assert_eq!(
         categories(&cat),
@@ -123,7 +123,7 @@ fn change_map_opens_what_game_setups_change_map_opens() {
     with_kit.push(kit_map());
     let cat = Catalogue::new(with_kit);
     assert_eq!(opening(Mode::Firefight, &cat), Some(Opening::Maps(Category::Firefight)));
-    assert!(!categories(&cat).contains(&Category::Firefight), "only a Firefight lobby's");
+    assert!(categories(&cat).contains(&Category::Firefight), "installed kit maps are playable maps");
 
     // One category: its maps straight away; none: no row.
     let one = Catalogue::new(cat.maps(Category::Halo2).to_vec());
