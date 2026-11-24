@@ -428,8 +428,8 @@ pub struct Flood {
     /// The deepest nesting (0 is the first cluster) at which a portal test
     /// ran, for the dead stack the original uses; `None` when none ran.
     pub deepest: Option<u32>,
-    /// The first cluster's portal count word, which the guest returns in
-    /// `ecx` and whose last compare sets the flags.
+    /// The first cluster's portal count word. Its sign selects the last
+    /// flag-producing instruction.
     pub portal_count: u32,
 }
 
