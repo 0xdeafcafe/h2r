@@ -62,7 +62,8 @@ played individually when only part of its pack is installed.
 
 `crates/extensions/game/src/map_select/packs.rs` keeps the pack IDs,
 base names and member content IDs in `<data>/live-mod-packs.json` so
-folders work offline. Each content rescan matches them to the offers'
+folders work offline. In the pause menu the value picker expands each pack in place
+and labels each member with its pack and map name. Each content rescan matches them to the offers'
 package markers. Only packs whose members all have usable slots become
 folders. The active selection lasts for the game session.
 

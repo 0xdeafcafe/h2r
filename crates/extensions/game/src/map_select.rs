@@ -279,6 +279,40 @@ impl Catalogue {
         self.clone()
     }
 
+    /// The pause dialog uses one value list. Walk the same selectable rows
+    /// as the pregame dialog, expanding each pack where its folder appears.
+    pub(crate) fn playable_maps(&self, category: Category) -> Vec<Map> {
+        let mode = Mode::Maps(category);
+        let mut maps = Vec::new();
+        let mut add = |mode, id, folder: Option<&str>| {
+            if let Some(map) = self.all().find(|m| m.id == id) {
+                let mut map = map.clone();
+                if let Some((_, label)) = row_label(self, mode, id) {
+                    map.name = match folder {
+                        Some(pack) => format!("{pack} / {label}"),
+                        None => label,
+                    };
+                }
+                maps.push(map);
+            }
+        };
+        for (id, _) in list_for(self, mode, &|_| 0) {
+            if category == Category::Mods {
+                if self.original_row() == Some(id) {
+                    continue;
+                }
+                if let Some(pack) = self.pack_row(id) {
+                    for (member, _) in list_for(self, Mode::Pack(id), &|_| 0) {
+                        add(Mode::Pack(id), member, Some(&pack.name));
+                    }
+                    continue;
+                }
+            }
+            add(mode, id, None);
+        }
+        maps
+    }
+
     fn pack_row(&self, id: u32) -> Option<&InstalledPack> {
         self.packs.iter().find(|p| p.representative() == id)
     }

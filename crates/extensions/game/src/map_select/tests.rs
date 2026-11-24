@@ -713,7 +713,11 @@ fn pack_picker_uses_exact_installed_slots_for_disc_and_dlc_bases() {
     assert_eq!(row_label(&cat, Mode::Maps(Category::Mods), a).unwrap().1, "After Hours");
     assert_eq!(list_for(&cat, Mode::Pack(a), &|_| 0), [(a, 0), (b, 0)]);
     assert_eq!(row_label(&cat, Mode::Pack(a), b).unwrap().1, "Warlock");
+    let members = cat.playable_maps(Category::Mods);
+    assert_eq!(members.iter().map(|m| m.id).collect::<Vec<_>>(), [a, b]);
+    assert_eq!(members[1].name, "After Hours / Warlock");
     cat.active_pack = Some("release-one".into());
+    assert!(cat.playable_maps(Category::Halo2).iter().any(|m| m.id == a && m.name == "Lockout (After Hours)"));
     let disc = list_for(&cat, Mode::Maps(Category::Halo2), &|id| u8::from(id == 0x0a));
     assert!(disc.contains(&(a, 1)), "the pack maps onto the retail row with its lock flag");
     assert!(disc.contains(&(0x14, 0)), "uncovered bases stay on disc");
