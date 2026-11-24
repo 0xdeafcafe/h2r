@@ -312,6 +312,27 @@ impl<'s> Cx<'s> {
                 code: g.f.code,
             })
             .collect();
+        let mut widgets = Vec::with_capacity(script.huds.len());
+        for h in &script.huds {
+            let Some(kind) = crate::ir::WidgetKind::ALL.into_iter().find(|k| k.word() == h.kind) else {
+                return err(h.pos, format!("{} is no hud kind", h.kind));
+            };
+            widgets.push(crate::ir::WidgetDef {
+                name: self.string(&h.name, h.pos)?,
+                kind,
+                slot: self.string(&h.slot, h.pos)?,
+            });
+        }
+        let mut waypoints = Vec::with_capacity(script.waypoints.len());
+        for w in &script.waypoints {
+            waypoints.push(crate::ir::WaypointDef {
+                name: self.string(&w.name, w.pos)?,
+                slot: match &w.slot {
+                    Some(slot) => Some(self.string(slot, w.pos)?),
+                    None => None,
+                },
+            });
+        }
         let ir = Ir {
             header: Header {
                 ir_version: IR_VERSION,
@@ -335,6 +356,8 @@ impl<'s> Cx<'s> {
             tags: std::mem::take(&mut self.tags),
             palettes: self.palettes.drain(..).map(|(_, p)| p).collect(),
             tables: std::mem::take(&mut self.table_defs),
+            widgets,
+            waypoints,
             handlers,
         };
         let bytes = ir.encode().len();

@@ -508,6 +508,20 @@ impl Game for FakeGame {
             id::PLAYER_SCORE => p.map_or(0, |p| p.score),
             id::ALIVE => p.is_some_and(|p| p.alive) as i32,
             id::TEAM_OF => p.map_or(-1, |p| p.team as i32),
+            id::SLOT_OF => match call.args.first() {
+                Some(Arg::Player(Some(s))) => i32::from(*s),
+                _ => -1,
+            },
+            id::SIDE_OF => match (call.args.first(), p) {
+                (Some(Arg::Player(Some(s))), Some(p)) => {
+                    if self.variant("team_play") != 0 {
+                        i32::from(p.team)
+                    } else {
+                        16 + i32::from(*s)
+                    }
+                }
+                _ => -1,
+            },
             id::LIVES => p.map_or(0, |p| p.lives),
             id::KILLS => p.map_or(0, |p| p.kills),
             id::DEATHS => p.map_or(0, |p| p.deaths),

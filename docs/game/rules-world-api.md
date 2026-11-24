@@ -1,7 +1,7 @@
 # Rules world API: a synced world for scripts
 
-Status: Design, with the first slices landing. Messages as cues (W1) and the bot orders (W7) are built; the rest extends the rules engine of [rules-engine.md](rules-engine.md) and is built after that page's host runtime runs in a game.
-Code: slice W1: `crates/formats/rules/src/show.rs` (the cue and its codec), `crates/extensions/game/src/rules/world/show.rs` (the host and client halves), `crates/live/actor-net/src/wire.rs` and `budget.rs` (the `Cue` record and its three-packet repeat), `crates/extensions/game/src/actor_net/host.rs` and `client.rs` (offered to every peer; shown once). Slice W7: the `bot_*` entries of `crates/formats/rules/src/caps.rs`, the dispatch in `crates/extensions/game/src/rules/runtime.rs`, `crates/extensions/game/src/rules/world/bots.rs`, `crates/live/bots/src/brain.rs` and `decisions.rs`. The plan names `crates/formats/rules/src/caps.rs` (the entries), `crates/formats/rules/src/world/` and `crates/extensions/game/src/rules/world/` (one module per capability group; `bots` and `show` are built), and `crates/live/actor-net/src/wire.rs` (two records; `Cue` is built). Tests: named per slice in "Implementation plan".
+Status: Design, with the first slices landing. Messages as cues (W1), the script HUD's declarations and show state (W2) and the bot orders (W7) are built; the rest extends the rules engine of [rules-engine.md](rules-engine.md) and is built after that page's host runtime runs in a game.
+Code: slice W1: `crates/formats/rules/src/show.rs` (the cue and its codec), `crates/extensions/game/src/rules/world/show.rs` (the host and client halves), `crates/live/actor-net/src/wire.rs` and `budget.rs` (the `Cue` record and its three-packet repeat), `crates/extensions/game/src/actor_net/host.rs` and `client.rs` (offered to every peer; shown once). Slice W2: `crates/formats/rules/src/show/state.rs` (the show state and `view`), the `hud`, `waypoint` and `section` declarations of `crates/formats/rules/src/lang`, the `hud_*`, `mark`, `unmark`, `side_of` and `slot_of` entries of `caps.rs`, `RulesExt::show` in `vm.rs`, `crates/extensions/game/src/rules/world/hud.rs` (the feed of the HUD kit's objective HUDs, `crates/rewrites/hud-kit-core/src/views/objective.rs`). Slice W7: the `bot_*` entries of `crates/formats/rules/src/caps.rs`, the dispatch in `crates/extensions/game/src/rules/runtime.rs`, `crates/extensions/game/src/rules/world/bots.rs`, `crates/live/bots/src/brain.rs` and `decisions.rs`. The plan names `crates/formats/rules/src/caps.rs` (the entries), `crates/formats/rules/src/world/` and `crates/extensions/game/src/rules/world/` (one module per capability group; `bots` and `show` are built), and `crates/live/actor-net/src/wire.rs` (two records; `Cue` is built). Tests: named per slice in "Implementation plan".
 Switch: none of its own; the `rules` feature of `H2_FEATURES` ([switches.md](../runtime/switches.md)).
 
 A rules script moves objects, flies drop ships, orders AI squads and
@@ -154,7 +154,9 @@ works") carries both, with two more record tags:
 | `Show` (7) | the state a peer's players are the audience of changed, at most 5 times a second; whole in every `Key` | length (u8), the state filtered to that peer's players |
 | `Cue` (8) (**Code**, `crates/live/actor-net/src/wire.rs`) | a cue for that peer's players, in three consecutive packets as `Line` is (**Code**, `crates/live/actor-net/src/budget.rs`) | cue tick (u32), sequence (u8), kind (u8), length (u8), at most 24 payload bytes |
 
-The `Show` record is not built (slice W2); nor is the 64-bit hash of the
+The `Show` record is not built (it needs `crates/live/actor-net`); the
+state it would carry is built (`rules::show::State`, at most 227 bytes), and
+every machine that runs the VM draws it. Nor is the 64-bit hash of the
 peer's filtered state the `Digest` gains, whose mismatch asks for a
 `Key`. The host filters the state per peer, so a team's waypoint is not
 sent to the other team's machines. A message cue carries its audience as a mask
@@ -526,34 +528,78 @@ and `hud.waypoints` ("marks places and things").
 
 A script declares its HUD once, as the HUD kit describes one
 ([hud-kit.md](hud-kit.md#the-model-cratesrewriteshud-kit-core)): a fixed
-list of elements, each a kind and a place. A state only shows, hides and
-words them.
+list of widgets and waypoints, each a kind and a place. A state only
+shows, hides and words them.
 
 ```text
-hud wave_line: text at top_right
-hud lives_line: text at under_score
-hud left_bar: meter at above_weapon
-waypoint lz
+hud hill_row: text at koth.hill
+hud moved_row: banner at koth.banner
+waypoint hill_mark at koth.mark
 ```
 
-A place is one of a fixed list of named slots the kit lays out against
-the retail HUD in every screen mode; a script gives no pixels. The
-checker builds the `hud_kit_core::Hud` and runs the kit's layout checks,
-so two elements in one slot, or a text wider than its slot, is a compile
-error. The game reads the declarations from the blob's header before
-`GAME_ACTIVATE`, where the kit installs (`hud_kit::register`), on a
-`Viewer` too.
+A place is a kit element's id: the HUD's name, a dot and the element
+(`koth.hill`), so a script gives no pixels. A declaration's name is its
+number, an `int` constant, which the calls below take. The kind is
+`text`, `banner` or `meter`. At most 16 widgets and 8 waypoints; a place
+taken twice is a compile error (`Refusal::HudSlot` in the verifier), and
+a declaration without its capability is one too. The slot's HUD is the
+one the game feeds from the state ([the HUDs a script feeds](#the-huds-a-script-feeds)).
+The text's width against the element's is not checked.
+
+A `section "Waves"` line splits a script: it compiles to nothing, the
+outline nests the declarations after it under it (`ide::symbols`) and
+editors fold it (`ide::fold`).
+
+The state a widget keeps is its value, fill (0 to 255 for 0 to 1), style,
+text (an index into the blob's strings) and audience, set by the calls
+below; a waypoint keeps the object it marks. `rules::show::view` makes
+what one viewer sees of it, a pure function of the state, the blob and
+the viewer's slot and team, and nothing in it reads the game. The state
+is part of `RulesExt` (`show`), so a checkpoint, a film's keyframe and the
+sim hash carry it, and a round's end clears it. A call that names a
+widget or waypoint the script does not declare stops the script
+(`ErrorKind::Hud`).
 
 | Script | Entry | Engine | Status | Synced by |
 |---|---|---|---|---|
 | `message(to, "…{n}")` | exist | the notification insert (`hud_kit::NOTIFY`, E `0x24cbee`), per local user (**Code**, `crates/extensions/game/src/rules/world/show.rs`); the timed centred text (`0x24cc73`) is not used | named | a `Cue` (**Code**) |
-| `hud_text(w, "Wave {n}")`, `hud_fill(w, f)`, `hud_style(w, style)`, `hud_show(w, to, on)` | `hud_text`, `hud_fill`, `hud_style`, `hud_show` | `hud_kit::Handle::publish` (**Code**, `crates/extensions/game/src/hud_kit.rs`); the text uses the message holes ([rules-language-types.md](rules-language-types.md#messages)) | named once the kit's runtime draws | `Show` |
+| `hud_text(w, "…")`, `hud_value(w, n)`, `hud_fill(w, f)`, `hud_style(w, style)`, `hud_show(w, on)` | `hud_text`, `hud_value`, `hud_fill`, `hud_style`, `hud_show` | the VM's show state; `hud_kit::Handle::publish` draws it (**Code**, `crates/extensions/game/src/rules/world/hud.rs`). The text is a literal: message holes and an audience (`to`) are not built | named | `Show` (not built) |
+| `side_of(p)`, `slot_of(p)` | `side_of`, `slot_of` | the roster: the team's index in a game with teams, 16 and the slot in one without; the slot | named | none: a read |
 | `countdown(w, t)` | `hud_countdown` | the state holds the end tick; each machine counts its own ticks | not built | `Show` |
-| `mark(wp, at, to)`, `mark(wp, at, to, "…")`, `unmark(wp, to)` | `mark`, `unmark` | the game's navpoint list (`0x24da7d`) through `Handle::navpoint`; the kit holds one slot, and more than one is **S** | named for one | `Show` |
+| `mark(wp, at)`, `unmark(wp)` | `mark`, `unmark` | a zone's middle through `Handle::navpoint_at`, one navpoint a HUD; the text is the distance from the user's unit. A thing that moves has no mark until the entity read (W3). `mark(wp, at, to)` and the text form are not built | named | `Show` (not built) |
 | `medal(p, "…")`: a line with a medal glyph, counted in the film and on Live | `medal` | the notification queue, as the superbounce medals (hud-kit.md "The medals"); `GAME_MEDAL` (`0x1970a0`) takes only the game's own medal rows | traced | a `Cue` |
 
 Scoreboard labels and the post-game report's columns stay the carrier's
 (rules-engine.md "Not verified").
+
+#### The HUDs a script feeds
+
+The first word of a slot names a HUD of the kit's: `ctf`, `assault`,
+`oddball`, `koth` or `territories`
+(`hud_kit_core::views::objective`, `content/modes/huds/`). The rules
+feature registers them hidden when it installs
+(`crates/extensions/game/src/rules/world/hud.rs`, `register`), and after
+each tick, for each local user, the game makes the user's view of the
+state, turns it into the objective views' `Fed` (`hud::fed`) and
+publishes `objective::feed`'s values for each HUD the script's slots
+name. A row the script leaves unset or hidden stays hidden. A side is a
+team's index in a game with teams and 16 and a roster slot in one
+without (`side_of`); a viewer is on a side (`Viewer::on_side`), so one
+state reads "yours" to one team and "the enemy's" to the other. Each
+HUD's contract with the script:
+
+| HUD | Widget (slot) | Reads |
+|---|---|---|
+| `koth` | `koth.hill`; `koth.time`; `koth.banner`; waypoint `koth.mark` | style 0 open, 1 held by the side in the value, 2 contested; the seconds in the value; the banner's text; the navpoint over a zone, with the distance |
+| `territories` | `ter.owned`; `ter.banner`; waypoint `ter.mark` | the count in the value and the total in the style (every side's: one state serves every viewer); the banner's text; a navpoint over a zone |
+| `oddball` | `odd.holder`; `odd.time`; `odd.banner` | style 0 loose, 1 carried, the value 16 and the carrier's slot (`slot_of`), worded with the player's name; the seconds in the value; the banner's text. The ball moves, so it has no mark |
+| `ctf` | `ctf.flag0`, `ctf.flag1`; `ctf.banner` | each team's flag: style 0 at home, 1 carried (the value 16 and the carrier's slot), 2 dropped; the viewer's team's is "your flag". No mark |
+| `assault` | `asl.bomb0`, `asl.bomb1`; `asl.banner` | each team's bomb as a flag, and style 3 armed with the seconds to detonation in the value; the viewer's team's is shown |
+
+A banner is timed by the kit from the moment its text changes
+(`BANNER_TICKS`), so a script shows it for two ticks and hides it. The
+`base` HUD is not fed from a script; its feed is slice GE5 of
+[game-types-without-carriers.md](game-types-without-carriers.md).
 
 ### Physics
 
@@ -687,7 +733,7 @@ own target on top of the three common ones, as `rules.world_ns` at the
 |---|---|---|---|---|---|---|
 | W0 | Roles: `Authority`, `Replica`, `Viewer` | `game/rules/runtime.rs`, `game/rules/feature.rs`; the blob as a start condition in `game/rules/gate.rs` | over invented guest memory: a mode 3 peer keeps its VM and makes the host's calls; a mode 5 client makes none; a peer without the blob blocks the start by name | a script game scores the same on both machines of a synchronous session | the host runtime running in a game; R1 | a script Slayer game against the lifted one: the tick's 99th percentile within 0.1 ms |
 | W1 | Messages everywhere: cues (**built**) | `rules/show.rs` (`Cue`, the codec), `game/rules/world/show.rs`, `crates/live/actor-net/src/wire.rs` and `budget.rs` (`Cue`), `game/actor_net/host.rs`, `client.rs`; `message*` named | the codec round-trips and refuses each bad bound; a cue in three packets shows once; the budget drops the rest the same way twice; the fake logs each message with its audience | `message(all, "…")` from Siege shows on the host and on a Live guest | W0 | 8 cues every tick to 15 peers: 0.05 ms, and 600 bytes a second to each |
-| W2 | Script HUD: show state, `hud` and `waypoint` declarations, sections | `rules/show.rs` (`State`, `view`), `lang/*` (the declarations, `section`), `ir.rs` (the header table), `ide/*` (outline, folding), `game/rules/world/hud.rs` (new, over `game/hud_kit.rs`), `wire.rs` (`Show`, the digest), the workbench's HUD strip in `web/src/stats/RulesTest.tsx` | a declared layout that overlaps is a compile error; `view` of the same bytes is the same on host and client at every tick of a fake match; a `Key` restores the state after loss | a script's wave counter and a waypoint draw on host and guest; Firefight's HUD view reads the show state | W1; the HUD kit's runtime drawing | 32 HUD writes every tick: 0.05 ms; `Show` at most 5 a second in `actors.net` |
+| W2 (built but for the `Show` record, the digest, `mark`'s audience and the workbench's HUD strip) | Script HUD: show state, `hud` and `waypoint` declarations, sections | `rules/show.rs` (`State`, `view`), `lang/*` (the declarations, `section`), `ir.rs` (the header table), `ide/*` (outline, folding), `game/rules/world/hud.rs` (new, over `game/hud_kit.rs`), `wire.rs` (`Show`, the digest), the workbench's HUD strip in `web/src/stats/RulesTest.tsx` | a declared layout that overlaps is a compile error; `view` of the same bytes is the same on host and client at every tick of a fake match; a `Key` restores the state after loss | a script's wave counter and a waypoint draw on host and guest; Firefight's HUD view reads the show state | W1; the HUD kit's runtime drawing | 32 HUD writes every tick: 0.05 ms; `Show` at most 5 a second in `actors.net` |
 | W3 | Objects in motion: `vec`, position reads, `teleport`, movers, `on arrive` | `lang/types.rs`, `lang/check.rs`, `lang/lower.rs` (`vec`), `vm.rs` (movers in `RulesExt`), `game/rules/world/objects.rs` (new) | `vec` arithmetic and each type error; a mover reaches its end on the stated tick and survives a checkpoint revert; a teleport outside the world is a refused call; a film of a mover replays to the same `RulesExt` hash | Race with moving platforms and a teleporter pad plays on Live | W0; R2, R3 | 16 movers: 0.15 ms |
 | W4 | Physics reads and pushes: `airborne`, `primed`, `on touchdown`, the sight table, `push`, `launch` | `vm.rs` (the sight table), `game/rules/world/physics.rs` (new), `game/superbounce_charge.rs` (the touchdown for every player), the `sb_strip` label source in `game/rules/census.rs`; `content/modes/rules/superbounce.rules`, `content/modes/rules/bounce_hunt.rules` | the sketch above scores the chain's recorded scenarios as `superbounce_chain_tests.rs` does; a `sees` pair answers one tick after it is asked and never from a handler; a push over the bound is a refused call | the Superbounce game type's chain and medals come from the script; `on bounce`, `on bounced` and the Rust chain are deleted only once the script gives the chain's awards on every scenario of its tests | W2, W3; R9 | 32 traces every tick: 0.25 ms |
 | W5 | Audio (**partly built**): `sound_to`, `sound_to_team`, `sound_to_all`, with the host finding a sound by the loaded map's tag index; `say`, `sound_at`, `music`, `announce` refused by name until R4 and R5 | `game/rules/world/audio.rs` (new), the `sound` and `line` types in `lang/*`, the tag table's sound group in `ir.rs` and `verify.rs` | a sound that is not in the map blocks the start by name; a `sound_to` cue reaches only its audience; the music slot starts a late machine at the right tick | a wave's stinger and an Elite's taunt play on every machine of a Live Firefight | W1; R4, R5 | 4 sounds every tick: 0.05 ms |

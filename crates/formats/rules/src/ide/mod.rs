@@ -289,6 +289,7 @@ impl Serialize for Token {
 /// LSP's `SymbolKind` numbers this module uses.
 pub mod symbol_kind {
     pub const MODULE: u8 = 2;
+    pub const NAMESPACE: u8 = 3;
     pub const PROPERTY: u8 = 7;
     pub const FIELD: u8 = 8;
     pub const ENUM: u8 = 10;

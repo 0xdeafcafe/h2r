@@ -31,7 +31,35 @@ pub struct Script {
     /// compile reads them first ([`super::modules`]), so a script that
     /// reaches the checker with one has no file to read it from.
     pub modules: Vec<(String, Pos)>,
+    /// `hud name: kind at slot`, in order: a widget's number is its index.
+    /// Each also leaves a `const` of the same name in `items`, so a call
+    /// names a widget by it.
+    pub huds: Vec<HudDecl>,
+    /// `waypoint name [at slot]`, in order, as `huds` are.
+    pub waypoints: Vec<WaypointDecl>,
+    /// `section "Waves"`: where the script is split, for the outline and
+    /// folding. It compiles to nothing.
+    pub sections: Vec<(String, Pos)>,
     pub items: Vec<Item>,
+}
+
+/// `hud <name>: <kind> at <slot>`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HudDecl {
+    pub name: String,
+    /// `text`, `banner` or `meter`; the checker refuses another.
+    pub kind: String,
+    /// The kit element the widget draws as (`koth.hill`).
+    pub slot: String,
+    pub pos: Pos,
+}
+
+/// `waypoint <name> [at <slot>]`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WaypointDecl {
+    pub name: String,
+    pub slot: Option<String>,
+    pub pos: Pos,
 }
 
 /// The `settings` block: one `name = value` a line.

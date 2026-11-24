@@ -722,6 +722,7 @@ fn kind_words(kind: ErrorKind) -> String {
             "more than {} areas are shown at once; hide_area takes one off",
             vm::MAX_SHOWN_AREAS
         ),
+        ErrorKind::Hud => "a HUD call names a widget or waypoint the script does not declare".into(),
     }
 }
 

@@ -42,6 +42,8 @@ pub enum Refusal {
     Label { index: usize, reason: &'static str },
     #[error("{what} index {index} is out of range")]
     Index { what: &'static str, index: u32 },
+    #[error("a HUD slot (string {0}) is declared twice")]
+    HudSlot(u16),
     #[error("option {0} has an invalid type, range or default")]
     Option(usize),
     #[error("the options need {0} bits; a record carries {OPTION_BITS}")]
@@ -302,6 +304,39 @@ pub fn verify(ir: &Ir) -> Result<Report, Refusal> {
     for (n, (what, max)) in per_scope.iter().zip(budgets) {
         if *n > max {
             return Err(Refusal::Limit { what, max });
+        }
+    }
+
+    if ir.widgets.len() > crate::ir::MAX_WIDGETS {
+        return Err(Refusal::Limit {
+            what: "HUD widgets",
+            max: crate::ir::MAX_WIDGETS,
+        });
+    }
+    if ir.waypoints.len() > crate::ir::MAX_WAYPOINTS {
+        return Err(Refusal::Limit {
+            what: "waypoints",
+            max: crate::ir::MAX_WAYPOINTS,
+        });
+    }
+    // A slot is one place: two declarations at one are an overlap.
+    let mut slots: Vec<u16> = Vec::new();
+    for d in &ir.widgets {
+        string(d.name)?;
+        string(d.slot)?;
+        if slots.contains(&d.slot) {
+            return Err(Refusal::HudSlot(d.slot));
+        }
+        slots.push(d.slot);
+    }
+    for d in &ir.waypoints {
+        string(d.name)?;
+        if let Some(slot) = d.slot {
+            string(slot)?;
+            if slots.contains(&slot) {
+                return Err(Refusal::HudSlot(slot));
+            }
+            slots.push(slot);
         }
     }
 

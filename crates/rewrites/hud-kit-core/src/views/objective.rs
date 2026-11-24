@@ -36,6 +36,78 @@ fn row(text: Option<String>) -> Value {
     text.map_or_else(Value::hidden, Value::text)
 }
 
+/// One widget of a script's show state as one viewer sees it
+/// (`rules::show::WidgetView`): the numbers a script sets with `hud_value`,
+/// `hud_style` and `hud_text`, which each HUD below reads its own way.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Widget {
+    /// The widget draws at all (`hud_show`).
+    pub shown: bool,
+    pub value: i32,
+    pub style: u8,
+    pub text: Option<String>,
+    /// `value` names a side the viewer is on: the viewer's team, or the
+    /// viewer's own slot in a game without teams (`rules::show::Viewer::on_side`).
+    pub mine: bool,
+}
+
+/// What a running script feeds the objective HUDs, for one viewer: its
+/// widgets by the element id they are at (`koth.hill`), the names of the
+/// players its widgets name by slot, and each navpoint element's distance
+/// to the thing its waypoint marks. The game builds it each tick
+/// (`game::rules::world::hud`); a state, a number or a name the script
+/// leaves out is a row that stays hidden.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Fed {
+    /// The viewer's team, for the HUDs that tell a side's own from the
+    /// other's (`ctf`, `assault`).
+    pub team: Option<u8>,
+    pub widgets: Vec<(String, Widget)>,
+    pub names: Vec<(u8, String)>,
+    pub distances: Vec<(String, u16)>,
+}
+
+impl Fed {
+    /// The widget at element `id`, when the script shows it.
+    fn widget(&self, id: &str) -> Option<&Widget> {
+        self.widgets.iter().find(|(slot, _)| slot == id).map(|(_, w)| w).filter(|w| w.shown)
+    }
+
+    /// The seconds a shown widget counts, from its value.
+    fn seconds(&self, id: &str) -> Option<u32> {
+        self.widget(id).map(|w| w.value.max(0) as u32)
+    }
+
+    fn distance(&self, id: &str) -> Option<u16> {
+        self.distances.iter().find(|(slot, _)| slot == id).map(|(_, d)| *d)
+    }
+
+    /// The banner at element `id`: the shown widget's text, when the
+    /// kit's banner takes it.
+    fn banner(&self, id: &str) -> Value {
+        let text = self.widget(id).and_then(|w| w.text.as_deref());
+        banner(text.filter(|t| crate::model::banner_fault(t).is_none()))
+    }
+
+    fn name(&self, slot: i32) -> Option<&str> {
+        let slot = u8::try_from(slot).ok()?;
+        self.names.iter().find(|(s, _)| *s == slot).map(|(_, n)| n.as_str())
+    }
+}
+
+/// The values the script feeds the objective HUD named `name`; `None` for
+/// a name that is no objective HUD.
+pub fn feed(name: &str, fed: &Fed) -> Option<Values> {
+    Some(match name {
+        ctf::NAME => ctf::feed(fed),
+        assault::NAME => assault::feed(fed),
+        oddball::NAME => oddball::feed(fed),
+        koth::NAME => koth::feed(fed),
+        territories::NAME => territories::feed(fed),
+        _ => return None,
+    })
+}
+
 /// The base HUD ([`Base`]): what the base shows of any scripted game.
 pub mod base {
     use super::*;
@@ -93,6 +165,10 @@ pub mod ctf {
     pub const ENEMY: &str = "ctf.enemy";
     pub const MARK: &str = "ctf.mark";
     pub const BANNER: &str = "ctf.banner";
+    /// The script's widgets for each team's flag: the HUD's own flag is
+    /// the viewer's team's, the enemy's the other's (a viewer on no team
+    /// reads team 0's as its own).
+    pub const FLAGS: [&str; 2] = ["ctf.flag0", "ctf.flag1"];
 
     /// Where a flag is.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,6 +213,38 @@ pub mod ctf {
         v
     }
 
+    /// The HUD a script feeds: each team's flag has a widget ([`FLAGS`]),
+    /// style 0 at home, 1 carried (the value is 16 and the carrier's
+    /// roster slot, so it is "yours" when you carry it) or 2 dropped; a
+    /// flag with no shown widget has no row.
+    pub fn feed(f: &Fed) -> Values {
+        let flag = |id| {
+            f.widget(id).map(|w| match w.style {
+                1 if w.mine => Flag::Yours,
+                1 => Flag::Taken,
+                2 => Flag::Dropped,
+                _ => Flag::Home,
+            })
+        };
+        let mine = usize::from(f.team == Some(1));
+        let (own, enemy) = (flag(FLAGS[mine]), flag(FLAGS[1 - mine]));
+        let state = State {
+            own: own.unwrap_or(Flag::Home),
+            enemy: enemy.unwrap_or(Flag::Home),
+            mark: f.distance(MARK),
+            banner: None,
+        };
+        let mut v = values(&state);
+        if own.is_none() {
+            v.set(OWN, Value::hidden());
+        }
+        if enemy.is_none() {
+            v.set(ENEMY, Value::hidden());
+        }
+        v.set(BANNER, f.banner(BANNER));
+        v
+    }
+
     pub(super) fn views() -> Vec<(&'static str, State)> {
         let s = |own, enemy, mark, banner| State { own, enemy, mark, banner };
         vec![
@@ -157,6 +265,9 @@ pub mod assault {
     pub const BOMB: &str = "asl.bomb";
     pub const MARK: &str = "asl.mark";
     pub const BANNER: &str = "asl.banner";
+    /// The script's widgets for each team's bomb: the HUD shows the
+    /// viewer's team's (a viewer on no team reads team 0's).
+    pub const BOMBS: [&str; 2] = ["asl.bomb0", "asl.bomb1"];
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum Bomb {
@@ -189,6 +300,29 @@ pub mod assault {
         v.set(BOMB, Value::text(format!("Bomb: {word}")));
         v.set(MARK, mark(s.mark));
         v.set(BANNER, banner(s.banner));
+        v
+    }
+
+    /// The HUD a script feeds: each team's bomb has a widget ([`BOMBS`]),
+    /// style 0 at base, 1 carried, 2 dropped or 3 armed, with the seconds
+    /// to detonation in its value.
+    pub fn feed(f: &Fed) -> Values {
+        let bomb = f.widget(BOMBS[usize::from(f.team == Some(1))]).map(|w| match w.style {
+            1 => Bomb::Carried,
+            2 => Bomb::Dropped,
+            3 => Bomb::Armed(w.value.max(0) as u32),
+            _ => Bomb::Home,
+        });
+        let state = State {
+            bomb: bomb.unwrap_or(Bomb::Home),
+            mark: f.distance(MARK),
+            banner: None,
+        };
+        let mut v = values(&state);
+        if bomb.is_none() {
+            v.set(BOMB, Value::hidden());
+        }
+        v.set(BANNER, f.banner(BANNER));
         v
     }
 
@@ -249,6 +383,30 @@ pub mod oddball {
         v
     }
 
+    /// The HUD a script feeds: the holder's widget (`odd.holder`) is style
+    /// 0 for a loose ball or 1 carried, its value `16` and the carrier's
+    /// roster slot (the player's name comes from the roster); `odd.time`
+    /// counts the seconds you have held it.
+    pub fn feed(f: &Fed) -> Values {
+        let holder = f.widget(HOLDER).map(|w| match w.style {
+            1 if w.mine => Holder::You,
+            1 => Holder::Other(f.name(w.value - 16).unwrap_or("another player").to_string()),
+            _ => Holder::Nobody,
+        });
+        let state = State {
+            holder: holder.clone().unwrap_or(Holder::Nobody),
+            held: f.seconds(TIME),
+            mark: f.distance(MARK),
+            banner: None,
+        };
+        let mut v = values(&state);
+        if holder.is_none() {
+            v.set(HOLDER, Value::hidden());
+        }
+        v.set(BANNER, f.banner(BANNER));
+        v
+    }
+
     pub(super) fn views() -> Vec<(&'static str, State)> {
         let s = |holder, held, mark, banner| State { holder, held, mark, banner };
         vec![
@@ -306,6 +464,31 @@ pub mod koth {
         v
     }
 
+    /// The HUD a script feeds: the hill's widget (`koth.hill`) is style 0
+    /// open, 1 held (the value is the holding side, so it is "yours" when
+    /// you are on it) or 2 contested; `koth.time` counts the seconds your
+    /// side has held it.
+    pub fn feed(f: &Fed) -> Values {
+        let hill = f.widget(HILL).map(|w| match w.style {
+            1 if w.mine => Hill::Yours,
+            1 => Hill::Theirs,
+            2 => Hill::Contested,
+            _ => Hill::Open,
+        });
+        let state = State {
+            hill: hill.unwrap_or(Hill::Open),
+            held: f.seconds(TIME),
+            mark: f.distance(MARK),
+            banner: None,
+        };
+        let mut v = values(&state);
+        if hill.is_none() {
+            v.set(HILL, Value::hidden());
+        }
+        v.set(BANNER, f.banner(BANNER));
+        v
+    }
+
     pub(super) fn views() -> Vec<(&'static str, State)> {
         let s = |hill, held, mark, banner| State { hill, held, mark, banner };
         vec![
@@ -344,6 +527,25 @@ pub mod territories {
         v.set(OWNED, Value::text(format!("Territories {} of {}", s.owned.min(9), s.total.min(9))));
         v.set(MARK, mark(s.mark));
         v.set(BANNER, banner(s.banner));
+        v
+    }
+
+    /// The HUD a script feeds: the count's widget (`ter.owned`) holds the
+    /// territories your side holds in its value and the total in its
+    /// style.
+    pub fn feed(f: &Fed) -> Values {
+        let owned = f.widget(OWNED).map(|w| (w.value.clamp(0, 9) as u8, w.style));
+        let state = State {
+            owned: owned.map_or(0, |o| o.0),
+            total: owned.map_or(0, |o| o.1),
+            mark: f.distance(MARK),
+            banner: None,
+        };
+        let mut v = values(&state);
+        if owned.is_none() {
+            v.set(OWNED, Value::hidden());
+        }
+        v.set(BANNER, f.banner(BANNER));
         v
     }
 
@@ -479,6 +681,93 @@ mod tests {
         assert_eq!(text(&Koth, "contested", koth::HILL).as_deref(), Some("Hill: Contested"));
         assert_eq!(text(&Koth, "contested", koth::MARK).as_deref(), Some("3"));
         assert_eq!(text(&Territories, "two", territories::OWNED).as_deref(), Some("Territories 2 of 5"));
+    }
+
+    fn widget(value: i32, style: u8, mine: bool) -> Widget {
+        Widget { shown: true, value, style, text: None, mine }
+    }
+
+    fn banner_widget(text: &str) -> Widget {
+        Widget { shown: true, text: Some(text.into()), ..Widget::default() }
+    }
+
+    fn at(v: &Values, id: &str) -> Option<String> {
+        let x = v.get(id).unwrap();
+        x.shown.then(|| x.text.clone())
+    }
+
+    /// Each HUD reads the script's widgets its own way, a hidden widget
+    /// has no row, and every state a feed makes fits the HUD's layout.
+    #[test]
+    fn a_fed_hud_reads_the_scripts_widgets_and_leaves_the_rest_hidden() {
+        let fed = |widgets: &[(&str, Widget)], distances: &[(&str, u16)]| Fed {
+            team: None,
+            widgets: widgets.iter().map(|(s, w)| (s.to_string(), w.clone())).collect(),
+            names: vec![(3, "Ann".into())],
+            distances: distances.iter().map(|(s, d)| (s.to_string(), *d)).collect(),
+        };
+        let koth = feed(
+            "koth",
+            &fed(
+                &[
+                    (koth::HILL, widget(1, 1, true)),
+                    (koth::TIME, widget(41, 0, false)),
+                    (koth::BANNER, banner_widget("HILL MOVED")),
+                ],
+                &[(koth::MARK, 75)],
+            ),
+        )
+        .unwrap();
+        assert_eq!(at(&koth, koth::HILL).as_deref(), Some("Hill: Yours"));
+        assert_eq!(at(&koth, koth::TIME).as_deref(), Some("Held 0:41"));
+        assert_eq!(at(&koth, koth::MARK).as_deref(), Some("75"));
+        assert_eq!(at(&koth, koth::BANNER).as_deref(), Some("HILL MOVED"));
+        let theirs = feed("koth", &fed(&[(koth::HILL, widget(1, 1, false))], &[])).unwrap();
+        assert_eq!(at(&theirs, koth::HILL).as_deref(), Some("Hill: Held by the enemy"));
+        assert_eq!(at(&theirs, koth::TIME), None);
+        assert_eq!(at(&theirs, koth::MARK), None);
+        assert_eq!(at(&theirs, koth::BANNER), None);
+
+        let flags = feed(
+            "ctf",
+            &fed(
+                &[(ctf::FLAGS[0], widget(0, 1, false)), (ctf::FLAGS[1], widget(16, 1, true))],
+                &[],
+            ),
+        )
+        .unwrap();
+        assert_eq!(at(&flags, ctf::OWN).as_deref(), Some("Your flag: Taken"));
+        assert_eq!(at(&flags, ctf::ENEMY).as_deref(), Some("Enemy flag: Carried by you"));
+
+        let bomb = feed("assault", &fed(&[(assault::BOMBS[0], widget(14, 3, false))], &[])).unwrap();
+        assert_eq!(at(&bomb, assault::BOMB).as_deref(), Some("Bomb: Armed 0:14"));
+        // A viewer on the second team reads the second team's flag and bomb
+        // as its own.
+        let mut second = fed(
+            &[(ctf::FLAGS[0], widget(0, 1, false)), (ctf::FLAGS[1], widget(0, 2, false))],
+            &[],
+        );
+        second.team = Some(1);
+        let second = feed("ctf", &second).unwrap();
+        assert_eq!(at(&second, ctf::OWN).as_deref(), Some("Your flag: Dropped"));
+        assert_eq!(at(&second, ctf::ENEMY).as_deref(), Some("Enemy flag: Taken"));
+
+        let ball = feed("oddball", &fed(&[(oddball::HOLDER, widget(16 + 3, 1, false))], &[])).unwrap();
+        assert_eq!(at(&ball, oddball::HOLDER).as_deref(), Some("Ball: Carried by Ann"));
+        let you = feed("oddball", &fed(&[(oddball::HOLDER, widget(16 + 3, 1, true))], &[])).unwrap();
+        assert_eq!(at(&you, oddball::HOLDER).as_deref(), Some("Ball: Carried by you"));
+
+        let held = feed("territories", &fed(&[(territories::OWNED, widget(2, 5, false))], &[])).unwrap();
+        assert_eq!(at(&held, territories::OWNED).as_deref(), Some("Territories 2 of 5"));
+
+        // A script that feeds nothing shows nothing; a name that is no
+        // objective HUD is none.
+        let none = feed("koth", &Fed::default()).unwrap();
+        assert!(koth::hud().elements.iter().all(|e| at(&none, e.id).is_none()));
+        assert!(feed("firefight", &Fed::default()).is_none());
+        // A banner the kit refuses stays hidden.
+        let long = feed("koth", &fed(&[(koth::BANNER, banner_widget("A\nB"))], &[])).unwrap();
+        assert_eq!(at(&long, koth::BANNER), None);
     }
 
     #[test]

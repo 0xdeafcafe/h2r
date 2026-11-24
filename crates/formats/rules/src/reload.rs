@@ -247,6 +247,14 @@ pub fn carry(old: &Ir, new: &Ir, ext: &mut RulesExt) {
             Scope::Object => ext.objects.values_mut().for_each(&mut fix),
         }
     }
+    // The show state is by declaration number: what the new script no
+    // longer declares goes, and a widget's text moves to the new table.
+    ext.show.truncate(new.widgets.len(), new.waypoints.len());
+    for w in ext.show.widgets.iter_mut().flatten() {
+        w.text = w
+            .text
+            .and_then(|t| u16::try_from(moved(old, new, Ty::Text, i32::from(t), -1)).ok());
+    }
     let api = new.header.api_version;
     for q in &mut ext.queue {
         let Some(entry) = caps::entry(q.entry, api) else {

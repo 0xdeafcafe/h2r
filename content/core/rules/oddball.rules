@@ -18,8 +18,16 @@
 rules "Oddball" 1
 type oddball
 requires objects.delete
+requires hud.widgets
 
 label oddball_spawn: objects
+
+// The HUD (docs/game/game-types-without-carriers.md, "The display"): the
+// ball's holder, the seconds that player has held it and a banner for a
+// pickup or a drop. The ball moves, so it has no mark.
+hud holder_row: text at odd.holder
+hud held_row: text at odd.time
+hud ball_row: banner at odd.banner
 
 // Retail's init takes at most three type-4 spawns (0x2bc2e0).
 const most_balls = 3
@@ -39,6 +47,9 @@ player var held: time = 0t
 global var made: int = 0
 global var pending: int = -1
 global var walk: int = 0
+global var holder: int = -1
+global var held_for: time = 0t
+global var banner_left: int = 0
 
 fn make(n: int) {
     pending = n
@@ -52,6 +63,9 @@ fn make(n: int) {
 on round_start {
     made = 0
     pending = -1
+    holder = -1
+    held_for = 0t
+    hud_show(ball_row, false)
     for each players p { p.held = 0t }
     // A ball left from the last round goes.
     for each objectives b where not b.gone {
@@ -68,14 +82,27 @@ on pickup(p, o) {
         o.moved = true
         o.idle = 0t
         role_traits(p, true)
+        hud_text(ball_row, "BALL TAKEN")
+        hud_show(ball_row, true)
+        banner_left = 2
     }
 }
 
 on drop(p, o) {
-    if is_objective(o) and not o.gone { role_traits(p, false) }
+    if is_objective(o) and not o.gone {
+        role_traits(p, false)
+        hud_text(ball_row, "BALL DROPPED")
+        hud_show(ball_row, true)
+        banner_left = 2
+    }
 }
 
 on tick {
+    // The banner shows for two ticks; the kit times it from there.
+    if banner_left > 0 {
+        banner_left = banner_left - 1
+        if banner_left == 0 { hud_show(ball_row, false) }
+    }
     // The ball made last tick takes the spawn it was made at.
     for each objectives b where not b.gone and b.slot < 0 {
         b.slot = pending
@@ -85,6 +112,26 @@ on tick {
         make(made)
         made = made + 1
     }
+    // The first ball's holder is the one the HUD names.
+    let lead_ball = first(objectives o where not o.gone and o.carrier != none)
+    if let ball = lead_ball {
+        if let who = ball.carrier {
+            hud_style(holder_row, 1)
+            hud_value(holder_row, 16 + slot_of(who))
+            if slot_of(who) == holder { held_for = held_for + 1t } else {
+                holder = slot_of(who)
+                held_for = 0t
+            }
+            hud_value(held_row, whole_seconds(held_for))
+            hud_show(held_row, true)
+        }
+    } else {
+        hud_style(holder_row, 0)
+        holder = -1
+        held_for = 0t
+        hud_show(held_row, false)
+    }
+    hud_show(holder_row, true)
     for each objectives b where not b.gone {
         let p = b.carrier
         if p != none {

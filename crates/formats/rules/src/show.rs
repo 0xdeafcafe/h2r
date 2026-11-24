@@ -10,6 +10,13 @@
 //! what the verified blob holds. No field is an offset, a length the
 //! receiver allocates by, or text.
 
+mod state;
+
+pub use state::{
+    MAX_BYTES as MAX_STATE_BYTES, MAX_WAYPOINTS, MAX_WIDGETS, State, StateError, View, Viewer, WaypointView,
+    Waypoint, Widget, WidgetView, fill_byte, view,
+};
+
 use crate::caps;
 use crate::ty::{MAX_PLAYERS, MAX_TEAMS};
 use crate::types::{StartLine, Type};

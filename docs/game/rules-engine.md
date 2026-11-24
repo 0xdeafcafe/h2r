@@ -1464,6 +1464,7 @@ plain words each:
 | `ai.squads` | places and commands AI | no |
 | `bots.orders` | gives bots orders | no |
 | `hud.message` | shows messages | no |
+| `hud.widgets`, `hud.waypoints` | draws on the HUD; marks places and things | no |
 | `hud.superbounce` | shows the superbounce guide: a priming HUD, marks over the map and bounce medals | no |
 | `firefight.director` | runs Firefight rounds, waves, lives and scores | no |
 | `forge.move`, `forge.delete`, `forge.place`, `forge.scale` | lets players move, remove, place and resize objects during the match | yes |

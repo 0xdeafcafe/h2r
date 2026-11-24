@@ -604,6 +604,7 @@ impl<'s> Cx<'s> {
                 Item::Enum { .. } | Item::Label(_) | Item::Const { .. } | Item::On { .. } => {}
             }
         }
+        self.show_decls();
         self.quick_marks();
         self.label_clashes();
         self.const_clashes();
@@ -707,6 +708,53 @@ impl<'s> Cx<'s> {
                 self.err("limit", *rpos, "more than 32 capabilities");
             } else {
                 self.requires.push((name.clone(), *rpos));
+            }
+        }
+    }
+
+    /// The `hud` and `waypoint` declarations: a kind the kit draws, a
+    /// slot of its own (two declarations at one slot overlap), the
+    /// counts the show state holds, and the capability that names them.
+    fn show_decls(&mut self) {
+        let s = self.script;
+        let mut slots: Vec<(&str, &str)> = Vec::new();
+        for (cap, empty) in [("hud.widgets", s.huds.is_empty()), ("hud.waypoints", s.waypoints.is_empty())] {
+            if empty {
+                continue;
+            }
+            self.used_caps.insert(cap.to_string());
+            if !self.required(cap) {
+                let pos = if cap == "hud.widgets" { s.huds[0].pos } else { s.waypoints[0].pos };
+                let what = if cap == "hud.widgets" { "a hud declaration" } else { "a waypoint declaration" };
+                self.err("cap.missing", pos, format!("{what} needs capability {cap}: add it to requires"));
+            }
+        }
+        if s.huds.len() > ir::MAX_WIDGETS {
+            self.err("limit", s.huds[ir::MAX_WIDGETS].pos, "a script declares at most 16 hud widgets");
+        }
+        if s.waypoints.len() > ir::MAX_WAYPOINTS {
+            self.err("limit", s.waypoints[ir::MAX_WAYPOINTS].pos, "a script declares at most 8 waypoints");
+        }
+        for h in &s.huds {
+            if ir::WidgetKind::ALL.iter().all(|k| k.word() != h.kind) {
+                let words: Vec<&str> = ir::WidgetKind::ALL.iter().map(|k| k.word()).collect();
+                let m = format!("{} is no hud kind; a hud is {}", h.kind, words.join(", "));
+                self.err("decl", h.pos, m);
+            }
+            if let Some((_, other)) = slots.iter().find(|(slot, _)| *slot == h.slot) {
+                let m = format!("{} is at {} already, where {other} is", h.name, h.slot);
+                self.err("decl", h.pos, m);
+            } else {
+                slots.push((h.slot.as_str(), h.name.as_str()));
+            }
+        }
+        for w in &s.waypoints {
+            let Some(slot) = &w.slot else { continue };
+            if let Some((_, other)) = slots.iter().find(|(s, _)| *s == slot.as_str()) {
+                let m = format!("{} is at {slot} already, where {other} is", w.name);
+                self.err("decl", w.pos, m);
+            } else {
+                slots.push((slot.as_str(), w.name.as_str()));
             }
         }
     }

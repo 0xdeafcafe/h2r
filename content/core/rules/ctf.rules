@@ -32,6 +32,19 @@
 // tags from the globals tag's multiplayer block, this script names the
 // paths; touching is read from the pickup event.
 
+requires hud.widgets
+
+// The HUD (docs/game/game-types-without-carriers.md, "The display"): each
+// team's flag or bomb, where it is, and a banner for the moment it changes
+// hands. A viewer reads its own team's as its own. The things move, so
+// they have no mark.
+hud flag0_row: text at ctf.flag0
+hud flag1_row: text at ctf.flag1
+hud flag_banner: banner at ctf.banner
+hud bomb0_row: text at asl.bomb0
+hud bomb1_row: text at asl.bomb1
+hud bomb_banner: banner at asl.banner
+
 // What the map supplies: each placement's team is its owner's.
 label flag_spawn: zones at most 16 = "ctf_flag_spawn"
 label flag_return: zones at most 16 = "ctf_flag_return"
@@ -55,6 +68,60 @@ object var moved: bool = false
 object var away: time = 0t
 object var arm: time = 0t
 global var defender: team = team 1
+global var banner_left: int = 0
+
+// A flag's or bomb's state at its team's widget: style 0 at home, 1 carried
+// (by 16 and the carrier's slot), 2 dropped, 3 a bomb armed (with the
+// seconds to detonation).
+fn show_thing(w: int, o: object) {
+    if let who = o.carrier {
+        if assault == 1 and o.arm > 0t {
+            hud_style(w, 3)
+            hud_value(w, max(whole_seconds(arm_time) - whole_seconds(o.arm), 0))
+        } else {
+            hud_style(w, 1)
+            hud_value(w, 16 + slot_of(who))
+        }
+    } else if o.moved {
+        hud_style(w, 2)
+    } else {
+        hud_style(w, 0)
+    }
+    hud_show(w, true)
+}
+
+fn announce_took() {
+    if assault == 1 {
+        hud_text(bomb_banner, "BOMB TAKEN")
+        hud_show(bomb_banner, true)
+    } else {
+        hud_text(flag_banner, "FLAG TAKEN")
+        hud_show(flag_banner, true)
+    }
+    banner_left = 2
+}
+
+fn announce_dropped() {
+    if assault == 1 {
+        hud_text(bomb_banner, "BOMB DROPPED")
+        hud_show(bomb_banner, true)
+    } else {
+        hud_text(flag_banner, "FLAG DROPPED")
+        hud_show(flag_banner, true)
+    }
+    banner_left = 2
+}
+
+fn announce_scored() {
+    if assault == 1 {
+        hud_text(bomb_banner, "BOMB ARMED")
+        hud_show(bomb_banner, true)
+    } else {
+        hud_text(flag_banner, "FLAG CAPTURED")
+        hud_show(flag_banner, true)
+    }
+    banner_left = 2
+}
 
 // Back to its stand: by touch, by the reset timer, or after a score. The
 // object goes and a new one is made at the stand, for its team (a
@@ -83,6 +150,8 @@ fn home(o: object) {
 }
 
 on round_start {
+    hud_show(flag_banner, false)
+    hud_show(bomb_banner, false)
     if defender == team 0 { defender = team 1 } else { defender = team 0 }
     for each teams t { t.at_home = true }
     // A flag or bomb left from the last round goes.
@@ -118,18 +187,35 @@ on pickup(p, o) {
             o.away = 0t
             if f != none { f.at_home = false }
             role_traits(p, true)
+            announce_took()
         }
     }
 }
 
 on drop(p, o) {
-    if is_objective(o) and not o.gone { role_traits(p, false) }
+    if is_objective(o) and not o.gone {
+        role_traits(p, false)
+        announce_dropped()
+    }
 }
 
 on tick {
     let bomb = assault == 1
     let one = flag_type == 1
+    // The banner shows for two ticks; the kit times it from there.
+    if banner_left > 0 {
+        banner_left = banner_left - 1
+        if banner_left == 0 {
+            hud_show(flag_banner, false)
+            hud_show(bomb_banner, false)
+        }
+    }
     for each objectives o where not o.gone {
+        if o.team == team 0 {
+            if bomb { show_thing(bomb0_row, o) } else { show_thing(flag0_row, o) }
+        } else if o.team == team 1 {
+            if bomb { show_thing(bomb1_row, o) } else { show_thing(flag1_row, o) }
+        }
         let p = o.carrier
         if p == none {
             if o.moved and reset_time > 0t {
@@ -144,6 +230,7 @@ on tick {
             if back and (not flag_at_home or mine.at_home) {
                 score(p, flag_points)
                 role_traits(p, false)
+                announce_scored()
                 home(o)
             }
         } else {
@@ -153,6 +240,7 @@ on tick {
             if on_plate and o.arm >= arm_time {
                 score(p, flag_points)
                 role_traits(p, false)
+                announce_scored()
                 home(o)
             }
         }

@@ -115,6 +115,9 @@ pub const READS: &[u16] = &[
     id::DEATHS,
     id::ALIVE,
     id::TEAM_OF,
+    // A HUD widget's side and slot (`super::world::hud`).
+    id::SIDE_OF,
+    id::SLOT_OF,
     id::LIVES,
     id::ROUND_TIME_LEFT,
     id::IS_OBJECTIVE,
@@ -164,6 +167,16 @@ pub const ACTIONS: &[u16] = &[
     // (`super::world::walls`), so no call is made at the boundary.
     id::SHOW_AREA,
     id::HIDE_AREA,
+    // Kept in the VM's state (`RulesExt::show`); the objective HUDs are
+    // fed from it every tick (`super::world::hud`), so no call is made at
+    // the boundary.
+    id::HUD_VALUE,
+    id::HUD_FILL,
+    id::HUD_STYLE,
+    id::HUD_TEXT,
+    id::HUD_SHOW,
+    id::MARK,
+    id::UNMARK,
 ];
 
 /// Where the `RULES` record lives: the process's `SimExt` blob in the
@@ -679,6 +692,16 @@ impl Game for GuestGame<'_> {
             id::TEAM_OF => p
                 .and_then(|p| self.roster().into_iter().find(|&(s, _, _)| s == p))
                 .map_or(::rules::ty::NONE, |(_, _, t)| i32::from(t)),
+            id::SLOT_OF => p.map_or(::rules::ty::NONE, i32::from),
+            id::SIDE_OF => match p {
+                None => ::rules::ty::NONE,
+                Some(p) if self.variant("team_play") == 0 => 16 + i32::from(p),
+                Some(p) => self
+                    .roster()
+                    .into_iter()
+                    .find(|&(s, _, _)| s == p)
+                    .map_or(::rules::ty::NONE, |(_, _, t)| i32::from(t)),
+            },
             id::ROUND_TIME_LEFT => guest::round_time_left(m).unwrap_or(guest::NO_TIME_LIMIT),
             id::IS_OBJECTIVE => match call.args.first() {
                 Some(Arg::Object(Some(o))) => guest::is_objective(m, *o).unwrap_or(false) as i32,
@@ -769,6 +792,9 @@ impl Game for GuestGame<'_> {
             // The VM keeps the shown areas in its state; the walls are
             // drawn from it (`super::world::walls`).
             id::SHOW_AREA | id::HIDE_AREA => None,
+            // The VM keeps the show state; the HUDs are drawn from it
+            // (`super::world::hud`).
+            id::HUD_VALUE | id::HUD_FILL | id::HUD_STYLE | id::HUD_TEXT | id::HUD_SHOW | id::MARK | id::UNMARK => None,
             id::SET_LOADOUT => {
                 let tag = |n: usize| match call.args.get(n) {
                     Some(Arg::Tag(t)) => t.clone(),
@@ -941,6 +967,9 @@ pub struct Runtime {
     forge: bool,
     /// The last tick published walls: the next tick with none clears them.
     walled: bool,
+    /// The last tick fed the objective HUDs: the next tick with no script
+    /// feeding them hides them.
+    hud_on: bool,
     /// The walls cue last sent on the actor channel, and the tick it was
     /// sent: the list is sent when it changes and again every
     /// `::rules::show::WALLS_REPEAT` ticks while it is not empty, so a
@@ -1007,6 +1036,7 @@ impl Runtime {
             film: false,
             forge: false,
             walled: false,
+            hud_on: false,
             wall_cue: None,
         }
     }
@@ -1626,6 +1656,9 @@ impl Runtime {
     /// enter`; [`zones::events`]), then timers, then `on tick`. A script
     /// with no handler for an event has none of it worked out.
     pub fn post_tick(&mut self, m: &dyn GuestMemory) {
+        if self.hud_on && !matches!(self.status, Status::Running(_)) {
+            self.publish_hud(None);
+        }
         let Some(tick) = bots::guest::game_tick(m) else {
             return;
         };
@@ -1644,7 +1677,22 @@ impl Runtime {
             r.seen = seen;
         }
         self.publish_walls();
+        self.publish_hud(Some(m));
         self.send_walls(tick);
+    }
+
+    /// Feeds the objective HUDs from the running script's show state, for
+    /// each local user (`super::world::hud`), and hides them once no
+    /// script feeds them. `None` for a game with no guest to read.
+    fn publish_hud(&mut self, m: Option<&dyn GuestMemory>) {
+        let on = match (&self.status, m) {
+            (Status::Running(r), Some(m)) => super::world::hud::publish(m, r.vm.ir(), r.vm.show(), &r.zones),
+            _ => false,
+        };
+        if self.hud_on && !on {
+            super::world::hud::clear();
+        }
+        self.hud_on = on;
     }
 
     /// Sends the areas the script shows to the clients as a walls cue
@@ -1722,6 +1770,7 @@ impl Runtime {
         self.status = Status::Idle("the game ended");
         self.wall_cue = None;
         self.publish_walls();
+        self.publish_hud(None);
     }
 
     /// Swaps the running script's program between ticks, keeping every

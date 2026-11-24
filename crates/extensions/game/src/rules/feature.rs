@@ -536,6 +536,9 @@ pub fn install(
     if !added {
         return Ok(false);
     }
+    // The objective HUDs a script feeds (`super::world::hud`), hidden
+    // until it does.
+    super::world::hud::register();
     let _ = SHARED.set(shared);
     Ok(true)
 }

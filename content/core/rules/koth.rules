@@ -14,14 +14,26 @@
 // read.
 rules "King of the Hill" 1
 type koth
+requires hud.widgets, hud.waypoints
 
 label hill_corner: zones numbered
+
+// The HUD (docs/game/game-types-without-carriers.md, "The display"): the
+// hill's state (open, held by a side, contested), the seconds the holding
+// side has held it, a banner for the move, and a mark over the hill.
+hud hill_row: text at koth.hill
+hud held_row: text at koth.time
+hud moved_row: banner at koth.banner
+waypoint hill_mark at koth.mark
 
 option move_time: time 0s..300s = 60s "Hill move time" "How long a hill stays in play before the next; 0 never moves it"
 
 global var hill: int = 0
 global var hills: int = 0
 global var moves: timer
+global var held_side: int = -1
+global var held_for: time = 0t
+global var banner_left: int = 0
 player var on_hill: time = 0t
 
 // Someone of another team, or with no teams anyone else.
@@ -32,13 +44,23 @@ fn rival(a: player, b: player) -> bool = (variant.team_play and a.team != b.team
 fn start_hill(n: int) {
     if let old = hill_corner[hill] { hide_area(old) }
     hill = n
-    if let zone = hill_corner[hill] { show_area(zone, none) }
+    if let zone = hill_corner[hill] {
+        show_area(zone, none)
+        mark(hill_mark, zone)
+    } else {
+        unmark(hill_mark)
+    }
+    hud_text(moved_row, "HILL MOVED")
+    hud_show(moved_row, true)
+    banner_left = 2
     // Never moves when the setting is 0 (0x2bd747).
     if move_time > 0t { moves = move_time }
 }
 
 on round_start {
     hills = 0
+    held_side = -1
+    held_for = 0t
     for each hill_corner c { hills = max(hills, c.number + 1) }
     for each players p { p.on_hill = 0t }
     start_hill(0)
@@ -49,10 +71,36 @@ on timer(moves) {
 }
 
 on tick {
+    // The banner shows for two ticks; the kit times it from there.
+    if banner_left > 0 {
+        banner_left = banner_left - 1
+        if banner_left == 0 { hud_show(moved_row, false) }
+    }
     if let zone = hill_corner[hill] {
         let lead = first(players p where p.alive and inside(p, zone))
         // Contested: a rival of the first player on the hill is on it too.
         let rivals = count(players q where q.alive and inside(q, zone) and lead != none and rival(q, lead))
+        if let who = lead {
+            if rivals > 0 {
+                hud_style(hill_row, 2)
+                held_side = -1
+                held_for = 0t
+            } else {
+                hud_style(hill_row, 1)
+                hud_value(hill_row, side_of(who))
+                if side_of(who) == held_side { held_for = held_for + 1t } else {
+                    held_side = side_of(who)
+                    held_for = 0t
+                }
+            }
+        } else {
+            hud_style(hill_row, 0)
+            held_side = -1
+            held_for = 0t
+        }
+        hud_show(hill_row, true)
+        hud_value(held_row, whole_seconds(held_for))
+        hud_show(held_row, held_side >= 0)
         for each players p {
             if rivals == 0 and p.alive and inside(p, zone) {
                 p.on_hill = p.on_hill + 1t
@@ -65,6 +113,8 @@ on tick {
             }
         }
     } else {
+        hud_show(hill_row, false)
+        hud_show(held_row, false)
         for each players p { p.on_hill = 0t }
     }
 }
