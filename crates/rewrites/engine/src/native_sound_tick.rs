@@ -10,6 +10,8 @@ use crate::sim_physics::{ARITH, arithmetic, byte, logic, status};
 use runtime::{CpuAbi, Guest, GuestFault};
 use sim_sound::tick::{USER_COUNT, next_listener};
 
+mod seeds;
+
 pub const BODIES: &[Body] = &[Body {
     point: &points::SOUND_UPDATE,
     sites: &[
@@ -18,7 +20,7 @@ pub const BODIES: &[Body] = &[Body {
         0x125c8c, 0x125ca1, 0x125ce9, 0x125cee, 0x125d02, 0x125d09, 0x125d30,
     ],
     run: frame,
-}];
+}, seeds::BODY];
 
 const FRAME: u32 = 0x1744;
 const CACHE_GLOBAL: u32 = 0x0050_210c;
@@ -31,7 +33,6 @@ const READ_CLOCK: u32 = 0x0033_14b0;
 const SERVICE_CLOCK: u32 = 0x0021_f360;
 const UPDATE_CLOCK: u32 = 0x0012_69f0;
 const UPDATE_ENVIRONMENT: u32 = 0x0022_1900;
-const BEFORE_LOOPS: u32 = 0x0021_9cc0;
 const UPDATE_LOOPS: u32 = 0x0021_b0e0;
 const UPDATE_INSTANCES: u32 = 0x0012_90d0;
 const UPDATE_SOURCES: u32 = 0x0012_8020;
@@ -141,7 +142,7 @@ fn frame(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
             push(c, g, c.ebx)?;
             call(points::SOUND_LISTENERS_UPDATE.base, 0x125c23)
         }
-        0x125c23 => call(BEFORE_LOOPS, 0x125c28),
+        0x125c23 => call(seeds::POINT.base, 0x125c28),
         0x125c28 => {
             c.edx = g.u32(points::SOUND_GLOBALS.base)?;
             logic(c, 0, 1 << 31);
