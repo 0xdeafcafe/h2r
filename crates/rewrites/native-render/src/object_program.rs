@@ -56,15 +56,26 @@ const SHADER_INTS: u32 = 1 << 4 | 1 << 5;
 /// object, [`object_pixel_uniforms`]). The first input that is not given,
 /// as the reason the object stays on D3D.
 pub fn inputs_supported(imp: &ResolvedImplementation) -> Result<(), String> {
+    check_inputs(imp, false)
+}
+
+fn check_inputs(imp: &ResolvedImplementation, has_layer_inputs: bool) -> Result<(), String> {
+    use scene_extract::layout::layer_inputs::{VIEW_SCALARS, VIEW_VECTORS_GIVEN};
+
     let r = imp.input_reads;
-    let v = r.vectors & !LIGHTING_VECTORS;
+    let (view_vectors, view_scalars) = if has_layer_inputs {
+        (VIEW_VECTORS_GIVEN, VIEW_SCALARS)
+    } else {
+        (0, 0)
+    };
+    let v = r.vectors & !(LIGHTING_VECTORS | view_vectors);
     if v != 0 {
         return Err(format!(
             "reads vector input {}, which is not the object's lighting",
             v.trailing_zeros()
         ));
     }
-    let s = r.scalars & !LIGHTING_SCALARS & !SHADER_SCALARS;
+    let s = r.scalars & !(LIGHTING_SCALARS | SHADER_SCALARS | view_scalars);
     if s != 0 {
         return Err(format!(
             "reads scalar input {}, which is not the object's lighting",
@@ -249,7 +260,7 @@ fn object_pass_with(
             texaccum,
             view,
         },
-    ) = object_look_stages(pass, imp)?;
+    ) = object_look_stages_with(pass, imp, blends)?;
     if !lightmap && look.textures.contains(&crate::look::Stage::Lightmap) {
         if blends {
             return Err(
@@ -433,7 +444,15 @@ pub fn object_look_stages(
     pass: map::TagId,
     imp: &ResolvedImplementation,
 ) -> Result<(PassLook, EngineBound), String> {
-    inputs_supported(imp)?;
+    object_look_stages_with(pass, imp, false)
+}
+
+fn object_look_stages_with(
+    pass: map::TagId,
+    imp: &ResolvedImplementation,
+    has_layer_inputs: bool,
+) -> Result<(PassLook, EngineBound), String> {
+    check_inputs(imp, has_layer_inputs)?;
     let mut instance = imp.clone();
     for r in instance
         .vertex_constants
@@ -603,14 +622,37 @@ pub fn texaccum_dimensions(
 /// One drawn object's inputs.
 #[derive(Clone, Copy, Debug)]
 pub struct ObjectInputs<'a> {
+    /// Material inputs captured at this layer's begin, including the fog
+    /// coefficients. Base and first-person submissions carry lighting only.
+    pub layer: Option<&'a frame_scene::LayerInputs>,
     pub lighting: Option<&'a Lighting>,
     pub defaults: &'a Defaults,
     pub shader: ShaderValues,
 }
 
+impl ObjectInputs<'_> {
+    fn vector(&self, source: u8) -> Result<[u32; 3], String> {
+        if source < 64 && LIGHTING_VECTORS >> source & 1 != 0 {
+            return vector_input(u32::from(source), self.lighting, self.defaults, self.shader)
+                .ok_or_else(|| format!("lighting vector {source} is not given for this object"));
+        }
+        self.layer.and_then(|v| v.vector(usize::from(source))).map(|v| v.map(f32::to_bits))
+            .ok_or_else(|| format!("view vector {source} is not given for this layer"))
+    }
+
+    fn scalar(&self, source: u8) -> Result<u32, String> {
+        if source < 64 && LIGHTING_SCALARS >> source & 1 != 0 {
+            return scalar_input(u32::from(source), self.lighting)
+                .ok_or_else(|| format!("lighting scalar {source} is not given for this object"));
+        }
+        self.layer.and_then(|v| v.scalar(usize::from(source))).map(f32::to_bits)
+            .ok_or_else(|| format!("view scalar {source} is not given for this layer"))
+    }
+}
+
 /// The vertex block an object's draw of `imp` reads: `base` (the
 /// compiled pass's, [`compile_object`]) with the engine constants that
-/// read the lighting evaluated for this object, its node rows at `c[50]`
+/// read the lighting or layer inputs evaluated for this draw, its node rows at `c[50]`
 /// and its decompression at `c[170]`. The view's `c[0..18]` are put in
 /// per frame. An error names a lighting input the port cannot give for
 /// this object (then it stays on D3D) or rows that do not fit.
@@ -643,16 +685,7 @@ pub fn object_vertex_uniforms(
         else {
             continue;
         };
-        if b.source >= 64 || LIGHTING_VECTORS & (1u64 << b.source) == 0 {
-            continue;
-        }
-        let v = vector_input(
-            u32::from(b.source),
-            inputs.lighting,
-            inputs.defaults,
-            inputs.shader,
-        )
-        .ok_or_else(|| format!("lighting vector {} is not given for this object", b.source))?;
+        let v = inputs.vector(b.source)?;
         put(bank, reg, components & 0b0111, v, false);
     }
     for b in &imp.scalar_bindings {
@@ -664,11 +697,11 @@ pub fn object_vertex_uniforms(
         else {
             continue;
         };
-        if b.source >= 64 || LIGHTING_SCALARS & (1u64 << b.source) == 0 {
+        // The shader's scalar was resolved with the material at load.
+        if b.source < 64 && SHADER_SCALARS >> b.source & 1 != 0 {
             continue;
         }
-        let s = scalar_input(u32::from(b.source), inputs.lighting)
-            .ok_or_else(|| format!("lighting scalar {} is not given for this object", b.source))?;
+        let s = inputs.scalar(b.source)?;
         put(bank, reg, components, [s, s, s], true);
     }
     if nodes.len() > 3 * MAX_PALETTE {
@@ -681,7 +714,7 @@ pub fn object_vertex_uniforms(
 
 /// The pixel block an object's draw of `imp` reads: `base` (the compiled
 /// pass's, the view's parts put in) with each combiner constant that reads
-/// a lighting input packed for this object as `0x00019ca0` packs it
+/// a lighting or layer input packed for this object as `0x00019ca0` packs it
 /// (`tags::material::pack_engine_colour`: a vector with alpha 0, a scalar
 /// through its binding's transform, `tags::material::engine_scalar`, in
 /// its one channel; halved first when the binding says so) into the byte
@@ -704,16 +737,7 @@ pub fn object_pixel_uniforms(
         else {
             continue;
         };
-        if b.source >= 64 || LIGHTING_VECTORS & (1u64 << b.source) == 0 {
-            continue;
-        }
-        let v = vector_input(
-            u32::from(b.source),
-            inputs.lighting,
-            inputs.defaults,
-            inputs.shader,
-        )
-        .ok_or_else(|| format!("lighting vector {} is not given for this object", b.source))?;
+        let v = inputs.vector(b.source)?;
         let packed = pack_engine_colour(
             [
                 f32::from_bits(v[0]),
@@ -736,11 +760,11 @@ pub fn object_pixel_uniforms(
         else {
             continue;
         };
-        if b.source >= 64 || LIGHTING_SCALARS & (1u64 << b.source) == 0 {
+        // The shader's scalar was resolved with the material at load.
+        if b.source < 64 && SHADER_SCALARS >> b.source & 1 != 0 {
             continue;
         }
-        let s = scalar_input(u32::from(b.source), inputs.lighting)
-            .ok_or_else(|| format!("lighting scalar {} is not given for this object", b.source))?;
+        let s = inputs.scalar(b.source)?;
         // The scalar lands in the one channel of its mode; the binding's
         // mask is that channel.
         let x = tags::material::engine_scalar(f32::from_bits(s), usize::from(transform));
@@ -1062,6 +1086,7 @@ pub(crate) mod tests {
         };
         let d = Defaults::default();
         let inputs = ObjectInputs {
+            layer: None,
             lighting: Some(&l),
             defaults: &d,
             shader: ShaderValues::default(),
@@ -1114,6 +1139,7 @@ pub(crate) mod tests {
         };
         let d = Defaults::default();
         let inputs = ObjectInputs {
+            layer: None,
             lighting: Some(&l),
             defaults: &d,
             shader: ShaderValues::default(),

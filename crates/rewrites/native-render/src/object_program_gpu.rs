@@ -1661,7 +1661,7 @@ pub fn plan_layer_part<'a>(
     let strip = Some(item.flags.contains(PartFlags::STRIP));
     let ranges = part_ranges(&p.indices, p.subparts.as_ref(), p.listed.as_ref(), strip, item.subparts)?;
     let defaults = pass.inputs.defaults.ok_or("the inputs' defaults do not read")?;
-    let inputs = ObjectInputs { lighting: item.lighting.as_ref(), defaults: &defaults, shader: p.shader };
+    let inputs = ObjectInputs { layer: Some(&pass.inputs), lighting: item.lighting.as_ref(), defaults: &defaults, shader: p.shader };
     let unstenciled;
     let entry = if layer == 1 && pass.stencil_off {
         let mut e = entry.clone();
@@ -1809,7 +1809,7 @@ fn plan_indexed_part<'a>(
     let (pass, inherited) = pass_of(program).ok_or("its program is missing")?;
     let ranges = part_ranges(&p.indices, p.subparts.as_ref(), p.listed.as_ref(), frame.strip, frame.subparts)?;
     let defaults = frame.defaults.ok_or("the inputs' defaults do not read")?;
-    let inputs = ObjectInputs { lighting: frame.lighting, defaults: &defaults, shader: p.shader };
+    let inputs = ObjectInputs { layer: None, lighting: frame.lighting, defaults: &defaults, shader: p.shader };
     let (vertex_base, pixel_base) = animated_blocks(pass, frame.time)?;
     let vertex = object_vertex_uniforms(&vertex_base, &pass.implementation, &inputs, rows, p.decompression)?;
     let pixel = object_pixel_uniforms(&pixel_base, &pass.implementation, &inputs)?;
@@ -3505,6 +3505,71 @@ mod tests {
         // The program reads c[70]: two constants do not reach it.
         let short = LayerItem { prt: Some(PrtStream { constants: vec![[0.0; 4]; 2], ..stream }), ..item };
         assert!(plan(&short).unwrap_err().contains("c[70]"));
+    }
+
+    #[test]
+    fn layer_19_binds_the_views_fog_coefficients_to_its_object() {
+        use crate::object_lighting::{DEFAULT_COLOUR, DEFAULT_VECTOR};
+        use crate::object_program::tests::{lit, rigid_program};
+        use frame_scene::InstanceKey;
+        use scene_extract::{layout::layer_inputs, testing::Mem};
+        use tags::material::{InputReads, VectorBinding, VectorTarget};
+
+        let mut imp = lit();
+        imp.input_reads = InputReads { vectors: 1 << 41, scalars: 1 << 39, ints: 0 };
+        imp.vector_bindings = vec![
+            VectorBinding { source: 41, target: VectorTarget::Vertex { bank: 1, reg: 0, components: 7 } },
+            VectorBinding { source: 41, target: VectorTarget::Pixel {
+                c1: false, slot: 0, mask: 0x00ff_ffff, half: false, transform: 0,
+            } },
+        ];
+        imp.scalar_bindings = vec![
+            VectorBinding { source: 39, target: VectorTarget::Vertex { bank: 1, reg: 0, components: 8 } },
+        ];
+        let compiled = object_layer_pass(map::TagId(1), &imp, &[], &rigid_program(), crate::program::INPUT_MASK,
+            [shaders::vsh::InputFetch::Float; 16]).unwrap();
+        let key = key(1, 0, 0);
+        let instance = InstanceKey(2);
+        let layers = [LitLayerPart {
+            layer: 19, section: key.section, part: key.part, shader_tag: key.shader,
+            shader: Default::default(), decompression: [[0.0; 4]; 3], indices: 0..3, subparts: None, listed: None,
+            passes: vec![LitLayerPass {
+                count: 1, implementations: [Some((0, 0)), None, None, None, None], ..Default::default()
+            }],
+        }];
+        let item = LayerItem {
+            slot: 0, key, owner: LayerOwner::Object(instance), model: 1, rows: 0..3,
+            lighting: None, flags: PartFlags::NONE, subparts: None, refusal: None, prt: None,
+        };
+        let plan = |mem: &Mem| {
+            let pass = LayerPass {
+                layer: 19, stencil_off: false, texaccum: false, items: 0..1, remainder: 0,
+                inputs: layer_inputs::read(mem),
+            };
+            plan_layer_part(&layers, Some(0), &|_| Some(&compiled), instance, 19, &[[1.0; 4]; 3], &pass, &item, &entry())
+        };
+        let mut mem = Mem::default();
+        mem.w(DEFAULT_VECTOR, 0x1000);
+        mem.w(DEFAULT_COLOUR, 0x2000);
+        for lane in 0..3 {
+            mem.f(0x1004 + lane * 4, 0.75);
+            mem.f(0x2000 + lane * 4, 0.0);
+        }
+        mem.w(layer_inputs::FOG_PLANE, 0);
+        mem.f(layer_inputs::ONE, 1.0);
+        mem.f(layer_inputs::FOG_NEAR, 2.0);
+        mem.f(layer_inputs::FOG_FAR, 6.0);
+        for (lane, value) in [-1.0, -2.0, -4.0].into_iter().enumerate() {
+            mem.f(layer_inputs::FOG_VECTOR + lane as u32 * 4, value);
+        }
+        let d = &plan(&mem).unwrap()[0];
+        assert_eq!(d.vertex.constants[18], [0.25, 0.5, 1.0, -0.5]);
+        assert_eq!(crate::light_look::repack(d.pixel.c0[0]) & 0x00ff_ffff, 0x0040_80ff);
+
+        mem.0.remove(&layer_inputs::FOG_VECTOR);
+        assert!(plan(&mem).unwrap_err().contains("view vector 41"));
+        mem.w(layer_inputs::FOG_PLANE, u32::MAX);
+        assert_eq!(plan(&mem).unwrap()[0].vertex.constants[18], [0.75, 0.75, 0.75, 0.0]);
     }
 
     #[test]
