@@ -442,8 +442,11 @@ phase with an exclusive split per stage
 ([gameplay-budget.md](../perf/notes/gameplay-budget.md)).
 `guest_layout::points::scene_effects::instruction_entries` lists the retail
 instruction boundaries those stages hook mid-function, and
-`render_aspect::instruction_entries` the aspect and HUD sites. The
-composition root registers both lists with the image builder
+`render_aspect::instruction_entries` the aspect and HUD sites;
+`game_types::instruction_entries` lists the spawn gather's site the
+`rules` feature answers for the script index, and its resume
+([game-types-without-carriers.md](../game/game-types-without-carriers.md)).
+The composition root registers the three lists with the image builder
 (`boot::register_image_entries`, calling `recomp::register_retail_entries`)
 before anything builds, stamps, loads or analyses the image: `h2`'s
 `main`, the Apple hosts and every `boot::run*`. Discovery for both image
