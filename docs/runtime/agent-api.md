@@ -2139,6 +2139,14 @@ h2 agent render.parity '{"arm": true}'
   the seal and the queued commands or Swap parameters.
   `scene_owned_target_refusals` counts missing physical attachments and
   frames the physical backend cannot reproduce at the active scale or mode.
+  On a scaled display, `scene_owned_scaled_whole` and
+  `scene_owned_scaled_fractional` count owned frames on whole-number and
+  fractional grids, and `scene_owned_scaled_refused_<reason>` counts the
+  scaled owner's refusals by their first reason: `grid` (an axis
+  minifies or passes the scale limit), `two_copies`, `busy`, `sealed`,
+  `history` (1x E3 with older pixels), `targets`, `live_views`,
+  `samples` and `stages` ([framescene.md](../graphics/framescene.md),
+  slice 8, "Fractional grids").
   The private renderer reports its own publication queue in
   `scene_private_published`, `scene_private_taken`, `scene_private_replaced`
   and `scene_private_waiting`. In paced mode a newer seal can replace an

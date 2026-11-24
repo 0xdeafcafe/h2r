@@ -443,8 +443,8 @@ pub fn draw_display_at_rate(
     let mut pass = GuestDrawPass::on_existing(backend, replay, targets)?;
     pass.set_lighting(lighting);
     let e3 = record(&mut pass, scene, replay, false, lighting, observer, sun_replay, None)?;
-    let scale = pass.scale();
-    let shown = display.at_swap(pass.backend_mut(), scene, replay, scale, lighting);
+    let grid = pass.grid();
+    let shown = display.at_swap(pass.backend_mut(), scene, replay, grid, lighting);
     let (flags, gamma) = (replay.flags, replay.gamma.as_deref());
     let outputs = match shown {
         // The window places the marks with the cameras the display frame
@@ -462,7 +462,7 @@ pub fn draw_display_at_rate(
 
 /// [`draw_scaled_display_on`] for a frame owner running the display-rate
 /// loop, as [`draw_display_at_rate`]: the view draws the display frame on
-/// its own targets at its scale.
+/// its own targets on its grid, whole or fractional.
 pub fn draw_scaled_display_at_rate(
     backend: &mut ScaledBackend<GfxBackend, GfxBackend>,
     display: &display_rate::Display,
@@ -481,12 +481,12 @@ pub fn draw_scaled_display_at_rate(
     String,
 > {
     let lighting = backend.lighting();
-    let scale = backend.scale();
+    let grid = backend.resolution();
     let before = backend.view().batch_stats();
     let mut pass = ScaledScenePass::new(backend, replay, targets)?;
     let _ = inputs::freeze_native_scaled_inputs(&mut pass, replay);
     let e3 = record(&mut pass, scene, replay, false, lighting, observer, None, None)?;
-    let shown = display.at_swap(pass.view_mut(), scene, replay, scale, lighting);
+    let shown = display.at_swap(pass.view_mut(), scene, replay, grid, lighting);
     let (flags, gamma) = (replay.flags, replay.gamma.as_deref());
     let (after, outputs) = match shown {
         Some(shown) => d3d::present_camera::with(Some(shown.marks), || {

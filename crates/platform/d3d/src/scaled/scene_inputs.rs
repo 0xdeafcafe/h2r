@@ -38,7 +38,7 @@ impl ScaledBackend<GfxBackend, GfxBackend> {
                         s.reference,
                         dest.reference,
                         desc,
-                        1,
+                        RenderScale::ONE,
                         &images.reference.texture,
                     )
                 {
@@ -62,11 +62,11 @@ impl ScaledBackend<GfxBackend, GfxBackend> {
                     && img.device == self.view.ctx.device
                     && self
                         .view
-                        .live_view_matches(view, dest_view, desc, 1, &img.texture);
+                        .live_view_matches(view, dest_view, desc, RenderScale::ONE, &img.texture);
             }
-            let (true, Some(scale)) = (self.single_copy, self.scale.uniform_integer()) else {
+            if !self.single_copy {
                 return false;
-            };
+            }
             let Some(img) = images.display.as_ref() else {
                 return false;
             };
@@ -83,9 +83,9 @@ impl ScaledBackend<GfxBackend, GfxBackend> {
                 return false;
             };
             let expected_grid = if (desc.width, desc.height) == (main.width, main.height) {
-                scale
+                self.scale
             } else {
-                1
+                RenderScale::ONE
             };
             self.image(s) == id
                 && img.device == self.view.ctx.device
@@ -154,7 +154,7 @@ impl ScaledBackend<GfxBackend, GfxBackend> {
             return Err("earlier live sample cannot bind the scaled scene source".into());
         }
         frame.validate_live_bindings();
-        let scale = self.scale.uniform_integer().ok_or("the scene grid is not an integer scale")?;
+        let grid = self.scale;
         let physical = names
             .iter()
             .map(|&name| {
@@ -171,9 +171,9 @@ impl ScaledBackend<GfxBackend, GfxBackend> {
                 // a different raster without changing the input values.
                 let main = frame.colour.ok_or("missing scene colour descriptor")?;
                 let expected = if (main.width, main.height) == (desc.width, desc.height) {
-                    scale
+                    grid
                 } else {
-                    1
+                    RenderScale::ONE
                 };
                 if !self.view.scene_target_matches(id, desc, expected) {
                     return Err(format!(

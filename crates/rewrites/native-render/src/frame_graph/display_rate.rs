@@ -31,6 +31,7 @@ use frame_scene::{Camera, FrameScene, ViewKind};
 use frame_scene::blend::{self, Plan};
 use frame_scene::display::{AtSwap, DisplayLoop, DisplayStats, Drawn, Idle};
 use frame_scene::pace::Rate;
+use gfx::raster::RenderScale;
 use gfx::surface::SurfaceId;
 
 use super::{record, sun_tiles};
@@ -41,8 +42,9 @@ type Scaled = ScaledBackend<GfxBackend, GfxBackend>;
 #[derive(Clone)]
 pub struct Kept {
     pub replay: Arc<ReplayFrame>,
-    /// The scale of the targets its display frames draw on.
-    pub scale: u32,
+    /// The grid of the targets its display frames draw on, whole or
+    /// fractional.
+    pub scale: RenderScale,
     /// The guest's image at its present: its world marks and their cameras
     /// (`d3d::present_camera`).
     pub image: Option<Arc<present_camera::Image>>,
@@ -179,13 +181,13 @@ impl Display {
     /// live attachments, on the render thread inside its present's
     /// metadata (the guest's image, `present_camera::guest_image`).
     /// Returns the display frame the window shows in its place, drawn on
-    /// `gpu`'s own targets at `scale`; `None` shows the scene itself.
+    /// `gpu`'s own targets on `scale`'s grid; `None` shows the scene itself.
     pub fn at_swap(
         &self,
         gpu: &mut GfxBackend,
         scene: &Arc<FrameScene>,
         replay: &Arc<ReplayFrame>,
-        scale: u32,
+        scale: RenderScale,
         lighting: Lighting,
     ) -> Option<Shown> {
         let started = Instant::now();
@@ -278,20 +280,22 @@ impl DisplayRate<Scaled> for OnScaled {
     }
 }
 
-/// `b`'s frame drawn on `gpu`'s own targets at `scale`: with each view's
-/// camera blended from `a` for [`Plan::Blend`], as `b` itself for
-/// [`Plan::Newest`]. Above 1x a frame with fixed-size attachments beside
-/// the display grid draws them at their own size, as a private capture
-/// does (`MixedPrivatePass`), with no sun tile.
+/// `b`'s frame drawn on `gpu`'s own targets on `scale`'s grid: with each
+/// view's camera blended from `a` for [`Plan::Blend`], as `b` itself for
+/// [`Plan::Newest`]. Above 1x, whole or fractional, a frame with
+/// fixed-size attachments beside the display grid draws them at their own
+/// size, as a private capture does (`MixedPrivatePass`), with no sun tile.
+/// E3's sun tiles follow the grid's nearest whole vertical scale.
 pub fn draw_blend(
     gpu: &mut GfxBackend,
     a: &FrameScene,
     b: &FrameScene,
     replay: &ReplayFrame,
-    scale: u32,
+    scale: impl Into<RenderScale>,
     lighting: Lighting,
     plan: Plan,
 ) -> Result<DisplayFrame, String> {
+    let scale = scale.into();
     let blended = match plan {
         Plan::Blend(alpha) => Some(blend::blend(a, b, alpha)),
         Plan::Newest => None,
@@ -300,12 +304,12 @@ pub fn draw_blend(
         let to = b.views.iter().map(|v| v.key).zip(blended.cameras.iter());
         Retarget::new(b.view_cameras(), to)
     });
-    let image = if scale > 1 && replay.has_mixed_target_sizes() {
+    let image = if scale != RenderScale::ONE && replay.has_mixed_target_sizes() {
         let mut pass = MixedPrivatePass::new_lit(gpu, replay, scale, lighting)?;
         record(&mut pass, b, replay, true, lighting, None, None, retarget.as_mut())?;
         pass.into_image(replay.presented)?
     } else {
-        let sun_replay = sun_tiles(&gpu.ctx.device, b, replay, scale, lighting);
+        let sun_replay = sun_tiles(&gpu.ctx.device, b, replay, scale.vertical_rounded(), lighting);
         let mut pass = GuestDrawPass::new_lit(gpu, replay, scale, lighting)?;
         record(&mut pass, b, replay, true, lighting, None, sun_replay, retarget.as_mut())?;
         pass.into_image()?

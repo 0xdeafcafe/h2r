@@ -77,7 +77,7 @@
 pub mod private_scene;
 mod scene_inputs;
 mod scene_targets;
-pub use scene_targets::ScaledScenePass;
+pub use scene_targets::{ScaledScenePass, SceneRefusal, scene_counters};
 mod single;
 
 use std::sync::{Arc, Mutex};

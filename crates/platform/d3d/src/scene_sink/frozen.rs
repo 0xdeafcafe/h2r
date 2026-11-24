@@ -145,18 +145,24 @@ mod tests {
         assert_eq!(
             scaled
                 .reference()
-                .frozen_texture(&sample, 1)
+                .frozen_texture(&sample, gfx::raster::RenderScale::ONE)
                 .unwrap()
                 .texture,
             one
         );
         assert_eq!(
-            scaled.view().frozen_texture(&sample, 4).unwrap().texture,
+            scaled
+                .view()
+                .frozen_texture(&sample, gfx::raster::RenderScale::from(4))
+                .unwrap()
+                .texture,
             four
         );
         // ScaledScenePass already owns the fourfold raster scale, even
         // though its commands take guest coordinates on a unit grid.
-        let native = scaled.frozen_texture(&sample, 1).unwrap();
+        let native = scaled
+            .frozen_texture(&sample, gfx::raster::RenderScale::ONE)
+            .unwrap();
         assert_eq!(native.reference.texture, one);
         assert_eq!(native.view.unwrap().texture, four);
     }

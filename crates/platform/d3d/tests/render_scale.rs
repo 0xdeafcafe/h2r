@@ -1905,7 +1905,7 @@ fn e3_tiles_give_a_replayed_shadow_the_sharp_edge() {
         }
     }
 
-    let mut pass = MixedPrivatePass::new_lit(&mut gpu, &frame, 2, d3d::Lighting::E3).unwrap();
+    let mut pass = MixedPrivatePass::new_lit(&mut gpu, &frame, 2u32, d3d::Lighting::E3).unwrap();
     for (_, op) in &frame.ops {
         pass.apply(op).unwrap();
     }
@@ -1915,7 +1915,8 @@ fn e3_tiles_give_a_replayed_shadow_the_sharp_edge() {
     // At 2x the tile is the map at 2x: a tile texel is two host pixels.
     assert_sharp_edge(size, &rgba, 2, 2.0, "2x");
     drop(pass);
-    let mut retail = MixedPrivatePass::new_lit(&mut gpu, &frame, 2, d3d::Lighting::Retail).unwrap();
+    let mut retail =
+        MixedPrivatePass::new_lit(&mut gpu, &frame, 2u32, d3d::Lighting::Retail).unwrap();
     for (_, op) in &frame.ops {
         retail.apply(op).unwrap();
     }

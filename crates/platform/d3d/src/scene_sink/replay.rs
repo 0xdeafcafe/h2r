@@ -72,9 +72,9 @@ impl RetainedExternal {
         targets: &std::collections::HashMap<TargetRef, S>,
         bound: (S, Option<S>),
         display: bool,
-        scale: u32,
+        scale: impl Into<gfx::raster::RenderScale>,
     ) -> Option<ExternalSurfaces<S>> {
-        if !(display || scale == 1) || !(Arc::ptr_eq(&self.packet, draw) || *self.packet == **draw) {
+        if !(display || scale.into() == gfx::raster::RenderScale::ONE) || !(Arc::ptr_eq(&self.packet, draw) || *self.packet == **draw) {
             return None;
         }
         let surfaces = self.surfaces.try_map(|r| targets.get(r).copied())?;

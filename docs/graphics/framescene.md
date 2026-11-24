@@ -1607,16 +1607,14 @@ D3D reference with all native stages disabled.
   "World marks on made frames"). Above 1x a frame with fixed-size
   attachments beside the display grid draws them at their own size on
   fresh targets (`d3d::scaled::private_scene::MixedPrivatePass::into_image`),
-  with no sun tile. At a render scale that is not a whole number the
-  scaled owner declines the frame (`ScaledBackend::can_draw_scene`:
-  sealed scenes replay on integer grids only), so the loop sees no owned
-  Swap and draws nothing between.
+  with no sun tile. The owner and the loop draw on any grid from 1x to
+  `MAX_SCALE` on each axis, whole or fractional ("Fractional grids"
+  below).
 - **Code to write.** Object palette rows, node matrices and lights from
   `Blended` on the carried and typed draws (objects are drawn at `B`
   today), visible-cluster unions, shadow re-rendering from blended
   casters, typed stages other than the indexed world, object and
-  transparent passes, owned frames and display frames at render scales
-  that are not whole numbers, display frames into the agent's clip slots, and extraction's
+  transparent passes, display frames into the agent's clip slots, and extraction's
   scripted-cut and distance flags.
 - **Tests.** Blend: identity at 0 and 1 (bitwise at 1), slerp against
   known rotations, every snap rule, unmatched and re-ordered
@@ -1628,14 +1626,62 @@ D3D reference with all native stages disabled.
   (`d3d` `present_camera`, `native-render` `frame_graph::display_rate`).
   A display frame on mixed-size targets at 2x against the private
   capture (`native-render` `a_scaled_display_frame_draws_mixed_size_attachments`). Retargeting
-  (`d3d` `tests/scene_camera.rs`). To add: a two-scene render at
-  `alpha = 1` equals the one-scene render.
+  (`d3d` `tests/scene_camera.rs`). Fractional grids: `gfx` `raster`
+  (`level`, `replayable`), an owned frame at 3/2 by 5/4 and a refused
+  minifying grid (`native-render`
+  `a_fractional_grid_owns_the_frame_on_its_rounded_targets`), display
+  frames at that grid with and without a fixed-size auxiliary
+  (`a_fractional_display_frame_draws_each_level_on_its_grid`). To add:
+  a two-scene render at `alpha = 1` equals the one-scene render.
 - **Gate.** Hash series identical at `--fps 30`, `60` and `120`. The
   super-bounce test passes at all three. `alpha = 1` captures are
   identical to 30 fps captures. Render-thread time per display frame
   under 16.7 ms at 60 and under 8.3 ms at 120 on the gate corpus at
   the user's play scale, p99, or the rate is not offered at that
   scale. `scene_held_draws` reported per level.
+
+#### Fractional grids
+
+A sealed scene replays on the grid of its display, a `RenderScale`
+(`crates/platform/gfx/src/raster.rs`): a reduced ratio per axis, so
+1366x768 is 683/320 across and 8/5 down. A whole number is the case
+where both ratios are `s/1`: every target is exactly `s` times its guest
+size and no edge rounds.
+
+- **Which grids.** `RenderScale::replayable(MAX_SCALE)`: neither axis
+  minifies or magnifies past `MAX_SCALE`. A window smaller than 640x480
+  is refused (`SceneRefusal::Grid`) and runs the guest's commands.
+- **Targets.** Each attachment the pass makes is
+  `grid.size(width, height)`: guest edges times the ratio, rounded half
+  up. A level whose edges round (an odd-sized auxiliary) has its own
+  reduced ratio, `RenderScale::level`, which the surface records.
+  `scene_target_matches` takes an existing target only with that size,
+  format, kind and level ratio, so a borrowed target and a fresh one
+  behave alike. Below the display grid's frame size, the scaled owner
+  and `MixedPrivatePass` keep a level at 1x as at whole numbers.
+- **Viewports and scissors.** Guest rectangles keep their guest
+  coordinates up to the device. `RenderScale::rect` maps each edge on
+  its own, so adjacent rectangles share their boundary, and the
+  window-coordinate shift (`window_shift`) is per axis. Typed stages map
+  their viewport the same way (`backend::external_viewport`).
+  [high-resolution.md](high-resolution.md) has the rounding rules.
+- **Depth.** Depth and colour of a frame-sized pair are on one grid. A
+  mixed pair (fixed-size colour over the scaled depth) goes through the
+  single-copy backend's guest-size intermediate, as at whole numbers.
+  32-bit depth aliases decode on the GPU; reinterpreted cube and volume
+  aliases decode at guest size.
+- **Sampled targets.** A live sample must name its attachment's image
+  on the grid that attachment has (`live_view_matches`). A frozen sample
+  uses its reference copy at 1x and its display copy on any other grid.
+  Uploads into a fractional target are staged at its guest size and
+  expanded on the GPU through the level's inverse ratio.
+- **Shadows and E3.** E3's shadow tiles and sun tiles follow the
+  grid's nearest whole vertical scale (`RenderScale::vertical_rounded`).
+- **Counters.** `ScaledBackend::scene_refusal` gives the first reason a
+  frame is refused (`SceneRefusal`); the frame owner counts each
+  (`check_scene`) next to the frames it owned on whole and fractional
+  grids, as `render.scene`'s `scene_owned_scaled_*` counters
+  ([agent-api.md](../runtime/agent-api.md), "FrameScene checks").
 
 ### Slice 9: type the carried stages that cost the most
 
