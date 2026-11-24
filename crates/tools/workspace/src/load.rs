@@ -58,6 +58,42 @@ impl Loaded {
     }
 }
 
+impl Loaded {
+    /// The package whose files are `files`, by path in the package:
+    /// `package.toml` and every file it names (a baked package). `name`
+    /// says where it came from in an error.
+    pub fn from_files(name: &str, files: &BTreeMap<String, Vec<u8>>) -> Result<Self, LoadError> {
+        let fail = |why: String| LoadError {
+            dir: PathBuf::from(name),
+            why,
+        };
+        let text = files
+            .get(MANIFEST_FILE)
+            .ok_or_else(|| fail(format!("no {MANIFEST_FILE}")))?;
+        let text = std::str::from_utf8(text).map_err(|e| fail(format!("{MANIFEST_FILE}: {e}")))?;
+        let manifest = Manifest::from_toml(text).map_err(|e| fail(e.to_string()))?;
+        let mut named = BTreeMap::new();
+        for file in manifest.files() {
+            let bytes = files
+                .get(file)
+                .ok_or_else(|| fail(format!("{file}: not in the package")))?;
+            named.insert(file.to_owned(), bytes.clone());
+        }
+        let lock = Lock::new(
+            named
+                .iter()
+                .map(|(n, b)| (n.clone(), Sha256::of(b)))
+                .collect(),
+        );
+        let package =
+            Package::new(manifest, lock).map_err(|e: PackageError| fail(e.to_string()))?;
+        Ok(Self {
+            package,
+            files: named,
+        })
+    }
+}
+
 /// The `package.lock` beside the manifest, if there is one.
 pub fn read_lock(dir: &Path) -> Result<Option<Lock>, LoadError> {
     let path = dir.join(LOCK_FILE);
@@ -229,16 +265,19 @@ fn overlap(a: &Maps, b: &Maps) -> bool {
 }
 
 /// The tag a `tag` or `bitmap` item adds, from the manifest alone.
-fn adds(item: &content::package::Item) -> Option<(String, String)> {
+pub fn added_tag(item: &content::package::Item) -> Option<tags::repo::TagKey> {
     let path = item.tag.as_deref()?.replace('/', "\\");
-    match item.kind {
-        Kind::Bitmap => Some(("bitm".into(), path)),
-        Kind::Tag => {
-            let g = crate::tagitem::group_of_source(item.source.as_deref()?).ok()?;
-            Some((tags::defs::fourcc_text(g), path))
-        }
-        _ => None,
-    }
+    let group = match item.kind {
+        Kind::Bitmap => map::FourCC(*b"bitm"),
+        Kind::Tag => crate::tagitem::group_of_source(item.source.as_deref()?).ok()?,
+        _ => return None,
+    };
+    Some(tags::repo::TagKey::new(group, path))
+}
+
+fn adds(item: &content::package::Item) -> Option<(String, String)> {
+    let key = added_tag(item)?;
+    Some((tags::defs::fourcc_text(key.group), key.path))
 }
 
 /// Two items, in the same package or different ones, that add the same tag

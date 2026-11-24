@@ -25,6 +25,8 @@ serde_yaml_ng.workspace = true
 # The `bitmap` builder's input.
 png = { workspace = true }
 thiserror.workspace = true
+# `PackageRewrite` is the VFS's rewrite of the game's maps.
+vfs.workspace = true
 
 [lints]
 workspace = true

@@ -10,12 +10,12 @@ use tags::repo::{Body, LooseTag, Node, RawRes, Region, TagKey, TagSource, Tree};
 
 use super::*;
 
-const A: &str = "invented\\dmg\\a";
+pub(crate) const A: &str = "invented\\dmg\\a";
 const B: &str = "invented\\dmg\\b";
-const C: &str = "invented\\dmg\\c";
+pub(crate) const C: &str = "invented\\dmg\\c";
 const BOOM: &str = "invented\\snd\\boom";
 
-fn cc(s: &[u8; 4]) -> FourCC {
+pub(crate) fn cc(s: &[u8; 4]) -> FourCC {
     FourCC(*s)
 }
 
@@ -31,7 +31,7 @@ fn zeroed_tag(set: &mut TagSet, group: &[u8; 4], name: &str) -> TagId {
 }
 
 /// globals, two damage tags and a sound, all built.
-fn base() -> TagSet {
+pub(crate) fn base() -> TagSet {
     let mut set = TagSet::new(CacheType::Multiplayer, "tiny", "invented\\scenarios\\tiny");
     for g in [b"matg", b"jpt!", b"snd!"] {
         set.add_group(cc(g), None, None);
@@ -53,7 +53,7 @@ fn base() -> TagSet {
     set
 }
 
-fn target() -> Target<'static> {
+pub(crate) fn target() -> Target<'static> {
     Target {
         name: "tiny",
         scope: MapScope::Multiplayer,
@@ -61,7 +61,7 @@ fn target() -> Target<'static> {
 }
 
 /// A package: items are (kind, source, tag, maps).
-fn pkg(
+pub(crate) fn pkg(
     id: &str,
     requires: &[&str],
     items: &[(&str, &str, Option<&str>, &str)],
@@ -114,10 +114,10 @@ fn float(v: f32) -> Val {
     Val::Float(v)
 }
 
-const ADD_C: &str = "fields:\n  damage_lower_bound: 5.0\n";
-const ADD_C_FILE: &str = "dmg_c.jpt!.yaml";
+pub(crate) const ADD_C: &str = "fields:\n  damage_lower_bound: 5.0\n";
+pub(crate) const ADD_C_FILE: &str = "dmg_c.jpt!.yaml";
 
-fn adds_c(id: &str) -> Loaded {
+pub(crate) fn adds_c(id: &str) -> Loaded {
     pkg(
         id,
         &[],
@@ -126,7 +126,7 @@ fn adds_c(id: &str) -> Loaded {
     )
 }
 
-fn edits(id: &str, requires: &[&str], text: &str) -> Loaded {
+pub(crate) fn edits(id: &str, requires: &[&str], text: &str) -> Loaded {
     pkg(
         id,
         requires,
@@ -135,7 +135,7 @@ fn edits(id: &str, requires: &[&str], text: &str) -> Loaded {
     )
 }
 
-fn edit_text(tag: &str, value: f32) -> String {
+pub(crate) fn edit_text(tag: &str, value: f32) -> String {
     format!("- tag: 'jpt!:{tag}'\n  set:\n    - {{path: damage_lower_bound, value: {value}}}\n")
 }
 

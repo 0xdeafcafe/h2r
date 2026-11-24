@@ -226,6 +226,10 @@ pub mod method {
     pub const GAME_MENU: &str = "game.menu";
     /// Queue an installed multiplayer package by its complete MapId.
     pub const MAPS_LOAD: &str = "maps.load";
+    /// The game's content packages in load order, on or off and why, and
+    /// what each map read got from them (docs/editor/studio-redesign.md,
+    /// "How the game consumes packages"; `boot::packages`).
+    pub const PACKAGES_LIST: &str = "packages.list";
     /// Test maps (docs/game/test-maps.md, [`crate::test_maps`]): the
     /// built-in recipes and the test maps built.
     pub const MAPS_TEST_LIST: &str = "maps.test.list";

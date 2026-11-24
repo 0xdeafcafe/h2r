@@ -41,8 +41,14 @@ impl Package {
     }
 }
 
+/// The packages that are always on: `set.toml` cannot switch them off, and
+/// they may not `require` anything, so no other package's absence disables
+/// them.
+pub const ALWAYS_ON: [&str; 2] = ["core", "ui"];
+
 /// `<data>/packages/set.toml`: the user's order and what is switched off.
-/// Every package is on unless it is listed in `off`.
+/// Every package is on unless it is listed in `off`; [`ALWAYS_ON`] may not
+/// be.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SetFile {
@@ -56,7 +62,17 @@ pub struct SetFile {
 
 impl SetFile {
     pub fn from_toml(text: &str) -> Result<Self, SetError> {
-        toml::from_str(text).map_err(|e| SetError::Toml(e.to_string()))
+        let file: Self = toml::from_str(text).map_err(|e| SetError::Toml(e.to_string()))?;
+        file.check()?;
+        Ok(file)
+    }
+
+    /// Refuse an `off` that names an [`ALWAYS_ON`] package.
+    pub fn check(&self) -> Result<(), SetError> {
+        match self.off.iter().find(|n| ALWAYS_ON.contains(&n.as_str())) {
+            Some(n) => Err(SetError::AlwaysOn(n.clone())),
+            None => Ok(()),
+        }
     }
 
     pub fn to_toml(&self) -> String {
@@ -95,6 +111,10 @@ pub enum SetError {
     DuplicateId(String),
     #[error("packages require or follow each other in a cycle: {}", .0.join(", "))]
     Cycle(Vec<String>),
+    #[error("package {0:?} is always on: set.toml cannot switch it off")]
+    AlwaysOn(String),
+    #[error("package {package:?} is always on, so it cannot require {requires:?}")]
+    AlwaysOnRequires { package: String, requires: String },
 }
 
 /// The enabled packages in load order, and the lines for those left out.
@@ -112,9 +132,18 @@ impl Set {
     /// The set of `packages` under the user's `file`. The result does not
     /// depend on the order `packages` arrive in.
     pub fn new(packages: Vec<Package>, file: &SetFile) -> Result<Self, SetError> {
+        file.check()?;
         let mut all: BTreeMap<String, Package> = BTreeMap::new();
         for p in packages {
             let name = p.name().to_owned();
+            if ALWAYS_ON.contains(&name.as_str())
+                && let Some(r) = p.manifest.package.requires.first()
+            {
+                return Err(SetError::AlwaysOnRequires {
+                    package: name,
+                    requires: r.clone(),
+                });
+            }
             if all.insert(name.clone(), p).is_some() {
                 return Err(SetError::DuplicateId(name));
             }
