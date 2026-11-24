@@ -735,6 +735,10 @@ fn kind_words(kind: ErrorKind) -> String {
             vm::MAX_SIGHT_PAIRS,
             vm::SIGHT_KEEP
         ),
+        ErrorKind::Gates => format!(
+            "more than {} barriers are open at once; set_open(b, false) closes one",
+            vm::MAX_GATES
+        ),
     }
 }
 
