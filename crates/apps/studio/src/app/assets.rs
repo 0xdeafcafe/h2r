@@ -274,6 +274,11 @@ fn badge(o: &Overlay, key: &TagKey) -> (Value, Value) {
     (Value::Null, json!([]))
 }
 
+/// The Browser's origin label for a tag, shared with the document header.
+pub(crate) fn badge_for(set: &GameSet, key: &TagKey) -> String {
+    badge(&overlay(set), key).0.as_str().unwrap_or("on the disc").to_owned()
+}
+
 fn words_match(words: &[String], hay: &str) -> bool {
     words.iter().all(|w| hay.contains(w.as_str()))
 }
@@ -709,7 +714,12 @@ impl App {
         self.sync_tags();
         let text = format!("{}:{}", fourcc_text(key.group), key.path);
         match tag_api::find_tag(&self.tags, &text) {
-            Some(id) => self.open_doc(Doc::Tag(id)),
+            Some(id) => {
+                if let Err(e) = self.navigate(super::NavAction::Open(vec![id])) {
+                    return self.error(e);
+                }
+                self.open_doc(Doc::Tag(id));
+            }
             None => self.error(format!("{text} is not in the open map")),
         }
     }

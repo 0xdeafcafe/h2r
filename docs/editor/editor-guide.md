@@ -123,6 +123,8 @@ disc, every panel waiting behind it.*
 
 *The window's regions: (1) the menu bar, (2) the bar of document tabs and the game link, (3) Scene, (4) the Viewport, (5) the Inspector, (6) the Log and (7) the status bar.*
 
+Each document has a header above its editor. It shows the trail and edit target, with Preview, Check, Undo, Redo, Save, Links and Open with controls. Links lists what the asset uses and what uses it; choose a row to open it, or show the list in the Browser.
+
 The window is made of panels that dock together:
 
 - **The bar** (under the menu) holds a tab for each open document: the

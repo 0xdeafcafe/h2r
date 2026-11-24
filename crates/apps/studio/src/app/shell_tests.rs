@@ -537,3 +537,34 @@ fn every_undo_button_runs_undo_doc() {
     check(&src.join("ui"), &mut buttons);
     assert!(buttons >= 2, "{buttons} undo buttons found");
 }
+
+/// The header's Back and Forward walk the documents brought to the front,
+/// of every kind, as the trail kept them.
+#[test]
+fn back_and_forward_walk_the_documents_across_kinds() {
+    let dir = Temp::new("doc-trail");
+    let mut app = app(&dir.0);
+    let (weap, kit) = (Doc::Tag(tag_tests::weap_id()), Doc::Tag(kit_id()));
+    for doc in [weap, kit, Doc::Tag(scnr_id())] {
+        app.dispatch(Action::OpenDoc(doc));
+    }
+    assert_eq!(app.front_doc(), Some(Doc::Map));
+    assert!(app.can_navigate(false));
+    let mut seen = Vec::new();
+    for _ in 0..8 {
+        app.dispatch(Action::Navigate(NavAction::Back));
+        seen.push(app.front_doc());
+        if app.front_doc() == Some(weap) {
+            break;
+        }
+    }
+    assert_eq!(app.front_doc(), Some(weap), "{seen:?}");
+    for _ in 0..8 {
+        if app.front_doc() == Some(Doc::Map) {
+            break;
+        }
+        app.dispatch(Action::Navigate(NavAction::Forward));
+    }
+    assert_eq!(app.front_doc(), Some(Doc::Map));
+    assert!(app.doc_trail().0.contains(&kit));
+}

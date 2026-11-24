@@ -695,6 +695,8 @@ pub struct App {
     /// shared cache), beside the open map's document ([`Self::tags`]).
     pub(crate) tag_browse: Option<tag_browse::Browse>,
     nav: NavHistory,
+    /// The documents brought to the front, for the header's Back and Forward.
+    doc_trail: navigation::DocTrail,
     /// The bitmap preview of the open map's document (the browsed map's
     /// is its own): the tag and the picture, or why there is none.
     tag_preview: Option<(map::TagId, Result<std::sync::Arc<map_pack::Picture>, String>)>,
@@ -791,6 +793,7 @@ impl App {
             tag_homes: Default::default(),
             tag_browse: None,
             nav: NavHistory::default(),
+            doc_trail: Default::default(),
             tag_preview: None,
             last_tag_export: None,
             last_tag_import: None,

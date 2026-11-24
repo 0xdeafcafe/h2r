@@ -553,6 +553,7 @@ impl App {
             }
         }
         self.tabs.front = Some(doc);
+        self.doc_trail.visit(doc);
     }
 
     /// [`super::Action::CloseDoc`]: close a tool's document (the guard has
