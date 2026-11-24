@@ -5,6 +5,7 @@ use crate::model::Describe;
 
 pub mod firefight;
 pub mod forge;
+pub mod forge_all;
 pub mod forge_readout;
 pub mod objective;
 pub mod pill_block;
@@ -37,9 +38,10 @@ pub fn find(name: &str) -> Option<Box<dyn Describe>> {
 }
 
 /// What `h2 hud preview` draws: the registered HUDs and the preview-only
-/// combined ones ([`superbounce_all`]).
+/// combined ones ([`superbounce_all`], [`forge_all`]).
 pub fn previews() -> Vec<Box<dyn Describe>> {
     let mut v = all();
     v.push(Box::new(superbounce_all::All));
+    v.push(Box::new(forge_all::All));
     v
 }
