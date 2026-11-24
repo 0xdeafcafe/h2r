@@ -27,6 +27,7 @@ pub mod recording_edit;
 mod scenario;
 mod script_doc;
 mod source;
+pub mod table_writes;
 pub mod vm;
 mod wire;
 

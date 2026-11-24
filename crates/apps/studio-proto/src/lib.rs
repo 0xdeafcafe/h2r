@@ -369,6 +369,8 @@ pub mod method {
     pub const SCRIPT_DOC: &str = "script.doc";
     pub const SCRIPT_EXTERNAL: &str = "script.external";
     pub const SCRIPT_WORKING: &str = "script.working";
+    pub const SCRIPT_COMPILE: &str = "script.compile";
+    pub const SCRIPT_UNDO: &str = "script.undo";
 
     // The game type script editor (docs/editor/editor-guide.md, "Game
     // type scripts").

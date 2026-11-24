@@ -4,9 +4,10 @@
 //! the builtins and where their names come from, and the documentation
 //! listing to name builtins from; `script.external` writes the working
 //! copy VS Code and Zed edit and opens it, and `script.working` reads
-//! back what a save there changed (`app::external`). The map is read
-//! only; selection and following go through `Action::Script`, the
-//! window's path. docs/editor/rich-editors.md, "Scripts";
+//! back what a save there changed (`app::external`); `script.compile`
+//! compiles source into the map's script tables and `script.undo` takes
+//! it back (`app::script_edit`). Selection and following go through
+//! `Action::Script`, the window's path. docs/editor/rich-editors.md, "Scripts";
 //! docs/editor/editor-guide.md, "Scripts in VS Code and Zed";
 //! docs/editor/agent-api.md.
 
@@ -23,6 +24,7 @@ use super::params::block_name;
 use super::scenario::refused;
 use super::{MethodDef, P, Provider, Reply, err};
 use crate::App;
+use crate::app::script_edit::{Refusal, Report};
 use crate::app::scripts::{Entry, Link, LinkKind, Loaded, Target};
 use crate::app::{Action, ScriptAction};
 
@@ -99,9 +101,23 @@ const METHODS: &[MethodDef] = &[
     ),
     def(
         m::SCRIPT_WORKING,
-        "The working copy, read and checked now: its file, whether it holds edits, which definitions differ from the map's (changed, added, removed), its problems against the context, and stale when the map's scripts changed under edits. The map is not written: that needs the script compiler (slices H2, H3). open false when no working copy is open",
+        "The working copy, read and checked now: its file, whether it holds edits, which definitions differ from the map's (changed, added, removed), its problems against the context, and stale when the map's scripts changed under edits. The map is not written: script.compile does that. open false when no working copy is open",
         "{}",
         r#"{"open":"boolean","map?":"string","path?":"string","edited?":"boolean","changed?":"[string]","added?":"[string]","removed?":"[string]","problems?":"[{line,col,severity,message,code}]","stale?":"boolean","summary?":"string"}"#,
+        "null",
+    ),
+    def(
+        m::SCRIPT_COMPILE,
+        "Compile source into the open map's script tables with the compiler (hs::compile): a definition of a name the map has replaces it, any other is added; only those definitions' nodes change. `source` is the text; `working: true` takes the working copy's changed and added definitions instead; `name` requires the source to define it. Without `apply` nothing changes and the answer says what would. With it the tables, the Scripts tab and the unsaved count follow, as one undo step (script.undo); a table that outgrows the map's (more nodes than free slots, a new string, a new script or global) needs Edit > Allow growing full blocks. Problems come back as `errors` (ok false), not as an error; a compile past the node limit has both counts in its text. REFUSED with no executable, with growth off, or with no working copy",
+        r#"{"source?":"string","working?":"boolean","name?":"string","apply?":"boolean"}"#,
+        r#"{"ok":"boolean","applied":"boolean","errors?":"[{line,column,span:[start,end],code,text}]","definitions?":"[{name,item}]","nodes?":"integer","freed?":"integer","reused?":"integer","grown?":"integer","new_strings?":"integer","grows?":"boolean","free_nodes?":"integer","depth?":"{undo,redo}"}"#,
+        r#"{"source":"(script static void helper\n  (invented_select door))"}"#,
+    ),
+    def(
+        m::SCRIPT_UNDO,
+        "Undo (or, with redo, redo) the last script.compile that was applied; changed is false when there is none",
+        r#"{"redo?":"boolean"}"#,
+        r#"{"changed":"boolean","free_nodes":"integer","depth":"{undo,redo}"}"#,
         "null",
     ),
 ];
@@ -268,6 +284,16 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 .collect();
             Ok(json!({ "kind": kind, "name": name, "uses": uses }))
         }
+        m::SCRIPT_COMPILE => compile(app, p),
+        m::SCRIPT_UNDO => {
+            let redo = p.bool("redo")?;
+            let changed = app.script_step(redo).map_err(refusal)?;
+            Ok(json!({
+                "changed": changed,
+                "free_nodes": loaded(app)?.free_nodes(),
+                "depth": depth(app),
+            }))
+        }
         m::SCRIPT_BUILTINS => builtins(
             loaded(app)?,
             p.opt_str("filter")?.unwrap_or(""),
@@ -275,6 +301,81 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
         ),
         _ => Err(err(code::METHOD_NOT_FOUND, format!("no method {method}"))),
     }
+}
+
+/// `script.compile`.
+fn compile(app: &mut App, p: &P) -> Reply {
+    let apply = p.bool("apply")?;
+    let text = match (p.opt_str("source")?, p.bool("working")?) {
+        (Some(_), true) => {
+            return Err(err(
+                code::INVALID_PARAMS,
+                "source: give the text or working: true, not both",
+            ));
+        }
+        (Some(s), false) => s.to_owned(),
+        (None, true) => {
+            app.check_working_copy(Instant::now(), true);
+            app.working_edits()
+                .map_err(|why| err(code::REFUSED, why))?
+        }
+        (None, false) => {
+            return Err(err(
+                code::INVALID_PARAMS,
+                "source: give the text to compile, or working: true",
+            ));
+        }
+    };
+    match app.script_compile(&text, p.opt_str("name")?, apply) {
+        Ok(r) => Ok(report_json(app, &r)),
+        Err(Refusal::Problems(messages)) => Ok(json!({
+            "ok": false,
+            "applied": false,
+            "errors": messages
+                .iter()
+                .map(|m| json!({
+                    "line": m.line,
+                    "column": m.column,
+                    "span": [m.start, m.end],
+                    "code": m.code,
+                    "text": m.text,
+                }))
+                .collect::<Vec<_>>(),
+        })),
+        Err(e) => Err(refusal(e)),
+    }
+}
+
+fn refusal(e: Refusal) -> RpcError {
+    match &e {
+        Refusal::Params(w) => err(code::INVALID_PARAMS, w.clone()),
+        Refusal::Refused(w) => err(code::REFUSED, w.clone()),
+        Refusal::Problems(_) => err(code::REFUSED, e.line()),
+    }
+}
+
+fn depth(app: &App) -> Value {
+    let (undo, redo) = app.scripts.edit.as_ref().map_or((0, 0), |d| d.depth());
+    json!({"undo": undo, "redo": redo})
+}
+
+fn report_json(app: &App, r: &Report) -> Value {
+    json!({
+        "ok": true,
+        "applied": r.applied,
+        "definitions": r.definitions
+            .iter()
+            .map(|(name, item)| json!({"name": name, "item": item_kind(*item)}))
+            .collect::<Vec<_>>(),
+        "nodes": r.nodes,
+        "freed": r.freed,
+        "reused": r.reused,
+        "grown": r.grown,
+        "new_strings": r.new_strings,
+        "grows": r.grows,
+        "free_nodes": r.free_nodes,
+        "depth": depth(app),
+    })
 }
 
 /// The read tables, or the tool's refusal: no map (`NO_DOCUMENT`), else

@@ -293,6 +293,8 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         | m::SCRIPT_BUILTINS
         | m::SCRIPT_DOC
         | m::SCRIPT_EXTERNAL
+        | m::SCRIPT_COMPILE
+        | m::SCRIPT_UNDO
         | m::RECORDING_LIST
         | m::RECORDING_READ
         | m::RECORDING_PLAY

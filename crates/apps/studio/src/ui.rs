@@ -1080,7 +1080,7 @@ impl Studio {
                 return;
             }
             if app.surface() == Surface::Scripts {
-                scripts::source(ui, app, &self.fonts, actions);
+                scripts::source(ui, app, &mut self.scripts, &self.fonts, actions);
                 return;
             }
             if let Some(view) = app.halo1_view() {

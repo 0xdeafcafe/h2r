@@ -53,7 +53,7 @@ fn exe() -> Exe {
 /// Two globals and two scripts using every construct the decompiler
 /// prints: calls of fixed and self-reading builtins, a script call,
 /// scenario and game globals, casts, and literals of every form.
-fn tables() -> Tables {
+pub(crate) fn tables() -> Tables {
     let mut t = Tables::new();
     let four = t.value(7, 4);
     t.global_definition("count", 7, four);
@@ -101,7 +101,7 @@ fn tables() -> Tables {
     t
 }
 
-fn setup() -> (Scenario, Catalog) {
+pub(crate) fn setup() -> (Scenario, Catalog) {
     let s = tables().scenario();
     let mut catalog = exe().catalog();
     catalog.observe(&s).unwrap();

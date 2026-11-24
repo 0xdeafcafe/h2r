@@ -114,6 +114,22 @@ impl Scenario {
         Ok(scenario)
     }
 
+    /// The scenario payload's guest address and its table header (the
+    /// first `0x240` bytes), as [`Self::read`] reads them: what
+    /// [`crate::table_writes::writes`] diffs against.
+    pub fn read_header<R: Read + Seek>(map: &mut map::Map<R>) -> Result<(u32, Vec<u8>)> {
+        let loc = map
+            .scenario()
+            .ok_or_else(|| invalid("map has no scenario"))?
+            .location
+            .ok_or(map::Error::NoTagData)?;
+        if loc.size < HS_HEADER_SIZE {
+            return Err(invalid("scenario header is truncated"));
+        }
+        let header = map.read_file_range(loc.file_offset()?, HS_HEADER_SIZE.into())?;
+        Ok((loc.address, header))
+    }
+
     /// Decode a complete scnr payload, with its guest virtual base. Every
     /// nonempty table must be within that payload, not just somewhere in a map.
     pub fn decode(bytes: &[u8], base: u32) -> Result<Self> {
@@ -422,6 +438,56 @@ impl Scenario {
         Ok(stats)
     }
 
+    /// The five tables as the map holds them: the header field of each
+    /// (`0x238` nodes, `0x1b0` string data, `0x1b8` scripts, `0x1c0`
+    /// globals, `0x1c8` tag references), its element size (1 for the
+    /// string data), and every byte.
+    pub fn table_bytes(&self) -> [(usize, usize, Vec<u8>); 5] {
+        [
+            (
+                0x238,
+                Node::SIZE,
+                self.nodes.iter().flat_map(|n| n.encode()).collect(),
+            ),
+            (0x1b0, 1, self.strings.clone()),
+            (
+                0x1b8,
+                Script::SIZE,
+                self.scripts.iter().flat_map(|s| s.encode()).collect(),
+            ),
+            (
+                0x1c0,
+                Global::SIZE,
+                self.globals.iter().flat_map(|g| g.encode()).collect(),
+            ),
+            (
+                0x1c8,
+                Reference::SIZE,
+                self.references.iter().flat_map(|r| r.encode()).collect(),
+            ),
+        ]
+    }
+
+    /// The tables written out and read back: the graph passes
+    /// [`Self::validate_graph`] as the reader checks it, and every table
+    /// encodes to the bytes it was read from (the codec's symmetry).
+    pub fn verify_written(&self) -> Result<()> {
+        let [nodes, strings, scripts, globals, references] = self.table_bytes();
+        let back = Self::decode_tables(
+            &nodes.2,
+            strings.2.clone(),
+            &scripts.2,
+            &globals.2,
+            &references.2,
+        )?;
+        for (a, b) in self.table_bytes().iter().zip(back.table_bytes().iter()) {
+            if a.2 != b.2 {
+                return Err(invalid(format!("table +{:#x} failed codec symmetry", a.0)));
+            }
+        }
+        Ok(())
+    }
+
     /// Exact byte comparison for every retained table, including dead slots,
     /// reserved words and name padding. Does not rewrite/relocate a cache.
     pub fn verify_codec_symmetry(&self, bytes: &[u8], base: u32) -> Result<()> {
@@ -465,7 +531,7 @@ impl Scenario {
     }
 }
 
-const HS_HEADER_SIZE: u32 = 0x240;
+pub(crate) const HS_HEADER_SIZE: u32 = 0x240;
 
 /// Preflight every descriptor before allocating tables or decoding records.
 fn tables<T>(
