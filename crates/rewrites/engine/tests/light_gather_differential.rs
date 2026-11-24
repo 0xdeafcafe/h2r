@@ -3899,6 +3899,9 @@ fn screen_bounds_match_the_lifted_original() {
                 c.gpr[7] = out;
                 c.mxcsr = fpu.mxcsr;
                 c.x87.control = fpu.x87_control;
+                if n % 2 != 0 {
+                    c.x87.status |= x87::abi::H2_FP_PE;
+                }
                 let esp = c.gpr[4];
                 lifted
                     .call(&mut c, &mut original, SCREEN_BOUNDS, esp, &[query.word])
