@@ -1277,7 +1277,8 @@ mod tests {
         overlay.push_text_run(red, ClipRect::full([2, 2]), [1.0, 0.0, 0.0, 1.0], &added).unwrap();
         let plan = OverlayPlan::new(&overlay, [4, 4], &assets.glyphs);
         let (encoded, stats) = gpu.prepare(&ctx.device, &view, &plan, &residency).unwrap();
-        assert_eq!((stats.batches, stats.refused_glyph), (3, 0));
+        // The two text runs share their material, clip and indices: one batch.
+        assert_eq!((stats.batches, stats.refused_glyph), (2, 0));
         let mut encoder = ctx.device.create_command_encoder(&Default::default());
         (encoded.commands)(&mut encoder);
         ctx.queue.submit([encoder.finish()]);

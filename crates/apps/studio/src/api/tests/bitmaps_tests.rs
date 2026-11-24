@@ -386,8 +386,20 @@ fn bitmap_paint_draws_a_line_and_clones() {
         json!({"bitmap": "floor", "source": [0.5, 1.5], "points": [[0.5, 1.5]], "size": 2, "hardness": 1}),
     );
     assert_eq!(r["dirty"], Value::Null);
-    // Undo takes the three back, the last first.
-    for (image, y, was) in [(1, 1, "00000000"), (0, 0, floor), (0, 1, floor)] {
+    // Undo takes the steps back, the last first: the image's paint, the
+    // added image itself (one undo step, so its pixels answer nothing
+    // after), the clone, the line.
+    call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "bitmaps"}));
+    assert_eq!(row(&mut api, &mut app, 1, 1), "00000000".repeat(4));
+    call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "bitmaps"}));
+    assert!(api
+        .call(
+            &mut app,
+            m::BITMAP_PIXELS,
+            json!({"bitmap": "floor", "image": 1, "rect": [0, 0, 4, 1]}),
+        )
+        .is_err());
+    for (image, y, was) in [(0, 0, floor), (0, 1, floor)] {
         call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "bitmaps"}));
         assert_eq!(row(&mut api, &mut app, image, y), was.repeat(4));
     }

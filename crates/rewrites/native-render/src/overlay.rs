@@ -154,8 +154,8 @@ impl GlyphPages {
         );
         page.x += pw;
         page.height = page.height.max(ph);
-        page.added.push((page.version, GlyphRect { x: x0, y: y0, width: w, height: h }));
         page.version += 1;
+        page.added.push((page.version, GlyphRect { x: x0, y: y0, width: w, height: h }));
         true
     }
 
