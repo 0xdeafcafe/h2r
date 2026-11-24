@@ -158,6 +158,9 @@ pub struct Rules {
     pub shared: Arc<Shared>,
     pub hle: Option<Arc<live_hle::Hle>>,
     pub scripts: Arc<crate::game_variants::GameScripts>,
+    /// The VFS the loaded map's sound tags are read through
+    /// ([`super::world::audio::activate`]).
+    pub vfs: Option<Arc<std::sync::Mutex<vfs::Vfs>>>,
 }
 
 /// The record's script prefix when its blob is neither built in nor on
@@ -226,7 +229,15 @@ impl hooks::Feature for Rules {
         let s = Arc::clone(&self.shared);
         let hle = self.hle.clone();
         let scripts = Arc::clone(&self.scripts);
+        let vfs = self.vfs.clone();
         b.game().on_start("start the game's rules script", move |o| {
+            // The sounds the loaded map holds, by path: read from its file
+            // before the start, which refuses a script naming one it lacks.
+            // The map file is read with no guest memory held.
+            if let Some(vfs) = &vfs {
+                let loaded = super::world::audio::loaded(&o.guest());
+                super::world::audio::activate(vfs, loaded);
+            }
             // A host (or a game alone) whose record names a script that is
             // not on this machine fetches it from Live first, with no guest
             // memory held and a bounded wait; the start below then finds it
@@ -504,6 +515,7 @@ pub fn install(
     registry: &mut hooks::Registry,
     hle: Option<Arc<live_hle::Hle>>,
     film: bool,
+    vfs: Option<Arc<std::sync::Mutex<vfs::Vfs>>>,
 ) -> anyhow::Result<bool> {
     let scripts = Arc::new(crate::game_variants::GameScripts::in_game(hle.clone()));
     let shared = Arc::new(Shared::new(
@@ -518,6 +530,7 @@ pub fn install(
             shared: Arc::clone(&shared),
             hle,
             scripts,
+            vfs,
         })
         .map_err(|e| anyhow::anyhow!("{FEATURE}: {e}"))?;
     if !added {

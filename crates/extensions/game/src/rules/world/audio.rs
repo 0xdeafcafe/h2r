@@ -16,10 +16,15 @@
 //! `music_stop` and `announce`.
 //!
 //! A script names a sound by its tag path, and the running game holds no
-//! tag paths. [`set_resolver`] gives a host its lookup of a sound tag's datum
-//! by path; a host with none refuses a script that plays a sound
-//! ([`refusal`]), by the sound's path.
+//! tag paths. The loaded map's file does: its tag index names each `snd!`
+//! tag and gives its datum, the datum the game loaded the tag under.
+//! [`activate`] reads the loaded map's file at each game start and installs
+//! [`set_resolver`]'s lookup from it; a host with no lookup, or a map that
+//! does not hold a sound the script plays, refuses the script ([`refusal`]),
+//! by the sound's path.
 
+use std::collections::HashMap;
+use std::io::{Read, Seek};
 use std::sync::{Mutex, MutexGuard};
 
 use ::rules::caps::id;
@@ -48,21 +53,61 @@ pub fn set_resolver(lookup: Option<Resolver>) {
     *resolver() = lookup;
 }
 
-/// Whether this host can find a sound tag by its path.
-pub fn can_resolve() -> bool {
-    resolver().is_some()
-}
-
 fn resolve(path: &str) -> Option<u32> {
     resolver().as_ref().and_then(|lookup| lookup(path))
 }
 
-/// Why a host that `resolves` or not cannot run `ir`, by the sound's path:
-/// the script plays a sound and the host has no lookup of a sound tag.
-pub fn refusal(ir: &Ir, resolves: bool) -> Option<String> {
-    if resolves {
-        return None;
-    }
+/// The sound tags `map` names: each `snd!` tag's path (with `/`, as the
+/// start gate's census spells it) and its datum.
+pub fn sounds_of<R: Read + Seek>(map: &map::Map<R>) -> HashMap<String, u32> {
+    map.tags()
+        .iter()
+        .filter(|t| &t.group.0 == b"snd!")
+        .filter_map(|t| {
+            let name = t.name.as_deref().filter(|n| !n.is_empty())?;
+            Some((name.replace('\\', "/"), t.id.0))
+        })
+        .collect()
+}
+
+/// Installs the lookup of the sounds in `source`, a map file; none (a map
+/// that cannot be read) takes the lookup away, so a script that plays a
+/// sound is refused by its path.
+pub fn install_map(source: Option<vfs::FileSource>) {
+    let table = source.and_then(|source| match source {
+        vfs::FileSource::Memory(bytes) => {
+            map::Map::from_reader(std::io::Cursor::new(&bytes[..])).ok().map(|m| sounds_of(&m))
+        }
+        vfs::FileSource::Host(f) => {
+            let file = std::fs::File::open(&f.path).ok()?;
+            let m = map::Map::from_region(file, f.offset, f.len).ok()?;
+            Some(sounds_of(&m))
+        }
+    });
+    set_resolver(table.map(|t| Box::new(move |path: &str| t.get(path).copied()) as Resolver));
+}
+
+/// The loaded map's name and the VFS path of its active slot, read from
+/// guest memory.
+pub fn loaded(guest: &runtime::Guest) -> Option<(String, Option<String>)> {
+    let name = crate::telemetry::loaded_map_name(guest).ok().filter(|n| !n.is_empty())?;
+    Some((name, crate::map_slots::active_file(guest)))
+}
+
+/// A game started: the lookup is of the loaded map's file ([`loaded`]), read
+/// through the VFS. Call it with no lock on the guest's memory held.
+pub fn activate(vfs: &Mutex<vfs::Vfs>, loaded: Option<(String, Option<String>)>) {
+    let source = loaded.and_then(|(name, slot)| {
+        let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
+        crate::map_override::map_source(&mut v, &name, slot.as_deref())
+    });
+    install_map(source);
+}
+
+/// Why this host cannot run `ir`, by the sound's path: the script plays a
+/// sound and the host has no lookup of sound tags, or the loaded map holds
+/// no sound tag at a path the script names.
+pub fn refusal(ir: &Ir) -> Option<String> {
     let plays = ir.handlers.iter().flat_map(|h| &h.code).any(|op| {
         matches!(op, Op::Call { entry, .. }
             if matches!(*entry, id::SOUND_TO | id::SOUND_TO_TEAM | id::SOUND_TO_ALL))
@@ -70,11 +115,22 @@ pub fn refusal(ir: &Ir, resolves: bool) -> Option<String> {
     if !plays {
         return None;
     }
-    let sound = ir.tags.iter().find(|t| t.group == TagGroup::Sound)?;
+    let held = resolver();
+    let Some(lookup) = held.as_ref() else {
+        let sound = ir.tags.iter().find(|t| t.group == TagGroup::Sound)?;
+        return Some(format!(
+            "the script plays the sound {}, and this host has not read the loaded map's sound tags \
+             (docs/game/rules-world-api.md, \"Audio\")",
+            sound.path
+        ));
+    };
+    let missing = ir
+        .tags
+        .iter()
+        .find(|t| t.group == TagGroup::Sound && lookup(&t.path).is_none())?;
     Some(format!(
-        "the script plays the sound {}, and this host cannot find a sound tag by its path yet \
-         (docs/game/rules-world-api.md, \"Audio\")",
-        sound.path
+        "the script plays the sound {}, which the loaded map does not hold",
+        missing.path
     ))
 }
 
@@ -168,9 +224,16 @@ async fn start(cx: &Cx, unit: u32, sound: u32) -> anyhow::Result<()> {
 /// Plays the sound `path` to this machine's own players in `audience`, each
 /// at its living unit. A player with no living unit hears nothing.
 pub async fn play(cx: &Cx, audience: Audience, path: &str) -> anyhow::Result<()> {
+    let units = cx.read(|m| units(m, audience));
+    play_at(cx, &units, path).await
+}
+
+/// Starts the sound `path` at each of `units`; the first failure is the
+/// answer, after every unit has been tried.
+async fn play_at(cx: &Cx, units: &[u32], path: &str) -> anyhow::Result<()> {
     let sound = resolve(path).ok_or_else(|| anyhow::anyhow!("no sound tag {path} found on this machine"))?;
     let mut failed = None;
-    for unit in cx.read(|m| units(m, audience)) {
+    for &unit in units {
         if let Err(e) = start(cx, unit, sound).await {
             failed.get_or_insert(e);
         }
@@ -182,10 +245,43 @@ fn guest(e: impl Into<EntryError>) -> anyhow::Error {
     anyhow::anyhow!("{}", e.into())
 }
 
+/// The lookup is process-wide: a test that sets it holds this for its run.
+#[cfg(test)]
+pub(crate) static SERIAL: Mutex<()> = Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ::rules::caps;
+    use map::build::{Block, TagPayload, TagSet};
+    use map::FourCC;
+
+    fn serial() -> MutexGuard<'static, ()> {
+        SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// An invented map: a scenario, a globals tag and one sound.
+    fn invented_map() -> (Vec<u8>, u32) {
+        let (matg, scnr, snd) = (FourCC(*b"matg"), FourCC(*b"scnr"), FourCC(*b"snd!"));
+        let mut set = TagSet::new(map::CacheType::Multiplayer, "invented", "test");
+        for g in [matg, scnr, snd] {
+            set.add_group(g, None, None);
+        }
+        set.globals = set.add_tag(matg, "globals", TagPayload::Built(Block::zeroed(0x284))).unwrap();
+        set.scenario = set
+            .add_tag(scnr, "levels\\test\\example", TagPayload::Built(Block::zeroed(0x3e0)))
+            .unwrap();
+        let stinger = set
+            .add_tag(snd, "sound\\stinger", TagPayload::Built(Block::zeroed(0x14)))
+            .unwrap();
+        (set.build().unwrap().0, stinger.0)
+    }
+
+    fn install_invented() -> u32 {
+        let (bytes, datum) = invented_map();
+        install_map(Some(vfs::FileSource::Memory(bytes.into())));
+        datum
+    }
 
     const STINGER: &str = "sound/stinger";
 
@@ -273,12 +369,80 @@ mod tests {
 
     #[test]
     fn a_host_with_no_sound_lookup_refuses_a_script_that_plays_one_by_its_path() {
+        let _g = serial();
+        set_resolver(None);
         let ir = ir();
-        let why = refusal(&ir, false).unwrap();
+        let why = refusal(&ir).unwrap();
         assert!(why.contains(STINGER), "{why}");
-        assert_eq!(refusal(&ir, true), None);
         // A script that plays no sound is no concern of the lookup.
         let quiet = ::rules::compile("rules \"Q\" 1\ntype slayer\nglobal var n: int = 0\non tick { n = n + 1 }\n");
-        assert_eq!(refusal(&quiet.unwrap(), false), None);
+        assert_eq!(refusal(&quiet.unwrap()), None);
+    }
+
+    #[test]
+    fn a_sound_the_loaded_map_names_resolves_to_its_datum_and_runs() {
+        let _g = serial();
+        let datum = install_invented();
+        assert_eq!(resolve(STINGER), Some(datum));
+        assert_eq!(datum & 0xffff, 2, "the third tag's slot");
+        assert_eq!(refusal(&ir()), None);
+        // The map's other tags are no sounds.
+        assert_eq!(resolve("globals"), None);
+        set_resolver(None);
+    }
+
+    #[test]
+    fn a_sound_the_loaded_map_lacks_is_refused_by_its_path() {
+        let _g = serial();
+        install_invented();
+        let other = ::rules::compile(
+            "rules \"A\" 1\ntype slayer\nrequires audio.play\n\
+             on kill(victim, killer) { sound_to_all(\"sound/missing\") }\n",
+        )
+        .unwrap();
+        let why = refusal(&other).unwrap();
+        assert!(why.contains("sound/missing"), "{why}");
+        // A map the host cannot read takes the lookup away.
+        install_map(Some(vfs::FileSource::Memory(vec![0u8; 16].into())));
+        let why = refusal(&ir()).unwrap();
+        assert!(why.contains(STINGER), "{why}");
+        set_resolver(None);
+    }
+
+    #[test]
+    fn a_played_sound_starts_at_each_unit_by_the_maps_datum() {
+        use engine::entry::{self, EntryFuture, Regs, Step};
+        let _g = serial();
+        let datum = install_invented();
+        let cx = Cx::new(std::sync::Mutex::new(engine::testing::FakeGuest::new()), Regs::default());
+        let units = [0x8001_0003u32, 0x8002_0004];
+        let mut f: EntryFuture = {
+            let cx = cx.clone();
+            Box::pin(async move {
+                play_at(&cx, &units, STINGER).await.map_err(|e| EntryError::IsolatedCall(e.to_string()))?;
+                Ok(entry::Ret::new(0, 0))
+            })
+        };
+        for unit in units {
+            let Step::Call(call) = entry::poll(&mut f, &cx) else {
+                panic!("a sound start")
+            };
+            assert_eq!(call.target, addr::SOUND_START_AT_MARKER);
+            assert_eq!(call.esi, Some(unit));
+            assert_eq!(call.args[2], datum);
+            entry::resume(&cx, Regs { eax: 7, ..Regs::default() });
+        }
+        assert!(matches!(entry::poll(&mut f, &cx), Step::Done(Ok(_))));
+        // A path the map lacks starts nothing and says so.
+        let mut f: EntryFuture = {
+            let cx = cx.clone();
+            Box::pin(async move {
+                let e = play_at(&cx, &units, "sound/missing").await.unwrap_err();
+                assert!(e.to_string().contains("sound/missing"), "{e}");
+                Ok(entry::Ret::new(0, 0))
+            })
+        };
+        assert!(matches!(entry::poll(&mut f, &cx), Step::Done(Ok(_))));
+        set_resolver(None);
     }
 }

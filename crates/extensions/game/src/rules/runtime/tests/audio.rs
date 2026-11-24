@@ -11,14 +11,16 @@ const SRC: &str = "rules \"Stinger\" 1\ntype slayer\nrequires audio.play\n\
 
 #[test]
 fn a_host_with_no_sound_lookup_names_the_sound_it_cannot_find() {
+    let _g = audio::SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    audio::set_resolver(None);
     let ir = ::rules::compile(SRC).unwrap();
-    let why = audio::refusal(&ir, false).unwrap();
+    let why = audio::refusal(&ir).unwrap();
     assert!(why.contains(STINGER), "{why}");
 }
 
 #[test]
 fn a_sound_is_held_until_the_authority_answers() {
-    // The lookup is process-wide and nothing else here reads it as absent.
+    let _g = audio::SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     audio::set_resolver(Some(Box::new(|path: &str| (path == STINGER).then_some(0xe123_0045))));
     let ir = ::rules::compile(SRC).unwrap();
     assert_eq!(host_refusal(&ir), None);

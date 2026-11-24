@@ -493,9 +493,9 @@ fn runtime_refusal(ir: &Ir) -> Option<String> {
             t.path
         ));
     }
-    // A sound is found by its tag path, which the running game does not
-    // hold: a host with no lookup refuses the script by the sound's path.
-    if let Some(why) = super::world::audio::refusal(ir, super::world::audio::can_resolve()) {
+    // A sound is found by its tag path in the loaded map's file: a host with
+    // no lookup, or a map without the sound, refuses the script by its path.
+    if let Some(why) = super::world::audio::refusal(ir) {
         return Some(why);
     }
     for hd in &ir.handlers {
