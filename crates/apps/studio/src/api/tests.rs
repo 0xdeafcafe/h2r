@@ -250,7 +250,41 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             // template's one pass in layer 5 reads.
             let map = t.path("shader.map");
             std::fs::write(&map, shader_tests::material_map(fixture::LAYERED_LAYER)).unwrap();
-            c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+            call(
+                api,
+                app,
+                m::SOURCE_OPEN,
+                json!({"path": map.display().to_string()}),
+            );
+            // A push sends a draft and a revert removes what one sent: the
+            // linked program is the draft, pushed to a directory of the test's.
+            if matches!(name, m::SHADER_PUSH | m::SHADER_REVERT) {
+                let r = call(
+                    api,
+                    app,
+                    m::SHADER_OVERRIDE,
+                    json!({"tag": shader_tests::SHADER}),
+                );
+                let base = r["base"].as_str().expect("the pass links").to_owned();
+                call(
+                    api,
+                    app,
+                    m::SHADER_OVERRIDE,
+                    json!({"tag": shader_tests::SHADER, "text": base}),
+                );
+            }
+            if name == m::SHADER_REVERT {
+                call(
+                    api,
+                    app,
+                    m::SHADER_PUSH,
+                    json!({
+                        "tag": shader_tests::SHADER,
+                        "program": "00abcdef01234567",
+                        "dir": t.path("out/overrides").display().to_string(),
+                    }),
+                );
+            }
         }
         m::TAG_COLOURS => {
             // A map whose weapon tag has an invented colour field of
