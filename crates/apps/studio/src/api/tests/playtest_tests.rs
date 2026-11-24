@@ -218,3 +218,230 @@ fn playtest_static_needs_a_map() {
         code::NO_DOCUMENT
     );
 }
+
+// ---- playtest.run and its readers, over a fake sim (slice PT4) ----
+
+use crate::app::playtest::fake::Fake;
+
+fn provider(t: &Temp) -> (crate::api::playtest::Playtest, Fake) {
+    let fake = Fake::new(t.path("playtest"));
+    (
+        crate::api::playtest::Playtest::with_source(Box::new(fake.clone())),
+        fake,
+    )
+}
+
+fn ask(
+    p: &mut crate::api::playtest::Playtest,
+    app: &mut App,
+    method: &str,
+    params: Value,
+) -> Reply {
+    use crate::api::Provider;
+    p.call(app, method, &params)
+        .expect("the provider answers it")
+}
+
+fn ok(p: &mut crate::api::playtest::Playtest, app: &mut App, method: &str, params: Value) -> Value {
+    ask(p, app, method, params).unwrap_or_else(|e| panic!("{method} {params}: {e}"))
+}
+
+/// The invented map with both starts on the bots' mesh, so Slayer is
+/// ready.
+fn ready_map(t: &Temp, api: &mut Api, app: &mut App) {
+    let bytes = fixture::fixture_with_pathfinding();
+    invented_mesh(&t.path("data"), &bytes);
+    open_map(api, app, t, "playtest.map", bytes);
+    let [x, y, _] = fixture::ROOM_AT;
+    set(api, app, 0, "position", json!([x + 2.0, y + 5.0, 0.0]));
+    set(api, app, 1, "position", json!([x + 8.0, y + 5.0, 0.0]));
+    set(api, app, 1, "team", json!(0));
+}
+
+/// Without a runner the call is refused; the readers say there is nothing.
+#[test]
+fn playtest_run_is_refused_with_no_sim_runner() {
+    let t = Temp::new("playtest-no-runner");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    assert_eq!(
+        code_of(api.call(&mut app, m::PLAYTEST_RUN, json!({"preset": "probe"}))),
+        code::REFUSED
+    );
+    let s = call(&mut api, &mut app, m::PLAYTEST_STATUS, json!({}));
+    assert_eq!(
+        (s["state"].clone(), s["run"].clone()),
+        (json!("none"), Value::Null)
+    );
+    assert_eq!(
+        call(&mut api, &mut app, m::PLAYTEST_RESULT, json!({}))["state"],
+        "none"
+    );
+    assert_eq!(
+        call(&mut api, &mut app, m::PLAYTEST_CANCEL, json!({})),
+        json!({"cancelled": false})
+    );
+}
+
+/// A run, its progress, its partial and whole result, a repeat from the
+/// cache and a cancel.
+#[test]
+fn playtest_run_status_result_and_cancel_over_a_fake_sim() {
+    let t = Temp::new("playtest-run");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    ready_map(&t, &mut api, &mut app);
+    let (mut p, fake) = provider(&t);
+
+    // Bad calls start nothing.
+    for params in [
+        json!({"preset": "sprint"}),
+        json!({"seeds": 0}),
+        json!({"bots": 99}),
+        json!({"game_types": "slayer"}),
+        json!({"minutes": -1}),
+    ] {
+        let e = ask(&mut p, &mut app, m::PLAYTEST_RUN, params.clone()).unwrap_err();
+        assert_eq!(e.code, code::INVALID_PARAMS, "{params}");
+    }
+    let e = ask(
+        &mut p,
+        &mut app,
+        m::PLAYTEST_RUN,
+        json!({"game_types": ["ctf"]}),
+    )
+    .unwrap_err();
+    assert_eq!(e.code, code::FAILED, "Capture the Flag is not ready: {e}");
+    assert!(fake.w().batches.is_empty());
+
+    let r = ok(
+        &mut p,
+        &mut app,
+        m::PLAYTEST_RUN,
+        json!({"preset": "probe", "seeds": 2}),
+    );
+    assert_eq!(
+        r,
+        json!({"run": "r1", "build": "b1", "matches": 2, "parallel": 2, "cached": false})
+    );
+    let s = ok(&mut p, &mut app, m::PLAYTEST_STATUS, json!({}));
+    assert_eq!(
+        (s["state"].clone(), s["done"].clone(), s["total"].clone()),
+        (json!("running"), json!(0), json!(2))
+    );
+    let nothing = ok(&mut p, &mut app, m::PLAYTEST_RESULT, json!({}));
+    assert_eq!(
+        (nothing["traces"].clone(), nothing["partial"].clone()),
+        (json!(0), json!(true))
+    );
+
+    // One match ends: its heat shows, its other measures are refused.
+    let jobs = fake.jobs();
+    fake.end(&jobs[0]);
+    fake.fail(&jobs[1], "the guest faulted");
+    let s = ok(&mut p, &mut app, m::PLAYTEST_STATUS, json!({"run": "r1"}));
+    assert_eq!(s["done"], 2);
+    assert_eq!(s["state"], "done");
+    assert_eq!(s["coarse"], true);
+    assert_eq!(
+        s["failed"],
+        json!([{"game_type": "slayer", "seed": 2, "swapped": false, "why": "the guest faulted"}])
+    );
+    let r = ok(&mut p, &mut app, m::PLAYTEST_RESULT, json!({}));
+    assert_eq!(
+        (
+            r["game_type"].clone(),
+            r["traces"].clone(),
+            r["partial"].clone()
+        ),
+        (json!("slayer"), json!(1), json!(false))
+    );
+    assert_eq!(r["seeds"], json!([1, 2]));
+    assert!(
+        r["match_file"].as_str().unwrap().ends_with("r1/match.json"),
+        "{r}"
+    );
+    assert_eq!(r["measures"]["heat"], json!({"ok": true}));
+    assert_eq!(r["measures"]["spawns"]["ok"], false);
+    assert_eq!(r["measures"]["spawns"]["refused"]["need"], 8);
+    let heat = ok(
+        &mut p,
+        &mut app,
+        m::PLAYTEST_RESULT,
+        json!({"measure": "heat"}),
+    );
+    assert_eq!(heat["ok"], true);
+    assert!(
+        heat["value"]["deaths"]
+            .as_array()
+            .is_some_and(|d| !d.is_empty()),
+        "{heat}"
+    );
+    let spawns = ok(
+        &mut p,
+        &mut app,
+        m::PLAYTEST_RESULT,
+        json!({"measure": "spawns"}),
+    );
+    assert_eq!(spawns["ok"], false);
+    assert_eq!(spawns["refused"]["what"], "spawns");
+    for bad in [
+        json!({"measure": "nope"}),
+        json!({"game_type": "ctf"}),
+        json!({"run": "r9"}),
+    ] {
+        let e = ask(&mut p, &mut app, m::PLAYTEST_RESULT, bad.clone()).unwrap_err();
+        assert_eq!(e.code, code::INVALID_PARAMS, "{bad}");
+    }
+
+    // A run that had a failure plays again; one that did not reads the
+    // cache.
+    let again = ok(&mut p, &mut app, m::PLAYTEST_RUN, json!({"seeds": 1}));
+    assert_eq!(again["cached"], false);
+    fake.end_all();
+    ok(&mut p, &mut app, m::PLAYTEST_STATUS, json!({}));
+    let hit = ok(&mut p, &mut app, m::PLAYTEST_RUN, json!({"seeds": 1}));
+    assert_eq!(
+        (hit["run"].clone(), hit["cached"].clone()),
+        (again["run"].clone(), json!(true))
+    );
+
+    // A cancel stops a running one.
+    let third = ok(&mut p, &mut app, m::PLAYTEST_RUN, json!({"seeds": 3}));
+    assert_eq!(
+        ok(&mut p, &mut app, m::PLAYTEST_CANCEL, json!({})),
+        json!({"cancelled": true})
+    );
+    let s = ok(
+        &mut p,
+        &mut app,
+        m::PLAYTEST_STATUS,
+        json!({"run": third["run"].clone()}),
+    );
+    assert_eq!(s["state"], "cancelled");
+    assert_eq!(
+        ok(&mut p, &mut app, m::PLAYTEST_CANCEL, json!({})),
+        json!({"cancelled": false})
+    );
+}
+
+/// With no game type ready the call says what each lacks.
+#[test]
+fn playtest_run_names_what_a_map_lacks() {
+    let t = Temp::new("playtest-lacks");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let bytes = fixture::fixture_with_pathfinding();
+    invented_mesh(&t.path("data"), &bytes);
+    open_map(&mut api, &mut app, &t, "playtest.map", bytes);
+    let (mut p, fake) = provider(&t);
+    let e = ask(&mut p, &mut app, m::PLAYTEST_RUN, json!({})).unwrap_err();
+    assert_eq!(e.code, code::FAILED);
+    assert!(
+        e.message.contains("no game type is ready") && e.message.contains("Slayer lacks"),
+        "{}",
+        e.message
+    );
+    assert!(fake.w().batches.is_empty());
+    assert_eq!(fake.w().builds, 0);
+}

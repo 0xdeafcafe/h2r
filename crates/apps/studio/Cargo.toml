@@ -75,6 +75,9 @@ boot.workspace = true
 # already depends on both, so they add no crate to the build.
 bots = { path = "../../live/bots" }
 superbounce = { path = "../../live/superbounce" }
+# Playtest's runner (src/app/playtest.rs): the match and batch files, the
+# spatial traces and their measures.
+sim-bench = { path = "../../live/sim-bench" }
 # The Map Pack's content directory (`T:\$c`) on the host.
 vfs.workspace = true
 serde_json.workspace = true

@@ -146,6 +146,10 @@ pub mod method {
     pub const NAV_BOTS: &str = "nav.bots";
     pub const NAV_PICK: &str = "nav.pick";
     pub const PLAYTEST_STATIC: &str = "playtest.static";
+    pub const PLAYTEST_RUN: &str = "playtest.run";
+    pub const PLAYTEST_STATUS: &str = "playtest.status";
+    pub const PLAYTEST_RESULT: &str = "playtest.result";
+    pub const PLAYTEST_CANCEL: &str = "playtest.cancel";
 
     pub const VARIANT_LIST: &str = "variant.list";
     pub const VARIANT_OPEN: &str = "variant.open";

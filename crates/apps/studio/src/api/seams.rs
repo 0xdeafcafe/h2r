@@ -81,7 +81,7 @@ pub fn register(api: &mut Api) {
     // and spots, and a pick.
     api.register(Box::new(super::nav_mesh::NavMesh));
     // Playtest's static checks over the open map (app::playtest_static).
-    api.register(Box::new(super::playtest::Playtest));
+    api.register(Box::new(super::playtest::Playtest::new()));
     // The Tags tool's browsing (shared caches), resources and tag bundles.
     api.register(Box::new(super::tag_io::TagIo));
     // Sound audition: decode, play and the waveform of a snd! tag.
