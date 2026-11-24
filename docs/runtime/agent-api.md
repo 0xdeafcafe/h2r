@@ -2858,7 +2858,7 @@ or the game's UI state without UI watch. All are read-only except
   (a guest address valid for that screen's lifetime), and `parent` where
   a return is known. The map picker stages share an ID and have
   distinct `mode` values (`folders`, `maps`, `pack`), with the open
-  category or pack named in `folder`. A pack's parent is the Mods list. All stages show the active picker row in `focused_row`
+  category or pack named in `folder`. A lobby variant list shows Change Game Type as its parent, including that selector's Game Setup parent when present. A pack's parent is the Mods list. All stages show the active picker row in `focused_row`
   (zero-based). `input` identifies the screen taking player one's menu
   input. `back` gives the instance that closes and its parent where
   known, with action `close`, `reopen` (recreate a parent), or `wait`
