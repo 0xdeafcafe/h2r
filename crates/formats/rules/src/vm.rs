@@ -1712,9 +1712,10 @@ impl<'a> Run<'a> {
                     .get(1)
                     .and_then(|&t| u8::try_from(t).ok())
                     .filter(|&t| (t as usize) < MAX_TEAMS);
+                let full = self.ext.shown.len() >= MAX_SHOWN_AREAS;
                 match self.ext.shown.iter_mut().find(|(z, _)| *z == zone) {
                     Some(row) => row.1 = team,
-                    None if self.ext.shown.len() >= MAX_SHOWN_AREAS => return Err(ErrorKind::Areas),
+                    None if full => return Err(ErrorKind::Areas),
                     None => self.ext.shown.push((zone, team)),
                 }
                 return Ok(());
