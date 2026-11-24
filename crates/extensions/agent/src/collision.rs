@@ -42,6 +42,7 @@ fn wire(s: &world::Stats) -> Stats {
         decode_failures: s.decode_failures,
         flushes: s.flushes,
         bsps: s.bsps,
+        mopps: s.mopps,
         bytes: s.bytes,
         array_bytes: s.array_bytes,
         budget_bytes: s.budget_bytes,
@@ -68,6 +69,8 @@ mod tests {
         s.entries[Entry::InstanceTrace as usize].mxcsr.insert(0x1fa0, 3);
         s.entries[Entry::InstanceTrace as usize].x87_control.insert(0x037f, 3);
         s.decodes = 3;
+        s.mopps = 2;
+        s.entries[Entry::MoppBox as usize].bails[Bail::Grow as usize] = 5;
         s.bytes = 950;
         s.array_bytes = 246;
         s.budget_bytes = 8 << 20;
@@ -79,13 +82,15 @@ mod tests {
         let names: Vec<&str> = w.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(
             names,
-            ["point_to_leaf", "location", "vector_test", "vector_context", "instance_trace"]
+            ["point_to_leaf", "location", "vector_test", "vector_context", "instance_trace", "mopp_box"]
         );
         assert_eq!(w.entries[0].addr, "0014a280");
         assert_eq!(w.entries[0].native, 7);
         assert_eq!(w.entries[1].bails["alias"], 2);
         assert_eq!(w.entries[1].bails.len(), Bail::ALL.len());
         assert_eq!((w.decodes, w.precision.double), (3, 5));
+        assert_eq!((w.mopps, w.entries[5].addr.as_str()), (2, "00300150"));
+        assert_eq!(w.entries[5].bails["grow"], 5);
         assert_eq!(w.entries[1].bails["budget"], 6);
         assert_eq!((w.bytes, w.array_bytes), (950, 246));
         assert_eq!((w.budget_bytes, w.ring_fallbacks, w.cluster_budget_reads), (8 << 20, 4, 19));

@@ -15,6 +15,13 @@ pub trait CollisionMemory: Memory {
         Ok((0, 0))
     }
 
+    /// A version of the bytes under the MOPP program at `code` (header and
+    /// bytecode): it moves whenever any of them may have been written. The
+    /// default is for immutable bytes.
+    fn mopp_revision(&mut self, _code: u32) -> Result<u64, Bail> {
+        Ok(0)
+    }
+
     /// A version for all bytes of this leaf table, when the memory provider
     /// can detect every change. Other providers read the selected word live.
     fn leaf_table(&mut self, _count_addr: u32, _leaves: u32, _leaf: u32) -> Option<LeafTable> {
@@ -34,6 +41,10 @@ impl CollisionMemory for Guest {
 
     fn leaf_table(&mut self, count_addr: u32, leaves: u32, leaf: u32) -> Option<LeafTable> {
         super::cluster::table(self, count_addr, leaves, leaf)
+    }
+
+    fn mopp_revision(&mut self, code: u32) -> Result<u64, Bail> {
+        super::sources::mopp_revision(self, code)
     }
 
     fn physical_range(&self, addr: u32, len: u32) -> Option<u32> {

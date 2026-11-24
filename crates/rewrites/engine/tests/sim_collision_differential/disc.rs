@@ -20,7 +20,7 @@ fn word(record: &[u8], offset: usize) -> u32 {
 
 /// The BSP pointer entry A takes starts at the first block descriptor.
 /// In a coll element that is the word after the node/flags header.
-fn bsp_headers<'a>(view: &TagView<'a>, group: FourCC, address: u32) -> Vec<&'a [u8]> {
+pub(super) fn bsp_headers<'a>(view: &TagView<'a>, group: FourCC, address: u32) -> Vec<&'a [u8]> {
     if group == SBSP {
         let root = view.range(address, 0x1c).unwrap();
         return view.block(root, 0x14, TagBsp::STRUCTURE_SIZE).unwrap();
@@ -65,7 +65,7 @@ fn ordinary_alias_roots_and_shared_blocks_resolve_in_map_space() {
 
 /// Sample in the BSP's own coordinate system. One point in eight lands
 /// exactly on a vertex. The others sample the surrounding volume.
-struct Samples<'a> {
+pub(super) struct Samples<'a> {
     vertices: &'a [u8],
     missing_vertices: bool,
     low: [f32; 3],
@@ -73,7 +73,7 @@ struct Samples<'a> {
 }
 
 impl<'a> Samples<'a> {
-    fn new(view: &TagView<'a>, header: &[u8]) -> Self {
+    pub(super) fn new(view: &TagView<'a>, header: &[u8]) -> Self {
         let field = 8 * block::VERTICES;
         let bytes = u64::from(word(header, field)) * u64::from(block::STRIDE[block::VERTICES]);
         // Sampling the optional bounding box must not panic before the
@@ -105,7 +105,7 @@ impl<'a> Samples<'a> {
         }
     }
 
-    fn point(&self, rng: &mut Rng, n: u32) -> [f32; 3] {
+    pub(super) fn point(&self, rng: &mut Rng, n: u32) -> [f32; 3] {
         if n.is_multiple_of(8) && !self.vertices.is_empty() {
             let at = 16 * rng.below((self.vertices.len() / 16) as u32) as usize;
             return std::array::from_fn(|i| f32::from_bits(word(self.vertices, at + i * 4)));
