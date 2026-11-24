@@ -122,7 +122,7 @@ fn shared(store: &Local, fetch: Box<Fetch>) -> Arc<Shared> {
 fn drive(shared: &Arc<Shared>, m: FakeGuest, work: Work, authority: bool) -> Vec<GuestCall> {
     let s = Arc::clone(shared);
     let entry =
-        move |cx: Cx| -> EntryFuture { Box::pin(run_work(cx, Arc::clone(&s), work.clone())) };
+        move |cx: Cx| -> EntryFuture { Box::pin(run_work(cx, Arc::clone(&s), work.clone(), 0)) };
     let run = testing::run(&entry, m, Regs::default(), |c, _| Regs {
         eax: if c.target == points::GAME_ENGINE_AUTHORITATIVE.base {
             u32::from(authority)
@@ -194,6 +194,7 @@ fn a_kill_scores_through_score_add_at_the_next_tick_boundary() {
                 player: 1,
                 delta: 3
             }],
+            sight: Vec::new(),
         }
     );
     // The same boundary again does nothing.

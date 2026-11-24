@@ -406,8 +406,9 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
 - **Known runtime gaps.** A host refuses a script, by name, if it calls an
   entry that is not `named` or VM-only: `set_team`, `give`,
   `take`, `create`, `register_objective`,
-  `spawn_objective`, and the physics reads `crouching`
-  and `sees` (their game side is not built). `airborne` and `primed` are
+  `spawn_objective`, and the physics read `crouching`. The host answers
+  `sees(a, b)` from the next tick boundary's collision trace, one tick
+  after the first request. `airborne` and `primed` are
   the superbounce chain's view of the biped, so they read false outside
   a game that `requires hud.superbounce`. `on touchdown`,
   `on launch` and `on grounded` come from the superbounce mode's medal

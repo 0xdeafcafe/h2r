@@ -29,7 +29,7 @@ use ::rules::vm::{Arg, Call as VmCall};
 use engine::entry::{Cx, GuestCall};
 use engine::view::objects;
 use engine::{DatumHandle, GuestMemory, points};
-use guest_layout::object::Object;
+use guest_layout::object::{Object, ObjectHeader, header::DELETE};
 
 /// How far up an attachment chain a read looks for the root.
 const MAX_DEPTH: usize = 8;
@@ -52,13 +52,13 @@ pub fn from_fixed(v: i32) -> f32 {
 
 /// The body of the root ancestor of the object `handle` names: the object's
 /// own when it has no parent.
-fn root(m: &dyn GuestMemory, handle: DatumHandle) -> Option<objects::Body> {
+fn root(m: &dyn GuestMemory, handle: DatumHandle) -> Option<(DatumHandle, objects::Body)> {
     let mut at = handle;
     for _ in 0..MAX_DEPTH {
         let (_, body) = objects::get(m, at).ok()??;
         match body.parent(m).ok()? {
             Some(parent) => at = parent,
-            None => return Some(body),
+            None => return Some((at, body)),
         }
     }
     None
@@ -74,7 +74,7 @@ pub fn read(m: &dyn GuestMemory, call: &VmCall) -> i32 {
     let Some(axis) = usize::try_from(*axis).ok().filter(|&a| a < 3) else {
         return 0;
     };
-    let Some(body) = DatumHandle::from_raw(*object).and_then(|h| root(m, h)) else {
+    let Some((_, body)) = DatumHandle::from_raw(*object).and_then(|h| root(m, h)) else {
         return 0;
     };
     let at = if call.entry.id == id::OBJECT_VEL {
@@ -83,6 +83,34 @@ pub fn read(m: &dyn GuestMemory, call: &VmCall) -> i32 {
         body.addr.wrapping_add(Object::POSITION.offset)
     };
     m.vec3(at).map_or(0, |v| to_fixed(v[axis]))
+}
+
+/// Finds the unique live object of this type at a scenario placement.
+pub(super) fn placed_datum(m: &dyn GuestMemory, kind: u8, index: i16) -> Option<u32> {
+    let array = objects::array(m).ok()??;
+    let mut found = None;
+    for row in array.live_iter(m, i32::from(u16::MAX) + 1).ok()? {
+        let (handle, header) = row.ok()?;
+        let h = ObjectHeader::at(header.addr);
+        if h.kind(m).ok()? != kind || h.flags(m).ok()? & DELETE != 0 {
+            continue;
+        }
+        let body = h.body(m).ok()?;
+        if body != 0 && Object::at(body).placement_index(m).ok()? == index {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(handle.raw());
+        }
+    }
+    found
+}
+
+/// The root object's position and datum to ignore in a sight trace.
+pub(super) fn sight_endpoint(m: &dyn GuestMemory, object: u32) -> Option<([f32; 3], u32)> {
+    let (root, body) = root(m, DatumHandle::from_raw(object)?)?;
+    let at = body.position(m).ok()?;
+    at.iter().all(|v| v.is_finite()).then_some((at, root.raw()))
 }
 
 /// One object put at a place, in world units.

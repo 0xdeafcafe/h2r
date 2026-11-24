@@ -1212,7 +1212,7 @@ pub async fn make_calls(
             for (i, &zone) in s.zones.iter().enumerate() {
                 for &(from, unit) in &s.from {
                     // A failed test counts as no sight.
-                    if guest::line_of_sight(cx, scratch, from, zone, unit)
+                    if guest::line_of_sight(cx, scratch, from, zone, [unit, u32::MAX])
                         .await
                         .unwrap_or(false)
                     {

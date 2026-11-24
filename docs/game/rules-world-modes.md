@@ -152,8 +152,7 @@ counts and scores equal the Rust chain's on every tick of
 `superbounce_chain_tests.rs` (`superbounce_chain_twin.rs`). The sketch
 below is the step after it, which judges a landing in the script from
 `on touchdown`, `p.primed` and the strips as a label; it waits on the
-`sb_strip` label source (the `airborne` and `primed` reads are the
-host's; `sees` and `crouching` are not).
+`sb_strip` label source.
 
 ```text
 rules "Superbounce" 1

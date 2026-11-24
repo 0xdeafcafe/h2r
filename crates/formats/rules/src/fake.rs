@@ -1080,9 +1080,9 @@ impl Game for FakeGame {
         }
     }
 
-    fn trace_sight(&mut self, from: u32, to: u32) -> bool {
+    fn trace_sight(&mut self, from: u32, to: u32) -> Option<bool> {
         self.traces.push((from, to));
-        self.clear_sight.contains(&(from, to))
+        Some(self.clear_sight.contains(&(from, to)))
     }
 
     fn step_object(&mut self, object: u32, at: [i32; 3], velocity: [i32; 3]) {

@@ -46,21 +46,7 @@ pub(super) fn resolve(m: &dyn GuestMemory, table: Option<&Table>, operand: u32) 
         return None;
     }
     let index = i16::try_from(thing.index).ok()?;
-    let array = objects::array(m).ok()??;
-    let mut found = None;
-    for row in array.live_iter(m, i32::from(u16::MAX) + 1).ok()? {
-        let (handle, header) = row.ok()?;
-        let Some(body) = vehicle_body(m, header).ok()? else {
-            continue;
-        };
-        if body.placement_index(m).ok()? == index {
-            if found.is_some() {
-                return None;
-            }
-            found = Some(handle.raw());
-        }
-    }
-    found
+    super::super::objects::placed_datum(m, objects::VEHICLE, index)
 }
 
 #[cfg(test)]

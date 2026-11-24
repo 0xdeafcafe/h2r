@@ -224,6 +224,10 @@ impl hooks::Feature for Rules {
             ::runtime::guest::Permissions::RW,
         )?;
         super::world::loadout::set_scratch(scratch);
+        let sight_scratch = b.guest_alloc(
+            super::world::physics::SIGHT_SCRATCH_SIZE,
+            ::runtime::guest::Permissions::RW,
+        )?;
         let s = Arc::clone(&self.shared);
         let hle = self.hle.clone();
         let scripts = Arc::clone(&self.scripts);
@@ -324,7 +328,7 @@ impl hooks::Feature for Rules {
                     };
                     let s = Arc::clone(&s);
                     c.answer_async(move |cx| -> EntryFuture {
-                        Box::pin(runtime::run_work(cx, s, work))
+                        Box::pin(runtime::run_work(cx, s, work, sight_scratch))
                     })
                 },
             )

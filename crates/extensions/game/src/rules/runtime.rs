@@ -501,6 +501,8 @@ pub struct Work {
     /// it says yes.
     pub ask_authority: bool,
     pub calls: Vec<Call>,
+    /// Ordered object pairs to trace after the calls, before the tick.
+    pub sight: Vec<super::world::physics::SightQuery>,
 }
 
 /// Why a script is not hostable here, by the first thing this runtime
@@ -715,6 +717,11 @@ fn player(call: &VmCall, n: usize) -> Option<u8> {
 }
 
 impl Game for GuestGame<'_> {
+    fn trace_sight(&mut self, _from: u32, _to: u32) -> Option<bool> {
+        // The VM keeps the pair and its previous answer until run_work.
+        None
+    }
+
     fn start_line(&mut self, ty: Type) {
         self.start_line = Some(ty);
     }
@@ -1628,6 +1635,7 @@ impl Runtime {
                 tick,
                 ask_authority: true,
                 calls: vec![Call::End],
+                sight: Vec::new(),
             });
         }
         let Status::Running(r) = &mut self.status else {
@@ -1714,10 +1722,19 @@ impl Runtime {
             r.start_line = None;
         }
         r.pending = held;
-        (ask_authority || !calls.is_empty()).then_some(Work {
+        let sight: Vec<_> = if r.vm.ext().stopped.is_none() {
+            r.vm.sight()
+                .iter()
+                .map(|p| super::world::physics::SightQuery::plan(m, &r.table, p.from, p.to))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        (ask_authority || !calls.is_empty() || !sight.is_empty()).then_some(Work {
             tick,
             ask_authority,
             calls,
+            sight,
         })
     }
 
@@ -2066,6 +2083,26 @@ impl Runtime {
         }
     }
 
+    /// Store the boundary's sight answers before any of the tick's handlers.
+    fn finish_sight(&mut self, tick: u32, sight: Vec<(u32, u32, bool)>) {
+        let Status::Running(r) = &mut self.status else {
+            return;
+        };
+        if r.pre != Some(tick) || sight.is_empty() {
+            return;
+        }
+        if let Err(why) = sync(r, &*self.store) {
+            self.stop(why);
+            return;
+        }
+        for (from, to, clear) in sight {
+            r.vm.record_sight(from, to, clear);
+        }
+        if let Err(why) = save(r, &mut *self.store) {
+            self.stop(why);
+        }
+    }
+
     /// The game ended: the record is removed and the script stops.
     pub fn ended(&mut self) {
         let name = match &self.status {
@@ -2367,16 +2404,29 @@ pub async fn make_calls(cx: &Cx, work: &Work) -> (Option<bool>, Vec<Refused>) {
     (authority, refused)
 }
 
-/// The async body before a tick with work: the calls, then the tick itself
-/// (its chain runs again; `reentry` lets the hook pass).
+/// The async body runs the boundary calls, traces sight, then re-enters
+/// the tick with `reentry` set so the hook lets it pass.
 pub async fn run_work(
     cx: Cx,
     shared: std::sync::Arc<super::feature::Shared>,
     work: Work,
+    sight_scratch: u32,
 ) -> Result<Ret, EntryError> {
     use std::sync::atomic::Ordering;
     let (authority, refused) = make_calls(&cx, &work).await;
-    shared.lock().finish(work.tick, authority, refused);
+    let mut sight = Vec::new();
+    if authority != Some(false) {
+        for query in work.sight {
+            let (from, to) = query.pair;
+            let clear = super::world::physics::trace_sight(&cx, sight_scratch, query).await;
+            sight.push((from, to, clear));
+        }
+    }
+    {
+        let mut rt = shared.lock();
+        rt.finish(work.tick, authority, refused);
+        rt.finish_sight(work.tick, sight);
+    }
     shared.reentry.store(true, Ordering::SeqCst);
     let r = cx.call(GuestCall::new(points::GAME_TICK.base)).await;
     shared.reentry.store(false, Ordering::SeqCst);
