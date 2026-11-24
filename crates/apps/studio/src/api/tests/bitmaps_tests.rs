@@ -886,12 +886,13 @@ fn auto_format_keeps_what_holds_the_picture_and_leaves_dxt_for_odd_sizes() {
     assert_eq!(r["reshape"]["width"], 8);
     // Asked to be DXT1 first, an odd size cannot stay DXT1: auto takes the
     // opaque linear format.
-    call(
+    let r = call(
         &mut api,
         &mut app,
         m::BITMAP_RESHAPE,
         json!({"bitmap": "floor", "format": "dxt1"}),
     );
+    assert_eq!(r["reshape"], json!({"width": 8, "height": 8, "format": "Dxt1"}));
     let r = call(
         &mut api,
         &mut app,

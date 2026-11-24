@@ -130,9 +130,19 @@ pub struct RayParity {
     pub first_mismatch: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VectorParity {
+    pub matched: u64,
+    pub mismatched: u64,
+    pub unverified: [u64; BAILS],
+    pub first_mismatch: Option<String>,
+}
+
 /// A snapshot of the world's counters. Diagnostic only: no kernel reads it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
+    pub vector: VectorParity,
+    pub context: VectorParity,
     pub entries: [EntryStats; ENTRIES],
     /// Entry I's parity arm.
     pub ray: RayParity,
@@ -201,6 +211,8 @@ struct Counters {
     mxcsr: [WordCounts<u32>; ENTRIES],
     x87_control: [WordCounts<u16>; ENTRIES],
     ray: RayCounters,
+    vector: Mutex<VectorParity>,
+    context: Mutex<VectorParity>,
 }
 
 #[derive(Default)]
@@ -643,6 +655,26 @@ impl CollisionWorld {
         };
     }
 
+    pub fn record_vector(&self, result: Result<Option<String>, Bail>) {
+        Self::record_parity(&self.counters.vector, result);
+    }
+
+    pub fn record_context(&self, result: Result<Option<String>, Bail>) {
+        Self::record_parity(&self.counters.context, result);
+    }
+
+    fn record_parity(counter: &Mutex<VectorParity>, result: Result<Option<String>, Bail>) {
+        let mut v = counter.lock().unwrap_or_else(|e| e.into_inner());
+        match result {
+            Ok(None) => v.matched += 1,
+            Ok(Some(reason)) => {
+                v.first_mismatch.get_or_insert(reason);
+                v.mismatched += 1;
+            }
+            Err(why) => v.unverified[why as usize] += 1,
+        }
+    }
+
     /// Count one query of entry I's parity arm, keeping the first mismatch.
     pub fn record_ray(&self, outcome: &Outcome) {
         let r = &self.counters.ray;
@@ -693,6 +725,8 @@ impl CollisionWorld {
         Stats {
             entries,
             ray,
+            vector: c.vector.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            context: c.context.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             decodes: inner.decodes,
             decode_failures: inner.decode_failures,
             flushes: inner.flushes,

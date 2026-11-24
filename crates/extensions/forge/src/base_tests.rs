@@ -1,6 +1,6 @@
 //! The session's things over a fake world and an invented map: two weapons,
-//! a starting point, a teleporter and a goal of the map's own, and a crate
-//! palette for added objects. No map or game installation.
+//! a starting point, a teleporter and a goal of the map's own, and a
+//! palette with a crate and a rifle. No map or game installation.
 use std::collections::BTreeMap;
 
 use forge_doc::{
@@ -245,10 +245,16 @@ fn open_with(base: BaseRows) -> Session {
         }),
         ..Default::default()
     };
-    let palette = vec![PaletteItem {
-        block: BlockKind::Crates,
-        tag: crate_tag(),
-    }];
+    let palette = vec![
+        PaletteItem {
+            block: BlockKind::Crates,
+            tag: crate_tag(),
+        },
+        PaletteItem {
+            block: BlockKind::Weapons,
+            tag: rifle(),
+        },
+    ];
     Session::new(draft(), limits, palette, 4)
         .unwrap()
         .with_base(base)

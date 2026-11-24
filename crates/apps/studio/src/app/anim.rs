@@ -541,9 +541,41 @@ impl GraphRest {
     }
 }
 
+/// The editable action placement for a draft animation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DraftPlacement {
+    pub mode: String,
+    pub class: String,
+    pub weapon_type: String,
+    pub action: String,
+}
+
+impl Default for DraftPlacement {
+    fn default() -> Self {
+        Self {
+            mode: "any".into(),
+            class: "any".into(),
+            weapon_type: "any".into(),
+            action: String::new(),
+        }
+    }
+}
+
+impl DraftPlacement {
+    pub(super) fn as_placement(&self) -> AnimationPlacement<'_> {
+        AnimationPlacement {
+            mode: Some(&self.mode),
+            class: Some(&self.class),
+            weapon_type: Some(&self.weapon_type),
+            action: Some(&self.action),
+        }
+    }
+}
+
 /// The app's animation documents and the graph currently loaded for posing.
 #[derive(Default)]
 pub struct Anim {
+    pub(crate) save_selection: Option<(TagId, u64, Option<DraftPlacement>)>,
     loaded: Option<Loaded>,
     docs: Vec<document::AnimationDocument>,
     graph_rests: HashMap<GraphKey, GraphRest>,

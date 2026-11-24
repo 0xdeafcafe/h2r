@@ -255,7 +255,11 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
         }
         m::DOC_LIST => Ok(list(app)),
         m::DOC_OPEN => open(app, p),
-        m::DOC_SAVE => save(app, map_for_tags(doc_kind(app, p)?)),
+        m::DOC_SAVE => match p.opt_str("doc")? {
+            Some("rules") => super::game_script::save_item(app, p),
+            None if app.front_doc() == Some(Doc::Rules) => super::game_script::save_item(app, p),
+            _ => save(app, map_for_tags(doc_kind(app, p)?)),
+        },
         m::DOC_SAVE_AS => {
             let t = map_for_tags(doc_kind(app, p)?);
             save_as(app, t, PathBuf::from(p.str("path")?))
@@ -499,15 +503,14 @@ fn save(app: &mut App, t: ToolKind) -> Reply {
                 SaveTarget::Nothing => Err(err(code::NO_DOCUMENT, "no map is open")),
             }
         }
-        ToolKind::Variants => {
-            let log = run(app, Action::SaveVariant, false)?;
-            Ok(json!({ "saved": true, "log": log }))
-        }
-        ToolKind::Playlists => {
-            let log = run(app, Action::SaveHopper, false)?;
-            Ok(
-                json!({ "saved": true, "path": app.hoppers.path().map(|p| p.display().to_string()), "log": log }),
-            )
+        ToolKind::Variants | ToolKind::Playlists => {
+            let target = super::packages::save_target(app, None)?;
+            let path = match t {
+                ToolKind::Variants => app.save_variant_item(&target),
+                _ => app.save_playlist_item(&target),
+            }
+            .map_err(super::packages::refuse)?;
+            Ok(json!({"saved": true, "edit_target": target, "path": path, "log": [format!("saved {}", path.display())]}))
         }
         ToolKind::UiScreens => Err(err(
             code::REFUSED,
@@ -541,7 +544,7 @@ fn save_as(app: &mut App, t: ToolKind, path: PathBuf) -> Reply {
             }
             Action::SaveMapAs(path.clone())
         }
-        ToolKind::Playlists => Action::SaveHopperAs(path.clone()),
+        ToolKind::Playlists => Action::ExportPlaylist(path.clone()),
         ToolKind::Variants => Action::ExportVariant(path.clone()),
         ToolKind::UiScreens => {
             return Err(err(

@@ -158,8 +158,7 @@ fn campaign_levels_read_their_hud_files() {
     // A Halo 2-assets map beside it (written by the import) is not read as
     // a level of its own, and marks the level as having one.
     assert!(campaign_halo2_levels(&dir).is_empty());
-    std::fs::create_dir_all(level.join("h2")).unwrap();
-    std::fs::write(level.join("h2").join("A10.map"), b"map").unwrap();
+    crate::campaigns::store_fixture(&dir.join("tags"), "halo1_campaign_a10_h2", b"map");
     assert_eq!(read_campaign_table(&dir).len(), 1);
     assert_eq!(
         campaign_halo2_levels(&dir),

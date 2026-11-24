@@ -409,8 +409,10 @@ fn installed_lists_campaigns_with_maps_and_says_why_not() {
     std::fs::write(root.join("halo1").join(cl::MANIFEST_FILE), HALO1).unwrap();
     assert!(!has_installed_halo1(&dir), "a manifest alone is not a campaign");
     std::fs::write(root.join("halo1/a10.map"), b"x").unwrap();
+    assert!(!has_installed_halo1(&dir), "a loose map is ignored");
+    store_fixture(&dir.join("tags"), "halo1_campaign_a10_h1", b"x");
     assert!(has_installed_halo1(&dir));
-    std::fs::write(root.join("halo1/a30.map"), b"x").unwrap();
+    store_fixture(&dir.join("tags"), "halo1_campaign_a30_h1", b"x");
     std::fs::write(
         root.join("halo1/import.stamp"),
         concat!(
@@ -629,7 +631,7 @@ fn a_halo1_import_is_picked_started_and_served() {
         ("d40", "The Maw"),
     ];
     for (l, _) in levels {
-        std::fs::write(h1.join(format!("{l}.map")), format!("converted {l}")).unwrap();
+        store_fixture(&data.join("tags"), &format!("halo1_campaign_{l}_h1"), format!("converted {l}").as_bytes());
     }
     std::fs::write(h1.join("import.stamp"), "converter=1\n").unwrap();
     std::fs::write(h1.join("source/manifest.txt"), "x").unwrap();

@@ -133,6 +133,15 @@ pub enum Cue {
     /// empty list takes every wall off.
     Walls(Vec<(u32, Option<u8>)>),
     Sound(SoundCue),
+    /// A picker's offer (`offer_pick`, `pick_row`), whole: the picker's
+    /// number, its title as an index of the blob's string table and its
+    /// rows as indexes of the same. The authority sends it when the
+    /// offers change, a picker taken away included as an empty one, and
+    /// again every [`PICK_REPEAT`] ticks while any stands, so a machine
+    /// that joins late has it; its players pick from it there and their
+    /// picks go back up the channel (docs/game/rules-world-api.md,
+    /// "Pickers").
+    Pick(crate::vm::PickOffer),
 }
 
 /// The kind byte of a message cue in the `Cue` record's payload.
@@ -152,6 +161,11 @@ pub const WALLS_REPEAT: u32 = 90;
 /// A wall's team on the wire when it is neutral.
 const NEUTRAL: u16 = 0xf;
 pub const SOUND: u8 = 3;
+/// How often the authority repeats the pickers' offer cues while they
+/// stand, in ticks: [`WALLS_REPEAT`], for the same reason.
+pub const PICK_REPEAT: u32 = WALLS_REPEAT;
+/// The offer cue's kind byte.
+pub const PICK: u8 = 4;
 
 impl Cue {
     /// The kind byte of the `Cue` record's payload.
@@ -161,6 +175,7 @@ impl Cue {
             Cue::StartClip(_) => START_CLIP,
             Cue::Walls(_) => WALLS,
             Cue::Sound(_) => SOUND,
+            Cue::Pick(_) => PICK,
         }
     }
 
@@ -172,6 +187,7 @@ impl Cue {
             Cue::StartClip(ty) if ty.row().start == StartLine::Ours => Ok(vec![ty.code()]),
             Cue::StartClip(ty) => Err(CueError::NoStartClip(ty.code())),
             Cue::Walls(walls) => encode_walls(walls),
+            Cue::Pick(offer) => offer.encode(),
         }
     }
 
@@ -194,6 +210,7 @@ impl Cue {
                 _ => Err(CueError::TrailingBytes),
             },
             WALLS => decode_walls(bytes).map(Cue::Walls),
+            PICK => crate::vm::PickOffer::decode(bytes, strings).map(Cue::Pick),
             kind => Err(CueError::UnknownKind(kind)),
         }
     }
@@ -287,6 +304,10 @@ pub enum CueError {
     DuplicateWall(u32),
     /// A sound that is no sound-group entry of the blob's tag table.
     BadSound(u16),
+    /// A picker number past the two a script may offer.
+    BadPicker(u8),
+    /// More than [`crate::vm::MAX_PICK_ROWS`] rows in one offer.
+    TooManyRows(usize),
 }
 
 impl std::fmt::Display for CueError {
@@ -375,6 +396,62 @@ impl Message {
             audience,
             text,
             values,
+        })
+    }
+}
+
+impl crate::vm::PickOffer {
+    /// The payload: the picker's number, its title's index, the row count
+    /// and each row's index. Six rows fill 16 of the [`MAX_CUE_BYTES`] 24.
+    pub fn encode(&self) -> Result<Vec<u8>, CueError> {
+        if usize::from(self.slot) >= crate::vm::MAX_PICKS {
+            return Err(CueError::BadPicker(self.slot));
+        }
+        if self.rows.len() > crate::vm::MAX_PICK_ROWS {
+            return Err(CueError::TooManyRows(self.rows.len()));
+        }
+        let mut out = Vec::with_capacity(3 + 2 * self.rows.len());
+        out.push(self.slot);
+        out.extend(self.title.to_le_bytes());
+        out.push(self.rows.len() as u8);
+        for row in &self.rows {
+            out.extend(row.to_le_bytes());
+        }
+        Ok(out)
+    }
+
+    /// Reads a payload against the blob's string table: the picker is one
+    /// a script may offer, the row count is within its bound, and the
+    /// title and every row are in the table.
+    pub fn decode(bytes: &[u8], strings: &[String]) -> Result<crate::vm::PickOffer, CueError> {
+        let mut r = Reader(bytes);
+        let slot = r.u8()?;
+        if usize::from(slot) >= crate::vm::MAX_PICKS {
+            return Err(CueError::BadPicker(slot));
+        }
+        let title = r.u16()?;
+        if usize::from(title) >= strings.len() {
+            return Err(CueError::BadText(title));
+        }
+        let count = usize::from(r.u8()?);
+        if count > crate::vm::MAX_PICK_ROWS {
+            return Err(CueError::TooManyRows(count));
+        }
+        let mut rows = Vec::with_capacity(count);
+        for _ in 0..count {
+            let row = r.u16()?;
+            if usize::from(row) >= strings.len() {
+                return Err(CueError::BadEnum(row));
+            }
+            rows.push(row);
+        }
+        if !r.0.is_empty() {
+            return Err(CueError::TrailingBytes);
+        }
+        Ok(crate::vm::PickOffer {
+            slot,
+            title,
+            rows,
         })
     }
 }
@@ -694,6 +771,81 @@ mod tests {
     }
 
     #[test]
+    fn an_offer_cue_round_trips_and_the_fullest_fits_the_bound() {
+        let strings = strings();
+        let offer = crate::vm::PickOffer {
+            slot: 1,
+            title: 2,
+            rows: vec![4, 3, 2, 1, 0, 2],
+        };
+        let cue = Cue::Pick(offer.clone());
+        assert_eq!(cue.kind(), PICK);
+        let bytes = cue.encode().unwrap();
+        assert!(bytes.len() <= MAX_CUE_BYTES, "{} bytes", bytes.len());
+        assert_eq!(Cue::decode(PICK, &bytes, &strings), Ok(cue));
+        // An empty offer is a cue too: it takes the picker's offer away.
+        let none = Cue::Pick(crate::vm::PickOffer {
+            slot: 0,
+            title: 0,
+            rows: Vec::new(),
+        });
+        assert_eq!(Cue::decode(PICK, &none.encode().unwrap(), &strings), Ok(none));
+    }
+
+    #[test]
+    fn the_codec_refuses_each_bad_offer() {
+        let strings = strings();
+        let offer = crate::vm::PickOffer {
+            slot: 0,
+            title: 2,
+            rows: vec![0, 4],
+        };
+        let good = Cue::Pick(offer).encode().unwrap();
+        // A picker past the two a script may offer, at encode and decode.
+        let past = Cue::Pick(crate::vm::PickOffer {
+            slot: crate::vm::MAX_PICKS as u8,
+            title: 0,
+            rows: vec![],
+        });
+        assert_eq!(past.encode(), Err(CueError::BadPicker(crate::vm::MAX_PICKS as u8)));
+        assert_eq!(
+            Cue::decode(PICK, &[crate::vm::MAX_PICKS as u8, 0, 0, 0], &strings),
+            Err(CueError::BadPicker(crate::vm::MAX_PICKS as u8))
+        );
+        // A seventh row at encode, a count over the bound at decode.
+        let seven = Cue::Pick(crate::vm::PickOffer {
+            slot: 0,
+            title: 0,
+            rows: vec![0; crate::vm::MAX_PICK_ROWS + 1],
+        });
+        assert_eq!(seven.encode(), Err(CueError::TooManyRows(crate::vm::MAX_PICK_ROWS + 1)));
+        let mut long = vec![0u8, 0, 0, (crate::vm::MAX_PICK_ROWS + 1) as u8];
+        long.extend(std::iter::repeat_n(0u16.to_le_bytes(), crate::vm::MAX_PICK_ROWS + 1).flatten());
+        assert_eq!(
+            Cue::decode(PICK, &long, &strings),
+            Err(CueError::TooManyRows(crate::vm::MAX_PICK_ROWS + 1))
+        );
+        // A title and a row outside the string table.
+        let mut bad_title = good.clone();
+        bad_title[1..3].copy_from_slice(&(strings.len() as u16).to_le_bytes());
+        assert_eq!(
+            Cue::decode(PICK, &bad_title, &strings),
+            Err(CueError::BadText(strings.len() as u16))
+        );
+        let mut bad_row = good.clone();
+        bad_row[4..6].copy_from_slice(&(strings.len() as u16).to_le_bytes());
+        assert_eq!(
+            Cue::decode(PICK, &bad_row, &strings),
+            Err(CueError::BadEnum(strings.len() as u16))
+        );
+        // Cut short and a byte too many.
+        assert_eq!(Cue::decode(PICK, &good[..good.len() - 1], &strings), Err(CueError::Truncated));
+        let mut more = good.clone();
+        more.push(0);
+        assert_eq!(Cue::decode(PICK, &more, &strings), Err(CueError::TrailingBytes));
+    }
+
+    #[test]
     fn a_line_fills_its_holes_words() {
         let strings = strings();
         let name = |slot: u8| format!("player {slot}");
@@ -771,7 +923,7 @@ mod tests {
         for _ in 0..4000 {
             let len = (next() % (MAX_CUE_BYTES as u64 + 4)) as usize;
             let bytes: Vec<u8> = (0..len).map(|_| next() as u8).collect();
-            for kind in [MESSAGE, START_CLIP, SOUND, (next() % 256) as u8] {
+            for kind in [MESSAGE, START_CLIP, SOUND, PICK, (next() % 256) as u8] {
                 if let Ok(cue) = Cue::decode(kind, &bytes, &strings) {
                     assert_eq!(cue.kind(), kind);
                     assert_eq!(cue.encode().as_deref(), Ok(bytes.as_slice()));

@@ -53,6 +53,8 @@ pub struct State {
     /// B has something to cancel: an object held or placing, a link
     /// started. Without it Escape reaches the game (its GAME MENU).
     pub cancel: bool,
+    /// A can distinguish pickup from selection in the Objects tool.
+    pub select_on_hold: bool,
     /// While editing a draft, Y and Start address the area. Path mode
     /// takes A's down and up edges to distinguish a tap from a drag.
     pub area: Option<AreaMode>,
@@ -392,14 +394,16 @@ impl Gate {
         down: bool,
         was: bool,
         now: Instant,
+        hold_enabled: bool,
     ) -> Option<Does> {
-        let Some(hold) = button.hold else {
+        let Some(hold) = button.hold.filter(|_| hold_enabled) else {
+            *timer = None;
             return if down && !was { button.tap } else { None };
         };
         if down && !was {
             *timer = Some(now);
         }
-        if down && timer.is_some_and(|t| now.saturating_duration_since(t) >= bindings::HOLD) {
+        if timer.is_some_and(|t| now.saturating_duration_since(t) >= bindings::HOLD) {
             *timer = None;
             return Some(hold);
         }
@@ -455,7 +459,10 @@ impl Gate {
                 }
                 let down = pressed.contains(button.button);
                 let was = self.previous.contains(button.button);
-                let Some(Does::Act(g)) = Self::fire(&mut self.held[i], button, down, was, now)
+                let hold_enabled = button.button != H::South
+                    || (b.state.monitor && b.state.select_on_hold && b.state.area.is_none());
+                let Some(Does::Act(g)) =
+                    Self::fire(&mut self.held[i], button, down, was, now, hold_enabled)
                 else {
                     continue;
                 };
@@ -589,6 +596,40 @@ mod tests {
         assert!(bridge.pad.buttons.contains(HostButton::RightBumper));
         assert!(bridge.held(Held::Rise), "a pressed Black is RB: up");
         gate.controls(&mut bridge, pad, Instant::now());
+        assert_eq!(next(&mut bridge), None);
+    }
+
+    #[test]
+    fn a_tap_picks_up_and_a_hold_selects_once() {
+        let mut bridge = monitor();
+        bridge.state.select_on_hold = true;
+        let mut gate = Gate::default();
+        let mut pad = HostPadState::default();
+        let now = Instant::now();
+        for (down, ms, expected) in [
+            (true, 0, None),
+            (false, 100, Some(Action::Accept)),
+            (true, 200, None),
+            (true, 649, None),
+            (true, 650, Some(Action::Select)),
+            (true, 700, None),
+            (false, 750, None),
+        ] {
+            pad.buttons.set(HostButton::South, down);
+            gate.controls(&mut bridge, pad, now + Duration::from_millis(ms));
+            assert_eq!(next(&mut bridge), expected);
+            assert_eq!(next(&mut bridge), None);
+        }
+
+        // Dropping or placing takes A immediately and only once.
+        bridge.state.select_on_hold = false;
+        pad.buttons.set(HostButton::South, true);
+        gate.controls(&mut bridge, pad, now + Duration::from_millis(800));
+        assert_eq!(next(&mut bridge), Some(Action::Accept));
+        // After the drop, releasing the same press does nothing.
+        bridge.state.select_on_hold = true;
+        pad.buttons.set(HostButton::South, false);
+        gate.controls(&mut bridge, pad, now + Duration::from_millis(1300));
         assert_eq!(next(&mut bridge), None);
     }
 

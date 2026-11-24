@@ -453,7 +453,7 @@ pub fn resolve_in(disc: &Path, data_root: Option<&Path>, name: &str, difficulty:
 /// scenario path: the start record's campaign id, map id and scenario path
 /// as [`crate::campaigns`] builds them, so the game opens
 /// `d:\maps\<map>.map`, which `vfs::CampaignMapsBackend` serves from the
-/// campaign's folder.
+/// tag store for Halo 1 levels.
 pub fn campaign_request(built: &[cl::Built], name: &str, difficulty: Difficulty) -> Option<Request> {
     let n = name.trim().trim_end_matches(".map");
     built.iter().find_map(|b| {

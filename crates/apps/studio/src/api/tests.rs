@@ -24,6 +24,7 @@ mod links_tests;
 mod mods_tests;
 mod packages_tests;
 mod edit_target_tests;
+mod doc_save_tests;
 mod problems_tests;
 mod import_tests;
 mod sound_edit_tests;
@@ -491,7 +492,7 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         m::VARIANT_COPY => c(m::DOC_OPEN, json!({"variant": {"builtin": 0}})),
         m::VARIANT_DELETE => {
             c(m::DOC_OPEN, new_variant);
-            c(m::DOC_SAVE, json!({"doc": "variant"}));
+            app.dispatch(Action::SaveVariant);
         }
         m::VARIANT_IMPORT => {
             c(m::DOC_OPEN, new_variant);
@@ -664,7 +665,7 @@ fn ui_palette_lists_and_runs_fixture_maps_tags_and_placements() {
     assert_eq!(kinds, ["map", "tag", "placement", "placement"]);
     assert_eq!(
         list["totals"],
-        json!({"map":1, "tag":1, "package":0, "item":0, "placement":2, "command":0})
+        json!({"map":1, "tag":1, "package":0, "item":0, "voice":0, "placement":2, "command":0})
     );
     assert_eq!(entries[0]["label"], "blaster");
     // The tag row: the file name as its label, the path in its detail.
@@ -675,7 +676,7 @@ fn ui_palette_lists_and_runs_fixture_maps_tags_and_placements() {
     let filtered = call(&mut api, &mut app, m::UI_PALETTE, json!({"query":"WEAP bla"}));
     assert_eq!(
         filtered["totals"],
-        json!({"map":0, "tag":1, "package":0, "item":0, "placement":2, "command":0})
+        json!({"map":0, "tag":1, "package":0, "item":0, "voice":0, "placement":2, "command":0})
     );
     let result = call(
         &mut api, &mut app, m::UI_PALETTE, json!({"query":"blast", "run":1}),

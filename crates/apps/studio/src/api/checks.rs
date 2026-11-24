@@ -121,7 +121,7 @@ pub struct Checks;
 
 const RUN: MethodDef = def(
     m::CHECK_RUN,
-    "Run every registered content check (or one area's: models, sounds, ui, hud, markers) over the open map and document and our own content, in one list: each finding's area, code, severity (error, warning, note), message, target and file. `target` narrows each check to one thing (an object tag, a clip id or prefix, a snd! tag, a screen, a HUD). `asset` (an asset id) reads the Problems list again and answers only the rows about that asset, as the header's Check count and `problems.list {asset}` do (`what` and `target` are then not used). A check that cannot run says why under `skipped`",
+    "Run every registered content check (or one area's: models, sounds, ui, hud, markers) over the open map and document and our own content, in one list: each finding's area, code, severity (error, warning, note), message, target and file. `target` narrows each check to one thing (an object tag, a clip id or prefix, a snd! tag, a screen, a HUD). `asset` (an asset id) reads the Problems list again and answers only the rows about that asset, as the header's Check count and `problems.list {asset}` do (`what` and `target` are then not used). For a package item it refreshes package checks and open-script diagnostics. A check that cannot run says why under `skipped`",
     r#"{"what?":"all|models|sounds|ui|hud|markers","target?":"string","asset?":"string"}"#,
     r#"{"findings":"[{area,code,severity,message,target,path?}]","counts":"{error,warning,note,total,by_area:{area:integer}}","ran":"[{area,check,findings}]","skipped":"[{area,check?,why}]"}"#,
     r#"{"what":"ui","target":"$SCREEN"}"#,
@@ -190,12 +190,13 @@ pub fn run(app: &mut App, p: &P, checks: &[ContentCheck]) -> Reply {
     }))
 }
 
-/// `check.run {asset}`: the Problems list read again over `checks`, and
-/// the rows about `asset` ([`App::asset_problems`]).
+/// `check.run {asset}`: refresh the Problems list and return the rows
+/// about `asset` ([`App::refresh_asset_problems`]).
 fn of_asset(app: &mut App, asset: &str, checks: &[ContentCheck]) -> Reply {
-    crate::app::assets::AssetId::parse(asset).map_err(|e| err(code::INVALID_PARAMS, e))?;
-    app.refresh_problems_over(None, checks);
-    let rows = app.asset_problems(asset);
+    let problems = app
+        .refresh_asset_problems(asset, None, checks)
+        .map_err(|e| err(code::INVALID_PARAMS, e))?;
+    let rows = &problems.rows;
     let n = |s: Severity| rows.iter().filter(|p| p.severity == s).count();
     let by_area: serde_json::Map<String, Value> = AREAS
         .iter()
@@ -211,8 +212,8 @@ fn of_asset(app: &mut App, asset: &str, checks: &[ContentCheck]) -> Reply {
             "total": rows.len(),
             "by_area": by_area,
         },
-        "ran": app.problems.ran,
-        "skipped": app.problems.skipped,
+        "ran": problems.ran,
+        "skipped": problems.skipped,
     }))
 }
 

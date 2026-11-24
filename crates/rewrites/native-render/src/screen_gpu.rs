@@ -324,10 +324,9 @@ pub enum ScreenRefused {
     Uniforms,
 }
 
-/// Whether `program` would draw into `color` (recording nothing): every
-/// sampled stage bound with what the pass supplies, the colour copyable
-/// when it may be sampled (the view's, or a result that may name it).
-pub fn check(color: &wgpu::TextureView, program: &ScreenProgram) -> Result<(), ScreenRefused> {
+/// Checks the sampled stages and the optional framebuffer's copy usage.
+/// The draw-order check resolves which surface a convolution result names.
+pub fn check(color: Option<&wgpu::TextureView>, program: &ScreenProgram) -> Result<(), ScreenRefused> {
     for (n, d) in program.dims.iter().enumerate() {
         if d.is_none() {
             continue;
@@ -337,8 +336,9 @@ pub fn check(color: &wgpu::TextureView, program: &ScreenProgram) -> Result<(), S
             ScreenStage::Bitmap { .. } => {}
             ScreenStage::Engine(id) => match bound(id) {
                 None => return Err(ScreenRefused::EngineTexture(id)),
+                Some(Bound::View) if color.is_none() => return Err(ScreenRefused::Attachment(0)),
                 Some(Bound::View | Bound::Result(_)) => {
-                    if !color.texture().usage().contains(wgpu::TextureUsages::COPY_SRC) {
+                    if color.is_some_and(|view| !view.texture().usage().contains(wgpu::TextureUsages::COPY_SRC)) {
                         return Err(ScreenRefused::ColourNotCopyable);
                     }
                 }
@@ -358,8 +358,22 @@ pub fn check_order<'a>(
     passes: impl IntoIterator<Item = (&'a ScreenProgram, Dest, &'a [ScreenConvolution])>,
 ) -> Result<(), ScreenRefused> {
     let mut drawn = Drawn::default();
+    let mut pins_view = false;
+    let mut needs_view = false;
     for (program, dest, convolutions) in passes {
+        pins_view |= dest == Dest::Bound;
+        // Even an unsampled stage can supply a size to a shader constant.
+        needs_view |= program.stages.iter().enumerate().any(|(n, stage)| {
+            let reads_size = program.constants.vertex.iter().any(|(c, _)|
+                c.reads_size() && usize::from(c.stage) == n + 1
+            );
+            (program.dims[n].is_some() || reads_size)
+                && matches!(stage, ScreenStage::Engine(id) if drawn.target(*id) == Ok(0))
+        }) || convolutions.iter().flat_map(|c| &c.draws).any(|q| q.source == 0);
         drawn.pass(program, dest, convolutions)?;
+    }
+    if needs_view && !pins_view {
+        return Err(ScreenRefused::Attachment(0));
     }
     Ok(())
 }
@@ -440,7 +454,7 @@ pub struct ScreenTarget<'a> {
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
     pub uploads: &'a gfx::ring::SubmissionUploads,
-    pub color: glow::PostSurface<'a>,
+    pub color: Option<glow::PostSurface<'a>>,
     pub target1: Option<glow::PostSurface<'a>>,
     pub convolutions: [Option<glow::PostSurface<'a>>; 3],
     /// The device's depth scale (`+0x948`).
@@ -817,11 +831,11 @@ impl ScreenSet {
         stage_image: &mut dyn FnMut(ScreenStage) -> Option<Image>,
     ) -> Result<ScreenCommands, ScreenRefused> {
         let ScreenTarget { device, queue, uploads, color, target1, convolutions, z_scale } = t;
-        let guest_size = color.guest_size;
+        let guest_size = color.map_or((0, 0), |c| c.guest_size);
         check_order(draws.iter().map(|d| (d.program, d.dest, d.convolutions)))?;
         convolution_states(frame, draws.iter().map(|d| d.convolutions))?;
         let slot = |index| match index {
-            0 => Some(color),
+            0 => color,
             1 => target1,
             _ => stand_in(index).and_then(|i| convolutions[i]),
         };
@@ -846,12 +860,12 @@ impl ScreenSet {
         };
         let mut drawn = Drawn::default();
         for d in draws {
-            check(color.view, d.program)?;
             if d.strips.is_empty() || d.strips.iter().any(|s| s.len() < 3) {
                 return Err(ScreenRefused::NoStrips);
             }
             let (index, guest) = dest_of(d.dest);
             let dest = attachment(index, guest)?;
+            check(color.map(|c| c.view), d.program)?;
             for source in drawn.reads(d.program, d.dest)?.into_iter().flatten() {
                 let source_view = sample(source)?;
                 if source != 0 && dest.texture() == source_view.texture() {
@@ -906,8 +920,6 @@ impl ScreenSet {
                 drawn.result(n, c);
             }
         }
-        let texture = color.view.texture();
-        let full = wgpu::Extent3d { width: texture.width(), height: texture.height(), depth_or_array_layers: 1 };
         let mut commands = ScreenCommands { steps: Vec::new(), ranges: 0 };
         let mut quads = quads.into_iter();
         let mut drawn = Drawn::default();
@@ -915,6 +927,8 @@ impl ScreenSet {
             let Some(Ok(g)) = self.passes.get(&d.key) else { return Err(ScreenRefused::NoProgram) };
             let reads = drawn.reads(d.program, d.dest)?;
             let copy = if reads.contains(&Some(0)) {
+                let texture = color.ok_or(ScreenRefused::Attachment(0))?.view.texture();
+                let full = wgpu::Extent3d { width: texture.width(), height: texture.height(), depth_or_array_layers: 1 };
                 let usage = wgpu::TextureUsages::TEXTURE_BINDING
                     | wgpu::TextureUsages::COPY_DST
                     | wgpu::TextureUsages::RENDER_ATTACHMENT;
@@ -1212,6 +1226,14 @@ mod tests {
         let empty = Dest::Target1 { guest: (0, 240) };
         assert_eq!(check_order([(&copy, empty, none)]), Err(ScreenRefused::Target1Size));
         assert_eq!(check_order([(&copy, Dest::Bound, none)]), Ok(()), "desaturate's");
+        assert_eq!(check_order([(&copy, into, none)]), Err(ScreenRefused::Attachment(0)));
+        let mut unused = copy.clone();
+        unused.dims[0] = None;
+        assert_eq!(check_order([(&unused, into, none)]), Ok(()));
+        unused.constants.vertex.push((tags::material::EngineVertexConstant {
+            bank: 0, reg: 2, mode: 5, stage: 1, source: 0,
+        }, 1));
+        assert_eq!(check_order([(&unused, into, none)]), Err(ScreenRefused::Attachment(0)));
     }
 
     /// The blur's shape: its first pass copies the view into target 1 and
@@ -1319,19 +1341,28 @@ mod tests {
         let mut encoder = ctx.device.create_command_encoder(&Default::default());
         let color = main.create_view(&Default::default());
         let target1 = level.create_view(&Default::default());
-        let target = ScreenTarget {
+        let target = |pinned: bool| ScreenTarget {
             device: &ctx.device,
             queue: &ctx.queue,
             uploads: &arena,
-            color: glow::PostSurface { view: &color, guest_size: size },
+            color: pinned.then_some(glow::PostSurface { view: &color, guest_size: size }),
             target1: Some(glow::PostSurface { view: &target1, guest_size: size }),
             convolutions: [None; 3],
             z_scale: 1.0,
         };
-        let draws = [draw((0, 0, 0), &red, &left[..], red.state.into()), draw((0, 0, 0), &blue, &right[..], blue.state.into())];
-        assert_eq!(ScreenSet::new().encode(target, &mut encoder, &draws, None, &mut |_| None), Ok(2));
+        let draws = [
+            ScreenDraw { dest: Dest::Bound, ..draw((0, 0, 0), &red, &left[..], red.state.into()) },
+            draw((0, 0, 0), &red, &left[..], red.state.into()),
+            draw((0, 0, 0), &blue, &right[..], blue.state.into()),
+        ];
+        let mut screens = ScreenSet::new();
+        assert_eq!(screens.encode(target(true), &mut encoder, &draws[..2], None, &mut |_| None), Ok(2));
+        assert_eq!(screens.encode(target(false), &mut encoder, &draws[2..], None, &mut |_| None), Ok(1));
         arena.flush(&ctx.queue);
         ctx.queue.submit([encoder.finish()]);
+        let framebuffer = gfx::readback::read_texture(&ctx, &main, wgpu::TextureAspect::All, 4, size);
+        assert_eq!(&framebuffer[..4], [255, 0, 0, 0]);
+        assert_eq!(&framebuffer[28..32], [0; 4], "the terminal blue strip belongs to target 1");
         let px = gfx::readback::read_texture(&ctx, &level, wgpu::TextureAspect::All, 4, size);
         assert_eq!(&px[..4], [51, 102, 255, 204], "the second pass kept the first pass and its other channels");
         assert_eq!(&px[16..20], original, "the gap kept its existing pixels");
@@ -1407,17 +1438,22 @@ mod tests {
         let frame = QuadFrame { window: [0.0, 0.0, 8.0, 8.0], signs: [-0.5, 0.5], combiner };
         let mut opaque: StripRaster = back.state.into();
         opaque.opaque_view = true;
-        let draws = [
-            ScreenDraw {
-                key: (0, 0, 0), program: &copy, strips: &strips, raster: copy.state.into(),
-                dest: Dest::Target1 { guest: size }, values: [0; 4], convolutions: &blur,
-            },
-            ScreenDraw {
-                key: (0, 1, 0), program: &back, strips: &strips, raster: opaque,
-                dest: Dest::Bound, values: [0; 4], convolutions: &[],
-            },
-        ];
-        let run = |prepared: bool| {
+        let tail = [ScreenConvolution {
+            size: (4, 4),
+            draws: vec![ConvolutionDraw { source: 0, dest: 0x19, spread: 0.0, grid: None }],
+            result: 0x19,
+        }];
+        let run = |prepared: bool, terminal: bool| {
+            let draws = [
+                ScreenDraw {
+                    key: (0, 0, 0), program: &copy, strips: &strips, raster: copy.state.into(),
+                    dest: Dest::Target1 { guest: size }, values: [0; 4], convolutions: &blur,
+                },
+                ScreenDraw {
+                    key: (0, 1, 0), program: &back, strips: &strips, raster: opaque,
+                    dest: Dest::Bound, values: [0; 4], convolutions: if terminal { &tail } else { &[] },
+                },
+            ];
             let (color, target1, stand_in) = (texture(size), texture(size), texture((4, 4)));
             fill(&color, &view_pixels);
             fill(&target1, &[1, 2, 3, 4].repeat(64));
@@ -1428,7 +1464,7 @@ mod tests {
                 device: &ctx.device,
                 queue: &ctx.queue,
                 uploads: &arena,
-                color: glow::PostSurface { view: &views[0], guest_size: size },
+                color: Some(glow::PostSurface { view: &views[0], guest_size: size }),
                 target1: Some(glow::PostSurface { view: &views[1], guest_size: size }),
                 convolutions: [Some(glow::PostSurface { view: &views[2], guest_size: (4, 4) }), None, None],
                 z_scale: 1.0,
@@ -1437,7 +1473,7 @@ mod tests {
             let mut encoder = ctx.device.create_command_encoder(&Default::default());
             let ranges = if prepared {
                 let commands = set.prepare(target, &draws, Some(&frame), &mut |_| None).unwrap();
-                assert_eq!(commands.passes(), 4, "two passes, the quad and the opaque copy's alpha");
+                assert_eq!(commands.passes(), 4 + usize::from(terminal));
                 let mut scratch = ctx.device.create_command_encoder(&Default::default());
                 commands.record(&mut scratch);
                 drop(scratch.finish());
@@ -1450,10 +1486,15 @@ mod tests {
             ctx.queue.submit([encoder.finish()]);
             (ranges, read(&color), read(&target1), read(&stand_in))
         };
-        let (own, prepared) = (run(false), run(true));
+        let (own, prepared) = (run(false, false), run(true, false));
         assert_eq!(own, prepared);
         assert_eq!(own.0, 3, "two strips and a quad");
         assert_ne!(&own.1[..4], &view_pixels[..4], "the second pass drew over the view");
+        let terminal = run(true, true);
+        assert_eq!(terminal.0, 4);
+        assert_eq!(terminal.1, own.1, "the terminal quad preserves the framebuffer");
+        assert_eq!(terminal.2, own.2, "target 1 remains available to later draws");
+        assert_ne!(terminal.3, own.3, "the terminal quad updates the live stand-in");
     }
 
     #[test]

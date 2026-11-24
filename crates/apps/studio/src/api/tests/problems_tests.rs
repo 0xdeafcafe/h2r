@@ -59,6 +59,13 @@ fn problems_list_and_check_run_narrow_to_one_asset() {
     let one = call(&mut api, &mut app, m::PROBLEMS_LIST, json!({"asset": "item:bad:0"}));
     assert_eq!(one["problems"].as_array().unwrap().len(), 1);
     assert_eq!(one["counts"]["total"], 1);
+    let checks: Vec<_> = one["ran"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["check"].as_str().unwrap())
+        .collect();
+    assert_eq!(checks, ["package.check", "package.diff"]);
     let none = call(&mut api, &mut app, m::PROBLEMS_LIST, json!({"asset": "item:bad:1"}));
     assert_eq!(none["problems"], json!([]));
 
@@ -66,6 +73,7 @@ fn problems_list_and_check_run_narrow_to_one_asset() {
     let run = call(&mut api, &mut app, m::CHECK_RUN, json!({"asset": "item:bad:0"}));
     assert_eq!(run["asset"], "item:bad:0");
     assert_eq!(run["findings"], one["problems"]);
+    assert_eq!(run["ran"], one["ran"]);
     assert_eq!(run["counts"]["total"], 1);
     assert_eq!(app.asset_problems("item:bad:0").len(), 1);
 

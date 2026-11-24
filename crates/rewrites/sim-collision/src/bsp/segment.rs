@@ -86,7 +86,89 @@ pub struct Outcome {
     pub mask_reads: Vec<u32>,
 }
 
+pub mod record {
+    /// `f32`: the hit fraction; `max(limit, 0)` before the walk.
+    pub const FRACTION: u32 = 0x00;
+    /// The hit plane's guest address.
+    pub const PLANE: u32 = 0x04;
+    /// The leaf the surface was found in, then the surface index.
+    pub const LEAF: u32 = 0x08;
+    pub const SURFACE: u32 = 0x0c;
+    /// The surface's plane word, sign-extended (bit 15: flipped).
+    pub const SURFACE_PLANE: u32 = 0x10;
+    /// Surface flags `u8`, breakable index `u8`, material `i16`.
+    pub const FLAGS: u32 = 0x14;
+    pub const BREAKABLE: u32 = 0x15;
+    pub const MATERIAL: u32 = 0x16;
+    /// `u32` leaves listed, then up to 256 leaf indices.
+    pub const COUNT: u32 = 0x18;
+    pub const LEAVES: u32 = 0x1c;
+    /// The last leaf visited once the list is full.
+    pub const OVERFLOW: u32 = 0x418;
+    pub const SIZE: u32 = 0x41c;
+}
+
+/// The vector test's 40-byte context (entry D's first argument; entry C
+/// builds one in its own frame).
+pub mod context {
+    pub const FLAGS: u32 = 0x00;
+    pub const BSP: u32 = 0x04;
+    /// `u16`.
+    pub const BREAKABLE_COUNT: u32 = 0x08;
+    pub const MASK: u32 = 0x0c;
+    pub const START: u32 = 0x10;
+    pub const DELTA: u32 = 0x14;
+    pub const RECORD: u32 = 0x18;
+    pub const PREV_LEAF: u32 = 0x1c;
+    /// `u8`.
+    pub const PREV_KIND: u32 = 0x20;
+    pub const PLANE: u32 = 0x24;
+    pub const SIZE: u32 = 0x28;
+}
+
 impl Outcome {
+    /// The context fields the caller reads after the walk.
+    pub fn write_context<E>(
+        &self,
+        mut store: impl FnMut(u32, &[u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        store(context::PREV_LEAF, &self.prev_leaf.to_le_bytes())?;
+        store(context::PREV_KIND, &[self.prev_kind])?;
+        store(context::PLANE, &self.plane.to_le_bytes())
+    }
+
+    /// Emit result-record stores in execution order. Unvisited list entries and
+    /// the hit fields on a miss retain their caller-provided bytes.
+    pub fn write_record<E>(
+        &self,
+        init: Option<u32>,
+        listed: u32,
+        mut store: impl FnMut(u32, &[u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        if let Some(fraction) = init {
+            store(record::FRACTION, &fraction.to_le_bytes())?;
+            store(record::COUNT, &0u32.to_le_bytes())?;
+        }
+        let (count, writes) = self.list_writes(listed);
+        for (offset, leaf) in writes {
+            store(offset, &leaf.to_le_bytes())?;
+        }
+        if count != listed {
+            store(record::COUNT, &count.to_le_bytes())?;
+        }
+        if let Some(h) = self.hit {
+            store(record::FRACTION, &h.fraction.to_le_bytes())?;
+            store(record::PLANE, &h.plane_addr.to_le_bytes())?;
+            store(record::LEAF, &h.leaf.to_le_bytes())?;
+            store(record::SURFACE, &h.surface.to_le_bytes())?;
+            store(record::SURFACE_PLANE, &h.plane.to_le_bytes())?;
+            store(record::FLAGS, &[h.flags])?;
+            store(record::BREAKABLE, &[h.breakable])?;
+            store(record::MATERIAL, &h.material.to_le_bytes())?;
+        }
+        Ok(())
+    }
+
     /// R's leaf count after the walk, and where each appended leaf went:
     /// `(R offset, leaf)` in order.
     pub fn list_writes(&self, listed: u32) -> (u32, Vec<(u32, u32)>) {
@@ -94,10 +176,10 @@ impl Outcome {
         let mut out = Vec::with_capacity(self.leaves.len());
         for &leaf in &self.leaves {
             if (count as i32) < LEAF_LIST as i32 {
-                out.push((0x1c + 4 * count, leaf));
+                out.push((record::LEAVES + 4 * count, leaf));
                 count += 1;
             } else {
-                out.push((0x418, leaf));
+                out.push((record::OVERFLOW, leaf));
             }
         }
         (count, out)

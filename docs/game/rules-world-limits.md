@@ -60,7 +60,7 @@ passed at run time is a **script error**, which ends the round.
 | `teleport` of a player | 1 per player | 4 per player | |
 | `move_to`, `move_along` started | 8 | 32 | 16 movers alive, 4 of them vehicles |
 | `set_open` | 8 | 32 | 16 barriers open; a call for the state a barrier is already in puts nothing |
-| `offer_pick`, `pick_row` | 1 and 6 per picker | | 2 pickers of 6 rows; the round's end takes them; the host opens one picker at a time and holds the next player's back 30 s at most |
+| `offer_pick`, `pick_row` | 1 and 6 per picker | | 2 pickers of 6 rows; the round's end takes them; the host and a client each open one picker at a time and hold the next player's back 30 s at most |
 | `set_velocity`, `push` | 16 | 120 | 50 world units a second; one per object a tick |
 | `launch` of a player | 1 per player | 10 per player | 50 world units a second |
 | squad orders | 16 | 64 | one per squad a tick |
@@ -70,7 +70,7 @@ passed at run time is a **script error**, which ends the round.
 | sounds | 4 | 8 per player | 4 playing per player; one music slot |
 | HUD and waypoint writes | 32 | 240 | 16 elements, 8 waypoints, 4 countdowns; a text 32 bytes after its holes |
 | show channel bytes to one client | 1,000 (one packet) | 600 | the state 255 bytes; the tag is inside the cap |
-| new `sees` pairs | 32 traces | | 64 pairs in the table |
+| retained `sees` pairs | 32 traces | | 32 ordered pairs in the table |
 | objects alive from `create` | | | 64, as rules-engine.md "Budgets" |
 
 A `Viewer` enforces the cue, sound and byte caps itself, on what it

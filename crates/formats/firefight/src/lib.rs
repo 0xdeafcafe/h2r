@@ -2,8 +2,8 @@
 //! player team, or two that also fight each other, against the AI.
 //!
 //! The definitions carry authored tuning and kit class names. [`script`]
-//! compiles a definition to a rules script whose running is the director:
-//! it turns what the host observes into host commands
+//! loads the definition as data for the handwritten director, which turns
+//! what the host observes into host commands
 //! ([`ScriptDirector`]). See [the design](../../../../docs/game/firefight.md).
 #![forbid(unsafe_code)]
 

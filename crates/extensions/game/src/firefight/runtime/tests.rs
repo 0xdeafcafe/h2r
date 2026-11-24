@@ -817,7 +817,7 @@ fn two_teams_turn_team_play_on_before_the_game_starts() {
 fn only_two_firefight_teams_on_a_kit_map_turn_team_play_on() {
     let unchanged = |options: Options, kit: bool, mode: u32, film: bool| {
         let (it, _) = shared(false);
-        it.lock().set_options(Box::new(move || Ok(options)));
+        it.lock().set_options(Box::new(move || Ok(options.clone())));
         let (mut m, _) = guest(kit, 1);
         options_block(&mut m, mode, 0);
         let line = it.lock().activate(&mut m, OPTIONS, film);
@@ -831,12 +831,12 @@ fn only_two_firefight_teams_on_a_kit_map_turn_team_play_on() {
     };
     let mp = MODE_MULTIPLAYER;
     assert!(unchanged(Options::default(), true, mp, false), "one team");
-    assert!(unchanged(two, false, mp, false), "no kit");
-    assert!(unchanged(two, true, 1, false), "a campaign game");
-    assert!(unchanged(two, true, mp, true), "a film");
+    assert!(unchanged(two.clone(), false, mp, false), "no kit");
+    assert!(unchanged(two.clone(), true, 1, false), "a campaign game");
+    assert!(unchanged(two.clone(), true, mp, true), "a film");
     let off = Options {
         enabled: false,
-        ..two
+        ..two.clone()
     };
     assert!(unchanged(off, true, mp, false), "Firefight off");
     let one = Options {
@@ -848,8 +848,8 @@ fn only_two_firefight_teams_on_a_kit_map_turn_team_play_on() {
         teams: Some(2),
         ..Options::default()
     };
-    assert!(!unchanged(holdout_two, true, mp, false), "Teams set to two");
     assert!(wants_team_play(&holdout_two, true));
+    assert!(!unchanged(holdout_two, true, mp, false), "Teams set to two");
     assert_eq!(with_team_play(1, true), None);
     assert_eq!(with_team_play(0, false), None);
     assert_eq!(with_team_play(0x10, true), Some(0x11));
@@ -866,13 +866,13 @@ fn each_multiplayer_start_names_its_match_for_the_session() {
         let (it, _) = shared(false);
         let sent: Sent = Arc::default();
         let seen = Arc::clone(&sent);
-        it.lock().set_options(Box::new(move || Ok(options)));
+        it.lock().set_options(Box::new(move || Ok(options.clone())));
         it.lock()
             .set_session(Box::new(move |f| seen.lock().unwrap().push(f)));
         let (mut m, _) = guest(kit, 1);
         options_block(&mut m, MODE_MULTIPLAYER, 1);
         it.lock().activate(&mut m, OPTIONS, film);
-        
+
         sent.lock().unwrap().clone()
     };
     let crossfire = Options {
@@ -880,7 +880,7 @@ fn each_multiplayer_start_names_its_match_for_the_session() {
         difficulty: ::firefight::Difficulty::Heroic,
         ..Options::default()
     };
-    let sent = start(crossfire, true, false);
+    let sent = start(crossfire.clone(), true, false);
     let def = crossfire.definition().unwrap();
     let expected = live_proto::session::Firefight {
         set: "Crossfire".into(),
@@ -899,10 +899,10 @@ fn each_multiplayer_start_names_its_match_for_the_session() {
         Some(("Holdout", 1))
     );
     // No kit, or Firefight off: the session names no match.
-    assert_eq!(start(crossfire, false, false), [None]);
+    assert_eq!(start(crossfire.clone(), false, false), [None]);
     let off = Options {
         enabled: false,
-        ..crossfire
+        ..crossfire.clone()
     };
     assert_eq!(start(off, true, false), [None]);
     assert!(start(crossfire, true, true).is_empty(), "a film");

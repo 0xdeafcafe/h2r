@@ -1231,10 +1231,12 @@ that side the engine's own spawns. The attackers spawn as Spartans and the defen
 as Elites (`set_body`), whatever each player chose. The HUD is the King of
 the Hill kit's ("The HUDs a script feeds" in
 [rules-world-api.md](rules-world-api.md#the-huds-a-script-feeds)): the
-mark and the row (`koth.hill`) follow the front, the site the attackers
-are on (a site someone stands on stays the front, contested or not), else
-the first site still to take, then the final stand; the row reads open,
-held by a side or contested; the banner (`koth.banner`) says a site
+mark and the row (`koth.hill`) stay on the current untaken site while
+any living player occupies it. When that site empties or is taken, the
+mark moves to the first untaken site with living attackers, including a
+contested site. With no attackers on a site it marks the first untaken
+site, and in the final phase it marks the stand. The row reads open,
+held by a side or contested. The banner (`koth.banner`) says a site
 taken, the final assault, an overtime, and the last 30 and 10 seconds of a
 phase; the phase's seconds left are the kit's `koth.phase` row ("Phase
 2:59"). A phase whose clock runs out with an attacker on its front goes
@@ -1456,7 +1458,7 @@ Actions:
 | `fly(v, path, t)`, `hover(v, on)`, `seat(p, v)`, `eject(p)`, `unload(v)`, `place_squad_in(s, class, n, v)`; reads `vehicle_riders(v)`, `vehicle_driver(v)`: a vehicle flown along a labelled `path`, loaded, unloaded and read | [rules-world-api.md](rules-world-api.md#vehicles-and-drop-ships): the host calls the retail hover and unload bodies at the tick boundary | named (`hover`, `unload`), not built (`fly`), traced (the rest) | `vehicles.drive` |
 | `spawn_areas(team, label, n)`: the team spawns only at the starting locations labelled `label` and numbered `n` | the rule in the VM's state; `SPAWN_LOCATION_FREE` `0x23bb70`, the free-spot test of `PLAYER_SPAWN_LOCATION` `0x14ef00`, answers "taken" for every other location (`rules/world/spawns.rs`); how the chooser weighs a location is not traced and not needed | named | `player.spawn` |
 | `spawn_near(team, zone, n)`: the team spawns only at the `n` starting locations nearest the zone; `none` or 0 lifts it | as `spawn_areas`, over the starting locations' positions (`+0x00`) | named | `player.spawn` |
-| loadout chosen at spawn | `on spawn` and `set_loadout`, with `offer_pick`, `pick_row` and `picked` for the player's own choice ([rules-world-api.md](rules-world-api.md#pickers)) | named; a player on another machine is not asked | `player.weapons`, `player.pick` |
+| loadout chosen at spawn | `on spawn` and `set_loadout`, with `offer_pick`, `pick_row` and `picked` for the player's own choice ([rules-world-api.md](rules-world-api.md#pickers)) | named; a client's players pick from the offer cue and their picks go back up the actor channel, whose upstream frame is not built | `player.weapons`, `player.pick` |
 | `give(p, tag)`: a weapon into a living player's hands | no entry proven. The pickup's attach routine `0x10ca80` (item, new unit) is on record as an observer only (**E**, [bots.md](bots.md) "Weapon taken") | untraced | `player.weapons` |
 | `take(p, weapon)` | the inventory removal `0xce920`, reached from the drop path `0xe8de0` (**E**, bots.md, the dual-wield drop); a call outside a drop is not proven | traced | `player.weapons` |
 | `set_body(team, tag)`: the team's players spawn as the Spartan or the Elite; `none` lifts it | the rule in the VM's state; the model byte (player `+0x88`) that `PLAYER_SPAWN` `0x14f2e0` and its representation pick `0x14f040` read, written for the spawn and put back after it (`rules/world/body.rs`) | named | `player.disguise` |
@@ -1466,11 +1468,11 @@ Actions:
 | `camera(p, mode)`: first or third person | no entry known | untraced | `player.camera` |
 | `teleport(o, at)`, `move_to(o, at, t)`, `stop(o)`; `o.position`, `o.velocity`, `o.speed`; `on arrive(o)` | `OBJECT_SET_TRANSFORM` `0xb7430` for a put and a mover's step each tick; the movers in the VM's state (`RulesExt::movers`); the object datum's position and velocity for the reads (`rules/world/objects.rs`, [rules-world-api.md](rules-world-api.md#objects)) | named; whether a client sees the move is not researched (R2, R3) | `objects.move` |
 | device power | Forge's sinks (forge-features.md) | not built | `objects.move` |
-| `p.airborne`, `p.crouching`, `p.primed`; `sees(a, b)`; `on touchdown(p, down, up)`, `on launch(p, spot, speed)`, `on grounded(p)` | a biped's flags (`game::superbounce_charge`), `AI_LINE_OF_SIGHT` traced at the tick boundary for the VM's sight table (`RulesExt::sight`, `Game::trace_sight`), and the medal chain's physics for every player (`superbounce_chain::Physics`, `game::rules::world::physics`); [rules-world-api.md](rules-world-api.md#physics) | the reads and `sees` built on the fake, and a host refuses a script that uses any by name; the three events delivered by the host while the superbounce mode runs | none |
+| `p.airborne`, `p.crouching`, `p.primed`; `sees(a, b)`; `on touchdown(p, down, up)`, `on launch(p, spot, speed)`, `on grounded(p)` | a biped's flags (`game::superbounce_charge`), `AI_LINE_OF_SIGHT` awaited at the next tick boundary for the VM's sight table (`RulesExt::sight`, `rules::runtime::run_work`), and the medal chain's physics for every player (`superbounce_chain::Physics`, `game::rules::world::physics`); [rules-world-api.md](rules-world-api.md#physics) | `sees` is hostable with a one-tick delay; the host delivers the three events and answers the biped reads while the superbounce mode runs; scripts using the reads must declare `requires hud.superbounce` | none |
 | `message(to, text)`: `to` is a player, a team or `all` (everyone); the compiler picks one of three entries by its type (`message`, `message_team`, `message_all`), all spelled `message`. A text written in the call may hold up to four `{name}` holes, each a player, team, int, time or enum in scope (`{{` is a brace); the call reaches the game with the holes' values after its own arguments ([rules-language-types.md](rules-language-types.md#messages)). The host shows it to its local users in the audience through the notification insert (`hud_kit::NOTIFY`) and sends it to clients as a show cue ([rules-world-api.md](rules-world-api.md#the-show-channel)). Scoreboard text, announcer, waypoint | the notification queue (`0x24cbee`), per local user (hud-kit.md "Messages"); the centred text (`0x24cc73`) is not used | named | `hud.message` |
 | `hud_text(w, "…")`, `hud_value(w, n)`, `hud_fill(w, f)`, `hud_style(w, style)`, `hud_show(w, on)`, `hud_value_for(w, p, n)`; `mark(wp, at)`, `mark(wp, at, to)`, `unmark(wp)` | the VM's show state (`RulesExt::show`), drawn from the objective HUDs after each tick (`rules/world/hud.rs`); a mark's audience is a player's slot's bit or the team's seated players' bits, resolved in the VM from the roster (`Game::players_of_team`); the state rides the show channel's `Show` record ([rules-world-api.md](rules-world-api.md#the-show-channel)) | named | `hud.widgets`, `hud.waypoints` |
 | `place_squad_at(s, class, n, zone, tier)`: a squad at a kit zone index with a weapon tier | Firefight's `PlaceSquad` command, through the same squad entry | named | `ai.squads` |
-| `ff_round`, `ff_wave`, `ff_skull`, `ff_lives`, `ff_score`, `ff_respawn`, `ff_finish`; with two player teams `ff_target(s, team)`, `ff_team_lives(team, n)`, `ff_player_score(p, n)`, `ff_team_finish(winner)` (`none` a draw) | Firefight's host log entries (`firefight::Command`), queued with the squad commands so the log keeps program order | named | `firefight.director` |
+| `ff_round`, `ff_wave`, `ff_skull`, `ff_lives(p, n)` (`none` for the shared pool), `ff_score`, `ff_respawn`, `ff_finish`; with two player teams `ff_target(s, team)`, `ff_team_lives(team, n)`, `ff_player_score(p, n)`, `ff_team_finish(winner)` (`none` a draw) | Firefight's host log entries (`firefight::Command`), queued with the squad commands so the log keeps program order | named | `firefight.director` |
 | `sound_to(s, p)`, `sound_to_team(s, t)`, `sound_to_all(s)`: a `sound` of the map played in the ears of an audience | `SOUND_START_AT_MARKER` `0x1891d0` at each audience player's unit, and a sound cue to every machine (`rules/world/audio.rs`; [rules-world-api.md](rules-world-api.md#audio)). `say`, `sound_at`, `music`, `music_stop` and `announce` are listed and refused by name (R4, R5) | named | `audio.play` |
 | `bot_go(p, at)`, `bot_hold(p, zone)`, `bot_follow(p, q)`, `bot_attack(p, q)`, `bot_free(p)`: an outside order to a phantom bot, its brain's goal while it stands | the phantom registry (`bots::phantom::order`): a hint to the seat's brain on the host, with a zone resolved through the census and the scenario's netgame flags (`rules/world/bots.rs`). No guest entry: the pad replicates as any player's input. An order to a seat no phantom holds is a refused call | named | `bots.orders` |
 | `forge_move(o, at)`, `forge_delete(o)`, `forge_place(tag, at)`, `forge_scale(o, s)`: an edit through the Forge log | a `forge-doc` op, validated and host-stamped (`crates/formats/forge-doc`, `LogHead::stamp`); edit classes in "Roles, powers and capabilities" | named | `forge.move`, `forge.delete`, `forge.place`, `forge.scale` |
@@ -2153,21 +2155,14 @@ engines' hooks, observers and bot readers that parse per-engine globals
 
 ## Firefight, AI and bounces
 
-**Firefight is the first port, and runs as one.** `firefight::ScriptDirector`
-(`crates/formats/firefight/src/script.rs`) compiles the wave-set
-definition to one rules script — waves, rounds, lives, skulls and
-scoring — and runs it: the host runtime steps it each tick
-([firefight.md](firefight.md#the-director-as-a-rules-script)). The
-wave-set format stays the authoring format. `firefight::Def` is already
-validated, bounded and hashed, and the hopper tool offers definitions;
-`firefight::script::compile` builds the director script's IR from a
-`Def`, with the definition's squads, waves, rounds, caps, points and
-multipliers as constant tables. It builds IR, not source: the loops over
-the 16 squad slots unroll at build time and the blob depends on nothing
-but the definition, so a wave set is one blob with one hash, mode 1
-folds into mode 2, and the built-in sets need no rewrite by hand. The
-director's tests are its scenarios: every match the fake world plays is
-replayed through a fresh script for the same `Command` log.
+**Firefight runs as a script.** `content/modes/rules/firefight.rules`
+owns waves, rounds, lives, skulls and scoring. `firefight::ScriptDirector`
+(`crates/formats/firefight/src/script.rs`) supplies the validated
+`firefight::Def` as a module of constant tables and tuning, then steps
+the compiled script each tick. The script and wave set determine the
+blob's hash. The host adapts observations and queued calls to the
+director's `Command` stream, which the scenarios exercise
+([firefight.md](firefight.md#the-director-as-a-rules-script)).
 
 **AI is commanded by squad.** A script places a squad from the kit's
 palette at a label, sets its team and orders, reads how many of its

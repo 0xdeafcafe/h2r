@@ -334,6 +334,10 @@ It still requires the compiled alpha test to match, and checks the actual
 strip attributes against the plan by bits. Each strip in one pass must
 have the same raster state. Other shaders, effects and raster states keep
 their original draws when the native pass cannot reproduce them.
+The replacement uses one depth scale across its pinned targets. A change
+in scale between held draws replays the call, including its side-target writes.
+A call that only writes side targets can run without a framebuffer slot when
+its stages and convolutions are independent of framebuffer pixels and size.
 
 A linear X8 alias of the framebuffer samples alpha as one. The native
 feedback copy applies that alpha rule on its own scratch texture, as
@@ -396,21 +400,28 @@ grid used for object culling.
 With a flare in view, sample `h2 agent render.scene` twice. An increase in `counters.scene_submitted_flares_reference_draws` or `counters.scene_submitted_flares_display_draws` counts committed native colour fans on that copy. One flare can contribute several fans. Private captures also contribute, so take the live samples during ordinary gameplay. The original GPU query supplies visibility feedback.
 
 **Residual geometry.** Layer 2's items at the main scene's call
-(`0x0002c05b`) and the first person's (`0x00040284`) draw from the scene's
+(`0x0002c05b`), the alternate view's (`0x0002bda3`) and the first person's (`0x00040284`) draw from the scene's
 plan as layers 1, 5, 7, 8 and 20 do (`frame-scene.layers`,
 `layer_pass::OVERLAY_LAYER`; [framescene.md](framescene.md), slice 4); its
-outcomes are `layer_plan_2_*` and `layer_plan_fp2_*` in `render.scene`.
+outcomes are `layer_plan_2_*`, `layer_plan_alt2_*` and `layer_plan_fp2_*` in `render.scene`.
 The sky model's indexed strip (`0x0004c976`) and the standard layer-2
 geometry the plan leaves at the main-scene and alternate-scene layer sites
 are admitted. Guest order, transforms, shader inputs and stencil setup stay.
 The pass records the full range on both live target copies before the device
 drops the D3D draw. Other layer-2 handlers and unknown callers stay on D3D.
 
-**Clears, binds and visibility.** A whole-viewport, unmasked clear uses the
-attachment load operations directly; partial or channel-masked clears use the
-rectangle renderer. Target binds among device-owned surfaces skip reference
-staging but keep surface lookup, write-back order and viewport behaviour;
-title-owned surfaces keep the usual rules. Visibility issuance and results
+**Clears, binds and visibility.** A whole-viewport, unmasked clear uses an
+attachment load. For up to eight explicit colour rectangles, the native
+planner clips their union to the viewport and target. A full union can use
+a load, and a masked clear writes only its selected channels. Depth and
+stencil tiles keep their individual scissors because the depth surface may
+extend beyond the colour target. Longer lists use the linear rectangle path.
+
+Device-owned targets skip reference staging. Title-owned surfaces reuse
+transaction storage while reading current guest reference counts, parent
+links and GPU lock stamps on each bind. Final releases queue the original
+resource destructor. Both bind forms retain their viewport behaviour.
+Visibility issuance and results
 use the GPU pixel counter and report slots; the inline begin still drains
 before the counted draw, and finish and result calls keep index validation,
 pending answers, timestamps and write order. A one-use marker lets these

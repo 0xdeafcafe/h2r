@@ -108,10 +108,10 @@ how matches end, the costliest tick, what looks wrong). Live's
 the web app, and `h2 rules sim` to the terminal
 ([Workbench](../../../docs/game/rules-engine.md#workbench)).
 
-The Firefight director script is built outside this crate, by
-`firefight::script` from a wave-set definition; the `firefight.director`
-entries, `place_squad_at`, the zone reads, `now`, `random` and
-`on actor_assist` are what it calls and answers.
+The Firefight director lives in `content/modes/rules/firefight.rules`.
+`firefight::script` supplies the selected wave set as a data module.
+The script uses `firefight.director` entries, `place_squad_at`, zone reads,
+`now`, `random` and `on actor_assist`.
 
 ## Language intelligence
 

@@ -386,7 +386,7 @@ pub fn panel_lines(
             None => vec!["No settings store holds Firefight's options".into()],
             Some(Err(why)) => vec![format!("Firefight options unread ({why})")],
             Some(Ok(o)) => {
-                let wave = choice_label(&ff::WAVE_SET, o.wave_set as i64);
+                let wave = o.wave_set_label();
                 let waves = match o.player_teams() {
                     1 => format!("{wave} waves"),
                     n => format!("{wave} waves, {n} teams"),
@@ -446,6 +446,9 @@ fn choice_label(def: &settings::Def, value: i64) -> String {
 /// without the kit says so in place of the options
 /// ([`firefight_map_lines`]).
 pub fn panel_ids(m: &mut dyn GuestMemory, store: &Store) -> Result<Vec<u32>, MemFault> {
+    // The Firefight page's Wave set row reads the lobby's kit map between
+    // redraws (`lobby_start::kit_map`); this is where the memory is.
+    lobby_start::set_kit_map(lobby_start::kit_map_name(&*m));
     let state = lobby_start::state();
     let no_map = (state.mode == Mode::Firefight)
         .then(|| firefight_map_lines(KitMaps::now(&*m)))
@@ -453,7 +456,8 @@ pub fn panel_ids(m: &mut dyn GuestMemory, store: &Store) -> Result<Vec<u32>, Mem
     let lines = match no_map {
         Some(lines) => lines,
         None => {
-            let firefight = (state.mode == Mode::Firefight).then(|| ff::Options::read(store));
+            let firefight = (state.mode == Mode::Firefight)
+                .then(|| ff::Options::for_map(store, lobby_start::kit_map().as_deref()));
             let mut lines = panel_lines(state.mode, state.forge_map.as_deref(), firefight);
             // In CUSTOM GAMES the variant's name is the line under the map's.
             if state.mode == Mode::Multiplayer
@@ -753,6 +757,7 @@ fn load_state(bytes: &[u8]) -> Result<(), String> {
         mode,
         forge_map: name,
         map_variant: None,
+        kit_map: None,
     });
     crate::map_variant::forget();
     TEXTS.rewrite_all();

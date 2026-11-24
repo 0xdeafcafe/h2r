@@ -10,11 +10,11 @@
 //!   `speed > 16.0` is true exactly when the host's `speed > 16.0` is.
 //! - The end of a run of bounces is `Input::Grounded`.
 //!
-//! `p.airborne` and `p.primed` are reads of the same chain's view of each
+//! `p.airborne`, `p.crouching` and `p.primed` read the chain's view of each
 //! player's biped on its last step ([`crate::superbounce_chain::Body`]):
 //! the runtime keeps the latest set ([`crate::rules::runtime::Runtime::bodies`])
-//! and the game answers from it ([`read`]); a player with no unit in the
-//! step, and any tick the mode does not step, reads false.
+//! and the game answers from it ([`read`]). A player with no unit in the
+//! snapshot reads false.
 //!
 //! A chain step sees at most one touchdown, one launch and one end of a
 //! run for its player, so a tick has at most 16 of each: the events' cap
@@ -23,8 +23,11 @@
 //! requires `hud.superbounce` runs.
 
 use ::rules::Input;
+use engine::GuestMemory;
+use engine::entry::Cx;
 
 use super::objects::to_fixed;
+use crate::rules::census::Table;
 use crate::superbounce_chain::{Body, Physics};
 
 /// A speed (units/s) as a `fixed` rounded up to the next 1/65536: for any
@@ -56,7 +59,7 @@ pub fn input(slot: u8, p: Physics) -> Input {
     }
 }
 
-/// The answer to `airborne` or `primed` (`entry`) for player `slot`: false
+/// The answer to a biped read (`entry`) for player `slot`: false
 /// for a player with no body in `bodies`, and for any other entry.
 pub fn read(bodies: &[Body], entry: u16, slot: u8) -> bool {
     let Some(b) = bodies.iter().find(|b| b.slot == slot) else {
@@ -64,9 +67,55 @@ pub fn read(bodies: &[Body], entry: u16, slot: u8) -> bool {
     };
     match entry {
         ::rules::caps::id::AIRBORNE => b.airborne,
+        ::rules::caps::id::CROUCHING => b.crouching,
         ::rules::caps::id::PRIMED => b.primed,
         _ => false,
     }
+}
+
+/// Guest workspace for the two world-space points passed to the sight query.
+pub const SIGHT_SCRATCH_SIZE: u32 = 24;
+
+/// A sight table key and the live datums it named at the boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SightQuery {
+    pub pair: (u32, u32),
+    datums: Option<(u32, u32)>,
+}
+
+impl SightQuery {
+    /// Pin placement labels to salted datums before the async calls run.
+    pub fn plan(m: &dyn GuestMemory, table: &Table, from: u32, to: u32) -> Self {
+        let datum = |object| {
+            if object & 0x8000_0000 != 0 {
+                return Some(object);
+            }
+            let thing = table.get(object)?;
+            let kind = u8::try_from(map::scenario_layout::block(thing.block).object_type?).ok()?;
+            let index = i16::try_from(thing.index).ok()?;
+            super::objects::placed_datum(m, kind, index)
+        };
+        Self {
+            pair: (from, to),
+            datums: datum(from).zip(datum(to)),
+        }
+    }
+}
+
+/// Read both positions after the boundary's puts, and ignore their root
+/// bodies in the collision query. Missing objects and failed traces read false.
+pub async fn trace_sight(cx: &Cx, scratch: u32, query: SightQuery) -> bool {
+    let Some((from, to)) = query.datums else {
+        return false;
+    };
+    let Some(((from, source), (to, target))) = cx.read(|m| {
+        super::objects::sight_endpoint(m, from).zip(super::objects::sight_endpoint(m, to))
+    }) else {
+        return false;
+    };
+    crate::firefight::guest::line_of_sight(cx, scratch, from, to, [source, target])
+        .await
+        .unwrap_or(false)
 }
 
 /// One tick's physics events, in the chain's order (slot by slot, in
@@ -94,13 +143,14 @@ mod tests {
     fn the_reads_answer_from_the_last_step_and_false_for_the_rest() {
         use ::rules::caps::id;
         let bodies = [
-            Body { slot: 2, airborne: true, primed: false },
-            Body { slot: 4, airborne: false, primed: true },
+            Body { slot: 2, airborne: true, crouching: false, primed: false },
+            Body { slot: 4, airborne: false, crouching: true, primed: true },
         ];
         assert!(read(&bodies, id::AIRBORNE, 2) && !read(&bodies, id::PRIMED, 2));
         assert!(!read(&bodies, id::AIRBORNE, 4) && read(&bodies, id::PRIMED, 4));
         assert!(!read(&bodies, id::AIRBORNE, 3), "no unit in the step");
-        assert!(!read(&bodies, id::CROUCHING, 2), "crouching has no host half");
+        assert!(!read(&bodies, id::CROUCHING, 2));
+        assert!(read(&bodies, id::CROUCHING, 4));
         assert!(!read(&[], id::PRIMED, 4));
     }
 

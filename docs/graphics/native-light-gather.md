@@ -253,6 +253,10 @@ draws) then, for each slot with records:
    range words and dirty bit, `0x003faae0` when its push buffer is full,
    and `0x003f6190` (**E** `0x000407bd`..`0x0004080f`).
 
+The first-person visibility comparison rebuilds the replay slots from the
+dynamic passes' source records and compares each slot at this loop's
+entry. See [native-visibility.md](native-visibility.md#first-person-lights).
+
 The loop keeps the slot index at `E-0x84` and the slot's datum address
 at `E-0x80` (`E` its entry `ESP`), the volume at `E-0x7c` and the draw
 byte at `E-0x85`. The layer-draw hook reads the index and the address

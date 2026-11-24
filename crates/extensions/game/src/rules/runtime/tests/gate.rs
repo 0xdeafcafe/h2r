@@ -86,6 +86,7 @@ fn a_map_that_lacks_a_label_blocks_the_game_and_ends_it_in_its_first_tick() {
             tick: TICK + 1,
             ask_authority: true,
             calls: vec![Call::End],
+            sight: Vec::new(),
         }
     );
     assert_eq!(s.lock().pre_tick(&m), None, "one end_round");

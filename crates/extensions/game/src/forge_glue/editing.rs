@@ -570,7 +570,8 @@ impl Editor {
             thing: id.identity(),
             selected: self.tool.is_selected(id),
             selection: self.tool.selection().len(),
-            group: self.session.group_of(id).map(|g| (g.id, g.name, g.locked)),
+            group: self.session.group_of(id),
+            pivot_editable: self.session.seat().is_none(),
         }
     }
 
@@ -1013,7 +1014,14 @@ impl Editor {
     /// game's (`forge_screens::ui_up`). `game`: the session's game type, as
     /// the variant record's engine index, which decides the things the
     /// Objects tool aims at.
-    pub fn tick(&mut self, tick: u32, bsp: Option<usize>, ui_up: bool, game: Option<i32>) {
+    pub fn tick(
+        &mut self,
+        tick: u32,
+        bsp: Option<usize>,
+        ui_up: bool,
+        game: Option<i32>,
+        memory: &dyn engine::GuestMemory,
+    ) {
         self.now = tick;
         self.bsp = bsp;
         self.ui_up = ui_up;
@@ -1082,7 +1090,7 @@ impl Editor {
             };
             self.poll(tick);
         }
-        self.publish();
+        self.publish(memory);
     }
 
     fn take_input(&mut self, tick: u32, input: Input, bsp: Option<usize>) {
@@ -1116,7 +1124,7 @@ impl Editor {
     }
 
     /// The session's state for the input bridge and the screens.
-    fn publish(&self) {
+    fn publish(&self, memory: &dyn engine::GuestMemory) {
         controls::publish(controls::State {
             active: true,
             monitor: self.tool.monitor,
@@ -1124,6 +1132,9 @@ impl Editor {
             camera: self.tool.camera,
             x_properties: self.x_properties(),
             cancel: self.cancellable(),
+            select_on_hold: !self.tool.links
+                && self.tool.placing.is_none()
+                && self.tool.held_thing.is_none(),
             area: self.area.as_ref().map(area::Draft::mode),
         });
         screens::publish(Facts {
@@ -1142,6 +1153,7 @@ impl Editor {
             filename: self.filename.clone(),
             placed: self.placed(),
             folders: sheet::folder_rows(&self.session.groups()),
+            map_limits: screens::map_limits::Usage::read(memory, self.guard.scenario),
         });
     }
 
@@ -1701,6 +1713,9 @@ impl Editor {
             Choice::LockGroup(group, locked) => {
                 return self.command(tick, Command::LockGroup { group, locked });
             }
+            Choice::SetGroupPivot(group, pivot_first) => {
+                return self.command(tick, Command::SetGroupPivot { group, pivot_first });
+            }
             Choice::BuildGround => return self.command(tick, Command::BuildGround),
             Choice::TestWaves => return self.command(tick, Command::TestWaves),
             Choice::GenerateNav => return self.start_nav(tick, None),
@@ -1849,7 +1864,7 @@ impl Editor {
                         .map_err(|_| "Type a whole number.".to_string())?;
                     let id = self.tool.aimed_thing.ok_or("Aim at an item entry.")?;
                     let name = match field {
-                        sheet::NumberField::ReturnTime => "abandon limit",
+                        sheet::NumberField::ReturnTime => "return time",
                         _ => "respawn time",
                     };
                     return self.command(
@@ -2106,6 +2121,7 @@ fn run(s: &mut Session, w: &mut ForgeWorld, tick: u32, cmd: Command) -> Result<(
         Group { name, members } => s.group(w, tick, &name, &members, false).map(|_| ()),
         Ungroup { group } => s.ungroup(w, tick, group),
         LockGroup { group, locked } => s.set_group_locked(w, tick, group, locked),
+        SetGroupPivot { group, pivot_first } => s.set_group_pivot(w, tick, group, pivot_first),
         SetLabel { id, label } => s.set_label(w, tick, id, label),
         Barrier { id, phase } => s.label_barrier(w, tick, id, phase),
         PlacePrefab { prefab, frame } => s.place_prefab(w, tick, &prefab, frame).map(|_| ()),

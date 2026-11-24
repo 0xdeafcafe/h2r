@@ -83,3 +83,45 @@ fn attachment_paths_and_query_results_match_the_d3d_reference() {
     );
     assert_eq!(run(true), baseline);
 }
+
+#[test]
+fn tiled_clear_uses_one_load_and_long_lists_keep_the_rectangle_path() {
+    let (mut d, mut m) = create(RecordingBackend::default(), UploadPolicy::Always);
+    d.set_native_residual(true);
+    const RECTS: u32 = MISC + 0x9000;
+    // Tile the full target, with overlapping columns and overshooting edges.
+    for (i, v) in [0, 0, W / 2 + 1, H, W / 2, 0, W + 3, H + 2].into_iter().enumerate() {
+        m.write_u32(RECTS + 4 * i as u32, v).unwrap();
+    }
+    d.clear(&mut m, 2, RECTS, 0xf0, 0xff31_2345, 0.5, 0).unwrap();
+    assert!(matches!(d.backend.calls.last(), Some(Recorded::Clear { .. })));
+    assert_eq!(d.stats().native_rect_clears, 1);
+
+    // The same coverage with one channel selected must preserve the others.
+    d.clear(&mut m, 2, RECTS, 0x10, 0, 0.5, 0).unwrap();
+    let Some(Recorded::ClearRects { clear, .. }) = d.backend.calls.last() else {
+        panic!("expected masked rectangle clear");
+    };
+    assert_eq!(clear.rects.len(), 1);
+    assert!(clear.rects[0].is_whole(W, H));
+    assert_eq!(d.stats().native_rect_clears, 2);
+
+    d.clear(&mut m, 2, RECTS, 0x01, 0, 0.5, 0).unwrap();
+    let Some(Recorded::ClearRects { clear, .. }) = d.backend.calls.last() else {
+        panic!("depth tiles must keep their scissors");
+    };
+    assert_eq!(clear.rects.len(), 2);
+    assert_eq!(clear.depth, Some(0.5));
+
+    for i in 0..9 {
+        for (j, v) in [i, 1, i + 1, 3].into_iter().enumerate() {
+            m.write_u32(RECTS + 16 * i + 4 * j as u32, v).unwrap();
+        }
+    }
+    d.clear(&mut m, 9, RECTS, 0x10, 0, 0.5, 0).unwrap();
+    let Some(Recorded::ClearRects { clear, .. }) = d.backend.calls.last() else {
+        panic!("expected fallback rectangle clear");
+    };
+    assert_eq!(clear.rects.len(), 9);
+    assert_eq!(d.stats().clear_refused_rect_count, 1);
+}

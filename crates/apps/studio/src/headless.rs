@@ -1189,7 +1189,8 @@ mod tests {
         use crate::app::ToolKind;
         use crate::script::{Button, Step};
         use hud_edit::{WidgetKey, WidgetKind};
-        let Some((_turn, mut h)) = headless() else {
+        // Leave room for the HUD's document header and the bottom dock.
+        let Some((_turn, mut h)) = headless_sized([1280.0, 1100.0]) else {
             return;
         };
         // A combo reports no label of its own: name it to the probe.
@@ -1215,13 +1216,25 @@ mod tests {
         h.step(&mut app, &click("##hud-w-Bitmap-2")).unwrap();
         assert_eq!(app.hud.selected, Some(stray));
         let (origin, zoom) = h.studio.hud.shown.expect("the picture is shown");
-        // The stray's middle (88..152, 396..412), then 20 HUD pixels right.
+        let rect = app
+            .hud
+            .shot()
+            .unwrap()
+            .picture
+            .placed
+            .iter()
+            .find(|p| p.hud == 0 && p.key == stray)
+            .and_then(|p| p.rect)
+            .expect("the stray has a rectangle");
+        let (x, y) = ((rect.x0 + rect.x1) / 2.0, (rect.y0 + rect.y1) / 2.0);
+        assert_eq!(app.hud.widget_at([x, y]), Some(stray));
+        // Move from the widget's middle by 20 HUD pixels.
         let at = |x: f32, y: f32| format!("{},{}", origin[0] + x * zoom, origin[1] + y * zoom);
         for step in [
-            Step::Move(at(120.0, 404.0)),
+            Step::Move(at(x, y)),
             Step::Down,
-            Step::Move(at(130.0, 404.0)),
-            Step::Move(at(140.0, 404.0)),
+            Step::Move(at(x + 10.0, y)),
+            Step::Move(at(x + 20.0, y)),
             Step::Up,
         ] {
             h.step(&mut app, &step).unwrap();

@@ -6,14 +6,14 @@
 //! package of its own: the map, a version 2 `patch.lvl` made from its
 //! `patch_v3.lvl` record (`patch_lvl`), and the disc package's
 //! `ContentMeta.xbx` with the new offer ID, signed for this console as the
-//! disc's installer does on a real one. Nothing else is read from the game
-//! beyond the disc's directory tree and, for the update, the XBE
-//! certificate. The layout and what the game does with it are in
+//! disc's installer does on a real one. The converter also stores each
+//! map in the tag store. The Halo 2 disc supplies the shared cache maps
+//! and its XBE certificate for update selection. The layout is in
 //! docs/game/map-pack.md, sections 5 and 8.
 use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use xiso::{Entry, Xiso};
 
 use content::patch_lvl;
@@ -270,6 +270,9 @@ pub fn layout<R: Read + Seek>(iso: &mut Xiso<R>, plan: &Plan) -> Result<Vec<MapP
             let lvl = patch_lvl::v2_from_v3(record)?;
             patch_lvl::validate_v2(&lvl)?;
             let map_id = patch_lvl::v2_map_id(&lvl);
+            if let Some(other) = out.iter().find(|m| file_name(&m.map).eq_ignore_ascii_case(&file)) {
+                bail!("{file} is already in package {}", other.source);
+            }
             if let Some(other) = out.iter().find(|m| m.map_id == map_id) {
                 bail!("{file} and {} share map id {map_id:#x}", other.map.path);
             }
@@ -348,9 +351,34 @@ fn remove_old_package(dir: &Path) -> Result<bool> {
     Ok(true)
 }
 
+const CONVERTER: &str = "map-pack";
+
+struct SharedCaches<'a>(Option<&'a Path>);
+
+impl workspace::BaseMaps for SharedCaches<'_> {
+    fn read(&self, name: &str) -> Result<Vec<u8>, String> {
+        let disc = self.0.ok_or_else(|| format!("no Halo 2 disc for {name}.map"))?;
+        crate::h1_cmd::read_h2_map(disc, name).map_err(|e| format!("{e:#}"))
+    }
+}
+
+fn map_stem(entry: &Entry) -> String {
+    Path::new(file_name(entry))
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+fn stored_map(root: &Path, stem: &str) -> bool {
+    use workspace::converted::{marked, verified};
+    marked(root, stem).is_some_and(|mark| verified(root, &mark, CONVERTER).is_some())
+}
+
 /// Writes one package per map, and the update when `base` is given, then
 /// removes the older layout's package directories.
-pub fn install<R: Read + Seek>(
+#[cfg(test)]
+fn install<R: Read + Seek>(
     iso: &mut Xiso<R>,
     plan: &Plan,
     out: &OutDir,
@@ -358,9 +386,20 @@ pub fn install<R: Read + Seek>(
     base: Option<&xbe::Certificate>,
     dry_run: bool,
 ) -> Result<Installed> {
-    // Everything is read and checked before anything is written, so a bad
-    // header or map list leaves the data dir as it was.
     let packages = layout(iso, plan)?;
+    install_packages(iso, plan, &packages, out, data_root, base, dry_run, None)
+}
+
+fn install_packages<R: Read + Seek>(
+    iso: &mut Xiso<R>,
+    plan: &Plan,
+    packages: &[MapPackage],
+    out: &OutDir,
+    data_root: &Path,
+    base: Option<&xbe::Certificate>,
+    dry_run: bool,
+    caches: Option<SharedCaches<'_>>,
+) -> Result<Installed> {
     let update = match base {
         Some(base) => {
             let Some(entry) = plan.update_for(base.version) else {
@@ -379,7 +418,19 @@ pub fn install<R: Read + Seek>(
     };
     let at = |comps: &[String]| comps.iter().fold(data_root.to_path_buf(), |a, c| a.join(c));
     let mut done = Installed { packages: packages.len(), ..Default::default() };
-    for m in &packages {
+    if let Some(caches) = caches {
+        let store = boot::store_status::root(data_root);
+        for package in packages {
+            let stem = map_stem(&package.map);
+            if !dry_run {
+                let bytes = iso.read(&package.map)?;
+                workspace::converted::store_converted(&store, &stem, &bytes, &caches, CONVERTER)
+                    .map_err(anyhow::Error::msg)?;
+            }
+            done.written.push(workspace::converted::marker_path(&store, &stem));
+        }
+    }
+    for m in packages {
         let generated = [(CONTENT_META_NAME, &m.meta), (PATCH_V2, &m.patch_lvl)];
         for (name, bytes) in generated {
             let comps = package_components(m.offer, name);
@@ -426,12 +477,11 @@ pub fn run(args: Vec<String>) -> Result<()> {
         Err(e) => bail!("{e}\n\n{USAGE}"),
     };
     let data = a.data.clone().unwrap_or_else(content::store::default_data_root);
+    let disc = a.disc.clone().map(Ok).unwrap_or_else(crate::default_disc);
     let base = if a.update {
-        let disc = match a.disc.clone() {
-            Some(d) => d,
-            None => crate::default_disc().context("finding your Halo 2 disc for the update (or pass --no-update)")?,
-        };
-        let bytes = crate::load_xbe(&disc)?;
+        let disc = disc.as_ref().map_err(|e| anyhow!("{e:#}"))
+            .context("finding your Halo 2 disc for the update (or pass --no-update)")?;
+        let bytes = crate::load_xbe(disc)?;
         let x = xbe::Xbe::parse(&bytes)?;
         if x.certificate.title_id != HALO2_TITLE {
             bail!("{} is not Halo 2 (title {:08X})", disc.display(), x.certificate.title_id);
@@ -443,7 +493,11 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let mut iso = crate::open_iso(&a.iso)?;
     let plan = Plan::from_entries(&iso.entries()?)?;
     let out = OutDir::new(&data, a.force)?.protecting(&a.iso);
-    let done = install(&mut iso, &plan, &out, &data, base.as_ref(), a.dry_run)?;
+    let packages = layout(&mut iso, &plan)?;
+    let done = install_packages(
+        &mut iso, &plan, &packages, &out, &data, base.as_ref(), a.dry_run,
+        Some(SharedCaches(disc.as_deref().ok())),
+    )?;
     let (verb, gone) = if a.dry_run { ("would write", "would remove") } else { ("wrote", "removed") };
     for p in &done.written {
         println!("{verb} {}", p.display());
@@ -477,7 +531,7 @@ const STAMP: &str = "mappack.stamp";
 /// 3: one package per map with a version 2 `patch.lvl` made from its
 /// `patch_v3.lvl` record, so 1.0 lists the maps; the three disc-shaped
 /// packages, whose `patch.lvl` took over the Lockout slot, are removed.
-const STAMP_VERSION: u32 = 3;
+const STAMP_VERSION: u32 = 4;
 
 /// Whether the automatic install runs: not with `--no-mappack`, and not with
 /// `H2_MAPPACK` set to `0`, `false`, `no` or `off`.
@@ -531,10 +585,18 @@ fn stamp_text(iso: &Path, base_version: u32) -> Result<String> {
 }
 
 /// Whether this disc, in this state, was already installed into `data`.
-fn already_installed(data: &Path, iso: &Path, base_version: u32) -> bool {
-    let content = vfs::Config::new(data, HALO2_TITLE).title_data_dir().join(vfs::CONTENT_DIR);
-    content.is_dir()
-        && stamp_text(iso, base_version).is_ok_and(|want| std::fs::read_to_string(data.join(STAMP)).is_ok_and(|have| have == want))
+fn already_installed(
+    data: &Path, iso: &Path, base_version: u32, packages: &[MapPackage],
+) -> bool {
+    let store = boot::store_status::root(data);
+    let cfg = vfs::Config::new(data, HALO2_TITLE);
+    stamp_text(iso, base_version).is_ok_and(|want| {
+        std::fs::read_to_string(data.join(STAMP)).is_ok_and(|have| have == want)
+    }) && packages.iter().all(|p| {
+        cfg.content_dir(p.offer).join(PATCH_V2).is_file()
+            && cfg.content_dir(p.offer).join(file_name(&p.map)).is_file()
+            && stored_map(&store, &map_stem(&p.map))
+    })
 }
 
 /// Looks for the map pack beside `game_disc` and installs it into `data`
@@ -556,22 +618,27 @@ fn try_auto(game_disc: &Path, data: &Path) -> Result<Option<String>> {
         return Ok(None);
     }
     let base = x.certificate;
-    if already_installed(data, &iso_path, base.version) {
-        return Ok(Some("already installed".into()));
-    }
-    install_disc(&iso_path, &base, data).map(Some)
+    install_disc(&iso_path, game_disc, &base, data).map(Some)
 }
 
-/// Install the map pack disc at `iso_path` into `data` for the game disc
-/// whose certificate is `base`, and stamp it. The line says what it did.
-fn install_disc(iso_path: &Path, base: &xbe::Certificate, data: &Path) -> Result<String> {
+/// Keep the levels and publish the retail content packages and matching update.
+fn install_disc(
+    iso_path: &Path, game_disc: &Path, base: &xbe::Certificate, data: &Path,
+) -> Result<String> {
     let name = iso_path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
     let mut iso = crate::open_iso(iso_path)?;
     let plan = Plan::from_entries(&iso.entries()?).with_context(|| name.clone())?;
+    let packages = layout(&mut iso, &plan)?;
+    if already_installed(data, iso_path, base.version, &packages) {
+        return Ok("already installed".into());
+    }
     let has_update = plan.update_for(base.version).is_some();
     // Overwrite: whatever is there came from this import or an older one.
     let out = OutDir::new(data, true)?.protecting(iso_path);
-    let maps = install(&mut iso, &plan, &out, data, has_update.then_some(base), false)?.packages;
+    let maps = install_packages(
+        &mut iso, &plan, &packages, &out, data, has_update.then_some(base), false,
+        Some(SharedCaches(Some(game_disc))),
+    )?.packages;
     std::fs::write(data.join(STAMP), stamp_text(iso_path, base.version)?)?;
     Ok(if has_update {
         format!("installed {maps} maps and title update from {name}")
@@ -700,7 +767,16 @@ mod tests {
     /// a patch_v3.lvl; package 3 with one map; a stray file beside them, one
     /// empty directory written as a zeroed sector, and two updates.
     fn disc_with(pkg1_v3: &[u8], pkg3_v3: &[u8]) -> Vec<u8> {
-        let mut img = vec![0u8; 500 * SECTOR];
+        disc_with_maps(pkg1_v3, pkg3_v3, [&[0xA5; 2000], b"gammamap", b"betamap"])
+    }
+
+    fn disc_with_maps(pkg1_v3: &[u8], pkg3_v3: &[u8], maps: [&[u8]; 3]) -> Vec<u8> {
+        let [alpha, gamma, beta] = maps;
+        let sectors = |bytes: &[u8]| bytes.len().div_ceil(SECTOR);
+        let alpha_at = 500;
+        let gamma_at = alpha_at + sectors(alpha);
+        let beta_at = gamma_at + sectors(gamma);
+        let mut img = vec![0u8; (beta_at + sectors(beta)) * SECTOR];
         let vd = 32 * SECTOR;
         img[vd..vd + 20].copy_from_slice(b"MICROSOFT*XBOX*MEDIA");
         img[vd + 20..vd + 24].copy_from_slice(&33u32.to_le_bytes());
@@ -716,8 +792,8 @@ mod tests {
                 table(&[
                     ("ContentImage.xbx", 72, 3, false),
                     ("ContentMeta.xbx", 62, META_LEN, false),
-                    ("Gamma.map", 73, 8, false),
-                    ("alpha.map", 63, 2000, false),
+                    ("Gamma.map", gamma_at as u32, len(gamma), false),
+                    ("alpha.map", alpha_at as u32, len(alpha), false),
                     ("patch.lvl", DISC_PATCH as u32, patch_lvl::V2_LEN as u32, false),
                     ("patch_v3.lvl", PKG1_V3 as u32, len(pkg1_v3), false),
                 ]),
@@ -725,7 +801,7 @@ mod tests {
             (
                 37,
                 table(&[
-                    ("beta.map", 65, 7, false),
+                    ("beta.map", beta_at as u32, len(beta), false),
                     ("ContentMeta.xbx", 66, META_LEN, false),
                     ("patch_v3.lvl", PKG3_V3 as u32, len(pkg3_v3), false),
                 ]),
@@ -748,13 +824,13 @@ mod tests {
         let mut fill =
             |sector: usize, bytes: &[u8]| img[sector * SECTOR..sector * SECTOR + bytes.len()].copy_from_slice(bytes);
         fill(62, &meta(1));
-        fill(63, &[0xA5; 2000]);
-        fill(65, b"betamap");
+        fill(alpha_at, alpha);
+        fill(beta_at, beta);
         fill(66, &meta(3));
         fill(67, &xbe(HALO2_TITLE, 0x303));
         fill(70, &xbe(HALO2_TITLE, 0x304));
         fill(72, b"img");
-        fill(73, b"gammamap");
+        fill(gamma_at, gamma);
         fill(PKG1_V3, pkg1_v3);
         fill(PKG3_V3, pkg3_v3);
         fill(DISC_PATCH, &lockout_patch_lvl());
@@ -774,6 +850,26 @@ mod tests {
 
     fn disc() -> Vec<u8> {
         disc_with(&pkg1_v3(), &pkg3_v3())
+    }
+
+    fn invented_map(name: &str) -> Vec<u8> {
+        use map::build::{TagPayload, TagSet};
+        use tags::defs::{Defs, default_record, to_built};
+        let mut set = TagSet::new(map::CacheType::Multiplayer, name, "invented\\scenarios\\map");
+        let group = map::FourCC(*b"jpt!");
+        set.add_group(group, None, None);
+        let def = Defs::builtin().group(group).unwrap();
+        let body = to_built(def, &default_record(def), &mut |_| None).unwrap();
+        set.add_tag(group, "invented\\damage\\one", TagPayload::Built(body)).unwrap();
+        set.build().unwrap().0
+    }
+
+    fn convertible_disc() -> Vec<u8> {
+        disc_with_maps(
+            &pkg1_v3(),
+            &pkg3_v3(),
+            ["alpha", "gamma", "beta"].map(invented_map).each_ref().map(Vec::as_slice),
+        )
     }
 
     /// The offer IDs of the synthetic disc's three maps.
@@ -1170,6 +1266,30 @@ mod tests {
     }
 
     #[test]
+    fn each_map_pack_unit_points_to_its_store_marker() {
+        use workspace::{ConvertSpec, Converter, Input};
+        let root = real_scratch("pack-units");
+        let iso = root.join("mappack.iso");
+        fs::write(&iso, disc()).unwrap();
+        let converter = package::MapPack {
+            game_disc: root.join("halo2.iso"),
+            data: root.join("data"),
+        };
+        let spec = ConvertSpec::parse(b"converter = 'map-pack'").unwrap();
+        let input = Input { path: iso, label: "invented".into(), identity: "fixture".into() };
+        let units = converter.units(&input, &spec).unwrap();
+        assert_eq!(units.len(), 3);
+        for (unit, name) in units.iter().zip(["alpha", "gamma", "beta"]) {
+            assert_eq!(unit.name, name);
+            assert_eq!(
+                unit.output,
+                Some(converter.data.join("tags/maps").join(format!("{name}.converted"))),
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn auto_installs_once_then_says_already_installed() {
         let d = real_scratch("auto");
         let data = d.join("data");
@@ -1177,17 +1297,23 @@ mod tests {
         assert_eq!(try_auto(&g, &data).unwrap(), None, "no map pack beside the disc");
         assert!(!data.exists());
 
-        fs::write(d.join("MAPPACK.ISO"), disc()).unwrap();
+        fs::write(d.join("MAPPACK.ISO"), convertible_disc()).unwrap();
         assert_eq!(
             try_auto(&g, &data).unwrap().unwrap(),
             "installed 3 maps and title update from MAPPACK.ISO"
         );
-        assert_layout(&data);
+
         let cfg = vfs::Config::new(&data, HALO2_TITLE);
         let one = cfg.content_dir(OFFER_ALPHA);
-        assert_eq!(fs::read(one.join("alpha.map")).unwrap(), vec![0xA5; 2000]);
+        assert_eq!(fs::read(one.join("alpha.map")).unwrap(), invented_map("alpha"));
         assert!(data.join("updates/4D530064/00000303/default.xbe").is_file());
         assert_eq!(try_auto(&g, &data).unwrap().unwrap(), "already installed");
+
+        let root = boot::store_status::root(&data);
+        assert!(stored_map(&root, "alpha"));
+        fs::remove_dir_all(root.join("maps")).unwrap();
+        assert!(try_auto(&g, &data).unwrap().unwrap().starts_with("installed 3 maps"));
+        assert!(stored_map(&root, "alpha"));
 
         // The maps are gone (a fresh data dir): installs again, over the stamp.
         fs::remove_dir_all(data.join("disk")).unwrap();
@@ -1195,7 +1321,7 @@ mod tests {
         assert!(one.join("alpha.map").is_file());
 
         // A different file at the same name (size changes): installs again.
-        let mut bigger = disc();
+        let mut bigger = convertible_disc();
         bigger.extend([0u8; SECTOR]);
         fs::write(d.join("MAPPACK.ISO"), bigger).unwrap();
         assert!(try_auto(&g, &data).unwrap().unwrap().starts_with("installed"));
@@ -1219,7 +1345,7 @@ mod tests {
         fs::write(data.join(STAMP), format!("v=2 {rest}")).unwrap();
         assert!(try_auto(&g, &data).unwrap().unwrap().starts_with("installed 3 maps"));
         assert!(old.iter().all(|o| !o.exists()));
-        assert_layout(&data);
+
         assert_eq!(try_auto(&g, &data).unwrap().unwrap(), "already installed");
 
         // Another base disc version needs its own update.
@@ -1234,7 +1360,7 @@ mod tests {
         let d = real_scratch("auto-noupdate");
         let data = d.join("data");
         let g = game(&d, HALO2_TITLE, 9);
-        fs::write(d.join("mappack.iso"), disc()).unwrap();
+        fs::write(d.join("mappack.iso"), convertible_disc()).unwrap();
         assert_eq!(
             try_auto(&g, &data).unwrap().unwrap(),
             "installed 3 maps from mappack.iso (no title update for this disc's version)"

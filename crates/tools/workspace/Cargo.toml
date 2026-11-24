@@ -55,10 +55,10 @@ firefight = { path = "../../formats/firefight" }
 # The UI screen tag generator and retail edit format.
 game = { path = "../../extensions/game", default-features = false }
 
-[dev-dependencies]
-# The default hopper `content/modes/playlists/default.toml` must equal
-# (modes_tests); live-proto does not depend on this crate.
+# Validate the playlist editor's hopper images and download envelopes.
 live-proto.workspace = true
+
+[dev-dependencies]
 # An invented font the `glyphs` kit's test patches.
 font = { path = "../../formats/font" }
 game = { path = "../../extensions/game", default-features = false, features = ["ui-fixture"] }

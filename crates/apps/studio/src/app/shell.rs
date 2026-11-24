@@ -105,8 +105,8 @@ pub enum Doc {
 
 /// What the window draws under the bar: the editor of the front document.
 /// The window has no tool tabs; this is read from the front tab and the
-/// panels it brings ([`App::surface`]), and the View menu's editor entries
-/// and a double-click in the browser ask for one ([`Action::Show`]).
+/// panels it brings ([`App::surface`]), and Go to anything's editor
+/// commands ask for one ([`Action::Show`]).
 ///
 /// [`Action::Show`]: super::Action::Show
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -234,6 +234,18 @@ impl App {
     pub fn pending_surface(&self) -> Option<Surface> {
         self.pending_tool().map(Surface::from)
     }
+
+    /// [`Tabs::set_item`]: the package item a tool document's tab was
+    /// opened from. No tab, nothing kept.
+    pub(super) fn set_tab_item(&mut self, doc: Doc, item: Option<String>, path: Option<String>) {
+        self.tabs.set_item(doc, item, path);
+    }
+
+    /// The item whose id a tab answers: the tab holding `doc` was opened
+    /// from a package item (`app::assets::open_item`).
+    pub fn tab_item(&self, doc: Doc) -> Option<&str> {
+        self.tabs.item(doc)
+    }
 }
 
 /// The tool an editor of the kind registry draws in. The field panel, the
@@ -260,6 +272,13 @@ pub struct Tab {
     pub doc: Doc,
     /// For a tag: the map it was opened on.
     pub map: Option<String>,
+    /// For a tool document opened from a package item (`item:<package>:<n>`):
+    /// the item's asset id, which the tab's id answers, and the file it was
+    /// opened from, kept so `sync_tabs` can see the editor still holds it.
+    /// A script's path must match; a variant's is not checked (the
+    /// variant's origin says nothing about a file).
+    pub item: Option<String>,
+    pub item_path: Option<String>,
 }
 
 /// The open tabs, in order, and the one in front.
@@ -283,6 +302,21 @@ impl Tabs {
         if !self.has(tab.doc) {
             self.open.push(tab);
         }
+    }
+    /// Set or clear the package item a tool document's tab was opened
+    /// from, with the file it came from.
+    fn set_item(&mut self, doc: Doc, item: Option<String>, path: Option<String>) {
+        if let Some(t) = self.open.iter_mut().find(|t| t.doc == doc) {
+            t.item = item;
+            t.item_path = path;
+        }
+    }
+    /// The item whose id the tab answers, if it was opened from one.
+    fn item(&self, doc: Doc) -> Option<&str> {
+        self.open
+            .iter()
+            .find(|t| t.doc == doc)
+            .and_then(|t| t.item.as_deref())
     }
     /// Drop `doc`'s tab. The front moves to its left neighbour, else its
     /// right one; returns the new front when it moved.
@@ -327,8 +361,8 @@ impl App {
     }
 
     /// A tab's id: a tool document's name (`map`, `variant`, `playlists`,
-    /// `ui`, `hud`), a voice's `voice:<id>`, or a tag's `group:path` as
-    /// `tag.*` takes it.
+    /// `ui`, `hud`), a package item's `item:<package>:<n>`, a voice's
+    /// `voice:<id>`, or a tag's `group:path` as `tag.*` takes it.
     pub fn doc_id(&self, doc: Doc) -> String {
         match doc {
             Doc::Tag(id) => match self.tags.tag(id) {
@@ -337,15 +371,20 @@ impl App {
             },
             Doc::SourceAsset(_) => self.source_asset(doc).map(|s| s.id.clone()).unwrap_or_default(),
             Doc::Voice => format!("voice:{}", self.voices.doc.as_deref().unwrap_or_default()),
-            other => other.tool_id().expect("a tool document").to_owned(),
+            other => match self.tab_item(other) {
+                Some(item) => item.to_owned(),
+                None => other.tool_id().expect("a tool document").to_owned(),
+            },
         }
     }
 
-    /// The open tab `id` names: [`Self::doc_id`], or a tag's `0x...` id.
+    /// The open tab `id` names: [`Self::doc_id`], the tool document's own
+    /// name when its tab was opened from an item, or a tag's `0x...` id.
     pub fn find_doc(&self, id: &str) -> Option<Doc> {
         self.tabs.list().iter().map(|t| t.doc).find(|&d| {
             self.doc_id(d) == id
                 || matches!(d, Doc::Tag(t) if format!("{:#010x}", t.0).eq_ignore_ascii_case(id))
+                || d.tool_id().is_some_and(|t| t == id)
         })
     }
 
@@ -475,18 +514,41 @@ impl App {
 
     /// Give every open tool document a tab (a new one comes to the front)
     /// and drop the tabs of closed ones, and of tags whose map is no
-    /// longer the one open.
+    /// longer the one open. A tab opened from a package item keeps its
+    /// item id only while the editor still holds that item's file (a
+    /// script); the others are cleared when the document is replaced.
     pub fn sync_tabs(&mut self) {
         for doc in TOOL_DOCS {
             let open = self.tool_doc_open(doc);
             if open && !self.tabs.has(doc) {
-                self.tabs.add(Tab { doc, map: None });
+                self.tabs.add(Tab {
+                    doc,
+                    map: None,
+                    item: None,
+                    item_path: None,
+                });
                 self.tabs.front = Some(doc);
                 if doc == Doc::Rules {
                     self.set_tool(ToolKind::Variants);
                 }
             } else if !open && self.tabs.has(doc) {
                 self.tabs.remove(doc);
+            }
+        }
+        // A script tab's item id answers only its own file.
+        if self.tabs.item(Doc::Rules).is_some() {
+            let path = self
+                .tabs
+                .list()
+                .iter()
+                .find(|t| t.doc == Doc::Rules)
+                .and_then(|t| t.item_path.clone());
+            let held = path
+                .as_deref()
+                .zip(self.rules.path.as_deref())
+                .is_some_and(|(kept, open)| open.display().to_string() == kept);
+            if !held {
+                self.tabs.set_item(Doc::Rules, None, None);
             }
         }
         let loaded = self
@@ -559,12 +621,22 @@ impl App {
                     Doc::Map
                 } else {
                     let map = self.loaded.clone();
-                    self.tabs.add(Tab { doc, map });
+                    self.tabs.add(Tab {
+                        doc,
+                        map,
+                        item: None,
+                        item_path: None,
+                    });
                     doc
                 }
             }
             Doc::SourceAsset(_) => {
-                self.tabs.add(Tab { doc, map: None });
+                self.tabs.add(Tab {
+                    doc,
+                    map: None,
+                    item: None,
+                    item_path: None,
+                });
                 doc
             }
             other => other,
@@ -822,6 +894,9 @@ impl App {
                 super::assets::SourceView::Sound { .. } => "audition",
                 super::assets::SourceView::Model(_) => "modeling",
             });
+        }
+        if let Some(item) = &tab.item {
+            v["item"] = json!(item);
         }
         if let Doc::Tag(id) = doc {
             v["editor"] = json!(self.tag_editor(id).id());

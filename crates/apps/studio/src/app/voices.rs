@@ -185,6 +185,7 @@ pub struct Voices {
     /// The voice the voice document shows (`Doc::Voice`): a character id
     /// or [`ANNOUNCER`]. `None` while no voice is open.
     pub doc: Option<String>,
+    pub(crate) announcer_save: Option<(PathBuf, String)>,
     /// The pane of that document.
     pub pane: Pane,
 }
@@ -216,6 +217,7 @@ impl Voices {
             next_job: 1,
             batch: Default::default(),
             doc: None,
+            announcer_save: None,
             pane: Pane::default(),
         }
     }
@@ -539,7 +541,7 @@ impl App {
 
     /// The **Voices** kind of `asset.list`: a row per voice with its
     /// dataset state, every word of `text` matching its name, id, state
-    /// or what a voice is for (voice, clone, dialogue). The answer has the shape of `assets::list`'s.
+    /// or what a voice is for (voice, character clone, dialogue). The answer has the shape of `assets::list`'s.
     pub fn voice_asset_list(&self, text: &str, limit: usize) -> Value {
         let words: Vec<String> = text.split_whitespace().map(str::to_lowercase).collect();
         let rows: Vec<Value> = self
@@ -547,7 +549,8 @@ impl App {
             .into_iter()
             .filter(|v| {
                 // Also found by what a voice is for.
-                let hay = format!("{} {} {} voice voices clone dialogue", v.name, v.id, v.state())
+                let character = if v.id == ANNOUNCER { "" } else { "character" };
+                let hay = format!("{} {} {} voice voices clone dialogue {character}", v.name, v.id, v.state())
                     .to_lowercase();
                 words.iter().all(|w| hay.contains(w.as_str()))
             })

@@ -162,7 +162,7 @@ dropped with it.
 | Method | Does |
 |---|---|
 | `shell.tabs` | the tabs in order and the `front` one; per tab its `doc` id, `kind`, `title`, the `tool` it shows in, `dirty`, `can_undo`, `can_redo`, and for a tag its `editor`, `id`, `group` and `map` |
-| `shell.open {asset?, tag?, map?, discard?}` | opens a tag of the open map (with `map`, that map opens first; refused over unsaved edits unless `discard`), or brings a map's tab forward; `asset` takes an asset id: `voice:<id>` opens the voice document (tab `voice:<id>`, on Setup while the voice has no dataset) and `package:<id>` opens the package document (tab `package`); answers the `tab`, the `front` and the `log` |
+| `shell.open {asset?, tag?, map?, discard?}` | opens a tag of the open map (with `map`, that map opens first; refused over unsaved edits unless `discard`), or brings a map's tab forward; `asset` takes a `tag:`, `voice:`, `item:` or `package:` id. A package opens in the `package` tab. A voice opens on Setup while it has no dataset. A package item opens the editor of what it builds, with `item:` tab IDs for scripts and variants. A local authored tag, WAV or model can open in a source tab before its tag is available in a map. Playlist fragments are refused. The call answers the `tab`, the `front` and the `log` |
 | `shell.focus {doc}` | brings a tab forward: its document shows in its editor |
 | `shell.close {doc, discard?}` | closes a tab: a tool's document closes (`UNSAVED` over edits unless `discard`), a tag's tab closes keeping its edits; the nearest tab left open, to its left first, comes forward |
 
@@ -173,9 +173,10 @@ leave the same tabs
 `headless::tests::the_tab_strip_clicks_and_shell_calls_leave_the_same_state`).
 Short forms: `tabs`, `focus <doc>`, `close <doc>`.
 
-`doc.save_as` takes a path. `doc.save` writes a variant to its save
-storage under the data root or a playlist file to its own path. For a
-map, `App::save_target` chooses the open package, the last standalone
+`doc.save_as` takes a path. `doc.save` writes the variant, game type
+script or playlist to the edit target as a package item and returns
+`{saved: true, path, edit_target}`. With no target it answers `NO_TARGET`.
+For a map, `App::save_target` chooses the open package, the last standalone
 output (**Export map...**) or the edit target. For a base map the edits
 are already lines in the edit target (`app::edit_target`), and `doc.save`
 returns `{saved: true, edit_target}`; with no target it answers
@@ -442,7 +443,10 @@ Notes on some:
   `rules.open` is `UNSAVED` over unsaved edits without `discard`, and
   picks the window's tab. `rules.set` reaches the text widget even while
   someone is typing in it, and leaves the keyboard where it is.
-  `rules.save` with no `path` on a script that has no file is `REFUSED`.
+  `rules.save` and `doc.save {doc: "rules"}` write a `rules` item in the
+  edit target and answer `NO_TARGET` when it is unset. A `path` in
+  `rules.save` exports a copy. For a package save, `reload` overrides
+  the editor's Reload on save checkbox.
   `rules.reload` compiles and verifies the text here, queues the blob for
   the game link and answers `{queued: hash}`; the game's answer arrives as
   `rules.get`'s `reload`: `{state: sending}`, then `{state: done, mode:
@@ -1758,7 +1762,9 @@ holds, with the tags a package adds for it; every word of `query` must
 match the path, group, kind or a package id; `package` keeps what that
 package adds or edits. `root` `packages` lists the set (baked, then
 `<data>/packages/`) with on or off and why; with `package` it lists that
-package's items. `root` `live` answers `offline: true`: the server's
+package's items. On item rows, `kind` is the Browser kind of what the
+item builds (including **Game types** and **Playlists**), and `item_kind`
+is its manifest kind. Use `kind` to filter those rows. `root` `live` answers `offline: true`: the server's
 offer is not held. A missing tree is refused with the way to make it
 (`workspace.extract`).
 
@@ -2131,10 +2137,12 @@ severity, message, target, path?}`, worst first; `counts` has `error`,
 its count; `skipped` each check that could not run and why, and each
 area with no check registered. `target` narrows every check to one
 thing; a check it does not fit is skipped. With `asset` (an asset id)
-the Problems list is read again over every source and the answer is
+the Problems list is read again and the answer is
 `{asset, findings, counts, ran, skipped}` for only the rows about that
 asset (the rows of `problems.list {asset}`, with `source`, `asset` and the
-rest); `what` and `target` are not used. The checks:
+rest); `what` and `target` are not used. For a package item, both calls
+refresh package checks and open-script diagnostics, which are the sources
+that can report a finding on an item. The checks:
 
 | Area | Check | What it checks |
 |---|---|---|
@@ -2191,11 +2199,12 @@ package's build encodes it, the way `import.sound` does (its reply, with
 folder is `REFUSED`, and only a `.wav` is taken, so a dataset clip or a
 weight file never reaches a package.
 
-**`voice.commit {clip, from?, repo?, replace?}`** (with no `tag`) copies the
-line to `art/announcer/<clip>.wav` of the checkout (`repo`, else the one
-above the editor's working directory). It does not run `git` or edit
-`boot::medal_announcer::CLIPS`; `next` says what is left. An existing clip
-needs `replace`. `clip`, `repo` and `replace` are refused with `tag`.
+**`voice.commit {clip, from?, repo?, replace?}`** saves a standalone
+`sound` item in the edit target. An explicit `repo` exports the WAV to
+`art/announcer/<clip>.wav` in that checkout. Use `replace` to overwrite
+an exported clip. The export's `next` field gives the steps for
+`boot::medal_announcer::CLIPS` and Git. `clip`, `repo` and `replace`
+are refused with `tag`.
 
 ## Voices
 
@@ -2281,12 +2290,13 @@ each row's `id`, `text`, `character`, `clip`, `tag`, `state` (`idle`,
 **`voice.batch.run {ids?, wait?, backend?}`** says the idle and failed rows
 again, or `ids` (a done row too, asking the model again, not the cache).
 
-**`voice.batch.save {ids?, repo?, package?, replace?}`** keeps the done
-rows in one step: a row with a `tag` becomes a `sound` item of `package`
-(default the edit target), one with a `clip` is copied to
-`art/announcer/<clip>.wav` of `repo`, replacing a clip only with `replace`;
-a row with neither fails with why. It answers `saved`, `failed` and each
-row's result, runs no git and edits no `CLIPS`.
+**`voice.batch.save {ids?, repo?, package?, replace?}`** saves done rows
+as `sound` items in the edit target or an explicit `package`. A row's
+`tag` or `clip` identifies the item to add or update. A row with neither
+fails with a reason. With neither a target nor a destination the call
+answers `NO_TARGET`. An explicit `repo` exports untagged rows to
+`art/announcer/<clip>.wav`, overwriting an exported clip with `replace`.
+The reply contains `saved`, `failed` and each row's result.
 
 ## Extension points
 
@@ -2889,9 +2899,10 @@ and edits live in memory.
   govern the segment to the next key. A new key defaults to linear.
   `remove: true` takes neither `value` nor `interp`. The reply is
   `{doc, revision, changed, key}` with the current key or null.
-- `anim.save {doc, package, mode?, class?, weapon_type?, action?}`
-  writes an `animation` item into a local package for the Tags tool's
-  current map. A document opened from a source clip replaces that clip
+- `anim.save {doc, package?, mode?, class?, weapon_type?, action?}`
+  writes an `animation` item for the Tags tool's current map. It uses
+  the edit target by default and answers `NO_TARGET` when no package
+  is specified and the target is unset. A document opened from a source clip replaces that clip
   and keeps its action. New and duplicate documents require an
   `action`. Their mode, class and weapon type each default to `any`.
   The reply is `{doc, package, tag, map, source, item}`, with the

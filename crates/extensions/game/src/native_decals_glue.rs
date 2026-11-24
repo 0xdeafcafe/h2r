@@ -76,7 +76,7 @@ fn clip(r: d3d::PixelRect) -> ClipRect {
 
 /// The resolved draw's vertices, decoded from its one stream. Halo 2's decal
 /// declaration (the attribute list at `0x0043f7b9`, bound with stride 16) is
-/// float3 position at `+0` in `v0` and `NORMPACKED3` at `+12` in `v3`: an
+/// float3 position at `+0` in `v0` and `NORMPACKED3` at `+12` in `v1` or `v3`: an
 /// 11:11:10 signed normalised dword, decoded as the NV2A fetches it
 /// ([`decode_packed`]). Any other declaration is refused.
 fn decal_vertices(
@@ -90,17 +90,16 @@ fn decal_vertices(
     {
         return Err("vertex declaration");
     }
-    for (register, data_type, offset) in [
-        (VertexRegister::POSITION, VertexDataType::Float3, 0),
-        (VertexRegister::DIFFUSE, VertexDataType::NormPacked3, 12),
-    ] {
-        if !layout
-            .attributes
-            .iter()
-            .any(|a| (a.register, a.data_type, a.offset) == (register, data_type, offset))
-        {
-            return Err("vertex declaration");
-        }
+    let position = layout.attributes.iter().any(|a| {
+        (a.register, a.data_type, a.offset) == (VertexRegister::POSITION, VertexDataType::Float3, 0)
+    });
+    let packed = layout.attributes.iter().any(|a| {
+        matches!(a.register.0, 1 | 3)
+            && a.data_type == VertexDataType::NormPacked3
+            && a.offset == 12
+    });
+    if !position || !packed {
+        return Err("vertex declaration");
     }
     if stream.data.len() != vertex_count as usize * VERTEX_SIZE {
         return Err("vertex bytes");
@@ -234,6 +233,14 @@ impl DrawAdmission for Glue {
         render_bridge::native_decals::note_examined();
         let prepared = match prepare(mode, snapshot) {
             Ok(p) => p,
+            Err(why @ ("vertex declaration" | "vertex streams")) => {
+                let d = snapshot.draw;
+                let strides: Vec<_> = d.streams.iter().map(|s| s.stride).collect();
+                render_bridge::native_decals::note_refusal(format!(
+                    "{why}: {:?}, bound strides {strides:?}", d.layout
+                ));
+                return None;
+            }
             Err(why) => {
                 render_bridge::native_decals::note_refusal(why);
                 return None;
@@ -388,7 +395,7 @@ mod tests {
     use d3d::backend::{StreamBytes, StreamData};
     use gfx::vertex::VertexAttribute;
 
-    /// Halo 2's decal declaration (the attribute list at `0x0043f7b9`):
+    /// Fixture for the v3 binding of the packed decal field:
     /// `v0` float3 at +0, `v3` `NORMPACKED3` at +12, stride 16.
     fn declaration() -> StreamLayout {
         StreamLayout {
@@ -441,6 +448,16 @@ mod tests {
                 Vertex { position: [0.0, -1.0, 7.25], diffuse: [-1.0, -1.0, -1.0] },
             ]
         );
+    }
+
+    #[test]
+    fn packed_semantic_at_v1_decodes_from_the_same_offset() {
+        let mut layout = declaration();
+        layout.attributes[1].register = VertexRegister(1);
+        let vs = [vertex([2., -1., 7.], 1)];
+        let got = decal_vertices(&layout, &stream(&vs, 16), 1).unwrap();
+        assert_eq!(got[0].position, [2., -1., 7.]);
+        assert_eq!(got[0].diffuse, [1. / 1023., 0., 0.]);
     }
 
     #[test]

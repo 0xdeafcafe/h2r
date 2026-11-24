@@ -45,6 +45,7 @@ pub fn layer_site(layer: u32, return_address: u32) -> Site {
         // Layer 17 (S: bloom), late in the passes: `call 0x00044550` at
         // `0x0002c306`, after the begin at `0x0002c2fd` returned true.
         | (17, 0x0002_c30b) => Site::Scene,
+        // The alternate branch ends with layer 2: begin at 0x0002bd96, draw at 0x0002bda3.
         (1, 0x0002_bd5c) | (3, 0x0002_bd74) | (5, 0x0002_bd8c) | (2, 0x0002_bda8) => {
             Site::AlternateView
         }
@@ -267,6 +268,8 @@ mod tests {
     #[test]
     fn the_same_layer_number_has_different_view_sites() {
         assert_eq!(layer_site(1, 0x0002_be4a), Site::Scene);
+        assert_eq!(layer_site(2, 0x0002_bda8), Site::AlternateView);
+        assert_eq!(layer_site(2, 0x0002_bd8c), Site::Other);
         assert_eq!(layer_site(1, 0x0002_bd5c), Site::AlternateView);
         assert_eq!(layer_site(1, 0x0004_00ab), Site::FirstPerson);
         assert_eq!(layer_site(3, 0x0002_be4a), Site::Other);

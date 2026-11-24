@@ -264,10 +264,9 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
     s
 }
 
-/// The screens `h2 ui preview` knows, by name: ours, then the design
-/// system's specimens (`design.<component>`) and the layout gallery
-/// (`layout.<name>`, [`crate::ui_kit::components::specimens::PAGES`]).
-pub const NAMES: [&str; 73] = [
+/// The screens `h2 ui preview` knows, including the design specimens
+/// and layout gallery. Append new screens to preserve existing ids.
+pub const NAMES: [&str; 74] = [
     "forge.objects",
     "forge.properties",
     "forge.tools",
@@ -341,6 +340,7 @@ pub const NAMES: [&str; 73] = [
     "layout.dialog.over-screen",
     "layout.code-entry",
     "layout.picker",
+    "forge.map-limits",
 ];
 
 /// The value picker as the Map Variant row opens it, with two usable map
@@ -380,7 +380,7 @@ pub fn live(name: &str) -> Option<Box<dyn Live>> {
         // The game's screens (`crate::forge_screens`).
         "forge.objects" | "forge.properties" | "forge.tools" | "forge.settings" | "forge.link"
         | "forge.question" | "forge.options" | "forge.controls" | "forge.games"
-        | "forge.variants" | "forge.variant" => {
+        | "forge.variants" | "forge.variant" | "forge.map-limits" => {
             crate::forge_screens::pages::live(name)
         }
         "signin-code" => Some(Box::new(Driven::new(crate::signin_screen::SigninPage))),

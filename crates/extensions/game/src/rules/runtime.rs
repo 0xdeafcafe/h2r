@@ -155,6 +155,10 @@ pub const READS: &[u16] = &[
     // A field of a tag the map holds (`super::world::map_tags::read`).
     id::TAG_INT,
     id::TAG_FIXED,
+    // The superbounce chain's biped snapshot (super::world::physics).
+    id::AIRBORNE,
+    id::CROUCHING,
+    id::PRIMED,
 ];
 /// The action entries this runtime makes.
 pub const ACTIONS: &[u16] = &[
@@ -501,6 +505,8 @@ pub struct Work {
     /// it says yes.
     pub ask_authority: bool,
     pub calls: Vec<Call>,
+    /// Ordered object pairs to trace after the calls, before the tick.
+    pub sight: Vec<super::world::physics::SightQuery>,
 }
 
 /// Why a script is not hostable here, by the first thing this runtime
@@ -570,6 +576,7 @@ fn runtime_refusal(ir: &Ir) -> Option<String> {
     if let Some(why) = super::world::audio::refusal(ir) {
         return Some(why);
     }
+    let superbounce = super::header::asks_superbounce(ir);
     for hd in &ir.handlers {
         if !DELIVERED.contains(&hd.event) {
             return Some(format!(
@@ -584,6 +591,14 @@ fn runtime_refusal(ir: &Ir) -> Option<String> {
                         continue;
                     };
                     match e.kind {
+                        Kind::Read if matches!(e.id, id::AIRBORNE | id::CROUCHING | id::PRIMED)
+                            && !superbounce =>
+                        {
+                            return Some(format!(
+                                "the script reads {}, which needs the superbounce mode (add `requires {}`)",
+                                e.name, super::header::SUPERBOUNCE
+                            ));
+                        }
                         Kind::Read if !READS.contains(&e.id) => {
                             return Some(format!(
                                 "the script reads {}, which this host runtime does not answer yet",
@@ -642,7 +657,7 @@ pub struct GuestGame<'a> {
     /// The map's tag paths, for `tag_int` and `tag_fixed`; none reads 0.
     pub tags: Option<&'a TagIndex>,
     /// The players' bodies at the last superbounce chain step, for
-    /// `airborne` and `primed` (`super::world::physics`); none reads false.
+    /// `airborne`, `crouching` and `primed` (`super::world::physics`); none reads false.
     pub bodies: &'a [crate::superbounce_chain::Body],
 }
 
@@ -715,6 +730,11 @@ fn player(call: &VmCall, n: usize) -> Option<u8> {
 }
 
 impl Game for GuestGame<'_> {
+    fn trace_sight(&mut self, _from: u32, _to: u32) -> Option<bool> {
+        // The VM keeps the pair and its previous answer until run_work.
+        None
+    }
+
     fn start_line(&mut self, ty: Type) {
         self.start_line = Some(ty);
     }
@@ -851,7 +871,7 @@ impl Game for GuestGame<'_> {
                 .unwrap_or(0),
                 _ => 0,
             },
-            id::AIRBORNE | id::PRIMED => {
+            id::AIRBORNE | id::CROUCHING | id::PRIMED => {
                 p.is_some_and(|p| super::world::physics::read(self.bodies, call.entry.id, p)) as i32
             }
             id::PLAYER_OF => match call.args.first() {
@@ -1127,6 +1147,11 @@ pub struct Runtime {
     /// `::rules::show::WALLS_REPEAT` ticks while it is not empty, so a
     /// machine that joins late has it (`super::world::show::walls`).
     wall_cue: Option<(Vec<(u32, Option<u8>)>, u32)>,
+    /// The pickers' offers last sent as `Pick` cues on the actor channel,
+    /// and the tick they were sent: sent when they change and again every
+    /// `::rules::show::PICK_REPEAT` ticks while any stands, so a machine
+    /// that joins late has them (`super::world::show::pick_offer`).
+    pick_cue: Option<(Vec<::rules::vm::PickOffer>, u32)>,
     /// The players' bodies at the superbounce chain's last step: what
     /// `airborne` and `primed` read (`super::world::physics`).
     bodies: Vec<crate::superbounce_chain::Body>,
@@ -1194,6 +1219,7 @@ impl Runtime {
             walled: false,
             hud_on: false,
             wall_cue: None,
+            pick_cue: None,
             bodies: Vec::new(),
         }
     }
@@ -1382,6 +1408,7 @@ impl Runtime {
     /// which runs only the built-in scripts. Returns the line to log.
     pub fn start(&mut self, m: &dyn GuestMemory, system_link: bool) -> String {
         self.errors.clear();
+        self.bodies.clear();
         self.store.remove();
         if bots::guest::game_mode(m) != Some(MODE_MULTIPLAYER) {
             self.status = Status::Idle("not a multiplayer game");
@@ -1622,6 +1649,7 @@ impl Runtime {
                 tick,
                 ask_authority: true,
                 calls: vec![Call::End],
+                sight: Vec::new(),
             });
         }
         let Status::Running(r) = &mut self.status else {
@@ -1708,10 +1736,19 @@ impl Runtime {
             r.start_line = None;
         }
         r.pending = held;
-        (ask_authority || !calls.is_empty()).then_some(Work {
+        let sight: Vec<_> = if r.vm.ext().stopped.is_none() {
+            r.vm.sight()
+                .iter()
+                .map(|p| super::world::physics::SightQuery::plan(m, &r.table, p.from, p.to))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        (ask_authority || !calls.is_empty() || !sight.is_empty()).then_some(Work {
             tick,
             ask_authority,
             calls,
+            sight,
         })
     }
 
@@ -1830,7 +1867,7 @@ impl Runtime {
     }
 
     /// The players' bodies at the medal chain's step, replacing the last
-    /// set: what a script's `p.airborne` and `p.primed` read until the next.
+    /// set for a script's biped reads.
     pub fn bodies(&mut self, bodies: &[crate::superbounce_chain::Body]) {
         self.bodies.clear();
         self.bodies.extend_from_slice(bodies);
@@ -1915,6 +1952,7 @@ impl Runtime {
         self.publish_hud(Some(m));
         self.send_show();
         self.send_walls(tick);
+        self.send_picks(tick);
     }
 
     /// Offers the running script's show state to the actor channel's
@@ -1962,6 +2000,45 @@ impl Runtime {
             super::world::show::walls(tick, shown.clone());
             self.wall_cue = Some((shown, tick));
         }
+    }
+
+    /// Sends the pickers' offers to the clients as `Pick` cues
+    /// (`::rules::show::Cue::Pick`), one per picker, from the authority
+    /// that runs the script: again when the offers change and every
+    /// `::rules::show::PICK_REPEAT` ticks while any stands, so a machine
+    /// that joins late has them. A picker taken away goes as an empty
+    /// one, which takes the asking on the clients off. A film's run
+    /// sends none: it has no channel.
+    fn send_picks(&mut self, tick: u32) {
+        let offers = match &self.status {
+            Status::Running(r) if r.authority == Some(true) && !self.film => r.vm.picks().to_vec(),
+            _ => return,
+        };
+        let (sent, at) = match self.pick_cue.as_ref() {
+            Some((sent, at)) => (Some(sent), *at),
+            None => (None, tick),
+        };
+        let changed = sent != Some(&offers);
+        let repeat = !offers.is_empty() && tick.wrapping_sub(at) >= ::rules::show::PICK_REPEAT;
+        if !changed && !repeat {
+            return;
+        }
+        for old in sent.into_iter().flatten() {
+            if !offers.iter().any(|o| o.slot == old.slot) {
+                super::world::show::pick_offer(
+                    tick,
+                    ::rules::vm::PickOffer {
+                        slot: old.slot,
+                        title: old.title,
+                        rows: Vec::new(),
+                    },
+                );
+            }
+        }
+        for offer in &offers {
+            super::world::show::pick_offer(tick, offer.clone());
+        }
+        self.pick_cue = Some((offers, tick));
     }
 
     /// The walls the running script shows in play (`show_area`), in the
@@ -2020,6 +2097,26 @@ impl Runtime {
         }
     }
 
+    /// Store the boundary's sight answers before any of the tick's handlers.
+    fn finish_sight(&mut self, tick: u32, sight: Vec<(u32, u32, bool)>) {
+        let Status::Running(r) = &mut self.status else {
+            return;
+        };
+        if r.pre != Some(tick) || sight.is_empty() {
+            return;
+        }
+        if let Err(why) = sync(r, &*self.store) {
+            self.stop(why);
+            return;
+        }
+        for (from, to, clear) in sight {
+            r.vm.record_sight(from, to, clear);
+        }
+        if let Err(why) = save(r, &mut *self.store) {
+            self.stop(why);
+        }
+    }
+
     /// The game ended: the record is removed and the script stops.
     pub fn ended(&mut self) {
         let name = match &self.status {
@@ -2030,6 +2127,7 @@ impl Runtime {
         self.store.remove();
         self.status = Status::Idle("the game ended");
         self.wall_cue = None;
+        self.pick_cue = None;
         self.publish_walls();
         self.publish_hud(None);
     }
@@ -2320,16 +2418,29 @@ pub async fn make_calls(cx: &Cx, work: &Work) -> (Option<bool>, Vec<Refused>) {
     (authority, refused)
 }
 
-/// The async body before a tick with work: the calls, then the tick itself
-/// (its chain runs again; `reentry` lets the hook pass).
+/// The async body runs the boundary calls, traces sight, then re-enters
+/// the tick with `reentry` set so the hook lets it pass.
 pub async fn run_work(
     cx: Cx,
     shared: std::sync::Arc<super::feature::Shared>,
     work: Work,
+    sight_scratch: u32,
 ) -> Result<Ret, EntryError> {
     use std::sync::atomic::Ordering;
     let (authority, refused) = make_calls(&cx, &work).await;
-    shared.lock().finish(work.tick, authority, refused);
+    let mut sight = Vec::new();
+    if authority != Some(false) {
+        for query in work.sight {
+            let (from, to) = query.pair;
+            let clear = super::world::physics::trace_sight(&cx, sight_scratch, query).await;
+            sight.push((from, to, clear));
+        }
+    }
+    {
+        let mut rt = shared.lock();
+        rt.finish(work.tick, authority, refused);
+        rt.finish_sight(work.tick, sight);
+    }
     shared.reentry.store(true, Ordering::SeqCst);
     let r = cx.call(GuestCall::new(points::GAME_TICK.base)).await;
     shared.reentry.store(false, Ordering::SeqCst);

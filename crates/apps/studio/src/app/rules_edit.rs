@@ -437,23 +437,28 @@ impl RulesEditor {
                 .ok_or("the script has no file yet: save it as one")?,
         };
         std::fs::write(&path, &self.text).map_err(|e| format!("{}: {e}", path.display()))?;
+        self.mark_saved(&path);
+        Ok(path)
+    }
+
+    /// Update the baseline and watcher after the package records the source.
+    pub(super) fn mark_saved(&mut self, path: &Path) {
         self.saved = self.text.clone();
         // Our own write is no outside change; a save elsewhere leaves the
         // outside editor's file behind.
         if self.watch.as_ref().is_some_and(|w| w.path == path) {
             if let Some(w) = &mut self.watch {
-                w.seen = modified(&path);
+                w.seen = modified(path);
             }
         } else {
             self.watch = None;
         }
-        if self.path.as_deref() != Some(path.as_path()) {
+        if self.path.as_deref() != Some(path) {
             self.title = path
                 .file_name()
                 .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
         }
-        self.path = Some(path.clone());
-        Ok(path)
+        self.path = Some(path.to_owned());
     }
 
     /// Formats the text (`rules::ide::format`); refused while it does not

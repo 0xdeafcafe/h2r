@@ -457,7 +457,14 @@ pub fn build(root: &Path, schema: &Schema) -> Result<(Catalogue, Built)> {
 /// `force` is set (the store was just written: a file can change while no
 /// manifest does). `None` when the catalogue is current.
 pub fn update(root: &Path, schema: &Schema, force: bool) -> Result<Option<Built>> {
-    if !force && read(root)?.is_some_and(|c| c.is_current(root).unwrap_or(false)) {
+    // A catalogue that does not read (an older format, a torn write) is
+    // stale like a missing one: it is built again, never an error.
+    if !force
+        && read(root)
+            .ok()
+            .flatten()
+            .is_some_and(|c| c.is_current(root).unwrap_or(false))
+    {
         return Ok(None);
     }
     let (c, report) = build(root, schema)?;

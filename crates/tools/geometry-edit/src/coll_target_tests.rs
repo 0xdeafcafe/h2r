@@ -152,7 +152,8 @@ fn an_unedited_bsp_writes_nothing() {
 
 #[test]
 fn a_moved_bsp_is_compiled_saved_and_reads_back() {
-    let src = map_bytes(2);
+    // Each of the cube's six faces has its own material.
+    let src = map_bytes(6);
     let mut s = session(&src);
     lift_all(&mut s, 1.0);
     let check = &s.check(Some(target()))[0];

@@ -66,6 +66,7 @@ impl App {
             }
             CreateAsset::Model { file, tag } => import_model(&data, &file, package, &tag)?,
         };
+        self.refresh_package_document();
         let id = format!("item:{package}:{}", reply["item"]);
         if !self.open_source_asset(&id, true) {
             return Err(CopyRefusal::Failed(format!(

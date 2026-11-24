@@ -119,6 +119,8 @@ fn counters(sink: bool) -> BTreeMap<String, u64> {
         .chain(sink.then(d3d::scene_sink::counters).into_iter().flatten())
         .collect();
     #[cfg(feature = "gpu")]
+    counts.extend(crate::native_post_glue::refusal_counters());
+    #[cfg(feature = "gpu")]
     if sink { counts.extend(crate::native_objects_glue::palette_counters()); }
     if sink && let Some(residency) = d3d::scene_stage::residency::counters() {
         counts.extend(residency.map(|(name, n)| (name.to_owned(), n)));
@@ -206,6 +208,9 @@ fn source(dump: bool) -> Result<SceneReply, String> {
             carried_checkpoint: checkpoint,
             carried_activation: ACTIVATION.get().cloned(),
             visibility_first_mismatch: render_bridge::scene_step::visibility_first_mismatch(),
+            light_visibility_first_mismatch: render_bridge::scene_step::light_visibility_first_mismatch(),
+            first_person_visibility_first_mismatch: render_bridge::native_lights::slot_visibility::first_mismatch(),
+            view_record_first_mismatch: render_bridge::scene_step::view_record_first_mismatch(),
             ..SceneReply::default()
         });
     };
@@ -365,6 +370,9 @@ fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>, summary: Option<&C
         carried_checkpoint: None,
         carried_activation: None,
         visibility_first_mismatch: render_bridge::scene_step::visibility_first_mismatch(),
+        light_visibility_first_mismatch: render_bridge::scene_step::light_visibility_first_mismatch(),
+        first_person_visibility_first_mismatch: render_bridge::native_lights::slot_visibility::first_mismatch(),
+        view_record_first_mismatch: render_bridge::scene_step::view_record_first_mismatch(),
         dump: None,
     }
 }

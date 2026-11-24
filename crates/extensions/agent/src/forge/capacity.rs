@@ -151,19 +151,37 @@ impl Block {
                 Some(tail)
             }
         };
-        let limit = match self.name {
+        Ok(BlockCapacity {
+            count,
+            limit: self.limit(m)?,
+            kit_left,
+        })
+    }
+
+    fn limit(&self, m: &dyn GuestMemory) -> Result<Option<u32>, RpcError> {
+        Ok(match self.name {
             // The optional campaign extension changes the squad header's
             // capacity at load. Read the actual allocated array here.
             "squads" => pool(m, 0x0051_e9d8)?.map(|p| p.limit),
             "squad_groups" => pool(m, 0x0051_e9dc)?.map(|p| p.limit),
             _ => self.limit,
-        };
-        Ok(BlockCapacity {
-            count,
-            limit,
-            kit_left,
         })
     }
+}
+
+/// A scenario block's live count and known engine limit. This shares the
+/// probe's measurements without scanning the block for spare kit rows.
+pub fn block_usage(
+    m: &dyn GuestMemory,
+    scenario: u32,
+    name: &str,
+) -> Result<(u32, Option<u32>), RpcError> {
+    let block = BLOCKS
+        .iter()
+        .find(|b| b.name == name)
+        .ok_or_else(|| unavailable(format!("unknown scenario block {name}")))?;
+    let (count, _) = block.extent(m, scenario)?;
+    Ok((count, block.limit(m)?))
 }
 
 pub(super) fn blocks(

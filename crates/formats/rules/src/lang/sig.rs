@@ -38,6 +38,7 @@ pub fn of(e: &Entry) -> Option<Sig> {
         id::CARRIER_OF | id::PLAYER_OF => given(&[O], Some(P_)),
         id::OBJECT_TEAM => given(&[O], Some(T_)),
         id::END_ROUND | id::FF_TEAM_FINISH => given(&[T_], None),
+        id::FF_LIVES => given(&[P_, Type::Int], None),
         id::REGISTER_OBJECTIVE => given(&[O, T_], None),
         id::SPAWN_OBJECTIVE => given(&[Type::TAG, O, T_], None),
         id::SET_LOADOUT => given(&[P, W_, W_], None),

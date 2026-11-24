@@ -1,8 +1,7 @@
 //! What is left to add, by kind of thing (docs/game/forge-map-variants-ui.md,
 //! "The budget"). One number has one source: `Session::budget_for` (`session/budget.rs`) gives
 //! what is left of a block, the limit and which limit binds, and the HUD's
-//! pill, the readout's guide line, the Map limits rows and a refused add's
-//! sentence all read it.
+//! pill, the readout's guide line and a refused add's sentence all read it.
 //!
 //! Two limits apply to an added entry: the session's object budget, for the
 //! blocks whose entries make objects, and the engine's count for the block

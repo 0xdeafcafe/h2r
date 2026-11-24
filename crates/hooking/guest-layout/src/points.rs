@@ -361,8 +361,8 @@ points! { ALL;
     SIM_ANIMATION_STREAM @ 0x0027_98a0: [opaque], Hot; "docs/perf/sim-budget.md";
     SIM_GRAPH_RESOLVE @ 0x001d_d9d0: [fn(graph: edx, clip: stack 0) ret 4], Hot; "docs/perf/sim-budget.md";
     SIM_MARKER_TRANSFORMS @ 0x000b_8d30: [fn(out: ebx, object: stack 0, name: stack 1, capacity: stack 2) -> eax ret 12], Hot; "docs/perf/sim-budget.md";
-    COLLISION_BSP_SEGMENT @ 0x001d_e6d0: [fn(query: stack 0, node: stack 1, lo: stack 2, hi: stack 3) -> al ret 16], Hot; "docs/perf/sim-budget.md";
-    /// BSP vector test: one segment through a collision BSP into the result record.
+    COLLISION_BSP_SEGMENT @ 0x001d_e6d0: [fn(query: stack 0, node: stack 1, lo: stack 2, hi: stack 3) -> al ret 16], Hot; "docs/engine/collision-queries.md";
+    /// BSP vector test. The parity observers gather at entry and compare AL and the result record at return.
     COLLISION_VECTOR_TEST @ 0x001d_e630: [fn(out: eax, flags: ecx, bsp: edx, limit: xmm0, breakable_count: stack 0, breakable_mask: stack 1, start: stack 2, delta: stack 3) -> al ret 16], Hot; "docs/engine/collision-queries.md";
     /// The instanced-geometry trace in one cluster.
     COLLISION_INSTANCE_TRACE @ 0x0024_4980: [fn(cluster: eax, start: esi, delta: edi, flags: stack 0, filter: stack 1, out: stack 2) -> al ret 12], Hot; "docs/engine/collision-queries.md";
@@ -382,6 +382,10 @@ points! { ALL;
     SIM_MOPP_RAY @ 0x0030_09e0: [fn(query: ecx, state: stack 0, program: stack 1, segment: stack 2) ret 12], Hot; "docs/perf/sim-budget.md";
     OBJECT_TRANSFORM_COMPOSE @ 0x0014_2a60: [fn(parent: ecx, child: edx, out: stack 0) -> eax ret 4], Hot; "docs/perf/sim-budget.md";
     OBJECT_POSE_MATRIX @ 0x0014_21f0: [fn(out: stack 0, pose: stack 1) ret 8], Hot; "docs/perf/sim-budget.md";
+    /// The animation graph's node walk: every node reached from node 0
+    /// through the child and sibling links posed and composed with its
+    /// parent's matrix (`root` for node 0) into `matrices`.
+    ANIM_GRAPH_MATRICES @ 0x001d_d1c0: [fn(graph: stack 0, matrices: stack 1, records: stack 2, root: stack 3) ret 16], Hot; "docs/engine/skeleton-walk.md";
     /// Root node transform from two axes, scale and an optional parent.
     OBJECT_ROOT_TRANSFORM @ 0x000b_dc40: [fn(forward: eax, up: ecx, position: stack 0, scale: stack 1, mirror: stack 2, parent: stack 3, out: stack 4) ret 20], Hot; "docs/perf/sim-budget.md";
     ANIM_ROTATION_CODEC @ 0x0028_c530: [fn() ret 0], Hot; "docs/perf/sim-budget.md";
@@ -908,6 +912,10 @@ points! { ALL;
     RENDER_FRAME_TAIL @ 0x0001_3b90: [opaque]; "docs/graphics/native-renderer.md";
     /// `render_scene_passes`: the scene pass sequence of one view.
     RENDER_SCENE_PASSES @ 0x0002_bcd0: [opaque]; "docs/graphics/e3-lighting.md";
+    /// Builds the viewport clear flags and issues the device clear.
+    SCENE_CLEAR @ 0x0001_4b60: [opaque]; "docs/graphics/native-renderer.md";
+    /// Selects the colour and depth targets, including cached selections.
+    SCENE_TARGET_SELECT @ 0x0001_cd30: [opaque]; "docs/graphics/native-renderer.md";
     /// Resets the record counters immediately before the two structure walks.
     RESET_SCENE_RECORDS @ 0x0002_cb30: [fn() ret 0]; "docs/graphics/occlusion-culling.md";
     /// Main view's visible structure cluster and placement record walks.

@@ -179,6 +179,9 @@ impl Client {
             diverged: true,
             ..Client::default()
         };
+        // The offers rode the channel that just closed: the asking stops.
+        #[cfg(feature = "rules")]
+        crate::rules::world::pick::client_reset();
     }
 
     /// Resolve the host packet atomically before recording presentation work.
@@ -373,7 +376,10 @@ impl Client {
         // them: the newest held, and the HUDs it feeds drawn from it on a
         // machine that runs no VM (`crate::rules::world::show::receive`).
         // Without the `rules` feature there is no script to show them by,
-        // and they are dropped.
+        // and they are dropped. The pickers' offers beside them: this
+        // machine's local players are asked at the boundary while the
+        // asking waits (`crate::rules::world::pick::client_tick`), and a
+        // press goes back up the channel.
         let cues = std::mem::take(&mut self.pending_cues);
         let shows = std::mem::take(&mut self.pending_show);
         #[cfg(feature = "rules")]
@@ -384,6 +390,7 @@ impl Client {
             if !shows.is_empty() {
                 crate::rules::world::show::receive(cx, &shows).await;
             }
+            crate::rules::world::pick::client_tick(cx, local_tick).await;
         }
         #[cfg(not(feature = "rules"))]
         drop((cues, shows));
@@ -406,6 +413,8 @@ pub fn install(
             super::roles::receive(&[]);
             #[cfg(feature = "rules")]
             crate::rules::world::show::clear_held();
+            #[cfg(feature = "rules")]
+            crate::rules::world::pick::client_reset();
         });
 
     let client = Arc::clone(&state);
@@ -433,15 +442,25 @@ pub fn install(
                         super::roles::receive(&[]);
                         #[cfg(feature = "rules")]
                         crate::rules::world::show::clear_held();
+                        #[cfg(feature = "rules")]
+                        crate::rules::world::pick::client_reset();
                         super::report::clear(agent::actors::Role::Client);
                         return Ok(Flow::Continue);
                     };
                     receive(&mut current, tick);
                     super::report::publish_client(tick, &current);
                     super::roles::receive(current.mode_state());
+                    // A picker's ask waiting on a client runs the boundary
+                    // too, so the asking advances
+                    // (`crate::rules::world::pick::client_tick`).
+                    #[cfg(feature = "rules")]
+                    let asks_waiting = crate::rules::world::pick::client_busy();
+                    #[cfg(not(feature = "rules"))]
+                    let asks_waiting = false;
                     if current.presentation.is_empty()
                         && current.pending_cues.is_empty()
                         && current.pending_show.is_empty()
+                        && !asks_waiting
                     {
                         return Ok(Flow::Continue);
                     }

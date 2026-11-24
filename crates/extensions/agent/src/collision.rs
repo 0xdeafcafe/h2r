@@ -15,6 +15,15 @@ pub fn install(agent: &Agent) {
     });
 }
 
+fn parity(stats: &world::VectorParity) -> agent_proto::collision::VectorParity {
+    agent_proto::collision::VectorParity {
+        matched: stats.matched,
+        mismatched: stats.mismatched,
+        unverified: Bail::ALL.iter().map(|&b| (b.name().to_owned(), stats.unverified[b as usize])).collect(),
+        first_mismatch: stats.first_mismatch.clone(),
+    }
+}
+
 fn wire(s: &world::Stats) -> Stats {
     Stats {
         switch: "impl.sim.native.collision".into(),
@@ -54,6 +63,8 @@ fn wire(s: &world::Stats) -> Stats {
             double: s.precision[2],
             extended: s.precision[3],
         },
+        vector: parity(&s.vector),
+        context: parity(&s.context),
         ray: RayParity {
             matched: s.ray.matched,
             mismatched: s.ray.mismatched,
@@ -88,6 +99,11 @@ mod tests {
         s.cluster_budget_reads = 19;
         s.entries[Entry::Location as usize].bails[Bail::Budget as usize] = 6;
         s.precision = [1, 0, 5, 0];
+        s.context.matched = 5;
+        s.vector.matched = 9;
+        s.vector.mismatched = 1;
+        s.vector.first_mismatch = Some("AL: expected 1, guest 0".into());
+        s.vector.unverified[Bail::Trap as usize] = 3;
         s.ray.matched = 11;
         s.ray.unverified[Bail::Float as usize] = 2;
         s.ray.first_mismatch = Some("different step at observation 3".into());
@@ -121,6 +137,9 @@ mod tests {
         assert_eq!(w.entries[4].mxcsr["00001fa0"], 3);
         assert_eq!(w.entries[4].x87_control["037f"], 3);
         assert_eq!((w.ray.matched, w.ray.unverified["float"]), (11, 2));
+        assert_eq!((w.vector.matched, w.vector.mismatched, w.vector.unverified["trap"]), (9, 1, 3));
+        assert_eq!(w.context.matched, 5);
+        assert_eq!(w.vector.first_mismatch, s.vector.first_mismatch);
         assert_eq!(w.ray.unverified.len(), Bail::ALL.len());
         assert_eq!(
             w.ray.first_mismatch.as_deref(),

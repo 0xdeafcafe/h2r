@@ -341,7 +341,7 @@ impl Driver {
                 .ok()
                 .flatten()
                 .and_then(|g| g.options().variant().engine(m).ok());
-            e.tick(tick, bsp, crate::forge_screens::ui_up(m), game);
+            e.tick(tick, bsp, crate::forge_screens::ui_up(m), game, m);
             let now = tick as f32 / 30.;
             crate::forge_readout::publish(e.readout_scene(game));
             crate::forge_hud::publish(e.monitor_hud(now));
