@@ -334,7 +334,7 @@ pub(super) fn cmp_byte(c: &mut CpuAbi, a: u8, b: u8) {
     c.eflags_defined |= crate::sim_physics::ARITH;
 }
 
-fn imul(c: &mut CpuAbi, a: u32, b: i32) -> u32 {
+pub(super) fn imul(c: &mut CpuAbi, a: u32, b: i32) -> u32 {
     let product = i64::from(a as i32) * i64::from(b);
     let narrowed = product as i32;
     let overflow = if i64::from(narrowed) == product {

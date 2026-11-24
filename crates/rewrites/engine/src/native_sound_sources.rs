@@ -9,6 +9,7 @@ use guest_layout::sound::{LoopingSound, SoundChannel, SoundInstance};
 use runtime::{CpuAbi, Guest, GuestFault};
 use sim_sound::sources::{FadeWindow, release_loop_ref, uses_specialized_channel};
 
+mod channels;
 mod completion;
 mod instances;
 mod listeners;
@@ -43,6 +44,11 @@ pub static RELEASE_LOOP: Point = Point::new(
 );
 
 pub const BODIES: &[Body] = &[
+    channels::CAPPED,
+    channels::CENSUS,
+    channels::COMPARE,
+    channels::PRESSURE,
+    channels::SELECT,
     completion::FINISH,
     completion::FREE,
     instances::SOURCE_WALK,

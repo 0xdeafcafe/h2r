@@ -184,6 +184,8 @@ fn compare_with(
 mod ambience;
 #[path = "sim_sound_differential/channel.rs"]
 mod channel;
+#[path = "sim_sound_differential/channel_choice.rs"]
+mod channel_choice;
 #[path = "sim_sound_differential/core.rs"]
 mod core_cases;
 #[path = "sim_sound_differential/disc.rs"]
@@ -217,6 +219,7 @@ fn cases(entry: u32) -> Vec<Case> {
     let providers: &[fn(u32) -> Vec<Case>] = &[
         ambience::cases,
         channel::cases,
+        channel_choice::cases,
         core_cases::cases,
         extra::cases,
         impulse::cases,

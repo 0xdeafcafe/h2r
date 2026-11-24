@@ -422,6 +422,11 @@ as runtime before).
   records across callbacks. The driver fuses calls between sound bodies and
   uses the original stack at calls to other systems. Reverting an arena
   restores the persistent sound records directly.
+- *Channel choice.* The census (`128500`), class ranking (`128b90`), pick
+  (`128700`), pressure scan (`128920`) and per-class ceiling (`128a60`) run
+  as bodies in `native_sound_sources/channels.rs`, deciding through
+  `sim_sound::{sources::VoicePriority, scheduling::CappedSelection}`. Their
+  synthetic differential cases are in `tests/sim_sound_differential/channel_choice.rs`.
 - *Verification.* Full sim reports with arena hashes include the ordered
   `sound.voices` component. Compare complete reports from the lifted and
   native arms with `h2 sim diff`. A quiet tick has an empty event list.
