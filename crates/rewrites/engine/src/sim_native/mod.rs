@@ -12,6 +12,7 @@ pub mod marker;
 pub mod mopp_query;
 pub mod object;
 pub mod object_base;
+pub(crate) mod plan;
 pub mod pose;
 pub mod root;
 mod ray;
@@ -19,6 +20,7 @@ pub mod stream;
 pub mod unit;
 
 pub use collision::{geometry_test, point_to_leaf};
+pub use plan::SegmentMemory;
 #[cfg(any(test, feature = "differential"))]
 pub use lanes::with as with_simd;
 pub use lanes::{enabled as simd_enabled, set_enabled as set_simd};
@@ -163,6 +165,23 @@ pub trait Memory {
         src: &[u8],
         alignment: u32,
     ) -> std::result::Result<(), GuestFault>;
+    /// Start of a physically contiguous readable span. Flat memory providers
+    /// have identity addresses. A mapped provider must translate aliases.
+    fn physical_read(&self, addr: u32, len: usize) -> Option<u32> {
+        (u64::from(addr).checked_add(len as u64)? <= 1 << 32).then_some(addr)
+    }
+    fn call(&mut self, c: &mut CpuAbi, target: u32, site: u32) -> Result
+    where
+        Self: Sized,
+    {
+        call(c, self, target, site)
+    }
+    fn ret(&self, c: &mut CpuAbi, pop: u32) -> Result
+    where
+        Self: Sized,
+    {
+        ret(self, c, pop)
+    }
     fn load<const N: usize>(&self, addr: u32) -> std::result::Result<[u8; N], GuestFault> {
         let mut bytes = [0; N];
         self.read_bytes(addr, &mut bytes, 1)?;
@@ -198,6 +217,10 @@ pub trait Memory {
 }
 
 impl Memory for Guest {
+    fn physical_read(&self, addr: u32, len: usize) -> Option<u32> {
+        plan::SegmentMemory::checked_offset(self, addr, len, runtime::guest::Access::Read, 1)
+    }
+
     fn read_bytes(
         &self,
         a: u32,

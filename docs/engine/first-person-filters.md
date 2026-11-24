@@ -1,26 +1,27 @@
 # The first-person filter step (`11eed0`)
 
-Status: Partly built. The filter step runs as one Rust call wherever the
-first-person filter port calls it; the port `166d75` around it stays a
-register-level port. Its retirement and the unit aim update remain in phase 1c.
-Code: `crates/rewrites/engine/src/sim_anim/filter.rs` (`step`, `run`).
-Tests: `crates/rewrites/engine/src/sim_anim/filter/tests.rs`,
-`crates/rewrites/engine/tests/sim_physics_differential.rs`
-(`first_person_filter_kernel`).
-Switch: `impl.sim.native.anim` (the port's own
-`impl.sim.native_first_person_filters` gates the vehicle), listed in
-[switches.md](../runtime/switches.md).
+Status: Implemented. Run parity and timing remain open.
+Code: `crates/rewrites/engine/src/sim_anim/segments.rs`,
+`sim_anim/filter.rs`, `sim_physics/first_person.rs` and `sim_physics/weapon_slots.rs`.
+Tests: `crates/rewrites/engine/src/sim_anim/filter/tests.rs` and
+`crates/rewrites/engine/tests/sim_physics_differential.rs`.
+Switch: [sim.native.anim](../runtime/switches.md).
 
-Phase 1c of the [simulation rewrite](sim-rewrite.md). A first-person
-seat's weapon view eases each of four axes toward its target once a
-tick. `11eed0` is one axis's step: it moves a position and its velocity
-toward a target under a speed bound and an acceleration bound, wraps
-across a range when asked, and clamps into it. The register-level port
-(`engine::sim_physics::first_person::filters`) stays the vehicle; at each
-of its calls to `11eed0`, `engine::sim_anim::filter::run` does the call's
-work in Rust and the port carries on at the return site with no guest
-transfer. What the call leaves — memory, registers, flags, MXCSR and the
-x87 state — is the guest's, bit for bit.
+`engine::sim_anim::first_person_filters` runs the seat update from
+`166d75` through its final return. It gathers the seat, steps its four
+view axes, then visits each of the two weapon slots. The slot index,
+animation channels, motion and idle timers stay in guest RAM. Calls to
+the animation manager, random-duration helper and first-person pose
+return to the original frame. The bridge installs the body when the
+image exports its entry and all 40 return selectors.
+
+The body computes each segment on a private CPU with an ordered store
+log. Loads see earlier stores through either guest mapping of the same
+physical bytes. A successful segment commits its stores and CPU before
+the next guest call or return. A fault or unsupported floating-point
+environment leaves the segment's entry state available to its generated
+selector. The individual filter port remains available with the
+animation switch off.
 
 ## How it works
 
@@ -54,9 +55,9 @@ x87 state — is the guest's, bit for bit.
      `(½ · a · tick + v') · tick + p`, wrapped and clamped into
      `[lo, hi]`; `al` 0.
 4. **Scatter** (`scatter`), in the guest's store order: the return
-   address, the stack slots the body writes (the velocity, squared speed
-   and reach locals, the target and tick arguments), then the velocity
-   and the position. Then the registers: `xmm0`–`xmm4`, `xmm6`, `xmm7`
+   address and each stack store, including values overwritten later in
+   the same call, followed by the velocity and position. The snap path
+   preserves the tick argument. Then the registers: `xmm0`–`xmm4`, `xmm6`, `xmm7`
    and MXCSR as the kernel leaves them; `al` and `cl` the snap answer
    (`eax` above `al` the sign when it was taken); the x87 registers,
    status and tags, with the last instruction the path's closing
@@ -66,14 +67,14 @@ x87 state — is the guest's, bit for bit.
 
 ## Interfaces
 
-- Entered only from the first-person filter port and its weapon-slot
-  step, at the calls listed above; nothing else calls `run`. The sim
-  objects' device body calls `11eed0` as a guest callout and does not
-  use the kernel.
+- The seat update calls the kernel at four axis sites and one slot
+  damping site. Its caller continues within the segment after a
+  successful inline call. A declined kernel emits the guest call to
+  `11eed0` with its original return address.
 - `step(&In) -> Result<Out, Decline>` is the call as a pure function of
   gathered state, for tests and later callers.
 - `engine::sim_anim::filter::stats()` counts calls, snaps and declines
-  by reason.
+  by reason. The seat update publishes counts when the segment commits.
 
 ## Rules and limits
 
@@ -84,9 +85,9 @@ when:
 - an instruction would deliver an unmasked SSE or x87 exception
   (`Float`) — the port's `supported` check keeps both masked, so this
   does not happen under the port;
-- the velocity or the position overlaps the call's stack window
-  (`Alias`): the body reads them before its stack stores and writes them
-  after, which the gather does not model when they share bytes.
+- a position or velocity overlaps the stack, a stack write aliases a
+  gathered constant, or a write overlaps the function's instructions
+  (`Alias`). These checks compare physical byte ranges.
 
 The arithmetic is the guest's own operation sequence on the emulators,
 so there is no fast-path range and no precision or rounding decline.
@@ -99,20 +100,19 @@ so there is no fast-path range and no precision or rounding decline.
   the new position — with the stack, register, flag and x87 shape each
   leaves; every decline leaving RAM and the CPU untouched; the switch;
   `step` against `run`.
-- `sim_physics_differential.rs` (`first_person_filter_kernel`,
-  `H2_XBE`): the filter port with the kernel on, against the lifted
-  `166d75` with `11eed0` run inside the segment — all memory and
-  registers at every boundary — over twelve cases of the first-person
-  fixture across x87 precisions and MXCSR rounding modes.
-  `first_person_filter_update` keeps the port itself equal to the
-  lifted guest with the kernel off.
+- `first_person_filter_body` compares the body with lifted `166d75`
+  over eight seeded seat fixtures. It requires all 40 return sites and
+  compares each transfer, the full CPU and RAM. Cases include two live
+  weapon slots, motion transitions and the idle timer's RNG path.
+- `first_person_filter_kernel` runs twelve fixtures with `11eed0`
+  inline on both sides. `first_person_filter_update` exercises the
+  individual port with kernel fusion disabled.
 
 ## Not verified
 
 - Run parity: the sim-budget A/B with `-impl.sim.native.anim` against
-  on, identical `state_hashes_v1` and an empty `h2 sim diff`, with the
-  first-person ports on and a mapped local seat; the decline rate on
-  real seats (`stats()`).
+  on, identical `state_hashes_v1` and an empty `h2 sim diff`, with
+  a mapped local seat. The decline rate on real seats comes from `stats()`.
 
 ## Related
 

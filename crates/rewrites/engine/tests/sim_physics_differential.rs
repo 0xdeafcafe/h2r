@@ -11,7 +11,8 @@ use engine::sim_physics::{ORACLES, PORTS, Port};
 use ir::interp::{Cpu, FlatMemory, Flow};
 use lifted::Code;
 use lifted::cpu::from_interp as abi_cpu;
-use runtime::{Guest, TransferAbi, abi, guest::Permissions};
+use runtime::{CpuAbi, Guest, GuestFault, TransferAbi, abi, guest::Permissions};
+use std::collections::BTreeSet;
 
 const RAM: usize = 8 << 20;
 const STACK: u32 = 0x007f_0000;
@@ -670,7 +671,18 @@ fn segment(code: &mut lifted::Original, inline: &[u32], cpu: &mut Cpu, mem: &mut
     panic!("did not reach a call or return");
 }
 
-fn compare(port: &Port, code: &mut lifted::Original, inline: &[u32], mut mem: FlatMemory, mut cpu: Cpu, case: u32) {
+type NativeBody = fn(&mut CpuAbi, &mut Guest, u32) -> Result<Option<TransferAbi>, GuestFault>;
+
+fn compare(
+    port: &Port,
+    body: Option<NativeBody>,
+    code: &mut lifted::Original,
+    inline: &[u32],
+    mut mem: FlatMemory,
+    mut cpu: Cpu,
+    case: u32,
+    seen: &mut BTreeSet<u32>,
+) {
     let mut native = Guest::new();
     native.map_zeroed(0, RAM as u32, Permissions::RW).unwrap();
     native.write_bytes(0, &mem.bytes, 1).unwrap();
@@ -678,8 +690,16 @@ fn compare(port: &Port, code: &mut lifted::Original, inline: &[u32], mut mem: Fl
     let mut regs = abi_cpu(&cpu);
     for n in 0..1024 {
         let at = cpu.eip;
-        assert!(engine::sim_physics::supported(port, &regs, &native), "fixture takes fallback at {at:#x}");
-        let actual = port.invoke(&mut regs, &mut native, at).unwrap();
+        let actual = if let Some(run) = body {
+            run(&mut regs, &mut native, at).unwrap()
+                .unwrap_or_else(|| panic!("native {} case {case} declined at {at:#x}", port.point.name))
+        } else {
+            assert!(engine::sim_physics::supported(port, &regs, &native), "fixture takes fallback at {at:#x}");
+            port.invoke(&mut regs, &mut native, at).unwrap()
+        };
+        if at != port.point.base {
+            seen.insert(at);
+        }
         assert_ne!(actual.route,abi::RESUME,"{} case {case} escaped to generated code",port.switch);
         let expected = segment(code, inline, &mut cpu, &mut mem);
         let why = || format!("{} case {case} boundary {n} from {at:#x}", port.switch);
@@ -789,14 +809,45 @@ fn compare(port: &Port, code: &mut lifted::Original, inline: &[u32], mut mem: Fl
             word(&mut mem, out, value);
             native.set_u32(out, value).unwrap();
         }
+        if body.is_some() && target == 0xc7750 {
+            // The steering callback returns a new displacement and velocity
+            // through two independent caller-owned locals.
+            let dest = mem.read_u32(sp + 4).unwrap();
+            for (addr, value) in [(dest, 0.125 * case as f32), (cpu.gpr[2], -0.0625 * n as f32)] {
+                word(&mut mem, addr, value.to_bits());
+                native.set_u32(addr, value.to_bits()).unwrap();
+            }
+        }
+        if body.is_some() && target == 0x373b6a {
+            // The remainder callback consumes two x87 arguments and leaves
+            // one result. Use the first input as the synthetic result.
+            let mut x = x87::abi::X87Abi {
+                st: cpu.x87.st, status: cpu.x87.status, tag: cpu.x87.tag, control: cpu.x87.control,
+                ..Default::default()
+            };
+            let rc = x87::abi::st_st(&mut x, 1, true);
+            assert_eq!(rc & x87::abi::status::MASK, x87::abi::status::OK);
+            cpu.x87.st = x.st;
+            cpu.x87.status = x.status;
+            cpu.x87.tag = x.tag;
+        }
         if matches!(target,0x24590|0x259d0) {
             let mut x=x87::abi::X87Abi { st:cpu.x87.st, status:cpu.x87.status, tag:cpu.x87.tag,
                 control:cpu.x87.control,..Default::default() };
-            let rc=x87::abi::ld_f32(&mut x,(case as f32*0.25).to_bits());
+            let value = if body.is_some() && target == 0x24590 {
+                let motion_threshold = f32::from_bits(mem.read_u32(0x45dc68).unwrap());
+                motion_threshold + if case == 0 { -0.25 } else { 0.25 }
+            } else {
+                case as f32 * 0.25
+            };
+            let rc = x87::abi::ld_f32(&mut x, value.to_bits());
             assert_eq!(rc & x87::abi::status::MASK,x87::abi::status::OK);
             cpu.x87.st=x.st;cpu.x87.status=x.status;cpu.x87.tag=x.tag;
         }
-        if target==0x187420 {cpu.xmm[0]=u128::from((case as f32*0.1).to_bits());}
+        if target==0x187420 {
+            let speed = if body.is_some() && case == 5 { 0.0 } else { case as f32 * 0.1 };
+            cpu.xmm[0] = u128::from(speed.to_bits());
+        }
         if target==0x1d9370 {cpu.xmm[0]=u128::from(0.75f32.to_bits());}
         let answer = target.wrapping_mul(0x9127).rotate_left(n % 32) ^ case;
         cpu.gpr[0] = match target {
@@ -809,6 +860,8 @@ fn compare(port: &Port, code: &mut lifted::Original, inline: &[u32], mut mem: Fl
             0xc7750=>u32::from(case<2),
             WELD_SHAPE=>DATA+1024, WELD_ACCEPT=>DATA+2560, 0x301a40=>0,
             0x2fa0d0=>mem.read_u32(sp+16).unwrap(),
+            0x13cb40 if body.is_some() => case % 2,
+            0x1469f0 if body.is_some() && case == 5 => 0,
             0x16898b => 0, 0x1cbd30 => case%4,
             0xbaf80 => 1,
             0x120850 => case % 3,
@@ -866,13 +919,17 @@ fn original(image: &lifted::image::Image, point: &points::Point, inline: &[u32])
 type Fixture = fn(&mut FlatMemory, &mut Cpu, u32);
 
 fn matches_guest(point: &points::Point, uses_objects: bool, cases: u32, prepare: Fixture) {
-    matches_guest_inlining(point, uses_objects, cases, prepare, inlined(point.base));
+    run_fixtures(point, uses_objects, cases, prepare, inlined(point.base), None);
 }
 
 /// [`matches_guest`] with the lifted side running `inline` inside the
 /// segment, for a port that does those calls' work in Rust.
-fn matches_guest_inlining(point: &points::Point, uses_objects: bool, cases: u32, prepare: Fixture, inline: &[u32]) {
-    let Some((image, ram)) = image() else { return };
+fn run_fixtures(
+    point: &points::Point, uses_objects: bool, cases: u32, prepare: Fixture,
+    inline: &[u32], body: Option<NativeBody>,
+) -> BTreeSet<u32> {
+    let mut seen = BTreeSet::new();
+    let Some((image, ram)) = image() else { return seen };
     let port = PORTS.iter().chain(ORACLES).find(|p| p.point.base == point.base).unwrap();
     let mut code = original(image, point, inline);
     for case in 0..cases {
@@ -893,8 +950,9 @@ fn matches_guest_inlining(point: &points::Point, uses_objects: bool, cases: u32,
         cpu.x87.control = [0x007f,0x027f,0x037f][case as usize % 3];
         cpu.mxcsr |= (case % 4) << 13;
         prepare(&mut memory, &mut cpu, case);
-        compare(port, &mut code, inline, memory, cpu, case);
+        compare(port, body, &mut code, inline, memory, cpu, case, &mut seen);
     }
+    seen
 }
 
 macro_rules! differential {
@@ -920,7 +978,12 @@ differential!(unit_aim_update, UNIT_AIM_UPDATE, false, 6, aim_fixture);
 differential!(unit_update, UNIT_UPDATE, true, 6, |_,_,_| {});
 differential!(light_record_update, LIGHT_RECORD_UPDATE, true, 6, |m,_,n| light_fixture(m,n));
 differential!(first_person_pose_update, FIRST_PERSON_POSE_UPDATE, true, 6, |m,_,n| first_person_fixture(m,n));
-differential!(first_person_filter_update, FIRST_PERSON_FILTER_UPDATE, true, 6, |m,_,n| first_person_fixture(m,n));
+#[test]
+fn first_person_filter_update() {
+    engine::sim_anim::filter::with(false, || {
+        matches_guest(&points::FIRST_PERSON_FILTER_UPDATE, true, 6, |m, _, n| first_person_fixture(m, n));
+    });
+}
 differential!(observer_camera, OBSERVER_RESULT, false, 6, observer_fixture);
 
 /// The palette step with the phase 1c kernel on: the port runs it as one
@@ -944,11 +1007,105 @@ fn first_person_pose_palette_kernel() {
 fn first_person_filter_kernel() {
     let before=engine::sim_anim::filter::stats().native;
     engine::sim_anim::filter::with(true,|| {
-        matches_guest_inlining(&points::FIRST_PERSON_FILTER_UPDATE,true,12,
-            |m,_,n| first_person_fixture(m,n%6),&[engine::sim_anim::filter::FILTER]);
+        run_fixtures(
+            &points::FIRST_PERSON_FILTER_UPDATE, true, 12, |m, _, n| first_person_fixture(m, n % 6),
+            &[engine::sim_anim::filter::FILTER], Some(engine::sim_anim::first_person_filters),
+        );
     });
     if image().is_some() {
         let after=engine::sim_anim::filter::stats().native;
         assert!(after>before,"the filter kernel never ran");
     }
+}
+
+/// Give the frame distinct caller state. A skipped register or x87 environment
+/// update is visible even when the current operation produces zero.
+fn seed_registers(c: &mut Cpu, case: u32) {
+    let mut rng = lifted::image::Rng(0x494d_1c00 + u64::from(case));
+    for r in &mut c.xmm {
+        *r = (u128::from(rng.next_u64()) << 64) | (u128::from(rng.u32()) << 32);
+    }
+    c.x87.status = ((case % 8) as u16) << 11;
+    for reg in &mut c.x87.st {
+        for byte in reg {
+            *byte = rng.u32() as u8;
+        }
+    }
+}
+
+fn aim_body_fixture(m: &mut FlatMemory, c: &mut Cpu, case: u32) {
+    aim_fixture(m, c, case);
+    seed_registers(c, case);
+}
+
+/// Enter through the real seat update with a live weapon. The synthetic channel
+/// uses the caller's action-name operands so the fixture can select each state.
+fn filter_body_fixture(m: &mut FlatMemory, c: &mut Cpu, case: u32) {
+    first_person_fixture(m, 1 + case % 5);
+    seed_registers(c, case);
+    let user = RECORDS;
+    let slot = user + 12;
+    word(m, user, case & 1);
+    m.bytes[slot as usize] = 1;
+    m.bytes[(slot + 25) as usize] = 2;
+
+    let operand = match case {
+        0 => 0x16728b, // no motion: update the existing track
+        2 => 0x167322, // the live secondary channel
+        5 => 0x1674b9, // resting idle
+        _ => 0x167585, // end idle and request a transition
+    };
+    let name = m.read_u32(operand).unwrap();
+    word(m, slot + 132, name);
+    if case == 7 {
+        // A second equipped slot has its own channel and countdown.
+        let second = slot + 4112;
+        word(m, second + 4, 1);
+        m.bytes[second as usize] = 1;
+        word(m, second + 132, name);
+        assert!(m.load(second + 240, &3u16.to_le_bytes()));
+    }
+
+    if case == 5 {
+        // All five resting filters are neutral. A zero idle timer consumes
+        // the seeded globals and the x87 return from the random-duration call.
+        for addr in [slot + 228, user + 8240, user + 8244, user + 8256, user + 8260] {
+            word(m, addr, 0);
+        }
+        let globals = m.read_u32(0x4e034c).unwrap();
+        let idle = DATA + 0x15000;
+        let random = DATA + 0x16000;
+        word(m, globals + 308, idle);
+        word(m, 0x4e7408, random);
+        word(m, random + 4, 0x5781);
+        for (off, value) in [(148, 0.25f32), (152, 1.5), (156, 0.375)] {
+            word(m, idle + off, value.to_bits());
+        }
+    }
+}
+
+fn all_sites(point: &points::Point, count: usize, seen: &BTreeSet<u32>) {
+    let port = PORTS.iter().chain(ORACLES).find(|p| p.point.base == point.base).unwrap();
+    let required: BTreeSet<_> = port.resumes.iter().copied().collect();
+    assert_eq!(required.len(), count, "{} registered return sites", point.name);
+    let missing: Vec<_> = required.difference(seen).copied().collect();
+    assert!(missing.is_empty(), "{} missing return sites: {missing:x?}", point.name);
+}
+
+#[test]
+fn unit_aim_body() {
+    if image().is_none() { return; }
+    let point = &points::UNIT_AIM_UPDATE;
+    let seen = run_fixtures(point, false, 6, aim_body_fixture, &[], Some(engine::sim_anim::unit_aim));
+    all_sites(point, 9, &seen);
+}
+
+#[test]
+fn first_person_filter_body() {
+    if image().is_none() { return; }
+    let point = &points::FIRST_PERSON_FILTER_UPDATE;
+    let seen = engine::sim_anim::filter::with(false, || {
+        run_fixtures(point, true, 8, filter_body_fixture, &[], Some(engine::sim_anim::first_person_filters))
+    });
+    all_sites(point, 40, &seen);
 }

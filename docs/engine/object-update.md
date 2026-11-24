@@ -37,8 +37,10 @@ virtual addresses; bare numbers in tables are hex. Names are ours.
   change colours, the unit update's shell `c6b30` and the light record
   update `c0c80` that slice 5's body takes over, are in
   `sim_physics::ORACLES`: never installed, kept as test oracles. The
-  unit aim port stays in `sim_physics::PORTS` under its own switch; the
-  `c7840` body runs the same code (`sim_physics::unit_aim::step`). The
+  unit aim body shares `sim_physics::unit_aim::step` with the animation
+  subsystem. With both switches enabled, the object dispatcher hands
+  calls to `c7840` to the animation hook. The individual aim port is
+  available when both subsystems are off. The
   function value, import and base import ports
   (`sim_native::object`, `sim_native::object_base`) are not installed
   either; `tests/sim_native_differential.rs` keeps them as oracles. The
@@ -970,7 +972,7 @@ look (`+180`). With both of a pair's rates zero (definition `+144`,
 `+148`; `+150`, `+154`; times `+14c` when body `+1bc` is 1) the
 direction is copied and clamped (`cba50`, fused; for the aim only when
 `c4970` answers) and its velocity (`+174`, `+198`) set from `[4687a4]`.
-Otherwise `c7840` (fused) turns it in the unit's frame (`b9fc0`) when
+Otherwise `c7840` turns it in the unit's frame (`b9fc0`) when
 the limits record's (body `+ [body+33e]`) bit 5 (aim) or 6 (look) is
 set, or `11f0d0` turns it in the world. The aim's two rate fractions
 (`11ce20`, `1201a0`, clamped to 0..1) become the bytes at `+243` and
@@ -995,14 +997,12 @@ any of seven `e6fe0(unit, n)` tests answers; then 0 when a held weapon
 caller's `ecx`, saved and restored in the frame, so `ecx` returns with
 it.
 
-**Aim `c7840`.** The port `sim_physics::unit_aim` run as a body:
-`unit_aim::step` returns its calls and return as an `Exit`, which the
-port maps to a `TransferAbi` and the body to a `Next`. The port stays in
-`sim_physics::PORTS` under `impl.sim.native_unit_aim` until phase 1c
-retires it; the port's check that x87 rounding is to nearest does not
-apply to the body: the transcendentals it uses (`fsin`, `fcos`,
-`fpatan`, `fsqrt`) give the same bits in every rounding mode in the
-`x87` crate.
+**Aim `c7840`.** `sim_physics::unit_aim::step` computes joint-space
+direction and velocity with scalar SSE and x87. It returns a call or
+return to its driver. The object update can fuse the step when it owns
+aim. With the animation subsystem selected, the object update emits the
+call and `sim_anim::unit_aim` plans and commits the segment. Both
+drivers use the guest frame across all nine return sites.
 
 ### Not verified for slice 6a
 

@@ -94,7 +94,7 @@ thread.
 | Lights `c0000..c4000` | 671 | 0.80 | `c0c80` 432, `c1400` 83, `c0b00` 64 | this phase |
 | Type dispatch `108000..10a000` | 558 | 0.66 | `108d90` 317, `108c60` 67, `109140` 44, `109050` 42 | this phase |
 | **Core subtotal (this phase only)** | **4,749** | **5.63** | | |
-| Unit `c4000..d2000` | 2,883 | 3.42 | `c7840` 325, `c60c0` 260, `ce0c0` 195, `cba50` 195, `cafc0` 190, `c49b0` 158, `c58f0` 150, `c6b90` 138 | this phase (`c7840` overlaps phase 1c's `native_unit_aim`) |
+| Unit `c4000..d2000` | 2,883 | 3.42 | `c7840` 325, `c60c0` 260, `ce0c0` 195, `cba50` 195, `cafc0` 190, `c49b0` 158, `c58f0` 150, `c6b90` 138 | object update (the animation subsystem owns `c7840` when both are enabled) |
 | Unit animation `110000..115000` | 1,072 | 1.27 | `112070` 361 (phase 1c), `111650` 210, `1130f0` 85 | 711 this phase |
 | Biped `dc000..ee000` | 1,597 | 1.89 | `df380` 139, `dd360` 138, `e01d0` 137, `e24f0` 137, `dc5c0` 116, `dd990` 109 | this phase |
 | Vehicle `ee000..f8000` | 1,447 | 1.72 | `f6d10` 224, `efde0` 183, `eec90` 175, `f3010` 162 | this phase |
