@@ -481,6 +481,26 @@ impl ExecCtx {
             std::ptr::null_mut()
         };
     }
+    /// Route transfers from this invocation through the runner. A comparison
+    /// at a generated call boundary needs the outgoing frame before the
+    /// callee runs, including when its caller entered via a direct thunk.
+    pub fn with_routed_calls<T>(&mut self, run: impl FnOnce(&mut ExecCtx) -> T) -> T {
+        struct Restore<'a> {
+            ctx: &'a mut ExecCtx,
+            previous: DirectPtr,
+        }
+
+        impl Drop for Restore<'_> {
+            fn drop(&mut self) {
+                std::mem::swap(&mut self.ctx.direct_ptr, &mut self.previous);
+            }
+        }
+
+        let previous = std::mem::replace(&mut self.direct_ptr, DirectPtr(std::ptr::null_mut()));
+        let restore = Restore { ctx: self, previous };
+        run(restore.ctx)
+    }
+
     /// Cap direct-call nesting at `depth` (at most [`MAX_DEPTH`]; default
     /// [`DEFAULT_DEPTH`]). A call past it goes through the runner.
     pub fn set_direct_call_depth(&mut self, depth: u32) {
@@ -589,6 +609,22 @@ mod tests {
             std::ptr::null(),
             (0x1000, 0x2001),
         )))
+    }
+
+    #[test]
+    fn routed_calls_restore_the_callers_mode() {
+        let rt = crate::Runtime::new(crate::Guest::new(), Dispatch::default());
+        let mut ctx = ExecCtx::new(rt, 1);
+        for enabled in [false, true] {
+            ctx.enable_direct_calls(enabled);
+            let previous = ctx.direct_ptr.0;
+            ctx.with_routed_calls(|ctx| {
+                assert!(ctx.direct_ptr.0.is_null());
+                ctx.with_routed_calls(|inner| assert!(inner.direct_ptr.0.is_null()));
+                assert!(ctx.direct_ptr.0.is_null());
+            });
+            assert_eq!(ctx.direct_ptr.0, previous);
+        }
     }
 
     #[test]
