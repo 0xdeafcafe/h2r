@@ -17,10 +17,13 @@ const CLASS: u32 = ARENA + 0x5c00;
 const DIRECTION: u32 = ARENA + 0x6000;
 
 pub(super) fn cases(entry: u32) -> Vec<Case> {
-    if entry != points::SOUND_CHANNEL_SPATIAL.base {
-        return Vec::new();
+    if entry == points::SOUND_CHANNEL_SPATIAL.base {
+        (0..14).map(|seed| Case { setup, reply, seed }).collect()
+    } else if matches!(entry, 0x12aff0 | 0x12ac20 | 0x12ad30) {
+        (0..12).map(|seed| Case { setup: attenuation_setup, reply: attenuation_reply, seed }).collect()
+    } else {
+        Vec::new()
     }
-    (0..14).map(|seed| Case { setup, reply, seed }).collect()
 }
 
 fn setup(g: &mut Guest, c: &mut Cpu, seed: u32) {
@@ -128,5 +131,89 @@ fn reply(g: &mut Guest, c: &mut Cpu, target: u32, seed: u32) -> u32 {
             16
         }
         _ => panic!("unexpected spatial child {target:#x}"),
+    }
+}
+
+fn attenuation_setup(g: &mut Guest, c: &mut Cpu, seed: u32) {
+    if c.eip == 0x12aff0 {
+        let (a, b, sample): (f32, f32, f32) = match seed {
+            0 | 1 => (1.25, 1.25, 1.125),
+            2 | 3 => (1.25, 1.25, 1.5),
+            4 => (1.25, 1.25, 1.25),
+            5 => (7.0, 3.5, 8.0),
+            6 => (7.0, 3.5, 3.0),
+            7 => (7.0, 3.5, 5.25),
+            8 => (0.5, 1.5, -2.0),
+            9 => (0.5, 1.5, 2.0),
+            10 => (0.5, 1.5, f32::NAN),
+            _ => (f32::NAN, 2.0, 1.0),
+        };
+        c.gpr[1] = 0xf00d0000 | (seed % 2);
+        for (i, v) in [a, b, sample].into_iter().enumerate() {
+            g.set_u32(STACK + 4 + i as u32 * 4, v.to_bits()).unwrap();
+        }
+        return;
+    }
+    let sample = [0.0f32, 1.5, 6.5, 12.0][(seed % 4) as usize];
+    g.set_u32(points::TAG_ENTRIES.base, TAGS).unwrap();
+    g.set_u32(TAGS + 0x18, TAG).unwrap();
+    g.set_u32(0x51ebd4, GLOBALS).unwrap();
+    g.set_u32(GLOBALS + 4, ROWS).unwrap();
+    let near = if seed % 4 == 2 { 0.0f32 } else { 2.75f32 };
+    for (at, value) in [(SOURCES + 0x34, near), (SOURCES + 0x38, 8.0),
+                        (ROWS + 0x38, near), (ROWS + 0x3c, 9.5),
+                        (CLASS + 0x18, near), (CLASS + 0x1c, 13.75)] {
+        g.set_u32(at, value.to_bits()).unwrap();
+    }
+    g.set_u16(TAG + 6, 1).unwrap();
+    g.set_u8(TAG + 2, 0xfb).unwrap();
+    let source_flags = match seed % 4 { 0 => 0, 1 => 4, 2 => 8, _ => 12 };
+    g.set_u16(SOURCES, source_flags | if seed % 2 != 0 { 0x210 } else { 0 }).unwrap();
+    let class_flags = match seed % 3 { 0 => 0, 1 => 4, _ => 12 };
+    g.set_u8(TAG + 1, class_flags | if seed == 6 { 0x10 } else { 0 }).unwrap();
+    if c.eip == 0x12ac20 {
+        c.gpr[0] = 0xacdc0001;
+        c.gpr[7] = SOURCES;
+        g.set_u32(STACK + 4, sample.to_bits()).unwrap();
+    } else {
+        c.gpr[0] = OUTPUT;
+        c.gpr[1] = SOURCES;
+        g.set_u32(STACK + 4, 0xacdc0001).unwrap();
+        g.set_u32(STACK + 8, DIRECTION).unwrap();
+        for (i, v) in [sample, sample * 0.75, sample * -0.5].into_iter().enumerate() {
+            g.set_u32(OUTPUT + i as u32 * 4, v.to_bits()).unwrap();
+        }
+    }
+}
+
+fn attenuation_reply(g: &mut Guest, c: &mut Cpu, target: u32, seed: u32) -> u32 {
+    match target {
+        0x124fc0 => {
+            c.xmm[0] = u128::from(2.25f32.to_bits());
+            0
+        }
+        0x12aff0 => {
+            c.xmm[0] = u128::from(0.625f32.to_bits());
+            12
+        }
+        0x12ac20 => {
+            let gain = if seed == 4 { 0.0f32 } else { 0.375 };
+            c.xmm[0] = u128::from(gain.to_bits());
+            4
+        }
+        0x30bf0 => {
+            c.xmm[0] = u128::from((if seed == 7 { 0.0f32 } else { 1.75 }).to_bits());
+            0
+        }
+        0x1251a0 => {
+            c.gpr[0] = (-9.25f32).to_bits();
+            0
+        }
+        0x11cf50 | 0x125120 | 0x1250a0 => {
+            c.xmm[0] = u128::from((seed as f32 + 0.125).to_bits());
+            0
+        }
+        0x221810 | 0x2195f0 => reply(g, c, target, seed),
+        _ => panic!("unexpected distance/cone child {target:#x}"),
     }
 }
