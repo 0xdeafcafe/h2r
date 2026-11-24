@@ -18,7 +18,7 @@ fn each_map_set_validates_compiles_and_round_trips() {
         let def: Def =
             serde_json::from_str(text).unwrap_or_else(|e| panic!("{file} is not a set: {e}"));
         validate(&def, &elite_kit()).unwrap_or_else(|e| panic!("{file}: {e}"));
-        firefight::script::compile(&def).unwrap_or_else(|e| panic!("{file}: {e:?}"));
+        firefight::script::load(&def).unwrap_or_else(|e| panic!("{file}: {e:?}"));
         let json = def.canonical_json().unwrap();
         assert_eq!(Def::from_bytes(json.as_bytes(), &elite_kit()).unwrap(), def, "{file}");
         assert_eq!(builtin::map_sets(map), vec![def.clone()], "{map}");
