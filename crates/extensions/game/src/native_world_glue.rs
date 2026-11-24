@@ -1007,7 +1007,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
         switches,
         refreshing: Arc::default(),
     }));
-    crate::native_transparents_glue::install(device);
+    crate::native_transparents_glue::install(device, Arc::clone(&state));
     crate::native_fog_glue::install(device, Arc::clone(&state));
     crate::native_water_glue::install(device, Arc::clone(&state));
     crate::native_layers_glue::install(device, Arc::clone(&state));
@@ -1561,12 +1561,12 @@ fn load_ready(
             &mut map, &mut files, &shaders, &stage_world, &lightmaps, &mut stage_images, &mut decoder,
         );
         let mut empty = water.part_set.is_empty();
-        if !empty {
+        if !empty || !water.pools.is_empty() {
             let set = crate::native_water_glue::upload_water(&water, &device, &queue, &stage_world,
                 &mut |s| stage_bitmap(&stage_images, s), &mut |k| lightmaps.get(&k).cloned());
             water.part_set.retain(|&(owner, part), _| set.draws_part(owner, part));
             empty = water.part_set.is_empty();
-            if !empty && !send(StageReady::Water(Arc::new(water), decoder.used().clone(), Box::new(set))) {
+            if (!empty || !water.pools.is_empty()) && !send(StageReady::Water(Arc::new(water), decoder.used().clone(), Box::new(set))) {
                 return Ok(());
             }
         }

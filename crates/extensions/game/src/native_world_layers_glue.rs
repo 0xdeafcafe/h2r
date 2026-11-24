@@ -35,6 +35,7 @@ pub struct DrawContext {
 }
 
 thread_local! {
+    static POOL: Cell<Option<(u32, u32)>> = const { Cell::new(None) };
     static SKY: RefCell<Option<Result<SkyItem, Refusal>>> = const { RefCell::new(None) };
     static DRAW: Cell<Option<DrawContext>> = const { Cell::new(None) };
 }
@@ -102,12 +103,14 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(
             index,
             "boot:native world layers indexed",
             move |cpu, ctx, selector| {
+                let mut pool = None;
                 let mut sky = None;
                 let context = (|| {
                     let frame = crate::d3d_diag::presents() + 1;
                     let current = current();
                     let guest = ctx.memory();
                     let mem = Memory(&guest);
+                    pool = render_bridge::native_transparents::pool_issue(&mem, cpu.esp);
                     let return_address = mem.read_u32(cpu.esp)?;
                     let layer = if return_address == SKY_INDEXED_RETURN {
                         sky = Some(SkyItem::read(&mem, cpu.esp, cpu.ebp));
@@ -147,6 +150,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(
                         index_count: cpu.esp.checked_add(8).and_then(|a| mem.read_u32(a)),
                     })
                 })();
+                let _pool = RestorePool(POOL.replace(pool));
                 let _restore = Restore(DRAW.replace(context));
                 let _sky = sky.map(|item| RestoreSky(SKY.replace(Some(item))));
                 Ok(previous.invoke(cpu, ctx, selector))
@@ -179,6 +183,14 @@ pub fn enter_opaque_range(
         bsp: None, generation: render_bridge::native_map_work::bsp_generation(),
     })))
 }
+
+struct RestorePool(Option<(u32, u32)>);
+
+impl Drop for RestorePool {
+    fn drop(&mut self) { POOL.set(self.0); }
+}
+
+pub(crate) fn pool_issue() -> Option<(u32, u32)> { POOL.get() }
 
 struct RestoreSky(Option<Result<SkyItem, Refusal>>);
 

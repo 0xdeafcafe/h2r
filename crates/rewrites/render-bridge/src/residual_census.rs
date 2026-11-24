@@ -316,6 +316,8 @@ pub const REGISTRY: &[Row] = &[
         status: Status::Partial,
         slot: "after_opaque",
     },
+    // Includes sorted layer-15 pool surfaces. Layer 6 and the teardown
+    // composite run outside this dispatcher.
     Row {
         name: "transparents",
         entry: 0x0001_e370,

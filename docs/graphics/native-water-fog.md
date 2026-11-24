@@ -32,11 +32,9 @@ gates the player chain after):
   layer-16 pass (16,668 resolved `(lod, layer)` passes on the disc's 30
   maps, against layer 3's 16,622: the fog pass is a per-material pass
   like the lightmap one, drawn where the same geometry drew in layer 3).
-  Layer 6 has two passes on the whole disc: the water templates'
-  (`shader_templates\...\water_pool`, `water_pool_static`; a water
-  surface is a kind-4 transparent part, structure-bsp.md "Observations
-  from the disc", so the surfaces themselves are stage 3's, and layer 6
-  is only the edge blend over them). Layers 18 and 19 (111 and 30
+  Retail pool templates (`water_pool`, `water_pool_static`) have a sorted
+  layer-15 pass. Layer 6 selects `water_edge_blend` on Old Mombasa and
+  Zanzibar. The static ocean and opaque water templates select layer 3. Layers 18 and 19 (111 and 30
   passes) are the active-camouflage materials', layer 21 (6) the
   hologram's; their items are object render records, stage 2's.
 - **Scene-copy and reflection inputs.** A template pass binds its stages from the instance bitmaps or the engine textures (`ResolvedImplementation::textures`); the engine-texture table (`0x00019530`, the jump table at `0x00019b68`) names every render target a pass can sample: 5 the view's bound target (a scene copy), 2 and 3 target 1 (the texaccum), 6 target 3, 13 target 9 (the shadow map), 8 target 10. Engine textures 14 and 15 bind the rasterizer data's bitmap at `+0x14` (`0x000197dd`, `0x000197fb`: `[[0x00485a80]+0x14]` through `0x000143c0`), 14 its image 0 and 15 its image 1 (14 clears `ecx`, the image argument; 15 leaves the 1 loaded at `0x00019538`); the fog and water loaders resolve it from the globals tag (`fog_gpu::Selection::rasterizer`, `look::rasterizer_image`) and sample it as an ordinary bitmap stage. A pass sampling a target the native side has no copy of stays on the D3D path. The fog pass draws before layer 6 and touches no target but the bound one. The water edge blend reads the alpha of the bound target (the teardown clears it after), so its native pass runs inside the wrapper's window, before `0x0003c3c0`'s clear; the pass is issued at the next D3D entry, and the teardown's clear is an entry.
@@ -151,8 +149,24 @@ the cached pipelines with their own uniforms and sampled textures.
 ### Water and the rest
 
 `feature::native_water`,
-`native_render::water_gpu` and `boot::native_water_glue`. Two parts:
+`native_render::water_gpu` and `game::native_water_glue`.
 
+- **Pool surfaces (layer 15).** The BSP loader follows the compiled shader
+  instance to its template and reads the first LOD's layer-15 range. Delta
+  Towers and Ivory Tower use this route. The sorted geometry handler
+  (`0x00041020` through `0x00040f60`) selects and binds each pass before
+  issuing its indexed range. `native_transparents::pool_issue` checks the
+  sorted entry, shader, emitter frame and indexed call. The native pass
+  translates the resolved vertex and pixel programs with the evaluated
+  constants, ripple frame, bump matrices, reflection, refraction and
+  Fresnel bindings. Fog and blend come from that issue. Frame replay
+  prepares the retained packet with its own texture views. A frame
+  snapshot uses the physical extent of each target copy, including the
+  full width of the display copy. Shader or pipeline unavailability,
+  missing textures, incompatible dimensions and attachment aliases leave
+  the packet on D3D. Recording refusals are counted by cause per BSP.
+  Mainmenu's aerial water is an alpha-tested environment material. Lockout
+  has no pool template. Neither requires a layer-6 pool pass.
 - **The water edge blend, drawn natively (layer 6).** The skip, the
   scene and the reservation are the fog's: one context-only observer before the layer draw, ordered
   after the world's and the fog's. It runs for layer 6 when the caller
