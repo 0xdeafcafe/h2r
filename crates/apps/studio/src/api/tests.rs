@@ -4400,6 +4400,7 @@ fn from_render_replaces_collision_as_one_replayable_and_saveable_edit() {
         "render": render, "materials": [6]
     })).unwrap_err();
     assert_eq!(bad.code, code::REFUSED, "{bad}");
+    assert!(bad.message.contains("uses material 6"), "{bad}");
     assert_eq!(call(&mut api, &mut app, m::GEOMETRY_READ, Value::Null), before);
     assert!(!app.session.is_dirty());
 

@@ -15,8 +15,8 @@ use studio_proto::{code, method as m};
 use super::scenario::refused;
 use super::{MethodDef, P, Provider, Reply, err};
 use crate::App;
-use crate::app::Action;
 use crate::app::modeling::ModelAction;
+use crate::app::{Action, Refused};
 
 /// The Modeling tool's provider.
 #[derive(Default)]
@@ -348,14 +348,18 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
                     format!("{render} is not open (geometry.open)"),
                 ));
             }
-            run(
-                app,
-                ModelAction::CollisionFromRender {
+            app.perform(
+                Action::Model(ModelAction::CollisionFromRender {
                     render,
                     target,
                     materials,
-                },
-            )?;
+                }),
+                false,
+            )
+            .map_err(|failure| match failure {
+                Refused::Failed(reason) => err(code::REFUSED, reason),
+                other => refused(other),
+            })?;
             let (verts, _, faces) = app.modeling.session.mesh(target).expect("open target").counts();
             Ok(json!({ "target": target.id(), "verts": verts, "faces": faces }))
         }
