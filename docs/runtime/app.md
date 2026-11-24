@@ -122,7 +122,7 @@ the slice count every 1000 slices), `--frame-stats` (frame-time stats, below),
 campaign level, or a local Slayer game on that multiplayer map, in place of
 the main menu, no title, profile or menus; a bad
 name lists the disc's levels before anything is built; `H2_LEVEL` and
-`H2_DIFFICULTY` do the same, see [level-boot.md](level-boot.md)), `--set
+`H2_DIFFICULTY` do the same, see [level-boot.md](level-boot.md)), `--editor [--window]` (the game a tool holds, Studio's own game: it needs `--level`, creates its window hidden unless `--window` is given, records no film, never pauses on a focus change, and refuses the Live flags, `--film` and `--input-timeline`; `play_cmd/editor.rs`, [game-view.md](../editor/game-view.md)), `--set
 KEY=VALUE` (any of our settings for this run, ahead of its variable and
 `<data>/settings.toml`, and its row locked; `h2 settings list` shows them,
 [settings-menu.md](../game/settings-menu.md) "Settings as a schema"), and Live: off

@@ -290,6 +290,9 @@ pub mod method {
 
     pub const GAME_STATUS: &str = "game.status";
     pub const GAME_SNAPSHOT: &str = "game.snapshot";
+    pub const GAME_START: &str = "game.start";
+    pub const GAME_STOP: &str = "game.stop";
+    pub const GAME_MODE: &str = "game.mode";
 
     pub const MIRROR_STATUS: &str = "mirror.status";
     pub const MIRROR_PENDING: &str = "mirror.pending";

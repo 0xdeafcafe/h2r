@@ -29,6 +29,7 @@ const USAGE: &str = "usage:
            [--live-tunnel-url https://HOST]] [--no-tunnel-setup]]
           [--icons auto|xbox|xbox360|playstation|keyboard|remote]
           [--level MAP [--difficulty easy|normal|heroic|legendary]] [--set KEY=VALUE]...
+          [--editor [--window]]
   h2 play --follow [--repo PATH] [--branch B] [--remote R] [--no-fetch] [--poll SECS]
           [--fresh-data] [--cache DIR] <the arguments above>
   h2 play --watch [--repo PATH] [--quiet MS] [--fresh-data] [--cache DIR] <the arguments above>
@@ -80,7 +81,9 @@ accepts native or WIDTHxHEIGHT; H2_RENDER_SCALE accepts a legacy multiplier.
 --set KEY=VALUE sets any of our settings for this run only, as its environment
 variable would: it wins over the variable and the file and locks its row
 (`h2 settings list` shows them; docs/game/settings-menu.md).
---level MAP (or H2_LEVEL) starts that level instead of the main menu, with one
+--editor starts the game for a tool to hold (Studio's own game): it needs
+--level, has no window unless --window is given, and is a local game with no
+Live, film or --input-timeline (docs/editor/game-view.md). --level MAP (or H2_LEVEL) starts that level instead of the main menu, with one
 default player: no title, profile or menus. MAP is a map file name from the
 disc: a campaign level (03a_oldmombasa) at --difficulty (or H2_DIFFICULTY;
 normal by default), or a multiplayer map (ascension) as a local Slayer game
@@ -521,6 +524,7 @@ fn watch_signals(_: app::Closer) -> Arc<AtomicBool> {
     Arc::new(AtomicBool::new(false))
 }
 
+mod editor;
 mod forge;
 pub(crate) mod theater;
 
@@ -564,6 +568,8 @@ pub(crate) fn run_with_theater(
     let mut level_flag: Option<String> = None;
     let mut difficulty_flag: Option<String> = None;
     let mut tier: Option<boot::tier::Choice> = None;
+    let mut editor_flag = false;
+    let mut window_flag = false;
     let mut config = app::AppConfig {
         // boot's DirectSound output owns the device; the shell's own
         // AudioOut would open it a second time (its discard renderer only
@@ -644,6 +650,8 @@ pub(crate) fn run_with_theater(
             }
             "--set" => flags.push(crate::settings_cmd::set_flag(&val()?)?),
             "--film" => film_out = Some(PathBuf::from(val()?)),
+            "--editor" => editor_flag = true,
+            "--window" => window_flag = true,
             "--level" => level_flag = Some(val()?),
             "--difficulty" => difficulty_flag = Some(val()?),
             "--follow-status" => follow_status = Some(PathBuf::from(val()?)),
@@ -688,9 +696,26 @@ pub(crate) fn run_with_theater(
         std::env::var_os("H2_LAB_JOB_ID").is_some_and(|v| !v.is_empty()),
     );
     live.check()?;
-    let film_auto = film_auto_request(
-        std::env::var_os("H2_LAB_JOB_ID").is_some_and(|v| !v.is_empty()),
-    );
+    let env_set = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
+    let editor = editor::check(editor::Asked {
+        editor: editor_flag,
+        window: window_flag,
+        level: level_flag.as_deref().is_some_and(|l| !l.trim().is_empty()) || env_set("H2_LEVEL"),
+        live: live.enabled || live.local || live.join.is_some(),
+        film: film_out.is_some() || env_set("H2_FILM_OUT"),
+        timeline: config.scripted_input.is_some(),
+    })?;
+    if let Some(mode) = editor {
+        // A tool holds this game: no window of its own unless asked, and
+        // a focus change never pauses it.
+        config.hidden = !mode.window;
+        config.pause_on_focus_loss = false;
+    }
+    let film_auto = if editor.is_some() {
+        boot::theater::autorecord::Request::Skip("editor mode records no film")
+    } else {
+        film_auto_request(std::env::var_os("H2_LAB_JOB_ID").is_some_and(|v| !v.is_empty()))
+    };
     if live.join.is_some()
         && (film_out.is_some() || std::env::var_os("H2_FILM_OUT").is_some_and(|p| !p.is_empty()))
     {
@@ -1624,6 +1649,26 @@ mod tests {
                 "hard",
             ]);
             assert!(e.contains("unknown difficulty"), "{e}");
+        }
+    }
+
+    #[test]
+    fn play_parses_the_editor_flags() {
+        let run_err = |a: &[&str]| {
+            run(a.iter().map(|s| s.to_string()).collect())
+                .unwrap_err()
+                .to_string()
+        };
+        // Each stops before the disc is read.
+        if std::env::var_os("H2_LEVEL").is_none() && std::env::var_os("H2_FILM_OUT").is_none() {
+            let e = run_err(&["/nonexistent/halo2.iso", "--editor"]);
+            assert!(e.contains("--editor needs --level"), "{e}");
+            let e = run_err(&["/nonexistent/halo2.iso", "--window", "--level", "a10"]);
+            assert!(e.contains("--window is for --editor"), "{e}");
+            let e = run_err(&["/nonexistent/halo2.iso", "--editor", "--level", "a10", "--live-local"]);
+            assert!(e.contains("local game"), "{e}");
+            let e = run_err(&["/nonexistent/halo2.iso", "--editor", "--level", "a10", "--film", "x.h2film"]);
+            assert!(e.contains("no film"), "{e}");
         }
     }
 

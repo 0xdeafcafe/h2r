@@ -325,7 +325,8 @@ impl Shell {
         let mut attrs = Window::default_attributes()
             .with_title(self.config.title.clone())
             .with_inner_size(LogicalSize::new(w.max(160), h.max(120)))
-            .with_min_inner_size(LogicalSize::new(160, 120));
+            .with_min_inner_size(LogicalSize::new(160, 120))
+            .with_visible(!self.config.hidden);
         if let Some((index, count)) = self.config.tile
             && let Some(monitor) = event_loop.primary_monitor()
         {
