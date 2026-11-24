@@ -11,6 +11,7 @@ fn rust_hud(name: &str) -> Hud {
         "superbounce" => expected::superbounce::hud(),
         "superbounce-readout" => expected::superbounce_readout::hud(),
         "pill-block" => expected::pill_block::hud(),
+        "forge" => expected::forge::hud(),
         "forge-readout" => expected::forge_readout::hud(),
         "firefight" => expected::firefight::hud(),
         other => panic!("no expected HUD {other}"),
@@ -37,6 +38,7 @@ fn each_yaml_is_the_hud_its_rust_was() {
 fn the_views_serve_the_yaml() {
     assert_eq!(views::superbounce::hud().elements.len(), 6);
     assert_eq!(views::superbounce_readout::hud().elements.len(), 1 + 9 + 4 + 3 + 5);
+    assert_eq!(views::forge::hud().elements.len(), 11);
     assert_eq!(views::forge_readout::hud().elements.len(), 3 + 5 + 12 + 8);
     assert_eq!(views::firefight::hud().elements.len(), 8);
     assert_eq!(views::pill_block::hud().elements.len(), 4);

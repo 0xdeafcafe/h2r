@@ -375,7 +375,7 @@ keys and what each kind needs are in `hud-kit-core/src/data.rs`, which
 reads one into a `Hud` and refuses an unknown key or an incomplete element
 by name. The first-party HUDs are in `content/superbounce/huds/`
 (`superbounce`, `superbounce-readout`, `pill-block`), `content/forge/huds/`
-(`forge-readout`) and `content/modes/huds/` (`firefight`); `data::BUILTIN`
+(`forge`, `forge-readout`) and `content/modes/huds/` (`firefight`); `data::BUILTIN`
 embeds them and each `views::*::hud()` reads its own, so the preview, the
 checks and the runtime all see the YAML. The `hud` builder
 (`crates/tools/workspace/src/hud.rs`) refuses a source that is not a HUD

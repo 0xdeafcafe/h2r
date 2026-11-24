@@ -215,6 +215,67 @@ pub mod pill_block {
     }
 }
 
+/// `forge`.
+pub mod forge {
+    use super::*;
+    use crate::views::forge::{
+        BUDGET_COUNT, BUDGET_END, BUDGET_LONGEST, BUDGET_METER, BUDGET_PILL, METER_DOWN, NAME,
+        NOTICE, NOTICE_LONGEST, PROMPT, PROMPT_LONGEST, REBUILD_COUNT, REBUILD_END,
+        REBUILD_LONGEST, REBUILD_PILL, REBUILD_STEP, TEACH, TEACH_LONGEST, TOOL, TOOL_LONGEST,
+    };
+
+    const fn row(origin: Origin, dx: i16, dy: i16) -> Place {
+        Place::new(Anchor::TopLeft, (dx, dy))
+            .split((dx, dy), (dx, dy))
+            .from(origin)
+    }
+
+    fn pill(pill: &'static str, end: &'static str, count: &'static str, longest: &'static str, dx: i16) -> [Element; 3] {
+        [
+            Element::icon(pill, Art::GrenadePill(PillPart::Body), row(Origin::NextGrenadePill, dx, 0)),
+            Element::icon(
+                end,
+                Art::GrenadePill(PillPart::End),
+                row(Origin::NextGrenadePill, dx + PILL_BODY, 0),
+            ),
+            Element::text(
+                count,
+                Font::Lcd,
+                Justify::Centre,
+                longest,
+                row(Origin::NextGrenadeCount, dx, 0),
+            )
+            .over(pill),
+        ]
+    }
+
+    pub fn hud() -> Hud {
+        let mut elements = vec![
+            Element::channel(PROMPT, Kind::Prompt { longest: PROMPT_LONGEST }),
+            Element::channel(NOTICE, Kind::Message { longest: NOTICE_LONGEST }),
+            Element::channel(TEACH, Kind::Training { longest: TEACH_LONGEST }),
+        ];
+        elements.extend(pill(BUDGET_PILL, BUDGET_END, BUDGET_COUNT, BUDGET_LONGEST, 0));
+        elements.push(Element::meter(
+            BUDGET_METER,
+            Art::StripMeter,
+            row(Origin::NextGrenadePill, 0, METER_DOWN),
+        ));
+        elements.push(Element::text(
+            TOOL,
+            Font::Hud,
+            Justify::End,
+            TOOL_LONGEST,
+            Place::new(Anchor::TopRight, (-6, 6)),
+        ));
+        elements.extend(pill(REBUILD_PILL, REBUILD_END, REBUILD_COUNT, REBUILD_LONGEST, REBUILD_STEP));
+        Hud {
+            name: NAME,
+            elements,
+        }
+    }
+}
+
 /// `forge-readout`.
 pub mod forge_readout {
     use super::*;

@@ -34,6 +34,25 @@ fn monitor_hud_in_every_state() {
     }
 }
 
+/// What the game's page holds while the monitor is up: the reticle on a
+/// transparent canvas, and nothing else (the HUD kit draws the rest).
+#[test]
+fn the_compositor_page_is_the_reticle_alone() {
+    let from = preview::From::Synthetic;
+    let s = reticle();
+    let v = from.view(&s, "monitor").unwrap();
+    assert_eq!(v.backing, Backing::None);
+    assert_eq!((v.focus.as_deref(), v.list), (None, None));
+    assert!(v.widget("reticle").is_some());
+    for id in ["title", "budget", "legend", "target", "notice"] {
+        assert!(v.widget(id).is_none(), "{id} is the HUD kit's");
+    }
+    assert!(spec::check_fallback(&s).is_empty());
+    let canvas = preview::render_overlay(&v, from.source());
+    assert_eq!(canvas.rgba[3], 0, "the world is visible");
+    assert!(canvas.rgba.chunks_exact(4).any(|p| p[3] != 0), "the reticle draws");
+}
+
 #[test]
 fn dialog_page_tables() {
     use Action::*;
