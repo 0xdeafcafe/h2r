@@ -6,8 +6,6 @@ use std::sync::{Arc, Mutex};
 
 use app::forge_overlay::{Controller, Frame, Overlay};
 use app::theater_overlay::Page;
-use boot::forge_glue::gizmo::Axes;
-use boot::forge_glue::marker::Marker;
 use boot::ui_kit::{preview, spec::ScreenSpec, view::View};
 use input::forge::Key;
 
@@ -30,7 +28,6 @@ struct Drawn {
     spec: ScreenSpec,
     page: Arc<Page>,
     rows: Vec<HitRow>,
-    with_axes: Option<(Axes, Arc<Page>)>,
 }
 
 struct HitRow {
@@ -89,48 +86,20 @@ fn clicked_row(rows: &[HitRow], x: i32, y: i32) -> Option<usize> {
 }
 
 impl Drawn {
-    fn frame(&mut self, axes: Option<Axes>, markers: Vec<Marker>) -> Frame {
-        let page = match axes {
-            None => self.page.clone(),
-            Some(axes) => {
-                if let Some((old, page)) = &self.with_axes
-                    && old == &axes
-                {
-                    page.clone()
-                } else {
-                    let mut rgba = self.page.rgba.clone();
-                    axes.paint(&mut rgba, self.page.size);
-                    for marker in markers {
-                        marker.paint(&mut rgba, self.page.size);
-                    }
-                    let page = Arc::new(Page {
-                        rgba,
-                        size: self.page.size,
-                        timeline: None,
-                    });
-                    self.with_axes = Some((axes, page.clone()));
-                    page
-                }
-            }
-        };
+    fn frame(&self) -> Frame {
         Frame {
             modal: self.spec.dialog.is_some(),
-            page,
+            page: self.page.clone(),
         }
     }
 }
 
 impl Pages {
-    fn render(
-        &mut self,
-        spec: ScreenSpec,
-        axes: Option<Axes>,
-        markers: Vec<Marker>,
-    ) -> anyhow::Result<Frame> {
-        if let Some(last) = &mut self.last
+    fn render(&mut self, spec: ScreenSpec) -> anyhow::Result<Frame> {
+        if let Some(last) = &self.last
             && last.spec == spec
         {
-            return Ok(last.frame(axes, markers));
+            return Ok(last.frame());
         }
         let from = preview::From::Disc(&self.disc);
         let view = from.view(&spec, "session")?;
@@ -146,9 +115,8 @@ impl Pages {
                 spec,
                 page,
                 rows: hit_rows(&view),
-                with_axes: None,
             })
-            .frame(axes, markers))
+            .frame())
     }
 }
 
@@ -160,11 +128,7 @@ impl Controller for Window {
             return None;
         };
         pages
-            .render(
-                spec,
-                boot::forge_glue::gizmo(),
-                boot::forge_glue::markers(),
-            )
+            .render(spec)
             .map_err(|error| eprintln!("Forge page: {error:#}"))
             .ok()
     }

@@ -1093,3 +1093,18 @@ fn the_drawing_user_is_the_hud_draws() {
     m.set_u32(DRAW_USER, u32::MAX).unwrap();
     assert_eq!(draw_user(&m), 0);
 }
+
+/// HUDs that show together take the slots in turn; one that never shows
+/// with the earlier ones starts again at the first slot.
+#[test]
+fn huds_that_never_meet_share_the_first_navpoint_slots() {
+    // A biped's HUD (1 point), its readout (3), a monitor's (4), which never
+    // shows with either, and a second monitor HUD (2) that shows with it.
+    let never = |a: usize, b: usize| {
+        let monitor = |i: usize| i >= 2;
+        monitor(a) != monitor(b)
+    };
+    assert_eq!(slot_bases(&[1, 3, 4, 2], never), vec![0, 1, 0, 4]);
+    assert_eq!(slot_bases(&[], never), Vec::<usize>::new());
+    assert_eq!(slot_bases(&[2, 2], |_, _| false), vec![0, 2]);
+}

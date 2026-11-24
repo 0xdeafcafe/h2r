@@ -58,3 +58,27 @@ elements:
     longest: "99"
     at: {anchor: top-left, full: [30, 0], half: [30, 0], quarter: [30, 0], origin: next-grenade-count}
     over: forge.rebuild.pill
+  # The held or aimed thing, the link's first end, and the nearest two other
+  # monitors are the game's navpoints (arrow, marker and the distance in
+  # metres); the gizmo is three world segments, one for each axis.
+  - id: forge.nav.target
+    kind: navpoint
+    longest: "999"
+  - id: forge.nav.from
+    kind: navpoint
+    longest: "999"
+  - id: forge.nav.monitor.1
+    kind: navpoint
+    longest: "999"
+  - id: forge.nav.monitor.2
+    kind: navpoint
+    longest: "999"
+  - id: forge.gizmo.x
+    kind: world-mark
+    shape: segment
+  - id: forge.gizmo.y
+    kind: world-mark
+    shape: segment
+  - id: forge.gizmo.z
+    kind: world-mark
+    shape: segment
