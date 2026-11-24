@@ -640,3 +640,416 @@ fn a_local_lod_is_patched_in_place() {
         assert!(w.offset as usize + w.bytes.len() <= r.size as usize);
     }
 }
+
+/// The solid picture and the per channel tolerance each written format
+/// reads back within.
+fn solid_cases() -> Vec<(PixelFormat, [u8; 4], [u8; 4])> {
+    vec![
+        (PixelFormat::Argb8888, [200, 100, 50, 180], [0, 0, 0, 0]),
+        (PixelFormat::Xrgb8888, [200, 100, 50, 255], [0, 0, 0, 0]),
+        (PixelFormat::Rgb565, [200, 100, 50, 255], [8, 4, 8, 0]),
+        (PixelFormat::Argb1555, [200, 100, 50, 255], [8, 8, 8, 0]),
+        (PixelFormat::Argb4444, [200, 100, 50, 170], [9, 9, 9, 9]),
+        (PixelFormat::Dxt1, [200, 100, 50, 255], [8, 4, 8, 0]),
+        (PixelFormat::Dxt3, [200, 100, 50, 170], [8, 4, 8, 9]),
+        (PixelFormat::Dxt5, [200, 100, 50, 170], [8, 4, 8, 2]),
+    ]
+}
+
+#[test]
+fn every_colour_format_reshapes_and_reads_back_at_every_level() {
+    let img = image(PixelFormat::Argb8888, TagKind::D2, [16, 16, 1], 4, SWZ, 3);
+    let (w, h) = (64u32, 32u32);
+    let mut files = ResourceFiles::new();
+    for (format, rgba, tol) in solid_cases() {
+        let px: Vec<u8> = (0..w * h).flat_map(|_| rgba).collect();
+        let pl = Planes {
+            width: w,
+            height: h,
+            depth: 1,
+            planes: &[&px],
+        };
+        let r = Reshape {
+            width: w,
+            height: h,
+            format,
+        };
+        let plan = plan_image(
+            &Edit {
+                image: &img,
+                image_at: 0x4000,
+                planes: pl,
+                dirty: &[],
+                reshape: Some(r),
+            },
+            &mut files,
+        )
+        .unwrap();
+        let (new, _) = reshaped(&img, r).unwrap();
+        assert_eq!(plan.appended.len(), 3, "{format:?}");
+        let d = read_back(&plan, 0x4000, &new);
+        assert!(d.size_matches(), "{format:?}");
+        let full = u32::from(new.mip_count) + 1;
+        let want = if matches!(
+            format,
+            PixelFormat::Dxt1 | PixelFormat::Dxt3 | PixelFormat::Dxt5
+        ) {
+            crate::bitmap::stored_dxt_levels(w, h)
+        } else {
+            full
+        };
+        assert_eq!(d.levels.len() as u32, want, "{format:?}");
+        // each level halves, down to one texel or one block
+        for (n, l) in d.levels.iter().enumerate() {
+            assert_eq!(l.width, (w >> n).max(1), "{format:?} level {n}");
+            assert_eq!(l.height, (h >> n).max(1), "{format:?} level {n}");
+            for p in l.rgba.chunks(4) {
+                for c in 0..4 {
+                    assert!(
+                        p[c].abs_diff(rgba[c]) <= tol[c],
+                        "{format:?} level {n} channel {c}: {p:?} vs {rgba:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn the_data_free_formats_reshape_to_the_value_they_hold() {
+    let img = image(PixelFormat::Argb8888, TagKind::D2, [8, 8, 1], 3, SWZ, 1);
+    let mut files = ResourceFiles::new();
+    // A8 keeps alpha, Y8 and AY8 the luma, A8Y8 both.
+    for (format, rgba, want) in [
+        (
+            PixelFormat::A8,
+            [10, 20, 30, 77],
+            [None, None, None, Some(77)],
+        ),
+        (
+            PixelFormat::Y8,
+            [90, 90, 90, 255],
+            [Some(90), Some(90), Some(90), None],
+        ),
+        (
+            PixelFormat::Ay8,
+            [90, 90, 90, 255],
+            [Some(90), Some(90), Some(90), None],
+        ),
+        (
+            PixelFormat::A8Y8,
+            [90, 90, 90, 33],
+            [Some(90), Some(90), Some(90), Some(33)],
+        ),
+    ] {
+        let px: Vec<u8> = (0..64).flat_map(|_| rgba).collect();
+        let r = Reshape {
+            width: 8,
+            height: 8,
+            format,
+        };
+        let plan = plan_image(
+            &Edit {
+                image: &img,
+                image_at: 0x4000,
+                planes: planes(&img, &[&px]),
+                dirty: &[],
+                reshape: Some(r),
+            },
+            &mut files,
+        )
+        .unwrap();
+        let (new, _) = reshaped(&img, r).unwrap();
+        let d = read_back(&plan, 0x4000, &new);
+        assert_eq!(d.levels.len(), 4, "{format:?}");
+        for l in &d.levels {
+            for p in l.rgba.chunks(4) {
+                for c in 0..4 {
+                    if let Some(v) = want[c] {
+                        assert_eq!(p[c], v, "{format:?} channel {c}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn the_last_mip_is_the_mean_of_the_picture() {
+    let img = image(PixelFormat::Argb8888, TagKind::D2, [32, 32, 1], 5, SWZ, 1);
+    let px = gradient(32, 32);
+    let a = decode(
+        &img,
+        0,
+        &encode_lod(&img, 0, &planes(&img, &[&px])).unwrap(),
+    );
+    assert_eq!(a.len(), 6);
+    let last = a.last().unwrap();
+    assert_eq!((last.width, last.height), (1, 1));
+    for c in 0..4 {
+        let mean = px.chunks(4).map(|p| u32::from(p[c])).sum::<u32>() as f32 / 1024.0;
+        assert!(
+            (f32::from(last.rgba[c]) - mean).abs() <= 1.5,
+            "channel {c}: {} vs {mean}",
+            last.rgba[c]
+        );
+    }
+}
+
+#[test]
+fn an_image_without_mips_stays_without_and_a_tiny_one_drops_the_lods_it_cannot_hold() {
+    let flat = image(PixelFormat::Argb8888, TagKind::D2, [16, 16, 1], 0, SWZ, 1);
+    let (new, _) = reshaped(
+        &flat,
+        Reshape {
+            width: 64,
+            height: 64,
+            format: PixelFormat::Dxt5,
+        },
+    )
+    .unwrap();
+    assert_eq!(new.mip_count, 0);
+    // 16x16 with mips and three LODs shrunk to 2x2: two levels, so LOD 2
+    // has no block and its pointer and size are cleared.
+    let img = image(PixelFormat::Argb8888, TagKind::D2, [16, 16, 1], 4, SWZ, 3);
+    let px: Vec<u8> = (0..4).flat_map(|_| [1, 2, 3, 255]).collect();
+    let plan = plan_image(
+        &Edit {
+            image: &img,
+            image_at: 0x4000,
+            planes: Planes {
+                width: 2,
+                height: 2,
+                depth: 1,
+                planes: &[&px],
+            },
+            dirty: &[],
+            reshape: Some(Reshape {
+                width: 2,
+                height: 2,
+                format: PixelFormat::Argb8888,
+            }),
+        },
+        &mut ResourceFiles::new(),
+    )
+    .unwrap();
+    assert_eq!(plan.appended.len(), 2);
+    assert!(
+        plan.tag
+            .contains(&(0x4000 + 0x1c + 8, u32::MAX.to_le_bytes().to_vec()))
+    );
+    assert!(
+        plan.tag
+            .contains(&(0x4000 + 0x34 + 8, 0u32.to_le_bytes().to_vec()))
+    );
+}
+
+#[test]
+fn sizes_a_format_refuses_are_named_and_change_nothing() {
+    let img = image(PixelFormat::Argb8888, TagKind::D2, [16, 16, 1], 4, SWZ, 1);
+    let ask = |img: &Image, width: u32, height: u32, format: PixelFormat| {
+        reshaped(
+            img,
+            Reshape {
+                width,
+                height,
+                format,
+            },
+        )
+        .err()
+        .map(|e| e.to_string())
+    };
+    for format in [PixelFormat::Dxt1, PixelFormat::Dxt3, PixelFormat::Dxt5] {
+        let e = ask(&img, 20, 16, format).expect("DXT needs power of two sides");
+        assert!(e.contains("power of two"), "{format:?}: {e}");
+        assert!(ask(&img, 16, 12, format).is_some());
+    }
+    assert!(
+        ask(&img, 0, 16, PixelFormat::Argb8888)
+            .unwrap()
+            .contains("zero")
+    );
+    assert!(
+        ask(&img, 16, 0, PixelFormat::Argb8888)
+            .unwrap()
+            .contains("zero")
+    );
+    assert!(
+        ask(&img, 70_000, 16, PixelFormat::Argb8888)
+            .unwrap()
+            .contains("65535")
+    );
+    // data formats and floats are not written
+    for format in [
+        PixelFormat::P8,
+        PixelFormat::V8U8,
+        PixelFormat::G8B8,
+        PixelFormat::P8Bump,
+    ] {
+        assert!(ask(&img, 16, 16, format).is_some(), "{format:?}");
+    }
+    // a cube stays square and a power of two
+    let cube = image(PixelFormat::Argb8888, TagKind::Cube, [8, 8, 1], 0, SWZ, 1);
+    assert!(
+        ask(&cube, 8, 4, PixelFormat::Argb8888)
+            .unwrap()
+            .contains("square")
+    );
+    assert!(ask(&cube, 6, 6, PixelFormat::Argb8888).is_some());
+    assert!(ask(&cube, 16, 16, PixelFormat::Dxt1).is_none());
+    // a refused plan writes nothing: the plan is an error, not a half plan
+    let px = vec![0u8; 20 * 16 * 4];
+    let plan = plan_image(
+        &Edit {
+            image: &img,
+            image_at: 0x4000,
+            planes: Planes {
+                width: 20,
+                height: 16,
+                depth: 1,
+                planes: &[&px],
+            },
+            dirty: &[],
+            reshape: Some(Reshape {
+                width: 20,
+                height: 16,
+                format: PixelFormat::Dxt1,
+            }),
+        },
+        &mut ResourceFiles::new(),
+    );
+    assert!(plan.is_err());
+}
+
+#[test]
+fn a_cube_reshape_writes_every_face_at_the_new_size() {
+    let img = image(PixelFormat::Argb8888, TagKind::Cube, [8, 8, 1], 3, SWZ, 1);
+    let faces: Vec<Vec<u8>> = (0..6u8)
+        .map(|f| (0..16 * 16).flat_map(|_| [f * 40, 10, 20, 255]).collect())
+        .collect();
+    let refs: Vec<&[u8]> = faces.iter().map(Vec::as_slice).collect();
+    let r = Reshape {
+        width: 16,
+        height: 16,
+        format: PixelFormat::Argb8888,
+    };
+    let plan = plan_image(
+        &Edit {
+            image: &img,
+            image_at: 0x4000,
+            planes: Planes {
+                width: 16,
+                height: 16,
+                depth: 1,
+                planes: &refs,
+            },
+            dirty: &[],
+            reshape: Some(r),
+        },
+        &mut ResourceFiles::new(),
+    )
+    .unwrap();
+    let (new, _) = reshaped(&img, r).unwrap();
+    let d = read_back(&plan, 0x4000, &new);
+    // 5 levels a face (16 down to 1), six faces
+    assert_eq!(d.levels.len(), 6 * 5);
+    for (n, l) in d.levels.iter().enumerate() {
+        let face = (n / 5) as u8;
+        assert_eq!(l.rgba[0], face * 40, "level {n}");
+    }
+}
+
+fn opaque_planes(w: u32, h: u32, alpha: &[u8]) -> Vec<u8> {
+    (0..(w * h) as usize)
+        .flat_map(|i| [10, 20, 30, alpha[i % alpha.len()]])
+        .collect()
+}
+
+#[test]
+fn the_suggested_format_follows_the_picture_and_the_size() {
+    use crate::write::{AlphaUse, alpha_use, suggest_format};
+    let pl = |px: &Vec<u8>, w: u32, h: u32| {
+        let px = px.clone();
+        move |cur: PixelFormat| {
+            suggest_format(
+                &Planes {
+                    width: w,
+                    height: h,
+                    depth: 1,
+                    planes: &[px.as_slice()],
+                },
+                cur,
+            )
+        }
+    };
+    let opaque = opaque_planes(8, 8, &[255]);
+    let cutout = opaque_planes(8, 8, &[255, 0]);
+    let blended = opaque_planes(8, 8, &[255, 128]);
+    let alpha = |px: &Vec<u8>| {
+        alpha_use(&Planes {
+            width: 8,
+            height: 8,
+            depth: 1,
+            planes: &[px.as_slice()],
+        })
+    };
+    assert_eq!(alpha(&opaque), AlphaUse::Opaque);
+    assert_eq!(alpha(&cutout), AlphaUse::Cutout);
+    assert_eq!(alpha(&blended), AlphaUse::Blended);
+    // what holds the picture is kept
+    assert_eq!(pl(&opaque, 8, 8)(PixelFormat::Rgb565), PixelFormat::Rgb565);
+    assert_eq!(pl(&cutout, 8, 8)(PixelFormat::Dxt1), PixelFormat::Dxt1);
+    assert_eq!(pl(&blended, 8, 8)(PixelFormat::Dxt3), PixelFormat::Dxt3);
+    assert_eq!(
+        pl(&blended, 8, 8)(PixelFormat::Argb8888),
+        PixelFormat::Argb8888
+    );
+    // what loses alpha is replaced
+    assert_eq!(pl(&cutout, 8, 8)(PixelFormat::Rgb565), PixelFormat::Dxt1);
+    assert_eq!(pl(&blended, 8, 8)(PixelFormat::Dxt1), PixelFormat::Dxt5);
+    assert_eq!(pl(&blended, 8, 8)(PixelFormat::Xrgb8888), PixelFormat::Dxt5);
+    // masks and greys are kept
+    for f in [
+        PixelFormat::A8,
+        PixelFormat::Y8,
+        PixelFormat::Ay8,
+        PixelFormat::A8Y8,
+    ] {
+        assert_eq!(pl(&blended, 8, 8)(f), f);
+    }
+    // a side that is not a power of two leaves DXT
+    let odd = opaque_planes(7, 5, &[255]);
+    assert_eq!(pl(&odd, 7, 5)(PixelFormat::Dxt1), PixelFormat::Xrgb8888);
+    let odd_blend = opaque_planes(7, 5, &[255, 9]);
+    assert_eq!(
+        pl(&odd_blend, 7, 5)(PixelFormat::Dxt5),
+        PixelFormat::Argb8888
+    );
+    // data formats are never answered
+    assert_eq!(pl(&opaque, 8, 8)(PixelFormat::P8), PixelFormat::Dxt1);
+    // and what it answers is always one the encoder writes and a reshape takes
+    let img = image(PixelFormat::Argb8888, TagKind::D2, [16, 16, 1], 4, SWZ, 1);
+    for (px, w, h) in [
+        (&opaque, 8, 8),
+        (&blended, 8, 8),
+        (&odd, 7, 5),
+        (&odd_blend, 7, 5),
+    ] {
+        for cur in [PixelFormat::P8, PixelFormat::Dxt1, PixelFormat::Rgb565] {
+            let f = pl(px, w, h)(cur);
+            assert!(writable(f));
+            assert!(
+                reshaped(
+                    &img,
+                    Reshape {
+                        width: w,
+                        height: h,
+                        format: f
+                    }
+                )
+                .is_ok(),
+                "{f:?} at {w}x{h}"
+            );
+        }
+    }
+}

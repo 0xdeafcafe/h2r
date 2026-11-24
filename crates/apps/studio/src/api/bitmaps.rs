@@ -124,7 +124,7 @@ const METHODS: &[MethodDef] = &[
     ),
     def(
         m::BITMAP_RESHAPE,
-        "Ask for a new size and/or format for an image (`format`: a8, y8, ay8, a8y8, rgb565, argb1555, argb4444, xrgb8888, argb8888, dxt1, dxt3 or dxt5; what is left out keeps its value). A save writes the image whole at that size: every layer resampled, every LOD it stores re-encoded and appended to the map, the record's size, format, flags and mips patched. A cube stays square, DXT needs power of two sides, a side that is not a power of two is linear without mips. Refused now when the save would refuse. One undo step; `doc.close` with `discard` drops it. Giving the image's own size and format clears it",
+        "Ask for a new size and/or format for an image (`format`: a8, y8, ay8, a8y8, rgb565, argb1555, argb4444, xrgb8888, argb8888, dxt1, dxt3, dxt5, or `auto`, which keeps the image's format when it holds the painted alpha and otherwise takes dxt1 for opaque and cut-out pictures and dxt5 for blended ones, or x8r8g8b8/a8r8g8b8 when a side is not a power of two; what is left out keeps its value). A save writes the image whole at that size: every layer resampled, every LOD it stores re-encoded and appended to the map, the record's size, format, flags and mips patched. A cube stays square, DXT needs power of two sides, a side that is not a power of two is linear without mips. Refused now when the save would refuse. One undo step; `doc.close` with `discard` drops it. Giving the image's own size and format clears it",
         r#"{"bitmap":"string","image?":"integer","width?":"integer","height?":"integer","format?":"string"}"#,
         r#"{"bitmap":"string","image":"integer","reshape":"{width,height,format}|null","edited":"boolean"}"#,
         r#"{"bitmap":"floor","width":8,"height":8,"format":"dxt1"}"#,
@@ -443,6 +443,45 @@ fn format_of(s: &str) -> Result<PixelFormat, RpcError> {
         })
 }
 
+/// A `format` parameter: a format's name, or `auto` for what
+/// `App::suggest_bitmap_format` picks at the size asked for.
+fn auto_or_format(
+    app: &mut App,
+    tag: TagId,
+    image: usize,
+    format: Option<&str>,
+    width: Option<u32>,
+    height: Option<u32>,
+) -> Result<Option<PixelFormat>, RpcError> {
+    let Some(f) = format else {
+        return Ok(None);
+    };
+    if !f.eq_ignore_ascii_case("auto") {
+        return format_of(f).map(Some);
+    }
+    let size = match (width, height) {
+        (None, None) => None,
+        (w, h) => {
+            let (cw, ch) = app
+                .textures
+                .reshape
+                .get(&(tag, image))
+                .map(|r| (r.width, r.height))
+                .or_else(|| {
+                    app.textures.open.get(&tag).and_then(|o| {
+                        let d = o.images.get(image)?.source.as_ref()?.dimensions;
+                        Some((u32::from(d[0]), u32::from(d[1])))
+                    })
+                })
+                .ok_or_else(|| bad("the bitmap is not open"))?;
+            Some((w.unwrap_or(cw), h.unwrap_or(ch)))
+        }
+    };
+    app.suggest_bitmap_format(tag, image, size)
+        .map(Some)
+        .map_err(bad)
+}
+
 fn images_json(app: &App, tag: TagId, only: Option<usize>) -> Value {
     let Some(open) = app.textures.open.get(&tag) else {
         return Value::Null;
@@ -637,7 +676,7 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
             let tag = bitmap(app, p)?;
             let from = p.opt_usize("from")?;
             let (width, height) = size_of(p)?;
-            let format = p.opt_str("format")?.map(format_of).transpose()?;
+            let format = auto_or_format(app, tag, image, p.opt_str("format")?, width, height)?;
             run(
                 app,
                 BitmapAction::AddImage {
@@ -649,7 +688,10 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 },
             )?;
             let open = &app.textures.open[&tag];
-            let i = open.images.last().ok_or_else(|| bad("the bitmap has no image"))?;
+            let i = open
+                .images
+                .last()
+                .ok_or_else(|| bad("the bitmap has no image"))?;
             Ok(json!({
                 "bitmap": super::scenario::tag_id(tag),
                 "image": i.index,
@@ -1043,7 +1085,7 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
                     .transpose()
             };
             let (width, height) = (dim("width")?, dim("height")?);
-            let format = p.opt_str("format")?.map(format_of).transpose()?;
+            let format = auto_or_format(app, tag, image, p.opt_str("format")?, width, height)?;
             if width.is_none() && height.is_none() && format.is_none() {
                 return Err(bad("give width, height and/or format"));
             }

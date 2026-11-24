@@ -213,7 +213,10 @@ impl OpenBitmap {
 
     /// Sprite `sprite` of sequence `index`, as the sprite editor shows it.
     pub fn sprite(&self, index: usize, sprite: usize) -> Option<SpriteView> {
-        self.sequence(index)?.sprites.get(sprite).map(|r| SpriteView::read(r))
+        self.sequence(index)?
+            .sprites
+            .get(sprite)
+            .map(|r| SpriteView::read(r))
     }
 
     /// The tag's sequences, then the added ones.
@@ -752,7 +755,9 @@ impl App {
             }
             images.push(info);
         }
-        let stored_sequences = parts.as_ref().map_or_else(|_| Vec::new(), |p| p.sequences.clone());
+        let stored_sequences = parts
+            .as_ref()
+            .map_or_else(|_| Vec::new(), |p| p.sequences.clone());
         Ok(OpenBitmap {
             tag,
             name,
@@ -894,7 +899,9 @@ impl App {
                 let at = at as usize;
                 bytes
                     .get_mut(at..at + b.len())
-                    .ok_or_else(|| format!("image {}: a record write lies past the tag", info.index))?
+                    .ok_or_else(|| {
+                        format!("image {}: a record write lies past the tag", info.index)
+                    })?
                     .copy_from_slice(&b);
             }
             raw.extend(plan.appended.into_iter().map(|a| MovedRaw {
@@ -958,6 +965,50 @@ impl App {
             })
             .collect();
         assets::encode::encode_tiles(src, &planes, &dirty).map_err(|e| e.to_string())
+    }
+
+    /// The format a save should write image `image` of bitmap `tag` in at
+    /// `size` (default: the size it saves at now): the one it has when
+    /// that holds the picture's alpha, else the smallest that does
+    /// (`assets::write::suggest_format`). The layers are looked at as
+    /// they are painted, at the new size when it differs.
+    pub fn suggest_bitmap_format(
+        &mut self,
+        tag: TagId,
+        image: usize,
+        size: Option<(u32, u32)>,
+    ) -> Result<PixelFormat, String> {
+        self.ensure_bitmap(tag)?;
+        let asked = self.textures.reshape.get(&(tag, image)).copied();
+        let open = &self.textures.open[&tag];
+        let info = open
+            .images
+            .get(image)
+            .ok_or_else(|| format!("the bitmap has no image {image}"))?;
+        if let Some(why) = info.locked.as_ref().or(info.error.as_ref()) {
+            return Err(format!("image {image} is not written: {why}"));
+        }
+        let src = info.source.as_ref().ok_or("the image has no record")?;
+        let current = asked.map_or(src.format, |r| r.format);
+        let (w, h) = size
+            .or_else(|| asked.map(|r| (r.width, r.height)))
+            .unwrap_or((u32::from(src.dimensions[0]), u32::from(src.dimensions[1])));
+        let to = Reshape {
+            width: w,
+            height: h,
+            format: current,
+        };
+        let (data, depth) = plane_data(open, info, Some(to))?;
+        let refs: Vec<&[u8]> = data.iter().map(Vec::as_slice).collect();
+        Ok(assets::write::suggest_format(
+            &Planes {
+                width: w,
+                height: h,
+                depth,
+                planes: &refs,
+            },
+            current,
+        ))
     }
 
     pub(super) fn run_bitmap(&mut self, action: BitmapAction) {
@@ -1130,8 +1181,8 @@ impl App {
         if label.len() > 31 {
             return Err(format!("label {label:?} is over 31 bytes"));
         }
-        let first16 =
-            i16::try_from(first).map_err(|_| format!("image {first} is past a sequence's reach"))?;
+        let first16 = i16::try_from(first)
+            .map_err(|_| format!("image {first} is past a sequence's reach"))?;
         let like = parts
             .sequences
             .first()
@@ -1265,7 +1316,10 @@ impl App {
     fn remove_sprite(&mut self, tag: TagId, index: usize, sprite: usize) -> Result<(), String> {
         self.edit_sequence(tag, index, |s, _| {
             if sprite >= s.sprites.len() {
-                return Err(format!("sprite {sprite}: the sequence has {}", s.sprites.len()));
+                return Err(format!(
+                    "sprite {sprite}: the sequence has {}",
+                    s.sprites.len()
+                ));
             }
             s.sprites.remove(sprite);
             Ok(format!("sprite {sprite} removed"))

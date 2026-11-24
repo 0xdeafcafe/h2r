@@ -2457,8 +2457,9 @@ the window and the API stay one path.
   unique substring. `bitmap.reshape {bitmap, image?, width?, height?,
   format?}` and `bitmap.image.resize {bitmap, image?, size? | width?,
   height?, format?}` ask for a new size and/or format (`dxt1`,
-  `argb8888`, ...) for an image, refused at once when a save would
-  refuse it;
+  `argb8888`, ...) for an image, or `auto` (the format it has when that
+  holds the painted alpha, else `dxt1` or `dxt5`, or a linear format at a
+  size DXT refuses), refused at once when a save would refuse it;
   `bitmap.image.add {bitmap, from?, size?, format?}` appends an image
   after the bitmap's last, its record copied from image `from` (default
   0; a 2D image) at `size` and `format` or the source's, its pixels
