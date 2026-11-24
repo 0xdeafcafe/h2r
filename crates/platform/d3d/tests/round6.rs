@@ -417,6 +417,30 @@ fn texture_level_targets_reference_their_parent_once() {
     assert_eq!(m.read_u32(TEX_HEADER).unwrap(), p0);
 }
 
+#[test]
+fn native_guest_bind_tracks_levels_and_defers_final_destruction() {
+    let (mut d, mut m) = rec();
+    d.set_native_residual(true);
+    let back = m.read_u32(DEV + f::RENDER_TARGET).unwrap();
+    let surf = texture_level(&mut m);
+    let parent = m.read_u32(TEX_HEADER).unwrap();
+    d.set_render_target_same_size(&mut m, surf, 0).unwrap();
+    d.set_render_target(&mut m, surf, 0).unwrap();
+    assert_eq!(m.read_u32(TEX_HEADER).unwrap(), parent + d3d::resource::common::INTREFCOUNT_ONE);
+    m.write_u32(DEV + f::GPU_TIME, 19).unwrap();
+    d.set_render_target_same_size(&mut m, back, 0).unwrap();
+    assert_eq!(m.read_u32(TEX_HEADER).unwrap(), parent);
+    assert_eq!(m.read_u32(TEX_HEADER + 8).unwrap(), 19);
+    let standalone = same_size_target(&mut m);
+    d.set_render_target_same_size(&mut m, standalone, 0).unwrap();
+    assert_eq!(d.stats().native_guest_binds, 4);
+    common::call(&mut d, &mut m, 0x3fb640, Regs::default(), &[standalone]).unwrap();
+    d.set_render_target_same_size(&mut m, back, 0).unwrap();
+    assert_eq!(d.take_pending_destroys(), vec![standalone]);
+    assert_eq!(d.stats().guest_bind_refused_destroy, 1);
+    assert_eq!(d.stats().native_guest_binds, 4);
+}
+
 /// A 16x4 level of the test texture, with the texture as its parent.
 fn texture_level(m: &mut SparseMemory) -> u32 {
     texture(m, 0);

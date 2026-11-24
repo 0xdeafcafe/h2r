@@ -30,13 +30,14 @@ impl EntryKind {
 pub(super) struct Residual {
     pub(super) enabled: bool,
     drained: Option<EntryKind>,
+    pub(super) bind_refs: Staged,
 }
 
 impl<B: Backend> Device<B> {
     pub fn set_native_residual(&mut self, enabled: bool) {
         self.residual = Residual {
             enabled,
-            drained: None,
+            ..Residual::default()
         };
     }
 

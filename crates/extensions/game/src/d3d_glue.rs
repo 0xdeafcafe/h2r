@@ -1938,6 +1938,10 @@ pub(crate) fn residual_tally(t: d3d::residual::Tally) -> render_bridge::residual
         state_words: t.state_words,
         copies: t.copies,
         uploads: t.uploads,
+        native_guest_binds: t.native_guest_binds,
+        guest_bind_refused_destroy: t.guest_bind_refused_destroy,
+        native_rect_clears: t.native_rect_clears,
+        clear_refused_rect_count: t.clear_refused_rect_count,
     }
 }
 

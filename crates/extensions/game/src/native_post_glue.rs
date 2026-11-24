@@ -112,7 +112,7 @@ pub enum Missing {
     TemplatePass,
     /// A pass into target 1 without a usable guest size.
     PassTarget,
-    /// No strip draws to target 0, so the call cannot pin its view slot.
+    /// A pass needs the view, but no strip pins it.
     ViewTarget,
     /// A blur convolution (`0x000211a0`) without its quads' frame
     /// ([`quad_frame`]).
@@ -365,7 +365,7 @@ pub fn wide_source(
 /// Whether `effect`'s passes and convolutions read only what the call
 /// drew before (`screen_gpu::check_order`: target 1, the stand-ins and
 /// the results), each with its program loaded.
-pub fn call_ordered(effects: Option<&ScreenEffects>, egor: TagId, effect: &Effect) -> bool {
+pub fn call_ordered(effects: Option<&ScreenEffects>, egor: TagId, effect: &Effect) -> Result<(), Missing> {
     let mut passes = Vec::new();
     for p in &effect.passes {
         let program = usize::try_from(p.selector)
@@ -373,10 +373,13 @@ pub fn call_ordered(effects: Option<&ScreenEffects>, egor: TagId, effect: &Effec
             .and_then(|i| effects?.program(egor, p.implementation as usize, i));
         match (program, dest(p), screen_convolutions(p, &unmade_grid)) {
             (Some(program), Some(d), Some(c)) => passes.push((program, d, c)),
-            _ => return false,
+            _ => return Err(Missing::TemplatePass),
         }
     }
-    screen_gpu::check_order(passes.iter().map(|(p, d, c)| (*p, *d, &c[..]))).is_ok()
+    screen_gpu::check_order(passes.iter().map(|(p, d, c)| (*p, *d, &c[..]))).map_err(|reason| match reason {
+        screen_gpu::ScreenRefused::Attachment(0) => Missing::ViewTarget,
+        _ => Missing::TemplatePass,
+    })
 }
 
 /// The frame of a call's convolution quads (`screen_gpu::QuadFrame`):
@@ -405,9 +408,6 @@ pub fn missing(
     blurs: bool,
 ) -> Vec<Missing> {
     let mut m = Vec::new();
-    if !effect.passes.is_empty() && !effect.passes.iter().any(|p| p.kind == 0) {
-        m.push(Missing::ViewTarget);
-    }
     for p in &effect.passes {
         if !drawable(p) {
             m.push(Missing::TemplatePass);
@@ -748,8 +748,7 @@ impl ScreenPass {
             ScreenStage::Bitmap { bitmap, image } => images.get(&(bitmap, image)).cloned(),
             _ => None,
         };
-        let bound =
-            slot(t.slots, SLOT_BOUND as usize).ok_or(screen_gpu::ScreenRefused::Attachment(0))?;
+        let bound = slot(t.slots, SLOT_BOUND as usize).map(glow::PostSurface::from);
         let target1 = slot(t.slots, SLOT_TARGET1 as usize).map(glow::PostSurface::from);
         let convolutions = std::array::from_fn(|i| {
             slot(t.slots, usize::from(SLOT_STAND_INS) + i).map(glow::PostSurface::from)
@@ -758,7 +757,7 @@ impl ScreenPass {
             device: t.device,
             queue: t.queue,
             uploads: t.uploads,
-            color: bound.into(),
+            color: bound,
             target1,
             convolutions,
             z_scale: t.z_scale,
@@ -1391,9 +1390,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let frame = quad_frame(&*mem, fp);
         let mut m = missing(
             &effect,
-            &|p| ordered && pass_drawable(effects.as_deref(), egor, p),
+            &|p| pass_drawable(effects.as_deref(), egor, p),
             frame.is_some(),
         );
+        if let Err(reason) = ordered && !m.contains(&reason) {
+            m.push(reason);
+        }
         if skipped.is_none() {
             m.push(Missing::TemplateSkipped);
         }
@@ -1936,8 +1938,8 @@ mod tests {
         );
         assert_eq!(
             missing(&effect(vec![into_1.clone()]), yes, false),
-            vec![Missing::ViewTarget],
-            "no strip pins the framebuffer slot"
+            vec![],
+            "the program determines whether the view is needed"
         );
         let unsized_1 = screen_effect::Pass {
             size: Some((0, 240)),
@@ -2484,17 +2486,18 @@ mod tests {
             Some(&e),
             EGOR,
             &call(vec![into_1.clone(), back.clone()])
-        ));
+        ).is_ok());
+        assert_eq!(call_ordered(Some(&e), EGOR, &call(vec![into_1.clone()])), Err(Missing::ViewTarget));
         assert!(
-            !call_ordered(Some(&e), EGOR, &call(vec![back.clone()])),
+            call_ordered(Some(&e), EGOR, &call(vec![back.clone()])).is_err(),
             "target 1 as D3D left it"
         );
         assert!(
-            !call_ordered(Some(&e), EGOR, &call(vec![back, into_1])),
+            call_ordered(Some(&e), EGOR, &call(vec![back, into_1])).is_err(),
             "read before drawn"
         );
         assert!(
-            !call_ordered(None, EGOR, &call(vec![drawn_pass(1, 4)])),
+            call_ordered(None, EGOR, &call(vec![drawn_pass(1, 4)])).is_err(),
             "no world"
         );
     }

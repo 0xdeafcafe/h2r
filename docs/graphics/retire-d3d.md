@@ -75,7 +75,7 @@ these per caller with every stage on: the column "Count" says what exists.
 | Loading `0x000289e0`, spinner `0x0002a1f4`, bitmaps `0x0002ae60` | immediate fans | each fan | the animation's clears, binds and presents | none |
 | Movies: tick `0x00156040`, blit `0x001568d0`, quad `0x00156960` | a texture lock and upload, one quad | none | all of it ([bink-hle.md](../audio/bink-hle.md)) | none |
 | Alternate view `0x0002c790` (`0x0002c863`, `0x0002c884`, `0x0002c889`), fallback view `0x002232a0` | whatever its scene and UI draw | as the callers above | view setup and finish | none |
-| Target selection `0x0001cd30` (five base sites `0x0002bde2` to `0x0002bfe3`), clears `0x00014b60` | binds, clears | whole-viewport clears as load operations; binds among device surfaces | partial clears, title-owned surfaces, the viewport reset | none |
+| Target selection `0x0001cd30` (five base sites `0x0002bde2` to `0x0002bfe3`), clears `0x00014b60` | binds, clears | attachment loads and clipped rectangle plans up to eight rectangles, device binds and title-surface reference transactions | longer rectangle lists, final resource destruction, the viewport reset | none |
 | Frame end `0x00013b90`, `0x00013cd0`; present `0x00013f10` | a target copy, push words, an optional surface lock, `Swap` | none | all of it | none |
 | Outside the render call: boot, the resource caches, the sim | `CreateDevice`, `AddRef`, `Release`, `IsBusy`, `BlockOnResource`, fences | none | all of it; about 0.1 call a frame from the sim [d] | 0.1 a frame [d] |
 
@@ -230,12 +230,19 @@ caller, what the guest front-end still asks `d3d` to do.
   `presents`, and `d3d_ms`.
 - **`producers`**, at most `top`, by `residual` then `entries`:
   `{producer, status, slot, calls, draws, claimed, residual, entries,
-  push_words, state_words, clears, binds, copies, uploads, d3d_ms,
+  push_words, state_words, clears, binds, native_rect_clears, clear_refused_rect_count,
+  native_guest_binds, guest_bind_refused_destroy, copies, uploads, d3d_ms,
   guest_ms}`. `status` is `native`, `d3d` or `unknown` from the registry
-  below, or `partial` for the screen-effect producer and for a layer draw whose items a native stage draws
+  below, or `partial` for the clear, target-selection and screen-effect producers and for a layer draw whose items a native stage draws
   in part from the scene, skipping their guest draws. `guest_ms` is the producer's exclusive guest time and is `null`
   without `render-timing`. A stage's refusals are not filed by producer;
   the capture's `native_<stage>_refused_*` counters give them by stage.
+  The totals and producer rows count committed native rectangle plans
+  (`native_rect_clears`) and lists above the eight-rectangle bound
+  (`clear_refused_rect_count`). Title binds that complete without a
+  destruction increment `native_guest_binds`; final releases increment
+  `guest_bind_refused_destroy`. The helper rows are `scene_clear` and
+  `target_select`.
 - **`callers`**, at most `top`: `{function, sites, entries, draws,
   inline_draws, residual, d3d_ms}`. `function` is the analysed guest
   function that holds the return address of the entry call, named as
@@ -259,7 +266,7 @@ row per caller in the inventory table that has a named point, each with
 its entry point, its name, its status and its slot, and the layer draw by
 site and layer as `render_bridge::entry_census` names it. Work goes to the
 innermost open producer, so the rows sum to `totals`. Callers with no
-point yet (movies, the flares, target selection, the untraced `Begin`
+point yet (movies, the flares, the untraced `Begin`
 callers, the first person's own entry) fall to the producer around them
 or to `unknown`, and `callers` names their functions. `outside_render` is
 every entry call made with no render frame open (boot, the caches, the
