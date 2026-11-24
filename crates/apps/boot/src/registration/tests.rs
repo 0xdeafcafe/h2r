@@ -630,6 +630,40 @@ fn the_rules_runtime_answers_the_record_paths_unless_turned_off() {
     assert!(hooks("-rules").is_empty());
 }
 
+/// With the rules runtime on, every game start puts the script index's
+/// engine object in (`GAME_ACTIVATE`, a `before` in the last class) and the
+/// spawn gather's jump on the engine index has the runtime's `before`
+/// (`rules::engine_object`); off, neither is hooked by it.
+#[cfg(feature = "rules")]
+#[test]
+fn the_rules_runtime_puts_in_the_script_index_engine_object_unless_turned_off() {
+    const POINTS: [&str; 2] = ["GAME_ACTIVATE", "SPAWN_TYPE_MASK"];
+    let hooks = |switches: &str| {
+        let plan = plan(&Case::full(switches)).unwrap();
+        let mut at: Vec<_> = plan
+            .chains
+            .values()
+            .filter(|chain| POINTS.contains(&chain.point.name))
+            .flat_map(|chain| {
+                chain
+                    .hooks()
+                    .filter(|hook| hook.feature == crate::rules::feature::FEATURE)
+                    .map(move |hook| (chain.point.name, hook.kind().as_str()))
+            })
+            .collect();
+        at.sort_unstable();
+        at
+    };
+    let want = vec![("GAME_ACTIVATE", "before"), ("SPAWN_TYPE_MASK", "before")];
+    assert_eq!(hooks("rules"), want);
+    assert_eq!(hooks(""), want);
+    assert!(hooks("-rules").is_empty());
+    // The spawn gather's site and its resume are image entries.
+    let entries: Vec<u32> = crate::image_entries().collect();
+    assert!(entries.contains(&engine::points::game_types::SPAWN_TYPE_MASK.base));
+    assert!(entries.contains(&engine::points::game_types::SPAWN_TYPE_MASK_SLAYER));
+}
+
 /// The features `run_hosted_with_live` adds around `register_core` and
 /// `register_late`, present in the full case's plan.
 #[test]
