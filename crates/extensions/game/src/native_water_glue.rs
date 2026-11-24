@@ -95,7 +95,11 @@ pub fn load<R: std::io::Read + std::io::Seek>(
                             .map(|p| {
                                 let code = look::world_program(map, lib.metadata(), p.look.vertex_shader)
                                     .ok_or("no world-space vertex program")?;
-                                FogProgram::compile(p, &code)
+                                let mut program = FogProgram::compile(p, &code)?;
+                                if let Some(code) = look::rigid_program(map, lib.metadata(), p.look.vertex_shader) {
+                                    program.rigid = native_render::program::compile_pass_rigid(&p.look, p.state.alpha_test, &code).ok();
+                                }
+                                Ok::<_, String>(program)
                             })
                             .collect::<Result<Vec<_>, String>>()
                             .map(|compiled| (ps, compiled))
@@ -126,11 +130,23 @@ pub fn load<R: std::io::Read + std::io::Seek>(
             }
             let mut unlit = 0;
             for t in &world.transparents {
-                // This lane has no rigid water program for placement-local streams.
-                if matches!(t.owner, Owner::Instance(_)) {
-                    continue;
-                }
                 let Some(compiled) = programs.get(&t.material) else { continue };
+                if let Owner::Instance(i) = t.owner {
+                    let refusal = if world.rows(i).is_none() {
+                        Some("placement_rows")
+                    } else if compiled.iter().any(|p| p.rigid.is_none()) {
+                        Some("rigid_program")
+                    } else if compiled.iter().any(|p| p.rigid.as_ref().is_some_and(|r| r.inputs & !t.inputs != 0)) {
+                        Some("placement_streams")
+                    } else {
+                        None
+                    };
+                    if let Some(cause) = refusal {
+                        *refused.entry(cause.into()).or_default() += 1;
+                        render_bridge::native_layers::count(WATER_LATE_LAYER.into(), &format!("refused_{cause}_load"), 1);
+                        continue;
+                    }
+                }
                 let samples_lightmap = compiled.iter().any(|c| {
                     c.program.stages.iter().zip(&c.program.dims).any(|(s, d)| matches!(s, Stage::Lightmap) && d.is_some())
                 });
@@ -183,6 +199,7 @@ pub fn upload_water(
     water: &WaterData,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
+    world: &World,
     stage_image: &mut dyn FnMut(Stage) -> Option<native_render::gpu::Image>,
     lightmap_image: &mut dyn FnMut(LightmapKey) -> Option<native_render::gpu::Image>,
 ) -> WaterSet {
@@ -193,7 +210,7 @@ pub fn upload_water(
         }
     }
     let set = WaterSet::new(
-        device, queue, water.parts.clone(), programs, water.targets.clone(), water.samples_view,
+        device, queue, world, water.parts.clone(), programs, water.targets.clone(), water.samples_view,
         stage_image, lightmap_image,
     );
     if hooks::native_verbose() {
@@ -228,9 +245,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             return None;
         }
         let read = ReadMemory(mem);
-        if !d.stencil_state(&read).is_some_and(|s| !s.enable)
-            || !palettes_hold(palettes, &|n| d.stage_palette(&read, n))
-        {
+        if !d.stencil_state(&read).is_some_and(|s| !s.enable) {
+            render_bridge::native_layers::count(WATER_LATE_LAYER.into(), "refused_stencil_view", 1);
+            return None;
+        }
+        if !palettes_hold(palettes, &|n| d.stage_palette(&read, n)) {
+            render_bridge::native_layers::count(WATER_LATE_LAYER.into(), "refused_palette_view", 1);
             return None;
         }
         // The render targets the passes sample (the reflection inputs):
@@ -238,6 +258,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let mut headers = Vec::with_capacity(water.targets.len());
         for &t in &water.targets {
             let Some(header) = target_header(mem, t) else {
+                render_bridge::native_layers::count(WATER_LATE_LAYER.into(), "refused_target_view", 1);
                 if !TARGET_UNREADABLE.swap(true, Ordering::Relaxed) {
                     eprintln!("native-water: render target {t} is unavailable; the D3D path draws the water");
                 }
@@ -253,12 +274,15 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // The fog state, as the fog's (a water pass that reads the fog
         // register gets the device's).
         let device_words = crate::native_fog_glue::device_fog_words(&d, mem);
-        let materials = crate::native_fog_glue::resolve_materials(&water.words, &device_words)?;
+        let Some(materials) = crate::native_fog_glue::resolve_materials(&water.words, &device_words) else {
+            render_bridge::native_layers::count(WATER_LATE_LAYER.into(), "refused_fog_words_view", 1);
+            return None;
+        };
         // The skip over a preview: nothing touches the guest until the
         // reservation has recorded on every copy.
         let read = ReadMemory(mem);
         let mut preview = native_render::skip::MaskPreview::new(&read)?;
-        let (selected, cleared) = native_render::fog::clear_fog(&mut preview, WATER_LAYER as u32, &|item| {
+        let (selected, cleared, refused) = native_render::fog::clear_fog(&mut preview, WATER_LAYER as u32, &|item| {
             let accepted = water.part_set.get(&(item.owner, item.part)) == Some(&(item.shader));
             if !accepted {
                 Stage::Water.count(Metric::Examined, 1);
@@ -266,6 +290,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             }
             accepted
         })?;
+        crate::native_fog_glue::count_late_refusals(WATER_LAYER as u32, refused);
         let masks = preview.finish()?;
         if selected.is_empty() {
             return None;

@@ -22,7 +22,7 @@ const GEOMETRY_RANGE_TAIL: u32 = 0x0004_dae0;
 const GEOMETRY_EMITTER_CALLER: u32 = 0x0004_d626;
 const TRANSPARENT_DRAW_CALLER: u32 = 0x0004_1010;
 const LAYER_DRAW_CALLER: u32 = 0x0003_bc90;
-const FIRST_PERSON_LAYER_FRAME: u32 = 0xf0a4;
+const LAYER_DRAW_FRAME: u32 = 0xf0a4;
 const SORTED_HANDLER_RETURN: u32 = 0x0001_e3f3;
 const LIST_COUNT: u32 = 0x004b_6280;
 const LIST_FIRST: u32 = 0x004b_6284;
@@ -31,10 +31,16 @@ const LIST_ORDER: u32 = 0x004b_628c;
 const ENTRY_BYTES: u32 = 0x70;
 const MAX_SORTED: u32 = 0x400;
 
+pub enum IndexTopology {
+    List,
+    Strip,
+    Water(frame_scene::late::WaterComposite),
+}
+
 pub struct IndexRange {
     pub indices: u32,
     pub count: u32,
-    pub strip: bool,
+    pub topology: IndexTopology,
 }
 
 pub trait WalkHost: Send + Sync {
@@ -88,7 +94,15 @@ fn walk_stage(mem: &dyn GuestRead, esp: u32) -> Option<Stage> {
         }
         LAYER_DRAW_CALLER => {
             use native_render::world_layers::{Site, layer_site};
-            let caller = word(FIRST_PERSON_LAYER_FRAME)?;
+            let caller = word(LAYER_DRAW_FRAME)?;
+            // The layer's sorted dispatcher has already applied the pass and
+            // chosen this range. Claim only the scene's own late-layer calls.
+            if scene_extract::late::scene_layer_call(layer, caller)
+                && mem.read_u32(native_render::skip::CURRENT_LAYER) == Some(layer)
+                && word(0xf094) == Some(0x0004_45b7)
+            {
+                return Some(if layer == 16 { Stage::Fog } else { Stage::Water });
+            }
             let first_person_layer = layer_site(layer, caller) == Site::FirstPerson;
             let list = mem.read_u32(native_render::skip::CURRENT_LIST)?;
             (first_person_layer && list != 0
@@ -99,9 +113,23 @@ fn walk_stage(mem: &dyn GuestRead, esp: u32) -> Option<Stage> {
     }
 }
 
+/// The guest has evaluated the current subpart and flushed its textures.
+fn subpart_range(mem: &dyn GuestRead, esp: u32) -> Option<IndexRange> {
+    let topology = match mem.read_u32(esp)? {
+        5 => IndexTopology::List,
+        6 => IndexTopology::Strip,
+        _ => return None,
+    };
+    Some(IndexRange {
+        topology,
+        count: mem.read_u32(esp.checked_add(4)?)?,
+        indices: mem.read_u32(esp.checked_add(8)?)?,
+    })
+}
+
 fn walk_range(mem: &mut dyn GuestMemory, stage: Stage, range: IndexRange) -> bool {
     stage.count(Metric::WalkExamined, 1);
-    if range.count < 3 || range.indices == 0 || (!range.strip && range.count % 3 != 0) {
+    if range.count < 3 || range.indices == 0 || (matches!(range.topology, IndexTopology::List) && range.count % 3 != 0) {
         stage.count(Metric::WalkRefusedInputs, 1);
         return false;
     }
@@ -280,17 +308,76 @@ impl Feature for NativeTransparents {
         if !on(b.switches()) {
             return Ok(());
         }
-        b.raw().before(&GEOMETRY_RANGE_READY, "native_scene_walk_indexed", |c| {
+        use points::scene_effects::{WATER_INDEX_READY, WATER_INDEX_END};
+        b.raw().before(&WATER_INDEX_READY, "native_water_composite", |c| {
             let rt = Arc::clone(c.ctx.runtime());
-            if !rt.read_dispatch(|dispatch| dispatch.has_resume(GEOMETRY_RANGE_TAIL)) {
+            let can_resume = rt.read_dispatch(|dispatch| dispatch.has_resume(WATER_INDEX_END));
+            let mut mem = rt.memory();
+            if mem.u32(c.cpu.esp).ok() != Some(scene_extract::late::WATER_COMPOSITE_RETURN) {
                 return Ok(Flow::Continue);
             }
+            let Some((indices, count)) = scene_extract::late::water_quad_range(&ReadMemory(&*mem), c.cpu.esp) else {
+                Stage::Water.count(Metric::WalkExamined, 1);
+                Stage::Water.count(Metric::WalkRefusedInputs, 1);
+                return Ok(Flow::Continue);
+            };
+            if !can_resume {
+                Stage::Water.count(Metric::WalkExamined, 1);
+                Stage::Water.count(Metric::WalkRefusedReservation, 1);
+                return Ok(Flow::Continue);
+            }
+            let Some(geometry) = crate::scene_step::water_composite(&*mem, indices, count) else {
+                Stage::Water.count(Metric::WalkExamined, 1);
+                Stage::Water.count(Metric::WalkRefusedInputs, 1);
+                return Ok(Flow::Continue);
+            };
+            let range = IndexRange { indices, count, topology: IndexTopology::Water(geometry) };
+            if walk_range(&mut *mem, Stage::Water, range) {
+                return Ok(Flow::Return(TransferAbi::resume(WATER_INDEX_END)));
+            }
+            Ok(Flow::Continue)
+        }).context_only().optional();
+        for (site, resume) in points::scene_effects::SUBPART_DRAWS {
+            b.raw().before(site, "native_late_subpart_draw", move |c| {
+                let Some(emitter_esp) = c.cpu.esp.checked_add(12) else { return Ok(Flow::Continue) };
+                let rt = Arc::clone(c.ctx.runtime());
+                let can_resume = rt.read_dispatch(|dispatch| dispatch.has_resume(resume));
+                let mut mem = rt.memory();
+                let read = ReadMemory(&*mem);
+                let Some(stage @ (Stage::Fog | Stage::Water)) = walk_stage(&read, emitter_esp) else {
+                    return Ok(Flow::Continue);
+                };
+                if !can_resume {
+                    stage.count(Metric::WalkExamined, 1);
+                    stage.count(Metric::WalkRefusedReservation, 1);
+                    return Ok(Flow::Continue);
+                }
+                let Some(range) = subpart_range(&read, c.cpu.esp) else {
+                    stage.count(Metric::WalkExamined, 1);
+                    stage.count(Metric::WalkRefusedInputs, 1);
+                    return Ok(Flow::Continue);
+                };
+                if !walk_range(&mut *mem, stage, range) {
+                    return Ok(Flow::Continue);
+                }
+                c.cpu.esp = emitter_esp;
+                Ok(Flow::Return(TransferAbi::resume(resume)))
+            }).context_only().optional();
+        }
+        b.raw().before(&GEOMETRY_RANGE_READY, "native_scene_walk_indexed", |c| {
+            let rt = Arc::clone(c.ctx.runtime());
+            let can_resume = rt.read_dispatch(|dispatch| dispatch.has_resume(GEOMETRY_RANGE_TAIL));
             let mut mem = rt.memory();
             let Some(stage) = walk_stage(&ReadMemory(&*mem), c.cpu.esp) else {
                 return Ok(Flow::Continue);
             };
+            if !can_resume {
+                stage.count(Metric::WalkExamined, 1);
+                stage.count(Metric::WalkRefusedReservation, 1);
+                return Ok(Flow::Continue);
+            }
             let strip = c.cpu.ebx as u8 != 0;
-            let range = IndexRange { indices: c.cpu.edi, count: c.cpu.esi, strip };
+            let range = IndexRange { indices: c.cpu.edi, count: c.cpu.esi, topology: if strip { IndexTopology::Strip } else { IndexTopology::List } };
             if !walk_range(&mut *mem, stage, range) {
                 return Ok(Flow::Continue);
             }
@@ -357,13 +444,54 @@ mod walk_tests {
     }
 
     #[test]
+    fn subpart_calls_take_the_live_topology_count_and_index_address() {
+        let mut mem = FlatMemory::new(0x1000, 0x100);
+        for topology in [5, 6] {
+            mem.set_u32(0x1010, topology).unwrap();
+            mem.set_u32(0x1014, 9).unwrap();
+            mem.set_u32(0x1018, 0x14000).unwrap();
+            let range = subpart_range(&ReadMemory(&mem), 0x1010).unwrap();
+            assert_eq!((range.indices, range.count), (0x14000, 9));
+            assert_eq!(matches!(range.topology, IndexTopology::Strip), topology == 6);
+        }
+        mem.set_u32(0x1010, 8).unwrap();
+        assert!(subpart_range(&ReadMemory(&mem), 0x1010).is_none());
+    }
+
+    #[test]
+    fn a_sorted_late_range_requires_its_geometry_emitter_and_scene_layer_call() {
+        let mut mem = FlatMemory::new(0x0040_0000, 0x001e_0000);
+        let stack = 0x005a_0000;
+        let classify = |m: &FlatMemory| walk_stage(&ReadMemory(m), stack);
+        for (layer, caller, stage) in [
+            (6, scene_extract::late::SCENE_WATER_RETURN, Stage::Water),
+            (16, scene_extract::late::SCENE_FOG_RETURN, Stage::Fog),
+        ] {
+            for (offset, value) in [(0x18, GEOMETRY_EMITTER_CALLER), (0x68, LAYER_DRAW_CALLER),
+                (0x78, layer), (0xf094, 0x0004_45b7), (LAYER_DRAW_FRAME, caller)] {
+                mem.set_u32(stack + offset, value).unwrap();
+            }
+            mem.set_u32(native_render::skip::CURRENT_LAYER, layer).unwrap();
+            assert_eq!(classify(&mem), Some(stage));
+            for offset in [0x18, 0x68, 0xf094, LAYER_DRAW_FRAME] {
+                let saved = mem.u32(stack + offset).unwrap();
+                mem.set_u32(stack + offset, 0).unwrap();
+                assert_eq!(classify(&mem), None);
+                mem.set_u32(stack + offset, saved).unwrap();
+            }
+            mem.set_u32(native_render::skip::CURRENT_LAYER, 3).unwrap();
+            assert_eq!(classify(&mem), None);
+        }
+    }
+
+    #[test]
     fn an_index_range_requires_the_first_person_stack_and_owned_list() {
         let mut mem = FlatMemory::new(0x0040_0000, 0x001e_0000);
         let (stack, list) = (0x005a_0000, 0x004a_0000);
         mem.set_u32(stack + 0x18, GEOMETRY_EMITTER_CALLER).unwrap();
         mem.set_u32(stack + 0x68, LAYER_DRAW_CALLER).unwrap();
         mem.set_u32(stack + 0x78, 7).unwrap();
-        mem.set_u32(stack + FIRST_PERSON_LAYER_FRAME, 0x0004_0271).unwrap();
+        mem.set_u32(stack + LAYER_DRAW_FRAME, 0x0004_0271).unwrap();
         mem.set_u32(CURRENT_LIST, list).unwrap();
         mem.set_u32(list + 0x14, crate::native_first_person::FIRST_PERSON_ITEMS).unwrap();
         let classify = |mem: &FlatMemory| walk_stage(&ReadMemory(mem), stack);
@@ -371,7 +499,7 @@ mod walk_tests {
         mem.set_u32(list + 0x14, 0x0050_0000).unwrap();
         assert_eq!(classify(&mem), None);
         mem.set_u32(list + 0x14, crate::native_first_person::FIRST_PERSON_ITEMS).unwrap();
-        mem.set_u32(stack + FIRST_PERSON_LAYER_FRAME, 0x0002_c039).unwrap();
+        mem.set_u32(stack + LAYER_DRAW_FRAME, 0x0002_c039).unwrap();
         assert_eq!(classify(&mem), None);
     }
 }

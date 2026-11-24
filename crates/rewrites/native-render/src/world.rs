@@ -164,6 +164,8 @@ pub struct TransparentDraw {
     pub first_index: u32,
     pub index_count: u32,
     pub bounds: Aabb,
+    /// Vertex registers supplied by this section, as in WorldDraw.
+    pub inputs: u16,
 }
 
 /// A run of draws sharing material and lightmap: one bind group and one
@@ -591,6 +593,7 @@ impl WorldBuilder {
                         first_index,
                         index_count,
                         bounds,
+                        inputs,
                     });
                 }
                 continue;

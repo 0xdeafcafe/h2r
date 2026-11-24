@@ -295,6 +295,8 @@ impl DeviceCache {
 /// One unmodified indexed range from the standard geometry emitter.
 pub struct IndexedPass {
     draw: Arc<ResolvedDraw>,
+    /// The guest quad packet when the native pass expands its topology.
+    original_quad: Option<Arc<ResolvedDraw>>,
     cache: Arc<Cache>,
     frame: u64,
     // Eligibility is fixed at guest extraction even if the render FIFO
@@ -315,6 +317,21 @@ impl IndexedPass {
     ) -> Option<Self> {
         if draw.indices.as_ref()?.iter().any(|&i| i >= draw.vertex_count) { return None; }
         Self::candidate(draw, cache, frame, texaccum, None)
+    }
+
+    /// Expand the indexed water composite using the Xbox quad diagonal.
+    /// Preserve vertex order within each quad, including repeated indices.
+    pub fn water_quads(draw: &ResolvedDraw, geometry: &frame_scene::late::WaterComposite, cache: Arc<Cache>, frame: u64) -> Option<Self> {
+        if draw.primitive != PrimitiveType::QuadList {
+            return None;
+        }
+        let triangles = geometry.triangles(draw.indices.as_ref()?)?;
+        let mut native = draw.clone();
+        native.primitive = PrimitiveType::TriangleList;
+        native.indices = Some(triangles.into());
+        let mut pass = Self::new(&native, cache, frame, None)?;
+        pass.original_quad = Some(Arc::new(draw.clone()));
+        Some(pass)
     }
 
     /// Sorted slots, render records, object handles and swap counters are
@@ -344,6 +361,7 @@ impl IndexedPass {
         }
         Some(Self {
             draw: Arc::new(draw.clone()),
+            original_quad: None,
             fetch: cache.fetch,
             cache,
             frame,
@@ -614,7 +632,7 @@ impl ExternalPass for IndexedPass {
     fn encode(&mut self, _target: ExternalTarget<'_>) {}
 
     fn resolved_fallback(&self) -> Option<Arc<ResolvedDraw>> {
-        Some(Arc::clone(&self.draw))
+        Some(Arc::clone(self.original_quad.as_ref().unwrap_or(&self.draw)))
     }
 
     fn with_draw(&self, draw: Arc<ResolvedDraw>) -> Option<Box<dyn ExternalPass>> {
@@ -624,8 +642,18 @@ impl ExternalPass for IndexedPass {
         if draw.streams.len() != self.draw.streams.len() {
             return None;
         }
+        // A retargeted original quad needs its expanded index stream too.
+        let (draw, original_quad) = if self.original_quad.is_some() {
+            let mut native = (*draw).clone();
+            native.primitive = self.draw.primitive;
+            native.indices = self.draw.indices.clone();
+            (Arc::new(native), Some(draw))
+        } else {
+            (draw, None)
+        };
         Some(Box::new(Self {
             draw,
+            original_quad,
             cache: Arc::clone(&self.cache),
             frame: self.frame,
             extracted_frame: self.extracted_frame,
@@ -666,6 +694,14 @@ impl ExternalPass for IndexedPass {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn water_quads_keep_the_indexed_corners_and_diagonal() {
+        let water = frame_scene::late::WaterComposite { quads: vec![[17, 10, 14, 21], [12, 12, 11, 13]] };
+        assert_eq!(water.triangles(&[7, 0, 4, 11, 2, 2, 1, 3]).unwrap(),
+            [7, 0, 4, 7, 4, 11, 2, 2, 1, 2, 1, 3]);
+        assert_eq!(water.triangles(&[1, 3, 9]), None);
+    }
 
     #[test]
     fn converted_streams_require_the_same_snapshot_count_and_repack_plan() {

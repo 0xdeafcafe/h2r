@@ -11,6 +11,47 @@ use crate::GuestRead;
 use crate::layout::post::PostFrame;
 use crate::layout::skip::{CURRENT_LAYER, CURRENT_LIST, ITEM_SIZE, MAX_ITEMS};
 
+/// Returns after the layer draws in the scene's late passes. The water
+/// draw at 0x0002c11b is inside the water setup and teardown.
+pub const SCENE_FOG_RETURN: u32 = 0x0002_c0e9;
+pub const SCENE_WATER_RETURN: u32 = 0x0002_c120;
+
+/// A layer number alone also matches draws from nested view handlers.
+pub fn scene_layer_call(layer: u32, ret: u32) -> bool {
+    matches!((layer, ret), (16, SCENE_FOG_RETURN) | (6, SCENE_WATER_RETURN))
+}
+
+/// The indexed helper returns to the water composite after its call at
+/// 0x0003c598. Its arguments are topology, index address and index count.
+pub const WATER_COMPOSITE_RETURN: u32 = 0x0003_c59d;
+
+pub fn water_quad_range(mem: &dyn GuestRead, esp: u32) -> Option<(u32, u32)> {
+    let slot = |offset| mem.read_u32(esp.checked_add(offset)?);
+    if slot(0)? != WATER_COMPOSITE_RETURN || slot(4)? != 8 {
+        return None;
+    }
+    let indices = slot(8)?;
+    let count = slot(12)?;
+    (indices != 0 && count >= 4 && count.is_multiple_of(4)).then_some((indices, count))
+}
+
+/// Copy the 16-bit index list as quads. Bound extraction to the device's
+/// vertex limit before allocating, and reject address wrap.
+pub fn water_composite(mem: &dyn GuestRead, indices: u32, count: u32) -> Option<frame_scene::late::WaterComposite> {
+    if indices == 0 || count < 4 || count > 1 << 20 || !count.is_multiple_of(4) {
+        return None;
+    }
+    indices.checked_add(2 * count - 1)?;
+    let mut quads = Vec::with_capacity(count as usize / 4);
+    for i in 0..count / 4 {
+        let at = indices + i * 8;
+        let a = mem.read_u32(at)?;
+        let b = mem.read_u32(at + 4)?;
+        quads.push([a as u16, (a >> 16) as u16, b as u16, (b >> 16) as u16]);
+    }
+    Some(frame_scene::late::WaterComposite { quads })
+}
+
 /// The current list's items with `layer`'s bit set, when the current
 /// layer is `layer`: what the guest's layer draw would draw. `None` when
 /// another layer is current or the list does not read.
@@ -75,6 +116,41 @@ mod tests {
     use super::*;
     use crate::layout::post::{SCENARIO, SCENARIO_SCREEN_EFFECTS, VIEW_KIND};
     use crate::testing::Mem;
+
+    #[test]
+    fn only_the_matching_layer_belongs_to_each_late_call() {
+        for (layer, other, ret) in [(6, 16, SCENE_WATER_RETURN), (16, 6, SCENE_FOG_RETURN)] {
+            assert!(scene_layer_call(layer, ret));
+            assert!(!scene_layer_call(layer, ret + 1));
+            assert!(!scene_layer_call(other, ret));
+        }
+    }
+
+    #[test]
+    fn water_composite_reads_only_complete_quads_at_its_own_call() {
+        let mut mem = Mem::default();
+        let esp = 0x5010;
+        for (offset, value) in [(0, WATER_COMPOSITE_RETURN), (4, 8), (8, 0x8342), (12, 12)] {
+            mem.w(esp + offset, value);
+        }
+        assert_eq!(water_quad_range(&mem, esp), Some((0x8342, 12)));
+        for (offset, invalid) in [(0, 0x1000), (4, 6), (8, 0), (12, 7)] {
+            let old = mem.read_u32(esp + offset).unwrap();
+            mem.w(esp + offset, invalid);
+            assert_eq!(water_quad_range(&mem, esp), None);
+            mem.w(esp + offset, old);
+        }
+    }
+
+    #[test]
+    fn composite_geometry_copies_unaligned_quads_and_refuses_incomplete_memory() {
+        let mut mem = Mem::default();
+        mem.w(0x2012, (14 << 16) | 11);
+        assert!(water_composite(&mem, 0x2012, 4).is_none());
+        mem.w(0x2016, (7 << 16) | 21);
+        assert_eq!(water_composite(&mem, 0x2012, 4).unwrap().quads, [[11, 14, 21, 7]]);
+        assert!(water_composite(&mem, u32::MAX - 5, 4).is_none());
+    }
 
     const LIST: u32 = 0x0010_0000;
     const ITEMS: u32 = 0x0020_0000;

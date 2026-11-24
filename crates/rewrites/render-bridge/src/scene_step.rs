@@ -831,6 +831,14 @@ pub struct LateStage {
     pub parts: Vec<LatePart>,
 }
 
+/// The mesh the teardown draws, owned by the keyed view. Its stage
+/// consumes this copy even when the layer-6 edge blend was empty.
+pub fn water_composite(mem: &dyn GuestMemory, indices: u32, count: u32) -> Option<frame_scene::late::WaterComposite> {
+    let key = late_key(mem)?;
+    let geometry = scene_extract::late::water_composite(&Ro(mem), indices, count)?;
+    with_step(|step| step.builder.set_water_composite(key, geometry).ok().cloned())
+}
+
 /// The late layer `layer` (16 the fog, 6 the water) of the view being
 /// drawn (docs/graphics/framescene.md, slice 5): whether its gate held,
 /// the device's fog words, the items the current list holds in it, and

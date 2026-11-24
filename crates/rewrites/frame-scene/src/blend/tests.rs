@@ -41,6 +41,7 @@ fn view(kind: ViewKind, camera: Camera, instances: Range<u32>, lights: Range<u32
         decorator_remainder: 0,
         fog: None,
         water: None,
+        water_composite: None,
         post: None,
     }
 }

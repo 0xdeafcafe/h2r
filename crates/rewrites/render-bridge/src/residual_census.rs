@@ -263,6 +263,12 @@ pub const REGISTRY: &[Row] = &[
         slot: "opaque",
     },
     Row {
+        name: "water_teardown",
+        entry: 0x0003_c3c0,
+        status: Status::Partial,
+        slot: "after_lights",
+    },
+    Row {
         name: "decals",
         entry: 0x0004_4040,
         status: Status::D3d,
@@ -356,11 +362,11 @@ pub const LAYER_SITES: [&str; 6] = [
 /// those items' guest draws (slice R1, docs/graphics/retire-d3d.md, "By
 /// caller"), by [`LAYER_SITES`] index: the scene's layers 1, 2, 5, 7, 8,
 /// 17 and 20 (`frame-scene.layers`) and 3 (`native_objects`,
-/// `native_world`, the decorators), and the first person's 1, 2, 7, 8 and
+/// `native_world`, the decorators), 6 (water) and 16 (fog), and the first person's 1, 2, 7, 8 and
 /// 20 (`frame-scene.layers`) and 3 (`native_first_person`). Each is
 /// [`Status::Partial`]: what its stages refuse stays the guest's.
 pub const PARTIAL_LAYERS: [(u8, &[u8]); 2] =
-    [(0, &[1, 2, 3, 5, 7, 8, 17, 20]), (2, &[1, 2, 3, 7, 8, 20])];
+    [(0, &[1, 2, 3, 5, 6, 7, 8, 16, 17, 20]), (2, &[1, 2, 3, 7, 8, 20])];
 
 /// The status of the layer draw at site `at` ([`LAYER_SITES`]) of `layer`.
 pub fn layer_status(at: u8, layer: u8) -> Status {
@@ -414,6 +420,7 @@ impl Producer {
     pub fn slot(self) -> &'static str {
         match self {
             Producer::Fixed(i) => REGISTRY.get(i).map_or("", |r| r.slot),
+            Producer::Layer { at: 0, layer: 6 | 16 } => "after_lights",
             Producer::Layer { at, .. } => match LAYER_SITES.get(usize::from(at)) {
                 Some(&"light") => "after_opaque",
                 _ => "opaque",
@@ -932,6 +939,12 @@ pub fn install(b: &mut hooks::Builder) {
             "residual_census_scene_passes_end",
         ),
         (
+            &points::WATER_TEARDOWN,
+            "water_teardown",
+            "residual_census_water_teardown",
+            "residual_census_water_teardown_end",
+        ),
+        (
             &points::OBJECT_SHADOW_LIST,
             "object_shadows",
             "residual_census_object_shadows",
@@ -1308,7 +1321,10 @@ mod tests {
             );
         }
         assert_eq!(status(2, 5), "d3d", "the first person draws no layer 5");
-        assert_eq!(status(0, 16), "d3d", "the fog's late layer");
+        for layer in [6, 16] {
+            assert_eq!(status(0, layer), "partial");
+            assert_eq!(status(5, layer), "d3d", "a different caller keeps its draw");
+        }
         assert_eq!(status(1, 2), "d3d", "an alternate view's layer 2");
         assert_eq!(status(1, 1), "d3d", "an alternate view's");
         assert_eq!(status(3, 12), "d3d", "the light passes'");
@@ -1316,8 +1332,8 @@ mod tests {
         for r in REGISTRY {
             assert_eq!(
                 r.status,
-                Status::D3d,
-                "{}: no fixed producer is replaced",
+                if r.name == "water_teardown" { Status::Partial } else { Status::D3d },
+                "unexpected fixed producer status for {}",
                 r.name
             );
         }

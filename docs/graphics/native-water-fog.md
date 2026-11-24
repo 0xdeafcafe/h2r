@@ -19,7 +19,7 @@ gates the player chain after):
 | Calls | What | Evidence |
 |---|---|---|
 | `0x00025d50`, then the layer draw of 16 | **Planar fog.** `0x25d50` (no stack cleanup) runs between the state call at `0x0002c0bc`'s return and the layer-16 begin at `0x0002c0d6`; the layer draw is at `0x0002c0e0` (returns `0x0002c0e9`). Its content is not read (S: the fog render states and any per-view constants; whatever it pushes is in the device's state before the layer begins, so a native pass asked at the layer draw reads it after the drain). | Code: the block machine `0x0002c0cc`..`0x0002c0ee` |
-| `0x0003ba90(esi, ecx=6)`, the layer draw of 6, `0x0003c3c0(al, 1)` | **The water edge blend.** Unless bit 4 of `[0x004b9fe0]` is set, when `0x0003c3c0(0, 0)` runs instead and layer 6 does not draw. `0x0003ba90` (`ret 4`) returns AL, stored and passed back to `0x0003c3c0` (`ret 8`). `0x0003c3c0` contains the alpha-only clear `0x3c515` with EAX `0x10` (d3d.md, "Channels"): the teardown clears the bound target's alpha, so the water edge blend's mask is the alpha channel the draws before it left. Both wrappers' content is otherwise not read. | Code: `0x0002c0ee`..`0x0002c137`; d3d.md |
+| `0x0003ba90(esi, ecx=6)`, the layer draw of 6, `0x0003c3c0(al, 1)` | **The water edge blend.** Unless bit 4 of `[0x004b9fe0]` is set, when `0x0003c3c0(0, 0)` runs instead and layer 6 does not draw. `0x0003ba90` (`ret 4`) returns AL, stored and passed back to `0x0003c3c0` (`ret 8`). `0x0003c3c0` contains the alpha-only clear `0x3c515` with EAX `0x10` (d3d.md, "Channels"): the teardown clears the bound target's alpha, so the water edge blend's mask is the alpha channel the draws before it left. The teardown can also issue an indexed quad draw at `0x0003c598` and continues with resource updates. | Code: `0x0002c0ee`..`0x0002c137`; d3d.md |
 
 - **Layer 16's own gate** (Code, the layer-draw port `0x00044582`): the
   layer draw draws layer 16 only when `[0x0048574c] == 3` or either fog
@@ -80,7 +80,7 @@ the cached pipelines with their own uniforms and sampled textures.
   The gate (`fog::planar_gate`) is `[0x004ba004]` non-zero with both fog
   bytes (`0x00485a75`, `0x00485a76`) clear. The skip (`fog::clear_fog`)
   computes the same from the record and carries it on `FogItem`; a
-  record with no entry is left alone and does not break the prefix.
+  structure or object record with no entry keeps its mask and contributes no draw.
   The load compiles implementation 2 (`native_fog_glue::LOADED_IMPLEMENTATION`,
   the gate's) for every pass that has more than one
   (`fog_gpu::layer_passes_selected`); a pass with one draws it whatever
@@ -100,8 +100,7 @@ the cached pipelines with their own uniforms and sampled textures.
   implementation of any pass of that layer, in any world material, sets
   `CULLMODE` or `FRONTFACE` to something else
   (`fog_gpu::layer_sets_other_cull`; `restore_states` are not credited
-  with putting it back). The native passes come first in the layer (the
-  skip's prefix rule), so each starts from the layer's setup. The world
+  with putting it back). A whole-layer native pass starts from the layer setup. The world
   layers (`layers_load`: 1, 5, 7, 8 and 20) apply the same rule.
 - **The fog state** (`fog_gpu::FogWords`): the effective fog unit of a
   draw is the implementation's own render states overlaid on the device's
@@ -127,11 +126,12 @@ the cached pipelines with their own uniforms and sampled textures.
   else through the ordered handoff, recording on every copy before
   anything is surrendered), checks that the same map and BSP load is
   current, applies the mask edits and commits.
-  The shared fog and water mask walk requires the accepted items to
-  form a prefix of the layer's list so the guest remainder draws in
-  order after the native pass. A later accepted item leaves the
-  whole layer on D3D. The hook remembers what was cleared for the restore
-  at the next layer draw. A placement's part draws with its pass's
+  The fog and water mask walk only surrenders a list when the stage can
+  draw every entry. A mixed list keeps all its masks for the guest sort.
+  The native range hook then offers each supported geometry range, including selected subparts, at its
+  original draw position, after the handler commits its state. A refused
+  range continues through its guest draw. The hook restores a surrendered
+  list's bits at the next layer draw. A placement's part draws with its pass's
   rigid classification (the `vrtx` tag's classification 1, the model
   rows `c[50..52]` at its slot's dynamic offset, as its layer 3 does);
   a material whose rigid program does not compile, or whose
@@ -158,15 +158,19 @@ the cached pipelines with their own uniforms and sampled textures.
   after the world's and the fog's. It runs for layer 6 when the caller
   is the late passes' call
   (`[esp] == 0x0002c120`), gated by the water branch's own gate (bit 4
-  of `0x004b9fe0` clear). The wrappers are never skipped — `0x0003ba90`
-  before the layer and `0x0003c3c0` with its alpha-only clear
-  `0x3c515` after it stay guest — so the native replacement lands
-  inside their window (the reservation drains `0x0003ba90`'s pushes
-  first, and the teardown's clear is a later guest entry) and the
-  alpha channel's lifetime is the game's own. The geometry is the
-  water surfaces themselves, the kind-4 transparent cluster parts.
-  Placements keep their D3D draws until the water path has their rigid
-  programs. The look is the material's own layer-6 pass
+  of `0x004b9fe0` clear). The reservation drains the setup wrapper's
+  pushes before the native draw. The teardown `0x0003c3c0` keeps its
+  conditional alpha clear at `0x0003c515` and its state commit. At
+  `0x0001c8a5`, the indexed helper offers the composite's quad list to
+  the water stage. The keyed view owns the quad corners, and the stage verifies
+  them against the current vertex window before expanding them into triangles.
+  Admission resumes at the helper's epilogue only after
+  the native draw commits. Refusals take the original indexed call.
+  Layer 6 draws the kind-4 transparent parts of clusters and placements. A placement uses
+  its own model rows at the rigid program's dynamic uniform offset.
+  Each pass must compile the rigid classification and the part must supply
+  every vertex input it reads. Missing rows, streams or rigid programs
+  leave the placement on the guest path. The look is the material's own layer-6 pass
   (`fog_gpu::supplied_layer_passes` — the acceptance is the fog
   layer's: the states the implementation sets itself, a final combiner
   of its own, no device-state texture modes).
@@ -260,7 +264,7 @@ the cached pipelines with their own uniforms and sampled textures.
 ## Rules and limits
 
 - The fog pass applies the layer draw's own gate (`[0x0048574c] == 3` or a fog byte set); otherwise it would fog views the game left clear.
-- Water: the shared fog and water mask walk requires the accepted items to form a prefix of the layer's list; a later accepted item leaves the whole layer on D3D. Placements keep their D3D draws until the water path has their rigid programs. Objects' layer-16 items are never cleared: their fog belongs to the objects stage.
+- Objects retain their layer-16 mask. In a mixed list, range admission uses the shader, geometry and texture bindings established by the sorted guest handler. A range that cannot sample its bound textures safely stays on the guest path.
 - Any engine texture id that is run-time chosen, the light's, a rasterizer bitmap other than 14 and 15 (which resolve) or a cleared stage refuses the material at load (`FogRefusal::Unsupplied`). The load line names the materials left on D3D and why, and every 1,800 layer-16 views a line gives the skip counts.
 - Layers 18 and 19 are taken only from the camouflage handler's calls (returns `0x00042015` and `0x0004205f`), 21 only from the hologram handler's (`0x00042721`); the handlers' replays of the scene's layers stay on D3D. An item extraction refuses (a fade byte below `0xff`, which sets the stipple, and the rest of `LayerObjectRefusal`), whose model is not resident, or whose shader's passes in the layer did not compile keeps its D3D draw, and so does every item after it.
 

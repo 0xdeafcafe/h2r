@@ -1158,7 +1158,7 @@ impl GpuWorld {
             pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
             for it in &items {
                 pass.set_pipeline(&it.pipeline);
-                pass.set_bind_group(0, &it.uniforms, &[]);
+                pass.set_bind_group(0, &it.uniforms, it.offset.as_slice());
                 pass.set_bind_group(1, &it.textures, &[]);
                 pass.set_blend_constant(it.blend);
                 pass.draw_indexed(it.first..it.first + it.count, 0, 0..1);

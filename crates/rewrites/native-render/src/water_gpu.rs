@@ -21,14 +21,14 @@
 //! parts ([`crate::world::World::transparents`]): one item draws them in
 //! layer 15 and again in layer 6, and only layer 6 is taken here.
 
-use std::collections::{HashMap, HashSet, hash_map::Entry};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, hash_map::Entry};
 
 use crate::fog_gpu::{supplied_layer_passes, FogPass, FogProgram, FogWords};
 use crate::gpu::{Image, texture};
 use crate::look::Stage;
 use crate::pass_state::PassState;
-use crate::program::{described_pipeline, Gpu, PipelineUse, ViewInputs};
-use crate::world::{LightmapKey, Owner};
+use crate::program::{described_pipeline, Gpu, Rigid, PipelineUse, ViewInputs};
+use crate::world::{LightmapKey, ModelRows, Owner, World};
 
 /// The layer this module draws.
 pub const WATER_LAYER: usize = 6;
@@ -52,6 +52,7 @@ pub(crate) struct WaterItem {
     pub key: gfx::pipeline::PipelineKey,
     pub pipeline: wgpu::RenderPipeline,
     pub uniforms: wgpu::BindGroup,
+    pub offset: Option<u32>,
     pub textures: wgpu::BindGroup,
     pub blend: wgpu::Color,
     pub first: u32,
@@ -89,7 +90,7 @@ pub(crate) fn item_packets(
                 vec![(vertices.clone(), 0, vertices.size())],
                 (indices.clone(), u64::from(it.first) * 4, u64::from(it.count) * 4),
                 it.count,
-                vec![BoundGroup::new(0, it.uniforms.clone()), BoundGroup::new(1, it.textures.clone())],
+                vec![BoundGroup { index: 0, group: it.uniforms.clone(), offsets: it.offset.into_iter().collect() }, BoundGroup::new(1, it.textures.clone())],
                 &render,
                 target_size,
                 scissor,
@@ -146,7 +147,7 @@ pub struct WaterSet {
 }
 
 struct WaterMaterial {
-    passes: Vec<(Gpu, PassState)>,
+    passes: Vec<(Gpu, PassState, Option<Rigid>)>,
     /// Per stage: the engine supply ([`supply_of`]).
     supplies: [Option<Supply>; 4],
     words: FogWords,
@@ -161,7 +162,7 @@ impl WaterSet {
         materials.sort_by_key(|(m, _)| **m);
         let mut out = Vec::new();
         for (_, m) in materials {
-            for (g, _) in &m.passes {
+            for (g, _, _) in &m.passes {
                 g.held(want, &mut out);
             }
         }
@@ -182,6 +183,7 @@ impl WaterSet {
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        world: &World,
         parts: Vec<((Owner, u8), (u32, u32, Option<LightmapKey>, u16))>,
         programs: HashMap<u16, (Vec<FogPass>, Vec<FogProgram>)>,
         targets: Vec<u32>,
@@ -189,6 +191,12 @@ impl WaterSet {
         stage_image: &mut dyn FnMut(Stage) -> Option<Image>,
         lightmap_image: &mut dyn FnMut(LightmapKey) -> Option<Image>,
     ) -> Self {
+        let mut placements: HashMap<u16, BTreeMap<u32, ModelRows>> = HashMap::new();
+        for &((owner, _), (_, _, _, material)) in &parts {
+            if let Owner::Instance(i) = owner && let Some(rows) = world.rows(i) {
+                placements.entry(material).or_default().insert(i, *rows);
+            }
+        }
         let mut materials = HashMap::new();
         'material: for (material, (passes, compiled)) in programs {
             if passes.is_empty() || passes.len() != compiled.len() {
@@ -203,11 +211,15 @@ impl WaterSet {
                 continue;
             }
             let mut gpus = Vec::with_capacity(compiled.len());
-            for p in compiled {
+            for mut p in compiled {
+                p.program.rigid = p.rigid;
                 let Some(g) = Gpu::new(device, queue, p.program, stage_image) else {
                     continue 'material;
                 };
-                gpus.push((g, p.state));
+                let rigid = placements.get(&material).and_then(|rows| {
+                    Rigid::with_slots(device, &g, rows.iter().map(|(&i, &r)| (i, r)).collect())
+                });
+                gpus.push((g, p.state, rigid));
             }
             materials.insert(material, WaterMaterial { passes: gpus, supplies, words });
         }
@@ -238,7 +250,10 @@ impl WaterSet {
         let Some(&(_, count, page, material)) = self.parts.get(&(owner, part)) else { return false };
         count != 0 && self.materials.get(&material).is_some_and(|m| {
             let has_page = page.and_then(|k| self.pages.get(&k)).is_some_and(Option::is_some);
-            m.passes.iter().all(|(g, _)| {
+            m.passes.iter().all(|(g, _, rigid)| {
+                if let Owner::Instance(i) = owner && rigid.as_ref().and_then(|r| r.offset(i)).is_none() {
+                    return false;
+                }
                 has_page || !g.program.stages.iter().zip(&g.program.dims)
                     .any(|(s, dim)| *s == Stage::Lightmap && dim.is_some())
             })
@@ -263,11 +278,12 @@ impl WaterSet {
     ) {
         for (&material, m) in &self.materials {
             let Some((fog, color)) = fogs.get(&material) else { continue };
-            for (g, _) in &m.passes {
+            for (g, _, rigid) in &m.passes {
                 let mut pixel = g.program.pixel;
                 pixel.fog = fog.uniform();
                 pixel.fog_color = *color;
                 g.prepare_with(uploads, view, &g.program.vertex, &pixel);
+                if let Some(r) = rigid { r.prepare(uploads, view); }
             }
         }
     }
@@ -284,7 +300,10 @@ impl WaterSet {
         let stencil = wgpu::StencilState::default();
         let mut ready = true;
         for m in self.materials.values_mut() {
-            for (g, state) in &mut m.passes {
+            for (g, state, rigid) in &mut m.passes {
+                if let Some(r) = rigid {
+                    ready &= r.pipelines.prepare(device, color, depth, Some(state), None, &stencil, usage);
+                }
                 ready &= g.pipelines.prepare(device, color, depth, Some(state), None, &stencil, usage);
             }
         }
@@ -392,7 +411,7 @@ impl WaterSet {
             }
         }
         m.passes.iter()
-            .map(|(g, _)| g.textures_supplied(device, page.as_ref(), &supplied))
+            .map(|(g, _, _)| g.textures_supplied(device, page.as_ref(), &supplied))
             .collect()
     }
 
@@ -428,12 +447,20 @@ impl WaterSet {
                     entry.insert(views)
                 }
             };
-            for ((g, state), textures) in m.passes.iter().zip(views.iter()) {
-                let pipeline = g.pipelines.get(color_format, depth_format, &wgpu::StencilState::default(), None).ok_or("a water pipeline is not made")?;
+            for ((g, state, rigid), textures) in m.passes.iter().zip(views.iter()) {
+                let (pipelines, uniforms, offset) = match key.0 {
+                    Owner::Cluster(_) => (&g.pipelines, &g.uniforms, None),
+                    Owner::Instance(i) => {
+                        let r = rigid.as_ref().ok_or("a water placement has no rigid program")?;
+                        (&r.pipelines, &r.uniforms, Some(r.offset(i).ok_or("a water placement has no slot")?))
+                    }
+                };
+                let pipeline = pipelines.get(color_format, depth_format, &wgpu::StencilState::default(), None).ok_or("a water pipeline is not made")?;
                 items.push(WaterItem {
                     key: described_pipeline(WATER_PROGRAM, color_format, depth_format, Some(state), None, stencil.clone()),
                     pipeline: pipeline.clone(),
-                    uniforms: g.uniforms.clone(),
+                    uniforms: uniforms.clone(),
+                    offset,
                     textures: textures.clone(),
                     blend: state.blend_constant,
                     first,
@@ -455,19 +482,21 @@ impl WaterSet {
         fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
         selected: &[(Owner, u8)],
     ) -> Result<Vec<(wgpu::Buffer, u64, Vec<u8>)>, &'static str> {
-        let mut used = std::collections::BTreeSet::new();
+        let mut used: BTreeMap<u16, BTreeSet<u32>> = BTreeMap::new();
         for key in selected {
-            used.insert(self.parts.get(key).ok_or("a selected water part did not bind")?.3);
+            let slots = used.entry(self.parts.get(key).ok_or("a selected water part did not bind")?.3).or_default();
+            if let Owner::Instance(i) = key.0 { slots.insert(i); }
         }
         let mut writes = Vec::new();
-        for material in used {
+        for (material, slots) in used {
             let m = self.materials.get(&material).ok_or("a selected water material did not bind")?;
             let (fog, color) = fogs.get(&material).ok_or("a selected water material has no resolved fog")?;
-            for (g, _) in &m.passes {
+            for (g, _, rigid) in &m.passes {
                 let mut pixel = g.program.pixel;
                 pixel.fog = fog.uniform();
                 pixel.fog_color = *color;
                 writes.extend(g.prepare_writes(view, &g.program.vertex, &pixel));
+                if let Some(r) = rigid { writes.extend(r.prepare_writes(view, slots.iter().copied(), None)); }
             }
         }
         Ok(writes)
@@ -489,27 +518,13 @@ impl WaterSet {
         selected: &[(Owner, u8)],
         sampled: &[Option<wgpu::TextureView>],
     ) -> usize {
-        let mut groups: HashMap<(u16, Option<LightmapKey>), Vec<wgpu::BindGroup>> = HashMap::new();
-        for key in selected {
-            let Some(&(first_index, index_count, lightmap, material)) = self.parts.get(key) else { return 0 };
-            let Some(m) = self.materials.get(&material) else { return 0 };
-            let views = match groups.entry((material, lightmap)) {
-                Entry::Occupied(entry) => entry.into_mut(),
-                Entry::Vacant(entry) => {
-                    let Some(views) = self.groups_for(device, m, lightmap, copy, sampled) else {
-                        return 0;
-                    };
-                    entry.insert(views)
-                }
-            };
-            for ((g, state), textures) in m.passes.iter().zip(views.iter()) {
-                let Some(pipeline) = g.pipelines.get(color_format, depth_format, &wgpu::StencilState::default(), None) else { return 0 };
-                pass.set_pipeline(pipeline);
-                pass.set_bind_group(0, &g.uniforms, &[]);
-                pass.set_bind_group(1, textures, &[]);
-                pass.set_blend_constant(state.blend_constant);
-                pass.draw_indexed(first_index..first_index + index_count, 0, 0..1);
-            }
+        let Ok(items) = self.items(device, color_format, depth_format, copy, selected, sampled) else { return 0 };
+        for it in items {
+            pass.set_pipeline(&it.pipeline);
+            pass.set_bind_group(0, &it.uniforms, it.offset.as_slice());
+            pass.set_bind_group(1, &it.textures, &[]);
+            pass.set_blend_constant(it.blend);
+            pass.draw_indexed(it.first..it.first + it.count, 0, 0..1);
         }
         selected.len()
     }
@@ -531,19 +546,58 @@ mod tests {
     /// A water set over the synthetic scene: `samples_view` makes its
     /// stage 0 the view's own target (engine texture 5), else it samples
     /// nothing.
-    fn scene(ctx: &gfx::GfxContext, samples_view: bool) -> GpuWorld {
-        let world = world();
+    fn scene(ctx: &gfx::GfxContext, samples_view: bool, translation: f32) -> GpuWorld {
+        let mut world = world();
+        world.placements[0].1[1][3] = translation;
         let parts = parts(&world);
         let mut gpu = GpuWorld::new(&ctx.device, &ctx.queue, world, &mut |_| None, &mut |_| None);
         let stage0 = if samples_view { Stage::Engine(5) } else { Stage::Empty };
         let (look, program) = pass(stage0);
         let set = WaterSet::new(
-            &ctx.device, &ctx.queue, parts, [(0, (vec![look], vec![program]))].into(), Vec::new(), samples_view,
+            &ctx.device, &ctx.queue, gpu.world(), parts, [(0, (vec![look], vec![program]))].into(), Vec::new(), samples_view,
             &mut |_| None, &mut |_| None,
         );
         assert_eq!(set.len(), 1);
         gpu.set_water(set);
         gpu
+    }
+
+    #[test]
+    fn a_missing_rigid_pass_or_model_rows_leaves_only_the_placement_on_guest() {
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        for (has_rows, has_program) in [(false, true), (true, false), (true, true)] {
+            let mut world = world();
+            if !has_rows { world.placements.clear(); }
+            let (look, mut program) = pass(Stage::Empty);
+            if !has_program { program.rigid = None; }
+            let set = WaterSet::new(
+                &ctx.device, &ctx.queue, &world, parts(&world), [(0, (vec![look], vec![program]))].into(),
+                Vec::new(), false, &mut |_| None, &mut |_| None,
+            );
+            assert!(set.draws_part(Owner::Cluster(0), 0));
+            assert_eq!(set.draws_part(Owner::Instance(5), 0), has_rows && has_program);
+        }
+    }
+
+    #[test]
+    fn a_water_placement_moves_with_its_own_model_rows() {
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let draw = |translation| {
+            let mut gpu = scene(&ctx, false, translation);
+            render(&ctx, |enc, arena, target| {
+                let mut uploads = gfx::ring::EncoderUploads { device: &ctx.device, queue: &ctx.queue, arena, encoder: enc };
+                gpu.prepare_water(&mut uploads, &view(), &fogs());
+                let count = gpu.encode_water(
+                    &ctx.device, enc, target.color, F::Rgba8Unorm, target.depth.unwrap(), F::Depth32Float,
+                    (SIZE, SIZE), d3d::TargetCopy::Display, &[(Owner::Instance(5), 0)], &[],
+                );
+                assert_eq!(count, 1);
+            }).0
+        };
+        let original = draw(0.0);
+        let shifted = draw(3.0);
+        assert!(original.iter().any(|&b| b != 0) && shifted.iter().any(|&b| b != 0));
+        assert_ne!(original, shifted);
     }
 
     /// Without a view copy the water's packets with their uniforms
@@ -552,7 +606,7 @@ mod tests {
     #[test]
     fn water_packets_draw_what_the_water_pass_draws_with_the_uniforms_written_up_front() {
         let Ok(ctx) = gfx::GfxContext::headless() else { return };
-        let mut gpu = scene(&ctx, false);
+        let mut gpu = scene(&ctx, false, 3.0);
         let (selected, view, fogs) = (selected(), view(), fogs());
         let mut images = Vec::new();
         for packets in [true, false] {
@@ -561,7 +615,7 @@ mod tests {
                     .water_draws(&ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), &selected, &[], &view, &fogs)
                     .unwrap();
                 assert_eq!((draws.ranges, draws.packets.len()), (2, 2));
-                assert_eq!(draws.writes.len(), 2, "the pass's vertex and pixel blocks");
+                assert_eq!(draws.writes.len(), 4, "cluster uniforms and placement view rows");
                 if packets {
                     for (buffer, offset, bytes) in &draws.writes {
                         arena.write_front(&ctx.device, &ctx.queue, buffer, *offset, bytes);
@@ -590,7 +644,7 @@ mod tests {
     #[test]
     fn water_that_samples_the_view_records_as_encoded_commands() {
         let Ok(ctx) = gfx::GfxContext::headless() else { return };
-        let mut gpu = scene(&ctx, true);
+        let mut gpu = scene(&ctx, true, 3.0);
         let (selected, view, fogs) = (selected(), view(), fogs());
         assert!(gpu
             .water_draws(&ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), &selected, &[], &view, &fogs)

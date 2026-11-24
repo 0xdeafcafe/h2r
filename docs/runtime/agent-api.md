@@ -2079,6 +2079,15 @@ h2 agent render.parity '{"arm": true}'
   and `scene_dropped_<stage>`, those it could not record after the guest
   skipped their items, for `world` and `objects` (framescene.md, slice
   2) and `fog` and `water` (slice 5). The counters
+  `layer_plan_{6,16}_refused_<cause>` count fog and water batch refusals.
+  Item causes are `build`, `handler`, `record`, `object`, `subparts`, `material` and
+  `order`. View causes include `stencil_view`, `palette_view`,
+  `fog_words_view` and the water stage's `target_view`.
+  The water loader counts refused placement parts by `placement_rows_load`,
+  `rigid_program_load` and `placement_streams_load`.
+  Sorted range admission reports `native_{fog,water}_walk_examined`,
+  `walk_suppressed`, `walk_refused_inputs` and `walk_refused_reservation`
+  under each stage. The counters
   `scene_submitted_flares_reference_draws` and
   `scene_submitted_flares_display_draws` accumulate flare ranges as
   `GfxBackend::commit_external` appends them to each copy's command
@@ -2339,7 +2348,7 @@ h2 agent render.residual '{"top": 500}'        # the last finished window
   guest_ms}`. Only with `frame-scene.census` in `H2_FEATURES`, which
   places an entry and an exit observer on each producer in
   `residual_census::REGISTRY` (the views, the scene passes, the object
-  shadows, decals, the lights, the transparents, the post calls, the HUD,
+  shadows, decals, the lights, the water teardown, the transparents, the post calls, the HUD,
   the UI, the fade, the frame end and the loading screen) and on the layer
   draw (`layer.<site>.<layer>`, as `render.scene`'s entry census names
   them); without it `producers` is absent. Work goes to the innermost
@@ -2350,9 +2359,11 @@ h2 agent render.residual '{"top": 500}'        # the last finished window
   its words were written. `status` is `native` or `d3d` from the
   registry, and `partial` for a layer draw a native stage draws some
   items of from the scene, skipping their guest draws
-  (`residual_census::PARTIAL_LAYERS`: the scene's layers 1, 2, 3, 5, 7,
-  8, 17 and 20 and the first person's 1, 2, 3, 7, 8 and 20); its `residual` is
-  what the stages left. `slot` is the carried slot the work lands in. `guest_ms` is
+  (`residual_census::PARTIAL_LAYERS`: the scene's layers 1, 2, 3, 5, 6, 7,
+  8, 16, 17 and 20 and the first person's 1, 2, 3, 7, 8 and 20); its `residual` is
+  what the stages left. The fixed producer `water_teardown` is also
+  `partial`: it can surrender its indexed composite and still owns its
+  guest state changes and alpha clear. `slot` is the carried slot the work lands in. `guest_ms` is
   the producer's exclusive time less its D3D time, `null` without
   `render-timing`; it ranks producers and is not a frame time.
   `unbalanced` counts producer exits with nothing to end and producers

@@ -150,6 +150,8 @@ pub struct View {
     pub fog: Option<FogState>,
     /// The view's layer 6.
     pub water: Option<WaterState>,
+    /// The teardown's indexed quad mesh in the current vertex stream.
+    pub water_composite: Option<crate::late::WaterComposite>,
     /// The view's post passes.
     pub post: Option<PostParams>,
 }

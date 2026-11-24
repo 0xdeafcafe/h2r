@@ -1320,7 +1320,11 @@ device's swallow. What is built (**Code**):
   items in the current list, each material the stage draws with and its
   words resolved over the device's (`LateMaterial`), the structure parts
   the stage draws in item order (`LatePart`), and whether the stage took
-  the layer. `View::post` is `PostParams`: what `render_screen_effects`
+  the layer. `View::water_composite` holds the teardown's four u16
+  corner indices per quad, in submitted order, independently of layer 6.
+  The indexed stage matches them to the rebased vertex window before
+  expanding the quads. The summary hash includes their order.
+  `View::post` is `PostParams`: what `render_screen_effects`
   was asked to draw (its two stack bytes, the view kind, the scenario's
   screen-effect count and the loop's gates, read as
   `scene_extract::layout::post::PostFrame` reads them), the colour pass
@@ -1337,7 +1341,10 @@ device's swallow. What is built (**Code**):
   then `render_bridge::scene_step::late_layer` writes the view's layer
   (with `scene_extract::late::layer_items`) and hands back the scene's
   copy, and the pass is built from that copy: the parts it draws and
-  each material's fog unit. A layer whose gate does not hold, with no
+  each material's fog unit. For mixed fog and water lists the guest sorts
+  all the entries and the native renderer offers indexed ranges at the
+  geometry emitter with the handler's state bound. The scene stage
+  clears masks only for a fully accepted layer. A layer whose gate does not hold, with no
   structure item, or that the glue leaves to the guest is written as
   the guest draws it (`late_kept`). The frame step observes
   `RENDER_SCREEN_EFFECTS` for `PostParams`; `native_post`'s colour-pass
