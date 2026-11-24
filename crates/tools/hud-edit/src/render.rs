@@ -206,6 +206,39 @@ impl Art {
         sprite_at(b, seq)
     }
 
+    /// Image `image` of bitmap `id` whole, decoded once: its top level's
+    /// width, height and RGBA texels (straight alpha). What a renderer
+    /// that names the image (the overlay stage) uploads.
+    pub fn image<R: Read + Seek>(
+        &mut self,
+        map: &mut Map<R>,
+        id: TagId,
+        image: usize,
+    ) -> Result<(u32, u32, &[u8]), String> {
+        let img = self
+            .bitmap(map, id)
+            .ok_or_else(|| format!("{id} is not a readable bitmap"))?
+            .images
+            .get(image)
+            .ok_or_else(|| format!("image {image} is not in the bitmap"))?
+            .clone();
+        let files = &mut self.files;
+        let decoded = self.images.entry((id, image)).or_insert_with(|| {
+            let d = assets::decode_image(&img, files).map_err(|e| e.to_string())?;
+            let l = d
+                .levels
+                .into_iter()
+                .find(|l| l.face == 0 && l.level == 0)
+                .ok_or("no top level")?;
+            let n = (l.width * l.height * 4) as usize;
+            Ok((l.width, l.height, l.rgba.get(..n).ok_or("short level")?.to_vec()))
+        });
+        match decoded {
+            Ok((w, h, rgba)) => Ok((*w, *h, rgba.as_slice())),
+            Err(e) => Err(e.clone()),
+        }
+    }
+
     /// Bitmap `id`'s sequence `seq` as a widget draws it ([`sprite_at`]).
     pub fn sprite<R: Read + Seek>(
         &mut self,
@@ -223,22 +256,7 @@ impl Art {
             mut note,
         } = sprite_at(b, seq)?;
         let px = size.map(|v| v.round().max(0.0) as u32);
-        let img = b.images[image].clone();
-        let decoded = self
-            .images
-            .entry((id, image))
-            .or_insert_with(|| {
-                let d = assets::decode_image(&img, &mut self.files).map_err(|e| e.to_string())?;
-                let l = d
-                    .levels
-                    .into_iter()
-                    .find(|l| l.face == 0 && l.level == 0)
-                    .ok_or("no top level")?;
-                let n = (l.width * l.height * 4) as usize;
-                Ok((l.width, l.height, l.rgba.get(..n).ok_or("short level")?.to_vec()))
-            })
-            .clone();
-        let rgba = match decoded {
+        let rgba = match self.image(map, id, image) {
             Ok((w, h, rgba)) => {
                 let x0 = (bounds[0] * w as f32).round() as u32;
                 let y0 = (bounds[2] * h as f32).round() as u32;

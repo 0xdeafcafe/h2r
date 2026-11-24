@@ -1469,6 +1469,12 @@ its window count is positive. The overlay's counters are its items by kind
 (`batches`) and the items dropped, by reason (`refused_material`,
 `refused_clip`, `refused_glyph`, `refused_texture`;
 [retire-d3d.md](../graphics/retire-d3d.md#what-replaces-each-subsystem)).
+The HUD's own (`hud_*`) are the HUD draws the overlay drew (`hud_claimed`),
+the game's widget quads it left out (`hud_quads_skipped`), claims whose
+left-out quads were not the items drawn (`hud_mismatch`), and the HUD draws
+left to the game's quads by their first reason (`hud_refused_shader`,
+`_text`, `_effects`, `_anchor`, `_unlisted`, `_frame`, `_loading`, `_pass`;
+[native-post-hud.md](../graphics/native-post-hud.md#the-hud-on-the-overlay)).
 The object-shadow list, row gather and caster each count calls to their own
 entry ([native-light-gather.md](../graphics/native-light-gather.md), L7).
 `counters` is `null` where the frame-stats window is not running.

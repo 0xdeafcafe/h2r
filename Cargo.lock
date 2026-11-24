@@ -2473,6 +2473,7 @@ dependencies = [
  "hot-render",
  "hot-tags",
  "hs",
+ "hud-edit",
  "hud-kit-core",
  "iced-x86",
  "indexmap",
