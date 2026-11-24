@@ -3,7 +3,6 @@
 //! mark tables, generations and output with the same kernel plan.
 use super::*;
 use runtime::Guest;
-use std::{cell::RefCell, collections::HashMap};
 
 // Return address of G's only self-call. Its parent already predicts the
 // complete flood, including this visit and its marks.
@@ -28,7 +27,9 @@ impl Region {
     }
 }
 
-struct Prediction {
+/// Owned by the passive return observer for this invocation.
+pub struct Prediction {
+    epoch: u64,
     eax: u32,
     regions: Vec<Region>,
 }
@@ -47,6 +48,7 @@ impl Prediction {
                 .collect(),
         };
         Ok(Self {
+            epoch: super::super::EPOCH.get(),
             eax: u32::from(p.flood.count()),
             regions: vec![marks, out],
         })
@@ -87,12 +89,19 @@ impl Prediction {
                 .collect(),
         };
         Ok(Self {
+            epoch: super::super::EPOCH.get(),
             eax: p.visit.eax(),
             regions: vec![objects, clusters, out],
         })
     }
 
-    fn compare(self, c: &CpuAbi, g: &impl CollisionMemory) -> Result<Option<String>, Bail> {
+    pub fn compare(self, c: &CpuAbi, g: &impl CollisionMemory) -> Result<Option<String>, Bail> {
+        if g.trapped() {
+            return Err(Bail::Trap);
+        }
+        if self.epoch != super::super::EPOCH.get() {
+            return Err(Bail::Data);
+        }
         if self.eax != c.eax {
             return Ok(Some(format!(
                 "EAX expected {:#x}, guest {:#x}",
@@ -115,17 +124,6 @@ impl Prediction {
         }
         Ok(None)
     }
-}
-
-struct Open {
-    sp: u32,
-    memory: (u64, u64),
-    epoch: u64,
-    prediction: Prediction,
-}
-
-thread_local! {
-    static OPEN: RefCell<HashMap<(u32, usize), Open>> = RefCell::default();
 }
 
 fn commit_uncontested_flood(
@@ -168,55 +166,37 @@ fn commit_empty_visit(
     commit_visit(c, g, p)
 }
 
-/// Before the hook registry replaces the caller's return slot.
+/// Run a scratch-exact exit or give the caller a prediction to attach
+/// to this invocation's guest return.
 pub fn dispatch(
     entry: Entry,
-    thread: u32,
     c: &mut CpuAbi,
     g: &mut Guest,
     world: &CollisionWorld,
-) -> Result<Option<TransferAbi>, GuestFault> {
+) -> Result<(Option<TransferAbi>, Option<Prediction>), GuestFault> {
     world.observe_environment(entry, c.mxcsr, c.x87.control);
-    let key = (thread, entry as usize);
-    let gate = if !crate::sim_native::supported(c) {
-        Some(Bail::Env)
+    let prediction = if !crate::sim_native::supported(c) {
+        Err(Bail::Env)
     } else if g.has_trap() {
-        Some(Bail::Trap)
-    } else {
-        None
-    };
-    if entry == Entry::ClusterFlood {
-        let recursive = if gate.is_some() {
-            OPEN.with_borrow(|calls| {
-                calls
-                    .get(&key)
-                    .is_some_and(|p| c.esp.wrapping_add(4 + layout::FLOOD_ARGS) < p.sp)
-            })
-        } else {
-            g.u32(c.esp) == Ok(FLOOD_SELF_RETURN)
-        };
-        if recursive {
-            return Ok(None);
-        }
-    }
-    // A new top-level entry also replaces a call abandoned by a guest fault.
-    OPEN.with_borrow_mut(|calls| calls.remove(&key));
-    let prediction = if let Some(why) = gate {
-        Err(why)
+        Err(Bail::Trap)
+    } else if entry == Entry::ClusterFlood && g.u32(c.esp) == Ok(FLOOD_SELF_RETURN) {
+        return Ok((None, None));
     } else {
         match entry {
             Entry::ClusterFlood => match plan_flood(c, g, world) {
                 Ok(p) if p.flood.deepest.is_none() => {
+                    let t = commit_uncontested_flood(c, g, p)?;
                     world.record(entry, &Ok(()));
-                    return commit_uncontested_flood(c, g, p).map(Some);
+                    return Ok((Some(t), None));
                 }
                 Ok(p) => Prediction::flood(g, p),
                 Err(why) => Err(why),
             },
             Entry::ObjectVisit => match plan_visit(c, g, world) {
                 Ok(p) if p.empty_location => {
+                    let t = commit_empty_visit(c, g, p)?;
                     world.record(entry, &Ok(()));
-                    return commit_empty_visit(c, g, p).map(Some);
+                    return Ok((Some(t), None));
                 }
                 Ok(p) => Prediction::visit(g, p),
                 Err(why) => Err(why),
@@ -225,47 +205,11 @@ pub fn dispatch(
         }
     };
     match prediction {
-        Ok(prediction) => {
-            let args = if entry == Entry::ClusterFlood {
-                layout::FLOOD_ARGS
-            } else {
-                layout::VISIT_ARGS
-            };
-            let p = Open {
-                sp: c.esp.wrapping_add(4 + args),
-                epoch: super::super::EPOCH.get(),
-                memory: g.write_watch_epoch(),
-                prediction,
-            };
-            OPEN.with_borrow_mut(|calls| calls.insert(key, p));
-        }
+        Ok(p) => Ok((None, Some(p))),
         Err(why) => {
             world.record::<()>(entry, &Err(why));
             world.record_spatial(entry, Err(why));
+            Ok((None, None))
         }
-    }
-    Ok(None)
-}
-
-/// After the guest has popped its arguments. A recursive G return leaves
-/// its enclosing query's prediction pending.
-pub fn end(entry: Entry, thread: u32, c: &CpuAbi, g: &Guest, world: &CollisionWorld) {
-    let key = (thread, entry as usize);
-    let p = OPEN.with_borrow_mut(|calls| {
-        if calls.get(&key).is_some_and(|p| p.sp == c.esp) {
-            calls.remove(&key)
-        } else {
-            None
-        }
-    });
-    if let Some(p) = p {
-        let result = if g.has_trap() {
-            Err(Bail::Trap)
-        } else if p.memory != g.write_watch_epoch() || p.epoch != super::super::EPOCH.get() {
-            Err(Bail::Data)
-        } else {
-            p.prediction.compare(c, g)
-        };
-        world.record_spatial(entry, result);
     }
 }

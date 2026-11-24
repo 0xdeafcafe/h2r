@@ -2,7 +2,7 @@
 //! authoritative exits, and check the prediction against the lifted guest
 //! elsewhere. The graph and references are invented.
 use super::*;
-use adapter::spatial_parity::{dispatch, end};
+use adapter::spatial_parity::dispatch;
 use sim_collision::Entry as Spatial;
 
 fn guest(m: &Ram<'_>) -> GuestRam {
@@ -110,10 +110,9 @@ fn the_authoritative_spatial_exits_replay_the_full_frame() {
             let (mut original, mut native) = (guest(&m), guest(&m));
             let mut expected = ir_cpu(&c);
             oracle.run(&mut expected, &mut original, entry.addr());
-            let t = dispatch(entry, 42, &mut c, &mut native.0, &world)
-                .unwrap()
-                .expect("exact exit");
-            c.eip = t.target_pc;
+            let (t, prediction) = dispatch(entry, &mut c, &mut native.0, &world).unwrap();
+            assert!(prediction.is_none());
+            c.eip = t.expect("exact exit").target_pc;
             assert_eq!(ir_cpu(&c), expected, "{entry:?} linked={linked}");
             let start = native.0.mappings()[0].physical_start as usize;
             let other = original.0.mappings()[0].physical_start as usize;
@@ -134,30 +133,21 @@ fn spatial_predictions_match_the_lifted_guest_and_catch_extra_marks() {
         static EPOCH: Epoch = Epoch::new();
         for entry in [Spatial::ClusterFlood, Spatial::ObjectVisit] {
             let world = CollisionWorld::new(&EPOCH);
-            let thread = 7;
             for corrupt in [false, true] {
                 let (mut c, m) = fixture(image, entry, true, false, 0);
                 let mut gm = guest(&m);
                 let before = c;
-                assert!(
-                    dispatch(entry, thread, &mut c, &mut gm.0, &world)
-                        .unwrap()
-                        .is_none()
-                );
+                let (t, prediction) = dispatch(entry, &mut c, &mut gm.0, &world).unwrap();
+                assert!(t.is_none());
+                let prediction = prediction.expect("outer prediction");
                 assert_eq!(before, c);
                 if entry == Spatial::ClusterFlood {
-                    // The observer pair for G's recursive self-call must leave
-                    // the outer prediction untouched.
+                    // The outer plan includes G's recursive self-call.
                     let mut child = c;
                     child.esp -= 0x2c;
                     gm.0.set_u32(child.esp, 0x0014_a690).unwrap();
-                    assert!(
-                        dispatch(entry, thread, &mut child, &mut gm.0, &world)
-                            .unwrap()
-                            .is_none()
-                    );
-                    child.esp += 4 + layout::FLOOD_ARGS;
-                    end(entry, thread, &child, &gm.0, &world);
+                    let (t, nested) = dispatch(entry, &mut child, &mut gm.0, &world).unwrap();
+                    assert!(t.is_none() && nested.is_none());
                 }
                 let mut returned = ir_cpu(&c);
                 oracle.run(&mut returned, &mut gm, entry.addr());
@@ -170,13 +160,8 @@ fn spatial_predictions_match_the_lifted_guest_and_catch_extra_marks() {
                     let at = base + 20;
                     gm.0.set_u32(at, gm.0.u32(at).unwrap() ^ 1).unwrap();
                 }
-                end(
-                    entry,
-                    thread,
-                    &lifted::cpu::from_interp(&returned),
-                    &gm.0,
-                    &world,
-                );
+                let returned = lifted::cpu::from_interp(&returned);
+                world.record_spatial(entry, prediction.compare(&returned, &gm.0));
                 let stats = world.stats();
                 let p = if entry == Spatial::ClusterFlood {
                     stats.flood
