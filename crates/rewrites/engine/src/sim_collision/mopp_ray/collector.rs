@@ -1,13 +1,17 @@
 //! Entry I's collector callbacks. The walk yields a terminal at its actual
 //! interpreter depth. That depth selects the guest stack scratch passed to
 //! the filter, collection and child; all three may run arbitrary guest code.
-use super::{Program, Read, prepare};
-use crate::sim_collision::{CollisionMemory, layout::mopp_ray as l};
+use super::{Program, Read, X87_FREE, prepare, vec4};
+use crate::sim_collision::{
+    CollisionMemory,
+    layout::{self, mopp_ray as l},
+};
 use crate::sim_native::Memory;
 use guest_layout::entry::GuestCall;
 use runtime::CpuAbi;
-use sim_collision::mopp::ray::{Event, RayWalk};
+use sim_collision::mopp::ray::{Constants, Event, Precision, RayWalk};
 use sim_collision::{Bail, CollisionWorld, GuestRead};
+use sim_core::det;
 
 const VM_LEN: usize = 0x68;
 const VM_INPUT: u32 = 0x20;
@@ -22,6 +26,8 @@ pub(super) struct Setup {
     pub(super) collection: u32,
     pub(super) fraction: u32,
     bytes: [u8; VM_LEN],
+    revision: u64,
+    constants: Constants,
 }
 
 impl Setup {
@@ -34,6 +40,8 @@ impl Setup {
         collection: u32,
         collector: u32,
         inverse_scale: u32,
+        revision: u64,
+        constants: Constants,
     ) -> Result<Self, Bail> {
         let fraction = m.u32(collector.wrapping_add(l::COLLECTOR_FRACTION))?;
         let mut bytes = [0; VM_LEN];
@@ -57,6 +65,8 @@ impl Setup {
             collection,
             fraction,
             bytes,
+            revision,
+            constants,
         })
     }
 
@@ -76,6 +86,29 @@ impl Setup {
             .zip(actual)
             .enumerate()
             .find_map(|(at, (&want, got))| (want != got).then_some((at, want, got))))
+    }
+
+    // The walk owns the bytecode, original ray, reciprocal and floating
+    // constants. A callback is free to modify any of them. A trial whose
+    // inputs changed cannot use the pre-callback walk for the remainder.
+    fn check_walk_inputs(&self, g: &mut impl CollisionMemory) -> Result<(), Bail> {
+        if g.mopp_revision(self.code)? != self.revision {
+            return Err(Bail::Data);
+        }
+        let m = Read(&*g, (0, 0));
+        let mut code_and_inverse = [0; 8];
+        let mut endpoints = [0; 0x20];
+        m.read(self.vm.wrapping_add(l::CODE), &mut code_and_inverse)?;
+        m.read(self.vm.wrapping_add(VM_INPUT), &mut endpoints)?;
+        if code_and_inverse[..] != self.bytes[0x10..0x18]
+            || endpoints[..] != self.bytes[0x20..0x40]
+            || m.u32(layout::ONE)? != self.constants.one
+            || m.u32(layout::ZERO)? != self.constants.zero
+            || vec4(&m, l::UNIT)? != self.constants.unit
+        {
+            return Err(Bail::Data);
+        }
+        Ok(())
     }
 
     fn write(&self, g: &mut impl CollisionMemory) -> Result<(), Bail> {
@@ -116,6 +149,8 @@ pub struct CollectorCast {
     vm: u32,
     entry_sp: u32,
     root_sp: u32,
+    setup: Setup,
+    precision: Precision,
     walk: RayWalk<Program>,
     resume: Resume,
 }
@@ -126,9 +161,6 @@ impl CollectorCast {
         g: &mut impl CollisionMemory,
         world: &CollisionWorld,
     ) -> Result<Self, Bail> {
-        if g.trapped() {
-            return Err(Bail::Trap);
-        }
         let (setup, walk) = prepare(cpu, g, world)?;
         // Aligned setup locals, root interpreter arguments, and its own
         // aligned locals and saved registers. Nested calls cost 0x1c0 each.
@@ -139,6 +171,8 @@ impl CollectorCast {
             vm: cpu.ecx,
             entry_sp: cpu.esp,
             root_sp,
+            setup,
+            precision: Precision::from_control(cpu.x87.control)?,
             walk,
             resume: Resume::Walk,
         })
@@ -175,8 +209,12 @@ impl CollectorCast {
     pub fn next(
         &mut self,
         g: &mut impl CollisionMemory,
-        eax: u32,
+        cpu: &CpuAbi,
     ) -> Result<Option<GuestCall>, Bail> {
+        if g.trapped() {
+            return Err(Bail::Trap);
+        }
+        let eax = cpu.eax;
         match std::mem::replace(&mut self.resume, Resume::Walk) {
             Resume::Filter(t) => {
                 if g.u8(eax).map_err(|_| Bail::Fault)? != 0 {
@@ -215,6 +253,13 @@ impl CollectorCast {
             }
             Resume::Walk => {}
         }
+        if !det::fast_env(cpu.mxcsr)
+            || !det::x87_env(cpu.x87.control, cpu.x87.status, cpu.x87.tag, X87_FREE)
+            || Precision::from_control(cpu.x87.control)? != self.precision
+        {
+            return Err(Bail::Env);
+        }
+        self.setup.check_walk_inputs(g)?;
         let fraction = self.vm_word(g, l::FRACTION)?;
         while let Some(step) = self.walk.next(fraction)? {
             let Event::Key(key) = step else { continue };

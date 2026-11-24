@@ -29,8 +29,7 @@ use sim_core::det;
 use std::sync::Arc;
 use std::{cell::RefCell, collections::HashMap};
 
-/// Queries open at once on one thread. A deeper stack means observers
-/// exceeded the bound. Deeper entries are counted as depth declines.
+/// Queries retained per guest thread. Deeper calls count as depth declines.
 const MAX_SESSIONS: usize = 16;
 
 /// x87 registers the interpreter's sequences need free.
@@ -106,6 +105,10 @@ fn prepare(
         let arg = |k: u32| m.u32(sp.wrapping_add(4 * k));
         (arg(1)?, arg(2)?, arg(3)?, arg(4)?, arg(5)?)
     };
+    // The setup copies the code origin and both input vectors with MOVAPS.
+    if (code | input | vm) & 15 != 0 {
+        return Err(Bail::Fault);
+    }
     let revision = g.mopp_revision(code)?;
     let m = Read(&*g, (0, 0));
     let tree = world.mopp(&m, code, revision)?;
@@ -154,6 +157,8 @@ fn prepare(
         collection,
         collector,
         root.inverse_scale,
+        revision,
+        constants,
     )?;
     Ok((setup, RayWalk::new(Program(tree), ray, &root)))
 }
@@ -295,4 +300,34 @@ pub fn end(thread: u32, g: &impl CollisionMemory, world: &CollisionWorld) {
 /// Queries open on this thread.
 pub fn open_queries() -> usize {
     SESSIONS.with_borrow(|sessions| sessions.values().map(|s| s.slots.len() + s.overflow).sum())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use runtime::Guest;
+    use sim_core::Epoch;
+
+    #[test]
+    fn guest_threads_finish_in_their_own_order() {
+        static EPOCH: Epoch = Epoch::new();
+        let (a, b) = (CollisionWorld::new(&EPOCH), CollisionWorld::new(&EPOCH));
+        let mut g = Guest::new();
+        let cpu = CpuAbi {
+            mxcsr: 0x1fa0,
+            ..Default::default()
+        };
+        let mut bad_env = cpu;
+        bad_env.mxcsr = 0;
+        begin(10, &bad_env, &mut g, &a);
+        let mut bad_stack = cpu;
+        bad_stack.x87.control = 0x027f;
+        bad_stack.x87.tag = 0xffff;
+        begin(20, &bad_stack, &mut g, &b);
+        end(10, &g, &a);
+        end(20, &g, &b);
+        assert_eq!(a.stats().ray.unverified[Bail::Env as usize], 1);
+        assert_eq!(b.stats().ray.unverified[Bail::Fault as usize], 1);
+        assert_eq!(open_queries(), 0);
+    }
 }
