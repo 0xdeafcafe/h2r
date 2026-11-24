@@ -624,6 +624,8 @@ pub fn copy(
         source: Some(source.clone()),
         tag: Some(new_path.clone()),
         maps: Maps::default(),
+        replaces: None,
+        was: None,
     });
     let undo = |e: String| {
         let _ = std::fs::remove_file(&file);

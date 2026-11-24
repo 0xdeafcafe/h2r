@@ -13,14 +13,24 @@
 // defenders at a site still to take, then at their flag stand. The
 // attackers spawn as Spartans and the defenders as Elites (`set_body`).
 // The winners score a point each, so the post-game's scores name them.
+// The HUD is the King of the Hill kit's: a mark over the site the attackers
+// are on (else the first still to take, then the final stand), its state
+// (open, held by a side, contested), the seconds the phase has left
+// (`koth.phase`), and a banner for a site taken, the final assault, an
+// overtime and the last 30 and 10 seconds of a phase.
+// A phase whose clock runs out with an attacker on its objective goes into
+// overtime: the defenders win when the attackers leave it, or when the
+// overtime runs out, whichever is first, and a capture that completes
+// first takes the site as it would have.
+// The map opens with the phases: each `siege_barrier` object, numbered by
+// the phase it opens in, stands open from that phase on (`set_open`).
 // docs/game/rules-engine.md, "Phases: attack and defend" and "Payoff".
 //
 // Entries a host cannot make yet (`verify::unhostable`): none.
-// Not covered: the map does not open (no map labels barriers).
 rules "Siege" 1
 type siege
 teams 2
-requires player.weapons, player.spawn, player.disguise, hud.message
+requires player.weapons, player.spawn, player.disguise, hud.message, hud.widgets, hud.waypoints, objects.move
 about "Attackers take the map's territories, then storm the defenders' flag stand. Each phase has its own clock: run it out and the defenders win."
 quick respawn_time, wave_time, phase_time, capture_time, sites
 
@@ -42,20 +52,36 @@ settings {
 // is placed, `rules::labels::reads`), a `siege_goal` is the final stand
 // (each team's CTF flag stand when none is placed), and `siege_line`
 // flags, numbered by phase and given a team, are where a side spawns in
-// that phase (the phase's own site or stand when none is placed). None
-// is required, so every map starts: with no site the assault goes
-// straight to the stand, with no stand the sites are the whole assault,
-// and with neither the round is a draw at its start. A line label is
-// bounded, so the lookups of a tick stay small.
+// that phase (the phase's own site or stand when none is placed), and
+// `siege_barrier` objects, numbered by the phase they open in (a barrier
+// numbered 0 is open from the start). None is required, so every map
+// starts: with no site the assault goes straight to the stand, with no
+// stand the sites are the whole assault, and with neither the round is a
+// draw at its start. A line or barrier label is bounded, so the lookups
+// of a tick stay small.
 label site: zones = "siege_site"
 label goal: zone? = "siege_goal"
 label base: zones = "ctf_flag_spawn"
 label placed_line: zones at most 16 = "siege_line"
+label barrier: objects at most 8 = "siege_barrier"
 
 option phase_time: time 60s..600s = 180s "Phase time" "How long the attackers have for each phase"
 option capture_time: time 5s..60s = 15s "Capture time" "How long the attackers hold a site or the flag stand alone to take it"
 option sites: int 1..4 = 2 "Sites" "How many territories the attackers take before the final assault"
 option wave_time: time 3s..30s = 10s "Respawn wave" "How long a side's dead wait to come back together"
+option overtime_time: time 5s..60s = 30s "Overtime" "The most a phase runs on past its clock while an attacker is on its objective"
+
+// What each side spawns with: the lobby picks one set for the game.
+enum Kits { standard, close, ranged }
+
+option kits: Kits = Kits.standard "Loadouts" "The weapons each side spawns with: the standard set, close quarters or long range"
+
+// The HUD (docs/game/game-types-without-carriers.md, "The display"): the
+// front's state, a banner, and a mark over the front.
+hud front_row: text at koth.hill
+hud banner_row: banner at koth.banner
+hud phase_row: text at koth.phase
+waypoint front_mark at koth.mark
 
 // How many starting locations a side's spawns keep near its line.
 const line = 4
@@ -65,11 +91,25 @@ table loadouts: (side: team, primary: weapon, secondary: weapon) = [
     (team 1, "objects/weapons/rifle/covenant_carbine/covenant_carbine", "objects/weapons/rifle/plasma_rifle/plasma_rifle"),
 ]
 
+table close_loadouts: (side: team, primary: weapon, secondary: weapon) = [
+    (team 0, "objects/weapons/rifle/shotgun/shotgun", "objects/weapons/pistol/magnum/magnum"),
+    (team 1, "objects/weapons/rifle/brute_plasma_rifle/brute_plasma_rifle", "objects/weapons/pistol/needler/needler"),
+]
+
+table ranged_loadouts: (side: team, primary: weapon, secondary: weapon) = [
+    (team 0, "objects/weapons/rifle/sniper_rifle/sniper_rifle", "objects/weapons/rifle/smg/smg"),
+    (team 1, "objects/weapons/rifle/beam_rifle/beam_rifle", "objects/weapons/pistol/plasma_pistol/plasma_pistol"),
+]
+
 // The phases taken so far, and how many sites come before the final one.
 global var phase: int = 0
 global var needed: int = 0
 global var clock: timer
 global var over: bool = false
+// Whether the phase is past its clock with an attacker still on its
+// objective, and how many attackers were on the front last tick.
+global var overtime: bool = false
+global var pushers: int = 0
 // The defenders' final stand: the placed goal, else their flag stand.
 global var last_stand: zone? = none
 // Whether the map gives the attackers a flag stand to storm.
@@ -85,16 +125,102 @@ object var lit: bool = false
 global var lights: int = 0
 // The site taken this tick, if any, whose line the spawns move to.
 global var front: zone? = none
+// The zone the HUD follows (and its id), the banner's ticks left, and the last whole
+// second of the clock a warning was weighed at.
+global var focus: zone? = none
+global var focus_id: int = -1
+global var stays: bool = false
+global var banner_left: int = 0
+global var seen: int = -1
 
 fn begin(n: int) {
     phase = n
     clock = phase_time
+    seen = -1
+    overtime = false
+}
+
+// The map opens with the phases: a barrier stands open from the phase it
+// is numbered for. Called once a tick at most, outside the sites' loop, so
+// the worst tick pays for its few barriers once.
+fn open_map() {
+    for each barrier b { set_open(b, b.number <= phase) }
+}
+
+// Who of either side stands in a zone.
+fn occupied(z: object) -> int = count(players p where p.alive and inside(p, z))
+
+// The HUD each tick: the mark and the state row follow the site the
+// attackers are on, else the first site still to take, then the final
+// stand; the banner shows for two ticks and the kit times it from there;
+// the last 30 and 10 seconds of a phase are said once each.
+fn show_front() {
+    if banner_left > 0 {
+        banner_left = banner_left - 1
+        if banner_left == 0 { hud_show(banner_row, false) }
+    }
+    let left = whole_seconds(clock)
+    if left != seen {
+        seen = left
+        hud_value(phase_row, left)
+        hud_show(phase_row, true)
+        // The warnings are for a phase's own last seconds, not its overtime.
+        if not overtime {
+            if left == 30 {
+                hud_text(banner_row, "30 SECONDS")
+                hud_show(banner_row, true)
+                banner_left = 2
+            } else if left == 10 {
+                hud_text(banner_row, "10 SECONDS")
+                hud_show(banner_row, true)
+                banner_left = 2
+            }
+        }
+    }
+    // A site someone is on stays the front, contested or not.
+    stays = false
+    if phase < needed {
+        for each site s where not s.taken and s.id == focus_id {
+            if occupied(s) > 0 { stays = true }
+        }
+        if not stays {
+            focus = first(site s where not s.taken and ticks_held(s, team 0) > 0t)
+            if focus == none { focus = first(site s where not s.taken) }
+        }
+    } else {
+        focus = last_stand
+    }
+    focus_id = -1
+    if let z = focus {
+        focus_id = z.id
+        mark(front_mark, z)
+        let here = count(players p where p.alive and p.team == team 0 and inside(p, z))
+        pushers = here
+        let rival = count(players q where q.alive and q.team == team 1 and inside(q, z))
+        if here > 0 and rival > 0 {
+            hud_style(front_row, 2)
+        } else if here > 0 {
+            hud_style(front_row, 1)
+            hud_value(front_row, 0)
+        } else if rival > 0 {
+            hud_style(front_row, 1)
+            hud_value(front_row, 1)
+        } else {
+            hud_style(front_row, 0)
+        }
+        hud_show(front_row, true)
+    } else {
+        pushers = 0
+        unmark(front_mark)
+        hud_show(front_row, false)
+    }
 }
 
 // The round's end: the winners score a point each.
 fn win(side: team) {
     over = true
     clock = 0t
+    hud_show(phase_row, false)
     for each players p where p.team == side { score(p, 1) }
     end_round(side)
 }
@@ -130,6 +256,10 @@ fn release(side: team) {
 
 on round_start {
     over = false
+    pushers = 0
+    banner_left = 0
+    hud_show(banner_row, false)
+    hud_show(phase_row, false)
     // Spartans attack, Elites defend.
     set_body(team 0, "objects/characters/masterchief/masterchief_mp")
     set_body(team 1, "objects/characters/elite/elite_mp")
@@ -151,6 +281,7 @@ on round_start {
     if let g = last_stand { show_area(g, team 1) }
     if needed > 0 or assault {
         begin(0)
+        open_map()
         // The attackers start at their own flag stand, when the map has one.
         spawn_near(team 0, base[team 0], line)
         if let m = first(placed_line q where q.team == team 0 and q.number == 0) {
@@ -184,6 +315,7 @@ on tick {
         // fall back.
         if let s = front {
             front = none
+            open_map()
             spawn_near(team 0, s, line)
             if let m = first(placed_line q where q.team == team 0 and q.number == phase) {
                 spawn_near(team 0, m, line)
@@ -191,8 +323,14 @@ on tick {
             fall_back()
             if phase < needed {
                 message(all, "The attackers took a site")
+                hud_text(banner_row, "SITE TAKEN")
+                hud_show(banner_row, true)
+                banner_left = 2
             } else if assault {
                 message(all, "Final assault: the defenders' flag")
+                hud_text(banner_row, "FINAL ASSAULT")
+                hud_show(banner_row, true)
+                banner_left = 2
             } else {
                 message(all, "The attackers took every site")
                 win(team 0)
@@ -204,12 +342,30 @@ on tick {
             win(team 0)
         }
     }
-}
-
-on timer(clock) {
-    if not over {
+    // An overtime ends when the attackers are off the objective.
+    if not over and overtime and pushers == 0 {
         message(all, "The defenders held")
         win(team 1)
+    }
+    if not over { show_front() }
+}
+
+// A phase's clock running out ends it for the defenders, unless an
+// attacker is on its objective: then it runs on for the overtime, once.
+on timer(clock) {
+    if not over {
+        if not overtime and pushers > 0 {
+            overtime = true
+            clock = overtime_time
+            seen = -1
+            message(all, "Overtime: the attackers are still on the objective")
+            hud_text(banner_row, "OVERTIME")
+            hud_show(banner_row, true)
+            banner_left = 2
+        } else {
+            message(all, "The defenders held")
+            win(team 1)
+        }
     }
 }
 
@@ -230,6 +386,14 @@ on timer(wave1) {
 }
 
 on spawn(p) {
-    let kit = loadouts[p.team]
-    set_loadout(p, kit.primary, kit.secondary)
+    if kits == Kits.close {
+        let kit = close_loadouts[p.team]
+        set_loadout(p, kit.primary, kit.secondary)
+    } else if kits == Kits.ranged {
+        let kit = ranged_loadouts[p.team]
+        set_loadout(p, kit.primary, kit.secondary)
+    } else {
+        let kit = loadouts[p.team]
+        set_loadout(p, kit.primary, kit.secondary)
+    }
 }

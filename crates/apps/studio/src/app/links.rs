@@ -451,3 +451,71 @@ pub fn links(tags_root: &Path, set: &GameSet, id: &AssetId) -> Result<Links, Str
     sort(&mut out.used_by);
     Ok(out)
 }
+
+/// The `item:` id of the first item of `kind` in a package that is on whose
+/// source is named `name`: by its script key (`hill` for
+/// `scripts/hill.variant.rules`) or its file name, without regard to case.
+pub fn item_id(set: &GameSet, kind: ItemKind, name: &str) -> Option<String> {
+    for entry in &set.on {
+        for (n, item) in entry.loaded.package.manifest.items.iter().enumerate() {
+            let source = item.source.as_deref().unwrap_or("");
+            let file = source.rsplit('/').next().unwrap_or(source);
+            if item.kind == kind
+                && (script_key(source).eq_ignore_ascii_case(name) || file.eq_ignore_ascii_case(name))
+            {
+                return Some(format!("item:{}:{n}", entry.loaded.package.name()));
+            }
+        }
+    }
+    None
+}
+
+/// What a package item is called in a header's path: its kind word and its source.
+pub fn item_label(set: &GameSet, package: &str, n: usize) -> Option<(String, String)> {
+    let entry = set.on.iter().find(|e| e.loaded.package.name() == package)?;
+    let item = entry.loaded.package.manifest.items.get(n)?;
+    Some((format!("{:?}", item.kind).to_lowercase(), item.source.clone().unwrap_or_default()))
+}
+
+impl super::App {
+    /// The asset a document is, when it is one: a tag by `tag:` id; a
+    /// script, a variant and a playlist file as the `item:` of a package
+    /// that is on and carries it; the HUD of a package as the package.
+    pub fn doc_asset(&self, doc: super::Doc) -> Option<String> {
+        use super::Doc;
+        let tag = |id| {
+            self.tags
+                .tag(id)
+                .map(|t| format!("tag:{}:{}", fourcc_text(t.group), t.name))
+        };
+        let set = || super::assets::read_set(&self.data_root());
+        match doc {
+            Doc::Tag(id) => tag(id),
+            Doc::Map => self.session.scenario().and_then(|s| tag(s.tag)),
+            Doc::Ui => match &self.ui_screens.pick {
+                Some(super::ui_screens::Pick::Retail { tag, .. }) => Some(format!("tag:wgit:{tag}")),
+                _ => None,
+            },
+            Doc::Rules => {
+                let file = self.rules.path.as_ref()?.file_name()?.to_string_lossy().into_owned();
+                item_id(&set(), ItemKind::Rules, script_key(&file))
+            }
+            Doc::Variant => {
+                let name = ::variants::panel::strip_icon(&self.variants.as_ref()?.current()?.name());
+                item_id(&set(), ItemKind::Variant, &name)
+            }
+            Doc::Playlists => {
+                let file = self.hoppers.path()?.file_name()?.to_string_lossy().into_owned();
+                item_id(&set(), ItemKind::Playlist, &file)
+            }
+            Doc::Hud => {
+                let opened = self.hud.opened.as_ref()?;
+                let set = set();
+                set.on
+                    .iter()
+                    .any(|e| e.loaded.package.name() == opened.as_str())
+                    .then(|| format!("package:{opened}"))
+            }
+        }
+    }
+}

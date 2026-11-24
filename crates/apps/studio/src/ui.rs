@@ -6,6 +6,8 @@ mod bar;
 pub mod browser;
 mod doc_tabs;
 mod doc_header;
+#[cfg(test)]
+pub(crate) use doc_header::crumbs as doc_header_crumbs;
 mod game_view;
 mod layout;
 mod toolbar;

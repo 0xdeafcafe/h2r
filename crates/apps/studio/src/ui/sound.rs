@@ -6,11 +6,14 @@
 //! **Stop**, a click on the waveform to play from there, and under the
 //! waveform the permutation's mouth curve as a filled track on the same
 //! time axis — read even when the audio itself cannot be decoded. A drag
-//! on the track redraws the curve (one stroke, one undo step), **From the
-//! sound** fills it from the sound's loudness at the window's gain and
-//! smoothing, **Revert** gives the file's back and **Undo** takes the last
-//! redraw back; they are `App::sound_mouth_*` ([`crate::app::sound_mouth`]),
-//! which `sound.mouth` shares, and save with the map.
+//! on the track redraws the curve (one stroke, one step of the sound's
+//! document), **From the sound** fills it from the sound's loudness at the
+//! window's gain and smoothing, **Revert** gives the file's back, and
+//! **Undo** takes the document's newest step back, a redraw or a field's
+//! write, as Cmd+Z does (`Action::UndoDoc`,
+//! docs/editor/studio-flow.md, "Shared patterns"). The redraws are
+//! `App::sound_mouth_*` ([`crate::app::sound_mouth`]), which `sound.mouth`
+//! shares, and save with the map.
 //! Decoding and playing are the app's ([`crate::app::audition`]); the
 //! agent API's `sound.read`, `sound.play` and `sound.mouth` use the same
 //! calls.
@@ -30,7 +33,7 @@ use tags::sound::MOUTH_HZ;
 
 use crate::app::anim::{AnimError, FacePose};
 use crate::app::audition::{Clip, SoundError, SoundInfo, SoundRow};
-use crate::app::{App, ToolKind};
+use crate::app::{Action, App, Doc, ToolKind};
 use crate::theme::{self, icon};
 use crate::ui::anim::{PICTURE, Preview};
 use crate::viewport::Gpu;
@@ -402,9 +405,13 @@ fn body(ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, st: &mut SoundUi, id: TagId, 
             }
         }
         ui.same_line();
-        let off = ui.begin_disabled_with_cond(!app.sound_mouth_can_undo());
+        // One undo for the sound's document (docs/editor/studio-flow.md,
+        // "Shared patterns"): the newest of its steps, the mouth curve's or
+        // a field's, as Cmd+Z takes.
+        let (can_undo, _) = app.doc_can(Doc::Tag(id));
+        let off = ui.begin_disabled_with_cond(!can_undo);
         if ui.button("Undo##mouth-undo") {
-            app.sound_mouth_undo();
+            app.dispatch(Action::UndoDoc(Doc::Tag(id)));
         }
         drop(off);
     }

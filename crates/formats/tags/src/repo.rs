@@ -13,14 +13,21 @@
 //! roots, and [`build::to_tag_set`] turns the tags into a
 //! [`map::build::TagSet`] the builder lays out from scratch. The file format
 //! and the repository layout are in `docs/formats/tag-repo.md`.
+//!
+//! An asset's identity is two things: its key, and its content as
+//! [`normal`] gives it without the map it was read from, hashed into the
+//! asset hash. [`catalogue`] lists, for a store, each asset by that hash
+//! and the maps reading it (docs/engine/asset-store.md).
 
 use map::FourCC;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 pub mod build;
+pub mod catalogue;
 pub mod compile;
 pub mod extract;
 pub mod format;
+pub mod normal;
 pub mod skeleton;
 pub mod store;
 

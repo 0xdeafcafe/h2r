@@ -45,6 +45,7 @@ before its slice starts.
 | An Xbox ADPCM encoder; a `snd!` writer with the gestalt merge | built, the second inside the converter | `crates/platform/audio/src/adpcm.rs` (`encode`), `crates/tools/h1-assets/src/sounds/merge.rs` |
 | Packages: `content::package::{Manifest, Lock, PackageId, Set}`, validation, `requires`, `after`, `set.toml`, `core` and `ui` always on, the load order, the content set | built | `crates/formats/content/src/package/` |
 | The package build: the builder registry (`tag`, `edits`, `bitmap`, `model`, `animation`, `sound`, `data`, `hud`, `screens`, `screen-edits`, `rules`, `variant`, `playlist`), `build` of ordered packages on a `TagSet`, `build_map` on a map file, conflicts, the cache key, `Layered`, `h2 package check\|build` | built (PK2) | `crates/tools/workspace`, `crates/apps/h2-tools/src/package_cmd.rs` |
+| Mod patches: a `set` line's `from`, `replaces`, the `tag-delta` item, the conflict table (`build_map_settled`), the asset hashes a `was` names (`workspace::assets`), a file that is the store's refused (`h2 package check --store`) | built ([asset-store.md](../engine/asset-store.md), AS6) | `crates/tools/workspace/src/{assets,build,delta,edit,load,onto}.rs` |
 | The game's side: the baked set (`content/`), `<data>/packages/`, `set.toml`, features, `PackageRewrite` with its cache, `packages.list` | built (PK3); `content/pogo` and `content/ui` supply per-map items | `crates/tools/workspace/src/{game,rewrite}.rs`, `crates/apps/boot/src/packages.rs`, `crates/apps/boot/build.rs` |
 | Projects, the other kits as build steps | design | [tag-workspace.md](tag-workspace.md) |
 
@@ -126,8 +127,8 @@ tabs in the centre.
   **Pending**, **Game** and **Log** are the built panels, and so is
   **Playtest** (`ui/playtest.rs`), the result of the last playtest run
   ([playtest.md](playtest.md#the-layers-and-the-panel)).
-- **Go to anything** (`ui/palette.rs`) searches every tag, package and
-  command.
+- **Go to anything** (`ui/palette.rs`) searches every tag, package,
+  item and command (`asset.list`'s rows), with no map open.
 
 ### The browser
 
@@ -382,10 +383,11 @@ maps = "multiplayer"
 
 | `kind` | Source in the package | Builds | Scope |
 |---|---|---|---|
-| `tag` | `<path>.<group>.yaml`: `like:` a disc tag or the group's defaults, then fields by name ([tag-workspace.md](tag-workspace.md), "Authoring and importing") | a new tag | sim |
-| `edits` | an edit file: `set` and `block` lines on tags that exist | changed fields | sim |
+| `tag` | `<path>.<group>.yaml`: `like:` a disc tag or the group's defaults, then fields by name ([tag-workspace.md](tag-workspace.md), "Authoring and importing"); with `replaces = "<asset hash>"`, the asset at `tag` overridden whole (built for `tag` items; the `model`, `bitmap`, `sound` and `animation` builders refuse `replaces` by name) | a new tag, or an asset overridden | sim |
+| `edits` | an edit file: `set` and `block` lines on tags that exist; a line's `from` names the value it replaces | changed fields | sim |
 | `model` | our primitive YAML (`content/pogo/models/*.yaml`'s form) or glTF | `bitm`, `shad`, `mode`, `phmo`, `hlmt` (built: the primitive YAML, with the atlas it names) | sim |
 | `bitmap` | PNG | `bitm` | client |
+| `tag-delta` | a BPS patch from an asset's image to the changed asset's ([asset-store.md](../engine/asset-store.md), "Mods and packages"); `tag` is the asset's path, the group the source's second extension (`a.jpt!.bps`), `was` the asset hash of its base (optional) | the patched asset | sim |
 | `animation` | `.anim.yaml` with the graph, skeleton, key tracks and replace or add operation | animation records and streams in a `jmad` | sim |
 | `sound` | WAV and an optional `.sound.yaml` (permutations, class, edits, mouth curve) | `snd!`, the gestalt merged (built: an item with a `tag` is written as a `snd!`; one with none is checked and a game feature plays the file) | client |
 | `screens` | screen YAML and `design.yaml` | `wgit` tags and `wgtz` rows ([ui-in-maps.md](../game/ui-in-maps.md)) | client |
@@ -412,16 +414,19 @@ item ([live-coop.md](../live/live-coop.md)).
 file: a cache map; a `.h2tag` bundle; a `tag` item whose YAML carries raw
 bytes; a `map-patch` without its base hash; anything under a voice
 dataset or model weights folder ([voice-cloning.md](voice-cloning.md));
-a file over the store's size cap. Live refuses any blob whose hash is on
-the retail list, as it does for maps ([maps.md](../game/maps.md) section
-5).
+a file over the store's size cap. `h2 package check --store <data>/tags`
+refuses a file whose SHA-256 is a raw resource or a tag file of the user's
+own tag store (`workspace::store_findings`): no list of the disc's hashes
+is shipped. Live refuses any blob whose hash is on the operator's retail
+list, as it does for maps ([maps.md](../game/maps.md) section 5).
 
 ### Identity, dependencies and load order
 
 - **`PackageId`** is the SHA-256 of the manifest's canonical JSON
   (`content::canonicalize`) with each `source` replaced by its file's
-  SHA-256 and each `inputs` path paired with its SHA-256. Display fields
-  and `[credit]` are omitted, the way
+  SHA-256 and each `inputs` path paired with its SHA-256. An item's
+  `replaces` and `was` are in its entry as the asset hash's lowercase text.
+  Display fields and `[credit]` are omitted, the way
   `MapId` is made. The build writes the file hashes to `package.lock`
   beside the manifest; the lock is what is signed.
 - **`requires`** names packages that must be in the set. A missing one
@@ -434,10 +439,13 @@ the retail list, as it does for maps ([maps.md](../game/maps.md) section
   are always on (`content::package::ALWAYS_ON`): a set file whose `off`
   names one is refused by name (`SetError::AlwaysOn`), and they may not
   `require` anything, so no other package's absence disables them.
-- **Conflicts.** Two packages that add the same tag path stop the build,
-  naming both. Two edit lines on the same field: the later package wins
-  and Problems lists the override. An edit whose path or `was` hash does
-  not match stops the build with the line.
+- **Conflicts.** In `h2 package build` and Studio's `package.build` two
+  packages that add the same tag path stop the build, naming both. Two
+  edit lines on the same field: the later package wins and the report
+  lists the override (`Report::overrides`). An edit whose path or `was`
+  hash does not match stops the build with the line. The game's build
+  leaves a refused package off for the map with its reason instead
+  ([asset-store.md](../engine/asset-store.md), "Conflicts").
 - **The content set** of a game is the ordered list of the `PackageId`s
   that have a `sim` item. Its hash goes where `map_id` goes (below).
 
@@ -449,7 +457,8 @@ map's name and class). An item runs when its `maps` takes the target;
 its builder comes from the closed registry (`workspace::registry`: `tag`,
 `edits`, `bitmap`, `model`, `sound`, `data`, `hud`, `screens`,
 `screen-edits`, `rules`, `variant`, `playlist`, `map`, `map-patch`,
-`convert`, `kit`; the other kinds stop the build with "no builder"). The `map` and
+`convert`, `kit`, `tag-delta`; the other kinds stop the build with "no
+builder"). The `map` and
 `map-patch` builders change no map: they build map packages at prepare (below). The
 base is what is built onto: the result differs from it only in the tags
 the items add or change, and a tag a decomposed map keeps pinned is laid
@@ -466,12 +475,26 @@ changes it. After an error the set is partly changed and is dropped.
   alternatives of text fields, `take:` field paths): the first alternative
   some tag matches, with every taken block non-empty, gives the values; no
   match stops the build. It is how a weapon takes the first-person view of
-  the map's own weapon of a class.
+  the map's own weapon of a class. With `replaces = "<asset hash>"` the
+  item takes the asset its `tag` names instead of adding a free path: the
+  asset is in the map and hashes to it (`Cx::replace_target`), the tag
+  keeps its datum, and the asset's hash as the item leaves it is kept for
+  a later package's `was` (`Report::replaced`).
 - **`edits`**: a YAML list of `{tag: <group>:<path>, was, block, set}`;
   `set` is a list of `{path, value}`. Values follow the field's type:
   numbers, enum and flag names or numbers, text for string IDs, lists for
   vectors, `<group>:<path>` for references, `null` to clear one. A block
-  is changed with `block` lines.
+  is changed with `block` lines. A line's `from` is the value it replaces,
+  checked against the tag as the build first found it (over an earlier
+  package's whole override, against that): a `from` that is not a value
+  the field takes, or that the field does not hold, is a refusal.
+- **`tag-delta`** (`workspace/src/delta.rs`): a BPS patch from the base
+  asset's image to the changed asset's. An image is the asset as the build
+  holds it (its arrays in tree order, each its bytes and the fields the
+  builder fills in, by what they name); the patch's source size and CRC32
+  must match it, so a patch made on other bytes is refused too, and the
+  tree it writes is read back with every length, index and alignment
+  checked. A raw resource the patch names is one the map holds.
 - **`bitmap`**: a PNG (any depth or colour type) as one linear `ARGB8888`
   `bitm` with no mips, through `tags::rgba_bitmap::install`.
 - **`screens`** (`workspace/src/screens.rs`) takes `design.yaml` as its
@@ -555,11 +578,25 @@ changes it. After an error the set is partly changed and is dropped.
   after the set is read and before the content library reads
   `<data>/maps/`. An item that cannot build is a line on stderr.
 
-`was` is the SHA-256 of the tag as the build first found it
-(`workspace::tag_hash`: group, bytes and fixups, references by name, raw
-resources by their bytes). A tag added by an item is hashed when it is
-added. The error for a stale `was` gives both hashes and the line of the
+`was`, and a `replaces`, name the asset hash of the tag as the build first
+found it: `tags::repo::normal::hash` over its normal form, read for the
+level, when the build is given the base's assets (`workspace::assets`:
+`build_map_settled` is, from the store's catalogue or the map's bytes);
+`workspace::tag_hash` (group, bytes and fixups, references by name, raw
+resources by their bytes) when it is not, as `h2 package build` and a
+build on an invented map are not. A tag added by an item has its own
+hash. The error for a stale `was` gives both hashes and the line of the
 entry.
+
+A **refusal** is an item for other content (a `from`, `was` or `replaces`
+that does not match, a patch of an asset an earlier package overrides
+whole without naming its hash, a second override of one asset or a second
+add of one tag path, a key the map lacks). `build` stops on it as on any
+failure. `build_map_settled` leaves the package off for the map whole,
+with its reason in `Report::refused`, and every package that requires one
+off for the map too; a package in `strict` (ours) stops the build instead.
+A package refused after one of its items ran is taken out by building the
+map again without it.
 
 A tag path two items add, or one an item adds that the base has, stops
 the build and names both items. Two packages that set the same field
@@ -579,7 +616,11 @@ line each: a manifest that does not read, a missing, stale or unlisted
 `package.lock`, a cache map, tag bundle, disc file, model weights file or
 dataset folder in the folder, an item with no builder, a missing or
 oversize source (`MAX_FILE_BYTES`), a source its builder refuses (with its
-line), and two packages that add the same tag. `h2 package build <dir>...
+line), a `replaces` its builder cannot act on, and two packages that add
+the same tag or override the same asset whole for maps that can meet.
+`h2 package check --store <data>/tags <dir>...` also names a file whose
+SHA-256 is a raw resource or a tag file of the store.
+`h2 package build <dir>...
 --base <map> -o <out.map> [--map NAME] [--scope CLASS] [--no-lock]` runs
 the same checks, applies the packages to the base map and writes the
 result and each package's `package.lock`, then prints what was added,
@@ -615,8 +656,10 @@ paths in "What exists":
    the key `workspace::cache_key`) with a `.json` receipt holding the
    full key and the output's hash; a second read is a cache hit, and a
    changed map, package or builder builds anew. A map that fails to
-   build is served unchanged and named once on stderr. It is the only
-   rewrite in boot's chain. The set's `kit` items run in it on the files
+   build is served unchanged and named once on stderr; a package refused
+   for the map (a stale `was`, a key it lacks) is off for it with its
+   reason in `packages.list`, and the cached map is keyed by what the map
+   takes. It is the only rewrite in boot's chain. The set's `kit` items run in it on the files
    they are for, with the inputs the boot gave it (`workspace::KitInputs`):
    `campaign-cards` runs `CardRewrite` on `maps\mainmenu.map` before the
    set's items, and `glyphs` runs the icon sets and then `GearRewrite` on
@@ -871,8 +914,11 @@ interpolation. Opening a retail clip reduces its dense frames with
 `tags::anim_keys::reduce`. Its Ramer-Douglas-Peucker reduction measures
 rotation as an angle, translation as a distance and scale as a
 difference. The timeline shows the source tolerance. Each document has
-its own undo and redo history. **Save to package** writes a named
-`animation` item for the current map. Opening a source clip gives a
+its own undo and redo history, its steps numbered with the graph tab's
+(`AnimDoc::share_steps`), so the window's Undo and Redo and the tab's take
+them all in the order they were made
+([studio-flow.md](studio-flow.md), "Shared patterns"). **Save to
+package** writes a named `animation` item for the current map. Opening a source clip gives a
 replacement item. A new or duplicated clip takes an action and can
 specify a mode, class and weapon type.
 
@@ -1128,8 +1174,11 @@ as a tab, and each writes through
   ([rules-engine.md](../game/rules-engine.md)).
 - Menu and HUD content is data in map files. No builder draws a screen
   in Rust.
-- A package is loaded whole or not at all.
-- An edit is never dropped: a line that does not apply stops the build.
+- A package is loaded whole or not at all: off for one map whole when it
+  is refused there, never in part.
+- An edit is never dropped quietly: a line that does not resolve stops the
+  build, and a line or an item for other content turns its package off for
+  that map with its reason (and stops `h2 package build`).
 - The window has no action the API lacks. `session.methods` lists every
   method, and each slice's headless test drives its feature through the
   API.
@@ -1200,6 +1249,12 @@ need only SH1 to open as documents.
 - That one rewrite over a pinned map gives the game what the four
   separate rewrites give it is **S**: PK4, PK5 and PK12 compare the
   bytes per kit.
+- A mod's `from`, `replaces`, `tag-delta` and the conflict table, on an
+  invented map: both of two mods on different fields show in the level, a
+  refused package is off with its reason and moves neither the level's
+  `LevelId` nor its image (**Test**,
+  `crates/tools/workspace/src/{mod_tests,delta,assets,rewrite_tests}.rs`;
+  [asset-store.md](../engine/asset-store.md), "Evidence").
 - Which groups a `client` item may change without moving the sim hash is
   **S** (a lockstep run).
 - Events and root movement in a `jmad`, the guest entry that starts an

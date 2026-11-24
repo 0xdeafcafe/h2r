@@ -186,7 +186,9 @@ pub fn evaluate(snapshot: &Snapshot<'_>, request: &Request) -> Result<Json, RpcE
     {
         name.push('_');
     }
-    let wrap = |ty: &str| format!("(script {kind} {ty} {name} ()\n{}\n)", request.expression);
+    // The body follows the name: a script takes no arguments, and the
+    // compiler reads a `()` there as a call that names no function.
+    let wrap = |ty: &str| format!("(script {kind} {ty} {name}\n{}\n)", request.expression);
     let compile = |ty: &str| {
         hs::compile(scenario, catalog, &wrap(ty), &options)
             .map_err(|messages| source_problems(&messages, &request.expression))

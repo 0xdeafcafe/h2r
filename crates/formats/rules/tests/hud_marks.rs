@@ -146,3 +146,105 @@ fn the_territories_count_is_those_the_viewers_side_holds() {
     let seen = view(vm.show(), vm.ir(), Viewer { slot: Some(1), team: Some(1) });
     assert_eq!(seen.at("ter.owned").map(|w| (w.style, w.shown)), Some((2, true)));
 }
+
+/// A Siege map for the HUD: two territories (600, 601) and each team's flag
+/// stand (20, 21), team 1 being player 1's.
+fn siege_game() -> FakeGame {
+    let mut g = FakeGame::with_players(2);
+    g.players.get_mut(&1).unwrap().team = 1;
+    g.variant.insert("team_play".into(), 1);
+    g.labelled.insert(
+        "territory".into(),
+        vec![Placed { placement: 0, object: 600 }, Placed { placement: 1, object: 601 }],
+    );
+    g.labelled.insert(
+        "ctf_flag_spawn".into(),
+        vec![Placed { placement: 0, object: 20 }, Placed { placement: 1, object: 21 }],
+    );
+    g.object_teams.extend([(20, 0), (21, 1)]);
+    g
+}
+
+/// What viewer 0 reads of the Siege front row: (shown, style, value).
+fn front(vm: &Vm) -> Option<(bool, u8, i32)> {
+    let viewer = Viewer { slot: Some(0), team: None };
+    view(vm.show(), vm.ir(), viewer).at("koth.hill").map(|w| (w.shown, w.style, w.value))
+}
+
+/// The banner viewer 0 reads, when it is shown.
+fn banner(vm: &Vm) -> Option<String> {
+    let viewer = Viewer { slot: Some(0), team: None };
+    let v = view(vm.show(), vm.ir(), viewer);
+    v.at("koth.banner").filter(|w| w.shown).and_then(|w| w.text.clone())
+}
+
+#[test]
+fn the_siege_mark_and_row_follow_the_front_and_its_holder() {
+    let mut g = siege_game();
+    let mut vm = start(builtin::SIEGE, &mut g, &[("capture_time", 5)]);
+
+    // Nobody on a site: the row is open and the mark is over the first one.
+    ticks(&mut vm, &mut g, 2, 1);
+    assert_eq!(front(&vm), Some((true, 0, 0)));
+    assert_eq!(marked(&vm, "koth.mark", 0), Some(600));
+
+    // An attacker alone on the second site: held by side 0, and the mark
+    // follows the site they are on.
+    g.inside.insert((0, 601));
+    ticks(&mut vm, &mut g, 3, 2);
+    assert_eq!(front(&vm), Some((true, 1, 0)));
+    assert_eq!(marked(&vm, "koth.mark", 0), Some(601));
+
+    // A defender on it too: contested.
+    g.inside.insert((1, 601));
+    ticks(&mut vm, &mut g, 5, 1);
+    assert_eq!(front(&vm), Some((true, 2, 0)));
+
+    // A defender alone: held by side 1.
+    g.inside.remove(&(0, 601));
+    ticks(&mut vm, &mut g, 6, 1);
+    assert_eq!(front(&vm), Some((true, 1, 1)));
+}
+
+/// Holds site 600 alone until the banner shows, and returns its text, the
+/// mark's object that tick, and whether it is hidden two ticks on.
+fn first_banner(options: &[(&str, i64)]) -> (String, Option<u32>, bool) {
+    let mut g = siege_game();
+    let mut vm = start(builtin::SIEGE, &mut g, options);
+    g.inside.insert((0, 600));
+    for t in 2..800 {
+        ticks(&mut vm, &mut g, t, 1);
+        if let Some(text) = banner(&vm) {
+            let mark = marked(&vm, "koth.mark", 0);
+            ticks(&mut vm, &mut g, t + 1, 2);
+            return (text, mark, banner(&vm).is_none());
+        }
+    }
+    panic!("no banner");
+}
+
+#[test]
+fn the_siege_banner_says_a_site_taken_and_the_final_assault() {
+    // Two sites: the first taken is a site, and the front moves to the other.
+    let (text, mark, hidden) = first_banner(&[("capture_time", 5)]);
+    assert_eq!((text.as_str(), mark, hidden), ("SITE TAKEN", Some(601), true));
+    // One site: taking it opens the final assault, and the front is the stand.
+    let (text, mark, hidden) = first_banner(&[("capture_time", 5), ("sites", 1)]);
+    assert_eq!((text.as_str(), mark, hidden), ("FINAL ASSAULT", Some(21), true));
+}
+
+#[test]
+fn the_siege_clock_is_called_at_thirty_and_ten_seconds() {
+    let mut g = siege_game();
+    let mut vm = start(builtin::SIEGE, &mut g, &[("phase_time", 60)]);
+    let mut said = Vec::new();
+    for t in 2..1805 {
+        ticks(&mut vm, &mut g, t, 1);
+        if let Some(b) = banner(&vm)
+            && said.last() != Some(&b)
+        {
+            said.push(b);
+        }
+    }
+    assert_eq!(said, ["30 SECONDS", "10 SECONDS"]);
+}

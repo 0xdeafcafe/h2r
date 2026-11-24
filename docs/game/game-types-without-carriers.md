@@ -187,8 +187,8 @@ A script whose options do not fit is refused.
   (`base`) shows the score under the game's `points` label and the clock.
   Each type's objective parts are a HUD kit HUD of the kit's own: `ctf`
   (both flags' places), `assault` (the bomb, with its fuse once armed),
-  `oddball` (the holder and your held time), `koth` (the hill's state and
-  held time) and `territories` (those held of the total), each with a
+  `oddball` (the holder and your held time), `koth` (the hill's state, held
+  time and a phase's seconds left) and `territories` (those held of the total), each with a
   navpoint over the objective and a banner for the moment it changes hands.
   The HUDs are YAML (`content/modes/huds/`, `BUILTIN` in
   `hud-kit-core/src/data.rs`); `hud-kit-core/src/views/objective.rs` holds

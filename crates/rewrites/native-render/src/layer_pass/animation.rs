@@ -1,5 +1,7 @@
 //! Sample a pass's constant registers after its instance and engine writes.
 
+use std::sync::Arc;
+
 use tags::effects::function::{Function, FunctionType, Tables};
 use tags::material::{AnimationKind, Origin, Register, ResolvedImplementation};
 use tags::shader::AnimatedProperty;
@@ -120,6 +122,56 @@ pub fn sample_constants(
         }
     }
     Ok(out)
+}
+
+/// One compiled pass's animated constants, kept for its draws: the
+/// implementation with its animated targets and the instance's
+/// properties, sampled again at each draw's clock ([`sample_constants`]).
+/// The structure's layer planner, the object passes and the world's
+/// layer 3 all draw through it.
+#[derive(Clone, Debug)]
+pub struct PassAnimation {
+    implementation: ResolvedImplementation,
+    properties: Arc<[AnimatedProperty]>,
+    object: bool,
+    pass: usize,
+}
+
+impl PassAnimation {
+    /// What a pass compiles from: `imp` sampled at clock 0 with its
+    /// animated targets cleared, so a register only an animation writes
+    /// is set when the translation checks what the program reads; and the
+    /// animation, `None` when `imp` animates nothing. `object`: the pass
+    /// draws an object's item (a ranged curve refuses,
+    /// [`LayerRefusal::ObjectAnimation`]). A target the sampler cannot
+    /// apply refuses the pass.
+    pub fn baseline(
+        imp: &ResolvedImplementation,
+        properties: &[AnimatedProperty],
+        object: bool,
+        pass: usize,
+    ) -> Result<(ResolvedImplementation, Option<Self>), LayerRefusal> {
+        if imp.animated.is_empty() {
+            return Ok((imp.clone(), None));
+        }
+        let mut baseline = sample_constants(imp, properties, Some(0.0), object, pass)?;
+        baseline.animated.clear();
+        let animation = Self { implementation: imp.clone(), properties: properties.into(), object, pass };
+        Ok((baseline, Some(animation)))
+    }
+
+    /// The pass's registers at `time` (the render clock, `0x004858a0`).
+    pub fn sample(&self, time: Option<f64>) -> Result<crate::fog_gpu::LayerConstants, LayerRefusal> {
+        let at = sample_constants(&self.implementation, &self.properties, time, self.object, self.pass)?;
+        Ok(crate::fog_gpu::LayerConstants::from_implementation(&at))
+    }
+}
+
+/// The render clock (`0x004858a0`, a double, seconds) as the layer
+/// inputs read it (`scene_extract::layout::layer_inputs::render_time`):
+/// what a pass outside the planned layers samples its animation at.
+pub fn render_time(mem: &dyn scene_extract::GuestRead) -> Option<f64> {
+    scene_extract::layout::layer_inputs::render_time(mem)
 }
 
 fn vertex_register(out: &mut ResolvedImplementation, dst: u8) -> &mut Register {

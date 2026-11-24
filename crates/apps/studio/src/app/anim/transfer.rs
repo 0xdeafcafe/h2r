@@ -141,7 +141,7 @@ impl App {
             error: None,
         };
         output.report = report;
-        output.doc = Some(self.anim.insert(AnimationDocument {
+        output.doc = Some(self.anim_add(AnimationDocument {
             graph: to_key,
             summary: authored_summary(summary, &clip),
             retail_index: None,

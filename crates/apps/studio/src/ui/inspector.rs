@@ -26,7 +26,7 @@ use scenario_edit::{BlockKind, Scenario, TagRef, Value};
 
 use crate::app::tag_api::{self, Chain, Node};
 use crate::app::tag_doc::Access;
-use crate::app::{Action, App, NavAction, NavLocation, Selection, TagDoc, ToolKind};
+use crate::app::{Action, App, Doc, NavAction, NavLocation, Selection, TagDoc};
 use crate::fields;
 use crate::play::issues::{Issue, IssueIndex, Kind};
 use crate::play::pair::Request;
@@ -710,15 +710,19 @@ fn tags(
     let issues = issues(app);
     state.tag_panel.follow(app);
     breadcrumbs(ui, app, location, &mut actions);
-    let undo = ui.begin_disabled_with_cond(!doc.can_undo());
+    // The tag's document is the stack, as for every editor (docs/editor/
+    // studio-flow.md, "Shared patterns"): its own writes and its editor's
+    // steps, taken newest first.
+    let can = app.doc_can(Doc::Tag(tag));
+    let undo = ui.begin_disabled_with_cond(!can.0);
     if ui.button("Undo tag edit") {
-        actions.push(Action::UndoIn(ToolKind::Tags));
+        actions.push(Action::UndoDoc(Doc::Tag(tag)));
     }
     undo.end();
     ui.same_line();
-    let redo = ui.begin_disabled_with_cond(!doc.can_redo());
+    let redo = ui.begin_disabled_with_cond(!can.1);
     if ui.button("Redo tag edit") {
-        actions.push(Action::RedoIn(ToolKind::Tags));
+        actions.push(Action::RedoDoc(Doc::Tag(tag)));
     }
     redo.end();
     let rev = doc.rev();

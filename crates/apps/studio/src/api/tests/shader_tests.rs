@@ -5,7 +5,7 @@
 
 use super::*;
 
-const SHADER: &str = "shad:levels\\test\\shaders\\floor";
+pub(super) const SHADER: &str = "shad:levels\\test\\shaders\\floor";
 
 /// The invented material map with its one pass in `layer`.
 pub(super) fn material_map(layer: u8) -> Vec<u8> {

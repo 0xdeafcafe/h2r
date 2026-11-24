@@ -93,9 +93,14 @@ A type-5 widget switches to the previous or next enabled page on navigation
 events 2 and 4 (`0x002b41ea`). The Live social screen embeds three such
 child screens. Each carries its pane index at `+0x5f0` (`0x0022f965`).
 
-Draw order: `0x002353a5` collects up to 256 widgets and sorts them with
-`0x002356d8` by depth (`+0x60`, the Z of the animated offset, copied by `0x0022e9aa`; values within 0.001 tie),
-then by render depth bias, then by widget type, ascending.
+Draw order: `0x002353a5` collects up to 256 shown widgets, each after its
+children (`0x0023566a`), and sorts them with the C runtime's `qsort`
+(`0x00321460`, not stable) and `0x002356d8`: by depth (`+0x60`, the Z of
+the animated offset, copied by `0x0022e9aa`), the deeper first; depths
+within 0.001 tie and sort by render depth bias, smaller first, then by
+widget type, larger first. Only widgets whose depth is inside the
+window from `0x0054d5ac` to `0x0054d5b4` (each less `0x0054d5b0`) are
+drawn ([native-post-hud.md](../graphics/native-post-hud.md#the-menus-on-the-overlay)).
 
 Under a screen whose lower window holds a screen (a dialog over its
 opener), the window stack's render (`0x0023029a`, the stacks' render

@@ -25,8 +25,9 @@ use crate::{
 ///
 /// `requires`, `after` and `features` are sets: sorted and deduplicated.
 /// Items keep their order (a later one wins), and map names are lowercased
-/// and sorted. Two manifests have the same id exactly when they say the same
-/// thing about the same file contents.
+/// and sorted. A `replaces` or `was` an item carries is in its entry, as the
+/// asset hash's lowercase text. Two manifests have the same id exactly when
+/// they say the same thing about the same file contents.
 ///
 /// Displays, parses and serialises as 64 lowercase hex digits.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -141,6 +142,21 @@ impl PackageId {
                 }
             };
             o.insert("maps".into(), maps);
+            // An asset hash, as its lowercase text: the case it is written in
+            // does not move the id.
+            let hash = |text: &str| {
+                Value::String(
+                    text.parse::<Sha256>()
+                        .map(|h| h.to_string())
+                        .unwrap_or_else(|_| text.to_string()),
+                )
+            };
+            if let Some(replaces) = &item.replaces {
+                o.insert("replaces".into(), hash(replaces));
+            }
+            if let Some(was) = &item.was {
+                o.insert("was".into(), hash(was));
+            }
             items.push(Value::Object(o));
         }
         let value = json!({

@@ -203,6 +203,9 @@ pub const ACTIONS: &[u16] = &[
     id::TELEPORT,
     id::MOVE_TO,
     id::STOP,
+    // The VM keeps the open barriers and steps each to its place
+    // ([`step_object`](Game::step_object)), so no call is made of its own.
+    id::SET_OPEN,
 ];
 
 /// Where the `RULES` record lives: the process's `SimExt` blob in the
@@ -867,7 +870,7 @@ impl Game for GuestGame<'_> {
             // (`super::world::hud`).
             id::HUD_VALUE | id::HUD_FILL | id::HUD_STYLE | id::HUD_TEXT | id::HUD_SHOW | id::MARK | id::UNMARK => None,
             // The VM keeps the mover; each tick's step is `step_object`.
-            id::MOVE_TO | id::STOP => None,
+            id::MOVE_TO | id::STOP | id::SET_OPEN => None,
             id::TELEPORT => super::world::objects::plan(call).map(Call::Put),
             id::SET_LOADOUT => {
                 let tag = |n: usize| match call.args.get(n) {

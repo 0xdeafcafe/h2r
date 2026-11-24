@@ -102,6 +102,28 @@ impl Problem {
     }
 }
 
+/// A package left out of one level, whole, and why
+/// (docs/engine/asset-store.md, "Conflicts"): a `from`, `was` or `replaces`
+/// that does not match what the level holds, a clash with an earlier
+/// package, a key the level lacks, or a `requires` that is off for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Refusal {
+    /// The package's id.
+    pub package: String,
+    /// Why it is off, naming what it matched or clashed with.
+    pub why: String,
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "package {:?} is off for this level: {}",
+            self.package, self.why
+        )
+    }
+}
+
 /// Why a set cannot be made.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SetError {

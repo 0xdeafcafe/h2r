@@ -219,6 +219,59 @@ impl fmt::Display for VoiceError {
 
 impl std::error::Error for VoiceError {}
 
+impl VoiceError {
+    /// The error as the Voices window says it: sentences, no traceback.
+    pub fn readable(&self) -> String {
+        match self {
+            VoiceError::Model(s) => readable(s),
+            other => other.to_string(),
+        }
+    }
+}
+
+/// What a failure text from the voice sidecar (or a line of the window)
+/// means for the user: a known library failure becomes a sentence that
+/// says what to do, a traceback is cut to its last line, and a long text
+/// to 240 characters. The whole text stays in the API's answer and in
+/// `sidecar.log`.
+pub fn readable(raw: &str) -> String {
+    let raw = raw.trim();
+    let lower = raw.to_lowercase();
+    if lower.contains("incompatible function arguments") {
+        let call = raw
+            .split("(): incompatible")
+            .next()
+            .and_then(|h| h.rsplit(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.')).next())
+            .filter(|c| !c.is_empty())
+            .unwrap_or("a library call");
+        return format!(
+            "The local voice model's libraries do not fit together ({call} was called with the wrong \
+             arguments). Open Voice setup and reinstall the model; the details are in sidecar.log."
+        );
+    }
+    if lower.contains("out of memory") {
+        return "The Mac ran out of memory saying that line. Close other apps, or say a shorter line.".into();
+    }
+    if lower.contains("traceback (most recent call last)") {
+        let last = raw
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty() && !l.starts_with(' '))
+            .unwrap_or(raw);
+        return clip(&format!("The local voice model failed: {last}"));
+    }
+    clip(raw)
+}
+
+fn clip(s: &str) -> String {
+    let one: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one.chars().count() > 240 {
+        format!("{}...", one.chars().take(240).collect::<String>())
+    } else {
+        one
+    }
+}
+
 // ---- the cache ----
 
 /// The lines a voice has said, as files under `<data root>/announcer/cache`:

@@ -4,15 +4,32 @@ use crate::app::{Action, App, Doc, NavAction, Surface};
 use crate::app::assets::{self, AssetId};
 use crate::app::links::{self, Links};
 
-fn asset(app: &App, doc: Doc) -> Option<String> {
-    match doc {
-        Doc::Tag(id) => app.tags.tag(id).map(|t| format!("tag:{}:{}", tags::defs::fourcc_text(t.group), t.name)),
-        Doc::Map => app.session.scenario().and_then(|s| app.tags.tag(s.tag)).map(|t| format!("tag:{}:{}", tags::defs::fourcc_text(t.group), t.name)),
-        Doc::Ui => match &app.ui_screens.pick {
-            Some(crate::app::ui_screens::Pick::Retail { tag, .. }) => Some(format!("tag:wgit:{tag}")),
-            _ => None,
-        },
-        _ => None,
+/// The header's path for an asset: where it comes from, its kind and its name.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Crumbs {
+    pub origin: String,
+    pub kind: String,
+    pub leaf: String,
+    pub badge: String,
+}
+
+pub(crate) fn crumbs(app: &App, id: &str) -> Option<Crumbs> {
+    let set = assets::read_set(&app.data_root());
+    match AssetId::parse(id).ok()? {
+        AssetId::Tag(key) => {
+            let group = tags::defs::fourcc_text(key.group);
+            Some(Crumbs {
+                origin: app.edit_target().unwrap_or_else(|| "Disc".into()),
+                kind: assets::kind_of(&group).to_owned(),
+                badge: format!("{group}  {}", assets::badge_for(&set, &key)),
+                leaf: key.path,
+            })
+        }
+        AssetId::Item(package, n) => {
+            let (kind, source) = links::item_label(&set, &package, n)?;
+            Some(Crumbs { origin: package.clone(), kind: kind.clone(), leaf: source, badge: format!("{kind}  in {package}") })
+        }
+        AssetId::Package(package) => Some(Crumbs { origin: package.clone(), kind: "Package".into(), leaf: package.clone(), badge: "package".into() }),
     }
 }
 
@@ -45,7 +62,12 @@ fn link_rows(ui: &Ui, rows: &[links::Link], actions: &mut Vec<Action>, browser: 
         if *count > 20 { continue; }
         if *count == 1 { ui.separator(); ui.text_disabled(link_role(row)); }
         if ui.menu_item(&row.asset) {
-            actions.push(Action::OpenAsset { asset: row.asset.clone(), map: None });
+            // Only a tag opens in an editor; a package or an item shows its Browser row.
+            if row.asset.starts_with("tag:") {
+                actions.push(Action::OpenAsset { asset: row.asset.clone(), map: None });
+            } else {
+                browser.locate(&row.asset);
+            }
         }
         if ui.is_item_hovered() { ui.tooltip_text(&row.via); }
     }
@@ -58,22 +80,20 @@ fn link_rows(ui: &Ui, rows: &[links::Link], actions: &mut Vec<Action>, browser: 
 /// Draw in the active document's existing window, never in a child window.
 pub(super) fn draw(ui: &Ui, app: &App, actions: &mut Vec<Action>, browser: &mut super::browser::BrowserUi) {
     let Some(doc) = app.front_doc() else { return; };
-    let id = asset(app, doc);
+    let id = app.doc_asset(doc);
     if button(ui, "<", app.can_navigate(false), "No earlier location") { actions.push(Action::Navigate(NavAction::Back)); }
     ui.same_line();
     if button(ui, ">", app.can_navigate(true), "No later location") { actions.push(Action::Navigate(NavAction::Forward)); }
     ui.same_line();
     if let Some(id) = &id {
-        if let Ok(AssetId::Tag(key)) = AssetId::parse(id) {
-            let group = tags::defs::fourcc_text(key.group);
-            if ui.small_button(app.edit_target().unwrap_or_else(|| "Disc".into())) { browser.locate(id); }
+        if let Some(c) = crumbs(app, id) {
+            if ui.small_button(format!("{}##crumb-origin", c.origin)) { browser.locate(id); }
             ui.same_line(); ui.text(">"); ui.same_line();
-            if ui.small_button(assets::kind_of(&group)) { browser.locate(id); browser.query.clear(); browser.kind = Some(assets::kind_of(&group).to_owned()); }
+            if ui.small_button(format!("{}##crumb-kind", c.kind)) { browser.locate(id); browser.query.clear(); browser.kind = Some(c.kind.clone()); }
             ui.same_line(); ui.text(">"); ui.same_line();
-            if ui.small_button(&key.path) { browser.locate(id); }
+            if ui.small_button(format!("{}##crumb-leaf", c.leaf)) { browser.locate(id); }
             ui.same_line(); if ui.small_button("In Browser") { browser.locate(id); }
-            let badge = assets::badge_for(&assets::read_set(&app.data_root()), &key);
-            ui.text(format!("{}  {}", group, badge));
+            ui.text(&c.badge);
         }
     } else { ui.text(app.doc_title(doc)); }
     ui.text(target_text(app.edit_target(), app.doc_dirty(doc)));
@@ -86,7 +106,6 @@ pub(super) fn draw(ui: &Ui, app: &App, actions: &mut Vec<Action>, browser: &mut 
     if ui.button("Check") { actions.push(Action::RefreshProblems(None)); }
     ui.same_line();
     let (undo, redo) = app.doc_can(doc);
-    // FL8 extends the document stack; the header always dispatches its actions.
     if button(ui, "Undo", undo, "Nothing to undo") { actions.push(Action::UndoDoc(doc)); }
     ui.same_line();
     if button(ui, "Redo", redo, "Nothing to redo") { actions.push(Action::RedoDoc(doc)); }

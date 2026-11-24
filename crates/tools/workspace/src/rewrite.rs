@@ -16,13 +16,20 @@
 //! anew. A map that fails to build is served unchanged and named once on
 //! stderr; [`PackageRewrite::served`] keeps what happened to each map for
 //! `packages.list`.
+//!
+//! A package refused for a map (docs/engine/asset-store.md, "Conflicts") is
+//! off for it, whole, with its reason in the record's `refused`; the first
+//! read of a map under a set asks [`build_map_settled`] and remembers, so a
+//! later read builds or serves what the map takes straight. The cached map
+//! is keyed by what the map takes, so a set that never had the refused
+//! package shares it.
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use content::Sha256;
-use content::package::Maps;
+use content::package::{Maps, Refusal};
 use ::game::bot_mark::GearRewrite;
 use ::game::campaign_cards::{CardRewrite, MAINMENU};
 use map::Map;
@@ -34,7 +41,7 @@ use crate::builders::changes_map;
 use crate::game::{CACHE_DIR, PACKAGES_DIR};
 use crate::kits::{Kit, kits_of};
 use crate::load::added_tag;
-use crate::onto::{build_map, scope_of};
+use crate::onto::{build_map, build_map_settled, scope_of};
 
 /// What happened to one map.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -45,6 +52,9 @@ pub struct ServedMap {
     pub packages: Vec<String>,
     /// Packages for the map that it already holds, left out.
     pub held: Vec<String>,
+    /// Packages off for this map, whole, and why (module docs).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub refused: Vec<Refusal>,
     /// [`cache_key`], hex; empty when nothing was applied.
     pub key: String,
     /// Reads served from the cache, and builds.
@@ -73,6 +83,10 @@ struct Receipt {
     map: Sha256,
     added: usize,
     changed: usize,
+    /// Packages off for the map when it was built. A receipt from before
+    /// they were kept has none.
+    #[serde(default)]
+    refused: Vec<Refusal>,
 }
 
 /// A map with the set applied.
@@ -141,6 +155,13 @@ pub struct PackageRewrite {
     /// The maps come from the tag store with the set already laid over
     /// them ([`crate::level::StoreLevels`]): no map is rebuilt here.
     levels: bool,
+    /// The packages that are ours: one of them refused stops a map's build
+    /// instead of being left out.
+    strict: BTreeSet<String>,
+    /// For each map and set asked for (the [`cache_key`] over every package
+    /// with an item for the map, hex), the packages a build found off for
+    /// the map: the first read asks, later ones skip them.
+    settled: BTreeMap<String, Vec<Refusal>>,
 }
 
 impl PackageRewrite {
@@ -173,7 +194,17 @@ impl PackageRewrite {
             inputs: KitInputs::default(),
             fonts: None,
             levels: false,
+            strict: BTreeSet::new(),
+            settled: BTreeMap::new(),
         }
+    }
+
+    /// The packages that are ours, by id (`strict`): a refusal of one stops
+    /// a map's build, as a failure does; any other package refused for a map
+    /// is off for it, with its reason.
+    pub fn strict(mut self, strict: BTreeSet<String>) -> Self {
+        self.strict = strict;
+        self
     }
 
     /// The maps are the tag store's level images, which hold the set's
@@ -302,20 +333,17 @@ impl PackageRewrite {
 
     /// Map `name` (its file's stem) whose bytes are `original`, with the
     /// set applied: from the cache when it holds the key, else built and
-    /// cached. `Ok(None)` when no package adds anything to it.
+    /// cached. `Ok(None)` when no package adds anything to it, as when every
+    /// package is refused for it (module docs).
     pub fn rebuild(&mut self, name: &str, original: &[u8]) -> Result<Option<Rebuilt>, String> {
         let name = name.to_ascii_lowercase();
         let map = Map::from_reader(Cursor::new(original)).map_err(|e| format!("not a map: {e}"))?;
         let scope = scope_of(map.header().cache_type);
         let target = Target { name: &name, scope };
-        let (applied, held) = applied_to(&self.packages, &self.built, &target, &map);
+        let (mut applied, held) = applied_to(&self.packages, &self.built, &target, &map);
         drop(map);
         let mut record = ServedMap {
             scope: scope.word().to_owned(),
-            packages: applied
-                .iter()
-                .map(|p| p.package.name().to_owned())
-                .collect(),
             held,
             ..ServedMap::default()
         };
@@ -324,8 +352,84 @@ impl PackageRewrite {
             return Ok(None);
         }
         let base = Sha256::of(original);
+        // What the map takes. A read that found packages off for it remembers
+        // them by the key over every package asked for. Otherwise the cache
+        // under that key is tried first: a map built with a package refused
+        // is keyed by what the map takes, so a hit there means the map takes
+        // them all. Else the build says.
+        let asked = cache_key(&base, &applied, &target);
+        let mut built = None;
+        let refused = match self.settled.get(&asked.to_string()).cloned() {
+            Some(refused) => refused,
+            None => match self.load(&base, &asked) {
+                Some((bytes, receipt, file)) => {
+                    record.key = asked.to_string();
+                    record.packages = applied
+                        .iter()
+                        .map(|p| p.package.name().to_owned())
+                        .collect();
+                    record.hits = 1;
+                    record.added = receipt.added;
+                    record.changed = receipt.changed;
+                    merge(&self.served, &name, record);
+                    return Ok(Some(Rebuilt {
+                        bytes,
+                        from_cache: true,
+                        file: Some(file),
+                    }));
+                }
+                None => match build_map_settled(
+                    original,
+                    &applied,
+                    &target,
+                    &self.strict,
+                    Some(&mut crate::assets::OfMap::of_map(original)),
+                ) {
+                    Ok(map) => {
+                        let refused = map.report.refused.clone();
+                        self.settled.insert(asked.to_string(), refused.clone());
+                        built = Some(map);
+                        refused
+                    }
+                    Err(why) => {
+                        record.error = Some(why.clone());
+                        merge(&self.served, &name, record);
+                        return Err(why);
+                    }
+                },
+            },
+        };
+        applied.retain(|p| !refused.iter().any(|r| r.package == p.package.name()));
+        record.packages = applied
+            .iter()
+            .map(|p| p.package.name().to_owned())
+            .collect();
+        record.refused = refused.clone();
+        if applied.is_empty() {
+            merge(&self.served, &name, record);
+            return Ok(None);
+        }
         let key = cache_key(&base, &applied, &target);
         record.key = key.to_string();
+        if let Some(built) = built {
+            let receipt = Receipt {
+                key,
+                map: Sha256::of(&built.bytes),
+                added: built.report.added.len(),
+                changed: built.report.changed.len(),
+                refused,
+            };
+            let file = self.store(&base, &key, &built.bytes, &receipt);
+            record.builds = 1;
+            record.added = receipt.added;
+            record.changed = receipt.changed;
+            merge(&self.served, &name, record);
+            return Ok(Some(Rebuilt {
+                bytes: built.bytes,
+                from_cache: false,
+                file,
+            }));
+        }
         if let Some((bytes, receipt, file)) = self.load(&base, &key) {
             record.hits = 1;
             record.added = receipt.added;
@@ -344,6 +448,7 @@ impl PackageRewrite {
                     map: Sha256::of(&bytes),
                     added: report.added.len(),
                     changed: report.changed.len(),
+                    refused: refused.clone(),
                 };
                 let file = self.store(&base, &key, &bytes, &receipt);
                 record.builds = 1;

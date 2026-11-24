@@ -203,7 +203,7 @@ fn walk(def: &StructDef, a: &Record, b: &Record, path: &str, out: &mut Lines) ->
             _ => {
                 if !same(x, y) {
                     let value = yaml_of(y).map_err(|why| format!("{p}: {why}"))?;
-                    out.sets.push(SetLine { path: p, value });
+                    out.sets.push(SetLine { path: p, from: None, value });
                 }
             }
         }

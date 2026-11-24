@@ -1,7 +1,7 @@
 # The asset store: levels assembled from shared assets
 
-Status: Design. The tag repository, the package build and the per-map rewrite it stands on are built ("What exists"), and so are slices AS1 to AS4: the skeleton and extent table, `h2 tags reassemble`, the store-backed map file behind `store-maps`, extraction on compile, and level images kept by `LevelId`, proven on invented maps; their disc runs are not done ("Not verified"). Mod patches and normal forms are not built. "Decisions" lists the owner's choices.
-Code: `crates/formats/tags/src/repo` (the store's files and extraction; `repo/skeleton.rs` the skeleton, the extent table and `StoreFile`; `repo/compile.rs` extraction on compile), `crates/apps/cli/src/store_prepare.rs` (the CLI's side of it), `crates/runtime/vfs/src/store_map.rs` (the map file served from the store), `crates/apps/boot/src/store_status.rs` (`store.status`), `crates/tools/workspace/src/level.rs` (level images), `crates/formats/content/src/id.rs` (`LevelId`), `crates/formats/content/src/package/` (packages and mods), `crates/apps/boot/src/packages.rs` (the game's side). Tests: each slice names its own.
+Status: Design. The tag repository, the package build and the per-map rewrite it stands on are built ("What exists"), and so are slices AS1 to AS4 and AS6: the skeleton and extent table, `h2 tags reassemble`, the store-backed map file behind `store-maps`, extraction on compile, level images kept by `LevelId`, and mod patches with the conflict table, proven on invented maps; the disc runs of AS1 to AS4 are not done ("Not verified"). The normal forms AS5 hashes with are `tags::repo::normal`, here for `was` and `replaces`. "Decisions" lists the owner's choices.
+Code: `crates/formats/tags/src/repo` (the store's files and extraction; `repo/skeleton.rs` the skeleton, the extent table and `StoreFile`; `repo/compile.rs` extraction on compile), `crates/apps/cli/src/store_prepare.rs` (the CLI's side of it), `crates/runtime/vfs/src/store_map.rs` (the map file served from the store), `crates/apps/boot/src/store_status.rs` (`store.status`), `crates/tools/workspace/src/level.rs` (level images), `crates/formats/content/src/id.rs` (`LevelId`), `crates/formats/content/src/package/` (packages and mods), `crates/tools/workspace/src/{build,edit,delta,onto,load,assets}.rs` (the conflict table, `from`, `replaces`, `tag-delta`, the store's bytes, the asset hashes a build checks against), `crates/apps/boot/src/packages.rs` (the game's side). Tests: each slice names its own.
 Switch: `store-maps` (`H2_FEATURES`, off until slice AS2 is accepted; [switches.md](../runtime/switches.md)).
 
 Every tag of every map on the user's discs is extracted once into one
@@ -36,6 +36,8 @@ Evidence labels are those of [docs-style.md](../meta/docs-style.md).
 | The disc's maps served from the store | `vfs::store_map::StoreMapBackend` under `store-maps`, `store.status` | built (AS2); no boot from the store yet |
 | The store kept current by `h2 build`, the pre-boot step and Studio | `tags::repo::compile::prepare`, `cli::store_prepare` | built (AS3); not run on the disc |
 | A layered level as an image kept by its `LevelId` | `workspace::level::{assemble, StoreLevels}`, `content::LevelId`, `StoreMapBackend::with_levels`, `<data>/store/images/` | built (AS4); not run on the disc |
+| Mod patches: a `set` line's `from`, `replaces`, the `tag-delta` item, the conflict table and a refused package off for one level with its reason | `workspace::{build_map_settled, delta, store_findings}`, `workspace::level::assemble_strict`, `content::package::Refusal`, `Report::refused`, `<data>/store/images/<cache key>.set` | built (AS6); on invented maps |
+| A file of a package that is a raw resource or a tag file of the user's own store | `workspace::store_findings`, `h2 package check --store <data>/tags` | built (AS6); Studio's `package.check` does not pass its store |
 
 What is missing: a boot that reads the executable, movies and fonts from
 `<data>/disc/` and the maps from the store with no disc image open (the
@@ -44,8 +46,11 @@ the store, so a retail level is its skeleton and cannot be rebuilt from
 tags; with `store-maps` off, packages still reach the game as
 whole-map caches; an asset's
 identity differs between maps for reasons that are not content (a
-sound's indices into its map's sound table); and a mod can only add tags
-or set fields.
+sound's indices into its map's sound table, until the catalogue is current on the machine); a whole-asset override
+(`replaces`) is built for `tag` items, and the `bitmap`, `model`, `sound`
+and `animation` builders refuse it; a delta is made on the tag as the
+build holds it, not on the normal form AS5 gives; the conflict rows are not
+in Studio's Problems (AS7).
 
 ## How it works
 
@@ -249,15 +254,22 @@ image from `workspace::level::assemble`:
    (`rewrite::applied_to`: a package whose added tags the level holds
    already is left out). With none, the level is its skeleton, as above,
    and its identity the retail `MapId`.
-2. If `<data>/store/images/` holds the level's `LevelId` ("Identity"),
+2. Settle them under the conflict table ("Conflicts"): every package the
+   level refuses is left out, whole, and the rest are the ones the level
+   takes. Which those are is learned by building once and kept as the
+   level's **settlement**, `<data>/store/images/<cache key>.set` (the key
+   is over the base file and every package with an item for the level), so
+   an open that finds it names the id without building. An image already
+   under the id of the whole set says none is refused.
+3. If `<data>/store/images/` holds the level's `LevelId` ("Identity"),
    use it.
-3. Otherwise run the built per-map build (`workspace::build_map_laid_out`,
-   the same path as `build_map`) on the map the store gives back: every
+4. Otherwise run the built per-map build (`workspace::build_map_settled`,
+   the same items as `build_map`) on the map the store gives back: every
    tag pinned (`TagSet::from_map`), the tags the layers change replaced,
    new tags added. The builder writes the header checksum over the whole
    file. A build over the tag memory bound is refused
    (`level::check_tag_memory`, below).
-4. Split the result (`level::split`): a range equal to one of the base's
+5. Split the result (`level::split`): a range equal to one of the base's
    extents at the same offset stays that extent and names the raw file
    the store has; a raw resource the build placed is stored in `raw/` by
    hash, once, and named the same way; every other byte is the image's
@@ -277,10 +289,16 @@ the VFS (`vfs::Config::store_levels`). `StoreMapBackend` asks it for each
 level as it is first opened and serves the image through `StoreFile`
 over the store's `raw/`, as it serves a retail level; a level whose image
 cannot be made is served as the store has it, with a line on stderr and
-the reason in `packages.list`. `PackageRewrite` is then
-`levels_from_store`: it rebuilds no map and still runs the kits and the
-observers. With `store-maps` off, `PackageRewrite` and its whole-map
-cache serve the set; they go when the store is the default.
+the reason in `packages.list`; a level with a package off for it is served
+as it takes it, each reason a line on stderr and in `packages.list`
+(`maps.<map>.refused`). The boot names its baked packages to
+`StoreLevels::strict`: one of them refused stops the level's build, as a
+failure does, where an installed package refused is left out.
+`PackageRewrite` is then `levels_from_store`: it rebuilds no map and still
+runs the kits and the observers. With `store-maps` off, `PackageRewrite`
+and its whole-map cache serve the set, a refused package off for the map
+with its reason in its record and the cached map keyed by what the map
+takes; they go when the store is the default.
 
 - **Load time.** A cached image costs nothing extra: the guest's copy
   into its slot paces the load, as it does for a disc map
@@ -341,18 +359,50 @@ the store has and **new assets**; it never holds disc bytes.
 
 | Part | Item | Names its target by | Holds |
 |---|---|---|---|
-| A field patch | `edits` (built) | key, and per line the field path with `from`, the value it replaces (new) | our values only |
+| A field patch | `edits` (built) | key, and per line the field path with `from`, the value it replaces (built) | our values only |
 | A structural patch | `edits` `block` lines (built) | key and `was`, the asset hash of the base | the entries added |
-| A whole-asset override | any tag-making item (`tag`, `model`, `bitmap`, `sound`, `animation`) with `replaces = "<asset hash>"` (new) | key and that hash | an authored source: YAML, PNG, WAV, glTF |
-| A delta | `tag-delta` (new) | key and `was` | a copy-and-insert delta against the base's normal form: the new bytes and ranges of the old, as a BPS patch holds |
+| A whole-asset override | a `tag` item with `replaces = "<asset hash>"` (built). The manifest lets a `model`, `bitmap`, `sound` or `animation` item carry one too; their builders refuse it by name | key and that hash | an authored source: YAML |
+| A delta | `tag-delta` (built) | key and `was` (optional) | a BPS patch from the base's image to the changed asset's: the new bytes and ranges of the old |
 | A new asset | `tag`, `model`, `bitmap`, `sound`, `animation`, `screens`, `hud`, `rules` (built) | a key no layer below has | the source |
 | A whole-level patch | `map-patch` (built) | the base map's SHA-256 | a PPF, IPS or BPS file |
 
-Naming a target by key and base hash is what lets a mod be shared: the
+Naming a target by key and asset hash is what lets a mod be shared: the
 file says which of the user's own assets it changes and holds only the
 change. `from` on a `set` line checks one field, so two mods that set
 different fields of one asset both apply, and a line applies to each
-map's variant of the asset in which the field has that value.
+map's variant of the asset in which the field has that value. The check
+is against the tag as the build first found it, so the later of two
+packages setting one field still applies over the earlier's line: its
+value is in the level and the override is listed. A `replaces` takes the
+asset at its key and leaves it the same tag (what names it still reaches
+it) with the authored content; `like` may name that asset, so an override
+is the asset with fields changed.
+
+**The asset hash** a `was` or `replaces` names is `tags::repo::normal::hash`
+over the tag's normal form, read for the level (a form depends on the
+map's tables: its sound gestalt, its low-detail region, the raw files a
+padded resource is cut by). A build asks `workspace::assets::OfMap`: the
+store's catalogue (`assets.idx`) answers for the base's own tags, and a
+base with no catalogue, or a tag a package wrote, is read from the map's
+bytes and given its form. The asset's hash as an override leaves it is in
+`Report::replaced`, for a later patch's `was`. A build given no assets
+(`h2 package build`, Studio's `package.build`) checks against a tag's own
+hash (`workspace::tag_hash`), as a build on an invented map does.
+
+**An image** (`workspace::delta::image`) is an asset as the build holds
+it, with nothing that depends on where it sits: its arrays in tree order,
+each its bytes and the fields the builder fills in, by what they name
+(tags by group and path, string IDs by text, raw resources by the hash of
+their bytes or by the cache and offset they sit at). A `tag-delta` item's
+source is a BPS patch (`content::patch::write::bps`) from the base's
+image to the changed asset's, so it holds the bytes the author changed and
+ranges of the user's own asset. `was` is checked as an `edits` entry's
+is; the patch's own source size and CRC32 must then match the image, so a
+patch made on other bytes is refused too, and an item without `was` stands
+on that check alone. The image the patch writes is read back with every
+length, index and alignment checked, names no raw resource the map does
+not hold, and gives the changed asset its own arrays (it keeps no sharing
+key).
 
 **Layering and order.** A level reads its assets through
 `workspace::Layered`, first hit wins, top first: the user's local
@@ -369,24 +419,38 @@ template) runs per level, cached by the hashes of what it read.
 **Per-map scope.** An item's `maps` (`"multiplayer"`, `"campaign"`,
 `"all"`, or names) is its scope. A mod that changes an asset for one
 map only is an item with that map's name: a fork. The asset is
-unchanged everywhere else.
+unchanged everywhere else: a fork moves its level's `LevelId` and no
+other's, and a mod refused on one level for a variant of the asset
+applies on the others.
 
-**Conflicts** (`workspace::level::assemble`, reported in
-`Report::overrides` and `Report::refused`):
+**Conflicts** (`workspace::level::assemble` over
+`workspace::build_map_settled`, reported in `Report::overrides` and
+`Report::refused`):
 
 | Case | Result |
 |---|---|
 | Two packages set different fields of one asset | both apply |
 | Two packages set the same field | the later package's value; the override is listed with both names |
-| A `from`, `was` or `replaces` that does not match what the store holds | the item is for other content (another pressing, a changed base): the package is off for that level with the reason |
+| A `from`, `was` or `replaces` that does not match what the store holds | the item is for other content (another pressing, a changed base): the package is off for that level with the reason, which names the key and both hashes |
 | A package patches an asset an earlier package overrides whole | applies only when the patch's `was` names the override's hash and the package `requires` the other; otherwise the later package is off, naming both |
 | Two packages override the same asset whole, or add the same key | the later package is off, naming both |
 | A patch whose key is missing | off, with the key |
+| A package that `requires` one off for the level | off too, naming what it requires |
+| A whole override follows a patch of the same asset | the override takes the asset; each field the earlier package set is listed as overridden |
 
-A package is never loaded in part: one refused item puts the whole
-package off for the level, with a line in `packages.list` and Problems.
-A first-party package (`content/`) that refuses stops the build
-instead, as `h2 package check` does.
+A refusal is an item's, and it is the package's: one refused item puts
+the whole package off for the level, and nothing of it applies, down to
+an item that ran before the refused one (the map is built again without
+the package). The reason is a line on stderr and in `packages.list`
+(`maps.<map>.refused`); the conflict rows in Problems are AS7. A refused
+package moves neither the level's `LevelId` nor its image: both are over
+the packages the level takes, so a peer without the mod holds the same
+level. A first-party package (`content/`) that refuses stops the level's
+build instead, as a failure does, and every refusal stops `h2 package
+build` and Studio's `package.build` with the item's line. `h2 package
+check` names without a map what two packages settle between themselves:
+two that override one asset whole, or add one tag path, for maps that can
+meet.
 
 **Enable and disable.** `set.toml` holds what is off and the order
 (`package.enable`, `package.order`). The store is not touched by any
@@ -401,9 +465,12 @@ document (built). New for mods:
   the assets added, overridden and forked, and the levels touched;
 - the inspector's **Changed by** row names every package with a patch
   on the asset in front, in order, with the winning value;
-- `package.check` runs the conflict table against the set and refuses a
-  file whose SHA-256 is a raw resource or a tag file of the store, so
-  the user's own store is the retail list on their machine;
+- `package.check` refuses a file whose SHA-256 is a raw resource or a tag
+  file of the store, so the user's own store is the retail list on their
+  machine (`workspace::store_findings`, built; `h2 package check --store
+  <data>/tags` runs it, and Studio's `package.check` passes its store in
+  AS7), and names two packages that override one asset whole for maps that
+  can meet (built);
 - `asset.fork {tag, map}` and `asset.revert {tag, map?}` add and remove
   scoped items in the edit target;
 - **Import mod...** (`package.import`) turns a patched map into a
@@ -496,8 +563,9 @@ is **S**, slice AS8's test). A level with nothing over it also has a
 |---|---|---|
 | `h2 build`, `h2 play`, `h2 run`, `h2 serve`, Studio | `tags::repo::compile::prepare` (the plan and `extract::update`; `store::catalogue::write` with AS5) | the stamps, the plan, the extraction |
 | The VFS | `vfs::store_map::StoreMapBackend` over `StoreFile::{len, read_at}` | a level's bytes from an image or a skeleton and the raw files |
-| `StoreLevels` (the VFS's, at a level's first open); Studio's `package.build` (later) | `workspace::level::assemble(store, images, packages, level) -> Level {id, map_id, image, packages, held, report}` | the image for a level under a set |
+| `StoreLevels` (the VFS's, at a level's first open); Studio's `package.build` (later) | `workspace::level::assemble(store, images, packages, level) -> Level {id, map_id, image, packages, held, refused, report}`; `assemble_strict(.., strict)` | the image for a level under a set |
 | The game's agent API | `packages.list`, `store.status` (built): the store's path, whether its maps are served, each map's length, SHA-256, skeleton size and extents, what is stale, and the level images | read |
+| `h2 package check --store <data>/tags` | `workspace::{check_package, check_set, store_findings}` | what is wrong with a package before any map is built, and a file that is the store's |
 | Studio's API | `workspace.status`, `workspace.extract`, `workspace.prune` (built); `asset.fork`, `asset.revert`, `package.diff`, `package.import` (new) | above |
 | `h2 tags` | `extract --update`, `reassemble MAP --out FILE`, `reassemble --all [--compare DISC]` (built), `level <map> [--set FILE]` (new) | the coordinator's and CI's entry |
 
@@ -508,8 +576,10 @@ is **S**, slice AS8's test). A level with nothing over it also has a
   or count of the store's contents is committed.
 - The store is written by the extractor only. A change is always an
   item of a package.
-- A package holds no disc bytes: `package.check` and Live's upload both
-  refuse a blob whose hash is retail.
+- A package holds no disc bytes: `h2 package check --store <data>/tags`
+  refuses a file whose SHA-256 is a raw resource or a tag file of the
+  user's own store, and Live's upload refuses a blob on the operator's
+  retail list ([maps.md](../game/maps.md), section 5).
 - A level with nothing over it is the disc's bytes. Anything else has
   an image, and a level never mixes the two.
 - A refused package is off whole, with its reason. Nothing is applied
@@ -588,10 +658,10 @@ them. Tests are headless on invented maps unless marked disc
 | AS14 (later) | **Retail levels built whole.** With W10, a retail level assembles `fresh` and its skeleton is dropped | W10 | as W10 | as W10 | a retail level with no skeleton loads |
 | AS15 (later, **E first**) | **No slot copy.** The guest's slot answered as warm and its reads routed to the store file | AS2; a read of the status and resource-read functions | `crates/extensions/game/src/map_copy.rs` | the kernel cache-slot test with the route on | a level load copies nothing and `<data>/disk/` shrinks |
 
-AS1 to AS4 are built; their disc checks are the coordinator's
-(above). AS4's build reads the level whole and builds at first open, and
-`PackageRewrite` with `<data>/packages/cache/` stays for `store-maps`
-off.
+AS1 to AS4 and AS6 are built; the disc checks of AS1 to AS4 are the
+coordinator's (above). AS4's build reads the level whole and builds at
+first open, and `PackageRewrite` with `<data>/packages/cache/` stays for
+`store-maps` off.
 AS1, AS3 and AS5 run together; AS2 follows AS1; AS4 follows AS2; AS6,
 AS8, AS10, AS11, AS12 and AS13 follow AS4 side by side.
 
@@ -666,7 +736,20 @@ AS8, AS10, AS11, AS12 and AS13 follow AS4 side by side.
   (**Test**, `crates/formats/content/src/id.rs`,
   `crates/tools/workspace/src/level_tests.rs`,
   `crates/runtime/vfs/tests/store_map.rs`).
-- The conflict table, `from`, `replaces` and `tag-delta` are **Design**.
+- Two invented mods on one weapon's different fields both show in the
+  assembled level; a `from` applies where the field holds its value and
+  turns its package off for a level whose variant holds another; a fork
+  moves its level's `LevelId` and no other's; a refused package moves
+  neither a level's `LevelId` nor its image, and its settlement keeps the
+  next open from building; one test per row of the conflict table, with a
+  package that requires one off for the level off too and named, and a
+  refusal of ours stopping the build; a delta applied to its base gives
+  the changed tag and is refused on another base or when its patch was
+  made on other bytes; a package holding a store blob is refused by file
+  name (**Test**, `crates/tools/workspace/src/mod_tests.rs`,
+  `delta.rs`, `rewrite_tests.rs`,
+  `crates/formats/content/src/package/tests.rs`,
+  `crates/apps/h2-tools/src/package_cmd.rs`).
 
 ## Not verified
 
@@ -690,6 +773,20 @@ AS8, AS10, AS11, AS12 and AS13 follow AS4 side by side.
 - That a re-extraction under a better layout leaves every installed
   mod's `was`, `from` and `replaces` matching, since the asset hash is
   over a normal form that a layout change can move.
+- That an image a delta is made on (`workspace::delta::image`: the asset
+  as the build holds it) is the normal form AS5 hashes. Until it is, a
+  delta made on one map's variant of an asset with a per-map coupling (a
+  sound, a bitmap) is refused on another's.
+- That the catalogue and the map's own bytes give one asset hash beyond
+  the invented map's (`workspace::assets`).
+- That an asset's hash as an override leaves it (`Report::replaced`) is
+  what AS9's importer computes for the same content, so a patch over an
+  override written there is taken.
+- `replaces` on `bitmap`, `model`, `sound` and `animation` items: the
+  manifest takes it and their builders refuse it by name.
+- That a mod's patch reaches the game on a running level under
+  `store-maps`, and that a refused mod is off where a player expects to
+  see the reason.
 - That a film recorded on an assembled level seeks and verifies as one
   recorded on a disc map does.
 

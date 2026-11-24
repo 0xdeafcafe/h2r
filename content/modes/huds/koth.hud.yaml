@@ -15,6 +15,12 @@ elements:
     justify: start
     longest: "Held 99:59"
     at: {anchor: bottom-left, full: [101, -26]}
+  - id: koth.phase
+    kind: text
+    font: hud
+    justify: start
+    longest: "Phase 99:59"
+    at: {anchor: bottom-left, full: [101, -68]}
   - id: koth.mark
     kind: navpoint
     longest: "999"

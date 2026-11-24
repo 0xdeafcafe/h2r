@@ -2,7 +2,8 @@
 //! pick a cluster or instanced definition, open it in edit mode, select
 //! and move its vertices with undo, and add a collision box to its
 //! structure's level collision. Every button is an `Action::Model`, the
-//! same command `geometry.*` and `mesh.*` run.
+//! same command `geometry.*` and `mesh.*` run, but Undo and Redo, which
+//! take the map document's stack like every editor (`Action::UndoDoc`).
 
 use dear_imgui_rs::{TreeNodeFlags, Ui};
 use geometry_edit::{TargetInfo, TargetKind};
@@ -10,6 +11,7 @@ use geometry_edit::mesh_edit::{MeshOp, SelectMode};
 
 use crate::App;
 use crate::app::Action;
+use crate::app::Doc;
 use crate::app::modeling::ModelAction;
 use crate::theme;
 
@@ -181,13 +183,21 @@ pub fn section(ui: &Ui, app: &mut App, st: &mut ModelingPanel, actions: &mut Vec
         actions.push(apply(vec![MeshOp::TrisToQuads { angle: st.quad_angle }]));
     }
     ui.separator();
+    // The map document's own stack, as Cmd+Z takes it in edit mode: every
+    // editor's steps are steps of its document (docs/editor/studio-flow.md,
+    // "Shared patterns").
+    let (can_undo, can_redo) = app.doc_can(Doc::Map);
+    let off = ui.begin_disabled_with_cond(!can_undo);
     if ui.button("Undo##modeling-undo") {
-        actions.push(Action::Model(ModelAction::Undo));
+        actions.push(Action::UndoDoc(Doc::Map));
     }
+    drop(off);
     ui.same_line();
+    let off = ui.begin_disabled_with_cond(!can_redo);
     if ui.button("Redo##modeling-redo") {
-        actions.push(Action::Model(ModelAction::Redo));
+        actions.push(Action::RedoDoc(Doc::Map));
     }
+    drop(off);
     for c in g.check(Some(t)) {
         ui.text(format!(
             "{} moved, {} faces' lightmaps stale: {}",

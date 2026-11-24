@@ -40,7 +40,8 @@
 //!   `close`, `read`, `check` and `mesh.mode`, `select`, `transform`,
 //!   `ops`, `apply` through `Action::Model` ([`super::geometry`]).
 //! - **Textures** (the open map's bitmaps): `bitmap.list`, `read`,
-//!   `export`, `import`, `paint`, `fill`, `adjust`, `pixels` through
+//!   `export`, `import`, `paint` (a clone stamp with `source`), `fill`,
+//!   `adjust`, `channel_copy`, `turn`, `pixels` through
 //!   `Action::Bitmap` ([`super::bitmaps`]).
 //! - **Image generation**: `image.generate`, `image.result`,
 //!   `image.apply`, `image.accept` and `image.discard` over the app's jobs

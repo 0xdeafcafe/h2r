@@ -334,12 +334,14 @@ mod tests {
         let ours = vec![
             ("koth.hill".into(), row("Hill: Yours")),
             ("koth.time".into(), row("Held 0:41")),
+            ("koth.phase".into(), None),
             ("koth.mark".into(), row("120")),
             ("koth.banner".into(), row("HILL MOVED")),
         ];
         let theirs = vec![
             ("koth.hill".into(), row("Hill: Held by the enemy")),
             ("koth.time".into(), row("Held 0:41")),
+            ("koth.phase".into(), None),
             ("koth.mark".into(), row("120")),
             ("koth.banner".into(), row("HILL MOVED")),
         ];

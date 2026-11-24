@@ -84,7 +84,16 @@ fn can(app: &App, t: ToolKind) -> (bool, bool) {
             .as_ref()
             .map_or((false, false), |e| (e.can_undo(), e.can_redo())),
         ToolKind::Playlists => (app.hoppers.can_undo(), app.hoppers.can_redo()),
-        ToolKind::UiScreens | ToolKind::Scripts => (false, false),
+        ToolKind::UiScreens => (false, false),
+        // The compiles into the map's scripts are the Scripts surface's stack.
+        ToolKind::Scripts => app
+            .scripts
+            .edit
+            .as_ref()
+            .map_or((false, false), |d| {
+                let (undo, redo) = d.depth();
+                (undo > 0, redo > 0)
+            }),
         ToolKind::Tags => (app.tags.can_undo(), app.tags.can_redo()),
         ToolKind::Textures => (app.textures.can_undo(), app.textures.can_redo()),
         ToolKind::Hud => app

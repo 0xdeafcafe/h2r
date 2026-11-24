@@ -35,6 +35,11 @@ pub const MAX_HELD_ZONES: usize = 32;
 pub const MAX_SHOWN_AREAS: usize = 8;
 /// Movers (`move_to`) running at once.
 pub const MAX_MOVERS: usize = 16;
+/// Barriers (`set_open`) open at once.
+pub const MAX_GATES: usize = 16;
+/// How far below its closed place an open barrier stands, in 16.16 world
+/// units: far enough that nothing it blocks is on it.
+pub const GATE_DROP: i32 = 64 << 16;
 /// Pairs of objects the sight table (`sees`) keeps at once.
 pub const MAX_SIGHT_PAIRS: usize = 32;
 /// A sight pair nobody asked for in this many ticks is dropped.
@@ -245,6 +250,8 @@ pub enum ErrorKind {
     /// More than [`MAX_SIGHT_PAIRS`] pairs asked to `sees` within
     /// [`SIGHT_KEEP`] ticks.
     Sight,
+    /// More than [`MAX_GATES`] barriers open at once (`set_open`).
+    Gates,
 }
 
 impl ErrorKind {
@@ -265,6 +272,7 @@ impl ErrorKind {
             8 => ErrorKind::Hud,
             9 => ErrorKind::Movers,
             10 => ErrorKind::Sight,
+            11 => ErrorKind::Gates,
             _ => return None,
         })
     }
@@ -351,6 +359,24 @@ pub struct RulesExt {
     /// asking ended with; the state carries it so every machine, a
     /// checkpoint and a film's keyframe read the same.
     pub sight: Vec<Sight>,
+    /// The barriers a script holds open (`set_open`), in the order opened,
+    /// each with the place it closes back to, at most [`MAX_GATES`].
+    pub gates: Vec<Gate>,
+}
+
+/// One open barrier: the object and where it stands when closed, 16.16
+/// world units.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Gate {
+    pub object: u32,
+    pub home: [i32; 3],
+}
+
+impl Gate {
+    /// Where the barrier stands while open.
+    pub fn open_at(&self) -> [i32; 3] {
+        [self.home[0], self.home[1], self.home[2].saturating_sub(GATE_DROP)]
+    }
 }
 
 /// One pair of the sight table.
@@ -449,8 +475,8 @@ pub enum StateError {
 const STATE_MAGIC: [u8; 4] = *b"H2RX";
 /// 2 added the `ticks_held` counters; 3 the teams' spawn rules and
 /// bodies; 4 the script role mask and the shown areas; 5 the show state;
-/// 6 the movers; 7 the sight table.
-const STATE_VERSION: u8 = 7;
+/// 6 the movers; 7 the sight table; 8 the open barriers.
+const STATE_VERSION: u8 = 8;
 
 impl RulesExt {
     /// Whether `player` holds `cap` (an index into `requires`) with uses
@@ -588,6 +614,11 @@ impl RulesExt {
             w.extend_from_slice(&t.to.to_le_bytes());
             w.extend_from_slice(&t.asked.to_le_bytes());
             w.push(t.clear as u8);
+        }
+        w.push(self.gates.len() as u8);
+        for g in &self.gates {
+            w.extend_from_slice(&g.object.to_le_bytes());
+            i32s(&mut w, &g.home);
         }
         w
     }
@@ -793,6 +824,21 @@ impl RulesExt {
             }
             sight.push(Sight { from, to, asked, clear });
         }
+        let at = r.at;
+        let n = r.u8()? as usize;
+        if n > MAX_GATES {
+            return Err(StateError::Malformed(at));
+        }
+        let mut gates: Vec<Gate> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let at = r.at;
+            let object = r.u32()?;
+            let home = [r.i32()?, r.i32()?, r.i32()?];
+            if object_id(object as i32).is_none() || gates.iter().any(|g| g.object == object) {
+                return Err(StateError::Malformed(at));
+            }
+            gates.push(Gate { object, home });
+        }
         if r.at != bytes.len() {
             return Err(StateError::Malformed(r.at));
         }
@@ -816,6 +862,7 @@ impl RulesExt {
             show,
             movers,
             sight,
+            gates,
         })
     }
 }
@@ -977,6 +1024,7 @@ impl Vm {
             show: crate::show::State::default(),
             movers: Vec::new(),
             sight: Vec::new(),
+            gates: Vec::new(),
         };
         Ok(Vm {
             role_traits: role_traits(&ir, options),
@@ -1014,6 +1062,7 @@ impl Vm {
                 .all(|w| w.text.is_none_or(|t| (t as usize) < ir.strings.len()))
             && ext.movers.len() <= MAX_MOVERS
             && ext.sight.len() <= MAX_SIGHT_PAIRS
+            && ext.gates.len() <= MAX_GATES
             && ext.spawns.iter().all(|r| match r {
                 Some(Spawns::Areas { label, .. }) => (*label as usize) < ir.labels.len(),
                 _ => true,
@@ -1120,7 +1169,7 @@ impl Vm {
         }
         let event = input.event();
         let Some(hi) = self.handler(event, None) else {
-            self.after(&input);
+            self.after(game, &input);
             return Fired::NoHandler;
         };
         if matches!(event, Event::Enter | Event::Leave) {
@@ -1131,7 +1180,7 @@ impl Vm {
         }
         let args = self.args(&input);
         let fired = self.run(game, hi, &args);
-        self.after(&input);
+        self.after(game, &input);
         fired
     }
 
@@ -1374,8 +1423,8 @@ impl Vm {
 
     /// Grants end at the player's quit and at the round's end; the
     /// `ticks_held` counters, the spawn rules, the bodies and the shown
-    /// areas end at the round's end.
-    fn after(&mut self, input: &Input) {
+    /// areas end at the round's end, and each open barrier closes.
+    fn after(&mut self, game: &mut dyn Game, input: &Input) {
         match *input {
             Input::Quit(p) => {
                 self.ext.grants.retain(|g| g.player != p);
@@ -1393,6 +1442,10 @@ impl Vm {
                 self.ext.show = crate::show::State::default();
                 self.ext.movers.clear();
                 self.ext.sight.clear();
+                // Every barrier still open stands where it closed.
+                for gate in std::mem::take(&mut self.ext.gates) {
+                    game.step_object(gate.object, gate.home, [0; 3]);
+                }
             }
             _ => {}
         }
@@ -1413,6 +1466,11 @@ impl Vm {
     /// The movers running (`move_to`), in the order started.
     pub fn movers(&self) -> &[Mover] {
         &self.ext.movers
+    }
+
+    /// The barriers held open (`set_open`), in the order opened.
+    pub fn gates(&self) -> &[Gate] {
+        &self.ext.gates
     }
 
     /// The sight table (`sees`), in the order its pairs were first asked.
@@ -1955,6 +2013,7 @@ impl<'a> Run<'a> {
                 match e.order {
                     Order::Now => {
                         self.mover(game, e.id, &raw)?;
+                        self.gate(game, e.id, &raw)?;
                         self.stand(e.id, &raw)?;
                         let mut call = self.resolve(e, &raw);
                         if caps::is_message(e.id) {
@@ -2016,6 +2075,44 @@ impl<'a> Run<'a> {
                 if let Some(object) = object_id(object) {
                     self.ext.movers.retain(|m| m.object != object);
                 }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// `set_open`: opening a closed barrier notes where it stands (as the
+    /// game reads it now) and steps it [`GATE_DROP`] below; closing an open
+    /// one steps it back to the noted place and forgets it. A barrier
+    /// already in the state asked for, and `none`, do nothing; a
+    /// seventeenth open barrier is a script error. The steps are the
+    /// host's put at the tick boundary, as a `teleport`'s.
+    fn gate(&mut self, game: &mut dyn Game, entry: u16, raw: &[i32]) -> Result<(), ErrorKind> {
+        let (caps::id::SET_OPEN, &[object, open]) = (entry, raw) else {
+            return Ok(());
+        };
+        let Some(object) = object_id(object) else {
+            return Ok(());
+        };
+        let held = self.ext.gates.iter().position(|g| g.object == object);
+        match (open != 0, held) {
+            (true, None) => {
+                if self.ext.gates.len() >= MAX_GATES {
+                    return Err(ErrorKind::Gates);
+                }
+                let home = [0, 1, 2].map(|axis| {
+                    game.read(&Call {
+                        entry: &caps::ENTRIES[caps::id::OBJECT_POS as usize],
+                        args: vec![Arg::Object(Some(object)), Arg::Int(axis)],
+                    })
+                });
+                let gate = Gate { object, home };
+                game.step_object(object, gate.open_at(), [0; 3]);
+                self.ext.gates.push(gate);
+            }
+            (false, Some(i)) => {
+                let gate = self.ext.gates.remove(i);
+                game.step_object(object, gate.home, [0; 3]);
             }
             _ => {}
         }
@@ -2346,6 +2443,7 @@ mod tests {
                 Sight { from: 0x4001_0001, to: 0x4001_0002, asked: 40, clear: true },
                 Sight { from: 0x4001_0002, to: 0x4001_0001, asked: 41, clear: false },
             ],
+            gates: vec![Gate { object: 0x4001_0003, home: [65_536, -2, 3] }],
         }
     }
 
@@ -2396,7 +2494,8 @@ mod tests {
             + (1 + 2 * (4 + 1))
             + (1 + e.show.encode().len())
             + (1 + 36 * e.movers.len())
-            + (1 + 13 * e.sight.len());
+            + (1 + 13 * e.sight.len())
+            + (1 + 16 * e.gates.len());
         let rules = (1 + 2 + 4) + (MAX_TEAMS - 2) + (1 + 4 + 1);
         let first = bytes.len() - held - MAX_TEAMS - rules;
         assert_eq!(bytes[first], 1, "team 0 has an Areas rule");
@@ -2666,6 +2765,7 @@ mod tests {
             sight: (0..MAX_SIGHT_PAIRS as u32)
                 .map(|o| Sight { from: o, to: o + 1, asked: u32::MAX, clear: true })
                 .collect(),
+            gates: (0..MAX_GATES as u32).map(|o| Gate { object: o, home: [i32::MIN; 3] }).collect(),
         };
         let bytes = e.encode();
         assert!(bytes.len() <= MAX_STATE_BYTES, "{} bytes", bytes.len());

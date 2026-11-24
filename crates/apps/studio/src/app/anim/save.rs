@@ -183,6 +183,8 @@ fn persist(
         source: Some(source.to_owned()),
         tag: Some(authored.graph.clone()),
         maps,
+        replaces: None,
+        was: None,
     };
     let mut found = None;
     let conflict = || Refused(format!("{source} is already used by another package item"));

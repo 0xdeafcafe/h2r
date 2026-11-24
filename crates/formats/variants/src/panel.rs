@@ -499,7 +499,7 @@ impl VariantEditor {
     /// ([`portable::Bundle::with_maps`]; at most [`portable::MAX_MAPS`]).
     /// With none it is [`Self::export_current`]'s version-1 text, so a
     /// variant that suggests nothing exports as it did. A record that names
-    /// the engine's built-in script carries it
+    /// a built-in script carries it
     /// ([`portable::builtin_attach`]); one that names another is refused by
     /// name ([`portable::Bundle::new`]). `None` when no variant is open.
     pub fn export_current_with(
@@ -998,6 +998,33 @@ mod tests {
         // The same map variant twice is refused by name, nothing written.
         let twice = e.export_current_with(vec![suggestion(2, "A"), suggestion(2, "B")]).unwrap();
         assert!(matches!(twice, Err(EditError::Import(PortableError::MapSuggestion(_)))));
+    }
+
+    #[test]
+    fn a_new_variant_on_the_script_index_exports_with_maps_and_carries_its_built_in() {
+        let castle = portable::MapSuggestion {
+            base: format!("{:064x}", 1),
+            variant: format!("{:064x}", 2),
+            name: "Castle".into(),
+        };
+        let mut e = VariantEditor::new(schema(), None);
+        e.new_variant(GameType::Slayer);
+        // Slayer's built-in writes nothing in Slayer's type area, so its
+        // record rides the script index: no engine names the script by.
+        assert_eq!(e.current().unwrap().game_type(), GameType::Script);
+        let text = e
+            .export_current_with(vec![castle.clone()])
+            .expect("a variant is open")
+            .expect("the export carries the built-in");
+        let b = portable::read(&text).unwrap();
+        assert_eq!(b.maps, [castle]);
+        assert_eq!(b.engine, crate::record::SCRIPT_INDEX);
+        assert_eq!(
+            b.script.as_ref().map(|s| s.name.as_str()),
+            Some("Slayer"),
+            "the file carries the script the record names"
+        );
+        assert!(b.integrity().unwrap().script.is_some());
     }
 
     #[test]

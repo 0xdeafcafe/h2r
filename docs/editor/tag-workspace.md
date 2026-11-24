@@ -124,7 +124,9 @@ of the tag:
 # assets/tag-edits/<name>.yaml (ours, in Git) or <data>/workspace/edits/ (the user's)
 - tag: <group>:<path>
   was: <content hash of the tag the edit was made on>   # local files only
-  set:   [{path: "barrels[0].rounds_per_second.upper", value: 12.0}]
+  set:
+    - {path: "barrels[0].rounds_per_second.upper", value: 12.0}
+    - {path: rounds_per_second, from: 8.0, value: 10.0}   # a mod's line: the value it replaces
   block: [{path: "magazines", op: add, like: 0}]
 ```
 
@@ -132,7 +134,12 @@ of the tag:
 field paths as `tag.set` (`tags::defs`, `tags::schema`). An edit whose
 path no longer resolves, or whose `was` no longer matches after a
 re-extraction, is reported with the tag and line and the build stops:
-no edit is dropped quietly. Files in Git hold our own numbers and names
+no edit is dropped quietly. A line's `from` is checked against the tag
+as the build first found it, so two mods that set different fields of one
+asset both apply and the later of two that set one field wins; a `from`
+that the field does not hold is for other content, and in the game's
+build it turns the package off for that map with its reason
+([asset-store.md](../engine/asset-store.md), "Mods and packages"). Files in Git hold our own numbers and names
 only, as `content/ui/retail-edits/` does for screens
 ([ui-in-maps.md](../game/ui-in-maps.md), "Retail edits as data").
 

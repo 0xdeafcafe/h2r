@@ -1,4 +1,6 @@
-//! The Go to anything popup. Search and actions live in the App.
+//! The Go to anything popup. Search and actions live in the App; the
+//! asset rows are read once per query and kept here
+//! ([`commands::palette_assets`]), the rest is rebuilt every frame.
 use dear_imgui_rs::{Key, ListClipper, Ui, WindowFlags};
 
 use crate::app::commands::{self, Kind, PALETTE_LIMIT};
@@ -12,6 +14,9 @@ pub(super) struct PaletteUi {
     opening: bool,
     query: String,
     selected: usize,
+    /// The asset rows for `query`, kept until the query changes: reading
+    /// them walks the tags tree and the package set.
+    assets: Option<(String, commands::Palette)>,
 }
 
 impl PaletteUi {
@@ -28,6 +33,7 @@ impl PaletteUi {
         if opening {
             self.query.clear();
             self.selected = 0;
+            self.assets = None;
             ui.open_popup(POPUP);
         }
         // ImGui centres new modal popups in the main viewport.
@@ -51,9 +57,22 @@ impl PaletteUi {
         ui.set_next_item_width(width);
         let changed = ui
             .input_text("##palette-query", &mut self.query)
-            .hint("Search maps, tags, placements and commands")
+            .hint("Search maps, tags, packages, items, placements and commands")
             .build();
-        let results = commands::palette(app, &self.query);
+        // The asset rows are read once per query; the rest is
+        // state-dependent and rebuilt every frame.
+        let assets = match self.assets.take() {
+            Some((q, rows)) if q == self.query => {
+                self.assets = Some((q, rows.clone()));
+                rows
+            }
+            _ => {
+                let rows = commands::palette_assets(app, &self.query);
+                self.assets = Some((self.query.clone(), rows.clone()));
+                rows
+            }
+        };
+        let results = commands::palette_with(app, &self.query, &assets);
         let last = results.entries.len().saturating_sub(1);
         let previous = self.selected;
         if changed {

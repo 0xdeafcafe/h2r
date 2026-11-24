@@ -1471,12 +1471,29 @@ the draws recorded (`batches`) and the items dropped, by reason
 (`refused_material`, `refused_clip`, `refused_glyph`, `refused_texture`,
 `refused_model_view`, `refused_blur`;
 [retire-d3d.md](../graphics/retire-d3d.md#what-replaces-each-subsystem)).
-The HUD's own (`hud_*`) are the HUD draws the overlay drew (`hud_claimed`),
-the game's widget quads it left out (`hud_quads_skipped`), claims whose
-left-out quads were not the items drawn (`hud_mismatch`), and the HUD draws
-left to the game's quads by their first reason (`hud_refused_shader`,
-`_text`, `_effects`, `_anchor`, `_unlisted`, `_frame`, `_loading`, `_pass`;
-[native-post-hud.md](../graphics/native-post-hud.md#the-hud-on-the-overlay)).
+The HUD counters measure reservations of bitmap quads (`hud_tag_quads`)
+and glyph quads (`hud_text_quads`), with `hud_tag_fallback` and
+`hud_text_fallback` for declined submissions. `hud_tag_recorded` counts
+display-copy recordings for both kinds and `hud_tag_record_failed` counts
+failed attempts per target copy, for every draw the overlay captures.
+See [the HUD on the overlay](../graphics/native-post-hud.md#the-hud-on-the-overlay).
+Menu shader bitmaps' quads count as `menu_shader_quads`, with
+`menu_shader_fallback` for those the UI fan path kept. The fade's, the
+bars' and the loading screen's draws count as `fade_quads`, `bar_quads`
+and `loading_quads`, with `screen_fallback` for those the UI fan path kept
+([the fade, the bars and the loading screen](../graphics/native-post-hud.md#the-fade-the-bars-and-the-loading-screen)).
+The menus' (`menu_*`) are the widget draws claimed at their sorted list
+(`menu_claimed`), those left out (`menu_skipped`), the passes placed for
+runs with items (`menu_passes`), lists whose left-out draws did not match
+(`menu_mismatch`), lists the game draws whole (`menu_refused_frame`,
+`_mismatched`), drawn bitmap widgets the game keeps (a meter,
+`menu_refused_bitmap_meter`; a scrolling bitmap, `_bitmap_scroll`; any
+other state the overlay does not draw as the game does, `_bitmap_state`),
+other drawn widgets the game keeps by the draw not read
+(`menu_refused_text`, `_model`, `_draw`, `_unreadable`,
+`_unlisted`), and lists or runs whose pass was not placed
+(`menu_refused_pass`;
+[native-post-hud.md](../graphics/native-post-hud.md#the-menus-on-the-overlay)).
 The object-shadow list, row gather and caster each count calls to their own
 entry ([native-light-gather.md](../graphics/native-light-gather.md), L7).
 `counters` is `null` where the frame-stats window is not running.
@@ -5668,9 +5685,13 @@ game read got from them ([studio-redesign.md](../editor/studio-redesign.md),
   packages on with a `sim` item), or `null` when the set did not order.
 - `local_only`: why a Live or System Link session would be refused with
   this set (an unsigned package with a `sim` item, named), or `null`.
-- `maps`: by map name, each map the rewrite was asked for: `scope` (its
+- `maps`: by map name, each map the rewrite was asked for (or, with
+  `store-maps`, each level opened from the store): `scope` (its
   header's class), `packages` applied in order, `held` (packages whose
-  tags the map has already, left out), `key` (the cache key; with
+  tags the map has already, left out), `refused` when packages are off
+  for this map (each `package` and `why`: a `from`, `was` or `replaces`
+  that does not match what the map holds, a clash with an earlier
+  package, or a `requires` that is off), `key` (the cache key; with
   `store-maps`, the level's `LevelId`, empty for a level with nothing
   over it), `hits` and `builds`, `added` and `changed` tag counts, and
   `error` when the map was served without its packages.

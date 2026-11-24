@@ -193,6 +193,15 @@ World placement transforms are initialized once at map load.
 | `v<V>_<C>_recorded`, `v<V>_<C>_ranges` | Ranges the stage recorded on this copy, including discarded attempts, and ranges committed. |
 | `v<V>_invariants`, `v<V>_<C>_invariants`, `v<V>_<C>_refused` | Range-count mismatches across copies, mismatches on this copy, and transactions refused by this copy. Each stage/view/copy mismatch logs once. |
 
+`native_shader_animation_{layers,objects,layer3}_{drawn,refused}` count
+material passes with animated constants
+([shader-instances.md](../formats/shader-instances.md#animated-constants))
+per path: the structure layer planner's items, the object passes' draws
+(layer 3 and the world layers) and the world layer-3 selection's
+materials. `drawn` counts passes planned with their registers sampled at
+the render clock; `refused` counts those the sampler refused, which stay
+on the D3D path.
+
 The frame-wide `command_buffers` counter counts every command buffer the
 wgpu backend hands to `queue.submit`, next to `submits` and `passes`.
 `ordered_writes` counts packet runs whose persistent rows (the world's
