@@ -13,12 +13,14 @@ use visible::VISIBLE_BYTES;
 pub mod call {
     pub const ELIGIBLE: u32 = 0x0003_d7f0;
     pub const LOCAL_OWNER: u32 = 0x0003_e9c0;
+    pub const MERGE: u32 = 0x0004_a7c0;
     pub const RANK: u32 = 0x0004_ac30;
 }
 
 pub mod site {
     pub const ELIGIBLE: u32 = 0x0003_348b;
     pub const LOCAL_OWNER: u32 = 0x0003_355b;
+    pub const MERGE: u32 = 0x0003_35a0;
     pub const RANK: u32 = 0x0003_35b2;
 }
 
@@ -26,6 +28,8 @@ pub mod site {
 pub const FRAME: u32 = 0x2c;
 const FADE: u32 = 0x14;
 const KIND: u32 = 0x1d;
+const HISTORY_FRAME: u32 = 0x24;
+const OUTPUT_BYTES: usize = VISIBLE_BYTES * history::ROWS;
 const VIEW_INDEX: u32 = 0x004b_9ed4;
 const RENDER_FRAME: u32 = 0x004b_a034;
 const OVERRIDE: u32 = 0x0051_0c50;
@@ -40,7 +44,6 @@ pub struct Plan {
     output: u32,
     count: u32,
     view: u32,
-    history: History,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,6 +56,14 @@ pub struct Rows {
 
 fn history_at(view: u32) -> u32 {
     history::OBJECT_SHADOWS + view * history::STRIDE
+}
+
+/// The guest merge and rank operate in place. A buffer covering its own
+/// history needs those instructions' interleaved reads and writes.
+fn separate_output(output: u32, addr: u32) -> bool {
+    output
+        .checked_add(OUTPUT_BYTES as u32 - 1)
+        .is_some_and(|end| end < addr || output >= addr + history::STRIDE)
 }
 
 fn frozen(m: &dyn GuestMemory) -> Result<bool, MemFault> {
@@ -134,11 +145,16 @@ pub fn plan(m: &dyn GuestMemory, entry_esp: u32, list: u32, fpu: Fpu) -> Result<
     )?;
     let output = m.u32(guest::at(entry_esp, 4)?)?;
     let mode = m.u32(guest::at(entry_esp, 8)?)?;
-    m.bytes(output, VISIBLE_BYTES * history::ROWS)?;
     let view = m.i32(VIEW_INDEX)?.clamp(0, 3) as u32;
     let history_at = history_at(view);
+    if !separate_output(output, history_at) {
+        return Err(Refusal::Layout);
+    }
+    m.bytes(output, OUTPUT_BYTES)?;
     m.bytes(history_at, history::STRIDE as usize)?;
-    let history = History::decode(m, history_at)?;
+    if m.u32(history_at + history::COUNT)? > history::ROWS as u32 {
+        return Err(Refusal::Layout);
+    }
     let count = (m.u16(guest::at(list, 4)?)? as i16).max(0) as u32;
     for i in 0..count {
         let row = object(m, list, i)?;
@@ -158,7 +174,6 @@ pub fn plan(m: &dyn GuestMemory, entry_esp: u32, list: u32, fpu: Fpu) -> Result<
         output,
         count,
         view,
-        history,
     })
 }
 
@@ -180,7 +195,24 @@ fn read_rows(
         .collect())
 }
 
-pub async fn run(cx: &Cx, mut p: Plan) -> Result<(Ret, Rows), EntryError> {
+async fn guest_rank(cx: &Cx, p: &Plan, history: u32) -> Result<u32, EntryError> {
+    let output = cx.arg(0)?;
+    let step = cx.read(|m| m.u32(STEP))?;
+    let limit = cx.read(|m| m.u8(LIMIT))? as i8 as i32 as u32;
+    let request = GuestCall::new(call::RANK)
+        .ebx(p.list)
+        .eax(history)
+        .ecx(output)
+        .args([history, output, limit, step]);
+    Ok(passes::named(cx, p.esp, HISTORY_FRAME, site::RANK, request)
+        .await?
+        .eax)
+}
+
+/// The ranked history and rows accompany the guest return when Rust takes
+/// the merge. If a predicate invalidates the layout, the two original
+/// history functions finish the call and only their return is available.
+pub async fn run(cx: &Cx, p: Plan) -> Result<(Ret, Option<Rows>), EntryError> {
     let mut n = 0;
     for i in 0..p.count {
         let object = cx.read(|m| object(m, p.list, i))?;
@@ -230,30 +262,43 @@ pub async fn run(cx: &Cx, mut p: Plan) -> Result<(Ret, Rows), EntryError> {
         n += 1;
     }
 
-    // The predicates do not touch the history. The candidate bytes,
-    // including the byte at +3 that neither predicate initializes, are
-    // what the caller's buffer holds at the merge.
-    let candidates = cx.read(|m| read_rows(m, p.output, n))?;
-    let frame = cx.read(|m| m.u32(RENDER_FRAME))?;
+    // Both the history and the output argument are read at the merge,
+    // after every predicate. Only the view index is an entry-time value.
+    let output = cx.arg(0)?;
     let addr = history_at(p.view);
-    history::merge(&mut p.history, &candidates, frame);
-    let freeze = p.history.count == 0 || cx.read(frozen)?;
+    let decoded = cx.read(|m| History::decode(m, addr));
+    let mut history = match decoded {
+        Ok(h) if separate_output(output, addr) => h,
+        _ => {
+            let request = GuestCall::new(call::MERGE)
+                .ebx(p.list)
+                .eax(addr)
+                .ecx(n as u32)
+                .edx(output)
+                .args([output, n as u32]);
+            let result = passes::named(cx, p.esp, HISTORY_FRAME, site::MERGE, request).await?;
+            return Ok((Ret::new(guest_rank(cx, &p, result.eax).await?, 8), None));
+        }
+    };
+    let candidates = cx.read(|m| read_rows(m, output, n))?;
+    let frame = cx.read(|m| m.u32(RENDER_FRAME))?;
+    history::merge(&mut history, &candidates, frame);
+    let freeze = history.count == 0 || cx.read(frozen)?;
     let limit = cx.read(|m| m.u8(LIMIT))?;
     let step = cx.read(|m| m.u32(STEP))?;
 
     let mut writes = Writes::new();
-    let rows = if freeze || p.history.finite() {
+    let rows = if freeze || history.finite() {
         if !freeze {
             history::rank_and_fade(
-                p.history.rows_mut(),
+                history.rows_mut(),
                 frame,
                 limit.into(),
                 f32::from_bits(step),
             );
         }
-        p.history.encode(addr, &mut writes);
-        let rows: Vec<_> = p
-            .history
+        history.encode(addr, &mut writes);
+        let rows: Vec<_> = history
             .rows()
             .iter()
             .map(|r| VisibleLight {
@@ -261,38 +306,30 @@ pub async fn run(cx: &Cx, mut p: Plan) -> Result<(Ret, Rows), EntryError> {
                 ..r.visible
             })
             .collect();
-        writes.array(
-            p.output,
-            rows.iter().flat_map(VisibleLight::encode).collect(),
-        );
+        writes.array(output, rows.iter().flat_map(VisibleLight::encode).collect());
         cx.write(|m| writes.apply(m))?;
         rows
     } else {
         // A predicate can return a non-finite fade after publication. The
         // merge is already valid; leave just its floating-point ranking to
         // 0x0004ac30 with the original arguments.
-        p.history.encode(addr, &mut writes);
+        history.encode(addr, &mut writes);
         cx.write(|m| writes.apply(m))?;
-        let request = GuestCall::new(call::RANK)
-            .ebx(p.list)
-            .eax(addr)
-            .ecx(p.output)
-            .args([addr, p.output, limit.into(), step]);
-        passes::named(cx, p.esp, 0x24, site::RANK, request).await?;
-        for (i, r) in p.history.rows_mut().iter_mut().enumerate() {
+        guest_rank(cx, &p, addr).await?;
+        for (i, r) in history.rows_mut().iter_mut().enumerate() {
             let mut bytes = [0; history::ROW_BYTES];
             cx.read(|m| m.read(addr + (i * history::ROW_BYTES) as u32, &mut bytes))?;
             *r = HistoryRow::decode(&bytes);
         }
-        cx.read(|m| read_rows(m, p.output, p.history.count))?
+        cx.read(|m| read_rows(m, output, history.count))?
     };
     Ok((
-        Ret::new(p.history.count as u32, 8),
-        Rows {
+        Ret::new(history.count as u32, 8),
+        Some(Rows {
             view: p.view,
-            history: p.history,
+            history,
             rows,
-        },
+        }),
     ))
 }
 
