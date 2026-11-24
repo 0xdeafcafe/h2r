@@ -139,6 +139,10 @@ fn counters(sink: bool) -> BTreeMap<String, u64> {
         counts.insert("scene_owned_mismatches".into(), owner.mismatches);
         counts.insert("scene_owned_target_refusals".into(), owner.target_refusals);
     }
+    #[cfg(feature = "gpu")]
+    if d3d::threaded::owner::stats().is_some() {
+        counts.extend(d3d::scaled::scene_counters());
+    }
     counts
 }
 

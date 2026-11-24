@@ -743,23 +743,23 @@ mod retained_admission {
         let (colour, depth) = (external.surfaces.color, external.surfaces.depth);
         let targets = HashMap::from([(colour, 7u32), (depth, 8)]);
 
-        assert!(external.resolve(&draw, &targets, (7, Some(8)), true, 1).is_some());
+        assert!(external.resolve(&draw, &targets, (7, Some(8)), true, 1u32).is_some());
         // Same packet in another allocation, as a rewrite that did not change it leaves it.
-        assert!(external.resolve(&Arc::new(o.submitted.clone()), &targets, (7, Some(8)), true, 1).is_some());
+        assert!(external.resolve(&Arc::new(o.submitted.clone()), &targets, (7, Some(8)), true, 1u32).is_some());
         // A rewrite of the draw (a camera warp, a tile) drops the admission.
         let mut rewritten = o.submitted.clone();
         rewritten.entry = "tiled";
-        assert!(external.resolve(&Arc::new(rewritten), &targets, (7, Some(8)), true, 1).is_none());
+        assert!(external.resolve(&Arc::new(rewritten), &targets, (7, Some(8)), true, 1u32).is_none());
         // Other attachments than the ones the draw is bound to.
-        assert!(external.resolve(&draw, &targets, (9, Some(8)), true, 1).is_none());
-        assert!(external.resolve(&draw, &targets, (7, Some(9)), true, 1).is_none());
-        assert!(external.resolve(&draw, &targets, (7, None), true, 1).is_none());
+        assert!(external.resolve(&draw, &targets, (9, Some(8)), true, 1u32).is_none());
+        assert!(external.resolve(&draw, &targets, (7, Some(9)), true, 1u32).is_none());
+        assert!(external.resolve(&draw, &targets, (7, None), true, 1u32).is_none());
         // A target the replay does not hold.
-        assert!(external.resolve(&draw, &HashMap::from([(colour, 7u32)]), (7, Some(8)), true, 1).is_none());
+        assert!(external.resolve(&draw, &HashMap::from([(colour, 7u32)]), (7, Some(8)), true, 1u32).is_none());
         // A private capture is native at 1x only; a live display's backend answers for its scale.
-        assert!(external.resolve(&draw, &targets, (7, Some(8)), false, 4).is_none());
-        assert!(external.resolve(&draw, &targets, (7, Some(8)), false, 1).is_some());
-        assert!(external.resolve(&draw, &targets, (7, Some(8)), true, 4).is_some());
+        assert!(external.resolve(&draw, &targets, (7, Some(8)), false, 4u32).is_none());
+        assert!(external.resolve(&draw, &targets, (7, Some(8)), false, 1u32).is_some());
+        assert!(external.resolve(&draw, &targets, (7, Some(8)), true, 4u32).is_some());
     }
 
     #[test]
@@ -792,8 +792,8 @@ mod retained_admission {
         assert_eq!(external.surfaces.color, external.surfaces.depth);
         let draw = external.packet.clone();
         let targets = HashMap::from([(external.surfaces.color, 3u32)]);
-        assert!(external.resolve(&draw, &targets, (3, None), true, 1).is_some());
-        assert!(external.resolve(&draw, &targets, (3, Some(4)), true, 1).is_none());
+        assert!(external.resolve(&draw, &targets, (3, None), true, 1u32).is_some());
+        assert!(external.resolve(&draw, &targets, (3, Some(4)), true, 1u32).is_none());
     }
 
     #[test]

@@ -522,7 +522,9 @@ view's camera blended between their ticks
 The rate is the Frame Rate setting's (60, or 120 while display frames
 fit the render thread, `frame-scene::pace::Headroom`, else 60). It needs
 a paced frame owner: a display with a render thread, on unless
-`frame-scene.sink=off`. Frames the owner declines (exact readbacks for
+`frame-scene.sink=off`. It runs at any render scale from 1x up, whole
+or fractional ([framescene.md](../graphics/framescene.md), slice 8,
+"Fractional grids"). Frames the owner declines (exact readbacks for
 network play, films and lockstep) are shown once. `render.stats`'
 `display_rate` counts the frames
 ([agent-api.md](../runtime/agent-api.md), "render.stats"). There is no

@@ -474,7 +474,7 @@ fn a_retained_filter_samples_its_input_and_counts_only_a_native_commit() {
             op(&mut frame, Slot::AfterPost, command);
         }
         let before = committed();
-        let mut playback = GuestDrawPass::new(&mut scene.backend, &frame, 1).unwrap();
+        let mut playback = GuestDrawPass::new(&mut scene.backend, &frame, 1u32).unwrap();
         for (_, command) in &frame.ops {
             playback.apply(command).unwrap();
         }

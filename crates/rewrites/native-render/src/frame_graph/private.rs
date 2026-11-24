@@ -161,7 +161,7 @@ mod tests {
             &scene,
             &scene,
             &frame,
-            2,
+            2u32,
             Lighting::Retail,
             frame_scene::blend::Plan::Newest,
         )
@@ -178,5 +178,58 @@ mod tests {
         // The caller keeps it until the next display frame.
         backend.retain_shown(drawn.image);
         assert!(backend.last_presented().is_none());
+    }
+
+    /// A display frame on a grid that is not a whole number (3/2 across,
+    /// 5/4 down): the main levels at the grid's rounded size and the
+    /// auxiliary at its own, through the mixed pass, and the same frame
+    /// without the auxiliary through the single pass.
+    #[test]
+    fn a_fractional_display_frame_draws_each_level_on_its_grid() {
+        let Ok(ctx) = GfxContext::headless() else {
+            return;
+        };
+        let mut backend = GfxBackend::new(ctx);
+        let mut builder = SceneBuilder::default();
+        builder.begin(SceneId::default());
+        let scene = builder.seal(Stamp::default()).unwrap();
+        let grid = gfx::raster::RenderScale::between((8, 4), (12, 5)).unwrap();
+        let mixed = mixed_frame();
+        let mut single = mixed_frame();
+        single.aux.clear();
+        single.ops.remove(0);
+        for frame in [&mixed, &single] {
+            let drawn = crate::frame_graph::display_rate::draw_blend(
+                &mut backend,
+                &scene,
+                &scene,
+                frame,
+                grid,
+                Lighting::Retail,
+                frame_scene::blend::Plan::Newest,
+            )
+            .unwrap();
+            assert_eq!(backend.surface_extent(drawn.image), Some((12, 5)));
+            let (pixels, order) = backend.read_color(drawn.image).unwrap();
+            let blue = match order {
+                gfx::encode::HostPixelOrder::Bgra8 => [255, 0, 0, 255],
+                _ => [0, 0, 255, 255],
+            };
+            assert_eq!(pixels.len(), 12 * 5 * 4);
+            assert!(pixels.chunks_exact(4).all(|p| p == blue));
+            backend.retain_shown(drawn.image);
+        }
+        // A grid that minifies is refused before any target is made.
+        let minified = gfx::raster::RenderScale::between((8, 4), (4, 4)).unwrap();
+        let refused = crate::frame_graph::display_rate::draw_blend(
+            &mut backend,
+            &scene,
+            &scene,
+            &single,
+            minified,
+            Lighting::Retail,
+            frame_scene::blend::Plan::Newest,
+        );
+        assert!(refused.is_err());
     }
 }

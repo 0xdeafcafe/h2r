@@ -21,14 +21,14 @@ pub(crate) trait SceneDevice: Backend {
     fn frozen_texture(
         &self,
         sample: &crate::scene_sink::FrozenSample,
-        scale: u32,
+        grid: RenderScale,
     ) -> Option<Self::Texture>;
     fn write_scene_target(
         &mut self,
         target: Self::Surface,
         desc: &TextureDesc,
         bytes: &[u8],
-        scale: u32,
+        grid: RenderScale,
     ) -> Result<(), String>;
 }
 
@@ -74,7 +74,7 @@ impl<B: SceneDevice> Commands<B> {
         gpu: &mut B,
         targets: &HashMap<TargetRef, B::Surface>,
         display: bool,
-        scale: u32,
+        scale: RenderScale,
         bound: (B::Surface, Option<B::Surface>),
         draw: &Arc<crate::backend::ResolvedDraw>,
         external: &crate::scene_sink::RetainedExternal,
@@ -110,7 +110,7 @@ impl<B: SceneDevice> Commands<B> {
         gpu: &mut B,
         targets: &HashMap<TargetRef, B::Surface>,
         display: bool,
-        scale: u32,
+        scale: RenderScale,
         op: &ReplayOp,
     ) -> Result<(), String> {
         let surface = |r: &TargetRef| {

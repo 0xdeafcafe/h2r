@@ -148,7 +148,7 @@ mod tests {
         }
         assert_eq!(*modes.lock().unwrap(), [Retail, RelightOn, RelightOff, Retail]);
 
-        let mut empty = GuestDrawPass::new_lit(&mut gpu, &frame, 1, RelightOff).unwrap();
+        let mut empty = GuestDrawPass::new_lit(&mut gpu, &frame, 1u32, RelightOff).unwrap();
         empty.apply(&frame.ops[1].1).unwrap();
         assert!(empty.read_rgba().unwrap_err().contains("no native world range"));
     }

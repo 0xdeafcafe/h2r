@@ -29,7 +29,7 @@ pub(crate) fn scaled_owner(device: DisplayDevice, display: Option<Display>) -> F
                 frame: Arc::clone(&replay),
                 before_original: Some(native_render::frame_graph::freeze_scaled_inputs),
                 eligible: Box::new(move |backend: &Scaled, targets| {
-                    backend.can_draw_scene(&to_check, targets)
+                    backend.check_scene(&to_check, targets)
                 }),
                 draw: Box::new(move |backend, targets| {
                     let mode = backend.lighting();

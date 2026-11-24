@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 
 use frame_types::{AuxTarget, TargetRef};
+use gfx::raster::RenderScale;
 use gfx::{Clear, D3DFormat, surface::SurfaceId};
 
 use super::{ScaledBackend, ScaledSurface};
@@ -47,11 +48,20 @@ pub struct MixedPrivatePass<'a> {
 }
 
 impl<'a> MixedPrivatePass<'a> {
+    /// A private draw on `scale`'s grid, whole or fractional: frame-sized
+    /// levels on the grid, each smaller level at its own size.
     pub fn new(
         source: &'a mut GfxBackend,
         frame: &ReplayFrame,
-        scale: u32,
+        scale: impl Into<RenderScale>,
     ) -> Result<Self, String> {
+        let grid = scale.into();
+        if !grid.replayable(crate::MAX_SCALE) {
+            return Err(format!(
+                "private scene grid {grid} is outside 1x to {}x",
+                crate::MAX_SCALE
+            ));
+        }
         if !frame.refusals.is_empty() {
             return Err(format!(
                 "scene cannot be replayed: {}",
@@ -72,7 +82,7 @@ impl<'a> MixedPrivatePass<'a> {
         source.flush()?;
         let reference = GfxBackend::new(source.ctx.clone());
         let placeholder = GfxBackend::new(source.ctx.clone());
-        let mut backend = Scaled::with_single_copy(reference, placeholder, scale, true)?;
+        let mut backend = Scaled::with_resolution(reference, placeholder, grid, true)?;
         // Keep the configured shader provider, its renderer's shader IDs,
         // and its live upload cache on the exact same backend.
         std::mem::swap(&mut backend.view, source);
@@ -116,7 +126,7 @@ impl<'a> MixedPrivatePass<'a> {
                     },
                 )?,
                 TargetSeed::Upload { desc, bytes } => {
-                    pass.backend.write_scene_target(surface, desc, bytes, 1)?;
+                    pass.backend.write_scene_target(surface, desc, bytes, RenderScale::ONE)?;
                 }
             }
         }
@@ -134,13 +144,14 @@ impl<'a> MixedPrivatePass<'a> {
     pub fn new_lit(
         source: &'a mut GfxBackend,
         frame: &ReplayFrame,
-        scale: u32,
+        scale: impl Into<RenderScale>,
         lighting: crate::Lighting,
     ) -> Result<Self, String> {
-        let mut pass = Self::new(source, frame, scale)?;
+        let grid = scale.into();
+        let mut pass = Self::new(source, frame, grid)?;
         pass.commands.private_lighting = Some(lighting);
         if lighting == crate::Lighting::E3 {
-            let factor = super::shadow_scale(scale, crate::Lighting::E3);
+            let factor = super::shadow_scale(grid.vertical_rounded(), crate::Lighting::E3);
             let plan = ShadowTiles::plan(frame, factor);
             pass.backend.scene_tiles = plan
                 .tile_levels()
@@ -159,18 +170,11 @@ impl<'a> MixedPrivatePass<'a> {
     fn allocate(&mut self, key: TargetRef, desc: AuxTarget) -> Result<(), String> {
         let size = (desc.width, desc.height);
         let scaled = self.backend.frame.is_none() || self.backend.frame == Some(size);
-        let grid = self.backend.scale.uniform_integer().ok_or("the private scene grid is not an integer scale")?;
-        let factor = if scaled { grid } else { 1 };
-        let limit = self
-            .backend
-            .view
-            .ctx
-            .device
-            .limits()
-            .max_texture_dimension_2d
-            / factor;
-        if desc.width == 0 || desc.height == 0 || desc.width > limit || desc.height > limit {
-            return Err(format!("invalid {key:?} size {size:?} at {factor}x"));
+        let grid = if scaled { self.backend.scale } else { RenderScale::ONE };
+        let limit = self.backend.view.ctx.device.limits().max_texture_dimension_2d;
+        let (width, height) = grid.size(desc.width, desc.height);
+        if desc.width == 0 || desc.height == 0 || width > limit || height > limit {
+            return Err(format!("invalid {key:?} size {size:?} on the {grid} grid"));
         }
         let format = D3DFormat::from_raw(desc.format)
             .ok_or_else(|| format!("unknown scene target format {}", desc.format))?;
@@ -192,7 +196,7 @@ impl<'a> MixedPrivatePass<'a> {
     }
 
     pub fn apply(&mut self, op: &ReplayOp) -> Result<(), String> {
-        let scale = self.backend.scale.uniform_integer().ok_or("private scene grid is not an integer scale")?;
+        let scale = self.backend.scale;
         let Some(tiles) = self.tiles.as_mut() else {
             return self
                 .commands
