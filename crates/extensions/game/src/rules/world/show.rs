@@ -762,14 +762,15 @@ mod tests {
     #[test]
     fn a_show_state_is_checked_against_the_blob_it_names() {
         let ir = ::rules::compile(
-            "rules \"C\" 1\ntype slayer\nrequires hud.widgets\n\
-             hud row: text at koth.hill\nwaypoint spot at ctf.mark\n",
+            "rules \"C\" 1\ntype slayer\nrequires hud.widgets, hud.waypoints\n\
+             hud row: text at koth.hill\nwaypoint spot at ctf.mark\n\
+             on round_start { hud_text(row, \"Ready\") }\n",
         )
         .unwrap();
         let mut state = State::default();
         *state.widget(0).unwrap() = ::rules::show::Widget {
             shown: true,
-            text: Some(0),
+            text: Some(ir.strings.iter().position(|s| s == "Ready").unwrap() as u16),
             ..::rules::show::Widget::default()
         };
         state.waypoints[0] = Some(::rules::show::Waypoint {

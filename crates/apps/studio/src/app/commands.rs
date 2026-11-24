@@ -458,7 +458,7 @@ pub(crate) fn palette_with(app: &App, query: &str, assets: &Palette) -> Palette 
 
     // The asset rows arrive already filtered by the query, so they are
     // listed as they were read.
-    for kind in [Kind::Tag, Kind::Package, Kind::Item] {
+    for kind in [Kind::Tag, Kind::Package, Kind::Item, Kind::Voice] {
         results.count(kind, assets.total(kind));
     }
     results.entries.extend(assets.entries.iter().cloned());

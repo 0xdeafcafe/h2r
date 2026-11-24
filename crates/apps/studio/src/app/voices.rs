@@ -539,7 +539,7 @@ impl App {
 
     /// The **Voices** kind of `asset.list`: a row per voice with its
     /// dataset state, every word of `text` matching its name, id, state
-    /// or what a voice is for (voice, clone, dialogue). The answer has the shape of `assets::list`'s.
+    /// or what a voice is for (voice, character clone, dialogue). The answer has the shape of `assets::list`'s.
     pub fn voice_asset_list(&self, text: &str, limit: usize) -> Value {
         let words: Vec<String> = text.split_whitespace().map(str::to_lowercase).collect();
         let rows: Vec<Value> = self
@@ -547,7 +547,8 @@ impl App {
             .into_iter()
             .filter(|v| {
                 // Also found by what a voice is for.
-                let hay = format!("{} {} {} voice voices clone dialogue", v.name, v.id, v.state())
+                let character = if v.id == ANNOUNCER { "" } else { "character" };
+                let hay = format!("{} {} {} voice voices clone dialogue {character}", v.name, v.id, v.state())
                     .to_lowercase();
                 words.iter().all(|w| hay.contains(w.as_str()))
             })

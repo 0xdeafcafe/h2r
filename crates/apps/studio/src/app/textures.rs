@@ -1535,6 +1535,7 @@ impl App {
                 format,
             } => {
                 self.ensure_bitmap(tag)?;
+                let was = self.textures.reshape.get(&(tag, image)).copied();
                 let open = self.open_mut(tag)?;
                 let info = open
                     .images
@@ -1544,14 +1545,16 @@ impl App {
                     return Err(format!("image {image} is not written: {why}"));
                 }
                 let src = info.source.clone().ok_or("the image has no record")?;
-                let (w, h) = (
-                    width.unwrap_or(u32::from(src.dimensions[0])),
-                    height.unwrap_or(u32::from(src.dimensions[1])),
-                );
+                let current = was.unwrap_or(Reshape {
+                    width: u32::from(src.dimensions[0]),
+                    height: u32::from(src.dimensions[1]),
+                    format: src.format,
+                });
+                let (w, h) = (width.unwrap_or(current.width), height.unwrap_or(current.height));
                 let want = Reshape {
                     width: w,
                     height: h,
-                    format: format.unwrap_or(src.format),
+                    format: format.unwrap_or(current.format),
                 };
                 // Refuse now what the save would refuse later.
                 assets::write::reshaped(&src, want).map_err(|e| e.to_string())?;
@@ -1559,7 +1562,6 @@ impl App {
                 let same = want.width == u32::from(src.dimensions[0])
                     && want.height == u32::from(src.dimensions[1])
                     && want.format == src.format;
-                let was = self.textures.reshape.get(&(tag, image)).copied();
                 let now = (!same).then_some(want);
                 if was == now {
                     return Ok(());

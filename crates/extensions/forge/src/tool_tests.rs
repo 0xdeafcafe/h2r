@@ -669,35 +669,26 @@ fn reset_orientation_uprights_the_hold_and_take_up_holds_a_new_thing() {
     assert_ne!(tool.ghost.unwrap().rotation, [0.; 3]);
     tool.set_orientation(0.75);
     assert_eq!(tool.ghost.unwrap().rotation, [0.75, 0., 0.]);
-    let Command::MoveThing { frame, .. } = tool
+    let Command::Move { id, frame } = tool
         .update(&session, 5, press(Action::Accept))
         .unwrap()
         .unwrap()
     else {
         panic!("the drop")
     };
+    assert_eq!(Endpoint::Added(id), first);
     assert_eq!(frame.rotation, [0.75, 0., 0.], "the reset is what drops");
     // The copy of another object is held where the add put it.
     let mut world = base::Fake::default();
-    let second = session
-        .place(
-            &mut world,
-            6,
-            0,
-            Frame {
-                position: [0., 0., -4.],
-                rotation: [0.; 3],
-            },
-        )
-        .unwrap();
     let at = Frame {
         position: [1., 0., -3.],
         rotation: [0.25, 0., 0.],
     };
+    let second = session.place(&mut world, 6, 0, at).unwrap();
     tool.take_up(&session, Endpoint::Added(second), Some(second), at);
     assert_eq!(tool.held_thing, Some(Endpoint::Added(second)));
     assert_eq!(tool.held, Some(second));
-    assert_eq!(tool.ghost.unwrap().rotation, [0.25, 0., 0.]);
+    assert_eq!(tool.ghost, Some(at));
     let Command::Move { id, frame } = tool
         .update(&session, 7, press(Action::Accept))
         .unwrap()

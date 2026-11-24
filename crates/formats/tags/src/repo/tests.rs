@@ -1916,7 +1916,10 @@ fn prepare_writes_the_catalogue_and_leaves_a_current_one_alone() {
     assert_eq!(c.of_key(&TagKey::new(g(b"bitm"), "a\\pixels")).len(), 1);
     assert_eq!(
         c.users(&TagKey::new(g(b"bitm"), "a\\pixels")).unwrap(),
-        &BTreeSet::from([TagKey::new(g(b"matg"), "globals\\globals")])
+        &BTreeSet::from([
+            TagKey::new(g(b"bitm"), "a\\same_pixels"),
+            TagKey::new(g(b"matg"), "globals\\globals"),
+        ])
     );
     // Nothing stale: the catalogue is not written again.
     let before = snapshot(&root);

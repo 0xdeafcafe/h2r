@@ -1849,7 +1849,7 @@ impl Editor {
                         .map_err(|_| "Type a whole number.".to_string())?;
                     let id = self.tool.aimed_thing.ok_or("Aim at an item entry.")?;
                     let name = match field {
-                        sheet::NumberField::ReturnTime => "abandon limit",
+                        sheet::NumberField::ReturnTime => "return time",
                         _ => "respawn time",
                     };
                     return self.command(

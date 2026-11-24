@@ -730,18 +730,23 @@ mod tests {
         let a = set.find(cc(b"jpt!"), A).unwrap();
         let pixels: Vec<u8> = (0..64u32).map(|i| (i * 3) as u8).collect();
         let raw = set.add_raw(pixels.clone(), 16);
-        let mut root = Block::zeroed(16);
+        let mut root = Block::zeroed(20);
         root.tag_ref(0, a)
-            .tag_id(4, TagId::NULL)
-            .string_id(8, "invented")
-            .raw(12, RawRef::Local(raw));
+            .tag_id(8, TagId::NULL)
+            .string_id(12, "invented")
+            .raw(16, RawRef::Local(raw));
         let bytes = image(&set, &root).unwrap();
         // What it names is in it as text, never as a datum.
         let text = String::from_utf8_lossy(&bytes).into_owned();
         assert!(text.contains("invented") && text.contains(A), "{text:?}");
+        let hash = Sha256::of(&pixels).0;
         assert!(
-            bytes.windows(4).any(|w| w == pixels.as_slice()),
-            "the raw is by hash"
+            bytes.windows(hash.len()).any(|w| w == hash.as_slice()),
+            "the raw hash is present"
+        );
+        assert!(
+            !bytes.windows(pixels.len()).any(|w| w == pixels.as_slice()),
+            "the raw bytes are absent"
         );
         assert_eq!(unimage(&set, &bytes).unwrap(), root);
         // The map it is read into must hold what it names.
