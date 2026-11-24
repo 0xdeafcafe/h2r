@@ -9,7 +9,6 @@
 
 use forge::{BlockKind, Thing, Value};
 
-use crate::ui_kit::forge::{ANGLE_STEPS, HEADINGS};
 use crate::ui_kit::ids::{self, Family};
 
 /// The Forge screens.
@@ -844,6 +843,11 @@ pub struct SettingDef {
     pub label: &'static str,
     pub description: &'static str,
 }
+
+/// Rotation snap choices in degrees.
+pub const ANGLE_STEPS: [f32; 4] = [1., 5., 15., 45.];
+/// Absolute object yaw in degrees about the world's vertical axis.
+pub const HEADINGS: [f32; 8] = [0., 45., 90., 135., 180., 225., 270., 315.];
 
 /// Movement snap choices, world units; 0 is off.
 pub const MOVE_STEPS: &[f32] = &[0.0, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0];

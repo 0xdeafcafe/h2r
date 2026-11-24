@@ -194,16 +194,6 @@ components:
     role: "the focused row at full alpha and its frame lit; the rest at alpha.unfocused and alpha.frame_dim"
     variants: [first, middle, last]
     specimen: design.focus
-  hud.text:
-    role: "a HUD's line over the running game, in title-safe coordinates"
-    font: body
-    colour: white
-    justify: left
-  hud.label:
-    role: "a HUD's caption beside its line"
-    font: body
-    colour: hint_blue
-    justify: left
   description.kit.example.29:
     role: "description of kit.example, as the converter found it"
     font: body
@@ -219,16 +209,6 @@ components:
     font: body
     colour: pale_blue
     justify: right
-  hud.forge.hud.36:
-    role: "hud of forge.hud, as the converter found it"
-    font: body
-    colour: white
-    justify: right
-  hud.forge.hud.37:
-    role: "hud of forge.hud, as the converter found it"
-    font: body
-    colour: white
-    justify: centre
   text.theater.playback.38:
     role: "text of theater.playback, as the converter found it"
     font: body

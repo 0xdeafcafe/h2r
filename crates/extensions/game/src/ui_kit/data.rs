@@ -237,7 +237,7 @@ impl DesignDoc {
 pub struct ScreenDoc {
     /// Its name in `crate::ui_kit::screens::NAMES`; the file's stem.
     pub screen: String,
-    /// `list`, `dialog`, `code_entry`, `picker` or `hud`.
+    /// `list`, `dialog`, `code_entry` or `picker`.
     pub kind: String,
     /// The list's place or the dialog's base, by name ([`LAYOUTS`]).
     pub layout: Option<String>,
@@ -455,14 +455,13 @@ pub struct RowDoc {
 }
 
 /// The kinds a screen doc may be.
-pub const KINDS: [&str; 5] = ["list", "dialog", "code_entry", "picker", "hud"];
+pub const KINDS: [&str; 4] = ["list", "dialog", "code_entry", "picker"];
 /// Each kind's layouts.
-pub const LAYOUTS: [(&str, &[&str]); 5] = [
+pub const LAYOUTS: [(&str, &[&str]); 4] = [
     ("list", &["controls", "level_select", "moved"]),
     ("dialog", &["settings", "large"]),
     ("code_entry", &["large"]),
     ("picker", &["picker", "large"]),
-    ("hud", &["none"]),
 ];
 pub const BACKINGS: [&str; 4] = ["shell", "over", "screen", "none"];
 pub const ROW_KINDS: [&str; 8] = ["", "action", "open", "value", "pick", "info", "text", "disabled"];

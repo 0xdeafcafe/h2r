@@ -8,10 +8,10 @@
 use crate::list_class::TextBlock;
 use crate::ui_kit::components::{Screen, legend, row};
 use crate::ui_kit::spec::{PaneText, ScreenSpec};
-use crate::ui_kit::view::{Justify, Kind, Layer, Opener, Widget};
+use crate::ui_kit::view::{Justify, Opener};
 
 /// Every specimen and layout page, as `NAMES` lists them.
-pub const PAGES: [&str; 29] = [
+pub const PAGES: [&str; 28] = [
     "design.title",
     "design.body",
     "design.panel-text",
@@ -40,7 +40,6 @@ pub const PAGES: [&str; 29] = [
     "layout.dialog.over-screen",
     "layout.code-entry",
     "layout.picker",
-    "layout.hud",
 ];
 
 /// Component `name`'s font and colour (a text component of design.yaml).
@@ -167,22 +166,6 @@ fn settings_page(name: &'static str) -> ScreenSpec {
 
 fn level_select_art(s: Screen) -> Screen {
     crate::ui_kit::screens::skulls_art().into_iter().fold(s, Screen::art)
-}
-
-fn hud_text(id: &str, component: &str, rect: [i16; 4], s: &str) -> Widget {
-    let (font, colour) = style(component);
-    Widget {
-        id: id.into(),
-        rect,
-        layer: Layer::Content,
-        alpha: 255,
-        kind: Kind::Text {
-            text: s.into(),
-            font,
-            justify: Justify::Left,
-            colour: crate::ui_kit::components::rgb(colour),
-        },
-    }
 }
 
 const LONG_HELP: &str = "A longer description wraps onto a second line of the block.";
@@ -409,14 +392,6 @@ pub fn states(name: &str) -> Option<Vec<(String, ScreenSpec)>> {
         "layout.picker" => each_row(
             Screen::picker(name, "TITLE", &["Value 1", "Value 2", "Value 3"], 0, "Description.", setup).build(),
         ),
-        "layout.hud" => rest(Screen::hud(
-            name,
-            "Title",
-            vec![
-                hud_text("hud.caption", "hud.label", [198, -264, 178, -100], "Caption"),
-                hud_text("hud.line", "hud.text", [176, -264, 156, -100], "Line"),
-            ],
-        )),
         _ => return None,
     })
 }

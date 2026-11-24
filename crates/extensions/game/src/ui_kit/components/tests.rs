@@ -69,8 +69,6 @@ fn a_screen_takes_the_inputs_its_rows_and_legend_need() {
     for i in [Input::Left, Input::Right, Input::Y] {
         assert!(s.inputs.contains(&i), "{i:?}");
     }
-    let hud = Screen::hud("t", "T", vec![]).build();
-    assert!(hud.inputs.is_empty());
 }
 
 /// A specimen page takes every input it lists and ignores what it doesn't.

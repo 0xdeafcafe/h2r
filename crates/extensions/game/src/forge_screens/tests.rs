@@ -13,8 +13,7 @@ use pages::SheetPage;
 use sheet::{Act, Group, Prop, Tool};
 
 /// Each screen's presses from a named state: the effects, then the
-/// focused row (the compositor's tables, `ui_kit/forge/tests.rs`, on the
-/// game's screens).
+/// focused row.
 #[test]
 fn page_tables() {
     use Input::{A, B, Down, Left, Right, Up};

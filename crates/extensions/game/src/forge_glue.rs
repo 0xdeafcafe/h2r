@@ -29,7 +29,6 @@ use serde_json::{Value, json};
 
 use crate::forge_controls as controls;
 use crate::forge_map::{self, Loaded, Opened};
-use crate::ui_kit::spec::ScreenSpec;
 use editing::Editor;
 
 /// Ticks between rebuilds of the game type markers.
@@ -63,13 +62,6 @@ fn current() -> Option<Shared> {
     CURRENT.lock().unwrap_or_else(|e| e.into_inner()).upgrade()
 }
 
-/// The window draws this page over the current world frame.
-pub fn page() -> Option<ScreenSpec> {
-    let driver = current()?;
-    let driver = driver.lock().unwrap_or_else(|e| e.into_inner());
-    driver.editor.as_ref()?.page()
-}
-
 /// The other seats' drawn bodies, as the last tick left them: the
 /// presentation instances the native renderer's object pass draws. The
 /// local seat's own body is never drawn in its own view.
@@ -78,13 +70,6 @@ pub fn monitor_bodies() -> Vec<forge::look::body::Draw> {
         return Vec::new();
     };
     driver.lock().unwrap_or_else(|e| e.into_inner()).bodies.clone()
-}
-
-/// A click on a compositor dialog's row. The Forge screens are the game's
-/// (`crate::forge_screens`), which take the mouse as the game does, so the
-/// compositor draws no dialog and no click is the session's.
-pub fn click(_row: usize) -> bool {
-    false
 }
 
 fn admitted(m: &dyn engine::GuestMemory, generation: u64) -> bool {

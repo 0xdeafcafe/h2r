@@ -23,7 +23,7 @@
 //!   distances, which the view shows as the navpoints' numbers.
 //!
 //! It is presentation: it reads the session and never writes it. The
-//! monitor's reticle is still the compositor's (`forge_glue::page`). The
+//! monitor has no reticle until the kit's `forge.reticle` is built. The
 //! retail widgets are not hidden in a monitor yet (slice K1).
 
 use std::collections::BTreeSet;

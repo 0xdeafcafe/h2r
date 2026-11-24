@@ -108,8 +108,6 @@ struct Shell {
     captured: bool,
     super_held: bool,
     shift_held: bool,
-    forge_modal: bool,
-    restore_forge_capture: bool,
     ime_composing: bool,
     ime_allowed: bool,
     #[cfg(target_os = "linux")]
@@ -192,8 +190,6 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         captured: false,
         super_held: false,
         shift_held: false,
-        forge_modal: false,
-        restore_forge_capture: false,
         ime_composing: false,
         ime_allowed: false,
         #[cfg(target_os = "linux")]
@@ -450,7 +446,10 @@ impl Shell {
             marks: MarkRenderer::default(),
             watermark: WatermarkRenderer::new(&ctx.device),
             menu: MenuRenderer::new(&ctx.device),
-            theater: (self.config.theater.is_some() || self.config.forge.is_some())
+            theater: self
+                .config
+                .theater
+                .is_some()
                 .then(|| theater_overlay::Renderer::new(&ctx.device)),
             backend: format!("{:?}", info.backend).to_lowercase(),
             ctx,
@@ -465,18 +464,6 @@ impl Shell {
     }
 
     fn redraw(&mut self, size: Option<PhysicalSize<u32>>) {
-        let forge_frame = self.config.forge.as_ref().and_then(|forge| forge.0.frame());
-        let modal = forge_frame.as_ref().is_some_and(|frame| frame.modal);
-        if modal && !self.forge_modal {
-            self.restore_forge_capture = self.captured;
-            self.capture(false);
-        } else if !modal && self.forge_modal {
-            if forge_frame.is_some() && self.restore_forge_capture {
-                self.capture(true);
-            }
-            self.restore_forge_capture = false;
-        }
-        self.forge_modal = modal;
         let Some(g) = self.gpu.as_mut() else { return };
         // AppKit can call drawRect before delivering Resized. A queued
         // resize event can also refer to an older size than the live view.
@@ -678,14 +665,10 @@ impl Shell {
             }
         }
         if let Some(renderer) = &mut g.theater {
-            let model = forge_frame.map(|frame| theater_overlay::View {
-                playing: false,
-                page: Some(frame.page),
-            });
             renderer.draw(
                 &g.ctx,
                 &mut enc,
-                model.as_ref().unwrap_or(&self.theater_view),
+                &self.theater_view,
                 &view,
                 g.surface.config.format,
                 size,
@@ -962,7 +945,6 @@ impl ApplicationHandler<UserEvent> for Shell {
                     theater.0.release_keys();
                 }
                 if !focused {
-                    self.restore_forge_capture = false;
                     if let Some(forge) = &self.config.forge {
                         forge.0.release_keys();
                     }
@@ -979,7 +961,6 @@ impl ApplicationHandler<UserEvent> for Shell {
                 self.super_held = m.state().super_key();
                 self.shift_held = m.state().shift_key();
                 if self.super_held {
-                    self.restore_forge_capture = false;
                     if let Some(forge) = &self.config.forge {
                         forge.0.release_keys();
                     }
@@ -1132,9 +1113,7 @@ impl ApplicationHandler<UserEvent> for Shell {
                     }
                 }
             }
-            WindowEvent::CursorMoved { position, .. }
-                if self.config.theater.is_some() || self.config.forge.is_some() =>
-            {
+            WindowEvent::CursorMoved { position, .. } if self.config.theater.is_some() => {
                 self.theater_cursor = Some((position.x, position.y));
             }
             WindowEvent::CursorLeft { .. } => self.theater_cursor = None,
@@ -1154,17 +1133,6 @@ impl ApplicationHandler<UserEvent> for Shell {
                     && let Some(forge) = &self.config.forge
                 {
                     use winit::event::MouseButton as B;
-                    if self.forge_modal {
-                        if down && button == B::Left
-                            && let Some((x, y)) = self.theater_cursor
-                            && let Some((x, y)) = self.gpu.as_ref()
-                                .and_then(|gpu| gpu.theater.as_ref())
-                                .and_then(|renderer| renderer.page_point(x, y))
-                        {
-                            forge.0.click(x, y);
-                        }
-                        return;
-                    }
                     if matches!(button, B::Left | B::Right)
                         && forge.0.mouse_button(button == B::Left, down)
                     {

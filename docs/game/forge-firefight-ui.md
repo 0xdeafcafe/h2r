@@ -1,7 +1,7 @@
 # Forge and Firefight UI: every screen and HUD piece as Halo 2 draws it
 
-Status: Partly built. Slices U1 (the main menu), U2 (the lobby modes), U3 (the monitor HUD on the HUD kit, without K1's gate), U4 (the Forge screens in the game and the bindings table) and U5 (the Firefight HUD) K4 (the gizmo's segment in the HUD kit) and U6 (the markers and the gizmo on the HUD kit) are built; the rest is design, and the audit describes the compositor code that U7 replaces.
-Code: `crates/extensions/game/src/forge_screens.rs` and `forge_screens/` (the Forge screens and GAME MENU rows), `forge_controls/bindings.rs` (the bindings table), `crates/extensions/game/src/ui_kit/forge.rs` and `ui_kit/forge/` (the compositor's Forge strip and dialogs), `lobby_mode.rs` (Game Setup's Forge Map row, the start refusal), `lobby_start.rs` (the mode), `forge_hud.rs` (the monitor HUD's feed), `firefight/{hud,options}.rs`, `map_select.rs` (the Firefight category), `forge_glue/gizmo.rs` (the gizmo's ends), `hud_kit_core::views::forge` and `content/forge/huds/forge.hud.yaml` (the monitor HUD's elements), `theater_ui.rs` (`menu`, the main menu's rows), `crates/apps/cli/src/play_cmd/forge.rs` (the compositor painter). Tests: named per slice below.
+Status: Partly built. Slices U1 (the main menu), U2 (the lobby modes), U3 (the monitor HUD on the HUD kit, without K1's gate), U4 (the Forge screens in the game and the bindings table), U5 (the Firefight HUD), K4 (the gizmo's segment in the HUD kit), U6 (the markers and the gizmo on the HUD kit) and U7 (the compositor path removed) are built; the rest is design.
+Code: `crates/extensions/game/src/forge_screens.rs` and `forge_screens/` (the Forge screens and GAME MENU rows), `forge_controls/bindings.rs` (the bindings table), `lobby_mode.rs` (Game Setup's Forge Map row, the start refusal), `lobby_start.rs` (the mode), `forge_hud.rs` (the monitor HUD's feed), `firefight/{hud,options}.rs`, `map_select.rs` (the Firefight category), `forge_glue/gizmo.rs` (the gizmo's ends), `hud_kit_core::views::forge` and `content/forge/huds/forge.hud.yaml` (the monitor HUD's elements), `theater_ui.rs` (`menu`, the main menu's rows), `crates/apps/cli/src/play_cmd/forge.rs` and `crates/apps/app/src/forge_overlay.rs` (the play window's keys and mouse, handed to the session). Tests: named per slice below.
 Switch: none of its own. `forge` and `firefight`, listed in [switches.md](../runtime/switches.md).
 
 Forge and Firefight are modes of the party lobby
@@ -49,10 +49,10 @@ Paths without a crate are under `crates/extensions/game/src/`.
 | Main menu row Theater | the retail main menu list, grown from 5 rows to 6 with one added item widget | `theater_ui.rs` (`menu::Rows::count`), `layout_glue.rs` |
 | Forge and Firefight lobbies | the retail pregame lobby and its Game Setup, in the mode the lobby is in | `lobby_mode.rs`, `lobby_start.rs` (`Mode`), [party-lobby.md](party-lobby.md) |
 | Firefight Options | the shared settings dialog on Quick Options over Game Setup, drawn by the game | `firefight/options.rs`, `content/ui/screens/firefight.yaml` |
-| Forge HUD | the game's HUD: the HUD kit's `forge` HUD, fed from the session each tick ("The monitor HUD"); the reticle is the compositor's: the preview renderer paints a `ScreenSpec::hud` page into a 640 by 480 RGBA image with the disc's fonts, blended over the frame | `hud_kit_core::views::forge`, `forge_hud.rs`; `ui_kit/forge.rs` (`reticle`), `crates/apps/cli/src/play_cmd/forge.rs` |
-| Forge dialogs (palette, properties, link, menu, load) | the same compositor path; the spec is a kit dialog spec, but no game widget exists | `ui_kit/forge/dialogs.rs:232`, `forge_glue.rs:55` |
-| Gizmo | pixels the compositor wrote into that image; now the HUD kit's `forge.gizmo` world marks | `forge_glue/gizmo.rs` |
-| Monitor marker | a ring the compositor wrote into that image; now the HUD kit's navpoints | `forge_hud.rs` (`Points`) |
+| Forge HUD | the game's HUD: the HUD kit's `forge` HUD, fed from the session each tick ("The monitor HUD"); no reticle until `forge.reticle` is built | `hud_kit_core::views::forge`, `forge_hud.rs` |
+| Forge screens (object menu, Properties, Tools, Tool settings, Link, questions, Forge options, Controls) | the game's own widgets on retail tags ("The Forge screens") | `forge_screens.rs`, `forge_screens/` |
+| Gizmo | the HUD kit's `forge.gizmo` world marks | `forge_glue/gizmo.rs` |
+| Monitor marker | the HUD kit's navpoints | `forge_hud.rs` (`Points`) |
 | Firefight HUD | the game's HUD: the HUD kit's `firefight` HUD, fed from `hud::current` each tick ("The Firefight HUD") | `hud_kit_core::huds::firefight`, `firefight/hud.rs` (`Feed`) |
 
 ### Why each reads as fake
@@ -66,39 +66,12 @@ advertises D-pad left and right as "Change" (`settings::legend`, as every
 page with value rows does), and its opener is Game Setup
 (`opener: game-setup.firefight` in its doc).
 
-**What the compositor still draws in a game.** The strip is the HUD
-kit's `forge` HUD ("The monitor HUD"). What remains on the compositor's
-page (`ui_kit::forge::reticle`) is a text reticle, the character "+" in
-menu font 1, and the gizmo and the monitor markers painted on it. It is
-a host overlay: it ignores the HUD's safe frame and fit, stays up when
-the game hides its HUD, is absent from films and captures, and exists
-only in the desktop play window
-(`crates/apps/cli/src/play_cmd/forge.rs`). Slices U6 and U7 remove it.
-
-**The Forge dialogs.**
-
-- Not game screens. They never enter the game's UI: no retail open and
-  close animation, no focus sounds, no key repeat of the game's, and
-  rows are clicked through a hit test of ours
-  (`crates/apps/cli/src/play_cmd/forge.rs:44`).
-- An invented backing. A 514 by 204 navy box is pushed under the retail
-  panel so rows stay legible (`ui_kit/forge/dialogs.rs:372`). Retail's
-  panel is an edge glow over the world.
-- A hybrid no retail screen has. Properties and Link put the settings
-  list skin, moved to a new anchor, inside `error_dialog_large`'s panel
-  (`ui_kit/forge/dialogs.rs:275`, `:293`).
-- Information as rows. Link's From, To and Channel are unselectable list
-  rows (`ui_kit/forge/dialogs.rs:288`); retail keeps facts in the
-  screen's texts and rows for what A acts on.
-- Three rows for a pause menu: Save, Save as, Load
-  (`ui_kit/forge/dialogs.rs:306`), not the game's own GAME MENU.
-- The opener in every spec is the main menu
-  (`ui_kit/forge/dialogs.rs:409`, `:438`), though they open in a game.
-
-**The gizmo and the marker (as audited; U6 replaced them).** Red, green and blue two-pixel lines
-(the compositor's gizmo painter) and a flat ring: a modelling tool's idiom,
-aliased, drawn behind the strip's pixels and in front of everything in
-the world.
+**The play window draws nothing of Forge.** It hands its keys and mouse
+to the session (`crates/apps/cli/src/play_cmd/forge.rs`,
+`app::forge_overlay`) and composites no page: the monitor's HUD, its
+navpoints and gizmo, and the Forge screens are the game's, so they keep
+the HUD's safe frame, hide with the HUD and appear in films and
+captures. The monitor has no reticle until `forge.reticle` is built.
 
 ## Targets
 
@@ -303,12 +276,10 @@ when the tool's state changes. One layout:
   (`Origin::NextGrenadePill`) then resolve to the row's first place.
   Until K1 the retail widgets of a player draw in a monitor too, and the
   pills sit after the retail frag pill.
-- **The reticle is the compositor's.** The kit has no reticle element
-  until a retail weapon's reticle widget is chosen from the disc census (**S**):
-  a text at the screen's centre is inside the retail reticle's reserved
-  rectangle and fails the `retail` check. `forge_glue::page` returns the
-  compositor's page of the reticle's `+` alone (`ui_kit::forge::reticle`),
-  until slice U7.
+- **No reticle yet.** The kit has no reticle element until a retail
+  weapon's reticle widget is chosen from the disc census (**S**): a text
+  at the screen's centre is inside the retail reticle's reserved
+  rectangle and fails the `retail` check, so the monitor draws none.
 - **Copy** is the game's form: sentence case, the button as the font's
   glyph, one line. The count is digits only, as the LCD font has no
   slash. A prompt's button is read from the bindings table
@@ -439,9 +410,8 @@ camera and tool take no input (`forge_screens::ui_up`, published to
   `forge_glue/gizmo.rs` (`Axes::from_frame`) gives the ends each tick, in
   the world's or the object's basis as the Axes setting says, an arm a
   seventh of the object's distance from the eye, between 0.05 and 0.5
-  world units. It hides with the HUD and while a Forge screen is up. The
-  bounding sphere's outline the compositor drew has no retail
-  counterpart and is not drawn.
+  world units. It hides with the HUD and while a Forge screen is up. No
+  bounding sphere's outline is drawn: retail has none.
 - `forge_hud::Points` holds the world points each tick; the editor
   leaves out the markers, the rings (other monitors) and the gizmo that
   `forge_hud::Show` turns off; the session turns them on all (the
@@ -488,13 +458,13 @@ their first user. The editing slices P1 to P6 are in
 | **U1** (built) | Main menu: six rows. Remove the FORGE and FIREFIGHT entries, place Theater after System Link, re-pitch if needed | S | U2, landed together | table tests `the_main_menu_has_six_rows_with_theater`, `five_rows_without_theater`, `pitch_keeps_six_rows_above_the_footer`; the `main-menu` opener's preview with six rows; the layout checks |
 | **U4** | Forge screens in the game: the bindings table and Halo 3 pad gate, object menu, Properties from a table, Tools picker, Tool settings (Rotation snap), Link, questions, GAME MENU rows, Forge options, Controls; input handover | L | nothing | `h2 ui preview forge.objects`, `forge.properties`, `forge.tools`, `forge.settings`, `forge.link`, `forge.question`, `forge.options`, `forge.controls --state all --animation all`; `Page` tables carried over from `ui_kit/forge/tests.rs` plus `x_opens_objects_or_properties_by_aim`, `no_is_focused_on_every_question`, `every_action_has_one_binding`, `the_controls_page_lists_the_bindings_table`, `game_menu_adds_five_rows`; a gate table test that RB and LB rise and fall, RT held manipulates, hold Y deletes and B cancels; `list_class` runner test that a picker opens with its pick in a game; layout and content checks in every state; a disc test that each base resolves in `shared` |
 | **K1** | HUD kit: monitor mode (retail widgets gated off per user but the motion tracker, grenade origins without the row) | S | the HUD kit on `master` | `hud_kit_tests`: a retail widget of a monitor user is not drawn, the motion tracker is, and another user's widgets are; `h2 hud preview forge --state all --mode all --synthetic` |
-| **U3** (built, without K1) | Forge HUD on the kit: `forge` HUD, feed from `forge_glue`, copy table with buttons from the bindings table. Not in it: the reticle (the compositor keeps its `+`, `ui_kit::forge::reticle`), the retail widgets' gate (K1), the gizmo and markers (U6) | M | U4's bindings | `h2 hud preview forge --state all`; the kit's checks (fit, glyphs, frame, retail, own, one layout, prompt, drawn) in every state and mode; `every_tool_state_has_one_prompt`, `the_prompts_read_as_the_game_does`, `the_budget_and_the_rebuilds_follow_the_view`, `each_hint_fits_the_training_box`, `the_pills_are_the_grenade_rows_first_places` (kit); `the_buttons_are_read_from_the_table`, `every_button_has_a_glyph_and_every_row_a_cue`, `a_notice_is_sent_once_each`, `a_hint_is_shown_once_for_its_time` (`forge_hud_tests.rs`); `the_compositor_page_is_the_reticle_alone`; `each_yaml_is_the_hud_its_rust_was` |
+| **U3** (built, without K1) | Forge HUD on the kit: `forge` HUD, feed from `forge_glue`, copy table with buttons from the bindings table. Not in it: the reticle (`forge.reticle`), the retail widgets' gate (K1), the gizmo and markers (U6) | M | U4's bindings | `h2 hud preview forge --state all`; the kit's checks (fit, glyphs, frame, retail, own, one layout, prompt, drawn) in every state and mode; `every_tool_state_has_one_prompt`, `the_prompts_read_as_the_game_does`, `the_budget_and_the_rebuilds_follow_the_view`, `each_hint_fits_the_training_box`, `the_pills_are_the_grenade_rows_first_places` (kit); `the_buttons_are_read_from_the_table`, `every_button_has_a_glyph_and_every_row_a_cue`, `a_notice_is_sent_once_each`, `a_hint_is_shown_once_for_its_time` (`forge_hud_tests.rs`); `each_yaml_is_the_hud_its_rust_was` |
 | **K2** (built) | HUD kit: the `Banner` channel (the timed centred line) | S | the HUD kit on `master` | `FlatMemory` test of the text, start and duration fields (`the_banner_is_written_as_the_game_writes_its_timed_line`, `the_banner_is_written_on_a_change_of_text`); the prompt check extended to it; preview draws it at the routine's place (`the_banner_is_drawn_centred_above_the_frames_bottom`) |
 | **U5** (built) | Firefight HUD on the kit | M | K2; kit `Message` | `h2 hud preview firefight --state all --mode all` (`the_firefight_hud_draws_and_passes_on_the_synthetic_sheet`); `the_hud_reads_only_the_mode_blob` unchanged; `every_stage_has_a_banner_or_none` table; the kit's checks replace `hud::check`; `the_feed_publishes_the_view_and_sends_the_notes_a_change_makes` |
 | **K3** | HUD kit: several navpoints for one HUD, the number drawn | S | the kit's navpoint number | `FlatMemory` test of n slots kept and released; preview with three points |
 | **K4** (built) | HUD kit: `Shape::Segment`, a line between two world points at any slope, and `Style::Axis(n)`, one of three axis colours | S | the HUD kit on `master` | `a_segment_runs_between_its_two_points_unlifted` (`world.rs`); `a_gizmo_axis_is_a_segment_in_its_colour` (`hud_kit_world.rs`); `the_preview_draws_a_gizmo_segment_in_its_axis_colour` (the colour per axis, the `world` check on a fourth axis and on an axis off a world mark) |
 | **U6** (built) | Forge markers as navpoints; the gizmo as three segments in the Axes setting's basis; remove the marker and gizmo painters | S | K3, K4, U3 (built) | table test: held, aimed, linking and two monitors give the expected points and segments; `h2 hud preview forge --state holding` |
-| **U7** | Remove the compositor path: `ScreenSpec::hud`, `Art::Solid`, the Forge painter in `play_cmd/forge.rs`, `forge.hud`, its reticle page and its sheet entries; update [ui-builder.md](ui-builder.md) "Screen kinds" | S | U3 (built), U4, U6 | `cargo check -p cli --no-default-features --features host`; the sheet has no `forge.hud`; `docs-check` |
+| **U7** (built) | Remove the compositor path: `ScreenSpec::hud` and the `hud` screen kind, the Forge painter in `play_cmd/forge.rs` (the window keeps only the input hand-over), `forge.hud`, `forge.palette`, `forge.menu`, the reticle page and their sheet entries. `Art::Solid` stays: Theater's playback page draws its bar with it; update [ui-builder.md](ui-builder.md) "Screen kinds" | S | U3 (built), U4, U6 | `cargo check -p cli --no-default-features --features host`; the sheet has no `forge.hud`; `docs-check` |
 
 The GAME MODE picker that replaces U2's Mode row is slices T1 to T7 of
 [party-lobby.md](party-lobby.md). U2 and U4 need neither kit change and can start at once. U1 lands with
@@ -515,8 +485,7 @@ retail widgets of a player until K1's gate hides them.
   fields are the message state's timed text (`+0x454`, `+0x4d8`,
   `+0x4dc`, **E** in the HUD kit's page).
 - **Agent API**: no new method. `ui.screen` and `ui.press` see the
-  Forge screens once they are game screens, which the compositor pages
-  never were; the lobby's mode is `ui.lobby.tabs`
+  Forge screens, which are game screens; the lobby's mode is `ui.lobby.tabs`
   ([party-lobby.md](party-lobby.md), "Interfaces"); `hud.kit` (the HUD
   kit's build plan) reads the HUDs; `forge.status` and `firefight.state`
   are unchanged.

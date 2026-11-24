@@ -177,7 +177,6 @@ fn view_rules(design: &DesignDoc, s: &ScreenSpec, v: &View, out: &mut Vec<Findin
         text,
     };
     let kind = Kind::of(s);
-    let hud = kind == Kind::Hud;
     for (w, text, font, colour) in texts(v) {
         if w.alpha == 0 || text.is_empty() {
             continue;
@@ -185,16 +184,14 @@ fn view_rules(design: &DesignDoc, s: &ScreenSpec, v: &View, out: &mut Vec<Findin
         if !on_palette(colour, &palette) {
             out.push(find(vec![w.id.clone()], "palette", format!("{colour:?} is not a palette colour")));
         }
-        if !hud {
-            let roles = font_role(&w.id);
-            let fonts: Vec<i16> = roles.iter().filter_map(|r| design.font(r).ok()).collect();
-            if !fonts.contains(&font) {
-                out.push(find(
-                    vec![w.id.clone()],
-                    "font",
-                    format!("font {font}, where its role ({}) is {fonts:?}", roles.join(" or ")),
-                ));
-            }
+        let roles = font_role(&w.id);
+        let fonts: Vec<i16> = roles.iter().filter_map(|r| design.font(r).ok()).collect();
+        if !fonts.contains(&font) {
+            out.push(find(
+                vec![w.id.clone()],
+                "font",
+                format!("font {font}, where its role ({}) is {fonts:?}", roles.join(" or ")),
+            ));
         }
         if w.id == "legend" {
             let line = text.rsplit('\n').next().unwrap_or(text);
@@ -202,7 +199,7 @@ fn view_rules(design: &DesignDoc, s: &ScreenSpec, v: &View, out: &mut Vec<Findin
                 out.push(find(vec![w.id.clone()], "legend", e));
             }
         }
-        if !hud && matches!(w.id.as_str(), "title" | "legend") && overflows(w, &Synthetic) {
+        if matches!(w.id.as_str(), "title" | "legend") && overflows(w, &Synthetic) {
             out.push(find(vec![w.id.clone()], "fit", format!("{text:?} overflows its rectangle")));
         }
     }
@@ -647,23 +644,21 @@ fn pattern_rules(design: &DesignDoc, s: &ScreenSpec, v: &View, out: &mut Vec<Fin
             ));
         }
     }
-    if Kind::of(s) != Kind::Hud {
-        let mut seen: Vec<Glyph> = Vec::new();
-        for g in shown_prompts(s).iter().flat_map(|p| &p.glyphs) {
-            if seen.contains(g) {
-                continue;
-            }
-            seen.push(*g);
-            let taken = INPUTS
-                .into_iter()
-                .any(|i| Glyph::of(i) == *g && s.inputs.contains(&i));
-            if !taken {
-                out.push(find(
-                    vec!["legend".into()],
-                    "handled",
-                    format!("the legend shows {}, and the page takes no such input", g.name()),
-                ));
-            }
+    let mut seen: Vec<Glyph> = Vec::new();
+    for g in shown_prompts(s).iter().flat_map(|p| &p.glyphs) {
+        if seen.contains(g) {
+            continue;
+        }
+        seen.push(*g);
+        let taken = INPUTS
+            .into_iter()
+            .any(|i| Glyph::of(i) == *g && s.inputs.contains(&i));
+        if !taken {
+            out.push(find(
+                vec!["legend".into()],
+                "handled",
+                format!("the legend shows {}, and the page takes no such input", g.name()),
+            ));
         }
     }
 }
@@ -698,9 +693,6 @@ fn place_rules(views: &[(ScreenSpec, View)], out: &mut Vec<Finding>) {
     for id in ["title", "legend"] {
         let mut by_group: HashMap<String, HashMap<[i16; 4], usize>> = HashMap::new();
         for (s, v) in views {
-            if Kind::of(s) == Kind::Hud {
-                continue;
-            }
             if let Some(w) = v.widget(id) {
                 *by_group.entry(group(s, v)).or_default().entry(w.rect).or_default() += 1;
             }
@@ -714,9 +706,6 @@ fn place_rules(views: &[(ScreenSpec, View)], out: &mut Vec<Finding>) {
             })
             .collect();
         for (s, v) in views {
-            if Kind::of(s) == Kind::Hud {
-                continue;
-            }
             let g = group(s, v);
             if let (Some(w), Some(r)) = (v.widget(id), usual.get(&g))
                 && w.rect != *r

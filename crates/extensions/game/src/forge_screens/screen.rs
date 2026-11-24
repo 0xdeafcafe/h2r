@@ -447,7 +447,7 @@ impl Rows for ForgeScreen {
         let current = r.value.as_ref()?.parse::<f32>().ok()?;
         let facts = super::facts();
         let step = if axis.is_angle() {
-            crate::ui_kit::forge::ANGLE_STEPS[facts.rotation_snap].max(1.0)
+            super::sheet::ANGLE_STEPS[facts.rotation_snap].max(1.0)
         } else {
             super::sheet::MOVE_STEPS[facts.movement_snap].max(0.01)
         };

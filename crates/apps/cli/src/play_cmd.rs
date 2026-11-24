@@ -861,7 +861,7 @@ pub(crate) fn run_with_theater(
     let editor_link = EditorLink::default();
     config.editor_link = Some(Arc::new(EditorPlateSource(editor_link.clone())));
     if boot::forge_glue::requested().map_err(anyhow::Error::msg)? {
-        config.forge = Some(forge::overlay(&opts.disc).context("loading Forge UI assets")?);
+        config.forge = Some(forge::overlay());
     }
     let theater = open_library.map(|open| (boot::theater_ui::Theater::default(), open));
     if let Some((controller, _)) = &theater {
