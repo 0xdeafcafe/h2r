@@ -189,6 +189,11 @@ impl Plan {
     fn at(&self, offset: u32) -> u32 {
         self.entry_esp.wrapping_sub(offset)
     }
+
+    /// The layer draw byte in the guest frame, committed with the typed slot.
+    pub fn draw_byte(&self) -> u32 {
+        self.at(slot::DRAWS)
+    }
 }
 
 /// A slot's light as the loop reads it (`0x000404eb`..`0x00040517`): no
@@ -404,12 +409,6 @@ async fn light(
         weight,
     };
     if let Some(accepted) = cx.write(|m| on_passes(m, p, &constants))? {
-        let last = if accepted.reached & (1 << 13) != 0 {
-            13
-        } else {
-            12
-        };
-        cx.write(|m| m.set_u8(p.at(slot::DRAWS), ((accepted.drawn >> last) & 1) as u8))?;
         return Ok(FirstPersonLight {
             index,
             light: l.datum,
@@ -524,7 +523,7 @@ async fn layer(
     out: &mut FirstPersonLight,
 ) -> Result<(), EntryError> {
     let e = p.entry_esp;
-    let draws_at = p.at(slot::DRAWS);
+    let draws_at = p.draw_byte();
     out.reached |= 1 << block.layer;
     let draws = cx.write(|m| -> Result<u8, MemFault> {
         let b = ((m.u32(LIGHT_MASK)? >> block.layer) & 1) as u8;

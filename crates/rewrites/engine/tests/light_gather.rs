@@ -1210,7 +1210,12 @@ mod first_person_body {
                     let mask = m.u32(LIGHT_MASK)?;
                     assert_eq!(mask, 1 << (12 + index));
                     seen += 1;
-                    Ok((index == 0).then_some(first_person::SlotPasses {
+                    if index != 0 {
+                        return Ok(None);
+                    }
+                    // The accepted packet transaction owns the slot's last draw byte.
+                    m.set_u8(plan.draw_byte(), 1)?;
+                    Ok(Some(first_person::SlotPasses {
                         flags: 0,
                         reached: (1 << 11) | (1 << 14) | (1 << 12),
                         drawn: mask,

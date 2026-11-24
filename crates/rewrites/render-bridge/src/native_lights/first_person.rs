@@ -174,9 +174,6 @@ fn try_passes(
             return Ok(None);
         }
     };
-    let [colour, depth] = slot.tail.surfaces;
-    let [x, y, width, height, near, far] = slot.tail.viewport;
-    let target = [colour, depth, x, y, width, height, near, far];
     let graph = light_graph::Pass::Light {
         site: GroupSite::FirstPerson,
         steps: slot.steps.as_slice(),
@@ -189,16 +186,17 @@ fn try_passes(
         mem,
         graph,
         &slot.groups,
-        target,
-        slot.tail.clip,
-        slot.tail.clip_header,
+        &slot.globals,
+        &slot.tail,
+        Some((
+            plan.draw_byte(),
+            u8::from(slot.steps.as_slice().last().is_some_and(|step| step.draws)),
+        )),
     ) {
         refused(SceneList::TypedFirstPerson, Refusal::Unsupported);
         return Ok(None);
     }
 
-    slot.globals.write(mem)?;
-    slot.tail.write(mem)?;
     let drawn = slot.steps.drawn();
     if drawn != 0 {
         // The ordinary loop opens the light at its first drawn layer.
