@@ -349,6 +349,8 @@ impl Ground {
             zones: self.zones,
             squads: self.squads,
             bases: self.bases,
+            classes: Vec::new(),
+            cut: Vec::new(),
         })
     }
 }
