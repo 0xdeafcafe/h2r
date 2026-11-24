@@ -271,7 +271,7 @@ pub(super) fn fill(
                     return Err(Refusal::Palette);
                 }
                 guest_map = m.bytes(ptr(m, at(geometry, 0x68)?)?, count)?;
-                &guest_map
+                guest_map.as_slice()
             } else {
                 &[]
             }
