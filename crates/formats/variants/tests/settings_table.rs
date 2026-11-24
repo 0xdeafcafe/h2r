@@ -38,6 +38,7 @@ fn ext_takes(field: ExtField, value: i32) -> bool {
         ExtField::Damage => e.damage = n,
         ExtField::Shield => e.shield = n,
         ExtField::Health => e.health = n,
+        ExtField::Speed => e.speed = n,
         ExtField::UnlimitedGrenades => {
             if n > 1 {
                 return false;
@@ -76,7 +77,9 @@ fn the_table_matches_the_record() {
                 assert!(!row.is_record());
                 let want = match field {
                     ExtField::Gravity => Some(ext::GRAVITY),
-                    ExtField::Damage | ExtField::Shield | ExtField::Health => Some(ext::PERCENT),
+                    ExtField::Damage | ExtField::Shield | ExtField::Health | ExtField::Speed => {
+                        Some(ext::PERCENT)
+                    },
                     ExtField::UnlimitedGrenades => None,
                 };
                 match want {

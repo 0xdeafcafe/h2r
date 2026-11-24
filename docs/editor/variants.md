@@ -293,7 +293,7 @@ file, so it carries no signature.
   `rules::settings::TABLE` stores it (a record setting through
   `GameVariant::set`, the carrier's own score setting for `score_limit`,
   CTF's or Assault's setting for the paired `ctf_*` rows, an `hx` field
-  for `gravity`, `damage`, `shield`, `health` and `unlimited_grenades`),
+  for `gravity`, `damage`, `shield`, `health`, `speed` and `unlimited_grenades`),
   the script's name, and the script reference (mode 2, the IR hash's
   first 8 bytes and the option bits, the defaults for options not
   given). It refuses a setting past the table, on a carrier it does not

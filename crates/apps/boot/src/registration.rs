@@ -377,6 +377,10 @@ pub(crate) fn register_core_film(
     features
         .add(&variant_ext::Vitality)
         .map_err(|e| anyhow::anyhow!("variant options vitality: {e}"))?;
+    // Its movement speed, on the engine's per-player speed step.
+    features
+        .add(&variant_ext::Speed)
+        .map_err(|e| anyhow::anyhow!("variant options speed: {e}"))?;
     // Our own skulls (from 15): hidden in campaign levels, their effects
     // ours on the tick (docs/game/skulls.md "Our skulls"). The skull weapon's
     // tag comes from the loaded map's file, found through the VFS.

@@ -173,8 +173,7 @@ pub enum PortableError {
     Setting(String),
     #[error("{0}")]
     Edit(String),
-    /// An `hx` extra no script setting sets (speed, weapon ids, team
-    /// size), beside a script.
+    /// An `hx` extra no script setting sets (weapon ids, team size), beside a script.
     #[error("the record's extension block has {0}, which no script setting sets")]
     Extras(&'static str),
 }
@@ -566,11 +565,11 @@ fn settings_on(ir: &rules::Ir, carrier: u8) -> Result<GameVariant, PortableError
 }
 
 /// The first extra of `e` that no [`rules::settings::TABLE`] row stores:
-/// only gravity, damage, shield, health and unlimited grenades have rows.
+/// only gravity, damage, shield, health, speed and unlimited grenades have
+/// rows.
 fn non_setting_extra(e: &ext::Ext) -> Option<&'static str> {
     let d = ext::Ext::default();
     [
-        (e.speed != d.speed, "a movement speed"),
         (e.primary != d.primary, "a primary weapon id"),
         (e.secondary != d.secondary, "a secondary weapon id"),
         (e.team_size != d.team_size, "a team size"),
@@ -597,7 +596,7 @@ pub fn set_row(v: &mut GameVariant, index: u16, value: i32) -> Result<(), Portab
 /// Attaches the built-in script of `v`'s engine to a record that names
 /// none: mode 2, its prefix and its default options. The block keeps the
 /// extras the table has rows for (gravity, damage, shield, health,
-/// unlimited grenades) and drops the rest. Returns false and changes
+/// speed, unlimited grenades) and drops the rest. Returns false and changes
 /// nothing for a record that names a script already, one whose block is
 /// ignored, and an engine with no built-in script.
 pub fn attach_builtin(v: &mut GameVariant) -> Result<bool, PortableError> {
@@ -622,6 +621,7 @@ pub fn attach_builtin(v: &mut GameVariant) -> Result<bool, PortableError> {
         damage: now.damage,
         shield: now.shield,
         health: now.health,
+        speed: now.speed,
         unlimited_grenades: now.unlimited_grenades,
         ..ext::Ext::default()
     };
@@ -669,6 +669,7 @@ fn write_setting(
                 ExtField::Damage => e.damage = percent()?,
                 ExtField::Shield => e.shield = percent()?,
                 ExtField::Health => e.health = percent()?,
+                ExtField::Speed => e.speed = percent()?,
                 ExtField::UnlimitedGrenades => e.unlimited_grenades = s.value != 0,
             }
         }
@@ -699,6 +700,7 @@ pub fn setting_value(v: &GameVariant, row: &rules::settings::Row, carrier: u8) -
                 ExtField::Damage => i32::from(e.damage),
                 ExtField::Shield => i32::from(e.shield),
                 ExtField::Health => i32::from(e.health),
+                ExtField::Speed => i32::from(e.speed),
                 ExtField::UnlimitedGrenades => i32::from(e.unlimited_grenades),
             })
         }
@@ -1096,11 +1098,11 @@ mod tests {
         // A bundle with an extra no script setting sets is refused.
         let mut bad = b.variant().unwrap();
         let mut e = bad.ext();
-        e.speed = 120;
+        e.team_size = 2;
         bad.set_ext(&e).unwrap();
         let mut bundle = b.clone();
         bundle.record_hex = hex(bad.bytes());
-        assert_eq!(bundle.check().unwrap_err(), PortableError::Extras("a movement speed"));
+        assert_eq!(bundle.check().unwrap_err(), PortableError::Extras("a team size"));
     }
 
     #[test]

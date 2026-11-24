@@ -93,16 +93,17 @@ const TEAMS_LABELS: u32 = GRENADES_LABELS + 3;
 pub const TEAMS_DESCRIPTION: &str = "How many teams a team game makes, at most the map's. \
      Every build plays it.";
 
-/// The damage, shield and health scales: their rows, after the team count.
+/// The damage, shield, health and speed scales: their rows, after the team count.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scale {
     Damage,
     Shield,
     Health,
+    Speed,
 }
 
 impl Scale {
-    pub const ALL: [Scale; 3] = [Scale::Damage, Scale::Shield, Scale::Health];
+    pub const ALL: [Scale; 4] = [Scale::Damage, Scale::Shield, Scale::Health, Scale::Speed];
 
     pub fn row(self) -> i16 {
         TEAMS_ROW + 1 + self as i16
@@ -117,6 +118,7 @@ impl Scale {
             Scale::Damage => "Damage",
             Scale::Shield => "Shields",
             Scale::Health => "Health",
+            Scale::Speed => "Speed",
         }
     }
 
@@ -125,6 +127,7 @@ impl Scale {
             Scale::Damage => e.damage,
             Scale::Shield => e.shield,
             Scale::Health => e.health,
+            Scale::Speed => e.speed,
         }
     }
 
@@ -133,6 +136,7 @@ impl Scale {
             Scale::Damage => e.damage = v,
             Scale::Shield => e.shield = v,
             Scale::Health => e.health = v,
+            Scale::Speed => e.speed = v,
         }
     }
 
@@ -146,6 +150,9 @@ impl Scale {
             }
             Scale::Health => {
                 "How much every player's body holds, as a share of the game's. Not on System Link."
+            }
+            Scale::Speed => {
+                "How fast every player moves, as a share of the game's. Not on System Link."
             }
         }
     }
@@ -173,7 +180,7 @@ impl Scale {
 pub const GRAVITY_ROW: i16 = 0;
 pub const GRENADES_ROW: i16 = 1;
 pub const TEAMS_ROW: i16 = 2;
-pub const ROWS: usize = 6;
+pub const ROWS: usize = 7;
 
 /// The team count in the edited record (`+0xb4`, an i32).
 pub const EDITED_TEAMS: u32 = EDITED_VARIANT + 0xb4;
@@ -186,7 +193,7 @@ const SCALE_IDS: u32 = TEAMS_LABELS + TEAM_COUNTS.len() as u32;
 /// The script option rows' ids: a label per row, then a description per
 /// row. Their text is the script's and changes with the record, so each id
 /// holds a placeholder of [`OPTION_ROOM`] bytes that `live_text` rewrites.
-const OPTION_IDS: u32 = SCALE_IDS + 3 * (1 + GRAVITY_STEPS.len() as u32);
+const OPTION_IDS: u32 = SCALE_IDS + Scale::ALL.len() as u32 * (1 + GRAVITY_STEPS.len() as u32);
 
 /// The most option rows (an option takes at least one of the record's 32
 /// option bits to be worth a row; the rest are not shown).
@@ -1372,7 +1379,8 @@ mod tests {
         p.read([0; ext::LEN]);
         assert_eq!(Scale::of_row(3), Some(Scale::Damage));
         assert_eq!(Scale::of_row(5), Some(Scale::Health));
-        assert_eq!(Scale::of_row(6), None);
+        assert_eq!(Scale::of_row(6), Some(Scale::Speed));
+        assert_eq!(Scale::of_row(7), None);
         for sc in Scale::ALL {
             assert_eq!(p.texts(sc.row()), [(LABEL_SLOT, sc.label_id(4))]);
             assert_eq!(p.description(sc.row()), Some(sc.description_id()));
@@ -1568,7 +1576,7 @@ mod tests {
         assert_eq!(p.texts(GRAVITY_ROW), [(LABEL_SLOT, gravity_label_id(4))]);
         assert_eq!(
             p.texts(ROWS as i16 - 1),
-            [(LABEL_SLOT, Scale::Health.label_id(4))]
+            [(LABEL_SLOT, Scale::Speed.label_id(4))]
         );
         // Then one row per option, in the script's order.
         for i in 0..4 {
