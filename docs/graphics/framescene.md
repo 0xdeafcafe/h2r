@@ -1041,8 +1041,8 @@ to the guest's draws (**Code**):
     Before a scene view's layer draw (`layer_site` is `Site::Scene`; the
     overlay layer 2 after the dynamic lights at `0x0002c060`,
     `layer_pass::OVERLAY_LAYER`, and the late layer 17 at `0x0002c30b`,
-    `layer_pass::BLOOM_LAYER`, among them), before the alternate view's layer 2
-    (`Site::AlternateView`, return `0x0002bda8`), before the first person's
+    `layer_pass::BLOOM_LAYER`, among them), before the alternate view's layers 1, 5 and 2
+    (`Site::AlternateView`), before the first person's
     layers 1, 7, 8, 20 and 2 (`Site::FirstPerson`, its layer 2 returning
     to `0x00040289`; its layer 3 is `native_first_person`'s), and before the sorted
     transparent list's camouflage layers 18 and 19 and hologram layer 21 (`sorted_site`,
@@ -1066,7 +1066,7 @@ to the guest's draws (**Code**):
     its state over the device's at the call,
     `object_state::resolve_layer`, blending kept) with its fog, sampling
     no texture accumulation target; the device must draw W-buffered over
-    the whole target, as layer 3's objects. An item toggling the
+    a single clip equal to the viewport. Packets use that viewport scaled to each target copy. An item toggling the
     auxiliary state is refused (its values are read at layer 3). An item
     with a PRT stream draws each pass's PRT variant with the stream's
     constants from `c[68]` on, written over the item's own as the draw
@@ -1121,7 +1121,7 @@ to the guest's draws (**Code**):
     stage cannot draw. Each ask's outcomes are counted in `render.scene`
     as `layer_plan_<layer>_taken` and
     `layer_plan_<layer>_refused_<cause>` (the first person's as
-    `layer_plan_fp<layer>_*`, the alternate view's as `layer_plan_alt2_*`, a sorted handler's as
+    `layer_plan_fp<layer>_*`, the alternate view's as `layer_plan_alt<layer>_*`, a sorted handler's as
     `layer_plan_sorted<layer>_*`): the plan's causes
     (`LayerRefusal::name`, `per_draw` for a material resolved per draw),
     extraction's object causes (`LayerObjectRefusal::name`,
@@ -1132,7 +1132,7 @@ to the guest's draws (**Code**):
     would leave a render state other than the device holds:
     `skip_holds`),
     `object_models` (the caller's models are not resident or their
-    palettes changed), `object_viewport`, `object_w_buffer`,
+    palettes changed), `viewport`, `object_w_buffer`,
     `object_model` (the item's model is not uploaded), `object_plan`
     (a pass does not plan; the first of each reason is logged),
     `object_texaccum`, `object_fog`, `object_stencil`,

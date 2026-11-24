@@ -1,5 +1,5 @@
 //! The host of `frame-scene.layers` (docs/graphics/framescene.md, slice 4):
-//! the scene's world layers 1, 5, 7, 8, 20, 2 and 17, the alternate view's layer 2, the first person's
+//! the scene's world layers 1, 5, 7, 8, 20, 2 and 17, the alternate view's layers 1, 5 and 2, the first person's
 //! layers 1, 7, 8, 20 and 2, and the sorted handlers' layers 18 and 19
 //! (camouflage) and 21 (hologram) (docs/graphics/native-water-fog.md),
 //! drawn from the scene's plan
@@ -201,6 +201,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             return None;
         }
         let read = ReadMemory(mem);
+        if !viewport_clip(&d, &read) {
+            refuse_all(&mut outcomes, "viewport", taken.len(), objects.len());
+            report(&outcomes, 0);
+            return None;
+        }
         // The device's stencil at the layer call, which the items draw
         // under (`layer_pass::item_stencil`); one that does not read
         // leaves the layer to the D3D path.
@@ -395,17 +400,7 @@ fn plan_objects<B: d3d::backend::Backend>(
         LayerCaller::FirstPerson => crate::native_first_person_glue::layer_models(d, mem),
     };
     let Some(models) = models else { return all("object_models") };
-    // The objects' programs draw over the whole target, as layer 3's.
     let read = ReadMemory(mem);
-    let whole = d.external_ready(&read, false).ok().is_some_and(|request| {
-        let (width, height) = request.surface_size;
-        d.clip_area(&read).ok().flatten().is_some_and(|(clip, rects)| {
-            rects.is_empty() && clip.is_whole(width, height) && request.rect == (0, 0, width, height)
-        })
-    });
-    if !whole {
-        return all("object_viewport");
-    }
     let (entry, w_buffered) = crate::native_objects_glue::entry_states(d, mem);
     if !w_buffered {
         return all("object_w_buffer");
@@ -510,6 +505,34 @@ enum LayerRun {
     World(Vec<(Owner, u8)>),
     /// Object pass draws, each with its model.
     Objects(Vec<(u32, PlannedDraw)>),
+}
+
+/// The guest programs apply the viewport transform in their constants. A
+/// single clip equal to the viewport can be reproduced on either target copy.
+pub(crate) fn viewport_clip<B: d3d::backend::Backend>(device: &d3d::Device<B>, read: &ReadMemory<'_>) -> bool {
+    let viewport = device.viewport();
+    device.clip_area(read).ok().flatten().is_some_and(|(clip, rects)| {
+        rects.is_empty() && (viewport.x, viewport.y, viewport.width, viewport.height) == (clip.x, clip.y, clip.width, clip.height)
+    })
+}
+
+pub(crate) fn clip_packets(
+    mut draws: d3d::backend::ExternalDraws, request: d3d::ExternalPassRequest, size: (u32, u32),
+) -> Result<d3d::backend::ExternalDraws, &'static str> {
+    if request.rect != (0, 0, request.surface_size.0, request.surface_size.1) {
+        let scissor = viewport_scissor(request.rect, request.surface_size, size).ok_or("empty layer viewport")?;
+        draws.packets = draws.packets.into_iter().map(|packet| packet.with_scissor(scissor, size)).collect();
+    }
+    Ok(draws)
+}
+
+fn viewport_scissor(
+    (x, y, width, height): (u32, u32, u32, u32), guest: (u32, u32), size: (u32, u32),
+) -> Option<gfx::ScissorRect> {
+    let scale = d3d::scaled::RenderScale::between(guest, size)?;
+    let [x, y, width, height] = scale.rect(x, y, width, height);
+    let rect = gfx::ScissorRect { x, y, width, height }.intersect(gfx::ScissorRect::full(size.0, size.1));
+    (!rect.is_empty()).then_some(rect)
 }
 
 /// One view's replacement of one layer.
@@ -683,6 +706,7 @@ impl LayerViewPass {
             &t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, &view,
             request.projection_factor(t.copy), &draws, None, Some(sampled),
         )?;
+        let out = clip_packets(out, request, t.size)?;
         let writes: Vec<(wgpu::Buffer, u64, wgpu::Buffer, u64, u64)> = out
             .writes
             .into_iter()
@@ -770,6 +794,24 @@ impl LayerViewPass {
             out.discards |= draws.discards;
             out.writes.extend(draws.writes);
         }
-        Ok(out)
+        clip_packets(out, request, t.size)
+    }
+}
+
+#[cfg(test)]
+mod viewport_tests {
+    use super::*;
+
+    #[test]
+    fn adjacent_views_share_the_same_edge_on_each_copy() {
+        for (size, boundary) in [((10, 8), 3), ((15, 13), 5)] {
+            let top = viewport_scissor((0, 0, 10, 3), (10, 8), size).unwrap();
+            let bottom = viewport_scissor((0, 3, 10, 5), (10, 8), size).unwrap();
+            assert_eq!(top.y, 0);
+            assert_eq!(top.height, boundary);
+            assert_eq!(bottom.y, boundary);
+            assert_eq!(bottom.y + bottom.height, size.1);
+            assert_eq!(bottom.width, size.0);
+        }
     }
 }

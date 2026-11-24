@@ -10,10 +10,11 @@ use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
 use engine::points;
-use frame_scene::{FrameScene, View};
+use frame_scene::{FrameScene, View, ViewKind};
 use native_render::camera::GuestRead;
 use native_render::object_walk::{self, Entry, Run, SortedObjects};
-use native_render::objects::{ItemKey, SCENE_LAYER3_RETURN};
+use native_render::objects::ItemKey;
+use native_render::world_layers::{Site, layer_site};
 use timeline::native::{Metric, ObjectWalk, Stage, Timer};
 
 use crate::native_world::Mem;
@@ -127,6 +128,7 @@ pub trait Host: Send + Sync {
 }
 
 struct WalkLayer {
+    kind: ViewKind,
     list: u32,
     base: u32,
     counter: u32,
@@ -145,9 +147,11 @@ fn host() -> Option<Arc<dyn Host>> {
 
 fn begin_walk(mem: &mut dyn GuestMemory, ret: u32) {
     WALK_LAYER.with(|state| *state.borrow_mut() = None);
-    if ret != SCENE_LAYER3_RETURN {
-        return;
-    }
+    let kind = match layer_site(3, ret) {
+        Site::Scene => ViewKind::Game,
+        Site::AlternateView => ViewKind::Alternate,
+        _ => return,
+    };
     let Some(host) = host() else { return };
     // Use the same map generation check as activation on snapshot loads.
     host.preload(mem);
@@ -156,6 +160,7 @@ fn begin_walk(mem: &mut dyn GuestMemory, ret: u32) {
     };
     WALK_LAYER.with(|state| {
         *state.borrow_mut() = Some(WalkLayer {
+            kind,
             list,
             base: 0,
             counter: 0,
@@ -175,7 +180,9 @@ fn initialize_walk(layer: &mut WalkLayer, mem: &mut dyn GuestMemory, esp: u32, e
     };
     ObjectWalk::PartAuxState.count(causes.aux_state);
     ObjectWalk::PartSubparts.count(causes.subparts);
-    crate::scene_step::objects(&*mem, &entries);
+    if !crate::scene_step::objects(&*mem, layer.kind, &entries) {
+        return;
+    }
     let decision = object_walk::decide(&entries, current);
     ObjectWalk::Unsupported.fallback(decision.unsupported);
     ObjectWalk::Order.fallback(decision.interleaved);

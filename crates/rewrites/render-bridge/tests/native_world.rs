@@ -277,6 +277,10 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
     native_world::before_layer(&mut m, 0x0002_bd74);
     assert_eq!(masks(&m), vec![0b0010, 0b1010, 0b1010]);
     assert_eq!(stub.asked.lock().unwrap().len(), asked + 2);
+    render_bridge::scene_step::with_open(|open| {
+        let (_, view) = open.expect("alternate layer 3 opened a view");
+        assert_eq!(view.key.kind, frame_scene::ViewKind::Alternate);
+    });
     native_world::restore_pending(&mut m);
 }
 
