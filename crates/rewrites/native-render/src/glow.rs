@@ -151,7 +151,8 @@ pub struct Plan {
     pub signs: [f32; 2],
     /// The view's target size and targets 7 and 8's, in guest pixels.
     pub view: (u32, u32),
-    pub small: (u32, u32),
+    pub down: (u32, u32),
+    pub other: (u32, u32),
     pub draws: Vec<Draw>,
 }
 
@@ -168,17 +169,18 @@ pub fn target_size(mem: &dyn GuestRead, index: u32) -> Option<(u32, u32)> {
 }
 
 /// What the quads share, read at the call: the window, the tap signs and
-/// the sizes (`None` when a size is missing, zero, or 7 and 8 differ).
+/// the sizes (`None` when a size is missing or zero).
 /// The draws are the caller's ([`Plan::draws`]).
 pub fn read_frame(mem: &dyn GuestRead) -> Option<Plan> {
     let (window, signs) = read_window(mem)?;
     let view_index = mem.read_u32(VIEW_TARGET)? & 0xffff;
     let view = target_size(mem, view_index as u16 as i16 as i32 as u32)?;
-    let small = target_size(mem, TARGET_DOWN)?;
-    if target_size(mem, TARGET_OTHER)? != small || [view.0, view.1, small.0, small.1].contains(&0) {
+    let down = target_size(mem, TARGET_DOWN)?;
+    let other = target_size(mem, TARGET_OTHER)?;
+    if [view.0, view.1, down.0, down.1, other.0, other.1].contains(&0) {
         return None;
     }
-    Some(Plan { window, signs, view, small, draws: Vec::new() })
+    Some(Plan { window, signs, view, down, other, draws: Vec::new() })
 }
 
 /// The window `(left, top, right, bottom)` and the tap signs
@@ -213,7 +215,8 @@ impl Plan {
     pub fn size(&self, s: Surface) -> (u32, u32) {
         match s {
             Surface::View => self.view,
-            Surface::Down | Surface::Other => self.small,
+            Surface::Down => self.down,
+            Surface::Other => self.other,
         }
     }
 
@@ -898,7 +901,8 @@ mod tests {
             window: [0.0, 0.0, 640.0, 480.0],
             signs: [-0.5, 0.5],
             view: (640, 480),
-            small: (160, 120),
+            down: (160, 120),
+            other: (160, 120),
             draws: Vec::new(),
         }
     }
@@ -1023,7 +1027,8 @@ mod tests {
             window: [0.0, 0.0, 4.0, 4.0],
             signs: [0.0; 2],
             view: (4, 4),
-            small: (2, 2),
+            down: (2, 2),
+            other: (2, 2),
             draws: [
                 (Surface::Down, Surface::View),
                 (Surface::View, Surface::Down),
@@ -1038,13 +1043,13 @@ mod tests {
         let target = GlowTarget {
             device: &ctx.device, queue: &ctx.queue, uploads: &arena,
             color: PostSurface { view: view.target().color, guest_size: plan.view }, entry_sources: [None; 4],
-            intermediates: [Some(PostSurface { view: small.target().color, guest_size: plan.small }), None],
+            intermediates: [Some(PostSurface { view: small.target().color, guest_size: plan.down }), None],
         };
         assert_eq!(glow.encode(target, &mut encoder, &plan), Err(Refused::Source(Surface::View)));
         glow.encode(GlowTarget {
             device: &ctx.device, queue: &ctx.queue, uploads: &arena,
             color: PostSurface { view: view.target().color, guest_size: plan.view }, entry_sources: [Some(&sample), None, None, None],
-            intermediates: [Some(PostSurface { view: small.target().color, guest_size: plan.small }), None],
+            intermediates: [Some(PostSurface { view: small.target().color, guest_size: plan.down }), None],
         }, &mut encoder, &plan).unwrap();
         arena.flush(&ctx.queue);
         ctx.queue.submit([encoder.finish()]);
@@ -1071,7 +1076,8 @@ mod tests {
             window: [0.0, 0.0, 8.0, 8.0],
             signs: [-0.5, 0.5],
             view: (8, 8),
-            small: (4, 4),
+            down: (4, 4),
+            other: (4, 4),
             draws: vec![
                 Draw { dest: Surface::Down, stages: [Some(Surface::View), None, None, None], combiner: copy, taps: 1, spread: 0.0, blend: None },
                 Draw {
@@ -1111,7 +1117,9 @@ mod tests {
             let target = GlowTarget {
                 device: &ctx.device, queue: &ctx.queue, uploads: &arena,
                 color: PostSurface { view: &views[0], guest_size: plan.view }, entry_sources: [Some(&views[3]), None, None, None],
-                intermediates: [1, 2].map(|i| Some(PostSurface { view: &views[i], guest_size: plan.small })),
+                intermediates: [(1, plan.down), (2, plan.other)].map(|(i, guest_size)| {
+                    Some(PostSurface { view: &views[i], guest_size })
+                }),
             };
             let mut glow = GpuGlow::new();
             let mut encoder = ctx.device.create_command_encoder(&Default::default());
@@ -1189,8 +1197,13 @@ mod tests {
         assert_eq!(p.window, [0.0, 0.0, 640.0, 480.0]);
         assert_eq!(p.signs, [-0.5, 0.5]);
         assert_eq!(p.view, (640, 480), "target 0 without a surface: 0x0001dd60's default");
-        assert_eq!(p.small, (160, 120));
+        assert_eq!(p.down, (160, 120));
         m.insert(TARGETS + TARGET_OTHER * TARGET_STRIDE + 0x80, 80);
-        assert_eq!(read_frame(&Words(m)), None, "7 and 8 differ");
+        let p = read_frame(&Words(m.clone())).unwrap();
+        let quad = p.quad(&draw(Surface::Other, Surface::Down, 4, 0.5));
+        assert_eq!(quad.dest[..2], [2.0 / 80.0, 2.0 / 120.0]);
+        assert_eq!(quad.taps[0][2..], [2.0, 1.0]);
+        m.insert(TARGETS + TARGET_OTHER * TARGET_STRIDE + 0x80, 0);
+        assert!(read_frame(&Words(m)).is_none());
     }
 }

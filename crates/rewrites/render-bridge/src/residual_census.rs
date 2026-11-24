@@ -325,13 +325,13 @@ pub const REGISTRY: &[Row] = &[
     Row {
         name: "screen_effects",
         entry: 0x0001_3870,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "transparents",
     },
     Row {
         name: "colour_pass",
         entry: 0x0002_14f0,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "transparents",
     },
     Row {
@@ -355,7 +355,7 @@ pub const REGISTRY: &[Row] = &[
     Row {
         name: "fade",
         entry: 0x0004_0890,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "overlay",
     },
     Row {
@@ -1421,17 +1421,36 @@ mod tests {
 
     #[test]
     fn screen_effects_charge_claimed_and_guest_draws_to_the_partial_producer() {
-        let effect = Producer::Fixed(row("screen_effect").unwrap());
+        let producer = |name| Producer::Fixed(row(name).unwrap());
+        let parent = producer("screen_effects");
         let mut c = open(true, 1);
         c.frame_begin();
-        c.enter(effect);
-        c.call(&entry(DRAW, 0x1200, tally(3, 2, 1, 0)), None);
-        c.leave(|p| p == effect);
+        c.enter(parent);
+        for name in ["colour_pass", "screen_effect"] {
+            let child = producer(name);
+            c.enter(child);
+            c.call(&entry(DRAW, 0x1200, tally(3, 2, 1, 0)), None);
+            c.leave(|p| p == child);
+        }
+        c.call(&entry(DRAW, 0x1300, tally(1, 0, 1, 0)), None);
+        c.leave(|p| p == parent);
+        let fade = producer("fade");
+        c.enter(fade);
+        c.call(&entry(DRAW, 0x1400, tally(1, 1, 0, 0)), None);
+        c.leave(|p| p == fade);
         c.frame_end();
-        let report = close(c, 8);
-        let work = report.producers.unwrap()[&effect].work;
-        assert_eq!(effect.status(), Status::Partial);
-        assert_eq!((work.draws, work.claimed, work.residual), (3, 2, 1));
+        let rows = close(c, 8).producers.unwrap();
+        for (name, expected) in [
+            ("screen_effects", (1, 0, 1)),
+            ("colour_pass", (3, 2, 1)),
+            ("screen_effect", (3, 2, 1)),
+            ("fade", (1, 1, 0)),
+        ] {
+            let p = producer(name);
+            let w = rows[&p].work;
+            assert_eq!(p.status(), Status::Partial, "{name}");
+            assert_eq!((w.draws, w.claimed, w.residual), expected, "{name}");
+        }
     }
 
     #[test]
