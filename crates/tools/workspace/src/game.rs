@@ -58,6 +58,9 @@ pub enum Off {
     Requires(String),
     /// The set could not be ordered.
     Set(String),
+    /// A `convert` item found no input and nothing was converted before
+    /// (`crate::convert`): the converter's reason.
+    Input(String),
 }
 
 impl std::fmt::Display for Off {
@@ -66,6 +69,7 @@ impl std::fmt::Display for Off {
             Self::SetFile => write!(f, "switched off in {SET_FILE}"),
             Self::Feature(name) => write!(f, "feature {name:?} is off"),
             Self::Requires(why) | Self::Set(why) => f.write_str(why),
+            Self::Input(why) => write!(f, "not converted: {why}"),
         }
     }
 }
@@ -170,6 +174,18 @@ impl GameSet {
         file: Result<SetFile, SetError>,
         feature_on: &dyn Fn(&str) -> bool,
     ) -> Self {
+        Self::assemble_with(baked, local, file, feature_on, &BTreeMap::new())
+    }
+
+    /// [`assemble`](Self::assemble), with `inputs_off` the packages whose
+    /// `convert` items found no input, and why ([`crate::inputs_off`]).
+    pub fn assemble_with(
+        baked: Vec<Loaded>,
+        local: Vec<Result<(PathBuf, Loaded), LoadError>>,
+        file: Result<SetFile, SetError>,
+        feature_on: &dyn Fn(&str) -> bool,
+        inputs_off: &BTreeMap<String, String>,
+    ) -> Self {
         let mut problems = Vec::new();
         let file = file.unwrap_or_else(|e| {
             problems.push(format!("{e}; every package is on, in the default order"));
@@ -218,6 +234,8 @@ impl GameSet {
                 off.insert(h.id.clone(), Off::SetFile);
             } else if let Some(f) = h.features.iter().find(|f| !feature_on(f)) {
                 off.insert(h.id.clone(), Off::Feature(f.clone()));
+            } else if let Some(why) = inputs_off.get(&h.id) {
+                off.insert(h.id.clone(), Off::Input(why.clone()));
             }
         }
         let mut run = file.clone();
@@ -275,8 +293,30 @@ impl GameSet {
 
     /// [`assemble`](Self::assemble) over `baked` and the folders under
     /// `<data_root>/packages/` that hold a `package.toml`, by name, and
-    /// that folder's `set.toml` when there is one.
+    /// that folder's `set.toml` when there is one. A package whose
+    /// conversion found no input at the last prepare is off
+    /// ([`crate::inputs_off`]).
     pub fn read(baked: Vec<Loaded>, data_root: &Path, feature_on: &dyn Fn(&str) -> bool) -> Self {
+        let off = crate::convert::inputs_off(data_root);
+        Self::read_off(baked, data_root, feature_on, &off)
+    }
+
+    /// [`read`](Self::read) without what the last prepare left off: the
+    /// set prepare itself runs on, so a disc that has arrived is found.
+    pub fn read_unprepared(
+        baked: Vec<Loaded>,
+        data_root: &Path,
+        feature_on: &dyn Fn(&str) -> bool,
+    ) -> Self {
+        Self::read_off(baked, data_root, feature_on, &BTreeMap::new())
+    }
+
+    fn read_off(
+        baked: Vec<Loaded>,
+        data_root: &Path,
+        feature_on: &dyn Fn(&str) -> bool,
+        inputs_off: &BTreeMap<String, String>,
+    ) -> Self {
         let root = data_root.join(PACKAGES_DIR);
         let mut dirs: Vec<PathBuf> = std::fs::read_dir(&root)
             .into_iter()
@@ -295,7 +335,7 @@ impl GameSet {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(SetFile::default()),
             Err(e) => Err(SetError::Toml(e.to_string())),
         };
-        Self::assemble(baked, local, file, feature_on)
+        Self::assemble_with(baked, local, file, feature_on, inputs_off)
     }
 
     /// The packages on, in load order, for [`crate::build`].

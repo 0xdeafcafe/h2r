@@ -550,7 +550,6 @@ pub fn auto_install(game_disc: &Path, data: &Path) {
 
 fn try_auto(game_disc: &Path, data: &Path) -> Result<Option<String>> {
     let Some(iso_path) = discover(game_disc) else { return Ok(None) };
-    let name = iso_path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
     let bytes = crate::load_xbe(game_disc)?;
     let x = xbe::Xbe::parse(&bytes)?;
     if x.certificate.title_id != HALO2_TITLE {
@@ -560,19 +559,29 @@ fn try_auto(game_disc: &Path, data: &Path) -> Result<Option<String>> {
     if already_installed(data, &iso_path, base.version) {
         return Ok(Some("already installed".into()));
     }
-    let mut iso = crate::open_iso(&iso_path)?;
+    install_disc(&iso_path, &base, data).map(Some)
+}
+
+/// Install the map pack disc at `iso_path` into `data` for the game disc
+/// whose certificate is `base`, and stamp it. The line says what it did.
+fn install_disc(iso_path: &Path, base: &xbe::Certificate, data: &Path) -> Result<String> {
+    let name = iso_path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    let mut iso = crate::open_iso(iso_path)?;
     let plan = Plan::from_entries(&iso.entries()?).with_context(|| name.clone())?;
     let has_update = plan.update_for(base.version).is_some();
     // Overwrite: whatever is there came from this import or an older one.
-    let out = OutDir::new(data, true)?.protecting(&iso_path);
-    let maps = install(&mut iso, &plan, &out, data, has_update.then_some(&base), false)?.packages;
-    std::fs::write(data.join(STAMP), stamp_text(&iso_path, base.version)?)?;
-    Ok(Some(if has_update {
+    let out = OutDir::new(data, true)?.protecting(iso_path);
+    let maps = install(&mut iso, &plan, &out, data, has_update.then_some(base), false)?.packages;
+    std::fs::write(data.join(STAMP), stamp_text(iso_path, base.version)?)?;
+    Ok(if has_update {
         format!("installed {maps} maps and title update from {name}")
     } else {
         format!("installed {maps} maps from {name} (no title update for this disc's version)")
-    }))
+    })
 }
+
+#[path = "mappack_package.rs"]
+pub mod package;
 
 #[cfg(test)]
 mod tests {

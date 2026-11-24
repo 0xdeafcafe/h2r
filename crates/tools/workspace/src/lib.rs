@@ -26,6 +26,9 @@
 //! - [`check_package`], [`check_set`]: what `h2 package check` reports.
 //! - [`prepare`]: `map` and `map-patch` items built to map packages under
 //!   `<data>/maps/` ([`maps`](crate::maps) module docs).
+//! - [`convert`]: `convert` items run with the converters the caller
+//!   has (the Halo 1 import, the Map Pack install), each map stamped under
+//!   `<data>/packages/stamps/` ([`convert`](mod@crate::convert) module docs).
 //! - [`build_map`]: [`build`] on a map file's bytes, laid out again.
 //! - [`GameSet`]: the game's packages, baked then `<data>/packages/`, under
 //!   `set.toml` and the game's features; [`PackageRewrite`] serves each map
@@ -38,6 +41,7 @@ mod animation;
 mod bitmap;
 mod build;
 mod builders;
+mod convert;
 mod edit;
 mod firefight_sets;
 mod game;
@@ -58,6 +62,8 @@ mod screens;
 mod tagitem;
 mod unpin;
 
+#[cfg(test)]
+mod convert_tests;
 #[cfg(test)]
 mod import_tests;
 #[cfg(test)]
@@ -83,6 +89,10 @@ pub use build::{
     cache_key, wants_shading,
 };
 pub use builders::{BUILDERS_VERSION, Builder, Job, builder, changes_map, registry};
+pub use convert::{
+    CONVERTERS, ConvertFailed, ConvertSpec, Converted, Converter, Input, InputOff, ItemStamp, Ran,
+    STAMPS_DIR, Skipped, Stamp, Unit, UnitFailed, convert, inputs_off, stamp_path, unit_key,
+};
 pub use edit::{BlockLine, Op, SetLine, TagEdit, edits_text, parse_edits};
 pub use firefight_sets::sets as wave_sets;
 pub use game::{CACHE_DIR, Entry, GameSet, Listed, Off, Origin, PACKAGES_DIR, baked};

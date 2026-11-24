@@ -151,6 +151,8 @@ mod mappack_cmd;
 #[cfg(feature = "desktop")]
 mod maps;
 #[cfg(feature = "desktop")]
+mod package_prepare;
+#[cfg(feature = "desktop")]
 mod server_map;
 #[cfg(feature = "desktop")]
 mod movies_cmd;
@@ -279,6 +281,10 @@ const USAGE: &str = "usage: h2 <command> [disc]
   import-mappack <iso> [--data DIR]
                           install the Multiplayer Map Pack disc's maps into the
                           emulated hard disk (docs/game/map-pack.md)
+  package prepare [--disc ISO] [--data DIR] [--force] [--no-halo1] [--no-mappack]
+                          run the packages' convert items (the Halo 1 and Map Pack
+                          discs beside the game disc), as h2 play, run and serve do
+                          before they boot (docs/editor/studio-redesign.md)
   movies <iso> [--out DIR] [--ffmpeg PATH] [--force]
                           convert the Bink movies to MP4 with your own ffmpeg
                           (optional; exit 3 if ffmpeg is missing, 4 if unusable)
@@ -441,6 +447,10 @@ fn desktop_command(cmd: String, mut args: impl Iterator<Item = String>) -> Resul
     }
     if cmd == "import-mappack" {
         return mappack_cmd::run(args.collect());
+    }
+    // The other `package` commands run in h2-tools (tools::forwards).
+    if cmd == "package" {
+        return package_prepare::run(args.skip(1).collect());
     }
     if cmd == "bots" {
         let args: Vec<String> = args.collect();

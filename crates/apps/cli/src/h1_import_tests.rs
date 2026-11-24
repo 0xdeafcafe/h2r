@@ -350,18 +350,45 @@ fn discovers_a_halo1_disc_by_its_xbe_under_another_name() {
 }
 
 #[test]
-fn auto_import_without_a_halo1_disc_does_nothing() {
+fn the_converter_without_a_halo1_disc_says_why_and_writes_nothing() {
+    use workspace::Converter as _;
     let d = scratch("auto-none");
     let game = d.join("halo2.iso");
     std::fs::write(&game, b"game").unwrap();
     let data = d.join("data");
-    auto_import(&game, &data);
-    assert!(!data.exists());
-    // With one but a game "disc" that is no image: a warning, nothing written.
+    let conv = package::Halo1 {
+        game_disc: game.clone(),
+        data: data.clone(),
+        force: false,
+    };
+    let spec = workspace::ConvertSpec::parse(b"converter = \"halo1\"\n").unwrap();
+    let why = conv.input(&spec).unwrap_err();
+    assert!(why.contains("no Halo 1 disc"), "{why}");
+    // With one but a game "disc" that is no image: the reason, nothing written.
     std::fs::write(d.join("halo1.iso"), h1map::testing::campaign_disc()).unwrap();
-    auto_import(&game, &data);
+    let why = conv.input(&spec).unwrap_err();
+    assert!(why.contains("not a disc image"), "{why}");
     assert!(!data.exists());
     let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_recipe_picks_the_jobs() {
+    use package::{Picks, picked};
+    let all = stems(&["a10", "bloodgulch"]);
+    let keys = |p: &Picks| picked(&all, p).iter().map(Job::key).collect::<Vec<_>>();
+    assert_eq!(
+        keys(&Picks::default()),
+        ["a10", "bloodgulch/h2", "bloodgulch/h1", "a10/h2"]
+    );
+    let table = |t: &str| Picks::from_settings(&toml::from_str(t).unwrap());
+    let mp_h1 = table("campaign = false\nsandboxes = [\"h1\"]\n").unwrap();
+    assert_eq!(keys(&mp_h1), ["bloodgulch/h1"]);
+    let no_h2_assets = table("halo2_assets = false\nmultiplayer = false\n").unwrap();
+    assert_eq!(keys(&no_h2_assets), ["a10"]);
+    assert!(table("sandboxes = [\"h3\"]\n").unwrap_err().contains("h3"));
+    assert!(table("levels = 1\n").unwrap_err().contains("levels"));
+    assert!(table("campaign = \"yes\"\n").is_err());
 }
 
 /// Against your discs: the whole import into a scratch data root, then what

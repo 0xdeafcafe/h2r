@@ -1,0 +1,17 @@
+[package]
+format = 1
+id = "map-pack"
+name = "Multiplayer Map Pack"
+description = "The Map Pack's nine maps and its title update, installed from your own Map Pack disc."
+
+[credit]
+authors = ["Alexander Forbes-Reed"]
+
+# The Map Pack install (h2 import-mappack) as a recipe. The maps come from
+# the Map Pack disc beside the game disc when `h2 package prepare` (or h2
+# play, run or serve) runs and stay under the data root. With no disc and
+# nothing installed before, the package is off and says why.
+
+[[item]]
+kind = "convert"
+source = "convert/map-pack.convert.toml"

@@ -8,6 +8,10 @@
 //! builder or a source its builder refuses, and two packages adding the
 //! same tag. `build` runs the same checks, then applies the packages to a
 //! base map the user names and writes the result.
+//!
+//! `h2 package prepare` runs the `convert` items with the Halo 1 and Map
+//! Pack converters, which link the game's disc readers, so it is `h2`'s
+//! (`crates/apps/cli/src/package_prepare.rs`).
 
 use std::path::{Path, PathBuf};
 
@@ -21,6 +25,7 @@ use workspace::{
 
 const USAGE: &str = "usage: h2 package check <dir>...
        h2 package build <dir>... --base <map> -o <out.map> [--map <name>] [--scope multiplayer|campaign|mainmenu|shared] [--no-lock]
+       h2 package prepare [--disc <halo2.iso>] [--data DIR] [--force] (runs in h2: the convert items)
 
 A <dir> is a package folder (it holds package.toml), or a folder of them
 (content/). Packages load in the order of their requires and after lists.

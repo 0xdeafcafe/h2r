@@ -54,7 +54,7 @@ the calls before it):
 
 | Content | Source in Git | How it gets in |
 |---|---|---|
-| Halo 1 maps and campaign | none (the user's disc) | `h1_import::auto_import` before boot (`crates/apps/cli/src/h1_import.rs`) writes `<data>/maps/h1_<map>/` and `<data>/campaigns/halo1/`; `campaigns::boot_state` and `new_maps::install_at_boot` list them |
+| Halo 1 maps and campaign | the recipe, `content/halo1/convert/` (the bytes are the user's disc) | the `halo1` package's `convert` item, run before boot by `package_prepare::before_boot` (PK10, "Conversions"), writes `<data>/maps/h1_<map>/` and `<data>/campaigns/halo1/`; `campaigns::boot_state` and `new_maps::install_at_boot` list them |
 | Pogo Stick | `content/pogo/` (the `pogo` package) | `workspace::PackageRewrite` (PK4; `pogo_kit::served` reads the weapons it left) |
 | Menu screens, retail screen edits | `content/ui/` (the `ui` package) | `workspace::PackageRewrite` (PK5) |
 | HUD kit HUDs | `hud` items (`content/{superbounce,forge,modes}/huds/`); their states in Rust (`crates/rewrites/hud-kit-core/src/views/`) | `hud_kit::install` in `boot/src/registration.rs`, compiled against the loaded map |
@@ -397,7 +397,7 @@ maps = "multiplayer"
 | `playlist` | a hopper fragment, TOML (`content::playlist::Fragment`): named map lists, playlists and entries by map name or `MapId`, a variant by the key of a matchmaking script | rows of the default hopper (built: parsed and checked; the server reads `workspace::hopper_fragments`) | Live |
 | `map` | `map.toml`: `mode` (`fresh`, `onto`), `base`, the new map's `name`, `scenario` and `kits` (`fresh`), and `ground` when it has AI; the items it takes are those whose `maps` names it | a derived map package under `<data>/maps/`, built at prepare, or when first picked if it has `ground` (built: `workspace::prepare`) | sim |
 | `map-patch` | a PPF, IPS or BPS file, and in `inputs` one TOML file with the base's `map` name and `sha256` | a map package with that layer, the one `h2 live maps import` writes for the patch (built) | sim |
-| `convert` | a recipe: a converter name and its settings; the input is the user's own disc | map packages and campaign files | sim |
+| `convert` | a recipe, `<name>.convert.toml`: a `converter` (`halo1`, `map-pack`) and its `[settings]`; the input is the user's own disc | map packages and campaign files under the data root, at prepare (built: `workspace::convert`, "Conversions") | sim |
 | `data` | a file a named game feature reads (the Pogo's pose set) | handed to the feature at boot | per feature |
 | `kit` | a named code builder's settings: `source` is `kits/<kit>.kit.yaml`, whose name says the kit (`campaign-cards`, `glyphs`); first-party packages only | what that builder adds to the files it is for; its inputs are the game's, so a build on a map leaves it out (`workspace::kits`) | per builder |
 
@@ -448,7 +448,8 @@ packages, in order, to a map's `map::build::TagSet` for one `Target` (the
 map's name and class). An item runs when its `maps` takes the target;
 its builder comes from the closed registry (`workspace::registry`: `tag`,
 `edits`, `bitmap`, `model`, `sound`, `data`, `hud`, `screens`,
-`screen-edits`, `rules`, `variant`, `playlist`, `map`, `map-patch`; the other kinds stop the build with "no builder"). The `map` and
+`screen-edits`, `rules`, `variant`, `playlist`, `map`, `map-patch`,
+`convert`, `kit`; the other kinds stop the build with "no builder"). The `map` and
 `map-patch` builders change no map: they build map packages at prepare (below). The
 base is what is built onto: the result differs from it only in the tags
 the items add or change, and a tag a decomposed map keeps pinned is laid
@@ -595,10 +596,10 @@ off, is not used and every package is on. Each such line goes to stderr
 and to `packages.list`. The set is used in four places, which replace the
 paths in "What exists":
 
-1. **Prepare**, before boot (`h2 play`, `h2 run`, `h2 serve`, in place
-   of `h1_import::auto_import` and the Map Pack's automatic install):
+1. **Prepare**, before boot (`h2 play`, `h2 run`, `h2 serve`):
    `convert` items run when their input disc is present and their stamp
-   is stale; `map` and `map-patch` items build to map packages under
+   is stale (`package_prepare::before_boot`, "Conversions"); at boot
+   `map` and `map-patch` items build to map packages under
    `<data>/maps/`. `new_maps::install_at_boot`, the resolver and `MapId`
    are unchanged: a map package stays the form the VFS loads and Live
    names.
@@ -657,8 +658,8 @@ as its unit: a project is a `map` item, a `ContentKit` is a builder, and
 | `modes` (built, PK8: `variant`, `rules`, `playlist`, `hud`) | `rules` (the community modes, Siege, Firefight's director with its wave sets (built, PK12), which the director script is built from), `variant`, `playlist`, `hud`, `sound` (start lines), `map` (our Firefight and Siege maps, with `ground`) | the rest of the scripts of `rules::builtin` (now `content/modes/rules/`), `community_variants`' table of scripts, `crates/formats/firefight`'s built-in sets, `huds/firefight.rs` |
 | `superbounce` | `rules`, `hud`, `sound` (the announcer clips), `screens` | `hud-kit-core/src/views/superbounce*.rs`' element lists, `art/announcer/` |
 | `pogo` (built, PK4) | `model`, `tag` (the weapons), `sound` (the clips `pogo_sound.rs` plays), `data` (the atlases, the pose set `pogo_pose.rs` reads) | `art/pogo/`, `PogoRewrite`; `pogo_kit::{kit, mesh, source, texture}` is the `model` builder's code and `inject::add_pogo` the test's reference |
-| `halo1` | `convert` (converter `halo1`: every multiplayer map in both sandboxes, the campaign), `kit: campaign-cards` (built, PK12), `screens` | `h1_import.rs`'s entry points, `CardRewrite` |
-| `map-pack` | `convert` (converter `map-pack`: the nine maps from the user's Map Pack disc), `playlist` | `mappack_cmd.rs`'s automatic install, the Map Pack rotations in `hopper/defaults.rs` |
+| `halo1` | `convert` (built, PK10: converter `halo1`, every multiplayer map in both sandboxes and the campaign), `kit: campaign-cards` (built, PK12), `screens` | `h1_import::auto_import` (gone), `CardRewrite` |
+| `map-pack` (built, PK10: the `convert` item) | `convert` (converter `map-pack`: the nine maps and the title update from the user's Map Pack disc), `playlist` | `mappack_cmd::auto_install` at boot (`h2 import-mappack` and Live's capture still call it), the Map Pack rotations in `hopper/defaults.rs` |
 | `stage` | `map` (`fresh`), `model`, `bitmap` | `art/stage/project.toml` ([content-stage.md](content-stage.md)) |
 | a community mod pack | `map-patch` per map, `[credit]` | a Live mod pack's member manifests ([maps.md](../game/maps.md), "The mod repository") |
 | a test map | `map` (`onto`) with `edits` | `scenario_edit::recipe` through `boot/src/test_maps_recipes.rs` ([test-maps.md](../game/test-maps.md)) |
@@ -681,13 +682,57 @@ its documents, materialiser and slot reservation stay code. Its screens
 are data like every screen and live in `ui`; a map variant a player
 makes in Forge is shared as a Forge document, as today.
 
+### Conversions
+
 A `convert` item holds the recipe only: which maps, which sandbox, which
 base. The Halo 1 or Map Pack bytes come from the user's disc at prepare
 time and the outputs stay under the data root. The converters stay Rust
-(`crates/tools/h1convert`); the package is what names and orders them,
-and what other packages build on: an `edits` item whose `maps` names a
-converted map is the overlay [modeling.md](modeling.md), "Converted Halo 1
-maps" describes.
+(`crates/tools/h1convert`, `crates/apps/cli/src/h1_import.rs`,
+`mappack_cmd.rs`); the package is what names and orders them, and what
+other packages build on: an `edits` item whose `maps` names a converted
+map is the overlay [modeling.md](modeling.md), "Converted Halo 1 maps"
+describes.
+
+- **The recipe** (`content/halo1/convert/halo1.convert.toml`,
+  `content/map-pack/convert/map-pack.convert.toml`) names a `converter`
+  from the closed list `workspace::CONVERTERS` and its `[settings]`. The
+  `convert` builder checks it (`h2 package check`) and changes no map.
+  `halo1` takes `campaign`, `halo2_assets`, `multiplayer` (true or false)
+  and `sandboxes` (`"h1"`, `"h2"`) (`h1_import::package::Picks`);
+  `map-pack` takes none. A key the converter does not know is an error.
+- **The run** is `workspace::convert(data, packages, converters, force,
+  say)`. A `workspace::Converter` finds its input (the disc beside the
+  game disc), lists its units (a level, a map in one sandbox; the Map
+  Pack is one unit) and converts the ones it is given, saying each as it
+  finishes. `h2` has two: `h1_import::package::Halo1` (the import's jobs
+  on its worker threads) and `mappack_cmd::package::MapPack`.
+- **Stamps.** `<data>/packages/stamps/<package>.toml` holds, per item,
+  the key each unit was converted with, or why it failed. A unit's key
+  (`workspace::unit_key`) covers the converter's version
+  (`h1_import::CONVERTER_VERSION`, the Map Pack stamp's version), the
+  input's identity (the disc's size and modification time), the settings
+  and the unit. The stamp is written after every unit, so a run that
+  stops resumes with the units it had not reached; a unit whose key moved
+  or whose output is gone converts again on its own; a unit that failed
+  with the same key is not tried again until `--force`. The Halo 1
+  import's own `import.stamp` and the Map Pack's `mappack.stamp` are kept
+  in step, so `h2 import halo1` and `h2 import-mappack` share the work.
+- **No disc.** A converter that finds no input gives its reason. With
+  nothing converted before (no stamp entry, and `Converter::kept` false:
+  no output of the converter's own command), the stamp records the
+  reason as `off`, and `GameSet::read` lists the package off with it
+  (`Off::Input`, "not converted: ..."). `GameSet::read_unprepared` is the
+  set prepare runs on, so a disc that has arrived is found. Output
+  converted before keeps the package on when the disc is taken away.
+- **When it runs.** `h2 play`, `h2 run` and `h2 serve` call
+  `package_prepare::before_boot` before they boot (in place of
+  `h1_import::auto_import` and `mappack_cmd::auto_install`); it never
+  stops the boot. `--no-halo1`, `--no-mappack`, `H2_HALO1` and
+  `H2_MAPPACK` leave that converter out of the run, and its stamp as it
+  was. `h2 package prepare [--disc] [--data] [--force] [--no-halo1]
+  [--no-mappack]` runs it alone and prints what is off and what failed;
+  it runs in `h2`, not `h2-tools`, because the converters link the disc
+  readers (`tools::forwards`).
 
 ### Live: sharing, signing and credit
 
@@ -1112,7 +1157,7 @@ Rows are in build order.
 | GT0 to GT7, GE0 to GE5, GM1 to GM4 | **Game types without carriers**, no retail engine object, and maps for scripted games ([game-types-without-carriers.md](../game/game-types-without-carriers.md)) | S to L | GT6 needs PK11; GM2 needs PK9 | as there |
 | PK8 (built: the items, `Registry`, `community_variants`' list from the set and the fragment's parse and tests; the default hopper in `live-proto` still builds its lineup in Rust) | **Rules, variants and playlists as items**: `content/core/` and `content/modes/`; the registry from the set; `community_variants` and the default hopper read it | M | PK3 | `crates/formats/rules/tests/modes.rs` pass with scripts from the set; a package off removes its list entries; the hopper built from fragments equals `hopper/defaults.rs`'s |
 | PK9 (built) | **Whole maps** (`workspace::prepare`, `stage_kit::fresh::StageFresh`, `workspace::scenario_edits`, boot's `packages::prepare_maps`): `map` and `map-patch` items to map packages at prepare; the stage and the test-map recipes as packages | M | PK2 | an invented `fresh` and an invented `onto` item build; the `MapId` of a `map-patch` item equals the id of the map package the importer writes for the same patch |
-| PK10 | **Conversions**: `convert` items, `h2 package prepare`, stamps; `content/halo1/` and `content/map-pack/` over the existing converters | M | PK9 | with an invented converter: no disc leaves the package off with its reason; a stale stamp reruns one map; an interrupted run resumes |
+| PK10 (built: `workspace::convert`, `cli/src/package_prepare.rs`, `content/{halo1,map-pack}/`; the Map Pack's `playlist` item waits for the hopper to read fragments) | **Conversions**: `convert` items, `h2 package prepare`, stamps; `content/halo1/` and `content/map-pack/` over the existing converters | M | PK9 | with an invented converter: no disc leaves the package off with its reason; a stale stamp reruns one map; an interrupted run resumes |
 | PK12 (built) | **Kits** (built: `workspace::{kits, firefight_sets}`, `content/{core,halo1}/`, `content/modes/firefight/`; `firefight_kit::build_package` stays for `h2 firefight kit` and `host-data`'s bundle until that is moved to `ground::build`): `kit: campaign-cards`, `glyphs`; Firefight's director and wave sets as `rules` items of `modes`; `firefight_kit::build_package`'s boot and host-bundle callers go (GM1 of game-types-without-carriers builds ground on demand); boot's chain is `PackageRewrite` alone | M | PK9 | per kit, the map through the package equals the one its own caller made; `boot/src/lib.rs` builds no other rewrite |
 | PK13 | **Live, server**: `/v1/packages`, the signed manifest and lock, the upload checks, credit, the model flag, both homes | M | PK1 | the parity suite: a bad signature, a lock hash that does not match, a retail hash and a model item without the flag are each refused; an admin's credit outranks the manifest's |
 | PK14 | **Live, game and Studio**: install, the content set in a session, the join check, a session refused on `boot::packages::network_refusal`, the Mods screens, `package.publish` and `package.install`; `h2 live mods import` writes packages | M | PK13, PK3 | on the fake server: a joiner missing one package fetches it and joins; a blocked one fails before the map load with the reason; an imported pack holds patches and credit only |

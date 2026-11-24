@@ -60,10 +60,12 @@ The commands `h2-tools` runs (`tools::TOOLS`):
 | `hs lsp` | `hs_lsp.rs` (over `hs::ide`), `studio_link.rs` (the editor commands' calls to Studio) |
 | `extract-shaders` | `extract_shaders.rs` |
 
-Two subcommands of those stay in `h2` (`tools::forwards`): `h2 maps
+Three subcommands of those stay in `h2` (`tools::forwards`): `h2 maps
 install`, which runs the game's own installer (`boot::new_maps`,
-`crates/apps/cli/src/maps.rs`), and `h2 forge looks`, which reads the disc
-the way Live's art extractor does (`crates/apps/cli/src/forge_looks.rs`).
+`crates/apps/cli/src/maps.rs`), `h2 forge looks`, which reads the disc
+the way Live's art extractor does (`crates/apps/cli/src/forge_looks.rs`),
+and `h2 package prepare`, which runs the packages' `convert` items with the
+Halo 1 and Map Pack converters (`crates/apps/cli/src/package_prepare.rs`).
 
 `cli-common` holds what both binaries use: the default disc (`$H2_DISC`,
 else the Halo 2 `.iso` in the checkout's `disc/`), opening a disc image or
