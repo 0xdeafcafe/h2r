@@ -25,3 +25,9 @@ ECX and the forward-vector pointer is the fifth stack argument
 `0x0002c560` copies these into successive position, forward and up fields
 starting at its ESP +0x38. The material-group admission hook reads this
 view and the ordered object handles before it admits indexed geometry.
+
+For a full-screen parent and canvas, the nested call records the model view
+and its viewport in the open frame scene. The scene summary includes the
+camera and handles. Geometry still uses the nested draw's material and
+depth/stencil state. Recording a view does not increment the widget skip
+count or enqueue another pass.

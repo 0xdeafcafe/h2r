@@ -87,6 +87,33 @@ fn refuse(mut widget: Widget, reason: Ui) {
     reason.count();
 }
 
+struct ModelScene {
+    /// Signed edges in the draw's viewport coordinate system.
+    parent: u32,
+    bounds: [u16; 4],
+    view: frame_scene::OverlayModelView,
+}
+
+impl ModelScene {
+    /// The full-screen overlay can represent only views wholly within its
+    /// canvas. Clamping a viewport would change the camera projection.
+    fn record(self, overlay: &mut frame_scene::Overlay) -> bool {
+        let size = scene_extract::ui::CANVAS;
+        let [left, top, right, bottom] = self.bounds.map(|w| i32::from(w as i16));
+        if (overlay.size != [0, 0] && overlay.size != size)
+            || left < 0 || top < 0 || right <= left || bottom <= top
+            || right > size[0] as i32 || bottom > size[1] as i32 {
+            return false;
+        }
+        let viewport = frame_scene::ClipRect {
+            x: left as u32, y: top as u32,
+            width: (right - left) as u32, height: (bottom - top) as u32,
+        };
+        overlay.set_size(size);
+        overlay.push_model_view(viewport, self.view).is_ok()
+    }
+}
+
 /// Read the model view at the nested camera call, after the guest resolves
 /// its object and light names. The latter are separate datum namespaces.
 fn read_view(
@@ -97,7 +124,7 @@ fn read_view(
     up: u32,
     stack: u32,
     mxcsr: u32,
-) -> Option<frame_scene::OverlayModelView> {
+) -> Option<ModelScene> {
     let word = |offset| mem.u32(frame.checked_add(offset)?).ok();
     if word(MODEL_WIDGET_LOCAL)? != widget {
         return None;
@@ -124,7 +151,8 @@ fn read_view(
         }
         v.iter().all(|f| f.is_finite()).then_some(v)
     };
-    let camera = ui_model::camera(mem, widget, word(MODEL_PARENT_BOUNDS)?, mxcsr)?;
+    let parent = word(MODEL_PARENT_BOUNDS)?;
+    let camera = ui_model::camera(mem, widget, parent, mxcsr)?;
     let position = vec3(center)?;
     if position.map(f32::to_bits) != camera.center {
         return None;
@@ -137,7 +165,7 @@ fn read_view(
     if mem.u32(stack.checked_add(20)?).ok()? != camera.fov {
         return None;
     }
-    Some(frame_scene::OverlayModelView {
+    let view = frame_scene::OverlayModelView {
         camera: frame_scene::OverlayCamera {
             position,
             forward: vec3(mem.u32(stack.checked_add(16)?).ok()?)?,
@@ -145,7 +173,8 @@ fn read_view(
             fov_y: f32::from_bits(camera.fov),
         },
         objects,
-    })
+    };
+    Some(ModelScene { parent, bounds: camera.bounds, view })
 }
 
 fn view(c: &Call<'_>) {
@@ -158,10 +187,20 @@ fn view(c: &Call<'_>) {
         return;
     }
     let mem = rt.memory();
-    if read_view(&*mem, widget.address, c.cpu.ebp, c.cpu.eax, c.cpu.ecx, c.cpu.esp, c.cpu.mxcsr).is_none()
-    {
+    let Some(scene) = read_view(
+        &*mem, widget.address, c.cpu.ebp, c.cpu.eax, c.cpu.ecx, c.cpu.esp, c.cpu.mxcsr,
+    ) else {
         refuse(widget, Ui::ModelCamera);
         return;
+    };
+    // Snapshot the view at the point it draws. The nested material hooks
+    // still own geometry and its depth/stencil state. This records no skip.
+    if super::ui_overlay::screen_rect(&*mem) == Some(super::ui_overlay::FULL_SCREEN)
+        && super::ui_overlay::FULL_SCREEN.iter().enumerate().all(|(i, &edge)| {
+            scene.parent.checked_add(i as u32 * 2).and_then(|at| mem.u16(at).ok()) == Some(edge as u16)
+        })
+    {
+        crate::scene_step::with_overlay(|overlay| scene.record(overlay));
     }
     widget.view_stack = Some(c.cpu.esp);
     WIDGET.set(Some(widget));
@@ -332,8 +371,8 @@ mod tests {
         for (i, outer) in [0u16, 0, 480, 640].into_iter().enumerate() {
             let at = i as u32 * 2;
             mem.put_u16(bounds + at, outer)
-                .put_u16(def + 0x38 + at, 0)
-                .put_u16(stack + i as u32 * 4, [320, 240, 320, 240][i]);
+                .put_u16(def + 0x38 + at, [12i16, -10, -12, 10][i] as u16)
+                .put_u16(stack + i as u32 * 4, [310, 228, 330, 252][i]);
         }
         for i in 0..3 {
             let at = i * 4;
@@ -344,7 +383,11 @@ mod tests {
                 .put_f32(forward + at, if i == 1 { 1.0 } else { 0.0 })
                 .put_f32(up + at, if i == 2 { 1.0 } else { 0.0 });
         }
-        let view = read_view(&mem, widget, frame, center, up, stack, 0x1f80).unwrap();
+        let scene = read_view(&mem, widget, frame, center, up, stack, 0x1f80).unwrap();
+        let mut overlay = frame_scene::Overlay::default();
+        assert!(scene.record(&mut overlay));
+        assert_eq!(overlay.items[0].clip, frame_scene::ClipRect { x: 310, y: 228, width: 20, height: 24 });
+        let view = overlay.model_view_of(&overlay.items[0]).unwrap();
         assert_eq!(view.objects, vec![42, 17]);
         assert_eq!(view.camera.forward, [0.0, 1.0, 0.0]);
         assert_eq!(view.camera.up, [0.0, 0.0, 1.0]);
