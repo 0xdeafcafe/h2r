@@ -57,7 +57,7 @@ stage gate follows it. There are no per-stage switches.
 | Particles, decals, effects | [native-particles.md](native-particles.md), [native-decals-research.md](native-decals-research.md) | `native-render`: `particles`, `particle_gpu`, `decal`, `decal_gpu`, `effect_geometry`, `effect_immediate`, `glow`. `feature`: `native_particles`, `native_decals`, `native_effects` | Quad, decal and contrail submission |
 | Stage 4: lights and shadows | [native-lights.md](native-lights.md), [native-shadows.md](native-shadows.md), [native-shadow-layers.md](native-shadow-layers.md), [native-gels.md](native-gels.md) | `native-render`: `lights`, `light_gpu`, `light_list`, `light_look`, `light_scene`, `shadows`, `shadow_gpu`, `shadow_look`, `shadow_scene`, `shadow_filter_gpu`, `gels`, `gels_gpu`. `feature`: `native_lights`, `native_shadows`, `native_gels` | The per-light passes, shadow maps and shader gels |
 | Stage 4b: water, fog and camouflage | [native-water-fog.md](native-water-fog.md) | `native-render`: `fog`, `fog_gpu`, `water_gpu`, `object_program_gpu`. `feature`: `native_fog`, `native_water`, `native_layers` | Layer 16 fog, layer 6 water edge blend, layers 18 and 19 camouflage and layer 21 hologram |
-| Stage 5: post and HUD | [native-post-hud.md](native-post-hud.md) | `native-render`: `post`, `screen_gpu`, `screen_look`, `hud`, `ui_gpu`. `feature`: `native_post`, `native_hud` | Screen effects, bloom, the HUD and UI quads |
+| Stage 5: post and HUD | [native-post-hud.md](native-post-hud.md) | `native-render`: `post`, `screen_gpu`, `screen_look`, `flares`, `hud`, `ui_gpu`. `render-bridge`: `native_post`, `native_flares`, `native_hud` | Screen effects, bloom, lens-flare colour fans, the HUD and UI quads |
 | Scene list builders | this page | `feature`: `native_scene_lists` | The engine's visibility gathers, object setup and render records |
 
 Shared modules: `native-render`: `program`, `look`, `pass_state`, `instances`. Sections that code comments cite and on the stage pages: "Object lighting" and "Object programs" in [native-objects.md](native-objects.md); "Skip only the replaced work" in [native-world.md](native-world.md). "What a world pass reads" is a subsection of "Next: matching the look" in the same page.
@@ -380,6 +380,10 @@ the count with inline NV2A methods, draws its callback and ends the test at
 `0x00020840`. The GPU counter must preserve sample counts, readiness and
 timestamps for both. That report is separate from the previous-frame depth
 grid used for object culling.
+
+**Lens-flare colour draws.** At each researched End call the bridge checks the saved caller and admits one fan. The guest supplies the projected corners, visibility fade, shader state and target order. The native pass uses the resolved stream and bindings for that draw, including the alternating filter targets. A failed preparation leaves the original packet available. There is no separate scene-list extraction. The [retail trace](notes/2026-11-24-lens-flares.md) identifies the six colour draw sites and the visibility callback.
+
+With a flare in view, sample `h2 agent render.scene` twice. An increase in `counters.scene_submitted_flares_reference_draws` or `counters.scene_submitted_flares_display_draws` counts committed native colour fans on that copy. One flare can contribute several fans. Private captures also contribute, so take the live samples during ordinary gameplay. The original GPU query supplies visibility feedback.
 
 **Residual geometry.** The sky model's indexed strip (`0x0004c976`) and
 standard layer-2 geometry at the main-scene and alternate-scene layer sites

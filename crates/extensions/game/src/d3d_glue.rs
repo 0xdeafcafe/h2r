@@ -1438,6 +1438,20 @@ impl d3d::backend::Backend for Headless {
         let r = self.0.draw_owned(color, depth, draw, textures);
         self.forget(r)
     }
+    fn draw_admitted(
+        &mut self,
+        color: u32,
+        depth: Option<u32>,
+        draw: d3d::backend::ResolvedDraw,
+        textures: [Option<&u32>; 4],
+        admission: d3d::backend::RetainedAdmission<u32>,
+    ) -> (
+        Result<d3d::backend::DrawOutcome, String>,
+        Vec<d3d::backend::StreamBytes>,
+    ) {
+        let r = self.0.draw_admitted(color, depth, draw, textures, admission);
+        self.forget(r)
+    }
     fn draw_shared(
         &mut self,
         color: u32,

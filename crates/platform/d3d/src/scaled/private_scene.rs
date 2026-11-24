@@ -192,10 +192,11 @@ impl<'a> MixedPrivatePass<'a> {
     }
 
     pub fn apply(&mut self, op: &ReplayOp) -> Result<(), String> {
+        let scale = self.backend.scale.uniform_integer().ok_or("private scene grid is not an integer scale")?;
         let Some(tiles) = self.tiles.as_mut() else {
             return self
                 .commands
-                .apply(&mut self.backend, &self.targets, false, 1, op);
+                .apply(&mut self.backend, &self.targets, false, scale, op);
         };
         let sharp = tiles.note(op);
         let tiled = self.backend.stats.shadow_textures;
@@ -204,7 +205,7 @@ impl<'a> MixedPrivatePass<'a> {
         }
         let result = self
             .commands
-            .apply(&mut self.backend, &self.targets, false, 1, op);
+            .apply(&mut self.backend, &self.targets, false, scale, op);
         if sharp {
             self.backend.view.set_sharp_receiver(false);
         }

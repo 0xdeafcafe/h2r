@@ -1,6 +1,6 @@
 # Native renderer stage 5: post and HUD
 
-Status: Partly built. The colour-pass glow, the scenario screen effects, layer 17's items and the native UI and HUD are drawn natively; `0x0002df00` and `0x0002dd30` (the lens flares) are not, and parity with D3D is not verified.
+Status: Partly built. The colour-pass glow, the scenario screen effects, layer 17's items, lens-flare colour fans and the UI and HUD draw natively. The visibility test retains its counted draw. Pixel parity with D3D needs a live check.
 Code: `crates/rewrites/render-bridge/src/native_post.rs`, `native_hud.rs`, `crates/extensions/game/src/native_post_glue.rs`, `native_post_load.rs`, `native_hud_glue.rs`, `crates/rewrites/scene-extract/src/layout/post.rs`, `glow.rs`, `screen_look.rs`, `screen_gpu.rs`, `hud.rs`, `ui_gpu.rs`, `crates/rewrites/engine/src/colour_pass.rs`, `glow.rs`, `screen_effects.rs`, `screen_grid.rs`, `function_eval.rs`. Tests: `crates/rewrites/render-bridge/tests/native_post.rs`, `native_hud.rs`, `crates/rewrites/engine/tests/colour_pass_differential.rs`, `glow_differential.rs`, `screen_effects_differential.rs`, `screen_grid_differential.rs`, `crates/platform/d3d/tests/swallow.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
@@ -91,7 +91,7 @@ frame.
      `0x11002`) through `0x0001ccf0`, the same bitmap, then the flare
      writer `0x00020bb0` (mask `0xf`, callback `0x0002e9e0`), which
      collects up to its count `[0x004c1a04]` entries of `0x10` bytes at
-     `0x004c19c4`; each is drawn by the immediate draw `0x00046ea0`.
+     `0x004c19c4`; each can issue the filtered fan sequence at `0x00046ea0`. The callback itself draws ordinary reflections. See the [retail trace](notes/2026-11-24-lens-flares.md).
 - **After the scene.** `0x00040890` is a full-screen fade: when the mode
   `[0x00485870]` is not 0, it draws the colour at `0x00485874..`
   (packed by `0x00131e50`), with a blend picked through the jump table
@@ -161,7 +161,7 @@ continuation closes the plan before the guest caller resumes.
   compiled as stage 3 compiles layer 15, drawn with the rectangle and
   the entry's function values. Blur needs the scene as a texture, which
   the colour pass's copy already gives.
-- **`0x0002df00`** is not drawn natively; a call with `late` set keeps its D3D passes.
+- **Lens flares.** A call with `late` set runs `0x0002df00`. The flare stage takes its eligible colour fans individually, across the target and shader changes made by the guest.
 
 ### The UI and HUD (Code, `h2 disasm`)
 
@@ -191,7 +191,7 @@ make that was followed ends in one of three:
 |---|---|---|
 | Screen quads: begin `0x00035b90` (record of `0x98` bytes), quad `0x000363a0`, end `0x00036560` (`points::SCREEN_QUADS_BEGIN`, `SCREEN_QUAD`, `SCREEN_QUADS_END`) | The begin sets up to three bitmaps (`0x00012310`, address mode wrap or clamp per stage, point or linear filter), colour writes without alpha (`SET_COLOR_MASK`), depth test off, the blend by mode (`0x000142f0`: mode 10 off, else three 12-entry tables of source factor, destination factor and equation), two vertex constant blocks (a pixel-centred screen transform over the rectangle at `0x00485648`, and a second block from the record's flips and pairs), and, with stage 0 bound and `+0x97` clear, a fixed combiner written into the PSDEF at `0x00484f68` with the record's colours packed in (`0x00131e50`). Each quad commits the state (`0x0001cf50`) and pushes one inline `Begin(7)`, four vertices of diffuse (`SET_VERTEX_DATA4UB`), coordinate and position (`SET_VERTEX_DATA2F`), and `End`: no D3D entry. | Text: `0x0001f070` (from `0x0001fa50`, 22 call sites, and `0x0001fb10`, the HUD's `0x0022aca8`), over the glyph cache `[0x004b62ac]`, one quad per glyph through the layout `0x0013f0e0`, its callback `0x0001f490` and `0x0001f3a0`. A full-screen bitmap at `0x00156960`. |
 | HUD shader quad `0x0022a664` (`points::HUD_SHADER_QUAD`) | The HUD's bitmap into `0x004e6978`/`0x004e697c` (datum, index: the shader's engine texture), the shader draw `0x0001bbf0` (EDI the shader), then `D3DDevice_Begin(7)`, per corner `SetVertexData2f(3, u, v)` and `SetVertexData4f(-1, x, y, z, w)` (z and w the float at `0x0045dd40`), `D3DDevice_End`. The coordinates are the rectangle at EAX `(u0, u1, v0, v1)`, times the bitmap's size when it is linear. | The HUD widgets (`0x0022b397` to `0x0022bca4`), the UI's shader bitmaps (`0x002b12ae`), `0x001e936a` to `0x001e95b6`, `0x0020077f`, `0x0024eca0` to `0x0024f556`. |
-| Other immediate draws (`D3DDevice_Begin` callers) | Not traced: `0x002548f0` (`0x00254e28`, `0x00255083`, with `0x00014bc0` target switches and `0x00014f60` texture binds: S, the menus' blurred backdrop), the fade's `0x00040d86`, and `0x00029b00`, `0x00037a60`, `0x0003bf20`, `0x00046ea0`. | |
+| Other immediate draws (`D3DDevice_Begin` callers) | Not traced: `0x002548f0` (`0x00254e28`, `0x00255083`, with `0x00014bc0` target switches and `0x00014f60` texture binds: S, the menus' blurred backdrop), the fade's `0x00040d86`, and `0x00029b00`, `0x0003bf20`. | |
 
 So text is one batch per string with a quad per glyph, each a separate
 D3D draw; that is the work a native batch removes (one draw per run of
@@ -732,7 +732,7 @@ Its numbers are ported: `engine::colour_pass`
 
 - Each post call commits one complete replacement or draws all its originals. A plan with an unsupported input or an unavailable live target uses D3D for that call.
 - Under render scaling, a replacement that uses a reference-only intermediate together with a live display target falls back.
-- `0x0002df00` and `0x0002dd30`, the lens flares and their visibility tests, are not typed stages: their draws are carried. The tests' counts are answered through `GetVisibilityTestResult` from the backend's counter ([d3d.md](d3d.md), "Visibility tests"), and an owned frame's graph replays the counted draws and installs its counts under the guest's tickets ([framescene.md](framescene.md), slice 6). A typed test would need a counted native draw inside the guest's test: the external pass draws into no visibility counter. Layer 17's items are drawn as the other scene layers' are; the clear before them is the guest's. The end of the frame (`0x00013b90`, `0x00013cd0`, the present `0x00013f10`) is D3D.
+- `0x0002df00` and `0x0002dd30` separate flare colour from visibility. The native flare stage records eligible colour fans. The visibility draw is carried. The tests' counts are answered through `GetVisibilityTestResult` from the backend's counter ([d3d.md](d3d.md), "Visibility tests"), and an owned frame's graph replays the counted draws and installs its counts under the guest's tickets ([framescene.md](framescene.md), slice 6). A typed test would need a counted native draw inside the guest's test: the external pass draws into no visibility counter. Layer 17's items are drawn as the other scene layers' are; the clear before them is the guest's. The end of the frame (`0x00013b90`, `0x00013cd0`, the present `0x00013f10`) is D3D.
 
 ## Not verified
 

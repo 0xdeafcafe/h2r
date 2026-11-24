@@ -58,6 +58,20 @@ pub const EFFECT_WEATHER_LAYER: EffectLeaf = leaf(0x0003_8342, 0x0003_8349);
 pub const EFFECT_WEATHER_PARTICLES: EffectLeaf = leaf(0x0003_96f7, 0x0003_96f9);
 pub const EFFECT_MATERIAL_STRIP: EffectLeaf = leaf(0x0019_fc3e, 0x0019_fc40);
 
+// Immediately before the XDK End call and at its return. The shared
+// reflection billboard already has a pair above.
+const fn flare_leaf(begin: u32, end: u32) -> EffectLeaf {
+    EffectLeaf {
+        begin: Point::new("FLARE_DRAW_END", begin, Sig::Site, RENDERER),
+        end: Point::new("FLARE_DRAW_RETURN", end, Sig::Site, RENDERER),
+    }
+}
+pub const FLARE_MASK: EffectLeaf = flare_leaf(0x0004_7306, 0x0004_730b);
+pub const FLARE_MASK_SAMPLE: EffectLeaf = flare_leaf(0x0004_7512, 0x0004_7517);
+pub const FLARE_FILTER_SOURCE: EffectLeaf = flare_leaf(0x0004_679b, 0x0004_67a0);
+pub const FLARE_FILTER: EffectLeaf = flare_leaf(0x0004_6e44, 0x0004_6e49);
+pub const FLARE_COMPOSITE: EffectLeaf = flare_leaf(0x0004_7854, 0x0004_7859);
+
 pub const EFFECT_QUERY: Point = Point::new("EFFECT_QUERY", 0x0002_e9b6, Sig::Site, PARTICLES);
 pub const EFFECT_LAYERED_A: Point = Point::new("EFFECT_LAYERED_A", 0x0004_1cc0, Sig::Site, PARTICLES);
 pub const EFFECT_LAYERED_B: Point = Point::new("EFFECT_LAYERED_B", 0x0004_23c0, Sig::Site, PARTICLES);
@@ -71,6 +85,11 @@ pub fn instruction_entries() -> impl Iterator<Item = u32> {
         &EFFECT_WEATHER_LAYER,
         &EFFECT_WEATHER_PARTICLES,
         &EFFECT_MATERIAL_STRIP,
+        &FLARE_MASK,
+        &FLARE_MASK_SAMPLE,
+        &FLARE_FILTER_SOURCE,
+        &FLARE_FILTER,
+        &FLARE_COMPOSITE,
     ];
     [
         DECAL_ITEM_GEOMETRY.base,

@@ -6245,6 +6245,9 @@ impl<B: Backend> Device<B> {
             }
             !missing
         });
+        // The typed admission this draw was offered as and, if it is not
+        // taken, travels with the draw's one D3D submission.
+        let mut retained = None;
         if let Some((plan, pass, binding)) = replacement {
             // Layer-level mask edits and helper scopes need the answer immediately.
             // At a resolved draw the original packet is sufficient for worker fallback
@@ -6264,6 +6267,18 @@ impl<B: Backend> Device<B> {
                 None
             };
             let pass = Arc::new(std::sync::Mutex::new(pass));
+            // Only the flares' colour draws travel with their packet.
+            if plan.stage == timeline::native::Stage::Flares
+                && let Some(packet) = &fallback
+            {
+                retained = Some(crate::backend::RetainedAdmission {
+                    packet: Arc::clone(packet),
+                    surfaces: binding.surfaces.clone(),
+                    request: binding.request,
+                    plan: plan.clone(),
+                    pass: Arc::clone(&pass),
+                });
+            }
             if let Some(fallback) = fallback {
                 let material = prepared.map(|p| p.material);
                 let stats = Arc::clone(&self.queued_external_stats);
@@ -6362,7 +6377,12 @@ impl<B: Backend> Device<B> {
             None
         };
         let writes_color = draw.state.render.color_write.xbox_value() != 0;
-        let (outcome, spare) = self.backend.draw_owned(color, depth, draw, textures);
+        // An adapted draw (`original`) is no longer the admitted packet. The
+        // sink checks the rest once, for a retaining replay only.
+        let (outcome, spare) = match retained.filter(|_| original.is_none()) {
+            Some(admission) => self.backend.draw_admitted(color, depth, draw, textures, admission),
+            None => self.backend.draw_owned(color, depth, draw, textures),
+        };
         self.note_backend_draw();
         if let Some(p) = prepared {
             timeline::native::world_packet(p.material, Some(fallback_reason));

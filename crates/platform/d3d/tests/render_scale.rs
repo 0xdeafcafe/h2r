@@ -1767,6 +1767,7 @@ fn tile_frame() -> d3d::scene_sink::ReplayFrame {
             draw: caster.clone(),
             textures: [None, None, None, None],
             camera: CameraUse::Screen,
+            external: None,
         },
         ReplayOp::Bind {
             colour: main,
@@ -1789,6 +1790,7 @@ fn tile_frame() -> d3d::scene_sink::ReplayFrame {
             draw: receiver.clone(),
             textures: [Some(ReplayTexture::Sample(0)), None, None, None],
             camera: CameraUse::Screen,
+            external: None,
         },
     ];
     ReplayFrame {

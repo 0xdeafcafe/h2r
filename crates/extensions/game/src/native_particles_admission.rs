@@ -14,11 +14,14 @@ use render_bridge::native_particles::{Call, Host, Producer};
 use gfx::vertex::{PrimitiveType, VertexDataType};
 use native_render::effect_geometry::{self, DynamicCall};
 use native_render::effect_immediate::{self, Site};
+use native_render::flares;
 use native_render::particle_gpu::*;
 use native_render::particles::{self, Declaration, DrawIdentity, Vertex};
 
 use crate::native_lights_glue::DeviceMemory;
 use timeline::native::{Metric, Stage};
+
+mod flare_pass;
 
 #[derive(Clone)]
 enum Source {
@@ -40,15 +43,30 @@ struct Pending {
     source: Source,
     id: u64,
 }
+
+enum Issuing {
+    Particle(Pending),
+    Flare(flares::Site),
+}
+impl Issuing {
+    fn producer(&self) -> Producer {
+        match self {
+            Self::Particle(p) => p.source.producer(),
+            Self::Flare(site) => Producer::Flare(*site),
+        }
+    }
+}
+
 #[derive(Default)]
 struct Scope {
     waiting: Option<Pending>,
-    issuing: Option<Pending>,
+    issuing: Option<Issuing>,
 }
 type Renderers = Arc<Mutex<HashMap<wgpu::Device, (u64, ParticleRenderer)>>>;
 struct Admission {
     scope: Mutex<Scope>,
     renderers: Renderers,
+    flare_gpu: Arc<Mutex<flares::FlareGpu>>,
     serial: AtomicU64,
 }
 struct ImmediateAdmission<B: d3d::backend::Backend + 'static> {
@@ -148,6 +166,16 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
             .issuing
             .is_some()
     }
+    fn arm_flare(&self, mem: &mut dyn GuestMemory, site: flares::Site) {
+        let mut device = self.device.lock().unwrap_or_else(|e| e.into_inner());
+        // Drain with no owner. End has yet to submit the fan, even when
+        // its four vertices were already published inline.
+        *self.admission.scope.lock().unwrap_or_else(|e| e.into_inner()) = Scope::default();
+        if device.drain_admission_boundary(&mut DeviceMemory(mem)).ok() == Some(true) {
+            self.admission.scope.lock().unwrap_or_else(|e| e.into_inner()).issuing =
+                Some(Issuing::Flare(site));
+        }
+    }
     fn publish(&self, mem: &mut dyn GuestMemory, producer: Producer, data: u32) {
         let mut device = self.device.lock().unwrap_or_else(|e| e.into_inner());
         let pending = {
@@ -175,7 +203,7 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
             .scope
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .issuing = Some(p);
+            .issuing = Some(Issuing::Particle(p));
     }
     fn finish(&self, mem: &mut dyn GuestMemory, producer: Producer) {
         let mut device = self.device.lock().unwrap_or_else(|e| e.into_inner());
@@ -185,10 +213,13 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
                 .scope
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
+            let active = s.issuing.as_ref().is_some_and(|p| p.producer() == producer);
+            if matches!(producer, Producer::Flare(_)) && !active {
+                // Shared helper called outside the flare pass, or End already consumed it.
+                return;
+            }
             s.waiting = None; // allocation failure / skipped emission
-            s.issuing
-                .as_ref()
-                .is_some_and(|p| p.source.producer() == producer)
+            active
         };
         if active {
             let _ = device.drain_admission_boundary(&mut DeviceMemory(mem));
@@ -208,6 +239,7 @@ pub fn install<B: d3d::backend::Backend + 'static>(device: &d3d::abi::SharedDevi
     let admission = Arc::new(Admission {
         scope: Mutex::new(Scope::default()),
         renderers: Default::default(),
+        flare_gpu: Default::default(),
         serial: AtomicU64::new(1),
     });
     device
@@ -367,7 +399,10 @@ impl DrawAdmission for Admission {
             .unwrap_or_else(|e| e.into_inner())
             .issuing
             .take()?;
-        self.plan(snapshot, &pending, Stage::Particles)
+        match pending {
+            Issuing::Particle(p) => self.plan(snapshot, &p, Stage::Particles),
+            Issuing::Flare(site) => flare_pass::plan(site, snapshot, &self.flare_gpu),
+        }
     }
 }
 
@@ -824,34 +859,65 @@ mod tests {
         draw.layout.streams[0].attributes[0].data_type = VertexDataType::NormShort4;
         assert!(matches!(geometry(&draw, &source), Err(Refused::Geometry)));
     }
+    fn snapshot(draw: &d3d::ResolvedDraw) -> DrawSnapshot<'_> {
+        DrawSnapshot {
+            draw,
+            vertex_shader: 0,
+            pixel_shader: 0,
+            bound_textures: [0; 4],
+            sampled_stages: [false; 4],
+            palettes: [0; 4],
+            color_header: 1,
+            depth_header: 2,
+        }
+    }
+
+    #[test]
+    fn one_flare_end_admits_one_fan_and_leaves_visibility_to_the_query() {
+        let admission = Admission {
+            scope: Mutex::new(Scope::default()),
+            renderers: Default::default(),
+            flare_gpu: Default::default(),
+            serial: AtomicU64::new(1),
+        };
+        let arm = || {
+            admission.scope.lock().unwrap().issuing = Some(Issuing::Flare(flares::Site::Mask));
+        };
+        let (mut fan, _) = particle();
+        fan.primitive = PrimitiveType::TriangleFan;
+        fan.layout.streams[0].stride = 256;
+        fan.layout.streams[0].attributes[0].data_type = VertexDataType::Float4;
+        fan.streams[0] = StreamBytes { stride: 256, data: vec![0; 1024].into() };
+        for end in ["D3DDevice_End", "inline Begin/End"] {
+            arm();
+            fan.entry = end;
+            let (plan, pass) = admission.admit(&snapshot(&fan)).expect("scoped fan");
+            assert_eq!((plan.stage, plan.ranges), (Stage::Flares, 1));
+            assert!(pass.replays_scene());
+            assert_eq!(pass.resolved_fallback().as_deref(), Some(&fan));
+            assert!(admission.admit(&snapshot(&fan)).is_none());
+        }
+        arm();
+        fan.hw.zpass_count_enable = true;
+        assert!(admission.admit(&snapshot(&fan)).is_none());
+        fan.hw.zpass_count_enable = false;
+        assert!(admission.admit(&snapshot(&fan)).is_none());
+    }
+
     #[test]
     fn a_mismatch_consumes_the_scope_and_cannot_take_the_following_quad() {
         let (draw, source) = particle();
         let admission = Admission {
             scope: Mutex::new(Scope::default()),
             renderers: Default::default(),
+            flare_gpu: Default::default(),
             serial: AtomicU64::new(1),
         };
-        fn snapshot(draw: &d3d::ResolvedDraw) -> DrawSnapshot<'_> {
-            DrawSnapshot {
-                draw,
-                vertex_shader: 0,
-                pixel_shader: 0,
-                bound_textures: [0; 4],
-                sampled_stages: [false; 4],
-                palettes: [0; 4],
-                color_header: 1,
-                depth_header: 2,
-            }
-        }
         assert!(
             admission.admit(&snapshot(&draw)).is_none(),
             "no active producer"
         );
-        admission.scope.lock().unwrap().issuing = Some(Pending {
-            source,
-            id: 1,
-        });
+        admission.scope.lock().unwrap().issuing = Some(Issuing::Particle(Pending { source, id: 1 }));
         let mut wrong = draw.clone();
         wrong.vertex_count = 3;
         assert!(admission.admit(&snapshot(&wrong)).is_none());

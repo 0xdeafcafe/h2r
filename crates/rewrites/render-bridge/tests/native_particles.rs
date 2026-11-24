@@ -10,7 +10,7 @@ fn the_switch_off_and_no_parent_update_skip() {
     let mut r = Registry::new(Switches::defaults());
     r.add(&NativeParticles).unwrap();
     let plan = r.build(&Base).unwrap();
-    assert_eq!(plan.chains.len(), 22);
+    assert_eq!(plan.chains.len(), 32);
     assert!(plan.chains.contains_key(&EMIT_READY.base));
     assert!(!plan.chains.contains_key(&native_render::particles::EMIT_QUAD), "the walk replaces the emit observer");
     assert!(plan.chains.contains_key(&DYNAMIC_QUAD_READY.base));
@@ -22,6 +22,9 @@ fn the_switch_off_and_no_parent_update_skip() {
         assert!(scene.contains(&chain.point.base));
     }
     assert_eq!(plan.chains.values().filter(|c| c.point.name.starts_with("EFFECT_IMMEDIATE_")).count(), 10);
+    let flare_points: Vec<_> = plan.chains.values().filter(|c| c.point.name.starts_with("FLARE_DRAW_")).collect();
+    assert_eq!(flare_points.len(), 10);
+    assert!(flare_points.iter().all(|c| scene.contains(&c.point.base)));
     for chain in plan.chains.values() {
         assert_ne!(chain.point.base, native_render::particles::RENDER_UPDATE);
         assert!(chain.render_thread().is_ok());

@@ -91,6 +91,7 @@ are under [Reviews](#reviews).
 - [hot-iteration.md](graphics/hot-iteration.md): live tag edits (`edit.*`) and hot WGSL overrides, parameters and toggles for the host renderer (`render.*`), without a rebuild or restart
 - [high-resolution.md](graphics/high-resolution.md): native and fixed output sizes, per-axis raster scaling, and widescreen projection
 - [native-renderer.md](graphics/native-renderer.md): the native GPU renderer (`impl.render.native`, `crates/rewrites/native-render`): the frame, the stages and how a frame is checked
+- [Retail lens-flare draws](graphics/notes/2026-11-24-lens-flares.md) traces the visibility callback, reflections and intermediate filter targets.
 - [native-world.md](graphics/native-world.md): native renderer stage 1: the static world
 - [native-objects.md](graphics/native-objects.md): native renderer stage 2: objects and skinning
 - [native-decorators.md](graphics/native-decorators.md): native decorators: the BSP's model decorators typed into the scene and drawn instanced

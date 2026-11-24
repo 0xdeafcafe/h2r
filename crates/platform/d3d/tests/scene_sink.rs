@@ -357,7 +357,7 @@ fn a_frozen_sample_needs_the_earlier_pixels_and_an_in_place_view_sees_the_later_
         presented: main, colour: Some(desc), aux: vec![desc], ops: vec![
             clear(main), (at, ReplayOp::Sample { id: 0, of: side, how }), clear(side),
             (at, ReplayOp::Bind { colour: main, depth: TargetRef::None }),
-            (at, ReplayOp::Draw { draw: std::sync::Arc::new(draw.clone()), textures: [Some(ReplayTexture::Sample(0)), None, None, None], camera: CameraUse::Screen }),
+            (at, ReplayOp::Draw { draw: std::sync::Arc::new(draw.clone()), textures: [Some(ReplayTexture::Sample(0)), None, None, None], camera: CameraUse::Screen, external: None }),
         ], ..Default::default()
     };
     let live = frame(ReplaySample::InPlace);
@@ -394,7 +394,7 @@ fn an_opaque_full_target_rhw_strip_defines_colour_only_when_it_covers_every_samp
         presented: main,
         colour: Some(AuxTarget { width: W, height: H, format: draw.target.format as u32, depth: false }),
         ops: vec![(at, ReplayOp::Bind { colour: main, depth: TargetRef::None }),
-            (at, ReplayOp::Draw { draw: std::sync::Arc::new(draw.clone()), textures: [None, None, None, None], camera: CameraUse::Screen })],
+            (at, ReplayOp::Draw { draw: std::sync::Arc::new(draw.clone()), textures: [None, None, None, None], camera: CameraUse::Screen, external: None })],
         ..Default::default()
     };
     let defined = |draw| frame(draw).private_target_refusal().is_none();
@@ -566,4 +566,268 @@ fn object_shadow_marks_wrap_each_shadows_ops_and_change_nothing_else() {
     let quiet = record(Some(never as ShadowSource));
     assert!(!quiet.ops.iter().any(|(_, op)| op.is_marker()));
     assert_eq!(ops(&quiet), ops(&unmarked));
+}
+
+/// A typed admission offered with the guest's one draw (docs/graphics/
+/// framescene.md): the draw is issued once, as any guest draw is, and the
+/// replay keeps the admission beside it only when it is exact for that draw.
+mod retained_admission {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use d3d::backend::{ExternalPassRequest, ExternalPlan, ExternalSurfaces, RetainedAdmission};
+    use d3d::scene_sink::{ReplayOp, ReplayTexture, RetainedExternal};
+    use d3d::{Backend, DrawOutcome, ExternalPass};
+    use gfx::D3DFormat;
+    use timeline::native::Stage;
+
+    struct Flare(bool);
+
+    impl ExternalPass for Flare {
+        fn replays_scene(&self) -> bool { self.0 }
+    }
+
+    fn slot() -> Option<SlotAt> { Some(SlotAt { slot: Slot::Opaque, view: 0 }) }
+
+    struct Outcome {
+        result: Result<DrawOutcome, String>,
+        /// Draws the sink's backend received for the one call.
+        issued: usize,
+        external: Option<Box<RetainedExternal>>,
+        replay_draws: usize,
+        refusals: Vec<&'static str>,
+        /// The draw the guest submitted, as the replay must see it.
+        submitted: ResolvedDraw,
+    }
+
+    /// One admitted draw through a real sink: `case` may break the
+    /// admission, the submitted draw or the sink's mode.
+    fn capture(
+        reference: bool,
+        case: impl FnOnce(&mut RetainedAdmission<u32>, &mut ResolvedDraw, [u32; 3]),
+    ) -> Outcome {
+        let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
+        set_states(&mut device, &mut memory);
+        quad(&mut device, &mut memory, 0xFF40_8020);
+        let draw = device.backend.draws().pop().unwrap().clone();
+
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let output = frames.clone();
+        let mut sink = SceneSink::new(RecordingBackend::new(), slot)
+            .with_replay(move |frame| output.lock().unwrap().push(frame))
+            .with_guest_reference_request(move || reference);
+        let fmt = D3DFormat::LinA8R8G8B8;
+        let colour = sink.create_texture_target(fmt, 32, 32).unwrap();
+        let shown = sink.create_surface(fmt, 32, 32, false).unwrap();
+        let depth = sink.create_surface(D3DFormat::LinD24S8, 32, 32, true).unwrap();
+        let mut admission = RetainedAdmission {
+            packet: Arc::new(draw.clone()),
+            surfaces: ExternalSurfaces { color: colour, depth, sampled: vec![], slots: vec![], slot_sizes: vec![] },
+            request: ExternalPassRequest {
+                rect: (0, 0, 32, 32),
+                surface_size: (32, 32),
+                z_scale: 1.0,
+                display_projection_factor: 1.0,
+            },
+            plan: ExternalPlan { stage: Stage::Flares, view: 0, ranges: 1, slots: vec![] },
+            pass: Arc::new(Mutex::new(Box::new(Flare(true)) as Box<dyn ExternalPass>)),
+        };
+        let mut submitted = draw;
+        case(&mut admission, &mut submitted, [colour, depth, shown]);
+        let before = sink.inner().draws().len();
+        let kept = submitted.clone();
+        let (result, _) = sink.draw_admitted(colour, Some(depth), submitted, [None; 4], admission);
+        let issued = sink.inner().draws().len() - before;
+        assert!(sink.copy_surface(colour, shown).unwrap());
+        sink.present(shown, 0).unwrap();
+
+        let mut frame = frames.lock().unwrap().pop().unwrap();
+        let refusals = frame.refusals.clone();
+        let mut external = None;
+        let mut replay_draws = 0;
+        for (_, op) in &mut frame.ops {
+            if let ReplayOp::Draw { external: e, .. } = op {
+                replay_draws += 1;
+                external = e.take();
+            }
+        }
+        Outcome { result, issued, external, replay_draws, refusals, submitted: kept }
+    }
+
+    #[test]
+    fn an_exact_admission_rides_the_one_draw_and_replay_keeps_it() {
+        let o = capture(false, |_, _, _| {});
+        assert_eq!(o.result, Ok(DrawOutcome::Drawn));
+        assert_eq!((o.issued, o.replay_draws), (1, 1), "issued once, carried once");
+        let external = o.external.expect("exact for this draw");
+        assert_eq!(*external.packet, o.submitted);
+        assert_eq!(external.plan.stage, Stage::Flares);
+        assert_ne!(external.surfaces.color, external.surfaces.depth, "the draw's own depth, not scratch");
+        assert!(o.refusals.is_empty(), "{:?}", o.refusals);
+    }
+
+    #[test]
+    fn every_inexact_admission_still_draws_the_packet_once_with_its_own_outcome() {
+        type Case = fn(&mut RetainedAdmission<u32>, &mut ResolvedDraw, [u32; 3]);
+        let cases: [(&str, bool, Case); 7] = [
+            ("one-shot pass", false, |a, _, _| {
+                a.pass = Arc::new(Mutex::new(Box::new(Flare(false)) as Box<dyn ExternalPass>));
+            }),
+            ("packet differs from the submitted draw", false, |_, d, _| d.entry = "adapted"),
+            ("only flares are retained: particles", false, |a, _, _| a.plan.stage = Stage::Particles),
+            ("only flares are retained: world", false, |a, _, _| a.plan.stage = Stage::World),
+            ("sampled levels need their own replay samples", false, |a, _, s| a.surfaces.sampled.push(s[2])),
+            ("admission bound other attachments", false, |a, _, s| a.surfaces.depth = s[2]),
+            ("guest reference requested", true, |_, _, _| {}),
+        ];
+        for (name, reference, case) in cases {
+            let o = capture(reference, case);
+            assert_eq!(o.result, Ok(DrawOutcome::Drawn), "{name}");
+            assert_eq!(o.issued, 1, "{name}: no double issue");
+            assert!(o.external.is_none(), "{name}: the admission was kept");
+            assert_eq!(o.replay_draws, 1, "{name}: the packet is still carried");
+        }
+    }
+
+    #[test]
+    fn without_a_replay_the_hook_is_the_plain_draw() {
+        fn off() -> Option<SlotAt> { None }
+        let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
+        set_states(&mut device, &mut memory);
+        quad(&mut device, &mut memory, 0xFF11_2233);
+        let draw = device.backend.draws().pop().unwrap().clone();
+        let mut sink = SceneSink::new(RecordingBackend::new(), off);
+        let fmt = D3DFormat::LinA8R8G8B8;
+        let colour = sink.create_texture_target(fmt, 32, 32).unwrap();
+        let depth = sink.create_surface(D3DFormat::LinD24S8, 32, 32, true).unwrap();
+        let admission = RetainedAdmission {
+            packet: Arc::new(draw.clone()),
+            surfaces: ExternalSurfaces { color: colour, depth, sampled: vec![], slots: vec![], slot_sizes: vec![] },
+            request: ExternalPassRequest { rect: (0, 0, 32, 32), surface_size: (32, 32), z_scale: 1.0, display_projection_factor: 1.0 },
+            plan: ExternalPlan { stage: Stage::Flares, view: 0, ranges: 1, slots: vec![] },
+            pass: Arc::new(Mutex::new(Box::new(Flare(true)) as Box<dyn ExternalPass>)),
+        };
+        let (result, _) = sink.draw_admitted(colour, Some(depth), draw.clone(), [None; 4], admission);
+        assert_eq!(result, Ok(DrawOutcome::Drawn));
+        assert_eq!(sink.inner().draws(), [&draw]);
+        assert!(sink.last_frame().ops.is_empty());
+    }
+
+    #[test]
+    fn a_default_backend_ignores_the_admission_and_draws_owned() {
+        let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
+        set_states(&mut device, &mut memory);
+        quad(&mut device, &mut memory, 0xFF11_2233);
+        let draw = device.backend.draws().pop().unwrap().clone();
+        let mut backend = RecordingBackend::new();
+        let fmt = D3DFormat::LinA8R8G8B8;
+        let colour = backend.create_texture_target(fmt, 32, 32).unwrap();
+        let admission = RetainedAdmission {
+            packet: Arc::new(draw.clone()),
+            surfaces: ExternalSurfaces { color: colour, depth: colour, sampled: vec![], slots: vec![], slot_sizes: vec![] },
+            request: ExternalPassRequest { rect: (0, 0, 32, 32), surface_size: (32, 32), z_scale: 1.0, display_projection_factor: 1.0 },
+            plan: ExternalPlan { stage: Stage::Flares, view: 0, ranges: 1, slots: vec![] },
+            pass: Arc::new(Mutex::new(Box::new(Flare(true)) as Box<dyn ExternalPass>)),
+        };
+        let (result, _) = backend.draw_admitted(colour, None, draw.clone(), [None; 4], admission);
+        assert_eq!(result, Ok(DrawOutcome::Drawn));
+        assert_eq!(backend.draws(), [&draw]);
+    }
+
+    #[test]
+    fn replay_uses_the_admission_only_for_the_draw_and_attachments_it_was_made_for() {
+        let o = capture(false, |_, _, _| {});
+        let external = o.external.expect("exact");
+        let draw = Arc::new(o.submitted.clone());
+        let (colour, depth) = (external.surfaces.color, external.surfaces.depth);
+        let targets = HashMap::from([(colour, 7u32), (depth, 8)]);
+
+        assert!(external.resolve(&draw, &targets, (7, Some(8)), true, 1).is_some());
+        // Same packet in another allocation, as a rewrite that did not change it leaves it.
+        assert!(external.resolve(&Arc::new(o.submitted.clone()), &targets, (7, Some(8)), true, 1).is_some());
+        // A rewrite of the draw (a camera warp, a tile) drops the admission.
+        let mut rewritten = o.submitted.clone();
+        rewritten.entry = "tiled";
+        assert!(external.resolve(&Arc::new(rewritten), &targets, (7, Some(8)), true, 1).is_none());
+        // Other attachments than the ones the draw is bound to.
+        assert!(external.resolve(&draw, &targets, (9, Some(8)), true, 1).is_none());
+        assert!(external.resolve(&draw, &targets, (7, Some(9)), true, 1).is_none());
+        assert!(external.resolve(&draw, &targets, (7, None), true, 1).is_none());
+        // A target the replay does not hold.
+        assert!(external.resolve(&draw, &HashMap::from([(colour, 7u32)]), (7, Some(8)), true, 1).is_none());
+        // A private capture is native at 1x only; a live display's backend answers for its scale.
+        assert!(external.resolve(&draw, &targets, (7, Some(8)), false, 4).is_none());
+        assert!(external.resolve(&draw, &targets, (7, Some(8)), false, 1).is_some());
+        assert!(external.resolve(&draw, &targets, (7, Some(8)), true, 4).is_some());
+    }
+
+    #[test]
+    fn a_colour_only_draw_binds_its_colour_as_depth() {
+        let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
+        set_states(&mut device, &mut memory);
+        quad(&mut device, &mut memory, 0xFF11_2233);
+        let draw = device.backend.draws().pop().unwrap().clone();
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let output = frames.clone();
+        let mut sink = SceneSink::new(RecordingBackend::new(), slot).with_replay(move |f| output.lock().unwrap().push(f));
+        let fmt = D3DFormat::LinA8R8G8B8;
+        let colour = sink.create_texture_target(fmt, 32, 32).unwrap();
+        let shown = sink.create_surface(fmt, 32, 32, false).unwrap();
+        let admission = RetainedAdmission {
+            packet: Arc::new(draw.clone()),
+            surfaces: ExternalSurfaces { color: colour, depth: colour, sampled: vec![], slots: vec![], slot_sizes: vec![] },
+            request: ExternalPassRequest { rect: (0, 0, 32, 32), surface_size: (32, 32), z_scale: 1.0, display_projection_factor: 1.0 },
+            plan: ExternalPlan { stage: Stage::Flares, view: 0, ranges: 1, slots: vec![] },
+            pass: Arc::new(Mutex::new(Box::new(Flare(true)) as Box<dyn ExternalPass>)),
+        };
+        sink.draw_admitted(colour, None, draw, [None; 4], admission).0.unwrap();
+        assert!(sink.copy_surface(colour, shown).unwrap());
+        sink.present(shown, 0).unwrap();
+        let frame = frames.lock().unwrap().pop().unwrap();
+        let external = frame.ops.iter().find_map(|(_, op)| match op {
+            ReplayOp::Draw { external, .. } => external.as_deref(),
+            _ => None,
+        }).expect("retained");
+        assert_eq!(external.surfaces.color, external.surfaces.depth);
+        let draw = external.packet.clone();
+        let targets = HashMap::from([(external.surfaces.color, 3u32)]);
+        assert!(external.resolve(&draw, &targets, (3, None), true, 1).is_some());
+        assert!(external.resolve(&draw, &targets, (3, Some(4)), true, 1).is_none());
+    }
+
+    #[test]
+    fn the_draws_own_texture_inputs_stay_with_it() {
+        use gfx::texture::{TextureDesc, TextureKind, decode_texture};
+        let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
+        set_states(&mut device, &mut memory);
+        quad(&mut device, &mut memory, 0xFF11_2233);
+        let draw = device.backend.draws().pop().unwrap().clone();
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let output = frames.clone();
+        let mut sink = SceneSink::new(RecordingBackend::new(), slot).with_replay(move |f| output.lock().unwrap().push(f));
+        let fmt = D3DFormat::LinA8R8G8B8;
+        let colour = sink.create_texture_target(fmt, 32, 32).unwrap();
+        let shown = sink.create_surface(fmt, 32, 32, false).unwrap();
+        let desc = TextureDesc::new(fmt, TextureKind::D2, 1, 1, 1, 1);
+        let decoded = decode_texture(&desc, &[1, 2, 3, 4], None, Default::default()).unwrap();
+        let image = sink.upload_texture(&decoded).unwrap();
+        let admission = RetainedAdmission {
+            packet: Arc::new(draw.clone()),
+            surfaces: ExternalSurfaces { color: colour, depth: colour, sampled: vec![], slots: vec![], slot_sizes: vec![] },
+            request: ExternalPassRequest { rect: (0, 0, 32, 32), surface_size: (32, 32), z_scale: 1.0, display_projection_factor: 1.0 },
+            plan: ExternalPlan { stage: Stage::Flares, view: 0, ranges: 1, slots: vec![] },
+            pass: Arc::new(Mutex::new(Box::new(Flare(true)) as Box<dyn ExternalPass>)),
+        };
+        sink.draw_admitted(colour, None, draw, [Some(&image), None, None, None], admission).0.unwrap();
+        assert!(sink.copy_surface(colour, shown).unwrap());
+        sink.present(shown, 0).unwrap();
+        let frame = frames.lock().unwrap().pop().unwrap();
+        let (textures, external) = frame.ops.iter().find_map(|(_, op)| match op {
+            ReplayOp::Draw { textures, external, .. } => Some((textures, external)),
+            _ => None,
+        }).unwrap();
+        assert!(external.is_some());
+        assert!(matches!(&textures[0], Some(ReplayTexture::Upload(a)) if **a == decoded));
+    }
 }

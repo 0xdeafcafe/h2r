@@ -1833,6 +1833,7 @@ impl Backend for GfxBackend {
             }
         }
         recording.stage.recorded(recording.view, recording.copy == crate::TargetCopy::Display, recording.ranges);
+        crate::scene_stage::submitted(recording.stage, recording.copy == crate::TargetCopy::Display, recording.ranges);
         if recording.copy == crate::TargetCopy::Reference || recording.single_display {
             recording.stage.count(timeline::native::Metric::Suppressed, recording.items as u64);
         }

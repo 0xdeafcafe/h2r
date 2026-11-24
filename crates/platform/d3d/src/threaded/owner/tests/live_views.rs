@@ -148,6 +148,7 @@ fn exercise_source(adopt_producer: bool, source: Source) {
         at,
         ReplayOp::Draw {
             camera: CameraUse::Screen,
+            external: None,
             draw: Arc::clone(&draw),
             textures: [
                 Some(ReplayTexture::Live {

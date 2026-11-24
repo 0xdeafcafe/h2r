@@ -492,6 +492,13 @@ impl Drop for GuestDrawPass<'_> {
 }
 
 impl SceneDevice for GfxBackend {
+    fn can_replay_flare(&self, draw: &crate::ResolvedDraw) -> bool {
+        // A raw replay draws the packet as supplied. An ordinary external
+        // reference recording restores the retail projection and UI placement.
+        self.only_display || (draw.retail_constants.is_none() && draw.ui_fit.is_none())
+    }
+
+
     fn record_scene_stage(
         &mut self,
         stage: &crate::SceneStage<TargetRef>,
