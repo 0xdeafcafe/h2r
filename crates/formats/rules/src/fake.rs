@@ -364,7 +364,12 @@ impl Game for FakeGame {
     }
 
     fn labelled(&self, label: &str) -> Vec<Placed> {
-        let mut list = self.labelled.get(label).cloned().unwrap_or_default();
+        let holds = |t: &str| self.labelled.get(t).is_some_and(|l| !l.is_empty());
+        let mut list = self
+            .labelled
+            .get(crate::labels::reads(label, holds))
+            .cloned()
+            .unwrap_or_default();
         list.reverse();
         list
     }

@@ -1145,12 +1145,15 @@ The built-in Siege (`crates/formats/rules/src/builtin/siege.rules`,
 listed in Party Games) is the part of this a host runs. Its zones come
 from every Territories and CTF map's own flags, so it needs no kit: the
 attackers take `sites` of the map's territories (each held alone for
-the capture time in all, by `ticks_held`), then hold the defenders' CTF
-flag stand (`label base: zones = "ctf_flag_spawn"`,
-`base[team 1]`) for the capture time to win. Each phase has its own
+the capture time in all, by `ticks_held`), then hold the defenders'
+final stand to win. The sites are the author's `siege_site` flags
+(`label site: zones = "siege_site"`) and, when none is placed, the map's
+territory flags ("Forge labels"); the final stand is a placed
+`siege_goal` (`label goal: zone? = "siege_goal"`), else the defenders'
+CTF flag stand (`label base: zones = "ctf_flag_spawn"`, `base[team 1]`). Each phase has its own
 clock, and a clock that runs out wins it for the defenders. Each side
 spawns with its own loadout (`on spawn`, `set_loadout`), and the winners
-score a point each, so the post-game names them. Neither label states a
+score a point each, so the post-game names them. No label states a
 requirement, so every map starts: with no territory the assault goes
 straight to the flag stand, with no flag stand taking every site wins
 it, and with neither the round draws at its start with a message. The
@@ -1161,8 +1164,11 @@ line (`spawn_near`, the four starting locations nearest it), and the
 lines move with the phases: the attackers start at their own flag stand
 (`base[team 0]`) and spawn at each site they take, and the defenders
 hold a site still to take, then fall back to their flag stand for the
-final assault. A line the map lacks (no flag stand) leaves that side the
-engine's own spawns. The attackers spawn as Spartans and the defenders
+final assault. A `siege_line` flag the author placed for a side and a
+phase (its number is the phase, its team the side;
+`label placed_line: zones at most 16 = "siege_line"`) replaces the
+phase's line for that side. A line the map lacks (no flag stand) leaves
+that side the engine's own spawns. The attackers spawn as Spartans and the defenders
 as Elites (`set_body`), whatever each player chose. It opens no barriers (`delete` and `create` are not
 hostable, "The engine API"), and it has no core to carry.
 
@@ -2258,6 +2264,21 @@ the hill number 0 to 7 as its number. Types 0, 1, 4, 7, 8, 10 and 11 to
 (bots.md calls them "bomb and plate"). Types 5, 6 and 9 have no label.
 The `RulesExt` table applies a placement's own label first and the
 built-in label of its flag type otherwise.
+
+**Ground labels.** The labels Forge and Studio place for a scripted game
+(`forge_doc::GroundLabel`: `ff_drop`, `ff_base`, `ff_cover`,
+`siege_site`, `siege_goal`, `siege_line`; "Maps for scripted games" in
+[game-types-without-carriers.md](game-types-without-carriers.md)) are
+ordinary labels on netgame flags, so a script declares the ones it reads
+as it declares any, and the start gate refuses a map short of a required
+one by name. One label has a default: a script's `siege_site` reads the
+map's `territory` flags while the map places no `siege_site`
+(`labels::fallback`, `labels::reads`; the census check, `Table::labelled`
+and `FakeGame::labelled` read through it), so a retail map plays Siege as
+before. Firefight's director takes its drops from the kit's `ff_drop_NN`
+zones, which `ground::build` makes one for each placed `ff_drop`; the
+director's own `ff_drop` label requires nothing, since the generator
+supplies the drops a map has none placed for.
 
 A label is a change of the document format. The format is one number
 (`forge_doc::FORMAT`, 1; `FORMAT_LABELS`, 2; `FORMAT_ENTRIES`, 3 for

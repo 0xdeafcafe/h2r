@@ -6,7 +6,8 @@ use rules::bodies::Body;
 use rules::builtin;
 use rules::fake::FakeSpawns;
 use rules::ir::OptionValue;
-use rules::scenario::{self, RunResult, Scenario, ScenarioEvent, ScenarioTick};
+use rules::labels::Class;
+use rules::scenario::{self, RunResult, Scenario, ScenarioEvent, ScenarioLabel, ScenarioTick};
 use rules::vm::Arg;
 
 const SIEGE_ATTACKERS_WIN: &str = include_str!("scenarios/siege_attackers_win.json");
@@ -322,6 +323,114 @@ fn siege_with_no_flag_stand_wins_at_the_last_site() {
     assert_eq!(calls(&r, "end_round").len(), 1);
     assert_eq!(r.game.players[&0].score, 1);
     assert_eq!(r.game.players[&1].score, 0);
+}
+
+/// A thing the author placed: a flag with a label, a team and a number.
+fn placed(label: &str, object: u32, team: Option<u8>, number: Option<i32>) -> ScenarioLabel {
+    ScenarioLabel {
+        team,
+        number,
+        class: Some(Class::Flag),
+        ..ScenarioLabel::new(label, object)
+    }
+}
+
+/// The sites the author placed are the sites, whatever territory flags
+/// the map has: one `siege_site` beside two territories is one site to
+/// take, the defenders stand at it, and holding it opens the final
+/// assault.
+#[test]
+fn siege_takes_the_sites_the_author_placed() {
+    let (ir, _) = siege(&[]);
+    let mut s: Scenario = serde_json::from_str(SIEGE_ATTACKERS_WIN).unwrap();
+    s.map.as_mut().unwrap().push(placed("siege_site", 12, None, None));
+    s.ticks = vec![ScenarioTick::default(); 600];
+    s.ticks[0].events = vec![
+        ScenarioEvent::Spawn(0),
+        ScenarioEvent::Spawn(1),
+        ScenarioEvent::Enter { zone: 12, object: 100 },
+    ];
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    assert_eq!(
+        lines(&r),
+        [
+            "Sites to take: 1. Then the defenders' flag",
+            "Final assault: the defenders' flag",
+        ]
+    );
+    let first = calls(&r, "spawn_near")
+        .into_iter()
+        .find(|(_, a)| a[0] == Arg::Team(Some(1)))
+        .map(|(_, a)| a.to_vec());
+    assert_eq!(first, Some(vec![Arg::Team(Some(1)), Arg::Object(Some(12)), Arg::Int(4)]));
+}
+
+/// A placed `siege_goal` is the defenders' final stand, over the map's
+/// own CTF flag stand: holding it wins, and the defenders spawn near it.
+#[test]
+fn siege_goes_for_the_goal_the_author_placed() {
+    let (ir, _) = siege(&[]);
+    let mut s: Scenario = serde_json::from_str(SIEGE_ATTACKERS_WIN).unwrap();
+    let map = s.map.as_mut().unwrap();
+    map.retain(|t| t.label != "territory");
+    map.push(placed("siege_goal", 40, None, None));
+    s.ticks = vec![ScenarioTick::default(); 1000];
+    s.ticks[0].events = vec![
+        ScenarioEvent::Spawn(0),
+        ScenarioEvent::Spawn(1),
+        ScenarioEvent::Enter { zone: 40, object: 100 },
+    ];
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    assert_eq!(
+        lines(&r),
+        [
+            "Sites to take: 0. Then the defenders' flag",
+            "The attackers took the flag",
+        ]
+    );
+    assert_eq!(r.game.spawns.get(&1), Some(&FakeSpawns::Near { zone: 40, count: 4 }));
+}
+
+/// A `siege_line` for a side and a phase is where that side spawns in the
+/// phase, over the phase's own site or stand; a phase with none placed
+/// keeps the default.
+#[test]
+fn siege_spawns_each_side_at_the_lines_the_author_placed() {
+    let (ir, _) = siege(&[]);
+    let mut s: Scenario = serde_json::from_str(SIEGE_ATTACKERS_WIN).unwrap();
+    let map = s.map.as_mut().unwrap();
+    map.push(placed("siege_line", 30, Some(0), Some(0)));
+    map.push(placed("siege_line", 31, Some(1), Some(0)));
+    map.push(placed("siege_line", 32, Some(0), Some(1)));
+    s.ticks = vec![ScenarioTick::default(); 500];
+    s.ticks[0].events = vec![
+        ScenarioEvent::Spawn(0),
+        ScenarioEvent::Spawn(1),
+        ScenarioEvent::Enter { zone: 10, object: 100 },
+    ];
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    let made: Vec<Vec<Arg>> = calls(&r, "spawn_near").into_iter().map(|(_, a)| a.to_vec()).collect();
+    let near = |team: u8, zone: Option<u32>| vec![Arg::Team(Some(team)), Arg::Object(zone), Arg::Int(4)];
+    assert_eq!(
+        made,
+        [
+            // Phase 0: each side's default, then its placed line.
+            near(0, Some(20)),
+            near(0, Some(30)),
+            near(1, Some(10)),
+            near(1, Some(31)),
+            // Site 10 taken: the attackers at their phase 1 line, the
+            // defenders (no line placed for them) at the next site.
+            near(0, Some(10)),
+            near(0, Some(32)),
+            near(1, Some(11)),
+        ]
+    );
+    assert_eq!(r.game.spawns.get(&0), Some(&FakeSpawns::Near { zone: 32, count: 4 }));
+    assert_eq!(r.game.spawns.get(&1), Some(&FakeSpawns::Near { zone: 11, count: 4 }));
 }
 
 /// A map with neither label starts and draws at once: nothing to take.

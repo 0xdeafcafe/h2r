@@ -38,6 +38,11 @@ its text), labels in table order, then tags:
 | a team without one | `team 1 has no zone labelled "ctf_flag_spawn"` |
 | a tag of the wrong group | `"<path>" on this map is a vehicle; Siege gives it as a weapon` |
 
+A label reads the members of its own text, and a ground label with a
+default (`siege_site`, whose default is the map's `territory` flags) reads
+the default's while the map holds none of its own (`labels::reads`), so a
+census with only territories satisfies a `siege_site` requirement.
+
 A member whose class does not satisfy the label is reported once per
 label and is not counted; a label with no member of its class reports
 the class alone. A stated `max` blocks a map over it; a label of `max`

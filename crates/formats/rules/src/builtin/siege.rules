@@ -36,13 +36,21 @@ settings {
     secondary_weapon = none
 }
 
-// What the map supplies, when it has it: its territory flags and each
-// team's CTF flag stands. Neither is required, so every map starts: with
-// no territory the assault goes straight to the flag stand, with no
-// stand the sites are the whole assault, and with neither the round is a
-// draw at its start.
-label site: zones = "territory"
+// What the map supplies, when it has it. The author's places come first
+// (docs/game/game-types-without-carriers.md, "Maps for scripted games"):
+// `siege_site` flags are the sites (the map's territory flags when none
+// is placed, `rules::labels::reads`), a `siege_goal` is the final stand
+// (each team's CTF flag stand when none is placed), and `siege_line`
+// flags, numbered by phase and given a team, are where a side spawns in
+// that phase (the phase's own site or stand when none is placed). None
+// is required, so every map starts: with no site the assault goes
+// straight to the stand, with no stand the sites are the whole assault,
+// and with neither the round is a draw at its start. A line label is
+// bounded, so the lookups of a tick stay small.
+label site: zones = "siege_site"
+label goal: zone? = "siege_goal"
 label base: zones = "ctf_flag_spawn"
+label placed_line: zones at most 16 = "siege_line"
 
 option phase_time: time 60s..600s = 180s "Phase time" "How long the attackers have for each phase"
 option capture_time: time 5s..60s = 15s "Capture time" "How long the attackers hold a site or the flag stand alone to take it"
@@ -62,6 +70,8 @@ global var phase: int = 0
 global var needed: int = 0
 global var clock: timer
 global var over: bool = false
+// The defenders' final stand: the placed goal, else their flag stand.
+global var last_stand: zone? = none
 // Whether the map gives the attackers a flag stand to storm.
 global var assault: bool = false
 // Each side's respawn wave, running while that side has dead to bring
@@ -91,7 +101,11 @@ fn fall_back() {
     if phase < needed {
         spawn_near(team 1, first(site where not taken), line)
     } else {
-        spawn_near(team 1, base[team 1], line)
+        spawn_near(team 1, last_stand, line)
+    }
+    // A line the author placed for the defenders in this phase wins.
+    if let m = first(placed_line q where q.team == team 1 and q.number == phase) {
+        spawn_near(team 1, m, line)
     }
 }
 
@@ -117,11 +131,16 @@ on round_start {
     set_body(team 1, "objects/characters/elite/elite_mp")
     for each site s { s.taken = false }
     needed = min(sites, count(site))
-    assault = base[team 1] != none
+    last_stand = base[team 1]
+    if let g = goal { last_stand = g }
+    assault = last_stand != none
     if needed > 0 or assault {
         begin(0)
         // The attackers start at their own flag stand, when the map has one.
         spawn_near(team 0, base[team 0], line)
+        if let m = first(placed_line q where q.team == team 0 and q.number == 0) {
+            spawn_near(team 0, m, line)
+        }
         fall_back()
         if assault {
             message(all, "Sites to take: {needed}. Then the defenders' flag")
@@ -150,6 +169,9 @@ on tick {
         if let s = front {
             front = none
             spawn_near(team 0, s, line)
+            if let m = first(placed_line q where q.team == team 0 and q.number == phase) {
+                spawn_near(team 0, m, line)
+            }
             fall_back()
             if phase < needed {
                 message(all, "The attackers took a site")
@@ -161,7 +183,7 @@ on tick {
             }
         }
     } else if not over and assault {
-        if let goal = base[team 1] and ticks_held(goal, team 0) >= capture_time {
+        if let g = last_stand and ticks_held(g, team 0) >= capture_time {
             message(all, "The attackers took the flag")
             win(team 0)
         }
