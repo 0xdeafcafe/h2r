@@ -1,6 +1,6 @@
 # Forge map variants: editing the map's own placements, and the file that keeps the edits
 
-Status: Design, slices M1 to M10 built. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1), `resolve`, which lowers entry ops for `replay` (M2), the materialiser's entry ops and print check (M3), the tier, the play and session forms and the variant name rule (M4), the session's things, `Session::{things, move_thing, hold}`, its kept rows and print check, and the base calls on `World` (M5), `Session::{set_field, remove, reset}` and `forge::props` (M6), `forge_map::rows`, which reads each block's rows, typed fields and prints from the loaded scenario as the session opens (M7), `ForgeWorld`'s base calls over the call queue, `base_move`, `base_field`, `base_inert` and `base_restore` (M8), the Objects tool aiming at every thing, own or added, mark or body, by game type and `forge.show` (M9), and `forge.things`, entry ops in `forge.propose` with named refusals and the variant in `forge.status` (M10); everything else named here as new is not.
+Status: Design, slices M1 to M10 and D2 built. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1), `resolve`, which lowers entry ops for `replay` (M2), the materialiser's entry ops and print check (M3), the tier, the play and session forms and the variant name rule (M4), the session's things, `Session::{things, move_thing, hold}`, its kept rows and print check, and the base calls on `World` (M5), `Session::{set_field, remove, reset}` and `forge::props` (M6), `forge_map::rows`, which reads each block's rows, typed fields and prints from the loaded scenario as the session opens (M7), `ForgeWorld`'s base calls over the call queue, `base_move`, `base_field`, `base_inert` and `base_restore` (M8), the Objects tool aiming at every thing, own or added, mark or body, by game type and `forge.show` (M9), and `forge.things`, entry ops in `forge.propose` with named refusals and the variant in `forge.status` (M10); `forge_doc::games` (D2); everything else named here as new is not.
 Code: `crates/formats/forge-doc` (the document), `crates/tools/forge-build` (the materialiser), `crates/extensions/forge` (`Session`; `things.rs` for things, kept rows and the base reconcile; `tool.rs` for aiming), `crates/extensions/agent/src/forge/{local.rs, base.rs}` (`ForgeWorld`, its base calls and the agent methods), `crates/extensions/game/src/forge_map.rs`, `crates/live/live-hle/src/maps.rs` (`MapGate`). Tests: named per slice below.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
@@ -314,7 +314,7 @@ engines, or all of them.
   engine's code or a group value: 12 every engine, 13 and 14 every
   engine but CTF and Assault, which match each other's code; King of
   the Hill's code is 0 (**E**, `map::scenario_layout::game_types`).
-  `forge_doc::games::encode(set)` (new) gives the slots for a set: a group value when one equals the
+  `forge_doc::games::encode(set)` gives the slots for a set: a group value when one equals the
   set, else one slot an engine. A set that needs more than four slots
   is refused with "An item can name four game types at most."
   `decode(slots)` gives the set back, and an entry whose slots hold a
@@ -527,7 +527,7 @@ Every machine builds the map from its own disc; no built byte travels
 - **`forge-doc`**: `Endpoint::Base.print`, `print`, `check_print`, `Edit::Entry`,
   `EntryOp`, `Property`, `resolve`, `Resolved`, `Printed`,
   `Apply::prints`, `Refusal::Print`, `games::{GameSet,
-  encode, decode}`, `Tier`, `ForgeDoc::{tier, check_variant}`,
+  GamesError, ENGINES, encode, decode, flag_games}`, `Tier`, `ForgeDoc::{tier, check_variant}`,
   `Refusal::Tier`, `play_form`, `session_form`, `KIT_RECIPE`,
   `variant_name`.
 - **`forge`**: `Thing {id: Endpoint, block, kind, own, frame, fields,

@@ -7,6 +7,7 @@
 
 mod document;
 mod entry;
+pub mod games;
 mod labels;
 mod links;
 mod log;
