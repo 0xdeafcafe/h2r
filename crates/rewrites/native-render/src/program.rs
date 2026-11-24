@@ -712,6 +712,7 @@ pub(crate) struct PassParts<'a> {
 /// A translated pass.
 pub(crate) struct Translated {
     pub wgsl: String,
+    pub vertex_shader: vsh::wgsl::VertexShader,
     pub samplers: [Option<StageStates>; 4],
     pub dims: [Option<TextureDim>; 4],
     pub signed: [[bool; 4]; 4],
@@ -824,6 +825,7 @@ pub(crate) fn translate_pass_with_pixel(
     let inputs = program.inputs_read() & p.provided_inputs;
     Ok(Translated {
         wgsl,
+        vertex_shader: vs,
         samplers,
         dims: ps.textures,
         signed,
@@ -844,7 +846,7 @@ pub fn lod_bias(samplers: [Option<StageStates>; 4]) -> [f32; 4] {
     })
 }
 
-fn alpha_func(f: wgpu::CompareFunction) -> psh::AlphaFunc {
+pub(crate) fn alpha_func(f: wgpu::CompareFunction) -> psh::AlphaFunc {
     use wgpu::CompareFunction as C;
     match f {
         C::Never => psh::AlphaFunc::Never,

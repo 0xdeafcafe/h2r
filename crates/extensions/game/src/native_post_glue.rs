@@ -840,11 +840,7 @@ impl d3d::SwallowPass for ScreenPass {
                         "the resolved screen strip differs from the planned vertices".into(),
                     );
                 }
-                let mut live = strip_raster(
-                    original.draw,
-                    program.state.alpha_test,
-                    Some(program.combiner_inputs),
-                )
+                let mut live = post_raster(original.draw, Some(program.combiner_inputs))
                 .map_err(|why| format!("screen effect {:#010x}: {why}", self.call.egor.0))?;
                 for (stage, source) in reads.iter().enumerate() {
                     if let Some(index) = source {
@@ -868,7 +864,7 @@ impl d3d::SwallowPass for ScreenPass {
                 let mut grid_raster = None;
                 for _ in 0..q.grid.as_ref().map_or(1, |g| g.strips.len()) {
                     let original = originals.next().ok_or("missing convolution draw")?;
-                    let live = strip_raster(original.draw, None, Some(inputs))
+                    let live = post_raster(original.draw, Some(inputs))
                         .map_err(|why| format!("screen convolution into {}: {why}", q.dest))?;
                     if grid_raster.replace(live).is_some_and(|first| first != live) {
                         return Err("screen convolution raster state changed within the grid".into());
@@ -1055,31 +1051,24 @@ fn live_combiner_inputs(draw: &d3d::ResolvedDraw) -> CombinerInputs {
 
 /// The template supplies shader code. Colour state can be inherited from
 /// the previous draw or applied by the template wrapper outside that code.
-fn strip_raster(
+fn post_raster(
     draw: &d3d::ResolvedDraw,
-    alpha: Option<(wgpu::CompareFunction, u8)>,
     planned_inputs: Option<CombinerInputs>,
 ) -> Result<PostRaster, &'static str> {
     use gfx::state::{CompareFunc, FillMode, ShadeMode};
     let state = &draw.state.render;
-    let live_alpha =
-        (state.alpha_test_enable && state.alpha_func != CompareFunc::Always).then(|| {
-            (
-                gfx::translate::compare_function(state.alpha_func),
-                state.alpha_ref,
-            )
-        });
-    if live_alpha != alpha {
-        return Err("the live alpha test differs from the compiled screen program");
-    }
+    let alpha_test = (state.alpha_test_enable && state.alpha_func != CompareFunc::Always)
+        .then(|| (d3d::nv2a::alpha_func(state.alpha_func), state.alpha_ref));
     if post_needs_depth(state, draw.target.depth_format.and_then(gfx::format::depth_format_to_wgpu)) {
         return Err("the post draw requires its live depth/stencil attachment");
     }
     // Build 5849's STIPPLEENABLE and TWOSIDEDLIGHTING slots.
     const STIPPLE_ENABLE: usize = 83;
     const TWO_SIDED_LIGHTING: usize = 141;
-    if draw.hw.stipple_control.unwrap_or(draw.raw.render[STIPPLE_ENABLE]) != 0 {
-        return Err("the post draw requires the polygon stipple mask");
+    let stipple = state.fill_mode == FillMode::Solid
+        && draw.hw.stipple_control.unwrap_or(draw.raw.render[STIPPLE_ENABLE]) != 0;
+    if planned_inputs.is_none() && stipple {
+        return Err("the colour quad requires the polygon stipple mask");
     }
     let two_sided = draw.raw.render[TWO_SIDED_LIGHTING] != 0;
     if let Some(planned) = planned_inputs {
@@ -1115,13 +1104,18 @@ fn strip_raster(
         wgpu::PrimitiveTopology::TriangleStrip,
         gfx::translate::Capabilities::from_features(wgpu::Features::empty()),
     );
+    let z_scale = gfx::format::d3dz_max(draw.target.depth_format);
     Ok(PostRaster {
+        alpha_test,
+        stipple: stipple.then_some(draw.hw.stipple_pattern),
+        z_scale: Some(z_scale),
+        w_clip: d3d::hw::w_buffered(draw).then(|| d3d::hw::w_clip_range(&draw.hw, z_scale)),
         blend: gfx::translate::blend_state(state),
         blend_constant: gfx::translate::blend_constant(state),
         writes: gfx::translate::color_writes(state.color_write),
         front_face: primitive.front_face,
         cull: primitive.cull_mode,
-        depth_clamp: state.depth_clamp,
+        depth_clamp: d3d::hw::draw_clamps_depth(draw),
         fill: state.fill_mode,
         opaque_view: [false; 4],
         clip: (!clip.is_whole(draw.target.width, draw.target.height)).then_some([
@@ -1139,7 +1133,10 @@ pub(crate) fn matches_colour_state(
     writes: wgpu::ColorWrites,
     alpha: Option<(wgpu::CompareFunction, u8)>,
 ) -> bool {
-    strip_raster(draw, alpha, None).is_ok_and(|r| {
+    let state = &draw.state.render;
+    let live_alpha = (state.alpha_test_enable && state.alpha_func != gfx::state::CompareFunc::Always)
+        .then(|| (gfx::translate::compare_function(state.alpha_func), state.alpha_ref));
+    live_alpha == alpha && post_raster(draw, None).is_ok_and(|r| {
         r.blend == blend && r.writes == writes && r.cull.is_none() && r.clip.is_none()
     })
 }
@@ -1263,7 +1260,7 @@ impl d3d::SwallowPass for GlowPass {
         let mut rasters = Vec::with_capacity(originals.len());
         for (i, (original, want)) in originals.iter().zip(&self.plan.draws).enumerate() {
             let inputs = CombinerInputs::read(&shaders::PixelShaderDef::from_words(&want.combiner));
-            let raster = strip_raster(original.draw, None, Some(inputs))?;
+            let raster = post_raster(original.draw, Some(inputs))?;
             rasters.push(raster);
             for stage in 0..4 {
                 if original.sampled[stage] {
@@ -2648,6 +2645,7 @@ mod tests {
             vertex: Default::default(),
             pixel: Default::default(),
             combiner_inputs: Default::default(),
+            raster_shader: None,
             inputs: 0x1f,
             constants: Default::default(),
             state: native_render::pass_state::PassState {

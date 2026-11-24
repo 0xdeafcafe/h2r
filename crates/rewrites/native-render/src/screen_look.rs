@@ -444,11 +444,32 @@ pub struct ScreenProgram {
     pub vertex: VertexUniforms,
     pub pixel: PixelUniforms,
     pub combiner_inputs: CombinerInputs,
+    /// Translation inputs for alpha-test and stipple pipeline variants.
+    pub raster_shader: Option<std::sync::Arc<ScreenRasterShader>>,
     /// `v<n>` the program reads (within [`STRIP_INPUTS`]).
     pub inputs: u16,
     /// What the call puts in ([`ScreenConstants::apply`]).
     pub constants: ScreenConstants,
     pub state: PassState,
+}
+
+#[derive(Clone, Debug)]
+pub struct ScreenRasterShader {
+    vertex: shaders::vsh::wgsl::VertexShader,
+    def: shaders::PixelShaderDef,
+    options: shaders::psh::PixelOptions,
+}
+
+impl ScreenRasterShader {
+    pub(crate) fn translate(
+        &self,
+        alpha_test: Option<shaders::psh::AlphaFunc>,
+        stipple: bool,
+    ) -> Result<String, String> {
+        let options = shaders::psh::PixelOptions { alpha_test, stipple, ..self.options };
+        let pixel = shaders::psh::translate(&self.def, &options);
+        shaders::link(&self.vertex, &pixel).map_err(|error| error.to_string())
+    }
 }
 
 /// Every bound stage is 2D: the shader's bitmaps and the render targets.
@@ -538,6 +559,11 @@ pub fn compile_screen(look: &ScreenLook, microcode: &[u8]) -> Result<ScreenProgr
         vertex: t.vertex,
         pixel: t.pixel,
         combiner_inputs: CombinerInputs::read(&t.def),
+        raster_shader: Some(std::sync::Arc::new(ScreenRasterShader {
+            vertex: t.vertex_shader,
+            def: t.def,
+            options: t.pixel_options,
+        })),
         inputs: t.inputs,
         constants: look.constants.clone(),
         state: look.state,
@@ -994,6 +1020,19 @@ mod tests {
             [0.5, 0.5, 0.0, 0.0],
             "instance constants"
         );
+    }
+
+    #[test]
+    fn live_fragment_raster_links_with_the_screen_vertex_program() {
+        use shaders::psh::AlphaFunc;
+
+        let program = compile_screen(&look(false), &strip_program(2)).unwrap();
+        let source = program.raster_shader.unwrap()
+            .translate(Some(AlphaFunc::GreaterEqual), true).unwrap();
+        shaders::validate(&source).expect("valid WGSL");
+        assert!(source.contains("xps.alpha_ref.x"));
+        assert!(source.contains("let cell ="));
+        assert!(!program.wgsl.contains("let cell ="));
     }
 
     /// `screen_xform_4` moves `v5`..`v7` into the colours and fog, which

@@ -684,7 +684,11 @@ The glow and screen effects use the same pipeline translation for
 colour writes, blending, facing, culling, front fill and depth clamp.
 A quad strip preserves the guest fan's winding and diagonal. Each
 scissor is scaled from the destination's guest size to its physical
-copy. A convolution grid uses the raster shared by its strips.
+copy. A convolution grid uses the raster shared by its strips. The
+combiner translator generates variants for the live alpha comparison
+and polygon stipple. The reference byte and mask rows are per-draw
+uniforms. Stipple uses guest pixel cells on each physical copy. Screen
+strips also carry the live W clip range and window-depth scale.
 
 ### The post hooks
 
@@ -1009,7 +1013,7 @@ Its numbers are ported: `engine::colour_pass`
      (below).
    - **The GPU pass** (`native_render::screen_gpu`). It translates
      the layer-15 program at the target's guest size with the
-     device's depth scale. Engine stages read the view, target 1 or
+     live draw's depth scale. Engine stages read the view, target 1 or
      a convolution result. A stage reading the view takes an
      ordered copy before the pass. Each attachment uses its live
      format and loads existing contents. Partial strips, colour

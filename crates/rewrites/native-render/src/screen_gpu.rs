@@ -298,6 +298,7 @@ pub enum ScreenRefused {
     Clip,
     /// No program for this pass (the load refused it).
     NoProgram,
+    FragmentRaster(String),
     /// The strip has fewer than three vertices or the call no strips.
     NoStrips,
     /// Target 1 sampled before a pass of the call drew it.
@@ -465,6 +466,7 @@ pub struct ScreenTarget<'a> {
 pub struct ScreenGpu {
     pub program: ScreenProgram,
     module: wgpu::ShaderModule,
+    variants: HashMap<FragmentRaster, wgpu::ShaderModule>,
     layout: wgpu::PipelineLayout,
     uniforms_layout: wgpu::BindGroupLayout,
     textures_layout: wgpu::BindGroupLayout,
@@ -552,6 +554,7 @@ impl ScreenGpu {
         Ok(Self {
             program,
             module,
+            variants: HashMap::new(),
             layout,
             uniforms_layout,
             textures_layout,
@@ -563,13 +566,33 @@ impl ScreenGpu {
 
     /// The pipeline for colour format `color`: strips, the pass's blend
     /// and colour writes, no depth.
-    fn pipeline(&mut self, device: &wgpu::Device, key: RasterPipeline) -> &wgpu::RenderPipeline {
+    fn pipeline(&mut self, device: &wgpu::Device, key: RasterPipeline) -> Result<&wgpu::RenderPipeline, ScreenRefused> {
         const SCREEN_PIPELINES: usize = 128;
         if self.pipelines.len() == SCREEN_PIPELINES && !self.pipelines.contains_key(&key) {
             self.pipelines.clear();
         }
-        let (module, layout) = (&self.module, &self.layout);
-        self.pipelines.entry(key).or_insert_with(|| {
+        let default = FragmentRaster {
+            alpha: self.program.state.alpha_test.map(|(func, _)| crate::program::alpha_func(func)),
+            stipple: false,
+        };
+        let module = if key.fragment == default {
+            &self.module
+        } else {
+            match self.variants.entry(key.fragment) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let source = self.program.raster_shader.as_ref().ok_or(ScreenRefused::NoProgram)?
+                        .translate(key.fragment.alpha, key.fragment.stipple)
+                        .map_err(ScreenRefused::FragmentRaster)?;
+                    entry.insert(device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                        label: Some("native screen raster variant"),
+                        source: wgpu::ShaderSource::Wgsl(source.into()),
+                    }))
+                }
+            }
+        };
+        let layout = &self.layout;
+        Ok(self.pipelines.entry(key).or_insert_with(|| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("native screen pass"),
                 layout: Some(layout),
@@ -599,7 +622,7 @@ impl ScreenGpu {
                 multiview_mask: None,
                 cache: None,
             })
-        })
+        }))
     }
 
     /// The texture group: `engine[n]` what engine stage `n` reads (the
@@ -645,11 +668,16 @@ pub type ScreenKey = (u32, usize, usize);
 pub struct PostRaster {
     pub blend: Option<wgpu::BlendState>,
     pub blend_constant: wgpu::Color,
+    pub alpha_test: Option<(psh::AlphaFunc, u8)>,
+    pub stipple: Option<[u32; 32]>,
     pub writes: wgpu::ColorWrites,
     pub front_face: wgpu::FrontFace,
     pub cull: Option<wgpu::Face>,
     pub depth_clamp: bool,
     pub fill: gfx::state::FillMode,
+    /// Window depth conversion and optional W clip range of the live strip.
+    pub z_scale: Option<f32>,
+    pub w_clip: Option<[f32; 2]>,
     /// X8 aliases read alpha as one, independently of stored alpha.
     pub opaque_view: [bool; 4],
     /// The effective scissor in guest target pixels.
@@ -665,6 +693,13 @@ pub(crate) struct RasterPipeline {
     cull: Option<wgpu::Face>,
     depth_clamp: bool,
     polygon_mode: wgpu::PolygonMode,
+    fragment: FragmentRaster,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) struct FragmentRaster {
+    pub(crate) alpha: Option<psh::AlphaFunc>,
+    pub(crate) stipple: bool,
 }
 
 impl PostRaster {
@@ -681,6 +716,24 @@ impl PostRaster {
                 wgpu::PrimitiveTopology::TriangleStrip,
                 gfx::translate::Capabilities::from_features(features),
             ).polygon_mode,
+            fragment: self.fragment(),
+        }
+    }
+
+    pub(crate) fn fragment(self) -> FragmentRaster {
+        FragmentRaster {
+            alpha: self.alpha_test.map(|(func, _)| func),
+            stipple: self.stipple.is_some(),
+        }
+    }
+
+    pub(crate) fn pixel_uniforms(self, pixel: &mut PixelUniforms, guest: (u32, u32), size: (u32, u32)) {
+        if let Some((_, reference)) = self.alpha_test {
+            pixel.alpha_ref = [f32::from(reference), 0.0, 0.0, 0.0];
+        }
+        if let Some(pattern) = self.stipple {
+            pixel.stipple = pattern;
+            pixel.stipple_scale = PixelUniforms::stipple_grid(guest, size);
         }
     }
 
@@ -714,11 +767,15 @@ impl Default for PostRaster {
         Self {
             blend: None,
             blend_constant: wgpu::Color::TRANSPARENT,
+            alpha_test: None,
+            stipple: None,
             writes: wgpu::ColorWrites::ALL,
             front_face: wgpu::FrontFace::Ccw,
             cull: None,
             depth_clamp: false,
             fill: gfx::state::FillMode::Solid,
+            z_scale: None,
+            w_clip: None,
             opaque_view: [false; 4],
             clip: None,
         }
@@ -730,6 +787,7 @@ impl From<crate::pass_state::PassState> for PostRaster {
         Self {
             blend: s.blend,
             blend_constant: s.blend_constant,
+            alpha_test: s.alpha_test.map(|(func, reference)| (crate::program::alpha_func(func), reference)),
             writes: s.color_writes,
             front_face: s.primitive.front_face,
             cull: s.primitive.cull_mode,
@@ -933,7 +991,7 @@ impl ScreenSet {
             }
             match self.passes.get_mut(&d.key) {
                 Some(Ok(g)) => {
-                    g.pipeline(device, d.raster.pipeline(dest.texture().format(), device.features()));
+                    g.pipeline(device, d.raster.pipeline(dest.texture().format(), device.features()))?;
                 }
                 Some(Err(r)) => return Err(r.clone()),
                 None => return Err(ScreenRefused::NoProgram),
@@ -948,6 +1006,7 @@ impl ScreenSet {
         for d in draws {
             drawn.reads(d.program, d.dest)?;
             drawn.drew(d.dest)?;
+            let mut rasters = d.convolution_rasters.iter().copied();
             for (n, c) in d.convolutions.iter().enumerate() {
                 for q in &c.draws {
                     let frame = frame.ok_or(ScreenRefused::NoFrame)?;
@@ -956,19 +1015,21 @@ impl ScreenSet {
                         return Err(ScreenRefused::Source(q.source));
                     }
                     let source = drawn.size(q.source, guest_size).ok_or(ScreenRefused::Unwritten(q.source))?;
-                    quads.push(match &q.grid {
+                    let raster = rasters.next().unwrap_or_default();
+                    let (program, shape) = match &q.grid {
                         None => {
                             let stages = [Some(source); 4];
-                            let program = self.quads.program(&frame.combiner, stages).map_err(ScreenRefused::Convolution)?;
+                            let program = self.quads.cached(&frame.combiner, stages, false, raster.fragment()).map_err(ScreenRefused::Convolution)?;
                             (program, Shape::Quad(glow::quad(frame.window, frame.signs, c.size, stages, 4, q.spread)))
                         }
                         Some(g) => {
                             // Checked by `convolution_states`.
                             let stages = [Some(g.bound); 4];
-                            let program = self.quads.grid_program(&frame.combiner, stages).map_err(ScreenRefused::Convolution)?;
+                            let program = self.quads.cached(&frame.combiner, stages, true, raster.fragment()).map_err(ScreenRefused::Convolution)?;
                             (program, Shape::Grid(glow::GridFrame::of(c.size)))
                         }
-                    });
+                    };
+                    quads.push((program, shape, raster));
                     drawn.convolved(q, c.size)?;
                 }
                 drawn.result(n, c);
@@ -1010,7 +1071,12 @@ impl ScreenSet {
                 None => None,
             });
             let textures = g.textures(device, &engine)?;
-            let (vertex, pixel) = screen_uniforms(d.program, d.values, (guest_size, &drawn), (dest_guest, dest_size), z_scale);
+            let (mut vertex, mut pixel) = screen_uniforms(
+                d.program, d.values, (guest_size, &drawn), (dest_guest, dest_size), d.raster.z_scale.unwrap_or(z_scale),
+            );
+            vertex.w_clip = d.raster.w_clip;
+            vertex.w_clamp = d.raster.depth_clamp;
+            d.raster.pixel_uniforms(&mut pixel, dest_guest, dest_size);
             let uniforms = uploads
                 .uniform_run(device, queue, &g.uniforms_layout, [VertexUniforms::SIZE, PixelUniforms::SIZE], 1, |_, v, p| {
                     vertex.write_bytes(v);
@@ -1037,14 +1103,12 @@ impl ScreenSet {
                 ranges,
             }));
             // A convolution samples the preceding pass's real pixels.
-            let mut rasters = d.convolution_rasters.iter().copied();
             for (n, c) in d.convolutions.iter().enumerate() {
                 for q in &c.draws {
-                    let Some((program, shape)) = quads.next() else { return Err(ScreenRefused::NoFrame) };
+                    let Some((program, shape, raster)) = quads.next() else { return Err(ScreenRefused::NoFrame) };
                     let source = sample(q.source)?;
                     let dest = glow::PostSurface { view: attachment(q.dest, c.size)?, guest_size: c.size };
                     let format = dest.view.texture().format();
-                    let raster = rasters.next().unwrap_or_default();
                     let (vertex, strips) = match (&shape, &q.grid) {
                         (Shape::Grid(f), Some(g)) => (bytemuck::bytes_of(f), Some(g.strips.as_slice())),
                         (Shape::Quad(quad), _) => (bytemuck::bytes_of(quad), None),
@@ -1205,6 +1269,7 @@ mod tests {
             vertex: VertexUniforms::default(),
             pixel: PixelUniforms::default(),
             combiner_inputs: Default::default(),
+            raster_shader: None,
             inputs: 0x1f,
             constants: Default::default(),
             state: PassState {
@@ -1240,6 +1305,28 @@ mod tests {
         assert_eq!(raster.scissor((32, 32), (64, 64)), Ok([8, 12, 16, 20]));
         assert_eq!(raster.scissor((32, 32), (80, 40)), Ok([10, 8, 20, 12]));
         assert_eq!(raster.scissor((8, 8), (16, 16)), Err(ScreenRefused::Clip));
+    }
+
+    #[test]
+    fn alpha_reference_and_stipple_rows_are_per_draw_uniforms() {
+        use shaders::psh::AlphaFunc;
+
+        let raster = PostRaster {
+            alpha_test: Some((AlphaFunc::Less, 37)),
+            stipple: Some([0x42; 32]),
+            ..Default::default()
+        };
+        let other = PostRaster {
+            alpha_test: Some((AlphaFunc::Less, 83)),
+            stipple: Some([0x77; 32]),
+            ..raster
+        };
+        assert_eq!(raster.fragment(), other.fragment());
+        let mut pixel = PixelUniforms::default();
+        raster.pixel_uniforms(&mut pixel, (32, 19), (80, 31));
+        assert_eq!(pixel.alpha_ref[0], 37.0);
+        assert_eq!(pixel.stipple, [0x42; 32]);
+        assert_eq!(pixel.stipple_scale, PixelUniforms::stipple_grid((32, 19), (80, 31)));
     }
 
     #[test]

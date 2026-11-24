@@ -35,7 +35,7 @@ use std::sync::Arc;
 use shaders::psh::{self, PixelOptions, PixelShaderDef, PixelUniforms, TextureDim};
 
 use crate::camera::GuestRead;
-use crate::screen_gpu::{PostRaster, RasterPipeline, STRIP_ATTRIBUTES, StripVertex, strip_ranges};
+use crate::screen_gpu::{FragmentRaster, PostRaster, RasterPipeline, STRIP_ATTRIBUTES, StripVertex, strip_ranges};
 
 /// A grid's vertex buffer: [`StripVertex`] in order.
 const STRIP_LAYOUT: [Option<wgpu::VertexBufferLayout<'static>>; 1] = [Some(wgpu::VertexBufferLayout {
@@ -359,18 +359,25 @@ pub struct Program {
 /// linear texture of that size (`tex_scale` one over it), fog off; or why
 /// it cannot be drawn.
 pub fn program(combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4]) -> Result<Program, String> {
-    translate(combiner, stages, false)
+    translate(combiner, stages, false, FragmentRaster::default())
 }
 
 /// [`program`] for a grid's strips ([`GRID_VERTEX`]).
 pub fn grid_program(combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4]) -> Result<Program, String> {
-    translate(combiner, stages, true)
+    translate(combiner, stages, true, FragmentRaster::default())
 }
 
-fn translate(combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4], grid: bool) -> Result<Program, String> {
+fn translate(
+    combiner: &[u32; COMBINER_WORDS],
+    stages: [Option<(u32, u32)>; 4],
+    grid: bool,
+    fragment: FragmentRaster,
+) -> Result<Program, String> {
     let def = PixelShaderDef::from_words(combiner);
     let options = PixelOptions {
         texture_dims: stages.map(|s| s.map(|_| TextureDim::D2)),
+        alpha_test: fragment.alpha,
+        stipple: fragment.stipple,
         ..Default::default()
     };
     let ps = psh::translate(&def, &options);
@@ -474,7 +481,7 @@ impl From<Option<Blend>> for PostRaster {
 /// and the sampler every stage of these passes binds.
 #[derive(Default)]
 pub struct QuadDrawer {
-    programs: HashMap<(ProgramKey, bool), Program>,
+    programs: HashMap<(ProgramKey, bool, FragmentRaster), Program>,
     compiled: HashMap<Arc<str>, Compiled>,
     sampler: Option<wgpu::Sampler>,
 }
@@ -490,20 +497,26 @@ impl QuadDrawer {
     /// `combiner`'s program with `stages` bound ([`program`]), its
     /// translation shared with every block of the same code.
     pub fn program(&mut self, combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4]) -> Result<Program, String> {
-        self.cached(combiner, stages, false)
+        self.cached(combiner, stages, false, FragmentRaster::default())
     }
 
     /// [`Self::program`] for a grid's strips ([`grid_program`]).
     pub fn grid_program(&mut self, combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4]) -> Result<Program, String> {
-        self.cached(combiner, stages, true)
+        self.cached(combiner, stages, true, FragmentRaster::default())
     }
 
-    fn cached(&mut self, combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4], grid: bool) -> Result<Program, String> {
-        let key = (program_key(combiner, stages), grid);
+    pub(crate) fn cached(
+        &mut self,
+        combiner: &[u32; COMBINER_WORDS],
+        stages: [Option<(u32, u32)>; 4],
+        grid: bool,
+        fragment: FragmentRaster,
+    ) -> Result<Program, String> {
+        let key = (program_key(combiner, stages), grid, fragment);
         if let Some(p) = self.programs.get(&key) {
             return Ok(with_constants(p.clone(), combiner));
         }
-        let p = translate(combiner, stages, grid)?;
+        let p = translate(combiner, stages, grid, fragment)?;
         if self.programs.len() >= Self::PROGRAMS {
             self.programs.clear();
         }
@@ -608,7 +621,9 @@ impl QuadDrawer {
         if strips.is_some() && all.is_empty() {
             return Ok(None);
         }
-        let pixel = program.pixel.to_bytes();
+        let mut pixel = program.pixel;
+        raster.pixel_uniforms(&mut pixel, dest.guest_size, (texture.width(), texture.height()));
+        let pixel = pixel.to_bytes();
         let run = uploads
             .uniform_run(device, queue, &c.uniforms_layout, [vertex_uniform.len(), pixel.len()], 1, |_, v, p| {
                 v.copy_from_slice(vertex_uniform);
@@ -793,7 +808,9 @@ impl GpuGlow {
                 return Err(Refused::Attachment(draw.dest));
             }
             let sizes = draw.stages.map(|s| s.map(|s| plan.size(s)));
-            let program = self.quads.program(&draw.combiner, sizes).map_err(Refused::Program)?;
+            let raster = rasters.map_or_else(|| draw.blend.into(), |states| states[index]);
+            let program = self.quads.cached(&draw.combiner, sizes, false, raster.fragment())
+                .map_err(Refused::Program)?;
             let mut stages = [None; 4];
             for (n, stage) in stages.iter_mut().enumerate() {
                 if program.dims[n].is_none() {
@@ -816,12 +833,11 @@ impl GpuGlow {
                 }
                 *stage = Some(view);
             }
-            prepared.push((dest, program, stages));
+            prepared.push((dest, program, stages, raster));
         }
         let mut quads = Vec::with_capacity(prepared.len());
-        for (index, (draw, (dest, program, stages))) in plan.draws.iter().zip(prepared).enumerate() {
+        for (draw, (dest, program, stages, raster)) in plan.draws.iter().zip(prepared) {
             let format = dest.view.texture().format();
-            let raster = rasters.map_or_else(|| draw.blend.into(), |states| states[index]);
             let quad = self.quads.prepare(
                 (t.device, t.queue, t.uploads), &program, bytemuck::bytes_of(&plan.quad(draw)),
                 None, (dest, format, raster), stages,
@@ -1198,6 +1214,15 @@ mod tests {
             (front == pixels && back == masked.0) || (back == pixels && front == masked.0),
             "the two triangles have the same facing"
         );
+        let rejected = run(true, Some(PostRaster {
+            alpha_test: Some((psh::AlphaFunc::Never, 0)),
+            ..raster
+        }));
+        assert_eq!(rejected.0, pixels, "the live alpha test rejects the composite");
+        let stippled = run(true, Some(PostRaster { stipple: Some([0; 32]), ..raster }));
+        assert_eq!(stippled.0, pixels, "the live stipple pattern rejects the composite");
+        let open_mask = run(true, Some(PostRaster { stipple: Some([u32::MAX; 32]), ..raster }));
+        assert_eq!(open_mask.0, masked.0, "stipple uniforms can change without a new pipeline");
         assert_eq!(own, prepared);
         assert_ne!(&own.0[..4], &pixels[..4], "the composite drew over the view");
     }
