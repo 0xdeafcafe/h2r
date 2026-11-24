@@ -36,6 +36,7 @@ pub mod tag_tree;
 pub mod textures;
 pub mod ui_screens;
 pub mod voices;
+pub mod workspace;
 pub use commands::{PlaylistEdit, Refused};
 pub use convert::{
     Built, Converter, Input as ConvertInput, Running, Written, explain, from_scratch,
@@ -593,6 +594,9 @@ pub struct App {
     pub voices: voices::Voices,
     /// The game type script editor (`rules_edit`).
     pub rules: rules_edit::RulesEditor,
+    /// The tag workspace: the tree's root, the plan, extraction and
+    /// prune (`app::workspace`, docs/editor/tag-workspace.md).
+    pub workspace: workspace::Workspace,
 }
 
 impl Default for App {
@@ -670,6 +674,7 @@ impl App {
             announcer: Default::default(),
             voices: Default::default(),
             rules: Default::default(),
+            workspace: Default::default(),
         }
     }
 

@@ -702,4 +702,4 @@ impl Disc for IsoDisc {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

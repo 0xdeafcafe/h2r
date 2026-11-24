@@ -18,7 +18,7 @@ impl Drop for Temp {
 
 /// A disc with the given maps and level list.
 #[derive(Default)]
-struct FakeDisc {
+pub(crate) struct FakeDisc {
     maps: Vec<&'static str>,
     slots: Vec<Vec<u8>>,
     base_files: HashMap<String, vfs::HostFile>,
@@ -56,7 +56,7 @@ fn slot(id: u32, map: &str, flags: u8, teams: [u8; 16], sort: u32) -> Vec<u8> {
     s
 }
 
-fn disc() -> FakeDisc {
+pub(crate) fn disc() -> FakeDisc {
     let mut empty = slot(u32::MAX, "", 0, [0; 16], 0);
     empty[..4].fill(0xff);
     FakeDisc {
@@ -75,7 +75,7 @@ fn disc() -> FakeDisc {
 }
 
 /// Writes a derived package `dir` for map `map` whose map file is `body`.
-fn package(data: &Path, dir: &str, map: &str, body: &[u8], extra: &str) {
+pub(crate) fn package(data: &Path, dir: &str, map: &str, body: &[u8], extra: &str) {
     let d = data.join("maps").join(dir);
     std::fs::create_dir_all(&d).unwrap();
     std::fs::write(d.join(format!("{map}.map")), body).unwrap();
@@ -131,7 +131,7 @@ fn dirs(data: &Path) -> Vec<String> {
     v
 }
 
-fn body(seed: u8) -> Vec<u8> {
+pub(crate) fn body(seed: u8) -> Vec<u8> {
     (0..0x1000u32)
         .map(|i| (i as u8).wrapping_mul(seed) ^ 0x5a)
         .collect()

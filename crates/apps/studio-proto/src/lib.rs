@@ -77,6 +77,13 @@ pub mod method {
     pub const DOC_REDO: &str = "doc.redo";
     pub const DOC_CLOSE: &str = "doc.close";
 
+    // The tag workspace (docs/editor/tag-workspace.md, "Interfaces";
+    // api/workspace.rs).
+    pub const WORKSPACE_STATUS: &str = "workspace.status";
+    pub const WORKSPACE_EXTRACT: &str = "workspace.extract";
+    pub const WORKSPACE_IMPORT: &str = "workspace.import";
+    pub const WORKSPACE_PRUNE: &str = "workspace.prune";
+
     pub const TAG_LIST: &str = "tag.list";
     pub const TAG_FIELDS: &str = "tag.fields";
     pub const TAG_VIEW: &str = "tag.view";

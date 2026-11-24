@@ -61,8 +61,11 @@ map.workspace = true
 # tables come from the user's own default.xbe.
 audio = { path = "../../platform/audio" }
 wma = { path = "../../platform/wma" }
-# The tag editor's field registry (schema structure + definition names).
+# The tag editor's field registry (schema structure + definition names),
+# and the tags tree the workspace keeps (src/app/workspace.rs).
 tags.workspace = true
+# The tag workspace's disc images (src/app/workspace.rs).
+xiso.workspace = true
 # The Scripts tool: the scenario's script tables, decompiled with the
 # source's own default.xbe (docs/editor/rich-editors.md, "Scripts").
 hs.workspace = true

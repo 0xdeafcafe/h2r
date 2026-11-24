@@ -101,6 +101,16 @@ fn example(d: &MethodDef, t: &Temp, app: &mut App) -> Value {
     let out = t.path("out");
     std::fs::create_dir_all(&out).unwrap();
     text = text.replace("$MAP", &t.path("example.map").display().to_string());
+    if text.contains("$DISC") {
+        let disc = t.path("disc");
+        std::fs::create_dir_all(&disc).unwrap();
+        std::fs::write(
+            disc.join("example.map"),
+            crate::app::workspace::tests::invented_map("example"),
+        )
+        .unwrap();
+        text = text.replace("$DISC", &disc.display().to_string());
+    }
     text = text.replace("$OUT", &out.display().to_string());
     if text.contains("$SCREEN") {
         let first = crate::app::UiScreens::tree()[0].0;
@@ -338,6 +348,19 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         }
         // A sibling of the loose map stands in for the disc's shared.map.
         m::TAG_BROWSE => std::fs::write(t.path("shared.map"), fixture::fixture()).unwrap(),
+        // An invented disc, its tree already extracted, so the example's
+        // own run is the plan's no-op.
+        m::WORKSPACE_EXTRACT => {
+            let disc = t.path("disc");
+            std::fs::create_dir_all(&disc).unwrap();
+            std::fs::write(
+                disc.join("example.map"),
+                crate::app::workspace::tests::invented_map("example"),
+            )
+            .unwrap();
+            c(m::WORKSPACE_EXTRACT, json!({"disc": disc.display().to_string()}));
+            app.wait_workspace();
+        }
         m::TAG_IMPORT => c(
             m::TAG_EXPORT,
             json!({"tag": "itmc", "out": t.path("out/kit.h2tag").display().to_string()}),
@@ -5278,4 +5301,103 @@ fn scenario_scripts_open_as_a_working_copy_and_its_saves_read_back() {
     assert_eq!(v["changed"], json!([]));
     assert_eq!(v["stale"], false);
     assert!(v["summary"].as_str().unwrap().contains("invented_added added"), "{v}");
+}
+
+/// `workspace.*` over an invented disc (docs/editor/agent-api.md, "The
+/// tag workspace"): no game data, and the tree goes under the test's
+/// data root, never the checkout.
+#[test]
+fn the_workspace_reports_the_start_page_and_extracts_an_invented_disc() {
+    let t = Temp::new("workspace");
+    // No source open: the first start's page shows with no tree.
+    let mut app = App::new();
+    app.set_data_root(t.path("data"));
+    let mut api = Api::new();
+    let status = call(&mut api, &mut app, m::WORKSPACE_STATUS, json!({}));
+    assert_eq!(status["start_page"], true);
+    assert_eq!(status["has_tree"], false);
+    assert_eq!(status["tree"], Value::Null);
+    assert_eq!(status["sizes"]["total"], json!(0));
+
+    // Extract every map of an invented disc.
+    let disc = t.path("disc");
+    std::fs::create_dir_all(&disc).unwrap();
+    std::fs::write(
+        disc.join("example.map"),
+        crate::app::workspace::tests::invented_map("example"),
+    )
+    .unwrap();
+    let started = call(
+        &mut api,
+        &mut app,
+        m::WORKSPACE_EXTRACT,
+        json!({"disc": disc.display().to_string()}),
+    );
+    assert_eq!(started["maps"], json!(["example"]));
+    assert_eq!(started["root"], json!(app.tags_root().display().to_string()));
+    app.wait_workspace();
+
+    let status = call(&mut api, &mut app, m::WORKSPACE_STATUS, json!({}));
+    assert_eq!(status["start_page"], false);
+    assert_eq!(status["has_tree"], true);
+    assert_eq!(status["tree"]["maps"], json!(1));
+    assert_eq!(status["tree"]["tags"], json!(4));
+    assert_eq!(status["stale"]["maps"], json!([]));
+    assert_eq!(status["last"]["maps"], json!(1));
+    assert!(status["sizes"]["tree"].as_u64().unwrap() > 0);
+    assert_eq!(status["extracting"], Value::Null);
+
+    // An unchanged disc is a no-op.
+    call(&mut api, &mut app, m::WORKSPACE_EXTRACT, json!({}));
+    app.wait_workspace();
+    let status = call(&mut api, &mut app, m::WORKSPACE_STATUS, json!({}));
+    assert_eq!(status["last"]["maps"], json!(0));
+
+    // Prune on the invented tree: nothing to remove, and the answer says
+    // what it looked at.
+    let pruned = call(&mut api, &mut app, m::WORKSPACE_PRUNE, json!({}));
+    assert_eq!(pruned["raw_removed"], json!(0));
+    assert_eq!(pruned["bytes"], json!(0));
+    assert_eq!(pruned["outputs_removed"], json!([]));
+}
+
+#[test]
+fn the_tags_tree_is_refused_inside_a_git_checkout() {
+    let t = Temp::new("workspace-git");
+    let mut app = App::new();
+    app.set_data_root(t.path("data"));
+    let mut api = Api::new();
+    let disc = t.path("disc");
+    std::fs::create_dir_all(&disc).unwrap();
+    std::fs::write(
+        disc.join("example.map"),
+        crate::app::workspace::tests::invented_map("example"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(t.path("repo/.git")).unwrap();
+    let e = api
+        .call(
+            &mut app,
+            m::WORKSPACE_EXTRACT,
+            json!({
+                "disc": disc.display().to_string(),
+                "root": t.path("repo/tags").display().to_string(),
+            }),
+        )
+        .unwrap_err();
+    assert_eq!(e.code, code::REFUSED);
+    assert!(e.message.contains("Git checkout"), "{}", e.message);
+    // The root was not recorded, and nothing runs.
+    assert_eq!(app.tags_root(), t.path("data").join("tags"));
+    assert!(app.workspace_start_page());
+    // A bad map name is a bad parameter.
+    let e = api
+        .call(
+            &mut app,
+            m::WORKSPACE_EXTRACT,
+            json!({"disc": disc.display().to_string(), "maps": ["nope"]}),
+        )
+        .unwrap_err();
+    assert_eq!(e.code, code::INVALID_PARAMS);
+    assert!(e.message.contains("nope.map"), "{}", e.message);
 }
