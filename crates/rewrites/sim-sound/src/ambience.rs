@@ -12,7 +12,10 @@ pub struct PortalLink {
 
 impl From<u16> for PortalLink {
     fn from(word: u16) -> Self {
-        Self { index: u32::from(word & 0x7fff), side: u32::from(word >> 15) }
+        Self {
+            index: u32::from(word & 0x7fff),
+            side: u32::from(word >> 15),
+        }
     }
 }
 
@@ -34,7 +37,6 @@ pub struct Fade {
     pub radius: u32,
     pub low: u32,
     pub high: u32,
-    pub position: u32,
     pub weight: u32,
     pub linear: u32,
     pub flags: u32,
@@ -47,9 +49,17 @@ impl FadeCurve {
     pub fn at(&self, radius: u32, distance: u32, mxcsr: &mut u32, fpu: &mut X87Abi) -> Fade {
         let cmp = |csr: &mut u32, a: u32, b: u32| simd::comiss(csr, a, b).expect("masked SSE");
         let above = |flags: u32| flags & 0x41 == 0;
-        let sub = |csr: &mut u32, a: u32, b: u32| simd::subss(csr, u128::from(a), b).expect("masked SSE") as u32;
-        let mul = |csr: &mut u32, a: u32, b: u32| simd::mulss(csr, u128::from(a), b).expect("masked SSE") as u32;
-        let radius = if above(cmp(mxcsr, radius, self.minimum_radius)) { radius } else { self.minimum_radius };
+        let sub = |csr: &mut u32, a: u32, b: u32| {
+            simd::subss(csr, u128::from(a), b).expect("masked SSE") as u32
+        };
+        let mul = |csr: &mut u32, a: u32, b: u32| {
+            simd::mulss(csr, u128::from(a), b).expect("masked SSE") as u32
+        };
+        let radius = if above(cmp(mxcsr, radius, self.minimum_radius)) {
+            radius
+        } else {
+            self.minimum_radius
+        };
         fp::ld_f32(fpu, radius);
         fp::unary(fpu, unary_op::ABS);
         fp::ld_f32(fpu, self.epsilon);
@@ -57,7 +67,11 @@ impl FadeCurve {
         fp::st_st(fpu, 0, true);
 
         let mut position = if tiny {
-            if above(cmp(mxcsr, radius, distance)) { self.one } else { 0 }
+            if above(cmp(mxcsr, radius, distance)) {
+                self.one
+            } else {
+                0
+            }
         } else {
             let n = sub(mxcsr, distance, radius);
             let d = sub(mxcsr, 0, radius);
@@ -71,7 +85,12 @@ impl FadeCurve {
 
         // For each endpoint the caller clamps a dB value before converting it.
         let low_db = if !above(cmp(mxcsr, self.db_threshold, self.silent_db))
-            && above(cmp(mxcsr, self.silent_db, 0)) { 0 } else { self.silent_db };
+            && above(cmp(mxcsr, self.silent_db, 0))
+        {
+            0
+        } else {
+            self.silent_db
+        };
         let endpoint = |fpu: &mut X87Abi, db| {
             self.gain.linear(db, fpu);
             let (_, store) = fp::st_f32(fpu, 0);
@@ -79,7 +98,11 @@ impl FadeCurve {
             store.value
         };
         let low = endpoint(fpu, low_db);
-        let high_db = if above(cmp(mxcsr, self.db_threshold, 0)) { self.silent_db } else { 0 };
+        let high_db = if above(cmp(mxcsr, self.db_threshold, 0)) {
+            self.silent_db
+        } else {
+            0
+        };
         let high = endpoint(fpu, high_db);
 
         let square = mul(mxcsr, position, position);
@@ -92,12 +115,22 @@ impl FadeCurve {
             weight = 0;
         } else {
             flags = cmp(mxcsr, weight, self.one);
-            if above(flags) { weight = self.one; }
+            if above(flags) {
+                weight = self.one;
+            }
         }
         let delta = sub(mxcsr, high, low);
         let scaled = mul(mxcsr, delta, weight);
         let linear = simd::addss(mxcsr, u128::from(scaled), low).expect("masked SSE") as u32;
-        Fade { radius, low, high, position, weight, linear, flags, high_db }
+        Fade {
+            radius,
+            low,
+            high,
+            weight,
+            linear,
+            flags,
+            high_db,
+        }
     }
 }
 
@@ -114,12 +147,31 @@ mod tests {
     #[test]
     fn cubic_fade_preserves_both_endpoints_and_the_halfway_gain() {
         let curve = FadeCurve {
-            minimum_radius: 0, epsilon: 0.01f32.to_bits(), one: 1f32.to_bits(),
-            quadratic: 3f32.to_bits(), cubic: 2f32.to_bits(), db_threshold: (-1.0f32).to_bits(),
-            silent_db: (-4.0f32).to_bits(), gain: GainCurve { decibel_scale: 1f32.to_bits(), exponent_scale: 1f32.to_bits() },
+            minimum_radius: 0,
+            epsilon: 0.01f32.to_bits(),
+            one: 1f32.to_bits(),
+            quadratic: 3f32.to_bits(),
+            cubic: 2f32.to_bits(),
+            db_threshold: (-1.0f32).to_bits(),
+            silent_db: (-4.0f32).to_bits(),
+            gain: GainCurve {
+                decibel_scale: 1f32.to_bits(),
+                exponent_scale: 1f32.to_bits(),
+            },
         };
-        for (d, w) in [(-2.0f32,1f32), (0.0,1.0), (2.0,0.5), (4.0,0.0), (6.0,0.0)] {
-            let result = curve.at(4f32.to_bits(), d.to_bits(), &mut 0x1f80, &mut X87Abi::default());
+        for (d, w) in [
+            (-2.0f32, 1f32),
+            (0.0, 1.0),
+            (2.0, 0.5),
+            (4.0, 0.0),
+            (6.0, 0.0),
+        ] {
+            let result = curve.at(
+                4f32.to_bits(),
+                d.to_bits(),
+                &mut 0x1f80,
+                &mut X87Abi::default(),
+            );
             assert_eq!(result.weight, w.to_bits());
         }
     }
