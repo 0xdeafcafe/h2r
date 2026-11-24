@@ -167,7 +167,7 @@ fn it_never_fires_an_empty_magazine() {
 #[test]
 fn a_moment_out_of_view_does_not_freeze_it_again() {
     let r = Skill::Easy.aim().reaction;
-    let at = [4.0, 4.0, 0.0];
+    let at = [5.0, 3.0, 0.0];
     let run = |gone: u32| {
         let mut m = Mind::new(Skill::Easy, 7);
         for t in 0..=r + 5 {
@@ -420,7 +420,7 @@ fn an_advancing_enemy_does_not_cost_the_left_gun() {
 #[test]
 fn both_triggers_are_down_together() {
     // Inside the SMG's band (held) and past it (bursts at Normal).
-    for distance in [5.0, 12.0] {
+    for distance in [5.0, 9.0] {
         let mut m = Mind::new(Skill::Normal, 8);
         let mut me = dual(rounds(60, 120));
         let (mut either, mut both) = (0, 0);

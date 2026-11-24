@@ -544,13 +544,13 @@ fn raw_bytes_fill_typed_fields_and_read_back() {
 }
 
 /// An invented group with one `view=` word of each kind.
-const VIEWS: &str = "group test 0x3c\n\
-  0x0 f32[3] tint view=rgb\n\
-  0xc f32[4] glow view=argb\n\
-  0x1c u32 edge view=rgb8\n\
-  0x20 u32 paint view=argb8\n\
-  0x24 u32 fill view=xrgb8\n\
-  0x28 f32[3] light view=hdr_rgb\n\
+const VIEWS: &str = "group test 0x3c\n  \
+  0x0 f32[3] tint view=rgb\n  \
+  0xc f32[4] glow view=argb\n  \
+  0x1c u32 edge view=rgb8\n  \
+  0x20 u32 paint view=argb8\n  \
+  0x24 u32 fill view=xrgb8\n  \
+  0x28 f32[3] light view=hdr_rgb\n  \
   0x34 data curve align 4 view=function\n";
 
 #[test]

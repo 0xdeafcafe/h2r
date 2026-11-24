@@ -335,8 +335,8 @@ group test 0x4c title="Test thing" applies=frame
 "#;
 
 /// An invented group with a view on a colour and a function.
-const VIEW_ATTRS: &str = "group test 0x14\n\
-  0x0 f32[3] tint view=hdr_rgb\n\
+const VIEW_ATTRS: &str = "group test 0x14\n  \
+  0x0 f32[3] tint view=hdr_rgb\n  \
   0xc data curve align 4 view=function\n";
 
 #[test]
