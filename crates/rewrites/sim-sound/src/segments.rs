@@ -2,6 +2,9 @@
 //! A start or update may allocate a missing instance. A stop only consumes
 //! the request. These decisions run before any track changes or RNG draws.
 
+pub mod playing;
+pub mod stopping;
+
 /// The mode at the request boundary is a word. The guest tests allocation
 /// with a variable shift, so that test sees only the low five bits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

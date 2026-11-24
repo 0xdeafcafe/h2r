@@ -1,10 +1,16 @@
 //! Loop requests enter with a tag, owner and requested mode. The lookup
 //! preserves datum order, so duplicate keys resolve to the first live slot.
 //! Admission and allocation may both finish the request before a track runs.
-//! The position update returns into the image with the live request frame.
+//! Listener response, track transitions and fade requests resume at their
+//! original call boundaries so callbacks can change the next track.
 use crate::datum::layout;
 use crate::points::{self, Point};
-use crate::sim_objects::{Body, Cx, Next, Result, frame};
+use crate::sim_objects::{Body, Cx, Next, Result, frame, sse};
+
+mod playing;
+mod stopping;
+mod response;
+mod tracks;
 use crate::sim_physics::{ARITH, arithmetic, byte, logic, status};
 use crate::sound::LoopingSound;
 use runtime::{CpuAbi, Guest};
@@ -32,9 +38,20 @@ const AFTER_SOURCE: u32 = 0x21a387;
 const ALLOCATE: u32 = 0x21aeb0;
 const UPDATE_SOURCE: u32 = 0x21d060;
 const NONE: u32 = u32::MAX;
-pub const GENERATED_SITES: &[u32] = &[AFTER_SOURCE];
+enum TrackStep {
+    Transfer(Next),
+    Done,
+    Stopping,
+}
+
+const REQUEST_SITES: &[u32] = &[
+    AFTER_LOOKUP, AFTER_ALLOCATION, AFTER_SOURCE, 0x21a3eb, 0x21a43f,
+    0x21a450, 0x21a473, 0x21a489, 0x21a499, 0x21a53f, 0x21a632, 0x21a65c,
+    0x21a670, 0x21a6a4, 0x21a6e8, 0x21a826, 0x21a8da, 0x21a8fc, 0x21a98c,
+    0x21a99d, 0x21a9bc, 0x21a9f4, 0x21aa36, 0x21aac6, 0x21aae8, 0x21ab93,
+];
 pub const BODIES: &[Body] = &[
-    Body { point: &LOOP_REQUEST, sites: &[AFTER_LOOKUP, AFTER_ALLOCATION], run: request },
+    Body { point: &LOOP_REQUEST, sites: REQUEST_SITES, run: request },
     Body { point: &LOOP_LOOKUP, sites: &[AFTER_FIRST], run: lookup },
 ];
 
@@ -123,6 +140,15 @@ fn finish_request(c: &mut CpuAbi, g: &Guest) -> Result<Next> {
 }
 
 fn request(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
+    if (AFTER_SOURCE..=0x21a499).contains(&pc) {
+        if let Some(next) = response::run(cx, pc)? {
+            return Ok(next);
+        }
+        return tracks::run(cx, 0x21a515);
+    }
+    if pc > 0x21a499 {
+        return tracks::run(cx, pc);
+    }
     let (c, g) = (&mut *cx.cpu, &mut *cx.g);
     if pc == LOOP_REQUEST.base {
         c.esp = arithmetic(c, c.esp, 0x3c, true);
@@ -232,5 +258,5 @@ fn request(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
         }
     }
     c.eax = frame::slot(c, g, 0x50)?;
-    Ok(Next::CallOriginalResume { target: UPDATE_SOURCE, site: AFTER_SOURCE })
+    Ok(Next::Call { target: UPDATE_SOURCE, site: AFTER_SOURCE })
 }
