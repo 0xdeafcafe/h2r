@@ -6195,6 +6195,24 @@ impl<B: Backend> Device<B> {
                 && texture_info[stage]
                     .is_some_and(|i| (i.width, i.height) == (target.width, target.height))
         });
+        // A screen-space quad whose positions reach both frame edges along
+        // an axis the fit shrinks is a full-frame pass too: like a frame
+        // copy, it spans the display, not the fitted safe box. The guest's
+        // own quads choose this at their submission sites (`render_aspect`);
+        // the strips a screen effect pushes by hand have no site, so the
+        // device reads the draw's vertices.
+        let spans_frame = match &self.ui_fit {
+            Some(fit) if !fit.applies_to_frame_sample() => spans_the_fitted_frame(
+                fit,
+                &parts.layout,
+                streams,
+                parts.indices.is_some(),
+                parts.vertex_count,
+                (target.width, target.height),
+            ),
+            _ => false,
+        };
+        let full_frame_pass = copies_a_frame || spans_frame;
         let (color, depth) = self.current_targets(mem, entry)?;
         let writes_depth = writes_depth_or_stencil(&state.render, target.depth_format);
         // The presented image is kept before anything draws over it; what
@@ -6225,7 +6243,7 @@ impl<B: Backend> Device<B> {
             ui_fit: self
                 .ui_fit
                 .filter(|fit| (target.width, target.height) == (640, 480)
-                    && (!copies_a_frame || fit.applies_to_frame_sample())),
+                    && (!full_frame_pass || fit.applies_to_frame_sample())),
             glyph_cache,
         };
         let (mut draw, snapshots) = if self
@@ -7241,6 +7259,71 @@ pub(crate) fn attribute_value(ty: VertexDataType, b: &[u8]) -> [f32; 4] {
         }
     }
     out
+}
+
+/// Whether an unindexed draw's screen-space positions reach both edges of
+/// the `frame` along an axis `fit` shrinks. A quad that does is a
+/// full-frame pass — a fill, tint, fade, blur or colour pass over the whole
+/// view — and the fit must not shrink it into the safe area
+/// (docs/graphics/high-resolution.md). The positions are read from the
+/// draw's own vertices, so every path that pushes a full-window quad is
+/// covered, whether or not the submission site is one `render_aspect`
+/// reads: the screen effects' hand-pushed strips, the colour pass's quads,
+/// a menu fill the background-art rule missed.
+fn spans_the_fitted_frame(
+    fit: &crate::backend::UiFit,
+    layout: &VertexLayout,
+    streams: &[StreamBytes],
+    indices: bool,
+    vertex_count: u32,
+    frame: (u32, u32),
+) -> bool {
+    let [sx, sy, _, _] = fit.transform;
+    let shrunk = [sx < 1.0, sy < 1.0];
+    if !shrunk[0] && !shrunk[1] {
+        return false;
+    }
+    // Indexed widgets select their own vertices; the strips, fans and
+    // quads of a full-frame pass never use indices. A cap keeps the walk
+    // off geometry submitted inside a fitted scope (a menu's model view).
+    if indices || vertex_count == 0 || vertex_count > 1024 {
+        return false;
+    }
+    let mut lo = [f32::INFINITY; 2];
+    let mut hi = [f32::NEG_INFINITY; 2];
+    for (stream, bytes) in layout.streams.iter().zip(streams) {
+        let Some(position) = stream
+            .attributes
+            .iter()
+            .find(|a| a.register == VertexRegister::POSITION)
+        else {
+            continue;
+        };
+        let stride = bytes.stride as usize;
+        let size = position.data_type.byte_size() as usize;
+        if stride < size {
+            return false;
+        }
+        let data: &[u8] = bytes.data.as_ref();
+        for vertex in 0..vertex_count as usize {
+            let base = vertex * stride + position.offset as usize;
+            let Some(b) = data.get(base..base + size) else {
+                return false;
+            };
+            let value = attribute_value(position.data_type, b);
+            for axis in 0..2 {
+                if value[axis].is_finite() {
+                    lo[axis] = lo[axis].min(value[axis]);
+                    hi[axis] = hi[axis].max(value[axis]);
+                }
+            }
+        }
+    }
+    // Pixel-centred corners sit half a pixel in: allow one guest pixel.
+    let frame = [frame.0 as f32, frame.1 as f32];
+    (0..2).any(|axis| {
+        shrunk[axis] && lo[axis] <= 1.0 && hi[axis] >= frame[axis] - 1.0
+    })
 }
 
 /// The attributes of an inline-array vertex and its size in bytes, from the

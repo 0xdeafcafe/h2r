@@ -116,7 +116,22 @@ render target the size of its own 640x480 target without the fit: a frame
 copy covers the frame (`crates/platform/d3d/src/device.rs`, test
 `a_frame_copy_in_a_fitted_ui_scope_keeps_the_whole_frame`). With the fit,
 each copy would shrink the picture into the centred box and leave stale
-target contents at the sides. Corner HUD
+target contents at the sides.
+
+A screen-space quad whose positions reach both edges of the frame along
+the axis the fit shrinks is a full-frame pass the same way: the screen
+effects' hand-pushed strips (the cutscene tints, the title screen's
+backdrop fill, the wide convolution's grid rows), the colour pass's quads
+and any menu fill a submission site did not read. The device reads the
+positions from the draw's own unindexed vertices and drops the widget
+fit for the draw (`crates/platform/d3d/src/device.rs`,
+`spans_the_fitted_frame`; test
+`full_frame_quads_span_the_display_in_a_fitted_ui_scope`). Without this,
+a full-window quad covered only the centred 4:3 box at a wide display
+while the scene under it, drawn with the display lens, spanned the whole
+raster — hard vertical edges at the box. A quad that covers the cinema
+window (full width, letterboxed height) spans the display along the
+fitted axis and keeps the fit on the other. Corner HUD
 groups can use the fitted rectangle or the viewport edges. If the game already
 uses the Xbox widescreen HUD layout, its artwork receives only the remaining
 aspect correction. At 16:9 the Pinned layout retains the retail widescreen fit.
