@@ -5,7 +5,7 @@ geometry path (slices 2 and 3, for clusters, instanced definitions and
 `mode` sections), grown raw writes (slice 7, with
 `MapEditor::append_raw` and **Use for lower LODs**, a checkbox on a model
 section and `geometry.lower_lods`), the collision compiler with `coll`
-BSPs as meshes and as `coll_bsp` targets (slice 8),
+BSPs as meshes, `coll_bsp` targets and **From render** (slice 8),
 adding solids to a structure's level collision (slice 11, with a box
 solid as the editor's one control) and the Textures tool (slices 5 and 6: painting,
 exporting, and writing the edited images with the map's save) are
@@ -333,11 +333,23 @@ material past its list, the limits) refuses the save naming the target. A
 paired game is not patched half way: the live path freezes geometry with
 a `reload` row until the map is reloaded.
 
-**From render** (`from_render.rs`): weld, drop degenerate and repeated
-triangles (one drawn both ways becomes two-sided), then join neighbours
-across shared edges, of one material and flags, within 0.5 degrees and
-0.001 of each other's plane, while the result is convex with at most
-eight vertices.
+**From render** replaces an open `coll_bsp` mesh with polygons made from
+an open render section's current mesh. Open the render section, then the
+collision BSP, and pick the source in Modeling or call
+`model.collision_from_render`. Both meshes use the same coordinate
+space. The command uses collision material 0 by default. The API also
+accepts a mapping indexed by render material. The destination keeps its
+node binding.
+
+`collision_build::from_render` welds, drops degenerate and repeated
+triangles (one drawn both ways becomes two-sided), then joins neighbours
+across shared edges with the same collision material and flags, within
+0.5 degrees and 0.001 of each other's plane, while the result is convex
+with at most eight vertices. `GeometrySession::collision_from_render`
+records one `replace_polygons` op after the replacement passes the
+destination's compiler and material checks. Undo and redo restore the
+meshes with their op logs, and saving uses the collision BSP's existing
+block and physics-slot write path.
 
 ## Targets and the save
 
@@ -775,7 +787,7 @@ more. Every acceptance test is on invented data; a disc test is
 | 5 | **Textures, paint and export**: `bitmap-edit` canvas, tools, PNG in and out, the Textures tool, live preview, `bitmap.*` without write | M | nothing | built in `crates/tools/bitmap-edit` and Studio on invented bitmaps: stamp, line, clone, fill, channel copy and turn pixel tests (`tests/stamp_fill.rs`); an undo snapshot shares untouched tiles and an edit that changed nothing is no step (`tests/history.rs`); import resample (`tests/import.rs`); `bitmap.pixels` after `bitmap.paint` with a line and a clone stroke, and the window's own line and clone drag (`api/tests/bitmaps_tests.rs`); export refused in a Git checkout |
 | 6 | **Textures, write**: `assets::encode` (linear, swizzled, DXT1/3/5, mips, cube faces), same-size in place; then new size or format and shared-cache copies through `MapEditor::append_raw` | M | 5; 3 for `patch_raw` | built in `assets::{encode, write}` and Studio (`encode_tests.rs`, `api/tests/bitmaps_tests.rs`): the encode tests above, every colour format reshaped and read back at every level, the last mip the picture's mean, sizes a format refuses named, a cube reshaped, `suggest_format`; a painted corner changes only its blocks and their mips in the saved map; a resized image reads back through `assets::bitmap::decode_image` with every level |
 | 7 | **Write, grown raw**: `MapEditor::append_raw`; topology changes for clusters and `mode` sections; section counts, visibility MOPP and table, frames; LOD repointing; behind Allow unverified geometry writes | L | 3 | the saved map validates and reads back to the exported mesh; `check_visibility` passes on every written cluster; the old block is unreferenced; a bucket-lit section and a sky strip are refused; the metadata still ends the file and a scenario block can still grow; package round trip (BPS) with a changed geometry hash |
-| 8 | **Collision compiler and `coll`**: `collision-build`; `coll` BSPs as meshes; BSP physics slots; **From render** | L | 1 | `Bsp::validate`; centroid and reference-side walks; random segments against brute force on a box, a concave room, a ramp and a two-sided sheet; limits refused; a saved `coll` reads back and its slot code emits each surface once |
+| 8 | **Collision compiler and `coll`**: `collision-build`; `coll` BSPs as meshes; BSP physics slots; **From render** | L | 1 | `Bsp::validate`; centroid and reference-side walks; random segments against brute force on a box, a concave room, a ramp and a two-sided sheet; limits refused; a saved `coll` reads back and its slot code emits each surface once; From render joins a synthetic floor into one quad, refuses an invalid material without editing, and survives undo, redo, op replay and save |
 | 9 | **`phmo` primitives** in place | S | 2 | a radius, a box and a hull vertex change only their bytes; a hull made concave is refused |
 | 10 | **Converted maps**: the overlay, its application in `h1convert` and `h1-assets`, the editor's save through conversion | M | 2, 8 | an overlay with a stale hash is an error; a converted fixture with an extrude overlay has the extruded faces in its cluster and passes the converter's own checks (`check_visibility`, portal and cluster tests) |
 | 11 | **Level collision, adding solids**: compile, `merge`, the leaf block, MOPP, checksum; grown blocks in ordinary metadata | L | 7, 8 | merged level validates; every old segment query gives its old answer away from the solid, and hits the solid inside it; added leaves have their stand-in's cluster; the MOPP returns every touching surface on sampled boxes |

@@ -389,6 +389,13 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             std::fs::write(&map, level_collision_map()).unwrap();
             c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
         }
+        m::MODEL_COLLISION_FROM_RENDER => {
+            let map = t.path("render-and-collision.map");
+            std::fs::write(&map, fixture::fixture_with_render_and_collision()).unwrap();
+            c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+            c(m::GEOMETRY_OPEN, json!({"target": "cluster:e1000004:0"}));
+            c(m::GEOMETRY_OPEN, json!({"target": "coll_bsp:e100000a:0"}));
+        }
         m::GEOMETRY_LIST
         | m::GEOMETRY_OPEN
         | m::GEOMETRY_CLOSE
@@ -4377,6 +4384,52 @@ fn a_coll_bsp_opens_as_a_mesh_and_a_compile_that_cannot_hold_is_named() {
     assert_eq!(check["targets"][0]["class"], "grown_blocks");
     assert!(check["targets"][0]["refused"].is_string(), "{check}");
     assert!(check["save_refusal"].is_string(), "{check}");
+}
+
+#[test]
+fn from_render_replaces_collision_as_one_replayable_and_saveable_edit() {
+    let t = Temp::new("collision-from-render");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    setup(&mut api, &mut app, &t, m::MODEL_COLLISION_FROM_RENDER);
+    let render = "cluster:e1000004:0";
+    let target = "coll_bsp:e100000a:0";
+    let before = call(&mut api, &mut app, m::GEOMETRY_READ, Value::Null);
+    assert_eq!(before["faces"].as_array().unwrap().len(), 6);
+    let bad = api.call(&mut app, m::MODEL_COLLISION_FROM_RENDER, json!({
+        "render": render, "materials": [6]
+    })).unwrap_err();
+    assert_eq!(bad.code, code::REFUSED, "{bad}");
+    assert_eq!(call(&mut api, &mut app, m::GEOMETRY_READ, Value::Null), before);
+    assert!(!app.session.is_dirty());
+
+    let result = call(&mut api, &mut app, m::MODEL_COLLISION_FROM_RENDER, json!({
+        "render": render, "materials": [1]
+    }));
+    assert_eq!(result, json!({"target": target, "verts": 4, "faces": 1}));
+    let edited = call(&mut api, &mut app, m::GEOMETRY_READ, Value::Null);
+    assert_eq!(edited["faces"][0]["material"], 1);
+    let ops = call(&mut api, &mut app, m::MESH_OPS, Value::Null)["ops"].clone();
+    assert_eq!(ops.as_array().unwrap().len(), 1);
+    assert_eq!(call(&mut api, &mut app, m::DOC_UNDO, json!({"doc":"map"}))["done"], true);
+    assert_eq!(call(&mut api, &mut app, m::GEOMETRY_READ, Value::Null), before);
+    assert_eq!(call(&mut api, &mut app, m::DOC_REDO, json!({"doc":"map"}))["done"], true);
+    assert_eq!(call(&mut api, &mut app, m::GEOMETRY_READ, Value::Null), edited);
+    call(&mut api, &mut app, m::DOC_UNDO, json!({"doc":"map"}));
+    call(&mut api, &mut app, m::MESH_APPLY, json!({"ops": ops}));
+    assert_eq!(call(&mut api, &mut app, m::GEOMETRY_READ, Value::Null), edited);
+
+    app.dispatch(Action::SetAllowUnverifiedGeometry(true));
+    let out = t.path("converted-collision.map");
+    call(&mut api, &mut app, m::DOC_SAVE_AS, json!({"doc":"map", "path":out}));
+    let mut map = map::Map::open(out).unwrap();
+    let collision = tags::collision::Collision::read(&mut map, fixture::id(10)).unwrap();
+    assert!(collision.validate().is_empty(), "{:?}", collision.validate());
+    let bsp = collision.bsps().next().unwrap();
+    assert_eq!(bsp.surfaces.len(), 1);
+    assert_eq!(bsp.surfaces[0].material, 1);
+    assert_eq!(bsp.surface_ring(0).len(), 4);
+    assert!(bsp.vertices.iter().all(|v| v.point[2] == 0.0));
 }
 
 #[test]

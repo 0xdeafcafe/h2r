@@ -54,7 +54,7 @@ pub use error::MeshError;
 pub use ids::{BitSet, EdgeId, FaceId, LoopId, VertId};
 pub use io::{Export, ImportReport, Source};
 pub use mesh::{Mesh, Poly, edge_flags, face_flags};
-pub use op::{DeleteWhat, MergeAt, MeshOp, OpResult};
+pub use op::{DeleteWhat, MergeAt, MeshOp, OpResult, PolygonFace};
 pub use ops::Affine;
 pub use select::{SelectHow, SelectMode, Selection};
 pub use triangulate::triangulate;

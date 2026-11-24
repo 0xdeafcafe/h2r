@@ -78,6 +78,13 @@ const METHODS: &[MethodDef] = &[
         r#"{}"#,
     ),
     def(
+        m::MODEL_COLLISION_FROM_RENDER,
+        "Replace an open collision BSP with polygons from an open render section in the same coordinate space. Optional materials maps each render material index to a collision material (default all 0). One undo step",
+        r#"{"render":"string","target?":"string","materials?":"[integer]"}"#,
+        r#"{"target":"string","verts":"integer","faces":"integer"}"#,
+        r#"{"render":"cluster:e1000004:0","target":"coll_bsp:e100000a:0"}"#,
+    ),
+    def(
         m::GEOMETRY_LOWER_LODS,
         "Use for lower LODs: point every lower level of detail of each permutation that draws an open model section (`mode_section:…`) at it (`on`, default true), or leave them as the file has them (false): one undo step, saved as patches of the permutations' LOD indices. A target that is not a model section is refused",
         r#"{"target?":"string","on?":"boolean"}"#,
@@ -155,12 +162,7 @@ fn run(app: &mut App, a: ModelAction) -> Result<Vec<String>, RpcError> {
 /// The `target` param, else the target in edit mode.
 fn target(app: &App, p: &P) -> Result<Target, RpcError> {
     match p.opt_str("target")? {
-        Some(id) => Target::parse(id).ok_or_else(|| {
-            err(
-                code::INVALID_PARAMS,
-                format!("target: {id:?} is not kind:tag:index (cluster:e1000004:0)"),
-            )
-        }),
+        Some(id) => parse_target("target", id),
         None => app.modeling.session.active.ok_or_else(|| {
             err(
                 code::NO_DOCUMENT,
@@ -168,6 +170,15 @@ fn target(app: &App, p: &P) -> Result<Target, RpcError> {
             )
         }),
     }
+}
+
+fn parse_target(param: &str, id: &str) -> Result<Target, RpcError> {
+    Target::parse(id).ok_or_else(|| {
+        err(
+            code::INVALID_PARAMS,
+            format!("{param}: {id:?} is not kind:tag:index (cluster:e1000004:0)"),
+        )
+    })
 }
 
 /// [`target`], which must be open.
@@ -319,6 +330,34 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 "allow_unverified": app.modeling.allow_unverified,
                 "save_refusal": save_refusal,
             }))
+        }
+        m::MODEL_COLLISION_FROM_RENDER => {
+            let target = open_target(app, p)?;
+            let render = parse_target("render", p.str("render")?)?;
+            let materials = p
+                .get("materials")
+                .map(|value| {
+                    serde_json::from_value(value.clone())
+                        .map_err(|e| err(code::INVALID_PARAMS, format!("materials: {e}")))
+                })
+                .transpose()?
+                .unwrap_or_default();
+            if !app.modeling.session.is_open(render) {
+                return Err(err(
+                    code::NO_DOCUMENT,
+                    format!("{render} is not open (geometry.open)"),
+                ));
+            }
+            run(
+                app,
+                ModelAction::CollisionFromRender {
+                    render,
+                    target,
+                    materials,
+                },
+            )?;
+            let (verts, _, faces) = app.modeling.session.mesh(target).expect("open target").counts();
+            Ok(json!({ "target": target.id(), "verts": verts, "faces": faces }))
         }
         m::GEOMETRY_LOWER_LODS => {
             let t = open_target(app, p)?;

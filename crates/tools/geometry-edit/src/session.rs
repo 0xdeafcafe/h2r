@@ -6,9 +6,11 @@ use std::fmt;
 use std::io::{Read, Seek};
 use std::sync::Arc;
 
+use collision_build::coll;
+use collision_build::from_render::{FromRender, from_render};
 use editor_core::UndoStack;
 use map::{AddressSpace, FourCC, Map, RawPointer, ResourceFile, TagId};
-use mesh_edit::{Export, Mesh, MeshError, MeshOp, OpResult, dirty, face_flags};
+use mesh_edit::{Export, Mesh, MeshError, MeshOp, OpResult, PolygonFace, dirty, face_flags};
 use tags::geometry::{Compression, RawSource, TagView};
 use tags::geometry_write::changed_runs;
 use tags::model::{MODEL_SECTION, RenderModelGeometry};
@@ -755,6 +757,62 @@ impl GeometrySession {
         }
     }
 
+    /// Replace an open collision BSP with polygons from an open render
+    /// section's current mesh. The caller chooses sections in the same space.
+    /// An empty material map assigns every triangle to collision material 0.
+    pub fn collision_from_render(
+        &mut self,
+        render: Target,
+        target: Target,
+        materials: &[u16],
+    ) -> Result<OpResult, Error> {
+        let refused = |reason| Error::Refused {
+            target: target.id(),
+            reason,
+        };
+        if render.kind == TargetKind::Coll || target.kind != TargetKind::Coll {
+            return Err(refused(
+                "From render needs a render section and a collision BSP".into(),
+            ));
+        }
+        if !self.is_open(target) {
+            return Err(Error::NotOpen(target.id()));
+        }
+        let mesh = self.mesh(render).ok_or_else(|| Error::NotOpen(render.id()))?;
+        let export = mesh.export();
+        let mapped = if materials.is_empty() {
+            Vec::new()
+        } else {
+            export
+                .materials
+                .iter()
+                .map(|&m| {
+                    materials.get(usize::from(m)).copied().ok_or_else(|| {
+                        refused(format!("render material {m} has no collision material mapping"))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let polygons = from_render(
+            &export.positions,
+            &export.triangles,
+            &mapped,
+            &FromRender::default(),
+        );
+        if polygons.is_empty() {
+            return Err(refused("the render section has no usable triangles".into()));
+        }
+        let faces = polygons
+            .into_iter()
+            .map(|p| PolygonFace {
+                points: p.points,
+                material: p.material,
+                group: coll::group_of(p.flags, p.breakable_surface),
+            })
+            .collect();
+        self.apply(target, &[MeshOp::ReplacePolygons { faces }], None)
+    }
+
     /// Apply `ops` to an open target as one undo step: all of them or,
     /// when one fails, none. With `merge`, a run of calls with the same
     /// key is one step (a gizmo drag), until [`Self::seal`].
@@ -784,6 +842,21 @@ impl GeometrySession {
                 selected: mesh.selection().len(),
                 ..OpResult::default()
             };
+        }
+        if ops.iter().any(|op| matches!(op, MeshOp::ReplacePolygons { .. })) {
+            let opened = self.find(t).expect("open target");
+            let Source::Coll { source, index } = &opened.source else {
+                return Err(Error::Refused {
+                    target: t.id(),
+                    reason: "polygon replacement requires a collision BSP".into(),
+                });
+            };
+            source
+                .writes(*index, &coll::polygons_from_mesh(&mesh))
+                .map_err(|reason| Error::Refused {
+                    target: t.id(),
+                    reason,
+                })?;
         }
         let before = self.state.clone();
         match merge {
