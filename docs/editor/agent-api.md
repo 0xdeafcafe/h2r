@@ -2500,7 +2500,9 @@ the window and the API stay one path.
   `geometry.lower_lods {target?, on?}` is **Use for lower LODs** on an
   open model section (`Action::Model(ModelAction::UseForLowerLods)`, one
   undo step; `on` defaults to true) and answers `changed`; any other
-  target is refused. `geometry.collision.add_box {structure, lo, hi, material?}` adds a
+  target is refused. `model.collision_from_render` runs Modeling's
+  **From render** action and records a replayable `replace_polygons` op.
+  `geometry.collision.add_box {structure, lo, hi, material?}` adds a
   closed box solid inside `[lo, hi]` to a structure's level collision
   (`structure` its tag id), onto the boxes added before, as
   `Action::Model(ModelAction::AddCollisionBox)`, and answers its counts
@@ -2741,6 +2743,19 @@ several tags is `INVALID_PARAMS` with the candidates.
   the node count; the render model's markers (`mode +0x58`, name and
   node); the object's change-colour count; and for a `weap` its
   `first_person` entries with their `model` and `animations` and paths.
+- `model.collision_from_render {render, target?, materials?}`: replace
+  a collision BSP with polygons made from the current mesh of a render
+  section. Open both with `geometry.open` and pass their target ids
+  (source `mode_section`, `cluster` or `instance_def`; destination
+  `coll_bsp`, defaults to the active target). Choose meshes in the same
+  coordinate space. The BSP keeps its existing node binding. Each entry
+  in `materials` is the collision material index for the render material
+  at that position. An omitted or empty array assigns every face
+  collision material 0. The call answers `{target, verts, faces}` and
+  creates one map undo step. An unopened target is `NO_DOCUMENT`.
+  Unusable geometry, missing material mappings and compiler failures are
+  `REFUSED` and leave the mesh unchanged. The edit saves with the map
+  when Allow unverified geometry writes is on.
 - `model.render {tag, view?, variant?, character?, biped?, hands?,
   size?, camera?, out?}`: the model drawn offscreen through the
   viewport's native object renderer

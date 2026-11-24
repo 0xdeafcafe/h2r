@@ -44,6 +44,12 @@ pub enum ModelAction {
         ops: Vec<MeshOp>,
         merge: Option<u64>,
     },
+    /// Replace a collision BSP with the current mesh of a render section.
+    CollisionFromRender {
+        render: Target,
+        target: Target,
+        materials: Vec<u16>,
+    },
     /// End a merged run (a gizmo drag).
     Seal,
     Undo,
@@ -118,6 +124,12 @@ impl App {
                 .modeling
                 .session
                 .apply(target, &ops, merge)
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+            ModelAction::CollisionFromRender { render, target, materials } => self
+                .modeling
+                .session
+                .collision_from_render(render, target, &materials)
                 .map(|_| ())
                 .map_err(|e| e.to_string()),
             ModelAction::Seal => {

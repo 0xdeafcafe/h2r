@@ -5,14 +5,14 @@
 //! first), and leave the result selected. Applying the same ops to the same
 //! mesh gives the same mesh, ids included.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::MeshError;
 use crate::ids::{EdgeId, FaceId, VertId};
 use crate::math::{self, Vec3};
-use crate::mesh::Mesh;
+use crate::mesh::{Mesh, Poly};
 use crate::ops::Affine;
 use crate::select::{SelectHow, SelectMode};
 
@@ -55,6 +55,14 @@ fn half() -> f32 {
 
 fn one_degree() -> f32 {
     1.0
+}
+
+/// An attributed polygon in a replacement mesh.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PolygonFace {
+    pub points: Vec<[f32; 3]>,
+    pub material: u16,
+    pub group: u16,
 }
 
 /// A mesh operation as a value.
@@ -166,6 +174,9 @@ pub enum MeshOp {
     /// along the neighbouring edges.
     Bevel { width: f32 },
     SetMaterial { material: u16 },
+    /// Replace the mesh with unskinned polygons, restarting its element
+    /// ids and clearing its selection. GeometrySession uses this on collision BSPs.
+    ReplacePolygons { faces: Vec<PolygonFace> },
 }
 
 /// What an op did: element counts after it, the ids it made, and the
@@ -186,7 +197,10 @@ impl Mesh {
     /// an op that fails, or would break an invariant, changes nothing.
     pub fn apply(&mut self, op: &MeshOp) -> Result<OpResult, MeshError> {
         let mut next = self.clone();
-        let (v0, e0, f0) = next.id_marks();
+        let (v0, e0, f0) = match op {
+            MeshOp::ReplacePolygons { .. } => (0, 0, 0),
+            _ => next.id_marks(),
+        };
         next.apply_in(op)?;
         next.flush_selection();
         if let Err(errors) = next.validate() {
@@ -269,6 +283,27 @@ impl Mesh {
             MeshOp::TrisToQuads { angle } => self.tris_to_quads(*angle)?,
             MeshOp::Inset { thickness, depth, individual } => self.inset(*thickness, *depth, *individual)?,
             MeshOp::Bevel { width } => self.bevel(*width)?,
+            MeshOp::ReplacePolygons { faces } => {
+                let mut mesh = Mesh::new();
+                let mut vertices = HashMap::new();
+                for face in faces {
+                    let mut ids = Vec::with_capacity(face.points.len());
+                    for &point in &face.points {
+                        if !point.iter().all(|v| v.is_finite()) {
+                            return Err(MeshError::BadInput("polygon vertex is not finite".into()));
+                        }
+                        let id = vertices
+                            .entry(point.map(f32::to_bits))
+                            .or_insert_with(|| mesh.add_vert(point, None));
+                        ids.push(*id);
+                    }
+                    let mut poly = Poly::new(ids);
+                    poly.material = face.material;
+                    poly.group = face.group;
+                    mesh.add_face(&poly)?;
+                }
+                *self = mesh;
+            }
             MeshOp::SetMaterial { material } => {
                 let faces = self.selected_faces();
                 if faces.is_empty() {
