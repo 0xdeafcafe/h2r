@@ -56,15 +56,28 @@ fn asin(m: &dyn GuestMemory, x: &mut X87) -> Result<u32, Error> {
             x.unary(unary_op::CHS)?;
         }
     }
-    // The masked precision report spills the result through a double.
-    if report && control != 0x027f && x.0.status & abi::H2_FP_PE != 0 {
+    // With a nondefault control word the CRT's precision report spills
+    // through a double. PE is sticky and may already be set on entry.
+    // If these instructions haven't raised it, both exits must round to
+    // the same caller word before a plan can own this result.
+    let mut direct = None;
+    if report && control != 0x027f {
+        if x.0.status & abi::H2_FP_PE == 0 {
+            let mut other = X87(x.0);
+            X87::ok(abi::ldcw(&mut other.0, control))?;
+            direct = Some(other.fstp_m32()?);
+        }
         let (code, stored) = abi::st_f64(&x.0, 0);
         X87::ok(code)?;
         abi::store_commit(&mut x.0, stored.status, true);
         X87::ok(abi::ld_f64(&mut x.0, stored.value))?;
     }
     X87::ok(abi::ldcw(&mut x.0, control))?;
-    x.fstp_m32()
+    let rounded = x.fstp_m32()?;
+    if direct.is_some_and(|word| word != rounded) {
+        return Err(Error::X87(abi::status::UNMODELLED));
+    }
+    Ok(rounded)
 }
 
 fn tangent(x: &mut X87, angle: u32) -> Result<u32, Error> {
