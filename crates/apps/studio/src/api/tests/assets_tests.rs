@@ -4,8 +4,8 @@
 
 use super::*;
 use map::FourCC;
-use tags::repo::store::Manifest;
-use tags::repo::{TagKey, TagRepo};
+use ::tags::repo::store::Manifest;
+use ::tags::repo::{TagKey, TagRepo};
 
 const PNG: &[u8] = &[0x89, b'P', b'N', b'G', 1, 2, 3, 4];
 
