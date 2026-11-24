@@ -1188,6 +1188,9 @@ fn every_method_in_methods_has_a_test() {
                         // No sim runner is wired to Studio's own API.
                         | m::PLAYTEST_RUN
                 ) && e.code == code::REFUSED => {}
+            // The invented map has no hill with corners to convert
+            // (markers_tests.rs makes one).
+            (None, Err(e)) if d.name == m::MARKERS_AREA_CONVERT && e.code == code::REFUSED => {}
             // Retail tag edits need the disc's screens: ours are refused.
             (None, Err(e))
                 if matches!(d.name, m::UI_HIDE | m::UI_DUPLICATE | m::UI_SET_STRING)

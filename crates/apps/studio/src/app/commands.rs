@@ -565,6 +565,27 @@ impl App {
         }
     }
 
+    /// [`Action::SetArea`]: a refusal's sentence goes to the status line
+    /// and the document stays as it was.
+    pub(super) fn set_area(
+        &mut self,
+        index: usize,
+        area: Option<scenario_edit::marker_view::game_markers::Area>,
+        merge: Option<u64>,
+    ) {
+        if let Err(e) = self.session.set_area(index, area, merge) {
+            self.error(refusal_text(&e));
+        }
+    }
+
+    /// [`Action::ConvertHill`].
+    pub(super) fn convert_hill(&mut self, index: usize) {
+        match self.session.convert_hill(index) {
+            Ok(_) => self.info("converted the hill to one flag with an area"),
+            Err(e) => self.error(refusal_text(&e)),
+        }
+    }
+
     /// [`Action::MovePlacement`]: the position and, given, the rotation (or
     /// facing) as one undo step.
     pub(super) fn move_placement(
@@ -611,5 +632,14 @@ impl App {
             Some(Err(e)) => self.error(e),
             None => self.error("no playlist file is open"),
         }
+    }
+}
+
+/// An edit's refusal as the status line says it: a refusal that names
+/// itself is the sentence alone.
+fn refusal_text(e: &scenario_edit::Error) -> String {
+    match e {
+        scenario_edit::Error::Declined(why) => why.clone(),
+        other => other.to_string(),
     }
 }

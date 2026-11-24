@@ -50,6 +50,12 @@ pub enum Op {
         kind: VolumeKind,
         entry: Vec<u8>,
     },
+    /// Set or clear (`None`) the area of netgame flag `index`
+    /// (docs/game/gametype-markers.md).
+    Area {
+        index: usize,
+        area: Option<game_markers::Area>,
+    },
 }
 
 /// A user action: one or more operations, undone as one step.
@@ -91,6 +97,14 @@ impl Command {
             merge: None,
         }
     }
+    /// Set or clear the area of netgame flag `index`.
+    pub fn area(index: usize, area: Option<game_markers::Area>) -> Self {
+        Self {
+            label: if area.is_some() { "set area" } else { "clear area" }.into(),
+            ops: vec![Op::Area { index, area }],
+            merge: None,
+        }
+    }
     pub fn merging(mut self, key: u64) -> Self {
         self.merge = Some(key);
         self
@@ -98,7 +112,7 @@ impl Command {
     fn only_sets(&self) -> bool {
         self.ops
             .iter()
-            .all(|o| matches!(o, Op::Set(_) | Op::VolumeSet { .. }))
+            .all(|o| matches!(o, Op::Set(_) | Op::VolumeSet { .. } | Op::Area { .. }))
     }
 }
 
@@ -122,6 +136,11 @@ enum Undo {
     VolumeAdded {
         kind: VolumeKind,
         entry: Vec<u8>,
+    },
+    /// The flag's old area.
+    Area {
+        index: usize,
+        area: Option<game_markers::Area>,
     },
 }
 
@@ -240,6 +259,7 @@ fn same_op(a: &Op, b: &Op) -> bool {
                 kind: k, index: i, ..
             },
         ) => kind == k && index == i,
+        (Op::Area { index, .. }, Op::Area { index: i, .. }) => index == i,
         _ => false,
     }
 }
@@ -253,6 +273,7 @@ fn same_undo(a: &Undo, b: &Undo) -> bool {
                 kind: k, index: i, ..
             },
         ) => kind == k && index == i,
+        (Undo::Area { index, .. }, Undo::Area { index: i, .. }) => index == i,
         _ => false,
     }
 }
@@ -292,6 +313,12 @@ fn apply_all(
             Op::VolumeRemove { kind, index } => scenario
                 .remove_volume(*kind, *index)
                 .map(Undo::VolumeRemoved),
+            Op::Area { index, area } => scenario
+                .set_area(*index, area.clone())
+                .map(|old| Undo::Area {
+                    index: *index,
+                    area: old,
+                }),
             Op::VolumeAdd { kind, entry } => {
                 scenario
                     .add_volume(*kind, entry.clone())
@@ -328,6 +355,9 @@ fn revert(scenario: &mut Scenario, before: &[Undo]) -> Result<()> {
             }
             Undo::VolumeRemoved(r) => scenario.unremove_volume(r)?,
             Undo::VolumeAdded { kind, entry } => scenario.unadd_volume(*kind, entry)?,
+            Undo::Area { index, area } => {
+                scenario.write_area(*index, area.clone())?;
+            }
         }
     }
     Ok(())

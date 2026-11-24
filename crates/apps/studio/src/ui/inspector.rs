@@ -12,6 +12,8 @@
 //! whose values differ says so, and an edit writes only what was touched
 //! (one component of a vector, one bit of flags) to each. Every edit is one
 //! undo step; a drag is one step however long.
+mod area;
+
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
@@ -636,6 +638,11 @@ pub fn draw(ui: &Ui, fonts: &theme::Fonts, app: &mut App, state: &mut InspectorS
     }
     if let Some(action) = resolution {
         app.pairing.requests.push(Request::Apply(action));
+    }
+    // A netgame flag's area (a hill, territory or site), or Convert to area
+    // for a retail hill's corners.
+    if selection.len() == 1 && kind == BlockKind::NetgameFlags {
+        area::rows(ui, app, index);
     }
     // Through the command layer, as the agent API's edits.
     for (field, edit) in edits {

@@ -21,6 +21,8 @@
 //! - [`marker_view`]: the game type markers of the open map (spawns, goals,
 //!   hills, item spawners, trigger volumes) as the shared `game_markers`
 //!   shapes, placed and split into the layers' overlays.
+//! - [`area_edit`]: the handles of a marker's area, and the area a drag of
+//!   one makes.
 //! - [`volumes`]: the trigger volumes, kill triggers and BSP switches as
 //!   oriented boxes to draw, pick and edit (BSP switches read only), kept
 //!   as the editor's own block list beside [`layout`].
@@ -39,6 +41,7 @@
 //! docs/editor/scenario-editor.md §6. No game data is in this crate or its tests.
 #![forbid(unsafe_code)]
 
+pub mod area_edit;
 pub mod collision_view;
 pub mod edit;
 /// An invented cache for tests and the editor's screenshots.
@@ -61,6 +64,8 @@ pub mod scene;
 pub mod session;
 pub mod volumes;
 #[cfg(test)]
+mod area_tests;
+#[cfg(test)]
 mod tests;
 
 pub use edit::{Command, History, SetField};
@@ -71,7 +76,7 @@ pub use scenario::{
     BspPatch, Changes, GeometryChanges, GeometryGrown, Grown, MovedRaw, RawAppend, RawPatch,
     Removed, Scenario, TagGrown, TagMove, TagRef, Value, VolumeRemoved,
 };
-pub use session::{GROWTH_REFUSAL, Reference, RotationField, Session, Transform};
+pub use session::{AreaFrom, GROWTH_REFUSAL, Reference, RotationField, Session, Transform};
 
 /// Why an edit, read or save was refused.
 #[derive(Debug, thiserror::Error)]
