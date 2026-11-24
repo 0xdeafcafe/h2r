@@ -1,0 +1,96 @@
+//! Listener-relative sound propagation and exact conversion to linear gain.
+//! The guest supplies tuning values and the x87 control word for each mix.
+use x87::abi::{self, ARITH_POP, X87Abi, arith_op, src_kind, unary_op};
+
+/// Scale factors in the dB-to-linear path, kept separate because each
+/// multiply rounds at the current precision.
+#[derive(Clone, Copy)]
+pub struct GainCurve {
+    pub decibel_scale: u32,
+    pub exponent_scale: u32,
+}
+
+impl GainCurve {
+    /// Push the linear gain in extended precision. Both the precision of
+    /// the intermediate results and the sticky exceptions are observable.
+    /// The sound entry runs only with all exceptions masked.
+    pub fn linear(self, decibels: u32, stack: &mut X87Abi) {
+        abi::ld_f32(stack, decibels);
+        for scale in [self.decibel_scale, self.exponent_scale] {
+            abi::arith(stack, arith_op::MUL, 0, src_kind::F32, u64::from(scale));
+        }
+        abi::ld_const(stack, 3); // log2(e)
+        abi::arith(stack, arith_op::MUL | ARITH_POP, 1, src_kind::ST, 0);
+        // 2^x = 2^round(x) * (1 + (2^(x-round(x)) - 1)).
+        abi::ld_st(stack, 0);
+        abi::unary(stack, unary_op::RNDINT);
+        abi::xch(stack, 1);
+        abi::arith(stack, arith_op::SUB, 0, src_kind::ST, 1);
+        abi::unary(stack, unary_op::X2M1);
+        abi::ld_const(stack, 0); // one
+        abi::arith(stack, arith_op::ADD | ARITH_POP, 1, src_kind::ST, 0);
+        abi::unary(stack, unary_op::SCALE);
+        abi::st_st(stack, 1, true);
+    }
+}
+
+/// A portal has two masks, one for each group of clusters it connects.
+/// The listener uses the other side; a listener present on both sides
+/// takes the first match. The listener's own environment never accumulates
+/// its door gain.
+#[derive(Clone)]
+pub struct PortalSides(pub [[u32; 16]; 2]);
+
+impl PortalSides {
+    pub fn opposite(&self, listener: usize) -> Option<usize> {
+        (0..2)
+            .find(|&side| self.contains(side, listener))
+            .map(|side| side ^ 1)
+    }
+
+    pub fn contains(&self, side: usize, cluster: usize) -> bool {
+        self.0[side][cluster / 32] & (1 << (cluster % 32)) != 0
+    }
+}
+
+/// The operand order matters for signed zeros and unordered comparisons.
+/// COMISS raises IE for either kind of NaN.
+pub fn portal_max(mxcsr: &mut u32, previous: u32, door: u32) -> u32 {
+    let flags = simd::comiss(mxcsr, previous, door).expect("masked SSE");
+    if flags & 0x41 == 0 { previous } else { door }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_side_wins_when_both_contain_listener() {
+        let mut p = PortalSides([[0; 16]; 2]);
+        p.0[1][1] = 1;
+        assert_eq!(p.opposite(32), Some(0));
+        assert_eq!(p.opposite(31), None);
+        p.0[0][1] = 1;
+        assert_eq!(p.opposite(32), Some(1));
+        p.0[0][15] = 1 << 31;
+        assert!(p.contains(0, 511));
+    }
+
+    #[test]
+    fn equal_and_unordered_select_the_new_gain() {
+        let mut mxcsr = 0x1f80;
+        assert_eq!(portal_max(&mut mxcsr, 0, (-0.0f32).to_bits()), (-0.0f32).to_bits());
+        assert_eq!(portal_max(&mut mxcsr, f32::NAN.to_bits(), 0), 0);
+        assert_ne!(mxcsr & 1, 0);
+    }
+
+    #[test]
+    fn zero_db_pushes_unity_above_the_previous_gain() {
+        let mut stack = X87Abi::default();
+        abi::ld_f32(&mut stack, 7.5f32.to_bits());
+        let curve = GainCurve { decibel_scale: 0.25f32.to_bits(), exponent_scale: 3.0f32.to_bits() };
+        curve.linear(0, &mut stack);
+        assert_eq!(stack.st(0), Some(x87::F80::ONE));
+        assert_eq!(abi::st_f32(&stack, 1).1.value, 7.5f32.to_bits());
+    }
+}
