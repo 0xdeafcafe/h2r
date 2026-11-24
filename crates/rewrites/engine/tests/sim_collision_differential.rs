@@ -856,6 +856,70 @@ fn vector_test_ties_match_the_guest() {
     });
 }
 
+#[test]
+fn vector_test_ring_groups_match_the_guest() {
+    with_oracle("collision vector test ring groups", |oracle, image| {
+        let polygon = [
+            [0.0, -4.0, -4.0],
+            [0.0, 0.0, -4.0],
+            [0.0, 4.0, -4.0],
+            [0.0, 4.0, 0.0],
+            [0.0, 4.0, 4.0],
+            [0.0, 0.0, 4.0],
+            [0.0, -4.0, 4.0],
+            [0.0, -4.0, 0.0],
+            [0.0, -4.0, -2.0],
+        ];
+        for len in [3, 5, 8, 9] {
+            for flip in [0, 0x8000] {
+                let mut b = Builder::default();
+                b.planes.push([1.0, 0.0, 0.0, 0.0]);
+                b.nodes.push((0, synth::leaf(0), synth::leaf(1)));
+                b.leaves.extend([(1, 1, 0), (1, 1, 0)]);
+                b.refs.push((flip, synth::surface(0)));
+                let points: Vec<_> =
+                    (0..len).map(|i| polygon[i * polygon.len() / len]).collect();
+                let first = b.ring(0, &points, flip != 0);
+                b.surfaces.push((flip, first, 0, 0, 7));
+
+                for (y, z) in [(0.0, -0.0), (-4.0, -4.0), (8.0, 8.0), (-8.0, 0.0)] {
+                    let mut m = fresh(image);
+                    write_bsp(&mut m, &b);
+                    record_and_mask(&mut m, &mut Rng(17));
+                    put_vector(&mut m, START, [-2.0, y, z]);
+                    put_vector(&mut m, DELTA, [4.0, 0.0, 0.0]);
+                    m.word(STACK + 4, 0);
+                    m.word(STACK + 8, 0);
+                    m.word(STACK + 12, START);
+                    m.word(STACK + 16, DELTA);
+                    let mut c = entry_cpu(&mut Rng(3), VECTOR.point.base);
+                    (c.mxcsr, c.x87.control, c.x87.tag) = (0x1fa0, 0x027f, 0xffff);
+                    c.eax = RECORD;
+                    c.ecx = 0;
+                    c.edx = BSP;
+                    c.xmm[0][..4].copy_from_slice(&1.0f32.to_le_bytes());
+
+                    for lanes in [false, true] {
+                        let label = format!("{len} edges, flip {flip:#x}, ({y}, {z}), lanes {lanes}");
+                        assert!(
+                            sim_core::lanes::with(lanes, || check(
+                                oracle,
+                                &VECTOR,
+                                &c,
+                                &m,
+                                |c, g, w| adapter::vector_test(c, g, w),
+                                None,
+                                &label,
+                            )),
+                            "{label}: declined"
+                        );
+                    }
+                }
+            }
+        }
+    });
+}
+
 /// The third arm for G and H: the lifted entry with `port` in place, from
 /// the same state, against the lifted entry alone.
 fn port_matches(

@@ -179,17 +179,15 @@ same bytes the guest would read. Nothing reads the map file separately.
 | `leaves` | flags, reference count, first reference | 4 | The matcher derives leaf state from the flags. |
 | `refs` | plane/flip word, 2D root, projection row | 6 | The row is computed from the dominant axis and flip at decode. |
 | `nodes_2d` | three binary32 words, two child words | 16 | Child indices retain their guest encoding. |
-| `surfaces` | plane, first edge, flags, breakable index, material, ring start and length | 16 | A scalar matcher can follow the original first edge. |
-| Optional ring edges | two binary32 xyz vertices | 24 | The current matcher uses pairs in traversal order. Section 4.4 describes the planned packed projection. |
+| `surfaces` | plane, first edge, flags, breakable index, material, ring start and length, first packed group | 20 | A scalar matcher can follow the original first edge. |
+| Optional ring edges | two binary32 xyz vertices | 24 | Pairs in traversal order. |
+| Optional packed groups | four origins and four edge deltas, stored by axis | 96 | One or two per short ring. References share the groups across projection rows. |
 
 Leaf indices, surface indices, plane indices and material indices are guest
 visible and are never renumbered.
 
-The planned packed matcher builds a ring for each (surface, projection)
-pair that a reference can reach through its 2D tree. Retail rings have at
-most 8 vertices (collision.md, V). A longer ring sets `n = 0xff` and the
-matcher falls back to the scalar edge loop over `edges` and `vertices`,
-which are then kept as plain guest-layout arrays.
+The scalar matcher uses the cached vertex pairs for longer rings and reads
+the guest edge and vertex blocks when the ring cache is out of budget.
 
 Structure-only tables live in `Structure`:
 
@@ -323,21 +321,27 @@ rejects the point when
 (Bv - Av) * (pu - Au) - (pv - Av) * (Bu - Au) > 0
 ```
 
-The answer is "no edge rejects", which does not depend on edge order. So
-the proposed packed ring stores `u = Au`, `v = Av`, `du = Bu - Au`, `dv = Bv - Av`
-for up to 8 edges (the two differences are the retail subtractions on static
-operands, done once), pads unused lanes with a copy of edge 0, and tests all
-edges in one 8-lane or two 4-lane steps: two subtractions, two
-multiplications, one subtraction and one compare per lane, in the retail
-order. A NaN compares false in both forms.
+The matcher in `sim_collision::bsp::ring` packs rings of up to eight edges.
+Each group stores `A` and `B - A` for four edges by axis, repeating an
+edge in any spare lane. Decode computes the differences once with
+binary32 subtraction under the host float guard. Each reference selects
+its own projection axes and the kernel computes the cross product with
+two subtractions, two multiplications and one final subtraction per lane.
+The existing native SIMD switch selects host SIMD or scalar lane arithmetic.
+
+The packed test uses the same range guard as the scalar edge loop. If a
+group fails that guard, the scalar loop replays the test in ring order.
+This preserves an early rejection even if a later lane needs a decline.
+The scalar loop also handles long rings, coordinates outside the packed
+range and rings that exceed the cache budget.
 
 ### 4.5 Memory
 
-Per map on the multiplayer set the structure BSP is the bulk: about 32 bytes
-per node, 32 per surface and 160 per reached ring. The budget is **≤ 8 MiB
+Per map on the multiplayer set the structure BSP is the bulk. The budget is **≤ 8 MiB
 per loaded map** for the whole collision world, inside the +32 MiB the plan
-allows all Rust sim state. The world charges decoded array capacity, the
-packed leaf table, reserved address-index capacity and the BSP owners.
+allows all Rust sim state. The world charges decoded array capacity,
+including ring edges and packed groups, the packed leaf table,
+reserved address-index capacity and the BSP owners.
 On first overflow it releases expanded rings and uses scalar guest edge
 reads for that generation. Essential tables that exceed the budget yield
 a live cluster read or a `budget` bail. The disc sweep reports retained
@@ -678,7 +682,7 @@ would store, not merely a final state that dedupes the same way.
 
 | Site | Lanes | Notes |
 |---|---|---|
-| Ring inside test | 8 edges | 4.4. One AVX step or two NEON/SSE2 steps. |
+| Ring inside test | 4 edges per group | 4.4. One or two NEON/SSE2 groups per short ring. |
 | BSP node | start and delta dot products as 2 lanes of 4 | Same products and sums as retail. |
 | Point to leaf, two levels at once | node and both children in 3 lanes | Optional (S8): needs a 3-plane treelet array; measure first. |
 | Object references of a cluster (J step 6, H) | 4 or 8 references | Gather the list into SoA (`centre xyz`, `radius`, `type`, `flags`, `handle`), run every sphere pretest or overlap in lanes, then replay marks and hits in list order. |
