@@ -366,6 +366,52 @@ fn scene(backend: &mut GfxBackend, mixed: bool) -> Vec<u8> {
 }
 
 #[test]
+fn resolved_light_window_samples_its_pinned_gel_on_the_indexed_draw() {
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(ctx) = GfxContext::headless() else { return };
+    let mut backend = GfxBackend::new(ctx);
+    let color = backend.create_surface(FORMAT, SIZE, SIZE, false).unwrap();
+    let depth = backend.create_surface(DEPTH, SIZE, SIZE, true).unwrap();
+    let gel = backend.create_texture_target(FORMAT, SIZE, SIZE).unwrap();
+    backend.clear(gel, None, Clear {
+        color: Some([1.0, 0.0, 0.0, 1.0]),
+        ..Clear::default()
+    }).unwrap();
+    let texture = backend.surface_texture(gel).unwrap().unwrap();
+    let sampled = [Some(&texture), None, None, None];
+    let mut draw = triangle(2.0, [1.0; 4], 0, true);
+    draw.state.render.depth_func = CompareFunc::Always;
+    draw.state.render.stencil.enable = false;
+    // The handler emitted only the triangle in the second half of the stream.
+    let mut vertices = triangle(18.0, [1.0; 4], 0, true).streams[0].data.to_vec();
+    vertices.extend_from_slice(&draw.streams[0].data);
+    draw.streams[0].data = vertices.into();
+    draw.vertex_count = 6;
+    draw.indices = Some(vec![3, 4, 5].into());
+    let clear = Clear::all([0.0, 0.0, 0.0, 1.0]);
+    backend.clear(color, Some(depth), clear).unwrap();
+    assert_eq!(backend.draw(color, Some(depth), &draw, sampled), Ok(DrawOutcome::Drawn));
+    let expected = backend.read_color(color).unwrap().0;
+    let pixel = |x, y| 4 * (y * SIZE + x) as usize;
+    assert_ne!(expected[pixel(4, 4)..][..4], expected[pixel(20, 4)..][..4]);
+    backend.clear(color, Some(depth), clear).unwrap();
+    let cache = Arc::new(Cache::default());
+    let mut surfaces = ExternalSurfaces {
+        color, depth, sampled: vec![gel], slots: vec![Some(gel)], slot_sizes: vec![Some((SIZE, SIZE))],
+    };
+    let make_pass = || {
+        let mut pass = IndexedPass::new(&draw, Arc::clone(&cache), 1, None).unwrap();
+        pass.pin_sampled_surface(ACCUM.texture, (SIZE, SIZE));
+        Box::new(pass)
+    };
+    let stage = timeline::native::Stage::Lights;
+    assert!(after_compile(|| record_pass(&mut backend, surfaces.clone(), sampled, stage, make_pass())));
+    assert_eq!(backend.read_color(color).unwrap().0, expected);
+    surfaces.slots[0] = Some(backend.create_texture_target(FORMAT, SIZE, SIZE).unwrap());
+    assert!(!record_pass(&mut backend, surfaces, sampled, stage, make_pass()));
+}
+
+#[test]
 fn world_layers_gpu_mixed_w_depth_stencil_and_texaccum_match_d3d() {
     let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let Ok(ctx) = GfxContext::headless() else {

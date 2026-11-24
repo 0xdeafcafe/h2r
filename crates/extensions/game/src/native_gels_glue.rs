@@ -59,12 +59,21 @@ impl Outputs {
         shader: u32,
         surface: u32,
     ) -> Option<Binding> {
+        self.produced_after(before, definition, shader)
+            .filter(|binding| binding.key.surface == surface)
+    }
+
+    /// The indexed draw validates the produced surface against its actual
+    /// sampled texture on every copy when the packet is recorded.
+    pub(crate) fn produced_after(
+        &self,
+        before: Checkpoint,
+        definition: u32,
+        shader: u32,
+    ) -> Option<Binding> {
         let binding = (*self.binding.lock().ok()?)?;
         let key = binding.key;
-        (key.sequence > before.0
-            && key.definition == definition
-            && key.shader == shader
-            && key.surface == surface)
+        (key.sequence > before.0 && key.definition == definition && key.shader == shader)
             .then_some(binding)
     }
 }

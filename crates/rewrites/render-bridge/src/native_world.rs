@@ -333,6 +333,15 @@ pub(crate) fn load_bsp(mem: &dyn GuestMemory, esp: u32) {
     {
         return;
     }
+    load_active_bsp(mem);
+}
+
+/// Both a scene base layer and the dynamic light pass can be the first
+/// consumer in a BSP. They share the activation's single pending load.
+pub(crate) fn load_active_bsp(mem: &dyn GuestMemory) {
+    if !BSP_LOAD_PENDING.load(Ordering::Acquire) {
+        return;
+    }
     let Ok(bsp) = mem.u32(ACTIVE_BSP) else {
         return;
     };

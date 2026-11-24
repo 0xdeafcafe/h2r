@@ -5036,6 +5036,7 @@ mod tests {
             palette: 0,
         };
         let section = |material, lit: bool, lighting: bool| SectionInput {
+            source: None,
             positions: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             uvs: vec![[0.0; 2]; 3],
             lightmap_uvs: if lit { vec![[0.5; 2]; 3] } else { Vec::new() },

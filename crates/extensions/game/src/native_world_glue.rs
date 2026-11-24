@@ -107,8 +107,7 @@ pub struct Ready {
     /// The model decorators' passes of this load (`native_decorators_glue`).
     pub decorators: OnceLock<Arc<crate::native_decorators_glue::DecoratorLooks>>,
     /// What the native lights draw over this world
-    /// (`native_lights_glue`; `None` when the world has no native
-    /// material).
+    /// (`native_lights_glue`), once the light resource worker publishes.
     pub lights: OnceLock<Arc<crate::native_lights_glue::LightsWorld>>,
     /// The device palettes the load expanded palettized stage bitmaps
     /// through, at the stages it used them (the rest `None`): each ask
@@ -1443,6 +1442,7 @@ fn load_ready(
     // The later shader walks use part descriptors and placement rows. Keep
     // those before filtering layer 3, without copying any vertex or index data.
     let stage_world = World {
+        light_parts: world.light_parts.clone(),
         draws: world.draws.clone(),
         batches: world.batches.clone(),
         transparents: world.transparents.clone(),
@@ -1564,9 +1564,7 @@ fn load_ready(
     let empty_lights = {
         let _scope = mem_watch::scope("native.lights.load");
         let _setup = Setup::Lights.worker();
-        let lights = if native.is_empty() { None } else {
-            crate::native_lights_glue::load(&mut map, &mut files, &shaders, &stage_world, &accepts, decoder.palettes())
-        };
+        let lights = crate::native_lights_glue::load(&mut map, &mut files, &shaders, &stage_world, decoder.palettes());
         if let Some(lights) = lights {
             let lights = Arc::new(lights);
             let set = lights.upload_engine_textures(&device, &queue);
