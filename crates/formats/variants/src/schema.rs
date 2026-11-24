@@ -415,7 +415,10 @@ impl Schema {
         }
         let mut defaults = BTreeMap::new();
         for ty in GameType::ALL {
-            let at = GOOF_DEFAULTS + ENTRY_SIZE * ty.content_type().unwrap() as usize;
+            let Some(category) = ty.content_type() else {
+                continue;
+            };
+            let at = GOOF_DEFAULTS + ENTRY_SIZE * category as usize;
             if goof.len() >= at + 8 {
                 defaults.insert(ty, pairs(goof, at, src)?);
             }
@@ -453,8 +456,10 @@ impl Schema {
     /// one (`0x1489b5`; that it starts from zeros is unverified).
     pub fn new_variant(&self, ty: GameType) -> GameVariant {
         let mut v = GameVariant::blank(ty);
-        for (id, value) in self.defaults.get(&ty).into_iter().flatten() {
-            let _ = v.set(*id, *value);
+        for (id, value) in self.defaults.get(&ty.menu_template()).into_iter().flatten() {
+            if ty != GameType::Script || applies(*id, ty) {
+                let _ = v.set(*id, *value);
+            }
         }
         v
     }
@@ -478,7 +483,7 @@ impl Schema {
     /// `21 + engine` a summary page (left out: it repeats the others),
     /// `31 + engine` team options. Unknown ids are shown for every type.
     pub fn pages_for(&self, ty: GameType) -> Vec<Page> {
-        let e = ty.engine() as u32;
+        let e = ty.menu_template().engine() as u32;
         self.pages
             .iter()
             .filter(|p| match p.id {
@@ -792,5 +797,39 @@ mod weapon_tests {
         let mut bare = Schema::fallback();
         bare.add_weapon_slots(&named);
         assert!(bare.settings[&WEAPON_SETTINGS[0]].choices.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod script_tests {
+    use super::*;
+
+    #[test]
+    fn script_records_get_common_pages_and_defaults_without_a_type_area() {
+        let score = GameType::Slayer.score_setting().unwrap();
+        let type_setting = SettingId(28);
+        let mut schema = Schema::fallback();
+        schema.defaults.insert(
+            GameType::Slayer,
+            vec![(score, 15), (type_setting, 1)],
+        );
+        schema.pages = vec![
+            Page {
+                id: 1,
+                title: "Match".into(),
+                settings: vec![score],
+            },
+            Page {
+                id: 14,
+                title: "Slayer".into(),
+                settings: vec![type_setting],
+            },
+        ];
+        let v = schema.new_variant(GameType::Script);
+        assert_eq!(v.game_type(), GameType::Script);
+        assert_eq!(v.get(score), Some(15));
+        assert!(v.bytes()[record::TYPE_AREA].iter().all(|&b| b == 0));
+        assert_eq!(schema.pages_for(v.game_type()), schema.pages[..1]);
+        assert!(schema.validate(&v).is_empty());
     }
 }
