@@ -16,7 +16,7 @@ const COLL: u32 = TABLE + 0x600;
 const BODIES: u32 = TABLE + 0x1000;
 const PERM: u32 = TABLE + 0x5000;
 const PART: u32 = TABLE + 0x6000;
-const ROOT: u32 = 0x1717_0001;
+pub(super) const ROOT: u32 = 0x1717_0001;
 const CHILD: u32 = 0x2929_0002;
 const SIBLING: u32 = 0x3434_0003;
 
@@ -28,7 +28,7 @@ impl GuestRead for Inputs<'_, '_> {
     }
 }
 
-fn fixture(m: &mut Ram<'_>) {
+pub(super) fn fixture(m: &mut Ram<'_>) {
     let regions = PERM;
     let states = PERM + 0x100;
     let coll_regions = PERM + 0x200;
