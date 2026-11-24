@@ -835,13 +835,15 @@ commits. The three parts are built.
   through `0x00015370`, the test off; before layer 10 they set none. So
   no layer reads a stencil an earlier one wrote: a later layer reads
   the shadow map (target 9) and the destination alpha layer 11 writes,
-  both kept by the GPU's order. At the passes' entry
-  (`hooks::native_lights::begin_light`) `light_passes::read` takes the
-  flags the light's constants computed, its lists' masks and the
-  additional casters' inputs, `light_passes::steps` gives the layers in
-  order, each with its stencil change, target and whether it draws, and
-  the light goes into the open view (`frame_scene::SceneLight`,
-  `LightStep`; `View::lights`). The resolved-draw path takes each of
+  both kept by the GPU's order. When the passes' item lists are made
+  (`render_bridge::native_lights::handoff`), the light's constants give
+  its flags, the item body's lists give their layers, and
+  `light_passes::read` gives the additional casters' inputs;
+  `light_passes::steps` gives the layers in order, each with its stencil
+  change, target and whether it draws, and the light goes into the open
+  view (`frame_scene::SceneLight`, `LightStep`; `View::lights`). A light
+  of the guest's own loop is read at its passes' entry
+  ([native-light-gather.md](native-light-gather.md), L5). The resolved-draw path takes each of
   layers 12 and 13 the steps draw, one at a time, with the candidate
   kept from the entry to the next light; the gathered walk batches any
   layer the steps draw, each its own reservation

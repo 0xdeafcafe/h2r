@@ -14,8 +14,10 @@
 //! structure records' detail for the world caller), the cluster and
 //! placement walks as [`world_walk::records`] in the light's kind, each
 //! given to its guest function when it refuses, and the object records
-//! `0x00133720` as a guest call. Once it has written, the body finishes
-//! the frame.
+//! `0x00133720` as a guest call. Step 16 is the passes `0x00031170` as a
+//! guest call; [`run_with`] hands each light's [`Gathered`] and its
+//! [`Passes`] to the caller first, which puts the light in its scene
+//! (slice L5). Once it has written, the body finishes the frame.
 //!
 //! The guest keeps its locals in the `0x1518` bytes below its entry
 //! `ESP` and hands its callees pointers into them; the body uses the
@@ -178,7 +180,40 @@ pub struct Gathered {
     /// `0x00133520` in the light's kind.
     pub clusters: By,
     pub placements: By,
+    /// Step 16: what the passes are handed.
+    pub passes: Passes,
 }
+
+/// Step 16's call of `0x00031170`: its registers and stack words, as
+/// the body hands them (`0x00031f0e`..`0x00031f2b`). The scene's light
+/// is made from these and the light's item lists
+/// (docs/graphics/native-light-gather.md, slice L5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Passes {
+    /// EAX: the `ligh` datum, the record's `+4`.
+    pub definition: u32,
+    /// ECX: the posed volume at `S+0x34`.
+    pub context: u32,
+    /// Stack 0: the light datum, the row's `+4`.
+    pub light: u32,
+    /// Stack 1: the record's frame block, `L+0x84`.
+    pub position: u32,
+    /// Stack 2: the dword at `S+0x10`, the shadow byte in its low byte.
+    pub shadow: u32,
+    /// Stack 3: the row's weight, f32 bits.
+    pub weight: u32,
+}
+
+impl Passes {
+    /// The four stack words, in the order they are pushed from the top.
+    pub fn args(&self) -> [u32; 4] {
+        [self.light, self.position, self.shadow, self.weight]
+    }
+}
+
+/// Called by [`run_with`] for each drawn light, after its gather and
+/// before its passes' call.
+pub type OnPasses<'a> = dyn FnMut(&Gathered) + Send + 'a;
 
 /// One row of the visible list.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -353,6 +388,17 @@ async fn guest(cx: &Cx, site: u32, call: GuestCall) -> Result<Regs, EntryError> 
 /// Publishes the plan's writes and runs the lights. Returns as
 /// `0x00031c80` does (`ret`, EAX 0) with what it did.
 pub async fn run(cx: &Cx, plan: Plan) -> Result<(Ret, LightFrame), EntryError> {
+    run_with(cx, plan, &mut |_: &Gathered| {}).await
+}
+
+/// [`run`], handing each drawn light's [`Gathered`] (with its
+/// [`Passes`]) to `on_passes` just before its passes' guest call, so the
+/// caller can put the light in its scene before the passes draw it.
+pub async fn run_with(
+    cx: &Cx,
+    plan: Plan,
+    on_passes: &mut OnPasses<'_>,
+) -> Result<(Ret, LightFrame), EntryError> {
     let bottom = plan.bottom();
     // 0x00031c91: the list's argument is pushed where the shadow byte
     // goes, so the dword `0x00031170` is handed carries its upper bytes.
@@ -385,7 +431,7 @@ pub async fn run(cx: &Cx, plan: Plan) -> Result<(Ret, LightFrame), EntryError> {
             });
             continue;
         }
-        let gathered = light(cx, bottom, plan.fpu, row_at, row.light).await?;
+        let gathered = light(cx, bottom, plan.fpu, row_at, row.light, on_passes).await?;
         frame.lights.push(FrameLight {
             row,
             drawn: true,
@@ -402,6 +448,7 @@ async fn light(
     fpu: Fpu,
     row_at: u32,
     datum: u32,
+    on_passes: &mut OnPasses<'_>,
 ) -> Result<Gathered, EntryError> {
     let light = cx.read(|m| Light::read(m, datum))?;
     // The plan checked the chain; nothing the body has called since
@@ -628,14 +675,15 @@ async fn light(
             m.u32(rec.wrapping_add(4))?,
         ))
     })?;
-    let request = GuestCall::new(call::LIGHT_PASSES)
-        .eax(definition)
-        .ecx(volume_at)
-        .ebx(records)
-        .args([light_datum, position, shadow_word, weight]);
-    guest(cx, site::LIGHT_PASSES, request).await?;
-
-    Ok(Gathered {
+    let passes = Passes {
+        definition,
+        context: volume_at,
+        light: light_datum,
+        position,
+        shadow: shadow_word,
+        weight,
+    };
+    let gathered = Gathered {
         record: rec,
         definition: l.definition,
         definition_flags: flags,
@@ -653,7 +701,16 @@ async fn light(
         extra_caster: extra_caster_by,
         clusters,
         placements,
-    })
+        passes,
+    };
+    on_passes(&gathered);
+    let request = GuestCall::new(call::LIGHT_PASSES)
+        .eax(passes.definition)
+        .ecx(passes.context)
+        .ebx(records)
+        .args(passes.args());
+    guest(cx, site::LIGHT_PASSES, request).await?;
+    Ok(gathered)
 }
 
 /// One record walk of step 14: Rust when [`world_walk::records`] takes

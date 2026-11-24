@@ -8,7 +8,7 @@
 use engine::light_constants::Fpu;
 use engine::points;
 use engine::render::light_gather::Refusal;
-use engine::render::light_gather::frame::{self, By, LightFrame};
+use engine::render::light_gather::frame::{self, By, Gathered, LightFrame};
 use hooks::{Builder, Cx, EntryFuture};
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
 use timeline::native::{SceneList, SceneListResult};
@@ -45,7 +45,12 @@ pub(super) fn install(b: &mut Builder) {
                 };
                 hooks::entry::start_render(cpu, ctx, addr, move |cx: Cx| -> EntryFuture {
                     Box::pin(async move {
-                        let (ret, light_frame) = frame::run(&cx, plan).await?;
+                        // Each drawn light is handed to the scene before
+                        // its passes (slice L5).
+                        let (ret, light_frame) = frame::run_with(&cx, plan, &mut |g: &Gathered| {
+                            super::handoff::handed(g)
+                        })
+                        .await?;
                         count(&light_frame);
                         Ok::<_, engine::entry::EntryError>(ret)
                     })

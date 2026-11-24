@@ -1,7 +1,7 @@
 # Native light gather and passes
 
-Status: Partly built. Slices L1 to L4 are built: the model's rows and histories and the leaves (the visible-light list, the geometry flags, the extra caster, the light volume) in `engine::render::light_gather`, which the seams of [native-renderer.md](native-renderer.md), "Scene list builders", call; the frame body of `0x00031c80` (`light_gather::frame`), which `render_bridge::native_lights::frame` installs at `RENDER_DYNAMIC_LIGHTS`; a light's cluster and placement records (`engine::render_loop::world_walk::records` in the light's kind), which the frame body makes; and a light's item lists and the first-person table (`light_gather::items`), which `render_bridge::native_lights::items` installs at `SCENE_ITEMS`. L5 on are design. The other leaf ports it starts from (the light constants, the pass flags, the shadow projection, the gathered groups) are described in [native-lights.md](native-lights.md).
-Code: `crates/rewrites/engine/src/render/light_gather.rs` and `light_gather/` (the model and the bodies), `crates/rewrites/engine/src/render_loop/world_walk.rs` (the record walks), `crates/rewrites/render-bridge/src/native_lights/frame.rs` and `items.rs` (the installs), `crates/rewrites/render-bridge/src/native_scene_lists/lights.rs` (the leaf seams that stay for the fallback). Tests: `crates/rewrites/engine/tests/light_gather_differential.rs`, `light_gather.rs`, the unit tests of `world_walk.rs`, `crates/rewrites/render-bridge/tests/native_lights.rs`.
+Status: Partly built. Slices L1 to L4 and L5's hand-off are built: the model's rows and histories and the leaves (the visible-light list, the geometry flags, the extra caster, the light volume) in `engine::render::light_gather`, which the seams of [native-renderer.md](native-renderer.md), "Scene list builders", call; the frame body of `0x00031c80` (`light_gather::frame`), which `render_bridge::native_lights::frame` installs at `RENDER_DYNAMIC_LIGHTS`; a light's cluster and placement records (`engine::render_loop::world_walk::records` in the light's kind), which the frame body makes; a light's item lists and the first-person table (`light_gather::items`), which `render_bridge::native_lights::items` installs at `SCENE_ITEMS`; and the scene's dynamic lights, made from the frame body's hand-off (`frame::Passes`) and the item body's lists (`render_bridge::native_lights::handoff`). L5's passes body and L6 on are design. The other leaf ports it starts from (the light constants, the pass flags, the shadow projection, the gathered groups) are described in [native-lights.md](native-lights.md).
+Code: `crates/rewrites/engine/src/render/light_gather.rs` and `light_gather/` (the model and the bodies), `crates/rewrites/engine/src/render_loop/world_walk.rs` (the record walks), `crates/rewrites/render-bridge/src/native_lights/frame.rs` and `items.rs` (the installs), `handoff.rs` (the scene's lights), `crates/rewrites/render-bridge/src/native_scene_lists/lights.rs` (the leaf seams that stay for the fallback). Tests: `crates/rewrites/engine/tests/light_gather_differential.rs`, `light_gather.rs`, the unit tests of `world_walk.rs` and `native_lights/handoff.rs`, `crates/rewrites/render-bridge/tests/native_lights.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md). No slice adds a switch.
 
 Slice R3 of [retire-d3d.md](retire-d3d.md): the guest's light front-end
@@ -301,14 +301,27 @@ New named points, all `[fn]` with the signatures above:
 `0x00040e90`, `RECORD_ITEMS` `0x00044ac0`, `LIGHT_REPOSE_BASIS`
 `0x00031b40`, `FIRST_PERSON_MARKER` `0x0016640f`.
 
-The scene takes its lights from the observation at the passes' entry
-(`render_bridge::native_lights::begin_light`, `read_light`) until L5:
-the frame body calls `0x00031170` as a guest call, so the observation
-sees each drawn light as it does under the guest loop. L5 fills
-`FrameScene::lights` from `LightFrame` (`guest_selected`,
-`guest_weight`, `flags`, `steps`) and removes the observation. The groups
-keep their type (`frame_scene::LightGroup`); `GroupSite` gains
-`FirstPerson`.
+The scene's dynamic lights come from the frame body
+(`render_bridge::native_lights::handoff`). Before each drawn light's
+passes call the body hands over the call it is about to make
+(`frame::Passes`: EAX, ECX and the four stack words; `frame::run_with`).
+The passes' entry pairs the hand-off with its registers, which must be
+the same call, and closes the scene's last light. The passes' first
+call is the item lists `0x00040e90` (**E** `0x00031192`, returning to
+`0x00031197`); when the item body makes them, `FrameScene::lights`
+gets the light (`guest_selected`, `guest_weight` the row's weight,
+`flags` from the constants of the hand-off's call, `steps` from the
+`LightItems` layers), and the light becomes the resolved-draw
+candidate. The shadow word is step 2's: a set byte becomes the casters'
+layer 10 (`shadow_argument`). The scene reads no list mask back from
+guest memory for these lights. A light of the guest's own loop (a
+refused frame plan), and a hand-off whose item lists the guest makes,
+are read from memory at that point (`Source::observed`): the passes'
+stack words, the scene flags and both masks. At the passes' entry the
+masks are the last light's, which is why the hand-off waits for the
+lists. The groups are still the layer builds' sorted entries
+(`walk`, `scene_extract::light_groups`) and keep their type
+(`frame_scene::LightGroup`); L6 adds `GroupSite::FirstPerson`.
 
 Counters follow the scene lists' scheme
 (`timeline::native::SceneList`, `SceneListResult`): stages
@@ -324,8 +337,13 @@ A frame the body makes counts `light_frame_native` and
 (a cold section is `residency`). `light_items` counts each record of a
 light that passes the walk's filters: `_native` for one appended in
 Rust, `_fallback` and the reason for one the guest's part calls make,
-and a call whose plan refuses. `render.scene` and `render.stats`
-report them ([agent-api.md](../runtime/agent-api.md)). The producers of
+and a call whose plan refuses. `light_handoff` counts each light
+the frame body hands over: `_native` for one the scene takes from the
+hand-off, `_fallback` and the reason for one it reads from memory (the
+item body declined, or no item lists' call took the hand-off:
+`layout`). Each light taken from a hand-off is checked against guest
+memory once its lists are made: `_compared` per light, `_mismatch` per
+difference. `render.scene` and `render.stats` report them ([agent-api.md](../runtime/agent-api.md)). The producers of
 `render.residual` are `dynamic_lights`, `light_passes`,
 `object_shadows`, `object_shadow` and `first_person`
 (`render_bridge::residual_census`).
@@ -387,7 +405,7 @@ coordinator runs them.
   `RENDER_DYNAMIC_LIGHTS` (one implementation; the observers before and
   after keep running), on the render thread (`context_only`), and runs
   the original when the lights stage stands down or the plan refuses.
-  The scene's lights stay the passes' observation until L5.
+  The scene's lights are the hand-off of L5.
 - **Call sites.** A hook that tests its caller's return address sees
   the body's continuation instead. While the body makes a guest call,
   `frame::call_site` names the guest's return site for it (per thread).
@@ -487,9 +505,9 @@ coordinator runs them.
   `0x00041040`, made below the record walk's frame so `0x00045ce0` and
   `0x00041040` are handed the guest's scratch address. `LightItems`
   keeps the records, `receivers` and `casters` (count, first, layers),
-  how each record was made and each first-person copy; until L5 the
-  install counts them and the scene takes the lists from the guest
-  memory they are written to.
+  how each record was made and each first-person copy. The install
+  counts them, and for the passes' own call hands their layers to the
+  scene's light (L5).
 - **Guest state.** Reads the records, the byte arrays `0x004c0b84` and
   `0x004c0ed6`, the override table `0x004c1228`, the BSP's section,
   placement and material tables, the material masks `[0x004ed280]`,
@@ -517,26 +535,63 @@ coordinator runs them.
   per-part calls for that record, in place. A plan that refuses (a
   read, a record range past `0x8000`) runs the guest function whole.
 
-### L5: the passes body (M)
+### L5: the scene's lights, then the passes body (M, hand-off built)
 
-- **Build.** `light_gather::passes::run(cx, light)`: steps 1 to 6 of
-  "One light's passes" in Rust order control, with the constants call,
-  the projection call and each layer's begin, draw and end still guest
-  calls, so the stage's existing whole-group draws apply unchanged.
-  `LightPasses` is computed before the first layer from
-  `pass_flags` and `light_passes::steps`. The scene's `SceneLight` and
-  the candidate for layers 12 and 13 come from it; `begin_light` and
-  its hook go.
-- **Guest state.** `[0x004ba014]`, `[0x004ba018]`, the colour B words
-  `0x00485950`.., the layer words, `[0x004858b4]`.
-- **Tests.** Differential root `0x00031170` with its callees stubbed:
-  equal transcripts over every flag combination, each mask bit, the
-  override byte and the additional casters' condition. The existing
+The hand-off is built; the passes body is design.
+
+- **Build, the hand-off.** `light_gather::frame::run_with(cx, plan,
+  on_passes)` hands each drawn light's `Gathered`, with `Passes` (step
+  16's registers and stack words), to the caller before the passes'
+  guest call. `render_bridge::native_lights::handoff` keeps it, pairs it
+  at the passes' entry with their registers (`Entry`; a call that is not
+  the hand-off's is read from memory), and takes it at the passes' item
+  lists call (return `0x00031197`). After `items::run` the scene's light
+  is made from `Source::handed`: the `ligh` datum, the constants' call
+  (`light_constants::Call`, the definition from the tag table, the shadow
+  word through `shadow_argument` with the casters' layers) and both
+  lists' layers from `LightItems`. `source_constants`, `pass_flags` and
+  `light_passes::steps` give the flags and steps, as for a light read
+  from memory. The guest's writes are unchanged: the passes still run
+  whole as a guest call, and the lists are still written for the layer
+  builds and handlers that read them.
+- **Build, the passes body.** `light_gather::passes::run(cx, light)`:
+  steps 1 to 6 of "One light's passes" in Rust order control, with the
+  constants call, the projection call and each layer's begin, draw and
+  end still guest calls, so the stage's existing whole-group draws apply
+  unchanged. `LightPasses` is computed before the first layer from
+  `pass_flags` and `light_passes::steps`; the hand-off's scene light and
+  the candidate for layers 12 and 13 come from it, and the observation
+  at the passes' entry goes with the guest loop (L9).
+- **Guest state.** The hand-off reads the light record, the tag table,
+  the constants' inputs and the additional casters' globals; it writes
+  nothing. The passes body: `[0x004ba014]`, `[0x004ba018]`, the colour B
+  words `0x00485950`.., the layer words, `[0x004858b4]`.
+- **Tests.** The hand-off, unit:
+  `each_light_is_handed_over_just_before_its_passes_with_their_call`
+  (`engine/tests/light_gather.rs`: one hand-off per drawn light, equal
+  to its passes call, with no guest call between),
+  `the_scene_light_from_the_hand_off_equals_the_one_read_from_memory`
+  (the same frame read back after the lists are made: equal sources and
+  equal steps for every flag),
+  `at_the_passes_entry_the_lists_are_the_last_lights` and
+  `a_hand_off_is_taken_only_by_its_own_passes_item_lists`
+  (`render-bridge/src/native_lights/handoff.rs`). The passes body:
+  differential root `0x00031170` with its callees stubbed, equal
+  transcripts over every flag combination, each mask bit, the override
+  byte and the additional casters' condition; the existing
   `engine/tests/light_passes*.rs` stay.
-- **Live check.** `light_passes_native` equals the drawn lights;
-  `lights_walked_native` and `scene_light_layers_alone` unchanged;
-  `render.parity`.
-- **Refusal.** None after entry: every step has its guest call.
+- **Live check.** The hand-off: `native_scene_lists_light_handoff_native`
+  equal to the drawn lights (`light_frame_native` frames times their
+  lights), `_compared` equal to it and `_mismatch` zero, `_fallback`
+  zero on a lit interior; `render.scene` lists each view's lights with
+  the master's handles and weights, and steps whose `draws` follow the
+  light's own lists. The passes body: `light_passes_native` equals the
+  drawn lights; `lights_walked_native` and `scene_light_layers_alone`
+  unchanged; `render.parity`.
+- **Refusal.** The hand-off: an item body that declines, a passes'
+  entry that is not the hand-off's call, or a hand-off no item lists'
+  call takes leaves the light to the read from memory, counted. The
+  passes body: none after entry, every step has its guest call.
 
 ### L6: the first-person lights (M)
 
@@ -662,7 +717,10 @@ and the attachment walk `0x00041c80`.
 - **Code.** The built leaves and the frame: `engine::render::light_gather`
   (`visible::list`, `history::merge`, `history::rank_and_fade`,
   `geometry::flags`, `extra_caster::list`, `volume::light_volume`,
-  `frame::plan`, `frame::run`),
+  `frame::plan`, `frame::run`, `frame::run_with`),
+  `render_bridge::native_lights::handoff` (the scene's lights; the
+  passes' item lists call at `0x00031192`, the shadow byte at
+  `0x0003119b`),
   `engine::light_constants`, `engine::light_passes`,
   `engine::shadow_constants`, `engine::render_loop::world_walk`,
   `render_bridge::native_world::section`.
