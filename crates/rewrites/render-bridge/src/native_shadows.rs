@@ -3,6 +3,7 @@
 //! guest state, including on a malformed or partially readable list.
 
 use crate::native_world::Mem;
+use engine::render::light_gather::{object_shadows, passes};
 use engine::{memory::GuestMemory, points, shadow_constants};
 use hooks::{BuildError, Builder, Feature, Manifest};
 use native_render::{
@@ -358,7 +359,7 @@ impl Feature for NativeShadows {
                     let m = o.guest();
                     let esp = o.cpu.esp;
                     OBJECT_LIST.set(
-                        (m.u32(esp).ok() == Some(0x0003_3632))
+                        (passes::caller(&*m, esp) == Some(object_shadows::site::ROWS))
                             .then(|| m.u32(esp.wrapping_add(4)).ok())
                             .flatten(),
                     );
@@ -378,7 +379,7 @@ impl Feature for NativeShadows {
                     .get()
                     .and_then(|base| shadows::object_candidate(base, address, o.cpu.edi));
                 let matched = index.is_some()
-                    && m.u32(esp).ok() == Some(0x0003_364c)
+                    && passes::caller(&*m, esp) == Some(object_shadows::site::CASTER)
                     && m.u8(0x0050_9413).ok() == Some(1)
                     && m.u8(0x0048_5a46).ok() == Some(1)
                     && args.iter().all(Option::is_some)
@@ -441,7 +442,7 @@ impl Feature for NativeShadows {
                 let Ok(layer) = mem.u32(skip::CURRENT_LAYER) else {
                     return;
                 };
-                let Some(site) = engine::render::light_gather::passes::caller(&*mem, o.cpu.esp)
+                let Some(site) = passes::caller(&*mem, o.cpu.esp)
                     .and_then(|ret| shadows::site(layer, ret))
                 else {
                     return;
@@ -463,7 +464,7 @@ impl Feature for NativeShadows {
                     return;
                 };
                 // Both calls have a five-byte direct CALL instruction.
-                let Some(site) = engine::render::light_gather::passes::caller(&*mem, o.cpu.esp)
+                let Some(site) = passes::caller(&*mem, o.cpu.esp)
                     .and_then(|ret| shadows::site(layer, ret.checked_sub(5)?))
                 else {
                     return;

@@ -78,7 +78,12 @@ pub async fn run(cx: &Cx, p: Plan) -> Result<Ret, EntryError> {
     cx.write(|m| m.set_u8(GATHER_ACTIVE, 1))?;
     let list = cx.read(|m| m.u32(MAIN_OBJECT_LIST))?;
     let gather = GuestCall::new(points::GATHER_OBJECT_SHADOWS.base)
-        .eax(mode).ecx(rows).ebx(list).esi(size).edi(size).args([rows, mode]);
+        .eax(mode)
+        .ecx(rows)
+        .ebx(list)
+        .esi(size)
+        .edi(size)
+        .args([rows, mode]);
     let count = passes::named(cx, esp, FRAME, site::ROWS, gather).await?.eax;
     let mut eax = count;
     let mut cursor = rows + 8;
@@ -86,7 +91,12 @@ pub async fn run(cx: &Cx, p: Plan) -> Result<Ret, EntryError> {
         let caster = cx.read(|m| m.u32(cursor))?;
         let fade = cx.read(|m| m.u32(cursor + 4))?;
         let draw = GuestCall::new(points::OBJECT_SHADOW.base)
-            .eax(caster).edx(fade).ebx(0).esi(cursor).edi(remaining as u32).args([caster, fade]);
+            .eax(caster)
+            .edx(fade)
+            .ebx(0)
+            .esi(cursor)
+            .edi(remaining as u32)
+            .args([caster, fade]);
         eax = passes::named(cx, esp, FRAME, site::CASTER, draw).await?.eax;
         cursor = cursor.wrapping_add(0x14);
     }
