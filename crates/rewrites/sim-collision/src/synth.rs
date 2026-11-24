@@ -591,6 +591,8 @@ impl References {
             index += list.len() as u32;
         }
     }
+}
+
 /// A random MOPP bytecode program over every box opcode class: splits of
 /// each form, bounds, rescales (most chains legal, a few past shift 0),
 /// key offsets, jumps over junk, property 0 writes, terminals and a bad
