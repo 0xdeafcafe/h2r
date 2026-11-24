@@ -227,7 +227,7 @@ mod tests {
     }
 
     #[test]
-    fn global_read_against_lifted_guest() {
+    fn global_reads_and_bound_stores_against_lifted_guest() {
         let Some(image) = lifted::image::Image::get() else {
             return;
         };
@@ -249,6 +249,7 @@ mod tests {
                 for source in [0, SOURCE] {
                     mem.set_u16(DESCRIPTOR, ty).unwrap();
                     mem.set_u32(DESCRIPTOR + 4, source).unwrap();
+                    assert!(ram.load(SOURCE, &BOUND.to_le_bytes()));
                     let read = predict(&mem, index).unwrap();
                     assert!(ram.load(DESCRIPTOR, &ty.to_le_bytes()));
                     assert!(ram.load(DESCRIPTOR + 4, &source.to_le_bytes()));
@@ -270,6 +271,27 @@ mod tests {
                         "index {index:x}, type {ty}, source {source:x}"
                     );
                     assert_eq!(cpu.gpr[4], STACK + 4);
+
+                    if let Some(store) = predict_store(&mem, index) {
+                        // Start the independent write-back from the original
+                        // cell, not the value left there by the refresh.
+                        assert!(ram.load(read.address, &OLD.to_le_bytes()));
+                        cpu.eip = points::HS_GLOBAL_STORED.base;
+                        cpu.gpr[4] = STACK;
+                        cpu.gpr[0] = u32::from(index);
+                        lifted::code::run_until(&mut code, &mut cpu, &mut ram, 120, |c| {
+                            c.eip == exit
+                        })
+                        .unwrap();
+                        let mut expected = BOUND.to_le_bytes();
+                        expected[..store.width].copy_from_slice(&store.bytes[..store.width]);
+                        assert_eq!(
+                            ram.read_u32(store.address),
+                            Some(u32::from_le_bytes(expected)),
+                            "store type {ty}"
+                        );
+                        assert_eq!(cpu.gpr[4], STACK + 4);
+                    }
                 }
             }
         }

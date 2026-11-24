@@ -128,3 +128,66 @@ pub(super) fn observe<T: Send + 'static>(
         })
         .optional();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engine::points;
+    use hooks::{Base, Obs, Registry, Run, Switches};
+
+    #[test]
+    fn nested_checks_retire_only_the_returning_threads_prediction() {
+        static COUNTER: Counter = Counter::new("test");
+        let point = &points::HS_EVALUATE;
+        let mut registry = Registry::new(Switches::default());
+        registry
+            .add(&hooks::from_fn("test", move |b| {
+                observe(
+                    b,
+                    point,
+                    &COUNTER,
+                    4,
+                    |cpu, _| (cpu.eax != 0).then_some(cpu.eax),
+                    |value, cpu, _| (*value != cpu.eax).then(|| format!("expected {value}")),
+                );
+                Ok(())
+            }))
+            .unwrap();
+        let plan = registry.build(&Base).unwrap();
+        let chain = &plan.chains[&point.base];
+        let Run::ObserveBefore(before) = &chain.observe_before[0].run else {
+            unreachable!()
+        };
+        let Run::ObserveAfter(after) = &chain.observe_after[0].run else {
+            unreachable!()
+        };
+        let rt = runtime::Runtime::new(Guest::new(), runtime::Dispatch::default());
+        let call = |enter, thread_id, esp, eax| {
+            let cpu = CpuAbi {
+                esp,
+                eax,
+                ..CpuAbi::default()
+            };
+            let obs = Obs {
+                addr: point.base,
+                point,
+                thread_id,
+                cpu: &cpu,
+                runtime: &rt,
+            };
+            if enter { before(&obs) } else { after(&obs) }
+        };
+        call(true, 1, 0x1000, 1);
+        call(true, 2, 0x1000, 2);
+        call(true, 1, 0xff0, 0); // declined nested call
+        call(false, 1, 0xff8, 5);
+        call(true, 1, 0xff0, 3); // unreturned nested call
+        call(true, 1, 0xff0, 4);
+        call(false, 2, 0x1008, 2);
+        call(false, 1, 0xff8, 9); // first difference
+        call(false, 1, 0x1008, 1);
+        let stats = COUNTER.totals.lock().unwrap();
+        assert_eq!((stats.matched, stats.declined, stats.mismatched), (2, 2, 1));
+        assert!(stats.first.as_ref().unwrap().contains("expected 4"));
+    }
+}
