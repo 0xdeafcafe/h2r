@@ -9,6 +9,7 @@ use std::sync::Arc;
 mod batch;
 pub use batch::{Trace, trace_batch};
 mod clusters;
+mod guards;
 mod parity;
 mod relocate;
 pub use parity::{Prediction, begin, end};
@@ -37,6 +38,9 @@ pub struct QueryResult {
     pub locations: [Location; 2],
     pub plane: Option<[u32; 4]>,
     pub material: Option<u16>,
+    pub cluster_epoch: Option<u32>,
+    pub instance_epoch: Option<u32>,
+    pub object_epoch: Option<u32>,
     pub cluster_marks: Vec<u32>,
     pub instance_marks: Vec<u32>,
     pub object_marks: Vec<u32>,
@@ -178,7 +182,14 @@ fn plan(
     mut ray: Ray,
     mut record: Record,
 ) -> Result<Plan, Bail> {
+    if g.trapped() {
+        return Err(Bail::Trap);
+    }
     super::vector_env(cpu)?;
+    // Shape and model transforms can use forward string stores.
+    if cpu.eflags & (1 << 10) != 0 {
+        return Err(Bail::Env);
+    }
     if ray.flags & BSP_SIDES == 0 {
         ray.flags |= BSP_SIDES;
     }
@@ -314,6 +325,9 @@ impl Plan {
             locations: [r.location(0x14), r.location(0x1c)],
             plane: (hit_type != 0).then(|| r.plane()),
             material: (hit_type != 0).then(|| r.half(0x24)),
+            cluster_epoch: self.marks.cluster_epoch,
+            instance_epoch: self.marks.instance_epoch,
+            object_epoch: self.marks.object_epoch,
             cluster_marks: self.marks.clusters,
             instance_marks: self.marks.instances,
             object_marks: self.marks.objects,

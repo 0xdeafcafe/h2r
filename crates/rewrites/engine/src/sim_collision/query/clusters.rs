@@ -12,8 +12,8 @@ use sim_collision::{
 use std::collections::HashSet;
 
 const INSTANCE_GENERATION: u32 = 0x004e_7c1c;
-const INSTANCE_ACTIVE: u32 = 0x004e_7c18;
-const INSTANCE_MARKS: u32 = 0x004e_7c20;
+pub(super) const INSTANCE_ACTIVE: u32 = 0x004e_7c18;
+pub(super) const INSTANCE_MARKS: u32 = 0x004e_7c20;
 const BOUNDARY_MIN_SPEED: u32 = 0x0045_dbdc;
 
 #[derive(Default)]
@@ -21,9 +21,9 @@ pub(super) struct Marks {
     pub(super) clusters: Vec<u32>,
     pub(super) instances: Vec<u32>,
     pub(super) objects: Vec<u32>,
-    cluster_epoch: Option<u32>,
-    instance_epoch: Option<u32>,
-    object_epoch: Option<u32>,
+    pub(super) cluster_epoch: Option<u32>,
+    pub(super) instance_epoch: Option<u32>,
+    pub(super) object_epoch: Option<u32>,
 }
 
 impl Marks {

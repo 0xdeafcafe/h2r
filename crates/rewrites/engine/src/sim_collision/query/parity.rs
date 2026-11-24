@@ -7,6 +7,7 @@ pub struct Prediction {
     plan: Plan,
     out: u32,
     flags_at: u32,
+    globals: Vec<(u32, Vec<u8>)>,
 }
 
 impl Prediction {
@@ -15,6 +16,9 @@ impl Prediction {
         g: &mut impl CollisionMemory,
         world: &CollisionWorld,
     ) -> Result<Self, Bail> {
+        if g.trapped() {
+            return Err(Bail::Trap);
+        }
         let m = Read(&*g, (0, 0));
         let arg = |i: u32| m.u32(cpu.esp.wrapping_add(4 * i));
         let flags = arg(1)?;
@@ -40,10 +44,58 @@ impl Prediction {
         };
         let mut initial = Record([0; RECORD_SIZE]);
         m.read(out, &mut initial.0)?;
-        let p = plan(cpu, g, world, ray, initial)?;
+        let mut guard = guards::Guard::new(g, cpu.esp, out, flags)?;
+        guard.separate(start, 12)?;
+        guard.separate(delta, 12)?;
+        let p = plan(cpu, &mut guard, world, ray, initial);
+        if guard.alias() {
+            return Err(Bail::Alias);
+        }
+        let p = p?;
         p.marks
             .expected(|at, v| outs.separate(g, at, v.len() as u32))?;
+        // Compare untouched slots too. The cluster table ends at the
+        // instance active byte. The instance table ends at PLAYERS_GLOBALS.
+        // The visit kernel bounds the object table at 0x800 slots.
+        let mut globals = Vec::with_capacity(3);
+        for (mask, base, end) in [
+            (
+                14,
+                layout::FLOOD_ACTIVE,
+                layout::CLUSTER_MARKS + 4 * sim_collision::flood::MAX_CLUSTERS,
+            ),
+            (
+                4,
+                clusters::INSTANCE_ACTIVE,
+                clusters::INSTANCE_MARKS + 4 * super::super::instance::MARK_SLOTS,
+            ),
+            (
+                8,
+                layout::VISIT_ACTIVE,
+                layout::OBJECT_MARKS + 4 * layout::OBJECT_MARK_SLOTS,
+            ),
+        ] {
+            if flags & mask == 0 {
+                continue;
+            }
+            outs.separate(g, base, end - base)?;
+            globals.push((base, Read(&*g, (0, 0)).bytes(base, (end - base) as usize)?));
+        }
+        p.marks.expected(|at, data| {
+            for (base, bytes) in &mut globals {
+                if let Some(offset) = at.checked_sub(*base)
+                    && let Some(dst) = bytes
+                        .get_mut(offset as usize..)
+                        .and_then(|tail| tail.get_mut(..data.len()))
+                {
+                    dst.copy_from_slice(data);
+                    return Ok(());
+                }
+            }
+            Err(Bail::Data)
+        })?;
         Ok(Self {
+            globals,
             plan: p,
             out,
             flags_at: cpu.esp.wrapping_add(4),
@@ -75,59 +127,100 @@ impl Prediction {
                 self.plan.record.0[i], actual[i]
             )));
         }
-        let mut first = None;
-        self.plan.marks.expected(|at, expected| {
-            if first.is_none() {
-                let mut actual = [0; 4];
-                let used = &mut actual[..expected.len()];
-                m.read(at, used)?;
-                if used != expected {
-                    first = Some(format!(
-                        "mark at {at:#x}: expected {expected:02x?}, guest {used:02x?}"
-                    ));
-                }
+        for (base, expected) in &self.globals {
+            let actual = m.bytes(*base, expected.len())?;
+            if let Some(i) = actual.iter().zip(expected).position(|(a, b)| a != b) {
+                return Ok(Some(format!(
+                    "mark state at {:#x}: expected {:#04x}, guest {:#04x}",
+                    base + i as u32,
+                    expected[i],
+                    actual[i]
+                )));
             }
-            Ok(())
-        })?;
-        Ok(first)
+        }
+        Ok(None)
     }
 }
 
-thread_local! {
-    static OPEN:RefCell<HashMap<u32, Vec<(u32,Prediction)>>> = RefCell::default();
+/// A reverted call may never reach its after hook. The map epoch and
+/// backing RAM generation exclude abandoned predictions, including across
+/// an image restart that reuses a thread id and stack address.
+#[derive(PartialEq, Eq)]
+struct Generation(u64, (u64, u64));
+
+fn generation(g: &runtime::Guest) -> Generation {
+    Generation(super::super::EPOCH.get(), g.write_watch_epoch())
 }
 
-pub fn begin(thread: u32, cpu: &CpuAbi, g: &mut runtime::Guest, world: &CollisionWorld) {
+struct Stack {
+    generation: Generation,
+    calls: Vec<(u32, Prediction)>,
+}
+
+thread_local! {
+    static OPEN: RefCell<HashMap<u32,Stack>> = RefCell::default();
+}
+
+pub fn begin(thread: u32, cpu: &CpuAbi, g: &mut runtime::Guest, world: &CollisionWorld) -> bool {
     let ret_sp = cpu.esp.wrapping_add(4 + 0x18);
-    let predicted = if g.has_trap() {
-        Err(Bail::Trap)
-    } else {
-        Prediction::gather(cpu, g, world)
-    };
+    let current_generation = generation(g);
     OPEN.with_borrow_mut(|threads| {
-        let stack = threads.entry(thread).or_default();
-        // Discard returns abandoned by a reverted or unwound guest frame.
-        stack.retain(|(outer, _)| *outer > ret_sp);
+        threads.retain(|_, s| s.generation == current_generation);
+        if let Some(s) = threads.get_mut(&thread) {
+            s.calls.retain(|(outer, _)| *outer > ret_sp);
+            if s.calls.len() >= 8 {
+                world.record_query(Err(Bail::Depth));
+                return false;
+            }
+        } else if threads.len() >= 32 {
+            world.record_query(Err(Bail::Budget));
+            return false;
+        }
+        let predicted = if g.has_trap() {
+            Err(Bail::Trap)
+        } else {
+            Prediction::gather(cpu, g, world)
+        };
         match predicted {
-            Ok(p) => stack.push((ret_sp, p)),
-            Err(why) => world.record_query(Err(why)),
+            Ok(p) => {
+                threads
+                    .entry(thread)
+                    .or_insert_with(|| Stack {
+                        generation: current_generation,
+                        calls: Vec::new(),
+                    })
+                    .calls
+                    .push((ret_sp, p));
+                true
+            }
+            Err(why) => {
+                world.record_query(Err(why));
+                if threads.get(&thread).is_some_and(|s| s.calls.is_empty()) {
+                    threads.remove(&thread);
+                }
+                false
+            }
         }
-        if stack.is_empty() {
-            threads.remove(&thread);
-        }
-    });
+    })
 }
 
 pub fn end(thread: u32, cpu: &CpuAbi, g: &runtime::Guest, world: &CollisionWorld) {
     OPEN.with_borrow_mut(|threads| {
-        let Some(stack) = threads.get_mut(&thread) else {
+        let Some(s) = threads.get_mut(&thread) else {
             return;
         };
-        if !stack.last().is_some_and(|(sp, _)| *sp == cpu.esp) {
+        if s.generation != generation(g) {
+            threads.remove(&thread);
             return;
         }
-        let (_, p) = stack.pop().unwrap();
-        if stack.is_empty() {
+        let Some(&(sp, _)) = s.calls.last() else {
+            return;
+        };
+        if sp != cpu.esp {
+            return;
+        }
+        let (_, p) = s.calls.pop().unwrap();
+        if s.calls.is_empty() {
             threads.remove(&thread);
         }
         world.record_query(if g.has_trap() {

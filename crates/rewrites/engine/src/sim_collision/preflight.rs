@@ -50,6 +50,16 @@ pub trait CollisionMemory: Memory {
         None
     }
 
+    /// Physical spans behind the possibly mapped portion of a recursive
+    /// frame below the entry. Flat providers require it to be contiguous.
+    fn frame_spans(&self, lo: u32, hi: u32) -> Result<Vec<(u32, u32)>, Bail> {
+        let len = hi.checked_sub(lo).ok_or(Bail::Alias)?;
+        Ok(vec![(
+            self.physical_range(lo, len).ok_or(Bail::Alias)?,
+            len,
+        )])
+    }
+
     /// Physical address of the first byte of a contiguous, readable range.
     fn physical_range(&self, addr: u32, len: u32) -> Option<u32>;
     /// Every byte in this range can be written during this call.
@@ -57,6 +67,21 @@ pub trait CollisionMemory: Memory {
 }
 
 impl CollisionMemory for Guest {
+    fn frame_spans(&self, lo: u32, hi: u32) -> Result<Vec<(u32, u32)>, Bail> {
+        let mut spans = Vec::new();
+        for m in self.mappings() {
+            let start = lo.max(m.virtual_start);
+            let end = u64::from(hi).min(u64::from(m.virtual_start) + u64::from(m.len));
+            if u64::from(start) < end {
+                spans.push((
+                    m.physical_start + (start - m.virtual_start),
+                    (end - u64::from(start)) as u32,
+                ));
+            }
+        }
+        Ok(spans)
+    }
+
     fn trapped(&self) -> bool {
         self.has_trap()
     }

@@ -35,17 +35,23 @@ pub(super) fn nudge(
     };
     let mut pos = std::array::from_fn(|i| record.word(8 + 4 * i));
     let last = record.word(0x1c);
+    let model_leaf = record.word(0x4c);
+    if last == NONE && (model.is_none() || model_leaf == NONE) {
+        return Ok(());
+    }
     let primary_addr = m.u32(layout::STRUCTURE_BSP)?;
     let primary = bsp(g, world, primary_addr)?;
+    let primary_matches = last == NONE || primary.point_to_leaf(0, pos)? == last;
+    if primary_matches && (model.is_none() || model_leaf == NONE) {
+        return Ok(());
+    }
     let model = model.map(|addr| bsp(g, world, addr)).transpose()?;
-    let model_leaf = record.word(0x4c);
-    if (last == NONE || primary.point_to_leaf(0, pos)? == last)
-        && (model_leaf == NONE
-            || model
-                .as_ref()
-                .map(|b| b.point_to_leaf(0, pos))
-                .transpose()?
-                .is_none_or(|leaf| leaf == model_leaf))
+    if primary_matches
+        && model
+            .as_ref()
+            .map(|b| b.point_to_leaf(0, pos))
+            .transpose()?
+            == Some(model_leaf)
     {
         return Ok(());
     }
