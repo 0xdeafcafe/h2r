@@ -462,8 +462,13 @@ fn decorators(mem: &dyn GuestMemory) {
 
 /// A light of the open view at its passes' entry, with its steps.
 /// Opens the view first when none is.
-pub fn light(mem: &dyn GuestMemory, light: SceneLight, steps: &[LightStep]) {
-    light_visibility_arm(mem, light.handle);
+pub fn light(
+    mem: &dyn GuestMemory,
+    light: SceneLight,
+    steps: &[LightStep],
+    call: &engine::light_constants::Call,
+) {
+    light_visibility_arm(mem, call);
     if view(mem).is_none() {
         return;
     }
@@ -650,7 +655,8 @@ pub fn first_person_chosen(
     mem: &dyn GuestMemory,
 ) -> Option<crate::native_lights::chosen::first_person::FirstPersonPass> {
     use crate::native_lights::chosen::first_person::{self, FirstPersonPass};
-    let recorded = engine::render::light_gather::first_person::recorded(mem).ok()?;
+    let recorded = crate::native_lights::slot_visibility::replay(mem)
+        .or_else(|| engine::render::light_gather::first_person::recorded(mem).ok())?;
     let view = Ro(mem).read_u32(VIEW_INDEX).unwrap_or(0) as u8;
     let game_key = ViewKey {
         kind: ViewKind::Game,
@@ -1233,8 +1239,9 @@ pub fn visibility_first_mismatch() -> Option<String> {
 /// light's struct `0x0054aa68` holds what its gather `0x001320f0` listed,
 /// after the extra caster and before the next light's gather. Computed,
 /// compared as sets and counted; nothing goes into the scene.
-fn light_visibility_arm(mem: &dyn GuestMemory, light: u32) {
+fn light_visibility_arm(mem: &dyn GuestMemory, call: &engine::light_constants::Call) {
     use scene_extract::visibility::{Decline, light as light_visibility};
+    let light = call.light;
     if light == frame_scene::NO_DATUM {
         return;
     }
@@ -1246,6 +1253,8 @@ fn light_visibility_arm(mem: &dyn GuestMemory, light: u32) {
             &mut step.visibility,
             crate::native_map_work::generation(),
             light,
+            call.frame,
+            call.context,
         )
     });
     LIGHT_VISIBILITY_NS.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -1510,6 +1519,7 @@ pub fn counters() -> Vec<(&'static str, u64)> {
             .zip(VISIBILITY_DECLINED.iter().map(|c| c.load(Ordering::Relaxed))),
     )
     .chain(light_visibility_counters())
+    .chain(crate::native_lights::slot_visibility::counters())
     .chain(
         [
             ("scene_view_record_checked", VIEW_RECORD_CHECKED.load(Ordering::Relaxed)),

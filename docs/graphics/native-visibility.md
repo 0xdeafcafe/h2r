@@ -3,9 +3,9 @@
 Status: Built, not verified. Every game view's visible clusters and
 objects (modes 0, 1 and 2), the run-time-computed visible sets, the
 window frusta objects are tested against, the main view's records and
-the sphere-mode light views are computed in Rust and compared with the
+the sphere-mode and frustum-mode light views are computed in Rust and compared with the
 guest's. The guest's view setup, portal flood and object gather still
-run and stay the fallback; a light's own frusta (mode 0) are not built.
+run and stay the fallback.
 Code: `crates/rewrites/scene-extract/src/visibility/` (`compute`, `arm`,
 `view`, `light`), the arms in `crates/rewrites/render-bridge/src/scene_step.rs`
 (`view_record_arm`, `visibility_arm`, `light_visibility_arm`). Tests:
@@ -18,10 +18,10 @@ Slice R4 of [retire-d3d.md](retire-d3d.md). For every game view the
 scene step builds, beside the guest's, the view's records (its render
 camera, projection, start cluster and mode), which BSP clusters the view
 sees and which objects it lists; at each dynamic light's passes it does
-the same for the light's view. Three differentials compare them with
-what the guest wrote. Each counts, names its first difference, and hands
-on the Rust result only when it equals the guest's; otherwise the
-guest's stays in use. Nothing here writes guest memory, so the sim's
+the same for the light's view. At first-person replay it compares the
+ordered light slots and their records. Each comparison counts differences
+and names the first. The scene uses Rust camera records, main-view sets
+and recorded light handles only on equality. Nothing here writes guest memory, so the sim's
 hashes cannot move.
 
 ## How it works
@@ -59,9 +59,17 @@ not decoded again.
   view `+0x4c` times a factor. The factor is `[0x0045083c]`, or
   `[0x0045dbbc]` and `[0x0044ae88]` for a view whose shape ratio
   (`width share · 100 / height share`, in whole numbers) is 200 or 50.
-  The near and far planes are `[0x00485ad4]` and `[0x00485ad8]`. The
-  viewport is read from the record (`+0xc + 0x30`); the shares are the
-  viewport's against the screen rectangle `0x00485a8a`.
+  The shares come from the span in grid cells divided by the grid size,
+  before pixel rounding. The near and far planes are `[0x00485ad4]` and
+  `[0x00485ad8]`.
+- The display flag forces one view. Otherwise the local player count at
+  `[[0x004e8c20] + 8]` is clamped to one through four. The split uses
+  columns on widescreen and rows on a standard screen or under the lens
+  override. `0x0002f600` sizes the grid and `0x0002f640` places each
+  view. With three players the first view spans two cells. For the
+  render camera viewport (`+0x30`), `0x0002f6b0` divides the inner
+  rectangle at `0x00485a92` into whole-pixel cells and takes the
+  outside edges from the screen rectangle at `0x00485a8a`.
 - The projection's scales and offsets are `0x0002fb70` with the default
   extents (`[min, one, min, one]` from `0x0045dbcc` and `0x0045dbc0`):
   `t = tan(fov · half)` (`0x0045dbbc`, the x87's `fptan`, stored once),
@@ -109,7 +117,8 @@ For each portal of a node's cluster, in the tag's order:
    `Straddle`: when the camera's foot on the plane is inside the polygon,
    its window is the whole screen; otherwise it is the projected
    rectangle widened, as a quad. A `Back` polygon is reversed. A portal
-   whose nearest corner is beyond the far plane is culled.
+   whose nearest corner exceeds the view frustum's `+0x88` distance is
+   culled when its `+0x84` byte is set.
 2. It is skipped when culled, when the path has crossed it, or when it is
    shut (the open-portal bits at `[0x004f93a4]`, which doors clear).
 3. A `Back` portal is crossed only from its first cluster and only when
@@ -141,7 +150,7 @@ and the merge factor (`0x0043ff08`).
 `0x00163db0`, from the window's rectangle, not its polygon.
 `visibility::frusta::Frustum::build` does the same from the rectangle in
 tangent units (`Lens::tangent`) and the lens as the view matrix (scale
-one; axes right, up and back), out to the far distance `k`:
+one; axes right, up and back), out to the distance `k` at view frustum `+0x88`:
 
 - An empty rectangle (max not above min, or NaN) makes no frustum.
 - The box is the six floats `[0x004687e0]` points at, grown by the eye
@@ -221,6 +230,15 @@ light's cluster (or the one its centre is in), its centre and its
 radius. A light never takes mode 2: no frusta, or a radius under
 `[0x0045dbd4]`, is mode 1; otherwise mode 0.
 
+In mode 0, `visibility::light_frusta` derives the six cube lenses or
+the projected lens from the pose and volume passed to the light's
+draw. Each lens floods from the light's cluster. The region list is
+the union across faces, and a sphere can reach any window for its
+cluster. A projected light with an unusable tangent rectangle declines.
+The source-window intersection at `0x00132900` writes overlap records
+at visibility struct `+0x2a98`. The set comparison covers region IDs
+and object handles, which the gather walks from the light's own regions.
+
 `visibility::light::compute` takes mode 1: the sphere mode's clusters,
 the objects whose second sphere reaches the light's, no sky cluster and
 no player unit. Under flag `0x400` step 13 (`0x00031c20`) appends the
@@ -229,6 +247,20 @@ room, and so does the Rust set. `scene_step::light_visibility_arm` runs
 at the start of each light's passes (`scene_step::light`), after that
 light's gather and before the next light's, and compares the sets with
 the struct's region list and object list.
+
+### First-person lights
+
+The loop at `0x000404b0` replays each nonempty slot in order. It has
+no BSP traversal of its own. At the dynamic passes' constants call
+(`0x000311c8` return site), the source record tail includes the
+attachments that the item walk processes. Rust assigns one slot per
+dynamic light in order, copies each bit-10 record, and stops copying
+when the slot fills. Lights past the slot cap contribute records to the
+last slot. At first-person entry, `first_person::slots` compares the
+number of slots, light handles and complete record sequences with the
+guest table. The E3 light choice uses the Rust handles when equal and
+the guest handles otherwise. The replay and its mode filter are described
+in [native-light-gather.md](native-light-gather.md#the-first-person-lights-e-0x000404b0-0x000402b0-0x0003fd70).
 
 ### The differential
 
@@ -248,7 +280,8 @@ counted only: no light list is carried into the scene.
 - Called from `render_bridge::scene_step::open_kind_at_layer` when a game
   view's base layer 3 is read, after `extract::cluster_gather`
   (`view_record_arm`, then `visibility_arm`), and from
-  `scene_step::light` at each dynamic light's passes.
+  `scene_step::light` at each dynamic light's passes. First-person slot
+  collection runs at the dynamic constants call and compares at replay.
 - Reads, all through `GuestRead`: the visibility structs `0x00547f88` and
   `0x0054aa68` (`+8` start cluster, `+0x14` object list, `+0x2a60`
   flags, `+0x2a64` frustum count, `+0x2a68` and `+0x2a74` the sphere,
@@ -261,9 +294,10 @@ counted only: no light list is carried into the scene.
 - `render.scene` reports it
   ([agent-api.md](../runtime/agent-api.md#framescene-checks-compare-capture-scene-parity-hashes)):
   per game view `visibility_source` and `visibility_objects`; the top
-  level `visibility_first_mismatch`, `light_visibility_first_mismatch`
-  and `view_record_first_mismatch`; and the `scene_visibility_*`,
-  `scene_light_visibility_*` and `scene_view_record_*` counters.
+  level `visibility_first_mismatch`, `light_visibility_first_mismatch`,
+  `first_person_visibility_first_mismatch` and `view_record_first_mismatch`;
+  and the `scene_visibility_*`, `scene_light_visibility_*`,
+  `scene_first_person_visibility_*` and `scene_view_record_*` counters.
 
 ## Rules and limits
 
@@ -276,25 +310,20 @@ counted only: no light list is carried into the scene.
 - **Declines, by name.** For the sets: memory that does not read
   (`unread`); counts, links or indices past the guest's arrays (more
   than 512 clusters or portals, more than 64 corners a portal, a short
-  second table, projection rows past 2; `layout`); an unknown mode, or a
-  light's mode 0 (`mode`); more than one view frustum (`frusta`); a limit
+  second table, projection rows past 2; `layout`); an unknown mode (`mode`);
+  an unsupported frustum count (`frusta`); a limit
   where the guest drops by its own order (256 nodes, 255 queued, the
   corner pools, 128 regions, 512 windows, a full object list; `overflow`);
   a camera that makes no lens (`camera`); a struct other than the one the
   arm is for (`not_main`, also for a light). For the records: `unread`,
   `layout`, `cinematic`, `no_observer`, `override`.
-- **Not ported.** A light's own frusta (mode 0, `0x000c1d90` and the
-  restriction `0x00132900` to the source view's clusters); the
-  first-person lights (`0x000404b0`); the view layout that places each
-  viewport (`0x0002f600`, `0x0002f640`, `0x0002f6b0`), whose viewport is
-  read; cinematic and override cameras; off-centre extents passed to
+- **Not ported.** The overlap records for light windows against source-view
+  windows (`0x00132900`); cinematic and override cameras; off-centre extents passed to
   `0x0002fb70`.
 - **Own arithmetic.** The flood, the window rectangles in tangent units,
-  the frusta's far distance (the camera's far plane, not the view
-  frustum's `+0x88`), the sphere flood's projection normal (the
-  structure's own BSP plane, where the guest reads the active BSP's) and
-  the field-of-view shares (the viewport's, where the guest uses its view
-  grid) are Rust's; a difference they make shows by name.
+  and the sphere flood's projection normal (the
+  structure's own BSP plane, where the guest reads the active BSP's)
+  are Rust's; a difference they make shows by name.
 
 ## Evidence
 
@@ -314,9 +343,10 @@ counted only: no light list is carried into the scene.
 
 - That the sets and records equal the guest's on real scenes: the
   acceptance of R4 is `scene_visibility_differ`,
-  `scene_light_visibility_differ` and `scene_view_record_differ` at
+  `scene_light_visibility_differ`, `scene_first_person_visibility_differ`
+  and `scene_view_record_differ` at
   zero, and `scene_visibility_rust_taken` equal to
-  `scene_visibility_checked`, over the gate corpus, with the three
+  `scene_visibility_checked`, over the gate corpus, with all four
   `*_first_mismatch` fields absent.
 - That the render camera and projection at layer 3 are the lens the
   gather used: the display copy can change the projection after the

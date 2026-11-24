@@ -26,7 +26,8 @@
 //! parent to the list when it has room, which [`compute_with`] adds the
 //! same way.
 //!
-//! Mode 0 (the light's frusta) is not ported here: [`Decline::Mode`].
+//! Mode 0 floods from each supported light frustum and tests the second
+//! object sphere against the resulting windows.
 
 use engine::render::light::{ARRAY_POINTER as LIGHTS, RECORD_SIZE};
 use engine::render_loop::occlusion::guest::{
@@ -35,7 +36,8 @@ use engine::render_loop::occlusion::guest::{
 
 pub use engine::render::light_gather::LIGHT_VIS;
 
-use super::flood::Reached;
+use super::flood::{self, Reached};
+use super::frusta::WindowFrusta;
 use super::graph::{MAX_CLUSTERS, PortalGraph};
 use super::guest::{self, ACTIVE_VIS, ViewInputs};
 use super::objects::{self, Clip, view_flags};
@@ -181,11 +183,21 @@ pub fn compute_with(
         clusters,
         windows: Vec::new(),
     };
-    let world = guest::light_object_world(mem, view, &reached.clusters)?;
     let clip = Clip::Sphere {
         centre: light_view.centre,
         radius: light_view.radius,
     };
+    listed_objects(mem, view, reached, clip, light)
+}
+
+fn listed_objects(
+    mem: &dyn GuestRead,
+    view: &ViewInputs,
+    reached: Reached,
+    clip: Clip,
+    light: u32,
+) -> Result<VisibilitySets, Decline> {
+    let world = guest::light_object_world(mem, view, &reached.clusters)?;
     let mut listed = objects::object_set(&world, &reached, clip)?;
     if view.flags & view_flags::FIRST_PARTITION_TYPE != 0
         && let Some(extra) = extra_caster(mem, light)?
@@ -197,22 +209,61 @@ pub fn compute_with(
     Ok(VisibilitySets::new(reached.clusters, listed))
 }
 
-/// The light view's Rust sets: [`compute_with`] over the cached graph and
-/// the values read from the running image.
+/// Gather once per light frustum, as in `0x00173130`. A cluster reached
+/// through several faces has one region and can admit objects through
+/// the windows of any of its faces (`0x00165010`).
+fn frustum_sets(
+    mem: &dyn GuestRead,
+    graph: &PortalGraph,
+    view: &ViewInputs,
+    light: u32,
+    pose: u32,
+    volume: u32,
+) -> Result<VisibilitySets, Decline> {
+    let mut reached = Reached::default();
+    let mut windows = WindowFrusta::default();
+    if view.start != u16::MAX {
+        let faces = super::light_frusta::frusta(mem, pose, volume, view.frusta)?;
+        let tuning = guest::tuning(mem)?;
+        let open = guest::open_portals(mem, graph.portals.len())?;
+        for (lens, clip_plane) in faces {
+            let face = flood::flood(graph, &lens, &tuning, &open, view.start)?;
+            let inputs = guest::window_inputs(mem, lens.far, clip_plane)?;
+            for cluster in face.clusters {
+                if !reached.clusters.contains(&cluster) {
+                    reached.clusters.push(cluster);
+                }
+            }
+            windows.0.extend(WindowFrusta::build(&face.windows, &lens, &inputs).0);
+            if reached.clusters.len() > flood::MAX_REGIONS || windows.0.len() > flood::MAX_WINDOWS {
+                return Err(Decline::Overflow);
+            }
+        }
+    }
+    listed_objects(mem, view, reached, Clip::Frusta(windows), light)
+}
+
+/// Visibility from the pose and volume passed to this light's draw.
 pub fn compute(
     mem: &dyn GuestRead,
     cache: &mut GraphCache,
     epoch: u64,
     light: u32,
+    pose: u32,
+    volume: u32,
 ) -> Result<VisibilitySets, Decline> {
     let light_view = light_view(mem)?;
-    if light_view.view.mode != 1 {
-        return Err(Decline::Mode);
+    let view = &light_view.view;
+    let graph = cache.graph(mem, epoch, view.structure)?;
+    match view.mode {
+        0 => frustum_sets(mem, graph, view, light, pose, volume),
+        1 => {
+            let rows = guest::projection_rows(mem)?;
+            let flood_min = guest::sphere_flood_min(mem)?;
+            compute_with(mem, graph, &light_view, &rows, flood_min, light)
+        }
+        _ => Err(Decline::Mode),
     }
-    let rows = guest::projection_rows(mem)?;
-    let flood_min = guest::sphere_flood_min(mem)?;
-    let graph = cache.graph(mem, epoch, light_view.view.structure)?;
-    compute_with(mem, graph, &light_view, &rows, flood_min, light)
 }
 
 /// The light whose gather last filled `0x0054aa68`, in Rust against its
@@ -223,8 +274,10 @@ pub fn light_arm(
     cache: &mut GraphCache,
     epoch: u64,
     light: u32,
+    pose: u32,
+    volume: u32,
 ) -> Result<Parity, Decline> {
-    let rust = compute(mem, cache, epoch, light)?;
+    let rust = compute(mem, cache, epoch, light, pose, volume)?;
     let guest = guest_lists(mem, LIGHT_VIS)?;
     Ok(compare(&rust, &guest))
 }
@@ -246,6 +299,8 @@ mod tests {
     const LIST: u32 = 0xe000;
     const HANDLES: u32 = 0xe100;
     const LIGHT_RECORDS: u32 = 0xf000;
+    const POSE: u32 = 0x24000;
+    const VOLUME: u32 = 0x24100;
     const LIGHT: u32 = 0x0001_0002;
 
     /// A datum array header at `header` with `end` slots of `stride` at
@@ -368,7 +423,7 @@ mod tests {
     fn run(m: &Mem, flood_min: f32) -> Result<Parity, Decline> {
         let mut m = Mem(m.0.clone());
         m.f(SPHERE_FLOOD_MIN, flood_min);
-        light_arm(&m, &mut GraphCache::default(), 1, LIGHT)
+        light_arm(&m, &mut GraphCache::default(), 1, LIGHT, POSE, VOLUME)
     }
 
     fn sets(m: &Mem) -> VisibilitySets {
@@ -403,6 +458,41 @@ mod tests {
     }
 
     #[test]
+    fn a_projected_light_sees_through_the_portal_up_to_its_own_far_plane() {
+        use crate::visibility::{light_frusta::PORTAL_CLIP, tests::window_fields, view::lens::HALF};
+        let mut m = scene();
+        window_fields(&mut m);
+        m.w(guest::OPEN_PORTALS, 0x25000);
+        m.w(0x25000, 1);
+        m.w(LIGHT_VIS + guest::vis::MODE, 0);
+        m.w(LIGHT_VIS + guest::vis::FRUSTA, 1);
+        m.w(VOLUME, 2);
+        for (address, vector) in [
+            (VOLUME + 0x1c, [0.0, -1.0, 0.0]),
+            (POSE + 0x28, [1.0, 0.0, 0.0]),
+            (POSE + 0x34, [0.0, 0.0, 1.0]),
+            (VOLUME + 0x2c, [0.0, 0.0, 0.0]),
+            (VOLUME + 0x3c, [1.0, 0.0, 0.0]),
+        ] {
+            for (axis, value) in vector.into_iter().enumerate() {
+                m.f(address + 4 * axis as u32, value);
+            }
+        }
+        let tolerance = 0.125_f32.to_bits();
+        m.w(PORTAL_CLIP & !3, tolerance << 8);
+        m.w((PORTAL_CLIP & !3) + 4, tolerance >> 24);
+        m.f(HALF, 0.5);
+        m.f(VOLUME + 0x28, 1.0);
+        m.f(VOLUME + 0x58, 2.0);
+        m.f(VOLUME + 0x5c, 2.0);
+        m.f(VOLUME + 0x64, 6.0);
+        assert!(run(&m, 0.0).unwrap().holds());
+        guest_objects(&mut m, &[0x0001_0001, 0x0001_0002, 0x0001_0003]);
+        let parity = run(&m, 0.0).unwrap();
+        assert_eq!(parity.first, Some(Mismatch::ObjectGuestOnly(0x0001_0003)));
+    }
+
+    #[test]
     fn the_extra_caster_is_listed_under_definition_bit_22() {
         let mut m = scene();
         m.w(LIGHT_VIS + guest::vis::FLAGS, view_flags::FIRST_PARTITION_TYPE);
@@ -425,8 +515,8 @@ mod tests {
     #[test]
     fn views_it_does_not_cover_decline_by_name() {
         let mut m = scene();
-        m.w(LIGHT_VIS + guest::vis::MODE, 0);
-        assert_eq!(run(&m, 0.0), Err(Decline::Mode), "the light's frusta");
+        m.w(LIGHT_VIS + guest::vis::MODE, 3);
+        assert_eq!(run(&m, 0.0), Err(Decline::Mode), "unknown mode");
         let mut m = scene();
         m.w(ACTIVE_VIS, guest::vis::START_CLUSTER);
         assert_eq!(run(&m, 0.0), Err(Decline::NotMain), "another struct");
