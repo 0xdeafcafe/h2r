@@ -39,15 +39,27 @@ pub fn on(switches: &hooks::Switches) -> bool {
 /// Whether the per-function port at `addr` stands down: the switch is on
 /// and a body owns the point.
 pub fn owns(switches: &hooks::Switches, addr: u32) -> bool {
-    owns_in(on(switches), &objects::TABLE, addr)
+    owns_in(on(switches), table(switches), addr)
 }
 
 fn owns_in(on: bool, table: &Table, addr: u32) -> bool {
     on && table.owns(addr)
 }
 
+// Both registration and the fused call/return driver must agree on who
+// handles c7840. Removing it from this table also sends its callers
+// through normal dispatch when the image lacks the animation selectors.
+fn table(switches: &hooks::Switches) -> &'static Table {
+    static WITHOUT_AIM: std::sync::LazyLock<Table> = std::sync::LazyLock::new(|| {
+        Table::new(objects::BODIES.iter().filter(|b| b.point.base != points::UNIT_AIM_UPDATE.base))
+            .expect("BODIES is consistent")
+    });
+    if crate::sim_native::anim_on(switches) { &WITHOUT_AIM } else { &objects::TABLE }
+}
+
 pub(crate) fn install(b: &mut Builder) {
-    install_table(b, &objects::TABLE);
+    let bodies = table(b.switches());
+    install_table(b, bodies);
     install_events(b);
 }
 

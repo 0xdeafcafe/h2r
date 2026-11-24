@@ -6,22 +6,23 @@ use runtime::{CpuAbi, ExecCtx, Guest, GuestFault, TransferAbi};
 
 pub struct SimNative {
     ray_dispatch: bool,
-    pose_resumes: bool,
+    anim_exports: [bool; ANIM_BODIES.len()],
 }
 
 impl SimNative {
     pub fn new(runtime: &runtime::Runtime) -> Self {
-        Self {
-            pose_resumes: runtime
-                .read_dispatch(|d| sim::unit::SITES.iter().all(|&pc| d.has_resume(pc))),
-            ray_dispatch: runtime.read_dispatch(|d| d.has_resume(sim::mopp_query::RAY_DISPATCH)),
-        }
+        runtime.read_dispatch(|d| Self {
+            ray_dispatch: d.has_resume(sim::mopp_query::RAY_DISPATCH),
+            anim_exports: ANIM_BODIES.map(|body| {
+                d.has_generated(body.point.base) && body.sites.iter().all(|&pc| d.has_resume(pc))
+            }),
+        })
     }
 
-    /// An image with the ray dispatch and unit pose resume selectors.
+    /// An image with the ray dispatch and all animation resume selectors.
     #[cfg(test)]
     pub(crate) fn for_tests() -> Self {
-        Self { ray_dispatch: true, pose_resumes: true }
+        Self { ray_dispatch: true, anim_exports: [true; ANIM_BODIES.len()] }
     }
 }
 
@@ -122,9 +123,7 @@ impl Feature for SimNative {
             {
                 continue;
             }
-            if anim
-                && (point.base == points::SIM_MARKER_TRANSFORMS.base || point.base == points::SIM_UNIT_POSE.base)
-            {
+            if owns_anim(b.switches(), point.base) {
                 continue;
             }
             if crate::sim_objects::owns(b.switches(), point.base) {
@@ -163,7 +162,7 @@ impl Feature for SimNative {
             }
         }
         if anim {
-            install_anim(b, self.pose_resumes);
+            install_anim(b, &self.anim_exports);
         }
         if collision {
             install_collision(b);
@@ -206,11 +205,11 @@ fn original(cpu: &mut CpuAbi, ctx: &mut ExecCtx, addr: u32) -> Result<TransferAb
 }
 
 /// Animation sampling and pose (docs/engine/sim-rewrite.md). The group
-/// owns the stream, marker and unit pose entries and enables the palette
-/// and filter kernels inside the first-person ports.
+/// owns the stream, marker, unit pose, unit aim and first-person filter
+/// entries and enables the first-person palette and filter kernels.
 pub const ANIM: &str = "sim.native.anim";
 
-fn anim_on(switches: &hooks::Switches) -> bool {
+pub(crate) fn anim_on(switches: &hooks::Switches) -> bool {
     switches.implementation(ANIM, false)
 }
 
@@ -233,21 +232,51 @@ const ANIM_INVALIDATE: [(&points::Point, &str); 3] = [
     (&points::GAME_STATE_RESTORE, "anim-invalidate-restore"),
 ];
 
-fn install_anim(b: &mut Builder, pose_resumes: bool) {
-    // A generated image needs a selector at every return site so that an
-    // unsupported segment can enter the original there. Older images that
-    // lack a selector keep their generated pose body.
-    if pose_resumes {
-        let pose = &points::SIM_UNIT_POSE;
-        b.raw()
-            .implement(pose, ANIM, move |cpu, ctx, pc| {
-                if let Some(transfer) = sim::unit::run(cpu, &mut *ctx.memory(), pc)? {
-                    return Ok(transfer);
-                }
-                crate::sim_objects::original(cpu, ctx, pc, sim::unit::SITES.binary_search(&pc).is_ok())
-            })
-            .resumes(sim::unit::SITES)
-            .context_only();
+#[derive(Clone, Copy)]
+struct AnimBody {
+    point: &'static points::Point,
+    sites: &'static [u32],
+    run: fn(&mut CpuAbi, &mut Guest, u32) -> Result<Option<TransferAbi>, GuestFault>,
+}
+
+const ANIM_BODIES: [AnimBody; 3] = [
+    AnimBody {
+        point: &points::SIM_UNIT_POSE,
+        sites: sim::unit::SITES,
+        run: sim::unit::run,
+    },
+    AnimBody {
+        point: &points::UNIT_AIM_UPDATE,
+        sites: engine::sim_anim::UNIT_AIM_SITES,
+        run: engine::sim_anim::unit_aim,
+    },
+    AnimBody {
+        point: &points::FIRST_PERSON_FILTER_UPDATE,
+        sites: engine::sim_anim::FIRST_PERSON_FILTER_SITES,
+        run: engine::sim_anim::first_person_filters,
+    },
+];
+
+/// The per-function ports stand down even on an older image: without a
+/// complete set of selectors its generated implementation owns this point.
+pub(crate) fn owns_anim(switches: &hooks::Switches, addr: u32) -> bool {
+    anim_on(switches) && (addr == points::SIM_MARKER_TRANSFORMS.base
+        || ANIM_BODIES.iter().any(|body| body.point.base == addr))
+}
+
+fn install_anim(b: &mut Builder, exports: &[bool; ANIM_BODIES.len()]) {
+    for (body, &available) in ANIM_BODIES.into_iter().zip(exports) {
+        if available {
+            b.raw()
+                .implement(body.point, ANIM, move |cpu, ctx, pc| {
+                    if let Some(transfer) = (body.run)(cpu, &mut *ctx.memory(), pc)? {
+                        return Ok(transfer);
+                    }
+                    crate::sim_objects::original(cpu, ctx, pc, body.sites.contains(&pc))
+                })
+                .resumes(body.sites)
+                .context_only();
+        }
     }
     let point = &points::SIM_ANIMATION_STREAM;
     b.raw()
@@ -413,7 +442,7 @@ mod tests {
         let pose = plan.chains[&points::SIM_UNIT_POSE.base].implement.as_ref().unwrap();
         assert_eq!(pose.label, ANIM);
         assert_eq!(pose.continuation_sites().0, sim::unit::SITES);
-        assert_eq!(plan.chains.len(), 3 + ANIM_INVALIDATE.len());
+        assert_eq!(plan.chains.len(), 2 + ANIM_BODIES.len() + ANIM_INVALIDATE.len());
         assert_eq!(plan.save_sections(), vec![("sim-native", Vec::new())]);
 
         // The subsystem owns both shared points when their individual
@@ -430,7 +459,7 @@ mod tests {
         let pose = plan.chains[&points::SIM_UNIT_POSE.base].implement.as_ref().unwrap();
         assert_eq!(pose.label, ANIM);
         assert_eq!(pose.continuation_sites().0, sim::unit::SITES);
-        assert_eq!(plan.chains.len(), 3 + ANIM_INVALIDATE.len());
+        assert_eq!(plan.chains.len(), 2 + ANIM_BODIES.len() + ANIM_INVALIDATE.len());
 
         // The retired per-function switches are gone from the table.
         for key in ["sim.native_rotation_codec", "sim.native_animation_stream"] {
@@ -438,41 +467,96 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_declined_pose_segment_invokes_the_original_selector() {
-        let entry = points::SIM_UNIT_POSE.base;
-        let site = sim::unit::SITES[0];
-        let mut dispatch = runtime::Dispatch::default();
-        dispatch.register_generated_rust(entry, |_, _, selector| Ok(TransferAbi::jump(selector))).unwrap();
-        // An overlapping generated owner may use a different selector.
-        let owner = 0x14000;
-        dispatch.register_generated_rust(owner, |_, _, selector| Ok(TransferAbi::ret(selector))).unwrap();
-        for &pc in sim::unit::SITES {
-            dispatch.register_resume(pc, owner, pc - entry).unwrap();
-        }
-        let rt = runtime::Runtime::new(Guest::new(), dispatch);
-        let mut registry = Registry::new(Switches::defaults().with("impl.sim.native.anim", true));
-        registry.add(&SimNative::new(&rt)).unwrap();
-        let plan = registry.build(&Base).unwrap();
-        let hook = plan.chains[&entry].implement.as_ref().unwrap();
-        let hooks::Run::Implement(run) = &hook.run else { unreachable!() };
-        let mut ctx = ExecCtx::new(rt, 1);
-        // No mapped operands, so both segments must decline before a write.
-        let mut cpu = CpuAbi::default();
-        let initial = cpu;
-        assert_eq!(run(&mut cpu, &mut ctx, entry).unwrap(), TransferAbi::jump(entry));
-        assert_eq!(run(&mut cpu, &mut ctx, site).unwrap(), TransferAbi::ret(site - entry));
-        assert_eq!(cpu, initial);
+    fn legacy_ports_and_objects() -> Switches {
+        Switches::defaults()
+            .with("impl.sim.native.objects", true)
+            .with("impl.sim.native_unit_aim", true)
+            .with("impl.sim.native_first_person_filters", true)
     }
 
     #[test]
-    fn animation_leaves_pose_to_an_image_without_its_resumes() {
-        let runtime = runtime::Runtime::new(Guest::new(), runtime::Dispatch::default());
-        let mut registry = Registry::new(Switches::defaults().with("impl.sim.native.anim", true));
-        registry.add(&SimNative::new(&runtime)).unwrap();
-        let plan = registry.build(&Base).unwrap();
-        assert!(!plan.chains.contains_key(&points::SIM_UNIT_POSE.base));
-        assert!(plan.chains.contains_key(&points::SIM_ANIMATION_STREAM.base));
+    fn animation_owns_aim_and_filters_even_for_fused_object_calls() {
+        for anim in [false, true] {
+            let switches = legacy_ports_and_objects().with("impl.sim.native.anim", anim);
+            assert_eq!(crate::sim_objects::owns(&switches, points::UNIT_AIM_UPDATE.base), !anim);
+            let mut registry = Registry::new(switches);
+            registry.add(&SimNative::for_tests()).unwrap();
+            registry.add(&crate::sim_physics::NativePhysics).unwrap();
+            let plan = registry.build(&Base).unwrap();
+            for (point, sites, legacy) in [
+                (&points::UNIT_AIM_UPDATE, engine::sim_anim::UNIT_AIM_SITES, crate::sim_objects::OBJECTS),
+                (&points::FIRST_PERSON_FILTER_UPDATE, engine::sim_anim::FIRST_PERSON_FILTER_SITES, "sim.native_first_person_filters"),
+            ] {
+                let hook = plan.chains[&point.base].implement.as_ref().unwrap();
+                assert_eq!(hook.label, if anim { ANIM } else { legacy });
+                if anim {
+                    assert_eq!(hook.continuation_sites().0, sites);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_declined_animation_segment_invokes_the_original_selector() {
+        for body in ANIM_BODIES {
+            let entry = body.point.base;
+            let mut dispatch = runtime::Dispatch::default();
+            dispatch.register_generated_rust(entry, |_, _, selector| Ok(TransferAbi::jump(selector))).unwrap();
+            // A different generated owner supplies the site's selector.
+            let owner = 0x14000;
+            dispatch.register_generated_rust(owner, |_, _, selector| Ok(TransferAbi::ret(selector))).unwrap();
+            for &pc in body.sites {
+                dispatch.register_resume(pc, owner, pc - entry).unwrap();
+            }
+            let mut guest = Guest::new();
+            guest.install_trap(4);
+            let rt = runtime::Runtime::new(guest, dispatch);
+            let mut registry = Registry::new(Switches::defaults().with("impl.sim.native.anim", true));
+            registry.add(&SimNative::new(&rt)).unwrap();
+            let plan = registry.build(&Base).unwrap();
+            let hook = plan.chains[&entry].implement.as_ref().unwrap();
+            let hooks::Run::Implement(run) = &hook.run else { unreachable!() };
+            let mut ctx = ExecCtx::new(rt, 1);
+            let mut cpu = CpuAbi::default();
+            let initial = cpu;
+            assert_eq!(run(&mut cpu, &mut ctx, entry).unwrap(), TransferAbi::jump(entry));
+            for &pc in body.sites {
+                assert_eq!(run(&mut cpu, &mut ctx, pc).unwrap(), TransferAbi::ret(pc - entry), "{pc:#x}");
+                assert_eq!(cpu, initial);
+            }
+        }
+    }
+
+    #[test]
+    fn one_missing_export_only_disables_its_animation_body() {
+        for missing in ANIM_BODIES {
+            let mut dispatch = runtime::Dispatch::default();
+            for body in ANIM_BODIES {
+                let entry = body.point.base;
+                dispatch.register_generated_rust(entry, |_, _, _| panic!("registration only")).unwrap();
+                for &site in body.sites {
+                    if entry != missing.point.base || site != missing.sites[0] {
+                        dispatch.register_resume(site, entry, site).unwrap();
+                    }
+                }
+            }
+            let rt = runtime::Runtime::new(Guest::new(), dispatch);
+            let switches = legacy_ports_and_objects()
+                .with("impl.sim.native_unit_pose", true)
+                .with("impl.sim.native.anim", true);
+            let mut registry = Registry::new(switches);
+            registry.add(&SimNative::new(&rt)).unwrap();
+            registry.add(&crate::sim_physics::NativePhysics).unwrap();
+            let plan = registry.build(&Base).unwrap();
+            assert!(!plan.chains.contains_key(&missing.point.base));
+            for body in ANIM_BODIES.into_iter().filter(|b| b.point.base != missing.point.base) {
+                let hook = plan.chains[&body.point.base].implement.as_ref().unwrap();
+                assert_eq!(hook.label, ANIM);
+                assert_eq!(hook.continuation_sites().0, body.sites);
+            }
+            assert!(plan.chains.contains_key(&points::SIM_ANIMATION_STREAM.base));
+            assert!(plan.chains.contains_key(&points::SIM_MARKER_TRANSFORMS.base));
+        }
     }
 
     #[test]
