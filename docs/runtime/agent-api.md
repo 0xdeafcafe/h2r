@@ -122,6 +122,7 @@ connection to hold `session.claim`.
 | `editor.marks` | read | [Paired editor](#editor-a-paired-editor) |
 | `theater.*` | read or act | [Theater transport](#theater-transport) |
 | `collision.stats` | read | [`collision`](#collision-the-native-collision-world) |
+| `anim.graph_walk` | read | [`anim`](#anim-the-animation-graph-walk) |
 | `input.list`, `input.log.read` | read | [Input logs](#input-act-like-a-player) |
 | `trace.*`, `flight.*` | read | [Tick traces and the flight recorder](#tick-traces-and-the-flight-recorder) |
 | `shadow.enable`, `shadow.disable`, `shadow.status` | act, act, read | [Shadow checks](#shadow-checks) |
@@ -5432,6 +5433,39 @@ h2 agent theater.seek '{"tick":30,"source":"boot"}' --socket "$film_run/play.soc
 h2 agent theater.step '{"ticks":1}' --socket "$film_run/play.sock"
 h2 agent theater.play '{}' --socket "$film_run/play.sock"
 ```
+
+## `anim`: the animation graph walk
+
+Under `impl.sim.native.anim` the animation graph's node walk `1dd1c0`
+runs as an arm: the guest answers each call, and the Rust result planned
+at the entry is compared with what the guest left
+([skeleton-walk.md](../engine/skeleton-walk.md#the-graph-walk-1dd1c0)).
+The game method reads process counters at a tick boundary. Code:
+`crates/extensions/agent/src/anim.rs`, wire types in
+`crates/extensions/agent-proto/src/anim.rs`.
+
+| Method | Access | Params and result |
+|---|---|---|
+| `anim.graph_walk` | read | No parameters. Returns `switch`, `addr` (`001dd1c0`), `arm` and `body`. |
+
+`arm` has `checked`, `matched` and `mismatched` calls, `dropped` plans
+(calls that entered and never returned), `declined` by reason (`float`,
+`fault`, `count`, `queue`, `alias`, `parent`; the guest ran unchecked)
+and `first`: the first mismatch since start, or absent. `first.what`
+names the register or byte (`ecx`, `xmm3`, `matrix 2 +0x10`, `stack
+entry-0x3f8 (queue entry 1)`), `plan` and `guest` give both values in hex,
+and `entry` the general registers and MXCSR at that call's entry. `body`
+counts calls the Rust body answered without the guest (`native`, `nodes`
+posed, `declined`); it stays zero while the arm is installed. The counters
+are zero with the switch off. Sample before and after a scenario and
+subtract to isolate that run.
+
+```sh
+h2 agent anim.graph_walk
+```
+
+Parity is `mismatched` 0 over the run ladder's matches, with `declined`
+small against `checked`.
 
 ## `collision`: the native collision world
 
