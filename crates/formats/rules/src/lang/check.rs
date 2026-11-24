@@ -492,6 +492,7 @@ impl<'s> Cx<'s> {
                 code,
                 severity,
                 pos,
+                file: None,
                 message,
             });
         }
@@ -682,6 +683,10 @@ impl<'s> Cx<'s> {
         for (word, arg, rpos) in &s.retired {
             let m = retired_line(word, arg, s);
             self.err("header.retired", *rpos, m);
+        }
+        for (name, mpos) in &s.modules {
+            let m = format!("`use \"{name}\"` has no file to read: the compile is of this text alone");
+            self.err("use", *mpos, m);
         }
         if let Some((text, apos)) = &s.about {
             let units = text.encode_utf16().count();

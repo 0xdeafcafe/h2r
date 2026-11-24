@@ -101,6 +101,7 @@
   "type"
   "teams"
   "uses"
+  "use"
   "points"
   "about"
   "quick"

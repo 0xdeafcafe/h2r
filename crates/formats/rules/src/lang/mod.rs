@@ -11,6 +11,7 @@ pub mod ast;
 pub mod check;
 pub mod lex;
 pub(crate) mod lower;
+pub mod modules;
 pub mod parse;
 pub mod sig;
 pub mod types;
@@ -64,7 +65,11 @@ pub enum Severity {
 pub struct Diagnostic {
     pub code: &'static str,
     pub severity: Severity,
+    /// Where, in `file` when it is not the root.
     pub pos: Pos,
+    /// The module file the finding is in (`use`); none for the root, the
+    /// only file of a compile of one text.
+    pub file: Option<String>,
     pub message: String,
 }
 
@@ -77,6 +82,7 @@ impl Diagnostic {
                 line: e.line,
                 col: e.col,
             },
+            file: None,
             message: e.message,
         }
     }
@@ -87,7 +93,10 @@ impl Diagnostic {
 
     /// The diagnostic as a [`CompileError`] (line, column and message).
     pub fn to_error(&self) -> CompileError {
-        CompileError::at(self.pos, self.message.clone())
+        match &self.file {
+            Some(f) => CompileError::at(self.pos, format!("in {f}: {}", self.message)),
+            None => CompileError::at(self.pos, self.message.clone()),
+        }
     }
 }
 
@@ -115,6 +124,46 @@ impl Compiled {
 /// runs only on a script with no error; a limit it meets is a `limit`
 /// error.
 pub fn diagnose(src: &str) -> Compiled {
+    diagnose_text(src)
+}
+
+/// [`diagnose`] for a script of several files: `src` is the root, named
+/// `root` in messages, and `read` gives another file's text by name for
+/// each `use` ([`modules`]). The blob is the blob of the files read as
+/// one text, and a finding in a module has its [`Diagnostic::file`] and
+/// the line in that file. A script with no `use` is [`diagnose`].
+pub fn diagnose_files(root: &str, src: &str, read: &dyn Fn(&str) -> Option<String>) -> Compiled {
+    if !modules::mentions_use(src) {
+        return diagnose_text(src);
+    }
+    let x = match modules::expand(root, src, read) {
+        Ok(x) => x,
+        Err(errors) => {
+            let mut diagnostics: Vec<Diagnostic> = errors
+                .into_iter()
+                .map(|e| Diagnostic {
+                    code: e.code,
+                    severity: Severity::Error,
+                    pos: e.pos,
+                    file: (e.file != root).then_some(e.file),
+                    message: e.message,
+                })
+                .collect();
+            diagnostics.truncate(MAX_ERRORS);
+            return Compiled { ir: None, diagnostics };
+        }
+    };
+    let mut c = diagnose_text(&x.src);
+    for d in &mut c.diagnostics {
+        if let Some(o) = x.origin(d.pos.line) {
+            d.pos.line = o.line;
+            d.file = (o.file != 0).then(|| x.file_name(o).to_string());
+        }
+    }
+    c
+}
+
+fn diagnose_text(src: &str) -> Compiled {
     if src.len() > MAX_SOURCE_BYTES {
         let e = CompileError::at(
             Pos { line: 1, col: 1 },
@@ -155,7 +204,16 @@ pub fn diagnose(src: &str) -> Compiled {
 /// still goes through [`crate::verify`] before it runs. [`diagnose`]
 /// gives every error and the warnings.
 pub fn compile(src: &str) -> Result<Ir, CompileError> {
-    let compiled = diagnose(src);
+    first_error(diagnose(src))
+}
+
+/// [`compile`] for a script of several files ([`diagnose_files`]). An
+/// error in a module starts its message with the module's name.
+pub fn compile_files(root: &str, src: &str, read: &dyn Fn(&str) -> Option<String>) -> Result<Ir, CompileError> {
+    first_error(diagnose_files(root, src, read))
+}
+
+fn first_error(compiled: Compiled) -> Result<Ir, CompileError> {
     match compiled.ir {
         Some(ir) => Ok(ir),
         None => Err(compiled

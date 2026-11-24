@@ -41,7 +41,7 @@ the reverse order, as Zed lets the last one win. Change both.
 ## Nodes
 
 Declarations: `header`, `type_declaration`, `teams_declaration`,
-`uses_declaration`, `points_declaration`, `about_declaration`,
+`uses_declaration`, `use_declaration`, `points_declaration`, `about_declaration`,
 `quick_declaration`, `settings_declaration` (`setting`),
 `requires_declaration` (`capability`),
 `option_declaration` (`range`), `palette_declaration`, `enum_declaration`,

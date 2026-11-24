@@ -332,6 +332,7 @@ pub(crate) fn keyword_doc(w: &str) -> Option<&'static str> {
         "settings" => "The record settings the script sets, one `name = value` a line: `settings { score_limit = 50; shields = none }`. A setting the block leaves out has the record's stock value.",
         "quick" => "The settings and options the lobby's Quick Options shows, at most five, in row order: `quick score_limit, starting_weapon`.",
         "scoring" => "Gone: `uses slayer` plays a built-in game's rules under the script's settings.",
+        "use" => "Another file's declarations, read in at this line before checking: `use \"waves.rules\"`. The module has no `rules` header, is read once however many files name it, and may not (even through other files) name a file that is reading it. The compile gives one blob, the one the same text in one file would give.",
         "about" => "The variant's description, at most 150 characters: `about \"No shields. 50 points to win.\"`.",
         "requires" => "The capabilities the script declares: `requires player.weapons, hud.message`. The lobby shows them in plain words.",
         "option" => "A row of the variant editor: `option name: int 1..5 = 1 \"Label\" \"Description\"`. An int, a bool or an enum, read-only in handlers.",

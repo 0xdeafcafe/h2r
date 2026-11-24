@@ -14,6 +14,10 @@
   "uses" @context
   name: (identifier) @name) @item
 
+(use_declaration
+  "use" @context
+  path: (string) @name) @item
+
 (about_declaration
   "about" @name) @item
 

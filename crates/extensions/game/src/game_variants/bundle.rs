@@ -32,6 +32,7 @@ pub fn from_live(v: &LiveVariant, ir: Option<&[u8]>) -> Result<Bundle, String> {
             hash: h.clone(),
             ir_b64: base64_encode(ir),
             source: None,
+            modules: Default::default(),
         }),
     };
     let record = unhex(v.record_hex.trim())

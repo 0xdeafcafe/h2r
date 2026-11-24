@@ -188,7 +188,17 @@ impl Server {
             .docs
             .get(uri)
             .map_or(("", None), |d| (d.text.as_str(), d.version));
-        let list: Vec<Value> = ide::diagnostics(src).iter().map(diagnostic_json).collect();
+        // A script's `use` files are the ones beside it on disk, as `h2
+        // rules check` reads them; a module's unsaved edits are not seen.
+        let found = match studio_link::path_of(uri) {
+            Some(path) => {
+                let label = path.display().to_string();
+                let root = path.file_name().map_or_else(|| label.clone(), |n| n.to_string_lossy().into_owned());
+                ide::diagnostics_with_files(src, &root, &crate::rules_cmd::module_reader(&label))
+            }
+            None => ide::diagnostics(src),
+        };
+        let list: Vec<Value> = found.iter().map(diagnostic_json).collect();
         diagnostics_note(uri, version, Value::Array(list))
     }
 
@@ -604,6 +614,24 @@ mod tests {
         assert_eq!(published(s.handle(note("textDocument/didClose", close))), json!([]));
         let r = response(s.handle(req(11, "textDocument/hover", at(3, 5))));
         assert_eq!(r.error.unwrap().code, INVALID_PARAMS);
+    }
+
+    #[test]
+    fn a_use_reads_the_file_beside_the_document() {
+        let dir = std::env::temp_dir().join(format!("h2-rules-lsp-use-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("waves.rules"), "const base = 2\nfn bonus() -> int = nope + 1\n").unwrap();
+        let uri = format!("file://{}/main.rules", dir.display());
+        let main = "rules \"T\" 1\ntype slayer\nuse \"waves.rules\"\non kill(v, k) { score(k, bonus()) }\n";
+        let mut s = Server::default();
+        let open = json!({"textDocument": {"uri": uri, "languageId": "rules", "version": 1, "text": main}});
+        let out = s.handle(note("textDocument/didOpen", open));
+        let [Message::Notification(n)] = &out[..] else { panic!("{out:?}") };
+        let all = &n.params["diagnostics"];
+        let d = all.as_array().unwrap().iter().find(|x| x["severity"] == 1).expect(&all.to_string());
+        assert_eq!(d["range"]["start"]["line"], 2);
+        assert!(d["message"].as_str().unwrap().starts_with("waves.rules:2:"), "{d}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

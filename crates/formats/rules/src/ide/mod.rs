@@ -384,6 +384,74 @@ pub fn diagnostics(src: &str) -> Vec<Diagnostic> {
     with(src, info::diagnostics)
 }
 
+/// [`diagnostics`] of a script of several files: `src` is the root, named
+/// `root`, and `read` gives another file's text by name for each `use`
+/// (`crate::lang::modules`). The files are read as the one text the
+/// checker sees. A problem in the root keeps its place and its fixes. A
+/// problem in a module is on the root's `use` line that read the module
+/// in, its message starting `file:line:column:`, with no fix. A script
+/// with no `use` is [`diagnostics`].
+pub fn diagnostics_with_files(src: &str, root: &str, read: &dyn Fn(&str) -> Option<String>) -> Vec<Diagnostic> {
+    use crate::lang::modules::{self, Expanded};
+    if !modules::mentions_use(src) {
+        return diagnostics(src);
+    }
+    let li = model::LineIndex::new(src);
+    let line_range = |root_line: u32| {
+        let l = root_line.max(1) as usize - 1;
+        li.range(li.line_start(l), li.line_end(l))
+    };
+    let x = match modules::expand(root, src, read) {
+        Ok(x) => x,
+        Err(errors) => {
+            return errors
+                .into_iter()
+                .map(|e| {
+                    let message = if e.file == root {
+                        e.message
+                    } else {
+                        format!("{}:{}:{}: {}", e.file, e.pos.line, e.pos.col, e.message)
+                    };
+                    info::diag(line_range(e.root_line), severity::ERROR, message, e.code)
+                })
+                .collect();
+        }
+    };
+    // A place of the expanded text, as the root file's, when it is there.
+    let home = |x: &Expanded, p: Position| -> Option<Position> {
+        let o = x.origin(p.line + 1).filter(|o| o.file == 0)?;
+        Some(Position::new(o.line - 1, p.character))
+    };
+    let mut out = Vec::new();
+    for mut d in diagnostics(&x.src) {
+        let Some(o) = x.origin(d.range.start.line + 1) else {
+            out.push(d);
+            continue;
+        };
+        if o.file != 0 {
+            d.message = format!("{}:{}:{}: {}", x.file_name(o), o.line, d.range.start.character + 1, d.message);
+            d.range = line_range(o.root_line);
+            d.fixes.clear();
+            out.push(d);
+            continue;
+        }
+        let start = Position::new(o.line - 1, d.range.start.character);
+        d.range.end = home(&x, d.range.end).unwrap_or(start);
+        d.range.start = start;
+        d.fixes.retain_mut(|f| {
+            f.edits.iter_mut().all(|e| match (home(&x, e.range.start), home(&x, e.range.end)) {
+                (Some(s), Some(en)) => {
+                    e.range = Range { start: s, end: en };
+                    true
+                }
+                _ => false,
+            })
+        });
+        out.push(d);
+    }
+    out
+}
+
 /// The fixes of every diagnostic whose range meets `range`, in the
 /// diagnostics' order (LSP's `textDocument/codeAction`).
 pub fn actions(src: &str, range: Range) -> Vec<CodeAction> {

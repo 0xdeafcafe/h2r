@@ -876,6 +876,28 @@ rules.``), which the checker reports once the script has no other error
 at most 150 UTF-16 units (`ir::MAX_ABOUT_UNITS`, the `limit` error) and
 256 bytes, the longest string literal.
 
+**Modules.** `use "waves.rules"` on a line of its own at the top level
+reads another file's lines in at that line before the checker runs
+(`lang::modules::expand`, `lang::diagnose_files`, `lang::compile_files`).
+The compile is of the one text the files make, so two files give the
+blob of the same text in one file, and nothing after the expansion knows
+a module. A name is a plain file name ending `.rules` (letters, digits,
+`_`, `-` and `.`, at most 64 bytes, no directory), the files of a script
+are one flat set, and a module has no `rules` header. A file is read
+once however many files name it; a file that names one that is reading it,
+directly or through others, is the error `use` naming both
+(`a cycle: a.rules uses b.rules uses a.rules`), at the `use` line in the
+file that closes it. The most is 32 files, 8 deep and 256 KiB in all (the
+`limit` error). Where the files come from is the caller's: `h2 rules
+check|build|run|sim|settings` reads the files beside the script, and a
+variant file carries them in `script.modules`
+([variants.md](../editor/variants.md)). A finding in a module has its
+file (`Diagnostic::file`) and its line in that file; compiling one text
+with a `use` is the error `use` ("has no file to read"). The editor's
+diagnostics (`ide::diagnostics_with_files`, and `h2 rules lsp`, which
+reads the files beside the document on disk) put a module's finding on
+the `use` line, its message starting `file:line:column:`.
+
 **Types.** `int` (32-bit, saturating), `fixed` (16.16, for seconds and
 distances), `bool`, `player`, `team`, `object`, `zone` (an object with a
 volume: a Forge trigger volume, or a netgame flag with its capture
@@ -1637,7 +1659,8 @@ Tooling:
     (`builtin::ALL`, as `engine <index>: <name>`), then the example
     scripts (`builtin::examples`, as `example <key>: <name>`), or prints
     one by name, engine index or key.
-  - `h2 rules lsp` is a language server on stdin and stdout
+  - `h2 rules lsp` is a language server on stdin and stdout, reading a
+    script's `use` files from beside the document
     (`crates/apps/h2-tools/src/rules_lsp.rs`, over `lsp-server`). It keeps
     each open document and applies incremental changes in UTF-16
     positions (`ide::offset`), publishes diagnostics on open and change

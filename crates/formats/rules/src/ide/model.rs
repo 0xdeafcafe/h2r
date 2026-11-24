@@ -1386,7 +1386,7 @@ impl<'s> Model<'s> {
                     let ok = match self.text(t) {
                         "settings" => next.k == K::Punct && self.text(next) == "{",
                         "quick" | "type" | "uses" | "scoring" => next.k == K::Ident,
-                        "points" | "about" => next.k == K::Str,
+                        "points" | "about" | "use" => next.k == K::Str,
                         _ => false,
                     };
                     if first && ok {

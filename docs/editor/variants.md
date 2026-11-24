@@ -236,8 +236,11 @@ file, so it carries no signature.
   `description` (at most 150 characters), `author` (`{xuid, gamertag}`,
   written by Live on publish), `game_type` (for people), `engine`,
   `record_hex` and, when the record's block names a rules script (mode
-  2), `script: {name, hash, ir_b64, source?}`: the IR blob (at most 64
-  KiB) and its source (at most 256 KiB). The record carries the 8-byte
+  2), `script: {name, hash, ir_b64, source?, modules?}`: the IR blob (at most
+  64 KiB) and its source (at most 256 KiB, with `modules`, the files
+  its `use` lines name by file name, in all: `Attach::from_files`,
+  `Bundle::with_modules`, [rules-engine.md](../game/rules-engine.md)
+  "Modules"; absent for a one-file script). The record carries the 8-byte
   hash prefix that names the script; the file carries the script itself
   ([rules-engine.md](../game/rules-engine.md#carrying-a-script)).
   `Bundle::canonical` is compact JSON in field order, and `Bundle::id` is

@@ -24,6 +24,8 @@
 //! it. [`from_script`] makes its bundle (docs/game/rules-variants.md, "The
 //! record of a script").
 
+use std::collections::BTreeMap;
+
 use content::Sha256;
 use serde::{Deserialize, Serialize};
 
@@ -88,6 +90,11 @@ pub struct ScriptPart {
     pub ir_b64: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// The files `source` names with `use` (`rules::lang::modules`), by
+    /// name: a script of several files travels as all of them. Only with a
+    /// `source`, and with it at most [`MAX_SOURCE`] bytes in all.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub modules: BTreeMap<String, String>,
 }
 
 /// A version-2 file. Fields serialize in this order; [`Bundle::canonical`]
@@ -275,6 +282,7 @@ impl Bundle {
                     hash: id.to_string(),
                     ir_b64: base64_encode(&a.ir),
                     source: a.source,
+                    modules: BTreeMap::new(),
                 })
             }
         };
@@ -291,6 +299,20 @@ impl Bundle {
         };
         b.check()?;
         Ok(b)
+    }
+
+    /// The bundle with the files its script's source names, `modules` by
+    /// name (see [`Attach::from_files`]). Refused without a script that
+    /// carries its source, or for a file that is not a module name, more
+    /// than the language's file count or [`MAX_SOURCE`] bytes in all.
+    pub fn with_modules(mut self, modules: BTreeMap<String, String>) -> Result<Bundle, PortableError> {
+        match &mut self.script {
+            Some(s) if s.source.is_some() => s.modules = modules,
+            _ if modules.is_empty() => {}
+            _ => return Err(PortableError::ScriptUnexpected),
+        }
+        self.check()?;
+        Ok(self)
     }
 
     /// The file's one byte form: compact JSON in field order.
@@ -357,6 +379,7 @@ impl Bundle {
                 if s.source.as_ref().is_some_and(|src| src.len() > MAX_SOURCE) {
                     return Err(PortableError::ScriptTooLarge("source"));
                 }
+                check_modules(s)?;
                 let ir = self.ir()?.expect("a script is present");
                 if ir.len() > MAX_IR {
                     return Err(PortableError::ScriptTooLarge("IR"));
@@ -422,7 +445,53 @@ pub struct Attach {
     pub options: Option<u32>,
 }
 
+/// The files a bundle's script source names: each a module name, no more
+/// than the language allows beside the root, and the source and the files
+/// together within [`MAX_SOURCE`]. None without a source.
+fn check_modules(s: &ScriptPart) -> Result<(), PortableError> {
+    if s.modules.is_empty() {
+        return Ok(());
+    }
+    let Some(src) = &s.source else {
+        return Err(PortableError::ScriptUnexpected);
+    };
+    if s.modules.len() >= rules::lang::modules::MAX_FILES {
+        return Err(PortableError::ScriptTooLarge("files"));
+    }
+    if let Some(bad) = s.modules.keys().find(|n| !rules::lang::modules::is_module_name(n)) {
+        return Err(PortableError::ScriptRefused(format!("`{bad}` is not a module name")));
+    }
+    let total = src.len() + s.modules.values().map(String::len).sum::<usize>();
+    if total > MAX_SOURCE {
+        return Err(PortableError::ScriptTooLarge("source"));
+    }
+    Ok(())
+}
+
 impl Attach {
+    /// [`Attach::from_source`] for a script of several files: `source` is
+    /// the root and `modules` the files its `use` lines name, by name.
+    /// The IR is that of the files read as one text; [`Bundle::with_modules`]
+    /// puts the files in the bundle beside the source.
+    pub fn from_files(source: &str, modules: &BTreeMap<String, String>) -> Result<Attach, PortableError> {
+        let total = source.len() + modules.values().map(String::len).sum::<usize>();
+        if total > MAX_SOURCE {
+            return Err(PortableError::ScriptTooLarge("source"));
+        }
+        let read = |name: &str| modules.get(name).cloned();
+        let (ir, _) = rules::ship_files("script.rules", source, &read).map_err(|e| match e {
+            e @ (rules::BuildError::OverBudget { .. } | rules::BuildError::TooLarge { .. }) => {
+                PortableError::ScriptCost(e.to_string())
+            }
+            e => PortableError::ScriptRefused(e.to_string()),
+        })?;
+        Ok(Attach {
+            ir: ir.encode(),
+            source: Some(source.to_string()),
+            options: None,
+        })
+    }
+
     /// Compiles and verifies `source`, refuses it over the budget
     /// (`rules::ship`), and attaches it with its IR.
     pub fn from_source(source: &str) -> Result<Attach, PortableError> {
@@ -1635,6 +1704,33 @@ settings {
         let back = read(&b.canonical()).unwrap().variant().unwrap();
         assert_eq!(back.game_type(), GameType::Slayer);
         assert_eq!(back.bytes()[record::TYPE_AREA], old.bytes()[record::TYPE_AREA]);
+    }
+
+    #[test]
+    fn a_script_of_several_files_travels_as_all_of_them() {
+        let main = "rules \"Split\" 1\ntype slayer\nuse \"waves.rules\"\non kill(v, k) { score(k, bonus()) }\n";
+        let one = "rules \"Split\" 1\ntype slayer\nconst base = 2\nfn bonus() -> int = base + 1\non kill(v, k) { score(k, bonus()) }\n";
+        let mods: BTreeMap<String, String> =
+            [("waves.rules".to_string(), "const base = 2\nfn bonus() -> int = base + 1\n".to_string())].into();
+        let attach = Attach::from_files(main, &mods).unwrap();
+        // The IR is the one of the same text in a file.
+        assert_eq!(attach.ir, Attach::from_source(one).unwrap().ir);
+        let v = GameVariant::stock(GameType::Slayer).unwrap();
+        let b = Bundle::new(&v, "Split", "", Some(attach.clone())).unwrap();
+        assert!(!b.canonical().contains("modules"), "a one-file script's bytes are unchanged");
+        let b = b.with_modules(mods.clone()).unwrap();
+        let back = read(&b.canonical()).unwrap();
+        assert_eq!(back, b);
+        assert_eq!(back.script.as_ref().unwrap().modules, mods);
+        // Without the files the root does not compile; a name that is not
+        // a module's, a script with no source and too many bytes are refused.
+        assert!(matches!(Attach::from_files(main, &BTreeMap::new()), Err(PortableError::ScriptRefused(_))));
+        let bad: BTreeMap<String, String> = [("../x.rules".to_string(), String::new())].into();
+        assert!(matches!(b.clone().with_modules(bad), Err(PortableError::ScriptRefused(_))));
+        let no_source = Bundle::new(&v, "Split", "", Some(Attach { source: None, ..attach })).unwrap();
+        assert_eq!(no_source.with_modules(mods).unwrap_err(), PortableError::ScriptUnexpected);
+        let big: BTreeMap<String, String> = [("big.rules".to_string(), "x".repeat(MAX_SOURCE))].into();
+        assert_eq!(b.with_modules(big).unwrap_err(), PortableError::ScriptTooLarge("source"));
     }
 
     #[test]
