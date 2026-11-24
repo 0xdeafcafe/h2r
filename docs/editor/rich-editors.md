@@ -320,7 +320,8 @@ with the `h2hs.json` context `h2 hs lsp` checks it against) and open it
 there; each save comes back to the tab as the definitions that differ
 from the map's and the file's problems (`app/external.rs`;
 [editor-guide.md, "Scripts in VS Code and Zed"](editor-guide.md#scripts-in-vs-code-and-zed)).
-Those edits reach the map once the compiler below exists.
+Those edits reach the map once **Compile** (slice H3) writes the
+compiler's output into the session.
 
 **The data.** `crates/formats/hs`: `Scenario::read` decodes the node
 table, string data, scripts, globals and tag references (`wire::Node`,
@@ -373,24 +374,31 @@ from a documentation listing"). Every other builtin stays
 **Choose...**, `h2-editor --hs-doc <file>` or `script.doc`. Projects
 built from leaked builds are not a source for any name.
 
-**What the compiler needs.** `hs::compile` (new) does not exist;
-`source::source_counts` only tokenises. It needs:
+**The compiler** (`hs::compile`, `crates/formats/hs/src/compiler.rs`;
+[haloscript.md, "Compiling source"](../formats/haloscript.md#compiling-source)).
+It takes source as the decompiler prints it or a person writes it, and
+gives a copy of the scenario's tables with those definitions in it, or
+every problem as a `Message` with its line, column, span and a stable
+code (`syntax.open`, `def.kind`, `call.arity`, `type.cast`,
+`name.unresolved`, `nodes.limit`, ...).
 
-| Need | Have | Gap |
-|---|---|---|
-| A parser for the decompiler's own output | the tokeniser | the tree builder, with positions for messages |
-| Function name to builtin index, with parameter and return types | `Catalog`: types and addresses for every builtin; names for those some scenario calls (`Catalog::observe`), plus `h1campaign::scripts::identified`, plus those a documentation listing names by signature (`hs::Naming`) | a builtin nothing names cannot be called by name. It is callable as `(#builtin:<index> ...)` and listed as such; nothing guesses a name |
-| External global name to index | `Catalog::external_global_types` (types only) | names only as observed in scenarios, as for builtins |
-| Type checking and casts | `cast::castable`, the VM's `HsType` | inference of each node's type from its parent, as the engine's compiler does (**S**: the retail node types of every disc script are the check, below) |
-| Literal to node data, per value type | numbers, booleans, strings; script and global references; tag references through `script_tag_references` | names of scenario things (object names, trigger volumes, cutscene flags and camera points, starting profiles, AI) resolve through scenario blocks, and the AI blocks have no reader ([scenario-editor.md](scenario-editor.md) §6). A name the compiler cannot resolve from a block resolves only if this map's scripts already use it (the pair of type and token is harvested from the existing nodes); otherwise it is an error naming the type |
-| Node salts and links | `wire::Datum`, `Scenario::validate_graph` | the allocator: free slots first, then new slots |
-| The executable | `Catalog::from_xbe`; the Scripts tab reads `default.xbe` from the source (`MapSource::executable`) and refuses without it | nothing |
+| Part | How |
+|---|---|
+| Parser | the working copy's tree (`ide::syntax`), with byte spans for messages; several body expressions are joined by the map's `begin` |
+| Function names | the names the map's own calls spell, then `hs::Naming` (or the catalog's). A builtin nothing names is called as `(#builtin:<index> ...)`; nothing guesses a name |
+| Game globals | names only as the map's scripts already use them |
+| Types and casts | a node takes its parent's type: a fixed builtin's parameter, a script's return type, a global's type. Arguments of a builtin that reads its own (flags bit 1) take the types this map's calls of it give that position, else their own. A value of another type needs `cast::castable` |
+| Literals | numbers, booleans, `none`, strings and `#real-bits:` by their form; a script by its index; other names (objects, volumes, AI, enums, tags) as this map's scripts already use them, then through the caller's `Options::resolve`; otherwise an error naming the type |
+| Slots | the replaced definitions' nodes are freed (those no kept definition reaches); new nodes take free slots first, then new slots, up to `hs::RETAIL_NODES` (or the scenario's own size); past it the compile is refused with both counts |
+| Strings | a token the string data holds keeps its offset; a new one is appended |
+| Check | the new tables pass `Scenario::validate` or nothing is returned |
 
 The compiler's acceptance is a round trip: for every script,
 `compile(decompile(s))` gives nodes equal to the source's in opcode,
-type, flags, data and shape. The synthetic form of that test is in the
-slice; the disc form is `#[ignore]`d and is the evidence that the type
-inference matches retail.
+type, flags, data and shape (`hs::first_difference`). The synthetic form
+is in `compiler/tests.rs`; the disc form is `tests/compile_disc.rs`,
+`#[ignore]`d, and reports the share of retail definitions that round-trip
+as the evidence that the type rules match retail.
 
 **Preview.** There is no editor-side run. `hs::vm` evaluates against
 `vm::mock` only and nothing in the game calls it
@@ -777,7 +785,7 @@ the first one whose needs are met.
 | F2 (built) | **Curve type changes** | S | F1, X2 | changing type saves at the new `blob_len` and reads back equal |
 | S3 | **Template parameter names**: read `stem`'s parameter and category blocks (**E** first), names on slots | S | S1 | an invented template names its slots; a template without the blocks shows the not-read sentence |
 | C3 | **Colour functions**: the read of which colours a function blends (**E**), gradient strips | M | F1, C1 | an invented colour property draws its strip; the note records the reader |
-| H2 | **Script compiler**: `hs::compile` (parser, names, types and casts, literals, allocator), messages with positions | L | H1 | `compile(decompile(s))` equals the nodes for every construct of the synthetic fixtures; each error class has a test; the `#[ignore]`d disc run reports the share of scripts that round-trip |
+| H2 (built) | **Script compiler**: `hs::compile` (parser, names, types and casts, literals, allocator), messages with positions | L | H1 | `compile(decompile(s))` equals the nodes for every construct of the synthetic fixtures; each error class has a test; the `#[ignore]`d disc run reports the share of scripts that round-trip |
 | H3 | **Scripts, write**: Edit and Compile in the tool, the session ops, free-slot reuse, growth, strings, the three validations, `script.compile` | M | H2, X2 | one changed script changes only its nodes and new strings in the saved map; a compile past the node limit is refused with both counts; undo restores the table |
 | A4 | **Mouth curves, write**: drawing, **From the sound**, the in-place raw write | M | A2; modeling 3 | a redrawn invented curve changes only its bytes and the checksum; a shared-cache sound and a split chain are refused |
 | K1 (built) | **Recordings, read**: the stream crate, typed events, the tool and timeline, `recording.list`, `recording.read` | M | H1 | every Halo 2 event type decodes from an invented stream; a bad type or length is an error with its offset |
@@ -800,8 +808,8 @@ that can be read, and models that move.
 - **Code**: every "have" and "gap" above is read from the file it names.
   The colour hint is `crates/formats/tags/src/registry.rs` (`hint`); the
   function round trip is `effects/function.rs`; the vertex encoder is the
-  `encode` module of `crates/formats/shaders/src/vsh/mod.rs`; the missing
-  compiler is `crates/formats/hs/src/source.rs` (`source_counts`).
+  `encode` module of `crates/formats/shaders/src/vsh/mod.rs`; the compiler is
+  `crates/formats/hs/src/compiler.rs` (`compile`).
 - **E**: the mouth curve and its sampler, as cited in
   [sounds.md](../halo1/sounds.md); the function evaluator, as cited in
   [effects.md](../formats/effects.md); the recording decoder loop and

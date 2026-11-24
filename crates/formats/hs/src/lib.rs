@@ -16,6 +16,7 @@
 mod cast;
 mod catalog;
 mod check;
+mod compiler;
 mod expression;
 #[cfg(any(test, feature = "fixture"))]
 pub mod fixture;
@@ -36,6 +37,9 @@ pub mod casts {
 }
 pub use catalog::*;
 pub use check::*;
+pub use compiler::{
+    Compiled, MAX_DEPTH, Message, Options, Resolve, compile, first_difference,
+};
 pub use expression::*;
 pub use scenario::*;
 pub use script_doc::*;

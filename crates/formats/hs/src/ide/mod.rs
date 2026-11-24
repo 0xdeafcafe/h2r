@@ -21,7 +21,7 @@ mod context;
 mod features;
 mod format;
 mod model;
-mod syntax;
+pub(crate) mod syntax;
 #[cfg(test)]
 mod tests;
 
