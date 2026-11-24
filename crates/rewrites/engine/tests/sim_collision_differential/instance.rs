@@ -165,6 +165,34 @@ fn populated_instance_cluster_against_the_lifted_callbacks() {
                     filter: 1,
                     limit: 1f32.to_bits(),
                 };
+                if case == "hit" && scale == 1.0 {
+                    let mut bad = m.clone();
+                    let outside = mopp::Code {
+                        offset: [0.; 3],
+                        scale: 1.,
+                        info: 37,
+                        bytecode: vec![0x51, 4, 0],
+                    };
+                    bad.store(CODE, &outside.to_block());
+                    bad.word(CODE + 0x24, 4);
+                    // Even a declared placement and a word matching this
+                    // generation cannot make PLAYER_GLOBALS a mark slot.
+                    bad.word(STRUCTURE + 0x140, instance::MARK_SLOTS + 1);
+                    bad.word(points::PLAYER_GLOBALS.base, EPOCH);
+                    let bad_world = CollisionWorld::new(&GENERATION);
+                    let bad_query = instance::Query { ..q };
+                    assert!(matches!(
+                        instance::predict_with_marks(
+                            &c,
+                            &mut bad,
+                            &bad_world,
+                            bad_query,
+                            EPOCH,
+                            &[]
+                        ),
+                        Err(sim_collision::Bail::Data)
+                    ));
+                }
                 let plan = instance::predict_with_marks(&c, &mut m, &world, q, EPOCH, &[]).unwrap();
                 assert_eq!(m.overlay, entry, "predictor wrote memory");
                 let mut guest = m.clone();
