@@ -402,7 +402,7 @@ impl std::fmt::Display for WorldMaterials {
 }
 
 const SCENE_LIST_START: usize = WORLD_SECTION_BASE + WORLD_SECTION_COLUMNS.len();
-const SCENE_LISTS: [&str; 20] = [
+const SCENE_LISTS: [&str; 22] = [
     "view_objects",
     "light_objects",
     "object_order",
@@ -423,6 +423,8 @@ const SCENE_LISTS: [&str; 20] = [
     "light_items",
     "light_handoff",
     "light_passes",
+    "first_person_lights",
+    "first_person_records",
 ];
 const SCENE_LIST_RESULTS: [&str; 11] = [
     "native",
@@ -474,6 +476,12 @@ pub enum SceneList {
     LightHandoff,
     /// One light's passes (`0x00031170`) by the passes body (slice L5).
     LightPasses,
+    /// One call of the first-person lights (`0x000404b0`) by their body
+    /// (slice L6).
+    FirstPersonLights,
+    /// One record of a first-person light's slot that passes the mode's
+    /// filter (`0x000402b0`, slice L6), or a call the body declines.
+    FirstPersonRecords,
 }
 
 #[derive(Clone, Copy)]
@@ -777,7 +785,12 @@ mod tests {
         assert_eq!(ui, lists + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len());
         assert_eq!(
             columns[ui - 1].1,
-            "native_scene_lists_light_passes_mismatch"
+            "native_scene_lists_first_person_records_mismatch"
+        );
+        let first_person = lists + SceneList::FirstPersonLights as usize * SCENE_LIST_RESULTS.len();
+        assert_eq!(
+            columns[first_person].1,
+            "native_scene_lists_first_person_lights_native"
         );
         let frame = lists + SceneList::LightFrame as usize * SCENE_LIST_RESULTS.len();
         assert_eq!(columns[frame].1, "native_scene_lists_light_frame_native");

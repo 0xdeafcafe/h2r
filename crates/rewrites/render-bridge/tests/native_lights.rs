@@ -47,7 +47,18 @@ fn its_chains_run_on_the_render_thread() {
         text.contains("implement native-lights:native_lights_passes"),
         "{text}"
     );
+    // And the first-person lights' and their slots' records' (slice L6).
+    assert!(
+        text.contains("implement native-lights:native_lights_first_person"),
+        "{text}"
+    );
+    assert!(
+        text.contains("implement native-lights:native_lights_first_person_records"),
+        "{text}"
+    );
     for point in [
+        "FIRST_PERSON_LIGHTS",
+        "FIRST_PERSON_LIGHT_RECORDS",
         "RENDER_LIGHT_PASSES",
         "RENDER_DYNAMIC_LIGHTS",
         "SCENE_ITEMS",

@@ -650,7 +650,7 @@ pub(super) fn install(b: &mut Builder) {
                         mem,
                         list,
                         layer,
-                        frame_scene::GroupSite::Light,
+                        frame_scene::GroupSite::FirstPerson,
                         &built.sorted(),
                     );
                     if built.count() != 0
