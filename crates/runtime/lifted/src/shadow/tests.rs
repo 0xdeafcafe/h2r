@@ -231,6 +231,32 @@ fn checks_count_and_the_live_call_still_runs() {
 }
 
 #[test]
+fn compare_only_samples_copies_and_leaves_the_live_call_to_the_guest() {
+    let s = registry();
+    let g = live();
+    let c = entry();
+    let mut invocations = 0;
+    let mut candidate = |cpu: &mut CpuAbi, view: &mut Guest| {
+        invocations += 1;
+        port(invocations, 1, 0)(cpu, view)
+    };
+
+    s.compare_only("test.inc", &c, &g, CODE, tick, &mut candidate);
+    assert_eq!(s.status().calls, 0);
+    s.enable(&["test.inc".into()], Some(2), None).unwrap();
+    for _ in 0..3 {
+        s.compare_only("test.inc", &c, &g, CODE, tick, &mut candidate);
+        assert_eq!(word(&g, OUT), 0);
+        assert_eq!(c, entry());
+    }
+    assert_eq!(invocations, 2);
+    let st = s.status();
+    assert_eq!((st.calls, st.checked, st.matched, st.mismatched), (3, 2, 1, 1));
+    let m = &st.mismatches[0];
+    assert_eq!((m.call, m.tick, m.diff.kind), (3, Some(7), "memory"));
+}
+
+#[test]
 fn every_samples_calls() {
     let s = registry();
     s.enable(&["all".into()], Some(3), None).unwrap();
