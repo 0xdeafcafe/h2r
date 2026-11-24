@@ -401,7 +401,9 @@ fn a_kind_with_no_builder_stops_by_name() {
             Kind::Model,
             Kind::Sound,
             Kind::Data,
-            Kind::Hud
+            Kind::Hud,
+            Kind::Screens,
+            Kind::ScreenEdits,
         ]
     );
 }

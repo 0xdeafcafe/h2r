@@ -4,7 +4,7 @@ fn store() -> Arc<Store> {
     Arc::new(Store::defaults(&DEFS))
 }
 
-/// The page's doc: `assets/ui/screens/clankers.yaml`.
+/// The page's doc: `content/ui/screens/clankers.yaml`.
 fn doc() -> Arc<crate::ui_kit::data::ScreenDoc> {
     crate::ui_kit::data::require(SCREEN).unwrap_or_else(|e| panic!("{e}"))
 }

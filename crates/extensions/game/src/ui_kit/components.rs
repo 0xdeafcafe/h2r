@@ -1,7 +1,7 @@
 //! The design system (docs/game/ui-builder.md "The design system"): the
 //! pieces our screens are built from. Their tokens and presets (colours,
 //! fonts by role, spacing, each component's font, colour and
-//! justification) are `assets/ui/design.yaml` ([`crate::ui_kit::data`]);
+//! justification) are `content/ui/design.yaml` ([`crate::ui_kit::data`]);
 //! this module puts them together.
 //!
 //! - [`Screen`]: a screen of any kind (docs/game/ui-builder.md "Screen
@@ -117,7 +117,7 @@ pub mod legend {
     }
 
     /// Whether `text` is a legend as the design system writes it
-    /// (`assets/ui/design.yaml`, `legend`): each prompt's glyphs
+    /// (`content/ui/design.yaml`, `legend`): each prompt's glyphs
     /// `glyph_gap` spaces apart, one space, its words in capitals, prompts
     /// `prompt_gap` spaces apart. `Err` says what is off.
     pub fn well_formed(text: &str, glyph_gap: usize, prompt_gap: usize) -> Result<(), String> {

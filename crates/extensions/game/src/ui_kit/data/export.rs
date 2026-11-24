@@ -1,7 +1,7 @@
 //! The converter (`h2 ui export-yaml`): every screen of
 //! `crate::ui_kit::screens::NAMES` in every state, read off the specs its
-//! Rust builds, written as `assets/ui/screens/<name>.yaml`, and
-//! `assets/ui/design.yaml` grown by what the screens use
+//! Rust builds, written as `content/ui/screens/<name>.yaml`, and
+//! `content/ui/design.yaml` grown by what the screens use
 //! (docs/game/ui-builder.md "Screens in YAML").
 //!
 //! - A widget whose style (font, colour, justification) matches a preset of

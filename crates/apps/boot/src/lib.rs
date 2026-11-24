@@ -608,16 +608,6 @@ fn run_configured(
         campaign_cards::CardRewrite::new(cards, s.cards.clone())
             .map(|r| r.with_cache(&opts.data_root))
     });
-    // Our screens as real `wgit` tags in the maps the game reads them from,
-    // after the cards (it rebuilds whatever mainmenu it is handed), cached
-    // on the host (docs/game/ui-in-maps.md).
-    let ui_screens = match ui_kit::inject::ScreensRewrite::baked() {
-        Ok(r) => Some(r.with_cache(&opts.data_root)),
-        Err(e) => {
-            eprintln!("ui screens: not added to the maps: {e}");
-            None
-        }
-    };
     // Every font gets the bot mark's gear (docs/game/bots.md, "Clanker appearance and Live player options"), after
     // the icon sets.
     #[cfg(feature = "desktop-runtime")]
@@ -641,7 +631,7 @@ fn run_configured(
     };
     let rewrites = Some(vfs::Chain(
         vfs::Chain(
-            vfs::Chain(vfs::Chain(fonts, cards), ui_screens),
+            vfs::Chain(fonts, cards),
             content_packages.rewrite,
         ),
         superbounce_font::Capture,

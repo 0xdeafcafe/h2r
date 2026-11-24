@@ -1,5 +1,5 @@
 //! A screen doc written back as its file: the canonical form the files in
-//! `assets/ui/screens/` are in, so a load and a save with no edit gives the
+//! `content/ui/screens/` are in, so a load and a save with no edit gives the
 //! same bytes (docs/game/ui-builder.md "Screens in YAML").
 //!
 //! The form: keys in [`super::ScreenDoc`]'s order, two-space indents, a

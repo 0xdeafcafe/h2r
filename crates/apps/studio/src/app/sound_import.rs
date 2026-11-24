@@ -1,5 +1,5 @@
 //! `import.sound`: a WAV file as a `sound` item of a local package
-//! (docs/editor/studio-redesign.md, "Sounds"). The file is copied into the
+//! (docs/editor/studio-redesign.md, "The sound editor"). The file is copied into the
 //! package unchanged; the package's build resamples it, encodes it as Xbox
 //! ADPCM and writes the `snd!` and its gestalt rows
 //! (`workspace::import`), so what is checked here is what the build will
@@ -101,6 +101,7 @@ pub fn import_sound(
     written.push(target);
     manifest.items.push(Item {
         kind: ItemKind::Sound,
+        inputs: Vec::new(),
         source: Some(source.clone()),
         tag: Some(tag.clone()),
         maps: Maps::default(),
@@ -112,6 +113,7 @@ pub fn import_sound(
         written.push(path);
         manifest.items.push(Item {
             kind: ItemKind::Data,
+            inputs: Vec::new(),
             source: Some(side.clone()),
             tag: None,
             maps: Maps::default(),

@@ -118,6 +118,8 @@ serde_json.workspace = true
 perf = { path = "../../tools/perf", optional = true }
 
 [features]
+# Invented UI map templates for the package parity tests.
+ui-fixture = []
 default = ["gpu", "movie-playback", "local-io", "test-maps", "rules"]
 desktop-runtime = ["render-bridge/native-render", "recomp/desktop-runtime"]
 gpu = ["desktop-runtime", "gfx/gpu", "d3d/gpu", "agent/render-overrides", "dep:wgpu", "dep:native-render", "dep:shaders", "dep:hot-render"]

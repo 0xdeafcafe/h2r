@@ -3,7 +3,7 @@
 //! rect or a text by widget id, sent to the screen's sink.
 //!
 //! - [`ours`]: our screens, whose presentation is `ScreenDoc`s
-//!   (`assets/ui/screens/<name>.yaml`, `boot::ui_kit::data`), saved into
+//!   (`content/ui/screens/<name>.yaml`, `boot::ui_kit::data`), saved into
 //!   the checkout the editor was started from.
 //! - [`retail`]: the disc's screens, `wgit` tags of `mainmenu.map`, edited
 //!   through the map's tag document and saved with the map. [`retail_tag`]

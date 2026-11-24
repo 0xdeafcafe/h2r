@@ -7,7 +7,8 @@
 //!   `mode` and `hlmt`), `sound` (a WAV clip a game feature plays, or with a
 //!   `tag` a `snd!` and its gestalt rows: [`import`]), `data`
 //!   (a file a game feature reads) and `hud` (a HUD kit YAML, read by the
-//!   game's install; [`huds`] lists a set's). A package's `[[item]]` names
+//!   game's install; [`huds`] lists a set's), `screens` and `screen-edits`
+//!   (UI screens and changes to the map's screens). A package's `[[item]]` names
 //!   one by its `kind`.
 //! - [`build`]: an ordered list of [`Loaded`] packages applied to a map's
 //!   [`map::build::TagSet`] for one [`Target`]. A tag path added twice stops
@@ -39,6 +40,7 @@ mod model;
 mod onto;
 mod rewrite;
 mod sound;
+mod screens;
 mod tagitem;
 mod unpin;
 
@@ -48,6 +50,8 @@ mod import_tests;
 mod pogo_tests;
 #[cfg(test)]
 mod rewrite_tests;
+#[cfg(test)]
+mod screen_tests;
 #[cfg(test)]
 mod tests;
 

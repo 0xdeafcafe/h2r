@@ -977,7 +977,7 @@ too.
 The per-game Halo 1 or Halo 2 choices (`h1_options::OptionRow`: a
 two-choice setting, its label and what each choice means). On the
 multiplayer page the rows are `setting:` rows of its doc,
-`assets/ui/screens/h1-options.yaml`; on the campaign's Skulls page they
+`content/ui/screens/h1-options.yaml`; on the campaign's Skulls page they
 are the skulls page's rows. Adding an option is a setting in
 `setting_defs` (choices 1 Halo 1, 2 Halo 2), an `OptionRow`, a row of
 the doc for a multiplayer option, and a switch in `h1_options::switch`.

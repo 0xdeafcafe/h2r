@@ -174,7 +174,7 @@ fn text(id: &str, rect: [i16; 4], justify: Justify, value: String) -> Widget {
             text: value,
             font: 1,
             justify,
-            // The design system's white (assets/ui/design.yaml).
+            // The design system's white (content/ui/design.yaml).
             colour: [255, 255, 255],
         },
     }

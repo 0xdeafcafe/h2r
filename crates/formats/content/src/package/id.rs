@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, fmt, str::FromStr};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Value, json};
 
-use super::manifest::{Manifest, Maps, PACKAGE_FORMAT};
+use super::manifest::{Item, Manifest, Maps, PACKAGE_FORMAT};
 use crate::{
     Sha256,
     hash::{BadHex, parse_hex32, write_hex},
@@ -14,7 +14,8 @@ use crate::{
 ///
 /// The identity is the manifest without its display fields (`name`,
 /// `description`, `image`) and without `[credit]`, and with each item's
-/// `source` replaced by the SHA-256 of that file from the [`Lock`]:
+/// `source` replaced by the SHA-256 of that file from the [`Lock`].
+/// Additional `inputs` are stored as a mapping from path to hash:
 ///
 /// ```json
 /// {"after":[..],"features":[..],"format":1,"id":"pogo",
@@ -78,7 +79,7 @@ impl Lock {
         manifest
             .items
             .iter()
-            .filter_map(|i| i.source.as_deref())
+            .flat_map(Item::files)
             .find(|s| !self.files.contains_key(*s))
     }
 }
@@ -113,6 +114,19 @@ impl PackageId {
                     .get(source)
                     .ok_or_else(|| IdError::MissingHash(source.clone()))?;
                 o.insert("source".into(), Value::String(hash.to_string()));
+            }
+            if !item.inputs.is_empty() {
+                let hashes = item
+                    .inputs
+                    .iter()
+                    .map(|path| {
+                        lock.files
+                            .get(path)
+                            .map(|hash| (path, hash.to_string()))
+                            .ok_or_else(|| IdError::MissingHash(path.clone()))
+                    })
+                    .collect::<Result<BTreeMap<_, _>, _>>()?;
+                o.insert("inputs".into(), json!(hashes));
             }
             if let Some(tag) = &item.tag {
                 o.insert("tag".into(), Value::String(tag.clone()));

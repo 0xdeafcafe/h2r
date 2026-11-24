@@ -730,7 +730,7 @@ Setup dialog's own window and slot, as before, not the dialogs' window):
 ## The settings dialog
 
 Every settings page of ours is one component, `ui_kit::settings`, built
-from its doc (`assets/ui/screens/<name>.yaml`, `layout: settings`) and
+from its doc (`content/ui/screens/<name>.yaml`, `layout: settings`) and
 the doc's `settings:` block. It keeps one rule:
 
 - **Top:** static per screen. The icon, the name and a line about the
@@ -1317,16 +1317,16 @@ The preview draws them the same way (`view::scroll_arrows`, widgets
 
 ## Screens in YAML
 
-A screen's presentation is data in `assets/ui/`; its Rust is behaviour
+A screen's presentation is data in `content/ui/`; its Rust is behaviour
 (`crate::ui_kit::data`):
 
-- `assets/ui/design.yaml` is the design system: the palette (named
+- `content/ui/design.yaml` is the design system: the palette (named
   colours), fonts by role (`title`, `legend`, `body`, `cell`,
   `row_controls`, `row_default`), spacing (row heights, the dialog body's
   top, the code cells' gaps), alphas (an unfocused row's text, a dimmed
   frame), the legend's format, and every component's preset (role, font,
   colour, justification, place, variants and specimen page).
-- `assets/ui/screens/<name>.yaml` is one screen of
+- `content/ui/screens/<name>.yaml` is one screen of
   `ui_kit::screens::NAMES`: `screen`, `kind` (`list`, `dialog`,
   `code_entry`, `picker`, `hud`), `layout` (a list's `controls`,
   `level_select` or `moved`; a dialog's `settings` or `large`), `backing`
@@ -1350,7 +1350,7 @@ A doc that names what doesn't exist (a component, a glyph, a layout for
 its kind, an opener, a slot that isn't closed, a value row's current value
 past its values, an icon, a setting) or breaks a settings dialog's rules
 is a `DataError` naming the file and the field
-(`assets/ui/screens/t.yaml widgets.title.component: ...`), never a quiet
+(`content/ui/screens/t.yaml widgets.title.component: ...`), never a quiet
 fallback; a screen without a doc is one too (`data::require`). The tests
 load every doc, so a bad one fails them by name.
 
@@ -1368,7 +1368,7 @@ equivalence test (`data::tests::each_state_drawn_from_its_doc_is_the_view_rust_d
 draws each state of each screen from its Rust alone and with its doc laid
 over (`data::present`), and the two views must be equal.
 
-**The converter.** `h2 ui export-yaml [--out assets/ui]`
+**The converter.** `h2 ui export-yaml [--out content/ui]`
 (`data::export::export`) builds every screen in every state, reads its
 presentation off the specs, and writes `screens/<name>.yaml` and
 `design.yaml`, starting from the `design.yaml` already there. A style
@@ -1515,7 +1515,7 @@ alone. Where that data lives depends on the screen.
              ┌─────────────────────┴──────────────────────┐
              ▼                                            ▼
   ours: ScreenDoc fields                    retail: tag fields of the open
-  (assets/ui/screens/<name>.yaml)           mainmenu map (App::tags writes)
+  (content/ui/screens/<name>.yaml)           mainmenu map (App::tags writes)
   text, at, size by widget id               rect, top_left, anchor by widget id
              │                                            │
   with_screens(edited docs) ─▶ View          RetailPlaces ─▶ Disc::retail_view,
@@ -1523,7 +1523,7 @@ alone. Where that data lives depends on the screen.
              ▼                                            ▼
         layout and content checks run on the edited view; ui.render shows it
              │                                            │
-  Save: to_yaml into <checkout>/assets/      Save: the map's own save
+  Save: to_yaml into <checkout>/content/      Save: the map's own save
   ui/screens/<name>.yaml (live-reloaded)     (patches with the user's map)
 ```
 
@@ -1533,7 +1533,7 @@ is a rect: the shown rect plus the step. The tool picks the sink from the
 pick:
 
 - **Our screens** (`edit::ours`). Presentation lives in
-  `assets/ui/screens/<name>.yaml`, one `ScreenDoc` per screen
+  `content/ui/screens/<name>.yaml`, one `ScreenDoc` per screen
   (`ui_kit::data`). The sink holds the edited docs, the docs as last loaded
   or saved, and an undo stack of whole-doc snapshots. A rect sets the
   widget's `at` (its top-left, `[left, top]`) and `size` (`[width,
@@ -1579,11 +1579,11 @@ nudges merges into one step, and so does typing in an inspector field
 (`merge`).
 
 **Saving.** Ours write `data::to_yaml(doc)` to
-`<checkout>/assets/ui/screens/<name>.yaml` for every edited screen. The
-checkout is the one the editor was started from: the first folder at or
-above the working directory, then above the executable, that has
-`assets/ui/screens`. With none, Save is refused. The game bakes those
-files when it is built, so a saved edit is in the next build. The editor
+`<checkout>/content/ui/screens/<name>.yaml` for every edited screen. The
+editor finds the first checkout at or above the working directory, then
+above the executable, that has `content/ui/package.toml`. Save requires
+the screen to be listed in that package's `screens` inputs. The game
+bakes the package when it is built. The editor
 polls that folder (once a second) and reloads a file that changed on disk
 when its screen has no unsaved edits. A screen with unsaved edits keeps
 them, and the tool says the file changed. Retail edits save with the map
@@ -1592,8 +1592,8 @@ them, and the tool says the file changed. Retail edits save with the map
 **Shipping a retail edit.** A retail edit saved with the map is the
 user's alone, since the map is disc-derived. `ui.export_edits {path,
 screen?}` writes the open map's retail edits as retail edit files, one
-per edited screen pane, and a file in `assets/ui/retail-edits/` is applied
-to every user's map at boot ([ui-in-maps.md](ui-in-maps.md), "Retail
+per edited screen pane. A `screen-edits` item in `content/ui/package.toml`
+applies the named file to the user's map at boot ([ui-in-maps.md](ui-in-maps.md), "Retail
 edits as data").
 
 **Checks on the edited view.** `UiScreens::draw_native` makes the view

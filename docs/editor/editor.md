@@ -1562,7 +1562,7 @@ UI; `ui/ui_screens.rs` draws it.
   drag, resize, nudge and retype widgets on the picture
   (`ui/ui_screens/edit.rs`), with a **Selected** section and a widget
   list in the inspector. Our screens' edits change their
-  `assets/ui/screens/<name>.yaml` docs (`edit::ours`, saved into the
+  `content/ui/screens/<name>.yaml` docs (`edit::ours`, saved into the
   checkout and reloaded when the files change on disk); a retail
   screen's are tag writes on the open `mainmenu` map (`edit::retail`,
   `App::tags`), saved with the map. A retail pick is drawn with its

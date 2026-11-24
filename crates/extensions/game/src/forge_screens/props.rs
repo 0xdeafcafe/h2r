@@ -1,6 +1,6 @@
 //! The Properties page's rows from its doc (docs/game/
 //! forge-map-variants-ui.md, "The Properties page"): each `props:` row of
-//! `assets/ui/screens/forge.properties.yaml` is for some kinds of thing,
+//! `content/ui/screens/forge.properties.yaml` is for some kinds of thing,
 //! names a property and says what A does. [`rows`] binds them to one
 //! thing: the rows of its kind, each showing the value the thing holds. A
 //! property the thing does not have (its block lacks the field, or the

@@ -1,5 +1,5 @@
 //! Importing a WAV as a `snd!`: what the `sound` builder writes for an item
-//! with a `tag` (docs/editor/studio-redesign.md, "Sounds").
+//! with a `tag` (docs/editor/studio-redesign.md, "The build").
 //!
 //! A clip of any rate is resampled to the nearest rate the `snd!`'s format
 //! field names that is not below it ([`target_rate`]: 22,050, 32,000 or

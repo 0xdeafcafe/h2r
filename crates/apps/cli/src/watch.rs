@@ -46,7 +46,7 @@ containing the current directory). Once the files have been quiet for
 merge, rebase or cherry-pick), it looks at what changed:
   rules scripts      reloaded into the running game (rules.reload)
   web/               the live web app rebuilt (with --live-local)
-  crates/, assets/   h2 rebuilt in the checkout (cargo build --release -p cli),
+  crates/, assets/, content/   h2 rebuilt in the checkout (cargo build --release -p cli),
                      and the game code generated again when the new h2 says so
   docs, tests        nothing
 A rebuild shows \"Update ready\" in the game window: F5 restarts into it,
@@ -129,7 +129,7 @@ const IMAGE_PREFIXES: &[&str] = &[
 ];
 
 /// What `cargo build -p cli` reads beyond the generator.
-const HOST_PREFIXES: &[&str] = &["crates/", "assets/", ".cargo/"];
+const HOST_PREFIXES: &[&str] = &["crates/", "assets/", "content/", ".cargo/"];
 const HOST_FILES: &[&str] = &["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"];
 
 /// The web app's tests, benchmarks and fixtures.

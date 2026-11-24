@@ -3,9 +3,9 @@
 //! boot, Studio and Live all read.
 //!
 //! - [`Manifest`]: `package.toml`, parsed and validated.
-//! - [`Lock`]: `package.lock`, the SHA-256 of each source file.
+//! - [`Lock`]: `package.lock`, the SHA-256 of each source and its inputs.
 //! - [`PackageId`]: the SHA-256 of the manifest's identity with each source
-//!   replaced by its file hash; display fields and credit are outside it.
+//!   replaced by its file hash and additional inputs paired with their hashes.
 //! - [`Set`]: the packages of one game in load order, from `requires`,
 //!   `after` and the user's `set.toml` ([`SetFile`]).
 //!

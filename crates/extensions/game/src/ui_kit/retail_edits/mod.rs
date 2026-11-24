@@ -4,9 +4,8 @@
 //! A change to a retail screen (a block moved, hidden or copied, a string
 //! ID named) is ours to ship, and the screen's `wgit` is the user's. So the
 //! change is kept as a list of edits in a YAML file under
-//! `assets/ui/retail-edits/` ([`DIR`]), and [`apply`] makes them in the
-//! user's map at boot, in the same `vfs::Rewrite` that adds our screens
-//! (`inject::ScreensRewrite`). A file names the screen tag, the map, one
+//! `content/ui/retail-edits/` ([`DIR`]), and [`apply`] makes them in the
+//! user's map at boot through the package builder. A file names the screen tag, the map, one
 //! pane and the edits in order:
 //!
 //! ```yaml
@@ -34,7 +33,6 @@
 use std::fmt;
 use std::str::FromStr;
 
-use content::{Hasher, Sha256};
 use serde::{Deserialize, Serialize};
 
 pub mod apply;
@@ -47,7 +45,7 @@ pub use apply::{Applied, Edited, apply_all};
 pub use diff::{Diff, PaneBytes, diff_pane};
 
 /// Where the files are, from the checkout's root.
-pub const DIR: &str = "assets/ui/retail-edits";
+pub const DIR: &str = "content/ui/retail-edits";
 
 /// Where a hidden block is parked: off screen, where the disc keeps its
 /// own spare blocks and neither the game nor the editor's picture draws
@@ -252,7 +250,7 @@ fn default_map() -> String {
 pub struct EditFile {
     /// The screen's tag path (`ui\screens\...`), as the map names it.
     pub screen: String,
-    /// The map's name: one of the maps `inject::rewrite::MAPS` serves.
+    /// The map's name: one of the maps `inject::MAPS` serves.
     #[serde(default = "default_map")]
     pub map: String,
     #[serde(default)]
@@ -288,11 +286,11 @@ impl EditFile {
                 self.screen
             ));
         }
-        if !crate::ui_kit::inject::rewrite::MAPS.contains(&self.map.as_str()) {
+        if !crate::ui_kit::inject::MAPS.contains(&self.map.as_str()) {
             return Err(format!(
-                "map: {:?} is not a map the rewrite serves ({})",
+                "map: {:?} is not a map the UI package serves ({})",
                 self.map,
-                crate::ui_kit::inject::rewrite::MAPS.join(", ")
+                crate::ui_kit::inject::MAPS.join(", ")
             ));
         }
         if self.edits.is_empty() {
@@ -423,61 +421,5 @@ pub fn file_name(screen: &str, pane: usize) -> String {
     match pane {
         0 => format!("{stem}.yaml"),
         n => format!("{stem}.pane{n}.yaml"),
-    }
-}
-
-/// The files, by name (the file's stem) and text.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Edits {
-    pub files: Vec<(String, String)>,
-}
-
-impl Edits {
-    /// The files baked into this build (`assets/ui/retail-edits/*.yaml`,
-    /// listed by the build script).
-    pub fn baked() -> Edits {
-        Edits {
-            files: crate::ui_kit::data::baked::RETAIL_EDITS
-                .iter()
-                .map(|(n, t)| ((*n).into(), (*t).into()))
-                .collect(),
-        }
-    }
-
-    /// Every file parsed and checked, in name order, or every file's
-    /// error.
-    pub fn parse(&self) -> Result<Vec<(String, EditFile)>, String> {
-        let mut files: Vec<&(String, String)> = self.files.iter().collect();
-        files.sort();
-        let mut ok = Vec::new();
-        let mut errors = Vec::new();
-        for (name, text) in files {
-            match parse(name, text) {
-                Ok(f) => ok.push((name.clone(), f)),
-                Err(e) => errors.push(e),
-            }
-        }
-        if errors.is_empty() {
-            Ok(ok)
-        } else {
-            Err(errors.join("; "))
-        }
-    }
-
-    /// The files' digest: every name and text, in name order.
-    pub fn hash(&self) -> Sha256 {
-        let mut h = Hasher::default();
-        let field = |h: &mut Hasher, b: &[u8]| {
-            h.update(&(b.len() as u64).to_le_bytes());
-            h.update(b);
-        };
-        field(&mut h, b"retail-edits");
-        let mut files: Vec<&(String, String)> = self.files.iter().collect();
-        files.sort();
-        for (name, text) in files {
-            field(&mut h, name.as_bytes());
-            field(&mut h, text.as_bytes());
-        }
-        h.finish()
     }
 }

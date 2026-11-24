@@ -1,0 +1,91 @@
+[package]
+format = 1
+id = "ui"
+name = "UI Screens"
+description = "Screen designs and edits to the game's menus."
+
+[[item]]
+kind = "screen-edits"
+source = "retail-edits/pregame_lobby.yaml"
+maps = ["mainmenu"]
+
+[[item]]
+kind = "screens"
+source = "design.yaml"
+maps = ["mainmenu", "shared", "single_player_shared"]
+inputs = [
+    "screens/account.yaml",
+    "screens/browser.filters.yaml",
+    "screens/campaigns.yaml",
+    "screens/clanker_player_options.yaml",
+    "screens/clankers.yaml",
+    "screens/coop.friends.yaml",
+    "screens/coop.join.yaml",
+    "screens/coop.yaml",
+    "screens/design.art.yaml",
+    "screens/design.body.yaml",
+    "screens/design.cells.yaml",
+    "screens/design.description.yaml",
+    "screens/design.focus.yaml",
+    "screens/design.legend.yaml",
+    "screens/design.panel-text.yaml",
+    "screens/design.picker.yaml",
+    "screens/design.row.action.yaml",
+    "screens/design.row.disabled.yaml",
+    "screens/design.row.info.yaml",
+    "screens/design.row.pick-inline.yaml",
+    "screens/design.row.setting.yaml",
+    "screens/design.row.text.yaml",
+    "screens/design.row.value-column.yaml",
+    "screens/design.row.value-inline.yaml",
+    "screens/design.title.yaml",
+    "screens/firefight.yaml",
+    "screens/forge.controls.yaml",
+    "screens/forge.hud.yaml",
+    "screens/forge.link.yaml",
+    "screens/forge.menu.yaml",
+    "screens/forge.objects.yaml",
+    "screens/forge.options.yaml",
+    "screens/forge.palette.yaml",
+    "screens/forge.properties.yaml",
+    "screens/forge.question.yaml",
+    "screens/forge.settings.yaml",
+    "screens/forge.tools.yaml",
+    "screens/h1-options.yaml",
+    "screens/kit.choices.yaml",
+    "screens/kit.dialog.large.yaml",
+    "screens/kit.dialog.yaml",
+    "screens/kit.example.yaml",
+    "screens/kit.picker.forge-map.yaml",
+    "screens/kit.picker.game.yaml",
+    "screens/kit.picker.mode.yaml",
+    "screens/kit.picker.yaml",
+    "screens/lab.running.yaml",
+    "screens/lab.takeover.alongside.yaml",
+    "screens/lab.takeover.yaml",
+    "screens/layout.code-entry.yaml",
+    "screens/layout.dialog.large.yaml",
+    "screens/layout.dialog.message.yaml",
+    "screens/layout.dialog.over-screen.yaml",
+    "screens/layout.dialog.settings.yaml",
+    "screens/layout.hud.yaml",
+    "screens/layout.list.description.yaml",
+    "screens/layout.list.level-select.yaml",
+    "screens/layout.list.panel-edge.yaml",
+    "screens/layout.list.texts.yaml",
+    "screens/layout.list.yaml",
+    "screens/layout.picker.yaml",
+    "screens/mods.detail.yaml",
+    "screens/mods.pack.yaml",
+    "screens/mods.yaml",
+    "screens/signin-code.yaml",
+    "screens/skulls.h1.yaml",
+    "screens/skulls.mp.yaml",
+    "screens/skulls.yaml",
+    "screens/theater.film.yaml",
+    "screens/theater.films.yaml",
+    "screens/theater.pause-menu.yaml",
+    "screens/theater.playback.yaml",
+    "screens/variant-more-options.yaml",
+    "screens/variant-quick.yaml",
+]

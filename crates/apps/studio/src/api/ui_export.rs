@@ -8,7 +8,7 @@
 //! as loaded and as edited, and writes the edits between them as an edit
 //! file (`boot::ui_kit::retail_edits`, `diff_pane`): our own numbers and
 //! names, which the game applies at boot. So a concept made in the editor
-//! becomes a file under `assets/ui/retail-edits/`.
+//! becomes a file under `content/ui/retail-edits/`.
 
 use std::path::PathBuf;
 
@@ -28,7 +28,7 @@ pub struct UiExport;
 
 const METHODS: &[MethodDef] = &[MethodDef {
     name: m::UI_EXPORT_EDITS,
-    summary: "Write the open map's retail screen edits (moves, hidden and copied blocks, string IDs set by name) as retail edit files, one per edited screen pane, into the directory path (assets/ui/retail-edits in a checkout ships them); screen limits it to one tag. What the format cannot hold is listed in skipped",
+    summary: "Write the open map's retail screen edits (moves, hidden and copied blocks, string IDs set by name) as retail edit files, one per edited screen pane, into the directory path (list shipped files as screen-edits items in content/ui/package.toml); screen limits it to one tag. What the format cannot hold is listed in skipped",
     params: r#"{"path":"string","screen?":"string"}"#,
     result: r#"{"map":"string","written":"[{path,screen,pane,edits}]","skipped":"[string]"}"#,
     example: r#"{"path":"$OUT/retail-edits"}"#,

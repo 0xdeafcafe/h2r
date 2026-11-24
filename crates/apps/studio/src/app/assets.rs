@@ -615,6 +615,7 @@ pub fn copy(
         .map_err(|e| Failed(format!("{}: {e}", file.display())))?;
     manifest.items.push(Item {
         kind: ItemKind::Tag,
+        inputs: Vec::new(),
         source: Some(source.clone()),
         tag: Some(new_path.clone()),
         maps: Maps::default(),

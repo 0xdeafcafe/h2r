@@ -4,7 +4,7 @@
 //!
 //! **The page** is the shared settings dialog
 //! (docs/game/ui-builder.md "The settings dialog") from
-//! `assets/ui/screens/variant-quick.yaml`: Quick Options' own panel, the
+//! `content/ui/screens/variant-quick.yaml`: Quick Options' own panel, the
 //! variant's name in the header (`settings.name: "{variant}"`), five row
 //! slots bound `quick.0` to `quick.4` and the focused row's help under
 //! the rows. Its Rust is its bindings ([`page`]): a slot is the script's

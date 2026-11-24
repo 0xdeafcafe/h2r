@@ -123,6 +123,11 @@ to = "perf"
 until = "the sampler is a hook boot installs: sampling.rs reaches the profiler behind `perf`, and agent_glue answers profile.sample.* with it"
 
 [[exception]]
+from = "workspace"
+to = "game"
+until = "the screen document parser, layout resolver and tag generator can be shared without constructing a game UI sample (docs/editor/studio-redesign.md, PK5)"
+
+[[exception]]
 from = "host-data"
 to = "firefight-kit"
 until = "a host bundle's Firefight kits are built by `h2 host bundle` in cli and handed to host-data as bytes: bundle/kits.rs calls firefight_kit::build_package behind the `firefight` feature"
