@@ -535,8 +535,12 @@ pub struct Visit {
 
 impl Visit {
     /// A new visit for controller `port`: the draft starts empty.
-    pub fn open(&self, port: u32, avail: Avail, rules: Vec<game_types::Listed>, base: Option<GameVariant>) {
-        let maps = catalogue().for_variant(lobby_start::mode(), base.as_ref());
+    pub fn open(&self, port: u32, mut avail: Avail, rules: Vec<game_types::Listed>, base: Option<GameVariant>) {
+        let mode = map_select::variant_mode(lobby_start::mode(), base.as_ref());
+        let maps = catalogue().for_variant(mode, base.as_ref());
+        if base.is_some() && avail.map.is_some() {
+            avail.map = opening(mode, &maps);
+        }
         self.port.store(port, Ordering::SeqCst);
         *lock(&self.state) = VisitState {
             maps,
