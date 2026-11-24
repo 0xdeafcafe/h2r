@@ -115,7 +115,7 @@ struct Step {
     shadow_open: bool,
     /// The structure's portal graph for the Rust visibility, decoded once.
     visibility: scene_extract::visibility::GraphCache,
-    display_visibility_factor: Option<f32>,
+    visibility_lens: VisibilityLens,
 }
 
 static STEP: Mutex<Option<Step>> = Mutex::new(None);
@@ -158,6 +158,26 @@ static POST_EFFECTS: AtomicU64 = AtomicU64::new(0);
 /// Post callees' calls with no `render_screen_effects` of their view in
 /// the scene.
 static POST_UNPLACED: AtomicU64 = AtomicU64::new(0);
+/// Rerun the portal flood with the display lens. The baseline has to match
+/// the guest so a difference in the flood cannot resubmit a retail draw.
+fn display_additions(
+    mem: &Ro<'_>, gather: &frame_scene::scene::ClusterGather, camera: Camera,
+    factor: f32, cache: &mut scene_extract::visibility::GraphCache,
+) -> Option<frame_scene::DisplayVisibility> {
+    if gather.mode != 0 || gather.source != frame_scene::VisibilitySource::Rust {
+        return None;
+    }
+    let display = native_render::camera::display_camera(camera, factor);
+    let mut visible = scene_extract::visibility::compute(
+        mem, &display, cache, crate::native_map_work::generation(),
+    ).ok()?;
+    visible.clusters.retain(|id| gather.visible.binary_search(id).is_err());
+    visible.objects.retain(|id| gather.objects.binary_search(id).is_err());
+    (!visible.clusters.is_empty() || !visible.objects.is_empty()).then_some(frame_scene::DisplayVisibility {
+        clusters: visible.clusters, objects: visible.objects,
+    })
+}
+
 /// The Rust visibility beside the guest's (docs/graphics/native-visibility.md):
 /// game views compared, equal, differing (and by what), declined by
 /// reason, taken, and the time spent.
@@ -244,12 +264,19 @@ fn with_step<R>(f: impl FnOnce(&mut Step) -> R) -> R {
     f(step.get_or_insert_with(Step::default))
 }
 
-/// Set at view entry, using the same horizontal correction as the display
-/// projection. Only a wider display needs supplemental geometry.
-pub fn set_display_visibility_factor(factor: f32) {
-    with_step(|step| {
-        step.display_visibility_factor = (factor > 0.0 && factor < 1.0).then_some(factor);
-    });
+/// Horizontal lens used by the view's portal flood and object planes.
+#[derive(Clone, Copy, Default)]
+pub enum VisibilityLens {
+    #[default]
+    Retail,
+    /// Bounds applied in the single-copy guest frustum builder.
+    Guest(f32),
+    /// Extra visible space on the exact-mode display copy.
+    Display(f32),
+}
+
+pub fn set_visibility_lens(lens: VisibilityLens) {
+    with_step(|step| step.visibility_lens = lens);
 }
 
 fn tick(m: &Ro<'_>) -> u32 {
@@ -366,25 +393,15 @@ fn open_kind_at_layer(mem: &dyn GuestMemory, kind: ViewKind, layer_hook: bool) -
                 .and_then(|()| {
                     if kind == ViewKind::Game && let Some(gather) = extract::cluster_gather(&m) {
                         let lens = view_record_arm(&m, &camera, key);
-                        let gather = visibility_arm(&m, &lens, key, &mut step.visibility, gather);
-                        if let Some(factor) = step.display_visibility_factor
-                            && gather.mode == 0
-                            && gather.source == frame_scene::VisibilitySource::Rust
+                        let guest_lens = match step.visibility_lens {
+                            VisibilityLens::Guest(factor) => native_render::camera::display_camera(lens, factor),
+                            _ => lens,
+                        };
+                        let gather = visibility_arm(&m, &guest_lens, key, &mut step.visibility, gather);
+                        if let VisibilityLens::Display(factor) = step.visibility_lens
+                            && let Some(extra) = display_additions(&m, &gather, lens, factor, &mut step.visibility)
                         {
-                            let display = native_render::camera::display_camera(lens, factor);
-                            if let Ok(mut visible) = scene_extract::visibility::compute(
-                                &m, &display, &mut step.visibility, crate::native_map_work::generation(),
-                            ) {
-                                // Both lists in a Rust-owned gather are sorted. Keep
-                                // the reference pass's geometry in its original order.
-                                visible.clusters.retain(|id| gather.visible.binary_search(id).is_err());
-                                visible.objects.retain(|id| gather.objects.binary_search(id).is_err());
-                                if !visible.clusters.is_empty() || !visible.objects.is_empty() {
-                                    step.builder.set_display_visibility(frame_scene::DisplayVisibility {
-                                        clusters: visible.clusters, objects: visible.objects,
-                                    })?;
-                                }
-                            }
+                            step.builder.set_display_visibility(extra)?;
                         }
                         step.builder.set_cluster_gather(gather)?;
                     }
@@ -1136,6 +1153,7 @@ fn reset_timeline(why: Cut) {
             UNSEALED.fetch_add(1, Ordering::Relaxed);
         }
         step.builder.discard(why);
+        step.visibility_lens = VisibilityLens::Retail;
         step.tick = None;
         SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
         LAST.lock().unwrap_or_else(|e| e.into_inner()).take();

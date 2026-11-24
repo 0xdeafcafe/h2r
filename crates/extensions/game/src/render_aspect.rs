@@ -486,7 +486,14 @@ impl Feature for RenderAspect {
                     lens.store(factor.to_bits(), Ordering::Relaxed);
                     sink.set_projection_factor(factor);
                     #[cfg(feature = "desktop-runtime")]
-                    render_bridge::scene_step::set_display_visibility_factor(if single_copy { 1.0 } else { factor });
+                    {
+                        use render_bridge::scene_step::{VisibilityLens, set_visibility_lens};
+                        set_visibility_lens(if !single_copy && factor < 1.0 {
+                            VisibilityLens::Display(factor)
+                        } else {
+                            VisibilityLens::Retail
+                        });
+                    }
                 })
                 // Reads this view's guest memory and tells the sink, as the
                 // UI-fit hooks below do (all context-only).
@@ -503,6 +510,10 @@ impl Feature for RenderAspect {
                         let factor = f32::from_bits(view_lens.load(Ordering::Relaxed));
                         if let Some(rect) = display_frustum_rect(&mut *mem, c.cpu.ecx, c.cpu.esi, factor) {
                             c.cpu.ecx = rect;
+                            #[cfg(feature = "desktop-runtime")]
+                            render_bridge::scene_step::set_visibility_lens(
+                                render_bridge::scene_step::VisibilityLens::Guest(factor),
+                            );
                         }
                     }
                     Ok(Flow::Continue)
