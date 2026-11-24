@@ -27,6 +27,14 @@ pub fn baked() -> (Vec<workspace::Loaded>, Vec<String>) {
     workspace::baked(baked::BAKED)
 }
 
+/// Build just the baked UI package for `h2 ui inject`.
+pub fn ui_rewrite(data_root: &Path) -> Result<PackageRewrite, String> {
+    let (loaded, problems) = baked();
+    let ui = loaded.into_iter().find(|p| p.package.name() == "ui")
+        .ok_or_else(|| format!("the baked UI package is unavailable: {}", problems.join("; ")))?;
+    Ok(PackageRewrite::new(vec![ui]).with_cache(data_root))
+}
+
 /// The boot's set and its rewrite.
 pub struct Packages {
     pub set: Arc<GameSet>,

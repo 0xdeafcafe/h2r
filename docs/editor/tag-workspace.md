@@ -133,7 +133,7 @@ field paths as `tag.set` (`tags::defs`, `tags::schema`). An edit whose
 path no longer resolves, or whose `was` no longer matches after a
 re-extraction, is reported with the tag and line and the build stops:
 no edit is dropped quietly. Files in Git hold our own numbers and names
-only, as `assets/ui/retail-edits/` does for screens
+only, as `content/ui/retail-edits/` does for screens
 ([ui-in-maps.md](../game/ui-in-maps.md), "Retail edits as data").
 
 Studio's document stays what it is, an open map with a journal and

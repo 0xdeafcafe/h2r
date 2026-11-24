@@ -26,7 +26,7 @@ fn the_design_system_parses_and_names_what_it_uses() {
 #[test]
 fn every_screen_has_its_doc_and_every_doc_a_screen() {
     let missing: Vec<&str> = NAMES.iter().copied().filter(|n| screen(n).is_none()).collect();
-    assert!(missing.is_empty(), "no doc in assets/ui/screens for {missing:?}");
+    assert!(missing.is_empty(), "no doc in content/ui/screens for {missing:?}");
     let extra: Vec<&str> = names().into_iter().filter(|n| !NAMES.contains(n)).collect();
     assert!(extra.is_empty(), "docs of no screen: {extra:?}");
 }
@@ -150,7 +150,7 @@ fn a_reloaded_doc_shows_until_the_reloads_are_forgotten() {
 
 #[test]
 fn a_doc_path_is_its_screen_under_assets_ui() {
-    assert_eq!(path_of("coop.join"), std::path::Path::new("assets/ui/screens/coop.join.yaml"));
+    assert_eq!(path_of("coop.join"), std::path::Path::new("content/ui/screens/coop.join.yaml"));
 }
 
 /// The tokens are the numbers the kit's geometry draws with: the Controls

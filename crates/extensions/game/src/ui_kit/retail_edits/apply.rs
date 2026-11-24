@@ -124,12 +124,7 @@ fn apply_file(
     } else {
         tree_of(relocator, id)?
     };
-    let mut lines = Vec::with_capacity(file.edits.len());
-    for (i, e) in file.edits.iter().enumerate() {
-        let line = edit(&mut work, file.pane, e)
-            .map_err(|why| format!("edits[{i}] ({} {}): {why}", e.op(), e.block()))?;
-        lines.push(line);
-    }
+    let lines = edit_block(&mut work, file)?;
     if !unpinned.contains(&id) {
         unpin(set, relocator, id)?;
         unpinned.insert(id);
@@ -137,6 +132,17 @@ fn apply_file(
     set.tag_mut(id)
         .ok_or("the screen tag left the set")?
         .payload = TagPayload::Built(work);
+    Ok(lines)
+}
+
+/// Apply a file to a working copy of a screen's block tree.
+pub fn edit_block(root: &mut Block, file: &EditFile) -> Result<Vec<String>, String> {
+    let mut lines = Vec::with_capacity(file.edits.len());
+    for (i, e) in file.edits.iter().enumerate() {
+        let line = edit(root, file.pane, e)
+            .map_err(|why| format!("edits[{i}] ({} {}): {why}", e.op(), e.block()))?;
+        lines.push(line);
+    }
     Ok(lines)
 }
 

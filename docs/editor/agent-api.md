@@ -206,7 +206,7 @@ action and return its index as `ran`. An out-of-range index returns
 
 ## The design system
 
-`ui.components` returns the catalogue of `assets/ui/design.yaml`
+`ui.components` returns the catalogue of `content/ui/design.yaml`
 (`ui_kit::components::catalogue_json`): `components` (each with `name`,
 `role`, `font`, `colour`, `justify`, `variants` and its `specimen` page),
 `layouts` (each `layout.<name>` page with its `kind` and `states`),
@@ -1590,7 +1590,7 @@ system's rules. Each finding has `code` `ui.<check>.<kind>`
 `ui.content.missing_glyph`), `severity` (`error`; `warning` for the
 design system's `consistency`; `note` for a layout note), `message`,
 `target` (`screen/state`), `path` (the screen's file under
-`assets/ui/screens/`), and the `screen`, `state`, `check`, `kind` and
+`content/ui/screens/`), and the `screen`, `state`, `check`, `kind` and
 widget `ids`. A state that does not draw is `ui.draw`. `checked` lists
 each state with its count and the checks the source could not run
 (`skipped`). `aspect` is `4:3`, `16:9` or `both` (the default); the
@@ -1791,7 +1791,7 @@ the window and the API stay one path.
 - **UI screen edits.** `api/ui_edit.rs` registers `UiEdit` for the
   `ui.*` edit methods over `Action::UiEdit` (`app/ui_screens/edit.rs`),
   the same edits the canvas makes. Our screens' edits change their YAML
-  docs and `ui.save` writes them into the checkout; a retail screen's
+  docs and `ui.save` writes the sources named in the checkout’s UI package; a retail screen's
   are tag writes on the open `mainmenu` map, undone with it and saved by
   `doc.save`. Each edit answers with the widget and the checks' findings
   on the edited view; `ui.animate` writes a transition's filmstrip PNG
@@ -1823,7 +1823,8 @@ the window and the API stay one path.
   skipped}`; `skipped` names each change the format cannot hold. No map
   open is `NO_DOCUMENT`, and a `screen` the map lacks `INVALID_PARAMS`.
   The files are ours, so `path` may be the checkout's
-  `assets/ui/retail-edits/`, where the game applies them at boot
+  `content/ui/retail-edits/`. The game applies files named by
+  `screen-edits` items in the UI package at boot
   (docs/game/ui-in-maps.md "Retail edits as data").
 - **HUDs (studio-hud, landed).** `api/hud.rs`: `hud.list` opens a map of
   the source (or a package) in the HUD tool and lists its `nhdt` tags

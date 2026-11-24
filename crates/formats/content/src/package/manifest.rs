@@ -75,12 +75,24 @@ pub struct Item {
     /// A file in the package. Every kind but `kit` names one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// Additional files the builder reads alongside its source.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<String>,
     /// The tag path the item adds, for the kinds that add one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
     /// Where it is added. Omitted is `all`.
     #[serde(default)]
     pub maps: Maps,
+}
+
+impl Item {
+    pub(super) fn files(&self) -> impl Iterator<Item = &str> {
+        self.source
+            .as_deref()
+            .into_iter()
+            .chain(self.inputs.iter().map(String::as_str))
+    }
 }
 
 /// The builder an item names: the closed list of "Contents".
@@ -307,11 +319,11 @@ impl Manifest {
         self.items.iter().any(|i| i.kind.scope() == ItemScope::Sim)
     }
 
-    /// Every file the manifest names: item sources, then the image.
+    /// Every file the manifest names: item sources and their inputs, then the image.
     pub fn files(&self) -> impl Iterator<Item = &str> {
         self.items
             .iter()
-            .filter_map(|i| i.source.as_deref())
+            .flat_map(Item::files)
             .chain(self.package.image.as_deref())
     }
 

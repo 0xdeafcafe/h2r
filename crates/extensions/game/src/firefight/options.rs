@@ -11,7 +11,7 @@
 //!
 //! **The page** is the shared settings dialog ([`page`],
 //! `crate::ui_kit::settings`), declared by
-//! `assets/ui/screens/firefight.yaml`: six rows over [`DEFS`] on the
+//! `content/ui/screens/firefight.yaml`: six rows over [`DEFS`] on the
 //! lobby's own settings dialog, Quick Options, as the Clankers page is
 //! (`crate::clankers`). A row opens the value picker on A, and left and
 //! right step through the choices as a shortcut. No row is a "< All >"
@@ -167,7 +167,7 @@ pub static DEFS: [&Setting; 6] = [&ENABLED, &WAVE_SET, &TEAMS, &DIFFICULTY, &LIV
 
 /// The Firefight page over `store`: the shared settings dialog
 /// (`crate::ui_kit::settings`) its doc declares,
-/// `assets/ui/screens/firefight.yaml`: its header, its six rows over
+/// `content/ui/screens/firefight.yaml`: its header, its six rows over
 /// [`DEFS`], their help and picker copy, and the Game Setup row's text
 /// and help (`settings.caller`).
 pub fn page(store: Arc<Store>) -> KitScreen {

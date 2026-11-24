@@ -26,6 +26,7 @@ use tags::repo::TagKey;
 
 use crate::builders::{self, BUILDERS_VERSION};
 use crate::hash::tag_hash;
+use crate::unpin::MapUnpin;
 pub use pogo_kit::kit::Shading;
 
 /// A package with the bytes of the files its manifest names, by path in the
@@ -178,12 +179,30 @@ pub(crate) struct State {
     /// The package that last set a field.
     fields: BTreeMap<(TagKey, String), String>,
     report: Report,
+    // After a builder pins a snapshot of the current map, later items
+    // relocate against that snapshot instead of the original map.
+    snapshot_unpin: Option<Result<MapUnpin, String>>,
+}
+
+impl State {
+    fn reader<'a>(&'a self, original: Option<&'a dyn Unpin>) -> Result<&'a dyn Unpin, String> {
+        match &self.snapshot_unpin {
+            Some(Ok(reader)) => Ok(reader),
+            Some(Err(why)) => Err(why.clone()),
+            None => original.ok_or_else(|| PINNED.into()),
+        }
+    }
 }
 
 impl Cx<'_> {
     /// `group` and `path` as the map names the tag (backslashes).
     pub fn key(group: FourCC, path: &str) -> TagKey {
         TagKey::new(group, path.replace('/', "\\"))
+    }
+
+    pub(crate) fn pin_snapshot(&mut self, set: TagSet, unpin: Result<MapUnpin, String>) {
+        *self.set = set;
+        self.state.snapshot_unpin = Some(unpin);
     }
 
     pub fn find(&self, key: &TagKey) -> Option<TagId> {
@@ -252,10 +271,7 @@ impl Cx<'_> {
     pub fn read_block(&self, id: TagId) -> Result<Block, String> {
         match self.set.tag(id).map(|t| &t.payload) {
             Some(TagPayload::Built(b)) => Ok(b.clone()),
-            Some(TagPayload::Pinned { .. }) => match &self.unpin {
-                Some(u) => u.tree(id),
-                None => Err(PINNED.into()),
-            },
+            Some(TagPayload::Pinned { .. }) => self.state.reader(self.unpin)?.tree(id),
             Some(TagPayload::Empty) => Err("the tag has no data".into()),
             Some(TagPayload::Alias { .. }) => Err("the tag shares another tag's bytes".into()),
             None => Err("the tag is not in the map".into()),
@@ -269,10 +285,7 @@ impl Cx<'_> {
             self.set.tag(id).map(|t| &t.payload),
             Some(TagPayload::Pinned { .. })
         ) {
-            match &self.unpin {
-                Some(u) => u.relocate(self.set, id)?,
-                None => return Err(PINNED.into()),
-            }
+            self.state.reader(self.unpin)?.relocate(self.set, id)?;
         }
         let entry = self.set.tag_mut(id).ok_or("the tag left the map")?;
         entry.payload = TagPayload::Built(block);

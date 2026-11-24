@@ -1,7 +1,7 @@
 //! Our screens' presentation as data (docs/game/ui-builder.md "Screens in
-//! YAML"): the design system's tokens in `assets/ui/design.yaml`
+//! YAML"): the design system's tokens in `content/ui/design.yaml`
 //! ([`DesignDoc`]) and each screen's widgets, texts, places and components
-//! in `assets/ui/screens/<name>.yaml` ([`ScreenDoc`]). Rust keeps
+//! in `content/ui/screens/<name>.yaml` ([`ScreenDoc`]). Rust keeps
 //! behaviour; it reads these, baked in at compile time ([`baked`]), and
 //! the editor swaps a doc it has edited in ([`reload`]).
 //!
@@ -61,7 +61,7 @@ impl std::error::Error for DataError {}
 
 // ---- the design system ----
 
-/// `assets/ui/design.yaml`: the palette, the fonts by role, spacing, the
+/// `content/ui/design.yaml`: the palette, the fonts by role, spacing, the
 /// legend's format and every component's preset.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -230,7 +230,7 @@ impl DesignDoc {
 
 // ---- a screen ----
 
-/// `assets/ui/screens/<name>.yaml`: one screen's presentation. Keys are in
+/// `content/ui/screens/<name>.yaml`: one screen's presentation. Keys are in
 /// the order [`to_yaml`] writes them.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -917,23 +917,44 @@ pub const FROM_DOC: [&str; 11] = [
 
 // ---- where they are, and the loaded set ----
 
-/// A screen doc's path in a checkout: `assets/ui/screens/<name>.yaml`.
+/// A screen doc's path in a checkout: `content/ui/screens/<name>.yaml`.
 pub fn path_of(screen: &str) -> PathBuf {
-    PathBuf::from("assets/ui/screens").join(format!("{screen}.yaml"))
+    PathBuf::from("content/ui/screens").join(format!("{screen}.yaml"))
 }
 /// `design.yaml`'s path in a checkout.
 pub fn design_path() -> PathBuf {
-    PathBuf::from("assets/ui/design.yaml")
+    PathBuf::from("content/ui/design.yaml")
 }
 
-static DESIGN: LazyLock<DesignDoc> = LazyLock::new(|| {
-    DesignDoc::parse(baked::DESIGN).unwrap_or_else(|e| panic!("{e}"))
-});
+static DESIGN: LazyLock<Arc<DesignDoc>> =
+    LazyLock::new(|| Arc::new(DesignDoc::parse(baked::DESIGN).unwrap_or_else(|e| panic!("{e}"))));
 
 /// The baked design system. Panics with the named error when the baked
 /// file is wrong (the tests load it first).
 pub fn design() -> &'static DesignDoc {
     &DESIGN
+}
+
+thread_local! {
+    static SCOPED_DESIGN: std::cell::RefCell<Option<Arc<DesignDoc>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The design used by a screen sample during a package build, or the baked design.
+pub(crate) fn active_design() -> impl std::ops::Deref<Target = DesignDoc> {
+    SCOPED_DESIGN.with(|d| d.borrow().clone()).unwrap_or_else(|| Arc::clone(&DESIGN))
+}
+
+/// Runs a screen sample with the design supplied by the package.
+pub(crate) fn with_design<R>(design: DesignDoc, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<Arc<DesignDoc>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            SCOPED_DESIGN.with(|d| *d.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(SCOPED_DESIGN.with(|d| d.borrow_mut().replace(Arc::new(design))));
+    f()
 }
 
 /// How many times the baked files have been parsed: once a process.

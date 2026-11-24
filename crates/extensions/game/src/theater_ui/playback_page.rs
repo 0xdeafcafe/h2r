@@ -20,7 +20,7 @@ use crate::ui_kit::{
 const BAR: [i16; 4] = [-105, -272, -208, 272];
 const RAIL: [i16; 4] = [-144, -252, -154, 252];
 const PANEL: [u8; 4] = [12, 23, 39, 238];
-// The design system's white and hint blue (assets/ui/design.yaml).
+// The design system's white and hint blue (content/ui/design.yaml).
 const BODY: [f32; 3] = [1.0, 1.0, 1.0];
 const MUTED: [f32; 3] = [0.678431, 0.764706, 0.847059];
 

@@ -3,7 +3,7 @@
 //! converted Halo 1 map; and the page it opens (`crate::h1_options::page`,
 //! docs/halo1/multiplayer.md "Halo 1 options"). The row's text and its
 //! Game Setup description are the page's caller (`settings.caller` in
-//! `assets/ui/screens/h1-options.yaml`), written from the page's own text
+//! `content/ui/screens/h1-options.yaml`), written from the page's own text
 //! slots, as the Clankers row's are.
 //!
 //! **The row.** The Game Setup dialog (screen 23, `squad_settings_dialog`)

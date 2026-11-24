@@ -1,6 +1,6 @@
 //! The consistency drive: every screen of
 //! [`crate::ui_kit::screens::NAMES`] in every named state, drawn without a
-//! disc, held to the design system in `assets/ui/design.yaml`
+//! disc, held to the design system in `content/ui/design.yaml`
 //! (docs/game/ui-builder.md "Consistency").
 //!
 //! The rules, each a finding's `rule`:

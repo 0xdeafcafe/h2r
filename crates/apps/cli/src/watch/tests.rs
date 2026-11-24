@@ -70,8 +70,8 @@ fn the_classifier_table() {
         ("crates/apps/cli/Cargo.toml", Host),
         ("crates/extensions/game/build.rs", Host),
         ("crates/rewrites/hud-kit-core/src/lib.rs", Host),
-        ("assets/ui/screens/settings.yaml", Host),
-        ("assets/ui/design.yaml", Host),
+        ("content/ui/screens/settings.yaml", Host),
+        ("content/ui/design.yaml", Host),
         ("Cargo.toml", Host),
         ("Cargo.lock", Host),
         ("rust-toolchain.toml", Host),
@@ -381,7 +381,7 @@ fn changes_during_a_build_merge_into_one_queued_build() {
         "crates/recompiler/emit/src/c.rs",
     ])));
     assert_eq!(a, vec![Action::Status(Some(info("Rebuilding h2\u{2026}")))]);
-    s.handle(Event::Changes(Plan::of(["assets/ui/design.yaml"])));
+    s.handle(Event::Changes(Plan::of(["content/ui/design.yaml"])));
     let a = s.handle(Event::Built(Ok(Some(build("local-1")))));
     assert!(matches!(&a[0], Action::StartBuild { id: 2, plan, .. } if plan.host && plan.image));
     let n = status_of(&a).unwrap().unwrap();

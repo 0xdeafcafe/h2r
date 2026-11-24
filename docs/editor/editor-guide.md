@@ -1366,7 +1366,7 @@ move, resize or retype its widgets.
     type, its text, its font, justification and colour, **Copy JSON**
     (the widget as the agent API gives it), **Revert widget**,
     **Revert screen** and **Save**. Our screens save into the checkout
-    the editor was started from (`assets/ui/screens/<name>.yaml`);
+    the editor was started from (`content/ui/screens/<name>.yaml`);
     outside a checkout Save is refused. When a file changes on disk the
     screen reloads it, unless you have unsaved edits to it, in which
     case it says so. A retail screen's edits are changes to your

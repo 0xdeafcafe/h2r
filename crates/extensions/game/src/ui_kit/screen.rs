@@ -6,7 +6,7 @@
 //!
 //! ```ignore
 //! const IDS: Family = ids::family("kit.example");
-//! // Title, legend, layout and labels: assets/ui/screens/kit.example.yaml.
+//! // Title, legend, layout and labels: content/ui/screens/kit.example.yaml.
 //! let s = KitScreen::new("kit-example", "kit.example", IDS)
 //!     .row(Row::value("Grunts", &["On", "Off"], get, set))
 //!     .row(Row::info("Status", status))
@@ -432,7 +432,7 @@ impl KitScreen {
     /// `feature` switches it (`features.<id>`), `name` is its screen in
     /// [`crate::ui_kit::screens::NAMES`] and what `Open` rows name, `ids`
     /// its family in [`crate::ui_kit::ids::FAMILIES`]. Its presentation is
-    /// its doc's, `assets/ui/screens/<name>.yaml` ([`KitScreen::from_doc`]).
+    /// its doc's, `content/ui/screens/<name>.yaml` ([`KitScreen::from_doc`]).
     /// Panics with the doc's named error when the screen has none or its
     /// doc can't be shown: the tests load every doc first.
     pub fn new(feature: &'static str, name: &'static str, ids: Family) -> Self {
@@ -492,7 +492,7 @@ impl KitScreen {
         if let Some(w) = doc.widget("description")
             && let Some(c) = &w.component
         {
-            let design = data::design();
+            let design = data::active_design();
             let preset = design.component(c)?;
             let (font, colour) = design.text_style(c)?;
             let [x, y] = w

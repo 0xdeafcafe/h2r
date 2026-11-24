@@ -1,7 +1,7 @@
 //! The Live browser's filter choices and their presentation. The retail
 //! browser still owns discovery and joining. Its filter page is the shared
 //! settings dialog (`crate::ui_kit::settings`) its doc declares,
-//! `assets/ui/screens/browser.filters.yaml`: a pick row per filter, bound
+//! `content/ui/screens/browser.filters.yaml`: a pick row per filter, bound
 //! here by name ([`bindings`]), and X CLEAR FILTERS. It is in the
 //! lobby-dialog window, leaving the higher dialogs window for each picker.
 

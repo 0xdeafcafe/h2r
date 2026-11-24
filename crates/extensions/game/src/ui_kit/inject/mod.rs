@@ -4,7 +4,7 @@
 //! (`ui\screens\h2recomp\<name>`), generated at boot from the user's own
 //! map and our docs, never kept in the repository:
 //!
-//! - [`plan`] reads each screen's doc (`assets/ui/screens/<name>.yaml`,
+//! - [`plan`] reads each screen's doc (`content/ui/screens/<name>.yaml`,
 //!   [`crate::ui_kit::data`]) and its sample ([`crate::ui_kit::screens::sample`]):
 //!   what kind of screen it is, which retail screen its tag is shaped
 //!   like, where its list goes and which animation tracks it plays;
@@ -12,14 +12,15 @@
 //!   `wgit` and adds the tags to a map through `map::build::TagSet`, with
 //!   the screens listed in the map's `wgtz` so the game finds them by id
 //!   like a retail screen;
-//! - [`rewrite`] serves the rebuilt maps through a `vfs::Rewrite`, kept on
-//!   the host keyed by the disc map's bytes and the docs.
+//! - The package build serves the rebuilt maps through the VFS.
 //!
 //! The tag is what `list_class::copy_tag` wrote into guest memory on each
 //! open, made once, in the map: the template's root, one pane with the
 //! template's other blocks, one list placed by the screen's layout, the
 //! frame art kept. Texts and pictures a class adds after the pane is built
 //! stay the class's (docs/game/ui-in-maps.md, "What is not in the tag").
+
+use std::collections::BTreeMap;
 
 use serde::Serialize;
 
@@ -28,14 +29,18 @@ use crate::ui_kit::data;
 use crate::ui_kit::screens::{self, NAMES};
 use crate::ui_kit::spec::ListPlace;
 
-pub mod rewrite;
 pub mod tag;
+
+#[cfg(any(test, feature = "ui-fixture"))]
+pub mod fixture;
 
 #[cfg(test)]
 mod tests;
 
-pub use rewrite::{Docs, Rebuilt, ScreensRewrite};
 pub use tag::{Added, add_screens};
+
+/// The maps whose interfaces hold the screens our UI opens by id.
+pub const MAPS: [&str; 3] = ["mainmenu", "shared", "single_player_shared"];
 
 /// The first of our screen ids. Retail's are below 0x400 (the highest read
 /// off the disc is 0xba and the in-game ones 200 to 240), and a screen id
@@ -164,6 +169,34 @@ pub fn entry(name: &str) -> Result<Entry, String> {
 /// Every screen's entry, in [`NAMES`] order.
 pub fn plan() -> Result<Vec<Entry>, String> {
     NAMES.iter().map(|n| entry(n)).collect()
+}
+
+/// The package's screens in the same order as the game's screen IDs.
+/// Design specimens without a screen ID are checked as docs and have no tag.
+pub fn package_plan(
+    design: data::DesignDoc,
+    docs: &BTreeMap<String, data::ScreenDoc>,
+) -> Result<Vec<Entry>, String> {
+    data::with_design(design, || {
+        data::with_screens(docs, || {
+            NAMES
+                .iter()
+                .filter(|name| docs.contains_key(**name))
+                .map(|name| {
+                    // The live sample assumes its presentation can make a
+                    // page. An invalid package should give a named build error.
+                    std::panic::catch_unwind(|| entry(name)).unwrap_or_else(|panic| {
+                        let why = panic
+                            .downcast_ref::<String>()
+                            .map(String::as_str)
+                            .or_else(|| panic.downcast_ref::<&str>().copied())
+                            .unwrap_or("the sample could not be made");
+                        Err(format!("{name}: {why}"))
+                    })
+                })
+                .collect()
+        })
+    })
 }
 
 /// The animation tracks a style asks for, as the class would ask at run

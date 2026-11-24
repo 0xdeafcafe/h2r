@@ -4294,8 +4294,13 @@ const UI_EDIT_SCREEN: &str = "kit.example";
 /// Points our screens' files at a temporary checkout, never the repo's.
 fn ui_edit_checkout(app: &mut App, t: &Temp) -> PathBuf {
     let checkout = t.path("checkout");
-    std::fs::create_dir_all(checkout.join(crate::app::ui_screens::edit::ours::SCREENS_DIR))
-        .unwrap();
+    use crate::app::ui_screens::edit::ours::{SCREENS_DIR, UI_MANIFEST};
+    std::fs::create_dir_all(checkout.join(SCREENS_DIR)).unwrap();
+    std::fs::write(
+        checkout.join(UI_MANIFEST),
+        include_str!("../../../../../content/ui/package.toml"),
+    )
+    .unwrap();
     app.ui_screens.edit.ours.set_checkout(Some(checkout.clone()));
     checkout
 }
@@ -4462,7 +4467,7 @@ fn ui_edits_refuse_rust_owned_widgets_and_bad_rects() {
 }
 
 #[test]
-fn ui_save_writes_the_yaml_into_the_checkout() {
+fn ui_save_writes_the_yaml_into_the_ui_package() {
     let t = Temp::new("uiedit-save");
     let (mut api, mut app, checkout) = ui_edit_app(&t);
     call(&mut api, &mut app, m::UI_SET_TEXT, json!({"id": "title", "text": "Saved by the API"}));

@@ -45,7 +45,7 @@ pub const PAGES: [&str; 29] = [
 
 /// Component `name`'s font and colour (a text component of design.yaml).
 fn style(name: &str) -> (i16, [f32; 3]) {
-    crate::ui_kit::data::design()
+    crate::ui_kit::data::active_design()
         .text_style(name)
         .unwrap_or_else(|e| panic!("{e}"))
 }
@@ -53,7 +53,7 @@ fn style(name: &str) -> (i16, [f32; 3]) {
 /// A description block of component `name` at its preset place, or at
 /// `rect` (`top, left, bottom, right`).
 fn block(name: &str, rect: Option<[i16; 4]>) -> TextBlock {
-    let d = crate::ui_kit::data::design();
+    let d = crate::ui_kit::data::active_design();
     let c = d.component(name).unwrap_or_else(|e| panic!("{e}"));
     let (font, colour) = style(name);
     let rect = rect.unwrap_or_else(|| {
@@ -71,7 +71,7 @@ fn block(name: &str, rect: Option<[i16; 4]>) -> TextBlock {
 /// A text of no row in component `component`'s style.
 fn text(id: &str, component: &str, rect: [i16; 4], s: &str) -> PaneText {
     let (font, colour) = style(component);
-    let right = crate::ui_kit::data::design()
+    let right = crate::ui_kit::data::active_design()
         .component(component)
         .is_ok_and(|c| c.justify() == Justify::Right);
     PaneText {

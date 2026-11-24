@@ -78,7 +78,7 @@ A screen is data a check can read. `ui_kit::spec::ScreenSpec` says what a screen
    a description per row, then the footer legend); `KitScreen::class` panics
    at install if the family is too small.
 2. **Declare it.** Its presentation is its doc,
-   `assets/ui/screens/<name>.yaml` ([ui-builder.md](ui-builder.md)
+   `content/ui/screens/<name>.yaml` ([ui-builder.md](ui-builder.md)
    "Screens in YAML"): the title, the legend, the kind and layout (the
    Controls list, the level select's, or a dialog on Quick Options or the
    large dialog over a named opener), the description block, whether it
@@ -133,7 +133,7 @@ A screen is data a check can read. `ui_kit::spec::ScreenSpec` says what a screen
    focused row's help under the rows:
 
    ```yaml
-   # assets/ui/screens/bots.yaml
+   # content/ui/screens/bots.yaml
    screen: bots
    kind: dialog
    layout: settings

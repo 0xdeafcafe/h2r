@@ -1,6 +1,6 @@
 //! The shared settings dialog (docs/game/ui-builder.md "The settings
 //! dialog"): one component for every settings page of ours, built from
-//! its doc, `assets/ui/screens/<name>.yaml`, with a `settings:` block.
+//! its doc, `content/ui/screens/<name>.yaml`, with a `settings:` block.
 //!
 //! The rule it keeps, by construction:
 //!
@@ -189,7 +189,7 @@ impl Bindings {
 /// Component `component` of `design.yaml` as a text block: its place,
 /// font and colour, with `animation`.
 pub fn block(component: &str, animation: u16) -> Result<TextBlock, DataError> {
-    let d = data::design();
+    let d = data::active_design();
     let c = d.component(component)?;
     let (font, colour) = d.text_style(component)?;
     let missing = || {

@@ -72,7 +72,7 @@ read them with
 [`ui.browser.filters`](../runtime/agent-api.md#ui-what-the-menus-show).
 
 The filter page is the shared settings dialog, `browser.filters`
-(`assets/ui/screens/browser.filters.yaml`; [ui-builder.md](../game/ui-builder.md)
+(`content/ui/screens/browser.filters.yaml`; [ui-builder.md](../game/ui-builder.md)
 "The settings dialog"): its rows' labels, helps and the X button are
 the doc's, each row's values a binding in
 `crates/extensions/game/src/custom_games/browser_filters.rs`. The

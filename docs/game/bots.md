@@ -6040,7 +6040,7 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
      The custom-game driver applies Aggression, Aim style and Taunts to
      existing seats as described in §7.
    - **The page** is the shared settings dialog, `clankers`
-     (`assets/ui/screens/clankers.yaml`; docs/game/ui-builder.md "The
+     (`content/ui/screens/clankers.yaml`; docs/game/ui-builder.md "The
      settings dialog"): eight `setting:` rows over the settings above, on
      the lobby's own settings dialog, Quick Options, inside and out:
      Quick Options' panel, header ("CLANKERS"), list (its `setting_lists`

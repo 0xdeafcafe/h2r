@@ -1,6 +1,6 @@
 //! The "our screens" sink (docs/game/ui-builder.md "Editing in the
 //! editor"): an edit of one of our screens sets a field of its
-//! `ScreenDoc` (`boot::ui_kit::data`, `assets/ui/screens/<name>.yaml`) by
+//! `ScreenDoc` (`boot::ui_kit::data`, `content/ui/screens/<name>.yaml`) by
 //! widget id: a widget's `text`, `at` and `size`, or a row's `text`. On a
 //! settings dialog the header's lines set its `settings:` block and the
 //! help under the rows sets the shown row's `help`
@@ -51,7 +51,10 @@ fn to_yaml(doc: &ScreenDoc) -> String {
 }
 
 /// Where the checkout keeps our screens' files.
-pub const SCREENS_DIR: &str = "assets/ui/screens";
+pub const SCREENS_DIR: &str = "content/ui/screens";
+
+/// The edit target for the project's screen sources.
+pub const UI_MANIFEST: &str = "content/ui/package.toml";
 
 /// Screen `screen`'s file in `checkout`.
 pub fn file_of(checkout: &Path, screen: &str) -> PathBuf {
@@ -60,7 +63,7 @@ pub fn file_of(checkout: &Path, screen: &str) -> PathBuf {
 
 /// The checkout the editor was started from: the first folder at or
 /// above the working directory, then above the executable, that has
-/// [`SCREENS_DIR`].
+/// [`UI_MANIFEST`].
 pub fn find_checkout() -> Option<PathBuf> {
     let starts = [
         std::env::current_dir().ok(),
@@ -69,7 +72,7 @@ pub fn find_checkout() -> Option<PathBuf> {
     starts.into_iter().flatten().find_map(|start| {
         start
             .ancestors()
-            .find(|a| a.join(SCREENS_DIR).is_dir())
+            .find(|a| a.join(UI_MANIFEST).is_file())
             .map(Path::to_path_buf)
     })
 }
@@ -550,7 +553,7 @@ impl Ours {
         self.changed.iter().cloned().collect()
     }
 
-    /// Writes every edited screen's file into the checkout; the paths.
+    /// Writes each edited screen into the checkout's UI package.
     pub fn save(&mut self) -> Result<Vec<PathBuf>, String> {
         let dirty = self.dirty_screens();
         if dirty.is_empty() {
@@ -558,19 +561,31 @@ impl Ours {
         }
         let Some(checkout) = self.checkout() else {
             return Err(format!(
-                "refused: the editor was not started from an h2recomp checkout (no {SCREENS_DIR} \
+                "refused: the editor was not started from an h2recomp checkout (no {UI_MANIFEST} \
                  at or above the working directory or the executable), and our screens' files \
                  live there"
             ));
         };
+        let manifest_path = checkout.join(UI_MANIFEST);
+        let manifest = std::fs::read_to_string(&manifest_path)
+            .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+        let manifest = content::package::Manifest::from_toml(&manifest)
+            .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+        for screen in &dirty {
+            let source = format!("screens/{screen}.yaml");
+            if !manifest.items.iter().any(|item| {
+                item.kind == content::package::Kind::Screens && item.inputs.contains(&source)
+            }) {
+                return Err(format!("{source} is missing from {UI_MANIFEST}'s screens inputs"));
+            }
+        }
+
         let mut written = Vec::new();
         for screen in dirty {
             let doc = self.docs[&screen].clone();
             let path = file_of(&checkout, &screen);
-            if let Some(dir) = path.parent() {
-                std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-            }
-            std::fs::write(&path, to_yaml(&doc)).map_err(|e| format!("{}: {e}", path.display()))?;
+            content::store::write_atomic(&path, to_yaml(&doc).as_bytes())
+                .map_err(|e| format!("{}: {e}", path.display()))?;
             self.read.insert(screen.clone(), Self::mtime(&path));
             self.base.insert(screen.clone(), doc);
             self.changed.remove(&screen);
