@@ -30,6 +30,14 @@
 //! the tags the packages added and changed ([`check_tag_memory`]).
 //! [`trim`] keeps the folder under a cap, least recently used first,
 //! sparing the ids a caller names (the images saved films use).
+//!
+//! **Identity.** A level with nothing over it has for its [`LevelId`] its
+//! skeleton's hash and, from the store's catalogue
+//! (`tags::repo::catalogue`), every asset of its manifest by hash
+//! ([`level_assets`]): a join names the assets that differ without
+//! reading a tag. With packages over it the skeleton's hash stands for
+//! the base and the packages' ids for what they change, and no asset is
+//! named.
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -39,6 +47,7 @@ use content::package::MapScope;
 use content::{LevelId, LevelInputs, MapId, Sha256};
 use map::{CacheType, Map};
 use tags::repo::StoreFile;
+use tags::repo::catalogue::Catalogue;
 use tags::repo::skeleton::{Extent, Extents, Skeleton};
 
 use crate::build::{Loaded, Report, Target};
@@ -89,6 +98,9 @@ pub struct Level {
     /// Packages applied, in load order, and those the level already holds.
     pub packages: Vec<String>,
     pub held: Vec<String>,
+    /// The assets its id names by hash ([`level_assets`]): none for a
+    /// level with packages over it.
+    pub assets: Vec<(String, Sha256)>,
     /// What the build did, when this call built the image.
     pub report: Option<Report>,
 }
@@ -134,17 +146,68 @@ pub fn open_image(images: &Path, raw_root: &Path, id: &LevelId) -> Option<(Image
 }
 
 /// The [`LevelId`] of `level` over the base whose file is `base`, with
-/// `packages` laid over it in load order. The skeleton's SHA-256 stands for
-/// every asset the store gives the level; the packages' ids for what they
-/// add and change.
+/// `packages` laid over it in load order and no asset named by hash: the
+/// skeleton's SHA-256 stands for every asset the store gives the level,
+/// and the packages' ids for what they add and change.
 pub fn level_id(level: &str, base: Sha256, packages: &[Loaded]) -> LevelId {
+    level_id_of(level, base, packages, Vec::new())
+}
+
+/// [`level_id`] with `assets` in the identity: (key as
+/// `<group>:<path>`, asset hash).
+pub fn level_id_of(
+    level: &str,
+    base: Sha256,
+    packages: &[Loaded],
+    assets: Vec<(String, Sha256)>,
+) -> LevelId {
     LevelId::of(&LevelInputs {
         builders: BUILDERS_VERSION,
         level: level.to_ascii_lowercase(),
         skeleton: Some(base),
-        assets: Vec::new(),
+        assets,
         packages: packages.iter().map(|p| p.package.id).collect(),
     })
+}
+
+/// The assets a level with nothing over it reads, from the store's
+/// catalogue ([`assemble`]): every tag of its manifest as
+/// (`<group>:<path>`, asset hash), sorted by key. A store with no manifest
+/// for the level (a level of ours, built whole) names none. A manifest
+/// with no current catalogue is an error: the id would not be the one
+/// another machine makes from the same store.
+pub fn level_assets(
+    store: &Path,
+    stem: &str,
+    catalogue: Option<&Catalogue>,
+) -> Result<Vec<(String, Sha256)>, String> {
+    if !store.join("maps").join(format!("{stem}.txt")).is_file() {
+        return Ok(Vec::new());
+    }
+    let Some(c) = catalogue else {
+        return Err(err(
+            stem,
+            "the store has no catalogue (assets.idx); h2 build or workspace.extract writes it",
+        ));
+    };
+    if !c.is_current(store).unwrap_or(false) {
+        return Err(err(
+            stem,
+            "the store's catalogue (assets.idx) is stale; h2 build or workspace.extract rewrites it",
+        ));
+    }
+    c.of_map(stem)
+        .into_iter()
+        .map(|(k, h)| {
+            let hash = h
+                .parse()
+                .map_err(|e| err(stem, format!("the asset hash of {k}: {e}")))?;
+            Ok((
+                format!("{}:{}", tags::defs::fourcc_text(k.group), k.path),
+                hash,
+            ))
+        })
+        .collect()
 }
 
 /// The image of the store's level `level` (its map stem) under `packages`
@@ -155,6 +218,24 @@ pub fn assemble(
     images: &Path,
     packages: &[Loaded],
     level: &str,
+) -> Result<Level, String> {
+    let catalogue = match tags::repo::catalogue::read(store) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("store: {}: assets.idx does not read: {e}", store.display());
+            None
+        }
+    };
+    assemble_with(store, images, packages, level, catalogue.as_ref())
+}
+
+/// [`assemble`] with the store's catalogue read once for its levels.
+pub fn assemble_with(
+    store: &Path,
+    images: &Path,
+    packages: &[Loaded],
+    level: &str,
+    catalogue: Option<&Catalogue>,
 ) -> Result<Level, String> {
     let name = level.to_ascii_lowercase();
     let stem = find_stem(store, &name).ok_or_else(|| {
@@ -190,9 +271,12 @@ pub fn assemble(
             .map(|p| p.package.name().to_owned())
             .collect(),
         held,
+        assets: Vec::new(),
         report: None,
     };
     if applied.is_empty() {
+        level.assets = level_assets(store, &stem, catalogue)?;
+        level.id = level_id_of(&name, base, &[], level.assets.clone());
         level.map_id = Some(MapId::retail(&name, base));
         return Ok(level);
     }
@@ -458,14 +542,17 @@ pub fn trim(images: &Path, cap: u64, keep: &BTreeSet<LevelId>) -> Vec<LevelId> {
 /// game opens is [`assemble`]d once per boot, recorded in the
 /// [`Served`] map `packages.list` reads. A level that does not assemble is
 /// served as the store has it, named once on stderr and in its record.
-/// After a build the folder is [`trim`]med to [`DEFAULT_IMAGE_CAP`],
-/// sparing the images this boot serves.
+/// The store's catalogue is read once, at the first level. After a build
+/// the folder is [`trim`]med to [`DEFAULT_IMAGE_CAP`], sparing the images
+/// this boot serves.
 pub struct StoreLevels {
     store: PathBuf,
     images: PathBuf,
     packages: Vec<Loaded>,
     served: Served,
     done: BTreeMap<String, Option<vfs::store_map::LevelImage>>,
+    /// The store's catalogue: not read yet, read and absent, or read.
+    catalogue: Option<Option<Catalogue>>,
 }
 
 impl StoreLevels {
@@ -478,6 +565,7 @@ impl StoreLevels {
             packages,
             served,
             done: BTreeMap::new(),
+            catalogue: None,
         }
     }
 
@@ -493,7 +581,25 @@ impl vfs::store_map::Levels for StoreLevels {
         if let Some(done) = self.done.get(&key) {
             return Ok(done.clone());
         }
-        let result = assemble(&self.store, &self.images, &self.packages, &key);
+        if self.catalogue.is_none() {
+            self.catalogue = Some(match tags::repo::catalogue::read(&self.store) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!(
+                        "store: {}: assets.idx does not read: {e}",
+                        self.store.display()
+                    );
+                    None
+                }
+            });
+        }
+        let result = assemble_with(
+            &self.store,
+            &self.images,
+            &self.packages,
+            &key,
+            self.catalogue.as_ref().and_then(|c| c.as_ref()),
+        );
         let mut record = ServedMap::default();
         let out = match result {
             Ok(level) => {

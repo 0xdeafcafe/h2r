@@ -102,7 +102,7 @@ pub use convert::{
 pub use edit::{BlockLine, Op, SetLine, TagEdit, edits_text, parse_edits};
 pub use firefight_sets::sets as wave_sets;
 pub use game::{CACHE_DIR, Entry, GameSet, Listed, Off, Origin, PACKAGES_DIR, baked};
-pub use hash::tag_hash;
+pub use hash::{asset_hash, tag_hash};
 pub use hud::huds;
 pub use modes::{hopper_fragments, script_registry};
 pub use layer::Layered;
