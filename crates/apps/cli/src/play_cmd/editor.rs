@@ -7,6 +7,8 @@
 //! film and scripted input are refused here, before the disc is read.
 
 use anyhow::{Result, bail};
+use input::host::HostButton;
+use input::{GatedPad, PadGate};
 
 /// What a run started with `--editor` is told.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -54,9 +56,25 @@ pub fn check(a: Asked) -> Result<Option<EditorMode>> {
     Ok(Some(EditorMode { window: a.window }))
 }
 
+/// Editor mode's pad gate: Start never reaches the game, so the in-game
+/// pause menu cannot open. Start goes to the tool that holds the game
+/// (Studio pauses it). Every pad passes through it, the window's keyboard
+/// (Escape is Start) and `input.pad` included. It runs after the debug
+/// menu's gate (`InputManager::add_gate`).
+pub struct NoStart;
+
+impl PadGate for NoStart {
+    fn filter(&mut self, pads: &mut [GatedPad]) {
+        for p in pads {
+            p.pad.state.buttons.set(HostButton::Start, false);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use input::host::{HostPad, HostPadId};
 
     fn editor() -> Asked {
         Asked { editor: true, level: true, ..Asked::default() }
@@ -88,5 +106,37 @@ mod tests {
         assert!(film.contains("no film"), "{film}");
         let timeline = check(Asked { timeline: true, ..editor() }).unwrap_err().to_string();
         assert!(timeline.contains("--input-timeline"), "{timeline}");
+    }
+
+    fn pad(id: u64, held: &[HostButton]) -> GatedPad {
+        let mut pad = HostPad {
+            id: HostPadId(id),
+            name: "fake".into(),
+            state: Default::default(),
+            physical: false,
+            supports_rumble: false,
+        };
+        for b in held {
+            pad.state.buttons.set(*b, true);
+        }
+        GatedPad { key: (0, HostPadId(id)), pad }
+    }
+
+    #[test]
+    fn start_is_hidden_from_every_pad_and_the_rest_passes() {
+        let mut pads = [
+            pad(1, &[HostButton::Start, HostButton::South]),
+            pad(2, &[HostButton::Start]),
+            pad(3, &[HostButton::Back]),
+        ];
+        NoStart.filter(&mut pads);
+        for p in &pads {
+            assert!(!p.pad.state.buttons.contains(HostButton::Start));
+        }
+        assert!(pads[0].pad.state.buttons.contains(HostButton::South));
+        assert!(pads[2].pad.state.buttons.contains(HostButton::Back));
+        // Filtering again, with nothing held, changes nothing.
+        NoStart.filter(&mut pads);
+        assert!(pads[0].pad.state.buttons.contains(HostButton::South));
     }
 }

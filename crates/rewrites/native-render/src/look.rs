@@ -117,6 +117,10 @@ pub enum Refusal {
     EngineVertexConstant(u8),
     /// Something in the pass is animated.
     Animated,
+    /// An animated constant the sampler cannot apply
+    /// ([`crate::layer_pass::PassAnimation::baseline`]), by the
+    /// [`crate::layer_pass::LayerRefusal::name`] of its cause.
+    AnimationSample(&'static str),
     /// The pass's render states do not fit the native pass
     /// ([`crate::pass_state::pass_state`]).
     State(StateRefusal),
@@ -154,9 +158,28 @@ pub struct WorldPass {
 /// (an open, single-sided girder seen from behind then draws its back
 /// faces: the 43 px on 03a).
 pub fn layer3_pass(material: &Material) -> Result<WorldPass, Refusal> {
-    let look = layer3_look(material)?;
-    let imp = layer3_implementation(material).ok_or(Refusal::NoLayer3)?;
-    world_pass(look, imp, &material.inputs)
+    let (pass, imp) = layer3_selected(material)?;
+    world_pass(implementation_look(pass, imp)?, imp, &material.inputs)
+}
+
+/// [`layer3_pass`] for a pass whose constants animate: compiled from its
+/// registers at clock 0, with the animation each frame samples at the
+/// render clock (`properties` the instance's, `shad +0x3c`; the
+/// structure planner's sampler, [`crate::layer_pass::PassAnimation`]).
+/// A target the sampler cannot apply stays on the D3D path
+/// ([`Refusal::AnimationSample`]).
+pub fn layer3_pass_sampled(
+    material: &Material, properties: &[tags::shader::AnimatedProperty],
+) -> Result<(WorldPass, Option<crate::layer_pass::PassAnimation>), Refusal> {
+    let (pass, imp) = layer3_selected(material)?;
+    let (imp, animation) = sampled(imp, properties)?;
+    Ok((world_pass(implementation_look(pass, &imp)?, &imp, &material.inputs)?, animation))
+}
+
+fn sampled(
+    imp: &ResolvedImplementation, properties: &[tags::shader::AnimatedProperty],
+) -> Result<(ResolvedImplementation, Option<crate::layer_pass::PassAnimation>), Refusal> {
+    crate::layer_pass::PassAnimation::baseline(imp, properties, false, 0).map_err(|r| Refusal::AnimationSample(r.name()))
 }
 
 /// The lighting selector for a BSP without a matching first lightmap
@@ -167,13 +190,29 @@ pub fn layer3_pass(material: &Material) -> Result<WorldPass, Refusal> {
 pub fn unlit_bsp_pass(
     pass: &tags::material::SelectedImplementation, inputs: &EngineInputs, normalization: Option<TagId>,
 ) -> Result<WorldPass, Refusal> {
+    let imp = unlit_bsp_implementation(pass)?;
+    let look = look_with_engine(pass.pass, imp, normalization, None)?;
+    world_pass(look, imp, inputs)
+}
+
+/// [`unlit_bsp_pass`] for a pass whose constants animate, as
+/// [`layer3_pass_sampled`].
+pub fn unlit_bsp_pass_sampled(
+    pass: &tags::material::SelectedImplementation, inputs: &EngineInputs, normalization: Option<TagId>,
+    properties: &[tags::shader::AnimatedProperty],
+) -> Result<(WorldPass, Option<crate::layer_pass::PassAnimation>), Refusal> {
+    let (imp, animation) = sampled(unlit_bsp_implementation(pass)?, properties)?;
+    let look = look_with_engine(pass.pass, &imp, normalization, None)?;
+    Ok((world_pass(look, &imp, inputs)?, animation))
+}
+
+fn unlit_bsp_implementation(pass: &tags::material::SelectedImplementation) -> Result<&ResolvedImplementation, Refusal> {
     if pass.layer_passes != 1 { return Err(Refusal::Passes(pass.layer_passes)); }
     let imp = &pass.implementation;
     if imp.index != UNLIT_BSP_IMPLEMENTATION {
         return Err(Refusal::MissingImplementation(UNLIT_BSP_IMPLEMENTATION));
     }
-    let look = look_with_engine(pass.pass, imp, normalization, None)?;
-    world_pass(look, imp, inputs)
+    Ok(imp)
 }
 
 /// Record lighting selector when the BSP has no matching lightmap.
@@ -201,18 +240,17 @@ pub(crate) fn sets_state(states: &[tags::shader::RenderStateValue], which: gfx::
         .any(|s| gfx::state::RenderStateType::from_guest_index(&table, u32::from(s.state)) == Some(which))
 }
 
-/// The implementation [`layer3_look`] takes.
-fn layer3_implementation(material: &Material) -> Option<&ResolvedImplementation> {
-    let layer = material.layers.iter().find(|l| l.lod == 0 && l.layer == LIGHTMAP_LAYER)?;
-    let [pass] = layer.passes.as_slice() else { return None };
-    pass.implementations.iter().find(|i| samples_lightmap(i))
-}
-
 /// The layer-3 pass of `material` (first level of detail), or why not.
 /// The implementation is the first that samples the lightmap: the one the
 /// engine binds for a lightmapped section (S, the lightmap bind at
 /// `0x0004d40f`).
 pub fn layer3_look(material: &Material) -> Result<PassLook, Refusal> {
+    let (pass, imp) = layer3_selected(material)?;
+    implementation_look(pass, imp)
+}
+
+/// The pass and implementation [`layer3_look`] draws, or why none.
+fn layer3_selected(material: &Material) -> Result<(TagId, &ResolvedImplementation), Refusal> {
     let layer = material
         .layers
         .iter()
@@ -227,7 +265,7 @@ pub fn layer3_look(material: &Material) -> Result<PassLook, Refusal> {
         .iter()
         .find(|i| samples_lightmap(i))
         .ok_or(Refusal::NoLightmapImplementation)?;
-    implementation_look(pass.pass, imp)
+    Ok((pass.pass, imp))
 }
 
 /// One implementation of the pass `pass` as the native pass draws it, or
@@ -577,6 +615,28 @@ mod tests {
         let equal = opaque(implementation(0, true), &[(R::ZFunc, CompareFunc::Equal.xbox_value()), (R::ZWriteEnable, 0)]);
         let p = layer3_pass(&material(3, vec![vec![equal]])).unwrap();
         assert_eq!((p.state.depth_compare, p.state.depth_write), (wgpu::CompareFunction::Equal, false));
+    }
+
+    /// A layer-3 pass whose constants animate stays on the D3D path
+    /// without its properties, and compiles at clock 0 with them.
+    #[test]
+    fn an_animated_layer3_pass_compiles_with_its_animation() {
+        let (target, props) = crate::layer_pass::tests::animated_z();
+        let mut imp = opaque(implementation(0, true), &[]);
+        imp.animated = vec![target];
+        let m = material(3, vec![vec![imp]]);
+        assert_eq!(layer3_pass(&m), Err(Refusal::Animated));
+        assert_eq!(layer3_pass_sampled(&m, &[]).unwrap_err(), Refusal::AnimationSample("property"));
+        let (pass, animation) = layer3_pass_sampled(&m, &props).unwrap();
+        let animation = animation.expect("kept for the frame's clock");
+        let c18 = pass.look.vertex_constants.iter().find(|r| r.index == 18).unwrap();
+        assert_eq!(c18.value[2], 0.0, "clock 0");
+        let v = animation.sample(Some(11.0)).unwrap().vertex(&shaders::vsh::VertexUniforms::default());
+        assert_eq!(v.constants[18][2], 1.5);
+        let still = material(3, vec![vec![opaque(implementation(0, true), &[])]]);
+        let (pass, none) = layer3_pass_sampled(&still, &props).unwrap();
+        assert!(none.is_none());
+        assert_eq!(pass, layer3_pass(&still).unwrap());
     }
 
     /// An engine-driven alpha reference from the instance's scalar 21

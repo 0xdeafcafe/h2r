@@ -269,6 +269,9 @@ pub struct Play {
     /// The launched game, its log, and the spawn it waits for.
     child: Option<Child>,
     child_endpoint: Option<Endpoint>,
+    /// The game last paired that this editor did not start: where the
+    /// mirror returns when the panel follows `attached`.
+    attached_endpoint: Option<Endpoint>,
     /// The launched game's level and whether it runs in editor mode.
     own_game: Option<(String, bool)>,
     /// Identity of the editor's launch copy, including when it pairs again.
@@ -338,6 +341,7 @@ impl Play {
             paused: false,
             child: None,
             child_endpoint: None,
+            attached_endpoint: None,
             own_game: None,
             launched_copy: None,
             log_path: None,
@@ -626,6 +630,9 @@ impl Play {
         self.feedback.clear_moves();
         self.pair_source = pair::Source::Finder;
         self.paired_pid = self.pid_for(&endpoint);
+        if self.child_endpoint.as_ref() != Some(&endpoint) {
+            self.attached_endpoint = Some(endpoint.clone());
+        }
         if let Endpoint::Unix(path) = &endpoint {
             self.auto_tried.insert(path.clone());
             self.unpaired.allow(path, self.paired_pid);
@@ -684,14 +691,36 @@ impl Play {
 
     /// `game.start`: the game in editor mode on the open map, paired. It
     /// replaces a game this editor started before.
+    /// The panel shows it, and the mirror follows it.
     pub fn start_own(&mut self, app: &mut App) -> Result<(), String> {
         let launch = self.prepare_for(app, true)?;
-        self.run_launch(app, launch)
+        self.run_launch(app, launch)?;
+        self.follow(app, pair::PanelMode::Own);
+        Ok(())
     }
 
+    /// F5, the Play button and a reload's relaunch: the same start as
+    /// `game.start`.
     fn launch_copy(&mut self, app: &mut App) -> Result<(), String> {
-        let launch = self.prepare(app)?;
-        self.run_launch(app, launch)
+        self.start_own(app)
+    }
+
+    /// `game.mode`: the panel and the mirror follow `mode`. With one
+    /// link, the other game is left and paired again when the panel
+    /// switches back: the own game by its socket, an attached game by the
+    /// endpoint it was last paired at.
+    fn follow(&mut self, app: &mut App, mode: pair::PanelMode) {
+        app.pairing.panel = mode;
+        let own = self.child_endpoint.clone();
+        let want = match mode {
+            pair::PanelMode::Own => own.clone(),
+            pair::PanelMode::Attached => self.attached_endpoint.clone().filter(|e| Some(e) != own.as_ref()),
+        };
+        if let Some(endpoint) = want
+            && self.endpoint() != Some(&endpoint)
+        {
+            self.request_pair(app, endpoint, pair::Source::Finder);
+        }
     }
 
     /// The launch for the open map: writes the edited map to the scratch
@@ -814,6 +843,9 @@ impl Play {
 
     fn child_gone(&mut self, app: &mut App) {
         self.own_game = None;
+        if app.pairing.panel == pair::PanelMode::Own {
+            app.pairing.panel = pair::PanelMode::Attached;
+        }
         if let Some(ep) = self.child_endpoint.take() {
             self.finder.forget(&ep);
             if self.launched_copy.as_ref().is_some_and(|(game, _, _)| game == &ep) {
@@ -962,10 +994,12 @@ impl Play {
                     }
                 }
                 Request::Stop => self.stop_game(app),
-                Request::StartOwn => match self.start_own(app) {
-                    Ok(()) => app.pairing.panel = pair::PanelMode::Own,
-                    Err(why) => app.error(format!("Game: {why}")),
-                },
+                Request::StartOwn => {
+                    if let Err(why) = self.start_own(app) {
+                        app.error(format!("Game: {why}"));
+                    }
+                }
+                Request::Follow(mode) => self.follow(app, mode),
                 Request::Edit(true) => {
                     if let Err(why) = self.apply_edits(app, Apply::Send) {
                         app.error(why);

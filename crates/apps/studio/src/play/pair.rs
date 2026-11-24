@@ -227,6 +227,8 @@ pub enum Request {
     Stop,
     /// `game.start`: the own game, in editor mode, on the open map.
     StartOwn,
+    /// `game.mode`: the panel and the mirror follow this game.
+    Follow(PanelMode),
     Edit(bool),
     Pause,
     Resume,

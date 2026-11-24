@@ -6,7 +6,9 @@
 //! under a collapsed "Voice setup". Making a line is the app's
 //! ([`crate::app::announcer`], [`crate::app::voices`]); the agent API's
 //! `voice.say`, `voice.clone.say` and `voice.say_batch` make it the same
-//! way. View > Voices opens it.
+//! way. View > Voices opens it, as do Go to anything ("Open: Voices") and
+//! the sound editor's **New line in Voices**, which starts a row that
+//! replaces the sound in front (`App::voices_line_for`).
 //!
 //! A line the voice already said comes back at once from the cache. The
 //! batch says one row per frame, the row shown "running" while the model is
@@ -17,7 +19,7 @@ use dear_imgui_rs::{Condition, ItemHoveredFlags, TreeNodeFlags, Ui};
 use crate::app::App;
 use crate::app::announcer::{Playback, SayParams, Said};
 use crate::app::voice_batch::{Row, RowState};
-use crate::app::voices::{BuildParams, MIN_TRAIN_MINUTES};
+use crate::app::voices::{BuildParams, MIN_TRAIN_MINUTES, Show};
 use crate::theme::{self, icon};
 use crate::voice::dataset::{self, CHARACTERS};
 use crate::voice::sidecar::Backend;
@@ -40,6 +42,8 @@ pub struct AnnouncerUi {
     paste: String,
     /// The voice picker's search.
     voice_filter: String,
+    /// The search of a row's own voice picker.
+    row_filter: String,
     /// The target-sound picker's search, and the tags it lists (read when
     /// the picker first opens, so it is not read every frame).
     tag_filter: String,
@@ -64,6 +68,18 @@ fn clock(ms: u64) -> String {
 }
 
 pub fn window(ui: &Ui, app: &mut App, st: &mut AnnouncerUi, dialogs: bool) {
+    // Asked for by Go to anything or by a sound's editor
+    // (`app::voices::Show`): open, in front, and on the batch when a line
+    // for a game sound was started.
+    let asked = app.voices.show.take();
+    if let Some(show) = asked {
+        st.open = true;
+        if show == Show::Lines {
+            st.engine = Engine::Clone;
+            // The target picker's list is the shown map's: read it again.
+            st.tags = None;
+        }
+    }
     if !st.open {
         return;
     }
@@ -76,6 +92,9 @@ pub fn window(ui: &Ui, app: &mut App, st: &mut AnnouncerUi, dialogs: bool) {
                 st.open = false;
             }
         });
+    if asked.is_some() {
+        ui.set_window_focus(Some("###announcer"));
+    }
 }
 
 /// What a backend is called in the picker.
@@ -210,7 +229,6 @@ enum RowAction {
 
 /// The batch: one block per row.
 fn rows_view(ui: &Ui, app: &mut App, st: &mut AnnouncerUi) {
-    let default = app.voices.batch.default_character.clone();
     let mut acts: Vec<RowAction> = Vec::new();
     let idle_row = |r: &Row| !matches!(r.state, RowState::Running | RowState::Queued);
     for i in 0..app.voices.batch.rows.len() {
@@ -220,6 +238,7 @@ fn rows_view(ui: &Ui, app: &mut App, st: &mut AnnouncerUi) {
             .character
             .as_deref()
             .and_then(|c| CHARACTERS.iter().position(|x| x.id == c));
+        let blocked = app.voices.batch.blocked(&app.voices.batch.rows[i]);
         {
             let r = &mut app.voices.batch.rows[i];
             ui.text(format!("{:>2}", i + 1));
@@ -239,10 +258,15 @@ fn rows_view(ui: &Ui, app: &mut App, st: &mut AnnouncerUi) {
                 acts.push(RowAction::Play(row_id));
             }
             ui.same_line();
+            let say_off = if busy {
+                Some("This line is being said".to_owned())
+            } else {
+                blocked.map(|b| format!("Cannot say it yet: {b}"))
+            };
             if action(
                 ui,
                 if r.state == RowState::Done { "Re-run##row-rerun" } else { "Say##row-rerun" },
-                busy.then_some("This line is being said"),
+                say_off.as_deref(),
             ) {
                 acts.push(RowAction::Rerun(row_id));
             }
@@ -253,21 +277,31 @@ fn rows_view(ui: &Ui, app: &mut App, st: &mut AnnouncerUi) {
         }
         // The row's voice, output name and target sound.
         ui.indent_by(24.0);
-        let mut f = String::new();
-        if let Some(p) = voice_picker(ui, app, "##row-voice", 170.0, current, Some("Batch voice"), &mut f) {
+        let mut f = std::mem::take(&mut st.row_filter);
+        let picked = voice_picker(ui, app, "##row-voice", 170.0, current, Some("Batch voice"), &mut f);
+        st.row_filter = f;
+        if let Some(p) = picked {
             app.voices.batch.rows[i].character = p.map(|i| CHARACTERS[i].id.to_owned());
         }
         ui.same_line();
         ui.set_next_item_width(150.0);
         ui.input_text("##row-clip", &mut app.voices.batch.rows[i].clip)
-            .hint("Output name")
+            .hint("Output name (required)")
             .build();
+        if ui.is_item_hovered() {
+            ui.tooltip_text(
+                "Names the saved clip: art/announcer/<name>.wav. Lowercase letters, digits and -.",
+            );
+        }
         ui.same_line();
         let target = app.voices.batch.rows[i].tag.clone();
         ui.set_next_item_width(-1.0);
         let preview = target
             .as_deref()
-            .map_or_else(|| "Replaces: no game line".to_owned(), |t| format!("Replaces: {t}"));
+            .map_or_else(
+                || "Replaces: nothing (saved as a new clip)".to_owned(),
+                |t| format!("Replaces: {t}"),
+            );
         if let Some(_combo) = ui.begin_combo("##row-tag", preview) {
             if st.tags.is_none() {
                 st.tags = Some(load_tags(app));
@@ -276,12 +310,20 @@ fn rows_view(ui: &Ui, app: &mut App, st: &mut AnnouncerUi) {
             ui.input_text("##tag-search", &mut st.tag_filter)
                 .hint("Search the open map's dialogue sounds")
                 .build();
-            if ui.selectable_config("No game line (use the output name)").selected(target.is_none()).build() {
+            ui.text_disabled(
+                "Replaces: the game sound this line stands in for. Kept lines go into the \
+                 edit target package over it.",
+            );
+            if ui.selectable_config("Nothing: save only as the output name's clip").selected(target.is_none()).build() {
                 app.voices.batch.rows[i].tag = None;
             }
             match st.tags.clone() {
                 Some(Ok(names)) => {
-                    for n in names.iter().filter(|n| contains(n, &st.tag_filter)).take(200) {
+                    let shown: Vec<&String> = names.iter().filter(|n| contains(n, &st.tag_filter)).collect();
+                    if shown.len() > 200 {
+                        ui.text_disabled(format!("{} match: the first 200 are shown, search to narrow", shown.len()));
+                    }
+                    for n in shown.into_iter().take(200) {
                         if ui.selectable_config(n).selected(target.as_deref() == Some(n.as_str())).build() {
                             app.voices.batch.rows[i].tag = Some(n.clone());
                         }
@@ -300,7 +342,10 @@ fn rows_view(ui: &Ui, app: &mut App, st: &mut AnnouncerUi) {
             RowState::Idle => ui.text_disabled("Not said yet"),
             RowState::Queued => ui.text_disabled("Queued"),
             RowState::Running => ui.text_colored(theme::ACCENT, "Running: the model is saying it"),
-            RowState::Failed(why) => ui.text_colored(theme::WARN, format!("{} {why}", icon::ALERT)),
+            RowState::Failed(why) => ui.text_colored(
+                theme::WARN,
+                format!("{} {}", icon::ALERT, voice::readable(why)),
+            ),
             RowState::Done => {
                 if let Some(s) = &r.said {
                     ui.text_colored(
@@ -317,12 +362,17 @@ fn rows_view(ui: &Ui, app: &mut App, st: &mut AnnouncerUi) {
                 }
             }
         }
-        if default.is_empty() && r.character.is_none() && r.state == RowState::Idle {
-            ui.text_disabled("No voice yet: pick one in step 1, or for this line");
+        if r.state == RowState::Idle {
+            if let Some(b) = app.voices.batch.blocked(r) {
+                ui.text_colored(theme::WARN, format!("{} {b}", icon::ALERT));
+            }
         }
         match &r.saved {
             Some(Ok(to)) => ui.text_wrapped(format!("Kept: {to}")),
-            Some(Err(why)) => ui.text_colored(theme::WARN, format!("{} Not kept: {why}", icon::ALERT)),
+            Some(Err(why)) => ui.text_colored(
+                theme::WARN,
+                format!("{} Not kept: {}", icon::ALERT, voice::readable(why)),
+            ),
             None => {}
         }
         ui.unindent_by(24.0);
@@ -356,6 +406,10 @@ fn clone_flow(ui: &Ui, app: &mut App, st: &mut AnnouncerUi, dialogs: bool) {
     let current = CHARACTERS
         .iter()
         .position(|c| c.id == app.voices.batch.default_character);
+    // Voice setup is for the voice picked here, however it was picked.
+    if let Some(i) = current {
+        st.character = i;
+    }
     let mut filter = std::mem::take(&mut st.voice_filter);
     if let Some(Some(i)) = voice_picker(ui, app, "##voices-character", 300.0, current, None, &mut filter) {
         st.character = i;
@@ -436,15 +490,23 @@ fn clone_flow(ui: &Ui, app: &mut App, st: &mut AnnouncerUi, dialogs: bool) {
     // 3. Say.
     ui.separator_with_text("3  Say");
     let c = app.voices.batch.counts();
-    let waiting = app.voices.batch.rows.iter().any(|r| {
-        matches!(r.state, RowState::Idle | RowState::Failed(_)) && !r.text.trim().is_empty()
-    });
+    let waits = |r: &&Row| matches!(r.state, RowState::Idle | RowState::Failed(_)) && !r.text.trim().is_empty();
+    let waiting = app.voices.batch.rows.iter().any(|r| waits(&r));
+    let unnamed = app
+        .voices
+        .batch
+        .rows
+        .iter()
+        .filter(waits)
+        .position(|r| r.clip.is_empty() && r.tag.is_none());
     let say_why = if app.voices.batch.active() {
         Some(format!("{} of {} are done", c.done, c.done + c.queued + c.running))
     } else if app.voices.batch.rows.is_empty() {
         Some("Add a line first".to_owned())
     } else if !waiting {
         Some("Every line is said: edit one, or Re-run it".to_owned())
+    } else if unnamed.is_some() {
+        Some("Every line needs an output name, or a game line it replaces, first".to_owned())
     } else {
         None
     };
@@ -481,10 +543,8 @@ fn clone_flow(ui: &Ui, app: &mut App, st: &mut AnnouncerUi, dialogs: bool) {
     ) {
         let r = app.voice_batch_save(None, None, None);
         let ok = r.iter().filter(|(_, r)| r.is_ok()).count();
-        st.batch_note = Some(Ok(format!(
-            "Kept {ok} of {} lines (each line says where, or why not)",
-            r.len()
-        )));
+        let said = format!("Kept {ok} of {} lines (each line says where, or why not)", r.len());
+        st.batch_note = Some(if ok == 0 && !r.is_empty() { Err(said) } else { Ok(said) });
     }
     if let Some(w) = &save_why {
         ui.text_disabled(w);
@@ -523,7 +583,7 @@ fn setup(ui: &Ui, app: &mut App, st: &mut AnnouncerUi) {
                     v["kept"], v["dataset"]["minutes"], v["dataset"]["pending_asr"], v["tags"]
                 )
             })
-            .map_err(|e| e.to_string()),
+            .map_err(|e| e.readable()),
         );
     }
     let status = app.voice_dataset_status(Some(c.id)).ok();
@@ -550,7 +610,7 @@ fn setup(ui: &Ui, app: &mut App, st: &mut AnnouncerUi) {
             st.clone_note = Some(
                 app.voice_clone_train(c.id, None, Some(need))
                     .map(|v| format!("Fine-tuning on {} minutes (job {})", v["minutes"], v["job"]))
-                    .map_err(|e| e.to_string()),
+                    .map_err(|e| e.readable()),
             );
         }
         if small {
@@ -603,7 +663,7 @@ fn setup(ui: &Ui, app: &mut App, st: &mut AnnouncerUi) {
             match j["state"].as_str() {
                 Some("failed") => ui.text_colored(
                     theme::WARN,
-                    format!("{line}: {}", j["why"].as_str().unwrap_or_default()),
+                    format!("{line}: {}", voice::readable(j["why"].as_str().unwrap_or_default())),
                 ),
                 _ => ui.text_disabled(line),
             }
@@ -689,7 +749,7 @@ fn body(ui: &Ui, app: &mut App, st: &mut AnnouncerUi, dialogs: bool) {
             ui.input_text("##announcer-command", &mut command).build();
         }
         Some(Err(e)) => {
-            ui.text_colored(theme::WARN, format!("{} {e}", icon::ALERT));
+            ui.text_colored(theme::WARN, format!("{} {}", icon::ALERT, e.readable()));
         }
         Some(Ok(said)) => {
             let said = said.clone();

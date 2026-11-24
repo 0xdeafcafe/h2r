@@ -637,6 +637,8 @@ fn plan_walk<B: d3d::backend::Backend>(
     }
     let cached = mem.u32(CACHED_IMPLEMENTATION).map_err(|_| ObjectWalk::State)?;
     let mut checked_transition = false;
+    // An animated pass samples its constants at the render clock.
+    let time = native_render::layer_pass::render_time(&read);
     let mut lit = models.lit.try_lock().map_err(|_| ObjectWalk::Model)?;
     let mut lit = lit.as_mut();
     let coverage = models.coverage.read().map_err(|_| ObjectWalk::Model)?;
@@ -663,7 +665,7 @@ fn plan_walk<B: d3d::backend::Backend>(
         // failed GPU lookup for that same model is a residency fallback.
         if !cover.assets.uploaded() { return Err(ObjectWalk::Unresident); }
         let lit = lit.as_deref_mut().filter(|assets| assets.has(model)).ok_or(ObjectWalk::Unresident)?;
-        let mut draw = lit.plan_part_of(model, scene, instance, scene_part, &entry.states).map_err(|why| {
+        let mut draw = lit.plan_part_of(model, scene, instance, scene_part, &entry.states, time).map_err(|why| {
             count_refusal(&why);
             ObjectWalk::Inputs
         })?;
@@ -1286,6 +1288,7 @@ fn lit_material(o: &mut Opened, shader: TagId) -> Result<LitMaterial, String> {
         Ok(LitMaterial {
             shader: ShaderValues { scalar_21: word(0), vector_24: word(4) },
             material: material.clone(),
+            properties: native_render::layer_pass::instance_properties(lib, shader),
         })
     };
     read()

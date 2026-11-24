@@ -266,15 +266,13 @@ fn an_unreadable_portal_list_declines_the_cluster_not_the_decode() {
 
 #[test]
 fn a_projection_is_needed_only_past_the_plane_and_sphere_tests() {
-    // Wall 2's normal has a subnormal component; a sphere the plane test
-    // turns away never reads it.
+    // Wall 2's normal has a subnormal component. The distance plane and the
+    // projection read the same plane here, and the plane test loads every
+    // component of it, so the flood bails before any sphere is turned away.
     let mut p = row(3);
     p.planes[1] = [1.0, f32::from_bits(3), 0.0, 2.0];
     let (img, t) = decode(&p);
-    assert_eq!(
-        t.cluster_flood(&img, &query(0, [0.5, 0.0, 0.0], 0.75)).unwrap().clusters,
-        [0, 1]
-    );
+    assert_eq!(t.cluster_flood(&img, &query(0, [0.5, 0.0, 0.0], 0.75)), Err(Bail::Float));
     assert_eq!(t.cluster_flood(&img, &query(1, [1.5, 0.0, 0.0], 0.75)), Err(Bail::Float));
     // Likewise a vertex count the guest cannot use.
     let mut p = row(3);

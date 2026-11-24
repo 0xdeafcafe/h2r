@@ -1046,7 +1046,7 @@ pub fn forget() {
     crate::entry_census::forget();
     crate::residual_census::forget();
     crate::carried_slots::forget();
-    crate::native_hud::hud_overlay::forget();
+    crate::native_hud::ui_overlay::forget();
 }
 
 /// The scene sealed last.

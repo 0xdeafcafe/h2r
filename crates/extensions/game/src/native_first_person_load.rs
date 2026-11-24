@@ -346,6 +346,7 @@ fn lit_material(opened: &mut Opened, shader: TagId) -> Result<LitMaterial, Strin
             vector_24: word(4),
         },
         material,
+        properties: native_render::layer_pass::instance_properties(lib, shader),
     })
 }
 
