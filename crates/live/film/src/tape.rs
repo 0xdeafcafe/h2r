@@ -9,6 +9,38 @@ pub use codec::{decode_batch, encode_batch};
 /// The chunk tag of a call batch: the binary stream of
 /// [`codec`](encode_batch), every stream interleaved in call order.
 pub const TAPE: Tag = *b"TAPE";
+pub const TAPE_PART: Tag = *b"TPAR";
+const PART_BYTES: usize = 1 << 20;
+const PARTS: u8 = 0xC8;
+
+/// A fragmented call ends with a TAPE record giving its index and the
+/// number of immediately preceding TPAR records.
+pub(crate) fn fragments(raw: &[u8]) -> FilmResult<Option<(u64, usize)>> {
+    if raw.first() != Some(&PARTS) {
+        return Ok(None);
+    }
+    ensure!(raw.len() == 17, "invalid tape fragment descriptor");
+    let index = u64::from_le_bytes(raw[1..9].try_into()?);
+    let parts = usize::try_from(u64::from_le_bytes(raw[9..].try_into()?))?;
+    ensure!(parts > 0, "empty fragmented call");
+    Ok(Some((index, parts)))
+}
+
+pub fn read_batch(reader: &mut Reader<File>, entry: &Entry, raw: &[u8]) -> FilmResult<Vec<Call>> {
+    let Some((index, count)) = fragments(raw)? else { return decode_batch(raw) };
+    let end = reader.entries.binary_search_by_key(&entry.offset, |e| e.offset)
+        .map_err(|_| anyhow::anyhow!("missing tape entry"))?;
+    let start = end.checked_sub(count).context("missing tape fragments")?;
+    let mut data = Vec::new();
+    for pos in start..end {
+        let part = reader.entries[pos].clone();
+        ensure!(part.tag == TAPE_PART, "missing tape fragment");
+        data.extend(reader.read_bytes_limited(&part, PART_BYTES)?);
+    }
+    let calls = decode_batch(&data)?;
+    ensure!(calls.len() == 1 && calls[0].index == index, "invalid fragmented tape call");
+    Ok(calls)
+}
 
 /// XAPI reads share the HLE call cursor; topology changes are sparse and
 /// indexed by the XAPI pump (the guest also sees its device-change globals).
@@ -39,7 +71,8 @@ pub fn holds_op(reader: &mut Reader<File>, op: &str) -> FilmResult<bool> {
         .cloned()
         .collect();
     for entry in entries {
-        if decode_batch(&reader.read_bytes(&entry)?)?.iter().any(|c| c.op == op) {
+        let raw = reader.read_bytes(&entry)?;
+        if read_batch(reader, &entry, &raw)?.iter().any(|c| c.op == op) {
             return Ok(true);
         }
     }
@@ -161,10 +194,27 @@ pub struct Batch {
 }
 impl Batch {
     pub fn append(&mut self, out: &mut Writer<File>, call: Call) -> FilmResult<()> {
-        if self.pending.len() >= 128 || self.bytes >= 65536 {
+        // Validate before queuing: an unencodable call must never poison
+        // the buffered prefix when teardown comes back to cut the film.
+        let storage = codec::call_storage(&call)?;
+        if self.pending.len() >= 128 || self.bytes + storage >= 65536 {
             self.flush(out)?;
         }
-        self.bytes += call.outputs.iter().map(Vec::len).sum::<usize>();
+        if storage >= 65536 {
+            let bytes = encode_batch(std::slice::from_ref(&call))?;
+            if bytes.len() <= PART_BYTES {
+                return out.chunk_bytes(TAPE, &bytes);
+            }
+            let parts = bytes.chunks(PART_BYTES);
+            let mut end = vec![PARTS];
+            end.extend(call.index.to_le_bytes());
+            end.extend((parts.len() as u64).to_le_bytes());
+            for part in parts {
+                out.chunk_bytes(TAPE_PART, part)?;
+            }
+            return out.chunk_bytes(TAPE, &end);
+        }
+        self.bytes += storage;
         self.pending.push(call);
         Ok(())
     }
@@ -502,7 +552,8 @@ impl Playback {
     }
 
     fn read_call_batch(reader: &mut Reader<File>, entry: &Entry) -> FilmResult<VecDeque<Call>> {
-        let batch = decode_batch(&reader.read_bytes(entry)?)?;
+        let raw = reader.read_bytes(entry)?;
+        let batch = read_batch(reader, entry, &raw)?;
         ensure!(batch.len() <= 128, "invalid film call batch");
         Ok(batch.into())
     }

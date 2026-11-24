@@ -303,9 +303,9 @@ impl<W: Read + Write + Seek> FilmWriter<W> {
         let shift = (HEADER_BYTES + frame.len()) as u64;
         let end = self.out.stream_position()?;
         self.out.seek(SeekFrom::Start(self.body))?;
-        let copied = std::io::copy(&mut (&mut self.out).take(end - self.body), &mut out)?;
+        let copied = std::io::copy(&mut (&mut self.out).take(end - self.body), &mut out);
         self.out.seek(SeekFrom::Start(end))?;
-        ensure!(copied == end - self.body, "film file is shorter than written");
+        ensure!(copied? == end - self.body, "film file is shorter than written");
         let mut chunks: Vec<u64> = self.chunks.iter().map(|&at| at - self.body + shift).collect();
         if self.encoder.ticks() > 0 {
             let at = out.stream_position()?;
@@ -559,7 +559,7 @@ impl<R: Read + Seek> FilmReader<R> {
 pub fn carried(tag: Tag) -> bool {
     matches!(
         &tag,
-        b"DATA" | b"BOOT" | b"MOVI" | b"TAPE" | b"PDEV" | b"BOTR" | b"HASH" | b"MARK"
+        b"DATA" | b"BOOT" | b"MOVI" | b"TAPE" | b"TPAR" | b"PDEV" | b"BOTR" | b"HASH" | b"MARK"
     )
 }
 

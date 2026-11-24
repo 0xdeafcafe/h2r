@@ -1,8 +1,7 @@
 //! The binary call stream (docs/game/input-film.md, "What the replay depends on").
 //!
-//! One batch is one `TAPE` chunk of calls in call order, every stream
-//! interleaved. A batch stands alone, so a seek to a batch boundary reads
-//! one chunk and nothing before it:
+//! A batch holds calls in order across all streams. A large singleton may
+//! span multiple physical chunks (see `tape::read_batch`).
 //!
 //! ```text
 //! u8      MAGIC (never `[`, so a JSON batch is told apart and refused)
@@ -35,9 +34,17 @@ pub const MAGIC: u8 = 0xC7;
 const MAX_OPS: u64 = 256;
 const MAX_NAME: u64 = 64;
 const MAX_CALLS: u64 = 4096;
-const MAX_ARGS: u64 = 32;
-const MAX_OUTPUTS: u64 = 8;
-const MAX_OUTPUT: u64 = 16 << 20;
+// A Live service call carries one output per guest write. Bound decoded
+// storage (including repeated packets) instead of assuming an ABI slot count.
+const MAX_STORAGE: usize = crate::MAX_CHUNK;
+
+pub(super) fn call_storage(call: &Call) -> Result<usize> {
+    ensure!(call.op.len() as u64 <= MAX_NAME, "tape operation name too long");
+    let storage = call.args.len() * size_of::<u32>()
+        + call.outputs.len() * size_of::<Vec<u8>>()
+        + call.outputs.iter().map(Vec::len).sum::<usize>();
+    Ok(storage)
+}
 
 const RAW: u8 = 0;
 const REPEAT: u8 = 1;
@@ -163,13 +170,11 @@ pub fn encode_batch(calls: &[Call]) -> Result<Vec<u8>> {
     }
     put(&mut out, calls.len() as u64);
     let mut last: HashMap<Key, Vec<u8>> = HashMap::new();
+    let mut storage = if calls.len() == 1 { usize::MAX } else { MAX_STORAGE };
     let mut previous = 0u64;
     for call in calls {
         let code = codes[call.op.as_str()];
-        ensure!(
-            call.args.len() as u64 <= MAX_ARGS && call.outputs.len() as u64 <= MAX_OUTPUTS,
-            "tape call too large"
-        );
+        storage = storage.checked_sub(call_storage(call)?).context("tape batch exceeds film chunk budget")?;
         put(&mut out, code as u64);
         put(&mut out, call.thread.into());
         put(&mut out, zigzag(call.index.wrapping_sub(previous) as i64));
@@ -186,10 +191,11 @@ pub fn encode_batch(calls: &[Call]) -> Result<Vec<u8>> {
         put(&mut out, call.outputs.len() as u64);
         let handle = call.args.first().copied().unwrap_or(0);
         for (slot, bytes) in call.outputs.iter().enumerate() {
-            ensure!(bytes.len() as u64 <= MAX_OUTPUT, "tape output too large");
             let key = (code, handle, slot);
             put_output(&mut out, last.get(&key), bytes);
-            last.insert(key, bytes.clone());
+            if calls.len() > 1 {
+                last.insert(key, bytes.clone());
+            }
         }
     }
     Ok(out)
@@ -219,6 +225,9 @@ pub fn decode_batch(mut input: &[u8]) -> Result<Vec<Call>> {
     ensure!(count > 0 && count <= MAX_CALLS, "invalid tape batch length");
     let mut calls = Vec::new();
     let mut last: HashMap<Key, Vec<u8>> = HashMap::new();
+    // A singleton has no preceding packet to repeat. Every slot has a
+    // length or tag in the input and every raw output consumes its own bytes.
+    let mut storage = if count == 1 { usize::MAX } else { MAX_STORAGE };
     let mut previous = 0u64;
     for _ in 0..count {
         let code = usize::try_from(get(input)?)?;
@@ -233,23 +242,29 @@ pub fn decode_batch(mut input: &[u8]) -> Result<Vec<Call>> {
         let value = (word >> 1) as u32;
         let result = if word & 1 == 0 { Ok(value) } else { Err(value) };
         let n = get(input)?;
-        ensure!(n <= MAX_ARGS, "tape call too large");
+        ensure!(n <= input.len() as u64 && n <= (storage / size_of::<u32>()) as u64, "invalid tape argument count");
+        storage -= n as usize * size_of::<u32>();
         let mut args = Vec::new();
         for _ in 0..n {
             args.push(u32::try_from(get(input)?)?);
         }
         let n = get(input)?;
-        ensure!(n <= MAX_OUTPUTS, "tape call too large");
+        ensure!(n <= input.len() as u64 && n <= (storage / size_of::<Vec<u8>>()) as u64, "invalid tape output count");
+        storage -= n as usize * size_of::<Vec<u8>>();
         let handle = args.first().copied().unwrap_or(0);
         let mut outputs = Vec::new();
         for slot in 0..n as usize {
             let key = (code, handle, slot);
             let (&kind, rest) = input.split_first().context("truncated tape batch")?;
             *input = rest;
+            if matches!(kind, REPEAT | DELTA) {
+                let old = last.get(&key).context("tape output has no earlier value")?;
+                ensure!(old.len() <= storage, "tape output too large");
+            }
             let bytes = match kind {
                 RAW => {
                     let len = get(input)?;
-                    ensure!(len <= MAX_OUTPUT, "tape output too large");
+                    ensure!(len <= storage as u64, "tape output too large");
                     take(input, len as usize)?.to_vec()
                 }
                 REPEAT => last
@@ -278,7 +293,10 @@ pub fn decode_batch(mut input: &[u8]) -> Result<Vec<Call>> {
                 }
                 _ => bail!("unknown tape output kind"),
             };
-            last.insert(key, bytes.clone());
+            storage -= bytes.len();
+            if count > 1 {
+                last.insert(key, bytes.clone());
+            }
             outputs.push(bytes);
         }
         calls.push(Call {
