@@ -960,6 +960,12 @@ lights with `16bc00`), and frees the light (`16ba40`).
 
 ## Slice 6a bodies
 
+On the look path of `cba50`, `sim_objects::unit::look_up` completes
+`frame_up × aim` and evaluates `aim × left` in packed binary32 lanes.
+The adapter reconstructs the six XMM outputs at the normalizer call.
+The scalar SSE path handles exceptional operands, out-of-range
+intermediates and float environments outside the packed path’s proof.
+
 Each is **C** for its control flow and accesses: read at its address
 with `h2 disasm`, and compared with the lifted original by
 `tests/sim_objects_differential.rs` (the four roots below, and the type
