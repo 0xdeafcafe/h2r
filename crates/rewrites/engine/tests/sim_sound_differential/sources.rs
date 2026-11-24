@@ -28,6 +28,7 @@ pub(super) fn cases(entry: u32) -> Vec<Case> {
     ) = match entry {
         0x1290d0 | 0x129380 | 0x1293f0 => (channels, channel_reply, 4),
         0x21b070 => (loop_release, loop_reply, 5),
+        0x127320 | 0x127390 => (completion, complete_reply, 6),
         0x128020 | 0x1282d0 => (instances, instance_reply, 15),
         0x127d00 => (listeners, listener_reply, 12),
         0x127e20 => (distances, listener_reply, 8),
@@ -379,5 +380,51 @@ fn instance_reply(g: &mut Guest, cpu: &mut Cpu, target: u32, seed: u32) -> u32 {
         }
         0x219310 => 12,
         _ => panic!("unexpected instance walk call {target:#x}"),
+    }
+}
+
+fn completion(g: &mut Guest, c: &mut Cpu, seed: u32) {
+    let sound = 0xabcd_0002;
+    c.gpr[0] = sound;
+    c.gpr[7] = sound;
+    g.set_u32(STACK + 4, 9).unwrap();
+    g.set_u32(points::SOUND_INSTANCES.base, INSTANCE_POOL)
+        .unwrap();
+    g.set_u32(INSTANCE_POOL + 0x44, RECORDS).unwrap();
+    let r = RECORDS + 2 * SoundInstance::SIZE;
+    g.set_u32(r + 0x10, 0xfeed_0012).unwrap();
+    g.set_u32(r + 0x14, if seed == 0 { 0 } else { CALLBACKS })
+        .unwrap();
+    g.set_u32(CALLBACKS + 0x10, if seed < 2 { 0 } else { CALLBACK })
+        .unwrap();
+    g.set_u16(r + 0xac, if seed % 2 == 0 { u16::MAX } else { 3 })
+        .unwrap();
+    g.set_u32(r + 0xa8, if seed == 0 { u32::MAX } else { 0xface_0001 })
+        .unwrap();
+    g.set_u32(0x51ebd8, COMPANION_POOL).unwrap();
+    g.set_u32(COMPANION_POOL + 0x44, COMPANIONS).unwrap();
+    g.set_u8(r + 3, if seed == 1 { 1 } else { 0xff }).unwrap();
+    g.set_u32(COMPANIONS + 0x1c + 4, if seed == 2 { u32::MAX } else { 0 })
+        .unwrap();
+    g.set_u8(
+        COMPANIONS + 0x1c + 3,
+        [2, 3, 4, 0, 0x81, 0x80][seed as usize],
+    )
+    .unwrap();
+}
+
+fn complete_reply(g: &mut Guest, c: &mut Cpu, target: u32, seed: u32) -> u32 {
+    match target {
+        0x12a5d0 | 0x126960 | 0x127390 | 0x219c80 | 0x16ba40 => 0,
+        CALLBACK => {
+            // A callback may detach the source's companion before free.
+            if seed == 4 {
+                g.set_u32(RECORDS + 2 * SoundInstance::SIZE + 0xa8, u32::MAX)
+                    .unwrap();
+            }
+            c.gpr[1] = seed;
+            12
+        }
+        _ => panic!("unexpected sound completion callback {target:#x}"),
     }
 }

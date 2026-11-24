@@ -7,7 +7,7 @@ use sim_sound::sources::InstanceScan;
 const NONE: u32 = u32::MAX;
 const GESTALT: u32 = 0x51ebd4;
 const FIRST_SLOT: u32 = 0x16bc00;
-const STOP: u32 = 0x127320;
+const STOP: u32 = points::SOUND_FINISH_INSTANCE.base;
 const SOUND_CLASS: u32 = 0x221810;
 const SOURCE_POINT: Point = Point::new("SOUND_SOURCE_WALK", 0x128020, NO_ARGS, DOC);
 const ASSIGN_POINT: Point = Point::new("SOUND_ASSIGN_CHANNELS", 0x1282d0, NO_ARGS, DOC);
@@ -322,7 +322,7 @@ fn source_walk(cx: &mut Cx<'_>, mut pc: u32) -> Result<Next> {
     }
 }
 
-fn cmp_byte(c: &mut CpuAbi, a: u8, b: u8) {
+pub(super) fn cmp_byte(c: &mut CpuAbi, a: u8, b: u8) {
     let v = a.wrapping_sub(b);
     let carry = u32::from(a < b);
     let overflow = u32::from((a ^ b) & (a ^ v) & 0x80 != 0) << 11;
@@ -393,7 +393,7 @@ fn assign(cx: &mut Cx<'_>, mut pc: u32) -> Result<Next> {
                     c.ecx = at(c.esp, 0x10);
                     frame::push(c, g, c.ecx)?;
                     frame::push(c, g, c.ebx)?;
-                    return call(0x128700, 0x128358);
+                    return call(points::SOUND_CHOOSE_CHANNEL.base, 0x128358);
                 }
                 if g.u16(at(c.esi, 0xac))? != u16::MAX {
                     pc = 0x12848d;

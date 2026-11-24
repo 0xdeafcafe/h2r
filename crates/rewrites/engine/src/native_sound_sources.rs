@@ -9,6 +9,7 @@ use guest_layout::sound::{LoopingSound, SoundChannel, SoundInstance};
 use runtime::{CpuAbi, Guest, GuestFault};
 use sim_sound::sources::{FadeWindow, release_loop_ref, uses_specialized_channel};
 
+mod completion;
 mod instances;
 mod listeners;
 
@@ -42,6 +43,8 @@ pub static RELEASE_LOOP: Point = Point::new(
 );
 
 pub const BODIES: &[Body] = &[
+    completion::FINISH,
+    completion::FREE,
     instances::SOURCE_WALK,
     instances::CHANNEL_ASSIGNMENT,
     Body {
@@ -306,7 +309,7 @@ fn update(cx: &mut Cx<'_>, mut pc: u32) -> Result<Next> {
                         .finished_fade_out(quiet)
                         {
                             frame::push(c, g, 4)?;
-                            return call(0x127320, 0x1294be);
+                            return call(points::SOUND_FINISH_INSTANCE.base, 0x1294be);
                         }
                     }
                 }
