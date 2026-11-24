@@ -53,7 +53,7 @@ const USAGE: &str = "usage:
                           [--disc ISO] [--out DIR] [--data DIR] [--tier ...] [--pace PACE]
   h2 sim bounces <bounces.toml> [--parallel N] [--dry-run] [--merge] [--keep-data]
                           [--disc ISO] [--out DIR] [--data DIR] [--tier ...] [--pace PACE]
-  h2 sim diff <report a.json> <report b.json>
+  h2 sim diff <report a.json> <report b.json> [--sound]
   h2 sim spatial <spatial.bin | run dir | results dir>...
   h2 sim audit-merge OUTPUT INPUT [INPUT ...]
   h2 sim audit-coverage OUTPUT AUDIT [AUDIT ...]
@@ -129,13 +129,22 @@ pub fn run(args: Vec<String>) -> Result<()> {
         Some("diff") => {
             let a = it.next().context(USAGE)?;
             let b = it.next().context(USAGE)?;
-            anyhow::ensure!(it.next().is_none(), "{USAGE}");
+            let option = it.next();
+            anyhow::ensure!(option.as_deref().is_none_or(|s| s == "--sound") && it.next().is_none(), "{USAGE}");
             let read = |path: &str| -> Result<sim_bench::metrics::Report> {
                 let file = File::open(path).with_context(|| format!("opening {path}"))?;
                 serde_json::from_reader(std::io::BufReader::new(file))
                     .with_context(|| format!("reading {path}"))
             };
-            print!("{}", sim_bench::diff::diff(&read(&a)?, &read(&b)?).render());
+            let (a, b) = (read(&a)?, read(&b)?);
+            if option.is_some() {
+                let result = sim_bench::diff::sound_diff(&a, &b).map_err(anyhow::Error::msg)?;
+                if !matches!(result, sim_bench::diff::Verdict::Identical { .. }) {
+                    bail!("{}", result.render().trim_end());
+                }
+            } else {
+                print!("{}", sim_bench::diff::diff(&a, &b).render());
+            }
             Ok(())
         }
         Some("audit-coverage") => {

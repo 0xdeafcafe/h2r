@@ -353,6 +353,13 @@ synchronized releases, stream starts, packet submissions and completions,
 and effective frequency changes. It records completion after both guest
 writes succeed. The HLE also records successful event signals and dispatch
 of each guest callback, including callbacks deferred to a later tick.
+The guest scheduling observers identify each admitted instance by its salted
+datum, sound tag, owner, track, pitch range, permutation and chunk.
+`0x126000` admits or rejects a request, `0x128700` chooses the channel
+and `0x128ca0` submits its current owner. The finish observer at
+`0x127320` takes the reason before the owner's callback. The observer at
+`0x127390` sees the slot released after that callback, so a nested start
+or finish retains its place in the sequence.
 Entries keep dispatch order and the output frame of each event. Buffer
 ends share their mix quantum's closing frame. Simultaneous releases under
 one mixer lock are listed by guest handle. The report stores the sequence

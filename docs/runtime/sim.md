@@ -1609,7 +1609,10 @@ match start, the event, and its guest handles or packet fields. A quiet tick
 has an empty value. An A/B run compares the ordered lines using the same
 `h2 sim diff` command. A different start, pitch, completion or callback
 grid point shows up even when the aggregate gameplay and arena hashes
-agree. See [DirectSound](../audio/dsound.md#notification-and-callback-contracts).
+agree. `h2 sim diff a.json b.json --sound` requires consecutive full-detail
+samples, readable voice records and arena digests in both runs. It exits
+silently on complete agreement and returns an error for missing coverage
+or the first difference. See [DirectSound](../audio/dsound.md#notification-and-callback-contracts).
 
 `detail = "training"` (the match key, or the batch key, which overrides the
 match file's) is for runs that only need to know whether two plays agree. It
