@@ -74,7 +74,7 @@ impl<T: Pod> Column<T> {
             Self::mapped(&map, 0..bytes.len())
         };
         let column = open().or_else(|| {
-            atomic_write(&path, bytes).ok()?;
+            let _ = atomic_write(&path, bytes);
             open()
         });
         if let Some(column) = column {
@@ -126,41 +126,62 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 #[cfg(test)]
+pub(crate) struct TestDir(std::path::PathBuf);
+
+#[cfg(test)]
+impl TestDir {
+    pub(crate) fn new() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        loop {
+            let n = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path =
+                std::env::temp_dir().join(format!("h2-collision-store-{}-{n}", std::process::id()));
+            match fs::create_dir(&path) {
+                Ok(()) => return Self(path),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => panic!("{e}"),
+            }
+        }
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn concurrent_column_publications_return_identical_read_only_rows() {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let dir = loop {
-            let n = NEXT.fetch_add(1, Ordering::Relaxed);
-            let candidate =
-                std::env::temp_dir().join(format!("h2-shared-column-{}-{n}", std::process::id()));
-            match fs::create_dir(&candidate) {
-                Ok(()) => break candidate,
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(e) => panic!("{e}"),
-            }
-        };
+        let scratch = crate::store::TestDir::new();
+        let dir = scratch.path();
         let rows: Vec<i16> = (0..=(i16::MAX as usize)).map(|i| -(i as i16)).collect();
         std::thread::scope(|s| {
             for _ in 0..4 {
                 s.spawn(|| {
                     let mut column: Column<_> = rows.clone().into();
-                    column.share(&dir);
+                    column.share(dir);
                     assert!(column.is_mapped());
                     assert_eq!(&*column, rows);
                 });
             }
         });
-        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
-        let path = fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
+        assert_eq!(fs::read_dir(dir).unwrap().count(), 1);
+        let path = fs::read_dir(dir).unwrap().next().unwrap().unwrap().path();
         let mut damaged = fs::read(&path).unwrap();
         damaged[7] ^= 1;
         atomic_write(&path, &damaged).unwrap();
         let mut recovered: Column<_> = rows.clone().into();
-        recovered.share(&dir);
+        recovered.share(dir);
         assert!(recovered.is_mapped());
         assert_eq!(&*recovered, rows);
-        fs::remove_dir_all(&dir).unwrap();
     }
 }

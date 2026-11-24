@@ -586,11 +586,11 @@ impl Bsp {
             hash: h,
             fingerprint: consts.fingerprint(h),
         };
-        if let Some(key) = key
-            && key.publish(&bsp, ring_bytes).is_ok()
-            && let Some(mapped) = key.open(addr, header, consts, h, ring_bytes)
-        {
-            return Ok(mapped);
+        if let Some(key) = key {
+            let _ = key.publish(&bsp, ring_bytes);
+            if let Some(mapped) = key.open(addr, header, consts, h, ring_bytes) {
+                return Ok(mapped);
+            }
         }
         Ok(bsp)
     }

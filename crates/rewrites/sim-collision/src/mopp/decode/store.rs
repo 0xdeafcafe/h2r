@@ -207,9 +207,8 @@ impl Tree {
         }
         let checksum = checksum(&bytes);
         bytes[40..HEADER].copy_from_slice(&checksum);
-        if atomic_write(&path, &bytes).is_ok()
-            && let Some(nodes) = open(&path, &key, max_rows, room)
-        {
+        let _ = atomic_write(&path, &bytes);
+        if let Some(nodes) = open(&path, &key, max_rows, room) {
             tree.nodes = nodes;
         }
         tree
@@ -220,23 +219,12 @@ impl Tree {
 mod tests {
     use super::*;
     use crate::mopp::Corners;
-    use std::{
-        fs,
-        sync::atomic::{AtomicU64, Ordering},
-    };
+    use std::fs;
 
     #[test]
     fn mapped_integer_walk_reuses_the_tree_at_a_new_code_pointer() {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let dir = loop {
-            let n = NEXT.fetch_add(1, Ordering::Relaxed);
-            let dir = std::env::temp_dir().join(format!("h2-mopp-tree-{}-{n}", std::process::id()));
-            match fs::create_dir(&dir) {
-                Ok(()) => break dir,
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(e) => panic!("{e}"),
-            }
-        };
+        let scratch = crate::store::TestDir::new();
+        let dir = scratch.path();
         // A split with two different terminals; padding after the reached
         // program also participates in the code digest.
         let mut bytecode = vec![0x10, 80, 40, 1, 0x31, 0x33];
@@ -247,8 +235,8 @@ mod tests {
             scale: 1f32.to_bits(),
         };
         let lazy = Tree::decode(0x31000, source.clone());
-        let first = Tree::decode_shared(0x7000, source.clone(), Some(&dir), 1 << 20);
-        let moved = Tree::decode_shared(0x31000, source.clone(), Some(&dir), 1 << 20);
+        let first = Tree::decode_shared(0x7000, source.clone(), Some(dir), 1 << 20);
+        let moved = Tree::decode_shared(0x31000, source.clone(), Some(dir), 1 << 20);
         assert!(matches!(first.nodes, Nodes::File(..)));
         assert!(matches!(moved.nodes, Nodes::File(..)));
         assert_eq!(moved.span(), lazy.span());
@@ -261,7 +249,9 @@ mod tests {
             };
             assert_eq!(moved.query_box(&q, 10), lazy.query_box(&q, 10));
         }
-        let path = fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
+        drop(first);
+        drop(moved);
+        let path = fs::read_dir(dir).unwrap().next().unwrap().unwrap().path();
         let valid = fs::read(&path).unwrap();
         let key: [u8; 32] = valid[8..40].try_into().unwrap();
         for node in [
@@ -301,10 +291,9 @@ mod tests {
         bad[40..HEADER].copy_from_slice(&sum);
         atomic_write(&path, &bad).unwrap();
         assert!(open(&path, &key, 100, 1 << 20).is_none());
-        let repaired = Tree::decode_shared(0x31000, source, Some(&dir), 1 << 20);
+        let repaired = Tree::decode_shared(0x31000, source, Some(dir), 1 << 20);
         assert_eq!(repaired.nodes(), lazy.nodes());
         assert_eq!(fs::read(&path).unwrap(), valid);
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

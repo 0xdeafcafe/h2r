@@ -219,10 +219,7 @@ impl Key {
 mod tests {
     use super::*;
     use crate::synth::{self, Builder, CONSTS, Image, Rng};
-    use std::{
-        fs,
-        sync::atomic::{AtomicU64, Ordering},
-    };
+    use std::fs;
 
     fn fixture(at: u32, b: &Builder) -> Image {
         let mut image = Image::new(at, b.size() as usize);
@@ -245,17 +242,8 @@ mod tests {
 
     #[test]
     fn mapped_columns_rebind_guest_addresses_and_repair_damaged_files() {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let dir = loop {
-            let n = NEXT.fetch_add(1, Ordering::Relaxed);
-            let path =
-                std::env::temp_dir().join(format!("h2-bsp-columns-{}-{n}", std::process::id()));
-            match fs::create_dir(&path) {
-                Ok(()) => break path,
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(e) => panic!("{e}"),
-            }
-        };
+        let scratch = crate::store::TestDir::new();
+        let dir = scratch.path();
         let mut rng = Rng(0x53e27d591);
         let mut b = synth::random(&mut rng, 4);
         b.planes.resize(4096, [1.0, 2.0, 3.0, 4.0]); // enough data to share
@@ -263,11 +251,11 @@ mod tests {
         let moved = fixture(0x1_0000, &b);
         let room = crate::world::MAP_BUDGET;
         let lazy = read(&moved, None, room);
-        let original = read(&first, Some(&dir), room);
-        let shared = read(&moved, Some(&dir), room);
+        let original = read(&first, Some(dir), room);
+        let shared = read(&moved, Some(dir), room);
         assert!(original.nodes.is_mapped());
         assert!(shared.nodes.is_mapped());
-        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(dir).unwrap().count(), 1);
         assert_ne!(original.plane_addr(0), shared.plane_addr(0));
         assert_ne!(original.source_hash(), shared.source_hash());
         assert_eq!(shared.plane_addr(0), lazy.plane_addr(0));
@@ -288,25 +276,27 @@ mod tests {
             let point = std::array::from_fn(|_| rng.eighths(16).to_bits());
             assert_eq!(shared.point_to_leaf(0, point), lazy.point_to_leaf(0, point));
         }
-        assert!(read(&moved, Some(&dir), 0).scalar_rings());
-        let path = fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
+        assert!(read(&moved, Some(dir), 0).scalar_rings());
+        let first_plane = original.planes[0];
+        drop(original);
+        drop(shared);
+        let path = fs::read_dir(dir).unwrap().next().unwrap().unwrap().path();
         let valid = fs::read(&path).unwrap();
         for damage in [0, 8, 40, 48, HEADER, valid.len() - 1] {
             let mut bad = valid.clone();
             bad[damage] ^= 0x80;
             atomic_write(&path, &bad).unwrap();
-            let fresh = read(&moved, Some(&dir), room);
+            let fresh = read(&moved, Some(dir), room);
             assert_eq!(fs::read(&path).unwrap(), valid, "repaired byte {damage}");
             assert_eq!(&*fresh.surfaces, &*lazy.surfaces);
         }
         atomic_write(&path, &valid[..12]).unwrap();
-        assert_eq!(&*read(&moved, Some(&dir), room).planes, &*lazy.planes);
+        assert_eq!(&*read(&moved, Some(dir), room).planes, &*lazy.planes);
         assert_eq!(fs::read(&path).unwrap(), valid);
         b.planes[0][3] = 713.0;
         let edited = fixture(first.base, &b);
-        let changed = read(&edited, Some(&dir), room);
-        assert_ne!(changed.planes[0], original.planes[0]);
-        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
-        fs::remove_dir_all(dir).unwrap();
+        let changed = read(&edited, Some(dir), room);
+        assert_ne!(changed.planes[0], first_plane);
+        assert_eq!(fs::read_dir(dir).unwrap().count(), 2);
     }
 }
