@@ -196,7 +196,7 @@ pub const KINDS: &[KindRow] = &[
         preview: Preview::Thumbnails,
         subject: Subject::Swatch,
         classes: FIELD_RAW_SHAPE,
-        missing: "the sprite editor (sequences are added by `bitmap.sequence.add`)",
+        missing: "none",
     },
     KindRow {
         label: "Shaders",

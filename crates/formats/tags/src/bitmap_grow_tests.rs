@@ -110,3 +110,26 @@ fn a_payload_with_unknown_bytes_or_stray_blocks_is_refused() {
     // Too short for a header.
     assert!(Parts::split(&[0; 8], at_).is_err());
 }
+
+#[test]
+fn a_sprite_record_round_trips_its_fields_and_keeps_its_other_bytes() {
+    let mut r = new_sprite(3);
+    r[4] = 9; // a byte the view does not name
+    let v = SpriteView::read(&r);
+    assert_eq!((v.image, v.left, v.right, v.top, v.bottom), (3, 0.0, 1.0, 0.0, 1.0));
+    let w = SpriteView { image: 5, left: 0.25, right: 0.5, top: 0.125, bottom: 0.75, registration: [0.5, 0.25] };
+    w.write(&mut r);
+    assert_eq!(SpriteView::read(&r), w);
+    assert_eq!(r[4], 9);
+    assert_eq!(r.len(), SPRITE_LEN);
+}
+
+#[test]
+fn a_sprite_that_is_inverted_or_not_finite_is_refused() {
+    let ok = SpriteView::read(&new_sprite(0));
+    assert!(ok.check().is_ok());
+    assert!(SpriteView { left: 0.6, right: 0.5, ..ok }.check().is_err());
+    assert!(SpriteView { top: 2.0, ..ok }.check().is_err());
+    assert!(SpriteView { bottom: f32::NAN, ..ok }.check().is_err());
+    assert!(SpriteView { registration: [f32::INFINITY, 0.0], ..ok }.check().is_err());
+}

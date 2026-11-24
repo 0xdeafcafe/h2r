@@ -314,6 +314,11 @@ pub mod method {
     pub const BITMAP_IMAGE_ADD: &str = "bitmap.image.add";
     pub const BITMAP_IMAGE_RESIZE: &str = "bitmap.image.resize";
     pub const BITMAP_SEQUENCE_ADD: &str = "bitmap.sequence.add";
+    pub const BITMAP_SEQUENCE_SET: &str = "bitmap.sequence.set";
+    pub const BITMAP_SPRITES: &str = "bitmap.sprites";
+    pub const BITMAP_SPRITE_ADD: &str = "bitmap.sprite.add";
+    pub const BITMAP_SPRITE_SET: &str = "bitmap.sprite.set";
+    pub const BITMAP_SPRITE_REMOVE: &str = "bitmap.sprite.remove";
 
     // Image generation (docs/editor/agent-api.md, "Generating images").
     pub const IMAGE_GENERATE: &str = "image.generate";

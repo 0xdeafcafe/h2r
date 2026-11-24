@@ -36,7 +36,7 @@ use bitmap_edit::{
 };
 use map::TagId;
 use scenario_edit::{GeometryChanges, MovedRaw, RawAppend, RawPatch, TagMove};
-use tags::bitmap_grow::{self, IMAGE_LEN, Parts, Sequence};
+use tags::bitmap_grow::{self, IMAGE_LEN, Parts, Sequence, SpriteView};
 use tags::{PixelFormat, TagData};
 
 use super::App;
@@ -150,6 +150,9 @@ pub struct OpenBitmap {
     pub parts: Result<Parts, String>,
     /// Sequences added in Studio, after the tag's own.
     pub new_sequences: Vec<Sequence>,
+    /// The tag's sequences as stored, so an edit to one (its label, range
+    /// or sprites) is known by comparison.
+    pub stored_sequences: Vec<Sequence>,
 }
 
 /// One sequence of a bitmap, as `bitmap.read` and the pickers show it.
@@ -172,7 +175,34 @@ impl OpenBitmap {
     /// The bitmap has images or sequences the file does not: a save moves
     /// the tag.
     pub fn grown(&self) -> bool {
-        self.images.iter().any(|i| i.added.is_some()) || !self.new_sequences.is_empty()
+        self.images.iter().any(|i| i.added.is_some())
+            || !self.new_sequences.is_empty()
+            || self
+                .parts
+                .as_ref()
+                .is_ok_and(|p| p.sequences != self.stored_sequences)
+    }
+
+    /// Sequence `index` (the tag's own, then the added ones).
+    pub fn sequence(&self, index: usize) -> Option<&Sequence> {
+        let stored = self.parts.as_ref().map_or(0, |p| p.sequences.len());
+        match index.checked_sub(stored) {
+            None => self.parts.as_ref().ok()?.sequences.get(index),
+            Some(k) => self.new_sequences.get(k),
+        }
+    }
+
+    fn sequence_mut(&mut self, index: usize) -> Option<&mut Sequence> {
+        let stored = self.parts.as_ref().map_or(0, |p| p.sequences.len());
+        match index.checked_sub(stored) {
+            None => self.parts.as_mut().ok()?.sequences.get_mut(index),
+            Some(k) => self.new_sequences.get_mut(k),
+        }
+    }
+
+    /// Sprite `sprite` of sequence `index`, as the sprite editor shows it.
+    pub fn sprite(&self, index: usize, sprite: usize) -> Option<SpriteView> {
+        self.sequence(index)?.sprites.get(sprite).map(|r| SpriteView::read(r))
     }
 
     /// The tag's sequences, then the added ones.
@@ -226,6 +256,13 @@ enum Shape {
     },
     /// The last sequence was added. `kept` holds it while it is undone.
     AddSequence { kept: Option<Sequence> },
+    /// Sequence `index` (its label, range or sprites) changed from `was`
+    /// to `now`.
+    EditSequence {
+        index: usize,
+        was: Box<Sequence>,
+        now: Box<Sequence>,
+    },
 }
 
 /// The Textures tool's state.
@@ -467,6 +504,35 @@ pub enum BitmapAction {
         count: u16,
         label: String,
     },
+    /// Change a sequence's label, first image and/or image count (`None`
+    /// keeps that one). One undo step; the save moves the tag.
+    SetSequence {
+        tag: TagId,
+        sequence: usize,
+        label: Option<String>,
+        first: Option<usize>,
+        count: Option<u16>,
+    },
+    /// Change sprite `sprite` of a sequence, or add one after its last
+    /// (`sprite: None`; it starts as a copy of the last, or over all of
+    /// its first image). `None` keeps that field. One undo step; the save
+    /// moves the tag.
+    SetSprite {
+        tag: TagId,
+        sequence: usize,
+        sprite: Option<usize>,
+        image: Option<usize>,
+        /// Left, right, top, bottom.
+        bounds: Option<[f32; 4]>,
+        registration: Option<[f32; 2]>,
+    },
+    /// Remove a sprite from a sequence. One undo step; the save moves the
+    /// tag.
+    RemoveSprite {
+        tag: TagId,
+        sequence: usize,
+        sprite: usize,
+    },
 }
 
 impl App {
@@ -622,6 +688,7 @@ impl App {
             }
             images.push(info);
         }
+        let stored_sequences = parts.as_ref().map_or_else(|_| Vec::new(), |p| p.sequences.clone());
         Ok(OpenBitmap {
             tag,
             name,
@@ -630,6 +697,7 @@ impl App {
             images_at: b.header.images.address,
             parts,
             new_sequences: Vec::new(),
+            stored_sequences,
         })
     }
 
@@ -996,6 +1064,129 @@ impl App {
         Ok(index)
     }
 
+    /// Changes sequence `index` of bitmap `tag` with `edit`, as one undo
+    /// step. An edit that changes nothing makes no step.
+    fn edit_sequence(
+        &mut self,
+        tag: TagId,
+        index: usize,
+        edit: impl FnOnce(&mut Sequence, usize) -> Result<String, String>,
+    ) -> Result<(), String> {
+        self.ensure_bitmap(tag)?;
+        let open = self.open_mut(tag)?;
+        if let Err(why) = &open.parts {
+            return Err(format!("no sequence can be edited: {why}"));
+        }
+        let images = open.images.len();
+        let name = open.name.clone();
+        let count = open.stored_sequences.len() + open.new_sequences.len();
+        let seq = open
+            .sequence_mut(index)
+            .ok_or_else(|| format!("sequence {index}: the bitmap has {count}"))?;
+        let was = seq.clone();
+        let what = match edit(seq, images) {
+            Ok(w) => w,
+            Err(e) => {
+                *seq = was;
+                return Err(e);
+            }
+        };
+        if *seq == was {
+            return Ok(());
+        }
+        let now = seq.clone();
+        self.note_shape(
+            tag,
+            Shape::EditSequence {
+                index,
+                was: Box::new(was),
+                now: Box::new(now),
+            },
+        );
+        self.info(format!("{name}: sequence {index} {what}"));
+        Ok(())
+    }
+
+    fn set_sequence(
+        &mut self,
+        tag: TagId,
+        index: usize,
+        label: Option<String>,
+        first: Option<usize>,
+        count: Option<u16>,
+    ) -> Result<(), String> {
+        if label.as_ref().is_some_and(|l| l.len() > 31) {
+            return Err("label is over 31 bytes".to_owned());
+        }
+        self.edit_sequence(tag, index, |s, images| {
+            let f = first.map_or(Ok(i32::from(s.first_image())), |f| {
+                i16::try_from(f)
+                    .map(i32::from)
+                    .map_err(|_| format!("image {f} is past a sequence's reach"))
+            })?;
+            let c = count.unwrap_or(s.image_count());
+            if f < 0 || f as usize + usize::from(c) > images {
+                return Err(format!("images {f} for {c}: the bitmap has {images}"));
+            }
+            let label = label.unwrap_or_else(|| s.label());
+            let e = bitmap_grow::sequence(Some(s), &label, f as i16, c).entry;
+            s.entry = e;
+            Ok(format!("now {label:?}, images {f} for {c}"))
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn set_sprite(
+        &mut self,
+        tag: TagId,
+        index: usize,
+        sprite: Option<usize>,
+        image: Option<usize>,
+        bounds: Option<[f32; 4]>,
+        registration: Option<[f32; 2]>,
+    ) -> Result<(), String> {
+        self.edit_sequence(tag, index, |s, images| {
+            let target = match sprite {
+                Some(k) if k < s.sprites.len() => k,
+                Some(k) => return Err(format!("sprite {k}: the sequence has {}", s.sprites.len())),
+                None => {
+                    let base = match s.sprites.last() {
+                        Some(last) => last.clone(),
+                        None => bitmap_grow::new_sprite(s.first_image().max(0)),
+                    };
+                    s.sprites.push(base);
+                    s.sprites.len() - 1
+                }
+            };
+            let mut v = SpriteView::read(&s.sprites[target]);
+            if let Some(i) = image {
+                if i >= images {
+                    return Err(format!("image {i}: the bitmap has {images}"));
+                }
+                v.image = i16::try_from(i).map_err(|_| format!("image {i} is too far"))?;
+            }
+            if let Some([l, r, t, b]) = bounds {
+                (v.left, v.right, v.top, v.bottom) = (l, r, t, b);
+            }
+            if let Some(g) = registration {
+                v.registration = g;
+            }
+            v.check()?;
+            v.write(&mut s.sprites[target]);
+            Ok(format!("sprite {target}: image {}", v.image))
+        })
+    }
+
+    fn remove_sprite(&mut self, tag: TagId, index: usize, sprite: usize) -> Result<(), String> {
+        self.edit_sequence(tag, index, |s, _| {
+            if sprite >= s.sprites.len() {
+                return Err(format!("sprite {sprite}: the sequence has {}", s.sprites.len()));
+            }
+            s.sprites.remove(sprite);
+            Ok(format!("sprite {sprite} removed"))
+        })
+    }
+
     /// Undoes (or redoes) a shape step of bitmap `tag`; the step to put
     /// on the other stack.
     fn swap_shape(&mut self, tag: TagId, shape: Shape, undo: bool) -> Option<Shape> {
@@ -1035,6 +1226,11 @@ impl App {
                     open.new_sequences.push(kept?);
                     Shape::AddSequence { kept: None }
                 }
+            }
+            Shape::EditSequence { index, was, now } => {
+                let set = if undo { &was } else { &now };
+                *open.sequence_mut(index)? = (**set).clone();
+                Shape::EditSequence { index, was, now }
             }
         };
         if let Some(open) = self.textures.open.get(&tag)
@@ -1205,6 +1401,32 @@ impl App {
                 label,
             } => {
                 self.add_sequence(tag, first, count, &label)?;
+            }
+            BitmapAction::SetSequence {
+                tag,
+                sequence,
+                label,
+                first,
+                count,
+            } => {
+                self.set_sequence(tag, sequence, label, first, count)?;
+            }
+            BitmapAction::SetSprite {
+                tag,
+                sequence,
+                sprite,
+                image,
+                bounds,
+                registration,
+            } => {
+                self.set_sprite(tag, sequence, sprite, image, bounds, registration)?;
+            }
+            BitmapAction::RemoveSprite {
+                tag,
+                sequence,
+                sprite,
+            } => {
+                self.remove_sprite(tag, sequence, sprite)?;
             }
             BitmapAction::Revert(tag) => {
                 if self.textures.stroke == Some(tag) {

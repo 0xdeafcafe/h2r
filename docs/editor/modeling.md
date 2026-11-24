@@ -442,6 +442,19 @@ pages open read-only.
   shaped like its first sequence, with one sprite per image copied from
   its first sprite when that one has sprites. Both are one undo step
   each, with the pixels' steps, on the `bitmaps` document.
+- **The sprite editor.** The inspector's **Sequences** tree opens each
+  sequence (the tag's own or an added one): its label, first image and
+  count, and a row per sprite with its image, its left, right, top and
+  bottom (fractions of the image, `left <= right`, `top <= bottom`) and
+  its registration point, with **Add a sprite** and **Remove**. A field
+  is committed, as one undo step, when it is left (`BitmapAction::SetSequence`,
+  `SetSprite`, `RemoveSprite`; `bitmap.sequence.set`, `bitmap.sprites`,
+  `bitmap.sprite.add`, `.set`, `.remove`). The canvas outlines every sprite
+  cut from the image on show. The fields are the sprite record's image
+  index (`+0x0`), bounds (`+0x8` to `+0x14`) and registration (`+0x18`,
+  `+0x1c`; `tags::bitmap_grow::SpriteView`). A stored sequence that is
+  edited makes the bitmap grown: the save moves the tag as an added
+  image does, and undoing back to the stored sequences makes it clean.
 - **The save of a grown bitmap.** A bitmap that gained images or
   sequences no longer fits where it is stored:
   `tags::bitmap_grow::Parts::split` takes the tag apart into its
@@ -468,8 +481,7 @@ pages open read-only.
   cursor's ray (`Session::surface_hit`, or the edit mesh), takes the
   hit's texture coordinate and stamps there; it paints through the same
   canvas.
-- **Deferred.** Layers, text, sprite sheet editing and the editing of an
-  existing sequence, a UV
+- **Deferred.** Layers, text, packing sprites onto a sheet, a UV
   editor, the low-detail copy (header `+0x158`), which stays as the
   source's (and so goes stale when the picture changes), and a
   LOD 1 or 2 where the map stored no LOD 0.
@@ -594,6 +606,8 @@ namespace (player models and looks) is separate and unchanged.
 | `bitmap.reshape {bitmap, image?, width?, height?, format?}`, `bitmap.image.resize {bitmap, image?, size? \| width?, height?, format?}` | asks for a new size or format; a save writes the image whole |
 | `bitmap.image.add {bitmap, from?, size?, format?}` | appends an image copied from `from`; answers its index; a save moves the tag |
 | `bitmap.sequence.add {bitmap, first, count?, label?}` | appends a sequence entry over those images; a save moves the tag |
+| `bitmap.sequence.set {bitmap, sequence, label?, first?, count?}` | changes a sequence, keeping its sprites |
+| `bitmap.sprites {bitmap, sequence?}`, `bitmap.sprite.add`, `.set`, `.remove` | a sequence's sprites (image, bounds, registration) and their edits, one undo step each |
 | `bitmap.spans {bitmap, image?, face?, slice?, rect?}` | the stored bytes the edits change, by LOD and offset; nothing is written |
 | `bitmap.export {bitmap, image?, mip?, out}`, `bitmap.import {bitmap, image?, path, rect?}` | PNG out and in |
 | `bitmap.paint {bitmap, image?, points, color, size, hardness?, opacity?, erase?}` | one stroke through pixel points, one undo step |

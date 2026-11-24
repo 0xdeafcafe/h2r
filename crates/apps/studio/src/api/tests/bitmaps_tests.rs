@@ -843,3 +843,150 @@ fn an_added_sequence_names_the_added_image_and_reads_back() {
     call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "bitmaps"}));
     assert_eq!(save_as(&mut api, &mut app, &t, "clean.map"), src);
 }
+
+#[test]
+fn sprites_are_added_edited_removed_undone_and_saved() {
+    let t = Temp::new("bitmaps-sprites");
+    let (mut api, mut app, src) = bitmaps_last(&t);
+    call(
+        &mut api,
+        &mut app,
+        m::BITMAP_SEQUENCE_ADD,
+        json!({"bitmap": "floor", "first": 0, "label": "icons"}),
+    );
+    // A new sprite covers the sequence's first image.
+    let a = call(
+        &mut api,
+        &mut app,
+        m::BITMAP_SPRITE_ADD,
+        json!({"bitmap": "floor", "sequence": 0, "bounds": [0.0, 0.5, 0.0, 0.5]}),
+    );
+    assert_eq!(a["sprite"], 0);
+    assert_eq!(a["sprites"][0]["image"], 0);
+    assert_eq!(a["sprites"][0]["right"], 0.5);
+    // The second is a copy of the first, then set.
+    let b = call(
+        &mut api,
+        &mut app,
+        m::BITMAP_SPRITE_ADD,
+        json!({"bitmap": "floor", "sequence": 0, "registration": [0.25, 0.75]}),
+    );
+    assert_eq!(b["sprite"], 1);
+    assert_eq!(b["sprites"][1]["right"], 0.5);
+    assert_eq!(b["sprites"][1]["registration"], json!([0.25, 0.75]));
+    let set = call(
+        &mut api,
+        &mut app,
+        m::BITMAP_SPRITE_SET,
+        json!({"bitmap": "floor", "sequence": 0, "sprite": 1, "bounds": [0.5, 1.0, 0.5, 1.0]}),
+    );
+    assert_eq!(set["sprites"][1]["left"], 0.5);
+    assert_eq!(set["sprites"][1]["registration"], json!([0.25, 0.75]));
+    let list = call(&mut api, &mut app, m::BITMAP_SPRITES, json!({"bitmap": "floor"}));
+    assert_eq!(list["sequences"][0]["label"], "icons");
+    assert_eq!(list["sequences"][0]["sprites"].as_array().unwrap().len(), 2);
+    let read = call(&mut api, &mut app, m::BITMAP_READ, json!({"bitmap": "floor"}));
+    assert_eq!(read["sequences"][0]["sprites"], 2);
+
+    // Refusals change nothing: an inverted pair, an image the bitmap
+    // lacks, a sprite that is not there, a label too long.
+    for (method, params) in [
+        (m::BITMAP_SPRITE_SET, json!({"sequence": 0, "sprite": 0, "bounds": [0.9, 0.1, 0.0, 1.0]})),
+        (m::BITMAP_SPRITE_SET, json!({"sequence": 0, "sprite": 0, "image": 5})),
+        (m::BITMAP_SPRITE_SET, json!({"sequence": 0, "sprite": 7, "image": 0})),
+        (m::BITMAP_SPRITE_REMOVE, json!({"sequence": 0, "sprite": 7})),
+        (m::BITMAP_SPRITE_ADD, json!({"sequence": 3})),
+        (m::BITMAP_SEQUENCE_SET, json!({"sequence": 0, "label": "x".repeat(32)})),
+        (m::BITMAP_SEQUENCE_SET, json!({"sequence": 0, "count": 9})),
+    ] {
+        let mut params = params;
+        params["bitmap"] = json!("floor");
+        assert!(api.call(&mut app, method, params).is_err(), "{method}");
+    }
+    let list2 = call(&mut api, &mut app, m::BITMAP_SPRITES, json!({"bitmap": "floor"}));
+    assert_eq!(list, list2);
+
+    let s = call(
+        &mut api,
+        &mut app,
+        m::BITMAP_SEQUENCE_SET,
+        json!({"bitmap": "floor", "sequence": 0, "label": "renamed"}),
+    );
+    assert_eq!(s["sequences"][0]["label"], "renamed");
+    assert_eq!(s["sequences"][0]["sprites"], 2);
+    let r = call(
+        &mut api,
+        &mut app,
+        m::BITMAP_SPRITE_REMOVE,
+        json!({"bitmap": "floor", "sequence": 0, "sprite": 0}),
+    );
+    assert_eq!(r["sprites"].as_array().unwrap().len(), 1);
+    assert_eq!(r["sprites"][0]["left"], 0.5);
+
+    let out = save_as(&mut api, &mut app, &t, "sprites.map");
+    let (bm, _) = floor_of(&out);
+    assert_eq!(bm.sequences.len(), 1);
+    assert_eq!(bm.sequences[0].sprites.len(), 1);
+    other_tags_kept(&src, &out);
+
+    // Undo walks back: the removal, the rename, the set, both adds.
+    for want in [2, 2, 2, 1, 0] {
+        call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "bitmaps"}));
+        let n = call(&mut api, &mut app, m::BITMAP_SPRITES, json!({"bitmap": "floor"}))["sequences"][0]
+            ["sprites"]
+            .as_array()
+            .unwrap()
+            .len();
+        assert_eq!(n, want);
+    }
+    call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "bitmaps"}));
+    assert_eq!(save_as(&mut api, &mut app, &t, "clean.map"), src);
+}
+
+#[test]
+fn editing_a_stored_sequence_moves_the_tag_and_undo_restores_it() {
+    let t = Temp::new("bitmaps-sprites-stored");
+    let (mut api, mut app, src) = bitmaps_last(&t);
+    // A sequence added and saved is stored in the saved file; open that.
+    call(
+        &mut api,
+        &mut app,
+        m::BITMAP_SEQUENCE_ADD,
+        json!({"bitmap": "floor", "first": 0, "label": "icons"}),
+    );
+    call(
+        &mut api,
+        &mut app,
+        m::BITMAP_SPRITE_ADD,
+        json!({"bitmap": "floor", "sequence": 0}),
+    );
+    let first = save_as(&mut api, &mut app, &t, "first.map");
+    let mut api = Api::new();
+    let mut app = app(&t);
+    let path = t.path("first.map");
+    call(
+        &mut api,
+        &mut app,
+        m::SOURCE_OPEN,
+        json!({"path": path.display().to_string()}),
+    );
+    let read = call(&mut api, &mut app, m::BITMAP_READ, json!({"bitmap": "floor"}));
+    assert_eq!(read["grown"], false);
+    assert_eq!(read["sequences"][0]["added"], false);
+    call(
+        &mut api,
+        &mut app,
+        m::BITMAP_SPRITE_SET,
+        json!({"bitmap": "floor", "sequence": 0, "sprite": 0, "registration": [0.5, 0.5]}),
+    );
+    let read = call(&mut api, &mut app, m::BITMAP_READ, json!({"bitmap": "floor"}));
+    assert_eq!(read["grown"], true);
+    let out = save_as(&mut api, &mut app, &t, "edited.map");
+    assert_ne!(out, first);
+    assert_eq!(floor_of(&out).0.sequences[0].sprites.len(), 1);
+    call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "bitmaps"}));
+    let read = call(&mut api, &mut app, m::BITMAP_READ, json!({"bitmap": "floor"}));
+    assert_eq!(read["grown"], false);
+    assert_eq!(save_as(&mut api, &mut app, &t, "undone.map"), first);
+    assert_ne!(first, src);
+}
