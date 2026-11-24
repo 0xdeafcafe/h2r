@@ -6,7 +6,7 @@ use std::path::Path;
 
 use content::Sha256;
 use content::package::{Kind, Lock, Package, SetError, SetFile};
-use game::ui_kit::{inject, retail_edits};
+use ::game::ui_kit::{inject, retail_edits};
 use map::{CacheType, Map};
 use tags::ui::check::check_map;
 use vfs::Rewrite as _;

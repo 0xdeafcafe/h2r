@@ -8863,6 +8863,7 @@ version = "0.1.0"
 dependencies = [
  "audio",
  "content",
+ "game",
  "h1-assets",
  "hud-kit-core",
  "map",

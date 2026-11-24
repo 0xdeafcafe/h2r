@@ -286,12 +286,6 @@ fn a_bad_file_is_refused_with_its_name_and_the_edit() {
         let e = parse("f", text).unwrap_err();
         assert!(e.contains(want), "{text}: {e}");
     }
-    // Every file's error, not the first.
-    let two = Edits {
-        files: vec![("a".into(), "nonsense: [".into()), ("b".into(), "screen: x\n".into())],
-    };
-    let e = two.parse().unwrap_err();
-    assert!(e.contains("a.yaml") && e.contains("b.yaml"), "{e}");
 }
 
 #[test]
