@@ -6,8 +6,9 @@ use d3d::backend::{PixelRect, UiFit};
 use engine::{GuestMemory, points};
 use hooks::{Builder, Feature, Flow, Manifest};
 use points::render_aspect::{
-    ANCHOR, ANCHOR_READY, DOC, FLARE_QUERY, FLARE_QUERY_END, FLARE_REFLECTION,
-    FLARE_REFLECTION_END, GROUPS, MENU_BACKDROP, MENU_FILL, MENU_FILL_END,
+    ANCHOR, ANCHOR_READY, DOC, FLARE_COMPOSITE_DONE, FLARE_COMPOSITE_LOOP, FLARE_QUERY,
+    FLARE_QUERY_END, FLARE_REFLECTION, FLARE_REFLECTION_END, GROUPS, MENU_BACKDROP, MENU_FILL,
+    MENU_FILL_END, VOLUME_DEPTH, VOLUME_DEPTH_END, VOLUME_SPRITE, VOLUME_SPRITE_END,
 };
 use points::scene_effects::{EFFECT_QUAD_READY, HUD_QUAD_READY};
 use points::ui_render::{ITEM_CALL, RECT_SUBMIT_RETURN, SCREEN_QUAD_READY};
@@ -113,7 +114,7 @@ fn viewport(mem: &impl GuestMemory, address: u32) -> Option<PixelRect> {
 // call to Begin (0x2e82b) have already been rounded, and their *original*
 // area is the game's denominator. Translate this footprint rigidly. The
 // reflected billboard has no readback and can take the entire lens map.
-fn flare_fit(
+fn projected_effect_fit(
     mem: &impl GuestMemory,
     output: (u32, u32),
     query_stack: Option<u32>,
@@ -542,19 +543,27 @@ impl Feature for RenderAspect {
         for (begin, end, query) in [
             (&FLARE_QUERY, &FLARE_QUERY_END, true),
             (&FLARE_REFLECTION, &FLARE_REFLECTION_END, false),
+            (&VOLUME_SPRITE, &VOLUME_SPRITE_END, false),
+            (&VOLUME_DEPTH, &VOLUME_DEPTH_END, false),
+            (&FLARE_COMPOSITE_LOOP, &FLARE_COMPOSITE_DONE, false),
         ] {
             let (layout, size, sink) = (layout.clone(), self.size.clone(), self.sink.clone());
             b.raw()
                 .before(
                     begin,
-                    "align the CPU-projected flare with the display lens",
+                    "align the CPU-projected effect with the display lens",
                     move |c| {
                         if !c.ctx.runtime().read_dispatch(|d| d.has_generated(end.base)) {
                             return Ok(Flow::Continue);
                         }
                         let mut l = layout.lock().unwrap_or_else(|e| e.into_inner());
                         let mut mem = c.ctx.memory();
-                        if let Some(fit) = flare_fit(&*mem, size(), query.then_some(c.cpu.esp)) {
+                        if let Some(fit) = projected_effect_fit(&*mem, size(), query.then_some(c.cpu.esp)) {
+                            let fit = if begin.base == VOLUME_DEPTH.base {
+                                fit.with_screen_input(1)
+                            } else {
+                                fit
+                            };
                             l.groups.push((end.base, Some(fit)));
                             sink.set_fit(&mut mem, Some(fit));
                         }
@@ -705,6 +714,9 @@ impl Feature for RenderAspect {
             &MENU_FILL_END,
             &FLARE_QUERY_END,
             &FLARE_REFLECTION_END,
+            &VOLUME_SPRITE_END,
+            &VOLUME_DEPTH_END,
+            &FLARE_COMPOSITE_DONE,
         ]) {
             let (layout, sink) = (layout.clone(), self.sink.clone());
             b.raw()
@@ -1190,11 +1202,11 @@ mod tests {
             width: 320,
             height: 480,
         };
-        assert_eq!(flare_fit(&mem, (1600, 1200), Some(esp)), None);
+        assert_eq!(projected_effect_fit(&mem, (1600, 1200), Some(esp)), None);
         for output in [(1920, 1080), (3440, 1440), (5120, 1440)] {
             let lens = projection_factor(&mem, output);
-            let probe = flare_fit(&mem, output, Some(esp)).unwrap();
-            let sprite = flare_fit(&mem, output, None).unwrap();
+            let probe = projected_effect_fit(&mem, output, Some(esp)).unwrap();
+            let sprite = projected_effect_fit(&mem, output, None).unwrap();
             let x = |fit: UiFit, x: f32| x * fit.transform[0] + fit.transform[2];
             let old = (left + right) * 0.5;
             close(x(probe, old), 479.5 + (old - 479.5) * lens);
@@ -1202,6 +1214,21 @@ mod tests {
             close(x(probe, old) + 0.5, x(sprite, old + 0.5));
             assert_eq!(probe.map_rect(viewport), viewport);
             assert_eq!(sprite.map_rect(viewport), viewport);
+        }
+    }
+
+    #[test]
+    fn a_projected_billboard_keeps_square_pixels_at_an_off_centre_anchor() {
+        let mut mem = FakeGuest::new();
+        for (i, edge) in [0, 0, 480, 640].into_iter().enumerate() {
+            mem.put_u16(0x0048_5648 + i as u32 * 2, edge);
+        }
+        for size in [(5120, 2880), (3440, 1440), (1200, 1600), (640, 480)] {
+            let fit = projected_effect_fit(&mem, size, None);
+            let [x, y] = physical(fit, size, [416., 176.]);
+            let end = physical(fit, size, [440., 200.]);
+            close(end[0] - x, end[1] - y);
+            close(x, size.0 as f32 * 0.5 + 96. * size.1 as f32 / 480.);
         }
     }
 

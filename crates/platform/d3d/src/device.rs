@@ -6039,6 +6039,7 @@ impl<B: Backend> Device<B> {
                 match self.frame_texture(mem, header, sampled[stage], extras[stage].color_sign)? {
                     FrameTexture::No => {}
                     FrameTexture::Snapshot(info, t) => {
+                        extras[stage].samples_frame = sampled[stage];
                         reads_frame_copy |= sampled[stage];
                         // Snapshots are not stored biased, so COLORSIGN
                         // cannot apply to them (docs/graphics/shaders.md).
@@ -6048,6 +6049,7 @@ impl<B: Backend> Device<B> {
                         continue;
                     }
                     FrameTexture::DepthAlias(info, key) => {
+                        extras[stage].samples_frame = sampled[stage];
                         reads_frame_copy |= sampled[stage];
                         extras[stage].color_sign = key.1;
                         texture_info[stage] = Some(info);
@@ -6167,7 +6169,8 @@ impl<B: Backend> Device<B> {
             retail_constants,
             ui_fit: self
                 .ui_fit
-                .filter(|_| (target.width, target.height) == (640, 480) && !copies_a_frame),
+                .filter(|fit| (target.width, target.height) == (640, 480)
+                    && (!copies_a_frame || fit.applies_to_frame_sample())),
             glyph_cache,
         };
         let (mut draw, snapshots) = if self

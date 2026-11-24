@@ -229,7 +229,7 @@ pub(super) fn uniforms(
     pu.border = std::array::from_fn(|n| border_value(draw.state.stages[n].border_color, signs[n]));
     for n in 0..4 {
         let e = &draw.extras[n];
-        pu.bump_mat[n] = e.bump_env_mat;
+        pu.bump_mat[n] = draw.bump_matrix(n);
         pu.bump_lum[n] = [e.bump_env_lscale, e.bump_env_loffset, 0.0, 0.0];
         if let Some(info) = draw.texture_info[n]
             && info.format.layout() == gfx::format::Layout::Linear
@@ -343,6 +343,38 @@ mod tests {
             ui_fit: None,
             glyph_cache: 1,
         }
+    }
+
+    #[test]
+    fn depth_billboard_fetch_fits_only_its_window_coordinate_on_the_display_copy() {
+        let mut draw = ui_draw();
+        let fit = crate::backend::UiFit::projected_sprite(0.75, 80.).with_screen_input(1);
+        draw.ui_fit = Some(fit);
+        let resolve = |d: &ResolvedDraw| {
+            NativeDrawProgram::resolve_ui(d, [true, false, false, false],
+                Capabilities::ALL, FetchMode::Cpu, 4u32).unwrap()
+        };
+        let display = resolve(&draw);
+        let retail = resolve(&draw.for_reference());
+        let mut expected = [InputFetch::Float; 16];
+        expected[1] = InputFetch::WindowFloat;
+        assert_eq!(display.key.0.vertex_options.input_fetch, expected);
+        assert_eq!(display.vertex.ui_transform, fit.transform);
+        assert_eq!(retail.key.0.vertex_options.input_fetch, [InputFetch::Float; 16]);
+        assert_eq!(retail.vertex.ui_transform, [1., 1., 0., 0.]);
+    }
+
+    #[test]
+    fn frame_distortion_follows_the_display_lens_on_both_horizontal_coefficients() {
+        let mut draw = ui_draw();
+        let matrix = [8., 5., -4., 3.];
+        draw.extras[0].samples_frame = true;
+        draw.extras[0].bump_env_mat = matrix;
+        draw.extras[1].bump_env_mat = matrix;
+        draw.retail_constants = Some((draw.shader.constants.clone(), 0.75));
+        assert_eq!(draw.bump_matrix(0), [6., 5., -3., 3.]);
+        assert_eq!(draw.bump_matrix(1), matrix);
+        assert_eq!(draw.for_reference().bump_matrix(0), matrix);
     }
 
     #[test]

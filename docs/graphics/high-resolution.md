@@ -65,7 +65,15 @@ the displayed pixel aspect. For translated shaders, the recogniser
 requires a four-row perspective transform. Programs with an unrecognised
 clip transform keep their original positions. The flare pass translates its
 occlusion query to the projected display column, preserving the footprint used
-for the expected count, and applies the lens to the reflection billboards.
+for the expected count, and applies the lens to the reflection billboards and final composite fans.
+Light volumes and light trails use the same CPU projector. Both billboard
+emitters take the display transform about the centre of the player's viewport.
+The depth billboard supplies its guest window position twice. The vertex
+translator applies the same transform to its depth lookup in register 1
+and to its raster position. Its sprite UVs keep their authored range.
+On a perspective draw that samples scene colour or depth with a bump matrix,
+both coefficients contributing to horizontal displacement take the display
+lens. Asset-space bump matrices keep their material values.
 The exact reference draws both at the retail coordinates. The vertical field of view, depth, simulation
 camera and guest visibility records keep their retail values. Orthographic
 menu widgets use a uniform fit inside each player's viewport. A menu quad

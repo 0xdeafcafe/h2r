@@ -1040,10 +1040,12 @@ pub struct UiFit {
     pub transform: [f32; 4],
     // A flare moves in its viewport. UI widgets carry a local scissor.
     fit_scissor: bool,
+    /// Input register carrying a second copy of the guest window coordinates.
+    pub(crate) screen_input: Option<u8>,
 }
 
 impl UiFit {
-    pub const IDENTITY: Self = Self { transform: [1.0, 1.0, 0.0, 0.0], fit_scissor: true };
+    pub const IDENTITY: Self = Self { transform: [1.0, 1.0, 0.0, 0.0], fit_scissor: true, screen_input: None };
 
     /// Fit guest pixels uniformly on the output, about a pivot in guest
     /// window coordinates. Each player's viewport has its own pivot.
@@ -1063,12 +1065,21 @@ impl UiFit {
         if !ratio.is_finite() || ratio <= 0.0 || ratio == 1.0 { return None; }
         let x = ratio.min(1.0);
         let y = ratio.recip().min(1.0);
-        Some(Self { transform: [x, y, pivot[0] * (1.0 - x), pivot[1] * (1.0 - y)], fit_scissor: true })
+        Some(Self { transform: [x, y, pivot[0] * (1.0 - x), pivot[1] * (1.0 - y)], fit_scissor: true, screen_input: None })
     }
 
     /// A CPU-projected sprite or query retains its player's scissor.
     pub fn projected_sprite(scale: f32, offset: f32) -> Self {
-        Self { transform: [scale, 1.0, offset, 0.0], fit_scissor: false }
+        Self { transform: [scale, 1.0, offset, 0.0], fit_scissor: false, screen_input: None }
+    }
+
+    /// Also fit this vertex register before the guest shader uses it for a lookup.
+    pub fn with_screen_input(self, register: u8) -> Self {
+        Self { screen_input: Some(register), ..self }
+    }
+
+    pub(crate) fn applies_to_frame_sample(self) -> bool {
+        !self.fit_scissor
     }
 
     pub fn map_rect(&self, r: PixelRect) -> PixelRect {
@@ -1231,6 +1242,19 @@ impl ResolvedDraw {
 
     pub fn for_copy(&self, copy: TargetCopy) -> std::borrow::Cow<'_, Self> {
         if copy == TargetCopy::Reference { self.for_reference() } else { std::borrow::Cow::Borrowed(self) }
+    }
+
+    /// Bump offsets added to a projected scene lookup are screen displacements.
+    /// The reference copy has already restored the original projection.
+    #[cfg(feature = "gpu")]
+    pub(crate) fn bump_matrix(&self, stage: usize) -> [f32; 4] {
+        let extra = self.extras[stage];
+        let mut matrix = extra.bump_env_mat;
+        if extra.samples_frame && let Some((_, factor)) = &self.retail_constants {
+            matrix[0] *= *factor;
+            matrix[2] *= *factor;
+        }
+        matrix
     }
 
     /// Translate a scissor in the same guest-pixel space as its draw.

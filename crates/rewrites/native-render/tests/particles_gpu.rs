@@ -48,6 +48,7 @@ fn snapshot(call: u64, x: f32, tint: [f32; 4]) -> ImmediateDrawSnapshot {
             },
             pixel_options: Default::default(),
             flat_shading: false,
+            input_fetch: Default::default(),
         },
         vertex_uniforms,
         pixel_uniforms: Default::default(),

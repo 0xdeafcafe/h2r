@@ -105,7 +105,7 @@ pub fn resolve(
     pu.border = std::array::from_fn(|n| border_value(draw.state.stages[n].border_color, signs[n]));
     for n in 0..4 {
         let e = &draw.extras[n];
-        pu.bump_mat[n] = e.bump_env_mat;
+        pu.bump_mat[n] = draw.bump_matrix(n);
         pu.bump_lum[n] = [e.bump_env_lscale, e.bump_env_loffset, 0.0, 0.0];
         if let Some(info) = draw.texture_info[n]
             && info.format.layout() == gfx::format::Layout::Linear

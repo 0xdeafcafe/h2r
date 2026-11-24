@@ -62,6 +62,7 @@ pub struct ShaderSnapshot {
     pub pixel: psh::PixelShaderDef,
     pub pixel_options: psh::PixelOptions,
     pub flat_shading: bool,
+    pub input_fetch: [vsh::InputFetch; 16],
 }
 
 /// Already decoded effective register values, including inherited defaults.
@@ -259,6 +260,7 @@ struct ShaderKey {
     pixel: psh::PixelShaderDef,
     options: psh::PixelOptions,
     flat: bool,
+    input_fetch: [vsh::InputFetch; 16],
     provided: u16,
 }
 
@@ -388,6 +390,7 @@ impl ParticleRenderer {
             pixel: code,
             options: s.shader.pixel_options,
             flat: s.shader.flat_shading,
+            input_fetch: s.shader.input_fetch,
             provided: s.raw_vertices.as_ref().map_or(u16::MAX, |r| r.provided),
         };
         let uniforms = self
@@ -692,7 +695,7 @@ fn compile(
         &vsh::VertexOptions {
             provided_inputs: key.provided,
             flat_shading: key.flat,
-            ..Default::default()
+            input_fetch: key.input_fetch,
         },
     )
     .map_err(|e| Refused::Shader(format!("vertex: {e:?}")))?;

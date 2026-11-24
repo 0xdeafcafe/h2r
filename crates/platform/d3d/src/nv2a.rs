@@ -1447,10 +1447,16 @@ fn program_key(
         code.final_constant0 = 0;
         code.final_constant1 = 0;
 
+        let mut fetch = input_fetch(draw, fetch);
+        if let Some(register) = draw.ui_fit.and_then(|fit| fit.screen_input)
+            && let Some(input @ InputFetch::Float) = fetch.get_mut(usize::from(register))
+        {
+            *input = InputFetch::WindowFloat;
+        }
         let vertex_options = VertexOptions {
             provided_inputs: draw.shader.provided_inputs,
             flat_shading: flat,
-            input_fetch: input_fetch(draw, fetch),
+            input_fetch: fetch,
         };
         let signs: [u8; 4] = std::array::from_fn(|n| color_sign(draw.extras[n].color_sign));
         let border: [u8; 4] = std::array::from_fn(|n| {

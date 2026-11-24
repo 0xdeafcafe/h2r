@@ -23,6 +23,13 @@ pub const FLARE_QUERY_END: Point = Point::new("FLARE_QUERY_SCREEN_END", 0x0002_e
 // A single reflection's CPU-projected billboard, including native admission.
 pub const FLARE_REFLECTION: Point = Point::new("FLARE_REFLECTION_SCREEN_QUAD", 0x0002_f247, Sig::Site, DOC);
 pub const FLARE_REFLECTION_END: Point = Point::new("FLARE_REFLECTION_SCREEN_END", 0x0002_f24c, Sig::Site, DOC);
+// Calls to the two CPU-projected volume/trail emitters and the final flare fans.
+pub const VOLUME_SPRITE: Point = Point::new("VOLUME_SPRITE", 0x0004_fdd8, Sig::Site, DOC);
+pub const VOLUME_SPRITE_END: Point = Point::new("VOLUME_SPRITE_END", 0x0004_fddd, Sig::Site, DOC);
+pub const VOLUME_DEPTH: Point = Point::new("VOLUME_DEPTH", 0x0004_fd98, Sig::Site, DOC);
+pub const VOLUME_DEPTH_END: Point = Point::new("VOLUME_DEPTH_END", 0x0004_fd9d, Sig::Site, DOC);
+pub const FLARE_COMPOSITE_LOOP: Point = Point::new("FLARE_COMPOSITE_LOOP", 0x0004_7732, Sig::Site, DOC);
+pub const FLARE_COMPOSITE_DONE: Point = Point::new("FLARE_COMPOSITE_DONE", 0x0004_7863, Sig::Site, DOC);
 // Return PC at the call to the HUD anchor helper and the end of the
 // producer using that anchor. The sensor blips have their own call and
 // use the same bottom-left origin as the motion sensor bitmap widget.
@@ -74,6 +81,12 @@ pub fn instruction_entries() -> impl Iterator<Item = u32> {
         FLARE_QUERY_END.base,
         FLARE_REFLECTION.base,
         FLARE_REFLECTION_END.base,
+        VOLUME_SPRITE.base,
+        VOLUME_SPRITE_END.base,
+        VOLUME_DEPTH.base,
+        VOLUME_DEPTH_END.base,
+        FLARE_COMPOSITE_LOOP.base,
+        FLARE_COMPOSITE_DONE.base,
     ]
     .into_iter()
     .chain(GROUPS.iter().map(|(_, end)| end.base))

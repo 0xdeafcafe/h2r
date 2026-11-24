@@ -622,6 +622,7 @@ impl Pass {
                 pixel: program.pixel,
                 pixel_options: program.pixel_options,
                 flat_shading: program.vertex_options.flat_shading,
+                input_fetch: program.vertex_options.input_fetch,
             },
             vertex_uniforms: program.vertex_uniforms,
             pixel_uniforms: program.pixel_uniforms,
