@@ -31,9 +31,15 @@
 //! [`unit_aim`] and [`first_person_filters`] run the complete caller
 //! segments at `c7840` and `166d75`. The latter inlines the [`filter`]
 //! step `11eed0` for the seat axes and weapon slots.
+//!
+//! [`graph_walk`] is phase 1b's other loop: the animation graph's node
+//! walk `1dd1c0` by `sim_anim::graph_matrices`, checked against the guest
+//! at every call by its arm (docs/engine/skeleton-walk.md, "The graph walk
+//! `1dd1c0`").
 mod segments;
 pub use segments::{FIRST_PERSON_FILTER_SITES, UNIT_AIM_SITES, first_person_filters, unit_aim};
 pub mod filter;
+pub mod graph_walk;
 pub mod manager;
 pub mod markers;
 pub mod palette;

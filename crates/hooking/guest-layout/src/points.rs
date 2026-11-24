@@ -378,6 +378,10 @@ points! { ALL;
     SIM_MOPP_RAY @ 0x0030_09e0: [fn(query: ecx, state: stack 0, program: stack 1, segment: stack 2) ret 12], Hot; "docs/perf/sim-budget.md";
     OBJECT_TRANSFORM_COMPOSE @ 0x0014_2a60: [fn(parent: ecx, child: edx, out: stack 0) -> eax ret 4], Hot; "docs/perf/sim-budget.md";
     OBJECT_POSE_MATRIX @ 0x0014_21f0: [fn(out: stack 0, pose: stack 1) ret 8], Hot; "docs/perf/sim-budget.md";
+    /// The animation graph's node walk: every node reached from node 0
+    /// through the child and sibling links posed and composed with its
+    /// parent's matrix (`root` for node 0) into `matrices`.
+    ANIM_GRAPH_MATRICES @ 0x001d_d1c0: [fn(graph: stack 0, matrices: stack 1, records: stack 2, root: stack 3) ret 16], Hot; "docs/engine/skeleton-walk.md";
     /// Root node transform from two axes, scale and an optional parent.
     OBJECT_ROOT_TRANSFORM @ 0x000b_dc40: [fn(forward: eax, up: ecx, position: stack 0, scale: stack 1, mirror: stack 2, parent: stack 3, out: stack 4) ret 20], Hot; "docs/perf/sim-budget.md";
     ANIM_ROTATION_CODEC @ 0x0028_c530: [fn() ret 0], Hot; "docs/perf/sim-budget.md";
