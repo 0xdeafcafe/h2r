@@ -341,6 +341,8 @@ pub enum Choice {
     Ungroup(forge::OpId),
     /// **Lock group** (true) or **Unlock group** (false).
     LockGroup(forge::OpId, bool),
+    /// **Pivot**: change where the group turns.
+    SetGroupPivot(forge::OpId, bool),
     /// **Clear label**: take the label off a thing.
     ClearLabel(forge::Endpoint),
     /// **Reset orientation**: pitch and roll to zero, the yaw to the
@@ -1489,35 +1491,62 @@ pub struct GroupFacts {
     pub selected: bool,
     /// How many things are selected.
     pub selection: usize,
-    /// The thing's group: its op, its name and whether it is locked.
-    pub group: Option<(forge::OpId, String, bool)>,
+    /// The thing's active group.
+    pub group: Option<forge::GroupInfo>,
+    /// The session can change the pivot as one edit.
+    pub pivot_editable: bool,
 }
 
 /// The Properties page's rows for selecting and grouping, after the doc's
-/// rows: a thing in a group shows the group and ends or locks it; any
-/// other can be selected, and two or more selected can be grouped.
+/// rows. A member can edit its group. A free thing can be selected, and
+/// two or more selected things can be grouped.
 pub fn group_rows(f: &GroupFacts) -> Vec<SheetRow> {
-    if let Some((id, name, locked)) = &f.group {
-        return vec![
+    if let Some(group) = &f.group {
+        let mut rows = vec![
             SheetRow::new("Group", Act::Info)
-                .value(name)
+                .value(&group.name)
                 .describe("The group this object moves with."),
             SheetRow::new(
-                if *locked {
+                if group.locked {
                     "Unlock group"
                 } else {
                     "Lock group"
                 },
-                Act::Choose(Choice::LockGroup(*id, !locked)),
+                Act::Choose(Choice::LockGroup(group.id, !group.locked)),
             )
-            .describe(if *locked {
+            .describe(if group.locked {
                 "Aim at the group's objects again."
             } else {
                 "Stop aiming at the group's objects."
             }),
-            SheetRow::new("Ungroup", Act::Choose(Choice::Ungroup(*id)))
-                .describe("Let the objects move on their own."),
         ];
+        if f.pivot_editable {
+            let values = ["Centre", "First member"];
+            let current = usize::from(group.pivot_first);
+            const HELP: &str = "Choose where the group turns.";
+            let pick = PickSpec {
+                title: "Group pivot".into(),
+                values: values.map(String::from).to_vec(),
+                current,
+                details: vec![],
+                description: HELP.into(),
+                choices: vec![
+                    Choice::SetGroupPivot(group.id, false),
+                    Choice::SetGroupPivot(group.id, true),
+                ],
+                closes: true,
+            };
+            rows.push(
+                SheetRow::new("Pivot", Act::Pick(pick))
+                    .value(values[current])
+                    .describe(HELP),
+            );
+        }
+        rows.push(
+            SheetRow::new("Ungroup", Act::Choose(Choice::Ungroup(group.id)))
+                .describe("Let the objects move on their own."),
+        );
+        return rows;
     }
     let mut rows = vec![
         SheetRow::new(

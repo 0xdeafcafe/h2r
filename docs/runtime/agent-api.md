@@ -4790,12 +4790,13 @@ feature is enabled.
 | `forge.look.set` (act) | `{reset?, save?, model?, variant?, primary?, secondary?, tint?, light?, light_colour?}` | `{look, changed, saved, drawn_as}`: the look as accepted. `reset: true` is the default look (the marker in the seat's colour) and takes no field. `variant: null` clears the variant. `save: true` also writes the profile (`not_saved` says why when the file was not written). A refusal is an error whose `data` is `{code, message, ...fields}`: `monitor_look_invalid` (`field`, `reason`), `monitor_look_locked` (`field`, `reason`) or `monitor_look_no_session` outside a Forge session; the look stays as it was |
 | `forge.status.monitors` (read) | `{}` or omitted | `{monitors: [{seat, name, monitor, pose, look, drawn_as, peers_see, seen_ticks_ago}]}`. Offline it holds seat 0 once a session is open and is empty before. `pose` is `{position, yaw, pitch}` while the monitor camera exists. `drawn_as` is how the seat looks in its own view, always `hidden` with the reason; `peers_see` is what another machine draws |
 
-The input queue accepts `toggle`, `accept`, `back`, `delete`, `palette`,
+The input queue accepts `toggle`, `accept`, `select`, `back`, `delete`, `palette`,
 `properties`, `tools`, `settings`, `overlays`, `undo`, `redo` and `link`. `palette`
 opens the object menu and `properties` the aimed or held thing's
 Properties, as X does by what is aimed at. In the Objects tool `accept`
-picks up the thing aimed at, own or added, mark or body, and drops it,
-and `delete` removes it; `tools` opens the Tools
+picks up the thing aimed at, own or added, mark or body, and drops it.
+With empty hands `select` toggles selection of the ungrouped thing under
+the reticle, like holding A. `delete` removes the thing; `tools` opens the Tools
 picker, `settings` the Tool settings and `overlays` the Overlays page. `link` switches to the Links
 tool; there `accept` starts a link on the aimed teleporter flag or
 placed machine and makes it on the second, `delete` removes the aimed
