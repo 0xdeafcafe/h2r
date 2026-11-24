@@ -12,6 +12,10 @@
 //! query of its own inside a terminal, so the open queries are a stack per
 //! thread. Each observation belongs to the innermost one, matched by its
 //! VM (the interpreter's `ecx`) or its collection (the child method's).
+mod collector;
+pub use collector::CollectorCast;
+use collector::Setup;
+
 use super::Read;
 use super::layout::{self, mopp_ray as l};
 use super::preflight::CollisionMemory;
@@ -22,12 +26,11 @@ use sim_collision::mopp::ray::{
 };
 use sim_collision::{Bail, CollisionWorld, GuestRead};
 use sim_core::det;
-use std::cell::RefCell;
 use std::sync::Arc;
+use std::{cell::RefCell, collections::HashMap};
 
 /// Queries open at once on one thread. A deeper stack means observers
-/// were skipped (a query that never returned through its own); it is
-/// dropped and those queries go uncounted.
+/// exceeded the bound. Deeper entries are counted as depth declines.
 const MAX_SESSIONS: usize = 16;
 
 /// x87 registers the interpreter's sequences need free.
@@ -48,7 +51,7 @@ struct Session {
     collection: u32,
     code: u32,
     keys: bool,
-    inverse_scale: u32,
+    setup: Setup,
     entered: bool,
     check: RayCheck<Program>,
 }
@@ -59,8 +62,14 @@ enum Slot {
     Check(Box<Session>),
 }
 
+#[derive(Default)]
+struct Stack {
+    slots: Vec<Slot>,
+    overflow: usize,
+}
+
 thread_local! {
-    static SESSIONS: RefCell<Vec<Slot>> = const { RefCell::new(Vec::new()) };
+    static SESSIONS: RefCell<HashMap<u32, Stack>> = RefCell::default();
 }
 
 fn vec4(m: &impl GuestRead, at: u32) -> Result<Vec4, Bail> {
@@ -79,16 +88,23 @@ fn words(m: &impl GuestRead, at: u32) -> Result<[u32; 8], Bail> {
 
 /// The setup's inputs, read at its entry: `ecx` the VM; stack
 /// `collection, code, ray_input, parent_body, collector`.
-fn open(c: &CpuAbi, g: &mut impl CollisionMemory, world: &CollisionWorld) -> Result<Session, Bail> {
+fn prepare(
+    c: &CpuAbi,
+    g: &mut impl CollisionMemory,
+    world: &CollisionWorld,
+) -> Result<(Setup, RayWalk<Program>), Bail> {
+    if g.trapped() {
+        return Err(Bail::Trap);
+    }
     if !det::fast_env(c.mxcsr) || !det::x87_env(c.x87.control, c.x87.status, c.x87.tag, X87_FREE) {
         return Err(Bail::Env);
     }
     let precision = Precision::from_control(c.x87.control)?;
     let (sp, vm) = (c.esp, c.ecx);
-    let (collection, code, input, collector) = {
+    let (collection, code, input, parent, collector) = {
         let m = Read(&*g, (0, 0));
         let arg = |k: u32| m.u32(sp.wrapping_add(4 * k));
-        (arg(1)?, arg(2)?, arg(3)?, arg(5)?)
+        (arg(1)?, arg(2)?, arg(3)?, arg(4)?, arg(5)?)
     };
     let revision = g.mopp_revision(code)?;
     let m = Read(&*g, (0, 0));
@@ -113,43 +129,76 @@ fn open(c: &CpuAbi, g: &mut impl CollisionMemory, world: &CollisionWorld) -> Res
         precision,
         constants,
     };
-    let filter = m.u32(input.wrapping_add(l::INPUT_FILTER))?;
-    let fraction = m.u32(collector.wrapping_add(l::COLLECTOR_FRACTION))?;
-    let child = m.u32(m.u32(collection)?.wrapping_add(l::COLLECTION_CHILD))?;
-    // Every terminal reaches the collection when there is no filter; the
-    // instanced collection's method is where the key can be seen.
-    let keys = filter == 0 && child == l::INSTANCE_CHILD;
     let root = ray.root()?;
-    let walk = RayWalk::new(Program(tree), ray, &root);
+    // The setup reads arguments and ray data between VM and stack writes.
+    // Decline if forwarding through an overlap would change their values.
+    let aligned = sp.checked_sub(4).ok_or(Bail::Fault)? & !15;
+    let call_sp = aligned.checked_sub(0x60).ok_or(Bail::Fault)?;
+    let outputs = super::preflight::Outputs::new(g, sp, sp - call_sp, [(vm, 0x68)])?;
+    for (at, len) in [
+        tree.span(),
+        (input, 0x28),
+        (collector.wrapping_add(l::COLLECTOR_FRACTION), 4),
+        (sp.wrapping_add(4), 20),
+        (layout::ONE, 4),
+        (l::ROOT_SCALE, 4),
+    ] {
+        outputs.separate(g, at, len)?;
+    }
+    let setup = Setup::read(
+        &m,
+        vm,
+        code,
+        input,
+        parent,
+        collection,
+        collector,
+        root.inverse_scale,
+    )?;
+    Ok((setup, RayWalk::new(Program(tree), ray, &root)))
+}
+
+fn open(c: &CpuAbi, g: &mut impl CollisionMemory, world: &CollisionWorld) -> Result<Session, Bail> {
+    let (setup, walk) = prepare(c, g, world)?;
+    let m = Read(&*g, (0, 0));
+    let vm = c.ecx;
+    let code = setup.code;
+    let collection = setup.collection;
+    let fraction = setup.fraction;
+    let child = m.u32(m.u32(collection)?.wrapping_add(l::COLLECTION_CHILD))?;
+    let keys = setup.filter() == 0 && child == l::INSTANCE_CHILD;
     Ok(Session {
         vm,
         collection,
         code,
         keys,
-        inverse_scale: root.inverse_scale,
+        setup,
         entered: false,
         check: RayCheck::new(walk, keys, fraction),
     })
 }
 
 /// Before `0x00301800`: open a query.
-pub fn begin(c: &CpuAbi, g: &mut impl CollisionMemory, world: &CollisionWorld) {
-    let slot = match open(c, g, world) {
-        Ok(session) => Slot::Check(Box::new(session)),
-        Err(why) => Slot::Skip(why),
-    };
-    SESSIONS.with_borrow_mut(|open| {
-        if open.len() >= MAX_SESSIONS {
-            open.clear();
+pub fn begin(thread: u32, c: &CpuAbi, g: &mut impl CollisionMemory, world: &CollisionWorld) {
+    SESSIONS.with_borrow_mut(|sessions| {
+        let stack = sessions.entry(thread).or_default();
+        if stack.slots.len() == MAX_SESSIONS {
+            stack.overflow += 1;
+        } else {
+            stack.slots.push(match open(c, g, world) {
+                Ok(session) => Slot::Check(Box::new(session)),
+                Err(why) => Slot::Skip(why),
+            });
         }
-        open.push(slot);
     });
 }
 
 /// The innermost query, while it is still being compared.
-fn with_open(f: impl FnOnce(&mut Session)) {
+fn with_open(thread: u32, f: impl FnOnce(&mut Session)) {
     SESSIONS.with_borrow_mut(|open| {
-        if let Some(Slot::Check(session)) = open.last_mut()
+        if let Some(stack) = open.get_mut(&thread)
+            && stack.overflow == 0
+            && let Some(Slot::Check(session)) = stack.slots.last_mut()
             && !session.check.decided()
         {
             f(session);
@@ -158,26 +207,35 @@ fn with_open(f: impl FnOnce(&mut Session)) {
 }
 
 /// Before `0x003009e0`: `ecx` the VM; stack `frame, pc, segment`.
-pub fn enter(c: &CpuAbi, g: &impl CollisionMemory) {
-    with_open(|s| {
+pub fn enter(thread: u32, c: &CpuAbi, g: &impl CollisionMemory) {
+    with_open(thread, |s| {
+        if g.trapped() {
+            s.check.decline(Bail::Trap);
+            return;
+        }
         if s.vm != c.ecx {
             return;
         }
         let m = Read(g, (0, 0));
-        let read = || -> Result<(Event, u32, u32), Bail> {
+        let read = || -> Result<(Event, u32), Bail> {
             let arg = |k: u32| m.u32(c.esp.wrapping_add(4 * k));
             let frame = Frame::from_words(words(&m, arg(1)?)?);
             let pc = arg(2)?.wrapping_sub(s.code).wrapping_sub(l::BYTECODE);
             let segment = Segment::from_words(words(&m, arg(3)?)?);
             let fraction = m.u32(s.vm.wrapping_add(l::FRACTION))?;
-            let inverse = m.u32(s.vm.wrapping_add(l::INVERSE_SCALE))?;
-            Ok((Event::Enter { pc, frame, segment }, fraction, inverse))
+            Ok((Event::Enter { pc, frame, segment }, fraction))
         };
         match read() {
-            Ok((event, fraction, inverse)) => {
+            Ok((event, fraction)) => {
                 if !s.entered {
                     s.entered = true;
-                    s.check.expect("inverse scale", s.inverse_scale, inverse);
+                    match s.setup.first_difference(&m) {
+                        Ok(Some((offset, expected, actual))) => {
+                            s.check.expect_byte(offset, expected, actual);
+                        }
+                        Err(why) => s.check.decline(why),
+                        Ok(None) => {}
+                    }
                 }
                 s.check.observe(fraction, event);
             }
@@ -188,8 +246,12 @@ pub fn enter(c: &CpuAbi, g: &impl CollisionMemory) {
 
 /// Before the instanced collection's child method: `ecx` the collection;
 /// stack `key, buffer`.
-pub fn key(c: &CpuAbi, g: &impl CollisionMemory) {
-    with_open(|s| {
+pub fn key(thread: u32, c: &CpuAbi, g: &impl CollisionMemory) {
+    with_open(thread, |s| {
+        if g.trapped() {
+            s.check.decline(Bail::Trap);
+            return;
+        }
         if !s.keys || s.collection != c.ecx {
             return;
         }
@@ -204,12 +266,24 @@ pub fn key(c: &CpuAbi, g: &impl CollisionMemory) {
 }
 
 /// After `0x00301800` returns: close the innermost query and count it.
-pub fn end(g: &impl CollisionMemory, world: &CollisionWorld) {
-    let Some(slot) = SESSIONS.with_borrow_mut(Vec::pop) else {
+pub fn end(thread: u32, g: &impl CollisionMemory, world: &CollisionWorld) {
+    let Some(slot) = SESSIONS.with_borrow_mut(|sessions| {
+        let stack = sessions.get_mut(&thread)?;
+        if stack.overflow != 0 {
+            stack.overflow -= 1;
+            return Some(Slot::Skip(Bail::Depth));
+        }
+        let slot = stack.slots.pop();
+        if stack.slots.is_empty() {
+            sessions.remove(&thread);
+        }
+        slot
+    }) else {
         return;
     };
     let outcome = match slot {
         Slot::Skip(why) => Outcome::Unverified(Unverified::Bail(why)),
+        Slot::Check(_) if g.trapped() => Outcome::Unverified(Unverified::Bail(Bail::Trap)),
         Slot::Check(s) => match Read(g, (0, 0)).u32(s.vm.wrapping_add(l::FRACTION)) {
             Ok(fraction) => s.check.finish(fraction),
             Err(f) => Outcome::Unverified(Unverified::Bail(f.into())),
@@ -220,5 +294,5 @@ pub fn end(g: &impl CollisionMemory, world: &CollisionWorld) {
 
 /// Queries open on this thread.
 pub fn open_queries() -> usize {
-    SESSIONS.with_borrow(Vec::len)
+    SESSIONS.with_borrow(|sessions| sessions.values().map(|s| s.slots.len() + s.overflow).sum())
 }

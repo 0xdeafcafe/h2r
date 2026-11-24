@@ -13,6 +13,11 @@ use sim_collision::{
 };
 
 pub trait CollisionMemory: Memory {
+    /// Reads must remain attributable to the guest instruction under a trap.
+    fn trapped(&self) -> bool {
+        false
+    }
+
     /// Establish a version for this BSP and its decode constants. The
     /// default is for immutable bytes and a world dedicated to one fixture.
     fn bsp_revision(&mut self, _addr: u32) -> Result<(u64, u64), Bail> {
@@ -52,6 +57,10 @@ pub trait CollisionMemory: Memory {
 }
 
 impl CollisionMemory for Guest {
+    fn trapped(&self) -> bool {
+        self.has_trap()
+    }
+
     fn bsp_revision(&mut self, addr: u32) -> Result<(u64, u64), Bail> {
         super::sources::revision(self, addr)
     }

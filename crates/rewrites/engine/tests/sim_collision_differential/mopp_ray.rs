@@ -109,8 +109,13 @@ fn simulate(image: &[u8], case: &Case) -> Result<Vec<u32>, Bail> {
 }
 
 fn setup<'a>(image: &'a [u8], rng: &mut Rng, case: &Case) -> (CpuAbi, Ram<'a>) {
+    let (cpu, mut ram) = setup_at(image, rng, case, CODE);
+    ram.store(CODE, &case.code.to_block());
+    (cpu, ram)
+}
+
+fn setup_at<'a>(image: &'a [u8], rng: &mut Rng, case: &Case, code_ptr: u32) -> (CpuAbi, Ram<'a>) {
     let mut m = fresh(image);
-    m.store(CODE, &case.code.to_block());
     m.store(VM, &[0xab; 0x70]);
     for k in 0..4u32 {
         m.float(INPUT + 4 * k, case.from[k as usize]);
@@ -135,7 +140,7 @@ fn setup<'a>(image: &'a [u8], rng: &mut Rng, case: &Case) -> (CpuAbi, Ram<'a>) {
     m.word(VTABLES + 0x100 + 0x24, FAKE_SHAPE_RAY);
     m.word(FILTER, VTABLES + 0x200);
     m.word(VTABLES + 0x200, FAKE_FILTER);
-    for (k, arg) in [COLLECTION, CODE, INPUT, PARENT, COLLECTOR]
+    for (k, arg) in [COLLECTION, code_ptr, INPUT, PARENT, COLLECTOR]
         .into_iter()
         .enumerate()
     {
@@ -179,18 +184,18 @@ fn run(oracle: &mut Oracle<'_>, c: &CpuAbi, m: &mut Ram<'_>, world: &CollisionWo
     for _ in 0..4_000_000 {
         cpu.eip = pc;
         if pc == HARNESS_EXIT {
-            arm::end(&*m, world);
+            arm::end(1, &*m, world);
             return out;
         }
         if pc == points::COLLISION_MOPP_RAY.base {
-            arm::begin(&lifted::cpu::from_interp(&cpu), &mut *m, world);
+            arm::begin(1, &lifted::cpu::from_interp(&cpu), &mut *m, world);
         } else if pc == points::SIM_MOPP_RAY.base {
             out.enters += 1;
-            arm::enter(&lifted::cpu::from_interp(&cpu), &*m);
+            arm::enter(1, &lifted::cpu::from_interp(&cpu), &*m);
         } else if pc == l::INSTANCE_CHILD || pc == FAKE_COLLECTION_CHILD {
             // `this` the collection; stack: key, buffer; `ret 8`.
             if pc == l::INSTANCE_CHILD {
-                arm::key(&lifted::cpu::from_interp(&cpu), &*m);
+                arm::key(1, &lifted::cpu::from_interp(&cpu), &*m);
             }
             assert_eq!(cpu.gpr[1], COLLECTION, "the collection's `this`");
             out.keys.push(arg(&cpu, &*m, 0));
@@ -252,8 +257,10 @@ fn check_case(
     assert_eq!(
         r.mismatched,
         0,
-        "{label}: {}\n{case:?}",
-        r.first_mismatch.as_deref().unwrap_or("")
+        "{label}: {}, control {:#x}, {} program bytes",
+        r.first_mismatch.as_deref().unwrap_or(""),
+        case.control,
+        case.code.bytecode.len()
     );
     assert!(got.enters > 0, "{label}: the interpreter never ran");
     let unverified: u64 = r.unverified.iter().sum();
@@ -264,7 +271,11 @@ fn check_case(
     );
     match expected {
         Ok(keys) => {
-            assert_eq!(got.keys, keys, "{label}: keys\n{case:?}");
+            assert_eq!(
+                got.keys, keys,
+                "{label}: keys, from {:?}, to {:?}",
+                case.from, case.to
+            );
             if case.instanced && !case.filter {
                 assert_eq!(r.matched, 1, "{label}: observed keys, not matched: {r:?}");
             }
@@ -472,3 +483,6 @@ fn mopp_ray_reports_a_deliberate_mismatch() {
         assert_eq!(arm::open_queries(), 0);
     });
 }
+
+#[path = "mopp_ray/disc_rays.rs"]
+mod disc_rays;
