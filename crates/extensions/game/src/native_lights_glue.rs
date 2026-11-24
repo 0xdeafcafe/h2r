@@ -691,7 +691,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             ranges: prepared.draws.iter().map(|draw| draw.ranges.len()).sum(),
             slots: Vec::new(),
         };
-        let pass = RunPass {
+        let pass: Box<dyn d3d::ExternalPass> = Box::new(RunPass {
             retained: None,
             light: prepared,
             view: None,
@@ -699,8 +699,19 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             gel_slot: None,
             fallback: None,
             colour_only: colour_mask,
+        });
+        // An object mask the shadow host offered a private chain draws into
+        // that chain's pair, not target 10 (native-shadow-layers.md).
+        let private = if colour_mask {
+            crate::native_shadow_chain::take()
+        } else {
+            None
         };
-        d.prepare_external_bound(&mut DeviceMemory(mem), plan, Box::new(pass), Vec::new())
+        let pass: Box<dyn d3d::ExternalPass> = match private {
+            Some(chain) => Box::new(crate::native_shadow_chain::PrivateCasters::new(pass, chain)),
+            None => pass,
+        };
+        d.prepare_external_bound(&mut DeviceMemory(mem), plan, pass, Vec::new())
             .map_err(|_| Keep::Unsupported("device error preparing the scene shadow pass"))?
             .ok_or(Keep::Unsupported("the scene shadow pass is not ready"))?
             .commit();
