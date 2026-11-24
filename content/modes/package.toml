@@ -134,6 +134,24 @@ source = "rules/matchmaking/assault.rules"
 kind = "rules"
 source = "rules/matchmaking/territories.rules"
 
+# Firefight's wave sets, in the set's order (firefight::builtin).
+
+[[item]]
+kind = "rules"
+source = "firefight/holdout.firefight.json"
+
+[[item]]
+kind = "rules"
+source = "firefight/attrition.firefight.json"
+
+[[item]]
+kind = "rules"
+source = "firefight/last-stand.firefight.json"
+
+[[item]]
+kind = "rules"
+source = "firefight/crossfire.firefight.json"
+
 [[item]]
 kind = "playlist"
 source = "playlists/default.toml"

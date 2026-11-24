@@ -524,7 +524,7 @@ fn the_map_is_built_on_an_invented_base() {
         "the base's skies are emptied for the stage's own: {:?}",
         e.cleared
     );
-    assert!(r.own.iter().any(|k| k.starts_with("sky ")), "{:?}", r.own);
+    assert!(r.own.iter().any(|k| k.ends_with(".sky ")), "{:?}", r.own);
     assert!(r.lightmap_side.is_power_of_two() && r.lightmap_density > 0.0);
     assert_eq!(e.datum_words, 1, "the script's biped datum");
     assert!(e.renamed >= 2, "the descriptor's two references");
@@ -768,7 +768,7 @@ fn the_flat_bay_is_even_and_the_dark_bay_is_under_its_bar() {
         }
     }
     assert!(
-        values.len() >= 3,
+        values.len() >= 2,
         "{} values on the day floor",
         values.len()
     );

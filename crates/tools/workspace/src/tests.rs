@@ -410,6 +410,7 @@ fn a_kind_with_no_builder_stops_by_name() {
             Kind::Playlist,
             Kind::Map,
             Kind::MapPatch,
+            Kind::Kit,
         ]
     );
 }
@@ -765,20 +766,7 @@ fn the_first_party_huds_read() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../content");
     let mut seen = Vec::new();
     for id in ["superbounce", "forge", "modes"] {
-        let dir = root.join(id);
-        let mut files = BTreeMap::new();
-        for rel in ["package.toml"].into_iter().chain(match id {
-            "superbounce" => vec![
-                "huds/superbounce.hud.yaml",
-                "huds/superbounce-readout.hud.yaml",
-                "huds/pill-block.hud.yaml",
-            ],
-            "forge" => vec!["huds/forge.hud.yaml", "huds/forge-readout.hud.yaml"],
-            _ => vec!["huds/firefight.hud.yaml"],
-        }) {
-            files.insert(rel.to_owned(), std::fs::read(dir.join(rel)).unwrap());
-        }
-        let loaded = Loaded::from_files(&format!("content/{id}"), &files).unwrap();
+        let loaded = Loaded::from_dir(&root.join(id)).unwrap();
         assert_eq!(check_package(&loaded), vec![], "{id}");
         seen.extend(huds(&[loaded]).into_iter().map(|(_, h)| h.name));
     }

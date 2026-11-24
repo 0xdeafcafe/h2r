@@ -49,7 +49,17 @@ fn our_kit_packages_check_clean_and_carry_their_kit() {
     for (id, kit) in [("core", Kit::Glyphs), ("halo1", Kit::CampaignCards)] {
         let loaded = package(id);
         assert_eq!(check_package(&loaded), vec![], "{id}");
-        assert!(!loaded.package.manifest.has_sim_item(), "{id}");
+        // A kit is no sim item (core also carries the retail scripts).
+        assert!(
+            loaded
+                .package
+                .manifest
+                .items
+                .iter()
+                .filter(|i| i.kind == Kind::Kit)
+                .all(|i| i.kind.scope() != content::package::ItemScope::Sim),
+            "{id}"
+        );
         assert!(PackageRewrite::new(vec![loaded]).has_kit(kit), "{id}");
     }
 }
@@ -333,5 +343,7 @@ fn a_wave_set_that_does_not_read_is_refused() {
     let err = check_text(&set, serde_json::to_string(&def).unwrap().as_bytes()).unwrap_err();
     assert!(err.why.contains("round"), "{}", err.why);
     let script = item(Kind::Rules, Some("rules/slayer.rules"));
-    assert!(check_text(&script, b"").unwrap_err().why.contains("wave sets"));
+    // A script is the modes builders', checked as a script and not as a set.
+    let err = check_text(&script, b"").unwrap_err();
+    assert!(!err.why.contains("Firefight"), "{}", err.why);
 }

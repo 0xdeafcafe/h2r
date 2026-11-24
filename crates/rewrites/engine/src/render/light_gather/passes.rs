@@ -654,8 +654,9 @@ mod tests {
         // Another invocation's frame.
         let other = Plan { entry_esp: entry_esp + 0x40, ..plan.clone() };
         assert!(!call.matches(&m, &other, regs).unwrap());
-        // A changed pushed weight.
-        m.put_u32(esp + 0x10, 0);
+        // A weight in the entry's argument slot other than the one pushed
+        // (the call was read before, so its pushed words are fixed).
+        m.put_u32(entry_esp + 0x10, 0);
         assert!(!call.matches(&m, &plan, regs).unwrap());
         // A Rust body's call: its return slot holds a token.
         m.put_u32(esp, 0xdead_0000);

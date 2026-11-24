@@ -188,6 +188,7 @@ mod tests {
         let r = Recipe::from_toml(
             "name = \"two\"\ntitle = \"Two\"\npurpose = \"p\"\nbase = \"fixture\"\n\
              fidelity = \"full\"\nanchor = { at = [0.0, 0.0, 0.0] }\n\
+             clear = [\"starting_locations\"]\n\
              [[place]]\nblock = \"starting_locations\"\nat = [4.0, 0.0, 0.0]\nfloor = false\n\
              [[place]]\nblock = \"starting_locations\"\nat = [8.0, 0.0, 0.0]\nfloor = false\n",
         )
