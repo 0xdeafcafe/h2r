@@ -1,0 +1,11 @@
+"""From the signed-in Xbox Live menu: forge.py 'Map Pack/Sanctuary' deltatap."""
+import sys
+from menu import change_map, choose, launch, select_path, verify
+
+path, map_name = sys.argv[1:]
+choose("Forge")
+verify("ui.lobby.tabs", lambda state: state.get("selected") == "forge")
+change_map()
+select_path(path)
+launch(map_name)
+verify("forge.status", lambda state: state.get("monitor") and state.get("tool") == "objects")
