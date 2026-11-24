@@ -25,7 +25,7 @@ Everything not marked **Code** is **Design**.
 ## What the built language leaves unchecked
 
 **Code**, `crates/formats/rules/src/lang/lower.rs` and the built-ins in
-`crates/formats/rules/src/builtin`:
+`content/core/rules/` and `content/modes/rules/`:
 
 | Gap | Where it shows |
 |---|---|
@@ -681,7 +681,7 @@ group.
 
 ## The built-ins, rewritten
 
-The 12 scripts in `crates/formats/rules/src/builtin`, the examples in
+The 12 scripts in `content/core/rules/` and `content/modes/rules/`, the examples in
 rules-engine.md and the h2-rules skill, and the scripts in
 `crates/formats/rules/tests` are rewritten by hand in the slice that
 changes the form they use (slices 2 and 5). Their tests keep the calls

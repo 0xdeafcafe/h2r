@@ -278,8 +278,8 @@ pub fn listed() -> &'static [Builtin] {
     static BUILT: OnceLock<Vec<Builtin>> = OnceLock::new();
     BUILT.get_or_init(|| {
         let mut out = Vec::new();
-        for b in ::rules::builtin::LISTED {
-            match ::rules::compile(b.source) {
+        for b in crate::community_variants::scripts() {
+            match ::rules::compile(&b.source) {
                 Ok(ir) => out.push(Builtin {
                     engine: ir.header.engine(),
                     blob: ir.encode(),

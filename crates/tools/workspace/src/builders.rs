@@ -31,7 +31,7 @@ pub struct Builder {
     pub check: fn(&Job<'_>) -> Result<(), Failure>,
 }
 
-static REGISTRY: [Builder; 10] = [
+static REGISTRY: [Builder; 13] = [
     Builder {
         kind: Kind::Tag,
         name: "tag",
@@ -92,6 +92,24 @@ static REGISTRY: [Builder; 10] = [
         apply: crate::screens::apply_edits,
         check: crate::screens::check_edits,
     },
+    Builder {
+        kind: Kind::Rules,
+        name: "rules",
+        apply: crate::modes::apply_rules,
+        check: crate::modes::check_rules,
+    },
+    Builder {
+        kind: Kind::Variant,
+        name: "variant",
+        apply: crate::modes::apply_variant,
+        check: crate::modes::check_variant,
+    },
+    Builder {
+        kind: Kind::Playlist,
+        name: "playlist",
+        apply: crate::modes::apply_playlist,
+        check: crate::modes::check_playlist,
+    },
 ];
 
 /// Every builder this build has. The other kinds of "Contents" are named
@@ -114,7 +132,7 @@ pub fn builder(kind: Kind) -> Option<&'static Builder> {
 /// and rows of the map's gestalt.
 pub fn changes_map(item: &Item) -> bool {
     match item.kind {
-        Kind::Hud | Kind::Data => false,
+        Kind::Hud | Kind::Data | Kind::Rules | Kind::Variant | Kind::Playlist => false,
         Kind::Sound => item.tag.as_deref().is_some_and(|t| !t.is_empty()),
         _ => true,
     }

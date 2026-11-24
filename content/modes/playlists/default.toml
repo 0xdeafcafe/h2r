@@ -1,0 +1,282 @@
+# The default hopper's playlists: a classic Halo 2 lineup written as data
+# (crates/live/live-proto/src/hopper/defaults.rs builds the same lineup in
+# Rust; docs/live/live-matchmaking.md, "6.8 The default set"). A map is
+# named as the level list names it; the server resolves each name to its
+# map id. An entry's `variant` is the key of a matchmaking script
+# (`rules/matchmaking/<key>.rules`) and `maps` is a list or the name of one
+# of the lists below. A playlist with `entries_of` plays the entries of
+# the playlist with that id. The first eight are the human playlists, the
+# rest Clankermatch's.
+
+[maps]
+small_ffa = ["Lockout", "Midship", "Ivory Tower", "Beaver Creek", "Ascension", "Foundation", "Warlock", "Sanctuary", "Elongation", "Gemini"]
+small_team = ["Lockout", "Midship", "Ivory Tower", "Beaver Creek", "Ascension", "Colossus", "Foundation", "Warlock", "Sanctuary", "Turf", "Elongation", "Backwash", "Relic"]
+big = ["Coagulation", "Headlong", "Zanzibar", "Waterworks", "Burial Mounds", "Containment", "Terminal", "Relic", "Gemini"]
+
+[[playlist]]
+id = 1
+title = "Rumble Pit"
+description = "Every player for themselves, up to 8. Slayer, with some Oddball and King of the Hill."
+rules = { kind = "free-for-all", ranked = true, players = [4, 8] }
+base_wait_ms = 30000
+search_timeout_ms = 150000
+
+[[playlist.entry]]
+variant = "rumble_slayer"
+maps = "small_ffa"
+weight = 10
+
+[[playlist.entry]]
+variant = "oddball"
+maps = ["Lockout", "Midship", "Warlock"]
+weight = 3
+
+[[playlist.entry]]
+variant = "king_of_the_hill"
+maps = ["Ivory Tower", "Ascension", "Sanctuary"]
+weight = 3
+
+[[playlist]]
+id = 2
+title = "Team Slayer"
+description = "Four against four Slayer on the small and medium maps."
+rules = { kind = "ranked-teams", teams = 2, team_size = [3, 4], party = [1, 4], party_as_team = [3, 4] }
+base_wait_ms = 30000
+search_timeout_ms = 150000
+
+[[playlist.entry]]
+variant = "team_slayer"
+maps = "small_team"
+weight = 10
+
+[[playlist.entry]]
+variant = "team_slayer"
+maps = ["Zanzibar"]
+weight = 4
+
+[[playlist]]
+id = 3
+title = "Team Skirmish"
+description = "Two against two. Bring a partner or find one here."
+rules = { kind = "ranked-teams", teams = 2, team_size = [2, 2], party = [1, 2], party_as_team = [2, 2] }
+base_wait_ms = 30000
+search_timeout_ms = 150000
+
+[[playlist.entry]]
+variant = "team_slayer"
+maps = ["Lockout", "Midship", "Ivory Tower", "Beaver Creek", "Foundation", "Warlock", "Sanctuary"]
+weight = 10
+
+[[playlist.entry]]
+variant = "teamball"
+maps = ["Midship", "Lockout", "Warlock"]
+weight = 3
+
+[[playlist]]
+id = 4
+title = "Team Snipers"
+description = "Four against four with sniper rifles and no vehicles."
+rules = { kind = "ranked-teams", teams = 2, team_size = [3, 4], party = [1, 4] }
+base_wait_ms = 30000
+search_timeout_ms = 150000
+
+[[playlist.entry]]
+variant = "team_snipers"
+maps = ["Zanzibar", "Coagulation", "Burial Mounds", "Ascension", "Colossus", "Lockout", "Headlong", "Containment", "Terminal", "Relic", "Sanctuary"]
+weight = 10
+
+[[playlist]]
+id = 5
+title = "Big Team Battle"
+description = "Up to eight a side on the big maps: Slayer, CTF, Assault and Territories."
+rules = { kind = "ranked-teams", teams = 2, team_size = [5, 8], party = [1, 5] }
+base_wait_ms = 45000
+search_timeout_ms = 300000
+
+[[playlist.entry]]
+variant = "team_slayer"
+maps = "big"
+weight = 10
+
+[[playlist.entry]]
+variant = "classic_ctf"
+maps = ["Coagulation", "Zanzibar", "Headlong", "Waterworks", "Containment", "Terminal", "Relic"]
+weight = 6
+
+[[playlist.entry]]
+variant = "assault"
+maps = ["Zanzibar", "Coagulation", "Burial Mounds", "Containment", "Terminal"]
+weight = 4
+
+[[playlist.entry]]
+variant = "territories"
+maps = ["Headlong", "Waterworks", "Coagulation", "Containment", "Relic"]
+weight = 4
+
+[[playlist]]
+id = 6
+title = "Team Objective"
+description = "Four against four: Capture the Flag, Assault, Territories, King and Oddball."
+rules = { kind = "ranked-teams", teams = 2, team_size = [3, 4], party = [1, 4], party_as_team = [3, 4] }
+base_wait_ms = 30000
+search_timeout_ms = 150000
+
+[[playlist.entry]]
+variant = "classic_ctf"
+maps = ["Beaver Creek", "Midship", "Colossus", "Ascension", "Sanctuary"]
+weight = 6
+
+[[playlist.entry]]
+variant = "assault"
+maps = ["Midship", "Beaver Creek", "Turf"]
+weight = 4
+
+[[playlist.entry]]
+variant = "territories"
+maps = ["Lockout", "Ascension", "Colossus", "Warlock"]
+weight = 4
+
+[[playlist.entry]]
+variant = "team_king"
+maps = ["Ivory Tower", "Midship", "Warlock"]
+weight = 3
+
+[[playlist.entry]]
+variant = "teamball"
+maps = ["Lockout", "Beaver Creek", "Sanctuary"]
+weight = 3
+
+[[playlist]]
+id = 7
+title = "Free for All"
+description = "Unranked free for all, 2 to 8 players. Parties welcome."
+rules = { kind = "free-for-all", ranked = false, players = [2, 8] }
+base_wait_ms = 30000
+search_timeout_ms = 150000
+
+[[playlist.entry]]
+variant = "rumble_slayer"
+maps = "small_ffa"
+weight = 10
+
+[[playlist.entry]]
+variant = "oddball"
+maps = ["Midship", "Warlock"]
+weight = 3
+
+[[playlist.entry]]
+variant = "king_of_the_hill"
+maps = ["Ascension", "Sanctuary"]
+weight = 3
+
+[[playlist]]
+id = 8
+title = "Unranked Teams"
+description = "Unranked team games for parties of any size, 2 to 4 a side."
+rules = { kind = "unranked-teams", teams = 2, team_size = [2, 4], uneven = true }
+base_wait_ms = 30000
+search_timeout_ms = 150000
+
+[[playlist.entry]]
+variant = "team_slayer"
+maps = "small_team"
+weight = 10
+
+[[playlist.entry]]
+variant = "classic_ctf"
+maps = ["Beaver Creek", "Midship", "Sanctuary"]
+weight = 4
+
+[[playlist.entry]]
+variant = "team_king"
+maps = ["Ivory Tower", "Warlock"]
+weight = 3
+
+[[playlist.entry]]
+variant = "teamball"
+maps = ["Lockout", "Sanctuary"]
+weight = 3
+
+[[playlist]]
+id = 9
+title = "Rumble Pit"
+description = "Ranked Clanker free for all, up to 8. Bots fill every seat your party does not."
+rules = { kind = "free-for-all", ranked = false, players = [2, 8] }
+base_wait_ms = 30000
+search_timeout_ms = 150000
+clankers = { ranked = true }
+entries_of = 1
+
+[[playlist]]
+id = 10
+title = "Team Slayer"
+description = "Ranked Clanker Team Slayer, four against four. Bots fill every seat your party does not."
+rules = { kind = "unranked-teams", teams = 2, team_size = [1, 4], uneven = true }
+base_wait_ms = 30000
+search_timeout_ms = 150000
+clankers = { ranked = true }
+entries_of = 2
+
+[[playlist]]
+id = 11
+title = "Team Skirmish"
+description = "Ranked Clanker Team Skirmish, two against two. Bots fill every seat your party does not."
+rules = { kind = "unranked-teams", teams = 2, team_size = [1, 2], uneven = true }
+base_wait_ms = 30000
+search_timeout_ms = 150000
+clankers = { ranked = true }
+entries_of = 3
+
+[[playlist]]
+id = 12
+title = "Team Snipers"
+description = "Ranked Clanker Team Snipers, four against four. Bots fill every seat your party does not."
+rules = { kind = "unranked-teams", teams = 2, team_size = [1, 4], uneven = true }
+base_wait_ms = 30000
+search_timeout_ms = 150000
+clankers = { ranked = true }
+entries_of = 4
+
+[[playlist]]
+id = 13
+title = "Big Team Battle"
+description = "Ranked Clanker Big Team Battle on big maps. Bots fill every seat your party does not."
+rules = { kind = "unranked-teams", teams = 2, team_size = [1, 8], uneven = true }
+base_wait_ms = 45000
+search_timeout_ms = 300000
+clankers = { ranked = true }
+entries_of = 5
+
+[[playlist]]
+id = 14
+title = "BTB Heavies"
+description = "Ranked Clanker Team Heavies on big maps. Bots fill every seat your party does not."
+rules = { kind = "unranked-teams", teams = 2, team_size = [1, 8], uneven = true }
+base_wait_ms = 45000
+search_timeout_ms = 300000
+clankers = { ranked = true }
+
+[[playlist.entry]]
+variant = "team_heavies"
+maps = "big"
+weight = 10
+
+[[playlist]]
+id = 15
+title = "Solo Training"
+description = "Unranked Clanker free for all training, up to 8. Bots fill every seat your party does not."
+rules = { kind = "free-for-all", ranked = false, players = [2, 8] }
+base_wait_ms = 30000
+search_timeout_ms = 150000
+clankers = { ranked = false }
+entries_of = 7
+
+[[playlist]]
+id = 16
+title = "Team Training"
+description = "Unranked Clanker team training, four against four. Bots fill every seat your party does not."
+rules = { kind = "unranked-teams", teams = 2, team_size = [1, 4], uneven = true }
+base_wait_ms = 30000
+search_timeout_ms = 150000
+clankers = { ranked = false }
+entries_of = 8

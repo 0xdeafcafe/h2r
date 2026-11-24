@@ -1,9 +1,11 @@
 //! The scripted modes of the built-in list, run over scenarios on the fake
 //! game (`rules::scenario`): what each one does in a whole round. The
-//! JSON files under `scenarios/` are the ones `h2 rules run` takes.
+//! JSON files under `scenarios/` are the ones `h2 rules run` takes. The
+//! scripts are the `modes` package's, read through its manifest as a set
+//! of packages gives them (`rules::builtin::package_sources`).
 
 use rules::bodies::Body;
-use rules::builtin;
+use rules::builtin::{Registry, package_sources};
 use rules::fake::FakeSpawns;
 use rules::ir::OptionValue;
 use rules::labels::Class;
@@ -12,6 +14,32 @@ use rules::vm::Arg;
 
 const SIEGE_ATTACKERS_WIN: &str = include_str!("scenarios/siege_attackers_win.json");
 const SIEGE_RESPAWN_WAVES: &str = include_str!("scenarios/siege_respawn_waves.json");
+
+/// The scripts of the `core` and `modes` packages, from their folders.
+fn set() -> &'static Registry {
+    static SET: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
+    SET.get_or_init(|| {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../content");
+        let mut sources = Vec::new();
+        for package in ["core", "modes"] {
+            let dir = root.join(package);
+            let text = std::fs::read_to_string(dir.join("package.toml")).unwrap();
+            let manifest = content::package::Manifest::from_toml(&text).unwrap();
+            let (mut s, problems) =
+                package_sources(&manifest, |name| std::fs::read(dir.join(name)).ok());
+            assert_eq!(problems, Vec::<String>::new());
+            sources.append(&mut s);
+        }
+        let r = Registry::from_sources(sources);
+        assert_eq!(r.problems, Vec::<String>::new());
+        r
+    })
+}
+
+/// The script of a `modes` item, by the stem of its file.
+fn script(key: &str) -> &'static str {
+    &set().script(key).unwrap_or_else(|| panic!("the set has no {key}")).source
+}
 
 const BR: &str = "objects/weapons/rifle/battle_rifle/battle_rifle";
 const MAGNUM: &str = "objects/weapons/pistol/magnum/magnum";
@@ -41,7 +69,7 @@ fn tag(path: &str) -> Arg {
 }
 
 fn siege(options: &[(&str, i64)]) -> (rules::Ir, Option<u32>) {
-    let ir = rules::compile(builtin::SIEGE).unwrap();
+    let ir = rules::compile(script("siege")).unwrap();
     let given: Vec<(String, OptionValue)> = options
         .iter()
         .map(|(k, v)| (k.to_string(), OptionValue::Int(*v)))
@@ -499,7 +527,7 @@ const LADDER: [&str; 12] = [
 ];
 
 fn gun_game(options: &[(&str, bool)]) -> (rules::Ir, Option<u32>) {
-    let ir = rules::compile(builtin::GUN_GAME).unwrap();
+    let ir = rules::compile(script("gun_game")).unwrap();
     let given: Vec<(String, OptionValue)> = options
         .iter()
         .map(|(k, v)| (k.to_string(), OptionValue::Bool(*v)))
@@ -590,7 +618,7 @@ const RACE_LAPS: &str = include_str!("scenarios/race_laps.json");
 /// and wins; player 1 skips hill 3 and never laps.
 #[test]
 fn race_laps_run_the_hills_in_number_order_from_the_lowest() {
-    let ir = rules::compile(builtin::RACE).unwrap();
+    let ir = rules::compile(script("race")).unwrap();
     let s: Scenario = serde_json::from_str(RACE_LAPS).unwrap();
     let r = scenario::run(ir, &s).unwrap();
     assert_eq!(r.script_error, None);
@@ -613,7 +641,7 @@ fn race_laps_run_the_hills_in_number_order_from_the_lowest() {
 /// A map whose corners are all one hill has no track: nobody laps.
 #[test]
 fn race_needs_two_hills() {
-    let ir = rules::compile(builtin::RACE).unwrap();
+    let ir = rules::compile(script("race")).unwrap();
     let mut s: Scenario = serde_json::from_str(RACE_LAPS).unwrap();
     for t in s.map.as_mut().unwrap() {
         t.number = Some(1);
@@ -627,7 +655,7 @@ fn race_needs_two_hills() {
 /// A map with fewer than three hill corners is no Race map.
 #[test]
 fn race_needs_a_hills_corners() {
-    let ir = rules::compile(builtin::RACE).unwrap();
+    let ir = rules::compile(script("race")).unwrap();
     let mut s: Scenario = serde_json::from_str(RACE_LAPS).unwrap();
     s.map.as_mut().unwrap().truncate(2);
     match scenario::run(ir, &s) {
@@ -649,7 +677,7 @@ const VIP_SUCCESSION: &str = include_str!("scenarios/vip_succession.json");
 /// limit (7 here) wins.
 #[test]
 fn vip_the_role_passes_on_and_an_enemy_vip_scores_more() {
-    let ir = rules::compile(builtin::VIP).unwrap();
+    let ir = rules::compile(script("vip")).unwrap();
     let s: Scenario = serde_json::from_str(VIP_SUCCESSION).unwrap();
     let r = scenario::run(ir, &s).unwrap();
     assert_eq!(r.script_error, None);
@@ -674,7 +702,7 @@ fn vip_the_role_passes_on_and_an_enemy_vip_scores_more() {
 /// it, and is worth the VIP's points again.
 #[test]
 fn vip_a_quit_hands_the_role_on_and_a_lone_vip_keeps_it() {
-    let ir = rules::compile(builtin::VIP).unwrap();
+    let ir = rules::compile(script("vip")).unwrap();
     let mut s: Scenario = serde_json::from_str(VIP_SUCCESSION).unwrap();
     s.variant.insert("score_limit".into(), 0);
     s.ticks = vec![ScenarioTick::default(); 6];
@@ -698,4 +726,13 @@ fn vip_a_quit_hands_the_role_on_and_a_lone_vip_keeps_it() {
     assert_eq!(r.game.players[&0].score, 6);
     // No score limit: the round runs on.
     assert_eq!(r.ended_at, None);
+}
+
+/// The set is what the constants are: the files the tests above read are
+/// the ones `rules::builtin` bakes.
+#[test]
+fn the_scripts_of_the_set_are_the_baked_ones() {
+    let baked = Registry::baked();
+    assert_eq!(baked.problems, Vec::<String>::new());
+    assert_eq!(set().scripts(), baked.scripts());
 }

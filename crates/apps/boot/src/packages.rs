@@ -63,6 +63,10 @@ pub fn at_boot(data_root: &Path, feature_on: &dyn Fn(&str) -> bool) -> Packages 
         });
     let served = rewrite.served();
     let rewrite = (!rewrite.is_empty()).then_some(rewrite);
+    // The built-in list entries are the `variant` items of the packages
+    // that are on: a package off takes its entries out of the game's list.
+    // This is before the list is first read (`community_variants::install`).
+    game::community_variants::install_registry(workspace::script_registry(&set.loaded()));
     let set = Arc::new(set);
     let _ = SET.set(Arc::clone(&set));
     Packages {

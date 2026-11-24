@@ -11,3 +11,10 @@ every file of each into `h2` (`crates/apps/boot/build.rs`,
 would read.
 
 A package holds our own sources and data, never bytes from a disc.
+
+`core` holds the scripts of the seven retail game types (`rules` items) and
+`modes` holds our built-in list entries (`variant` items), the example and
+matchmaking scripts (`rules` items) and the default hopper's playlists
+(`playlist`, `playlists/default.toml`). The `.rules` files are also what
+`rules::builtin` compiles in, so editing one changes the constants and the
+package together.

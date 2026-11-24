@@ -1,7 +1,7 @@
 //! The superbounce HUD's options (docs/game/superbounce.md, "The HUD's
 //! options"): which pieces of the HUD a game shows. They are options of
 //! the Superbounce rules script
-//! (`crates/formats/rules/src/builtin/superbounce.rules`), carried in the
+//! (`content/modes/rules/superbounce.rules`), carried in the
 //! variant record's option bits, and the host reads them by name through
 //! the path that turns the mode on: the active variant's extension block
 //! ([`crate::variant_ext::in_game`]), its script reference, the script's

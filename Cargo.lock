@@ -8879,14 +8879,17 @@ dependencies = [
  "game",
  "h1-assets",
  "hud-kit-core",
+ "live-proto",
  "map",
  "png",
  "pogo-kit",
+ "rules",
  "serde",
  "serde_json",
  "serde_yaml_ng",
  "tags",
  "thiserror 2.0.21",
+ "variants",
  "vfs",
 ]
 

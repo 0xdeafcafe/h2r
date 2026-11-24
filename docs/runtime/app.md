@@ -497,7 +497,7 @@ checkout's top; the first row that matches wins):
 | --- | --- |
 | any `target/`, `node_modules/`, `buck-out/`, `__pycache__/`, `.direnv/`, `.devenv*` component; `.claude/worktrees/`, `web/dist/`, `out/`, `extracted/`, `disc/`, `.tools/`; `.git/objects/`, `logs/`, `worktrees/`, `modules/`, `lfs/`; editor droppings (`*~`, `*.swp`, `.#*`, `4913`, `.DS_Store`) | ignored |
 | the rest of `.git` (HEAD, refs, the index, operation markers) | holds the settle timer open; builds nothing |
-| `crates/formats/rules/src/builtin/*.rules` | hot: `rules.reload`; also rebuilds `h2`, which bakes it |
+| `content/core/rules/*.rules`, `content/modes/rules/**/*.rules` | hot: `rules.reload`; also rebuilds `h2`, which bakes it |
 | any other `*.rules` | hot: `rules.reload` |
 | `docs/`, `*.md` | nothing |
 | `web/test/`, `web/bench/`, `web/mock/` | nothing |

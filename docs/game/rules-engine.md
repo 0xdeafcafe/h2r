@@ -1157,7 +1157,7 @@ on enter(goal, o) {
 on timer(clock) { end_round(team 1) }
 ```
 
-The built-in Siege (`crates/formats/rules/src/builtin/siege.rules`,
+The built-in Siege (`content/modes/rules/siege.rules`,
 listed in Party Games) is the part of this a host runs. Its zones come
 from every Territories and CTF map's own flags, so it needs no kit: the
 attackers take `sites` of the map's territories (each held alone for
@@ -1982,7 +1982,7 @@ Game Types**. The layout, its states and its copy are described in
 All layout facts are **E** from bots.md section 3.7.
 
 **The scripts.** Every engine has a script in
-`crates/formats/rules/src/builtin/`, found by `builtin::builtin(engine
+`content/core/rules/` (the `core` package's `rules` items), found by `builtin::builtin(engine
 index)`: `slayer.rules`, `oddball.rules`, `koth.rules`,
 `juggernaut.rules`, `territories.rules`, and `ctf.rules`, which serves
 CTF and Assault (`builtin/mod.rs` puts a header in front of it for each,
@@ -2125,7 +2125,7 @@ presentation-only (a film's hook digest leaves it out), so a script that
 scores bounces is not yet a parity game.
 
 **The Superbounce game type is a script**,
-`crates/formats/rules/src/builtin/superbounce.rules`, an example
+`content/modes/rules/superbounce.rules`, an example
 (`builtin::examples`): `type research`,
 `requires hud.superbounce`, no kill rule (a kill scores nothing), and
 four options: `suicide_costs` (default on), a point off for a death with
@@ -2172,7 +2172,7 @@ gets the defaults.
 ## Payoff
 
 The modes below that have a script are examples in
-`crates/formats/rules/src/builtin/`, listed by `builtin::examples()`
+`content/modes/rules/`, listed by `builtin::examples()`
 rather than by engine: `infection.rules`, `gun_game.rules`,
 `vip.rules`, `siege.rules`, `race.rules`, `bounce_hunt.rules` and
 `superbounce.rules`. Each compiles, verifies and fits a tick

@@ -18,7 +18,7 @@ Research and Devolution. Community variants carry a
 built-ins they cannot be edited in place: choosing Edit asks for a name and
 makes a copy, which is an ordinary saved variant.
 
-Code: `crates/extensions/game/src/community_variants.rs`, installed by the boot runner; the scripts in `crates/formats/rules/src/builtin/` (`LISTED`).
+Code: `crates/extensions/game/src/community_variants.rs`, installed by the boot runner; the scripts in `content/modes/rules/`, the `variant` items of the `modes` package (`rules::builtin::Registry::listed`, which a package off takes its entries out of).
 
 No game data is in the repository. Addresses are guest virtual addresses of
 the retail XBE (SHA-256 `03215919…935d`), named only as hook points. The
@@ -131,7 +131,7 @@ offers, except the unarmed start of Bumper Cars, Siege and Gun Game, one of our 
 ([game-options.md](game-options.md)). Rules a variant cannot enforce (who may use which weapon, switching
 teams on death) were honour rules then and are in the description now.
 
-Each row is one script in `crates/formats/rules/src/builtin/` (a
+Each row is one script in `content/modes/rules/` (a
 `settings` block, a `type` line, `uses <type>` but for Superbounce and the scripted modes, and its
 description as `about`). Settings a script does not name have the stock
 value of its game type (`GameVariant::stock`); the list entry carries

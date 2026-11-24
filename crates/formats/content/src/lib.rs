@@ -12,6 +12,7 @@
 //!   list records (docs/halo1/campaign-picker.md).
 //! - [`package`]: Studio's packages: manifest, lock, id and the load order
 //!   (docs/editor/studio-redesign.md).
+//! - [`playlist`]: a hopper fragment, what a `playlist` item holds.
 //! - [`map_pack`]: the Multiplayer Map Pack's maps, which packages can
 //!   take as their base.
 //! - [`patch_lvl`] and [`map_list`]: 1.0's multiplayer map list entries,
@@ -30,6 +31,7 @@ pub mod map_pack;
 pub mod package;
 pub mod patch;
 pub mod patch_lvl;
+pub mod playlist;
 pub mod relight;
 mod resolve;
 pub mod store;
