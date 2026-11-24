@@ -1098,6 +1098,8 @@ points! { ALL;
     PORTAL_WINDOW_MERGE @ 0x0017_2c70: [fn(chains: esi, pool: stack 0) ret 4]; "docs/graphics/native-visibility.md";
     /// Materialize regions and frusta from the merged node pool.
     PORTAL_WINDOW_REGIONS @ 0x0017_30a0: [opaque]; "docs/graphics/native-visibility.md";
+    /// Publish sphere-mode region records and update visited-cluster stamps.
+    VIEW_SPHERE_REGIONS @ 0x0013_2d60: [fn(vis: eax) ret 0]; "docs/graphics/native-visibility.md";
     /// Populate visibility lists from the current view's cluster references.
     SCENE_CLUSTER_GATHER @ 0x0013_2220: [fn(vis: stack 0) ret 4]; "docs/graphics/native-renderer.md";
     /// Publish clusters and their instanced geometry in visibility order.

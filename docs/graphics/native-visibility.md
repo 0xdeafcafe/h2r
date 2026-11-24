@@ -215,6 +215,19 @@ taken in double precision, the rest in single, in the guest's order.
 An object is listed in mode 1 when `(r + R)² ≥ d²`, `d` from the view's
 centre to the object's, `R` the view's radius (`0x00132e60`).
 
+The render wrapper at `0x00132d60` admits a Rust sphere list after a
+matching guest call. At the geometry gather, `native_scene_lists::sphere_regions`
+compares the DFS-ordered cluster IDs, region count, per-region frustum
+counts, sorted ordinals and the sphere epoch and visited-cluster stamps.
+Further floods reuse that proof for the same BSP generation, start,
+centre, radius, axis rows and computed ID sequence. Outside and
+single-cluster views have separate proofs. Rust stages the region writes
+and the marks the sim shares with the renderer. A stamp already equal
+to the next epoch, differing collision BSPs, or a region count beyond the
+table's capacity returns the call to the guest. The
+`native_scene_lists_sphere_regions_*` counters report comparisons,
+mismatches, fallbacks and native calls.
+
 ### Computed visible sets
 
 Mode 2 is `0x001733e0` over `0x0016de20`: the start cluster's row,

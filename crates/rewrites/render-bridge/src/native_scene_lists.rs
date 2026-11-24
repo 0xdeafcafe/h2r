@@ -12,6 +12,7 @@ mod records;
 mod setup;
 pub use setup::{DisplaySection, display_model};
 mod regions;
+mod sphere_regions;
 mod transparents;
 mod window;
 pub(crate) use transparents::bsp as transparent_bsp;
@@ -140,6 +141,7 @@ impl Feature for ScaledSceneLists {
             lights::extra_caster,
         );
         regions::install(b);
+        sphere_regions::install(b);
         portal_merge::install(b);
         install(
             b,
