@@ -1307,6 +1307,7 @@ fn a_repainted_base_map_changes_the_drawn_world() {
     // Lightmap only draws white whatever the bitmap.
     let flat = NativeWorld::new(&device, &queue, &load, Lighting::LightmapOnly);
     assert_eq!(flat.repaint_base(&queue, bitmap, 4, 4, &blue), 0);
+}
 
 /// The invented coloured material ([`crate::fixture::fixture_with_shader_colour`])
 /// with its pass in `layer`, opened as a map, and its raw resources.
@@ -1417,7 +1418,7 @@ fn a_material_preview_draws_its_colour_and_follows_an_edit() {
         let mut map = Map::from_reader(std::io::Cursor::new(bytes)).unwrap();
         let p = material(&mut map, &mut files, id(6), Shape::Sphere).unwrap();
         let tex = render_material(&device, &queue, &p, [64, 64], [0.0; 3]);
-        read_all(&device, &queue, &tex)
+        read_pixels(&device, &queue, &tex)
     };
     let green = |p: &[u8; 4]| p[1] > 250 && p[0] < 5 && p[2] < 5;
     let red = |p: &[u8; 4]| p[0] > 250 && p[1] < 5 && p[2] < 5;
@@ -1441,7 +1442,7 @@ fn a_material_preview_draws_its_colour_and_follows_an_edit() {
 }
 
 /// Every pixel of a 64 by 64 colour texture.
-fn read_all(device: &wgpu::Device, queue: &wgpu::Queue, color: &wgpu::Texture) -> Vec<[u8; 4]> {
+fn read_pixels(device: &wgpu::Device, queue: &wgpu::Queue, color: &wgpu::Texture) -> Vec<[u8; 4]> {
     let row = 256u32;
     let buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,

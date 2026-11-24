@@ -348,7 +348,7 @@ fn the_convert_builder_checks_the_recipe_and_changes_no_map() {
     assert!(check_recipe("converter = \"map-pack\"\n").is_ok());
     let why = check_recipe("converter = \"halo3\"\n")
         .unwrap_err()
-        .to_string();
+        .why;
     assert!(why.contains("halo3"), "{why}");
     assert!(check_recipe("converter = \"halo1\"\nmaps = 3\n").is_err());
     let item = Item {
