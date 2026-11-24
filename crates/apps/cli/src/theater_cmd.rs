@@ -335,7 +335,7 @@ fn child_with_start(
         && film.header.version >= 2
         && launch.source != Some(agent_proto::theater::SeekRoute::Boot)
     {
-        let mut track = film::blam::TrackReader::open(&opts.film)?;
+        let mut track = film::blam::TrackReader::open_with_film(&opts.film)?;
         if compatibility == film::image::ImageMatch::FromBoot {
             track.disable_embedded_keyframes();
         }

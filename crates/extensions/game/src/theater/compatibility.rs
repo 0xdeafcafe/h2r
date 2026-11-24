@@ -527,6 +527,7 @@ mod tests {
             telemetry: false,
             telemetry_hooks: None,
             render_hooks: None,
+            inputs_in_film: false,
             live_service: false,
             features: String::new(),
             player_features: false,

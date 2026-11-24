@@ -160,19 +160,51 @@ pub(super) fn cut(
     // A running tape's file holds exactly what it wrote so far; on APFS
     // the copy is a clone.
     fs::copy(&rec.file, &path).with_context(|| path.display().to_string())?;
+    // The cut's film file: this game's film from the tape's own, as the
+    // container is cut from the tape's.
+    let film_path = film::file::beside(&path);
     let sealed = (|| -> anyhow::Result<()> {
         let file = fs::File::options().write(true).open(&path)?;
         let mut writer = out.fork(file, &header)?;
+        let actions = match &rec.film {
+            Some(tape) => {
+                let seed = film::file::Seed {
+                    header: header.clone(),
+                    descriptor: rec.meta.descriptor().clone(),
+                };
+                let file = fs::File::options()
+                    .write(true)
+                    .create_new(true)
+                    .open(&film_path)
+                    .with_context(|| film_path.display().to_string())?;
+                let cut = tape
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .fork(file, &seed)?;
+                let cut = std::sync::Arc::new(std::sync::Mutex::new(cut));
+                writer.set_mirror(Some(film::file::machine_mirror(std::sync::Arc::clone(&cut))));
+                Some(cut)
+            }
+            None => None,
+        };
         let mut track = rec.track.clone();
         writer.chunk(film::HEAD, &header)?;
         rec.meta.finish_map()?;
         track.finish(&mut writer, rec.meta.descriptor(), &summary)?;
         writer.chunk(film::MARK, &film::tape::Mark::End { slices, tick, calls })?;
         writer.finish()?.sync_all()?;
+        if let Some(cut) = actions {
+            let cut = std::sync::Arc::try_unwrap(cut)
+                .map_err(|_| anyhow::anyhow!("the cut's film file is still shared"))?
+                .into_inner()
+                .unwrap_or_else(|e| e.into_inner());
+            cut.finish()?.sync_all()?;
+        }
         Ok(())
     })();
     if let Err(error) = sealed {
         let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&film_path);
         return Err(error);
     }
     if let Some(keys) = &rec.sidecar

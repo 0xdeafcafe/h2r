@@ -75,12 +75,21 @@ pub struct TrackWriter {
     guest_tick: Option<u64>,
     unified: bool,
     split_after_keyframe: bool,
+    inputs_in_film: bool,
     directory: Directory,
     tick: u64,
     finished: bool,
 }
 
 impl TrackWriter {
+    /// A writer whose time chunks carry no actions: they go in the film
+    /// file ([`crate::file::FilmWriter`]), and the container's header says
+    /// so ([`crate::Header::inputs_in_film`]).
+    pub fn without_inputs(mut self) -> Self {
+        self.inputs_in_film = true;
+        self
+    }
+
     /// A fresh input dictionary starts on the next tick.
     pub fn begins_chunk(&self) -> bool {
         self.pending.is_empty()
@@ -244,7 +253,7 @@ impl TrackWriter {
     fn flush<W: Write + Seek>(&mut self, out: &mut Writer<W>) -> Result<()> {
         if let Some(first) = self.pending.first() {
             let block = if out.version >= 3 {
-                let raw = unified::encode(&self.pending, &self.extra)?;
+                let raw = unified::encode(&self.pending, &self.extra, !self.inputs_in_film)?;
                 let projection =
                     live_proto::film::privacy::project(&raw).map_err(anyhow::Error::msg)?;
                 let identity_sha256 = if let Some(private) = &projection.private {
@@ -517,11 +526,23 @@ pub struct TrackReader<R: Read + Seek> {
     keyframe_offset: Option<u64>,
     sidecar_cursor: Option<SidecarCursor>,
     film: Option<FilmActions>,
+    inputs_in_film: bool,
 }
 
 impl TrackReader<File> {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::new(Reader::open(path)?)
+    }
+
+    /// Open a film for playback: its stats container, and its film file
+    /// beside it when the container's actions are there.
+    pub fn open_with_film(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let mut track = Self::open(path)?;
+        if track.inputs_in_film {
+            track.attach_film(FilmActions::open(&crate::file::beside(path))?)?;
+        }
+        Ok(track)
     }
 }
 
@@ -625,6 +646,7 @@ impl<R: Read + Seek> TrackReader<R> {
                 );
             }
         }
+        let inputs_in_film = reader.header.inputs_in_film;
         Ok(Self {
             reader,
             descriptor,
@@ -637,6 +659,7 @@ impl<R: Read + Seek> TrackReader<R> {
             keyframe_offset: None,
             sidecar_cursor: None,
             film: None,
+            inputs_in_film,
         })
     }
 
@@ -879,6 +902,10 @@ impl<R: Read + Seek> TrackReader<R> {
     }
 
     fn decode_block(&mut self, index: usize) -> Result<VecDeque<Tick>> {
+        ensure!(
+            self.film.is_some() || !self.inputs_in_film,
+            "this film's actions are in its film file: open it with TrackReader::open_with_film"
+        );
         let mut ticks = self.decode_stats_block(index)?;
         if let Some(film) = &mut self.film {
             for frame in &mut ticks {

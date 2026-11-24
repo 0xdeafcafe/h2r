@@ -1,6 +1,6 @@
 # The input film
 
-Status: Design. The per-tick input capture, the binary HLE tape, the container that holds them, the action-column codec and the film file that carries the columns are built; a recorder that writes the film file as its only tick output, and the engine film, are not.
+Status: Design. The per-tick input capture, the binary HLE tape, the container that holds them, the action-column codec and the film file that carries the columns are built; a default recording writes its film file as it is played and its stats container without actions, and playback reads both; the container still carries the machine part and the full digests, and Live ingest of the film file is not built; the engine film is not.
 Code: `crates/extensions/game/src/theater/actions.rs` (`capture`, `apply`), `crates/live/film/src/tape.rs` (`Call`, `Batch`, `Playback`), `crates/live/film/src/columns.rs` (`ChunkEncoder`, `ChunkDecoder`, `FieldStats`), `crates/live/film/src/file.rs` (`FilmWriter`, `FilmReader`, `from_container`), `crates/live/film/src/blam` (the tick track). Tests: `crates/extensions/game/src/theater/actions.rs` (`gathered_actions_follow_sparse_player_slots_and_replay_ignores_pad_only_rows`), `crates/live/film/src/blam/tests.rs`.
 Switch: none.
 
@@ -258,13 +258,22 @@ own from a running one, with a new ID, every block so far and a copy of the
 open chunk, while the running film goes on. `FilmActions` reads a film
 file's actions by tick, in any order, and `TrackReader::attach_film` gives a
 stats container's reader the film's actions in place of its own, checking
-each tick's digest against the film's low 16 bits. A tick's digest in a chunk is the low 16
+each tick's digest against the film's low 16 bits. A stats container
+written without actions (`TrackWriter::without_inputs`) says so in its
+header (`inputs_in_film`); `TrackReader::open_with_film` opens it with the
+film file beside it, and a reader without one refuses to step. A tick's digest in a chunk is the low 16
 bits of its gameplay digest and the chunk's closing hash is the last
 tick's whole digest. A seat that joins, leaves or quits is a seat record on
-its tick. The recorder writes the file beside each sealed game's container
-(`film::file::write_beside`, extension `.h2f`) and checks that every tick
-decodes to the container's actions and digests; `h2 film split FILE [OUT]`
-does the same for any sealed film and prints the two sizes.
+its tick. A default recording (`Recording::film` in `theater.rs`) feeds
+the file one tick at a time from `post_tick`, mirrors the container's
+machine chunks into it, and writes a checkpoint of the open chunk
+(`FilmWriter::checkpoint`, a block of kind 3 that a reader of an unsealed
+file takes as its last chunk) before each capture mark. A game's cut
+forks the container and the film file together (`autorecord::cut`). A
+hard-killed recording is sealed at its last capture mark's tick by
+`film::recover_tape`, which seals the film file at the same tick
+(`film::file::recover_beside`). Host and explicit recordings are one
+container with their actions inline.
 
 The length, the trailer offset and the sealed flag are zero while a film
 is being written or streamed; a reader of such a file walks the blocks.

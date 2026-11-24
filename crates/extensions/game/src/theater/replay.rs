@@ -21,7 +21,7 @@ pub(super) struct EngineReplay {
 
 impl EngineReplay {
     pub(super) fn open(replay: &Replay, image: film::image::ImageMatch) -> Result<Self> {
-        let mut track = TrackReader::open(&replay.path)?;
+        let mut track = TrackReader::open_with_film(&replay.path)?;
         if image == film::image::ImageMatch::FromBoot {
             track.disable_embedded_keyframes();
         }

@@ -138,6 +138,10 @@ struct Recording {
     file: PathBuf,
     match_over: bool,
     track: film::blam::TrackWriter,
+    /// A default recording's film file: its actions, digests and machine
+    /// part, written as the game is played (docs/game/input-film.md). The
+    /// container's writer mirrors its machine chunks into it.
+    film: Option<Arc<Mutex<film::file::FilmWriter<File>>>>,
     meta: metadata::Capture,
     frame: record::Capture,
     unified: unified::Capture,
@@ -375,6 +379,9 @@ impl Session {
             let guest_image = film::image::GuestImage::capture(
                 &stamp, recomp::host_triple(), &xbe_sha256,
             );
+            // A default recording keeps its actions in a film file; a host's
+            // or an explicit recording is one container.
+            let split = player_features && !host_recording;
             let header = Header {
                 version: 3,
                 title_id,
@@ -396,6 +403,7 @@ impl Session {
                 live_service,
                 features: switches.with(admission, true).spec(),
                 player_features: player_features && !host_recording,
+                inputs_in_film: split,
                 tape_id: None,
                 transfers_per_slice: opts.transfers_per_slice,
                 meta: FilmMeta {
@@ -431,6 +439,27 @@ impl Session {
                     .with_context(|| path.display().to_string())?,
                 &header,
             )?;
+            let film = if split {
+                let mut file = File::options();
+                file.read(true).write(true).create_new(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    file.mode(0o600);
+                }
+                let film_path = film::file::beside(&path);
+                let seed = film::file::Seed { header: header.clone(), descriptor: Default::default() };
+                let writer = film::file::FilmWriter::new(
+                    file.open(&film_path).with_context(|| film_path.display().to_string())?,
+                    &seed,
+                    30,
+                )?;
+                let writer = Arc::new(Mutex::new(writer));
+                out.set_mirror(Some(film::file::machine_mirror(Arc::clone(&writer))));
+                Some(writer)
+            } else {
+                None
+            };
             out.chunk(film::DATA, &manifest)?;
             (
                 Mode::Record(Recording {
@@ -439,7 +468,12 @@ impl Session {
                     sidecar: None,
                     file: path,
                     match_over: false,
-                    track: Default::default(),
+                    track: if split {
+                        film::blam::TrackWriter::default().without_inputs()
+                    } else {
+                        Default::default()
+                    },
+                    film,
                     meta: metadata::Capture::new(&header),
                     frame: Default::default(),
                     unified: Default::default(),
@@ -948,21 +982,6 @@ impl Session {
         {
             eprintln!("theater: could not seal the sidecar: {error:#}");
         }
-        // The film file beside the container: the seats' actions as
-        // columns, the seed and the machine part (docs/game/input-film.md).
-        // It is checked against the container before it is kept.
-        if matched {
-            match film::file::write_beside(&path) {
-                Ok(done) => eprintln!(
-                    "theater: film file: {} ticks, {} bytes against {} in the container's tick blocks",
-                    done.ticks, done.film_bytes, done.container_tick_bytes
-                ),
-                Err(error) => {
-                    let _ = std::fs::remove_file(film::file::beside(&path));
-                    eprintln!("theater: could not write the film file: {error:#}");
-                }
-            }
-        }
         // Release the retained physical RAM anchor when a local game returns to the lobby.
         rec.frame = Default::default();
         s.complete = true;
@@ -1039,6 +1058,7 @@ impl State {
             return;
         }
         drop(rec.out.take());
+        drop(rec.film.take());
         drop(rec.sidecar.take());
         rec.frame = Default::default();
         let dir = rec.file.parent().unwrap_or(std::path::Path::new(".")).to_owned();

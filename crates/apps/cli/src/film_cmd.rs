@@ -11,30 +11,24 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const USAGE: &str = "usage: h2 film stat FILE | h2 film stat --fields FILE... | h2 film split FILE [OUT]";
+const USAGE: &str = "usage: h2 film stat FILE | h2 film stat --fields FILE...";
 
 pub fn run(args: Vec<String>) -> Result<()> {
     let mut args = args.into_iter();
     let verb = args.next();
-    if verb.as_deref() == Some("split") {
-        let path = PathBuf::from(args.next().context(USAGE)?);
-        let out = args.next().map(PathBuf::from).unwrap_or_else(|| film::file::beside(&path));
-        ensure!(args.next().is_none(), "{USAGE}");
-        print!("{}", split(&path, &out)?);
-        return Ok(());
-    }
     ensure!(verb.as_deref() == Some("stat"), "{USAGE}");
     let first = args.next().context(USAGE)?;
     if first == "--fields" {
         let paths: Vec<PathBuf> = args.map(PathBuf::from).collect();
         ensure!(!paths.is_empty(), "{USAGE}");
-        let mut files = Vec::new();
+        let mut tracks = Vec::new();
         for path in &paths {
-            files.push(
-                film::Reader::open(path).with_context(|| format!("opening {}", path.display()))?,
+            tracks.push(
+                film::blam::TrackReader::open_with_film(path)
+                    .with_context(|| format!("opening {}", path.display()))?,
             );
         }
-        print!("{}", fields(files)?);
+        print!("{}", field_table(tracks)?);
         return Ok(());
     }
     let path = PathBuf::from(first);
@@ -43,34 +37,28 @@ pub fn run(args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
-/// Write the film file of a sealed container and check that it decodes to
-/// the container's actions and digests on every tick.
-pub fn split(container: &Path, out: &Path) -> Result<String> {
-    let converted = film::file::from_container(container, out)?;
-    let verified = film::file::verify(container, out)?;
-    let mut report = String::new();
-    writeln!(report, "film file: {}", out.display())?;
-    writeln!(report, "ticks: {} verified: {verified}", converted.ticks)?;
-    writeln!(report, "chunks: {} machine_blocks: {}", converted.chunks, converted.machine_blocks)?;
-    writeln!(
-        report,
-        "container_tick_bytes: {} film_bytes: {}",
-        converted.container_tick_bytes, converted.film_bytes
-    )?;
-    Ok(report)
-}
-
 /// The field table over the tick tracks of `films`, one report for all of
 /// them: per field, the seat-ticks it is in the game for, how many change
 /// from the tick before, and the stored bytes under each predictor, with
 /// the grids that hold.
 pub fn fields<R: std::io::Read + std::io::Seek>(films: Vec<film::Reader<R>>) -> Result<String> {
+    let tracks = films
+        .into_iter()
+        .map(film::blam::TrackReader::new)
+        .collect::<Result<Vec<_>>>()?;
+    field_table(tracks)
+}
+
+/// [`fields`] over readers that are open already, with their film files
+/// attached when their actions are there.
+pub fn field_table<R: std::io::Read + std::io::Seek>(
+    tracks: Vec<film::blam::TrackReader<R>>,
+) -> Result<String> {
     use film::columns::{FIELDS, FieldRow, FieldStats, GRIDS, Predictor, SEATS};
     let mut table: Vec<FieldRow> = Vec::new();
     let mut ticks = 0u64;
-    let count = films.len();
-    for reader in films {
-        let mut track = film::blam::TrackReader::new(reader)?;
+    let count = tracks.len();
+    for mut track in tracks {
         let mut stats = FieldStats::new();
         while let Some(tick) = track.step()? {
             let mut seats = [None; SEATS];
