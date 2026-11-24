@@ -514,10 +514,14 @@ pub enum Event {
     /// An object took damage: the object, the player it is credited to and
     /// the amount as a fraction of full vitality (`SimEvent::Damage`).
     Damage,
+    /// A player's biped touched down: the speed it fell at on the tick
+    /// before and its vertical speed now, both `fixed` world units a
+    /// second, `down` positive for a fall and `up` positive for rising.
+    Touchdown,
 }
 
 impl Event {
-    pub const ALL: [Event; 23] = [
+    pub const ALL: [Event; 24] = [
         Event::Init,
         Event::RoundStart,
         Event::Tick,
@@ -541,6 +545,7 @@ impl Event {
         Event::Bounced,
         Event::Arrive,
         Event::Damage,
+        Event::Touchdown,
     ];
 
     pub fn code(self) -> u8 {
@@ -577,6 +582,7 @@ impl Event {
             Event::Bounced => "bounced",
             Event::Arrive => "arrive",
             Event::Damage => "damage",
+            Event::Touchdown => "touchdown",
         }
     }
 
@@ -600,6 +606,7 @@ impl Event {
             Event::Arrive => &[Ty::Object],
             Event::SquadDead => &[Ty::Squad],
             Event::Damage => &[Ty::Object, Ty::Player, Ty::Fixed],
+            Event::Touchdown => &[Ty::Player, Ty::Fixed, Ty::Fixed],
             Event::ActorKill => &[Ty::Player, Ty::Class],
             Event::ActorAssist => &[Ty::Player, Ty::Player, Ty::Class],
             Event::Init | Event::RoundStart | Event::Tick | Event::Timer | Event::RoundEnd => &[],
@@ -625,7 +632,8 @@ impl Event {
             | Event::Quit
             | Event::ActorKill
             | Event::ActorAssist
-            | Event::Damage => 16,
+            | Event::Damage
+            | Event::Touchdown => 16,
             Event::Enter | Event::Leave => 64,
             Event::SquadDead => 16,
             // One a mover, and a script has at most 16 movers.

@@ -1015,6 +1015,9 @@ at most 16 a tick),
 chain, 1 for a single bounce; `monster` a Monster Bounce),
 `on bounced(p)` (a fall out of the map during a bounce),
 `on arrive(o)` (a `move_to` reached its end, on that tick),
+`on touchdown(p, down, up)` (a player's biped landed; `down` the speed it
+fell at the tick before and `up` its vertical speed now, `fixed` world
+units a second; at most 16 a tick),
 `on edit(p, o)` (a granted power was used),
 `on join(p)`, `on quit(p)`, `on round_end`. A handler names its event's
 arguments in order and may leave out trailing ones (`on bounce(p, spot)`);
@@ -1432,6 +1435,7 @@ Actions:
 | `camera(p, mode)`: first or third person | no entry known | untraced | `player.camera` |
 | `teleport(o, at)`, `move_to(o, at, t)`, `stop(o)`; `o.position`, `o.velocity`, `o.speed`; `on arrive(o)` | `OBJECT_SET_TRANSFORM` `0xb7430` for a put and a mover's step each tick; the movers in the VM's state (`RulesExt::movers`); the object datum's position and velocity for the reads (`rules/world/objects.rs`, [rules-world-api.md](rules-world-api.md#objects)) | named; whether a client sees the move is not researched (R2, R3) | `objects.move` |
 | device power | Forge's sinks (forge-features.md) | not built | `objects.move` |
+| `p.airborne`, `p.crouching`, `p.primed`; `on touchdown(p, down, up)`; `sees(a, b)` | a biped's flags (`game::superbounce_charge`), the touchdown rule run for every player, and `AI_LINE_OF_SIGHT` traced at the tick boundary for the VM's sight table (`RulesExt::sight`, `Game::trace_sight`); [rules-world-api.md](rules-world-api.md#physics) | built on the fake; a host refuses a script that uses any by name | none |
 | `message(to, text)`: `to` is a player, a team or `all` (everyone); the compiler picks one of three entries by its type (`message`, `message_team`, `message_all`), all spelled `message`. A text written in the call may hold up to four `{name}` holes, each a player, team, int, time or enum in scope (`{{` is a brace); the call reaches the game with the holes' values after its own arguments ([rules-language-types.md](rules-language-types.md#messages)). The host shows it to its local users in the audience through the notification insert (`hud_kit::NOTIFY`) and sends it to clients as a show cue ([rules-world-api.md](rules-world-api.md#the-show-channel)). Scoreboard text, announcer, waypoint | the notification queue (`0x24cbee`), per local user (hud-kit.md "Messages"); the centred text (`0x24cc73`) is not used | named | `hud.message` |
 | `place_squad_at(s, class, n, zone, tier)`: a squad at a kit zone index with a weapon tier | Firefight's `PlaceSquad` command, through the same squad entry | named | `ai.squads` |
 | `ff_round`, `ff_wave`, `ff_skull`, `ff_lives`, `ff_score`, `ff_respawn`, `ff_finish`; with two player teams `ff_target(s, team)`, `ff_team_lives(team, n)`, `ff_player_score(p, n)`, `ff_team_finish(winner)` (`none` a draw) | Firefight's host log entries (`firefight::Command`), queued with the squad commands so the log keeps program order | named | `firefight.director` |
@@ -1806,8 +1810,11 @@ Tooling:
     ```
 - **Scenario tests**: a scenario is JSON read by `rules::scenario`:
   `seed`, `options` (bits; the blob's defaults when absent), `players`
-  (`slot`, `team`, `alive`, `score`, `lives`, and `unit`, the object
-  that is the player's unit), `teams`, `variant` (record fields by name;
+  (`slot`, `team`, `alive`, `score`, `lives`, `unit`, the object
+  that is the player's unit, and `body`: `airborne`, `crouching` and
+  `primed`, what the physics reads answer until a `touchdown` lands the
+  player), `sight` (`[from, to]` pairs of objects with nothing solid
+  between them, what `sees` answers true for), `teams`, `variant` (record fields by name;
   each one left out reads the stock record of the script's type,
   `fake::stock_variant`), `map` (the things the game holds that a script
   labels: `label`, `object`, `number`, `placement`, `team` and `class`,
@@ -1820,7 +1827,8 @@ Tooling:
   1 when absent, and `monster`, false when absent), `bounced` (the
   player), `squad_dead`, `actor_kill` (`killer`,
   `class`), `actor_assist` (`killer`, `assist`, `class`), `damage`
-  (`object`, `by`, `amount`, a raw `fixed`) and
+  (`object`, `by`, `amount`, a raw `fixed`), `touchdown` (`player`,
+  `down`, `up`, raw `fixed`) and
   `round_end`. Tick 0 reports `init` and `round_start` first; each tick
   ends with the per-tick group; queued calls are made at the start of
   the next tick and after the last. The fake game is the one the

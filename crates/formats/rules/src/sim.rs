@@ -236,6 +236,7 @@ pub fn emits(ir: &Ir) -> Vec<Event> {
         Event::ActorAssist,
         Event::Bounce,
         Event::Edit,
+        Event::Touchdown,
         Event::Quit,
     ] {
         if w.on(e) {
@@ -727,6 +728,16 @@ impl Director {
         {
             out.push(Input::Bounced(self.bots[i].slot));
         }
+        if self.wants.on(Event::Touchdown)
+            && self.below(6 * u64::from(TPS)) < n
+            && let Some(i) = self.any(&living)
+        {
+            // A fall of 2 to 11 world units a second, landing at 0 to 13
+            // up.
+            let down = crate::ty::fixed::from_int(2 + self.below(10) as i32);
+            let up = crate::ty::fixed::from_int(self.below(14) as i32);
+            out.push(Input::Touchdown { player: self.bots[i].slot, down, up });
+        }
         if self.wants.on(Event::Edit)
             && self.below(15 * u64::from(TPS)) < n
             && let Some(i) = self.any(&living)
@@ -1190,6 +1201,7 @@ pub fn to_file(s: &Scenario) -> (file::Scenario, Vec<String>) {
                 class,
             },
             Input::Damage { object, by, amount } => file::ScenarioEvent::Damage { object, by, amount },
+            Input::Touchdown { player, down, up } => file::ScenarioEvent::Touchdown { player, down, up },
         };
         if let Some(t) = ticks.get_mut(step.tick as usize) {
             t.events.push(event);
@@ -1208,12 +1220,14 @@ pub fn to_file(s: &Scenario) -> (file::Scenario, Vec<String>) {
                 score: 0,
                 lives: p.lives,
                 unit: p.unit,
+                body: Default::default(),
             })
             .collect(),
         teams: (!s.teams.is_empty()).then(|| s.teams.clone()),
         variant: s.variant.clone(),
         map: s.map.clone(),
         round_time_left: s.round_time,
+        sight: Vec::new(),
         ticks,
     };
     (scenario, left.into_iter().collect())
