@@ -89,6 +89,7 @@ pub mod method {
     pub const ASSET_LIST: &str = "asset.list";
     pub const ASSET_THUMB: &str = "asset.thumb";
     pub const ASSET_COPY: &str = "asset.copy";
+    pub const ASSET_LINKS: &str = "asset.links";
     // The package document (api/packages.rs).
     pub const PACKAGE_LIST: &str = "package.list";
     pub const PACKAGE_READ: &str = "package.read";
