@@ -1,0 +1,17 @@
+[package]
+format = 1
+id = "halo1"
+name = "Halo 1"
+description = "Our campaigns' level pictures in the level select."
+
+[credit]
+authors = ["Alexander Forbes-Reed"]
+
+# Each converted level's picture, found under the data root's campaigns
+# folder, added to mainmenu as a new bitmap shaped like retail's
+# (game::campaign_cards). A set with no campaign adds nothing.
+
+[[item]]
+kind = "kit"
+source = "kits/campaign-cards.kit.yaml"
+maps = ["mainmenu"]

@@ -58,12 +58,12 @@ the calls before it):
 | Pogo Stick | `content/pogo/` (the `pogo` package) | `workspace::PackageRewrite` (PK4; `pogo_kit::served` reads the weapons it left) |
 | Menu screens, retail screen edits | `content/ui/` (the `ui` package) | `workspace::PackageRewrite` (PK5) |
 | HUD kit HUDs | `hud` items (`content/{superbounce,forge,modes}/huds/`); their states in Rust (`crates/rewrites/hud-kit-core/src/views/`) | `hud_kit::install` in `boot/src/registration.rs`, compiled against the loaded map |
-| Firefight | Rust (`crates/tools/firefight-kit`), wave sets in `crates/formats/firefight` | `firefight_kit::build_package` writes a map package per base map (`h2 firefight kit`, `boot/src/test_maps_recipes.rs`, `crates/live/host-data/src/bundle/kits.rs`) |
+| Firefight | the ground generator in Rust (`crates/tools/firefight-kit`); the wave sets are `rules` items of `modes` (`content/modes/firefight/*.firefight.json`, PK12) | `firefight_kit::ground::build` writes a map package per base map when asked (`h2 firefight kit`, `boot/src/test_maps_recipes.rs`, `crates/live/host-data/src/bundle/kits.rs`); the sets are read by `firefight::builtin` and `workspace::wave_sets` |
 | Forge | `.h2forge` documents | `forge_build::build` materialises a format 2 map package ([forge-design.md](../game/forge-design.md)) |
 | Map Pack maps and rotations | none (the user's disc) | `h2 import-mappack` and the automatic install ([map-pack.md](../game/map-pack.md)); rotations in `crates/live/live-proto/src/hopper/defaults.rs` |
 | Rules modes and variants | `rules` and `variant` items (`content/core/rules/`, `content/modes/rules/`) | `rules::builtin::Registry` from the set (`workspace::script_registry`); the constants of `rules::builtin` are the same files; list entries by `community_variants`, installed at boot with the set's registry |
 | The default hopper's playlists | a `playlist` item (`content/modes/playlists/default.toml`, `content::playlist::Fragment`) | `workspace::hopper_fragments` lists a set's fragments for the server |
-| Campaign cards, icon fonts, the bot gear glyph | Rust and baked art | `campaign_cards::CardRewrite`, `icons::font_rewrite`, `bot_mark::GearRewrite` |
+| Campaign cards, icon fonts, the bot gear glyph | `kit` items: `content/halo1/` (`campaign-cards`) and `content/core/` (`glyphs`); the cards and the icon sets are the user's, given by the boot (PK12) | `workspace::PackageRewrite` runs `campaign_cards::CardRewrite` on mainmenu, and `icons::font_rewrite` then `bot_mark::GearRewrite` on each font file |
 | Announcer clips | `art/announcer/` | baked; one WAV per medal of ours (`art/announcer/README.md`) |
 | Community mods | none (Live) | imported as map packages with credit (`h2 live mods import`), grouped as mod packs |
 
@@ -379,7 +379,7 @@ maps = "multiplayer"
 | `map-patch` | a PPF, IPS or BPS file, and in `inputs` one TOML file with the base's `map` name and `sha256` | a map package with that layer, the one `h2 live maps import` writes for the patch (built) | sim |
 | `convert` | a recipe: a converter name and its settings; the input is the user's own disc | map packages and campaign files | sim |
 | `data` | a file a named game feature reads (the Pogo's pose set) | handed to the feature at boot | per feature |
-| `kit` | a named code builder's settings (`campaign-cards`, `glyphs`); first-party packages only | what that builder adds | per builder |
+| `kit` | a named code builder's settings: `source` is `kits/<kit>.kit.yaml`, whose name says the kit (`campaign-cards`, `glyphs`); first-party packages only | what that builder adds to the files it is for; its inputs are the game's, so a build on a map leaves it out (`workspace::kits`) | per builder |
 
 **Scope** is the builder's, not the author's: `sim` items change what the
 simulation reads, so every peer of a networked game needs them; `client`
@@ -594,8 +594,14 @@ paths in "What exists":
    the key `workspace::cache_key`) with a `.json` receipt holding the
    full key and the output's hash; a second read is a cache hit, and a
    changed map, package or builder builds anew. A map that fails to
-   build is served unchanged and named once on stderr. It runs last in
-   boot's chain after `CardRewrite` and the font rewrites.
+   build is served unchanged and named once on stderr. It is the only
+   rewrite in boot's chain. The set's `kit` items run in it on the files
+   they are for, with the inputs the boot gave it (`workspace::KitInputs`):
+   `campaign-cards` runs `CardRewrite` on `maps\mainmenu.map` before the
+   set's items, and `glyphs` runs the icon sets and then `GearRewrite` on
+   each file of `maps\fonts`. `PackageRewrite::observing_fonts` hands each
+   font file and the font table, as the game is given them, to
+   `superbounce_font::Capture::keep`.
    `PackageRewrite::observed` hands
    each map, as the game is given it, to the boot's hook, which records
    the pogo stick's weapons (`pogo_kit::served::publish`).
@@ -626,12 +632,12 @@ as its unit: a project is a `map` item, a `ContentKit` is a builder, and
 
 | Package | Items | Replaces |
 |---|---|---|
-| `core` (built, PK8: the `rules` items) | `rules` (the seven retail types), `strings`, `kit: glyphs` (icon fonts, the gear) | `rules::builtin`'s engine constants, `icons::font_rewrite`, `bot_mark::GearRewrite` |
+| `core` (built, PK8: the `rules` items) | `rules` (the seven retail types), `strings`, `kit: glyphs` (built, PK12: icon fonts, the gear) | `rules::builtin`'s engine constants, `icons::font_rewrite`, `bot_mark::GearRewrite` |
 | `ui` (built, PK5) | `screens`, `screen-edits`; accepts `bitmap` items for art | `content/ui/` holds the design, screen docs and retail edits |
-| `modes` (built, PK8: `variant`, `rules`, `playlist`, `hud`) | `rules` (the community modes, Siege, Firefight's director with its wave sets), `variant`, `playlist`, `hud`, `sound` (start lines), `map` (our Firefight and Siege maps, with `ground`) | the rest of the scripts of `rules::builtin` (now `content/modes/rules/`), `community_variants`' table of scripts, `crates/formats/firefight`'s built-in sets, `huds/firefight.rs` |
+| `modes` (built, PK8: `variant`, `rules`, `playlist`, `hud`) | `rules` (the community modes, Siege, Firefight's director with its wave sets (built, PK12), which the director script is built from), `variant`, `playlist`, `hud`, `sound` (start lines), `map` (our Firefight and Siege maps, with `ground`) | the rest of the scripts of `rules::builtin` (now `content/modes/rules/`), `community_variants`' table of scripts, `crates/formats/firefight`'s built-in sets, `huds/firefight.rs` |
 | `superbounce` | `rules`, `hud`, `sound` (the announcer clips), `screens` | `hud-kit-core/src/views/superbounce*.rs`' element lists, `art/announcer/` |
 | `pogo` (built, PK4) | `model`, `tag` (the weapons), `sound` (the clips `pogo_sound.rs` plays), `data` (the atlases, the pose set `pogo_pose.rs` reads) | `art/pogo/`, `PogoRewrite`; `pogo_kit::{kit, mesh, source, texture}` is the `model` builder's code and `inject::add_pogo` the test's reference |
-| `halo1` | `convert` (converter `halo1`: every multiplayer map in both sandboxes, the campaign), `kit: campaign-cards`, `screens` | `h1_import.rs`'s entry points, `CardRewrite` |
+| `halo1` | `convert` (converter `halo1`: every multiplayer map in both sandboxes, the campaign), `kit: campaign-cards` (built, PK12), `screens` | `h1_import.rs`'s entry points, `CardRewrite` |
 | `map-pack` | `convert` (converter `map-pack`: the nine maps from the user's Map Pack disc), `playlist` | `mappack_cmd.rs`'s automatic install, the Map Pack rotations in `hopper/defaults.rs` |
 | `stage` | `map` (`fresh`), `model`, `bitmap` | `art/stage/project.toml` ([content-stage.md](content-stage.md)) |
 | a community mod pack | `map-patch` per map, `[credit]` | a Live mod pack's member manifests ([maps.md](../game/maps.md), "The mod repository") |
@@ -641,7 +647,7 @@ as its unit: a project is a `map` item, a `ContentKit` is a builder, and
 Slayer: a script that awards points and declares its `type`, with no
 retail game type under it
 ([game-types-without-carriers.md](../game/game-types-without-carriers.md)).
-Firefight has no kit and nothing is added to a map at boot for it. A
+Firefight's wave sets are `rules` items of `modes`, and nothing is added to a map at boot for it. A
 Firefight or Siege map is made in Forge or in Studio, and the AI ground
 it needs (sectors, zones, squad slots, characters) is built on demand
 when that map is made, edited or first picked
@@ -1064,7 +1070,7 @@ Rows are in build order.
 | PK8 (built: the items, `Registry`, `community_variants`' list from the set and the fragment's parse and tests; the default hopper in `live-proto` still builds its lineup in Rust) | **Rules, variants and playlists as items**: `content/core/` and `content/modes/`; the registry from the set; `community_variants` and the default hopper read it | M | PK3 | `crates/formats/rules/tests/modes.rs` pass with scripts from the set; a package off removes its list entries; the hopper built from fragments equals `hopper/defaults.rs`'s |
 | PK9 (built) | **Whole maps** (`workspace::prepare`, `stage_kit::fresh::StageFresh`, `workspace::scenario_edits`, boot's `packages::prepare_maps`): `map` and `map-patch` items to map packages at prepare; the stage and the test-map recipes as packages | M | PK2 | an invented `fresh` and an invented `onto` item build; the `MapId` of a `map-patch` item equals the id of the map package the importer writes for the same patch |
 | PK10 | **Conversions**: `convert` items, `h2 package prepare`, stamps; `content/halo1/` and `content/map-pack/` over the existing converters | M | PK9 | with an invented converter: no disc leaves the package off with its reason; a stale stamp reruns one map; an interrupted run resumes |
-| PK12 | **Kits**: `kit: campaign-cards`, `glyphs`; Firefight's director and wave sets as `rules` items of `modes`; `firefight_kit::build_package`'s boot and host-bundle callers go (GM1 of game-types-without-carriers builds ground on demand); boot's chain is `PackageRewrite` alone | M | PK9 | per kit, the map through the package equals the one its own caller made; `boot/src/lib.rs` builds no other rewrite |
+| PK12 (built) | **Kits** (built: `workspace::{kits, firefight_sets}`, `content/{core,halo1}/`, `content/modes/firefight/`; `firefight_kit::build_package` stays for `h2 firefight kit` and `host-data`'s bundle until that is moved to `ground::build`): `kit: campaign-cards`, `glyphs`; Firefight's director and wave sets as `rules` items of `modes`; `firefight_kit::build_package`'s boot and host-bundle callers go (GM1 of game-types-without-carriers builds ground on demand); boot's chain is `PackageRewrite` alone | M | PK9 | per kit, the map through the package equals the one its own caller made; `boot/src/lib.rs` builds no other rewrite |
 | PK13 | **Live, server**: `/v1/packages`, the signed manifest and lock, the upload checks, credit, the model flag, both homes | M | PK1 | the parity suite: a bad signature, a lock hash that does not match, a retail hash and a model item without the flag are each refused; an admin's credit outranks the manifest's |
 | PK14 | **Live, game and Studio**: install, the content set in a session, the join check, a session refused on `boot::packages::network_refusal`, the Mods screens, `package.publish` and `package.install`; `h2 live mods import` writes packages | M | PK13, PK3 | on the fake server: a joiner missing one package fetches it and joins; a blocked one fails before the map load with the reason; an imported pack holds patches and credit only |
 | M1 (built) | **Model poses** (rich-editors) | M | nothing | as there |

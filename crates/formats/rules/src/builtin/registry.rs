@@ -237,6 +237,16 @@ pub fn package_sources(
 ) -> (Vec<Source>, Vec<String>) {
     let (mut sources, mut problems) = (Vec::new(), Vec::new());
     for item in &manifest.items {
+        // A Firefight wave set is a `rules` item no script reads
+        // (`workspace::firefight_sets`).
+        if item.kind == Kind::Rules
+            && item
+                .source
+                .as_deref()
+                .is_some_and(|s| s.to_ascii_lowercase().ends_with(".firefight.json"))
+        {
+            continue;
+        }
         let role = match item.kind {
             Kind::Rules if manifest.package.id == "core" => Role::Retail,
             Kind::Rules => Role::Rules,

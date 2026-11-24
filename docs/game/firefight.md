@@ -181,6 +181,12 @@ output and hashes depend on the definition alone.
 
 `firefight::builtin::definitions()` returns Holdout, Attrition and Last
 Stand for one team, then Crossfire for two (a player kill scores 50).
+They are files of the `modes` package, `content/modes/firefight/*.firefight.json`
+(`firefight::builtin::SETS` embeds them), and the package lists each as a
+`rules` item: `h2 package check` reads it as a `Def`, builds the director
+script from it (`script::compile`) and refuses a set the lobby would
+refuse (`workspace::wave_sets` lists a set's). The reference test in
+`builtin.rs` holds the files to the sets written as Rust.
 Each has three rounds and uses the stage-one kit's Elite class.
 `builtin::with_teams(def, n)` plays a set with `n` teams: with two, a
 player kill scores the set's own points or `builtin::PLAYER_KILL_POINTS`

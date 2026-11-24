@@ -8,8 +8,10 @@
 //!   `tag` a `snd!` and its gestalt rows: [`import`]), `data`
 //!   (a file a game feature reads) and `hud` (a HUD kit YAML, read by the
 //!   game's install; [`huds`] lists a set's), `screens` and `screen-edits`
-//!   (UI screens and changes to the map's screens) and `animation` (authored
-//!   keys baked to a `jmad` resource). A package's `[[item]]` names
+//!   (UI screens and changes to the map's screens), `animation` (authored
+//!   keys baked to a `jmad` resource), `rules` (Firefight's wave sets, as
+//!   [`wave_sets`] lists a set's) and `kit` (a named builder of ours,
+//!   [`kits`]). A package's `[[item]]` names
 //!   one by its `kind`.
 //! - [`script_registry`] and [`hopper_fragments`]: what a set's `rules`, `variant` and
 //!   `playlist` items give the game (the scripts, the list entries) and the
@@ -37,10 +39,12 @@ mod bitmap;
 mod build;
 mod builders;
 mod edit;
+mod firefight_sets;
 mod game;
 mod hash;
 mod hud;
 pub mod import;
+pub mod kits;
 mod layer;
 mod load;
 mod maps;
@@ -58,7 +62,10 @@ mod unpin;
 mod import_tests;
 #[cfg(test)]
 mod modes_tests;
+#[cfg(test)]
 mod maps_tests;
+#[cfg(test)]
+mod kit_tests;
 #[cfg(test)]
 mod pogo_tests;
 #[cfg(test)]
@@ -77,6 +84,7 @@ pub use build::{
 };
 pub use builders::{BUILDERS_VERSION, Builder, Job, builder, changes_map, registry};
 pub use edit::{BlockLine, Op, SetLine, TagEdit, parse_edits};
+pub use firefight_sets::sets as wave_sets;
 pub use game::{CACHE_DIR, Entry, GameSet, Listed, Off, Origin, PACKAGES_DIR, baked};
 pub use hash::tag_hash;
 pub use hud::huds;
@@ -94,6 +102,6 @@ pub use maps::{
 };
 pub use onto::{build_map, scope_of, scope_of_bytes};
 pub use recipe::{TestMap, records_edits, scenario_edits, test_map_package};
-pub use rewrite::{Observer, PackageRewrite, Rebuilt, Served, ServedMap, stem_of};
+pub use rewrite::{FontObserver, KitInputs, Observer, PackageRewrite, Rebuilt, Served, ServedMap, stem_of};
 pub use tagitem::group_of_source;
 pub use unpin::MapUnpin;

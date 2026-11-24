@@ -109,12 +109,15 @@ fn file_name(path: &str) -> &str {
 }
 
 /// Keeps the font table and the HUD font as the game reads them. Serves
-/// every file unchanged; chain it after the rewrites that patch fonts.
+/// every file unchanged; chain it after the rewrites that patch fonts, or
+/// give the package rewrite's `observing_fonts` [`Capture::keep`].
 #[derive(Default)]
 pub struct Capture;
 
 impl Capture {
-    fn keep(path: &str, original: &[u8]) {
+    /// Keep `original` if it is the table or a font file, as `rewrite`
+    /// does; the package rewrite calls it with each font it serves.
+    pub fn keep(path: &str, original: &[u8]) {
         let mut guard = captured();
         let c = guard.get_or_insert_with(Captured::default);
         let lower = path.to_ascii_lowercase();

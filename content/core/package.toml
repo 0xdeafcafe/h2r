@@ -2,7 +2,7 @@
 format = 1
 id = "core"
 name = "Core"
-description = "The scripts of the seven retail game types: what a record with no mode plays."
+description = "The scripts of the seven retail game types, and the glyphs the fonts carry."
 
 [credit]
 authors = ["Alexander Forbes-Reed"]
@@ -41,3 +41,11 @@ inputs = ["rules/ctf.rules"]
 kind = "rules"
 source = "rules/assault.head"
 inputs = ["rules/ctf.rules"]
+
+# The bot mark's gear, the Mods list's marks, the HUD's arrows and rings
+# and the superbounce medals, drawn in code and added to every font file
+# (game::bot_mark), after the button icon sets when the boot has them.
+
+[[item]]
+kind = "kit"
+source = "kits/glyphs.kit.yaml"

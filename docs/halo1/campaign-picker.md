@@ -189,8 +189,9 @@ free slots, so they are not reused.
 - **At boot**, `campaign_cards::CardRewrite` reads the cards of the
   levels listed.
 - **When the VFS first serves `maps\mainmenu.map`**, CardRewrite adds one
-  `bitm` per card. It is a `vfs::Rewrite`, chained after the button
-  icons' font rewrite (`vfs::Chain`).
+  `bitm` per card. It runs as the `campaign-cards` kit of the `halo1`
+  package (`content/halo1/`) inside `workspace::PackageRewrite`, before
+  the set's other items on mainmenu; the boot gives the rewrite the cards.
   - The disc's map is decomposed with every tag where it was
     (`TagSet::from_map`), and the index is given room for more tags.
   - Each card is scaled to cover 220x207: centred, the overflow cropped,

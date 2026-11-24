@@ -16,19 +16,23 @@
 //! anew. A map that fails to build is served unchanged and named once on
 //! stderr; [`PackageRewrite::served`] keeps what happened to each map for
 //! `packages.list`.
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use content::Sha256;
 use content::package::Maps;
+use ::game::bot_mark::GearRewrite;
+use ::game::campaign_cards::{CardRewrite, MAINMENU};
 use map::Map;
 use serde::{Deserialize, Serialize};
+use vfs::Rewrite as _;
 
 use crate::build::{Loaded, Target, cache_key};
 use crate::builders::changes_map;
 use crate::game::{CACHE_DIR, PACKAGES_DIR};
+use crate::kits::{Kit, kits_of};
 use crate::load::added_tag;
 use crate::onto::{build_map, scope_of};
 
@@ -85,6 +89,36 @@ pub struct Rebuilt {
 /// for a rewrite to read.
 pub type Observer = Box<dyn Fn(&str, Option<&[u8]>) + Send>;
 
+/// The font files' folder, and the table that names them.
+const FONTS: &str = "maps\\fonts\\";
+const FONT_TABLE: &str = "maps\\fonts\\font_table.txt";
+
+/// A file of `maps\fonts`.
+fn is_font(path: &str) -> bool {
+    path.to_ascii_lowercase().starts_with(FONTS)
+}
+
+/// A font file the `glyphs` kit patches: the fonts, not the table.
+fn is_font_file(path: &str) -> bool {
+    is_font(path) && !path.to_ascii_lowercase().ends_with(".txt")
+}
+
+/// What the boot gives the kits of the set to run on: the game's inputs,
+/// which no package holds ([`crate::kits`]).
+#[derive(Default)]
+pub struct KitInputs {
+    /// `campaign-cards`: the level pictures, with the table the level lists
+    /// read the cards' datums from.
+    pub cards: Option<CardRewrite>,
+    /// `glyphs`: the button icon sets, which go into every font before the
+    /// gear and the other marks (`game::icons::Icons::font_rewrite`).
+    pub icons: Option<Box<dyn vfs::Rewrite>>,
+}
+
+/// What the boot does with each font file and the font table as the game
+/// is handed them: the path and the bytes after the set.
+pub type FontObserver = Box<dyn Fn(&str, &[u8]) + Send>;
+
 /// The one rewrite of the game's set.
 pub struct PackageRewrite {
     packages: Vec<Loaded>,
@@ -100,6 +134,10 @@ pub struct PackageRewrite {
     /// The maps already named on stderr.
     named: HashSet<String>,
     observer: Option<Observer>,
+    /// The kits the set carries, and the inputs they run on.
+    kits: BTreeSet<Kit>,
+    inputs: KitInputs,
+    fonts: Option<FontObserver>,
 }
 
 impl PackageRewrite {
@@ -118,6 +156,7 @@ impl PackageRewrite {
             }
         }
         let built = crate::maps::built_names(&packages).into_iter().collect();
+        let kits = kits_of(&packages.iter().map(|p| &p.package).collect::<Vec<_>>());
         Self {
             packages,
             cache: None,
@@ -127,7 +166,29 @@ impl PackageRewrite {
             served: Served::default(),
             named: HashSet::new(),
             observer: None,
+            kits,
+            inputs: KitInputs::default(),
+            fonts: None,
         }
+    }
+
+    /// The inputs the set's kits run on. A kit with none does nothing.
+    pub fn with_kits(mut self, inputs: KitInputs) -> Self {
+        self.inputs = inputs;
+        self
+    }
+
+    /// Call `f` with each font file and the font table as the game is
+    /// handed them (the superbounce labels' HUD font is read from them:
+    /// `game::superbounce_font`).
+    pub fn observing_fonts(mut self, f: impl Fn(&str, &[u8]) + Send + 'static) -> Self {
+        self.fonts = Some(Box::new(f));
+        self
+    }
+
+    /// Whether the set carries `kit`.
+    pub fn has_kit(&self, kit: Kit) -> bool {
+        self.kits.contains(&kit)
     }
 
     /// Call `f` with each map the rewrite is asked for, as the game is
@@ -151,9 +212,39 @@ impl PackageRewrite {
 
     /// Whether the rewrite has anything to add to any map.
     pub fn is_empty(&self) -> bool {
-        self.packages
-            .iter()
-            .all(|p| p.package.manifest.items.iter().all(|i| !changes_map(i)))
+        self.kits.is_empty()
+            && self
+                .packages
+                .iter()
+                .all(|p| p.package.manifest.items.iter().all(|i| !changes_map(i)))
+    }
+
+    /// Whether the set's `campaign-cards` kit is for `path`.
+    fn cards_for(&self, path: &str) -> bool {
+        self.has_kit(Kit::CampaignCards)
+            && self.inputs.cards.is_some()
+            && path.eq_ignore_ascii_case(MAINMENU)
+    }
+
+    /// A font file or the table, as the game reads it: the icon sets, then
+    /// the gear and the marks (the `glyphs` kit), then the observer.
+    fn font(&mut self, path: &str, original: &[u8]) -> Option<Vec<u8>> {
+        let mut out: Option<Vec<u8>> = None;
+        if self.has_kit(Kit::Glyphs) && is_font_file(path) {
+            if let Some(icons) = self.inputs.icons.as_mut()
+                && icons.wants(path)
+            {
+                out = icons.rewrite(path, original);
+            }
+            let bytes = out.as_deref().unwrap_or(original);
+            if let Some(gear) = GearRewrite.rewrite(path, bytes) {
+                out = Some(gear);
+            }
+        }
+        if let Some(f) = &self.fonts {
+            f(path, out.as_deref().unwrap_or(original));
+        }
+        out
     }
 
     fn files(&self, base: &Sha256, key: &Sha256) -> Option<(PathBuf, PathBuf)> {
@@ -323,16 +414,35 @@ pub fn stem_of(path: &str) -> Option<String> {
 
 impl vfs::Rewrite for PackageRewrite {
     fn wants(&self, path: &str) -> bool {
-        stem_of(path).is_some_and(|s| self.by_class || self.names.contains(&s))
+        if is_font(path) {
+            (self.fonts.is_some() && (is_font_file(path) || path.eq_ignore_ascii_case(FONT_TABLE)))
+                || (self.has_kit(Kit::Glyphs) && is_font_file(path))
+        } else {
+            self.cards_for(path)
+                || stem_of(path).is_some_and(|s| self.by_class || self.names.contains(&s))
+        }
     }
 
     fn rewrite(&mut self, path: &str, original: &[u8]) -> Option<Vec<u8>> {
+        if is_font(path) {
+            return self.font(path, original);
+        }
         let stem = stem_of(path)?;
-        let out = match self.rebuild(&stem, original) {
-            Ok(r) => r.map(|r| r.bytes),
+        // The level pictures first, then the set's items on that map.
+        let carded = if self.cards_for(path) {
+            self.inputs
+                .cards
+                .as_mut()
+                .and_then(|c| c.rewrite(path, original))
+        } else {
+            None
+        };
+        let input = carded.as_deref().unwrap_or(original);
+        let out = match self.rebuild(&stem, input) {
+            Ok(r) => r.map(|r| r.bytes).or(carded),
             Err(e) => {
                 self.name_once(&stem, &e);
-                None
+                carded
             }
         };
         if let Some(f) = &self.observer {
@@ -342,6 +452,18 @@ impl vfs::Rewrite for PackageRewrite {
     }
 
     fn skipped(&mut self, path: &str) {
+        if is_font_file(path) && self.has_kit(Kit::Glyphs) {
+            if let Some(icons) = self.inputs.icons.as_mut() {
+                icons.skipped(path);
+            }
+            GearRewrite.skipped(path);
+            return;
+        }
+        if self.cards_for(path)
+            && let Some(cards) = self.inputs.cards.as_mut()
+        {
+            cards.skipped(path);
+        }
         if let Some(stem) = stem_of(path) {
             let why = "it is larger than a rewrite reads";
             merge(

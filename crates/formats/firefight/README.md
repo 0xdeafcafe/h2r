@@ -11,7 +11,7 @@ Portable Firefight definitions and admission rules for a one-team Slayer match. 
 - `src/def.rs`, `src/validate.rs`: the definition and its admission rules.
 - `src/director.rs`: the director's interface types (settings, observations, commands, state).
 - `src/script.rs`: a definition compiled to a rules script, and the `ScriptDirector` that runs it.
-- `src/scoring.rs`, `src/wire.rs`, `src/builtin.rs`: scoring, the wire form and the built-in definitions.
+- `src/scoring.rs`, `src/wire.rs`, `src/builtin.rs`: scoring, the wire form and the built-in definitions (the files of `content/modes/firefight/`).
 
 ## Tests
 

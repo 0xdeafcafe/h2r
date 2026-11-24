@@ -14,7 +14,7 @@ use std::sync::{Arc, OnceLock};
 use agent::{Access, Agent};
 use agent_proto::method;
 use vfs::Backend as _;
-use workspace::{GameSet, PackageRewrite, Served};
+use workspace::{GameSet, KitInputs, PackageRewrite, Served};
 
 mod baked {
     include!(concat!(env!("OUT_DIR"), "/packages_baked.rs"));
@@ -46,8 +46,14 @@ pub struct Packages {
 }
 
 /// Read the set: baked, then `<data_root>/packages/`, `feature_on` saying
-/// which game features are on. Every problem is a line on stderr.
-pub fn at_boot(data_root: &Path, feature_on: &dyn Fn(&str) -> bool) -> Packages {
+/// which game features are on. `kits` is what the set's `kit` items run on:
+/// the campaigns' level pictures and the button icon sets. Every problem is
+/// a line on stderr.
+pub fn at_boot(
+    data_root: &Path,
+    feature_on: &dyn Fn(&str) -> bool,
+    kits: KitInputs,
+) -> Packages {
     let (baked, mut problems) = workspace::baked(baked::BAKED);
     let mut set = GameSet::read(baked, data_root, feature_on);
     problems.append(&mut set.problems);
@@ -57,8 +63,12 @@ pub fn at_boot(data_root: &Path, feature_on: &dyn Fn(&str) -> bool) -> Packages 
     }
     // The pogo stick's weapons are in the maps the `pogo` package built:
     // read them from what the game is handed, for the loadout.
+    // The superbounce world labels' HUD font is read from the fonts as the
+    // game is handed them, after the `glyphs` kit.
     let rewrite = PackageRewrite::new(set.loaded())
         .with_cache(data_root)
+        .with_kits(kits)
+        .observing_fonts(game::superbounce_font::Capture::keep)
         .observed(|stem, bytes| match bytes {
             Some(bytes) => pogo_kit::served::publish(stem, bytes),
             None => pogo_kit::served::clear(stem),

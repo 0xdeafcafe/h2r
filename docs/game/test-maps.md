@@ -28,7 +28,8 @@ user's data and cache directories.
    `Recipes::build`. In `boot::test_maps_recipes`, the default builder
    applies placement edits through `recipe::build_package_with_replace`.
    A recipe with `builder = "firefight-probe"` calls
-   `firefight_kit::build_package` in probe mode on the same base bytes.
+   `firefight_kit::ground::build` in probe mode (no labels) on the same base
+   bytes, installed with `Ground::install`.
    Both save package `test-<name>` under `<data>/maps/` and write the
    build report to `<cache>/test-maps/<MapId>.json`. A placement recipe is
    also a content package: `test_maps_recipes::recipe_package` runs it on

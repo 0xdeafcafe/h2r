@@ -59,6 +59,10 @@ fn script(job: &Job<'_>) -> Result<rules::Ir, Failure> {
 }
 
 pub fn check_rules(job: &Job<'_>) -> Result<(), Failure> {
+    // A source ending `.firefight.json` is a wave set, not a script.
+    if crate::firefight_sets::is_set(job.item) {
+        return crate::firefight_sets::check(job);
+    }
     script(job).map(drop)
 }
 
@@ -80,7 +84,10 @@ pub fn check_playlist(job: &Job<'_>) -> Result<(), Failure> {
 
 /// Changes nothing in the map: the game and the server read the item.
 /// The source is read again so a build stops on a bad one.
-pub fn apply_rules(_cx: &mut Cx<'_>, job: &Job<'_>) -> Result<(), Failure> {
+pub fn apply_rules(cx: &mut Cx<'_>, job: &Job<'_>) -> Result<(), Failure> {
+    if crate::firefight_sets::is_set(job.item) {
+        return crate::firefight_sets::apply(cx, job);
+    }
     check_rules(job)
 }
 
