@@ -66,21 +66,6 @@ const GROUND_REACH: f32 = 100.;
 /// How far in front of the monitor a ground marker is placed, in world
 /// units.
 const MARKER_REACH: f32 = 3.;
-/// The overlay's ring for a label the last build could not honour.
-const PROBLEM_RING: [u8; 3] = [255, 90, 0];
-
-/// The overlay's ring for a placed ground marker: a drop green, a cover
-/// yellow, a base its team's colour, and the siege labels violet.
-fn ground_ring(label: forge::GroundLabel, team: u8) -> [u8; 3] {
-    use forge::GroundLabel as L;
-    match label {
-        L::Drop => [60, 220, 90],
-        L::Cover => [235, 205, 60],
-        L::Base if team == 0 => [225, 70, 70],
-        L::Base => [70, 110, 235],
-        L::Site | L::Goal | L::Line => [190, 120, 245],
-    }
-}
 
 pub(super) struct Editor {
     pub session: Arc<Session>,
@@ -367,29 +352,36 @@ impl Editor {
         Ok(rx)
     }
 
-    /// The ground's marks and problems as rings for the play window's
-    /// overlay: a problem first, so its colour is the one a marker at the
-    /// same place shows through. Nothing with the monitor off.
-    pub fn ground_rings(&self) -> Vec<(forge::Frame, [u8; 3])> {
+    /// The game type markers of the session: a marker for each spawn,
+    /// flag, hill, teleporter, item spawner and ground label, and each
+    /// problem the last ground build found
+    /// ([`super::markers_world::entries`]). None with the monitor off.
+    pub fn marker_entries(&self) -> Vec<super::markers_world::Entry> {
+        use super::markers_world::{Facts, entries};
         if !self.tool.monitor {
             return Vec::new();
         }
-        let problems = self.session.ground_report().into_iter().flat_map(|r| {
-            r.problems.iter().map(|p| {
-                let frame = forge::Frame {
-                    position: p.position,
-                    rotation: [0.; 3],
-                };
-                (frame, PROBLEM_RING)
-            })
-        });
         let placed = self.session.ground_counts().iter().sum::<usize>() > 0;
-        let marks = placed
+        let ground = placed
             .then(|| self.session.markers().unwrap_or_default())
-            .unwrap_or_default()
-            .into_iter()
-            .map(|m| (m.frame, ground_ring(m.label, m.team)));
-        problems.chain(marks).collect()
+            .unwrap_or_default();
+        let problems = self
+            .session
+            .ground_report()
+            .map_or(&[][..], |r| r.problems.as_slice());
+        entries(&Facts {
+            monitor: true,
+            things: &self.session.things(),
+            ground: &ground,
+            problems,
+            game: self.tool.game,
+            show: self.tool.show,
+        })
+    }
+
+    /// The things aimed at and held, which their markers draw selected.
+    pub fn marker_pins(&self) -> (Option<Endpoint>, Option<Endpoint>) {
+        (self.tool.aimed_thing, self.tool.held_thing)
     }
 
     /// What is placed, held or aimed at: its name, block and frame (the

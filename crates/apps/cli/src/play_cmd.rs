@@ -910,6 +910,7 @@ pub(crate) fn run_with_theater(
         host.game_code = Some(game_code);
         host.editor_link = Some(editor_link);
         boot::debug_views::register(&mut host);
+        boot::forge_glue::markers_world::register(&mut host);
         boot::superbounce_mode::register(&mut host);
         let r = boot::run_hosted_with_live(&xbe, &lib, &opts, host, &live_config);
         // As `h2 run` does: the kernel's storage may outlive the run (or never

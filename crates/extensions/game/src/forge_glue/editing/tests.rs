@@ -725,28 +725,34 @@ mod ground {
     }
 
     #[test]
-    fn the_overlay_rings_the_markers_and_the_problems_the_last_build_made() {
+    fn the_markers_are_the_ground_labels_and_the_problems_the_last_build_made() {
+        use crate::forge_glue::markers_world::Tone;
         let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         installed::install(Box::new(Kit { refuse: false }));
         let mut e = ground_editor();
-        assert!(e.ground_rings().is_empty());
+        let drops = |e: &Editor| {
+            e.marker_entries()
+                .into_iter()
+                .filter(|m| m.marker.kind.name() == "ff_drop")
+                .collect::<Vec<_>>()
+        };
+        assert!(drops(&e).is_empty());
         e.command(1, drop_at(1.)).unwrap();
         e.poll(2);
-        let rings = e.ground_rings();
-        assert_eq!(rings.len(), 1);
-        assert_eq!(rings[0].0.position, [1., 1., 0.]);
-        assert_eq!(rings[0].1, ground_ring(forge::GroundLabel::Drop, 0));
+        let placed = drops(&e);
+        assert_eq!(placed.len(), 1);
+        assert_eq!(placed[0].place.at, [1., 1., 0.]);
+        assert_eq!(placed[0].tone, Tone::Normal);
 
         e.command(3, Command::BuildGround).unwrap();
         finish(&mut e, 4);
-        // The problem is first, so its colour is the one that shows.
-        let rings = e.ground_rings();
-        assert_eq!(rings.len(), 2);
-        assert_eq!(rings[0].1, PROBLEM_RING);
-        assert_eq!(rings[1].1, ground_ring(forge::GroundLabel::Drop, 0));
+        // The problem is at the label's place and draws in its stead.
+        let built = drops(&e);
+        assert_eq!(built.len(), 1);
+        assert_eq!(built[0].tone, Tone::Problem);
         // The monitor off draws none.
         e.tool.monitor = false;
-        assert!(e.ground_rings().is_empty());
+        assert!(e.marker_entries().is_empty());
         installed::uninstall();
     }
 }

@@ -62,7 +62,7 @@ pub use pad::{AtTick, Now, PAD_BUTTONS, PadParams, PadStep};
 pub use render::{
     CaptureCamera, CaptureLighting, CaptureReply, CaptureSource, CompareParams, CompareReply, DepthRecord,
     DrawLayout, DrawRecord, FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals,
-    LayoutTexture, OpRecord, ParityParams, ParityReply, PassRecord, RenderStats, ResidualArm,
+    LayoutTexture, MarkersParams, OpRecord, ParityParams, ParityReply, PassRecord, RenderStats, ResidualArm,
     ResidualCaller, ResidualParams, ResidualProducer, ResidualReply, ResidualTotals,
     ResidualUnattributed, ResidualWindow, SceneCarried,
     SceneEntries, SceneEntryRecord, SceneLateRecord, SceneOpCounts, SceneParams, ScenePostRecord,
@@ -288,6 +288,9 @@ pub mod method {
     /// frame kind, a made frame's blend fraction and camera shift, and the
     /// first anchors' window pixels (no params; the first call arms it).
     pub const RENDER_MARKS: &str = "render.marks";
+    /// The game type markers the last present drew, and what the 256
+    /// budget left out ([`crate::MarkersParams`]).
+    pub const RENDER_MARKERS: &str = "render.markers";
     /// Two PNG files compared pixel by pixel ([`crate::CompareParams`]).
     pub const RENDER_COMPARE: &str = "render.compare";
     /// The frame of a sim tick as a PNG ([`crate::FrameCaptureParams`]).

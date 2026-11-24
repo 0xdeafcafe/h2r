@@ -2436,6 +2436,7 @@ dependencies = [
  "forge",
  "forge-doc",
  "frame-scene",
+ "game-markers",
  "gfx",
  "guest-layout",
  "h1-contract",

@@ -6,6 +6,7 @@ pub mod gizmo;
 pub mod ground;
 mod link;
 pub mod marker;
+pub mod markers_world;
 pub mod net;
 
 use std::path::{Path, PathBuf};
@@ -31,6 +32,9 @@ use crate::forge_controls as controls;
 use crate::forge_map::{self, Loaded, Opened};
 use crate::ui_kit::spec::ScreenSpec;
 use editing::Editor;
+
+/// Ticks between rebuilds of the game type markers.
+const MARKS_EVERY: u32 = 3;
 
 type Shared = Arc<Mutex<Driver>>;
 type MapResult = Result<Opened, String>;
@@ -68,9 +72,9 @@ pub fn page() -> Option<ScreenSpec> {
 }
 
 /// The rings the play window's overlay paints beside the gizmo, projected
-/// through the last frame's world view: the ground's problems and markers
-/// (docs/game/forge-map-variants.md, "AI ground"), then the session's other
-/// monitors. A monitor's own marker is never drawn.
+/// through the last frame's world view: the session's other monitors. A
+/// monitor's own marker is never drawn. The ground's marks and problems are
+/// game type markers ([`markers_world`]).
 pub fn markers() -> Vec<marker::Marker> {
     let Some(driver) = current() else {
         return Vec::new();
@@ -136,6 +140,10 @@ struct Driver {
     /// The other seats' markers as the last tick left them, for the play
     /// window's overlay ([`markers`]).
     markers: Vec<(forge::Frame, [u8; 3])>,
+    /// The game type markers the last rebuild made, and the tick of it
+    /// ([`markers_world`]).
+    marks: Arc<Vec<markers_world::Entry>>,
+    marks_at: Option<u32>,
     /// The other seats' drawn bodies as the last tick left them, for the
     /// native renderer's object pass ([`monitor_bodies`]).
     bodies: Vec<forge::look::body::Draw>,
@@ -151,6 +159,9 @@ impl Driver {
         self.opening = None;
         self.loaded = None;
         self.markers.clear();
+        self.marks = Arc::default();
+        self.marks_at = None;
+        markers_world::clear();
         self.bodies.clear();
         self.link.reset();
         self.reason = "Waiting for a local multiplayer map.".into();
@@ -286,8 +297,18 @@ impl Driver {
             e.tick(tick, bsp, crate::forge_screens::ui_up(m), game);
             let now = tick as f32 / 30.;
             crate::forge_readout::publish(e.readout_scene(game));
-            self.markers = e.ground_rings();
-            self.markers.extend(e.monitor_markers(now));
+            self.markers = e.monitor_markers(now);
+            // The things are rebuilt a few times a second; the aimed and
+            // held things move the selection every tick.
+            if self
+                .marks_at
+                .is_none_or(|at| tick < at || tick - at >= MARKS_EVERY)
+            {
+                self.marks = Arc::new(e.marker_entries());
+                self.marks_at = Some(tick);
+            }
+            let (aimed, held) = e.marker_pins();
+            markers_world::publish(&self.marks, aimed, held);
             self.bodies = e.monitor_draws(now, now);
         }
     }
@@ -441,6 +462,8 @@ pub fn install(
         editor: None,
         draft: None,
         markers: Vec::new(),
+        marks: Arc::default(),
+        marks_at: None,
         bodies: Vec::new(),
         reason: "Waiting for a local multiplayer map.".into(),
     }));

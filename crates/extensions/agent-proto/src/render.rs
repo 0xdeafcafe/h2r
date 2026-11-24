@@ -6,6 +6,17 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// `render.markers`: the game type markers the last present drew
+/// (docs/runtime/agent-api.md, "render.markers").
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MarkersParams {
+    /// Only the markers of this kind (`spawn`, `hill`, `flag_stand`, ...);
+    /// the counts still cover every marker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
 /// `render.spawn_view`: select a player starting location, or release the camera.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -986,6 +997,17 @@ pub struct ResidualUnattributed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn markers_params_take_a_kind_and_refuse_strays() {
+        let none: MarkersParams = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(none.kind, None);
+        let one: MarkersParams = serde_json::from_value(serde_json::json!({"kind": "hill"})).unwrap();
+        assert_eq!(one.kind.as_deref(), Some("hill"));
+        for bad in [serde_json::json!({"team": 1}), serde_json::json!({"kind": 3})] {
+            assert!(serde_json::from_value::<MarkersParams>(bad).is_err());
+        }
+    }
 
     #[test]
     fn a_draw_omits_layout_depth_and_constants_when_absent() {
