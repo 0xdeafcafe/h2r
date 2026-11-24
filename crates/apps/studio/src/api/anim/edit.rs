@@ -26,8 +26,8 @@ pub(super) const DUPLICATE: MethodDef = def(
 
 pub(super) const RETARGET: MethodDef = def(
     m::ANIM_RETARGET,
-    "Carry an open base clip onto the skeleton of a jmad tag in the shown map as a new document. Nodes pair by name, the table pairs the rest; rotations carry as deltas from each rest pose, translations scale by bone length. Unmatched nodes are listed and their channels dropped",
-    r#"{"doc":"integer","to":"string (the target jmad tag)","name":"string","table?":"[[source node index, target node index]]","from_model?":"string","to_model?":"string (the model whose rest pose the graph's skeleton takes, when several use it)"}"#,
+    "Carry an open base clip, from this or another map, onto the skeleton of a jmad tag in the shown map as a new document. Nodes pair by name, the table pairs the rest; rotations carry as deltas from each rest pose, translations scale by bone length. Unmatched nodes are listed and their channels dropped",
+    r#"{"doc":"integer","to":"string (the target jmad tag)","name":"string","table?":"[[source node index, target node index]]","map?":"string (the map the source document was made on; a document of another map retargets from the rest pose captured when it was made)","from_model?":"string","to_model?":"string (the model whose rest pose the graph's skeleton takes, when several use it)"}"#,
     r#"{"doc":"integer","name":"string","frames":"integer","nodes":"integer","revision":"integer","matched":"[[source,target]]","dropped_nodes":"[integer]","dropped_channels":"integer","unmatched_targets":"[integer]","scaled":"[{node,ratio}]"}"#,
     r#"{"doc":1,"to":"jmad:invented\\stickman","name":"wave retargeted"}"#,
 );
@@ -106,7 +106,14 @@ pub(super) fn retarget(app: &mut App, p: &P) -> Reply {
         }
     }
     let (id, report) = app
-        .anim_retarget(doc, to, name, &table, [p.opt_str("from_model")?, p.opt_str("to_model")?])
+        .anim_retarget(
+            doc,
+            to,
+            name,
+            &table,
+            [p.opt_str("from_model")?, p.opt_str("to_model")?],
+            p.opt_str("map")?,
+        )
         .map_err(failed)?;
     let mut out = doc_summary(app, id)?;
     out["matched"] = json!(report.matched);

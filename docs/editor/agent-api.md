@@ -2275,13 +2275,16 @@ and edits live in memory.
   decoded clip. `anim.duplicate {doc, name}` copies an open document's
   current keys. Both forms and `anim.new` return `{doc, name, frames,
   nodes, revision}` with a node count and a fresh revision of zero.
-- `anim.retarget {doc, to, name, table?, from_model?, to_model?}`
+- `anim.retarget {doc, to, name, table?, map?, from_model?, to_model?}`
   carries an open base clip onto the skeleton of the `jmad` tag `to`
   (in the map the Tags tool shows, like the clip's own graph) as a new
   document. Nodes pair by name, and `table` is a list of
   `[source node index, target node index]` pairs that win over a name.
   Each graph's rest pose is its model's; `from_model` and `to_model`
-  name it when several use the graph. An overlay is refused. The reply
+  name it when several use the graph. A document made on another map
+  retargets from the rest pose captured when it was made; `map`, when
+  given, must name the map the document was made on. An overlay is
+  refused. The reply
   is the `anim.new` summary plus `matched`, `dropped_nodes`,
   `dropped_channels`, `unmatched_targets` and `scaled` (`{node, ratio}`
   for each translation scaled by bone length).

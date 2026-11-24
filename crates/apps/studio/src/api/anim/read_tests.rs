@@ -779,3 +779,66 @@ fn a_retarget_onto_the_same_skeleton_keeps_the_keys_and_reports_every_node_match
         assert!(matches!(error.code, code::INVALID_PARAMS | code::REFUSED), "{error}");
     }
 }
+
+#[test]
+fn a_clip_of_another_map_retargets_from_the_rest_pose_captured_when_it_was_made() {
+    let t = Temp::new("retarget-map");
+    let (mut app, mut api) = open(&t);
+    let doc = create_doc(&mut api, &mut app, "source");
+    call(
+        &mut api,
+        &mut app,
+        m::ANIM_KEY,
+        json!({"doc": doc, "node": 1, "channel": "translation", "frame": 3, "value": [1.4, 0, 0]}),
+    );
+    let same = call(
+        &mut api,
+        &mut app,
+        m::ANIM_RETARGET,
+        json!({"doc": doc, "to": GRAPH, "name": "same"}),
+    );
+    // The document was made while another map was shown.
+    app.anim_doc_pretend_map(doc, "other_map");
+    for wrong in [json!("not_it"), json!(7)] {
+        let error = refused(api.call(
+            &mut app,
+            m::ANIM_RETARGET,
+            json!({"doc": doc, "to": GRAPH, "name": "bad", "map": wrong}),
+        ));
+        assert!(matches!(error.code, code::INVALID_PARAMS | code::REFUSED), "{error}");
+    }
+    let out = call(
+        &mut api,
+        &mut app,
+        m::ANIM_RETARGET,
+        json!({"doc": doc, "to": GRAPH, "name": "from other", "map": "other_map"}),
+    );
+    assert_eq!(out["unmatched_targets"], json!([]));
+    assert_eq!(out["dropped_nodes"], json!([]));
+    let keys = |api: &mut Api, app: &mut crate::App, d: &Value| {
+        read(api, app, json!({"doc": d, "keys": true}))["nodes"].clone()
+    };
+    assert_eq!(keys(&mut api, &mut app, &same["doc"]), keys(&mut api, &mut app, &out["doc"]));
+    // Without `map` the stored rest pose is used all the same.
+    let bare = call(
+        &mut api,
+        &mut app,
+        m::ANIM_RETARGET,
+        json!({"doc": doc, "to": GRAPH, "name": "bare"}),
+    );
+    assert_eq!(keys(&mut api, &mut app, &same["doc"]), keys(&mut api, &mut app, &bare["doc"]));
+}
+
+#[test]
+fn every_session_document_lists_for_the_retarget_picker() {
+    let t = Temp::new("retarget-list");
+    let (mut app, mut api) = open(&t);
+    let a = create_doc(&mut api, &mut app, "a");
+    let b = create_doc(&mut api, &mut app, "b");
+    app.anim_doc_pretend_map(b, "other_map");
+    let all = app.anim_all_docs();
+    let ids: Vec<u64> = all.iter().map(|d| d.0).collect();
+    assert!(ids.contains(&a) && ids.contains(&b));
+    let row = all.iter().find(|d| d.0 == b).unwrap();
+    assert_eq!((row.1.as_str(), row.3.as_deref()), ("b", Some("other_map")));
+}

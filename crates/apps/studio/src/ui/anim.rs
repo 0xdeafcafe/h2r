@@ -321,6 +321,13 @@ fn picker(ui: &Ui, app: &mut App, st: &mut AnimUi, tag: TagId, info: &AnimInfo) 
         });
     }
     drop(disabled);
+    ui.same_line();
+    if ui.button("Retarget from...##anim-retarget") {
+        ui.open_popup("##anim-retarget-from");
+    }
+    if let Some(_popup) = ui.begin_popup("##anim-retarget-from") {
+        made = retarget_picker(ui, app, st, tag, info).or(made);
+    }
     match made {
         Some(Ok(id)) => {
             let overlay = app.anim_doc_info(id).is_ok_and(|row| row.kind == "overlay");
@@ -333,6 +340,55 @@ fn picker(ui: &Ui, app: &mut App, st: &mut AnimUi, tag: TagId, info: &AnimInfo) 
     if let Some(problem) = &st.problem {
         ui.text_colored(theme::WARN, problem);
     }
+}
+
+/// The sources a retarget onto this graph can start from: every base
+/// document of the session (any map) and this graph's retail clips.
+/// Picking one makes a document on this graph's skeleton.
+fn retarget_picker(
+    ui: &Ui,
+    app: &mut App,
+    st: &mut AnimUi,
+    tag: TagId,
+    info: &AnimInfo,
+) -> Option<Result<u64, AnimError>> {
+    let mut source = None;
+    for (id, name, kind, map) in app.anim_all_docs() {
+        if kind == "overlay" {
+            continue;
+        }
+        let from = map.map_or(String::new(), |m| format!(" · {m}"));
+        if ui
+            .selectable(format!("{name}{from}##retarget-draft-{id}"))
+        {
+            source = Some((Ok(id), name));
+        }
+    }
+    ui.separator();
+    for row in &info.animations {
+        if row.kind == "base"
+            && row.error.is_none()
+            && !row.aim_grid
+            && ui.selectable(format!("{}##retarget-retail-{}", row.name, row.index))
+        {
+            source = Some((app.anim_open(tag, row.index), row.name.clone()));
+        }
+    }
+    let (opened, from_name) = source?;
+    let name = if st.name.trim().is_empty() {
+        format!("{from_name} retargeted")
+    } else {
+        st.name.clone()
+    };
+    let to_model = (info.users.len() > 1)
+        .then(|| info.users.get(st.model).map(|m| m.name.clone()))
+        .flatten();
+    let made = opened.and_then(|doc| {
+        app.anim_retarget(doc, tag, &name, &[], [None, to_model.as_deref()], None)
+            .map(|(id, _)| id)
+    });
+    ui.close_current_popup();
+    Some(made)
 }
 
 fn overlay_picker(ui: &Ui, st: &mut AnimUi, info: &AnimInfo) {

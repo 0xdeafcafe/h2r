@@ -20,6 +20,10 @@ pub(super) struct AnimationDocument {
     summary: AnimSummary,
     retail_index: Option<usize>,
     clip: AnimDoc,
+    /// The graph's rest pose when the document was made, so a retarget
+    /// can start from it after the Tags tool shows another map. `None`
+    /// when no single model gave one.
+    rest: Option<Vec<NodeDefault>>,
 }
 
 impl Anim {
@@ -194,11 +198,13 @@ impl App {
             summary.name = format!("animation {index}");
         }
         let clip = document_from_read(read, summary.name.clone())?;
+        let rest = self.anim_captured_rest(&graph);
         Ok(self.anim.insert(AnimationDocument {
             graph,
             summary,
             retail_index: Some(index),
             clip,
+            rest,
         }))
     }
 
@@ -209,6 +215,7 @@ impl App {
         let clip =
             AnimDoc::new(name.to_owned(), frames, loaded.skeleton()).map_err(AnimError::Refused)?;
         let graph = loaded.key.clone();
+        let rest = self.anim_captured_rest(&graph);
         Ok(self.anim.insert(AnimationDocument {
             graph,
             summary: AnimSummary {
@@ -222,6 +229,7 @@ impl App {
             },
             retail_index: None,
             clip,
+            rest,
         }))
     }
 
@@ -235,11 +243,13 @@ impl App {
         let read = self.anim_read(id, animation, Tolerance::DEFAULT)?;
         let clip = document_from_read(&read, name.to_owned())?;
         let graph = self.anim_graph_key(id);
+        let rest = self.anim_captured_rest(&graph);
         Ok(self.anim.insert(AnimationDocument {
             graph,
             summary: authored_summary(read.animation, &clip),
             retail_index: None,
             clip,
+            rest,
         }))
     }
 
@@ -255,14 +265,45 @@ impl App {
             summary: authored_summary(source.summary.clone(), &clip),
             retail_index: None,
             clip,
+            rest: source.rest.clone(),
         };
         Ok(self.anim.insert(doc))
     }
 
+    /// The rest pose of the graph if it is the one loaded and a single
+    /// model gives it.
+    fn anim_captured_rest(&self, graph: &GraphKey) -> Option<Vec<NodeDefault>> {
+        let loaded = self.anim.loaded.as_ref().filter(|l| &l.key == graph)?;
+        loaded.rest(None).ok()
+    }
+
+    /// Every session document, any map: its id, name, kind, frame count
+    /// and the map it was made on (`None` for the open map's own).
+    pub fn anim_all_docs(&self) -> Vec<(u64, String, &'static str, Option<String>)> {
+        self.anim
+            .docs
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.retail_index.is_none())
+            .map(|(i, d)| {
+                (
+                    i as u64 + 1,
+                    d.summary.name.clone(),
+                    d.summary.kind,
+                    d.graph.map.clone(),
+                )
+            })
+            .collect()
+    }
+
     /// Start a document on another graph's skeleton from a document's keys
-    /// (AN5). Both graphs are in the map the Tags tool shows, and each
-    /// has one model, or `from_model` and `to_model` name it. `table`
-    /// pairs `(source node, target node)` where the names do not.
+    /// (AN5). The target graph is in the map the Tags tool shows and has
+    /// one model, or `models[1]` names it. The source may be a document
+    /// made on another map: its rest pose is the one captured when it was
+    /// made. On the shown map the live rest pose is used, and `models[0]`
+    /// can name the source's model. `map`, when given, must be the map
+    /// the source document was made on. `table` pairs
+    /// `(source node, target node)` where the names do not.
     pub fn anim_retarget(
         &mut self,
         doc: u64,
@@ -270,15 +311,36 @@ impl App {
         name: &str,
         table: &[(usize, usize)],
         models: [Option<&str>; 2],
+        map: Option<&str>,
     ) -> Result<(u64, RetargetReport), AnimError> {
-        let from = self.anim_doc_tag(doc)?;
         if self.anim_doc_info(doc)?.kind == "overlay" {
             return Err(AnimError::Refused(
                 "an overlay's keys are deltas, not poses: retarget a base clip".to_owned(),
             ));
         }
-        self.ensure_anim(from)?;
-        let source_rest = self.anim.loaded.as_ref().expect("loaded").rest(models[0])?;
+        let source = self.anim_document(doc)?;
+        let made_on = source.graph.clone();
+        let wrong = map.is_some_and(|want| {
+            !made_on.map.as_deref().is_some_and(|m| m.eq_ignore_ascii_case(want))
+        });
+        if wrong {
+            let want = map.unwrap_or_default();
+            return Err(AnimError::Refused(format!(
+                "animation document {doc} was made on {}, not {want}",
+                made_on.map.as_deref().unwrap_or("the open map"),
+            )));
+        }
+        let source_rest = if self.anim_graph_key(made_on.tag) == made_on {
+            self.ensure_anim(made_on.tag)?;
+            self.anim.loaded.as_ref().expect("loaded").rest(models[0])?
+        } else {
+            self.anim_document(doc)?.rest.clone().ok_or_else(|| {
+                AnimError::Refused(format!(
+                    "animation document {doc} was made on {}, and no single model gave it a rest pose then",
+                    made_on.map.as_deref().unwrap_or("another map"),
+                ))
+            })?
+        };
         self.ensure_anim(to)?;
         let loaded = self.anim.loaded.as_ref().expect("loaded");
         let target_rest = loaded.rest(models[1])?;
@@ -307,8 +369,16 @@ impl App {
             },
             retail_index: None,
             clip,
+            rest: Some(target_rest),
         });
         Ok((id, report))
+    }
+
+    /// Test seam: say a document was made on map `map`, as it would be
+    /// after the Tags tool shows another one.
+    #[cfg(test)]
+    pub(crate) fn anim_doc_pretend_map(&mut self, doc: u64, map: &str) {
+        self.anim.docs[doc_index(doc).unwrap()].graph.map = Some(map.to_owned());
     }
 
     /// Pose a document on the graph's model. An overlay document applies
