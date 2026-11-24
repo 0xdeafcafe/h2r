@@ -44,6 +44,22 @@ removes only part of the first.
    resource reference counting and busy checks, fences, `KickOff`, the
    gamma ramp, vblank and `Swap`.
 
+### External pass refusals
+
+A device refusal includes the producer's Rust pass type, its issue boundary,
+and the native stage for a typed plan. The first refusal for each producer,
+boundary, stage and reason is logged. Device counters retain every refusal.
+A failed reservation leaves the original guest draws available to its caller.
+A refusal from a pass with no corresponding guest draw can instead omit
+that operation.
+
+`d3d::SceneSink` declines untyped passes and unsealed reservations inside a
+captured scene slot. The display graph needs retained inputs to record the
+operation on its own attachments. A one-shot pass carries no replay command.
+The sink names this case with the producer, so it can be distinguished from a
+binding failure or a backend recording failure. Outside captured slots these
+passes still use their normal backend path.
+
 ### By caller
 
 "Claimed" is what a native stage takes in the default configuration.

@@ -276,6 +276,11 @@ impl IndexedTail {
 /// world. The device decides where (the bound targets and viewport); the
 /// backend gives the pass its encoder and the targets' views.
 pub trait ExternalPass: Send {
+    /// The producer, even for untyped passes without an `ExternalPlan`.
+    fn diagnostic_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+
     /// Supplemental geometry seen only through the display lens. The game
     /// has no draw for it. Only display attachments may receive a recording.
     fn display_only(&self) -> bool { false }

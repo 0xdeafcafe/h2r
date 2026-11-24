@@ -1766,6 +1766,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             return Ok(false);
         }
         let confirm = pass.confirm_issue();
+        let producer = pass.diagnostic_name();
         let issue = move |w: &mut Worker<B>| {
             let (c, d) = (w.surface(color)?, w.surface(depth)?);
             let sampled = sampled.into_iter().map(|s| s.and_then(|s| w.surface(s).ok())).collect();
@@ -1777,7 +1778,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         let shared = Arc::clone(&self.shared);
         self.post(move |w| {
             if !issue(w)? {
-                shared.miss("external_pass returned false".into());
+                shared.miss(format!("{producer}: the worker declined an untyped external pass"));
             }
             Ok(())
         });

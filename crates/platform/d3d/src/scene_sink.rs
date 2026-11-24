@@ -38,6 +38,8 @@ use frame_types::{AuxTarget, Carried, CarriedSummary, GuestOp, Readback, SlotAt,
 use gfx::texture::{DecodedTexture, TextureDesc};
 use gfx::{Clear, D3DFormat};
 
+use crate::device::ExternalOrigin;
+
 #[cfg(feature = "gpu")]
 use crate::backend::ExternalCopies;
 use crate::backend::{
@@ -776,7 +778,12 @@ impl<B: Backend> Backend for SceneSink<B> {
         &mut self, surfaces: ExternalSurfaces<Self::Surface>, request: ExternalPassRequest, textures: [Option<&Self::Texture>; 4],
         plan: &ExternalPlan, copy: TargetCopy, pass: SharedReplacement,
     ) -> Result<Option<Vec<ExternalRecording>>, String> {
-        if self.replaying() { return Ok(None); }
+        if self.replaying() {
+            let pass = pass.lock().unwrap_or_else(|err| err.into_inner());
+            ExternalOrigin::new(&**pass, "scene capture reservation", Some(plan.stage))
+                .refused("the scene recorder cannot retain an unsealed reservation", None);
+            return Ok(None);
+        }
         self.inner.prepare_external(surfaces, request, textures.map(|t| t.map(|t| &t.inner)), plan, copy, pass)
     }
     fn can_commit_carried(&self) -> bool {
@@ -871,7 +878,11 @@ impl<B: Backend> Backend for SceneSink<B> {
         &mut self, color: Self::Surface, depth: Self::Surface, sampled: Vec<Option<Self::Surface>>, request: ExternalPassRequest,
         pass: Box<dyn ExternalPass>,
     ) -> Result<bool, String> {
-        if self.replaying() { return Ok(false); }
+        if self.replaying() {
+            ExternalOrigin::new(&*pass, "scene capture issue", None)
+                .refused("the scene recorder cannot retain an untyped pass", None);
+            return Ok(false);
+        }
         self.untracked_write();
         self.inner.external_pass(color, depth, sampled, request, pass)
     }
