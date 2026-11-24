@@ -365,7 +365,7 @@ Hooks, all on retail's own screens (static reading of the XBE, 2026-11-21):
 |---|---|---|
 | `0x2b1ab3` | the game type screen's constructor (screens 207, Change Rules, and 60, Settings, Game Variants); its list at `+0x614` holds one datum per row, the row's word at `+2` | `after`: reserve room in the list allocator and append words 9 through 12, except in the create mode (`+0xb39`) |
 | `0x2c5823` | a row's text, by word | `before`: words 9 through 12 draw their row's label |
-| `0x2c5897` | a row chosen | `before`: words 9 through 12 run retail's press with Slayer's word, with the row set to mark the variant list it opens |
+| `0x2c5897` | a row chosen | `before`: words 9 through 12 run retail's press with a private press record containing Slayer's row handle, with the row set to mark the variant list it opens |
 | `0x2c9ddb` | the variant list's constructor | `after`: write the mark at `+0x4fde` (a spare byte no code reads): the row's number (`Row::mark`, 1 Research and Devolution, 2 Party Games, 3 Firefight, 4 Siege) while its press runs, else 0 |
 | `0x215900` | a content category's variants, called by the list's fill at `0x2ca113` | `before`, from that caller only, for a game type list, enumerate its category then the other six, load each handle with `0x212bc0` and retain matches to the selected type. A marked list hides Create New. |
 | `0x2cad45` | the variant list's per-frame update | `before` on a marked list: the row's title and description in the texts retail sets for Slayer's |

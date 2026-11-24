@@ -18,6 +18,8 @@ pub(crate) const LOBBY_DIALOG: u32 = 3;
 pub(crate) const GAME_SETUP_ID: u32 = 23;
 pub(crate) const SELECT_MAP_ID: u32 = 0xce;
 pub(crate) const SCREEN_ID: u32 = 0x70;
+pub(crate) const CATEGORY_ID: u32 = 207;
+const VARIANTS_ID: u32 = 208;
 const CONTROLLER_MASK: u32 = 8;
 const REQUEST_LOADER: u32 = 0x1c;
 pub(crate) const REQUEST_FOCUS: u32 = 0x18;
@@ -27,7 +29,15 @@ const BACK_SOUND: u32 = 4;
 #[derive(Default)]
 pub struct Navigation {
     pub(crate) maps: crate::map_select::Flow,
+    categories: Mutex<BTreeMap<u32, CategoryReturn>>,
     game_setup: Mutex<BTreeMap<u32, u16>>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct CategoryReturn {
+    mask: u16,
+    focus: Option<i16>,
+    pub(crate) setup: Option<u16>,
 }
 
 impl Navigation {
@@ -37,6 +47,56 @@ impl Navigation {
 
     pub(crate) fn setup_parent(&self, child: u32) -> Option<u16> {
         self.game_setup().get(&child).copied()
+    }
+
+    pub(crate) fn category_parent(&self, screen: u32) -> Option<CategoryReturn> {
+        self.categories.lock().unwrap_or_else(|e| e.into_inner()).get(&screen).copied()
+    }
+
+    /// Capture a lobby replacement before retail disposes of its predecessor.
+    /// Return the focus handle from the newly constructed category list.
+    fn pushed(&self, m: &dyn engine::GuestMemory, child: u32, request: u32) -> Option<u32> {
+        let mem = ReadGm(m);
+        if let Some(mask) = capture_setup(&mem, child, request) {
+            self.game_setup().insert(child, mask);
+            return None;
+        }
+        let (source, ch) = DialogChannel::of(&mem, child)?;
+        let parent = mem.u32(ch + ACTIVE)?;
+        if source.window != LOBBY_DIALOG || mem.u32(ch + PENDING)? != 0 || parent == 0 {
+            return None;
+        }
+        let mask = mem.u16(parent + CONTROLLER_MASK)?;
+        if mask & source.mask == 0 {
+            return None;
+        }
+        let parent_id = mem.u32(parent + SCREEN_ID)?;
+        let child_id = mem.u32(child + SCREEN_ID)?;
+        match (parent_id, child_id, mem.u16(request)?) {
+            (CATEGORY_ID, VARIANTS_ID, 0) if mem.u8(parent + SCREEN_STATE)? & 2 == 0 => {
+                let list = parent + crate::tweakers::SCREEN_LIST;
+                let focus = crate::ui_kit::lifecycle::focused_row_handle(m, ch, list)
+                    .map(|handle| handle as i16);
+                let target = CategoryReturn { mask, focus, setup: self.setup_parent(parent) };
+                self.categories.lock().unwrap_or_else(|e| e.into_inner()).insert(child, target);
+                None
+            }
+            (VARIANTS_ID, CATEGORY_ID, 1)
+                if mem.u32(request + REQUEST_LOADER)? == points::LOBBY_VARIANT_LIST_LOAD.base =>
+            {
+                let target = self.category_parent(parent)?;
+                if let Some(mask) = target.setup {
+                    self.game_setup().insert(child, mask);
+                }
+                crate::retail_rows::retail_handle(m, child + crate::tweakers::SCREEN_LIST, target.focus?)
+            }
+            _ => None,
+        }
+    }
+
+    fn freed(&self, screen: u32) {
+        self.game_setup().remove(&screen);
+        self.categories.lock().unwrap_or_else(|e| e.into_inner()).remove(&screen);
     }
 
     /// A map list replaces the folders on open, and folders replace it on
@@ -122,7 +182,7 @@ pub(crate) async fn reopen(
 fn is_setup_selector(id: u32, loader: u32) -> bool {
     match id {
         SELECT_MAP_ID => loader == points::SELECT_MAP_LOAD.base,
-        0xcf => loader == points::LOBBY_VARIANT_LIST_LOAD.base,
+        CATEGORY_ID => loader == points::LOBBY_VARIANT_LIST_LOAD.base,
         11 => loader == points::LOBBY_LEVEL_LIST_LOAD.base,
         12 => loader == points::LOBBY_DIFFICULTY_LOAD.base,
         _ => false,
@@ -160,24 +220,29 @@ impl hooks::Feature for RetailBack {
     fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         let request_at = b.guest_alloc(0x20, runtime::guest::Permissions::RW)?;
         let nav = Arc::clone(&self.0);
-        b.raw().observe_before(&points::SCREEN_PUSH, "remember the replaced Game Setup", move |o| {
-            let (child, request) = (o.cpu.edi, o.cpu.ebx);
-            let m = o.guest();
-            if let Some(mask) = capture_setup(&ReadGm(&*m), child, request) {
-                nav.game_setup().insert(child, mask);
+        b.raw().before(&points::SCREEN_PUSH, "remember the replaced lobby selector", move |c| {
+            let mut mem = c.ctx.runtime().memory();
+            let request = c.cpu.ebx;
+            if let Some(handle) = nav.pushed(&*mem, c.cpu.edi, request) {
+                mem.set_u32(request + REQUEST_FOCUS, handle)?;
             }
+            Ok(hooks::Flow::Continue)
         });
         let nav = Arc::clone(&self.0);
         b.raw().observe_before(&points::UI_CHANNEL_FREE, "forget the freed screen's opener", move |o| {
             if let Some(screen) = o.arg_u32("screen") {
-                nav.game_setup().remove(&screen);
+                nav.freed(screen);
             }
         });
         let nav = Arc::clone(&self.0);
         b.raw()
             .before(&points::SCREEN_BACK_EVENT, "return to the replaced Game Setup", move |c| {
                 let screen = c.cpu.ecx;
-                let Some(mask) = nav.setup_parent(screen) else {
+                let (mask, loader) = if let Some(category) = nav.category_parent(screen) {
+                    (category.mask, points::LOBBY_VARIANT_LIST_LOAD.base)
+                } else if let Some(mask) = nav.setup_parent(screen) {
+                    (mask, points::GAME_SETUP_LOAD.base)
+                } else {
                     return Ok(hooks::Flow::Continue);
                 };
                 let (action, source) = {
@@ -197,7 +262,7 @@ impl hooks::Feature for RetailBack {
                     (Back::Reopen, Some(mut source)) => {
                         source.mask = mask;
                         c.answer_async(move |cx| Box::pin(async move {
-                            reopen(&cx, request_at, source, points::GAME_SETUP_LOAD.base).await?;
+                            reopen(&cx, request_at, source, loader).await?;
                             Ok(Ret::new(1, 4))
                         }))
                     }
@@ -207,7 +272,7 @@ impl hooks::Feature for RetailBack {
             .after_feature(crate::map_select::FEATURE);
         let nav = Arc::clone(&self.0);
         b.snapshot(hooks::SnapshotPolicy::forbid_while(move || {
-            (!nav.game_setup().is_empty()).then(|| "a lobby selector has a Game Setup return".into())
+            (!nav.game_setup().is_empty() || !nav.categories.lock().unwrap_or_else(|e| e.into_inner()).is_empty()).then(|| "a lobby selector has a Game Setup return".into())
         }));
         Ok(())
     }
@@ -262,6 +327,56 @@ mod tests {
         mem.put_u32(channel + PENDING, 0);
         mem.put_u8(setup + SCREEN_STATE, 2);
         assert_eq!(capture_setup(&ReadGm(&mem), child, request), None);
+    }
+
+    #[test]
+    fn lobby_variants_restore_the_category_focus_and_setup_return_across_reuse() {
+        use engine::{GuestMemory, datum::DatumArray, testing::FakeGuest};
+
+        let nav = Navigation::default();
+        let mut m = FakeGuest::new();
+        let ch = channel(LOBBY_DIALOG, 4).unwrap();
+        let (setup, category, variants, request) = (0x10000, 0x20000, 0x30000, 0x40000);
+        let (item, array, name) = (0x50000, 0x60000, 0x70000);
+        let list = category + crate::tweakers::SCREEN_LIST;
+        m.map(array, 0x1000).map(name, 32)
+            .put_u32(item + 0x10, list)
+            .put_u32(list + crate::retail_rows::LIST_ROWS, array)
+            .put_u32(ch + 0x34, item);
+        for (screen, id) in [(setup, GAME_SETUP_ID), (category, CATEGORY_ID), (variants, VARIANTS_ID)] {
+            m.put_u32(screen + SCREEN_WINDOW, LOBBY_DIALOG)
+                .put_u32(screen + SCREEN_SLOT, 4)
+                .put_u16(screen + CONTROLLER_MASK, 1)
+                .put_u32(screen + SCREEN_ID, id);
+        }
+        let rows = DatumArray::at(array);
+        rows.initialize_contiguous(&mut m, name, 8, 4, 0, 0).unwrap();
+        rows.make_valid(&mut m).unwrap();
+        let handles: Vec<_> = (0..4).map(|_| rows.new_datum(&mut m).unwrap().unwrap().0).collect();
+
+        for index in [3, 0, 2, 1, 3] {
+            m.put_u32(ch + ACTIVE, setup)
+                .put_u16(request, 0)
+                .put_u32(request + REQUEST_LOADER, points::LOBBY_VARIANT_LIST_LOAD.base);
+            assert_eq!(nav.pushed(&m, category, request), None);
+            m.put_u32(ch + ACTIVE, category)
+                .put_u32(item + 0x70, 0x1234_0000 | index as u32);
+            assert_eq!(nav.pushed(&m, variants, request), None);
+            nav.freed(category);
+            m.put_u32(ch + ACTIVE, variants);
+            assert_eq!(nav.category_parent(variants).unwrap().setup, Some(1));
+            assert_eq!(back(&ReadGm(&m), variants, Some(Input::Back)).0, Back::Reopen);
+            m.put_u16(request, 1);
+            assert_eq!(nav.pushed(&m, category, request), Some(handles[index]));
+            nav.freed(variants);
+            m.put_u32(ch + ACTIVE, category);
+            assert_eq!(nav.setup_parent(category), Some(1));
+            assert_eq!(back(&ReadGm(&m), category, Some(Input::B)).0, Back::Reopen);
+            nav.freed(category);
+            assert!(nav.setup_parent(category).is_none());
+            assert!(nav.category_parent(variants).is_none());
+            assert_eq!(m.u32(list + crate::retail_rows::LIST_ROWS), Ok(array));
+        }
     }
 
     #[test]

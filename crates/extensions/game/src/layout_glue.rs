@@ -444,10 +444,10 @@ pub fn string_address(id: u32) -> Option<u32> {
         .find(|(i, _)| *i == id)
         .map(|(_, a)| *a)
 }
-/// The Xbox Live menu tag `custom_games::Menu::extend_tag` last extended (0:
-/// none yet). A map load replaces the tag, and the next screen build
-/// extends the new one before a pane is set.
-static LIVE_TAG: AtomicU32 = AtomicU32::new(0);
+// Within the Live menu's scratch page, after the pane and press arguments.
+const LIVE_SOURCE: u32 = 0x10;
+const LIVE_ROOT: u32 = 0x20;
+const _: () = assert!(LIVE_ROOT + crate::list_class::SCREEN_ROOT_SIZE <= 0x100);
 /// Live menu item widgets of ours: one set per open screen, this many
 /// slots, each of up to [`LIVE_MAX_EXTRA`] items.
 const LIVE_ITEM_SLOTS: u32 = 8;
@@ -831,6 +831,11 @@ pub fn install(
                 // left any lobby, whose mode ends with it.
                 if name == theater_menu::LIST_NAME || name == custom_games::LIST_NAME {
                     crate::lobby_start::clear();
+                    crate::lobby_tabs::cancel_request();
+                    crate::clankermatch::set_active(false);
+                }
+                if name == custom_games::LIST_NAME {
+                    ctx.runtime().memory().set_u32(live.2 + LIVE_SOURCE, 0)?;
                 }
                 let n = live_menu().count(name, n);
                 let n = menu_rows.count(name, n);
@@ -958,9 +963,8 @@ pub fn install(
                 // retail's Content Download pane. The row is handed over in
                 // our word, not written back through the caller's pointer.
                 if id == custom_games::SCREEN_ID {
-                    let tag = LIVE_TAG.load(Ordering::SeqCst);
-                    let panes = if tag != 0 && mem.u32(tag + 0x24).ok() == Some(live.0) {
-                        mem.u32(tag + 0x20).unwrap_or(0)
+                    let panes = if mem.u32(live.2 + LIVE_SOURCE)? != 0 {
+                        mem.u32(live.2 + LIVE_ROOT + 0x20)?
                     } else {
                         0
                     };
@@ -1058,14 +1062,18 @@ pub fn install(
                         return Ok(());
                     }
                     if id == custom_games::SCREEN_ID {
-                        // Ours already (our pane array) or freshly extended.
-                        if mem.u32(cpu.eax + 0x24).ok() == Some(live.0) {
+                        let source = cpu.eax;
+                        let root = live.2 + LIVE_ROOT;
+                        if mem.u32(live.2 + LIVE_SOURCE)? == source {
+                            cpu.eax = root;
                             return Ok(());
                         }
+                        mem.set_u32(live.2 + LIVE_SOURCE, 0)?;
                         let menu = live_menu();
-                        match menu.extend_tag(&mut *mem, cpu.eax, live.0) {
+                        match menu.copy_tag(&mut *mem, source, root, live.0) {
                             Some(true) => {
-                                LIVE_TAG.store(cpu.eax, Ordering::SeqCst);
+                                mem.set_u32(live.2 + LIVE_SOURCE, source)?;
+                                cpu.eax = root;
                                 eprintln!(
                                     "custom games: xbox live menu tag has {} panes and shows {} of {} rows",
                                     custom_games::ALL_PANES,
@@ -1489,6 +1497,7 @@ pub fn install(
                 })
             });
         }
+        let live_press = live.2 + 12;
         if let Some(o) = originals.remove(&custom_games::ROW_CHOSEN) {
             let seen = AtomicBool::new(false);
             let sh = alias(d, &mut next_shadow, &o, custom_games::ROW_CHOSEN);
@@ -1498,6 +1507,20 @@ pub fn install(
                     (chosen_row(&*mem, cpu.esp), video_screen::player_mask(&*mem, cpu.esp))
                 };
                 let kind = row.map_or(custom_games::Row::Retail, |r| live_menu().row_kind(r));
+                // Resolve the forwarded row before changing any lobby state. Keep
+                // the caller's selected datum intact across retail's transition.
+                let target = kind.retail_press().or_else(|| {
+                    (kind == custom_games::Row::Coop && !crate::coop_live::list_ui())
+                        .then_some(custom_games::RETAIL_CUSTOM_GAME_ROW)
+                });
+                if let Some(target) = target {
+                    let mut mem = ctx.runtime().memory();
+                    let Some(handle) = crate::retail_rows::retail_handle(&*mem, cpu.ecx, target) else {
+                        return mem.ret(cpu, 8);
+                    };
+                    mem.set_u32(live_press, handle)?;
+                    mem.set_u32(cpu.esp + 8, live_press)?;
+                }
                 // The playlist screen OptiMatch's press opens lists the
                 // clanker hoppers only after the Clankermatch row's press.
                 crate::clankermatch::set_active(kind == custom_games::Row::Clankermatch);
@@ -1521,17 +1544,10 @@ pub fn install(
                     return Ok(o.invoke(cpu, ctx, custom_games::ROW_CHOSEN));
                 }
                 // Clankermatch and the mode rows: the retail press of their
-                // retail row (the press record rewritten, as the co-op row
-                // does below), then the cursor row left on ours (the retail
+                // retail row, then the cursor row left on ours (the retail
                 // press stored the retail row in it).
                 if let Some(retail) = kind.retail_press() {
                     let shown = row.unwrap_or(retail);
-                    {
-                        let rt = Arc::clone(ctx.runtime());
-                        let mut mem = rt.memory();
-                        let record = mem.u32(cpu.esp.wrapping_add(8))?;
-                        mem.set_u16(record, retail as u16)?;
-                    }
                     if kind == custom_games::Row::Clankermatch {
                         eprintln!(
                             "clankermatch: Live menu row {shown} runs OptiMatch's press (row {retail})"
@@ -1574,12 +1590,6 @@ pub fn install(
                         return ctx.runtime().memory().ret(cpu, 8);
                     };
                     lobby.open_retail();
-                    let rt = Arc::clone(ctx.runtime());
-                    {
-                        let mut mem = rt.memory();
-                        let record = mem.u32(cpu.esp.wrapping_add(8))?;
-                        mem.set_u16(record, custom_games::RETAIL_CUSTOM_GAME_ROW as u16)?;
-                    }
                     eprintln!(
                         "coop-live: Live menu row {} opens the custom game lobby (row {}) in co-op mode",
                         row.unwrap_or(-1),

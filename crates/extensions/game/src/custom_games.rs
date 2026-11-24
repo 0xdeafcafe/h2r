@@ -360,6 +360,16 @@ impl Menu {
         pane_for(self.row_kind(row), panes)
     }
 
+    /// Serve this root only to the Live menu. Other tag lookups keep the
+    /// map's pane count, pane array and original list layout.
+    pub fn copy_tag<M: Gm>(self, m: &mut M, source: u32, root: u32, panes: u32) -> Option<bool> {
+        let mut header = [0; crate::list_class::SCREEN_ROOT_SIZE as usize];
+        if !m.rd(source, &mut header) || !m.wr(root, &header) {
+            return None;
+        }
+        self.extend_tag(m, root, panes)
+    }
+
     pub fn extend_tag<M: Gm>(self, m: &mut M, wgit: u32, base: u32) -> Option<bool> {
         extend_tag_with(m, wgit, base, TAG_SPACE, self, mods_row_enabled())
     }
@@ -1609,6 +1619,22 @@ mod tests {
         assert_eq!(regular_menu(false).extend_tag(&mut m, wgit, BASE), Some(true));
         let list = m.u32(BASE + 0x10).unwrap();
         assert_eq!(i16_at(&m, list + 6), 7);
+    }
+
+    #[test]
+    fn opening_live_repeatedly_only_extends_the_private_tag() {
+        let mut m = Fake::default();
+        m.wr(WGIT, &[0; crate::list_class::SCREEN_ROOT_SIZE as usize]);
+        let source = live_tag(&mut m, 4);
+        let original = m.u32(source + 0x24);
+        let root = BASE + TAG_SPACE;
+        for coop in [true, false, true] {
+            assert_eq!(regular_menu(coop).copy_tag(&mut m, source, root, BASE), Some(true));
+            assert_eq!(m.u32(root + 0x24), Some(BASE));
+            assert_eq!(m.u32(root + 0x20), Some(ALL_PANES));
+            assert_eq!(m.u32(source + 0x24), original);
+            assert_eq!(m.u32(source + 0x20), Some(VANILLA_PANES));
+        }
     }
 
     #[test]

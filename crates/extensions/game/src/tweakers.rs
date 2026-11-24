@@ -19,8 +19,8 @@
 //!   each with its word ([`word_of_row`]) last, except in the create mode
 //!   (a new variant of a game type). `before` hooks draw their labels and
 //!   take their presses.
-//! - The press runs retail's press with the datum's word swapped for
-//!   Slayer's, so retail opens Slayer's variant list in the right mode on
+//! - The press runs retail's press with a private handle pointing to
+//!   Slayer's row, so retail opens Slayer's variant list in the right mode on
 //!   the right stack. While it runs, the variant list constructor's hook
 //!   marks the new screen with the row ([`SCREEN_MARK`],
 //!   [`community::Row::mark`]); every other variant list is marked 0.
@@ -347,33 +347,38 @@ static OPENING: AtomicU8 = AtomicU8::new(0);
 /// The variant list update being let through to retail's (0: none).
 static UPDATING: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// Release the constructor mark even if its suspended guest call is dropped.
+struct Opening(u8);
+
+impl Opening {
+    fn new(row: Row) -> Self {
+        Self(OPENING.swap(row.mark(), Ordering::SeqCst))
+    }
+}
+
+impl Drop for Opening {
+    fn drop(&mut self) {
+        OPENING.store(self.0, Ordering::SeqCst);
+    }
+}
+
 fn once(seen: &AtomicBool, what: &str) {
     if !seen.swap(true, Ordering::Relaxed) {
         eprintln!("{what}");
     }
 }
 
-/// Retail's press on one of our rows, as on Slayer's: the word swapped for
-/// the call, the screen it opens marked.
-async fn press(cx: Cx, ours: Row, list: u32, chain: u32, row: u32) -> Result<Ret, EntryError> {
-    let elem = cx.read(|m| {
-        let handle = engine::DatumHandle::from_raw(m.u32(row).ok()?)?;
-        rows(m, list).ok()?.try_get(m, handle).ok()?
-    });
-    let Some(elem) = elem else {
+/// Forward through the actual Slayer datum. The press may dispose of the
+/// source screen, so nothing writes back through its list after the call.
+async fn press(cx: Cx, ours: Row, list: u32, chain: u32, press_at: u32) -> Result<Ret, EntryError> {
+    let slayer = cx.read(|m| crate::retail_rows::retail_handle(m, list, SLAYER_PANE));
+    let Some(handle) = slayer else {
         return Ok(Ret::new(0, 8));
     };
-    cx.write(|m| m.set_u16(elem + ROW_WORD, SLAYER_WORD as u16))?;
-    OPENING.store(ours.mark(), Ordering::SeqCst);
-    let r = cx
-        .call(
-            GuestCall::new(points::VARIANT_CATEGORY_ROW_CHOSEN.base)
-                .ecx(list)
-                .args([chain, row]),
-        )
-        .await;
-    OPENING.store(0, Ordering::SeqCst);
-    cx.write(|m| m.set_u16(elem + ROW_WORD, word_of_row(ours) as u16))?;
+    cx.write(|m| m.set_u32(press_at, handle))?;
+    let _opening = Opening::new(ours);
+    let r = cx.call(GuestCall::new(points::VARIANT_CATEGORY_ROW_CHOSEN.base)
+        .ecx(list).args([chain, press_at])).await;
     r?;
     Ok(Ret::new(0, 8))
 }
@@ -381,9 +386,8 @@ async fn press(cx: Cx, ours: Row, list: u32, chain: u32, row: u32) -> Result<Ret
 /// A reopen of a row's list: Slayer's `loader`, marked with the row.
 async fn reopen(cx: Cx, ours: Row, loader: u32) -> Result<Ret, EntryError> {
     let request = cx.arg(0)?;
-    OPENING.store(ours.mark(), Ordering::SeqCst);
+    let _opening = Opening::new(ours);
     let r = cx.call(GuestCall::new(loader).args([request])).await;
-    OPENING.store(0, Ordering::SeqCst);
     Ok(Ret::new(r?.eax, 4))
 }
 
@@ -518,22 +522,19 @@ fn row_text(c: &mut Call, seen: &AtomicBool) -> Result<Flow, GuestFault> {
     })
 }
 
-fn row_chosen(c: &mut Call) -> Result<Flow, GuestFault> {
-    if OPENING.load(Ordering::SeqCst) != 0 {
-        return Ok(Flow::Continue);
-    }
-    let (list, chain, row, word) = {
+fn row_chosen(c: &mut Call, press_at: u32) -> Result<Flow, GuestFault> {
+    let (list, chain, word) = {
         let mem = c.ctx.runtime().memory();
         let chain = mem.u32(c.cpu.esp + 4).unwrap_or(0);
         let row = mem.u32(c.cpu.esp + 8).unwrap_or(0);
         let word = mem.u32(row).ok().and_then(|h| word_of(&*mem, c.cpu.ecx, h));
-        (c.cpu.ecx, chain, row, word)
+        (c.cpu.ecx, chain, word)
     };
     let Some(ours) = word.and_then(row_of_word) else {
         return Ok(Flow::Continue);
     };
     eprintln!("tweakers: opening the {} variants", ours.label());
-    c.answer_async(move |cx| -> EntryFuture { Box::pin(press(cx, ours, list, chain, row)) })
+    c.answer_async(move |cx| -> EntryFuture { Box::pin(press(cx, ours, list, chain, press_at)) })
 }
 
 /// The reopen entries' labels: for each row in [`Row::ALL`]'s order, its
@@ -570,6 +571,7 @@ impl hooks::Feature for Tweakers {
             .doc("docs/game/community-gametypes.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        let press_at = b.guest_alloc(4, Permissions::RW)?;
         let scratch = b.guest_alloc(0x1000, Permissions::RW)?;
         // Each row's list's own loaders, one for each of Slayer's: for each
         // row in [`Row::ALL`]'s order, settings, lobby, pick.
@@ -630,7 +632,7 @@ impl hooks::Feature for Tweakers {
         b.raw().before(
             &points::VARIANT_CATEGORY_ROW_CHOSEN,
             "our rows' press",
-            row_chosen,
+            move |c| row_chosen(c, press_at),
         );
         b.raw().after(
             &points::VARIANT_LIST_SCREEN_CTOR,
