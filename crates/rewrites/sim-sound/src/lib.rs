@@ -2,3 +2,18 @@
 //! The engine adapters read the live inputs at each guest callback boundary.
 
 #![forbid(unsafe_code)]
+
+pub mod ambience;
+pub mod channel;
+pub mod environment;
+pub mod impulse;
+pub mod listener;
+pub mod loops;
+pub mod mix;
+pub mod objects;
+pub mod scheduling;
+pub mod segments;
+pub mod sources;
+pub mod spatial;
+pub mod submix;
+pub mod tick;

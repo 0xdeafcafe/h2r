@@ -1692,6 +1692,8 @@ points! { ALL;
     SOUND_IMPULSE_ALLOCATE @ 0x0012_6000: [fn(source: stack 0, channel: stack 1, tag: stack 2, rule: stack 3) ret 16]; "docs/halo1/sounds.md";
     /// Walks a block of predicted resources in the requested prediction mode.
     PREDICT_RESOURCES @ 0x0016_e5e0: [fn(mode: edi, resources: stack 0) -> al ret 4], Optional; "docs/perf/sim-budget.md";
+    /// Smooth a mix-in's position, obstruction and occlusion.
+    SOUND_SUBMIX_UPDATE @ 0x0022_0e00: [fn(source: edi, slot: stack 0) ret 4], Optional; "docs/audio/dsound.md";
     /// Sets source reverb and filter parameters on a DirectSound submix buffer.
     SOUND_SUBMIX_FX @ 0x0022_11e0: [fn(submix: eax, room: stack 0) ret 4], Optional; "docs/perf/sim-budget.md";
     /// Convert the submix filter cutoff to its coefficient word.

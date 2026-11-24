@@ -174,6 +174,14 @@ impl Feature for SimNative {
         if crate::sim_objects::on(b.switches()) {
             crate::sim_objects::install(b);
         }
+        if b.switches().implementation("sim.native.sound", false) {
+            crate::sim_objects::install_table(
+                b,
+                &engine::sim_sound::TABLE,
+                "sim.native.sound",
+                engine::sim_sound::generated_sites,
+            );
+        }
         // The clip store and the collision world are derived from guest
         // memory and hold no state of their own; a load only has to
         // invalidate them.

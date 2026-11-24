@@ -59,7 +59,7 @@ fn table(switches: &hooks::Switches) -> &'static Table {
 
 pub(crate) fn install(b: &mut Builder) {
     let bodies = table(b.switches());
-    install_table(b, bodies);
+    install_table(b, bodies, OBJECTS, |_| &[]);
     install_events(b);
 }
 
@@ -78,11 +78,16 @@ fn install_events(b: &mut Builder) {
     });
 }
 
-fn install_table(b: &mut Builder, table: &'static Table) {
+pub(crate) fn install_table(
+    b: &mut Builder,
+    table: &'static Table,
+    label: &'static str,
+    generated_sites: fn(u32) -> &'static [u32],
+) {
     for &body in table.bodies() {
         let point = body.point;
         b.raw()
-            .implement(point, OBJECTS, move |cpu, ctx, pc| {
+            .implement(point, label, move |cpu, ctx, pc| {
                 let site = pc != point.base && body.sites.contains(&pc);
                 if (pc == point.base || site) && objects::supported(cpu) {
                     let mut mem = ctx.memory();
@@ -91,6 +96,7 @@ fn install_table(b: &mut Builder, table: &'static Table) {
                 original(cpu, ctx, pc, site)
             })
             .resumes(body.sites)
+            .generated_resumes(generated_sites(point.base))
             .context_only()
             // Another feature hooks this point too: calls go through the
             // chain (`hooks::install::guard_shared_bodies`).
@@ -399,7 +405,7 @@ mod tests {
         }
         fn build(&self, b: &mut Builder) -> Result<(), hooks::BuildError> {
             b.snapshot(hooks::SnapshotPolicy::Stateless);
-            install_table(b, self.0);
+            install_table(b, self.0, OBJECTS, |_| &[]);
             Ok(())
         }
     }
