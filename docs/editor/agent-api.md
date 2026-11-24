@@ -295,11 +295,12 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `shell` | `tabs`, `open {tag?, map?, discard?}`, `focus {doc}`, `close {doc, discard?}`: the document tabs ([Document tabs](#document-tabs)) |
 | `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `fields {tag, path?}`, `tree {root?, depth?}`, `refs {tag, limit?}`, `kinds {group?}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
 | `sound` | `read {tag, range?, permutation?, bins?}`, `play {tag, range?, permutation?, from_ms?}`, `stop`, `measure {tag \| clip \| path, range?, permutation?, class?, limit?}` ([Content checks](#content-checks)) |
-| `scenario` | `blocks`, `list {block}`, `get`, `set {block, index, field, value}`, `add {block, like, position}`, `move {block, index, position, ypr}`, `delete`, `duplicate`, `select` |
+| `scenario` | `blocks`, `list {block}`, `get`, `set {block, index, field, value}`, `add {block, like, position}` (or `add {block: "label", label, position, facing?, team?, phase?}`: a ground label, [AI ground](#ai-ground)), `move {block, index, position, ypr}`, `delete`, `duplicate`, `select` |
 | `volume` | `list {kind?}` (short form `volumes [kind]`), `select {index?, focus?}`, `set {index, origin?, center?, forward?, up?, size?}`, `add {kill?, center?, origin?, forward?, up?, size?}`, `remove {kind?, index}` |
 | `collision` | `surfaces {class?, bsp?, offset?, limit?}`, `at {origin, dir}` or `at {point, within?}` (with `select?`), `select {index?, focus?}`, `objects {block?, index?}` |
 | `markers` | `list {kind?, layer?}`, `render {kind?, team?, area?, view?, size?, out?}`, `area.set {id, area}`, `area.convert {id}`: the game type markers of the open map, their areas, and the marker shapes drawn on a grid ([Game type markers](#game-type-markers)) |
 | `nav` | `status`, `back`, `forward`, `go` (the inspector's history); `pathfinding {bsp?, offset?, limit?}`, `bots {wait?, polys?, links?, spots?, offset?, limit?}`, `pick {origin, dir}` or `pick {point, within?}` (with `layer?`, `shown?`, `select?`) or `pick {kind, index, focus?}` (the Navigation layers) |
+| `ground` | `status {offset?, limit?}`, `build {wait?, offset?, limit?}`: the open map's AI ground ([AI ground](#ai-ground)) |
 | `playtest` | `static {wait?}`: the open map's static checks and each built-in game type's readiness ([playtest.md](playtest.md#static-checks)); `run {preset?, game_types?, seeds?, minutes?, bots?}`, `status {run?}`, `result {run?, game_type?, measure?}`, `cancel {run?}`: headless bot matches on the open map and their measures ([playtest.md](playtest.md#what-a-run-is)) |
 | `variant` | `list`, `get` (with `script`), `set {setting \| option, value}`, `rename`, `copy`, `export`, `import`, `delete` |
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
@@ -1575,6 +1576,7 @@ tool?}`, worst first. The sources:
 | `hud` | `hud.check` and the HUD kit's check |
 | `package` | the manifest checks `h2 package check` runs over the packages under `<data>/packages/`: an item with no builder, a missing or oversize source, a source its builder refuses, two items that add one tag path |
 | `build` | what the game's package set refuses to load, as the boot log says it: an unreadable package, a refused id, a `requires` that is missing, a set that cannot be ordered |
+| `ground` | the last AI ground build of the open map: a label it could not honour (`ground.label`, a warning, target `<label>[<index>]`) or why it failed (`ground.build`, an error); the tool is the scenario ([AI ground](#ai-ground)) |
 
 Each row names what opens it: `asset` (`tag:<group>:<path>` for a tag of
 the open map, `package:<id>` or `item:<package>:<n>`), `field` (the field
@@ -2086,6 +2088,53 @@ the window and the API stay one path.
   the window's Generate window). Apply, accept and discard run the
   commands `Action::Image` runs, which write through the Textures tool's
   `BitmapAction`s ([Generating images](#generating-images)).
+
+## AI ground
+
+`ground.*` (`api/ground.rs`, a provider over `app/ground.rs`) is the agent's
+view of the AI ground of the open map
+([game-types-without-carriers.md](../game/game-types-without-carriers.md),
+"In Studio"): the labels placed on it, **Build AI ground** and what the
+build made. Nothing builds at open or while placing.
+
+- **Labels.** `scenario.add {block: "label", label, position?, facing?,
+  team?, phase?}` places a ground label (`ff_drop`, `ff_base`, `ff_cover`,
+  `siege_site`, `siege_goal` or `siege_line`) as one netgame flag of a
+  type the game reads no marker for, with the label attached, in one undo
+  step; `facing` is radians, `team` 0 (red) or 1 (blue; a base and a siege
+  line read it), `phase` a siege line's. It answers `{index}`, the flag's.
+  The Scene tab's **AI and objectives** group and its **Place new with the
+  mouse** place by the same action (`Action::PlaceLabelAt`), so a label
+  placed in the window and one placed here are one document. The label
+  belongs to its flag, as an area does, so a swap-removal moves it with the
+  flag and an undo brings it back.
+- `ground.status {offset?, limit?}` answers `{state, stale, job, error,
+  labels, built, shown, matching, sectors}`. `state` is `no_map`, `never`
+  (not built for this map), `building`, `current`, `stale` or `failed`;
+  `stale` says why: `labels` (one was placed, moved or removed),
+  `collision` (a placed solid object or a Modeling write changed),
+  `recipe` or `kit_version`. A move of a spawn, a rename or a script edit
+  leaves the ground current. `labels` counts the placed ones by label and
+  in `total`. `built` is `{zones, squads, sectors, links, problems,
+  costs, headroom: {tag_growth, available, fits}, bases}` for the last
+  build, and `problems` are the labels the build could not honour
+  (`{label, index, position, reason}`). `sectors` lists the built ground's
+  pathfinding sectors as `nav.pathfinding` does (`matching` is how many),
+  empty until a build.
+- `ground.build {wait?, offset?, limit?}` builds over the open map as
+  edited (`firefight_kit::ground::build`) on its own thread and answers
+  `{job, status}` at once, or when it is done with `wait`. A build
+  already running is `REFUSED`; a failed one is in `status.error` and in
+  Problems. The built ground's pathfinding then draws in the Navigation
+  layers and `nav.pathfinding` reads it in place of the map's own.
+
+The labels and the built ground live in the open session; they are not yet
+written with the map's package.
+
+The tests are `app/ground_tests.rs` (the window's placing and
+`scenario.add` make one document, a build on the kit's invented court
+lists its sectors, the stale rule, a failed build in Problems) and
+`scenario-edit/src/ground_tests.rs`.
 
 ## Game type markers
 

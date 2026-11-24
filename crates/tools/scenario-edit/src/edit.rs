@@ -56,6 +56,11 @@ pub enum Op {
         index: usize,
         area: Option<game_markers::Area>,
     },
+    /// Set or clear (`None`) the ground label of netgame flag `index`.
+    Label {
+        index: usize,
+        label: Option<crate::FlagLabel>,
+    },
 }
 
 /// A user action: one or more operations, undone as one step.
@@ -94,6 +99,14 @@ impl Command {
         Self {
             label: format!("add {block:?}"),
             ops: vec![Op::Add { block, entry }],
+            merge: None,
+        }
+    }
+    /// Set or clear the ground label of netgame flag `index`.
+    pub fn label(index: usize, label: Option<crate::FlagLabel>) -> Self {
+        Self {
+            label: if label.is_some() { "set label" } else { "clear label" }.into(),
+            ops: vec![Op::Label { index, label }],
             merge: None,
         }
     }
@@ -141,6 +154,11 @@ enum Undo {
     Area {
         index: usize,
         area: Option<game_markers::Area>,
+    },
+    /// The flag's old label.
+    Label {
+        index: usize,
+        label: Option<crate::FlagLabel>,
     },
 }
 
@@ -319,6 +337,12 @@ fn apply_all(
                     index: *index,
                     area: old,
                 }),
+            Op::Label { index, label } => scenario
+                .set_label(*index, *label)
+                .map(|old| Undo::Label {
+                    index: *index,
+                    label: old,
+                }),
             Op::VolumeAdd { kind, entry } => {
                 scenario
                     .add_volume(*kind, entry.clone())
@@ -357,6 +381,9 @@ fn revert(scenario: &mut Scenario, before: &[Undo]) -> Result<()> {
             Undo::VolumeAdded { kind, entry } => scenario.unadd_volume(*kind, entry)?,
             Undo::Area { index, area } => {
                 scenario.write_area(*index, area.clone())?;
+            }
+            Undo::Label { index, label } => {
+                scenario.write_label(*index, *label)?;
             }
         }
     }

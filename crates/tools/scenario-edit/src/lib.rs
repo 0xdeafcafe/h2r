@@ -66,12 +66,15 @@ pub mod volumes;
 #[cfg(test)]
 mod area_tests;
 #[cfg(test)]
+mod ground_tests;
+#[cfg(test)]
 mod tests;
 
 pub use edit::{Command, History, SetField};
 pub use layout::{BlockKind, FieldType, Role};
 pub use package::{PackageForm, SavedPackage};
 pub use save::MapSource;
+pub use scenario::ground::{FlagLabel, LABEL_FLAG_TYPE, LabelKind, SOLID_BLOCKS};
 pub use scenario::{
     BspPatch, Changes, GeometryChanges, GeometryGrown, Grown, MovedRaw, RawAppend, RawPatch,
     Removed, Scenario, TagGrown, TagMove, TagRef, Value, VolumeRemoved,

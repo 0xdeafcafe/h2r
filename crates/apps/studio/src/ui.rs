@@ -163,6 +163,7 @@ impl Studio {
         app.poll_convert();
         app.poll_cards();
         app.poll_bot_nav();
+        app.poll_ground();
         // The workspace's background extraction, before the status bar
         // reads its progress.
         app.poll_workspace();
@@ -918,6 +919,7 @@ impl Studio {
             }
             ui.separator();
             let filter = app.filter.trim().to_owned();
+            let ground_state = app.ground_state();
             let session = &app.session;
             let Some(scenario) = session.scenario() else {
                 return;
@@ -925,6 +927,7 @@ impl Studio {
             let io = ui.io();
             let (toggle, range) = (io.key_ctrl() || io.key_super(), io.key_shift());
             let mut place = None;
+            let mut label_place = None;
             theme::panel_body(ui, "##outliner-body", || {
                 for b in &scenario.blocks {
                     let kind = b.def.kind;
@@ -981,9 +984,15 @@ impl Studio {
                     }
                 }
                 volume_outliner(ui, session, &filter, &mut self.volume_shown, actions);
+                label_place = ground_outliner(ui, session, &filter, ground_state, actions);
         });
                 if place.is_some() {
                     self.viewport.placing = place;
+                    self.viewport.placing_label = None;
+                }
+                if label_place.is_some() {
+                    self.viewport.placing_label = label_place;
+                    self.viewport.placing = None;
                 }
             });
     }
@@ -1008,9 +1017,12 @@ impl Studio {
                     viewport.draw(ui, app, gpu, actions);
                     play.overlay(ui, app, viewport.shown().map(|(r, _)| r));
                     if viewport.hovered() || viewport.looking() {
-                        self.hint = Some(match viewport.placing {
-                            Some((kind, _)) => format!("Click the level to place {kind:?} · Esc cancels"),
-                            None => "RMB look and fly · Alt+LMB orbit · MMB pan · Wheel dolly".into(),
+                        self.hint = Some(match (viewport.placing, viewport.placing_label) {
+                            (Some((kind, _)), _) => format!("Click the level to place {kind:?} · Esc cancels"),
+                            (None, Some(label)) => {
+                                format!("Click the level to place {} · Esc cancels", label.text())
+                            }
+                            (None, None) => "RMB look and fly · Alt+LMB orbit · MMB pan · Wheel dolly".into(),
                         });
                     }
                 } else if app.source().is_some() || app.halo1_source().is_some() {
@@ -1529,6 +1541,95 @@ fn volume_outliner(
             }
         }
     }
+}
+
+/// The Scene tab's AI and objectives group
+/// (docs/game/game-types-without-carriers.md, "In Studio"): each ground
+/// label with how many are placed, a **Place new with the mouse** row for
+/// it, and the placed ones as rows that select their flag. **Build AI
+/// ground** and where the ground stands are at its head. Answers the label
+/// the next click is to place.
+fn ground_outliner(
+    ui: &Ui,
+    session: &scenario_edit::Session,
+    filter: &str,
+    state: crate::app::ground::GroundState,
+    actions: &mut Vec<Action>,
+) -> Option<scenario_edit::LabelKind> {
+    use scenario_edit::{BlockKind, LabelKind};
+    let scenario = session.scenario()?;
+    let labels = scenario.flag_labels();
+    let shown: Vec<LabelKind> = LabelKind::ALL
+        .into_iter()
+        .filter(|k| outliner::matches(filter, "AI and objectives", k.title(), 0))
+        .collect();
+    if !filter.is_empty() && shown.is_empty() {
+        return None;
+    }
+    let mut node = ui
+        .tree_node_config("block-ground")
+        .label(format!("{}  AI and objectives  ({})", icon::FLAG, labels.len()))
+        .span_avail_width(true);
+    if !filter.is_empty() {
+        node = node.opened(true, Condition::Always);
+    }
+    let _node = node.push()?;
+    let mut place = None;
+    let building = state == crate::app::ground::GroundState::Building;
+    let d = ui.begin_disabled_with_cond(building);
+    if ui.button(format!("{} Build AI ground##build-ground", icon::FLAG)) {
+        actions.push(Action::BuildGround);
+    }
+    d.end();
+    ui.same_line();
+    ui.text_disabled(match state {
+        crate::app::ground::GroundState::NoMap => "no map",
+        crate::app::ground::GroundState::Never => "not built",
+        crate::app::ground::GroundState::Building => "building...",
+        crate::app::ground::GroundState::Current => "built",
+        crate::app::ground::GroundState::Stale(_) => "stale: build again",
+        crate::app::ground::GroundState::Failed => "the build failed",
+    });
+    let flags = BlockKind::NetgameFlags;
+    for kind in shown {
+        let mine: Vec<usize> = labels
+            .iter()
+            .filter(|(_, l)| l.kind == kind)
+            .map(|(i, _)| *i)
+            .collect();
+        let Some(_row) = ui
+            .tree_node_config(format!("ground-{}", kind.text()))
+            .label(format!("{}  ({})", kind.title(), mine.len()))
+            .span_avail_width(true)
+            .push()
+        else {
+            continue;
+        };
+        if ui
+            .selectable_config(format!("Place new with the mouse##place-{}", kind.text()))
+            .build()
+        {
+            place = Some(kind);
+        }
+        for i in mine {
+            let name = match scenario.flag_label(i) {
+                Some(l) if l.kind.has_phase() => format!("{} {i}, phase {}", kind.text(), l.phase),
+                _ => format!("{} {i}", kind.text()),
+            };
+            if ui
+                .selectable_config(format!("{name}###label-{i}"))
+                .selected(session.is_selected((flags, i)))
+                .allow_double_click(true)
+                .build()
+            {
+                actions.push(Action::Select(Some((flags, i))));
+                if ui.is_mouse_double_clicked(dear_imgui_rs::MouseButton::Left) {
+                    actions.push(Action::FocusSelected);
+                }
+            }
+        }
+    }
+    place
 }
 
 /// The outliner of a Halo 1 map shown read-only: its placements by kind.

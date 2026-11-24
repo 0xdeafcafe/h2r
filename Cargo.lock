@@ -7093,6 +7093,7 @@ dependencies = [
  "dear-imgui-winit",
  "dear-imguizmo",
  "editor-core",
+ "firefight-kit",
  "forge-doc",
  "geometry-edit",
  "gfx",

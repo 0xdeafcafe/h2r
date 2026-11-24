@@ -11,6 +11,7 @@ pub mod announcer;
 pub mod anim;
 pub mod audition;
 pub mod bot_nav;
+pub mod ground;
 pub mod commands;
 pub(crate) mod convert;
 pub mod hud;
@@ -279,6 +280,19 @@ pub enum Action {
     /// Add a new placement where the cursor met the level: a copy of an
     /// entry, or the block's first palette item.
     PlaceAt(BlockKind, Option<usize>, [f32; 3]),
+    /// Place a ground label at `at`: one netgame flag with its label, as
+    /// one undo step (`app::ground`). The Scene tab's AI and objectives
+    /// group and `scenario.add {block: "label"}` both come here.
+    PlaceLabelAt {
+        kind: scenario_edit::LabelKind,
+        at: [f32; 3],
+        facing: f32,
+        team: u8,
+        phase: u16,
+    },
+    /// Build the AI ground over the open map (`app::ground`): **Build AI
+    /// ground**, and `ground.build`.
+    BuildGround,
     /// Delete the selected placements.
     Delete,
     /// Duplicate the selected placements.
@@ -561,6 +575,8 @@ pub struct App {
     /// The bots' nav mesh and spots loading for the open map
     /// ([`bot_nav`]).
     bot_nav: bot_nav::BotNavLoad,
+    /// The AI ground's build and what it made ([`ground`]).
+    ground: ground::GroundBuild,
     /// The playlist editor.
     pub hoppers: HopperSession,
     /// The playlist shown (0..16).
@@ -700,6 +716,7 @@ impl App {
             variants_for: None,
             data_root: None,
             bot_nav: Default::default(),
+            ground: Default::default(),
             hoppers: HopperSession::new(),
             hopper_selected: 0,
             hopper_preset: None,
@@ -1263,6 +1280,14 @@ impl App {
             }
             Action::GoTo(selection) => self.go_to(selection),
             Action::PlaceAt(kind, like, at) => self.place_at(kind, like, at),
+            Action::PlaceLabelAt {
+                kind,
+                at,
+                facing,
+                team,
+                phase,
+            } => self.place_label_at(kind, at, facing, team, phase),
+            Action::BuildGround => self.build_ground(),
             Action::Delete if self.session.selection().len() > 1 => self.delete_selection(),
             Action::Duplicate if self.session.selection().len() > 1 => self.duplicate_selection(),
             Action::Delete => match (self.session.selected(), self.session.selected_volume()) {
@@ -2057,5 +2082,7 @@ mod map_pack_tests;
 pub(crate) mod shell_tests;
 #[cfg(test)]
 mod problems_tests;
+#[cfg(test)]
+mod ground_tests;
 #[cfg(test)]
 mod tests;

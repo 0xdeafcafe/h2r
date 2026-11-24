@@ -8,8 +8,12 @@ use crate::nav_view::{self, BotNav, LevelPathfinding, NavPick};
 
 impl Session {
     /// The open map's pathfinding data.
+    /// While AI ground is shown ([`Self::set_ground_pathfinding`]) it is
+    /// the ground's.
     pub fn pathfinding(&self) -> Option<&LevelPathfinding> {
-        self.doc.as_ref().map(|d| &d.pathfinding)
+        self.doc
+            .as_ref()
+            .map(|d| d.ground_pathfinding.as_ref().unwrap_or(&d.pathfinding))
     }
 
     /// The bots' data for the open map, once the editor has given it.

@@ -1,6 +1,10 @@
 # Game types without carriers
 
+<<<<<<< HEAD
 Status: Design, with GT0 (the reads, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md)), GT1 (the header), GT2 (eligible Slayer scripts on index 6 and script role traits), GT3 (King of the Hill and Territories own their zones), GT4 (the flag, bomb and ball as script objects), GT5 (filing and round-start lines), GT7's record mapping (the `GAME_ACTIVATE` swap is not wired, "Retail records"), GE1 to GE4 (the record clean-up, the wire codec, the protocol map and the engine object for the script index), GM1 (`crates/tools/firefight-kit/src/ground.rs`) and GM4 (`siege.rules`'s labels, `rules::labels::reads`) built, and GM3's document, session and screens built (the builder hook is not wired, below); "What the carrier supplies" is the state of the code and the slices are the order to change the rest in.
+=======
+Status: Design, with GT0 (the reads, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md)), GT1 (the header), GT2 (eligible Slayer scripts on index 6 and script role traits), GT5 (filing and round-start lines), GE1 to GE4 (the record clean-up, the wire codec, the protocol map and the engine object for the script index), GM1 (`crates/tools/firefight-kit/src/ground.rs`), GM2 (Studio's labels, **Build AI ground** and `ground.*`, `crates/apps/studio/src/app/ground.rs`; the `map` item's `ground` is not built) and GM4 (`siege.rules`'s labels, `rules::labels::reads`) built, and GM3's document, session and screens built (the builder hook is not wired, below); "What the carrier supplies" is the state of the code and the slices are the order to change the rest in.
+>>>>>>> ground-gm2
 Code: `crates/formats/rules/src` (`ir.rs` the header, `types.rs` the type table, `lang/check.rs`, `caps.rs`, `builtin/`), `crates/extensions/game/src/rules/` (`runtime.rs`, `scoring.rs`, `objectives.rs`, `roles.rs`), `crates/formats/variants/src/portable.rs` (`record_for`), `crates/formats/variants/src/record.rs` (`check`, `clean_up`, `protocol`), `crates/formats/variants/src/wire.rs` (the codec), `crates/extensions/game/src/rules/record.rs` (the record hooks), `crates/extensions/game/src/rules/engine_object.rs` (the engine object), `crates/hooking/guest-layout/src/points/game_types.rs` (its image entries), `crates/extensions/game/src/community_variants.rs`. Tests: `crates/formats/rules/tests/engines.rs`, `tests/modes.rs`, `crates/rewrites/engine/tests/variant_record_differential.rs`, `crates/extensions/game/src/rules/runtime/tests/script_index.rs`.
 Switch: none (the `rules` feature).
 
@@ -323,18 +327,40 @@ Ground is built when it is asked for, never while placing:
 ### In Studio
 
 Opening the scenario gives the map editor; its Scene tab has an **AI
-and objectives** group with the same labels, placed with **Place new
-with the mouse**. **Build AI ground** is on the toolbar; the result
-draws in the Navigation layers (`view.layers`, `nav.pathfinding`), the
-problems go to Problems, and **Playtest** runs waves on it headless
-([playtest.md](../editor/playtest.md)). Saving writes a `map` item into
-the edit target with its `ground` table.
+and objectives** group with the same labels. Each label has a **Place
+new with the mouse** row (the next click on the level puts it there,
+facing the way the camera looks; Esc cancels) and lists the ones placed,
+which select their flag. A label is one netgame flag of a type the game
+reads no marker for, with the label kept by placement beside it
+(`scenario_edit::FlagLabel`, `Session::add_label_at`), so it follows its
+flag through a removal and an undo. A base or a siege line takes the team
+the placed ones leave short, red then blue, and a siege line the phase of
+its pair, as Forge's marker placing does (`app::ground::next_team_phase`).
+
+**Build AI ground** is on the toolbar and at the head of the group. It
+builds `firefight_kit::ground::build` over the open map as edited, with
+the labels, on its own thread (`App::start_ground`); nothing builds at open
+or while placing. The result draws in the Navigation layers in place of the
+map's own pathfinding (`view.layers`, `nav.pathfinding`), the labels it
+could not honour go to Problems (source `ground`), and **Playtest** runs
+waves on it headless ([playtest.md](../editor/playtest.md)).
+
+The stale rule is the kit's, over Studio's own base: the digest of the
+map's name and `Scenario::collision_stamp`, which covers where each placed
+solid object stands and what it is (scenery, crates, machines, vehicles) and
+the Modeling tool's writes. A spawn moved, a name or a script edited leaves
+the ground current; a label placed, moved or removed, or a solid moved,
+marks it stale and says which.
+
+The labels and the built ground live in the open session. Saving a `map`
+item into the edit target with its `ground` table comes with the package
+model's whole-map items.
 
 | Method (Studio) | Does |
 |---|---|
-| `ground.status {doc?}` | stale or built, counts of sectors, drops and positions, the cost against headroom |
-| `ground.build {doc?}` | builds; answers with a job as `playtest.run` does |
-| `scenario.add {block: "label", name, ...}` | places a label |
+| `ground.status {offset?, limit?}` | stale or built, counts of labels, sectors, drops and positions, the cost against headroom, the sectors |
+| `ground.build {wait?, offset?, limit?}` | builds; answers with a job as `playtest.run` does, or with the status when `wait` |
+| `scenario.add {block: "label", label, position?, facing?, team?, phase?}` | places a label |
 
 ### The build step
 
@@ -430,7 +456,7 @@ with tests, M under 2,500. Tests are headless on `rules::fake::FakeGame`.
 | GE4 (built) | **The engine object**. Index 6 selects a host-owned object with shared engine bodies. The runtime receives kills and round events from the common paths. | L | GE0 to GE3 | a scripted kill on index 6 reaches `on kill` without invoking a retail scoring slot |
 | GE5 | **Every script game on the script index**. Move the remaining templates and retail-record swap, films and sessions to index 6. Remove retail scoring hooks after the last scripted retail record is covered. The base HUD shows score and time. | M | GT2, GT6, GT7 | `tests/modes.rs` and `tests/engines.rs` pass on script-index records; no built-in's record is index 2; the base HUD compiles and shows an invented score and clock |
 | GM1 (built) | **Ground as a build step**: `firefight_kit`'s generator behind `ground::build(map, labels, recipe)`, labels in place of found bases and picked drops, the stale rule, the receipt | M | nothing | on the kit's invented court: no labels gives the tags `build_package` gives; a moved `ff_drop` moves its zone; the same inputs give the same bytes; over headroom is refused with its biggest part |
-| GM2 | **Studio**: the AI and objectives group, **Build AI ground**, `ground.status`, `ground.build`, the Navigation layers, the `map` item's `ground` | M | GM1, PK9 of studio-redesign | a label placed in the window and by `scenario.add` make the same document; a build on an invented map lists its sectors; an edit that moves collision marks it stale |
+| GM2 (built, but for the `map` item's `ground`) | **Studio**: the AI and objectives group, **Build AI ground**, `ground.status`, `ground.build`, the Navigation layers, the `map` item's `ground` | M | GM1, PK9 of studio-redesign | a label placed in the window and by `scenario.add` make the same document; a build on an invented map lists its sectors; an edit that moves collision marks it stale |
 | GM3 (built, but for the reload) | **Forge**: the palette page, the `ground` recipe in the document and `Tier::Variant`, **Build AI ground**, the rebuild and reload (the build is built; the reload is not), build on save, the overlay | M | GM1 | a variant with labels and a recipe validates as a variant; materialising it equals GM1's build of the same inputs; a save with stale ground builds first |
 | GM4 (built) | **Labels the scripts read**: Firefight's director and `siege.rules` take their places from labels; the lobby's refusal for a map without them | S | GM1, GT1 | on the fake game a wave lands at a placed drop; Siege's sites are the placed ones; a map with no required label is refused by name |
 

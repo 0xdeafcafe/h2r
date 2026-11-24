@@ -779,6 +779,9 @@ build), and keeps the last four maps' scenes so reopening one is instant.
     (`nav.pathfinding`). The 2D BSP nodes are counted, not drawn. Read
     with the map (`LevelPathfinding::read`). Retail multiplayer maps
     carry none: the layer is empty and `nav.pathfinding` gives a note.
+    Once **Build AI ground** has built ground for the map, the layer
+    draws the built ground's sectors in its place
+    (`Session::set_ground_pathfinding`, [game-types-without-carriers.md](../game/game-types-without-carriers.md), "In Studio").
   - **Bot nav mesh** draws the bots' own mesh
     ([bots.md](../game/bots.md), §3.2): each polygon as translucent
     floor, blue in the map and a dim grey-blue out of it

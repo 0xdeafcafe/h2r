@@ -93,6 +93,8 @@ serde_json.workspace = true
 # Playtest's static checks (src/app/playtest_static.rs): the start gate's
 # census of the open scenario (docs/game/rules-start-gate.md).
 forge-doc.workspace = true
+# AI ground built over the open map (src/app/ground.rs): GM1's build.
+firefight-kit = { path = "../../tools/firefight-kit" }
 # The announcer voice: Fish Audio's text to speech over HTTPS (src/voice/fish.rs).
 ureq = { version = "2", default-features = false, features = ["tls"] }
 
@@ -109,6 +111,8 @@ studio-proto = { path = "../studio-proto" }
 libc = { workspace = true }
 
 [dev-dependencies]
+# ground.*'s tests build on the kit's invented court (api/tests/ground_tests.rs).
+firefight-kit = { path = "../../tools/firefight-kit", features = ["testkit"] }
 # The HUD tool's tests draw the invented HUD map.
 hud-edit = { path = "../../tools/hud-edit", features = ["fixture"] }
 # model.*'s tests put the kit into the kit's invented map.

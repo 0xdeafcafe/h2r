@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use std::io::{Read, Seek};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub mod ground;
+
 /// The `scnr` root is at least this long: the furthest block pair this crate
 /// reads is crates' palette at `+0x330`.
 const ROOT: u32 = 0x338;
@@ -453,10 +455,16 @@ pub struct Scenario {
     /// (docs/game/gametype-markers.md, "In the document"). Edited through
     /// [`Self::set_area`]; an entry whose flag is gone waits for its undo.
     areas: std::collections::BTreeMap<PlacementId, game_markers::Area>,
+<<<<<<< HEAD
     /// The areas record the map was opened with, as it encodes now (empty
     /// when it had none): a save writes the areas again, and
     /// [`Changes::areas`] holds the record only when it differs from this.
     areas_loaded: Vec<u8>,
+=======
+    /// The ground label of each netgame flag that has one, by placement
+    /// ([`ground`]).
+    labels: std::collections::BTreeMap<PlacementId, ground::FlagLabel>,
+>>>>>>> ground-gm2
 }
 
 pub(crate) fn u32_at(b: &[u8], o: usize) -> u32 {
@@ -673,7 +681,11 @@ impl Scenario {
             geometry: GeometryChanges::default(),
             bitmap: GeometryChanges::default(),
             areas: std::collections::BTreeMap::new(),
+<<<<<<< HEAD
             areas_loaded: Vec::new(),
+=======
+            labels: std::collections::BTreeMap::new(),
+>>>>>>> ground-gm2
         })
     }
 

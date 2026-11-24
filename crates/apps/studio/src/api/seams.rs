@@ -92,6 +92,9 @@ pub fn register(api: &mut Api) {
     // The Navigation layers' data: the game's pathfinding, the bots' mesh
     // and spots, and a pick.
     api.register(Box::new(super::nav_mesh::NavMesh));
+    // ground.status and ground.build: the open map's AI ground
+    // (app::ground).
+    api.register(Box::new(super::ground::Ground));
     // Playtest's static checks over the open map (app::playtest_static).
     api.register(Box::new(super::playtest::Playtest::new()));
     // The Tags tool's browsing (shared caches), resources and tag bundles.

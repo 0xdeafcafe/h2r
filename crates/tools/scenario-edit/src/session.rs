@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 mod area;
 mod collision;
+mod ground;
 mod multi;
 mod nav;
 mod volume_edit;
@@ -51,6 +52,9 @@ struct Doc {
     objects: crate::object_collision::ObjectCollisions,
     /// The structure BSPs' own pathfinding data ([`crate::nav_view`]).
     pathfinding: crate::nav_view::LevelPathfinding,
+    /// The pathfinding of AI ground built over this map, shown in its
+    /// place ([`Session::set_ground_pathfinding`]).
+    ground_pathfinding: Option<crate::nav_view::LevelPathfinding>,
     /// The bots' nav mesh and spots, when the editor has given them
     /// ([`Session::set_bot_nav`]); they go with the map.
     bot_nav: Option<Arc<crate::nav_view::BotNav>>,
@@ -527,6 +531,7 @@ impl Session {
             collision,
             objects,
             pathfinding,
+            ground_pathfinding: None,
             bot_nav: None,
             scene,
             native: Arc::new(native),

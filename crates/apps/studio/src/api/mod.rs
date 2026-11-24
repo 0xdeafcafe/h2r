@@ -43,6 +43,7 @@ mod markers_check;
 mod mirror;
 mod models;
 mod nav;
+mod ground;
 mod nav_mesh;
 mod pair;
 mod params;
@@ -516,8 +517,8 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::SCENARIO_ADD,
-        "Add a placement: a copy of `like`, or a new one with the palette's first item, at `position` (default: the camera focus). Refused where the block can't grow safely",
-        r#"{"block":"string","like?":"integer","position?":"[x,y,z]"}"#,
+        "Add a placement: a copy of `like`, or a new one with the palette's first item, at `position` (default: the camera focus). Refused where the block can't grow safely. `block: \"label\"` places a ground label (ff_drop, ff_base, ff_cover, siege_site, siege_goal or siege_line, as `label`) as one netgame flag with its label, as the Scene tab's AI and objectives group does; `facing` is radians, `team` 0 or 1 (a base and a siege line), `phase` a siege line's",
+        r#"{"block":"string","like?":"integer","position?":"[x,y,z]","label?":"string","facing?":"number","team?":"integer","phase?":"integer"}"#,
         r#"{"index":"integer"}"#,
         r#"{"block":"starting_locations","like":0,"position":[1,1,1]}"#,
     ),
@@ -1059,6 +1060,7 @@ impl Api {
         }
         play.update(app);
         app.poll_bot_nav();
+        app.poll_ground();
         // The workspace's background extraction, as the window polls it
         // each frame.
         app.poll_workspace();
