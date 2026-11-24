@@ -341,9 +341,8 @@ fn load(
                     part,
                     influences,
                     first_index: u32::from(p.first_index),
-                    index_count: u32::from(p.index_count),
                     list: p.is_triangle_list(),
-                    triangles: g.part_triangles(p),
+                    raw_indices: g.part_indices(p),
                     vertex_shaders,
                 });
             }

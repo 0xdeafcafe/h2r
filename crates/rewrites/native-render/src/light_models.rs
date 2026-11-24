@@ -4,8 +4,8 @@
 //! entry without the guest's geometry handler (`0x0004d0b0`).
 //!
 //! Per model section: its parts' triangles in one index list (the part's
-//! raw range decoded in its own topology, as the object path decodes it,
-//! `tags::geometry::Geometry::part_triangles`), its decompression rows,
+//! raw indices decoded as their authored topology and, for strips, also
+//! as lists for records that clear the strip bit), its decompression rows,
 //! and its vertices once per (vertex shader, classification) its parts'
 //! materials' shadow and light implementations name,
 //! gathered through the declaration that program's input semantics give
@@ -16,8 +16,8 @@
 //! [`crate::shadow_look::compile_shadow_model`]).
 //!
 //! An entry finds its part by its model, section and part
-//! ([`LightModels::part`]); its raw range and topology must be the
-//! part's, and its sorted vertex classification one a buffer was built
+//! ([`LightModels::part`]); its raw range must match and it must use an
+//! available topology, with a sorted vertex classification a buffer was built
 //! for ([`LightSection::buffer`]). Anything else is not resident, and the
 //! layer keeps its handlers (`light_scene::Refusal::Stream`).
 
@@ -44,21 +44,20 @@ pub struct ModelSection<'a> {
     /// Its streams by descriptor slot: (stream type, bytes).
     pub streams: Vec<Option<(u8, StreamData<'a>)>>,
     pub vertex_count: usize,
-    pub parts: Vec<SectionPart>,
+    pub parts: Vec<SectionPart<'a>>,
 }
 
 /// One part of a section: its index among the section's parts, its raw
-/// index range, whether that range is a list, its triangles, and the
+/// index range, whether that range is a list, and the
 /// vertex shaders its material's lit passes name.
 #[derive(Clone, Debug, PartialEq)]
-pub struct SectionPart {
+pub struct SectionPart<'a> {
     pub part: u8,
     /// The section influence byte selected by this part's kind.
     pub influences: u8,
     pub first_index: u32,
-    pub index_count: u32,
     pub list: bool,
-    pub triangles: Vec<[u16; 3]>,
+    pub raw_indices: &'a [u16],
     pub vertex_shaders: Vec<TagId>,
 }
 
@@ -143,8 +142,10 @@ pub struct LightPart {
     pub first_index: u32,
     pub index_count: u32,
     pub topology: Topology,
-    /// Its triangles in the section's index list.
+    /// The part drawn in its authored topology, also used by host lights.
     pub indices: Range<u32>,
+    /// The part drawn as a list, as a light record can request for a strip.
+    pub as_list: Range<u32>,
 }
 
 /// One section's parts, decompression and buffers.
@@ -199,19 +200,27 @@ pub fn light_model(
         let mut shaders = Vec::new();
         for p in &s.parts {
             let start = list.len() as u32;
-            list.extend(p.triangles.iter().flatten().map(|&i| u32::from(i)));
+            let as_list = tags::geometry::list_triangles(p.raw_indices);
+            let as_strip = (!p.list).then(|| tags::geometry::strip_triangles(p.raw_indices));
+            let authored = as_strip.as_ref().unwrap_or(&as_list);
+            list.extend(authored.iter().flatten().map(|&i| u32::from(i)));
+            let indices = start..list.len() as u32;
+            let list_range = if authored == &as_list {
+                indices.clone()
+            } else {
+                let start = indices.end;
+                list.extend(as_list.iter().flatten().map(|&i| u32::from(i)));
+                start..list.len() as u32
+            };
             parts.insert(
                 p.part,
                 LightPart {
                     vertex_class: None,
                     first_index: p.first_index,
-                    index_count: p.index_count,
-                    topology: if p.list {
-                        Topology::List
-                    } else {
-                        Topology::Strip
-                    },
-                    indices: start..list.len() as u32,
+                    index_count: p.raw_indices.len() as u32,
+                    topology: if p.list { Topology::List } else { Topology::Strip },
+                    indices,
+                    as_list: list_range,
                 },
             );
             for &vs in &p.vertex_shaders {
@@ -282,9 +291,9 @@ pub fn light_model(
         }
         for part in &s.parts {
             let mut found = part.vertex_shaders.iter()
-                .filter_map(|&vs| classes.get(&(vs, part.influences)).copied());
-            if let Some(first) = found.next()
-                && found.all(|class| class == first)
+                .map(|&vs| classes.get(&(vs, part.influences)).copied());
+            if let Some(Some(first)) = found.next()
+                && found.all(|class| class == Some(first))
                 && let Some(held) = parts.get_mut(&part.part)
             {
                 held.vertex_class = u16::try_from(first).ok();
@@ -315,19 +324,23 @@ pub struct LightModels {
 
 impl LightModels {
     /// `entry`'s section and part, when the entry is an object's whose
-    /// raw range and topology are the part's.
-    pub fn part(&self, entry: &LightEntry) -> Option<(&LightSection, &LightPart)> {
+    /// raw range matches, and the triangles for its record's topology.
+    pub fn part(&self, entry: &LightEntry) -> Option<(&LightSection, Range<u32>)> {
         let section = self
             .models
             .get(&entry.model)?
             .sections
             .get(&entry.stream.section)?;
         let part = section.parts.get(&entry.stream.part)?;
-        (part.first_index == entry.stream.first_index
-            && part.index_count == entry.stream.index_count
-            && part.topology == entry.stream.topology
-            && !part.indices.is_empty())
-        .then_some((section, part))
+        if part.first_index != entry.stream.first_index || part.index_count != entry.stream.index_count {
+            return None;
+        }
+        let indices = match entry.stream.topology {
+            Topology::List => &part.as_list,
+            Topology::Strip if part.topology == Topology::Strip => &part.indices,
+            _ => return None,
+        };
+        (!indices.is_empty()).then(|| (section, indices.clone()))
     }
 
     /// The stream an entry's part is in, for [`crate::light_scene`]: its
@@ -365,18 +378,16 @@ mod tests {
                     part: 0,
                     influences: 0,
                     first_index: 0,
-                    index_count: 6,
                     list: true,
-                    triangles: vec![[0, 1, 2], [2, 1, 3]],
+                    raw_indices: &[0, 1, 2, 2, 1, 3],
                     vertex_shaders: vec![TagId(0xe000_0010)],
                 },
                 SectionPart {
                     part: 1,
                     influences: 0,
                     first_index: 6,
-                    index_count: 4,
                     list: false,
-                    triangles: vec![[0, 1, 2], [1, 3, 2]],
+                    raw_indices: &[0, 1, 2, 3],
                     vertex_shaders: vec![TagId(0xe000_0010), TagId(0xe000_0011)],
                 },
             ],
@@ -433,6 +444,33 @@ mod tests {
     }
 
     #[test]
+    fn record_topology_preserves_winding_and_never_crosses_a_part_boundary() {
+        let bytes = [0; 80];
+        let mut s = section(&bytes);
+        let mut adjacent = s.parts[1].clone();
+        s.parts[1].raw_indices = &[0, 1, 2, 2, 3, 1];
+        adjacent.part = 2;
+        adjacent.first_index = 12;
+        adjacent.raw_indices = &[0, 0, 1, 2];
+        s.parts.push(adjacent);
+        let (model, why) = light_model(&[s], &formats(), &|_, _, _| Some((0, vec![0])));
+        assert!(why.is_empty(), "{why:?}");
+        let mut models = LightModels::default();
+        models.models.insert(0xe100_0007, model);
+        let values = |part, first, count, topology| {
+            let (section, range) = models.part(&entry(part, first, count, topology))?;
+            let bytes = &section.indices.bytes[4 * range.start as usize..4 * range.end as usize];
+            Some(bytes.chunks_exact(4).map(|b| u32::from_ne_bytes(b.try_into().unwrap())).collect::<Vec<_>>())
+        };
+        assert_eq!(values(1, 6, 6, Topology::List).unwrap(), [0, 1, 2, 2, 3, 1]);
+        assert_eq!(values(1, 6, 6, Topology::Strip).unwrap(), [0, 1, 2, 2, 1, 3]);
+        assert_eq!(values(2, 12, 4, Topology::Strip).unwrap(), [0, 2, 1]);
+        assert_eq!(values(2, 12, 4, Topology::List), None);
+        assert_eq!(values(1, 7, 6, Topology::List), None);
+        assert_eq!(values(1, 6, 5, Topology::List), None);
+    }
+
+    #[test]
     fn an_unsorted_part_needs_its_own_programs_to_agree_on_a_class() {
         let bytes = [0; 80];
         let section = section(&bytes);
@@ -444,6 +482,27 @@ mod tests {
         assert!(why.is_empty(), "{why:?}");
         assert_eq!(model.sections[&2].parts[&0].vertex_class, Some(0));
         assert_eq!(model.sections[&2].parts[&1].vertex_class, None);
+    }
+
+    #[test]
+    fn a_program_missing_from_one_part_cannot_use_its_other_parts_class() {
+        let bytes = [0; 80];
+        let mut s = section(&bytes);
+        s.parts[0].influences = 1;
+        s.parts[1].influences = 2;
+        let other_shader = s.parts[1].vertex_shaders[1];
+        s.parts[0].vertex_shaders.push(other_shader);
+        let semantics = |vs, _, influences| {
+            if vs == other_shader && influences == 1 {
+                return None;
+            }
+            Some((3, vec![0]))
+        };
+        let (model, _) = light_model(&[s], &formats(), &semantics);
+        let section = &model.sections[&2];
+        assert!(section.buffer(other_shader, 3).is_some());
+        assert_eq!(section.parts[&0].vertex_class, None);
+        assert_eq!(section.parts[&1].vertex_class, Some(3));
     }
 
     #[test]
@@ -466,7 +525,7 @@ mod tests {
         let (model, why) = light_model(&[s], &formats(), &semantics);
         assert_eq!(why.len(), 1, "{why:?}");
         let section = &model.sections[&2];
-        assert_eq!(section.indices.len(), 12 * 4, "both parts' triangles");
+        assert_eq!(section.indices.len(), 15 * 4, "one list and both forms of the strip");
         assert_eq!(section.parts[&0].indices, 0..6);
         assert_eq!(section.parts[&1].indices, 6..12);
         assert_eq!(section.parts[&1].topology, Topology::Strip);
@@ -486,8 +545,15 @@ mod tests {
         models.models.insert(0xe100_0007, model);
         assert!(models.part(&entry(0, 0, 6, Topology::List)).is_some());
         assert!(models.part(&entry(1, 6, 4, Topology::Strip)).is_some());
-        // Drawn as a list by its record, or another range: not this part.
-        assert!(models.part(&entry(1, 6, 4, Topology::List)).is_none());
+        let (section, as_list) = models.part(&entry(1, 6, 4, Topology::List)).unwrap();
+        assert_eq!(as_list, 12..15);
+        // The list ignores the incomplete last triangle and never reads the adjacent part.
+        let words: Vec<_> = section.indices.bytes.chunks_exact(4)
+            .map(|b| u32::from_ne_bytes(b.try_into().unwrap())).collect();
+        assert_eq!(&words[6..12], &[0, 1, 2, 1, 3, 2]);
+        assert_eq!(&words[12..15], &[0, 1, 2]);
+        assert!(models.part(&entry(0, 0, 6, Topology::Strip)).is_none());
+        assert!(models.part(&entry(1, 7, 4, Topology::List)).is_none());
         assert!(models.part(&entry(0, 0, 3, Topology::List)).is_none());
         assert!(models.part(&entry(5, 0, 6, Topology::List)).is_none());
         assert_ne!(

@@ -511,6 +511,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         if !matches!(layer, CASTER_LAYER | RECEIVER_LAYER | OPACITY_LAYER) {
             return Err(Keep::Shadow("state"));
         }
+        if group.entries.iter().any(|e| e.binding.variant != 0 || e.binding.selector != 0) {
+            return Err(Keep::Unsupported("shadow entry selects a nonzero material LOD or pass"));
+        }
         let shadow = group.group.pass.ok_or(Keep::Shadow("state"))?;
         let projection = group.group.projection;
         let colour_mask = layer == CASTER_LAYER && shadow.colour_mask();
@@ -721,10 +724,10 @@ struct Held<'a> {
 impl native_render::light_scene::Resident for Held<'_> {
     fn part(&self, e: &LightEntry) -> Option<native_render::light_scene::ResidentPart> {
         if structure_key(e).is_none() {
-            let (_, part) = self.models?.part(e)?;
+            let (_, indices) = self.models?.part(e)?;
             return Some(native_render::light_scene::ResidentPart {
                 stream: LightModels::stream(e),
-                indices: part.indices.clone(),
+                indices,
             });
         }
         let d = self.world.structure_entry(e).ok()?;
@@ -1759,7 +1762,7 @@ impl LightsWorld {
         selection: Option<(u8, u8)>,
         produced_gel: bool,
     ) -> Result<Planned, Keep> {
-        let (section, part) = lights.models.part(entry).ok_or(Keep::Unsupported(
+        let (section, indices) = lights.models.part(entry).ok_or(Keep::Unsupported(
             "scene group entry has no native light stream",
         ))?;
         let (shader, instance) = lights
@@ -1795,7 +1798,7 @@ impl LightsWorld {
             layer,
             implementation: imp,
             compiled,
-            ranges: vec![part.indices.clone()],
+            ranges: vec![indices],
             placement: None,
             model: Some(ModelDraw {
                 lights: Arc::clone(lights),
@@ -1867,7 +1870,7 @@ impl LightsWorld {
         entry: &LightEntry,
         rows: &[Row],
     ) -> Result<Planned, Keep> {
-        let (section, part) = lights
+        let (section, indices) = lights
             .models
             .part(entry)
             .ok_or(Keep::Unsupported("scene shadow entry has no native stream"))?;
@@ -1902,7 +1905,7 @@ impl LightsWorld {
             layer: CASTER_LAYER,
             implementation: usize::from(entry.binding.implementation),
             compiled,
-            ranges: vec![part.indices.clone()],
+            ranges: vec![indices],
             placement: None,
             model: Some(ModelDraw {
                 lights: Arc::clone(lights),
@@ -1979,7 +1982,7 @@ impl LightsWorld {
         rows: &[Row],
         layer: usize,
     ) -> Result<Planned, Keep> {
-        let (section, part) = lights.models.part(entry).ok_or(Keep::Unsupported(
+        let (section, indices) = lights.models.part(entry).ok_or(Keep::Unsupported(
             "scene receiver entry has no native stream",
         ))?;
         let (shader, instance) = lights
@@ -2013,7 +2016,7 @@ impl LightsWorld {
             layer,
             implementation: usize::from(entry.binding.implementation),
             compiled,
-            ranges: vec![part.indices.clone()],
+            ranges: vec![indices],
             placement: None,
             model: Some(ModelDraw {
                 lights: Arc::clone(lights),

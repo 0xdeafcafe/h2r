@@ -266,6 +266,7 @@ mod tests {
             index_count: 12,
             topology: Topology::Strip,
             indices: 0..30,
+            as_list: 30..42,
         };
         let section = LightSection {
             decompression: [[0.0; 4]; 3],
@@ -288,7 +289,7 @@ mod tests {
         );
         assert_eq!(e.pose, LightPose::Rows(0..6));
         let (_, found) = models.part(&e).expect("the held part");
-        assert_eq!(found, &held);
+        assert_eq!(found, held.indices);
         let other = entry(&part(1, 10), &held, 1, 4);
         assert!(models.part(&other).is_none(), "a part the section lacks");
     }
