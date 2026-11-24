@@ -35,7 +35,10 @@ and the first-person owner are suppressed. `native_objects_glue/display.rs`
 submits resident opaque parts only to the display attachments. An object
 whose setup needs an animation update, effect overlay or attachment walk,
 or whose selected section has an unsupported material, can still be
-absent at the sides in protected sessions.
+absent at the sides in protected sessions. When the unit pose tail
+(`0x000bd934`) can adjust either of its selected nodes, the shared
+object setup leaves palette construction to the guest. This also
+applies when both earlier actor pose overlays are idle.
 
 The stack holds the remaining entry count at handler ESP + `0x28`, with
 the array immediately after it. The entry contains its item index, the

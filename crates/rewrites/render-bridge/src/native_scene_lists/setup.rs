@@ -771,6 +771,71 @@ mod setup_tests {
     }
 
     #[test]
+    fn both_arm_sections_use_their_own_pose_or_return_the_whole_setup_to_the_guest() {
+        let (mut m, cpu) = fixture();
+        let identity = m.bytes(ROOT + 0x200, 0x34).unwrap();
+        let regions = 0x17200;
+        let permutations = 0x17300;
+        let actor = ROOT + 0x600;
+        let animation = ROOT + 0x700;
+        m.put_u32(ROOT + 0x10, NONE)
+            .put_u32(MODEL + 4, 0)
+            .put_u32(MODEL + 0x1c, 2)
+            .put_u32(MODEL + 0x20, regions)
+            .put_u32(MODEL + 0x48, 2)
+            .put(0x17728 + 0x60, &identity)
+            .put_u16(ROOT + 0x114, 2 * 0x34)
+            .put(ROOT + 0x234, &identity)
+            .put_u16(ROOT + 0x118, 20)
+            .put_u16(ROOT + 0x280, 0)
+            .put_u8(OBJECT_SLOTS + 3, 0)
+            .put_u16(ROOT + 0x112, 0x500)
+            .put_u16(ROOT + 0x33e, 0x600)
+            .put_u16(actor + 0x36, u16::MAX)
+            .put_u16(actor + 0x5e, u16::MAX)
+            .put_u16(ROOT + 0x12a, 0x700)
+            .put_u32(animation, 1)
+            .put_u32(animation + 0x68, 1)
+            .put_u16(ROOT + 0x148, 0x8000)
+            .put_u16(ROOT + 0x1f6, 0x0100)
+            .put_u8(palette::UNIT_NODE_ADJUSTMENTS_ENABLED, 0);
+        for (i, x) in [(0, -3.0), (1, 5.0)] {
+            let region = regions + i * 16;
+            let perm = permutations + i * 16;
+            let section = SECTIONS + i * 0x5c;
+            m.put_u32(region + 8, 1)
+                .put_u32(region + 12, perm)
+                .put_u16(perm + 14, i as u16)
+                .put_u16(section + 0x18, 1)
+                .put_u16(section + 0x2c, i as u16)
+                .put_f32(ROOT + 0x200 + i * 0x34 + 40, x);
+        }
+        let (_, _, sections) = display_model(&m, ROOT_HANDLE).unwrap();
+        assert_eq!(sections.len(), 2);
+        for (section, (index, x)) in sections.iter().zip([(0, -3.), (1, 5.)]) {
+            assert_eq!(section.section, index);
+            assert_eq!(section.rows, [[1., 0., 0., x], [0., 1., 0., 0.], [0., 0., 1., 0.]]);
+        }
+
+        let mut submitted = m.clone();
+        let out = setup(&submitted, &cpu, 1.0).unwrap();
+        publish(&mut submitted, out);
+        assert_eq!(submitted.u32(MAIN_COUNT).unwrap(), 2);
+        let read = crate::native_world::Mem(&mut submitted);
+        for (i, section) in sections.iter().enumerate() {
+            let record = RENDER_RECORDS + i as u32 * RENDER_RECORD_SIZE;
+            assert_eq!(native_render::object_nodes::node_rows(&read, record).unwrap(), section.rows);
+        }
+
+        m.put_u8(palette::UNIT_NODE_ADJUSTMENTS_ENABLED, 1);
+        assert!(matches!(setup(&m, &cpu, 1.0), Err(Refusal::Palette)));
+        assert!(display_model(&m, ROOT_HANDLE).is_none());
+        assert_eq!(m.u32(RECORD_COUNT).unwrap(), 0);
+        assert_eq!(m.u32(NODE_BLOCKS - 4).unwrap(), 0);
+        assert_eq!(m.u32(CACHE_ENTRIES + 0x4c).unwrap(), NONE);
+    }
+
+    #[test]
     fn setup_emits_parent_then_child_and_publishes_palette_and_cache() {
         let (mut mem, cpu) = fixture();
         let out = setup(&mem, &cpu, 1.0).unwrap();
