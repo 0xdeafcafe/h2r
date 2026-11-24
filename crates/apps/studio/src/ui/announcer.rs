@@ -13,9 +13,10 @@ use dear_imgui_rs::{Condition, Ui};
 
 use crate::app::App;
 use crate::app::announcer::{Playback, SayParams, Said};
-use crate::app::voices::BuildParams;
+use crate::app::voices::{BuildParams, MIN_TRAIN_MINUTES};
 use crate::theme::{self, icon};
 use crate::voice::dataset::CHARACTERS;
+use crate::voice::sidecar::Backend;
 use crate::voice::{self, Engine, VoiceError};
 
 /// The window's state.
@@ -33,6 +34,9 @@ pub struct AnnouncerUi {
     character: usize,
     /// The clone's reference line, or empty.
     reference: String,
+    /// The least minutes of speech a fine-tune starts from; lowered to
+    /// train on a small dataset. `None` until the window first draws.
+    min_minutes: Option<f32>,
     /// What the last dataset build or fine-tune start said.
     clone_note: Option<Result<String, String>>,
     last: Option<Result<Said, VoiceError>>,
@@ -58,6 +62,14 @@ pub fn window(ui: &Ui, app: &mut App, st: &mut AnnouncerUi) {
                 st.open = false;
             }
         });
+}
+
+/// What a backend is called in the picker.
+fn backend_label(b: Backend) -> &'static str {
+    match b {
+        Backend::F5Mlx => "f5-mlx: zero-shot or fine-tune",
+        Backend::Qwen3Tts => "qwen3-tts: zero-shot only (no training)",
+    }
 }
 
 /// The clone's half: the character, its dataset and fine-tune, and the
@@ -89,15 +101,56 @@ fn clone_panel(ui: &Ui, app: &mut App, st: &mut AnnouncerUi) {
             .map_err(|e| e.to_string()),
         );
     }
+    let backend = app.voices.backend();
+    ui.set_next_item_width(300.0);
+    if let Some(_combo) = ui.begin_combo("##voices-backend", backend_label(backend)) {
+        for b in Backend::ALL {
+            if ui.selectable_config(backend_label(b)).selected(b == backend).build() {
+                app.voices.set_backend(b);
+            }
+        }
+    }
     ui.same_line();
-    if ui.button("Fine-tune##voices-train") {
-        st.clone_note = Some(
-            app.voice_clone_train(c.id, None, None)
-                .map(|v| format!("Fine-tuning on {} minutes (job {})", v["minutes"], v["job"]))
-                .map_err(|e| e.to_string()),
+    ui.text_disabled("Model");
+    let status = app.voice_dataset_status(Some(c.id)).ok();
+    let minutes = status
+        .as_ref()
+        .and_then(|s| s["datasets"][0]["dataset"]["minutes"].as_f64())
+        .unwrap_or(0.0);
+    let small = minutes < MIN_TRAIN_MINUTES;
+    let floor = st.min_minutes.get_or_insert(MIN_TRAIN_MINUTES as f32);
+    if app.voices.backend().trains() {
+        if small {
+            ui.set_next_item_width(90.0);
+            if ui.input_float("Least minutes##voices-floor", floor) {
+                *floor = if floor.is_finite() { floor.max(0.0) } else { MIN_TRAIN_MINUTES as f32 };
+            }
+        }
+        ui.same_line();
+        let need = f64::from(*floor);
+        if ui.button(if small {
+            "Train anyway##voices-train"
+        } else {
+            "Fine-tune##voices-train"
+        }) {
+            st.clone_note = Some(
+                app.voice_clone_train(c.id, None, Some(need))
+                    .map(|v| format!("Fine-tuning on {} minutes (job {})", v["minutes"], v["job"]))
+                    .map_err(|e| e.to_string()),
+            );
+        }
+        if small {
+            ui.text_disabled(format!(
+                "This dataset has {minutes:.1} min of speech with text; a fine-tune on so little \
+                 can give an unstable voice. Lower the minimum to train anyway."
+            ));
+        }
+    } else {
+        ui.text_disabled(
+            "This model clones from a reference line with no training. Say it needs a \
+             dataset with text: Build dataset, then wait for its transcription.",
         );
     }
-    let status = app.voice_dataset_status(Some(c.id)).ok();
     if let Some(s) = &status {
         let d = &s["datasets"][0];
         if d["built"] == true {

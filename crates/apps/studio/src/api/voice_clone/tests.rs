@@ -498,3 +498,47 @@ fn a_failing_model_is_reported_and_the_job_list_says_why() {
     ));
     assert_eq!(e.code, code::INVALID_PARAMS);
 }
+
+#[test]
+fn a_small_dataset_trains_once_the_floor_is_lowered_and_the_zero_shot_model_needs_no_fine_tune() {
+    let t = Temp::new("floor");
+    let mut app = test_app(&t);
+    let fake = test_setup(&mut app, true, true);
+    let default_floor = crate::app::voices::MIN_TRAIN_MINUTES;
+
+    // The Voices window's path: the default floor refuses, and says how
+    // much speech there is and what it needs.
+    let e = app.voice_clone_train("cortana", None, Some(default_floor));
+    let e = e.unwrap_err().to_string();
+    assert!(e.contains("minutes of speech with text"), "{e}");
+    assert!(e.contains("needs 10"), "{e}");
+    assert!(fake.calls_of("train").is_empty());
+    // Lowered to 0 it starts.
+    let r = app.voice_clone_train("cortana", Some(3), Some(0.0)).unwrap();
+    assert_eq!(r["state"], "running");
+    assert_eq!(r["lines"], 2);
+    let id = r["job"].as_u64().unwrap();
+    let mut api = Api::new();
+    let done = wait(&mut api, &mut app, id);
+    assert_eq!(done["state"], "done", "{done}");
+
+    // The picker's choice: the zero-shot model says the line from a
+    // reference clip and the dataset's text, with no fine-tune, and
+    // cannot be trained.
+    app.voices.set_backend(crate::voice::sidecar::Backend::Qwen3Tts);
+    let said = call(
+        &mut api,
+        &mut app,
+        m::VOICE_CLONE_SAY,
+        json!({"character": "cortana", "text": "Hold on.", "play": false}),
+    );
+    assert_eq!(said["backend"], "qwen3-tts");
+    assert_eq!(said["model"], "qwen3-tts");
+    let asked = fake.calls_of("say");
+    let last = asked.last().unwrap();
+    assert_eq!(last["backend"], "qwen3-tts");
+    assert_eq!(last["checkpoint"], Value::Null);
+    assert!(last["reference"]["path"].as_str().unwrap().ends_with(".wav"));
+    assert!(!last["reference"]["text"].as_str().unwrap().is_empty());
+    assert!(app.voice_clone_train("cortana", None, Some(0.0)).is_err());
+}
