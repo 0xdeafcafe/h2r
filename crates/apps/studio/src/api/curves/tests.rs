@@ -100,7 +100,7 @@ fn invented(kind: u8) -> Vec<u8> {
 /// one function blob of every type, then a plain reference to eight
 /// zero bytes.
 pub(crate) fn curve_map() -> Vec<u8> {
-    let mut b = fixture::fixture();
+    let mut b = fixture::fixture_at_end();
     let tags = fixture::INDEX + 32 + 4 * 12;
     put(&mut b, tags + 2 * 16 + 12, 0x70);
     let w = fixture::META_FILE + 0x1100;
@@ -305,15 +305,15 @@ fn read_gives_the_typed_sets() {
         json!({"minimum": w(0), "maximum": w(1), "power": w(2)})
     );
     // Types 6 and 8: words, read-only.
-    for (name, len, from) in [
-        ("multi_linear_key", 32usize, 0usize),
-        ("multi_spline", 4, 4),
-    ] {
+    for (name, len) in [("multi_linear_key", 32usize), ("multi_spline", 4)] {
         let r = read(name);
         assert_eq!(r["editable"], false);
         assert_eq!(r["read_only"], EVALUATED_AS_ZERO);
-        let words: Vec<f64> = (from..from + len).map(w).collect();
-        assert_eq!(r["sets"][0], json!({"words": words}));
+        // Set 0 is the first `len` words, set 1 the next `len`.
+        for set in 0..2 {
+            let words: Vec<f64> = (set * len..(set + 1) * len).map(w).collect();
+            assert_eq!(r["sets"][set], json!({"words": words}), "{name} set {set}");
+        }
     }
     // An unknown type has no layout: no sets.
     let r = read("curvex");

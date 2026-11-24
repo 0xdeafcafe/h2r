@@ -903,7 +903,7 @@ mod tests {
     /// defaults are visible curves; types without an evaluator are refused.
     #[test]
     fn with_kind_rebuilds_at_the_new_length() {
-        let mut from = blob(2, 1, [3, 1], [0.25, 0.75], &[0.0; 8]);
+        let mut from = blob(2, 1, [3, 1], [0.25, 0.75], &[0.0; 4]);
         from[0xc..0x14].copy_from_slice(&[9; 8]);
         let from = Function::parse(&from).unwrap();
         for byte in [0u8, 1, 2, 3, 4, 5, 7, 9, 10] {

@@ -432,7 +432,7 @@ pub fn unhostable_refusal(ir: &Ir) -> Option<String> {
             let name = |c: u8| caps::carrier_name(c).map_or_else(|| format!("engine {c}"), str::to_string);
             let on: Vec<String> = hosts.iter().map(|&c| name(c)).collect();
             return Some(format!(
-                "the script calls {}, which a host makes only on {}, and the script's record is on {}",
+                "the script calls {}, which a host makes only on {}, and the script rides {}",
                 caps::spelled(e),
                 on.join(", "),
                 name(ir.header.engine())

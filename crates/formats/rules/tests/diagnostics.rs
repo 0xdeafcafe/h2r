@@ -899,8 +899,8 @@ fn type_points_and_about_codes() {
     assert_eq!(m, "points is 1 to 32 bytes");
     error(&riding("party", &format!("points \"{}\"\non tick {{ }}\n", "x".repeat(33))), "limit");
     // A type files and announces; it changes no rule.
-    let party = compile(&riding("party", "on kill(v, k) { score(k, 1) }\n")).unwrap();
-    let slayer = compile(&riding("slayer", "on kill(v, k) { score(k, 1) }\n")).unwrap();
+    let party = compile(&riding("party", "on kill(v, k) { if k != none { score(k, 1) } }\n")).unwrap();
+    let slayer = compile(&riding("slayer", "on kill(v, k) { if k != none { score(k, 1) } }\n")).unwrap();
     assert_eq!(party.handlers, slayer.handlers);
     assert_eq!(party.header.engine(), slayer.header.engine());
     assert_ne!(party.id(), slayer.id());
