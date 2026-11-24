@@ -1465,9 +1465,10 @@ each `native_scene_lists_*` stage and the overlay stage's
 `native_ui_overlay_*` counters. The `_native` and `_fallback` fields and
 every overlay counter include zeroes. Another refusal reason appears when
 its window count is positive. The overlay's counters are its items by kind
-(`items`, `quads`, `text_runs`, `fills`, `glyphs`), the draws recorded
-(`batches`) and the items dropped, by reason (`refused_material`,
-`refused_clip`, `refused_glyph`, `refused_texture`;
+(`items`, `quads`, `text_runs`, `fills`, `glyphs`, `blurs`, `model_views`),
+the draws recorded (`batches`) and the items dropped, by reason
+(`refused_material`, `refused_clip`, `refused_glyph`, `refused_texture`,
+`refused_model_view`, `refused_blur`;
 [retire-d3d.md](../graphics/retire-d3d.md#what-replaces-each-subsystem)).
 The object-shadow list, row gather and caster each count calls to their own
 entry ([native-light-gather.md](../graphics/native-light-gather.md), L7).

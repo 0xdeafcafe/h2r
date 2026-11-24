@@ -356,18 +356,18 @@ classified readers, 73 read run state and 30 start from it.
 | Lens flares | `0x00020bb0`, `0x00020770`, the visibility entries | a native query pass; the flare's own fade state is advanced in Rust from its result | GPU counter and native colour fans built, fade state guest-owned |
 | Post | `0x00013870`, `0x000214f0`, `0x0002d140`, `0x0002dd30`, `0x0002df00`, layer 17 | typed post from the scenario's screen effects and the camera's parameters | glow and screen effects built |
 | HUD | `0x001917eb`, `0x0013954b`, the widgets `0x0022b397` to `0x0022bca4` | a Rust HUD that walks the HUD definitions against the unit's and weapon's state and emits a draw list. It is the same HUD kit the added HUD pieces use | the walk emits the overlay's items (`hud_edit::overlay::draw_list`, from a `HudState`); the game's HUD state is not read into it, and the game still draws its HUD as quads |
-| Menus and UI | `0x00147af1`, the widget sort `0x002353a5`, each widget's draw | a Rust walk of the guest's screens and widgets (the UI's logic, input and state stay the guest's) that emits a draw list: bitmaps, text runs, model widgets, the backdrop's blur chain | quads only |
+| Menus and UI | `0x00147af1`, the widget sort `0x002353a5`, each widget's draw | a Rust walk of the guest's screens and widgets (the UI's logic, input and state stay the guest's) that emits a draw list: bitmaps, text runs, model widgets, the backdrop's blur chain | the walk emits the overlay's items (`scene_extract::ui::draw_list`, from a `UiFrame`); the guest's widgets are not read into it, and the game still draws its menus as quads |
 | Text | glyph decode `0x0001f5c0`, the glyph cache, one quad per glyph | Rust shaping from the font data ([fonts.md](../formats/fonts.md)) into the renderer's own atlas, one draw per run | not built |
 | Movies | `0x00156040`'s blit and quad, `BinkCopyToBuffer` | the decoder's host frame goes to the renderer as a scene item; no guest texture is locked | not built |
-| Loading, fade, bars | `0x000289e0`, `0x00040890`, `0x00052ce7` | draw-list items from the same state words the guest reads | geometry only |
+| Loading, fade, bars | `0x000289e0`, `0x00040890`, `0x00052ce7` | draw-list items from the same state words the guest reads | items from a `UiFrame` (`scene_extract::ui`); the state words are not read into it |
 | Final display | `0x00013b90`, `0x00013cd0`, `0x00013f10`, `Swap` | the publish. Vblank, the logical frame wait and the gamma ramp move out of `d3d` into the frame step; the screenshot readback becomes a `RenderFeedback` message | not built |
 
 The HUD, the UI, text, movies, loading and the fade share one typed
 stage, `frame_scene::Overlay` (`FrameScene::overlay`): an ordered list of
 items, each with a material key and a clip rectangle, drawn by
-`native_render::ui_gpu::OverlayGpu`. The stage has `Quad`, `TextRun` and
-`Fill` items (`frame_scene::overlay`); `ModelView`, `Blur` and
-`MovieFrame` join it with the slices that draw them (R7, R8). Positions
+`native_render::ui_gpu::OverlayGpu`. The stage has `Quad`, `TextRun`,
+`Fill`, `Blur` and `ModelView` items (`frame_scene::overlay`);
+`MovieFrame` joins it with R8. Positions
 are the guest target's pixels, so a producer writes what the guest's
 screen transform would have made, and the renderer scales them and the
 clips to its own target. A text run is one font's glyphs, each a glyph
@@ -388,6 +388,20 @@ blend) is dropped and counted: the overlay has no guest draw behind it.
 `render.stats` reports the counts as `native_ui_overlay_*`
 ([agent-api.md](../runtime/agent-api.md#renderstats)).
 
+A `Blur` item blurs what the items before it drew, inside its clip: the
+menus' backdrop under a dialog. It carries the guest's steps by value
+(each step's spread and the tap's offset over it), and the plan turns
+them into offsets that are fractions of the target, so a blur looks the
+same at any scale. The plan ends the batch before a blur
+(`native_render::overlay::PlanBlur`); `OverlayGpu` ends its pass there,
+copies the target, runs each step as four bilinear taps between two
+scratch targets, and writes the result back through the texture
+combiner inside the clip. Over a target it cannot copy or sample, every
+blur is dropped and counted (`refused_blur`). A `ModelView` item is a
+model widget's camera and objects with its viewport as the clip. No
+stage draws one yet: the plan drops it and counts it
+(`refused_model_view`).
+
 The HUD's producer is `hud_edit::overlay::draw_list`: the walk of the
 HUD editor's and the HUD kit's preview (the gate, anchors, sprites,
 crops, turns and answers) emitting a quad per bitmap widget and a text
@@ -397,6 +411,22 @@ fill the overlay yet: the sim-thread read of the HUD's unit and weapon
 state into a `HudState` and the render thread's draw of
 `FrameScene::overlay` are R6's remaining work, and until they land the
 game's HUD draws as the quads of [native-post-hud.md](native-post-hud.md).
+
+The UI's producer is `scene_extract::ui::draw_list`. Its input, a
+`UiFrame`, is the guest's UI draws in call order: the fade, the solid
+rectangles of `0x00052ce7`, the loading draw's bitmaps and the screens
+of `0x00147af1`, each screen with its widgets' headers (type, depth,
+bias, rectangle, animated offset, alpha) and what each draws (a bitmap,
+a shader bitmap, text, a model view, or nothing for a container). Each
+screen's widgets are drawn in the order of the guest's comparator
+`0x002356d8` (`sort_widgets`: depth, ties within 0.001, then bias, then
+type; the guest's sort algorithm is not traced), and a dialog's screen
+first draws its backdrop as a fill and a blur. Text is laid out by the
+caller's fonts (`UiText`), clipped to the widget's rectangle. A shader
+bitmap names its shader, so it is refused until tag shaders translate.
+The sim-thread read of the guest's widgets and state words into a
+`UiFrame` is R7's remaining work, and until it lands the menus draw as
+the quads of [native-post-hud.md](native-post-hud.md).
 
 ### What stays the same, and the proof
 

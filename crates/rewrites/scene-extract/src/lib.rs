@@ -28,5 +28,6 @@ pub mod layout;
 pub mod light_groups;
 pub mod lights;
 pub mod testing;
+pub mod ui;
 
 pub use guest::{GuestRead, GuestWrite};

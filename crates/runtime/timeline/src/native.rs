@@ -529,7 +529,7 @@ impl SceneList {
     }
 }
 
-const UI_COLUMNS: [&str; Ui::OverlayRefusedTexture as usize + 1] = [
+const UI_COLUMNS: [&str; Ui::OverlayRefusedBlur as usize + 1] = [
     "items",
     "item_refused",
     "fallback_geometry",
@@ -570,6 +570,10 @@ const UI_COLUMNS: [&str; Ui::OverlayRefusedTexture as usize + 1] = [
     "overlay_refused_clip",
     "overlay_refused_glyph",
     "overlay_refused_texture",
+    "overlay_blurs",
+    "overlay_model_views",
+    "overlay_refused_model_view",
+    "overlay_refused_blur",
 ];
 const UI_OFFSET: usize = SCENE_LIST_START + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len();
 pub(crate) const COLUMNS: usize = UI_OFFSET + UI_COLUMNS.len();
@@ -622,6 +626,14 @@ pub enum Ui {
     OverlayRefusedClip,
     OverlayRefusedGlyph,
     OverlayRefusedTexture,
+    /// The menus' items (slice R7): blurs under a dialog and model
+    /// widgets' views.
+    OverlayBlurs,
+    OverlayModelViews,
+    /// Model views: no stage draws one yet.
+    OverlayRefusedModelView,
+    /// Blurs over a target the GPU cannot copy or sample.
+    OverlayRefusedBlur,
 }
 
 impl Ui {
@@ -856,8 +868,10 @@ mod tests {
         assert_eq!(columns[ui].1, "native_ui_items");
         assert_eq!(
             columns[phase::Counter::ALL.len() + COLUMNS - 1].1,
-            "native_ui_overlay_refused_texture"
+            "native_ui_overlay_refused_blur"
         );
+        assert_eq!(columns[ui + Ui::OverlayRefusedTexture as usize].1, "native_ui_overlay_refused_texture");
+        assert_eq!(columns[ui + Ui::OverlayModelViews as usize].1, "native_ui_overlay_model_views");
         assert_eq!(
             columns[ui + Ui::OutlineReservation as usize].1,
             "native_ui_outline_fallback_reservation"

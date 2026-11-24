@@ -1,15 +1,31 @@
 //! The overlay stage's plan (docs/graphics/retire-d3d.md, "What replaces
 //! each subsystem"; `frame_scene::overlay`): the scene's ordered list of
 //! quads, text runs and fills turned into one vertex and index list and
-//! the batches that draw it, in the list's order. Pure: `ui_gpu`'s
-//! `OverlayGpu` records it.
+//! the batches that draw it, in the list's order, with the blurs between
+//! them ([`PlanBlur`]). Pure: `ui_gpu`'s `OverlayGpu` records it.
 //!
 //! Consecutive items with the same material key and clip draw as one
 //! batch; nothing is reordered, so blended items keep the guest's order.
+//! A blur ends the batch before it: it reads what was drawn. A model view
+//! is refused until a stage draws a model widget's view.
 //! An item the renderer cannot draw is dropped and counted by its reason
 //! ([`OverlayStats`]): the overlay has no guest draw to fall back to.
 
 use frame_scene::{ClipRect, Overlay, OverlayKind, OverlayMaterial, Program};
+
+/// A blur between batches: the target as the batches before it left it,
+/// blurred step by step, written back inside the scissor.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlanBlur {
+    /// The batches drawn before it (an index into
+    /// [`OverlayPlan::batches`]).
+    pub before: u32,
+    pub scissor: Scissor,
+    /// Each step's tap offset, a fraction of the target in x and y: the
+    /// spread times the tap over the guest target's size, so the same
+    /// at any scale.
+    pub offsets: Vec<[f32; 2]>,
+}
 
 /// The six corners a quad draws as two triangles, as indices into its four
 /// (the fan `0, 1, 2` and `0, 2, 3`).
@@ -71,6 +87,8 @@ pub struct OverlayStats {
     pub text_runs: u32,
     pub fills: u32,
     pub glyphs: u32,
+    pub blurs: u32,
+    pub model_views: u32,
     /// Draws recorded (one per batch the GPU took).
     pub batches: u32,
     /// Items whose material is a tag shader: not translated yet.
@@ -82,12 +100,16 @@ pub struct OverlayStats {
     /// Batches whose texture the renderer does not hold, or whose blend
     /// it cannot take (`ui_gpu`).
     pub refused_texture: u32,
+    /// Model views: no stage draws a model widget's view yet.
+    pub refused_model_view: u32,
+    /// Blurs over a target the GPU cannot copy or sample (`ui_gpu`).
+    pub refused_blur: u32,
 }
 
 impl OverlayStats {
-    /// Items drawn.
+    /// Items the plan kept.
     pub fn drawn(&self) -> u32 {
-        self.items - self.refused_material - self.refused_clip - self.refused_glyph
+        self.items - self.refused_material - self.refused_clip - self.refused_glyph - self.refused_model_view
     }
 }
 
@@ -99,6 +121,8 @@ pub struct OverlayPlan {
     pub vertices: Vec<PlanVertex>,
     pub indices: Vec<u32>,
     pub batches: Vec<OverlayBatch>,
+    /// In list order; each between the batches its `before` names.
+    pub blurs: Vec<PlanBlur>,
     pub stats: OverlayStats,
 }
 
@@ -139,7 +163,13 @@ impl OverlayPlan {
         plan.stats.text_runs = counts.text_runs;
         plan.stats.fills = counts.fills;
         plan.stats.glyphs = counts.glyphs;
+        plan.stats.blurs = counts.blurs;
+        plan.stats.model_views = counts.model_views;
         for item in &overlay.items {
+            if item.kind == OverlayKind::ModelView {
+                plan.stats.refused_model_view += 1;
+                continue;
+            }
             if matches!(item.material.program, Program::Shader { .. }) {
                 plan.stats.refused_material += 1;
                 continue;
@@ -148,6 +178,19 @@ impl OverlayPlan {
                 plan.stats.refused_clip += 1;
                 continue;
             };
+            if item.kind == OverlayKind::Blur {
+                let Some(blur) = overlay.blur_of(item) else {
+                    plan.stats.refused_clip += 1;
+                    continue;
+                };
+                let (w, h) = (guest[0] as f32, guest[1] as f32);
+                plan.blurs.push(PlanBlur {
+                    before: plan.batches.len() as u32,
+                    scissor,
+                    offsets: blur.spreads.iter().map(|s| [s * blur.tap / w, s * blur.tap / h]).collect(),
+                });
+                continue;
+            }
             let base = plan.vertices.len() as u32;
             let start = plan.indices.len() as u32;
             match item.kind {
@@ -160,6 +203,7 @@ impl OverlayPlan {
                     }));
                     plan.indices.extend(QUAD_INDICES.map(|i| base + i));
                 }
+                OverlayKind::Blur | OverlayKind::ModelView => unreachable!("planned above"),
                 OverlayKind::TextRun => {
                     let font = match item.material.texture {
                         frame_scene::OverlayTexture::Glyphs { font } => font,
@@ -192,7 +236,8 @@ impl OverlayPlan {
                 }
             }
             let count = plan.indices.len() as u32 - start;
-            let joins = plan.batches.last().is_some_and(|b| {
+            let after_blur = plan.blurs.last().is_some_and(|b| b.before as usize == plan.batches.len());
+            let joins = !after_blur && plan.batches.last().is_some_and(|b| {
                 b.material == item.material && b.clip == item.clip && b.first_index + b.index_count == start
             });
             if let Some(b) = plan.batches.last_mut().filter(|_| joins) {
@@ -213,7 +258,7 @@ impl OverlayPlan {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.batches.is_empty()
+        self.batches.is_empty() && self.blurs.is_empty()
     }
 }
 
@@ -312,6 +357,30 @@ mod tests {
         assert_eq!(p.vertices[6].uv, [1.0, 1.0]);
         assert!(p.vertices.iter().all(|v| v.color == [1.0, 0.0, 0.0, 0.5]));
         assert_eq!(p.stats.glyphs, 2);
+    }
+
+    #[test]
+    fn a_blur_splits_the_batches_and_carries_its_steps_as_fractions() {
+        use frame_scene::{OverlayBlur, OverlayCamera, OverlayModelView};
+        let mut o = Overlay::new([640, 480]);
+        o.push_quad(sprite(1), all(), quad(0.0)).unwrap();
+        o.push_blur(all(), OverlayBlur { tap: 0.5, spreads: vec![1.0, 1.25] }).unwrap();
+        o.push_quad(sprite(1), all(), quad(8.0)).unwrap();
+        let view = OverlayModelView { camera: OverlayCamera::default(), objects: vec![7] };
+        o.push_model_view(ClipRect { x: 10, y: 10, width: 64, height: 48 }, view).unwrap();
+        o.push_quad(sprite(1), all(), quad(16.0)).unwrap();
+        let p = OverlayPlan::new(&o, [1280, 960], &NoGlyphs);
+        assert_eq!(p.batches.len(), 2, "the quad after the blur is not merged back; the model view does not split");
+        assert_eq!((p.batches[0].items, p.batches[1].items), (1, 2));
+        assert_eq!(p.blurs.len(), 1);
+        assert_eq!(p.blurs[0].before, 1);
+        assert_eq!(p.blurs[0].scissor, Scissor { x: 0, y: 0, width: 1280, height: 960 });
+        assert_eq!(p.blurs[0].offsets, vec![[0.5 / 640.0, 0.5 / 480.0], [0.625 / 640.0, 0.625 / 480.0]]);
+        assert_eq!((p.stats.blurs, p.stats.model_views, p.stats.refused_model_view), (1, 1, 1));
+        assert_eq!(p.stats.drawn(), 4);
+        let mut blur_only = Overlay::new([640, 480]);
+        blur_only.push_blur(all(), OverlayBlur { tap: 0.5, spreads: vec![1.0] }).unwrap();
+        assert!(!OverlayPlan::new(&blur_only, [640, 480], &NoGlyphs).is_empty());
     }
 
     #[test]

@@ -1,8 +1,10 @@
 //! The overlay stage (docs/graphics/retire-d3d.md, "What replaces each
 //! subsystem"): what is drawn over a frame's views, the HUD first, as one
 //! ordered list of items. Each item is a [`OverlayKind::Quad`], a
-//! [`OverlayKind::TextRun`] or a [`OverlayKind::Fill`], with a material
-//! key and a clip rectangle; `native_render::ui_gpu` draws the list in its
+//! [`OverlayKind::TextRun`], a [`OverlayKind::Fill`], a
+//! [`OverlayKind::Blur`] of what is under it or a
+//! [`OverlayKind::ModelView`] (a menu's model widget), with a material key
+//! and a clip rectangle; `native_render::ui_gpu` draws the list in its
 //! order. Positions are the guest target's pixels, window coordinates on
 //! pixel edges (`(0, 0)` the top left corner of the top left pixel), so a
 //! producer writes what the guest's screen transform would have made and
@@ -176,6 +178,45 @@ pub enum OverlayKind {
     TextRun,
     /// A flat rectangle: four corners, no texture.
     Fill,
+    /// The target's pixels drawn so far, blurred inside the clip
+    /// ([`OverlayBlur`]): the menus' backdrop under a dialog.
+    Blur,
+    /// A menu's model widget: its objects seen from its camera, drawn
+    /// into the clip ([`OverlayModelView`]).
+    ModelView,
+}
+
+/// The blur under a dialog (`0x00235756` running the Kawase blur
+/// `0x000211a0`; docs/formats/ui.md, "Draw order"): each step makes every
+/// pixel the mean of four bilinear taps at the corners of a square, tap
+/// `k` moved by `spread * tap` guest pixels, positive for `k & 1` in x and
+/// `k & 2` in y, negative otherwise. The sampler clamps at the target's
+/// edges. Both values are the guest's, read by the producer.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct OverlayBlur {
+    /// The tap's offset over the spread.
+    pub tap: f32,
+    /// Each step's spread, in draw order; never empty.
+    pub spreads: Vec<f32>,
+}
+
+/// A model widget's camera, in its scene's space.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
+pub struct OverlayCamera {
+    pub position: [f32; 3],
+    pub forward: [f32; 3],
+    pub up: [f32; 3],
+    /// The vertical field of view, radians.
+    pub fov_y: f32,
+}
+
+/// A model widget's view (widget type 7, docs/formats/ui.md): the
+/// objects it shows and its camera. The item's clip is its viewport.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct OverlayModelView {
+    pub camera: OverlayCamera,
+    /// The objects' datum handles, in the widget's order.
+    pub objects: Vec<u32>,
 }
 
 /// One item of the list.
@@ -193,6 +234,9 @@ pub struct OverlayItem {
     /// A text run's colour (RGBA, 0 to 1); a quad's and a fill's are on
     /// their corners.
     pub color: [f32; 4],
+    /// A blur's index in [`Overlay::blurs`] or a model view's in
+    /// [`Overlay::model_views`]; `None` for the other kinds.
+    pub detail: Option<u32>,
 }
 
 /// Why the list refused an item. The list is left as it was.
@@ -205,8 +249,8 @@ pub enum OverlayError {
     /// The material does not fit the kind: a fill that samples, a text
     /// run that is not over a glyph atlas.
     Material,
-    /// A position, coordinate or colour that is not finite, or a text run
-    /// with no glyphs.
+    /// A position, coordinate or colour that is not finite, a text run
+    /// with no glyphs, or a blur with no steps or a negative spread.
     Geometry,
 }
 
@@ -219,6 +263,10 @@ pub struct Overlay {
     pub items: Vec<OverlayItem>,
     pub vertices: Vec<OverlayVertex>,
     pub glyphs: Vec<OverlayGlyph>,
+    /// The blur items' steps, in item order.
+    pub blurs: Vec<OverlayBlur>,
+    /// The model view items' views, in item order.
+    pub model_views: Vec<OverlayModelView>,
 }
 
 /// The overlay's sizes.
@@ -229,6 +277,8 @@ pub struct OverlayCounts {
     pub text_runs: u32,
     pub fills: u32,
     pub glyphs: u32,
+    pub blurs: u32,
+    pub model_views: u32,
     /// Items whose material is a tag shader.
     pub shader_materials: u32,
 }
@@ -249,6 +299,8 @@ impl Overlay {
         self.items.clear();
         self.vertices.clear();
         self.glyphs.clear();
+        self.blurs.clear();
+        self.model_views.clear();
     }
 
     /// Sets the target size. Items already in the list keep their
@@ -267,6 +319,16 @@ impl Overlay {
 
     pub fn glyphs_of(&self, item: &OverlayItem) -> &[OverlayGlyph] {
         self.glyphs.get(item.glyphs.start as usize..item.glyphs.end as usize).unwrap_or(&[])
+    }
+
+    /// A blur item's steps.
+    pub fn blur_of(&self, item: &OverlayItem) -> Option<&OverlayBlur> {
+        (item.kind == OverlayKind::Blur).then(|| self.blurs.get(item.detail? as usize)).flatten()
+    }
+
+    /// A model view item's view.
+    pub fn model_view_of(&self, item: &OverlayItem) -> Option<&OverlayModelView> {
+        (item.kind == OverlayKind::ModelView).then(|| self.model_views.get(item.detail? as usize)).flatten()
     }
 
     fn clip(&self, clip: ClipRect) -> Result<ClipRect, OverlayError> {
@@ -301,6 +363,7 @@ impl Overlay {
             vertices: v..v + 4,
             glyphs: g..g,
             color: [1.0; 4],
+            detail: None,
         });
         Ok(self.items.len() as u32 - 1)
     }
@@ -356,8 +419,51 @@ impl Overlay {
             vertices: v..v,
             glyphs: g..g + glyphs.len() as u32,
             color,
+            detail: None,
         });
         Ok(self.items.len() as u32 - 1)
+    }
+
+    /// An item with no corners or glyphs of its own.
+    fn push_detail(&mut self, kind: OverlayKind, clip: ClipRect, detail: u32) -> u32 {
+        let v = self.vertices.len() as u32;
+        let g = self.glyphs.len() as u32;
+        self.items.push(OverlayItem {
+            kind,
+            material: OverlayMaterial::fill(OverlayBlend::Off),
+            clip,
+            vertices: v..v,
+            glyphs: g..g,
+            color: [1.0; 4],
+            detail: Some(detail),
+        });
+        self.items.len() as u32 - 1
+    }
+
+    /// The pixels drawn so far blurred inside `clip`, by `blur`'s steps.
+    pub fn push_blur(&mut self, clip: ClipRect, blur: OverlayBlur) -> Result<u32, OverlayError> {
+        let clip = self.clip(clip)?;
+        if blur.spreads.is_empty()
+            || !blur.tap.is_finite()
+            || blur.spreads.iter().any(|s| !s.is_finite() || *s < 0.0)
+        {
+            return Err(OverlayError::Geometry);
+        }
+        self.blurs.push(blur);
+        let detail = self.blurs.len() as u32 - 1;
+        Ok(self.push_detail(OverlayKind::Blur, clip, detail))
+    }
+
+    /// A model widget's `view`, drawn into `viewport`.
+    pub fn push_model_view(&mut self, viewport: ClipRect, view: OverlayModelView) -> Result<u32, OverlayError> {
+        let clip = self.clip(viewport)?;
+        let c = &view.camera;
+        if !finite(&c.position) || !finite(&c.forward) || !finite(&c.up) || !c.fov_y.is_finite() {
+            return Err(OverlayError::Geometry);
+        }
+        self.model_views.push(view);
+        let detail = self.model_views.len() as u32 - 1;
+        Ok(self.push_detail(OverlayKind::ModelView, clip, detail))
     }
 
     pub fn counts(&self) -> OverlayCounts {
@@ -367,6 +473,8 @@ impl Overlay {
                 OverlayKind::Quad => c.quads += 1,
                 OverlayKind::TextRun => c.text_runs += 1,
                 OverlayKind::Fill => c.fills += 1,
+                OverlayKind::Blur => c.blurs += 1,
+                OverlayKind::ModelView => c.model_views += 1,
             }
             c.glyphs += item.glyphs.len() as u32;
             if matches!(item.material.program, Program::Shader { .. }) {
@@ -384,7 +492,7 @@ impl Overlay {
             return Ok(());
         }
         let target = ClipRect::full(self.size);
-        let (mut v, mut g) = (0u32, 0u32);
+        let (mut v, mut g, mut b, mut m) = (0u32, 0u32, 0u32, 0u32);
         for (n, item) in self.items.iter().enumerate() {
             let r = (&item.vertices, &item.glyphs);
             if r.0.start != v || r.0.end < r.0.start || r.0.end as usize > self.vertices.len() {
@@ -402,9 +510,22 @@ impl Overlay {
                 OverlayKind::TextRun => {
                     corners == 0 && glyphs > 0 && matches!(item.material.texture, OverlayTexture::Glyphs { .. })
                 }
+                OverlayKind::Blur | OverlayKind::ModelView => corners == 0 && glyphs == 0,
             };
             if !fits {
                 return Err(format!("overlay item {n} is a {:?} with {corners} corners and {glyphs} glyphs", item.kind));
+            }
+            let next = match item.kind {
+                OverlayKind::Blur => Some(&mut b),
+                OverlayKind::ModelView => Some(&mut m),
+                _ => None,
+            };
+            match (next, item.detail) {
+                (None, None) => {}
+                (Some(next), Some(d)) if d == *next => *next += 1,
+                (_, detail) => {
+                    return Err(format!("overlay item {n} is a {:?} with detail {detail:?}", item.kind));
+                }
             }
             if item.clip.is_empty() || item.clip.intersect(&target) != item.clip {
                 return Err(format!("overlay item {n} clip {:?} outside {:?}", item.clip, self.size));
@@ -412,6 +533,9 @@ impl Overlay {
         }
         if v as usize != self.vertices.len() || g as usize != self.glyphs.len() {
             return Err("overlay has vertices or glyphs no item names".into());
+        }
+        if b as usize != self.blurs.len() || m as usize != self.model_views.len() {
+            return Err("overlay has blurs or model views no item names".into());
         }
         Ok(())
     }
@@ -478,6 +602,22 @@ pub(crate) fn summary_words(overlay: &Overlay, word: &mut dyn FnMut(u32)) {
             word(g.index);
             floats(&mut *word, &g.rect);
         }
+        if let Some(b) = overlay.blur_of(item) {
+            floats(&mut *word, &[b.tap]);
+            word(b.spreads.len() as u32);
+            floats(&mut *word, &b.spreads);
+        }
+        if let Some(m) = overlay.model_view_of(item) {
+            let c = &m.camera;
+            floats(&mut *word, &c.position);
+            floats(&mut *word, &c.forward);
+            floats(&mut *word, &c.up);
+            floats(&mut *word, &[c.fov_y]);
+            word(m.objects.len() as u32);
+            for o in &m.objects {
+                word(*o);
+            }
+        }
     }
 }
 
@@ -533,7 +673,7 @@ mod tests {
         assert_eq!(o.vertices_of(&o.items[3])[0].position, [50.0, 20.0]);
         assert_eq!(
             o.counts(),
-            OverlayCounts { items: 4, quads: 2, text_runs: 1, fills: 1, glyphs: 2, shader_materials: 0 }
+            OverlayCounts { items: 4, quads: 2, text_runs: 1, fills: 1, glyphs: 2, ..OverlayCounts::default() }
         );
         assert_eq!(o.check(), Ok(()));
     }
@@ -565,6 +705,53 @@ mod tests {
         assert_eq!(o.check(), Ok(()));
     }
 
+    fn camera() -> OverlayCamera {
+        OverlayCamera { position: [0.0, -2.0, 0.5], forward: [0.0, 1.0, 0.0], up: [0.0, 0.0, 1.0], fov_y: 0.9 }
+    }
+
+    #[test]
+    fn blurs_and_model_views_keep_their_place_and_their_details() {
+        let mut o = Overlay::new([640, 480]);
+        let all = ClipRect::full([640, 480]);
+        o.push_fill(all, [0.0, 0.0, 640.0, 480.0], [0.0, 0.0, 0.0, 0.25], OverlayBlend::ALPHA).unwrap();
+        let blur = OverlayBlur { tap: 0.5, spreads: vec![1.0, 1.5, 2.0] };
+        assert_eq!(o.push_blur(all, blur.clone()), Ok(1));
+        let viewport = ClipRect { x: 100, y: 80, width: 200, height: 150 };
+        let view = OverlayModelView { camera: camera(), objects: vec![0xe000_0001, 0xe001_0002] };
+        assert_eq!(o.push_model_view(viewport, view.clone()), Ok(2));
+        o.push_quad(sprite(), all, quad(0.0, 0.0)).unwrap();
+        assert_eq!(o.blur_of(&o.items[1]), Some(&blur));
+        assert_eq!(o.model_view_of(&o.items[2]), Some(&view));
+        assert_eq!(o.items[2].clip, viewport);
+        assert_eq!(o.blur_of(&o.items[2]), None, "a model view has no blur");
+        assert_eq!(o.items[3].vertices, 4..8, "a blur and a model view take no corners");
+        let c = o.counts();
+        assert_eq!((c.items, c.blurs, c.model_views, c.fills, c.quads), (4, 1, 1, 1, 1));
+        assert_eq!(o.check(), Ok(()));
+        let mut swapped = o.clone();
+        swapped.items[1].detail = Some(1);
+        assert!(swapped.check().unwrap_err().contains("detail"));
+        let mut orphan = o.clone();
+        orphan.blurs.push(blur);
+        assert!(orphan.check().unwrap_err().contains("blurs"));
+    }
+
+    #[test]
+    fn a_blur_needs_steps_and_a_model_view_a_finite_camera() {
+        let mut o = Overlay::new([640, 480]);
+        let all = ClipRect::full([640, 480]);
+        assert_eq!(o.push_blur(all, OverlayBlur { tap: 0.5, spreads: vec![] }), Err(OverlayError::Geometry));
+        assert_eq!(o.push_blur(all, OverlayBlur { tap: 0.5, spreads: vec![-1.0] }), Err(OverlayError::Geometry));
+        assert_eq!(o.push_blur(all, OverlayBlur { tap: f32::NAN, spreads: vec![1.0] }), Err(OverlayError::Geometry));
+        let mut bad = camera();
+        bad.fov_y = f32::INFINITY;
+        let view = OverlayModelView { camera: bad, objects: vec![] };
+        assert_eq!(o.push_model_view(all, view), Err(OverlayError::Geometry));
+        let off = ClipRect { x: 640, y: 0, width: 4, height: 4 };
+        assert_eq!(o.push_blur(off, OverlayBlur { tap: 0.5, spreads: vec![1.0] }), Err(OverlayError::Clip));
+        assert!(o.is_empty() && o.blurs.is_empty() && o.model_views.is_empty(), "the list is left as it was");
+    }
+
     #[test]
     fn check_names_a_broken_item() {
         let mut o = Overlay::new([640, 480]);
@@ -592,6 +779,10 @@ mod tests {
         assert_ne!(one, crate::summary_hash(&empty));
         scene.overlay.vertices[1].position[0] = 2.0;
         assert_ne!(crate::summary_hash(&scene), one, "a corner moved");
+        scene.overlay.push_blur(ClipRect::full([640, 480]), OverlayBlur { tap: 0.5, spreads: vec![1.0] }).unwrap();
+        let blurred = crate::summary_hash(&scene);
+        scene.overlay.blurs[0].spreads[0] = 1.25;
+        assert_ne!(crate::summary_hash(&scene), blurred, "a blur's spread changed");
         scene.clear();
         assert!(scene.overlay.is_empty() && scene.overlay.size == [0, 0]);
     }

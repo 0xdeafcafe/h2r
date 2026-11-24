@@ -55,8 +55,9 @@ pub use light_group::{
 pub use node::{NODE_MATRIX_SIZE, NodeMatrix};
 pub use object::{Defaults, ItemKey, LIGHTING_BYTES, LIGHTING_WORDS, Lighting, ObjectFrame, Owner};
 pub use overlay::{
-    ClipRect, Combiner, Overlay, OverlayBlend, OverlayCounts, OverlayError, OverlayGlyph,
-    OverlayItem, OverlayKind, OverlayMaterial, OverlayTexture, OverlayVertex, Program, Sampler,
+    ClipRect, Combiner, Overlay, OverlayBlend, OverlayBlur, OverlayCamera, OverlayCounts,
+    OverlayError, OverlayGlyph, OverlayItem, OverlayKind, OverlayMaterial, OverlayModelView,
+    OverlayTexture, OverlayVertex, Program, Sampler,
 };
 pub use scene::{
     AuxDepth, Cut, FrameScene, Instance, InstanceKey, NearbyCaster, PartDraw, PartFlags, Row,
