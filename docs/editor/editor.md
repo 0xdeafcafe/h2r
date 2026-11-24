@@ -1,36 +1,14 @@
 # h2-editor
 
-Status: Built. Code: `crates/apps/studio/src`. Tests: in-source unit tests.
+Status: Built.
+Code: `crates/apps/studio/src/ui.rs`, `crates/apps/studio/src/app.rs`.
 Switch: none.
 
-To *use* the editor (open a map, move a weapon, make a game variant, edit
-a playlist), read the user guide, [editor-guide.md](editor-guide.md).
-This page is for developers.
-
-`h2-editor` (`crates/apps/studio`) is a native editor suite for the files
-h2recomp's game reads, in the spirit of the original tools' Sapien, with
-a game-tool look (Unreal, RenderDoc, Tracy). It is a Rust app on Dear
-ImGui's docking branch: `dear-imgui-rs` for the UI, `dear-imgui-wgpu` on
-the workspace's wgpu 30, `dear-imgui-winit` for the window,
-`dear-imguizmo` for the 3D gizmo, `rfd` for the system's file dialogs. No
-web views, no scripting. It runs unbundled, so it sets its own Dock icon
-(`app_icon::set_dock_icon`, [art/app-icon](../../art/app-icon/README.md)).
-It hosts five tools:
-
-- **Map** combines the scenario editor (`crates/tools/scenario-edit`,
-  [scenario-editor.md](scenario-editor.md)) and the tag editor. It edits
-  placements in a 3D viewport and tag fields in the inspector. Both save
-  to a map package or a whole `.map`.
-- **Game variants**: the game variant editor (`crates/formats/variants`,
-  [variants.md](variants.md)).
-- **Playlists**: `multiplayer_hopper.dat`, the 16 matchmaking playlists
-  the game downloads from Live (`crates/tools/hopper-edit`, below).
-- **UI Screens**: our native game screens drawn, stepped and checked
-  offline (`boot::ui_kit`, [ui-builder.md](../game/ui-builder.md);
-  below).
-- **HUD**: a map's HUDs (`nhdt`) drawn as the engine places them, checked
-  for overlaps and spills, edited and saved as a patched `.map`
-  (`crates/tools/hud-edit`, [hud-editor.md](hud-editor.md)).
+Studio is the native Rust editor for maps, tags, voices, scripts, game
+variants, playlists, screens and HUDs. Dear ImGui supplies the docked
+windows. The front document determines which editor the window draws.
+Follow the [editor guide](editor-guide.md) for the weapon, voice and
+game type walkthroughs.
 
 Nothing in the editor contains game data. Map names and everything else
 it shows come from your own disc at run time.
@@ -111,24 +89,14 @@ Scene, viewport, inspector, Log and status bar.*
   the `.rules` document (`Doc::Rules`): a tab from the first open of a
   script, drawn beside the variant's settings, closed without dropping
   its text.
-- **Save** (Cmd/Ctrl+S, `App::save_target`) writes the edit target's
-  package. The first edit to a base map asks which package takes it.
-  **Export map...** (Shift+Cmd/Ctrl+S) asks for a standalone `.map`
-  path.
-- **Go to anything** (Cmd/Ctrl+P, `ui/palette.rs`) searches the maps,
-  the open map's tags and placements, and available menu actions. Each
-  word must match. Use Up or Down to move, Enter to open or run the
-  selection, and Esc to close. The result list is as tall as its rows, up
-  to seven.
-- **The bar** (under the menu, `ui/bar.rs`), visible in every tool. Left:
-  the tools as tabs, Map, Variants, Playlists, UI and HUD. Middle: a tab
-  per open document (`ui/doc_tabs.rs`, `app/shell.rs`): the map, the
-  variant, the playlist file, the screen, the HUD map and each tag opened
-  (a double-click in the Tags tree, or `shell.open`), each with its close
-  button and its own undo stack; a `*` marks unsaved edits, and tabs that
-  do not fit are under **More** ([agent-api.md](agent-api.md#document-tabs)).
-  Right: the game link. Its
-  pill shows the pairing and whether tag and placement edits can reach
+- **Go to anything** (Cmd/Ctrl+P, `ui/palette.rs`) searches the tree's
+  tags and the set's packages and items, as well as voices, maps,
+  placements and commands (`app::commands::palette`). Use Up or Down
+  to move, Enter to open or run the selection, and Esc to close.
+- **Document tabs** (`ui/doc_tabs.rs`, `app/shell.rs`) identify open
+  documents. Each tab has a close button. A `*` marks an unsaved
+  document, and tabs that do not fit are under **More**.
+- **The game link** sits to the right of the tabs. Its pill shows the pairing and whether tag and placement edits can reach
   the game.
   The controls beside it provide Play or Stop, Pause or Resume, Step and
   the Edit switch as they become available. The link's width is measured
@@ -233,6 +201,50 @@ local or world axes, and T (over the viewport, paired) teleport the player
 to the cursor.
 Dropping a disc image, map or folder on the window
 opens it.
+
+## Document header and links
+
+**Code** in `crates/apps/studio/src/ui/doc_header.rs` draws the shared
+header for the front document. `App::doc_asset` resolves its tag,
+package item, package or voice id when one is available. The trail
+buttons and **In Browser** locate the row, and the kind button also
+filters the Browser by kind. For tags, the badge describes the source
+or package overlay. The **into:** line reports the edit target and
+document dirty state separately. **<** and **>** walk the document
+trail (`app/navigation.rs`, `app/shell.rs`).
+
+`app/links.rs` reads forward and reverse tag references, the enabled
+package manifests, variant and script item relationships, and the
+voice rules that match sound paths. **Links** shows **Uses** and
+**Used by**, up to 20 rows per role, with the source of the link on
+hover. **Show all in the Browser** passes the full section's asset ids
+to the Browser. Tag rows dispatch `Action::OpenAsset`. Other rows
+locate the asset in the Browser. **Open with** offers the editor
+entries from the link table and disables entries with a refusal or
+without a wired action. [`asset.links`](agent-api.md#the-browser) exposes
+the links, editor choices and read problems over the socket.
+
+### Shared patterns
+
+| Pattern | Window and API behavior | Code under `crates/apps/studio/src/` |
+|---|---|---|
+| **Preview** | The header and **Preview** menu share the target picker and **In game**. `preview.target` reads or changes the front tab's target. `pair.preview {doc?}` runs the document's route. Supported tags use the paired game, variants launch Studio's game with the current record, and scripts compile and reload into Studio's game. | `ui/preview_switch.rs`, `app/preview_switch.rs`, `api/preview.rs` |
+| **Check** | The header counts the front asset's findings. Clicking **Check** refreshes Problems. `check.run {asset}` returns the requested asset's rows from a refresh, and `problems.list {asset}` filters the list. Script findings can open the affected line. | `ui/doc_header.rs`, `app/problems.rs`, `api/checks.rs` |
+| **Apply** | Edits act on the working document. The header and Cmd/Ctrl+S share `App::doc_save_action`. Scripts, variants, playlist files, selected animation clips and generated voice lines save through the edit target. Without a target, a package save opens the picker. Map saves follow `App::save_target`, and export controls write standalone files. | `app/doc_save.rs`, `app/edit_target.rs`, `app.rs` |
+| **Undo** | The header runs `Action::UndoDoc` and `Action::RedoDoc` for the front document. The tag document's step counter orders field edits with specialized steps such as mouth curves, bitmap edits and animation edits. The map routes its history to the active modeling or map script context when applicable. | `app/shell.rs`, `app/tag_doc.rs` |
+
+The header's **Revert** is disabled. The variant Inspector offers its
+own revert action. **Copy into package...** writes a tag recipe and
+leaves the source tab in front. Opening the copy requires a map that
+contains it. The **Packages** root lists packages and their items.
+Package check, build and play are socket methods. See
+[Packages](agent-api.md#packages).
+
+### Not verified
+
+- The copied weapon and the replacement sound in a game running a map
+  built with their package items.
+- The full variant launch and script reload in Studio's game.
 
 ## Scenario
 
@@ -811,7 +823,7 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   builds the mesh in memory with the bots' own builder
   (`bots::autonav::build_map`, what `h2 bots nav` runs), does not write
   it, and says why in `nav.bots`'s notes. The spots come from
-  `<map>.spots` when current (else a scan now), the hand-measured ones,
+  `<map>.spots` when current (otherwise a scan), the hand-measured ones,
   and `<map>.verified`, `<map>.learned` and `<map>.ghosts` beside them.
   `<data>` is the data root (`--data`, else the one `h2 play` uses).
 
