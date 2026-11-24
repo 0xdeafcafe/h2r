@@ -119,6 +119,8 @@ fn counters(sink: bool) -> BTreeMap<String, u64> {
         .chain(sink.then(d3d::scene_sink::counters).into_iter().flatten())
         .collect();
     #[cfg(feature = "gpu")]
+    counts.extend(crate::native_post_glue::refusal_counters());
+    #[cfg(feature = "gpu")]
     if sink { counts.extend(crate::native_objects_glue::palette_counters()); }
     if sink && let Some(residency) = d3d::scene_stage::residency::counters() {
         counts.extend(residency.map(|(name, n)| (name.to_owned(), n)));

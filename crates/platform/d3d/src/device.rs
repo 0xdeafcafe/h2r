@@ -3053,6 +3053,14 @@ impl<B: Backend> Device<B> {
                 "post target's Z scale is unreadable".into()
             });
         };
+        // The replacement receives one depth scale for the entire call,
+        // even if its final strip or convolution binds a different target.
+        let s = self.swallowing.as_ref().expect("matching post draw");
+        if s.plan.drop && s.last.is_some_and(|(_, request)| request.z_scale != z_scale) {
+            return self.swallow_abort(SwallowRefusal::Resource, || {
+                "post depth scale changed between draws".into()
+            });
+        }
         let v = draw.viewport;
         let request = crate::backend::ExternalPassRequest {
             rect: (v.x, v.y, v.width, v.height),

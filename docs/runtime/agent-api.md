@@ -2094,7 +2094,10 @@ h2 agent render.parity '{"arm": true}'
   `scene_submitted_flares_display_draws` accumulate flare ranges as
   `GfxBackend::commit_external` appends them to each copy's command
   stream. Private replays also contribute. These counters are available
-  with frame statistics and the residual census disabled. Unless
+  with frame statistics and the residual census disabled.
+  `post_effect_refused_<cause>` counts screen-effect preflight refusals.
+  A missing view strip increments `view_target`. A missing or empty
+  target 1 size increments `pass_target`. Unless
   `frame-scene.layers=off` is in `H2_FEATURES`, `layer_plan_asked`, `layer_plan_drawn`,
   `layer_plan_items` and the plan's outcomes by layer,
   `layer_plan_<layer>_taken` and `layer_plan_<layer>_refused_<cause>`,
@@ -2359,7 +2362,7 @@ h2 agent render.residual '{"top": 500}'        # the last finished window
   frame it is `outside_render`. At each boundary the device first decodes
   the push buffer, so an inline draw is charged to the producer open when
   its words were written. `status` is `native` or `d3d` from the
-  registry, and `partial` for a layer draw a native stage draws some
+  registry, and `partial` for the screen-effect producer or a layer draw a native stage draws some
   items of from the scene, skipping their guest draws
   (`residual_census::PARTIAL_LAYERS`: the scene's layers 1, 2, 3, 5, 7,
   8, 17 and 20, the alternate view's 2 and the first person's 1, 2, 3, 7, 8 and 20); its `residual` is

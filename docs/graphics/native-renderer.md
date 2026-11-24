@@ -334,6 +334,8 @@ It still requires the compiled alpha test to match, and checks the actual
 strip attributes against the plan by bits. Each strip in one pass must
 have the same raster state. Other shaders, effects and raster states keep
 their original draws when the native pass cannot reproduce them.
+The replacement uses one depth scale across its pinned targets. A change
+in scale between held draws replays the call, including its side-target writes.
 
 A linear X8 alias of the framebuffer samples alpha as one. The native
 feedback copy applies that alpha rule on its own scratch texture, as

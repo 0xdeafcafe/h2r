@@ -118,6 +118,25 @@ fn a_mismatch_at_each_position_replays_the_original_packets_in_order() {
 }
 
 #[test]
+fn a_depth_scale_change_replays_the_held_post_draws() {
+    let (mut d, mut m, _) = setup(recorder());
+    assert!(d.swallow(&mut m, plan(true, Capture)).unwrap());
+    d.set_render_target(&mut m, LEVEL_A, 0).unwrap();
+    let scale = d3d::GuestLayout::HALO2.device + d3d::layout::device_field::Z_SCALE;
+    m.write_u32(scale, 64.0f32.to_bits()).unwrap();
+    quad(&mut m, 0);
+    assert_eq!(d.drain_until_callback(&mut m).unwrap(), None);
+    m.write_u32(scale, 32.0f32.to_bits()).unwrap();
+    quad(&mut m, 1);
+    assert_eq!(d.drain_until_callback(&mut m).unwrap(), None);
+    assert!(!d.swallowing());
+    let stats = d.stats();
+    assert_eq!(stats.swallow_reasons[SwallowRefusal::Resource.index()], 1);
+    assert_eq!(stats.swallow_draws_replayed, 1);
+    assert_eq!(draws(&d).len(), 2);
+}
+
+#[test]
 fn a_late_target_mismatch_replays_the_intermediate_before_drawing_the_mismatch() {
     let run = |armed| {
         let (mut d, mut m, back) = setup(recorder());

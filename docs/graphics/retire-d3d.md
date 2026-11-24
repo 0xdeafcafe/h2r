@@ -65,7 +65,7 @@ these per caller with every stage on: the column "Count" says what exists.
 | Sorted transparents `0x0001e370` (also `0x00040870`), layer 15 | indexed; per-handler immediate | vertex bindings of indexed draws; the Rust sort | every handler's setup; multi-range branches; unknown effect builders | 2.58 ms, 1,010 entries [a] |
 | Particles `0x0023ed5c`, decals `0x00044161`, effect quads and contrails `0x0004b252`, `0x0004b28c` | inline quads and strips | the draw packet | iteration, property evaluation, ribbon construction, the per-view update `0x00174420`; unknown builders | not broken out |
 | Lens flares: writer `0x00020bb0`, reader `0x00020770` | a counted draw between an inline begin and `EndVisibilityTest` | the pixel counter, on the GPU | the counted draw, the report slots, `GetVisibilityTestResult` | none |
-| Post: `0x00013870`, colour pass `0x000214f0`, screen effect `0x0002d140` | strips into side targets | glow, screen strips, blur and convolutions, as one transaction per call | a call with an unsupported input or a missing live target; a reference-only intermediate under scaling | 0.76 ms, 164 entries [a] |
+| Post: `0x00013870`, colour pass `0x000214f0`, screen effect `0x0002d140` | strips into side targets | glow, screen strips, blur and convolutions, as one transaction per call, including a final strip or convolution into a side target | a call with an unsupported input or a missing live target; a reference-only intermediate under scaling | 0.76 ms, 164 entries [a] |
 | `0x0002dd30`, `0x0002df00` (the flares' tests and draws) | a counted visibility fan, reflection billboards and a filtered composite | six colour fan sites ([retail trace](notes/2026-11-24-lens-flares.md)) | visibility test and feedback, guest queue and target changes, refused colour fans | committed fan ranges per copy in `render.scene` |
 | Layer 17 `0x0002c30b` (S: bloom) | indexed | its structure and object items from the scene's plan (`frame-scene.layers`) | what layers 1, 5, 7, 8 and 20 refuse | none |
 | HUD `0x001917eb` (tail `0x0013954b`), shader quad `0x0022a664` | immediate quads through a shader | the quad's vertices | the shader draw `0x0001bbf0` per quad; uncovered widget helpers (`guest_builder_draw`); the built-in diffuse shader | none: the HUD is outside the timed scene-pass sites |
@@ -232,7 +232,7 @@ caller, what the guest front-end still asks `d3d` to do.
   `{producer, status, slot, calls, draws, claimed, residual, entries,
   push_words, state_words, clears, binds, copies, uploads, d3d_ms,
   guest_ms}`. `status` is `native`, `d3d` or `unknown` from the registry
-  below, or `partial` for a layer draw whose items a native stage draws
+  below, or `partial` for the screen-effect producer and for a layer draw whose items a native stage draws
   in part from the scene, skipping their guest draws. `guest_ms` is the producer's exclusive guest time and is `null`
   without `render-timing`. A stage's refusals are not filed by producer;
   the capture's `native_<stage>_refused_*` counters give them by stage.

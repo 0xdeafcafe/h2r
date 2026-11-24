@@ -991,6 +991,12 @@ Its numbers are ported: `engine::colour_pass`
      ordered copy before the pass. Each attachment uses its live
      format and loads existing contents. Partial strips, colour
      masks and consecutive writes preserve the surrounding pixels.
+     Once a strip pins the view slot, the call can finish on target 1
+     or a convolution stand-in. The wide and blur calls at
+     `0x0002da77` and `0x0002da96` precede the guest size restores.
+     The final bind does not redirect the earlier strips. A call with
+     no view strip stays on D3D (`ViewTarget`), as does a target 1
+     pass without a positive size (`PassTarget`).
 
    - **the end of the call draws nothing**
      (`0x0002dae8..0x0002db64`): `0x0001ddd0` writes the sizes of
