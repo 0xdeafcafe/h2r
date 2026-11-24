@@ -36,7 +36,8 @@
 //! [`first_person_records_match_the_lifted_original`].
 //!
 //! **Object shadows (L7).** See [`object_shadow_list_matches_the_lifted_original`]
-//! and [`object_shadow_rows_match_the_lifted_original`].
+//! [`object_shadow_rows_match_the_lifted_original`] and
+//! [`object_shadow_caster_matches_the_lifted_original`].
 //!
 //! Needs the user's XBE (`H2_XBE`, or `disc/default.xbe`), pinned by hash;
 //! skips without it. Nothing is copied from it: thresholds and constants
@@ -3475,6 +3476,16 @@ fn object_shadow_rows_match_the_lifted_original() {
                             putf(m, call.args[1], r.float(0.05, 1.0));
                             put8(m, call.args[2], r.u32() as u8);
                             putf(m, body(i) + 0x30, r.float(-50.0, 50.0));
+                            if case == 4 && k == 0 {
+                                // A current, fading history row appears during the walk,
+                                // after preflight but before the guest enters the merge.
+                                put(m, hist + history::COUNT, 1);
+                                put(m, hist + 4, call.args[0]);
+                                putf(m, hist + 0x14, 0.02);
+                                putf(m, hist + 0x18, 0.03);
+                                put(m, hist + 0x1c, frame);
+                                put(m, hist + 0x20, frame.wrapping_sub(2));
+                            }
                             if case >= 8 && k == 0 && count > 1 {
                                 let objects = word(m, list + 0xc);
                                 put(m, objects + 4, object_datum(OBJECT_SLOTS - 1));
@@ -3507,5 +3518,156 @@ fn object_shadow_rows_match_the_lifted_original() {
         }
     }) {
         eprintln!("SKIPPED object_shadow_rows_match_the_lifted_original: no XBE (set H2_XBE)");
+    }
+}
+
+/// The mask caster's callees, including the layer hooks that read the named
+/// return slot. The test supplies finite, synthetic coordinates to its basis
+/// and radius calculations; all scalar coefficients are the image's own.
+const SHADOW_CASTER_STUBS: Stubs = &[
+    (SHADOW_ELIGIBLE, &[], 3, 12),
+    (0x0003_d7c0, &[6, 7], 0, 0),    // chain visibility, also writes through EDI
+    (0x0003_dc90, &[], 1, 4),         // lighting sample
+    (0x0003_1f50, &[], 5, 20),        // extents
+    (0x0003_0bf0, &[0], 0, 0),        // vector to normalize
+    (0x000c_1930, &[0, 2], 0, 0),     // volume
+    (0x000c_1a80, &[1, 2], 1, 4),     // pose
+    (0x0003_20b0, &[6], 0, 0),        // transformed bounds
+    (0x000c_1d90, &[], 4, 16),        // frusta
+    (0x0013_20f0, &[0, 1, 2], 7, 28), // visibility
+    (0x0016_5a20, &[7], 3, 12),       // insert caster
+    (0x0002_cbc0, &[], 1, 4),         // records
+    (0x0004_4720, &[], 0, 0),         // part visibility
+    (0x0003_0ca0, &[0, 1], 0, 0),     // pass bit
+    (passes::call::CONSTANTS, &[0, 1, 2], 4, 16),
+    (passes::call::SHADOW_SETUP, &[1, 3], 1, 4),
+    (passes::call::ITEMS, &[0], 0, 0),
+    (passes::call::LAYER_BEGIN, &[7], 0, 0),
+    (passes::call::LAYER_DRAW, &[], 0, 0),
+    (passes::call::LAYER_END, &[], 0, 0),
+    (0x0002_22a0, &[], 0, 0),         // filter between layers 10 and 11
+    (passes::call::TARGET, &[0], 2, 8),
+    (passes::call::CLIP_MODE, &[0], 0, 0),
+    (passes::call::RECEIVER_BLEND, &[], 0, 0),
+    (passes::call::STENCIL, &[3], 0, 0),
+    (0x0004_a780, &[], 0, 0),         // restore
+];
+
+const SHADOW_LIGHTING: u32 = 0x0349_0000;
+const SHADOW_AXES: u32 = 0x034a_0000;
+
+fn shadow_caster_world(w: &mut World, r: &mut Rng, esp: u32, case: u32) {
+    let m = &mut w.mem;
+    fill(m, r, esp - 0xb50, 0xb50);
+    put(m, esp + 4, object_datum(0));
+    putf(m, esp + 8, r.float(0.75, 1.25));
+    put(m, body(0), definition_datum(0));
+    put16(m, definition(0) + 0x18, 2);
+    put(m, body(0) + 0x14, NONE);
+    put8(m, OBJECT_DATA + 2, 0);
+    put8(m, OBJECT_DATA + 3, 0);
+    put8(m, body(0) + 4, 0);
+    put8(m, body(0) + 6, 0);
+    put8(m, body(0) + 7, 1);
+    put8(m, body(0) + 0xaa, (case % 2) as u8);
+    put8(m, SHADOWS_ON, 1);
+    put8(m, SHADOW_LIST_MODE, 1);
+    put(m, 0x004d_e2f4, SHADOW_LIGHTING);
+    let sample = SHADOW_LIGHTING + 0x1c;
+    putf(m, sample + 0x1c, r.float(0.9, 1.5));
+    putf(m, body(0) + 0x3c, r.float(0.1, 2.0));
+    put16(m, body(0) + 0x2c, r.u32() as u16);
+    for i in 0..3 {
+        putf(m, body(0) + 0x30 + i * 4, r.float(-20.0, 20.0));
+        putf(m, sample + 0xc + i * 4, r.float(-1.0, 1.0));
+    }
+    put(m, 0x0046_87ac, SHADOW_AXES);
+    put(m, 0x0046_87b4, SHADOW_AXES + 12);
+    for i in 0..6 {
+        putf(m, SHADOW_AXES + 4 * i, r.float(-1.0, 1.0));
+    }
+    put(m, 0x0054_aa74, list_header(0));
+    put16(m, list_header(0) + 4, 1);
+    put(m, PASS_LIGHT_MASK, 0);
+    put(m, PASS_CASTER_MASK, 0);
+    put(m, PASS_VIEW_TARGET, r.u32());
+}
+
+#[test]
+fn object_shadow_caster_matches_the_lifted_original() {
+    if !with_image(|image, mut lifted| {
+        for seed in seeds() {
+            for case in 0..7u32 {
+                let mut r = Rng(seed ^ ((case as u64) << 32) ^ 0x2350);
+                let mut w = World::new(image, &mut r, 4);
+                let c = cpu(&mut r);
+                let esp = c.gpr[4];
+                shadow_caster_world(&mut w, &mut r, esp, case);
+                let label = format!("shadow mask seed {seed} case {case}");
+                let plan = object_shadows::caster::plan(&Ram(w.mem.clone()), esp, FPU)
+                    .unwrap_or_else(|why| panic!("{label}: {why:?}"));
+                let calls = compare_shadow_body(
+                    &mut lifted, w.mem, c, SHADOW_CASTER, esp, 8, SHADOW_CASTER_STUBS,
+                    move |cx| Box::pin(async move { object_shadows::caster::run(&cx, plan).await }),
+                    |k, c, m| {
+                        let mut r = Rng(seed ^ ((k as u64) << 32) ^ u64::from(c.site));
+                        let mut eax = r.u32();
+                        match c.target {
+                            SHADOW_ELIGIBLE => {
+                                putf(m, c.args[1], r.float(0.8, 1.1));
+                                put8(m, c.args[2], 0);
+                                eax |= 1;
+                            }
+                            0x0003_d7c0 => {
+                                put8(m, c.regs[1], r.u32() as u8);
+                                eax |= 1;
+                            }
+                            0x0003_dc90 => eax = SHADOW_LIGHTING + 0x1c,
+                            0x0003_1f50 => {
+                                putf(m, c.args[3], r.float(1.0, 4.0));
+                                putf(m, c.args[4], r.float(0.5, 6.0));
+                            }
+                            0x0003_0bf0 => {
+                                let v = c.regs[0];
+                                let log = SHADOW_LOG + if c.site == 0x0003_24b6 { 0x40 } else { 0x4c };
+                                m.bytes.copy_within(v as usize..(v + 12) as usize, log as usize);
+                                for i in 0..3 {
+                                    putf(m, v + i * 4, r.float(-1.0, 1.0));
+                                }
+                            }
+                            0x000c_1930 => fill(m, &mut r, c.regs[1], 0x7c),
+                            0x000c_1a80 => {
+                                putf(m, c.regs[1] + 0x58, r.float(0.5, 2.0));
+                                putf(m, c.regs[1] + 0x5c, r.float(0.2, 3.0));
+                            }
+                            0x0003_20b0 => {
+                                // Capture the stack matrix and all three half extents.
+                                let bounds = c.regs[0] as usize;
+                                m.bytes.copy_within(bounds..bounds + 0x40, SHADOW_LOG as usize);
+                                eax |= 1;
+                            }
+                            0x000c_1d90 => put16(m, c.args[3], 1 + r.below(5) as u16),
+                            0x0004_4720 => put16(m, list_header(0) + 4, u16::from(case != 0)),
+                            passes::call::ITEMS => {
+                                put(m, PASS_CASTER_MASK, u32::from(case != 1) << 10);
+                                put(m, PASS_LIGHT_MASK, u32::from(case != 2) << 11);
+                            }
+                            passes::call::LAYER_BEGIN => eax = (eax & !0xff) | u32::from(case != 3),
+                            0x0002_22a0 if case == 5 => put(m, PASS_LIGHT_MASK, 0),
+                            passes::call::STENCIL if case == 6 => put8(m, esp - 0xb50 + 0x13, 0),
+                            _ => {}
+                        }
+                        (eax, r.u32())
+                    },
+                    &label,
+                );
+                let visits = |target| calls.iter().filter(|c| c.target == target).count();
+                assert_eq!(visits(passes::call::ITEMS), usize::from(case != 0), "{label}");
+                assert_eq!(visits(0x0002_22a0), usize::from(case >= 3), "{label}");
+                assert_eq!(visits(passes::call::LAYER_DRAW), [0, 0, 0, 1, 2, 1, 1][case as usize], "{label}");
+            }
+        }
+    }) {
+        eprintln!("SKIPPED object_shadow_caster_matches_the_lifted_original: no XBE (set H2_XBE)");
     }
 }
