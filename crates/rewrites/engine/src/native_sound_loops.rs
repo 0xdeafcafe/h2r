@@ -10,6 +10,9 @@ use crate::sound::{LoopingSound, LoopingTrack, SoundInstance};
 use runtime::{Guest, GuestFault};
 use sim_sound::loops::TrackRing;
 
+mod track;
+mod walk;
+
 const DOC: &str = "docs/engine/sim-rewrite.md";
 const EMPTY: u32 = TrackRing::EMPTY;
 pub static FIND_INSTANCE: Point = Point::new(
@@ -46,6 +49,11 @@ pub static TRACK_FADE_IN: Point = Point::new(
 
 pub const BODIES: &[Body] = &[
     Body {
+        point: &walk::UPDATE,
+        sites: walk::SITES,
+        run: walk::update,
+    },
+    Body {
         point: &TRACK_FADE_OUT,
         sites: &[0x21bdd4],
         run: fade_out,
@@ -72,7 +80,7 @@ pub const BODIES: &[Body] = &[
     },
 ];
 
-fn track(g: &Guest, owner: u32, number: u32) -> Result<(u32, u32)> {
+fn track_address(g: &Guest, owner: u32, number: u32) -> Result<(u32, u32)> {
     let pool = g.u32(points::LOOPING_SOUNDS.base)?;
     let base = g.u32(pool.wrapping_add(DATA))?;
     let record = base.wrapping_add((owner & 0xffff) * LoopingSound::SIZE);
@@ -92,7 +100,7 @@ fn instance(records: u32, datum: u32) -> u32 {
 
 fn find(cx: &mut Cx<'_>, _: u32) -> Result<Next> {
     let (c, g) = (&mut *cx.cpu, &mut *cx.g);
-    let (base, track) = track(g, c.eax, c.ecx)?;
+    let (base, track) = track_address(g, c.eax, c.ecx)?;
     c.ecx = base;
     c.edx = g.u32(track)?;
     frame::push(c, g, c.ebp)?;
@@ -177,7 +185,7 @@ fn find_or_start(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
 
 fn link(cx: &mut Cx<'_>, _: u32) -> Result<Next> {
     let (c, g) = (&mut *cx.cpu, &mut *cx.g);
-    let (_, track) = track(g, c.eax, c.ecx)?;
+    let (_, track) = track_address(g, c.eax, c.ecx)?;
     c.edx = track;
     frame::push(c, g, c.edi)?;
     c.edi = g.u32(points::SOUND_INSTANCES.base)?;

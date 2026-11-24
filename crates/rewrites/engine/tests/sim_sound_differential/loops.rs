@@ -133,6 +133,17 @@ fn reply(g: &mut Guest, c: &mut Cpu, target: u32, seed: u32) -> u32 {
 }
 
 pub(super) fn cases(entry: u32) -> Vec<Case> {
+    if entry == 0x21b0e0 {
+        let mut cases: Vec<_> = (0..10)
+            .map(|seed| Case {
+                setup: walk_setup,
+                reply: walk_reply,
+                seed,
+            })
+            .collect();
+        cases.extend(loop_tracks::cases());
+        return cases;
+    }
     let count = match entry {
         0x21b870 => 6,
         0x21b910 => 2,
@@ -142,3 +153,96 @@ pub(super) fn cases(entry: u32) -> Vec<Case> {
     };
     (0..count).map(|seed| Case { setup, reply, seed }).collect()
 }
+
+const LOOP_TAGS: u32 = ARENA + 0x9000;
+const LSND: u32 = ARENA + 0xa000;
+const SOUND: u32 = ARENA + 0xb000;
+const MASK: u32 = ARENA + 0xc000;
+const DETAILS: u32 = ARENA + 0xd000;
+const SEEDS: u32 = ARENA + 0xe000;
+
+fn setup_test_loop(g: &mut Guest, _c: &mut Cpu) -> (u32, u32) {
+    g.set_u32(LOOPING_SOUNDS.base, LOOP_POOL).unwrap();
+    g.set_u32(LOOP_POOL + 0x24, 0xd4).unwrap();
+    g.set_u32(LOOP_POOL + 0x38, 1).unwrap();
+    g.set_u32(LOOP_POOL + 0x44, LOOPS).unwrap();
+    g.set_u32(LOOP_POOL + 0x48, MASK).unwrap();
+    g.set_u32(MASK, 1).unwrap();
+    g.set_u16(LOOPS, 0xa1d0).unwrap();
+    g.set_u32(LOOPS + 4, TAG).unwrap();
+    g.set_u32(LOOPS + 0x54, NONE).unwrap();
+    g.set_u32(LOOPS + 0x88, NONE).unwrap();
+    g.set_u32(SOUND_INSTANCES.base, VOICE_POOL).unwrap();
+    g.set_u32(VOICE_POOL + 0x44, VOICES).unwrap();
+    g.set_u32(engine::points::TAG_ENTRIES.base, LOOP_TAGS)
+        .unwrap();
+    g.set_u32(LOOP_TAGS + (TAG & 0xffff) * 16 + 8, LSND)
+        .unwrap();
+    g.set_u32(engine::points::SOUND_GLOBALS.base, SOUND)
+        .unwrap();
+    g.set_u32(engine::points::RANDOM_SEEDS.base, SEEDS).unwrap();
+    g.set_u32(SEEDS + 4, 0xd9547b31).unwrap();
+    g.set_u32(STACK + 4, 1).unwrap();
+    (LOOPS, LSND)
+}
+
+fn walk_setup(g: &mut Guest, c: &mut Cpu, seed: u32) {
+    setup_test_loop(g, c);
+    g.set_u32(LSND + 0x24, 2).unwrap();
+    g.set_u32(LSND + 0x28, DETAILS).unwrap();
+    g.set_u32(SOUND + 0x84, 40).unwrap();
+    for (i, opts) in [0, 2u32].into_iter().enumerate() {
+        let detail = DETAILS + (i as u32) * 0x34;
+        g.set_u32(detail + 8, TAG).unwrap();
+        g.set_u32(detail + 12, 0.0625f32.to_bits()).unwrap();
+        g.set_u32(detail + 16, 0.875f32.to_bits()).unwrap();
+        g.set_u32(detail + 24, opts).unwrap();
+    }
+    match seed {
+        1 => {
+            // Replace the occupied row during the release callback.
+            g.set_u8(LOOPS + 0x53, 3).unwrap();
+        }
+        2 => g.set_u8(LOOPS + 0x52, 2).unwrap(),   // stopped
+        3 => g.set_u8(LOOPS + 0x50, 4).unwrap(),   // no detail sounds
+        4 => g.set_u32(LOOPS + 0x58, 40).unwrap(), // equality holds the timer
+        8 => g.set_u8(LOOPS + 0x50, 1).unwrap(),   // alternate details
+        9 => {
+            g.set_u32(LOOP_POOL + 0x38, 40).unwrap();
+            g.set_u32(MASK + 4, 1 << 5).unwrap();
+            let second = LOOPS + 37 * 0xd4;
+            g.set_u16(second, 0x547f).unwrap();
+            g.set_u32(second + 4, TAG).unwrap();
+            g.set_u8(second + 0x52, 2).unwrap();
+        }
+        _ => {}
+    }
+}
+
+fn walk_reply(g: &mut Guest, c: &mut Cpu, target: u32, seed: u32) -> u32 {
+    match target {
+        0x16bc00 => {
+            c.gpr[0] = if seed == 0 { NONE } else { 0 };
+            0
+        }
+        0x21b070 => {
+            g.set_u32(LOOP_POOL + 0x38, 0).unwrap();
+            0
+        }
+        0x21cc60 => {
+            c.gpr[0] = u32::from(seed != 5);
+            12
+        }
+        0x125f70 => {
+            c.gpr[0] = if seed == 6 || seed == 7 { NONE } else { ADDED };
+            // An accepted request can be queued while the allocator returns
+            // no instance. The call writes its result through EDI.
+            g.set_u32(c.gpr[7], u32::from(seed == 7)).unwrap();
+            4
+        }
+        addr => panic!("unhandled loop walk call {addr:x}"),
+    }
+}
+
+#[path = "loop_tracks.rs"]
+mod loop_tracks;
