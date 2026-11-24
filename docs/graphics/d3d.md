@@ -1079,7 +1079,11 @@ Fallbacks:
 - A frame-wait stop (see "Vertical blank") uses the same hook, with the
   engine address `0x12b2e0`.
 - `Event` means something is worth knowing but execution continues:
-  `DrawSkipped`, `BadState` and `MissedInvalidation`.
+  `DrawSkipped`, `BadState` and `MissedInvalidation`. Draws record them
+  every frame and the run report drains them at exit, so the device keeps
+  the first 4096 since the last drain and counts the rest
+  (`EventLog` in `crates/platform/d3d/src/events.rs`); the report prints
+  the count past the limit as its last event line.
 - Nothing is skipped silently.
 
 ## Integration

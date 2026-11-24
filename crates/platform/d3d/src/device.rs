@@ -1073,7 +1073,7 @@ pub struct Device<B: Backend> {
     cache: HashMap<TextureKey, CachedTexture<B::Texture>>,
     /// Guest-write tracking (see [`crate::dirty`]).
     pub tracker: WriteTracker,
-    events: Vec<Event>,
+    events: crate::events::EventLog,
     last_stop: Option<HleStop>,
     stats: Stats,
     queued_external_stats: Arc<QueuedExternalStats>,
@@ -1429,7 +1429,7 @@ impl<B: Backend> Device<B> {
             regs: None,
             cache: HashMap::default(),
             tracker: WriteTracker::new(),
-            events: Vec::new(),
+            events: Default::default(),
             last_stop: None,
             stats: Stats::default(),
             queued_external_stats: Default::default(),
@@ -1518,9 +1518,15 @@ impl<B: Backend> Device<B> {
         stats
     }
 
-    /// Drains recorded events.
+    /// Drains recorded events: the first `EventLog::LIMIT` since the last
+    /// drain (crates/platform/d3d/src/events.rs).
     pub fn take_events(&mut self) -> Vec<Event> {
-        std::mem::take(&mut self.events)
+        self.events.take().0
+    }
+
+    /// Drains recorded events with the count of those past the kept limit.
+    pub fn take_events_counted(&mut self) -> (Vec<Event>, u64) {
+        self.events.take()
     }
 
     /// Records the call that stopped the guest (the runtime glue does this).
