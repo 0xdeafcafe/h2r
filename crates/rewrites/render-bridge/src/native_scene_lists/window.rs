@@ -312,6 +312,18 @@ mod tests {
     }
 
     #[test]
+    fn changed_float_bits_reopen_parity_and_aliasing_declines_before_publication() {
+        let (mut m, mut cpu) = scene();
+        m.put_f32(cpu.ecx, 0.0);
+        let positive = Window::read(&m, &cpu).unwrap();
+        m.put_f32(cpu.ecx, -0.0);
+        let negative = Window::read(&m, &cpu).unwrap();
+        assert_ne!(positive.inputs, negative.inputs);
+        cpu.ecx = cpu.edi + 16;
+        assert!(matches!(Window::read(&m, &cpu), Err(Refusal::Layout)));
+    }
+
+    #[test]
     fn empty_window_keeps_callers_registers_and_diagnostic_uses_guest() {
         let (mut m, mut cpu) = scene();
         m.put_f32(cpu.ecx + 4, -1.);
