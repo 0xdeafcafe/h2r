@@ -181,6 +181,7 @@ pub mod method {
     pub const SOUND_PERMUTATION: &str = "sound.permutation";
     // A WAV imported into a package as a `sound` item (api/import.rs).
     pub const IMPORT_SOUND: &str = "import.sound";
+    pub const IMPORT_MODEL: &str = "import.model";
     // A PNG imported into a package as a `bitmap` item (api/import.rs).
     pub const IMPORT_BITMAP: &str = "import.bitmap";
 

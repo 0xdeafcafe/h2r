@@ -75,6 +75,14 @@ fn import_copies_the_wav_in_and_the_item_checks_clean() {
     assert_eq!(v["sidecar"], Value::Null);
     assert_eq!(v["item"], 0);
     assert_eq!(v["class"], 51);
+    let doc = app.front_doc().unwrap();
+    assert_eq!(v["doc"], app.doc_id(doc));
+    let tab = app.tabs().iter().find(|tab| tab.doc == doc).unwrap();
+    assert_eq!(app.tab_json(tab)["editor"], "audition");
+    assert!(matches!(
+        app.source_asset(doc).map(|source| &source.view),
+        Some(crate::app::assets::SourceView::Sound { clip, .. }) if clip.frames() == 640
+    ));
     assert_eq!(v["from"], json!({"rate": 22_050, "channels": 1, "frames": 640}));
     // 640 frames at the clip's own rate: ten 36-byte blocks.
     assert_eq!((v["rate"].clone(), v["frames"].clone()), (json!(22_050), json!(640)));
@@ -91,6 +99,10 @@ fn import_copies_the_wav_in_and_the_item_checks_clean() {
     // As `h2 package check` reads it: the item resamples and encodes.
     let loaded = ::workspace::Loaded::from_dir(&dir).unwrap();
     assert_eq!(::workspace::check_package(&loaded), vec![]);
+
+    app.dispatch(crate::app::Action::CloseDoc(doc));
+    let open = call(&mut api, &mut app, m::SHELL_OPEN, json!({"asset": v["doc"]}));
+    assert_eq!(open["tab"]["editor"], "audition");
 }
 
 #[test]
@@ -243,4 +255,37 @@ fn a_png_import_refuses_what_it_cannot_build() {
     // Nothing the refusals wrote is left in the package.
     assert_eq!(manifest(&t).items.len(), 1);
     assert!(!t.path("data/packages/mine/bitmaps/b.png").exists());
+}
+
+pub(super) fn model_files(dir: &std::path::Path) {
+    std::fs::create_dir_all(dir).unwrap();
+    let frame = pogo_kit::NODE_FRAME;
+    std::fs::write(dir.join("model.yaml"), format!(
+        "name: invented\natlas: invented\nnodes:\n  - name: {frame}\n    at: [0, 0, 0]\nmarkers: []\nparts:\n  - box:\n      node: {frame}\n      region: body\n      min: [-1, -1, -1]\n      max: [1, 1, 1]\n"
+    )).unwrap();
+    let (w, h) = pogo_kit::source::ATLAS;
+    std::fs::write(dir.join("invented.png"), png(w.into(), h.into())).unwrap();
+}
+
+#[test]
+fn import_model_adds_its_atlas_and_opens_the_model_source() {
+    let (t, mut app, mut api) = setup("import-model");
+    model_files(&t.path("out"));
+    let v = call(
+        &mut api,
+        &mut app,
+        m::IMPORT_MODEL,
+        json!({"file": t.path("out/model.yaml"), "package": "mine", "tag": "models/invented/box"}),
+    );
+    assert_eq!(v["tag"], "tag:hlmt:models\\invented\\box");
+    assert_eq!(v["doc"], "item:mine:0");
+    let doc = app.front_doc().unwrap();
+    assert!(matches!(
+        app.source_asset(doc).map(|source| &source.view),
+        Some(crate::app::assets::SourceView::Model(mesh)) if mesh.triangles() == 12
+    ));
+    let loaded = ::workspace::Loaded::from_dir(&t.path("data/packages/mine")).unwrap();
+    assert_eq!(loaded.package.manifest.items[0].kind, content::package::Kind::Model);
+    assert_eq!(loaded.package.manifest.items[1].kind, content::package::Kind::Data);
+    assert_eq!(::workspace::check_package(&loaded), vec![]);
 }

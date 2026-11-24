@@ -287,6 +287,7 @@ impl Studio {
             ui.set_window_focus(Some("###game"));
         }
         self.status_bar(ui, app);
+        self.browser.create_modal(ui, &mut actions);
         self.modals(ui, app, &mut actions);
         actions.extend(self.palette.draw(ui, app));
         dispatch_actions(app, actions);
@@ -870,6 +871,7 @@ impl Studio {
                 };
                 ui.text_disabled(format!("{kind} {}", src.path().display()));
             }
+            st.import_buttons(ui, self.dialogs);
             browser::draw(ui, app, &mut st, actions);
         });
         self.browser = st;
@@ -1037,6 +1039,12 @@ impl Studio {
             .flags(WindowFlags::NO_SCROLLBAR | WindowFlags::NO_SCROLL_WITH_MOUSE)
             .build(|| {
                 doc_header::draw(ui, app, actions, &mut self.browser);
+                if let Some(doc) = app.front_doc()
+                    && app.source_asset(doc).is_some()
+                {
+                    browser::source_view(ui, app, doc);
+                    return;
+                }
                 if map_is_visible(app) {
                     toolbar::draw(ui, app, viewport, actions, &mut self.hint);
                     viewport.draw(ui, app, gpu, actions);
@@ -1331,7 +1339,6 @@ impl Studio {
                 None => ui.close_current_popup(),
                 Some(mut picker) => {
                     ui.text("Which package gets your edits?");
-                    ui.text_disabled("Each change becomes an edit line in it.");
                     ui.spacing();
                     let mut answer = None;
                     for (id, name) in app.local_packages() {

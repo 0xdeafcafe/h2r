@@ -229,6 +229,10 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
                 json!({"file": t.path("out/clip.wav").display().to_string(), "package": "mine", "tag": "sounds\\clip"}),
             );
         }
+        m::IMPORT_MODEL => {
+            import_tests::package(&t.path("data/packages/mine"), "mine");
+            import_tests::model_files(&t.path("out"));
+        }
         m::IMPORT_BITMAP => {
             // An empty local package `mine` and a PNG of invented pixels.
             import_tests::package(&t.path("data/packages/mine"), "mine");

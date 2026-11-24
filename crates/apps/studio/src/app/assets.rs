@@ -174,7 +174,7 @@ pub(super) fn overlay(set: &GameSet) -> Overlay {
         let id = m.package.id.clone();
         for item in &m.items {
             match item.kind {
-                ItemKind::Tag | ItemKind::Bitmap => {
+                ItemKind::Tag | ItemKind::Bitmap | ItemKind::Sound | ItemKind::Model => {
                     if let Some(key) = added_tag(item) {
                         out.added
                             .entry(key)
@@ -670,8 +670,7 @@ pub fn copy(
 }
 
 impl App {
-    /// `asset.copy`, and the browser's **Copy into package**: the one call
-    /// both make.
+    /// Write the `like:` item for **New from this...** and `asset.copy`.
     pub fn asset_copy(
         &mut self,
         id: &AssetId,
@@ -682,28 +681,14 @@ impl App {
         copy(&self.tags_root(), &set, id, package, to)
     }
 
-    /// [`super::Action::CopyAsset`].
-    pub(super) fn copy_asset(&mut self, asset: &str, package: &str) {
-        let id = match AssetId::parse(asset) {
-            Ok(id) => id,
-            Err(e) => return self.error(e),
-        };
-        match self.asset_copy(&id, package, None) {
-            Ok(v) => self.info(format!(
-                "copied {asset} into {package} as {}",
-                v["tag"].as_str().unwrap_or("a new tag")
-            )),
-            Err(CopyRefusal::Params(m) | CopyRefusal::Refused(m) | CopyRefusal::Failed(m)) => {
-                self.error(m)
-            }
-        }
-    }
-
     /// [`super::Action::OpenAsset`]: a voice opens its document
     /// ([`App::open_voice`]); a tag opens the map that holds it (a
     /// Halo 1 map shows read-only, with no document), then the tag in the
     /// editor its group gets. A scenario tag is the map's own tab.
     pub(super) fn open_asset(&mut self, asset: &str, map: Option<&str>) {
+        if map.is_none() && self.open_source_asset(asset, false) {
+            return;
+        }
         let key = match AssetId::parse(asset) {
             Ok(AssetId::Tag(key)) => key,
             Ok(AssetId::Voice(id)) => return self.open_voice(&id),
@@ -747,3 +732,7 @@ impl App {
         }
     }
 }
+
+mod creation;
+pub use creation::CreateAsset;
+pub(crate) use creation::{SourceAsset, SourceView};

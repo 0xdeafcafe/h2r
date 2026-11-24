@@ -292,6 +292,10 @@ fn copy_into_writes_a_like_item_with_no_bytes_of_the_source() {
     assert_eq!(v["tag"], "tag:weap:objects\\weapons\\rifle_copy");
     assert_eq!(v["source"], "tags/objects/weapons/rifle_copy.weap.yaml");
     assert_eq!(v["item"], 3);
+    assert_eq!(v["doc"], "item:kit-test:3");
+    let doc = app.front_doc().unwrap();
+    let tab = app.tabs().iter().find(|tab| tab.doc == doc).unwrap();
+    assert_eq!(app.tab_json(tab)["badge"], "new in kit-test");
     // The source file names the tag and holds nothing else.
     let text =
         std::fs::read_to_string(dir.join("tags/objects/weapons/rifle_copy.weap.yaml")).unwrap();

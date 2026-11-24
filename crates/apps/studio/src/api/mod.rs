@@ -235,9 +235,9 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::ASSET_COPY,
-        "Copy into a package: a new `tag` item `like:` the tag of the tree, in a package under <data>/packages/ (the source file holds no bytes of the disc's tag; the lock is rewritten). The new path is `to`, or the tag's path with _copy added",
-        r#"{"asset":"string (tag:<group>:<path>)","package":"string","to?":"string"}"#,
-        r#"{"package":"string","from":"string","tag":"string","source":"string","item":"integer","dir":"string"}"#,
+        "Copy into a package: a new `tag` item `like:` the tag of the tree, in a package under <data>/packages/ (the source file holds no bytes of the disc's tag; the lock is rewritten). The new path is `to`, or the tag's path with _copy added. Opens the package document for the copy and answers its tab id in `doc`. The package defaults to the edit target",
+        r#"{"asset":"string (tag:<group>:<path>)","package?":"string","to?":"string"}"#,
+        r#"{"package":"string","from":"string","tag":"string","source":"string","item":"integer","dir":"string","doc":"string"}"#,
         r#"{"asset":"tag:weap:objects\\weapons\\rifle","package":"kit-test"}"#,
     ),
     def(

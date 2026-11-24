@@ -338,9 +338,8 @@ pub enum Action {
     /// editor, or a voice (`voice:<id>`) in the voice document: on `map` (opened first when it is not the open one), else
     /// on the open map (`app::assets`).
     OpenAsset { asset: String, map: Option<String> },
-    /// Copy a browser row's tag into a local package, as `asset.copy`
-    /// does (`app::assets`).
-    CopyAsset { asset: String, package: String },
+    /// Make and open a package item in the edit target.
+    CreateAsset(assets::CreateAsset),
     /// **Fork for this map**: the asset's edit lines for the open map, in
     /// the edit target (`app::mods`).
     ForkAsset { asset: String },
@@ -551,7 +550,7 @@ impl Action {
             Action::HudOpenMap(_) | Action::HudOpenPackage(_) => dirty(ToolKind::Hud),
             Action::CloseDoc(Doc::Map) => dirty_map(),
             // The script's text stays in the editor when its tab closes.
-            Action::CloseDoc(Doc::Rules | Doc::Voice) => None,
+            Action::CloseDoc(Doc::Rules | Doc::Voice | Doc::SourceAsset(_)) => None,
             Action::CloseDoc(doc) => doc.holder().and_then(dirty),
             _ => None,
         }
@@ -624,6 +623,7 @@ pub struct App {
     packages: Vec<editor_core::packages::PackageEntry>,
     /// The package entry open in the scenario tool.
     opened_package: Option<String>,
+    source_assets: Vec<Option<assets::SourceAsset>>,
     /// The open Map Pack, beside the Halo 2 source (its maps resolve their
     /// shared caches from that source).
     mappack: Option<MapPack>,
@@ -764,6 +764,7 @@ impl App {
             edits: EditState::default(),
             packages: Vec::new(),
             opened_package: None,
+            source_assets: Vec::new(),
             mappack: None,
             pack: Vec::new(),
             pack_notes: Vec::new(),
@@ -1193,7 +1194,7 @@ impl App {
                 None => self.undo_redo(self.tool, false),
             },
             Action::OpenAsset { asset, map } => self.open_asset(&asset, map.as_deref()),
-            Action::CopyAsset { asset, package } => self.copy_asset(&asset, &package),
+            Action::CreateAsset(request) => self.create_in_target(request),
             Action::ForkAsset { asset } => self.fork_asset(&asset),
             Action::RevertAsset { asset } => self.revert_asset(&asset),
             Action::RefreshProblems(source) => self.refresh_problems(source.as_deref()),

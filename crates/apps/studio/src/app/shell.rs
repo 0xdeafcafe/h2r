@@ -97,6 +97,8 @@ pub enum Doc {
     Voice,
     /// A tag of the open map, in the editor its group gets.
     Tag(TagId),
+    /// A package item shown from its authored source before it is in a map.
+    SourceAsset(usize),
 }
 
 /// What the window draws under the bar: the editor of the front document.
@@ -189,6 +191,7 @@ impl Doc {
             Doc::Hud => ToolKind::Hud,
             // The script editor docks beside the variant's settings.
             Doc::Rules => ToolKind::Variants,
+            Doc::SourceAsset(_) => ToolKind::Tags,
             // The voice document draws over the field panel's surface,
             // as the sound editor does (`ui::voices::window`).
             Doc::Voice => ToolKind::Tags,
@@ -206,6 +209,7 @@ impl Doc {
             Doc::Hud => "hud",
             Doc::Rules => "rules",
             Doc::Voice => "voice",
+            Doc::SourceAsset(_) => "item",
             Doc::Tag(_) => return None,
         })
     }
@@ -323,6 +327,7 @@ impl App {
                 Some(t) => format!("{}:{}", tags::defs::fourcc_text(t.group), t.name),
                 None => format!("{:#010x}", id.0),
             },
+            Doc::SourceAsset(_) => self.source_asset(doc).map(|s| s.id.clone()).unwrap_or_default(),
             Doc::Voice => format!("voice:{}", self.voices.doc.as_deref().unwrap_or_default()),
             other => other.tool_id().expect("a tool document").to_owned(),
         }
@@ -339,6 +344,7 @@ impl App {
     /// What a tab shows as its name.
     pub fn doc_title(&self, doc: Doc) -> String {
         match doc {
+            Doc::SourceAsset(_) => self.source_asset(doc).map(|s| s.key.path.clone()).unwrap_or_default(),
             Doc::Map => self.loaded_map().unwrap_or("map").to_owned(),
             Doc::Variant => self
                 .variants
@@ -386,6 +392,7 @@ impl App {
         match doc {
             Doc::Tag(id) => self.tool_dirty(ToolKind::Scenario) && self.tags.is_changed(id),
             Doc::Rules => self.rules.dirty(),
+            Doc::SourceAsset(_) => false,
             // Lines that are said and not kept are the batch's, not a
             // document's edits: nothing to ask about on close.
             Doc::Voice => false,
@@ -421,6 +428,7 @@ impl App {
             Doc::Map => (self.session.can_undo(), self.session.can_redo()),
             // The text widget keeps the script's own undo.
             Doc::Rules => (false, false),
+            Doc::SourceAsset(_) => (false, false),
             // A voice's lines are rows: Remove takes one away.
             Doc::Voice => (false, false),
             Doc::Variant => self
@@ -451,6 +459,7 @@ impl App {
             Doc::Rules => self.rules.opened,
             Doc::Voice => self.voices.doc.is_some(),
             Doc::Tag(_) => false,
+            Doc::SourceAsset(_) => false,
         }
     }
 
@@ -544,6 +553,10 @@ impl App {
                     doc
                 }
             }
+            Doc::SourceAsset(_) => {
+                self.tabs.add(Tab { doc, map: None });
+                doc
+            }
             other => other,
         };
         if !self.tabs.has(doc) {
@@ -592,6 +605,7 @@ impl App {
         let was_front = self.tabs.front() == Some(doc);
         match doc {
             Doc::Tag(_) => {}
+            Doc::SourceAsset(index) => self.source_assets[index] = None,
             Doc::Map => {
                 self.close_tool(ToolKind::Scenario);
                 self.close_tool(ToolKind::Textures);
@@ -713,6 +727,9 @@ impl App {
         if doc == Doc::Rules {
             return self.info("the script editor keeps its own undo: use it in the text");
         }
+        if matches!(doc, Doc::SourceAsset(_)) {
+            return;
+        }
         if doc == Doc::Voice {
             return self.info("a voice's lines are rows: Remove takes one away");
         }
@@ -778,6 +795,15 @@ impl App {
             "can_redo": can_redo,
             "front": self.tabs.front() == Some(doc),
         });
+        if let Some(source) = self.source_asset(doc) {
+            v["badge"] = json!(format!("new in {}", source.package));
+            v["asset"] = json!(super::assets::tag_id(&source.key));
+            v["editor"] = json!(match &source.view {
+                super::assets::SourceView::Tag(_) => "tag_source",
+                super::assets::SourceView::Sound { .. } => "audition",
+                super::assets::SourceView::Model(_) => "modeling",
+            });
+        }
         if let Doc::Tag(id) = doc {
             v["editor"] = json!(self.tag_editor(id).id());
             v["id"] = json!(format!("{:#010x}", id.0));

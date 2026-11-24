@@ -1767,12 +1767,14 @@ package's bitmap item with a PNG source. A tag's own picture (a bitmap,
 a model through `model.render`, a waveform, a screen) is not drawn yet
 and answers `not-yet`.
 
-`asset.copy {asset, package, to?}` is Copy into a package: it writes
+`asset.copy {asset, package?, to?}` is **New from this...**. It writes
 `tags/<path>.<group>.yaml` holding only `like: '<group>:<path>'`, adds a
 `tag` item to the package's `package.toml` and rewrites its
 `package.lock`. The package is one under `<data>/packages/` (a baked one
 is refused); the new path is `to`, or the source's with `_copy`; a path
-the tree or the package already has is refused.
+the tree or the package already has is refused. The reply gives the
+new source tab's `item:` id as `doc`. With no `package`, the method uses
+the edit target or returns `NO_TARGET`.
 
 `asset.links {asset}` answers what the asset uses, what uses it and which
 editors open it (docs/editor/studio-flow.md, "Links"; `app/links.rs`):
@@ -1921,7 +1923,7 @@ and `headless::tests::the_problems_panel_lists_rows_and_a_double_click_opens_the
 
 ### Sounds into a package
 
-`import.sound {file, package, tag, class?}` (`api/import.rs`,
+`import.sound {file, package?, tag, class?}` (`api/import.rs`,
 `app/sound_import.rs`) adds a WAV to a local package as a `sound` item that
 writes the `snd!` `tag`. The WAV (16-bit PCM, mono or stereo, any rate) is
 copied unchanged to `sounds/<last segment of tag>.wav`, the item is added to
@@ -1931,7 +1933,9 @@ other is written to `sounds/<name>.sound.yaml`, a `data` item beside the
 WAV. The answer is what the build will write: `rate` (22,050, 32,000 or
 44,100 Hz, the nearest not below the clip's), `frames` at that rate,
 `duration_ms` and the `bytes` of Xbox ADPCM, with `from` the clip's own
-rate, channels and frames. A package that is baked, a tag the package adds
+rate, channels and frames. The sound source tab shows the waveform and
+plays the WAV. Its `item:` id is `doc` in the reply. With no `package`,
+the method uses the edit target or returns `NO_TARGET`. A package that is baked, a tag the package adds
 already or a file that is not a 16-bit PCM WAV is refused; a class that is
 not one is `invalid params`.
 
@@ -1942,6 +1946,18 @@ h2 studio import.sound '{"file":"/tmp/boing.wav","package":"my-pack","tag":"soun
 The build is `workspace::build` (`h2 package build`); the tests
 (`api/tests/import_tests.rs`, `workspace/src/import_tests.rs`) run over
 invented tones and an invented map.
+
+### Models into a package
+
+`import.model {file, package?, tag}` adds a primitive model YAML and the
+sibling atlas PNG it names to a local package as `model` and `data`
+items. The model builder checks both files before Studio writes them.
+The destination tag is a path such as `models/invented/box`. The
+result includes the package, the `tag:hlmt:` asset id, the YAML's
+relative `source`, the model item's index and the package directory.
+The model source tab shows the mesh as a wireframe and the result
+includes its `item:` id as `doc`. With no `package`, the method uses
+the edit target or returns `NO_TARGET`.
 
 ### Sound edits
 

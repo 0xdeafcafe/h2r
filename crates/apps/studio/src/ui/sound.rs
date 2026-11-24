@@ -139,7 +139,9 @@ pub fn row_text(row: &SoundRow) -> String {
 /// it, else the one selected there (a browsed map has no tabs). `None` for any
 /// other kind.
 pub fn target(app: &App) -> Option<(TagId, String)> {
-    if app.tool != ToolKind::Tags || app.front_doc() == Some(Doc::Voice) {
+    if app.tool != ToolKind::Tags
+        || matches!(app.front_doc(), Some(Doc::Voice | Doc::SourceAsset(_)))
+    {
         return None;
     }
     let id = app.front_tag_doc().or(app.shown_tags().selected)?;
@@ -168,6 +170,51 @@ pub fn window(ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, st: &mut SoundUi) {
                 .map(|c| c.duration_ms());
             super::voices::lines::sound_pane(ui, app, &name, original);
         });
+}
+
+fn draw_waveform(ui: &Ui, origin: [f32; 2], width: f32, peaks: &[[i16; 2]]) {
+    let dl = ui.get_window_draw_list();
+    dl.add_rect(
+        origin,
+        [origin[0] + width, origin[1] + WAVE_HEIGHT],
+        theme::RAISED,
+    )
+    .filled(true)
+    .build();
+    let mid = origin[1] + WAVE_HEIGHT * 0.5;
+    let column = width / peaks.len().max(1) as f32;
+    for (i, [low, high]) in peaks.iter().enumerate() {
+        let x = origin[0] + i as f32 * column;
+        let top = mid - f32::from(*high) / 32768.0 * WAVE_HEIGHT * 0.5;
+        let bottom = mid - f32::from(*low) / 32768.0 * WAVE_HEIGHT * 0.5;
+        dl.add_rect([x, top], [x + column, bottom.max(top + 1.0)], theme::ACCENT)
+            .filled(true)
+            .build();
+    }
+}
+
+/// A WAV source has a waveform and playback before its map permutations exist.
+pub(super) fn source(ui: &Ui, app: &mut App, doc: Doc) {
+    let Some(crate::app::assets::SourceView::Sound { clip, peaks }) =
+        app.source_asset(doc).map(|asset| &asset.view)
+    else {
+        return;
+    };
+    ui.text(format!("{} Hz · {} channels · {}", clip.rate, clip.channels, clock(clip.duration_ms())));
+    let width = ui.content_region_avail()[0].max(1.0);
+    let origin = ui.cursor_screen_pos();
+    ui.dummy([width, WAVE_HEIGHT]);
+    draw_waveform(ui, origin, width, peaks);
+    if ui.button("Play") {
+        let clip = clip.clone();
+        if let Err(e) = app.sound_play_clip(&clip) {
+            app.error(e.to_string());
+        }
+    }
+    ui.same_line();
+    if ui.button("Stop") {
+        app.sound_stop();
+    }
 }
 
 fn body(ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, st: &mut SoundUi, id: TagId, key: Key) {
@@ -253,25 +300,9 @@ fn body(ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, st: &mut SoundUi, id: TagId, 
         let origin = ui.cursor_screen_pos();
         ui.dummy([width, WAVE_HEIGHT]);
         let hovered = ui.is_item_hovered();
+        let peaks = st.peaks.as_ref().map_or(&[][..], |(_, peaks)| peaks.as_slice());
+        draw_waveform(ui, origin, width, peaks);
         let dl = ui.get_window_draw_list();
-        dl.add_rect(
-            origin,
-            [origin[0] + width, origin[1] + WAVE_HEIGHT],
-            theme::RAISED,
-        )
-        .filled(true)
-        .build();
-        let mid = origin[1] + WAVE_HEIGHT * 0.5;
-        if let Some((_, peaks)) = &st.peaks {
-            for (i, [low, high]) in peaks.iter().enumerate() {
-                let x = origin[0] + i as f32;
-                let top = mid - f32::from(*high) / 32768.0 * WAVE_HEIGHT * 0.5;
-                let bottom = mid - f32::from(*low) / 32768.0 * WAVE_HEIGHT * 0.5;
-                dl.add_rect([x, top], [x + 1.0, bottom.max(top + 1.0)], theme::ACCENT)
-                    .filled(true)
-                    .build();
-            }
-        }
         if here && duration > 0 {
             let at = origin[0] + (state.position_ms.min(duration) as f32 / duration as f32) * width;
             dl.add_rect(

@@ -92,7 +92,12 @@ pub(super) fn draw(ui: &Ui, app: &App, actions: &mut Vec<Action>, browser: &mut 
     if button(ui, ">", app.can_navigate(true), "No later location") { actions.push(Action::Navigate(NavAction::Forward)); }
     ui.same_line();
     if let Some(id) = &id {
-        if let Some(c) = crumbs(app, id) {
+        let source = app.source_asset(doc);
+        if let Some(mut c) = crumbs(app, id) {
+            if let Some(source) = source {
+                c.origin = source.package.clone();
+                c.badge = format!("{}  new in {}", tags::defs::fourcc_text(source.key.group), source.package);
+            }
             if ui.small_button(format!("{}##crumb-origin", c.origin)) { browser.locate(id); }
             ui.same_line(); ui.text(">"); ui.same_line();
             if ui.small_button(format!("{}##crumb-kind", c.kind)) { browser.locate(id); browser.query.clear(); browser.kind = Some(c.kind.clone()); }
@@ -100,6 +105,12 @@ pub(super) fn draw(ui: &Ui, app: &App, actions: &mut Vec<Action>, browser: &mut 
             if ui.small_button(format!("{}##crumb-leaf", c.leaf)) { browser.locate(id); }
             ui.same_line(); if ui.small_button("In Browser") { browser.locate(id); }
             ui.text(&c.badge);
+            if id.starts_with("tag:") && source.is_none() && !c.badge.contains("  new in ") {
+                ui.same_line();
+                if ui.small_button("New from this...") {
+                    browser.new_from(id);
+                }
+            }
         }
     } else { ui.text(app.doc_title(doc)); }
     ui.text(target_text(app.edit_target(), app.doc_dirty(doc)));

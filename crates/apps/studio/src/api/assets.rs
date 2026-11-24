@@ -8,7 +8,7 @@ use studio_proto::{code, method as m};
 
 use super::{P, Reply, err};
 use crate::App;
-use crate::app::assets::{self, AssetId, CopyRefusal, Query, Root, ThumbRefusal};
+use crate::app::assets::{self, AssetId, CreateAsset, Query, Root, ThumbRefusal};
 use crate::app::mods;
 use crate::app::package_doc::{self, Refusal};
 use ::workspace::SetLine;
@@ -63,13 +63,12 @@ fn thumb(app: &mut App, p: &P) -> Reply {
 }
 
 fn copy(app: &mut App, p: &P) -> Reply {
-    let id = asset(p)?;
-    let package = p.str("package")?;
-    app.asset_copy(&id, package, p.opt_str("to")?).map_err(|e| match e {
-        CopyRefusal::Params(m) => err(code::INVALID_PARAMS, m),
-        CopyRefusal::Refused(m) => err(code::REFUSED, m),
-        CopyRefusal::Failed(m) => err(code::FAILED, m),
-    })
+    let package = package_or_target(app, p)?;
+    let request = CreateAsset::Copy {
+        asset: p.str("asset")?.to_owned(),
+        to: p.opt_str("to")?.map(str::to_owned),
+    };
+    app.create_asset(request, &package).map_err(super::import::copy_error)
 }
 
 fn links(app: &mut App, p: &P) -> Reply {
@@ -79,7 +78,7 @@ fn links(app: &mut App, p: &P) -> Reply {
 }
 
 /// `package`, else the edit target; with neither, `NO_TARGET`.
-fn package_or_target(app: &App, p: &P) -> Result<String, agent_proto::RpcError> {
+pub(super) fn package_or_target(app: &App, p: &P) -> Result<String, agent_proto::RpcError> {
     match p.opt_str("package")? {
         Some(id) => Ok(id.to_owned()),
         None => package_doc::target(&app.data_root()).ok_or_else(|| {

@@ -56,6 +56,7 @@ pub struct EditState {
     pub picker: Option<Picker>,
     /// The change the picker was opened for.
     held: Option<TagAction>,
+    pub(super) held_asset: Option<super::assets::CreateAsset>,
     /// The tags this session has changed, by `group:path`.
     touched: BTreeSet<String>,
     /// The map's tag document the touched set is for.
@@ -144,6 +145,7 @@ impl App {
             EditChoice::Cancel => {
                 self.edits.picker = None;
                 self.edits.held = None;
+                self.edits.held_asset = None;
                 return;
             }
             EditChoice::Existing(id) => Ok(id),
@@ -160,6 +162,9 @@ impl App {
                 match self.edits.held.take() {
                     Some(action) => self.run_map_tag(action),
                     None => self.sync_edit_lines(),
+                }
+                if let Some(request) = self.edits.held_asset.take() {
+                    self.create_in_target(request);
                 }
             }
             Err(e) => self.error(e.to_string()),

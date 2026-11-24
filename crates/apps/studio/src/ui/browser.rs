@@ -11,12 +11,11 @@
 //!
 //! A double-click on a tag opens it in the editor its group gets, on the
 //! map that holds it ([`Action::OpenAsset`]); right-click offers **Open**
-//! and **Copy into package**, the call `asset.copy` makes
-//! ([`Action::CopyAsset`]).
+//! and **New from this...**, the call `asset.copy` makes.
 use dear_imgui_rs::{ListClipper, MouseButton, Ui};
 use serde_json::Value;
 
-use crate::app::assets::{self, Query, Root};
+use crate::app::assets::{self, CreateAsset, Query, Root};
 use crate::app::{Action, App};
 use crate::theme::{self, icon};
 
@@ -34,6 +33,7 @@ struct Key {
     /// The tree may have appeared or grown with the first start page.
     start_page: bool,
     refresh: u32,
+    source_revision: usize,
 }
 
 /// One answer of `asset.list`, kept until its key changes.
@@ -46,12 +46,11 @@ struct Listing {
     kinds: Vec<String>,
     offline: bool,
     error: Option<String>,
-    /// The local packages a tag can be copied into: id and name.
-    locals: Vec<(String, String)>,
 }
 
 /// The panel's UI-only state.
 pub struct BrowserUi {
+    create: Option<CreateAsset>,
     root: Root,
     /// The search box.
     pub query: String,
@@ -74,6 +73,7 @@ pub struct BrowserUi {
 impl Default for BrowserUi {
     fn default() -> Self {
         Self {
+            create: None,
             root: Root::Tags,
             query: String::new(),
             kind: None,
@@ -131,12 +131,6 @@ fn load(app: &App, st: &BrowserUi) -> Listing {
         }
         Err(e) => out.error = Some(e),
     }
-    out.locals = set
-        .listed
-        .iter()
-        .filter(|l| l.dir.is_some())
-        .map(|l| (l.id.clone(), l.name.clone()))
-        .collect();
     out
 }
 
@@ -274,6 +268,7 @@ pub fn draw(ui: &Ui, app: &App, st: &mut BrowserUi, actions: &mut Vec<Action>) {
         query: st.query.clone(),
         start_page: app.workspace_start_page(),
         refresh: st.refresh,
+        source_revision: app.source_asset_revision(),
     };
     let (key, list) = match st.cache.take() {
         Some((k, l)) if k == key => (k, l),
@@ -371,7 +366,7 @@ fn body(ui: &Ui, app: &App, st: &mut BrowserUi, list: &Listing, actions: &mut Ve
     theme::panel_body(ui, "##browser-rows", || {
         for l in ListClipper::new(lines.len()).begin(ui).iter() {
             match lines[l] {
-                Line::Row(i) => row(ui, app, st, list, &list.rows[i], actions),
+                Line::Row(i) => row(ui, app, st, &list.rows[i], actions),
                 Line::Variant(i, v) => variant(ui, app, st, &list.rows[i], v, actions),
             }
         }
@@ -418,7 +413,6 @@ fn row(
     ui: &Ui,
     app: &App,
     st: &mut BrowserUi,
-    list: &Listing,
     row: &Value,
     actions: &mut Vec<Action>,
 ) {
@@ -438,7 +432,7 @@ fn row(
         tooltip(ui, row);
         if ui.is_mouse_double_clicked(MouseButton::Left) {
             if tag {
-                open(actions, asset, open_map(app, row));
+                open(actions, asset, if row["new"] == true { None } else { open_map(app, row) });
             } else if row["root"] == "voices" {
                 open(actions, asset, None);
             } else if row["root"] == "packages" && asset.starts_with("package:") {
@@ -450,9 +444,11 @@ fn row(
     if let Some(_menu) = ui.begin_popup_context_item() {
         if tag {
             if ui.menu_item(format!("{} Open", icon::FILE)) {
-                open(actions, asset, open_map(app, row));
+                open(actions, asset, if row["new"] == true { None } else { open_map(app, row) });
             }
-            copy_menu(ui, list, asset, actions);
+            if row["new"] != true && ui.menu_item("New from this...") {
+                st.new_from(asset);
+            }
         } else if row["root"] == "voices" {
             if ui.menu_item(format!("{} Open", icon::SOUND)) {
                 open(actions, asset, None);
@@ -474,23 +470,6 @@ fn tooltip(ui: &Ui, row: &Value) {
             ui.text_disabled(why);
         }
     });
-}
-
-/// **Copy into package**: one entry per local package.
-fn copy_menu(ui: &Ui, list: &Listing, asset: &str, actions: &mut Vec<Action>) {
-    let any = !list.locals.is_empty();
-    if let Some(_m) = ui.begin_menu_with_enabled(format!("{} Copy into package...", icon::COPY), any) {
-        for (id, name) in &list.locals {
-            if ui.menu_item(format!("{name}##browser-copy-{id}")) {
-                actions.push(Action::CopyAsset {
-                    asset: asset.to_owned(),
-                    package: id.clone(),
-                });
-            }
-        }
-    } else if !any && ui.is_item_hovered() {
-        ui.tooltip_text("No package of yours is on: make one under <data>/packages/");
-    }
 }
 
 /// One variant of a tag: the maps that hold it. A double-click opens the
@@ -539,5 +518,109 @@ mod linked_tests {
         browser.locate("tag:weap:objects\\test");
         assert!(browser.linked.is_none());
         assert_eq!(browser.query, "objects\\test");
+    }
+}
+
+impl BrowserUi {
+    pub(super) fn new_from(&mut self, asset: &str) {
+        if let Ok(assets::AssetId::Tag(key)) = assets::AssetId::parse(asset) {
+            self.create = Some(CreateAsset::Copy {
+                asset: asset.to_owned(),
+                to: Some(format!("{}_copy", key.path)),
+            });
+        }
+    }
+
+    pub(super) fn import_buttons(&mut self, ui: &Ui, dialogs: bool) {
+        let _disabled = ui.begin_disabled_with_cond(!dialogs);
+        if ui.small_button("Import sound...")
+            && let Some(file) = rfd::FileDialog::new().add_filter("WAV", &["wav"]).pick_file()
+        {
+            let name = import_name(&file, "sound");
+            self.create = Some(CreateAsset::Sound {
+                file, tag: format!("sounds\\{name}"), class: None,
+            });
+        }
+        ui.same_line();
+        if ui.small_button("Add model...")
+            && let Some(file) = rfd::FileDialog::new().add_filter("Model YAML", &["yaml", "yml"]).pick_file()
+        {
+            let name = import_name(&file, "model");
+            self.create = Some(CreateAsset::Model { file, tag: format!("models\\{name}\\model") });
+        }
+    }
+
+    pub(super) fn create_modal(&mut self, ui: &Ui, actions: &mut Vec<Action>) {
+        const POPUP: &str = "New asset";
+        let Some(mut request) = self.create.take() else { return };
+        if !ui.is_popup_open(POPUP) {
+            ui.open_popup(POPUP);
+        }
+        let Some(_popup) = ui.begin_modal_popup_config(POPUP)
+            .flags(dear_imgui_rs::WindowFlags::ALWAYS_AUTO_RESIZE).begin()
+        else {
+            self.create = Some(request);
+            return;
+        };
+        let (tag, button) = match &mut request {
+            CreateAsset::Copy { to, .. } => (to.get_or_insert_with(String::new), "Create copy"),
+            CreateAsset::Sound { tag, .. } => (tag, "Import sound"),
+            CreateAsset::Model { tag, .. } => (tag, "Add model"),
+        };
+        ui.set_next_item_width(360.0);
+        ui.input_text("Tag path", tag).build();
+        let disabled = ui.begin_disabled_with_cond(tag.trim().is_empty());
+        let submit = ui.button(button);
+        drop(disabled);
+        ui.same_line();
+        if submit {
+            actions.push(Action::CreateAsset(request));
+            ui.close_current_popup();
+        } else if ui.button("Cancel") || ui.is_key_pressed(dear_imgui_rs::Key::Escape) {
+            ui.close_current_popup();
+        } else {
+            self.create = Some(request);
+        }
+    }
+}
+
+fn import_name(file: &std::path::Path, fallback: &str) -> String {
+    let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or(fallback);
+    crate::app::edit_target::slug_of(stem)
+}
+
+pub(super) fn source_view(ui: &Ui, app: &mut App, doc: crate::app::Doc) {
+    use assets::SourceView;
+    let Some(source) = app.source_asset(doc) else { return };
+    match &source.view {
+        SourceView::Tag(yaml) => ui.text_wrapped(yaml),
+        SourceView::Sound { .. } => super::sound::source(ui, app, doc),
+        SourceView::Model(mesh) => model_view(ui, mesh),
+    }
+}
+
+fn model_view(ui: &Ui, mesh: &pogo_kit::mesh::Mesh) {
+    if mesh.triangles() == 0 {
+        ui.text_disabled("This model has no triangles");
+        return;
+    }
+    let [left, top] = ui.cursor_screen_pos();
+    let [width, height] = ui.content_region_avail().map(|v| v.max(1.0));
+    ui.dummy([width, height]);
+    let (lo, hi) = mesh.bounds();
+    let extent = (0..3).map(|i| hi[i] - lo[i]).fold(f32::EPSILON, f32::max);
+    let scale = width.min(height) * 0.42 / extent;
+    let project = |position: [f32; 3]| {
+        let [x, y, z] = std::array::from_fn(|i| position[i] - (lo[i] + hi[i]) * 0.5);
+        [left + width * 0.5 + (x - y) * scale, top + height * 0.5 - (z + (x + y) * 0.4) * scale]
+    };
+    let draw = ui.get_window_draw_list();
+    for part in &mesh.parts {
+        for &triangle in &part.triangles {
+            let [a, b, c] = triangle.map(|i| project(part.vertices[usize::from(i)].position));
+            for (from, to) in [(a, b), (b, c), (c, a)] {
+                draw.add_line(from, to, theme::ACCENT).build();
+            }
+        }
     }
 }
