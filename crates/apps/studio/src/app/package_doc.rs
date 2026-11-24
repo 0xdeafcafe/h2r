@@ -680,6 +680,8 @@ pub fn put_edits(data: &Path, id: &str, map: &str, text: &str) -> Res<bool> {
         inputs: Vec::new(),
         tag: None,
         maps: content::package::Maps::Names(vec![map.to_owned()]),
+        replaces: None,
+        was: None,
     });
     if let Err(e) = commit(data, &dir, &manifest) {
         let _ = std::fs::remove_file(&path);

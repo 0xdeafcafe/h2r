@@ -29,6 +29,8 @@ fn item(kind: Kind, source: Option<&str>) -> Item {
         inputs: vec![],
         tag: None,
         maps: Maps::default(),
+        replaces: None,
+        was: None,
     }
 }
 

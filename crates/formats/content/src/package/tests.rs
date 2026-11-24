@@ -141,7 +141,7 @@ fn unknown_keys_are_refused_by_name() {
     let bad = |from: &str, to: &str| POGO.replacen(from, to, 1);
     assert!(toml_err(&bad("format = 1", "format = 1\ncolour = 3")).contains("colour"));
     assert!(toml_err(&bad("[credit]", "[credit]\nlicence = \"x\"")).contains("licence"));
-    assert!(toml_err(&bad("kind = \"model\"", "kind = \"model\"\nwas = \"y\"")).contains("was"));
+    assert!(toml_err(&bad("kind = \"model\"", "kind = \"model\"\nwere = \"y\"")).contains("were"));
     assert!(toml_err(&format!("{POGO}\n[wat]\nx = 1\n")).contains("wat"));
     assert!(toml_err(&bad("kind = \"model\"", "kind = \"spaceship\"")).contains("spaceship"));
     assert!(toml_err(&bad("maps = \"multiplayer\"", "maps = \"nowhere\"")).contains("nowhere"));
@@ -232,6 +232,161 @@ fn kinds_know_who_needs_them() {
     assert!(!m.has_sim_item());
     assert_eq!(Kind::Playlist.scope(), ItemScope::Live);
     assert_eq!(Kind::Kit.scope(), ItemScope::PerFeature);
+    assert_eq!(Kind::TagDelta.scope(), ItemScope::Sim);
+}
+
+// -------------------------------------------------------------- mods (AS6)
+
+/// Invented asset hashes: never a store's.
+const PISTOL: &str = "abababababababababababababababababababababababababababababababab";
+const RIFLE: &str = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
+const OTHER: &str = "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef";
+
+/// A mod: an authored override of one weapon, a field patch and a delta of
+/// another.
+const MOD: &str = r#"
+[package]
+format = 1
+id = "balanced"
+name = "Balanced"
+
+[[item]]
+kind = "tag"
+source = "tags/pistol.jpt!.yaml"
+tag = 'objects\weapons\pistol'
+replaces = "PISTOL"
+
+[[item]]
+kind = "edits"
+source = "edits.yaml"
+
+[[item]]
+kind = "tag-delta"
+source = "deltas/rifle.weap.bps"
+tag = 'objects\weapons\rifle'
+was = "RIFLE"
+maps = "multiplayer"
+"#;
+
+fn invention() -> Manifest {
+    Manifest::from_toml(&MOD.replace("PISTOL", PISTOL).replace("RIFLE", RIFLE)).unwrap()
+}
+
+fn invention_lock() -> Lock {
+    Lock::new(BTreeMap::from([
+        ("tags/pistol.jpt!.yaml".to_owned(), h(0x71)),
+        ("edits.yaml".to_owned(), h(0x72)),
+        ("deltas/rifle.weap.bps".to_owned(), h(0x73)),
+    ]))
+}
+
+#[test]
+fn a_mod_names_its_assets_by_key_and_hash() {
+    let m = invention();
+    let [tag, edits, delta] = (&m.items[0], &m.items[1], &m.items[2]);
+    assert_eq!(tag.replaces.as_deref(), Some(PISTOL));
+    assert_eq!((edits.replaces, edits.was), (None, None));
+    assert_eq!(
+        (delta.kind, delta.was.as_deref()),
+        (Kind::TagDelta, Some(RIFLE))
+    );
+    assert_eq!(delta.maps, Maps::Scope(MapScope::Multiplayer));
+    assert_eq!(Manifest::from_toml(&m.to_toml()).unwrap(), m);
+    assert!(m.has_sim_item());
+    // An item without them says neither.
+    let text = pogo().to_toml();
+    assert!(
+        !text.contains("replaces") && !text.contains("\nwas = "),
+        "{text}"
+    );
+    // A package left out of one level, and why.
+    let refusal = Refusal {
+        package: "balanced".into(),
+        why: "it was made on another asset".into(),
+    };
+    assert_eq!(
+        refusal.to_string(),
+        "package \"balanced\" is off for this level: it was made on another asset"
+    );
+}
+
+#[test]
+fn replaces_and_was_move_the_id_as_the_hash_they_name() {
+    let base = PackageId::of(&invention(), &invention_lock()).unwrap();
+    let id = |f: &dyn Fn(&mut Item)| {
+        let mut m = invention();
+        for item in &mut m.items {
+            f(item);
+        }
+        PackageId::of(&m, &invention_lock()).unwrap()
+    };
+    // The case a hash is written in does not move it.
+    let upper = id(&|i| {
+        for t in [&mut i.replaces, &mut i.was].into_iter().flatten() {
+            *t = t.to_ascii_uppercase();
+        }
+    });
+    assert_eq!(upper, base);
+    // Another asset does.
+    let other_replaces = id(&|i| i.replaces = i.replaces.map(|_| OTHER.into()));
+    let other_was = id(&|i| i.was = i.was.map(|_| OTHER.into()));
+    assert_ne!(other_replaces, base);
+    assert_ne!(other_was, base);
+    assert_ne!(other_replaces, other_was);
+    // So does leaving them out.
+    let text = invention()
+        .to_toml()
+        .replace(&format!("replaces = \"{PISTOL}\"\n"), "")
+        .replace(&format!("was = \"{RIFLE}\"\n"), "");
+    let bare = Manifest::from_toml(&text).unwrap();
+    assert!(
+        bare.items
+            .iter()
+            .all(|i| i.replaces.is_none() && i.was.is_none())
+    );
+    assert_ne!(PackageId::of(&bare, &invention_lock()).unwrap(), base);
+}
+
+#[test]
+fn replaces_and_was_are_refused_by_kind_and_shape() {
+    let err = |f: &dyn Fn(&mut Manifest)| {
+        let mut m = invention();
+        f(&mut m);
+        m.validate().unwrap_err()
+    };
+    // `replaces` on a kind that makes no asset of its own.
+    for kind in [Kind::Edits, Kind::Kit, Kind::TagDelta] {
+        assert_eq!(
+            err(&|m| m.items[0].kind = kind),
+            ManifestError::Replaces { index: 0, kind },
+            "{kind:?}"
+        );
+    }
+    // `was` on anything but a delta.
+    for kind in [Kind::Tag, Kind::Edits, Kind::Model] {
+        assert_eq!(
+            err(&|m| m.items[2].kind = kind),
+            ManifestError::Was { index: 2, kind },
+            "{kind:?}"
+        );
+    }
+    // Not an asset hash: refused, naming the item and the field.
+    let changes: [(&str, usize, &str, &dyn Fn(&mut Manifest)); 2] = [
+        ("replaces", 0, "not a hash", &|m| {
+            m.items[0].replaces = Some("not a hash".into())
+        }),
+        ("was", 2, "cd", &|m| m.items[2].was = Some("cd".into())),
+    ];
+    for (field, index, text, f) in changes {
+        assert_eq!(
+            err(f),
+            ManifestError::Hash {
+                index,
+                field,
+                text: text.into(),
+            }
+        );
+    }
 }
 
 fn pkg(id: &str, requires: &[&str], after: &[&str]) -> Package {

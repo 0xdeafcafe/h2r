@@ -31,7 +31,7 @@ pub struct Builder {
     pub check: fn(&Job<'_>) -> Result<(), Failure>,
 }
 
-static REGISTRY: [Builder; 17] = [
+static REGISTRY: [Builder; 18] = [
     Builder {
         kind: Kind::Tag,
         name: "tag",
@@ -134,6 +134,12 @@ static REGISTRY: [Builder; 17] = [
         apply: crate::kits::apply,
         check: crate::kits::check,
     },
+    Builder {
+        kind: Kind::TagDelta,
+        name: "tag-delta",
+        apply: crate::delta::apply,
+        check: crate::delta::check,
+    },
 ];
 
 /// Every builder this build has. The other kinds of "Contents" are named
@@ -146,6 +152,15 @@ pub fn registry() -> &'static [Builder] {
 /// The builder for `kind`.
 pub fn builder(kind: Kind) -> Option<&'static Builder> {
     REGISTRY.iter().find(|b| b.kind == kind)
+}
+
+/// Whether an item of this `kind` overrides an asset whole under
+/// `replaces` (docs/engine/asset-store.md, "Mods and packages"): a `tag`
+/// item does. The manifest lets `model`, `bitmap`, `sound` and `animation`
+/// items carry one too, and the build refuses them by name: their builders
+/// write their tags through the map.
+pub fn overrides_whole(kind: Kind) -> bool {
+    kind == Kind::Tag
 }
 
 /// Whether `item` changes the map it is built on. A `hud` or `data` item

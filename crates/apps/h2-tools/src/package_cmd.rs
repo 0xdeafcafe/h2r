@@ -318,7 +318,7 @@ mod tests {
     #[test]
     fn check_reads_a_folder_of_packages_in_order_and_reports() {
         let root = tree("check");
-        let r = read(&[root.clone()]).unwrap();
+        let r = read(&[root.clone()], None).unwrap();
         let ids: Vec<&str> = r
             .loaded
             .iter()
@@ -336,6 +336,44 @@ mod tests {
                 ..Args::default()
             })
             .is_err()
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn check_refuses_a_file_the_store_holds_by_its_hash() {
+        let root = tree("store");
+        // An invented store: a raw resource whose bytes are one package
+        // file's, and a tag file whose bytes are another's.
+        let store = root.join("not-a-package").join("store");
+        let hex = |b: &[u8]| Sha256::of(b).to_string();
+        let (raw, tag) = (
+            &b"fields:\n  damage_lower_bound: 1.0\n"[..],
+            &b"fields: {}\n"[..],
+        );
+        let raw_at = store.join("raw").join(&hex(raw)[..2]);
+        std::fs::create_dir_all(&raw_at).unwrap();
+        std::fs::write(raw_at.join(hex(raw)), raw).unwrap();
+        let tag_at = store.join("tags").join("invented").join("dmg");
+        std::fs::create_dir_all(&tag_at).unwrap();
+        std::fs::write(tag_at.join("c.jpt!"), tag).unwrap();
+        let without = read(&[root.clone()], None).unwrap();
+        assert!(!without.findings.join("\n").contains("of the store"));
+        let with = read(&[root.clone()], Some(&store)).unwrap();
+        let all = with.findings.join("\n");
+        assert!(
+            all.contains(&format!(
+                "good item 0 dmg.jpt!.yaml: a raw resource of the store, by its SHA-256 {}",
+                hex(raw)
+            )),
+            "{all}"
+        );
+        assert!(
+            all.contains(&format!(
+                "bad item 1 dmg.jpt!.yaml: a tag file of the store, by its SHA-256 {}",
+                hex(tag)
+            )),
+            "{all}"
         );
         let _ = std::fs::remove_dir_all(root);
     }

@@ -1,13 +1,21 @@
 //! [`build_map`]: [`build`] on a map file's bytes, the one path `h2 package
 //! build` and the game's [`PackageRewrite`](crate::PackageRewrite) share, so
 //! both write the same bytes for the same inputs.
+//!
+//! [`build_map_settled`] is the same build for the game
+//! (docs/engine/asset-store.md, "Conflicts"): a package refused for this map
+//! is off for it, whole, and the rest still apply.
+use std::collections::BTreeSet;
 use std::io::Cursor;
 
-use content::package::MapScope;
+use content::package::{MapScope, Refusal};
 use map::build::{BuildLayout, TagSet};
 use map::{CacheType, Map};
 
-use crate::build::{Loaded, Report, Shading, Target, Unpin, build_with, wants_shading};
+use crate::assets::Assets;
+use crate::build::{
+    Loaded, Report, Shading, Target, Unpin, build_refusing, build_with, wants_shading,
+};
 use crate::unpin::MapUnpin;
 
 /// A map's class, from its header's cache type. The two shared maps are
@@ -59,9 +67,81 @@ pub fn build_map_laid_out(
     packages: &[Loaded],
     target: &Target<'_>,
 ) -> Result<BuiltMap, String> {
-    let mut map = Map::from_reader(Cursor::new(base)).map_err(|e| format!("not a map: {e}"))?;
+    match attempt(base, packages, target, None, None) {
+        Ok(built) => Ok(built),
+        Err(Broke::Failed(why)) => Err(why),
+        // Nothing is refused here: every refusal is a failure.
+        Err(Broke::Again { package, why }) => unreachable!("{package}: {why}"),
+    }
+}
+
+/// [`build_map_laid_out`] with the conflict table
+/// (docs/engine/asset-store.md, "Conflicts"). An item that is refused (a
+/// `from`, `was` or `replaces` that does not match what the base holds, a
+/// key the map lacks, a second override of one asset, a patch of an asset
+/// an earlier package overrides whole without naming its hash) turns its
+/// package off for this map, whole, with the reason in
+/// [`Report::refused`], and so is every package that requires one off; the
+/// other packages still apply. A package in `strict` is ours: its refusal
+/// stops the build instead, with the item's line. Nothing is applied in
+/// part: a package refused after one of its items ran is taken out by
+/// building the map again without it.
+///
+/// `assets` gives the asset hashes of the base, what a `was` or `replaces`
+/// names ([`crate::assets`]); with `None` a tag's own hash stands for its
+/// asset's, so `h2 package build`'s checks and a build on an invented map
+/// run with no store.
+pub fn build_map_settled(
+    base: &[u8],
+    packages: &[Loaded],
+    target: &Target<'_>,
+    strict: &BTreeSet<String>,
+    mut assets: Option<&mut dyn Assets>,
+) -> Result<BuiltMap, String> {
+    let mut left: Vec<Loaded> = packages.to_vec();
+    let mut refused: Vec<Refusal> = Vec::new();
+    loop {
+        match attempt(
+            base,
+            &left,
+            target,
+            Some((strict, &mut refused)),
+            assets.as_deref_mut(),
+        ) {
+            Ok(mut built) => {
+                built.report.refused = refused;
+                return Ok(built);
+            }
+            Err(Broke::Failed(why)) => return Err(why),
+            Err(Broke::Again { package, why }) => {
+                crate::build::turn_off(&mut refused, &left, &package, why);
+                left.retain(|p| !refused.iter().any(|r| r.package == p.package.name()));
+            }
+        }
+    }
+}
+
+/// Why an attempt to build the map stopped: an item failed, or a package
+/// was refused after one of its items ran.
+enum Broke {
+    Failed(String),
+    Again { package: String, why: String },
+}
+
+/// Decompose `base` once and apply `packages`. With `off`, refusals leave
+/// packages off ([`build_map_settled`]); without, they stop the build.
+fn attempt(
+    base: &[u8],
+    packages: &[Loaded],
+    target: &Target<'_>,
+    off: Option<(&BTreeSet<String>, &mut Vec<Refusal>)>,
+    mut assets: Option<&mut dyn Assets>,
+) -> Result<BuiltMap, Broke> {
+    let mut map = Map::from_reader(Cursor::new(base))
+        .map_err(|e| Broke::Failed(format!("not a map: {e}")))?;
     let unpin = MapUnpin::new(&mut map);
-    let mut set = TagSet::from_map(&mut map).map_err(|e| format!("decomposing the map: {e}"))?;
+    let mut set = TagSet::from_map(&mut map)
+        .map_err(|e| Broke::Failed(format!("decomposing the map: {e}")))?;
     // A tag laid out anew can land past the old metadata's end; the same
     // lift `ui_kit::retail_edits` makes, and the build's size check still
     // runs.
@@ -74,14 +154,32 @@ pub fn build_map_laid_out(
     // What a `model` item draws with is read from the base map, once.
     let shading: Option<Result<Shading, String>> = wants_shading(packages, target)
         .then(|| Shading::read(&mut map).map_err(|e| format!("{e:#}")));
-    let report =
-        build_with(&mut set, packages, target, reader, shading.as_ref()).map_err(
-            |e| match &unpin {
-                Ok(_) => e.to_string(),
-                Err(why) => format!("{e} (the map's reader: {why})"),
-            },
-        )?;
-    let (bytes, layout) = set.build().map_err(|e| format!("building the map: {e}"))?;
+    let stopped = |e: crate::build::BuildError| match &unpin {
+        Ok(_) => Broke::Failed(e.to_string()),
+        Err(why) => Broke::Failed(format!("{e} (the map's reader: {why})")),
+    };
+    let report = match off {
+        Some((strict, off)) => build_refusing(
+            &mut set,
+            packages,
+            target,
+            reader,
+            shading.as_ref(),
+            strict,
+            off,
+            assets.as_deref_mut(),
+        )
+        .map_err(|s| match s {
+            crate::build::Stopped::Failed(e) => stopped(e),
+            crate::build::Stopped::Again { package, why } => Broke::Again { package, why },
+        })?,
+        None => {
+            build_with(&mut set, packages, target, reader, shading.as_ref()).map_err(stopped)?
+        }
+    };
+    let (bytes, layout) = set
+        .build()
+        .map_err(|e| Broke::Failed(format!("building the map: {e}")))?;
     let raw = layout
         .raw
         .iter()

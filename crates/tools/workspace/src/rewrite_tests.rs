@@ -217,11 +217,65 @@ fn items_for_other_maps_leave_a_map_alone() {
 #[test]
 fn a_failed_build_is_served_unchanged_and_recorded() {
     let original = base_map();
-    let bad = edits("e", &[], &edit_text("invented\\dmg\\missing", 1.0));
+    let bad = pkg(
+        "e",
+        &[],
+        &[("edits", "e.yaml", None, "multiplayer")],
+        &[("e.yaml", b"- tag: [unclosed")],
+    );
     let mut rw = PackageRewrite::new(vec![bad]);
     assert!(rw.rewrite(PATH, &original).is_none());
     let rec = rw.served().lock().unwrap()["tiny"].clone();
     assert!(rec.error.is_some());
+}
+
+#[test]
+fn a_refused_package_is_off_for_the_map_whole_and_recorded() {
+    let original = base_map();
+    // A key the map lacks: off with the key, not a failed build.
+    let bad = edits("e", &[], &edit_text("invented\\dmg\\missing", 1.0));
+    let mut rw = PackageRewrite::new(vec![bad]);
+    assert!(rw.rebuild("tiny", &original).unwrap().is_none());
+    let rec = rw.served().lock().unwrap()["tiny"].clone();
+    assert!(rec.error.is_none());
+    assert!(rec.packages.is_empty());
+    assert_eq!(rec.refused.len(), 1);
+    assert_eq!(rec.refused[0].package, "e");
+    assert!(
+        rec.refused[0].why.contains("invented\\dmg\\missing"),
+        "{rec:?}"
+    );
+    // The next read asks the build for nothing.
+    assert!(rw.rebuild("tiny", &original).unwrap().is_none());
+    let rec = rw.served().lock().unwrap()["tiny"].clone();
+    assert_eq!((rec.hits, rec.builds), (0, 0));
+    assert_eq!(rec.refused.len(), 1);
+}
+
+#[test]
+fn a_map_takes_what_is_not_refused_and_shares_its_cache() {
+    let data = temp("refused");
+    let original = base_map();
+    let good = adds_c("c");
+    let bad = edits("e", &[], &edit_text("invented\\dmg\\missing", 1.0));
+    let mut rw = PackageRewrite::new(vec![good.clone(), bad]).with_cache(&data);
+    let built = rw.rebuild("tiny", &original).unwrap().unwrap();
+    assert!(!built.from_cache);
+    assert!(has_tag(&built.bytes, b"jpt!", C));
+    let rec = rw.served().lock().unwrap()["tiny"].clone();
+    assert_eq!(rec.packages, ["c"]);
+    assert_eq!(rec.refused.len(), 1);
+    assert_eq!((rec.builds, rec.hits), (1, 0));
+    // The next boot, with a set that never had the refused package: a hit on
+    // the same file, as the cache is keyed by what the map takes.
+    let hit = PackageRewrite::new(vec![good])
+        .with_cache(&data)
+        .rebuild("tiny", &original)
+        .unwrap()
+        .unwrap();
+    assert!(hit.from_cache);
+    assert!(hit.bytes == built.bytes);
+    let _ = std::fs::remove_dir_all(&data);
 }
 
 fn write_package(root: &Path, l: &Loaded) -> PathBuf {
