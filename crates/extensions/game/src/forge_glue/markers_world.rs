@@ -23,7 +23,7 @@ use agent::Access;
 use agent_proto::{MarkersParams, RpcError, code, method};
 use forge::tool::{Show, in_game};
 use forge::{Endpoint, GroundProblem, PlacedMarker, Thing, ThingKind, Value};
-use game_markers::{Area, Item, Kind, Marker, Palette, Place, Tint};
+use game_markers::{Area, Item, Kind, Marker, Palette, Place, Tint, Tri};
 use serde_json::{Value as Json, json};
 
 /// The most markers a view draws; the nearest are kept.
@@ -389,10 +389,13 @@ fn published() -> Option<Published> {
 
 // ---- one view ----
 
-/// One marker's lines for the window: one group, one colour.
+/// One marker's lines for the window: one group, one colour. Its faces
+/// are the native renderer's skin ([`gpu::batch`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Group {
     pub edges: Vec<[[f32; 3]; 2]>,
+    /// The placed mesh's faces, with their alpha, faded as the marker is.
+    pub tris: Vec<Tri>,
     pub anchor: [f32; 3],
     pub colour: [f32; 3],
     pub alpha: f32,
@@ -463,6 +466,7 @@ pub fn draw_walls(walls: &[Wall], eye: Option<[f32; 3]>, palette: &Palette) -> (
         let anchor = [w.at[0], w.at[1], top];
         groups.push(Group {
             edges: mesh.lines.iter().map(|l| [l.a, l.b]).collect(),
+            tris: mesh.tris.clone(),
             anchor,
             colour,
             alpha: mesh.lines.first().map_or(1.0, |l| l.colour[3]),
@@ -550,6 +554,7 @@ pub fn draw(
         let lines = mesh.lines.len();
         groups.push(Group {
             edges: mesh.lines.iter().map(|l| [l.a, l.b]).collect(),
+            tris: mesh.tris.clone(),
             anchor,
             colour,
             alpha: mesh.lines.first().map_or(alpha, |l| l.colour[3]),
@@ -618,7 +623,7 @@ pub fn add_method(agent: &agent::Agent) {
 }
 
 #[cfg(feature = "gpu")]
-pub use gpu::register;
+pub use gpu::{batch, register};
 
 #[cfg(feature = "gpu")]
 mod gpu {
@@ -630,6 +635,51 @@ mod gpu {
 
     /// Draws the markers while a Forge session has any.
     pub struct Source;
+
+    /// Opacity left at `depth` world units from the eye: as the window's
+    /// per-line fade (1 up to the start, 0 from the end, linear between).
+    fn fade_factor(fade: Option<(f32, f32)>, depth: f32) -> f32 {
+        match fade {
+            Some((start, end)) if end > start => (1.0 - (depth - start) / (end - start)).clamp(0.0, 1.0),
+            _ => 1.0,
+        }
+    }
+
+    /// The groups' faces and lines as the native renderer's batch
+    /// (docs/game/gametype-markers.md, "The game"): each vertex's alpha is
+    /// the group's, times its fade at the vertex's distance from `eye`
+    /// (none: no fade). A line is the group's colour at the group's alpha.
+    pub fn batch(groups: &[Group], eye: Option<[f32; 3]>) -> native_render::markers::Batch {
+        let mut batch = native_render::markers::Batch::default();
+        for g in groups {
+            let fade = |at: [f32; 3]| eye.map_or(1.0, |eye| fade_factor(g.fade, distance(eye, at)));
+            let with = |colour: [f32; 4], at: [f32; 3]| [colour[0], colour[1], colour[2], colour[3] * fade(at)];
+            for t in &g.tris {
+                let [a, b, c] = t.points;
+                batch.tris.extend([a, b, c].map(|position| native_render::markers::Vertex {
+                    position,
+                    colour: with(t.colour, position),
+                }));
+            }
+            let line = [g.colour[0], g.colour[1], g.colour[2], g.alpha];
+            for [a, b] in &g.edges {
+                batch.lines.extend([*a, *b].map(|position| native_render::markers::Vertex {
+                    position,
+                    colour: with(line, position),
+                }));
+            }
+        }
+        batch
+    }
+
+    /// `impl.render.native` ([`hooks::switches::NATIVE`]) as the process
+    /// started: the native frame graph may draw the markers.
+    fn native_on() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| {
+            hooks::switches::native_render_on(&hooks::Switches::from_env().unwrap_or_default())
+        })
+    }
 
     pub fn register(host: &mut crate::Host) {
         host.add_world_line_source(Arc::new(Source));
@@ -658,7 +708,12 @@ mod gpu {
 
     impl WorldLineSource for Source {
         fn active(&self) -> bool {
-            ACTIVE.load(Ordering::Acquire) || WALLS_ACTIVE.load(Ordering::Acquire)
+            let on = ACTIVE.load(Ordering::Acquire) || WALLS_ACTIVE.load(Ordering::Acquire);
+            if !on {
+                // Nothing to draw: the frame graph's batch goes too.
+                native_render::markers::publish(None);
+            }
+            on
         }
 
         fn capture(&self, guest: &dyn GuestMemory) -> Option<Arc<dyn ImageMarks>> {
@@ -670,25 +725,39 @@ mod gpu {
             report.markers.extend(shown);
             groups.extend(walls);
             *LAST.lock().unwrap_or_else(|e| e.into_inner()) = report;
+            // With the native renderer on, the frame graph draws the faces
+            // and the lines (with their X-ray look); the window then draws
+            // the labels alone, so no line is drawn twice. Off, or while
+            // the graph is not drawing, the window draws the lines.
+            let native = native_on();
+            native_render::markers::publish(native.then(|| batch(&groups, eye)));
             if groups.is_empty() {
                 return None;
             }
             let face = crate::superbounce_font::look(guest).face;
-            Some(Arc::new(Sample { groups, face }))
+            let native_lines =
+                native_render::markers::window_skips_lines(native, native_render::markers::drawn_recently());
+            Some(Arc::new(Sample { groups, face, native_lines }))
         }
     }
 
+    /// What the window's world-line pass draws of the markers.
     #[derive(Debug)]
-    struct Sample {
-        groups: Vec<Group>,
-        face: LabelFace,
+    pub(super) struct Sample {
+        pub(super) groups: Vec<Group>,
+        pub(super) face: LabelFace,
+        /// The native renderer draws the lines: only the labels are left.
+        pub(super) native_lines: bool,
     }
 
     impl ImageMarks for Sample {
         fn lines(&self, visitor: &mut dyn FnMut(WorldLine<'_>)) {
             for g in &self.groups {
+                if self.native_lines && g.label.is_none() {
+                    continue;
+                }
                 visitor(WorldLine {
-                    edges: &g.edges,
+                    edges: if self.native_lines { &g.edges[..0] } else { &g.edges[..] },
                     anchor: g.anchor,
                     color: g.colour,
                     dashed: false,

@@ -1,6 +1,6 @@
 //! Synthetic only: the marker skin on the headless target.
 #![cfg(feature = "gpu")]
-use native_render::markers::{Batch, Pass, Targets};
+use native_render::markers::{Batch, Pass, Targets, WDepth};
 
 const SIZE: u32 = 32;
 const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -25,6 +25,11 @@ fn texture(ctx: &gfx::GfxContext, format: wgpu::TextureFormat) -> wgpu::Texture 
 /// nearer wall the markers are tested against), then the pass over it in
 /// clip space. Returns the colour.
 fn draw(ctx: &gfx::GfxContext, world: f32, batch: &Batch) -> Vec<u8> {
+    draw_with(ctx, world, batch, IDENTITY, None)
+}
+
+/// As [`draw`], through `matrix` and, with `w`, over a W-buffer depth.
+fn draw_with(ctx: &gfx::GfxContext, world: f32, batch: &Batch, matrix: [[f32; 4]; 4], w: Option<WDepth>) -> Vec<u8> {
     let (color, depth) = (texture(ctx, COLOR), texture(ctx, DEPTH));
     let (cv, dv) = (color.create_view(&Default::default()), depth.create_view(&Default::default()));
     let mut encoder = ctx.device.create_command_encoder(&Default::default());
@@ -45,13 +50,11 @@ fn draw(ctx: &gfx::GfxContext, world: f32, batch: &Batch) -> Vec<u8> {
         occlusion_query_set: None,
         multiview_mask: None,
     }));
-    Pass::new(&ctx.device, COLOR, DEPTH, false).encode(
-        &ctx.device,
-        &mut encoder,
-        &Targets { color: &cv, depth: &dv },
-        IDENTITY,
-        batch,
-    );
+    let targets = Targets { color: &cv, depth: &dv };
+    let pass = Pass::new(&ctx.device, COLOR, DEPTH, false);
+    if let Some(prepared) = pass.prepare(&ctx.device, matrix, batch, w) {
+        prepared.record(&mut encoder, &targets, None);
+    }
     ctx.queue.submit([encoder.finish()]);
     ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
     gfx::readback::read_texture(ctx, &color, wgpu::TextureAspect::All, 4, (SIZE, SIZE))
@@ -100,4 +103,31 @@ fn a_line_behind_the_world_draws_at_a_third_of_its_alpha() {
     let hidden = lit(&draw(&ctx, 0.1, &line));
     assert_eq!(in_front, 255, "a line in front is full");
     assert!((80..=90).contains(&hidden), "a line behind keeps a third: {hidden}");
+}
+
+/// World to clip with the view depth in `w` (`w = z`) and clip depth 0, as
+/// the camera's projection leaves it: the depth buffer is a W-buffer.
+const VIEW_W: [[f32; 4]; 4] =
+    [[1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 0., 1.], [0., 0., 0., 0.]];
+
+#[test]
+fn over_a_w_buffer_the_skin_meets_the_guests_depth_not_the_clip_depth() {
+    let Ok(ctx) = gfx::GfxContext::headless() else {
+        eprintln!("no GPU adapter; skipped");
+        return;
+    };
+    let w = Some(WDepth { far: 100.0, scale: 16_777_215.0, bias: 0.0 });
+    // A wall 10 units from the eye (depth 0.1), x and y scaled by w.
+    let mut batch = Batch::default();
+    let colour = [1., 0., 0., 0.5];
+    let z = 10.0;
+    batch.push_tri([[-5., -5., z], [5., -5., z], [5., 5., z]], colour);
+    batch.push_tri([[-5., -5., z], [5., 5., z], [-5., 5., z]], colour);
+    // The world 50 units away: the wall is in front of it.
+    let front = draw_with(&ctx, 0.5, &batch, VIEW_W, w);
+    let red = px(&front, SIZE / 2, SIZE / 2)[0];
+    assert!((120..=136).contains(&red), "half red over black: {red}");
+    // The world 5 units away: it hides the wall.
+    let behind = draw_with(&ctx, 0.05, &batch, VIEW_W, w);
+    assert!(behind.chunks(4).all(|p| p == [0, 0, 0, 255]), "no skin behind a nearer wall");
 }

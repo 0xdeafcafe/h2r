@@ -504,3 +504,86 @@ fn render_markers_lists_the_walls_shown_and_filters_by_the_wall_kind() {
     assert_eq!(r["markers"], json!([]));
     assert_eq!(r["shown"], 1);
 }
+
+/// An invented hill at the origin and a wall 20 units along x, as the
+/// window sees them from `eye`.
+#[cfg(feature = "gpu")]
+fn hill_and_wall(eye: Option<[f32; 3]>) -> (Vec<Group>, Entry) {
+    let palette = Palette::default();
+    let hill = entry(
+        None,
+        "hill".into(),
+        Kind::Hill(Area::default()),
+        None,
+        Some(0),
+        [0.; 3],
+        0.0,
+        Tone::Normal,
+        false,
+    );
+    let (mut groups, _) = draw(&[hill.clone()], [&None, &None], eye, &palette, BUDGET);
+    let (walls, _) = draw_walls(&[wall(1, Some(0), [20., 0., 0.])], eye, &palette);
+    groups.extend(walls);
+    (groups, hill)
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn the_batch_of_a_hill_and_a_wall_has_their_faces_and_lines() {
+    let palette = Palette::default();
+    let (groups, hill) = hill_and_wall(None);
+    assert_eq!(groups.len(), 2);
+    let ring = Area::default().outline().len();
+    let hill_faces = hill.marker.mesh(&palette).tris.len();
+    assert!(hill_faces > 0, "the hill has a skin");
+    assert_eq!(groups[0].tris.len(), hill_faces);
+    assert_eq!(groups[1].tris.len(), 2 * ring, "two faces a side of the wall");
+    let got = batch(&groups, None);
+    // Three vertices a face, two a line: the hill's, then the wall's.
+    assert_eq!(got.tris.len(), 3 * (hill_faces + 2 * ring));
+    assert_eq!(got.lines.len(), 2 * (groups[0].edges.len() + 3 * ring));
+    // The wall's faces keep their alpha; its lines are its team's colour
+    // at the group's alpha.
+    let first_wall_face = 3 * hill_faces;
+    assert_eq!(got.tris[first_wall_face].colour, groups[1].tris[0].colour);
+    assert!(got.tris[first_wall_face].colour[3] < 1.0, "a skin, not a solid");
+    let line = got.lines[2 * groups[0].edges.len()].colour;
+    assert_eq!(line, [palette.teams[0][0], palette.teams[0][1], palette.teams[0][2], groups[1].alpha]);
+    // Positions are the mesh's world points.
+    assert_eq!(got.lines[2 * groups[0].edges.len()].position, groups[1].edges[0][0]);
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn the_batch_fades_each_vertex_with_its_distance_from_the_eye() {
+    let (groups, _) = hill_and_wall(None);
+    let near = batch(&groups, Some([20., 0., 0.]));
+    let none = batch(&groups, None);
+    assert_eq!(near, none, "the eye in the middle of both: full strength");
+    let far = batch(&groups, Some([1000., 0., 0.]));
+    assert_eq!(far.tris.len(), none.tris.len());
+    assert!(far.tris.iter().chain(&far.lines).all(|v| v.colour[3] == 0.0), "past every fade");
+    // The colour is not touched by the fade.
+    assert_eq!(&far.tris[0].colour[..3], &none.tris[0].colour[..3]);
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn with_the_native_pass_drawing_the_window_keeps_the_labels_and_drops_the_lines() {
+    use gfx::world_lines::{ImageMarks, LabelFace};
+    let (groups, _) = hill_and_wall(None);
+    assert!(groups[0].label.is_some() && groups[1].label.is_none());
+    let seen = |native_lines| {
+        let sample = gpu::Sample { groups: groups.clone(), face: LabelFace::Debug, native_lines };
+        let mut out = Vec::new();
+        sample.lines(&mut |l| out.push((l.edges.len(), l.label.map(str::to_owned))));
+        out
+    };
+    // The window alone draws every line and the label.
+    let alone = seen(false);
+    assert_eq!(alone.len(), 2);
+    assert_eq!(alone[0], (groups[0].edges.len(), Some("Hill 1".to_owned())));
+    assert_eq!(alone[1], (groups[1].edges.len(), None));
+    // The native pass drew them: the label is all the window draws.
+    assert_eq!(seen(true), [(0, Some("Hill 1".to_owned()))]);
+}

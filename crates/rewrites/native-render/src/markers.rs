@@ -10,7 +10,14 @@
 //! the lines alone.
 //!
 //! The pass takes plain vertices and a view-projection matrix; it knows
-//! nothing of `game-markers`.
+//! nothing of `game-markers`. The game publishes the frame's [`Batch`]
+//! ([`publish`]); the frame graph (`frame_graph::markers`) draws it in each
+//! game view after the transparents and before the HUD, against the
+//! guest's W-buffer depth ([`WDepth`]).
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// What a line behind the world's depth keeps of its alpha.
 pub const XRAY_ALPHA: f32 = 1.0 / 3.0;
@@ -46,6 +53,65 @@ impl Batch {
     }
 }
 
+/// How the guest's depth buffer stores a view's depth: a W-buffer, `floor(w
+/// * scale / far) / scale`, nearer smaller (`frame_scene::w_depth`). The
+/// pass writes that value for each fragment, so its test meets the world's
+/// own. `bias` is how far towards the eye a fragment moves first, in view
+/// units, so a face lying on a surface passes the rounding.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WDepth {
+    pub far: f32,
+    pub scale: f32,
+    pub bias: f32,
+}
+
+static PUBLISHED: Mutex<Option<Arc<Batch>>> = Mutex::new(None);
+static HAS_PUBLISHED: AtomicBool = AtomicBool::new(false);
+static DREW: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// How long after the pass last recorded the window's line pass leaves the
+/// lines to it.
+pub const DREW_FOR: Duration = Duration::from_millis(250);
+
+/// The batch the frame graph draws from now on, in place of the last; none
+/// (or an empty batch) when there are no markers.
+pub fn publish(batch: Option<Batch>) {
+    let batch = batch.filter(|b| !b.is_empty()).map(Arc::new);
+    if batch.is_none() && !HAS_PUBLISHED.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    HAS_PUBLISHED.store(batch.is_some(), Ordering::Release);
+    *PUBLISHED.lock().unwrap_or_else(|e| e.into_inner()) = batch;
+}
+
+/// The batch to draw, if the game published one.
+pub fn published() -> Option<Arc<Batch>> {
+    if !HAS_PUBLISHED.load(Ordering::Acquire) {
+        return None;
+    }
+    PUBLISHED.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// The frame graph recorded the pass for a view.
+pub fn note_drawn() {
+    *DREW.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+}
+
+/// Whether the pass recorded within [`DREW_FOR`].
+pub fn drawn_recently() -> bool {
+    DREW.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some_and(|at| at.elapsed() < DREW_FOR)
+}
+
+/// Whether the window's world-line pass leaves the marker lines out: the
+/// native renderer is on and this pass drew them a moment ago, so a line is
+/// never drawn twice. Anywhere the pass does not run (the switch off, a
+/// frame the graph does not own) the window draws the lines alone.
+pub fn window_skips_lines(native: bool, drew_recently: bool) -> bool {
+    native && drew_recently
+}
+
 /// What the marker pass draws for a view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Plan {
@@ -66,23 +132,34 @@ pub fn plan(native: bool, batch: &Batch) -> Plan {
 }
 
 #[cfg(feature = "gpu")]
-pub use gpu::{Pass, Targets};
+pub use gpu::{Pass, Prepared, Targets};
 
 #[cfg(feature = "gpu")]
 mod gpu {
-    use super::{Batch, Vertex, XRAY_ALPHA};
+    use super::{Batch, Vertex, WDepth, XRAY_ALPHA};
 
     const SHADER: &str = "
-struct U { m: mat4x4<f32>, scale: vec4<f32> };
+struct U { m: mat4x4<f32>, scale: vec4<f32>, depth: vec4<f32> };
 @group(0) @binding(0) var<uniform> u: U;
-struct VO { @builtin(position) p: vec4<f32>, @location(0) c: vec4<f32> };
+struct VO { @builtin(position) p: vec4<f32>, @location(0) c: vec4<f32>, @location(1) w: f32 };
+struct FO { @location(0) c: vec4<f32>, @builtin(frag_depth) d: f32 };
 @vertex fn vs_main(@location(0) pos: vec3<f32>, @location(1) col: vec4<f32>) -> VO {
     var o: VO;
     o.p = u.m * vec4<f32>(pos, 1.0);
     o.c = vec4<f32>(col.rgb, col.a * u.scale.x);
+    o.w = o.p.w;
     return o;
 }
-@fragment fn fs_main(i: VO) -> @location(0) vec4<f32> { return i.c; }
+@fragment fn fs_main(i: VO) -> FO {
+    var o: FO;
+    o.c = i.c;
+    if (u.depth.x > 0.0) {
+        o.d = floor(max(i.w - u.depth.z, 0.0) * u.depth.x) / u.depth.y;
+    } else {
+        o.d = i.p.z;
+    }
+    return o;
+}
 ";
 
     #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -90,6 +167,7 @@ struct VO { @builtin(position) p: vec4<f32>, @location(0) c: vec4<f32> };
     struct Uniform {
         matrix: [f32; 16],
         scale: [f32; 4],
+        depth: [f32; 4],
     }
 
     /// The attachments the pass draws over. It loads both and writes only
@@ -106,6 +184,20 @@ struct VO { @builtin(position) p: vec4<f32>, @location(0) c: vec4<f32> };
         skin: wgpu::RenderPipeline,
         front: wgpu::RenderPipeline,
         behind: wgpu::RenderPipeline,
+        stencil: bool,
+    }
+
+    /// A batch uploaded for one view: everything `record` needs, made at
+    /// prepare so recording is only commands (it can run more than once).
+    pub struct Prepared {
+        skin: wgpu::RenderPipeline,
+        front: wgpu::RenderPipeline,
+        behind: wgpu::RenderPipeline,
+        full: wgpu::BindGroup,
+        xray: wgpu::BindGroup,
+        tris: Option<(wgpu::Buffer, u32)>,
+        lines: Option<(wgpu::Buffer, u32)>,
+        stencil: bool,
     }
 
     impl Pass {
@@ -120,7 +212,7 @@ struct VO { @builtin(position) p: vec4<f32>, @location(0) c: vec4<f32> };
                 label: Some("markers"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -191,21 +283,22 @@ struct VO { @builtin(position) p: vec4<f32>, @location(0) c: vec4<f32> };
                 front: make("marker lines", wgpu::PrimitiveTopology::LineList, near),
                 behind: make("marker x-ray", wgpu::PrimitiveTopology::LineList, far),
                 layout,
+                stencil: depth_format.has_stencil_aspect(),
             }
         }
 
-        /// Records the pass: the skin, the lines in front, then the lines
-        /// behind at [`XRAY_ALPHA`]. `matrix` is column-major, world to clip.
-        pub fn encode(
+        /// Uploads `batch` for a view whose world to clip is `matrix`
+        /// (column-major). `w` is the guest's W-buffer, or none for a depth
+        /// buffer holding the clip depth. None for an empty batch.
+        pub fn prepare(
             &self,
             device: &wgpu::Device,
-            encoder: &mut wgpu::CommandEncoder,
-            targets: &Targets,
             matrix: [[f32; 4]; 4],
             batch: &Batch,
-        ) {
+            w: Option<WDepth>,
+        ) -> Option<Prepared> {
             if batch.is_empty() {
-                return;
+                return None;
             }
             let buffer = |label: &str, usage, bytes: &[u8]| {
                 let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -218,10 +311,12 @@ struct VO { @builtin(position) p: vec4<f32>, @location(0) c: vec4<f32> };
                 buffer.unmap();
                 buffer
             };
+            let depth = w.map_or([0.0; 4], |w| [w.scale / w.far, w.scale, w.bias, 0.0]);
             let group = |scale: f32| {
                 let uniform = Uniform {
                     matrix: std::array::from_fn(|i| matrix[i / 4][i % 4]),
                     scale: [scale, 0., 0., 0.],
+                    depth,
                 };
                 let buffer = buffer("marker uniform", wgpu::BufferUsages::UNIFORM, bytemuck::bytes_of(&uniform));
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -230,42 +325,86 @@ struct VO { @builtin(position) p: vec4<f32>, @location(0) c: vec4<f32> };
                     entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
                 })
             };
-            let (full, xray) = (group(1.0), group(XRAY_ALPHA));
-            let tris = (!batch.tris.is_empty())
-                .then(|| buffer("marker skin", wgpu::BufferUsages::VERTEX, bytemuck::cast_slice(&batch.tris)));
-            let lines = (!batch.lines.is_empty())
-                .then(|| buffer("marker lines", wgpu::BufferUsages::VERTEX, bytemuck::cast_slice(&batch.lines)));
+            let vertices = |label: &str, v: &[Vertex]| {
+                (!v.is_empty()).then(|| {
+                    (buffer(label, wgpu::BufferUsages::VERTEX, bytemuck::cast_slice(v)), v.len() as u32)
+                })
+            };
+            Some(Prepared {
+                skin: self.skin.clone(),
+                front: self.front.clone(),
+                behind: self.behind.clone(),
+                full: group(1.0),
+                xray: group(XRAY_ALPHA),
+                tris: vertices("marker skin", &batch.tris),
+                lines: vertices("marker lines", &batch.lines),
+                stencil: self.stencil,
+            })
+        }
+
+        /// Records the pass: the skin, the lines in front, then the lines
+        /// behind at [`XRAY_ALPHA`], over a depth buffer holding the clip
+        /// depth. `matrix` is column-major, world to clip.
+        pub fn encode(
+            &self,
+            device: &wgpu::Device,
+            encoder: &mut wgpu::CommandEncoder,
+            targets: &Targets,
+            matrix: [[f32; 4]; 4],
+            batch: &Batch,
+        ) {
+            if let Some(prepared) = self.prepare(device, matrix, batch, None) {
+                prepared.record(encoder, targets, None);
+            }
+        }
+    }
+
+    impl Prepared {
+        /// GPU draws `record` issues.
+        pub fn draws(&self) -> usize {
+            usize::from(self.tris.is_some()) + 2 * usize::from(self.lines.is_some())
+        }
+
+        /// Records the pass on `targets`, inside `viewport` (`x, y, width,
+        /// height` in target pixels) when given.
+        pub fn record(&self, encoder: &mut wgpu::CommandEncoder, targets: &Targets, viewport: Option<[f32; 4]>) {
+            fn kept<V>() -> wgpu::Operations<V> {
+                wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }
+            }
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("markers"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: targets.color,
                     depth_slice: None,
                     resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                    ops: kept(),
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: targets.depth,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
-                    stencil_ops: None,
+                    depth_ops: Some(kept()),
+                    stencil_ops: self.stencil.then(kept::<u32>),
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            if let Some(tris) = &tris {
-                pass.set_pipeline(&self.skin);
-                pass.set_bind_group(0, &full, &[]);
-                pass.set_vertex_buffer(0, tris.slice(..));
-                pass.draw(0..batch.tris.len() as u32, 0..1);
+            if let Some([x, y, w, h]) = viewport {
+                pass.set_viewport(x, y, w, h, 0.0, 1.0);
             }
-            if let Some(lines) = &lines {
+            if let Some((tris, count)) = &self.tris {
+                pass.set_pipeline(&self.skin);
+                pass.set_bind_group(0, &self.full, &[]);
+                pass.set_vertex_buffer(0, tris.slice(..));
+                pass.draw(0..*count, 0..1);
+            }
+            if let Some((lines, count)) = &self.lines {
                 pass.set_vertex_buffer(0, lines.slice(..));
                 pass.set_pipeline(&self.front);
-                pass.set_bind_group(0, &full, &[]);
-                pass.draw(0..batch.lines.len() as u32, 0..1);
+                pass.set_bind_group(0, &self.full, &[]);
+                pass.draw(0..*count, 0..1);
                 pass.set_pipeline(&self.behind);
-                pass.set_bind_group(0, &xray, &[]);
-                pass.draw(0..batch.lines.len() as u32, 0..1);
+                pass.set_bind_group(0, &self.xray, &[]);
+                pass.draw(0..*count, 0..1);
             }
         }
     }
@@ -292,5 +431,26 @@ mod tests {
         assert_eq!(plan(false, &batch), Plan { skin: false, lines: false });
         assert_eq!(plan(true, &batch), Plan { skin: true, lines: true });
         assert_eq!(plan(true, &Batch::default()), Plan { skin: false, lines: false });
+    }
+
+    #[test]
+    fn the_window_leaves_the_lines_only_to_a_native_pass_that_drew() {
+        assert!(window_skips_lines(true, true));
+        assert!(!window_skips_lines(true, false), "the graph did not draw: the lines stay");
+        assert!(!window_skips_lines(false, true), "native off: lines only");
+        assert!(!window_skips_lines(false, false));
+    }
+
+    #[test]
+    fn a_published_batch_is_read_back_and_an_empty_one_clears_it() {
+        let mut batch = Batch::default();
+        batch.push_line([0.; 3], [1.; 3], [1.; 4]);
+        publish(Some(batch.clone()));
+        assert_eq!(published().as_deref(), Some(&batch));
+        publish(Some(Batch::default()));
+        assert!(published().is_none());
+        publish(Some(batch));
+        publish(None);
+        assert!(published().is_none());
     }
 }
