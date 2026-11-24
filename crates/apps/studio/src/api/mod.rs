@@ -45,6 +45,7 @@ mod playtest;
 mod scenario;
 mod scripts;
 pub mod seams;
+mod shell;
 pub mod server;
 mod sound;
 mod strings;
@@ -204,9 +205,9 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::DOC_LIST,
-        "Every document: open, its name, dirty, undo and redo",
+        "Every document: each tool's, then each open tag tab's (its own undo stack); open, its name, dirty, undo and redo",
         "{}",
-        r#"[{"doc":"map|variant|playlists|ui","open":"boolean","name":"string|null","dirty":"boolean","can_undo":"boolean","can_redo":"boolean","path?":"string"}]"#,
+        r#"[{"doc":"map|variant|playlists|ui|... or a tag tab's group:path","open":"boolean","name":"string|null","dirty":"boolean","can_undo":"boolean","can_redo":"boolean","path?":"string"}]"#,
         "null",
     ),
     def(
@@ -239,15 +240,15 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::DOC_UNDO,
-        "Undo the document's last edit",
-        r#"{"doc?":"map|variant|playlists (default: the tool shown)"}"#,
+        "Undo the document's last edit; a tag tab's id undoes in that tag's own stack",
+        r#"{"doc?":"map|variant|playlists|... or a tag tab's id (default: the tool shown)"}"#,
         r#"{"done":"boolean","can_undo":"boolean","can_redo":"boolean","log":"[string]"}"#,
         r#"{"doc":"map"}"#,
     ),
     def(
         m::DOC_REDO,
-        "Redo the document's last undone edit",
-        r#"{"doc?":"map|variant|playlists (default: the tool shown)"}"#,
+        "Redo the document's last undone edit; a tag tab's id redoes in that tag's own stack",
+        r#"{"doc?":"map|variant|playlists|... or a tag tab's id (default: the tool shown)"}"#,
         r#"{"done":"boolean","can_undo":"boolean","can_redo":"boolean","log":"[string]"}"#,
         r#"{"doc":"map"}"#,
     ),
@@ -257,6 +258,34 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"doc":"map|variant|playlists","discard?":"boolean"}"#,
         r#"{"closed":"boolean"}"#,
         r#"{"doc":"playlists","discard":true}"#,
+    ),
+    def(
+        m::SHELL_TABS,
+        "The document tabs in order and the one in front: each tab's id (what doc.* takes), kind, title, the tool it shows in, its editor for a tag, dirty, and its own undo and redo",
+        "{}",
+        r#"{"front":"string|null","tool":"string","tabs":"[{doc,kind,title,tool,dirty,can_undo,can_redo,front,editor?,id?,group?,map?}]"}"#,
+        "null",
+    ),
+    def(
+        m::SHELL_OPEN,
+        "Open a tag of the open map as a tab, in the editor its group gets (the scenario tag is the map's own tab), and bring it to the front. With map, that map opens first (refused over unsaved edits unless discard); a map alone brings its tab forward",
+        r#"{"tag?":"string|integer (an id, group:path, path.group or a group with one tag)","map?":"string","discard?":"boolean"}"#,
+        r#"{"tab":"{doc,kind,title,tool,dirty,can_undo,can_redo,front,...}","front":"string|null","log":"[string]"}"#,
+        r#"{"tag":"itmc:objects\test\kit"}"#,
+    ),
+    def(
+        m::SHELL_FOCUS,
+        "Bring a tab to the front: its document shows in its editor, and Undo takes its own stack",
+        r#"{"doc":"string (a tab id from shell.tabs)"}"#,
+        r#"{"tab":"{doc,...}","front":"string|null","log":"[string]"}"#,
+        r#"{"doc":"map"}"#,
+    ),
+    def(
+        m::SHELL_CLOSE,
+        "Close a tab. A tool's document closes (refused over unsaved edits unless discard); a tag's tab closes and its edits stay the map's. The tab to its left comes to the front",
+        r#"{"doc":"string (a tab id from shell.tabs)","discard?":"boolean"}"#,
+        r#"{"closed":"boolean","front":"string|null","log":"[string]"}"#,
+        r#"{"doc":"map"}"#,
     ),
     def(
         m::TAG_LIST,
@@ -783,6 +812,7 @@ impl Api {
         match method.split('.').next().unwrap_or("") {
             "session" => self.session(app, method, &p),
             "source" | "doc" => docs::call(app, method, &p),
+            "shell" => shell::call(app, method, &p),
             "tag" => tags::call(app, method, &p),
             "scenario" => scenario::call(app, method, &p),
             "volume" => scenario::volume(app, method, &p),

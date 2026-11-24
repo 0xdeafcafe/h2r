@@ -90,6 +90,16 @@ fn a_method_by_name_takes_json_params() {
 }
 
 #[test]
+fn the_tab_short_forms_name_a_tab() {
+    assert_eq!(c("tabs"), (m::SHELL_TABS.into(), json!(null)));
+    assert_eq!(c("focus map"), (m::SHELL_FOCUS.into(), json!({"doc": "map"})));
+    assert_eq!(
+        c("close itmc:kit"),
+        (m::SHELL_CLOSE.into(), json!({"doc": "itmc:kit"}))
+    );
+}
+
+#[test]
 fn bad_short_forms_say_why() {
     for bad in [
         "nope",

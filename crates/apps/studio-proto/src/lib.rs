@@ -77,6 +77,12 @@ pub mod method {
     pub const DOC_REDO: &str = "doc.redo";
     pub const DOC_CLOSE: &str = "doc.close";
 
+    // The document tabs (docs/editor/studio-redesign.md, "The shell").
+    pub const SHELL_TABS: &str = "shell.tabs";
+    pub const SHELL_OPEN: &str = "shell.open";
+    pub const SHELL_FOCUS: &str = "shell.focus";
+    pub const SHELL_CLOSE: &str = "shell.close";
+
     pub const TAG_LIST: &str = "tag.list";
     pub const TAG_FIELDS: &str = "tag.fields";
     pub const TAG_VIEW: &str = "tag.view";

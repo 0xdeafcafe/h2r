@@ -788,9 +788,9 @@ mod tests {
         check(&src.join("fields"));
     }
 
-    /// At 1000 by 420 every tool draws no child window but a panel body or
-    /// a bounded list, and the scene outliner's filter is above its body.
-    /// Skipped without a wgpu adapter.
+    /// At 1000 by 420 every tool, and every document tab in front, draws
+    /// no child window but a panel body or a bounded list, and the scene
+    /// outliner's filter is above its body. Skipped without a wgpu adapter.
     #[test]
     fn every_panel_scrolls_as_a_whole_on_a_short_window() {
         use crate::ToolKind;
@@ -824,6 +824,19 @@ mod tests {
             "##empty-card",
             "##bsp-bytes",
         ];
+        let check = |h: &Headless, what: &str| {
+            for window in &h.scene.windows {
+                let Some((_, child)) = window.name.rsplit_once('/') else {
+                    continue;
+                };
+                let id = child.rsplit_once('_').map_or(child, |(id, _)| id);
+                assert!(
+                    !id.starts_with("##") || ALLOWED.contains(&id) || id.starts_with("##Table"),
+                    "{what} draws child window {:?}",
+                    window.name
+                );
+            }
+        };
         for tool in [
             ToolKind::Scenario,
             ToolKind::Tags,
@@ -834,20 +847,74 @@ mod tests {
         ] {
             app.dispatch(Action::SetTool(tool));
             h.frames(&mut app, 4).unwrap();
-            for window in &h.scene.windows {
-                let Some((_, child)) = window.name.rsplit_once('/') else {
-                    continue;
-                };
-                let id = child.rsplit_once('_').map_or(child, |(id, _)| id);
-                assert!(
-                    !id.starts_with("##") || ALLOWED.contains(&id) || id.starts_with("##Table"),
-                    "{tool:?} draws child window {:?}",
-                    window.name
-                );
-            }
+            check(&h, &format!("{tool:?}"));
+        }
+        // Each document tab in front: the map, and a tag of each group.
+        for slot in [0, 2, 3] {
+            app.dispatch(Action::OpenDoc(crate::app::Doc::Tag(fixture::id(slot))));
+        }
+        let docs: Vec<_> = app.tabs().iter().map(|t| t.doc).collect();
+        assert!(docs.len() >= 4, "{docs:?}");
+        for doc in docs {
+            app.dispatch(Action::FocusDoc(doc));
+            h.frames(&mut app, 4).unwrap();
+            assert_eq!(app.front_doc(), Some(doc));
+            assert!(h.scene.find("##studio-bar>###doc-tab-").is_ok(), "the tab strip");
+            check(&h, &app.doc_id(doc));
         }
         drop(turn);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The tab strip's clicks (a double-click in the Tags tree, a tab, a
+    /// close button) and the same `shell.*` calls leave the same tabs.
+    /// Skipped without a wgpu adapter.
+    #[test]
+    fn the_tab_strip_clicks_and_shell_calls_leave_the_same_state() {
+        use crate::api::Api;
+        use crate::app::{Doc, shell_tests, tag_tests};
+        use studio_proto::method as m;
+
+        let Some((_turn, mut h)) = tags_headless() else {
+            return;
+        };
+        let (ta, tb) = (shell_tests::Temp::new("strip"), shell_tests::Temp::new("strip-api"));
+        let mut window = shell_tests::app(&ta.0);
+        let mut agent = shell_tests::app(&tb.0);
+        let weap = Doc::Tag(tag_tests::weap_id());
+        let kit = Doc::Tag(shell_tests::kit_id());
+        h.frames(&mut window, 4).unwrap();
+        let click = |t: &str| Step::Click(t.into(), Button::Left);
+        h.step(&mut window, &click("weap  (1)")).unwrap();
+        h.frames(&mut window, 2).unwrap();
+        h.step(
+            &mut window,
+            &Step::Click("objects\\test\\blaster".into(), Button::Double),
+        )
+        .unwrap();
+        assert_eq!(window.front_doc(), Some(weap), "a double-click opens the tag");
+        window.dispatch(Action::OpenDoc(kit));
+        h.frames(&mut window, 3).unwrap();
+        h.step(&mut window, &click("##studio-bar>###doc-tab-map")).unwrap();
+        assert_eq!(window.front_doc(), Some(Doc::Map));
+        let weap_id = window.doc_id(weap);
+        h.step(&mut window, &click(&format!("##studio-bar>###doc-close-{weap_id}")))
+            .unwrap();
+        assert!(!window.tabs().iter().any(|t| t.doc == weap));
+
+        let mut api = Api::new();
+        let mut call = |app: &mut App, method: &str, p: serde_json::Value| {
+            api.call(app, method, p.clone())
+                .unwrap_or_else(|e| panic!("{method} {p}: {e}"))
+        };
+        call(&mut agent, m::SHELL_OPEN, serde_json::json!({ "tag": weap_id }));
+        call(&mut agent, m::SHELL_OPEN, serde_json::json!({ "tag": "itmc" }));
+        call(&mut agent, m::SHELL_FOCUS, serde_json::json!({ "doc": "map" }));
+        call(&mut agent, m::SHELL_CLOSE, serde_json::json!({ "doc": weap_id }));
+        let a = call(&mut window, m::SHELL_TABS, serde_json::Value::Null);
+        let b = call(&mut agent, m::SHELL_TABS, serde_json::Value::Null);
+        assert_eq!(a, b);
+        assert_eq!(window.tool, agent.tool);
     }
 
     /// One real frame of the shell over the invented test map, read back:

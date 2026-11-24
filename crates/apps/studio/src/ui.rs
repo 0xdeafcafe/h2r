@@ -3,6 +3,7 @@
 //! go back to [`App`] as [`Action`]s.
 
 mod bar;
+mod doc_tabs;
 mod layout;
 mod toolbar;
 pub(crate) mod inspector;
@@ -150,6 +151,8 @@ impl Studio {
         // game link sends the reload they queue.
         game_script::poll(app);
         self.play.update(app);
+        // What the agent API opened or closed since the last frame.
+        app.sync_tabs();
         let mut actions = Vec::new();
         self.shortcuts(ui, app, &mut actions);
         if !self.palette.is_open(ui) {

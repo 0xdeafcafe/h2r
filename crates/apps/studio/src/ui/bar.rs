@@ -1,5 +1,6 @@
 //! The fixed bar under the main menu: tool tabs on the left, the open
-//! document in the centre and the game link on the right.
+//! documents' tabs in the centre (`doc_tabs`) and the game link on the
+//! right.
 
 use dear_imgui_rs::{Condition, StyleColor, StyleVar, Ui, WindowFlags};
 
@@ -87,18 +88,13 @@ pub(super) fn draw(
             };
             let link_start = (width - EDGE - link_width(ui, &view, pill_width))
                 .max(tabs_end + theme::BAR_SPACING);
+            // The open documents' tabs take what is left between the tool
+            // tabs and the link.
             let document_end = link_start - 16.0;
-            if let Some(name) = app.document_caption()
-                && document_end > tabs_end + 24.0
-            {
-                let _font = ui.push_font(fonts.title);
-                let text_width = ui.calc_text_size(&name)[0];
-                let start = ((width - text_width) / 2.0)
-                    .min(document_end - text_width)
-                    .max(tabs_end + 16.0);
+            let start = tabs_end + 16.0;
+            if document_end > start + 24.0 {
                 ui.set_cursor_pos([start, row]);
-                ui.align_text_to_frame_padding();
-                theme::clipped_text(ui, &name, theme::TEXT, document_end - start);
+                super::doc_tabs::draw(ui, app, actions, document_end - start);
             }
 
             let clicked = {
