@@ -310,6 +310,9 @@ mod tests {
             ("ctf_touch_return", "touch_return"),
             ("ctf_flag_at_home", "flag_at_home"),
             ("assault_arm_time", "arm_time"),
+            ("king_moving_hill", "move_time"),
+            ("territories_count", "in_play"),
+            ("territories_contest_time", "contest_time"),
         ];
         let width = |(lo, hi): (i32, i32)| 64 - ((hi - lo).max(0) as u64).leading_zeros();
         let mut counted = Vec::new();
@@ -329,7 +332,7 @@ mod tests {
         // (engine, the built-in's options, the type area).
         assert_eq!(
             counted,
-            [(1, 20, 0), (2, 4, 0), (3, 8, 3), (4, 0, 15), (7, 5, 6), (8, 4, 18), (9, 20, 0)]
+            [(1, 20, 0), (2, 4, 0), (3, 8, 3), (4, 9, 0), (7, 5, 6), (8, 12, 0), (9, 20, 0)]
         );
         for b in LISTED.iter().chain(&[Builtin { name: "Infection", engine: 2, source: INFECTION }]) {
             let ir = crate::lang::compile(b.source).unwrap();

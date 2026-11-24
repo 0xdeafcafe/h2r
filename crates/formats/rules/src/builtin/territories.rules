@@ -3,8 +3,10 @@
 // contest time, an owner per territory, and points for territories held.
 // docs/game/rules-engine.md, "Porting the seven engines".
 //
-// Entries a host cannot make yet (`verify::unhostable`):
-//   register_objective  traced (0x15e050; Territories' own call 0x2c0a7d)
+// The script owns its territories: it tracks which are in play itself, so
+// no retail objective is registered, and the record's type area is zero, so
+// the count and contest time are script options.
+// Entries a host cannot make yet (`verify::unhostable`): none.
 // Not reproduced: the Territories globals (`T=[0x51eccc]`: owners `T+0x70`,
 // occupants `T+0x95`) are not written; the marker's territory index is not
 // passed as its registration team; a contested or abandoned capture
@@ -18,9 +20,12 @@ const most_territories = 8
 
 label territory: zones 1..most_territories
 
+option in_play: int 1..most_territories = 3 "Territories" "How many of the map's territories are in play"
+option contest_time: time 1s..30s = 5s "Contest time" "How long a territory is stood in, uncontested, to take it"
 option score_time: time 1s..16s = 1s "Score interval" "Time between points for each territory held"
 
 object var owner: player? = none
+object var live: bool = false
 object var progress: time = 0t
 global var placed: int = 0
 global var pay: timer
@@ -30,10 +35,10 @@ fn rival(a: player, b: player) -> bool = (variant.team_play and a.team != b.team
 
 on round_start {
     placed = 0
-    let n = clamp(variant.territories_count, 1, most_territories)
     for each territory m {
-        if placed < n {
-            register_objective(m, none)
+        m.live = false
+        if placed < in_play {
+            m.live = true
             m.owner = none
             m.progress = 0t
             show_area(m, none)
@@ -43,9 +48,8 @@ on round_start {
     pay = score_time
 }
 
-// The territories in play are the registered ones.
 on tick {
-    for each territory m where is_objective(m) {
+    for each territory m where m.live {
         if let lead = first(players p where p.alive and inside(p, m)) {
             let rivals = count(players q where q.alive and inside(q, m) and rival(q, lead))
             let owner = m.owner
@@ -54,7 +58,7 @@ on tick {
                 m.progress = 0t
             } else {
                 m.progress = m.progress + 1t
-                if m.progress >= seconds(max(variant.territories_contest_time, 1)) {
+                if m.progress >= contest_time {
                     m.owner = lead
                     m.progress = 0t
                     show_area(m, lead.team)
@@ -67,7 +71,7 @@ on tick {
 }
 
 on timer(pay) {
-    for each objectives m {
+    for each territory m where m.live {
         if let o = m.owner { score(o, 1) }
     }
     pay = score_time

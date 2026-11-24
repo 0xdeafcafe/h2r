@@ -408,7 +408,10 @@ fn king_scores_time_on_the_hill_unless_contested() {
     g.inside.insert((0, 500));
     // Player 1 stands on hill 1, which is not in play.
     g.inside.insert((1, 510));
-    let mut vm = start(builtin::KING, &mut g, 5);
+    // A stock record's type area would move the hill every second; the
+    // script index's is zero, so only the script's own option counts.
+    g.variant.insert("king_moving_hill".into(), 1);
+    let mut vm = start_scripted(builtin::KING, &mut g, 5, &[("move_time", 0)]);
     assert_eq!(vm.global("hills"), Some(2));
     ticks(&mut vm, &mut g, 2, 30);
     assert_eq!(scores(&g), vec![(0, 1)]);
@@ -422,6 +425,29 @@ fn king_scores_time_on_the_hill_unless_contested() {
     g.players.get_mut(&1).unwrap().team = 0;
     ticks(&mut vm, &mut g, 92, 30);
     assert_eq!(scores(&g), vec![(0, 1), (0, 1), (1, 1)]);
+    // Hill 0 stayed in play throughout, and the script made no call into a
+    // retail objective registry.
+    assert_eq!(vm.global("hill"), Some(0));
+    assert!(g.calls_to("register_objective").is_empty());
+}
+
+#[test]
+fn king_moves_the_hill_on_its_own_option() {
+    let mut g = FakeGame::with_players(1);
+    g.labelled.insert(
+        "hill_corner".into(),
+        vec![
+            Placed { placement: 0, object: 500 },
+            Placed { placement: 1, object: 510 },
+        ],
+    );
+    g.numbers.extend([(500, 0), (510, 1)]);
+    let mut vm = start_scripted(builtin::KING, &mut g, 5, &[("move_time", 2)]);
+    assert_eq!(vm.global("hill"), Some(0));
+    ticks(&mut vm, &mut g, 2, 119);
+    assert_eq!(vm.global("hill"), Some(0));
+    ticks(&mut vm, &mut g, 121, 2);
+    assert_eq!(vm.global("hill"), Some(1));
 }
 
 // ---- CTF and Assault ----
@@ -656,7 +682,9 @@ fn assault_with_one_bomb_is_neutral_and_armed_on_the_defenders_plate() {
 fn territories_held_score_each_interval() {
     let mut g = FakeGame::with_players(2);
     g.players.get_mut(&1).unwrap().team = 1;
-    g.variant.insert("territories_count".into(), 2);
+    // The type area's fields are zero on the script index; they are
+    // ignored, as the script's options say how many and how long.
+    g.variant.insert("territories_count".into(), 1);
     g.labelled.insert(
         "territory".into(),
         vec![
@@ -665,9 +693,17 @@ fn territories_held_score_each_interval() {
             Placed { placement: 2, object: 602 },
         ],
     );
-    let mut vm = start(builtin::TERRITORIES, &mut g, 4);
+    let mut vm = start_scripted(
+        builtin::TERRITORIES,
+        &mut g,
+        4,
+        &[("in_play", 2), ("contest_time", 1)],
+    );
+    // The script tracks its own territories: none is registered with the
+    // game, and the third is out of play.
+    assert!(g.calls_to("register_objective").is_empty());
     assert_eq!(
-        g.calls_to("register_objective"),
+        g.calls_to("show_area"),
         vec![&vec![object(600), Arg::Team(None)], &vec![object(601), Arg::Team(None)]]
     );
 

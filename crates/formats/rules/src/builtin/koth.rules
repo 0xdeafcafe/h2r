@@ -3,8 +3,10 @@
 // point for each second on the hill, and contesting.
 // docs/game/rules-engine.md, "Porting the seven engines".
 //
+// The script owns its hills: no retail engine slot runs the hill, and the
+// record's type area is zero, so the hill's move time is a script option.
 // Entries a host cannot make yet (`verify::unhostable`): none. `inside`
-// tests the polygon of the hill's corners (`game::rules::world::zones`).
+// tests the area of the hill's corners (`game::rules::world::zones`).
 // Not reproduced: the KotH globals (`[0x51ecc8]`: the hill in play
 // `+0x1a4`, the occupants mask `+0x1a8`, player `+0x1b8`) are not written;
 // the next hill is the next number in order, as 0x2bd0b0's choice is not
@@ -14,6 +16,8 @@ rules "King of the Hill" 1
 type koth
 
 label hill_corner: zones numbered
+
+option move_time: time 0s..300s = 60s "Hill move time" "How long a hill stays in play before the next; 0 never moves it"
 
 global var hill: int = 0
 global var hills: int = 0
@@ -30,7 +34,7 @@ fn start_hill(n: int) {
     hill = n
     if let zone = hill_corner[hill] { show_area(zone, none) }
     // Never moves when the setting is 0 (0x2bd747).
-    if variant.king_moving_hill > 0 { moves = seconds(variant.king_moving_hill) }
+    if move_time > 0t { moves = move_time }
 }
 
 on round_start {
