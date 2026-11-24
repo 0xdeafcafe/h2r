@@ -895,9 +895,9 @@ fn tag_node(
             let label = scenario_edit::layout::BLOCKS
                 .iter()
                 .find(|d| d.kind == p.kind)
-                .map_or_else(|| format!("{:?}", p.kind), |d| d.label);
+                .map_or_else(|| format!("{:?}", p.kind), |d| d.label.to_string());
             if ui.small_button(format!("{label} {}##used", p.index)) {
-                actions.push(Action::Select(Selection::Placement(p.kind, p.index)));
+                actions.push(Action::Select(Some((p.kind, p.index))));
             }
         }
     }

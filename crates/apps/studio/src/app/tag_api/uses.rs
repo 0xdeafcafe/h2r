@@ -96,7 +96,8 @@ pub fn uses(doc: &TagDoc, scenario: Option<&Scenario>, tag: TagId) -> Uses {
     let mut queue = VecDeque::from([tag]);
     let mut tags = Vec::new();
     while let Some(current) = queue.pop_front() {
-        for &(referrer, via) in index.edges.get(&current).into_iter().flatten() {
+        for (referrer, via) in index.edges.get(&current).into_iter().flatten() {
+            let referrer = *referrer;
             if seen.insert(referrer) {
                 queue.push_back(referrer);
                 tags.push(Used {

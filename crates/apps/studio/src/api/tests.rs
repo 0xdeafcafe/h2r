@@ -901,7 +901,7 @@ fn tag_find_matches_words_and_changed_follows_edits() {
     );
 
     // Changed only: nothing, the edit, then nothing again after its undo.
-    assert_eq!(paths(&find(&mut api, &mut app, None, None, true)), []);
+    assert!(paths(&find(&mut api, &mut app, None, None, true)).is_empty());
     call(&mut api, &mut app, m::TAG_SET, json!({"tag": weap, "path": "speed", "value": 4.0}));
     assert_eq!(paths(&find(&mut api, &mut app, None, None, true)), ["speed"]);
     // Both filters together intersect.
@@ -922,7 +922,7 @@ fn tag_find_matches_words_and_changed_follows_edits() {
     assert_eq!((focused["search"].as_str(), focused["changed"].as_bool()), (Some(""), Some(false)));
     assert!(focused["rows"].as_array().unwrap().iter().any(|r| r["path"] == "flags"));
     app.dispatch(Action::Undo);
-    assert_eq!(paths(&find(&mut api, &mut app, json!({"changed": true}))), []);
+    assert!(paths(&find(&mut api, &mut app, None, None, true)).is_empty());
 }
 
 /// The search walk stops at 5,000 list items and says so: `tag.find`
@@ -987,7 +987,7 @@ fn tag_uses_lists_the_placements_and_tags_that_reach_a_tag() {
             .as_array()
             .unwrap()
             .iter()
-            .map(|p| (p["block"].as_str().unwrap().to_owned(), p["index"].as_usize().unwrap()))
+            .map(|p| (p["block"].as_str().unwrap().to_owned(), p["index"].as_u64().unwrap() as usize))
             .collect()
     };
     let tags = |v: &Value| -> Vec<String> {
