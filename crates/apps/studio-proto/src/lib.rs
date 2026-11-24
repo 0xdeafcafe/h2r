@@ -343,6 +343,7 @@ pub mod method {
     // In-memory animation documents (AN3).
     pub const ANIM_NEW: &str = "anim.new";
     pub const ANIM_DUPLICATE: &str = "anim.duplicate";
+    pub const ANIM_RETARGET: &str = "anim.retarget";
     pub const ANIM_KEY: &str = "anim.key";
     pub const ANIM_CHECK: &str = "anim.check";
     pub const ANIM_SAVE: &str = "anim.save";

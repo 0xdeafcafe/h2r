@@ -448,6 +448,7 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         m::ANIM_READ
         | m::ANIM_NEW
         | m::ANIM_DUPLICATE
+        | m::ANIM_RETARGET
         | m::ANIM_KEY
         | m::ANIM_CHECK
         | m::ANIM_SAVE => {
@@ -457,7 +458,7 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             if name == m::ANIM_SAVE {
                 import_tests::package(&t.path("data/packages/mine"), "mine");
             }
-            if matches!(name, m::ANIM_KEY | m::ANIM_CHECK | m::ANIM_SAVE) {
+            if matches!(name, m::ANIM_KEY | m::ANIM_CHECK | m::ANIM_SAVE | m::ANIM_RETARGET) {
                 let opened = call(
                     api,
                     app,

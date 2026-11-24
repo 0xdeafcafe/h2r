@@ -1,9 +1,9 @@
 //! Session animation documents for the Tags tool's animation graphs.
 
-use anim_edit::{AnimDoc, Check, Node};
+use anim_edit::{AnimDoc, Check, Node, RetargetReport};
 use map::TagId;
 use tags::anim_keys::Tolerance;
-use tags::anim_sample::{NodeTransform, Pose};
+use tags::anim_sample::{NodeDefault, NodeTransform, Pose};
 
 #[path = "save.rs"]
 pub(super) mod save;
@@ -57,6 +57,31 @@ impl Loaded {
                 parent: node.parent,
             })
             .collect()
+    }
+}
+
+impl Loaded {
+    /// The rest pose of the render model that uses the graph, which the
+    /// retarget measures keys against.
+    fn rest(&self, model: Option<&str>) -> Result<Vec<NodeDefault>, AnimError> {
+        let Some(picked) = self.pick_model(model)? else {
+            return Err(AnimError::Refused(
+                "no model of this map uses the graph, so it has no rest pose".to_owned(),
+            ));
+        };
+        let (user, piece) = &self.models[picked];
+        let piece = piece
+            .clone()
+            .map_err(|e| AnimError::Refused(format!("{}: {e}", user.name)))?;
+        if piece.skeleton.len() != self.graph.nodes.len() {
+            return Err(AnimError::Refused(format!(
+                "{}: the render model has {} nodes, the graph {}",
+                user.name,
+                piece.skeleton.len(),
+                self.graph.nodes.len()
+            )));
+        }
+        Ok(model_defaults(&piece))
     }
 }
 
@@ -232,6 +257,58 @@ impl App {
             clip,
         };
         Ok(self.anim.insert(doc))
+    }
+
+    /// Start a document on another graph's skeleton from a document's keys
+    /// (AN5). Both graphs are in the map the Tags tool shows, and each
+    /// has one model, or `from_model` and `to_model` name it. `table`
+    /// pairs `(source node, target node)` where the names do not.
+    pub fn anim_retarget(
+        &mut self,
+        doc: u64,
+        to: TagId,
+        name: &str,
+        table: &[(usize, usize)],
+        models: [Option<&str>; 2],
+    ) -> Result<(u64, RetargetReport), AnimError> {
+        let from = self.anim_doc_tag(doc)?;
+        if self.anim_doc_info(doc)?.kind == "overlay" {
+            return Err(AnimError::Refused(
+                "an overlay's keys are deltas, not poses: retarget a base clip".to_owned(),
+            ));
+        }
+        self.ensure_anim(from)?;
+        let source_rest = self.anim.loaded.as_ref().expect("loaded").rest(models[0])?;
+        self.ensure_anim(to)?;
+        let loaded = self.anim.loaded.as_ref().expect("loaded");
+        let target_rest = loaded.rest(models[1])?;
+        let nodes = loaded.skeleton();
+        let graph = loaded.key.clone();
+        let (clip, report) = anim_edit::retarget(
+            &self.anim_document(doc)?.clip,
+            &source_rest,
+            &nodes,
+            &target_rest,
+            name.to_owned(),
+            table,
+        )
+        .map_err(AnimError::Refused)?;
+        let frames = clip.frames();
+        let id = self.anim.insert(AnimationDocument {
+            graph,
+            summary: AnimSummary {
+                index: 0,
+                name: clip.name().to_owned(),
+                kind: "base",
+                frames,
+                codecs: [None, None],
+                aim_grid: false,
+                error: None,
+            },
+            retail_index: None,
+            clip,
+        });
+        Ok((id, report))
     }
 
     /// Pose a document on the graph's model. An overlay document applies

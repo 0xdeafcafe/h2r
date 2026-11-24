@@ -24,6 +24,14 @@ pub(super) const DUPLICATE: MethodDef = def(
     r#"{"tag":"jmad:invented\\stickman","animation":"combat:idle","name":"idle copy"}"#,
 );
 
+pub(super) const RETARGET: MethodDef = def(
+    m::ANIM_RETARGET,
+    "Carry an open base clip onto the skeleton of a jmad tag in the shown map as a new document. Nodes pair by name, the table pairs the rest; rotations carry as deltas from each rest pose, translations scale by bone length. Unmatched nodes are listed and their channels dropped",
+    r#"{"doc":"integer","to":"string (the target jmad tag)","name":"string","table?":"[[source node index, target node index]]","from_model?":"string","to_model?":"string (the model whose rest pose the graph's skeleton takes, when several use it)"}"#,
+    r#"{"doc":"integer","name":"string","frames":"integer","nodes":"integer","revision":"integer","matched":"[[source,target]]","dropped_nodes":"[integer]","dropped_channels":"integer","unmatched_targets":"[integer]","scaled":"[{node,ratio}]"}"#,
+    r#"{"doc":1,"to":"jmad:invented\\stickman","name":"wave retargeted"}"#,
+);
+
 pub(super) const KEY: MethodDef = def(
     m::ANIM_KEY,
     "Set or remove one key on an open animation document. An interpolation edit without a value needs an existing key. Interpolation governs the segment after the key",
@@ -82,6 +90,35 @@ pub(super) fn duplicate(app: &mut App, p: &P) -> Reply {
         app.anim_duplicate(tag, animation, name).map_err(failed)?
     };
     doc_summary(app, id)
+}
+
+pub(super) fn retarget(app: &mut App, p: &P) -> Reply {
+    let doc = p.u64("doc")?;
+    let name = p.str("name")?;
+    let to = super::anim_tag(app, &P(&json!({"tag": p.get("to").cloned().unwrap_or(Value::Null)})))?;
+    let mut table = Vec::new();
+    if let Some(rows) = p.get("table") {
+        let bad = || invalid("table: expected [[source node index, target node index]]");
+        for row in rows.as_array().ok_or_else(bad)? {
+            let pair = row.as_array().filter(|a| a.len() == 2).ok_or_else(bad)?;
+            let index = |v: &Value| v.as_u64().and_then(|i| usize::try_from(i).ok()).ok_or_else(bad);
+            table.push((index(&pair[0])?, index(&pair[1])?));
+        }
+    }
+    let (id, report) = app
+        .anim_retarget(doc, to, name, &table, [p.opt_str("from_model")?, p.opt_str("to_model")?])
+        .map_err(failed)?;
+    let mut out = doc_summary(app, id)?;
+    out["matched"] = json!(report.matched);
+    out["dropped_nodes"] = json!(report.dropped_nodes);
+    out["dropped_channels"] = json!(report.dropped_channels);
+    out["unmatched_targets"] = json!(report.unmatched_targets);
+    out["scaled"] = report
+        .scaled
+        .iter()
+        .map(|(node, ratio)| json!({"node": node, "ratio": ratio}))
+        .collect();
+    Ok(out)
 }
 
 pub(super) fn read(app: &App, id: u64, with_keys: bool) -> Reply {

@@ -741,3 +741,41 @@ fn a_gizmo_drag_and_a_socket_key_write_the_same_document() {
     assert!(doc.redo());
     assert_eq!(socket_keys, read(&mut api, &mut app, json!({"doc": gizmo}))["nodes"]);
 }
+
+#[test]
+fn a_retarget_onto_the_same_skeleton_keeps_the_keys_and_reports_every_node_matched() {
+    let t = Temp::new("retarget");
+    let (mut app, mut api) = open(&t);
+    let doc = create_doc(&mut api, &mut app, "source");
+    call(
+        &mut api,
+        &mut app,
+        m::ANIM_KEY,
+        json!({"doc": doc, "node": 1, "channel": "translation", "frame": 3, "value": [1.4, 0, 0]}),
+    );
+    let out = call(
+        &mut api,
+        &mut app,
+        m::ANIM_RETARGET,
+        json!({"doc": doc, "to": GRAPH, "name": "copy"}),
+    );
+    assert_ne!(out["doc"], doc);
+    assert_eq!(out["dropped_nodes"], json!([]));
+    assert_eq!(out["dropped_channels"], 0);
+    assert_eq!(out["unmatched_targets"], json!([]));
+    let mut keys = |d: &Value| {
+        read(&mut api, &mut app, json!({"doc": d, "keys": true}))["nodes"][1]["channels"][0]["keys"][0]["value"].clone()
+    };
+    let (a, b) = (keys(&json!(doc)), keys(&out["doc"]));
+    for (x, y) in a.as_array().unwrap().iter().zip(b.as_array().unwrap()) {
+        assert!((x.as_f64().unwrap() - y.as_f64().unwrap()).abs() < 1e-5, "{a} {b}");
+    }
+    for table in [json!([[1]]), json!([[1, 9]]), json!("x")] {
+        let error = refused(api.call(
+            &mut app,
+            m::ANIM_RETARGET,
+            json!({"doc": doc, "to": GRAPH, "name": "bad", "table": table}),
+        ));
+        assert!(matches!(error.code, code::INVALID_PARAMS | code::REFUSED), "{error}");
+    }
+}
