@@ -2251,6 +2251,7 @@ name = "forge-build"
 version = "0.1.0"
 dependencies = [
  "content",
+ "firefight-kit",
  "forge-doc",
  "map",
  "scenario-edit",
