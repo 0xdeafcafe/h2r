@@ -1,4 +1,6 @@
 use scene_extract::layer_sort::sort;
+pub(crate) mod bsp;
+
 use super::*;
 
 const LIST_END: u32 = 0x004b_6280;
@@ -29,15 +31,19 @@ impl Entry {
         if count == CAPACITY {
             return Ok(None);
         }
-        let address = at(ptr(m, LIST_ENTRIES)?, count * STRIDE)?;
+        Self::at(m, ptr(m, LIST_ENTRIES)?, count).map(Some)
+    }
+
+    fn at(m: &dyn GuestMemory, entries: u32, count: u32) -> Result<Self> {
+        let address = at(entries, count * STRIDE)?;
         let mut bytes = [0; STRIDE as usize];
         m.read(address, &mut bytes)?;
         bytes[0xc] = 0;
-        Ok(Some(Self {
+        Ok(Self {
             address,
             count,
             bytes,
-        }))
+        })
     }
 
     fn word(&mut self, offset: usize, value: u32) {
@@ -75,6 +81,15 @@ impl Entry {
         for (i, coord) in position.into_iter().enumerate() {
             self.word(0x64 + i * 4, coord.to_bits());
         }
+        Ok(())
+    }
+
+    fn geometry(&mut self, m: &dyn GuestMemory, position: [f32; 3], radius: f32, flags: u8, shader: u32, argument: u32) -> Result<()> {
+        let class = [3, 1, 2, 0][usize::from(flags & 3)];
+        self.sort_key(m, class, position, Some(radius))?;
+        self.word(0x20, points::TRANSPARENT_GEOMETRY.base);
+        self.word(0x24, shader);
+        self.word(0x28, argument);
         Ok(())
     }
 
@@ -146,13 +161,8 @@ fn geometry_entry(m: &dyn GuestMemory, cpu: &CpuAbi) -> Result<Output> {
     let bounds = stack(m, cpu, 0x38)?;
     let position = m.vec3(at(bounds, 4)?)?;
     let radius = m.f32(at(bounds, 0x10)?)?;
-    let flags = m.u8(at(cpu.ebx, 0x16)?)? & 3;
-    // 0x00040e10 encodes the material's two sort classification bits.
-    let class = [3, 1, 2, 0][flags as usize];
-    entry.sort_key(m, class, position, Some(radius))?;
-    entry.word(0x20, points::TRANSPARENT_GEOMETRY.base);
-    entry.word(0x24, cpu.edi);
-    entry.word(0x28, cpu.ebp);
+    let flags = m.u8(at(cpu.ebx, 0x16)?)?;
+    entry.geometry(m, position, radius, flags, cpu.edi, cpu.ebp)?;
     let plane = m.u8(at(bounds, 0x14)?)?;
     entry.bytes[0xc] = plane;
     let (eax, ecx, edx) = if plane == 0 {

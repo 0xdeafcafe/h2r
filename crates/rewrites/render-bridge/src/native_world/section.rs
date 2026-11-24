@@ -1,11 +1,13 @@
 //! The main BSP arm of the scene material walk at 0x44c04. Plan a whole
-//! record before appending any items. A transparent producer, material
-//! override or unrecognised shader sends the record back to its guest loop.
+//! record before appending its scene items and sorted geometry entries.
+//! An unresolved input returns the complete record to its guest loop.
 
 use std::collections::HashMap;
 
 use engine::memory::GuestMemory;
 use native_render::skip;
+use frame_scene::Owner;
+use crate::native_scene_lists::transparent_bsp::{Bounds, SectionQueue, PLANE_HASH, PLANE_EQUAL};
 
 const SCENE_LIST: u32 = 0x004c_1a48;
 const SCREEN_SCALE: u32 = 0x0046_70e4;
@@ -15,8 +17,6 @@ const LOD_SCALES: u32 = 0x0048_5b28;
 const MATERIAL_VIS: u32 = 0x004e_d280;
 const ACTIVE_BSP_INDEX: u32 = 0x0046_86c4;
 const PART_PLANES: u32 = 0x0051_f400;
-const PLANE_HASH: u32 = 0x0001_e8c0;
-const PLANE_EQUAL: u32 = 0x0001_e8f0;
 pub(super) const FIRST_PART_RETURN: u32 = 0x0004_4c15;
 
 fn material_visible(m: &dyn GuestMemory, material: u32, placement: u32) -> Option<bool> {
@@ -282,7 +282,7 @@ fn append_cached(m: &mut dyn GuestMemory, sp: u32, index: u32, cache: &mut Secti
     let geometry = m.u32(sp.checked_add(0x28)?).ok()?;
     let count = m.u32(geometry).ok()?;
     if geometry == 0 || !(1..=256).contains(&count) { return None; }
-    let parts = m.u32(geometry.checked_add(4)?).ok()?;
+    let part_base = m.u32(geometry.checked_add(4)?).ok()?;
     let bsp = m.u32(super::ACTIVE_BSP).ok()?;
     let materials = m.u32(bsp.checked_add(0xa8)?).ok()?;
     let material_count = m.u32(bsp.checked_add(0xa4)?).ok()?;
@@ -297,7 +297,8 @@ fn append_cached(m: &mut dyn GuestMemory, sp: u32, index: u32, cache: &mut Secti
     if cache.parts.scope != Some((generation, bsp)) { cache.materials.shaders.clear(); }
     let outputs = &mut cache.outputs;
     outputs.clear();
-    let (parts, mut hit) = cache.parts.resolve(m, generation, bsp, parts, count, &mut cache.sources)?;
+    let (parts, mut hit) = cache.parts.resolve(m, generation, bsp, part_base, count, &mut cache.sources)?;
+    let mut queue = SectionQueue::default();
     for (n, part) in parts.iter().enumerate() {
         let material_no = u32::from(part.material);
         if material_no >= material_count || material_no > i16::MAX as u32 { return None; }
@@ -313,17 +314,25 @@ fn append_cached(m: &mut dyn GuestMemory, sp: u32, index: u32, cache: &mut Secti
         hit &= material_hit;
         // The standard scene caller passes the same shader as its override.
         if layers & 0x8080 != 0 && layers & 0xa == 0 && base_layers & (1 << 21) != 0 { continue; }
-        // The transparent producer allocates a second entry and publishes its
-        // plane and position. Leave the complete section to that producer.
-        if layers & (1<<15) != 0 { return None; }
-        if layers == 0 || first + (outputs.len() / 24) as u32 == capacity { continue; }
+        let argument = u32::from(pixels)<<24 | index<<8 | n as u32;
+        if layers & (1<<15) != 0 {
+            let owner = if flags & (1<<12) != 0 {
+                Owner::Instance(placement)
+            } else {
+                Owner::Cluster((m.u32(record+12).ok()? >> 9) & 0x1ff)
+            };
+            let bounds = Bounds::read(m, bsp, planes, owner, n as u8, part_base.checked_add(n as u32 * PART_SIZE as u32)?)?;
+            queue.push(m, bounds, shader, argument)?;
+        }
+        // The base scene skips the ordinary material append if the only
+        // selected layer is the sorted handler (0x412a3).
+        if layers & !(1 << 15) == 0 || first + (outputs.len() / 24) as u32 == capacity { continue; }
         let mut item = [0; 24];
         let item_at = dst.checked_add(outputs.len() as u32)?;
         m.read(item_at, &mut item).ok()?;
         item[0..4].copy_from_slice(&skip::GEOMETRY_BUILD.to_le_bytes());
         item[4..8].copy_from_slice(&skip::GEOMETRY_DRAW.to_le_bytes());
         item[8..12].copy_from_slice(&shader.to_le_bytes());
-        let argument = u32::from(pixels)<<24 | index<<8 | n as u32;
         item[12..16].copy_from_slice(&argument.to_le_bytes());
         item[16..20].copy_from_slice(&layers.to_le_bytes());
         item[20] = 0;
@@ -331,7 +340,28 @@ fn append_cached(m: &mut dyn GuestMemory, sp: u32, index: u32, cache: &mut Secti
         all_layers |= layers;
         outputs.extend_from_slice(&item);
     }
-    if !outputs.is_empty() {
+    if let Some((rows_at, rows, count_at, next_count)) = queue.pending() {
+        let mut header = [0; 8];
+        header[..4].copy_from_slice(&(first + (outputs.len() / 24) as u32).to_le_bytes());
+        header[4..].copy_from_slice(&all_layers.to_le_bytes());
+        let mut writes: Vec<(u32, &[u8])> = vec![(rows_at, rows), (count_at, &next_count)];
+        if !outputs.is_empty() {
+            writes.extend([(dst, outputs.as_slice()), (SCENE_LIST + 4, header.as_slice())]);
+        }
+        // A later read-only destination must leave both queues intact for
+        // the guest to retry the entire section. GuestMemory writes each
+        // individual span atomically.
+        let old = writes.iter().map(|(addr, bytes)| m.bytes(*addr, bytes.len()).ok())
+            .collect::<Option<Vec<_>>>()?;
+        for (i, &(addr, bytes)) in writes.iter().enumerate() {
+            if m.write(addr, bytes).is_err() {
+                for (&(prior, _), saved) in writes[..i].iter().zip(&old).rev() {
+                    m.write(prior, saved).expect("restore material lists on refusal");
+                }
+                return None;
+            }
+        }
+    } else if !outputs.is_empty() {
         let mut old_header = [0; 8];
         m.read(SCENE_LIST+4, &mut old_header).ok()?;
         let mut header = [0; 8];
@@ -450,6 +480,47 @@ mod tests {
         assert_eq!(frame(&mut render), Some((2, false)));
         assert_eq!(render.u32(SCENE_LIST+4).unwrap(), 2);
         assert_eq!(render.u32(ITEMS+16).unwrap(), 1<<7);
+    }
+
+    #[test]
+    fn section_build_publishes_layer_15_in_part_order_and_mixed_parts_to_both_lists() {
+        const END: u32 = 0x004b_6280;
+        const ENTRIES: u32 = 0x004b_6288;
+        const ROWS: u32 = SP+0x4000;
+        let mut m = fixture();
+        m.set_u32(BSP+0xb20, 1).unwrap();
+        m.set_u32(ENTRIES, ROWS).unwrap();
+        m.set_u32(END, 1).unwrap();
+        m.set_u8(SP+0x24, 17).unwrap();
+        m.set_u32(HEADER+0x42, 1<<15).unwrap();
+        m.set_u8(HEADER+0x116, 1).unwrap();
+        m.set_f32(0x0048_5624, 1.).unwrap();
+        m.set_f32(0x0048_5618, 3.).unwrap();
+        m.set_f32(PARTS+0x10, 9.).unwrap();
+        m.set_f32(PARTS+0x48+0x10, -2.).unwrap();
+        m.set_u8(ROWS+0x70+0x3a, 37).unwrap();
+        assert_eq!(append(&mut m, SP, 0), Some(2));
+        assert_eq!(m.u32(SCENE_LIST+4), Ok(0));
+        assert_eq!(m.u32(END), Ok(3));
+        for (i, depth) in [(0, -6.), (1, 5.)] {
+            let row = ROWS+(i+1)*0x70;
+            assert_eq!(m.u32(row), Ok(1));
+            assert_eq!(m.f32(row+4), Ok(depth));
+            assert_eq!(m.u32(row+0x20), Ok(engine::points::TRANSPARENT_GEOMETRY.base));
+            assert_eq!(m.u32(row+0x24), Ok(1));
+            assert_eq!(m.u32(row+0x28), Ok((17<<24) | i));
+        }
+        assert_eq!(m.u8(ROWS+0x70+0x3a), Ok(37));
+        m.set_u32(HEADER+0x42, (1<<15) | (1<<6)).unwrap();
+        assert_eq!(append(&mut m, SP, 0), Some(2));
+        assert_eq!(m.u32(SCENE_LIST+4), Ok(2));
+        assert_eq!(m.u32(ITEMS+16), Ok((1<<15) | (1<<6)));
+        assert_eq!(m.u32(END), Ok(5));
+
+        m.set_u32(END, 0x3ff).unwrap();
+        let before = m.bytes.clone();
+        assert_eq!(append(&mut m, SP, 0), None);
+        assert_eq!(m.bytes, before);
     }
 
     #[test]

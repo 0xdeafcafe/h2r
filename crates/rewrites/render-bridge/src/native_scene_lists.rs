@@ -9,7 +9,9 @@ mod object_lod;
 mod records;
 mod setup;
 pub use setup::{DisplaySection, display_model};
+mod regions;
 mod transparents;
+pub(crate) use transparents::bsp as transparent_bsp;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -132,6 +134,7 @@ impl Feature for ScaledSceneLists {
             Seam::Function(&points::LIGHT_EXTRA_CASTER, 4),
             lights::extra_caster,
         );
+        regions::install(b);
         install(
             b,
             Seam::Function(&points::TRANSPARENT_EFFECT_ENTRY, 8),
