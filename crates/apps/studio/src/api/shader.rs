@@ -1,6 +1,6 @@
 //! The Shader tab as the agent API ([`super::Provider`], registered in
-//! [`super::seams`]): `shader.read`, `shader.set` and `shader.preview`
-//! over `app::shader`, the tab's own read and draw. `shader.set` is
+//! [`super::seams`]): `shader.read`, `shader.set`, `shader.preview` and
+//! `shader.code` over `app::shader`, the tab's own read and draw. `shader.set` is
 //! `tag.set` at the slot's path (`app::shader::SlotKind::path`), so the
 //! write, its undo step and its refusals are the field panel's.
 //! docs/editor/rich-editors.md, "Shaders"; docs/editor/agent-api.md.
@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 
 use map::TagId;
+use scenario_edit::native_view::code::{self as programs, ProgramCode};
 use scenario_edit::native_view::preview::{Shape, covered};
 use serde_json::{Value, json};
 use studio_proto::{code, method as m};
@@ -42,6 +43,14 @@ const PREVIEW: MethodDef = def(
     r#"{"tag":"string|integer","shape?":"sphere|quad|object","object?":"string|integer (the object tag, for shape object)","size?":"[w, h] (default [320, 240], each 16 to 2048)","out?":"string (a .png path outside Git)"}"#,
     r#"{"png":"string|null","width":"integer","height":"integer","covered":"integer","shape":"string","passes_drawn":"integer","refusals":"[{layer, passes, why}]","base":"string|null","unresolved":"[string]","notes":"[string]"}"#,
     r#"{"tag":"shad:levels\\test\\shaders\\floor","shape":"sphere","out":"$OUT/floor.png"}"#,
+);
+
+const CODE: MethodDef = def(
+    m::SHADER_CODE,
+    "The two programs of one pass of a shader as text, read with the document's edits: the vertex program (the world classification the preview draws) and the pixel program, each as its disassembly (`listing`), the WGSL the translator makes of it (`wgsl`) and the translator's `warnings`. `pass` counts the passes across the layers of the first level of detail, in layer order (default 0; `passes` is how many there are, `layer` and `pass_in_layer` where it sits); `implementation` picks one of the pass's implementations (default 0). A program that cannot be translated has its listing, a null `wgsl` and the refusal in `warnings` (a state program); one that does not decode has a null `listing` too. Nothing is written: the text is what the renderer is given, not a map edit",
+    r#"{"tag":"string|integer","pass?":"integer (default 0)","implementation?":"integer (default 0)"}"#,
+    r#"{"tag":"string","pass":"integer","passes":"integer","layer":"integer","pass_in_layer":"integer","pass_tag":"string|null","implementation":"integer","implementations":"integer","vertex":"{classification, listing: string|null, wgsl: string|null, warnings: [string]}","pixel":"{listing: string|null, wgsl: string|null, warnings: [string]}"}"#,
+    r#"{"tag":"shad:levels\\test\\shaders\\floor","pass":0}"#,
 );
 
 /// The provider: a GPU for the previews, held between calls.
@@ -216,6 +225,33 @@ fn shape_of(app: &mut App, p: &P) -> Result<Shape, agent_proto::RpcError> {
     }
 }
 
+fn program_json(p: &ProgramCode) -> Value {
+    json!({"listing": p.listing, "wgsl": p.wgsl, "warnings": p.warnings})
+}
+
+fn read_code(app: &mut App, p: &P) -> Reply {
+    let tag = tag_fields::resolve(app, p)?;
+    let pass = p.opt_usize("pass")?.unwrap_or(0);
+    let implementation = p.opt_usize("implementation")?.unwrap_or(0);
+    let c = app
+        .shader_code(tag, pass, implementation)
+        .map_err(failed)?;
+    let mut vertex = program_json(&c.vertex);
+    vertex["classification"] = json!(programs::VERTEX_CLASSIFICATION);
+    Ok(json!({
+        "tag": tag_name(app, tag),
+        "pass": c.pass,
+        "passes": c.passes,
+        "layer": c.layer,
+        "pass_in_layer": c.pass_in_layer,
+        "pass_tag": tag_name(app, c.pass_tag),
+        "implementation": c.implementation,
+        "implementations": c.implementations,
+        "vertex": vertex,
+        "pixel": program_json(&c.pixel),
+    }))
+}
+
 impl Shader {
     fn preview(&mut self, app: &mut App, p: &P) -> Reply {
         let tag = tag_fields::resolve(app, p)?;
@@ -280,7 +316,7 @@ impl Shader {
 
 impl Provider for Shader {
     fn methods(&self) -> Vec<MethodDef> {
-        vec![READ, SET, PREVIEW]
+        vec![READ, SET, PREVIEW, CODE]
     }
 
     fn call(&mut self, app: &mut App, method: &str, params: &Value) -> Option<Reply> {
@@ -289,6 +325,7 @@ impl Provider for Shader {
             m::SHADER_READ => read(app, &p),
             m::SHADER_SET => set(app, &p),
             m::SHADER_PREVIEW => self.preview(app, &p),
+            m::SHADER_CODE => read_code(app, &p),
             _ => return None,
         })
     }

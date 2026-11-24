@@ -1483,6 +1483,7 @@ impl NativeObjects {
     }
 }
 
+pub mod code;
 pub mod preview;
 
 #[cfg(test)]

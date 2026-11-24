@@ -156,6 +156,8 @@ pub mod method {
     pub const SHADER_READ: &str = "shader.read";
     pub const SHADER_SET: &str = "shader.set";
     pub const SHADER_PREVIEW: &str = "shader.preview";
+    // The Code section (slice S4): a pass's programs as text.
+    pub const SHADER_CODE: &str = "shader.code";
 
     pub const SOUND_READ: &str = "sound.read";
     pub const SOUND_PLAY: &str = "sound.play";

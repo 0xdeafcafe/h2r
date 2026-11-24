@@ -238,7 +238,7 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             app.tags = crate::app::TagDoc::new(super::curves::tests::registry());
             call(api, app, m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
         }
-        m::SHADER_READ | m::SHADER_SET | m::SHADER_PREVIEW => {
+        m::SHADER_READ | m::SHADER_SET | m::SHADER_PREVIEW | m::SHADER_CODE => {
             // The invented material: the floor shader with a colour its
             // template's one pass in layer 5 reads.
             let map = t.path("shader.map");

@@ -502,6 +502,19 @@ Notes on some:
   answers `passes_drawn`, each left-out layer in `refusals` with its pass
   count and reason, `base` when the base look does not draw, and
   `covered`. With no renderer `png` is null and the counts still answer.
+  `shader.code {tag, pass?, implementation?}` reads one pass's programs
+  as text (`native_view::code`, the Shader tab's Code section): `pass`
+  counts the passes across the layers of the first level of detail in
+  layer order (default 0), `implementation` picks one of the pass's
+  (default 0). The answer gives `passes`, `layer`, `pass_in_layer`,
+  `pass_tag`, `implementations`, and for `vertex` (the world
+  classification, `classification: "world"`) and `pixel` each
+  `{listing, wgsl, warnings}`: the disassembly, the WGSL the translator
+  makes of it and the translator's warnings. A state program has its
+  listing, a null `wgsl` and the refusal in `warnings`; a program that
+  does not decode has a null `listing` too. A pass or implementation the
+  shader lacks, or a tag that is not a `shad`, is `REFUSED`. It reads
+  with the document's edits and writes nothing.
 - **Curves.** `function.read {tag, path}` reads the function blob a
   `view=function` data field points at
   ([rich-editors.md](rich-editors.md), "Curves"; `api/curves.rs`):
@@ -2171,9 +2184,10 @@ the window and the API stay one path.
   is `app::tag_api::set_field` with `fields::colour::from_json`, a
   `TagAction::Write` of the field's own length, as the dialog writes.
 - **Shaders (rich editors S1).** `api/shader.rs` registers `Shader` for
-  `shader.read`, `shader.set` and `shader.preview`, over `app/shader.rs`
-  (the Shader tab's read, on the shown map with the document's edits)
-  and `native_view::preview::material`; `shader.set` is `tag.set` at the
+  `shader.read`, `shader.set`, `shader.preview` and `shader.code`, over
+  `app/shader.rs` (the Shader tab's read, on the shown map with the
+  document's edits), `native_view::preview::material` and
+  `native_view::code::pass_code` (S4); `shader.set` is `tag.set` at the
   slot's path (`SlotKind::path`) through `tag_fields::perform`, one undo
   step.
 - **Game type scripts.** `api/game_script.rs` registers `GameScript` for

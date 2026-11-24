@@ -26,7 +26,8 @@
 //!   `tag.colours`, every colour row of a tag ([`super::colours`]);
 //!   `tag.set` takes a colour as hex or `{rgba, intensity?}`.
 //! - **shaders** (the Shader tab, rich editors S1): `shader.read`,
-//!   `shader.set` (`tag.set` at the slot's path) and `shader.preview`
+//!   `shader.set` (`tag.set` at the slot's path), `shader.preview` and
+//!   `shader.code` (a pass's programs as text, slice S4)
 //!   ([`super::shader`]).
 //! - **tag browsing and bundles**: `tag.list` over the document the Tags
 //!   tool shows, `tag.browse`, `tag.resources`, `tag.export` and
