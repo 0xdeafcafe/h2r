@@ -5,7 +5,7 @@
 
 use bytemuck::{Pod, Zeroable};
 
-/// One world vertex (76 bytes): what the lightmap pass reads. The first
+/// One world vertex: what the lightmap pass reads. The first
 /// four fields are what stage 1's own program reads; the rest are what the
 /// game's world programs read (docs/graphics/native-world.md, "What a
 /// world pass reads"): `v2..v4` the tangent frame, `v5` the lighting
@@ -28,6 +28,8 @@ pub struct WorldVertex {
     /// material programs read `v2..v5` from these and decode them in the
     /// shader as the D3D translation does (`crate::program::INPUTS`).
     pub packed: [u32; 4],
+    /// Per-vertex light, stored in RGBA order for a normalized byte fetch.
+    pub baked_color: [u8; 4],
 }
 
 /// `v` as a `NORMPACKED3` word (signed 11:11:10, x in the low bits): each
@@ -128,6 +130,10 @@ pub struct WorldDraw {
     pub inputs: u16,
 }
 
+/// Required stream bit for a classified program that takes baked colour
+/// at v6. The ordinary v6 stream bit denotes lightmap UVs.
+pub const BAKED_COLOR_INPUT: u16 = 1 << 7;
+
 /// [`WorldDraw::inputs`] of a section with `n` vertices.
 fn section_inputs(s: &SectionInput, lit: bool) -> u16 {
     let n = s.positions.len();
@@ -140,6 +146,7 @@ fn section_inputs(s: &SectionInput, lit: bool) -> u16 {
         has(s.tangents.len()),
         has(s.lighting.len()),
         lit,
+        has(s.baked_colors.len()),
     ]
     .iter()
     .enumerate()
@@ -191,6 +198,8 @@ pub struct SectionInput {
     pub tangents: Vec<[f32; 3]>,
     /// The signed lighting vectors (stream `30`); empty without them.
     pub lighting: Vec<[f32; 3]>,
+    /// A baked RGBA colour per vertex when this stream is bound.
+    pub baked_colors: Vec<[u8; 4]>,
     pub parts: Vec<PartInput>,
 }
 
@@ -371,11 +380,13 @@ impl World {
             let (mut placed, mut program) = section_vertex(section, &run.place, lit, i);
             if keep_lighting {
                 let old = self.vertices[first + i];
+                placed.baked_color = old.baked_color;
                 placed.lightmap_uv = old.lightmap_uv;
                 placed.lighting = old.lighting;
                 placed.packed = pack_frame(placed.normal, placed.binormal, placed.tangent, placed.lighting);
                 if programs {
                     let old = self.program_vertices[first + i];
+                    program.baked_color = old.baked_color;
                     program.lightmap_uv = old.lightmap_uv;
                     program.lighting = old.lighting;
                     program.packed = pack_frame(program.normal, program.binormal, program.tangent, program.lighting);
@@ -482,6 +493,7 @@ fn section_vertex(section: &SectionInput, place: &Placement, lit: bool, i: usize
     let (binormal, tangent, lighting) = (own(&section.binormals), own(&section.tangents), own(&section.lighting));
     let uv = section.uvs.get(i).copied().unwrap_or([0.0; 2]);
     let lightmap_uv = if lit { section.lightmap_uvs[i] } else { [0.0; 2] };
+    let baked_color = section.baked_colors.get(i).copied().unwrap_or_default();
     let program = WorldVertex {
         position: section.positions[i],
         uv,
@@ -491,6 +503,7 @@ fn section_vertex(section: &SectionInput, place: &Placement, lit: bool, i: usize
         tangent,
         lighting,
         packed: pack_frame(normal, binormal, tangent, lighting),
+        baked_color,
     };
     let (placed_normal, placed_binormal, placed_tangent, placed_lighting) = (
         place.normal(normal),
@@ -517,6 +530,7 @@ fn section_vertex(section: &SectionInput, place: &Placement, lit: bool, i: usize
         // together).
         lighting: placed_lighting,
         packed: pack_frame(placed_normal, placed_binormal, placed_tangent, placed_lighting),
+        baked_color,
     };
     (placed, program)
 }
@@ -848,11 +862,13 @@ mod tests {
         // replace them.
         let mut own = quad(0, false, true);
         own.lightmap_uvs = vec![[0.125; 2]; 4];
+        own.baked_colors = vec![[12, 21, 42, 129]; 4];
         let mut w = build(&quad(0, false, true), &own);
         let mut def = edited.clone();
         def.lightmap_uvs = vec![[0.9; 2]; 4];
         let mut moved = edited.clone();
         moved.lightmap_uvs = own.lightmap_uvs.clone();
+        moved.baked_colors = own.baked_colors.clone();
         let want = build(&quad(0, false, true), &moved);
         assert!(w.replace_section(Owner::Instance(3), &def).is_ok());
         assert_eq!(w.vertices, want.vertices);

@@ -111,7 +111,20 @@ pub fn section_input(s: &Section) -> Option<SectionInput> {
         binormals: v.binormals,
         tangents: v.tangents,
         lighting: lighting_vectors(s),
+        baked_colors: s.vertex_buffers.iter().rev().find_map(|vb|
+            baked_colors(vb.type_id, vb.stride, s.data(vb))).unwrap_or_default(),
     })
+}
+
+/// D3DCOLOR carries alpha; PBYTE3 supplies 1. Both fetches use UNORM8.
+fn baked_colors(kind: u8, stride: u8, bytes: &[u8]) -> Option<Vec<[u8; 4]>> {
+    match (kind, stride) {
+        (0x2e, 4) if bytes.len().is_multiple_of(4) =>
+            Some(bytes.as_chunks::<4>().0.iter().map(|&[b, g, r, a]| [r, g, b, a]).collect()),
+        (0x2f, 3) if bytes.len().is_multiple_of(3) =>
+            Some(bytes.as_chunks::<3>().0.iter().map(|&[r, g, b]| [r, g, b, 255]).collect()),
+        _ => None,
+    }
 }
 
 /// A section's signed lighting vectors (stream `30`, found by
@@ -218,6 +231,10 @@ pub fn load_world<R: Read + Seek>(
                 let lightmap_uvs = bucket_slice(&b.lightmap_uvs, first, n).map(<[_]>::to_vec);
                 let lighting = bucket_slice(&b.lighting, first, n).map(<[_]>::to_vec);
                 with_own = SectionInput {
+                    baked_colors: match &b.colors {
+                        Some(colors) => bucket_slice(colors, first, n).unwrap_or_default().to_vec(),
+                        None => def.baked_colors.clone(),
+                    },
                     lightmap_uvs: lightmap_uvs.unwrap_or_else(|| def.lightmap_uvs.clone()),
                     lighting: lighting.unwrap_or_else(|| def.lighting.clone()),
                     ..def.clone()
@@ -317,24 +334,32 @@ pub struct BucketStreams {
     pub lightmap_uvs: Vec<[f32; 2]>,
     /// Stream `30`.
     pub lighting: Vec<[f32; 3]>,
+    /// Second descriptor when the colour flag is set. An unreadable
+    /// bound stream stays empty, so a part requiring it fails admission.
+    pub colors: Option<Vec<[u8; 4]>>,
 }
 
-/// Each of `group`'s buckets' streams, loaded once; empty for a bucket the
-/// engine does not patch (flag bit 0), or one that does not load.
+/// Each bucket's streams, loaded once. Flag bit 0 enables the first
+/// descriptor and bit 1 the baked colour descriptor.
 pub fn bucket_streams(group: &LightmapGroup, raw: &mut dyn RawSource) -> Vec<BucketStreams> {
     group
         .buckets
         .iter()
         .map(|b| {
-            if !b.is_patched() {
+            let color_bound = b.flags & 2 != 0;
+            if !b.is_patched() && !color_bound {
                 return BucketStreams::default();
             }
             match load_bucket(b, raw) {
                 Ok(Some(s)) => BucketStreams {
-                    lightmap_uvs: s.vertices(None).map(|v| v.lightmap_texcoords).unwrap_or_default(),
-                    lighting: lighting_vectors(&s),
+                    lightmap_uvs: if b.is_patched() {
+                        s.vertices(None).map(|v| v.lightmap_texcoords).unwrap_or_default()
+                    } else { Vec::new() },
+                    lighting: if b.is_patched() { lighting_vectors(&s) } else { Vec::new() },
+                    colors: color_bound.then(|| s.vertex_buffers.iter().find(|v| v.slot == 1)
+                        .and_then(|v| baked_colors(v.type_id, v.stride, s.data(v))).unwrap_or_default()),
                 },
-                _ => BucketStreams::default(),
+                _ => BucketStreams { colors: color_bound.then(Vec::new), ..Default::default() },
             }
         })
         .collect()
@@ -509,6 +534,16 @@ mod tests {
         assert_eq!(image.rgba, [0x10, 0x20, 0x30, 0x80].repeat(4));
         assert_eq!(image.mips, vec![vec![0x40, 0x50, 0x60, 0xff]]);
         assert!(expand_levels(vec![level(0, 2, 1, 1)], &palette).is_none(), "no first face");
+    }
+
+    #[test]
+    fn baked_color_streams_preserve_channels_and_the_placement_offset() {
+        let packed = baked_colors(0x2e, 4, &[1, 3, 5, 7, 19, 23, 29, 31]).unwrap();
+        assert_eq!(bucket_slice(&packed, Some(1), 1), Some(&[[29, 23, 19, 31]][..]));
+        let rgb = baked_colors(0x2f, 3, &[29, 23, 19]).unwrap();
+        assert_eq!(rgb, [[29, 23, 19, 255]]);
+        assert!(baked_colors(0x2f, 4, &[0; 4]).is_none());
+        assert!(baked_colors(0x2e, 4, &[0; 3]).is_none());
     }
 
     #[test]

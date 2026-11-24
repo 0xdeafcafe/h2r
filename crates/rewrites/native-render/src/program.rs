@@ -145,6 +145,37 @@ pub const FLOAT_INPUTS: [(u32, u64, wgpu::VertexFormat); 7] = [
 /// Bit `n` for each supplied `v<n>`.
 pub const INPUT_MASK: u16 = 0x7f;
 
+/// Convert the per-vertex lighting classification's input registers into the
+/// streams required of a section. The shader still reads v6. Its declaration
+/// maps that register to the baked colour from the bucket's second descriptor.
+pub fn vertex_lit_inputs(inputs: u16, semantics: &[u16]) -> Result<u16, String> {
+    if semantics.len() > 7 || inputs >> semantics.len() != 0 {
+        return Err("per-vertex lighting program reads outside its world declaration".into());
+    }
+    // The geometry binder tests every declared semantic before emitting,
+    // including those the vertex microcode happens to leave unused.
+    let mut required = 0;
+    for (register, &semantic) in semantics.iter().enumerate() {
+        // Position, UV, tangent frame, lighting vector and baked colour.
+        let mapped = matches!((register, semantic),
+            (0, 0) | (1, 3) | (2, 4) | (3, 5) | (4, 6) | (5, 8) | (6, 14));
+        if !mapped {
+            return Err(format!("per-vertex lighting v{register} has unsupported semantic {semantic}"));
+        }
+        required |= if register == 6 { crate::world::BAKED_COLOR_INPUT } else { 1 << register };
+    }
+    Ok(required)
+}
+
+fn material_attributes(required: u16) -> [(u32, u64, wgpu::VertexFormat); 7] {
+    let mut attributes = INPUTS;
+    if required & crate::world::BAKED_COLOR_INPUT != 0 {
+        attributes[6] = (6, std::mem::offset_of!(WorldVertex, baked_color) as u64,
+            wgpu::VertexFormat::Unorm8x4);
+    }
+    attributes
+}
+
 /// A material's compiled pass.
 #[derive(Clone, Debug)]
 pub struct MaterialProgram {
@@ -161,8 +192,8 @@ pub struct MaterialProgram {
     /// The vertex uniforms but for the view's constants, surface and depth.
     pub vertex: VertexUniforms,
     pub pixel: PixelUniforms,
-    /// The vertex registers (bit `n` for `v<n>`) the program reads from
-    /// the world vertex ([`INPUTS`]).
+    /// Required world streams. Bits 0..6 name [`INPUTS`]; a per-vertex
+    /// lighting program that reads v6 requires [`crate::world::BAKED_COLOR_INPUT`].
     pub inputs: u16,
     /// The pixel shader definition and options it was translated with.
     pub def: PixelShaderDef,
@@ -199,7 +230,7 @@ pub struct RigidProgram {
     pub wgsl: String,
     /// The vertex uniforms but for the view's constants and the rows.
     pub vertex: VertexUniforms,
-    /// The vertex registers the rigid program reads.
+    /// Required world streams, as in [`MaterialProgram::inputs`].
     pub inputs: u16,
     /// The program's instruction words (four per instruction, no
     /// header): what the D3D path's draw of a placement binds.
@@ -738,6 +769,9 @@ pub fn part_fit(
         "lightmap coordinates",
     ];
     let missing = inputs & !d.inputs;
+    if missing == crate::world::BAKED_COLOR_INPUT {
+        return Err("a part has no baked vertex colours (v6)".into());
+    }
     if missing != 0 {
         let n = missing.trailing_zeros() as usize;
         return Err(format!(
@@ -1422,6 +1456,7 @@ impl WorldPipelines {
         source: &str,
         layout: wgpu::PipelineLayout,
         shader: ShaderId,
+        required: u16,
     ) -> Option<Self> {
         let module = gfx::program::validated_resource(device, || {
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1429,7 +1464,7 @@ impl WorldPipelines {
                 source: wgpu::ShaderSource::Wgsl(source.into()),
             })
         })?;
-        let attributes = INPUTS
+        let attributes = material_attributes(required)
             .into_iter()
             .map(|(shader_location, offset, format)| wgpu::VertexAttribute {
                 format,
@@ -1732,7 +1767,7 @@ impl Gpu {
             device.create_sampler(&sampler_descriptor(program.samplers[n].as_ref()))
         });
         let pipelines =
-            WorldPipelines::material(device, &program.wgsl, layout, WORLD_CLUSTER_PROGRAM)?;
+            WorldPipelines::material(device, &program.wgsl, layout, WORLD_CLUSTER_PROGRAM, program.inputs)?;
         Some(Gpu {
             program,
             pipelines,
@@ -2024,7 +2059,7 @@ impl Rigid {
             },
         );
         let pipelines =
-            WorldPipelines::material(device, &program.wgsl, layout, WORLD_RIGID_PROGRAM)?;
+            WorldPipelines::material(device, &program.wgsl, layout, WORLD_RIGID_PROGRAM, program.inputs)?;
         Some(Self {
             program,
             buffer,
@@ -2873,7 +2908,46 @@ mod tests {
             assert_eq!(WORLD_FETCH[n] == InputFetch::NormPacked3, packed, "v{n}");
         }
         assert_eq!(FLOAT_INPUTS.iter().map(|i| i.0).collect::<Vec<_>>(), regs);
-        assert_eq!(std::mem::size_of::<WorldVertex>(), 92);
+        assert_eq!(std::mem::size_of::<WorldVertex>(), 96);
+    }
+
+    #[test]
+    fn classified_baked_colour_uses_v6_without_a_lightmap() {
+        use crate::world::{BAKED_COLOR_INPUT, Owner, PartInput, Placement, SectionInput, WorldBuilder};
+        let mut section = SectionInput {
+            positions: vec![[0.; 3], [1., 0., 0.], [0., 1., 0.]],
+            uvs: vec![[0.; 2]; 3],
+            normals: vec![[0., 0., 1.]; 3],
+            binormals: vec![[0., 1., 0.]; 3],
+            tangents: vec![[1., 0., 0.]; 3],
+            lighting: vec![[1., 0., 0.]; 3],
+            baked_colors: vec![[11, 31, 52, 73]; 3],
+            parts: vec![PartInput { material: 2, transparent: false, triangles: vec![[0, 1, 2]] }],
+            ..Default::default()
+        };
+        let mut b = WorldBuilder::new();
+        b.add_section(Owner::Instance(2), &section, &Placement::IDENTITY, None);
+        section.baked_colors.clear();
+        section.lightmap_uvs = vec![[0.25, 0.75]; 3];
+        b.add_section(Owner::Instance(3), &section, &Placement::IDENTITY, None);
+        let w = b.finish();
+        let mut program = compile(&plain_look(), &plain_program()).unwrap();
+        program.stages = [Stage::Empty; 4];
+        // The synthetic shader reads only position and colour. Admission
+        // also checks the tangent frame declared by this classification.
+        let semantics = [0, 3, 4, 5, 6, 8, 14];
+        let required = vertex_lit_inputs(0x41, &semantics).unwrap();
+        assert_eq!(required, 0x3f | BAKED_COLOR_INPUT);
+        let no_page = |_| panic!("a vertex-lit pass has no lightmap fetch");
+        assert_eq!(part_fit(&w.draws[0], required, &program, &no_page), Ok(()));
+        assert!(part_fit(&w.draws[1], required, &program, &no_page).is_err());
+        let (_, offset, format) = material_attributes(required)[6];
+        assert_eq!(format, wgpu::VertexFormat::Unorm8x4);
+        let offset = offset as usize;
+        assert_eq!(&bytemuck::bytes_of(&w.program_vertices[0])[offset..offset + 4], &[11, 31, 52, 73]);
+        assert_eq!(material_attributes(0x41)[6], INPUTS[6]);
+        assert!(vertex_lit_inputs(0x41, &[0, 1, 2]).is_err());
+        assert!(vertex_lit_inputs(0x41, &[0, 1, 2, 3, 4, 5, 9]).is_err());
     }
 
     #[test]
@@ -4965,6 +5039,7 @@ mod tests {
             normals: vec![[0.0, 0.0, 1.0]; 3],
             binormals: vec![[1.0, 0.0, 0.0]; 3],
             tangents: vec![[0.0, 1.0, 0.0]; 3],
+            baked_colors: Vec::new(),
             lighting: if lighting {
                 vec![[0.0, 0.0, 1.0]; 3]
             } else {
