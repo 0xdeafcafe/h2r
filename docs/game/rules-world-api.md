@@ -129,7 +129,17 @@ engine does not replicate, is one of two things:
   Firefight or Siege round-start line (the declared type byte), a sound
   (tag-table index, an entity or a point or an audience) and a
   medal line. A cue is not state: a machine that joins later does not
-  get it.
+  get it. One cue is the exception, since it carries state: the walls
+  cue (`rules::show::Cue::Walls`, kind 2) holds the whole list of areas
+  the script shows (`show_area`; at most 8, each a netgame flag's index
+  in 12 bits and a team in 4, 17 bytes at most). The authority sends it
+  when the list changes, an emptied list included, and again every 90
+  ticks while the list is not empty, so a machine that joins late has it
+  within a second or two. A client that gets it reads each zone's shape
+  from its own copy of the map (`rules/world/walls.rs`, `client`),
+  draws the walls through the markers' world-line source and takes an
+  older or repeated cue for nothing
+  (`crates/extensions/game/src/rules/world/show.rs`, `present_walls`).
 
 An audience is a 16-bit mask of player slots. A text is an index into
 the blob's string table and a sound an index into its tag table, so a
@@ -411,7 +421,7 @@ host runtime's ([rules-engine.md](rules-engine.md#the-host-runtime)).
 | `player_of(o)` | `player_of`, a read | the roster's units (the player datum's unit), so no unit field is read | named | a read |
 | `ticks_held(zone, team)` | `ticks_held`, a VM read | the VM's own counters over `Game::zone_holder`: the one team whose living players alone are inside, `none` when the zone is empty or contested | named | the state blob |
 | `on enter(zone, o)`, `on leave(zone, o)`; `on spawn(p)`, `on death(p)` | VM events | the roster's and the zones' changes since the last tick (`world::zones::events`), in the order the host runtime tells them | named | the state blob |
-| `show_area(zone, team)`, `hide_area(zone)` | `show_area`, `hide_area` | no engine call: the zone is kept in the VM's state (`RulesExt::shown`, at most eight, in the order first shown; a ninth is a script error; `none` for the team is neutral; the round's end clears them), and the runtime hands the zones' shapes to the world-line source after each tick (`world/walls.rs`), which draws each wall alone in the team's colour ([gametype-markers.md](gametype-markers.md), "When a marker shows"). No capability: it is a display | named | the state blob; a machine that runs the VM draws it, a film's re-run included. A client that does not run the script gets no wall: not built |
+| `show_area(zone, team)`, `hide_area(zone)` | `show_area`, `hide_area` | no engine call: the zone is kept in the VM's state (`RulesExt::shown`, at most eight, in the order first shown; a ninth is a script error; `none` for the team is neutral; the round's end clears them), and the runtime hands the zones' shapes to the world-line source after each tick (`world/walls.rs`), which draws each wall alone in the team's colour ([gametype-markers.md](gametype-markers.md), "When a marker shows"). No capability: it is a display | named | the state blob; a machine that runs the VM draws it, a film's re-run included. A client that does not run the script draws it from a walls cue ([the show channel](#the-show-channel)) |
 
 ### Loadouts
 

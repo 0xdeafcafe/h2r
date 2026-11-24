@@ -80,7 +80,15 @@ pub const START_TEAM: u32 = 0x10;
 /// The labelled things of the loaded game, by [`rows`] and no document.
 pub fn things(m: &dyn GuestMemory) -> Result<Vec<LabelledThing>, String> {
     let rows = rows(m).map_err(|e| format!("guest memory at {:#x} faulted", e.addr))?;
-    forge_doc::labelled(&rows, None).map_err(|e| e.to_string())
+    let mut things = forge_doc::labelled(&rows, None).map_err(|e| e.to_string())?;
+    // The areas a Studio map was saved with (`crate::map_areas`).
+    let saved = crate::map_areas::current();
+    if !saved.is_empty()
+        && let Ok(flags) = crate::map_areas::flags(m)
+    {
+        crate::map_areas::attach(&mut things, &flags, &saved);
+    }
+    Ok(things)
 }
 
 /// The census of `things`, with no tags (the game holds no tag paths).
@@ -126,7 +134,16 @@ pub struct Table {
 
 impl Table {
     pub fn new(things: &[LabelledThing], ir: &Ir) -> Table {
-        let mut t = Table {
+        let mut t = Table::of_census(things);
+        t.relabel(ir);
+        t
+    }
+
+    /// A table of the census's things with no script's labels: what a
+    /// machine that does not run the script reads zones from
+    /// (`super::world::walls::client`).
+    pub fn of_census(things: &[LabelledThing]) -> Table {
+        Table {
             things: things
                 .iter()
                 .map(|l| Thing {
@@ -140,9 +157,7 @@ impl Table {
                     area: l.area.as_ref().and_then(|a| forge_doc::Area::try_from(a).ok()),
                 })
                 .collect(),
-        };
-        t.relabel(ir);
-        t
+        }
     }
 
     /// A table of `things` as they are, for tests of what reads it.

@@ -741,6 +741,12 @@ pub struct SceneViewRecord {
     pub key: String,
     pub cut: bool,
     pub clusters: u32,
+    /// Upstream cluster counts for this game's camera. The scene dump
+    /// has the corresponding IDs for each view ordinal in cluster_gathers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility_clusters: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structure_clusters: Option<u32>,
     pub instances: u32,
     pub parts: u32,
     pub rows: u32,

@@ -2251,6 +2251,25 @@ and edits live in memory.
   model-space `z = 0`. Overlay diagnostics use full weight over rest.
   `model` and the shown map follow the rules for posing.
 
+- `anim.retarget {from, to, map?, name?, from_model?, to_model?,
+  preview?}` copies open document `from` onto the skeleton of the jmad
+  tag `to` in the shown map as a new document. Nodes pair by unique name;
+  `map` is `[{source, target}]` with a `null` target to drop a node, and
+  wins over names. `from_model` and `to_model` name the model whose rest
+  skeleton applies when several use a graph. The reply is `{doc, name,
+  nodes, unmatched_source, unmatched_target, dropped_channels, notes}`;
+  `nodes` has `{source, source_name, target, target_name}` for every
+  source node. With `preview: true`, `doc` is null and nothing opens. A
+  node outside either skeleton or a node mapped twice is `REFUSED`; a
+  malformed `map` is `INVALID_PARAMS`.
+- `anim.import {file, to?, clip?, map?, name?, to_model?, preview?}`
+  reads a local `.gltf` or `.glb` and places one animation on the graph
+  `to` (default: the selected jmad) by the same rules and reply. `clip` is
+  an animation name or index and is required when the file has several;
+  the `INVALID_PARAMS` error then lists them in `data.clips`. An
+  unreadable or unsupported file is `REFUSED`; skipped channels are in
+  `notes`.
+
 ### `model.colors` and `model.emblem` (planned)
 
 `model.colors {player?, colors?}` and `model.emblem {player?, emblem?}`
@@ -2336,6 +2355,8 @@ diagnostics and angle display. `ui/anim/edit.rs` tests that plotting
 the rotation leaves its stored quaternions unchanged.
 `api/tests/anim_save_tests.rs` verifies source clip replacement,
 map scoping, lock updates and key round-trips through `anim.save`.
+`api/anim/transfer_tests.rs` covers `anim.retarget` and `anim.import`
+on the invented graph and an invented glTF file.
 
 ## Code
 

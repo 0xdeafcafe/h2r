@@ -1,5 +1,5 @@
-//! [`InterpBackend`]: records each frame's draws into the presented
-//! surface and replays the newest one with interpolated matrices into
+//! [`InterpBackend`]: records the presented colour and the passes that
+//! supply its depth/stencil, then replays them with interpolated matrices into
 //! surfaces of its own, at the display rate, on the render thread.
 
 use std::collections::HashMap;
@@ -30,6 +30,11 @@ pub struct InterpStats {
     /// Frames shown as the guest drew them: no previous frame to blend
     /// from, a gap, a view change, or nothing to move.
     pub held_frames: u64,
+    /// Auxiliary colour draws and clears kept at guest Swap because a later
+    /// draw on the presented colour uses their depth/stencil attachment.
+    pub shared_depth_ops: u64,
+    /// Blended guest frames that included an auxiliary depth/stencil producer.
+    pub shared_depth_blended_frames: u64,
     /// In-between frames replayed between presents.
     pub replays: u64,
     /// Draws replayed with substituted constants, over all replays.
@@ -283,25 +288,74 @@ enum Op<B: Backend> {
         color: B::Surface,
         depth: Option<B::Surface>,
         draw: Box<ResolvedDraw>,
-        textures: [Option<Arc<B::Texture>>; 4],
+        // None if one of this draw's live samples could not be frozen.
+        textures: Option<[Option<Arc<B::Texture>>; 4]>,
         /// Where it was in the guest's frame (for the hold log).
         at: DrawAt,
     },
-    Copy {
-        src: B::Surface,
-        dst: B::Surface,
-    },
+    /// A surface copy, upload or mirror restore whose input the replay
+    /// does not own. Only matters if the frame uses this destination.
+    SurfaceWrite(B::Surface),
 }
 
 impl<B: Backend> Op<B> {
-    fn targets(&self, s: B::Surface) -> bool {
+    fn attachments(&self) -> (B::Surface, Option<B::Surface>) {
         match self {
-            Op::Clear { color, .. } | Op::ClearRects { color, .. } | Op::Draw { color, .. } => {
-                *color == s
-            }
-            Op::Copy { dst, .. } => *dst == s,
+            Op::Clear { color, depth, .. } | Op::ClearRects { color, depth, .. }
+            | Op::Draw { color, depth, .. } => (*color, *depth),
+            Op::SurfaceWrite(s) => (*s, None),
         }
     }
+
+    fn writes_depth(&self) -> bool {
+        match self {
+            Op::Clear { clear, .. } => clear.depth.is_some() || clear.stencil.is_some(),
+            Op::ClearRects { clear, .. } => clear.depth.is_some() || clear.stencil.is_some(),
+            Op::Draw { draw, .. } => draw.writes_depth_stencil(),
+            Op::SurfaceWrite(_) => false,
+        }
+    }
+}
+
+/// Keep writes to a shared depth/stencil level before its use on the
+/// displayed target, even if the guest bound another colour at the time.
+fn frame_ops<B: Backend>(mut ops: Vec<Op<B>>, surface: B::Surface) -> (Vec<Op<B>>, u64) {
+    let mut depths = Vec::new();
+    let mut shared = 0;
+    ops.reverse();
+    ops.retain(|op| {
+        let (color, depth) = op.attachments();
+        if let Op::SurfaceWrite(s) = op {
+            return *s == surface || depths.contains(s);
+        }
+        let shared_write = depth.is_some_and(|d| depths.contains(&d)) && op.writes_depth();
+        if color != surface && !shared_write {
+            return false;
+        }
+        if color != surface {
+            shared += 1;
+        }
+        if let Some(d) = depth {
+            match op {
+                // A whole-depth-and-stencil clear makes all earlier writers irrelevant.
+                Op::Clear { clear, .. } if clear.depth.is_some() && clear.stencil.is_some() => {
+                    depths.retain(|s| *s != d);
+                }
+                Op::Draw { draw, .. }
+                    if draw.state.render.depth_mode != gfx::state::DepthBufferMode::Disabled
+                        || draw.state.render.stencil.enable =>
+                {
+                    if !depths.contains(&d) {
+                        depths.push(d);
+                    }
+                }
+                _ => {}
+            }
+        }
+        true
+    });
+    ops.reverse();
+    (ops, shared)
 }
 
 struct Frame<B: Backend> {
@@ -520,10 +574,13 @@ fn run_ops<B: Backend>(
     inner: &mut B,
     ops: &mut [Op<B>],
     first_draw: usize,
-    to: &dyn Fn(B::Surface) -> B::Surface,
+    targets: &[(B::Surface, B::Surface)],
     subs: &dyn Fn(usize) -> Option<Constants>,
     streams: &dyn Fn(usize) -> Option<Vec<StreamBytes>>,
 ) -> Result<(), String> {
+    let to = |s: B::Surface| {
+        targets.iter().find(|(real, _)| *real == s).expect("private replay attachment").1
+    };
     let mut k = first_draw;
     for o in ops.iter_mut() {
         match o {
@@ -539,9 +596,7 @@ fn run_ops<B: Backend>(
             } => {
                 inner.clear_rects(to(*color), depth.map(to), clear)?;
             }
-            Op::Copy { src, dst } => {
-                inner.copy_surface(to(*src), to(*dst))?;
-            }
+            Op::SurfaceWrite(_) => return Err("replay needs an uncaptured surface write".into()),
             Op::Draw {
                 color,
                 depth,
@@ -549,6 +604,7 @@ fn run_ops<B: Backend>(
                 textures,
                 ..
             } => {
+                let textures = textures.as_ref().ok_or("replay needs an uncaptured texture")?;
                 let tex: [Option<&B::Texture>; 4] = std::array::from_fn(|i| textures[i].as_deref());
                 let own_constants =
                     subs(k).map(|c| std::mem::replace(&mut draw.shader.constants, c));
@@ -572,19 +628,19 @@ fn draws_in<B: Backend>(ops: &[Op<B>]) -> usize {
     ops.iter().filter(|o| matches!(o, Op::Draw { .. })).count()
 }
 
-/// The depth surfaces `ops` use, in order.
-fn depths_in<B: Backend>(ops: &[Op<B>]) -> Vec<B::Surface> {
-    let mut v = Vec::new();
-    for o in ops {
-        if let Op::Clear { depth: Some(d), .. }
-        | Op::ClearRects { depth: Some(d), .. }
-        | Op::Draw { depth: Some(d), .. } = o
-            && !v.contains(d)
-        {
-            v.push(*d);
+/// The attachments a replay must own, including the auxiliary colour used
+/// when drawing into a shared depth buffer.
+fn targets_in<B: Backend>(ops: &[Op<B>], surface: B::Surface) -> Vec<B::Surface> {
+    let mut targets = vec![surface];
+    for op in ops {
+        let (color, depth) = op.attachments();
+        for s in [Some(color), depth].into_iter().flatten() {
+            if !targets.contains(&s) {
+                targets.push(s);
+            }
         }
     }
-    v
+    targets
 }
 
 fn constants_of<B: Backend>(ops: &[Op<B>]) -> Vec<Constants> {
@@ -598,6 +654,7 @@ fn constants_of<B: Backend>(ops: &[Op<B>]) -> Vec<Constants> {
 
 #[derive(Clone, Copy, Debug)]
 struct SurfaceInfo {
+    texture_target: bool,
     format: D3DFormat,
     width: u32,
     height: u32,
@@ -658,9 +715,8 @@ pub struct InterpBackend<B: Backend> {
     /// Copies of render targets taken for recorded draws that sampled them,
     /// valid until the surface is written.
     snaps: Vec<(B::Surface, Arc<B::Texture>)>,
-    /// The frame being recorded read something the replay cannot keep: a
-    /// render target it could not copy, or a surface copied in.
-    unpinned: bool,
+    /// An external pass ran that cannot be replayed as a draw.
+    external_work: bool,
     /// Each vertex program, as read from its microcode once: its viewport
     /// transform ([`Epilogue::of`]; `None`: not one E1 can follow) and the
     /// block its clip position comes from ([`position`]).
@@ -711,7 +767,7 @@ impl<B: Backend> InterpBackend<B> {
             stats: Arc::default(),
             live: Vec::new(),
             snaps: Vec::new(),
-            unpinned: false,
+            external_work: false,
             programs: HashMap::new(),
             program_ids: HashMap::new(),
             fence: None,
@@ -865,8 +921,14 @@ impl<B: Backend> InterpBackend<B> {
         }
     }
 
-    fn recording(&self, color: B::Surface) -> bool {
-        self.shown.contains(&color) && self.rate() != Rate::Off
+    fn recording(&self, color: B::Surface, writes_depth: bool) -> bool {
+        (writes_depth || self.shown.contains(&color)) && self.rate() != Rate::Off
+    }
+
+    fn surface_write(&mut self, surface: B::Surface) {
+        if self.rate() != Rate::Off {
+            self.ops.push(Op::SurfaceWrite(surface));
+        }
     }
 
     fn info(&self, s: B::Surface) -> Option<SurfaceInfo> {
@@ -879,7 +941,7 @@ impl<B: Backend> InterpBackend<B> {
         self.prev = None;
         self.cur = None;
         self.ops.clear();
-        self.unpinned = false;
+        self.external_work = false;
         self.last = None;
     }
 
@@ -893,39 +955,40 @@ impl<B: Backend> InterpBackend<B> {
     /// The texture a recorded draw keeps for `t`: `t` itself, or, when `t`
     /// is a view of a render target, a copy of the target as the draw
     /// sampled it (a replay later must not see what the guest drew into it
-    /// since: a smaller pass, the next frame). Marks the frame unpinned
-    /// when no copy can be made.
-    fn pin(&mut self, t: &Arc<B::Texture>) -> Arc<B::Texture> {
+    /// since: a smaller pass, the next frame).
+    fn pin(&mut self, t: &Arc<B::Texture>) -> Option<Arc<B::Texture>> {
         let Some(&(_, surface)) = self
             .live
             .iter()
             .find(|(w, _)| std::ptr::eq(w.as_ptr(), Arc::as_ptr(t)))
         else {
-            return Arc::clone(t);
+            return Some(Arc::clone(t));
         };
         if let Some((_, c)) = self.snaps.iter().find(|(s, _)| *s == surface) {
-            return Arc::clone(c);
+            return Some(Arc::clone(c));
         }
         match self.inner.snapshot_surface(surface, false) {
             Ok(Some(c)) => {
                 let c = Arc::new(c);
                 self.snaps.push((surface, Arc::clone(&c)));
-                c
+                Some(c)
             }
-            _ => {
-                self.unpinned = true;
-                Arc::clone(t)
-            }
+            _ => None,
         }
     }
 
     /// The textures a recorded draw keeps ([`Self::pin`]).
-    fn pinned(&mut self, textures: [Option<&Arc<B::Texture>>; 4]) -> [Option<Arc<B::Texture>>; 4] {
+    fn pinned(
+        &mut self,
+        textures: [Option<&Arc<B::Texture>>; 4],
+    ) -> Option<[Option<Arc<B::Texture>>; 4]> {
         let mut out: [Option<Arc<B::Texture>>; 4] = Default::default();
         for (o, t) in out.iter_mut().zip(textures) {
-            *o = t.map(|t| self.pin(t));
+            if let Some(t) = t {
+                *o = Some(self.pin(t)?);
+            }
         }
-        out
+        Some(out)
     }
 
     /// Notes a texture that views render target `s`.
@@ -984,9 +1047,11 @@ impl<B: Backend> InterpBackend<B> {
         let i = self.info(s).ok_or_else(|| {
             format!("interpolation: surface {s:?} was not made through this backend")
         })?;
-        let p = self
-            .inner
-            .create_surface(i.format, i.width, i.height, i.depth)?;
+        let p = if i.texture_target {
+            self.inner.create_texture_target(i.format, i.width, i.height)?
+        } else {
+            self.inner.create_surface(i.format, i.width, i.height, i.depth)?
+        };
         if world {
             self.world_private.push((s, p));
         } else {
@@ -1042,8 +1107,7 @@ impl<B: Backend> InterpBackend<B> {
     fn capture(&mut self) -> Result<(), String> {
         let cur = self.cur.as_ref().ok_or("interpolation: no frame")?;
         let end = cur.world_end;
-        let mut targets = vec![cur.surface];
-        targets.extend(depths_in(&cur.ops[..end]));
+        let targets = targets_in(&cur.ops[..end], cur.surface);
         let world_draws = draws_in(&cur.ops[..end]);
         let constants = constants_of(&cur.ops);
         let subs = reproject::overscan(
@@ -1057,14 +1121,13 @@ impl<B: Backend> InterpBackend<B> {
         for t in targets {
             map.push((t, self.copy_of(t, true)?));
         }
-        let to = |s: B::Surface| map.iter().find(|(r, _)| *r == s).map_or(s, |(_, p)| *p);
         let cur = self.cur.as_mut().expect("checked above");
         let streams = std::mem::take(&mut cur.streams);
         let r = run_ops(
             &mut self.inner,
             &mut cur.ops[..end],
             0,
-            &to,
+            &map,
             &|k| subs.get(k).cloned().flatten(),
             &|k| streams.get(k).and_then(|s| s.as_ref()).map(|s| s.0.clone()),
         );
@@ -1103,15 +1166,19 @@ impl<B: Backend> InterpBackend<B> {
             .ok_or("interpolation: the camera's projection does not invert")?;
         let (surface, end) = (cur.surface, cur.world_end);
         let first_overlay_draw = draws_in(&cur.ops[..end]);
-        let depths = depths_in(&cur.ops[end..]);
+        let targets = targets_in(&cur.ops[end..], surface);
         let world = self.copy_of(surface, true)?;
         let shown = self.private_of(surface)?;
         if !self.inner.warp_surface(world, shown, h)? {
             return Err("interpolation: the backend cannot warp surfaces".into());
         }
         let mut map = vec![(surface, shown)];
-        for d in depths {
-            let p = self.private_of(d)?;
+        for target in targets.into_iter().filter(|s| *s != surface) {
+            let p = self.private_of(target)?;
+            map.push((target, p));
+            if !self.info(target).is_some_and(|i| i.depth) {
+                continue;
+            }
             // The overlay draws over far depth: the world under it is a
             // picture now.
             self.inner.clear(
@@ -1123,15 +1190,13 @@ impl<B: Backend> InterpBackend<B> {
                     stencil: Some(0),
                 },
             )?;
-            map.push((d, p));
         }
-        let to = |s: B::Surface| map.iter().find(|(r, _)| *r == s).map_or(s, |(_, p)| *p);
         let cur = self.cur.as_mut().expect("checked above");
         run_ops(
             &mut self.inner,
             &mut cur.ops[end..],
             first_overlay_draw,
-            &to,
+            &map,
             &|_| None,
             &|_| None,
         )?;
@@ -1162,29 +1227,18 @@ impl<B: Backend> InterpBackend<B> {
         );
         drop(draws);
         // Private surfaces for every target the frame touches.
-        let mut targets: Vec<B::Surface> = vec![cur.surface];
-        for o in &cur.ops {
-            match o {
-                Op::Clear { depth: Some(d), .. }
-                | Op::ClearRects { depth: Some(d), .. }
-                | Op::Draw { depth: Some(d), .. } if !targets.contains(d) => {
-                    targets.push(*d);
-                }
-                _ => {}
-            }
-        }
+        let targets = targets_in(&cur.ops, cur.surface);
         let mut map = Vec::with_capacity(targets.len());
         for t in targets {
             map.push((t, self.private_of(t)?));
         }
-        let to = |s: B::Surface| map.iter().find(|(r, _)| *r == s).map_or(s, |(_, p)| *p);
         let cur = self.cur.as_mut().expect("checked above");
-        let surface = to(cur.surface);
+        let surface = map[0].1;
         run_ops(
             &mut self.inner,
             &mut cur.ops,
             0,
-            &to,
+            &map,
             &|k| subs.get(k).cloned().flatten(),
             &|_| None,
         )?;
@@ -1226,28 +1280,24 @@ impl<B: Backend> InterpBackend<B> {
             return self.inner.present_with_gamma(surface, flags, gamma);
         };
         self.gamma = gamma.map(|g| Box::new(*g));
-        let ops: Vec<Op<B>> = std::mem::take(&mut self.ops)
-            .into_iter()
-            .filter(|o| o.targets(surface))
-            .collect();
-        // A surface copied in is read when the frame is made again, by then
-        // with whatever the guest drew into it since.
-        let unpinned =
-            std::mem::take(&mut self.unpinned) || ops.iter().any(|o| matches!(o, Op::Copy { .. }));
-        if !self.shown.contains(&surface) {
+        let (ops, shared_depth_ops) = frame_ops(std::mem::take(&mut self.ops), surface);
+        let unpinned = std::mem::take(&mut self.external_work)
+            || ops.iter().any(|op| matches!(op, Op::SurfaceWrite(_) | Op::Draw { textures: None, .. }));
+        let known_target = self.shown.contains(&surface);
+        if !known_target {
             self.shown.push(surface);
         }
-        let draws: Vec<&ResolvedDraw> = ops
+        let (draws, on_display): (Vec<_>, Vec<_>) = ops
             .iter()
             .filter_map(|o| match o {
-                Op::Draw { draw, .. } => Some(&**draw),
+                Op::Draw { color, draw, .. } => Some((&**draw, *color == surface)),
                 _ => None,
             })
-            .collect();
+            .unzip();
         let programs: Vec<(Option<Epilogue>, Position, Option<PassThrough>)> =
             draws.iter().map(|d| self.program(d)).collect();
         let positions: Vec<Position> = programs.iter().map(|p| p.1).collect();
-        let model = FrameModel::build(&draws, &positions);
+        let model = FrameModel::build_for_display(&draws, &positions, |i| on_display[i]);
         drop(draws);
         // The pair to blend: only consecutive frames close together, with
         // the same views (a split-screen change, a load or a pause starts
@@ -1295,7 +1345,7 @@ impl<B: Backend> InterpBackend<B> {
         let pass_throughs: Vec<Option<PassThrough>> = programs.iter().map(|p| p.2).collect();
         let mut screen = None;
         let mut streams = Vec::new();
-        let hold = if unpinned {
+        let hold = if unpinned || !known_target {
             Some(Hold::Unsure(Unsure::Unpinned))
         } else if !model.cameras.iter().all(|c| c.camera.centred()) {
             Some(Hold::Unsure(Unsure::Camera))
@@ -1343,6 +1393,7 @@ impl<B: Backend> InterpBackend<B> {
         });
         let mut st = self.stats.lock().unwrap();
         st.frames += 1;
+        st.shared_depth_ops += shared_depth_ops;
         drop(st);
         let mode = self.mode;
         let c = self.cur.as_ref().expect("set above");
@@ -1385,16 +1436,17 @@ impl<B: Backend> InterpBackend<B> {
                     // The present is the guest's own (its frame boundary
                     // and any wait): not the replay's cost.
                     self.timed(t);
-                    let mut st = self.stats.lock().unwrap();
-                    st.blended_frames += 1;
-                    st.substituted_draws += s.draws as u64;
-                    st.held_draw(&s);
-                    st.snapped += s.snapped as u64;
-                    drop(st);
                     let metadata = self.synthetic_metadata(a);
                     crate::present_camera::with(Some(metadata), || {
                         self.inner.present_with_gamma(p, flags, gamma)
                     })?;
+                    let mut st = self.stats.lock().unwrap();
+                    st.blended_frames += 1;
+                    st.shared_depth_blended_frames += u64::from(shared_depth_ops != 0);
+                    st.substituted_draws += s.draws as u64;
+                    st.held_draw(&s);
+                    st.snapped += s.snapped as u64;
+                    drop(st);
                     if slots == 0 {
                         self.last = Some((id, a));
                         self.schedule.shown_at(now, period);
@@ -1563,6 +1615,7 @@ where
         self.surfaces.push((
             s,
             SurfaceInfo {
+                texture_target: false,
                 format,
                 width,
                 height,
@@ -1576,22 +1629,31 @@ where
         let in_frames = [&self.prev, &self.cur].iter().any(|f| {
             f.as_ref().is_some_and(|f| {
                 f.surface == surface
-                    || f.ops.iter().any(|o| match o {
-                        Op::Clear { depth, .. }
-                        | Op::ClearRects { depth, .. }
-                        | Op::Draw { depth, .. } => *depth == Some(surface),
-                        Op::Copy { src, .. } => *src == surface,
+                    || f.ops.iter().any(|op| {
+                        let (c, d) = op.attachments();
+                        c == surface || d == Some(surface)
                     })
             })
         });
         if in_frames {
-            self.reset();
+            self.prev = None;
+            self.cur = None;
+            self.last = None;
         }
-        self.ops.retain(|o| match o {
-            Op::Clear { depth, .. } | Op::ClearRects { depth, .. } | Op::Draw { depth, .. } => {
-                *depth != Some(surface)
+        self.ops.retain_mut(|op| {
+            let (color, depth) = op.attachments();
+            if color == surface && let Some(d) = depth && op.writes_depth() {
+                // The auxiliary colour has gone, but a later draw could
+                // still use the depth this op wrote. Hold such a frame.
+                *op = Op::SurfaceWrite(d);
+                return true;
             }
-            Op::Copy { src, .. } => *src != surface,
+            if depth == Some(surface) {
+                // The produced colour survives its destroyed depth attachment.
+                *op = Op::SurfaceWrite(color);
+                return true;
+            }
+            color != surface
         });
         self.shown.retain(|s| *s != surface);
         self.surfaces.retain(|(s, _)| *s != surface);
@@ -1627,7 +1689,8 @@ where
         if let Some(d) = depth {
             self.wrote(d);
         }
-        if self.recording(color) {
+        let writes_depth = depth.is_some() && (clear.depth.is_some() || clear.stencil.is_some());
+        if self.recording(color, writes_depth) {
             self.ops.push(Op::Clear {
                 color,
                 depth,
@@ -1651,7 +1714,9 @@ where
         if let Some(d) = depth {
             self.wrote(d);
         }
-        if r == DrawOutcome::Drawn && self.recording(color) {
+        if r == DrawOutcome::Drawn
+            && self.recording(color, depth.is_some() && draw.writes_depth_stencil())
+        {
             let textures = self.pinned(textures);
             self.ops.push(Op::Draw {
                 color,
@@ -1676,7 +1741,7 @@ where
         if let Some(d) = depth {
             self.wrote(d);
         }
-        if !self.recording(color) {
+        if !self.recording(color, depth.is_some() && draw.writes_depth_stencil()) {
             let tex: [Option<&B::Texture>; 4] = std::array::from_fn(|i| textures[i].map(|t| &**t));
             return self.inner.draw_owned(color, depth, draw, tex);
         }
@@ -1772,7 +1837,8 @@ where
         if let Some(d) = depth {
             self.wrote(d);
         }
-        if r == DrawOutcome::Drawn && self.recording(color) {
+        let writes_depth = depth.is_some() && (clear.depth.is_some() || clear.stencil.is_some());
+        if r == DrawOutcome::Drawn && self.recording(color, writes_depth) {
             self.ops.push(Op::ClearRects {
                 color,
                 depth,
@@ -1826,8 +1892,8 @@ where
     fn copy_surface(&mut self, src: Self::Surface, dst: Self::Surface) -> Result<bool, String> {
         let r = self.inner.copy_surface(src, dst)?;
         self.wrote(dst);
-        if r && self.recording(dst) {
-            self.ops.push(Op::Copy { src, dst });
+        if r {
+            self.surface_write(dst);
         }
         Ok(r)
     }
@@ -1838,8 +1904,12 @@ where
         desc: &TextureDesc,
         bytes: &[u8],
     ) -> Result<bool, String> {
-        self.wrote(surface);
-        self.inner.write_surface(surface, desc, bytes)
+        let written = self.inner.write_surface(surface, desc, bytes)?;
+        if written {
+            self.wrote(surface);
+            self.surface_write(surface);
+        }
+        Ok(written)
     }
 
     fn snapshot_surface(
@@ -1886,6 +1956,7 @@ where
         self.surfaces.push((
             s,
             SurfaceInfo {
+                texture_target: true,
                 format,
                 width,
                 height,
@@ -1936,7 +2007,7 @@ where
     }
 
     fn commit_external(&mut self, recording: crate::ExternalRecording) {
-        self.unpinned = true;
+        self.external_work = true;
         self.inner.commit_external(recording);
     }
 
@@ -1968,7 +2039,7 @@ where
     ) -> Result<bool, String> {
         // A replay redraws recorded draws, not passes: until it can redraw
         // this one with its warped camera, the frame is held, not blended.
-        self.unpinned = true;
+        self.external_work = true;
         self.inner.external_pass(color, depth, sampled, request, pass)
     }
 
@@ -2048,7 +2119,9 @@ where
     ) -> Result<(), String> {
         self.wrote(surface);
         self.inner
-            .mirror_load(surface, format, width, height, layout, offset)
+            .mirror_load(surface, format, width, height, layout, offset)?;
+        self.surface_write(surface);
+        Ok(())
     }
 
     fn mirror_read(&mut self, offset: u32, len: u32) -> Result<Vec<u8>, String> {

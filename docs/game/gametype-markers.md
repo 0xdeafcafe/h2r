@@ -1,7 +1,7 @@
 # Game type markers
 
 Status: Partly built. The marker set and the area model exist (MK1), Studio draws the markers and answers `markers.list` and `markers.render` (MK4), Forge draws them as world lines and answers `render.markers` (MK6), the Forge document stores areas, which `forge.things` and `forge.propose` carry (MK2), a script's zone reads them (MK3), Studio edits them (MK5), Forge places and edits them in the monitor (MK7) and a script shows an area's wall in play (MK8); the skin, Studio's saved map and the wall on a client that does not run the script are design.
-Code: `crates/formats/game-markers/src/lib.rs` (`Marker::mesh`), `crates/formats/game-markers/src/area.rs` (`Area`), `crates/tools/scenario-edit/src/marker_view.rs` (`placed`, `overlays`), `crates/apps/studio/src/api/markers.rs`, `crates/apps/studio/src/api/markers_check.rs` (the `markers` check), `crates/tools/scenario-edit/src/area_edit.rs` (handles, drag), `crates/tools/scenario-edit/src/session/area.rs` (`set_area`, `convert_hill`), `crates/apps/studio/src/viewport/area.rs`, `crates/apps/studio/src/ui/inspector/area.rs`, `crates/extensions/game/src/forge_glue/markers_world.rs` (Forge's source, `render.markers`), `crates/extensions/game/src/forge_glue/editing/area.rs` (Forge's draft area), `crates/formats/forge-doc/src/{area,entry,links}.rs`, `crates/extensions/forge/src/session.rs`, `crates/extensions/agent/src/forge/local.rs`, `crates/extensions/game/src/rules/world/zones.rs` (`Zones::new`), `crates/formats/rules/src/fake.rs` (`FakeGame::set_area`, `move_to`, `shown`), `crates/formats/rules/src/vm.rs` (`RulesExt::shown`), `crates/extensions/game/src/rules/world/walls.rs`, `crates/extensions/game/src/forge_glue/markers_world.rs` (`Wall`, `draw_walls`), `crates/live/bots/src/objective/zones.rs` (`first_hill`), `crates/extensions/agent-proto/src/rules.rs` (`rules.zones`). Tests: `crates/formats/game-markers/src/tests.rs`, `marker_view.rs`, `crates/apps/studio/src/api/tests/markers_tests.rs`, `crates/tools/scenario-edit/src/area_tests.rs`, `area_edit.rs`, `crates/apps/studio/src/viewport/area.rs`, `crates/extensions/game/src/forge_glue/markers_world/tests.rs`, `crates/extensions/game/src/forge_glue/editing/tests/area.rs`, `crates/formats/forge-doc/src/tests/area.rs`, `crates/extensions/forge/src/base_tests.rs`, `crates/extensions/agent/src/forge/tests.rs`, `zones.rs`' `a_flags_area_is_its_zone_before_corners_and_the_default`, `crates/formats/rules/tests/area_zones.rs`, `crates/formats/rules/tests/modes.rs` (`siege_shows_each_site_in_its_holders_colour`), `crates/extensions/game/src/rules/runtime/tests/world.rs`, `crates/extensions/game/src/rules/world/walls.rs`, `crates/live/bots/src/objective/zones/tests.rs`, `crates/extensions/agent/src/rules/tests.rs`.
+Code: `crates/formats/game-markers/src/lib.rs` (`Marker::mesh`), `crates/formats/game-markers/src/record.rs` (the saved areas), `crates/extensions/game/src/map_areas.rs` (the game reads them), `crates/formats/rules/src/show.rs` (`Cue::Walls`), `crates/formats/game-markers/src/area.rs` (`Area`), `crates/tools/scenario-edit/src/marker_view.rs` (`placed`, `overlays`), `crates/apps/studio/src/api/markers.rs`, `crates/apps/studio/src/api/markers_check.rs` (the `markers` check), `crates/tools/scenario-edit/src/area_edit.rs` (handles, drag), `crates/tools/scenario-edit/src/session/area.rs` (`set_area`, `convert_hill`), `crates/apps/studio/src/viewport/area.rs`, `crates/apps/studio/src/ui/inspector/area.rs`, `crates/extensions/game/src/forge_glue/markers_world.rs` (Forge's source, `render.markers`), `crates/extensions/game/src/forge_glue/editing/area.rs` (Forge's draft area), `crates/formats/forge-doc/src/{area,entry,links}.rs`, `crates/extensions/forge/src/session.rs`, `crates/extensions/agent/src/forge/local.rs`, `crates/extensions/game/src/rules/world/zones.rs` (`Zones::new`), `crates/formats/rules/src/fake.rs` (`FakeGame::set_area`, `move_to`, `shown`), `crates/formats/rules/src/vm.rs` (`RulesExt::shown`), `crates/extensions/game/src/rules/world/walls.rs`, `crates/extensions/game/src/forge_glue/markers_world.rs` (`Wall`, `draw_walls`), `crates/live/bots/src/objective/zones.rs` (`first_hill`), `crates/extensions/agent-proto/src/rules.rs` (`rules.zones`). Tests: `crates/formats/game-markers/src/tests.rs`, `record.rs`, `crates/extensions/game/src/map_areas.rs`, `marker_view.rs`, `crates/apps/studio/src/api/tests/markers_tests.rs`, `crates/tools/scenario-edit/src/area_tests.rs`, `area_edit.rs`, `crates/apps/studio/src/viewport/area.rs`, `crates/extensions/game/src/forge_glue/markers_world/tests.rs`, `crates/extensions/game/src/forge_glue/editing/tests/area.rs`, `crates/formats/forge-doc/src/tests/area.rs`, `crates/extensions/forge/src/base_tests.rs`, `crates/extensions/agent/src/forge/tests.rs`, `zones.rs`' `a_flags_area_is_its_zone_before_corners_and_the_default`, `crates/formats/rules/tests/area_zones.rs`, `crates/formats/rules/tests/modes.rs` (`siege_shows_each_site_in_its_holders_colour`), `crates/extensions/game/src/rules/runtime/tests/world.rs`, `crates/extensions/game/src/rules/world/walls.rs`, `crates/live/bots/src/objective/zones/tests.rs`, `crates/extensions/agent/src/rules/tests.rs`.
 Switch: none.
 
 A game type's parts are rows of a scenario with no body: a player
@@ -172,7 +172,8 @@ follows its flag through appends and swap-removes. Clear the area
 before removing its flag. `Session::set_area` writes one edit, which
 can be undone through the session's edit log.
 
-A Studio map stores the same op as an edit line on the scenario, beside
+A Studio map keeps its areas in the map file itself ("Areas saved with a
+map"). A Studio map stores the same op as an edit line on the scenario, beside
 its labels ([game-types-without-carriers.md](game-types-without-carriers.md),
 "The build step").
 
@@ -184,6 +185,45 @@ area on a flag whose label and number three or more flags share is
 refused by the validator (`a hill with corners takes no area`). The
 validator reads explicit labels and the base map's built-in flag types
 when the session or the materialiser supplies them.
+
+### Areas saved with a map
+
+A netgame flag has no spare bytes for an area, so a map Studio saves
+carries them as a record at the end of its file
+(`game_markers::record`, `crates/formats/game-markers/src/record.rs`):
+
+```text
+record  = "H2AR" version:u8 count:u16le row*count crc:u32le
+row     = block:u8 index:u32le type:i16le identifier:i16le
+          at:[u32le;3] shape:u8 below:u32le above:u32le
+          (radius:u32le | points:u8 [u32le;2]*points)
+trailer = length:u32le "H2AE"           ; the file's last 8 bytes
+```
+
+- **Same area as the document's.** The distances are the exact `f32`
+  bits `forge_doc::Area` spells in hex, and every row passes
+  `Area::validate` on read, so a record and a document name one area one
+  way and `forge_doc::Area::try_from` takes either. A row is keyed by
+  its block (netgame flags), index and identifier, and fingerprinted by
+  the flag's type and position bits.
+- **Finding the flag again.** `record::place` gives a row the flag at its
+  own index when that flag still has its type and position, else the
+  first free flag with its type, identifier and position. A flag a tool
+  moved or retyped since the save has no area (the open map's status line
+  counts them), and a flag takes one row.
+- **Studio.** `MapSource::open` reads the map without the record, so the
+  editor patches the map the engine reads, and `MapSource::areas` reads
+  the record. `Scenario::load_areas` gives each flag its area as no edit.
+  `write_patched` appends the record after the map when any flag has an
+  area; a map with none is the source's bytes. `Changes::areas` holds the
+  record when the areas differ from the ones the map was opened with, so
+  `is_dirty` and undo see them.
+- **The game.** At a map's activation (`EditorSources::activated`) the
+  game reads the record through the VFS (`game::map_areas::activate`).
+  The census (`rules::census::things`) attaches each row to its flag
+  (`LabelledThing::area`), so the flag's zone takes it (step 1 of "In a
+  script") and the bots read the hill from it. A flag with an area of its
+  own (a Forge document's) keeps it.
 
 ### In a script
 
@@ -312,8 +352,11 @@ publishes them; the same world-line source draws each wall alone
 (`Kind::wall`, `draw_walls`), in the team's colour with no pip and no
 label, fading over the area's range, and `render.markers` lists it as a
 `wall`. A game draws it with or without a Forge session. A machine that
-runs the VM draws it, and so does a film's re-run; a client that does not
-run the script gets no wall yet. It is on in the built-in scripts, and a
+runs the VM draws it, and so does a film's re-run. A client that does not
+run the script draws it from a walls cue ([rules-world-api.md](rules-world-api.md),
+"The show channel"): the authority sends the whole shown list when it
+changes and every 90 ticks while it is not empty, and the client reads each
+zone's shape from its own copy of the map. It is on in the built-in scripts, and a
 script that never calls it draws nothing.
 
 ## Editing
@@ -361,9 +404,9 @@ make the same document.
   `Area::of_corners`' path on a new centre flag and removes the corner
   flags, in one undo step. A custom hill is one centre marker and an
   area. The marker models replace Studio's old glyphs (MK4).
-- Areas are held in the open session, keyed by placement, and are not
-  yet written to the saved `.map`: `changes()` and `is_dirty` ignore
-  them.
+- Areas are held in the open session, keyed by placement, and a save
+  writes them to the end of the `.map` ("Areas saved with a map"); they
+  count in `changes()` and `is_dirty`.
 
 ## Agent API
 

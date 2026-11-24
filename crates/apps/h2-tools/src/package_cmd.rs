@@ -323,7 +323,7 @@ mod tests {
         let all = r.findings.join("\n");
         assert!(all.contains("good: no package.lock"), "{all}");
         assert!(all.contains("a cache map"), "{all}");
-        assert!(all.contains("no builder"), "{all}");
+        assert!(all.contains("missing field `graph`"), "{all}");
         assert!(all.contains("adds tag"), "{all}");
         assert!(
             check(Args {

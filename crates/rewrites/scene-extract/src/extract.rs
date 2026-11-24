@@ -34,6 +34,57 @@ pub fn world(mem: &dyn GuestRead) -> WorldState {
     WorldState { texaccum: texaccum_bound(mem) }
 }
 
+/// Visibility records produced by the guest's main camera gather. The
+/// portal flood writes cluster ordinals at 0x00173130. The structure
+/// gather filters those to the IDs consumed by 0x00133390. A light view
+/// has separate lists and must never be attributed to the camera.
+pub fn cluster_gather(mem: &dyn GuestRead) -> Option<frame_scene::scene::ClusterGather> {
+    use engine::render_loop::occlusion::guest::{LIST_COUNT, LIST_HANDLES, MAIN_VIS, VIS_KIND};
+
+    const ACTIVE_VIS: u32 = 0x004c_0b80;
+    const CLIP_MODE: u32 = 0x2a7c;
+    const STRUCTURE_LIST: u32 = 0xc;
+    const REGION_COUNT: u32 = 0xa6c;
+    const REGION_IDS: u32 = 0xa6e;
+    const REGION_STRIDE: u32 = 0x1a;
+
+    fn ids(count: u32, mut read: impl FnMut(u32) -> Option<u32>) -> Option<Vec<u16>> {
+        const MAX_CLUSTERS: u32 = 512;
+        if count > MAX_CLUSTERS {
+            return None;
+        }
+        (0..count)
+            .map(|i| read(i).filter(|&id| id < MAX_CLUSTERS).map(|id| id as u16))
+            .collect()
+    }
+
+    let half = |at: u32| mem.read_u32(at & !3).map(|v| (v >> ((at & 2) * 8)) & 0xffff);
+    let ptr = |at| mem.read_u32(at).filter(|&p| p != 0);
+    if ptr(ACTIVE_VIS)? != MAIN_VIS || mem.read_u32(MAIN_VIS + VIS_KIND)? != 0 {
+        return None;
+    }
+    let mode = mem.read_u32(MAIN_VIS + CLIP_MODE)?;
+    if mode > 2 {
+        return None;
+    }
+    let regions = ptr(MAIN_VIS)?;
+    let visible = ids(half(regions.checked_add(REGION_COUNT)?)?, |i| {
+        half(regions.checked_add(REGION_IDS + REGION_STRIDE * i)?)
+    })?;
+    let list = ptr(MAIN_VIS + STRUCTURE_LIST)?;
+    let count = half(list.checked_add(LIST_COUNT)?)?;
+    if count > mem.read_u32(list)? {
+        return None;
+    }
+    let structure = if count == 0 {
+        Vec::new()
+    } else {
+        let handles = ptr(list.checked_add(LIST_HANDLES)?)?;
+        ids(count, |i| mem.read_u32(handles.checked_add(4 * i)?))?
+    };
+    Some(frame_scene::scene::ClusterGather { mode, visible, structure })
+}
+
 /// The clusters the current list's `layer` items draw, each once, in the
 /// list's order: the clusters the guest found visible for the view.
 /// Instanced-geometry placements are not clusters and are left out.
@@ -308,6 +359,37 @@ mod tests {
     fn view(b: &mut SceneBuilder, m: &Mem) {
         b.begin(SceneId::default());
         b.open_view(ViewKey { kind: ViewKind::Game, player: 0, view: 0 }, camera(m).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn main_gather_preserves_cluster_ids_before_structure_and_layer_selection() {
+        use engine::render_loop::occlusion::guest::{MAIN_VIS, VIS_KIND};
+        let mut m = Mem::default();
+        let (regions, list, handles) = (0x1000, 0x3000, 0x3400);
+        m.w(0x004c_0b80, MAIN_VIS);
+        m.w(MAIN_VIS + VIS_KIND, 0);
+        m.w(MAIN_VIS + 0x2a7c, 0);
+        m.w(MAIN_VIS, regions);
+        // The first ID is packed in the high half next to the count;
+        // the next is aligned because the visible row stride is 26 bytes.
+        m.w(regions + 0xa6c, (103 << 16) | 2);
+        m.w(regions + 0xa88, 9);
+        m.w(MAIN_VIS + 0xc, list);
+        m.w(list, 512);
+        m.w(list + 4, 1);
+        m.w(list + 0xc, handles);
+        m.w(handles, 9);
+        let gather = cluster_gather(&m).unwrap();
+        assert_eq!(gather.visible, [103, 9]);
+        assert_eq!(gather.structure, [9]);
+
+        m.w(list + 4, 0);
+        assert!(cluster_gather(&m).unwrap().structure.is_empty());
+        m.w(list + 4, 513);
+        assert!(cluster_gather(&m).is_none());
+        m.w(list + 4, 1);
+        m.w(0x004c_0b80, MAIN_VIS + 8);
+        assert!(cluster_gather(&m).is_none(), "another view owns the active gather");
     }
 
     #[test]

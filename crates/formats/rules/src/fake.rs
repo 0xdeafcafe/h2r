@@ -63,6 +63,9 @@ pub struct FakeGame {
     pub messages: Vec<FakeMessage>,
     /// The retail event or original clip posted at each audible round start.
     pub start_lines: Vec<RoundLine>,
+    /// What a point is called on the scoreboard and in the post-game, as
+    /// the last round start told it (`Game::points_label`).
+    pub scoreboard_label: Option<String>,
     /// Each team's spawn rule, as `spawn_areas` and `spawn_near` set it:
     /// the starting locations the engine's spawns of that team may use.
     pub spawns: BTreeMap<u8, FakeSpawns>,
@@ -407,6 +410,10 @@ impl FakeGame {
 }
 
 impl Game for FakeGame {
+    fn points_label(&mut self, label: &str) {
+        self.scoreboard_label = Some(label.to_string());
+    }
+
     fn start_line(&mut self, ty: crate::types::Type) {
         use crate::types::StartLine;
         match ty.row().start {

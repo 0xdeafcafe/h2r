@@ -279,6 +279,16 @@ pub struct PartDraw {
     pub subparts: Option<Subparts>,
 }
 
+/// The main visibility lists before layer masks and part selection. Cluster
+/// IDs have the BSP's numbering in both lists and in the layer-3 cluster list.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ClusterGather {
+    /// Guest clipping mode (0 portal flood, 1 sphere, 2 all clusters).
+    pub mode: u32,
+    pub visible: Vec<u16>,
+    pub structure: Vec<u16>,
+}
+
 /// One rendered frame, typed. Built on the sim thread by
 /// [`crate::SceneBuilder`], sealed, then read only.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -288,6 +298,9 @@ pub struct FrameScene {
     pub cut: Cut,
     /// At most four game views plus the alternate view.
     pub views: Vec<View>,
+    /// Visibility at the base layer, indexed by view ordinal. Kept outside
+    /// the View so the stage hooks can copy a View without copying its lists.
+    pub cluster_gathers: Vec<Option<ClusterGather>>,
     /// Visible cluster ids; views index ranges of it.
     pub clusters: Vec<u16>,
     pub instances: Vec<Instance>,
@@ -334,6 +347,7 @@ impl FrameScene {
         self.stamp = Stamp::default();
         self.cut = Cut::NONE;
         self.views.clear();
+        self.cluster_gathers.clear();
         self.clusters.clear();
         self.instances.clear();
         self.nodes.clear();

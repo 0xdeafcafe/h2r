@@ -114,6 +114,7 @@ pub mod map_bases;
 pub mod map_copy;
 pub mod map_override;
 pub mod map_select;
+pub mod map_areas;
 pub mod map_slots;
 pub mod medal_announcer;
 pub mod mod_slots;

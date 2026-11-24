@@ -71,6 +71,9 @@ pub struct Placed {
 pub trait Game {
     /// The variant's type announces a round, including one with no handler.
     fn start_line(&mut self, _ty: crate::types::Type) {}
+    /// What a point is called on the scoreboard and in the post-game: the
+    /// header's `points`, told at each round start.
+    fn points_label(&mut self, _label: &str) {}
     /// Roster slots of the players present. Order does not matter.
     fn players(&self) -> Vec<u8>;
     /// Indices of the teams in play. Order does not matter.
@@ -905,8 +908,11 @@ impl Vm {
     /// Starts a round of the variant's declared type. A settings-only
     /// variant can use a different type's built-in for its handlers.
     pub fn round_start_as(&mut self, game: &mut dyn Game, ty: crate::types::Type) -> Fired {
-        if self.ext.stopped.is_none() && ty.row().start != crate::types::StartLine::None {
-            game.start_line(ty);
+        if self.ext.stopped.is_none() {
+            game.points_label(&self.ir.header.points);
+            if ty.row().start != crate::types::StartLine::None {
+                game.start_line(ty);
+            }
         }
         self.fire_handler(game, Input::RoundStart)
     }
@@ -1934,6 +1940,7 @@ mod tests {
     fn state_refuses_unsorted_zones() {
         let mut e = ext();
         e.held.clear();
+        e.shown.clear();
         let bytes = e.encode();
         // Two zones, 12 before 5: rewrite the tail by hand.
         let mut bad = bytes[..bytes.len() - 1].to_vec();
@@ -1942,6 +1949,7 @@ mod tests {
             bad.extend_from_slice(&zone.to_le_bytes());
             bad.extend_from_slice(&[0; 4 * MAX_TEAMS]);
         }
+        bad.push(0);
         assert!(RulesExt::decode(&bad).is_err());
     }
 
@@ -1963,7 +1971,8 @@ mod tests {
         let bytes = ext().encode();
         // The spawn rules sit before the held counters: team 0's kind byte
         // is the first of them.
-        let held = 1 + 2 * (4 + 4 * MAX_TEAMS);
+        let shown = 1 + 2 * (4 + 1);
+        let held = shown + 1 + 2 * (4 + 4 * MAX_TEAMS);
         let rules = (1 + 2 + 4) + (MAX_TEAMS - 2) + (1 + 4 + 1);
         let first = bytes.len() - held - MAX_TEAMS - rules;
         assert_eq!(bytes[first], 1, "team 0 has an Areas rule");
@@ -2080,6 +2089,7 @@ mod tests {
             [(0x4001_0000, Some(0)), (0x4001_0002, Some(0)), (0x4001_0001, Some(0))]
         );
         vm.fire(&mut g, Input::RoundEnd);
+        g.after(&Input::RoundEnd);
         assert!(vm.shown_areas().is_empty());
         assert!(g.shown.is_empty());
     }

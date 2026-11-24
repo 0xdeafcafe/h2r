@@ -176,6 +176,7 @@ fn a_hills_corner_takes_no_area_and_converting_gives_one_flag_with_the_hull() {
     let mut app = app(&t);
     let mut api = Api::new();
     open_map(&mut api, &mut app, &t, "convert.map", fixture::fixture_at_end());
+    app.session.set_allow_growth(true);
     make_hill(&mut api, &mut app, true);
     let e = api
         .call(&mut app, m::MARKERS_AREA_SET, json!({"id": "netgame_flags[1]", "area": {"radius": 4}}))
@@ -210,6 +211,7 @@ fn the_markers_check_names_an_overlapping_pair() {
     let mut app = app(&t);
     let mut api = Api::new();
     open_map(&mut api, &mut app, &t, "check.map", fixture::fixture_at_end());
+    app.session.set_allow_growth(true);
     call(&mut api, &mut app, m::SCENARIO_SET, json!({
         "block": "netgame_flags", "index": 0, "field": "type", "value": 10
     }));

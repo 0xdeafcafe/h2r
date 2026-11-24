@@ -444,7 +444,17 @@ impl Session {
 
     fn open_keyed(&mut self, source: MapSource, name: &str, cache_key: &str) -> Result<()> {
         let mut map = source.open()?;
-        let scenario = Scenario::read(&mut map)?;
+        let mut scenario = Scenario::read(&mut map)?;
+        // The areas the map was saved with (`game_markers::record`): not
+        // edits. A record that does not read leaves the map without them,
+        // and the status says so.
+        let area_note = match source.areas() {
+            Ok(rows) => match scenario.load_areas(&rows) {
+                0 => String::new(),
+                lost => format!(", {lost} saved areas found no flag"),
+            },
+            Err(e) => format!(", the saved areas were not read: {e}"),
+        };
         let mut raw = geometry::RawFiles::open(&source)?;
         let started = std::time::Instant::now();
         let lit = geometry::world_parts_lit(&mut map, &mut raw).unwrap_or_default();
@@ -493,7 +503,7 @@ impl Session {
             None => String::new(),
         };
         self.status = format!(
-            "{} triangles{}, {} placements{art}",
+            "{} triangles{}, {} placements{art}{area_note}",
             world.len(),
             if world_failed > 0 {
                 format!(" ({world_failed} sections not loaded)")

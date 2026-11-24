@@ -48,8 +48,9 @@
 //! `GAME_TICK`, through the mechanism Firefight's tick hook uses, ahead of
 //! the VM's queued calls. A score therefore lands at the next tick
 //! boundary rather than inside the kill, and a read in the same handler
-//! does not see it. The carrier's own scoring does not run beside it
-//! (`super::scoring`).
+//! does not see it. On the script index no retail engine scores beside
+//! it: the engine object's kill slot is an empty body
+//! (`super::engine_object`).
 //!
 //! **State.** The VM's state is the `RULES` record of the `SimExt` blob
 //! ([`Store`]), written after every run that changed it. Before each run
@@ -915,6 +916,24 @@ pub struct Runtime {
     forge: bool,
     /// The last tick published walls: the next tick with none clears them.
     walled: bool,
+    /// The walls cue last sent on the actor channel, and the tick it was
+    /// sent: the list is sent when it changes and again every
+    /// `::rules::show::WALLS_REPEAT` ticks while it is not empty, so a
+    /// machine that joins late has it (`super::world::show::walls`).
+    wall_cue: Option<(Vec<(u32, Option<u8>)>, u32)>,
+}
+
+/// Whether the authority sends the walls cue now: the list changed since
+/// the last one (an emptied list included), or it is not empty and the
+/// last one is `WALLS_REPEAT` ticks old. Nothing shown and nothing sent is
+/// nothing to say.
+fn walls_due(last: Option<&(Vec<(u32, Option<u8>)>, u32)>, shown: &[(u32, Option<u8>)], tick: u32) -> bool {
+    match last {
+        None => !shown.is_empty(),
+        Some((sent, at)) => {
+            sent != shown || (!shown.is_empty() && tick.wrapping_sub(*at) >= ::rules::show::WALLS_REPEAT)
+        }
+    }
 }
 
 fn describe(e: &ScriptError) -> String {
@@ -963,6 +982,7 @@ impl Runtime {
             film: false,
             forge: false,
             walled: false,
+            wall_cue: None,
         }
     }
 
@@ -1116,6 +1136,14 @@ impl Runtime {
             .0
             .team;
         Some((slot, r.vm.body(team)?))
+    }
+
+    /// Whether a script runs here and this machine is the game's
+    /// authority, so the carrier's round-start line is the script's to
+    /// make (`super::start_line::replace_carrier`). Before the first tick
+    /// boundary asks for the authority, the engine keeps its line.
+    pub fn has_authority(&self) -> bool {
+        matches!(&self.status, Status::Running(r) if r.authority == Some(true))
     }
 
     /// The running blob's full hash, for the Live session's `rules` field.
@@ -1594,6 +1622,21 @@ impl Runtime {
             r.seen = seen;
         }
         self.publish_walls();
+        self.send_walls(tick);
+    }
+
+    /// Sends the areas the script shows to the clients as a walls cue
+    /// (`::rules::show::Cue::Walls`), from the authority that runs the
+    /// script. A film's run sends none: it has no channel.
+    fn send_walls(&mut self, tick: u32) {
+        let shown = match &self.status {
+            Status::Running(r) if r.authority == Some(true) && !self.film => r.vm.shown_areas().to_vec(),
+            _ => return,
+        };
+        if walls_due(self.wall_cue.as_ref(), &shown, tick) {
+            super::world::show::walls(tick, shown.clone());
+            self.wall_cue = Some((shown, tick));
+        }
     }
 
     /// The walls the running script shows in play (`show_area`), in the
@@ -1655,6 +1698,7 @@ impl Runtime {
         eprintln!("rules: {name} ended with the game");
         self.store.remove();
         self.status = Status::Idle("the game ended");
+        self.wall_cue = None;
         self.publish_walls();
     }
 

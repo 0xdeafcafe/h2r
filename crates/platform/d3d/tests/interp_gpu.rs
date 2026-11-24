@@ -312,6 +312,62 @@ fn fixed_capture_records_four_presents_even_if_readback_misses_wall_clock_slots(
 }
 
 #[test]
+fn shared_depth_from_an_auxiliary_target_lights_every_display_slot() {
+    use gfx::state::{CompareFunc, DepthBufferMode};
+
+    let Some(ctx) = context() else {
+        return;
+    };
+    let cam = build::view_projection(1.2, [0.0; 3], 0.0, 0.0);
+    let mut prepass = quad(&cam, -10.0, 2.5, [0xFF00_0000; 4]);
+    prepass.target.depth_format = Some(D3DFormat::D24S8);
+    prepass.state.render.depth_mode = DepthBufferMode::Z;
+    prepass.state.render.depth_write = true;
+    prepass.state.render.depth_func = CompareFunc::Always;
+    let mut world = quad(&cam, -10.0, 40.0, [0xFFFF_FFFF; 4]);
+    world.target.depth_format = prepass.target.depth_format;
+    world.state.render.depth_mode = DepthBufferMode::Z;
+    world.state.render.depth_write = false;
+    world.state.render.depth_func = CompareFunc::Equal;
+
+    for slots in [2, 4] {
+        let hz = slots * 30;
+        let shown: Shown = Arc::default();
+        let mut b = InterpBackend::new(scaled(&ctx, 2, &shown), move || hz)
+            .with_capture_slots(move || slots);
+        let back = b.create_surface(D3DFormat::A8R8G8B8, W, H, false).unwrap();
+        let depth = b.create_surface(D3DFormat::D24S8, W, H, true).unwrap();
+        let aux = b.create_texture_target(D3DFormat::A8R8G8B8, W, H).unwrap();
+        b.present(back, 0).unwrap();
+        for _ in 0..2 {
+            b.clear(back, Some(depth), Clear {
+                color: Some([0.0, 0.0, 0.0, 1.0]),
+                depth: Some(1.0),
+                stencil: Some(0),
+            }).unwrap();
+            // Only the small patch gets the depth used by the lit world.
+            // The two visible draws share a camera, as the replay requires.
+            for (color, draw) in [(aux, &prepass), (back, &world), (back, &world)] {
+                assert_eq!(b.draw(color, Some(depth), draw, [None; 4]), Ok(d3d::DrawOutcome::Drawn));
+            }
+            b.present(back, 0).unwrap();
+        }
+
+        let stats = *b.stats().lock().unwrap();
+        assert_eq!((stats.blended_frames, stats.replays), (1, u64::from(slots - 1)), "{hz} Hz");
+        let shown = shown.lock().unwrap();
+        assert_eq!(shown.len(), 2 + slots as usize);
+        let (size, guest) = &shown[1];
+        let bright = guest.chunks_exact(4).filter(|p| p[..3] == [255; 3]).count();
+        assert!(bright > 0 && bright < guest.len() / 4, "the guest must light just the patch");
+        for (slot, (extent, pixels)) in shown[2..].iter().enumerate() {
+            assert_eq!(extent, size);
+            assert_eq!(agreement(guest, pixels, 0).1, 0, "{hz} Hz slot {slot}");
+        }
+    }
+}
+
+#[test]
 fn made_frames_match_the_guests_at_render_scale() {
     let Some(ctx) = context() else {
         return;

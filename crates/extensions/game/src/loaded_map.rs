@@ -48,6 +48,12 @@ impl EditorSources {
     }
 
     pub fn activated(&self, guest: &dyn GuestMemory) {
+        // The areas the map was saved with, before the rules runtime's
+        // start reads the census (`crate::map_areas`).
+        if let Some(vfs) = self.mount.upgrade() {
+            let file = crate::map_slots::active_file(&crate::layout_glue::ReadGm(guest));
+            crate::map_areas::activate(&vfs, file.as_deref());
+        }
         if !self.binding.has_ever_bound() {
             return;
         }

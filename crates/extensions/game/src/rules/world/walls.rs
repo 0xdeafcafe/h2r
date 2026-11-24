@@ -11,7 +11,10 @@
 
 use crate::forge_glue::markers_world::Wall;
 
+use engine::GuestMemory;
+
 use super::zones::{Shape, Zones};
+use crate::rules::census::{self, Table};
 
 /// The walls of `shown`, in order: a zone with no shape (the map has no
 /// flag for it) has none.
@@ -30,9 +33,28 @@ pub fn of(shown: &[(u32, Option<u8>)], zones: &Zones) -> Vec<Wall> {
         .collect()
 }
 
+/// The walls of `shown` on a machine that does not run the script (a
+/// client that received a walls cue, `::rules::show::Cue::Walls`): the
+/// zones are read from its own copy of the map, which is the one the
+/// host's script ran over (the census with the areas the map was saved
+/// with), so the same flags give the same shapes.
+pub fn client(m: &dyn GuestMemory, shown: &[(u32, Option<u8>)]) -> Vec<Wall> {
+    let Ok(things) = census::things(m) else {
+        return Vec::new();
+    };
+    of(shown, &Zones::read(m, &Table::of_census(&things)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The wire's zone base is a netgame flag's handle with no index.
+    #[test]
+    fn the_cues_zone_base_is_a_netgame_flags_handle() {
+        let flag = census::HANDLE | (forge_doc::BlockKind::NetgameFlags as u32) << 16;
+        assert_eq!(flag, ::rules::show::ZONE_BASE);
+    }
 
     #[test]
     fn a_zone_the_map_has_no_flag_for_has_no_wall() {

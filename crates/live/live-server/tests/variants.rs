@@ -68,8 +68,8 @@ async fn flow(timers: Timers) {
     assert_eq!(v["description"], "Three points a kill");
     assert_eq!(v["author"]["gamertag"], "Maker");
     assert_eq!(v["author"]["xuid"], me.xuid.to_string());
-    assert_eq!(v["engine"], 2);
-    assert_eq!(v["game_type"], "Slayer");
+    assert_eq!(v["engine"], 6);
+    assert_eq!(v["game_type"], "Script");
     assert_eq!(v["script_hash"], slayer_hash());
     assert_eq!(v["script_name"], "Slayer");
     assert_eq!(v["visibility"], "public");

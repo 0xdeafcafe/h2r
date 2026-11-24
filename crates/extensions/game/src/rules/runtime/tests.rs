@@ -13,7 +13,7 @@ use variants::ext::{LEN, Script};
 use super::*;
 use crate::rules::feature::Shared;
 
-/// The carrier's own scoring, `role_traits` and the objectives on the host.
+/// `role_traits` and the objectives on the host.
 mod hosted;
 /// The start gate and the label reads.
 mod gate;
@@ -898,7 +898,6 @@ fn carried(store: &Local, src: &str, engine: i32) -> (Arc<Shared>, FakeGuest, [u
 
 #[test]
 fn a_carrier_scored_slayer_script_runs_the_builtin_slayer_under_its_record() {
-    use crate::rules::scoring;
     let store = Local::default();
     let (s, m, datums, line, id) = carried(&store, CARRIED, SLAYER);
     assert!(line.starts_with("rules: Slayer ("), "{line}");
@@ -954,17 +953,10 @@ fn a_carrier_scored_slayer_script_runs_the_builtin_slayer_under_its_record() {
             .eax(1)
             .args([datums[1]])
     );
-    // On the authority the script is the one scorer: Slayer's own kill
-    // scoring is answered in place.
-    assert!(scoring::script_scores(&s.lock()));
-    let site = scoring::CARRIER_SCORE_SITES[0];
-    assert_eq!(site.1, "slayer");
-    assert!(scoring::drops_score(&s.lock(), site.0 + scoring::CALL_LEN));
 }
 
 #[test]
 fn a_carrier_whose_builtin_this_host_cannot_run_is_refused_by_name() {
-    use crate::rules::scoring;
     let store = Local::default();
     // King of the Hill's built-in answers on round_start, which this host
     // does not do yet.
@@ -986,7 +978,6 @@ fn a_carrier_whose_builtin_this_host_cannot_run_is_refused_by_name() {
     assert_eq!(s.lock().hash(), None);
     assert_eq!(store.bytes(), None);
     assert_eq!(s.lock().pre_tick(&m), None);
-    assert!(!scoring::script_scores(&s.lock()));
 }
 
 /// Every listed `uses` script runs the built-in it uses or is refused in

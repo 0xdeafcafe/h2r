@@ -281,7 +281,13 @@ fn open_kind_at_layer(mem: &dyn GuestMemory, kind: ViewKind, layer_hook: bool) -
             let set = step
                 .builder
                 .set_clusters(clusters)
-                .and_then(|()| step.builder.set_world(extract::world(&m)));
+                .and_then(|()| step.builder.set_world(extract::world(&m)))
+                .and_then(|()| {
+                    if kind == ViewKind::Game && let Some(gather) = extract::cluster_gather(&m) {
+                        step.builder.set_cluster_gather(gather)?;
+                    }
+                    Ok(())
+                });
             if set.is_err() {
                 REFUSED.fetch_add(1, Ordering::Relaxed);
             }

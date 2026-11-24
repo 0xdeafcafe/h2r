@@ -564,34 +564,28 @@ fn the_rules_runtime_is_planned_unless_turned_off() {
     assert!(!has("-rules"));
 }
 
-/// With the rules runtime on, the carrier engine's scoring and role-making
-/// routines each have the runtime's `before`, which answers them only
-/// while a script runs (`rules::scoring`); off, none of them is hooked.
+/// The rules runtime answers no retail engine's scoring or role-making
+/// routine, on or off: a script game's engine object calls none of them
+/// (`rules::engine_object`), so none is hooked by it.
 #[cfg(feature = "rules")]
 #[test]
-fn the_rules_runtime_answers_the_carriers_scoring_unless_turned_off() {
+fn the_rules_runtime_hooks_no_retail_scoring_site() {
     const SCORING: [&str; 4] = ["JUGGERNAUT_KILL", "JUGGERNAUT_TICK", "SCORE_ADD", "SLAYER_KILL"];
-    let befores = |switches: &str| {
+    for switches in ["rules", ALL_ON, "", "-rules"] {
         let plan = plan(&Case::full(switches)).unwrap();
-        let mut at: Vec<_> = plan
+        let hooked: Vec<_> = plan
             .chains
             .values()
+            .filter(|chain| SCORING.contains(&chain.point.name))
             .flat_map(|chain| {
                 chain
                     .hooks()
                     .filter(|hook| hook.feature == crate::rules::feature::FEATURE)
-                    .filter(move |_| SCORING.contains(&chain.point.name))
                     .map(move |hook| (chain.point.name, hook.kind().as_str()))
             })
             .collect();
-        at.sort_unstable();
-        at
-    };
-    let want: Vec<_> = SCORING.iter().map(|&p| (p, "before")).collect();
-    assert_eq!(befores("rules"), want);
-    assert_eq!(befores(ALL_ON), want);
-    assert_eq!(befores(""), want);
-    assert!(befores("-rules").is_empty());
+        assert!(hooked.is_empty(), "{switches:?}: {hooked:?}");
+    }
 }
 
 /// With the rules runtime on, the record clean-up, the wire codec, the
@@ -632,7 +626,9 @@ fn the_rules_runtime_answers_the_record_paths_unless_turned_off() {
 }
 
 /// With the rules runtime on, every game start puts the script index's
-/// engine object in (`GAME_ACTIVATE`, a `before` in the last class) and the
+/// engine object in and moves a record that would score beside its engine
+/// onto the script index (`GAME_ACTIVATE`, two `before`s in the last class)
+/// and the
 /// spawn gather's jump on the engine index has the runtime's `before`
 /// (`rules::engine_object`); off, neither is hooked by it.
 #[cfg(feature = "rules")]
@@ -656,6 +652,7 @@ fn the_rules_runtime_puts_in_the_script_index_engine_object_unless_turned_off() 
         at
     };
     let want = vec![
+        ("GAME_ACTIVATE", "before"),
         ("GAME_ACTIVATE", "before"),
         ("GAME_ACTIVATE", "observe_after"),
         ("SPAWN_TYPE_MASK", "before"),

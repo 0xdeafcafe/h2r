@@ -98,15 +98,53 @@ impl MapSource {
         f.read_exact(&mut out)?;
         Ok(out)
     }
+    /// The map, without the areas record a save of ours appended to its
+    /// tail (`game_markers::record`): the editor sees the map it patches,
+    /// and [`Self::areas`] reads the record.
     pub fn open(&self) -> Result<Map<MapReader>> {
         if let Some(b) = &self.bytes {
-            return Ok(Map::from_reader(MapReader::Memory(Cursor::new(b.clone())))?);
+            let mut reader = MapReader::Memory(Cursor::new(b.clone()));
+            let len = b.len() as u64;
+            let kept = len - tail_len(&mut reader, 0, len);
+            return Ok(if kept == len {
+                Map::from_reader(reader)?
+            } else {
+                Map::from_region(reader, 0, kept)?
+            });
         }
-        let reader = MapReader::File(BufReader::new(File::open(&self.path)?));
-        Ok(match self.region {
-            None => Map::from_reader(reader)?,
-            Some((base, len)) => Map::from_region(reader, base, len)?,
+        let mut reader = MapReader::File(BufReader::new(File::open(&self.path)?));
+        let (base, len) = match self.region {
+            Some(r) => r,
+            None => (0, std::fs::metadata(&self.path)?.len()),
+        };
+        let kept = len - tail_len(&mut reader, base, len);
+        Ok(match (self.region, kept == len) {
+            (None, true) => Map::from_reader(reader)?,
+            _ => Map::from_region(reader, base, kept)?,
         })
+    }
+    /// The areas the map was saved with (`game_markers::record`): the
+    /// record at the end of its file, or none.
+    pub fn areas(&self) -> Result<Vec<game_markers::record::Row>> {
+        let found = match &self.bytes {
+            Some(b) => game_markers::record::read_tail(&mut Cursor::new(&b[..])),
+            None => {
+                let mut f = BufReader::new(File::open(&self.path)?);
+                let (base, len) = match self.region {
+                    Some(r) => r,
+                    None => (0, std::fs::metadata(&self.path)?.len()),
+                };
+                game_markers::record::read_tail(&mut Region {
+                    inner: &mut f,
+                    base,
+                    len,
+                    at: 0,
+                })
+            }
+        };
+        Ok(found
+            .map_err(|e| Error::Declined(e.to_string()))?
+            .unwrap_or_default())
     }
     /// The maps under `/maps/` in an XISO, by name (no `.map`).
     pub fn disc_maps(iso: &Path) -> Result<Vec<(String, MapSource)>> {
@@ -145,6 +183,53 @@ impl MapSource {
 
 fn xiso_open(iso: &Path) -> Result<xiso::Xiso<BufReader<File>>> {
     xiso::Xiso::open(BufReader::new(File::open(iso)?)).map_err(|_| Error::Save("not an XISO image"))
+}
+
+/// `len` bytes at `base` of `inner`, read as a file of their own.
+struct Region<'a, R> {
+    inner: &'a mut R,
+    base: u64,
+    len: u64,
+    at: u64,
+}
+impl<R: Read + Seek> Read for Region<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let left = self.len.saturating_sub(self.at);
+        let n = buf.len().min(usize::try_from(left).unwrap_or(usize::MAX));
+        self.inner.seek(SeekFrom::Start(self.base + self.at))?;
+        let got = self.inner.read(&mut buf[..n])?;
+        self.at += got as u64;
+        Ok(got)
+    }
+}
+impl<R: Read + Seek> Seek for Region<'_, R> {
+    fn seek(&mut self, to: SeekFrom) -> std::io::Result<u64> {
+        let at = match to {
+            SeekFrom::Start(n) => Some(n),
+            SeekFrom::End(d) => self.len.checked_add_signed(d),
+            SeekFrom::Current(d) => self.at.checked_add_signed(d),
+        };
+        self.at = at.ok_or_else(|| std::io::Error::other("seek before the start"))?;
+        Ok(self.at)
+    }
+}
+
+/// The bytes of an areas record and its trailer at the end of the `len`
+/// bytes at `base` of `r`: none (0) when the file has no trailer.
+fn tail_len<R: Read + Seek>(r: &mut R, base: u64, len: u64) -> u64 {
+    let trailer = game_markers::record::TRAILER as u64;
+    if len < trailer {
+        return 0;
+    }
+    let mut t = [0u8; game_markers::record::TRAILER];
+    let read = r
+        .seek(SeekFrom::Start(base + len - trailer))
+        .and_then(|_| r.read_exact(&mut t));
+    if read.is_err() || t[4..] != game_markers::record::END {
+        return 0;
+    }
+    let n = u64::from(u32::from_le_bytes([t[0], t[1], t[2], t[3]]));
+    if n + trailer > len { 0 } else { n + trailer }
 }
 
 /// Stream `map` with the scenario's patches applied into `out` (at its
@@ -282,7 +367,14 @@ pub fn write_patched<R: Read + Seek>(
             u32::try_from(bytes.len()).map_err(|_| Error::Save("a moved tag is too large"))?;
         editor.move_tag(m.tag, at, size)?;
     }
-    Ok(editor.write_to(out)?)
+    let mut written = editor.write_to(out)?;
+    // The areas go at the very end, outside the map the engine reads
+    // (`game_markers::record`), and are read again at the next open.
+    if let Some(record) = scenario.area_record() {
+        out.write_all(&record)?;
+        written += record.len() as u64;
+    }
+    Ok(written)
 }
 
 /// Save to `out`, never over the source file. Writes a sibling temporary

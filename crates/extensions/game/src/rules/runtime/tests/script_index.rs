@@ -172,3 +172,180 @@ fn each_ready_round_posts_the_record_scripts_line_on_the_host() {
         GuestCall::new(points::GAME_TICK.base),
     ]);
 }
+
+/// A record whose options sit at [`OPTIONS`] in a multiplayer game, as the
+/// start hands them to `GAME_ACTIVATE`.
+const OPTIONS: u32 = 0x1007_0000;
+
+fn options_with(record: [u8; variants::record::RECORD_SIZE]) -> FakeGuest {
+    let mut m = FakeGuest::new();
+    m.map(OPTIONS, 0x300)
+        .put_u32(OPTIONS, MODE_MULTIPLAYER)
+        .put(OPTIONS + crate::variant_ext::OPTIONS_VARIANT, &record);
+    m
+}
+
+fn record_at(m: &FakeGuest) -> [u8; variants::record::RECORD_SIZE] {
+    let mut raw = [0; variants::record::RECORD_SIZE];
+    m.read(OPTIONS + crate::variant_ext::OPTIONS_VARIANT, &mut raw).unwrap();
+    raw
+}
+
+use crate::rules::record::Swap;
+
+fn on_script_index(m: &mut FakeGuest) -> [u8; LEN] {
+    assert_eq!(crate::rules::record::move_onto_script_index(m, OPTIONS), Ok(Swap::Moved));
+    let raw = record_at(m);
+    let v = variants::GameVariant::from_bytes(&raw).unwrap();
+    assert_eq!(v.game_type(), variants::GameType::Script);
+    assert!(variants::record::check(&v).is_empty());
+    raw[variants::ext::AT..variants::ext::AT + LEN].try_into().unwrap()
+}
+
+#[test]
+fn a_saved_slayer_record_starts_on_the_script_index_and_scores_once() {
+    let mut raw = variants::GameVariant::stock(variants::GameType::Slayer).unwrap().to_bytes();
+    let block = block(prefix(&slayer().id), 2);
+    raw[variants::ext::AT..variants::ext::AT + LEN].copy_from_slice(&block);
+    let mut options = options_with(raw);
+    let moved = on_script_index(&mut options);
+    assert_eq!(moved, block, "the script reference stays");
+
+    // The game starts the script index's engine: the kill is the script's
+    // one score, and no carrier's kill routine is called.
+    let store = Local::default();
+    let s = shared(&store, Box::new(no_fetch));
+    let (m, datums) = script_game(moved);
+    s.lock().start(&m, false);
+    assert!(s.lock().state().running);
+    s.lock().kill(&m, 0, Some(1));
+    let work = s.lock().pre_tick(&m).unwrap();
+    let calls = drive(&s, m, work, true);
+    let scores: Vec<_> = calls.iter().filter(|c| c.target == points::SCORE_ADD.base).collect();
+    assert_eq!(scores, [&GuestCall::new(points::SCORE_ADD.base).eax(3).args([datums[1]])]);
+    assert!(calls.iter().all(|c| ![points::SLAYER_KILL.base, points::JUGGERNAUT_KILL.base].contains(&c.target)));
+}
+
+#[test]
+fn a_no_mode_juggernaut_record_starts_its_built_in_on_the_script_index_and_scores_at_most_once() {
+    let raw = variants::GameVariant::stock(variants::GameType::Juggernaut).unwrap().to_bytes();
+    let mut options = options_with(raw);
+    let moved = on_script_index(&mut options);
+    let ported = builtins().iter().find(|b| b.engine == 7).unwrap();
+    let script = variants::ext::Ext::in_effect(&moved).script;
+    assert_eq!((script.mode, script.prefix), (variants::ext::Mode::Rules, prefix(&ported.id)));
+
+    let store = Local::default();
+    let s = shared(&store, Box::new(no_fetch));
+    let (m, _) = script_game(moved);
+    s.lock().start(&m, false);
+    let state = s.lock().state();
+    assert!(state.running, "{state:?}");
+    assert_eq!(state.script.as_deref(), Some("Juggernaut"));
+    s.lock().kill(&m, 0, Some(1));
+    let work = s.lock().pre_tick(&m).unwrap();
+    let calls = drive(&s, m, work, true);
+    // The kill scores at most the script's one point; no retail kill,
+    // tick or role routine runs beside it.
+    let scores = calls.iter().filter(|c| c.target == points::SCORE_ADD.base).count();
+    assert!(scores <= 1, "{calls:?}");
+    for target in [
+        points::SLAYER_KILL.base,
+        points::JUGGERNAUT_KILL.base,
+        points::JUGGERNAUT_TICK.base,
+        points::JUGGERNAUT_ROLE_SET.base,
+    ] {
+        assert!(calls.iter().all(|c| c.target != target), "{target:#x}: {calls:?}");
+    }
+}
+
+#[test]
+fn only_a_multiplayer_games_options_move_and_a_retail_slayer_record_stays() {
+    use crate::rules::record::move_onto_script_index;
+    let slayer_raw = variants::GameVariant::stock(variants::GameType::Slayer).unwrap().to_bytes();
+    let mut options = options_with(slayer_raw);
+    assert_eq!(move_onto_script_index(&mut options, OPTIONS), Ok(Swap::Stayed));
+    assert_eq!(record_at(&options), slayer_raw, "no script: retail Slayer");
+    let mut jugg = options_with(variants::GameVariant::stock(variants::GameType::Juggernaut).unwrap().to_bytes());
+    let was = record_at(&jugg);
+    jugg.put_u32(OPTIONS, 1);
+    assert_eq!(move_onto_script_index(&mut jugg, OPTIONS), Ok(Swap::Stayed));
+    assert_eq!(record_at(&jugg), was, "a campaign start");
+}
+
+fn retail(ty: variants::GameType, rows: &[(&str, i32)]) -> variants::GameVariant {
+    let mut v = variants::GameVariant::stock(ty).unwrap();
+    for &(name, value) in rows {
+        let (_, row) = ::rules::settings::named(name).unwrap();
+        v.set(variants::SettingId(row.setting(ty.engine() as u8).unwrap()), value).unwrap();
+    }
+    v
+}
+
+#[test]
+fn every_no_script_retail_record_starts_as_its_built_in_with_the_mapped_options() {
+    use variants::GameType::{Assault, Ctf, Juggernaut, King, Oddball, Territories};
+    let cases = [
+        (Ctf, vec![("ctf_reset_time", 45)], "reset_time", 45),
+        (Assault, vec![("assault_arm_time", 7)], "arm_time", 7),
+        (Oddball, vec![("oddball_ball_count", 3)], "ball_count", 3),
+        (King, vec![("king_moving_hill", 30)], "move_time", 30),
+        (Territories, vec![("territories_contest_time", 9)], "contest_time", 9),
+        (Juggernaut, vec![], "", 0),
+    ];
+    for (ty, rows, option, want) in cases {
+        let was = retail(ty, &rows);
+        let mut options = options_with(was.to_bytes());
+        let moved = on_script_index(&mut options);
+        let script = variants::ext::Ext::in_effect(&moved).script;
+        let src = ::rules::builtin::builtin(ty.engine() as u8).unwrap();
+        let ir = ::rules::compile(src).unwrap();
+        assert_eq!(script.mode, variants::ext::Mode::Rules, "{ty:?}");
+        assert_eq!(script.prefix[..], ir.id().0[..8], "{ty:?}");
+        if !option.is_empty() {
+            assert_eq!(ir.option_value(script.options, option), Some(want), "{ty:?}");
+        }
+        // The common settings stay.
+        assert_eq!(&record_at(&options)[0x4c..0xe0], &was.to_bytes()[0x4c..0xe0], "{ty:?}");
+    }
+}
+
+#[test]
+fn a_record_naming_its_own_built_in_keeps_its_type_area_options() {
+    let mut named = retail(variants::GameType::Ctf, &[("ctf_reset_time", 45)]);
+    assert!(variants::portable::attach_builtin(&mut named).unwrap());
+    let mut options = options_with(named.to_bytes());
+    let moved = on_script_index(&mut options);
+    let ir = ::rules::compile(::rules::builtin::builtin(1).unwrap()).unwrap();
+    let script = variants::ext::Ext::in_effect(&moved).script;
+    assert_eq!(ir.option_value(script.options, "reset_time"), Some(45));
+}
+
+#[test]
+fn a_script_record_on_a_retail_index_other_than_slayers_moves_and_scores_once() {
+    for ty in [
+        variants::GameType::Ctf,
+        variants::GameType::Oddball,
+        variants::GameType::King,
+        variants::GameType::Territories,
+        variants::GameType::Assault,
+        variants::GameType::Juggernaut,
+    ] {
+        let mut raw = variants::GameVariant::stock(ty).unwrap().to_bytes();
+        let block = block(prefix(&slayer().id), 2);
+        raw[variants::ext::AT..variants::ext::AT + LEN].copy_from_slice(&block);
+        let mut options = options_with(raw);
+        assert_eq!(on_script_index(&mut options), block, "{ty:?}: the script reference stays");
+        let v = variants::GameVariant::from_bytes(&record_at(&options)).unwrap();
+        assert!(v.bytes()[variants::record::TYPE_AREA].iter().all(|&b| b == 0), "{ty:?}");
+    }
+}
+
+#[test]
+fn a_retail_record_that_cannot_map_stays_and_the_reason_is_named() {
+    let raw = retail(variants::GameType::Ctf, &[("ctf_reset_time", 301)]).to_bytes();
+    let mut options = options_with(raw);
+    let swap = crate::rules::record::move_onto_script_index(&mut options, OPTIONS);
+    assert!(matches!(swap, Ok(Swap::Refused(_))), "{swap:?}");
+    assert_eq!(record_at(&options), raw);
+}

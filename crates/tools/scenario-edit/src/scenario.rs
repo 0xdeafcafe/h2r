@@ -204,6 +204,11 @@ pub struct Changes {
     pub geometry_refusal: Option<String>,
     /// The same for the Textures tool's edits.
     pub bitmap_refusal: Option<String>,
+    /// The areas record (`game_markers::record`) the map would carry,
+    /// when the areas differ from the ones it was opened with (empty when
+    /// they were all taken off); none otherwise. A save appends it to the map's tail
+    /// ([`Scenario::area_record`]).
+    pub areas: Option<Vec<u8>>,
 }
 impl Changes {
     pub fn is_empty(&self) -> bool {
@@ -218,6 +223,7 @@ impl Changes {
             && self.tag_moves.is_empty()
             && self.geometry_refusal.is_none()
             && self.bitmap_refusal.is_none()
+            && self.areas.is_none()
     }
 }
 
@@ -447,6 +453,10 @@ pub struct Scenario {
     /// (docs/game/gametype-markers.md, "In the document"). Edited through
     /// [`Self::set_area`]; an entry whose flag is gone waits for its undo.
     areas: std::collections::BTreeMap<PlacementId, game_markers::Area>,
+    /// The areas record the map was opened with, as it encodes now (empty
+    /// when it had none): a save writes the areas again, and
+    /// [`Changes::areas`] holds the record only when it differs from this.
+    areas_loaded: Vec<u8>,
 }
 
 pub(crate) fn u32_at(b: &[u8], o: usize) -> u32 {
@@ -663,7 +673,73 @@ impl Scenario {
             geometry: GeometryChanges::default(),
             bitmap: GeometryChanges::default(),
             areas: std::collections::BTreeMap::new(),
+            areas_loaded: Vec::new(),
         })
+    }
+
+    /// Every netgame flag's type, identifier and position, by index: what
+    /// an areas record's rows find their flags by
+    /// ([`game_markers::record::place`]).
+    fn record_flags(&self) -> Vec<game_markers::record::Flag> {
+        let flags = BlockKind::NetgameFlags;
+        (0..self.block(flags).len())
+            .map(|i| game_markers::record::Flag {
+                flag_type: self
+                    .get(flags, i, "type")
+                    .ok()
+                    .and_then(Value::as_int)
+                    .and_then(|v| i16::try_from(v).ok())
+                    .unwrap_or(-1),
+                identifier: self
+                    .get(flags, i, "identifier")
+                    .ok()
+                    .and_then(Value::as_int)
+                    .and_then(|v| i16::try_from(v).ok())
+                    .unwrap_or(-1),
+                at: self
+                    .get(flags, i, "position")
+                    .ok()
+                    .and_then(Value::as_vec3)
+                    .unwrap_or([0.0; 3]),
+            })
+            .collect()
+    }
+
+    /// The rows of the areas record a save writes: one for each flag that
+    /// has an area, in flag order.
+    pub fn area_rows(&self) -> Vec<game_markers::record::Row> {
+        let flags = self.record_flags();
+        self.flag_areas()
+            .into_iter()
+            .map(|(i, area)| game_markers::record::Row {
+                index: i as u32,
+                flag_type: flags[i].flag_type,
+                identifier: flags[i].identifier,
+                at: flags[i].at,
+                area: area.clone(),
+            })
+            .collect()
+    }
+
+    /// The areas record a save appends to the map
+    /// (`game_markers::record`), or none when no flag has an area.
+    pub fn area_record(&self) -> Option<Vec<u8>> {
+        let rows = self.area_rows();
+        (!rows.is_empty()).then(|| game_markers::record::encode(&rows))
+    }
+
+    /// Takes the areas a map was saved with: each row goes to the flag it
+    /// finds ([`game_markers::record::place`]) and is not an edit. Returns
+    /// how many rows found no flag (the flag was moved or changed type
+    /// since); those are dropped.
+    pub fn load_areas(&mut self, rows: &[game_markers::record::Row]) -> usize {
+        let (placed, lost) = game_markers::record::place(rows, &self.record_flags());
+        for (index, area) in placed {
+            // Stored as read: `Area::validate` passed in the decoder.
+            let _ = self.write_area(index, Some(area));
+        }
+        self.areas_loaded = self.area_record().unwrap_or_default();
+        lost.len()
     }
 
     /// The area of netgame flag `index`, if it has one.
@@ -870,6 +946,12 @@ impl Scenario {
             geometry_refusal: self.geometry.refusal.clone(),
             ..Changes::default()
         };
+        // The areas count as a change when they are not the ones the map
+        // was opened with; a map opened with areas and left alone has none.
+        let record = self.area_record().unwrap_or_default();
+        if record != self.areas_loaded {
+            out.areas = Some(record);
+        }
         out.patches.extend(self.geometry.patches.iter().cloned());
         out.bsp_patches
             .extend(self.geometry.bsp_patches.iter().cloned());

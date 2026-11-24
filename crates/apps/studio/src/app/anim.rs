@@ -50,6 +50,7 @@ use super::App;
 
 mod document;
 pub use document::save::{AnimationPlacement, SavedAnimation};
+pub use document::transfer::{RetargetOptions, Transfer};
 
 /// The renders' background, sRGB-encoded: `model.render`'s own.
 pub(crate) const BACKGROUND: [f64; 3] = [0.10, 0.11, 0.13];
@@ -279,7 +280,7 @@ pub struct AnimRead {
 }
 
 /// A graph's identity even while the Tags tool shows another map.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct GraphKey {
     source: Option<PathBuf>,
     map: Option<String>,
@@ -475,41 +476,61 @@ impl Loaded {
         })
     }
 
-    /// Which of the graph's models to pose: the one named, the only one
-    /// when none is, or `None` when the map has none. Several without a
-    /// name, or a name that is no user, are refused by name.
     fn pick_model(&self, model: Option<&str>) -> Result<Option<usize>, AnimError> {
-        match model {
-            None => match self.models.len() {
-                0 => Ok(None),
-                1 => Ok(Some(0)),
-                n => Err(AnimError::Refused(format!(
-                    "{n} models use this graph: {}",
-                    self.models
-                        .iter()
-                        .map(|(u, _)| u.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ))),
-            },
-            Some(want) => {
-                let found = self.models.iter().position(|(u, _)| {
-                    u.name.eq_ignore_ascii_case(want)
-                        || id_text(u.object).eq_ignore_ascii_case(want)
-                });
-                match found {
-                    Some(i) => Ok(Some(i)),
-                    None => Err(AnimError::Refused(format!(
-                        "{want:?} is not one of the models using this graph ({})",
-                        self.models
-                            .iter()
-                            .map(|(u, _)| u.name.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ))),
-                }
-            }
-        }
+        pick_model(&self.models, model)
+    }
+}
+
+/// Which model to use: the named one, the only one when none is named,
+/// or no selection if the graph has no model. Poses and retargeting
+/// interpret names and tag IDs the same way.
+fn pick_model<T>(
+    models: &[(ModelUser, T)],
+    model: Option<&str>,
+) -> Result<Option<usize>, AnimError> {
+    let names = || {
+        models
+            .iter()
+            .map(|(user, _)| user.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    match model {
+        None => match models.len() {
+            0 => Ok(None),
+            1 => Ok(Some(0)),
+            n => Err(AnimError::Refused(format!(
+                "{n} models use this graph: {}", names()
+            ))),
+        },
+        Some(want) => models
+            .iter()
+            .position(|(user, _)| {
+                user.name.eq_ignore_ascii_case(want)
+                    || id_text(user.object).eq_ignore_ascii_case(want)
+            })
+            .map(Some)
+            .ok_or_else(|| AnimError::Refused(format!(
+                "{want:?} is not one of the models using this graph ({})", names()
+            ))),
+    }
+}
+
+/// Retain the rest transforms even after a different graph takes the
+/// model preview cache. Open documents can then serve as retarget sources
+/// from a different map without reopening it or retaining its mesh.
+struct GraphRest {
+    name: String,
+    models: Vec<(ModelUser, Result<Vec<NodeDefault>, String>)>,
+}
+
+impl GraphRest {
+    fn model(&self, model: Option<&str>) -> Result<&[NodeDefault], AnimError> {
+        let index = pick_model(&self.models, model)?.ok_or_else(|| {
+            AnimError::Refused(format!("{} has no model with a rest skeleton", self.name))
+        })?;
+        let (user, rest) = &self.models[index];
+        rest.as_deref().map_err(|why| AnimError::Refused(format!("{}: {why}", user.name)))
     }
 }
 
@@ -518,6 +539,7 @@ impl Loaded {
 pub struct Anim {
     loaded: Option<Loaded>,
     docs: Vec<document::AnimationDocument>,
+    graph_rests: HashMap<GraphKey, GraphRest>,
 }
 
 fn model_defaults(piece: &Piece) -> Vec<NodeDefault> {
@@ -795,16 +817,14 @@ impl App {
         let mut map = self
             .open_shown_map()
             .map_err(|e| AnimError::Failed(format!("the map: {e}")))?;
-        let group = map
-            .tag(id)
-            .map_err(|e| AnimError::Failed(e.to_string()))?
-            .group;
-        if group.0 != *b"jmad" {
+        let entry = map.tag(id).map_err(|e| AnimError::Failed(e.to_string()))?;
+        if entry.group.0 != *b"jmad" {
             return Err(AnimError::Refused(format!(
                 "{} is not an animation graph (jmad)",
-                tags::defs::fourcc_text(group)
+                tags::defs::fourcc_text(entry.group)
             )));
         }
+        let graph_name = entry.name.clone().unwrap_or_else(|| id_text(id));
         let ctx = Context::read(&mut map)
             .map_err(|e| AnimError::Failed(format!("the map's tags: {e}")))?;
         let graph =
@@ -837,7 +857,7 @@ impl App {
         let mut files = self
             .shown_raw_files()
             .map_err(|e| AnimError::Failed(format!("the map's resource files: {e}")))?;
-        let models = users
+        let models: Vec<_> = users
             .iter()
             .map(|u| {
                 let piece = preview::object(&mut map, &ctx, &mut files, u.object, None)
@@ -846,6 +866,19 @@ impl App {
                 (u.clone(), piece)
             })
             .collect();
+        self.anim.graph_rests.insert(
+            key.clone(),
+            GraphRest {
+                name: graph_name,
+                models: models
+                    .iter()
+                    .map(|(user, piece)| {
+                        let rest = piece.as_ref().map(|piece| model_defaults(piece)).map_err(Clone::clone);
+                        (user.clone(), rest)
+                    })
+                    .collect(),
+            },
+        );
         self.anim.loaded = Some(Loaded {
             key,
             graph,
