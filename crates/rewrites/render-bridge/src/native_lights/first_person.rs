@@ -122,6 +122,7 @@ impl Slot {
     /// including its output ranges and the final target, before asking the
     /// host to reserve any geometry.
     fn read(mem: &dyn GuestMemory, call: &Call, fpu: Fpu) -> Result<Self, Refusal> {
+        super::typed::check_view_layers(mem, call.definition, true)?;
         let globals =
             typed::plan(mem, call, fpu, typed::Site::FirstPerson).map_err(|error| match error {
                 engine::light_constants::Error::Memory(_) => Refusal::Memory,
@@ -129,9 +130,6 @@ impl Slot {
             })?;
         let constants = super::constants_of(mem, &globals.light, globals.flags, call.definition)
             .ok_or(Refusal::Layout)?;
-        if constants.animated_gel {
-            return Err(Refusal::Unsupported);
-        }
         let inputs = light_passes::read(&Ro(mem), globals.flags, constants.definition_flags)
             .ok_or(Refusal::Layout)?;
         let steps = light_passes::first_person_steps(&inputs);

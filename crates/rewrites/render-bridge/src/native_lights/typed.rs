@@ -83,6 +83,25 @@ pub(super) fn submit(
     )
 }
 
+/// Layer 14 always tests the receiver mask, and first-person lights also
+/// always test layer 11. Skip the sphere projection and material walk when
+/// one of these draws or the shader gel already needs the ordinary passes.
+pub(super) fn check_view_layers(
+    mem: &dyn GuestMemory,
+    definition: u32,
+    first_person: bool,
+) -> Result<(), Refusal> {
+    let mask = mem.u32(light_passes::LIGHT_LIST + 8)?;
+    if mask & (1 << 14) != 0
+        || (first_person && mask & (1 << 11) != 0)
+        || mem.u32(definition.wrapping_add(engine::light_passes::DEFINITION_GEL_SHADER))?
+            != u32::MAX
+    {
+        return Err(Refusal::Unsupported);
+    }
+    Ok(())
+}
+
 struct Dynamic {
     globals: typed::Globals,
     tail: typed_tail::Tail,
@@ -92,6 +111,7 @@ struct Dynamic {
 }
 
 fn plan(mem: &dyn GuestMemory, p: &passes::Plan) -> Result<Dynamic, Refusal> {
+    check_view_layers(mem, p.data, false)?;
     let casters = mem.u32(light_passes::CASTERS + 8)?;
     let shadow =
         engine::light_passes::shadow_argument(mem.u32(p.entry_esp.wrapping_add(12))?, casters);
@@ -110,9 +130,6 @@ fn plan(mem: &dyn GuestMemory, p: &passes::Plan) -> Result<Dynamic, Refusal> {
         })?;
     let constants =
         constants_of(mem, &globals.light, globals.flags, p.data).ok_or(Refusal::Memory)?;
-    if constants.animated_gel {
-        return Err(Refusal::Unsupported);
-    }
     let inputs = light_passes::read(&Ro(mem), globals.flags, constants.definition_flags)
         .ok_or(Refusal::Memory)?;
     let steps = light_passes::steps(&inputs);

@@ -1,11 +1,7 @@
-//! One light's passes at `RENDER_LIGHT_PASSES` (`0x00031170`;
-//! docs/graphics/native-light-gather.md, slice L5): the body
-//! `engine::render::light_gather::passes` makes the guest's steps in its
-//! order, with the item lists, the constants, the projection and each
-//! layer's target, stencil, draw and end as guest calls, so every hook on
-//! them runs as under the guest. A hook that tests the return address of
-//! one of those calls reads it through `passes::caller`. A plan that
-//! refuses runs the guest function whole.
+//! One dynamic light at `0x00031170`. After the item gather, L8 offers the
+//! complete passes to the renderer. A refused light continues through L5,
+//! whose guest calls name their original return sites through `passes::caller`.
+//! Refusal at the entry itself runs the entire original function.
 
 use engine::light_constants::Fpu;
 use engine::points;
