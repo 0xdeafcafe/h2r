@@ -48,6 +48,8 @@
 //! - **content checks**: `sound.measure` ([`super::sound_measure`]),
 //!   `ui.check` ([`super::ui_check`]) and `check.run`, whose checks are
 //!   the rows of [`super::checks::CHECKS`].
+//! - **import**: `import.sound` writes a WAV into a package as a `sound`
+//!   item ([`super::import`], `app::sound_import`).
 //! - **models**: `model.list`, `read`, `render` and `check` over the map
 //!   the scenario tool has open, or a named one, with the Pogo Stick's kit
 //!   when asked ([`super::models`]); read-only, so no actions.
@@ -131,6 +133,8 @@ pub fn register(api: &mut Api) {
     // Content checks: a sound's levels against the map's, our screens and
     // HUDs checked, and every check in one list (check.run).
     api.register(Box::new(super::sound_measure::SoundMeasure));
+    // import.sound: a WAV added to a package as a `sound` item.
+    api.register(Box::new(super::import::Import));
     api.register(Box::new(super::ui_check::UiCheck));
     api.register(Box::new(super::checks::Checks));
     // model.*: objects' models read, rendered (ground, third and first

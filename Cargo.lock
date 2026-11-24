@@ -8858,7 +8858,9 @@ dependencies = [
 name = "workspace"
 version = "0.1.0"
 dependencies = [
+ "audio",
  "content",
+ "h1-assets",
  "hud-kit-core",
  "map",
  "png",

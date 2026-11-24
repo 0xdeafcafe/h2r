@@ -2,8 +2,8 @@
 //!
 //! Linear is what the mixer uses per voice: cheap, bounded, and good enough
 //! for game audio where voices are pitch-shifted constantly anyway. It does
-//! not band-limit, so large downsamples alias. A windowed-sinc path can slot
-//! in behind the same signatures later.
+//! not band-limit, so large downsamples alias. [`resample_sinc`] is the
+//! band-limited path, for clips converted once (Studio's `import.sound`).
 
 /// Reads the frame at fractional position `pos` (in frames) from interleaved
 /// `src`, writing `channels` values to `out`. Positions past the end clamp to
@@ -35,6 +35,60 @@ pub fn resample_linear(src: &[f32], channels: usize, from: u32, to: u32) -> Vec<
     let mut out = vec![0.0; out_frames * channels];
     for (n, frame) in out.chunks_exact_mut(channels).enumerate() {
         lerp_frame(src, channels, n as f64 * step, frame);
+    }
+    out
+}
+
+/// Zero crossings of the sinc kernel on each side of the centre.
+const SINC_WINGS: i64 = 16;
+
+fn sinc(x: f64) -> f64 {
+    if x.abs() < 1e-9 {
+        1.0
+    } else {
+        let a = std::f64::consts::PI * x;
+        a.sin() / a
+    }
+}
+
+/// Resamples a whole interleaved clip from `from` Hz to `to` Hz with a
+/// Hann-windowed sinc, low-passed at the lower of the two rates' Nyquist,
+/// so a downsample does not alias. Slow (about 32 taps per output
+/// sample at the higher rate) and meant for clips converted once. Frames
+/// outside the clip read as silence.
+pub fn resample_sinc(src: &[f32], channels: usize, from: u32, to: u32) -> Vec<f32> {
+    assert!(channels > 0 && from > 0 && to > 0);
+    let frames = src.len() / channels;
+    if frames == 0 || from == to {
+        return src.to_vec();
+    }
+    let out_frames = (frames as u64 * u64::from(to) / u64::from(from)) as usize;
+    let step = f64::from(from) / f64::from(to);
+    // Cutoff as a fraction of the input rate's Nyquist: below 1 when going
+    // down, which also widens the kernel in input frames.
+    let cutoff = (f64::from(to) / f64::from(from)).min(1.0);
+    let wing = SINC_WINGS as f64 / cutoff;
+    let mut out = vec![0.0; out_frames * channels];
+    for (n, frame) in out.chunks_exact_mut(channels).enumerate() {
+        let pos = n as f64 * step;
+        let lo = (pos - wing).ceil() as i64;
+        let hi = (pos + wing).floor() as i64;
+        let mut acc = [0.0f64; 2];
+        let mut norm = 0.0;
+        for k in lo..=hi {
+            let d = k as f64 - pos;
+            let w = cutoff * sinc(d * cutoff) * (0.5 + 0.5 * (std::f64::consts::PI * d / wing).cos());
+            norm += w;
+            if (0..frames as i64).contains(&k) {
+                for (c, a) in acc.iter_mut().enumerate().take(channels) {
+                    *a += w * f64::from(src[k as usize * channels + c]);
+                }
+            }
+        }
+        // Normalising by the kernel's own sum keeps a constant at its value.
+        for (c, v) in frame.iter_mut().enumerate() {
+            *v = (acc[c] / norm) as f32;
+        }
     }
     out
 }
@@ -158,5 +212,44 @@ mod tests {
         // 1% faster: 1% fewer output frames for the next thousand.
         assert_eq!(before, 99, "the last frame is held back");
         assert_eq!(out.len() - before, 991);
+    }
+
+    #[test]
+    fn sinc_keeps_a_constant_and_a_slow_sine() {
+        let flat = resample_sinc(&[0.5; 400], 1, 48_000, 44_100);
+        assert_eq!(flat.len(), 400 * 44_100 / 48_000);
+        for &v in &flat[40..flat.len() - 40] {
+            assert!((v - 0.5).abs() < 1e-3, "{v}");
+        }
+        // 440 Hz at 48 kHz, converted to 22.05 kHz: still 440 Hz.
+        let sine: Vec<f32> = (0..4800)
+            .map(|i| (i as f32 / 48_000.0 * 440.0 * std::f32::consts::TAU).sin())
+            .collect();
+        let down = resample_sinc(&sine, 1, 48_000, 22_050);
+        for (n, &v) in down.iter().enumerate().skip(40).take(down.len() - 80) {
+            let want = (n as f32 / 22_050.0 * 440.0 * std::f32::consts::TAU).sin();
+            assert!((v - want).abs() < 0.02, "frame {n}: {v} vs {want}");
+        }
+    }
+
+    #[test]
+    fn sinc_removes_what_the_new_rate_cannot_hold() {
+        // 15 kHz is above the Nyquist of a 22.05 kHz clip (11.025 kHz).
+        let tone: Vec<f32> = (0..4800)
+            .map(|i| (i as f32 / 48_000.0 * 15_000.0 * std::f32::consts::TAU).sin())
+            .collect();
+        let down = resample_sinc(&tone, 1, 48_000, 22_050);
+        let peak = down[60..down.len() - 60].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(peak < 0.1, "aliased to {peak}");
+    }
+
+    #[test]
+    fn sinc_keeps_stereo_channels_apart() {
+        let src: Vec<f32> = (0..400).flat_map(|_| [0.25f32, -0.5]).collect();
+        let out = resample_sinc(&src, 2, 22_050, 44_100);
+        assert_eq!(out.len() / 2, 800);
+        for f in out.chunks_exact(2).skip(40).take(720) {
+            assert!((f[0] - 0.25).abs() < 1e-3 && (f[1] + 0.5).abs() < 1e-3, "{f:?}");
+        }
     }
 }

@@ -269,13 +269,14 @@ fn overlap(a: &Maps, b: &Maps) -> bool {
     }
 }
 
-/// The tag a `tag`, `bitmap` or `model` item adds (a `model`'s is its
-/// `hlmt`), from the manifest alone.
+/// The tag a `tag`, `bitmap`, `model` or `sound` item adds (a `model`'s is
+/// its `hlmt`, a `sound`'s its `snd!`), from the manifest alone.
 pub fn added_tag(item: &content::package::Item) -> Option<tags::repo::TagKey> {
     let path = item.tag.as_deref()?.replace('/', "\\");
     let group = match item.kind {
         Kind::Bitmap => map::FourCC(*b"bitm"),
         Kind::Model => map::FourCC(*b"hlmt"),
+        Kind::Sound => map::FourCC(*b"snd!"),
         Kind::Tag => crate::tagitem::group_of_source(item.source.as_deref()?).ok()?,
         _ => return None,
     };

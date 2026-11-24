@@ -18,6 +18,7 @@ mod image_gen_tests;
 mod script_variants_tests;
 mod assets_tests;
 mod problems_tests;
+mod import_tests;
 mod shell_tests;
 mod ui_export_tests;
 
@@ -181,6 +182,12 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             // An invented tags tree of two maps and a package `kit-test`.
             assets_tests::tree(&app.tags_root());
             assets_tests::package(&t.path("data/packages/kit-test"));
+        }
+        m::IMPORT_SOUND => {
+            // An empty local package `mine` and a WAV of an invented tone.
+            import_tests::package(&t.path("data/packages/mine"), "mine");
+            std::fs::create_dir_all(t.path("out")).unwrap();
+            std::fs::write(t.path("out/clip.wav"), import_tests::tone(1, 22_050, 640)).unwrap();
         }
         m::SOUND_READ | m::SOUND_PLAY | m::SOUND_STOP | m::SOUND_MEASURE => {
             // A map with a sound, played to the headless output.

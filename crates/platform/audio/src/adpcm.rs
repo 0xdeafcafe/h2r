@@ -166,69 +166,94 @@ fn decode_block(block: &[u8], channels: usize, cols: &mut [[i16; 65]]) {
     }
 }
 
+/// Encodes interleaved 16-bit PCM as Xbox ADPCM blocks: the inverse of
+/// [`decode`], for the sounds Studio imports.
+///
+/// Each block holds 64 frames per channel. The header sample is the
+/// block's first frame (exact), the next 63 are 4-bit codes, and the step
+/// index runs on from one block to the next. A clip that is not a whole
+/// number of blocks is padded with its last frame, so the tail decodes to
+/// a held value rather than a click; the caller keeps the true length.
+/// An empty clip encodes to no blocks. The quantiser is the plain IMA
+/// one (no search): its error is the codec's own.
+pub fn encode(pcm: &[i16], channels: usize) -> Result<Vec<u8>, AudioError> {
+    if !(1..=2).contains(&channels) {
+        return Err(AudioError::UnsupportedFormat("Xbox ADPCM is mono or stereo"));
+    }
+    if !pcm.len().is_multiple_of(channels) {
+        return Err(AudioError::BadLength {
+            len: pcm.len(),
+            unit: channels,
+            what: "PCM frame",
+        });
+    }
+    let frames = pcm.len() / channels;
+    let blocks = frames.div_ceil(SAMPLES_PER_BLOCK);
+    let mut out = Vec::with_capacity(blocks * BLOCK_BYTES_PER_CHANNEL * channels);
+    let mut index = [0i32; 2];
+    for blk in 0..blocks {
+        let base = blk * SAMPLES_PER_BLOCK;
+        let sample = |i: usize, ch: usize| -> i32 {
+            let frame = (base + i).min(frames - 1);
+            i32::from(pcm[frame * channels + ch])
+        };
+        let mut codes = [[0u8; SAMPLES_PER_BLOCK]; 2];
+        for ch in 0..channels {
+            let mut st = ChannelState { predictor: sample(0, ch), index: index[ch] };
+            out.extend_from_slice(&(sample(0, ch) as i16).to_le_bytes());
+            out.push(st.index as u8);
+            out.push(0);
+            // The block's 64th nibble slot is unused (it stays 0 and the
+            // decoder drops it).
+            for i in 1..SAMPLES_PER_BLOCK {
+                let code = encode_nibble(&st, sample(i, ch));
+                st.step(code);
+                codes[ch][i - 1] = code;
+            }
+            index[ch] = st.index;
+        }
+        for group in 0..GROUPS {
+            for codes in codes.iter().take(channels) {
+                for b in 0..GROUP_BYTES {
+                    let i = group * 8 + b * 2;
+                    out.push(codes[i] | (codes[i + 1] << 4));
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn encode_nibble(st: &ChannelState, target: i32) -> u8 {
+    let step = STEP_TABLE[st.index as usize];
+    let mut diff = target - st.predictor;
+    let mut code = 0u8;
+    if diff < 0 {
+        code = 8;
+        diff = -diff;
+    }
+    if diff >= step {
+        code |= 4;
+        diff -= step;
+    }
+    if diff >= step >> 1 {
+        code |= 2;
+        diff -= step >> 1;
+    }
+    if diff >= step >> 2 {
+        code |= 1;
+    }
+    code
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
 
-    /// Test-only IMA encoder producing Xbox block layout. Not shipped: the
-    /// game only ever decodes.
+    /// The shipped encoder, for whole blocks only.
     pub fn encode(pcm: &[i16], channels: usize) -> Vec<u8> {
-        let per_ch = pcm.len() / channels;
-        assert_eq!(per_ch % SAMPLES_PER_BLOCK, 0, "pad input to whole blocks");
-        let mut out = Vec::new();
-        let mut index = [0i32; 2];
-        for blk in 0..per_ch / SAMPLES_PER_BLOCK {
-            // Block b of channel c covers samples [b*64 .. b*64+64) with the
-            // 65th decode slot unused; header sample is sample 0.
-            let base = blk * SAMPLES_PER_BLOCK;
-            let mut codes = vec![[0u8; 64]; channels];
-            for ch in 0..channels {
-                let s = |i: usize| pcm[(base + i) * channels + ch] as i32;
-                let mut st = ChannelState { predictor: s(0), index: index[ch] };
-                out.extend_from_slice(&(s(0) as i16).to_le_bytes());
-                out.push(st.index as u8);
-                out.push(0);
-                for i in 1..64 {
-                    let code = encode_nibble(&st, s(i));
-                    st.step(code);
-                    codes[ch][i - 1] = code;
-                }
-                // Slot 64 is padding; use a zero-delta code.
-                codes[ch][63] = 0;
-                index[ch] = st.index;
-            }
-            for group in 0..GROUPS {
-                for codes in codes.iter().take(channels) {
-                    for b in 0..4 {
-                        let i = group * 8 + b * 2;
-                        out.push(codes[i] | (codes[i + 1] << 4));
-                    }
-                }
-            }
-        }
-        out
-    }
-
-    fn encode_nibble(st: &ChannelState, target: i32) -> u8 {
-        let step = STEP_TABLE[st.index as usize];
-        let mut diff = target - st.predictor;
-        let mut code = 0u8;
-        if diff < 0 {
-            code = 8;
-            diff = -diff;
-        }
-        if diff >= step {
-            code |= 4;
-            diff -= step;
-        }
-        if diff >= step >> 1 {
-            code |= 2;
-            diff -= step >> 1;
-        }
-        if diff >= step >> 2 {
-            code |= 1;
-        }
-        code
+        assert_eq!((pcm.len() / channels) % SAMPLES_PER_BLOCK, 0, "pad input to whole blocks");
+        super::encode(pcm, channels).unwrap()
     }
 
     #[test]
@@ -344,5 +369,19 @@ pub(crate) mod tests {
         // Corrupt step index is clamped, not a panic.
         block[2] = 255;
         decode(&block, 1).unwrap();
+    }
+
+    #[test]
+    fn public_encoder_pads_a_short_clip_with_its_last_frame() {
+        let pcm: Vec<i16> = (0..100).map(|i| (i * 50) as i16).collect();
+        let enc = super::encode(&pcm, 1).unwrap();
+        assert_eq!(enc.len(), 2 * 36);
+        let dec = decode(&enc, 1).unwrap();
+        assert_eq!(dec.len(), 128);
+        // The second block's header is its first frame, exactly.
+        assert_eq!(dec[64], pcm[64]);
+        assert!(super::encode(&[], 1).unwrap().is_empty());
+        assert!(super::encode(&[0; 3], 2).is_err());
+        assert!(super::encode(&[0; 4], 3).is_err());
     }
 }

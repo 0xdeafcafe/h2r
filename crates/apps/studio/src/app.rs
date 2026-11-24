@@ -36,6 +36,7 @@ pub mod tag_bundle;
 pub mod tag_doc;
 pub mod assets;
 pub mod problems;
+pub mod sound_import;
 pub mod tag_tree;
 pub mod textures;
 pub mod ui_screens;

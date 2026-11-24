@@ -107,7 +107,7 @@ impl PackageRewrite {
         for i in packages
             .iter()
             .flat_map(|p| &p.package.manifest.items)
-            .filter(|i| changes_map(i.kind))
+            .filter(|i| changes_map(i))
         {
             match &i.maps {
                 Maps::Scope(_) => by_class = true,
@@ -148,7 +148,7 @@ impl PackageRewrite {
     pub fn is_empty(&self) -> bool {
         self.packages
             .iter()
-            .all(|p| p.package.manifest.items.iter().all(|i| !changes_map(i.kind)))
+            .all(|p| p.package.manifest.items.iter().all(|i| !changes_map(i)))
     }
 
     fn files(&self, base: &Sha256, key: &Sha256) -> Option<(PathBuf, PathBuf)> {
@@ -208,7 +208,7 @@ impl PackageRewrite {
                 .manifest
                 .items
                 .iter()
-                .filter(|i| changes_map(i.kind) && target.takes(&i.maps))
+                .filter(|i| changes_map(i) && target.takes(&i.maps))
                 .collect();
             if items.is_empty() {
                 continue;

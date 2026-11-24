@@ -88,11 +88,16 @@ pub fn builder(kind: Kind) -> Option<&'static Builder> {
     REGISTRY.iter().find(|b| b.kind == kind)
 }
 
-/// Whether an item of `kind` changes the map it is built on. A `hud`,
-/// `sound` or `data` item does not: the game compiles a HUD's records at
-/// install and plays or reads the others from the package, so a package of
-/// nothing else leaves every map as it was and the rewrite serves none
-/// of them anew.
-pub fn changes_map(kind: Kind) -> bool {
-    !matches!(kind, Kind::Hud | Kind::Sound | Kind::Data)
+/// Whether `item` changes the map it is built on. A `hud` or `data` item
+/// does not, nor does a `sound` item with no `tag`: the game compiles a
+/// HUD's records at install and plays or reads the others from the package,
+/// so a package of nothing else leaves every map as it was and the rewrite
+/// serves none of them anew. A `sound` item with a `tag` writes a `snd!`
+/// and rows of the map's gestalt.
+pub fn changes_map(item: &Item) -> bool {
+    match item.kind {
+        Kind::Hud | Kind::Data => false,
+        Kind::Sound => item.tag.as_deref().is_some_and(|t| !t.is_empty()),
+        _ => true,
+    }
 }

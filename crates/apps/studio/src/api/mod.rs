@@ -37,6 +37,7 @@ mod game_script;
 mod geometry;
 mod hud;
 mod image_gen;
+mod import;
 mod mirror;
 mod models;
 mod nav;

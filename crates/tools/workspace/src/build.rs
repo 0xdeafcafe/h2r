@@ -227,6 +227,15 @@ impl Cx<'_> {
         }
     }
 
+    /// Note a tag of the base this item changed by other means (a sound
+    /// gestalt rewritten as sounds join it). A tag an item added is not a
+    /// change of the base.
+    pub fn note_changed(&mut self, key: &TagKey) {
+        if !self.state.added.contains_key(key) {
+            self.state.report.changed.insert(key.clone());
+        }
+    }
+
     /// The tag's hash as the build first found it, taken now if this is the
     /// first touch. Call before changing the tag.
     pub fn touch(&mut self, id: TagId) -> Result<Sha256, String> {

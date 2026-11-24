@@ -123,6 +123,26 @@ works where the sound's audio cannot be read.
 
 Verdict: 64 samples per block per channel; `SamplesPerBlock::Hardware64` is right.
 
+## Writing a sound
+
+A `sound` item of a package with a `tag` is written as a `snd!`
+(`workspace::import`; [studio-redesign.md](../editor/studio-redesign.md),
+"Contents"). The clip's rate is mapped to the nearest of 22,050, 32,000 and
+44,100 Hz that is not below it (`+3` 0, 2, 1) and resampled to it, the
+channel count is `+4` (0 mono, 1 stereo), and `+5` is 1: Xbox ADPCM in
+whole blocks (`audio::adpcm::encode`: each block's header sample is its
+first frame and the next 63 are 4-bit codes, as read above). The bytes are
+cut at 0x7ff8 (910 mono or 455 stereo blocks) into chunks, each a raw
+resource aligned to 0x200. The sound has one pitch range of one
+permutation: the gestalt rows are a playback of zeros (the flags `0x400`,
+`0x800` and `0x1000` take both distances from the class and drop the cone),
+a scale with both multipliers 1.0, the range, the permutation (its
+size the sum of its chunks, its length in milliseconds at `+6`) and its
+chunks, all appended after the rows the gestalt held, so no existing index
+moves. `+0x10` is the floor of the clip's length in milliseconds, as read
+above. A clip is never given an extra info (no mouth curve), a promotion or
+a custom playback.
+
 ## `h2 sound` behaviour
 
 - Output is always `<tag path>.r<range>p<permutation>.wav`, including retail
