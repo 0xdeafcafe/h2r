@@ -41,6 +41,9 @@ pub struct TagsUi {
     pub export_dependencies: bool,
     /// Export raw resources (pixels, geometry) as blobs.
     pub export_resources: bool,
+    /// The Shader tab's state: the preview shape, its picture and the
+    /// bitmap picker (docs/editor/rich-editors.md, "Shaders").
+    pub shader: fields::shader::ShaderUi,
 }
 
 fn group_text(g: FourCC) -> String {
@@ -534,13 +537,18 @@ fn scenario_rows(
     });
 }
 
-/// The selected tag's fields, with export and import.
+/// The selected tag's fields, with export and import; a group with a tag
+/// view shows its tab too (`fields::rich`), drawn with the GPU for its
+/// pictures.
+#[allow(clippy::too_many_arguments)]
 pub fn fields(
     ui: &Ui,
     app: &mut App,
     st: &mut TagsUi,
     fonts: &Fonts,
     dialogs: bool,
+    gpu: &mut Gpu<'_>,
+    pictures: &mut MapListUi,
     actions: &mut Vec<Action>,
 ) {
     let doc = app.shown_tags();
@@ -626,7 +634,13 @@ pub fn fields(
         st.panel.set_settings(settings);
     }
     if let Some(view) = fields::rich::tag_view(t.group, shown) {
-        (view.draw)(ui, app, id, actions);
+        let mut cx = fields::rich::ViewCx {
+            gpu,
+            pictures,
+            panel: &mut st.panel,
+            shader: &mut st.shader,
+        };
+        (view.draw)(ui, app, id, &mut cx, actions);
         st.panel.store(app);
         return;
     }

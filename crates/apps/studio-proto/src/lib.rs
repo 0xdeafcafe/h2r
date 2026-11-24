@@ -150,6 +150,13 @@ pub mod method {
     // Colour fields of a tag (api/colours.rs).
     pub const TAG_COLOURS: &str = "tag.colours";
 
+    // The Shader tab (api/shader.rs; slice S1 of
+    // docs/editor/rich-editors.md): a shad's slots read and written, and
+    // the material drawn alone.
+    pub const SHADER_READ: &str = "shader.read";
+    pub const SHADER_SET: &str = "shader.set";
+    pub const SHADER_PREVIEW: &str = "shader.preview";
+
     pub const SOUND_READ: &str = "sound.read";
     pub const SOUND_PLAY: &str = "sound.play";
     pub const SOUND_STOP: &str = "sound.stop";

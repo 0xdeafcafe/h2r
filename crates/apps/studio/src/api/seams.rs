@@ -25,6 +25,9 @@
 //! - **colours** (the colour picker of a colour field, rich editors C1):
 //!   `tag.colours`, every colour row of a tag ([`super::colours`]);
 //!   `tag.set` takes a colour as hex or `{rgba, intensity?}`.
+//! - **shaders** (the Shader tab, rich editors S1): `shader.read`,
+//!   `shader.set` (`tag.set` at the slot's path) and `shader.preview`
+//!   ([`super::shader`]).
 //! - **tag browsing and bundles**: `tag.list` over the document the Tags
 //!   tool shows, `tag.browse`, `tag.resources`, `tag.export` and
 //!   `tag.import` through `Action::BrowseTags`, `Action::TagExport` and
@@ -96,6 +99,9 @@ pub fn register(api: &mut Api) {
     // Every colour field of a tag, with its form and hex (rich editors
     // C1).
     api.register(Box::new(super::colours::Colours));
+    // The Shader tab (rich editors S1): a shad's slots read and written
+    // through tag.set, and the material drawn alone (app::shader).
+    api.register(Box::new(super::shader::Shader::default()));
     api.register(Box::new(super::nav::Navigation));
     // The Navigation layers' data: the game's pathfinding, the bots' mesh
     // and spots, and a pick.

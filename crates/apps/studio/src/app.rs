@@ -31,6 +31,7 @@ pub mod rules_edit;
 pub mod recordings;
 pub mod scripts;
 pub mod shared_refs;
+pub mod shader;
 pub mod shell;
 pub mod subject;
 pub mod tag_api;

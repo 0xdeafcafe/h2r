@@ -32,6 +32,7 @@ pub(crate) mod checks;
 mod problems;
 mod collision;
 mod colours;
+mod shader;
 mod curves;
 mod docs;
 mod game_script;
