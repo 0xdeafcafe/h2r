@@ -429,7 +429,10 @@ reports the choice as `lights_lit` and `lights_over_cap`.
   "Colours, tint and light"). The frame step adds them to each game view
   after the game's candidates (`render_bridge::scene_step::set_host_lights`).
   They rank after every game light whatever their score, so they are the
-  first a full view leaves unlit, and they carry no steps and no shadow.
+  first a full view leaves unlit, and they carry no steps and no shadow. The light passes draw them from
+  `render_bridge::native_lights::host` (constants) and
+  `native_lights_glue::host` (layers 12 and 13 over the structure the
+  sphere meets), once the main view's light pass is over.
 - **The view's own lights** are its first-person lights (definition bit
   5), which the view test admits only for the view's local first-person
   owner. The scene carries neither the view's unit nor an owner chain, so

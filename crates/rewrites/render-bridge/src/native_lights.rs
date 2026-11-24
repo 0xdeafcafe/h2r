@@ -19,6 +19,7 @@ mod additional;
 mod first_person;
 mod frame;
 mod handoff;
+pub mod host;
 mod items;
 mod object_shadows;
 mod passes;
@@ -177,6 +178,13 @@ pub trait Host: Send + Sync {
     /// them, nothing issued.
     fn draw_alone(&self, _mem: &mut dyn GuestMemory, _alone: Alone<'_>) -> bool {
         false
+    }
+    /// Draw the host's own lights' layers 12 and 13 ([`host`]) in the view
+    /// whose light pass is over: each [`host::HostLight`] a sphere of its
+    /// constants, the geometry it touches the host's to choose. Returns
+    /// the lights drawn; a light it keeps draws nothing.
+    fn draw_host(&self, _mem: &mut dyn GuestMemory, _draw: host::HostDraw<'_>) -> usize {
+        0
     }
     /// Draw a caster group from the scene, or return the refusal category
     /// the shadow stage counts. No draw is issued on refusal.

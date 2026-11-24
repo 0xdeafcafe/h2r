@@ -1,5 +1,6 @@
 //! Native light draws over sorted guest geometry. Each target copy prepares
 //! immutable draw resources alongside the exact resolved fallback.
+mod host;
 mod materials;
 pub mod models;
 pub(crate) mod typed;
@@ -928,6 +929,14 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             eprintln!("{msg}");
         }
         ok
+    }
+
+    fn draw_host(
+        &self,
+        mem: &mut dyn GuestMemory,
+        draw: render_bridge::native_lights::host::HostDraw<'_>,
+    ) -> usize {
+        self.host_lights(mem, draw)
     }
 
     fn draw_typed(

@@ -1,0 +1,280 @@
+//! The host's own lights (docs/game/forge-monitor-appearance.md, ML5):
+//! sphere lights with no guest record, whose constants
+//! (`render_bridge::native_lights::host`) the frame step made once the
+//! view's light pass was over. Each draws its layers 12 and 13 over the
+//! world's structure parts its sphere meets, in the view's target, as one
+//! external pass a light, with the same resident geometry, material
+//! variants and light textures a guest light's scene group uses
+//! ([`Glue::scene_light_draws`]). No shadow map is made, no gel is
+//! sampled, and no object (model) part is lit: a host light lights the
+//! structure and its placements only.
+use super::*;
+use render_bridge::native_lights::host::{HostDraw, HostLight};
+
+/// The whole target: [`intersect_scissor`] crops it to the view's.
+const WHOLE: [u32; 4] = [0, 0, u32::MAX / 2, u32::MAX / 2];
+
+/// The parts a host light draws, as `(layer, implementation, part)` in
+/// the order the guest's lists draw them: layer 12's parts by their place
+/// in the world's indices, then layer 13's. A part is in when its bounds
+/// meet the light's sphere and its material is one the passes hold; the
+/// implementation is the engine's choice for the light's flags and the
+/// material's integer input 4 (`engine::light_passes::implementation`),
+/// and a layer with none draws nothing.
+pub(super) fn parts<'a>(
+    draws: impl Iterator<Item = &'a WorldDraw>,
+    materials: &HashMap<u16, LitMaterial>,
+    light: &HostLight,
+) -> Vec<(usize, usize, WorldDraw)> {
+    let c = &light.constants;
+    let mut met: Vec<&WorldDraw> = draws
+        .filter(|d| d.bounds.meets_sphere(light.origin, light.radius))
+        .collect();
+    met.sort_by_key(|d| (d.first_index, d.index_count));
+    let mut out = Vec::new();
+    for layer in [DIFFUSE_LAYER, SPECULAR_LAYER] {
+        for d in &met {
+            let Some(m) = materials.get(&d.material) else {
+                continue;
+            };
+            let int_input = m.instance.ints[4] as u16;
+            if let Some(imp) = engine::light_passes::implementation(
+                layer as u32,
+                c.flags,
+                c.definition_flags as u8,
+                int_input,
+            ) {
+                out.push((layer, imp as usize, **d));
+            }
+        }
+    }
+    out
+}
+
+impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+    /// Counts one host light's answer with the others' ([`Tally`]).
+    fn count_host(&self, answer: Result<(), Keep>) {
+        let mut tally = self.tally.lock().unwrap_or_else(|e| e.into_inner());
+        for msg in tally.count(answer) {
+            eprintln!("{msg}");
+        }
+    }
+
+    /// Draws `draw`'s lights, each as an external pass at the view's
+    /// target, and returns how many it drew. A light the passes cannot
+    /// draw (the world not loaded, a variant still building, no part met)
+    /// is counted and drawn by nobody this frame.
+    pub(super) fn host_lights(&self, mem: &mut dyn GuestMemory, draw: HostDraw<'_>) -> usize {
+        let mut device = match self.device.lock() {
+            Ok(d) => d,
+            Err(_) => {
+                self.count_host(Err(Keep::Unsupported("device unavailable")));
+                return 0;
+            }
+        };
+        let began = device.begin_external_boundary(&mut DeviceMemory(mem));
+        let refusal = match began {
+            Ok(true) if device.bound_target() == draw.view_target => None,
+            Ok(true) => Some("light view target changed"),
+            Ok(false) => Some("light has an outstanding push callback"),
+            Err(_) => Some("could not drain light state"),
+        };
+        let ready = match (refusal, self.ready(&*mem)) {
+            (Some(why), _) => Err(Keep::Unsupported(why)),
+            (None, ready) => ready,
+        };
+        let ready = match ready {
+            Ok(r) => r,
+            Err(why) => {
+                self.count_host(Err(why));
+                return 0;
+            }
+        };
+        let mut drawn = 0;
+        for light in draw.lights {
+            let answer = self.host_light(&mut device, mem, &ready, light);
+            drawn += usize::from(answer.is_ok());
+            self.count_host(answer);
+        }
+        drawn
+    }
+
+    /// One host light's passes: its parts resolved with its constants, the
+    /// device state taken at the view's target without a guest light's
+    /// scissor and stencil checks (the whole view is the clip), and the
+    /// draw issued as an external pass. A part whose material has no pass
+    /// in the layer or whose program the light cannot read is left out; a
+    /// variant still building keeps the light for this frame.
+    fn host_light(
+        &self,
+        d: &mut d3d::Device<B>,
+        mem: &mut dyn GuestMemory,
+        ready: &Arc<Ready>,
+        light: &HostLight,
+    ) -> Result<(), Keep> {
+        let world = ready.lights.get().ok_or(Keep::NoWorld)?;
+        let c = &light.constants;
+        let wanted = parts(
+            world.clusters.values().map(|(_, draw)| draw),
+            &world.materials,
+            light,
+        );
+        let mut planned: Vec<Planned> = Vec::new();
+        let mut pending = false;
+        for part in wanted {
+            match world.resolve_parts(c, vec![part], false) {
+                Ok(done) => {
+                    for next in done {
+                        match planned.last_mut() {
+                            Some(last)
+                                if last.material == next.material
+                                    && last.layer == next.layer
+                                    && Arc::ptr_eq(&last.compiled, &next.compiled) =>
+                            {
+                                last.ranges.extend(next.ranges);
+                            }
+                            _ => planned.push(next),
+                        }
+                    }
+                }
+                Err(Keep::MaterialPending) => pending = true,
+                Err(_) => {}
+            }
+        }
+        if pending {
+            return Err(Keep::MaterialPending);
+        }
+        if planned.is_empty() {
+            return Err(Keep::Unsupported(
+                "a host light meets no part with a native light pass",
+            ));
+        }
+        let prepared = self.prepare_planned(
+            &*d,
+            &*mem,
+            Arc::clone(ready),
+            *c,
+            planned,
+            None,
+            false,
+            Some(WHOLE),
+        )?;
+        let plan = d3d::ExternalPlan {
+            stage: timeline::native::Stage::Lights,
+            view: mem
+                .u32(engine::render_loop::occlusion::guest::VIEW_INDEX)
+                .unwrap_or(u32::MAX),
+            ranges: prepared.draws.iter().map(|draw| draw.ranges.len()).sum(),
+            slots: Vec::new(),
+        };
+        let pass = RunPass {
+            retained: None,
+            light: prepared,
+            view: None,
+            clip: None,
+            gel_slot: None,
+            fallback: None,
+            colour_only: false,
+        };
+        d.prepare_external_bound(&mut DeviceMemory(mem), plan, Box::new(pass), Vec::new())
+            .map_err(|_| Keep::Unsupported("device error preparing the host light pass"))?
+            .ok_or(Keep::Unsupported("the host light pass is not ready"))?
+            .commit();
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use native_render::world::Aabb;
+
+    fn draw(first: u32, material: u16, at: f32) -> WorldDraw {
+        WorldDraw {
+            owner: Owner::Cluster(0),
+            part: 0,
+            material,
+            lightmap: None,
+            first_index: first,
+            index_count: 3,
+            bounds: Aabb {
+                min: [at, 0.0, 0.0],
+                max: [at + 1.0, 1.0, 1.0],
+            },
+            batch: 0,
+            inputs: 1,
+        }
+    }
+
+    fn material(int_input: i32) -> LitMaterial {
+        let mut instance = EngineInputs::default();
+        instance.ints[4] = int_input;
+        LitMaterial {
+            shader: TagId(1),
+            instance,
+        }
+    }
+
+    fn light(flags: u32) -> HostLight {
+        HostLight {
+            seat: 1,
+            origin: [0.0, 0.0, 0.0],
+            radius: 2.0,
+            constants: LightConstants {
+                frame: [0; 36],
+                flags,
+                colour_a: [0; 3],
+                colour_b: [0; 3],
+                mode: 0,
+                definition_flags: 0,
+                definition_8a: 0,
+                definition_80: 0,
+                falloff_0: 0,
+                gel: None,
+                animated_gel: false,
+            },
+        }
+    }
+
+    #[test]
+    fn a_sphere_light_draws_layer_12_over_the_parts_it_meets_in_world_order() {
+        let draws = [draw(30, 0, 1.0), draw(10, 0, 0.5), draw(20, 0, 50.0)];
+        let materials = HashMap::from([(0, material(0))]);
+        // Context zero (bit 0): the sphere implementation, one.
+        let got = parts(draws.iter(), &materials, &light(1));
+        assert_eq!(
+            got.iter()
+                .map(|(l, i, d)| (*l, *i, d.first_index))
+                .collect::<Vec<_>>(),
+            [(12, 1, 10), (12, 1, 30)],
+            "the far part is left out; the others by their place in the indices"
+        );
+    }
+
+    #[test]
+    fn layer_13_draws_only_for_a_specular_light_over_a_material_that_asks() {
+        let draws = [draw(10, 0, 0.0), draw(20, 1, 0.0)];
+        let materials = HashMap::from([(0, material(1)), (1, material(0))]);
+        // Bits 0 and 1: context zero with a colour B above the threshold.
+        let got = parts(draws.iter(), &materials, &light(3));
+        assert_eq!(
+            got.iter()
+                .map(|(l, i, d)| (*l, *i, d.first_index))
+                .collect::<Vec<_>>(),
+            [(12, 1, 10), (12, 1, 20), (13, 0, 10)],
+            "layer 13 only for the material whose integer input 4 is set"
+        );
+        let plain = parts(draws.iter(), &materials, &light(1));
+        assert!(
+            plain.iter().all(|(l, ..)| *l == 12),
+            "no colour B, no layer 13"
+        );
+    }
+
+    #[test]
+    fn a_part_with_a_material_the_passes_do_not_hold_is_left_out() {
+        let draws = [draw(10, 7, 0.0), draw(20, u16::MAX, 0.0)];
+        let materials = HashMap::from([(0, material(0))]);
+        assert!(parts(draws.iter(), &materials, &light(1)).is_empty());
+    }
+}
