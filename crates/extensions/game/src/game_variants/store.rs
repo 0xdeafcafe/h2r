@@ -55,6 +55,9 @@ pub struct Entry {
     pub record: [u8; variants::record::RECORD_SIZE],
     /// The script's full hash, when the record names one.
     pub hash: Option<Sha256>,
+    /// The file it was read from or written to, when the store has a
+    /// directory: where [`Store::set_maps`] writes it again.
+    pub path: Option<PathBuf>,
 }
 
 /// The store: its entries (one per bundle id) and scripts.
@@ -142,7 +145,7 @@ impl Store {
                 let added = text
                     .map_err(|e| e.to_string())
                     .and_then(|t| variants::portable::read(&t).map_err(|e| e.to_string()))
-                    .and_then(|b| s.add(origin, b));
+                    .and_then(|b| s.add_at(origin, b, Some(p.clone())));
                 if let Err(why) = added {
                     lines.push(format!("game variants: {} left out: {why}", p.display()));
                 }
@@ -204,6 +207,10 @@ impl Store {
     /// script's IR joins the scripts. One of the same bundle id already
     /// kept stays. Returns whether it was new.
     pub fn add(&mut self, origin: Origin, bundle: Bundle) -> Result<bool, String> {
+        self.add_at(origin, bundle, None)
+    }
+
+    fn add_at(&mut self, origin: Origin, bundle: Bundle, path: Option<PathBuf>) -> Result<bool, String> {
         let checked = bundle.integrity().map_err(|e| e.to_string())?;
         let hash = match checked.script {
             Some((ir, _)) => Some(self.add_script(ir)?),
@@ -218,6 +225,7 @@ impl Store {
             bundle,
             record: *checked.variant.bytes(),
             hash,
+            path,
         });
         Ok(true)
     }
@@ -281,6 +289,7 @@ impl Store {
         bundle: Bundle,
     ) -> Result<bool, String> {
         bundle.integrity().map_err(|e| e.to_string())?;
+        let mut at = None;
         if let Some(root) = &self.root {
             let dir = root.join(dir);
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -289,8 +298,51 @@ impl Store {
             if std::fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
                 std::fs::write(&path, text).map_err(|e| e.to_string())?;
             }
+            at = Some(path);
         }
-        self.add(origin, bundle)
+        self.add_at(origin, bundle, at)
+    }
+
+    /// Sets the map variants the kept game variant `id` (its bundle id)
+    /// suggests, `maps` in the order given and at most
+    /// [`variants::portable::MAX_MAPS`] (`Bundle::with_maps`), none to clear
+    /// them. The record is untouched; the bundle, so its id, changes, and
+    /// the file it came from is written again with the new bytes. Returns
+    /// the new id. A Live variant is refused: Live sends its own copy again
+    /// at every refresh and does not carry suggestions; so is an id the
+    /// store does not hold, and an id of suggestions another kept bundle
+    /// already has.
+    pub fn set_maps(
+        &mut self,
+        id: &str,
+        maps: Vec<variants::portable::MapSuggestion>,
+    ) -> Result<String, String> {
+        let at = self
+            .entries
+            .iter()
+            .position(|e| e.bundle.id() == id)
+            .ok_or_else(|| format!("no game variant {id} is kept here"))?;
+        let entry = &self.entries[at];
+        if entry.origin == Origin::Live {
+            return Err(format!(
+                "{} is a Live variant: Live keeps its copy, which carries no map variants",
+                entry.bundle.name
+            ));
+        }
+        let bundle = entry.bundle.clone().with_maps(maps).map_err(|e| e.to_string())?;
+        let new = bundle.id();
+        if new == id {
+            return Ok(new);
+        }
+        if self.entries.iter().any(|e| e.bundle.id() == new) {
+            return Err(format!("{} with those map variants is already kept", bundle.name));
+        }
+        if let Some(path) = &entry.path {
+            std::fs::write(path, bundle.canonical())
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+        }
+        self.entries[at].bundle = bundle;
+        Ok(new)
     }
 
     /// A Live variant: saved as its bundle under `live/<id>.h2variant`

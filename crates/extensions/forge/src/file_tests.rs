@@ -324,3 +324,28 @@ fn a_map_name_or_file_handle_that_is_a_path_is_refused() {
     stray.base.map = "../x".into();
     assert!(variants::save(&dir.0, &stray, false).is_err());
 }
+
+#[test]
+fn suggestable_lists_every_maps_usable_variants_and_leaves_the_rest_out() {
+    let dir = Dir::new();
+    // None on a machine with no variant directory.
+    assert!(variants::suggestable(&dir.0).unwrap().is_empty());
+    let a = doc("Zeta");
+    let b = doc("alpha");
+    variants::save(&dir.0, &a, false).unwrap();
+    variants::save(&dir.0, &b, false).unwrap();
+    // A map-tier file, an unparsable file and a file in another map's
+    // directory are not suggestable.
+    fs::write(dir.file("Tiered"), map_tier("Tiered").canonical_json().unwrap()).unwrap();
+    fs::write(dir.file("Broken"), b"not a document").unwrap();
+    let other = dir.0.join("map-variants/elsewhere");
+    fs::create_dir_all(&other).unwrap();
+    fs::copy(dir.file("Zeta"), other.join("Stray.h2mapvariant")).unwrap();
+    let got = variants::suggestable(&dir.0).unwrap();
+    let names: Vec<_> = got.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["alpha", "Zeta"], "by name without case, one map's");
+    assert_eq!(got[1].id, a.id().unwrap());
+    assert_eq!(got[1].base, hash());
+    assert_eq!((got[1].map.as_str(), got[1].file.as_str()), ("fixture", "Zeta"));
+    assert!(got.iter().all(|s| s.source == Source::Saved));
+}

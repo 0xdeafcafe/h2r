@@ -236,6 +236,7 @@ pub mod method {
     pub const VARIANT_RENAME: &str = "variant.rename";
     pub const VARIANT_COPY: &str = "variant.copy";
     pub const VARIANT_EXPORT: &str = "variant.export";
+    pub const VARIANT_MAPS: &str = "variant.maps";
     pub const VARIANT_IMPORT: &str = "variant.import";
     pub const VARIANT_DELETE: &str = "variant.delete";
 

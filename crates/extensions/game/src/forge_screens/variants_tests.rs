@@ -165,3 +165,31 @@ fn the_notices_and_the_delete_question_say_what_happened() {
     assert_eq!(s.body, "Delete Court?");
     assert_eq!(s.rows[s.focus].label, "No");
 }
+
+/// A dialog's footer follows its focus: A Select on an action, Back alone
+/// on a fact row (the open variant's "Open now"), and again on moving off it.
+#[test]
+fn the_footer_follows_focus_onto_a_fact_row() {
+    use crate::forge_screens::screen::ForgeScreen;
+    use crate::list_class::Rows;
+    use crate::ui_kit::input::footer_legend;
+    use crate::ui_kit::spec::Describe;
+
+    let saved = row("a", "Arena", true, None);
+    let sheet = variant_sheet(&saved, Some("ARENA"));
+    let fact = sheet.rows.iter().position(|r| r.act == Act::Info).unwrap();
+    let screen = ForgeScreen::new(Kind::Variant);
+    screen.show(sheet).unwrap();
+    let select = footer_legend(&screen.prompts_at(Some(0)));
+    let back = footer_legend(&screen.prompts_at(Some(fact)));
+    assert!(select.contains("Select"), "{select}");
+    assert!(!back.contains("Select") && back.contains("Back"), "{back}");
+    // The class's footer slot is rewritten on each focus change.
+    let footer = screen.focused_footer(Some(fact as i16)).unwrap();
+    assert_eq!(footer, screen.focused_footer(Some(0)).unwrap());
+    // The spec's legend is the focused row's.
+    let mut focused = screen.sheet();
+    focused.focus = fact;
+    screen.show(focused).unwrap();
+    assert_eq!(screen.spec().prompts, screen.prompts_at(Some(fact)));
+}

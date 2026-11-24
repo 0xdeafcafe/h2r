@@ -372,6 +372,13 @@ Notes on some:
   0 or 1, an enum's value as its position from the option's low end); a
   run of edits to one option is one `doc.undo` step. An unknown option
   or a value out of range is `INVALID_PARAMS`, a built-in `REFUSED`.
+- **Suggested map variants.** `variant.maps` lists this machine's map
+  variants a game variant may suggest (`{map, name, base, variant,
+  source}`, by map and name). `variant.export {path, maps: [variant id]}`
+  writes a version-2 file whose `maps` are those, in that order, and
+  answers how many; an id not on the list is `INVALID_PARAMS`, and more than
+  eight, or a record that names a script, is refused by name. Without `maps` the file is
+  the version-1 text.
 - **Game type scripts.** `rules.*` drive the one script the Game type
   script window shows (`app/rules_edit.rs`). Each answers its state:
   `title`, `path`, `dirty`, `problems` (each `line`, `col` from 1,
