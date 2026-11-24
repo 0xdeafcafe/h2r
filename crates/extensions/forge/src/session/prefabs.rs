@@ -58,11 +58,11 @@ impl Session {
         if let Some(label) = &label {
             label.check().map_err(reason)?;
         }
-        if have == label {
-            return Ok(());
-        }
         if label.is_none() && have.is_none() {
             return Err("This has no label.".into());
+        }
+        if have == label {
+            return Ok(());
         }
         let ops = self.ops(vec![Edit::Forge(Forge::Label { target, label })])?;
         self.edit(world, tick, ops, None)

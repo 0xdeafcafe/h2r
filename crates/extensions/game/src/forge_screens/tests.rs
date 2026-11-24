@@ -594,7 +594,7 @@ fn the_overlays_page_has_a_row_for_each_overlay() {
     assert_eq!(page.rows.len(), sheet::OVERLAYS.len());
     assert_eq!(sheet::OVERLAYS.len(), Overlay::ALL.len());
     let values: Vec<_> = page.rows.iter().map(|r| r.value.as_deref()).collect();
-    assert_eq!(values, [Some("On"), Some("Off"), Some("On")]);
+    assert_eq!(values, [Some("On"), Some("Off"), Some("On"), Some("On")]);
     let Act::Pick(p) = &page.rows[1].act else {
         panic!("a value row opens a picker");
     };

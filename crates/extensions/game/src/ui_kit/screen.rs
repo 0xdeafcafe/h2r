@@ -1813,7 +1813,7 @@ mod tests {
 
     #[test]
     fn a_doc_a_kit_screen_cannot_take_is_a_named_error() {
-        let d = doc("screen: t\nkind: hud\nlayout: none\nwidgets:\n  title:\n    text: \"T\"\n");
+        let d = doc("screen: t\nkind: picker\nlayout: picker\nwidgets:\n  title:\n    text: \"T\"\n");
         let e = KitScreen::from_doc("t", "t", IDS, &d).err().unwrap();
         assert_eq!(e.at, "layout");
         let d = doc("screen: t\nkind: list\nlayout: controls\n");

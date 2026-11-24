@@ -9,7 +9,7 @@
 //!   and the Firefight kit read it.
 //! - A teleporter: a netgame flag of type 7 (sender) and one of type 8
 //!   (receiver) with the same identifier, as `forge-build` writes a link
-//!   (docs/game/forge-design.md, "Links"). Each sender pairs with each
+//!   (docs/game/forge-design.md, "Slices", F6 in detail). Each sender pairs with each
 //!   receiver of its channel.
 //! - A solid: a scenery, crate or machine placement
 //!   ([`SOLID_BLOCKS`]) whose object's model names a `coll`; each

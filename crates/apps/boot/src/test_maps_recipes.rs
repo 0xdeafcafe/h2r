@@ -204,10 +204,13 @@ mod tests {
         for g in [*b"matg", *b"scnr"] {
             set.add_group(FourCC(g), None, None);
         }
-        set.add_tag(FourCC(*b"matg"), "globals\\globals", TagPayload::Built(Block::zeroed(0x40)))
+        let globals = set
+            .add_tag(FourCC(*b"matg"), "globals\\globals", TagPayload::Built(Block::zeroed(0x40)))
             .unwrap();
         let block = to_built(def, &rec, &mut |_| None).unwrap();
-        set.add_tag(scnr, name, TagPayload::Built(block)).unwrap();
+        let scenario = set.add_tag(scnr, name, TagPayload::Built(block)).unwrap();
+        set.globals = globals;
+        set.scenario = scenario;
         set.build().expect("the invented map builds").0
     }
 

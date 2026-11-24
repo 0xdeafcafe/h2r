@@ -312,7 +312,7 @@ fn a_drag_is_one_undo_step() {
     let (mut app, _) = open(&t);
     let before = bytes(&app, 0x1c, 4);
     let mut open = dialog(&app, "paint");
-    for x in [0.1f32, 0.3, 0.7] {
+    for x in [0.1f32, 0.3, 0.8] {
         let action = colour::pick(&app.tags, &mut open, Colour::new([x, x, x, 1.0], None));
         app.dispatch(action.unwrap());
     }
@@ -322,8 +322,8 @@ fn a_drag_is_one_undo_step() {
         colour::finish(&mut open, &mut settings).is_none(),
         "sealed once"
     );
-    assert_eq!(word(&bytes(&app, 0x1c, 4)), 0xffb2_b2b2);
-    assert_eq!(settings.recent_colours, ["#ffb2b2b2"]);
+    assert_eq!(word(&bytes(&app, 0x1c, 4)), 0xffcc_cccc);
+    assert_eq!(settings.recent_colours, ["#ffcccccc"]);
     app.dispatch(Action::Undo);
     assert_eq!(bytes(&app, 0x1c, 4), before);
     assert!(!app.tags.can_undo());

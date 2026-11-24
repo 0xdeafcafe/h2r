@@ -156,7 +156,7 @@ fn payloads_and_the_initial_state_are_set_by_name_within_their_widths() {
     assert_eq!(d.initial.trailer, [3; 12]);
     assert_eq!(d.events[1].payload, [0xf0]);
     // The padding the typed read drops is untouched.
-    assert_eq!(s.prologue[16..18], prologue()[14..16]);
+    assert_eq!(s.prologue[14..16], prologue()[14..16]);
 
     assert!(
         s.set_initial("aiming_speed", &Value::Signed(40_000))

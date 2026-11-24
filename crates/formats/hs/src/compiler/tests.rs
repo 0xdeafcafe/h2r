@@ -256,7 +256,7 @@ fn literals_take_their_form_and_names_resolve_through_the_caller() {
     // half the map's script literals agree on.
     assert!(atoms.contains(&(10, 10, 0)), "{atoms:?}");
     // A bare word where a string is wanted is that string.
-    let bare = c.nodes().iter().find(|n| n.live() && n.opcode() == 9 && c.string_bytes(n.string_offset()).unwrap() == b"bare").unwrap();
+    let bare = c.nodes().iter().find(|n| n.live() && n.atom() && n.opcode() == 9 && c.string_bytes(n.string_offset()).unwrap() == b"bare").unwrap();
     assert_eq!(bare.data(), bare.string_offset());
 }
 

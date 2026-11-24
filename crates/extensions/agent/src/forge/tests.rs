@@ -2269,6 +2269,10 @@ mod ground {
         assert_eq!(nav["problems"], json!([]));
         assert_eq!(nav["overlay"], json!([]));
         let read = h.ok(&mut game, method::NAV, json!({"generate": false}));
+        // `at` carries the tick counters, which move with every call.
+        let (mut read, mut nav) = (read, nav);
+        read.as_object_mut().unwrap().remove("at");
+        nav.as_object_mut().unwrap().remove("at");
         assert_eq!(read, nav);
 
         let none = h.call(&mut game, method::NAV, json!({"generate": true}));

@@ -19,7 +19,7 @@ const SLAYER: i32 = 2;
 
 fn source() -> MapSource {
     let mut source = MapSource::file("invented/fixture.map");
-    source.bytes = Some(fixture::fixture().into());
+    source.bytes = Some(fixture::fixture_at_end().into());
     source
 }
 

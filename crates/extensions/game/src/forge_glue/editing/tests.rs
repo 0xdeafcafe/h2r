@@ -234,6 +234,7 @@ fn selecting_two_objects_groups_them_and_the_browser_lists_the_group_first() {
     e.choose(23, Choice::ToggleSelected(b)).unwrap();
     e.tool.aimed_thing = Some(b);
     e.command(24, Command::Properties).unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Properties));
     assert!(
         labels().contains(&"Group selection".to_string()),
         "{:?}",
@@ -296,6 +297,7 @@ fn selecting_two_objects_groups_them_and_the_browser_lists_the_group_first() {
 #[test]
 fn labels_are_typed_and_the_object_menu_places_a_saved_prefab() {
     let mut e = editor();
+    calls::lock(&e.calls).arm();
     e.tool.monitor = true;
     let frame = Frame {
         position: [3., 0., 0.],
@@ -317,6 +319,7 @@ fn labels_are_typed_and_the_object_menu_places_a_saved_prefab() {
     };
     e.tool.aimed_thing = Some(a);
     e.command(3, Command::Properties).unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Properties));
     let before = rows(&e);
     assert!(before.contains(&"Label".to_string()), "{before:?}");
     assert!(before.contains(&"Save as prefab".to_string()), "{before:?}");
@@ -352,6 +355,7 @@ fn labels_are_typed_and_the_object_menu_places_a_saved_prefab() {
         .is_err()
     );
     e.command(10, Command::Properties).unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Properties));
     let after = rows(&e);
     for want in ["Label number", "Clear label"] {
         assert!(after.contains(&want.to_string()), "{after:?}");

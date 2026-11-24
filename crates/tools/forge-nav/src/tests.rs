@@ -119,12 +119,14 @@ fn a_block_out_ramp_gains_the_sectors_and_link_that_make_the_ledge_reachable() {
     assert_eq!(after.solids, 1);
 
     // The ramp's slope is new floor: a sector over its middle.
+    // The tolerance is under the slope's rise, so the floor 0.7 below
+    // does not count as a sector there.
     let on_ramp = [0.0, 0.0, 0.7];
-    assert!(before.data.nav.locate(on_ramp, 1.0).is_none());
+    assert!(before.data.nav.locate(on_ramp, 0.2).is_none());
     let slope = after
         .data
         .nav
-        .locate(on_ramp, 1.0)
+        .locate(on_ramp, 0.2)
         .expect("the ramp's slope is a sector");
     assert!(after.sectors() > before.sectors());
 
