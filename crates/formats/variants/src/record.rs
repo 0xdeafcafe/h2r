@@ -815,6 +815,23 @@ pub fn protocol(engine: i32) -> (u32, u32, Option<u32>) {
     (answer, ecx, edx)
 }
 
+/// The content category `0x216a50` files a record of engine index
+/// `engine` under (EAX the record; [`GameType::content_type`]): the
+/// game's for the seven retail indexes, Slayer's for the script index
+/// (every script record there rides Slayer's rules; filing by the
+/// script's `type` is GT5 of docs/game/game-types-without-carriers.md),
+/// and none for any other index, through which the game's body jumps
+/// with no bounds check. The body leaves ECX the index less one.
+pub fn content_category(engine: i32) -> Option<u32> {
+    if engine == SCRIPT_INDEX {
+        return GameType::Slayer.content_type();
+    }
+    match GameType::from_engine(engine) {
+        GameType::Other(_) => None,
+        ty => ty.content_type(),
+    }
+}
+
 /// Team count (setting 93, `+0xb4`): how many teams the game makes. The
 /// team set builder (`0x157790`) reads it from the active record
 /// (`G+0x1f0`), takes 0 as 8, caps it at the teams the map allows
@@ -1377,5 +1394,16 @@ mod tests {
         assert_eq!(protocol(0), (SYNCHRONOUS, u32::MAX, None));
         assert_eq!(protocol(10), (SYNCHRONOUS, 9, None));
         assert_eq!(protocol(-1), (SYNCHRONOUS, 0xffff_fffe, None));
+    }
+
+    #[test]
+    fn the_content_category_files_the_script_index_as_slayer() {
+        for ty in GameType::ALL {
+            assert_eq!(content_category(ty.engine()), ty.content_type(), "{ty:?}");
+        }
+        assert_eq!(content_category(SCRIPT_INDEX), Some(1));
+        for e in [0, 5, 10, -1, 0x102] {
+            assert_eq!(content_category(e), None, "{e}");
+        }
     }
 }

@@ -738,6 +738,12 @@ points! { ALL;
     /// of range, through a byte table (`0x161cbc`). Called from the
     /// protocol choice `0x64060` (`0x640a7`) and `0x71480` (`0x7155d`).
     VARIANT_PROTOCOL @ 0x0016_1c90: [fn(record: ecx) -> eax ret 0], Optional; "docs/live/live-coop.md";
+    /// The content category a saved or listed variant is filed under: EAX
+    /// the record; EAX 7 CTF, 8 Assault, 1 Slayer, 4 Oddball, 2 KotH, 9
+    /// Territories, 5 Juggernaut, through a jump on `+0x44` with no bounds
+    /// check (table `0x216a88`, zero for 5 and 6). Called from `0x2170af`,
+    /// `0x2baa29`, `0x2ca45d` and `0x2ca49b`.
+    VARIANT_CATEGORY @ 0x0021_6a50: [fn(record: eax) -> eax ret 0], Optional; "docs/game/notes/2026-11-24-game-type-engine-reads.md";
     /// Juggernaut's role setter: sets (ECX's low byte nonzero) or clears
     /// the player's bit of the role mask `[JUGGERNAUT_GLOBALS]+0` (`u16`;
     /// EAX the salted player datum, its index the bit). Setting posts the

@@ -19,6 +19,8 @@
 //!   a script record goes on the wire as a Slayer record would, less
 //!   Slayer's type area, and comes off it with a zero one, where the
 //!   original alone refuses it.
+//! - The content category (`0x216a50`) answers as the original for every
+//!   retail index; the script index is filed as Slayer's.
 //!
 //! ```sh
 //! H2_XBE=/abs/path/default.xbe cargo test -p engine --features differential \
@@ -381,6 +383,41 @@ fn the_protocol_map_answers_as_the_game_and_the_script_index_plays_distributed()
         assert_eq!(cpu.gpr[3], gpr[3], "EBX is the caller's");
         assert_eq!(cpu.gpr[6..], gpr[6..], "ESI and EDI are the caller's");
     }
+}
+
+/// The content category answers as the game for every retail index; the
+/// script index, where the game jumps through a zero entry, is filed as
+/// Slayer's natively.
+#[test]
+fn the_content_category_answers_as_the_game_for_every_retail_index() {
+    let image = Image::require();
+    let mut original = image.original();
+    let base = Ram::new(image);
+    let mut rng = Rng(0x0021_6a50);
+    for ty in GameType::ALL {
+        let engine = ty.engine();
+        let mut mem = base.clone();
+        assert!(mem.put(REC + ENGINE_AT as u32, &engine.to_le_bytes()));
+        let mut gpr = regs(&mut rng);
+        gpr[0] = REC;
+        let cpu = run(&mut original, &mut mem, points::VARIANT_CATEGORY.base, gpr);
+        assert_eq!(Some(cpu.gpr[0]), record::content_category(engine), "{ty:?}");
+        assert_eq!(
+            cpu.gpr[1],
+            engine as u32 - 1,
+            "{ty:?}: ECX the index less one"
+        );
+        assert_eq!(
+            cpu.gpr[2..4],
+            gpr[2..4],
+            "{ty:?}: EDX and EBX are the caller's"
+        );
+        assert_eq!(cpu.gpr[5..], gpr[5..], "{ty:?}");
+    }
+    assert_eq!(
+        record::content_category(SCRIPT_INDEX),
+        GameType::Slayer.content_type()
+    );
 }
 
 /// Where the bit stream's header and its words live.

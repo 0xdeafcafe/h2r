@@ -35,10 +35,11 @@
 //!   `before`s in the default class: while a script runs on the authority,
 //!   the carrier's own scoring and role-making return at once
 //!   ([`super::scoring`]).
-//! - `VARIANT_CLEAN_UP`, `VARIANT_ENCODE`, `VARIANT_DECODE` and
-//!   `VARIANT_PROTOCOL`, `before`s in the default class: a record of the
-//!   script index is kept by the clean-up, crosses the wire with no type
-//!   area and plays distributed ([`super::record`]).
+//! - `VARIANT_CLEAN_UP`, `VARIANT_ENCODE`, `VARIANT_DECODE`,
+//!   `VARIANT_PROTOCOL` and `VARIANT_CATEGORY`, `before`s in the default
+//!   class: a record of the script index is kept by the clean-up, crosses
+//!   the wire with no type area, plays distributed and is filed as
+//!   Slayer's ([`super::record`]).
 //! - `GAME_ACTIVATE`, a `before` in the last class: the script index's
 //!   engine object goes in the engine table; and `SPAWN_TYPE_MASK`, a
 //!   `before` in the default class: the spawn gather's unchecked jump on

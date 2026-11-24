@@ -173,9 +173,9 @@ stays an index every path refuses.
 | Lobby protocol map `0x161c90` (`VARIANT_PROTOCOL`) | `variants::record::protocol`: the game's table, with the script index distributed, and the registers the game's body leaves | built (GE3); its two callers choose the protocol only (`0x640a7`, `0x7155d`) |
 | Engine table `0x55e4d0[index]` and the engine start `0x1574c0` | `rules::engine_object`: at `GAME_ACTIVATE` entry, on every machine, the entry for the script index (`0x55e4e8`) gets a host-owned object whose vtable is Slayer's 51 slots read from the image with Slayer's four rule bodies (`+0x14`, `+0x18`, `+0x24`, `+0x78`, the kill scoring) replaced by the empty bodies of the same pop the other engines use. `+0x00` answers 2, `+0x04` sets up the globals the shared entity bodies read, `+0x9c` answers 0, so every client builds Slayer's engine-globals entity. The runtime takes its events from the common paths (`PLAYER_KILLED`, `GAME_TICK`, `ENGINE_ROUND_RESET`, `ENGINE_PLAYER_LEFT`) and accepts any script on a record of the script index | built (GE4); the slots marked own or shared and the entity type in [the GT0 note](notes/2026-11-24-game-type-engine-reads.md), "GE4" |
 | Spawn gather `0x23b170`, its jump at `0x23b2dc` (`SPAWN_TYPE_MASK`) | the type's bit of a starting location's mask, through a jump on `E+0xc14` with no bounds check and zero entries for 5 and 6; answered for the script index as Slayer's case (bit 0), resuming at `0x23b2ea`. Both are image entries (`points::game_types`) | built (GE4); every multiplayer spawn reaches it from `PLAYER_SPAWN_LOCATION` |
-| Content category `0x216a50` | the script's `type` (GT5) | jumps on `+0x44` with no bounds check, so a script record must not reach it on save or on the built-in add |
+| Content category `0x216a50` (`VARIANT_CATEGORY`) | `variants::record::content_category`: Slayer's category (1) for the script index, the game's table for every other; filing by the script's `type` is GT5 | built for the script index; the game's body jumps on `+0x44` with no bounds check (a zero entry for 5 and 6), on save and on the built-in add |
 
-The answers are `before`s of the `rules` feature (`rules/record.rs`),
+The record answers are `before`s of the `rules` feature (`rules/record.rs`),
 on every machine, so a record of the script index is kept by the host
 and by each guest's decode alike.
 

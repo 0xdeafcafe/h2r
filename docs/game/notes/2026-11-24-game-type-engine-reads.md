@@ -570,3 +570,24 @@ h2 disasm disc/default.xbe 0x2bbf50 120      # Slayer's own slots +0x04..+0x24
   entry, in the last class of `before`s, ahead of the engine start's
   copy at `0x1574c0`; an entry that already names another object is
   refused.
+
+## 2026-11-24: GE5, the content category
+
+The same image and tools. `variants::record::content_category` is the
+table below; `the_content_category_answers_as_the_game_for_every_retail_index`
+in `crates/rewrites/engine/tests/variant_record_differential.rs` runs it
+against the lifted body.
+
+```sh
+h2 disasm disc/default.xbe 0x216a50 14
+python3 -I words.py disc/default.xbe 0x216a88 9
+```
+
+- EAX the record. `mov ecx,[eax+44h]`, `dec ecx`, a jump through
+  `0x216a88` with no bounds check; each case is `mov eax,N` and `ret`:
+  1 CTF 7, 2 Slayer 1, 3 Oddball 4, 4 KotH 2, 7 Juggernaut 5, 8
+  Territories 9, 9 Assault 8 (`GameType::content_type`). The entries for
+  5 and 6 are 0. EBX, EDX, ESI and EDI are the caller's; ECX is the index
+  less one.
+- The `rules` feature answers the script index with Slayer's category,
+  ECX 5, and leaves every other index to the body.
