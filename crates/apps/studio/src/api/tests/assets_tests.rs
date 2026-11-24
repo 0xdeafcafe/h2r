@@ -519,3 +519,41 @@ fn with_a_catalogue_the_rows_carry_assets_and_where_used() {
     });
     assert!(stale, "{v}");
 }
+
+/// A catalogue that could hash none of the tree's tags (files of
+/// placeholder bytes) leaves the rows as they are without one.
+#[test]
+fn a_catalogue_that_hashed_nothing_leaves_the_rows_as_files() {
+    let t = Temp::new("assets-unhashed");
+    let mut app = App::new();
+    app.set_data_root(t.path("data"));
+    let root = app.tags_root();
+    tree(&root);
+    let (c, report) =
+        tags::repo::catalogue::build(&root, &tags::schema::Schema::default()).unwrap();
+    assert_eq!(report.problems.len(), 6, "{:?}", report.problems);
+    assert!(c.assets.is_empty());
+    tags::repo::catalogue::write(&root, &c).unwrap();
+    let mut api = Api::new();
+    let v = call(
+        &mut api,
+        &mut app,
+        m::ASSET_LIST,
+        json!({"query": "pixels"}),
+    );
+    assert_eq!(
+        v["rows"][0]["variants"],
+        json!([
+            {"variant": null, "maps": ["alpha"]},
+            {"variant": "v2", "maps": ["beta"]},
+        ])
+    );
+    assert_eq!(v["rows"][0]["maps"], json!(["alpha", "beta"]));
+    assert!(v["rows"][0]["hash"].is_null() && v["rows"][0]["used"].is_null());
+    let stale = v["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p.as_str().is_some_and(|p| p.contains("assets.idx")));
+    assert!(!stale, "{v}");
+}

@@ -124,7 +124,7 @@ fn plan_line(plan: &Plan, input: Input) -> String {
 fn catalogue_line(built: &catalogue::Built) -> String {
     let (before, after) = built.totals();
     format!(
-        "catalogue written: {} keys, {} assets, {} keys with more than one content (as files: {} files, {} keys with variants){}",
+        "catalogue written: {} keys, {} assets, {} with more than one content (as files: {} files, {} keys with variants){}",
         after.keys,
         after.contents,
         after.split,
@@ -395,7 +395,7 @@ mod tests {
         };
         assert_eq!(
             catalogue_line(&built),
-            "catalogue written: 2 keys, 3 assets, 1 keys with more than one content (as files: 4 files, 2 keys with variants)"
+            "catalogue written: 2 keys, 3 assets, 1 with more than one content (as files: 4 files, 2 keys with variants)"
         );
         let mut bad = built.clone();
         bad.problems.push("m: t: why".into());

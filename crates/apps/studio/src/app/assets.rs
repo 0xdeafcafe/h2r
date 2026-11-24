@@ -351,7 +351,9 @@ fn tag_row(
     let group = fourcc_text(key.group);
     let name = key.path.rsplit('\\').next().unwrap_or(&key.path).to_owned();
     let (badge, packages) = badge(o, key);
-    let assets = catalogue.map(|c| c.of_key(key));
+    // A tag the catalogue could not hash has no asset: its files are its
+    // contents, as without a catalogue.
+    let assets = catalogue.map(|c| c.of_key(key)).filter(|a| !a.is_empty());
     let maps: BTreeSet<&String> = match assets {
         Some(assets) => assets.iter().flat_map(|a| a.maps.iter()).collect(),
         None => versions

@@ -1713,8 +1713,10 @@ store's catalogue (`assets.idx`) is current, a content is an asset by
 asset hash (`hash` on a row with one; `hash`, `files`, `variant` and
 `maps` on each entry of `variants`), so two files that differ only in
 what ties them to their map are one content, and `used` names the keys
-whose tags reference the tag. Without a catalogue, or with a stale one (a
-line in `problems`), a content is a file and an entry of `variants` is
+whose tags reference the tag. A tag the catalogue could not hash has no
+asset and its files are its contents. Without a catalogue, or with a
+stale one (a line in `problems`), a content is a file and an entry of
+`variants` is
 (`variant`, null for the main file, and its `maps`). A tag a package
 adds is in the same list
 (`new: true`, `origin: "package"`, badge `new in <package>`); a tag an
