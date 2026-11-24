@@ -19,7 +19,12 @@ A light's gel is a shader drawn into render target 13 before the light passes sa
 - `0x0003a5ab`, return `0x0003a5b0`, calls
   `0x00016610(shader, 1, -1, 0, 13, 1)`: **shader layer 1 into target
   13**, not shader layer 13.
-- The template sets up each implementation and loads classification 0.
+- Before calling the template, `0x0001bd50` clears the shader input
+  selector at `0x00485a58` and updates the five dirty masks at
+  `0x00485b78`. It does this even when layer 1 has no drawable pass.
+- For each drawn pass the template restores the preceding implementation's
+  states and resets the shader cache (`0x00016b10`), binds the pass
+  (`0x0001bbf0`) and loads vertex classification 0 (`0x0001c590`).
   Its full-target quad helper `0x00015ec0`, return `0x0001675a`, binds
   target 13, resets viewport/scissors through SetRenderTarget, and draws
   a four-vertex triangle strip per level. v0 is position, v1..v4 are
@@ -84,8 +89,11 @@ snapshots/palette reads. The light graph retains that owner.
 
 1. At light entry, before original constants run, retain
    `let before = outputs.checkpoint()`.
-2. Keep the original constants/gel setup running. A whole-light skip at
-   `0x00031170` bypasses production and must not take a stale binding.
+2. The typed light graph returns a shader-driven gel to the ordinary
+   passes before reserving any draws. Its constants call runs the
+   producer, including the shader-cache, target and viewport changes
+   that later guest draws observe. The gel quad is eligible for
+   replacement at that point.
 3. At the post-constants boundary use
    `outputs.binding_after(before, definition_ptr, shader_datum,
    target13_surface) -> Option<Binding>`. Retain the binding in the
