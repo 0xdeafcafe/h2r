@@ -1486,6 +1486,11 @@ runs with items (`menu_passes`), lists whose left-out draws did not match
 `_unreadable`, `_unlisted`), and lists or runs whose pass was not placed
 (`menu_refused_pass`;
 [native-post-hud.md](../graphics/native-post-hud.md#the-menus-on-the-overlay)).
+A list's scroll arrows and a button's image and label belong to the
+widget's claim. A failed glyph-page fill or bitmap decode leaves the
+whole run on the game renderer and counts under `menu_refused_pass`.
+An active model widget can contribute a camera and object handles to the
+scene overlay while its geometry draws in the nested model view.
 The object-shadow list, row gather and caster each count calls to their own
 entry ([native-light-gather.md](../graphics/native-light-gather.md), L7).
 `counters` is `null` where the frame-stats window is not running.

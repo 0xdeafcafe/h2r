@@ -404,11 +404,14 @@ taken), `render_bridge::native_hud::ui_overlay` reads the list from the
 frame and asks the host whether it draws menus now (`Host::ui_overlay`;
 the game's answer is the UI scope's order). It claims nothing unless the
 screen quads' viewport (`0x00485648`, top, left, bottom, right) is 0, 0,
-480, 640, and nothing on a screen that mismatched before. Each drawn
+480, 640, both floating-point units round to nearest, and the screen has
+no earlier mismatch on this map. Each drawn
 entry's widget is read (`scene_extract::ui::read_widget`: the header, and
 what its draw makes by the function its vtable's `+0x10` names) and listed
 alone (`draw_list`). Consecutive drawn entries that list are a run; an
-entry outside the window does not end one, a refused entry does.
+entry outside the window does not end one, a refused entry does. After a
+guest draw, the next run rereads its entries at placement so guest changes
+to focus, colours or resource state reach that pass.
 
 At the sorted call of a run's first entry, the host places one overlay
 pass with the run's items (`Host::ui_pass`, `game::hud_overlay::place_menu`,
@@ -421,18 +424,35 @@ claimed ones counts `menu_mismatch` and its screen is the game's until
 the next map. A list drawn inside another's draw has its own frame and
 closes inside out.
 
-What `read_widget` lists today is the containers: a widget whose draw is
-the base's `ret 4` (`0x00333105`: the screen's, list item's, page
-selector's and table's) has no pixels. Every other draw is the game's,
-counted by what is not read (`render.stats`, `native_ui_overlay_menu_*`):
+The base draw (`0x00333105`) returns without drawing. The class readers
+in `render_bridge::native_hud::ui_overlay` list these additional draws:
 
-| Reason | Draw | What reading it needs |
+- Text and button labels use the live UTF-16 interface, font, justification,
+  colour, clipping rectangle, shadow and flash. The shaper uses the game
+  font's advances and kerning to wrap and justify each line. Each pass
+  fills the same glyph pages as the HUD before the guest draw is skipped.
+  [Text draw and interface reads](notes/2026-11-24-menu-text.md)
+- The list emits scroll arrows using the bound first and last rows, live
+  row occupancy and the active skin. The sorted children carry the row
+  layout and animated highlight. A button's bitmap uses its focus state
+  and precedes its label in the same claim.
+  [List and button draws](notes/2026-11-24-menu-list-button.md)
+- An idle model scene or a selection without objects or lights can
+  produce an empty claim. At the nested camera call an active scene
+  records its viewport, camera and ordered object handles as a
+  `ModelView`. Its geometry still draws through the model material hooks.
+  [Model selection and camera](notes/2026-11-24-menu-model-selection.md)
+
+The remaining guest draws count by reason in `render.stats`:
+
+| Reason | Draw | What keeps it on the guest |
 |---|---|---|
 | `bitmap` | `0x002b0540` | the meter path `0x002b07e2`; for the bitmap path `0x002b0565`, the tint (`+0x28` to `+0x30` and the alpha, each times 255 and rounded by `fistp` to ARGB), the parent's offset (`0x002363d4`), the bitmap's frame (`0x002b0b19`), the rectangle (`0x0022ea81`), and the quad (`0x00235e5e`, or `0x00235f31` when the definition scrolls) as an overlay material |
 | `shader` | `0x002b11c9` | the HUD shader quad's translation ([The HUD on the overlay](#the-hud-on-the-overlay)) |
-| `text` | `0x002538f5` | the string as the interface holds it, its font and justification, and the colour product the draw writes into the interface (its `+0x3c` slot) for the interface's own draw; then the glyph pages (`native_render::overlay::GlyphPages`) |
-| `model` | `0x002b0baa` | a stage that draws a `ModelView` |
-| `draw` | a list's `0x0024bda2`, a button's `0x00253ea8`, a screen's own | those draws read |
+| `text` | text or button label | interface overrides, reveal updates, substitution, custom tabs or an unsupported transform |
+| `model` | model scene | active nested view, light processing or unresolved selection semantics |
+| `draw` | list, button or custom draw | unsupported class-specific lookup, placement or guest side effects |
+| `unlisted`, `pass` | any listed class | layout or pass preparation fails, including unavailable font pages or bitmap assets |
 
 The fade, the bars and the loading screen are drawn by the producers
 above and are not on the overlay.

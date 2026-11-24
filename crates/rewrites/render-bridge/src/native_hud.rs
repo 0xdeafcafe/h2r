@@ -145,6 +145,16 @@ pub trait Host: Send + Sync {
         None
     }
 
+    /// Whether the host has its own sorted-draw replacement for this widget.
+    fn ui_custom_widget(&self, _mem: &dyn GuestMemory, _widget: u32) -> bool {
+        false
+    }
+
+    /// The loaded map's menu font layout and shared overlay glyph pages.
+    fn ui_text(&self, _mem: &dyn GuestMemory) -> Option<Box<dyn ui_overlay::UiText>> {
+        None
+    }
+
     /// Draws `part`, the items of a run of a list's widgets, from the
     /// overlay stage, placed at this point in the frame. True: placed, and
     /// the run's widget draws are left out; false: the game draws them.
@@ -232,7 +242,11 @@ pub(crate) fn menu_item(c: &mut hooks::Call<'_>, mem: &mut dyn GuestMemory, stac
         Item::Game => return None,
         Item::Skip => {}
         Item::Place(run) => {
-            let part = ui_overlay::run_part(frame, run)?;
+            let Some(part) = ui_overlay::run_part(frame, run, mem) else {
+                ui_overlay::placed(frame, run, false);
+                MenuRefusal::Pass.counter().count();
+                return None;
+            };
             // A run of containers has nothing to draw: it needs no pass.
             let placed = part.is_empty() || host().is_some_and(|host| host.ui_pass(mem, &part));
             ui_overlay::placed(frame, run, placed);
@@ -294,6 +308,10 @@ impl Feature for NativeHud {
             let rt = Arc::clone(c.ctx.runtime());
             let continuation = engine::points::ui_render::ITEM_CONTINUATION;
             if !rt.read_dispatch(|dispatch| dispatch.has_resume(continuation)) {
+                return Ok(Flow::Continue);
+            }
+            if c.cpu.x87.control & 0x0c00 != 0 || c.cpu.mxcsr & 0x6000 != 0 {
+                MenuRefusal::Frame.counter().count();
                 return Ok(Flow::Continue);
             }
             let mut mem = rt.memory();

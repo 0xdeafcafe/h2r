@@ -356,6 +356,9 @@ pub fn place_menu<B: d3d::Backend + Send + 'static>(
     mem: &mut dyn GuestMemory,
     part: &Overlay,
 ) -> bool {
+    if part.items.iter().any(|item| native_render::ui_gpu::overlay_blend(item.material.blend).is_err()) {
+        return false;
+    }
     let Some((loaded, assets)) = slot(mem) else { return false };
     if part.items.iter().any(|item| matches!(item.material.texture, OverlayTexture::Glyphs { .. })) {
         let Some(fonts) = fonts() else { return false };
@@ -368,6 +371,17 @@ pub fn place_menu<B: d3d::Backend + Send + 'static>(
         let Some(loaded) = loaded else { return false };
         let mut l = loaded.lock().unwrap_or_else(|e| e.into_inner());
         let mut a = assets.lock().unwrap_or_else(|e| e.into_inner());
+        // A menu can refer to UI assets outside the level's map. Only
+        // populate the shared image key when both indices name this bitmap.
+        for item in &part.items {
+            let OverlayTexture::Bitmap { tag, .. } = item.material.texture else { continue };
+            let Some(datum) = guest_layout::DatumHandle::from_raw(tag) else { return false };
+            let Ok(entry) = l.map.tag(TagId(tag)) else { return false };
+            let address = guest_layout::tags::tag_get_checked(mem, datum, guest_layout::tags::GroupTag::from_chars(*b"bitm"));
+            if entry.location.is_none() || address.ok().flatten() != Some(entry.index_address) {
+                return false;
+            }
+        }
         if decode_images(&mut l, part, &mut a).is_err() {
             return false;
         }

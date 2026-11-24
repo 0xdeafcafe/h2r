@@ -20,16 +20,16 @@ impl UiText for MenuText {
     }
 }
 
-fn origin(left: i32, room: i32, line: i32, alignment: Justify) -> i32 {
-    left + match alignment {
-        Justify::Left => 0,
-        Justify::Right => room - line,
-        Justify::Centre => (room - line) / 2,
+fn origin(left: i32, room: i32, line: i32, alignment: Justify) -> f32 {
+    left as f32 + match alignment {
+        Justify::Left => 0.0,
+        Justify::Right => (room - line) as f32,
+        Justify::Centre => (room - line) as f32 * 0.5,
     }
 }
 
 /// The line scanner handles private-use substitutions, tabs and inline
-/// formatting separately. The ordinary label path accepts printable ASCII
+/// formatting separately. The ordinary label path accepts basic Latin and alphabetic European text
 /// and the engine's line separator, including its CRLF spelling.
 fn shape(
     font: &Font<'_>,
@@ -37,9 +37,9 @@ fn shape(
     rect: [f32; 4],
     alignment: Justify,
 ) -> Option<Vec<OverlayGlyph>> {
-    if !units
+    if font.header.unknown[0] != 0 || !units
         .iter()
-        .all(|u| matches!(*u, 10 | 13 | 32..=123 | 125..=126))
+        .all(|u| matches!(*u, 10 | 13 | 32..=123 | 125..=126 | 0x00a0..=0x052f))
         || !rect
             .iter()
             .all(|v| v.is_finite() && v.fract() == 0.0 && v.abs() < 65536.0)
@@ -70,21 +70,21 @@ fn shape(
         let mut prev = None;
         for c in line.text.chars() {
             let r = record(c)?;
-            x += kern(prev, c) + i32::from(r.x_offset);
+            x += (kern(prev, c) + i32::from(r.x_offset)) as f32;
             let y = baseline - i32::from(r.y_offset);
             if r.width != 0 && r.height != 0 {
                 glyphs.push(OverlayGlyph {
                     index: font.glyph_index(c as u16),
                     rect: [
-                        x as f32,
+                        x,
                         y as f32,
-                        (x + i32::from(r.width)) as f32,
+                        x + f32::from(r.width),
                         (y + i32::from(r.height)) as f32,
                     ],
                 });
             }
             prev = Some(c);
-            x += i32::from(r.advance);
+            x += f32::from(r.advance);
         }
     }
     Some(glyphs)
@@ -130,9 +130,9 @@ mod tests {
 
     #[test]
     fn aligns_measured_lines_individually_in_an_offset_rectangle() {
-        assert_eq!(origin(19, 31, 12, Justify::Left), 19);
-        assert_eq!(origin(19, 31, 12, Justify::Right), 38);
-        assert_eq!(origin(19, 31, 12, Justify::Centre), 28);
-        assert_eq!(origin(19, 31, 35, Justify::Centre), 17);
+        assert_eq!(origin(19, 31, 12, Justify::Left), 19.0);
+        assert_eq!(origin(19, 31, 12, Justify::Right), 38.0);
+        assert_eq!(origin(19, 31, 12, Justify::Centre), 28.5);
+        assert_eq!(origin(19, 31, 35, Justify::Centre), 17.0);
     }
 }
