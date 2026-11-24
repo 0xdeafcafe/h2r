@@ -309,6 +309,42 @@ fn missed(cx: &Cx, s: u32, eax: u32) -> Result<Ret, EntryError> {
     Ok(Ret::new(low(eax, byte), 8))
 }
 
+/// A predicate changed the creature output after admission. Start the
+/// creature pass once or use the already active pass (0x00032a2e).
+async fn creature(cx: &Cx, p: &Plan, s: u32, eax: u32) -> Result<Ret, EntryError> {
+    let done = |eax| -> Result<Ret, EntryError> {
+        Ok(Ret::new(low(eax, cx.read(|m| m.u8(s + 0x13))?), 8))
+    };
+    let request = |target| {
+        GuestCall::new(target)
+            .esi(p.object)
+            .edi(s + 0x1c)
+            .ebx(p.body)
+    };
+    let mode = cx.read(|m| m.u8(MASK_MODE))?;
+    let (site, fade) = if mode != 0 {
+        let setup = request(0x0003_2ac0).eax(low(eax, mode));
+        let ready = p.call(cx, 0x0003_2a3c, setup).await?;
+        if ready.eax as u8 == 0 {
+            cx.write(|m| m.set_u8(CREATURE_MODE, 0))?;
+            return done(ready.eax);
+        }
+        let fade = cx.read(|m| m.u32(s + 0x14))?;
+        cx.write(|m| -> Result<(), MemFault> {
+            m.set_u8(CREATURE_MODE, 1)?;
+            m.set_u8(MASK_MODE, 0)
+        })?;
+        (0x0003_2a5a, fade)
+    } else {
+        if cx.read(|m| m.u8(CREATURE_MODE))? == 0 {
+            return done(eax);
+        }
+        (0x0003_2a98, cx.read(|m| m.u32(s + 0x14))?)
+    };
+    let draw = request(0x0003_2ce0).eax(p.object).ecx(fade).args([fade]);
+    done(p.call(cx, site, draw).await?.eax)
+}
+
 /// Run the admitted caster, returning EAX and popping both stack words.
 /// Record building goes through 0x0002cbc0, and item building through
 /// the installed light-kind body at SCENE_ITEMS. Each call keeps the
@@ -360,8 +396,11 @@ pub async fn run(cx: &Cx, p: Plan) -> Result<Ret, EntryError> {
     if visible.eax as u8 == 0 {
         return Ok(Ret::new(low(visible.eax, cx.read(|m| m.u8(s + 0x13))?), 8));
     }
-    // Eligibility sets the creature output exactly for object type 12.
-    // The plan leaves that type to the original before its first write.
+    // Eligibility writes this byte, and the visibility call runs before
+    // its consumer. An admitted mask must follow the live answer.
+    if cx.read(|m| m.u8(s + 0x1b))? != 0 {
+        return creature(cx, &p, s, visible.eax).await;
+    }
     let radius = cx
         .write(|m| -> Result<u32, Error> {
             let body_radius = m.u32(body + 0x3c)?;
