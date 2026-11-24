@@ -160,6 +160,13 @@ impl SceneBuilder {
         self.cut(why);
     }
 
+    /// The view keys of the scene sealed before, sorted: with the open
+    /// scene's own, the views a frame step expects this frame (the E3
+    /// light choice's share, `native_render::light_choice::share_of`).
+    pub fn previous_views(&self) -> &[ViewKey] {
+        &self.previous.views
+    }
+
     /// The scene being written.
     pub fn scene(&self) -> Option<&FrameScene> {
         self.scene.as_ref()

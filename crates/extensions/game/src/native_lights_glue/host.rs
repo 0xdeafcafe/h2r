@@ -8,8 +8,65 @@
 //! ([`Glue::scene_light_draws`]). No shadow map is made, no gel is
 //! sampled, and no object (model) part is lit: a host light lights the
 //! structure and its placements only.
+//!
+//! E3's chosen lights beyond the guest's
+//! (`render_bridge::native_lights::chosen`, docs/graphics/e3-lighting.md)
+//! draw the same way from the constants extraction made for them, each
+//! queued as a scene stage of E3 alone (`d3d::ExternalPass::lighting_only`)
+//! with its materials, gel and geometry retained, so the frame graph
+//! records it in an E3 frame and skips it in any other. A chosen light
+//! the renderer shadows (`native_render::cone_shadows::view_shadows`)
+//! comes with its shadowed constants, so its parts take the shadowed
+//! implementations, and its pass names the light
+//! (`d3d::ExternalPass::cone_shadow`): the frame graph writes the cone's
+//! shadow term into the destination alpha just before it, as retail's
+//! layer 11 would.
 use super::*;
+use render_bridge::native_lights::chosen::{ChosenDraw, ChosenLight};
 use render_bridge::native_lights::host::{HostDraw, HostLight};
+
+/// A light the passes draw as a sphere over the structure: a host light
+/// or a chosen one.
+#[derive(Clone, Copy)]
+pub(super) struct Sphere<'a> {
+    pub origin: [f32; 3],
+    pub radius: f32,
+    pub constants: &'a LightConstants,
+    /// The light whose cone shadow its passes read (a chosen light the
+    /// renderer shadows), by handle.
+    pub cone: Option<u32>,
+}
+
+impl<'a> From<&'a HostLight> for Sphere<'a> {
+    fn from(l: &'a HostLight) -> Self {
+        Self {
+            origin: l.origin,
+            radius: l.radius,
+            constants: &l.constants,
+            cone: None,
+        }
+    }
+}
+
+impl<'a> From<&'a ChosenLight> for Sphere<'a> {
+    fn from(l: &'a ChosenLight) -> Self {
+        Self {
+            origin: l.origin,
+            radius: l.radius,
+            constants: &l.constants,
+            cone: l.shadowed.then_some(l.handle),
+        }
+    }
+}
+
+/// How a sphere light's pass is issued.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Issue {
+    /// At once, in every mode: a host light.
+    Now,
+    /// As a retained scene stage of E3 alone: a chosen light.
+    E3Stage,
+}
 
 /// The whole target: [`intersect_scissor`] crops it to the view's.
 const WHOLE: [u32; 4] = [0, 0, u32::MAX / 2, u32::MAX / 2];
@@ -24,9 +81,9 @@ const WHOLE: [u32; 4] = [0, 0, u32::MAX / 2, u32::MAX / 2];
 pub(super) fn parts<'a>(
     draws: impl Iterator<Item = &'a WorldDraw>,
     materials: &HashMap<u16, LitMaterial>,
-    light: &HostLight,
+    light: Sphere<'_>,
 ) -> Vec<(usize, usize, WorldDraw)> {
-    let c = &light.constants;
+    let c = light.constants;
     let mut met: Vec<&WorldDraw> = draws
         .filter(|d| d.bounds.meets_sphere(light.origin, light.radius))
         .collect();
@@ -52,7 +109,7 @@ pub(super) fn parts<'a>(
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
-    /// Counts one host light's answer with the others' ([`Tally`]).
+    /// Counts one sphere light's answer with the others' ([`Tally`]).
     fn count_host(&self, answer: Result<(), Keep>) {
         let mut tally = self.tally.lock().unwrap_or_else(|e| e.into_inner());
         for msg in tally.count(answer) {
@@ -65,6 +122,26 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     /// draw (the world not loaded, a variant still building, no part met)
     /// is counted and drawn by nobody this frame.
     pub(super) fn host_lights(&self, mem: &mut dyn GuestMemory, draw: HostDraw<'_>) -> usize {
+        let lights: Vec<Sphere<'_>> = draw.lights.iter().map(Sphere::from).collect();
+        self.sphere_lights(mem, &lights, draw.view_target, Issue::Now)
+    }
+
+    /// Draws `draw`'s chosen lights, each a scene stage of E3 alone at the
+    /// view's target, and returns how many it queued. Where the render
+    /// thread does not take scene stages none is drawn: E3 is the frame
+    /// graph's.
+    pub(super) fn chosen_lights(&self, mem: &mut dyn GuestMemory, draw: ChosenDraw<'_>) -> usize {
+        let lights: Vec<Sphere<'_>> = draw.lights.iter().map(Sphere::from).collect();
+        self.sphere_lights(mem, &lights, draw.view_target, Issue::E3Stage)
+    }
+
+    fn sphere_lights(
+        &self,
+        mem: &mut dyn GuestMemory,
+        lights: &[Sphere<'_>],
+        view_target: [u32; 8],
+        issue: Issue,
+    ) -> usize {
         let mut device = match self.device.lock() {
             Ok(d) => d,
             Err(_) => {
@@ -74,7 +151,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         };
         let began = device.begin_external_boundary(&mut DeviceMemory(mem));
         let refusal = match began {
-            Ok(true) if device.bound_target() == draw.view_target => None,
+            Ok(true) if device.bound_target() == view_target => None,
             Ok(true) => Some("light view target changed"),
             Ok(false) => Some("light has an outstanding push callback"),
             Err(_) => Some("could not drain light state"),
@@ -91,29 +168,30 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             }
         };
         let mut drawn = 0;
-        for light in draw.lights {
-            let answer = self.host_light(&mut device, mem, &ready, light);
+        for &light in lights {
+            let answer = self.host_light(&mut device, mem, &ready, light, issue);
             drawn += usize::from(answer.is_ok());
             self.count_host(answer);
         }
         drawn
     }
 
-    /// One host light's passes: its parts resolved with its constants, the
-    /// device state taken at the view's target without a guest light's
+    /// One sphere light's passes: its parts resolved with its constants,
+    /// the device state taken at the view's target without a guest light's
     /// scissor and stencil checks (the whole view is the clip), and the
-    /// draw issued as an external pass. A part whose material has no pass
-    /// in the layer or whose program the light cannot read is left out; a
-    /// variant still building keeps the light for this frame.
+    /// draw issued as an external pass ([`Issue`]). A part whose material
+    /// has no pass in the layer or whose program the light cannot read is
+    /// left out; a variant still building keeps the light for this frame.
     fn host_light(
         &self,
         d: &mut d3d::Device<B>,
         mem: &mut dyn GuestMemory,
         ready: &Arc<Ready>,
-        light: &HostLight,
+        light: Sphere<'_>,
+        issue: Issue,
     ) -> Result<(), Keep> {
         let world = ready.lights.get().ok_or(Keep::NoWorld)?;
-        let c = &light.constants;
+        let c = light.constants;
         let wanted = parts(
             world.clusters.values().map(|(_, draw)| draw),
             &world.materials,
@@ -146,7 +224,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         }
         if planned.is_empty() {
             return Err(Keep::Unsupported(
-                "a host light meets no part with a native light pass",
+                "a sphere light meets no part with a native light pass",
             ));
         }
         let prepared = self.prepare_planned(
@@ -167,15 +245,34 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             ranges: prepared.draws.iter().map(|draw| draw.ranges.len()).sum(),
             slots: Vec::new(),
         };
+        let retained = match issue {
+            Issue::Now => None,
+            Issue::E3Stage => Some(RetainedLight::of(ready, &prepared)?),
+        };
         let pass = RunPass {
-            retained: None,
+            retained,
             light: prepared,
             view: None,
             clip: None,
             gel_slot: None,
             fallback: None,
             colour_only: false,
+            lighting_only: (issue == Issue::E3Stage).then_some(d3d::Lighting::E3),
+            cone_shadow: light.cone.filter(|_| issue == Issue::E3Stage),
         };
+        if issue == Issue::E3Stage {
+            // Queued for the render thread; the frame graph records it in
+            // an E3 frame. No guest item is skipped for it, so a stage the
+            // render thread does not take only leaves the light undrawn.
+            return match d.reserve_scene_stage(&mut DeviceMemory(mem), plan, Box::new(pass)) {
+                Ok(Some(reservation)) => {
+                    reservation.commit();
+                    Ok(())
+                }
+                Ok(None) => Err(Keep::Unsupported("the render thread takes no scene stage")),
+                Err(_) => Err(Keep::Unsupported("device error reserving the chosen light")),
+            };
+        }
         d.prepare_external_bound(&mut DeviceMemory(mem), plan, Box::new(pass), Vec::new())
             .map_err(|_| Keep::Unsupported("device error preparing the host light pass"))?
             .ok_or(Keep::Unsupported("the host light pass is not ready"))?
@@ -241,7 +338,7 @@ mod tests {
         let draws = [draw(30, 0, 1.0), draw(10, 0, 0.5), draw(20, 0, 50.0)];
         let materials = HashMap::from([(0, material(0))]);
         // Context zero (bit 0): the sphere implementation, one.
-        let got = parts(draws.iter(), &materials, &light(1));
+        let got = parts(draws.iter(), &materials, Sphere::from(&light(1)));
         assert_eq!(
             got.iter()
                 .map(|(l, i, d)| (*l, *i, d.first_index))
@@ -256,7 +353,7 @@ mod tests {
         let draws = [draw(10, 0, 0.0), draw(20, 1, 0.0)];
         let materials = HashMap::from([(0, material(1)), (1, material(0))]);
         // Bits 0 and 1: context zero with a colour B above the threshold.
-        let got = parts(draws.iter(), &materials, &light(3));
+        let got = parts(draws.iter(), &materials, Sphere::from(&light(3)));
         assert_eq!(
             got.iter()
                 .map(|(l, i, d)| (*l, *i, d.first_index))
@@ -264,7 +361,7 @@ mod tests {
             [(12, 1, 10), (12, 1, 20), (13, 0, 10)],
             "layer 13 only for the material whose integer input 4 is set"
         );
-        let plain = parts(draws.iter(), &materials, &light(1));
+        let plain = parts(draws.iter(), &materials, Sphere::from(&light(1)));
         assert!(
             plain.iter().all(|(l, ..)| *l == 12),
             "no colour B, no layer 13"
@@ -275,6 +372,6 @@ mod tests {
     fn a_part_with_a_material_the_passes_do_not_hold_is_left_out() {
         let draws = [draw(10, 7, 0.0), draw(20, u16::MAX, 0.0)];
         let materials = HashMap::from([(0, material(0))]);
-        assert!(parts(draws.iter(), &materials, &light(1)).is_empty());
+        assert!(parts(draws.iter(), &materials, Sphere::from(&light(1))).is_empty());
     }
 }

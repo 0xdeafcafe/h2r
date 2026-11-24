@@ -87,6 +87,16 @@ pub trait WorldReceivers {
         Vec::new()
     }
 
+    /// Opaque parts of visible clusters whose bounds meet a light's cone
+    /// (`cone_shadows`): its tile's casters and receivers both.
+    fn cone_parts(
+        &self,
+        _clusters: &[u16],
+        _cone: &crate::cone_shadows::Cone,
+    ) -> Vec<ReceiverMesh> {
+        Vec::new()
+    }
+
     /// Part `part` of `owner`'s section in world space, when held.
     fn part(&self, owner: Owner, part: u8) -> Option<WorldPart>;
 }
@@ -196,6 +206,33 @@ impl SunWorld {
         self
     }
 
+    /// The parts of `clusters` whose bounding sphere `meets` accepts.
+    fn parts_meeting(
+        &self,
+        clusters: &[u16],
+        meets: impl Fn([f32; 3], f32) -> bool,
+    ) -> Vec<ReceiverMesh> {
+        let mut receivers = Vec::new();
+        for &cluster in clusters {
+            let owner = Owner::Cluster(u32::from(cluster));
+            let first = self.parts.partition_point(|p| p.owner < owner);
+            for p in self.parts[first..].iter().take_while(|p| p.owner == owner) {
+                let (centre, radius) = box_sphere(&p.bounds);
+                if meets(centre, radius)
+                    && let Some(part) = self.part(owner, p.part)
+                {
+                    receivers.push(ReceiverMesh {
+                        key: ReceiverKey::World(owner, p.part),
+                        mesh: part.mesh,
+                        centre,
+                        radius,
+                    });
+                }
+            }
+        }
+        receivers
+    }
+
     fn mesh_of(&self, held: &HeldPart) -> CasterMesh {
         let mut mesh = CasterMesh::default();
         let mut remap: HashMap<u32, u32> = HashMap::new();
@@ -224,25 +261,13 @@ impl WorldReceivers for SunWorld {
 
     fn shadow_parts(&self, clusters: &[u16], caster: &SunCaster) -> Vec<ReceiverMesh> {
         let rows = crate::sun_tiles::tile_rows(caster.centre, caster.radius, caster.towards_light);
-        let mut receivers = Vec::new();
-        for &cluster in clusters {
-            let owner = Owner::Cluster(u32::from(cluster));
-            let first = self.parts.partition_point(|p| p.owner < owner);
-            for p in self.parts[first..].iter().take_while(|p| p.owner == owner) {
-                let (centre, radius) = box_sphere(&p.bounds);
-                if crate::sun_tiles::meets(&rows, caster.radius, centre, radius)
-                    && let Some(part) = self.part(owner, p.part)
-                {
-                    receivers.push(ReceiverMesh {
-                        key: ReceiverKey::World(owner, p.part),
-                        mesh: part.mesh,
-                        centre,
-                        radius,
-                    });
-                }
-            }
-        }
-        receivers
+        self.parts_meeting(clusters, |centre, radius| {
+            crate::sun_tiles::meets(&rows, caster.radius, centre, radius)
+        })
+    }
+
+    fn cone_parts(&self, clusters: &[u16], cone: &crate::cone_shadows::Cone) -> Vec<ReceiverMesh> {
+        self.parts_meeting(clusters, |centre, radius| cone.meets(centre, radius))
     }
 
     fn part(&self, owner: Owner, part: u8) -> Option<WorldPart> {
@@ -909,6 +934,30 @@ mod tests {
             receivers(&s, 0, &models, None),
             Err(CasterRefusal::WorldReceiver)
         );
+    }
+
+    /// A cone over a cluster's opaque part gathers it, as caster and
+    /// receiver both; a cone elsewhere, or a cluster the view does not
+    /// hold, gathers nothing.
+    #[test]
+    fn a_cone_gathers_the_structure_under_it() {
+        let world = SunWorld::new(&two_section_world());
+        let cone_at = |x: f32| crate::cone_shadows::Cone {
+            apex: [x, 0.5, 6.0],
+            axis: [0.0, 0.0, -1.0],
+            right: [1.0, 0.0, 0.0],
+            up: [0.0, 1.0, 0.0],
+            slopes: [0.25, 0.25],
+            near: 0.5,
+            far: 8.0,
+        };
+        let keys = |parts: Vec<ReceiverMesh>| parts.into_iter().map(|r| r.key).collect::<Vec<_>>();
+        assert_eq!(
+            keys(world.cone_parts(&[4], &cone_at(0.5))),
+            [ReceiverKey::World(Owner::Cluster(4), 1)]
+        );
+        assert!(world.cone_parts(&[4], &cone_at(20.0)).is_empty());
+        assert!(world.cone_parts(&[5], &cone_at(0.5)).is_empty());
     }
 
     /// The render thread reads a map's world only for that map's scenes,

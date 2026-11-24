@@ -501,6 +501,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             gel_slot: None,
             fallback: None,
             colour_only: false,
+            lighting_only: None,
+            cone_shadow: None,
         };
         d.prepare_external_bound(&mut DeviceMemory(mem), plan, Box::new(pass), Vec::new())
             .map_err(|_| Keep::Unsupported("device error preparing the scene light pass"))?
@@ -699,6 +701,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             gel_slot: None,
             fallback: None,
             colour_only: colour_mask,
+            lighting_only: None,
+            cone_shadow: None,
         });
         // An object mask the shadow host offered a private chain draws into
         // that chain's pair, not target 10 (native-shadow-layers.md).
@@ -950,6 +954,14 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         self.host_lights(mem, draw)
     }
 
+    fn draw_chosen(
+        &self,
+        mem: &mut dyn GuestMemory,
+        draw: render_bridge::native_lights::chosen::ChosenDraw<'_>,
+    ) -> usize {
+        self.chosen_lights(mem, draw)
+    }
+
     fn draw_typed(
         &self,
         mem: &mut dyn GuestMemory,
@@ -1078,6 +1090,8 @@ impl d3d::DrawAdmission for LightAdmission {
             gel_slot,
             fallback: Some(Arc::new(draw.clone())),
             colour_only: false,
+            lighting_only: None,
+            cone_shadow: None,
         };
         Some((plan, Box::new(pass)))
     }
@@ -2305,11 +2319,57 @@ struct RunPass {
     /// A colour-mask caster has no depth attachment; the backend supplies
     /// its scratch depth for the shared packet path.
     colour_only: bool,
+    /// E3's chosen lights draw only in an E3 frame
+    /// (`render_bridge::native_lights::chosen`).
+    lighting_only: Option<d3d::Lighting>,
+    /// A chosen light drawn with its shadowed implementation: its handle,
+    /// whose cone shadow the frame graph writes into the destination
+    /// alpha before the pass (`d3d::ExternalPass::cone_shadow`).
+    cone_shadow: Option<u32>,
+}
+
+impl RetainedLight {
+    /// `light`'s materials, gel and the world's geometry held for the
+    /// scene to record its pass again (`d3d::ExternalPass::replays_scene`).
+    fn of(ready: &Ready, light: &PreparedLight) -> Result<Self, Keep> {
+        let upload = &ready.upload_device.as_ref().ok_or(Keep::NoWorld)?.0;
+        let (set, vertices, indices) = ready
+            .gpu()
+            .as_mut()
+            .and_then(|gpu| gpu.retain_light(upload, light.constants.gel))
+            .ok_or(Keep::NoWorld)?;
+        let materials = light
+            .draws
+            .iter()
+            .map(|draw| {
+                let mut gpu = draw
+                    .compiled
+                    .gpu
+                    .try_lock()
+                    .map_err(|_| Keep::Unsupported("light material is busy"))?;
+                Ok(gpu.retain())
+            })
+            .collect::<Result<Vec<_>, Keep>>()?;
+        Ok(Self {
+            set,
+            vertices,
+            indices,
+            materials,
+        })
+    }
 }
 
 impl d3d::ExternalPass for RunPass {
     fn replays_scene(&self) -> bool {
         self.retained.is_some()
+    }
+
+    fn lighting_only(&self) -> Option<d3d::Lighting> {
+        self.lighting_only
+    }
+
+    fn cone_shadow(&self) -> Option<u32> {
+        self.cone_shadow
     }
 
     fn uses_validated_resources(&self) -> bool {
