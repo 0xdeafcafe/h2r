@@ -22,6 +22,9 @@
 //!   field, rich editors F1): `function.read`, `function.set` (same
 //!   length, one undo step) and `function.sample` over
 //!   `tags::effects::function` ([`super::curves`]).
+//! - **colours** (the colour picker of a colour field, rich editors C1):
+//!   `tag.colours`, every colour row of a tag ([`super::colours`]);
+//!   `tag.set` takes a colour as hex or `{rgba, intensity?}`.
 //! - **tag browsing and bundles**: `tag.list` over the document the Tags
 //!   tool shows, `tag.browse`, `tag.resources`, `tag.export` and
 //!   `tag.import` through `Action::BrowseTags`, `Action::TagExport` and
@@ -90,6 +93,9 @@ pub fn register(api: &mut Api) {
     // Curve functions of a `view=function` field, read, edited and
     // sampled (rich editors F1).
     api.register(Box::new(super::curves::Curves));
+    // Every colour field of a tag, with its form and hex (rich editors
+    // C1).
+    api.register(Box::new(super::colours::Colours));
     api.register(Box::new(super::nav::Navigation));
     // The Navigation layers' data: the game's pathfinding, the bots' mesh
     // and spots, and a pick.

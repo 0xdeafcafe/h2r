@@ -302,7 +302,7 @@ fn view(app: &mut App, p: &P) -> Reply {
 
 /// The game link the panel's rows are drawn for, and the issues they
 /// show: none with no game connected.
-fn linked(app: &App) -> (panel::Link, &IssueIndex) {
+pub(super) fn linked(app: &App) -> (panel::Link, &IssueIndex) {
     let link = panel::Link::of(app);
     let issues = match (link, &app.pairing.link) {
         (panel::Link::Off, _) | (_, None) => IssueIndex::empty(),

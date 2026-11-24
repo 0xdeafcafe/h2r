@@ -1,7 +1,7 @@
 # Rich editors: shaders, colours, curves, scripts, sounds and recordings
 
-Status: Design, except the seam (X1), "Data that changes length", sound audition (A1), mouth curves, read (A2), Scripts, read (H1), Recordings, read (K1), Recordings, play (K2), Recordings, write (K3), the curve editor, same length (F1), curve type changes (F2) and Model poses (M1), which are built; each section names the format code it stands on and the gaps in it.
-Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/fields/rich.rs` (the seam), `crates/formats/tags/src/defs/attrs.rs` (`FieldView`), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/apps/studio/src/fields/curve.rs` and `crates/apps/studio/src/api/curves.rs` (F1), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/formats/hs/src/script_doc.rs`, `crates/formats/hs/src/recording.rs`, `crates/formats/hs/src/recording_edit.rs`, `crates/apps/studio/src/app/recordings.rs`, `crates/apps/studio/src/api/recordings.rs`, `crates/apps/studio/src/app/scripts.rs`, `crates/apps/studio/src/ui/scripts.rs`, `crates/apps/studio/src/api/scripts.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`. Tests: `defs/tests.rs`, `registry/tests.rs`, `fields::rich::tests` and `api/tests.rs` (X1), `effects::function::tests` and `api/curves/tests.rs` (F1), `app/tag_data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1), `app::scripts::tests`, `hs::script_doc::tests` and `hs::source::each_tests` (H1), `hs::recording::tests`, `hs::recording_edit::tests` (`recording_edit_tests.rs`) and `app/recordings_tests.rs` (K1, K3), `scenario-edit`'s `the_recordings_blocks_writes_save_with_the_scenario` (K3); each other slice names its own, `crates/apps/studio/src/app/anim.rs`, `crates/apps/studio/src/ui/anim.rs` (M1), `api/anim/tests.rs`, `anim_tests.rs`.
+Status: Design, except the seam (X1), "Data that changes length", sound audition (A1), mouth curves, read (A2), Scripts, read (H1), Recordings, read (K1), Recordings, play (K2), Recordings, write (K3), the curve editor, same length (F1), curve type changes (F2) Model poses (M1), the colour picker (C1) and the colour forms of `obje`, `deca`, `lens` and `sky ` (C2), which are built; each section names the format code it stands on and the gaps in it.
+Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/fields/rich.rs` (the seam), `crates/formats/tags/src/defs/attrs.rs` (`FieldView`), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/apps/studio/src/fields/colour.rs` and `crates/apps/studio/src/api/colours.rs` (C1), `crates/apps/studio/src/fields/curve.rs` and `crates/apps/studio/src/api/curves.rs` (F1), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/formats/hs/src/script_doc.rs`, `crates/formats/hs/src/recording.rs`, `crates/formats/hs/src/recording_edit.rs`, `crates/apps/studio/src/app/recordings.rs`, `crates/apps/studio/src/api/recordings.rs`, `crates/apps/studio/src/app/scripts.rs`, `crates/apps/studio/src/ui/scripts.rs`, `crates/apps/studio/src/api/scripts.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`. Tests: `defs/tests.rs`, `registry/tests.rs`, `fields::rich::tests` and `api/tests.rs` (X1), `effects::function::tests` and `api/curves/tests.rs` (F1), `app/tag_data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1), `app::scripts::tests`, `hs::script_doc::tests` and `hs::source::each_tests` (H1), `hs::recording::tests`, `hs::recording_edit::tests` (`recording_edit_tests.rs`) and `app/recordings_tests.rs` (K1, K3), `fields/colour/tests.rs` and `api/colours/tests.rs` (C1), `scenario-edit`'s `the_recordings_blocks_writes_save_with_the_scenario` (K3); each other slice names its own, `crates/apps/studio/src/app/anim.rs`, `crates/apps/studio/src/ui/anim.rs` (M1), `api/anim/tests.rs`, `anim_tests.rs`.
 Switch: none.
 
 A rich editor shows a tag, or part of one, as the thing it is: a material
@@ -97,18 +97,34 @@ With a game connected, a resized data reference has the `reload` effect.
 
 ### Colours
 
-**What the user does.** Every colour field shows a swatch, the numbers,
-and opens a picker dialog on a click: a saturation and value square, a
-hue bar, an alpha bar over a checkerboard when the field has alpha, RGB,
-HSV and hex entry, the value in the file beside the new one, a row of
-recent colours and a saved palette. Copy and paste carry a hex string
-between any two colour fields, converting form. A drag is one undo step.
+**What the user does.** Every colour field shows a swatch and its
+stored numbers (three or four floats, or the packed word in hex), and a
+click on the swatch opens the picker dialog: a saturation and value
+square, a hue bar, an alpha bar over a checkerboard when the field has
+alpha, RGB, HSV and hex entry, the value in the file beside the new one
+(the picker's reference colour, and both as `#aarrggbb` under it), a row
+of recent colours and a saved palette (**Save colour**, **Remove from
+saved**; a click on either row applies that colour). The swatch's
+right-click menu has **Copy** and **Paste**, which carry a `#aarrggbb`
+string between any two colour fields, converting form: a form without
+alpha drops it, and an `hdr_rgb` field keeps its intensity. A drag is one
+undo step and puts the colour at the head of the recent row. The recent
+colours (12) and the saved palette (24) are `fields::Settings`, saved
+with the layout as `RecentColour=` and `SavedColour=` lines of the
+`[Studio][Tags]` ini section; the copied colour is not saved.
 
-**The data.** The definitions have no colour type. `registry::Hint::Colour`
-is set by `registry::hint` only for an array of three floats whose name
-contains `colour` or `color`, and `fields.rs` draws that one case with
-`color_edit3`. Four-float colours and packed 32-bit colours show as plain
-numbers or hex. The `view=` words name the stored form:
+The code is `fields::colour` (`crates/apps/studio/src/fields/colour.rs`):
+`form` (a field's form), `decode` and `encode` (stored bytes and the
+picker's colour), `held` (a colour as the form holds it), `pick` and
+`finish` (the dialog's writes and the seal that ends a drag), and
+`from_json` (the values `tag.set` takes).
+
+**The data.** The definitions have no colour type. A field is a colour
+when it has a colour `view=` word, or when it is an array of three
+floats whose name contains `colour` or `color` (`registry::Hint::Colour`,
+set by `registry::hint`), which is shown as the `rgb` form. Either way
+its row reads `Colour` and draws the swatch. The `view=` words name the
+stored form:
 
 | Word | Stored as | Picker |
 |---|---|---|
@@ -140,8 +156,25 @@ read yet.`
 tag: the Shader preview, the viewport, and a connected game when the
 field's effect is known.
 
-**Write.** Fixed-length, in place, through `TagDoc::write`. Nothing is
-refused beyond the tag's own read-only reasons.
+**Write.** Fixed-length, in place, through `TagDoc::write` with the
+field panel's merge key, sealed when the mouse is let go. A pick from the
+recent or saved row, a paste and a `tag.set` are one undo step each.
+Nothing is refused beyond the tag's own read-only reasons. `tag.set`
+takes `"#aarrggbb"`, `"#rrggbb"` or `{rgba, intensity?}` on a colour
+field and refuses channels outside 0 to 1, an intensity below 0, and an
+intensity on a form other than `hdr_rgb`; numbers still set the stored
+values as for any field.
+
+**Forms on the definitions (C2).** `view=rgb` is on `obje`'s
+`change_colors` bounds (both blocks: the retail reference's RGB float
+triplets, and the engine's interpolation at `0xbe9a7` for the functions
+block), `deca`'s `colour_lower` and `colour_upper` (**V** 0 to 1),
+`lens` `reflections[].tint_colour` (**V** 0 to 1) and `sky `
+`fog_a[].color` (**E** `0x001301c0` clamps it to 0 to 1). The `defs`
+suite checks that every `view=` line cites **E**, **V** or the retail
+reference (`builtin_view_lines_cite_their_source`). No packed or
+four-float colour has a word yet: `hudg`'s packed colours and `jpt!`'s
+four floats wait for the engine read of their byte order.
 
 ### Curves (function data)
 
@@ -688,9 +721,9 @@ already a namespace there (player models and looks), so poses use `anim.*`.
 
 | Method | Params | Result |
 |---|---|---|
-| `tag.fields` (extended) | as tag-editing.md | a row with a field view gains `view: {kind, form?}`; a colour row gains `colour: {hex, rgba, intensity?}`; a function row gains `function: {type, ranged, range, length}` |
-| `tag.set` (extended) | a colour row's `value` may be `"#aarrggbb"` or `{rgba, intensity?}` | as built |
-| `tag.colours` | `{tag}` | every colour row of the tag: `{path, label, form, hex}` |
+| `tag.fields` (extended) | as tag-editing.md | a row with a field view gains `view` (its word); a colour row gains `colour: {form, by, hex, rgba, intensity?}`; a function row gains `function: {type, ranged, range, length}` |
+| `tag.set` (extended) | a colour row's `value` may be `"#aarrggbb"`, `"#rrggbb"` or `{rgba, intensity?}` | as built |
+| `tag.colours` | `{tag}` | every colour row of the tag, every list walked as `tag.find` walks: `{colours: [{path, label, form, by, hex, rgba, intensity?}], truncated}` |
 | `function.read` | `{tag, path}` | `{type, ranged, sub_types, range, length, sets: [...], editable, read_only}` |
 | `function.set` | `{tag, path, type?, ranged?, range?, sets?}` | the new `function.read`; one undo step; refusals as "Curves" |
 | `function.sample` | `{tag, path, inputs: [x], range_input?}` | `{outputs}` from `Function::evaluate` |
@@ -784,8 +817,8 @@ the first one whose needs are met.
 | # | Slice | Size | Needs | Accepted when |
 |---|---|---|---|---|
 | X1 (built) | **The seam**: `fields::rich`, the `view=` attribute and its parser, tag-view tabs, `view` on `tag.fields` rows | S | T2, T4 | an invented group with one `view=` word of each kind lists them; an unknown word fails the `defs` suite |
-| C1 | **Colour picker**: the five forms, the dialog, recent and saved colours, hex in `tag.set`, `tag.colours` | M | X1, T6 | headless: pick a colour through the dialog on an invented tag of each form; the bytes equal the picked value after quantisation; a drag is one undo step |
-| C2 | **Colour forms for a group** (repeatable): `view=` on a group's colour fields with evidence | S each | X1 | the group's colour rows in `tag.colours` rise; each line cites its source |
+| C1 (built) | **Colour picker**: the five forms, the dialog, recent and saved colours, hex in `tag.set`, `tag.colours` | M | X1, T6 | headless: pick a colour through the dialog on an invented tag of each form; the bytes equal the picked value after quantisation; a drag is one undo step |
+| C2 (built for `obje`, `deca`, `lens`, `sky `; repeatable) | **Colour forms for a group** (repeatable): `view=` on a group's colour fields with evidence | S each | X1 | the group's colour rows in `tag.colours` rise; each line cites its source |
 | A1 | **Sound audition**: decode, the host output, waveform, play and scrub, `sound.read`, `sound.play` | M | X1 | an invented ADPCM sound plays through the headless sink to its sample count; a WMA sound without the executable is refused by name |
 | F1 | **Curve editor, same length**: typed payload accessors, the plot, handles, `function.*` | M | X1 | `function.sample` equals `Function::evaluate` for every type on invented blobs; an edit round-trips through `to_bytes`; types 6 and 8 are read-only |
 | H1 | **Scripts, read**: the Scripts tool, the catalog from the source's executable, source with links, `script.list`, `script.source`, `script.uses` | M | P4 | an invented scenario's scripts list and decompile; a link to an object name selects the placement; without the executable the tool refuses by name |

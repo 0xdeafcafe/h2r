@@ -147,6 +147,9 @@ pub mod method {
     pub const FUNCTION_SET: &str = "function.set";
     pub const FUNCTION_SAMPLE: &str = "function.sample";
 
+    // Colour fields of a tag (api/colours.rs).
+    pub const TAG_COLOURS: &str = "tag.colours";
+
     pub const SOUND_READ: &str = "sound.read";
     pub const SOUND_PLAY: &str = "sound.play";
     pub const SOUND_STOP: &str = "sound.stop";

@@ -237,6 +237,14 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             app.tags = crate::app::TagDoc::new(super::curves::tests::registry());
             call(api, app, m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
         }
+        m::TAG_COLOURS => {
+            // A map whose weapon tag has an invented colour field of
+            // every form.
+            let map = t.path("colour.map");
+            std::fs::write(&map, super::colours::tests::colour_map()).unwrap();
+            app.tags = crate::app::TagDoc::new(super::colours::tests::registry());
+            call(api, app, m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+        }
         m::VOICE_CHARACTERS | m::VOICE_DATASET_BUILD | m::VOICE_DATASET_STATUS => {
             // Invented maps and the fake sidecar (never Python).
             super::voice_clone::test_setup(app, false, false);
