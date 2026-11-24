@@ -1,6 +1,6 @@
 # Forge map variants: the editor's HUD, world marks and screens
 
-Status: Design, slices K5, H1, H3, S1, S2 and S6 built. The Forge screens in the game (slice U4), the HUD kit, its world marks and the superbounce readout this page copies are built, and so are `Shape::Line`, `Style::Team` and `Describe::never_with` (K5) and the readout's description with its fourteen states (H1), including the `fgr.zone` marks, the readout's `never_with` declaration and the team-coloured near marks. The runtime (H3, `forge_readout.rs`) registers the HUD, feeds it each tick from the session's aimed or held thing and its bodiless things, chooses the near pool and poses the marks; it has no ring feed yet (below), and its guide row says a refusal's sentence and, while an added thing is held with a tenth or less left, the binding limit (S6). The Properties page's rows are the doc's `props:` block (S1), with **Game types...** on an item spawner, which opens the Game types dialog (`forge.games`, S2; `forge_screens/games.rs`); the rows of the other slices are not built. `Session::budget_for` (S6; `extensions/forge/src/{budget.rs, session/budget.rs}`) is the budget's one source. Everything else named here as new is not built.
+Status: Design, slices K5, H1, H3, S1, S2, S4 and S6 built. The Forge screens in the game (slice U4), the HUD kit, its world marks and the superbounce readout this page copies are built, and so are `Shape::Line`, `Style::Team` and `Describe::never_with` (K5) and the readout's description with its fourteen states (H1), including the `fgr.zone` marks, the readout's `never_with` declaration and the team-coloured near marks. The runtime (H3, `forge_readout.rs`) registers the HUD, feeds it each tick from the session's aimed or held thing and its bodiless things, chooses the near pool and poses the marks; it has no ring feed yet (below), and its guide row says a refusal's sentence and, while an added thing is held with a tenth or less left, the binding limit (S6). The Properties page's rows are the doc's `props:` block (S1), with **Game types...** on an item spawner, which opens the Game types dialog (`forge.games`, S2; `forge_screens/games.rs`); the rows of the other slices are not built. `Session::budget_for` (S6; `extensions/forge/src/{budget.rs, session/budget.rs}`) is the budget's one source. Everything else named here as new is not built.
 Code: `crates/extensions/game/src/forge_screens/` (the screens), `content/ui/screens/forge.*.yaml` (their docs), `crates/rewrites/hud-kit-core/src/{world.rs, views/}` (the HUD kit's model), `crates/extensions/game/src/hud_kit_world.rs` (the world-line source), `crates/extensions/game/src/forge_readout.rs` (the readout's runtime), `crates/extensions/game/src/forge_screens/props.rs` (the Properties rows). Tests: named per slice below.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
@@ -269,21 +269,34 @@ act on the variant store (`forge::files::variants`).
 
 | Screen | Doc | Opened by | Is |
 |---|---|---|---|
-| Name | the game's keyboard (`Effect::Keyboard`) | Save as; Rename; Save on a variant with no name | titled NAME MAP VARIANT, 16 characters |
+| Name | the game's keyboard (`Effect::Keyboard`) | Save as; Rename; Save on a variant with no name | 16 characters (the title NAME MAP VARIANT is not set: the keyboard's open call takes none yet) |
 | Map variant picker | `kit.picker.map-variant` | Load; the lobby's Map Variant... | a picker: Original, then this map's variants by name; the description block has the author, the counts by kind and the game types with goals |
 | Map variants | `forge.variants` | **Map variants...** on Forge options | a list page: a row a variant of this map, with where it is (`Saved`, `Xbox Live`) or why it cannot be used in the value column |
 | A variant's actions | `forge.variant` | A on a row of Map variants | a dialog on top: **Load**, **Rename**, **Duplicate**, **Upload to Xbox Live**, **Delete** |
 | Questions | `forge.question` | below | Yes and No, No focused |
 
-- **Save** writes the open variant under its name and shows "Saved
-  <name>" as a notice. A variant opened from Original has no name, so
-  Save is Save as.
-- **Save as** opens the keyboard on the current name. A name another
-  variant of this map has asks "Replace <name>?".
-- **Load** asks "Load without saving?" when there are unsaved edits,
-  then opens the picker. The pick opens at a fresh log head, and the
-  world is reconciled to it: every own entry the old variant touched
-  is restored first.
+- **Save** writes the open variant under its name
+  (`Session::save_variant`, which is `forge::files::variants::save` of
+  the session's play form) and shows "Saved <name>." as a notice. A
+  variant opened from Original has no name, so Save opens the keyboard,
+  as Save as does.
+- **Save as** opens the keyboard on the current name, 16 characters
+  (`forge_screens::NAME_CHARS`). The open variant's own name, with any
+  case, saves over it. A name another variant of this map has comes
+  back from the store as `NameTaken` and asks "Replace <name>?", No
+  focused; Yes writes over that file, No ends in "Not saved.". A name
+  the store refuses (blank, over 16 characters) is the notice and
+  writes nothing.
+- **Load** picks among this map's saved variants that pass the store's
+  checks (a Live copy or a variant with a problem is listed on Map
+  variants, not offered here), then, when there are unsaved edits, asks
+  "Load without saving?" before it loads; No ends in "Not loaded.". The
+  load opens at a fresh log head, and the world is reconciled to it
+  (`Session::load_variant`: the document is checked against the
+  session's limits, and the kit put back, before the game is asked to
+  change): every own entry the old variant touched is restored first.
+  Each flow's decisions are `forge_screens::variants`; the editor
+  (`forge_glue::editing`) runs the store calls off the game thread.
 - **Rename** opens the keyboard. A name that is taken is refused with
   the store's sentence as the dialog's status line; nothing is
   replaced by a rename. The name is part of the document, so a renamed

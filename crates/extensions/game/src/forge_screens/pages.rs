@@ -124,6 +124,7 @@ pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
             ("delete-linked", sheet::question(Ask::DeleteLinked, "")),
             ("overwrite", sheet::question(Ask::Overwrite, "Courtyard")),
             ("leave", sheet::question(Ask::Leave, "")),
+            ("load", sheet::question(Ask::Load, "")),
         ],
         Kind::Options => {
             let open = sheet::options();

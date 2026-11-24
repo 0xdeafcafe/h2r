@@ -208,29 +208,21 @@ impl Session {
         self.build_ground(builder).map(|_| true)
     }
 
-    /// Save, building first when the ground was built and is stale, so a
-    /// saved variant never has a ground the build has not seen. A build
-    /// that fails stops the save. A session that never built ground saves
-    /// as it is: no map gets ground it was not given.
+    /// Save as the variant `title` ([`Session::save_variant`]), building
+    /// first when the ground was built and is stale, so a saved variant
+    /// never has a ground the build has not seen. A build that fails stops
+    /// the save. A session that never built ground saves as it is: no map
+    /// gets ground it was not given.
     pub fn save_building(
         &mut self,
         data_dir: &Path,
-        name: &str,
+        title: &str,
+        replace: bool,
         builder: &mut (impl GroundBuilder + ?Sized),
-    ) -> Result<(), String> {
-        self.build_if_stale(builder)?;
-        self.save(data_dir, name)
-    }
-
-    /// [`Session::save_building`] to a new name ([`Session::save_new`]).
-    pub fn save_new_building(
-        &mut self,
-        data_dir: &Path,
-        base: &str,
-        builder: &mut (impl GroundBuilder + ?Sized),
-    ) -> Result<String, String> {
-        self.build_if_stale(builder)?;
-        self.save_new(data_dir, base)
+    ) -> Result<String, files::variants::Error> {
+        self.build_if_stale(builder)
+            .map_err(files::variants::Error::Io)?;
+        self.save_variant(data_dir, title, replace)
     }
 
     fn build_if_stale(
@@ -256,18 +248,6 @@ impl Session {
             recipe,
             built: None,
         };
-    }
-
-    pub(super) fn write_ground_form(&self, data_dir: &Path, name: &str) -> Result<(), String> {
-        files::save(data_dir, name, &self.ground_form())
-    }
-
-    pub(super) fn write_ground_form_new(
-        &self,
-        data_dir: &Path,
-        base: &str,
-    ) -> Result<String, String> {
-        files::save_new(data_dir, base, &self.ground_form())
     }
 
     // ---- markers ----

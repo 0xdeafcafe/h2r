@@ -9,6 +9,7 @@ use agent::forge::local::{self as local_api, ForgeEdit, ForgeWorld, Guard, Propo
 use agent::sim::calls;
 use forge::camera::Camera;
 use forge::tool::{Action, Axes, Command, Extent, Input, Overlay, Show, Tool};
+use forge::files::variants::{self, Listed};
 use forge::{BlockKind, Linkable, OpId, PaletteItem, Session, Thing, ThingKind};
 use forge_doc::{ActiveLink, Endpoint, Entry, Link as DocLink, LogHead, Op, Sha256};
 use serde_json::{Value, json};
@@ -21,6 +22,7 @@ use crate::forge_map::Opened;
 use crate::forge_screens::{
     self as screens, Facts,
     sheet::{self, ANGLE_STEPS, Ask, Choice, Group, HEADINGS, Kind, Prop, Sheet, Tool as ToolKind},
+    variants as flows,
 };
 
 mod area;
@@ -45,14 +47,16 @@ struct Pending {
 }
 
 enum FileResult {
-    /// The saved maps, for Load, the saved prefabs, and a line for each
+    /// The map's variants, for Load, the saved prefabs, and a line for each
     /// prefab file that did not read.
-    Listed(Vec<String>, Vec<forge::Prefab>, Vec<String>),
+    Listed(Vec<Listed>, Vec<forge::Prefab>, Vec<String>),
     /// A prefab was saved as this name; the prefabs after, and the files
     /// that did not read.
     Prefab(String, Vec<forge::Prefab>, Vec<String>),
-    /// Saved as this name; the saved maps after.
-    Saved(String, Vec<String>),
+    /// Saved as this variant name; the map's variants after.
+    Saved(String, Vec<Listed>),
+    /// The store has a variant of this name: Replace asks.
+    Taken(String),
     Loaded(Pending),
     /// The ground build's copy of the session, and whether it built.
     Ground(Box<(Session, bool)>),
@@ -92,6 +96,8 @@ pub(super) struct Editor {
     pending: Option<Pending>,
     file_job: Option<mpsc::Receiver<Result<FileResult, String>>>,
     data: PathBuf,
+    /// The name of the map variant the session was last saved or loaded
+    /// as; none for a session opened from Original.
     filename: Option<String>,
     selected: usize,
     rotation_step: usize,
@@ -115,10 +121,12 @@ pub(super) struct Editor {
     delete_asked: Option<Command>,
     /// The name the overwrite question is about.
     overwrite_asked: Option<String>,
+    /// The variant file the load question is about.
+    load_asked: Option<String>,
     /// The log head as last saved or loaded: edits since are not saved.
     saved_head: LogHead,
-    /// The saved maps, for Load.
-    saved: Vec<String>,
+    /// The map's variants, for Load.
+    variants: Vec<Listed>,
     /// The saved prefabs, which the object menu lists when the map holds
     /// their tags.
     prefabs: Vec<forge::Prefab>,
@@ -175,8 +183,9 @@ impl Editor {
             link_dialog: None,
             delete_asked: None,
             overwrite_asked: None,
+            load_asked: None,
             saved_head,
-            saved: Vec::new(),
+            variants: Vec::new(),
             prefabs: Vec::new(),
             listed: false,
             ui_up: false,
@@ -957,7 +966,7 @@ impl Editor {
                     After::Edited => {}
                     After::Load(name) => {
                         self.area = None;
-                        self.notice = Some((format!("Loaded {name}."), tick));
+                        self.notice = Some((flows::loaded(&name), tick));
                         self.filename = Some(name);
                         self.saved_head = self.session.head();
                         self.tool.clear_selection();
@@ -999,10 +1008,11 @@ impl Editor {
         if !self.listed && !self.busy() {
             self.listed = true;
             let data = self.data.clone();
+            let session = self.session.clone();
             if let Err(reason) = self.file(move || {
                 let (prefabs, skipped) = forge::load_prefabs(&data)?;
                 Ok(FileResult::Listed(
-                    forge::saved_names(&data)?,
+                    list_variants(&data, &session)?,
                     prefabs,
                     skipped,
                 ))
@@ -1108,7 +1118,7 @@ impl Editor {
             } else {
                 ToolKind::Objects
             }),
-            saved: self.saved.clone(),
+            variants: flows::rows(&self.variants),
             filename: self.filename.clone(),
             placed: self.placed(),
             folders: sheet::folder_rows(&self.session.groups()),
@@ -1157,8 +1167,8 @@ impl Editor {
         };
         self.file_job = None;
         match result {
-            Ok(FileResult::Listed(names, prefabs, skipped)) => {
-                self.saved = names;
+            Ok(FileResult::Listed(listed, prefabs, skipped)) => {
+                self.variants = listed;
                 self.prefabs = prefabs;
                 if let Some(first) = skipped.first() {
                     self.notice = Some((format!("Not a prefab, {first}"), tick));
@@ -1176,13 +1186,17 @@ impl Editor {
                 ));
                 self.prefabs = prefabs;
             }
-            Ok(FileResult::Saved(name, names)) => {
-                self.notice = Some((format!("Saved {name}."), tick));
+            Ok(FileResult::Saved(name, listed)) => {
+                self.notice = Some((flows::saved(&name), tick));
                 self.filename = Some(name);
-                self.saved = names;
+                self.variants = listed;
                 // No edit runs while a file job does: this is what was saved.
                 self.saved_head = self.session.head();
             }
+            Ok(FileResult::Taken(name)) => match screens::open(sheet::question(Ask::Overwrite, &name)) {
+                Ok(()) => self.overwrite_asked = Some(name),
+                Err(reason) => self.notice = Some((reason, tick)),
+            },
             Ok(FileResult::Loaded(pending)) => self.pending = Some(pending),
             Ok(FileResult::Ground(done)) => {
                 // No edit runs while a file job does: the copy is the
@@ -1736,43 +1750,41 @@ impl Editor {
             } => {
                 let name = self.overwrite_asked.take().ok_or("Nothing to save.")?;
                 if yes {
-                    return self.save(Some(name));
+                    return self.save(name, true);
                 }
+                self.notice = Some((flows::NOT_SAVED.into(), tick));
+            }
+            Choice::Answer {
+                ask: Ask::Load,
+                yes,
+            } => {
+                let file = self.load_asked.take().ok_or("Nothing to load.")?;
+                if yes {
+                    return self.load(tick, file);
+                }
+                self.notice = Some((flows::NOT_LOADED.into(), tick));
             }
             // Leave Game's answer is the screens' own (`forge_screens`).
             Choice::Answer {
                 ask: Ask::Leave, ..
             } => {}
-            Choice::Save => return self.save(self.filename.clone()),
-            Choice::SaveAs(name) => {
-                if Some(&name) != self.filename.as_ref() && self.saved.contains(&name) {
-                    screens::open(sheet::question(Ask::Overwrite, &name))?;
-                    self.overwrite_asked = Some(name);
+            Choice::Save => match flows::save(self.filename.as_deref()) {
+                // GAME MENU opens the keyboard for an unnamed map before it
+                // sends Save; a Save that gets here without one is refused.
+                flows::SaveStep::Keyboard => return Err(flows::UNNAMED.into()),
+                flows::SaveStep::Write { name, replace } => return self.save(name, replace),
+            },
+            Choice::SaveAs(typed) => match flows::save_as(self.filename.as_deref(), &typed)? {
+                flows::SaveStep::Write { name, replace } => return self.save(name, replace),
+                flows::SaveStep::Keyboard => return Err(flows::UNNAMED.into()),
+            },
+            Choice::Load(file) => {
+                if self.dirty() {
+                    screens::open(sheet::question(Ask::Load, ""))?;
+                    self.load_asked = Some(file);
                 } else {
-                    return self.save(Some(name));
+                    return self.load(tick, file);
                 }
-            }
-            Choice::Load(name) => {
-                let (data, session, tags, calls, guard) = (
-                    self.data.clone(),
-                    self.session.clone(),
-                    self.tags.clone(),
-                    self.calls.clone(),
-                    self.guard,
-                );
-                return self.file(move || {
-                    let edit = ForgeWorld::apply(
-                        &session,
-                        &calls,
-                        guard,
-                        |tag| resolve(&session, &tags, tag),
-                        |s, w| s.load(w, tick, &data, &name),
-                    )?;
-                    Ok(FileResult::Loaded(Pending {
-                        edit,
-                        after: After::Load(name),
-                    }))
-                });
             }
             Choice::Games(set) => {
                 let id = self
@@ -1795,20 +1807,52 @@ impl Editor {
             .ok_or_else(|| "Aim at a thing of the map.".to_string())
     }
 
-    /// Saves as `name`, or as a new name from the map's when none.
-    fn save(&mut self, name: Option<String>) -> Result<(), String> {
+    /// Saves the session as the map variant `name`. A name another variant
+    /// has, when `replace` is not set, ends in the Replace question.
+    fn save(&mut self, name: String, replace: bool) -> Result<(), String> {
         let data = self.data.clone();
         let session = self.session.clone();
-        self.file(move || {
-            let name = if let Some(name) = name {
-                session.save(&data, &name)?;
-                name
-            } else {
-                session.save_new(&data, &session.document().base.map)?
-            };
-            Ok(FileResult::Saved(name, forge::saved_names(&data)?))
+        self.file(move || match session.save_variant(&data, &name, replace) {
+            Ok(_) => Ok(FileResult::Saved(name, list_variants(&data, &session)?)),
+            Err(variants::Error::NameTaken(_)) => Ok(FileResult::Taken(name)),
+            Err(e) => Err(e.to_string()),
         })
     }
+
+    /// Loads the map variant of file stem `file` over the session.
+    fn load(&mut self, tick: u32, file: String) -> Result<(), String> {
+        let (data, session, tags, calls, guard) = (
+            self.data.clone(),
+            self.session.clone(),
+            self.tags.clone(),
+            self.calls.clone(),
+            self.guard,
+        );
+        self.file(move || {
+            let base = &session.document().base;
+            let doc = variants::load(&data, &base.map, &file, Some(&base.sha256))
+                .map_err(|e| e.to_string())?;
+            let name = doc.title.clone();
+            let edit = ForgeWorld::apply(
+                &session,
+                &calls,
+                guard,
+                |tag| resolve(&session, &tags, tag),
+                |s, w| s.load_variant(w, tick, doc),
+            )?;
+            Ok(FileResult::Loaded(Pending {
+                edit,
+                after: After::Load(name),
+            }))
+        })
+    }
+}
+
+/// The variants of the session's map on this machine, with the session's
+/// base as the installed map.
+fn list_variants(data: &Path, session: &Session) -> Result<Vec<Listed>, String> {
+    let base = &session.document().base;
+    variants::list(data, &base.map, Some(&base.sha256)).map_err(|e| e.to_string())
 }
 
 fn surface_hit(walls: Option<&bots::los::Walls>, camera: Camera) -> Option<(f32, [f32; 3])> {

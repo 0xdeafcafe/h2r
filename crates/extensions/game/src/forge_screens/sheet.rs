@@ -146,10 +146,12 @@ impl Look {
 pub enum Ask {
     /// Delete an object that has links (its links go too).
     DeleteLinked,
-    /// Save as over a saved map of that name.
+    /// Save as over a map variant of that name.
     Overwrite,
     /// Leave Game with unsaved edits.
     Leave,
+    /// Load a map variant over unsaved edits.
+    Load,
 }
 
 /// A value a Properties or Tool settings row sets.
@@ -321,8 +323,11 @@ pub enum Choice {
         ask: Ask,
         yes: bool,
     },
+    /// **Save**: write the open variant under its name.
     Save,
+    /// **Save as**: the name typed on the keyboard.
     SaveAs(String),
+    /// Load the map variant of this file stem (`variants::Row::file`).
     Load(String),
     /// The Game types dialog's Done: give the aimed or held item spawner
     /// this set, as one step.
@@ -1359,7 +1364,7 @@ pub fn link(from: &str, to: &str, writes: &str) -> Sheet {
     }
 }
 
-/// The question `ask`, about `name` (the map's name for an overwrite),
+/// The question `ask`, about `name` (the variant's name for an overwrite),
 /// **Yes** and **No**, No focused.
 pub fn question(ask: Ask, name: &str) -> Sheet {
     let (title, body) = match ask {
@@ -1367,14 +1372,12 @@ pub fn question(ask: Ask, name: &str) -> Sheet {
             "DELETE OBJECT",
             "This object has links. Delete it and its links?".to_string(),
         ),
-        Ask::Overwrite => (
-            "SAVE AS",
-            format!("A Forge map named {name} is saved. Replace it?"),
-        ),
+        Ask::Overwrite => ("SAVE AS", super::variants::replace_question(name)),
         Ask::Leave => (
             "LEAVE GAME",
             "This Forge map has edits that are not saved. Leave without saving?".to_string(),
         ),
+        Ask::Load => ("LOAD", super::variants::LOAD_QUESTION.to_string()),
     };
     let answer = |yes| Act::Choose(Choice::Answer { ask, yes });
     Sheet {

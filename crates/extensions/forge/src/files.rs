@@ -52,25 +52,6 @@ fn ensure_dir(path: &Path) -> Result<PathBuf, String> {
     }
 }
 
-pub(crate) fn save(data: &Path, name: &str, doc: &ForgeDoc) -> Result<(), String> {
-    let name = filename(name)?;
-    let bytes = doc.canonical_json().map_err(|e| e.to_string())?;
-    let path = std::path::absolute(data.join("forge")).map_err(|e| e.to_string())?;
-    let dir = ensure_dir(&path)?;
-    content::store::write_atomic(&dir.join(name), bytes.as_bytes()).map_err(|e| e.to_string())
-}
-
-/// Write and sync one hidden sibling. Hard-link it into the first available
-/// name: creating the link cannot replace an existing file and readers see
-/// only the complete document. Concurrent writers choose different names.
-pub(crate) fn save_new(data: &Path, base: &str, doc: &ForgeDoc) -> Result<String, String> {
-    filename(base)?;
-    let bytes = doc.canonical_json().map_err(|e| e.to_string())?;
-    let path = std::path::absolute(data.join("forge")).map_err(|e| e.to_string())?;
-    let dir = ensure_dir(&path)?;
-    create_unique(&dir, base, "h2forge", bytes.as_bytes())
-}
-
 /// Create `<base>.<ext>` in `dir`, or `<base>-2.<ext>` and on, holding
 /// `bytes`, and return the stem it took.
 fn create_unique(dir: &Path, base: &str, ext: &str, bytes: &[u8]) -> Result<String, String> {

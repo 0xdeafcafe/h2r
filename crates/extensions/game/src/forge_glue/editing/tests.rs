@@ -1,4 +1,5 @@
 mod area;
+mod variants;
 
 use super::*;
 use agent::forge::local::OBJECT_GONE;
@@ -6,6 +7,10 @@ use forge::{BlockKind, Frame, TagKey};
 use forge_doc::{BuilderVersions, ForgeDoc, Limits, MapRef, WorldBounds};
 
 fn editor() -> Editor {
+    editor_in(Path::new("."))
+}
+
+fn editor_in(data: &Path) -> Editor {
     let item = PaletteItem {
         block: BlockKind::Crates,
         tag: TagKey {
@@ -48,7 +53,7 @@ fn editor() -> Editor {
         walls: vec![],
         names: Default::default(),
     };
-    Editor::new(opened, Path::new("."), 1, calls::shared())
+    Editor::new(opened, data, 1, calls::shared())
 }
 
 #[test]

@@ -28,6 +28,7 @@ pub mod pages;
 pub mod props;
 pub mod screen;
 pub mod sheet;
+pub mod variants;
 
 #[cfg(test)]
 mod tests;
@@ -67,9 +68,10 @@ pub struct Facts {
     /// Local rather than World axes.
     pub local_axes: bool,
     pub tool: Option<sheet::Tool>,
-    /// The saved Forge maps, for Load.
-    pub saved: Vec<String>,
-    /// The saved map the session is, for Save as's keyboard.
+    /// The map variants of this map, for Load.
+    pub variants: Vec<variants::Row>,
+    /// The name of the variant the session is, for Save and Save as's
+    /// keyboard; none for a session opened from Original.
     pub filename: Option<String>,
     /// The added objects, for the placed objects browser
     /// ([`sheet::placed_rows`]).
@@ -79,8 +81,8 @@ pub struct Facts {
     pub folders: Vec<sheet::Folder>,
 }
 
-/// The longest name Save as takes.
-pub const NAME_CHARS: u32 = 31;
+/// The longest name Save as takes: a map variant's.
+pub const NAME_CHARS: u32 = forge_doc::MAX_VARIANT_NAME as u32;
 
 struct Hub {
     screens: Vec<Arc<ForgeScreen>>,
@@ -434,33 +436,39 @@ async fn open_keyboard(cx: &Cx, spec: Option<TypeSpec>) -> Result<(), EntryError
 async fn menu_press(cx: &Cx, row: MenuRow, chain: u32, list: u32) -> Result<(), EntryError> {
     let f = facts();
     match row {
-        MenuRow::Save => send(Choice::Save),
+        MenuRow::Save => match variants::save(f.filename.as_deref()) {
+            variants::SaveStep::Keyboard => open_keyboard(cx, None).await?,
+            variants::SaveStep::Write { .. } => send(Choice::Save),
+        },
         MenuRow::SaveAs => open_keyboard(cx, None).await?,
-        MenuRow::Load if f.saved.is_empty() => {
-            send(Choice::Notice("No Forge maps are saved.".into()))
+        MenuRow::Load if variants::loadable(&f.variants).is_empty() => {
+            send(Choice::Notice(variants::NONE_SAVED.into()))
         }
         MenuRow::Load => {
-            let names = f.saved.clone();
+            let rows: Vec<variants::Row> = variants::loadable(&f.variants)
+                .into_iter()
+                .cloned()
+                .collect();
+            let names: Vec<String> = rows.iter().map(|r| r.name.clone()).collect();
             let current = f
                 .filename
-                .as_ref()
-                .and_then(|n| names.iter().position(|x| x == n))
+                .as_deref()
+                .and_then(|n| rows.iter().position(|r| variants::same_name(&r.name, n)))
                 .unwrap_or(0);
-            let chosen = names.clone();
             let set = Arc::new(move |i: usize| -> String {
-                match chosen.get(i) {
-                    Some(n) => {
-                        send(Choice::Load(n.clone()));
-                        format!("forge: load {n}")
+                match rows.get(i) {
+                    Some(r) => {
+                        send(Choice::Load(r.file.clone()));
+                        format!("forge: load {}", r.name)
                     }
-                    None => format!("forge: no saved map {i}"),
+                    None => format!("forge: no map variant {i}"),
                 }
             });
             let pick = Pick::new(
                 "Load",
                 names,
                 current,
-                "A saved Forge map of this map.",
+                "A map variant of this map.",
                 set,
             )
             .over(screen::OPENER);

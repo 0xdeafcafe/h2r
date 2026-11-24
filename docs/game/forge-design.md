@@ -150,8 +150,10 @@ integer-only implementation of RFC 8785. Floats are eight lowercase
 hexadecimal digits of their `f32` bits. The document's identity is the
 SHA-256 of its canonical form with the entire `expect` block omitted.
 Use `ForgeDoc::from_bytes` to read the 8 MiB
-bounded format and `ForgeDoc::canonical_json` to write it. The saved
-file is `<data>/forge/<name>.h2forge`. A draft can omit `expect`.
+bounded format and `ForgeDoc::canonical_json` to write it. A Forge map
+file is `<data>/forge/<name>.h2forge`; the editor saves map variants
+in the variant store instead ([forge-map-variants.md](forge-map-variants.md),
+"The map variant file"). A draft can omit `expect`.
 The `format` is 1, or 2 when an op sets or clears a label; validation
 refuses the other number, so a document has one spelling and every
 document without labels keeps its identity.
