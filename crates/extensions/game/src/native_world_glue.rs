@@ -1454,7 +1454,7 @@ fn load_ready(
     // object shadows on the structure (docs/graphics/e3-lighting.md, "Sun
     // shadows from objects"). Retail never reads it.
     let sun_world = native_render::sun_casters::SunWorld::new(&world);
-    let layer3 = Layer3Materials::group(&mut world, &shaders, lightmap_bitmap.is_some(), &per_vertex_placements)?;
+    let layer3 = Layer3Materials::group(&mut world, &shaders, lightmap_bitmap.is_some(), &per_vertex_placements);
     let declared = world.materials().len();
     let out = match lightmap_error {
         Some(reason) => Programs {
@@ -1718,12 +1718,12 @@ struct Layer3Materials {
 }
 
 impl Layer3Materials {
-    fn group(world: &mut World, shaders: &[TagId], has_group: bool, per_vertex: &[bool]) -> Result<Self, &'static str> {
+    fn group(world: &mut World, shaders: &[TagId], has_group: bool, per_vertex: &[bool]) -> Self {
         let mut slots = Self {
             shaders: shaders.to_vec(),
             implementations: vec![if has_group { 0 } else { look::UNLIT_BSP_IMPLEMENTATION }; shaders.len()],
         };
-        if !has_group { return Ok(slots); }
+        if !has_group { return slots; }
         let vertex_lit = |d: &WorldDraw| matches!(d.owner, Owner::Instance(i) if per_vertex.get(i as usize) == Some(&true));
         let per_pixel: HashSet<_> = world.draws.iter().filter(|d| !vertex_lit(d)).map(|d| d.material).collect();
         let mut mixed = HashMap::new();
@@ -1736,23 +1736,22 @@ impl Layer3Materials {
             }
             if !vertex_lit(draw) { continue; }
             if per_pixel.contains(&draw.material) {
-                let slot = match mixed.entry(draw.material) {
-                    std::collections::hash_map::Entry::Occupied(slot) => *slot.get(),
-                    std::collections::hash_map::Entry::Vacant(entry) => {
-                        let next = u16::try_from(slots.shaders.len()).ok().filter(|&n| n != u16::MAX)
-                            .ok_or("too many world lighting variants for layer 3")?;
+                draw.material = *mixed.entry(draw.material).or_insert_with(|| {
+                    // Leave only this variant to the sorted handler if all
+                    // representable material slots are occupied.
+                    let Ok(next) = u16::try_from(slots.shaders.len()) else { return u16::MAX };
+                    if next != u16::MAX {
                         slots.shaders.push(shaders[m]);
                         slots.implementations.push(1);
-                        *entry.insert(next)
                     }
-                };
-                draw.material = slot;
+                    next
+                });
             } else {
                 slots.implementations[m] = 1;
             }
         }
         world.regroup_draws();
-        Ok(slots)
+        slots
     }
 }
 
@@ -1820,7 +1819,7 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
         if !key.current() { break; }
         let mut uses_palette = false;
         let Some(&shader) = layer3.shaders.get(usize::from(m)).filter(|_| m != u16::MAX) else {
-            refused.entry("no shader".into()).or_default().push(m);
+            refused.entry("no layer 3 material slot".into()).or_default().push(m);
             continue;
         };
         // An animated pass compiles at clock 0 and keeps its animation,
@@ -2168,7 +2167,7 @@ mod tests {
         let mut menu = world.clone();
         let shaders = [TagId(100), TagId(200)];
         let modes = [false, true, true];
-        let slots = Layer3Materials::group(&mut world, &shaders, true, &modes).unwrap();
+        let slots = Layer3Materials::group(&mut world, &shaders, true, &modes);
         assert_eq!(slots.shaders, [TagId(100), TagId(200), TagId(100)]);
         assert_eq!(slots.implementations, [0, 1, 1]);
         let draws: Vec<_> = world.draws.iter().map(|d| {
@@ -2178,7 +2177,13 @@ mod tests {
         assert_eq!(draws, [(Owner::Cluster(3), 0), (Owner::Instance(0), 0),
             (Owner::Instance(2), 1), (Owner::Instance(1), 1)]);
         assert_eq!(part_set(&world, &slots.shaders)[&(Owner::Instance(1), 0)], shaders[0].0);
-        let unlit = Layer3Materials::group(&mut menu, &shaders, false, &modes).unwrap();
+        let mut full = menu.clone();
+        let all_slots = vec![TagId(100); usize::from(u16::MAX)];
+        let full_slots = Layer3Materials::group(&mut full, &all_slots, true, &modes);
+        assert_eq!(full_slots.shaders.len(), all_slots.len());
+        assert_eq!(full.draws.iter().find(|d| d.owner == Owner::Instance(1)).unwrap().material, u16::MAX);
+        assert_eq!(full.draws.iter().find(|d| d.owner == Owner::Cluster(3)).unwrap().material, 0);
+        let unlit = Layer3Materials::group(&mut menu, &shaders, false, &modes);
         assert_eq!(unlit.shaders, shaders);
         assert_eq!(unlit.implementations, [3, 3]);
     }
