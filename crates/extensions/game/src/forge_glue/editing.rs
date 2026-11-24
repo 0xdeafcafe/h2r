@@ -162,6 +162,8 @@ pub(super) struct Editor {
 impl Editor {
     pub fn new(opened: Opened, data: &Path, scenario: u32, calls: calls::Shared) -> Self {
         let saved_head = opened.session.head();
+        let mut tool = Tool::with_extents(opened.extents.into());
+        tool.monitor = crate::lobby_start::mode() == crate::lobby_start::Mode::Forge;
         Self {
             session: Arc::new(opened.session),
             tags: opened.tags.into(),
@@ -173,7 +175,7 @@ impl Editor {
                 admitted,
             },
             calls,
-            tool: Tool::with_extents(opened.extents.into()),
+            tool,
             pending: None,
             file_job: None,
             data: data.into(),

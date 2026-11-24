@@ -37,7 +37,7 @@ use super::{Place, Reason, RetailMode, Tab, notice};
 use crate::clankermatch::{self, Scope};
 use crate::firefight::options as ff;
 use crate::lobby_start::{self, Mode};
-use crate::map_select::{Catalogue, Category};
+use crate::map_select::Catalogue;
 
 // ---- the retail routines' parts ----
 
@@ -126,10 +126,7 @@ pub fn map_for(
     catalogue: Option<&Catalogue>,
 ) -> Result<Option<u32>, Reason> {
     match to {
-        Tab::Forge => {
-            let c = catalogue.ok_or(Reason::NoMapList)?;
-            inside(c.maps(Category::Halo2).iter().map(|m| m.id), current).ok_or(Reason::NoForgeMap)
-        }
+        Tab::Forge => Ok(None),
         Tab::Firefight => {
             let Some(c) = catalogue else { return Ok(None) };
             let kit = lobby_start::kit_maps(c);

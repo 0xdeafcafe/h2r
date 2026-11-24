@@ -28,12 +28,12 @@ pub const MODE_INVITE: u32 = 4;
 /// The campaign's screens: A on Campaign, and the one after it.
 pub const CAMPAIGN_SCREENS: [u32; 2] = [0xee, 0xd1];
 /// Live menu rows (`game::custom_games`): 2 Clankermatch, 3 Co-op Campaign,
-/// 4 Custom Games (retail's Custom Game press), 5 Forge, 6 Firefight, 7 the
-/// browser, 8 Mods.
+/// 4 Custom Games (retail's Custom Game press), 5 Forge, 6 the
+/// browser, 7 Mods.
 pub const CLANKERMATCH_ROW: u32 = 2;
 pub const COOP_ROW: u32 = 3;
 pub const CUSTOM_GAME_ROW: u32 = 4;
-pub const BROWSER_ROW: u32 = 7;
+pub const BROWSER_ROW: u32 = 6;
 /// Retail main menu rows: 0 Campaign, 1 Xbox Live,
 /// 2 Split Screen, 3 System Link, 4 Settings. Theater, the one row of
 /// ours, follows System Link, so these rows keep their places.

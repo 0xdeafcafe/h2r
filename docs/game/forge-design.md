@@ -483,11 +483,11 @@ Halo Infinite's that fit, and looks like Halo 2. Three pages hold it:
   retail Forges do, with sources.
 
 **Entering Forge.** Forge is a mode of the party lobby
-([party-lobby.md](party-lobby.md)), beside Custom Games and Firefight,
+([party-lobby.md](party-lobby.md)), beside Custom Games,
 in Split Screen, in a hosted System Link game and in an Xbox Live
 custom game, which the Xbox Live menu's Forge row opens in it
 (forge-firefight-ui.md, "The lobbies"). In Forge Game Setup has
-**Change Map...** (the original maps), **Map Variant...** (Original, or a
+**Change Map...** (the installed multiplayer maps), **Map Variant...** (Original, or a
 map variant of the lobby's map, `forge::files::variants::list`) and the game
 type, which picks the goals the session edits. Start Game is the
 game's; the draft is loaded as the session opens
@@ -733,9 +733,9 @@ skip"). The hook is ordered first, ahead of the native scene lists'
 setup, so the biped has no layer-3 items and the native objects stage,
 which draws only the walk of those items, never meets it. The biped stays
 in the visibility list, so its shadow is still chosen as a caster.
-`forge.status` gives the parked unit as `parked`. The Forge lobby's Start
-and an ordinary local game open the same session: the player starts in
-the biped and D-pad Up or Tab enters the monitor.
+`forge.status` gives the parked unit as `parked`. Start Game in a Forge lobby opens the monitor with its HUD and tools.
+A local level boot starts in the biped. D-pad Up or Tab switches between
+the biped and the monitor.
 
 `forge::Session` validates edits against the loaded map and folds their
 entries with F1. Its `World` interface resolves each placement to a

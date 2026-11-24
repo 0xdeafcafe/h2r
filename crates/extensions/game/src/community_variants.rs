@@ -270,7 +270,8 @@ fn registry() -> &'static ::rules::builtin::Registry {
 pub const MAX_ENTRIES: usize =
     (crate::game_variants::inject::DESCRIPTION_BASE - DESCRIPTION_BASE) as usize;
 const _: () = assert!(MAX_ENTRIES <= 0x74);
-const _: () = assert!(::rules::builtin::LISTED.len() <= MAX_ENTRIES);
+const SCRIPT_SLOTS: usize = MAX_ENTRIES - ::firefight::builtin::SETS.len() - ::firefight::builtin::MAP_SETS.len();
+const _: () = assert!(::rules::builtin::LISTED.len() <= SCRIPT_SLOTS);
 
 /// The listed scripts, by their index in the list: the entry's name, its
 /// engine and its source.
@@ -282,13 +283,13 @@ pub fn scripts() -> &'static [::rules::builtin::Script] {
             eprintln!("community variants: {p}");
         }
         let all: Vec<_> = r.listed().cloned().collect();
-        if all.len() > MAX_ENTRIES {
+        if all.len() > SCRIPT_SLOTS {
             eprintln!(
-                "community variants: {} entries, the list holds {MAX_ENTRIES}: the rest are left out",
+                "community variants: {} entries, the list holds {SCRIPT_SLOTS} scripts: the rest are left out",
                 all.len()
             );
         }
-        all.into_iter().take(MAX_ENTRIES).collect()
+        all.into_iter().take(SCRIPT_SLOTS).collect()
     })
 }
 
@@ -296,7 +297,21 @@ pub fn scripts() -> &'static [::rules::builtin::Script] {
 /// why it has none (named in the log at each load).
 pub fn listed() -> &'static [Result<Listed, String>] {
     static LISTED: OnceLock<Vec<Result<Listed, String>>> = OnceLock::new();
-    LISTED.get_or_init(|| scripts().iter().map(|b| Listed::of(&b.source)).collect())
+    LISTED.get_or_init(|| {
+        let waves = ::firefight::builtin::variants().iter().map(|wave| {
+            let def = &wave.def;
+            let record = GameVariant::firefight(&def.name, def.teams, wave.prefix)
+                .map_err(|e| e.to_string())?;
+            Ok(Listed {
+                about: format!("Fight the {} wave set.", def.name),
+                name: def.name.clone(),
+                list_type: goof_type(record.game_type()).unwrap(),
+                game_type: Type::Firefight,
+                record,
+            })
+        });
+        scripts().iter().map(|b| Listed::of(&b.source)).chain(waves).collect()
+    })
 }
 
 /// The listed script named `name` (its `header.name`).
@@ -418,7 +433,7 @@ pub const DESCRIPTION_BASE: u32 = 40;
 /// is one of ours.
 pub fn description_for(n: u32) -> Option<u32> {
     let i = n.checked_sub(DESCRIPTION_BASE)? as usize;
-    (i < scripts().len()).then(|| description_id(i))
+    (i < listed().len()).then(|| description_id(i))
 }
 
 /// What `0x19fd00` returns instead of the original, given its return
@@ -527,7 +542,10 @@ pub fn last_offered() -> Option<HashMap<u32, Vec<i32>>> {
 pub fn entries(offered: &HashMap<u32, Vec<i32>>) -> (Vec<NewEntry>, Vec<String>) {
     let mut out = Vec::new();
     let mut lines = Vec::new();
-    for (i, (l, b)) in listed().iter().zip(scripts()).enumerate() {
+    for (i, l) in listed().iter().enumerate() {
+        let name = l.as_ref().map(|l| l.name.as_str()).unwrap_or_else(|_| {
+            scripts().get(i).map_or("Firefight", |b| b.name.as_str())
+        });
         let entry = l.as_ref().map_err(String::clone).and_then(|l| {
             Ok(NewEntry {
                 name_id: name_id(i),
@@ -538,7 +556,7 @@ pub fn entries(offered: &HashMap<u32, Vec<i32>>) -> (Vec<NewEntry>, Vec<String>)
         });
         match entry {
             Ok(e) => out.push(e),
-            Err(why) => lines.push(format!("community variants: {} left out: {why}", b.name)),
+            Err(why) => lines.push(format!("community variants: {name} left out: {why}")),
         }
     }
     (out, lines)

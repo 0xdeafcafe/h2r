@@ -40,6 +40,16 @@ fn only_active_local_offline_multiplayer_is_admitted() {
     }
     guest.put_u32(squad + crate::variant_ext::SESSION_NETWORK_CLASS, 0);
     assert!(admitted(&guest));
+    crate::lobby_start::set_mode(crate::lobby_start::Mode::Forge);
+    guest.put_u32(sim + 8, 4)
+        .put_u32(squad + crate::variant_ext::SESSION_NETWORK_CLASS, 2)
+        .put_u32(squad + bots::phantom::session::at::PEER_COUNT, 1)
+        .put_u32(squad + bots::phantom::session::at::LOCAL_PEER, 0);
+    assert!(admitted(&guest), "solo Live Forge host");
+    guest.put_u32(sim + 8, 5);
+    assert!(!admitted(&guest), "a distributed client");
+    crate::lobby_start::clear();
+    guest.put_u32(sim + 8, 1);
     guest.put_u32(lobby::SESSION_TYPE, 8);
     assert!(!admitted(&guest));
 }

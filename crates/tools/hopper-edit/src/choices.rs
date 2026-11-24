@@ -16,7 +16,9 @@ use std::path::{Path, PathBuf};
 use crate::model;
 use variants::record::{self, Problem};
 use variants::save::SaveStore;
-use variants::{GameType, GameVariant, Schema, SettingId, portable};
+use variants::{GameVariant, Schema, portable};
+#[cfg(test)]
+use variants::SettingId;
 
 /// Where a choice comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,30 +96,18 @@ fn strip_icon(name: &str) -> String {
 pub fn firefight_record(def: &firefight::Def) -> Result<GameVariant, String> {
     let why = |e: &dyn std::fmt::Display| format!("Firefight set {:?}: {e}", def.name);
     let id = def.id().map_err(|e| why(&e))?;
-    let stock = GameVariant::stock(GameType::Slayer).expect("Slayer has a stock record");
-    let mut bytes = stock.to_bytes();
-    let flags = record::FLAGS_AT;
-    bytes[flags] = (bytes[flags] & !1) | u8::from(def.teams == 2);
-    let mut v = GameVariant::from_bytes(&bytes).map_err(|e| why(&e))?;
-    v.set_name(&def.name).map_err(|e| why(&e))?;
-    for (setting, value) in [(SCORE_TO_WIN, 0), (TIME_LIMIT, 0), (LIVES, 1)] {
-        v.set(setting, value).map_err(|e| why(&e))?;
-    }
-    let mut e = v.ext();
-    e.script = variants::ext::Script {
-        mode: variants::ext::Mode::Firefight,
-        prefix: id.0[..8].try_into().expect("8 bytes"),
-        options: 0,
-    };
-    v.set_ext(&e).map_err(|e| why(&e))?;
-    Ok(v)
+    GameVariant::firefight(&def.name, def.teams, id.0[..8].try_into().expect("8 bytes"))
+        .map_err(|e| why(&e))
 }
 
 /// The record's settings [`firefight_record`] writes
 /// (`variants::record::field`): score to win (`+0x50`), the time limit
 /// (`+0x54`) and lives (`+0x7c`).
+#[cfg(test)]
 const SCORE_TO_WIN: SettingId = SettingId(1);
+#[cfg(test)]
 const TIME_LIMIT: SettingId = SettingId(10);
+#[cfg(test)]
 const LIVES: SettingId = SettingId(16);
 
 /// Everything the picker offers.

@@ -24,7 +24,9 @@ use std::sync::Mutex;
 
 use agent::sim::calls;
 
-use crate::map_select::{Catalogue, Category, Map};
+use crate::map_select::{Catalogue, Map};
+#[cfg(test)]
+use crate::map_select::Category;
 
 /// A kit package's name in the catalogue: `firefight-kit`'s package name
 /// for its regular mode (`Firefight – <map>`, with an en dash).
@@ -35,9 +37,15 @@ pub fn is_kit_map(map: &Map) -> bool {
     map.name.starts_with(KIT_NAME_PREFIX)
 }
 
-/// The original maps Forge opens on: the disc's own, in the game's order.
+/// Kit packages on which a variant's director has a wave set.
+pub fn supports_wave(map: &Map, prefix: [u8; 8]) -> bool {
+    is_kit_map(map) && ::firefight::builtin::variant(prefix).is_some_and(|wave|
+        wave.map.is_none_or(|base| map.short_name().eq_ignore_ascii_case(base)))
+}
+
+/// The installed multiplayer maps in catalogue order.
 pub fn forge_maps(catalogue: &Catalogue) -> Vec<Map> {
-    catalogue.maps(Category::Halo2).to_vec()
+    catalogue.all().cloned().collect()
 }
 
 /// The installed maps that carry the Firefight kit.
@@ -60,13 +68,21 @@ impl KitMaps {
     /// For the lobby on map `map` (its list id), with `catalogue` the map
     /// list.
     pub fn of(catalogue: Option<&Catalogue>, map: Option<u32>) -> KitMaps {
-        let Some(c) = catalogue else {
-            return KitMaps::default();
-        };
-        KitMaps {
-            lobby: map.is_some_and(|id| c.all().any(|m| m.id == id && is_kit_map(m))),
-            installed: c.all().any(is_kit_map),
+        Self::for_wave(catalogue, map, None)
+    }
+
+    pub fn for_wave(catalogue: Option<&Catalogue>, map: Option<u32>, wave: Option<[u8; 8]>) -> Self {
+        let mut result = Self::default();
+        if let Some(catalogue) = catalogue {
+            for item in catalogue.all().filter(|m| wave.map_or_else(|| is_kit_map(m), |p| supports_wave(m, p))) {
+                result.installed = true;
+                if Some(item.id) == map {
+                    result.lobby = true;
+                    break;
+                }
+            }
         }
+        result
     }
 
     /// For the lobby as it stands: the map list read so far
@@ -366,8 +382,8 @@ mod tests {
         let forge: Vec<_> = forge_maps(&cat).into_iter().map(|m| m.id).collect();
         assert!(forge.contains(&10) && forge.contains(&11));
         assert!(
-            !forge.contains(&12) && !forge.contains(&13),
-            "a package is not an original"
+            forge.contains(&12) && forge.contains(&13),
+            "installed packages are selectable"
         );
         let kit: Vec<_> = kit_maps(&cat).into_iter().map(|m| m.id).collect();
         assert_eq!(kit, [12]);

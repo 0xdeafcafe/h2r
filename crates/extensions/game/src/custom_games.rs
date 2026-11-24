@@ -1,5 +1,5 @@
 //! Custom games over Live (docs/live/live-custom-games.md): the Xbox Live
-//! menu's rows (Custom Games, Forge and Firefight lobbies, a "Custom Game
+//! menu's rows (Custom Games and Forge lobbies, a "Custom Game
 //! Browser" row that opens the retail System Link browser in its dormant
 //! Live mode, a Mods row that opens the mod repository's Mods screen,
 //! `crate::mods_screen`, or without it a dialog that explains how to
@@ -28,8 +28,7 @@
 //! show the rows in this order ([`Menu::layout`]): rows 0 and 1 as retail,
 //! row 2 Clankermatch (OptiMatch's press with `crate::clankermatch::active`
 //! set, docs/game/bots.md §8.3), then Co-op Campaign when enabled, Custom
-//! Games, Forge, Firefight, the browser and Mods. Custom Games, Forge and
-//! Firefight each run retail's Custom Game press (a Live squad session and
+//! Games, Forge, the browser and Mods. Custom Games and Forge each run retail's Custom Game press (a Live squad session and
 //! the custom lobby) and ask for their mode ([`Row::mode`]), which the
 //! lobby switches to once it is up (`crate::lobby_tabs::request`,
 //! docs/game/party-lobby.md). The browser's row opens the Live browser with
@@ -52,7 +51,7 @@
 //! (`0x24bb60`) links our additional item widgets after the four. The
 //! list lays the widgets out in order (`0x24bc12`). The tag's
 //! list shows at most seven items ([`VISIBLE_ITEMS`]); a menu of more rows
-//! (nine with every row on) scrolls, with retail's own scroll arrows.
+//! (eight with every row on) scrolls, with retail's own scroll arrows.
 //! [`Menu::extend_tag`] gives the added rows their panes.
 //!
 //! **Privacy.** The party privacy screen (screen `0x19`, list "squad privacy
@@ -84,18 +83,16 @@ pub const LIST_NAME: u32 = 0x0045_8c80;
 pub const VANILLA_ROWS: u32 = 4;
 /// The rows of the whole menu ([`Menu::ALL`], every row on), in order:
 /// Quickmatch and OptiMatch as retail, Clankermatch (docs/game/bots.md
-/// §8.3), Co-op Campaign (docs/live/live-coop.md), Custom Games, Forge,
-/// Firefight, our Custom Game Browser, and Mods (retail's Content
+/// §8.3), Co-op Campaign (docs/live/live-coop.md), Custom Games, Forge, our Custom Game Browser, and Mods (retail's Content
 /// Download, its row 3). A row that is off (the co-op row with
-/// `H2_NO_COOP_ROW=1`, Forge or Firefight with their feature off) is left
+/// `H2_NO_COOP_ROW=1`, Forge with its feature off) is left
 /// out and the rows under it close up ([`Menu::layout`]).
 pub const CLANKERMATCH_ROW: i16 = 2;
 pub const COOP_ROW: i16 = 3;
 pub const CUSTOM_GAMES_ROW: i16 = 4;
 pub const FORGE_ROW: i16 = 5;
-pub const FIREFIGHT_ROW: i16 = 6;
-pub const BROWSER_ROW: i16 = 7;
-pub const MODS_ROW: i16 = 8;
+pub const BROWSER_ROW: i16 = 6;
+pub const MODS_ROW: i16 = 7;
 const RETAIL_DOWNLOAD_ROW: i16 = 3;
 /// The Quickmatch row, using the pressing player’s saved selection.
 pub const RETAIL_QUICKMATCH_ROW: i16 = 0;
@@ -105,7 +102,7 @@ pub const RETAIL_QUICKMATCH_ROW: i16 = 0;
 pub const RETAIL_OPTIMATCH_ROW: i16 = 1;
 /// Retail row 2, Custom Game (`0x231001`: `0x199e2e(1)`, a Live squad
 /// session `0x59890(2, 0, 0)`, then the lobby mode `0x199a03(2)`). The
-/// Custom Games, Forge and Firefight rows run it and ask for their mode;
+/// Custom Games and Forge rows run it and ask for their mode;
 /// the Co-op Campaign row runs it with the mode turned to co-op.
 pub const RETAIL_CUSTOM_GAME_ROW: i16 = 2;
 /// Its row text (stdcall, `ret 8`) and row chosen (`ret 8`) functions.
@@ -178,7 +175,7 @@ pub const SWITCH_CLANKERMATCH_TEXT: &str = "Switch To: Clankermatch";
 /// The mode rows' and the Mods row's texts: their own family, since "live
 /// menu rows" is full.
 const MODE_IDS: crate::ui_kit::ids::Family = crate::ui_kit::ids::family("live menu modes");
-/// The Custom Games, Forge and Firefight rows: the lobby's own names for
+/// The Custom Games and Forge rows: the lobby's own names for
 /// its modes (`crate::lobby_tabs::Tab::title_case`), each with a line of
 /// help on its pane.
 pub const CUSTOM_GAMES_TEXT_ID: u32 = MODE_IDS.id(0);
@@ -190,10 +187,6 @@ pub const FORGE_TEXT_ID: u32 = MODE_IDS.id(2);
 pub const FORGE_TEXT: &str = Tab::Forge.title_case();
 pub const FORGE_HELP_ID: u32 = MODE_IDS.id(3);
 pub const FORGE_HELP: &str = "Edit a map with your party in Forge, then play on it.";
-pub const FIREFIGHT_TEXT_ID: u32 = MODE_IDS.id(4);
-pub const FIREFIGHT_TEXT: &str = Tab::Firefight.title_case();
-pub const FIREFIGHT_HELP_ID: u32 = MODE_IDS.id(5);
-pub const FIREFIGHT_HELP: &str = "Team up with your party against waves of enemies.";
 /// The Mods row's label when the mod repository has none of its own
 /// (`crate::mods_screen`), and its help when it opens the Map Pack dialog.
 pub const MODS_TEXT_ID: u32 = MODE_IDS.id(6);
@@ -293,15 +286,13 @@ pub fn set_mods_row(on: bool) {
 pub struct Menu {
     pub coop: bool,
     pub forge: bool,
-    pub firefight: bool,
 }
 
 impl Menu {
-    /// Every row on: the nine-row menu.
+    /// Every row on: the eight-row menu.
     pub const ALL: Menu = Menu {
         coop: true,
         forge: true,
-        firefight: true,
     };
 
     /// This run's menu: the co-op row's switch and the lobby's modes
@@ -311,7 +302,6 @@ impl Menu {
         Menu {
             coop: coop_row_enabled(),
             forge: modes.forge,
-            firefight: modes.firefight,
         }
     }
 
@@ -325,7 +315,6 @@ impl Menu {
             (Row::Coop, self.coop),
             (Row::CustomGames, true),
             (Row::Forge, self.forge),
-            (Row::Firefight, self.firefight),
             (Row::Browser, true),
             (Row::Mods, true),
         ]
@@ -408,8 +397,6 @@ pub enum Row {
     CustomGames,
     /// Retail's Custom Game press, the lobby switched to FORGE.
     Forge,
-    /// Retail's Custom Game press, the lobby switched to FIREFIGHT.
-    Firefight,
     /// Ours: opens the Live browser.
     Browser,
     /// Retail's Content Download, renamed and moved down: opens the Mods
@@ -425,7 +412,7 @@ impl Row {
     pub fn retail_press(self) -> Option<i16> {
         match self {
             Row::Clankermatch => Some(RETAIL_OPTIMATCH_ROW),
-            Row::CustomGames | Row::Forge | Row::Firefight => Some(RETAIL_CUSTOM_GAME_ROW),
+            Row::CustomGames | Row::Forge => Some(RETAIL_CUSTOM_GAME_ROW),
             _ => None,
         }
     }
@@ -437,7 +424,6 @@ impl Row {
         match self {
             Row::CustomGames => Some(Tab::CustomGames),
             Row::Forge => Some(Tab::Forge),
-            Row::Firefight => Some(Tab::Firefight),
             _ => None,
         }
     }
@@ -450,7 +436,6 @@ impl Row {
             Row::Coop => Some(COOP_PANE),
             Row::CustomGames => Some(CUSTOM_GAMES_PANE),
             Row::Forge => Some(FORGE_PANE),
-            Row::Firefight => Some(FIREFIGHT_PANE),
             Row::Retail | Row::Mods => None,
         }
     }
@@ -495,7 +480,6 @@ fn text_id(kind: Row, mods: Option<u32>) -> Option<u32> {
         Row::Coop => Some(COOP_TEXT_ID),
         Row::CustomGames => Some(CUSTOM_GAMES_TEXT_ID),
         Row::Forge => Some(FORGE_TEXT_ID),
-        Row::Firefight => Some(FIREFIGHT_TEXT_ID),
         Row::Browser => Some(TEXT_ID),
         Row::Mods => Some(mods.unwrap_or(MODS_TEXT_ID)),
         Row::Retail => None,
@@ -535,10 +519,9 @@ pub const BROWSER_PANE: i16 = 5;
 pub const COOP_PANE: i16 = 6;
 pub const CUSTOM_GAMES_PANE: i16 = 7;
 pub const FORGE_PANE: i16 = 8;
-pub const FIREFIGHT_PANE: i16 = 9;
 /// The extended tag's panes: the retail four and ours, every one built
 /// whichever rows are on, so a row's pane does not move.
-pub const ALL_PANES: u32 = 10;
+pub const ALL_PANES: u32 = 9;
 
 // ---- back from the Live browser ----
 //
@@ -697,8 +680,6 @@ pub fn strings() -> Vec<(u32, &'static str)> {
         (CUSTOM_GAMES_HELP_ID, CUSTOM_GAMES_HELP),
         (FORGE_TEXT_ID, FORGE_TEXT),
         (FORGE_HELP_ID, FORGE_HELP),
-        (FIREFIGHT_TEXT_ID, FIREFIGHT_TEXT),
-        (FIREFIGHT_HELP_ID, FIREFIGHT_HELP),
         (MODS_TEXT_ID, MODS_TEXT),
         (MAPPACK_HELP_ID, MAPPACK_HELP),
     ]
@@ -905,7 +886,6 @@ fn extend_tag_with<M: Gm>(
             COOP_PANE => COOP_HELP_ID,
             CUSTOM_GAMES_PANE => CUSTOM_GAMES_HELP_ID,
             FORGE_PANE => FORGE_HELP_ID,
-            FIREFIGHT_PANE => FIREFIGHT_HELP_ID,
             RETAIL_DOWNLOAD_ROW if mods => MODS_HELP_ID,
             RETAIL_DOWNLOAD_ROW => MAPPACK_HELP_ID,
             _ => HELP_ID,
@@ -1109,22 +1089,20 @@ mod tests {
             Coop,
             CustomGames,
             Forge,
-            Firefight,
             Browser,
             Mods,
         ];
         assert_eq!(Menu::ALL.layout(), all);
-        assert_eq!(Menu::ALL.rows(), 9);
+        assert_eq!(Menu::ALL.rows(), 8);
         let no_coop: Vec<Row> = all.into_iter().filter(|&r| r != Coop).collect();
         assert_eq!(regular_menu(false).layout(), no_coop);
-        assert_eq!(regular_menu(false).rows(), 8);
+        assert_eq!(regular_menu(false).rows(), 7);
         // The row constants are the whole menu's.
         for (row, kind) in [
             (CLANKERMATCH_ROW, Clankermatch),
             (COOP_ROW, Coop),
             (CUSTOM_GAMES_ROW, CustomGames),
             (FORGE_ROW, Forge),
-            (FIREFIGHT_ROW, Firefight),
             (BROWSER_ROW, Browser),
             (MODS_ROW, Mods),
         ] {
@@ -1148,17 +1126,16 @@ mod tests {
             assert_eq!(menu.row_kind(rows), Retail, "past the last row");
             assert_eq!(menu.row_kind(-1), Retail);
         }
-        // Forge or Firefight off: its row is left out.
+        // Forge off: its row is left out.
         let no_forge = Menu {
             forge: false,
             ..Menu::ALL
         };
-        assert_eq!(no_forge.rows(), 8);
+        assert_eq!(no_forge.rows(), 7);
         assert_eq!(no_forge.row_of(Forge), None);
-        assert_eq!(no_forge.row_kind(FORGE_ROW), Firefight);
+        assert_eq!(no_forge.row_kind(FORGE_ROW), Browser);
         let neither = Menu {
             forge: false,
-            firefight: false,
             coop: false,
         };
         assert_eq!(neither.rows(), 6);
@@ -1175,7 +1152,6 @@ mod tests {
             (COOP_ROW, COOP_TEXT_ID, COOP_TEXT),
             (CUSTOM_GAMES_ROW, CUSTOM_GAMES_TEXT_ID, "Custom Games"),
             (FORGE_ROW, FORGE_TEXT_ID, "Forge"),
-            (FIREFIGHT_ROW, FIREFIGHT_TEXT_ID, "Firefight"),
             (BROWSER_ROW, TEXT_ID, "Custom Game Browser"),
             (MODS_ROW, MODS_TEXT_ID, "Mods"),
         ] {
@@ -1187,7 +1163,7 @@ mod tests {
         assert!(CLANKERMATCH_TEXT.len() < TEXT.len());
     }
 
-    /// Custom Games, Forge and Firefight each run retail's Custom Game
+    /// Custom Games and Forge each run retail's Custom Game
     /// press and ask for their own mode; no other row asks for one.
     #[test]
     fn each_mode_row_lands_on_its_mode() {
@@ -1195,7 +1171,6 @@ mod tests {
             for (kind, mode) in [
                 (Row::CustomGames, Tab::CustomGames),
                 (Row::Forge, Tab::Forge),
-                (Row::Firefight, Tab::Firefight),
             ] {
                 let row = menu.row_of(kind).unwrap();
                 assert_eq!(menu.row_kind(row).mode(), Some(mode), "{kind:?}");
@@ -1207,7 +1182,7 @@ mod tests {
             }
             for row in 0..menu.rows() as i16 {
                 let kind = menu.row_kind(row);
-                if !matches!(kind, Row::CustomGames | Row::Forge | Row::Firefight) {
+                if !matches!(kind, Row::CustomGames | Row::Forge) {
                     assert_eq!(kind.mode(), None, "row {row}");
                 }
             }
@@ -1245,7 +1220,6 @@ mod tests {
             (COOP_ROW, COOP_PANE),
             (CUSTOM_GAMES_ROW, CUSTOM_GAMES_PANE),
             (FORGE_ROW, FORGE_PANE),
-            (FIREFIGHT_ROW, FIREFIGHT_PANE),
             (BROWSER_ROW, BROWSER_PANE),
             (MODS_ROW, 3),
         ] {
@@ -1263,7 +1237,7 @@ mod tests {
         // Custom Games shows retail's Custom Game pane, Mods its own.
         assert_eq!(menu.pane_of(CUSTOM_GAMES_ROW, VANILLA_PANES), Pane::Show(2));
         assert_eq!(menu.pane_of(MODS_ROW, VANILLA_PANES), Pane::Show(3));
-        for row in [CLANKERMATCH_ROW, COOP_ROW, FORGE_ROW, FIREFIGHT_ROW, BROWSER_ROW] {
+        for row in [CLANKERMATCH_ROW, COOP_ROW, FORGE_ROW, BROWSER_ROW] {
             assert_eq!(menu.pane_of(row, VANILLA_PANES), Pane::Keep, "row {row}");
         }
     }
@@ -1473,7 +1447,6 @@ mod tests {
             (COOP_PANE, COOP_HELP_ID),
             (CUSTOM_GAMES_PANE, CUSTOM_GAMES_HELP_ID),
             (FORGE_PANE, FORGE_HELP_ID),
-            (FIREFIGHT_PANE, FIREFIGHT_HELP_ID),
         ] {
             assert_eq!(m.u32(text(&m, p as u32, 2) + 0x24), Some(help), "pane {p}");
         }
@@ -1522,13 +1495,13 @@ mod tests {
 
     #[test]
     fn the_live_menu_shows_seven_rows_and_scrolls_the_rest() {
-        for (menu, rows) in [(Menu::ALL, 9), (regular_menu(false), 8)] {
+        for (menu, rows) in [(Menu::ALL, 8), (regular_menu(false), 7)] {
             assert_eq!(menu.count(LIST_NAME, VANILLA_ROWS), rows);
             assert_eq!(menu.visible(), VISIBLE_ITEMS, "{rows} rows");
             // Three item widgets of ours after the retail four: fewer than
             // the rows, so the list scrolls.
             assert_eq!(menu.visible() - VANILLA_ITEMS, MAX_EXTRA_ITEMS);
-            assert!(menu.rows() > menu.visible());
+            assert_eq!(menu.rows() > menu.visible(), menu.coop);
 
             let mut m = Fake::default();
             let wgit = live_tag(&mut m, 4);
@@ -1742,8 +1715,8 @@ mod tests {
 
     #[test]
     fn only_the_live_menu_grows_by_our_rows() {
-        assert_eq!(regular_menu(false).count(LIST_NAME, 4), 8);
-        assert_eq!(regular_menu(true).count(LIST_NAME, 4), 9);
+        assert_eq!(regular_menu(false).count(LIST_NAME, 4), 7);
+        assert_eq!(regular_menu(true).count(LIST_NAME, 4), 8);
         assert_eq!(regular_menu(false).count(LIST_NAME, 8), 8, "not twice");
         assert_eq!(regular_menu(false).count(LIST_NAME, 3), 3, "not another size");
         assert_eq!(regular_menu(false).count(crate::speaker_row::LIST_NAME, 4), 4);
@@ -1840,7 +1813,7 @@ mod tests {
         // The mode rows (their retail press stored 2) and the browser are
         // past what it restores: stored, and the build hook puts the
         // cursor there.
-        for row in [CUSTOM_GAMES_ROW, FORGE_ROW, FIREFIGHT_ROW, BROWSER_ROW] {
+        for row in [CUSTOM_GAMES_ROW, FORGE_ROW, BROWSER_ROW] {
             assert!(remember_row(&mut m, row));
             assert_eq!(m.u32(LAST_ROW), Some(row as u32));
             assert_eq!(cursor_row(&m), Some(row as u32));

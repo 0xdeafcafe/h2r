@@ -221,10 +221,26 @@ pub fn move_onto_script_index(
     let at = options.wrapping_add(crate::variant_ext::OPTIONS_VARIANT);
     let mut raw = [0u8; RECORD_SIZE];
     m.read(at, &mut raw)?;
-    let mapped = match variants::GameVariant::from_bytes(&raw) {
-        Ok(v) => variants::portable::script_record_of_retail(&v).map_err(|e| e.to_string()),
-        Err(_) => Ok(None),
-    };
+    // The Forge row opens Custom Game's lobby with its plain Slayer
+    // template. Leave the lobby record intact for a return to Custom
+    // Games, but give an editing session no Slayer scorer or round clock.
+    let source = variants::GameVariant::from_bytes(&raw).expect("complete variant record");
+    if crate::lobby_start::mode() == crate::lobby_start::Mode::Forge
+        && source.game_type() == variants::GameType::Slayer
+        && source.ext().script.mode == variants::ext::Mode::None
+    {
+        raw[record::ENGINE_AT..record::ENGINE_AT + 4]
+            .copy_from_slice(&record::SCRIPT_INDEX.to_le_bytes());
+        raw[record::TYPE_AREA].fill(0);
+        let mut editor = variants::GameVariant::from_bytes(&raw).expect("complete variant record");
+        editor.set_name("Forge").expect("short name");
+        for id in [1, 10] {
+            editor.set(variants::SettingId(id), 0).expect("unlimited score and time");
+        }
+        m.write(at, editor.bytes())?;
+        return Ok(Swap::Moved);
+    }
+    let mapped = variants::portable::script_record_of_retail(&source).map_err(|e| e.to_string());
     let mapped = match mapped {
         Ok(None) => builtin_record(&raw),
         other => other,

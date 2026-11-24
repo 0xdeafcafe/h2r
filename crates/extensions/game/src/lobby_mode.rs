@@ -541,10 +541,18 @@ pub fn start_refusal(m: &dyn GuestMemory) -> Option<Reason> {
     if !state.lobby {
         return None;
     }
-    match state.mode {
+    let variant = crate::pause_change_map::lobby_variant(m);
+    let mode = crate::map_select::variant_mode(state.mode, variant.as_ref());
+    match mode {
         Mode::Multiplayer => None,
         Mode::Forge => refusal(state.mode, remote_members(m), KitMaps::default()),
-        Mode::Firefight => refusal(state.mode, Some(0), KitMaps::now(m)),
+        Mode::Firefight => {
+            let catalogue = crate::map_select::current();
+            let id = m.u32(crate::h1_options_row::LOBBY_MAP).ok();
+            let wave = variant.as_ref().map(|v| v.ext().script)
+                .filter(|s| s.mode == variants::ext::Mode::Firefight).map(|s| s.prefix);
+            refusal(mode, Some(0), KitMaps::for_wave(catalogue.as_deref(), id, wave))
+        }
     }
 }
 
@@ -566,7 +574,10 @@ pub fn variant_hold(m: &dyn GuestMemory) -> Option<String> {
     crate::map_variant::follow_mode(
         lobby_start::mode() == Mode::Forge,
         map,
-        map.and_then(crate::map_select::short_name_of).as_deref(),
+        // The kit builder materialises disc bases by basename. An offer
+        // may share that basename; edit the offer in its own cache slot.
+        map.filter(|&id| crate::map_select::selected_category(id) == Some(crate::map_select::Category::Halo2))
+            .and_then(crate::map_select::short_name_of).as_deref(),
         || crate::skulls::profile_or_default(&crate::layout_glue::ReadGm(m), 0),
     );
     crate::map_variant::hold()

@@ -188,15 +188,59 @@ pub fn check(key: &Key, sources: &dyn Sources) -> Verdict {
         }
     };
     let teams: &[u8] = if key.team_play { TEAMS } else { &[] };
-    let problems: Vec<String> = ::rules::labels::check(&ir, &census, teams)
-        .into_iter()
-        .map(|p| p.text)
-        .collect();
+    let problems = map_problems(&ir, &census, teams, is_siege(prefix));
     if problems.is_empty() {
         Verdict::Clear
     } else {
         Verdict::Blocked(problems)
     }
+}
+
+// Siege's script accepts a site OR a final stand. Its individual labels
+// are optional because a map does not need both. Without either, its
+// round_start ends the round immediately.
+fn is_siege(prefix: [u8; 8]) -> bool {
+    crate::community_variants::listed_named("Siege").is_some_and(|l| l.ext().script.prefix == prefix)
+}
+
+fn map_problems(ir: &::rules::Ir, census: &Census, teams: &[u8], siege: bool) -> Vec<String> {
+    let mut problems: Vec<_> = ::rules::labels::check(ir, census, teams)
+        .into_iter().map(|problem| problem.text).collect();
+    if siege {
+        let zones = |label: &str, team: Option<u8>| {
+            census.labels.get(label).is_some_and(|members| members.iter().any(|m|
+                m.class.satisfies(::rules::ir::LabelKind::Zone) && team.is_none_or(|t| m.team == Some(t))
+            ))
+        };
+        if !zones("siege_site", None) && !zones("territory", None)
+            && !zones("siege_goal", None) && !zones("ctf_flag_spawn", Some(1))
+        {
+            problems.push("Siege needs a territory, a Siege site or a defending flag stand.".into());
+        }
+    }
+    problems
+}
+
+/// Maps offered for an explicit script use the same label and team requirements
+/// as Start Game. Read the blob once when opening the picker.
+pub fn map_filter(record: &variants::GameVariant) -> Option<impl Fn(u32) -> bool> {
+    map_filter_using(record, SOURCES.get()?.as_ref())
+}
+
+pub(crate) fn map_filter_using<'a>(
+    record: &variants::GameVariant,
+    sources: &'a dyn Sources,
+) -> Option<impl Fn(u32) -> bool + use<'a>> {
+    let prefix = script_of(record.ext_block(), record.game_type().engine())?;
+    let (ir, _) = ::rules::verify::load(&sources.blob(prefix)?).ok()?;
+    if ir.labels.is_empty() && ir.tags.is_empty() {
+        return None;
+    }
+    let teams = if record.team_play() { TEAMS } else { &[] };
+    let siege = is_siege(prefix);
+    Some(move |id| sources.census(id, None).is_ok_and(|census|
+        map_problems(&ir, &census, teams, siege).is_empty()
+    ))
 }
 
 /// The script prefix a record's block names: a `Rules` block's prefix, or
@@ -366,11 +410,6 @@ impl Sources for InGame {
         let path = crate::map_select::selected_path(map)
             .ok_or_else(|| format!("map {map} is not in the catalogue"))?;
         let vfs = self.vfs.as_ref().ok_or("no map files are mounted")?;
-        let source = vfs
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .file_source(&path)
-            .ok_or_else(|| format!("{path} is not served"))?;
         let doc = forge_map
             .map(|file| {
                 let base = crate::map_select::short_name_of(map)
@@ -380,19 +419,11 @@ impl Sources for InGame {
                     .map_err(|e| e.to_string())
             })
             .transpose()?;
-        match source {
-            vfs::FileSource::Memory(bytes) => {
-                let mut m = map::Map::from_reader(std::io::Cursor::new(&bytes[..]))
-                    .map_err(|e| format!("{path}: {e}"))?;
-                Census::of_file(&mut m, doc.as_ref()).map_err(|e| format!("{path}: {e}"))
-            }
-            vfs::FileSource::Host(f) => {
-                let file = std::fs::File::open(&f.path).map_err(|e| format!("{path}: {e}"))?;
-                let mut m = map::Map::from_region(file, f.offset, f.len)
-                    .map_err(|e| format!("{path}: {e}"))?;
-                Census::of_file(&mut m, doc.as_ref()).map_err(|e| format!("{path}: {e}"))
-            }
-        }
+        let file = crate::bots_nav_auto::VfsFile::open(Arc::clone(vfs), &path)
+            .map_err(|e| format!("{path}: {e}"))?;
+        let mut map = map::Map::from_reader(std::io::BufReader::new(file))
+            .map_err(|e| format!("{path}: {e}"))?;
+        Census::of_file(&mut map, doc.as_ref()).map_err(|e| format!("{path}: {e}"))
     }
 
     fn blob(&self, prefix: [u8; 8]) -> Option<Vec<u8>> {

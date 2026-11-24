@@ -991,6 +991,23 @@ mod gate {
     }
 
     #[test]
+    fn siege_picker_and_start_check_the_same_selected_record_and_objectives() {
+        let siege = crate::community_variants::listed_named("Siege").unwrap();
+        let blob = crate::rules::feature::local_blob(siege.ext().script.prefix).unwrap();
+        let (ir, _) = ::rules::verify::load(&blob).unwrap();
+        let mut guest = lobby(MAP, siege.ext().script.prefix, true);
+        guest.put(VARIANT, siege.record.bytes());
+        let input = g::read(&guest, VARIANT).unwrap();
+
+        for (census, supported) in [(Census::default(), false), (territory_map(), true)] {
+            let sources = Fake::new(census, &ir);
+            let offers = g::map_filter_using(&siege.record, &sources).unwrap();
+            assert_eq!(offers(MAP), supported);
+            assert_eq!(g::check(&input.key, &sources) == Verdict::Clear, supported);
+        }
+    }
+
+    #[test]
     fn a_changed_map_forge_map_or_variant_runs_the_check_once() {
         fresh(Some(Mode::Multiplayer));
         let ir = script();

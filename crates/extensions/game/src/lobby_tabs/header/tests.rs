@@ -159,12 +159,11 @@ fn a_member_reads_its_mode_from_the_lobby() {
         place: Place::SystemLink,
         leader: false,
         retail: RetailMode::Custom,
-        kit_map: true,
         clanker: None,
         facts: Facts::default(),
     };
     let s = shown(&reading, Present::ALL, Mode::Multiplayer);
-    assert_eq!(s.selected, Tab::Firefight, "a kit map in a custom lobby");
+    assert_eq!(s.selected, Tab::CustomGames);
     let leader = Reading {
         leader: true,
         ..reading
@@ -183,7 +182,6 @@ fn multiplayer_reports_whether_its_playlist_is_a_clanker_one() {
         place: Place::XboxLive,
         leader: true,
         retail: RetailMode::Matchmaking,
-        kit_map: false,
         clanker: Some(true),
         facts: Facts {
             playlists: true,
