@@ -211,6 +211,8 @@ dependencies = [
 name = "anim-edit"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_yaml_ng",
  "tags",
 ]
 
@@ -8871,6 +8873,7 @@ dependencies = [
 name = "workspace"
 version = "0.1.0"
 dependencies = [
+ "anim-edit",
  "audio",
  "content",
  "game",
