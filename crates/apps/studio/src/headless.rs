@@ -903,10 +903,34 @@ mod tests {
             h.frames(&mut app, 4).unwrap();
             assert_eq!(app.front_doc(), Some(doc));
             assert!(h.scene.find("##studio-bar>###doc-tab-").is_ok(), "the tab strip");
+            for label in ["Undo", "Links", "Open with"] {
+                assert!(h.scene.find(label).is_ok(), "{} missing {label}", app.doc_id(doc));
+            }
             check(&h, &app.doc_id(doc));
         }
         drop(turn);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn following_a_link_and_back_restores_the_document_and_selection() {
+        use crate::app::{Doc, NavAction, shell_tests, tag_tests};
+        let dir = shell_tests::Temp::new("header-back");
+        let mut app = shell_tests::app(&dir.0);
+        let weapon = tag_tests::weap_id();
+        let target = shell_tests::kit_id();
+        app.dispatch(Action::OpenDoc(Doc::Tag(weapon)));
+        app.dispatch(Action::Navigate(NavAction::Go {
+            tag: weapon, path: Some("parts[0].item".into()), element: None,
+        }));
+        let selection = app.nav_location();
+        let tag = app.tags.tag(target).unwrap();
+        let id = format!("tag:{}:{}", tags::defs::fourcc_text(tag.group), tag.name);
+        app.dispatch(Action::OpenAsset { asset: id, map: None });
+        assert_eq!(app.front_doc(), Some(Doc::Tag(target)));
+        app.dispatch(Action::Navigate(NavAction::Back));
+        assert_eq!(app.front_doc(), Some(Doc::Tag(weapon)));
+        assert_eq!(app.nav_location(), selection);
     }
 
     /// The tab strip's clicks (a double-click in the Tags tree, a tab, a

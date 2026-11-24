@@ -167,6 +167,9 @@ impl App {
                 }
                 self.tags.selected = destination.tag();
                 self.tags.seal();
+                if let Some(tag) = self.tags.selected {
+                    self.open_doc(super::Doc::Tag(tag));
+                }
             }
             return Ok(());
         }

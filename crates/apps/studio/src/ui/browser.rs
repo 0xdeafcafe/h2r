@@ -61,6 +61,8 @@ pub struct BrowserUi {
     selected: Option<String>,
     refresh: u32,
     cache: Option<(Key, Listing)>,
+    /// An explicit set from the document link menu.
+    linked: Option<Vec<String>>,
     /// The asset ids the last frame drew a row for, for scripts and tests.
     pub shown: Vec<String>,
 }
@@ -76,6 +78,7 @@ impl Default for BrowserUi {
             selected: None,
             refresh: 0,
             cache: None,
+            linked: None,
             shown: Vec::new(),
         }
     }
@@ -159,6 +162,38 @@ fn open(actions: &mut Vec<Action>, asset: &str, map: Option<String>) {
 }
 
 impl BrowserUi {
+    /// Show an asset's row in the Browser.
+    pub fn locate(&mut self, asset: &str) {
+        self.linked = None;
+        self.query.clear();
+        self.kind = None;
+        self.map = None;
+        self.package = None;
+        self.selected = Some(asset.to_owned());
+        match assets::AssetId::parse(asset) {
+            Ok(assets::AssetId::Tag(key)) => {
+                self.root = Root::Tags;
+                self.query = key.path;
+            }
+            Ok(assets::AssetId::Package(_)) => self.root = Root::Packages,
+            Ok(assets::AssetId::Item(package, _)) => {
+                self.root = Root::Packages;
+                self.package = Some(package);
+            }
+            Err(_) => self.selected = None,
+        }
+    }
+
+    /// Show exactly the targets of a link section, across Browser roots.
+    pub fn show_links(&mut self, rows: &[crate::app::links::Link]) {
+        let mut ids: Vec<String> = rows.iter().map(|row| row.asset.clone()).collect();
+        ids.sort();
+        ids.dedup();
+        self.linked = Some(ids);
+        self.query.clear();
+        self.selected = None;
+    }
+
     /// Show a package or one of its items, as a Problems row opens it.
     pub fn reveal(&mut self, asset: &str) {
         let package = asset
@@ -186,6 +221,7 @@ pub fn draw(ui: &Ui, app: &App, st: &mut BrowserUi, actions: &mut Vec<Action>) {
             .build()
         {
             st.root = root;
+            st.linked = None;
         }
     }
     ui.same_line();
@@ -196,6 +232,29 @@ pub fn draw(ui: &Ui, app: &App, st: &mut BrowserUi, actions: &mut Vec<Action>) {
         ui.tooltip_text("Read the tree and the packages again");
     }
 
+    if st.linked.is_some() {
+        ui.text("Linked assets");
+        ui.same_line();
+        if ui.small_button("Clear##browser-linked") { st.linked = None; }
+        if let Some(ids) = st.linked.clone() {
+            ui.set_next_item_width(-1.0);
+            ui.input_text("##browser-linked-search", &mut st.query).hint("Search linked assets").build();
+            let words = st.query.to_lowercase();
+            theme::panel_body(ui, "##browser-rows", || {
+                for id in ids.iter().filter(|id| words.split_whitespace().all(|w| id.to_lowercase().contains(w))) {
+                    st.shown.push(id.clone());
+                    if ui.selectable_config(format!("{id}##browser-link-{id}"))
+                        .selected(st.selected.as_deref() == Some(id.as_str())).build() {
+                        st.selected = Some(id.clone());
+                    }
+                    if ui.is_item_hovered() && ui.is_mouse_double_clicked(MouseButton::Left) {
+                        open(actions, id, None);
+                    }
+                }
+            });
+            return;
+        }
+    }
     let key = Key {
         root: root_id(st.root),
         package: st.package.clone(),
@@ -442,4 +501,26 @@ fn variant(ui: &Ui, app: &App, st: &mut BrowserUi, row: &Value, n: usize, action
         open(actions, asset, open_map_of(app, &maps));
     }
     ui.unindent();
+}
+
+#[cfg(test)]
+mod linked_tests {
+    use super::*;
+    use crate::app::links::Link;
+
+    #[test]
+    fn linked_assets_keep_all_roots_and_can_return_to_a_single_asset() {
+        let mut browser = BrowserUi::default();
+        let rows = [
+            Link { asset: "tag:weap:objects\\test".into(), role: "Objects", via: "test".into() },
+            Link { asset: "package:example".into(), role: "Package", via: "test".into() },
+            Link { asset: "tag:weap:objects\\test".into(), role: "Objects", via: "other".into() },
+        ];
+        browser.show_links(&rows);
+        assert_eq!(browser.linked.as_ref().unwrap().len(), 2);
+        assert!(browser.linked.as_ref().unwrap().contains(&"package:example".to_owned()));
+        browser.locate("tag:weap:objects\\test");
+        assert!(browser.linked.is_none());
+        assert_eq!(browser.query, "objects\\test");
+    }
 }
