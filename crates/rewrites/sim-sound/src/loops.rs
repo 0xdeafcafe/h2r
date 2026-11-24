@@ -23,21 +23,6 @@ impl TrackRing {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_lap_ends_at_the_original_salted_datum_or_an_empty_link() {
-        let ring = TrackRing::new(0xabcd0003);
-        assert_eq!(TrackRing::new(TrackRing::EMPTY).first(), None);
-        assert_eq!(ring.first(), Some(0xabcd0003));
-        assert_eq!(ring.following(0xabce0003), Some(0xabce0003));
-        assert_eq!(ring.following(TrackRing::EMPTY), None);
-        assert_eq!(ring.following(0xabcd0003), None);
-    }
-}
-
 /// Place the next detail impulse on the sound clock. The interval is sampled
 /// between the tag's bounds, in extended precision through the addition of
 /// the current clock. The caller uses the guest's integer conversion.
@@ -61,4 +46,41 @@ pub fn detail_deadline(
     fp::arith(fpu, op::ADD, 0, src::ST, 1);
     fp::arith(fpu, op::MUL, 0, src::F32, clock_scale.into());
     fp::arith(fpu, op::ADD, 0, src::I32, u64::from(now as u32));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_lap_ends_at_the_original_salted_datum_or_an_empty_link() {
+        let ring = TrackRing::new(0xabcd0003);
+        assert_eq!(TrackRing::new(TrackRing::EMPTY).first(), None);
+        assert_eq!(ring.first(), Some(0xabcd0003));
+        assert_eq!(ring.following(0xabce0003), Some(0xabce0003));
+        assert_eq!(ring.following(TrackRing::EMPTY), None);
+        assert_eq!(ring.following(0xabcd0003), None);
+    }
+
+    #[test]
+    fn detail_interval_keeps_the_lower_bound_under_the_deadline() {
+        use x87::abi as fp;
+        for (draw, expected) in [(0, -1.0f32), (8, 3.0), (16, 7.0)] {
+            let mut fpu = fp::X87Abi::default();
+            let original = 99.25f32.to_bits();
+            fp::ld_f32(&mut fpu, original);
+            let interval = [1.0f32.to_bits(), 5.0f32.to_bits()];
+            detail_deadline(
+                &mut fpu,
+                interval,
+                draw,
+                (1.0f32 / 16.0).to_bits(),
+                2.0f32.to_bits(),
+                -3,
+            );
+            assert_eq!(fp::st_f32(&fpu, 0).1.value, expected.to_bits());
+            assert_eq!(fp::st_f32(&fpu, 1).1.value, interval[0]);
+            assert_eq!(fp::st_f32(&fpu, 2).1.value, original);
+        }
+    }
 }
