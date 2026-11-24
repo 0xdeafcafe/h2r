@@ -76,9 +76,9 @@ impl Doc {
 }
 
 /// The tool an editor of the kind registry draws in. The field panel, the
-/// Modeling section, audition, the HUD and screen editors and the scripts
-/// view of a tag all show in the Tags tool until their own documents dock
-/// (the slices of docs/editor/studio-redesign.md).
+/// Modeling section, audition, the animation window, the HUD and screen
+/// editors and the scripts view of a tag all show in the Tags tool until
+/// their own documents dock (the slices of docs/editor/studio-redesign.md).
 pub fn tool_for(editor: Editor) -> ToolKind {
     match editor {
         Editor::Scenario => ToolKind::Scenario,
@@ -88,7 +88,8 @@ pub fn tool_for(editor: Editor) -> ToolKind {
         | Editor::Audition
         | Editor::Hud
         | Editor::UiScreens
-        | Editor::Scripts => ToolKind::Tags,
+        | Editor::Scripts
+        | Editor::Animation => ToolKind::Tags,
     }
 }
 

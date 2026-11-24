@@ -420,6 +420,12 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             std::fs::write(&map, super::anim::tests::anim_map(true)).unwrap();
             app.dispatch(Action::OpenSource(map));
         }
+        // The invented two-bone graph for the animation editor's read.
+        m::ANIM_READ => {
+            let map = t.path("timeline.map");
+            std::fs::write(&map, super::anim::read_tests::read_map()).unwrap();
+            app.dispatch(Action::OpenSource(map));
+        }
         n if n.starts_with("hud.") => {
             // The HUD fixture's map as the source (it has no scenario).
             let map = t.path("hudtest.map");

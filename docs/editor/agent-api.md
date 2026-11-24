@@ -603,7 +603,7 @@ Notes on some:
   `app::kinds::KINDS`). It returns `{kinds, default, groups, target}`:
   `kinds` has one row per kind with `label`, `groups`, `editor`
   (`field_panel`, `scenario`, `modeling`, `textures`, `audition`,
-  `hud`, `ui_screens`, `scripts`), `preview` (`none`, `viewport`,
+  `hud`, `ui_screens`, `scripts`, `animation`), `preview` (`none`, `viewport`,
   `model_render`, `thumbnails`, `waveform`, `tool`, `reports`),
   `subject` (`none`, `level`, `placement`, `swatch`, `loop`, `play`),
   `classes` (`field`, `raw`, `shape`, `host`) and `missing`; `default`
@@ -1968,10 +1968,11 @@ with the saved map's name reads the edit.
 
 ### Model poses
 
-`anim.*` reads a `jmad` tag of the map the Tags tool shows and poses it
-on the model that uses it (rich-editors.md, "Model poses", slice M1; the
-same calls the Animation window draws with, `app::anim`). `tag` is as
-`sound.*` takes it; read-only.
+`anim.*` reads a `jmad` tag of the map the Tags tool shows, poses it
+on the model that uses it (rich-editors.md, "Model poses", slice M1) and
+lists a clip's channels as keys (studio-redesign.md, "The animation
+editor", slice AN1); the same calls the Animation window draws with,
+`app::anim`. `tag` is as `sound.*` takes it; read-only.
 
 - `anim.list {tag}`: the graph's animations, each
   `{index, name, type (base|overlay|replacement|unknown), frames,
@@ -2005,6 +2006,30 @@ same calls the Animation window draws with, `app::anim`). `tag` is as
   cache directory's `studio/anim/`; never into a Git checkout), with
   `width`, `height`, `covered` as `model.render` gives them; without a
   renderer the transforms still answer and a note names why.
+- `anim.read {tag, animation, tolerance?, keys?}`: one animation as the
+  timeline shows it. `nodes` has a row per node, `{index, name, parent,
+  channels}`, with the channels the clip drives, each `{kind (rotation,
+  translation or scale), moves, key_count, keys: [{frame, value}]}`. A
+  rotation's value is a quaternion `[x, y, z, w]`, a translation's
+  `[x, y, z]`, a scale's `[s]`. The keys are the clip's dense decoded
+  frames reduced (`tags::anim_keys::reduce`): between two keys the value
+  is linear (a rotation along the shorter arc, re-normalised, as
+  `anim.pose` blends), before the first and after the last it holds, and
+  every frame bakes back within `tolerance`. The default tolerance is a
+  tenth of a degree of turn, a thousandth of a unit of translation and a
+  thousandth of scale; `tolerance` is `{rotation_degrees?, translation?,
+  scale?}`, none negative. A channel with one key does not change
+  (`moves` false): the static stream's channels, and any that sit within
+  tolerance of their first frame. `reduction` says what it cost:
+  `{channels, dense_values, keys, max_error: {rotation_degrees,
+  translation, scale}}`, the error measured at every frame against the
+  decoded clip. `keys: false` lists the counts only. Also `animation`
+  (the `anim.list` row), `frame_rate` (30), `frames`, `duration`
+  (seconds), `tolerance`, `events {frame, sound, effect, decoded}` and
+  `notes`. Events are counted, not decoded (`decoded` is false), and a
+  note says so when there are any; so is a root movement
+  (`frame_info_type` other than none). An aim grid (codec 8) is not a
+  time series: its nodes list without channels and a note says so.
 
 ### `model.colors` and `model.emblem` (planned)
 
@@ -2068,6 +2093,24 @@ holding the last, and the refusals: a tag that is not a `jmad`, an
 animation that is not there, a model that does not use the graph, and a
 graph nothing uses (the channels answer with a note).
 
+`anim.read` runs on its own invented map (`api/anim/read_tests.rs`: the
+Pogo kit's map with a two-bone graph in it, built with the Halo 1
+converter's writers): a base clip of six frames whose arm turns 0, 45,
+90, 90, 45, 0 degrees while it slides, and an overlay. The slice's
+accepted test: the clip lists its channels (the body's three as one key
+each, the arm's turn as four keys at frames 0, 2, 3 and 5, its slide as
+two, its scale as one), and the keys played back by the stated rule sit
+within the tolerance of `anim.pose` at every frame, at the default and
+at a looser one. It also checks that a wide tolerance collapses a
+channel to one key with the measured error, `keys: false`, an overlay's
+single channel, and the refusals (a tag that is not a `jmad`, an
+animation that is not there, a negative or unknown tolerance).
+`tags::anim_keys`' own tests (`anim_keys_tests.rs`) cover the reduction:
+keys within tolerance at every frame on a noisy clip, a flipped
+quaternion sign, undriven channels, one frame, none. The timeline's
+transport (scrub, play, step, loop, speed) is `app::anim::Transport`,
+tested in `app/anim.rs`.
+
 ## Code
 
 - `crates/apps/studio-proto`: method names, error codes, the socket path,
@@ -2089,7 +2132,7 @@ graph nothing uses (the channels answer with a note).
   renders through `scenario_edit::native_view::preview`).
   `api/anim.rs`: `anim.*`, over `app/anim.rs` (the graph, its clips and
   the models kept per map and tag; the Animation window, `ui/anim.rs`,
-  draws the same poses).
+  draws the same poses and the timeline over `anim.read`'s rows).
   `api/playtest.rs`: the playtest checks (`app/playtest_static.rs`) and
   the runner's methods (`app/playtest.rs`). `api/workspace.rs` (with
   `app/workspace.rs`: the tree's root, the plan, the extraction thread,

@@ -1,8 +1,9 @@
-//! Model poses as the agent API ([`super::Provider`], registered in
-//! [`super::seams`]): `anim.list` and `anim.pose` over the Tags tool's
-//! own model poses (`app::anim`), so the Animation window and the API are
-//! one path. docs/editor/agent-api.md, docs/editor/rich-editors.md
-//! ("Model poses", slice M1).
+//! Model poses and the animation editor's read as the agent API
+//! ([`super::Provider`], registered in [`super::seams`]): `anim.list`,
+//! `anim.pose` and `anim.read` over the Tags tool's own animation reads
+//! (`app::anim`), so the Animation window and the API are one path.
+//! docs/editor/agent-api.md, docs/editor/rich-editors.md ("Model poses",
+//! slice M1), docs/editor/studio-redesign.md (slice AN1).
 
 use std::path::PathBuf;
 
@@ -13,7 +14,8 @@ use super::models::size;
 use super::view::Gpu;
 use super::{MethodDef, P, Provider, Reply, def, err};
 use crate::App;
-use crate::app::anim::{AnimError, AnimInfo, PoseAnswer};
+use crate::app::anim::{AnimError, AnimInfo, AnimRead, HZ, PoseAnswer};
+use tags::anim_keys::{Kind, Tolerance};
 
 const LIST: MethodDef = def(
     m::ANIM_LIST,
@@ -28,6 +30,14 @@ const POSE: MethodDef = def(
     r#"{"tag":"string","animation":"string|integer (its name or index)","frame?":"number (default 0)","overlay?":{"animation":"string|integer","weight":"number (0 to 1)"},"model?":"string (an object that uses the graph, by name or 0x... id; default its only one)","size?":"[w,h] (default [640,480])","out?":"string"}"#,
     r#"{"tag":"string","animation":"string","frame":"number","frames":"integer","model":"{object,name,triangles,untextured}|null","nodes":"[{index,name,parent,rotation,translation,scale,has:{rotation,translation,scale},world:[[f,f,f,f];4]|null}]","png":"string|null","width":"integer","height":"integer","covered":"integer","notes":"[string]"}"#,
     r#"{"tag":"jmad:invented\\stickman","animation":"combat:idle","frame":2,"out":"$OUT/pose.png"}"#,
+);
+
+const READ: MethodDef = def(
+    m::ANIM_READ,
+    "One animation of a jmad tag read as the timeline shows it: a row per node with the rotation, translation and scale channels the clip drives, each as keys (frame and value; a rotation is a quaternion [x,y,z,w], a translation [x,y,z], a scale [s]) between which the value is linear (a rotation along the shorter arc). The keys are the dense decoded frames reduced within `tolerance` (the default is a tenth of a degree, a thousandth of a unit and of a scale), so baking them back stays within it at every frame: `reduction.max_error` is what was measured. A channel with one key does not change over the clip. Events are counted, not decoded; an aim grid (codec 8) lists its nodes without keys. Reads only",
+    r#"{"tag":"string","animation":"string|integer (its name or index)","tolerance?":{"rotation_degrees?":"number (default 0.1)","translation?":"number (default 0.001)","scale?":"number (default 0.001)"},"keys?":"boolean (default true; false lists key counts only)"}"#,
+    r#"{"tag":"string","animation":"{index,name,type,frames,codecs,aim_grid,error}","frame_rate":"number (30)","frames":"integer","duration":"number (seconds)","tolerance":"{rotation_degrees,translation,scale}","nodes":"[{index,name,parent,channels:[{kind,moves,key_count,keys?:[{frame,value:[number]}]}]}]","reduction":"{channels,dense_values,keys,max_error:{rotation_degrees,translation,scale}}","events":"{frame,sound,effect,decoded}","notes":"[string]"}"#,
+    r#"{"tag":"jmad:invented\stickman","animation":"combat:idle"}"#,
 );
 
 fn failed(e: AnimError) -> agent_proto::RpcError {
@@ -141,6 +151,128 @@ fn answer_json(answer: &PoseAnswer, picture: (&Value, u32, u32, usize)) -> Value
     })
 }
 
+/// The `tolerance` param: degrees of rotation, units of translation and
+/// of scale, each defaulting to [`Tolerance::DEFAULT`].
+fn tolerance(p: &P) -> Result<Tolerance, agent_proto::RpcError> {
+    let Some(v) = p.get("tolerance") else {
+        return Ok(Tolerance::DEFAULT);
+    };
+    let o = v.as_object().ok_or_else(|| {
+        err(
+            code::INVALID_PARAMS,
+            format!("tolerance: an object, not {v}"),
+        )
+    })?;
+    let mut t = Tolerance::DEFAULT;
+    for (k, v) in o {
+        let n = v
+            .as_f64()
+            .filter(|f| f.is_finite() && *f >= 0.0)
+            .ok_or_else(|| {
+                err(
+                    code::INVALID_PARAMS,
+                    format!("tolerance.{k}: a number of 0 or more, not {v}"),
+                )
+            })? as f32;
+        match k.as_str() {
+            "rotation_degrees" => t.rotation = n.to_radians(),
+            "translation" => t.translation = n,
+            "scale" => t.scale = n,
+            _ => {
+                return Err(err(
+                    code::INVALID_PARAMS,
+                    format!("tolerance.{k}: rotation_degrees, translation or scale"),
+                ));
+            }
+        }
+    }
+    Ok(t)
+}
+
+fn kind_value(kind: Kind, value: [f32; 4]) -> Value {
+    json!(value[..kind.width()].to_vec())
+}
+
+fn read_json(tag: &str, r: &AnimRead, with_keys: bool) -> Value {
+    let degrees = |radians: f32| radians.to_degrees();
+    let nodes: Vec<Value> = r
+        .nodes
+        .iter()
+        .map(|n| {
+            let channels: Vec<Value> = n
+                .channels
+                .iter()
+                .map(|c| {
+                    let mut o = json!({
+                        "kind": c.kind.name(),
+                        "moves": c.moves,
+                        "key_count": c.keys.len(),
+                    });
+                    if with_keys {
+                        o["keys"] = c
+                            .keys
+                            .iter()
+                            .map(|k| json!({"frame": k.frame, "value": kind_value(c.kind, k.value)}))
+                            .collect();
+                    }
+                    o
+                })
+                .collect();
+            json!({
+                "index": n.index,
+                "name": n.name,
+                "parent": n.parent,
+                "channels": channels,
+            })
+        })
+        .collect();
+    json!({
+        "tag": tag,
+        "animation": summary_json(&r.animation),
+        "frame_rate": HZ,
+        "frames": r.frames,
+        "duration": r.frames as f32 / HZ,
+        "tolerance": {
+            "rotation_degrees": degrees(r.keys.tolerance.rotation),
+            "translation": r.keys.tolerance.translation,
+            "scale": r.keys.tolerance.scale,
+        },
+        "nodes": nodes,
+        "reduction": {
+            "channels": r.keys.channels.len(),
+            "dense_values": r.dense_values,
+            "keys": r.keys.key_count(),
+            "max_error": {
+                "rotation_degrees": degrees(r.max_error[0]),
+                "translation": r.max_error[1],
+                "scale": r.max_error[2],
+            },
+        },
+        "events": {
+            "frame": r.events[0],
+            "sound": r.events[1],
+            "effect": r.events[2],
+            "decoded": false,
+        },
+        "notes": r.notes,
+    })
+}
+
+fn read(app: &mut App, p: &P) -> Reply {
+    let id = anim_tag(app, p)?;
+    let info = app.anim_info(id).map_err(failed)?;
+    let animation = find_animation(&info, p.get("animation").unwrap_or(&Value::Null))?;
+    let tol = tolerance(p)?;
+    let with_keys = match p.get("keys") {
+        None => true,
+        Some(v) => v
+            .as_bool()
+            .ok_or_else(|| err(code::INVALID_PARAMS, format!("keys: true or false, not {v}")))?,
+    };
+    let answer = app.anim_read(id, animation, tol).map_err(failed)?;
+    Ok(read_json(p.str("tag")?, &answer, with_keys))
+}
+
 /// The provider: a GPU for the renders, held between calls.
 #[derive(Default)]
 pub struct Anim {
@@ -149,16 +281,17 @@ pub struct Anim {
 
 impl Provider for Anim {
     fn methods(&self) -> Vec<MethodDef> {
-        vec![LIST, POSE]
+        vec![LIST, POSE, READ]
     }
 
     fn call(&mut self, app: &mut App, method: &str, params: &Value) -> Option<Reply> {
-        if !matches!(method, m::ANIM_LIST | m::ANIM_POSE) {
+        if !matches!(method, m::ANIM_LIST | m::ANIM_POSE | m::ANIM_READ) {
             return None;
         }
         let p = P(params);
         Some(match method {
             m::ANIM_LIST => self.list(app, &p),
+            m::ANIM_READ => read(app, &p),
             _ => self.pose(app, &p),
         })
     }
@@ -279,3 +412,6 @@ impl Anim {
 #[cfg(test)]
 #[path = "anim/tests.rs"]
 pub(super) mod tests;
+#[cfg(test)]
+#[path = "anim/read_tests.rs"]
+pub(super) mod read_tests;

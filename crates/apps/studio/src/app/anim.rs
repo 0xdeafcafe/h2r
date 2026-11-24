@@ -20,6 +20,12 @@
 //! applies over the base with the engine's scaled-add rule
 //! ([`tags::anim_sample::Pose::add_overlay`]).
 //!
+//! **The timeline.** [`App::anim_read`] decodes a clip to dense frames and
+//! reduces them to keys within a tolerance ([`tags::anim_keys`]), listed
+//! per node and channel: the rows of the Animation window's timeline and
+//! the answer of `anim.read`. [`Transport`] is the timeline's scrub head,
+//! play, loop and speed, one type for the window and its tests.
+//!
 //! The graph, its clips and the models are read once per (map, tag) and
 //! kept: sampling a frame needs no map access, so scrubbing stays cheap.
 //! The window and the API read the map the Tags tool shows
@@ -34,6 +40,7 @@ use scenario_edit::geometry::Camera;
 use scenario_edit::native_view::posed_nodes;
 use scenario_edit::native_view::preview::{self, Matrix, Piece};
 use tags::anim::AnimationGraph;
+use tags::anim_keys::{self, Keys, Tolerance};
 use tags::anim_sample::{AnimationClip, Codec, NodeDefault};
 use tags::object::Context;
 use tags::sound::ResourceReader;
@@ -142,6 +149,125 @@ pub struct PoseAnswer {
     pub nodes: Vec<PoseNode>,
     /// The model posed, when the map has one that uses the graph.
     pub model: Option<PoseModel>,
+    pub notes: Vec<String>,
+}
+
+/// The animation's rate: the graph's own 30 Hz.
+pub const HZ: f32 = 30.0;
+
+/// The timeline's scrub head and play state (docs/editor/studio-redesign.md,
+/// "The animation editor", **Timeline**): a frame position over a clip's
+/// frames at [`HZ`], times a speed, optionally looping.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Transport {
+    /// Where the head is, in frames (fractional while playing).
+    pub frame: f32,
+    pub playing: bool,
+    pub looping: bool,
+    /// Playback speed, a multiple of real time ([`Self::SPEEDS`]).
+    pub speed: f32,
+}
+
+impl Default for Transport {
+    fn default() -> Self {
+        Self {
+            frame: 0.0,
+            playing: false,
+            looping: false,
+            speed: 1.0,
+        }
+    }
+}
+
+impl Transport {
+    /// The speeds the timeline offers.
+    pub const SPEEDS: [f32; 5] = [0.25, 0.5, 1.0, 2.0, 4.0];
+
+    /// Puts the head on `frame` (held inside the clip) and stops play.
+    pub fn scrub(&mut self, frame: f32, frames: usize) {
+        let last = frames.saturating_sub(1) as f32;
+        self.frame = if frame.is_nan() {
+            0.0
+        } else {
+            frame.clamp(0.0, last)
+        };
+        self.playing = false;
+    }
+
+    /// Plays, or pauses; playing from the end starts again at frame 0.
+    pub fn toggle(&mut self, frames: usize) {
+        let last = frames.saturating_sub(1) as f32;
+        if !self.playing && self.frame >= last {
+            self.frame = 0.0;
+        }
+        self.playing = !self.playing;
+    }
+
+    /// One step of the loop (or the stop) of play, one frame at a time.
+    pub fn step(&mut self, by: i32, frames: usize) {
+        let to = (self.frame.round() + by as f32).clamp(0.0, frames.saturating_sub(1) as f32);
+        self.scrub(to, frames);
+    }
+
+    /// Moves the head on by `dt` seconds of play. Looping wraps past the
+    /// last frame to the start (the last frame is the first again, so the
+    /// loop is `frames - 1` long); otherwise play stops on the last.
+    pub fn advance(&mut self, dt: f32, frames: usize) {
+        if !self.playing {
+            return;
+        }
+        let last = frames.saturating_sub(1) as f32;
+        self.frame += dt * HZ * self.speed;
+        if self.frame > last {
+            if self.looping && last > 0.0 {
+                self.frame %= last;
+            } else {
+                self.frame = last;
+                self.playing = false;
+            }
+        }
+    }
+}
+
+/// One channel of a node on the timeline: a rotation, translation or scale
+/// as keys.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReadChannel {
+    pub kind: anim_keys::Kind,
+    pub keys: Vec<anim_keys::Key>,
+    /// More than one key: the channel changes over the clip.
+    pub moves: bool,
+}
+
+/// One row of the timeline: a node with the channels the clip drives.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReadNode {
+    pub index: usize,
+    /// The graph node's name, resolved through the map's strings.
+    pub name: Option<String>,
+    pub parent: i16,
+    pub channels: Vec<ReadChannel>,
+}
+
+/// One animation read as the timeline shows it.
+#[derive(Clone, Debug)]
+pub struct AnimRead {
+    pub animation: AnimSummary,
+    pub frames: usize,
+    /// One row per node of the clip, in node order.
+    pub nodes: Vec<ReadNode>,
+    /// The keys the rows list, within [`Keys::tolerance`] of the dense
+    /// frames at every frame.
+    pub keys: Keys,
+    /// How many dense channel values the clip decodes to (channels times
+    /// frames): what the keys replace.
+    pub dense_values: usize,
+    /// The largest error of the keys against the dense frames, per kind
+    /// `[rotation (radians), translation, scale]`.
+    pub max_error: [f32; 3],
+    /// Events the animation declares: frame, sound and effect blocks,
+    /// counted but not decoded.
+    pub events: [usize; 3],
     pub notes: Vec<String>,
 }
 
@@ -401,6 +527,87 @@ impl App {
         })
     }
 
+    /// Animation `animation` of the graph `id` as the timeline shows it:
+    /// the clip decoded to dense frames and reduced to keys within
+    /// `tolerance` ([`tags::anim_keys::reduce`]), listed per node. An aim
+    /// grid (codec 8) is not a time series: its nodes list without keys,
+    /// and a note says so.
+    pub fn anim_read(
+        &mut self,
+        id: TagId,
+        animation: usize,
+        tolerance: Tolerance,
+    ) -> Result<AnimRead, AnimError> {
+        self.ensure_anim(id)?;
+        let mut files = self
+            .shown_raw_files()
+            .map_err(|e| AnimError::Failed(format!("the map's resource files: {e}")))?;
+        let mut reader = Raw(&mut files);
+        let loaded = self.anim.loaded.as_mut().expect("loaded");
+        let clip = loaded
+            .clip(animation, &mut reader)
+            .map_err(AnimError::Refused)?;
+        let summary = loaded.summary(animation);
+        let record = &loaded.graph.animations[animation];
+        let events = [
+            record.frame_events.len(),
+            record.sound_events.len(),
+            record.effect_events.len(),
+        ];
+        let mut notes = Vec::new();
+        if events.iter().any(|&n| n > 0) {
+            notes.push(
+                "events are counted, not decoded (docs/formats/animation.md, \"Open items\")"
+                    .to_owned(),
+            );
+        }
+        if record.frame_info_type != 0 {
+            notes.push("root movement (frame info) is not decoded".to_owned());
+        }
+        let frames = clip.frame_count();
+        let poses = if clip.is_aim_grid() {
+            notes.push(
+                "an aim grid: its frames are cells selected by aim, not points in time, so no keys are listed"
+                    .to_owned(),
+            );
+            Vec::new()
+        } else {
+            (0..frames)
+                .map(|f| clip.sample_frame(f))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| AnimError::Failed(format!("sampling: {e}")))?
+        };
+        let keys = anim_keys::reduce(&poses, tolerance);
+        let max_error = keys.max_error(&poses);
+        let nodes = (0..clip.node_count())
+            .map(|index| ReadNode {
+                index,
+                name: loaded.node_names.get(index).cloned().flatten(),
+                parent: loaded.graph.nodes.get(index).map_or(-1, |n| n.parent),
+                channels: keys
+                    .channels
+                    .iter()
+                    .filter(|c| c.node == index)
+                    .map(|c| ReadChannel {
+                        kind: c.kind,
+                        keys: c.keys.clone(),
+                        moves: c.moves(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        Ok(AnimRead {
+            animation: summary,
+            frames,
+            nodes,
+            dense_values: keys.channels.len() * poses.len(),
+            keys,
+            max_error,
+            events,
+            notes,
+        })
+    }
+
     /// Samples animation `animation` of the graph `id` at `frame`
     /// (fractional frames blend the neighbours), with `overlay`'s sample
     /// applied at `weight` over it, on the model that uses the graph.
@@ -608,5 +815,80 @@ impl App {
             models,
         });
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::{HZ, Transport};
+
+    #[test]
+    fn scrub_holds_the_head_inside_the_clip_and_stops_play() {
+        let mut t = Transport {
+            playing: true,
+            ..Transport::default()
+        };
+        t.scrub(3.0, 10);
+        assert_eq!((t.frame, t.playing), (3.0, false));
+        t.scrub(99.0, 10);
+        assert_eq!(t.frame, 9.0);
+        t.scrub(-4.0, 10);
+        assert_eq!(t.frame, 0.0);
+        t.scrub(f32::NAN, 10);
+        assert_eq!(t.frame, 0.0);
+        t.scrub(5.0, 0);
+        assert_eq!(t.frame, 0.0);
+    }
+
+    #[test]
+    fn play_runs_at_thirty_hertz_times_the_speed_and_stops_on_the_last_frame() {
+        let mut t = Transport::default();
+        t.advance(1.0, 100);
+        assert_eq!(t.frame, 0.0, "a paused head does not move");
+        t.toggle(100);
+        assert!(t.playing);
+        t.advance(0.5, 100);
+        assert!((t.frame - 0.5 * HZ).abs() < 1e-4);
+        t.speed = 2.0;
+        t.advance(0.25, 100);
+        assert!((t.frame - (0.5 * HZ + 0.25 * HZ * 2.0)).abs() < 1e-4);
+        t.advance(10.0, 100);
+        assert_eq!((t.frame, t.playing), (99.0, false));
+        // Playing from the end starts again.
+        t.toggle(100);
+        assert_eq!((t.frame, t.playing), (0.0, true));
+    }
+
+    #[test]
+    fn loop_wraps_past_the_last_frame_and_keeps_playing() {
+        let mut t = Transport {
+            looping: true,
+            ..Transport::default()
+        };
+        t.toggle(31);
+        // 31 frames: the loop is 30 long. 1.1 s is 33 frames: 3 past.
+        t.advance(1.1, 31);
+        assert!(t.playing);
+        assert!((t.frame - 3.0).abs() < 1e-3, "{}", t.frame);
+        // A one-frame clip has no loop to run: it stops.
+        let mut one = Transport {
+            looping: true,
+            ..Transport::default()
+        };
+        one.toggle(1);
+        one.advance(1.0, 1);
+        assert_eq!((one.frame, one.playing), (0.0, false));
+    }
+
+    #[test]
+    fn step_moves_one_frame_and_pauses() {
+        let mut t = Transport::default();
+        t.toggle(5);
+        t.step(1, 5);
+        assert_eq!((t.frame, t.playing), (1.0, false));
+        t.step(-9, 5);
+        assert_eq!(t.frame, 0.0);
+        t.step(9, 5);
+        assert_eq!(t.frame, 4.0);
     }
 }

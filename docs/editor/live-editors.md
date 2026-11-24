@@ -142,7 +142,7 @@ preview is a query and not a guess.
 | Curves (function data) | the field panel | none | the curve editor | rich-editors F1, F2 |
 | Effects, particles, contrails, lights, lens flares, decals (`effe`, `prt3`, `ligh`, `lens`, `deca` and their kin) | the field panel | none | grouped editors on the curves and colours; the game view as preview | LE7 |
 | Sky and fog (`sky `, `fog `) | the field panel | the viewport uses the sky's colour, sun and fog | a tag view with the dome and the fog curve | LE8 |
-| Animations (`jmad`) | none | none | pick and scrub on the model, then the timeline, keys and the write | rich-editors M1; [studio-redesign.md](studio-redesign.md) AN1 to AN6 |
+| Animations (`jmad`) | the animation editor: pick, pose and scrub on the model, the timeline of keys (read only) | none | keys and curves, the write | rich-editors M1; [studio-redesign.md](studio-redesign.md) AN1 to AN6 |
 | Sounds (`snd!`, `lsnd`, `ugh!`) | audition: waveform, play, scrub | the waveform | import, levels and distances, mouth curves | rich-editors A2 to A5; workspace W7 |
 | HUD (`nhdt`, HUD kit) | the HUD tool | its preview | what "Not modelled" lists | hud-editor |
 | Screens (`wgit`, `wgtz`, our YAML) | the UI Screens tool | its preview and sheets | the levels' screens and dialogs | ui-in-maps |
