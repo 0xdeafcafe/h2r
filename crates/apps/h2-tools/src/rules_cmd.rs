@@ -478,7 +478,7 @@ pub fn sim_text(label: &str, src: &str, args: &SimArgs) -> Result<SimOut, String
 /// lines, one for every error the compile finds ([`rules::diagnose`]),
 /// then its warnings.
 fn compile(label: &str, src: &str) -> Result<(Ir, Report), String> {
-    let compiled = rules::diagnose(src);
+    let compiled = rules::diagnose_files(&root_name(label), src, &module_reader(label));
     let Some(ir) = compiled.ir else {
         let mut s = String::new();
         for d in &compiled.diagnostics {
@@ -490,11 +490,39 @@ fn compile(label: &str, src: &str) -> Result<(Ir, Report), String> {
     Ok((ir, report))
 }
 
+/// The files a `use "name.rules"` reads: the ones beside the script
+/// `label` names. A file over the source cap is read to one byte past it,
+/// so the compile reports the size.
+pub(crate) fn module_reader(label: &str) -> impl Fn(&str) -> Option<String> + '_ {
+    use std::io::Read as _;
+    move |name| {
+        let mut text = String::new();
+        std::fs::File::open(module_path(label, name))
+            .ok()?
+            .take(rules::lang::MAX_SOURCE_BYTES as u64 + 1)
+            .read_to_string(&mut text)
+            .ok()?;
+        Some(text)
+    }
+}
+
+/// The script's own file name, which a `use` of it is a cycle with.
+fn root_name(label: &str) -> String {
+    Path::new(label).file_name().map_or_else(|| label.to_string(), |n| n.to_string_lossy().into_owned())
+}
+
+/// The path of module `name` of the script at `label`.
+fn module_path(label: &str, name: &str) -> PathBuf {
+    Path::new(label).with_file_name(name)
+}
+
 /// One diagnostic as `label:line:col: message`, a warning's message
 /// starting `warning:`, its code at the end in brackets.
 fn diagnostic_line(label: &str, d: &rules::Diagnostic) -> String {
     let kind = if d.is_error() { "" } else { "warning: " };
-    format!("{label}:{}:{}: {kind}{} [{}]", d.pos.line, d.pos.col, d.message, d.code)
+    // A finding in a module is in that file.
+    let file = d.file.as_deref().map_or_else(|| label.to_string(), |f| module_path(label, f).display().to_string());
+    format!("{file}:{}:{}: {kind}{} [{}]", d.pos.line, d.pos.col, d.message, d.code)
 }
 
 /// The report `h2 rules check` prints for source that builds.
@@ -584,7 +612,7 @@ pub fn check_text(label: &str, src: &str) -> Result<String, String> {
             let _ = writeln!(s, "  {} ({})", caps::spelled(e), unhostable_words(e));
         }
     }
-    for d in rules::diagnose(src).warnings() {
+    for d in rules::diagnose_files(&root_name(label), src, &module_reader(label)).warnings() {
         let _ = writeln!(s, "{}", diagnostic_line(label, d));
     }
     // Over the budget or the IR cap: the report, then the refusal.
@@ -1114,5 +1142,30 @@ settings {
         let err = settings_text("x.rules", "rules \"A\" 1\ntype slayer\nuses slayer\nsettings { nope = 1 }\n")
             .unwrap_err();
         assert!(err.starts_with("x.rules:4:"), "{err}");
+    }
+
+    #[test]
+    fn a_script_reads_the_files_beside_it() {
+        let main = "rules \"Split\" 1\ntype slayer\nuse \"waves.rules\"\non kill(v, k) { score(k, bonus()) }\n";
+        let one = "rules \"Split\" 1\ntype slayer\nconst base = 2\nfn bonus() -> int = base + 1\non kill(v, k) { score(k, bonus()) }\n";
+        let dir = std::env::temp_dir().join(format!("h2-rules-use-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let label = dir.join("main.rules").display().to_string();
+        let waves = dir.join("waves.rules");
+        std::fs::write(&waves, "const base = 2\nfn bonus() -> int = base + 1\n").unwrap();
+        let (_, hash) = build_blob(&label, main).unwrap();
+        assert_eq!(hash, build_blob("one.rules", one).unwrap().1);
+        assert!(check_text(&label, main).unwrap().contains(&format!("id: {hash}")));
+        // An error in the module is in its file, at its line.
+        std::fs::write(&waves, "const base = 2\nfn bonus() -> int = nope + 1\n").unwrap();
+        let err = check_text(&label, main).unwrap_err();
+        assert!(err.starts_with(&format!("{}:2:", waves.display())), "{err}");
+        // A file that is not there, and a cycle.
+        std::fs::remove_file(&waves).unwrap();
+        assert!(check_text(&label, main).unwrap_err().contains("no file named `waves.rules`"));
+        std::fs::write(&waves, "use \"main.rules\"\n").unwrap();
+        let err = check_text(&label, main).unwrap_err();
+        assert!(err.contains("a cycle: main.rules uses waves.rules uses main.rules"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -94,7 +94,7 @@
       ]
     },
     "header-lines": {
-      "comment": "The header words type, uses, points, about and quick: words only at the start of a line, where the next token is what the parser looks for (a name, a string). In a handler they are names.",
+      "comment": "The header words type, uses, use, points, about and quick: words only at the start of a line, where the next token is what the parser looks for (a name, a string). In a handler they are names.",
       "patterns": [
         {
           "comment": "type koth, uses slayer: the game type and the built-in game a script plays.",
@@ -118,6 +118,22 @@
           },
           "end": "(?=//)|$",
           "name": "meta.points.rules",
+          "patterns": [
+            {
+              "include": "#string"
+            }
+          ]
+        },
+        {
+          "comment": "use \"waves.rules\": another file's declarations, read in at this line.",
+          "begin": "^\\s*(use)\\b(?=\\s*\")",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.other.declaration.rules"
+            }
+          },
+          "end": "(?=//)|$",
+          "name": "meta.use.rules",
           "patterns": [
             {
               "include": "#string"

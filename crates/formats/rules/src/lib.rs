@@ -31,7 +31,7 @@ pub mod workbench;
 
 pub use content::Sha256;
 pub use ir::{DecodeError, Event, Ir};
-pub use lang::{CompileError, Compiled, Diagnostic, Severity, compile, diagnose};
+pub use lang::{CompileError, Compiled, Diagnostic, Severity, compile, compile_files, diagnose, diagnose_files};
 pub use ty::Ty;
 pub use verify::{Refusal, Report, load, verify};
 pub use vm::{Call, Fired, Game, Input, RulesExt, ScriptError, Vm};
@@ -71,6 +71,17 @@ pub fn build(src: &str) -> Result<(Ir, Report), BuildError> {
     Ok((ir, report))
 }
 
+/// [`build`] for a script of several files ([`lang::diagnose_files`]).
+pub fn build_files(
+    root: &str,
+    src: &str,
+    read: &dyn Fn(&str) -> Option<String>,
+) -> Result<(Ir, Report), BuildError> {
+    let ir = compile_files(root, src, read)?;
+    let report = verify(&ir)?;
+    Ok((ir, report))
+}
+
 /// What a blob must hold to before it is written out or published: the
 /// worst-tick estimate fits the budget and the encoding fits the IR cap.
 pub fn fits(ir: &Ir, report: &Report) -> Result<(), BuildError> {
@@ -95,6 +106,17 @@ pub fn fits(ir: &Ir, report: &Report) -> Result<(), BuildError> {
 /// made from source run.
 pub fn ship(src: &str) -> Result<(Ir, Report), BuildError> {
     let (ir, report) = build(src)?;
+    fits(&ir, &report)?;
+    Ok((ir, report))
+}
+
+/// [`ship`] for a script of several files ([`lang::diagnose_files`]).
+pub fn ship_files(
+    root: &str,
+    src: &str,
+    read: &dyn Fn(&str) -> Option<String>,
+) -> Result<(Ir, Report), BuildError> {
+    let (ir, report) = build_files(root, src, read)?;
     fits(&ir, &report)?;
     Ok((ir, report))
 }

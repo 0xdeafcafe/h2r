@@ -36,6 +36,14 @@ words only at the start of a line; in a handler they are names. A script
 with `uses` holds header lines, `settings`, `quick` and `about` only.
 `carrier`, `list` and `scoring` lines are refused (`header.retired`).
 
+Modules: `use "waves.rules"` alone on a top-level line reads that file's
+lines in at that point, so two files give the blob of the same text in
+one. Names are flat (`name.rules`, no directory), a module has no `rules`
+header, a file is read once, a cycle is an error naming both files, and
+the most is 32 files and 256 KiB in all. `h2 rules check|build|run|sim|
+settings` and `h2 rules lsp` read the files beside the script; an error
+in a module prints with the module's path and its line.
+
 ## Types
 
 | Type | Meaning |

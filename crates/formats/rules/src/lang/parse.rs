@@ -55,6 +55,7 @@ pub fn parse_recovering(tokens: &[Token]) -> (Script, Vec<CompileError>) {
                 quick: None,
                 settings: None,
                 requires: Vec::new(),
+                modules: Vec::new(),
                 items: Vec::new(),
             }
         }
@@ -104,7 +105,7 @@ impl<'a> Parser<'a> {
             "rules" | "carrier" | "teams" | "list" | "requires" | "option" | "palette" | "enum" | "table" | "fn" | "label" | "const" | "on"))
     }
 
-    /// `settings`, `quick`, `type`, `uses`, `scoring`, `points` or `about`
+    /// `settings`, `quick`, `type`, `uses`, `scoring`, `points`, `about` or `use`
     /// where it starts a header line: followed by `{`, a name (`quick`,
     /// `type`, `uses`, `scoring`) or a string (`points`, `about`). They are
     /// not keywords, so a handler may still use them as names.
@@ -121,6 +122,7 @@ impl<'a> Parser<'a> {
             "scoring" if matches!(next, Tok::Ident(_)) => Some("scoring"),
             "points" if matches!(next, Tok::Str(_)) => Some("points"),
             "about" if matches!(next, Tok::Str(_)) => Some("about"),
+            "use" if matches!(next, Tok::Str(_)) => Some("use"),
             _ => None,
         }
     }
@@ -403,6 +405,7 @@ impl<'a> Parser<'a> {
             quick: None,
             settings: None,
             requires: Vec::new(),
+            modules: Vec::new(),
             items: Vec::new(),
         };
         match self.header() {
@@ -469,6 +472,10 @@ impl<'a> Parser<'a> {
                 return Err(CompileError::at(pos, "uses is given twice"));
             }
             script.uses = Some((self.word()?, pos));
+        } else if header == Some("use") {
+            self.bump();
+            let name = self.string()?;
+            script.modules.push((name, pos));
         } else if header == Some("points") {
             self.bump();
             if script.points.is_some() {

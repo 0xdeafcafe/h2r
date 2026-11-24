@@ -57,6 +57,7 @@ const source = [
   /* 25 */ '    quick = about',
   /* 26 */ '}',
   /* 27 */ 'points "Laps"',
+  /* 28 */ 'use "waves.rules"',
 ];
 
 const lines = [];
@@ -223,6 +224,11 @@ test('the header lines uses, points, about and quick', () => {
   exact(17, 'score_limit', 'variable.other.property.setting.rules');
   exact(17, 'shields', 'variable.other.property.setting.rules');
   hasScope(17, 'shields', 'meta.quick.rules');
+});
+
+test('the use line', () => {
+  exact(28, 'use', 'keyword.other.declaration.rules');
+  hasScope(28, 'waves.rules', 'string.quoted.double.rules');
 });
 
 test('the settings block', () => {

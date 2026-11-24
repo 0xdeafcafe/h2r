@@ -239,3 +239,43 @@ on enter(capture z, o) {
       (event_parameter
         (identifier)))
     (block)))
+
+================================================================================
+Use lines read other files in
+================================================================================
+
+rules "Firefight" 1
+type slayer
+use "waves.rules"
+use "tables.rules";
+global var wave: int = 0
+on tick {
+    let use = 1
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (header
+    (string
+      (string_content))
+    (integer))
+  (type_declaration
+    (identifier))
+  (use_declaration
+    (string
+      (string_content)))
+  (use_declaration
+    (string
+      (string_content)))
+  (var_declaration
+    (identifier)
+    (type
+      (identifier))
+    (integer))
+  (handler_declaration
+    (identifier)
+    (block
+      (let_statement
+        (identifier)
+        (integer)))))

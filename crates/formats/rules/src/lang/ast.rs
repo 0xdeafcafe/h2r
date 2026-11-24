@@ -27,6 +27,10 @@ pub struct Script {
     /// `settings { name = value ... }`.
     pub settings: Option<SettingsBlock>,
     pub requires: Vec<(String, Pos)>,
+    /// `use "waves.rules"`: the module files the script names. The
+    /// compile reads them first ([`super::modules`]), so a script that
+    /// reaches the checker with one has no file to read it from.
+    pub modules: Vec<(String, Pos)>,
     pub items: Vec<Item>,
 }
 

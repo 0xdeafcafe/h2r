@@ -888,6 +888,7 @@ fn top_level(m: &Model) -> Vec<CompletionItem> {
         ("points", "points \"${1:Points}\"".to_string(), "points"),
         ("requires", "requires ${1:capability}".to_string(), "requires"),
         ("uses", uses, "uses"),
+        ("use", "use \"${1:module}.rules\"".to_string(), "use"),
         ("about", "about \"${1:Description}\"".to_string(), "about"),
         ("quick", "quick ${1:score_limit}".to_string(), "quick"),
         (
