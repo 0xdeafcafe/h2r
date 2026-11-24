@@ -3593,17 +3593,48 @@ fn shadow_caster_world(w: &mut World, r: &mut Rng, esp: u32, case: u32) {
     put(m, PASS_VIEW_TARGET, r.u32());
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MaskCase {
+    NoClusters,
+    NoCasters,
+    NoReceivers,
+    DeclineLayer,
+    BothLayers,
+    FilterClearsReceiver,
+    StencilSkipsDraw,
+    Ineligible,
+    AttachedDuringEligibility,
+    DisabledDuringEligibility,
+    Hidden,
+    NoSample,
+    ZeroStrength,
+    BelowThreshold,
+    AtThreshold,
+    AboveThreshold,
+    OutsideBounds,
+}
+
 #[test]
 fn object_shadow_caster_matches_the_lifted_original() {
+    use MaskCase::*;
     if !with_image(|image, mut lifted| {
         for seed in seeds() {
-            for case in 0..7u32 {
+            for case in [
+                NoClusters, NoCasters, NoReceivers, DeclineLayer, BothLayers,
+                FilterClearsReceiver, StencilSkipsDraw, Ineligible, AttachedDuringEligibility,
+                DisabledDuringEligibility, Hidden, NoSample, ZeroStrength, BelowThreshold,
+                AtThreshold, AboveThreshold, OutsideBounds,
+            ] {
                 let mut r = Rng(seed ^ ((case as u64) << 32) ^ 0x2350);
                 let mut w = World::new(image, &mut r, 4);
                 let c = cpu(&mut r);
                 let esp = c.gpr[4];
-                shadow_caster_world(&mut w, &mut r, esp, case);
-                let label = format!("shadow mask seed {seed} case {case}");
+                shadow_caster_world(&mut w, &mut r, esp, case as u32);
+                let threshold_case = matches!(case, BelowThreshold | AtThreshold | AboveThreshold);
+                if threshold_case {
+                    putf(&mut w.mem, esp + 8, 1.0);
+                }
+                let label = format!("shadow mask seed {seed} case {case:?}");
                 let plan = object_shadows::caster::plan(&Ram(w.mem.clone()), esp, FPU)
                     .unwrap_or_else(|why| panic!("{label}: {why:?}"));
                 let calls = compare_shadow_body(
@@ -3614,15 +3645,33 @@ fn object_shadow_caster_matches_the_lifted_original() {
                         let mut eax = r.u32();
                         match c.target {
                             SHADOW_ELIGIBLE => {
-                                putf(m, c.args[1], r.float(0.8, 1.1));
+                                putf(m, c.args[1], if threshold_case { 1.0 } else { r.float(0.8, 1.1) });
+                                if case == AttachedDuringEligibility {
+                                    put(m, body(0) + 0x14, object_datum(1));
+                                } else if case == DisabledDuringEligibility {
+                                    put8(m, SHADOWS_ON, 0);
+                                }
                                 put8(m, c.args[2], 0);
-                                eax |= 1;
+                                eax = (eax & !0xff) | u32::from(case != Ineligible);
                             }
                             0x0003_d7c0 => {
                                 put8(m, c.regs[1], r.u32() as u8);
-                                eax |= 1;
+                                eax = (eax & !0xff) | u32::from(case != Hidden);
                             }
-                            0x0003_dc90 => eax = SHADOW_LIGHTING + 0x1c,
+                            0x0003_dc90 => {
+                                eax = if case == NoSample { 0 } else { SHADOW_LIGHTING + 0x1c };
+                                if case == ZeroStrength {
+                                    putf(m, eax + 0x1c, 0.0);
+                                } else if threshold_case {
+                                    let threshold = word(m, 0x0045_df88);
+                                    let strength = match case {
+                                        BelowThreshold => threshold - 1,
+                                        AboveThreshold => threshold + 1,
+                                        _ => threshold,
+                                    };
+                                    put(m, eax + 0x1c, strength);
+                                }
+                            }
                             0x0003_1f50 => {
                                 putf(m, c.args[3], r.float(1.0, 4.0));
                                 putf(m, c.args[4], r.float(0.5, 6.0));
@@ -3644,30 +3693,84 @@ fn object_shadow_caster_matches_the_lifted_original() {
                                 // Capture the stack matrix and all three half extents.
                                 let bounds = c.regs[0] as usize;
                                 m.bytes.copy_within(bounds..bounds + 0x40, SHADOW_LOG as usize);
-                                eax |= 1;
+                                eax = (eax & !0xff) | u32::from(case != OutsideBounds);
                             }
                             0x000c_1d90 => put16(m, c.args[3], 1 + r.below(5) as u16),
-                            0x0004_4720 => put16(m, list_header(0) + 4, u16::from(case != 0)),
+                            0x0004_4720 => put16(m, list_header(0) + 4, u16::from(case != NoClusters)),
                             passes::call::ITEMS => {
-                                put(m, PASS_CASTER_MASK, u32::from(case != 1) << 10);
-                                put(m, PASS_LIGHT_MASK, u32::from(case != 2) << 11);
+                                put(m, PASS_CASTER_MASK, u32::from(case != NoCasters) << 10);
+                                put(m, PASS_LIGHT_MASK, u32::from(case != NoReceivers) << 11);
                             }
-                            passes::call::LAYER_BEGIN => eax = (eax & !0xff) | u32::from(case != 3),
-                            0x0002_22a0 if case == 5 => put(m, PASS_LIGHT_MASK, 0),
-                            passes::call::STENCIL if case == 6 => put8(m, esp - 0xb50 + 0x13, 0),
+                            passes::call::LAYER_BEGIN => eax = (eax & !0xff) | u32::from(case != DeclineLayer),
+                            0x0002_22a0 if case == FilterClearsReceiver => put(m, PASS_LIGHT_MASK, 0),
+                            passes::call::STENCIL if case == StencilSkipsDraw => put8(m, esp - 0xb50 + 0x13, 0),
                             _ => {}
                         }
                         (eax, r.u32())
                     },
                     &label,
                 );
+                // The original and the body must stop at the same predicate even
+                // when it changes a gate that was satisfied during preflight.
+                let stopped_at = match case {
+                    Ineligible | AttachedDuringEligibility | DisabledDuringEligibility => Some(SHADOW_ELIGIBLE),
+                    Hidden => Some(0x0003_d7c0),
+                    NoSample | ZeroStrength | BelowThreshold | AtThreshold => Some(0x0003_dc90),
+                    OutsideBounds => Some(0x0003_20b0),
+                    _ => None,
+                };
+                if let Some(last) = stopped_at {
+                    assert_eq!(calls.last().map(|c| c.target), Some(last), "{label}");
+                    continue;
+                }
                 let visits = |target| calls.iter().filter(|c| c.target == target).count();
-                assert_eq!(visits(passes::call::ITEMS), usize::from(case != 0), "{label}");
-                assert_eq!(visits(0x0002_22a0), usize::from(case >= 3), "{label}");
-                assert_eq!(visits(passes::call::LAYER_DRAW), [0, 0, 0, 1, 2, 1, 1][case as usize], "{label}");
+                assert_eq!(visits(passes::call::ITEMS), usize::from(case != NoClusters), "{label}");
+                let draws = match case {
+                    DeclineLayer | FilterClearsReceiver | StencilSkipsDraw => 1,
+                    BothLayers | AboveThreshold => 2,
+                    _ => 0,
+                };
+                assert_eq!(visits(0x0002_22a0), usize::from(draws != 0), "{label}");
+                assert_eq!(visits(passes::call::LAYER_DRAW), draws, "{label}");
             }
         }
     }) {
         eprintln!("SKIPPED object_shadow_caster_matches_the_lifted_original: no XBE (set H2_XBE)");
+    }
+}
+
+/// Planning uses the same root, sample and view as the mask differential.
+/// A refusal returns control to the original with every byte intact,
+/// including the entry's scratch frame. These inputs need no retail image.
+#[test]
+fn object_shadow_caster_refuses_before_writing() {
+    use gather::Refusal::{Residency, Unsupported};
+    let image = FlatMemory::new(0, RAM);
+    for seed in seeds() {
+        let mut r = Rng(seed);
+        let mut w = World::new(&image, &mut r, 4);
+        let esp = cpu(&mut r).gpr[4];
+        shadow_caster_world(&mut w, &mut r, esp, 0);
+        assert!(object_shadows::caster::plan(&Ram(w.mem.clone()), esp, FPU).is_ok());
+        type Edit = fn(&mut FlatMemory, &mut Fpu);
+        let cases: &[(&str, gather::Refusal, Edit)] = &[
+            ("disabled", Unsupported, |m, _| put8(m, SHADOWS_ON, 0)),
+            ("attached", Unsupported, |m, _| put(m, body(0) + 0x14, object_datum(1))),
+            ("creature", Unsupported, |m, _| put8(m, body(0) + 0xaa, 12)),
+            ("missing cache entry", Residency, |m, _| {
+                put8(m, body(0) + 7, 0);
+                put(m, body(0) + 0xcc, NONE);
+            }),
+            ("x87 precision", Unsupported, |_, fpu| fpu.x87_control = 0x037f),
+            ("SSE rounding", Unsupported, |_, fpu| fpu.mxcsr |= 1 << 13),
+        ];
+        for &(case, why, edit) in cases {
+            let mut m = w.mem.clone();
+            let mut fpu = FPU;
+            edit(&mut m, &mut fpu);
+            let ram = Ram(m.clone());
+            assert_eq!(object_shadows::caster::plan(&ram, esp, fpu).err(), Some(why), "seed {seed}, {case}");
+            assert!(m.bytes == ram.0.bytes, "seed {seed}, {case}: refusal modified memory");
+        }
     }
 }
