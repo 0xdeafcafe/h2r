@@ -36,7 +36,7 @@ row in the Browser and a document tab.
 
 A package item is the same document as the tag it builds. A `sound` item
 and the `snd!` it builds are one tab; the header says which package the
-tab writes to. A `rules`, `variant`, `sound` and `edits` item opens now
+tab writes to. A `rules`, `variant`, `sound` and `edits` item opens
 (with the other tag-building items), as a tab of its `item:` id; a
 `playlist` item's fragment, and the screens' and HUDs' items, name why
 they do not open yet.
@@ -238,6 +238,10 @@ selected local package. A tag header supplies its tag path to the form.
 
 ### The three journeys in this model
 
+**Design.** These journeys include the FL10 and FL11 controls. For
+the paths available in Studio, follow the walkthroughs in the
+[editor guide](editor-guide.md#document-header-and-links).
+
 **A new weapon.** Browser > Objects > a weapon > **New from this...**
 makes the copy in the edit target (`asset.copy`), asking for a package
 first when there is none (the edit target picker, with **New
@@ -314,7 +318,7 @@ nothing unbuilt and run together.
 | FL9 (built) | **One preview**: the target switch and **In game** in the header and menu, with the Game panel showing the result | M | FL2 | `ui/preview_switch.rs`, `app/preview_switch.rs`, `api/preview.rs`, `play.rs`, `ui/game_script.rs` | the button and API queue the same unsaved variant record, and the launch uses it; the fake own game receives `rules.reload` for the open script; paired kinds use the plans from `preview.target` |
 | FL10 (built) | **The package document**: the manifest, the items, **Check**, **Build**, **Play**, **Publish...**, **Export...**, **Set as edit target**, **New package...**, and **Add to package** from any header | M | FL4 (built) | `ui/package.rs` (new), `app/package_doc.rs`, `ui/browser.rs`, `ui.rs` | local actions show their `package.*` replies; a new package made in the window is the edit target and is listed by `package.list`; Live publishing depends on PK14 |
 | FL11 (built) | **New from this**: **New from this...** on a Browser row and in the header (the window form of `asset.copy`), **Import sound...** (`import.sound`) and **Add model...** (`import.model`), each opening the new document | M | FL10 | `ui/browser.rs`, `ui/doc_header.rs`, `app/assets.rs`, `api/import.rs` | a weapon copied from an invented one opens as a tab marked **new in** the target and holds no bytes of its source; an imported WAV opens in the sound editor |
-| FL12 | **The guide by journey**: [editor-guide.md](editor-guide.md) and [editor.md](editor.md) describe the header, links and the four patterns, with the three journeys as walkthroughs | S | FL5 to FL10 | `docs/editor/editor-guide.md`, `docs/editor/editor.md`, `headless.rs` (the screenshots list) | `scripts/docs-check.py docs/editor` is clean; the screenshots regenerate from documents |
+| FL12 (built) | **The guide by journey**: [editor-guide.md](editor-guide.md) and [editor.md](editor.md) describe the header, links and the four patterns, with the three journeys as walkthroughs | S | FL5 to FL10 | `docs/editor/editor-guide.md`, `docs/editor/editor.md`, `headless.rs` (the screenshots list) | `scripts/docs-check.py docs/editor` is clean; the screenshots regenerate from documents |
 
 ## Rules and limits
 

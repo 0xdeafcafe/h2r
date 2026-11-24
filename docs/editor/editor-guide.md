@@ -1,5 +1,7 @@
 # Editor guide
 
+Status: Built. The walkthroughs follow the controls in Studio.
+
 `h2-editor` is h2recomp's editor. With it you can:
 
 - move, add and remove the objects placed on a map (weapons, vehicles,
@@ -23,6 +25,11 @@ full resolution so their text reads. Section 13 says how they are made.
 
 ## Contents
 
+- [Document header and links](#document-header-and-links)
+- [A new weapon](#a-new-weapon)
+- [An announcer line in a cloned voice](#an-announcer-line-in-a-cloned-voice)
+- [A game type](#a-game-type)
+
 1. [What you need](#1-what-you-need)
 2. [Starting the editor](#2-starting-the-editor)
 3. [The window](#3-the-window)
@@ -36,6 +43,126 @@ full resolution so their text reads. Section 13 says how they are made.
 11. [Where files go](#11-where-files-go)
 12. [Troubleshooting](#12-troubleshooting)
 13. [Regenerating the screenshots](#13-regenerating-the-screenshots)
+
+## Document header and links
+
+1. Double-click an asset in the **Browser**, or find it with **Go to
+   anything** (Cmd/Ctrl+P). Search covers tags across the tree, package
+   items, voices and commands. A Problems row can also take you to an
+   asset or a line in a script. [Code](../../crates/apps/studio/src/app/commands.rs)
+2. Use **<** and **>** above the editor to step through document history.
+   The trail shows the asset's location, kind and name. For tags, the
+   badge below the trail shows the tag group and whether a package adds
+   or edits it. **In Browser** selects the asset's row. **into:** shows
+   the edit target, with a `*` when the document has unsaved edits.
+   [Code](../../crates/apps/studio/src/ui/doc_header.rs)
+3. Open **Links** and look under **Uses** for dependencies or **Used by**
+   for references back to the asset. Pick a tag to open it or a package,
+   item or voice to locate its Browser row. Hover a link to see where it
+   comes from. **Show all in the Browser** lists the whole section,
+   including links beyond the first 20 per role. **Open with** lists
+   editor choices. Hover an unavailable choice for its reason.
+   [Code](../../crates/apps/studio/src/ui/doc_header.rs)
+
+### Preview, check, apply and undo
+
+- **Preview.** Work in the editor's own view with **Studio**. For
+  supported tags, pair a game, choose **My game** for a game Studio starts
+  or **Attached** for one you connect, and click **In game**
+  (Cmd/Ctrl+Enter). The Game panel comes forward with the result.
+  Variants launch Studio's own game, and scripts reload into it.
+  [Code](../../crates/apps/studio/src/app/preview_switch.rs)
+- **Check.** Click **Check** to refresh **Problems**. The number on the
+  button counts findings for the front asset. Click a finding to go to
+  its asset or location. [Code](../../crates/apps/studio/src/app/problems.rs)
+- **Apply.** Make edits in the document, then use **Save** (Cmd/Ctrl+S)
+  to keep them. Package saves ask for a local package when the edit target
+  is unset. Pick one or enter a name and click **New package...**.
+  Scripts, variants, playlist files, selected animation clips and
+  generated lines save as package items. Use the editor's export
+  control when you want a standalone file.
+  [Code](../../crates/apps/studio/src/app/doc_save.rs)
+- **Undo.** **Undo** and **Redo** act on the front document. Use
+  Cmd/Ctrl+Z and Cmd/Ctrl+Shift+Z, or the buttons in the header. A tag's
+  history covers field edits and the steps from its specialized editor.
+  The header's **Revert** is disabled. Game variants has its own **Revert**
+  in the Inspector. [Code](../../crates/apps/studio/src/app/shell.rs)
+
+## A new weapon
+
+1. Open a map that holds the weapon. In the **Browser**, pick
+   **Objects**, find the weapon and double-click it. Choose **Links >
+   Uses** to inspect references such as **Model**, **Sounds** or
+   **Projectile** when present. Follow a tag link, then click **<** to
+   return. [Code](../../crates/apps/studio/src/app/links.rs)
+2. Right-click the weapon's Browser row, choose **Copy into package...**
+   and select an enabled local package. If you need one, create it with
+   [`package.new`](agent-api.md#packages). The copy has a `_copy` suffix.
+   Studio writes a `tag` item that refers to the source with `like:`.
+   Set that package as the edit target with
+   [`package.target`](agent-api.md#packages).
+   [Code](../../crates/apps/studio/src/app/assets.rs)
+3. Build a map that contains the copy with
+   [`package.build`](agent-api.md#packages), passing the map and an
+   output folder, then open the resulting map in Studio. Find the copy
+   in the map's **Tags** tree and open its fields. Make your changes,
+   click **Check** to refresh Problems, then **Save** in the document
+   you edited. [Code](../../crates/apps/studio/src/api/packages.rs)
+4. With a paired game running a map that contains the copy, click
+   **In game** on the copied weapon's tag. Studio gives it to the
+   player and shows the outcome in **Game**. Check and build the
+   package through the [package API](agent-api.md#packages).
+   [Code](../../crates/apps/studio/src/api/preview/run.rs)
+
+## An announcer line in a cloned voice
+
+1. To replace an existing dialogue sound, find its `snd!` tag under
+   **Sounds** and open it. Under **Lines**, click **New line**. The
+   row takes the sound as its target and uses the voice matched by its
+   path. For a sound without a voice match, open a character in
+   **Voices** and use the **Replaces** picker in that voice's **Lines** pane to
+   select a dialogue sound from the open map. [Code](../../crates/apps/studio/src/app/voices.rs)
+2. If the row flags missing setup, click **Open its Setup** and follow
+   [Lines in a game character's voice](#lines-in-a-game-characters-voice).
+   Return to the sound, enter the line in **What is said**, then click
+   **Say**. Compare the waveforms on the same time axis and use **Play**
+   on the result to hear it.
+   [Code](../../crates/apps/studio/src/ui/voices/lines.rs)
+3. Click **Save** in the sound document to put the generated take in the
+   edit target as a `sound` item. To hear it in the game, load a map
+   built with that item in the paired game, then click **In game** from
+   the sound document. This plays the sound tag in that game.
+   [Code](../../crates/apps/studio/src/app/doc_save.rs)
+4. For a new announcer clip, open **Announcer** under **Voices** and use
+   **Say it** in **Lines**. Give the take a clip id and use the header's
+   **Save**. This uses the announcer's Fish Audio voice. See
+   [Announcer lines](#announcer-lines).
+   [Code](../../crates/apps/studio/src/ui/voices/lines.rs)
+
+## A game type
+
+1. Open **Game variants** from **Go to anything** using
+   `Open editor: Game variants`. In its **Game type script** panel,
+   choose **New**, then **Blank script** or a starter. To work from an
+   existing packaged script, open its item from **Game types** in the
+   Browser. [Code](../../crates/apps/studio/src/ui/game_script.rs)
+2. Edit the script and use **Check** and **Problems** to find errors.
+   Click the script header's **Save** to add or update the `rules` item
+   in the edit target.
+   [Code](../../crates/apps/studio/src/app/doc_save.rs)
+3. In the **Variants** list, choose **New from script... > The open
+   script**. This entry appears when the script passes analysis. Adjust
+   the settings and save from the variant's header to add the
+   `variant` item to the same package.
+   [Code](../../crates/apps/studio/src/ui/variants.rs)
+4. With a multiplayer map open, click **In game** on the variant.
+   Studio starts its own game with the current variant record,
+   including unsaved settings. Return to the script and use **In game**
+   to compile and reload the open buffer. **Reload on save** requests
+   a reload after a successful script save. Watch the **Game** panel
+   for the result, then use [`package.check`](agent-api.md#packages)
+   to check the saved package.
+   [Code](../../crates/apps/studio/src/api/preview.rs)
 
 ## 1. What you need
 
@@ -123,7 +250,8 @@ disc, every panel waiting behind it.*
 
 *The window's regions: (1) the menu bar, (2) the bar of document tabs and the game link, (3) Scene, (4) the Viewport, (5) the Inspector, (6) the Log and (7) the status bar.*
 
-Each document has a header above its editor. It shows the trail and edit target, with Preview, Check, Undo, Redo, Save, Links and Open with controls. Links lists what the asset uses and what uses it; choose a row to open it, or show the list in the Browser.
+See [Document header and links](#document-header-and-links) for the
+controls above the active editor.
 
 The window is made of panels that dock together:
 
@@ -191,7 +319,7 @@ back.
 
 *Dragging the **Inspector** tab over the outliner: the blue targets show where it can dock.*
 
-![The Inspector docked as a second tab beside the Outliner in the left column; the viewport now fills the right of the window](../images/editor/layout-docked.jpg)
+![The Inspector docked as a second tab beside the Outliner in the left column; the viewport fills the right of the window](../images/editor/layout-docked.jpg)
 
 *Dropped on the middle target, the inspector becomes a tab beside the outliner.*
 
@@ -420,7 +548,7 @@ went. **F** frames it.
    (E)**) for the rotate gizmo, or change **rotation**, **orientation** or
    **facing** in the inspector, depending on the kind of object.
 
-   ![The battle rifle spawn from the gizmo picture above, now two units to the side of where it was](../images/editor/move-after.jpg)
+   ![The battle rifle spawn from the gizmo picture above, two units to the side of where it was](../images/editor/move-after.jpg)
    
    *The spawn in the gizmo picture above, two units along x later.*
 4. To swap what spawns there, pick another item from the list on the
@@ -809,8 +937,7 @@ A game variant is a set of game settings: the game type (Slayer, CTF and
 so on), its name, and options like the score to win, the time limit and
 the weapons. The game ships with built-in variants, and you can save your
 own. Open the tool from Go to anything (`Open editor: Game variants`),
-or open a variant or script item of a package from the Browser's **Game
-types** kind.
+or open a script item from the Browser's **Game types** kind.
 
 ![The Game variants tool with the built-in Swords variant open: the Variants list on the left, its settings in the middle, and its changes from the Slayer defaults on the right](../images/editor/variants-builtin.jpg)
 
@@ -847,10 +974,10 @@ From a built-in variant:
    ![The top of the Settings panel for the built-in Swords: Built-in variant: copy it to edit., a name box holding Swords copy, and the Copy button](../images/editor/variants-copy.png)
    
    *A built-in, with the name its copy will get.*
-2. Type a name and click **Copy**. You now have an unsaved copy. You can
-   still rename it in its **Name** box.
+2. Type a name and click **Copy**. Rename the unsaved copy in its
+   **Name** box.
 
-   ![The Settings panel of the copy, its Name box now reading Lockout Swords, marked unsaved](../images/editor/variants-rename.png)
+   ![The Settings panel of the copy, its Name box reading Lockout Swords, marked unsaved](../images/editor/variants-rename.png)
    
    *The copy, renamed.*
 3. Change its settings. Each change shows under **Changes from the ...
@@ -889,8 +1016,9 @@ someone else's), the section names the script's hash and the settings
 are left as they are; open the script in the Game type script window to
 see its options.
 
-Open a packaged variant from its item row to edit it. The **Saved**
-list and **Delete** manage variants in the game's save storage.
+Use **Import...** on a saved `.h2variant` package file to reopen the
+record. The **Saved** list and **Delete** manage variants in the game's
+save storage.
 
 ### The settings pages
 
@@ -978,8 +1106,9 @@ it has unsaved edits; the editor shows beside the variant's settings
 text for the next open.
 
 - **New** starts a blank script, or one of the built-in game types or
-  examples to change. **Open**, **Save** and **Save as** read and write
-  `.rules` files. Opening a script gives it a tab and brings it forward. **Format**
+  examples to change. **Open** reads a `.rules` file and brings its
+  tab forward. The header's **Save** writes to the edit target, and
+  **Export script...** writes a standalone file. **Format**
   (**Shift+Alt+F**) lays the script out the standard way; it refuses a
   script that does not parse.
 - The text is coloured as the language reads it (its semantic tokens),
@@ -1045,11 +1174,9 @@ text for the next open.
   (`variants::portable::from_script`, as `h2 variants from-script`
   does). The script has to build and fit its budget.
 
-**Reload** (or **Cmd+R** while typing) sends the script to the paired
-game ([Play from the editor](#play-from-the-editor)). The editor builds
-and checks it first, and sends nothing that does not build. **Save**
-(**Cmd+S**) reloads too while **Reload on save** is ticked, as it is
-when the editor starts. The game decides how it goes in
+**In game** compiles the script and queues a reload into Studio's own
+game. With **Reload on save** ticked, **Save** (Cmd/Ctrl+S) also requests
+a reload after writing the script. The game chooses how to reload in
 ([Reloading a running script](../game/rules-engine.md#reloading-a-running-script)):
 
 - **In place** when the script keeps the running one's variables,
@@ -1060,7 +1187,7 @@ when the editor starts. The game decides how it goes in
   variant with the new script, and the editor's row says why it could
   not go in place.
 
-The mode list next to **Reload** picks **Auto** (the above), **In
+The mode list next to **Reload on save** picks **Auto** (the above), **In
 place** (refuse rather than restart) or **Restart** (always). The
 result shows at the bottom of the window and in the Game panel. The
 game refuses a reload in a Theater film, in a matchmade Live game, on a
@@ -1332,7 +1459,7 @@ move, resize or retype its widgets.
     whole drag is one step. Each edit is checked at once, so a widget
     dragged off the title-safe area turns red.
 - **Inspector** (right):
-  - **Page**: what the screen shows now, and a pad: **Up**, **Down**,
+  - **Page**: what the screen shows, and a pad: **Up**, **Down**,
     **Left**, **Right**, **A**, **B**, **X**, **Y**, **Start** and
     **Back**. Each press steps the screen as the game would, and the
     line under the pad says what it did (`Down: Focus(1)`,
