@@ -15,7 +15,7 @@ use native_render::camera::GuestRead;
 use native_render::transparent_streams;
 
 use native_render::world_layers_gpu::{Cache as IndexedCache, IndexedPass};
-use timeline::native::Stage;
+use timeline::native::{Metric, Stage};
 
 struct Walk<B: d3d::Backend> {
     device: d3d::abi::SharedDevice<B>,
@@ -147,8 +147,7 @@ impl Cache {
             return None;
         }
         let key = StreamKey::new(&draw.streams, draw.vertex_count)?;
-        let binding = self.binding(key, &draw.layout, &draw.streams)?;
-        let result = IndexedGeometry { layout: binding.layout.clone(), stream: binding.stream.clone() };
+        let result = self.binding(key, &draw.layout, &draw.streams)?;
         self.accepted += 1;
         if self.accepted % 1800 == 1 {
             eprintln!("native-transparents: {} indexed draws with native bindings", self.accepted);
@@ -156,12 +155,18 @@ impl Cache {
         Some(result)
     }
 
-    fn binding(&mut self, key: StreamKey, original: &VertexLayout, sources: &[StreamBytes]) -> Option<&IndexedGeometry> {
+    fn binding(&mut self, key: StreamKey, original: &VertexLayout, sources: &[StreamBytes]) -> Option<IndexedGeometry> {
         const BUDGET: usize = 16 * 1024 * 1024;
-        let find = |bindings: &Vec<Binding>| bindings.iter().position(|b| b.original == *original);
-        if let Some(existing) = self.by_streams.get(&key).and_then(find) {
-            return Some(&self.by_streams[&key][existing].packed);
+        if let Some(binding) = self.by_streams.get(&key)
+            .and_then(|bindings| bindings.iter().find(|binding| binding.original == *original))
+        {
+            Stage::Transparents.count(Metric::CacheHits, 1);
+            return Some(IndexedGeometry {
+                layout: binding.packed.layout.clone(),
+                stream: binding.packed.stream.clone(),
+            });
         }
+        Stage::Transparents.count(Metric::CacheMisses, 1);
         let mut views = [VertexStream { data: &[], stride: 0 }; 16];
         let views = views.get_mut(..sources.len())?;
         for (view, source) in views.iter_mut().zip(sources) {
@@ -173,19 +178,19 @@ impl Cache {
             self.by_streams.clear();
             self.bytes = 0;
         }
-        let bindings = self.by_streams.entry(key).or_default();
-        bindings.push(Binding {
-            original: original.clone(),
-            packed: IndexedGeometry {
-                layout: packed.layout,
-                stream: StreamBytes {
-                    stride: packed.stride,
-                    data: StreamData::Cached(CachedBytes::derived(packed.bytes)),
-                },
+        let packed = IndexedGeometry {
+            layout: packed.layout,
+            stream: StreamBytes {
+                stride: packed.stride,
+                data: StreamData::Cached(CachedBytes::derived(packed.bytes)),
             },
+        };
+        self.by_streams.entry(key).or_default().push(Binding {
+            original: original.clone(),
+            packed: IndexedGeometry { layout: packed.layout.clone(), stream: packed.stream.clone() },
         });
         self.bytes += size;
-        Some(&bindings.last().expect("just added").packed)
+        Some(packed)
     }
 }
 
@@ -218,17 +223,17 @@ mod tests {
         let mut streams = [stream(1.0), stream(2.0)];
         let key = StreamKey::new(&streams, 1).unwrap();
         let id = |b: &IndexedGeometry| b.stream.data.cache_id().unwrap();
-        let first = id(cache.binding(key, &layout, &streams).unwrap());
-        assert_eq!(id(cache.binding(key, &layout, &streams).unwrap()), first);
+        let first = id(&cache.binding(key, &layout, &streams).unwrap());
+        assert_eq!(id(&cache.binding(key, &layout, &streams).unwrap()), first);
 
         layout.streams[1].attributes[0].register = VertexRegister(6);
-        let new_layout = id(cache.binding(key, &layout, &streams).unwrap());
+        let new_layout = id(&cache.binding(key, &layout, &streams).unwrap());
         assert_ne!(new_layout, first);
 
         streams[1] = stream(3.0);
         let key = StreamKey::new(&streams, 1).unwrap();
         let packed = cache.binding(key, &layout, &streams).unwrap();
-        assert_ne!(id(packed), new_layout);
+        assert_ne!(id(&packed), new_layout);
         assert_eq!(&packed.stream.data[4..8], &3.0f32.to_le_bytes());
     }
 }

@@ -191,7 +191,7 @@ make that was followed ends in one of three:
 |---|---|---|
 | Screen quads: begin `0x00035b90` (record of `0x98` bytes), quad `0x000363a0`, end `0x00036560` (`points::SCREEN_QUADS_BEGIN`, `SCREEN_QUAD`, `SCREEN_QUADS_END`) | The begin sets up to three bitmaps (`0x00012310`, address mode wrap or clamp per stage, point or linear filter), colour writes without alpha (`SET_COLOR_MASK`), depth test off, the blend by mode (`0x000142f0`: mode 10 off, else three 12-entry tables of source factor, destination factor and equation), two vertex constant blocks (a pixel-centred screen transform over the rectangle at `0x00485648`, and a second block from the record's flips and pairs), and, with stage 0 bound and `+0x97` clear, a fixed combiner written into the PSDEF at `0x00484f68` with the record's colours packed in (`0x00131e50`). Each quad commits the state (`0x0001cf50`) and pushes one inline `Begin(7)`, four vertices of diffuse (`SET_VERTEX_DATA4UB`), coordinate and position (`SET_VERTEX_DATA2F`), and `End`: no D3D entry. | Text: `0x0001f070` (from `0x0001fa50`, 22 call sites, and `0x0001fb10`, the HUD's `0x0022aca8`), over the glyph cache `[0x004b62ac]`, one quad per glyph through the layout `0x0013f0e0`, its callback `0x0001f490` and `0x0001f3a0`. A full-screen bitmap at `0x00156960`. |
 | HUD shader quad `0x0022a664` (`points::HUD_SHADER_QUAD`) | The HUD's bitmap into `0x004e6978`/`0x004e697c` (datum, index: the shader's engine texture), the shader draw `0x0001bbf0` (EDI the shader), then `D3DDevice_Begin(7)`, per corner `SetVertexData2f(3, u, v)` and `SetVertexData4f(-1, x, y, z, w)` (z and w the float at `0x0045dd40`), `D3DDevice_End`. The coordinates are the rectangle at EAX `(u0, u1, v0, v1)`, times the bitmap's size when it is linear. | The HUD widgets (`0x0022b397` to `0x0022bca4`), the UI's shader bitmaps (`0x002b12ae`), `0x001e936a` to `0x001e95b6`, `0x0020077f`, `0x0024eca0` to `0x0024f556`. |
-| Other immediate draws (`D3DDevice_Begin` callers) | Not traced: `0x002548f0` (`0x00254e28`, `0x00255083`, with `0x00014bc0` target switches and `0x00014f60` texture binds: S, the menus' blurred backdrop), the fade's `0x00040d86`, and `0x00029b00`, `0x0003bf20`. | |
+| Other immediate draws (`D3DDevice_Begin` callers) | Not traced: `0x002548f0` (`0x00254e28`, `0x00255083`, with `0x00014bc0` target switches and `0x00014f60` texture binds: the motion sensor calls it at `0x001a295b`), the fade's `0x00040d86`, and `0x00029b00`, `0x0003bf20`. | |
 
 So text is one batch per string with a quad per glyph, each a separate
 D3D draw; that is the work a native batch removes (one draw per run of
@@ -231,7 +231,7 @@ paths. The fade and solid rectangle helpers own their separate scopes.
 | Full-screen fade | The two signed-short extents at `0x00040d86`, with the fade's selected combiner and blend already set. | Begin, four position setters and End. The fade epilogue runs at `0x00040db8`. |
 | Menu fade rectangles, cinematic bars and split-screen dividers | The completed quad copy at the `0x0004b252` uploader with return address `0x00052ce7`. The callback, mode, topology and copy length must agree. | The copy callback and inline packet publication. The common uploader's caller runs its original state tail. |
 | Loading spinners and background/sweep bitmaps | The spinner's two sets of completed UVs at `0x0002a1f4`. The bitmap at `0x0002ae60` supplies its two rectangles and UV divisors and Rust evaluates the multiplications with the live MXCSR. | The immediate-mode submission of each fan. The loading animation, clears, target binds and presentation remain in guest order. |
-| Menu backdrop wash, tint, and composite | The wash uses the live tint and sample spread at `0x00254b95`. The tint at `0x00254e28` reads the active title's immediate operands. The composite at `0x00255083` reads the selected center and half extent. | Each fan's geometry builder through End. Material and target changes keep their original order. |
+| Motion sensor wash, tint, and composite | The wash uses the live tint and sample spread at `0x00254b95`. The tint at `0x00254e28` reads the loaded executable's immediate operands. The composite at `0x00255083` reads the selected center and half extent. | Each fan's geometry builder through End. Material and target changes keep their original order. |
 | Model widgets | At the sorted call, Rust checks the selector and definition. For an active view it verifies the selected object and light handles, camera scale, animated offsets, field of view and viewport against the camera arguments. It walks the live mesh section, material group and visibility mask at `0x0004d621`. | The entire virtual draw for an inactive widget or an empty name list. An accepted material group skips the indexed geometry builder at `0x0004daa0` and resumes at `0x0004d626`. |
 | Debug/widget outlines | Five signed-short points and the converted colour at `0x0001ed98`, with the caller and the open line-strip Begin verified. | The packed colour and vertex loop. The guest End closes the empty stream and restores line state. |
 | Host-drawn widgets | At the sorted call, the host is asked whether it draws the validated widget itself (`native_hud::Host::replace_widget`). The Skulls page's model picture is the one such widget: the noted picture widget, its block and its alpha at `+0x64` ([skulls.md](../game/skulls.md#the-model-picture)). | The entire virtual draw, resuming at `0x00235448` as an idle model widget does. The host's pass is queued at that point in the walk (`Device::external_pass_now`). |
@@ -434,18 +434,18 @@ widget lists exactly. One list is one call of `0x002353a5` on one screen
 order is the guest's whatever the port does.
 
 At `0x00235428` (`points::ui_render::LIST_READY`, after the window is
-taken), `render_bridge::native_hud::ui_overlay` reads the list from the
-frame and asks the host whether it draws menus now (`Host::ui_overlay`;
-the game's answer is the UI scope's order). It claims nothing unless the
-screen quads' viewport (`0x00485648`, top, left, bottom, right) is 0, 0,
-480, 640, both floating-point units round to nearest, and the screen has
-no earlier mismatch on this map. Each drawn
-entry's widget is read (`scene_extract::ui::read_widget`: the header, and
-what its draw makes by the function its vtable's `+0x10` names) and listed
-alone (`draw_list`). Consecutive drawn entries that list are a run; an
-entry outside the window does not end one, a refused entry does. After a
-guest draw, the next run rereads its entries at placement so guest changes
-to focus, colours or resource state reach that pass.
+taken), `render_bridge::native_hud::ui_overlay` asks whether the host draws
+menus and checks the viewport and screen before it reads the list. The
+host checks the UI scope's order (`Host::ui_overlay`). The screen quads'
+viewport (`0x00485648`, top, left, bottom, right) must cover the full
+canvas, both floating-point units must round to nearest, and the screen
+must have no earlier mismatch on this map. Each drawn widget is read
+(`scene_extract::ui::read_widget`) and listed on its own (`draw_list`).
+Consecutive drawn entries that list form a run. An entry outside the
+window leaves the run open and a refused entry ends it. After a guest
+draw, each run refreshes only its own entries at placement so changes to
+focus, colours or resource state reach the pass. List planning and run
+refresh time count toward `native_ui_extract_ns`.
 
 At the sorted call of a run's first entry, the host places one overlay
 pass with the run's items (`Host::ui_pass`, `game::hud_overlay::place_menu`,

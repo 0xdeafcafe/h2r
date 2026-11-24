@@ -185,34 +185,56 @@ impl GuestRead for Ro<'_> {
     }
 }
 
-/// The sorted list at [`LIST_READY`] (EBP, EDI): `None` when its frame
-/// does not read.
-pub fn at_list(mem: &dyn GuestMemory, ebp: u32, edi: u32) -> Option<UiList> {
-    let below = |n: u32| mem.u32(ebp.checked_sub(n)?).ok();
-    let count = below(COUNT_FROM_EBP)? as i32;
-    if count <= 0 || count as usize > walk::MAX_LISTED {
-        return None;
-    }
-    let first = ebp.checked_sub(LIST_FROM_EBP)?;
-    let entries = (0..count as u32)
-        .map(|i| {
-            let at = first.checked_add(i * ENTRY_BYTES)?;
-            Some(ListEntry {
-                widget: mem.u32(at).ok()?,
-                depth: f32::from_bits(mem.u32(at.checked_add(ENTRY_DEPTH)?).ok()?),
-                bias: mem.u16(at.checked_add(ENTRY_BIAS)?).ok()? as i16,
-            })
+/// The live portion of the sort frame shared by list planning and a run
+/// refreshed after an intervening guest draw.
+struct ListFrame {
+    first: u32,
+    count: u32,
+    user: u32,
+}
+
+impl ListFrame {
+    fn read(mem: &dyn GuestMemory, ebp: u32) -> Option<Self> {
+        let count = mem.u32(ebp.checked_sub(COUNT_FROM_EBP)?).ok()?;
+        if count == 0 || count as usize > walk::MAX_LISTED {
+            return None;
+        }
+        Some(Self {
+            first: ebp.checked_sub(LIST_FROM_EBP)?,
+            count,
+            user: mem.u32(ebp.checked_add(USER_FROM_EBP)?).ok()?,
         })
-        .collect::<Option<Vec<_>>>()?;
+    }
+
+    fn entry(&self, mem: &dyn GuestMemory, ordinal: u32) -> Option<ListEntry> {
+        if ordinal >= self.count {
+            return None;
+        }
+        let at = self.first.checked_add(ordinal * ENTRY_BYTES)?;
+        let mut words = [0; ENTRY_BIAS as usize + 2];
+        mem.read(at, &mut words).ok()?;
+        Some(ListEntry {
+            widget: u32::from_le_bytes(words[..4].try_into().ok()?),
+            depth: f32::from_le_bytes(
+                words[ENTRY_DEPTH as usize..ENTRY_BIAS as usize].try_into().ok()?,
+            ),
+            bias: i16::from_le_bytes(words[ENTRY_BIAS as usize..].try_into().ok()?),
+        })
+    }
+}
+
+/// The sorted list at LIST_READY (EBP, EDI), if the frame reads.
+pub fn at_list(mem: &dyn GuestMemory, ebp: u32, edi: u32) -> Option<UiList> {
+    let frame = ListFrame::read(mem, ebp)?;
+    let depth = |n: u32| mem.f32(ebp.checked_sub(n)?).ok();
     Some(UiList {
         frame: ebp,
         root: edi,
-        user: mem.u32(ebp.checked_add(USER_FROM_EBP)?).ok()?,
-        window: [
-            f32::from_bits(below(NEAR_FROM_EBP)?),
-            f32::from_bits(below(FAR_FROM_EBP)?),
-        ],
-        entries,
+        user: frame.user,
+        window: [depth(NEAR_FROM_EBP)?, depth(FAR_FROM_EBP)?],
+        entries: (0..frame.count)
+            .map(|ordinal| frame.entry(mem, ordinal))
+            .collect::<Option<Vec<_>>>()?,
     })
 }
 
@@ -395,28 +417,28 @@ pub fn run_part(frame: u32, run: usize, mem: &dyn GuestMemory) -> Option<Overlay
         let claim = claims.iter().rev().find(|c| c.frame == frame)?;
         let run = claim.runs.get(run)?;
         Some(if claim.guest_drew {
-            Err((claim.root, run.entries.clone()))
+            Err(run.entries.clone())
         } else {
             Ok(run.part.clone())
         })
     })?;
-    let (root, ordinals) = match pending {
+    let ordinals = match pending {
         Ok(part) => return Some(part),
         Err(refresh) => refresh,
     };
     if screen_rect(mem) != Some(FULL_SCREEN) {
         return None;
     }
-    let list = at_list(mem, frame, root)?;
+    let list = ListFrame::read(mem, frame)?;
     let host = super::host()?;
     let fonts = host.ui_text(mem);
     let mut refreshed = Overlay::new(walk::CANVAS);
     for ordinal in ordinals {
-        let entry = list.entries.get(ordinal as usize)?;
+        let entry = list.entry(mem, ordinal)?;
         if host.ui_custom_widget(mem, entry.widget) {
             return None;
         }
-        let items = part(&Ro(mem), entry, list.user, fonts.as_deref().unwrap_or(&NoText)).ok()?;
+        let items = part(&Ro(mem), &entry, list.user, fonts.as_deref().unwrap_or(&NoText)).ok()?;
         refreshed.append(&items).ok()?;
     }
     Some(refreshed)
@@ -469,23 +491,26 @@ pub fn forget() {
     REFUSED.with(|r| r.borrow_mut().clear());
 }
 
-/// The list at [`LIST_READY`]: its claim, or why the game draws all of
-/// it. Each drawn widget the game keeps is counted by its reason.
-pub fn claim_list(mem: &dyn GuestMemory, list: &UiList) -> Result<Claim, MenuRefusal> {
+/// Check the screen before reading its sorted entries.
+pub(super) fn check_frame(mem: &dyn GuestMemory, root: u32) -> Result<(), MenuRefusal> {
     if screen_rect(mem) != Some(FULL_SCREEN) {
         return Err(MenuRefusal::Frame);
     }
-    if refused(list.root) {
+    if refused(root) {
         return Err(MenuRefusal::Mismatched);
     }
-    let host = super::host();
-    let fonts = host.as_ref().and_then(|host| host.ui_text(mem));
-    let custom = |widget| host.as_ref().is_some_and(|h| h.ui_custom_widget(mem, widget));
+    Ok(())
+}
+
+/// Claim the list at LIST_READY. Count each drawn widget the game keeps.
+pub(super) fn claim_list(mem: &dyn GuestMemory, list: &UiList, host: &dyn super::Host) -> Claim {
+    let fonts = host.ui_text(mem);
+    let custom = |widget| host.ui_custom_widget(mem, widget);
     let (claim, refused) = plan_with_text(&Ro(mem), list, fonts.as_deref().unwrap_or(&NoText), &custom);
     for (_, why) in refused {
         why.counter().count();
     }
-    Ok(claim)
+    claim
 }
 
 #[cfg(test)]
@@ -579,6 +604,25 @@ mod tests {
         assert_eq!(at_list(&mem, ebp, root), None);
         mem.put_u32(ebp - COUNT_FROM_EBP, 257);
         assert_eq!(at_list(&mem, ebp, root), None);
+    }
+
+    #[test]
+    fn a_run_can_refresh_its_entries_without_reading_other_ordinals() {
+        let mut mem = FakeGuest::new();
+        let second = 0x8000;
+        let ebp = second - ENTRY_BYTES + LIST_FROM_EBP;
+        mem.put_u32(ebp - COUNT_FROM_EBP, 2)
+            .put_u32(ebp + USER_FROM_EBP, 1)
+            .put_u32(second, 0x1200)
+            .put_f32(second + ENTRY_DEPTH, 0.25)
+            .put_u16(second + ENTRY_BIAS, 4);
+        let frame = ListFrame::read(&mem, ebp).unwrap();
+        assert_eq!(frame.entry(&mem, 0), None);
+        assert_eq!(
+            frame.entry(&mem, 1),
+            Some(ListEntry { widget: 0x1200, depth: 0.25, bias: 4 }),
+        );
+        assert_eq!(frame.entry(&mem, 2), None);
     }
 
     /// Runs are the drawn entries that list, consecutive among the drawn:

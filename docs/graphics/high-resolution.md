@@ -85,27 +85,27 @@ scrolling strips: 1024-texel bitmaps drawn as two pieces that meet where
 the texture wraps. A panel or tab at the edge has a shorter bitmap and keeps
 the fit. Only the UI rectangle site gives the bitmap's texture coordinates:
 an emblem draws a unit quad through the shader quad site, placed by its
-transform, so the shader and screen quad sites use the first case alone. Background art keeps the full viewport, as on a widescreen Xbox,
-so the menu covers the display. The choice is made per quad, before its
-Begin, at the shader quad (`HUD_QUAD_READY`), screen quad
-(`UI_SCREEN_QUAD_READY`) and UI rectangle sites. The UI rectangle
-(`0x00052040`: bitmap widgets and the menus' background bitmaps and strips)
-is read at the dynamic upload helper's `EFFECT_QUAD_READY` when it returns
-to `RECT_SUBMIT_RETURN`. The next quad or widget (`UI_ITEM_CALL`) restores
-the fit. Tests:
-`menu_background_art_covers_the_display_and_widgets_keep_the_uniform_fit`,
-`a_scrolling_strips_two_pieces_fill_and_a_widget_at_the_edge_keeps_the_fit`,
-`background_fill_follows_the_fitted_axis_and_view_and_skips_the_hud` and
+transform, so the shader and screen quad sites use the first case alone.
+Background art keeps the full viewport, as on a widescreen Xbox. The choice
+is made before the native or guest draw at the shader quad
+(`HUD_QUAD_READY`), screen quad (`UI_SCREEN_QUAD_READY`) and UI rectangle
+sites. The screen and rectangle shaders use raster-local coordinates, so
+their art tests use the width and height of their raster rectangle. The UI
+rectangle (`0x00052040`) is read at the dynamic upload helper's
+`EFFECT_QUAD_READY` when it returns to `RECT_SUBMIT_RETURN`. The next quad or
+widget (`UI_ITEM_CALL`) restores the fit.
+
+The full-view fades in `UI_RENDER_LAYERS`, the start-screen transition,
+and the window stack's dialog dim all call `UI_MENU_VIEW_FILL`. This helper
+subtracts the supplied rectangle's origin. Its quad takes its width and
+height from the same raster rectangle as the rectangle shader
+(`0x00485648`). The fill uses the full view through submission and then
+restores the widget fit. The current view can be a split-screen viewport.
+`crates/extensions/game/src/render_aspect.rs` covers these paths with
+`menu_view_fades_use_the_rectangle_their_shader_projects_over`,
+`screen_art_uses_raster_local_bounds_in_the_right_hand_view` and
 `quads_are_read_at_the_shader_screen_and_rect_sites`.
-The menu backdrop (`UI_MENU_BACKDROP`) uses the scene's full viewport
-through its blur and dim passes. `crates/extensions/game/src/render_aspect.rs`
-restores the widget fit when it finishes. Under a dialog the window stack
-calls the colour fill at `UI_MENU_VIEW_FILL`. Its quad starts at the local
-origin and takes its width and height from the raster rectangle used by
-the rectangle shader (`0x00485648`). This covers the current view even
-when the window stack supplies narrower UI bounds. The subsequent dialog
-pass blurs the screen under it
-with the screen convolution blur (`SCREEN_CONVOLUTION_BLUR`, called by the
+The dialog then blurs the screen under it with the screen convolution blur (`SCREEN_CONVOLUTION_BLUR`, called by the
 modal blur at `0x00235756`), which copies whole 640x480 targets back and
 forth inside the widget fit. The device draws any draw that samples a
 render target the size of its own 640x480 target without the fit: a frame
@@ -543,14 +543,10 @@ allocations, from 512x512 down to 64x64.
 
 Fixed-size blur targets keep their guest texel grids. Frame-sized
 intermediates and feedback copies use the display grid
-(`crates/platform/d3d/src/scaled.rs`). The shared menu backdrop helper
-(`UI_MENU_BACKDROP`) processes the scene in the view's own coordinates.
-`crates/extensions/game/src/render_aspect.rs` drains pending draws at the
-helper's entry and return, suspends the widget safe-area fit for the
-backdrop's target chain, and restores the fit for subsequent UI draws.
-The final backdrop fan (`crates/rewrites/engine/src/ui_backdrop.rs`)
-interpolates normalized texture coordinates over the guest's composite
-rectangle. The back buffer rasterises it on the display grid.
+(`crates/platform/d3d/src/scaled.rs`). A frame-sized copy bypasses the
+widget fit in draw resolution. The motion sensor's wash, tint and
+composite fans (`crates/rewrites/engine/src/ui_backdrop.rs`) draw the sensor
+at its HUD placement.
 
 Known failure modes to test for, all seen in xemu at more than 1x:
 
