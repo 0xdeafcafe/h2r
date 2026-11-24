@@ -266,6 +266,8 @@ fn entry(file: &str, name: &str, sentence: Option<&str>) -> VariantEntry {
         name: name.into(),
         sentence: sentence.map(str::to_owned),
         detail: format!("By Builder. Adds 2 Crates ({name})."),
+        id: Some(content::Sha256::of(file.as_bytes())),
+        suggested_for: None,
     }
 }
 
@@ -307,6 +309,64 @@ fn the_map_variant_picker_offers_original_first_and_the_variants_by_name() {
     assert!(pick.description.contains("permission denied"));
     // A held variant no longer saved focuses Original.
     assert_eq!(map_variant_pick(Ok(vec![]), Some("Gone"), recorder().0).current, 0);
+}
+
+/// A King of the Hill game variant named `Hill` suggesting the map
+/// variants whose entries (`entry`) have these files, on the base `base`.
+fn suggesting(base: &content::Sha256, files: &[&str]) -> variants::portable::Bundle {
+    use variants::portable::MapSuggestion;
+    let mut v = variants::GameVariant::blank(variants::GameType::King);
+    v.set_name("Hill").unwrap();
+    let maps = files
+        .iter()
+        .map(|f| MapSuggestion {
+            base: base.to_string(),
+            variant: content::Sha256::of(f.as_bytes()).to_string(),
+            name: (*f).to_owned(),
+        })
+        .collect();
+    variants::portable::Bundle::new(&v, "Hill", "", None)
+        .unwrap()
+        .with_maps(maps)
+        .unwrap()
+}
+
+#[test]
+fn the_picker_opens_on_a_suggested_variant_and_keeps_its_order() {
+    let base = content::Sha256::of(b"base map");
+    let mut listed = vec![
+        entry("Castle", "Castle", None),
+        entry("Two_Towers", "Two Towers", None),
+    ];
+    crate::map_variant::suggest(&mut listed, &suggesting(&base, &["Two_Towers"]), &base);
+    assert_eq!(listed[0].suggested_for, None);
+    assert_eq!(listed[1].suggested_for.as_deref(), Some("Hill"));
+    let pick = map_variant_pick(Ok(listed.clone()), None, recorder().0);
+    // Original, then by name, as ever; the focus is on the suggestion.
+    assert_eq!(pick.values, [ORIGINAL, "Castle", "Two Towers"]);
+    assert_eq!(pick.current, 2);
+    assert!(pick.line(2).ends_with("Made for Hill."));
+    assert!(!pick.line(1).contains("Made for"));
+    // A held pick wins over the suggestion.
+    assert_eq!(map_variant_pick(Ok(listed), Some("Castle"), recorder().0).current, 1);
+}
+
+#[test]
+fn a_suggestion_for_another_base_or_an_unusable_variant_does_not_focus() {
+    let base = content::Sha256::of(b"base map");
+    let other = content::Sha256::of(b"another map");
+    let mut listed = vec![entry("Castle", "Castle", None)];
+    crate::map_variant::suggest(&mut listed, &suggesting(&other, &["Castle"]), &base);
+    assert_eq!(listed[0].suggested_for, None);
+    assert_eq!(map_variant_pick(Ok(listed), None, recorder().0).current, 0);
+    // A variant not on this machine marks nothing.
+    let mut listed = vec![entry("Castle", "Castle", None)];
+    crate::map_variant::suggest(&mut listed, &suggesting(&base, &["Gone"]), &base);
+    assert_eq!(listed[0].suggested_for, None);
+    // A suggested one that cannot be used is not opened on.
+    let mut listed = vec![entry("Old", "Old", Some("Old was made for another version."))];
+    crate::map_variant::suggest(&mut listed, &suggesting(&base, &["Old"]), &base);
+    assert_eq!(map_variant_pick(Ok(listed), None, recorder().0).current, 0);
 }
 
 #[test]

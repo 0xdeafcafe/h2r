@@ -203,7 +203,9 @@ seats its Clankers in all three modes
   over Game Setup with Original and the map variants saved for the lobby's
   map (`lobby_mode::map_variant_list`, over `forge::files::variants::list`);
   a variant that cannot be used is listed with its sentence as its line and
-  A on it stays in the picker. Its help line names the chosen variant. In
+  A on it stays in the picker. The picker opens on a map variant the lobby's
+  game variant suggests (`lobby_mode::map_variant_list_for`) when none is held.
+  Its help line names the chosen variant. In
   FORGE the pick is the variant's file stem, the draft the session opens
   with (`lobby_start::forge_map`), and the start gate's census applies
   (`rules::gate`, `variants::load`); in CUSTOM GAMES it is the variant the

@@ -47,6 +47,11 @@ pub const MAX_IR: usize = rules::ir::MAX_IR_BYTES;
 /// The rules source's cap (`rules::lang::MAX_SOURCE_BYTES`).
 pub const MAX_SOURCE: usize = rules::lang::MAX_SOURCE_BYTES;
 
+/// The most map variants a game variant suggests.
+pub const MAX_MAPS: usize = 8;
+/// A suggestion's name, UTF-16 units.
+pub const MAX_MAP_NAME_UNITS: usize = 63;
+
 /// A saved-variant file: the record, then its 20-byte signature
 /// ([`crate::save::FILE_SIZE`]).
 pub const SAVE_FILE: usize = crate::save::FILE_SIZE;
@@ -97,6 +102,18 @@ pub struct ScriptPart {
     pub modules: BTreeMap<String, String>,
 }
 
+/// A map variant the game variant's author made it for
+/// (docs/game/forge-map-variants.md, "Who picks"): the base map's
+/// SHA-256, the map variant's document id and its name, for people.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MapSuggestion {
+    /// The base map's SHA-256, 64 lowercase hex digits.
+    pub base: String,
+    /// The map variant's document id, 64 lowercase hex digits.
+    pub variant: String,
+    pub name: String,
+}
+
 /// A version-2 file. Fields serialize in this order; [`Bundle::canonical`]
 /// is compact JSON of this struct, so a bundle has one byte form.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,6 +133,10 @@ pub struct Bundle {
     pub record_hex: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub script: Option<ScriptPart>,
+    /// Map variants it suggests, at most [`MAX_MAPS`]. A bundle with none
+    /// has the bytes it had before the field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub maps: Vec<MapSuggestion>,
 }
 
 /// A bundle that passed [`Bundle::integrity`] or [`Bundle::check`].
@@ -167,6 +188,10 @@ pub enum PortableError {
     /// Over the VM's per-tick budget or the IR cap (`rules::fits`).
     #[error("the script is too costly to run: {0}")]
     ScriptCost(String),
+    #[error("the file suggests {0} map variants; at most {MAX_MAPS}")]
+    MapsTooMany(usize),
+    #[error("a suggested map variant {0}")]
+    MapSuggestion(&'static str),
     #[error("the option values: {0}")]
     Options(String),
     #[error("the record is engine {record}; the script's record is engine {script}")]
@@ -233,6 +258,7 @@ pub fn read(text: &str) -> Result<Bundle, PortableError> {
             engine: v.game_type().engine(),
             record_hex: hex(v.bytes()),
             script: None,
+            maps: Vec::new(),
         });
     }
     let b: Bundle = serde_json::from_str(text).map_err(|e| PortableError::Json(e.to_string()))?;
@@ -295,6 +321,7 @@ impl Bundle {
             engine: v.game_type().engine(),
             record_hex: hex(v.bytes()),
             script,
+            maps: Vec::new(),
         };
         b.check()?;
         Ok(b)
@@ -312,6 +339,25 @@ impl Bundle {
         }
         self.check()?;
         Ok(self)
+    }
+
+    /// The bundle suggesting `maps`: refused for more than [`MAX_MAPS`], a
+    /// hash that is not 64 lowercase hex digits, an empty or over-long
+    /// name, or the same map variant twice.
+    pub fn with_maps(mut self, maps: Vec<MapSuggestion>) -> Result<Bundle, PortableError> {
+        self.maps = maps;
+        check_maps(&self.maps)?;
+        self.check()?;
+        Ok(self)
+    }
+
+    /// The suggestions for the base map whose SHA-256 is `base`.
+    pub fn suggested_for<'a>(
+        &'a self,
+        base: &'a Sha256,
+    ) -> impl Iterator<Item = &'a MapSuggestion> + 'a {
+        let base = base.to_string();
+        self.maps.iter().filter(move |m| m.base == base)
     }
 
     /// The file's one byte form: compact JSON in field order.
@@ -348,6 +394,7 @@ impl Bundle {
     /// with the record's prefix, loads (`rules::verify::load`) and rides
     /// the record's engine or the script index.
     pub fn integrity(&self) -> Result<Checked, PortableError> {
+        check_maps(&self.maps)?;
         let v = self.variant()?;
         let engine = v.game_type().engine();
         if self.engine != engine {
@@ -442,6 +489,34 @@ pub struct Attach {
     pub ir: Vec<u8>,
     pub source: Option<String>,
     pub options: Option<u32>,
+}
+
+/// A bundle's suggestions: at most [`MAX_MAPS`], each with two hashes and
+/// a name, none twice.
+fn check_maps(maps: &[MapSuggestion]) -> Result<(), PortableError> {
+    if maps.len() > MAX_MAPS {
+        return Err(PortableError::MapsTooMany(maps.len()));
+    }
+    let hash = |h: &str| h.len() == 64 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    for (i, m) in maps.iter().enumerate() {
+        if !hash(&m.base) {
+            return Err(PortableError::MapSuggestion("has a base that is not a SHA-256"));
+        }
+        if !hash(&m.variant) {
+            return Err(PortableError::MapSuggestion("has an id that is not a SHA-256"));
+        }
+        if m.name.is_empty() {
+            return Err(PortableError::MapSuggestion("has no name"));
+        }
+        if m.name.encode_utf16().count() > MAX_MAP_NAME_UNITS {
+            return Err(PortableError::MapSuggestion("has a name over 63 characters"));
+        }
+        text_chars(&m.name).map_err(PortableError::MapSuggestion)?;
+        if maps[..i].iter().any(|o| o.base == m.base && o.variant == m.variant) {
+            return Err(PortableError::MapSuggestion("is listed twice"));
+        }
+    }
+    Ok(())
 }
 
 /// The files a bundle's script source names: each a module name, no more
@@ -1858,5 +1933,70 @@ settings {
         assert_eq!(setting_value(&v, row("damage"), 2), Some(100));
         assert_eq!(setting_value(&v, row("time_limit"), 2), Some(480));
         assert_eq!(setting_value(&v, row("juggernaut_movement"), 2), None);
+    }
+    fn suggestion(n: u8, name: &str) -> MapSuggestion {
+        MapSuggestion {
+            base: format!("{:064x}", 1),
+            variant: format!("{n:064x}"),
+            name: name.into(),
+        }
+    }
+
+    fn plain() -> Bundle {
+        Bundle::new(&king(), "Hill", "", None).unwrap()
+    }
+
+    #[test]
+    fn a_bundle_without_maps_keeps_its_bytes() {
+        let b = plain();
+        assert!(b.maps.is_empty());
+        assert!(!b.canonical().contains("maps"));
+        // A file written before the field existed reads, and writes back
+        // the same bytes and id.
+        let back = read(&b.canonical()).unwrap();
+        assert_eq!(back.canonical(), b.canonical());
+        assert_eq!(back.id(), b.id());
+    }
+
+    #[test]
+    fn suggestions_travel_and_change_the_id() {
+        let b = plain();
+        let with = b.clone().with_maps(vec![suggestion(2, "Castle")]).unwrap();
+        assert_ne!(with.id(), b.id());
+        let back = read(&with.canonical()).unwrap();
+        assert_eq!(back, with);
+        let base: Sha256 = format!("{:064x}", 1).parse().unwrap();
+        let other: Sha256 = format!("{:064x}", 9).parse().unwrap();
+        assert_eq!(back.suggested_for(&base).count(), 1);
+        assert_eq!(back.suggested_for(&other).count(), 0);
+    }
+
+    #[test]
+    fn more_than_eight_suggestions_are_refused() {
+        let eight: Vec<_> = (0..8).map(|n| suggestion(n, "Map")).collect();
+        assert!(plain().with_maps(eight.clone()).is_ok());
+        let mut nine = eight;
+        nine.push(suggestion(8, "Map"));
+        assert_eq!(plain().with_maps(nine.clone()).unwrap_err(), PortableError::MapsTooMany(9));
+        // A file that carries nine is refused when it is read.
+        let mut b = plain();
+        b.maps = nine;
+        assert_eq!(read(&b.canonical()).unwrap_err(), PortableError::MapsTooMany(9));
+    }
+
+    #[test]
+    fn a_malformed_suggestion_is_refused_by_name() {
+        let bad = |m: MapSuggestion| plain().with_maps(vec![m]).unwrap_err();
+        let mut m = suggestion(2, "Castle");
+        m.base = "abc".into();
+        assert!(matches!(bad(m), PortableError::MapSuggestion(w) if w.contains("base")));
+        let mut m = suggestion(2, "Castle");
+        m.variant = "G".repeat(64);
+        assert!(matches!(bad(m), PortableError::MapSuggestion(w) if w.contains("id")));
+        assert!(matches!(bad(suggestion(2, "")), PortableError::MapSuggestion(_)));
+        assert!(matches!(bad(suggestion(2, &"x".repeat(64))), PortableError::MapSuggestion(_)));
+        assert!(matches!(bad(suggestion(2, "a|b")), PortableError::MapSuggestion(_)));
+        let twice = plain().with_maps(vec![suggestion(2, "A"), suggestion(2, "B")]);
+        assert!(matches!(twice, Err(PortableError::MapSuggestion(w)) if w.contains("twice")));
     }
 }

@@ -203,6 +203,10 @@ pub struct VariantEntry {
     pub sentence: Option<String>,
     /// The line of a usable one: its author and what it adds.
     pub detail: String,
+    /// The variant's document id; `None` when the file does not parse.
+    pub id: Option<content::Sha256>,
+    /// The game variant that suggests it ([`crate::map_variant::suggest`]).
+    pub suggested_for: Option<String>,
 }
 
 /// The map variants of the lobby's map `map` (its list id) the picker
@@ -231,9 +235,42 @@ pub fn map_variant_list(data: &Path, map: Option<u32>) -> Result<Vec<VariantEntr
                 name: l.name,
                 sentence: l.sentence,
                 detail,
+                id: l.id,
+                suggested_for: None,
             }
         })
         .collect())
+}
+
+/// [`map_variant_list`] with the suggestions of `game`, the lobby's game
+/// variant, marked on the map variants it names
+/// ([`crate::map_variant::suggest`]).
+pub fn map_variant_list_for(
+    data: &Path,
+    map: Option<u32>,
+    game: Option<&variants::portable::Bundle>,
+) -> Result<Vec<VariantEntry>, String> {
+    let mut listed = map_variant_list(data, map)?;
+    let base = map.and_then(crate::map_select::short_name_of);
+    if let (Some(game), Some(base)) = (game, base.and_then(|b| crate::map_variant::installed(&b))) {
+        crate::map_variant::suggest(&mut listed, game, &base);
+    }
+    Ok(listed)
+}
+
+/// The store's bundle of the game variant the lobby plays, found by the
+/// record's name and engine (as `game_variants::inject` finds its block);
+/// `None` for a variant that is not one of our files.
+fn lobby_game_bundle(m: &dyn GuestMemory) -> Option<variants::portable::Bundle> {
+    let v = crate::pause_change_map::lobby_variant(m)?;
+    let (name, engine) = (v.name(), v.game_type().engine());
+    let store = crate::game_variants::store();
+    let store = store.lock().unwrap_or_else(|e| e.into_inner());
+    store
+        .entries()
+        .iter()
+        .find(|e| e.bundle.name == name && e.bundle.engine == engine)
+        .map(|e| e.bundle.clone())
 }
 
 /// What choosing in the picker does: `None` is Original, `Some(file)` a
@@ -290,14 +327,24 @@ pub fn map_variant_pick(
     let mut values = vec![ORIGINAL.to_owned()];
     values.extend(listed.iter().map(|v| v.name.clone()));
     let mut details = vec!["Play the map as it is.".to_owned()];
-    details.extend(listed.iter().map(|v| match &v.sentence {
-        Some(why) => why.clone(),
-        None => v.detail.clone(),
+    details.extend(listed.iter().map(|v| match (&v.sentence, &v.suggested_for) {
+        (Some(why), _) => why.clone(),
+        (None, None) => v.detail.clone(),
+        (None, Some(game)) => format!("{} Made for {game}.", v.detail).trim().to_owned(),
     }));
     let mut blocked = vec![false];
     blocked.extend(listed.iter().map(|v| v.sentence.is_some()));
+    // The held pick; else the game variant's suggestion, so the picker
+    // opens on it (docs/game/forge-map-variants.md, "Who picks"); else
+    // Original. The order stays Original, then by name.
     let held = current
         .and_then(|c| listed.iter().position(|v| v.file == c).map(|i| i + 1))
+        .or_else(|| {
+            listed
+                .iter()
+                .position(|v| v.suggested_for.is_some() && v.sentence.is_none())
+                .map(|i| i + 1)
+        })
         .unwrap_or(0);
     let files: Vec<String> = std::iter::once(String::new())
         .chain(listed.into_iter().map(|v| v.file))
@@ -632,8 +679,12 @@ fn row_chosen(c: &mut Call, me: &LobbyMode, request_at: u32) -> Result<Flow, Gue
         Mode::Forge => lobby_start::forge_map(),
         _ => crate::map_variant::picked().map(|p| p.file),
     };
+    let game = {
+        let mem = c.ctx.runtime().memory();
+        lobby_game_bundle(&*mem)
+    };
     let pick = map_variant_pick(
-        map_variant_list(&me.data, lobby_map),
+        map_variant_list_for(&me.data, lobby_map, game.as_ref()),
         current.as_deref(),
         choose_in_lobby(me.data.clone(), lobby_map),
     );
