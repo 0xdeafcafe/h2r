@@ -1596,7 +1596,10 @@ D3D reference with all native stages disabled.
   `d3d::threaded::owner::DisplayRate` (the render thread's idle turns) and
   `native_render::frame_graph::display_rate` (the draws, `render.stats`'
   `display_rate`). `graphics.fps` drives it; no switch. There is no
-  D3D-side interpolation.
+  D3D-side interpolation. Each display frame is presented with
+  synthetic present metadata, so the window projects the world marks
+  with the cameras the frame drew ([high-framerate.md](../game/high-framerate.md),
+  "World marks on made frames").
 - **Code to write.** Object palette rows, node matrices and lights from
   `Blended` on the carried and typed draws (objects are drawn at `B`
   today), visible-cluster unions, shadow re-rendering from blended
@@ -1609,7 +1612,9 @@ D3D reference with all native stages disabled.
   instances. Pacer (`frame-scene/src/pace.rs`). The loop
   (`frame-scene/src/display.rs`): 30 fps, the first scene, 60 and 120 fps
   sequences, cuts and gaps, resets, the headroom cap. The render thread's
-  idle turns (`d3d` `threaded/owner/tests/display_rate.rs`). Retargeting
+  idle turns and the guest image a draw sees (`d3d`
+  `threaded/owner/tests/display_rate.rs`). The marks' metadata
+  (`d3d` `present_camera`, `native-render` `frame_graph::display_rate`). Retargeting
   (`d3d` `tests/scene_camera.rs`). To add: a two-scene render at
   `alpha = 1` equals the one-scene render.
 - **Gate.** Hash series identical at `--fps 30`, `60` and `120`. The

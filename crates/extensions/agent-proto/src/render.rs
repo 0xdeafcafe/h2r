@@ -434,6 +434,12 @@ pub struct DisplayRateStats {
     pub moved_stages: u64,
     /// Typed stages in a game view drawn as their tick drew them.
     pub held_stages: u64,
+    /// Views on display frames whose world marks were moved onto the
+    /// camera the frame drew the view with.
+    pub marks_moved: u64,
+    /// Views on display frames whose world marks kept their image's
+    /// camera (no drawn view at their viewport).
+    pub marks_held: u64,
 }
 
 /// `render.compare`: two PNG files compared pixel by pixel

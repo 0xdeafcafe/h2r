@@ -72,3 +72,42 @@ fn a_swap_without_the_graph_tells_the_display_rate_hook() {
     wait_for(&log, |l| l.declined == 1);
     assert_eq!(owned.load(Ordering::Relaxed), 0);
 }
+
+#[test]
+fn an_owned_draw_sees_the_guest_image_of_its_present() {
+    use crate::present_camera::{self, Image, Present};
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&seen);
+    let mut gpu = ThreadedBackend::new(Pixels::default()).unwrap().with_frame_owner(FrameOwner {
+        select: Box::new(move |n, _| {
+            let byte = u8::try_from(n).unwrap();
+            let log = Arc::clone(&log);
+            Some(Submission::Native(Candidate {
+                frame: Arc::new(frame(n, byte)),
+                before_original: None,
+                eligible: Box::new(|_, _| true),
+                draw: Box::new(move |gpu: &mut Pixels, targets| {
+                    log.lock().unwrap().push(present_camera::guest_image());
+                    let target = targets[&TargetRef::SceneColour];
+                    gpu.clear(target, None, clear(byte))?;
+                    gpu.present(target, 0)?;
+                    Ok(Outputs::default())
+                }),
+            }))
+        }),
+        events: Arc::new(()),
+    });
+    let target = gpu.create_surface(D3DFormat::A8R8G8B8, 1, 1, false).unwrap();
+    let image = Arc::new(Image { views: [None; 4], payload: Arc::new(7u8) });
+    let guest = Present::Guest { image: Some(Arc::clone(&image)), reference: false };
+    gpu.clear(target, None, clear(1)).unwrap();
+    present_camera::with(Some(guest), || gpu.present(target, 0)).unwrap();
+    gpu.clear(target, None, clear(2)).unwrap();
+    gpu.present(target, 0).unwrap();
+    gpu.finish().unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert!(seen[0].as_ref().is_some_and(|i| Arc::ptr_eq(i, &image)));
+    // A present made with no image hands the draw none.
+    assert!(seen[1].is_none());
+}

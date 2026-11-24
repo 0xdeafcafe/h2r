@@ -413,7 +413,11 @@ pub fn draw_display_at_rate(
     let shown = display.at_swap(pass.backend_mut(), scene, replay, scale, lighting);
     let (flags, gamma) = (replay.flags, replay.gamma.as_deref());
     let outputs = match shown {
-        Some(image) => pass.present_with_outputs_showing(flags, gamma, image)?,
+        // The window places the marks with the cameras the display frame
+        // drew (`display_rate::marks_present`).
+        Some(shown) => d3d::present_camera::with(Some(shown.marks), || {
+            pass.present_with_outputs_showing(flags, gamma, shown.image)
+        })?,
         None => pass.present_with_outputs(flags, gamma)?,
     };
     Ok((
@@ -451,7 +455,9 @@ pub fn draw_scaled_display_at_rate(
     let shown = display.at_swap(pass.view_mut(), scene, replay, scale, lighting);
     let (flags, gamma) = (replay.flags, replay.gamma.as_deref());
     let (after, outputs) = match shown {
-        Some(image) => pass.present_showing(flags, gamma, image)?,
+        Some(shown) => d3d::present_camera::with(Some(shown.marks), || {
+            pass.present_showing(flags, gamma, shown.image)
+        })?,
         None => pass.present(flags, gamma)?,
     };
     Ok((

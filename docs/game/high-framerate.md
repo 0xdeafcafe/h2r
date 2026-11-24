@@ -536,8 +536,8 @@ scale ([framescene.md](../graphics/framescene.md), section 13).
 
 ## 9. World marks on made frames
 
-Status: The window side is built and tested on synthetic cameras; the frame owner's display frames do not yet attach view shifts, so marks on them use the source image's cameras.
-Code: `crates/platform/d3d/src/present_camera.rs`, `crates/apps/cli/src/play_cmd.rs` (`mark_frame`, `mark_cameras`), `crates/apps/app/src/overlay/marks.rs`, `crates/extensions/game/src/superbounce_world.rs`.
+Status: Built and tested on synthetic cameras.
+Code: `crates/platform/d3d/src/present_camera.rs`, `crates/rewrites/native-render/src/frame_graph/display_rate.rs` (`marks_present`), `crates/apps/cli/src/play_cmd.rs` (`mark_frame`, `mark_cameras`), `crates/apps/app/src/overlay/marks.rs`, `crates/extensions/game/src/superbounce_world.rs`.
 
 The window draws world marks (the editor's marks, the superbounce figures) over the finished frame, projecting each world point with a camera ([agent-api.md](../runtime/agent-api.md), "Drawing world-space lines over the frame"). A mark is captured with a genuine guest image and that image's per-view cameras. On a made frame the world is drawn with another camera, so a mark projected with the image's own would swim against the world by up to a tick of camera motion while the player turns.
 
@@ -546,7 +546,7 @@ The window draws world marks (the editor's marks, the superbounce figures) over 
 - **A genuine image:** its own cameras.
 - **A made frame:** per view, the camera the display frame drew it with: the blended camera, or the newest scene's own on a cut and at alpha 1.
 
-A made frame's `Present::Synthetic` carries one `ViewShift` per view: `C⁻¹ B`, the source image's camera `C` for that view and the shown one `B`, both the guest's view-projection, in world space. `mark_cameras` multiplies each mark camera by its view's shift (matched by viewport, within a hundredth of the image on each side; a single view on each side pairs). The mark camera's own conventions (aspect factor, depth range) are left as they are: `M · C⁻¹ · B` projects a world point where `B` draws it, through `M`'s mapping.
+The frame owner's display-rate loop keeps each owned present's guest image with its scene (`present_camera::guest_image`, read on the render thread inside the present's metadata). Every display frame, at a Swap or between, is presented inside `present_camera::with` as a `Present::Synthetic` (`display_rate::marks_present`, `Present::display_frame`). It carries one `ViewShift` per view drawn with another camera than the image's: `C⁻¹ B`, the source image's camera `C` for that view and the drawn one `B` (the frame's game view at the same viewport, first-person views left out), both the guest's view-projection, in world space. A view drawn with the image's own camera (the newest scene at alpha 1) has none. A view with no drawn camera at its viewport keeps the image's; `render.stats`' `display_rate.marks_moved` and `marks_held` count the two. `mark_cameras` multiplies each mark camera by its view's shift (matched by viewport, within a hundredth of the image on each side; a single view on each side pairs). The mark camera's own conventions (aspect factor, depth range) are left as they are: `M · C⁻¹ · B` projects a world point where `B` draws it, through `M`'s mapping.
 
 The marks come from the newest image, or from the frame before while a blend is under fraction 0.5, so what a mark shows (where it is, which spots are listed) lags the world by at most half a tick. Marks fixed to a moving object step at the tick rate while the object blends.
 
@@ -558,7 +558,7 @@ The superbounce logic counts game ticks, not presents or wall time: the mode's s
 
 ### Tests
 
-`cargo test -p d3d --lib present_camera`, `cargo test -p cli made_frames_move_the_mark_camera`, `cargo test -p app --lib overlay::marks`, `cargo test -p gfx --lib probe`, `cargo test -p game --lib -- world_lines superbounce_world superbounce_hud`.
+`cargo test -p d3d --lib present_camera`, `cargo test -p d3d --lib an_owned_draw_sees_the_guest_image_of_its_present`, `cargo test -p native-render --lib frame_graph::display_rate`, `cargo test -p cli made_frames_move_the_mark_camera`, `cargo test -p app --lib overlay::marks`, `cargo test -p gfx --lib probe`, `cargo test -p game --lib -- world_lines superbounce_world superbounce_hud`.
 
 ### Checking it in the game
 
