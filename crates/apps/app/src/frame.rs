@@ -48,10 +48,12 @@ pub enum FrameError {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameStats {
     /// Frames published: the guest's presents and, above 30 fps, the
-    /// in-between frames the render thread makes ([`FrameStats::made`]).
+    /// display frames the render thread draws between them
+    /// ([`FrameStats::made`]).
     pub published: u64,
     /// Of those, frames the host made between the guest's presents
-    /// (`d3d::interp`, present flags [`MADE_FRAME_FLAGS`]). `published -
+    /// (the frame owner's display-rate loop, `native_render::frame_graph::
+    /// display_rate`, present flags [`MADE_FRAME_FLAGS`]). `published -
     /// made` is the guest's own present count.
     pub made: u64,
     /// Frames the window picked up.

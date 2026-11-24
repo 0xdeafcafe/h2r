@@ -1456,26 +1456,45 @@ readbacks come from `crates/platform/d3d/src/scaled.rs` and
 
 ### `render.stats`
 
-No params. `interp` is `d3d::interp::InterpStats` with every field
-(frames blended and held, replays, warps, and the hold reasons `unsure_*`,
-`mismatch_*`, `dropped`, and per draw `held_draws_*`: draws a made frame
-drew at their own matrices, `held_draws_palette` when their node
-registers are not their pair's), read from its `Debug` text so fields added there
-appear with no change here. `counters.line` is the frame-stats window's
+No params. `display_rate` is the frame owner's display-rate loop, the
+display frames drawn between sealed scenes at 60 and 120 fps
+([framescene.md](../graphics/framescene.md), section 7). `counters.line` is the frame-stats window's
 summary. `counters` also reports the per-frame means for `shadow_walk_layers`
 and each `native_scene_lists_*` stage. The `_native` and `_fallback` fields
 include zeroes. A refusal reason appears when its window count is positive.
 The object-shadow list, row gather and caster each count calls to their own
 entry ([native-light-gather.md](../graphics/native-light-gather.md), L7).
-Each source is `null` where that piece is not running.
+`counters` is `null` where the frame-stats window is not running.
 
-`interp.shared_depth_ops` counts auxiliary-colour draws and clears retained
-at guest Swap for later depth/stencil tests on the displayed target.
-`interp.shared_depth_blended_frames` counts guest frames successfully
-presented with those operations in a blended image. A rising first count
-and a flat second count means the renderer sees the dependency while
-holding those frames. In a `render.frame` capture the corresponding passes
-have different colour targets and the same depth attachment.
+`display_rate` is present while a paced frame owner runs it: a window
+or GPU serve with the render thread on, `frame-scene.sink` not off, and no
+locked mailbox (`H2_BOOT_STOP_AT_PRESENT`, an unpaced display or a
+headless run lock it). Its fields, counted since the loop was installed:
+
+| Field | Meaning |
+|---|---|
+| `rate_hz` | the rate `graphics.fps` asks for; 0 at 30 |
+| `shown_hz` | the rate after the headroom cap |
+| `capped` | display frames do not fit, so the rate is held below `rate_hz` |
+| `swaps` | owned presents the loop saw |
+| `blended` | display frames drawn with blended cameras, at a Swap or between |
+| `swap_blends` | of `blended`, the ones shown in place of a Swap's scene |
+| `between_newest` | frames between Swaps drawn as the newest scene (alpha 1, a cut or a gap) |
+| `failed` | display frames that failed; the window kept the frame before |
+| `resets` | pairs dropped by a Swap without the graph |
+| `avg_cost_us` | mean render-thread cost of a display frame |
+| `moved_draws` | carried draws drawn on a blended camera |
+| `moved_stages` | typed stages drawn on a blended camera |
+| `held_stages` | typed stages in a game view drawn at their tick's camera |
+
+At `--fps 60` and above with the frame owner on, `blended` rises with
+play; at 30 it stays 0 and `swaps` still counts. The loop is in
+`crates/rewrites/frame-scene/src/display.rs` and
+`crates/rewrites/native-render/src/frame_graph/display_rate.rs`.
+
+```sh
+h2 agent render.stats | jq .display_rate.blended
+```
 
 `display_frame` gives the identity, lighting and backend counter deltas
 when the worker's latest presentation used the native graph. An
@@ -1514,24 +1533,9 @@ receiver draws with no redraw. The
 guest's light selections are in `render.scene.views`.
 Retail graph draws omit `e3`.
 
-`interp` exists when in-between frames run: in `h2 play`, or in an `h2
-serve` that renders on the GPU off-screen (`H2_BOOT_GFX`) with an
-interpolation switch on. Outside a [display clip](#rendercapture_clip),
-the in-between frames follow the wall clock. The hold reasons describe
-the in-game render ([high-framerate.md](../game/high-framerate.md),
-"Headless"). `interp.holds` lists the draws a held frame was held for,
-each with its guest draw and pass number (as `render.frame` numbers
-them), vertex program, transform and where it lands
-([high-framerate.md](../game/high-framerate.md), "Held frames, draw by
-draw"). Without `H2_BOOT_GFX` or with `H2_RENDER_THREAD=0`, `interp` is `null`. `H2_BOOT_GFX_BETWEEN=N`
-writes the first N in-between frames as PNGs, with the guest frame before
-and after each ([switches.md](switches.md)).
-
-```sh
-H2_OPT=2 H2_BOOT_GFX=$TMPDIR/h2-gfx H2_BOOT_GFX_EVERY=never \
-  H2_FPS=60 H2_FEATURES=impl.render.reproject \
-  h2 serve disc/halo2.iso --out <the image you built>
-```
+`H2_BOOT_GFX_BETWEEN=N` writes the first N display frames between
+scenes as PNGs, with the guest frame before and after each
+([switches.md](switches.md)).
 
 ### `render.capture_clip`
 
@@ -1543,16 +1547,12 @@ clip folder under the headless graphics output directory.
 
 `render.capture_clip.status {"id":1}` returns the same fields for the
 latest clip. When `written` equals `frames`, all PNG files are closed.
-A lost guest tick or missing display slot fails the request. Read
-`render.stats` for the replay's hold reasons.
+A lost guest tick or missing display slot fails the request.
 
 Clip capture needs headless GPU rendering. The [graphics size switch](switches.md)
-sets the clip's output dimensions. Above 30 fps, enable interpolated
-replay on the render thread and select a display rate at least as high
-as the clip's. The render thread emits the guest present and one or
-three intermediate presents for each 30 Hz tick pair, at even blend
-fractions. PNG readback and encoding may slow capture. The saved frame
-sequence retains the requested rate.
+sets the clip's output dimensions. The writer takes one frame per tick,
+so `fps` above 30 is refused: display frames between scenes are not
+written to clip slots. PNG readback and encoding may slow capture.
 
 The state is in `crates/extensions/agent/src/render/clip.rs`. The GPU
 writer is in `crates/extensions/game/src/d3d_glue/clip_png.rs`.
@@ -3826,7 +3826,7 @@ drawn on in-between frames (60 and 120 fps), from the source image's
 samples if it carries the current lease's marks, with the camera the
 frame drew each view with
 ([high-framerate.md](../game/high-framerate.md), "World marks on made frames";
-`crates/platform/d3d/src/interp/marks.rs`,
+`crates/platform/d3d/src/present_camera.rs`,
 `crates/apps/cli/src/play_cmd.rs`, `crates/apps/app/src/shell.rs`).
 
 A shell pause or paused Theater playback blocks the guest loop, so

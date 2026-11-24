@@ -1234,7 +1234,7 @@ fn mark_frame() -> app::overlay::marks::FrameMarks {
 }
 
 /// Each view's mark camera, moved by its shift where a made frame drew it
-/// with another camera than the image's own (`d3d::interp::marks`).
+/// with another camera than the image's own (`d3d::present_camera`).
 fn mark_cameras(
     views: &[Option<d3d::present_camera::View>; 4],
     reference: bool,

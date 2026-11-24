@@ -1,5 +1,4 @@
-//! Small matrix and quaternion helpers for the interpolated replay, in
-//! `f64` so that splitting a matrix and putting it back loses less than
+//! Small matrix and quaternion helpers for [`super::camera`], in `f64` so that splitting a matrix and putting it back loses less than
 //! the `f32` constants it came from.
 //!
 //! Convention: a [`Mat4`] is four rows and transforms column vectors

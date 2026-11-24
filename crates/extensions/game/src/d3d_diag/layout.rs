@@ -76,7 +76,7 @@ pub(super) fn describe<T, S: std::fmt::Debug>(
 fn vertex_position(draw: &ResolvedDraw) -> String {
     #[cfg(feature = "gpu")]
     if let d3d::shader::VertexProcessing::Program { microcode, .. } = &draw.shader.vertex {
-        use d3d::interp::epilogue::{Position, position};
+        use d3d::clip_space::epilogue::{Position, position};
         return match position(microcode) {
             Position::Rows(first) => format!("rows c[{}..={}]", first, first + 3),
             Position::Fixed => "no constant rows".into(),

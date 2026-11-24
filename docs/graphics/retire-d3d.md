@@ -423,8 +423,8 @@ independent of all of them once its slice 6 holds.
 `glyph.rs`, `pipeline_store.rs`, `device/` except what R11 lists,
 `backend.rs`, `gfx_backend.rs` and `gfx_backend/`, `scaled.rs` and
 `scaled/`, `threaded.rs` and `threaded/`, `scene_sink.rs` and
-`scene_sink/`, `scene_stage.rs`, `interp/` if framescene.md slice 8 has
-not already; `DrawAdmission` and every `render_bridge::native_*` hook;
+`scene_sink/` (with `retarget.rs`, moved to the native side first),
+`scene_stage.rs`, `clip_space/`; `DrawAdmission` and every `render_bridge::native_*` hook;
 `frame_types::carried` (the `frame-types` crate's carried part); in `gfx`, what only a resolved D3D draw uses
 (`state.rs`, `translate.rs`, `xdk.rs`, the D3D pipeline key); the
 `render-timing` and `render-census` features and `render.parity`.

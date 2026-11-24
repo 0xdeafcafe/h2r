@@ -1,9 +1,8 @@
 //! `Device::request_external_pass` (docs/graphics/native-renderer.md): a
 //! host pass drawn into the bound colour target and depth with the
 //! current viewport, recorded after the next drain, on the device's
-//! thread, through the render thread, through the interpolating backend
-//! (which passes it on and holds the frame) and under the render scale
-//! (both copies). Dropped without a backend that can. Synthetic device;
+//! thread, through the render thread and under the render scale (both
+//! copies). Dropped without a backend that can. Synthetic device;
 //! skipped without an adapter or without `DEPTH32FLOAT_STENCIL8`.
 
 use std::sync::{Arc, Mutex};
@@ -11,7 +10,7 @@ use std::time::Duration;
 
 use crate::common::*;
 use d3d::{
-    Backend, Device, ExternalPass, ExternalTarget, GfxBackend, GuestMemory, InterpBackend, RecordingBackend,
+    Backend, Device, ExternalPass, ExternalTarget, GfxBackend, GuestMemory, RecordingBackend,
     SparseMemory, SwapFinish, ThreadedBackend, UploadPolicy,
 };
 use gfx::GfxContext;
@@ -196,12 +195,6 @@ fn relight_requires_an_isolated_display_copy_at_each_scale() {
             }
         }
     }
-}
-
-#[test]
-fn the_interpolating_backend_passes_it_on() {
-    let Some(b) = backend() else { return };
-    run(ThreadedBackend::new(InterpBackend::new(b, || 0)).unwrap());
 }
 
 /// Keeps the view constants it is given.
@@ -663,17 +656,6 @@ fn validation_refuses_a_complete_range_count() {
     assert!(d.prepare_external_pass(&mut m, plan(1), Box::new(InvalidRecording)).unwrap().is_none());
     assert_eq!(d.stats().external_passes, 0);
 }
-
-#[test]
-fn a_view_to_be_interpolated_keeps_its_guest_geometry() {
-    let Some(b) = backend() else { return };
-    let (mut d, mut m) = create(InterpBackend::new(b, || 60), UploadPolicy::Always);
-    let seen = Arc::default();
-    let pass = Counting { seen: Arc::clone(&seen), display_ranges: 1 };
-    assert!(d.prepare_external_pass(&mut m, plan(1), Box::new(pass)).unwrap().is_none());
-    assert!(seen.lock().unwrap().is_empty());
-}
-
 
 struct SlotCopy;
 

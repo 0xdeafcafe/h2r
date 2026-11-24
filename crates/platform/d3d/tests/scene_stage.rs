@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::common::*;
 use d3d::{
-    Device, ExternalPass, ExternalPlan, InterpBackend, Recorded, RecordingBackend, SparseMemory, ThreadedBackend,
+    Device, ExternalPass, ExternalPlan, Recorded, RecordingBackend, SparseMemory, ThreadedBackend,
     UploadPolicy,
 };
 use timeline::native::Stage;
@@ -121,16 +121,6 @@ fn without_a_render_thread_no_scene_stage_is_taken() {
     let r = d.reserve_scene_stage(&mut m, plan(Stage::Fog, 1), Box::new(Probe(Arc::clone(&seen)))).unwrap();
     assert!(r.is_none());
     assert!(seen.lock().unwrap().is_empty());
-}
-
-#[test]
-fn a_replaying_backend_takes_no_scene_stage() {
-    let replaying = InterpBackend::new(recorder(), || 60);
-    let (d, _) = create(ThreadedBackend::new(replaying).unwrap(), UploadPolicy::Always);
-    assert!(!d.queues_scene_stages(Stage::Gels));
-    let off = InterpBackend::new(recorder(), || 30);
-    let (d, _) = create(ThreadedBackend::new(off).unwrap(), UploadPolicy::Always);
-    assert!(d.queues_scene_stages(Stage::Gels));
 }
 
 #[test]

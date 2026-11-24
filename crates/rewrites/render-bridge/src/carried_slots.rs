@@ -18,8 +18,8 @@
 //! what was written under the old one ([`Drain`], registered by the
 //! host).
 //!
-//! An option, off by default: without it [`slot`] answers `None` and the
-//! sink records nothing.
+//! On unless `frame-scene.sink=off`: without it [`slot`] answers `None`
+//! and the sink records nothing.
 
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};

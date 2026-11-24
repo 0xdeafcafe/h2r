@@ -20,6 +20,10 @@ mod frozen;
 #[cfg(feature = "gpu")]
 pub use frozen::{FrozenImages, FrozenSample};
 mod replay;
+#[cfg(feature = "gpu")]
+mod retarget;
+#[cfg(feature = "gpu")]
+pub use retarget::{Retarget, RetargetCounts, Retargeted};
 mod seeds;
 pub use seeds::TargetSeed;
 
@@ -642,16 +646,8 @@ impl<B: Backend> Backend for SceneSink<B> {
     fn frame_stats(&mut self) {
         self.inner.frame_stats()
     }
-    fn stamp_present(&mut self, at: std::time::Instant) {
-        self.inner.stamp_present(at)
-    }
     fn present_replay(&mut self, surface: Self::Surface, gamma: Option<&[u8; 768]>) -> Result<(), String> {
         self.inner.present_replay(surface, gamma)
-    }
-    fn warp_surface(&mut self, src: Self::Surface, dst: Self::Surface, h: [[f32; 3]; 3]) -> Result<bool, String> {
-        let warped = self.inner.warp_surface(src, dst, h)?;
-        if warped { self.refuse_replay("warp_surface"); }
-        Ok(warped)
     }
     fn queue_frame_probe_read(
         &mut self, surface: Self::Surface, width: u32, height: u32,
@@ -686,12 +682,6 @@ impl<B: Backend> Backend for SceneSink<B> {
         surface: Self::Surface,
     ) -> Result<Option<DisplaySurfacePixels>, String> {
         self.inner.read_display_surface(surface)
-    }
-    fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
-        self.inner.gpu_fence()
-    }
-    fn idle(&mut self) -> Option<std::time::Instant> {
-        self.inner.idle()
     }
     fn reset_present_metadata(&mut self) -> Result<(), String> {
         self.inner.reset_present_metadata()

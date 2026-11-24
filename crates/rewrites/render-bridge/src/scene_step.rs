@@ -1227,9 +1227,9 @@ impl Feature for FrameSceneStep {
             crate::residual_census::install(b);
         }
         // The slot of the frame the guest's D3D work is in, for the
-        // device's scene sink (slice 6): an option, its census of the
-        // carried part.
-        if b.switches().feature(crate::carried_slots::ID, false) {
+        // device's scene sink (slice 6): on unless `frame-scene.sink=off`,
+        // since a paced display's frame owner draws from it.
+        if b.switches().feature(crate::carried_slots::ID, true) {
             crate::carried_slots::install(b);
         }
         Ok(())
@@ -1327,15 +1327,15 @@ mod tests {
     }
 
     #[test]
-    fn the_carried_slots_are_placed_only_with_their_option() {
+    fn the_carried_slots_are_placed_unless_their_option_is_off() {
         let text = |spec| {
             let mut r = hooks::Registry::new(hooks::Switches::parse(spec).unwrap());
             assert!(r.add(&FrameSceneStep::default()).unwrap());
             r.build(&hooks::plan::Base).unwrap().text()
         };
-        let off = text("");
+        let off = text("frame-scene.sink=off");
         assert!(!off.contains("carried_slot"), "{off}");
-        let on = text("frame-scene.sink");
+        let on = text("");
         for label in [
             "carried_slot_frame",
             "carried_slot_frame_end",

@@ -30,7 +30,7 @@ pub(super) fn draw_mixed(
     let mut pass = MixedPrivatePass::new_lit(backend, replay, scale, lighting)?;
     // A mixed-size frame draws no sun tile: every object shadow keeps
     // retail's mask.
-    let e3 = record(&mut pass, scene, replay, true, lighting, observer, None)?;
+    let e3 = record(&mut pass, scene, replay, true, lighting, observer, None, None)?;
     let (size, rgba) = pass.read_rgba(replay.presented)?;
     drop(pass);
     Ok(CapturedFrame {

@@ -617,6 +617,25 @@ impl ExternalPass for IndexedPass {
         Some(Arc::clone(&self.draw))
     }
 
+    fn with_draw(&self, draw: Arc<ResolvedDraw>) -> Option<Box<dyn ExternalPass>> {
+        // A display frame between ticks changes the constants only
+        // (`d3d::scene_sink::Retarget`): the geometry and state the
+        // candidate checks accepted stay.
+        if draw.streams.len() != self.draw.streams.len() {
+            return None;
+        }
+        Some(Box::new(Self {
+            draw,
+            cache: Arc::clone(&self.cache),
+            frame: self.frame,
+            extracted_frame: self.extracted_frame,
+            fetch: self.fetch,
+            texaccum: self.texaccum,
+            texaccum_stages: self.texaccum_stages,
+            section: self.section,
+        }))
+    }
+
     fn sampled(&self) -> Vec<u32> {
         self.texaccum.iter().map(|target| target.texture).collect()
     }

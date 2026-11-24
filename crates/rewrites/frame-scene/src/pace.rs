@@ -1,48 +1,50 @@
-//! When in-between frames are shown and what fraction of a tick each one
-//! is at. Times are nanoseconds on one host clock; frames are stamped on
-//! the game's thread when `Swap` is called (their arrival), so the render
-//! thread's lag does not move them.
+//! When display frames between two sealed scenes are shown and what
+//! fraction of a tick each one is at (docs/graphics/framescene.md, section
+//! 7, "Pacing"). Times are nanoseconds on one host clock; a scene's time
+//! is its publish stamp (`Stamp::published`, taken on the sim thread), so
+//! the render thread's lag does not move it. [`crate::display`] runs these
+//! rules on the render thread.
 //!
-//! - The guest frame arriving at `T(N)` is shown blended from frame `N-1`
-//!   (alpha 0 at `T(N)`) to frame `N` (alpha 1 one frame interval later,
-//!   when `N+1` is due). That is the one tick of delay the design takes:
-//!   nothing is extrapolated, and a late frame holds at alpha 1.
-//! - The interval is the measured one between the two arrivals, so a
-//!   frame that ran two ticks (catch-up) blends over its longer gap.
-//! - A gap longer than [`HOLD_GAP_NS`] (the guest below 30 fps, a load, a
-//!   pause in host time) ends the blend: the next frame is shown as it is
+//! - The scene published at `T(N)` is shown blended from scene `N-1`
+//!   (alpha 0 at `T(N)`) to scene `N` (alpha 1 one interval later, when
+//!   `N+1` is due). That is the one tick of delay the design takes:
+//!   nothing is extrapolated, and a late scene holds at alpha 1.
+//! - The interval is the measured one between the two publishes, so a
+//!   scene that ran two ticks (catch-up) blends over its longer gap.
+//! - A gap longer than [`HOLD_GAP_NS`] (the sim below 30 fps, a load, a
+//!   pause in host time) ends the blend: the next scene is shown as it is
 //!   and starts a new pair.
-//! - In-between frames are due on a fixed schedule at the display rate
+//! - Display frames are due on a fixed schedule at the display rate
 //!   ([`Schedule`]); a late one skips slots, never bursts.
 
 /// One guest frame at 30 fps.
 pub const GUEST_FRAME_NS: u64 = 1_000_000_000 / 30;
 
-/// Frames further apart than this are not blended (below about 22 fps).
-pub const HOLD_GAP_NS: u64 = 45_000_000;
+/// Scenes further apart than this are not blended (below about 22 fps):
+/// [`crate::blend::MAX_GAP`].
+pub const HOLD_GAP_NS: u64 = crate::blend::MAX_GAP.as_nanos() as u64;
 
-/// The highest replay rate (docs/game/high-framerate.md, "Phase 2"):
-/// 120 and uncapped replay at 120 while [`Headroom`] says the made frames
-/// fit, else at [`FALLBACK_REPLAY_HZ`].
+/// The highest display rate: 120 and uncapped run at 120 while
+/// [`Headroom`] says the display frames fit, else at [`FALLBACK_REPLAY_HZ`].
 pub const MAX_REPLAY_HZ: u32 = 120;
 
-/// The rate a replay above 60 falls back to when its made frames do not
-/// fit ([`Headroom`]).
+/// The rate a display above 60 falls back to when its frames do not fit
+/// ([`Headroom`]).
 pub const FALLBACK_REPLAY_HZ: u32 = 60;
 
 /// What the frame-rate setting (`graphics.fps`, `H2_FPS`) asks of the
-/// replay.
+/// display.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rate {
-    /// 30 (or anything at or below): no replay, frames as today.
+    /// 30 (or anything at or below): one display frame per scene.
     Off,
-    /// In-between frames at this many a second.
+    /// Display frames at this many a second.
     Hz(u32),
 }
 
 impl Rate {
-    /// From the setting's value: 30 is off, 0 is uncapped (replays at
-    /// [`MAX_REPLAY_HZ`]); everything above 30 replays at its own rate,
+    /// From the setting's value: 30 is off, 0 is uncapped (runs at
+    /// [`MAX_REPLAY_HZ`]); everything above 30 runs at its own rate,
     /// [`MAX_REPLAY_HZ`] at most.
     pub fn from_setting(fps: u32) -> Rate {
         match fps {
@@ -52,7 +54,7 @@ impl Rate {
         }
     }
 
-    /// Nanoseconds between in-between frames.
+    /// Nanoseconds between display frames.
     pub fn period_ns(self) -> Option<u64> {
         match self {
             Rate::Off => None,
@@ -110,6 +112,11 @@ impl Headroom {
     /// Whether rates above the fallback are held back now.
     pub fn capped(&self) -> bool {
         self.capped
+    }
+
+    /// The average display-frame cost so far, ns.
+    pub fn average_ns(&self) -> Option<u64> {
+        self.avg_ns
     }
 }
 

@@ -1057,14 +1057,6 @@ impl<B: Backend> Backend for DiagBackend<B> {
     ) -> Result<bool, String> {
         self.inner.external_pass(color, depth, sampled, request, pass)
     }
-    fn warp_surface(
-        &mut self,
-        src: Self::Surface,
-        dst: Self::Surface,
-        h: [[f32; 3]; 3],
-    ) -> Result<bool, String> {
-        self.inner.warp_surface(src, dst, h)
-    }
     fn queue_frame_probe_read(
         &mut self, surface: Self::Surface, width: u32, height: u32,
         done: Box<dyn FnOnce(Result<Vec<u8>, String>) + Send>,
@@ -1097,9 +1089,6 @@ impl<B: Backend> Backend for DiagBackend<B> {
         &mut self, surface: Self::Surface,
     ) -> Result<Option<DisplaySurfacePixels>, String> {
         self.inner.read_display_surface(surface)
-    }
-    fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
-        self.inner.gpu_fence()
     }
 
     fn depth_level_texture(
@@ -1236,20 +1225,12 @@ impl<B: Backend> Backend for DiagBackend<B> {
     fn present(&mut self, surface: Self::Surface, flags: u32) -> Result<(), String> {
         self.present_with_gamma(surface, flags, None)
     }
-    // The interpolated replay's host-only calls (d3d::interp): passed
-    // through, not counted as guest presents.
-    fn stamp_present(&mut self, at: std::time::Instant) {
-        self.inner.stamp_present(at)
-    }
     fn present_replay(
         &mut self,
         surface: Self::Surface,
         gamma: Option<&[u8; 768]>,
     ) -> Result<(), String> {
         self.inner.present_replay(surface, gamma)
-    }
-    fn idle(&mut self) -> Option<std::time::Instant> {
-        self.inner.idle()
     }
     fn reset_present_metadata(&mut self) -> Result<(), String> {
         self.inner.reset_present_metadata()
