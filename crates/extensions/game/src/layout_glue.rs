@@ -832,7 +832,7 @@ pub fn install(
                 if name == theater_menu::LIST_NAME || name == custom_games::LIST_NAME {
                     crate::lobby_start::clear();
                     crate::lobby_tabs::cancel_request();
-                    crate::clankermatch::set_active(false);
+                    crate::clankermatch::set_scope(crate::clankermatch::Scope::Players);
                 }
                 if name == custom_games::LIST_NAME {
                     ctx.runtime().memory().set_u32(live.2 + LIVE_SOURCE, 0)?;

@@ -857,8 +857,7 @@ mod tests {
                 .len(),
             3
         );
-        let mut bad = image(Vec::new());
-        bad.rgba.pop();
+        let bad = Image::from_rgba(4, 2, vec![0; 31], Vec::new());
         assert!(levels(&bad).is_none());
     }
 }

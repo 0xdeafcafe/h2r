@@ -136,7 +136,7 @@ fn a_batch_the_encoder_would_not_write_is_refused() {
     assert!(encode_batch(&[]).is_err());
     let long = "x".repeat(65);
     assert!(encode_batch(&[call(0, &long, &[], Ok(0), &[])]).is_err());
-    round_trip(&[call(0, "Op", &[0; 65], Ok(0), &[b"x"; 129])]);
+    round_trip(&[call(0, "Op", &[0; 65], Ok(0), &[&b"x"[..]; 129])]);
 }
 
 #[test]
