@@ -1,7 +1,7 @@
 # Native light gather and passes
 
 Status: Partly built. L1–L7 implement the visible list and history, light volumes, frame and per-light passes, record and item walks, scene hand-off, first-person lights and object-shadow list, rows and mask casters. L8 admits complete, same-target diffuse and specular passes for dynamic and first-person lights. Shadow targets, filters and shader gels still use the existing layer bodies. L9 and the live parity and timing gates remain open.
-Code: `crates/rewrites/engine/src/render/light_gather.rs` and `light_gather/` (including `object_shadows.rs`, `object_shadows/rows.rs` `object_shadows/caster.rs`, `typed.rs` and `typed_tail.rs`), `crates/rewrites/engine/src/render_loop/world_walk.rs` (the record walks), `crates/rewrites/render-bridge/src/native_lights/` (`frame.rs`, `items.rs`, `passes.rs`, `first_person.rs` and `object_shadows.rs` install the bodies, `handoff.rs` supplies the scene lights, `typed.rs` and `typed_groups.rs` admit whole passes), `crates/rewrites/native-render/src/light_graph.rs`, `crates/extensions/game/src/native_lights_glue/typed.rs`, `crates/platform/d3d/src/device/external_sequence.rs`, `crates/rewrites/render-bridge/src/native_scene_lists/lights.rs` (fallback leaves). Tests: `crates/rewrites/engine/tests/light_gather_differential.rs`, `light_gather.rs`, the unit tests in `world_walk.rs`, `object_shadows/` and `native_lights/handoff.rs`, `crates/rewrites/render-bridge/tests/native_lights.rs`.
+Code: `crates/rewrites/engine/src/render/light_gather.rs` and `light_gather/` (including `object_shadows.rs`, `object_shadows/rows.rs`, `object_shadows/caster.rs`, `typed.rs` and `typed_tail.rs`), `crates/rewrites/engine/src/render_loop/world_walk.rs` (the record walks), `crates/rewrites/render-bridge/src/native_lights/` (`frame.rs`, `items.rs`, `passes.rs`, `first_person.rs` and `object_shadows.rs` install the bodies, `handoff.rs` supplies the scene lights, `typed.rs` and `typed_groups.rs` admit whole passes), `crates/rewrites/native-render/src/light_graph.rs`, `crates/extensions/game/src/native_lights_glue/typed.rs`, `crates/platform/d3d/src/device/external_sequence.rs`, `crates/rewrites/render-bridge/src/native_scene_lists/lights.rs` (fallback leaves). Tests: `crates/rewrites/engine/tests/light_gather_differential.rs`, `light_gather.rs`, the unit tests in `world_walk.rs`, `object_shadows/` and `native_lights/handoff.rs`, `crates/rewrites/render-bridge/tests/native_lights.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md). No slice adds a switch.
 
 Slice R3 of [retire-d3d.md](retire-d3d.md): the guest's light front-end
@@ -799,7 +799,11 @@ the independent L8 in [e3-lighting.md](e3-lighting.md).
   copies must be ready. The host records all ranges in pass order, then
   commits the light globals, device constants, guest cache words and
   final viewport together. A refusal at the last group leaves both
-  groups to their existing layer handlers.
+  groups to their existing layer handlers. A retained frame keeps one
+  repeatable light stage at its original slot. The display worker and
+  private renderer record against their own attachments using the mesh,
+  pose rows and textures held for that light. An armed guest-reference
+  capture keeps its original draws.
 - **Bounds and clip.** `engine::light_constants::screen_bounds` ports
   `0x001650a0` with the caller's SSE and x87 modes. The globals keep all
   six words. At layers 12 and 13, the target setter installs the view's
@@ -808,7 +812,10 @@ the independent L8 in [e3-lighting.md](e3-lighting.md).
   dynamic light, each additional-caster suffix, a first-person light and
   an object-shadow mask with its filter. The view-target host refuses
   layers 10, 11 and 14, shader-driven gels, and passes that require a
-  target change. An additional-caster loop whose visibility rows select
+  target change. Even when the dimensions match, target 1 has a distinct
+  colour-surface header. Layer 14 binds that surface and restores the
+  view's actual colour and depth surfaces afterward. An additional-caster
+  loop whose visibility rows select
   no caster restores its cursor in Rust. A selected caster still needs
   its own record walk, projection and suffix. An object mask still
   builds its model items after constants and projection, then generates,
@@ -816,8 +823,9 @@ the independent L8 in [e3-lighting.md](e3-lighting.md).
   target-13 producer and its shader and device state changes.
 - **Tests.** The seeded XBE differentials cover sphere bounds, empty
   additional-caster loops and the layer and target state a following
-  guest light reads. Graph tests check each site's draw order and late
-  refusal. The mixed GPU fixture compares a diffuse/specular pair beside
+  guest light reads. The opacity differential checks both forms of the
+  target-1 bind and the following view restore. Graph tests check each
+  site's draw order and late refusal. The mixed GPU fixture compares a diffuse/specular pair beside
   guest draws against all-D3D pixels, including a late specular refusal.
 - **Gate.** Check the per-site native and fallback counts above and
   compare lit interiors with `render.parity` at 1x and 4x. The gate for
