@@ -107,6 +107,9 @@ libc = { workspace = true }
 hud-edit = { path = "../../tools/hud-edit", features = ["fixture"] }
 # model.*'s tests put the kit into the kit's invented map.
 pogo-kit = { path = "../../tools/pogo-kit", features = ["fixture"] }
+# anim.*'s tests build the invented two-bone model and its graph with the
+# Halo 1 converter's writers (api/anim/tests.rs).
+h1-assets = { path = "../../tools/h1-assets" }
 # The agent's real server behind an invented game (src/play/tests.rs).
 agent = { path = "../../extensions/agent" }
 # Invented script tables and an invented executable for the Scripts tool.

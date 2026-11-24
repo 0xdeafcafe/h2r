@@ -36,7 +36,7 @@ before its slice starts.
 | Map packages: a base plus patch layers, `MapId`, the resolver, Live sharing, mod packs | built | `crates/formats/content`, `crates/runtime/vfs/src/packages.rs`, [maps.md](../game/maps.md) |
 | Sound audition (A1), mouth curves read (A2), sound measurement | built | `app/audition.rs`, `ui/sound.rs`, `api/sound.rs`, `api/sound_measure.rs`, `tags::sound::Gestalt::mouth_curve` |
 | Announcer lines and voice cloning | built | [announcer.md](announcer.md), [voice-cloning.md](voice-cloning.md) |
-| Animation graphs read and sampled, every retail codec | built, no view | `crates/formats/tags/src/anim.rs`, `anim_sample.rs` ([animation.md](../formats/animation.md)) |
+| Animation graphs read and sampled, every retail codec, and a graph's clips posed on the model that uses it (M1) | built | `crates/formats/tags/src/anim.rs`, `anim_sample.rs` ([animation.md](../formats/animation.md)); the pose view `crates/apps/studio/src/{app,ui,api}/anim.rs` |
 | A `jmad` stream encoder (static stream and the 8-byte quantised codec), which the Halo 1 converter calls | built (AN2) | `crates/formats/tags/src/anim_write.rs`; the converter's graph assembly stays in `crates/tools/h1-assets/src/models/jmad.rs` |
 | An Xbox ADPCM encoder; a `snd!` writer with the gestalt merge | built, the second inside the converter | `crates/platform/audio/src/adpcm.rs` (`encode`), `crates/tools/h1-assets/src/sounds/merge.rs` |
 | Packages: `content::package::{Manifest, Lock, PackageId, Set}`, validation, `requires`, `after`, `set.toml`, `core` and `ui` always on, the load order, the content set | built | `crates/formats/content/src/package/` |
@@ -643,16 +643,21 @@ graph, edits keys on a timeline and writes the graph back.
 +--------------------------------------------------------------------------------------+
 ```
 
-**Read and pose (slice M1 of [rich-editors.md](rich-editors.md)).**
+**Read and pose (slice M1 of [rich-editors.md](rich-editors.md), built).**
 `tags::anim::AnimationGraph` lists modes, classes, types and actions;
 `anim_sample::AnimationClip::sample` gives a pose at a frame for every
 retail codec. The native view takes node matrices from the pose in place
-of `rest_nodes` (`crates/tools/scenario-edit/src/native_view.rs`). The
-frame a decoded rotation is in relative to the render model's skeleton
-is an open item of [animation.md](../formats/animation.md); M1 settles it
-against the engine's composition rule
-([anim-sampling.md](../engine/anim-sampling.md)), which the Halo 1
-converter already writes to ([models.md](../halo1/models.md)).
+of `rest_nodes` (`crates/tools/scenario-edit/src/native_view.rs`
+`posed_nodes`, drawn by `native_view/preview.rs`'s posed render; the
+Animation window and the `anim.list`/`anim.pose` API over it are
+`crates/apps/studio/src/{app,ui,api}/anim.rs`). The frame a decoded
+rotation is in relative to the render model's skeleton was an open item
+of [animation.md](../formats/animation.md); M1 settled it against the
+engine's composition rule ([anim-sampling.md](../engine/anim-sampling.md)),
+which the Halo 1 converter already writes to ([models.md](../halo1/models.md)):
+the sampled channels merge with the render model node's defaults and
+compose up its tree (animation.md, "Composing a pose"), an overlay
+applying with the engine's scaled-add rule.
 
 **Timeline.** One row per node with its rotation, translation and scale
 channels, a ruler in frames at the graph's 30 Hz, a scrub head, loop and
@@ -884,7 +889,7 @@ Rows are in build order.
 | PK12 | **Kits**: `kit: campaign-cards`, `glyphs`; Firefight's director and wave sets as `rules` items of `modes`; `firefight_kit::build_package`'s boot and host-bundle callers go (GM1 of game-types-without-carriers builds ground on demand); boot's chain is `PackageRewrite` alone | M | PK9 | per kit, the map through the package equals the one its own caller made; `boot/src/lib.rs` builds no other rewrite |
 | PK13 | **Live, server**: `/v1/packages`, the signed manifest and lock, the upload checks, credit, the model flag, both homes | M | PK1 | the parity suite: a bad signature, a lock hash that does not match, a retail hash and a model item without the flag are each refused; an admin's credit outranks the manifest's |
 | PK14 | **Live, game and Studio**: install, the content set in a session, the join check, a session refused on `boot::packages::network_refusal`, the Mods screens, `package.publish` and `package.install`; `h2 live mods import` writes packages | M | PK13, PK3 | on the fake server: a joiner missing one package fetches it and joins; a blocked one fails before the map load with the reason; an imported pack holds patches and credit only |
-| M1 | **Model poses** (rich-editors) | M | nothing | as there |
+| M1 (built) | **Model poses** (rich-editors) | M | nothing | as there |
 | AN1 | **The animation editor, read**: `anim.read`, the timeline rows, scrub, loop, the key reduction | M | M1, SH1 | an invented two-bone clip lists its channels; reduce then bake is within the tolerance at every frame |
 | AN2 | **The encoder** (built): `tags::anim_write` (codecs 1 and 3) lifted from `h1-assets`, which calls it | M | nothing | `decode(encode(c))` equals `c` within quantisation on invented clips; the converter's `jmad` tests pass unchanged |
 | AN3 | **Keys and curves**: `crates/tools/anim-edit`, `AnimDoc`, `anim.key`, gizmo keying, the Curves tab, `anim.new`, `anim.duplicate`, `anim.check` | M | AN1 | a key set by the gizmo and by `anim.key` make the same document; a drag is one undo step; a rotation survives the angle view unchanged |

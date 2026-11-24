@@ -8,6 +8,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 pub mod announcer;
+pub mod anim;
 pub mod audition;
 pub mod bot_nav;
 pub mod commands;
@@ -605,6 +606,8 @@ pub struct App {
     pub(crate) last_tag_import: Option<tag_bundle::ImportReport>,
     /// Sound audition: the decoded sound, the audio output and what plays.
     pub audition: audition::Audition,
+    /// Model poses: the graph read, its clips and the models that use it.
+    pub anim: anim::Anim,
     /// The Announcer: its voice source and the last line made.
     pub announcer: announcer::Announcer,
     /// Voices: the clone's datasets, jobs and sidecar (`voices`).
@@ -690,6 +693,7 @@ impl App {
             last_tag_export: None,
             last_tag_import: None,
             audition: Default::default(),
+            anim: Default::default(),
             announcer: Default::default(),
             voices: Default::default(),
             rules: Default::default(),

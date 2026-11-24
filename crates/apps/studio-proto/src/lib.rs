@@ -300,6 +300,12 @@ pub mod method {
     pub const RULES_EXTERNAL: &str = "rules.external";
     pub const RULES_RUN: &str = "rules.run";
 
+    // Model poses (docs/editor/agent-api.md, "Model poses"; the M1 slice
+    // of docs/editor/rich-editors.md): a `jmad` tag's animations listed
+    // and one posed on the model that uses it.
+    pub const ANIM_LIST: &str = "anim.list";
+    pub const ANIM_POSE: &str = "anim.pose";
+
     // Planned namespaces: listed by `session.methods` with status
     // "planned"; a call answers NOT_YET until its lane registers it.
     pub const HUD_LIST: &str = "hud.list";

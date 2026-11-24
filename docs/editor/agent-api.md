@@ -312,6 +312,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `image` | `generate {prompt, references, bitmap?, image?, size?, alpha?, out?, from?}`, `result {id?}`, `apply {id}`, `accept {id, save?}`, `discard {id}`: a picture made for a bitmap image from a prompt and the references the user picks ([Generating images](#generating-images)) |
 | `mesh` | `mode {mode}`, `select {ids, op \| all \| none \| invert}`, `transform {translate \| matrix, pivot?, merge?}`, `ops`, `apply {ops}`; each with `target?` |
 | `model` | `list {group?}`, `read {tag, variant?}`, `render {tag, view?, variant?, character?, biped?, hands?, size?, camera?, out?}`, `check {tag, variant?}`, each with `map?` and `pogo?` ([Models and customisation](#models-and-customisation)); `colors`, `emblem` (planned) |
+| `anim` | `list {tag}`, `pose {tag, animation, frame?, overlay?, model?, size?, out?}` ([Model poses](#model-poses)) |
 | `custom` (planned) | `list`, `set` |
 
 `view.camera` returns `fly_speed` in world units per second. Its optional
@@ -1907,6 +1908,46 @@ and save; each `path` above is that call's. The provider re-reads its
 map when the scenario tool opens another; after a save, `model.list`
 with the saved map's name reads the edit.
 
+### Model poses
+
+`anim.*` reads a `jmad` tag of the map the Tags tool shows and poses it
+on the model that uses it (rich-editors.md, "Model poses", slice M1; the
+same calls the Animation window draws with, `app::anim`). `tag` is as
+`sound.*` takes it; read-only.
+
+- `anim.list {tag}`: the graph's animations, each
+  `{index, name, type (base|overlay|replacement|unknown), frames,
+  codecs: [static, animated] (the engine's codec names, null where a
+  stream is absent), aim_grid, error}` — `aim_grid` marks codec 8, whose
+  "frames" are the cells of an aim grid, not points in time; `error`
+  names why a damaged clip does not build (inline data is refused by
+  name). With them: `nodes`, and `users`, the map's objects whose `hlmt`
+  names the graph.
+- `anim.pose {tag, animation, frame?, overlay?, model?, size?, out?}`:
+  one animation sampled at `frame` (a fractional frame blends the
+  neighbours; the default 0; a frame past the end holds the last) and
+  posed on the model. `animation` is its name or index. `overlay` is
+  `{animation, weight}`: a second animation applied over the base at
+  `weight` 0 to 1 with the engine's scaled-add rule
+  (anim-sampling.md, "Evaluators"; 0 changes nothing, 1 is the plain
+  add). `model` names which user to pose (by tag name or `0x...` id)
+  when several use the graph; without it the only one is posed, and
+  when none does, the answer still gives the animation's own channels
+  with a note saying so. The reply: `nodes`, each
+  `{index, name, parent, rotation [x,y,z,w], translation, scale, has
+  {rotation, translation, scale}, world}` — the local transform that
+  composes (the animation's channel where it has one, the render model
+  node's default where it does not, which `has` says), and the posed
+  world matrix, column-major `T·R·S` (null without a model). The
+  composition is the engine's own: the graph's nodes and the render
+  model's are the same list, and the merged locals compose up the model
+  node tree (animation.md, "Composing a pose"; a node-count
+  disagreement is refused by name). The model is also drawn offscreen
+  through the viewport's native object renderer to a PNG (`out`, or the
+  cache directory's `studio/anim/`; never into a Git checkout), with
+  `width`, `height`, `covered` as `model.render` gives them; without a
+  renderer the transforms still answer and a note names why.
+
 ### `model.colors` and `model.emblem` (planned)
 
 `model.colors {player?, colors?}` and `model.emblem {player?, emblem?}`
@@ -1956,6 +1997,19 @@ go into. The planned methods need: colour and emblem bounds refused;
 profile edits undone and redone as their document; and the window's
 actions and the API's make identical profiles.
 
+`anim.*` runs its examples on an invented two-bone map (a body box and
+an arm box, their graph and the `bipd` that uses them, built with the
+Halo 1 converter's writers in `api/anim/tests.rs`). That suite is the
+slice's accepted test: posed at the last frame of the base clip, the
+arm's transforms are the expected quarter turn and the body's are the
+rest pose — the pose differs from the rest where the clip moves it and
+nowhere else. It also checks the list (names, codecs, the user), the
+overlay at weights 0 and 1 (0 changes nothing; 1 composes the base's
+quarter about z with the overlay's about x), a frame past the end
+holding the last, and the refusals: a tag that is not a `jmad`, an
+animation that is not there, a model that does not use the graph, and a
+graph nothing uses (the channels answer with a note).
+
 ## Code
 
 - `crates/apps/studio-proto`: method names, error codes, the socket path,
@@ -1975,6 +2029,9 @@ actions and the API's make identical profiles.
   the verdict over the audio crate's meter), `api/ui_check.rs` and
   `api/checks.rs`: the content checks. `api/models.rs`: `model.*` (its
   renders through `scenario_edit::native_view::preview`).
+  `api/anim.rs`: `anim.*`, over `app/anim.rs` (the graph, its clips and
+  the models kept per map and tag; the Animation window, `ui/anim.rs`,
+  draws the same poses).
   `api/playtest.rs`: the playtest checks (`app/playtest_static.rs`) and
   the runner's methods (`app/playtest.rs`). `api/workspace.rs` (with
   `app/workspace.rs`: the tree's root, the plan, the extraction thread,

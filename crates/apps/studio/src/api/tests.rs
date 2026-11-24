@@ -413,6 +413,12 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         m::MODEL_LIST | m::MODEL_READ | m::MODEL_RENDER | m::MODEL_CHECK => {
             super::models::tests::open_court(app, &t.path("court.map"), &pogo_kit::fixture::kitted().bytes);
         }
+        // The invented two-bone model and its graph, as pose.map.
+        m::ANIM_LIST | m::ANIM_POSE => {
+            let map = t.path("pose.map");
+            std::fs::write(&map, super::anim::tests::anim_map(true)).unwrap();
+            app.dispatch(Action::OpenSource(map));
+        }
         n if n.starts_with("hud.") => {
             // The HUD fixture's map as the source (it has no scenario).
             let map = t.path("hudtest.map");

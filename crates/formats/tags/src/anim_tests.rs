@@ -1051,3 +1051,128 @@ fn engine_problems_require_aligned_blend_screen_streams() {
     let p = g.engine_problems(0, &resource_at(0x40));
     assert_eq!(p, ["blend screen 0 of 0"]);
 }
+
+// ---- composing a pose on a skeleton (M1) ---------------------------------------
+
+fn node_t(rotation: [f32; 4], translation: [f32; 3], scale: f32) -> NodeTransform {
+    NodeTransform {
+        rotation,
+        translation,
+        scale,
+        has_rotation: true,
+        has_translation: true,
+        has_scale: true,
+    }
+}
+
+fn defaults() -> Vec<NodeDefault> {
+    vec![
+        NodeDefault {
+            parent: -1,
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            translation: [0.0; 3],
+            scale: 1.0,
+        },
+        NodeDefault {
+            parent: 0,
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            translation: [1.0, 0.0, 0.0],
+            scale: 1.0,
+        },
+    ]
+}
+
+#[test]
+fn merged_fills_the_defaults_the_animation_leaves_out() {
+    let mut pose = Pose {
+        nodes: vec![NodeTransform::default(), NodeTransform::default()],
+    };
+    pose.nodes[1].rotation = [0.0, 0.0, SQRT_HALF, SQRT_HALF];
+    pose.nodes[1].has_rotation = true;
+    let m = pose.merged(&defaults()).unwrap();
+    // Node 0 keeps every default; node 1 its animated rotation and the
+    // default translation. The flags stay the animation's own.
+    assert!(close_all(&m.nodes[0].rotation, &[0.0, 0.0, 0.0, 1.0]));
+    assert_eq!(m.nodes[0].translation, [0.0; 3]);
+    assert!(close_all(
+        &m.nodes[1].rotation,
+        &[0.0, 0.0, SQRT_HALF, SQRT_HALF]
+    ));
+    assert_eq!(m.nodes[1].translation, [1.0, 0.0, 0.0]);
+    assert!(m.nodes[1].has_rotation && !m.nodes[1].has_translation);
+    assert!(!m.nodes[0].has_rotation);
+    // A mismatched skeleton is named, not papered over.
+    assert!(pose.merged(&defaults()[..1]).is_err());
+}
+
+#[test]
+fn merged_poses_compose_up_the_skeleton() {
+    let mut pose = Pose {
+        nodes: vec![NodeTransform::default(), NodeTransform::default()],
+    };
+    pose.nodes[1].rotation = [0.0, 0.0, SQRT_HALF, SQRT_HALF];
+    pose.nodes[1].has_rotation = true;
+    let m = pose.merged(&defaults()).unwrap();
+    let parents: Vec<i16> = defaults().iter().map(|d| d.parent).collect();
+    let w = m.world_matrices(&parents).unwrap();
+    // The root is its own frame; the child is the root after its turn:
+    // a quarter turn about z takes x to y. Matrices are column-major.
+    assert!(close_all(&w[0][0], &[1.0, 0.0, 0.0, 0.0]));
+    assert!(close_all(&w[1][0], &[0.0, 1.0, 0.0, 0.0]));
+    assert!(close_all(&w[1][3], &[1.0, 0.0, 0.0, 1.0]));
+}
+
+#[test]
+fn the_engines_overlay_rule_adds_by_weight() {
+    // An identity base, an overlay that turns a quarter about z and moves
+    // x by 2 at scale 2.
+    let base = Pose {
+        nodes: vec![node_t([0.0, 0.0, 0.0, 1.0], [0.0; 3], 1.0)],
+    };
+    let quarter = [0.0, 0.0, SQRT_HALF, SQRT_HALF];
+    let overlay = Pose {
+        nodes: vec![node_t(quarter, [2.0, 0.0, 0.0], 2.0)],
+    };
+    // Weight 0 changes nothing (the blend of the quaternion is ±1).
+    let mut p = base.clone();
+    p.add_overlay(&overlay, 0.0).unwrap();
+    assert!(close_all(&p.nodes[0].rotation, &[0.0, 0.0, 0.0, 1.0]));
+    assert_eq!(p.nodes[0].translation, [0.0; 3]);
+    assert_eq!(p.nodes[0].scale, 1.0);
+    // Weight 1 is the plain add: rotation r ⊗ s, translation r + s,
+    // scale s * r.
+    let mut p = base.clone();
+    p.add_overlay(&overlay, 1.0).unwrap();
+    assert!(close_all(&p.nodes[0].rotation, &quarter));
+    assert_eq!(p.nodes[0].translation, [2.0, 0.0, 0.0]);
+    assert!(close(p.nodes[0].scale, 2.0));
+    // Weight 0.5 on an identity base: the rotation is half the turn along
+    // the shorter arc (22.5 degrees about z, so half of the quarter), the
+    // translation half, the scale halfway to doubling.
+    let mut p = base.clone();
+    p.add_overlay(&overlay, 0.5).unwrap();
+    let z = std::f32::consts::FRAC_PI_8.sin();
+    assert!(close_all(
+        &p.nodes[0].rotation,
+        &[0.0, 0.0, z, (1.0 - z * z).sqrt()]
+    ));
+    assert_eq!(p.nodes[0].translation, [1.0, 0.0, 0.0]);
+    assert!(close(p.nodes[0].scale, 1.5));
+    // A channel the overlay leaves out stays.
+    let sparse = Pose {
+        nodes: vec![NodeTransform {
+            translation: [2.0, 0.0, 0.0],
+            has_translation: true,
+            ..NodeTransform::default()
+        }],
+    };
+    let mut p = base;
+    p.add_overlay(&sparse, 1.0).unwrap();
+    assert!(close_all(&p.nodes[0].rotation, &[0.0, 0.0, 0.0, 1.0]));
+    assert_eq!(p.nodes[0].translation, [2.0, 0.0, 0.0]);
+    // Counts that disagree are named.
+    let two = Pose {
+        nodes: vec![NodeTransform::default(), NodeTransform::default()],
+    };
+    assert!(sparse.add_overlay(&two, 1.0).is_err());
+}
