@@ -48,6 +48,11 @@ Each triangle list or strip goes through the existing indexed pass with the reso
 
 `native_render::transparent_streams` packs multiple immutable streams into one buffer when their live declarations and strides allow it. It keeps the raw guest bytes, including packed normals and normalized endpoints. The cache uses immutable stream snapshots and the exact declaration, scoped to the game activation and active BSP. A transparent view can use the cache before any layer-3 item. Object entries pack only when the objects stage is on. Object inputs and node rows come from the actual draw, as do cluster and placement inputs. The opaque world keeps the layers 1, 3, 5, 7 and 8 layout, with a 92-byte stride and `Float32x2` for v6.
 
+The `indexed draws with native bindings` log counts accepted draw bindings
+since startup and reports every 1,800 acceptances. The
+`native_transparents_cache_hits` and `native_transparents_cache_misses`
+frame counters track reuse and packing attempts for those bindings.
+
 ### GPU submission
 
 The ordered draw path batches uniforms in the renderer's upload arena and reuses texture and sampler groups keyed by the live views and samplers. The packed vertex buffer can stay on the GPU across views. No transparent draw allocates its own pair of uniform buffers and group.

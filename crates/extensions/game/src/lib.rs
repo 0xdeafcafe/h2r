@@ -168,6 +168,8 @@ pub mod native_post_glue;
 #[cfg(feature = "gpu")]
 pub mod native_post_load;
 #[cfg(feature = "gpu")]
+mod native_refusals;
+#[cfg(feature = "gpu")]
 pub mod native_residual_glue;
 #[cfg(feature = "gpu")]
 pub mod native_transparents_glue;

@@ -1304,6 +1304,11 @@ impl<B: Backend> Backend for DiagBackend<B> {
             }
             times.push(now);
         }
+        #[cfg(feature = "gpu")]
+        if n.is_multiple_of(100) {
+            crate::native_particles_admission::report_refusals();
+            crate::native_gels_glue::report_refusals();
+        }
         // H2_HOST_PERF: where the frame time went (host_perf.rs), on the
         // game thread before the backend presents.
         crate::host_perf::on_present(n);
