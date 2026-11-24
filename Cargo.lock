@@ -7009,6 +7009,7 @@ version = "0.1.0"
 dependencies = [
  "collision-build",
  "content",
+ "gfx",
  "h1-assets",
  "h1convert",
  "h1map",
