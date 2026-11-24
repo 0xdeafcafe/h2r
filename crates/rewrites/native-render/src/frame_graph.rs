@@ -212,12 +212,21 @@ fn record(
         .unwrap_or_default();
     let mut rows = rows.into_iter().enumerate().peekable();
     let mut observer = observer;
+    // Ranges of the chosen lights' stages this draw recorded (`e3.lights`).
+    let mut chosen = 0u32;
     let ran = (|| -> Result<(), String> {
         for (i, (at, op)) in frame.ops.iter().enumerate() {
             let named = |e: String| format!("view {} {} op {i}: {e}", at.view, at.slot.name());
+            // A stage of one lighting mode (the renderer's chosen lights
+            // beyond the guest's) draws only in that mode.
+            let mode = stage_mode(op);
+            let other_mode = mode.is_some_and(|m| m != lighting);
             // An admitted object shadow's ops: its sun stage stands in.
-            if !sun_replay.as_ref().is_some_and(|s| s.skip[i]) {
+            if !other_mode && !sun_replay.as_ref().is_some_and(|s| s.skip[i]) {
                 pass.apply(op).map_err(named)?;
+                if let (Some(_), ReplayOp::Stage(stage)) = (mode, op) {
+                    chosen += stage.plan.ranges as u32;
+                }
             }
             for stage in sun_replay.as_ref().and_then(|s| s.after.get(&i)).into_iter().flatten() {
                 pass.apply(stage).map_err(named)?;
@@ -252,8 +261,18 @@ fn record(
     }
     if let Some(report) = e3.as_mut() {
         report.add_choice(&crate::light_choice::choose(scene));
+        report.add_chosen(chosen);
     }
     Ok(e3)
+}
+
+/// The one lighting mode `op` draws in: a scene stage whose pass names
+/// one (`d3d::ExternalPass::lighting_only`). `None` for every other op.
+fn stage_mode(op: &ReplayOp) -> Option<Lighting> {
+    let ReplayOp::Stage(stage) = op else {
+        return None;
+    };
+    stage.pass.lock().ok()?.lighting_only()
 }
 
 /// Re-render this scene to an isolated target. No present hook or

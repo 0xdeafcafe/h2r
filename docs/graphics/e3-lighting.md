@@ -161,7 +161,7 @@ shadows from every cone light, and a different edge.
 
 ## How it works
 
-The frame graph, candidate extraction and the tiles of the guest's shadowed lights are built. The sun's tiles and receivers are built in the renderer and consume the scene’s marked shadows and nearby offscreen roots. The renderer's own choice of lights is built and counted; drawing it is the design.
+The frame graph, candidate extraction and the tiles of the guest's shadowed lights are built. The sun's tiles and receivers are built in the renderer and consume the scene’s marked shadows and nearby offscreen roots. The renderer's own choice of lights is built and counted, and the chosen lights beyond the guest's are drawn over the structure; their shadows and the first-person pass are the design.
 
 ### The scene does not know the mode
 
@@ -421,7 +421,9 @@ remainder going one each to the first views (`view_caps`: three views
 take 6, 5 and 5). A second record of a view is chosen alike and counted
 once. The first `FIRST_PERSON_CAP` (8, retail's recorded-light count) of
 a view's lit lights are its first-person set. Under E3 the frame graph
-reports the choice as `lights_lit` and `lights_over_cap`.
+reports the choice as `lights_lit`, `lights_over_cap` and
+`lights_beyond_guest` (the lit game lights the guest did not draw,
+`ViewChoice::beyond_guest`).
 
 - **Host lights** (`frame_scene::Light::host_light`, `host: Some(seat)`)
   have no datum and no `ligh` tag: the Forge monitors' lights
@@ -437,16 +439,47 @@ reports the choice as `lights_lit` and `lights_over_cap`.
   5), which the view test admits only for the view's local first-person
   owner. The scene carries neither the view's unit nor an owner chain, so
   a light attached to the view's weapon takes its place by score.
-- **Not drawn yet.** The light passes drawn are still the guest's in
-  both modes, and `e3.lights` issues no draws. Drawing a chosen light the
-  guest did not draw needs its receivers gathered from its bounds, which
-  the scene does not hold. The first-person set has no pass of its own
-  yet either.
+- **Drawing the lights beyond the guest's**
+  (`render_bridge::native_lights::chosen`). Once the main view's light
+  pass is over and its candidates are in the scene, the frame step
+  chooses the open view as the render thread does
+  (`light_choice::choose_view`), its share of the cap from the views of
+  this scene so far and the scene before (`light_choice::share_of`). A
+  frame whose views change chooses on the render thread from the views
+  it has, so its counters and its drawn lights can differ for that frame.
+  Each lit game light the guest did not draw is drawn from the constants
+  extraction made for it without a shadow (`LightCandidate::constants`,
+  `unshadowed`) as a sphere of its bounds: `native_lights_glue::host`
+  draws its layers 12 and 13 over the structure and placement parts the
+  sphere meets, as it draws a host light. Each light is a scene stage
+  with its materials, gel and geometry retained, of E3 alone
+  (`d3d::ExternalPass::lighting_only`): the frame graph records it in an
+  E3 draw and skips it in any other, and the render thread's live
+  recording, on the retail reference, takes it and draws nothing. The
+  guest's own work and the scene are the same in both modes. Where the
+  render thread takes no scene stage, no chosen light is drawn.
+  `e3.lights` counts the ranges of the stages an E3 draw recorded;
+  `scene_e3_lights_drawn`, `scene_e3_lights_kept` and
+  `scene_e3_lights_unread` count the frame step's outcomes.
+- **Not drawn yet.** A chosen light casts no shadow (L7), lights no
+  object (model) part, and is left undrawn when its candidate holds no
+  constants or its gel is drawn by a shader into target 13 (the guest's
+  passes produce that gel, and they did not run for it). The
+  first-person set has no pass of its own: retail's first-person pass
+  draws the lights retail recorded, and lighting the first-person parts
+  with a light the guest did not record needs those parts in the scene
+  (`View::first_person`, FrameScene slice 3).
 
 Tests: `twenty_candidates_draw_the_sixteen_highest_in_score_order_every_run`,
 `ties_take_the_lower_index_and_only_candidates_are_lit`,
 `the_views_own_light_is_lit_first` and `split_screen_shares_the_cap`
-(`light_choice.rs`), and `e3_reports_its_choice_of_sixteen_lights_from_twenty`
+`the_lights_beyond_the_guests_are_the_lit_ones_it_did_not_draw`,
+`a_views_choice_from_its_slice_matches_the_frames` and
+`a_views_share_counts_the_keys_seen_and_itself` (`light_choice.rs`),
+`the_lit_lights_the_guest_did_not_draw_are_drawn_unshadowed` and
+`a_light_without_constants_or_with_a_shader_gel_is_unread`
+(`render-bridge/src/native_lights/chosen.rs`), and
+`e3_reports_its_choice_of_sixteen_lights_from_twenty`
 (`tests/world_layers_gpu/frame_graph.rs`).
 
 ### Shadows from local lights
@@ -613,17 +646,18 @@ On a replayable game view the render thread draws one sealed scene into a privat
   `e3.lights`. Each has its submitted draw count and an optional GPU
   time. `e3.tiles` counts the caster draws into tiles and `e3.marks` the
   receivers compared with the Sharp edge. `e3.sun_tiles` counts
-  the caster draws into the sun's tiles and `e3.sun` their receivers. `e3.lights` issues no draws
-  yet. No stage has a timestamp query yet, so `gpu_ns` is null.
+  the caster draws into the sun's tiles and `e3.sun` their receivers. `e3.lights`
+  counts the ranges of the chosen lights' stages beyond the guest's. No stage has a timestamp query yet, so `gpu_ns` is null.
 - `render.stats` and `render.scene` expose the E3 graph's per-draw
   counters under `display_frame.e3` and `private_frame.e3`:
-  `lights_lit`, `lights_shadowed`, `lights_over_cap`, `sun_tiles`,
+  `lights_lit`, `lights_shadowed`, `lights_over_cap`, `lights_beyond_guest`, `sun_tiles`,
   `sun_tiles_redrawn`, `sun_tiles_offscreen`, `atlas_halved` and `tiles_refused`. They count the
   renderer's own light and atlas decisions. `lights_shadowed` is the
   tiles drawn, one per shadowed light of the guest's, and `tiles_refused`
-  the shadow maps left at the guest's size. `lights_lit` and
-  `lights_over_cap` are the renderer's choice ("Built: the choice"); the
-  lights drawn are still the guest's in both modes.
+  the shadow maps left at the guest's size. `lights_lit`,
+  `lights_over_cap` and `lights_beyond_guest` are the renderer's choice
+  ("Built: the choice"); an E3 draw also draws the lights beyond the
+  guest's, a retail draw the guest's alone.
 
 The display worker samples the Lighting row at the frame boundary.
 `settings.set` with `graphics.lighting` changes the mode on a window or GPU
@@ -699,7 +733,7 @@ runs the game.
 | L3 | The mode as a render-thread parameter; `render.capture {lighting}`; the pass rows and counters | With no E3 pass yet, a retail and an E3 capture of one tick are identical (`max_channel == 0`) | none |
 | L4 | Built. Local-light shadows: the guest's shadow maps drawn as tiles at `shadow_scale`, the Sharp edge on layer 11 ("Shadows from local lights") | Synthetic: `render_scale::e3_tiles_give_a_replayed_shadow_the_sharp_edge`, a replayed tile's shadow with the L1 edge at 1x and 2x and retail's map in retail mode; the plan's tests in `tiles.rs`. Game: on a tick with a shadowed light, the E3 capture differs from retail's only within eight pixels of retail's shadow edges, `e3.tiles` and `e3.marks` have draws, `lights_shadowed` is one per shadowed light and `tiles_refused` is 0 | Frame and render-thread time of E3 against retail at 1x and 4x; the first numbers for the budget |
 | L5 | Built on invented scenes: the tile plan, the cache, the atlas, the caster and receiver draws, the casters and receivers gathered from the scene's object shadows (objects, structure clusters and placements), the replay's marks, the models and the world receivers on the render thread, and the frame graph's stage that skips an admitted shadow's mask. The materials' layer-10 and layer-11 programs are not used yet | Synthetic, built (`tests/world_layers_gpu/sun_tiles.rs`): `a_box_on_a_plane_casts_a_hard_shadow`, `a_box_shadows_the_structure_it_stands_on`, `an_l_shaped_caster_shadows_itself`, `nonpositive_normal_terms_keep_rgb_and_mixed_terms_interpolate`, `a_still_casters_tile_is_not_redrawn_and_a_moved_one_is`; the plan's tests in `sun_tiles.rs`; the frame graph's in `tests/world_layers_gpu/frame_graph.rs`. Game, pending: an outdoor gameplay tick differs from retail around every caster, and no retail mask pass is drawn for a caster with a tile | GPU ms with 8, 16 and 32 casters (`sim.spawn`) at 1x and 4x; `sun_tiles_redrawn` at 60 fps |
-| L6 | The renderer's light choice: score, the cap of 16, the view's own lights first, the first-person pass. Partly built: the choice, its first-person set and its counters ("Built: the choice"); drawing the chosen lights beyond the guest's, and the first-person pass, are not | Synthetic, built: `twenty_candidates_draw_the_sixteen_highest_in_score_order_every_run` (`light_choice.rs`), 20 candidates give the 16 highest in score order, the same every run. Game: firing in a dark street (`input.pad`) lights the firer and the ground in the E3 capture; `lights_lit` and `lights_over_cap` | GPU ms of `e3.lights` against `lights_lit` |
+| L6 | The renderer's light choice: score, the cap of 16, the view's own lights first, the first-person pass. Partly built: the choice, its first-person set and its counters ("Built: the choice"), and the chosen lights beyond the guest's drawn over the structure as E3-only stages; the first-person pass, and those lights on objects, are not | Synthetic, built: `twenty_candidates_draw_the_sixteen_highest_in_score_order_every_run` (`light_choice.rs`), 20 candidates give the 16 highest in score order, the same every run; `the_lit_lights_the_guest_did_not_draw_are_drawn_unshadowed` (`native_lights/chosen.rs`). Game, pending: `scene_e3_lights_drawn` above zero, `e3.lights` draws in the E3 capture and none in retail. Game: firing in a dark street (`input.pad`) lights the firer and the ground in the E3 capture; `lights_lit` and `lights_over_cap` | GPU ms of `e3.lights` against `lights_lit` |
 | L7 | Shadows from cones the content flagged off, with the renderer's caster gather; four slots; the flashlight | Synthetic: a no-shadow cone casts in E3 and not in retail. Game: a lamp placement and the flashlight cast in the E3 capture | The flashlight frame: all of the mode's passes at 4x. This is the worst case the budget must hold |
 | L8 | Implemented: extract nearby offscreen casters and shadow visible ground | Seeded pool and lifted lighting-sample differentials, GPU pixel test `a_caster_behind_the_camera_shadows_the_ground_in_view`. Live check pending: on one outdoor tick with the caster behind the camera, compare 1x retail and E3 captures. Check `render.stats` → `private_frame.e3.sun_tiles_offscreen > 0` and `e3.sun` draws | Lab sim-thread frame-step increase under 0.1 ms, pending |
 | L9 | Tuning against "Target look" on captures at pstencil-history.md's footage times; then the D3D-path row's code goes with `scaled.rs` (FrameScene slice 10) | A table in the notes: each target item, met or not, with the capture's tick | The laptop A/B below, three pairs |

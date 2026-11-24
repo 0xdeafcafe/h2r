@@ -286,6 +286,14 @@ pub trait ExternalPass: Send {
     /// Selected world ranges that bind a private page whose two lamp states differ.
     fn relit_lightmap_ranges(&self) -> usize { 0 }
 
+    /// The one lighting mode whose frames draw this pass, `None` for every
+    /// mode (docs/graphics/e3-lighting.md, "Lights: which, and how many").
+    /// Such a pass is a scene stage that only the frame graph records,
+    /// and only in that mode (`native_render::frame_graph`): the render
+    /// thread's live recording, on the reference copy, takes it and draws
+    /// nothing ([`Backend::run_scene_stage`]).
+    fn lighting_only(&self) -> Option<crate::Lighting> { None }
+
     fn indexed_tail(&self) -> Option<IndexedTail> { None }
 
     /// All these ranges share the textures resolved at the first draw.
@@ -1695,6 +1703,11 @@ pub trait Backend: Send {
         #[cfg(feature = "gpu")]
         {
             let SceneStage { surfaces, request, plan, pass } = stage;
+            // The reference draws retail: a pass of one mode is the frame
+            // graph's to record ([`ExternalPass::lighting_only`]).
+            if pass.lock().map_err(|_| "native pass poisoned")?.lighting_only().is_some() {
+                return Ok(true);
+            }
             let Some(recordings) = self.prepare_external(surfaces, request, [None; 4], &plan, TargetCopy::Reference, pass)? else {
                 return Ok(false);
             };

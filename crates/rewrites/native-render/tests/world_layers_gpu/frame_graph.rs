@@ -916,6 +916,9 @@ fn e3_reports_its_choice_of_sixteen_lights_from_twenty() {
         let e3 = draw_private(&mut backend, &scene, &frame, 1, Lighting::E3).unwrap();
         let report = e3.report.e3.unwrap();
         assert_eq!((report.lights_lit, report.lights_over_cap), (16, 4));
+        // The guest drew none of them; with no chosen-light stage in the
+        // replay, `e3.lights` has no draws.
+        assert_eq!(report.lights_beyond_guest, 16);
         assert_eq!(report.lights.draws, 0);
         assert_eq!(e3.rgba, retail.rgba);
     }

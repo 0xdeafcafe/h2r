@@ -32,6 +32,9 @@ pub struct E3Report {
     pub lights_lit: u32,
     pub lights_shadowed: u32,
     pub lights_over_cap: u32,
+    /// Lit game lights the guest did not draw: E3's own light passes.
+    #[serde(default)]
+    pub lights_beyond_guest: u32,
     pub sun_tiles: u32,
     /// Offscreen casters with a receiver draw in this view, summed across views.
     pub sun_tiles_offscreen: u32,

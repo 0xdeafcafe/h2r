@@ -1496,7 +1496,7 @@ includes it for the corresponding draw. Its `passes` array contains
 `name`, submitted `draws` and `gpu_ns` (null for an empty or unmeasured
 stage). Snapshot indices refer to the attachment runs in the frame
 record. The per-frame counters are `lights_lit`, `lights_shadowed`,
-`lights_over_cap`, `sun_tiles`, `sun_tiles_redrawn`, `sun_tiles_offscreen`, `atlas_halved` and
+`lights_over_cap`, `lights_beyond_guest`, `sun_tiles`, `sun_tiles_redrawn`, `sun_tiles_offscreen`, `atlas_halved` and
 `tiles_refused`. They count the E3 renderer's selections and atlas work.
 The graph draws the guest's shadow maps as tiles
 ([e3-lighting.md](../graphics/e3-lighting.md), "Shadows from local
@@ -1507,8 +1507,10 @@ left at the guest's size. The display on the guest's live attachments
 draws no tiles. `lights_lit` and `lights_over_cap` are the renderer's
 own choice of lights from the scene's candidates (e3-lighting.md,
 "Lights: which, and how many"): the lights it chose, and the candidates
-its cap of 16 left out. The lights drawn are still the guest's, so
-`e3.lights` has no draws. `sun_tiles_offscreen` counts offscreen casters for which the graph
+its cap of 16 left out. `lights_beyond_guest` counts the chosen game
+lights the guest did not draw, and `e3.lights` the ranges of the stages
+that draw them (layers 12 and 13 over the structure each light meets),
+which only an E3 draw records. `sun_tiles_offscreen` counts offscreen casters for which the graph
 submits a receiver draw, summed across views. A cached tile can have
 receiver draws with no redraw. The
 guest's light selections are in `render.scene.views`.
@@ -1960,6 +1962,10 @@ h2 agent render.parity '{"arm": true}'
   `scene_host_lights_drawn`, `scene_host_lights_kept` and
   `scene_host_lights_unread` (the host's own lights, ML5, drawn by the
   light passes, made but kept, and whose constants did not read),
+  `scene_e3_lights_drawn`, `scene_e3_lights_kept` and
+  `scene_e3_lights_unread` (E3's chosen lights beyond the guest's,
+  queued as E3 stages, ready but not queued, and with no constants to
+  draw from),
   `scene_light_entries` and
   `scene_light_entry_remainder_<cause>` (sorted entries left to the
   guest's handlers, by `scene_extract::light_groups::Cause`: `memory`,

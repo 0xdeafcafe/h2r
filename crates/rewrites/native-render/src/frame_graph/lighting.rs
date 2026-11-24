@@ -29,6 +29,9 @@ pub struct E3Report {
     pub lights_lit: u32,
     pub lights_shadowed: u32,
     pub lights_over_cap: u32,
+    /// Lit game lights the guest did not draw: E3's own light passes
+    /// (`crate::light_choice::ViewChoice::beyond_guest`).
+    pub lights_beyond_guest: u32,
     pub sun_tiles: u32,
     /// Offscreen casters with a receiver draw in this view, summed across views.
     pub sun_tiles_offscreen: u32,
@@ -63,10 +66,18 @@ impl E3Report {
     }
 
     /// The renderer's choice of lights (`crate::light_choice`): the
-    /// lights it lights and the candidates its cap left unlit.
+    /// lights it lights, the candidates its cap left unlit, and the lit
+    /// lights the guest did not draw.
     pub fn add_choice(&mut self, choice: &LightChoice) {
         self.lights_lit += choice.lit();
         self.lights_over_cap += choice.over_cap();
+        self.lights_beyond_guest += choice.beyond_guest();
+    }
+
+    /// The chosen lights' stages the frame recorded (`e3.lights`): one
+    /// draw a range, the light's parts in layers 12 and 13.
+    pub fn add_chosen(&mut self, ranges: u32) {
+        self.lights.draws += ranges;
     }
 }
 

@@ -16,6 +16,7 @@
 //! scene holds whole are drawn from it alone ([`FIRST_PERSON_LAYERS`]).
 //! On with the native renderer (`impl.render.native`, on by default).
 mod additional;
+pub mod chosen;
 mod first_person;
 mod frame;
 mod handoff;
@@ -184,6 +185,14 @@ pub trait Host: Send + Sync {
     /// constants, the geometry it touches the host's to choose. Returns
     /// the lights drawn; a light it keeps draws nothing.
     fn draw_host(&self, _mem: &mut dyn GuestMemory, _draw: host::HostDraw<'_>) -> usize {
+        0
+    }
+    /// Draw E3's chosen lights beyond the guest's ([`chosen`]) in the view
+    /// whose light pass is over: each [`chosen::ChosenLight`]'s layers 12
+    /// and 13 over the geometry its sphere meets, queued as a scene stage
+    /// of E3 alone (`d3d::ExternalPass::lighting_only`). Returns the
+    /// lights queued; a light it keeps draws nothing.
+    fn draw_chosen(&self, _mem: &mut dyn GuestMemory, _draw: chosen::ChosenDraw<'_>) -> usize {
         0
     }
     /// Draw a caster group from the scene, or return the refusal category

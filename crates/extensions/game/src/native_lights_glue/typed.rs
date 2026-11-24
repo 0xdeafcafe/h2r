@@ -112,30 +112,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 false,
                 Some(rect),
             )?;
-            let upload = &ready.upload_device.as_ref().ok_or(Keep::NoWorld)?.0;
-            let (set, vertices, indices) = ready
-                .gpu()
-                .as_mut()
-                .and_then(|gpu| gpu.retain_light(upload, light.constants.gel))
-                .ok_or(Keep::NoWorld)?;
-            let materials = light
-                .draws
-                .iter()
-                .map(|draw| {
-                    let mut gpu = draw
-                        .compiled
-                        .gpu
-                        .try_lock()
-                        .map_err(|_| Keep::Unsupported("light material is busy"))?;
-                    Ok(gpu.retain())
-                })
-                .collect::<Result<Vec<_>, Keep>>()?;
-            let retained = RetainedLight {
-                set,
-                vertices,
-                indices,
-                materials,
-            };
+            let retained = RetainedLight::of(&ready, &light)?;
             let plan = d3d::ExternalPlan {
                 stage: timeline::native::Stage::Lights,
                 view: batch.view,
@@ -150,6 +127,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 gel_slot: None,
                 fallback: None,
                 colour_only: false,
+                lighting_only: None,
             };
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if !current_ready(&state, mem).is_some_and(|current| Arc::ptr_eq(current, &ready)) {

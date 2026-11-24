@@ -21,6 +21,7 @@ pub(super) fn e3_report(frame: &FrameReport) -> Option<E3Report> {
         lights_lit: work.lights_lit,
         lights_shadowed: work.lights_shadowed,
         lights_over_cap: work.lights_over_cap,
+        lights_beyond_guest: work.lights_beyond_guest,
         sun_tiles: work.sun_tiles,
         sun_tiles_offscreen: work.sun_tiles_offscreen,
         sun_tiles_redrawn: work.sun_tiles_redrawn,
@@ -69,6 +70,7 @@ mod tests {
             lights_lit: 5,
             lights_shadowed: 3,
             lights_over_cap: 2,
+            lights_beyond_guest: 1,
             sun_tiles: 4,
             sun_tiles_offscreen: 2,
             sun_tiles_redrawn: 1,
@@ -85,7 +87,7 @@ mod tests {
                     {"name":"e3.marks", "draws":3, "gpu_ns":null},
                     {"name":"e3.lights", "draws":4, "gpu_ns":17}
                 ],
-                "lights_lit":5, "lights_shadowed":3, "lights_over_cap":2,
+                "lights_lit":5, "lights_shadowed":3, "lights_over_cap":2, "lights_beyond_guest":1,
                 "sun_tiles":4, "sun_tiles_offscreen":2, "sun_tiles_redrawn":1, "atlas_halved":2,
                 "tiles_refused":1
             })
