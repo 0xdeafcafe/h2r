@@ -484,7 +484,7 @@ first, then the converted script sounds (`h1campaign`).
 
 The ignored `a_transplanted_tree_takes_its_sounds` check transplants 04b's
 flood combat elite onto 05a and compares the 42 moved sounds after
-reopening the map, including the promotion previously cut. The synthetic
+reopening the map, including its promotion rule. The synthetic
 `a_reused_donor_sound_must_keep_its_promotion` check covers a same-name
 sound whose destination lacks the rule.
 
