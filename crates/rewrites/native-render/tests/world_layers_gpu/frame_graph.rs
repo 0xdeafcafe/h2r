@@ -1329,29 +1329,48 @@ fn a_shadowed_chosen_light_reads_its_cone_in_e3_and_not_in_retail() {
     let scene = b.seal(Stamp::default()).unwrap();
     let mut world = WorldBuilder::new();
     let (f, h) = (1.5, 0.1);
+    // The floor in cells of a quarter unit: the cone term's gate is a
+    // vertex value, so one quad would carry its corners' gate everywhere.
+    let cells = 12usize;
+    let mut positions = Vec::new();
+    for j in 0..=cells {
+        for i in 0..=cells {
+            let at = |k: usize| -f + 2.0 * f * k as f32 / cells as f32;
+            positions.push([at(i), at(j), 0.]);
+        }
+    }
+    let mut floor = Vec::new();
+    for j in 0..cells {
+        for i in 0..cells {
+            let a = (j * (cells + 1) + i) as u32;
+            let c = a + cells as u32 + 1;
+            floor.extend([[a, a + 1, c + 1], [a, c + 1, c]]);
+        }
+    }
+    let board = positions.len() as u32;
+    positions.extend([
+        [0.5 - h, -h, 0.45],
+        [0.5 + h, -h, 0.45],
+        [0.5 + h, h, 0.45],
+        [0.5 - h, h, 0.45],
+    ]);
     let floor_and_board = SectionInput {
-        positions: vec![
-            [-f, -f, 0.],
-            [f, -f, 0.],
-            [f, f, 0.],
-            [-f, f, 0.],
-            [0.5 - h, -h, 0.45],
-            [0.5 + h, -h, 0.45],
-            [0.5 + h, h, 0.45],
-            [0.5 - h, h, 0.45],
-        ],
-        normals: vec![[0., 0., 1.]; 8],
-        uvs: vec![[0.; 2]; 8],
+        normals: vec![[0., 0., 1.]; positions.len()],
+        uvs: vec![[0.; 2]; positions.len()],
+        positions,
         parts: vec![
             PartInput {
                 material: 0,
                 transparent: false,
-                triangles: vec![[0, 1, 2], [0, 2, 3]],
+                triangles: floor,
             },
             PartInput {
                 material: 0,
                 transparent: false,
-                triangles: vec![[4, 5, 6], [4, 6, 7]],
+                triangles: vec![
+                    [board, board + 1, board + 2],
+                    [board, board + 2, board + 3],
+                ],
             },
         ],
         ..Default::default()
