@@ -2,6 +2,7 @@
 //! immutable draw resources alongside the exact resolved fallback.
 mod materials;
 pub mod models;
+pub(crate) mod typed;
 pub mod walk;
 
 use crate::native_gels_glue::{Binding, Checkpoint, Outputs};
@@ -244,7 +245,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let constants = constants(light)?;
         let world = ready.lights.get().ok_or(Keep::NoWorld)?;
         let draws = world.resolve_parts(&constants, parts, binding.is_some())?;
-        self.prepare_planned(d, mem, ready, constants, draws, binding, false)
+        self.prepare_planned(d, mem, ready, constants, draws, binding, false, None)
     }
 
     /// [`Self::prepare_parts`] for draws already resolved.
@@ -257,6 +258,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         draws: Vec<Planned>,
         binding: Option<Binding>,
         colour_only: bool,
+        typed_rect: Option<[u32; 4]>,
     ) -> Result<PreparedLight, Keep> {
         let world = ready.lights.get().ok_or(Keep::NoWorld)?;
         if draws.is_empty() {
@@ -268,12 +270,17 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let target = d
             .external_ready(&memory, colour_only)
             .map_err(|why| Keep::Unsupported(why.describe()))?;
-        if !d.stencil_state(&memory).is_some_and(|s| !s.enable) {
-            return Err(Keep::Unsupported(
-                "enabled or unknown stencil state at light geometry",
-            ));
-        }
-        let clip = d.light_scissor(&memory).map_err(Keep::Unsupported)?;
+        let clip = match typed_rect {
+            Some(rect) => rect,
+            None => {
+                if !d.stencil_state(&memory).is_some_and(|s| !s.enable) {
+                    return Err(Keep::Unsupported(
+                        "enabled or unknown stencil state at light geometry",
+                    ));
+                }
+                d.light_scissor(&memory).map_err(Keep::Unsupported)?
+            }
+        };
         let scissor = intersect_scissor(clip, target.rect);
         if d.depth_clip(&memory, target.z_scale).w_buffered != Some(true) {
             return Err(Keep::Unsupported(
@@ -352,6 +359,74 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         })
     }
 
+    /// Resolve all the entries of a diffuse or specular group. The typed
+    /// light and the single-layer path use the same resident geometry and
+    /// material variants, including each object's pose at its sorted slot.
+    fn scene_light_draws(
+        &self,
+        d: &d3d::Device<B>,
+        mem: &dyn GuestMemory,
+        ready: &Ready,
+        group: &render_bridge::native_lights::SceneGroup,
+        c: &LightConstants,
+    ) -> Result<Vec<Planned>, Keep> {
+        use native_render::light_scene::{Refusal, plan_entries};
+        let world = ready.lights.get().ok_or(Keep::NoWorld)?;
+        let objects = group.entries.iter().any(|e| structure_key(e).is_none());
+        let model_lights = if objects {
+            let name = crate::health::loaded_map_name(mem)
+                .map_err(|_| Keep::Unsupported("the loaded map's name does not read"))?;
+            let read = ReadMemory(mem);
+            Some(
+                self.models
+                    .get(
+                        &name,
+                        &ready.upload_device.as_ref().ok_or(Keep::NoWorld)?.0,
+                        || native_render::object_streams::StreamFormats::read(&read),
+                        || crate::native_world_glue::scene_load_palettes(d, mem),
+                    )
+                    .ok_or(Keep::Unsupported("the map's model light parts are loading"))?,
+            )
+        } else {
+            None
+        };
+        let held = Held {
+            clusters: &world.clusters,
+            models: model_lights.as_deref().map(|m| &m.models),
+        };
+        plan_entries(&group.entries, &|e| group.rows_of(e), &held).map_err(|r| match r {
+            Refusal::Remainder(_) => Keep::Unsupported("scene group has a remainder"),
+            Refusal::Stream => Keep::Unsupported("scene group entry has no native light stream"),
+            Refusal::Pose => Keep::Unsupported("scene group entry has no pose"),
+        })?;
+        let layer = usize::from(group.group.layer);
+        // Runs of structure entries resolve together, as the sorted
+        // list's do; each object entry is a draw of its own (its rows).
+        let mut draws: Vec<Planned> = Vec::new();
+        let mut run: Vec<(usize, usize, WorldDraw)> = Vec::new();
+        for e in &group.entries {
+            let imp = usize::from(e.binding.implementation);
+            if let Some(k) = structure_key(e) {
+                let (_, draw) = world.clusters.get(&k).ok_or(Keep::Unsupported(
+                    "scene group entry has no native light stream",
+                ))?;
+                run.push((layer, imp, *draw));
+                continue;
+            }
+            if !run.is_empty() {
+                draws.extend(world.resolve_parts(c, std::mem::take(&mut run), false)?);
+            }
+            let lights = model_lights
+                .as_ref()
+                .ok_or(Keep::Unsupported("the map's model light parts are loading"))?;
+            draws.push(world.resolve_model(c, lights, layer, e, group.rows_of(e))?);
+        }
+        if !run.is_empty() {
+            draws.extend(world.resolve_parts(c, run, false)?);
+        }
+        Ok(draws)
+    }
+
     /// A light layer drawn from its scene group alone
     /// ([`render_bridge::native_lights::draw_alone`]): the group's
     /// structure parts resolved as [`Self::reserve`] resolves the sorted
@@ -363,7 +438,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     /// is pinned through a draw's plan) or a state the device cannot give
     /// refuses, issuing nothing.
     fn alone(&self, mem: &mut dyn GuestMemory, a: Alone<'_>) -> Result<(), Keep> {
-        use native_render::light_scene::{Refusal, plan_entries};
         if a.shader_gel.is_some() {
             return Err(Keep::Unsupported("a shader gel draws through its handler"));
         }
@@ -382,61 +456,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         }
         let c = constants(&a.light)?;
         let ready = self.ready(mem)?;
-        let world = ready.lights.get().ok_or(Keep::NoWorld)?;
-        let group = a.group;
-        let objects = group.entries.iter().any(|e| structure_key(e).is_none());
-        let model_lights = if objects {
-            let name = crate::health::loaded_map_name(mem)
-                .map_err(|_| Keep::Unsupported("the loaded map's name does not read"))?;
-            let read = ReadMemory(&*mem);
-            Some(
-                self.models
-                    .get(
-                        &name,
-                        &ready.upload_device.as_ref().ok_or(Keep::NoWorld)?.0,
-                        || native_render::object_streams::StreamFormats::read(&read),
-                        || crate::native_world_glue::scene_load_palettes(&*d, &*mem),
-                    )
-                    .ok_or(Keep::Unsupported("the map's model light parts are loading"))?,
-            )
-        } else {
-            None
-        };
-        let held = Held {
-            clusters: &world.clusters,
-            models: model_lights.as_deref().map(|m| &m.models),
-        };
-        plan_entries(&group.entries, &|e| group.rows_of(e), &held).map_err(|r| match r {
-            Refusal::Remainder(_) => Keep::Unsupported("scene group has a remainder"),
-            Refusal::Stream => Keep::Unsupported("scene group entry has no native light stream"),
-            Refusal::Pose => Keep::Unsupported("scene group entry has no pose"),
-        })?;
+        if u32::from(a.group.group.layer) != a.layer {
+            return Err(Keep::Unsupported("light group names another layer"));
+        }
         let layer = a.layer as usize;
-        // Runs of structure entries resolve together, as the sorted
-        // list's do; each object entry is a draw of its own (its rows).
-        let mut draws: Vec<Planned> = Vec::new();
-        let mut run: Vec<(usize, usize, WorldDraw)> = Vec::new();
-        for e in &group.entries {
-            let imp = usize::from(e.binding.implementation);
-            if let Some(k) = structure_key(e) {
-                let (_, draw) = world.clusters.get(&k).ok_or(Keep::Unsupported(
-                    "scene group entry has no native light stream",
-                ))?;
-                run.push((layer, imp, *draw));
-                continue;
-            }
-            if !run.is_empty() {
-                draws.extend(world.resolve_parts(&c, std::mem::take(&mut run), false)?);
-            }
-            let lights = model_lights
-                .as_ref()
-                .ok_or(Keep::Unsupported("the map's model light parts are loading"))?;
-            draws.push(world.resolve_model(&c, lights, layer, e, group.rows_of(e))?);
-        }
-        if !run.is_empty() {
-            draws.extend(world.resolve_parts(&c, run, false)?);
-        }
-        let prepared = self.prepare_planned(&d, mem, Arc::clone(&ready), c, draws, None, false)?;
+        let draws = self.scene_light_draws(&d, mem, &ready, a.group, &c)?;
+        let prepared =
+            self.prepare_planned(&d, mem, Arc::clone(&ready), c, draws, None, false, None)?;
         use native_render::light_passes;
         let drawn = light_passes::read(&ReadMemory(&*mem), c.flags, c.definition_flags)
             .map_or(0, |i| light_passes::steps(&i).drawn());
@@ -641,6 +667,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             draws,
             None,
             colour_mask,
+            None,
         )?;
         prepared.projection =
             projection.map(|projection| std::array::from_fn(|n| projection[n / 4][n % 4]));
@@ -896,6 +923,21 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let ok = result.is_ok();
         let mut t = self.tally.lock().unwrap_or_else(|e| e.into_inner());
         for msg in t.count(result) {
+            eprintln!("{msg}");
+        }
+        ok
+    }
+
+    fn draw_typed(
+        &self,
+        mem: &mut dyn GuestMemory,
+        batch: &render_bridge::native_lights::TypedPasses<'_>,
+    ) -> bool {
+        self.refresh_edits(mem);
+        let result = self.typed(mem, batch);
+        let ok = result.is_ok();
+        let mut tally = self.tally.lock().unwrap_or_else(|e| e.into_inner());
+        for msg in tally.count(result) {
             eprintln!("{msg}");
         }
         ok
