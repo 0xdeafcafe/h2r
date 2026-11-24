@@ -8,6 +8,7 @@
 //! it from guest memory; `native_render` draws it. The camera, the carried
 //! part and the view and instance keys are `frame_types`', re-exported.
 
+pub mod blend;
 pub mod builder;
 pub mod decorator;
 pub mod late;

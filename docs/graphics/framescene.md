@@ -19,8 +19,9 @@ replacements wait on. Slice 6 provides the carried census, private draws
 of sealed scenes and an opt-in display owner for eligible game views.
 Paced display still queues guest-visible writes in order. Default ownership
 depends on the scheduling, corpus, parity and timing gates
-in [slice 6](#slice-6-the-renderer-owns-game-view-frames). Slices 7 to 10
-are planned.
+in [slice 6](#slice-6-the-renderer-owns-game-view-frames). Of slice 8
+the pure blend (`frame-scene::blend`) is built and unit-tested; the
+render thread's display-rate loop is not. Slices 7, 9 and 10 are planned.
 
 Evidence labels as in [feature-engine.md](../engine/feature-engine.md):
 **Code** (read in this repository or in the disassembly), **S**
@@ -1538,8 +1539,21 @@ D3D reference with all native stages disabled.
 
 ### Slice 8: 60 and 120 fps
 
-- **Code.** `frame-scene::blend` (pure): matching, the blends and
-  snaps of section 7. The render thread's display-rate loop, alpha
+- **Built.** `frame-scene::blend` (pure, `crates/rewrites/frame-scene/src/blend.rs`).
+  `plan(a, b, due)` gives `Plan::Newest` (B's own values: `alpha >= 1`,
+  `ticks_run == 0`, a cut, another map epoch, no stamp, or a gap over
+  `MAX_GAP`, 45 ms) or `Plan::Blend(alpha)`. `blend(a, b, alpha)` returns
+  `Blended`: cameras parallel to `B.views`, node matrices to `B.nodes`,
+  palette rows to `B.rows` and light candidates to `B.lights`, with
+  `BlendCounts`. It follows section 7's table for cameras, instances, parts and
+  lights: positions and scales linear, rotations by shortest-path slerp,
+  a row that is sheared, mirrored or moved over `MAX_MOVE` (5 units) keeps B's
+  value, as does a teleported, unmatched, re-modelled or re-noded instance.
+  The first person view's nodes and rows blend in camera space and return
+  through the blended camera. Not built: visible-cluster unions, shadow
+  re-rendering from blended casters, the carried draws' rebuilt view block and
+  extraction's scripted-cut and distance flags.
+- **Code to write.** The render thread's display-rate loop, alpha
   from publish times, the pacer moved from `d3d::interp::pacing`. Cut
   detection in extraction. `graphics.fps` drives it; no switch.
   `d3d/src/interp`, `impl.render.interpolate`, `impl.render.reproject`
