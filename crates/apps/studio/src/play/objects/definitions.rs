@@ -1,5 +1,5 @@
-//! Respawn by definition (docs/editor/realtime-edits.md, "Respawn by
-//! definition"): the object definitions behind the `next_spawn` rows of the
+//! Respawn by definition (docs/editor/realtime-edits.md, "Realtime
+//! coverage"): the object definitions behind the `next_spawn` rows of the
 //! Pending tab. A row on an object tag names that tag; a row on a `hlmt` or
 //! a `phmo` names the object tags that reach it. The game remakes every
 //! placed object of each (`world.object.respawn {definition}`).
