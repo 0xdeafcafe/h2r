@@ -106,7 +106,7 @@ The step declines, writing nothing (the port's loops run), when:
 
 - [sim-rewrite.md](sim-rewrite.md), section 5, phase 1c.
 - [markers.md](markers.md): the marker slice of phase 1c.
-- [first-person-filters.md](first-person-filters.md): the filter step
-  of the first-person filter port.
+- [first-person-filters.md](first-person-filters.md): the seat filters and
+  weapon-slot update.
 - [anim-sampling.md](anim-sampling.md): the node records the palette's
   shape comes from.

@@ -2,14 +2,12 @@
 
 Status: plan, 2026-11-20. The `SimExt` blob (section 2) is partly built,
 with tests only. Phase 1b's skeleton walk in `bd090` is built, with tests
-only ([skeleton-walk.md](skeleton-walk.md)); `1dd1c0` is not. Phase 1c's
-marker lookup — `b8d30` with the scan `1d8f00` and the fill `1d8f50` —
-is built, with tests only ([markers.md](markers.md)), and so is 1c's
-first-person palette — `16760c`'s identity fill and model-node overlay
-([palette.md](palette.md)) — and the first-person filter step `11eed0`
-inside the `166d75` port ([first-person-filters.md](first-person-filters.md)).
-The [unit pose](unit-pose.md) implements `112070` through its final return.
-Phase 1c still needs the unit aim update `c7840` and the rest of `166d75`. The plan replaces the verdict in
+only ([skeleton-walk.md](skeleton-walk.md)); `1dd1c0` is not. The phase 1c bodies cover
+[markers](markers.md), the [first-person palette](palette.md), the
+[unit pose](unit-pose.md), unit aim (`c7840`) and the
+[first-person filters](first-person-filters.md) (`166d75`, including
+`11eed0`). Run parity and the cumulative timing gate remain open.
+The plan replaces the verdict in
 [feature-engine.md](feature-engine.md) ("Subsystem map and ranking", rows
 15-18) that objects, AI and physics "stay recompiled". The user asked on
 2026-11-16 and 2026-11-17 for whole-subsystem rewrites, not per-function
@@ -618,17 +616,26 @@ call `1d8f50` it calls `sim_anim::model_markers` through
 ([markers.md](markers.md)). The first-person palette follows it in the same shape: the
 first-person pose port (`sim_physics::first_person`, `16760c`) runs its
 palette step through `engine::sim_anim::palette` and
-`sim_anim::palette` ([palette.md](palette.md)), and the first-person
-filter port (`sim_physics::first_person::filters`, `166d75`) runs each of
-its five calls to the filter step `11eed0` through
-`engine::sim_anim::filter`, which does the call's work in Rust and
-carries on at the return site ([first-person-filters.md](first-person-filters.md)).
+`sim_anim::palette` ([palette.md](palette.md)).
 The [unit pose](unit-pose.md) (`sim_native::unit::run`, `112070`) plans
 the base and aim channels, angle projections and overlay tail one guest
 call at a time. The manager and graph functions remain callouts for 1d.
-1c's remaining bodies are the unit aim update `c7840`
-(`sim_physics::unit_aim`) and the rest of the first-person filter port
-`166d75`. The unit animation state `111650`
+
+The same checked segment plan runs `sim_anim::unit_aim` (`c7840`,
+nine return sites) and `sim_anim::first_person_filters` (`166d75`, 40).
+Unit aim projects the directions into joint space, enforces yaw and pitch
+limits and updates direction and angular velocity. First-person filters
+advance four seat axes and visit both weapon slots, including their
+motion tracks and idle timers. Its five calls to `11eed0` can run within
+the segment ([first-person-filters.md](first-person-filters.md)).
+Each body resumes after a guest callee using the live guest frame.
+A declined segment starts the original at its entry or return selector.
+An image must export the entry and every return selector for that body.
+The differential in `engine/tests/sim_physics_differential.rs` checks
+the transfer, CPU and memory at the boundaries and requires every site.
+The phase 1c ladder and cumulative timing gate are in the table above.
+
+The unit animation state `111650`
 is a body of the object update (slice 6c, [object-update.md](object-update.md)). 1d's step 0 is the write set of `1c66a0`, `1c6560` and
 `1cd590` (channel state in object data) and the readers of the graph
 resolve results.
