@@ -16,6 +16,8 @@
 //! is drawn through its tag shader, and no HUD shader translates yet
 //! ([`translates`]); a text widget's colour is its shader's.
 
+pub(crate) mod menu_text;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -354,7 +356,22 @@ pub fn place_menu<B: d3d::Backend + Send + 'static>(
     mem: &mut dyn GuestMemory,
     part: &Overlay,
 ) -> bool {
-    let Some(assets) = assets(mem) else { return false };
+    let Some((loaded, assets)) = slot(mem) else { return false };
+    if part.items.iter().any(|item| matches!(item.material.texture, OverlayTexture::Glyphs { .. })) {
+        let Some(fonts) = fonts() else { return false };
+        let mut a = assets.lock().unwrap_or_else(|e| e.into_inner());
+        if fill_glyphs(&mut a.glyphs, part, &fonts).is_err() {
+            return false;
+        }
+    }
+    if part.items.iter().any(|item| matches!(item.material.texture, OverlayTexture::Bitmap { .. })) {
+        let Some(loaded) = loaded else { return false };
+        let mut l = loaded.lock().unwrap_or_else(|e| e.into_inner());
+        let mut a = assets.lock().unwrap_or_else(|e| e.into_inner());
+        if decode_images(&mut l, part, &mut a).is_err() {
+            return false;
+        }
+    }
     place(device, mem, Arc::new(part.clone()), assets)
 }
 

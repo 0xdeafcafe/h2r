@@ -391,6 +391,16 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
         Some(self.permits_draw())
     }
 
+    fn ui_text(&self, _mem: &dyn GuestMemory) -> Option<Box<dyn render_bridge::native_hud::ui_overlay::UiText>> {
+        Some(Box::new(crate::hud_overlay::menu_text::MenuText(crate::hud_overlay::fonts()?)))
+    }
+
+    fn ui_custom_widget(&self, mem: &dyn GuestMemory, widget: u32) -> bool {
+        widget.checked_add(crate::list_class::WIDGET_BLOCK)
+            .and_then(|addr| mem.u32(addr).ok())
+            .is_some_and(|block| crate::skulls_model::noted(widget, block).is_some())
+    }
+
     fn ui_pass(&self, mem: &mut dyn GuestMemory, part: &frame_scene::Overlay) -> bool {
         self.permits_draw() && crate::hud_overlay::place_menu(&self.device, mem, part)
     }
