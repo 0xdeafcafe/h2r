@@ -20,7 +20,12 @@ pub enum BinAction {
 impl BinChanges {
     /// Duplicate gains are compared to scratch indexed by the **row**
     /// (22165a). The first occurrence is stored by bin number (221689).
-    pub fn visit(&mut self, bin: u32, gain_changed: bool, duplicate_gain_agrees: bool) -> BinAction {
+    pub fn visit(
+        &mut self,
+        bin: u32,
+        gain_changed: bool,
+        duplicate_gain_agrees: bool,
+    ) -> BinAction {
         let bit = 1u32.wrapping_shl(bin);
         let duplicate = self.seen & bit != 0;
         if gain_changed {
@@ -30,7 +35,11 @@ impl BinChanges {
             self.changed |= bit;
         }
         self.seen |= bit;
-        if duplicate { BinAction::Keep } else { BinAction::Append }
+        if duplicate {
+            BinAction::Keep
+        } else {
+            BinAction::Append
+        }
     }
 }
 
