@@ -926,6 +926,47 @@ mod passes_body {
     }
 
     #[test]
+    fn whole_pass_admission_uses_this_gather_and_refusal_continues_at_constants() {
+        for accept in [false, true] {
+            let g = guest(0, 1 << 14, 0);
+            let plan = passes::plan(&g, E, DEFINITION, CONTEXT, FPU).unwrap();
+            let body = move |cx: Cx| -> EntryFuture {
+                let plan = plan.clone();
+                Box::pin(async move {
+                    let (ret, _) = passes::run_with(&cx, plan, |m, _| {
+                        // ITEMS replaced the previous light's mask, but the pass
+                        // has not changed its argument or installed any flags yet.
+                        assert_eq!(m.u32(LIGHT_MASK)?, 1 << 12);
+                        assert_eq!(m.u32(E + 0xc)?, 0xab00);
+                        assert_eq!(m.u32(PASS_FLAGS)?, 0x55);
+                        Ok(accept.then(|| (Ret::new(7, 16), LightPasses::default())))
+                    }).await?;
+                    Ok(ret)
+                })
+            };
+            let mut calls = Vec::new();
+            let regs = Regs { esp: E, ..Regs::default() };
+            let run = testing::run(&body, g, regs, |call, mem| {
+                calls.push(call.target);
+                if call.target == call::ITEMS {
+                    mem.set_u32(LIGHT_MASK, 1 << 12).unwrap();
+                }
+                Regs::default()
+            });
+            if accept {
+                assert_eq!(run.result, Ok(Ret::new(7, 16)));
+                assert_eq!(calls, [call::ITEMS]);
+            } else {
+                assert_eq!(run.result, Ok(Ret::new(0, 16)));
+                assert_eq!(calls[..2], [call::ITEMS, call::CONSTANTS]);
+                assert_eq!(calls.iter().filter(|&&target| target == call::ITEMS).count(), 1);
+                assert_eq!(calls.iter().filter(|&&target| target == call::LAYER_DRAW).count(), 1);
+                assert_eq!(calls.last(), Some(&call::TARGET));
+            }
+        }
+    }
+
+    #[test]
     fn a_shadowed_lights_passes_call_the_guest_in_its_order() {
         let ran = run_passes(guest(1, 1 << 11 | 1 << 12, 1 << 10));
         assert_eq!(ran.run.result, Ok(Ret::new(0x77, 0x10)));
