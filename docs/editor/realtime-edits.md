@@ -1,6 +1,6 @@
 # Realtime edits: geometry, placements, collision and textures in the running game
 
-Status: In progress. Slices R1 (the raw overlay in both readers, `raw` and `evict` in `edit.batch`, `edit.raw.append`, `edit.stage.put`, `edit.overlay` and their journal), R2 (the native refresh), R3 (placement transactions, `world.placement.edit`), R4 (the edit arena, `moves` in `edit.batch`, `edit.arena`, placement growth into the arena; its live check has not run), R5 (the editor's geometry and pixel sends, `play/raw_sync.rs`), R6 (the editor's placement adds and removes live, `crates/apps/studio/src/play/objects/drive/placements.rs`) and R7 (`edit.collision.stage` and `.commit`, `crates/extensions/agent/src/hot/collision.rs`, the structure activation `sim::calls::Call::ReactivateStructure`, and the editor's send, `play/collision_sync.rs`, fed by the Modeling tool's collision box; its live check has not run), R8 (the tag-write notice and its subscribers), R9 (the metadata overlay), R10 (the native shader refresh) and R11 (the native refresh in every glue that holds a texture or model) and R12 (`world.object.respawn {definition}`, `crates/extensions/agent/src/sim/calls/placement/definition.rs`, and Studio's **Respawn now** for definitions, `play/objects/definitions.rs`) are built, the live checks of R8, R9, R10, R11 and R12 not run; R13 (`applies=` evidence, `crates/formats/tags/src/defs`) is built for `nhdt`, `prt3`, `effe`, `ligh`, `obje`, `proj` and two `matg` blocks, and open for `weap`, `jpt!`, `vehi`, `bipd` and the rest of `matg` and `bitm`; R14 to R17 ("Realtime coverage") are design, and what they build on is cited as **Code**.
+Status: In progress. Slices R1 (the raw overlay in both readers, `raw` and `evict` in `edit.batch`, `edit.raw.append`, `edit.stage.put`, `edit.overlay` and their journal), R2 (the native refresh), R3 (placement transactions, `world.placement.edit`), R4 (the edit arena, `moves` in `edit.batch`, `edit.arena`, placement growth into the arena; its live check has not run), R5 (the editor's geometry and pixel sends, `play/raw_sync.rs`), R6 (the editor's placement adds and removes live, `crates/apps/studio/src/play/objects/drive/placements.rs`) and R7 (`edit.collision.stage` and `.commit`, `crates/extensions/agent/src/hot/collision.rs`, the structure activation `sim::calls::Call::ReactivateStructure`, and the editor's send, `play/collision_sync.rs`, fed by the Modeling tool's collision box; its live check has not run), R8 (the tag-write notice and its subscribers), R9 (the metadata overlay), R10 (the native shader refresh) and R11 (the native refresh in every glue that holds a texture or model) and R12 (`world.object.respawn {definition}`, `crates/extensions/agent/src/sim/calls/placement/definition.rs`, and Studio's **Respawn now** for definitions, `play/objects/definitions.rs`) are built, the live checks of R8, R9, R10, R11 and R12 not run; R13 (`applies=` evidence, `crates/formats/tags/src/defs`) is built for `nhdt`, `prt3`, `effe`, `ligh`, `obje`, `proj` and two `matg` blocks, and open for `weap`, `jpt!`, `vehi`, `bipd` and the rest of `matg` and `bitm`; R17 (writes to a BSP that is not loaded, `{bsp: {index}}` owners in `crates/extensions/hot-tags/src/raw.rs` and `tag_sync::diff_live` in `crates/apps/studio/src/play/tag_sync.rs`) is built, its live check not run; R14 to R16 ("Realtime coverage") are design, and what they build on is cited as **Code**.
 Code: built in `crates/runtime/vfs/src/map_override/overlay.rs`, `crates/runtime/vfs/src/lib.rs` (`Vfs::read`), `crates/platform/assets/src/resource.rs`, `crates/extensions/game/src/native_map.rs`, `crates/extensions/hot-tags/src/raw.rs`, `crates/extensions/hot-tags/src/arena.rs`, `crates/extensions/hot-tags/src/batch.rs`, `crates/extensions/agent/src/hot.rs`, `crates/extensions/game/src/hot_glue.rs`, `crates/rewrites/render-bridge/src/native_edits.rs`, `crates/rewrites/native-render`, `crates/extensions/agent/src/sim/edits.rs`, `crates/extensions/agent/src/sim/calls/placement/edit.rs`, `crates/extensions/agent-proto/src/sim/edits.rs` `crates/apps/studio/src/play/raw_sync.rs`, `crates/apps/studio/src/play/objects/drive/placements.rs`, `crates/extensions/agent/src/hot/collision.rs`, `crates/extensions/agent/src/debug_views/debug_static.rs`, `crates/live/bots/src/autonav.rs` (`collision_edited`), `crates/apps/studio/src/play/collision_sync.rs`, `crates/apps/studio/src/app/modeling.rs` (`ModelAction::AddCollisionBox`), `crates/extensions/hot-tags/src/notice.rs`, and for R11 `crates/extensions/game/src/native_world_glue.rs`, `crates/extensions/game/src/native_first_person_glue.rs`, `crates/extensions/game/src/native_first_person_load.rs`, `crates/extensions/game/src/native_lights_glue.rs`, `crates/extensions/game/src/native_decorators_glue.rs` and `crates/extensions/game/src/native_post_glue.rs`; planned in the rest of `crates/apps/studio/src/play`. Tests: named per slice under "Build slices".
 Switch: none. With no editor paired and no edit sent, none of it runs.
 
@@ -420,6 +420,38 @@ allocated for it: After reload. Evicting and re-paging a resized texture
 is not designed here because the cache's behaviour with a changed record
 is not known (modeling.md, "Not verified").
 
+### Inactive BSPs
+
+Only the loaded structure BSP's region is in guest memory
+(`hot_tags::raw::loaded_bsp`, the `i16` at
+`engine::sim_collision::layout::BSP_INDEX`); the scenario's other BSPs
+live in their regions of the map file alone, and a switch reads the
+region from the guest's slot, which serves the overlay as the map
+("The edit overlay"). A write to such a BSP is a raw write whose owner
+is `{bsp: {index}}`, the scenario's structure BSP descriptor (`+0x210`,
+`0x44` a descriptor: file offset, size, virtual base;
+map-format.md, "BSP and lightmap metadata"). Its offset counts from the
+region's start. The host checks `was` against the file view, puts the
+bytes in the overlay as raw runs and writes no guest byte; no native
+refresh is queued, since the switch loads the world from the overlaid
+file. The loaded BSP is refused as an owner: its region is guest memory,
+written with `at`. A revert puts the overlay's runs back, and when the
+BSP has been switched to since, writes the file's bytes back into its
+region at the descriptor's virtual base where guest memory still holds
+the written ones. These are raw runs, so they refuse snapshots as any
+raw run does ("Rules and limits").
+
+Studio learns the loaded BSP from `edit.map`'s `bsp`
+(`play::Edits::bsp`). `tag_sync::diff_live` turns each changed region of
+another BSP into a `tag_sync::RegionWrite` (the runs that differ from
+what the game holds, each with the file's or the game's bytes as `was`),
+sent as `raw` entries in the same `edit.batch` as the field writes, with
+a pending row **Next use** ("read when the game switches to this BSP").
+When the game takes it, the baseline holds the region's patches
+(`TagBaseline::took_bsp`). The loaded BSP's region, a region of no
+descriptor and a region the game refused wait under **After reload**
+with the reason; a switch clears the refusals.
+
 ### The tick boundary and the session
 
 Every primitive above runs where `edit.batch` and `world.object.*` run:
@@ -703,7 +735,7 @@ string IDs touch every cache keyed by tag index (XL, not sliced).
 | **R14** Block growth from Studio (M) | `TagDoc::block_op` add, duplicate and remove become `edit.batch` `moves` and count writes, for blocks no other block indexes; the rest stay **After reload** with the reason | `crates/apps/studio/src/play/tag_sync.rs`, `crates/apps/studio/src/app/tag_doc.rs`, `crates/apps/studio/src/play/edits.rs` | fake game: an added element is one batch with a move; undo puts the pair back; an indexed block stays under reload | add a colour to a shader's postprocess block in Studio; `edit.arena` lists the move and the colour draws | R4, R13 |
 | **R15** Studio's own viewport follows tags (M) | the viewport rebuilds a material, a texture or a model when its tag document changes, through R10's and R11's functions fed from the `TagDoc`; painted pixels reach it as they reach the game | `crates/apps/studio/src/viewport.rs`, `crates/apps/studio/src/viewport` | a viewport `ProgramSet` after a document edit equals one built from the saved map | `model.render` before and after a shader edit differ | R10, R11 |
 | **R16** Sound samples (L) | a raw owner for a `snd!` permutation's sample data and its eviction from the guest's sound cache; field edits stay `next_use` | `crates/extensions/hot-tags/src/raw.rs`, `crates/extensions/agent/src/hot.rs` | fake game: a permutation write takes the overlay; an eviction clears the cache entry | replace a footstep's samples; the next step plays them | R1; the sound cache's handles read with `h2 disasm` |
-| **R17** Inactive BSPs (S) | Studio sends edits of a BSP that is not active as overlay entries at its region's file offsets; the next switch reads them | `crates/extensions/hot-tags/src/raw.rs`, `crates/apps/studio/src/play/tag_sync.rs` | a write to an inactive BSP's region is held by the overlay and not written to guest memory | edit a second BSP's cluster record, switch to it, `edit.get` reads the edit | R9 |
+| **R17** Inactive BSPs (S; built, live check not run) | Studio sends edits of a BSP that is not active as overlay entries at its region's file offsets; the next switch reads them | `crates/extensions/hot-tags/src/raw.rs`, `crates/apps/studio/src/play/tag_sync.rs` | a write to an inactive BSP's region is held by the overlay and not written to guest memory | edit a second BSP's cluster record, switch to it, `edit.get` reads the edit | R9 |
 
 ## Rules and limits
 

@@ -3373,7 +3373,7 @@ is `$H2_RENDER_OVERRIDES`, else `render-overrides` in the cache directory.
 
 | Method | Access | Params | Does |
 |---|---|---|---|
-| `edit.map` | read | `{known_epoch?}` | `{at,name,file,checksum,scenario,epoch,session}` for the loaded map. File and checksum can be null. Session includes `writes` and the refusal reason in `why`. A multiplayer host with an unknown peer count reports `writes:false` and `why:"multiplayer host peer count is unknown"`. |
+| `edit.map` | read | `{known_epoch?}` | `{at,name,file,checksum,scenario,epoch,session,bsp}` for the loaded map. File and checksum can be null. `bsp` is the loaded structure BSP's index in the scenario's block (`-1` before one loads, null when unreadable): the one BSP whose region is in guest memory. Session includes `writes` and the refusal reason in `why`. A multiplayer host with an unknown peer count reports `writes:false` and `why:"multiplayer host peer count is unknown"`. |
 | `edit.tags` | read | `{group?, name?, limit?}` | the loaded map's tags: `tag`, `group`, `name`, `address`, `size`, `defined` |
 | `edit.get` | read | `{tag, group?, path?, epoch?}` | a field by path (`postprocess[0].colors[1].color`), or an element's fields; `tag` is a datum or a name |
 | `edit.read` | read | `{epoch,at,len}` | Reads `len` bytes (1–524288) at numeric address `at` inside one loaded tag. Returns `{at,holds_bytes}` with lowercase hex bytes. |
@@ -3431,7 +3431,8 @@ Tag names come from the map file the game loaded ([`world`](#world-what-is-in-th
 ### Raw edits
 
 Section vertices and indices and bitmap pixels live in the map files' raw
-blocks, not in the tags. These methods write them live, through the raw
+blocks, not in the tags, and a structure BSP that is not loaded lives in
+its region of the map file alone. These methods write them live, through the raw
 overlay that both the guest's page-ins and the native loaders read. The
 design is [realtime-edits.md](../editor/realtime-edits.md). The methods
 are in `crates/extensions/agent/src/hot.rs`, the editor half in
@@ -3447,9 +3448,13 @@ are in `crates/extensions/agent/src/hot.rs`, the editor half in
 | `edit.overlay` | read | none | `{entries, bytes, appended, appended_bytes, metadata, metadata_bytes, files, owners}`: raw runs, appended extents and metadata runs (copies of tag writes; docs/editor/realtime-edits.md, "The edit overlay") |
 
 `owner` is `{section: {tag, kind, index}}`, with `kind` one of `cluster`,
-`instance_def` and `mode`, or `{pixels: {tag, image, lod}}`, with `lod`
-0 to 2. `tag` is a datum or a name. `offset` counts from the start of the
-owner's raw block or LOD chain, and the bytes must fit inside it. `bytes`
+`instance_def` and `mode`, `{pixels: {tag, image, lod}}`, with `lod`
+0 to 2, or `{bsp: {index}}`, the scenario's structure BSP `index`. `tag`
+is a datum or a name. `offset` counts from the start of the owner's raw
+block, LOD chain or BSP region (the region's virtual base, its file
+offset in the scenario's descriptor), and the bytes must fit inside it.
+A `bsp` owner is refused while it is the loaded BSP (`edit.map`'s `bsp`):
+its region is guest memory then, written with `at`. `bytes`
 is base64, or `{stage, at?, len?}` naming bytes `edit.stage.put` holds.
 `was` is base64 bytes or `{hash}`, their FNV-1a 64 as a number or a hex
 string.
@@ -3464,13 +3469,14 @@ already holds succeeds. Otherwise error 8 (`MISMATCH`) returns
 
 At the boundary the batch writes the tag bytes, then each raw entry into
 the overlay and into the resident copy when there is one, then the
-evictions. `resident` says whether a resident copy was written; pixels and
-sections not paged in take the overlay alone, which their next page-in
-reads. An eviction clears the section's loaded flag, cache handle and
+evictions. `resident` says whether a resident copy was written; pixels,
+sections not paged in and BSPs not loaded take the overlay alone, which
+their next page-in or the switch to the BSP reads. An eviction clears the section's loaded flag, cache handle and
 runtime section block, so the guest's next lookup pages it in from the
 file view. `refresh` names the native refresh queued on
 `render_bridge::native_edits`: `section` (with `grown` when the batch
-evicts it), `model` or `image`.
+evicts it), `model` or `image`; null for a `bsp` owner, whose switch
+loads the world from the overlaid file.
 
 `edit.raw.append` reserves an extent past the end of `file` (`local`,
 `mainmenu`, `shared` or `single_player_shared`; `local` by default),

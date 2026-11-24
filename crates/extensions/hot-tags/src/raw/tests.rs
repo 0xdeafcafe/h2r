@@ -383,6 +383,112 @@ fn a_new_map_drops_the_overlay_and_the_raw_journal() {
     assert!(ed.overlay()["owners"].as_array().unwrap().is_empty());
 }
 
+/// The scenario's structure BSP block: two BSPs whose regions share one
+/// virtual base, at their own file offsets, BSP 0 loaded.
+const BSPS_AT: u32 = META + 0x5000;
+const REGION: [u32; 2] = [0x300, 0x340];
+const REGION_SIZE: u32 = 0x40;
+const REGION_BASE: u32 = 0x2000_0000;
+
+fn two_bsps() -> Guest {
+    let mut g = level();
+    g.set_u32(META + 0x210, 2).unwrap();
+    g.set_u32(META + 0x214, BSPS_AT).unwrap();
+    for (i, file) in REGION.into_iter().enumerate() {
+        let d = BSPS_AT + i as u32 * 0x44;
+        g.set_u32(d, file).unwrap();
+        g.set_u32(d + 4, REGION_SIZE).unwrap();
+        g.set_u32(d + 8, REGION_BASE).unwrap();
+    }
+    g.map_zeroed(REGION_BASE, 0x1000, Permissions::RW).unwrap();
+    switch_to(&mut g, &files(), 0);
+    g
+}
+
+/// What a switch does to memory: the loaded index, and the region read
+/// from the file view at its virtual base.
+fn switch_to(g: &mut Guest, fake: &Fake, i: usize) {
+    g.set_u16(engine::sim_collision::layout::BSP_INDEX, i as u16).unwrap();
+    let bytes = fake.0.lock().unwrap().view(ResourceFile::Local, u64::from(REGION[i]), REGION_SIZE as usize);
+    g.write_bytes(REGION_BASE, &bytes, 1).unwrap();
+}
+
+fn region(g: &Guest) -> Vec<u8> {
+    let mut b = vec![0; REGION_SIZE as usize];
+    g.read_bytes(REGION_BASE, &mut b, 1).unwrap();
+    b
+}
+
+fn bsp(i: u32) -> Value {
+    json!({"bsp": {"index": i}})
+}
+
+#[test]
+fn a_write_to_an_inactive_bsp_is_held_by_the_overlay_and_not_written_to_guest_memory() {
+    let mut g = two_bsps();
+    let fake = files();
+    let (mut ed, pushed) = editor(&fake);
+    let (before, loaded) = (snapshot(&g), region(&g));
+    let old: Vec<u8> = (REGION[1] + 0x10..REGION[1] + 0x14).map(byte).collect();
+    let reply = ed
+        .batch_with(&mut g, &[], &write(bsp(1), 0x10, &[1, 2, 3, 4], Some(Was::Bytes(old))), None)
+        .unwrap();
+    assert_eq!(reply["raw"][0]["owner"], bsp(1), "{reply}");
+    assert_eq!(reply["raw"][0]["resident"], false);
+    assert!(reply["raw"][0]["refresh"].is_null(), "the switch loads the world from the file");
+    let s = fake.0.lock().unwrap();
+    assert_eq!(s.view(ResourceFile::Local, u64::from(REGION[1]) + 0x10, 4), [1, 2, 3, 4]);
+    assert_eq!(s.overlay.len(), 4);
+    drop(s);
+    assert_eq!(snapshot(&g), before, "no tag byte moved");
+    assert_eq!(region(&g), loaded, "the loaded BSP's region is untouched");
+    assert!(pushed.lock().unwrap().is_empty());
+    assert_eq!(ed.overlay()["owners"], json!([bsp(1)]));
+    // The next switch reads the edit.
+    switch_to(&mut g, &fake, 1);
+    assert_eq!(&region(&g)[0x10..0x14], [1, 2, 3, 4]);
+}
+
+#[test]
+fn the_loaded_bsp_and_a_bsp_past_the_block_are_refused() {
+    let mut g = two_bsps();
+    let fake = files();
+    let (mut ed, _) = editor(&fake);
+    for owner in [bsp(0), bsp(2)] {
+        let e = ed.batch_with(&mut g, &[], &write(owner, 0, &[1], None), None).unwrap_err();
+        assert!(matches!(e, BatchError::Field(Error { kind: ErrorKind::Invalid, .. })), "{e:?}");
+    }
+    let e = ed.batch_with(&mut g, &[], &write(bsp(1), REGION_SIZE - 1, &[1, 2], None), None).unwrap_err();
+    assert!(matches!(e, BatchError::Field(Error { kind: ErrorKind::Invalid, .. })), "{e:?}");
+    let e = ed
+        .batch_with(&mut g, &[], &write(bsp(1), 0, &[1], Some(Was::Bytes(vec![0xee]))), None)
+        .unwrap_err();
+    let BatchError::Mismatch { raw, .. } = e else { panic!("not a mismatch") };
+    assert_eq!(raw[0]["owner"], bsp(1));
+    assert!(fake.0.lock().unwrap().overlay.is_empty());
+}
+
+#[test]
+fn revert_of_an_inactive_bsp_write_restores_the_file_and_the_bsp_once_switched_to() {
+    let mut g = two_bsps();
+    let fake = files();
+    let (mut ed, _) = editor(&fake);
+    let file: Vec<u8> = (REGION[1]..REGION[1] + REGION_SIZE).map(byte).collect();
+    // Not switched to: the overlay alone goes back.
+    let id = ed.batch_with(&mut g, &[], &write(bsp(1), 4, &[9, 9], None), None).unwrap()["id"].as_u64().unwrap();
+    let r = ed.revert(&mut g, Some(id)).unwrap();
+    assert_eq!(r["reverted"][0]["resident"], false, "{r}");
+    assert!(fake.0.lock().unwrap().overlay.is_empty());
+    // Switched to since: the loaded region holds the edit until the revert.
+    ed.batch_with(&mut g, &[], &write(bsp(1), 4, &[9, 9], None), None).unwrap();
+    switch_to(&mut g, &fake, 1);
+    assert_eq!(&region(&g)[4..6], [9, 9]);
+    let r = ed.revert(&mut g, None).unwrap();
+    assert_eq!(r["reverted"][0]["resident"], true, "{r}");
+    assert_eq!(region(&g), file);
+    assert!(fake.0.lock().unwrap().overlay.is_empty());
+}
+
 #[test]
 fn fnv1a64_matches_the_reference_values() {
     assert_eq!(fnv1a64(b""), 0xcbf2_9ce4_8422_2325);
