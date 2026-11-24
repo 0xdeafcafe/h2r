@@ -144,6 +144,21 @@ fn viewport(mem: &impl GuestMemory, address: u32) -> Option<PixelRect> {
     })
 }
 
+// The window stack calls MENU_FILL with its layout bounds. The helper
+// subtracts their origin and 0x52040 projects the resulting corners using
+// the active raster rectangle. Give the dim quad the same extent as that
+// projection, including when the raster belongs to a split-screen view.
+const MODAL_FILL_RETURN: u32 = 0x0023_511d;
+const RASTER_RECT: u32 = 0x0048_5648;
+
+fn fill_bounds(mem: &impl GuestMemory, esp: u32, bounds: u32) -> u32 {
+    if mem.u32(esp).ok() == Some(MODAL_FILL_RETURN) {
+        RASTER_RECT
+    } else {
+        bounds
+    }
+}
+
 // 0x48b00 maps clip X to guest pixel centres. Query edges at the
 // call to Begin (0x2e82b) have already been rounded, and their *original*
 // area is the game's denominator. Translate this footprint rigidly. The
@@ -770,6 +785,7 @@ impl Feature for RenderAspect {
                             .runtime()
                             .read_dispatch(|d| d.has_generated(MENU_FILL_END.base))
                     {
+                        c.cpu.ecx = fill_bounds(&*c.ctx.memory(), c.cpu.esp, c.cpu.ecx);
                         l.groups.push((MENU_FILL_END.base, None));
                         sink.set_fit(&mut c.ctx.memory(), None);
                     }
@@ -933,6 +949,29 @@ mod tests {
             (xy[0] * sx + ox) * (output.0 as f32 / 640.0),
             (xy[1] * sy + oy) * (output.1 as f32 / 480.0),
         ]
+    }
+
+    #[test]
+    fn modal_dim_uses_the_rectangle_its_shader_projects_over() {
+        let mut mem = FakeGuest::new();
+        let esp = 0x1000;
+        let bounds = 0x2000;
+        mem.put_u32(esp, MODAL_FILL_RETURN);
+        for (top, height) in [(0u16, 480u16), (240, 240)] {
+            for (at, width) in [(bounds, 480), (RASTER_RECT, 640)] {
+                mem.put_u16(at, top)
+                    .put_u16(at + 2, 0)
+                    .put_u16(at + 4, top + height)
+                    .put_u16(at + 6, width);
+            }
+            let rect = viewport(&mem, fill_bounds(&mem, esp, bounds)).unwrap();
+            let output = (5120, 2880);
+            let edge = physical(None, output, [rect.width as f32, (rect.y + rect.height) as f32]);
+            assert_eq!(edge, [5120.0, 2880.0]);
+            assert_eq!(rect.y, u32::from(top));
+        }
+        mem.put_u32(esp, 0x3000);
+        assert_eq!(fill_bounds(&mem, esp, bounds), bounds);
     }
 
     #[test]
