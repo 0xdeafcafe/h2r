@@ -1,6 +1,7 @@
 //! Film transport and presentation controls. Ticks count from boot.
 use serde::{Deserialize, Serialize};
 
+pub const LIST: &str = "theater.list";
 pub const SHARE: &str = "theater.share";
 pub const OPEN: &str = "theater.open";
 #[derive(Debug, Serialize, Deserialize)]

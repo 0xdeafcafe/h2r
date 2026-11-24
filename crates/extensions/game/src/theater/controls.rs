@@ -345,6 +345,21 @@ pub fn library_methods(
         data,
         installation,
     });
+    let library = launch.clone();
+    a.add_method(api::LIST, Access::Read, move |p| {
+        let _: Empty = params(p)?;
+        let entries = film::Library::open(&library.dir)
+            .and_then(|library| library.list())
+            .map_err(|error| RpcError::new(code::UNAVAILABLE, error.to_string()))?;
+        Ok(Value::Array(entries.into_iter().map(|entry| serde_json::json!({
+            "id": entry.meta.id,
+            "map": entry.meta.map,
+            "variant": entry.meta.variant,
+            "started_ms": entry.meta.started_ms,
+            "length_ticks": entry.meta.length_ticks,
+            "saved": entry.saved,
+        })).collect()))
+    });
     let compat = launch.clone();
     a.add_method(api::COMPAT, Access::Read, move |p| {
         let request = params::<api::Compat>(p)?;
