@@ -92,7 +92,10 @@ fn machine(c: &Case) -> (CpuAbi, Guest) {
     w(&mut g, FRAME - super::MODEL_TWO, MODEL_TWO);
     w(&mut g, FRAME - SAVED_EDI, EDI_SAVE);
     w(&mut g, FRAME - super::GRAPH, GRAPH);
-    for (i, (at, nodes_at)) in [(MODEL_ONE, NODES_ONE), (MODEL_TWO, NODES_TWO)].into_iter().enumerate() {
+    for (i, (at, nodes_at)) in [(MODEL_ONE, NODES_ONE), (MODEL_TWO, NODES_TWO)]
+        .into_iter()
+        .enumerate()
+    {
         w(&mut g, at + MODEL_COUNT, c.counts[i] as u32);
         w(&mut g, at + MODEL_NODES, nodes_at);
         for n in 0..c.counts[i].max(0) {
@@ -113,7 +116,9 @@ fn machine(c: &Case) -> (CpuAbi, Guest) {
             g.write_bytes(table + 4 * n as u32, &bytes, 1).unwrap();
         }
     }
-    // Garbage in the registers the step does not read whole.
+    // Garbage in the registers the step does not read whole. `esi` is
+    // the first model: the step's caller leaves it there, and the first
+    // loop reads it before the fill's exit can set it.
     let mut cpu = CpuAbi {
         eax: 0xabcd_0000 | (c.nodes as u16 as u32),
         ecx: rng.next() as u32,
@@ -121,7 +126,7 @@ fn machine(c: &Case) -> (CpuAbi, Guest) {
         ebx: SLOT,
         esp: STACK,
         ebp: FRAME,
-        esi: rng.next() as u32,
+        esi: MODEL_ONE,
         edi: rng.next() as u32,
         eflags: 0x246 | if c.df { 0x400 } else { 0 },
         eflags_defined: 0x8d5,
@@ -181,7 +186,7 @@ fn the_kernel_equals_the_loops() {
         for counts in [[0i32, 0], [1, 0], [0, 2], [3, 3], [2, 4]] {
             for seed in 1..4u64 {
                 equal(&case(
-                    seed * 0x9e37 + nodes as u64 + counts[0] as u64,
+                    seed * 0x9e37 + u64::from(nodes as u16) + counts[0] as u64,
                     nodes,
                     counts,
                 ));
@@ -231,9 +236,12 @@ fn steps_off_the_gather_decline_untouched() {
         },
         Decline::Count,
     );
-    // An identity record pointer past the end of RAM.
+    // An identity record pointer past the end of RAM. The fill count is
+    // zero, so the port never dereferences it: only the kernel's eager
+    // gather sees the fault and declines.
+    let quiet = case(5, 0, [2, 2]);
     declines(
-        &c,
+        &quiet,
         |_, g| g.set_u32(IDENTITY, RAM + 0x1000).unwrap(),
         Decline::Fault,
     );

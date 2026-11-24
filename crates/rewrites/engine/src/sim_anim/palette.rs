@@ -295,10 +295,11 @@ fn scatter(c: &mut CpuAbi, g: &mut impl Memory, p: &Plan) -> Result<TransferAbi,
 
     // The registers the loops leave. `esi` is the second model, read
     // before its loop whatever it does; `edi` is the saved value when
-    // the fill ran or the first model landed a node.
+    // the fill ran or either loop landed a node (every record branch
+    // restores it).
     c.eax = p.graph;
     c.esi = p.model_two;
-    if p.nodes > 0 || p.models[0].writes_any() {
+    if p.nodes > 0 || p.models[0].writes_any() || p.models[1].writes_any() {
         c.edi = p.saved_edi;
     }
     // `ecx`: the node count, zeroed by the fill's `rep movsd`, then the

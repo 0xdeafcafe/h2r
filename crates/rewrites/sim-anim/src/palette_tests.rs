@@ -65,8 +65,10 @@ fn an_overlay_lays_its_nodes_over_the_fill() {
     };
     let out = build(&identity(), 2, ONE, &[overlay]);
     assert_eq!(out.first, 0);
-    assert_eq!(out.bytes.len(), 2 * NODE_BYTES);
-    // Node 0 landed in slot 2, node 2 in slot 0; slot 1 kept the fill.
+    // The span covers the fill's two slots and the overlay's third: node
+    // 0 landed in slot 2 (one past the fill), node 2 in slot 0, and slot
+    // 1 kept the fill.
+    assert_eq!(out.bytes.len(), 3 * NODE_BYTES);
     let slot = |i: usize| &out.bytes[i * NODE_BYTES..(i + 1) * NODE_BYTES];
     assert_eq!(&slot(0)[..16], &nodes[2 * MODEL_NODE_BYTES + 0x18..][..16]);
     assert_eq!(&slot(0)[16..28], &nodes[2 * MODEL_NODE_BYTES + 0xc..][..12]);
@@ -108,10 +110,10 @@ fn a_negative_index_reaches_below_the_palette() {
     let out = build(&identity(), 2, ONE, &[overlay]);
     assert_eq!(out.first, -32768);
     assert_eq!(out.bytes.len(), (2 + 32768) * NODE_BYTES);
-    let at = 32768 * NODE_BYTES;
-    assert_eq!(&out.bytes[at..at + 16], &nodes[0x18..0x28]);
-    // The fill still covers the positive slots.
-    let fill = (out.bytes.len() - 2 * NODE_BYTES) as usize;
+    // The overlay's record sits at the span's start (its slot); the fill
+    // covers the positive slots at the span's end.
+    assert_eq!(&out.bytes[0..16], &nodes[0x18..0x28]);
+    let fill = out.bytes.len() - 2 * NODE_BYTES;
     assert_eq!(&out.bytes[fill..fill + NODE_BYTES], &identity());
 }
 
