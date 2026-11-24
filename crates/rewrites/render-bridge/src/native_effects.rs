@@ -64,6 +64,12 @@ pub(crate) fn build(b: &mut hooks::Builder) {
             let ordinal = CALLS[index].fetch_add(1, Ordering::Relaxed);
             let mut mem = o.guest();
             let caller = site.caller_offset().and_then(|offset| o.cpu.esp.checked_add(offset)).and_then(|at| mem.u32(at).ok());
+            if site == Site::Billboard && crate::native_flares::reflection_caller(caller) {
+                if let Some(h) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+                    h.arm_flare(&mut *mem, native_render::flares::Site::Reflection);
+                }
+                return;
+            }
             if !site.accepts_caller(caller) {
                 if ordinal < LOG_LIMIT {
                     eprintln!("native-particles-refused: site={site:?} caller={caller:?} reason=UnownedCaller");
@@ -78,7 +84,16 @@ pub(crate) fn build(b: &mut hooks::Builder) {
                 let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 if let Some(h) = host {
                     let mut mem = o.guest();
-                    h.finish(&mut *mem, Producer::Immediate(site));
+                    // End returned and the helper popped ESI before this site.
+                    let reflection = site == Site::Billboard && crate::native_flares::reflection_caller(
+                        o.cpu.esp.checked_add(0x20).and_then(|at| mem.u32(at).ok())
+                    );
+                    let producer = if reflection {
+                        Producer::Flare(native_render::flares::Site::Reflection)
+                    } else {
+                        Producer::Immediate(site)
+                    };
+                    h.finish(&mut *mem, producer);
                 }
             })
             .context_only();

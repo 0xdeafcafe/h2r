@@ -21,9 +21,10 @@ pub enum Stage {
     FirstPerson,
     Effects,
     Ui,
+    Flares,
 }
 
-const STAGES: [&str; 15] = [
+const STAGES: [&str; 16] = [
     "world",
     "objects",
     "transparents",
@@ -39,6 +40,7 @@ const STAGES: [&str; 15] = [
     "first_person",
     "effects",
     "ui",
+    "flares",
 ];
 #[derive(Clone, Copy, Debug)]
 #[repr(usize)]
@@ -667,6 +669,9 @@ pub(crate) fn labels() -> &'static [String] {
 }
 
 impl Stage {
+    /// Number of stages with timeline counter columns.
+    pub const COUNT: usize = STAGES.len();
+
     /// The stage's name in its counters (`native_<name>_...`).
     pub fn name(self) -> &'static str {
         STAGES[self as usize]
@@ -854,6 +859,12 @@ mod tests {
         ] {
             assert_eq!(columns[world + metric as usize].1, label);
         }
+    }
+
+    #[test]
+    fn flares_have_a_stage_of_their_own() {
+        assert_eq!(Stage::Flares.name(), "flares");
+        assert_eq!(STAGES[Stage::Flares as usize], "flares");
     }
 
     #[test]

@@ -615,7 +615,7 @@ impl<B: Backend> DiagBackend<B> {
         color: B::Surface,
         depth: Option<B::Surface>,
         draw: &ResolvedDraw,
-        shared: Option<&Arc<ResolvedDraw>>,
+        issue: impl FnOnce(&mut B, [Option<&B::Texture>; 4]) -> Result<DrawOutcome, String>,
         textures: [Option<&Tracked<B::Texture, B::Surface>>; 4],
     ) -> Result<DrawOutcome, String> {
         let ids: Vec<Option<u64>> = textures.iter().map(|t| t.map(|t| t.id)).collect();
@@ -653,10 +653,7 @@ impl<B: Backend> DiagBackend<B> {
         }
         let inner: [Option<&B::Texture>; 4] =
             std::array::from_fn(|i| textures[i].map(|t| &t.inner));
-        let r = match shared {
-            Some(packet) => self.inner.draw_shared(color, depth, Arc::clone(packet), inner).0,
-            None => self.inner.draw(color, depth, draw, inner),
-        };
+        let r = issue(&mut self.inner, inner);
         if probing {
             let mut info = probe_draw(color, depth, draw, &r);
             if self.probe.layout_requested() {
@@ -1171,7 +1168,9 @@ impl<B: Backend> Backend for DiagBackend<B> {
         draw: &ResolvedDraw,
         textures: [Option<&Self::Texture>; 4],
     ) -> Result<DrawOutcome, String> {
-        self.diagnosed_draw(color, depth, draw, None, textures)
+        self.diagnosed_draw(color, depth, draw, |backend, inputs| {
+            backend.draw(color, depth, draw, inputs)
+        }, textures)
     }
     fn draw_owned(
         &mut self,
@@ -1193,6 +1192,26 @@ impl<B: Backend> Backend for DiagBackend<B> {
         self.tally(&r, &target, &info);
         (r, spare)
     }
+    fn draw_admitted(
+        &mut self,
+        color: Self::Surface,
+        depth: Option<Self::Surface>,
+        draw: ResolvedDraw,
+        textures: [Option<&Self::Texture>; 4],
+        admission: d3d::backend::RetainedAdmission<Self::Surface>,
+    ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
+        if self.inspects_draw() {
+            let result = self.diagnosed_draw(color, depth, &draw, |backend, inputs| {
+                backend.draw_admitted(color, depth, draw.clone(), inputs, admission).0
+            }, textures);
+            return (result, draw.streams);
+        }
+        let (target, info) = (draw.target, draw.texture_info);
+        let inputs = textures.map(|t| t.map(|t| &t.inner));
+        let (result, spare) = self.inner.draw_admitted(color, depth, draw, inputs, admission);
+        self.tally(&result, &target, &info);
+        (result, spare)
+    }
     fn draw_shared(
         &mut self,
         color: Self::Surface,
@@ -1201,7 +1220,9 @@ impl<B: Backend> Backend for DiagBackend<B> {
         textures: [Option<&Self::Texture>; 4],
     ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
         if self.inspects_draw() {
-            let result = self.diagnosed_draw(color, depth, &draw, Some(&draw), textures);
+            let result = self.diagnosed_draw(color, depth, &draw, |backend, inputs| {
+                backend.draw_shared(color, depth, Arc::clone(&draw), inputs).0
+            }, textures);
             return (result, Vec::new());
         }
         let (target, info) = (draw.target, draw.texture_info);

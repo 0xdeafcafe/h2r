@@ -701,6 +701,19 @@ pub struct QueuedExternalDraw<S> {
     pub finished: Box<dyn FnOnce(Option<&Result<DrawOutcome, String>>) + Send>,
 }
 
+/// The typed admission a guest draw was offered as and did not take: the
+/// exact packet the pass would replace, and the pass, with the attachments it
+/// resolved. A backend that retains the frame keeps it beside the draw
+/// ([`Backend::draw_admitted`]) so replay can prepare the pass on its own
+/// attachments; any other backend drops it.
+pub struct RetainedAdmission<S> {
+    pub packet: std::sync::Arc<ResolvedDraw>,
+    pub surfaces: ExternalSurfaces<S>,
+    pub request: ExternalPassRequest,
+    pub plan: ExternalPlan,
+    pub pass: SharedReplacement,
+}
+
 /// A typed stage of the frame step's scene (docs/graphics/framescene.md,
 /// slice 2): one command in the render thread's queue, in order with the
 /// draws around it. The game thread has already decided, from the scene
@@ -1670,6 +1683,17 @@ pub trait Backend: Send {
         &mut self, _stage: SceneStage<Self::Surface>, copies: Vec<ExternalRecording>,
     ) {
         for copy in copies { self.commit_external(copy); }
+    }
+
+    /// The guest's one draw for a packet that was offered to a typed pass
+    /// and not taken. The draw, its outcome and its stream buffers are those
+    /// of [`draw_owned`](Self::draw_owned), which is all the default does.
+    /// A backend that retains the frame may keep `admission` beside it.
+    fn draw_admitted(
+        &mut self, color: Self::Surface, depth: Option<Self::Surface>, draw: ResolvedDraw,
+        textures: [Option<&Self::Texture>; 4], _admission: RetainedAdmission<Self::Surface>,
+    ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
+        self.draw_owned(color, depth, draw, textures)
     }
 
     /// Try to enqueue an independently resolved draw with its exact fallback.

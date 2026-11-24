@@ -96,6 +96,7 @@ fn push(frame: &mut ReplayFrame, slot: Slot, view: u8, draw: ResolvedDraw) {
             draw: draw.into(),
             textures: Default::default(),
             camera: CameraUse::Unknown,
+            external: None,
         },
     ));
 }

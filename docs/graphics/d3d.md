@@ -1760,13 +1760,12 @@ lights. Static trace, all addresses guest VAs:
   `0x2c2e4`) sets `ZEnable(2)`, colour writes off, `LESSEQUAL` without
   depth writes, and runs `0x20bb0` with the callback `0x2e540`: a quad of
   half-size `[2, 128]` pixels around the projected flare, pushed inline
-  (`BEGIN_END` quads, four `VERTEX_DATA4F` on register 0) through a game
+  (a triangle fan with four position-register writes) through a game
   vertex program, its expected count the quad's area.
 - The reader `0x20770` divides the landed count by that area, clamps it to
   `[0, 1]`, scales it to a byte (x256, at most 255) and smooths it into
   the entry's visibility byte. The draw pass `0x2df00` (from `0x13b7e`,
-  callback `0x2e9e0`) draws the flares; that it scales them by the byte is
-  inference (the callback is not traced in detail).
+  callback `0x2e9e0`) reads the visibility byte and can skip the reflection loop when the computed visibility is zero. Its billboards and the optional filtered fans are traced in [Retail lens-flare draws](notes/2026-11-24-lens-flares.md).
 
 So a count of 0 is an invisible flare. Under the W-buffer the quad's
 rasterized z is about 1 (or 0.5 with depth clamp), above every stored w

@@ -213,3 +213,20 @@ fn scene_asset_upload_runs_once_on_the_display_worker_without_a_frame_or_attachm
     sink.inner_mut().with_inner(|gpu| assert!(gpu.last_presented().is_none())).unwrap();
     assert_eq!(recv.recv().unwrap(), (32, Some("d3d-render".to_string())));
 }
+
+#[test]
+fn flare_counters_follow_committed_draws_only() {
+    let read = |name: &str| {
+        d3d::scene_stage::counters().into_iter().find(|(k, _)| k == name).map(|(_, v)| v).unwrap()
+    };
+    let (display, reference) = (read("scene_submitted_flares_display_draws"), read("scene_submitted_flares_reference_draws"));
+    // Queueing a flare stage, or committing another stage, counts no flare draw.
+    d3d::scene_stage::queued(Stage::Flares);
+    d3d::scene_stage::submitted(Stage::Fog, true, 7);
+    assert_eq!(read("scene_submitted_flares_display_draws"), display);
+    d3d::scene_stage::submitted(Stage::Flares, true, 3);
+    d3d::scene_stage::submitted(Stage::Flares, false, 5);
+    assert_eq!(read("scene_submitted_flares_display_draws"), display + 3);
+    assert_eq!(read("scene_submitted_flares_reference_draws"), reference + 5);
+    assert!(d3d::scene_stage::counters().iter().all(|(k, _)| !k.starts_with("scene_stages_flares") && !k.starts_with("scene_dropped_flares")));
+}

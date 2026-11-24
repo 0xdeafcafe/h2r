@@ -43,6 +43,7 @@ pub mod decorators_gpu;
 pub mod decorators_load;
 pub mod effect_geometry;
 pub mod effect_immediate;
+pub mod flares;
 #[cfg(feature = "gpu")]
 pub mod engine_states;
 pub mod fog;

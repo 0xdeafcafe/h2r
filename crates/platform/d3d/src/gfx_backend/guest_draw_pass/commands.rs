@@ -7,6 +7,9 @@ use crate::backend::{ExternalSurfaces, SceneStage};
 use crate::threaded::owner::Outputs;
 
 pub(crate) trait SceneDevice: Backend {
+    /// Does the physical copy select the same projection for typed and carried draws?
+    fn can_replay_flare(&self, _draw: &crate::ResolvedDraw) -> bool { true }
+
     fn record_scene_stage(
         &mut self,
         stage: &SceneStage<TargetRef>,
@@ -58,6 +61,50 @@ impl<B: SceneDevice> Commands<B> {
         Ok(())
     }
 
+    /// The draw's typed replacement, prepared on this replay's own
+    /// attachments with the draw's own resolved texture inputs. It is used
+    /// only for the draw it was admitted for (an equal packet), on the
+    /// attachments that draw is bound to, in a private capture only at 1x
+    /// (a live display's backend answers for its own scale). Every copy is
+    /// prepared before any is committed, so a refusal leaves nothing drawn
+    /// and the caller draws the exact D3D packet.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_external(
+        &self,
+        gpu: &mut B,
+        targets: &HashMap<TargetRef, B::Surface>,
+        display: bool,
+        scale: u32,
+        bound: (B::Surface, Option<B::Surface>),
+        draw: &Arc<crate::backend::ResolvedDraw>,
+        external: &crate::scene_sink::RetainedExternal,
+        handles: &[Option<B::Texture>; 4],
+    ) -> bool {
+        if !gpu.can_replay_flare(draw) {
+            return false;
+        }
+        let Some(surfaces) = external.resolve(draw, targets, bound, display, scale) else {
+            return false;
+        };
+        let Ok(Some(recordings)) = gpu.prepare_external(
+            surfaces,
+            external.request,
+            handles.each_ref().map(Option::as_ref),
+            &external.plan,
+            crate::TargetCopy::Reference,
+            Arc::clone(&external.pass),
+        ) else {
+            return false;
+        };
+        if !crate::device::complete_recordings(&external.plan, &recordings) {
+            return false;
+        }
+        for recording in recordings {
+            gpu.commit_external(recording);
+        }
+        true
+    }
+
     pub(crate) fn apply(
         &mut self,
         gpu: &mut B,
@@ -89,7 +136,7 @@ impl<B: SceneDevice> Commands<B> {
                 self.relit_ranges += gpu.record_scene_stage(stage, surfaces, self.private_lighting)?;
             }
             ReplayOp::Bind { colour, depth } => self.bound = Some(attachments(colour, depth)?),
-            ReplayOp::Draw { draw, textures, .. } => {
+            ReplayOp::Draw { draw, textures, external, .. } => {
                 let (colour, depth) = self.bound.ok_or("scene draw before target bind")?;
                 let mut handles: [Option<B::Texture>; 4] = Default::default();
                 for (dst, src) in handles.iter_mut().zip(textures) {
@@ -117,6 +164,11 @@ impl<B: SceneDevice> Commands<B> {
                             ));
                         }
                     };
+                }
+                if let Some(external) = external
+                    && self.draw_external(gpu, targets, display, scale, (colour, depth), draw, external, &handles)
+                {
+                    return Ok(());
                 }
                 drawn(gpu.draw(colour, depth, draw, handles.each_ref().map(Option::as_ref))?)?;
             }

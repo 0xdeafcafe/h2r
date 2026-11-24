@@ -1410,8 +1410,20 @@ D3D reference with all native stages disabled.
   draws, the sink also records repeatable typed stages at the point where
   they acquired their attachments. One-shot replacements decline admission
   before guest draws are released. A queued native draw
-  (`Backend::queue_external_draw`) is not carried, whether the render
-  thread records it or draws its D3D packet.
+  (`Backend::queue_external_draw`) is not carried: the render thread
+  records it or draws its D3D packet. A flare draw (`Stage::Flares`)
+  that is offered to its pass with an exact resolved fallback and is not
+  taken is still issued once, as the guest's own draw
+  (`Backend::draw_admitted`, `draw_owned` by default). A sink that
+  retains the frame keeps the admission (`RetainedExternal`) on that
+  draw's `ReplayOp::Draw` when its pass records repeatedly, it writes
+  only the draw's colour target, it samples no other surface, it equals
+  the submitted packet and no guest reference is requested. Replay
+  (`RetainedExternal::resolve`) prepares the admission on its own
+  attachments with the draw's own live, frozen or sampled texture inputs,
+  only for an unchanged draw bound to the attachments it was made for
+  (a private capture only at 1x), and draws the packet when any copy is
+  refused. Every other draw is carried as the guest's packet alone.
 - **Coverage.** `render.scene` reports, with the option, `carried`
   (the last frame's ops by slot, its side targets with the ops that
   named them by slot, and its readbacks in and outside a game view),
