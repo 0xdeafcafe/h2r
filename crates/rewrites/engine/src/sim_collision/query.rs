@@ -10,9 +10,10 @@ mod batch;
 pub use batch::{Trace, trace_batch};
 mod clusters;
 mod guards;
+pub(super) use guards::Guard;
 mod parity;
 mod relocate;
-pub use parity::{Prediction, begin, end};
+pub use parity::{PendingQuery, Prediction, observe};
 
 const SEGMENT_BSP: u32 = 0x004e_0340;
 const BREAKABLES: u32 = 0x004e_d280;

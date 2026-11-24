@@ -1,7 +1,7 @@
 //! Plan at J's entry, compare the guest answer after J returns. A plan
 //! owns its expected bytes, including the incoming result record's padding.
 use super::*;
-use std::{cell::RefCell, collections::HashMap};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub struct Prediction {
     plan: Plan,
@@ -142,91 +142,84 @@ impl Prediction {
     }
 }
 
-/// A reverted call may never reach its after hook. The map epoch and
-/// backing RAM generation exclude abandoned predictions, including across
-/// an image restart that reuses a thread id and stack address.
-#[derive(PartialEq, Eq)]
-struct Generation(u64, (u64, u64));
+/// Limit live return observations. Each can retain a snapshot of all three
+/// mark tables. Dropping the runner's callback releases its slot, whether
+/// the guest returns normally or unwinds the call.
+struct Slot<'a>(&'a AtomicUsize);
 
-fn generation(g: &runtime::Guest) -> Generation {
-    Generation(super::super::EPOCH.get(), g.write_watch_epoch())
+impl<'a> Slot<'a> {
+    fn reserve(count: &'a AtomicUsize) -> Option<Self> {
+        count
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
+                (live < 32).then_some(live + 1)
+            })
+            .ok()
+            .map(|_| Self(count))
+    }
 }
 
-struct Stack {
-    generation: Generation,
-    calls: Vec<(u32, Prediction)>,
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
-thread_local! {
-    static OPEN: RefCell<HashMap<u32,Stack>> = RefCell::default();
+pub struct PendingQuery {
+    prediction: Prediction,
+    _slot: Slot<'static>,
 }
 
-pub fn begin(thread: u32, cpu: &CpuAbi, g: &mut runtime::Guest, world: &CollisionWorld) -> bool {
-    let ret_sp = cpu.esp.wrapping_add(4 + 0x18);
-    let current_generation = generation(g);
-    OPEN.with_borrow_mut(|threads| {
-        threads.retain(|_, s| s.generation == current_generation);
-        if let Some(s) = threads.get_mut(&thread) {
-            s.calls.retain(|(outer, _)| *outer > ret_sp);
-            if s.calls.len() >= 8 {
-                world.record_query(Err(Bail::Depth));
-                return false;
-            }
-        } else if threads.len() >= 32 {
-            world.record_query(Err(Bail::Budget));
-            return false;
+pub fn observe(
+    cpu: &CpuAbi,
+    g: &mut runtime::Guest,
+    world: &CollisionWorld,
+) -> Option<PendingQuery> {
+    static LIVE: AtomicUsize = AtomicUsize::new(0);
+    if g.has_trap() {
+        world.record_query(Err(Bail::Trap));
+        return None;
+    }
+    let Some(slot) = Slot::reserve(&LIVE) else {
+        world.record_query(Err(Bail::Budget));
+        return None;
+    };
+    match Prediction::gather(cpu, g, world) {
+        Ok(prediction) => Some(PendingQuery {
+            prediction,
+            _slot: slot,
+        }),
+        Err(why) => {
+            world.record_query(Err(why));
+            None
         }
-        let predicted = if g.has_trap() {
-            Err(Bail::Trap)
-        } else {
-            Prediction::gather(cpu, g, world)
-        };
-        match predicted {
-            Ok(p) => {
-                threads
-                    .entry(thread)
-                    .or_insert_with(|| Stack {
-                        generation: current_generation,
-                        calls: Vec::new(),
-                    })
-                    .calls
-                    .push((ret_sp, p));
-                true
-            }
-            Err(why) => {
-                world.record_query(Err(why));
-                if threads.get(&thread).is_some_and(|s| s.calls.is_empty()) {
-                    threads.remove(&thread);
-                }
-                false
-            }
-        }
-    })
+    }
 }
 
-pub fn end(thread: u32, cpu: &CpuAbi, g: &runtime::Guest, world: &CollisionWorld) {
-    OPEN.with_borrow_mut(|threads| {
-        let Some(s) = threads.get_mut(&thread) else {
-            return;
-        };
-        if s.generation != generation(g) {
-            threads.remove(&thread);
-            return;
-        }
-        let Some(&(sp, _)) = s.calls.last() else {
-            return;
-        };
-        if sp != cpu.esp {
-            return;
-        }
-        let (_, p) = s.calls.pop().unwrap();
-        if s.calls.is_empty() {
-            threads.remove(&thread);
-        }
+impl PendingQuery {
+    pub fn finish(self, cpu: &CpuAbi, g: &runtime::Guest, world: &CollisionWorld) {
         world.record_query(if g.has_trap() {
             Err(Bail::Trap)
         } else {
-            p.compare(cpu.eax as u8, g)
+            self.prediction.compare(cpu.eax as u8, g)
         });
-    });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn abandoned_observations_release_their_budget() {
+        let live = AtomicUsize::new(0);
+        let mut held = Vec::new();
+        while let Some(slot) = Slot::reserve(&live) {
+            held.push(slot);
+        }
+        assert_eq!(held.len(), 32);
+        held.pop();
+        assert!(Slot::reserve(&live).is_some());
+        drop(held);
+        assert_eq!(live.load(Ordering::Relaxed), 0);
+    }
 }
