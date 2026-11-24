@@ -530,6 +530,13 @@ no reader at any slice 3 entry or site) and keep `xmm0` to `xmm4` and the
 x87 state as retail leaves them. Function names compared by `cmp` or
 `sub` are read from those instructions' immediates in the loaded image.
 
+The `sim_objects::functions::ExportCursor` scans consecutive misses in
+one Rust loop. A match returns to the evaluator with the record, index
+and byte offset in the guest frame. On resume the body advances that
+cursor and reads the current count, table address and requested name.
+This keeps duplicate exports in definition order even if a callback
+replaces the table.
+
 **Function value** `bab40` (`functions/value.rs`). Saves `ecx`, `ebx`,
 `ebp`, `esi`, `edi`; stores 0 through the value pointer first. The
 result byte is the top byte of the saved `ecx` slot, so `ecx` at return

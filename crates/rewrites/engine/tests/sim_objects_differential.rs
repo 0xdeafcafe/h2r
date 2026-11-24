@@ -1265,7 +1265,7 @@ fn function_entry(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
 
 #[test]
 fn function_value() {
-    transcripts(&points::OBJECT_FUNCTION_VALUE, function_cases());
+    transcripts(&points::OBJECT_FUNCTION_VALUE, function_cases() + 1);
 }
 
 #[test]
