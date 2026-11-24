@@ -1,11 +1,11 @@
 // Hide and Seek: everyone hides with active camo; the Juggernaut seeks.
-// `list party` files it under Party Games: a row's list holds Slayer's and
-// Juggernaut's variants (docs/game/rules-variants.md).
+// `type party` files it under Party Games; `uses juggernaut` plays
+// Juggernaut's rules under its settings.
 // docs/game/community-gametypes.md.
 rules "Hide and Seek" 1
-carrier juggernaut
-list party
-scoring carrier
+type party
+points "Kills"
+uses juggernaut
 about "Everyone hides with active camo and no motion sensor. The Juggernaut seeks with a sword, a motion sensor and extra speed. One life each."
 quick time_limit, lives, juggernaut_movement, starting_weapon, active_camo
 

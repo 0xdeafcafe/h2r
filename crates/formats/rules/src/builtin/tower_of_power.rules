@@ -1,8 +1,8 @@
 // Tower of Power: teams fight for the tower with shotguns.
 // docs/game/community-gametypes.md.
 rules "Tower of Power" 1
-carrier slayer
-scoring carrier
+type slayer
+uses slayer
 about "Teams fight for the tower with shotguns and no shields. Made for Ascension."
 quick score_limit, time_limit, starting_weapon, respawn_time, team_play
 

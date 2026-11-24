@@ -286,7 +286,7 @@ pub fn unhostable_all(ir: &Ir) -> Vec<&'static str> {
         for op in &hd.code {
             if let Op::Call { entry, .. } = *op
                 && let Some(e) = caps::entry(entry, ir.header.api_version)
-                && !e.hostable_on(ir.header.carrier)
+                && !e.hostable_on(ir.header.engine())
                 && !out.contains(&caps::spelled(e))
             {
                 out.push(caps::spelled(e));
@@ -892,7 +892,7 @@ impl Runner {
         validate(scenario).map_err(RunError::Scenario)?;
         let hash = ir.id().to_string();
         let options = scenario.options.unwrap_or_else(|| ir.default_options());
-        let carrier = ir.header.carrier;
+        let carrier = ir.header.engine();
         let vm = Vm::new(ir, options, scenario.seed).map_err(refused)?;
 
         let mut g = FakeGame {
@@ -1162,7 +1162,7 @@ mod tests {
 
     #[test]
     fn the_report_lists_the_settings_and_the_quick_rows() {
-        let src = "rules \"Swat\" 1\ncarrier slayer\nscoring carrier\nquick score_limit, shields, lives\n\
+        let src = "rules \"Swat\" 1\ntype slayer\nuses slayer\nquick score_limit, shields, lives\n\
                    settings {\n    score_limit = 50\n    shields = none\n    time_limit = 300s\n}\n";
         let c = check(src);
         assert!(c.ok, "{:?}", c.errors);
@@ -1179,7 +1179,7 @@ mod tests {
 
     #[test]
     fn a_compile_error_has_its_place() {
-        let c = check("rules \"X\" 1\ncarrier slayer\non kill(v, k) { score(k, ) }\n");
+        let c = check("rules \"X\" 1\ntype slayer\non kill(v, k) { score(k, ) }\n");
         assert!(!c.ok);
         assert!(c.report.is_none());
         assert_eq!(c.errors[0].line, 3);
@@ -1188,7 +1188,7 @@ mod tests {
 
     #[test]
     fn capabilities_read_in_plain_words() {
-        let src = "rules \"T\" 1\ncarrier slayer\nteams 2\nrequires player.team, forge.move\non spawn(p) { set_team(p, team 1) }\n";
+        let src = "rules \"T\" 1\ntype slayer\nteams 2\nrequires player.team, forge.move\non spawn(p) { set_team(p, team 1) }\n";
         let c = check(src);
         let r = c.report.unwrap();
         let names: Vec<_> = r.capabilities.iter().map(|c| c.name.as_str()).collect();
@@ -1235,7 +1235,7 @@ mod tests {
 
     #[test]
     fn timers_end_round_and_variables_show() {
-        let src = "rules \"T\" 1\ncarrier slayer\nglobal var left: timer = 5t\nglobal var n: int = 0\non timer(left) { n = n + 1; end_round(none) }\n";
+        let src = "rules \"T\" 1\ntype slayer\nglobal var left: timer = 5t\nglobal var n: int = 0\non timer(left) { n = n + 1; end_round(none) }\n";
         let t = run(src, &Scenario { ticks: 100, ..Scenario::default() }).unwrap();
         let last = t.ticks.last().unwrap();
         assert_eq!(t.round_ended, Some(last.tick));

@@ -978,7 +978,7 @@ options), and `community_variants::write_blocks` writes that block into
 its built-in record when the list loads, so a game on it and a saved
 copy of it name the script. The script is
 `crates/formats/rules/src/builtin/superbounce.rules`, compiled into the
-game: `list research` files the variant under Research and Devolution and
+game: `type research` files the variant under Research and Devolution and
 `requires hud.superbounce` turns the mode on
 ([rules-engine.md](rules-engine.md#firefight-ai-and-bounces)). It scores
 bounces alone, which the script works out from what the medal chain

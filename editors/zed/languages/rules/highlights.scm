@@ -9,10 +9,10 @@
 
 [
   "rules"
-  "carrier"
+  "type"
   "teams"
-  "list"
-  "scoring"
+  "uses"
+  "points"
   "about"
   "quick"
   "settings"
@@ -98,10 +98,7 @@
 (capability
   (identifier) @constant)
 
-(list_declaration
-  name: (identifier) @constant)
-
-(scoring_declaration
+(uses_declaration
   name: (identifier) @constant)
 
 (setting
@@ -113,7 +110,7 @@
 (quick_declaration
   mark: (identifier) @property)
 
-(carrier_declaration
+(type_declaration
   name: (identifier) @constant)
 
 (option_declaration

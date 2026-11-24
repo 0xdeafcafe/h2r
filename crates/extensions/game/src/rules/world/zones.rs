@@ -380,7 +380,7 @@ mod tests {
 
     fn table(m: &dyn GuestMemory) -> Table {
         let ir = ::rules::compile(
-            "rules \"T\" 1\ncarrier slayer\nlabel territory: zones at least 1\n\non tick { }\n",
+            "rules \"T\" 1\ntype slayer\nlabel territory: zones at least 1\n\non tick { }\n",
         )
         .unwrap();
         Table::new(&census::things(m).unwrap(), &ir)

@@ -4,9 +4,9 @@
 // `verify::unhostable`).
 // docs/game/community-gametypes.md.
 rules "Zombies" 1
-carrier slayer
-list party
-scoring carrier
+type party
+points "Kills"
+uses slayer
 about "Humans on red with shotguns, zombies on green with swords. When a zombie gets you, switch to green. Last human standing wins."
 quick time_limit, respawn_time, starting_weapon, secondary_weapon, weapons_on_map
 

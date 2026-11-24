@@ -525,7 +525,7 @@ pub fn game_of(ir: &Ir, scenario: &Scenario) -> Result<FakeGame, RunError> {
 pub fn run(ir: Ir, scenario: &Scenario) -> Result<RunResult, RunError> {
     let options = scenario.options.unwrap_or_else(|| ir.default_options());
     let mut game = game_of(&ir, scenario)?;
-    game.carrier = ir.header.carrier;
+    game.carrier = ir.header.engine();
     let mut vm = Vm::new(ir, options, scenario.seed)?;
     let end_name = caps::entry(caps::id::END_ROUND, caps::API_VERSION).map(|e| e.name);
     let mut ticks = Vec::new();
@@ -574,7 +574,7 @@ mod tests {
 
     const SRC: &str = r#"
 rules "Count" 1
-carrier slayer
+type slayer
 
 on kill(victim, killer) {
     if killer == none or killer == victim { score(victim, -1) } else { score(killer, 1) }
@@ -680,7 +680,7 @@ on kill(victim, killer) {
 
     #[test]
     fn a_kill_counts_kills_deaths_and_alive() {
-        let src = "rules \"K\" 1\ncarrier slayer\nglobal var seen: int = 0\n\
+        let src = "rules \"K\" 1\ntype slayer\nglobal var seen: int = 0\n\
                    on kill(victim, killer) { if killer != none and not victim.alive { seen = killer.kills * 10 + victim.deaths } }\n";
         let s = Scenario {
             players: vec![seat(0, 0), seat(1, 1)],
@@ -704,7 +704,7 @@ on kill(victim, killer) {
 
     #[test]
     fn variant_fields_and_the_round_clock_read_the_scenario() {
-        let src = "rules \"V\" 1\ncarrier slayer\nglobal var limit: int = 0\nglobal var left: time = 0t\n\
+        let src = "rules \"V\" 1\ntype slayer\nglobal var limit: int = 0\nglobal var left: time = 0t\n\
                    on tick { limit = variant.score_limit; left = round_time_left() }\n";
         let s = Scenario {
             round_time_left: 10,
@@ -714,7 +714,7 @@ on kill(victim, killer) {
         let ir = crate::build(src).unwrap().0;
         let mut vm = Vm::new(ir.clone(), 0, 0).unwrap();
         let mut g = game_of(&ir, &s).unwrap();
-        g.carrier = ir.header.carrier;
+        g.carrier = ir.header.engine();
         for t in 0..4 {
             step(&mut vm, &mut g, t, true, &[]);
         }
@@ -731,7 +731,7 @@ on kill(victim, killer) {
 
     #[test]
     fn ticks_held_counts_a_zone_held_alone() {
-        let src = "rules \"Z\" 1\ncarrier slayer\nlabel zone: zone\nglobal var held: time = 0t\n\
+        let src = "rules \"Z\" 1\ntype slayer\nlabel zone: zone\nglobal var held: time = 0t\n\
                    on tick { held = ticks_held(zone, team 0) }\n";
         let mut s = Scenario {
             players: vec![seat(0, 0), seat(1, 1)],

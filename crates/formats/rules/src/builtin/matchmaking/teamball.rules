@@ -1,10 +1,10 @@
 // Teamball: a built-in matchmaking variant of the default Live lineup
-// (live_proto::hopper::defaults). The carrier's engine scores the game; the
-// settings are the hopper defaults writer's (0x00193010: settings 12 to 14
+// (live_proto::hopper::defaults). The built-in game it uses scores the
+// game; the settings are the hopper defaults writer's (0x00193010: settings 12 to 14
 // cleared) and this variant's own. docs/live/live-matchmaking.md, "6.8 The default set".
 rules "Teamball" 1
-carrier oddball
-scoring carrier
+type oddball
+uses oddball
 about "Team Oddball with a ten second respawn."
 
 settings {

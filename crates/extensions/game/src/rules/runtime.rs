@@ -11,12 +11,12 @@
 //!   this host cannot run yet by name, start the VM, run `on init` and the
 //!   first round's `on round_start`, and set the `RULES` record. A
 //!   refusal is kept with its reason and logged; the game then plays as
-//!   the carrier engine's lifted rules. A map the gate
+//!   record's engine's lifted rules. A map the gate
 //!   blocks plays no rules at all: [`Status::Blocked`] keeps every problem,
 //!   no VM is made, and the first tick boundary ends the game
 //!   (docs/game/rules-start-gate.md, "What a blocked start shows"). A
-//!   `scoring carrier` script, after the policy check, runs its carrier
-//!   engine's built-in script under the record ([`carrier_builtin`],
+//!   script with a `uses` line, after the policy check, runs that
+//!   type's built-in script under the record ([`used_builtin`],
 //!   [`Carried`]): every step after that is the built-in's, and a
 //!   refusal names both.
 //! - [`Runtime::pre_tick`] before each game tick: the VM's tick begins and
@@ -61,7 +61,7 @@ use std::collections::VecDeque;
 use std::sync::OnceLock;
 
 use ::rules::caps::{self, Kind, Status as EntryStatus, id};
-use ::rules::ir::{Event, Ir, Op, Scoring, TagGroup};
+use ::rules::ir::{Event, Ir, Op, TagGroup};
 use ::rules::vm::{Arg, Call as VmCall, Fired, Game, Input, Placed, RulesExt, ScriptError, TICK_BUDGET, Vm};
 use ::rules::policy::{self, Context};
 use ::rules::{Sha256, verify};
@@ -251,7 +251,7 @@ pub fn examples() -> &'static [Builtin] {
         for &(name, src) in ::rules::builtin::examples() {
             match ::rules::compile(src) {
                 Ok(ir) => out.push(Builtin {
-                    engine: ir.header.carrier,
+                    engine: ir.header.engine(),
                     blob: ir.encode(),
                     id: ir.id(),
                 }),
@@ -276,7 +276,7 @@ pub fn listed() -> &'static [Builtin] {
         for b in ::rules::builtin::LISTED {
             match ::rules::compile(b.source) {
                 Ok(ir) => out.push(Builtin {
-                    engine: ir.header.carrier,
+                    engine: ir.header.engine(),
                     blob: ir.encode(),
                     id: ir.id(),
                 }),
@@ -291,7 +291,7 @@ pub fn listed() -> &'static [Builtin] {
 /// (`rules::builtin::MATCHMAKING`), compiled once, each with its carrier as
 /// `engine`. A default hopper entry's record names one by its prefix
 /// (`live_proto::hopper::defaults`), so a match on it runs it, as the
-/// carrier's own rules (`scoring carrier`).
+/// built-in game each `uses`.
 pub fn matchmaking() -> &'static [Builtin] {
     static BUILT: OnceLock<Vec<Builtin>> = OnceLock::new();
     BUILT.get_or_init(|| {
@@ -299,7 +299,7 @@ pub fn matchmaking() -> &'static [Builtin] {
         for m in ::rules::builtin::MATCHMAKING {
             match ::rules::compile(m.source) {
                 Ok(ir) => out.push(Builtin {
-                    engine: ir.header.carrier,
+                    engine: ir.header.engine(),
                     blob: ir.encode(),
                     id: ir.id(),
                 }),
@@ -432,10 +432,10 @@ pub fn unhostable_refusal(ir: &Ir) -> Option<String> {
             let name = |c: u8| caps::carrier_name(c).map_or_else(|| format!("engine {c}"), str::to_string);
             let on: Vec<String> = hosts.iter().map(|&c| name(c)).collect();
             return Some(format!(
-                "the script calls {}, which a host makes only on {}, and the script rides {}",
+                "the script calls {}, which a host makes only on {}, and the script's record is on {}",
                 caps::spelled(e),
                 on.join(", "),
-                name(ir.header.carrier)
+                name(ir.header.engine())
             ));
         }
         return Some(format!(
@@ -782,8 +782,8 @@ pub struct Running {
     /// against them again.
     census: ::rules::labels::Census,
     teams: Vec<u8>,
-    /// The `scoring carrier` script the record names, when `vm` runs its
-    /// carrier's built-in for it.
+    /// The `uses` script the record names, when `vm` runs the built-in it
+    /// uses.
     pub carried: Option<Carried>,
 }
 
@@ -794,10 +794,10 @@ impl Running {
     }
 }
 
-/// The `scoring carrier` script a game's record names
+/// The `uses` script a game's record names
 /// (docs/game/rules-variants.md, "A script that keeps its carrier's
-/// rules"): settings and a header, no handlers. The game runs its carrier
-/// engine's built-in script ([`carrier_builtin`]) under the record, and
+/// rules"): settings and a header, no handlers. The game runs the built-in
+/// script of the type it uses ([`used_builtin`]) under the record, and
 /// this keeps what the record named. The header's `requires` turn their
 /// modes on through the record's script reference (`super::header`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -807,29 +807,32 @@ pub struct Carried {
     pub name: String,
 }
 
-/// The built-in script a `scoring carrier` script's game runs: its
-/// carrier engine's ([`builtins`]). A carrier with none is refused by
-/// name.
-pub fn carrier_builtin(ir: &Ir) -> Result<Ir, String> {
-    let carrier = ir.header.carrier;
-    let name = caps::carrier_name(carrier).map_or_else(|| format!("engine {carrier}"), str::to_string);
-    let Some(b) = builtins().iter().find(|b| b.engine == carrier) else {
+/// The built-in script a `uses` script's game runs: the one of the type
+/// it uses ([`builtins`], `rules::builtin::of_type`). A type with none is
+/// refused by name.
+pub fn used_builtin(ir: &Ir) -> Result<Ir, String> {
+    let Some(uses) = ir.header.uses else {
+        return Err(format!("{} uses no built-in game", ir.header.name));
+    };
+    let engine = uses.engine();
+    let Some(b) = builtins().iter().find(|b| b.engine == engine).filter(|_| uses.is_retail()) else {
         return Err(format!(
-            "{} is scoring carrier, and its carrier {name} has no built-in script",
-            ir.header.name
+            "{} uses {}, which has no built-in script",
+            ir.header.name,
+            uses.name()
         ));
     };
     verify::load(&b.blob)
         .map(|(ir, _)| ir)
-        .map_err(|e| format!("the built-in {name} script does not verify: {e}"))
+        .map_err(|e| format!("the built-in {} script does not verify: {e}", uses.name()))
 }
 
-/// A refusal of the script that runs, in words that name the `scoring
-/// carrier` script it runs for, if any.
+/// A refusal of the script that runs, in words that name the `uses`
+/// script it runs for, if any.
 fn for_carried(carried: Option<&Carried>, running: &Ir, why: String) -> String {
     match carried {
         Some(c) => format!(
-            "{} is scoring carrier and plays the built-in {} script, which this host cannot run yet: {why}",
+            "{} uses the built-in {} script, which this host cannot run yet: {why}",
             c.name, running.header.name
         ),
         None => why,
@@ -1077,14 +1080,14 @@ impl Runtime {
     }
 
     /// The running blob's full hash, for the Live session's `rules` field.
-    /// A `scoring carrier` script's game names its carrier's built-in,
-    /// which every build has.
+    /// A `uses` script's game names the built-in it uses, which every
+    /// build has.
     pub fn hash(&self) -> Option<String> {
         self.running().map(|r| r.hash.to_string())
     }
 
     fn refuse(&mut self, hash: Option<String>, why: String) -> String {
-        let line = format!("rules: refused, the game plays the carrier engine's own rules: {why}");
+        let line = format!("rules: refused, the game plays the record engine's own rules: {why}");
         self.store.remove();
         self.status = Status::Refused { hash, why };
         line
@@ -1150,12 +1153,12 @@ impl Runtime {
             );
         }
         let full = Some(hash.to_string());
-        if i32::from(ir.header.carrier) != engine {
+        if i32::from(ir.header.engine()) != engine {
             return self.refuse(
                 full,
                 format!(
                     "the script rides engine {}, and the record is engine {engine}",
-                    ir.header.carrier
+                    ir.header.engine()
                 ),
             );
         }
@@ -1166,14 +1169,13 @@ impl Runtime {
         {
             return self.refuse(full, d.to_string());
         }
-        // `scoring carrier`: the record's script is settings only, so the
-        // game runs the carrier engine's built-in script under the record
+        // `uses`: the record's script is settings only, so the game runs
+        // the built-in script of the type it uses under the record
         // (its settings, its score limit). From here on `ir` is the
         // built-in's; every refusal names the carried script too.
-        let scoring = ir.header.scoring;
-        let (ir, hash, source, carried) = match scoring {
-            Scoring::Script => (ir, hash, source, None),
-            Scoring::Carrier => match carrier_builtin(&ir) {
+        let (ir, hash, source, carried) = match ir.header.uses {
+            None => (ir, hash, source, None),
+            Some(_) => match used_builtin(&ir) {
                 Ok(builtin) => {
                     let carried = Carried {
                         hash,
@@ -1270,7 +1272,7 @@ impl Runtime {
         );
         let line = match &running.carried {
             Some(c) => format!(
-                "{line}, for {} ({}) from {}, scoring carrier",
+                "{line}, for {} ({}) from {}, which uses it",
                 c.name,
                 c.hash,
                 c.source.name()
@@ -1284,8 +1286,8 @@ impl Runtime {
         line
     }
 
-    /// The `scoring carrier` script whose game runs its carrier's built-in
-    /// script here, if any.
+    /// The `uses` script whose game runs the built-in it uses here, if
+    /// any.
     pub fn carried(&self) -> Option<&Carried> {
         self.running().and_then(|r| r.carried.as_ref())
     }
@@ -1560,12 +1562,12 @@ impl Runtime {
             Status::Running(r) => r,
             _ => return Err("no script runs in this game".into()),
         };
-        // A program with no handlers would score nowhere: the carrier's
-        // routines stay answered in place. A carried script's game runs its
-        // carrier's built-in, which a restart picks.
-        if ir.header.scoring == Scoring::Carrier {
+        // A program with no handlers would score nowhere: the engine's
+        // routines stay answered in place. A `uses` script's game runs the
+        // built-in it uses, which a restart picks.
+        if ir.header.uses.is_some() {
             return Err(
-                "the new script is scoring carrier, which has no handlers to swap in; restart the game with it".into(),
+                "the new script has a uses line and no handlers to swap in; restart the game with it".into(),
             );
         }
         if let Err(why) = sync(r, &*self.store) {
@@ -1652,7 +1654,7 @@ impl Runtime {
                     version: Some(ir.header.version),
                     hash: Some(r.hash.to_string()),
                     source: Some(r.source.name().into()),
-                    carrier: Some(ir.header.carrier),
+                    carrier: Some(ir.header.engine()),
                     scoring: Some(wire::Scoring::Script),
                     options: Some(r.options),
                     authority: r.authority,

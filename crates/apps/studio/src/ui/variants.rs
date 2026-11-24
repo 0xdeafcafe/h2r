@@ -295,7 +295,7 @@ fn script_section(ui: &Ui, prefix: [u8; 8], view: Option<&ScriptView>, actions: 
         ui.text_wrapped(&view.about);
     }
     if view.carrier_scoring {
-        ui.text_disabled("Scored by its game type's own rules (scoring carrier).");
+        ui.text_disabled("Scored by the built-in game it uses.");
     }
     if !view.marks.is_empty() {
         ui.text_disabled(format!("{} Quick Options", icon::FLAG));

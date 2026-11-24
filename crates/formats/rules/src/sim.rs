@@ -272,7 +272,7 @@ fn teams_for(ir: &Ir, setup: &Setup) -> u8 {
         ir.header.teams.min(8)
     } else if setup.teams >= 2 {
         setup.teams
-    } else if matches!(ir.header.carrier, 1 | 9) {
+    } else if matches!(ir.header.engine(), 1 | 9) {
         2
     } else {
         0
@@ -282,7 +282,7 @@ fn teams_for(ir: &Ir, setup: &Setup) -> u8 {
 /// The record a match is played under: the carrier's usual limits, sized
 /// so a match ends in a few minutes.
 fn variant(ir: &Ir, setup: &Setup, teams: u8) -> BTreeMap<String, i32> {
-    let carrier = ir.header.carrier;
+    let carrier = ir.header.engine();
     let team_play = teams >= 2;
     let score = setup.score_limit.unwrap_or(match carrier {
         1 | 9 => 5,
@@ -300,7 +300,6 @@ fn variant(ir: &Ir, setup: &Setup, teams: u8) -> BTreeMap<String, i32> {
     set("score_limit", score);
     set("time_limit", setup.length.unwrap_or(DEFAULT_LENGTH) as i32);
     set("respawn_time", RESPAWN_SECONDS as i32);
-    set("engine", i32::from(carrier));
     match carrier {
         1 | 9 => {
             set("ctf_reset_time", 10);
@@ -401,7 +400,7 @@ impl Director {
             // Apart from the VM's own stream, which the match seed also
             // starts.
             rng: scenario.seed ^ 0x6d61_7463_685f_6765,
-            carrier: ir.header.carrier,
+            carrier: ir.header.engine(),
             team_play: field("team_play") != 0,
             respawn_ticks: match u32::try_from(field("respawn_time")) {
                 Ok(s) if s > 0 => s * TPS,

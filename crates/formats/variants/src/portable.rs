@@ -161,11 +161,11 @@ pub enum PortableError {
     ScriptCost(String),
     #[error("the option values: {0}")]
     Options(String),
-    #[error("the record is engine {record}; the script rides engine {script}")]
+    #[error("the record is engine {record}; the script's record is engine {script}")]
     Carrier { record: i32, script: u8 },
     #[error("engine {0} has no built-in script")]
     NoBuiltin(i32),
-    #[error("the script rides engine {0}, which has no stock record")]
+    #[error("the script's record is engine {0}, which has no stock record")]
     NoStock(u8),
     /// A setting of the script's IR the record cannot take: past the
     /// table, on a carrier it does not apply to, or out of its range.
@@ -364,10 +364,10 @@ impl Bundle {
                 }
                 let (decoded, _) = rules::verify::load(&ir)
                     .map_err(|e| PortableError::ScriptRefused(e.to_string()))?;
-                if i32::from(decoded.header.carrier) != engine {
+                if i32::from(decoded.header.engine()) != engine {
                     return Err(PortableError::Carrier {
                         record: engine,
-                        script: decoded.header.carrier,
+                        script: decoded.header.engine(),
                     });
                 }
                 Some((ir, decoded))
@@ -532,7 +532,7 @@ pub fn record_for_named(
 /// and has no script reference. [`Bundle::check`] and `h2 rules check`
 /// hold a script to it.
 pub fn settings_record(ir: &rules::Ir) -> Result<GameVariant, PortableError> {
-    let carrier = ir.header.carrier;
+    let carrier = ir.header.engine();
     let mut v = GameVariant::stock(GameType::from_engine(i32::from(carrier)))
         .ok_or(PortableError::NoStock(carrier))?;
     let mut e = ext::Ext::default();
@@ -617,14 +617,6 @@ pub fn attach_builtin(v: &mut GameVariant) -> Result<bool, PortableError> {
     Ok(true)
 }
 
-/// The carrier's name in a script (`slayer`), for messages.
-fn carrier_word(carrier: u8) -> String {
-    rules::caps::CARRIERS
-        .iter()
-        .find(|&&(_, e)| e == carrier)
-        .map_or_else(|| format!("engine {carrier}"), |&(name, _)| name.to_string())
-}
-
 /// Writes one setting of a script into the record or the block.
 fn write_setting(
     v: &mut GameVariant,
@@ -639,10 +631,10 @@ fn write_setting(
     };
     if !row.applies(carrier) {
         return refuse(format!(
-            "{} is a {} setting; this script's carrier is {}",
+            "{} is a {} setting; this script's record is {}'s",
             row.name,
             row.carrier_words(),
-            carrier_word(carrier)
+            rules::settings::carrier_label(carrier)
         ));
     }
     if !row.in_range(s.value) {
@@ -1160,7 +1152,7 @@ mod tests {
 
     #[test]
     fn a_script_over_the_budget_is_not_published() {
-        let heavy = "rules \"Heavy\" 1\ncarrier slayer\nglobal var n: int = 0\n\
+        let heavy = "rules \"Heavy\" 1\ntype slayer\nglobal var n: int = 0\n\
                      on kill(v, k) { for each players a { for each players b { for each players c { n = n + 1 } } } }\n";
         // From source or as a blob: a bundle passes `check`, which refuses it.
         assert!(matches!(
@@ -1273,8 +1265,8 @@ mod tests {
     // ---- the record of a script ----
 
     const SWAT: &str = "rules \"SWAT\" 1
-carrier slayer
-scoring carrier
+type slayer
+uses slayer
 about \"No shields, no motion sensor, battle rifles and magnums.\"
 quick score_limit, starting_weapon, secondary_weapon
 
@@ -1298,13 +1290,13 @@ settings {
 
     /// A settings-only script of `carrier` named V.
     fn carried(carrier: &str, lines: &str) -> String {
-        format!("rules \"V\" 1\ncarrier {carrier}\nscoring carrier\nsettings {{\n{lines}}}\n")
+        format!("rules \"V\" 1\ntype {carrier}\nuses {carrier}\nsettings {{\n{lines}}}\n")
     }
 
     #[test]
     fn a_named_record_takes_its_name_not_the_scripts() {
         let long = "A script name far longer than any record's thirty-one";
-        let src = format!("rules \"{long}\" 1\ncarrier slayer\nscoring carrier\nsettings {{\nscore_limit = 10\n}}\n");
+        let src = format!("rules \"{long}\" 1\ntype slayer\nuses slayer\nsettings {{\nscore_limit = 10\n}}\n");
         let ir = compiled(&src);
         assert!(record_for(&ir, &[]).is_err(), "the script's own name is too long");
         let v = record_for_named(&ir, "Short", &[]).unwrap();
@@ -1417,7 +1409,7 @@ settings {
         assert_eq!(
             edited(&|ir: &mut rules::Ir| ir.settings[0].index = at("juggernaut_movement")),
             PortableError::Setting(
-                "juggernaut_movement is a Juggernaut setting; this script's carrier is slayer".into()
+                "juggernaut_movement is a Juggernaut setting; this script's record is Slayer's".into()
             )
         );
         assert_eq!(
@@ -1438,7 +1430,6 @@ settings {
             }),
             PortableError::Setting(_)
         ));
-        assert_eq!(edited(&|ir: &mut rules::Ir| ir.header.carrier = 5), PortableError::NoStock(5));
         assert_eq!(
             edited(&|ir: &mut rules::Ir| ir.header.name = "a|b".into()),
             PortableError::Name("has a |")

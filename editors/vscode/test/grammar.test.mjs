@@ -30,7 +30,7 @@ const grammar = await registry.loadGrammar('source.rules');
 
 const source = [
   /* 0 */ 'rules "Demo" 1',
-  /* 1 */ 'carrier slayer',
+  /* 1 */ 'type slayer',
   /* 2 */ 'requires hud.message, player.weapons',
   /* 3 */ 'label goal: zones at most 4 per team = "goal"',
   /* 4 */ 'global var clock: timer',
@@ -42,9 +42,9 @@ const source = [
   /* 10 */ '    }',
   /* 11 */ '    if victim is goal { }',
   /* 12 */ '    let x = 5st',
-  /* 13 */ '    if variant.engine == carrier.assault and r == Role.vip { }',
+  /* 13 */ '    if variant.team_play == true and r == Role.vip { }',
   /* 14 */ '}',
-  /* 15 */ 'scoring carrier',
+  /* 15 */ 'uses slayer',
   /* 16 */ 'about "No shields."',
   /* 17 */ 'quick score_limit, shields',
   /* 18 */ 'settings {',
@@ -56,6 +56,7 @@ const source = [
   /* 24 */ '    let about = 1',
   /* 25 */ '    quick = about',
   /* 26 */ '}',
+  /* 27 */ 'points "Laps"',
 ];
 
 const lines = [];
@@ -119,7 +120,7 @@ test('every scope name ends in .rules', () => {
 
 test('keywords', () => {
   exact(0, 'rules', 'keyword.other.declaration.rules');
-  exact(1, 'carrier', 'keyword.other.declaration.rules');
+  exact(1, 'type', 'keyword.other.declaration.rules');
   exact(6, 'on', 'keyword.other.declaration.rules');
   exact(7, 'if', 'keyword.control.conditional.rules');
   exact(7, 'let', 'keyword.other.declaration.rules');
@@ -128,9 +129,9 @@ test('keywords', () => {
   exact(4, 'global', 'storage.modifier.scope.rules');
 });
 
-test('the header name, the carrier and capabilities', () => {
+test('the header name, the type and capabilities', () => {
   exact(0, 'Demo', 'entity.name.section.rules');
-  exact(1, 'slayer', 'support.constant.carrier.rules');
+  exact(1, 'slayer', 'support.constant.type.rules');
   exact(2, 'hud.message', 'support.constant.capability.rules');
   exact(2, 'player.weapons', 'support.constant.capability.rules');
 });
@@ -204,17 +205,18 @@ test('labels, handlers and calls', () => {
   exact(9, 'score', 'variable.other.property.rules');
 });
 
-test('enum, carrier and variant access', () => {
+test('enum and variant access', () => {
   exact(13, 'variant', 'variable.language.variant.rules');
-  exact(13, 'engine', 'variable.other.property.variant.rules');
-  exact(13, 'assault', 'variable.other.enummember.rules');
+  exact(13, 'team_play', 'variable.other.property.variant.rules');
   exact(13, 'Role', 'entity.name.type.enum.rules');
   exact(13, 'vip', 'variable.other.enummember.rules');
 });
 
-test('the header lines scoring, about and quick', () => {
-  exact(15, 'scoring', 'keyword.other.declaration.rules');
-  exact(15, 'carrier', 'support.constant.scoring.rules');
+test('the header lines uses, points, about and quick', () => {
+  exact(15, 'uses', 'keyword.other.declaration.rules');
+  exact(15, 'slayer', 'support.constant.type.rules');
+  exact(27, 'points', 'keyword.other.declaration.rules');
+  hasScope(27, 'Laps', 'string.quoted.double.rules');
   exact(16, 'about', 'keyword.other.declaration.rules');
   hasScope(16, 'No shields.', 'string.quoted.double.rules');
   exact(17, 'quick', 'keyword.other.declaration.rules');

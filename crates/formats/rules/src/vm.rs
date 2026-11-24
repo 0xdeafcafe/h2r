@@ -1680,7 +1680,7 @@ mod tests {
 
     #[test]
     fn a_labelled_set_visits_at_most_its_label_max() {
-        let src = "rules \"Bound\" 1\ncarrier slayer\nlabel crate: objects\nglobal var n: int = 0\n\
+        let src = "rules \"Bound\" 1\ntype slayer\nlabel crate: objects\nglobal var n: int = 0\n\
                    on tick { for each crate o { n = n + 1 } }\n";
         let run = |max: Option<u16>, placed: u32| {
             let (mut ir, _) = crate::build(src).unwrap();
@@ -1714,7 +1714,7 @@ mod tests {
 
     #[test]
     fn host_writes_change_only_the_named_slots() {
-        let src = "rules \"Write\" 1\ncarrier slayer\n\
+        let src = "rules \"Write\" 1\ntype slayer\n\
                    global var pool: int = 7\nplayer var stock: int = 3\n\
                    on tick { pool = pool }\n";
         let (ir, _) = crate::build(src).unwrap();
@@ -1834,7 +1834,7 @@ mod tests {
     /// ends them all.
     #[test]
     fn spawn_rules_stand_in_the_state_until_the_round_ends() {
-        let src = "rules \"Lines\" 1\ncarrier slayer\nteams 2\nrequires player.spawn\n\
+        let src = "rules \"Lines\" 1\ntype slayer\nteams 2\nrequires player.spawn\n\
                    label goal: zone\nlabel attack: spawns\nglobal var phase: int = 0\n\
                    on round_start { spawn_near(team 1, goal, 3)\n spawn_areas(team 0, attack, 2) }\n\
                    on tick { phase = phase + 1\n if phase == 2 { spawn_near(team 1, goal, 0) } }\n";
@@ -1866,7 +1866,7 @@ mod tests {
     /// players their own, and a tag that is no body stops the script.
     #[test]
     fn a_teams_body_stands_in_the_state_and_a_wrong_tag_stops_the_script() {
-        let src = "rules \"Bodies\" 1\ncarrier slayer\nteams 2\nrequires player.disguise\n\
+        let src = "rules \"Bodies\" 1\ntype slayer\nteams 2\nrequires player.disguise\n\
                    table kinds: (side: team, body: tag) = [(team 0, \"objects/characters/elite/elite\")]\n\
                    global var phase: int = 0\n\
                    on round_start { set_body(team 1, \"objects/characters/elite/elite_mp\")\n\
@@ -1946,7 +1946,7 @@ mod tests {
         // byte-identical to the run whose killer was `none` and made no
         // order. The runs share one IR, so the rng (`seed`, from the IR's
         // hash) and the slot table match; only the order differs.
-        let src = "rules \"Orders\" 1\ncarrier slayer\nrequires bots.orders\non kill(victim, killer) { if killer != none { bot_follow(killer, victim) } }\n";
+        let src = "rules \"Orders\" 1\ntype slayer\nrequires bots.orders\non kill(victim, killer) { if killer != none { bot_follow(killer, victim) } }\n";
         let run = |killer: Option<u8>| {
             let (ir, _) = crate::build(src).unwrap();
             let mut vm = Vm::new(ir, 0, 0).unwrap();

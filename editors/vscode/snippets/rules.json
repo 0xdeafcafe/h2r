@@ -1,10 +1,10 @@
 {
   "Script header": {
     "prefix": "rules",
-    "description": "The header: name, version, carrier and teams.",
+    "description": "The header: name, version, game type and teams.",
     "body": [
       "rules \"${1:Name}\" ${2:1}",
-      "carrier ${3|slayer,ctf,oddball,king,juggernaut,territories,assault|}",
+      "type ${3|slayer,ctf,assault,oddball,koth,juggernaut,territories,research,party,firefight,siege|}",
       "teams ${4:2}",
       "$0"
     ]
@@ -16,11 +16,18 @@
       "requires ${1|hud.message,player.weapons,player.team,player.spawn,player.traits,game.traits,objects.create,objects.delete,ai.squads,forge.place,forge.move,forge.delete,forge.scale|}$0"
     ]
   },
-  "scoring": {
-    "prefix": "scoring",
-    "description": "The carrier's engine scores the game; the script holds settings only.",
+  "uses": {
+    "prefix": "uses",
+    "description": "Play a built-in game's rules; the script holds settings only.",
     "body": [
-      "scoring carrier$0"
+      "uses ${1|slayer,ctf,assault,oddball,koth,juggernaut,territories|}$0"
+    ]
+  },
+  "points": {
+    "prefix": "points",
+    "description": "What a point is called, at most 32 bytes.",
+    "body": [
+      "points \"${1:Points}\"$0"
     ]
   },
   "about": {
@@ -307,7 +314,7 @@
   },
   "match": {
     "prefix": "match",
-    "description": "Match an enum or carrier value.",
+    "description": "Match an enum value.",
     "body": [
       "match ${1:value} {",
       "\t${2:Type}.${3:a} { $4 }",

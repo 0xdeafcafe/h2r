@@ -23,6 +23,7 @@ pub mod settings;
 pub mod show;
 pub mod sim;
 pub mod ty;
+pub mod types;
 pub mod verify;
 pub mod vm;
 pub mod weapons;
@@ -93,7 +94,7 @@ mod tests {
     #[test]
     fn ship_refuses_a_script_over_the_budget() {
         // 16 players times 16 players times the body, once per kill of 16.
-        let src = "rules \"Heavy\" 1\ncarrier slayer\nglobal var n: int = 0\n\
+        let src = "rules \"Heavy\" 1\ntype slayer\nglobal var n: int = 0\n\
                    on kill(v, k) { for each players a { for each players b { for each players c { n = n + 1 } } } }\n";
         let (ir, report) = build(src).unwrap();
         assert!(!report.fits(), "worst tick {}", report.worst_tick);
@@ -105,7 +106,7 @@ mod tests {
     #[test]
     fn options_pack_by_name_in_declaration_order() {
         use ir::{OptionError, OptionValue};
-        let src = "rules \"O\" 1\ncarrier slayer\nenum Mode { calm, wild }\n\
+        let src = "rules \"O\" 1\ntype slayer\nenum Mode { calm, wild }\n\
                    option points: int 1..5 = 1\n\
                    option costs: bool = true\n\
                    option mode: Mode = Mode.calm\n\

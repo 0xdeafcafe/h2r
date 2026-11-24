@@ -21,7 +21,8 @@ pub struct Capability {
 }
 
 impl Entry {
-    /// Whether a host can make the call in a script that rides `carrier`.
+    /// Whether a host can make the call in a script whose record is on the
+    /// engine `carrier` (`ir::Header::engine`).
     /// A host refuses a script that calls an entry it cannot, naming the
     /// entry; nothing runs with a call stubbed out.
     pub fn hostable_on(&self, carrier: u8) -> bool {
@@ -29,8 +30,8 @@ impl Entry {
     }
 }
 
-/// The name a script's header gives the carrier `engine` (`carrier slayer`),
-/// or `None` for an index no script rides.
+/// The name of the retail engine `engine` ([`CARRIERS`]), or `None` for an
+/// index no script's record is on.
 pub fn carrier_name(engine: u8) -> Option<&'static str> {
     CARRIERS.iter().find(|&&(_, e)| e == engine).map(|&(n, _)| n)
 }
@@ -699,8 +700,6 @@ pub const VARIANT_FIELDS: &[(&str, Ty)] = &[
     ("respawn_time", Ty::Int),
     ("friendly_fire", Ty::Bool),
     ("rounds", Ty::Int),
-    // The engine index, `+0x44` (a CTF and an Assault game share a script).
-    ("engine", Ty::Int),
     // Oddball: setting 43, i16 `+0xf4`, 0..3 (inferred: Ball Count).
     ("oddball_ball_count", Ty::Int),
     // King: setting 40, i16 `+0xf4`, seconds until the hill moves, 0 never
@@ -727,8 +726,10 @@ pub const VARIANT_FIELDS: &[(&str, Ty)] = &[
     ("territories_contest_time", Ty::Int),
 ];
 
-/// The script's carrier engine: retail engine indices
-/// (`variants::record::GameType`).
+/// The retail engines by name and index (`variants::record::GameType`):
+/// the engine a script's record is on (`ir::Header::engine`) and the
+/// engines an entry is made on (`Entry::hosts`). No script names one; see
+/// `docs/game/game-types-without-carriers.md`.
 pub const CARRIERS: &[(&str, u8)] = &[
     ("ctf", 1),
     ("slayer", 2),

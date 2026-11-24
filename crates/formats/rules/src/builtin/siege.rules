@@ -18,9 +18,8 @@
 // Entries a host cannot make yet (`verify::unhostable`): none.
 // Not covered: the map does not open (no map labels barriers).
 rules "Siege" 1
-carrier slayer
+type siege
 teams 2
-list party
 requires player.weapons, player.spawn, player.disguise, hud.message
 about "Attackers take the map's territories, then storm the defenders' flag stand. Each phase has its own clock: run it out and the defenders win."
 quick respawn_time, wave_time, phase_time, capture_time, sites

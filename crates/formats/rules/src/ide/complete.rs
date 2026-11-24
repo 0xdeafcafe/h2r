@@ -7,7 +7,7 @@ use super::info::{self, LANG};
 use super::model::{self, DefKind, FieldTarget, Model, T};
 use super::scan::{self, K};
 use super::{CompletionItem, Markup, PLAIN_TEXT, SNIPPET, kind};
-use crate::caps::{self, CAPABILITIES, CARRIERS, ENTRIES, VARIANT_FIELDS};
+use crate::caps::{self, CAPABILITIES, ENTRIES, VARIANT_FIELDS};
 use crate::ir::{Event, Scope};
 use crate::lang::lower::FIELDS;
 use crate::lang::sig;
@@ -109,20 +109,21 @@ fn candidates(m: &Model, off: usize) -> Vec<CompletionItem> {
     let depth = braces.len();
     let in_requires = depth == 0 && first_on_line.is_some_and(|f| m.is_word(f, "requires"));
 
-    // Inside `settings { }`: the carrier's setting names, and the values
+    // Inside `settings { }`: the record's setting names, and the values
     // of the setting before an `=`.
     if let Some(open) = settings_open(m, i) {
         return settings_block(m, open, i, off);
     }
-    // The header lines `quick` and `scoring`.
+    // The header lines `quick`, `type` and `uses`.
     if depth == 0
         && let Some(f) = first_on_line
     {
         if m.is_word(f, "quick") && (prev == Some(f) || ptext == ",") {
             return quick_marks(m, f, i);
         }
-        if m.is_word(f, "scoring") {
-            return if prev == Some(f) { scoring_words() } else { Vec::new() };
+        if m.is_word(f, "type") || m.is_word(f, "uses") {
+            let uses = m.is_word(f, "uses");
+            return if prev == Some(f) { game_types(uses) } else { Vec::new() };
         }
     }
 
@@ -172,9 +173,6 @@ fn candidates(m: &Model, off: usize) -> Vec<CompletionItem> {
     }
     if depth == 0 && ptext == "on" {
         return events(m, "");
-    }
-    if ptext == "carrier" {
-        return carriers();
     }
     if in_requires {
         return capabilities("", false);
@@ -274,19 +272,6 @@ fn after_dot(m: &Model, dot: usize, off: usize, in_requires: bool) -> Vec<Comple
         return capabilities(&format!("{path}."), false);
     }
     if parts.len() == 1 && m.visible_locals(off).iter().all(|&d| m.defs[d].name != head) {
-        if head == "carrier" {
-            return CARRIERS
-                .iter()
-                .map(|(n, index)| {
-                    plain(
-                        n,
-                        kind::ENUM_MEMBER,
-                        "carrier",
-                        format!("The retail {n} engine (engine index {index}): `carrier.{n}`."),
-                    )
-                })
-                .collect();
-        }
         if head == "variant" {
             return VARIANT_FIELDS
                 .iter()
@@ -455,7 +440,7 @@ fn block_names<'s>(m: &Model<'s>, open: usize, skip: usize) -> Vec<&'s str> {
 
 /// Inside the block: after an `=` the setting's values; where a setting
 /// starts (after `{`, a `;` or on a new line) the settings of the
-/// script's carrier that the block does not set yet.
+/// script's game that the block does not set yet.
 fn settings_block(m: &Model, open: usize, i: usize, off: usize) -> Vec<CompletionItem> {
     // `open < i`, so there is a token before.
     let prev = i - 1;
@@ -471,18 +456,18 @@ fn settings_block(m: &Model, open: usize, i: usize, off: usize) -> Vec<Completio
     if !fresh {
         return Vec::new();
     }
-    let carrier = m.carrier_engine();
+    let engine = m.engine();
     let taken = block_names(m, open, i);
     settings::TABLE
         .iter()
         .enumerate()
-        .filter(|(_, r)| carrier.is_none_or(|c| r.applies(c)) && !taken.contains(&r.name))
-        .map(|(index, r)| setting_item(index as u16, r, carrier))
+        .filter(|(_, r)| engine.is_none_or(|c| r.applies(c)) && !taken.contains(&r.name))
+        .map(|(index, r)| setting_item(index as u16, r, engine))
         .collect()
 }
 
 /// One setting as a completion: it inserts `name = ` and the value place.
-fn setting_item(index: u16, r: &settings::Row, carrier: Option<u8>) -> CompletionItem {
+fn setting_item(index: u16, r: &settings::Row, engine: Option<u8>) -> CompletionItem {
     let value = match r.kind {
         SettingKind::Bool => "${1|true,false|}".to_string(),
         SettingKind::Choice { names, .. } if !names.is_empty() => {
@@ -496,7 +481,7 @@ fn setting_item(index: u16, r: &settings::Row, carrier: Option<u8>) -> Completio
         r.name,
         kind::PROPERTY,
         format!("{}: {}", r.label, r.kind.word()),
-        info::setting_markdown(index, carrier),
+        info::setting_markdown(index, engine),
         format!("{} = {value}", r.name),
         SNIPPET,
     )
@@ -552,25 +537,32 @@ fn setting_values(name: &str) -> Vec<CompletionItem> {
     out
 }
 
-/// After `scoring`.
-fn scoring_words() -> Vec<CompletionItem> {
-    vec![plain(
-        "carrier",
-        kind::ENUM_MEMBER,
-        "scoring",
-        "The carrier engine scores the game, and the script holds settings and options for the lobby only.",
-    )]
+/// After `type`: every game type; after `uses`: the retail ones, each
+/// with a built-in game.
+fn game_types(uses: bool) -> Vec<CompletionItem> {
+    crate::types::TABLE
+        .iter()
+        .filter(|r| !uses || r.ty.is_retail())
+        .map(|r| {
+            let doc = if uses {
+                format!("Play the built-in {} game's rules under this script's settings.", r.label)
+            } else {
+                format!("Filed in the {} row; a point is called {}.", r.label, r.points)
+            };
+            plain(r.name, kind::ENUM_MEMBER, if uses { "uses" } else { "type" }, doc)
+        })
+        .collect()
 }
 
 /// After `quick` or a `,` on its line: the script's options, then the
 /// settings its block sets, then the other record settings of its
-/// carrier; each name once.
+/// script's game; each name once.
 fn quick_marks(m: &Model, first: usize, i: usize) -> Vec<CompletionItem> {
     let marked: Vec<&str> = (first + 1..i)
         .filter(|&j| m.code[j].k == K::Ident)
         .map(|j| m.text(&m.code[j]))
         .collect();
-    let carrier = m.carrier_engine();
+    let engine = m.engine();
     let mut out = Vec::new();
     for (d, def) in m.defs.iter().enumerate() {
         if def.kind == DefKind::Option && !marked.contains(&def.name.as_str()) {
@@ -591,7 +583,7 @@ fn quick_marks(m: &Model, first: usize, i: usize) -> Vec<CompletionItem> {
         .map_or_else(Vec::new, |w| block_names(m, w + 1, usize::MAX));
     let mut rows: Vec<(bool, u16, &settings::Row)> = Vec::new();
     for (index, r) in settings::TABLE.iter().enumerate() {
-        if !r.is_record() || !carrier.is_none_or(|c| r.applies(c)) || marked.contains(&r.name) {
+        if !r.is_record() || !engine.is_none_or(|c| r.applies(c)) || marked.contains(&r.name) {
             continue;
         }
         let set = in_block.contains(&r.name);
@@ -604,25 +596,12 @@ fn quick_marks(m: &Model, first: usize, i: usize) -> Vec<CompletionItem> {
             r.name,
             kind::PROPERTY,
             format!("{origin}: {}", r.label),
-            info::setting_markdown(index, carrier),
+            info::setting_markdown(index, engine),
         ));
     }
     out
 }
 
-fn carriers() -> Vec<CompletionItem> {
-    CARRIERS
-        .iter()
-        .map(|(n, index)| {
-            plain(
-                n,
-                kind::ENUM_MEMBER,
-                format!("engine index {index}"),
-                format!("The script rides the retail {n} engine."),
-            )
-        })
-        .collect()
-}
 
 /// Capabilities whose names start with `prefix`, completed past it;
 /// only the grantable ones when `grantable`.
@@ -898,15 +877,17 @@ fn constants(m: &Model) -> Vec<CompletionItem> {
 }
 
 fn top_level(m: &Model) -> Vec<CompletionItem> {
-    let carriers: Vec<&str> = CARRIERS.iter().map(|(n, _)| *n).collect();
-    let carrier = format!("carrier ${{1|{}|}}", carriers.join(","));
+    let types: Vec<&str> = crate::types::TABLE.iter().map(|r| r.name).collect();
+    let ty = format!("type ${{1|{}|}}", types.join(","));
+    let retail: Vec<&str> = crate::types::TABLE.iter().filter(|r| r.ty.is_retail()).map(|r| r.name).collect();
+    let uses = format!("uses ${{1|{}|}}", retail.join(","));
     let snippets: Vec<(&str, String, &str)> = vec![
         ("rules", "rules \"${1:Name}\" ${2:1}".to_string(), "rules"),
-        ("carrier", carrier, "carrier"),
+        ("type", ty, "type"),
         ("teams", "teams ${1:2}".to_string(), "teams"),
-        ("list", "list ${1|research,party|}".to_string(), "list"),
+        ("points", "points \"${1:Points}\"".to_string(), "points"),
         ("requires", "requires ${1:capability}".to_string(), "requires"),
-        ("scoring", "scoring carrier".to_string(), "scoring"),
+        ("uses", uses, "uses"),
         ("about", "about \"${1:Description}\"".to_string(), "about"),
         ("quick", "quick ${1:score_limit}".to_string(), "quick"),
         (

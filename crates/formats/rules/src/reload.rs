@@ -4,7 +4,7 @@
 //!
 //! [`compatible`] is the whole decision. Two blobs have the same state
 //! shape when a [`RulesExt`] of one is a valid state of the other and
-//! means the same thing: the same carrier, team count, API version and
+//! means the same thing: the same record engine, team count, API version and
 //! capabilities; the same options (name, type, range, default, in order),
 //! so the record's option bits read the same; the same enums by name and
 //! variant names; the same slots per scope (name and type, in order); the
@@ -32,8 +32,9 @@ use crate::{Refusal, caps};
 /// One way the new blob's state shape differs from the old one's.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reason {
-    /// The script rides another engine index.
-    Carrier { old: u8, new: u8 },
+    /// The script's record is on another engine index
+    /// (`ir::Header::engine`).
+    Engine { old: u8, new: u8 },
     Teams { old: u8, new: u8 },
     ApiVersion { old: u16, new: u16 },
     /// The `requires` list differs (names or order).
@@ -53,8 +54,8 @@ pub enum Reason {
     Labels,
     /// The palette names differ (grants index them).
     Palettes,
-    /// The script scores another way (`scoring carrier` or its handlers).
-    Scoring,
+    /// The script scores another way (a `uses` line or its handlers).
+    Uses,
     /// The record settings the script sets differ (`settings`), so the
     /// variant's record would change.
     Settings,
@@ -63,8 +64,8 @@ pub enum Reason {
 impl fmt::Display for Reason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Reason::Carrier { old, new } => {
-                write!(f, "the script rides engine {new}, not {old}")
+            Reason::Engine { old, new } => {
+                write!(f, "the script's record is on engine {new}, not {old}")
             }
             Reason::Teams { old, new } => write!(f, "the script needs {new} teams, not {old}"),
             Reason::ApiVersion { old, new } => {
@@ -83,7 +84,7 @@ impl fmt::Display for Reason {
             Reason::Slot { scope, name } => write!(f, "{scope} variable {name} changed"),
             Reason::Labels => f.write_str("the Forge labels the script names changed"),
             Reason::Palettes => f.write_str("the palettes the script declares changed"),
-            Reason::Scoring => f.write_str("the script scores another way (scoring carrier)"),
+            Reason::Uses => f.write_str("the script scores another way (uses)"),
             Reason::Settings => f.write_str("the record settings the script sets changed"),
         }
     }
@@ -131,8 +132,8 @@ fn slots(ir: &Ir, scope: Scope) -> Vec<(&str, Ty)> {
 pub fn compatible(old: &Ir, new: &Ir) -> Result<(), Vec<Reason>> {
     let mut out = Vec::new();
     let (oh, nh) = (&old.header, &new.header);
-    if oh.carrier != nh.carrier {
-        out.push(Reason::Carrier { old: oh.carrier, new: nh.carrier });
+    if oh.engine() != nh.engine() {
+        out.push(Reason::Engine { old: oh.engine(), new: nh.engine() });
     }
     if oh.teams != nh.teams {
         out.push(Reason::Teams { old: oh.teams, new: nh.teams });
@@ -143,8 +144,8 @@ pub fn compatible(old: &Ir, new: &Ir) -> Result<(), Vec<Reason>> {
     if oh.requires != nh.requires {
         out.push(Reason::Capabilities);
     }
-    if oh.scoring != nh.scoring {
-        out.push(Reason::Scoring);
+    if oh.uses != nh.uses {
+        out.push(Reason::Uses);
     }
     if old.settings != new.settings {
         out.push(Reason::Settings);
@@ -267,7 +268,7 @@ mod tests {
 
     const BASE: &str = r#"
 rules "Count" 1
-carrier slayer
+type slayer
 
 option kill_points: int 1..5 = 1 "Kill points" "Points for each kill"
 
@@ -386,25 +387,28 @@ on kill(victim, killer) {
     }
 
     #[test]
-    fn another_carrier_is_not() {
-        let new = edited("carrier slayer", "carrier oddball");
+    fn another_engine_is_not() {
+        let new = edited("type slayer", "type oddball");
         let why = compatible(&ir(BASE), &new).unwrap_err();
-        assert!(matches!(why[0], Reason::Carrier { .. }), "{why:?}");
-        assert!(reasons(&why).contains("rides engine"), "{}", reasons(&why));
+        assert!(matches!(why[0], Reason::Engine { .. }), "{why:?}");
+        assert!(reasons(&why).contains("on engine"), "{}", reasons(&why));
+        // Another type on the same record files the game elsewhere and
+        // keeps the state.
+        assert_eq!(compatible(&ir(BASE), &edited("type slayer", "type party")), Ok(()));
     }
 
     #[test]
     fn changed_settings_or_scoring_are_not() {
-        let set = edited("carrier slayer\n", "carrier slayer\nsettings { score_limit = 10 }\n");
-        let more = edited("carrier slayer\n", "carrier slayer\nsettings { score_limit = 20 }\n");
+        let set = edited("type slayer\n", "type slayer\nsettings { score_limit = 10 }\n");
+        let more = edited("type slayer\n", "type slayer\nsettings { score_limit = 20 }\n");
         assert_eq!(compatible(&set, &set), Ok(()));
         let why = compatible(&set, &more).unwrap_err();
         assert_eq!(why, [Reason::Settings]);
         assert!(reasons(&why).contains("record settings"), "{}", reasons(&why));
-        let carried = ir("rules \"Count\" 1\ncarrier slayer\nscoring carrier\n");
-        let plain = ir("rules \"Count\" 1\ncarrier slayer\non tick { }\n");
+        let carried = ir("rules \"Count\" 1\ntype slayer\nuses slayer\n");
+        let plain = ir("rules \"Count\" 1\ntype slayer\non tick { }\n");
         let why = compatible(&plain, &carried).unwrap_err();
-        assert!(why.contains(&Reason::Scoring), "{why:?}");
+        assert!(why.contains(&Reason::Uses), "{why:?}");
     }
 
     fn kill(vm: &mut Vm, g: &mut FakeGame, killer: u8, victim: u8) {

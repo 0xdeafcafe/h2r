@@ -1,10 +1,10 @@
 ================================================================================
-Scoring, about and quick lines
+Uses, about and quick lines
 ================================================================================
 
 rules "Swat" 1
-carrier slayer
-scoring carrier
+type slayer
+uses slayer
 about "No shields. 50 points to win."
 quick score_limit, shields, starting_weapon
 
@@ -15,9 +15,9 @@ quick score_limit, shields, starting_weapon
     (string
       (string_content))
     (integer))
-  (carrier_declaration
+  (type_declaration
     (identifier))
-  (scoring_declaration
+  (uses_declaration
     (identifier))
   (about_declaration
     (string
@@ -79,13 +79,12 @@ settings { }
   (settings_declaration))
 
 ================================================================================
-A script that keeps its carrier's rules
+A script that plays a built-in game's rules
 ================================================================================
 
 rules "Duel" 1
-carrier slayer
-scoring carrier
-list party
+type party
+uses slayer
 quick score_limit
 settings {
     score_limit = 10
@@ -98,11 +97,9 @@ settings {
     (string
       (string_content))
     (integer))
-  (carrier_declaration
+  (type_declaration
     (identifier))
-  (scoring_declaration
-    (identifier))
-  (list_declaration
+  (uses_declaration
     (identifier))
   (quick_declaration
     (identifier))

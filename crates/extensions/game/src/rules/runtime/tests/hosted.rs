@@ -95,7 +95,7 @@ fn a_guest_and_a_refused_script_leave_the_carriers_scoring_on() {
     assert!(!scoring::script_scores(&s.lock()));
 }
 
-const CROWN: &str = "rules \"Crown\" 1\ncarrier juggernaut\n\non kill(victim, killer) {\n    if killer != none and killer != victim { role_traits(killer, true) }\n    role_traits(victim, false)\n}\n";
+const CROWN: &str = "rules \"Crown\" 1\ntype juggernaut\n\non kill(victim, killer) {\n    if killer != none and killer != victim { role_traits(killer, true) }\n    role_traits(victim, false)\n}\n";
 
 #[test]
 fn role_traits_sets_the_juggernaut_role_through_the_engine_at_the_boundary() {
@@ -171,7 +171,7 @@ fn role_traits_without_the_juggernaut_globals_is_an_engine_refusal() {
 
 #[test]
 fn role_traits_on_another_carrier_is_refused_by_the_carrier() {
-    let src = CROWN.replace("carrier juggernaut", "carrier slayer");
+    let src = CROWN.replace("type juggernaut", "type slayer");
     let store = Local::default();
     let (s, id) = hosting(&store, &src);
     let (m, _) = guest(block(prefix(&id), 0), SLAYER);
@@ -182,7 +182,7 @@ fn role_traits_on_another_carrier_is_refused_by_the_carrier() {
     );
 }
 
-const RETURN: &str = "rules \"Return\" 1\ncarrier oddball\n\non tick {\n    for each objectives b {\n        if b.carrier == none { reset_objective(b) }\n    }\n}\n";
+const RETURN: &str = "rules \"Return\" 1\ntype oddball\n\non tick {\n    for each objectives b {\n        if b.carrier == none { reset_objective(b) }\n    }\n}\n";
 
 #[test]
 fn reset_objective_returns_an_oddball_through_the_engines_ball_return() {

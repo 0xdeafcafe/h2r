@@ -33,7 +33,7 @@ fn prefix(h: &Sha256) -> [u8; 8] {
 /// A Slayer script of its own, scoring `k` a kill.
 fn ir(k: u32) -> Vec<u8> {
     let src = format!(
-        "rules \"Score {k}\" 1\ncarrier slayer\n\non kill(victim, killer) {{ if killer != none {{ score(killer, {k}) }} }}\n"
+        "rules \"Score {k}\" 1\ntype slayer\n\non kill(victim, killer) {{ if killer != none {{ score(killer, {k}) }} }}\n"
     );
     ::rules::compile(&src).unwrap().encode()
 }

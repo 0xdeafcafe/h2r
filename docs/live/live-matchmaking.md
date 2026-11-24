@@ -614,7 +614,7 @@ variant (`0x00212f40`, 28 of them), then clear settings 12..14
 limits (`0x0019d650`) a variant is held to.
 
 Our default entries write the same records as scripts. Each of the ten
-built-in matchmaking variants is a `scoring carrier` script of its engine
+built-in matchmaking variants is a `uses` script of its type
 (`rules::builtin::MATCHMAKING`): the settings block holds the changes and
 the three settings the defaults writer clears (`setting_twelve`,
 `setting_thirteen`, `join_in_progress`). `defaults::variants` builds the

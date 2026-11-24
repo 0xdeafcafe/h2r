@@ -2,8 +2,8 @@
 // score to win is seconds with the ball.
 // docs/game/community-gametypes.md.
 rules "Wheeeeee!" 1
-carrier oddball
-scoring carrier
+type oddball
+uses oddball
 about "Rockets, extra damage and a fast, tough ball carrier. How high can you fly?"
 quick score_limit, time_limit, oddball_ball_speed, starting_weapon, weapon_respawn
 

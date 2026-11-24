@@ -1,10 +1,10 @@
 // Classic CTF: a built-in matchmaking variant of the default Live lineup
-// (live_proto::hopper::defaults). The carrier's engine scores the game; the
-// settings are the hopper defaults writer's (0x00193010: settings 12 to 14
+// (live_proto::hopper::defaults). The built-in game it uses scores the
+// game; the settings are the hopper defaults writer's (0x00193010: settings 12 to 14
 // cleared) and this variant's own. docs/live/live-matchmaking.md, "6.8 The default set".
 rules "Classic CTF" 1
-carrier ctf
-scoring carrier
+type ctf
+uses ctf
 about "Capture the Flag with the flag at home to score and touch return."
 
 settings {

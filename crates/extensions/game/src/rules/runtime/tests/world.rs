@@ -77,7 +77,7 @@ fn global(s: &Arc<Shared>, name: &str) -> i32 {
 
 const ZONES: &str = r#"
 rules "Zones" 1
-carrier slayer
+type slayer
 label site: zones at least 1 = "territory"
 global var entered: int = 0
 global var left: int = 0
@@ -150,7 +150,7 @@ fn a_unit_entering_a_flags_zone_is_told_once_and_held_by_its_team() {
 
 const KIT: &str = r#"
 rules "Kit" 1
-carrier slayer
+type slayer
 requires player.weapons
 global var spawns: int = 0
 global var deaths: int = 0
@@ -279,7 +279,7 @@ fn every_listed_scripted_mode_is_hostable() {
     let mut scripted = Vec::new();
     for b in ::rules::builtin::LISTED {
         let ir = ::rules::compile(b.source).unwrap();
-        if ir.header.scoring != ::rules::ir::Scoring::Script {
+        if ir.header.uses.is_some() {
             continue;
         }
         assert_eq!(host_refusal(&ir), None, "{}", b.name);
@@ -292,7 +292,7 @@ fn every_listed_scripted_mode_is_hostable() {
 
 const LINES: &str = r#"
 rules "Lines" 1
-carrier slayer
+type slayer
 teams 2
 requires player.spawn
 label site: zones = "territory"
@@ -330,7 +330,7 @@ fn a_teams_spawn_rule_keeps_its_spawns_to_the_nearest_locations() {
 
 const SIDES: &str = r#"
 rules "Sides" 1
-carrier slayer
+type slayer
 teams 2
 requires player.disguise
 on round_start { set_body(team 1, "objects/characters/elite/elite_mp") }

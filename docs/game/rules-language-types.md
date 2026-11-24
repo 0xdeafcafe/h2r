@@ -1,6 +1,6 @@
 # Rules language: declared labels and stronger types
 
-Status: Design, with slices 1 to 9 built: the IR's label and tag tables, their verifier rules, the VM's bound on a labelled set and `rules::labels::check` ("The IR", "The start gate"); the checker, declared labels, `T?` with narrowing, `zone` and `weapon` (`lang/check.rs`); the census builders, the host's gate and the lobby's gate ([rules-start-gate.md](rules-start-gate.md)); scenario maps, the check report's `labels` and the generator's minimal map ("The workbench"); Live's hopper gate, a map census and `admin::check_pairs` ([rules-start-gate.md](rules-start-gate.md#hoppers-system-link-offline-and-theater)); the editor's Rust half: `rules::ide` on the checker's `Checked` script, every diagnostic with its fixes, code actions and rename in `ide/fix.rs`, `h2 rules lsp` and the `ide` route ("Diagnostics and the editor"); `time`, constants, `match`, the `carrier` enum and value functions ("Stronger typing"); the web workbench: the test map, its problems and "Add what the script needs", "What a map needs", quick fixes, rename and the Insert menu's label groups ("The workbench", "Diagnostics and the editor"). "The built language" below is the language before slice 2, which the gap table describes.
+Status: Design, with slices 1 to 9 built: the IR's label and tag tables, their verifier rules, the VM's bound on a labelled set and `rules::labels::check` ("The IR", "The start gate"); the checker, declared labels, `T?` with narrowing, `zone` and `weapon` (`lang/check.rs`); the census builders, the host's gate and the lobby's gate ([rules-start-gate.md](rules-start-gate.md)); scenario maps, the check report's `labels` and the generator's minimal map ("The workbench"); Live's hopper gate, a map census and `admin::check_pairs` ([rules-start-gate.md](rules-start-gate.md#hoppers-system-link-offline-and-theater)); the editor's Rust half: `rules::ide` on the checker's `Checked` script, every diagnostic with its fixes, code actions and rename in `ide/fix.rs`, `h2 rules lsp` and the `ide` route ("Diagnostics and the editor"); `time`, constants, `match`, value functions ("Stronger typing"); the web workbench: the test map, its problems and "Add what the script needs", "What a map needs", quick fixes, rename and the Insert menu's label groups ("The workbench", "Diagnostics and the editor"). "The built language" below is the language before slice 2, which the gap table describes.
 Code: `crates/formats/rules/src/lang` (lexer, parser, `check.rs`, which gives every diagnostic, `lower.rs`, which lowers a checked script), `crates/formats/rules/src/ide`, `crates/formats/rules/src/ir.rs`, `crates/formats/rules/src/verify.rs`, `crates/formats/rules/src/labels.rs`; the workbench's web half in `web/src/lib/rules.ts`, `web/src/lib/rulesIde.ts`, `web/src/stats/rulesMonaco.ts` and `web/src/stats/RulesTest.tsx`. Tests: `cargo test -p rules`; `bun test test/rules.test.ts test/rulesIde.test.ts` in `web/`.
 Switch: none.
 
@@ -61,7 +61,7 @@ the compiler cannot disagree.
 | `tag` | a tag path of any object definition | `Tag` |
 | `weapon` | a `tag` that must be a weapon | `Tag` |
 | `class`, `text` | an AI class; a string-table text | `Class`, `Text` |
-| `enum` types | script-declared, plus the built-in `carrier` (`carrier.assault`), which lowers to an `int` constant | `Enum(n)`; `Int` |
+| `enum` types | script-declared | `Enum(n)`; `Int` |
 | `timer` | a global variable's type; it reads and writes as `time` | `Timer` |
 | `T?` | `T` or `none`, for `player`, `team`, `object`, `zone`, `tag`, `weapon` | the IR type of `T` |
 | `objects`, `zones`, `spawns`, `players`, `teams` | sets: not values, used where a set is read | none (`SetBase`) |
@@ -327,11 +327,6 @@ for the rest. An arm may name several variants, comma-separated
 (`Mode.b, Mode.c { }`); a variant in two arms is an error. It lowers to
 compares and forward jumps.
 `match on Role has no arm for Role.guard. Add "Role.guard { }" or "else { }".`
-`variant.engine` is the built-in enum `carrier`, whose variants are the
-names of `caps::CARRIERS` and erase to their engine indices:
-`variant.engine == carrier.assault`. `variant.engine == 9` is an error,
-`a carrier is named, not numbered: write carrier.assault`. `match` takes
-a `carrier` too.
 
 ### Constants
 
@@ -509,20 +504,20 @@ numbered.
 | `cap.missing`, `cap.unused` (warning) | "Capabilities" | Add to `requires`; Remove from `requires` |
 | `event.args`, `event.label` | `on enter gives 2 arguments (zone, object); this handler names 3.` `core is an object; on enter takes a zone label.` | none |
 | `setting.unknown` | `no setting named score_limt. Did you mean score_limit?` | Change to `score_limit` |
-| `setting.carrier` | `juggernaut_movement is a Juggernaut setting; this script's carrier is slayer` | Remove the setting (or the mark) |
+| `setting.type` | `juggernaut_movement is a Juggernaut setting; this script's record is Slayer's` | Remove the setting (or the mark) |
 | `setting.twice` | `lives is set twice; it is first set on line 5` | Remove the repeated setting |
 | `setting.value` | `time_limit is a time: write 300s for 300 seconds. time_limit takes a time in whole seconds, 0s to 32767s, or none.` | none |
 | `quick.many` | `Quick Options has five rows; this line names 6` | Drop the marks past the fifth |
 | `quick.unknown` | `bounce_points is no setting and no option of this script` | Change to the nearest name; Remove the mark |
 | `quick.twice` | `lives is marked twice` | Remove the repeated mark |
 | `option.setting` | `option lives has a setting's name; an option needs a name of its own` | none |
-| `scoring.handlers` | `on kill has no place here: with scoring carrier the carrier's engine scores the game, and the script holds requires, list, settings, quick and about only` | Remove `scoring carrier` |
-| `scoring.none` | ``this script scores nothing. Write `scoring carrier` to play Slayer's rules.`` | Add `scoring carrier` |
-| `list.carrier` | `list party files the variant under one of our rows, which hold Slayer and Juggernaut variants; this script's carrier is king` | Remove the `list` line |
+| `uses.handlers` | `on kill has no place here: with uses slayer the built-in game scores, and the script holds its header lines, settings and quick only` | Remove `uses slayer` |
+| `scoring.none` | ``this script scores nothing. Write `uses slayer` to play Slayer's rules.`` | Add `uses <T>` |
+| `header.retired` | ``list is gone: write `type party`, which files the game in its row`` (and the like for `carrier` and `scoring`) | Replace the line with the one it names |
 
-The `setting.*`, `quick.*`, `option.setting`, `scoring.*` and
-`list.carrier` codes check the settings block, the `quick` line and the
-`scoring` line against `rules::settings::TABLE`
+The `setting.*`, `quick.*`, `option.setting`, `uses.*` and
+`scoring.*` codes check the settings block, the `quick` line and the
+`uses` line against `rules::settings::TABLE`
 ([rules-engine.md](rules-engine.md#the-language)). A settings value is
 not a front-end type: each row's kind (bool, int, seconds, choice,
 percent) says what it takes, and the checker folds it as it folds a
@@ -737,8 +732,6 @@ on enter(goal, o) {
 - New keywords: `label`, `const`, `match`, `is`. Type and kind words
   (`zone`, `time`, `weapon`, `objects`, `numbered`, `per`) are read by
   place and stay usable as names, so `let zone = ...` compiles.
-  `carrier` followed by `.` names a carrier; elsewhere it is the
-  script's `carrier` line.
 - A script declares at most 64 labels. A label's members are at most
   256. Each read of a label costs its `at most` in the worst-tick
   estimate, so a script that reads a set every tick declares one; the

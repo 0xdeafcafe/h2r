@@ -94,19 +94,35 @@
       ]
     },
     "header-lines": {
-      "comment": "The header words scoring, about and quick: words only at the start of a line, where the next token is what the parser looks for (a name, a string). In a handler they are names.",
+      "comment": "The header words type, uses, points, about and quick: words only at the start of a line, where the next token is what the parser looks for (a name, a string). In a handler they are names.",
       "patterns": [
         {
-          "comment": "scoring carrier",
-          "match": "^\\s*(scoring)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "comment": "type koth, uses slayer: the game type and the built-in game a script plays.",
+          "match": "^\\s*(type|uses)\\s+([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
             "1": {
               "name": "keyword.other.declaration.rules"
             },
             "2": {
-              "name": "support.constant.scoring.rules"
+              "name": "support.constant.type.rules"
             }
           }
+        },
+        {
+          "comment": "points \"Laps\"",
+          "begin": "^\\s*(points)\\b(?=\\s*\")",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.other.declaration.rules"
+            }
+          },
+          "end": "(?=//)|$",
+          "name": "meta.points.rules",
+          "patterns": [
+            {
+              "include": "#string"
+            }
+          ]
         },
         {
           "comment": "about \"No shields. 50 points to win.\"",
@@ -230,30 +246,6 @@
     },
     "declarations": {
       "patterns": [
-        {
-          "comment": "carrier slayer",
-          "match": "\\b(carrier)\\s+([A-Za-z_][A-Za-z0-9_]*)",
-          "captures": {
-            "1": {
-              "name": "keyword.other.declaration.rules"
-            },
-            "2": {
-              "name": "support.constant.carrier.rules"
-            }
-          }
-        },
-        {
-          "comment": "list research",
-          "match": "\\b(list)\\s+([A-Za-z_][A-Za-z0-9_]*)",
-          "captures": {
-            "1": {
-              "name": "keyword.other.declaration.rules"
-            },
-            "2": {
-              "name": "support.constant.list.rules"
-            }
-          }
-        },
         {
           "comment": "teams 2 (the header line; elsewhere teams is a set)",
           "match": "\\b(teams)\\s+(?=[0-9])",
@@ -470,9 +462,6 @@
           "include": "#capability"
         },
         {
-          "include": "#carrier-access"
-        },
-        {
           "include": "#enum-access"
         },
         {
@@ -580,20 +569,6 @@
       "match": "\\b(?:game\\.traits|player\\.(?:traits|team|spawn|weapons|disguise|camera)|objects\\.(?:create|delete|move)|ai\\.squads|hud\\.(?:message|superbounce)|firefight\\.director|forge\\.(?:move|delete|place|scale))\\b(?!\\s*\\()",
       "name": "support.constant.capability.rules"
     },
-    "carrier-access": {
-      "match": "\\b(carrier)\\s*(\\.)\\s*([A-Za-z_][A-Za-z0-9_]*)",
-      "captures": {
-        "1": {
-          "name": "storage.type.rules"
-        },
-        "2": {
-          "name": "punctuation.accessor.rules"
-        },
-        "3": {
-          "name": "variable.other.enummember.rules"
-        }
-      }
-    },
     "enum-access": {
       "comment": "Type.variant: an enum's name starts with a capital letter by convention.",
       "match": "\\b([A-Z][A-Za-z0-9_]*)\\s*(\\.)\\s*([A-Za-z_][A-Za-z0-9_]*)",
@@ -643,7 +618,7 @@
     "keywords": {
       "patterns": [
         {
-          "match": "\\b(rules|carrier|teams|list|requires|option|palette|enum|global|var|table|fn|on|label|const|let)\\b",
+          "match": "\\b(rules|teams|requires|option|palette|enum|global|var|table|fn|on|label|const|let)\\b",
           "name": "keyword.other.declaration.rules"
         },
         {
@@ -683,7 +658,7 @@
     "types": {
       "patterns": [
         {
-          "match": "\\b(int|bool|fixed|time|timer|squad|Class|class|tag|weapon|zone|player|team|object|carrier)\\b",
+          "match": "\\b(int|bool|fixed|time|timer|squad|Class|class|tag|weapon|zone|player|team|object)\\b",
           "name": "storage.type.rules"
         },
         {

@@ -67,7 +67,7 @@ fn unhostable_entries(ir: &Ir) -> BTreeSet<&'static str> {
             Op::Call { entry, .. } => caps::entry(entry, ir.header.api_version),
             _ => None,
         })
-        .filter(|e| !e.hostable_on(ir.header.carrier))
+        .filter(|e| !e.hostable_on(ir.header.engine()))
         .map(caps::spelled)
         .collect()
 }
@@ -132,7 +132,7 @@ fn each_header_names_exactly_the_entries_a_host_lacks() {
 fn a_set_argument_names_its_member() {
     let src = r#"
 rules "T" 1
-carrier slayer
+type slayer
 global var n: int = 0
 on round_start { n = count(players p where p.team == team 1) }
 "#;
@@ -146,7 +146,7 @@ on round_start { n = count(players p where p.team == team 1) }
 
     let bad = r#"
 rules "T" 1
-carrier slayer
+type slayer
 on round_start { for each pick(players p, 1) q { score(q, 1) } }
 "#;
     assert!(compile(bad).is_err());
@@ -156,7 +156,7 @@ on round_start { for each pick(players p, 1) q { score(q, 1) } }
 fn objectives_are_visited_by_handle_and_bounded_at_eight() {
     let src = r#"
 rules "T" 1
-carrier slayer
+type slayer
 global var first_seen: object? = none
 global var n: int = 0
 on round_start {
@@ -187,7 +187,7 @@ fn salted_object_datums_round_trip_through_the_vm() {
     const B: u32 = 0x8000_0001;
     let src = r#"
 rules "T" 1
-carrier slayer
+type slayer
 global var first_seen: object? = none
 global var carried: object? = none
 global var n: int = 0
@@ -504,8 +504,8 @@ fn superbounce_scores_bounces_only_by_their_chain() {
     let (ir, report) = build(builtin::SUPERBOUNCE).unwrap();
     assert!(report.fits());
     assert_eq!(ir.header.name, "Superbounce");
-    assert_eq!(ir.header.carrier, 2);
-    assert_eq!(ir.header.list, rules::ir::List::Research);
+    assert_eq!(ir.header.engine(), 2);
+    assert_eq!(ir.header.game_type, rules::types::Type::Research);
     assert_eq!(ir.header.requires, ["hud.superbounce"]);
     // The options in the order the record packs them: the suicide penalty
     // (bit 0), bounce points raw 1 (bits 1 to 3), the Bounced penalty

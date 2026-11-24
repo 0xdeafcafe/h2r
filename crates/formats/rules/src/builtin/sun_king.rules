@@ -2,8 +2,8 @@
 // to win is seconds on the hill.
 // docs/game/community-gametypes.md.
 rules "Sun King" 1
-carrier king
-scoring carrier
+type koth
+uses koth
 about "Team King of the Hill with rockets and no shields. You'll spend the whole game on fire."
 quick score_limit, time_limit, king_moving_hill, starting_weapon, team_play
 

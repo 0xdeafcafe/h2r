@@ -161,9 +161,9 @@ fn entries_are_built_from_the_listed_scripts() {
             text(e.name_id),
             Some(format!("{} \u{e006}", ir.header.name))
         );
-        // The game type: the carrier's list type.
+        // The game type: the list type of the record's engine.
         let ty = GameType::from_list_index(e.list_type).unwrap();
-        assert_eq!(ty.engine(), i32::from(ir.header.carrier), "{}", b.name);
+        assert_eq!(ty.engine(), i32::from(ir.header.engine()), "{}", b.name);
         // The pairs: the record of the script, every setting the editor
         // offers, not only the script's.
         let record = variants::portable::record_for(&ir, &[]).unwrap();

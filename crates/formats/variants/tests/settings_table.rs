@@ -228,9 +228,10 @@ fn the_named_rows_are_the_records_settings() {
     assert_eq!(stock.get(SettingId(94)), Some(0));
 }
 
-/// The record of a script of `carrier` whose settings block is `block`.
-fn record_of_block(carrier: &str, block: &str) -> GameVariant {
-    let src = format!("rules \"T\" 1\ncarrier {carrier}\nscoring carrier\n\nsettings {{\n{block}\n}}\n");
+/// The record of a script of the retail type `ty` whose settings block is
+/// `block`.
+fn record_of_block(ty: &str, block: &str) -> GameVariant {
+    let src = format!("rules \"T\" 1\ntype {ty}\nuses {ty}\n\nsettings {{\n{block}\n}}\n");
     let ir = rules::compile(&src).unwrap_or_else(|e| panic!("{block}: {e}"));
     variants::portable::record_for(&ir, &[]).unwrap_or_else(|e| panic!("{block}: {e}"))
 }
@@ -285,7 +286,7 @@ fn the_matchmaking_rows_round_trip_through_a_script_record() {
         "respawn_modifier = 3",
         "second_heavy_vehicle = 5",
     ] {
-        let src = format!("rules \"T\" 1\ncarrier slayer\nscoring carrier\n\nsettings {{\n    {block}\n}}\n");
+        let src = format!("rules \"T\" 1\ntype slayer\nuses slayer\n\nsettings {{\n    {block}\n}}\n");
         assert!(rules::compile(&src).is_err(), "{block}");
     }
 }

@@ -1,8 +1,8 @@
 // Duel: one on one, a magnum and a random weapon.
 // docs/game/community-gametypes.md.
 rules "Duel" 1
-carrier slayer
-scoring carrier
+type slayer
+uses slayer
 about "One on one, magnum and a random weapon, nothing on the map. Winner stays on. Try Lockout or Ascension."
 quick score_limit, time_limit, starting_weapon, secondary_weapon, weapons_on_map
 

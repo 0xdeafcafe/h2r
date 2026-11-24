@@ -365,7 +365,7 @@ mod tests {
 
     fn ir() -> Ir {
         ::rules::compile(
-            "rules \"M\" 1\ncarrier slayer\nrequires hud.message\n\
+            "rules \"M\" 1\ntype slayer\nrequires hud.message\n\
              global var n: int = 0\n\
              on tick { message(all, \"Wave {n}\") }\n",
         )

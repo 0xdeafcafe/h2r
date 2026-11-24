@@ -12,8 +12,7 @@
 //
 // Entries a host cannot make yet (`verify::unhostable`): none.
 rules "Gun Game" 1
-carrier slayer
-list party
+type party
 requires player.weapons, hud.message
 about "Every kill moves you up the weapon ladder, from the SMG to the energy sword. A kill with the sword wins. Leave dropped weapons where they lie."
 quick suicide_demotes, time_limit, respawn_time

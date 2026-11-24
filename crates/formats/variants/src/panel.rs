@@ -602,7 +602,8 @@ pub struct MarkView {
 pub struct ScriptView {
     pub name: String,
     pub about: String,
-    /// `scoring carrier`: the script only sets settings.
+    /// A `uses` line: the script only sets settings, and the built-in game
+    /// it uses scores.
     pub carrier_scoring: bool,
     pub options: Vec<OptionView>,
     /// The Quick Options rows, in the script's order.
@@ -616,9 +617,9 @@ pub struct ScriptView {
 /// The Script section's model for the script `ir` in the record `v`.
 pub fn script_view(ir: &rules::Ir, v: &GameVariant) -> ScriptView {
     use rules::Ty;
-    use rules::ir::{Quick, Scoring};
+    use rules::ir::Quick;
     let bits = v.ext().script.options;
-    let carrier = ir.header.carrier;
+    let carrier = ir.header.engine();
     let string = |i: u16| ir.strings.get(usize::from(i)).cloned().unwrap_or_default();
     let options: Vec<OptionView> = ir
         .options
@@ -684,7 +685,7 @@ pub fn script_view(ir: &rules::Ir, v: &GameVariant) -> ScriptView {
     ScriptView {
         name: ir.header.name.clone(),
         about: ir.header.about.clone(),
-        carrier_scoring: ir.header.scoring == Scoring::Carrier,
+        carrier_scoring: ir.header.uses.is_some(),
         options,
         marks,
         marked_settings,

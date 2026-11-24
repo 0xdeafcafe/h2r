@@ -15,9 +15,10 @@ use super::lower::FIELDS;
 use super::sig;
 use super::types::{Handle, SetKind, Type};
 use super::{Diagnostic, MAX_ERRORS, Pos, Severity};
-use crate::caps::{self, CARRIERS, ENTRIES, TICKS_PER_SECOND, VARIANT_FIELDS, id};
-use crate::ir::{self, Event, LabelDef, LabelKind, List, Scope, label_flags};
+use crate::caps::{self, ENTRIES, TICKS_PER_SECOND, VARIANT_FIELDS, id};
+use crate::ir::{self, Event, LabelDef, LabelKind, Scope, label_flags};
 use crate::settings;
+use crate::types as game;
 use crate::ty::{MAX_ENUM_VARIANTS, MAX_ENUMS, MAX_LABELLED, MAX_SQUADS, MAX_TEAMS};
 
 /// What the compiler ends a `time` option's label with: the IR stores no
@@ -81,13 +82,11 @@ pub struct Checked<'s> {
     pub settings: Vec<ir::Setting>,
     /// The Quick Options marks, in the script's order.
     pub quick: Vec<ir::Quick>,
-    /// Who scores the game: `scoring carrier`, or the script.
-    pub scoring: ir::Scoring,
+    /// The `type` line's game type; `None` when it is missing or unknown.
+    pub game_type: Option<game::Type>,
+    /// The `uses` line's built-in game: the script holds settings only.
+    pub uses: Option<game::Type>,
 }
-
-/// The carriers a `list` line may file a variant of: our rows hold Slayer
-/// and Juggernaut variants (`docs/game/rules-variants.md`, "Slices").
-const LIST_CARRIERS: &[&str] = &["slayer", "juggernaut"];
 
 /// A message's text as the IR stores it, and its holes ("Messages" in
 /// `docs/game/rules-language-types.md`).
@@ -341,12 +340,42 @@ struct Cx<'s> {
     /// The function whose argument is being checked, for messages.
     arg_of: Option<&'s str>,
     templates: HashMap<*const Expr, Template>,
-    /// The carrier's engine index; `None` when the carrier is missing or
-    /// unknown.
-    carrier: Option<u8>,
+    /// The engine index the script's record is on (`ir::Header::engine`);
+    /// `None` when the type or the `uses` game is missing or unknown.
+    engine: Option<u8>,
     settings: Vec<ir::Setting>,
     quick: Vec<ir::Quick>,
-    scoring: ir::Scoring,
+    game_type: Option<game::Type>,
+    uses: Option<game::Type>,
+}
+
+/// The message for a retired header line, naming the line to write
+/// instead (`docs/game/game-types-without-carriers.md`, "The header").
+fn retired_line(word: &str, arg: &str, s: &Script) -> String {
+    // A retired `carrier` word as a type: `king` became `koth`.
+    let as_type = |c: &str| game::Type::named(if c == "king" { "koth" } else { c }).filter(|t| t.is_retail());
+    match word {
+        "carrier" => match as_type(arg) {
+            Some(t) => format!(
+                "carrier is gone: write `type {}`. A script names its game type, not an engine",
+                t.name()
+            ),
+            None => format!("carrier is gone: write `type` and one of {}", game::names()),
+        },
+        "list" => match game::Type::named(arg) {
+            Some(t) => format!("list is gone: write `type {}`, which files the game in its row", t.name()),
+            None => format!("list is gone: write `type` and one of {}", game::names()),
+        },
+        _ => {
+            let from_carrier = s.retired.iter().find(|(w, _, _)| w == "carrier").and_then(|(_, a, _)| as_type(a));
+            let from_type = s.game_type.as_ref().and_then(|(t, _)| game::Type::named(t)).filter(|t| t.is_retail());
+            let t = from_carrier.or(from_type).unwrap_or(game::Type::Slayer);
+            format!(
+                "scoring {arg} is gone: write `uses {}` to play that built-in game's rules under this script's settings",
+                t.name()
+            )
+        }
+    }
 }
 
 fn is_none_lit(e: &Expr) -> bool {
@@ -447,10 +476,11 @@ impl<'s> Cx<'s> {
             implicit: Vec::new(),
             arg_of: None,
             templates: HashMap::new(),
-            carrier: None,
+            engine: None,
             settings: Vec::new(),
             quick: Vec::new(),
-            scoring: ir::Scoring::Script,
+            game_type: None,
+            uses: None,
         }
     }
 
@@ -506,7 +536,8 @@ impl<'s> Cx<'s> {
             templates: self.templates,
             settings: self.settings,
             quick: self.quick,
-            scoring: self.scoring,
+            game_type: self.game_type,
+            uses: self.uses,
         }
     }
 
@@ -611,50 +642,44 @@ impl<'s> Cx<'s> {
         if u16::try_from(s.version).is_err() {
             self.err("decl", pos, "the version is 0 to 65535");
         }
-        match &s.carrier {
-            None => self.err("decl", pos, "a script names its carrier: carrier slayer"),
-            Some((c, cpos)) => {
-                if !CARRIERS.iter().any(|(n, _)| n == c) {
-                    self.err("name.unknown", *cpos, format!("unknown carrier {c}"));
+        match &s.game_type {
+            None => self.err("decl", pos, "a script names its game type: type slayer"),
+            Some((t, tpos)) => match game::Type::named(t) {
+                Some(t) => self.game_type = Some(t),
+                None => {
+                    let m = format!("unknown type {t}: a type is {}", game::names());
+                    self.err("name.unknown", *tpos, m);
                 }
-            }
+            },
         }
         if let Some((n, tpos)) = s.teams
             && !(1..=MAX_TEAMS as i64).contains(&n)
         {
             self.err("decl", tpos, "teams is 1 to 8");
         }
-        if let Some((name, lpos)) = &s.list
-            && List::named(name).is_none()
-        {
-            let names: Vec<&str> = List::NAMED.iter().filter_map(|l| l.name()).collect();
-            let names = names.join(", ");
-            self.err("name.unknown", *lpos, format!("unknown list {name}: a list is {names}"));
-        }
-        self.carrier = s
-            .carrier
-            .as_ref()
-            .and_then(|(c, _)| CARRIERS.iter().find(|(n, _)| n == c).map(|&(_, e)| e));
-        if let Some((name, lpos)) = &s.list
-            && List::named(name).is_some()
-            && let Some((c, _)) = &s.carrier
-            && self.carrier.is_some()
-            && !LIST_CARRIERS.contains(&c.as_str())
-        {
-            let m = format!(
-                "list {name} files the variant under one of our rows, which hold Slayer and Juggernaut variants; this script's carrier is {c}"
-            );
-            self.err("list.carrier", *lpos, m);
-        }
-        if let Some((word, spos)) = &s.scoring {
-            if word == "carrier" {
-                self.scoring = ir::Scoring::Carrier;
-            } else {
-                let m = format!(
-                    "unknown scoring {word}: write scoring carrier for the carrier's rules, or no scoring line for a script that scores"
-                );
-                self.err("name.unknown", *spos, m);
+        if let Some((u, upos)) = &s.uses {
+            match game::Type::named(u) {
+                Some(t) if t.is_retail() => self.uses = Some(t),
+                _ => {
+                    let m = format!("uses names a built-in game: {}", game::retail_names());
+                    self.err("name.unknown", *upos, m);
+                }
             }
+        }
+        self.engine = match (&s.uses, self.uses, self.game_type) {
+            (Some(_), None, _) => None,
+            (_, Some(u), _) => Some(u.engine()),
+            (None, None, t) => t.map(game::Type::engine),
+        };
+        if let Some((text, ppos)) = &s.points
+            && (text.is_empty() || text.len() > game::MAX_POINTS_BYTES)
+        {
+            let m = format!("points is 1 to {} bytes", game::MAX_POINTS_BYTES);
+            self.err("limit", *ppos, m);
+        }
+        for (word, arg, rpos) in &s.retired {
+            let m = retired_line(word, arg, s);
+            self.err("header.retired", *rpos, m);
         }
         if let Some((text, apos)) = &s.about {
             let units = text.encode_utf16().count();
@@ -686,12 +711,11 @@ impl<'s> Cx<'s> {
     // ---- the settings block, the quick line and the scorer ----
 
     /// The `settings` block: each name in [`settings::TABLE`], applying to
-    /// the carrier, named once, with a value of the row's kind in its
+    /// the script's game, named once, with a value of the row's kind in its
     /// range. See `docs/game/rules-variants.md`, "The settings block".
     fn settings_block(&mut self) {
         let s = self.script;
         let Some(block) = &s.settings else { return };
-        let carrier_name = s.carrier.as_ref().map_or("", |(c, _)| c.as_str());
         let mut seen: Vec<(u16, Pos)> = Vec::new();
         for line in &block.lines {
             let Some((index, row)) = settings::named(&line.name) else {
@@ -708,15 +732,16 @@ impl<'s> Cx<'s> {
                 continue;
             }
             seen.push((index, line.pos));
-            if let Some(c) = self.carrier
-                && !row.applies(c)
+            if let Some(e) = self.engine
+                && !row.applies(e)
             {
                 let m = format!(
-                    "{} is a {} setting; this script's carrier is {carrier_name}",
+                    "{} is a {} setting; this script's record is {}'s",
                     row.name,
-                    row.carrier_words()
+                    row.carrier_words(),
+                    settings::carrier_label(e)
                 );
-                self.err("setting.carrier", line.pos, m);
+                self.err("setting.type", line.pos, m);
                 continue;
             }
             if let Some(value) = self.setting_value(row, &line.value) {
@@ -788,7 +813,7 @@ impl<'s> Cx<'s> {
     }
 
     /// The `quick` line: at most [`ir::MAX_QUICK`] names, each a record
-    /// setting of the table that applies to the carrier or one of the
+    /// setting of the table that applies to the script's game or one of the
     /// script's options, named once. An option is named apart from every
     /// setting.
     fn quick_marks(&mut self) {
@@ -807,7 +832,6 @@ impl<'s> Cx<'s> {
             let m = format!("Quick Options has five rows; this line names {}", names.len());
             self.err("quick.many", *at, m);
         }
-        let carrier_name = s.carrier.as_ref().map_or("", |(c, _)| c.as_str());
         let mut seen: Vec<&str> = Vec::new();
         for (name, pos) in names {
             if seen.contains(&name.as_str()) {
@@ -821,14 +845,15 @@ impl<'s> Cx<'s> {
             }
             match settings::named(name) {
                 Some((index, row)) if row.is_record() => {
-                    if let Some(c) = self.carrier
-                        && !row.applies(c)
+                    if let Some(e) = self.engine
+                        && !row.applies(e)
                     {
                         let m = format!(
-                            "{name} is a {} setting; this script's carrier is {carrier_name}",
-                            row.carrier_words()
+                            "{name} is a {} setting; this script's record is {}'s",
+                            row.carrier_words(),
+                            settings::carrier_label(e)
                         );
-                        self.err("setting.carrier", *pos, m);
+                        self.err("setting.type", *pos, m);
                         continue;
                     }
                     self.quick.push(ir::Quick::Setting(index));
@@ -850,13 +875,13 @@ impl<'s> Cx<'s> {
         }
     }
 
-    /// Who scores: a `scoring carrier` script holds `requires`, `list`,
-    /// `settings`, `quick` and `about` only (`scoring.handlers`); a script
-    /// with no handlers and no `scoring carrier` scores nothing
-    /// (`scoring.none`), reported once the script has no other error.
+    /// Who scores: a `uses` script holds its header lines, `settings` and
+    /// `quick` only (`uses.handlers`); a script with no handlers and no
+    /// `uses` line scores nothing (`scoring.none`), reported once the
+    /// script has no other error.
     fn scorer(&mut self) {
         let s = self.script;
-        if self.scoring == ir::Scoring::Carrier {
+        if let Some(u) = self.uses {
             for item in &s.items {
                 let (what, pos) = match item {
                     Item::On { event, pos, .. } => (format!("on {event}"), *pos),
@@ -870,9 +895,10 @@ impl<'s> Cx<'s> {
                     Item::Const { name, pos, .. } => (format!("const {name}"), *pos),
                 };
                 let m = format!(
-                    "{what} has no place here: with scoring carrier the carrier's engine scores the game, and the script holds requires, list, settings, quick and about only"
+                    "{what} has no place here: with uses {} the built-in game scores, and the script holds its header lines, settings and quick only",
+                    u.name()
                 );
-                self.err("scoring.handlers", pos, m);
+                self.err("uses.handlers", pos, m);
             }
             return;
         }
@@ -880,11 +906,12 @@ impl<'s> Cx<'s> {
         if scores || self.out.iter().any(Diagnostic::is_error) {
             return;
         }
-        let rules = match self.carrier {
-            Some(c) => settings::carrier_label(c),
-            None => "the carrier",
-        };
-        let m = format!("this script scores nothing. Write `scoring carrier` to play {rules}'s rules.");
+        let uses = self.game_type.filter(|t| t.is_retail()).unwrap_or(game::Type::Slayer);
+        let m = format!(
+            "this script scores nothing. Write `uses {}` to play {}'s rules.",
+            uses.name(),
+            uses.row().label
+        );
         self.err("scoring.none", s.pos, m);
     }
 
@@ -2146,7 +2173,6 @@ impl<'s> Cx<'s> {
         let t = self.expr(value, None);
         let variants: Option<(String, Vec<String>)> = match t {
             Some(Type::Enum(e)) => Some(self.enums[e as usize].clone()),
-            Some(Type::Carrier) => Some(("carrier".into(), CARRIERS.iter().map(|(n, _)| n.to_string()).collect())),
             Some(other) => {
                 let m = format!("match takes an enum value, and {} is {}", describe(value), self.tn(other));
                 self.err("type.mismatch", value.pos, m);
@@ -2723,23 +2749,12 @@ impl<'s> Cx<'s> {
                 None => {
                     if b == "variant" {
                         return match VARIANT_FIELDS.iter().find(|(n, _)| *n == f) {
-                            // The engine index reads as the built-in enum.
-                            Some(_) if f == "engine" => Some(Type::Carrier),
                             Some(&(_, t)) => Type::from_ir(t),
                             None => {
                                 self.err("name.unknown", pos, format!("variant has no field {f}"));
                                 None
                             }
                         };
-                    }
-                    if b == "carrier" {
-                        if CARRIERS.iter().any(|(n, _)| *n == f) {
-                            return Some(Type::Carrier);
-                        }
-                        let names: Vec<&str> = CARRIERS.iter().map(|(n, _)| *n).collect();
-                        let m = format!("carrier has no variant {f}; a carrier is {}", names.join(", "));
-                        self.err("name.unknown", pos, m);
-                        return None;
                     }
                     if let Some(i) = self.enums.iter().position(|(n, _)| n == b) {
                         if !self.enums[i].1.iter().any(|v| v == f) {
@@ -3009,14 +3024,7 @@ impl<'s> Cx<'s> {
         if t.comparable(other) {
             return Some(t);
         }
-        let m = match (other, t, const_int(e)) {
-            // `variant.engine == 9`: a carrier is named, not numbered.
-            (Type::Carrier, Type::Int, n) => {
-                let name = n.and_then(|n| CARRIERS.iter().find(|c| c.1 as i64 == n)).map_or("assault", |c| c.0);
-                format!("a carrier is named, not numbered: write carrier.{name}")
-            }
-            _ => format!("expected {}, found {}", self.tn(other), self.tn(t)),
-        };
+        let m = format!("expected {}, found {}", self.tn(other), self.tn(t));
         self.err("type.mismatch", e.pos, m);
         None
     }

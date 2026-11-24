@@ -11,7 +11,7 @@
 // starts again rather than decaying; the score interval is a script
 // option, as retail's is not traced; setting 99 is not read.
 rules "Territories" 1
-carrier territories
+type territories
 
 // Retail's territory count is 1 to 8 (setting 74).
 const most_territories = 8
