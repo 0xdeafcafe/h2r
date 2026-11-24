@@ -820,6 +820,16 @@ the independent L8 in [e3-lighting.md](e3-lighting.md).
   private renderer record against their own attachments using the mesh,
   pose rows and textures held for that light. An armed guest-reference
   capture keeps its original draws.
+- **Gathered geometry.** Typed layers, whole scene groups and sorted
+  diffuse/specular dispatches resolve gathered entries against the same
+  resident parts. The light material selection uses the entry's LOD,
+  pass, implementation and vertex class. The BSP light index covers
+  opaque and transparent parts independently of layer 3. The model
+  section supplies the part's indices and the render record supplies
+  its pose. In the per-handler path each issue rechecks its sorted slot
+  and source index window. A partial subpart or a handler with live
+  state can issue native indexed packets using its resolved bindings.
+  [native-lights.md](native-lights.md) describes the target and gel checks.
 - **Bounds and clip.** `engine::light_constants::screen_bounds` ports
   `0x001650a0` with the caller's SSE and x87 modes. The globals keep all
   six words. At layers 12 and 13, the target setter installs the view's

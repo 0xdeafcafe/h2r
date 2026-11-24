@@ -75,7 +75,7 @@ struct Glue<B: d3d::backend::Backend + Send + 'static> {
     refreshing: Arc<std::sync::atomic::AtomicBool>,
 }
 
-/// Why a light keeps its D3D passes.
+/// Why a native light plan declined a request.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Keep {
     /// The world (or its lights' part) is not loaded.
@@ -111,12 +111,12 @@ impl std::fmt::Display for Keep {
     }
 }
 
-/// Lights considered between summaries.
+/// Host planning decisions between summaries.
 pub const SUMMARY_EVERY: u64 = 1800;
 const REFUSAL_DETAIL_LIMIT: usize = 32;
 
-/// The host's answers so far: lights asked, lights planned, and the lights
-/// kept on D3D by reason.
+/// Whole-light, scene-group and resolved-layer preparation attempts. One
+/// light can reach more than one path. Per-emission GPU results are separate.
 #[derive(Debug, Default)]
 pub struct Tally {
     pub asked: u64,
@@ -162,7 +162,7 @@ impl Tally {
                     }
                     self.refusal_details += 1;
                 }
-                let line = format!("native-lights: a light keeps its D3D passes: {}", entry.key());
+                let line = format!("native-lights: light plan declined: {}", entry.key());
                 entry.insert(1);
                 vec![line]
             }
@@ -178,7 +178,7 @@ impl Tally {
             kept.push(format!("{} other shader refusals", self.other_refusals));
         }
         format!(
-            "native-lights: host planned {} of {} lights; kept on D3D: {}",
+            "native-lights: {} of {} host planning requests accepted; declined: {}",
             self.planned,
             self.asked,
             if kept.is_empty() {
@@ -2913,7 +2913,7 @@ mod tests {
         let mut t = Tally::default();
         assert_eq!(
             t.count(Err(Keep::Unloaded("normalization cube"))),
-            vec!["native-lights: a light keeps its D3D passes: samples an unloaded normalization cube".to_string()]
+            vec!["native-lights: light plan declined: samples an unloaded normalization cube".to_string()]
         );
         assert!(
             t.count(Err(Keep::Unloaded("normalization cube")))
@@ -2921,13 +2921,13 @@ mod tests {
             "once per reason"
         );
         assert_eq!(
-            t.count(Err(Keep::Unsupported("gathered model"))),
-            vec!["native-lights: a light keeps its D3D passes: gathered model".to_string()]
+            t.count(Err(Keep::Unsupported("missing pose"))),
+            vec!["native-lights: light plan declined: missing pose".to_string()]
         );
         assert!(t.count(Ok(())).is_empty());
         assert_eq!(
             t.summary(),
-            "native-lights: host planned 1 of 4 lights; kept on D3D: 2 samples an unloaded normalization cube, 1 gathered model"
+            "native-lights: 1 of 4 host planning requests accepted; declined: 2 samples an unloaded normalization cube, 1 missing pose"
         );
         for _ in 5..SUMMARY_EVERY {
             assert!(t.count(Ok(())).is_empty());
@@ -2941,7 +2941,7 @@ mod tests {
         );
         assert_eq!(
             Tally::default().summary(),
-            "native-lights: host planned 0 of 0 lights; kept on D3D: none"
+            "native-lights: 0 of 0 host planning requests accepted; declined: none"
         );
     }
 
