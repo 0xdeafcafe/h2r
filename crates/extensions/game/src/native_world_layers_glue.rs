@@ -29,6 +29,8 @@ pub struct DrawContext {
     pub layer: Layer,
     pub frame: u64,
     pub geometry: Option<Geometry>,
+    /// The indexed light handler's (pass selector, vertex class).
+    pub light_selection: Option<(u8, u16)>,
     bsp: Option<u32>,
     pub(crate) generation: u64,
     pub index_count: Option<u32>,
@@ -144,6 +146,11 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(
                         bsp: mem.read_u32(render_bridge::native_world::ACTIVE_BSP),
                         generation: render_bridge::native_map_work::bsp_generation(),
                         geometry,
+                        light_selection: if matches!(layer.number, 12 | 13) {
+                            geometry.and_then(|g| g.light_selection(&mem, cpu.esp))
+                        } else {
+                            None
+                        },
                         index_count: cpu.esp.checked_add(8).and_then(|a| mem.read_u32(a)),
                     })
                 })();
@@ -173,7 +180,7 @@ pub fn enter_opaque_range(
         },
     };
     Restore(DRAW.replace(Some(DrawContext {
-        layer, frame, geometry: Some(geometry), index_count: Some(count),
+        layer, frame, geometry: Some(geometry), light_selection: None, index_count: Some(count),
         // The sorted range has no guest memory to read the BSP from here;
         // without it the section cache is bypassed for this range.
         bsp: None, generation: render_bridge::native_map_work::bsp_generation(),
