@@ -79,6 +79,25 @@ fn the_setter_is_the_named_point() {
     );
 }
 
+/// A CTF script can mark a type-area setting. On index 6 only common
+/// settings have a record field, and score uses the common score page.
+#[test]
+fn quick_marks_follow_the_records_available_fields() {
+    let ir = ::rules::compile(
+        "rules \"Example\" 1\ntype ctf\nuses ctf\nquick score_limit, ctf_flag_type\n",
+    )
+    .unwrap();
+    let record = GameVariant::stock(GameType::Script).unwrap();
+    let rows = crate::variant_quick::rows_with(&record, &ir, None);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].name, "score_limit");
+    assert!(matches!(rows[0].mark, Mark::Setting { setting: 2, .. }));
+
+    let view = variants::panel::script_view(&ir, &record);
+    assert_eq!(view.marks.len(), 1);
+    assert_eq!(view.marked_settings, [SettingId(2)]);
+}
+
 /// A row's change is the lobby's record with that one setting changed:
 /// it is shown at once, waits for the UI update, and the drain writes it
 /// and calls the lobby variant setter with it on the stack. The setter

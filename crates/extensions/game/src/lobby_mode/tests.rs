@@ -886,6 +886,20 @@ mod gate {
     }
 
     #[test]
+    fn a_script_index_variant_requires_its_scripts_map_labels() {
+        let ir = script();
+        let fake = Fake::new(territory_map(), &ir);
+        let mut m = lobby(MAP, prefix(&ir), false);
+        m.put_u32(VARIANT + 0x44, u32::from(::rules::SCRIPT_INDEX));
+        let input = g::read(&m, VARIANT).unwrap();
+        assert_eq!(
+            g::check(&input.key, &fake),
+            Verdict::Blocked(vec![GOAL.to_string(), CORE.to_string()])
+        );
+        assert_eq!(fake.reads(), 1);
+    }
+
+    #[test]
     fn a_blocked_pair_holds_start_game_and_says_why() {
         fresh(Some(Mode::Multiplayer));
         let ir = script();
