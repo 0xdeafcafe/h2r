@@ -1,6 +1,6 @@
 # Behaviour parity on converted maps
 
-**Built, awaiting integration runs.** `h2 parity` reads Halo 1's Xbox
+**Built.** `h2 parity` reads Halo 1's Xbox
 executable and source cache from the owner's disc. It takes observations
 through the agent socket on a running Halo 2 serve. Each comparison prints a
 tab-separated check name, Halo 1 value, observed value and PASS or FAIL.
@@ -72,7 +72,7 @@ exact biped for a controlled trial when the type is absent at the checkpoint.
 Weapons or actors the engine refuses are reported by name. The four probes
 cover simulation behaviour. Pickup-prompt display requires a HUD check.
 
-Blood Gulch’s source shotgun has a clear press-latch bit, a 1.0–1.0 round/second rate and 15 projectiles per shot. The held-trigger check therefore expects shots roughly 30 ticks apart. A fast repeating shotgun fails on cadence. The source assault rifle has a 15.0–15.0 rate and its spread grows over 0.6 seconds.
+Blood Gulch’s source shotgun has a clear press-latch bit and a fixed repeat rate, so the held-trigger check expects shots spaced by that rate. A fast repeating shotgun fails on cadence. The source assault rifle's spread grows over its error acceleration time.
 
 ## Tolerances
 

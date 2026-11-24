@@ -2,9 +2,9 @@
 
 The converter starts with a Halo 2 tag definition and writes the source
 object and its dependencies into it. A field without a source mapping
-keeps the definition default. The following changes are **Built** in
-the full-rebuild lane. The disc tests are written for the coordinator's
-integration run. There is no new pass count or play result yet.
+keeps the definition default. Everything below is **Built**. The disc
+tests are ignored tests that read both discs ("Running the audit"); the
+page records what they check, not a pass count or a play result.
 
 | Area | Source and evidence |
 | --- | --- |
@@ -101,7 +101,7 @@ integration run. There is no new pass count or play result yet.
 ## Models that used the marine head shader
 
 **Built.** A model with an H1 `soso` whose base, detail and reflection
-datums are null now gets its own H2 `shad`. On the owner's campaign
+datums are null gets its own H2 `shad`. On the owner's campaign
 discs, 15 of the 21 model records that referenced
 `objects\characters\marine\marine_female\shaders\head_female` on
 05a_deltaapproach meet this condition. Fourteen have all four bitmaps
@@ -127,7 +127,7 @@ the draw uses an object-seeded phase. Function 0 returns one
 or have identical endpoints, so their emission is independent of time
 and phase. In particular, the rocks have a nonconstant waveform but
 both endpoints are black. A custom map with two different endpoints
-and a varying wave currently returns a conversion error.
+and a varying wave returns a conversion error.
 
 H1 multiplies the resulting emission by the object colour at `+0x70`
 and independently selects diffuse object colour at `+0x4c`
@@ -149,7 +149,7 @@ require only the white lit surface.
 
 Each level in a row below contains a separate affected `mode` tag. Slots
 are zero-based. The inventory compares the material datums of all ten
-previously converted campaign maps against the shader references in
+converted campaign maps against the shader references in
 the matching H1 disc maps.
 
 | Levels | Render model tag | Slot | Source shader |
@@ -218,9 +218,9 @@ additive (3). At `0x67c43..0x67cd8` the draw requests a 2D texture and
 image zero. The null branch at `0x803c3` reads the rasterizer bitmap at
 `+0xb8`. In both maps that is `globals\globals` block `+0x134`, reference
 `+0xac`, naming `rasterizer\default 2d`. Image zero is 4×4 opaque black.
-The new instance binds that converted H1 bitmap to H2's additive
+The instance binds that converted H1 bitmap to H2's additive
 `one_add_illum` template. The stage adds zero RGB and leaves depth intact. The adjacent floor-symbol
-material in d20 has four source images. Its cutout bump now preserves the
+material in d20 has four source images. Its cutout bump preserves the
 alpha mask for every image and mip.
 
 **Built, Sentinel.** All four caches bind the same H1 bitmap to both noise
@@ -320,21 +320,21 @@ Halo 1 Xbox disc. It also read the tag tables, structure palettes and sky
 models on 05a_deltaapproach, Coagulation and Beaver Creek on the Halo 2
 disc. Counts below are distinct map, parent and source-use combinations.
 A tag being present on the disc establishes a candidate, not a runtime draw.
-The accompanying TSV has 35,510 rows. Each gives the map, group, source path, parent or BSP index, destination base, historical candidate or disposition and code site.
+The survey has 35,510 rows. Each gives the map, group, source path, parent or BSP index, destination base, the fallback candidate or disposition and code site.
 
-| Former fallback and code site | Retail source and former target | Current handling |
+| Fallback and code site | Retail source and the fallback target | Handling |
 | --- | --- | --- |
-| BSP render shaders, `textures::plan_bsp` | 1,981 BSP/shader rows. The old word matcher selected the closest base shader or the first opaque one. | **Built.** Material records name the rebuilt source shader. Its recipe must be available and its source images must convert. The illumination-only `levels\a10\shaders\monitor glow` on a10, d40 and putput uses its own illumination texture at `+0x254` and UV scale at `+0x250`. |
-| BSP collision, `textures::Retexture::install` and `Structure::write` | 1,295 BSP/shader/material rows. Delta Approach supplied `tower_metal_dirty`, `tower_metal_trim_g` or `shaders\invalid`. Coagulation supplied `coag_rocks` and Beaver Creek supplied `bc_forerunner_lightgray`. | **Built.** Each source palette entry retains its shader and maps its substance at `+0x22` to the destination globals material index. Collision-only shaders enter the conversion graph. Merged scenery surfaces use their object's source substance. H1 object collision materials have no shader reference. |
-| Model materials, `Converter::model_shader` | The first eligible opaque object shader was `objects\characters\marine\marine_female\shaders\head_female` on Delta Approach and `objects\multi\2way_teleporter\shaders\2way_teleporter` on both multiplayer bases. Seven distinct diffuse-null `soso` paths account for 17 map/model/shader rows. | **Built.** A missing recipe, map or program reports the source shader and map. The null-base, Chicago and volume plasma programs are built ("Models that used the marine head shader" above). |
-| Sky materials, `Sky::from_map/install` | 135 sky/material rows. Delta Approach used `deltatemple\shaders\ring_afternoon`, both multiplayer bases used `coagulation\shaders\coag_ring`. | **Built.** Source material references and bitmaps are required. Missing recipes and flares fail conversion. The scenario records the actual number of source skies. |
+| BSP render shaders, `textures::plan_bsp` | 1,981 BSP/shader rows. A word matcher would select the closest base shader or the first opaque one. | **Built.** Material records name the rebuilt source shader. Its recipe must be available and its source images must convert. The illumination-only `levels\a10\shaders\monitor glow` on a10, d40 and putput uses its own illumination texture at `+0x254` and UV scale at `+0x250`. |
+| BSP collision, `textures::Retexture::install` and `Structure::write` | 1,295 BSP/shader/material rows. Delta Approach would supply `tower_metal_dirty`, `tower_metal_trim_g` or `shaders\invalid`. Coagulation would supply `coag_rocks` and Beaver Creek `bc_forerunner_lightgray`. | **Built.** Each source palette entry retains its shader and maps its substance at `+0x22` to the destination globals material index. Collision-only shaders enter the conversion graph. Merged scenery surfaces use their object's source substance. H1 object collision materials have no shader reference. |
+| Model materials, `Converter::model_shader` | The first eligible opaque object shader would be `objects\characters\marine\marine_female\shaders\head_female` on Delta Approach and `objects\multi\2way_teleporter\shaders\2way_teleporter` on both multiplayer bases. Seven distinct diffuse-null `soso` paths account for 17 map/model/shader rows. | **Built.** A missing recipe, map or program reports the source shader and map. The null-base, Chicago and volume plasma programs are built ("Models that used the marine head shader" above). |
+| Sky materials, `Sky::from_map/install` | 135 sky/material rows. Delta Approach would use `deltatemple\shaders\ring_afternoon`, both multiplayer bases would use `coagulation\shaders\coag_ring`. | **Built.** Source material references and bitmaps are required. Missing recipes and flares fail conversion. The scenario records the actual number of source skies. |
 | Bitmap, sound and flare reuse, `TagSet::converted` | Six `bitm` paths collide on every map, including `rasterizer\glow` and five `ui\hud\bitmaps` images. No `snd!`, `lsnd`, `snde` or `lens` namesakes were found on these three bases. | **Built.** Reuse requires an installed conversion with the same group, name and live datum. The existing slot may receive rebuilt data. The name alone cannot certify its contents. Loop tracks, details, sound environments and authored sounds propagate conversion failures. |
-| Objects, units, campaign placements and AI, `Converter::model`, `roster::prepare/install`, `ai_control_characters::resolve` | Previously an object could inherit a native unit/model root or species character. Examples include H2 Marine, Grunt and Elite characters. The disc has 265 map/unit rows and 217 map/actor-palette entries. Nine additional map/variant pairs occur in explicit script references. | **Built.** The H1 sandbox builds the object and model definitions, actor variant unit, weapon and major variant links. A vehicle lacking a solid hull uses its own mass points or fails. The H2 sandbox can explicitly select an H2 asset. |
-| Script atoms and cinematic animation, `h1campaign::scenario` and `cutscenes` | 910 explicit map/reference pairs across eleven source groups, including sounds, loops, animation graphs, effects, damage, actor variants and five object groups. Formerly a path could resolve to a native namesake or disappear. | **Built.** The scenario resolves typed converted datums and explicit H2 asset aliases. Script-only effect, damage and object roots are rebuilt. First- and third-person animation sound events both resolve their authored sounds. |
+| Objects, units, campaign placements and AI, `Converter::model`, `roster::prepare/install`, `ai_control_characters::resolve` | An object could otherwise inherit a native unit/model root or species character. Examples include H2 Marine, Grunt and Elite characters. The disc has 265 map/unit rows and 217 map/actor-palette entries. Nine additional map/variant pairs occur in explicit script references. | **Built.** The H1 sandbox builds the object and model definitions, actor variant unit, weapon and major variant links. A vehicle lacking a solid hull uses its own mass points or fails. The H2 sandbox can explicitly select an H2 asset. |
+| Script atoms and cinematic animation, `h1campaign::scenario` and `cutscenes` | 910 explicit map/reference pairs across eleven source groups, including sounds, loops, animation graphs, effects, damage, actor variants and five object groups. A path could otherwise resolve to a native namesake or disappear. | **Built.** The scenario resolves typed converted datums and explicit H2 asset aliases. Script-only effect, damage and object roots are rebuilt. First- and third-person animation sound events both resolve their authored sounds. |
 | Effects, projectiles and devices, `effect_uncached`, `arsenal::responses`, `device` | 10,102 effect-part rows, including 338 damage rows. 7,115 projectile material/effect rows and 137 device transitions, of which 127 are effects and ten are sounds. | **Built.** Every event keeps its original damage parts, except that a projectile's detonation effect hands its primary damage part to the projectile. H2 dispatches damage directly at `0x17a8a0`. Each material response resolves its normal, potential and detonation effects. Device transitions use the source reference's group. Cyclic dependencies resolve to the eventual converted datum. |
-| Source widgets, `Converter::native_widgets` and `object_attachments` | 27 retail paths in 262 owner/map rows, plus the a10 beam attachment. | **Built in code.** The converter binds antennas, light volumes, lightning, cloth and glow to their owners. The ignored disc test checks each binding through the public owner converter. Coordinator execution is pending. See [objects.md](objects.md#source-widgets) for native dispatch, physics and renderer evidence. |
-| Contrails, `Converter::contrail` | 265 map/contrail/physics rows formerly emitted a null `pphy`. Cold smoke, steam, vacuum and the Warthog antenna have corresponding point-physics records with differing coefficients on the two discs. | **Built.** The typed H2 definition receives source flags, mass, air/liquid buoyancy, density, drag, friction and restitution. Each contrail point names its own converted physics tag. |
-| Multiplayer starting equipment, `halo1::plan_starting_equipment` | Both H2 bases used one `multiplayer\\single_weapons\\smg` collection. Blood Gulch's CTF row instead names the assault rifle and pistol. Wizard has three distinct game-type rows. | **Built.** The H1 sandbox rebuilds its source rows, selector words, collections, weapons and weights. A native variant selector with no H1 weapon or vehicle is left unassigned. |
+| Source widgets, `Converter::native_widgets` and `object_attachments` | 27 retail paths in 262 owner/map rows, plus the a10 beam attachment. | **Built.** The converter binds antennas, light volumes, lightning, cloth and glow to their owners. The ignored disc test checks each binding through the public owner converter. See [objects.md](objects.md#source-widgets) for native dispatch, physics and renderer evidence. |
+| Contrails, `Converter::contrail` | 265 map/contrail/physics rows would emit a null `pphy` without it. Cold smoke, steam, vacuum and the Warthog antenna have corresponding point-physics records with differing coefficients on the two discs. | **Built.** The typed H2 definition receives source flags, mass, air/liquid buoyancy, density, drag, friction and restitution. Each contrail point names its own converted physics tag. |
+| Multiplayer starting equipment, `halo1::plan_starting_equipment` | Both H2 bases carry one `multiplayer\\single_weapons\\smg` collection. Blood Gulch's CTF row instead names the assault rifle and pistol. Wizard has three distinct game-type rows. | **Built.** The H1 sandbox rebuilds its source rows, selector words, collections, weapons and weights. A native variant selector with no H1 weapon or vehicle is left unassigned. |
 | Ordinary biped shields, `biped_rebuilt` | 55 biped/modifier rows name three `spla` tags. The H2 Chief uses `masterchief_plasma_shield_change_color_fp` and `masterchief_plasma_shield_change_color`; the Elite uses `elite_plasma_shield_fp` and `elite_plasma_shield`. | **Built.** Both ordinary shield views bind the source modifier through the model-material converter. All three source shaders use the Elite shield noise volume twice. The volume-plasma rebuild above draws them. |
 
 ### Sky clouds and unit voices
@@ -384,7 +384,7 @@ rule's pitch range within the donor sound. `0x219070` adds its relocated
 first range. Donor transplantation and gestalt compaction share the merge
 that carries those rules and timers with the rebuilt range order. Invalid
 rules and incompatible reuse identify the source sound and map.
-See [sounds.md](sounds.md#merging-a-moved-sound-h1soundsmerge_sound).
+See [sounds.md](sounds.md#merging-a-moved-sound-h1_assetssoundsmerge_sound).
 
 ### Dependencies kept from Halo 2
 
@@ -398,28 +398,29 @@ parent and Sentinel behavior style supply H2 engine behavior. H1 actor
 variants provide the concrete character. H2 asset mode retains its selected
 native units, weapons and vehicles, including assets from donor maps.
 
-`h1map`, `h1bitmaps`, `h1models` and `h1sky` read source data or write
-caller-supplied datums. `h1text` extends the destination locale table
-to keep IDs already referenced by engine tags. The HUD converter lives
-in `h1objects::h1hud`. It builds its primary `nhdt` and binds destination
-drawing programs. `h1scripts` emits relocation requests. Campaign resolves
+`h1map` and the `h1-assets` modules `bitmaps`, `models` and `sky` read
+source data or write caller-supplied datums. `h1_assets::text` extends the
+destination locale table to keep IDs already referenced by engine tags.
+The HUD converter lives in `h1objects::h1hud`. It builds its primary
+`nhdt` and binds destination drawing programs. `h1campaign::scripts` emits
+relocation requests. Campaign resolves
 those against the selected sandbox before installing the scenario.
 
 ### Rebuilt surface and particle draws
 
 - **Built. Textureless environment and glass.** On d40, `burnt flourescent off` is an opaque, lightmapped `senv`. H1 selects white for the absent base and neutral grey for detail at `0x774a2` and `0x77500`. The H2 opaque program uses its white, neutral detail and flat normal bitmaps. On a50 and d20, `covenant glass floor` is an `sgla` with a white background tint and zero reflection. H1 draws it with ZERO/SRC_COLOR/ADD at `0x68383..0x683db`. The rebuilt layer-15 pass multiplies destination RGB by white and preserves depth. Its only native program dependency is the H2 transparent mesh vertex declaration and transform.
 - **Built. Maximum-blend particles.** H1 `part +0xda = 6` selects ONE/ONE/MAX at `0x7f4e0`. The tables start at `0x1e9c0c`, `0x1e9c30` and `0x1e9c54`. At `0x66e45..0x67060` the source RGB is the sprite times vertex tint, optional secondary-map RGB, particle opacity and fog visibility. Only RGB is written. Across 47 source map/tag pairs, glass breakable uses the sprite UVs for its moving mask, glass death uses clip XY/W and glowingdrip goo has one sampler. H1 clamps both goo sequence phases to the bitmap’s only sprite at `0x10e217`. The authored vertex programs use H2 billboard declarations 7 and 8. Glass breakable aligns to velocity as in H1 `0x59291`. The H1 mirror flags at `0x10e9f9` and `0x10ea10` select the corresponding H2 random U/V mirrors. The single-sampler variant uses H2's existing particle vertex program for sprite placement, tint and fog. Mask motion follows H1 `0x56ff0` through the H2 periodic property evaluator.
-- **Built. Premultiplied ice particles.** All 23 retail maps contain `effects\particles\solid\ice`. Its former template, `particle_alpha_multiply_add`, is absent from Beaver Creek (11 source maps) and Coagulation (2). H1 XBE blend table entry 7 at `0x1e9c0c`, `0x1e9c30` and `0x1e9c54` selects ONE, ONE_MINUS_SRC_ALPHA and ADD. Its pixel-program branch at `0x67039` scales both RGB and alpha by particle opacity and fog visibility. The rebuilt pass samples the source sprite and moving screen-space mask on campaign and multiplayer. It adds source RGB to destination RGB scaled by one minus source alpha, preserving destination alpha.
+- **Built. Premultiplied ice particles.** All 23 retail maps contain `effects\particles\solid\ice`. The template `particle_alpha_multiply_add` is absent from Beaver Creek (11 source maps) and Coagulation (2). H1 XBE blend table entry 7 at `0x1e9c0c`, `0x1e9c30` and `0x1e9c54` selects ONE, ONE_MINUS_SRC_ALPHA and ADD. Its pixel-program branch at `0x67039` scales both RGB and alpha by particle opacity and fog visibility. The rebuilt pass samples the source sprite and moving screen-space mask on campaign and multiplayer. It adds source RGB to destination RGB scaled by one minus source alpha, preserving destination alpha.
 - **Built. Model bitmap permutations.** At `0xa2449..0xa246d` the geometry part selects its model shader entry, including the signed permutation at entry `+0x10`. A nonzero object texture override replaces it at `0xa25d1..0xa25ef`. The bitmap binder at `0x8038b` takes the remainder separately for each sampler. On b30 the five wall and ceiling light fixtures draw image zero and both floor fixtures draw image one of the same frame material. Each derived base includes the red reflection mask from the corresponding multipurpose image.
 
 The offline draw survey covered all ten campaign and thirteen multiplayer maps. The 2,301 particle tags contain 47 maximum-blend draws and 23 premultiplied draws. The 629 states in 199 particle systems contain neither blend. Glass breakable uses sprite coordinates with waveform 2 and a four-second period. Glass death and ice use screen coordinates with waveform 6 and a one-second period. Each has sprite sequences 0–3. The single unmasked goo uses sequence 0. All 12 fully textureless environment or glass shaders match the rebuilt layouts. Of 3,618 model material entries referencing environment or model shaders, 92 select multi-image bases across seven materials. All selected images satisfy the draw guards.
 
 ### Retail gaps that stop conversion
 
-No retail gap is open. The former sky cloud and `udlg` rows are built
-(see [Sky clouds and unit voices](#sky-clouds-and-unit-voices)), as are the
+No retail gap is open: the sky cloud and `udlg` rows
+([Sky clouds and unit voices](#sky-clouds-and-unit-voices)), the
 textureless and glass draws, maximum-blend particles and source widgets
-above.
+above are all built.
 
 The ignored `both_sandboxes_rebuild_every_retail_map` test attempts all 46
 conversions, collects individual map/sandbox errors and asserts that the
@@ -439,16 +440,12 @@ all supported object roots and their rebuilt dependencies on
 05a_deltaapproach, including objects reachable only by script.
 `ROLE_AUDIT_OUT` optionally names a Markdown output file.
 
-```sh
-H1_ISO="$PWD/disc/halo1.iso" H2_DISC="$PWD/disc/halo2.iso" H1_MAPS=all cargo test --release -p h1objects --test it role_audit_disc:: -- --ignored --nocapture
-```
+The test is `role_audit_disc` in `crates/tools/h1objects/tests/it.rs`,
+with `H1_ISO` and `H2_DISC` set to the two discs and `H1_MAPS=all`.
 
 The shader regressions cover the combiner equations, named conversion errors,
-all 21 affected material slots, and the a10 charger's scrolls and power colours. Run from the
-integrated checkout with `disc/` present.
-
-```sh
-cargo test --release -p h1bitmaps -p h1convert -p h1objects --lib
-cargo test --release -p h1objects --test it weapon_counter::
-H1_ISO="$PWD/disc/halo1.iso" H2_DISC="$PWD/disc/halo2.iso" cargo test --release -p h1objects --test it model_shaders_disc:: -- --ignored
-```
+all 21 affected material slots, and the a10 charger's scrolls and power
+colours: the `weapon_counter` and `model_shaders_disc` modules of the same
+`it` test binary (`model_shaders_disc` is ignored and needs the discs), and
+the `h1-assets` and `h1convert` library tests. Run the library tests with
+`cargo xtask test -p h1-assets -p h1convert -p h1objects`.

@@ -243,6 +243,14 @@ Halo 1 (Xbox) running in the Halo 2 engine: its data read from your own `halo1.i
 - [script-builtins.md](halo1/script-builtins.md): Halo 1 unit, object and miscellaneous script builtins: retail equivalents and the hooks on converted campaign maps (`boot::h1_script_builtins`)
 - [shared-map.md](halo1/shared-map.md): design for a shared Halo 1 cache and the Halo 1 sandbox on every map: the sandbox built once and added to a map as a layer, its raw in an appendix to `shared.map`'s offset space (not built)
 - Notes: [shared-map.md](halo1/notes/shared-map.md) (what the converted maps repeat, and the room in the shared caches)
+- Notes: [campaign.md](halo1/notes/campaign.md) (campaign conversion sizes, per-level counts, the stub survey and import timing)
+- Notes: [sky.md](halo1/notes/sky.md) (a10's grey slab under the space sky)
+- Notes: [sounds.md](halo1/notes/sounds.md) (the sound audit of a10 on the Delta Approach base)
+- Notes: [models.md](halo1/notes/models.md) (the model and animation round trips: skinning error, geometry error)
+- Notes: [objects.md](halo1/notes/objects.md) (game-run observations on converted Blood Gulch: ghost, scorpion treads, scenery bodies, leaf shaders)
+- Notes: [rebuild.md](halo1/notes/rebuild.md) (game runs on converted Blood Gulch behind the rebuilt vehicles, scenery and weapons)
+- Notes: [hud.md](halo1/notes/hud.md) (the reload warning's thresholds on a converted map)
+- Notes: [multiplayer.md](halo1/notes/multiplayer.md) (the teleporter receiver's brightness against Halo 1's)
 
 Reading and converting Halo 1 data:
 
