@@ -7,7 +7,8 @@ entries and the `firefight` feature that runs it, the agent API
 (FF5), the Game Setup row and options page, the HUD's mode blob, view and
 its HUD kit HUD (FF8), the mode state in the host log and the host log
 in films (AN14), and the dedicated host's whole-pack
-admission and bundled kits (FF10) are implemented, tests only. "Guest boundary" lists the runs that
+admission and bundled kits (FF10), and `h2 sim run` Firefight matches with
+the 30 s game-thread CPU p99 (FF11) are implemented, tests only. "Guest boundary" lists the runs that
 settle what the disassembly leaves open. Retail play and the network probes await verification.
 Code: `crates/formats/firefight` defines and validates wave sets, compiles
 a definition to the director's rules script (`src/script.rs`, run by
