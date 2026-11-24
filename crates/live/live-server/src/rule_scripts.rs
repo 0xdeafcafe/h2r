@@ -387,6 +387,15 @@ enum WireEvent {
         down: i32,
         up: i32,
     },
+    Launch {
+        player: u8,
+        #[serde(default)]
+        spot: Option<u32>,
+        speed: i32,
+    },
+    Grounded {
+        player: u8,
+    },
 }
 
 impl From<WireEvent> for Input {
@@ -425,6 +434,8 @@ impl From<WireEvent> for Input {
             }
             WireEvent::Damage { object, by, amount } => Input::Damage { object, by, amount },
             WireEvent::Touchdown { player, down, up } => Input::Touchdown { player, down, up },
+            WireEvent::Launch { player, spot, speed } => Input::Launch { player, spot, speed },
+            WireEvent::Grounded { player } => Input::Grounded(player),
         }
     }
 }
@@ -463,6 +474,8 @@ impl From<&Input> for WireEvent {
             },
             Input::Damage { object, by, amount } => WireEvent::Damage { object, by, amount },
             Input::Touchdown { player, down, up } => WireEvent::Touchdown { player, down, up },
+            Input::Launch { player, spot, speed } => WireEvent::Launch { player, spot, speed },
+            Input::Grounded(player) => WireEvent::Grounded { player },
         }
     }
 }

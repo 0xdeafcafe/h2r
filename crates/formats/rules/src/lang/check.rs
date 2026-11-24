@@ -3384,6 +3384,9 @@ impl<'s> Cx<'s> {
         if name == "message" {
             return self.message(args, pos, need_value);
         }
+        if name == "mark" {
+            return self.mark(args, pos, need_value);
+        }
         if let Some(why) = world_refusal(name) {
             self.err("name.unknown", pos, format!("{name} is not built: {why}"));
             return None;
@@ -3579,6 +3582,49 @@ impl<'s> Cx<'s> {
         }
         if self.expect(&args[1], Type::Text, Some("message")).is_some() {
             self.template(&args[1]);
+        }
+        Some(None)
+    }
+
+    /// `mark(wp, at)`: every viewer; `mark(wp, at, to)` with `to` a
+    /// player, a team or `all`, which names the waypoint's audience.
+    fn mark(&mut self, args: &'s [Expr], pos: Pos, need_value: bool) -> Option<Option<Type>> {
+        if need_value {
+            self.err("type.mismatch", pos, "mark has no value");
+            return None;
+        }
+        if args.len() != 2 && args.len() != 3 {
+            self.err(
+                "type.mismatch",
+                pos,
+                "mark takes 2 or 3 arguments: mark(wp, at) or mark(wp, at, to)",
+            );
+            return None;
+        }
+        let cap = "hud.waypoints";
+        if !self.required(cap) {
+            self.err("cap.missing", pos, format!("mark needs capability {cap}: add it to requires"));
+        }
+        self.used_caps.insert(cap.to_string());
+        self.expect(&args[0], Type::Int, Some("mark"));
+        self.expect(&args[1], Type::OBJECT, Some("mark"));
+        if let Some(to) = args.get(2) {
+            match &to.kind {
+                ExprKind::Name(n) if n == caps::EVERYONE => {}
+                ExprKind::None => {
+                    self.err("type.mismatch", to.pos, "mark is to a player, a team or all, not none")
+                }
+                _ => match self.expr(to, None) {
+                    Some(Type::H(Handle::Player | Handle::Team, false)) | None => {}
+                    Some(t @ Type::H(h @ (Handle::Player | Handle::Team), true)) => {
+                        self.mismatch(to, t, Type::H(h, false), Some("mark"));
+                    }
+                    Some(other) => {
+                        let m = format!("mark is to a player, a team or all, not {}", self.tn(other));
+                        self.err("type.mismatch", to.pos, m);
+                    }
+                },
+            }
         }
         Some(None)
     }

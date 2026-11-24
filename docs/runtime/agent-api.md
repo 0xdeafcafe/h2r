@@ -1494,6 +1494,17 @@ other drawn widgets the game keeps by the draw not read
 `_unlisted`), and lists or runs whose pass was not placed
 (`menu_refused_pass`;
 [native-post-hud.md](../graphics/native-post-hud.md#the-menus-on-the-overlay)).
+A list's scroll arrows and a button's image and label belong to the
+widget's claim. A failed glyph-page fill or bitmap decode leaves the
+whole run on the game renderer and counts under `menu_refused_pass`.
+An active model widget can contribute a camera and object handles to the
+scene overlay while its geometry draws in the nested model view.
+The blur under a dialog counts as `modal_blurs` where the overlay's blur
+replaced its quads, `modal_blur_replayed` where the game's quads were
+given back, `modal_blur_refused_pass` where the host did not arm it, and
+`modal_blur_refused_arguments`, `_steps`, `_combiner` and `_targets` for
+calls not read
+([the blur under a dialog](../graphics/native-post-hud.md#the-blur-under-a-dialog)).
 The object-shadow list, row gather and caster each count calls to their own
 entry ([native-light-gather.md](../graphics/native-light-gather.md), L7).
 `counters` is `null` where the frame-stats window is not running.
@@ -1827,7 +1838,7 @@ h2 agent render.parity '{"arm": true}'
 | `render.spawn_view` | act | `{index, yaw_offset?}` or `{reset: true}` | `{index, count, position: [x,y,z], yaw}` or `{reset: true}` |
 | `render.view` | act | `{eye: [x,y,z], yaw, pitch, fov?}` or `{reset: true}` | `{eye, yaw, pitch, fov}` or `{reset: true}` |
 | `render.capture` | read | `{tick?, pass?, lighting?, game_id?}` | `{path, tick, present, pass?, lighting?, scene_hash, source?}` |
-| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, carried_census?, carried_activation?, carried_checkpoint?, dump?, display_frame?, private_frame?}` |
+| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, carried_census?, carried_activation?, carried_checkpoint?, visibility_first_mismatch?, dump?, display_frame?, private_frame?}` |
 | `render.parity` | act | `{arm: true}` | `render.compare`'s fields plus `tick` |
 | `sim.hashes` | read | `{from_tick?, max?}` | `{rows: [{tick, gameplay, arena?}], dropped, resets, truncated?}` |
 
@@ -1974,16 +1985,34 @@ h2 agent render.parity '{"arm": true}'
   positions through, `view` has the view's verified projection block
   and viewport, and `unknown` covers the other draws. The map is
   empty for other view kinds or without a retained matching scene.
-  For a game view, `visibility_clusters` counts the guest visibility list
-  and `structure_clusters` counts the subsequent BSP structure list. Both
-  fields are absent if extraction cannot read the main gather at layer 3.
+  For a game view, `visibility_clusters` counts the visible clusters,
+  `structure_clusters` the subsequent BSP structure list and
+  `visibility_objects` the view's object list; `visibility_source` is
+  `rust` when the Rust visibility equalled the guest's for the view and
+  supplied the clusters and objects, `guest` otherwise
+  ([native-visibility.md](../graphics/native-visibility.md)). All four
+  are absent if extraction cannot read the main gather at layer 3.
   A zero is a successfully read empty list. With `{"dump":true}`, the scene
-  file has the ordered BSP cluster IDs in `cluster_gathers[i].visible` and
-  `.structure` for `views[i]`. Its `mode` is 0 for a portal flood, 1 for
-  a sphere and 2 for all clusters. The view's `clusters` range selects the
+  file has the BSP cluster IDs in `cluster_gathers[i].visible`, the
+  object handles in `.objects` (the guest's order, or ascending when
+  `.source` is `rust`) and `.structure` for `views[i]`. Its `mode` is 0
+  for a portal flood, 1 for a sphere and 2 for the potentially visible
+  set. The view's `clusters` range selects the
   layer-3 IDs from the top-level `clusters` array. `views[i].camera` gives
   the vertical FOV in radians, guest projection terms and viewport.
+  `visibility_first_mismatch` names the first game view since the map
+  loaded whose Rust visibility differed from the guest's: its key, frame
+  and tick, the first difference (`cluster 12 guest only`, `object
+  0x00050002 rust only`) and the counts each way.
   The top-level `counters` include
+  the visibility differential's `scene_visibility_checked` (game views
+  whose Rust sets were made and compared), `scene_visibility_equal`,
+  `scene_visibility_differ`, `scene_visibility_clusters_differ`,
+  `scene_visibility_objects_differ`, `scene_visibility_rust_taken` (views
+  that carry the Rust sets), `scene_visibility_ns` (time in the Rust
+  computation) and `scene_visibility_declined_<reason>` (`unread`,
+  `layout`, `mode`, `frusta`, `overflow`, `computed_pvs`, `camera`,
+  `not_main`: views it made no sets for). They also include
   (`scenes_sealed`, `scenes_unsealed`, `scene_views`, `scene_no_camera`,
   `scene_refused_writes`, `scene_layers`, `scene_layer_items`,
   `scene_layer_remainder`, `scene_layers_unread` (layer draws whose list
@@ -2321,8 +2350,8 @@ h2 agent render.residual '{"top": 500}'        # the last finished window
   its words were written. `status` is `native` or `d3d` from the
   registry, and `partial` for a layer draw a native stage draws some
   items of from the scene, skipping their guest draws
-  (`residual_census::PARTIAL_LAYERS`: the scene's layers 1, 3, 5, 7, 8
-  and 20 and the first person's 1, 3, 7, 8 and 20); its `residual` is
+  (`residual_census::PARTIAL_LAYERS`: the scene's layers 1, 2, 3, 5, 7,
+  8, 17 and 20 and the first person's 1, 2, 3, 7, 8 and 20); its `residual` is
   what the stages left. `slot` is the carried slot the work lands in. `guest_ms` is
   the producer's exclusive time less its D3D time, `null` without
   `render-timing`; it ranks producers and is not a frame time.
@@ -4749,7 +4778,7 @@ feature is enabled.
 | Method and access | Parameters | Result |
 |---|---|---|
 | `forge.status` (read) | `{}` or omitted | The local session, role, log head, budget, monitor camera, aimed and held IDs, screen and focus, pending call or file work, and last notice. Tool settings: `rotation_snap` (degrees), `movement_snap` (world units, 0 for off) and `axes` (`world` or `local`). `overlays`: each overlay (`markers`, `monitors`, `gizmo`, `nav`) to whether it is on. Links fields: `tool` (`objects` or `links`), `aimed_link` and `link_from` (`{teleporter: flag}` or `{object: id}`), `teleporters` (`{flag, sender, channel, position}` with the channel the document gives), `links` (`{id, kind:"teleporter", sender, receiver, channel}` or `{id, kind:"device", machines, applies:"rebuild"}`, final indices) and `pending_rebuild`, the active device links. Palette fields: `palette` (the Objects palette's item count) and `palette_refused` (each scenario palette entry left out, as `"path: reason"`). `parked`: the hex handle of the biped the monitor parks and hides, or `null` while none is. Groups fields: `groups` (`{id, name, locked, pivot, members}`, `pivot` `centre` or `first`, `members` the things' endpoints) and `selection` (the endpoints chosen to group). Labels and prefabs: `labels` (`{thing, text, number}`, the active labels) and `prefabs` (`{name, pieces, grouped, fits, reason}`, the saved prefabs, and why one is refused on this map). Things fields: `aimed_thing` and `held_thing`, the thing's endpoint as `forge.things` gives it (an own entry's or an added one's; `aimed` and `held` are an added object's op ID only), `game` (the variant record's engine index the tool reads, or `null`) and `show` (`this_game_type` or `all_game_types`). `variant`: `{name, title, id, tier, dirty}`, the session's document as a map variant saves it: `name` the file it was saved or loaded as (`null` before), `id` the play form's identity (`null`, with `id_refused`, when it does not compute), `tier` `variant` or `map`, and `dirty` edits since the last save or load. `ground`: `{state, building, available, loaded, markers, problems, zones?, squads?}`, the AI ground in brief (`forge.ground` has the rest): `state` is `not_built`, `current` or `stale`, `available` whether this game has a builder, `loaded` whether the last build's map is the running one, `markers` how many labels are placed and `problems` how many labels the last build could not honour. `nav`: `{state, available, generating, problems, sectors?, out_of_map?}`, the last **Generate nav** in brief (`forge.nav` has the rest). An inactive session returns `{session:"inactive", reason}` |
-| `forge.ground` (read) | `{}` or omitted | The AI ground (docs/game/forge-map-variants.md, "AI ground"): `{state, building, available, loaded, recipe, counts, markers, problems, report}`. `state` is `not_built`, `current` or `stale`; `building` is true while a build runs (edits wait for it); `available` is whether this game has a builder; `loaded` is whether the last build's map is the running one (false while the game cannot load a built map). `recipe` is `{kit_version, home, probe}` or null before the first build. `counts` maps each label (`ff_drop`, `ff_base`, `ff_cover`, `siege_site`, `siege_goal`, `siege_line`) to how many are placed, and `markers` lists them as `{id, label, number, position, facing, team}`. `problems` is each label the last build could not honour, `{label, position, reason}`. `report` is null before a build, else `{zones, squads, problems, receipt}`, with `receipt` `{base, labels, kit_version}` as hex digests of the inputs the build covers |
+| `forge.ground` (read) | `{}` or omitted | The AI ground (docs/game/forge-map-variants.md, "AI ground"): `{state, building, available, loaded, recipe, counts, markers, problems, report}`. `state` is `not_built`, `current` or `stale`; `building` is true while a build runs (edits wait for it); `available` is whether this game has a builder; `loaded` is whether the last build's map is the running one (false while the game cannot load a built map). `recipe` is `{kit_version, home, probe}` or null before the first build. `counts` maps each label (`ff_drop`, `ff_base`, `ff_cover`, `siege_site`, `siege_goal`, `siege_line`, `siege_barrier`) to how many are placed (a `siege_barrier` is a label on a placed object, not a flag, so it is counted and is not in `markers`), and `markers` lists the flags as `{id, label, number, position, facing, team}`. `problems` is each label the last build could not honour, `{label, position, reason}`. `report` is null before a build, else `{zones, squads, problems, receipt}`, with `receipt` `{base, labels, kit_version}` as hex digests of the inputs the build covers |
 | `forge.ground.build` (act) | `{if_stale?}` or omitted | **Build AI ground**, or with `if_stale: true` **Test waves** (build only when the ground is stale or was never built). Answers when the build has ended with `forge.ground`'s reply plus `built`, whether it built. The build runs off the game thread over a copy of the session, and edits wait meanwhile. Refused as `forge_refused` when this game has no builder (`This game cannot build AI ground.`), in a shared session, while another edit or file job waits, and with the build's own sentence when it fails (a map with no room for the ground names its cost and its biggest part); a failed build changes nothing |
 | `forge.nav` (act) | `{generate?}` or omitted | **Generate nav** ([forge-nav.md](../game/forge-nav.md)): `{state, available, generating, counts, problems, overlay}`. `state` is `not_built`, `current` or `stale`; `available` is whether this game has a generator; `generating` is true while one runs (edits wait for it). `counts` is null before a generation, else `{sectors, links, out_of_map, solids}`, `links` mapping each link kind (`walk`, `drop`, `jump`, `crouch_jump`, `teleporter`, `lift`, `elevator`) to its count. `problems` lists `{kind, what, position, reason}`, `kind` one of `start_off_mesh`, `teleporter_off_mesh` and `solid_left_out`. `overlay` lists `{kind, a, b}` lines: each sector's sides (`sector`, or `out_of_map` where no start reaches) and each link but a walk, by its kind. With `generate: true` (a local multiplayer tick) it generates first and answers when it has ended; refused as `forge_refused` when this game has no generator (`This game cannot generate nav.`), in a shared session, while another edit or file job waits, and with the generator's sentence when it fails; a failed generation changes nothing |
 | `forge.things` (read) | `{kind?, changed?}` or omitted | `{things, left_out}`. `things` is every thing of the session (the map's own entries in block and index order, then the added ones), or those of one `kind` (`object`, `item_spawner`, `starting_point`, `goal`, `teleporter`), or with `changed` those an entry op changes (`true`, which includes every added one) or not (`false`). Each is `{id, block, kind, own, changed, position, rotation, fields}`: `id` is the endpoint an entry op's `target` names, `{base:{block, index, print}}` or `{added: op}`; `fields` maps each layout field name to its value as the document writes one. Each netgame flag also has `area` in the document spelling, or `null` for an unshaped flag. An active area marks its flag as changed. A removed entry is not listed. `left_out` is each block of the map that did not read, as `"block: reason"`; its entries are not things |
@@ -4831,7 +4860,14 @@ carries its name in `data.code` (`agent_proto::forge::refusal`):
 | `forge_was` | the target's value is not the one `was` names |
 | `forge_left_out` | the entry's block did not read when the session opened (`forge.things` `left_out`) |
 | `forge_object_gone`, `forge_object_kind`, `forge_object_held` | the game call's: the live object no longer resolves, its block has no live objects, or the own entry's object is held or attached |
+| `forge_no_kit` | an add or a drop of a starting location, netgame flag or netgame equipment row, on a map whose next row is not in the kit's spare form: the map has no kit (or its spare rows are used) |
 | `forge_refused` | any other: the message says why |
+
+A kit session adds those rows: the document's `Add` of such an entry is
+one `Add` base step, which writes the block's next spare row and raises
+its root count, and its removal or undo is one `Drop` step, which writes
+the spare form back and lowers the count (`agent::forge::base`). A batch
+is checked in order; a refusal changes nothing.
 
 An area op names a netgame flag, own or added, and sets its
 [document area](../game/gametype-markers.md#in-the-document). Send
@@ -5389,15 +5425,16 @@ h2 agent theater.play '{}' --socket "$film_run/play.sock"
 
 ## `collision`: the native collision world
 
-The collision switch enables counters for native entries A, B and F, and
+The collision switch enables counters for native entries A, B and F,
 before-call observers for the lifted vector and instance traces C–E, the
-cluster flood G and the object visit H. The game
+cluster flood G and the object visit H, and the parity arm of the lifted
+general MOPP ray I. The game
 method reads process counters at a tick boundary. The entry addresses and
 bail reasons are in [collision-queries.md](../engine/collision-queries.md).
 
 | Method | Access | Params and result |
 |---|---|---|
-| `collision.stats` | read | No parameters. Returns `switch`, `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `mopps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, and `precision` (aggregate single, reserved, double and extended x87 calls at C and D). |
+| `collision.stats` | read | No parameters. Returns `switch`, `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `mopps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, `precision` (aggregate single, reserved, double and extended x87 calls at C and D), and `ray` (I's parity arm, below). |
 
 Each row in `entries` gives the `name` and eight-digit guest `addr`, the
 count of `native` answers, and `bails` by reason. Two frequency maps count
@@ -5405,8 +5442,8 @@ the control words at entry, including calls that fall back at the first
 environment check. Keys are lowercase hexadecimal strings with leading
 zeros: eight digits for `mxcsr` and four for `x87_control`. Each value is
 a call count. Each map counts its own register independently. For
-`vector_test`, `vector_context`, `instance_trace`, `cluster_flood` and
-`object_visit`, only the frequency maps accumulate; `cluster_flood` also
+`vector_test`, `vector_context`, `instance_trace`, `cluster_flood`,
+`object_visit` and `mopp_ray`, only the frequency maps accumulate; `cluster_flood` also
 counts the flood's recursive entries. An image without an observed entry
 leaves its row empty. `array_bytes` counts the decoded BSP allocations, the
 packed cluster table, the portal graph and the decoded MOPP trees (`mopps`
@@ -5417,6 +5454,15 @@ capacity. `budget_bytes` limits that total to 8 MiB per loaded map.
 `cluster_budget_reads` counts lookups that need the live cluster word
 because the packed table would exceed the budget. Sample before and after
 a scenario and subtract the counters to isolate that run.
+
+`ray` counts the MOPP ray queries the native walk followed while the
+guest answered them: `matched` (every interpreter call, and every key
+where the instanced collection shows it, equal), `mismatched` with
+`first_mismatch` describing the first since start (the observation index
+and both sides), `unverified` by bail reason (the walk could not follow
+the query exactly, or its environment is one it does not model), and
+`fraction_moved` (no key was visible and a terminal lowered the fraction).
+Parity is `mismatched` zero over a match.
 
 ```sh
 h2 agent collision.stats

@@ -5,6 +5,9 @@
 mod bar;
 pub mod browser;
 mod doc_tabs;
+mod doc_header;
+#[cfg(test)]
+pub(crate) use doc_header::crumbs as doc_header_crumbs;
 mod game_view;
 mod layout;
 mod toolbar;
@@ -22,7 +25,7 @@ mod preview_switch;
 mod sound;
 pub(crate) mod sky;
 pub(crate) mod anim;
-mod announcer;
+mod voices;
 pub mod scripts;
 pub mod tags;
 mod ui_screens;
@@ -114,8 +117,8 @@ pub struct Studio {
     sound: sound::SoundUi,
     /// The Animation window over the Tags tool's selected `jmad`.
     anim: anim::AnimUi,
-    /// The Voices window (View > Voices): the announcer and the clones.
-    announcer: announcer::AnnouncerUi,
+    /// The voice document (`Doc::Voice`): the announcer and the clones.
+    voices: voices::VoicesUi,
     /// The tag workspace's start page and status-line bar
     /// (`app::workspace`).
     workspace: workspace::WorkspaceUi,
@@ -156,7 +159,7 @@ impl Studio {
             map_list: map_list::MapListUi::default(),
             sound: sound::SoundUi::new(),
             anim: anim::AnimUi::default(),
-            announcer: announcer::AnnouncerUi::default(),
+            voices: voices::VoicesUi::default(),
             workspace: workspace::WorkspaceUi::default(),
         }
     }
@@ -270,7 +273,7 @@ impl Studio {
         sound::window(ui, app, gpu, &mut self.sound);
         // The same seam for model poses (that page's slice M1).
         anim::window(ui, app, gpu, &mut self.anim);
-        announcer::window(ui, app, &mut self.announcer, self.dialogs);
+        voices::window(ui, app, &mut self.voices, self.dialogs);
         // The tag workspace's first-start page (a floating window; the
         // shell is another lane's).
         workspace::start_page(ui, app, &mut self.workspace, &self.fonts, self.dialogs);
@@ -506,10 +509,6 @@ impl Studio {
             }
         }
         if let Some(_m) = ui.begin_menu("View") {
-            // No Editors submenu: an editor with no document open is
-            // reached from its asset, not from a menu
-            // (docs/editor/studio-flow.md, "One way in"). **View >
-            // Voices** goes when the voice document is built (slice FL5).
             menu_action(ui, app, MenuCommand::FrameAll, Some(icon::MAXIMIZE), false, actions);
             menu_action(ui, app, MenuCommand::FocusSelected, Some(icon::FOCUS), false, actions);
             ui.separator();
@@ -554,13 +553,6 @@ impl Studio {
             }
             menu_action(ui, app, MenuCommand::Overlay, None, app.overlay_shown(), actions);
             ui.separator();
-            if ui.menu_item_enabled_selected_no_shortcut(
-                format!("{} Voices", icon::SOUND),
-                self.announcer.open,
-                true,
-            ) {
-                self.announcer.open = !self.announcer.open;
-            }
             if ui.menu_item("Reset layout") {
                 self.reset_layout = true;
             }
@@ -692,14 +684,24 @@ impl Studio {
         ui.window(&keys.list)
             .build(|| variants::list(ui, app, st, fonts, actions));
         ui.window(&keys.center)
-            .build(|| variants::settings(ui, app, st, fonts, actions));
+            .build(|| {
+                if app.front_doc() != Some(crate::app::Doc::Rules) {
+                    doc_header::draw(ui, app, actions, &mut self.browser);
+                }
+                variants::settings(ui, app, st, fonts, actions);
+            });
         ui.window(&keys.inspector)
             .build(|| variants::inspector(ui, app, st, fonts, self.dialogs, actions));
         // Docked beside the settings, but never takes the tab from them
         // when it first appears; it is opened by picking its tab.
         ui.window(&self.keys.rules)
             .flags(dear_imgui_rs::WindowFlags::NO_FOCUS_ON_APPEARING)
-            .build(|| game_script::window(ui, app, fonts, self.dialogs));
+            .build(|| {
+                if app.front_doc() == Some(crate::app::Doc::Rules) {
+                    doc_header::draw(ui, app, actions, &mut self.browser);
+                }
+                game_script::window(ui, app, fonts, self.dialogs);
+            });
         // Opening a script (from its toolbar or `rules.open`) picks its tab,
         // asked each frame until the window's body has drawn: a request
         // made before the dock layout exists is lost.
@@ -716,7 +718,10 @@ impl Studio {
         ui.window(&keys.list)
             .build(|| playlists::list(ui, app, fonts, dialogs, actions));
         ui.window(&keys.center)
-            .build(|| playlists::entries(ui, app, fonts, actions));
+            .build(|| {
+                doc_header::draw(ui, app, actions, &mut self.browser);
+                playlists::entries(ui, app, fonts, actions);
+            });
         let st = &mut self.playlists;
         ui.window(&keys.inspector)
             .build(|| playlists::inspector(ui, app, st, fonts, dialogs, actions));
@@ -736,7 +741,10 @@ impl Studio {
             .build(|| ui_screens::tree(ui, app, st, fonts, actions));
         ui.window(&keys.center)
             .flags(WindowFlags::HORIZONTAL_SCROLLBAR)
-            .build(|| ui_screens::preview(ui, app, st, gpu, actions));
+            .build(|| {
+                doc_header::draw(ui, app, actions, &mut self.browser);
+                ui_screens::preview(ui, app, st, gpu, actions);
+            });
         ui.window(&keys.inspector)
             .build(|| ui_screens::inspector(ui, app, st, fonts, self.dialogs, actions));
     }
@@ -749,7 +757,10 @@ impl Studio {
             .build(|| hud::tree(ui, app, st, fonts, actions));
         ui.window(&keys.center)
             .flags(WindowFlags::HORIZONTAL_SCROLLBAR)
-            .build(|| hud::preview(ui, app, st, fonts, gpu, actions));
+            .build(|| {
+                doc_header::draw(ui, app, actions, &mut self.browser);
+                hud::preview(ui, app, st, fonts, gpu, actions);
+            });
         ui.window(&keys.inspector)
             .build(|| hud::inspector(ui, app, st, fonts, self.dialogs, actions));
     }
@@ -762,7 +773,10 @@ impl Studio {
             .build(|| textures::list(ui, app, st, actions));
         ui.window(&keys.center)
             .flags(WindowFlags::HORIZONTAL_SCROLLBAR)
-            .build(|| textures::canvas(ui, app, st, fonts, gpu, actions));
+            .build(|| {
+                doc_header::draw(ui, app, actions, &mut self.browser);
+                textures::canvas(ui, app, st, fonts, gpu, actions);
+            });
         ui.window(&keys.inspector)
             .build(|| textures::inspector(ui, app, st, self.dialogs, actions));
     }
@@ -1006,6 +1020,7 @@ impl Studio {
         ui.window(&self.keys.viewport)
             .flags(WindowFlags::NO_SCROLLBAR | WindowFlags::NO_SCROLL_WITH_MOUSE)
             .build(|| {
+                doc_header::draw(ui, app, actions, &mut self.browser);
                 if map_is_visible(app) {
                     toolbar::draw(ui, app, viewport, actions, &mut self.hint);
                     viewport.draw(ui, app, gpu, actions);

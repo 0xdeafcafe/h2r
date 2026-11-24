@@ -440,7 +440,9 @@ fn a_clone_stamp_copies_the_pixels_at_the_offset() {
             assert_eq!(c.pixel(x, y), [x as u8 - 4, y as u8, 7, 255], "{x},{y}");
         }
     }
-    assert_eq!(c.pixel(7, 1), [3, 1, 7, 255]);
+    // The rim pixel is the brush's anti-aliased edge: half the source
+    // over what was there, in linear light.
+    assert_eq!(c.pixel(7, 1), [5, 1, 7, 255]);
     // Past the source's edge (no pixel at x = -1) and outside the stamp,
     // the pixels are as they were.
     assert_eq!(c.pixel(3, 1), [3, 1, 7, 255]);

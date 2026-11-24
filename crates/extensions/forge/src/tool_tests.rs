@@ -647,3 +647,64 @@ fn overlays_start_on_and_the_action_opens_their_page() {
         "the Links tool has the same button"
     );
 }
+
+/// Reset orientation (Properties) sets what is held upright at the yaw
+/// the editor's snap rounding gives, and `take_up` holds a thing at once
+/// where it was made, as Duplicate's copy is.
+#[test]
+fn reset_orientation_uprights_the_hold_and_take_up_holds_a_new_thing() {
+    let (mut session, mut tool, first) = things_map();
+    assert_eq!(
+        aim_from(&session, &mut tool, [2., -4., 0.], 0., None),
+        Some(first.identity())
+    );
+    tool.update(&session, 3, press(Action::Accept)).unwrap();
+    assert!(tool.held_thing.is_some());
+    let turn = Input {
+        rotating: true,
+        look: [0.5, 0.3],
+        ..Default::default()
+    };
+    tool.update(&session, 4, turn).unwrap();
+    assert_ne!(tool.ghost.unwrap().rotation, [0.; 3]);
+    tool.set_orientation(0.75);
+    assert_eq!(tool.ghost.unwrap().rotation, [0.75, 0., 0.]);
+    let Command::MoveThing { frame, .. } = tool
+        .update(&session, 5, press(Action::Accept))
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("the drop")
+    };
+    assert_eq!(frame.rotation, [0.75, 0., 0.], "the reset is what drops");
+    // The copy of another object is held where the add put it.
+    let mut world = base::Fake::default();
+    let second = session
+        .place(
+            &mut world,
+            6,
+            0,
+            Frame {
+                position: [0., 0., -4.],
+                rotation: [0.; 3],
+            },
+        )
+        .unwrap();
+    let at = Frame {
+        position: [1., 0., -3.],
+        rotation: [0.25, 0., 0.],
+    };
+    tool.take_up(&session, Endpoint::Added(second), Some(second), at);
+    assert_eq!(tool.held_thing, Some(Endpoint::Added(second)));
+    assert_eq!(tool.held, Some(second));
+    assert_eq!(tool.ghost.unwrap().rotation, [0.25, 0., 0.]);
+    let Command::Move { id, frame } = tool
+        .update(&session, 7, press(Action::Accept))
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("the drop of the copy")
+    };
+    assert_eq!(id, second);
+    assert_eq!(frame.rotation, [0.25, 0., 0.]);
+}

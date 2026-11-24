@@ -233,7 +233,7 @@ hundred kilobytes at most (**Estimate**).
 | Gels | the template and quad sites | carried, then typed | 6, 9 |
 | Transparents | the sorted list `0x0001e370` dispatches | carried, then typed | 6, 9 |
 | Decals, particles, contrails, effects | the producers' draws | carried, then typed | 6, 9 |
-| Sky, layer 2, layers 15, 18, 19, 21 | their draws | carried | 6 |
+| Sky, the alternate view's layer 2, layers 15, 18, 19, 21 | their draws | carried | 6 |
 | Lens flares and their visibility tests | the flare writer `0x00020bb0` and reader `0x00020770` | typed (a native query) | 6 |
 | HUD, menus, loading screens, movies | the UI dispatch `0x00147af1`, the fallback view `0x002232a0` | carried | 6 |
 
@@ -514,7 +514,7 @@ costs the most guest time" where it is not.
 | 1 | Camera, world layer 3, objects | read guest at the layer hook, game-thread prepare, packets | typed; render-thread prepare | none yet (masks stay while there is a remainder) | 1, 2 |
 | 2 | Object-walk remainder | about 14 objects a frame through D3D | typed (`PartFlags`) | the layer-3 geometry handlers for objects | 3 |
 | 3 | First person | per-item replacement at issue | typed | the layer-3 call in `0x0003fdf0` | 3 |
-| 4 | World layers 1, 5, 7, 8, 20 and 17 | recorded at the resolved draw | typed | those layers' draws | 3 |
+| 4 | World layers 1, 5, 7, 8, 20, 2 and 17 | recorded at the resolved draw | typed | those layers' draws | 3 |
 | 5 | Lights and shadows | admitted per packet; some lights refused | typed, shadows batched in one pass sequence | the light pass `0x00031c80` and the shadow layers | 3 |
 | 6 | Opaque block as a whole | mask bits edited and restored | whole-call replacement | `LAYER_DRAW` for layers 1, 3, 5, 7, 8, 20 | 4 |
 | 7 | Fog, water | native passes at their layer hooks | typed | layers 16 and 6 | 5 |
@@ -1015,13 +1015,13 @@ to the guest's draws (**Code**):
     `boot::native_layers_glue`). At the world's load (only with the
     stage placed; `native_render::layers_load::load`, which reads the
     map file alone, so the editor loads the same layers) each world
-    material's passes of each of the five
-    layers are compiled as the fog's layer 16 is (`fog_gpu::layer_passes`,
+    material's passes of each layer the plan takes (1, 5, 7, 8 and 20,
+    the overlay layer 2 and layer 17: `layer_pass::planned_layers`) are compiled as the fog's layer 16 is (`fog_gpu::layer_passes`,
     `FogProgram`), all or nothing per material and layer, and each
     material is resolved once with its instance's properties and input
     scales; `GpuWorld::set_layer` holds one `fog_gpu::FogSet` per layer.
-    The object models compile their materials' passes of layers 1, 5,
-    7, 8 and 20 at load with their layer-3 passes
+    The object models compile their materials' passes of layers 1, 2,
+    5, 7, 8, 17 and 20 at load with their layer-3 passes
     (`object_program_gpu::lit_model`, `object_program::object_layer_pass`:
     over the same buffers, the pass's blend kept for its pipeline, no
     lightmap stage, since outside layer 3 the geometry draw binds no
@@ -1038,9 +1038,11 @@ to the guest's draws (**Code**):
     section's registers only, and the program carries what the stream
     feeds (`PrtInput`).
     Before a scene view's layer draw (`layer_site` is `Site::Scene`; the
-    late layer 17 at `0x0002c30b` among them, `layer_pass::BLOOM_LAYER`),
-    before the first person's layers 1, 7, 8 and 20 (`Site::FirstPerson`;
-    its layer 3 is `native_first_person`'s), and before the sorted
+    overlay layer 2 after the dynamic lights at `0x0002c060`,
+    `layer_pass::OVERLAY_LAYER`, and the late layer 17 at `0x0002c30b`,
+    `layer_pass::BLOOM_LAYER`, among them), before the first person's
+    layers 1, 7, 8, 20 and 2 (`Site::FirstPerson`, its layer 2 returning
+    to `0x00040289`; its layer 3 is `native_first_person`'s), and before the sorted
     transparent list's camouflage layers 18 and 19 and hologram layer 21 (`sorted_site`,
     [native-water-fog.md](native-water-fog.md)), the bridge extracts the
     layer's pass from guest memory and the host plans it

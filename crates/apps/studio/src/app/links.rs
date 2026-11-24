@@ -8,10 +8,11 @@
 //!
 //! | Asset | Uses | Used by |
 //! |---|---|---|
-//! | a tag | the tags it references (role of the target's kind); for a dialogue sound, the voice that says it | the tags that reference it; the packages that edit or add it |
+//! | a tag | the tags it references (role of the target's kind); for a dialogue sound, the voice that says it | the tags that reference it; the packages that edit or add it (and, as `changed_by`, the packages that patch it in load order) |
 //! | a `rules` or `variant` item | (a variant) the `rules` items of its key | (a script) the `variant` items of its key |
 //! | any other item | the tag it adds or edits | its package |
 //! | a package | its items, the packages it `requires` | the packages that require it |
+//! | a voice | | the dialogue sounds its rules pick, and (from the batch) the lines it made |
 //!
 //! A `rules` item and a `variant` item of one script share the file stem
 //! the registry keys them by (`rules::builtin::package_sources`); that
@@ -28,6 +29,7 @@ use tags::repo::{Body, TagKey, TagRepo, TagSource, Value as FieldValue};
 
 use super::assets::{AssetId, kind_of, overlay, tag_id};
 use super::kinds::{self, Editor};
+use super::mods::{ChangedBy, changed_by};
 use crate::voice::dataset::{CHARACTERS, Rules, is_dialogue};
 
 /// One link: the asset at its end, the plain word the menu groups it by
@@ -53,6 +55,9 @@ pub struct EditorRow {
 pub struct Links {
     pub uses: Vec<Link>,
     pub used_by: Vec<Link>,
+    /// A tag: the packages with a patch on it, in load order, with each
+    /// field's value and whether it wins (`app::mods::changed_by`).
+    pub changed_by: Vec<ChangedBy>,
     pub editors: Vec<EditorRow>,
     /// What could not be read, one line each: a tag file that does not
     /// decode, a missing tree. The answer is whole for everything else.
@@ -70,6 +75,7 @@ impl Links {
             "asset": asset,
             "uses": rows(&self.uses),
             "used_by": rows(&self.used_by),
+            "changed_by": self.changed_by.iter().map(ChangedBy::json).collect::<Vec<_>>(),
             "editors": self.editors.iter().map(|e| json!({
                 "id": e.id,
                 "label": e.label,
@@ -149,7 +155,7 @@ fn refs_of(repo: &mut TagRepo, key: &TagKey) -> Result<Vec<(TagKey, String)>, St
 
 /// The voice that says a dialogue sound: the first character whose rules
 /// pick its path.
-fn voice_of(path: &str) -> Option<&'static str> {
+pub(crate) fn voice_of(path: &str) -> Option<&'static str> {
     if !is_dialogue(path) {
         return None;
     }
@@ -247,6 +253,7 @@ fn tag_links(tags_root: &Path, set: &GameSet, key: &TagKey) -> Links {
             via: "dialogue rules".to_owned(),
         });
     }
+    out.changed_by = changed_by(set, key, None, None);
     let o = overlay(set);
     for (word, by) in [("adds", &o.added), ("edits", &o.edited)] {
         for (package, _) in by.get(key).into_iter().flatten() {
@@ -440,14 +447,147 @@ fn package_links(set: &GameSet, id: &str) -> Result<Links, String> {
     Ok(out)
 }
 
+/// A voice: the dialogue sounds of the tree whose paths its rules pick
+/// (used by: the sounds it says), and the voice document as its editor.
+/// The lines it made are the batch's, which the caller adds
+/// (`App::asset_links`).
+fn voice_links(tags_root: &Path, id: &str) -> Links {
+    let mut out = Links {
+        editors: vec![EditorRow {
+            id: "voices",
+            label: "Voice",
+            why_not: None,
+        }],
+        ..Links::default()
+    };
+    match TagRepo::open(tags_root) {
+        Ok(repo) => {
+            for key in repo.keys() {
+                if fourcc_text(key.group) == "snd!" && voice_of(&key.path) == Some(id) {
+                    out.used_by.push(Link {
+                        asset: tag_id(&key),
+                        role: "Sounds",
+                        via: "dialogue rules".to_owned(),
+                    });
+                }
+            }
+        }
+        // A voice is read from the data root; a missing tree only means
+        // there are no sounds to list.
+        Err(_) => {}
+    }
+    out
+}
+
 /// `asset.links`: the answer for `id`.
 pub fn links(tags_root: &Path, set: &GameSet, id: &AssetId) -> Result<Links, String> {
     let mut out = match id {
         AssetId::Tag(key) => tag_links(tags_root, set, key),
         AssetId::Item(package, n) => item_links(set, package, *n)?,
         AssetId::Package(p) => package_links(set, p)?,
+        AssetId::Voice(v) => voice_links(tags_root, v),
     };
     sort(&mut out.uses);
     sort(&mut out.used_by);
     Ok(out)
+}
+
+/// The `item:` id of the first item of `kind` in a package that is on whose
+/// source is named `name`: by its script key (`hill` for
+/// `scripts/hill.variant.rules`) or its file name, without regard to case.
+pub fn item_id(set: &GameSet, kind: ItemKind, name: &str) -> Option<String> {
+    for entry in &set.on {
+        for (n, item) in entry.loaded.package.manifest.items.iter().enumerate() {
+            let source = item.source.as_deref().unwrap_or("");
+            let file = source.rsplit('/').next().unwrap_or(source);
+            if item.kind == kind
+                && (script_key(source).eq_ignore_ascii_case(name) || file.eq_ignore_ascii_case(name))
+            {
+                return Some(format!("item:{}:{n}", entry.loaded.package.name()));
+            }
+        }
+    }
+    None
+}
+
+/// What a package item is called in a header's path: its kind word and its source.
+pub fn item_label(set: &GameSet, package: &str, n: usize) -> Option<(String, String)> {
+    let entry = set.on.iter().find(|e| e.loaded.package.name() == package)?;
+    let item = entry.loaded.package.manifest.items.get(n)?;
+    Some((format!("{:?}", item.kind).to_lowercase(), item.source.clone().unwrap_or_default()))
+}
+
+impl super::App {
+    /// The asset a document is, when it is one: a tag by `tag:` id; a
+    /// script, a variant and a playlist file as the `item:` of a package
+    /// that is on and carries it; the HUD of a package as the package.
+    pub fn doc_asset(&self, doc: super::Doc) -> Option<String> {
+        use super::Doc;
+        if let Some(item) = self.tab_item(doc) {
+            return Some(item.to_owned());
+        }
+        let tag = |id| {
+            self.tags
+                .tag(id)
+                .map(|t| format!("tag:{}:{}", fourcc_text(t.group), t.name))
+        };
+        let set = || super::assets::read_set(&self.data_root());
+        match doc {
+            Doc::Voice => self.voices.doc.as_ref().map(|v| format!("voice:{v}")),
+            Doc::Tag(id) => tag(id),
+            Doc::Map => self.session.scenario().and_then(|s| tag(s.tag)),
+            Doc::Ui => match &self.ui_screens.pick {
+                Some(super::ui_screens::Pick::Retail { tag, .. }) => Some(format!("tag:wgit:{tag}")),
+                _ => None,
+            },
+            Doc::Rules => {
+                let file = self.rules.path.as_ref()?.file_name()?.to_string_lossy().into_owned();
+                item_id(&set(), ItemKind::Rules, script_key(&file))
+            }
+            Doc::Variant => {
+                let name = ::variants::panel::strip_icon(&self.variants.as_ref()?.current()?.name());
+                item_id(&set(), ItemKind::Variant, &name)
+            }
+            Doc::Playlists => {
+                let file = self.hoppers.path()?.file_name()?.to_string_lossy().into_owned();
+                item_id(&set(), ItemKind::Playlist, &file)
+            }
+            Doc::Hud => {
+                let opened = self.hud.opened.as_ref()?;
+                let set = set();
+                set.on
+                    .iter()
+                    .any(|e| e.loaded.package.name() == opened.as_str())
+                    .then(|| format!("package:{opened}"))
+            }
+        }
+    }
+
+    /// [`links`] for `id`, with what only the app knows: a voice's lines.
+    /// Each done row of the batch said by the voice that has a target
+    /// sound links to it (role Sounds, `via` the line's number), read from
+    /// the batch each time.
+    pub fn asset_links(&self, id: &AssetId) -> Result<Links, String> {
+        let set = super::assets::read_set(&self.data_root());
+        let mut out = links(&self.tags_root(), &set, id)?;
+        if let AssetId::Voice(voice) = id {
+            let batch = &self.voices.batch;
+            for (n, r) in batch.rows.iter().enumerate() {
+                if r.state != super::voice_batch::RowState::Done
+                    || batch.voice_of(r).as_deref() != Some(voice.as_str())
+                {
+                    continue;
+                }
+                if let Some(tag) = &r.tag {
+                    out.uses.push(Link {
+                        asset: format!("tag:snd!:{tag}"),
+                        role: "Sounds",
+                        via: format!("line {}", n + 1),
+                    });
+                }
+            }
+            sort(&mut out.uses);
+        }
+        Ok(out)
+    }
 }

@@ -19,7 +19,17 @@ fn list(app: &mut App, p: &P) -> Reply {
         ));
     }
     app.refresh_problems(source);
-    Ok(app.problems.json(source))
+    // `asset` narrows to the rows about one asset: what the header's
+    // **Check** counts.
+    let Some(asset) = p.opt_str("asset")? else {
+        return Ok(app.problems.json(source));
+    };
+    crate::app::assets::AssetId::parse(asset).map_err(|e| err(code::INVALID_PARAMS, e))?;
+    let narrowed = crate::app::problems::Problems {
+        rows: app.asset_problems(asset),
+        ..app.problems.clone()
+    };
+    Ok(narrowed.json(source))
 }
 
 pub fn call(app: &mut App, method: &str, p: &P) -> Reply {

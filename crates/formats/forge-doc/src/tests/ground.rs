@@ -257,6 +257,55 @@ fn a_ground_label_off_a_flag_or_a_line_with_no_phase_is_refused() {
 }
 
 #[test]
+fn a_siege_barrier_marks_a_solid_object_numbered_by_its_phase() {
+    let doc = with(vec![
+        add(1, SCENERY),
+        label(2, Endpoint::Added(OpId(1)), "siege_barrier", Some(2)),
+        label(3, Endpoint::base(SCENERY, 0), "siege_barrier", None),
+        label(4, Endpoint::base(FLAGS, 0), "ff_drop", None),
+    ]);
+    let marks = doc.ground_marks(&counts()).unwrap();
+    let got: Vec<_> = marks.iter().map(|m| (m.kind, m.block, m.index, m.number)).collect();
+    assert_eq!(
+        got,
+        [
+            (GroundLabel::Drop, FLAGS, 0, None),
+            (GroundLabel::Barrier, SCENERY, 0, None),
+            (GroundLabel::Barrier, SCENERY, 2, Some(2)),
+        ],
+        "an unnumbered barrier is open from the start"
+    );
+    assert_eq!(GroundLabel::of("siege_barrier"), Some(GroundLabel::Barrier));
+    assert!(GroundLabel::Barrier.has_phase() && !GroundLabel::Barrier.needs_phase());
+    assert!(!GroundLabel::Barrier.on_flag() && !GroundLabel::Barrier.has_team());
+    assert_eq!(GroundLabel::ALL.last(), Some(&GroundLabel::Barrier));
+}
+
+#[test]
+fn a_barrier_off_a_solid_object_or_with_a_bad_phase_is_refused() {
+    let flag = with(vec![label(1, Endpoint::base(FLAGS, 0), "siege_barrier", None)]);
+    let error = flag.ground_marks(&counts()).unwrap_err().to_string();
+    assert!(error.contains("placed object"), "{error}");
+    let weapon = with(vec![label(1, Endpoint::base(WEAPONS, 0), "siege_barrier", Some(1))]);
+    assert!(weapon.ground_marks(&counts()).is_err());
+    let negative = with(vec![label(1, Endpoint::base(SCENERY, 0), "siege_barrier", Some(-1))]);
+    let error = negative.ground_marks(&counts()).unwrap_err().to_string();
+    assert!(error.contains("phase"), "{error}");
+}
+
+#[test]
+fn a_barrier_is_no_input_of_the_ground() {
+    let base = with(vec![
+        add(1, FLAGS),
+        label(2, Endpoint::Added(OpId(1)), "ff_drop", None),
+    ]);
+    let stamp = |doc: &ForgeDoc| doc.ground_stamp(&counts()).unwrap();
+    let mut barred = base.clone();
+    barred.ops.push(label(3, Endpoint::base(SCENERY, 1), "siege_barrier", Some(1)));
+    assert_eq!(stamp(&barred), stamp(&base), "labelling a barrier leaves the ground current");
+}
+
+#[test]
 fn the_label_names_and_titles_are_one_table() {
     for label in GroundLabel::ALL {
         assert_eq!(GroundLabel::of(label.text()), Some(label));
@@ -269,6 +318,11 @@ fn the_label_names_and_titles_are_one_table() {
         .filter(|l| l.has_team())
         .collect();
     assert_eq!(teamed, [GroundLabel::Base, GroundLabel::Line]);
+    let on_objects: Vec<_> = GroundLabel::ALL
+        .into_iter()
+        .filter(|l| !l.on_flag())
+        .collect();
+    assert_eq!(on_objects, [GroundLabel::Barrier]);
 }
 
 #[test]

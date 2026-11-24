@@ -1,7 +1,7 @@
 # The asset store: levels assembled from shared assets
 
-Status: Design. The tag repository, the package build and the per-map rewrite it stands on are built ("What exists"), and so are slices AS1 to AS4 and AS6: the skeleton and extent table, `h2 tags reassemble`, the store-backed map file behind `store-maps`, extraction on compile, level images kept by `LevelId`, and mod patches with the conflict table, proven on invented maps; the disc runs of AS1 to AS4 are not done ("Not verified"). The normal forms AS5 hashes with are `tags::repo::normal`, here for `was` and `replaces`. "Decisions" lists the owner's choices.
-Code: `crates/formats/tags/src/repo` (the store's files and extraction; `repo/skeleton.rs` the skeleton, the extent table and `StoreFile`; `repo/compile.rs` extraction on compile), `crates/apps/cli/src/store_prepare.rs` (the CLI's side of it), `crates/runtime/vfs/src/store_map.rs` (the map file served from the store), `crates/apps/boot/src/store_status.rs` (`store.status`), `crates/tools/workspace/src/level.rs` (level images), `crates/formats/content/src/id.rs` (`LevelId`), `crates/formats/content/src/package/` (packages and mods), `crates/tools/workspace/src/{build,edit,delta,onto,load,assets}.rs` (the conflict table, `from`, `replaces`, `tag-delta`, the store's bytes, the asset hashes a build checks against), `crates/apps/boot/src/packages.rs` (the game's side). Tests: each slice names its own.
+Status: Design. The tag repository, the package build and the per-map rewrite it stands on are built ("What exists"), and so are slices AS1 to AS4, AS6 and AS7, and the store side of AS10 (a converter's map kept as a level of the store): the skeleton and extent table, `h2 tags reassemble`, the store-backed map file behind `store-maps`, extraction on compile, level images kept by `LevelId`, mod patches with the conflict table, and their Studio side (fork, revert, diff, **Changed by**, the conflict rows in Problems), proven on invented maps; the disc runs of AS1 to AS4 are not done ("Not verified"). The normal forms AS5 hashes with are `tags::repo::normal`, here for `was` and `replaces`. "Decisions" lists the owner's choices.
+Code: `crates/formats/tags/src/repo` (the store's files and extraction; `repo/skeleton.rs` the skeleton, the extent table and `StoreFile`; `repo/compile.rs` extraction on compile), `crates/apps/cli/src/store_prepare.rs` (the CLI's side of it), `crates/runtime/vfs/src/store_map.rs` (the map file served from the store), `crates/apps/boot/src/store_status.rs` (`store.status`), `crates/tools/workspace/src/level.rs` (level images), `crates/tools/workspace/src/converted.rs` (converted levels), `crates/formats/content/src/id.rs` (`LevelId`), `crates/formats/content/src/package/` (packages and mods), `crates/tools/workspace/src/{build,edit,delta,onto,load,assets}.rs` (the conflict table, `from`, `replaces`, `tag-delta`, the store's bytes, the asset hashes a build checks against), `crates/apps/boot/src/packages.rs` (the game's side). Tests: each slice names its own.
 Switch: `store-maps` (`H2_FEATURES`, off until slice AS2 is accepted; [switches.md](../runtime/switches.md)).
 
 Every tag of every map on the user's discs is extracted once into one
@@ -37,7 +37,9 @@ Evidence labels are those of [docs-style.md](../meta/docs-style.md).
 | The store kept current by `h2 build`, the pre-boot step and Studio | `tags::repo::compile::prepare`, `cli::store_prepare` | built (AS3); not run on the disc |
 | A layered level as an image kept by its `LevelId` | `workspace::level::{assemble, StoreLevels}`, `content::LevelId`, `StoreMapBackend::with_levels`, `<data>/store/images/` | built (AS4); not run on the disc |
 | Mod patches: a `set` line's `from`, `replaces`, the `tag-delta` item, the conflict table and a refused package off for one level with its reason | `workspace::{build_map_settled, delta, store_findings}`, `workspace::level::assemble_strict`, `content::package::Refusal`, `Report::refused`, `<data>/store/images/<cache key>.set` | built (AS6); on invented maps |
-| A file of a package that is a raw resource or a tag file of the user's own store | `workspace::store_findings`, `h2 package check --store <data>/tags` | built (AS6); Studio's `package.check` does not pass its store |
+| A file of a package that is a raw resource or a tag file of the user's own store | `workspace::store_findings`, `h2 package check --store <data>/tags`, Studio's `package.check`, `package.read` and Problems (the store is `tags_root`) | built (AS6, AS7) |
+| Mods in Studio: a fork for one map, its revert, a package's diff, **Changed by** in load order and the conflict rows in Problems | `studio::app::mods::{fork, revert, diff, changed_by}`, `asset.fork`, `asset.revert`, `package.diff`, `asset.links`' `changed_by`, `Problems::levels` | built (AS7); on invented maps |
+| A converter's map kept as a level of the store, found by its stem and assembled like a disc level | `workspace::converted::{store_converted, is_stored, marked, levels}`, `<store>/maps/<stem>.converted` | built (AS10, store side); on invented maps; the converters do not call it yet |
 
 What is missing: a boot that reads the executable, movies and fonts from
 `<data>/disc/` and the maps from the store with no disc image open (the
@@ -49,8 +51,7 @@ identity differs between maps for reasons that are not content (a
 sound's indices into its map's sound table, until the catalogue is current on the machine); a whole-asset override
 (`replaces`) is built for `tag` items, and the `bitmap`, `model`, `sound`
 and `animation` builders refuse it; a delta is made on the tag as the
-build holds it, not on the normal form AS5 gives; the conflict rows are not
-in Studio's Problems (AS7).
+build holds it, not on the normal form AS5 gives.
 
 ## How it works
 
@@ -136,7 +137,7 @@ lost, because it is still there as the disc's bytes.
 **Forks.** A fork is a change with a map scope. It is never a copy in
 the store: it is an item of a package whose `maps` names one map
 ("Mods and packages"). Studio's **Fork for this map** (`asset.fork`,
-new) writes that item into the edit target. A change with no map scope
+built) writes that item into the edit target. A change with no map scope
 applies in every level that names the asset. **Copy into package**
 (`asset.copy`, built) makes a new asset under a new key, which a level
 uses when a reference is pointed at it.
@@ -336,9 +337,25 @@ takes; they go when the store is the default.
   under 4 GiB (`DEFAULT_IMAGE_CAP`), least recently used first (a hit
   renews the table's modification time), sparing the images the boot
   serves.
-- **Levels built whole.** A level of ours (the stage, a converted Halo 1
-  map) has no skeleton: its image is a `fresh` build from the manifest's
-  closure. A retail level builds that way once its level tags extract
+- **Converted levels.** A map a converter wrote (a converted Halo 1
+  map) is kept by `workspace::converted::store_converted`: its tags go
+  through `store_map` (a tag the store holds is not written again, a key
+  held with other contents is a variant only this level reads), its
+  skeleton and extents through `store_skeleton`, and the store must give
+  the map back byte for byte. A `<stem>.converted` marker in
+  `<store>/maps/` (converter and file hash) is written last; a stem a disc
+  extraction made is never overwritten, and a converted level whose file is
+  the converter's current output is left alone (`is_stored`). Nothing
+  falls back: a stem that is not a plain lower-case name, a map that does
+  not read, a pointer into a shared cache the caller cannot give, a tag the
+  extractor refuses and a store that does not give the map back each stop
+  the level with an error naming it (a converted Halo 1 level never takes
+  a Halo 2 tag silently). The level then assembles as a disc level does
+  (`level::assemble`). A re-extraction of the disc under a new extractor
+  version empties `<store>/maps/`, markers included, and the converter's
+  unit runs again.
+- **Levels built whole.** A level of ours (the stage) has no skeleton: its
+  image is a `fresh` build from the manifest's closure. A retail level builds that way once its level tags extract
   without loss (W10 of [tag-workspace.md](../editor/tag-workspace.md)).
 
 **The renderer.** The native loaders read a level's models, world and
@@ -442,7 +459,7 @@ A refusal is an item's, and it is the package's: one refused item puts
 the whole package off for the level, and nothing of it applies, down to
 an item that ran before the refused one (the map is built again without
 the package). The reason is a line on stderr and in `packages.list`
-(`maps.<map>.refused`); the conflict rows in Problems are AS7. A refused
+(`maps.<map>.refused`); Studio's `package.diff` with a map reads the same rows and Problems lists them ("In Studio"). A refused
 package moves neither the level's `LevelId` nor its image: both are over
 the packages the level takes, so a peer without the mod holds the same
 level. A first-party package (`content/`) that refuses stops the level's
@@ -459,20 +476,39 @@ image for the other set is still in the cache, and the change shows at
 the next load of the level.
 
 **In Studio.** The Packages root lists the set; a package opens as a
-document (built). New for mods:
+document (built). For mods (`app::mods`, `api/assets.rs`,
+`api/packages.rs`):
 
-- `package.diff {id, map?}`: per asset, the fields before and after,
-  the assets added, overridden and forked, and the levels touched;
-- the inspector's **Changed by** row names every package with a patch
-  on the asset in front, in order, with the winning value;
-- `package.check` refuses a file whose SHA-256 is a raw resource or a tag
-  file of the store, so the user's own store is the retail list on their
-  machine (`workspace::store_findings`, built; `h2 package check --store
-  <data>/tags` runs it, and Studio's `package.check` passes its store in
-  AS7), and names two packages that override one asset whole for maps that
-  can meet (built);
-- `asset.fork {tag, map}` and `asset.revert {tag, map?}` add and remove
-  scoped items in the edit target;
+- `package.diff {id?, map?}`: per asset, the fields the package sets
+  (each line's `to`, and its `from` when the line names the value it
+  replaces) and its block lines, the assets it adds, overrides whole
+  (`replaces`) or patches (`tag-delta`), which items are forks, and the
+  levels it changes. With `map` and the map's file the set is built over
+  that map (`workspace::build_map_settled`) and `conflicts` holds the
+  conflict table's rows (`refused` with the reason, `override` with both
+  package names); `involves` marks the rows that name this package, and
+  the rows replace the last ones read for that level in Problems;
+- the inspector's **Changed by** row, and `asset.links`' `changed_by`,
+  name every package with a patch on the asset in front, in load order,
+  with each field's value and whether it wins (a later package that sets
+  the field, or overrides the asset whole, takes it);
+- `package.check`, `package.read` and Problems refuse a file whose
+  SHA-256 is a raw resource or a tag file of the store, so the user's own
+  store is the retail list on their machine (`workspace::store_findings`,
+  with `tags_root` as the store; `h2 package check --store <data>/tags`
+  runs the same), and name two packages that override one asset whole
+  for maps that can meet;
+- `asset.fork {tag, map, package?, set?}` writes the tag's lines into
+  `edits/<map>.yaml` of the package (the edit target by default), an
+  `edits` item whose `maps` names that map alone. Without `set` they are
+  the lines the package's other `edits` items that reach the map have for
+  the tag; a tag with none, a tag forked already, a built-in package and a
+  map that cannot name a file are refused. `asset.revert {tag, map?,
+  package?}` takes the tag's lines out: with `map` only the item that names
+  that map alone, without every `edits` item with an entry for the tag;
+  an item left with no entry goes with its file. The inspector's **Fork
+  for this map** and **Revert for this map** (`Action::ForkAsset`,
+  `Action::RevertAsset`) make the same calls on the open map;
 - **Import mod...** (`package.import`) turns a patched map into a
   package: the patch is applied to the base the store reassembles, the
   result is stored as a layer (`store_map` keeps only what differs),
@@ -566,7 +602,7 @@ is **S**, slice AS8's test). A level with nothing over it also has a
 | `StoreLevels` (the VFS's, at a level's first open); Studio's `package.build` (later) | `workspace::level::assemble(store, images, packages, level) -> Level {id, map_id, image, packages, held, refused, report}`; `assemble_strict(.., strict)` | the image for a level under a set |
 | The game's agent API | `packages.list`, `store.status` (built): the store's path, whether its maps are served, each map's length, SHA-256, skeleton size and extents, what is stale, and the level images | read |
 | `h2 package check --store <data>/tags` | `workspace::{check_package, check_set, store_findings}` | what is wrong with a package before any map is built, and a file that is the store's |
-| Studio's API | `workspace.status`, `workspace.extract`, `workspace.prune` (built); `asset.fork`, `asset.revert`, `package.diff`, `package.import` (new) | above |
+| Studio's API | `workspace.status`, `workspace.extract`, `workspace.prune`, `asset.fork`, `asset.revert`, `package.diff` (built); `package.import` (new) | above |
 | `h2 tags` | `extract --update`, `reassemble MAP --out FILE`, `reassemble --all [--compare DISC]` (built), `level <map> [--set FILE]` (new) | the coordinator's and CI's entry |
 
 ## Rules and limits
@@ -648,17 +684,17 @@ them. Tests are headless on invented maps unless marked disc
 | AS4 | **Level images.** `workspace::level::{assemble, LevelId}`: `build_map` on the skeleton, raw as extents, the checksum from per-file sums, the image cache and its cap; `PackageRewrite` and `<data>/packages/cache/` removed | AS2 | `crates/tools/workspace/src/{level.rs (new), rewrite.rs, build.rs, game.rs}`, `crates/formats/content/src/id.rs`, `crates/apps/boot/src/packages.rs`, [studio-redesign.md](../editor/studio-redesign.md) | the image and extents read back equal `build_map`'s whole map byte for byte; golden `LevelId`s on invented hashes; a set change gives another id and the first image is still a hit; an image over the tag memory bound is refused naming the assets | a multiplayer level with the Pogo loads from an image and `<data>/packages/cache/` is not written |
 | AS5 | **Normal forms and the catalogue.** `tags::repo::normal` for sounds, bitmaps and padded raw; the asset hash; `assets.idx`; Studio's In maps and Where used from it | AS1 | `crates/formats/tags/src/repo/{normal.rs (new), catalogue.rs (new)}`, `crates/tools/workspace/src/hash.rs`, `crates/apps/studio/src/app/assets.rs`, `docs/formats/notes/` (the variant counts) | two invented maps with one sound at different table indices give one asset hash and another when a sample differs; the catalogue rebuilt from manifests equals the one kept | the note records the disc's variant counts by group before and after |
 | AS6 | **Mod patches.** `from` on `set` lines, `replaces`, the `tag-delta` item, the conflict table, off-with-reason for installed packages, the retail refusal against the store | AS4, AS5 | `crates/formats/content/src/package/{manifest.rs, set.rs}`, `crates/tools/workspace/src/{edit.rs, delta.rs (new), level.rs, builders.rs}`, `crates/apps/h2-tools/src/package_cmd.rs`, [studio-redesign.md](../editor/studio-redesign.md), [maps.md](../game/maps.md) | one test per row of the conflict table; a delta applied to its base gives the changed tag and to another base is refused; a package holding a store blob is refused by file name | two invented mods on one weapon's different fields both show in the assembled level |
-| AS7 | **Mods in Studio.** `package.diff`, `asset.fork`, `asset.revert`, **Changed by** in order, the conflict rows in Problems | AS6 | `crates/apps/studio/src/{api/packages.rs, api/assets.rs, app/package_doc.rs, ui/browser.rs}`, `studio-proto`, [agent-api.md](../editor/agent-api.md) | every method's example; a fork changes one level's `LevelId` and no other's; revert removes the item and its line | a field forked for one map shows there and nowhere else, in the window and through the API |
+| AS7 | **Mods in Studio.** `package.diff`, `asset.fork`, `asset.revert`, **Changed by** in order, the conflict rows in Problems | AS6 | `crates/apps/studio/src/{api/packages.rs, api/assets.rs, app/{mods.rs (new), package_doc.rs, links.rs, problems.rs}, ui/inspector.rs}`, `studio-proto`, [agent-api.md](../editor/agent-api.md) | every method's example; a fork changes one level's `LevelId` and no other's; revert removes the item and its line | a field forked for one map shows there and nowhere else, in the window and through the API |
 | AS8 | **Identity on Live and in films.** `level_id` in the session and the join check with the asset diff (with PK14); `DESC.level_id`; `prepare_map` by `LevelId`; film-named images kept; the cross-platform determinism test | AS4; PK13 for Live | `crates/live/live-proto`, `crates/live/live-hle/src/maps.rs`, `crates/extensions/game/src/theater/metadata.rs`, `crates/live/film/src`, [film-format.md](../game/film-format.md), [live-api.md](../live/live-api.md) | on the fake server a joiner with another asset fails before the map load naming it; a film recorded on an assembled level verifies, and after a builder bump plays from its kept image | two machines of different architectures print the same image hash for one `LevelId` |
 | AS9 | **Mod import.** `package.import` and `h2 live mods import` write tag-level packages through the store, `map-patch` as the fallback | AS6 | `crates/tools/workspace/src/import_map.rs` (new), `crates/apps/cli/src/live_cmd`, `crates/apps/studio/src/api/packages.rs`, [maps.md](../game/maps.md) | an invented patched map imports to a package that assembles to the same tags; a patch touching the scenario's lossy part stays a `map-patch` and says so | two imported mods of one base map load together |
-| AS10 | **Converted and imported levels in the store.** The `convert` items store their output with `store_map`; a level with no skeleton assembles `fresh`; `<data>/maps/` derived packages and `<data>/campaigns/` whole maps removed | AS4 | `crates/tools/workspace/src/{convert.rs, maps.rs, level.rs}`, `crates/apps/cli/src/{h1_import.rs, mappack_cmd.rs}`, [multiplayer.md](../halo1/multiplayer.md), [map-pack.md](../game/map-pack.md) | an invented converted level stores only tags the store lacks and assembles to the map the converter wrote | a converted level loads from the store; the note has the disk size before and after |
+| AS10 | **Converted and imported levels in the store.** `workspace::converted::store_converted` keeps a converter's map as a level (**built**); the `convert` items call it with their output and `<data>/maps/` derived packages and `<data>/campaigns/` whole maps are removed (**not built**: the Halo 1 and Map Pack converters, the boot's map list and the campaign picker still read the files) | AS4 | `crates/tools/workspace/src/{converted.rs, convert.rs, maps.rs}`, `crates/apps/cli/src/{h1_import.rs, mappack_cmd.rs}`, [multiplayer.md](../halo1/multiplayer.md), [map-pack.md](../game/map-pack.md) | an invented converted level stores only tags the store lacks and assembles to the map the converter wrote | a converted level loads from the store; the note has the disk size before and after |
 | AS11 | **The renderer on asset hashes.** The image's datum table; loaders keyed by asset hash; a model read from the store by key; the Monitor's catalogue by `(key, asset hash)` | AS4, AS5 | `crates/rewrites/native-render/src/{model_load.rs, models.rs, load.rs}`, `crates/extensions/forge/src/look/census.rs`, `crates/apps/cli/src/forge_looks.rs`, [native-objects.md](../graphics/native-objects.md), [forge-monitor-appearance.md](../game/forge-monitor-appearance.md) | an invented model shared by two levels uploads once across a level change; a model in no loaded level resolves from the store | a campaign body draws on a multiplayer level with no other map file opened |
 | AS12 | **Forge on the store.** A Forge document as a layer; the materialised map and its package removed | AS4 | `crates/tools/forge-build`, `crates/formats/content/src/forge.rs`, `crates/extensions/forge`, [forge-design.md](../game/forge-design.md) | the image for an invented document equals the materialised map's tags | a saved Forge variant loads with no `.map` written |
 | AS13 | **Bundles from the store.** The host data bundle and the device packers (`h2host::layout`) take images and a subset of the store | AS4 | `crates/live/host-data/src/bundle`, `crates/apps/h2host/src/layout.rs`, [dedicated-host.md](../live/dedicated-host.md) | an invented bundle serves every range its coverage names and refuses one it lacks by name | a host plays a match from a bundle built with no disc image mounted |
 | AS14 (later) | **Retail levels built whole.** With W10, a retail level assembles `fresh` and its skeleton is dropped | W10 | as W10 | as W10 | a retail level with no skeleton loads |
 | AS15 (later, **E first**) | **No slot copy.** The guest's slot answered as warm and its reads routed to the store file | AS2; a read of the status and resource-read functions | `crates/extensions/game/src/map_copy.rs` | the kernel cache-slot test with the route on | a level load copies nothing and `<data>/disk/` shrinks |
 
-AS1 to AS4 and AS6 are built; the disc checks of AS1 to AS4 are the
+AS1 to AS4, AS6 and AS7 are built, and AS10's `store_converted`; the disc checks of AS1 to AS4 are the
 coordinator's (above). AS4's build reads the level whole and builds at
 first open, and `PackageRewrite` with `<data>/packages/cache/` stays for
 `store-maps` off.

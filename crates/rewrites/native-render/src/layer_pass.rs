@@ -1,7 +1,8 @@
 //! A layer draw planned from the scene alone (docs/graphics/framescene.md,
 //! slice 4): for each item of a [`frame_scene::LayerPass`] of layers 1, 5,
-//! 7, 8 and 20 (the scene's and the first person's) and of the scene's
-//! layer 17 ([`BLOOM_LAYER`]), the material passes
+//! 7, 8 and 20 (the scene's and the first person's), of layer 2
+//! ([`OVERLAY_LAYER`], the scene's and the first person's) and of the
+//! scene's layer 17 ([`BLOOM_LAYER`]), the material passes
 //! the layer draws for it, the implementation of each, the engine inputs
 //! the item's draw evaluates and the values of the material's animated
 //! properties, from the pass's [`LayerInputs`], the item's owner and
@@ -70,9 +71,29 @@ pub const LAYERS: [u8; 5] = [1, 5, 7, 8, 20];
 /// 0. Planned like [`LAYERS`]: the scene's caller only.
 pub const BLOOM_LAYER: u8 = 17;
 
-/// Whether the stage plans `layer`: one of [`LAYERS`] or [`BLOOM_LAYER`].
+/// Layer 2, the late overlay: the scene draws it after the dynamic lights
+/// and the decals of mode 1 (the layer draw at `0x0002c05b`, returning
+/// `0x0002c060`), the first person after its layer 7 when its begin says
+/// so (`0x00040284`, returning `0x00040289`). Both take their setup from
+/// the general layer begin `0x00044370`, as layers 5, 7, 8 and 20 do; its
+/// items draw under the device's stencil ([`item_stencil`]). Its passes
+/// multiply the destination (S: the materials' blend, not the layer's).
+/// Planned like [`LAYERS`].
+pub const OVERLAY_LAYER: u8 = 2;
+
+/// The layers planned besides [`LAYERS`]: [`OVERLAY_LAYER`] and
+/// [`BLOOM_LAYER`].
+pub const OTHER_LAYERS: [u8; 2] = [OVERLAY_LAYER, BLOOM_LAYER];
+
+/// Every layer the stage plans, [`LAYERS`] then [`OTHER_LAYERS`]: the
+/// layers the world's load compiles (`layers_load`).
+pub fn planned_layers() -> impl Iterator<Item = u8> {
+    LAYERS.into_iter().chain(OTHER_LAYERS)
+}
+
+/// Whether the stage plans `layer`: one of [`LAYERS`] or [`OTHER_LAYERS`].
 pub fn planned(layer: u8) -> bool {
-    LAYERS.contains(&layer) || layer == BLOOM_LAYER
+    LAYERS.contains(&layer) || OTHER_LAYERS.contains(&layer)
 }
 
 /// The scalar input the shader instance gives (`shad +0x44`).
@@ -1198,5 +1219,34 @@ pub(crate) mod tests {
         let three = pass(3, view_inputs());
         assert_eq!(plan_item(&three, &item(LayerOwner::Cluster(1), 0, None), &mut lib).unwrap_err(), LayerRefusal::Layer(3));
         assert!(planned(BLOOM_LAYER) && !planned(16) && !planned(3), "layer 17 is planned; 3 and 16 are other stages'");
+        assert!(planned(OVERLAY_LAYER), "layer 2 is planned");
+    }
+
+    #[test]
+    fn every_planned_layer_is_loaded_once_and_layer_3_and_the_late_passes_are_not() {
+        let all: Vec<u8> = planned_layers().collect();
+        assert_eq!(all, [1, 5, 7, 8, 20, 2, 17]);
+        assert!(all.iter().all(|&l| planned(l)));
+        for other in [3, 6, 15, 16, 18, 19, 21] {
+            assert!(!planned(other), "layer {other} is another stage's");
+        }
+    }
+
+    #[test]
+    fn a_layer_2_item_plans_as_the_other_scene_layers_and_draws_under_the_devices_stencil() {
+        let m = material(2, vec![vec![implementation(0, InputReads::default(), Vec::new())]], own_inputs());
+        let mut lib = library(m);
+        let d = plan_item(&pass(OVERLAY_LAYER, view_inputs()), &item(LayerOwner::Cluster(3), 0, None), &mut lib).unwrap();
+        assert_eq!(d.layer, OVERLAY_LAYER);
+        assert_eq!(d.passes, [PassDraw { pass: 0, implementation: 0 }]);
+        assert_eq!(d.inputs, own_inputs());
+        let other = plan_item(&pass(OVERLAY_LAYER, view_inputs()), &LayerItem { key: ItemKey { shader: 0xe000_0099, ..key(0) }, ..item(LayerOwner::Cluster(3), 0, None) }, &mut lib);
+        assert_eq!(other.unwrap_err().name(), "material", "a shader that does not resolve is named");
+        let device = crate::object_state::structure_stencil(0);
+        assert_eq!(
+            item_stencil(OVERLAY_LAYER, true, device, true),
+            ItemStencil { stencil: device, needs_mode_1: false },
+            "the geometry draw sets no stencil mode outside layers 1 and 3"
+        );
     }
 }

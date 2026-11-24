@@ -65,7 +65,9 @@ fn team_of(scenario: &Scenario, mark: &GroundMark) -> Result<Team, Error> {
 /// scenario's flags.
 pub(crate) fn labels(scenario: &Scenario, marks: &[GroundMark]) -> Result<Labels, Error> {
     let mut out = Labels::default();
-    for mark in marks {
+    // A barrier is a mark on an object, which the script reads by its
+    // label: the ground build has no use for it.
+    for mark in marks.iter().filter(|m| m.kind.on_flag()) {
         let at = position(scenario, mark.index)?;
         match mark.kind {
             GroundLabel::Drop => out.drops.push(Marker {
@@ -82,6 +84,7 @@ pub(crate) fn labels(scenario: &Scenario, marks: &[GroundMark]) -> Result<Labels
             }),
             GroundLabel::Site => out.sites.push(at),
             GroundLabel::Goal => out.goals.push(at),
+            GroundLabel::Barrier => {}
             GroundLabel::Line => out.lines.push(LineMarker {
                 position: at,
                 // The document's check keeps the number in 0..=65535.

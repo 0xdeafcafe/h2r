@@ -9,7 +9,11 @@
 //! The overlay's glyphs are every list's to share: [`fonts`] is the disc's fonts
 //! as the game serves them, [`assets`] the loaded map's overlay assets and
 //! [`fill_glyphs`] puts a list's glyphs into their pages, each decoded once;
-//! [`place_menu`] fills before it places.
+//! [`place_menu`] fills before it places. [`menu_text`] shapes a menu label from
+//! the same fonts.
+
+pub(crate) mod menu_text;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, LazyLock, Mutex};
 

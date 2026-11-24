@@ -254,10 +254,16 @@ fn award(slot: u8, spot: Option<u32>, chain: u32) -> crate::superbounce_chain::A
     }
 }
 
+/// A landing the chain judged a bounce, for player `slot`, off `spot`,
+/// launching at `speed` units/s.
+fn launch(slot: u8, spot: Option<u32>, speed: f32) -> (u8, crate::superbounce_chain::Physics) {
+    (slot, crate::superbounce_chain::Physics::Launch { spot, speed })
+}
+
 #[test]
-fn a_bounce_reaches_on_bounce_and_scores_at_the_next_tick_boundary() {
+fn a_launch_reaches_on_launch_and_scores_at_the_next_tick_boundary() {
     let ir = ::rules::compile(::rules::builtin::SUPERBOUNCE).unwrap();
-    assert_eq!(host_refusal(&ir), None, "the host delivers on bounce");
+    assert_eq!(host_refusal(&ir), None, "the host delivers on launch and on grounded");
     let id = ir.id();
     let store = Local::default();
     // An example is compiled in: found by its prefix, never fetched.
@@ -277,14 +283,23 @@ fn a_bounce_reaches_on_bounce_and_scores_at_the_next_tick_boundary() {
     assert!(state.running, "{state:?}");
     assert_eq!(state.source.as_deref(), Some("builtin"));
     assert_eq!(s.lock().hash(), Some(id.to_string()));
-    // A Bounced is no bounce; the bounce off strip 77 is. The Bounced
-    // reaches `on bounced`, which costs nothing with its option off.
-    s.lock().bounces(&m, &[award(0, None, 0), award(1, Some(77), 1)]);
+    // Player 1's launch off strip 77 is a bounce; player 0's touchdown
+    // is none. A Bounced reaches `on bounced`, which costs nothing with
+    // its option off.
+    s.lock().physics(
+        &m,
+        &[
+            (0, crate::superbounce_chain::Physics::Touchdown { down: 6.0, up: 0.0 }),
+            launch(1, Some(77), 12.0),
+        ],
+    );
+    s.lock().bounces(&m, &[award(0, None, 0)]);
     {
         let rt = s.lock();
         let r = rt.running().unwrap();
         assert_eq!(r.vm.player_var(0, "bounces"), Some(0));
         assert_eq!(r.vm.player_var(1, "bounces"), Some(1));
+        assert_eq!(r.vm.player_var(1, "chain"), Some(1));
         assert_eq!(
             r.pending(),
             [Call::Score {
@@ -306,14 +321,17 @@ fn a_bounce_reaches_on_bounce_and_scores_at_the_next_tick_boundary() {
     assert_eq!(&record, s.lock().running().unwrap().vm.ext());
 }
 
-/// A host award reaches `on bounce` with its chain's count and whether it
-/// was a Monster, and a Bounced reaches `on bounced`: with Superbounce's
-/// default options but the suicide penalty off (so the Bounced penalty is
-/// the one that takes the point), a double scores 2, a Monster
-/// single 2, a Bounced -1.
+/// The script keeps the chain on the host's launches and ends of runs: a
+/// second launch with no ground between is a double, a launch over 16
+/// units/s a Monster, a Grounded starts the count again, and a Bounced
+/// reaches `on bounced`. With Superbounce's default options but the
+/// suicide penalty off (so the Bounced penalty is the one that takes the
+/// point): a single 1, a double 2, a Monster triple 6, then after the
+/// ground a single 1, and a Bounced -1. The chain's own awards reach no
+/// handler of this script.
 #[test]
-fn a_bounce_carries_its_chain_and_a_bounced_reaches_on_bounced() {
-    use hud_kit_core::views::superbounce::Medal;
+fn the_script_chains_the_hosts_launches_and_a_bounced_reaches_on_bounced() {
+    use crate::superbounce_chain::Physics::Grounded;
     let ir = ::rules::compile(::rules::builtin::SUPERBOUNCE).unwrap();
     let id = ir.id();
     let store = Local::default();
@@ -322,27 +340,24 @@ fn a_bounce_carries_its_chain_and_a_bounced_reaches_on_bounced() {
     let (m, _) = guest(block(prefix(&id), bits), SLAYER);
     s.lock().start(&m, false);
     assert!(s.lock().state().running);
-    let mut monster = award(0, Some(80), 1);
-    monster.medals.push(Medal::Monster);
-    s.lock().bounces(
-        &m,
-        &[
-            award(1, Some(77), 1),
-            award(1, Some(78), 2),
-            monster,
-            award(0, None, 3),
-        ],
-    );
+    s.lock().physics(&m, &[launch(1, Some(77), 12.0)]);
+    s.lock().physics(&m, &[launch(1, None, 11.0)]);
+    s.lock().bounces(&m, &[award(1, Some(78), 2)]);
+    s.lock().physics(&m, &[launch(1, Some(80), 16.5), (1, Grounded)]);
+    s.lock().physics(&m, &[launch(1, Some(77), 12.0)]);
+    s.lock().bounces(&m, &[award(0, None, 3)]);
     let rt = s.lock();
     let r = rt.running().unwrap();
-    assert_eq!(r.vm.player_var(1, "bounces"), Some(2));
-    assert_eq!(r.vm.player_var(0, "bounces"), Some(1));
+    assert_eq!(r.vm.player_var(1, "bounces"), Some(4));
+    assert_eq!(r.vm.player_var(1, "chain"), Some(1));
+    assert_eq!(r.vm.player_var(1, "flying"), Some(1));
     assert_eq!(
         r.pending(),
         [
             Call::Score { player: 1, delta: 1 },
             Call::Score { player: 1, delta: 2 },
-            Call::Score { player: 0, delta: 2 },
+            Call::Score { player: 1, delta: 6 },
+            Call::Score { player: 1, delta: 1 },
             Call::Score { player: 0, delta: -1 },
         ]
     );
@@ -571,6 +586,33 @@ fn the_game_reads_the_roster_the_statborg_and_the_record() {
         args: vec![Arg::Team(Some(0))],
     });
     assert_eq!(calls, [Call::End], "a call through none does nothing");
+}
+
+#[test]
+fn the_game_answers_airborne_and_primed_from_the_chains_bodies() {
+    use crate::superbounce_chain::Body;
+    let (m, _) = guest([0; LEN], SLAYER);
+    let mut calls = Vec::new();
+    let bodies = [
+        Body { slot: 0, airborne: true, primed: false },
+        Body { slot: 1, airborne: false, primed: true },
+    ];
+    let mut g = GuestGame::new(&m, &mut calls).with_bodies(&bodies);
+    let read = |g: &mut GuestGame<'_>, name: &str, p: Option<u8>| {
+        g.read(&VmCall {
+            entry: caps::entry_named(name).unwrap(),
+            args: vec![Arg::Player(p)],
+        })
+    };
+    assert_eq!(read(&mut g, "airborne", Some(0)), 1);
+    assert_eq!(read(&mut g, "primed", Some(0)), 0);
+    assert_eq!(read(&mut g, "airborne", Some(1)), 0);
+    assert_eq!(read(&mut g, "primed", Some(1)), 1);
+    assert_eq!(read(&mut g, "primed", Some(5)), 0, "no body, no read");
+    assert_eq!(read(&mut g, "primed", None), 0, "through none reads false");
+    let mut calls = Vec::new();
+    let mut none = GuestGame::new(&m, &mut calls);
+    assert_eq!(read(&mut none, "primed", Some(1)), 0, "no step, no bodies");
 }
 
 // ---- scripts from the game-variant store and Live ----

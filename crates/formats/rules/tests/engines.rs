@@ -751,18 +751,31 @@ fn infection_switches_the_victims_team() {
 
 // ---- Superbounce ----
 
-/// A bounce at chain count `chain` by `player` off strip `spot`.
-fn bounce(player: u8, spot: u32, chain: u32, monster: bool) -> Input {
-    Input::Bounce {
+/// A landing the host judged a bounce, by `player` off strip `spot`,
+/// launching at `speed` world units a second.
+fn launch(player: u8, spot: u32, speed: i32) -> Input {
+    Input::Launch {
         player,
-        spot,
-        chain,
-        monster,
+        spot: Some(spot),
+        speed: rules::ty::fixed::from_int(speed),
     }
 }
 
+/// `n` launches in a run by `player`, the last at `last` units/s, the
+/// rest at 12: the `n`th bounce of a chain.
+fn chain_of(vm: &mut Vm, g: &mut FakeGame, player: u8, n: u32, last: i32) {
+    for i in 1..=n {
+        vm.fire(g, launch(player, 77, if i == n { last } else { 12 }));
+    }
+}
+
+/// The chain's scores as `chain_of` gives them: one score a launch.
+fn last_score(g: &FakeGame) -> i32 {
+    scores(g).last().map_or(0, |s| s.1)
+}
+
 #[test]
-fn superbounce_scores_bounces_only_by_their_chain() {
+fn superbounce_scores_bounces_only_by_the_chain_it_keeps() {
     let (ir, report) = build(builtin::SUPERBOUNCE).unwrap();
     assert!(report.fits());
     assert_eq!(ir.header.name, "Superbounce");
@@ -830,9 +843,11 @@ fn superbounce_scores_bounces_only_by_their_chain() {
     vm.begin_tick(1);
     assert_eq!(vm.fire(&mut g, Input::Kill { victim: 0, killer: Some(1) }), Fired::Ran);
     assert!(scores(&g).is_empty(), "a kill scores 0");
-    assert_eq!(vm.fire(&mut g, bounce(1, 77, 1, false)), Fired::Ran);
-    assert_eq!(vm.fire(&mut g, bounce(1, 78, 2, false)), Fired::Ran);
+    assert_eq!(vm.fire(&mut g, launch(1, 77, 12)), Fired::Ran);
+    assert_eq!(vm.fire(&mut g, launch(1, 78, 11)), Fired::Ran);
     assert_eq!(vm.player_var(1, "bounces"), Some(2));
+    assert_eq!(vm.player_var(1, "chain"), Some(2));
+    assert_eq!(vm.player_var(0, "chain"), Some(0), "each player keeps its own");
     assert_eq!(scores(&g), vec![(1, 1), (1, 2)]);
     assert_eq!(scores(&g).iter().map(|s| s.1).sum::<i32>(), 3);
     vm.fire(&mut g, Input::Kill { victim: 1, killer: None });
@@ -845,23 +860,43 @@ fn superbounce_scores_bounces_only_by_their_chain() {
     let mut g = FakeGame::with_players(2);
     let mut vm = Vm::new(ir.clone(), ir.default_options(), 1).unwrap();
     vm.begin_tick(1);
-    for chain in 1..=8 {
-        vm.fire(&mut g, bounce(0, 77, chain, false));
-    }
+    chain_of(&mut vm, &mut g, 0, 8, 12);
     let points: Vec<i32> = scores(&g).iter().map(|s| s.1).collect();
     assert_eq!(points, [1, 2, 3, 4, 5, 6, 6, 6]);
+    assert_eq!(vm.player_var(0, "chain"), Some(8));
+
+    // The ground ends the run: the next launch starts a chain at 1, and
+    // the count stays until it does. A launch off a seam no strip marks
+    // counts the same.
+    assert_eq!(vm.fire(&mut g, Input::Grounded(0)), Fired::Ran);
+    assert_eq!(vm.player_var(0, "flying"), Some(0));
+    assert_eq!(vm.player_var(0, "chain"), Some(8));
+    vm.fire(&mut g, Input::Launch { player: 0, spot: None, speed: rules::ty::fixed::from_int(9) });
+    assert_eq!(vm.player_var(0, "chain"), Some(1));
+    assert_eq!(last_score(&g), 1);
+    vm.fire(&mut g, launch(0, 77, 12));
+    assert_eq!(last_score(&g), 2);
 
     // A Bounced is a death with no killer: with the suicide penalty on,
-    // `on kill` takes its one point and `on bounced` none. A Monster
-    // doubles after the cap.
+    // `on kill` takes its one point and `on bounced` none. A Monster (a
+    // launch over 16 units/s) doubles after the cap; 16 itself is no
+    // Monster.
     let mut g = FakeGame::with_players(2);
     let mut vm = Vm::new(ir.clone(), ir.default_options(), 1).unwrap();
     vm.begin_tick(1);
     assert_eq!(vm.fire(&mut g, Input::Bounced(0)), Fired::Ran);
     vm.fire(&mut g, Input::Kill { victim: 0, killer: None });
-    vm.fire(&mut g, bounce(1, 77, 1, true));
-    vm.fire(&mut g, bounce(1, 77, 9, true));
-    assert_eq!(scores(&g), vec![(0, -1), (1, 2), (1, 12)]);
+    vm.fire(&mut g, launch(1, 77, 17));
+    vm.fire(&mut g, Input::Grounded(1));
+    chain_of(&mut vm, &mut g, 1, 9, 17);
+    assert_eq!(scores(&g)[..2], [(0, -1), (1, 2)]);
+    assert_eq!(last_score(&g), 12);
+    vm.fire(&mut g, Input::Grounded(1));
+    vm.fire(&mut g, launch(1, 77, 16));
+    assert_eq!(last_score(&g), 1, "at the speed is not over it");
+    vm.fire(&mut g, Input::Grounded(1));
+    vm.fire(&mut g, Input::Launch { player: 1, spot: Some(77), speed: rules::ty::fixed::from_int(16) + 1 });
+    assert_eq!(last_score(&g), 2, "a step over it is");
 
     // With the suicide penalty off, the Bounced penalty takes the point:
     // bounce points raw 0, the Bounced penalty on (bit 4).
@@ -879,21 +914,24 @@ fn superbounce_scores_bounces_only_by_their_chain() {
     let mut g = FakeGame::with_players(2);
     let mut vm = Vm::new(ir.clone(), 2 << 1, 1).unwrap();
     vm.begin_tick(1);
-    vm.fire(&mut g, bounce(0, 77, 1, false));
-    vm.fire(&mut g, bounce(0, 77, 3, true));
+    vm.fire(&mut g, launch(0, 77, 12));
+    vm.fire(&mut g, Input::Grounded(0));
+    vm.fire(&mut g, launch(0, 77, 12));
+    vm.fire(&mut g, launch(0, 77, 12));
+    vm.fire(&mut g, launch(0, 77, 17));
     vm.fire(&mut g, Input::Bounced(0));
     vm.fire(&mut g, Input::Kill { victim: 0, killer: None });
     vm.fire(&mut g, Input::Kill { victim: 1, killer: Some(0) });
-    assert_eq!(scores(&g), vec![(0, 2), (0, 6)]);
-    assert_eq!(vm.player_var(0, "bounces"), Some(2));
+    assert_eq!(scores(&g), vec![(0, 2), (0, 2), (0, 4), (0, 6)]);
+    assert_eq!(vm.player_var(0, "bounces"), Some(4));
 
     // Bounce points 0 scores no bounce.
     let mut g = FakeGame::with_players(2);
     let mut vm = Vm::new(ir, 0, 1).unwrap();
     vm.begin_tick(1);
-    vm.fire(&mut g, bounce(0, 77, 2, true));
+    chain_of(&mut vm, &mut g, 0, 2, 17);
     assert!(scores(&g).is_empty());
-    assert_eq!(vm.player_var(0, "bounces"), Some(1));
+    assert_eq!(vm.player_var(0, "bounces"), Some(2));
 }
 
 #[test]

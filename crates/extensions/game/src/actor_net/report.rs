@@ -45,6 +45,7 @@ pub fn host(tick: u32, peers: impl IntoIterator<Item = (u32, Stats, usize)>) -> 
             keys: s.keys,
             digests: s.digests,
             records: s.records,
+            shows: s.shows,
             dropped: s.dropped,
         })
         .collect();
@@ -89,6 +90,7 @@ mod tests {
             keys: 1,
             digests: 1,
             records: 9,
+            shows: 2,
             dropped: 2,
         };
         let r = host(60, [(7, stats, 120), (3, Stats::default(), 0)]);
@@ -105,6 +107,7 @@ mod tests {
                 keys: 1,
                 digests: 1,
                 records: 9,
+                shows: 2,
                 dropped: 2,
             }
         );

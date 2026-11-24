@@ -248,3 +248,50 @@ fn the_siege_clock_is_called_at_thirty_and_ten_seconds() {
     }
     assert_eq!(said, ["30 SECONDS", "10 SECONDS"]);
 }
+
+/// `mark(wp, at)` is every viewer, `mark(wp, at, all)` is the same, and
+/// `mark(wp, at, to)` with a player or a team is that audience only: the
+/// team's mask comes from the roster the game answers (`players_of_team`).
+#[test]
+fn a_mark_names_its_audience_and_the_view_hides_the_rest() {
+    let src = "rules \"Aim\" 1\ntype slayer\nrequires hud.waypoints\n\
+        label hill: zones\n\
+        waypoint all_mark at ctf.mark\n\
+        waypoint team_mark at ter.mark\n\
+        waypoint one_mark at asl.mark\n\
+        on round_start {\n\
+            if let z = hill[0] {\n\
+                mark(all_mark, z)\n\
+                mark(team_mark, z, team 1)\n\
+                for each players p { if slot_of(p) == 0 { mark(one_mark, z, p) } }\n\
+            }\n\
+        }\n";
+    let mut g = FakeGame::with_players(3);
+    g.players.get_mut(&1).unwrap().team = 1;
+    g.players.get_mut(&2).unwrap().team = 1;
+    g.label("hill", 0x4001_0000, 0, 1);
+    let mut vm = start(src, &mut g, &[]);
+    assert_eq!(g.script_error, None, "{:?}", g.script_error);
+
+    let at = |vm: &Vm, slot: &str, viewer: u8, team: Option<u8>| {
+        let viewer = Viewer { slot: Some(viewer), team };
+        view(vm.show(), vm.ir(), viewer).waypoint_at(slot).is_some()
+    };
+    // Everyone's mark is seen by all three; team 1's by its two players;
+    // the player form by slot 0 alone.
+    assert_eq!([0, 1, 2].map(|v| at(&vm, "ctf.mark", v, None)), [true; 3]);
+    assert_eq!(
+        [0, 1, 2].map(|v| at(&vm, "ter.mark", v, None)),
+        [false, true, true]
+    );
+    assert_eq!(
+        [0, 1, 2].map(|v| at(&vm, "asl.mark", v, None)),
+        [true, false, false]
+    );
+
+    // The bytes a viewer's machine holds show the same: the state encodes,
+    // decodes and views the same as the VM's own.
+    let held = rules::show::State::decode(&vm.show().encode()).unwrap();
+    let other = Viewer { slot: Some(1), team: Some(1) };
+    assert_eq!(view(&held, vm.ir(), other), view(vm.show(), vm.ir(), other));
+}

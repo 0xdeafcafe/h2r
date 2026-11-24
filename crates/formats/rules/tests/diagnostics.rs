@@ -658,7 +658,10 @@ fn the_builtins_use_time_constants_and_match() {
     // A time option's label carries its unit in the blob.
     let siege = compile(builtin::SIEGE).unwrap();
     let labels: Vec<&str> = siege.options.iter().map(|o| siege.strings[o.label as usize].as_str()).collect();
-    assert_eq!(labels, ["Phase time (seconds)", "Capture time (seconds)", "Sites", "Respawn wave (seconds)"]);
+    assert_eq!(
+        labels,
+        ["Phase time (seconds)", "Capture time (seconds)", "Sites", "Respawn wave (seconds)", "Overtime (seconds)", "Loadouts"]
+    );
 }
 
 // ---- settings, quick marks and the scorer ----

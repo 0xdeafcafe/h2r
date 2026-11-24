@@ -48,9 +48,10 @@ pub fn layer_site(layer: u32, return_address: u32) -> Site {
         (1, 0x0002_bd5c) | (3, 0x0002_bd74) | (5, 0x0002_bd8c) | (2, 0x0002_bda8) => {
             Site::AlternateView
         }
-        (1, 0x0004_00ab) | (3, 0x0004_0136) | (8, 0x0004_01a7) | (20, 0x0004_020b) | (7, 0x0004_0271) => {
-            Site::FirstPerson
-        }
+        (1, 0x0004_00ab) | (3, 0x0004_0136) | (8, 0x0004_01a7) | (20, 0x0004_020b) | (7, 0x0004_0271)
+        // Layer 2: `call 0x00044550` at `0x00040284`, after the begin at
+        // `0x0004027b` returned true.
+        | (2, 0x0004_0289) => Site::FirstPerson,
         _ => Site::Other,
     }
 }
@@ -286,6 +287,9 @@ mod tests {
         assert_eq!(layer_site(18, 0x0004_2015), Site::Other, "no scene site");
         assert_eq!(layer_site(17, 0x0002_c30b), Site::Scene, "the late layer 17");
         assert_eq!(layer_site(17, 0x0002_c010), Site::Other, "layer 20's return names only 20");
+        assert_eq!(layer_site(2, 0x0002_c060), Site::Scene, "the scene's layer 2, after the lights");
+        assert_eq!(layer_site(2, 0x0004_0289), Site::FirstPerson, "the first person's layer 2, after its 7");
+        assert_eq!(layer_site(7, 0x0004_0289), Site::Other, "layer 2's return names only 2");
     }
 
     #[test]

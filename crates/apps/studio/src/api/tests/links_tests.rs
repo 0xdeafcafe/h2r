@@ -2,8 +2,10 @@
 //! (docs/editor/studio-flow.md, "Links"): a weapon that names a model, a
 //! sound and a projectile, a dialogue sound under an invented character's
 //! folder, a tag file that does not decode, the assets_tests package
-//! `kit-test` (which edits the weapon) and a package `modes` whose
-//! `rules` and `variant` items share a script key. No game data.
+//! `kit-test` (which edits the weapon) and a package `modes-test` whose
+//! `rules` and `variant` items share a script key. No game data. The
+//! package id is not the built-in `modes`: a local package that takes a
+//! baked package's id stays out whole.
 
 use super::assets_tests;
 use super::*;
@@ -79,16 +81,16 @@ fn tree(root: &std::path::Path) {
     .unwrap();
 }
 
-/// `modes`: a script `hill` as a `rules` item and as a `variant` item,
-/// another script, and a requirement on `kit-test`.
+/// `modes-test`: a script `hill` as a `rules` item and as a `variant`
+/// item, another script, and a requirement on `kit-test`.
 fn modes(dir: &std::path::Path) {
     std::fs::create_dir_all(dir.join("scripts")).unwrap();
     std::fs::write(
         dir.join("package.toml"),
         r#"[package]
 format = 1
-id = "modes"
-name = "Modes"
+id = "modes-test"
+name = "Modes test"
 requires = ["kit-test"]
 
 [[item]]
@@ -116,7 +118,7 @@ fn setup(name: &str) -> (Temp, App, Api) {
     app.set_data_root(t.path("data"));
     tree(&app.tags_root());
     assets_tests::package(&t.path("data/packages/kit-test"));
-    modes(&t.path("data/packages/modes"));
+    modes(&t.path("data/packages/modes-test"));
     (t, app, Api::new())
 }
 
@@ -200,22 +202,22 @@ fn a_tag_an_edit_line_touches_lists_the_package_and_a_package_tag_its_adder() {
 #[test]
 fn a_variant_lists_its_script_and_the_script_its_variant() {
     let (_t, mut app, mut api) = setup("links-script");
-    let variant = links(&mut api, &mut app, "item:modes:1");
+    let variant = links(&mut api, &mut app, "item:modes-test:1");
     assert_eq!(
         pairs(&variant["uses"]),
-        [("Script".to_owned(), "item:modes:0".to_owned())],
+        [("Script".to_owned(), "item:modes-test:0".to_owned())],
         "{variant}"
     );
-    assert!(has(&variant["used_by"], "Package", "package:modes"));
-    let script = links(&mut api, &mut app, "item:modes:0");
+    assert!(has(&variant["used_by"], "Package", "package:modes-test"));
+    let script = links(&mut api, &mut app, "item:modes-test:0");
     assert_eq!(
         pairs(&script["used_by"]).into_iter().filter(|p| p.0 == "Variant").collect::<Vec<_>>(),
-        [("Variant".to_owned(), "item:modes:1".to_owned())],
+        [("Variant".to_owned(), "item:modes-test:1".to_owned())],
         "{script}"
     );
     // Another script shares no key: nothing links it to the variant.
-    let other = links(&mut api, &mut app, "item:modes:2");
-    assert!(!has(&other["used_by"], "Variant", "item:modes:1"), "{other}");
+    let other = links(&mut api, &mut app, "item:modes-test:2");
+    assert!(!has(&other["used_by"], "Variant", "item:modes-test:1"), "{other}");
 }
 
 #[test]
@@ -246,8 +248,8 @@ fn packages_and_items_link_to_each_other() {
     let (_t, mut app, mut api) = setup("links-items");
     let v = links(&mut api, &mut app, "package:kit-test");
     assert!(has(&v["uses"], "Package", "item:kit-test:1"), "{v}");
-    assert!(has(&v["used_by"], "Package", "package:modes"), "{v}");
-    let v = links(&mut api, &mut app, "package:modes");
+    assert!(has(&v["used_by"], "Package", "package:modes-test"), "{v}");
+    let v = links(&mut api, &mut app, "package:modes-test");
     assert!(has(&v["uses"], "Package", "package:kit-test"), "{v}");
 
     // The edits item uses the tag its line names; a tag item the tag it adds.
@@ -285,4 +287,51 @@ fn a_bad_id_a_missing_package_and_an_item_past_the_end_are_refused() {
             .unwrap_err();
         assert_eq!(e.code, code, "{asset}: {}", e.message);
     }
+}
+
+#[test]
+fn a_script_document_is_the_item_of_the_package_that_carries_it() {
+    use crate::app::{Doc, assets::read_set, links::item_id};
+    use content::package::Kind;
+    let (t, mut app, _api) = setup("links-doc-asset");
+    let script = |f: &str| Some(t.path(&format!("data/packages/modes/scripts/{f}")));
+    app.rules.path = script("hill.rules");
+    assert_eq!(app.doc_asset(Doc::Rules).as_deref(), Some("item:modes:0"));
+    app.rules.path = script("other.rules");
+    assert_eq!(app.doc_asset(Doc::Rules).as_deref(), Some("item:modes:2"));
+    app.rules.path = script("nowhere.rules");
+    assert_eq!(app.doc_asset(Doc::Rules), None);
+    // A variant and a playlist file are named the same way; none open is none.
+    let set = read_set(&app.data_root());
+    assert_eq!(item_id(&set, Kind::Variant, "hill").as_deref(), Some("item:modes:1"));
+    assert_eq!(item_id(&set, Kind::Variant, "HILL").as_deref(), Some("item:modes:1"));
+    assert_eq!(item_id(&set, Kind::Playlist, "hill"), None);
+    assert_eq!(app.doc_asset(Doc::Variant), None);
+    assert_eq!(app.doc_asset(Doc::Playlists), None);
+    // The header's path for an item names its package, its kind and its source.
+    let c = crate::ui::doc_header_crumbs(&app, "item:modes:1").unwrap();
+    assert_eq!(
+        (c.origin.as_str(), c.kind.as_str(), c.leaf.as_str()),
+        ("modes", "variant", "scripts/hill.variant.rules")
+    );
+}
+
+#[test]
+fn a_voice_lists_the_dialogue_sounds_its_rules_pick() {
+    let (_t, mut app, mut api) = setup("links-voice");
+    let v = links(&mut api, &mut app, "voice:arbiter");
+    assert_eq!(
+        pairs(&v["used_by"]),
+        [("Sounds".to_owned(), LINE.to_owned())],
+        "{v}"
+    );
+    assert_eq!(v["editors"][0]["id"], "voices");
+    // The sound names its voice, and the voice opens as an asset id.
+    let sound = links(&mut api, &mut app, LINE);
+    assert!(has(&sound["uses"], "Voice", "voice:arbiter"), "{sound}");
+    // A voice that is no character is refused as a bad id.
+    let e = api
+        .call(&mut app, m::ASSET_LINKS, json!({ "asset": "voice:nobody" }))
+        .unwrap_err();
+    assert_eq!(e.code, code::INVALID_PARAMS, "{}", e.message);
 }

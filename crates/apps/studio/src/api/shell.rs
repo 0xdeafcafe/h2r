@@ -61,23 +61,10 @@ fn answer(app: &mut App, doc: Doc, log: Vec<String>) -> Reply {
     Ok(json!({ "tab": tab, "front": app.front_doc().map(|d| app.doc_id(d)), "log": log }))
 }
 
-/// `shell.open`: a tag of the open map (or of `map`, opened first), a
-/// package item (`asset: "item:<package>:<n>"`), or a map alone.
+/// `shell.open`: an asset, a tag of the open map, or a map alone.
 fn open(app: &mut App, p: &P) -> Reply {
     let discard = p.bool("discard")?;
-    let mut log = Vec::new();
     let map = p.opt_str("map")?;
-    if let Some(map) = &map {
-        if app.loaded_map().as_deref() != Some(map.as_str()) || app.browsing().is_some() {
-            log.extend(run(app, Action::SelectMap(map.to_owned()), discard)?);
-        }
-        if app.loaded_map().as_deref() != Some(map.as_str()) {
-            return Err(err(
-                code::INVALID_PARAMS,
-                format!("{map:?} did not open as the map (source.maps lists them)"),
-            ));
-        }
-    }
     if let Some(asset) = p.opt_str("asset")? {
         if p.has("tag") {
             return Err(err(
@@ -85,26 +72,31 @@ fn open(app: &mut App, p: &P) -> Reply {
                 "shell.open takes one of asset or tag",
             ));
         }
-        // The way in the browser's double-click takes
-        // (`Action::OpenAsset`), so both leave the same tab in front.
-        log.extend(run(
+        let log = run(
             app,
             Action::OpenAsset {
-                asset,
-                map: map.clone(),
+                asset: asset.to_owned(),
+                map: map.map(str::to_owned),
             },
             discard,
-        )?);
+        )?;
         app.sync_tabs();
-        let front = app.front_doc();
-        let tab = front
-            .and_then(|d| app.tabs().iter().find(|t| t.doc == d))
-            .map(|t| app.tab_json(t));
-        return Ok(json!({
-            "tab": tab.unwrap_or(Value::Null),
-            "front": front.map(|d| app.doc_id(d)),
-            "log": log,
-        }));
+        let Some(shown) = app.front_doc() else {
+            return Err(err(code::REFUSED, format!("{asset} did not open")));
+        };
+        return answer(app, shown, log);
+    }
+    let mut log = Vec::new();
+    if let Some(map) = map {
+        if app.loaded_map() != Some(map) || app.browsing().is_some() {
+            log.extend(run(app, Action::SelectMap(map.to_owned()), discard)?);
+        }
+        if app.loaded_map() != Some(map) {
+            return Err(err(
+                code::INVALID_PARAMS,
+                format!("{map:?} did not open as the map (source.maps lists them)"),
+            ));
+        }
     }
     let doc = if p.has("tag") {
         if app.browsing().is_some() {

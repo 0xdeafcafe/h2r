@@ -144,6 +144,11 @@ impl Kept {
         kept
     }
 
+    /// The kept rows of `block`, in index order; none when the block was left out.
+    pub(crate) fn rows_of(&self, block: BlockKind) -> &[BaseRow] {
+        self.rows.get(&block).map_or(&[], Vec::as_slice)
+    }
+
     /// The kept row of the base entry `(block, index)`.
     pub fn row(&self, block: BlockKind, index: u32) -> Result<&BaseRow, String> {
         let rows = self.rows.get(&block).ok_or_else(|| {

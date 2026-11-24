@@ -9,7 +9,10 @@
 //! - **Marks.** A ground label is a netgame flag with a label op naming
 //!   its place ([`GroundLabel`]). Its position and facing are the flag's;
 //!   its team is the flag's team; a `siege_line`'s phase is the label's
-//!   number. The materialiser reads them from the built scenario.
+//!   number. The materialiser reads them from the built scenario. The one
+//!   exception is `siege_barrier`: a mark on a placed solid object (not a
+//!   flag), numbered by the phase it opens in, which the ground build does
+//!   not read: the script finds it by its label.
 //! - **The recipe.** A `generate` recipe named [`GROUND_RECIPE`] with the
 //!   kit's version, the home team and the mode ([`GroundRecipe`]). It is
 //!   not a Forge-map recipe: a document that holds it stays a map
@@ -57,16 +60,23 @@ pub enum GroundLabel {
     /// Where a side spawns in a phase: a team, and the label's number is
     /// the phase.
     Line,
+    /// An object that stands open from a phase on (`siege.rules`'
+    /// `set_open`): the label's number is the phase it opens in, and 0 or
+    /// no number is open from the start. It is the one ground label on a
+    /// placed object (scenery, a crate, a machine or a vehicle), not on a
+    /// netgame flag.
+    Barrier,
 }
 
 impl GroundLabel {
-    pub const ALL: [GroundLabel; 6] = [
+    pub const ALL: [GroundLabel; 7] = [
         Self::Drop,
         Self::Base,
         Self::Cover,
         Self::Site,
         Self::Goal,
         Self::Line,
+        Self::Barrier,
     ];
 
     /// The label's text, as a script reads it.
@@ -78,6 +88,7 @@ impl GroundLabel {
             Self::Site => "siege_site",
             Self::Goal => "siege_goal",
             Self::Line => "siege_line",
+            Self::Barrier => "siege_barrier",
         }
     }
 
@@ -90,6 +101,7 @@ impl GroundLabel {
             Self::Site => "Siege site",
             Self::Goal => "Siege goal",
             Self::Line => "Siege line",
+            Self::Barrier => "Siege barrier",
         }
     }
 
@@ -103,19 +115,37 @@ impl GroundLabel {
         matches!(self, Self::Base | Self::Line)
     }
 
-    /// Whether the label carries a number (a `siege_line`'s phase).
+    /// Whether the label carries a number (a `siege_line`'s or a
+    /// `siege_barrier`'s phase).
     pub const fn has_phase(self) -> bool {
+        matches!(self, Self::Line | Self::Barrier)
+    }
+
+    /// Whether the number is required: a line is in a phase, while a
+    /// barrier with no number is open from the start.
+    pub const fn needs_phase(self) -> bool {
         matches!(self, Self::Line)
+    }
+
+    /// Whether the label marks a netgame flag ([`GROUND_BLOCK`]), as every
+    /// ground label but a barrier does; a barrier marks a placed solid
+    /// object ([`SOLID_BLOCKS`]) and the ground build does not read it.
+    pub const fn on_flag(self) -> bool {
+        !matches!(self, Self::Barrier)
     }
 }
 
-/// A ground label on a netgame flag of the finished map.
+/// A ground label on a netgame flag of the finished map, or a barrier's on
+/// a solid object.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GroundMark {
     pub kind: GroundLabel,
-    /// The flag's index after every placement edit.
+    /// The block the marked entry is in: [`GROUND_BLOCK`] for every label
+    /// but a barrier's.
+    pub block: BlockKind,
+    /// The entry's index after every placement edit.
     pub index: u32,
-    /// The label's number: a `siege_line`'s phase.
+    /// The label's number: a `siege_line`'s or a `siege_barrier`'s phase.
     pub number: Option<i32>,
 }
 
@@ -259,16 +289,17 @@ impl ForgeDoc {
         doc
     }
 
-    /// The ground labels on the finished map's netgame flags, by label then
-    /// index. A ground label on any other block, or a `siege_line` with no
-    /// phase, is refused by name.
+    /// The ground labels on the finished map's netgame flags, and the
+    /// barriers on its solid objects, by label then block then index. A
+    /// ground label on any other block, or a `siege_line` with no phase, is
+    /// refused by name.
     pub fn ground_marks(&self, base_counts: &BTreeMap<BlockKind, u32>) -> Result<Vec<GroundMark>> {
         let mut marks = Vec::new();
         for active in self.labels(base_counts)?.active {
             let Some(kind) = GroundLabel::of(&active.label.text) else {
                 continue;
             };
-            if active.block != GROUND_BLOCK {
+            if kind.on_flag() && active.block != GROUND_BLOCK {
                 return Err(Refusal::invalid(
                     "label",
                     format!(
@@ -278,7 +309,18 @@ impl ForgeDoc {
                     ),
                 ));
             }
-            if kind.has_phase() && !matches!(active.label.number, Some(0..=65535)) {
+            if !kind.on_flag() && !SOLID_BLOCKS.contains(&active.block) {
+                return Err(Refusal::invalid(
+                    "label",
+                    format!(
+                        "{} marks a placed object (scenery, a crate, a machine or a vehicle), not a {} entry",
+                        kind.text(),
+                        active.block.name()
+                    ),
+                ));
+            }
+            let in_range = matches!(active.label.number, Some(0..=65535));
+            if (kind.needs_phase() || (kind.has_phase() && active.label.number.is_some())) && !in_range {
                 return Err(Refusal::invalid(
                     "label",
                     format!(
@@ -289,11 +331,12 @@ impl ForgeDoc {
             }
             marks.push(GroundMark {
                 kind,
+                block: active.block,
                 index: active.index,
                 number: active.label.number,
             });
         }
-        marks.sort_by_key(|m| (m.kind, m.index));
+        marks.sort_by_key(|m| (m.kind, m.block as u32, m.index));
         Ok(marks)
     }
 
@@ -301,7 +344,12 @@ impl ForgeDoc {
     /// recipe, the marks, and the ops that move a mark or change what is
     /// solid. An edit that touches none of them leaves it as it was.
     pub fn ground_stamp(&self, base_counts: &BTreeMap<BlockKind, u32>) -> Result<Sha256> {
-        let marks = self.ground_marks(base_counts)?;
+        // A barrier is no input of the ground: the script reads it.
+        let marks: Vec<GroundMark> = self
+            .ground_marks(base_counts)?
+            .into_iter()
+            .filter(|m| m.kind.on_flag())
+            .collect();
         let mut added: BTreeMap<OpId, BlockKind> = BTreeMap::new();
         for op in &self.ops {
             if let Edit::Placement(Placement::Add { block, .. }) = &op.edit {

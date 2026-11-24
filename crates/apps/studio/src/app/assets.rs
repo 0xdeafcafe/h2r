@@ -6,7 +6,10 @@
 //!
 //! An asset is named by an id: `tag:<group>:<path>` for a tag of the tree
 //! or one a package adds, `package:<id>` for a package, and
-//! `item:<package>:<n>` for the n-th item of a package's manifest.
+//! `item:<package>:<n>` for the n-th item of a package's manifest, and
+//! `voice:<id>` for a voice (a character of `voice::dataset::CHARACTERS`,
+//! or `announcer`), which the **Voices** kind lists
+//! ([`App::voice_asset_list`]).
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -42,12 +45,19 @@ const KINDS: &[(&str, &[&str])] = &[
     ("Screens", &["wgit", "wgtz", "wigl"]),
     ("HUDs", &["nhdt", "grhi", "hudg", "hud#"]),
     ("Strings", &["unic", "ustr", "str#"]),
-    // No tag groups: the kinds a package item takes
-    // ([`item_kind`]). Voices joins when the voice document is built
-    // (docs/editor/studio-flow.md, "Voices and the announcer").
+    // Package item kinds with no tag groups.
     ("Game types", &[]),
     ("Playlists", &[]),
 ];
+
+/// The kind of the voices (`voice:<id>` rows): not a tag group, so it is
+/// listed by [`App::voice_asset_list`] rather than from the tree.
+pub const VOICES_KIND: &str = "Voices";
+
+/// The Kind is the Voices kind.
+pub fn is_voices_kind(kind: Option<&str>) -> bool {
+    kind.is_some_and(|k| k.trim().eq_ignore_ascii_case(VOICES_KIND))
+}
 
 /// The kind a group belongs to.
 pub fn kind_of(group: &str) -> &'static str {
@@ -62,7 +72,11 @@ pub fn kind_of(group: &str) -> &'static str {
 
 /// The Kind picker's choices.
 pub fn kind_names() -> Vec<&'static str> {
-    KINDS.iter().map(|(k, _)| *k).chain(["Other"]).collect()
+    KINDS
+        .iter()
+        .map(|(k, _)| *k)
+        .chain(["Other", VOICES_KIND])
+        .collect()
 }
 
 /// The kind a package item lists under: the kind of the tag it adds (a
@@ -128,13 +142,15 @@ pub enum AssetId {
     Tag(TagKey),
     Package(String),
     Item(String, usize),
+    /// A voice: a character id or `announcer`.
+    Voice(String),
 }
 
 impl AssetId {
     pub fn parse(s: &str) -> Result<Self, String> {
         let bad = || {
             format!(
-                "{s:?} is not an asset id (tag:<group>:<path>, package:<id> or item:<package>:<n>)"
+                "{s:?} is not an asset id (tag:<group>:<path>, package:<id>, item:<package>:<n> or voice:<id>)"
             )
         };
         let (kind, rest) = s.split_once(':').ok_or_else(bad)?;
@@ -148,6 +164,9 @@ impl AssetId {
                 Ok(Self::Tag(TagKey::new(group, path.replace('/', "\\"))))
             }
             "package" if !rest.is_empty() => Ok(Self::Package(rest.to_owned())),
+            "voice" if crate::voice::dataset::character(rest).is_some() || rest == super::voices::ANNOUNCER => {
+                Ok(Self::Voice(rest.to_owned()))
+            }
             "item" => {
                 let (p, n) = rest.rsplit_once(':').ok_or_else(bad)?;
                 Ok(Self::Item(p.to_owned(), n.parse().map_err(|_| bad())?))
@@ -173,7 +192,7 @@ pub(super) struct Overlay {
     pub(super) problems: Vec<String>,
 }
 
-fn group_ref(text: &str) -> Option<TagKey> {
+pub(super) fn group_ref(text: &str) -> Option<TagKey> {
     let (g, path) = text.split_once(':')?;
     Some(TagKey::new(parse_fourcc(g)?, path.replace('/', "\\")))
 }
@@ -304,6 +323,11 @@ fn badge(o: &Overlay, key: &TagKey) -> (Value, Value) {
         return (json!(format!("edited by {}", ids.join(", "))), json!(ids));
     }
     (Value::Null, json!([]))
+}
+
+/// The Browser's origin label for a tag, shared with the document header.
+pub(crate) fn badge_for(set: &GameSet, key: &TagKey) -> String {
+    badge(&overlay(set), key).0.as_str().unwrap_or("on the disc").to_owned()
 }
 
 fn words_match(words: &[String], hay: &str) -> bool {
@@ -440,12 +464,11 @@ pub fn list(tags_root: &Path, set: &GameSet, q: &Query) -> Result<Value, String>
                     .find(|e| e.loaded.package.name() == id)
                     .ok_or_else(|| format!("no package {id:?} is on (root packages lists them)"))?;
                 let edited = edited_kinds(&e.loaded);
-                let kind = q.kind.as_deref().map(str::to_lowercase);
+                let filter = q.kind.as_deref().map(str::trim);
                 for (n, item) in e.loaded.package.manifest.items.iter().enumerate() {
-                    let kind = edited.get(&n).copied();
-                    let row = item_row(id, n, item, kind);
-                    if let Some(k) = &kind
-                        && row["kind"].as_str().unwrap_or("").to_lowercase() != *k
+                    let row = item_row(id, n, item, edited.get(&n).copied());
+                    if let Some(kind) = filter
+                        && !row["kind"].as_str().unwrap_or("").eq_ignore_ascii_case(kind)
                     {
                         continue;
                     }
@@ -746,14 +769,14 @@ impl App {
     }
 
     /// [`super::Action::OpenAsset`]: the asset a browser row, a Go to
-    /// anything entry or `shell.open {asset}` names, so all four leave the
-    /// same tab in front (docs/editor/studio-flow.md, "One way in"). A
-    /// package item opens the editor of what it builds ([`Self::open_item`]);
-    /// the package document is slice FL10.
+    /// anything entry or `shell.open {asset}` names. A package item opens
+    /// the editor of what it builds ([`Self::open_item`]), and a voice
+    /// opens its own document (docs/editor/studio-flow.md, "One way in").
     pub(super) fn open_asset(&mut self, asset: &str, map: Option<&str>) {
         let key = match AssetId::parse(asset) {
             Ok(AssetId::Tag(key)) => key,
             Ok(AssetId::Item(p, n)) => return self.open_item(asset, &p, n, map),
+            Ok(AssetId::Voice(id)) => return self.open_voice(&id),
             Ok(AssetId::Package(_)) => {
                 return self.error(format!(
                     "{asset} opens in the package document, which is not built yet"
@@ -796,7 +819,12 @@ impl App {
         self.sync_tags();
         let text = format!("{}:{}", fourcc_text(key.group), key.path);
         match tag_api::find_tag(&self.tags, &text) {
-            Some(id) => self.open_doc(Doc::Tag(id)),
+            Some(id) => {
+                if let Err(e) = self.navigate(super::NavAction::Open(vec![id])) {
+                    return self.error(e);
+                }
+                self.open_doc(Doc::Tag(id));
+            }
             None => self.error(format!("{text} is not in the open map")),
         }
     }
@@ -808,8 +836,8 @@ impl App {
     /// `model`, `animation` or `sound` item the tag it adds, an `edits`
     /// item the first tag its file names. A `playlist` item's fragment has
     /// no editor (the Playlists tool opens a `multiplayer_hopper.dat`) and
-    /// is refused by name. The tab the editor opens carries the item's id,
-    /// and `map` opens first for the items whose editor is a tag editor.
+    /// is refused by name. Script and variant tabs carry the item's id.
+    /// Items that open in a tag editor use `map` when supplied.
     fn open_item(&mut self, asset: &str, package: &str, n: usize, map: Option<&str>) {
         let set = read_set(&self.data_root());
         let listed = set.listed.iter().find(|l| l.id == package && l.on);
@@ -885,10 +913,8 @@ impl App {
                         let Some(text) = text else {
                             return self.error(format!("{asset}: {source} is not in the package"));
                         };
-                        if let Err(why) =
-                            self.run_variant(super::Action::NewVariantFromScript(text))
-                        {
-                            return self.error(format!("{asset}: {why}"));
+                        if !self.run_variant(super::Action::NewVariantFromScript(text)) {
+                            return;
                         }
                         self.focus_doc(Doc::Variant);
                         self.set_tab_item(Doc::Variant, Some(item_id), None);

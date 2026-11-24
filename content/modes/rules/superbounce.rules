@@ -7,11 +7,13 @@
 // scores `bounce_points` times its place in its chain, capped at 6
 // (Bouncetacular), and twice that for a Monster Bounce; a Bounced (a fall
 // out of the map during a bounce) costs a point, and so does a death by
-// the player's own hand. The medals, chains and the Monster test are the
-// host's, and so are the HUD's pieces, which the eight options after the
-// scoring ones choose, and the Pogo Stick, which the last two do.
-// docs/game/superbounce.md, "The superbounce game type", and
-// docs/game/rules-engine.md, "Firefight, AI and bounces".
+// the player's own hand. The chain and the Monster test are this
+// script's, on the host's physics events: `on launch` for each landing the
+// host judges a bounce, `on grounded` when the ground (or a teleport, a
+// new unit, a fall through a strip) ends the run. The medals on the HUD,
+// the HUD's pieces (the eight options after the scoring ones) and the Pogo
+// Stick (the last two) are the host's. docs/game/superbounce.md, "The
+// superbounce game type", and docs/game/rules-world-api.md, "Physics".
 //
 // Entries a host cannot make yet (`verify::unhostable`): none.
 rules "Superbounce" 1
@@ -61,20 +63,32 @@ option pogo: bool = true "Pogo Stick" "Everyone spawns with a pogo stick as the 
 option pogo_style: PogoStyle = PogoStyle.unsc "Pogo style" "Which stick the game hands out: the UNSC field spring, the Covenant grav hopper or the Forerunner strut"
 
 player var bounces: int = 0
+// The place of the last bounce in its chain, kept after the chain ends.
+player var chain: int = 0
+// Whether the next bounce adds to the chain: no ground since the last.
+player var flying: bool = false
 
 // A kill scores nothing; a suicide or a fall costs a point.
 on kill(victim, killer) {
     if suicide_costs and (killer == none or killer == victim) { score(victim, -1) }
 }
 
-// The chain's multiplier stops at 6, Bouncetacular's count, so a long
+// A bounce with no ground since the last adds to the chain; any other
+// starts one. The multiplier stops at 6, Bouncetacular's count, so a long
 // chain cannot run away; a Monster doubles after the cap.
-on bounce(p, spot, chain, monster) {
+on launch(p, spot, speed) {
+    if p.flying { p.chain = p.chain + 1 } else { p.chain = 1 }
+    p.flying = true
     p.bounces = p.bounces + 1
     if bounce_points > 0 {
-        let points = bounce_points * min(chain, 6)
-        if monster and monster_double { score(p, points * 2) } else { score(p, points) }
+        let points = bounce_points * min(p.chain, 6)
+        // 16.0: the host's `superbounce_chain::MONSTER_VZ`, a Monster Bounce.
+        if speed > 16.0 and monster_double { score(p, points * 2) } else { score(p, points) }
     }
+}
+
+on grounded(p) {
+    p.flying = false
 }
 
 // A Bounced is a fall out of the map, a death with no killer, so with

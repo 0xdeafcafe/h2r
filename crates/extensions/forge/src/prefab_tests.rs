@@ -87,6 +87,33 @@ fn a_label_a_script_cannot_read_or_the_ground_owns_is_refused() {
 }
 
 #[test]
+fn a_siege_barrier_is_picked_for_an_object_and_numbered_by_its_phase() {
+    let mut s = session(4);
+    let mut w = Fake::default();
+    let id = s.place(&mut w, 1, 0, frame(1., 0.)).unwrap();
+    s.label_barrier(&mut w, 2, at(id), 1).unwrap();
+    assert_eq!(s.label_of(at(id)), Some(label("siege_barrier", Some(1))));
+    let i = forge_doc::GroundLabel::ALL
+        .iter()
+        .position(|l| *l == forge_doc::GroundLabel::Barrier)
+        .unwrap();
+    assert_eq!(s.ground_counts()[i], 1, "the palette counts it");
+    assert!(s.markers().unwrap().is_empty(), "it is no flag marker");
+    // Picking it again renumbers; typing it in Properties still works.
+    s.label_barrier(&mut w, 3, at(id), 2).unwrap();
+    assert_eq!(s.label_of(at(id)), Some(label("siege_barrier", Some(2))));
+    s.set_label(&mut w, 4, at(id), Some(label("siege_barrier", Some(0)))).unwrap();
+    assert_eq!(s.label_of(at(id)), Some(label("siege_barrier", Some(0))));
+    // It labels an object: the marker placement refuses it, by name.
+    let error = s
+        .place_marker(&mut w, 5, forge_doc::GroundLabel::Barrier, frame(0., 0.), 0, None)
+        .unwrap_err();
+    assert!(error.contains("labels an object"), "{error}");
+    // A thing that is not there is refused.
+    assert!(s.label_barrier(&mut w, 6, at(OpId(999)), 1).is_err());
+}
+
+#[test]
 fn deleting_a_labelled_object_clears_its_label_in_the_same_undo_step() {
     let (mut s, mut w, ids) = build();
     s.delete(&mut w, 3, ids[1]).unwrap();

@@ -24,12 +24,15 @@ pub fn state_hash(state: &[u8]) -> u64 {
 
 impl ActorSet {
     /// The host's digest of this set, with the host log head it has
-    /// written (all zeros when no mode keeps a log).
-    pub fn digest(&self, log_head: [u8; 32]) -> Record {
+    /// written (all zeros when no mode keeps a log) and the hash of the
+    /// show state the peer was last offered (the empty state's hash when
+    /// the script shows none).
+    pub fn digest(&self, log_head: [u8; 32], show_hash: u64) -> Record {
         Record::Digest {
             log_head,
             state_hash: state_hash(self.state()),
             actor_count: self.actors().len() as u16,
+            show_hash,
         }
     }
 

@@ -1,6 +1,6 @@
 //! The host of `frame-scene.layers` (docs/graphics/framescene.md, slice 4):
-//! the scene's world layers 1, 5, 7, 8, 20 and 17, the first person's
-//! layers 1, 7, 8 and 20, and the sorted handlers' layers 18 and 19
+//! the scene's world layers 1, 5, 7, 8, 20, 2 and 17, the first person's
+//! layers 1, 7, 8, 20 and 2, and the sorted handlers' layers 18 and 19
 //! (camouflage) and 21 (hologram) (docs/graphics/native-water-fog.md),
 //! drawn from the scene's plan
 //! (`native_render::layer_pass`, `LitObjects::plan_layer_item`) over the
@@ -15,7 +15,7 @@
 //!   and layer, their stage images decoded; the parts that can draw them;
 //!   and each material resolved once, with its instance's animated
 //!   properties and input scales, for the plan. Object models compile
-//!   their materials' passes of layers 1, 5, 7, 8 and 20 with their
+//!   their materials' passes of layers 1, 2, 5, 7, 8, 17 and 20 with their
 //!   layer-3 passes, over the same buffers (`object_program_gpu::lit_model`).
 //! - **Per layer call** ([`Glue::ask`], before the layer draw of a scene
 //!   view or of the first person): the bridge extracts the layer's pass
@@ -47,8 +47,8 @@
 //!   epilogue leaves mode 1. So with the stencil off the items draw with
 //!   the stencil disabled, and with the stencil off or a marked object
 //!   item taken the device must already hold mode 1; else the layer, or
-//!   the marked items, stay on the D3D path. Layers 5, 7, 8 and 20 draw
-//!   under the device's stencil.
+//!   the marked items, stay on the D3D path. Layers 2, 5, 7, 8, 17 and 20
+//!   draw under the device's stencil.
 //! - **The pass** ([`LayerViewPass`]): the device's view constants and W
 //!   clip at the issue, then per run of the list `GpuWorld::layer_draws`
 //!   or `LitObjects::draws` in the D3D pass open on the bound

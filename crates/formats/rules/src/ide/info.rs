@@ -141,6 +141,7 @@ const BOUNCE: &[&str] = &["p", "spot", "chain", "monster"];
 const KILLER_ASSIST_CLASS: &[&str] = &["killer", "assist", "class"];
 const DAMAGE: &[&str] = &["o", "by", "amount"];
 const TOUCHDOWN: &[&str] = &["p", "down", "up"];
+const LAUNCH: &[&str] = &["p", "spot", "speed"];
 
 /// An event's argument names, as the docs write them, and what fires it.
 pub(crate) fn event_info(ev: Event) -> (&'static [&'static str], &'static str) {
@@ -182,6 +183,14 @@ pub(crate) fn event_info(ev: Event) -> (&'static [&'static str], &'static str) {
         Event::Touchdown => (
             TOUCHDOWN,
             "A player's biped touched down. `down` is the speed it fell at on the tick before and `up` its vertical speed now, both in world units a second (`down` positive for a fall, `up` positive for rising). At most 16 a tick.",
+        ),
+        Event::Launch => (
+            LAUNCH,
+            "A landing the host judged a superbounce, on the tick its launch window closed (three ticks after the touchdown). `spot` is the strip it came off, `none` for a seam no marked strip accounts for; `speed` is the launch, in world units a second up. At most 16 a tick.",
+        ),
+        Event::Grounded => (
+            P,
+            "A player's run of bounces with no ground between them ended: a landing that did not bounce, the ground from the third tick after a bounce, a teleport, a new unit or a fall through a strip's floor. Only after a `launch`; at most 16 a tick.",
         ),
         Event::Damage => (
             DAMAGE,

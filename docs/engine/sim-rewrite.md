@@ -354,7 +354,11 @@ as runtime before).
   - point to leaf `14a280`;
   - geometry test `11e5e0`;
   - float MOPP ray `3009e0` with its Havok path `244980` → `2df720` →
-    `301800` (1.80% of the thread, no caller inside the world step);
+    `301800` (1.80% of the thread, no caller inside the world step); the
+    native walk (`sim_collision::mopp::ray`) follows `301800` as a parity
+    arm that counts matches and the first mismatch, while the guest's
+    answer stands until it shows parity
+    ([collision-queries.md](collision-queries.md), "Entry I");
   - the datum walk `b89b0`;
   - spatial query `14a370` and the cluster walk `14a5b0`.
 - *Not in this phase.* The integer MOPP box query `2ff8b0` is called only

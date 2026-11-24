@@ -43,15 +43,16 @@ fn the_state_hash_is_fnv_1a_64() {
 }
 
 #[test]
-fn a_digest_carries_the_log_head_state_hash_and_count_and_round_trips() {
+fn a_digest_carries_the_log_head_state_hash_count_and_show_hash_and_round_trips() {
     let set = host(&[0x0100_0001, 0x0200_0002], &[1, 2, 3]);
-    let digest = set.digest([9; 32]);
+    let digest = set.digest([9; 32], state_hash(&[4, 5]));
     assert_eq!(
         digest,
         Record::Digest {
             log_head: [9; 32],
             state_hash: state_hash(&[1, 2, 3]),
             actor_count: 2,
+            show_hash: state_hash(&[4, 5]),
         }
     );
     let packet = Packet {
@@ -71,7 +72,7 @@ fn a_replica_equal_to_the_host_agrees() {
             records: vec![set.key()],
         })
         .unwrap();
-    let (hash, count) = parts(&set.digest([0; 32]));
+    let (hash, count) = parts(&set.digest([0; 32], 0));
     let mut check = Check::default();
     assert_eq!(check.observe(replica.set(), hash, count), Verdict::Agrees);
     assert_eq!(check.misses(), 0);
@@ -80,7 +81,7 @@ fn a_replica_equal_to_the_host_agrees() {
 #[test]
 fn a_wrong_state_or_count_asks_for_a_key() {
     let set = host(&[0x0100_0001, 0x0200_0002], &[7]);
-    let (hash, count) = parts(&set.digest([0; 32]));
+    let (hash, count) = parts(&set.digest([0; 32], 0));
     let mut check = Check::default();
     let lost_actor = host(&[0x0100_0001], &[7]);
     assert_eq!(check.observe(&lost_actor, hash, count), Verdict::RequestKey);
@@ -92,7 +93,7 @@ fn a_wrong_state_or_count_asks_for_a_key() {
 #[test]
 fn three_mismatches_in_a_row_with_keys_between_diverge() {
     let set = host(&[0x0100_0001], &[1]);
-    let (hash, count) = parts(&set.digest([0; 32]));
+    let (hash, count) = parts(&set.digest([0; 32], 0));
     let stale = ActorSet::default();
     let mut check = Check::default();
     assert_eq!(check.observe(&stale, hash, count), Verdict::RequestKey);
@@ -107,7 +108,7 @@ fn three_mismatches_in_a_row_with_keys_between_diverge() {
 #[test]
 fn an_agreement_ends_the_run() {
     let set = host(&[0x0100_0001], &[1]);
-    let (hash, count) = parts(&set.digest([0; 32]));
+    let (hash, count) = parts(&set.digest([0; 32], 0));
     let stale = ActorSet::default();
     let mut check = Check::default();
     check.observe(&stale, hash, count);
@@ -122,7 +123,7 @@ fn an_agreement_ends_the_run() {
 #[test]
 fn mismatches_while_the_key_is_on_its_way_ask_again_and_never_diverge() {
     let set = host(&[0x0100_0001], &[1]);
-    let (hash, count) = parts(&set.digest([0; 32]));
+    let (hash, count) = parts(&set.digest([0; 32], 0));
     let stale = ActorSet::default();
     let mut check = Check::default();
     for _ in 0..10 {

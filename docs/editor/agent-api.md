@@ -162,7 +162,7 @@ dropped with it.
 | Method | Does |
 |---|---|
 | `shell.tabs` | the tabs in order and the `front` one; per tab its `doc` id, `kind`, `title`, the `tool` it shows in, `dirty`, `can_undo`, `can_redo`, and for a tag its `editor`, `id`, `group` and `map` |
-| `shell.open {tag?, map?, discard?}` | opens a tag of the open map (with `map`, that map opens first; refused over unsaved edits unless `discard`), or brings a map's tab forward; answers the `tab`, the `front` and the `log` |
+| `shell.open {asset?, tag?, map?, discard?}` | opens a tag of the open map (with `map`, that map opens first; refused over unsaved edits unless `discard`), or brings a map's tab forward; `asset` takes a `tag:`, `voice:` or `item:` id. A voice opens on Setup while it has no dataset. A package item opens the editor of what it builds, with `item:` tab IDs for scripts and variants. Playlist fragments are refused. The call answers the `tab`, the `front` and the `log` |
 | `shell.focus {doc}` | brings a tab forward: its document shows in its editor |
 | `shell.close {doc, discard?}` | closes a tab: a tool's document closes (`UNSAVED` over edits unless `discard`), a tag's tab closes keeping its edits; the nearest tab left open, to its left first, comes forward |
 
@@ -210,9 +210,10 @@ The asset rows are what `asset.list` answers for the query — every tag
 of the tags tree, the set's packages and the items of each package that
 is on (`app::commands::palette_assets`), with no map open. The commands
 are the menus' own, one `Open editor: <name>` per editor of View >
-Editors, and `Open: Voices` (`Action::ShowVoices`).
+Editors. Voices are `voice` entries (`voice:<id>` assets of the **Voices**
+kind), which open the voice document.
 Entries are `{kind, label, detail}` in the order shown by Cmd/Ctrl+P:
-`map`, then the asset rows `tag`, `package`, `item`, then `placement`
+`map`, then the asset rows `tag`, `package`, `item`, `voice`, then `placement`
 and `command`. Each kind has at most 20 entries. `totals` counts all
 matches by kind before that cap. Each word of the query must match the
 commands' labels and details, and is the same search `asset.list` runs
@@ -1736,12 +1737,17 @@ the main file, and its `maps`). A tag a package adds is in the same list
 edit line of a package on touches has badge `edited by <package>` and
 the packages in `packages`. `kind` is one of `kinds` (Maps, Objects,
 Models, Animations, Bitmaps, Shaders, Effects, Sounds, Screens, HUDs,
-Strings, Other) or a tag group; `map` keeps what that map's manifest
+Strings, Other, Voices) or a tag group; the kind `Voices` lists a
+`voice:<id>` row for each character and the announcer, with `state` (`no
+dataset`, `dataset`, `fine-tuned` or `announcer`), `minutes`,
+`pending_asr` and `tuned`; `map` keeps what that map's manifest
 holds, with the tags a package adds for it; every word of `query` must
 match the path, group, kind or a package id; `package` keeps what that
 package adds or edits. `root` `packages` lists the set (baked, then
 `<data>/packages/`) with on or off and why; with `package` it lists that
-package's items. `root` `live` answers `offline: true`: the server's
+package's items. On item rows, `kind` is the Browser kind of what the
+item builds (including **Game types** and **Playlists**), and `item_kind`
+is its manifest kind. Use `kind` to filter those rows. `root` `live` answers `offline: true`: the server's
 offer is not held. A missing tree is refused with the way to make it
 (`workspace.extract`).
 
@@ -1759,12 +1765,17 @@ the tree or the package already has is refused.
 
 `asset.links {asset}` answers what the asset uses, what uses it and which
 editors open it (docs/editor/studio-flow.md, "Links"; `app/links.rs`):
-`{asset, uses, used_by, editors, problems}`. A link is `{asset, role, via}`;
+`{asset, uses, used_by, changed_by, editors, problems}`. A link is `{asset, role, via}`;
 `role` groups it (Model, Animations, Sounds, HUD, Projectile, Variant,
 Voice, Package, or the target's kind). A tag's `uses` are the tags its file
 references (`via` is `node <n> +<offset>`) and, for a dialogue sound, the
 voice that says it (`voice:<character>`); its `used_by` are the tags that
-reference it and the packages that add or edit it. A `variant` item uses the
+reference it and the packages that add or edit it; its `changed_by` is every
+package with a patch on it in load order, each `{package, item, asset, change,
+maps, forked, blocks, fields: [{path, value, from?, wins}]}` (`change` is
+`edit`, `patch` for a `tag-delta` or `replaces`; `wins` is false for a field
+a later package sets or an asset a later package overrides whole;
+`app/mods.rs`). A `variant` item uses the
 `rules` item of its script key, which lists the variant under `used_by`.
 An item lists the tag it adds or edits and its package; a package lists its
 items and `requires`. `editors` is `[{id, label, why_not}]`. A tag file that
@@ -1778,8 +1789,28 @@ h2 studio asset.copy '{"asset":"tag:weap:objects\\weapons\\rifle","package":"my-
 h2 studio asset.links '{"asset":"tag:weap:objects\\weapons\\rifle"}'
 ```
 
-The tests (`api/tests/assets_tests.rs`, `api/tests/links_tests.rs`) run over
-an invented tree and local packages.
+`asset.fork {tag, map, package?, set?}` is Fork for this map
+(docs/engine/asset-store.md, "In Studio"; `app/mods.rs`). `tag` is
+`<group>:<path>` or `tag:<group>:<path>`; `package` is a local package, else
+the edit target (`NO_TARGET`). The tag's lines go into `edits/<map>.yaml` of
+the package, an `edits` item whose `maps` names `map` alone, so every other
+level reads the asset as it was. Without `set` the lines are the ones the
+package's other `edits` items that reach `map` have for the tag (the last to
+set a path wins); with `set`, a list of `{path, value, from?}`, those lines are
+put in by path. The answer is `{package, tag, map, file, item, lines,
+from_items, created}`. A tag with no line to fork, a tag forked for the map
+already (without `set`) and a built-in package are `REFUSED`; a map that cannot
+name a file (letters, digits, `_` and `-`) or a tag that is not one is
+`INVALID_PARAMS`. The lock is rewritten.
+
+`asset.revert {tag, map?, package?}` takes the tag's lines out of the
+package's `edits` items: with `map` only the item that names that map alone,
+without every `edits` item with an entry for the tag. An item left with no
+entry goes with its file. The answer is `{package, tag, map, removed: [{item,
+file, maps, lines, item_removed}]}`; a tag with no line is `REFUSED`.
+
+The tests (`api/tests/assets_tests.rs`, `api/tests/links_tests.rs`,
+`api/tests/mods_tests.rs`) run over an invented tree and local packages.
 
 ### Packages
 
@@ -1802,9 +1833,10 @@ under `<data>/packages/<id>/` with `package.toml`, its files and
 | `package.target {id?, clear?}` | the edit target, read, set to a local package, or cleared |
 | `package.enable {id, on}` | `set.toml`'s `off`; `left_out` lists the packages that `require` the one switched off |
 | `package.order {ids}` | `set.toml`'s `order`; `loaded` is the resulting load order |
-| `package.check {id?}` | `{ok, count, findings: [{kind, message, item?, file?, line?}]}`: `lock` (missing or stale), `files` (a cache map, a `.h2tag` bundle, disc files, model weights or a dataset folder), `item` (no builder, a missing or oversize source, a source its builder refuses), `set` (a requirement missing or off), `conflict` (a tag path another package adds) |
+| `package.check {id?}` | `{ok, count, findings: [{kind, message, item?, file?, line?}]}`: `lock` (missing or stale), `files` (a cache map, a `.h2tag` bundle, disc files, model weights or a dataset folder), `store` (a file that is a raw resource or a tag file of the user's tag store, by SHA-256; `package.read`'s `problems` and Problems list it too), `item` (no builder, a missing or oversize source, a source its builder refuses), `set` (a requirement missing or off), `conflict` (a tag path another package adds) |
 | `package.build {id?, map?, out?}` | for each map of the open source the package has an item for (or `map`), `{map, scope, touched, took_ms, tags, added, changed, overrides, bytes, problems}`; with `out`, each built map is written to `<out>/<map>.map` |
 | `package.play {id, map}` | the build for `map`, then `game.load` on the paired game |
+| `package.diff {id?, map?}` | `{id, map, assets, counts, levels, built, conflicts, problems}`: `assets` is one row per asset the package changes or adds, `{asset, item, item_asset, change, maps, forked, ...}` where `change` is `edit` (with `fields: [{path, to, from?}]`, `blocks: [{path, op}]` and `was?`), `patch` (a `tag-delta`, with `was`), `override` (a `replaces`, with its hash) or `added`; `counts` counts them and the forks; `levels` are the maps the package changes (the open source's maps by class, else the maps its items name). With `map` (of the open source) the whole set is built over it and `conflicts` is the conflict table's rows `{map, kind: refused \| override, package, why, involves, other?, tag?, path?}`; `built` is false, with the reason in `problems`, when the build did not run. A read that built keeps its rows as that level's in Problems |
 
 Each write puts the new manifest through the set before it keeps it: a
 manifest that does not read, a source that is not in the folder, a
@@ -1815,8 +1847,8 @@ and `package.order` refuse by name: `core` and `ui` cannot be switched off
 `requires` or follows names both. A `set.toml` written by hand that turns
 `core` off is named in `package.list`'s `problems` and stops every write to
 the set file. The edit calls that default `id` to the edit target answer
-`NO_TARGET` when none is set. `package.build` needs a source (`NO_DOCUMENT`)
-and refuses a package that is off. `package.play` needs a pairing and
+`NO_TARGET` when none is set. `package.build` needs a source (`NO_DOCUMENT`) and
+refuses a package that is off; `package.diff` needs one only for a `map`. `package.play` needs a pairing and
 refuses a game whose content hash (`packages.list`) differs from
 `package.list`'s: the game reads its set at boot.
 
@@ -1833,18 +1865,18 @@ a temporary data root.
 
 ### Problems
 
-`problems.list {source?}` is the Problems panel's list
+`problems.list {source?, asset?}` is the Problems panel's list
 (docs/editor/studio-redesign.md, "The shell"; `app/problems.rs`,
 `api/problems.rs`), read again on every call. A row is
 `{source, area, code, severity, message, target, path?, asset?, field?,
-tool?}`, worst first. The sources:
+tool?, line?, col?}`, worst first. The sources:
 
 | `source` | Rows from |
 |---|---|
-| `check` | `check.run`'s `models` and `sounds` checks |
+| `check` | `check.run`'s `models` and `sounds` checks, and the diagnostics of the script open in the script editor (area `scripts`, code `script.<code>`, target `<title>:<line>`, with `line` and `col`; the row opens the editor with the cursor there) |
 | `ui` | `ui.check` |
 | `hud` | `hud.check` and the HUD kit's check |
-| `package` | the manifest checks `h2 package check` runs over the packages under `<data>/packages/`: an item with no builder, a missing or oversize source, a source its builder refuses, two items that add one tag path |
+| `package` | the manifest checks `h2 package check` runs over the packages under `<data>/packages/`: an item with no builder, a missing or oversize source, a source its builder refuses, two items that add one tag path, a file that is a raw resource or a tag file of the user's tag store (`workspace::store_findings`), and the conflict rows of the last `package.diff` with a `map` for each level (`package.refused`, a warning: the package is off for that level, with the reason; `package.override`, a note: a later package's value for a field or an asset wins; target `<map>: <package>`, asset `package:<id>`). A refresh keeps those rows; the next diff of the level replaces them |
 | `build` | what the game's package set refuses to load, as the boot log says it: an unreadable package, a refused id, a `requires` that is missing, a set that cannot be ordered |
 | `ground` | the last AI ground build of the open map: a label it could not honour (`ground.label`, a warning, target `<label>[<index>]`) or why it failed (`ground.build`, an error); the tool is the scenario ([AI ground](#ai-ground)) |
 
@@ -1859,6 +1891,14 @@ that source is read and the panel's other rows stay. The panel's
 double-click on a row is `Action::OpenProblem`: a tag opens in its editor
 with the field shown, a package or item shows in the browser, a screen or
 a HUD shows its tool.
+
+`asset` (an asset id) keeps the rows about that asset: those whose
+`asset` is it, and for the HUD, a screen at its state and the open script
+the rows their tool holds (`App::asset_problems`, `App::doc_problems`). The
+number on the header's **Check** is the same rows' count
+(`App::doc_problem_count`), so it equals this call's `counts.total` for
+the document's asset. A HUD document has no asset id of its own when it
+was opened from a map; its count is the `hud` rows.
 
 ```sh
 h2 studio problems.list '{"source":"package"}'
@@ -2055,14 +2095,18 @@ which fit each aspect asked is.
 `off_screen`, `outside_frame`, `art_overlap`, `text_overlap` or
 `text_spills` (`hud_edit::checks`).
 
-**`check.run {what?, target?}`** (`api/checks.rs`) runs every check of
+**`check.run {what?, target?, asset?}`** (`api/checks.rs`) runs every check of
 `CHECKS` (or one area's: `models`, `sounds`, `ui`, `hud`, `markers`) and answers
 `{findings, counts, ran, skipped}`. A finding is `{area, code,
 severity, message, target, path?}`, worst first; `counts` has `error`,
 `warning`, `note`, `total` and `by_area`; `ran` names each check with
 its count; `skipped` each check that could not run and why, and each
 area with no check registered. `target` narrows every check to one
-thing; a check it does not fit is skipped. The checks:
+thing; a check it does not fit is skipped. With `asset` (an asset id)
+the Problems list is read again over every source and the answer is
+`{asset, findings, counts, ran, skipped}` for only the rows about that
+asset (the rows of `problems.list {asset}`, with `source`, `asset` and the
+rest); `what` and `target` are not used. The checks:
 
 | Area | Check | What it checks |
 |---|---|---|
@@ -2404,8 +2448,8 @@ the window and the API stay one path.
   IDs are the Tags tool's to edit (`REFUSED`).
 - **Modeling (studio-modeling, landed in part).** `api/geometry.rs`:
   `geometry.list` gives the open map's structure clusters and instanced
-  definitions (and a render model's sections with `model`) as target ids
-  `kind:tag:index` (`cluster:e1000004:0`); `geometry.open` enters edit
+  definitions, every `coll` BSP (`coll_bsp:…`) and, with `model`, a render
+  model's sections as target ids `kind:tag:index` (`cluster:e1000004:0`); `geometry.open` enters edit
   mode on one, after which a `target` param may be left out.
   `geometry.read` gives the mesh (positions by vertex id, faces, the
   selection); `mesh.*` are `Action::Model(ModelAction::Apply)`, one undo
@@ -2415,7 +2459,10 @@ the window and the API stay one path.
   `geometry.check` gives each open target's write class and
   `save_refusal`, why a save would be refused (Allow unverified geometry
   writes off, `allow_unverified`, or an edit that changes a count).
-  `geometry.collision.add_box {structure, lo, hi, material?}` adds a
+  `geometry.lower_lods {target?, on?}` is **Use for lower LODs** on an
+  open model section (`Action::Model(ModelAction::UseForLowerLods)`, one
+  undo step; `on` defaults to true) and answers `changed`; any other
+  target is refused. `geometry.collision.add_box {structure, lo, hi, material?}` adds a
   closed box solid inside `[lo, hi]` to a structure's level collision
   (`structure` its tag id), onto the boxes added before, as
   `Action::Model(ModelAction::AddCollisionBox)`, and answers its counts
@@ -2453,8 +2500,9 @@ the window and the API stay one path.
   unique substring. `bitmap.reshape {bitmap, image?, width?, height?,
   format?}` and `bitmap.image.resize {bitmap, image?, size? | width?,
   height?, format?}` ask for a new size and/or format (`dxt1`,
-  `argb8888`, ...) for an image, refused at once when a save would
-  refuse it;
+  `argb8888`, ...) for an image, or `auto` (the format it has when that
+  holds the painted alpha, else `dxt1` or `dxt5`, or a linear format at a
+  size DXT refuses), refused at once when a save would refuse it;
   `bitmap.image.add {bitmap, from?, size?, format?}` appends an image
   after the bitmap's last, its record copied from image `from` (default
   0; a 2D image) at `size` and `format` or the source's, its pixels

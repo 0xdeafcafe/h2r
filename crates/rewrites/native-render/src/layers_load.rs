@@ -1,5 +1,6 @@
 //! The world layers' load (docs/graphics/framescene.md, slice 4): each
-//! world material's passes of layers 1, 5, 7, 8 and 20 compiled with their
+//! world material's passes of every layer `layer_pass` plans (1, 5, 7, 8,
+//! 20, the overlay layer 2 and layer 17: `layer_pass::planned_layers`) compiled with their
 //! own programs (`fog_gpu::layer_passes_selected` and `FogProgram`, the same
 //! translation the fog's layer 16 takes), all or nothing per material and
 //! layer, their stage images decoded; the parts that can draw them; and
@@ -187,7 +188,7 @@ pub fn load_with<R: std::io::Read + std::io::Seek>(
         out.materials.insert(shader.0, Arc::clone(&material));
         resolved.insert(m, material);
     }
-    for layer in layer_pass::LAYERS.into_iter().chain([layer_pass::BLOOM_LAYER]) {
+    for layer in layer_pass::planned_layers() {
         let mut data = LayerData::default();
         let mut refused: BTreeMap<String, usize> = BTreeMap::new();
         // A pass that leaves `CULLMODE` unset draws with the cull the layer

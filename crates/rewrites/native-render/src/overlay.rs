@@ -25,6 +25,8 @@ pub struct PlanBlur {
     /// spread times the tap over the guest target's size, so the same
     /// at any scale.
     pub offsets: Vec<[f32; 2]>,
+    /// The steps' combiner constant (`frame_scene::OverlayBlur::pick`).
+    pub pick: f32,
 }
 
 /// The six corners a quad draws as two triangles, as indices into its four
@@ -154,8 +156,8 @@ impl GlyphPages {
         );
         page.x += pw;
         page.height = page.height.max(ph);
-        page.added.push((page.version, GlyphRect { x: x0, y: y0, width: w, height: h }));
         page.version += 1;
+        page.added.push((page.version, GlyphRect { x: x0, y: y0, width: w, height: h }));
         true
     }
 
@@ -368,6 +370,7 @@ impl OverlayPlan {
                     before: plan.batches.len() as u32,
                     scissor,
                     offsets: blur.spreads.iter().map(|s| [s * blur.tap / w, s * blur.tap / h]).collect(),
+                    pick: blur.pick,
                 });
                 continue;
             }
@@ -657,7 +660,7 @@ mod tests {
         use frame_scene::{OverlayBlur, OverlayCamera, OverlayModelView};
         let mut o = Overlay::new([640, 480]);
         o.push_quad(sprite(1), all(), quad(0.0)).unwrap();
-        o.push_blur(all(), OverlayBlur { tap: 0.5, spreads: vec![1.0, 1.25] }).unwrap();
+        o.push_blur(all(), OverlayBlur { tap: 0.5, spreads: vec![1.0, 1.25], pick: 0.25 }).unwrap();
         o.push_quad(sprite(1), all(), quad(8.0)).unwrap();
         let view = OverlayModelView { camera: OverlayCamera::default(), objects: vec![7] };
         o.push_model_view(ClipRect { x: 10, y: 10, width: 64, height: 48 }, view).unwrap();
@@ -669,10 +672,11 @@ mod tests {
         assert_eq!(p.blurs[0].before, 1);
         assert_eq!(p.blurs[0].scissor, Scissor { x: 0, y: 0, width: 1280, height: 960 });
         assert_eq!(p.blurs[0].offsets, vec![[0.5 / 640.0, 0.5 / 480.0], [0.625 / 640.0, 0.625 / 480.0]]);
+        assert_eq!(p.blurs[0].pick, 0.25, "the combiner's constant goes with the steps");
         assert_eq!((p.stats.blurs, p.stats.model_views, p.stats.refused_model_view), (1, 1, 1));
         assert_eq!(p.stats.drawn(), 4);
         let mut blur_only = Overlay::new([640, 480]);
-        blur_only.push_blur(all(), OverlayBlur { tap: 0.5, spreads: vec![1.0] }).unwrap();
+        blur_only.push_blur(all(), OverlayBlur { tap: 0.5, spreads: vec![1.0], pick: 0.0 }).unwrap();
         assert!(!OverlayPlan::new(&blur_only, [640, 480], &NoGlyphs).is_empty());
     }
 

@@ -213,6 +213,20 @@ fn one() -> u32 {
 pub struct ScenarioTick {
     #[serde(default)]
     pub events: Vec<ScenarioEvent>,
+    /// Picks the players made in the pickers the script offered, reported
+    /// after the tick runs ([`crate::vm::Vm::choose`]), as the host reports
+    /// them from its own UI.
+    #[serde(default)]
+    pub picks: Vec<ScenarioPick>,
+}
+
+/// One player's pick: row `row` of picker `slot`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScenarioPick {
+    pub player: u8,
+    pub slot: u8,
+    pub row: u8,
 }
 
 /// One event the host reports within a tick.
@@ -294,6 +308,17 @@ pub enum ScenarioEvent {
         down: i32,
         up: i32,
     },
+    /// A landing the host judged a superbounce off strip `spot` (`none`
+    /// when absent), launching at `speed` (a `fixed` raw value, world
+    /// units a second up).
+    Launch {
+        player: u8,
+        #[serde(default)]
+        spot: Option<u32>,
+        speed: i32,
+    },
+    /// `player`'s run of bounces with no ground between them ended.
+    Grounded(u8),
     RoundEnd,
 }
 
@@ -336,6 +361,8 @@ impl ScenarioEvent {
             },
             ScenarioEvent::Damage { object, by, amount } => Input::Damage { object, by, amount },
             ScenarioEvent::Touchdown { player, down, up } => Input::Touchdown { player, down, up },
+            ScenarioEvent::Launch { player, spot, speed } => Input::Launch { player, spot, speed },
+            ScenarioEvent::Grounded(p) => Input::Grounded(p),
             ScenarioEvent::RoundEnd => Input::RoundEnd,
         }
     }
@@ -391,6 +418,10 @@ fn due_timers(vm: &Vm) -> Vec<String> {
 pub fn step(vm: &mut Vm, game: &mut FakeGame, tick: u32, start: bool, inputs: &[Input]) -> Stepped {
     vm.begin_tick(tick);
     game.begin_tick(tick);
+    // The host's boundary: a put the world refused is told to the VM first.
+    for (object, at) in std::mem::take(&mut game.refused_steps) {
+        vm.put_refused(object, at.map(|v| (f64::from(v) / 65536.0) as f32));
+    }
     vm.flush_queue(game);
     let mut out = Stepped::default();
     if tick == 0 && start {
@@ -441,6 +472,10 @@ pub struct RunResult {
     /// The tick the script called `end_round`, if it did.
     pub ended_at: Option<u32>,
     pub script_error: Option<ScriptError>,
+    /// The picks the VM refused, with the tick each was reported at: a
+    /// picker the script had not offered, a row it does not hold or a
+    /// player outside the roster.
+    pub refused_picks: Vec<(u32, ScenarioPick)>,
 }
 
 impl RunResult {
@@ -572,6 +607,7 @@ pub fn run(ir: Ir, scenario: &Scenario) -> Result<RunResult, RunError> {
     let mut ticks = Vec::new();
     let mut ended_at = None;
     let mut made = 0usize;
+    let mut refused_picks = Vec::new();
     let count = scenario.ticks.len().max(1);
     for t in 0..count {
         let tick = t as u32;
@@ -581,6 +617,11 @@ pub fn run(ir: Ir, scenario: &Scenario) -> Result<RunResult, RunError> {
             .map(|st| st.events.iter().map(ScenarioEvent::input).collect())
             .unwrap_or_default();
         let stepped = step(&mut vm, &mut game, tick, true, &inputs);
+        for pick in scenario.ticks.get(t).map(|st| st.picks.as_slice()).unwrap_or_default() {
+            if !vm.choose(pick.player, pick.slot, pick.row) {
+                refused_picks.push((tick, *pick));
+            }
+        }
         if t + 1 == count {
             vm.flush_queue(&mut game);
         }
@@ -606,6 +647,7 @@ pub fn run(ir: Ir, scenario: &Scenario) -> Result<RunResult, RunError> {
         script_error: game.script_error,
         ended_at,
         game,
+        refused_picks,
     })
 }
 
@@ -702,12 +744,13 @@ on kill(victim, killer) {
         let s = Scenario {
             players: (0..2).map(|slot| seat(slot, slot)).collect(),
             ticks: vec![
-                ScenarioTick { events: vec![] },
+                ScenarioTick::default(),
                 ScenarioTick {
                     events: vec![ScenarioEvent::Kill {
                         victim: 1,
                         killer: Some(0),
                     }],
+                    ..ScenarioTick::default()
                 },
             ],
             ..Scenario::default()
@@ -731,6 +774,7 @@ on kill(victim, killer) {
                     victim: 1,
                     killer: Some(0),
                 }],
+                ..ScenarioTick::default()
             }],
             ..Scenario::default()
         };

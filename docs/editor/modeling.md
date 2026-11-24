@@ -3,16 +3,16 @@
 Status: Partly built. The mesh kernel (slice 1), the in-place
 geometry path (slices 2 and 3, for clusters, instanced definitions and
 `mode` sections), grown raw writes (slice 7, with
-`MapEditor::append_raw` and **Use for lower LODs** in the session), the
-collision compiler with `coll` BSPs as meshes (slice 8, the crate only),
+`MapEditor::append_raw` and **Use for lower LODs**, a checkbox on a model
+section and `geometry.lower_lods`), the collision compiler with `coll`
+BSPs as meshes and as `coll_bsp` targets (slice 8),
 adding solids to a structure's level collision (slice 11, with a box
 solid as the editor's one control) and the Textures tool (slices 5 and 6: painting,
 exporting, and writing the edited images with the map's save) are
 implemented; the Modeling window is a section of the map inspector with
-buttons, not yet the gizmo, overlays and keymap below, and has no control
-or API method for **Use for lower LODs** yet. A `coll` BSP and a
-structure's collision are not yet `geometry-edit` targets, so the mesh
-session does not reach them. The one level collision edit is a box:
+buttons, not yet the gizmo, overlays and keymap below. A structure's
+level collision is not a `geometry-edit` target, so the mesh session does
+not reach it; a `coll` BSP is (`coll_bsp:<tag>:<n>`). The one level collision edit is a box:
 **Add collision box** in the section (two corners) and
 `geometry.collision.add_box` add a closed box solid to the picked
 target's structure (`ModelAction::AddCollisionBox`), onto the boxes added
@@ -23,6 +23,7 @@ level's collision and markers are designs.
 Code: `crates/tools/mesh-edit`, `crates/tools/geometry-edit`,
 `crates/tools/collision-build`,
 `crates/tools/collision-build/src/{merge,level}.rs`,
+`crates/tools/geometry-edit/src/coll_target.rs`,
 `crates/tools/geometry-edit/src/level_collision.rs`,
 `crates/formats/tags/src/geometry_write.rs`,
 `crates/formats/map/src/writer.rs` (`append_raw`, `append_metadata`),
@@ -36,6 +37,7 @@ Tests: `crates/tools/mesh-edit/tests`,
 `crates/tools/bitmap-edit/tests`,
 `crates/tools/geometry-edit/src/{session,write,grow,level_collision}_tests.rs`,
 `crates/tools/collision-build/src/{build,coll,merge}_tests.rs`,
+`crates/tools/geometry-edit/src/coll_target_tests.rs`,
 `crates/formats/tags/src/geometry_write_tests.rs`, the `append*raw*`
 tests in `crates/formats/map/src/tests.rs`,
 `a_geometry_raw_append_*`, `a_geometry_grown_block_*` and `bitmap_changes_*` in
@@ -315,6 +317,22 @@ its writes and stage start from the file's blocks. `box_solid` is the
 closed box the editor adds (`LevelSource::add_box`, `LevelEdit::add_box`;
 a box with no volume or a corner not finite is refused by target).
 
+**As a target** (`geometry-edit/src/coll_target.rs`). `geometry.list`
+gives each BSP of each `coll` as `coll_bsp:<tag>:<n>`, `n` counting
+region, permutation, BSP in order; `geometry.open` opens it as
+`mesh_from_bsp`'s mesh, which has no source triangles, so nothing is
+welded or passed through. `CollSource::read` walks the tag for each
+block, slot box and slot MOPP in the ordinary metadata. A save runs
+`rebuild` on the mesh's polygons and writes the eight blocks as
+patches where the count holds, else as grown blocks
+(`Patches::grown`, saved as `GeometryGrown`, pairs at `element + 4 + 8k`),
+the slot's box as patches and its MOPP over the old program when it fits
+(`LevelWrites::mopp`). A BSP whose polygons are as imported writes
+nothing, so an undone edit is unedited. A compile the tag cannot hold (a
+material past its list, the limits) refuses the save naming the target. A
+paired game is not patched half way: the live path freezes geometry with
+a `reload` row until the map is reloaded.
+
 **From render** (`from_render.rs`): weld, drop degenerate and repeated
 triangles (one drawn both ways becomes two-sided), then join neighbours
 across shared edges, of one material and flags, within 0.5 degrees and
@@ -346,7 +364,9 @@ classes, named in the status bar and by `geometry.check`: **in place**
 writes until a game run has loaded one), **grown raw** (a
 new raw block; behind Allow unverified geometry writes until a game run
 has loaded one) and **grown blocks** (a tag block with more elements;
-behind Allow growing full blocks as well).
+behind Allow growing full blocks as well). A `coll` BSP edit is always
+the last, named `grown_blocks`: the BSP is compiled whole, a block whose
+count holds is patched and one that changed is appended.
 
 ## Texture editing (`bitmap-edit`)
 
@@ -453,6 +473,16 @@ pages open read-only.
   than the edit) is the session's `bitmap_refusal`: the save fails by
   name before it writes. A map that cannot take a new raw block
   (`raw_append_refusal`) refuses a shared-cache copy or a reshape.
+- **Format choice** (`assets::write::suggest_format`). The format a picture
+  saves in is the one it has when that holds the painted alpha (DXT1 and
+  A1R5G5B5 hold opaque and cut-out pictures, the colour-only formats opaque
+  ones, the rest anything), else DXT1 for an opaque or cut-out picture and
+  DXT5 for a blended one, or X8R8G8B8 and A8R8G8B8 when a side is not a power
+  of two (no DXT, no mips). `A8`, `Y8`, `AY8` and `A8Y8` are masks and greys
+  on purpose and are kept. The answer is always a format the encoder writes
+  and `reshaped` takes at that size. Resize's **Auto** button and `"auto"` as
+  `bitmap.reshape`'s `format` ask for it (`App::suggest_bitmap_format`,
+  looking at the layers resampled to the size asked for).
 - **Adding images and sequences.** `bitmap.image.add` (the inspector's
   **Add image**) appends an image after the bitmap's last: its `0x74`
   record copied from an existing 2D image (`from`, default 0) at a size
@@ -579,10 +609,10 @@ pages open read-only.
 What is built (Code): every Modeling command is
 `Action::Model(ModelAction)` (`app/modeling.rs`): open, close, apply a
 list of `MeshOp`s as one undo step (or one merged step per `merge` key),
-seal, undo and redo, and a collision box added to a structure's level
+seal, undo and redo, **Use for lower LODs** on a model section, and a collision box added to a structure's level
 collision or the structure's boxes cleared. The provider `api/geometry.rs`
 answers `geometry.list {model?}`, `geometry.open`, `geometry.close`,
-`geometry.read`, `geometry.check`, `geometry.collision.add_box
+`geometry.read`, `geometry.check`, `geometry.lower_lods {target?, on?}`, `geometry.collision.add_box
 {structure, lo, hi, material?}`, `geometry.collision.clear {structure}`,
 `mesh.mode`, `mesh.select {ids, op |
 all | none | invert}`, `mesh.transform {translate | matrix, pivot?,
@@ -621,6 +651,7 @@ namespace (player models and looks) is separate and unchanged.
 
 | Method | Does |
 |---|---|
+| `geometry.lower_lods {target?, on?}` | **Use for lower LODs** on an open model section: its permutations' lower levels point at it (`on`, default true) or are left as the file has them; one undo step; `changed` says whether anything did |
 | `geometry.list {kind?}` | targets with kind (`cluster`, `instance_def`, `instance`, `structure_collision`, `mode_section`, `marker`, `coll_bsp`, `phmo_shape`), counts, write class, stale marks |
 | `geometry.open {target}`, `geometry.close {target}` | enter or leave Edit mode on a target; `open` returns the mesh's element counts |
 | `geometry.read {target, verts?, faces?, range?}` | positions, faces as vert ids, materials, groups; bounded by `range` |
@@ -740,7 +771,7 @@ more. Every acceptance test is on invented data; a disc test is
 | 3 | **Write, in place**: `MapEditor::patch_raw`; moved vertices for clusters, instance definitions and `mode` sections; compression box growth; part and cluster bounds; instance placements and markers; stale marks | M | 2 | the saved map differs from the source only in the moved vertices' bytes, the bounds and the checksum; it reads back to the edited positions within quantisation; a box growth rewrites every section at its own size; a count change is refused; package round trip (PPF3) |
 | 4 | **Loop tools**: `SelectLoop`, `SelectRing`, `LoopCut`, `TrisToQuads`, `Dissolve`; then `Bevel` and `Inset` | M | 1 | built in `crates/tools/mesh-edit` with synthetic fixtures: counts on a quad cylinder and open strip; loops stop at poles and three-face edges; cut attributes interpolate, including weights normalised to 255; joining and triangulating restores an untouched pair |
 | 5 | **Textures, paint and export**: `bitmap-edit` canvas, tools, PNG in and out, the Textures tool, live preview, `bitmap.*` without write | M | nothing | built in `crates/tools/bitmap-edit` and Studio on invented bitmaps: stamp, line, clone, fill, channel copy and turn pixel tests (`tests/stamp_fill.rs`); an undo snapshot shares untouched tiles and an edit that changed nothing is no step (`tests/history.rs`); import resample (`tests/import.rs`); `bitmap.pixels` after `bitmap.paint` with a line and a clone stroke, and the window's own line and clone drag (`api/tests/bitmaps_tests.rs`); export refused in a Git checkout |
-| 6 | **Textures, write**: `assets::encode` (linear, swizzled, DXT1/3/5, mips, cube faces), same-size in place; then new size or format and shared-cache copies through `MapEditor::append_raw` | M | 5; 3 for `patch_raw` | the encode tests above; a painted corner changes only its blocks and their mips in the saved map; a resized image reads back through `assets::bitmap::decode_image` with every level |
+| 6 | **Textures, write**: `assets::encode` (linear, swizzled, DXT1/3/5, mips, cube faces), same-size in place; then new size or format and shared-cache copies through `MapEditor::append_raw` | M | 5; 3 for `patch_raw` | built in `assets::{encode, write}` and Studio (`encode_tests.rs`, `api/tests/bitmaps_tests.rs`): the encode tests above, every colour format reshaped and read back at every level, the last mip the picture's mean, sizes a format refuses named, a cube reshaped, `suggest_format`; a painted corner changes only its blocks and their mips in the saved map; a resized image reads back through `assets::bitmap::decode_image` with every level |
 | 7 | **Write, grown raw**: `MapEditor::append_raw`; topology changes for clusters and `mode` sections; section counts, visibility MOPP and table, frames; LOD repointing; behind Allow unverified geometry writes | L | 3 | the saved map validates and reads back to the exported mesh; `check_visibility` passes on every written cluster; the old block is unreferenced; a bucket-lit section and a sky strip are refused; the metadata still ends the file and a scenario block can still grow; package round trip (BPS) with a changed geometry hash |
 | 8 | **Collision compiler and `coll`**: `collision-build`; `coll` BSPs as meshes; BSP physics slots; **From render** | L | 1 | `Bsp::validate`; centroid and reference-side walks; random segments against brute force on a box, a concave room, a ramp and a two-sided sheet; limits refused; a saved `coll` reads back and its slot code emits each surface once |
 | 9 | **`phmo` primitives** in place | S | 2 | a radius, a box and a hull vertex change only their bytes; a hull made concave is refused |

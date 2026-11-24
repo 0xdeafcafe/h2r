@@ -20,7 +20,9 @@
 //!    mip count are patched. The old blocks stay as dead data.
 //!
 //! The image's low-detail picture (a separate, smaller copy for far views)
-//! is not rewritten.
+//! is not rewritten. [`suggest_format`] picks the
+//! format for a picture (the Textures tool's **Auto** and
+//! `bitmap.reshape`'s `"auto"`).
 
 use map::{RawPointer, ResourceFile};
 use tags::{Image, PixelFormat, TextureKind as TagKind};
@@ -219,6 +221,77 @@ pub fn reshaped(image: &Image, r: Reshape) -> Result<(Image, Vec<(u32, Vec<u8>)>
         p(at::MIP_COUNT, mips),
     ];
     Ok((out, tag))
+}
+
+/// How a picture uses alpha.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AlphaUse {
+    /// Every texel has alpha 255.
+    Opaque,
+    /// Every alpha is 0 or 255: a cut-out.
+    Cutout,
+    /// Some alpha is in between.
+    Blended,
+}
+
+/// How `planes` use alpha.
+pub fn alpha_use(planes: &Planes) -> AlphaUse {
+    let mut out = AlphaUse::Opaque;
+    for p in planes.planes {
+        for px in p.chunks_exact(4) {
+            match px[3] {
+                255 => {}
+                0 => out = out.max(AlphaUse::Cutout),
+                _ => return AlphaUse::Blended,
+            }
+        }
+    }
+    out
+}
+
+/// Whether `format` keeps `alpha` (DXT1 and A1R5G5B5 have one bit of it,
+/// the colour-only formats none).
+fn holds_alpha(format: PixelFormat, alpha: AlphaUse) -> bool {
+    use PixelFormat::*;
+    match format {
+        Dxt1 | Argb1555 => alpha <= AlphaUse::Cutout,
+        Rgb565 | Xrgb8888 | Y8 => alpha == AlphaUse::Opaque,
+        Argb4444 | Argb8888 | Dxt3 | Dxt5 | A8Y8 => true,
+        _ => false,
+    }
+}
+
+/// The format to save a picture in: the one it has when that holds the
+/// picture's alpha, otherwise the smallest the game reads that does.
+///
+/// * The single channel formats (`A8`, `Y8`, `AY8`, `A8Y8`) are kept: they
+///   are masks and greys on purpose.
+/// * A side that is not a power of two (or a volume that is not) cannot be
+///   DXT or swizzled: it gets `X8R8G8B8` when opaque, else `A8R8G8B8`.
+/// * Otherwise opaque and cut-out pictures take DXT1 and blended ones
+///   DXT5.
+///
+/// A format the encoder does not write is never answered.
+pub fn suggest_format(planes: &Planes, current: PixelFormat) -> PixelFormat {
+    if matches!(
+        current,
+        PixelFormat::A8 | PixelFormat::Y8 | PixelFormat::Ay8 | PixelFormat::A8Y8
+    ) {
+        return current;
+    }
+    let alpha = alpha_use(planes);
+    let pow2 = planes.width.is_power_of_two()
+        && planes.height.is_power_of_two()
+        && planes.depth.max(1).is_power_of_two();
+    if writable(current) && holds_alpha(current, alpha) && (pow2 || !compressed(current)) {
+        return current;
+    }
+    match (pow2, alpha) {
+        (false, AlphaUse::Opaque) => PixelFormat::Xrgb8888,
+        (false, _) => PixelFormat::Argb8888,
+        (true, AlphaUse::Blended) => PixelFormat::Dxt5,
+        (true, _) => PixelFormat::Dxt1,
+    }
 }
 
 fn merge(spans: &[Span], lod: u32) -> impl Iterator<Item = &Span> {

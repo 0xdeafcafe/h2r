@@ -61,7 +61,7 @@ pub use overlay::{
 };
 pub use scene::{
     AuxDepth, Cut, FrameScene, Instance, InstanceKey, NearbyCaster, PartDraw, PartFlags, Row,
-    SceneId, Stamp, Subparts, View, ViewCounts, ViewKey, ViewKind, WorldState,
+    SceneId, Stamp, Subparts, View, ViewCounts, ViewKey, ViewKind, VisibilitySource, WorldState,
 };
 pub use summary::summary_hash;
 

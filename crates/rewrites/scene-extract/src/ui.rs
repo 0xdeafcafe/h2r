@@ -81,6 +81,7 @@ pub enum UiContent {
         text: Vec<u16>,
         color: [f32; 4],
         justify: Justify,
+        shadow: bool,
     },
     /// A model scene (type 7): its view into the widget's rectangle.
     Model(OverlayModelView),
@@ -479,7 +480,8 @@ pub enum Unread {
 /// entry's): its header and what its draw makes. A widget whose draw is
 /// the base's `ret 4` is a container with no pixels ([`UiContent::None`]).
 pub fn read_widget(mem: &dyn GuestRead, widget: u32, depth: f32) -> Result<UiWidget, Unread> {
-    let content = match draw_of(mem, widget).ok_or(Unread::Unreadable)? {
+    let draw = widget_draw(mem, widget)?;
+    let content = match draw {
         draws::NONE => UiContent::None,
         draws::BITMAP => return Err(Unread::Bitmap),
         draws::SHADER_BITMAP => return Err(Unread::Shader),
@@ -487,6 +489,16 @@ pub fn read_widget(mem: &dyn GuestRead, widget: u32, depth: f32) -> Result<UiWid
         draws::MODEL => return Err(Unread::Model),
         _ => return Err(Unread::Draw),
     };
+    read_widget_header(mem, widget, depth, content)
+}
+
+/// The virtual draw invoked by the sorted item call.
+pub fn widget_draw(mem: &dyn GuestRead, widget: u32) -> Result<u32, Unread> {
+    draw_of(mem, widget).ok_or(Unread::Unreadable)
+}
+
+/// Combines the common widget header with its class-specific draw content.
+pub fn read_widget_header(mem: &dyn GuestRead, widget: u32, depth: f32, content: UiContent) -> Result<UiWidget, Unread> {
     Ok(UiWidget {
         content,
         ..read_header(mem, widget, depth)?
@@ -624,6 +636,7 @@ fn widget(overlay: &mut Overlay, text: &dyn UiText, w: &UiWidget) -> Result<Opti
             text: string,
             color,
             justify,
+            shadow,
         } => {
             if string.is_empty() {
                 return Ok(None);
@@ -637,6 +650,25 @@ fn widget(overlay: &mut Overlay, text: &dyn UiText, w: &UiWidget) -> Result<Opti
                 .collect();
             if glyphs.is_empty() {
                 return Ok(None);
+            }
+            if *shadow && w.alpha * color[3] > 0.0 {
+                // The glyph callback clips a glyph first, then draws its
+                // offset shadow followed immediately by its face.
+                let [x0, y0, x1, y1] = rect;
+                let shadow_clip = clip_of([x0.max(0.0) + 1.0, y0.max(0.0) + 1.0,
+                    x1.min(overlay.size[0] as f32) + 1.0, y1.min(overlay.size[1] as f32) + 1.0]);
+                let clip = clip_of(rect);
+                let material = OverlayMaterial::text(*font);
+                let face = faded(*color, w.alpha);
+                let mut first = None;
+                for glyph in glyphs {
+                    let shifted = OverlayGlyph { rect: glyph.rect.map(|v| v + 1.0), ..glyph };
+                    let item = overlay.push_text_run(material, shadow_clip,
+                        [0.0, 0.0, 0.0, face[3]], &[shifted]).map_err(refused)?;
+                    first.get_or_insert(item);
+                    overlay.push_text_run(material, clip, face, &[glyph]).map_err(refused)?;
+                }
+                return Ok(first);
             }
             overlay
                 .push_text_run(
@@ -955,6 +987,35 @@ mod tests {
         assert_eq!(widget_rect(&x), [275.0, 130.0, 355.0, 170.0]);
     }
 
+    #[test]
+    fn each_glyph_draws_its_clipped_shadow_before_its_face() {
+        let mut label = w(6, 0.0, 0);
+        label.content = UiContent::Text {
+            font: 1,
+            text: vec![61, 62],
+            justify: Justify::Left,
+            color: [1.0; 4],
+            shadow: true,
+        };
+        let frame = UiFrame { draws: vec![UiDraw::Screen(UiScreen {
+            backdrop: None,
+            widgets: vec![label],
+        })] };
+        let mut o = Overlay::default();
+        assert!(draw_list(&frame, &Cells, &mut o).iter().all(|l| l.note.is_none()));
+        assert_eq!(o.items.len(), 4);
+        for (i, pair) in o.items.chunks_exact(2).enumerate() {
+            let shadow = o.glyphs_of(&pair[0])[0];
+            let face = o.glyphs_of(&pair[1])[0];
+            assert_eq!(face.index, 61 + i as u32);
+            assert_eq!(shadow.index, face.index);
+            assert_eq!(shadow.rect, face.rect.map(|edge| edge + 1.0));
+            assert_eq!(pair[0].clip.x, pair[1].clip.x + 1);
+            assert_eq!(pair[0].color, [0.0, 0.0, 0.0, 1.0]);
+            assert_eq!(pair[1].color, [1.0; 4]);
+        }
+    }
+
     /// The UI order test (retire-d3d.md, R7's proof) on a synthetic
     /// frame: the fade, a bar, a loading bitmap, then a dialog's screen
     /// (its backdrop's fill and blur, then its widgets sorted), each
@@ -967,6 +1028,7 @@ mod tests {
             text: "OK".encode_utf16().collect(),
             color: [1.0, 1.0, 0.5, 1.0],
             justify: Justify::Left,
+            shadow: false,
         };
         title.alpha = 0.5;
         let mut panel = w(8, 0.0, 0);
@@ -1001,6 +1063,7 @@ mod tests {
                 blur: OverlayBlur {
                     tap: 0.5,
                     spreads: vec![1.0, 0.875],
+                    pick: 0.25,
                 },
             }),
             widgets: vec![title, meter, list, picture, panel],
@@ -1091,6 +1154,7 @@ mod tests {
             text: vec![0x41],
             color: [1.0; 4],
             justify: Justify::Centre,
+            shadow: false,
         };
         let mut off = w(8, 0.1, 0);
         off.rect = [10, 400, -10, 420];

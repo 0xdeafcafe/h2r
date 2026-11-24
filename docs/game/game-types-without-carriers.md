@@ -301,6 +301,7 @@ game variant's (the script and its options), not the map's.
 | `ff_cover` | a firing position | a marker with a facing | sampled from the sectors |
 | `siege_site` | a site the attackers take | a territory flag, as `siege.rules` reads now | the map's own territories |
 | `siege_goal`, `siege_line` | the final stand; where each side spawns per phase | a flag stand; markers with a phase and a team | the map's CTF stands |
+| `siege_barrier` | an object that stands open from a phase on (`set_open`) | scenery, a crate, a machine or a vehicle labelled from the AI and objectives page, numbered by its phase | none: the map plays as before |
 
 A script declares the labels it reads, so the tools offer exactly those
 for the game type the author is building for, and a map with none of a

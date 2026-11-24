@@ -48,6 +48,9 @@ pub mod refusal {
     pub const PRINT: &str = "forge_print";
     /// The edit names an entry of a block the session could not read.
     pub const LEFT_OUT: &str = "forge_left_out";
+    /// An add to the starting location, netgame flag or netgame equipment
+    /// block names a row the map's kit has not reserved: the map has no kit.
+    pub const NO_KIT: &str = "forge_no_kit";
     /// The target's value is not the one `was` names.
     pub const WAS: &str = "forge_was";
     /// Any other refusal: the message says why.

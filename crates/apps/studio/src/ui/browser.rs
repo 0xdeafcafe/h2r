@@ -7,6 +7,10 @@
 //! types**, **Playlists** beside the tag kinds); every word of the
 //! search must match.
 //!
+//! The **Voices** kind lists each character and the announcer with its
+//! dataset state; a double-click opens the voice document
+//! ([`Action::OpenAsset`] on `voice:<id>`).
+//!
 //! A double-click on a tag opens it in the editor its group gets, on the
 //! map that holds it ([`Action::OpenAsset`]); a double-click on a package
 //! item opens the editor of what it builds
@@ -66,6 +70,8 @@ pub struct BrowserUi {
     selected: Option<String>,
     refresh: u32,
     cache: Option<(Key, Listing)>,
+    /// An explicit set from the document link menu.
+    linked: Option<Vec<String>>,
     /// The asset ids the last frame drew a row for, for scripts and tests.
     pub shown: Vec<String>,
 }
@@ -81,6 +87,7 @@ impl Default for BrowserUi {
             selected: None,
             refresh: 0,
             cache: None,
+            linked: None,
             shown: Vec::new(),
         }
     }
@@ -107,7 +114,13 @@ fn load(app: &App, st: &BrowserUi) -> Listing {
         limit: LIMIT,
     };
     let mut out = Listing::default();
-    match assets::list(&app.tags_root(), &set, &q) {
+    // The Voices kind lists voices, read from the data root.
+    let listed = if tags && assets::is_voices_kind(q.kind.as_deref()) {
+        Ok(app.voice_asset_list(&q.text, q.limit))
+    } else {
+        assets::list(&app.tags_root(), &set, &q)
+    };
+    match listed {
         Ok(v) => {
             out.rows = v["rows"].as_array().cloned().unwrap_or_default();
             out.total = v["total"].as_u64().unwrap_or(0) as usize;
@@ -164,6 +177,39 @@ fn open(actions: &mut Vec<Action>, asset: &str, map: Option<String>) {
 }
 
 impl BrowserUi {
+    /// Show an asset's row in the Browser.
+    pub fn locate(&mut self, asset: &str) {
+        self.linked = None;
+        self.query.clear();
+        self.kind = None;
+        self.map = None;
+        self.package = None;
+        self.selected = Some(asset.to_owned());
+        match assets::AssetId::parse(asset) {
+            Ok(assets::AssetId::Tag(key)) => {
+                self.root = Root::Tags;
+                self.query = key.path;
+            }
+            Ok(assets::AssetId::Package(_)) => self.root = Root::Packages,
+            Ok(assets::AssetId::Item(package, _)) => {
+                self.root = Root::Packages;
+                self.package = Some(package);
+            }
+            Ok(assets::AssetId::Voice(_)) => self.root = Root::Tags,
+            Err(_) => self.selected = None,
+        }
+    }
+
+    /// Show exactly the targets of a link section, across Browser roots.
+    pub fn show_links(&mut self, rows: &[crate::app::links::Link]) {
+        let mut ids: Vec<String> = rows.iter().map(|row| row.asset.clone()).collect();
+        ids.sort();
+        ids.dedup();
+        self.linked = Some(ids);
+        self.query.clear();
+        self.selected = None;
+    }
+
     /// Show a package or one of its items, as a Problems row opens it.
     pub fn reveal(&mut self, asset: &str) {
         let package = asset
@@ -191,6 +237,7 @@ pub fn draw(ui: &Ui, app: &App, st: &mut BrowserUi, actions: &mut Vec<Action>) {
             .build()
         {
             st.root = root;
+            st.linked = None;
         }
     }
     ui.same_line();
@@ -201,6 +248,29 @@ pub fn draw(ui: &Ui, app: &App, st: &mut BrowserUi, actions: &mut Vec<Action>) {
         ui.tooltip_text("Read the tree and the packages again");
     }
 
+    if st.linked.is_some() {
+        ui.text("Linked assets");
+        ui.same_line();
+        if ui.small_button("Clear##browser-linked") { st.linked = None; }
+        if let Some(ids) = st.linked.clone() {
+            ui.set_next_item_width(-1.0);
+            ui.input_text("##browser-linked-search", &mut st.query).hint("Search linked assets").build();
+            let words = st.query.to_lowercase();
+            theme::panel_body(ui, "##browser-rows", || {
+                for id in ids.iter().filter(|id| words.split_whitespace().all(|w| id.to_lowercase().contains(w))) {
+                    st.shown.push(id.clone());
+                    if ui.selectable_config(format!("{id}##browser-link-{id}"))
+                        .selected(st.selected.as_deref() == Some(id.as_str())).build() {
+                        st.selected = Some(id.clone());
+                    }
+                    if ui.is_item_hovered() && ui.is_mouse_double_clicked(MouseButton::Left) {
+                        open(actions, id, None);
+                    }
+                }
+            });
+            return;
+        }
+    }
     let key = Key {
         root: root_id(st.root),
         package: st.package.clone(),
@@ -326,7 +396,7 @@ fn glyph(row: &Value) -> &'static str {
         "Package" => icon::PACKAGE,
         "Models" | "Objects" => icon::BOX,
         "Screens" | "HUDs" => icon::LAYERS,
-        "Sounds" => icon::SOUND,
+        "Sounds" | "Voices" => icon::SOUND,
         "Game types" => icon::SWORDS,
         "Playlists" => icon::LOG,
         _ => icon::FILE,
@@ -385,6 +455,8 @@ fn row(
                 open(actions, asset, open_map(app, row));
             } else if asset.starts_with("item:") {
                 open(actions, asset, item_map(app, row));
+            } else if row["root"] == "voices" {
+                open(actions, asset, None);
             } else if row["root"] == "packages" && asset.starts_with("package:") {
                 st.package = row["id"].as_str().map(str::to_owned);
                 st.selected = None;
@@ -400,6 +472,10 @@ fn row(
         } else if asset.starts_with("item:") {
             if ui.menu_item(format!("{} Open", icon::FILE)) {
                 open(actions, asset, item_map(app, row));
+            }
+        } else if row["root"] == "voices" {
+            if ui.menu_item(format!("{} Open", icon::SOUND)) {
+                open(actions, asset, None);
             }
         } else if asset.starts_with("package:") && ui.menu_item("Open items") {
             st.package = row["id"].as_str().map(str::to_owned);
@@ -475,4 +551,26 @@ fn variant(ui: &Ui, app: &App, st: &mut BrowserUi, row: &Value, n: usize, action
         open(actions, asset, open_map_of(app, &maps));
     }
     ui.unindent();
+}
+
+#[cfg(test)]
+mod linked_tests {
+    use super::*;
+    use crate::app::links::Link;
+
+    #[test]
+    fn linked_assets_keep_all_roots_and_can_return_to_a_single_asset() {
+        let mut browser = BrowserUi::default();
+        let rows = [
+            Link { asset: "tag:weap:objects\\test".into(), role: "Objects", via: "test".into() },
+            Link { asset: "package:example".into(), role: "Package", via: "test".into() },
+            Link { asset: "tag:weap:objects\\test".into(), role: "Objects", via: "other".into() },
+        ];
+        browser.show_links(&rows);
+        assert_eq!(browser.linked.as_ref().unwrap().len(), 2);
+        assert!(browser.linked.as_ref().unwrap().contains(&"package:example".to_owned()));
+        browser.locate("tag:weap:objects\\test");
+        assert!(browser.linked.is_none());
+        assert_eq!(browser.query, "objects\\test");
+    }
 }

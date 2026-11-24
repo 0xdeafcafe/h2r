@@ -46,6 +46,7 @@ pub mod assets;
 pub mod links;
 pub mod edit_lines;
 pub mod edit_target;
+pub mod mods;
 pub mod package_doc;
 pub mod preview_switch;
 pub mod problems;
@@ -333,15 +334,19 @@ pub enum Action {
     /// Show an editor's surface: the View menu's editors and a document
     /// brought forward.
     Show(Surface),
-    /// Bring the Voices window forward (`app::voices::Show`).
-    ShowVoices,
     /// Open a browser row's tag (an asset id, `tag:<group>:<path>`) in its
-    /// editor: on `map` (opened first when it is not the open one), else
+    /// editor, or a voice (`voice:<id>`) in the voice document: on `map` (opened first when it is not the open one), else
     /// on the open map (`app::assets`).
     OpenAsset { asset: String, map: Option<String> },
     /// Copy a browser row's tag into a local package, as `asset.copy`
     /// does (`app::assets`).
     CopyAsset { asset: String, package: String },
+    /// **Fork for this map**: the asset's edit lines for the open map, in
+    /// the edit target (`app::mods`).
+    ForkAsset { asset: String },
+    /// **Revert for this map**: take the open map's fork of the asset out
+    /// of the edit target (`app::mods`).
+    RevertAsset { asset: String },
     /// Read the Problems list again: every source, or one of
     /// [`problems::SOURCES`] (`app::problems`).
     RefreshProblems(Option<String>),
@@ -546,7 +551,7 @@ impl Action {
             Action::HudOpenMap(_) | Action::HudOpenPackage(_) => dirty(ToolKind::Hud),
             Action::CloseDoc(Doc::Map) => dirty_map(),
             // The script's text stays in the editor when its tab closes.
-            Action::CloseDoc(Doc::Rules) => None,
+            Action::CloseDoc(Doc::Rules | Doc::Voice) => None,
             Action::CloseDoc(doc) => doc.holder().and_then(dirty),
             _ => None,
         }
@@ -695,6 +700,8 @@ pub struct App {
     /// shared cache), beside the open map's document ([`Self::tags`]).
     pub(crate) tag_browse: Option<tag_browse::Browse>,
     nav: NavHistory,
+    /// The documents brought to the front, for the header's Back and Forward.
+    doc_trail: navigation::DocTrail,
     /// The bitmap preview of the open map's document (the browsed map's
     /// is its own): the tag and the picture, or why there is none.
     tag_preview: Option<(map::TagId, Result<std::sync::Arc<map_pack::Picture>, String>)>,
@@ -791,6 +798,7 @@ impl App {
             tag_homes: Default::default(),
             tag_browse: None,
             nav: NavHistory::default(),
+            doc_trail: Default::default(),
             tag_preview: None,
             last_tag_export: None,
             last_tag_import: None,
@@ -1186,6 +1194,8 @@ impl App {
             },
             Action::OpenAsset { asset, map } => self.open_asset(&asset, map.as_deref()),
             Action::CopyAsset { asset, package } => self.copy_asset(&asset, &package),
+            Action::ForkAsset { asset } => self.fork_asset(&asset),
+            Action::RevertAsset { asset } => self.revert_asset(&asset),
             Action::RefreshProblems(source) => self.refresh_problems(source.as_deref()),
             Action::OpenProblem(index) => self.open_problem(index),
             Action::PreviewInGame(doc) => self.preview_in_game(doc),
@@ -1380,11 +1390,6 @@ impl App {
                 self.set_tool(tool);
                 self.follow_tool(tool);
             }
-            Action::ShowVoices => {
-                if self.voices.show.is_none() {
-                    self.voices.show = Some(voices::Show::Window);
-                }
-            }
             Action::Quit => self.quit = true,
             Action::UiPick(pick) => {
                 self.sync_ui_disc();
@@ -1521,7 +1526,9 @@ impl App {
             | Action::ExportVariant(_)
             | Action::ExportVariantWith(..)
             | Action::ImportVariantFile(_)
-            | Action::ImportVariantText(_)) => self.run_variant(a),
+            | Action::ImportVariantText(_)) => {
+                self.run_variant(a);
+            }
             a => self.run_playlist(a),
         }
     }
@@ -1771,11 +1778,11 @@ impl App {
         }
     }
 
-    fn run_variant(&mut self, action: Action) {
+    fn run_variant(&mut self, action: Action) -> bool {
         // The actions that replace the document: its tab loses the
         // `item:` id it answered (`app::assets::open_item` sets it again
         // when the item opened it).
-        if matches!(
+        let replaces = matches!(
             action,
             Action::OpenVariant(_)
                 | Action::NewVariant(_)
@@ -1783,11 +1790,8 @@ impl App {
                 | Action::CopyBuiltin(_)
                 | Action::ImportVariantFile(_)
                 | Action::ImportVariantText(_)
-                | Action::EditEntryVariant(..)
                 | Action::DeleteVariant
-        ) {
-            self.set_tab_item(Doc::Variant, None, None);
-        }
+        );
         self.ensure_variants();
         let e = self.variants.as_mut().expect("built");
         let r: Result<Option<String>, String> = match action {
@@ -1871,12 +1875,17 @@ impl App {
                 .map_err(|e| e.to_string()),
             _ => unreachable!("not a variant action"),
         };
+        let opened = r.is_ok();
+        if opened && replaces {
+            self.set_tab_item(Doc::Variant, None, None);
+        }
         match r {
             Ok(Some(msg)) => self.info(msg),
             Ok(None) => {}
             Err(msg) => self.error(msg),
         }
         self.variant_status();
+        opened
     }
 
     /// Read the playlist tool's map list and variant choices for the
@@ -1949,6 +1958,7 @@ impl App {
                 match editor.import(&variants::portable::export(&v)) {
                     Ok(()) => {
                         self.tool = ToolKind::Variants;
+                        self.set_tab_item(Doc::Variant, None, None);
                         self.info(format!("editing a copy of {:?}", v.name()));
                     }
                     Err(err) => self.error(format!("cannot open the variant: {err}")),

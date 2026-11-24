@@ -148,16 +148,18 @@ pub(crate) enum Kind {
     Tag,
     Package,
     Item,
+    Voice,
     Placement,
     Command,
 }
 
 impl Kind {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Map,
         Self::Tag,
         Self::Package,
         Self::Item,
+        Self::Voice,
         Self::Placement,
         Self::Command,
     ];
@@ -168,6 +170,7 @@ impl Kind {
             Self::Tag => "tag",
             Self::Package => "package",
             Self::Item => "item",
+            Self::Voice => "voice",
             Self::Placement => "placement",
             Self::Command => "command",
         }
@@ -179,6 +182,7 @@ impl Kind {
             Self::Tag => "Tags",
             Self::Package => "Packages",
             Self::Item => "Items",
+            Self::Voice => "Voices",
             Self::Placement => "Placements",
             Self::Command => "Commands",
         }
@@ -372,6 +376,23 @@ pub(crate) fn palette_assets(app: &App, query: &str) -> Palette {
         }
     }
     out.count(Kind::Item, items);
+    // The voices, each opening its document.
+    let v = app.voice_asset_list(query, PALETTE_SCAN);
+    out.count(Kind::Voice, v["total"].as_u64().unwrap_or(0) as usize);
+    for row in rows(&v) {
+        let Some(asset) = row["asset"].as_str() else {
+            continue;
+        };
+        out.push_row(
+            Kind::Voice,
+            row["name"].as_str().unwrap_or(asset).to_owned(),
+            format!("voice · {}", row["label"].as_str().unwrap_or("")),
+            Action::OpenAsset {
+                asset: asset.to_owned(),
+                map: None,
+            },
+        );
+    }
     out
 }
 
@@ -467,9 +488,6 @@ pub(crate) fn palette_with(app: &App, query: &str, assets: &Palette) -> Palette 
             results.add(Kind::Command, label, OPEN_DETAIL, Action::Show(surface));
         }
     }
-    if words_match(query, VOICES_LABEL, VOICES_DETAIL) {
-        results.add(Kind::Command, VOICES_LABEL, VOICES_DETAIL, Action::ShowVoices);
-    }
     for command in MenuCommand::ALL {
         let item = command.item(app);
         if let Some(action) = item.action
@@ -482,11 +500,7 @@ pub(crate) fn palette_with(app: &App, query: &str, assets: &Palette) -> Palette 
 }
 
 /// The detail line of the palette's editor entries.
-const OPEN_DETAIL: &str = "View > Editors";
-/// The palette's entry for the Voices window, and the words it is also
-/// found by.
-pub(crate) const VOICES_LABEL: &str = "Open: Voices";
-const VOICES_DETAIL: &str = "announcer lines, character voice clone, dialogue";
+const OPEN_DETAIL: &str = "Open an editor";
 
 /// One playlist edit, applied to the working copy as one undo step. The
 /// playlist table's row buttons and weight drags, and `playlist.*` calls,
