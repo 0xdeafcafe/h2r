@@ -1666,7 +1666,8 @@ mod tests {
             window: [0.0; 4],
             signs: [0.0; 2],
             view: (32, 32),
-            small: (16, 16),
+            down: (16, 16),
+            other: (16, 16),
             draws: [
                 Surface::Down,
                 Surface::Other,
@@ -1703,13 +1704,16 @@ mod tests {
                 mem.set_u32(config.layout.simple_encode + 4 * slot, header)
                     .unwrap();
             }
-            for (descriptor, data) in [(down, 0x0010_0000), (other, 0x0011_0000)] {
+            for (descriptor, data, (width, height)) in [
+                (down, 0x0010_0000, plan.down),
+                (other, 0x0011_0000, plan.other),
+            ] {
                 mem.set_u32(descriptor + 0x88, data).unwrap();
                 mem.set_u32(descriptor + 0x78, 1).unwrap();
                 let surface = descriptor + 0x18;
                 let resource = (ResourceType::Surface.raw() << common::TYPE_SHIFT) | 1;
                 let format = (2 << 4) | (gfx::D3DFormat::LinA8R8G8B8.raw() << 8) | (1 << 16);
-                let size = (plan.small.0 - 1) | ((plan.small.1 - 1) << 12);
+                let size = (width - 1) | ((height - 1) << 12);
                 for (i, word) in [resource, data, 0, format, size, 0].into_iter().enumerate() {
                     mem.set_u32(surface + 4 * i as u32, word).unwrap();
                 }
@@ -2847,7 +2851,8 @@ mod tests {
             window: [0.0; 4],
             signs: [0.0; 2],
             view: (640, 480),
-            small: (160, 120),
+            down: (160, 120),
+            other: (160, 120),
             draws: vec![],
         };
         let glow = GlowPass {
