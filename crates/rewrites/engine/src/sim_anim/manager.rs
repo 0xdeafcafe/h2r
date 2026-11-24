@@ -27,7 +27,7 @@ macro_rules! body {
                 concat!("ANIM_MANAGER_", stringify!($entry)),
                 $entry,
                 points::Sig::Opaque,
-                "docs/engine/animation-manager.md",
+                "docs/engine/unit-pose.md",
             ),
             entry: $entry,
             end: $end,
