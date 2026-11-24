@@ -391,6 +391,7 @@ impl Inner {
 }
 
 pub struct CollisionWorld {
+    store: Option<std::path::PathBuf>,
     epoch: &'static Epoch,
     budget: u64,
     slot_limit: usize,
@@ -403,12 +404,21 @@ impl CollisionWorld {
         Self::with_budget(epoch, MAP_BUDGET)
     }
 
+    /// Enable shared, immutable BSP columns in the platform cache directory.
+    pub fn with_shared_store(epoch: &'static Epoch) -> Self {
+        Self {
+            store: host_dirs::cache().map(|dir| dir.join("collision")),
+            ..Self::new(epoch)
+        }
+    }
+
     pub(crate) fn with_budget(epoch: &'static Epoch, budget: u64) -> Self {
         Self::with_limits(epoch, budget, MAP_SLOTS)
     }
 
     pub(crate) fn with_limits(epoch: &'static Epoch, budget: u64, slot_limit: usize) -> Self {
         Self {
+            store: None,
             epoch,
             budget,
             slot_limit,
@@ -495,8 +505,9 @@ impl CollisionWorld {
                 .and_then(|n| inner.bsp_room(self.budget, n + metadata));
             (inner.generation, room)
         };
-        let built = ring_limit
-            .and_then(|room| Bsp::decode_with_ring_limit(g, addr, header, &consts()?, room));
+        let built = ring_limit.and_then(|room| {
+            Bsp::decode_cached(g, addr, header, &consts()?, room, self.store.as_deref())
+        });
         let mut inner = self.lock();
         inner.decodes += 1;
         if epoch != self.epoch.get() || generation != inner.generation {

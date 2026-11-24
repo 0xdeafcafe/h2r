@@ -1,6 +1,6 @@
 //! Edge tests for a two-sided BSP surface. Short cached rings also hold
 //! four-edge groups of vertex A and the rounded difference B - A.
-use super::{Bsp, RingEdge, Surface, above, cached_ring};
+use super::{Bsp, Column, RingEdge, Surface, above, cached_ring};
 use crate::{Bail, GuestRead};
 use sim_core::{
     det::{self, Fp},
@@ -12,8 +12,10 @@ const LANES: usize = 4;
 const MAX_PACKED_EDGES: usize = 8;
 
 pub(super) struct Rings {
-    pub(super) edges: Vec<RingEdge>,
-    packed: Vec<EdgeGroup>,
+    pub(super) edges: Column<RingEdge>,
+    pub(super) packed: Column<EdgeGroup>,
+    pub(super) complete: bool,
+    pub(super) mapped_padding: usize,
 }
 
 impl Rings {
@@ -22,7 +24,8 @@ impl Rings {
         // Pack only after the BSP's raw rings fit in the available space.
         let room = budget.saturating_sub((edges.capacity() * size_of::<RingEdge>()) as u64);
         let max_groups = (room / size_of::<EdgeGroup>() as u64) as usize;
-        if max_groups != 0 && det::host_fast_env() {
+        let mut complete = true;
+        if det::host_fast_env() {
             for surface in surfaces {
                 let len = surface.ring_len as usize;
                 if !(1..=MAX_PACKED_EDGES).contains(&len) {
@@ -31,6 +34,7 @@ impl Rings {
                 let count = len.div_ceil(LANES);
                 let needed = packed.len() + count;
                 if needed > max_groups {
+                    complete = false;
                     continue;
                 }
                 let Ok(ring) = cached_ring(&edges, surface) else {
@@ -58,11 +62,17 @@ impl Rings {
                 packed.extend(second);
             }
         }
-        Self { edges, packed }
+        Self {
+            edges: edges.into(),
+            packed: packed.into(),
+            complete,
+            mapped_padding: 0,
+        }
     }
 
     pub(super) fn footprint(&self) -> usize {
-        self.edges.capacity() * size_of::<RingEdge>()
+        self.mapped_padding
+            + self.edges.capacity() * size_of::<RingEdge>()
             + self.packed.capacity() * size_of::<EdgeGroup>()
     }
 
@@ -76,6 +86,8 @@ impl Rings {
     }
 }
 
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
 pub(super) struct EdgeGroup {
     // Keep all three axes so references with different projection rows
     // share one cache. The query loads only its projected pair.

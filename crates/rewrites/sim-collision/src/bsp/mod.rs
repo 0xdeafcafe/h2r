@@ -27,6 +27,8 @@ use std::sync::RwLock;
 pub mod point;
 mod ring;
 pub mod segment;
+mod store;
+pub use store::Column;
 
 /// A child word with this bit set is a leaf (`0xffff_ffff`: none, solid).
 pub const LEAF: u32 = 0x0080_0000;
@@ -67,7 +69,7 @@ pub const BAD: u8 = 0xff;
 
 /// An internal node: `u16 plane`, then the back and front children as
 /// 24-bit signed words.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, bytemuck::Zeroable, bytemuck::Pod)]
 #[repr(C, align(32))]
 pub struct Node {
     /// The plane's `nx, ny, nz, d` bits.
@@ -77,11 +79,12 @@ pub struct Node {
     /// The raw plane index (the guest sign-extends it).
     pub plane_index: u16,
     pub bad: u8,
+    reserved: [u8; 5],
 }
 
 const _: () = assert!(std::mem::size_of::<Node>() == 32);
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, bytemuck::Zeroable, bytemuck::Pod)]
 #[repr(C)]
 pub struct Leaf {
     pub flags: u8,
@@ -91,7 +94,7 @@ pub struct Leaf {
 
 /// A 2D reference: the plane it lies on (bit 15 flips it), the root of its
 /// 2D tree, and the projection row the matcher uses for it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, bytemuck::Zeroable, bytemuck::Pod)]
 #[repr(C)]
 pub struct Ref {
     pub plane: u16,
@@ -99,11 +102,12 @@ pub struct Ref {
     /// `2 * axis + sign`, an index into [`Bsp::projection`]; [`BAD`] when
     /// the plane is out of range or not ordinary.
     pub row: u8,
+    reserved: u8,
 }
 
 /// A 2D node: `a * u + b * v - d`, then the back and front children
 /// (bit 15 set: a surface, `0xffff` none).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, bytemuck::Zeroable, bytemuck::Pod)]
 #[repr(C)]
 pub struct Node2d {
     pub a: u32,
@@ -112,7 +116,7 @@ pub struct Node2d {
     pub child: [u16; 2],
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, bytemuck::Zeroable, bytemuck::Pod)]
 #[repr(C)]
 pub struct Surface {
     pub plane: u16,
@@ -131,7 +135,7 @@ pub struct Surface {
 /// One edge of a surface ring as the inside test reads it: vertex A (the
 /// end vertex when the edge's right surface is this one, else the start)
 /// and vertex B (the other), each `x, y, z` bits.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, bytemuck::Zeroable, bytemuck::Pod)]
 #[repr(C)]
 pub struct RingEdge {
     pub a: [u32; 3],
@@ -150,15 +154,16 @@ pub struct Consts {
 pub struct Bsp {
     addr: u32,
     header: [u32; HEADER_WORDS],
-    pub nodes: Vec<Node>,
-    pub planes: Vec<[u32; 4]>,
+    mapped_overhead: usize,
+    pub nodes: Column<Node>,
+    pub planes: Column<[u32; 4]>,
     /// The dominant axis of each plane as the matcher picks it, [`BAD`]
     /// when a normal component is not ordinary.
-    pub axis: Vec<u8>,
-    pub leaves: Vec<Leaf>,
-    pub refs: Vec<Ref>,
-    pub nodes_2d: Vec<Node2d>,
-    pub surfaces: Vec<Surface>,
+    pub axis: Column<u8>,
+    pub leaves: Column<Leaf>,
+    pub refs: Column<Ref>,
+    pub nodes_2d: Column<Node2d>,
+    pub surfaces: Column<Surface>,
     /// Optional expanded edges. The world can release them even while a
     /// query holds an Arc to the essential arrays. Only edge arithmetic
     /// runs under the read lock.
@@ -327,7 +332,8 @@ impl Bsp {
     /// Bytes reserved by the decoded arrays, including spare vector capacity.
     pub fn footprint(&self) -> usize {
         use std::mem::size_of;
-        self.nodes.capacity() * size_of::<Node>()
+        self.mapped_overhead
+            + self.nodes.capacity() * size_of::<Node>()
             + self.planes.capacity() * size_of::<[u32; 4]>()
             + self.axis.capacity()
             + self.leaves.capacity() * size_of::<Leaf>()
@@ -359,7 +365,18 @@ impl Bsp {
         consts: &Consts,
         ring_bytes: u64,
     ) -> Result<Bsp, Bail> {
-        Self::essential_bytes(&header)?;
+        Self::decode_cached(g, addr, header, consts, ring_bytes, None)
+    }
+
+    pub(crate) fn decode_cached(
+        g: &impl GuestRead,
+        addr: u32,
+        header: [u32; HEADER_WORDS],
+        consts: &Consts,
+        ring_bytes: u64,
+        directory: Option<&std::path::Path>,
+    ) -> Result<Bsp, Bail> {
+        let essential = Self::essential_bytes(&header)?;
         let mut h = hash(
             HASH_SEED,
             &header
@@ -372,6 +389,15 @@ impl Bsp {
             let count = header[2 * i];
             *r = g.bytes(header[2 * i + 1], (count * block::STRIDE[i]) as usize)?;
             h = hash(h, r);
+        }
+        let key = directory
+            .filter(|_| cfg!(target_endian = "little") && essential >= store::MIN_BYTES)
+            .map(|dir| store::Key::new(dir, &raw, consts));
+        if let Some(bsp) = key
+            .as_ref()
+            .and_then(|k| k.open(addr, header, consts, h, ring_bytes))
+        {
+            return Ok(bsp);
         }
         let n = |i: usize| raw[i].len() / block::STRIDE[i] as usize;
         let (n_nodes, n_planes) = (n(block::NODES), n(block::PLANES));
@@ -417,6 +443,7 @@ impl Bsp {
                     child,
                     plane_index,
                     bad,
+                    reserved: [0; 5],
                 }
             })
             .collect();
@@ -453,6 +480,7 @@ impl Bsp {
                     plane,
                     node: half(b, 2),
                     row,
+                    reserved: 0,
                 }
             })
             .collect();
@@ -529,28 +557,30 @@ impl Bsp {
             .collect();
         let ring = ring.map(|edges| ring::Rings::new(edges, &mut surfaces, ring_bytes));
 
-        let projection = consts.projection.map(|row| {
-            if (0..3).contains(&row[0]) && (0..3).contains(&row[1]) {
-                [row[0] as u8, row[1] as u8]
-            } else {
-                [BAD; 2]
-            }
-        });
+        let projection = consts.projection.map(projection_axes);
 
-        Ok(Bsp {
+        let bsp = Bsp {
+            mapped_overhead: 0,
             addr,
             header,
             nodes,
-            planes,
-            axis,
+            planes: planes.into(),
+            axis: axis.into(),
             leaves,
             refs,
             nodes_2d,
-            surfaces,
+            surfaces: surfaces.into(),
             ring: RwLock::new(ring),
             projection,
             hash: h,
-        })
+        };
+        if let Some(key) = key
+            && key.publish(&bsp, ring_bytes).is_ok()
+            && let Some(mapped) = key.open(addr, header, consts, h, ring_bytes)
+        {
+            return Ok(mapped);
+        }
+        Ok(bsp)
     }
 
     /// A copy of the cached surface edges. A budget-limited BSP reads its
@@ -616,6 +646,14 @@ impl Bsp {
             Some(&[u, v]) if u != BAD => Ok([usize::from(u), usize::from(v)]),
             _ => Err(Bail::Data),
         }
+    }
+}
+
+fn projection_axes(row: [i16; 3]) -> [u8; 2] {
+    if (0..3).contains(&row[0]) && (0..3).contains(&row[1]) {
+        [row[0] as u8, row[1] as u8]
+    } else {
+        [BAD; 2]
     }
 }
 
