@@ -414,9 +414,7 @@ fn scenario_fade(cx: &mut Cx<'_>, _: u32) -> Result<Next> {
     arithmetic(c, c.eax, u32::MAX, true);
     if c.eax != u32::MAX {
         c.ecx = g.u32(TAGS)?;
-        c.eax = (c.eax & 0xffff) << 4;
-        // The last integer instruction affecting flags is SHL EAX,4.
-        crate::sim_objects::alu::shl(c, c.eax >> 4, 4, 32);
+        c.eax = crate::sim_objects::alu::shl(c, c.eax & 0xffff, 4, 32);
         c.edx = g.u32(at(c.ecx, c.eax + 8))?;
         sse::load(c, 0, g.u32(at(c.edx, 0x54))?);
     }

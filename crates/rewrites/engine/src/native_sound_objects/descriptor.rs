@@ -120,7 +120,7 @@ pub(super) fn build(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
                 // carry, and sets AF when it turns -1 into zero.
                 let prior = if missing == 0 { u8::MAX } else { 0 };
                 c.eflags = (c.eflags & !ARITH) | status(missing.into(), 0x80)
-                    | u32::from(prior == u8::MAX) * 0x11;
+                    | (u32::from(prior == u8::MAX) * 0x11);
                 c.eflags_defined |= ARITH;
                 g.set_u8(at(c.esp, 0x13), missing)?;
                 if missing != 0 { 0x18ccb5 } else {
