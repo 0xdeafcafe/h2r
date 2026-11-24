@@ -1,0 +1,89 @@
+[package]
+format = 1
+id = "pogo"
+name = "Pogo Stick"
+description = "The stick a Superbounce player carries, in three looks."
+features = ["pogo"]
+
+[credit]
+authors = ["Alexander Forbes-Reed"]
+notes = "Original shapes, paint and sounds."
+
+# The atlases the models name (models/<look>.yaml's `atlas`), the rider's
+# pose set (crates/extensions/game/src/pogo_pose.rs) and the clips
+# (crates/extensions/game/src/pogo_sound.rs) are named here so the package's
+# identity covers them.
+
+[[item]]
+kind = "data"
+source = "models/unsc.png"
+maps = "multiplayer"
+
+[[item]]
+kind = "data"
+source = "models/covenant.png"
+maps = "multiplayer"
+
+[[item]]
+kind = "data"
+source = "models/forerunner.png"
+maps = "multiplayer"
+
+[[item]]
+kind = "data"
+source = "data/poses.yaml"
+maps = "multiplayer"
+
+[[item]]
+kind = "sound"
+source = "sounds/compress.wav"
+maps = "multiplayer"
+
+[[item]]
+kind = "sound"
+source = "sounds/spring.wav"
+maps = "multiplayer"
+
+[[item]]
+kind = "sound"
+source = "sounds/settle.wav"
+maps = "multiplayer"
+
+# Each look: its model (`bitm`, `shad`, `mode`, `hlmt`, and the `phmo` and
+# `nhdt` the looks share), then its weapon.
+
+[[item]]
+kind = "model"
+source = "models/unsc.yaml"
+tag = 'objects\weapons\multiplayer\pogo\unsc\pogo_unsc'
+maps = "multiplayer"
+
+[[item]]
+kind = "tag"
+source = "tags/pogo_unsc.weap.yaml"
+tag = 'objects\weapons\multiplayer\pogo\unsc\pogo_unsc'
+maps = "multiplayer"
+
+[[item]]
+kind = "model"
+source = "models/covenant.yaml"
+tag = 'objects\weapons\multiplayer\pogo\covenant\pogo_covenant'
+maps = "multiplayer"
+
+[[item]]
+kind = "tag"
+source = "tags/pogo_covenant.weap.yaml"
+tag = 'objects\weapons\multiplayer\pogo\covenant\pogo_covenant'
+maps = "multiplayer"
+
+[[item]]
+kind = "model"
+source = "models/forerunner.yaml"
+tag = 'objects\weapons\multiplayer\pogo\forerunner\pogo_forerunner'
+maps = "multiplayer"
+
+[[item]]
+kind = "tag"
+source = "tags/pogo_forerunner.weap.yaml"
+tag = 'objects\weapons\multiplayer\pogo\forerunner\pogo_forerunner'
+maps = "multiplayer"

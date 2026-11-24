@@ -27,6 +27,13 @@ png = { workspace = true }
 thiserror.workspace = true
 # `PackageRewrite` is the VFS's rewrite of the game's maps.
 vfs.workspace = true
+# The `model` builder: the primitive YAML's mesh, the atlas and the tags a
+# look is built into.
+pogo-kit = { path = "../pogo-kit" }
+
+[dev-dependencies]
+# An invented multiplayer map and the kit built on it (PK4's test).
+pogo-kit = { path = "../pogo-kit", features = ["fixture"] }
 
 [lints]
 workspace = true

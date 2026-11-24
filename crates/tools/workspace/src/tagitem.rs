@@ -17,12 +17,29 @@
 //! A tag reference names a tag by `<group>:<path>`, and the tag must be in
 //! the map by then: an item may name tags that the base has or that earlier
 //! items added. A tag path that is taken stops the build.
+//!
+//! `borrow` takes fields from a tag the map already has, chosen by what it
+//! holds, for a value no package can name (the first-person view of the
+//! map's own weapon of a class):
+//!
+//! ```yaml
+//! borrow:
+//!   - from: weap                  # the tag's own group
+//!     where:                      # alternatives, tried in order
+//!       - {weapon_class: pistol, weapon_name: hp}
+//!       - {weapon_class: pistol}
+//!     take: [first_person]        # copied over, each a non-empty block
+//! ```
+//!
+//! The first alternative that some tag of the group matches (text fields
+//! equal) and that holds every `take` field with elements gives its values,
+//! the first such tag in the map's order. No match stops the build.
 use std::path::Path;
 
 use map::FourCC;
 use serde::Deserialize;
 use serde_yaml_ng::{Mapping, Value};
-use tags::defs::{default_record, from_built, parse_fourcc};
+use tags::defs::{Record, Str, StructDef, Val, default_record, from_built, parse_fourcc};
 
 use crate::build::{Cx, Failure};
 use crate::builders::Job;
@@ -40,6 +57,18 @@ struct TagFile {
     block: Vec<BlockLine>,
     #[serde(default)]
     fields: Mapping,
+    #[serde(default)]
+    borrow: Vec<Borrow>,
+}
+
+/// One `borrow` entry.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Borrow {
+    from: String,
+    #[serde(default, rename = "where")]
+    matching: Vec<Mapping>,
+    take: Vec<String>,
 }
 
 /// The group in `<path>.<group>.yaml`.
@@ -95,7 +124,103 @@ pub fn check(job: &Job<'_>) -> Result<(), Failure> {
     for (path, _) in sets(&file)? {
         field_of(def, path)?;
     }
+    for b in &file.borrow {
+        check_borrow(def, group, b)?;
+    }
     Ok(())
+}
+
+fn check_borrow(def: &StructDef, group: FourCC, b: &Borrow) -> Result<(), String> {
+    let from =
+        parse_fourcc(&b.from).ok_or_else(|| format!("borrow from {:?}: not a group", b.from))?;
+    if from != group {
+        return Err(format!(
+            "borrow from {}: a tag takes fields from tags of its own group, {}",
+            b.from,
+            fourcc(group)
+        ));
+    }
+    if b.take.is_empty() {
+        return Err("a borrow takes at least one field".into());
+    }
+    for path in &b.take {
+        field_of(def, path).map_err(|e| format!("borrow take: {e}"))?;
+    }
+    for alt in &b.matching {
+        for (k, v) in alt {
+            let (Value::String(k), Value::String(_)) = (k, v) else {
+                return Err("a `where` entry is a field path and its text".into());
+            };
+            field_of(def, k).map_err(|e| format!("borrow where: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn text_is(rec: &Record, path: &str, want: &str) -> bool {
+    matches!(rec.at(path), Some(Val::String(Str::Text(t))) if t == want)
+}
+
+/// Take `b`'s fields into `rec` from a tag of the map.
+fn borrow(
+    cx: &Cx<'_>,
+    def: &StructDef,
+    group: FourCC,
+    rec: &mut Record,
+    b: &Borrow,
+) -> Result<(), String> {
+    let mut unreadable = 0usize;
+    let mut candidates = Vec::new();
+    for slot in &cx.set.slots {
+        let Some(t) = slot.tag.as_ref().filter(|t| t.group == group) else {
+            continue;
+        };
+        match cx
+            .read_block(t.id)
+            .and_then(|blk| from_built(def, &blk).map_err(|e| e.to_string()))
+        {
+            Ok(r) => candidates.push(r),
+            Err(_) => unreadable += 1,
+        }
+    }
+    let alternatives: Vec<&Mapping> = if b.matching.is_empty() {
+        vec![]
+    } else {
+        b.matching.iter().collect()
+    };
+    let empty = Mapping::new();
+    let tries: Vec<&Mapping> = if alternatives.is_empty() {
+        vec![&empty]
+    } else {
+        alternatives
+    };
+    for alt in tries {
+        let pairs: Vec<(&str, &str)> = alt
+            .iter()
+            .filter_map(|(k, v)| Some((k.as_str()?, v.as_str()?)))
+            .collect();
+        let found = candidates.iter().find(|r| {
+            pairs.iter().all(|(k, v)| text_is(r, k, v))
+                && b.take.iter().all(|p| match r.at(p) {
+                    Some(Val::Block(e)) => !e.is_empty(),
+                    Some(_) => true,
+                    None => false,
+                })
+        });
+        if let Some(from) = found {
+            for p in &b.take {
+                let v = from.at(p).cloned().expect("checked above");
+                *rec.at_mut(p)
+                    .ok_or_else(|| format!("borrow take {p:?}: no such element"))? = v;
+            }
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "borrow from {}: no tag of the map matches ({} read, {unreadable} that could not be laid out)",
+        b.from,
+        candidates.len()
+    ))
 }
 
 fn fourcc(g: FourCC) -> String {
@@ -124,6 +249,9 @@ pub fn apply(cx: &mut Cx<'_>, job: &Job<'_>) -> Result<(), Failure> {
     };
     let sets = sets(&file)?;
     change(def, &mut rec, &file.block, &sets).map_err(|why| format!("tag {key}: {why}"))?;
+    for b in &file.borrow {
+        borrow(cx, def, group, &mut rec, b).map_err(|why| format!("tag {key}: {why}"))?;
+    }
     let block = write_back(cx, def, &rec, &key)?;
     cx.add_tag(&key, block)?;
     Ok(())

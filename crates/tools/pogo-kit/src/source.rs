@@ -1,4 +1,4 @@
-//! The models' source: `art/pogo/<style>.yaml`, a parametric description
+//! The models' source: `content/pogo/models/<style>.yaml`, a parametric description
 //! (nodes, markers, and parts built from lathes, sweeps and boxes), read
 //! with every unknown key refused. [`crate::mesh`] turns it into triangles.
 //!
@@ -15,7 +15,7 @@ use crate::Style;
 pub const ATLAS: (u16, u16) = (512, 256);
 
 /// The atlas regions a part names, in pixels (x0, y0, x1, y1): the table
-/// `scripts/pogo-atlas.py` paints and `art/pogo/README.md` lists.
+/// `scripts/pogo-atlas.py` paints and `content/pogo/README.md` lists.
 pub const REGIONS: [(&str, [u16; 4]); 8] = [
     ("body", [0, 0, 256, 128]),
     ("body_dark", [256, 0, 384, 128]),
@@ -245,9 +245,9 @@ impl Part {
 /// A style's source text, as built in.
 pub fn text(style: Style) -> &'static str {
     match style {
-        Style::Unsc => include_str!("../../../../art/pogo/unsc.yaml"),
-        Style::Covenant => include_str!("../../../../art/pogo/covenant.yaml"),
-        Style::Forerunner => include_str!("../../../../art/pogo/forerunner.yaml"),
+        Style::Unsc => include_str!("../../../../content/pogo/models/unsc.yaml"),
+        Style::Covenant => include_str!("../../../../content/pogo/models/covenant.yaml"),
+        Style::Forerunner => include_str!("../../../../content/pogo/models/forerunner.yaml"),
     }
 }
 
@@ -255,9 +255,9 @@ pub fn text(style: Style) -> &'static str {
 /// in a checkout without LFS, which [`crate::texture::decode`] names).
 pub fn atlas(style: Style) -> &'static [u8] {
     match style {
-        Style::Unsc => include_bytes!("../../../../art/pogo/unsc.png"),
-        Style::Covenant => include_bytes!("../../../../art/pogo/covenant.png"),
-        Style::Forerunner => include_bytes!("../../../../art/pogo/forerunner.png"),
+        Style::Unsc => include_bytes!("../../../../content/pogo/models/unsc.png"),
+        Style::Covenant => include_bytes!("../../../../content/pogo/models/covenant.png"),
+        Style::Forerunner => include_bytes!("../../../../content/pogo/models/forerunner.png"),
     }
 }
 

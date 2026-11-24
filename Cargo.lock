@@ -8849,6 +8849,7 @@ dependencies = [
  "content",
  "map",
  "png",
+ "pogo-kit",
  "serde",
  "serde_json",
  "serde_yaml_ng",

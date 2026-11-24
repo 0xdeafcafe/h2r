@@ -102,6 +102,54 @@ pub struct Facts {
     pub material: (String, i16),
 }
 
+/// What the models are drawn with, read from the map: the shader templates
+/// and the material. The `model` builder of the package build takes only
+/// this ([`Facts`] adds what the weapon needs).
+#[derive(Clone, Debug)]
+pub struct Shading {
+    pub library: Library,
+    pub layout: &'static Layout,
+    /// The global material and its index in the globals.
+    pub material: (String, i16),
+}
+
+impl Shading {
+    /// The map's shader templates and material.
+    pub fn read<R: Read + Seek>(map: &mut Map<R>) -> Result<Shading> {
+        let meta = tags::object::Metadata::read(map).map_err(|e| anyhow!("tag memory: {e}"))?;
+        Shading::read_with(map, &meta)
+    }
+
+    /// [`Shading::read`] with the map's tag memory already read.
+    pub fn read_with<R: Read + Seek>(
+        map: &mut Map<R>,
+        meta: &tags::object::Metadata,
+    ) -> Result<Shading> {
+        let library = Library::read(map);
+        let layout = LAYOUTS
+            .into_iter()
+            .find(|l| library.has(l))
+            .with_context(|| {
+                format!(
+                    "the map has no shader template the stick draws with ({} or {}, and their default bitmaps)",
+                    LAYOUTS[0].stem, LAYOUTS[1].stem
+                )
+            })?;
+        let globals =
+            h1convert::materials::global_materials(map, meta).map_err(|e| anyhow!("{e}"))?;
+        let index = globals
+            .iter()
+            .position(|g| g == MATERIAL)
+            .or(if globals.is_empty() { None } else { Some(0) })
+            .context("the map's globals have no materials")?;
+        Ok(Shading {
+            library,
+            layout,
+            material: (globals[index].clone(), index as i16),
+        })
+    }
+}
+
 /// One element of a weapon's first-person block: the arms and weapon
 /// model and the graph that animates them, for one player character.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -220,7 +268,10 @@ fn elements<R: Read + Seek>(
 
 /// The first-person block of the map's `weap` `weapon`, as the game
 /// reads it.
-pub fn first_person_of<R: Read + Seek>(map: &mut Map<R>, weapon: TagId) -> Result<Vec<FirstPerson>> {
+pub fn first_person_of<R: Read + Seek>(
+    map: &mut Map<R>,
+    weapon: TagId,
+) -> Result<Vec<FirstPerson>> {
     let meta = tags::object::Metadata::read(map).map_err(|e| anyhow!("tag memory: {e}"))?;
     let at = map
         .tags()
@@ -235,7 +286,10 @@ pub fn first_person_of<R: Read + Seek>(map: &mut Map<R>, weapon: TagId) -> Resul
         word(head, WEAPON_FIRST_PERSON)?,
         word(head, WEAPON_FIRST_PERSON + 4)?,
     );
-    ensure!(count <= FIRST_PERSON_MAX, "weapon {weapon:?}: {count} first-person elements");
+    ensure!(
+        count <= FIRST_PERSON_MAX,
+        "weapon {weapon:?}: {count} first-person elements"
+    );
     elements(map, &meta, weapon, count, first)
 }
 
@@ -369,32 +423,25 @@ impl Facts {
         map: &mut Map<R>,
         class: (String, String),
     ) -> Result<Facts> {
-        let library = Library::read(map);
-        let layout = LAYOUTS
-            .into_iter()
-            .find(|l| library.has(l))
-            .with_context(|| {
-                format!(
-                    "the map has no shader template the stick draws with ({} or {}, and their default bitmaps)",
-                    LAYOUTS[0].stem, LAYOUTS[1].stem
-                )
-            })?;
         let meta = tags::object::Metadata::read(map).map_err(|e| anyhow!("tag memory: {e}"))?;
-        let globals =
-            h1convert::materials::global_materials(map, &meta).map_err(|e| anyhow!("{e}"))?;
-        let index = globals
-            .iter()
-            .position(|g| g == MATERIAL)
-            .or(if globals.is_empty() { None } else { Some(0) })
-            .context("the map's globals have no materials")?;
+        let shading = Shading::read_with(map, &meta)?;
         let first_person = first_person(map, &meta, &class)?;
         Ok(Facts {
             class,
             first_person,
-            library,
-            layout,
-            material: (globals[index].clone(), index as i16),
+            library: shading.library,
+            layout: shading.layout,
+            material: shading.material,
         })
+    }
+
+    /// What the models are drawn with.
+    pub fn shading(&self) -> Shading {
+        Shading {
+            library: self.library.clone(),
+            layout: self.layout,
+            material: self.material.clone(),
+        }
     }
 }
 
@@ -583,25 +630,34 @@ fn groups(set: &mut TagSet) {
 
 /// Adds the shared tags to `set`.
 pub fn install_shared(set: &mut TagSet, facts: &Facts) -> Result<Shared> {
+    install_shared_at(set, &shared_path(), &facts.material.0, false)
+}
+
+/// The shared tags at `path`: added, or, when `reuse` and both are in the
+/// set already (an earlier look of the same package added them), found.
+pub fn install_shared_at(
+    set: &mut TagSet,
+    path: &str,
+    material: &str,
+    reuse: bool,
+) -> Result<Shared> {
     groups(set);
-    let path = shared_path();
-    for group in [b"phmo", b"nhdt"] {
+    let held = [b"phmo", b"nhdt"].map(|g| set.find(FourCC(*g), path));
+    if reuse && let [Some(physics), Some(hud)] = held {
+        return Ok(Shared { physics, hud });
+    }
+    for (group, id) in [b"phmo", b"nhdt"].into_iter().zip(held) {
         ensure!(
-            set.find(FourCC(*group), &path).is_none(),
+            id.is_none(),
             "the map already has {path}.{}",
             FourCC(*group)
         );
     }
-    let physics = rebuild::sphere_physics(
-        PHYSICS_RADIUS,
-        PHYSICS_CENTRE,
-        PHYSICS_MASS,
-        &facts.material.0,
-    )
-    .map_err(|e| anyhow!("phmo: {e}"))?;
-    let physics = set.add_tag(FourCC(*b"phmo"), &path, TagPayload::Built(physics))?;
+    let physics = rebuild::sphere_physics(PHYSICS_RADIUS, PHYSICS_CENTRE, PHYSICS_MASS, material)
+        .map_err(|e| anyhow!("phmo: {e}"))?;
+    let physics = set.add_tag(FourCC(*b"phmo"), path, TagPayload::Built(physics))?;
     let hud = h1objects::h1hud::nhdt(&[], &[]);
-    let hud = set.add_tag(FourCC(*b"nhdt"), &path, TagPayload::Built(hud))?;
+    let hud = set.add_tag(FourCC(*b"nhdt"), path, TagPayload::Built(hud))?;
     Ok(Shared { physics, hud })
 }
 
@@ -627,10 +683,42 @@ pub fn install_from(
     if set.find(FourCC(*b"weap"), &path).is_some() {
         bail!("the map already has {path}.weap");
     }
+    let models = install_model(set, &facts.shading(), shared, &path, source, atlas)?;
+    let weapon = weapon(facts, models.model, shared.hud)?;
+    let weapon = set.add_tag(FourCC(*b"weap"), &path, TagPayload::Built(weapon))?;
+    Ok(Tags {
+        weapon,
+        model: models.model,
+        render: models.render,
+        shader: models.shader,
+        bitmap: models.bitmap,
+    })
+}
+
+/// One look's tags but its weapon: what the package build's `model`
+/// builder adds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Models {
+    pub model: TagId,
+    pub render: TagId,
+    pub shader: TagId,
+    pub bitmap: TagId,
+}
+
+/// Adds one look's `bitm`, `shad`, `mode` and `hlmt`, all named `path`.
+pub fn install_model(
+    set: &mut TagSet,
+    shading: &Shading,
+    shared: Shared,
+    path: &str,
+    source: &Source,
+    atlas: &texture::Rgba,
+) -> Result<Models> {
+    groups(set);
     ensure!(
         (atlas.width, atlas.height) == (u32::from(source::ATLAS.0), u32::from(source::ATLAS.1)),
         "{}: the atlas is {}x{}, want {}x{}",
-        style.id(),
+        source.atlas,
         atlas.width,
         atlas.height,
         source::ATLAS.0,
@@ -640,7 +728,7 @@ pub fn install_from(
     let model = model(source, &mesh)?;
 
     let bitmap = texture::bitmap(atlas)?
-        .install(set, &path)
+        .install(set, path)
         .map_err(|e| anyhow!("bitm: {e}"))?;
     let maps = HashMap::from([(
         Role::Base,
@@ -650,11 +738,11 @@ pub fn install_from(
             lod_offset: shad::lod_offset(source::ATLAS.0, source::ATLAS.1),
         },
     )]);
-    let shader = facts
+    let shader = shading
         .library
-        .build(facts.layout, &maps)
+        .build(shading.layout, &maps)
         .map_err(|e| anyhow!("shad: {e}"))?;
-    let shader = set.add_tag(FourCC(*b"shad"), &path, TagPayload::Built(shader))?;
+    let shader = set.add_tag(FourCC(*b"shad"), path, TagPayload::Built(shader))?;
 
     let render = convert_model(
         &model,
@@ -664,13 +752,13 @@ pub fn install_from(
             strips: false,
         },
     )
-    .and_then(|c| c.install(set, &path))
+    .and_then(|c| c.install(set, path))
     .map_err(|e| anyhow!("mode: {e}"))?;
 
     let material = rebuild::ModelMaterial {
-        name: facts.material.0.clone(),
-        global: facts.material.0.clone(),
-        global_index: facts.material.1,
+        name: shading.material.0.clone(),
+        global: shading.material.0.clone(),
+        global_index: shading.material.1,
     };
     let hlmt = rebuild::model(&rebuild::Model {
         render,
@@ -687,17 +775,19 @@ pub fn install_from(
         materials: vec![material],
     })
     .map_err(|e| anyhow!("hlmt: {e}"))?;
-    let model_tag = set.add_tag(FourCC(*b"hlmt"), &path, TagPayload::Built(hlmt))?;
-
-    let weapon = weapon(facts, model_tag, shared.hud)?;
-    let weapon = set.add_tag(FourCC(*b"weap"), &path, TagPayload::Built(weapon))?;
-    Ok(Tags {
-        weapon,
-        model: model_tag,
+    let model = set.add_tag(FourCC(*b"hlmt"), path, TagPayload::Built(hlmt))?;
+    Ok(Models {
+        model,
         render,
         shader,
         bitmap,
     })
+}
+
+/// Lets a set decomposed from a map gain tags
+/// (`h1_assets::sounds::convert::make_index_room`); a no-op the second time.
+pub fn make_index_room(set: &mut TagSet) {
+    h1_assets::sounds::convert::make_index_room(set);
 }
 
 /// Adds the whole kit to a set decomposed from a map: the shared tags and

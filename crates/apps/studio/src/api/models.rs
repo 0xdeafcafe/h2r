@@ -6,7 +6,8 @@
 //!
 //! The provider reads the map the scenario tool has open, or one of the
 //! source's maps by name; with `pogo: true`, that map with the Pogo
-//! Stick's kit added as the game serves it (`pogo_kit::rewrite`). It holds
+//! Stick's kit added (`pogo_kit::inject::add_pogo`, which the `pogo` package's
+//! build equals). It holds
 //! that map read-only: a fix is a `tag.set` on the map the Tags tool edits
 //! (each finding names its path), or, for the kit's own tags, a change to
 //! `crates/tools/pogo-kit`.
@@ -22,7 +23,6 @@ use agent_proto::RpcError;
 use map::{FourCC, TagId};
 use pogo_kit::Style;
 use pogo_kit::inject::Costs;
-use pogo_kit::rewrite::PogoRewrite;
 use scenario_edit::MapSource as EditSource;
 use scenario_edit::geometry::Camera;
 use scenario_edit::native_view::preview::{self, Matrix, Piece};
@@ -763,7 +763,7 @@ impl Open {
 }
 
 /// Opens map `name` from `source`, with the kit added when `pogo`.
-fn open_map(app: &App, name: String, source: EditSource, auto: bool, pogo: bool) -> Result<Open, RpcError> {
+fn open_map(_app: &App, name: String, source: EditSource, auto: bool, pogo: bool) -> Result<Open, RpcError> {
     let mut source = source;
     let mut kit = None;
     let marker = pogo_kit::inject::marker_string();
@@ -787,23 +787,20 @@ fn open_map(app: &App, name: String, source: EditSource, auto: bool, pogo: bool)
                 None => source.read_base().map_err(failed)?,
             };
             let stem = name.to_ascii_lowercase();
-            let rebuilt = PogoRewrite::new()
-                .with_cache(&app.data_root())
-                .rebuild(&stem, &bytes)
-                .map_err(|e| {
-                    reason(
-                        code::REFUSED,
-                        "pogo_refused",
-                        format!("{name}: the Pogo Stick's kit does not go in: {e:#}"),
-                    )
-                })?;
+            let added = pogo_kit::inject::add_pogo(&bytes, &stem).map_err(|e| {
+                reason(
+                    code::REFUSED,
+                    "pogo_refused",
+                    format!("{name}: the Pogo Stick's kit does not go in: {e:#}"),
+                )
+            })?;
             kit = Some(Kit {
                 weapons: Vec::new(),
-                costs: Some(rebuilt.added.costs),
-                from_cache: rebuilt.from_cache,
+                costs: Some(added.costs),
+                from_cache: false,
             });
             source = EditSource {
-                bytes: Some(Arc::from(rebuilt.added.bytes)),
+                bytes: Some(Arc::from(added.bytes)),
                 ..source
             };
         }

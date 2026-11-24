@@ -79,6 +79,11 @@ pub struct Rebuilt {
     pub file: Option<PathBuf>,
 }
 
+/// What a boot does with each map as the game is handed it: the map's file
+/// stem and its bytes after the set, or `None` when the map was too large
+/// for a rewrite to read.
+pub type Observer = Box<dyn Fn(&str, Option<&[u8]>) + Send>;
+
 /// The one rewrite of the game's set.
 pub struct PackageRewrite {
     packages: Vec<Loaded>,
@@ -90,6 +95,7 @@ pub struct PackageRewrite {
     served: Served,
     /// The maps already named on stderr.
     named: HashSet<String>,
+    observer: Option<Observer>,
 }
 
 impl PackageRewrite {
@@ -110,7 +116,16 @@ impl PackageRewrite {
             names,
             served: Served::default(),
             named: HashSet::new(),
+            observer: None,
         }
+    }
+
+    /// Call `f` with each map the rewrite is asked for, as the game is
+    /// handed it (the pogo stick's weapons are read from it:
+    /// `pogo_kit::served`).
+    pub fn observed(mut self, f: impl Fn(&str, Option<&[u8]>) + Send + 'static) -> Self {
+        self.observer = Some(Box::new(f));
+        self
     }
 
     /// Keep the built maps under `<data_root>/packages/cache`.
@@ -295,13 +310,17 @@ impl vfs::Rewrite for PackageRewrite {
 
     fn rewrite(&mut self, path: &str, original: &[u8]) -> Option<Vec<u8>> {
         let stem = stem_of(path)?;
-        match self.rebuild(&stem, original) {
+        let out = match self.rebuild(&stem, original) {
             Ok(r) => r.map(|r| r.bytes),
             Err(e) => {
                 self.name_once(&stem, &e);
                 None
             }
+        };
+        if let Some(f) = &self.observer {
+            f(&stem, Some(out.as_deref().unwrap_or(original)));
         }
+        out
     }
 
     fn skipped(&mut self, path: &str) {
@@ -316,6 +335,9 @@ impl vfs::Rewrite for PackageRewrite {
                 },
             );
             self.name_once(&stem, why);
+            if let Some(f) = &self.observer {
+                f(&stem, None);
+            }
         }
     }
 }

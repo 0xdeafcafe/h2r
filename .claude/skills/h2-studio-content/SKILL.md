@@ -1,6 +1,6 @@
 ---
 name: h2-studio-content
-description: Use when building or changing game content (a model, a weapon such as the Pogo Stick from art/pogo, an object, a sound, a UI screen or a HUD piece) so it is seen before the user plays it. Covers Studio (h2-editor) as the content workbench, its renders (model.render, ui.render, hud.render), check.run, and pair.preview and pair.audio on a running game, and what a content lane's report attaches.
+description: Use when building or changing game content (a model, a weapon such as the Pogo Stick from content/pogo, an object, a sound, a UI screen or a HUD piece) so it is seen before the user plays it. Covers Studio (h2-editor) as the content workbench, its renders (model.render, ui.render, hud.render), check.run, and pair.preview and pair.audio on a running game, and what a content lane's report attaches.
 ---
 
 # Build content through Studio

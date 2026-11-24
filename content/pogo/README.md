@@ -4,8 +4,8 @@ Three looks of one stick, the weapon a Superbounce player carries
 (docs/game/superbounce.md): `unsc`, a stamped olive field spring with a coil
 and a chromed piston; `covenant`, a curved shell over a plasma column and
 cushion; `forerunner`, a six-sided alloy strut over a core of light and three
-rings. Each look is a model source, `<look>.yaml`, and a texture atlas,
-`<look>.png`.
+rings. Each look is a model source, `models/<look>.yaml`, and a texture atlas,
+`models/<look>.png`.
 
 **Original.** The shapes and the paint are ours, drawn for this project.
 Nothing here is taken from a Halo game, and there are no logos, emblems or
@@ -16,9 +16,14 @@ is read from the owner's map when the kit is built, and is not stored.
 
 ## How it is built
 
-`crates/tools/pogo-kit` embeds the six files and builds each look into the
-tags a multiplayer map carries it as (`bitm`, `shad`, `mode`, `hlmt`,
-`weap`). `h2 pogo models --out DIR` writes the three meshes as OBJ files to
+This folder is the `pogo` package (`package.toml`, baked into `h2` by
+`crates/apps/boot/build.rs`). Per look, a `model` item
+(`models/<look>.yaml`, with `models/<look>.png` named as a `data` item) builds
+`bitm`, `shad`, `mode` and `hlmt` (`crates/tools/workspace/src/model.rs`,
+over `crates/tools/pogo-kit`), and a `tag` item (`tags/pogo_<look>.weap.yaml`)
+builds the `weap`. `sounds/` holds the three clips the game plays
+(`sound` items) and `data/poses.yaml` the rider's pose set. A multiplayer map
+gets them when the game reads it (`workspace::PackageRewrite`). `h2 pogo models --out DIR` writes the three meshes as OBJ files to
 look at.
 
 A model source is a list of parts, each one of three primitives on one of

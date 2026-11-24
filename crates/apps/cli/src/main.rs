@@ -246,7 +246,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
   ls                      files on the disc
   pogo kit MAP [--out FILE]  add the pogo stick to a disc multiplayer map and
                           say what it took; pogo models [--out DIR] writes
-                          the three looks as OBJ files (art/pogo/README.md)
+                          the three looks as OBJ files (content/pogo/README.md)
   forge looks [--disc <iso>] [--json]  the models a Forge monitor can look like
   bitmap <map> <tag>      decode a bitmap tag to PNG (--image N --out DIR --mips)
   bitmap --all <map>      bulk decode check of every bitmap in a map

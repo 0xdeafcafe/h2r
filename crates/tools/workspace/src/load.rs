@@ -195,7 +195,12 @@ pub fn check_package(loaded: &Loaded) -> Vec<Finding> {
             },
             None => &[],
         };
-        if let Err(f) = (builder.check)(&Job { item, source }) {
+        let job = Job {
+            item,
+            source,
+            files: &loaded.files,
+        };
+        if let Err(f) = (builder.check)(&job) {
             out.push(found(f.line, format!("{}: {}", builder.name, f.why)));
         }
     }
@@ -264,11 +269,13 @@ fn overlap(a: &Maps, b: &Maps) -> bool {
     }
 }
 
-/// The tag a `tag` or `bitmap` item adds, from the manifest alone.
+/// The tag a `tag`, `bitmap` or `model` item adds (a `model`'s is its
+/// `hlmt`), from the manifest alone.
 pub fn added_tag(item: &content::package::Item) -> Option<tags::repo::TagKey> {
     let path = item.tag.as_deref()?.replace('/', "\\");
     let group = match item.kind {
         Kind::Bitmap => map::FourCC(*b"bitm"),
+        Kind::Model => map::FourCC(*b"hlmt"),
         Kind::Tag => crate::tagitem::group_of_source(item.source.as_deref()?).ok()?,
         _ => return None,
     };
