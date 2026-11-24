@@ -83,7 +83,10 @@ resolved draw packets after their recording has succeeded.
   vertex address is `([[0x509444]+0x4] | 0x80000000) + offset`, and the start
   vertex is `offset >> 4`. The attribute list at `0x0043f7b9` binds 16 bytes
   per vertex: float3 position at `+0` in `v0`, and a `NORMPACKED3` dword at
-  `+12` in `v3` — its format code 16 maps through the table at `0x0035790`
+  `+12` for semantic 3. The declaration builder at `0x0001c3b0` maps semantics to
+  the register slots listed by the vertex shader classification. Colossus’s
+  decal program assigns semantic 3 to `v1`. Native pipelines bind the decoded
+  field at the resolved location (`v1` or `v3`). Its format code 16 maps through the table at `0x0035790`
   to `D3DVSDT 0x16`, an 11:11:10 signed normalised vector the NV2A fetches
   with `w = 1` (the native pass decodes it to three floats, as
   `gfx::repack` and the D3D translation do).
@@ -158,7 +161,7 @@ depth/bias/blend/colour state, and an explicit final combiner that does not
 consume fog, the eye or a bump environment. Border samplers, two-sided
 lighting, polygon stipple, non-zero `ZBIAS`, additional supplied vertex inputs,
 and non-2D or depth-format stage-0 textures are refused. Only unsupplied `v10`
-and `v11` defaults are accepted beyond the position and diffuse streams.
+and `v11` defaults are accepted beyond the position and packed fields. Declaration refusals include the resolved layouts and bound strides.
 
 The handoff supplies the resident stage views directly; there is no custom
 bitmap decoder or map cache. Recording returns one range only after the draw is
