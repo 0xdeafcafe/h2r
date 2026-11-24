@@ -161,6 +161,8 @@ pub struct ObjectPass {
     /// The object program supplies D3D's default final combiner using
     /// the fog and specular uniforms.
     pub default_final: bool,
+    /// Layer 18's engine-driven blend constant, evaluated for each item.
+    pub(crate) blend_color: Option<std::sync::Arc<crate::object_state::LayerBlendColor>>,
     /// The implementation as compiled: its animated constants at clock 0,
     /// its animated targets cleared.
     pub implementation: ResolvedImplementation,
@@ -302,6 +304,7 @@ fn object_pass_with(
     Ok(ObjectPass {
         program,
         default_final,
+        blend_color: None,
         implementation: baseline.clone(),
         animation,
         normalization,

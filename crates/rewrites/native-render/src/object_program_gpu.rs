@@ -1344,7 +1344,7 @@ impl LitObjects {
         let buffer = model.buffers.get(draw.buffer)?;
         let program = model.programs.get_mut(draw.program)?;
         let prt = prt_layout(program, draw)?;
-        let key = (color, depth, buffer.layout_id, draw.state, prt.as_ref().map(|(_, f)| f.clone()).unwrap_or_default());
+        let key = (color, depth, buffer.layout_id, draw.state.pipeline_state(), prt.as_ref().map(|(_, f)| f.clone()).unwrap_or_default());
         let (entry, resident) = match program.pipelines.entry(key) {
             std::collections::hash_map::Entry::Occupied(entry) => (entry.into_mut(), true),
             std::collections::hash_map::Entry::Vacant(entry) => {
@@ -1465,7 +1465,7 @@ impl LitObjects {
             }
             let p = &mut m.programs[d.program];
             let prt_formats = d.prt.as_ref().and_then(|(_, v)| v.as_ref()).map(|v| v.formats.clone()).unwrap_or_default();
-            let (described, pipeline) = p.pipelines.get(&(color_format, depth_format, b.layout_id, d.state, prt_formats))
+            let (described, pipeline) = p.pipelines.get(&(color_format, depth_format, b.layout_id, d.state.pipeline_state(), prt_formats))
                 .cloned().ok_or("object pipeline unavailable")?;
             let textures = match &p.textures {
                 Some(textures) => textures.clone(),
@@ -1701,7 +1701,12 @@ pub fn plan_layer_part<'a>(
         }
         let pixel = object_pixel_uniforms(&pixel_base, &compiled.implementation, &inputs)?;
         let alpha_test = compiled.program.state.as_ref().ok_or("its pass has no state")?.alpha_test;
-        let mut state = object_state::resolve_layer(&compiled.implementation.render_states, entry, alpha_test)?;
+        let imp = &compiled.implementation;
+        let mut states = std::borrow::Cow::Borrowed(&imp.render_states);
+        if let Some(blend) = &compiled.blend_color {
+            states.to_mut().push(blend.resolve(imp, entry, &pass.inputs, item.lighting.as_ref(), p.shader)?);
+        }
+        let mut state = object_state::resolve_layer(&states, entry, alpha_test)?;
         if item.flags.contains(PartFlags::STENCIL_MARK) && !pass.stencil_off {
             object_state::mark(&mut state);
         }
@@ -2034,6 +2039,19 @@ fn instance_states<'a>(
     Ok(std::borrow::Cow::Owned(resolved))
 }
 
+/// The camouflage pass writes its blend colour from the object's engine inputs.
+fn layer_instance_states<'a>(
+    layer: u8, imp: &'a tags::material::ResolvedImplementation, inputs: &tags::material::EngineInputs,
+) -> Result<(std::borrow::Cow<'a, tags::material::ResolvedImplementation>, Option<Arc<object_state::LayerBlendColor>>), String> {
+    if layer != CAMO_LAYER || imp.engine_render_states.is_empty() {
+        return Ok((instance_states(imp, inputs)?, None));
+    }
+    let mut remaining = imp.clone();
+    let blend = object_state::LayerBlendColor::take(&mut remaining)?.map(Arc::new);
+    let resolved = instance_states(&remaining, inputs)?.into_owned();
+    Ok((std::borrow::Cow::Owned(resolved), blend))
+}
+
 /// What [`lit_model`] built: the input to upload, the materials taken,
 /// those refused with the reason, and the implementations (bit `n`) every
 /// taken material has (an object whose records draw another stays on D3D).
@@ -2304,7 +2322,7 @@ pub fn lit_model(
                         }
                         continue;
                     }
-                    let resolved = match instance_states(imp, &lit.material.inputs) {
+                    let (resolved, blend_color) = match layer_instance_states(layer, imp, &lit.material.inputs) {
                         Ok(resolved) => resolved,
                         Err(e) => {
                             out.layer_refused.push((m, layer, format!("pass {k} implementation {n}: {e}")));
@@ -2319,7 +2337,8 @@ pub fn lit_model(
                     );
                     match compiled {
                         Ok(got) => {
-                            for (slot, (program, buffer)) in per.iter_mut().zip(got) {
+                            for (slot, (mut program, buffer)) in per.iter_mut().zip(got) {
+                                program.pass.blend_color = blend_color.clone();
                                 out.input.programs.push(program);
                                 slot[k].implementations[n] = Some((out.input.programs.len() - 1, buffer));
                             }
@@ -3309,12 +3328,15 @@ mod tests {
         camo.pixel_shader = shaders::PixelShaderDef { texture_modes: 1 << 5, ..Default::default() }.to_bytes();
         let pass = |implementations| ResolvedPass { index: 0, pass: map::TagId(0xe000_0001), implementations };
         let shader = map::TagId(0xe000_0020);
+        let mut driven = camo.clone();
+        driven.render_states.push(state(RenderStateType::BlendColor, 0x6d12_3456));
+        driven.engine_render_states.push(tags::shader::ExternalBinding { bytes: [1, 0, 0, 40] });
         let camouflage = tags::material::Material {
             shader,
             template: map::TagId(0xe000_0021),
             inputs: Default::default(),
             layers: vec![
-                ResolvedLayer { lod: 0, layer: usize::from(CAMO_LAYER), passes: vec![pass(vec![camo.clone()])] },
+                ResolvedLayer { lod: 0, layer: usize::from(CAMO_LAYER), passes: vec![pass(vec![driven])] },
                 ResolvedLayer { lod: 0, layer: usize::from(CAMO_MODULATE_LAYER), passes: vec![pass(vec![camo.clone()])] },
                 ResolvedLayer { lod: 0, layer: usize::from(HOLOGRAM_LAYER), passes: vec![pass(vec![camo.clone()])] },
                 ResolvedLayer { lod: 0, layer: 7, passes: vec![pass(vec![camo])] },
@@ -3338,6 +3360,34 @@ mod tests {
         let camo_program = built.input.layers[0].passes[0].implementations[0].unwrap().0;
         assert_eq!(built.input.programs[camo_program].pass.view, [false, true, false, false]);
         assert_eq!(built.input.programs[camo_program].images[1], None, "the copy is bound per encode");
+        // The layer-18 packet uses the object's root value for RGB over
+        // the pass's static alpha. A skipped, unrestored write must
+        // leave the same raw word as the device already holds.
+        let instance = frame_scene::InstanceKey(7);
+        let item = LayerItem {
+            slot: 0, key: ItemKey { shader: shader.0, ..key(4, 0, 0) }, owner: LayerOwner::Object(instance),
+            model: 1, rows: 0..3, lighting: Some(Lighting { words: [0; 30], root: Some(0.5f32.to_bits()) }),
+            flags: PartFlags::NONE, subparts: None, refusal: None, prt: None,
+        };
+        let layer_pass = LayerPass {
+            layer: CAMO_LAYER, stencil_off: false, texaccum: false, items: 0..1, remainder: 0,
+            inputs: frame_scene::LayerInputs { defaults: Some(Default::default()), ..Default::default() },
+        };
+        let plan = |held| {
+            let mut entry = entry();
+            for (field, value) in &mut entry.0 {
+                match field {
+                    RenderStateType::BlendColor => *value = held,
+                    RenderStateType::BlendOp => *value = gfx::state::BlendOp::Add.xbox_value(),
+                    _ => {}
+                }
+            }
+            plan_layer_part(&built.input.layers, Some(0), &|i| Some(&built.input.programs.get(i)?.pass),
+                instance, CAMO_LAYER, &[[1.0; 4]; 3], &layer_pass, &item, &entry)
+        };
+        let draw = &plan(0x6d80_8080).unwrap()[0];
+        assert_eq!(draw.state.blend_color(), wgpu::Color { r: 128.0 / 255.0, g: 128.0 / 255.0, b: 128.0 / 255.0, a: 109.0 / 255.0 });
+        assert!(plan(0x6d00_0000).unwrap_err().contains("BLENDCOLOR would leave"));
         let (programs, buffers) = (model.input.programs.len(), model.input.buffers.len());
         let own_parts = model.input.parts.len();
         assert_eq!(own_parts, 2, "both parts draw the model's own layer 3");
