@@ -114,12 +114,12 @@ impl Replay {
                 if bytes.len() > MAX_MESSAGE_BYTES {
                     return Err(FilmError::Record("item too large".into()));
                 }
-                let item =
-                    Stamped::from_bytes(bytes).map_err(|e| FilmError::Record(e.to_string()))?;
                 let peer = self
                     .peer
                     .as_mut()
                     .ok_or(FilmError::Order("an item before the welcome"))?;
+                let item =
+                    Stamped::from_bytes(bytes).map_err(|e| FilmError::Record(e.to_string()))?;
                 // The watermarks were not recorded: each is a gap in `n`.
                 while peer.next_n() < item.n {
                     peer.receive(Stamped {

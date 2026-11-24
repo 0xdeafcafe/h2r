@@ -20,4 +20,3 @@ widgets:
     size: [235, 154]
   legend:
     component: legend
-    prompts: [[A, "SELECT"], [B, "BACK"]]

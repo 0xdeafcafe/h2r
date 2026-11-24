@@ -340,7 +340,7 @@ Reading and converting Halo 1 data:
 - [game-view.md](editor/game-view.md): design for the game's picture inside Studio: the frame ring and stream (`render.picture`), editor mode and Studio's own game, attached mode, input and cameras
 - [studio-redesign.md](editor/studio-redesign.md): design for Studio redone as one window over the tag tree of every map, where opening a tag opens the editor for its kind; packages as the one format for all added content (manifest, item kinds, load order, the game's single rewrite, Live sharing, signing and credit) with each current content path mapped onto one; the animation editor and the sound editor; where the other editors dock; and the build slices
 - [playtest.md](editor/playtest.md): design for headless bot matches on the map being edited: static checks, the spatial trace, heatmaps, spawn, flow, sightline, item and stuck-spot overlays, seeds, before and after, and what a fresh map needs
-- Notes: [2026-11-23-realtime-survey.md](editor/notes/2026-11-23-realtime-survey.md) (what a live edit of each tag group does today and what realtime needs, sized), [tag-field-names.md](editor/notes/tag-field-names.md) (the sources of tag field names, their links and licences)
+- Notes: [2026-11-23-realtime-survey.md](editor/notes/2026-11-23-realtime-survey.md) (what a live edit of each tag group does today and what realtime needs, sized), [game-view.md](editor/notes/game-view.md) (the game view's cost and latency, not yet measured), [tag-field-names.md](editor/notes/tag-field-names.md) (the sources of tag field names, their links and licences)
 
 ## Working on the repository (`dev/`)
 

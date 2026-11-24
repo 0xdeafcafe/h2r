@@ -50,7 +50,7 @@ fn display_frames_run_while_nothing_is_queued_and_after_the_owned_present() {
     let (gpu, owned, target) = device(true);
     let log = Arc::new(Mutex::new(Log::default()));
     let mut gpu = gpu.with_display_rate(Box::new(Frames { log: Arc::clone(&log), surface: 0, frames: 3 }));
-    gpu.clear(target, None, clear(9)).unwrap();
+    gpu.clear(target, None, clear(1)).unwrap();
     gpu.present(target, 0).unwrap();
     gpu.finish().unwrap();
     wait_for(&log, |l| l.idle == 3);
