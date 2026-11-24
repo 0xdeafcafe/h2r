@@ -2356,6 +2356,7 @@ No source derived from a leaked build is used.
 
 ## Related
 
+- [game-types-without-carriers.md](game-types-without-carriers.md): the design that removes the `carrier` line
 - [firefight.md](firefight.md): the template for a host-side director over engine entries
 - [forge-design.md](forge-design.md), [forge-features.md](forge-features.md): `SimExt`, `ForgeExt`, the logic graph, edit classes and the edit log
 - [game-options.md](game-options.md): the variant record, the `hx` block and its Live transport

@@ -12,8 +12,8 @@ a scenario the map editor with its viewport. Every piece of content we
 add to the game is a **package**: a folder with a manifest that the game
 build, the game's boot, Studio and Live all read the same way. Halo 1
 maps, the Pogo Stick,
-our menu screens, the HUD kit's HUDs, Firefight, Forge, the Map Pack's
-rotations and the rules modes stop being separate injection paths in
+our menu screens, the HUD kit's HUDs, the Map Pack's rotations and the
+game types (Firefight and Siege among them) stop being separate injection paths in
 `boot` and become packages in one load order. The rules that must hold:
 a package holds our own content and patches, never bytes from a disc;
 every action in the window is a method of the agent API
@@ -200,7 +200,6 @@ Panels a document brings (Scene, Timeline) dock where the layout has
 them and go when another document is in front; nothing else moves.
 
 **A scenario open.**
-**Map.**
 
 ```
 +----------------+---------------------------------------------------+-----------------+
@@ -214,13 +213,13 @@ them and go when another document is in front; nothing else moves.
 +----------------+---------------------------------------------------+-----------------+
 ```
 
-**Scripts.** Scripts are written in VS Code or Zed through the extensions
-([rules-editors.md](rules-editors.md)). Studio shows a script read-only
-with its problems, its options as a form, its check and simulation
-reports (`rules::workbench`), **Open in editor** (`app/external.rs`) and
-**Reload into game** (`rules.reload`). The text editing of
-`app/rules_edit.rs` and `ui/game_script.rs` (completion, rename, the
-formatter) is deleted; the language server is its one home.
+**Scripts.** A `.rules` file opens in the built script editor
+(`app/rules_edit.rs`, `ui/game_script.rs`: completion, rename, the
+formatter, problems), with its options as a form, its check and
+simulation reports (`rules::workbench`) and **Reload into game**
+(`rules.reload`). The same file is edited in VS Code or Zed through the
+extensions ([rules-editors.md](rules-editors.md)); **Open in editor**
+(`app/external.rs`) goes there and Studio follows the file on disk.
 
 ### Navigation
 
@@ -266,7 +265,6 @@ document id.
   for a `.map`, `active.toml`: the edit target and **Export map...**.
 - The floating Sound, Voices, Image and Map Pack windows: panes of the
   sound, bitmap and package documents.
-- The in-window script text editor (above).
 - `.h2tag` bundles as a way to move content between maps
   (`app/tag_bundle.rs`): a bundle copies a map's bytes, so it cannot go
   in a package. Moving a tag is **Copy into**, which writes text.
@@ -278,7 +276,7 @@ document id.
 A package is a folder with `package.toml` and the files it names. It is
 the unit of authoring, building, enabling, sharing and credit.
 
-- Ours live in Git under `packages/<id>/` and are baked into `h2`
+- Ours live in Git under `content/<id>/` and are baked into `h2`
   (`include_dir`-style, as `pogo_kit::source` and
   `ui_kit::inject::ScreensRewrite::baked` bake theirs).
 - The user's live under `<data>/packages/<id>/`; so do packages
@@ -287,11 +285,12 @@ the unit of authoring, building, enabling, sharing and credit.
   into tags is a **builder**: a Rust function in a closed registry
   (`workspace::builders`, new). A package names builders; it cannot add
   one. Behaviour stays where it is: game features in Rust
-  (`pogo_ride.rs`, the Firefight runtime) and `.rules` scripts in the
-  rules VM. A package says which features it needs.
+  (`pogo_ride.rs`, Forge) and `.rules` scripts in the rules VM. A
+  package says which features it needs. A community package may use
+  the data builders only; the `kit` builders are for ours.
 
 ```toml
-# packages/pogo/package.toml
+# content/pogo/package.toml
 [package]
 format = 1
 id = "pogo"                        # lowercase letters, digits, '-'; unique in a set
@@ -348,8 +347,8 @@ maps = "multiplayer"
 | `map` | `map.toml`: `mode` (`fresh`, `onto`), `base`, `scenario`, the items it takes | a map package under `<data>/maps/` | sim |
 | `map-patch` | a PPF, IPS or BPS file with the base's name and SHA-256 | a map package with that layer | sim |
 | `convert` | a recipe: a converter name and its settings; the input is the user's own disc | map packages and campaign files | sim |
-| `data` | a file a named game feature reads (the Pogo's pose set, Firefight's wave sets) | handed to the feature at boot | per feature |
-| `kit` | a named code builder's settings (`firefight`, `forge-slots`, `campaign-cards`, `glyphs`) | what that builder adds | per builder |
+| `data` | a file a named game feature reads (the Pogo's pose set) | handed to the feature at boot | per feature |
+| `kit` | a named code builder's settings (`ai-ground`, `campaign-cards`, `glyphs`); first-party packages only | what that builder adds | per builder |
 
 **Scope** is the builder's, not the author's: `sim` items change what the
 simulation reads, so every peer of a networked game needs them; `client`
@@ -430,18 +429,31 @@ as its unit: a project is a `map` item, a `ContentKit` is a builder, and
 
 | Package | Items | Replaces |
 |---|---|---|
-| `core` | `rules` (the seven engine ports), `strings`, `kit: glyphs` (icon fonts, the gear) | `rules::builtin`'s engine constants, `icons::font_rewrite`, `bot_mark::GearRewrite` |
+| `core` | `rules` (the seven retail types), `strings`, `kit: glyphs` (icon fonts, the gear), `kit: ai-ground` | `rules::builtin`'s engine constants, `icons::font_rewrite`, `bot_mark::GearRewrite`, `firefight_kit::build_package`'s callers |
 | `ui` | `screens`, `screen-edits`, `bitmap` | `assets/ui/`, `ScreensRewrite` |
-| `modes` | `rules`, `variant` (the community modes), `playlist` | the rest of `rules/src/builtin/`, `community_variants`' table of scripts |
+| `modes` | `rules` (the community modes, Siege, Firefight's director with its wave sets), `variant`, `playlist`, `hud`, `sound` (start lines) | the rest of `rules/src/builtin/`, `community_variants`' table of scripts, `crates/formats/firefight`'s built-in sets, `huds/firefight.rs` |
 | `superbounce` | `rules`, `hud`, `sound` (the announcer clips), `screens` | `hud-kit-core/src/huds/superbounce*.rs`, `art/announcer/` |
 | `pogo` | `model`, `bitmap`, `tag`, `sound`, `data` (the pose set `pogo_pose.rs` reads) | `art/pogo/`, `pogo_kit::{kit, inject, rewrite}`; `pogo_kit::mesh` becomes the `model` builder |
-| `firefight` | `kit: firefight` on the maps that take one, `data` (the wave sets), `hud`, `screens`, `rules` | `firefight_kit::build_package` callers, `huds/firefight.rs` |
-| `forge` | `kit: forge-slots`, `screens`, `hud`, the object palette as data | `forge_build::kit`, the Forge screens' place in `assets/ui/` |
 | `halo1` | `convert` (converter `halo1`: every multiplayer map in both sandboxes, the campaign), `kit: campaign-cards`, `screens` | `h1_import.rs`'s entry points, `CardRewrite` |
 | `map-pack` | `convert` (converter `map-pack`: the nine maps from the user's Map Pack disc), `playlist` | `mappack_cmd.rs`'s automatic install, the Map Pack rotations in `hopper/defaults.rs` |
 | `stage` | `map` (`fresh`), `model`, `bitmap` | `art/stage/project.toml` ([content-stage.md](content-stage.md)) |
 | a community mod pack | `map-patch` per map, `[credit]` | a Live mod pack's member manifests ([maps.md](../game/maps.md), "The mod repository") |
 | a test map | `map` (`onto`) with `edits` | `scenario_edit::recipe` through `boot/src/test_maps_recipes.rs` ([test-maps.md](../game/test-maps.md)) |
+
+**Game types are scripts.** Firefight and Siege are `rules` items like
+Slayer: a script that awards points and declares its `type`, with no
+retail game type under it
+([game-types-without-carriers.md](../game/game-types-without-carriers.md)).
+Firefight has no kit of its own. What it needs from a multiplayer map
+(sectors, zones, squad slots, characters;
+[firefight.md](../game/firefight.md), "The kit") is the `ai-ground`
+builder in `core`, there for any script that asks for AI.
+
+**Forge is not a package.** It is an engine feature
+(`crates/extensions/forge`, [forge-design.md](../game/forge-design.md)):
+its documents, materialiser and slot reservation stay code. Its screens
+are data like every screen and live in `ui`; a map variant a player
+makes in Forge is shared as a Forge document, as today.
 
 A `convert` item holds the recipe only: which maps, which sandbox, which
 base. The Halo 1 or Map Pack bytes come from the user's disc at prepare
@@ -465,7 +477,8 @@ the author's key (the `MapPublished` flow of `live_proto::maps`).
 - **Signing.** The server verifies the signature and every hash in the
   lock on upload. A client verifies both again on install. Baked
   packages are trusted as part of the binary. A local, unsigned package
-  loads on its own machine.
+  loads in local games only: a Live or System Link session is refused
+  while the set holds one with a `sim` item, naming the package.
 - **Joining.** A session carries the content set's hash and its
   `PackageId`s beside `map_id`. A joiner missing one downloads it,
   rebuilds its cache and joins; one it cannot have (blocked, or its base
@@ -495,8 +508,8 @@ A package opens as a document; the browser's Packages root is the set:
 | [x] modes      +---------------------------------------------------+ tag    ...\pogo_|
 | [x] superbounce| Items (14)                    kind     maps       |        unsc     |
 | [x] pogo    *  |  models/unsc.yaml             model    multiplayer| maps   multipl. |
-| [x] firefight  |  models/covenant.yaml         model    multiplayer| scope  sim      |
-| [ ] halo1  (no |  tags/pogo_unsc.weap.yaml     tag      multiplayer| builds mode coll|
+| [x] halo1      |  models/covenant.yaml         model    multiplayer| scope  sim      |
+| [ ] map-pack(no|  tags/pogo_unsc.weap.yaml     tag      multiplayer| builds mode coll|
 |      disc)     |  sounds/spring.wav            sound    multiplayer|        phmo hlmt|
 | -- mine --     |  ...                                              |                 |
 | [x] my-lockout | Credit: Alexander Forbes-Reed                     | [Open] [Remove] |
@@ -762,6 +775,7 @@ each. Every test is headless on invented data. `W`, `LE`, `GV` and
 [playtest.md](playtest.md); `M1`, `A2` to `A4`, `F1` and `X2` are
 [rich-editors.md](rich-editors.md)'s. PK2, PK3 and PK7 are W2, W4 and W5
 cut to the package model; PK4, PK5 and PK9 to PK12 are W8's migrations.
+Rows are in build order.
 
 | # | Slice | Size | Needs | Accepted when |
 |---|---|---|---|---|
@@ -771,17 +785,18 @@ cut to the package model; PK4, PK5 and PK9 to PK12 are W8's migrations.
 | PK2 | **Builders and the build**: `crates/tools/workspace` with the registry, `Layered`, `build` on a `TagSet`, conflicts, the cache key, the `tag`, `edits` and `bitmap` builders, `h2 package check` and `build` | M | PK1 | on an invented map: two packages build in order; the same tag path twice stops naming both; a stale `was` stops with its line; `onto` output differs from its base only in changed tags |
 | SH2 | **The browser**: the Tags root over `TagRepo` by path with variants, the Packages and Live roots, `asset.list`, `asset.thumb`, `asset.copy`, Kind, Map, search, badges; the Maps list, Tags tab list and per-tool lists removed | M | SH1, PK1, W3 | an invented tree of two maps and one package lists one row for a shared tag and two variants for one that differs; the Map picker gives one scenario's closure; each word of a query must match; a tag an edit line touches carries the package's badge; **Copy into** writes a `tag` item with no bytes of the source |
 | PK3 | **The game's side**: `PackageRewrite` as the one rewrite, the baked set, `<data>/packages`, features, the cache, the game's `packages.list` | M | PK2 | the rewrite's bytes equal `workspace::build`'s; a second read is a cache hit; a package off in `set.toml` or with its feature off adds nothing; a map that holds the content is left alone |
-| PK4 | **Pogo as a package**: `packages/pogo/`, the `model` and `sound` builders, the weapon as a `tag` item; `PogoRewrite` deleted | M | PK3 | on `pogo_kit::fixture`'s map the package builds the tags `pogo_kit::inject::add_pogo` built, compared group by group |
-| PK5 | **Screens as a package**: `packages/ui/`, the `screens` and `screen-edits` builders over `ui_kit::inject::tag::add_screens`; `ScreensRewrite` deleted; `ui.save` writes into the edit target | M | PK3 | `ui_kit::inject::tests` pass through the package; a screen saved from the window is a changed file in the package and nowhere else |
+| PK11 | **HUDs as data**: the `hud` builder, HUD kit YAML for the superbounce and Firefight HUDs; `hud-kit-core/src/huds/*.rs` deleted | M | PK3 | each YAML compiles to the records its Rust definition compiled to (`hud-kit-core/src/tests.rs`' fixtures) |
+| PK4 | **Pogo as a package**: `content/pogo/`, the `model` and `sound` builders, the weapon as a `tag` item; `PogoRewrite` deleted | M | PK3 | on `pogo_kit::fixture`'s map the package builds the tags `pogo_kit::inject::add_pogo` built, compared group by group |
+| PK5 | **Screens as a package**: `content/ui/`, the `screens` and `screen-edits` builders over `ui_kit::inject::tag::add_screens`; `ScreensRewrite` deleted; `ui.save` writes into the edit target | M | PK3 | `ui_kit::inject::tests` pass through the package; a screen saved from the window is a changed file in the package and nowhere else |
 | PK6 | **The package document and `package.*`**: list, read, new, set, items, target, enable, order, check, build, play | M | PK2, SH1 | every method's example runs; a reorder that breaks `requires` is refused; `package.check` names a cache map, a bundle and a dataset folder put in an invented package |
 | PK7 | **Edits go to the edit target**: the journal as edit lines, the first-edit picker, **Export map...**; the package form and `active.toml` deleted | M | PK6 | a field set in the window and by `tag.set` write the same line; undo across a save removes it; with no target the API answers `NO_TARGET` |
 | SH3 | **Problems**: one panel and `problems.list` over `check.run`, `ui.check`, `hud.check`, `package.check` and build errors, each row opening its asset | S | SH1 | findings from two invented sources list together; opening a row focuses the document and the field |
 | SH4 | **The preview switch**: `preview.target`, **Preview in game** by kind over `pair.preview` | S | SH1 | on the fake game each kind sends the calls its `what` lists; a paused game refuses with the built message |
-| PK8 | **Rules, variants and playlists as items**: `packages/core/` and `packages/modes/`; the registry from the set; `community_variants` and the default hopper read it | M | PK3 | `crates/formats/rules/tests/modes.rs` pass with scripts from the set; a package off removes its list entries; the hopper built from fragments equals `hopper/defaults.rs`'s |
+| GT0 to GT7 | **Game types without carriers** ([game-types-without-carriers.md](../game/game-types-without-carriers.md)) | S and M | GT6 needs PK11 | as there |
+| PK8 | **Rules, variants and playlists as items**: `content/core/` and `content/modes/`; the registry from the set; `community_variants` and the default hopper read it | M | PK3 | `crates/formats/rules/tests/modes.rs` pass with scripts from the set; a package off removes its list entries; the hopper built from fragments equals `hopper/defaults.rs`'s |
 | PK9 | **Whole maps**: `map` and `map-patch` items to map packages at prepare; the stage and the test-map recipes as packages | M | PK2 | an invented `fresh` and an invented `onto` item build; the `MapId` of a `map-patch` item equals the id of the map package the importer writes for the same patch |
-| PK10 | **Conversions**: `convert` items, `h2 package prepare`, stamps; `packages/halo1/` and `packages/map-pack/` over the existing converters | M | PK9 | with an invented converter: no disc leaves the package off with its reason; a stale stamp reruns one map; an interrupted run resumes |
-| PK11 | **HUDs as data**: the `hud` builder, HUD kit YAML for the superbounce and Firefight HUDs | M | PK3 | each YAML compiles to the records its Rust definition compiled to (`hud-kit-core/src/tests.rs`' fixtures) |
-| PK12 | **Kits**: `kit: firefight`, `forge-slots`, `campaign-cards`, `glyphs`; boot's chain is `PackageRewrite` alone | M | PK9 | per kit, the map through the package equals the one its own caller made; `boot/src/lib.rs` builds no other rewrite |
+| PK10 | **Conversions**: `convert` items, `h2 package prepare`, stamps; `content/halo1/` and `content/map-pack/` over the existing converters | M | PK9 | with an invented converter: no disc leaves the package off with its reason; a stale stamp reruns one map; an interrupted run resumes |
+| PK12 | **Kits**: `kit: ai-ground`, `campaign-cards`, `glyphs`; Firefight's director and wave sets as `rules` items of `modes`; boot's chain is `PackageRewrite` alone | M | PK9 | per kit, the map through the package equals the one its own caller made; `boot/src/lib.rs` builds no other rewrite |
 | PK13 | **Live, server**: `/v1/packages`, the signed manifest and lock, the upload checks, credit, the model flag, both homes | M | PK1 | the parity suite: a bad signature, a lock hash that does not match, a retail hash and a model item without the flag are each refused; an admin's credit outranks the manifest's |
 | PK14 | **Live, game and Studio**: install, the content set in a session, the join check, the Mods screens, `package.publish` and `package.install`; `h2 live mods import` writes packages | M | PK13, PK3 | on the fake server: a joiner missing one package fetches it and joins; a blocked one fails before the map load with the reason; an imported pack holds patches and credit only |
 | M1 | **Model poses** (rich-editors) | M | nothing | as there |
@@ -797,10 +812,10 @@ cut to the package model; PK4, PK5 and PK9 to PK12 are W8's migrations.
 | SN3 | **Waveform edits**: `crates/tools/sound-edit`, the edit list, `sound.edit`, `sound.render`, permutations as files | M | SN1, SN2 | each op on an invented wave gives the expected samples; the source file's bytes never change; reorder and undo give the earlier render |
 | SN4 | **Voices into packages**: `voice.commit` and cloned lines to the edit target | S | PK7 | a committed line is a `sound` item; a dataset or weights path is refused |
 | SN5 | **Sound in the game**: the game's `audio.play` (**E first**), `pair.preview {what: "sound"}` | S | SN2, SH4 | on the fake game the preview plays, samples `audio.voices` and returns both measures |
-| SH5 | **Old tools removed**: the tool tabs, floating windows, the script text editor; [editor.md](editor.md) and [editor-guide.md](editor-guide.md) describe the tree and the editors | M | SH2, PK7, SN1 | `headless.rs`' screenshots list regenerates from documents; no `ToolKind` match is left in `ui.rs` |
+| SH5 | **Old tools removed**: the tool tabs and floating windows; the script editor as the `.rules` document; [editor.md](editor.md) and [editor-guide.md](editor-guide.md) describe the tree and the editors | M | SH2, PK7, SN1 | `headless.rs`' screenshots list regenerates from documents; no `ToolKind` match is left in `ui.rs` |
 
-SH1, PK1, W3, AN2 and M1 need nothing and start together. PK2 follows
-PK1; SH2 follows SH1, PK1 and W3. The other editors' slices keep their own pages' order and
+SH1, W3, M1, PK2, GT0 and GT1 need nothing unbuilt and run together; SH2 follows SH1, PK1 and W3; PK3 follows PK2, and PK11,
+PK4 and PK5 follow it side by side. The other editors' slices keep their own pages' order and
 need only SH1 to open as documents.
 
 ## Evidence
@@ -809,7 +824,7 @@ need only SH1 to open as documents.
 - The converter's `jmad` writer emits codecs 1 and 3 and the retail
   decoder reads its output (**Test**, `crates/tools/h1-assets/src/models/tests.rs`;
   [models.md](../halo1/models.md)).
-- Converted Halo 1 maps and Firefight kits are already map packages the
+- Converted Halo 1 maps and Firefight's per-map builds are already map packages the
   game loads by id (**Code**, `crates/apps/cli/src/h1_import.rs`,
   `crates/tools/firefight-kit/src/lib.rs`).
 - That one rewrite over a pinned map gives the game what the four
@@ -838,5 +853,6 @@ need only SH1 to open as documents.
 - [tag-workspace.md](tag-workspace.md): the tree, layers, edit files and the build this stands on
 - [live-editors.md](live-editors.md), [rich-editors.md](rich-editors.md), [game-view.md](game-view.md), [playtest.md](playtest.md), [content-stage.md](content-stage.md): the editors and views that open as documents
 - [editor.md](editor.md), [agent-api.md](agent-api.md): the window and the API as built
+- [game-types-without-carriers.md](../game/game-types-without-carriers.md): game types as scripts with a `type`, and their slices
 - [maps.md](../game/maps.md): map packages, `MapId`, Live's store and credit
 - [animation.md](../formats/animation.md), [sounds.md](../halo1/sounds.md): the formats the two new editors write
