@@ -146,6 +146,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 None,
                 view_layers,
                 batch.clip_header,
+                batch.writes.iter().map(|w| (w.addr, w.bytes.as_slice())),
             )
             .map_err(|_| Keep::Unsupported("device error applying light tail"))?
         {
