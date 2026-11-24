@@ -161,7 +161,7 @@ preview is a query and not a guess.
 | Colours and gradients (colour fields, colour functions, colour tables) | the field panel | none | the picker, gradient strips, a table editor | rich-editors C1 to C3; LE6 |
 | Curves (function data) | the field panel | none | the curve editor | rich-editors F1, F2 |
 | Effects, particles, contrails, lights, lens flares, decals (`effe`, `prt3`, `ligh`, `lens`, `deca` and their kin) | the field panel | none | grouped editors on the curves and colours; the game view as preview | LE7 |
-| Sky and fog (`sky `, `fog `) | the field panel | the viewport uses the sky's colour, sun and fog | a tag view with the dome and the fog curve | LE8 |
+| Sky and fog (`sky `, `fog `) | the field panel | the viewport draws the sky's sun and fog from the tag document, so an edit shows on the next frame | a tag view with the dome and the fog curve | LE8 |
 | Animations (`jmad`) | model pose, timeline and curve edits, save to an animation package | live metadata writes flush the decoded clips. New raw streams take effect on map load | retarget, import and paired-game preview | rich-editors M1, [studio-redesign.md](studio-redesign.md) AN1 to AN6 |
 | Sounds (`snd!`, `lsnd`, `ugh!`) | audition: waveform, play, scrub | the waveform | import, distances, waveform edits, drawing the mouth curve | rich-editors A2 to A5; workspace W7 |
 | HUD (`nhdt`, HUD kit) | the HUD tool | its preview | what "Not modelled" lists | hud-editor |
@@ -189,6 +189,19 @@ preview is a query and not a guess.
   `host`) beside `effect`.
 - Each editor's own namespace is on its page (`shader.*`, `function.*`,
   `sound.*`, `hud.*`, `mesh.*`, `model.*`).
+
+## Sky and fog in the viewport
+
+`ui::sky::live_atmosphere` reads the first of the open scenario's skies
+that decodes from the tag document, edits applied, with
+`scenario_edit::scene::atmosphere_in_doc`: the sun is the first light
+with parameters, the fog the first `fog_a` element. The viewport calls
+`ui::sky::apply` whenever the document's revision moves, and
+`Viewport::set_atmosphere` swaps the sun and fog words the scene shader
+draws with; nothing is uploaded again. A sky that does not decode leaves
+the scene's own atmosphere. The own game reads the same bytes through
+the Field route. The native renderer's world lighting is not changed by
+this path.
 
 ## Rules and limits
 

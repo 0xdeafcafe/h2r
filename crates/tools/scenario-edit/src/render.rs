@@ -2083,6 +2083,20 @@ impl Viewport {
         self.target.as_ref().map(|t| &t.ui_view)
     }
 
+    /// Draw with another sun and fog than the scene was built with: a
+    /// `sky ` edited after the map opened (its sun direction, colour or
+    /// fog). Nothing is re-uploaded; the next frame reads the new words.
+    pub fn set_atmosphere(&mut self, atmosphere: &Atmosphere) {
+        if self.scene.is_some() {
+            self.atmosphere = AtmosphereUniforms::of(atmosphere);
+        }
+    }
+
+    /// The sun and fog words the scene shader draws with.
+    pub fn atmosphere(&self) -> AtmosphereUniforms {
+        self.atmosphere
+    }
+
     /// Whether the scene uploaded has a sky model to draw.
     pub fn has_sky(&self) -> bool {
         self.scene.as_ref().is_some_and(|s| s.sky.is_some())

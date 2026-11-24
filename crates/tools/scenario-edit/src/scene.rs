@@ -1366,6 +1366,60 @@ pub fn skies_in(bytes: &[u8], address: u32) -> Vec<TagId> {
         .unwrap_or_default()
 }
 
+/// What a decoded `sky ` says about light and fog: its first light with
+/// parameters is the sun, its first `fog_a` element ([`fog_of`]) the fog.
+/// `name` is the tag's path; the atmosphere keeps its file name.
+pub fn atmosphere_of(sky: &h1_assets::sky::h2::Sky, name: &str) -> Atmosphere {
+    let sun = sky.lights.iter().find_map(|l| {
+        let p = l.params.as_ref()?;
+        Some(Sun {
+            direction: sun_direction(l.yaw, l.pitch),
+            color: p.color,
+            power: p.power,
+        })
+    });
+    let fog = sky
+        .gradients_a
+        .first()
+        .and_then(|g| fog_of(g.color, g.fraction, g.tail[0], g.tail[1]));
+    Atmosphere {
+        sky: Some(name.rsplit(['\\', '/']).next().unwrap_or(name).to_owned()),
+        sun,
+        fog,
+        fallback_rgb: Some(sky.fallback_rgb),
+    }
+}
+
+/// The atmosphere of the first of a scenario payload's skies that
+/// decodes, read from a tag document instead of the map file, so a sky
+/// edited in the document is seen as edited. `sky` gives a tag's path,
+/// payload address and payload bytes; `read` gives `len` bytes at a
+/// virtual address of a tag's region (a block element can sit outside
+/// the payload). `None` when no sky decodes: the caller keeps the
+/// scene's own atmosphere.
+pub fn atmosphere_in_doc(
+    scenario: &[u8],
+    scenario_address: u32,
+    sky: &mut dyn FnMut(TagId) -> Option<(String, u32, Vec<u8>)>,
+    read: &mut dyn FnMut(TagId, u32, u32) -> Option<Vec<u8>>,
+) -> Option<Atmosphere> {
+    for id in skies_in(scenario, scenario_address) {
+        if id == TagId::NULL {
+            continue;
+        }
+        let Some((name, address, payload)) = sky(id) else {
+            continue;
+        };
+        let decoded = h1_assets::sky::h2::Sky::decode(&payload, address, &mut |at, n| {
+            read(id, at, n).ok_or_else(|| h1_assets::sky::Error::Invalid("sky block unread".into()))
+        });
+        if let Ok(decoded) = decoded {
+            return Some(atmosphere_of(&decoded, &name));
+        }
+    }
+    None
+}
+
 /// The open map's scenario's skies ([`skies_in`]).
 pub fn scenario_skies<R: Read + Seek>(map: &mut Map<R>) -> Vec<TagId> {
     let Some((id, address)) = map
@@ -1532,24 +1586,7 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
                 .ok()
                 .and_then(|t| t.name.clone())
                 .unwrap_or_default();
-            let sun = sky.lights.iter().find_map(|l| {
-                let p = l.params.as_ref()?;
-                Some(Sun {
-                    direction: sun_direction(l.yaw, l.pitch),
-                    color: p.color,
-                    power: p.power,
-                })
-            });
-            let fog = sky
-                .gradients_a
-                .first()
-                .and_then(|g| fog_of(g.color, g.fraction, g.tail[0], g.tail[1]));
-            self.scene.atmosphere = Atmosphere {
-                sky: Some(name.rsplit(['\\', '/']).next().unwrap_or(&name).to_owned()),
-                sun,
-                fog,
-                fallback_rgb: Some(sky.fallback_rgb),
-            };
+            self.scene.atmosphere = atmosphere_of(&sky, &name);
             return;
         }
     }
@@ -2509,6 +2546,88 @@ mod tests {
 
     fn close3(a: [f32; 3], b: [f32; 3]) -> bool {
         a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4)
+    }
+
+    /// An invented sky payload at `base`: one light (`yaw`, `pitch`, white
+    /// parameters) and one fog gradient, the elements after the root.
+    fn invented_sky(base: u32, yaw: f32, pitch: f32, fog_density: f32) -> Vec<u8> {
+        use crate::fixture::{put, putf};
+        use h1_assets::sky::h2::{GRADIENT_LEN, LIGHT_LEN, PARAMS_LEN, ROOT_LEN, layout, light, params};
+        let light_at = ROOT_LEN;
+        let params_at = light_at + LIGHT_LEN;
+        let gradient_at = params_at + PARAMS_LEN;
+        let mut b = vec![0u8; gradient_at + GRADIENT_LEN];
+        put(&mut b, layout::LIGHTS, 1);
+        put(&mut b, layout::LIGHTS + 4, base + light_at as u32);
+        put(&mut b, layout::GRADIENT_A, 1);
+        put(&mut b, layout::GRADIENT_A + 4, base + gradient_at as u32);
+        putf(&mut b, layout::MODEL_SCALE, 1.0);
+        putf(&mut b, light_at + light::YAW, yaw);
+        putf(&mut b, light_at + light::PITCH, pitch);
+        put(&mut b, light_at + light::PARAMS, 1);
+        put(&mut b, light_at + light::PARAMS + 4, base + params_at as u32);
+        for i in 0..3 {
+            putf(&mut b, params_at + params::COLOR + 4 * i, 1.0);
+        }
+        putf(&mut b, params_at + params::POWER, 2.0);
+        for i in 0..3 {
+            putf(&mut b, gradient_at + 4 * i, 0.5);
+        }
+        putf(&mut b, gradient_at + 0xc, fog_density);
+        putf(&mut b, gradient_at + 0x10, 5.0);
+        putf(&mut b, gradient_at + 0x14, 105.0);
+        b
+    }
+
+    /// A sky edited in the tag document moves the sun and the fog the
+    /// viewport draws with: the sun direction and fog density read back
+    /// from the edited bytes, not the map file's.
+    #[test]
+    fn an_edited_sky_moves_the_sun_and_the_fog() {
+        use crate::fixture::put;
+        let (scnr_at, sky_at) = (0x1000u32, 0x2000u32);
+        let sky_id = TagId(0xe100_0001);
+        let mut scnr = vec![0u8; 0x18];
+        put(&mut scnr, SCENARIO_SKIES, 1);
+        put(&mut scnr, SCENARIO_SKIES + 4, scnr_at + 0x10);
+        put(&mut scnr, 0x14, sky_id.0);
+        let read_atmosphere = |yaw: f32, density: f32| {
+            let payload = invented_sky(sky_at, yaw, std::f32::consts::FRAC_PI_2 * 0.5, density);
+            let whole = payload.clone();
+            atmosphere_in_doc(
+                &scnr,
+                scnr_at,
+                &mut |id| (id == sky_id).then(|| ("sky\\sky_day".to_owned(), sky_at, payload.clone())),
+                &mut |id, at, n| {
+                    let start = at.checked_sub(sky_at)? as usize;
+                    (id == sky_id).then(|| whole.get(start..start + n as usize).map(<[u8]>::to_vec))?
+                },
+            )
+            .expect("the sky decodes")
+        };
+        let before = read_atmosphere(0.0, 0.25);
+        let after = read_atmosphere(std::f32::consts::FRAC_PI_2, 0.75);
+        assert_eq!(before.sky.as_deref(), Some("sky_day"));
+        let (b, a) = (before.sun.unwrap(), after.sun.unwrap());
+        assert!(close3(b.direction, sun_direction(0.0, std::f32::consts::FRAC_PI_4)));
+        assert!(close3(a.direction, sun_direction(std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_4)));
+        assert!(!close3(b.direction, a.direction));
+        assert_eq!((before.fog.unwrap().density, after.fog.unwrap().density), (0.25, 0.75));
+        // The viewport's words follow: the sun's xy turns from +x to +y.
+        let (ub, ua) = (
+            crate::render::AtmosphereUniforms::of(&before),
+            crate::render::AtmosphereUniforms::of(&after),
+        );
+        assert!(ub.sun[0] > 0.5 && ub.sun[1].abs() < 1e-4, "{:?}", ub.sun);
+        assert!(ua.sun[1] > 0.5 && ua.sun[0].abs() < 1e-4, "{:?}", ua.sun);
+        assert_eq!(ua.fog_color[3], 0.75);
+    }
+
+    /// No sky that decodes: the caller keeps the scene's atmosphere.
+    #[test]
+    fn a_scenario_with_no_readable_sky_gives_no_atmosphere() {
+        let scnr = vec![0u8; 0x18];
+        assert_eq!(atmosphere_in_doc(&scnr, 0x1000, &mut |_| None, &mut |_, _, _| None), None);
     }
 
     #[test]

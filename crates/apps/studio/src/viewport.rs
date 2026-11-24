@@ -129,6 +129,8 @@ pub struct ViewportView {
     vp: Option<Viewport>,
     texture: Option<ExternalTextureId>,
     world_rev: Option<u64>,
+    /// The tag document's revision the sun and fog last read.
+    sky_rev: Option<u64>,
     markers_rev: Option<u64>,
     /// The session's native models last uploaded: a placement of a tag
     /// first placed after the map opened gives the session new ones.
@@ -178,6 +180,7 @@ impl ViewportView {
             vp: None,
             texture: None,
             world_rev: None,
+            sky_rev: None,
             markers_rev: None,
             modeling_rev: None,
             native_models: None,
@@ -247,6 +250,13 @@ impl ViewportView {
             let native = session.native_world().map_or(&[][..], |n| n.as_slice());
             vp.set_native(gpu.device, gpu.queue, native);
             self.world_rev = Some(session.world_rev());
+        }
+        // The sky tag's sun and fog, as the document has them: a sun
+        // direction written in the field panel moves the viewport's sun
+        // on this frame (docs/editor/live-editors.md, "Sky and fog").
+        if world_changed || self.sky_rev != Some(app.tags.rev()) {
+            crate::ui::sky::apply(vp, session.scene().map(|s| &s.atmosphere), &app.tags);
+            self.sky_rev = Some(app.tags.rev());
         }
         // The Modeling tool's in-place edits, redrawn over the sections
         // they came from (docs/editor/modeling.md, "Interfaces").
