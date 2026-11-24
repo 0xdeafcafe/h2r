@@ -258,7 +258,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `volume` | `list {kind?}` (short form `volumes [kind]`), `select {index?, focus?}`, `set {index, origin?, center?, forward?, up?, size?}`, `add {kill?, center?, origin?, forward?, up?, size?}`, `remove {kind?, index}` |
 | `collision` | `surfaces {class?, bsp?, offset?, limit?}`, `at {origin, dir}` or `at {point, within?}` (with `select?`), `select {index?, focus?}`, `objects {block?, index?}` |
 | `nav` | `status`, `back`, `forward`, `go` (the inspector's history); `pathfinding {bsp?, offset?, limit?}`, `bots {wait?, polys?, links?, spots?, offset?, limit?}`, `pick {origin, dir}` or `pick {point, within?}` (with `layer?`, `shown?`, `select?`) or `pick {kind, index, focus?}` (the Navigation layers) |
-| `playtest` | `static {wait?}`: the open map's static checks and each built-in game type's readiness ([playtest.md](playtest.md#static-checks)) |
+| `playtest` | `static {wait?}`: the open map's static checks and each built-in game type's readiness ([playtest.md](playtest.md#static-checks)); `run {preset?, game_types?, seeds?, minutes?, bots?}`, `status {run?}`, `result {run?, game_type?, measure?}`, `cancel {run?}`: headless bot matches on the open map and their measures ([playtest.md](playtest.md#what-a-run-is)) |
 | `variant` | `list`, `get` (with `script`), `set {setting \| option, value}`, `rename`, `copy`, `export`, `import`, `delete` |
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
 | `ui` | `palette {query, run?}`, `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}`, `select_folder {folder \| root}`, `sheet {folder?, root?, states?, columns?, out?}`; the shown screen's edits, of our screens or a retail one: `select {id?}`, `move {id, dx, dy}`, `set_rect {id, rect}`, `set_text {id, text}`, `revert {id?}`, `undo`, `redo`, `edits`, `save`, `animate {phase, frames?, out?}` ([ui-builder.md](../game/ui-builder.md#editing-in-the-editor)); `check {screen?, state?, aspect?}` ([Content checks](#content-checks)) |
@@ -941,6 +941,41 @@ Notes on some:
   neutral one) and an `assault_bomb_return` flag per team, and for both a
   starting location each team can use (its own or one with no team).
   Without a map it is `NO_DOCUMENT`.
+- **Playtest's runs.** (`studio::app::playtest`;
+  [playtest.md](playtest.md#what-a-run-is).) `playtest.run` plays the
+  open map through a sim runner: it checks the map as `playtest.static`
+  does, builds the project, makes the bots' mesh for the build, writes
+  `match.json` and `batch.json` under `<cache>/playtest/<run>/` and
+  starts the batch, then answers at once with `{run, build, matches,
+  parallel, cached}`. `preset` is `probe` (the default: seeds 1 to 4 of
+  the first ready game type, 2 game minutes), `standard` (seeds 1 to 8
+  of every ready game type, 5 minutes) or `soak` (seeds 1 to 32 of every
+  ready game type, each played twice with the sides swapped, to the
+  score limit). `seeds` (1 to 256) replaces the count, `minutes` (1 to
+  120) the length, `bots` (2 to 16, default 4) the seats, and
+  `game_types` names the ones to play (any name `h2 sim` takes); one
+  that is not ready is refused. A run with the same build, match, seeds,
+  bots' version and image as a finished run with no failed match answers
+  with that run and `cached: true`, and starts nothing. A newer run
+  cancels one still going. With no sim runner connected (none is wired
+  to the window yet) it is `REFUSED`; with no game type ready it is
+  `FAILED` and says what each lacks; a bad param is `INVALID_PARAMS`.
+  `playtest.status` gives `{run, state, preset, build, done, total,
+  speedup, stale, coarse, failed}`: `state` is `none` (no run yet),
+  `running`, `done`, `failed` (every match failed) or `cancelled`;
+  `speedup` is game seconds played per wall second; `stale` is true once
+  a newer run's build is another build; `coarse` is true under 8 seeds;
+  `failed` lists `{game_type, seed, swapped, why}`. `playtest.result`
+  answers over the matches that ended so far, for one `game_type` (the
+  first played by default): the run's `build`, `map`, `match_file`,
+  `seeds` and `game_types`, `traces` and `seconds` counted, `partial`
+  while matches are still to come, and `measures`: each of `heat`,
+  `spawns`, `flow`, `sight`, `items` and `stuck` as `{ok: true}` or
+  `{ok: false, refused: {measure, what, have, need}}` when its events are
+  too few. With `measure` it answers that one in full: `ok` and `value`
+  (its bins) or `refused`. `playtest.cancel` stops the running run, or
+  the one named, and answers `{cancelled}`; what came back stays. A call
+  names a run by its id (`r1`), or the newest.
 - **Renders.** `ui.render` draws on the CPU (no GPU needed); `view.snapshot`
   renders the open map offscreen through the viewport's own renderer
   (wgpu, no window) and answers `NO_GPU` on a machine without an adapter.
@@ -1784,7 +1819,8 @@ actions and the API's make identical profiles.
   the verdict over the audio crate's meter), `api/ui_check.rs` and
   `api/checks.rs`: the content checks. `api/models.rs`: `model.*` (its
   renders through `scenario_edit::native_view::preview`).
-  `api/playtest.rs`: the playtest checks (`app/playtest_static.rs`).
+  `api/playtest.rs`: the playtest checks (`app/playtest_static.rs`) and
+  the runner's methods (`app/playtest.rs`).
   host methods). `api/sound_measure.rs` (with `sound_measure/meter.rs`),
   `api/ui_check.rs` and `api/checks.rs`: the content checks. `api/voice.rs`
   (with `app/announcer.rs` and `src/voice*`): the Announcer.
@@ -1882,6 +1918,14 @@ system temp directory):
   the checks themselves on invented layouts: islands, slivers, one-way
   drops, sight through a wall and by team, each game type's needs
   (`app::playtest_static::tests`);
+- `playtest.run`, `status`, `result` and `cancel` over a fake sim: the
+  files written and read back by `h2 sim`'s batch planner, the presets'
+  matches and seeds, only ready game types run, partial and whole
+  results with their refused measures, a failed match listed, a repeat
+  answered from the cache, a newer run cancelling the old one, and the
+  refusal with no runner (`api::tests::playtest_tests`); the runner
+  itself, its stale mark on a new build key and its cache keys
+  (`app::playtest::tests`);
 - `view.stats` of an invented scene reports its BSP's lighting, its
   triangles by blend, its materials and its sky's sun and fog
   (`api::view::tests`);

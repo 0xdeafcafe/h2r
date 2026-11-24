@@ -7085,6 +7085,7 @@ dependencies = [
  "rules",
  "scenario-edit",
  "serde_json",
+ "sim-bench",
  "studio-proto",
  "superbounce",
  "tags",

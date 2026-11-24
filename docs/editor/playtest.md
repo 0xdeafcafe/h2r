@@ -1,7 +1,7 @@
 # Playtest: headless matches on the map being edited
 
-Status: Design. `h2 sim`, its match and batch files, its reports, the spatial trace and its measures, and the bots are built ([sim.md](../runtime/sim.md), "The spatial trace"; [bots.md](../game/bots.md)), and so are the static checks and `playtest.static`; Studio's runner and the overlays are not.
-Code: `crates/apps/studio/src/app/playtest_static.rs` (the static checks), `crates/apps/studio/src/api/playtest.rs`, `crates/live/sim-bench/src/spatial.rs` (the trace and its measures), `crates/extensions/game/src/sim_glue.rs` (the observers), `crates/apps/studio/src/app/playtest.rs` (the runner), `crates/apps/studio/src/viewport/playtest.rs` (the overlays). Tests: `app::playtest_static::tests`, `api::tests::playtest_tests`, `sim::spatial::tests`, `app::playtest::tests`.
+Status: Design, in part built. `h2 sim`, its match and batch files, its reports, the spatial trace and its measures, and the bots are built ([sim.md](../runtime/sim.md), "The spatial trace"; [bots.md](../game/bots.md)), and so are the static checks and `playtest.static`, and the runner's logic and `playtest.run`, `status`, `result` and `cancel` over a `Source` (the build, the bots' mesh and the sim) that tests fake. The real `Source`, the run on save, the overlays and the pool are not built; with no `Source` connected `playtest.run` is refused.
+Code: `crates/apps/studio/src/app/playtest_static.rs` (the static checks), `crates/apps/studio/src/api/playtest.rs`, `crates/live/sim-bench/src/spatial.rs` (the trace and its measures), `crates/extensions/game/src/sim_glue.rs` (the observers), `crates/apps/studio/src/app/playtest.rs` (the runner and its `Source`), `crates/apps/studio/src/viewport/playtest.rs` (the overlays). Tests: `app::playtest_static::tests`, `api::tests::playtest_tests`, `sim::spatial::tests`, `app::playtest::tests`.
 Switch: none.
 
 While a map is being made, Studio plays it: bot matches on the current
@@ -46,6 +46,23 @@ own; a run's preset fills it:
 | `probe` | 4 seeds of the map's first game type | 2 game minutes | every save |
 | `standard` | 8 seeds per game type the map is ready for | 5 game minutes | a look before sharing |
 | `soak` | 32 seeds, sides swapped | to the score limit | balance |
+
+The runner is `app::playtest::Runner`, driven through a `Source`: its
+`build` gives the build key and the map's name, `nav` makes the mesh,
+`start` takes the written `Batch` (the batch file, the match file and
+the jobs: game type, seed and which leg), and `poll` gives each match
+that ended with its `Trace` or why it failed. `Runner::start` chooses
+the game types (the preset's among the ready ones, or those named, each
+of which must be ready), builds, marks runs of another build stale,
+answers from the cache when a finished run with no failed match has the
+same key (build, map, image, bots' version, game types, seed count,
+legs, length and seats), otherwise cancels a running run, makes the mesh
+and writes `match.json` (`detail = "spatial"`, `bot_threads = "off"`,
+`max_ticks` from the minutes) and `batch.json` (`arm_swap` with two
+arms for `soak`) under `<cache>/playtest/<run>/`, in the sim's own
+formats. `pump` folds in each ended match, once; a run is done when
+every match ended, and failed when none gave a trace. A result is
+`sim_bench::spatial::measure` over the traces of one game type so far.
 
 ### What is measured
 
@@ -203,11 +220,11 @@ and the stuck-spot measure to be tested against.
 | Method | Access | Params | Result |
 |---|---|---|---|
 | `playtest.static` (**Code**) | read | `{wait?}` | `{ok, nav, problems: [{kind, text, target}], ready: [{game_type, engine, ok, missing}]}`; a placement `target` goes to `nav.go`, a polygon's to `nav.pick`. It checks the open map; a project param comes with the workspace's projects |
-| `playtest.run` | act | `{preset?, game_types?, seeds?, minutes?, bots?, compare_to?}` | `{run, build, matches, parallel}` at once |
-| `playtest.status` | read | `{run?}` | `{state, done, total, speedup, stale, failed: [{seed, why}]}` |
-| `playtest.result` | read | `{run?, measure?}` | the measures, or one in full with its bins |
+| `playtest.run` (**Code**) | act | `{preset?, game_types?, seeds?, minutes?, bots?}` (`compare_to` comes with PT6) | `{run, build, matches, parallel, cached}` at once |
+| `playtest.status` (**Code**) | read | `{run?}` | `{run, state, preset, build, done, total, speedup, stale, coarse, failed: [{game_type, seed, swapped, why}]}` |
+| `playtest.result` (**Code**) | read | `{run?, game_type?, measure?}` | the run's build, match file and seeds, and the measures each `ok` or refused; or one in full with its bins |
 | `playtest.compare` | read | `{a, b}` | per measure: `a`, `b`, `spread`, `changed`; the static checks' difference |
-| `playtest.cancel` | act | `{run?}` | `{cancelled}` |
+| `playtest.cancel` (**Code**) | act | `{run?}` | `{cancelled}` |
 | `view.layers` | act | the playtest layers by name, and `diff` | as now |
 | `match.start` | act (the sim) | `{file}` on a sim whose match is over | `{queued}` |
 
@@ -238,11 +255,18 @@ child's world stream as it takes a paired game's.
   Firefight match in [sim.md](../runtime/sim.md), "Firefight").
 - Studio builds the bots' mesh in memory for a map with no cache
   (**Test**, `api::tests::nav_bots_builds_the_mesh_when_there_is_no_cache`).
+- A run's files are the sim's: the batch planner reads them and plans
+  every match (**Test**, `app::playtest::tests`).
+- Partial results, a failed match, a cancel, a stale mark on a new build
+  key, a cache hit and a newer run replacing one going, over a fake sim
+  (**Test**, `app::playtest::tests`; `api::tests::playtest_tests`).
 - The speed figures are arithmetic on the cited measurements, not a
   measurement of a batch (**S**: PT7's note).
 
 ## Not verified
 
+- That the real `Source` (the build, the mesh, `h2 sim batch`) gives the runner what the fake does.
+- That `h2 sim batch` ends a child's trace file before reporting it, and that a cancel stops its children.
 - That the bots' mesh builder accepts a hand-made level's collision.
 - That a sim process can take a second match without a restart.
 - The number of processes a machine runs before they slow each other.
@@ -256,7 +280,7 @@ child's world stream as it takes a paired game's.
 | PT1 | Static checks and `playtest.static` | `studio/src/app/playtest_static.rs`, `studio/src/api/playtest.rs`, [agent-api.md](agent-api.md) | on the invented map with sectors: an off-mesh spawn, an island, two spawns in sight and a missing flag are each found | the checks list the stage's layout as ready for Slayer |
 | PT2 | The spatial trace: `detail = "spatial"`, the observers, the file | `crates/live/sim-bench/src/{spatial.rs, config.rs}`, `crates/extensions/game/src/sim_glue.rs`, [sim.md](../runtime/sim.md) | the file round-trips; over fake guest memory each event is written once with its places; the tally is unchanged with the trace on | a sim match writes a trace whose kills are the report's |
 | PT3 | The measures | `sim-bench/src/spatial/{heat.rs, spawns.rs, flow.rs, sight.rs, items.rs, stuck.rs}` | each measure on invented traces, with too few events refused | `h2 sim` prints the measures of a trace |
-| PT4 | The runner: build, nav, the batch, the gather, the cache, `playtest.run`, `status`, `result`, `cancel`, on save | `studio/src/app/playtest.rs`, `studio/src/api/playtest.rs` | a fake batch: the files written, partial results, a cancel, a stale mark on a new build key, a cache hit | `playtest.run` on a retail map gives a result |
+| PT4 (the runner's logic, its API and its tests are built; its real `Source` and the save hook are not) | The runner: build, nav, the batch, the gather, the cache, `playtest.run`, `status`, `result`, `cancel`, on save | `studio/src/app/playtest.rs`, `studio/src/api/playtest.rs` | a fake batch: the files written, partial results, a cancel, a stale mark on a new build key, a cache hit | `playtest.run` on a retail map gives a result |
 | PT5 | The overlays and the panel | `studio/src/viewport/playtest.rs`, `studio/src/ui/playtest.rs`, `view.layers` | each layer counts its marks and changes the snapshot's pixels on an invented result | the layers draw over a map in the window |
 | PT6 | Before and after: `playtest.compare`, difference layers, the baseline, swapped sides | `sim-bench/src/spatial/compare.rs`, `studio/src/app/playtest.rs` | two invented results: a change inside the spread is not called out and one outside it is | moving a spawn shows its fairness change |
 | PT7 | The pool: `match.start`, kept children, the sizing, the measured speeds | `crates/extensions/game/src/sim_glue.rs`, `crates/apps/cli/src/sim_cmd.rs`, `studio/src/app/playtest.rs`, `docs/editor/notes/playtest.md` | a second match on a fake sim starts from a clean tally; the pool is sized from cores and memory | the note has matches a minute, cold and warm |
