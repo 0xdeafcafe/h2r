@@ -21,6 +21,8 @@ pub(crate) enum Call {
     BaseField(BlockKind, u32, String, Value),
     BaseInert(BlockKind, u32),
     BaseRestore(BlockKind, u32, Vec<u8>),
+    KitAdd(BlockKind, u32, Vec<(String, Value)>),
+    KitDrop(BlockKind, u32),
 }
 
 /// A world that records each call. `refuse_at` refuses the call at that
@@ -81,6 +83,18 @@ impl World for Fake {
     fn base_restore(&mut self, block: BlockKind, index: u32, row: &[u8]) -> Result<(), String> {
         self.call(Call::BaseRestore(block, index, row.to_vec()))
     }
+    fn kit_add(
+        &mut self,
+        block: BlockKind,
+        index: u32,
+        fields: &[(&'static str, Value)],
+    ) -> Result<(), String> {
+        let fields = fields.iter().map(|(n, v)| (n.to_string(), v.clone())).collect();
+        self.call(Call::KitAdd(block, index, fields))
+    }
+    fn kit_drop(&mut self, block: BlockKind, index: u32) -> Result<(), String> {
+        self.call(Call::KitDrop(block, index))
+    }
 }
 
 pub(crate) fn float(v: f32) -> Value {
@@ -98,7 +112,7 @@ pub(crate) fn frame(x: f32, yaw: f32) -> Frame {
     }
 }
 
-fn tag(group: &str, path: &str) -> TagKey {
+pub(crate) fn tag(group: &str, path: &str) -> TagKey {
     TagKey {
         group: group.into(),
         path: path.into(),

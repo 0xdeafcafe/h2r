@@ -1267,7 +1267,13 @@ impl Editor {
             Palette => {
                 let mut menu = sheet::objects_with_ai(&self.items(), self.selected, &self.ai_items());
                 if self.session.can_place_goals() {
-                    menu = Some(sheet::with_goals(menu));
+                    menu = Some(sheet::with_goals_for(
+                        menu,
+                        &self.session.goals(self.tool.game),
+                    ));
+                }
+                if self.session.has_kit() {
+                    menu = Some(sheet::with_kit(menu, &self.kit_menu()));
                 }
                 let menu = sheet::with_prefabs(menu, &self.prefab_items());
                 screens::open(menu.ok_or("This map has nothing to place.")?)?;
@@ -1497,6 +1503,38 @@ impl Editor {
             .collect()
     }
 
+    /// What the kit adds to the object menu: the items its spawners can
+    /// name, and the rows each block has left.
+    fn kit_menu(&self) -> sheet::KitMenu {
+        let items = self
+            .session
+            .kit_items()
+            .into_iter()
+            .enumerate()
+            .map(|(index, tag)| sheet::KitItem {
+                index,
+                group: match forge::kit::item_group(&tag) {
+                    forge::kit::ItemGroup::Weapons => Group::Weapons,
+                    forge::kit::ItemGroup::Vehicles => Group::Vehicles,
+                    forge::kit::ItemGroup::Equipment => Group::Equipment,
+                },
+                name: tag
+                    .path
+                    .rsplit('\\')
+                    .next()
+                    .unwrap_or(&tag.path)
+                    .replace('_', " "),
+            })
+            .collect();
+        let left = |block| self.session.kit_left(block).unwrap_or(0);
+        sheet::KitMenu {
+            items,
+            items_left: left(BlockKind::NetgameEquipment),
+            spawns_left: left(BlockKind::StartingLocations),
+            flags_left: left(BlockKind::NetgameFlags),
+        }
+    }
+
     fn link_sheet(&self, active: &ActiveLink) -> Sheet {
         let [from, to] = active.link.endpoints();
         let writes = match active.link {
@@ -1516,6 +1554,24 @@ impl Editor {
             Choice::Goal(goal) => {
                 let frame = self.goal_frame()?;
                 return self.command(tick, Command::Goal { goal, frame });
+            }
+            Choice::Spawn(team) => {
+                let frame = self.goal_frame()?;
+                return self.command(tick, Command::Spawn { team, frame });
+            }
+            Choice::Teleporter(sender) => {
+                let frame = self.goal_frame()?;
+                return self.command(tick, Command::Teleporter { sender, frame });
+            }
+            Choice::Item(i) => {
+                let item = self
+                    .session
+                    .kit_items()
+                    .get(i)
+                    .cloned()
+                    .ok_or("That item is gone.")?;
+                let frame = self.goal_frame()?;
+                return self.command(tick, Command::Item { item, frame });
             }
             Choice::EditArea(id) => return self.begin_area(id),
             Choice::Marker(forge::GroundLabel::Site) => {
@@ -2003,6 +2059,9 @@ fn run(s: &mut Session, w: &mut ForgeWorld, tick: u32, cmd: Command) -> Result<(
         Redo => s.redo(w, tick),
         Marker { label, frame } => s.place_marker_next(w, tick, label, frame).map(|_| ()),
         Goal { goal, frame } => s.place_goal(w, tick, goal, frame).map(|_| ()),
+        Spawn { team, frame } => s.place_spawn(w, tick, team, frame).map(|_| ()),
+        Teleporter { sender, frame } => s.place_teleporter(w, tick, sender, frame).map(|_| ()),
+        Item { item, frame } => s.place_item(w, tick, &item, frame).map(|_| ()),
         _ => Err("A screen's command is not an edit.".into()),
     }
 }

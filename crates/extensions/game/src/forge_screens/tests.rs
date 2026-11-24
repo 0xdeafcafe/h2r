@@ -797,3 +797,75 @@ fn the_properties_page_has_selection_and_group_rows() {
         );
     }
 }
+
+#[test]
+fn a_kit_session_adds_spawns_teleporters_and_item_spawners_to_the_object_menu() {
+    let items = [sheet::Item {
+        group: Group::Weapons,
+        name: "Rifle".into(),
+        placed: 0,
+        left: 5,
+    }];
+    let kit = sheet::KitMenu {
+        items: vec![
+            sheet::KitItem {
+                index: 0,
+                group: Group::Weapons,
+                name: "Rifles".into(),
+            },
+            sheet::KitItem {
+                index: 1,
+                group: Group::Vehicles,
+                name: "Hogs".into(),
+            },
+        ],
+        items_left: 1,
+        spawns_left: 2,
+        flags_left: 0,
+    };
+    let s = sheet::with_kit(sheet::objects(&items, 0), &kit);
+    let labels: Vec<&str> = s.rows.iter().map(|r| &*r.label).collect();
+    // The groups are in the table's order, the map's own among them.
+    assert_eq!(labels, ["Weapons", "Vehicles", "Teleporters", "Spawns"]);
+    let pick = |label: &str| {
+        let row = s.rows.iter().find(|r| &*r.label == label).unwrap();
+        let Act::Pick(p) = &row.act else {
+            panic!("a group opens the picker")
+        };
+        p.clone()
+    };
+    let weapons = pick("Weapons");
+    assert_eq!(weapons.values, ["Rifle", "Rifles spawner"]);
+    assert_eq!(weapons.choices, [Choice::Select(0), Choice::Item(0)]);
+    assert_eq!(weapons.details[1], "Item spawner. 1 more fits.");
+    assert_eq!(pick("Vehicles").choices, [Choice::Item(1)]);
+    let spawns = pick("Spawns");
+    assert_eq!(spawns.values[0], "Red start");
+    assert_eq!(spawns.choices[1], Choice::Spawn(1));
+    assert_eq!(spawns.details[0], "Starting point. 2 more fit.");
+    let teleporters = pick("Teleporters");
+    assert_eq!(teleporters.values, ["Sender", "Receiver"]);
+    assert_eq!(
+        teleporters.choices,
+        [Choice::Teleporter(true), Choice::Teleporter(false)]
+    );
+    assert_eq!(teleporters.details[0], "Teleporter. no more fit.");
+    assert!(spawns.closes && teleporters.closes);
+}
+
+#[test]
+fn the_goals_group_lists_the_goals_a_game_type_reads() {
+    let all = sheet::with_goals(None);
+    let Act::Pick(p) = &all.rows[0].act else {
+        panic!("Goals opens its picker")
+    };
+    assert_eq!(p.values, ["Hill", "Territory", "Siege site"]);
+    let some = sheet::with_goals_for(None, &[forge::Goal::Hill, forge::Goal::Site]);
+    let Act::Pick(p) = &some.rows[0].act else {
+        panic!("Goals opens its picker")
+    };
+    assert_eq!(p.values, ["Hill", "Siege site"]);
+    assert_eq!(p.choices[0], Choice::Goal(forge::Goal::Hill));
+    // A game type that reads none has no Goals group.
+    assert!(sheet::with_goals_for(None, &[]).rows.is_empty());
+}
