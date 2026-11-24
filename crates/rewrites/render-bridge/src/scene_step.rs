@@ -277,6 +277,10 @@ fn open_kind_at_layer(mem: &dyn GuestMemory, kind: ViewKind, layer_hook: bool) -
         }
         if base && !step.based {
             step.based = true;
+            if kind == ViewKind::Game {
+                let casters = scene_extract::layout::nearby_casters::extract(&m, &camera);
+                let _ = step.builder.add_nearby_casters(casters);
+            }
             let clusters = extract::layer_clusters(&m, LIGHTMAP_LAYER).unwrap_or_default();
             let set = step
                 .builder

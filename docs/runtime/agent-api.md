@@ -1484,8 +1484,8 @@ includes it for the corresponding draw. Its `passes` array contains
 `e3.tiles`, `e3.sun_tiles`, `e3.sun`, `e3.marks` and `e3.lights`. Each row has
 `name`, submitted `draws` and `gpu_ns` (null for an empty or unmeasured
 stage). Snapshot indices refer to the attachment runs in the frame
-record. The seven per-frame counters are `lights_lit`, `lights_shadowed`,
-`lights_over_cap`, `sun_tiles`, `sun_tiles_redrawn`, `atlas_halved` and
+record. The per-frame counters are `lights_lit`, `lights_shadowed`,
+`lights_over_cap`, `sun_tiles`, `sun_tiles_redrawn`, `sun_tiles_offscreen`, `atlas_halved` and
 `tiles_refused`. They count the E3 renderer's selections and atlas work.
 The graph draws the guest's shadow maps as tiles
 ([e3-lighting.md](../graphics/e3-lighting.md), "Shadows from local
@@ -1497,9 +1497,9 @@ draws no tiles. `lights_lit` and `lights_over_cap` are the renderer's
 own choice of lights from the scene's candidates (e3-lighting.md,
 "Lights: which, and how many"): the lights it chose, and the candidates
 its cap of 16 left out. The lights drawn are still the guest's, so
-`e3.lights` has no draws. The sun's stages and counters are zero: no
-game frame hands the renderer sun casters yet (`e3.sun_tiles`,
-`e3.sun`, `sun_tiles`, `sun_tiles_redrawn`, `atlas_halved`). The
+`e3.lights` has no draws. `sun_tiles_offscreen` counts offscreen casters for which the graph
+submits a receiver draw, summed across views. A cached tile can have
+receiver draws with no redraw. The
 guest's light selections are in `render.scene.views`.
 Retail graph draws omit `e3`.
 

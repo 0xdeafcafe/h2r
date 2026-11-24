@@ -279,6 +279,17 @@ pub struct PartDraw {
     pub subparts: Option<Subparts>,
 }
 
+/// A root object outside the frustum whose shadow can reach this view.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct NearbyCaster {
+    pub handle: u32,
+    pub definition: u32,
+    pub nodes: Vec<NodeMatrix>,
+    pub sphere: ([f32; 3], f32),
+    pub towards_light: [f32; 3],
+    pub strength: f32,
+}
+
 /// One rendered frame, typed. Built on the sim thread by
 /// [`crate::SceneBuilder`], sealed, then read only.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -291,6 +302,8 @@ pub struct FrameScene {
     /// Visible cluster ids; views index ranges of it.
     pub clusters: Vec<u16>,
     pub instances: Vec<Instance>,
+    /// Shadow-only poses indexed by scene view, in guest pool order.
+    pub nearby_casters: Vec<(u32, NearbyCaster)>,
     pub nodes: Vec<NodeMatrix>,
     pub parts: Vec<PartDraw>,
     /// Part indices, each view's in its guest list order.
@@ -336,6 +349,7 @@ impl FrameScene {
         self.views.clear();
         self.clusters.clear();
         self.instances.clear();
+        self.nearby_casters.clear();
         self.nodes.clear();
         self.parts.clear();
         self.order.clear();

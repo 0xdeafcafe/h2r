@@ -4411,6 +4411,7 @@ dependencies = [
  "gfx",
  "ir",
  "lift",
+ "lifted",
  "map",
  "mem-watch",
  "pollster",

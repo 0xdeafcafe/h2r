@@ -215,6 +215,18 @@ impl SceneBuilder {
         Ok(scene.views.last().expect("just pushed"))
     }
 
+    /// Attach shadow-only poses to the open view without adding visible instances.
+    pub fn add_nearby_casters(
+        &mut self,
+        casters: Vec<crate::NearbyCaster>,
+    ) -> Result<(), BuildError> {
+        let (scene, view) = self.open_mut()?;
+        scene
+            .nearby_casters
+            .extend(casters.into_iter().map(|c| (view as u32, c)));
+        Ok(())
+    }
+
     pub(crate) fn open_mut(&mut self) -> Result<(&mut FrameScene, usize), BuildError> {
         let scene = self.scene.as_mut().ok_or(BuildError::NoScene)?;
         let open = self.open.ok_or(BuildError::NoView)?;

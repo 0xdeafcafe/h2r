@@ -1068,3 +1068,123 @@ fn private_receivers_restore_the_renderer_and_the_swap_reports_its_own_mode() {
     }
     assert_eq!(*shown.lock().unwrap(), [Lighting::E3, Lighting::Retail]);
 }
+
+/// The camera looks straight down at a flat white floor. A raised triangle
+/// above the eye is absent from both the visible walk and the mask list.
+#[test]
+fn a_caster_behind_the_camera_shadows_the_ground_in_view() {
+    use frame_scene::{NodeMatrix, RenderCamera, ViewKey, ViewKind};
+    use native_render::sun_casters::{SunWorld, set_models, set_world};
+    use native_render::world::{Owner, PartInput, Placement, SectionInput, WorldBuilder};
+    use scene_extract::{
+        layout::{nearby_casters, object_nodes::TAG_INSTANCES},
+        testing::{self, BODIES, Mem},
+    };
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(ctx) = test_gpu() else { return };
+    const EPOCH: u64 = 0x5e3_0008;
+    let camera = RenderCamera {
+        position: [0., 0., 1.],
+        forward: [0., 0., -1.],
+        up: [0., 1., 0.],
+        fov: std::f32::consts::FRAC_PI_2,
+        projection_xy: None,
+        viewport: [0, 0, SIZE as i16, SIZE as i16],
+        near: 0.1,
+        far: 100.,
+    };
+    let mut mem = Mem::default();
+    testing::object(&mut mem, 0, 0, 1);
+    mem.w(BODIES + 4, 1 << 24);
+    mem.w(BODIES + 0x14, u32::MAX);
+    mem.w(BODIES + 0xa8, 0);
+    mem.w(TAG_INSTANCES, 0x2000);
+    mem.w(0x2008, 0x3000);
+    mem.w(0x3018, 2);
+    mem.w(nearby_casters::DEFAULT_LIGHTING, 0x4000);
+    for (i, v) in [0., 0., 1.].into_iter().enumerate() {
+        mem.f(0x4028 + i as u32 * 4, v);
+    }
+    mem.f(0x4038, 0.75);
+    for (i, v) in [0., 0., 2., 0.8].into_iter().enumerate() {
+        mem.f(BODIES + 0x30 + i as u32 * 4, v);
+    }
+    let node = NodeMatrix {
+        position: [0., 0., 2.],
+        ..NodeMatrix::IDENTITY
+    };
+    for (i, &v) in bytemuck::cast_ref::<_, [f32; 13]>(&node).iter().enumerate() {
+        mem.f(BODIES + 0x200 + i as u32 * 4, v);
+    }
+    let mut b = SceneBuilder::new(FreeList::new());
+    b.begin(SceneId {
+        map_epoch: EPOCH,
+        tick: 1,
+        frame: 1,
+    });
+    b.open_view(
+        ViewKey {
+            kind: ViewKind::Game,
+            player: 0,
+            view: 0,
+        },
+        camera,
+    )
+    .unwrap();
+    b.set_clusters([0]).unwrap();
+    let casters = nearby_casters::extract(&mem, &camera);
+    assert_eq!(casters.len(), 1);
+    b.add_nearby_casters(casters).unwrap();
+    let scene = b.seal(Stamp::default()).unwrap();
+    let mut model = sun_model();
+    for (v, p) in model
+        .vertices
+        .iter_mut()
+        .zip([[-0.5, -0.5, 0.], [0.5, -0.5, 0.], [0., 0.5, 0.]])
+    {
+        v.position = p;
+    }
+    set_models(EPOCH, Some(Arc::new(SunModels(model))));
+    let mut world = WorldBuilder::new();
+    let floor = SectionInput {
+        positions: vec![[-1., -1., 0.], [1., -1., 0.], [1., 1., 0.], [-1., 1., 0.]],
+        normals: vec![[0., 0., 1.]; 4],
+        uvs: vec![[0.; 2]; 4],
+        parts: vec![PartInput {
+            material: 0,
+            transparent: false,
+            triangles: vec![[0, 1, 2], [0, 2, 3]],
+        }],
+        ..Default::default()
+    };
+    world.add_section(Owner::Cluster(0), &floor, &Placement::IDENTITY, None);
+    set_world(EPOCH, Some(Arc::new(SunWorld::new(&world.finish()))));
+    let mut backend = GfxBackend::new(ctx);
+    let mut frame = replay();
+    op(&mut frame, Slot::Opaque, bind());
+    op(
+        &mut frame,
+        Slot::Opaque,
+        ReplayOp::Clear {
+            colour: MAIN,
+            depth: Z,
+            clear: Clear {
+                depth: Some(1.0 / camera.far),
+                ..Clear::all([1.; 4])
+            },
+        },
+    );
+    let retail = draw_private(&mut backend, &scene, &frame, 1, Lighting::Retail).unwrap();
+    let e3 = draw_private(&mut backend, &scene, &frame, 1, Lighting::E3).unwrap();
+    assert_eq!(rgba(&retail, SIZE / 2, SIZE / 2), [255; 4]);
+    assert!(rgba(&e3, SIZE / 2, SIZE / 2)[0] < 100);
+    assert_eq!(rgba(&e3, 2, 2), [255; 4]);
+    let work = e3.report.e3.unwrap();
+    assert_eq!(work.sun_tiles_offscreen, 1);
+    assert_eq!(
+        (work.sun_tiles, work.sun_tiles_redrawn, work.sun.draws),
+        (1, 1, 1)
+    );
+    set_models(EPOCH, None);
+    set_world(EPOCH, None);
+}

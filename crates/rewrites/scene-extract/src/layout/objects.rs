@@ -244,11 +244,11 @@ pub fn object_lighting(mem: &dyn GuestRead, handle: u32, body: u32) -> Option<u3
         return None;
     }
     let index = state & 0xffff;
-    if index >= mem.read_u32(cache + ARRAY_HIGH_WATER)? {
+    if index >= mem.read_u32(cache.checked_add(ARRAY_HIGH_WATER)?)? {
         return None;
     }
-    let record = mem.read_u32(cache + ARRAY_DATA)?.checked_add(CACHE_RECORD_SIZE * index)?;
-    (mem.read_u32(record + CACHE_OWNER)? == handle).then_some(record + CACHE_LIGHTING)
+    let record = mem.read_u32(cache.checked_add(ARRAY_DATA)?)?.checked_add(CACHE_RECORD_SIZE * index)?;
+    (mem.read_u32(record.checked_add(CACHE_OWNER)?)? == handle).then_some(record.checked_add(CACHE_LIGHTING)?)
 }
 
 /// The definition datum of the live object `handle`.
@@ -262,12 +262,28 @@ pub fn definition(mem: &dyn GuestRead, handle: u32) -> Option<u32> {
 pub fn read_object(mem: &dyn GuestRead, handle: u32) -> Option<ObjectFrame> {
     let body = body(mem, handle)?;
     let definition = mem.read_u32(body + BODY_DEFINITION)?;
+    let nodes = read_nodes(mem, body)?;
+    let f = |o: u32| mem.read_f32(body + o);
+    let sphere = ([f(BODY_SPHERE)?, f(BODY_SPHERE + 4)?, f(BODY_SPHERE + 8)?], f(BODY_SPHERE_RADIUS)?);
+    let lighting = object_lighting(mem, handle, body).and_then(|at| Lighting::read(mem, at));
+    Some(ObjectFrame {
+        handle,
+        definition,
+        nodes,
+        sphere,
+        lighting,
+        defaults: Defaults::read(mem),
+    })
+}
+
+pub(super) fn read_nodes(mem: &dyn GuestRead, body: u32) -> Option<Vec<NodeMatrix>> {
     let size = usize::from(read_u16(mem, body + BODY_NODES_SIZE)?);
     let offset = read_u16(mem, body + BODY_NODES_OFFSET)? as i16;
     if size == 0 || size % NODE_MATRIX_SIZE != 0 || size / NODE_MATRIX_SIZE > MAX_NODES || offset < 0 {
         return None;
     }
     let base = body.checked_add(offset as u32)?;
+    base.checked_add(size as u32 - 1)?;
     let mut nodes = Vec::with_capacity(size / NODE_MATRIX_SIZE);
     for n in 0..size / NODE_MATRIX_SIZE {
         let at = base + (n * NODE_MATRIX_SIZE) as u32;
@@ -281,17 +297,7 @@ pub fn read_object(mem: &dyn GuestRead, handle: u32) -> Option<ObjectFrame> {
         }
         nodes.push(m);
     }
-    let f = |o: u32| mem.read_f32(body + o);
-    let sphere = ([f(BODY_SPHERE)?, f(BODY_SPHERE + 4)?, f(BODY_SPHERE + 8)?], f(BODY_SPHERE_RADIUS)?);
-    let lighting = object_lighting(mem, handle, body).and_then(|at| Lighting::read(mem, at));
-    Some(ObjectFrame {
-        handle,
-        definition,
-        nodes,
-        sphere,
-        lighting,
-        defaults: Defaults::read(mem),
-    })
+    Some(nodes)
 }
 
 /// What [`clear_objects`] cleared: the items (to restore), the object
