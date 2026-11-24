@@ -26,7 +26,7 @@ mod wake;
 mod walks;
 mod functions;
 // Slice 11: the small type updates.
-mod alu;
+pub(crate) mod alu;
 mod bloc;
 mod creature;
 mod device;

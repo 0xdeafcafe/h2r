@@ -2045,6 +2045,7 @@ dependencies = [
  "sim-collision",
  "sim-core",
  "sim-objects",
+ "sim-sound",
  "simd",
  "tags",
  "variants",
@@ -6657,6 +6658,14 @@ version = "0.1.0"
 dependencies = [
  "guest-layout",
  "sim-core",
+]
+
+[[package]]
+name = "sim-sound"
+version = "0.1.0"
+dependencies = [
+ "simd",
+ "x87",
 ]
 
 [[package]]

@@ -1694,6 +1694,10 @@ points! { ALL;
     PREDICT_RESOURCES @ 0x0016_e5e0: [fn(mode: edi, resources: stack 0) -> al ret 4], Optional; "docs/perf/sim-budget.md";
     /// Sets source reverb and filter parameters on a DirectSound submix buffer.
     SOUND_SUBMIX_FX @ 0x0022_11e0: [fn(submix: eax, room: stack 0) ret 4], Optional; "docs/perf/sim-budget.md";
+    /// Convert the submix filter cutoff to its coefficient word.
+    SOUND_SUBMIX_CUTOFF @ 0x0021_e270: [fn(frequency: stack 0) ret 4], Optional; "docs/audio/dsound.md";
+    /// Convert the submix filter resonance to its coefficient word.
+    SOUND_SUBMIX_RESONANCE @ 0x0021_e2d0: [fn(resonance: stack 0) ret 4], Optional; "docs/audio/dsound.md";
     /// The sound frame service, once a frame after the render: among
     /// other things, one listener per mapped local user (`0x125c93`).
     SOUND_UPDATE @ 0x0012_5b40: [fn() ret 0]; "docs/engine/engine-map.md";
