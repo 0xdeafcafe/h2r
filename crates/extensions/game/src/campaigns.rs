@@ -68,7 +68,7 @@ pub const RETAIL_CAMPAIGN: u32 = 1;
 const MAX_ELEMENTS: u32 = 256;
 
 fn stored_maps(data_root: &Path, sandbox: &str) -> BTreeMap<String, vfs::MapSource> {
-    use workspace::converted::{levels, verified};
+    use tags::repo::converted::{levels, verified};
     let root = data_root.join("tags");
     let suffix = format!("_{sandbox}");
     levels(&root)
@@ -982,7 +982,7 @@ pub(crate) fn store_fixture(root: &Path, stem: &str, bytes: &[u8]) {
     std::fs::write(maps.join(format!("{stem}.{SKEL_EXT}")), skeleton.encode().unwrap()).unwrap();
     std::fs::write(maps.join(format!("{stem}.{EXTENTS_EXT}")), extents.to_text()).unwrap();
     std::fs::write(
-        workspace::converted::marker_path(root, stem),
+        tags::repo::converted::marker_path(root, stem),
         format!("converter halo1\nfile {file}\n"),
     ).unwrap();
 }

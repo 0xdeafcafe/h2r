@@ -185,7 +185,7 @@ fn stored_halo1(
     root: &Path,
     sandbox: &str,
 ) -> Vec<(Package, vfs::VariantPair)> {
-    use workspace::converted::{halo1_metadata, halo1_mp_stem, levels, verified};
+    use tags::repo::converted::{halo1_metadata, halo1_mp_stem, levels, verified};
     let hashes: BTreeMap<_, _> = levels(root)
         .into_iter()
         .filter_map(|mark| Some((mark.stem.clone(), verified(root, &mark, "halo1")?)))

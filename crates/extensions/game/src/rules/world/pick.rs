@@ -125,21 +125,21 @@ pub fn plan_from(now: Vec<(u8, String, Vec<String>)>, seats: &[(u8, u32)], tick:
             }
             s.key = Some(now);
         }
-        next_ask(s, tick)
+        next_ask(&mut s.queue, &mut s.open_since, tick)
     })
 }
 
 /// The ask the queue yields at `tick`, held back while the open picker
 /// waits for its player.
-fn next_ask(s: &mut State, tick: u32) -> Option<Ask> {
-    if let Some(since) = s.open_since {
+fn next_ask(queue: &mut VecDeque<Ask>, open_since: &mut Option<u32>, tick: u32) -> Option<Ask> {
+    if let Some(since) = *open_since {
         if tick.wrapping_sub(since) < OPEN_TICKS {
             return None;
         }
-        s.open_since = None;
+        *open_since = None;
     }
-    let ask = s.queue.pop_front()?;
-    s.open_since = Some(tick);
+    let ask = queue.pop_front()?;
+    *open_since = Some(tick);
     Some(ask)
 }
 
@@ -320,7 +320,7 @@ pub fn client_busy() -> bool {
 /// the cues of one tick do not reopen the first picker.
 pub fn client_plan(tick: u32, seats: &[(u8, u32)]) -> Option<Ask> {
     let Some(now) = with_received(|r| std::mem::take(r)) else {
-        return with_client(|s| next_ask(s, tick));
+        return with_client(|s| next_ask(&mut s.queue, &mut s.open_since, tick));
     };
     // The pickers offered now, in slot order, the taken ones away.
     let mut set: BTreeMap<u8, (String, Vec<String>)> = BTreeMap::new();
@@ -371,7 +371,7 @@ pub fn client_plan(tick: u32, seats: &[(u8, u32)]) -> Option<Ask> {
             }
         }
         s.key = Some(now);
-        next_ask(s, tick)
+        next_ask(&mut s.queue, &mut s.open_since, tick)
     })
 }
 

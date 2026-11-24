@@ -570,12 +570,12 @@ fn real_disc_base_entry_and_record() {
 
 fn converted_gulch(data: &Path) {
     let root = data.join("tags");
-    let d = workspace::converted::halo1_metadata(&root).join("h1_gulch");
+    let d = tags::repo::converted::halo1_metadata(&root).join("h1_gulch");
     std::fs::create_dir_all(&d).unwrap();
     for (sandbox, seed) in [("h1", 7), ("h2", 9)] {
         crate::campaigns::store_fixture(
             &root,
-            &workspace::converted::halo1_mp_stem("h1_gulch", sandbox),
+            &tags::repo::converted::halo1_mp_stem("h1_gulch", sandbox),
             &body(seed),
         );
     }
@@ -634,7 +634,7 @@ fn a_reset_removes_the_offer_and_a_missing_sandbox_does_not_use_the_other() {
     let data = &t.0;
     converted_gulch(data);
     let root = data.join("tags");
-    let marker = workspace::converted::marker_path(&root, "h1_gulch_h1");
+    let marker = tags::repo::converted::marker_path(&root, "h1_gulch_h1");
     std::fs::remove_file(marker).unwrap();
     let r = install(data, &mut disc()).unwrap();
     let path = device_path(r.installed[0].1, "h1_gulch");
