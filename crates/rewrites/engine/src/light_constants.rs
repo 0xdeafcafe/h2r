@@ -11,11 +11,10 @@
 //! the scissor from the rectangle through D3D.
 //!
 //! [`light_globals`] computes that block without writing anything:
-//! [`LightGlobals::write`] stores it the way the original does. Two pieces
-//! are not ported:
+//! [`LightGlobals::write`] stores it the way the original does. The caller supplies two operations:
 //!
-//! - `0x001650a0`, the sphere's screen bounds (`ret 4`): the caller answers
-//!   it ([`BoundsQuery`]); `None` is the original's `AL = 0`.
+//! - `0x001650a0`, the sphere's screen bounds (`ret 4`): [`screen_bounds`] answers
+//!   it for a [`BoundsQuery`]; `None` is the original's `AL = 0`.
 //! - `0x0003a550`, the scissor: the original calls it last, with no
 //!   arguments; whoever stores the block calls it (or sets the scissor
 //!   itself) afterwards.
@@ -34,6 +33,9 @@
 //! the original, lifted and run on the IR interpreter, word for word.
 
 use crate::memory::{GuestMemory, MemFault};
+
+mod screen_bounds;
+pub use screen_bounds::screen_bounds;
 
 /// `0x0004a1e0`: EAX the light's frame block, ECX the light volume, EDX
 /// the light datum (or -1), stack `(definition, unused, shadow, weight)`.
