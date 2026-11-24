@@ -94,7 +94,9 @@ checkout.
 Committing is a separate, explicit step. The announcer's clips are
 `art/announcer/<id>.wav` (Git LFS), embedded by
 `boot::medal_announcer::CLIPS`. `voice.say` with `clip: "<id>"` says what
-that takes (`ready`). `voice.commit {clip}` then copies the saved line to
+that takes (`ready`). `voice.commit {tag}` adds the saved line to the edit target as a
+`sound` item of that `snd!`, and a dataset or weights path is refused.
+`voice.commit {clip}` then copies the saved line to
 `art/announcer/<clip>.wav` in the checkout. It refuses to replace a clip
 that exists unless `replace` is set, does not run `git`, and does not edit
 `CLIPS`: for a new clip the reply gives the entry to add, and a medal

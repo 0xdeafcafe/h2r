@@ -1809,12 +1809,20 @@ kept lines used, whether the key item exists (`key.state`: `present`,
 cache's directory and size, and the lines most recently said. It asks
 nothing of the service.
 
-**`voice.commit {clip, from?, repo?, replace?}`** copies a saved line
-(`from`, else the last one made) to `art/announcer/<clip>.wav` of the
-checkout (`repo`, else the one above the editor's working directory). It is
-the only way a line reaches the checkout. It does not run `git` or edit
+**`voice.commit {tag, package?, class?, from?}`** adds a saved line
+(`from`, else the last one made, by `voice.say` or `voice.clone.say`) to
+`package` (default the edit target; `NO_TARGET` with none) as a `sound` item
+that writes the `snd!` `tag`. The WAV is copied in unchanged and the
+package's build encodes it, the way `import.sound` does (its reply, with
+`class` as there). A `from` inside a character's `dataset` or `model`
+folder is `REFUSED`, and only a `.wav` is taken, so a dataset clip or a
+weight file never reaches a package.
+
+**`voice.commit {clip, from?, repo?, replace?}`** (with no `tag`) copies the
+line to `art/announcer/<clip>.wav` of the checkout (`repo`, else the one
+above the editor's working directory). It does not run `git` or edit
 `boot::medal_announcer::CLIPS`; `next` says what is left. An existing clip
-needs `replace`.
+needs `replace`. `clip`, `repo` and `replace` are refused with `tag`.
 
 ## Voices
 
