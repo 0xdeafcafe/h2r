@@ -18,6 +18,7 @@
 use std::collections::BTreeMap;
 
 use map::{FourCC, TagId};
+use scenario_edit::native_view::code::{self, PassCode};
 use scenario_edit::native_view::preview::{self, MaterialDraws, MaterialPreview, Shape};
 use serde_json::{Value, json};
 use tags::material::ShaderLibrary;
@@ -514,6 +515,28 @@ impl App {
         let mut read = read_from(&mut lib, shader)?;
         read.read_only = doc.refusal(shader).map(str::to_owned);
         Ok(read)
+    }
+
+    /// The programs of pass number `pass` (across the layers, in layer
+    /// order) and implementation `implementation` of `shader` as text,
+    /// from the shown map with its edits: the Code section and
+    /// `shader.code`.
+    pub fn shader_code(
+        &self,
+        shader: TagId,
+        pass: usize,
+        implementation: usize,
+    ) -> Result<PassCode, String> {
+        let doc = self.shown_tags();
+        let t = doc.tag(shader).ok_or("no such tag")?;
+        if t.group != SHAD {
+            return Err(format!(
+                "{} is not a shader instance (shad)",
+                doc.tag_label(shader.0)
+            ));
+        }
+        let mut map = self.open_shown_map_edited()?;
+        code::pass_code(&mut map, shader, pass, implementation)
     }
 
     /// `shader` drawn alone on `shape` from the shown map with its edits,

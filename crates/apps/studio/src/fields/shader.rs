@@ -5,7 +5,9 @@
 //! folding sections: **Bitmaps** with thumbnails and a bitmap picker that
 //! shows them, **Colours** as the panel's own colour rows (the C1 dialog),
 //! **Vectors** as four numbers, **Animation** as what each animated
-//! property drives. Each row has its `Used by` line.
+//! property drives, **Code** as each pass's vertex and pixel programs
+//! (listing, translated WGSL and the translator's warnings; slice S4,
+//! read only). Each row has its `Used by` line.
 //!
 //! The tab reads through `app::shader` (the shown map with the
 //! document's edits) and writes through the field panel's own commands:
@@ -19,6 +21,7 @@ use std::sync::Arc;
 use dear_imgui_rs::{ColorButtonFlags, ListClipper, TreeNodeFlags, Ui, WindowFlags};
 use dear_imgui_wgpu::ExternalTextureId;
 use map::{FourCC, TagId};
+use scenario_edit::native_view::code::{PassCode, ProgramCode};
 use scenario_edit::native_view::preview::{self as material, Shape};
 use serde_json::{Value, json};
 
@@ -88,6 +91,9 @@ pub struct ShaderUi {
     thumbs_map: Option<String>,
     pick: Option<Pick>,
     shape_pick: Option<ShapePick>,
+    /// The Code section's passes read so far, by pass number
+    /// (implementation 0), for one document revision.
+    code: Option<(Key, HashMap<usize, Result<PassCode, String>>)>,
 }
 
 /// The tab: [`super::rich::TagView::draw`] of the `shader` view.
@@ -171,9 +177,95 @@ pub fn draw(ui: &Ui, app: &App, tag: TagId, cx: &mut ViewCx<'_, '_>, actions: &m
         }
         ui.text_disabled("Animated properties are edited as curves in the Fields tab.");
     }
+    code_section(ui, app, &read, &key, cx.shader);
     bitmap_picker(ui, app, &read, cx, actions);
     shape_picker(ui, app, cx.shader);
     colour::draw(ui, doc, cx.panel, actions);
+}
+
+/// The **Code** section: a node per pass, read when it is opened.
+fn code_section(ui: &Ui, app: &App, read: &ShaderRead, key: &Key, st: &mut ShaderUi) {
+    let total: usize = read.passes.values().sum();
+    if total == 0
+        || !ui.collapsing_header(
+            format!("Code ({total})##shader-code"),
+            TreeNodeFlags::empty(),
+        )
+    {
+        return;
+    }
+    ui.text_disabled(
+        "What the renderer is given, read only. It is not written into the map; a program's text is not edited here.",
+    );
+    if st.code.as_ref().is_none_or(|(k, _)| k != key) {
+        st.code = Some((key.clone(), HashMap::new()));
+    }
+    let layers: Vec<usize> = read
+        .passes
+        .iter()
+        .flat_map(|(&l, &n)| std::iter::repeat_n(l, n))
+        .collect();
+    for (pass, layer) in layers.into_iter().enumerate() {
+        let Some(_node) = ui
+            .tree_node_config(format!("shader-code-{pass}"))
+            .label(format!("Pass {pass} in layer {layer}"))
+            .push()
+        else {
+            continue;
+        };
+        let Some((_, cache)) = st.code.as_mut() else {
+            continue;
+        };
+        let code = cache
+            .entry(pass)
+            .or_insert_with(|| app.shader_code(read.tag, pass, 0));
+        match code {
+            Err(e) => ui.text_colored(theme::WARN, format!("{} {e}", icon::ALERT)),
+            Ok(c) => {
+                if c.implementations > 1 {
+                    ui.text_disabled(format!(
+                        "Implementation 0 of {}; `shader.code` reads the others.",
+                        c.implementations
+                    ));
+                }
+                program(ui, &format!("{pass}-vertex"), "Vertex program", &c.vertex);
+                program(ui, &format!("{pass}-pixel"), "Pixel program", &c.pixel);
+            }
+        }
+    }
+}
+
+/// One program: its warnings, then its listing and its WGSL, each in
+/// a read-only box.
+fn program(ui: &Ui, id: &str, title: &str, p: &ProgramCode) {
+    let Some(_node) = ui
+        .tree_node_config(format!("shader-program-{id}"))
+        .label(title)
+        .push()
+    else {
+        return;
+    };
+    for w in &p.warnings {
+        ui.text_colored(theme::WARN, format!("{} {w}", icon::ALERT));
+    }
+    for (what, text) in [("Listing", &p.listing), ("WGSL", &p.wgsl)] {
+        let Some(text) = text else {
+            ui.text_disabled(format!("{what}: none"));
+            continue;
+        };
+        ui.text(what);
+        let lines = text.lines().count().clamp(2, 16) as f32;
+        // A copy each frame: the box is for reading and selecting, and
+        // what is typed into it is dropped.
+        let mut shown = text.clone();
+        ui.input_text_multiline(
+            format!("##shader-{id}-{what}"),
+            &mut shown,
+            [-1.0, lines * ui.text_line_height_with_spacing()],
+        )
+        .read_only(true)
+        .build();
+    }
 }
 
 /// The template with **Open**, the level of detail, why the tag is

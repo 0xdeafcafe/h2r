@@ -1,4 +1,4 @@
-//! `shader.read`, `shader.set` and `shader.preview` over the scenario
+//! `shader.read`, `shader.set`, `shader.preview` and `shader.code` over the scenario
 //! crate's invented material (`fixture::fixture_with_shader_colour`: the
 //! floor shader with one colour its template's one pass reads at the
 //! final combiner; no game data). docs/editor/rich-editors.md, slice S1.
@@ -222,4 +222,46 @@ fn the_shaders_colour_is_a_colour_row() {
         .find(|r| r["path"] == "postprocess[0].colors[0].color")
         .unwrap_or_else(|| panic!("{v}"));
     assert_eq!(row["hex"], format!("#{:08x}", fixture::SHADER_COLOUR));
+}
+
+/// S4's acceptance: an invented pass lists both programs, a pass or
+/// implementation the shader lacks is refused, and so is a tag that is
+/// not a shader.
+#[test]
+fn shader_code_lists_both_programs_of_a_pass() {
+    let t = Temp::new("shader-code");
+    let (mut api, mut app) = open(&t, fixture::LAYERED_LAYER);
+    let r = call(&mut api, &mut app, m::SHADER_CODE, json!({"tag": SHADER}));
+    assert_eq!(r["tag"], SHADER);
+    assert_eq!(
+        (r["pass"].clone(), r["passes"].clone(), r["layer"].clone(), r["pass_in_layer"].clone()),
+        (json!(0), json!(1), json!(fixture::LAYERED_LAYER), json!(0))
+    );
+    assert_eq!((r["implementation"].clone(), r["implementations"].clone()), (json!(0), json!(1)));
+    assert!(r["pass_tag"].as_str().unwrap().starts_with("spas:"), "{r}");
+    assert_eq!(r["vertex"]["classification"], "world");
+    for k in ["vertex", "pixel"] {
+        assert!(r[k]["listing"].as_str().is_some_and(|l| !l.is_empty()), "{k}: {r}");
+        assert!(r[k]["wgsl"].as_str().is_some_and(|w| !w.is_empty()), "{k}: {r}");
+        assert!(r[k]["warnings"].is_array(), "{k}: {r}");
+    }
+    assert_eq!(r["vertex"]["warnings"], json!([]));
+    // The same pass named in full.
+    let again = call(
+        &mut api,
+        &mut app,
+        m::SHADER_CODE,
+        json!({"tag": SHADER, "pass": 0, "implementation": 0}),
+    );
+    assert_eq!(r, again);
+    for p in [json!({"pass": 1}), json!({"implementation": 1})] {
+        let mut params = json!({"tag": SHADER});
+        params.as_object_mut().unwrap().extend(p.as_object().unwrap().clone());
+        let e = api.call(&mut app, m::SHADER_CODE, params).unwrap_err();
+        assert_eq!(e.code, code::REFUSED, "{p}: {e}");
+    }
+    let e = api
+        .call(&mut app, m::SHADER_CODE, json!({"tag": "bitm:levels\\test\\bitmaps\\floor"}))
+        .unwrap_err();
+    assert_eq!(e.code, code::REFUSED, "{e}");
 }
