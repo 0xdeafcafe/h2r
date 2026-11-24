@@ -148,6 +148,11 @@ pub const ACTIONS: &[u16] = &[
     id::MESSAGE_ALL,
     // The multiplayer list's weapons (`super::world::loadout`).
     id::SET_LOADOUT,
+    // Played at the audience's units and sent as sound cues
+    // (`super::world::audio`).
+    id::SOUND_TO,
+    id::SOUND_TO_TEAM,
+    id::SOUND_TO_ALL,
     // Kept in the VM's state; the spawn chooser's hooks read it
     // (`super::world::spawns`), so no call is made at the boundary.
     id::SPAWN_AREAS,
@@ -371,6 +376,16 @@ pub enum Call {
     /// a show cue, made at the boundary by [`Runtime::pre_tick`]
     /// (`super::world::show`).
     Message(super::world::show::Outgoing),
+    /// `sound_to`, `sound_to_team` or `sound_to_all`: a sound cue and a play
+    /// for this machine's players, made at the boundary by
+    /// [`Runtime::pre_tick`] (`super::world::audio`).
+    SoundTo { to: ::rules::show::To, path: String },
+    /// The play of a sound the boundary published: the sound's tag path to
+    /// this machine's own players in the audience.
+    Play {
+        audience: ::rules::show::Audience,
+        path: String,
+    },
     /// `set_loadout`: the player's living unit gets the weapons, by tag
     /// path (`super::world::loadout`).
     SetLoadout {
@@ -399,6 +414,7 @@ impl Call {
             },
             Call::End => "end_round",
             Call::Message(_) => "message",
+            Call::SoundTo { .. } | Call::Play { .. } => "sound",
             Call::SetLoadout { .. } => "set_loadout",
         }
     }
@@ -476,6 +492,11 @@ fn runtime_refusal(ir: &Ir) -> Option<String> {
             "the script names the weapon {}, and set_loadout gives only the multiplayer list's weapons",
             t.path
         ));
+    }
+    // A sound is found by its tag path, which the running game does not
+    // hold: a host with no lookup refuses the script by the sound's path.
+    if let Some(why) = super::world::audio::refusal(ir, super::world::audio::can_resolve()) {
+        return Some(why);
     }
     for hd in &ir.handlers {
         if !DELIVERED.contains(&hd.event) {
@@ -731,6 +752,11 @@ impl Game for GuestGame<'_> {
             // (`super::world::show::publish`), not made as an engine call.
             id::MESSAGE | id::MESSAGE_TEAM | id::MESSAGE_ALL => {
                 super::world::show::outgoing(call).map(Call::Message)
+            }
+            // Played and sent as a sound cue at the boundary
+            // (`super::world::audio::publish`).
+            id::SOUND_TO | id::SOUND_TO_TEAM | id::SOUND_TO_ALL => {
+                super::world::audio::outgoing(call).map(|(to, path)| Call::SoundTo { to, path })
             }
             // The winner is not passed: naming one is not traced.
             id::END_ROUND => Some(Call::End),
@@ -1389,17 +1415,21 @@ impl Runtime {
         // machine that is not the authority shows none.
         let (messages, rest): (Vec<Call>, Vec<Call>) = std::mem::take(&mut r.pending)
             .into_iter()
-            .partition(|c| matches!(c, Call::Message(_)));
+            .partition(|c| matches!(c, Call::Message(_) | Call::SoundTo { .. }));
+        let mut plays = Vec::new();
         let held = match r.authority {
             Some(true) => {
-                let messages = messages
-                    .into_iter()
-                    .filter_map(|c| match c {
-                        Call::Message(outgoing) => Some(outgoing),
-                        _ => None,
-                    })
-                    .collect();
-                super::world::show::publish(m, r.vm.ir(), tick, messages);
+                let mut outgoing = Vec::new();
+                let mut sounds = Vec::new();
+                for c in messages {
+                    match c {
+                        Call::Message(o) => outgoing.push(o),
+                        Call::SoundTo { to, path } => sounds.push((to, path)),
+                        _ => {}
+                    }
+                }
+                super::world::show::publish(m, r.vm.ir(), tick, outgoing);
+                plays = super::world::audio::publish(m, r.vm.ir(), tick, sounds);
                 Vec::new()
             }
             None => messages,
@@ -1407,6 +1437,7 @@ impl Runtime {
         };
         let ask_authority = r.authority.is_none();
         let mut calls = rest;
+        calls.extend(plays);
         if let Some(ty) = r.start_line
             && super::start_line::players_ready(m)
         {
@@ -1875,7 +1906,8 @@ pub async fn make_calls(cx: &Cx, work: &Work) -> (Option<bool>, Vec<(String, Str
             // Messages are made at the boundary by `Runtime::pre_tick`
             // (`super::world::show::publish`); one reaching this far makes
             // no engine call.
-            Call::Message(_) => Ok(()),
+            Call::Message(_) | Call::SoundTo { .. } => Ok(()),
+            Call::Play { audience, ref path } => super::world::audio::play(cx, audience, path).await,
             Call::SetLoadout {
                 player,
                 ref primary,

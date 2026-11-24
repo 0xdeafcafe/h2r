@@ -169,6 +169,9 @@ pub struct MapRows {
     pub flags: Vec<FlagRow>,
     pub starts: Vec<i16>,
     pub tags: BTreeMap<String, ObjectType>,
+    /// The path of each sound (`snd!`) the map names; none when the rows do
+    /// not read tag paths (the running game's).
+    pub sounds: Option<std::collections::BTreeSet<String>>,
 }
 
 /// One labelled thing of a map, after its Forge document: the block and
@@ -370,6 +373,7 @@ pub fn census(things: &[LabelledThing], tags: &BTreeMap<String, ObjectType>) -> 
     let mut census = Census {
         labels: BTreeMap::new(),
         tags: tags.clone(),
+        sounds: None,
     };
     for t in things {
         census
@@ -401,7 +405,9 @@ pub trait CensusOf: Sized {
 impl CensusOf for Census {
     fn of_file<R: Read + Seek>(map: &mut map::Map<R>, doc: Option<&ForgeDoc>) -> Result<Self> {
         let rows = rows_of_file(map)?;
-        Ok(census(&labelled(&rows, doc)?, &rows.tags))
+        let mut census = census(&labelled(&rows, doc)?, &rows.tags);
+        census.sounds = rows.sounds.clone();
+        Ok(census)
     }
 
     fn of_game(rows: &MapRows, doc: Option<&ForgeDoc>) -> Result<Self> {
@@ -511,12 +517,20 @@ pub fn rows_of_file<R: Read + Seek>(map: &mut map::Map<R>) -> Result<MapRows> {
         .insert(BlockKind::NetgameFlags, rows.flags.len() as u32);
     rows.counts
         .insert(BlockKind::StartingLocations, rows.starts.len() as u32);
+    let mut sounds = std::collections::BTreeSet::new();
     for tag in map.tags() {
+        if &tag.group.0 == b"snd!"
+            && let Some(name) = tag.name.as_deref()
+            && !name.is_empty()
+        {
+            sounds.insert(name.replace('\\', "/"));
+        }
         if let (Some(ty), Some(name)) = (object_type(&tag.group.0), tag.name.as_deref())
             && !name.is_empty()
         {
             rows.tags.insert(name.replace('\\', "/"), ty);
         }
     }
+    rows.sounds = Some(sounds);
     Ok(rows)
 }

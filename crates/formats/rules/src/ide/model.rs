@@ -1503,7 +1503,7 @@ pub(crate) fn scope_of(h: Handle) -> Option<Scope> {
         Handle::Player => Some(Scope::Player),
         Handle::Team => Some(Scope::Team),
         Handle::Object | Handle::Zone => Some(Scope::Object),
-        Handle::Tag | Handle::Weapon => None,
+        Handle::Tag | Handle::Weapon | Handle::Sound => None,
     }
 }
 

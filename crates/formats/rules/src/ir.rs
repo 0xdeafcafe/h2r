@@ -333,6 +333,8 @@ pub enum TagGroup {
     #[default]
     Any,
     Weapon,
+    /// A sound (`snd!`): the map must hold it, which no object type says.
+    Sound,
 }
 
 impl TagGroup {
@@ -340,6 +342,7 @@ impl TagGroup {
         match self {
             TagGroup::Any => 0,
             TagGroup::Weapon => 1,
+            TagGroup::Sound => 2,
         }
     }
 
@@ -347,6 +350,7 @@ impl TagGroup {
         Some(match c {
             0 => TagGroup::Any,
             1 => TagGroup::Weapon,
+            2 => TagGroup::Sound,
             _ => return None,
         })
     }

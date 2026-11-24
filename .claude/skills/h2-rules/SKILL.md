@@ -405,7 +405,7 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
   reads only scores, kills, deaths, `alive`, `team_of`, `lives`,
   `round_time_left`, `is_objective`, `carrier_of`, the label reads,
   `inside` and `player_of`; makes only `score`, `end_round`, `set_lives`,
-  `respawn`, `role_traits`, `reset_objective`, `set_loadout` (the
+  `respawn`, `role_traits`, `reset_objective`, `sound_to`, `sound_to_team` and `sound_to_all` (a `sound` of the map, played at the audience's units), `set_loadout` (the
   multiplayer weapon list's tags only), `spawn_areas` and `spawn_near`
   (a team's spawn rule, read at each spawn), `set_body` (a team's body,
   Spartan or Elite, at each spawn), `show_area` and `hide_area` (a zone's

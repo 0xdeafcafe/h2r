@@ -366,15 +366,16 @@ impl<'s> Cx<'s> {
         Self::intern(&mut self.strings, &mut self.string_ix, s, pos)
     }
 
-    /// A tag path's index. A path named once as a weapon is a weapon's on
-    /// every map: its entry's group is [`TagGroup::Weapon`].
+    /// A tag path's index. A path named once as a weapon or a sound is
+    /// that group's on every map: its entry's group is [`TagGroup::Weapon`]
+    /// or [`TagGroup::Sound`].
     fn tag(&mut self, s: &str, group: TagGroup, pos: Pos) -> R<u16> {
         if s.is_empty() || s.len() > MAX_TAG_BYTES {
             return err(pos, "a tag path is 1 to 256 bytes");
         }
         if let Some(&i) = self.tag_ix.get(s) {
-            if group == TagGroup::Weapon {
-                self.tags[i as usize].group = TagGroup::Weapon;
+            if group != TagGroup::Any {
+                self.tags[i as usize].group = group;
             }
             return Ok(i);
         }
@@ -563,6 +564,7 @@ impl<'s> Cx<'s> {
             (ExprKind::None, Type::H(..)) => NONE,
             (ExprKind::Str(s), Type::H(Handle::Tag, _)) => self.tag(s, TagGroup::Any, pos)? as i32,
             (ExprKind::Str(s), Type::H(Handle::Weapon, _)) => self.tag(s, TagGroup::Weapon, pos)? as i32,
+            (ExprKind::Str(s), Type::H(Handle::Sound, _)) => self.tag(s, TagGroup::Sound, pos)? as i32,
             (ExprKind::Str(s), Type::Class | Type::Text) => self.string(s, pos)? as i32,
             (ExprKind::Team(inner), Type::H(Handle::Team, _)) => self.const_int(inner)?,
             (ExprKind::Field(_, v), Type::Enum(i)) => match self.enums[i as usize].1.iter().position(|x| x == v) {
@@ -1033,6 +1035,7 @@ impl<'s> Cx<'s> {
                 let (ty, index) = match self.ty_of(e)? {
                     Type::H(Handle::Tag, _) => (Ty::Tag, self.tag(s, TagGroup::Any, pos)?),
                     Type::H(Handle::Weapon, _) => (Ty::Tag, self.tag(s, TagGroup::Weapon, pos)?),
+                    Type::H(Handle::Sound, _) => (Ty::Tag, self.tag(s, TagGroup::Sound, pos)?),
                     Type::Class => (Ty::Class, self.string(s, pos)?),
                     Type::Text => (Ty::Text, self.string(s, pos)?),
                     _ => return internal(pos, "a string of no string type"),

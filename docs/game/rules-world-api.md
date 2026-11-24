@@ -452,14 +452,31 @@ Capability `audio.play` ("plays sounds, dialogue and music").
 
 | Script | Entry | Engine | Status | Synced by |
 |---|---|---|---|---|
-| `say(u, line)`: a unit speaks a line of its own voice | `say` | the unit's voice bank resolves the vocalization (`0x1144a0`), `SOUND_START_AT_MARKER` (`0x1891d0`), `BIPED_DIALOGUE_LIP_SYNC` (`0x109220`): the path a client plays a replicated line with (**Code**, `crates/extensions/game/src/actor_net/client.rs`) | named | the actor channel's `Line` record, which exists |
-| `sound(s, at)`: a sound in the world | `sound_at` | `SOUND_IMPULSE_ALLOCATE` (`0x126000`) admits a one-shot; the scripts' `sound_impulse_start` evaluator is `0x2a9e00`; its body is not read | traced | a `Cue` with the object's entity or the point |
-| `sound(s, to)`: a sound in the ears of a player, a team or `all` | `sound_to` | as above, with no position | traced | a `Cue` to the audience |
-| `music(s)`, `music_stop()` | `music`, `music_stop` | a looping sound's start and stop: not traced | untraced | the show state's music slot, so a late machine starts it at the right offset |
-| `announce(event, p)`: a retail game event, with its retail line and announcer sound | `announce` | the game-engine event record and its responses (`0x19de80`, `0x19e890`, `0x19e770`, hud-kit.md) | traced | the game engine event (type 7), on System Link too |
+| `sound_to(s, p)`, `sound_to_team(s, t)`, `sound_to_all(s)`: a sound in the ears of a player, a team or everyone | `sound_to`, `sound_to_team`, `sound_to_all` | the game's own sound start at each audience player's living unit, at its head marker: `SOUND_START_AT_MARKER` (`0x1891d0`), the call a replicated dialogue line and `audio.play` make (**Code**, `crates/extensions/game/src/rules/world/audio.rs`, `crates/extensions/game/src/actor_net/client/guest.rs`). The one-shot allocator (`SOUND_IMPULSE_ALLOCATE`, `0x126000`) is the game's own behind it; `sound_impulse_start`'s body (`0x2a9e00`) is not used | named | a sound cue (`rules::show::SoundCue`, kind 2) with the audience mask and the sound's index in the blob's tag table, which a `Viewer` checks is a sound-group entry before it plays it at its own players |
+| `say(u, line)`: a unit speaks a line of its own voice | `say` | the unit's voice bank resolves the vocalization (`0x1144a0`), `SOUND_START_AT_MARKER`, `BIPED_DIALOGUE_LIP_SYNC` (`0x109220`): the path a client plays a replicated line with (**Code**, `actor_net/client.rs`) | not built: no table of a map's dialogue names gives the `line` type its checked index | the actor channel's `Line` record, which exists |
+| `sound_at(s, o)`: a sound at an object or a point | `sound_at` | `SOUND_IMPULSE_ALLOCATE` admits a one-shot; the scripts' `sound_impulse_start` evaluator is `0x2a9e00`; its body is not read (R4) | traced | a `Cue` with the object's entity or the point |
+| `music(s)`, `music_stop()` | `music`, `music_stop` | a looping sound's start and stop: not traced (R5) | untraced | the show state's music slot, so a late machine starts it at the right offset |
+| `announce(event, p)`: a retail game event, with its retail line and announcer sound | `announce` | the game-engine event record and its responses (`0x19de80`, `0x19e890`, `0x19e770`, hud-kit.md); how a host raises one with a player is R5. The first argument is the retail event's kind number until R5 names them | traced | the game engine event (type 7), on System Link too |
 
-A sound is a tag the loaded map holds, checked at load like any tag
-path. A script brings no audio of its own.
+A sound is a tag the loaded map holds, checked like any tag path: a `sound`
+is a string interned with the sound group (`TagGroup::Sound`), and the
+start gate blocks a map whose tag index lacks that path by name
+(`rules::labels::check`, `Census::sounds`). A census that does not read tag
+paths (the running game's) checks none. A script brings no audio of its own.
+
+The three `sound_to*` entries are spelled by name, not as one `sound`
+overloaded on its audience as `message` is. A call through `none` plays
+nothing, and a team with no seated players is an empty audience. The call is
+queued and made at the next tick boundary; on the authority the boundary
+sends the cue and plays the sound at the host's own players, and a machine
+that is not the authority makes neither. A host that cannot find a sound tag
+by its path (`world::audio::set_resolver`: the running game holds no tag
+paths) refuses a script that plays one, by the sound's path. A host that
+runs a film makes the same sounds.
+
+A script that names `say`, `sound_at`, `music`, `music_stop` or `announce`
+is refused at the start by the entry's name: R4 and R5 have not settled
+what each does on the host.
 
 ### HUD
 
@@ -632,7 +649,7 @@ own target on top of the three common ones, as `rules.world_ns` at the
 | W2 | Script HUD: show state, `hud` and `waypoint` declarations, sections | `rules/show.rs` (`State`, `view`), `lang/*` (the declarations, `section`), `ir.rs` (the header table), `ide/*` (outline, folding), `game/rules/world/hud.rs` (new, over `game/hud_kit.rs`), `wire.rs` (`Show`, the digest), the workbench's HUD strip in `web/src/stats/RulesTest.tsx` | a declared layout that overlaps is a compile error; `view` of the same bytes is the same on host and client at every tick of a fake match; a `Key` restores the state after loss | a script's wave counter and a waypoint draw on host and guest; Firefight's HUD view reads the show state | W1; the HUD kit's runtime drawing | 32 HUD writes every tick: 0.05 ms; `Show` at most 5 a second in `actors.net` |
 | W3 | Objects in motion: `vec`, position reads, `teleport`, movers, `on arrive` | `lang/types.rs`, `lang/check.rs`, `lang/lower.rs` (`vec`), `vm.rs` (movers in `RulesExt`), `game/rules/world/objects.rs` (new) | `vec` arithmetic and each type error; a mover reaches its end on the stated tick and survives a checkpoint revert; a teleport outside the world is a refused call; a film of a mover replays to the same `RulesExt` hash | Race with moving platforms and a teleporter pad plays on Live | W0; R2, R3 | 16 movers: 0.15 ms |
 | W4 | Physics reads and pushes: `airborne`, `primed`, `on touchdown`, the sight table, `push`, `launch` | `vm.rs` (the sight table), `game/rules/world/physics.rs` (new), `game/superbounce_charge.rs` (the touchdown for every player), the `sb_strip` label source in `game/rules/census.rs`; `builtin/superbounce.rules`, `builtin/bounce_hunt.rules` | the sketch above scores the chain's recorded scenarios as `superbounce_chain_tests.rs` does; a `sees` pair answers one tick after it is asked and never from a handler; a push over the bound is a refused call | the Superbounce game type's chain and medals come from the script; `on bounce`, `on bounced` and the Rust chain are deleted only once the script gives the chain's awards on every scenario of its tests | W2, W3; R9 | 32 traces every tick: 0.25 ms |
-| W5 | Audio: `say`, `sound`, `music`, `announce` | `game/rules/world/audio.rs` (new), the `sound` and `line` types in `lang/*`, the tag table's sound group in `ir.rs` and `verify.rs` | a sound that is not in the map blocks the start by name; a `sound_to` cue reaches only its audience; the music slot starts a late machine at the right tick | a wave's stinger and an Elite's taunt play on every machine of a Live Firefight | W1; R4, R5 | 4 sounds every tick: 0.05 ms |
+| W5 | Audio (**partly built**): `sound_to`, `sound_to_team`, `sound_to_all`; `say`, `sound_at`, `music`, `announce` refused by name until R4 and R5 | `game/rules/world/audio.rs` (new), the `sound` and `line` types in `lang/*`, the tag table's sound group in `ir.rs` and `verify.rs` | a sound that is not in the map blocks the start by name; a `sound_to` cue reaches only its audience; the music slot starts a late machine at the right tick | a wave's stinger and an Elite's taunt play on every machine of a Live Firefight | W1; R4, R5 | 4 sounds every tick: 0.05 ms |
 | W6 | AI orders and the hand-written director: `go_to`, `hold`, `set_skull`, `firefight.rules` | `crates/tools/firefight-kit` (an order per zone), `game/actor_net/squads.rs`, `builtin/firefight.rules` (new), `crates/formats/firefight/src/script.rs` (fills tables) | every scenario of `crates/formats/firefight/tests` passes against the hand-written script; a squad sent to a zone gets that zone's order on the fake squad entry | Firefight runs from `firefight.rules`; the `ff_*` entries, `zone_seen`, `zone_distance` and `firefight.director` are deleted only once the script matches the generated director on every scenario | W2, W4, W5; Firefight's runs R1 to R4 | the script director with 24 actors: `rules.vm_ns` at most 0.4 ms, and the tick within 2% of the generated director's |
 | W7 | Bot orders (**built**) | `crates/live/bots/src/brain.rs`, `decisions.rs` (an outside order as the goal), `pad_source.rs`, `lib.rs`, `phantom.rs` (delivery), `game/rules/world/bots.rs` (new) | a phantom with `bot_hold` plans to the zone on a nav fixture (`bots::mind::tests`); playback makes no order (`rules::runtime::tests`); an order changes no `RulesExt` byte (`rules::vm::tests`, `rules::runtime::tests`) | Clankers hold the zones a Firefight script sends them to | W0 | 16 orders every tick: 0.02 ms on the game thread |
 | W8 | Vehicles and drop ships: `vehicle`, `path`, `fly`, `seat`, `place_squad_in`, `unload` | `rules/labels.rs` (`path`), `game/rules/world/vehicles.rs` (new), the kit's stage 2 and its labelled ship and paths in `crates/tools/firefight-kit` | a `path` with a gap blocks the start; a ship flies a path in the stated ticks, facing its tangent; riders are placed and unloaded on the fake | a Firefight wave arrives by drop ship on a kit map | W3, W6; R6, R7, R8 | a drop ship with 8 riders in flight: 0.2 ms |
@@ -653,8 +670,8 @@ on it:
 | R1 | What `GAME_ENGINE_AUTHORITATIVE` answers on a synchronous peer, and whether its `SCORE_ADD` applies there | W0 |
 | R2 | Whether `OBJECT_SET_TRANSFORM` marks the position flag for a host-moved object, by its `notify` argument | W3 |
 | R3 | Which object groups get an entity when the host makes or moves one (forge-design.md slice F3) | W3, W8 |
-| R4 | The body behind `sound_impulse_start` (`0x2a9e00`) for a positioned and an unpositioned one-shot | W5 |
-| R5 | The start and stop of a looping sound; how a retail game event is raised on the host | W5 |
+| R4 | The body behind `sound_impulse_start` (`0x2a9e00`) for a positioned and an unpositioned one-shot; a table of a map's dialogue names for `line` | W5 |
+| R5 | The start and stop of a looping sound; how a retail game event is raised on the host with a player; how the running game finds a sound tag by its path | W5 |
 | R6 | `vehicle_load_magic`, `vehicle_unload` and `vehicle_hover`: their evaluators and bodies; which vehicle `AI_SQUAD_PLACE`'s seat attempt uses | W8 |
 | R7 | Whether a vehicle's Havok body accepts a transform each tick without fighting it | W8 |
 | R8 | The kit's stage 2 transplant of a drop ship and its tag headroom on each map | W8 |

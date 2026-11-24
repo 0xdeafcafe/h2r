@@ -50,6 +50,7 @@ with `uses` holds header lines, `settings`, `quick` and `about` only.
 | `timer` | a global variable of ticks left; 0 is stopped; read and written as `time` |
 | `tag` | a tag path string (a table column or `set_loadout` argument) |
 | `weapon` | a tag path that must be a weapon's (checked against the weapon group at load); goes where a `tag` is wanted |
+| `sound` | a tag path that must be a sound's (`snd!`); the start gate blocks a map that lacks it, by name; goes where a `tag` is wanted |
 | `T?` | `player?`, `team?`, `object?`, `zone?`, `tag?`, `weapon?`: a handle that may be `none` |
 | `Class` | a kit class name string, for `place_squad` and `on actor_kill` |
 | `text` | a string-table index: `text 3` or a string |
@@ -265,6 +266,8 @@ game answers it from its `enter` and `leave` events.
 | `show_area` | zone, team (may be `none`) | none | now | named (the zone's boundary drawn in play in the team's colour, neutral for `none`; at most eight at once, a ninth is a script error; the round's end clears them) |
 | `hide_area` | zone | none | now | named (takes the zone's boundary off) |
 | `message` | player, team or `all`; text | `hud.message` | now | untraced |
+| `sound_to`, `sound_to_team`, `sound_to_all` | sound, player; sound, team; sound | `audio.play` | queued | named (played at each audience player's unit, and sent to every machine as a cue; a host with no sound-tag lookup refuses the script by the sound's path) |
+| `say`, `sound_at`, `music`, `music_stop`, `announce` | | `audio.play` | queued | not built, traced or untraced: refused by name (research R4, R5) |
 | `place_squad` | squad, Class, int, label | `ai.squads` | queued | named |
 | `place_squad_at` | squad, Class, int, int, int | `ai.squads` | queued | named |
 | `hunt`, `erase_squad` | squad | `ai.squads` | queued | named |

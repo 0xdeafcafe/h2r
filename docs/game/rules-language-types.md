@@ -60,6 +60,7 @@ the compiler cannot disagree.
 | `zone` | an `object` with a volume: a Forge trigger volume, or a netgame flag with its capture volume | `Object` |
 | `tag` | a tag path of any object definition | `Tag` |
 | `weapon` | a `tag` that must be a weapon | `Tag` |
+| `sound` | a `tag` that must be a sound (`snd!`); a string in a `sound` place is interned with the sound group, and the start gate blocks a map whose tag index lacks it, by name | `Tag` |
 | `class`, `text` | an AI class; a string-table text | `Class`, `Text` |
 | `enum` types | script-declared | `Enum(n)`; `Int` |
 | `timer` | a global variable's type; it reads and writes as `time` | `Timer` |
@@ -92,6 +93,7 @@ types. A test asserts each front-end signature erases to its entry's
 | `set_loadout(p, a, b)`, `give(p, w)` | `player, weapon?, weapon?`; `player, weapon` |
 | `spawn_areas(t, areas, n)`, `spawn_near(t, z, n)` | `team, spawns, int`; `team, zone?, int` (`none` lifts the rule) |
 | `set_body(t, body)` | `team, tag?` (`none` gives the players their own) |
+| `sound_to(s, p)`, `sound_to_team(s, t)`, `sound_to_all(s)`, `sound_at(s, o)`, `music(s)` | `sound, player`; `sound, team`; `sound`; `sound, object`; `sound` |
 | `show_area(z, t)`, `hide_area(z)` | `zone, team?` (`none` is neutral); `zone` |
 | `place_squad(s, c, n, at)` | `squad, class, int, objects` |
 | `round_time_left()`, `now()`, `seconds(n)` | `-> time`; `int -> time` |
@@ -648,7 +650,7 @@ does not verify.
 | Table | Holds, in encoding order |
 |---|---|
 | label (`LabelDef`) | text (a string); kind, a byte (`LabelKind`: 1 object, 2 zone, 3 spawn); `min` and `max` members, two `u16`s, `max` at most 256 (`ty::MAX_LABELLED`, which states no limit); flags, a byte (`ir::label_flags`: 1 single, 2 numbered, 4 number range, 8 per team); the number range `lo` and `hi`, two `i32`s, inclusive, both 0 without the range flag |
-| tag (`TagDef`) | path (a string); group, a byte (`TagGroup`: 0 any object, 1 weapon) |
+| tag (`TagDef`) | path (a string); group, a byte (`TagGroup`: 0 any object, 1 weapon, 2 sound) |
 
 A single label is `max` 1 with the single flag and no other, and `min` 0
 when it is optional (`object?`). Decoding refuses an unknown kind or

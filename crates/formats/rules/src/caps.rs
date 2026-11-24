@@ -60,6 +60,7 @@ pub const CAPABILITIES: &[Capability] = &[
     cap("ai.squads", "places and commands AI", false),
     cap("bots.orders", "gives bots orders", false),
     cap("hud.message", "shows messages", false),
+    cap("audio.play", "plays sounds, dialogue and music", false),
     cap(
         "hud.superbounce",
         "shows the superbounce guide: a priming HUD, marks over the map and bounce medals",
@@ -300,6 +301,14 @@ pub mod id {
     pub const SET_BODY: u16 = 76;
     pub const SHOW_AREA: u16 = 77;
     pub const HIDE_AREA: u16 = 78;
+    pub const SAY: u16 = 79;
+    pub const SOUND_AT: u16 = 80;
+    pub const SOUND_TO: u16 = 81;
+    pub const SOUND_TO_TEAM: u16 = 82;
+    pub const SOUND_TO_ALL: u16 = 83;
+    pub const MUSIC: u16 = 84;
+    pub const MUSIC_STOP: u16 = 85;
+    pub const ANNOUNCE: u16 = 86;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -471,6 +480,26 @@ pub const ENTRIES: &[Entry] = &[
     // (`game::rules::world::walls`). A display only, so no capability.
     act(id::SHOW_AREA, "show_area", &[Object, Team], None, Now, Named),
     act(id::HIDE_AREA, "hide_area", &[Object], None, Now, Named),
+    // Audio (docs/game/rules-world-api.md, "Audio"). A sound is a `sound`
+    // tag of the map; a `sound_to*` plays it at each audience player's own
+    // unit, by the game's own sound start at the unit's head marker (the
+    // path a replicated dialogue line takes), and rides the show channel as
+    // a sound cue to every machine (`game::rules::world::audio`). The
+    // entries the research rows R4 and R5 leave open are listed so a script
+    // naming one is refused by its name: `say` needs a table of a map's
+    // dialogue names (no `line` type yet), `sound_at` the body of
+    // `sound_impulse_start` (R4), and `music`, `music_stop` and `announce`
+    // the start and stop of a looping sound and the raising of a retail game
+    // event with a player (R5). `announce`'s first argument is the retail
+    // event's kind number until R5 names them.
+    act(id::SAY, "say", &[Object, Text], Some("audio.play"), Queued, Status::NotBuilt),
+    act(id::SOUND_AT, "sound_at", &[Tag, Object], Some("audio.play"), Queued, Traced),
+    act(id::SOUND_TO, "sound_to", &[Tag, Player], Some("audio.play"), Queued, Named),
+    act(id::SOUND_TO_TEAM, "sound_to_team", &[Tag, Team], Some("audio.play"), Queued, Named),
+    act(id::SOUND_TO_ALL, "sound_to_all", &[Tag], Some("audio.play"), Queued, Named),
+    act(id::MUSIC, "music", &[Tag], Some("audio.play"), Queued, Untraced),
+    act(id::MUSIC_STOP, "music_stop", &[], Some("audio.play"), Queued, Untraced),
+    act(id::ANNOUNCE, "announce", &[Int, Player], Some("audio.play"), Queued, Traced),
 ];
 
 /// The word `message(to, text)` takes for everyone.
@@ -891,6 +920,33 @@ mod tests {
         assert_eq!(entry(id::BOT_FOLLOW, API_VERSION).unwrap().args, &[Player, Player]);
         assert_eq!(entry(id::BOT_FREE, API_VERSION).unwrap().args, &[Player]);
         let c = capability("bots.orders", API_VERSION).unwrap();
+        assert!(!c.grantable);
+        assert_eq!(
+            crate::policy::eligible(&[c.name.to_string()], API_VERSION),
+            ["custom", "hopper", "ranked"]
+        );
+    }
+
+    #[test]
+    fn audio_builds_the_sound_to_entries_and_refuses_what_r4_and_r5_leave_open() {
+        for name in ["sound_to", "sound_to_team", "sound_to_all"] {
+            let e = entry_named(name).unwrap();
+            assert_eq!(e.kind, Kind::Action, "{name}");
+            assert_eq!(e.order, Order::Queued, "{name}");
+            assert_eq!(e.cap, Some("audio.play"), "{name}");
+            assert!(e.status.hostable(), "{name}");
+            assert_eq!(e.args[0], Tag, "{name}");
+        }
+        assert_eq!(entry(id::SOUND_TO, API_VERSION).unwrap().args, &[Tag, Player]);
+        assert_eq!(entry(id::SOUND_TO_TEAM, API_VERSION).unwrap().args, &[Tag, Team]);
+        assert_eq!(entry(id::SOUND_TO_ALL, API_VERSION).unwrap().args, &[Tag]);
+        // Each open entry is listed and no host makes it.
+        for name in ["say", "sound_at", "music", "music_stop", "announce"] {
+            let e = entry_named(name).unwrap();
+            assert_eq!(e.cap, Some("audio.play"), "{name}");
+            assert!(!e.hostable_on(0), "{name}");
+        }
+        let c = capability("audio.play", API_VERSION).unwrap();
         assert!(!c.grantable);
         assert_eq!(
             crate::policy::eligible(&[c.name.to_string()], API_VERSION),
