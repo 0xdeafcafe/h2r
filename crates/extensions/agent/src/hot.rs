@@ -8,9 +8,9 @@
 //! never inside one. The render methods only talk to the hub; the renderer
 //! picks changes up at its next frame.
 //!
-//! Raw edits (`raw` and `evict` in `edit.batch`, `edit.raw.append`,
-//! `edit.stage.put`, `edit.overlay`; docs/editor/realtime-edits.md) go
-//! through the editor's `hot_tags::RawFiles`, which the game's glue
+//! Raw edits (`raw` and `evict` in `edit.batch`, for sections, pixels and
+//! sound chunks; `edit.raw.append`, `edit.stage.put`, `edit.overlay`;
+//! docs/editor/realtime-edits.md) go through the editor's `hot_tags::RawFiles`, which the game's glue
 //! installs; bytes are base64 or `{stage, at, len}` naming staged bytes.
 //!
 //! Block moves (`moves` in `edit.batch`, `edit.arena`) copy a grown tag
