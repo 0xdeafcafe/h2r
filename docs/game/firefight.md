@@ -537,6 +537,7 @@ h2 firefight kit coagulation
 h2 firefight kit beavercreek
 h2 firefight kit beavercreek --home blue --replace
 h2 firefight kit coagulation --probe
+h2 firefight kit beavercreek --classes my-classes.txt --cut
 ```
 
 The first command installs `<data>/maps/firefight-coagulation`. `--home
@@ -558,10 +559,20 @@ what its closure adds over the base and the classes before it; sounds
 bring their entries into the base's `ugh!` gestalt, and a class with
 sounds is refused when the base or the donor has no gestalt. The
 package id follows the base, the kit version and the list in order, so
-two machines with the same donors and list build the same id. `h2
-firefight kit` does not pass classes yet, and the retail class table
-(which donor and which `char` path gives a Grunt, a Jackal, a Brute) is
-not built: the census goes in notes.
+two machines with the same donors and list build the same id.
+
+`h2 firefight kit` builds the list from the player's own disc
+(`crates/apps/h2-tools/src/firefight_cmd.rs`). Each class is `--class
+NAME=DONOR:CHAR_PATH`, where DONOR is a campaign map on the disc and
+CHAR_PATH the `char` tag's name in it; `--classes FILE` reads one such
+class per line (blank lines and `#` comments skipped). The order of the
+flags and lines is the keep order, `--cut` sets `cut_to_fit`, and the
+command prints each class's cost and what it cut. Donor maps are read
+from the disc at run time and the schema is `Schema::builtin()`; a class
+name listed twice, or `--probe` with classes, is refused. The retail class
+table (which donor and which `char` path gives a Grunt, a Jackal, a Brute)
+is not in the repository: the player writes it from their own maps, and the
+census goes in notes.
 
 **The cost and the cut order.** `Package::classes` gives each class's
 tags, sounds and tag bytes (the copied tags and their index entries; the
