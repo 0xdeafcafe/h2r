@@ -4,7 +4,8 @@ use super::{
     layout::{context, record},
     plan_context, plan_vector,
 };
-use runtime::CpuAbi;
+use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
+use sim_collision::Entry;
 use sim_collision::GuestRead;
 use std::{cell::RefCell, collections::HashMap};
 
@@ -100,21 +101,51 @@ thread_local! {
     static OPEN: RefCell<HashMap<u32, Prediction>> = RefCell::default();
 }
 
-pub fn begin(thread: u32, c: &CpuAbi, g: &mut runtime::Guest, world: &CollisionWorld) {
-    let predicted = if g.has_trap() {
-        Err(Bail::Trap)
+fn plan(c: &CpuAbi, g: &mut Guest, world: &CollisionWorld, entry: Entry) -> Result<Plan, Bail> {
+    if g.has_trap() {
+        return Err(Bail::Trap);
+    }
+    if !crate::sim_native::supported(c) {
+        return Err(Bail::Env);
+    }
+    if entry == Entry::VectorContext {
+        plan_context(c, g, world)
     } else {
-        Prediction::gather(c, g, world)
-    };
-    OPEN.with_borrow_mut(|calls| {
-        calls.remove(&thread);
-        match predicted {
-            Ok(p) => {
-                calls.insert(thread, p);
+        plan_vector(c, g, world)
+    }
+}
+
+/// Commit a fully replayable exit, or keep the prediction for the
+/// lifted return. Native answers never feed the parity counters.
+pub fn dispatch_vector(
+    thread: u32,
+    c: &mut CpuAbi,
+    g: &mut Guest,
+    world: &CollisionWorld,
+) -> Result<Option<TransferAbi>, GuestFault> {
+    OPEN.with_borrow_mut(|calls| calls.remove(&thread));
+    let entry = Entry::VectorTest;
+    let predicted = match plan(c, g, world, entry) {
+        Ok(p) => {
+            if let Some(walk) = p.outcome.straight {
+                let ret = super::straight::commit(c, g, &p, walk)?;
+                world.record(entry, &Ok(()));
+                return Ok(Some(ret));
             }
-            Err(why) => world.record_vector(Err(why)),
+            Prediction::from_plan(p, g)
         }
-    });
+        Err(why) => Err(why),
+    };
+    match predicted {
+        Ok(p) => OPEN.with_borrow_mut(|calls| {
+            calls.insert(thread, p);
+        }),
+        Err(why) => {
+            world.record::<()>(entry, &Err(why));
+            world.record_vector(Err(why));
+        }
+    }
+    Ok(None)
 }
 
 pub fn end(thread: u32, c: &CpuAbi, g: &runtime::Guest, world: &CollisionWorld) {
@@ -128,33 +159,53 @@ pub fn end(thread: u32, c: &CpuAbi, g: &runtime::Guest, world: &CollisionWorld) 
 }
 
 /// The recursive call is already included in the outer kernel walk.
-pub fn begin_context(thread: u32, c: &CpuAbi, g: &mut runtime::Guest, world: &CollisionWorld) {
+pub fn dispatch_context(
+    thread: u32,
+    c: &mut CpuAbi,
+    g: &mut Guest,
+    world: &CollisionWorld,
+) -> Result<Option<TransferAbi>, GuestFault> {
     let return_sp = c.esp.wrapping_add(4 + super::layout::VECTOR_ARGS);
-    let trapped = g.has_trap();
+    let caller = if g.has_trap() {
+        None
+    } else {
+        Read(&*g, (0, 0)).u32(c.esp).ok()
+    };
     CONTEXT.with_borrow_mut(|calls| {
-        let recursive = if trapped {
-            // Keep a pending parent when the trap precludes reading the call site.
-            calls.get(&thread).is_some_and(|(sp, _)| return_sp < *sp)
-        } else {
-            Read(&*g, (0, 0)).u32(c.esp) == Ok(super::layout::CONTEXT_RECURSIVE_RETURN)
-        };
-        if recursive {
-            return;
+        // The recursive near child belongs to the lifted parent's
+        // differential. Its return must leave the parent pending.
+        if caller == Some(super::layout::CONTEXT_RECURSIVE_RETURN)
+            || (caller.is_none() && calls.get(&thread).is_some_and(|(sp, _)| return_sp < *sp))
+        {
+            return Ok(None);
         }
-        let result = if trapped {
-            Err(Bail::Trap)
-        } else {
-            Prediction::gather_context(c, g, world)
+        calls.remove(&thread);
+        let entry = Entry::VectorContext;
+        let predicted = match plan(c, g, world, entry) {
+            Ok(p) => {
+                // C's oracle must also run its D callee lifted.
+                let in_vector_oracle = caller == Some(super::straight::WRAPPER_AFTER_WALK)
+                    && OPEN.with_borrow(|v| v.contains_key(&thread));
+                if let Some(walk) = p.outcome.straight.filter(|_| !in_vector_oracle) {
+                    let ret = super::straight::commit(c, g, &p, walk)?;
+                    world.record(entry, &Ok(()));
+                    return Ok(Some(ret));
+                }
+                Prediction::from_plan(p, g)
+            }
+            Err(why) => Err(why),
         };
-        let prediction = match result {
+        let prediction = match predicted {
             Ok(p) => Some(p),
             Err(why) => {
+                world.record::<()>(entry, &Err(why));
                 world.record_context(Err(why));
                 None
             }
         };
         calls.insert(thread, (return_sp, prediction));
-    });
+        Ok(None)
+    })
 }
 
 pub fn end_context(thread: u32, c: &CpuAbi, g: &runtime::Guest, world: &CollisionWorld) {
@@ -201,7 +252,11 @@ mod tests {
         CONTEXT.with_borrow_mut(|calls| {
             calls.insert(7, (outer_return, Some(p)));
         });
-        begin_context(7, &cpu, &mut g, &world);
+        assert!(
+            dispatch_context(7, &mut cpu, &mut g, &world)
+                .unwrap()
+                .is_none()
+        );
         cpu.esp += 4 + super::super::layout::VECTOR_ARGS;
         end_context(7, &cpu, &g, &world);
         assert_eq!(world.stats().context, Default::default());
