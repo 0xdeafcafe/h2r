@@ -1091,6 +1091,7 @@ dependencies = [
  "voice",
  "windows-sys 0.61.2",
  "wma",
+ "workspace",
  "xbe",
  "xiso",
 ]
