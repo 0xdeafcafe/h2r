@@ -271,7 +271,7 @@ pub const METHODS: &[MethodDef] = &[
         "Open a tag of the open map as a tab, in the editor its group gets (the scenario tag is the map's own tab), and bring it to the front. With map, that map opens first (refused over unsaved edits unless discard); a map alone brings its tab forward",
         r#"{"tag?":"string|integer (an id, group:path, path.group or a group with one tag)","map?":"string","discard?":"boolean"}"#,
         r#"{"tab":"{doc,kind,title,tool,dirty,can_undo,can_redo,front,...}","front":"string|null","log":"[string]"}"#,
-        r#"{"tag":"itmc:objects\test\kit"}"#,
+        r#"{"tag":"itmc:objects\\test\\kit"}"#,
     ),
     def(
         m::SHELL_FOCUS,

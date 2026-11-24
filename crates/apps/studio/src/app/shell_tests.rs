@@ -37,7 +37,7 @@ group weap 0x10
 ",
         )
         .unwrap();
-        defs.parse_into("test-items", "group itmc 0x10\n  0x8 u32 count\n")
+        defs.parse_into("test-items", "group itmc 0x10\n  0x0 pad 0x8\n  0x8 u32 count\n  0xc pad 0x4\n")
             .unwrap();
         Registry::build(&schema, &defs)
     })
