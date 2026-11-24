@@ -1584,6 +1584,10 @@ impl hooks::Feature for SimMetrics {
         me.lock().pages.enabled = page_census;
         let full_detail = me.matched.config.detail().tally() == Detail::Full;
         let traces = me.matched.config.detail().traces();
+        // The Havok heap walk (docs/engine/sim-rewrite-havok.md §9.2): the
+        // arena hash cannot cover the heap, so its digest joins the named
+        // components when the report has them.
+        let havok_digest = full_detail && me.matched.config.components != Some(false);
         b.frame().on_tick("sim: tick sample", move |o| {
             if !matches!(me.lock().phase, Phase::Playing | Phase::Binding) {
                 return;
@@ -1633,6 +1637,9 @@ impl hooks::Feature for SimMetrics {
             };
             // A handful of reads (docs/runtime/sim.md §6, `guest_census`).
             let census = crate::sim_census::read(&*g);
+            let havok = havok_digest
+                .then(|| live_telemetry::havok_agents::digest::read(&*g).ok())
+                .flatten();
             drop(g);
             let ground = spatial::MapGround::when(traces);
             let mut s = me.lock();
@@ -1672,7 +1679,19 @@ impl hooks::Feature for SimMetrics {
                     // `detail = "training"` or "spatial" leaves it out too,
                     // with all but a sparse few of the digests.
                     if full_detail && me.matched.config.components != Some(false) {
-                        let components = state_hash::components(&snap, rng);
+                        let mut components = state_hash::components(&snap, rng);
+                        // The Havok walk names the first tick where physics
+                        // differs when the arena hash cannot.
+                        let havok = havok.map_or_else(
+                            || "unreadable".to_owned(),
+                            |d| {
+                                format!(
+                                    "hash={:016x} bodies={} constraints={} pairs={} heap={}",
+                                    d.hash, d.bodies, d.constraints, d.pairs, d.heap_used
+                                )
+                            },
+                        );
+                        components.push(("havok.world".into(), havok));
                         s.tally
                             .tick_components_blocks(tick, arena_base, components, &arena_blocks);
                     }
