@@ -8,7 +8,7 @@ use crate::threaded::owner::Outputs;
 
 pub(crate) trait SceneDevice: Backend {
     /// Does the physical copy select the same projection for typed and carried draws?
-    fn can_replay_flare(&self, _draw: &crate::ResolvedDraw) -> bool { true }
+    fn can_replay_admission(&self, _draw: &crate::ResolvedDraw) -> bool { true }
 
     fn record_scene_stage(
         &mut self,
@@ -80,7 +80,7 @@ impl<B: SceneDevice> Commands<B> {
         external: &crate::scene_sink::RetainedExternal,
         handles: &[Option<B::Texture>; 4],
     ) -> bool {
-        if !gpu.can_replay_flare(draw) {
+        if !gpu.can_replay_admission(draw) {
             return false;
         }
         let Some(surfaces) = external.resolve(draw, targets, bound, display, scale) else {
@@ -165,10 +165,11 @@ impl<B: SceneDevice> Commands<B> {
                         }
                     };
                 }
-                if let Some(external) = external
-                    && self.draw_external(gpu, targets, display, scale, (colour, depth), draw, external, &handles)
-                {
-                    return Ok(());
+                if let Some(external) = external {
+                    if self.draw_external(gpu, targets, display, scale, (colour, depth), draw, external, &handles) {
+                        return Ok(());
+                    }
+                    external.plan.stage.count(timeline::native::Metric::RefusedReplay, 1);
                 }
                 drawn(gpu.draw(colour, depth, draw, handles.each_ref().map(Option::as_ref))?)?;
             }

@@ -635,9 +635,9 @@ mod tests {
         for (slot, build, record, mask) in [
             (0, GEOMETRY_BUILD, 1, seven),
             (1, GEOMETRY_BUILD, 1, seven),
-            (2, GEOMETRY_BUILD, 4, seven | 1 << 3),
+            (2, GEOMETRY_BUILD, 4, seven | 1 << 3 | 1 << 2),
             (3, GEOMETRY_BUILD, 2, seven),
-            (4, 0x0001_2340, 1, seven),
+            (4, 0x0001_2340, 1, seven | 1 << 2),
             (5, GEOMETRY_BUILD, 2, 1 << 5),
         ] {
             let at = ITEMS + ITEM_SIZE * slot;
@@ -653,6 +653,9 @@ mod tests {
         // The first person's items carry their owner's lighting.
         let first_person = layer(&m, 7, true, &mut b).unwrap().unwrap();
         assert_eq!(first_person, got);
+        b.open_view(ViewKey { kind: ViewKind::Alternate, player: 0, view: 0 }, camera(&m).unwrap()).unwrap();
+        let overlay = layer(&m, 2, true, &mut b).unwrap().unwrap();
+        assert_eq!(overlay, Layer { items: 1, remainder: 1 });
         let s = b.seal(Stamp::default()).unwrap();
         s.check().unwrap();
         let v = &s.views[0];
@@ -673,6 +676,9 @@ mod tests {
         let lit = &s.items_of(&passes[1])[1];
         assert_eq!(lit.lighting, read_object(&m, a).unwrap().lighting);
         assert_eq!(s.counts(v).layers, [(7, 3, 1), (7, 3, 1)]);
+        let alternate = &s.views[1];
+        assert_eq!(s.counts(alternate).layers, [(2, 1, 1)]);
+        assert_eq!(s.items_of(&s.layers_of(alternate)[0])[0].owner, LayerOwner::Object(InstanceKey(a)));
         m.w(CURRENT_LIST, 0);
         let mut b = SceneBuilder::default();
         view(&mut b, &m);

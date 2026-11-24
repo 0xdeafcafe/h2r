@@ -233,7 +233,8 @@ hundred kilobytes at most (**Estimate**).
 | Gels | the template and quad sites | carried, then typed | 6, 9 |
 | Transparents | the sorted list `0x0001e370` dispatches | carried, then typed | 6, 9 |
 | Decals, particles, contrails, effects | the producers' draws | carried, then typed | 6, 9 |
-| Sky, the alternate view's layer 2, layers 15, 18, 19, 21 | their draws | carried | 6 |
+| Sky model | per-view node rows, section part and layer-15 material at its indexed strip (see [native-renderer.md](native-renderer.md)) | typed with packet fallback | 6 |
+| Other layer-15 draws, layers 18, 19, 21 | their draws | carried | 6 |
 | Lens flares and their visibility tests | the flare writer `0x00020bb0` and reader `0x00020770` | typed (a native query) | 6 |
 | HUD, menus, loading screens, movies | the UI dispatch `0x00147af1`, the fallback view `0x002232a0` | carried | 6 |
 
@@ -1040,14 +1041,15 @@ to the guest's draws (**Code**):
     Before a scene view's layer draw (`layer_site` is `Site::Scene`; the
     overlay layer 2 after the dynamic lights at `0x0002c060`,
     `layer_pass::OVERLAY_LAYER`, and the late layer 17 at `0x0002c30b`,
-    `layer_pass::BLOOM_LAYER`, among them), before the first person's
+    `layer_pass::BLOOM_LAYER`, among them), before the alternate view's layer 2
+    (`Site::AlternateView`, return `0x0002bda8`), before the first person's
     layers 1, 7, 8, 20 and 2 (`Site::FirstPerson`, its layer 2 returning
     to `0x00040289`; its layer 3 is `native_first_person`'s), and before the sorted
     transparent list's camouflage layers 18 and 19 and hologram layer 21 (`sorted_site`,
     [native-water-fog.md](native-water-fog.md)), the bridge extracts the
     layer's pass from guest memory and the host plans it
     (`render_bridge::native_layers::caller`). A structure item (the
-    scene's caller only) is drawn when it is a cluster's or a
+    main or alternate scene caller) is drawn when it is a cluster's or a
     placement's and the layer's set draws its part with its shader.
     The set compiles game-time constant bindings with a time-zero sample
     to check the registers the program reads. At each layer call the
@@ -1119,7 +1121,7 @@ to the guest's draws (**Code**):
     stage cannot draw. Each ask's outcomes are counted in `render.scene`
     as `layer_plan_<layer>_taken` and
     `layer_plan_<layer>_refused_<cause>` (the first person's as
-    `layer_plan_fp<layer>_*`, a sorted handler's as
+    `layer_plan_fp<layer>_*`, the alternate view's as `layer_plan_alt2_*`, a sorted handler's as
     `layer_plan_sorted<layer>_*`): the plan's causes
     (`LayerRefusal::name`, `per_draw` for a material resolved per draw),
     extraction's object causes (`LayerObjectRefusal::name`,

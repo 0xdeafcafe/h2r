@@ -668,6 +668,21 @@ mod retained_admission {
     }
 
     #[test]
+    fn the_sky_strip_keeps_its_stencil_write_on_replay() {
+        let o = capture(false, |admission, draw, _| {
+            admission.plan.stage = Stage::Sky;
+            draw.target.depth_format = Some(D3DFormat::LinD24S8);
+            draw.state.render.stencil.enable = true;
+            draw.state.render.stencil.write_mask = 0xff;
+            draw.state.render.stencil.pass = gfx::state::StencilOp::Replace;
+            admission.packet = Arc::new(draw.clone());
+        });
+        assert!(o.submitted.writes_depth_stencil());
+        assert_eq!(o.external.unwrap().plan.stage, Stage::Sky);
+        assert_eq!((o.issued, o.replay_draws), (1, 1));
+    }
+
+    #[test]
     fn every_inexact_admission_still_draws_the_packet_once_with_its_own_outcome() {
         type Case = fn(&mut RetainedAdmission<u32>, &mut ResolvedDraw, [u32; 3]);
         let cases: [(&str, bool, Case); 7] = [
@@ -675,8 +690,8 @@ mod retained_admission {
                 a.pass = Arc::new(Mutex::new(Box::new(Flare(false)) as Box<dyn ExternalPass>));
             }),
             ("packet differs from the submitted draw", false, |_, d, _| d.entry = "adapted"),
-            ("only flares are retained: particles", false, |a, _, _| a.plan.stage = Stage::Particles),
-            ("only flares are retained: world", false, |a, _, _| a.plan.stage = Stage::World),
+            ("unretained stage: particles", false, |a, _, _| a.plan.stage = Stage::Particles),
+            ("unretained stage: world", false, |a, _, _| a.plan.stage = Stage::World),
             ("sampled levels need their own replay samples", false, |a, _, s| a.surfaces.sampled.push(s[2])),
             ("admission bound other attachments", false, |a, _, s| a.surfaces.depth = s[2]),
             ("guest reference requested", true, |_, _, _| {}),

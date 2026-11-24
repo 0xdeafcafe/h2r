@@ -6267,8 +6267,8 @@ impl<B: Backend> Device<B> {
                 None
             };
             let pass = Arc::new(std::sync::Mutex::new(pass));
-            // Only the flares' colour draws travel with their packet.
-            if plan.stage == timeline::native::Stage::Flares
+            // These passes can record again on replay's attachments.
+            if matches!(plan.stage, timeline::native::Stage::Flares | timeline::native::Stage::Sky)
                 && let Some(packet) = &fallback
             {
                 retained = Some(crate::backend::RetainedAdmission {

@@ -910,6 +910,8 @@ points! { ALL;
     RENDER_SCENE_PASSES @ 0x0002_bcd0: [opaque]; "docs/graphics/e3-lighting.md";
     /// Water compositing after the scene's layer 6.
     WATER_TEARDOWN @ 0x0003_c3c0: [opaque]; "docs/graphics/native-water-fog.md";
+    /// Selects the current view's sky and draws its model.
+    RENDER_SKY @ 0x0003_ede0: [opaque]; "docs/graphics/native-renderer.md";
     /// Resets the record counters immediately before the two structure walks.
     RESET_SCENE_RECORDS @ 0x0002_cb30: [fn() ret 0]; "docs/graphics/occlusion-culling.md";
     /// Main view's visible structure cluster and placement record walks.
