@@ -450,6 +450,29 @@ impl Session {
         self.edit(world, tick, ops, None)
     }
 
+    /// Give an item spawner the game types `set` ([`props::games_ops`]):
+    /// one `EntryOp::Set` of each slot that changes, in one undo step. A
+    /// set it already has writes nothing.
+    pub fn set_games(
+        &mut self,
+        world: &mut impl World,
+        tick: u32,
+        id: Endpoint,
+        set: forge_doc::games::GameSet,
+    ) -> Result<(), String> {
+        self.restore(world)?;
+        let thing = self.thing(id).ok_or(NO_THING)?;
+        let edits: Vec<_> = props::games_ops(&thing, set)?
+            .into_iter()
+            .map(Edit::Entry)
+            .collect();
+        if edits.is_empty() {
+            return Ok(());
+        }
+        let ops = self.ops(edits)?;
+        self.edit(world, tick, ops, None)
+    }
+
     /// Remove a thing, own or added. A linked entry cannot be removed, so
     /// its links end in the same undo step. In the world an own entry's row
     /// is made inert, and an undo writes the kept row back.

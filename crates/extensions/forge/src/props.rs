@@ -4,6 +4,7 @@
 //! thing and the one `EntryOp::Set` it writes. A field the design gives a
 //! row only once something else is done (the game types, the respawn
 //! trigger, spare clips, a weight) is absent until then.
+use forge_doc::games::{self, GameSet};
 use forge_doc::{BlockKind, EntryOp, FieldWrite, Value};
 use map::scenario_layout::{self as layout, FieldDef, Role};
 
@@ -145,4 +146,58 @@ impl Prop {
             },
         })
     }
+}
+
+/// The fields of an item spawner's four game-type slots.
+pub const GAME_SLOTS: [&str; 4] = ["game type 1", "game type 2", "game type 3", "game type 4"];
+
+/// The game types of an item spawner, from its four slots: none for another
+/// kind of thing, a thing whose block lacks the slots, or a slot the table
+/// does not know, which is shown as it is and not edited
+/// ([`games::decode`]).
+pub fn games(thing: &Thing) -> Option<GameSet> {
+    if thing.kind != ThingKind::ItemSpawner {
+        return None;
+    }
+    let slots: Option<Vec<i16>> = GAME_SLOTS
+        .iter()
+        .map(|name| match thing.fields.iter().find(|(f, _)| f == name) {
+            Some((_, Value::Int(v))) => i16::try_from(*v).ok(),
+            _ => None,
+        })
+        .collect();
+    games::decode(&slots?)
+}
+
+/// The ops that give an item spawner the game types `set`: one
+/// `EntryOp::Set` of each slot that changes, none when the set is the
+/// one it has. A thing that has no editable game types, and a set the slots
+/// cannot name ([`games::encode`]), are refused by their sentence.
+pub fn games_ops(thing: &Thing, set: GameSet) -> Result<Vec<EntryOp>, String> {
+    let have = games(thing).ok_or_else(|| {
+        format!("This {} has no game types to edit.", thing.kind.name())
+    })?;
+    let slots = games::encode(set).map_err(|e| e.to_string())?;
+    if have == set {
+        return Ok(Vec::new());
+    }
+    let def = layout::block(thing.block);
+    let mut ops = Vec::new();
+    for (name, slot) in GAME_SLOTS.iter().zip(slots) {
+        if !def.field(name).is_some_and(|f| f.editable) {
+            return Err(format!("This {} has no game types to edit.", thing.kind.name()));
+        }
+        let value = Value::Int(i64::from(slot));
+        let held = thing.fields.iter().find(|(f, _)| f == name).map(|(_, v)| v);
+        if held != Some(&value) {
+            ops.push(EntryOp::Set {
+                target: thing.id,
+                write: FieldWrite {
+                    field: (*name).into(),
+                    value,
+                },
+            });
+        }
+    }
+    Ok(ops)
 }
