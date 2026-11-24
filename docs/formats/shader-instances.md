@@ -142,7 +142,28 @@ the shapes match in every disc tag. The engine bounds-checks each level
 |---|---|---|
 | `40`, `4c` | `shad` references (usually null) | U; D resolve or are null |
 | `58` | compiled postprocess T, stride 0x28 | E `0x00016bf4`; D exactly 1 element |
+| `10`, `18` | named blocks in Assembly's plugin: properties (stride 8, a string id at `+4`), categories (stride 0xc, a name and a parameter block of stride 0x34 with a name string id) | R, not read here; whether a disc tag keeps them is not checked (below) |
 | rest | raw | U |
+
+**Parameter names (R).** Assembly's Halo 2 `stem` plugin
+(`src/Assembly/Plugins/Halo2/stem.xml` in the public XboxChaos/Assembly
+repository; the folder is the Halo 2 plugin for retail layouts, there is no
+Xbox-specific `stem.xml`, and the Xbox `shad.xml` is the instance side) names
+the root as: `+0x10` properties, `+0x18` categories (each with a parameters
+block holding the parameter names and types), `+0x20` light response, `+0x28`
+LODs, `+0x40` and `+0x4c` "Aux 1/2 Shader" references with a layer enum
+after each, and `+0x58` the postprocess definition (stride 0x28, the same
+five blocks as above). The last three agree with `defs/stem.txt` and the
+engine reads. So the parameter and category blocks are at `+0x10` and
+`+0x18`, not at `+0x40` and `+0x4c`, which are shader references. The same
+plugin's Xbox `shad.xml` names a `Parameters` block at `shad +0x18` (name,
+type, bitmap, value, animation), which `defs/shad.txt` has as 8 padding
+bytes; if the stem blocks are emptied the same way, a retail cache keeps no
+names. Nothing here says how a binding's `source` index (into the
+instance's bitmaps, colours and vectors) maps to a parameter row, which
+would need the order the compiler emitted. Until both are read from a real
+tag (the counts at `stem +0x14` and `+0x1c`, the string ids resolved
+against the map's string table), the editor names slots by kind and index.
 
 Postprocess T (0x28):
 
@@ -395,7 +416,7 @@ that column's condition. [Shadow census](../graphics/notes/e3-lighting.md).
   each implementation. Engine dimension modes read 0×0 when the stage's
   size is unknown (engine sources) or still zero.
 - **Unread fields** (marked U) are preserved but have no meaning assigned.
-  These are `shad +0x0c/+0x2c/+0x34`, `P +0x5c..+0x7c`, `stem +0x40/+0x4c`,
+  These are `shad +0x0c/+0x2c/+0x34`, `P +0x5c..+0x7c`, `stem +0x40/+0x4c` (Aux shaders),
   LOD `+6`, the variant `u16`/`u8`, and implementation
   `+0xf8/+0x118/+0x126`.
 - Deferred render-state names (92-135) follow the XDK order only. Names
