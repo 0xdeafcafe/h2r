@@ -1492,7 +1492,7 @@ fn run_configured(
     // Sim match metrics and match.* on the agent.
     if let Some(s) = &sim_mode {
         let playback = film.as_ref().filter(|f| f.has_engine_track()).map(|_| replaying);
-        s.install_with_film(&mut features, playback)?;
+        s.install_with_audio(&mut features, playback, ds.as_ref().map(|a| Arc::clone(&a.hle)))?;
         if let Some(a) = &agent {
             s.add_methods(&a.agent);
         }

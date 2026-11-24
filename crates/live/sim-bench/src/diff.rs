@@ -743,6 +743,26 @@ mod tests {
     }
 
     #[test]
+    fn voice_order_and_grid_differ_even_when_gameplay_components_agree() {
+        let reference = "32 callback 1 2 3 0\n32 callback 1 2 4 0\n";
+        let recorded = |events| report(Some(series(&[
+            (10, &[("sound.voices", ""), ("rng.seed", "aa")]),
+            (11, &[("sound.voices", events)]),
+        ])));
+        assert_eq!(diff(&recorded(reference), &recorded(reference)), Verdict::Identical { ticks: 2 });
+        for other in [
+            "32 callback 1 2 4 0\n32 callback 1 2 3 0\n",
+            "32 callback 1 2 3 0\n64 callback 1 2 4 0\n",
+        ] {
+            let Verdict::Components(d) = diff(&recorded(reference), &recorded(other)) else {
+                panic!("expected a voice divergence");
+            };
+            assert_eq!(d.tick, 11);
+            assert_eq!(d.differences[0].component, "sound.voices");
+        }
+    }
+
+    #[test]
     fn an_unchanged_component_that_differs_earlier_is_not_reported_later() {
         // The component is equal in both until tick 3, where only b changes.
         let a = series(&[(1, &[("rng.seed", "1")]), (2, &[]), (3, &[])]);

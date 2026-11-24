@@ -348,6 +348,16 @@ room curve for general I3DL2 inputs. Nonzero source rolloff with finite
 
 ### Notification and callback contracts
 
+For a full sim parity report, `DirectSound` records buffer plays and ends,
+synchronized releases, stream starts, packet submissions and completions,
+and effective frequency changes. It records completion after both guest
+writes succeed. The HLE also records successful event signals and dispatch
+of each guest callback, including callbacks deferred to a later tick.
+Entries keep dispatch order and the output frame of each event. Buffer
+ends share their mix quantum's closing frame. Simultaneous releases under
+one mixer lock are listed by guest handle. The report stores the sequence
+in the [sim component series](../runtime/sim.md#finding-the-first-differing-state).
+
 - **Packet completion.** `Process` writes `E_PENDING` (`0x8000000A`) to
   `*pdwStatus` and 0 to `*pdwCompletedSize` immediately (verified). When the
   mixer finishes the packet, the shim writes the completed size (the whole
