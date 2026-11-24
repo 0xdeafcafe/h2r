@@ -1,7 +1,7 @@
 # Forge editing: the monitor's controls, tools and properties
 
-Status: Partly built. The Halo 3 button table, flying with thrust and fine movement, pick up and drop, manipulating a held object, movement and rotation snap, world or local axes, Coordinates with typing and nudging, hold to delete, undo and redo, the Tools picker with the Objects and Links tools, the object menu, a Properties page with Heading and the spawn, goal and item rows, Tool settings with Movement snap, Rotation snap and Axes, the Overlays page with the Markers, Other monitors and Axes overlays, and the placed objects browser exist. The nav overlay (with F9), groups, prefabs and lights are design.
-Code: `crates/extensions/forge/src/tool.rs` (`Tool`, `Action`, `Input`, `Command`), `crates/extensions/forge/src/session.rs` (`Session`), `crates/extensions/game/src/forge_controls.rs` and `forge_controls/bindings.rs` (pad, keyboard and agent input; the bindings table), `crates/extensions/game/src/forge_screens/sheet.rs` (the menus' tables), `crates/extensions/game/src/forge_glue/editing.rs` (the host). Tests: `crates/extensions/forge/src/tool_tests.rs`, `link_tests.rs`, `props_tests.rs`, `tests.rs`; `forge_controls.rs`, `bindings.rs`, `forge_screens/tests.rs` and `forge_glue/editing/tests.rs` in `crates/extensions/game/src`.
+Status: Partly built. The Halo 3 button table, flying with thrust and fine movement, pick up and drop, manipulating a held object, movement and rotation snap, world or local axes, Coordinates with typing and nudging, hold to delete, undo and redo, the Tools picker with the Objects and Links tools, the object menu, a Properties page with Heading and the spawn, goal and item rows, Tool settings with Movement snap, Rotation snap and Axes, the Overlays page with the Markers, Other monitors and Axes overlays, the placed objects browser, and groups (Select, Group selection, Ungroup, Lock group; moving one member moves the group) exist. The nav overlay (with F9), prefabs, the group pivot row, a held A to select and lights are design.
+Code: `crates/extensions/forge/src/tool.rs` (`Tool`, `Action`, `Input`, `Command`), `crates/extensions/forge/src/session.rs` and `session/groups.rs` (`Session`), `crates/extensions/game/src/forge_controls.rs` and `forge_controls/bindings.rs` (pad, keyboard and agent input; the bindings table), `crates/extensions/game/src/forge_screens/sheet.rs` (the menus' tables), `crates/extensions/game/src/forge_glue/editing.rs` (the host). Tests: `crates/extensions/forge/src/tool_tests.rs`, `link_tests.rs`, `props_tests.rs`, `group_tests.rs`, `tests.rs`; `forge_controls.rs`, `bindings.rs`, `forge_screens/tests.rs` and `forge_glue/editing/tests.rs` in `crates/extensions/game/src`.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
 What a player can do as a monitor in a Forge session, and which button
@@ -42,9 +42,9 @@ objects that are guest truth, tool state that is presentation
 | Duplicate | P1 | One `Placement::Add` with the source's fields, held at once | in P1 |
 | Placed-object browser | built | A picker over `Session::objects`; choosing a row flies the monitor to it (`sheet::placed_rows`, `Camera::toward`) | none |
 | Limits by kind | P4 | `forge.capacity` already measures the object pool, each block's count and limit, and tag headroom | in P4 |
-| Selection, groups, group pivot | P5 | A selection is tool state. A group is a Forge-family op naming its members by `OpId`; moving one is a batch of placement sets in one undo step, as a delete of a linked machine is one step (`session.rs`) | M; the document format takes its next number |
+| Selection, groups, group pivot | built, but the pivot row and a held A | A selection is tool state (`Tool::toggle_selected`). A group is a Forge-family op naming its members by endpoint (`forge_doc::Group`); moving one is a batch of entry sets in one undo step, as a delete of a linked machine is one step (`Session::move_thing`). The pivot, centre or first member, is a field of the op (`pivot_first`); the Properties page makes centre groups, and `forge.propose` writes the other | none; the document format is 4 (`FORMAT_GROUPS`) |
 | Prefabs | P5 | A prefab is a small document: tag keys and frames relative to a pivot, no game bytes. Placing one checks every tag against this map's palette and refuses by name | in P5; sharing on Live rides F14 |
-| Folders, lock | P5 | A group's name is the folder; lock is a flag on the group that the tool honours | in P5 |
+| Folders, lock | built | A group's name is the folder (the browser lists groups first); lock is a flag on the group (`Forge::GroupLock`) that the tool honours: it does not aim at a locked group's things | none |
 | Placed lights | P6 | A kit piece of ours with a generated light tag; colour and size are tag field writes, which are Live ([forge-design.md](forge-design.md), "What the engine allows at runtime"). Halo 2 lights the level from a baked lightmap, so a placed light adds dynamic light only and casts no shadow (**S**: the engine's count of dynamic lights a frame, to be probed) | M, after F8's generators |
 | Node graph | F7, [rules-engine.md](rules-engine.md) | The graph exists in the design as links between ports ([forge-features.md](forge-features.md), "Teleporters, buttons and triggers"), compiled to the rules IR. On a pad it is edited in the world with the Links tool, one link at a time; a canvas view belongs to the paired editor. Its caps are the validator's and the Forge step's budget of node visits a tick | L (F7), unchanged |
 | Bots on an edited map | F9 | `bots::autonav` rebuilds the nav mesh off the game thread | M (F9), unchanged |
@@ -242,7 +242,8 @@ opens a picker; an action row acts and closes.
 | teleporter | Channel | the flag's identifier, through a link (`forge_doc::Forge::Link`) | Kit; built for the map's own flags | F6, P2 |
 | scenery, crate, machine | Physics: Normal, Fixed | **S**: no placement field that pins a physical object is known | | after a probe |
 | any object | Label | a label and number in the document ([rules-engine.md](rules-engine.md#forge-labels)) | none: scripts read it | P5 |
-| group member | Group... | the group op | none | P5 |
+| any object | Select, Group selection | tool state; the group op | none | built |
+| group member | Group, Lock group, Ungroup | `Forge::GroupLock`, `Forge::Ungroup` | none | built |
 | light | Colour, Size, Brightness | fields of the light's generated tag | Live | P6 |
 
 - **The map's own entries.** Every row applies to an entry the base
@@ -270,14 +271,24 @@ opens a picker; an action row acts and closes.
 
 ## Selection, groups and prefabs
 
-- **Select.** In the Objects tool, A held on an object adds it to the
-  selection without picking it up; A on any selected object picks up
-  the whole selection. B clears it. The selection is tool state.
-- **Group.** Properties of a selection has **Group**: a Forge-family op
-  with a name and the members' `OpId`s. A on a member picks the group
-  up. The group turns about its centre, or about its first member when
-  the Group page says so. **Ungroup** ends the op. A locked group is
-  not aimed at.
+- **Select.** Properties of a thing has **Select**, which adds it to the
+  selection (and **Deselect** takes it out), and, with two or more
+  selected, **Group selection**. B with nothing held clears the
+  selection. The selection is tool state: it never reaches the document,
+  the log or the sim, and a thing that is deleted or undone leaves it. A
+  held A that selects without opening a page is design.
+- **Group.** **Group selection** makes a Forge-family op with a name
+  ("Group 1", the first free) and the members' endpoints
+  (`Session::group`). A on a member picks the group up, and a drop, a
+  typed Coordinates frame or a heading moves every member in one undo
+  step (`Session::move_thing`): the group turns rigidly about its centre,
+  the mean of its members, or about its first member when the op says so,
+  by the yaw the held member turns. Pitch and roll are the held member's
+  alone. **Ungroup** ends the op. **Lock group** sets the lock: a locked
+  group is not aimed at. An object is in one group, and a group has 2 to
+  256 members. Deleting a member leaves the others grouped, in the same
+  undo step, and ends the group when one is left. The tool shows only the
+  held member's ghost; the others move on the drop.
 - **Prefab.** **Save as prefab** writes
   `<data>/forge/prefabs/<name>.h2prefab`: canonical JSON of tag keys and
   frames relative to the pivot, read with the document's bounded reader.
@@ -290,8 +301,9 @@ opens a picker; an action row acts and closes.
   Each row's line says its group and position. A on a row flies the
   monitor to it: it stands 5 world units off, on the side it was on, and
   faces the object (`Camera::toward`), so the aim finds it. With nothing
-  placed the row is a fact. Once groups exist the browser lists them
-  first (P5). The monitor's view changes only: nothing reaches the
+  placed the row is a fact. The browser lists the groups first, each
+  with its object count and lock; A on one flies to its centre, standing
+  back by its spread. The monitor's view changes only: nothing reaches the
   document, the log or the sim.
 
 ## Interfaces
@@ -304,9 +316,14 @@ opens a picker; an action row acts and closes.
   `axes` beside `fine`, the selection and the tool
   ([agent-api.md](../runtime/agent-api.md), "Local Forge session"). No new
   method: input and state already carry them.
-- **Document**: groups, labels and prefabs come in one format step
-  (P5), since `forge_doc::FORMAT` is one number and an older build
-  refuses a newer document whole (`validate.rs`).
+- **Document**: a document with a group op is format 4
+  (`forge_doc::FORMAT_GROUPS`), since the format is one number and an
+  older build refuses a newer document whole (`validate.rs`); one with no
+  group op keeps its number. Prefabs take the next step when built.
+- **Agent API**: `forge.status` has `groups` (`{id, name, locked, pivot,
+  members}`) and `selection`; a group is made, ended or locked through
+  `forge.propose` with a `Forge::Group`, `Ungroup` or `GroupLock` op
+  ([agent-api.md](../runtime/agent-api.md), "Local Forge session").
 
 ## Rules and limits
 

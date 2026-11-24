@@ -606,9 +606,24 @@ fn the_overlays_page_has_a_row_for_each_overlay() {
 fn placed_sample() -> Vec<sheet::Placed> {
     use forge_doc::OpId;
     sheet::placed_rows(&[
-        (OpId(7), sheet::Group::Scenery, "Beacon".into(), [1., 2., 3.]),
-        (OpId(2), sheet::Group::Crates, "Barrel".into(), [0., 0., 0.5]),
-        (OpId(5), sheet::Group::Scenery, "Beacon".into(), [-4.25, 0., 0.]),
+        (
+            OpId(7),
+            sheet::Group::Scenery,
+            "Beacon".into(),
+            [1., 2., 3.],
+        ),
+        (
+            OpId(2),
+            sheet::Group::Crates,
+            "Barrel".into(),
+            [0., 0., 0.5],
+        ),
+        (
+            OpId(5),
+            sheet::Group::Scenery,
+            "Beacon".into(),
+            [-4.25, 0., 0.],
+        ),
         (OpId(9), sheet::Group::Scenery, "Arch".into(), [0., 0., 0.]),
     ])
 }
@@ -646,7 +661,116 @@ fn the_placed_objects_row_picks_an_object_to_fly_to() {
     assert_eq!(p.choices[1], Choice::FlyTo(forge_doc::OpId(7)));
     assert!(ForgeScreen::new(Kind::Options).show(page).is_ok());
     let none = sheet::options();
-    let row = none.rows.iter().find(|r| r.label == "Placed objects").unwrap();
+    let row = none
+        .rows
+        .iter()
+        .find(|r| r.label == "Placed objects")
+        .unwrap();
     assert_eq!(row.act, Act::Info);
     assert_eq!(row.value.as_deref(), Some("None"));
+}
+
+fn group_info(id: u32, name: &str, members: u32, locked: bool) -> forge::GroupInfo {
+    forge::GroupInfo {
+        id: forge_doc::OpId(id),
+        name: name.into(),
+        locked,
+        pivot_first: false,
+        members: (0..members)
+            .map(|i| forge::Endpoint::Added(forge_doc::OpId(100 + i)))
+            .collect(),
+    }
+}
+
+/// The browser lists the groups before the objects, each flying to its
+/// centre, and the page still fits its screen.
+#[test]
+fn the_browser_lists_groups_first() {
+    let folders = sheet::folder_rows(&[
+        group_info(3, "Roof", 3, false),
+        group_info(8, "Wall", 2, true),
+    ]);
+    assert_eq!(folders[0].line, "Group. 3 objects.");
+    assert_eq!(folders[1].line, "Group. 2 objects, locked.");
+    let rows = placed_sample();
+    let page = sheet::options_with_groups(&folders, &rows);
+    let row = page
+        .rows
+        .iter()
+        .find(|r| r.label == "Placed objects")
+        .unwrap();
+    assert_eq!(row.value.as_deref(), Some("6"));
+    let Act::Pick(p) = &row.act else {
+        panic!("a browser picks");
+    };
+    assert_eq!(&p.values[..3], ["Roof", "Wall", "Arch"]);
+    assert_eq!(p.choices[0], Choice::FlyToGroup(forge_doc::OpId(3)));
+    assert_eq!(p.choices[2], Choice::FlyTo(forge_doc::OpId(9)));
+    assert_eq!(p.details.len(), p.values.len());
+    assert!(ForgeScreen::new(Kind::Options).show(page).is_ok());
+    // Groups alone are enough to make the row a browser.
+    let only = sheet::options_with_groups(&folders, &[]);
+    let row = only
+        .rows
+        .iter()
+        .find(|r| r.label == "Placed objects")
+        .unwrap();
+    assert!(matches!(row.act, Act::Pick(_)));
+}
+
+/// The Properties page offers Select to a free thing, Group selection
+/// with two selected, and the group's rows to a member.
+#[test]
+fn the_properties_page_has_selection_and_group_rows() {
+    let thing = forge::Endpoint::Added(forge_doc::OpId(4));
+    let facts = |selected, selection, group| sheet::GroupFacts {
+        thing,
+        selected,
+        selection,
+        group,
+    };
+    let labels = |f: &sheet::GroupFacts| -> Vec<String> {
+        sheet::group_rows(f).into_iter().map(|r| r.label).collect()
+    };
+    assert_eq!(labels(&facts(false, 0, None)), ["Select"]);
+    assert_eq!(labels(&facts(true, 1, None)), ["Deselect"]);
+    assert_eq!(
+        labels(&facts(true, 2, None)),
+        ["Deselect", "Group selection"]
+    );
+    let rows = sheet::group_rows(&facts(
+        false,
+        0,
+        Some((forge_doc::OpId(2), "Roof".into(), false)),
+    ));
+    assert_eq!(
+        rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
+        ["Group", "Lock group", "Ungroup"]
+    );
+    assert_eq!(rows[0].value.as_deref(), Some("Roof"));
+    assert_eq!(
+        rows[1].act,
+        Act::Choose(Choice::LockGroup(forge_doc::OpId(2), true))
+    );
+    assert_eq!(
+        rows[2].act,
+        Act::Choose(Choice::Ungroup(forge_doc::OpId(2)))
+    );
+    let locked = sheet::group_rows(&facts(
+        false,
+        0,
+        Some((forge_doc::OpId(2), "Roof".into(), true)),
+    ));
+    assert_eq!(locked[1].label, "Unlock group");
+    assert_eq!(
+        locked[1].act,
+        Act::Choose(Choice::LockGroup(forge_doc::OpId(2), false))
+    );
+    for r in rows.iter().chain(&locked) {
+        assert!(
+            r.description
+                .as_deref()
+                .is_some_and(|d| !d.trim().is_empty())
+        );
+    }
 }

@@ -175,11 +175,117 @@ fn the_placed_objects_browser_flies_the_monitor_to_the_chosen_object() {
     assert!((at[0] - 3.).abs() < 1e-3 && at[1].abs() < 1e-3 && at[2].abs() < 1e-3);
     // A gone object is refused by name, and the view stays.
     let gone = forge_doc::OpId(999);
-    assert_eq!(e.choose(4, Choice::FlyTo(gone)), Err("That object is gone.".into()));
+    assert_eq!(
+        e.choose(4, Choice::FlyTo(gone)),
+        Err("That object is gone.".into())
+    );
     assert_eq!(e.tool.camera, Some(eye));
     // With no monitor view there is nothing to fly.
     e.tool.camera = None;
     assert!(e.choose(5, Choice::FlyTo(placed[0].id)).is_err());
+}
+
+/// Two placed objects are selected from their Properties pages, grouped
+/// by name, listed first by the browser, locked and ungrouped.
+#[test]
+fn selecting_two_objects_groups_them_and_the_browser_lists_the_group_first() {
+    let mut e = editor();
+    e.tool.monitor = true;
+    for (n, x) in [3., 5.].into_iter().enumerate() {
+        let frame = Frame {
+            position: [x, 0., 0.],
+            rotation: [0.; 3],
+        };
+        e.command(1 + n as u32, Command::Place { item: 0, frame })
+            .unwrap();
+        let (ticket, _) = calls::lock(&e.calls).drain().pop().unwrap();
+        calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[31 + n]})));
+        e.poll(10 + n as u32);
+    }
+    let [a, b] = [0, 1].map(|i| Endpoint::Added(e.session.objects()[i].id));
+    let labels = || -> Vec<String> {
+        screens::screen(Kind::Properties)
+            .sheet()
+            .rows
+            .iter()
+            .map(|r| r.label.clone())
+            .collect()
+    };
+    // An ungrouped thing's page offers Select; Group selection comes with
+    // two selected.
+    e.tool.aimed_thing = Some(a);
+    e.command(20, Command::Properties).unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    assert!(labels().contains(&"Select".to_string()), "{:?}", labels());
+    assert!(!labels().contains(&"Group selection".to_string()));
+    e.choose(21, Choice::ToggleSelected(a)).unwrap();
+    assert!(
+        e.command(
+            22,
+            Command::Group {
+                name: "x".into(),
+                members: e.tool.selection().to_vec()
+            }
+        )
+        .is_err()
+    );
+    e.choose(23, Choice::ToggleSelected(b)).unwrap();
+    e.tool.aimed_thing = Some(b);
+    e.command(24, Command::Properties).unwrap();
+    assert!(
+        labels().contains(&"Group selection".to_string()),
+        "{:?}",
+        labels()
+    );
+    assert!(labels().contains(&"Deselect".to_string()));
+    // Group selection: one op, the selection lets go.
+    e.choose(25, Choice::GroupSelection).unwrap();
+    e.poll(26);
+    let groups = e.session.groups();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].name, "Group 1");
+    assert!(e.tool.selection().is_empty());
+    // A grouped thing's page shows the group.
+    e.tool.aimed_thing = Some(a);
+    e.command(27, Command::Properties).unwrap();
+    let rows = labels();
+    for want in ["Group", "Lock group", "Ungroup"] {
+        assert!(rows.contains(&want.to_string()), "{rows:?}");
+    }
+    // The browser lists the group first, and choosing it flies to its centre.
+    let folders = sheet::folder_rows(&e.session.groups());
+    assert_eq!(folders[0].name, "Group 1");
+    assert_eq!(folders[0].line, "Group. 2 objects.");
+    let page = sheet::options_with_groups(&folders, &e.placed());
+    let row = page
+        .rows
+        .iter()
+        .find(|r| r.label == "Placed objects")
+        .unwrap();
+    let sheet::Act::Pick(pick) = &row.act else {
+        panic!("a browser picks");
+    };
+    assert_eq!(pick.values[0], "Group 1");
+    assert_eq!(pick.choices[0], Choice::FlyToGroup(groups[0].id));
+    e.tool.camera = Some(forge::camera::Camera {
+        position: [20., 0., 0.],
+        yaw: 0.,
+        pitch: 0.,
+    });
+    e.choose(28, Choice::FlyToGroup(groups[0].id)).unwrap();
+    let at = e.tool.camera.unwrap().point(FLY_DISTANCE + 1.);
+    assert!((at[0] - 4.).abs() < 1e-3 && at[1].abs() < 1e-3, "{at:?}");
+    // Lock, then end it.
+    e.choose(29, Choice::LockGroup(groups[0].id, true)).unwrap();
+    e.poll(30);
+    assert!(e.session.groups()[0].locked);
+    e.choose(31, Choice::Ungroup(groups[0].id)).unwrap();
+    e.poll(32);
+    assert!(e.session.groups().is_empty());
+    assert_eq!(
+        e.choose(33, Choice::FlyToGroup(groups[0].id)),
+        Err("That group is gone.".into())
+    );
 }
 
 /// The tools and their settings are screens of their own; a choice on
@@ -809,13 +915,18 @@ fn the_overlays_page_turns_overlays_off() {
     assert_eq!(screens::take_request(), Some(Kind::Settings));
     assert!(e.overlay(Overlay::Markers));
     assert_eq!(e.status()["overlays"]["markers"], true);
-    e.choose(2, Choice::Set(Prop::Overlay(Overlay::Markers), 1)).unwrap();
+    e.choose(2, Choice::Set(Prop::Overlay(Overlay::Markers), 1))
+        .unwrap();
     assert!(!e.overlay(Overlay::Markers));
     assert!(e.marker_entries().is_empty());
     assert_eq!(e.status()["overlays"]["markers"], false);
     assert_eq!(e.status()["overlays"]["gizmo"], true);
-    assert!(e.choose(3, Choice::Set(Prop::Overlay(Overlay::Gizmo), 2)).is_err());
-    e.choose(4, Choice::Set(Prop::Overlay(Overlay::Markers), 0)).unwrap();
+    assert!(
+        e.choose(3, Choice::Set(Prop::Overlay(Overlay::Gizmo), 2))
+            .is_err()
+    );
+    e.choose(4, Choice::Set(Prop::Overlay(Overlay::Markers), 0))
+        .unwrap();
     assert!(e.overlay(Overlay::Markers));
     assert_eq!(e.session.head(), head, "no op was made");
 }

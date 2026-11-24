@@ -15,9 +15,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActiveLabel, Area, BlockKind, Edit, EntryOp, FieldWrite, ForgeDoc, Label, Labels, Limits,
-    MarkerArea, Op, OpId, Placement, Print, Refusal, Result, Value, WorldBounds, builtin_label,
-    entry, wire,
+    ActiveGroup, ActiveLabel, Area, BlockKind, Edit, EntryOp, FieldWrite, ForgeDoc, Group,
+    GroupSet, Label, Labels, Limits, MarkerArea, Op, OpId, Placement, Print, Refusal, Result,
+    Value, WorldBounds, builtin_label, entry, wire,
 };
 
 /// The largest channel a teleporter link writes. The netgame flag's
@@ -95,6 +95,17 @@ pub enum Forge {
         target: Endpoint,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<Label>,
+    },
+    /// Group objects under a name. Needs format 4.
+    Group(Group),
+    /// End the active group the op `group` made.
+    Ungroup {
+        group: OpId,
+    },
+    /// Lock or unlock the active group the op `group` made.
+    GroupLock {
+        group: OpId,
+        locked: bool,
     },
 }
 
@@ -199,8 +210,37 @@ impl ForgeDoc {
             .collect())
     }
 
+    /// Resolve the active groups to final indices. The map's base count is
+    /// needed for each block a group names.
+    pub fn groups(&self, base_counts: &BTreeMap<BlockKind, u32>) -> Result<GroupSet> {
+        Pass::run(&self.ops, base_counts, None, None)?.resolve_groups()
+    }
+
+    /// The active groups with their members named by identity, by the ID
+    /// of the op that made each, for a live session whose base things
+    /// still use their original indices.
+    pub fn group_targets(
+        &self,
+        base_counts: &BTreeMap<BlockKind, u32>,
+    ) -> Result<Vec<(OpId, Group)>> {
+        if !self
+            .ops
+            .iter()
+            .any(|op| matches!(op.edit, Edit::Forge(Forge::Group(_))))
+        {
+            return Ok(Vec::new());
+        }
+        Ok(Pass::run(&self.ops, base_counts, None, None)?
+            .groups
+            .into_iter()
+            .collect())
+    }
+
     /// Resolve active areas to final netgame flag indices.
-    pub fn areas(&self, base_counts: &BTreeMap<BlockKind, u32>) -> Result<BTreeMap<u32, MarkerArea>> {
+    pub fn areas(
+        &self,
+        base_counts: &BTreeMap<BlockKind, u32>,
+    ) -> Result<BTreeMap<u32, MarkerArea>> {
         if !has_area_ops(&self.ops) {
             return Ok(BTreeMap::new());
         }
@@ -228,6 +268,11 @@ fn invalid(what: &str, reason: impl Into<String>) -> Refusal {
 pub(crate) fn op(edit: &Forge) -> Result<()> {
     let link = match edit {
         Forge::Label { target, label } => return crate::labels::check_op(target, label.as_ref()),
+        Forge::Group(group) => return crate::groups::check_op(group),
+        Forge::Ungroup { group } | Forge::GroupLock { group, .. } if group.0 == 0 => {
+            return Err(invalid("group", "want the ID of a group op"));
+        }
+        Forge::Ungroup { .. } | Forge::GroupLock { .. } => return Ok(()),
         Forge::Unlink { link } if link.0 == 0 => {
             return Err(invalid("unlink", "want the ID of a link op"));
         }
@@ -308,6 +353,10 @@ struct Pass<'a> {
     order: Vec<OpId>,
     roles: BTreeMap<Endpoint, Role>,
     labels: BTreeMap<Endpoint, (OpId, Label)>,
+    /// The active groups, by the op that made each.
+    groups: BTreeMap<OpId, Group>,
+    /// The group each grouped entry is in.
+    grouped: BTreeMap<Endpoint, OpId>,
     areas: BTreeMap<Endpoint, Area>,
     /// Flag types by identity, tracked only when the document shapes an area.
     flag_types: Option<BTreeMap<Endpoint, u16>>,
@@ -343,6 +392,8 @@ impl<'a> Pass<'a> {
             order: Vec::new(),
             roles: BTreeMap::new(),
             labels: BTreeMap::new(),
+            groups: BTreeMap::new(),
+            grouped: BTreeMap::new(),
             areas: BTreeMap::new(),
             flag_types,
             prints: BTreeMap::new(),
@@ -361,6 +412,11 @@ impl<'a> Pass<'a> {
                 Edit::Forge(Forge::Label { target, label }) => {
                     let target = pass.name(*target)?;
                     pass.label(op.id, target, label.as_ref())?
+                }
+                Edit::Forge(Forge::Group(group)) => pass.group(op.id, group)?,
+                Edit::Forge(Forge::Ungroup { group }) => pass.ungroup(*group)?,
+                Edit::Forge(Forge::GroupLock { group, locked }) => {
+                    pass.group_lock(*group, *locked)?
                 }
                 Edit::Entry(edit) => pass.entry(op.id, edit)?,
                 _ => {}
@@ -474,6 +530,9 @@ impl<'a> Pass<'a> {
             if self.labels.contains_key(&target) {
                 return Err(invalid(block.name(), "clear the entry's label first"));
             }
+            if self.grouped.contains_key(&target) {
+                return Err(invalid(block.name(), "ungroup the entry first"));
+            }
             if self.areas.contains_key(&target) {
                 return Err(invalid(block.name(), "clear the flag's area first"));
             }
@@ -493,7 +552,9 @@ impl<'a> Pass<'a> {
     fn placement(&mut self, id: OpId, placement: &Placement) -> Result<()> {
         let block = placement.block();
         match *placement {
-            Placement::Add { like, ref fields, .. } => {
+            Placement::Add {
+                like, ref fields, ..
+            } => {
                 self.added.insert(id, block);
                 if block == FLAGS && self.flag_types.is_some() {
                     let kind = fields.iter().find_map(flag_type).or_else(|| match like {
@@ -524,15 +585,18 @@ impl<'a> Pass<'a> {
                     if self.labels.contains_key(&end) {
                         return Err(invalid(block.name(), "clear the entry's label first"));
                     }
+                    if self.grouped.contains_key(&end) {
+                        return Err(invalid(block.name(), "ungroup the entry first"));
+                    }
                     if self.areas.contains_key(&end) {
                         return Err(invalid(block.name(), "clear the flag's area first"));
                     }
                     self.gone.insert(end);
                 }
             }
-            Placement::Set { index, ref write, .. }
-                if block == FLAGS && self.flag_types.is_some() =>
-            {
+            Placement::Set {
+                index, ref write, ..
+            } if block == FLAGS && self.flag_types.is_some() => {
                 let target = self
                     .rows(FLAGS)
                     .and_then(|rows| rows.get(index as usize))
@@ -650,6 +714,85 @@ impl<'a> Pass<'a> {
             }
         }
         Ok(())
+    }
+
+    fn group(&mut self, id: OpId, group: &Group) -> Result<()> {
+        let mut members = Vec::with_capacity(group.members.len());
+        for &end in &group.members {
+            let end = self.name(end)?;
+            let present = match end {
+                Endpoint::Base { block, index, .. } => {
+                    self.base.get(&block).is_none_or(|&n| index < n)
+                }
+                Endpoint::Added(add) => self.added.contains_key(&add),
+            };
+            if !present || self.gone.contains(&end) {
+                return Err(invalid("group", "names no entry"));
+            }
+            if self.grouped.contains_key(&end) {
+                return Err(invalid("group", "an object is already in a group"));
+            }
+            members.push(end);
+        }
+        for &end in &members {
+            self.grouped.insert(end, id);
+        }
+        self.groups.insert(
+            id,
+            Group {
+                members,
+                ..group.clone()
+            },
+        );
+        Ok(())
+    }
+
+    fn ungroup(&mut self, id: OpId) -> Result<()> {
+        let group = self
+            .groups
+            .remove(&id)
+            .ok_or_else(|| invalid("ungroup", "names no active group"))?;
+        for end in group.members {
+            self.grouped.remove(&end);
+        }
+        Ok(())
+    }
+
+    fn group_lock(&mut self, id: OpId, locked: bool) -> Result<()> {
+        self.groups
+            .get_mut(&id)
+            .ok_or_else(|| invalid("group", "names no active group"))?
+            .locked = locked;
+        Ok(())
+    }
+
+    fn resolve_groups(mut self) -> Result<GroupSet> {
+        let groups = std::mem::take(&mut self.groups);
+        let mut active = Vec::with_capacity(groups.len());
+        for (id, group) in groups {
+            let mut members = Vec::with_capacity(group.members.len());
+            for end in group.members {
+                let block = match end {
+                    Endpoint::Base { block, .. } => block,
+                    Endpoint::Added(add) => self.added[&add],
+                };
+                if self.rows(block).is_none() {
+                    return Err(invalid(
+                        "groups",
+                        format!("the map's {} count is needed", block.name()),
+                    ));
+                }
+                members.push((block, self.index(block, end)?));
+            }
+            active.push(ActiveGroup {
+                id,
+                name: group.name,
+                pivot_first: group.pivot_first,
+                locked: group.locked,
+                members,
+            });
+        }
+        Ok(GroupSet { active })
     }
 
     fn check_hills(&self) -> Result<()> {

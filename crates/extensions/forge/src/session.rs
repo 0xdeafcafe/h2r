@@ -16,6 +16,7 @@ use crate::{
 mod area;
 mod budget;
 mod ground;
+mod groups;
 mod shared;
 
 pub use area::{Goal, flag_label};
@@ -23,6 +24,7 @@ pub use area::{Goal, flag_label};
 pub use ground::{
     GroundBuilder, GroundProblem, GroundReceipt, GroundReport, GroundState, PlacedMarker,
 };
+pub use groups::{GroupInfo, carried};
 pub use shared::{Outgoing, SHARED_PROPOSE, SHARED_REDO, SessionAdmit};
 
 #[derive(Clone, Debug)]
@@ -145,7 +147,8 @@ impl Session {
     pub fn thing(&self, id: Endpoint) -> Option<Thing> {
         match id.identity() {
             Endpoint::Added(op) => {
-                let scene = scene::project(&self.doc, &self.limits, &self.palette, self.budget).ok()?;
+                let scene =
+                    scene::project(&self.doc, &self.limits, &self.palette, self.budget).ok()?;
                 scene
                     .objects
                     .iter()
@@ -317,6 +320,9 @@ impl Session {
         id: OpId,
         frame: Frame,
     ) -> Result<(), String> {
+        if self.group_of(Endpoint::Added(id)).is_some() {
+            return self.move_thing(world, tick, Endpoint::Added(id), frame);
+        }
         self.restore(world)?;
         let (object, index) = self.target(id)?;
         let mut edits = vec![];
@@ -349,6 +355,7 @@ impl Session {
             .into_iter()
             .map(|a| Edit::Forge(Forge::Unlink { link: a.id }))
             .collect();
+        edits.extend(self.leave_group(Endpoint::Added(id)));
         edits.push(Edit::Placement(Placement::Remove {
             block: object.item.block,
             index,
@@ -360,7 +367,9 @@ impl Session {
     /// Move and turn a thing, own or added, to where a drop leaves it: one
     /// `EntryOp::Set` for its position and one for its rotation or facing,
     /// each only when it changes, in one undo step. An own entry is named by
-    /// its print, which the session checks against the row it kept.
+    /// its print, which the session checks against the row it kept. A thing
+    /// in a group takes the group with it: each member's sets are in the
+    /// same step ([`Session::group_frames`]).
     pub fn move_thing(
         &mut self,
         world: &mut impl World,
@@ -369,14 +378,17 @@ impl Session {
         frame: Frame,
     ) -> Result<(), String> {
         self.restore(world)?;
-        let thing = self.thing(id).ok_or(NO_THING)?;
+        let frames = self.group_frames(id, frame)?;
         let mut edits = vec![];
-        for write in things::frame_writes(thing.block, frame)? {
-            if field(&thing, &write.field) != Some(&write.value) {
-                edits.push(Edit::Entry(EntryOp::Set {
-                    target: thing.id,
-                    write,
-                }));
+        for (member, frame) in frames {
+            let thing = self.thing(member).ok_or(NO_THING)?;
+            for write in things::frame_writes(thing.block, frame)? {
+                if field(&thing, &write.field) != Some(&write.value) {
+                    edits.push(Edit::Entry(EntryOp::Set {
+                        target: thing.id,
+                        write,
+                    }));
+                }
             }
         }
         if edits.is_empty() {
@@ -393,7 +405,7 @@ impl Session {
     /// Carry a thing while it is held: the world moves it, and the document
     /// and the log do not change until the drop ([`Self::move_thing`]). A
     /// hold moves at most once a tick; a second move in the same tick is
-    /// dropped.
+    /// dropped. A thing in a group carries the group.
     pub fn hold(
         &mut self,
         world: &mut impl World,
@@ -406,6 +418,16 @@ impl Session {
         }
         self.restore(world)?;
         let thing = self.thing(id).ok_or(NO_THING)?;
+        for (member, frame) in self.group_frames(id, frame)? {
+            let member = self.thing(member).ok_or(NO_THING)?;
+            self.carry(world, &member, frame)?;
+        }
+        self.held = Some((thing.id.identity(), tick));
+        Ok(())
+    }
+
+    /// Move one thing in the world, and not in the document.
+    fn carry(&mut self, world: &mut impl World, thing: &Thing, frame: Frame) -> Result<(), String> {
         match thing.id {
             Endpoint::Added(_) if thing.block == BlockKind::NetgameFlags => {
                 scene::in_bounds(&self.limits, frame)?;
@@ -448,7 +470,6 @@ impl Session {
                 }
             }
         }
-        self.held = Some((thing.id.identity(), tick));
         Ok(())
     }
 
@@ -534,7 +555,9 @@ impl Session {
 
     /// Active areas keyed by the flag identity used in this session.
     pub fn areas(&self) -> Result<BTreeMap<Endpoint, Area>, String> {
-        self.doc.area_targets(&self.limits.base_counts).map_err(reason)
+        self.doc
+            .area_targets(&self.limits.base_counts)
+            .map_err(reason)
     }
 
     /// Set or clear a flag's area in one edit and one undo step.
@@ -556,7 +579,7 @@ impl Session {
     }
 
     /// Remove a thing, own or added. A linked entry cannot be removed, so
-    /// its links end in the same undo step. In the world an own entry's row
+    /// its links end in the same undo step; so does its place in a group. In the world an own entry's row
     /// is made inert, and an undo writes the kept row back.
     pub fn remove(
         &mut self,
@@ -571,6 +594,7 @@ impl Session {
             .into_iter()
             .map(|a| Edit::Forge(Forge::Unlink { link: a.id }))
             .collect();
+        edits.extend(self.leave_group(thing.id));
         edits.push(Edit::Entry(EntryOp::Remove { target: thing.id }));
         let ops = self.ops(edits)?;
         self.edit(world, tick, ops, None)

@@ -2,13 +2,13 @@
 //! and session forms, and a variant's name (docs/game/forge-map-variants.md,
 //! "The map variant file").
 //!
-//! A map variant holds scenario edits only: placement adds, entry ops, links
-//! and labels, and may ask for AI ground ([`crate::GroundRecipe`]). Its build is a scenario patch, so it fits every map the kit
+//! A map variant holds scenario edits only: placement adds, entry ops, links,
+//! labels and groups, and may ask for AI ground ([`crate::GroundRecipe`]). Its build is a scenario patch, so it fits every map the kit
 //! fits. A document with anything more (a recipe, an import slot, a source
 //! map, a tag-field write, a placement set or removal by running index) is a
 //! Forge map. The tier is computed from the ops, never declared, and judged
 //! on the play form: the session's kit recipe does not count.
-use crate::{Edit, Forge, ForgeDoc, Placement, Recipe, Refusal, Result};
+use crate::{Edit, ForgeDoc, Placement, Recipe, Refusal, Result};
 
 /// The generate recipe that makes the session kit part of a document
 /// (docs/game/forge-design.md, "The kit"). A session's document has it and
@@ -48,7 +48,7 @@ impl ForgeDoc {
             .all(|r| is_kit(r) || crate::ground::is_ground(r));
         let ops = self.ops.iter().all(|op| match &op.edit {
             Edit::Placement(Placement::Add { .. }) | Edit::Entry(_) => true,
-            Edit::Forge(Forge::Link(_) | Forge::Unlink { .. } | Forge::Label { .. }) => true,
+            Edit::Forge(_) => true,
             Edit::Placement(_) | Edit::TagField(_) | Edit::Undo | Edit::Mesh | Edit::Bitmap => {
                 false
             }

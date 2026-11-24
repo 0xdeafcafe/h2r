@@ -74,6 +74,9 @@ pub struct Facts {
     /// The added objects, for the placed objects browser
     /// ([`sheet::placed_rows`]).
     pub placed: Vec<sheet::Placed>,
+    /// The active groups, listed first by the browser
+    /// ([`sheet::folder_rows`]).
+    pub folders: Vec<sheet::Folder>,
 }
 
 /// The longest name Save as takes.
@@ -259,7 +262,7 @@ pub(crate) fn prepare(kind: Kind) -> Result<(), String> {
     let sheet = match kind {
         Kind::Tools => sheet::tools(f.tool.unwrap_or(sheet::Tool::Objects)),
         Kind::Settings => sheet::settings(f.rotation_snap, f.movement_snap, f.local_axes),
-        Kind::Options => sheet::options_with(&f.placed),
+        Kind::Options => sheet::options_with_groups(&f.folders, &f.placed),
         Kind::Controls => sheet::controls(),
         Kind::Objects
         | Kind::Properties

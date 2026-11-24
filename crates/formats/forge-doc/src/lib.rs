@@ -10,6 +10,7 @@ mod document;
 mod entry;
 pub mod games;
 mod ground;
+mod groups;
 mod labels;
 mod links;
 mod log;
@@ -23,6 +24,7 @@ pub use content::{MapId, Sha256};
 pub use document::*;
 pub use entry::{EntryOp, PROPERTY_TEAMS, Print, Property, check_print, print, teams};
 pub use ground::*;
+pub use groups::*;
 pub use labels::*;
 pub use links::*;
 pub use log::*;
@@ -40,7 +42,7 @@ pub type Result<T> = std::result::Result<T, Refusal>;
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Refusal {
     #[error(
-        "Forge format {0} is unsupported (this build reads 1, 2 for documents with labels and 3 for documents with entry edits or prints)"
+        "Forge format {0} is unsupported (this build reads 1, 2 for documents with labels, 3 for documents with entry edits or prints and 4 for documents with groups)"
     )]
     Format(u32),
     /// The base entry an edit names is not the one it was made on: its
@@ -132,6 +134,17 @@ pub trait Apply {
         }
     }
 
+    /// Hand over the active groups, after the labels. Indices are the
+    /// entries' final ones. Groups are document data with no scenario
+    /// bytes, so an adapter keeps them in its own table.
+    fn groups(&mut self, groups: &GroupSet) -> Result<()> {
+        if groups.active.is_empty() {
+            Ok(())
+        } else {
+            Err(Refusal::Unsupported("group".into()))
+        }
+    }
+
     /// Check every base entry the document names with a print, before the
     /// first edit: the entry as the base map has it must give the print
     /// (`check_print`), or the refusal is `Refusal::Print` and nothing is
@@ -156,6 +169,7 @@ pub fn replay(doc: &ForgeDoc, limits: &Limits, target: &mut impl Apply) -> Resul
     target.prints(&resolved.prints)?;
     let mut linked = false;
     let mut labelled = false;
+    let mut grouped = false;
     for op in &doc.ops {
         match &op.edit {
             Edit::Placement(edit) => target.placement(edit)?,
@@ -166,6 +180,9 @@ pub fn replay(doc: &ForgeDoc, limits: &Limits, target: &mut impl Apply) -> Resul
             }
             Edit::TagField(write) => target.tag_field(write)?,
             Edit::Forge(Forge::Label { .. }) => labelled = true,
+            Edit::Forge(Forge::Group(_) | Forge::Ungroup { .. } | Forge::GroupLock { .. }) => {
+                grouped = true
+            }
             Edit::Forge(_) => linked = true,
             edit => return Err(edit.unsupported()),
         }
@@ -175,6 +192,9 @@ pub fn replay(doc: &ForgeDoc, limits: &Limits, target: &mut impl Apply) -> Resul
     }
     if labelled {
         target.labels(&doc.labels(&limits.base_counts)?)?;
+    }
+    if grouped {
+        target.groups(&doc.groups(&limits.base_counts)?)?;
     }
     Ok(())
 }
