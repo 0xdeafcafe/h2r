@@ -13,16 +13,15 @@ use d3d::{
 use gfx::state::{DepthBufferMode, FillMode, ShadeMode, TextureAddress};
 use gfx::translate::{Capabilities, SamplerKey};
 use gfx::vertex::{PrimitiveType, VertexDataType};
-use native_render::gels::{Key, Target};
+use native_render::gels::{Key, Level, Target};
 use native_render::gels_gpu::{Frame, INPUTS, Program, Vertex};
 use native_render::pass_state::PassState;
 use shaders::psh::{self, PixelOptions, PixelUniforms, TextureDim};
 use shaders::vsh::VertexUniforms;
 use timeline::native::{Metric, Stage};
 
-/// Target 13 as this invocation leaves it, whether the admitted quad was
-/// committed natively or retained by D3D. The consumer adds this surface
-/// to its own plan and gets the correct reference/display sample view.
+/// Level zero of target 13 as this invocation leaves it. The consumer
+/// adds the surface to its plan and samples the matching physical copy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Binding {
     pub key: Key,
@@ -67,6 +66,7 @@ impl Binding {
 struct Scope {
     key: Key,
     target: Target,
+    next_level: u32,
     view: u32,
     generation: u64,
 }
@@ -79,37 +79,67 @@ pub struct Replacements {
 }
 impl Replacements {
     pub fn arm(&self, key: Key, target: Target, view: u32, generation: u64) {
-        *self.scope.lock().unwrap_or_else(|e| e.into_inner()) = Some(Scope {
+        let mut scope = self.scope.lock().unwrap_or_else(|e| e.into_inner());
+        *scope = Some(Scope {
             key,
             target,
+            next_level: 0,
             view,
             generation,
         });
         self.armed.store(true, Ordering::Release);
     }
+
+    pub fn active(&self) -> bool {
+        self.armed.load(Ordering::Acquire)
+    }
+
     pub fn cancel(&self) {
+        let mut scope = self.scope.lock().unwrap_or_else(|e| e.into_inner());
+        scope.take();
         self.armed.store(false, Ordering::Release);
-        self.scope.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
+
+    fn take_level(
+        &self,
+        surface: u32,
+        size: (u32, u32),
+        entry: &str,
+    ) -> Option<(Scope, Level)> {
+        if !self.active() {
+            return None;
+        }
+        let mut active = self.scope.lock().ok()?;
+        let mut scope = active.take()?;
+        let level = scope.target.level(scope.next_level).filter(|level| {
+            level.surface == surface
+                && level.size == size
+                && matches!(entry, "inline Begin/End" | "D3DDevice_End")
+        });
+        if level.is_some() && scope.target.level(scope.next_level + 1).is_some() {
+            scope.next_level += 1;
+            *active = Some(scope);
+        } else {
+            self.armed.store(false, Ordering::Release);
+        }
+        if level.is_none() {
+            Stage::Gels.count(Metric::RefusedOwnership, 1);
+        }
+        level.map(|level| (scope, level))
     }
 }
 
 impl DrawAdmission for Replacements {
     fn admit(&self, snapshot: &DrawSnapshot<'_>) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
-        // Exactly the next resolved draw belongs to the armed helper.
-        // Any discrepancy consumes the scope and leaves that packet on D3D.
-        if !self.armed.load(Ordering::Acquire) || !self.armed.swap(false, Ordering::AcqRel) {
-            return None;
-        }
-        let scope = self.scope.lock().ok()?.take()?;
-        if snapshot.color_header != scope.target.surface
-            || snapshot.draw.target.width != scope.target.size.0
-            || snapshot.draw.target.height != scope.target.size.1
-            || !matches!(snapshot.draw.entry, "inline Begin/End" | "D3DDevice_End")
-        {
-            Stage::Gels.count(Metric::RefusedOwnership, 1);
-            return None;
-        }
-        let pass = match Replacement::snapshot(snapshot, scope, Arc::clone(&self.cache)) {
+        // Each resolved packet must match the helper's next level. Refused
+        // GPU state leaves that whole packet with D3D. Losing ownership of
+        // the stream cancels all remaining claims in this helper.
+        let (scope, level) = self.take_level(
+            snapshot.color_header,
+            (snapshot.draw.target.width, snapshot.draw.target.height),
+            snapshot.draw.entry,
+        )?;
+        let pass = match Replacement::snapshot(snapshot, scope, level, Arc::clone(&self.cache)) {
             Ok(pass) => pass,
             Err(reason) => {
                 Stage::Gels.count(Metric::RefusedResources, 1);
@@ -137,7 +167,7 @@ impl DrawAdmission for Replacements {
 struct Replacement {
     program: Program,
     frame: Frame,
-    target: Target,
+    level: Level,
     key: Key,
     cache: Arc<native_render::gels_gpu::ResidentCache>,
     generation: u64,
@@ -147,6 +177,7 @@ impl Replacement {
     fn snapshot(
         snapshot: &DrawSnapshot<'_>,
         scope: Scope,
+        level: Level,
         cache: Arc<native_render::gels_gpu::ResidentCache>,
     ) -> Result<Self, String> {
         let draw = snapshot.draw;
@@ -160,10 +191,10 @@ impl Replacement {
             || !draw.clip_rects.is_empty()
             || !draw
                 .clip
-                .is_some_and(|r| r.is_whole(scope.target.size.0, scope.target.size.1))
+                .is_some_and(|r| r.is_whole(level.size.0, level.size.1))
             || draw.viewport.x != 0
             || draw.viewport.y != 0
-            || (draw.viewport.width, draw.viewport.height) != scope.target.size
+            || (draw.viewport.width, draw.viewport.height) != level.size
             || draw.viewport.min_z != 0.0
             || draw.viewport.max_z != 1.0
         {
@@ -298,7 +329,7 @@ impl Replacement {
                 pixel,
                 vertices,
             },
-            target: scope.target,
+            level,
             key: scope.key,
             generation: scope.generation,
             cache,
@@ -378,7 +409,7 @@ impl Replacement {
         color_format: wgpu::TextureFormat,
         stages: [Option<&wgpu::TextureView>; 4],
     ) -> Result<(), &'static str> {
-        if guest_size != self.target.size
+        if guest_size != self.level.size
             || viewport != [0.0, 0.0, size.0 as f32, size.1 as f32]
             || color.texture().sample_count() != 1
             || color.texture().format() != color_format
@@ -493,6 +524,80 @@ impl ExternalPass for Replacement {
 mod tests {
     use super::*;
     use gfx::vertex::{StreamLayout, VertexAttribute, VertexLayout, VertexRegister};
+
+    fn mip_target() -> Target {
+        use engine::memory::{FlatMemory, GuestMemory};
+        use native_render::{camera::GuestRead, gels};
+
+        struct Read(FlatMemory);
+        impl GuestRead for Read {
+            fn read_u32(&self, address: u32) -> Option<u32> {
+                self.0.u32(address).ok()
+            }
+        }
+
+        let at = gels::TARGETS + gels::TARGET_STRIDE * gels::TARGET;
+        let mut mem = FlatMemory::new(at, gels::TARGET_STRIDE as usize);
+        for (offset, word) in [(0x78, 3), (0x80, 16), (0x84, 8), (0x88, 1)] {
+            mem.set_u32(at + offset, word).unwrap();
+        }
+        Target::read(&Read(mem)).unwrap()
+    }
+
+    #[test]
+    fn gel_helper_admits_each_mip_packet_once() {
+        let replacements = Replacements::default();
+        let target = mip_target();
+        let key = Key {
+            sequence: 1,
+            definition: 2,
+            shader: 3,
+            surface: target.surface,
+        };
+        let entry = "inline Begin/End";
+        replacements.arm(key, target, 0, 1);
+        for mip in 0..3 {
+            let level = target.level(mip).unwrap();
+            let (scope, got) = replacements
+                .take_level(level.surface, level.size, entry)
+                .unwrap();
+            assert_eq!(scope.key, key);
+            assert_eq!(got, level);
+        }
+        assert!(!replacements.active());
+        assert!(replacements.take_level(target.surface, target.size, entry).is_none());
+
+        // A subsequent pass in the same template call starts at level zero.
+        replacements.arm(key, target, 0, 1);
+        assert!(replacements.take_level(target.surface, target.size, entry).is_some());
+        replacements.cancel();
+        let level = target.level(1).unwrap();
+        assert!(replacements.take_level(level.surface, level.size, entry).is_none());
+    }
+
+    #[test]
+    fn mips_cannot_be_claimed_after_an_unowned_packet() {
+        let replacements = Replacements::default();
+        let target = mip_target();
+        let key = Key {
+            sequence: 1,
+            definition: 2,
+            shader: 3,
+            surface: target.surface,
+        };
+        let entry = "D3DDevice_End";
+        let mip1 = target.level(1).unwrap();
+        for (surface, size, got_entry) in [
+            (mip1.surface, mip1.size, entry),
+            (target.surface, mip1.size, entry),
+            (target.surface, target.size, "D3DDevice_DrawVertices"),
+        ] {
+            replacements.arm(key, target, 0, 1);
+            assert!(replacements.take_level(surface, size, got_entry).is_none());
+            assert!(!replacements.active());
+            assert!(replacements.take_level(target.surface, target.size, entry).is_none());
+        }
+    }
 
     fn fixture() -> (VertexLayout, Vec<d3d::StreamBytes>) {
         let layout = VertexLayout {

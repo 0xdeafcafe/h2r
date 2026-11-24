@@ -35,7 +35,7 @@ use std::sync::Arc;
 use shaders::psh::{self, PixelOptions, PixelShaderDef, PixelUniforms, TextureDim};
 
 use crate::camera::GuestRead;
-use crate::screen_gpu::{STRIP_ATTRIBUTES, StripVertex, strip_ranges};
+use crate::screen_gpu::{FragmentRaster, PostRaster, RasterPipeline, STRIP_ATTRIBUTES, StripVertex, strip_ranges};
 
 /// A grid's vertex buffer: [`StripVertex`] in order.
 const STRIP_LAYOUT: [Option<wgpu::VertexBufferLayout<'static>>; 1] = [Some(wgpu::VertexBufferLayout {
@@ -271,7 +271,8 @@ fn glow_tap(p: vec2f, t: vec4f) -> vec4f {
 
 @vertex
 fn vs_main(@builtin(vertex_index) i: u32) -> XboxVaryings {
-    let k = vec2f(f32(i & 1u), f32(i >> 1u));
+    // BL, BR, TL, TR: the strip has the fan's winding and TL–BR diagonal.
+    let k = vec2f(f32(i & 1u), f32(1u - (i >> 1u)));
     let p = mix(glow.corners.xy, glow.corners.zw, k);
     var o: XboxVaryings;
     o.position = vec4f(p.x * glow.dest.x - 1.0, 1.0 - p.y * glow.dest.y, 0.0, 1.0);
@@ -358,18 +359,25 @@ pub struct Program {
 /// linear texture of that size (`tex_scale` one over it), fog off; or why
 /// it cannot be drawn.
 pub fn program(combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4]) -> Result<Program, String> {
-    translate(combiner, stages, false)
+    translate(combiner, stages, false, FragmentRaster::default())
 }
 
 /// [`program`] for a grid's strips ([`GRID_VERTEX`]).
 pub fn grid_program(combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4]) -> Result<Program, String> {
-    translate(combiner, stages, true)
+    translate(combiner, stages, true, FragmentRaster::default())
 }
 
-fn translate(combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4], grid: bool) -> Result<Program, String> {
+fn translate(
+    combiner: &[u32; COMBINER_WORDS],
+    stages: [Option<(u32, u32)>; 4],
+    grid: bool,
+    fragment: FragmentRaster,
+) -> Result<Program, String> {
     let def = PixelShaderDef::from_words(combiner);
     let options = PixelOptions {
         texture_dims: stages.map(|s| s.map(|_| TextureDim::D2)),
+        alpha_test: fragment.alpha,
+        stipple: fragment.stipple,
         ..Default::default()
     };
     let ps = psh::translate(&def, &options);
@@ -432,7 +440,7 @@ struct Compiled {
     uniforms_layout: wgpu::BindGroupLayout,
     layout: wgpu::PipelineLayout,
     textures_layout: wgpu::BindGroupLayout,
-    pipelines: HashMap<(wgpu::TextureFormat, Option<wgpu::BlendState>, wgpu::ColorWrites), wgpu::RenderPipeline>,
+    pipelines: HashMap<RasterPipeline, wgpu::RenderPipeline>,
 }
 
 /// One attachment of a post pass. Fixed-size blur levels may have a
@@ -462,21 +470,9 @@ pub struct GlowTarget<'a> {
     pub intermediates: [Option<PostSurface<'a>>; 2],
 }
 
-/// Colour output of a resolved glow draw.
-#[derive(Clone, Copy, Debug)]
-pub struct QuadColour {
-    pub blend: Option<wgpu::BlendState>,
-    pub constant: wgpu::Color,
-    pub writes: wgpu::ColorWrites,
-}
-
-impl From<Option<Blend>> for QuadColour {
+impl From<Option<Blend>> for PostRaster {
     fn from(blend: Option<Blend>) -> Self {
-        Self {
-            blend: blend.map(Blend::state),
-            constant: wgpu::Color::TRANSPARENT,
-            writes: wgpu::ColorWrites::ALL,
-        }
+        Self { blend: blend.map(Blend::state), ..Self::default() }
     }
 }
 
@@ -485,7 +481,7 @@ impl From<Option<Blend>> for QuadColour {
 /// and the sampler every stage of these passes binds.
 #[derive(Default)]
 pub struct QuadDrawer {
-    programs: HashMap<(ProgramKey, bool), Program>,
+    programs: HashMap<(ProgramKey, bool, FragmentRaster), Program>,
     compiled: HashMap<Arc<str>, Compiled>,
     sampler: Option<wgpu::Sampler>,
 }
@@ -501,20 +497,26 @@ impl QuadDrawer {
     /// `combiner`'s program with `stages` bound ([`program`]), its
     /// translation shared with every block of the same code.
     pub fn program(&mut self, combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4]) -> Result<Program, String> {
-        self.cached(combiner, stages, false)
+        self.cached(combiner, stages, false, FragmentRaster::default())
     }
 
     /// [`Self::program`] for a grid's strips ([`grid_program`]).
     pub fn grid_program(&mut self, combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4]) -> Result<Program, String> {
-        self.cached(combiner, stages, true)
+        self.cached(combiner, stages, true, FragmentRaster::default())
     }
 
-    fn cached(&mut self, combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4], grid: bool) -> Result<Program, String> {
-        let key = (program_key(combiner, stages), grid);
+    pub(crate) fn cached(
+        &mut self,
+        combiner: &[u32; COMBINER_WORDS],
+        stages: [Option<(u32, u32)>; 4],
+        grid: bool,
+        fragment: FragmentRaster,
+    ) -> Result<Program, String> {
+        let key = (program_key(combiner, stages), grid, fragment);
         if let Some(p) = self.programs.get(&key) {
             return Ok(with_constants(p.clone(), combiner));
         }
-        let p = translate(combiner, stages, grid)?;
+        let p = translate(combiner, stages, grid, fragment)?;
         if self.programs.len() >= Self::PROGRAMS {
             self.programs.clear();
         }
@@ -539,7 +541,9 @@ impl QuadDrawer {
         blend: Option<Blend>,
         stages: [Option<&wgpu::TextureView>; 4],
     ) -> Result<Option<QuadCommand>, &'static str> {
-        self.prepare((device, queue, uploads), program, bytemuck::bytes_of(quad), None, (dest, format, blend.into()), stages)
+        let texture = dest.texture();
+        let surface = PostSurface { view: dest, guest_size: (texture.width(), texture.height()) };
+        self.prepare((device, queue, uploads), program, bytemuck::bytes_of(quad), None, (surface, format, blend.into()), stages)
     }
 
     /// A grid's `strips` (`screen_gpu::StripVertex`, each a triangle
@@ -559,16 +563,18 @@ impl QuadDrawer {
         blend: Option<Blend>,
         stages: [Option<&wgpu::TextureView>; 4],
     ) -> Result<Option<QuadCommand>, &'static str> {
-        self.prepare((device, queue, uploads), program, bytemuck::bytes_of(frame), Some(strips), (dest, format, blend.into()), stages)
+        let texture = dest.texture();
+        let surface = PostSurface { view: dest, guest_size: (texture.width(), texture.height()) };
+        self.prepare((device, queue, uploads), program, bytemuck::bytes_of(frame), Some(strips), (surface, format, blend.into()), stages)
     }
 
-    fn prepare(
+    pub(crate) fn prepare(
         &mut self,
         (device, queue, uploads): (&wgpu::Device, &wgpu::Queue, &gfx::ring::SubmissionUploads),
         program: &Program,
         vertex_uniform: &[u8],
         strips: Option<&[Vec<StripVertex>]>,
-        (dest, format, colour): (&wgpu::TextureView, wgpu::TextureFormat, QuadColour),
+        (dest, format, raster): (PostSurface<'_>, wgpu::TextureFormat, PostRaster),
         stages: [Option<&wgpu::TextureView>; 4],
     ) -> Result<Option<QuadCommand>, &'static str> {
         let sampler = self.sampler.get_or_insert_with(|| device.create_sampler(&sampler_descriptor())).clone();
@@ -576,7 +582,10 @@ impl QuadDrawer {
             self.compiled.clear();
         }
         let c = self.compiled.entry(Arc::clone(&program.wgsl)).or_insert_with(|| compile(device, program));
-        let pipeline_key = (format, colour.blend, colour.writes);
+        let pipeline_key = raster.pipeline(format, device.features());
+        let texture = dest.view.texture();
+        let scissor = raster.scissor(dest.guest_size, (texture.width(), texture.height()))
+            .map_err(|_| "invalid post quad scissor")?;
         if c.pipelines.len() == Self::PIPELINES_PER_PROGRAM && !c.pipelines.contains_key(&pipeline_key) {
             c.pipelines.clear();
         }
@@ -591,11 +600,7 @@ impl QuadDrawer {
                     compilation_options: Default::default(),
                     buffers: if program.grid { &STRIP_LAYOUT[..] } else { &[] },
                 },
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleStrip,
-                    cull_mode: None,
-                    ..Default::default()
-                },
+                primitive: pipeline_key.primitive(),
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
                 fragment: Some(wgpu::FragmentState {
@@ -604,8 +609,8 @@ impl QuadDrawer {
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
-                        blend: colour.blend,
-                        write_mask: colour.writes,
+                        blend: raster.blend,
+                        write_mask: raster.writes,
                     })],
                 }),
                 multiview_mask: None,
@@ -616,7 +621,9 @@ impl QuadDrawer {
         if strips.is_some() && all.is_empty() {
             return Ok(None);
         }
-        let pixel = program.pixel.to_bytes();
+        let mut pixel = program.pixel;
+        raster.pixel_uniforms(&mut pixel, dest.guest_size, (texture.width(), texture.height()));
+        let pixel = pixel.to_bytes();
         let run = uploads
             .uniform_run(device, queue, &c.uniforms_layout, [vertex_uniform.len(), pixel.len()], 1, |_, v, p| {
                 v.copy_from_slice(vertex_uniform);
@@ -649,8 +656,9 @@ impl QuadDrawer {
             }
         };
         Ok(Some(QuadCommand {
-            blend_constant: colour.constant,
-            dest: dest.clone(),
+            blend_constant: raster.blend_constant,
+            scissor,
+            dest: dest.view.clone(),
             pipeline,
             uniforms: run.group.clone(),
             offsets: run.offsets(0),
@@ -668,6 +676,7 @@ impl QuadDrawer {
 #[derive(Clone)]
 pub struct QuadCommand {
     blend_constant: wgpu::Color,
+    scissor: [u32; 4],
     dest: wgpu::TextureView,
     pipeline: wgpu::RenderPipeline,
     uniforms: wgpu::BindGroup,
@@ -699,6 +708,8 @@ impl QuadCommand {
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_blend_constant(self.blend_constant);
+        let [x, y, width, height] = self.scissor;
+        pass.set_scissor_rect(x, y, width, height);
         pass.set_bind_group(0, &self.uniforms, &self.offsets);
         pass.set_bind_group(1, &self.textures, &[]);
         if let Some((buffer, offset, size)) = &self.vertices {
@@ -736,12 +747,11 @@ pub struct GpuGlow {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refused {
     ViewSize((u32, u32), (u32, u32)),
-    ColourCount,
+    RasterCount,
     Attachment(Surface),
     Source(Surface),
     Program(String),
-    /// The submission's arena could not hold a quad's uniforms.
-    Uniforms,
+    Record(&'static str),
 }
 
 /// A draw's program's key: its block without its constants (uniforms,
@@ -775,13 +785,13 @@ impl GpuGlow {
     /// format and existing pixels come from that view. Refused before
     /// anything is recorded.
     pub fn prepare(&mut self, t: GlowTarget<'_>, plan: &Plan) -> Result<GlowCommands, Refused> {
-        self.prepare_colours(t, plan, None)
+        self.prepare_raster(t, plan, None)
     }
 
-    /// Prepare the plan with the colour state captured from each matched quad.
-    pub fn prepare_colours(&mut self, t: GlowTarget<'_>, plan: &Plan, colours: Option<&[QuadColour]>) -> Result<GlowCommands, Refused> {
-        if colours.is_some_and(|states| states.len() != plan.draws.len()) {
-            return Err(Refused::ColourCount);
+    /// Prepare the plan with the raster state captured from each matched quad.
+    pub fn prepare_raster(&mut self, t: GlowTarget<'_>, plan: &Plan, rasters: Option<&[PostRaster]>) -> Result<GlowCommands, Refused> {
+        if rasters.is_some_and(|states| states.len() != plan.draws.len()) {
+            return Err(Refused::RasterCount);
         }
         if t.color.guest_size != plan.view {
             return Err(Refused::ViewSize(t.color.guest_size, plan.view));
@@ -797,9 +807,10 @@ impl GpuGlow {
             if dest.guest_size != plan.size(draw.dest) || !live_colour(dest.view) {
                 return Err(Refused::Attachment(draw.dest));
             }
-            let dest = dest.view;
             let sizes = draw.stages.map(|s| s.map(|s| plan.size(s)));
-            let program = self.quads.program(&draw.combiner, sizes).map_err(Refused::Program)?;
+            let raster = rasters.map_or_else(|| draw.blend.into(), |states| states[index]);
+            let program = self.quads.cached(&draw.combiner, sizes, false, raster.fragment())
+                .map_err(Refused::Program)?;
             let mut stages = [None; 4];
             for (n, stage) in stages.iter_mut().enumerate() {
                 if program.dims[n].is_none() {
@@ -812,7 +823,7 @@ impl GpuGlow {
                     .ok_or(Refused::Source(surface))?;
                 let source = view.texture();
                 if slot.guest_size != plan.size(surface)
-                    || dest.texture() == source
+                    || dest.view.texture() == source
                     || source.size() != slot.view.texture().size()
                     || source.sample_count() != 1
                     || (!entry_view && !live_colour(view))
@@ -822,17 +833,16 @@ impl GpuGlow {
                 }
                 *stage = Some(view);
             }
-            prepared.push((dest, program, stages));
+            prepared.push((dest, program, stages, raster));
         }
         let mut quads = Vec::with_capacity(prepared.len());
-        for (index, (draw, (dest, program, stages))) in plan.draws.iter().zip(prepared).enumerate() {
-            let format = dest.texture().format();
-            let colour = colours.map_or_else(|| draw.blend.into(), |states| states[index]);
+        for (draw, (dest, program, stages, raster)) in plan.draws.iter().zip(prepared) {
+            let format = dest.view.texture().format();
             let quad = self.quads.prepare(
                 (t.device, t.queue, t.uploads), &program, bytemuck::bytes_of(&plan.quad(draw)),
-                None, (dest, format, colour), stages,
+                None, (dest, format, raster), stages,
             );
-            quads.extend(quad.map_err(|_| Refused::Uniforms)?);
+            quads.extend(quad.map_err(Refused::Record)?);
         }
         Ok(GlowCommands { quads })
     }
@@ -1149,7 +1159,7 @@ mod tests {
         );
         let read = |t: &wgpu::Texture| gfx::readback::read_texture(&ctx, t, wgpu::TextureAspect::All, 4, (t.width(), t.height()));
         let pixels: Vec<u8> = (0..64u8).flat_map(|i| [i * 4, 255 - i * 3, i * 2 + 7, 255]).collect();
-        let run = |prepared: bool, masked: bool| {
+        let run = |prepared: bool, composite: Option<PostRaster>| {
             let attachment = wgpu::TextureUsages::RENDER_ATTACHMENT;
             let (view, down, other) = (texture((8, 8), attachment), texture((4, 4), attachment), texture((4, 4), attachment));
             fill(&view, &pixels);
@@ -1169,11 +1179,11 @@ mod tests {
             let mut glow = GpuGlow::new();
             let mut encoder = ctx.device.create_command_encoder(&Default::default());
             if prepared {
-                let mut colours: Vec<_> = plan.draws.iter().map(|draw| QuadColour::from(draw.blend)).collect();
-                if masked {
-                    colours[2].writes = wgpu::ColorWrites::RED;
+                let mut rasters: Vec<_> = plan.draws.iter().map(|draw| PostRaster::from(draw.blend)).collect();
+                if let Some(composite) = composite {
+                    rasters[2] = composite;
                 }
-                let commands = glow.prepare_colours(target, &plan, Some(&colours)).unwrap();
+                let commands = glow.prepare_raster(target, &plan, Some(&rasters)).unwrap();
                 assert_eq!(commands.passes(), 3);
                 let mut scratch = ctx.device.create_command_encoder(&Default::default());
                 commands.record(&mut scratch);
@@ -1186,14 +1196,33 @@ mod tests {
             ctx.queue.submit([encoder.finish()]);
             (read(&view), read(&down), read(&other))
         };
-        let (own, prepared) = (run(false, false), run(true, false));
-        let masked = run(true, true);
-        for ((actual, full), original) in masked.0.chunks_exact(4)
-            .zip(prepared.0.chunks_exact(4)).zip(pixels.chunks_exact(4))
+        let (own, prepared) = (run(false, None), run(true, None));
+        let clip = Some([2, 1, 4, 5]);
+        let raster = PostRaster { writes: wgpu::ColorWrites::RED, clip, ..Default::default() };
+        let masked = run(true, Some(raster));
+        for (i, ((actual, full), original)) in masked.0.chunks_exact(4)
+            .zip(prepared.0.chunks_exact(4)).zip(pixels.chunks_exact(4)).enumerate()
         {
-            assert_eq!(actual[0], full[0]);
+            let inside = (2..6).contains(&(i % 8)) && (1..6).contains(&(i / 8));
+            assert_eq!(actual[0], if inside { full[0] } else { original[0] });
             assert_eq!(actual[1..], original[1..]);
         }
+        let cull = |side| run(true, Some(PostRaster { cull: Some(side), ..raster })).0;
+        let front = cull(wgpu::Face::Front);
+        let back = cull(wgpu::Face::Back);
+        assert!(
+            (front == pixels && back == masked.0) || (back == pixels && front == masked.0),
+            "the two triangles have the same facing"
+        );
+        let rejected = run(true, Some(PostRaster {
+            alpha_test: Some((psh::AlphaFunc::Never, 0)),
+            ..raster
+        }));
+        assert_eq!(rejected.0, pixels, "the live alpha test rejects the composite");
+        let stippled = run(true, Some(PostRaster { stipple: Some([0; 32]), ..raster }));
+        assert_eq!(stippled.0, pixels, "the live stipple pattern rejects the composite");
+        let open_mask = run(true, Some(PostRaster { stipple: Some([u32::MAX; 32]), ..raster }));
+        assert_eq!(open_mask.0, masked.0, "stipple uniforms can change without a new pipeline");
         assert_eq!(own, prepared);
         assert_ne!(&own.0[..4], &pixels[..4], "the composite drew over the view");
     }
