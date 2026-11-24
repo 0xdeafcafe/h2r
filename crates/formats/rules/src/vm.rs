@@ -67,6 +67,8 @@ pub struct Placed {
 /// What the VM reads from and does to the game. The host implements it
 /// over `engine::entry::Cx`; tests implement it over a fake.
 pub trait Game {
+    /// The variant's type announces a round, including one with no handler.
+    fn start_line(&mut self, _ty: crate::types::Type) {}
     /// Roster slots of the players present. Order does not matter.
     fn players(&self) -> Vec<u8>;
     /// Indices of the teams in play. Order does not matter.
@@ -817,6 +819,22 @@ impl Vm {
 
     /// Runs the handler for an event the host reported.
     pub fn fire(&mut self, game: &mut dyn Game, input: Input) -> Fired {
+        if input == Input::RoundStart {
+            return self.round_start_as(game, self.ir.header.game_type);
+        }
+        self.fire_handler(game, input)
+    }
+
+    /// Starts a round of the variant's declared type. A settings-only
+    /// variant can use a different type's built-in for its handlers.
+    pub fn round_start_as(&mut self, game: &mut dyn Game, ty: crate::types::Type) -> Fired {
+        if self.ext.stopped.is_none() && ty.row().start != crate::types::StartLine::None {
+            game.start_line(ty);
+        }
+        self.fire_handler(game, Input::RoundStart)
+    }
+
+    fn fire_handler(&mut self, game: &mut dyn Game, input: Input) -> Fired {
         if self.ext.stopped.is_some() {
             return Fired::Stopped;
         }

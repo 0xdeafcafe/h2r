@@ -26,7 +26,7 @@ pub enum Type {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StartLine {
     /// The retail announcer line, played from the disc.
-    Retail,
+    Retail(u8),
     /// A clip of ours (`art/announcer/`).
     Ours,
     /// No line.
@@ -58,7 +58,7 @@ pub const TABLE: &[Row] = &[
         "slayer",
         "Slayer",
         "Kills",
-        StartLine::Retail,
+        StartLine::Retail(2),
         2,
     ),
     row(
@@ -66,7 +66,7 @@ pub const TABLE: &[Row] = &[
         "ctf",
         "Capture the Flag",
         "Captures",
-        StartLine::Retail,
+        StartLine::Retail(3),
         1,
     ),
     row(
@@ -74,7 +74,7 @@ pub const TABLE: &[Row] = &[
         "assault",
         "Assault",
         "Detonations",
-        StartLine::Retail,
+        StartLine::Retail(10),
         9,
     ),
     row(
@@ -82,7 +82,7 @@ pub const TABLE: &[Row] = &[
         "oddball",
         "Oddball",
         "Time",
-        StartLine::Retail,
+        StartLine::Retail(4),
         3,
     ),
     row(
@@ -90,7 +90,7 @@ pub const TABLE: &[Row] = &[
         "koth",
         "King of the Hill",
         "Time",
-        StartLine::Retail,
+        StartLine::Retail(6),
         4,
     ),
     row(
@@ -98,7 +98,7 @@ pub const TABLE: &[Row] = &[
         "juggernaut",
         "Juggernaut",
         "Kills",
-        StartLine::Retail,
+        StartLine::Retail(8),
         7,
     ),
     row(
@@ -106,7 +106,7 @@ pub const TABLE: &[Row] = &[
         "territories",
         "Territories",
         "Time",
-        StartLine::Retail,
+        StartLine::Retail(9),
         8,
     ),
     row(
@@ -187,7 +187,7 @@ impl Type {
     /// Whether the type is one of the seven retail ones, each with a
     /// built-in script a `uses` line may name (`crate::builtin::ALL`).
     pub fn is_retail(self) -> bool {
-        self.row().start == StartLine::Retail
+        matches!(self.row().start, StartLine::Retail(_))
     }
 
     /// The header byte.
@@ -216,7 +216,7 @@ impl Type {
     pub fn of_engine(engine: u8) -> Option<Type> {
         TABLE
             .iter()
-            .find(|r| r.start == StartLine::Retail && r.engine == engine)
+            .find(|r| r.ty.is_retail() && r.engine == engine)
             .map(|r| r.ty)
     }
 }
@@ -230,7 +230,7 @@ pub fn names() -> String {
 pub fn retail_names() -> String {
     TABLE
         .iter()
-        .filter(|r| r.start == StartLine::Retail)
+        .filter(|r| r.ty.is_retail())
         .map(|r| r.name)
         .collect::<Vec<_>>()
         .join(", ")

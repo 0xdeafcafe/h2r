@@ -53,6 +53,8 @@ pub struct FakeGame {
     pub reads: Vec<&'static str>,
     /// Messages shown, in call order (each is in [`FakeGame::calls`] too).
     pub messages: Vec<FakeMessage>,
+    /// The game type announced at each audible round start, in order.
+    pub start_lines: Vec<crate::types::Type>,
     /// Each team's spawn rule, as `spawn_areas` and `spawn_near` set it:
     /// the starting locations the engine's spawns of that team may use.
     pub spawns: BTreeMap<u8, FakeSpawns>,
@@ -354,6 +356,10 @@ impl FakeGame {
 }
 
 impl Game for FakeGame {
+    fn start_line(&mut self, ty: crate::types::Type) {
+        self.start_lines.push(ty);
+    }
+
     fn players(&self) -> Vec<u8> {
         // Reverse order, so the VM's own ordering is what tests see.
         self.players.keys().rev().copied().collect()
