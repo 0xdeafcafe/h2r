@@ -129,7 +129,7 @@ engine does not replicate, is one of two things:
   Firefight or Siege round-start line (the declared type byte), a sound
   (tag-table index, an entity or a point or an audience) and a
   medal line. A cue is not state: a machine that joins later does not
-  get it. One cue is the exception, since it carries state: the walls
+  get it. Two cues are the exceptions, since they carry state. The walls
   cue (`rules::show::Cue::Walls`, kind 2) holds the whole list of areas
   the script shows (`show_area`; at most 8, each a netgame flag's index
   in 12 bits and a team in 4, 17 bytes at most). The authority sends it
@@ -140,6 +140,9 @@ engine does not replicate, is one of two things:
   draws the walls through the markers' world-line source and takes an
   older or repeated cue for nothing
   (`crates/extensions/game/src/rules/world/show.rs`, `present_walls`).
+  The pickers' offer cue (`rules::show::Cue::Pick`, kind 4) holds each
+  picker's offer the same way, for the players a client asks
+  ([Pickers](#pickers)).
 
 An audience is a 16-bit mask of player slots. A text is an index into
 the blob's string table and a sound an index into its tag table, so a
@@ -536,11 +539,27 @@ after 30 seconds (B on the picker reports nothing). Picks made before the
 round's end reset are still handed over. The picker is the existing
 data-driven one, so no screen of its own and no per-script Rust.
 
-A player on another machine is not asked (it has no local user here), and
-a pick made on another machine is not carried, which needs a message on the
-actor channel; such a player reads -1 from `picked` and a script falls back
-to the lobby's option, as `siege.rules` does. A player who joins after the
-offers were made is not asked either.
+A player on another machine is asked the other way. The authority sends
+each picker as an offer cue on the show channel
+([the show channel](#the-show-channel), `rules::show::Cue::Pick`: the
+picker's number, its title and its rows as string-table indexes, at most
+16 bytes) when the offers change — a picker taken away goes as an empty
+one, which takes the asking off — and again every 90 ticks while any
+stands, so a machine that joins late has them. A client holds them
+(`rules/world/pick.rs`, `client_offer`), asks its own local players one
+at a time at the tick boundary with the same value picker, and sends each
+press back up the actor channel as the pick message
+(`game/src/actor_net/pick.rs`: the roster slot, the picker and the row,
+three bytes, bounds-checked on both ends). The host decodes it
+(`actor_net/pick.rs::receive`), keeps only picks for players the sending
+peer sits, and hands them to `Vm::choose` like its own local reports, so
+`picked` reads a remote pick as it reads a local one. The tunnel carries
+no frame upstream yet — its only client-to-host frame is the key request,
+which holds no payload — so a client asks nobody until the frame is built
+(`actor_net/link.rs::pick_upstream` answers false), and a player on
+another machine reads -1 from `picked`; a script falls back to the
+lobby's option, as `siege.rules` does. A player who joins after the
+offers were made is asked by the next repeat of the offer cue.
 
 ### Spawns
 

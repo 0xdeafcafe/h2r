@@ -4,6 +4,8 @@ pub mod client;
 pub mod creature;
 mod dialogue;
 pub mod host;
+#[cfg(feature = "rules")]
+pub mod pick;
 pub mod report;
 pub mod roles;
 pub mod squads;
@@ -199,6 +201,8 @@ impl Feature for Capture {
             if let Some(client) = &client {
                 *client.lock().unwrap() = client::Client::default();
                 roles::receive(&[]);
+                #[cfg(feature = "rules")]
+                crate::rules::world::pick::client_reset();
             }
             pending.clear();
             clear_show_cues();
