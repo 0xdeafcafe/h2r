@@ -359,9 +359,14 @@ fn clamp(c: &mut CpuAbi, g: &mut Guest) -> Result<Next> {
     let mut rgb = [0u32; 6];
     for (i, p) in [c.esi, c.ebp + 216, c.ebp + 220, c.ebp + 224, c.ebp + 228, c.ebp + 232].into_iter().enumerate() {
         let v = g.u32(p)?;
-        rgb[i] = s.clamp(v, zero, one).map_err(fp)?;
+        let below = s.above(zero, v).map_err(fp)?;
+        rgb[i] = if below { zero } else if s.above(v, one).map_err(fp)? { one } else { v };
         if i < 2 {
             g.set_u32(sp + 20 + i as u32 * 4, rgb[i])?;
+        } else if below {
+            // The low clamp copies the whole register (movaps). At the
+            // root-lookup continuation XMM1 belongs to the returning callee.
+            c.xmm[9 - i] = c.xmm[1];
         } else {
             scalar(c, 9 - i, rgb[i]);
         }

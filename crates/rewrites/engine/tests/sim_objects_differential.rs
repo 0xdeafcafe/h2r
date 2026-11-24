@@ -34,7 +34,7 @@
 //! event per object it deletes.
 //!
 //! Every root also compares the float state at every callout and at its
-//! return: the eight XMM registers and the whole x87 state (the eight
+//! return: MXCSR, the eight XMM registers and the whole x87 state (the eight
 //! physical registers, TOP and the rest of the status word, the tag
 //! word, the control word, FIP, FOP, FDP and their selectors). A root
 //! leaves that comparison only through [`FLOAT_OPT_OUT`], with its
@@ -489,7 +489,8 @@ struct Callout {
     eflags: u32,
     defined: u32,
     ram: u64,
-    /// The XMM registers and the x87 state, unless the root opts out.
+    /// MXCSR, XMM registers and the x87 state, unless the root opts out.
+    mxcsr: Option<u32>,
     xmm: Option<[u128; 8]>,
     x87: Option<ir::interp::X87>,
 }
@@ -500,6 +501,7 @@ impl PartialEq for Callout {
         (self.kind, self.target, self.resume, self.gpr, self.ram)
             == (o.kind, o.target, o.resume, o.gpr, o.ram)
             && self.eflags & both == o.eflags & both
+            && self.mxcsr == o.mxcsr
             && self.xmm == o.xmm
             && self.x87 == o.x87
     }
@@ -566,6 +568,7 @@ fn digest(g: &Guest, esp: u32) -> u64 {
 fn callout(cpu: &Cpu, g: &Guest, t: TransferAbi) -> Callout {
     let floats = FLOATS.with(std::cell::Cell::get);
     Callout {
+        mxcsr: floats.then_some(cpu.mxcsr),
         xmm: floats.then_some(cpu.xmm),
         x87: floats.then(|| cpu.x87.clone()),
         kind: t.kind,
@@ -588,8 +591,6 @@ std::thread_local! {
 const FLOAT_OPT_OUT: &[(u32, &str)] = &[
     (0x000b_d090, "OBJECT_NODE_MATRICES: the body does not keep retail's XMM state (slice 4)"),
     (0x000b_c820, "OBJECT_POST_UPDATE: fuses OBJECT_NODE_MATRICES (slice 4)"),
-    (0x000c_1400, "LIGHTS_UPDATE: the body does not keep retail's XMM state (slice 5)"),
-    (0x000c_0c80, "LIGHT_RECORD_UPDATE: the body does not keep retail's XMM state (slice 5)"),
 ];
 
 /// Whether `root` compares the float state.
@@ -2190,7 +2191,14 @@ fn lights(g: &mut Guest, case: u32) {
             _ => u32::MAX,
         };
         word(g, l + 0x4c, owner);
-        g.set_u16(l + 0x54, u16::MAX).unwrap();
+        // One owner drives its attached light from the built-in constant
+        // function. Both colour calls remain visible in the transcript.
+        let animated = i == 1 && case == 1;
+        if animated {
+            word(g, l + 0x4c, handle(1));
+            word(g, l + 0x50, 0);
+        }
+        g.set_u16(l + 0x54, if animated { 0 } else { u16::MAX }).unwrap();
         word(g, l + 0x58, if (i + case) % 3 == 1 { handle(3) } else { u32::MAX });
         g.set_u16(l + 0x5c, 0).unwrap();
         for k in 0..9 {
@@ -2250,6 +2258,9 @@ fn lit(point: &points::Point, cases: u32) {
         };
         let (cpu, g) = fresh();
         let reference = h.run(cpu, g, &|_| false);
+        if point.base == points::LIGHT_RECORD_UPDATE.base && case == 1 {
+            assert_eq!(reference.callouts.iter().filter(|call| call.target == 0x131d60).count(), 2);
+        }
         let (cpu, g) = fresh();
         let fused = h.run(cpu, g, &|_| true);
         check(&format!("{} case {case} fused", point.name), &reference, &fused);
@@ -2299,6 +2310,10 @@ fn the_harness_sees_a_float_difference() {
     cpu.xmm[5] ^= 1;
     let b = h.run(cpu, g, &|_| false);
     assert_ne!(a.callouts[0], b.callouts[0], "an XMM register is compared");
+    let (mut cpu, g) = start(ram, root, 1);
+    cpu.mxcsr ^= 0x20;
+    let precision = h.run(cpu, g, &|_| false);
+    assert_ne!(a.callouts[0], precision.callouts[0], "the sticky precision flag is compared");
     let (mut cpu, g) = start(ram, root, 1);
     cpu.x87.instruction_pointer ^= 0x10;
     let c = h.run(cpu, g, &|_| false);
