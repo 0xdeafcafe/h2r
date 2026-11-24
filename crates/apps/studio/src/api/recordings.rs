@@ -11,7 +11,7 @@ use studio_proto::{code, method as m};
 
 use super::{MethodDef, P, Provider, Reply, def, err};
 use crate::App;
-use crate::app::recordings::{NONE, Row};
+use crate::app::recordings::{NONE, Op, Refusal, Row};
 
 const LIST: MethodDef = def(
     m::RECORDING_LIST,
@@ -45,6 +45,30 @@ const PATH: MethodDef = def(
     "{}",
 );
 
+const WRITE: MethodDef = def(
+    m::RECORDING_WRITE,
+    "Edit one recording's stream (rich editors K3), all or nothing, as one undo step: set the initial unit control state by field, set or move events, insert events, remove events. Events keep their ticks: removing one gives its delay to the next, inserting one takes its delay from the next, moving one takes and gives the difference. The block's tick count becomes the stream's. The edit is the map's unsaved change; a stream longer than the source's needs Edit > Allow growing full blocks. REFUSED for a stream that does not read or is not version 4; INVALID_PARAMS for an edit that does not fit (the index of the one that failed is in the message)",
+    r#"{"name":"string (case-insensitive)","initial?":"{field:value} (the names recording.read gives: numbers, or an array of reals)","trailer?":"hex (12 bytes)","events?":"[{op:'set',index,delay?,payload?|fields?} | {op:'insert',index,kind,delay?,payload?|fields?} | {op:'remove',index}] (applied in order; index is the event's number in recording.read; insert goes before it, the end event included; fields are the names recording.read gives: value, or a and b)"}"#,
+    r#"{"name":"string","ticks":"integer","stream_bytes":"integer","events":"integer","grows":"boolean (the stream outgrew the source's and is appended on save)"}"#,
+    r#"{"name":"arrive","events":[{"op":"remove","index":0}]}"#,
+);
+
+const REMOVE: MethodDef = def(
+    m::RECORDING_REMOVE,
+    "Remove a recording from the block (rich editors K3): the ones after it move down, one undo step. REFUSED while a script plays it, plays a later one by its number, or when the scripts do not read (who plays it cannot be known)",
+    r#"{"name":"string (case-insensitive)"}"#,
+    r#"{"removed":"string","recordings":"integer (left)"}"#,
+    r#"{"name":"empty"}"#,
+);
+
+const UNDO: MethodDef = def(
+    m::RECORDING_UNDO,
+    "Undo the last recording edit, or with redo, redo the last undone one",
+    r#"{"redo?":"boolean"}"#,
+    r#"{"changed":"boolean (false: nothing to undo or redo)"}"#,
+    "{}",
+);
+
 const DEFAULT_LIMIT: usize = 1000;
 const MAX_LIMIT: usize = 20_000;
 
@@ -53,7 +77,7 @@ pub struct Recordings;
 
 impl Provider for Recordings {
     fn methods(&self) -> Vec<MethodDef> {
-        vec![LIST, READ, PLAY, PATH]
+        vec![LIST, READ, PLAY, PATH, WRITE, REMOVE, UNDO]
     }
 
     fn call(&mut self, app: &mut App, method: &str, params: &Value) -> Option<Reply> {
@@ -62,6 +86,9 @@ impl Provider for Recordings {
             m::RECORDING_READ => Some(read(app, &P(params))),
             m::RECORDING_PLAY => Some(play(app, &P(params))),
             m::RECORDING_PATH => Some(path(app, &P(params))),
+            m::RECORDING_WRITE => Some(write(app, &P(params))),
+            m::RECORDING_REMOVE => Some(remove(app, &P(params))),
+            m::RECORDING_UNDO => Some(undo(app, &P(params))),
             _ => None,
         }
     }
@@ -287,6 +314,179 @@ pub(crate) fn play_on(app: &mut App, recording: &str, player: u16, mode: Option<
     app.pairing.path.start(recording, player);
     answer["path"] = json!({"recording": recording, "player": player, "points": 0});
     Ok(answer)
+}
+
+fn refusal(r: Refusal) -> RpcError {
+    match r {
+        Refusal::Params(why) => err(code::INVALID_PARAMS, why),
+        Refusal::Refused(why) => err(code::REFUSED, why),
+    }
+}
+
+/// The index of the recording `name` names.
+fn index_of(app: &mut App, name: &str) -> Result<usize, RpcError> {
+    rows(app)?
+        .iter()
+        .position(|r| r.recorded.name.eq_ignore_ascii_case(name))
+        .ok_or_else(|| {
+            err(
+                code::INVALID_PARAMS,
+                format!("name: no recording {name:?} (recording.list lists them)"),
+            )
+        })
+}
+
+/// A JSON number or array of numbers as a value: whole numbers are
+/// integers (the width is checked where it is known), anything else reals.
+fn json_value(k: &str, v: &Value) -> Result<Val, RpcError> {
+    let bad = || err(code::INVALID_PARAMS, format!("{k}: a number or an array of numbers, not {v}"));
+    match v {
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                if let Ok(u) = u32::try_from(i) {
+                    Ok(Val::Unsigned(u))
+                } else {
+                    i32::try_from(i).map(Val::Signed).map_err(|_| bad())
+                }
+            } else {
+                Err(bad())
+            }
+        }
+        Value::Array(a) => a
+            .iter()
+            .map(|x| x.as_f64().map(|f| f as f32).ok_or_else(bad))
+            .collect::<Result<_, _>>()
+            .map(Val::Reals),
+        _ => Err(bad()),
+    }
+}
+
+fn unhex(k: &str, s: &str) -> Result<Vec<u8>, RpcError> {
+    let bad = || err(code::INVALID_PARAMS, format!("{k}: hex bytes, not {s:?}"));
+    if s.len() % 2 != 0 || !s.is_ascii() {
+        return Err(bad());
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|_| bad()))
+        .collect()
+}
+
+/// One entry of `events`.
+fn op(i: usize, o: &Value) -> Result<Op, RpcError> {
+    let p = P(o);
+    let at = |e: RpcError| err(e.code, format!("events[{i}]: {}", e.message));
+    let index = p.usize("index").map_err(at)?;
+    let delay = p
+        .opt_u64("delay")
+        .map_err(at)?
+        .map(|d| u16::try_from(d).map_err(|_| err(code::INVALID_PARAMS, format!("events[{i}].delay: 0..65535, not {d}"))))
+        .transpose()?;
+    // The payload as bytes, or built from named values.
+    let payload = |kind: Option<u8>| -> Result<Option<Vec<u8>>, RpcError> {
+        if let Some(h) = p.opt_str("payload").map_err(at)? {
+            return Ok(Some(unhex("payload", h)?));
+        }
+        let Some(f) = p.get("fields") else {
+            return Ok(None);
+        };
+        let obj = f.as_object().ok_or_else(|| {
+            err(code::INVALID_PARAMS, format!("events[{i}].fields: an object, not {f}"))
+        })?;
+        let kind = kind.ok_or_else(|| {
+            err(code::INVALID_PARAMS, format!("events[{i}].fields: set takes payload hex; fields name an insert's values"))
+        })?;
+        let values: Vec<(&str, Val)> = obj
+            .iter()
+            .map(|(k, v)| Ok((k.as_str(), json_value(k, v)?)))
+            .collect::<Result<_, RpcError>>()?;
+        hs::recording_edit::payload_from(kind, &values)
+            .map(Some)
+            .map_err(|why| err(code::INVALID_PARAMS, format!("events[{i}].fields: {why}")))
+    };
+    match p.str("op").map_err(at)? {
+        "set" => {
+            let payload = payload(None)?;
+            if delay.is_none() && payload.is_none() {
+                return Err(err(code::INVALID_PARAMS, format!("events[{i}]: set needs delay or payload")));
+            }
+            Ok(Op::Set { index, delay, payload })
+        }
+        "insert" => {
+            let kind = p.u64("kind").map_err(at)?;
+            let kind = u8::try_from(kind).map_err(|_| {
+                err(code::INVALID_PARAMS, format!("events[{i}].kind: 0..255, not {kind}"))
+            })?;
+            let payload = payload(Some(kind))?.unwrap_or_default();
+            Ok(Op::Insert { index, kind, delay: delay.unwrap_or(0), payload })
+        }
+        "remove" => Ok(Op::Remove { index }),
+        other => Err(err(
+            code::INVALID_PARAMS,
+            format!("events[{i}].op: set, insert or remove, not {other:?}"),
+        )),
+    }
+}
+
+/// `recording.write`.
+fn write(app: &mut App, p: &P) -> Reply {
+    let name = p.str("name")?;
+    let mut ops = Vec::new();
+    if let Some(initial) = p.get("initial") {
+        let o = initial
+            .as_object()
+            .ok_or_else(|| err(code::INVALID_PARAMS, format!("initial: an object, not {initial}")))?;
+        for (k, v) in o {
+            ops.push(Op::Initial { name: k.clone(), value: json_value(k, v)? });
+        }
+    }
+    if let Some(t) = p.opt_str("trailer")? {
+        ops.push(Op::Trailer(unhex("trailer", t)?));
+    }
+    if let Some(events) = p.get("events") {
+        let list = events
+            .as_array()
+            .ok_or_else(|| err(code::INVALID_PARAMS, format!("events: an array, not {events}")))?;
+        for (i, e) in list.iter().enumerate() {
+            ops.push(op(i, e)?);
+        }
+    }
+    if ops.is_empty() {
+        return Err(err(code::INVALID_PARAMS, "initial, trailer or events: say what to change"));
+    }
+    let index = index_of(app, name)?;
+    app.recording_write(index, &ops).map_err(refusal)?;
+    let all = rows(app)?;
+    let row = &all[index];
+    let d = row.decoded.as_ref().expect("a written stream reads");
+    let grows = row.recorded.stream.len()
+        > app
+            .scripts
+            .recording_doc
+            .as_ref()
+            .map_or(usize::MAX, |doc| doc.entries[index].original.len());
+    Ok(json!({
+        "name": row.recorded.name,
+        "ticks": row.recorded.ticks,
+        "stream_bytes": row.recorded.stream.len(),
+        "events": d.events.len(),
+        "grows": grows,
+    }))
+}
+
+/// `recording.remove`.
+fn remove(app: &mut App, p: &P) -> Reply {
+    let name = p.str("name")?;
+    let index = index_of(app, name)?;
+    let removed = rows(app)?[index].recorded.name.clone();
+    app.recording_remove(index).map_err(refusal)?;
+    Ok(json!({"removed": removed, "recordings": rows(app)?.len()}))
+}
+
+/// `recording.undo`.
+fn undo(app: &mut App, p: &P) -> Reply {
+    let changed = app.recording_step(p.bool("redo")?).map_err(refusal)?;
+    Ok(json!({"changed": changed}))
 }
 
 /// `recording.path`: the points kept since the last play.

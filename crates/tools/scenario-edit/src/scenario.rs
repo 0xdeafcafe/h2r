@@ -437,6 +437,9 @@ pub struct Scenario {
     tag_grown: Vec<TagGrown>,
     /// New string IDs. See [`Self::set_tag_strings`].
     tag_strings: Vec<String>,
+    /// The recordings block's writes. See [`Self::set_recording_changes`].
+    recording_patches: Vec<(u32, Vec<u8>)>,
+    recording_grown: Vec<TagGrown>,
     /// The Modeling tool's writes. See [`Self::set_geometry_changes`].
     geometry: GeometryChanges,
     /// The Textures tool's writes, in the same shape. See
@@ -655,6 +658,8 @@ impl Scenario {
             bsp_patches: Vec::new(),
             tag_grown: Vec::new(),
             tag_strings: Vec::new(),
+            recording_patches: Vec::new(),
+            recording_grown: Vec::new(),
             geometry: GeometryChanges::default(),
             bitmap: GeometryChanges::default(),
         })
@@ -801,6 +806,8 @@ impl Scenario {
             geometry_refusal: self.geometry.refusal.clone(),
             ..Changes::default()
         };
+        out.patches.extend(self.recording_patches.iter().cloned());
+        out.tag_grown.extend(self.recording_grown.iter().cloned());
         out.patches.extend(self.geometry.patches.iter().cloned());
         out.bsp_patches
             .extend(self.geometry.bsp_patches.iter().cloned());
@@ -962,6 +969,47 @@ impl Scenario {
     /// The Textures tool's writes.
     pub fn bitmap_changes(&self) -> &GeometryChanges {
         &self.bitmap
+    }
+
+    /// Replace the recordings block's writes (all of them, not a delta):
+    /// patches to the scenario's own `recorded_animation` elements, their
+    /// count and the streams written in place, and the streams that
+    /// outgrew their source, appended at save with the element's
+    /// `(size, address)` pair pointed at the copy
+    /// (`hs::recording_edit::changes`). They are the scenario's bytes but
+    /// no placement block's, so they go out beside the blocks' own.
+    /// Refused when a grown stream's pair lies outside the scenario's
+    /// payload or a patch covers it.
+    pub fn set_recording_changes(
+        &mut self,
+        patches: Vec<(u32, Vec<u8>)>,
+        grown: Vec<TagGrown>,
+    ) -> Result<()> {
+        let (lo, hi) = (self.address, self.address.saturating_add(self.size));
+        for g in &grown {
+            let end = g.root.saturating_add(8);
+            if g.root < lo || end > hi {
+                return Err(Error::Refused(
+                    "a grown recording's pair is outside the scenario's payload",
+                ));
+            }
+            if patches
+                .iter()
+                .any(|(a, b)| *a < end && g.root < a.saturating_add(b.len() as u32))
+            {
+                return Err(Error::Refused("a grown recording's pair is also patched"));
+            }
+            if g.bytes.is_empty() || g.count == 0 {
+                return Err(Error::Refused("a grown recording has no bytes"));
+            }
+        }
+        self.recording_patches = patches;
+        self.recording_grown = grown;
+        Ok(())
+    }
+    /// The recordings block's in-place writes and grown streams.
+    pub fn recording_changes(&self) -> (&[(u32, Vec<u8>)], &[TagGrown]) {
+        (&self.recording_patches, &self.recording_grown)
     }
 
     /// Replace the other tags' grown blocks (all of them, not a delta).

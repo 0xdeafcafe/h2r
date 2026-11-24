@@ -1,7 +1,7 @@
 # Rich editors: shaders, colours, curves, scripts, sounds and recordings
 
-Status: Design, except the seam (X1), "Data that changes length", sound audition (A1), mouth curves, read (A2), Scripts, read (H1), Recordings, read (K1), Recordings, play (K2), the curve editor, same length (F1), curve type changes (F2) and Model poses (M1), which are built; each section names the format code it stands on and the gaps in it.
-Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/fields/rich.rs` (the seam), `crates/formats/tags/src/defs/attrs.rs` (`FieldView`), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/apps/studio/src/fields/curve.rs` and `crates/apps/studio/src/api/curves.rs` (F1), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/formats/hs/src/script_doc.rs`, `crates/formats/hs/src/recording.rs`, `crates/apps/studio/src/app/recordings.rs`, `crates/apps/studio/src/api/recordings.rs`, `crates/apps/studio/src/app/scripts.rs`, `crates/apps/studio/src/ui/scripts.rs`, `crates/apps/studio/src/api/scripts.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`. Tests: `defs/tests.rs`, `registry/tests.rs`, `fields::rich::tests` and `api/tests.rs` (X1), `effects::function::tests` and `api/curves/tests.rs` (F1), `app/tag_data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1), `app::scripts::tests`, `hs::script_doc::tests` and `hs::source::each_tests` (H1), `hs::recording::tests` and `app/recordings_tests.rs` (K1); each other slice names its own, `crates/apps/studio/src/app/anim.rs`, `crates/apps/studio/src/ui/anim.rs` (M1), `api/anim/tests.rs`, `anim_tests.rs`.
+Status: Design, except the seam (X1), "Data that changes length", sound audition (A1), mouth curves, read (A2), Scripts, read (H1), Recordings, read (K1), Recordings, play (K2), Recordings, write (K3), the curve editor, same length (F1), curve type changes (F2) and Model poses (M1), which are built; each section names the format code it stands on and the gaps in it.
+Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/fields/rich.rs` (the seam), `crates/formats/tags/src/defs/attrs.rs` (`FieldView`), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/apps/studio/src/fields/curve.rs` and `crates/apps/studio/src/api/curves.rs` (F1), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/formats/hs/src/script_doc.rs`, `crates/formats/hs/src/recording.rs`, `crates/formats/hs/src/recording_edit.rs`, `crates/apps/studio/src/app/recordings.rs`, `crates/apps/studio/src/api/recordings.rs`, `crates/apps/studio/src/app/scripts.rs`, `crates/apps/studio/src/ui/scripts.rs`, `crates/apps/studio/src/api/scripts.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`. Tests: `defs/tests.rs`, `registry/tests.rs`, `fields::rich::tests` and `api/tests.rs` (X1), `effects::function::tests` and `api/curves/tests.rs` (F1), `app/tag_data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1), `app::scripts::tests`, `hs::script_doc::tests` and `hs::source::each_tests` (H1), `hs::recording::tests`, `hs::recording_edit::tests` (`recording_edit_tests.rs`) and `app/recordings_tests.rs` (K1, K3), `scenario-edit`'s `the_recordings_blocks_writes_save_with_the_scenario` (K3); each other slice names its own, `crates/apps/studio/src/app/anim.rs`, `crates/apps/studio/src/ui/anim.rs` (M1), `api/anim/tests.rs`, `anim_tests.rs`.
 Switch: none.
 
 A rich editor shows a tag, or part of one, as the thing it is: a material
@@ -533,7 +533,9 @@ list still shows and says that the scripts that play each need it. With
 a game paired, **Play on unit** plays the recording on the first
 player's unit (`recording.play`) and the Scene viewport draws the path
 that unit takes through the live mirror as a line, kept until the next
-play (`recording.path`). The lanes and the scrub bar are not built.
+play (`recording.path`). Stream edits, **Remove** and undo are the API's
+(`recording.write`, `recording.remove`, `recording.undo`); the tool has no
+controls for them, and the lanes and the scrub bar are not built.
 
 **The data.** The element is `defs/recorded_animation.txt` (name,
 version, control version, ticks, the stream). `hs::recording` reads the
@@ -552,8 +554,7 @@ eight, twelve and four-byte unit control fields are shown as floats
 (throttle two, facing, aiming and looking three) or integers, and the
 byte and short deltas (types 7 to 22) show their `channel` (the type's
 position in its run) and two values: which control each channel moves
-is not read. Gaps: nothing encodes a stream (slice K3), and only version 4
-streams are read. Halo 2's player reads the stream; a Halo 1 stream in a
+is not read. Only version 4 streams are read. Halo 2's player reads the stream; a Halo 1 stream in a
 converted map has already been rewritten to Halo 2's widths.
 
 **Scripts that play them.** A script names a recording with a value of
@@ -588,12 +589,43 @@ the player is put before capture starts. The check is that a captured
 stream played back on the same unit from the same start reaches the same
 place in a deterministic run (**S** until run).
 
-**Write.** Through the scenario session. A stream changes length with
-every edit, so it uses the session's `resize_data`; a new recording adds
-a block element. Renaming or removing one a script plays is refused,
-naming the script. On a converted Halo 1 map the conversion owns the
-scenario, so edits save as an overlay the converter applies, the way
+**Write.** `hs::recording_edit::Stream` parses a stream into events that
+encode back to the same bytes: it keeps the initial state's padding, the
+form each delay was written in and any bytes after the end event, so an
+unedited stream encodes to itself. The edits keep every event that is not
+named at its tick: removing one gives its delay to the next, inserting one
+takes its delay from the one it goes before, moving one takes and gives
+the difference (the end event, with nothing after it, sets the length).
+The end event cannot be removed or inserted, a payload has its type's
+length, an initial field its width, and the result must walk clean
+(`Stream::check`). `payload_from` builds a payload from the names
+`recording.read` gives. The block's tick count becomes the stream's.
+
+`app::recordings::Doc` holds the block as the source has it and the
+entries as edited, with an undo stack of entry snapshots. Each edit
+(`App::recording_write`, `recording_remove`, `recording_step`) replaces
+the entries and hands the scenario session the diff
+(`hs::recording_edit::changes`, `Session::set_recording_changes`): the
+element bytes that differ, a stream no longer than its source's written
+over it with the size patched, and a longer stream as a
+`scenario_edit::TagGrown` at the slot's `(size, address)` pair, appended
+to the metadata on save behind **Allow growing full blocks**. The old
+streams stay as dead bytes. Nothing is written by the tag editor, which
+does not own the scenario tag's bytes; the diff counts as an unsaved
+change and goes out with the placement edits. A refused diff changes
+nothing.
+
+**Remove** moves the later elements down and lowers the count. It is
+refused when a script plays the recording, when a script plays a later
+one by its number (which would then name another), and when the scripts do
+not read (without the executable, who plays it cannot be known).
+Recordings are not added: the block keeps the element room it has.
+
+On a converted Halo 1 map the conversion owns the scenario, so edits
+should save as an overlay the converter applies, the way
 [modeling.md](modeling.md), "Converted Halo 1 maps" does for geometry.
+That overlay is not built: the edits above are written into the converted
+map itself, and a reconversion discards them.
 
 ### Strings
 
@@ -661,7 +693,9 @@ already a namespace there (player models and looks), so poses use `anim.*`.
 | `anim.list`, `anim.pose` | `{tag}`; `{tag, animation, frame?, overlay?: {animation, weight}, model?, size?, out?}` | the animations with types, frame counts and codecs, and the models that use the graph; the posed node transforms (local and world, which channels the animation supplied), and the posed model drawn to a PNG |
 | `recording.list` | none | `{recordings: [{name, ticks, version, control_version, stream_bytes, events, problem?, played_by}], note?}` |
 | `recording.read` | `{name, limit?, offset?}` | `{initial: {fields, trailer}, events: [{tick, at, delay, kind, name, fields, payload}], total, truncated, ...}`; a stream that does not read is `REFUSED` with the offset |
-| `recording.write` | `{name, initial?, events}` | the new `recording.read`; one undo step |
+| `recording.write` | `{name, initial?, trailer?, events?: [{op: set\|insert\|remove, index, delay?, payload?\|fields?, kind?}]}` | `{name, ticks, stream_bytes, events, grows}`; all or nothing, one undo step |
+| `recording.remove` | `{name}` | `{removed, recordings}`; `REFUSED` while a script plays it |
+| `recording.undo` | `{redo?}` | `{changed}` |
 | `recording.play` | `{name, unit?: "player.<n>", mode?: play\|delete\|hover}` | the game's answer `{player, recording, index, unit}` and `path`; `REFUSED` without a paired, running game that lists it, with the game's reason when it refuses |
 | `recording.path` | `{clear?, limit?}` | `{recording, player, count, points, truncated}`: the unit positions kept since the last play |
 | `recording.capture` | `{name, unit, start?, stop?}` (K4) | forwarded to the paired game; `REFUSED` without one |
@@ -749,7 +783,7 @@ the first one whose needs are met.
 | K1 (built) | **Recordings, read**: the stream crate, typed events, the tool and timeline, `recording.list`, `recording.read` | M | H1 | every Halo 2 event type decodes from an invented stream; a bad type or length is an error with its offset |
 | K2 (built) | **Recordings, play**: the game's `recording.play`, the path in Scene | M | K1; live-mirror | on the fake game, **Play on unit...** sends the call and the streamed positions draw a path |
 | H4 | **`hs.eval`** in the game, and an expression box in the Scripts tool | M | H1 | the agent crate's test evaluates an invented expression through the evaluator entry; a parse error returns the evaluator's text |
-| K3 | **Recordings, write**: the encoder, event edits, `recording.write`, the converted-map overlay | M | K1, X2 | `encode(decode(s)) == s`; an edited stream saves and walks clean; removing a played recording is refused |
+| K3 (built) | **Recordings, write**: the encoder, event edits, `recording.write`, the converted-map overlay | M | K1, X2 | `encode(decode(s)) == s`; an edited stream saves and walks clean; removing a played recording is refused |
 | S5 | **WGSL overrides from the editor** | S | S4, P12 | on the fake game, an edited file reaches `render.reload` and a compile error shows under the text |
 | N1 | **Strings, read**: every string by name and language, searched | S | nothing | an invented table lists and searches in each language |
 | K4 | **Re-record from input**: the game's `recording.capture`, the capture flow | L | K2, K3 | a capture on the fake game encodes to a stream that walks clean; the determinism check is in "Not verified" |

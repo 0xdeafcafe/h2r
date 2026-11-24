@@ -299,6 +299,9 @@ pub mod method {
     pub const RECORDING_READ: &str = "recording.read";
     pub const RECORDING_PLAY: &str = "recording.play";
     pub const RECORDING_PATH: &str = "recording.path";
+    pub const RECORDING_WRITE: &str = "recording.write";
+    pub const RECORDING_REMOVE: &str = "recording.remove";
+    pub const RECORDING_UNDO: &str = "recording.undo";
 
     pub const SCRIPT_LIST: &str = "script.list";
     pub const SCRIPT_SOURCE: &str = "script.source";
