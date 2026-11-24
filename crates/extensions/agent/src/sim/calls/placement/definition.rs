@@ -1,6 +1,6 @@
 //! `world.object.respawn {definition}`: every placed object of one
 //! definition remade, each linked to its placement as a load would make it
-//! (docs/editor/realtime-edits.md, "Respawn by definition").
+//! (docs/editor/realtime-edits.md, "Realtime coverage").
 //!
 //! The survey reads the placement blocks of every object type and keeps the
 //! entries whose palette names the definition. An entry whose placement
