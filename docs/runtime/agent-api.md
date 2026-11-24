@@ -122,6 +122,7 @@ connection to hold `session.claim`.
 | `editor.marks` | read | [Paired editor](#editor-a-paired-editor) |
 | `theater.*` | read or act | [Theater transport](#theater-transport) |
 | `collision.stats` | read | [`collision`](#collision-the-native-collision-world) |
+| `collision.trace` | read | [`collision`](#collision-the-native-collision-world) |
 | `anim.graph_walk` | read | [`anim`](#anim-the-animation-graph-walk) |
 | `input.list`, `input.log.read` | read | [Input logs](#input-act-like-a-player) |
 | `trace.*`, `flight.*` | read | [Tick traces and the flight recorder](#tick-traces-and-the-flight-recorder) |
@@ -5546,6 +5547,21 @@ bail reasons are in [collision-queries.md](../engine/collision-queries.md).
 | Method | Access | Params and result |
 |---|---|---|
 | `collision.stats` | read | No parameters. Returns `switch`, `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `mopps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, `precision` (aggregate single, reserved, double and extended x87 calls at C and D), `vector` (C’s result parity), `context` (D’s outer walk parity), and `ray` (I’s parity arm, below). |
+| `collision.trace` | read | `{start, delta, flags}` where `start` and `delta` are three finite binary32 world coordinates and `flags` is an unsigned 32-bit whole-query mask. |
+
+`collision.trace` evaluates entry J at a tick boundary on the active
+structure. The segment ends at `start + delta`. Both ignore handles are
+empty. The reply gives the tick stamp, numeric `hit_type` (zero for a
+miss), `fraction`, world `position`, optional `material` and `plane`, and
+the first and last `locations` as `{leaf, cluster, bsp}`. The arrays
+`cluster_marks`, `instance_marks` and `object_marks` give the slots J
+would mark in traversal order. The query leaves guest memory untouched.
+A path outside the native kernel returns `UNAVAILABLE` with the bail
+name in `error.data.reason`.
+
+```sh
+h2 agent collision.trace '{"start":[0,0,1],"delta":[0,0,-2],"flags":1}'
+```
 
 Each row in `entries` gives the `name` and eight-digit guest `addr`, the
 count of `native` answers, and `bails` by reason. Two frequency maps count

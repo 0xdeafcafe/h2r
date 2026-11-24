@@ -12,7 +12,41 @@ pub mod method {
     /// The world's counters since start (no params → [`super::Stats`]).
     pub const STATS: &str = "collision.stats";
 
-    pub const ALL: &[&str] = &[STATS];
+    /// Predict the whole-query result at the current tick, without scattering its writes.
+    pub const TRACE: &str = "collision.trace";
+
+    pub const ALL: &[&str] = &[STATS, TRACE];
+}
+
+/// A world-space segment. Delta is a displacement in world units.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TraceParams {
+    pub start: [f32; 3],
+    pub delta: [f32; 3],
+    pub flags: u32,
+}
+
+/// The first or last structure leaf visited by the trace.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TraceLocation {
+    pub leaf: i32,
+    pub cluster: i16,
+    pub bsp: i16,
+}
+
+/// The fields entry J computes, plus the mark slots it would write in each list.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TraceResult {
+    pub hit_type: u32,
+    pub fraction: f32,
+    pub position: [f32; 3],
+    pub material: Option<u16>,
+    pub plane: Option<[f32; 4]>,
+    pub locations: [TraceLocation; 2],
+    pub cluster_marks: Vec<u32>,
+    pub instance_marks: Vec<u32>,
+    pub object_marks: Vec<u32>,
 }
 
 /// `collision.stats`.

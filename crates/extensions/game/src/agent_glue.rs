@@ -659,6 +659,7 @@ impl agent::Sampler for BootSampler {
 /// The methods that read the runtime itself: `profile.faults`, the fault
 /// census (`runtime::fault_census`).
 pub fn add_runtime_methods(agent: &agent::Agent, rt: &std::sync::Arc<runtime::Runtime>) {
+    agent::collision_trace_query::install(agent, rt);
     let rt = std::sync::Arc::clone(rt);
     agent.add_method(method::PROFILE_FAULTS, Access::Read, move |v| {
         let top = top_param(&v, 20)?;
