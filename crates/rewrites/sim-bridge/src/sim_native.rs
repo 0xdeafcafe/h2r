@@ -167,9 +167,7 @@ impl Feature for SimNative {
         if collision {
             install_collision(b);
         }
-        if crate::sim_objects::on(b.switches()) {
-            crate::sim_objects::install(b);
-        }
+        crate::sim_objects::install(b);
         // The clip store and the collision world are derived from guest
         // memory and hold no state of their own; a load only has to
         // invalidate them.

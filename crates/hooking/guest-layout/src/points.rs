@@ -1856,6 +1856,9 @@ points! { ALL;
     /// A seconds value times the tick rate, rounded by `fistp` (`ecx`
     /// returns the same integer).
     GAME_SECONDS_TO_TICKS @ 0x0014_69f0: [fn(seconds: stack 0) -> eax ret 4], Hot; "docs/engine/object-update.md";
+    /// Visit active unit actions in order. A callback returning zero clears
+    /// its action. Returns one if any callback returned nonzero.
+    UNIT_ACTIONS_UPDATE @ 0x000e_6830: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
     /// An action request for the unit: eight words on the stack, the action
     /// first, handed to `0xe6900`.
     BIPED_ACTION @ 0x000e_68c0: [fn(action: ecx, object: stack 0) ret 4], Hot; "docs/engine/object-update.md";
