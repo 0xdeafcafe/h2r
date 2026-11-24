@@ -55,7 +55,7 @@ the calls before it):
 
 | Content | Source in Git | How it gets in |
 |---|---|---|
-| Halo 1 maps and campaign | the recipe, `content/halo1/convert/` (the bytes are the user's disc) | the `halo1` package's `convert` item, run before boot by `package_prepare::before_boot` (PK10, "Conversions"), writes `<data>/maps/h1_<map>/` and `<data>/campaigns/halo1/`; `campaigns::boot_state` and `new_maps::install_at_boot` list them |
+| Halo 1 maps and campaign | the recipe, `content/halo1/convert/` (the bytes are the user's disc) | the `halo1` package's `convert` item, run before boot by `package_prepare::before_boot` (PK10, "Conversions"), writes converted levels to the tag store and campaign metadata to `<data>/campaigns/halo1/`; `campaigns::boot_state` and `new_maps::install_at_boot` list them |
 | Pogo Stick | `content/pogo/` (the `pogo` package) | `workspace::PackageRewrite` (PK4; `pogo_kit::served` reads the weapons it left) |
 | Menu screens, retail screen edits | `content/ui/` (the `ui` package) | `workspace::PackageRewrite` (PK5) |
 | HUD kit HUDs | `hud` items (`content/{superbounce,forge,modes}/huds/`); their states in Rust (`crates/rewrites/hud-kit-core/src/views/`) | `hud_kit::install` in `boot/src/registration.rs`, compiled against the loaded map |

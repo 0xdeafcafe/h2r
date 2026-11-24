@@ -166,24 +166,25 @@ This is the `map-pack` package's `convert` item
 (`content/map-pack/convert/map-pack.convert.toml`), run by
 `mappack_cmd::package::MapPack` before boot; `h2 package prepare` runs it
 alone ([studio-redesign.md](../editor/studio-redesign.md),
-"Conversions"). The disc installs as one unit, stamped in
-`<data>/packages/stamps/map-pack.toml` as well as `mappack.stamp`. With
+"Conversions"). Each map is a conversion unit whose output is
+`<data>/tags/maps/<stem>.converted`. The installer records the disc in
+`mappack.stamp` and the package records its units in
+`<data>/packages/stamps/map-pack.toml`. With
 no Map Pack disc and nothing installed before, the `map-pack` package is
 off, and `packages.list` and `h2 package prepare` say why.
 
 "Installed" means `<data>/mappack.stamp` records the import's format
 version, the ISO's size, its modification time and the base disc's
-certificate version, and
-`<data>/disk/Partition1/TDATA/4D530064/$c` still exists. Replace the ISO, change
-the game disc version, or empty the data dir (`--fresh-data`), and the next
-start installs again. A stamp with another format version
+certificate version. Each map must have a verified store marker and its
+retail content package. Replacing the ISO, changing the game disc
+version, or clearing the store's map records triggers conversion. A stamp with another format version
 (`STAMP_VERSION` in `crates/apps/cli/src/mappack_cmd.rs`) also installs again.
 The current format signs `ContentMeta.xbx` and installs one package per
 map with our own `patch.lvl`; it removes disc-shaped packages from an
 older format, whose `patch.lvl` would take over the Lockout slot (8.5).
 
 It never stops the game from starting: a problem is printed as
-`packages: map-pack item 0 maps: <why>` and the game runs on. `--no-mappack` or
+`packages: map-pack item 0 <stem>: <why>` and the game runs on. `--no-mappack` or
 `H2_MAPPACK=0` (also `false`, `no`, `off`) skips the check.
 
 `h2 play --follow` runs `h2 play` as a child with the same disc path and
@@ -207,7 +208,9 @@ cargo h2 import-mappack <iso> --data <data root> --disc disc/halo2.iso --dry-run
 ```
 
 It reads the disc's directory tree and, for every `/demos/dlc/<8 hex
-digits>/` package, its `ContentMeta.xbx` and `patch_v3.lvl`. Then it writes
+digits>/` package, its `ContentMeta.xbx` and `patch_v3.lvl`. It stores
+each map through `workspace::converted::store_converted`, with shared
+caches supplied by the Halo 2 disc. Then it writes
 **one package per map** (1.0 takes one map per package, 8.1) to
 `<data>/disk/Partition1/TDATA/4D530064/$c/<offer ID>/`, which is the host
 side of `T:\$c\<offer ID>\` in `crates/runtime/vfs` (`vfs::Config::content_dir`).
@@ -215,7 +218,7 @@ Each holds:
 
 | file | from |
 |---|---|
-| the map, under its disc name | copied byte for byte, the only copy of it |
+| the map, under its disc name | copied byte for byte for the retail content path |
 | `patch.lvl` | made from the map's `patch_v3.lvl` record (8.2), version 2, one record |
 | `ContentMeta.xbx` | the disc package's, with this package's offer ID at `0x28`, then signed (section 7) |
 | `ContentImage.xbx` and any other file | copied byte for byte from the disc package |

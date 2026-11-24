@@ -67,9 +67,27 @@ pub const RETAIL_CAMPAIGN: u32 = 1;
 /// Most elements a list we copy may have.
 const MAX_ELEMENTS: u32 = 256;
 
+fn stored_maps(data_root: &Path, sandbox: &str) -> BTreeMap<String, vfs::MapSource> {
+    use workspace::converted::{levels, verified};
+    let root = data_root.join("tags");
+    let suffix = format!("_{sandbox}");
+    levels(&root)
+        .into_iter()
+        .filter_map(|mark| {
+            let name = mark.stem.strip_prefix("halo1_campaign_")?.strip_suffix(&suffix)?;
+            let hash = verified(&root, &mark, "halo1")?;
+            Some((name.to_owned(), vfs::MapSource::Stored {
+                root: root.clone(),
+                stem: mark.stem,
+                hash: Some(hash),
+            }))
+        })
+        .collect()
+}
+
 /// The campaigns installed under `<data>/campaigns`: every
-/// `<key>/campaign.toml` that parses, with the levels whose map exists
-/// (`<key>/<map>.map`, or the disc's own `maps\<map>.map`). A campaign
+/// `<key>/campaign.toml` that parses, with levels available in the store
+/// for Halo 1 or on the disc for other campaigns. A campaign
 /// left with no level is not installed. Lines say what was skipped.
 pub fn installed(
     data_root: &Path,
@@ -86,6 +104,7 @@ pub fn installed(
         .filter(|p| p.is_dir())
         .collect();
     dirs.sort();
+    let halo1 = stored_maps(data_root, "h1");
     for dir in dirs {
         let file = dir.join(cl::MANIFEST_FILE);
         let Ok(text) = std::fs::read_to_string(&file) else {
@@ -112,8 +131,13 @@ pub fn installed(
             m.fill_from(&b);
         }
         let before = m.levels.len();
-        m.levels
-            .retain(|l| dir.join(format!("{}.map", l.map)).is_file() || disc_has(&l.map));
+        m.levels.retain(|l| {
+            if m.campaign.key == HALO1_KEY {
+                halo1.contains_key(&l.map)
+            } else {
+                disc_has(&l.map)
+            }
+        });
         if m.levels.len() < before {
             lines.push(format!(
                 "campaigns: {}: {} of {before} levels have no map yet; listing the rest",
@@ -869,9 +893,10 @@ pub fn read_disc(disc: &Path) -> anyhow::Result<(Vec<String>, Vec<u32>, Vec<u32>
 fn has_installed_halo1(data_root: &Path) -> bool {
     let dir = data_root.join("campaigns").join(HALO1_KEY);
     let Ok(text) = std::fs::read_to_string(dir.join(cl::MANIFEST_FILE)) else { return false };
+    let stored = stored_maps(data_root, "h1");
     match CampaignManifest::parse(&text) {
         Ok(m) => m.campaign.key == HALO1_KEY && m.levels.iter().any(|l| {
-            dir.join(format!("{}.map", l.map)).is_file()
+            stored.contains_key(&l.map)
         }),
         Err(e) => {
             eprintln!("campaigns: invalid Halo 1 manifest in {}: {e}", dir.display());
@@ -930,22 +955,36 @@ pub fn boot_state(data_root: &Path, disc: &Path) -> Option<State> {
     })
 }
 
-/// Our campaigns' map files, for the VFS to serve as `maps\<map>.map`
-/// where the disc has no such map (`vfs::CampaignMapsBackend`).
-pub fn host_maps(data_root: &Path, state: &State) -> Vec<(String, PathBuf)> {
-    state
-        .built
-        .iter()
-        .flat_map(|b| {
-            b.levels.iter().filter_map(move |l| {
-                let p = data_root
-                    .join("campaigns")
-                    .join(&b.key)
-                    .join(format!("{}.map", l.map));
-                p.is_file().then(|| (l.map.clone(), p))
-            })
-        })
+/// Converted campaign levels for the VFS, keyed by the guest map name.
+pub fn host_maps(data_root: &Path, state: &State) -> Vec<(String, vfs::MapSource)> {
+    let mut stored = stored_maps(data_root, "h1");
+    state.built.iter()
+        .filter(|b| b.key == HALO1_KEY)
+        .flat_map(|b| &b.levels)
+        .filter_map(|level| stored.remove_entry(&level.map))
         .collect()
+}
+
+/// The campaign levels with a stored Halo 2-assets variant.
+pub fn halo2_maps(data_root: &Path) -> BTreeMap<String, vfs::MapSource> {
+    stored_maps(data_root, "h2")
+}
+
+#[cfg(test)]
+pub(crate) fn store_fixture(root: &Path, stem: &str, bytes: &[u8]) {
+    use tags::repo::skeleton::{EXTENTS_EXT, Extents, SKEL_EXT, Skeleton};
+    let maps = root.join("maps");
+    std::fs::create_dir_all(&maps).unwrap();
+    let len = bytes.len() as u64;
+    let file = content::Sha256::of(bytes).to_string();
+    let skeleton = Skeleton { len, ranges: vec![(0, len)], bytes: bytes.to_vec() };
+    let extents = Extents { len, file: file.clone(), extents: Vec::new() };
+    std::fs::write(maps.join(format!("{stem}.{SKEL_EXT}")), skeleton.encode().unwrap()).unwrap();
+    std::fs::write(maps.join(format!("{stem}.{EXTENTS_EXT}")), extents.to_text()).unwrap();
+    std::fs::write(
+        workspace::converted::marker_path(root, stem),
+        format!("converter halo1\nfile {file}\n"),
+    ).unwrap();
 }
 
 #[cfg(test)]

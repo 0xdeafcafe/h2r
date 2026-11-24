@@ -1,8 +1,8 @@
 //! Converted Halo 1 maps served in the sandbox chosen for the next game
 //! (docs/halo1/multiplayer.md, "The setting and the map list").
 //!
-//! A converted multiplayer map has one whole map per sandbox
-//! (`<data>/maps/h1_<map>/{h1,h2}/h1_<map>.map`). 1.0 opens a new map from
+//! A converted multiplayer map has one stored level per sandbox.
+//! 1.0 opens a new map from
 //! its content package, `T:\$c\<offer>\<map>.map` (docs/game/map-pack.md
 //! "Loading"), which `boot::new_maps` writes at boot. [`VariantFiles`] sits
 //! over the data partition and serves that path from the variant the
@@ -19,7 +19,6 @@
 use std::{
     collections::BTreeMap,
     fs::File,
-    io::{Read, Seek, SeekFrom},
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -58,7 +57,7 @@ impl SandboxChoice {
 /// One sandbox's map file, and its package `MapId` when known.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VariantFile {
-    pub file: PathBuf,
+    pub file: crate::MapSource,
     pub id: Option<content::MapId>,
 }
 
@@ -129,7 +128,7 @@ impl ContentVariants {
 
 struct Served {
     halo1: bool,
-    file: File,
+    file: crate::map_source::OpenMap,
     len: u64,
 }
 
@@ -260,15 +259,15 @@ impl<B: Backend> VariantFiles<B> {
             self.files.remove(&key);
         }
         if !self.files.contains_key(&key) {
-            let opened = File::open(&pair.pick(halo1).file).and_then(|file| {
-                let len = file.metadata()?.len();
+            let opened = pair.pick(halo1).file.open().and_then(|file| {
+                let len = file.len()?;
                 Ok(Served { halo1, file, len })
             });
             match opened {
                 Ok(s) => {
                     self.files.insert(key.clone(), s);
                 }
-                Err(e) => return Some(Err(e.into())),
+                Err(e) => return Some(Err(e)),
             }
         }
         self.files.get_mut(&key).map(Ok)
@@ -318,8 +317,8 @@ impl<B: Backend> Backend for VariantFiles<B> {
                 continue;
             }
             let child = format!("{path}\\{}", e.name);
-            if let Some(served) = self.served(&child) {
-                resize(&mut e.metadata, served?.len);
+            if let Some(Ok(served)) = self.served(&child) {
+                resize(&mut e.metadata, served.len);
             }
         }
         Ok(entries)
@@ -340,24 +339,14 @@ impl<B: Backend> Backend for VariantFiles<B> {
         let Some(served) = self.served(path) else {
             return self.inner.read_at(path, offset, buffer);
         };
-        let s = served?;
-        let n = s.len.saturating_sub(offset).min(buffer.len() as u64) as usize;
-        if n == 0 {
-            return Ok(0);
-        }
-        s.file.seek(SeekFrom::Start(offset))?;
-        match s.file.read_exact(&mut buffer[..n]) {
-            Ok(()) => Ok(n),
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Err(Error::FileCorrupt),
-            Err(e) => Err(e.into()),
-        }
+        served?.file.read_at(offset, buffer)
     }
     fn volume_info(&mut self) -> Result<VolumeInfo> {
         self.inner.volume_info()
     }
     fn film_source(&mut self, path: &str) -> Result<Option<crate::FilmMapSource>> {
         if let Some(served) = self.served(path) {
-            return Ok(Some(crate::FilmMapSource::region(served?.file.try_clone()?, 0)));
+            return served?.file.film_source();
         }
         if let Some(p) = self.package(path) {
             return p.served(path)?.film_source().map(Some);
@@ -376,12 +365,7 @@ impl<B: Backend> Backend for VariantFiles<B> {
             };
         };
         let len = self.served(path)?.ok()?.len;
-        Some(HostFile {
-            generation: None,
-            path: pair.pick(halo1).file.clone(),
-            offset: 0,
-            len,
-        })
+        pair.pick(halo1).file.host_file(len)
     }
     fn map_id(&mut self, path: &str) -> Option<content::MapId> {
         match self.variant(path) {
@@ -583,8 +567,8 @@ mod tests {
         variants.register(
             MAP,
             VariantPair {
-                h1: VariantFile { file: d.join("h1.map"), id: id(1) },
-                h2: VariantFile { file: d.join("h2.map"), id: id(2) },
+                h1: VariantFile { file: d.join("h1.map").into(), id: id(1) },
+                h2: VariantFile { file: d.join("h2.map").into(), id: id(2) },
             },
         );
         let lower = MAP.to_ascii_lowercase();

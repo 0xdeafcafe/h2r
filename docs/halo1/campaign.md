@@ -40,7 +40,7 @@ disc/halo1.iso ──xiso──▶ maps/*.map (cache v5, zlib)
                            │        single_player_shared.map)
                            │  map builder: write a whole v8 cache file
                            ▼
-              <data>/campaigns/halo1/<level>.map  ──▶ Halo 2 engine
+              tag store level halo1_campaign_<level>_h1  ──▶ Halo 2 engine
 ```
 
 Pieces:
@@ -180,7 +180,7 @@ campaigns' progress is kept in `<data>/campaigns/progress.toml`. A
 campaign is `<data>/campaigns/<key>/campaign.toml`; Halo 1's lists a10,
 a30, a50, b30, b40, c10, c20, c40, d20 and d40. A picker screen comes
 before the main menu's level select. The VFS serves a converted level's
-map (`<data>/campaigns/halo1/<map>.map`) as `maps\<map>.map`.
+map from the tag store as `maps\<map>.map`.
 
 ## 5. The asset setting
 
@@ -252,13 +252,11 @@ Seat mappings already match Halo 2 vehicles' seats by role
 
 **Writing and serving it.** `h2 import halo1` writes it as the job
 `<level>/h2` after every other job (Halo 1's assets are the default),
-to `<data>/campaigns/halo1/h2/<level>.map`
-(`h1_variants::campaign_alternate`), with no HUD pairs and no manifest of
-its own. `game::h1_variants::set_campaign_assets` flips the
+to the store as `halo1_campaign_<level>_h2`. The manifest lists the
+level once and its HUD pairs refer to the Halo 1-assets variant. `game::h1_variants::set_campaign_assets` flips the
 `vfs::SandboxChoice` the campaign maps backend serves by
 (`vfs::CampaignMapsBackend::with_assets`). With Halo 2 assets chosen and
-no such file (the import did not write it), the level is
-served from its Halo 1 map and the first open says so once on stderr:
+no stored alternate, the level is served from its Halo 1 map and the first open says so once on stderr:
 `campaigns: a30: no Halo 2 assets level (<path>); serving its Halo 1
 map`. The choice applies at the level's next open: an open map keeps its
 file, and `map_changed` lets `game::map_slots` drop a cached copy of the
@@ -927,9 +925,9 @@ map. `--copy-source` also copies the disc's campaign maps unchanged to
 
 | Job | Output | Read by |
 |---|---|---|
-| each of a10 .. d40 | `<data>/campaigns/halo1/<level>.map`, `campaign.toml` (`content::campaign_list::HALO1`) | the campaign picker and lists (`game::campaigns`), `vfs::CampaignMapsBackend` as `maps\<level>.map`, `--level` (`level_boot::resolve_in`) |
-| each Halo 1 multiplayer map on the disc (`h1convert::convert::MAPS`), Halo 2 then Halo 1 sandbox | `<data>/maps/h1_<map>/{h2,h1}/h1_<map>.map`, `manifest.toml` | `game::new_maps`, the `multiplayer.halo1_sandbox` setting picks the variant |
-| then each level's Halo 2-assets variant, job `<level>/h2` (§5) | `<data>/campaigns/halo1/h2/<level>.map` | `vfs::CampaignMapsBackend::with_assets` when `campaign.halo1_assets` is Halo 2 |
+| each of a10 .. d40 | stored level `halo1_campaign_<level>_h1` and `campaign.toml` (`content::campaign_list::HALO1`) | the campaign picker and lists (`game::campaigns`), `vfs::CampaignMapsBackend` as `maps\<level>.map`, `--level` (`level_boot::resolve_in`) |
+| each Halo 1 multiplayer map on the disc (`h1convert::convert::MAPS`), Halo 2 then Halo 1 sandbox | stored levels `h1_<map>_h2` and `h1_<map>_h1` and multiplayer list metadata | `game::new_maps`, the `multiplayer.halo1_sandbox` setting picks the variant |
+| then each level's Halo 2-assets variant, job `<level>/h2` (§5) | stored level `halo1_campaign_<level>_h2` | `vfs::CampaignMapsBackend::with_assets` when `campaign.halo1_assets` is Halo 2 |
 
 Campaign levels are written fresh from their base (§9); multiplayer maps
 fresh from their default base (`--pinned` for either keeps the base).
@@ -940,7 +938,7 @@ fresh from their default base (`--pinned` for either keeps the base).
 size and modification time, the converter version, and each map's
 outcome, written after every map (an interrupted import resumes). A start
 converts what is missing: a map not in the stamp, or stamped done but
-whose file is gone. Everything is converted again when:
+whose store marker is gone. Everything is converted again when:
 
 - **the converter version changes**: `CONVERTER_VERSION` in
   `crates/apps/cli/src/h1_import.rs`. **Bump it in the commit that changes what
@@ -956,9 +954,7 @@ a converter bug stays a failure until the converter changes.
 
 **Tests.** `cli` `h1_import::tests`: the job list (campaign in play
 order, then the multiplayer maps the disc has, both sandboxes, then each
-level's Halo 2-assets variant); where each writes (the folders
-`game::new_maps` and the campaigns read, the variant where
-`h1_variants::campaign_alternate` looks); the stamp
+level's Halo 2-assets variant); each job's store marker; the stamp
 reads back; an unchanged disc is not hashed again and keeps its outcomes,
 another disc or converter version starts again; what is pending; a map
 that fails or panics is recorded, the stamp saved after each, the rest
