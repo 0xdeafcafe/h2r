@@ -898,7 +898,7 @@ mod tests {
     /// `alpha` (over 15) in the font's ascent of 12.
     fn font_with(unit: u16, wide: u16, high: u16, alpha: u16) -> Vec<u8> {
         let mut base = vec![0; font::RECORDS_OFFSET + font::RECORD_LEN];
-        let put = |at: usize, bytes: &[u8]| base[at..at + bytes.len()].copy_from_slice(bytes);
+        let mut put = |at: usize, bytes: &[u8]| base[at..at + bytes.len()].copy_from_slice(bytes);
         put(font::HEADER_OFFSET, &font::MAGIC.to_le_bytes());
         put(font::HEADER_OFFSET + 4, &12u16.to_le_bytes());
         put(font::HEADER_OFFSET + 0xc, &1u32.to_le_bytes());
@@ -906,7 +906,7 @@ mod tests {
             unit,
             width: wide,
             height: high,
-            advance: i16::from(wide) + 1,
+            advance: wide as i16 + 1,
             x_offset: 0,
             y_offset: None,
             pixels: vec![(alpha << 12) | 0x0fff; usize::from(wide) * usize::from(high)],
@@ -931,9 +931,9 @@ mod tests {
         assert_eq!(first.header.ascent, 12);
         assert_eq!(first.glyph(u16::from(b'A')).unwrap().pixels, [0xffff; 4]);
         assert_eq!(fonts.font(1).unwrap().glyph_by_index(1).unwrap().pixels, [0x8fff; 3]);
-        assert_eq!(fonts.font(2), None, "no such line");
-        assert_eq!(fonts.font(-1), None);
-        assert!(!fonts.has_glyph(0, u16::from(b'Z')), "a unit the font lacks");
+        assert!(fonts.font(2).is_none(), "no such line");
+        assert!(fonts.font(-1).is_none());
+        assert_eq!(fonts.has_glyph(0, u16::from(b'Z')), Some(false), "a unit the font lacks");
         assert!(Fonts::served(b"", Vec::new()).table.is_empty());
     }
 }

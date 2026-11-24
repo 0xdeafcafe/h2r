@@ -619,7 +619,7 @@ mod tests {
         assert!(pages.insert(6, 40, 3, 2, &[10, 20, 30, 40, 50, 60]));
         assert!(pages.insert(6, 44, 0, 5, &[]), "an empty glyph has no texels");
         let (side, rgba, added) = pages.added_since(6, 0).unwrap();
-        assert_eq!((side, added), (16, &[(1, first)]));
+        assert_eq!((side, added), (16, &[(1u64, first)][..]));
         let (x, y) = (first.x as usize, first.y as usize);
         assert_eq!(rgba[(y * 16 + x) * 4..(y * 16 + x) * 4 + 4], [255, 255, 255, 10], "the glyph's texels");
         assert!(pages.insert(6, 41, 10, 4, &[255; 40]));

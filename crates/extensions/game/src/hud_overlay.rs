@@ -631,7 +631,7 @@ mod tests {
     /// font's ascent of 12.
     fn invented_font(glyphs: &[(u16, u16, u16, u16)]) -> Vec<u8> {
         let mut base = vec![0; font::RECORDS_OFFSET + font::RECORD_LEN];
-        let put = |at: usize, bytes: &[u8]| base[at..at + bytes.len()].copy_from_slice(bytes);
+        let mut put = |at: usize, bytes: &[u8]| base[at..at + bytes.len()].copy_from_slice(bytes);
         put(font::HEADER_OFFSET, &font::MAGIC.to_le_bytes());
         put(font::HEADER_OFFSET + 4, &12u16.to_le_bytes());
         put(font::HEADER_OFFSET + 0xc, &1u32.to_le_bytes());
@@ -641,7 +641,7 @@ mod tests {
                 unit,
                 width,
                 height,
-                advance: i16::from(width) + 1,
+                advance: width as i16 + 1,
                 x_offset: 0,
                 y_offset: None,
                 pixels: vec![(alpha << 12) | 0x0fff; usize::from(width) * usize::from(height)],
@@ -653,7 +653,7 @@ mod tests {
     /// A text run of `text` in engine font `font`, laid out as the walk
     /// lays one out ([`Fonts::layout`]).
     fn run(overlay: &mut Overlay, fonts: &Fonts, font: u16, text: &str) {
-        let (laid, _) = fonts.layout(i16::from(font), text).unwrap();
+        let (laid, _) = fonts.layout(font as i16, text).unwrap();
         let glyphs = laid
             .glyphs
             .iter()
