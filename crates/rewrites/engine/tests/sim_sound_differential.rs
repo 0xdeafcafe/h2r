@@ -182,8 +182,32 @@ mod loops;
 #[path = "sim_sound_differential/sources.rs"]
 mod sources;
 
+#[path = "sim_sound_differential/ambience.rs"]
+mod ambience;
+#[path = "sim_sound_differential/channel.rs"]
+mod channel;
+#[path = "sim_sound_differential/disc.rs"]
+mod disc;
+#[path = "sim_sound_differential/objectsound.rs"]
+mod objectsound;
+#[path = "sim_sound_differential/segments.rs"]
+mod segments;
+#[path = "sim_sound_differential/spatial.rs"]
+mod spatial;
+#[path = "sim_sound_differential/stream.rs"]
+mod stream;
+#[path = "sim_sound_differential/streammix.rs"]
+mod streammix;
+
 fn cases(entry: u32) -> Vec<Case> {
     let mut result = core_cases::cases(entry);
+    result.extend(ambience::cases(entry));
+    result.extend(channel::cases(entry));
+    result.extend(objectsound::cases(entry));
+    result.extend(segments::cases(entry));
+    result.extend(spatial::cases(entry));
+    result.extend(stream::cases(entry));
+    result.extend(streammix::cases(entry));
     result.extend(extra::cases(entry));
     result.extend(impulse::cases(entry));
     result.extend(listener::cases(entry));
