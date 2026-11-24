@@ -246,16 +246,56 @@ impl Listed {
     }
 }
 
-/// Every listed script, by its index in `rules::builtin::LISTED`: the
-/// entry's parts, or why it has none (named in the log at each load).
+/// The scripts a boot's packages list as built-in entries, in list order
+/// (`rules::builtin::Registry::listed`, from the `variant` items of the
+/// set), as many as the id ranges hold ([`MAX_ENTRIES`]).
+static REGISTRY: OnceLock<::rules::builtin::Registry> = OnceLock::new();
+
+/// Takes the set's scripts for the list. It must come before the first
+/// read of [`scripts`]; `false` when the list was already read, or a set
+/// was already given. With none given the list is the first-party
+/// scripts' (`Registry::baked`), which the tests run on.
+pub fn install_registry(registry: ::rules::builtin::Registry) -> bool {
+    REGISTRY.set(registry).is_ok()
+}
+
+fn registry() -> &'static ::rules::builtin::Registry {
+    REGISTRY.get_or_init(::rules::builtin::Registry::baked)
+}
+
+/// The most list entries: the description numbers between
+/// [`DESCRIPTION_BASE`] and the game-variant store's, and the name ids
+/// below our rows' (`0x74`).
+pub const MAX_ENTRIES: usize =
+    (crate::game_variants::inject::DESCRIPTION_BASE - DESCRIPTION_BASE) as usize;
+const _: () = assert!(MAX_ENTRIES <= 0x74);
+const _: () = assert!(::rules::builtin::LISTED.len() <= MAX_ENTRIES);
+
+/// The listed scripts, by their index in the list: the entry's name, its
+/// engine and its source.
+pub fn scripts() -> &'static [::rules::builtin::Script] {
+    static SCRIPTS: OnceLock<Vec<::rules::builtin::Script>> = OnceLock::new();
+    SCRIPTS.get_or_init(|| {
+        let r = registry();
+        for p in &r.problems {
+            eprintln!("community variants: {p}");
+        }
+        let all: Vec<_> = r.listed().cloned().collect();
+        if all.len() > MAX_ENTRIES {
+            eprintln!(
+                "community variants: {} entries, the list holds {MAX_ENTRIES}: the rest are left out",
+                all.len()
+            );
+        }
+        all.into_iter().take(MAX_ENTRIES).collect()
+    })
+}
+
+/// Every listed script, by its index in [`scripts`]: the entry's parts, or
+/// why it has none (named in the log at each load).
 pub fn listed() -> &'static [Result<Listed, String>] {
     static LISTED: OnceLock<Vec<Result<Listed, String>>> = OnceLock::new();
-    LISTED.get_or_init(|| {
-        ::rules::builtin::LISTED
-            .iter()
-            .map(|b| Listed::of(b.source))
-            .collect()
-    })
+    LISTED.get_or_init(|| scripts().iter().map(|b| Listed::of(&b.source)).collect())
 }
 
 /// The listed script named `name` (its `header.name`).
@@ -334,7 +374,7 @@ const ID_BASE: u32 = crate::ui_kit::ids::family("community variants").base;
 pub fn is_ours(id: u32) -> bool {
     id & 0xffff_ff00 == ID_BASE
 }
-/// The name id of listed script `i` (its index in `rules::builtin::LISTED`).
+/// The name id of listed script `i` (its index in [`scripts`]).
 pub fn name_id(i: usize) -> u32 {
     ID_BASE | i as u32
 }
@@ -350,7 +390,6 @@ pub fn row_ids() -> impl Iterator<Item = u32> {
         .into_iter()
         .flat_map(|r| [r.label_id(), r.title_id(), r.description_id()])
 }
-const _: () = assert!(::rules::builtin::LISTED.len() <= 0x74);
 
 /// The text for one of our ids: a listed script's name and icon, or its
 /// `about`.
@@ -374,15 +413,11 @@ pub fn text(id: u32) -> Option<String> {
 /// ([`crate::game_variants::inject::DESCRIPTION_BASE`]); listed script `i`
 /// has `DESCRIPTION_BASE + i`, 40 to 93 at most.
 pub const DESCRIPTION_BASE: u32 = 40;
-const _: () = assert!(
-    DESCRIPTION_BASE as usize + ::rules::builtin::LISTED.len()
-        <= crate::game_variants::inject::DESCRIPTION_BASE as usize
-);
 /// The id the variant list should show for description number `n`, if it
 /// is one of ours.
 pub fn description_for(n: u32) -> Option<u32> {
     let i = n.checked_sub(DESCRIPTION_BASE)? as usize;
-    (i < ::rules::builtin::LISTED.len()).then(|| description_id(i))
+    (i < scripts().len()).then(|| description_id(i))
 }
 
 /// What `0x19fd00` returns instead of the original, given its return
@@ -483,7 +518,7 @@ pub fn last_offered() -> Option<HashMap<u32, Vec<i32>>> {
     LAST_OFFERED.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-/// The listed scripts' entries, in `rules::builtin::LISTED`'s order: each
+/// The listed scripts' entries, in [`scripts`]' order: each
 /// its script's list type, its record's value of every setting of its
 /// type the editor offers (`crate::game_variants::inject::pairs`) and its
 /// description number. A script with a value the editor does not offer,
@@ -491,7 +526,7 @@ pub fn last_offered() -> Option<HashMap<u32, Vec<i32>>> {
 pub fn entries(offered: &HashMap<u32, Vec<i32>>) -> (Vec<NewEntry>, Vec<String>) {
     let mut out = Vec::new();
     let mut lines = Vec::new();
-    for (i, (l, b)) in listed().iter().zip(::rules::builtin::LISTED).enumerate() {
+    for (i, (l, b)) in listed().iter().zip(scripts()).enumerate() {
         let entry = l.as_ref().map_err(String::clone).and_then(|l| {
             Ok(NewEntry {
                 name_id: name_id(i),

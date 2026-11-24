@@ -44,7 +44,7 @@ before its slice starts.
 | A `jmad` stream encoder (static stream and the 8-byte quantised codec), which the Halo 1 converter calls | built (AN2) | `crates/formats/tags/src/anim_write.rs`; the converter's graph assembly stays in `crates/tools/h1-assets/src/models/jmad.rs` |
 | An Xbox ADPCM encoder; a `snd!` writer with the gestalt merge | built, the second inside the converter | `crates/platform/audio/src/adpcm.rs` (`encode`), `crates/tools/h1-assets/src/sounds/merge.rs` |
 | Packages: `content::package::{Manifest, Lock, PackageId, Set}`, validation, `requires`, `after`, `set.toml`, `core` and `ui` always on, the load order, the content set | built | `crates/formats/content/src/package/` |
-| The package build: the builder registry (`tag`, `edits`, `bitmap`, `model`, `animation`, `sound`, `data`, `hud`, `screens`, `screen-edits`), `build` of ordered packages on a `TagSet`, `build_map` on a map file, conflicts, the cache key, `Layered`, `h2 package check\|build` | built (PK2) | `crates/tools/workspace`, `crates/apps/h2-tools/src/package_cmd.rs` |
+| The package build: the builder registry (`tag`, `edits`, `bitmap`, `model`, `animation`, `sound`, `data`, `hud`, `screens`, `screen-edits`, `rules`, `variant`, `playlist`), `build` of ordered packages on a `TagSet`, `build_map` on a map file, conflicts, the cache key, `Layered`, `h2 package check\|build` | built (PK2) | `crates/tools/workspace`, `crates/apps/h2-tools/src/package_cmd.rs` |
 | The game's side: the baked set (`content/`), `<data>/packages/`, `set.toml`, features, `PackageRewrite` with its cache, `packages.list` | built (PK3); `content/pogo` and `content/ui` supply per-map items | `crates/tools/workspace/src/{game,rewrite}.rs`, `crates/apps/boot/src/packages.rs`, `crates/apps/boot/build.rs` |
 | Projects, the other kits as build steps | design | [tag-workspace.md](tag-workspace.md) |
 
@@ -61,7 +61,8 @@ the calls before it):
 | Firefight | Rust (`crates/tools/firefight-kit`), wave sets in `crates/formats/firefight` | `firefight_kit::build_package` writes a map package per base map (`h2 firefight kit`, `boot/src/test_maps_recipes.rs`, `crates/live/host-data/src/bundle/kits.rs`) |
 | Forge | `.h2forge` documents | `forge_build::build` materialises a format 2 map package ([forge-design.md](../game/forge-design.md)) |
 | Map Pack maps and rotations | none (the user's disc) | `h2 import-mappack` and the automatic install ([map-pack.md](../game/map-pack.md)); rotations in `crates/live/live-proto/src/hopper/defaults.rs` |
-| Rules modes and variants | `crates/formats/rules/src/builtin/*.rules` | `include_str!` in `rules::builtin`; list entries by `community_variants` |
+| Rules modes and variants | `rules` and `variant` items (`content/core/rules/`, `content/modes/rules/`) | `rules::builtin::Registry` from the set (`workspace::script_registry`); the constants of `rules::builtin` are the same files; list entries by `community_variants`, installed at boot with the set's registry |
+| The default hopper's playlists | a `playlist` item (`content/modes/playlists/default.toml`, `content::playlist::Fragment`) | `workspace::hopper_fragments` lists a set's fragments for the server |
 | Campaign cards, icon fonts, the bot gear glyph | Rust and baked art | `campaign_cards::CardRewrite`, `icons::font_rewrite`, `bot_mark::GearRewrite` |
 | Announcer clips | `art/announcer/` | baked; one WAV per medal of ours (`art/announcer/README.md`) |
 | Community mods | none (Live) | imported as map packages with credit (`h2 live mods import`), grouped as mod packs |
@@ -371,9 +372,9 @@ maps = "multiplayer"
 | `screen-edits` | retail screen edit files | changed `wgit` fields | client |
 | `hud` | HUD kit YAML (a `hud_kit_core::model::Hud` as data) | HUD kit records | client |
 | `strings` | YAML by name and language | `unic` rows | client |
-| `rules` | `.rules` | a compiled script in the rules registry | sim |
-| `variant` | `.h2variant` or a script name | a built-in list entry | sim |
-| `playlist` | a hopper fragment: playlists and entries by map name or `MapId` | rows of the default hopper | Live |
+| `rules` | `.rules`; `inputs` are joined after the source (CTF and Assault are a header then the shared body) | a compiled script in the rules registry (built: checked at build, read by `workspace::script_registry`; a `rules` item of `core` is a retail type's game) | sim |
+| `variant` | a settings or scripted `.rules` file (built; `.h2variant` is not read yet) | a built-in list entry, in manifest order | sim |
+| `playlist` | a hopper fragment, TOML (`content::playlist::Fragment`): named map lists, playlists and entries by map name or `MapId`, a variant by the key of a matchmaking script | rows of the default hopper (built: parsed and checked; the server reads `workspace::hopper_fragments`) | Live |
 | `map` | `map.toml`: `mode` (`fresh`, `onto`), `base`, `scenario`, the items it takes, and `ground` when it has AI | a map package under `<data>/maps/`, built at prepare, or when first picked if it has `ground` | sim |
 | `map-patch` | a PPF, IPS or BPS file with the base's name and SHA-256 | a map package with that layer | sim |
 | `convert` | a recipe: a converter name and its settings; the input is the user's own disc | map packages and campaign files | sim |
@@ -427,7 +428,7 @@ packages, in order, to a map's `map::build::TagSet` for one `Target` (the
 map's name and class). An item runs when its `maps` takes the target;
 its builder comes from the closed registry (`workspace::registry`: `tag`,
 `edits`, `bitmap`, `model`, `sound`, `data`, `hud`, `screens`,
-`screen-edits`; the other kinds stop the build with "no builder"). The
+`screen-edits`, `rules`, `variant`, `playlist`; the other kinds stop the build with "no builder"). The
 base is what is built onto: the result differs from it only in the tags
 the items add or change, and a tag a decomposed map keeps pinned is laid
 out anew (through `Unpin`, `MapUnpin` for a map file) only when an item
@@ -553,11 +554,14 @@ paths in "What exists":
    `PackageRewrite::observed` hands
    each map, as the game is given it, to the boot's hook, which records
    the pogo stick's weapons (`pogo_kit::served::publish`).
-3. **Set items**: `rules` items fill the registry `rules::builtin::ALL`
-   is today; `variant` items are the built-in list entries
-   `community_variants` builds; `hud` items are what `hud_kit::install`
-   compiles against the loaded map; `playlist` items are merged into the
-   default hopper by the server (`live-server/src/default_hopper.rs`).
+3. **Set items**: `rules` items fill the script registry
+   (`rules::builtin::Registry`, whose baked form is `rules::builtin`'s
+   constants); `variant` items are the built-in list entries
+   `community_variants` builds (`workspace::script_registry`, installed by
+   `boot::packages::at_boot`); `hud` items are what `hud_kit::install`
+   compiles against the loaded map; `playlist` items are hopper fragments
+   (`workspace::hopper_fragments`) that the server merges into the default hopper
+   (`live-server/src/default_hopper.rs`).
 4. **Features**: a package whose `features` names a switch that is off
    (`hooks::Switches::feature`, on unless switched off) is skipped whole,
    and so is a package that requires it, so turning `pogo` off still
@@ -577,9 +581,9 @@ as its unit: a project is a `map` item, a `ContentKit` is a builder, and
 
 | Package | Items | Replaces |
 |---|---|---|
-| `core` | `rules` (the seven retail types), `strings`, `kit: glyphs` (icon fonts, the gear) | `rules::builtin`'s engine constants, `icons::font_rewrite`, `bot_mark::GearRewrite` |
+| `core` (built, PK8: the `rules` items) | `rules` (the seven retail types), `strings`, `kit: glyphs` (icon fonts, the gear) | `rules::builtin`'s engine constants, `icons::font_rewrite`, `bot_mark::GearRewrite` |
 | `ui` (built, PK5) | `screens`, `screen-edits`; accepts `bitmap` items for art | `content/ui/` holds the design, screen docs and retail edits |
-| `modes` | `rules` (the community modes, Siege, Firefight's director with its wave sets), `variant`, `playlist`, `hud`, `sound` (start lines), `map` (our Firefight and Siege maps, with `ground`) | the rest of `rules/src/builtin/`, `community_variants`' table of scripts, `crates/formats/firefight`'s built-in sets, `huds/firefight.rs` |
+| `modes` (built, PK8: `variant`, `rules`, `playlist`, `hud`) | `rules` (the community modes, Siege, Firefight's director with its wave sets), `variant`, `playlist`, `hud`, `sound` (start lines), `map` (our Firefight and Siege maps, with `ground`) | the rest of the scripts of `rules::builtin` (now `content/modes/rules/`), `community_variants`' table of scripts, `crates/formats/firefight`'s built-in sets, `huds/firefight.rs` |
 | `superbounce` | `rules`, `hud`, `sound` (the announcer clips), `screens` | `hud-kit-core/src/views/superbounce*.rs`' element lists, `art/announcer/` |
 | `pogo` (built, PK4) | `model`, `tag` (the weapons), `sound` (the clips `pogo_sound.rs` plays), `data` (the atlases, the pose set `pogo_pose.rs` reads) | `art/pogo/`, `PogoRewrite`; `pogo_kit::{kit, mesh, source, texture}` is the `model` builder's code and `inject::add_pogo` the test's reference |
 | `halo1` | `convert` (converter `halo1`: every multiplayer map in both sandboxes, the campaign), `kit: campaign-cards`, `screens` | `h1_import.rs`'s entry points, `CardRewrite` |
@@ -1012,7 +1016,7 @@ Rows are in build order.
 | SH3 | **Problems** (built: `app/problems.rs`, `ui/problems.rs`, `problems.list`): one panel and `problems.list` over `check.run`, `ui.check`, `hud.check`, `package.check` and build errors, each row opening its asset | S | SH1 | findings from two invented sources list together; opening a row focuses the document and the field |
 | SH4 | **The preview switch** (built: `app/preview_switch.rs`, `ui/preview_switch.rs`, `api/preview.rs`; the Problems rows for a finished preview wait for the Game panel): `preview.target`, **Preview in game** by kind over `pair.preview` | S | SH1 | on the fake game each kind sends the calls its `what` lists; a paused game refuses with the built message |
 | GT0 to GT7, GE0 to GE5, GM1 to GM4 | **Game types without carriers**, no retail engine object, and maps for scripted games ([game-types-without-carriers.md](../game/game-types-without-carriers.md)) | S to L | GT6 needs PK11; GM2 needs PK9 | as there |
-| PK8 | **Rules, variants and playlists as items**: `content/core/` and `content/modes/`; the registry from the set; `community_variants` and the default hopper read it | M | PK3 | `crates/formats/rules/tests/modes.rs` pass with scripts from the set; a package off removes its list entries; the hopper built from fragments equals `hopper/defaults.rs`'s |
+| PK8 (built: the items, `Registry`, `community_variants`' list from the set and the fragment's parse and tests; the default hopper in `live-proto` still builds its lineup in Rust) | **Rules, variants and playlists as items**: `content/core/` and `content/modes/`; the registry from the set; `community_variants` and the default hopper read it | M | PK3 | `crates/formats/rules/tests/modes.rs` pass with scripts from the set; a package off removes its list entries; the hopper built from fragments equals `hopper/defaults.rs`'s |
 | PK9 | **Whole maps**: `map` and `map-patch` items to map packages at prepare; the stage and the test-map recipes as packages | M | PK2 | an invented `fresh` and an invented `onto` item build; the `MapId` of a `map-patch` item equals the id of the map package the importer writes for the same patch |
 | PK10 | **Conversions**: `convert` items, `h2 package prepare`, stamps; `content/halo1/` and `content/map-pack/` over the existing converters | M | PK9 | with an invented converter: no disc leaves the package off with its reason; a stale stamp reruns one map; an interrupted run resumes |
 | PK12 | **Kits**: `kit: campaign-cards`, `glyphs`; Firefight's director and wave sets as `rules` items of `modes`; `firefight_kit::build_package`'s boot and host-bundle callers go (GM1 of game-types-without-carriers builds ground on demand); boot's chain is `PackageRewrite` alone | M | PK9 | per kit, the map through the package equals the one its own caller made; `boot/src/lib.rs` builds no other rewrite |

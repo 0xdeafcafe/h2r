@@ -29,6 +29,11 @@ png = { workspace = true }
 thiserror.workspace = true
 # The `hud` builder reads a HUD kit YAML (`hud_kit_core::data`).
 hud-kit-core.workspace = true
+# The `rules` and `variant` builders compile a script; `registry` is the
+# built-in scripts of a set.
+rules.workspace = true
+# A `variant` item makes a record of its script.
+variants = { path = "../../formats/variants" }
 # The `sound` builder's import: Xbox ADPCM encoding and resampling.
 audio = { path = "../../platform/audio", default-features = false }
 # The sound gestalt model and the converter's sound entries, which a
@@ -44,6 +49,9 @@ pogo-kit = { path = "../pogo-kit" }
 game = { path = "../../extensions/game", default-features = false }
 
 [dev-dependencies]
+# The default hopper `content/modes/playlists/default.toml` must equal
+# (modes_tests); live-proto does not depend on this crate.
+live-proto.workspace = true
 game = { path = "../../extensions/game", default-features = false, features = ["ui-fixture"] }
 # An invented multiplayer map and the kit built on it (PK4's test).
 pogo-kit = { path = "../pogo-kit", features = ["fixture"] }

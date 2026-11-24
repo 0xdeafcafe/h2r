@@ -113,7 +113,7 @@ package give the same bytes on every machine, and the bytes equal
 
 ### The loadout
 
-The Superbounce script (`crates/formats/rules/src/builtin/superbounce.rules`)
+The Superbounce script (`content/modes/rules/superbounce.rules`)
 declares two options after the HUD's: `pogo` (a bool, on) and
 `pogo_style` (`unsc`, `covenant` or `forerunner`; default `unsc`). Its
 `secondary_weapon` stays `none`.

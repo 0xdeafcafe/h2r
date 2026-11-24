@@ -2,7 +2,141 @@
 format = 1
 id = "modes"
 name = "Modes"
-description = "The HUDs of our game modes: Firefight's banner, lives and enemies pills and notifications."
+description = "Our game modes: the built-in list entries, the example and matchmaking scripts, the default hopper's playlists, and Firefight's HUD."
+requires = ["core"]
+
+# The built-in list entries, in list order (the game's variant list shows
+# them after the retail and community ones), then the example scripts that
+# are not entries, then the matchmaking scripts the default hopper's
+# entries name by file stem.
+
+[[item]]
+kind = "variant"
+source = "rules/zombies.rules"
+
+[[item]]
+kind = "variant"
+source = "rules/hide_and_seek.rules"
+
+[[item]]
+kind = "variant"
+source = "rules/jousting.rules"
+
+[[item]]
+kind = "variant"
+source = "rules/swat.rules"
+
+[[item]]
+kind = "variant"
+source = "rules/duel.rules"
+
+[[item]]
+kind = "variant"
+source = "rules/clint_eastwood.rules"
+
+[[item]]
+kind = "variant"
+source = "rules/sun_king.rules"
+
+[[item]]
+kind = "variant"
+source = "rules/tower_of_power.rules"
+
+[[item]]
+kind = "variant"
+source = "rules/wheeeeee.rules"
+
+[[item]]
+kind = "variant"
+source = "rules/cops_and_robbers.rules"
+
+[[item]]
+kind = "variant"
+source = "rules/bounce_practice.rules"
+
+[[item]]
+kind = "variant"
+source = "rules/glitch_hunt.rules"
+
+[[item]]
+kind = "variant"
+source = "rules/bumper_cars.rules"
+
+[[item]]
+kind = "variant"
+source = "rules/superbounce.rules"
+
+[[item]]
+kind = "variant"
+source = "rules/siege.rules"
+
+[[item]]
+kind = "variant"
+source = "rules/gun_game.rules"
+
+[[item]]
+kind = "variant"
+source = "rules/race.rules"
+
+[[item]]
+kind = "variant"
+source = "rules/vip.rules"
+
+[[item]]
+kind = "rules"
+source = "rules/infection.rules"
+
+[[item]]
+kind = "rules"
+source = "rules/bounce_hunt.rules"
+
+[[item]]
+kind = "rules"
+source = "rules/matchmaking/rumble_slayer.rules"
+
+[[item]]
+kind = "rules"
+source = "rules/matchmaking/team_slayer.rules"
+
+[[item]]
+kind = "rules"
+source = "rules/matchmaking/team_snipers.rules"
+
+[[item]]
+kind = "rules"
+source = "rules/matchmaking/team_heavies.rules"
+
+[[item]]
+kind = "rules"
+source = "rules/matchmaking/oddball.rules"
+
+[[item]]
+kind = "rules"
+source = "rules/matchmaking/teamball.rules"
+
+[[item]]
+kind = "rules"
+source = "rules/matchmaking/king_of_the_hill.rules"
+
+[[item]]
+kind = "rules"
+source = "rules/matchmaking/team_king.rules"
+
+[[item]]
+kind = "rules"
+source = "rules/matchmaking/classic_ctf.rules"
+
+[[item]]
+kind = "rules"
+source = "rules/matchmaking/assault.rules"
+
+[[item]]
+kind = "rules"
+source = "rules/matchmaking/territories.rules"
+
+[[item]]
+kind = "playlist"
+source = "playlists/default.toml"
 
 [[item]]
 kind = "hud"

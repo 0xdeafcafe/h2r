@@ -40,7 +40,7 @@ engine and settings. See [rules-variants.md](rules-variants.md#the-record-of-a-s
 Firefight already works this way: it is a Slayer game whose rules the
 host makes ([firefight.md](firefight.md)), and its director is a rules
 script (`firefight::script::compile`). Siege is a script on Slayer that
-uses the map's own flags (`builtin/siege.rules`). This page makes the
+uses the map's own flags (`content/modes/rules/siege.rules`). This page makes the
 seven retail types the same.
 
 ## How it works
@@ -398,8 +398,8 @@ and is stored nowhere but in the built map on each machine.
 - A type is display and filing. It changes no rule, and two scripts of
   one type need share nothing else.
 - A script names no engine. `variant.engine` is removed; CTF and
-  Assault are two scripts over one shared body (`builtin/ctf.rules`
-  under two headers in `builtin/mod.rs`, with `const assault`).
+  Assault are two scripts over one shared body (`content/core/rules/ctf.rules`
+  under two headers, `ctf.head` and `assault.head`, with `const assault`).
 - Films and Live name a script by hash, so a script rewritten for this
   has a new hash; nothing published depends on the old ones.
 - AI ground is map content, built on demand and kept only in built

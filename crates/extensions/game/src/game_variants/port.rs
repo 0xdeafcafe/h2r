@@ -132,8 +132,8 @@ pub fn port_builtins(
                 .map_err(|why| (b.name.clone(), why)),
         );
     }
-    for b in ::rules::builtin::LISTED {
-        out.push(listed_bundle(b.source).map_err(|why| (b.name.to_owned(), why)));
+    for b in crate::community_variants::scripts() {
+        out.push(listed_bundle(&b.source).map_err(|why| (b.name.clone(), why)));
     }
     out
 }

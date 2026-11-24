@@ -1,4 +1,6 @@
-//! Built-in scripts, compiled into every build: one per retail game type,
+//! Built-in scripts, compiled into every build from the files of the `core`
+//! and `modes` packages (`content/core/rules/`, `content/modes/rules/`):
+//! one per retail game type,
 //! found by type (a `uses` line) and by engine index (a record with no
 //! mode), and the payoff modes as example scripts. See
 //! `docs/game/rules-engine.md`, "A record with no mode", "Porting the
@@ -7,35 +9,39 @@
 
 use crate::types::Type;
 
+mod registry;
+pub use registry::{EXAMPLE_KEYS, LISTED_FILES, Registry, Role, Script, Source, package_sources};
+
 /// Slayer (engine index 2): kill, suicide and betrayal scoring.
-pub const SLAYER: &str = include_str!("slayer.rules");
+pub const SLAYER: &str = include_str!("../../../../../content/core/rules/slayer.rules");
 /// Oddball (engine index 3): time held scores.
-pub const ODDBALL: &str = include_str!("oddball.rules");
+pub const ODDBALL: &str = include_str!("../../../../../content/core/rules/oddball.rules");
 /// King of the Hill (engine index 4): time on the hill scores.
-pub const KING: &str = include_str!("koth.rules");
+pub const KING: &str = include_str!("../../../../../content/core/rules/koth.rules");
 /// Juggernaut (engine index 7): the killer of the Juggernaut takes the role.
-pub const JUGGERNAUT: &str = include_str!("juggernaut.rules");
+pub const JUGGERNAUT: &str = include_str!("../../../../../content/core/rules/juggernaut.rules");
 /// Territories (engine index 8): held territories score.
-pub const TERRITORIES: &str = include_str!("territories.rules");
-// The headers `ctf.rules` gets for CTF and Assault: macros, so `concat!`
+pub const TERRITORIES: &str = include_str!("../../../../../content/core/rules/territories.rules");
+// The headers `ctf.rules` gets for CTF and Assault (`ctf.head` and
+// `assault.head` beside it in the `core` package): macros, so `concat!`
 // takes them and [`sources_of`] uses the same text. `const assault` tells
 // the shared body which game it plays.
 macro_rules! ctf_header {
     () => {
-        "rules \"Capture the Flag\" 1\ntype ctf\nconst assault = 0\n"
+        include_str!("../../../../../content/core/rules/ctf.head")
     };
 }
 macro_rules! assault_header {
     () => {
-        "rules \"Assault\" 1\ntype assault\nconst assault = 1\n"
+        include_str!("../../../../../content/core/rules/assault.head")
     };
 }
 
 /// Capture the Flag (engine index 1). `ctf.rules` serves CTF and Assault;
 /// each gets its own header, so each is its own type.
-pub const CTF: &str = concat!(ctf_header!(), include_str!("ctf.rules"));
+pub const CTF: &str = concat!(ctf_header!(), include_str!("../../../../../content/core/rules/ctf.rules"));
 /// Assault (engine index 9), from the same body as [`CTF`].
-pub const ASSAULT: &str = concat!(assault_header!(), include_str!("ctf.rules"));
+pub const ASSAULT: &str = concat!(assault_header!(), include_str!("../../../../../content/core/rules/ctf.rules"));
 
 /// The script sources a file of this directory makes, given its name and
 /// its text now (an edited checkout's, not the baked one): `ctf.rules`
@@ -51,49 +57,49 @@ pub fn sources_of(file_name: &str, text: &str) -> Vec<String> {
 }
 
 /// Infection: a kill switches the victim to the zombies' team.
-pub const INFECTION: &str = include_str!("infection.rules");
+pub const INFECTION: &str = include_str!("../../../../../content/modes/rules/infection.rules");
 /// Gun Game: a weapon ladder, one rung a kill.
-pub const GUN_GAME: &str = include_str!("gun_game.rules");
+pub const GUN_GAME: &str = include_str!("../../../../../content/modes/rules/gun_game.rules");
 /// VIP: a VIP per team, worth more to kill, the role passing on.
-pub const VIP: &str = include_str!("vip.rules");
+pub const VIP: &str = include_str!("../../../../../content/modes/rules/vip.rules");
 /// Siege: the phased attack-and-defend mode.
-pub const SIEGE: &str = include_str!("siege.rules");
+pub const SIEGE: &str = include_str!("../../../../../content/modes/rules/siege.rules");
 /// Race: numbered checkpoints, a point a lap.
-pub const RACE: &str = include_str!("race.rules");
+pub const RACE: &str = include_str!("../../../../../content/modes/rules/race.rules");
 /// Bounce Hunt: points for superbounces.
-pub const BOUNCE_HUNT: &str = include_str!("bounce_hunt.rules");
+pub const BOUNCE_HUNT: &str = include_str!("../../../../../content/modes/rules/bounce_hunt.rules");
 /// Superbounce: the superbounce mode's guide, and points for bounces only:
 /// a kill scores nothing. Its settings block is the listed variant's.
-pub const SUPERBOUNCE: &str = include_str!("superbounce.rules");
+pub const SUPERBOUNCE: &str = include_str!("../../../../../content/modes/rules/superbounce.rules");
 
 // The listed variants, the community's classics: each a settings script
 // (`uses`) except Superbounce. See `LISTED`.
 /// Zombies: honour rules, in `about`.
-pub const ZOMBIES: &str = include_str!("zombies.rules");
+pub const ZOMBIES: &str = include_str!("../../../../../content/modes/rules/zombies.rules");
 /// Hide and Seek.
-pub const HIDE_AND_SEEK: &str = include_str!("hide_and_seek.rules");
+pub const HIDE_AND_SEEK: &str = include_str!("../../../../../content/modes/rules/hide_and_seek.rules");
 /// Jousting.
-pub const JOUSTING: &str = include_str!("jousting.rules");
+pub const JOUSTING: &str = include_str!("../../../../../content/modes/rules/jousting.rules");
 /// SWAT.
-pub const SWAT: &str = include_str!("swat.rules");
+pub const SWAT: &str = include_str!("../../../../../content/modes/rules/swat.rules");
 /// Duel.
-pub const DUEL: &str = include_str!("duel.rules");
+pub const DUEL: &str = include_str!("../../../../../content/modes/rules/duel.rules");
 /// Clint Eastwood.
-pub const CLINT_EASTWOOD: &str = include_str!("clint_eastwood.rules");
+pub const CLINT_EASTWOOD: &str = include_str!("../../../../../content/modes/rules/clint_eastwood.rules");
 /// Sun King.
-pub const SUN_KING: &str = include_str!("sun_king.rules");
+pub const SUN_KING: &str = include_str!("../../../../../content/modes/rules/sun_king.rules");
 /// Tower of Power.
-pub const TOWER_OF_POWER: &str = include_str!("tower_of_power.rules");
+pub const TOWER_OF_POWER: &str = include_str!("../../../../../content/modes/rules/tower_of_power.rules");
 /// Wheeeeee!
-pub const WHEEEEEE: &str = include_str!("wheeeeee.rules");
+pub const WHEEEEEE: &str = include_str!("../../../../../content/modes/rules/wheeeeee.rules");
 /// Cops and Robbers.
-pub const COPS_AND_ROBBERS: &str = include_str!("cops_and_robbers.rules");
+pub const COPS_AND_ROBBERS: &str = include_str!("../../../../../content/modes/rules/cops_and_robbers.rules");
 /// Bounce Practice: settings only, no score.
-pub const BOUNCE_PRACTICE: &str = include_str!("bounce_practice.rules");
+pub const BOUNCE_PRACTICE: &str = include_str!("../../../../../content/modes/rules/bounce_practice.rules");
 /// Glitch Hunt.
-pub const GLITCH_HUNT: &str = include_str!("glitch_hunt.rules");
+pub const GLITCH_HUNT: &str = include_str!("../../../../../content/modes/rules/glitch_hunt.rules");
 /// Bumper Cars.
-pub const BUMPER_CARS: &str = include_str!("bumper_cars.rules");
+pub const BUMPER_CARS: &str = include_str!("../../../../../content/modes/rules/bumper_cars.rules");
 
 /// The built-in scripts of the default Live lineup, in lineup order: each a
 /// settings script that `uses` its type's built-in game, which scores it. A hopper entry's variant is the record of one
@@ -101,17 +107,17 @@ pub const BUMPER_CARS: &str = include_str!("bumper_cars.rules");
 /// by its hash. `key` is the name Live's admin API gives the variant
 /// (`live_proto::hopper::defaults::builtin_variants`).
 pub const MATCHMAKING: &[Matchmaking] = &[
-    Matchmaking { key: "rumble_slayer", engine: 2, source: include_str!("matchmaking/rumble_slayer.rules") },
-    Matchmaking { key: "team_slayer", engine: 2, source: include_str!("matchmaking/team_slayer.rules") },
-    Matchmaking { key: "team_snipers", engine: 2, source: include_str!("matchmaking/team_snipers.rules") },
-    Matchmaking { key: "team_heavies", engine: 2, source: include_str!("matchmaking/team_heavies.rules") },
-    Matchmaking { key: "oddball", engine: 3, source: include_str!("matchmaking/oddball.rules") },
-    Matchmaking { key: "teamball", engine: 3, source: include_str!("matchmaking/teamball.rules") },
-    Matchmaking { key: "king_of_the_hill", engine: 4, source: include_str!("matchmaking/king_of_the_hill.rules") },
-    Matchmaking { key: "team_king", engine: 4, source: include_str!("matchmaking/team_king.rules") },
-    Matchmaking { key: "classic_ctf", engine: 1, source: include_str!("matchmaking/classic_ctf.rules") },
-    Matchmaking { key: "assault", engine: 9, source: include_str!("matchmaking/assault.rules") },
-    Matchmaking { key: "territories", engine: 8, source: include_str!("matchmaking/territories.rules") },
+    Matchmaking { key: "rumble_slayer", engine: 2, source: include_str!("../../../../../content/modes/rules/matchmaking/rumble_slayer.rules") },
+    Matchmaking { key: "team_slayer", engine: 2, source: include_str!("../../../../../content/modes/rules/matchmaking/team_slayer.rules") },
+    Matchmaking { key: "team_snipers", engine: 2, source: include_str!("../../../../../content/modes/rules/matchmaking/team_snipers.rules") },
+    Matchmaking { key: "team_heavies", engine: 2, source: include_str!("../../../../../content/modes/rules/matchmaking/team_heavies.rules") },
+    Matchmaking { key: "oddball", engine: 3, source: include_str!("../../../../../content/modes/rules/matchmaking/oddball.rules") },
+    Matchmaking { key: "teamball", engine: 3, source: include_str!("../../../../../content/modes/rules/matchmaking/teamball.rules") },
+    Matchmaking { key: "king_of_the_hill", engine: 4, source: include_str!("../../../../../content/modes/rules/matchmaking/king_of_the_hill.rules") },
+    Matchmaking { key: "team_king", engine: 4, source: include_str!("../../../../../content/modes/rules/matchmaking/team_king.rules") },
+    Matchmaking { key: "classic_ctf", engine: 1, source: include_str!("../../../../../content/modes/rules/matchmaking/classic_ctf.rules") },
+    Matchmaking { key: "assault", engine: 9, source: include_str!("../../../../../content/modes/rules/matchmaking/assault.rules") },
+    Matchmaking { key: "territories", engine: 8, source: include_str!("../../../../../content/modes/rules/matchmaking/territories.rules") },
 ];
 
 /// One script of [`MATCHMAKING`].
@@ -358,7 +364,7 @@ mod tests {
 
     #[test]
     fn sources_of_a_file_are_the_baked_scripts() {
-        let ctf = include_str!("ctf.rules");
+        let ctf = include_str!("../../../../../content/core/rules/ctf.rules");
         assert_eq!(sources_of("ctf.rules", ctf), vec![CTF.to_string(), ASSAULT.to_string()]);
         assert_eq!(sources_of("slayer.rules", SLAYER), vec![SLAYER.to_string()]);
     }
@@ -373,7 +379,7 @@ mod tests {
         assert_eq!(events(&ctf), events(&assault));
         assert_ne!(ctf.handlers, assault.handlers);
         assert_ne!(ctf.id(), assault.id());
-        let body = include_str!("ctf.rules");
+        let body = include_str!("../../../../../content/core/rules/ctf.rules");
         assert!(CTF.ends_with(body) && ASSAULT.ends_with(body));
     }
 }

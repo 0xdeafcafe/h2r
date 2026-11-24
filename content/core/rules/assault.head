@@ -1,0 +1,3 @@
+rules "Assault" 1
+type assault
+const assault = 1

@@ -1,0 +1,43 @@
+[package]
+format = 1
+id = "core"
+name = "Core"
+description = "The scripts of the seven retail game types: what a record with no mode plays."
+
+[credit]
+authors = ["Alexander Forbes-Reed"]
+notes = "Original scripts of the retail types' rules."
+
+# One script per retail engine (rules::builtin::builtin). Capture the Flag
+# and Assault share a body: each item is its header (rules/<game>.head)
+# then rules/ctf.rules.
+
+[[item]]
+kind = "rules"
+source = "rules/slayer.rules"
+
+[[item]]
+kind = "rules"
+source = "rules/oddball.rules"
+
+[[item]]
+kind = "rules"
+source = "rules/koth.rules"
+
+[[item]]
+kind = "rules"
+source = "rules/juggernaut.rules"
+
+[[item]]
+kind = "rules"
+source = "rules/territories.rules"
+
+[[item]]
+kind = "rules"
+source = "rules/ctf.head"
+inputs = ["rules/ctf.rules"]
+
+[[item]]
+kind = "rules"
+source = "rules/assault.head"
+inputs = ["rules/ctf.rules"]

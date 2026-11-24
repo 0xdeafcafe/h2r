@@ -29,8 +29,8 @@ Commit `grammar.js` and `src/` together. Then put the commit's SHA in
 To see a script's tree or its highlights:
 
 ```sh
-tree-sitter parse ../../crates/formats/rules/src/builtin/vip.rules
-tree-sitter highlight ../../crates/formats/rules/src/builtin/vip.rules
+tree-sitter parse ../../content/modes/rules/vip.rules
+tree-sitter highlight ../../content/modes/rules/vip.rules
 ```
 
 `queries/highlights.scm` is ordered for the tree-sitter CLI (the first

@@ -977,7 +977,7 @@ script's record names it (mode 2, the script's hash prefix and default
 options), and `community_variants::write_blocks` writes that block into
 its built-in record when the list loads, so a game on it and a saved
 copy of it name the script. The script is
-`crates/formats/rules/src/builtin/superbounce.rules`, compiled into the
+`content/modes/rules/superbounce.rules`, compiled into the
 game: `type research` files the variant under Research and Devolution and
 `requires hud.superbounce` turns the mode on
 ([rules-engine.md](rules-engine.md#firefight-ai-and-bounces)). It scores
@@ -1656,7 +1656,7 @@ measured, and `DEPTH_SOFT` stands in for it.
 
 Which pieces of the HUD a game shows is the variant's: they are options
 of the Superbounce rules script
-(`crates/formats/rules/src/builtin/superbounce.rules`), carried in the
+(`content/modes/rules/superbounce.rules`), carried in the
 variant record's option bits after the four scoring options
 ([rules-engine.md](rules-engine.md#firefight-ai-and-bounces)), each on
 unless a variant turns it off:

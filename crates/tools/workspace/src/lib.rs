@@ -11,6 +11,9 @@
 //!   (UI screens and changes to the map's screens) and `animation` (authored
 //!   keys baked to a `jmad` resource). A package's `[[item]]` names
 //!   one by its `kind`.
+//! - [`script_registry`] and [`hopper_fragments`]: what a set's `rules`, `variant` and
+//!   `playlist` items give the game (the scripts, the list entries) and the
+//!   server (the default hopper's playlists); the builders only check them.
 //! - [`build`]: an ordered list of [`Loaded`] packages applied to a map's
 //!   [`map::build::TagSet`] for one [`Target`]. A tag path added twice stops
 //!   it naming both; an edit with a stale `was` or a path that does not
@@ -39,6 +42,7 @@ pub mod import;
 mod layer;
 mod load;
 mod model;
+mod modes;
 mod onto;
 mod rewrite;
 mod sound;
@@ -48,6 +52,8 @@ mod unpin;
 
 #[cfg(test)]
 mod import_tests;
+#[cfg(test)]
+mod modes_tests;
 #[cfg(test)]
 mod pogo_tests;
 #[cfg(test)]
@@ -67,6 +73,7 @@ pub use edit::{BlockLine, Op, SetLine, TagEdit, parse_edits};
 pub use game::{CACHE_DIR, Entry, GameSet, Listed, Off, Origin, PACKAGES_DIR, baked};
 pub use hash::tag_hash;
 pub use hud::huds;
+pub use modes::{hopper_fragments, script_registry};
 pub use layer::Layered;
 pub use load::{
     Finding, LoadError, MAX_FILE_BYTES, added_tag, check_package, check_set, forbidden_files,

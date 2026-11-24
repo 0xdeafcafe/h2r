@@ -257,8 +257,13 @@ original engine. The script header determines its visible type.
 
 ### Built-in list entries
 
-`rules::builtin::LISTED` (new) names the scripts that are built-in
-variants, in list order. `community_variants.rs` keeps its hooks and its
+The `variant` items of the packages that are on name the scripts that are
+built-in variants, in list order (`rules::builtin::Registry::listed`, made
+by `workspace::script_registry` and given to `community_variants::install_registry`
+at boot; `rules::builtin::LISTED` is the first-party packages' list as
+constants, which the tests and a game with no package set run on). A
+package off takes its entries out of the list, and the list holds
+`community_variants::MAX_ENTRIES`. `community_variants.rs` keeps its hooks and its
 merged block and loses `VARIANTS`, `Setting`, `Variant`, `Category`,
 `Tweak` and `superbounce_ext`. At `BUILTINS_LOAD`, for each listed
 script (compiled once, kept):
@@ -286,7 +291,7 @@ reference. `community_variants::filed_type` resolves its declared type.
 entries; retail uses 0 to 38 and the store 94 to 100).
 
 **Porting the table.** Each of the fourteen becomes a file in
-`crates/formats/rules/src/builtin/`. All fourteen port with what exists:
+`content/modes/rules/`, a `variant` item of the `modes` package. All fourteen port with what exists:
 
 | Variant | `type` | `uses` | Notes |
 |---|---|---|---|
@@ -513,7 +518,7 @@ change needs a line in another slice's doc puts the text in its report.
 | 1 | Language and IR: the table, `settings`, `quick`, `uses`, `about`, the codec and the verifier | | `crates/formats/rules/src/settings.rs` (new), `lang/{ast,parse,check,lower}.rs`, `ir.rs`, `verify.rs`, `lib.rs`, `tests/diagnostics.rs`; `docs/game/rules-engine.md`, `docs/game/rules-language-types.md` | `settings_round_trip_and_decode_refuses_disorder`; `a_setting_on_the_wrong_carrier_is_refused` (compiler and `verify::load`); `score_limit_names_each_carriers_setting`; `a_sixth_quick_mark_is_refused`; `a_quick_mark_names_a_setting_or_an_option`; `scoring_carrier_takes_no_handlers`; `a_script_with_no_handlers_needs_scoring_carrier`; `the_hash_covers_settings_marks_and_about`; one diagnostics case per new code |
 | 2 | The record of a script and the CLI | 1 | `crates/formats/variants/src/{record,portable}.rs`, `crates/formats/variants/tests/settings_table.rs` (new), `crates/apps/cli/src/{variants_cmd,rules_cmd}.rs`; `docs/editor/variants.md` | `the_table_matches_the_record` (every row has a `record::field`, its carriers match `schema::applies`, its range the clean-up's); `record_for_is_stock_plus_the_scripts_settings`; `record_for_refuses_what_the_game_would_not_keep`; `from_script_is_the_same_bundle_twice`; `h2 rules settings` and `h2 variants from-script` output tests; disc `#[ignore]`: `the_stock_record_is_offered` (each carrier's stock values are values its `sily` definitions offer) |
 | 3 | IDE and editor grammars | 1 | `crates/formats/rules/src/ide/*.rs`, `crates/formats/rules/src/workbench.rs`, `editors/**`, `web/src/stats/rulesMonaco.ts`, `web/src/lib/rulesIde.ts` | `ide::tests`: completion in the block offers only the type's settings, values after `=`, marks after `quick`; hover on a setting; rename of an option renames its mark; each fix; the formatter's round trip; the tree-sitter corpus cases |
-| 4 | The fourteen scripts | 1 | `crates/formats/rules/src/builtin/*.rules`, `builtin/mod.rs`, `crates/formats/rules/tests/scripts.rs` | `every_listed_script_compiles_and_verifies`; `listed_names_are_unique_and_fit_the_keyboard`; `each_listed_script_sets_what_the_table_set` (the old table's pairs, written into the test as the expected values, so the table can go) |
+| 4 | The fourteen scripts | 1 | `content/modes/rules/*.rules`, `builtin/mod.rs`, `crates/formats/rules/tests/scripts.rs` | `every_listed_script_compiles_and_verifies`; `listed_names_are_unique_and_fit_the_keyboard`; `each_listed_script_sets_what_the_table_set` (the old table's pairs, written into the test as the expected values, so the table can go) |
 | 5 | Built-in entries from scripts | 2, 4 | `crates/extensions/game/src/{community_variants,tweakers,string_ids,superbounce_mode}.rs`, `rules/header.rs`, `game_variants/port.rs`; `docs/game/community-gametypes.md` | on synthetic memory: `entries_are_built_from_the_listed_scripts` (name, type, pairs, description number); `every_listed_record_gets_its_block_at_load`; `a_copy_lists_under_its_scripts_row`; `a_script_the_disc_does_not_offer_is_left_out_by_name`; the existing merged-block and tweakers tests, moved off the table. Disc `#[ignore]`: `every_listed_script_is_offered_on_the_retail_disc` |
 | 6 | The host and `uses` | 1 | `crates/extensions/game/src/rules/{runtime,feature,scoring}.rs`, `rules/runtime/tests.rs`, `crates/extensions/agent-proto/src/rules.rs`, `crates/extensions/agent/src/rules.rs` | `a_carrier_scored_slayer_script_runs_the_builtin_slayer_under_its_record`; `a_carrier_whose_builtin_this_host_cannot_run_is_refused_by_name`; `every_listed_carrier_script_runs_its_builtin_or_is_refused_by_name`; `its_requires_still_turn_the_mode_on` |
 | 7 | Live and the web | 2 | `crates/live/live-server/src/game_variants.rs`, `crates/live/live-server/tests/{variants,rule_scripts}.rs`, `crates/live/live-worker/**`, `web/src/stats/{Rules,Variant}.tsx`, `web/src/lib/{rules,variants}.ts`; `docs/live/live-api.md` | `a_script_variant_has_the_scripts_settings`; `the_script_view_lists_settings_and_quick`; `stock_agrees_with_the_hopper_stock_record` (`GameVariant::stock` against `VariantRecord::stock`, all seven types); the parity suite's variant cases |
