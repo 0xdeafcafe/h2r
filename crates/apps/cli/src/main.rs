@@ -153,6 +153,8 @@ mod maps;
 #[cfg(feature = "desktop")]
 mod package_prepare;
 #[cfg(feature = "desktop")]
+mod store_prepare;
+#[cfg(feature = "desktop")]
 mod server_map;
 #[cfg(feature = "desktop")]
 mod movies_cmd;

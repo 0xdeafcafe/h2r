@@ -23,7 +23,7 @@ rules "Chain" 1
 type slayer
 player var was_primed: bool = false
 player var chain: int = 0
-player var last_down: fixed = 0.0
+global var last_down: fixed = 0.0
 on touchdown(p, down, up) {
     last_down = down
     if p.was_primed and up > 8.0 {
@@ -172,8 +172,8 @@ fn touchdown_is_an_event_with_a_player_and_two_speeds() {
         [rules::Ty::Player, rules::Ty::Fixed, rules::Ty::Fixed]
     );
     assert_eq!(Event::Touchdown.worst_per_tick(), 16);
-    // A handler with the wrong shape does not compile.
-    assert!(compile("rules \"T\" 1\ntype slayer\non touchdown(p) { }\n").is_err());
+    // A handler naming more than the event gives does not compile.
+    assert!(compile("rules \"T\" 1\ntype slayer\non touchdown(p, a, b, c) { }\n").is_err());
     assert!(
         compile("rules \"T\" 1\ntype slayer\non touchdown(p, down, up) { score(down, 1) }\n")
             .is_err()
@@ -362,7 +362,7 @@ fn a_host_refuses_what_its_game_side_lacks_by_name() {
             "on tick { for each players p { if p.crouching { score(p, 1) } } }",
             "crouching",
         ),
-        ("on tick { if sees(eye, target) { end_round() } }", "sees"),
+        ("on tick { if sees(eye, target) { end_round(team 0) } }", "sees"),
     ] {
         let full =
             format!("rules \"H\" 1\ntype slayer\nlabel eye: object\nlabel target: object\n{src}\n");

@@ -53,6 +53,8 @@ pub enum Purpose {
     Control(&'static str),
     /// The script editor's `rules.reload`.
     Rules,
+    /// The Shader tab's `render.reload` for one program's override.
+    ShaderOverride(u64),
     /// A call the user asked for by hand.
     Other,
 }

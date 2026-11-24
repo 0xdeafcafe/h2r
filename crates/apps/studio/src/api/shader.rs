@@ -17,6 +17,7 @@ use super::view::Gpu;
 use super::{MethodDef, P, Provider, Reply, def, err, tag_fields};
 use crate::App;
 use crate::app::shader::{self as model, ShaderRead, Slot, SlotKind, SlotValue};
+use crate::app::shader_override::{self as overrides, Key};
 use crate::app::tag_api;
 
 /// The shape of a slot row, as `shader.read` lists them and `shader.set`
@@ -39,7 +40,7 @@ const SET: MethodDef = def(
 );
 const PREVIEW: MethodDef = def(
     m::SHADER_PREVIEW,
-    "Draw a shader alone through the native renderer, the viewport's Game mode with no game: on a sphere (the default), a flat square, or an object tag's model in its rest pose, read with the document's edits, written to a PNG outside Git. `passes_drawn` counts the passes drawn; each layer whose passes are left out is in `refusals` with its pass count and why (layer 1 until its stencil mode is checked, a program that does not compile, an animated constant, fog, a view constant the editor does not give); `time` is the preview clock, at which the animated properties are evaluated and listed in `animation` (a pass that animates a constant is left out at every time and named in `refusals`, as the editor does not apply an animated constant); `base` says why the base look does not draw, which the layers draw over. With no renderer the counts still answer and `png` is null",
+    "Draw a shader alone through the native renderer, the viewport's Game mode with no game: on a sphere (the default), a flat square, or an object tag's model in its rest pose, read with the document's edits, written to a PNG outside Git. `passes_drawn` counts the passes drawn; each layer whose passes are left out is in `refusals` with its pass count and why (layer 1 until its stencil mode is checked, a program that does not compile, a missing object-function input, fog, a view constant the editor does not give); `time` is the preview clock, in seconds. The layer plan applies supported pixel and vertex constant bindings at this time. `animation` lists the properties and their scalar values; `base` says why the base look does not draw, which the layers draw over. With no renderer the counts still answer and `png` is null",
     r#"{"tag":"string|integer","shape?":"sphere|quad|object","object?":"string|integer (the object tag, for shape object)","size?":"[w, h] (default [320, 240], each 16 to 2048)","time?":"number (the preview clock in seconds, default 0)","out?":"string (a .png path outside Git)"}"#,
     r#"{"png":"string|null","width":"integer","height":"integer","covered":"integer","shape":"string","time":"number","animation":"[{index, value:number|null, no_value:string|null, drives:[string]}]","passes_drawn":"integer","refusals":"[{layer, passes, why}]","base":"string|null","unresolved":"[string]","notes":"[string]"}"#,
     r#"{"tag":"shad:levels\\test\\shaders\\floor","shape":"sphere","out":"$OUT/floor.png"}"#,
@@ -52,6 +53,136 @@ const CODE: MethodDef = def(
     r#"{"tag":"string","pass":"integer","passes":"integer","layer":"integer","pass_in_layer":"integer","pass_tag":"string|null","implementation":"integer","implementations":"integer","vertex":"{classification, listing: string|null, wgsl: string|null, warnings: [string]}","pixel":"{listing: string|null, wgsl: string|null, warnings: [string]}"}"#,
     r#"{"tag":"shad:levels\\test\\shaders\\floor","pass":0}"#,
 );
+
+const OVERRIDE: MethodDef = def(
+    m::SHADER_OVERRIDE,
+    "Read or edit the WGSL of one pass's program, the text an override of the game's renderer would replace (slice S5). `base` is the pass's vertex and pixel programs linked into one module with `vs_main` and `fs_main`, translated with default options (the game's own program carries the draw's options, so `render.dump` is the exact start for a push); with no `text` the draft is read (null when none), with a string it is set, with null it is discarded. `check` is the draft as the game parses it (naga: parse, validation and the two entry points), with the line and column of a compile error, or null with no draft. `pushed` lists the overrides sent from this draft with their state (queued, sent, loaded, refused with `why`, reverting). A draft is kept in the editor only: it changes how our renderer draws, is never written into a map, and is not a tag edit",
+    r#"{"tag":"string|integer","pass?":"integer (default 0)","implementation?":"integer (default 0)","text?":"string|null (set or discard the draft)"}"#,
+    r#"{"tag":"string","pass":"integer","implementation":"integer","base":"string|null","base_note":"string|null","text":"string|null","edited":"boolean","check":"null|{ok:true}|{ok:false, error, line:integer|null, column:integer|null}","pushed":"[{program, file, state, why:string|null}]"}"#,
+    r#"{"tag":"shad:levels\\test\\shaders\\floor","text":"@vertex fn vs_main() ..."}"#,
+);
+const PUSH: MethodDef = def(
+    m::SHADER_PUSH,
+    "Send a pass's draft to the paired game as the override of one of its programs: the draft is checked here (a draft that does not parse is REFUSED with its line), written as `<program>_studio.wgsl` in `dir` (default the game's default override directory, on this machine) and the game is told to read the directory (`render.reload {dir}`) on the next frame of the link. `program` is one of the 16 hex digits `render.programs` lists; the editor cannot derive it, as the game's id hashes a key with draw-time options. Answers once queued; `shader.override`'s `pushed` has the game's answer (`loaded` when it lists the program; whether the program takes the text is `render.overrides`' `applied`, as the game compares its interface). Not paired, or a game without `render.reload`, ends as `refused`. The override changes the game's renderer only, never a map",
+    r#"{"tag":"string|integer","pass?":"integer (default 0)","implementation?":"integer (default 0)","program":"string (16 hex digits)","dir?":"string (a directory the game reads)"}"#,
+    r#"{"queued":"string (the file)","program":"string","dir":"string"}"#,
+    r#"{"tag":"shad:levels\\test\\shaders\\floor","program":"00abcdef01234567"}"#,
+);
+const REVERT: MethodDef = def(
+    m::SHADER_REVERT,
+    "Remove the overrides pushed from a pass (or the one named by `program`): the file is deleted and the game told to read the directory again, so the program draws its translation. The draft stays. REFUSED for a program with no override pushed from here. Answers once queued; `shader.override`'s `pushed` loses the entry when the game no longer lists the program",
+    r#"{"tag":"string|integer","pass?":"integer (default 0)","implementation?":"integer (default 0)","program?":"string (16 hex digits; default every override of the pass)"}"#,
+    r#"{"queued":"[string] (the files)"}"#,
+    r#"{"tag":"shad:levels\\test\\shaders\\floor"}"#,
+);
+
+/// The pass an override method names, checked to exist.
+fn pass_key(app: &mut App, p: &P) -> Result<(Key, programs::PassCode), agent_proto::RpcError> {
+    let tag = tag_fields::resolve(app, p)?;
+    let pass = p.opt_usize("pass")?.unwrap_or(0);
+    let implementation = p.opt_usize("implementation")?.unwrap_or(0);
+    let code = app.shader_code(tag, pass, implementation).map_err(failed)?;
+    Ok((Key { tag, pass, implementation }, code))
+}
+
+fn pushed_json(app: &App, key: &Key) -> Vec<Value> {
+    app.shader_overrides
+        .pushed_for(key)
+        .into_iter()
+        .map(|(id, p)| {
+            json!({
+                "program": overrides::program_text(id),
+                "file": p.file.display().to_string(),
+                "state": p.state.id(),
+                "why": p.state.why(),
+            })
+        })
+        .collect()
+}
+
+fn override_json(app: &App, key: &Key, code: &programs::PassCode) -> Value {
+    let draft = app.shader_overrides.draft(key);
+    let check = draft.map(|t| match overrides::check(t) {
+        Ok(()) => json!({"ok": true}),
+        Err(e) => json!({"ok": false, "error": e.message, "line": e.line, "column": e.column}),
+    });
+    json!({
+        "tag": tag_name(app, key.tag),
+        "pass": key.pass,
+        "implementation": key.implementation,
+        "base": code.linked.as_ref().ok(),
+        "base_note": code.linked.as_ref().err(),
+        "text": draft,
+        "edited": draft.is_some_and(|d| code.linked.as_deref().ok() != Some(d)),
+        "check": check,
+        "pushed": pushed_json(app, key),
+    })
+}
+
+fn override_call(app: &mut App, p: &P) -> Reply {
+    let (key, code) = pass_key(app, p)?;
+    match p.get("text") {
+        None => {}
+        Some(Value::Null) => {
+            app.shader_overrides.discard(&key);
+        }
+        Some(Value::String(t)) => app.shader_overrides.set_draft(key, t.clone()),
+        Some(_) => return Err(err(code::INVALID_PARAMS, "text: a string, or null to discard")),
+    }
+    Ok(override_json(app, &key, &code))
+}
+
+fn program_of(p: &P) -> Result<u64, agent_proto::RpcError> {
+    let s = p.str("program")?;
+    overrides::parse_program(s)
+        .ok_or_else(|| err(code::INVALID_PARAMS, format!("program: {s:?} is not 16 hex digits")))
+}
+
+fn push_call(app: &mut App, p: &P) -> Reply {
+    let (key, _) = pass_key(app, p)?;
+    let program = program_of(p)?;
+    let dir = match p.opt_str("dir")? {
+        Some(d) => PathBuf::from(d),
+        None => agent_proto::hot::default_override_dir(),
+    };
+    let file = app
+        .shader_overrides
+        .queue_push(key, program, &dir)
+        .map_err(failed)?;
+    Ok(json!({
+        "queued": file.display().to_string(),
+        "program": overrides::program_text(program),
+        "dir": dir.display().to_string(),
+    }))
+}
+
+fn revert_call(app: &mut App, p: &P) -> Reply {
+    let (key, _) = pass_key(app, p)?;
+    let programs: Vec<u64> = match p.opt_str("program")? {
+        Some(_) => vec![program_of(p)?],
+        None => app
+            .shader_overrides
+            .pushed_for(&key)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect(),
+    };
+    if programs.is_empty() {
+        return Err(failed("no override pushed from this pass".into()));
+    }
+    let mut files = Vec::new();
+    for id in programs {
+        if app.shader_overrides.pushed(id).is_some_and(|p| p.key != key) {
+            return Err(failed(format!(
+                "program {} carries the override of another pass",
+                overrides::program_text(id)
+            )));
+        }
+        let f = app.shader_overrides.queue_revert(id).map_err(failed)?;
+        files.push(f.display().to_string());
+    }
+    Ok(json!({ "queued": files }))
+}
 
 /// The provider: a GPU for the previews, held between calls.
 #[derive(Default)]
@@ -350,7 +481,7 @@ impl Shader {
 
 impl Provider for Shader {
     fn methods(&self) -> Vec<MethodDef> {
-        vec![READ, SET, PREVIEW, CODE]
+        vec![READ, SET, PREVIEW, CODE, OVERRIDE, PUSH, REVERT]
     }
 
     fn call(&mut self, app: &mut App, method: &str, params: &Value) -> Option<Reply> {
@@ -360,6 +491,9 @@ impl Provider for Shader {
             m::SHADER_SET => set(app, &p),
             m::SHADER_PREVIEW => self.preview(app, &p),
             m::SHADER_CODE => read_code(app, &p),
+            m::SHADER_OVERRIDE => override_call(app, &p),
+            m::SHADER_PUSH => push_call(app, &p),
+            m::SHADER_REVERT => revert_call(app, &p),
             _ => return None,
         })
     }

@@ -106,10 +106,11 @@ pub(crate) fn recordings() -> Vec<hs::recording::Recorded> {
 }
 
 /// The invented map with the scripts and the object name `door` (weapon
-/// 1), at `dir/example.map`, with the invented `default.xbe` beside it
+/// 1), at `dir/example.map` with its metadata ending the file (a table can
+/// grow), with the invented `default.xbe` beside it
 /// when `executable`.
 pub(crate) fn scripted_source(dir: &Path, executable: bool) -> PathBuf {
-    let mut b = fixture::fixture();
+    let mut b = fixture::fixture_at_end();
     let name = fixture::sfile(fixture::NAMES_AT);
     b[name..name + 5].copy_from_slice(b"door\0");
     let payload = &mut b[fixture::sfile(0)..fixture::sfile(fixture::SCNR_SIZE)];

@@ -6,16 +6,24 @@
 //! run of its font's glyphs. Nothing is decoded: the renderer holds the
 //! images and the glyph atlas.
 //!
-//! What the list draws differently from the preview, and why:
+//! Each listed widget says whether its item is what the engine draws
+//! ([`Listed::inexact`]), and [`first_inexact`] gives the first that is
+//! not: the game draws a HUD from the list only when every shown widget is
+//! exact, and leaves it to the engine otherwise. What the list draws
+//! differently from the engine, and why:
 //!
-//! - A meter names its shader ([`Program::Shader`]): the fill is the
-//!   shader's, not a fixed combiner's, and the renderer refuses the item
-//!   until tag shaders translate. The preview's fill is its own stand-in.
-//! - Plain sprites draw with the fixed texture combiner, alpha blended:
-//!   the preview's assumption (S: that a plain HUD shader draws its texels
-//!   as they are).
-//! - Text without the disc's fonts has no glyphs, so it is not listed; the
-//!   preview draws a stand-in.
+//! - The engine draws every bitmap widget through its shader (`0x0001bbf0`
+//!   from `0x0022a664`). [`Shading::Engine`] names the shader
+//!   ([`Program::Shader`]), exact only where the renderer translates it;
+//!   [`Shading::Preview`] draws a plain sprite with the fixed texture
+//!   combiner (S: that a plain HUD shader draws its texels as they are) and
+//!   a meter by its shader. The preview's meter fill is its own stand-in.
+//! - A text widget's colour is its shader's and is not read: the engine
+//!   shading does not list text, the preview's draws it in
+//!   [`render::TEXT_COLOUR`] or what a hook answers. Without the disc's
+//!   fonts text has no glyphs and is not listed.
+//! - A widget's effects block (`0x22bcaf`) and an anchor that is not a
+//!   corner are not modelled.
 
 use std::io::{Read, Seek};
 
@@ -30,6 +38,55 @@ use crate::place::{self, Frame};
 use crate::render::{self, Answers, Art, Fonts, H, W};
 use crate::state::HudState;
 
+/// How a bitmap widget's shader goes into its item's material.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shading {
+    /// The preview's: a plain sprite is the fixed texture combiner (or the
+    /// grey one a hook's look asks for), a meter names its shader, and text
+    /// is drawn in the preview's colour.
+    Preview,
+    /// The engine's: every bitmap widget names its shader, and text is not
+    /// listed (its colour is its shader's, not read).
+    Engine,
+}
+
+/// Why a shown widget's item is not what the engine draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Inexact {
+    /// Drawn by its tag shader: exact where the renderer translates it.
+    Shader,
+    /// A text widget: its colour is its shader's (not read), or the fonts
+    /// are missing.
+    Text,
+    /// Its effects block (`0x22bcaf`) moves, scales or tints it.
+    Effects,
+    /// Its anchor is not a corner the walk places (E `0x1396c7`).
+    Anchor,
+    /// Shown, but not listed: no bitmap or shader, an unreadable bitmap,
+    /// a refused item.
+    Unlisted,
+}
+
+impl Inexact {
+    pub const ALL: [Inexact; 5] = [
+        Inexact::Shader,
+        Inexact::Text,
+        Inexact::Effects,
+        Inexact::Anchor,
+        Inexact::Unlisted,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Inexact::Shader => "shader",
+            Inexact::Text => "text",
+            Inexact::Effects => "effects",
+            Inexact::Anchor => "anchor",
+            Inexact::Unlisted => "unlisted",
+        }
+    }
+}
+
 /// One widget of the walk: the overlay item it added, or why none.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Listed {
@@ -40,6 +97,31 @@ pub struct Listed {
     pub item: Option<u32>,
     /// Why it drew nothing, or what was assumed.
     pub notes: Vec<String>,
+    /// Shown, and its item (or its absence) is not what the engine draws:
+    /// why. `None` for a hidden widget, one the engine draws nothing for
+    /// (no text shader, no font, off the screen), and an exact item.
+    pub inexact: Option<Inexact>,
+}
+
+/// The first shown widget of `listed` whose item is not what the engine
+/// draws, by its index in `listed`, and why; `None` when `overlay` draws
+/// every widget as the engine does. An item drawn by its shader is exact
+/// when `translates` says the renderer draws that shader (its datum).
+pub fn first_inexact(
+    listed: &[Listed],
+    overlay: &Overlay,
+    translates: &dyn Fn(u32) -> bool,
+) -> Option<(usize, Inexact)> {
+    listed.iter().enumerate().find_map(|(n, l)| {
+        let why = l.inexact?;
+        let item = l.item.and_then(|i| overlay.items.get(i as usize));
+        let exact = why == Inexact::Shader
+            && item.is_some_and(|item| match item.material.program {
+                Program::Shader { tag } => translates(tag),
+                Program::Fixed(_) => false,
+            });
+        (!exact).then_some((n, why))
+    })
 }
 
 /// The part of a sprite `[u0, u1, v0, v1]` (fractions of it) a crop
@@ -61,10 +143,30 @@ fn crop(px: [u32; 2], [u0, u1, v0, v1]: [f32; 4]) -> ([f32; 4], [u32; 2]) {
     )
 }
 
+/// A widget's item.
+struct Drawn {
+    item: u32,
+    note: Option<String>,
+    inexact: Option<Inexact>,
+}
+
+/// Why a widget has no item, and whether the engine draws something there.
+struct Missed {
+    why: String,
+    inexact: Option<Inexact>,
+}
+
+impl Missed {
+    fn new(why: impl Into<String>, inexact: Option<Inexact>) -> Missed {
+        Missed { why: why.into(), inexact }
+    }
+}
+
 /// Adds the HUDs' widgets to `overlay` in the order the engine draws them
 /// (`huds[0]` first, then those drawn with it, E `0x1394b9`), each HUD's
-/// widgets in its order. The overlay's target is the HUD's 640 by 480
-/// canvas; one with no size is given it.
+/// widgets in its order, with `shading`'s materials. The overlay's target
+/// is the HUD's 640 by 480 canvas; one with no size is given it.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_list<R: Read + Seek>(
     map: &mut Map<R>,
     art: &mut Art,
@@ -72,6 +174,7 @@ pub fn draw_list<R: Read + Seek>(
     huds: &[&Hud],
     st: &HudState,
     answers: &dyn Answers,
+    shading: Shading,
     overlay: &mut Overlay,
 ) -> Vec<Listed> {
     if overlay.size == [0, 0] {
@@ -86,46 +189,58 @@ pub fn draw_list<R: Read + Seek>(
             let mut notes = Vec::new();
             let (shown, point) =
                 render::shown_and_point(&frame, mode, masks, st, (h, answers), w, &mut notes);
-            let item = match (shown, point) {
+            // `shown_and_point` notes an anchor that is not a corner.
+            let centred = !notes.is_empty();
+            let (item, inexact) = match (shown, point) {
                 (false, _) => {
                     notes.push("hidden".into());
-                    None
+                    (None, None)
                 }
-                (true, None) => None,
+                (true, None) => (None, Some(Inexact::Anchor)),
                 (true, Some(point)) => {
                     let result = match w.key.kind {
                         WidgetKind::Bitmap => {
-                            bitmap(map, art, overlay, w, st, (h, answers), point)
+                            bitmap(map, art, overlay, w, st, (h, answers), shading, point)
                         }
-                        WidgetKind::Text => text(map, fonts, overlay, w, st, (h, answers), point),
+                        WidgetKind::Text => {
+                            text(map, fonts, overlay, w, st, (h, answers), shading, point)
+                        }
                     };
-                    match result {
-                        Ok((item, note)) => {
-                            notes.extend(note);
-                            Some(item)
+                    let (item, inexact) = match result {
+                        Ok(d) => {
+                            notes.extend(d.note);
+                            (Some(d.item), d.inexact)
                         }
-                        Err(why) => {
-                            notes.push(why);
-                            None
+                        Err(m) => {
+                            notes.push(m.why);
+                            (None, m.inexact)
                         }
-                    }
+                    };
+                    (item, if centred { Some(Inexact::Anchor) } else { inexact })
                 }
             };
-            listed.push(Listed { hud: h, key: w.key, name: w.name.clone(), item, notes });
+            listed.push(Listed { hud: h, key: w.key, name: w.name.clone(), item, notes, inexact });
         }
     }
     listed
 }
 
-fn refused(e: OverlayError) -> String {
+/// An item the overlay refused: off the screen draws nothing there, as
+/// the engine's would not be seen; anything else is unlisted.
+fn refused(e: OverlayError) -> Missed {
     match e {
-        OverlayError::NoTarget => "the overlay has no target".into(),
-        OverlayError::Clip => "off the screen".into(),
-        OverlayError::Material => "the material does not fit the item".into(),
-        OverlayError::Geometry => "a corner or colour is not finite".into(),
+        OverlayError::Clip => Missed::new("off the screen", None),
+        OverlayError::NoTarget => Missed::new("the overlay has no target", Some(Inexact::Unlisted)),
+        OverlayError::Material => {
+            Missed::new("the material does not fit the item", Some(Inexact::Unlisted))
+        }
+        OverlayError::Geometry => {
+            Missed::new("a corner or colour is not finite", Some(Inexact::Unlisted))
+        }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn bitmap<R: Read + Seek>(
     map: &mut Map<R>,
     art: &mut Art,
@@ -133,12 +248,14 @@ fn bitmap<R: Read + Seek>(
     w: &Widget,
     st: &HudState,
     (h, answers): (usize, &dyn Answers),
+    shading: Shading,
     point: [f32; 2],
-) -> Result<(u32, Option<String>), String> {
+) -> Result<Drawn, Missed> {
+    let unlisted = |why: String| Missed::new(why, Some(Inexact::Unlisted));
     let mode = st.mode;
-    let id = w.bitmap().ok_or("no bitmap")?;
-    let at = art.sprite_place(map, id, w.sequence(mode))?;
-    let image = u16::try_from(at.image).map_err(|_| "an image past 65535".to_owned())?;
+    let id = w.bitmap().ok_or_else(|| unlisted("no bitmap".into()))?;
+    let at = art.sprite_place(map, id, w.sequence(mode)).map_err(unlisted)?;
+    let image = u16::try_from(at.image).map_err(|_| unlisted("an image past 65535".into()))?;
     // The texels across and down, as the preview counts them.
     let px = at.size.map(|v| v.round().max(0.0) as u32);
     let (part, px) = match answers.crop(h, w) {
@@ -201,16 +318,21 @@ fn bitmap<R: Read + Seek>(
         }
         None => full,
     };
-    let (program, note) = match render::meter_fill(map, w, st, (h, answers)) {
-        Some(_) => match w.shader() {
-            Some(shader) => (
-                Program::Shader { tag: shader.0 },
-                Some("a meter: drawn by its shader, not a fixed combiner".to_owned()),
-            ),
-            None => return Err("a meter with no shader".into()),
-        },
-        None if look.is_some_and(|l| l.grey) => (Program::Fixed(Combiner::TextureGrey), None),
-        None => (Program::Fixed(Combiner::Texture), None),
+    let meter = render::meter_fill(map, w, st, (h, answers)).is_some();
+    let (program, note) = match (shading, w.shader()) {
+        (Shading::Engine, Some(shader)) => (Program::Shader { tag: shader.0 }, None),
+        (Shading::Engine, None) => {
+            return Err(unlisted("no shader: what the engine draws is not read".into()));
+        }
+        (Shading::Preview, Some(shader)) if meter => (
+            Program::Shader { tag: shader.0 },
+            Some("a meter: drawn by its shader, not a fixed combiner".to_owned()),
+        ),
+        (Shading::Preview, None) if meter => return Err(unlisted("a meter with no shader".into())),
+        (Shading::Preview, _) if look.is_some_and(|l| l.grey) => {
+            (Program::Fixed(Combiner::TextureGrey), None)
+        }
+        (Shading::Preview, _) => (Program::Fixed(Combiner::Texture), None),
     };
     let material = OverlayMaterial {
         program,
@@ -219,9 +341,13 @@ fn bitmap<R: Read + Seek>(
         blend: OverlayBlend::ALPHA,
     };
     let item = overlay.push_quad(material, clip, corners).map_err(refused)?;
-    Ok((item, note))
+    // Every bitmap widget is drawn through its shader: a fixed combiner
+    // is the preview's assumption, a named shader exact once translated.
+    let inexact = if w.effects() != 0 { Inexact::Effects } else { Inexact::Shader };
+    Ok(Drawn { item, note, inexact: Some(inexact) })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn text<R: Read + Seek>(
     map: &mut Map<R>,
     fonts: Option<&Fonts>,
@@ -229,22 +355,29 @@ fn text<R: Read + Seek>(
     w: &Widget,
     st: &HudState,
     (h, answers): (usize, &dyn Answers),
+    shading: Shading,
     point: [f32; 2],
-) -> Result<(u32, Option<String>), String> {
+) -> Result<Drawn, Missed> {
+    let text_inexact = |why: String| Missed::new(why, Some(Inexact::Text));
     let mode = st.mode;
     if w.shader().is_none() {
-        return Err("no shader: the engine draws nothing (0x22aa2f)".into());
+        return Err(Missed::new("no shader: the engine draws nothing (0x22aa2f)", None));
     }
-    let font = crate::layout::text_font(w.font(mode))
-        .ok_or_else(|| format!("font byte {} names no font: not drawn", w.font(mode)))?;
+    let font = crate::layout::text_font(w.font(mode)).ok_or_else(|| {
+        Missed::new(format!("font byte {} names no font: not drawn", w.font(mode)), None)
+    })?;
+    if shading == Shading::Engine {
+        return Err(text_inexact("the text's colour is its shader's (not read): not listed".into()));
+    }
     let string = answers.text(h, w).unwrap_or_else(|| {
         let string = crate::model::string(map, w.string());
         render::widget_text(w, string.as_deref(), st)
     });
-    let fonts = fonts.ok_or("the disc's fonts were not found: the text has no glyphs")?;
+    let fonts = fonts
+        .ok_or_else(|| text_inexact("the disc's fonts were not found: the text has no glyphs".into()))?;
     let (laid, line) = fonts
         .layout(font, &string)
-        .ok_or_else(|| format!("font {font} does not lay out {string:?}"))?;
+        .ok_or_else(|| text_inexact(format!("font {font} does not lay out {string:?}")))?;
     let size = [laid.width as f32, (line).max(laid.height as i32) as f32];
     let rect = place::text_rect(point, size, w.justification());
     let [ox, oy] = [rect.x0.round(), rect.y0.round()];
@@ -261,10 +394,12 @@ fn text<R: Read + Seek>(
         })
         .collect();
     if glyphs.is_empty() {
-        return Err("no glyph with pixels".into());
+        return Err(Missed::new("no glyph with pixels", None));
     }
-    let colour = answers.colour(h, w).unwrap_or(render::TEXT_COLOUR);
-    let font = u16::try_from(font).map_err(|_| format!("font {font} is negative"))?;
+    let answered = answers.colour(h, w);
+    let colour = answered.unwrap_or(render::TEXT_COLOUR);
+    let font = u16::try_from(font)
+        .map_err(|_| Missed::new(format!("font {font} is negative"), Some(Inexact::Unlisted)))?;
     let item = overlay
         .push_text_run(
             OverlayMaterial::text(font),
@@ -273,7 +408,12 @@ fn text<R: Read + Seek>(
             &glyphs,
         )
         .map_err(refused)?;
-    Ok((item, None))
+    let inexact = match answered {
+        None => Some(Inexact::Text),
+        Some(_) if w.effects() != 0 => Some(Inexact::Effects),
+        Some(_) => None,
+    };
+    Ok(Drawn { item, note: None, inexact })
 }
 
 #[cfg(test)]
@@ -312,7 +452,7 @@ mod tests {
         let mut art = Art::new(scenario_edit::scene::resource_files(&source));
         let st = HudState::default();
         let mut overlay = Overlay::default();
-        let listed = draw_list(&mut map, &mut art, None, &[&hud], &st, &render::Retail, &mut overlay);
+        let listed = draw_list(&mut map, &mut art, None, &[&hud], &st, &render::Retail, Shading::Preview, &mut overlay);
         assert_eq!(overlay.size, [640, 480]);
         assert_eq!(overlay.check(), Ok(()));
         let names: Vec<_> = listed.iter().map(|l| (l.name.as_str(), l.item)).collect();
@@ -349,7 +489,8 @@ mod tests {
         let hud = crate::model::read(&mut map, player).unwrap();
         let mut art = Art::new(scenario_edit::scene::resource_files(&source));
         let mut overlay = Overlay::default();
-        let listed = draw_list(&mut map, &mut art, None, &[&hud], &HudState::default(), &Kit, &mut overlay);
+        let listed =
+            draw_list(&mut map, &mut art, None, &[&hud], &HudState::default(), &Kit, Shading::Preview, &mut overlay);
         let by = |n: &str| listed.iter().find(|l| l.name == n).unwrap().clone();
         assert_eq!(by("stray").item, None);
         assert!(by("stray").notes.contains(&"hidden".to_owned()));
@@ -365,6 +506,60 @@ mod tests {
         let m = overlay.vertices_of(meter);
         assert_eq!(m[1].position[0] - m[0].position[0], 16.0);
         assert_eq!(m[1].uv[0], 0.25);
+    }
+
+    /// As the engine draws it: every bitmap widget names its shader, the
+    /// text is not listed (its colour is its shader's), and the HUD is
+    /// exact only once the renderer translates every shader drawn.
+    #[test]
+    fn the_engine_shading_names_every_shader_and_says_what_is_inexact() {
+        let (bytes, player, _, _) = fixture::build();
+        let source = MapSource { bytes: Some(bytes.into()), ..MapSource::file("hudtest.map") };
+        let mut map = source.open().unwrap();
+        let hud = crate::model::read(&mut map, player).unwrap();
+        let mut art = Art::new(scenario_edit::scene::resource_files(&source));
+        let mut overlay = Overlay::default();
+        let st = HudState::default();
+        let listed =
+            draw_list(&mut map, &mut art, None, &[&hud], &st, &render::Retail, Shading::Engine, &mut overlay);
+        assert_eq!(overlay.check(), Ok(()));
+        let shaders: Vec<_> = hud.widgets[..3].iter().map(|w| Program::Shader { tag: w.shader().unwrap().0 }).collect();
+        let programs: Vec<_> = overlay.items.iter().map(|i| i.material.program).collect();
+        assert_eq!(programs, shaders, "panel, meter and stray, each by its own shader");
+        let why: Vec<_> = listed.iter().map(|l| l.inexact).collect();
+        assert_eq!(why, [Some(Inexact::Shader), Some(Inexact::Shader), Some(Inexact::Shader), Some(Inexact::Text)]);
+        assert_eq!(listed[3].item, None);
+        assert_eq!(first_inexact(&listed, &overlay, &|_| true), Some((3, Inexact::Text)), "the text still is not");
+        assert_eq!(first_inexact(&listed, &overlay, &|_| false), Some((0, Inexact::Shader)));
+        let plain = hud.widgets[0].shader().unwrap().0;
+        assert_eq!(first_inexact(&listed[..3], &overlay, &|t| t == plain), Some((1, Inexact::Shader)), "the meter's shader");
+        assert_eq!(first_inexact(&listed[..3], &overlay, &|_| true), None);
+    }
+
+    /// A hidden widget is exact (the engine draws nothing either); the
+    /// preview's fixed combiner for a plain sprite is never exact, whatever
+    /// translates.
+    #[test]
+    fn hidden_widgets_are_exact_and_the_previews_combiner_is_not() {
+        let (bytes, player, _, _) = fixture::build();
+        let source = MapSource { bytes: Some(bytes.into()), ..MapSource::file("hudtest.map") };
+        let mut map = source.open().unwrap();
+        let hud = crate::model::read(&mut map, player).unwrap();
+        let mut art = Art::new(scenario_edit::scene::resource_files(&source));
+        struct Hide;
+        impl Answers for Hide {
+            fn shown(&self, _: usize, w: &Widget) -> Option<bool> {
+                Some(w.name == "panel")
+            }
+        }
+        let mut overlay = Overlay::default();
+        let listed =
+            draw_list(&mut map, &mut art, None, &[&hud], &HudState::default(), &Hide, Shading::Preview, &mut overlay);
+        let why: Vec<_> = listed.iter().map(|l| l.inexact).collect();
+        assert_eq!(why, [Some(Inexact::Shader), None, None, None]);
+        assert_eq!(overlay.items[0].material.program, Program::Fixed(Combiner::Texture));
+        assert_eq!(first_inexact(&listed, &overlay, &|_| true), Some((0, Inexact::Shader)));
+        assert_eq!(Inexact::ALL.map(Inexact::name), ["shader", "text", "effects", "anchor", "unlisted"]);
     }
 
     #[test]

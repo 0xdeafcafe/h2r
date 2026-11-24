@@ -76,8 +76,9 @@ pub(crate) fn sound_map() -> Vec<u8> {
 /// The ticks of permutation 0's mouth curve, rising from 0 to 255 over the
 /// sound's 1,741 ms (52 ticks at 30 Hz).
 const CURVE: usize = 52;
-/// Where the extra-info resource sits in the map's raw data.
-const RESOURCE_AT: usize = 0x8000;
+/// Where the extra-info resource sits in the map's raw data: past the
+/// sound's chunk (0x3300 + 600 blocks of 36 bytes ends at 0x8760).
+const RESOURCE_AT: usize = 0x8800;
 
 /// The sound map with two permutations and one extra info: permutation 0
 /// is voiced (a 52-tick curve), permutation 1 unvoiced (a zero-length

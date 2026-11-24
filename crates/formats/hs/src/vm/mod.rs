@@ -235,6 +235,17 @@ impl<'a> Vm<'a> {
     pub fn global(&self, index: usize) -> Option<Cell> {
         self.globals.get(EXTERNAL_GLOBALS + index).copied()
     }
+    /// Give a scenario global's cell a value read from elsewhere (a
+    /// running game's cell). `false` for an index past the definitions.
+    pub fn set_global(&mut self, index: usize, cell: Cell) -> bool {
+        match self.globals.get_mut(EXTERNAL_GLOBALS + index) {
+            Some(slot) if index < self.scenario.globals.len() => {
+                *slot = cell;
+                true
+            }
+            _ => false,
+        }
+    }
     pub fn global_by_name(&self, name: &str) -> Option<Value> {
         let (i, g) = self
             .scenario

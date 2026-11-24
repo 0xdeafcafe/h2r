@@ -292,6 +292,15 @@ impl Widget {
     pub fn is_dirty(&self) -> bool {
         self.bytes != self.original
     }
+    /// How many entries its effects block holds (bitmap `+0x58`, text
+    /// `+0x4c`: the block `0x22bcaf` takes before the draw).
+    pub fn effects(&self) -> u32 {
+        let at = match self.key.kind {
+            WidgetKind::Bitmap => bitmap::EFFECTS,
+            WidgetKind::Text => text::EFFECTS,
+        };
+        u32::from_le_bytes(self.bytes[at..at + 4].try_into().unwrap())
+    }
 
     /// Field `key`'s value.
     pub fn get(&self, key: &str) -> Option<Value> {

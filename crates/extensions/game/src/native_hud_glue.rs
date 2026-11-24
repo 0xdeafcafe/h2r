@@ -10,7 +10,9 @@ use std::sync::{Arc, Mutex};
 use d3d::backend::{ExternalAttachments, ExternalDraws, ExternalPassRequest, IndexedStreams};
 use d3d::{DrawAdmission, DrawSnapshot, ExternalPass, ExternalPlan, ExternalWrites};
 use engine::memory::GuestMemory;
-use render_bridge::native_hud::{Host, HudVertices, OUTLINE_PUSH_BYTES, OutlineVertices, UiScope};
+use render_bridge::native_hud::{
+    Host, HudBitmaps, HudClaim, HudRefusal, HudVertices, OUTLINE_PUSH_BYTES, OutlineVertices, UiScope,
+};
 use gfx::vertex::PrimitiveType;
 use native_render::ui_gpu::{Refusal, UiGpu};
 use timeline::native::{Metric, Stage, Ui};
@@ -370,6 +372,18 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
 
     fn replace_widget(&self, mem: &mut dyn GuestMemory, widget: u32) -> bool {
         self.permits_draw() && crate::skulls_model::gpu::replace_widget(&self.device, mem, widget)
+    }
+
+    fn hud_bitmaps(&self, mem: &mut dyn GuestMemory, at: &HudBitmaps) -> Option<Result<u32, HudRefusal>> {
+        // The HUD scope's order must hold for a pass placed in it.
+        if !self.permits_draw() {
+            return Some(Err(HudRefusal::Pass));
+        }
+        Some(crate::hud_overlay::claim(&self.device, mem, at))
+    }
+
+    fn hud_mismatch(&self, claim: &HudClaim) {
+        crate::hud_overlay::mismatch(claim.nhdt);
     }
 
     fn enter_ui(&self, mem: &mut dyn GuestMemory, kind: UiScope, stack: u32, eligible: bool) {

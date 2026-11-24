@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::compiler::tests::{setup, tables};
-use crate::{Options, compile};
+use crate::{Options, Script, compile};
 
 const BASE: u32 = 0x4000_0000;
 
@@ -63,13 +63,22 @@ fn an_edit_writes_only_its_own_nodes() {
     let head = crate::Datum(s.node(root).unwrap().data());
     let used = [root.slot(), head.slot()];
     assert!(!w.patches.is_empty());
+    // The one script table patch is `other`'s root, which the recompile
+    // gave a new salt.
+    let script = word(&p, 0x1b8 + 4) + Script::SIZE as u32;
+    let mut script_patches = 0;
     for (a, b) in &w.patches {
+        if *a >= script && *a + b.len() as u32 <= script + Script::SIZE as u32 {
+            script_patches += 1;
+            continue;
+        }
         assert!(*a >= nodes, "{a:#x} is outside the node table");
         let (first, last) = ((a - nodes) as usize / 20, (a - nodes) as usize + b.len() - 1);
         for slot in first..=last / 20 {
             assert!(used.contains(&slot), "slot {slot} was written");
         }
     }
+    assert_eq!(script_patches, 1, "{w:?}");
     save(&mut p, &w);
     let back = Scenario::decode(&p, BASE).unwrap();
     assert_eq!(back.table_bytes(), out.scenario.table_bytes());

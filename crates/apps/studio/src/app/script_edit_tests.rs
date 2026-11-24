@@ -90,15 +90,19 @@ fn a_compile_that_fits_is_in_place_one_undo_step_and_saves() {
     // ones the map had.
     assert!(source_of(&mut api, &mut app, "main").contains("(helper)"));
     assert_eq!(call(&mut api, &mut app, m::SCRIPT_LIST, json!({}))["free_nodes"], free);
-    // Only node bytes change: no table is copied, and every patch lies in
-    // the node table.
+    // No table is copied: every patch lies in the node table, but for the
+    // replaced script's root (it takes a new salt), in the script table.
     let c = app.session.scenario().unwrap().changes();
     assert!(c.tag_grown.is_empty() && !c.patches.is_empty());
     let doc = app.scripts.edit.as_ref().unwrap();
     let word = |o: usize| u32::from_le_bytes(doc.header[o..o + 4].try_into().unwrap());
     let (count, nodes) = (word(0x238), word(0x238 + 4));
+    let (scripts, scripts_at) = (word(0x1b8), word(0x1b8 + 4));
     for (a, b) in &c.patches {
-        assert!(*a >= nodes && *a + b.len() as u32 <= nodes + count * 20, "{a:#x}");
+        let end = *a + b.len() as u32;
+        let in_nodes = *a >= nodes && end <= nodes + count * 20;
+        let in_scripts = *a >= scripts_at && end <= scripts_at + scripts * 40;
+        assert!(in_nodes || in_scripts, "{a:#x}");
     }
 
     // Saved, the map reads the edit.

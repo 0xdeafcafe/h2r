@@ -1,7 +1,7 @@
 # Simulation rewrite, phase 2: the collision world
 
 The phase 2 design uses a Rust-owned collision world behind the native
-collision switch. A/B have native adapters. C–E record their entry
+collision switch. A, B and F have native adapters. C–E record their entry
 controls and run lifted. The vector kernels are tested directly until
 their transitive scratch-state contract is closed. The [entry contracts](collision-queries.md)
 describe the implemented arithmetic, stack and register comparisons.
@@ -109,6 +109,7 @@ crates/rewrites/sim-collision/       no `runtime` dependency; depends on sim-cor
   src/bsp/point.rs          point to leaf
   src/bsp/segment.rs        vector test, leaf list, surface matcher
   src/bsp/ring.rs           projected rings, SIMD inside test
+  src/mopp/mod.rs           code object header and source, constants
   src/mopp/decode.rs        bytecode -> Tree (unfolds state)
   src/mopp/boxq.rs          integer box query, single and packet
   src/mopp/ray.rs           float ray walker (pull style)
@@ -122,6 +123,7 @@ crates/rewrites/sim-collision/       no `runtime` dependency; depends on sim-cor
 crates/rewrites/engine/src/sim_collision/
   mod.rs                    adapters: read ABI, call kernel, scatter, return
   layout.rs                 guest offsets as named constants (section 5)
+  mopp_box.rs               entry F
   commit.rs                 ordered scatter helpers, mark replay
 crates/rewrites/engine/tests/sim_collision_differential.rs
 crates/rewrites/sim-bridge/src/sim_native.rs   installs under impl.sim.native.collision
@@ -151,8 +153,7 @@ element.
 pub struct CollisionWorld {
     epoch: Epoch,                       // map generation it was built for
     bsps: Slots,                        // sorted guest addresses and decoded BSPs
-    mopps: Vec<Arc<Tree>>,
-    mopp_by_addr: HashMap<u32, u32>,    // guest code-object pointer -> slot
+    mopps: HashMap<u32, MoppSlot>,      // guest code-object pointer -> tree, source revision
     structure: Option<Structure>,       // for the active sbsp
     stats: Stats,                       // calls, bails by reason, decode time, bytes
 }
@@ -221,14 +222,34 @@ placement on the disc.
 
 The decoder walks the bytecode from `+0x30` carrying the interpreter state
 (shift, three frame offsets, key offset) and emits a node per *reached
-(pc, state)* pair. Jumps (`05..07`), key-offset opcodes (`09..0b`) and
-rescales (`01..04`) emit nothing for the box view: their effect is folded
-into the thresholds and keys of the nodes below them. A pc reached with two
-different states is emitted twice. Decode is bounded by 16 nodes per
-bytecode byte and fails closed: a program that exceeds the bound, uses an
-asserting opcode, a property opcode (`60..6b`), or overflows 32-bit
-arithmetic in any folded value is marked `guest_only`, and every query on it
-bails to the lifted interpreter.
+(pc, state)* pair. Jumps (`05..07`), key-offset opcodes (`09..0b`),
+rescales (`01..04`) and property 0 writes (`60`, `64`, `68`, which stay in
+the interpreter's stack state) emit nothing for the box view: their
+effect is folded into the thresholds and keys of the nodes below them. A
+pc reached with two different states is emitted twice. Decode fails
+closed. A reached point the interpreter faults or asserts on (an opcode
+outside its table, property slots `61..63`, `65..67`, `69..6b`, an
+operand past the program's size, a rescale below shift 0) becomes a
+`Trap` node, and a query that reaches it bails to the lifted
+interpreter. A program that unfolds past 16 nodes per bytecode byte is
+marked `guest_only`, and every query on it bails. Thresholds are `i64`,
+so no folded value can overflow.
+
+The box view (`sim_collision::mopp::Node`) is an enum over thresholds on
+the full-precision corners, children as node indices, the low child
+always next:
+
+```rust
+pub enum Node {
+    Split { axis: u8, below: i64, above: i64, low: u32, high: u32 },     // lo < below, hi >= above
+    Diagonal { op: u8, shift: u8, below: i64, above: i64, low: u32, high: u32 },
+    Bound { axis: u8, above: i64, below: i64, next: u32 },               // on while hi >= above, lo < below
+    Leaf { key: u32 },
+    Trap { pc: u32 },
+}
+```
+
+The ray view (S3) adds the frame-space float operands and rescales:
 
 ```rust
 #[repr(C)]
@@ -271,13 +292,14 @@ over 32-byte nodes with two integer compares per split and no state copy.
 Keys come out in the retail order because the DFS order is the same (low
 child first) and each node's visit condition is the same predicate.
 
-Two conditions make the table exact, and both are checked:
+Two conditions make the table exact, and both are checked per query:
 
 - the query has `lo <= hi` on every axis. The retail one-plane split takes
   the low child whenever `H <= S` without looking at `L`, which equals
   `L <= S` only for an ordered box. An inverted box bails;
-- no folded value leaves `i32`, and no rescale takes the shift below zero
-  (decode marks the program `guest_only`).
+- every corner lies in `[-2^28, 2^28)`. The interpreter forms its frame
+  values and diagonal sums in 32 bits; inside that range none of them
+  wraps, so the `i64` thresholds compare the same way. A far box bails.
 
 **The ray view.** The float interpreter (`0x003009e0`) cannot be lifted the
 same way: a rescale subtracts and scales the segment endpoints in `f32`, and
@@ -527,10 +549,13 @@ in x87 working precision, stores to binary32, reloads, converts with
 integers at `+0x20..+0x28` and the maximum integers at `+0x10..+0x18`,
 without writing a fourth lane. F starts the DFS of section 4.3 at
 `code+0x30`. Keys are appended to the guest
-`hkArray`. If `size + keys > capacity & 0x7fff_ffff` the kernel bails and
-the lifted code runs and grows the array itself. S4 measures the bail rate;
-if it is above 1% of calls, the adapter becomes `async` and awaits
-`0x002d91d0` at the same points retail calls it.
+`hkArray`. If `size + keys > capacity & 0x7fff_ffff` the kernel bails
+(`grow`) and the lifted code runs and grows the array itself.
+`collision.stats` counts those bails for `mopp_box`; if they are above 1%
+of calls, the adapter becomes `async` and awaits `0x002d91d0` at the same
+points retail calls it. The six conversions run as `det::Chain`s in one
+checked region; the adapter needs PE already sticky in the x87 status
+word, since an inexact conversion sets it.
 
 **Cluster flood** (E, `0x0014a5b0`; P for the portal test,
 `sim_physics/spatial.rs`): write the cluster to the output while capacity

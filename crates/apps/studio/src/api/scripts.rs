@@ -114,6 +114,13 @@ const METHODS: &[MethodDef] = &[
         r#"{"source":"(script static void helper\n  (invented_select door))"}"#,
     ),
     def(
+        m::SCRIPT_EVAL,
+        "Evaluate one HaloScript expression in the paired game (the game's hs.eval): it is compiled against the loaded map's scripts and run at a tick boundary over a snapshot of the map's scripts and global cells, so control flow, arithmetic, comparison and reads of the map's globals run, and a builtin that needs the game's objects is refused by name. `type` names the result's type where the expression's own is not fixed (a begin, an if). Problems in the text come back as `errors` (ok false) with their line and column in the expression, as does the evaluator's refusal as `error`. REFUSED without a paired, running (not paused) game that lists hs.eval",
+        r#"{"expression":"string","type?":"string (a type name: real, short, boolean ...)"}"#,
+        r#"{"ok":"boolean","type?":"string","value?":"any (null for void)","bits?":"integer","errors?":"[{line,column,code,text}]","error?":"string"}"#,
+        r#"{"expression":"(+ 1 2)"}"#,
+    ),
+    def(
         m::SCRIPT_UNDO,
         "Undo (or, with redo, redo) the last script.compile that was applied; changed is false when there is none",
         r#"{"redo?":"boolean"}"#,
@@ -285,6 +292,7 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
             Ok(json!({ "kind": kind, "name": name, "uses": uses }))
         }
         m::SCRIPT_COMPILE => compile(app, p),
+        m::SCRIPT_EVAL => eval_on(app, p.str("expression")?, p.opt_str("type")?),
         m::SCRIPT_UNDO => {
             let redo = p.bool("redo")?;
             let changed = app.script_step(redo).map_err(refusal)?;
@@ -343,6 +351,62 @@ fn compile(app: &mut App, p: &P) -> Reply {
                 .collect::<Vec<_>>(),
         })),
         Err(e) => Err(refusal(e)),
+    }
+}
+
+/// The paired game's `hs.eval` of `expression`: what `script.eval` and the
+/// tool's expression box both do. The call is made on a connection of its
+/// own, as the previews' are, and answers on the game's next tick.
+pub(crate) fn eval_on(app: &mut App, expression: &str, ty: Option<&str>) -> Reply {
+    use agent_proto::{CallError, Client};
+    use std::time::Duration;
+
+    const GAME_METHOD: &str = "hs.eval";
+    let (endpoint, paused) = super::preview::paired(app)?;
+    if paused {
+        return Err(err(
+            code::REFUSED,
+            "the game is paused: the call answers on its next tick (resume or step it)",
+        ));
+    }
+    let refused = |why: String| err(code::REFUSED, why);
+    let mut client = Client::connect_with_timeout(&endpoint, Some(Duration::from_secs(5)))
+        .map_err(|e| refused(format!("connecting to the paired game at {endpoint}: {e}")))?;
+    client
+        .set_timeout(Some(Duration::from_secs(5)))
+        .map_err(|e| refused(format!("{endpoint}: {e}")))?;
+    let methods = client
+        .call(agent_proto::method::METHODS, Value::Null)
+        .map_err(|e| refused(format!("session.methods: {e}")))?;
+    if !methods
+        .as_array()
+        .is_some_and(|l| l.iter().any(|name| name == GAME_METHOD))
+    {
+        return Err(refused(format!(
+            "the paired game does not list {GAME_METHOD} (a build before it)"
+        )));
+    }
+    let mut params = json!({ "expression": expression });
+    if let Some(ty) = ty {
+        params["type"] = json!(ty);
+    }
+    match client.call(GAME_METHOD, params) {
+        Ok(mut answer) => {
+            answer["ok"] = json!(true);
+            Ok(answer)
+        }
+        Err(CallError::Rpc(e)) if e.code == agent_proto::code::INVALID_PARAMS => {
+            let problems = e.data.as_ref().and_then(|d| d.get("problems")).cloned();
+            match problems {
+                Some(errors) => Ok(json!({"ok": false, "errors": errors, "error": e.message})),
+                None => Err(err(code::INVALID_PARAMS, format!("{GAME_METHOD}: {}", e.message))),
+            }
+        }
+        Err(CallError::Rpc(e)) if e.code == agent_proto::code::UNAVAILABLE => {
+            Ok(json!({"ok": false, "error": e.message}))
+        }
+        Err(CallError::Rpc(e)) => Err(refused(format!("{GAME_METHOD}: {}", e.message))),
+        Err(e) => Err(refused(format!("{GAME_METHOD}: {e}"))),
     }
 }
 

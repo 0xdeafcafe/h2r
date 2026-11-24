@@ -529,7 +529,7 @@ impl SceneList {
     }
 }
 
-const UI_COLUMNS: [&str; Ui::OverlayRefusedBlur as usize + 1] = [
+const UI_COLUMNS: [&str; Ui::OverlayHudRefusedPass as usize + 1] = [
     "items",
     "item_refused",
     "fallback_geometry",
@@ -574,6 +574,17 @@ const UI_COLUMNS: [&str; Ui::OverlayRefusedBlur as usize + 1] = [
     "overlay_model_views",
     "overlay_refused_model_view",
     "overlay_refused_blur",
+    "overlay_hud_claimed",
+    "overlay_hud_quads_skipped",
+    "overlay_hud_mismatch",
+    "overlay_hud_refused_shader",
+    "overlay_hud_refused_text",
+    "overlay_hud_refused_effects",
+    "overlay_hud_refused_anchor",
+    "overlay_hud_refused_unlisted",
+    "overlay_hud_refused_frame",
+    "overlay_hud_refused_loading",
+    "overlay_hud_refused_pass",
 ];
 const UI_OFFSET: usize = SCENE_LIST_START + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len();
 pub(crate) const COLUMNS: usize = UI_OFFSET + UI_COLUMNS.len();
@@ -634,6 +645,28 @@ pub enum Ui {
     OverlayRefusedModelView,
     /// Blurs over a target the GPU cannot copy or sample.
     OverlayRefusedBlur,
+    /// HUD draws (one `nhdt`'s widgets) the overlay drew in place of the
+    /// game's quads (docs/graphics/native-post-hud.md, "The HUD on the
+    /// overlay").
+    OverlayHudClaimed,
+    /// The game's widget quads not drawn because the overlay drew them.
+    OverlayHudQuadsSkipped,
+    /// Claimed HUD draws whose skipped quads did not match the items the
+    /// overlay drew; that HUD is not claimed again on the map.
+    OverlayHudMismatch,
+    /// HUD draws left to the game's quads, by the first reason: a widget
+    /// drawn by a tag shader that does not translate, a text widget, a
+    /// widget with effects, one whose anchor is not a corner, one not
+    /// listed; a frame that is not the full screen; the map's HUDs not
+    /// loaded yet; the overlay's pass not placed.
+    OverlayHudRefusedShader,
+    OverlayHudRefusedText,
+    OverlayHudRefusedEffects,
+    OverlayHudRefusedAnchor,
+    OverlayHudRefusedUnlisted,
+    OverlayHudRefusedFrame,
+    OverlayHudRefusedLoading,
+    OverlayHudRefusedPass,
 }
 
 impl Ui {
@@ -868,10 +901,12 @@ mod tests {
         assert_eq!(columns[ui].1, "native_ui_items");
         assert_eq!(
             columns[phase::Counter::ALL.len() + COLUMNS - 1].1,
-            "native_ui_overlay_refused_blur"
+            "native_ui_overlay_hud_refused_pass"
         );
         assert_eq!(columns[ui + Ui::OverlayRefusedTexture as usize].1, "native_ui_overlay_refused_texture");
         assert_eq!(columns[ui + Ui::OverlayModelViews as usize].1, "native_ui_overlay_model_views");
+        assert_eq!(columns[ui + Ui::OverlayRefusedBlur as usize].1, "native_ui_overlay_refused_blur");
+        assert_eq!(columns[ui + Ui::OverlayHudClaimed as usize].1, "native_ui_overlay_hud_claimed");
         assert_eq!(
             columns[ui + Ui::OutlineReservation as usize].1,
             "native_ui_outline_fallback_reservation"

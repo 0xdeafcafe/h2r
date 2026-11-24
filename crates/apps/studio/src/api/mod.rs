@@ -56,7 +56,7 @@ mod playlists;
 mod playtest;
 mod scenario;
 pub(crate) mod recordings;
-mod scripts;
+pub(crate) mod scripts;
 pub mod seams;
 mod shell;
 pub mod server;

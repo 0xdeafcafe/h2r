@@ -96,6 +96,7 @@ connection to hold `session.claim`.
 | `audio.play` | act | [`audio.play`](#audioplay) |
 | `recording.play` | act | [`recording.play`](#recordingplay) |
 | `hs.threads`, `hs.globals`, `hs.player_actions` | read | [HaloScript state](#haloscript-state) |
+| `hs.eval` | read | [`hs.eval`](#hseval) |
 | `input.pad`, `release`, `record`, `replay`, `stop` | act | [`input`](#input-act-like-a-player) |
 | `input.state`, `input.host` | read | [`input`](#input-act-like-a-player) |
 | `input.route`, `input.route.stop` | act | [Routes](#routes) |
@@ -1470,6 +1471,12 @@ the draws recorded (`batches`) and the items dropped, by reason
 (`refused_material`, `refused_clip`, `refused_glyph`, `refused_texture`,
 `refused_model_view`, `refused_blur`;
 [retire-d3d.md](../graphics/retire-d3d.md#what-replaces-each-subsystem)).
+The HUD's own (`hud_*`) are the HUD draws the overlay drew (`hud_claimed`),
+the game's widget quads it left out (`hud_quads_skipped`), claims whose
+left-out quads were not the items drawn (`hud_mismatch`), and the HUD draws
+left to the game's quads by their first reason (`hud_refused_shader`,
+`_text`, `_effects`, `_anchor`, `_unlisted`, `_frame`, `_loading`, `_pass`;
+[native-post-hud.md](../graphics/native-post-hud.md#the-hud-on-the-overlay)).
 The object-shadow list, row gather and caster each count calls to their own
 entry ([native-light-gather.md](../graphics/native-light-gather.md), L7).
 `counters` is `null` where the frame-stats window is not running.
@@ -1525,8 +1532,10 @@ includes it for the corresponding draw. Its `passes` array contains
 `name`, submitted `draws` and `gpu_ns` (null for an empty or unmeasured
 stage). Snapshot indices refer to the attachment runs in the frame
 record. The per-frame counters are `lights_lit`, `lights_shadowed`,
-`lights_over_cap`, `sun_tiles`, `sun_tiles_redrawn`, `sun_tiles_offscreen`, `atlas_halved` and
-`tiles_refused`. They count the E3 renderer's selections and atlas work.
+`lights_over_cap`, `lights_beyond_guest`, `sun_tiles`, `sun_tiles_redrawn`, `sun_tiles_offscreen`, `atlas_halved`,
+`tiles_refused`, `cones_shadowed`, `cones_flagged_off`, `flashlight_shadowed`,
+`shadows_over_cap`, `cones_refused`, `cones_drawn` and `cones_kept`. They
+count the E3 renderer's selections and atlas work.
 The graph draws the guest's shadow maps as tiles
 ([e3-lighting.md](../graphics/e3-lighting.md), "Shadows from local
 lights"): `e3.tiles` counts the caster draws into them, `e3.marks` the
@@ -1536,8 +1545,18 @@ left at the guest's size. The display on the guest's live attachments
 draws no tiles. `lights_lit` and `lights_over_cap` are the renderer's
 own choice of lights from the scene's candidates (e3-lighting.md,
 "Lights: which, and how many"): the lights it chose, and the candidates
-its cap of 16 left out. The lights drawn are still the guest's, so
-`e3.lights` has no draws. `sun_tiles_offscreen` counts offscreen casters for which the graph
+its cap of 16 left out. `lights_beyond_guest` counts the chosen game
+lights the guest did not draw, and `e3.lights` the ranges of the stages
+that draw them (layers 12 and 13 over the structure each light meets),
+which only an E3 draw records. The five cone counters are the renderer's
+choice of shadowed lights from those it lit (e3-lighting.md, "Built: the
+shadowed cones"): the cones it shadows itself, the shadowed lights whose
+content flag was off, the views whose flashlight holds a slot, the lit
+cones its four slots left out, and the lit lights whose frustum makes no
+projection. A chosen light the renderer shadows reads its cone's term:
+`cones_drawn` counts the cone tiles drawn for those lights (their caster
+draws join `e3.tiles`, their receivers `e3.marks`) and `cones_kept` the
+lights left undrawn because their cone could not be. `sun_tiles_offscreen` counts offscreen casters for which the graph
 submits a receiver draw, summed across views. A cached tile can have
 receiver draws with no redraw. The
 guest's light selections are in `render.scene.views`.
@@ -1970,6 +1989,11 @@ h2 agent render.parity '{"arm": true}'
   `scene_host_lights_drawn`, `scene_host_lights_kept` and
   `scene_host_lights_unread` (the host's own lights, ML5, drawn by the
   light passes, made but kept, and whose constants did not read),
+  `scene_e3_lights_drawn`, `scene_e3_lights_kept`,
+  `scene_e3_lights_unread` and `scene_e3_lights_shadowed` (E3's chosen
+  lights beyond the guest's, queued as E3 stages, ready but not queued,
+  with no constants to draw from, and handed to the host with their
+  shadowed implementations over the renderer's cone shadow),
   `scene_light_entries` and
   `scene_light_entry_remainder_<cause>` (sorted entries left to the
   guest's handlers, by `scene_extract::light_groups::Cause`: `memory`,
@@ -3164,12 +3188,48 @@ its backing state is unreadable or uninitialized.
   Each row has `name`, `type`, `type_index` and `value.bits`; scalar types
   also have `boolean`, `real` or signed `number`. Scenario declarations
   start after the interpreter's external-global cells.
+- `hs.eval` is below.
 - `hs.player_actions` returns three unsigned masks from local player
   control. `latched` records inputs seen since the script's last
   action-test reset; `capture` identifies inputs claimed by script tests;
   `until_release` retains suppression through button-up after a reset. Bit
   0 of each mask denotes the mapped action/reload button. The state is
   shared by local controls, so the method takes no player index.
+
+### `hs.eval`
+
+`hs.eval {expression, type?}` compiles one HaloScript expression against
+the loaded map's scripts and answers its value (`crates/extensions/agent/src/hs_eval.rs`).
+It runs at the tick boundary the request is served at, over a snapshot:
+the scenario's tables (`hs::Scenario::read_memory`), the builtin table
+from the running image (`hs::Catalog::from_memory`, named by the map's own
+calls) and the live cell of each scenario global. The text is wrapped in
+a static script of a copy of the tables (`hs::compile`) and run on
+`hs::vm`, the native evaluator ([hs_vm.md](../engine/hs_vm.md)); nothing
+is written back to the game, so a `set` of a global changes the snapshot
+only. Control flow, arithmetic, comparison and reads of the map's globals
+run. A builtin that needs the game's objects, AI or sound is refused by
+name until the guest-backed engine exists, and an expression that sleeps
+is refused: the answer comes at one boundary.
+
+- **`type`** names the result's type (`real`, `short`, `boolean`, ...).
+  Without it the expression's own is used where it is fixed: a call of a
+  builtin or script that returns a plain value, or a bare global's name.
+  A `begin`, an `if` or a literal needs it.
+- **Result.** `{type, type_index, value, bits}`: `value` is a boolean, a
+  number, the string's text, or the raw bits of a handle or index, and
+  `null` for void.
+- **Errors.** Problems in the text are `INVALID_PARAMS` with the compiler's
+  sentence and `data.problems: [{line, column, code, text}]`, counted in the
+  expression (a `(` it never closes is named at its own place). An unknown
+  `type` is `INVALID_PARAMS`. The evaluator's refusal (an engine builtin,
+  a sleeping expression, a thread that faults) and unreadable or
+  uninitialized scripts and globals are `UNAVAILABLE`.
+
+```sh
+h2 agent hs.eval '{"expression":"my_global"}'
+h2 agent hs.eval '{"expression":"(begin (set counter 3) counter)","type":"short"}'
+```
 
 ## `input`: act like a player
 
@@ -5295,14 +5355,14 @@ h2 agent theater.play '{}' --socket "$film_run/play.sock"
 
 ## `collision`: the native collision world
 
-The collision switch enables counters for native entries A and B, and
+The collision switch enables counters for native entries A, B and F, and
 before-call observers for the lifted vector and instance traces C–E. The game
 method reads process counters at a tick boundary. The entry addresses and
 bail reasons are in [collision-queries.md](../engine/collision-queries.md).
 
 | Method | Access | Params and result |
 |---|---|---|
-| `collision.stats` | read | No parameters. Returns `switch`, `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, and `precision` (aggregate single, reserved, double and extended x87 calls at C and D). |
+| `collision.stats` | read | No parameters. Returns `switch`, `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `mopps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, and `precision` (aggregate single, reserved, double and extended x87 calls at C and D). |
 
 Each row in `entries` gives the `name` and eight-digit guest `addr`, the
 count of `native` answers, and `bails` by reason. Two frequency maps count
@@ -5312,8 +5372,10 @@ zeros: eight digits for `mxcsr` and four for `x87_control`. Each value is
 a call count. Each map counts its own register independently. For
 `vector_test`, `vector_context` and `instance_trace`, only the frequency
 maps accumulate. An image without an observed entry leaves its row empty.
-`array_bytes` counts the decoded BSP allocations and the packed cluster
-table. `bytes` adds the reserved space for BSP owners and address-index
+`array_bytes` counts the decoded BSP allocations, the packed cluster
+table and the decoded MOPP trees (`mopps` of them; `decodes` and
+`decode_failures` include MOPP programs, a failure being one left to the
+guest). `bytes` adds the reserved space for BSP owners and address-index
 capacity. `budget_bytes` limits that total to 8 MiB per loaded map.
 `ring_fallbacks` counts transitions to scalar ring reads, and
 `cluster_budget_reads` counts lookups that need the live cluster word
@@ -5325,7 +5387,8 @@ h2 agent collision.stats
 ```
 
 The bail audit (under 0.1% of calls bailing) reads `bails` against
-`native`. A reason that appears on one architecture only is a determinism
+`native`. For `mopp_box`, `grow` counts answers that did not fit the
+key array's room. A reason that appears on one architecture only is a determinism
 bug.
 
 ## Tick traces and the flight recorder

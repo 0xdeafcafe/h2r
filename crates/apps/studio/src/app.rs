@@ -35,6 +35,7 @@ pub mod script_edit;
 pub mod scripts;
 pub mod shared_refs;
 pub mod shader;
+pub mod shader_override;
 pub mod shell;
 pub mod subject;
 pub mod tag_api;
@@ -314,6 +315,8 @@ pub enum Action {
     FocusSelected,
     SetFlySpeed(f32),
     SetAllowGrowth(bool),
+    /// The Shader tab's WGSL override box (`shader_override`).
+    ShaderOverride(shader_override::OverrideAction),
     /// "Allow unverified geometry writes": while off, a save with
     /// Modeling edits is refused (docs/editor/modeling.md).
     SetAllowUnverifiedGeometry(bool),
@@ -705,6 +708,8 @@ pub struct App {
     pub voices: voices::Voices,
     /// The game type script editor (`rules_edit`).
     pub rules: rules_edit::RulesEditor,
+    /// The Shader tab's WGSL drafts and pushed overrides (`shader_override`).
+    pub shader_overrides: shader_override::Overrides,
     /// The document tabs and the one in front (`shell`).
     tabs: shell::Tabs,
     /// The tag workspace: the tree's root, the plan, extraction and
@@ -791,6 +796,7 @@ impl App {
             announcer: Default::default(),
             voices: Default::default(),
             rules: Default::default(),
+            shader_overrides: Default::default(),
             tabs: Default::default(),
             workspace: Default::default(),
         }
@@ -1349,6 +1355,7 @@ impl App {
                 self.tags.allow_growth = allow;
             }
             Action::SetAllowUnverifiedGeometry(allow) => self.set_allow_unverified_geometry(allow),
+            Action::ShaderOverride(a) => self.run_shader_override(a),
             Action::Model(a) => self.run_model(a),
             Action::Bitmap(a) => self.run_bitmap(a),
             Action::Image(a) => self.run_image(a),

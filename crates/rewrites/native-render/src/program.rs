@@ -970,7 +970,7 @@ pub fn defaults_mask(defaults: &[Register]) -> u16 {
 }
 
 /// Writes the components `r` writes into its register of `regs`.
-fn put(regs: &mut [[f32; 4]], r: &Register) {
+pub(crate) fn put(regs: &mut [[f32; 4]], r: &Register) {
     let Some(reg) = regs.get_mut(usize::from(r.index)) else {
         return;
     };
@@ -1681,8 +1681,8 @@ impl Gpu {
         ))
     }
 
-    /// The frame's uniforms with `pixel` in place of the program's own pixel
-    /// uniforms, written through the submission's upload arena (the
+    /// The frame's vertex and pixel uniforms, written through the submission's
+    /// upload arena (the
     /// reservation path records into an isolated encoder, where a queue
     /// write would escape cancellation): for a pass whose pixel state is
     /// resolved per view (the fog layer's `PixelUniforms::fog` and
@@ -1691,12 +1691,13 @@ impl Gpu {
         &self,
         uploads: &mut gfx::ring::EncoderUploads<'_>,
         view: &ViewInputs,
+        vertex: &VertexUniforms,
         pixel: &PixelUniforms,
     ) {
         uploads.write(
             &self.vertex_buffer,
             0,
-            &frame_vertex(&self.program.vertex, view).to_bytes(),
+            &frame_vertex(vertex, view).to_bytes(),
         );
         uploads.write(&self.pixel_buffer, 0, &frame_pixel(pixel, view).to_bytes());
     }
@@ -1706,13 +1707,14 @@ impl Gpu {
     pub(crate) fn prepare_writes(
         &self,
         view: &ViewInputs,
+        vertex: &VertexUniforms,
         pixel: &PixelUniforms,
     ) -> [(wgpu::Buffer, u64, Vec<u8>); 2] {
         [
             (
                 self.vertex_buffer.clone(),
                 0,
-                frame_vertex(&self.program.vertex, view).to_bytes().to_vec(),
+                frame_vertex(vertex, view).to_bytes(),
             ),
             (
                 self.pixel_buffer.clone(),
@@ -1769,7 +1771,7 @@ pub(crate) fn described_pipeline(
 /// that slot's dynamic offset for the placement's draws, with the
 /// material's pixel uniforms and texture groups.
 pub(crate) struct Rigid {
-    program: RigidProgram,
+    pub(crate) program: RigidProgram,
     buffer: wgpu::Buffer,
     pub(crate) uniforms: wgpu::BindGroup,
     /// Bytes between slots (the device's offset alignment).
@@ -1928,20 +1930,33 @@ impl Rigid {
         );
     }
 
+    /// Upload the sampled material registers and each placement's own rows.
+    pub(crate) fn prepare_sampled(
+        &self, uploads: &mut gfx::ring::EncoderUploads<'_>, view: &ViewInputs, vertex: &VertexUniforms,
+    ) {
+        for (slot, (_, rows)) in self.slots.iter().enumerate() {
+            uploads.write(&self.buffer, self.stride * slot as u64, &rigid_vertex(vertex, view, rows).to_bytes());
+        }
+    }
+
     /// [`Rigid::prepare`]'s view rows for the slots of `instances` only, as
     /// writes ahead of a pass's packets. Unknown instances are skipped.
     pub(crate) fn prepare_writes(
         &self,
         view: &ViewInputs,
         instances: impl IntoIterator<Item = u32>,
+        sampled: Option<&VertexUniforms>,
     ) -> Vec<(wgpu::Buffer, u64, Vec<u8>)> {
         let v = frame_vertex(&self.program.vertex, view).to_bytes();
         let mut writes = Vec::new();
         for instance in instances {
-            let Some(offset) = self.offset(instance) else {
+            let Ok(slot) = self.slots.binary_search_by_key(&instance, |s| s.0) else { continue };
+            let offset = self.stride * slot as u64;
+            if let Some(vertex) = sampled {
+                let vertex = rigid_vertex(vertex, view, &self.slots[slot].1);
+                writes.push((self.buffer.clone(), offset, vertex.to_bytes()));
                 continue;
-            };
-            let offset = u64::from(offset);
+            }
             writes.push((
                 self.buffer.clone(),
                 offset,

@@ -87,6 +87,7 @@ pub mod raw;
 mod reader;
 pub mod render;
 mod server;
+pub mod hs_eval;
 pub mod hs_state;
 pub mod shadow;
 pub mod sim;

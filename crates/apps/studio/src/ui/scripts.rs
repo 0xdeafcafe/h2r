@@ -29,6 +29,8 @@ pub struct ScriptsUi {
     pub recording: Option<usize>,
     /// The definition being edited and its text.
     pub edit: Option<Edit>,
+    /// The expression box (**Evaluate in game**).
+    pub expression: String,
 }
 
 /// A definition's source in the text box.
@@ -77,6 +79,7 @@ pub fn list(
     ));
     ui.text_disabled(format!("{} {}", icon::FILE, l.executable));
     external_row(ui, app, l, actions);
+    eval_row(ui, app, st, actions);
     ui.set_next_item_width(-1.0);
     ui.input_text("##scripts-filter", &mut st.filter)
         .hint(format!("{} Search names and source", icon::SEARCH))
@@ -266,6 +269,47 @@ fn fields_text(fields: &[hs::recording::Named]) -> String {
         })
         .collect::<Vec<_>>()
         .join("  ")
+}
+
+/// The expression box and **Evaluate in game**: the paired game compiles
+/// the expression against the loaded map's scripts and answers its value
+/// (`hs.eval`); the last answer shows under the box.
+fn eval_row(ui: &Ui, app: &App, st: &mut ScriptsUi, actions: &mut Vec<Action>) {
+    let paired = app
+        .pairing
+        .published
+        .as_ref()
+        .is_some_and(|s| s["state"] == "connected");
+    ui.set_next_item_width(-1.0);
+    ui.input_text("##scripts-eval", &mut st.expression)
+        .hint(format!("{} An expression, such as (+ 1 2)", icon::RUN))
+        .build();
+    let disabled = ui.begin_disabled_with_cond(!paired || st.expression.trim().is_empty());
+    if ui.button("Evaluate in game##scripts-eval-run") {
+        actions.push(Action::Script(ScriptAction::Eval {
+            expression: st.expression.trim().to_owned(),
+            ty: None,
+        }));
+    }
+    disabled.end();
+    if ui.is_item_hovered() {
+        ui.tooltip_text(
+            "Compile the expression against the loaded map's scripts and run it in\nthe paired game, over a snapshot of the map's global values. A builtin\nthat needs the game's objects is refused by name.",
+        );
+    }
+    ui.same_line();
+    if !paired {
+        ui.text_disabled("pair with a game to evaluate");
+    }
+    match &app.scripts.evaluated {
+        Some((expression, Ok(value))) => ui.text_wrapped(format!("{expression}  ->  {value}")),
+        Some((expression, Err(why))) => {
+            ui.text_colored(theme::ERROR, icon::ALERT);
+            ui.same_line();
+            ui.text_wrapped(format!("{expression}: {why}"));
+        }
+        None => {}
+    }
 }
 
 /// "Open in VS Code" and "Open in Zed", and the working copy's state.

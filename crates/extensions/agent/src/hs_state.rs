@@ -15,6 +15,7 @@ pub fn install(agent: &Agent) {
     agent.add_game_method("hs.threads", Access::Read, |_, ctx| ctx.with_guest(|m| threads(m)));
     agent.add_game_method("hs.player_actions", Access::Read, |_, ctx| ctx.with_guest(|m| player_actions(m)));
     agent.add_game_method("hs.globals", Access::Read, |_, ctx| ctx.with_guest(|m| globals(m)));
+    crate::hs_eval::install(agent);
 }
 
 fn unavailable(message: &str) -> RpcError {

@@ -31,7 +31,11 @@ pub struct Stats {
     /// Decoded BSPs held, and charged map storage including index and BSP owners.
     pub bsps: u64,
     pub bytes: u64,
-    /// Actual capacities of BSP arrays and the packed cluster table.
+    /// Decoded MOPP programs held (entry F).
+    #[serde(default)]
+    pub mopps: u64,
+    /// Actual capacities of BSP arrays, the packed cluster table and the
+    /// MOPP trees.
     #[serde(default)]
     pub array_bytes: u64,
     #[serde(default)]
@@ -55,7 +59,7 @@ pub struct EntryStats {
     /// Calls the native kernel answered.
     pub native: u64,
     /// Calls left to the lifted code, by reason (`env`, `float`, `fault`,
-    /// `data`, `depth`, `alias`, `trap`, `budget`).
+    /// `data`, `depth`, `alias`, `trap`, `budget`, `grow`).
     pub bails: BTreeMap<String, u64>,
     /// Complete guest control words at entry, as zero-padded lowercase
     /// hexadecimal keys. Absent keys have count zero.

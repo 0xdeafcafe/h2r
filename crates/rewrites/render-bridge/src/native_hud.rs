@@ -4,6 +4,7 @@
 //! walk keeps the game's order, state setup and layout callbacks.
 
 mod backdrop;
+pub mod hud_overlay;
 mod model;
 mod outline;
 mod ui;
@@ -19,6 +20,7 @@ use hooks::{BuildError, Builder, Feature, Flow, Manifest};
 
 pub const ID: &str = "native-hud";
 
+pub use hud_overlay::{Claim as HudClaim, GateRecord as HudGateRecord, HudBitmaps, HudRefusal};
 pub use outline::{PUSH_BYTES as OUTLINE_PUSH_BYTES, Vertices as OutlineVertices};
 pub use ui::UiScope;
 
@@ -119,6 +121,20 @@ pub trait Host: Send + Sync {
         false
     }
 
+    /// One HUD draw is at its first bitmap widget ([`hud_overlay`]): the
+    /// host may draw the draw's widgets itself from the overlay stage,
+    /// placed at this point in the frame. `None`: the host does not draw
+    /// HUDs. `Some(Ok(n))`: it did, `n` of its items the game's plain
+    /// widget quads, which are then left out. `Some(Err(why))`: the game
+    /// draws them.
+    fn hud_bitmaps(&self, _mem: &mut dyn GuestMemory, _at: &HudBitmaps) -> Option<Result<u32, HudRefusal>> {
+        None
+    }
+
+    /// A claimed HUD draw left out other quads than its pass drew: the
+    /// host stops claiming that `nhdt` (`claim.nhdt`).
+    fn hud_mismatch(&self, _claim: &HudClaim) {}
+
     fn enter_ui(&self, _mem: &mut dyn GuestMemory, _scope: UiScope, _stack: u32, _eligible: bool) {}
 
     fn leave_ui(&self, _mem: &mut dyn GuestMemory, _scope: UiScope, _stack: u32) {}
@@ -134,6 +150,35 @@ pub fn set_host(host: Arc<dyn Host>) {
 fn host() -> Option<Arc<dyn Host>> {
     // HOST is only held to clone the host: never across its calls.
     HOST.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// A HUD draw at its first bitmap widget: closes the claim before it and
+/// asks the host for this one, counting why when it is the game's.
+fn hud_bitmaps(mem: &mut dyn GuestMemory, at: &HudBitmaps) {
+    let host = host();
+    if let Some(mismatch) = hud_overlay::close()
+        && let Some(host) = &host
+    {
+        host.hud_mismatch(&mismatch);
+    }
+    match host.and_then(|host| host.hud_bitmaps(mem, at)) {
+        Some(Ok(quads)) if quads > 0 => {
+            hud_overlay::open(at, quads);
+        }
+        // Nothing shown: nothing drawn, and nothing of the game's left out.
+        Some(Ok(_)) => {}
+        Some(Err(why)) => why.counter().count(),
+        None => {}
+    }
+}
+
+/// The HUD scope left: its last claim closes.
+pub(crate) fn hud_scope_left() {
+    if let Some(mismatch) = hud_overlay::close()
+        && let Some(host) = host()
+    {
+        host.hud_mismatch(&mismatch);
+    }
 }
 
 pub struct NativeHud;
@@ -152,6 +197,22 @@ impl Feature for NativeHud {
             return Ok(());
         }
         ui::place(b);
+        // The overlay's HUD (`hud_overlay`): asked at a HUD draw's first
+        // bitmap gate, before any hook that answers the gate itself.
+        b.raw().before(&points::HUD_WIDGET_GATE, "native_hud_overlay", |c| {
+            let rt = Arc::clone(c.ctx.runtime());
+            // A claimed draw's quads are left out by resuming at the
+            // quad's tail: without it, nothing is claimed.
+            if !rt.read_dispatch(|dispatch| dispatch.has_resume(HUD_QUAD_TAIL)) {
+                return Ok(Flow::Continue);
+            }
+            let mut mem = rt.memory();
+            let cpu = &c.cpu;
+            if let Some(at) = hud_overlay::at_gate(&*mem, cpu.esp, cpu.ebp, cpu.edi, cpu.ecx, cpu.edx) {
+                hud_bitmaps(&mut *mem, &at);
+            }
+            Ok(Flow::Continue)
+        }).first().context_only().optional();
         b.raw().before(&HUD_QUAD_READY, "native_hud_walk_quad", |c| {
             let rt = Arc::clone(c.ctx.runtime());
             if !rt.read_dispatch(|dispatch| dispatch.has_resume(HUD_QUAD_TAIL)) {
@@ -159,8 +220,13 @@ impl Feature for NativeHud {
             }
             let Some(esp) = c.cpu.esp.checked_add(4) else { return Ok(Flow::Continue) };
             let mut mem = rt.memory();
-            if mem.u32(c.cpu.esp).ok() != Some(7)
-                || !walk_quad(&mut *mem, c.cpu.ebp, c.cpu.ebx)
+            // A widget quad the overlay drew is left out: not drawn here
+            // and not emitted.
+            let owned = mem.u32(c.cpu.esp).ok() == Some(7)
+                && hud_overlay::owns_quad(&*mem, c.cpu.ebp);
+            if !owned
+                && (mem.u32(c.cpu.esp).ok() != Some(7)
+                    || !walk_quad(&mut *mem, c.cpu.ebp, c.cpu.ebx))
             {
                 return Ok(Flow::Continue);
             }

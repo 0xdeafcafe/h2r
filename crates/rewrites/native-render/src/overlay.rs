@@ -47,6 +47,145 @@ impl GlyphAtlas for NoGlyphs {
     }
 }
 
+/// The renderer's glyph atlas: one square page per engine font, each glyph
+/// rasterised into it once (white, its coverage in alpha, what
+/// `Combiner::TextureAlpha` samples), packed in shelves left to right and
+/// top to bottom with a texel of space around it. Pages only grow: a glyph
+/// keeps its place, so a list planned before a glyph was added still
+/// draws. [`GlyphPages::page`]'s version says when a page's texels changed.
+#[derive(Clone, Debug)]
+pub struct GlyphPages {
+    size: u32,
+    pages: std::collections::BTreeMap<u16, GlyphPage>,
+}
+
+#[derive(Clone, Debug)]
+struct GlyphPage {
+    rgba: Vec<u8>,
+    glyphs: std::collections::HashMap<u32, [f32; 4]>,
+    /// The open shelf: its left edge so far, its top, its height.
+    x: u32,
+    y: u32,
+    height: u32,
+    version: u64,
+}
+
+impl GlyphPages {
+    /// The side of a page in texels.
+    pub const PAGE: u32 = 1024;
+
+    /// Pages `size` texels square.
+    pub fn new(size: u32) -> GlyphPages {
+        GlyphPages { size, pages: std::collections::BTreeMap::new() }
+    }
+
+    /// Whether glyph `index` of font `font` is in its page.
+    pub fn has(&self, font: u16, index: u32) -> bool {
+        self.pages.get(&font).is_some_and(|p| p.glyphs.contains_key(&index))
+    }
+
+    /// Adds glyph `index` of font `font`, `width` by `height` with one
+    /// coverage byte per texel (row-major, 0 to 255): true when it is in
+    /// the page, as it already was or now; false when the coverage is not
+    /// `width * height` bytes or the page has no room left.
+    pub fn insert(&mut self, font: u16, index: u32, width: u16, height: u16, alpha: &[u8]) -> bool {
+        let size = self.size;
+        let (w, h) = (u32::from(width), u32::from(height));
+        if alpha.len() != (w * h) as usize {
+            return false;
+        }
+        let page = self.pages.entry(font).or_insert_with(|| GlyphPage {
+            rgba: vec![0; (size * size * 4) as usize],
+            glyphs: std::collections::HashMap::new(),
+            x: 0,
+            y: 0,
+            height: 0,
+            version: 0,
+        });
+        if page.glyphs.contains_key(&index) {
+            return true;
+        }
+        if w == 0 || h == 0 {
+            page.glyphs.insert(index, [0.0; 4]);
+            return true;
+        }
+        // One texel of space on every side.
+        let (pw, ph) = (w + 2, h + 2);
+        if pw > size || ph > size {
+            return false;
+        }
+        if page.x + pw > size {
+            page.y += page.height;
+            page.x = 0;
+            page.height = 0;
+        }
+        if page.y + ph > size {
+            return false;
+        }
+        let (x0, y0) = (page.x + 1, page.y + 1);
+        for row in 0..h {
+            for col in 0..w {
+                let at = (((y0 + row) * size + x0 + col) * 4) as usize;
+                page.rgba[at..at + 3].fill(255);
+                page.rgba[at + 3] = alpha[(row * w + col) as usize];
+            }
+        }
+        let s = size as f32;
+        page.glyphs.insert(
+            index,
+            [x0 as f32 / s, y0 as f32 / s, (x0 + w) as f32 / s, (y0 + h) as f32 / s],
+        );
+        page.x += pw;
+        page.height = page.height.max(ph);
+        page.version += 1;
+        true
+    }
+
+    /// Font `font`'s page: its side, its RGBA texels and its version (how
+    /// many glyphs changed it).
+    pub fn page(&self, font: u16) -> Option<(u32, &[u8], u64)> {
+        self.pages.get(&font).map(|p| (self.size, p.rgba.as_slice(), p.version))
+    }
+
+    /// The fonts with a page, in order.
+    pub fn fonts(&self) -> impl Iterator<Item = u16> + '_ {
+        self.pages.keys().copied()
+    }
+}
+
+impl Default for GlyphPages {
+    fn default() -> GlyphPages {
+        GlyphPages::new(GlyphPages::PAGE)
+    }
+}
+
+impl GlyphAtlas for GlyphPages {
+    fn glyph(&self, font: u16, index: u32) -> Option<[f32; 4]> {
+        self.pages.get(&font)?.glyphs.get(&index).copied()
+    }
+}
+
+/// A bitmap image an overlay names, decoded on the host: its size and its
+/// RGBA texels, straight alpha.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OverlayImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: std::sync::Arc<[u8]>,
+}
+
+/// What an overlay's textures are made from on the host: the bitmap
+/// images its quads name, by (bitmap datum, image index), and the glyph
+/// pages its text runs sample. `ui_gpu::OverlayResidency` uploads them.
+/// A datum names another bitmap on another map: a new `generation` (one
+/// per map) makes the residency drop what it holds.
+#[derive(Clone, Debug, Default)]
+pub struct OverlayAssets {
+    pub generation: u64,
+    pub images: std::collections::HashMap<(u32, u16), OverlayImage>,
+    pub glyphs: GlyphPages,
+}
+
 /// One corner as the program takes it: clip space, the coordinate, RGBA.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -357,6 +496,40 @@ mod tests {
         assert_eq!(p.vertices[6].uv, [1.0, 1.0]);
         assert!(p.vertices.iter().all(|v| v.color == [1.0, 0.0, 0.0, 0.5]));
         assert_eq!(p.stats.glyphs, 2);
+    }
+
+    /// Glyphs pack in shelves with a texel around each, keep their place
+    /// as others join, and the page's texels are white with the coverage
+    /// in alpha.
+    #[test]
+    fn glyph_pages_pack_each_glyph_once_and_keep_its_place() {
+        let mut pages = GlyphPages::new(16);
+        assert!(pages.insert(6, 40, 3, 2, &[10, 20, 30, 40, 50, 60]));
+        assert_eq!(pages.glyph(6, 40), Some([1.0 / 16.0, 1.0 / 16.0, 4.0 / 16.0, 3.0 / 16.0]));
+        let (side, rgba, version) = pages.page(6).unwrap();
+        assert_eq!((side, version), (16, 1));
+        let texel = |x: usize, y: usize| &rgba[(y * 16 + x) * 4..(y * 16 + x) * 4 + 4];
+        assert_eq!(texel(1, 1), [255, 255, 255, 10]);
+        assert_eq!(texel(3, 2), [255, 255, 255, 60]);
+        assert_eq!(texel(0, 0), [0, 0, 0, 0], "the space around it");
+        assert!(pages.insert(6, 40, 3, 2, &[0; 6]), "already in");
+        assert_eq!(pages.page(6).unwrap().2, 1, "unchanged");
+        // 5 + 12 wide does not fit a 16 texel shelf: the next shelf.
+        assert!(pages.insert(6, 41, 10, 4, &[255; 40]));
+        assert_eq!(pages.glyph(6, 41), Some([1.0 / 16.0, 5.0 / 16.0, 11.0 / 16.0, 9.0 / 16.0]));
+        assert_eq!(pages.glyph(6, 40), Some([1.0 / 16.0, 1.0 / 16.0, 4.0 / 16.0, 3.0 / 16.0]), "kept");
+        assert!(!pages.insert(6, 42, 4, 12, &[1; 48]), "no room below");
+        assert!(!pages.insert(6, 43, 2, 2, &[1; 3]), "coverage of the wrong size");
+        assert!(pages.insert(6, 44, 0, 5, &[]), "an empty glyph has no texels");
+        assert!(pages.insert(8, 1, 1, 1, &[7]), "another font, its own page");
+        assert_eq!(pages.fonts().collect::<Vec<_>>(), [6, 8]);
+        assert!(pages.has(8, 1) && !pages.has(8, 2));
+        // The plan takes its coordinates from the pages.
+        let mut o = Overlay::new([640, 480]);
+        let g = [OverlayGlyph { index: 40, rect: [0.0, 0.0, 3.0, 2.0] }];
+        o.push_text_run(OverlayMaterial::text(6), all(), [1.0; 4], &g).unwrap();
+        let p = OverlayPlan::new(&o, [640, 480], &pages);
+        assert_eq!(p.vertices[2].uv, [4.0 / 16.0, 3.0 / 16.0]);
     }
 
     #[test]

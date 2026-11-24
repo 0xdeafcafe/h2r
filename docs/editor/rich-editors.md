@@ -1,7 +1,7 @@
 # Rich editors: shaders, colours, curves, scripts, sounds and recordings
 
-Status: Design, except the seam (X1), "Data that changes length", sound audition (A1), mouth curves, read (A2), mouth curves, write (A4), Scripts, read (H1), Recordings, read (K1), Recordings, play (K2), Recordings, write (K3), Scripts, write (H3), the curve editor, same length (F1), curve type changes (F2), Model poses (M1), the colour picker (C1) and the colour forms of `obje`, `deca`, `lens` and `sky ` (C2), the Shader tab (S1) and shader code, read (S4), which are built; each section names the format code it stands on and the gaps in it.
-Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/fields/rich.rs` (the seam), `crates/formats/tags/src/defs/attrs.rs` (`FieldView`), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/tools/scenario-edit/src/scenario/data.rs` (the scenario's data that changes length), `crates/apps/studio/src/fields/colour.rs` and `crates/apps/studio/src/api/colours.rs` (C1), `crates/apps/studio/src/fields/curve.rs` and `crates/apps/studio/src/api/curves.rs` (F1), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/formats/hs/src/script_doc.rs`, `crates/formats/hs/src/recording.rs`, `crates/formats/hs/src/recording_edit.rs`, `crates/apps/studio/src/app/recordings.rs`, `crates/apps/studio/src/api/recordings.rs`, `crates/apps/studio/src/app/scripts.rs`, `crates/apps/studio/src/app/script_edit.rs`, `crates/formats/hs/src/table_writes.rs`, `crates/apps/studio/src/ui/scripts.rs`, `crates/apps/studio/src/api/scripts.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`, `crates/apps/studio/src/app/shader.rs`, `crates/apps/studio/src/fields/shader.rs`, `crates/apps/studio/src/api/shader.rs` and `crates/tools/scenario-edit/src/native_view/preview.rs` (`material`, S1) and `crates/tools/scenario-edit/src/native_view/code.rs` (`pass_code`, S4). S4) S1). and `crates/tools/scenario-edit/src/native_view/animate.rs` (`value_at`, S2). Tests: `defs/tests.rs`, `registry/tests.rs`, `fields::rich::tests` and `api/tests.rs` (X1), `effects::function::tests` and `api/curves/tests.rs` (F1), `app/tag_data_tests.rs` and scenario-edit's `data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1), `app::scripts::tests`, `app/script_edit_tests.rs`, `hs/src/table_writes_tests.rs` and scenario-edit's `the_script_tables_writes_save_with_the_scenario` (H3), `hs::script_doc::tests` and `hs::source::each_tests` (H1), `hs::recording::tests`, `hs::recording_edit::tests` (`recording_edit_tests.rs`) and `app/recordings_tests.rs` (K1, K3), `fields/colour/tests.rs` and `api/colours/tests.rs` (C1), `scenario-edit`'s `the_recordings_blocks_writes_save_with_the_scenario` (K3), `app/shader_tests.rs`, `api/tests/shader_tests.rs` and `native_view::tests` (S1), `native_view::code::tests` and `shader_code_lists_both_programs_of_a_pass` (S4); (S1); `native_view::animate::tests` and `the_preview_clock_is_read_and_checked` (S2); each other slice names its own, `crates/apps/studio/src/app/anim.rs`, `crates/apps/studio/src/ui/anim.rs` (M1), `api/anim/tests.rs`, `anim_tests.rs`.
+Status: Design, except the seam (X1), "Data that changes length", sound audition (A1), mouth curves, read (A2), mouth curves, write (A4), Scripts, read (H1), Recordings, read (K1), Recordings, play (K2), Recordings, write (K3), Scripts, write (H3), the curve editor, same length (F1), curve type changes (F2), Model poses (M1), the colour picker (C1) and the colour forms of `obje`, `deca`, `lens` and `sky ` (C2), the Shader tab (S1), shader animation (S2), shader code, read (S4) and WGSL overrides (S5), which are built; each section names the format code it stands on and the gaps in it.
+Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/fields/rich.rs` (the seam), `crates/formats/tags/src/defs/attrs.rs` (`FieldView`), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/tools/scenario-edit/src/scenario/data.rs` (the scenario's data that changes length), `crates/apps/studio/src/fields/colour.rs` and `crates/apps/studio/src/api/colours.rs` (C1), `crates/apps/studio/src/fields/curve.rs` and `crates/apps/studio/src/api/curves.rs` (F1), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/formats/hs/src/script_doc.rs`, `crates/formats/hs/src/recording.rs`, `crates/formats/hs/src/recording_edit.rs`, `crates/apps/studio/src/app/recordings.rs`, `crates/apps/studio/src/api/recordings.rs`, `crates/apps/studio/src/app/scripts.rs`, `crates/apps/studio/src/app/script_edit.rs`, `crates/formats/hs/src/table_writes.rs`, `crates/apps/studio/src/ui/scripts.rs`, `crates/apps/studio/src/api/scripts.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`, `crates/apps/studio/src/app/shader.rs`, `crates/apps/studio/src/fields/shader.rs`, `crates/apps/studio/src/api/shader.rs` and `crates/tools/scenario-edit/src/native_view/preview.rs` (`material`, S1) and `crates/tools/scenario-edit/src/native_view/code.rs` (`pass_code`, S4). `linked_code`, `check_override`, S4, S5) and `crates/apps/studio/src/app/shader_override.rs` (S5). S4) S1). and `crates/tools/scenario-edit/src/native_view/animate.rs` (`value_at`, S2). Tests: `defs/tests.rs`, `registry/tests.rs`, `fields::rich::tests` and `api/tests.rs` (X1), `effects::function::tests` and `api/curves/tests.rs` (F1), `app/tag_data_tests.rs` and scenario-edit's `data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1), `app::scripts::tests`, `app/script_edit_tests.rs`, `hs/src/table_writes_tests.rs` and scenario-edit's `the_script_tables_writes_save_with_the_scenario` (H3), `hs::script_doc::tests` and `hs::source::each_tests` (H1), `hs::recording::tests`, `hs::recording_edit::tests` (`recording_edit_tests.rs`) and `app/recordings_tests.rs` (K1, K3), `fields/colour/tests.rs` and `api/colours/tests.rs` (C1), `scenario-edit`'s `the_recordings_blocks_writes_save_with_the_scenario` (K3), `app/shader_tests.rs`, `api/tests/shader_tests.rs` and `native_view::tests` (S1), `native_view::code::tests` and `shader_code_lists_both_programs_of_a_pass` (S4); `app/shader_override_tests.rs`, `api/tests/shader_tests.rs` (`shader_override_*`, `shader_push_*`) and `play/tests/shader_override.rs` (S5); (S1); `native_view::animate::tests` and `the_preview_clock_is_read_and_checked` (S2); each other slice names its own, `crates/apps/studio/src/app/anim.rs`, `crates/apps/studio/src/ui/anim.rs` (M1), `api/anim/tests.rs`, `anim_tests.rs`.
 Switch: none.
 
 A rich editor shows a tag, or part of one, as the thing it is: a material
@@ -265,16 +265,16 @@ preview, then the parameters in four folding sections.
 - **Vectors**: the vertex constants, each four numbers, with **Edit in
   Fields**, which shows the field in the Fields tab. The tab does not edit
   them itself.
-- **Animation**: a preview clock (**Play** or **Pause** and a slider over
-  the longest period of a game-time property), then one row per animated
+- **Animation** has one row per animated
   property with its input (an object function or game time and its
   period), its curve as a small plot with the clock's place marked and
   **Edit curve...** (the curve dialog of "Curves", writing the property's
   `function` data), its value at the clock, and what it drives. A
   property driven by an object function, or with a period that is not
-  positive, says why it has no value (`native_view::animate`). A property
-  that drives a bitmap, render state or stage state says the layer plan
-  refuses to animate it.
+  positive, says why it has no value. A periodic wave that needs an engine
+  lookup table names the wave (`native_view::animate`). A property
+  that animates a bitmap frame, render state or stage state names the
+  refusal. Texture-slot transform properties can feed vertex constants.
 
 A header names the template (`stem`) with **Open**, the level of detail
 shown (0, the one a near object draws), why the tag is read-only when it
@@ -301,9 +301,10 @@ grown is not in that overlay; the read shows the map's own.
 slots carry `applies=frame`. Gaps:
 
 - **Parameter names.** Slots bind by index (`ParameterBinding::source`).
-  The template's parameter and category blocks (`stem` root `+0x40`,
-  `+0x4c`) are not read ([shader-instances.md](../formats/shader-instances.md),
-  "Open items"). Until slice S3 reads them, a slot is labelled by its
+  The template's properties and categories blocks (`stem` root `+0x10`,
+  `+0x18`, per Assembly's plugin) are not read, and a retail cache may keep
+  no names in them ([shader-instances.md](../formats/shader-instances.md),
+  "Parameter names"). Until slice S3 reads them, a slot is labelled by its
   kind, index and `Used by` line (`Bitmap 2 · stage 1 of pass 3`), and
   the tab says once `This template's parameter names are not read yet.`
 - **`pixl`, `slit`.** No code parses either. The light response
@@ -319,16 +320,14 @@ look, then each layer pass the plan accepts. The shape is a sphere (the
 default), a flat square, or an object tag's model in its rest pose,
 chosen in a picker dialog under the preview. An edit re-plans the one
 material and shows on the next frame; the Scene viewport shows the same
-change on the map. The preview plans at the clock's time
-(`preview::material_at`; `shader.preview`'s `time`), and a pass that
-animates a constant is refused by name at every time: the plan draws the
-constants the compiled programs hold, and where an animated target lands
-in a program is not decoded
-([shader-instances.md](../formats/shader-instances.md), "Open items"), so the
-picture does not change with the clock; the values beside the curves
-do. The picture is redrawn when the clock is set down, not while it
-runs. What the native view refuses,
-the preview refuses in the same words, listed under it: layer 1 (`native_view::LAYER_1_UNCHECKED`), bitmap, render-state
+change on the map. **Play**, **Pause** and the slider above the preview
+set the clock in seconds. It loops over the longest period. Playing or
+scrubbing updates the drawn layer passes' pixel and vertex constants
+from the same clock that drives the curve readout. The tab keeps the
+geometry, programs and textures on the GPU between samples.
+`preview::material_at` and `shader.preview` take a time for a single
+picture. The preview lists the native view's refusals, including
+layer 1 (`native_view::LAYER_1_UNCHECKED`), bitmap-frame, render-state
 and stage-state animations and object-function inputs
 (`native_render::layer_pass::LayerRefusal`), and the registers named in
 `program::CAMERA_GIVEN`. A refused pass is left out and counted, never
@@ -359,14 +358,35 @@ and stays a viewer with a working preview.
    any) shows the vertex program's disassembly (`vsh::disassemble`), the combiner listing
    (`psh::disassemble`), the translated WGSL (`vsh::wgsl::translate`,
    `psh::wgsl::translate`) and the translator's warnings.
-2. **Override the translation** (slice S5). The game already replaces a
-   translated program with a WGSL file from a watched directory
-   (`crates/platform/hot-render`, `render.dump`, `render.reload`,
-   [hot-iteration.md](../graphics/hot-iteration.md)). The Code section
-   edits such a file with the compile error under the text and sends it
-   to the connected game. It changes how our renderer draws, is saved in
-   the override directory, and is never written into a map; the section
-   says so.
+2. **Override the translation** (built, slice S5; `app::shader_override`).
+   The game replaces a translated program with a WGSL file from a watched
+   directory (`crates/platform/hot-render`, `render.dump`, `render.reload`,
+   [hot-iteration.md](../graphics/hot-iteration.md)). Each pass's Code
+   section has an **Override** box. Its text starts from the pass's vertex
+   and pixel programs linked into one module (`code::linked_code`:
+   `shaders::link` with default options, `vs_main` and `fs_main`), and is
+   checked as the game parses it (`code::check_override`: naga, then the
+   two entry points), with the line and column of a compile error under the
+   text. The game's own program carries the draw's options, so for an exact
+   start `render.dump` writes its translation. **Push** writes the text as
+   `<program>_studio.wgsl` in the override directory (the game's default,
+   on this machine) and sends `render.reload {dir}` on the game link;
+   **Revert** deletes the file and reloads, so the program draws its
+   translation; **Discard edits** drops the draft. A push shows as queued,
+   sent, `loaded` (the game lists the program) or refused with the game's
+   words; whether the program takes the text (the game compares its
+   interface with the program's, `hot_render::iface::check`) is
+   `render.overrides`' `applied`. The box says that the override changes
+   how our renderer draws and is never written into a map.
+   - *Program id.* The game's id is the pipeline cache's hash of a key with
+     draw-time options (`d3d::pipeline_store::program_id`), which the
+     editor cannot derive; the user names it from `render.programs`.
+   - *Preview.* The editor's own preview draws materials through the
+     native renderer, not WGSL, so an override is previewed by the game
+     it is pushed to. A push with no game paired, or to a game without
+     `render.reload`, is refused by name and writes no file.
+   - *Where.* The file and the directory are on this machine; a game on
+     another machine does not see them.
 3. **Write Xbox programs into the map** (slice S6). Feasible, with
    limits:
    - *Vertex programs.* `vsh::encode` builds microcode from `Inst` values
@@ -502,12 +522,16 @@ is in `compiler/tests.rs`; the disc form is `tests/compile_disc.rs`,
 as the evidence that the type rules match retail.
 
 **Preview.** There is no editor-side run. `hs::vm` evaluates against
-`vm::mock` only and nothing in the game calls it
+`vm::mock` only and the game's scripts run on the retail interpreter
 ([hs_vm.md](../engine/hs_vm.md)). With a game connected the tool shows
 live threads and globals beside the source (`hs.threads`, `hs.globals`).
-A changed script has the `reload` effect. Evaluating an expression in the
-running game needs a game method that does not exist (`hs.eval`, slice
-H4), and is not assumed.
+A changed script has the `reload` effect. The expression box under the
+search (**Evaluate in game**, `script.eval`) sends one expression to the
+paired game's `hs.eval`, which compiles it against the loaded map and runs
+it at a tick boundary over a snapshot of the map's globals; the last answer
+shows under the box. It does not run builtins that act on the game's
+objects, and it writes nothing back
+([runtime/agent-api.md](../runtime/agent-api.md#hseval)).
 
 **Write** (`crates/apps/studio/src/app/script_edit.rs`,
 `crates/formats/hs/src/table_writes.rs`). `App::script_compile(source,
@@ -644,7 +668,9 @@ codec tables from a verified `default.xbe` (`wma::VerifiedImage`). Gaps:
 
 **Preview.** Audio through the host mixer; the face in the editor's
 native view. The game is not needed. Hearing a line in the running game
-with the character speaking is a script call and belongs to `hs.eval`.
+with the character speaking is a script call and belongs to `hs.eval`, which
+runs builtins that need the game's objects only once the guest-backed engine
+exists.
 
 **Write.**
 
@@ -853,6 +879,7 @@ already a namespace there (player models and looks), so poses use `anim.*`.
 | `script.follow` | `{name?, link}` | `{kind, name, target, tool, log}`: what a click on the link does |
 | `script.compile` | `{source?, working?, name?, apply?}` | `{ok, applied, definitions, nodes, freed, reused, grown, new_strings, grows, free_nodes, depth}`, or `{ok: false, errors: [{line, column, span, code, text}]}`; with `apply`, one undo step |
 | `script.undo` | `{redo?}` | `{changed, free_nodes, depth}` |
+| `script.eval` | `{expression, type?}` | the paired game's `hs.eval`: `{ok, type, type_index, value, bits}`, or `{ok: false, errors, error}`; `REFUSED` without a paired, running game that lists it |
 | `script.uses` | `{kind, name}` | `{uses: [{name, item, count}]}`: the definitions that name a script, global, object name, volume, tag or recording |
 | `script.builtins` | `{filter?, unnamed?}` | `{builtins: [{index, name, label, from, returns, parameters, own_arguments, call, usage}], named_by_map, named_by_doc, unnamed, doc}` |
 | `script.doc` | `{path}` | `{path, doc, log}`: names builtins from the listing at `path` (`null`: none) |
@@ -881,7 +908,7 @@ slice and by later tests, so each is an expansion, not a one-off:
 
 | Method | Class | Does | Needed by |
 |---|---|---|---|
-| `hs.eval` | act | evaluates one expression through the game's own script evaluator on the game thread; `{value, type}` or the evaluator's error | H4; any test that drives a scripted map |
+| `hs.eval` (built) | read | compiles one expression against the loaded map (`hs::compile`) and runs it on `hs::vm` over a snapshot of the scripts and global cells at a tick boundary; `{type, type_index, value, bits}`, the compiler's problems with places, or the evaluator's refusal; builtins that act on the game are refused by name | H4; any test that drives a scripted map |
 | `recording.play` (built) | act | plays a named recording on a player's unit by the engine's own entry | K2 |
 | `recording.capture` | act | records a unit's control per tick into events until stopped | K4 |
 
@@ -942,22 +969,22 @@ the first one whose needs are met.
 | H1 | **Scripts, read**: the Scripts tool, the catalog from the source's executable, source with links, `script.list`, `script.source`, `script.uses` | M | P4 | an invented scenario's scripts list and decompile; a link to an object name selects the placement; without the executable the tool refuses by name |
 | M1 (built) | **Model poses**: `anim.list`, `anim.pose`, an animation picker and scrub on a model in the native view | M | P14 | an invented two-bone model posed at a frame differs from the rest pose where the clip moves it and nowhere else |
 | S1 (built) | **Shader tab**: slots with `Used by`, bitmap thumbnails in rows and in the picker, the preview on sphere, quad and object, refusals listed, `shader.read`, `shader.set`, `shader.preview` | L | C1, P15 | on an invented material: `shader.set` equals the `tag.set` it stands for; a changed colour changes `shader.preview` pixels; a refused pass is counted and absent |
-| S2 (curves, clock and values built; the picture awaits applying animated constants) | **Shader animation**: animated properties as curves, the preview clock | S | S1, F1 | a periodic property changes the preview between two clock times; a refused animation kind is named |
+| S2 (built) | **Shader animation**: animated properties as curves, the preview clock | S | S1, F1 | a periodic property changes the preview between two clock times; a refused animation kind is named |
 | S4 (built) | **Shader code, read**: listings, WGSL and warnings per pass, `shader.code` | S | S1 | an invented pass lists both programs; a state program shows its refusal |
 | A2 (built) | **Mouth curves, read**: the extra-info names in `defs`, `Gestalt::mouth_curve`, the track under the waveform, `sound.mouth` read | S | A1 | an invented gestalt with one voiced and one unvoiced permutation gives one curve and one null |
 | A3 (built) | **Face preview**: the `talk` overlay by the curve on a picked model, in step with play and scrub | S | A2, M1 | `anim.pose` with the overlay at weight 0 and 1 gives two pictures; the preview at a tick uses that tick's byte |
 | X2 (built) | **Data that changes length**: `TagDoc::resize_data`, the grown-data entry in the save, the session's form for the scenario | M | nothing | a shorter and a longer invented payload save and read back; growth off refuses; the old bytes are unreferenced; undo restores the pair |
 | F2 (built) | **Curve type changes** | S | F1, X2 | changing type saves at the new `blob_len` and reads back equal |
-| S3 | **Template parameter names**: read `stem`'s parameter and category blocks (**E** first), names on slots | S | S1 | an invented template names its slots; a template without the blocks shows the not-read sentence |
+| S3 | **Template parameter names**: read `stem`'s properties and categories blocks (`+0x10`, `+0x18`), names on slots. Waits on a disc check that the blocks are kept and on the source-index to parameter mapping | S | S1 | an invented template names its slots; a template without the blocks shows the not-read sentence |
 | C3 | **Colour functions**: the read of which colours a function blends (**E**), gradient strips | M | F1, C1 | an invented colour property draws its strip; the note records the reader |
 | H2 (built) | **Script compiler**: `hs::compile` (parser, names, types and casts, literals, allocator), messages with positions | L | H1 | `compile(decompile(s))` equals the nodes for every construct of the synthetic fixtures; each error class has a test; the `#[ignore]`d disc run reports the share of scripts that round-trip |
 | H3 (built) | **Scripts, write**: Edit and Compile in the tool, the session ops, free-slot reuse, growth, strings, the three validations, `script.compile` | M | H2, X2 | one changed script changes only its nodes and new strings in the saved map; a compile past the node limit is refused with both counts; undo restores the table |
 | A4 (built) | **Mouth curves, write**: drawing, **From the sound**, the in-place raw write | M | A2; modeling 3 | a redrawn invented curve changes only its bytes and the checksum; a shared-cache sound and a split chain are refused |
 | K1 (built) | **Recordings, read**: the stream crate, typed events, the tool and timeline, `recording.list`, `recording.read` | M | H1 | every Halo 2 event type decodes from an invented stream; a bad type or length is an error with its offset |
 | K2 (built) | **Recordings, play**: the game's `recording.play`, the path in Scene | M | K1; live-mirror | on the fake game, **Play on unit...** sends the call and the streamed positions draw a path |
-| H4 | **`hs.eval`** in the game, and an expression box in the Scripts tool | M | H1 | the agent crate's test evaluates an invented expression through the evaluator entry; a parse error returns the evaluator's text |
+| H4 (built) | **`hs.eval`** in the game, and an expression box in the Scripts tool | M | H1 | the agent crate's test evaluates an invented expression through the evaluator; a parse error returns the compiler's text with its place |
 | K3 (built) | **Recordings, write**: the encoder, event edits, `recording.write`, the converted-map overlay | M | K1, X2 | `encode(decode(s)) == s`; an edited stream saves and walks clean; removing a played recording is refused |
-| S5 | **WGSL overrides from the editor** | S | S4, P12 | on the fake game, an edited file reaches `render.reload` and a compile error shows under the text |
+| S5 (built) | **WGSL overrides from the editor** | S | S4, P12 | on the fake game, an edited file reaches `render.reload` and a compile error shows under the text |
 | N1 | **Strings, read**: every string by name and language, searched | S | nothing | an invented table lists and searches in each language |
 | K4 | **Re-record from input**: the game's `recording.capture`, the capture flow | L | K2, K3 | a capture on the fake game encodes to a stream that walks clean; the determinism check is in "Not verified" |
 | S6 | **Xbox shader programs, write**: the vertex assembler, the combiner encoder and parser, the writes | L | S4, X2 | `assemble(disassemble(p)) == p` and `encode(decode(d)) == d` on invented programs; over-limit and untranslatable programs are refused |

@@ -78,6 +78,9 @@ pub struct AppConfig {
     pub tile: Option<(u32, u32)>,
     /// Start in borderless fullscreen.
     pub fullscreen: bool,
+    /// Create the window invisible: a game a tool holds (`h2 play
+    /// --editor`) presents to its frame handoff and `render.picture` only.
+    pub hidden: bool,
     /// Displayed shape of the guest frame.
     pub aspect: DisplayAspect,
     pub scaling: Scaling,
@@ -156,6 +159,7 @@ impl Default for AppConfig {
             window_size: (1280, 960),
             tile: None,
             fullscreen: false,
+            hidden: false,
             aspect: DisplayAspect::Standard,
             scaling: Scaling::Fit,
             native_fit: None,

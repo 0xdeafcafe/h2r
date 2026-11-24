@@ -169,6 +169,18 @@ cargo run --release -p cli --features perf -- bench --only hot-loop
 cargo run --release -p cli --features perf -- profile hot-loop/memory --seconds 5 --out $TMPDIR/prof
 ```
 
+## The store
+
+`h2 build` extracts the disc into the asset store after it has built the
+image: `tags::repo::compile::prepare` on `<data>/tags`, with progress on
+stderr, then the disc's files that are not maps copied to `<data>/disc/`
+once per image (`crates/apps/cli/src/store_prepare.rs`). `h2 play`, `h2 run`
+and `h2 serve` run the same step before they boot, beside the packages'
+convert items, and never fail the boot: a problem is a line on stderr. With
+nothing stale the step costs a stat of each map file. The slim host build
+(`--profile host`) does not extract. The design is
+[asset-store.md](../engine/asset-store.md), "Extraction on compile".
+
 ## Ghidra
 
 Ghidra is a second opinion and a browser. The pipeline never depends on it

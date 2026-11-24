@@ -142,7 +142,28 @@ the shapes match in every disc tag. The engine bounds-checks each level
 |---|---|---|
 | `40`, `4c` | `shad` references (usually null) | U; D resolve or are null |
 | `58` | compiled postprocess T, stride 0x28 | E `0x00016bf4`; D exactly 1 element |
+| `10`, `18` | named blocks in Assembly's plugin: properties (stride 8, a string id at `+4`), categories (stride 0xc, a name and a parameter block of stride 0x34 with a name string id) | R, not read here; whether a disc tag keeps them is not checked (below) |
 | rest | raw | U |
+
+**Parameter names (R).** Assembly's Halo 2 `stem` plugin
+(`src/Assembly/Plugins/Halo2/stem.xml` in the public XboxChaos/Assembly
+repository; the folder is the Halo 2 plugin for retail layouts, there is no
+Xbox-specific `stem.xml`, and the Xbox `shad.xml` is the instance side) names
+the root as: `+0x10` properties, `+0x18` categories (each with a parameters
+block holding the parameter names and types), `+0x20` light response, `+0x28`
+LODs, `+0x40` and `+0x4c` "Aux 1/2 Shader" references with a layer enum
+after each, and `+0x58` the postprocess definition (stride 0x28, the same
+five blocks as above). The last three agree with `defs/stem.txt` and the
+engine reads. So the parameter and category blocks are at `+0x10` and
+`+0x18`, not at `+0x40` and `+0x4c`, which are shader references. The same
+plugin's Xbox `shad.xml` names a `Parameters` block at `shad +0x18` (name,
+type, bitmap, value, animation), which `defs/shad.txt` has as 8 padding
+bytes; if the stem blocks are emptied the same way, a retail cache keeps no
+names. Nothing here says how a binding's `source` index (into the
+instance's bitmaps, colours and vectors) maps to a parameter row, which
+would need the order the compiler emitted. Until both are read from a real
+tag (the counts at `stem +0x14` and `+0x1c`, the string ids resolved
+against the map's string table), the editor names slots by kind and index.
 
 Postprocess T (0x28):
 
@@ -260,6 +281,31 @@ Integer inputs: 4 and 5 come from the `shad` root, 0-3 from engine globals,
 and 6-7 are flags. Scalar 21 comes from the `shad` root. Vector inputs 23,
 24 and 35 use the object-function callback at `0x485a58`.
 
+### Animated constants
+
+Both constant bindings use `word = target | (b1 << 8)`. Byte 3 indexes
+the property range. A direct constant takes only its first reference's
+property. The destination comes from the binding itself. Bitmap slot
+bindings consume every reference and use its component.
+
+| Program | Destination | Source and conversion |
+|---|---|---|
+| Pixel | Word bits 6–9 select stage 0–7 or final combiner 8. Bit 10 selects C1. For a fragmented program, bits 0–2 select the fragment and bits 3–5 its required selector value. Active general stages add the fragment's starting stage. | `b2 & 7` selects R, G, B, A, RGB, R, G or B. Modes 0–3 apply the engine scalar transform above, selected by `(b2 >> 3) & 7`. Mode 4 takes the curve's RGB output. Modes 5–7 clear their selected channel. All writes clamp and round to ARGB bytes, preserving the other channels. |
+| Vertex | Word bits 0–3 select a register. Bit 4 selects a hardware constant `c[18+n]` when set and an attribute default `v[n]` when clear. | Bits 5–9 select x, y, z, w (modes 0–3), RGB in xyz (4), or a texture transform (5–20). The transform reads the slot in bits 10–12. Byte 2 is unused. Writes preserve the other lanes. |
+
+For a scalar, the curve's high flag nibble selects raw output when nonzero.
+Otherwise the writer clamps the raw value to [0, 1] and maps it to the
+header's float range. For RGB, the same nibble selects how the raw value
+indexes the header's packed colour stops. Vertex RGB is in units of
+1/255. See the [instruction trace and texture-transform mode table](../graphics/notes/2026-11-24-shader-constant-animation.md).
+
+The native structure layer planner samples the selected passes at the render
+clock after resolving their instance and engine constants. Studio uses the
+same planner with its preview clock. A texture transform may use any slot
+fields supplied by this draw. A required inherited field, an animated
+bitmap frame or pipeline state, an unavailable wave table, or a curve
+requiring an object callback leaves the affected draw with its refusal.
+
 ## Element budgets and aliasing
 
 The cache deduplicates identical child data. **D:** of 134,919 nonempty
@@ -316,7 +362,9 @@ implementation of its `spas`, because the caller picks one per draw. Each
   and constants patched, plus masks of the constants written
 - vertex constants `c[18..34]` and vertex defaults `v[0..16]`, each tagged
   `Instance` or `Engine`
-- the animated targets, which are listed but not evaluated
+- the animation bindings and property references, with the active pixel
+  destination after fragment selection. `layer_pass::sample_constants`
+  applies their values to a copy for the draw
 - the raw engine render-state and sampler-state bindings
 
 `EngineInputs::for_shader` is the default input set. It is zero except for
@@ -350,14 +398,6 @@ that column's condition. [Shadow census](../graphics/notes/e3-lighting.md).
 
 ## Open items
 
-- **Animated values are evaluated, not placed.** Targets and property
-  references are decoded, and a game-time property's value at a time is the
-  game's own (`native_render::layer_pass::property_value`, the evaluator
-  `0x0013b390`; `scenario_edit::native_view::animate`). Where an animated
-  pixel or vertex constant lands in a compiled program is not read (the
-  binding's `target`, `b1` and `b2` against `0x000176a0` and `0x00017960`), so
-  the editor's preview does not apply it. A property driven by an object
-  function needs the object-function callback.
 - **Engine texture sources** (`0x00019530`: 1, 3, 5, 8-10, 13-20, 24, 26 and
   27 occur) are reported by id. Which render target or global texture each
   id means is not mapped.
@@ -395,7 +435,7 @@ that column's condition. [Shadow census](../graphics/notes/e3-lighting.md).
   each implementation. Engine dimension modes read 0×0 when the stage's
   size is unknown (engine sources) or still zero.
 - **Unread fields** (marked U) are preserved but have no meaning assigned.
-  These are `shad +0x0c/+0x2c/+0x34`, `P +0x5c..+0x7c`, `stem +0x40/+0x4c`,
+  These are `shad +0x0c/+0x2c/+0x34`, `P +0x5c..+0x7c`, `stem +0x40/+0x4c` (Aux shaders),
   LOD `+6`, the variant `u16`/`u8`, and implementation
   `+0xf8/+0x118/+0x126`.
 - Deferred render-state names (92-135) follow the XDK order only. Names

@@ -20,6 +20,11 @@
 //! - **The first-person pass** draws the first [`FIRST_PERSON_CAP`] of a
 //!   view's lit lights again over its first-person parts, as retail's
 //!   recorded-light pass does.
+//! - **Beyond the guest's** ([`ViewChoice::beyond_guest`]): the lit game
+//!   lights the guest did not draw. The light passes' owner draws them
+//!   (`render_bridge::native_lights::chosen`) as scene stages only an E3
+//!   frame records; the guest's own lights and the host lights draw in
+//!   every mode.
 //!
 //! A view's own light is a first-person light (definition bit 5), which
 //! the view test admits only for the view's local first-person owner. The
@@ -88,6 +93,9 @@ pub struct ViewChoice {
     pub first_person: Vec<u32>,
     /// Candidates the view's share left unlit.
     pub over_cap: u32,
+    /// The lit game lights the guest did not draw, in draw order: E3's
+    /// own light passes.
+    pub beyond_guest: Vec<u32>,
 }
 
 /// The frame's choice, a view at a time in the scene's order.
@@ -110,6 +118,16 @@ impl LightChoice {
         self.counted().map(|v| v.over_cap).sum()
     }
 
+    /// Lit game lights the guest did not draw.
+    pub fn beyond_guest(&self) -> u32 {
+        self.counted().map(|v| v.beyond_guest.len() as u32).sum()
+    }
+
+    /// Lights in the views' first-person sets.
+    pub fn first_person(&self) -> u32 {
+        self.counted().map(|v| v.first_person.len() as u32).sum()
+    }
+
     fn counted(&self) -> impl Iterator<Item = &ViewChoice> {
         self.views
             .iter()
@@ -128,14 +146,81 @@ struct Rank {
     index: u32,
 }
 
-/// The lights E3 lights in `scene`.
-pub fn choose(scene: &FrameScene) -> LightChoice {
+/// The distinct view keys of `views`, in the order they first appear.
+fn keys_in_order(views: impl IntoIterator<Item = ViewKey>) -> Vec<ViewKey> {
     let mut keys: Vec<ViewKey> = Vec::new();
-    for v in &scene.views {
-        if !keys.contains(&v.key) {
-            keys.push(v.key);
+    for key in views {
+        if !keys.contains(&key) {
+            keys.push(key);
         }
     }
+    keys
+}
+
+/// `key`'s share of [`LIT_CAP`] among `keys` (distinct, in the scene's
+/// order), as [`choose`] gives it; a key not in `keys` is counted after
+/// them.
+pub fn share_of(keys: &[ViewKey], key: ViewKey) -> usize {
+    let mut keys = keys_in_order(keys.iter().copied());
+    let at = match keys.iter().position(|k| *k == key) {
+        Some(at) => at,
+        None => {
+            keys.push(key);
+            keys.len() - 1
+        }
+    };
+    view_caps(keys.len())[at]
+}
+
+/// One view's choice from its lights, `lights` the view's own slice of
+/// `FrameScene::lights` starting at index `first`, with `cap` its share.
+/// [`ViewChoice::view`] is left zero for the caller.
+pub fn choose_view(lights: &[Light], first: u32, cap: usize) -> ViewChoice {
+    let mut ranked: Vec<Rank> = Vec::new();
+    let mut handles = HashSet::new();
+    for (k, light) in lights.iter().enumerate() {
+        let Some(s) = score(light) else { continue };
+        if !handles.insert((light.handle, light.host)) {
+            continue;
+        }
+        ranked.push(Rank {
+            own: own(light),
+            host: light.host,
+            score: s,
+            handle: light.handle,
+            index: first + k as u32,
+        });
+    }
+    ranked.sort_by(|a, b| {
+        b.own
+            .cmp(&a.own)
+            .then(a.host.is_some().cmp(&b.host.is_some()))
+            .then(a.host.cmp(&b.host))
+            .then(b.score.total_cmp(&a.score))
+            .then((a.handle & 0xffff).cmp(&(b.handle & 0xffff)))
+            .then(a.handle.cmp(&b.handle))
+    });
+    let lit: Vec<u32> = ranked.iter().take(cap).map(|r| r.index).collect();
+    let beyond_guest = lit
+        .iter()
+        .copied()
+        .filter(|&i| {
+            let l = &lights[(i - first) as usize];
+            !l.guest_selected && l.host.is_none()
+        })
+        .collect();
+    ViewChoice {
+        view: 0,
+        first_person: lit.iter().copied().take(FIRST_PERSON_CAP).collect(),
+        over_cap: ranked.len().saturating_sub(lit.len()) as u32,
+        lit,
+        beyond_guest,
+    }
+}
+
+/// The lights E3 lights in `scene`.
+pub fn choose(scene: &FrameScene) -> LightChoice {
+    let keys = keys_in_order(scene.views.iter().map(|v| v.key));
     let caps = view_caps(keys.len());
     let mut out = LightChoice::default();
     let mut seen_keys = HashSet::new();
@@ -144,42 +229,14 @@ pub fn choose(scene: &FrameScene) -> LightChoice {
             .iter()
             .position(|k| *k == view.key)
             .map_or(0, |k| caps[k]);
-        let mut ranked: Vec<Rank> = Vec::new();
-        let mut handles = HashSet::new();
         let lights = scene
             .lights
             .get(view.lights.start as usize..view.lights.end as usize)
             .unwrap_or(&[]);
-        for (k, light) in lights.iter().enumerate() {
-            let Some(s) = score(light) else { continue };
-            if !handles.insert((light.handle, light.host)) {
-                continue;
-            }
-            ranked.push(Rank {
-                own: own(light),
-                host: light.host,
-                score: s,
-                handle: light.handle,
-                index: view.lights.start + k as u32,
-            });
-        }
-        ranked.sort_by(|a, b| {
-            b.own
-                .cmp(&a.own)
-                .then(a.host.is_some().cmp(&b.host.is_some()))
-                .then(a.host.cmp(&b.host))
-                .then(b.score.total_cmp(&a.score))
-                .then((a.handle & 0xffff).cmp(&(b.handle & 0xffff)))
-                .then(a.handle.cmp(&b.handle))
-        });
-        let lit: Vec<u32> = ranked.iter().take(cap).map(|r| r.index).collect();
+        let mut choice = choose_view(lights, view.lights.start, cap);
+        choice.view = index as u32;
         out.first_of_key.push(seen_keys.insert(view.key));
-        out.views.push(ViewChoice {
-            view: index as u32,
-            first_person: lit.iter().copied().take(FIRST_PERSON_CAP).collect(),
-            over_cap: ranked.len().saturating_sub(lit.len()) as u32,
-            lit,
-        });
+        out.views.push(choice);
     }
     out
 }
@@ -387,5 +444,67 @@ mod tests {
         assert_eq!(sizes, [6, 5, 5, 6]);
         assert_eq!(handles(&s, &got.views[3].lit), handles(&s, &got.views[0].lit));
         assert_eq!((got.lit(), got.over_cap()), (16, 4 + 5 + 5));
+    }
+
+    /// Of twenty candidates with the guest's five drawn, the sixteen lit
+    /// hold the guest's five and eleven beyond them, in draw order; a host
+    /// light lit is not beyond the guest's (its own path draws it), and
+    /// neither is an unlit guest light.
+    #[test]
+    fn the_lights_beyond_the_guests_are_the_lit_ones_it_did_not_draw() {
+        let mut lights: Vec<Light> = (0..20)
+            .map(|k| light(k, 1, 1.0 + k as f32, 1.0))
+            .collect();
+        // The guest drew 0..=2 (unlit by E3's score, but candidates) and
+        // 18..=19 (the highest).
+        for k in [0, 1, 2, 18, 19] {
+            lights[k].guest_selected = true;
+        }
+        let s = scene(&[(0, lights)]);
+        let got = choose(&s);
+        let v = &got.views[0];
+        assert_eq!(v.lit.len(), LIT_CAP);
+        let beyond = handles(&s, &v.beyond_guest);
+        let want: Vec<u32> = (4..18).rev().map(|k| 1 << 16 | k).collect();
+        assert_eq!(beyond, want, "lit, not drawn by the guest, in draw order");
+        assert_eq!(got.beyond_guest(), 14);
+        assert_eq!(got.first_person(), FIRST_PERSON_CAP as u32);
+        // A host light under the cap is lit but not beyond the guest's.
+        let few = vec![
+            light(1, 1, 2.0, 1.0),
+            Light::host_light(3, [0.0; 3], [1.0; 3], 2.0),
+        ];
+        let s = scene(&[(0, few)]);
+        let v = &choose(&s).views[0];
+        assert_eq!(v.lit.len(), 2);
+        assert_eq!(handles(&s, &v.beyond_guest), [1 << 16 | 1]);
+    }
+
+    /// One view's choice from its own slice gives the indices `choose`
+    /// gives, offset by where the slice starts.
+    #[test]
+    fn a_views_choice_from_its_slice_matches_the_frames() {
+        let many = |p: u32| (0..10).map(|k| light(k, p, 1.0 + k as f32, 1.0)).collect::<Vec<_>>();
+        let s = scene(&[(0, many(1)), (1, many(2))]);
+        let got = choose(&s);
+        let v = &s.views[1];
+        let alone = choose_view(
+            &s.lights[v.lights.start as usize..v.lights.end as usize],
+            v.lights.start,
+            8,
+        );
+        assert_eq!(alone.lit, got.views[1].lit);
+        assert_eq!(alone.beyond_guest, got.views[1].beyond_guest);
+    }
+
+    /// A view's share is its place among the scene's keys; a key not seen
+    /// yet is counted after them.
+    #[test]
+    fn a_views_share_counts_the_keys_seen_and_itself() {
+        assert_eq!(share_of(&[], view(0)), LIT_CAP);
+        assert_eq!(share_of(&[view(0)], view(0)), LIT_CAP);
+        assert_eq!(share_of(&[view(0)], view(1)), 8);
+        assert_eq!(share_of(&[view(0), view(1), view(0)], view(2)), 5);
+        assert_eq!(share_of(&[view(0), view(1), view(2)], view(0)), 6);
     }
 }

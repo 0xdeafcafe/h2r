@@ -795,6 +795,32 @@ pub fn attach_builtin(v: &mut GameVariant) -> Result<bool, PortableError> {
     Ok(true)
 }
 
+/// The attachment for a record that names its engine's built-in script
+/// (what [`attach_builtin`] writes): that script's IR and source, with the
+/// record's own options. `None` for a record that names no script or one
+/// other than the built-in, whose blob is not at hand.
+pub fn builtin_attach(v: &GameVariant) -> Result<Option<Attach>, PortableError> {
+    let Block::Ext(e) = v.ext_state() else {
+        return Ok(None);
+    };
+    if e.script.mode != Mode::Rules {
+        return Ok(None);
+    }
+    let Some(src) = u8::try_from(v.game_type().engine())
+        .ok()
+        .and_then(rules::builtin::builtin)
+    else {
+        return Ok(None);
+    };
+    let named = rules::compile(src).map_err(|e| PortableError::ScriptRefused(e.to_string()))?;
+    if named.id().0[..8] != e.script.prefix {
+        return Ok(None);
+    }
+    let mut attach = Attach::from_source(src)?;
+    attach.options = Some(e.script.options);
+    Ok(Some(attach))
+}
+
 /// The built-in options a retail record with no script plays with: each
 /// type-area row of [`rules::builtin::RETAIL_OPTIONS`] that applies to the
 /// record's engine and that `ir` has an option for, read from `v`; every
