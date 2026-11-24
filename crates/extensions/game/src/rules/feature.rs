@@ -545,6 +545,13 @@ pub fn bounces(m: &dyn GuestMemory, awards: &[crate::superbounce_chain::Award]) 
     }
 }
 
+/// What the running script calls a point (its header's `points`), for the
+/// base HUD ([`super::base_hud`]); none while no script runs here.
+pub fn points_label() -> Option<String> {
+    let rt = SHARED.get()?.lock();
+    rt.running().map(|r| r.vm.ir().header.points.clone())
+}
+
 /// The problems the host's start gate blocked the last game on, while the
 /// block holds (until the next game starts); none without the feature.
 /// The lobby's verdict (`rules::gate`) reads it, so the status line names
