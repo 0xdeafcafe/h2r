@@ -1,15 +1,8 @@
 //! Read the private, sorted dispatch records of the light's current layer.
 
 use crate::camera::GuestRead;
-use crate::skip::{self, GEOMETRY_DRAW, ITEM_SIZE};
-use crate::world::Owner;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Item {
-    pub part: (Owner, u8),
-    pub shader: u32,
-    pub layers: u32,
-}
+use crate::skip::ITEM_SIZE;
+use scene_extract::light_groups::Sorted;
 
 /// The entry loop sorts its private 0x18-byte records after the build
 /// callbacks. Only this list includes the build refusals, sort tie order,
@@ -18,8 +11,7 @@ pub struct Item {
 pub struct SortedItem {
     pub slot: u32,
     pub handler_item: u32,
-    pub geometry: Option<Item>,
-    pub implementation: u8,
+    sorted: Sorted,
 }
 
 impl SortedItem {
@@ -29,7 +21,7 @@ impl SortedItem {
         mem: &dyn GuestRead,
     ) -> Result<(frame_scene::LightEntry, Vec<frame_scene::Row>, u32), &'static str> {
         use scene_extract::light_groups::{Cause, dispatched_entry};
-        dispatched_entry(mem, self.slot, self.handler_item).map_err(|cause| match cause {
+        dispatched_entry(mem, self.handler_item, self.sorted).map_err(|cause| match cause {
             Cause::Memory => "unreadable gathered light entry",
             Cause::Callback => "nonstandard gathered light geometry callback",
             Cause::Owner => "gathered light render record has no live owner",
@@ -125,22 +117,14 @@ impl SortedCall {
             let target = word(slot, 16).filter(|&p| p != 0).ok_or(unread)?;
             if word(target, 0x100).ok_or(unread)? == u32::MAX { continue; }
             if slot < esi { return Err("a preceding sorted light handler already ran"); }
-            let index = word(slot, 0).ok_or(unread)? & 0xffff;
+            let sorted = Sorted::read(mem, slot).map_err(|_| unread)?;
+            let index = u32::from(sorted.index);
             if !(first..end).contains(&index) { return Err("sorted entry outside the gathered interval"); }
             let item = index.checked_mul(ITEM_SIZE).and_then(|n| table.checked_add(n)).ok_or(unread)?;
             item.checked_add(ITEM_SIZE - 1).ok_or(unread)?;
-            let handler = word(item, 4).filter(|&p| p != 0).ok_or(unread)?;
-            let shader = word(item, 8).ok_or(unread)?;
-            word(item, 12).ok_or(unread)?;
-            let selector = word(item, 20).ok_or(unread)?;
-            let mask = 1 << layer;
-            if word(item, 16).ok_or(unread)? & mask == 0 { return Err("sorted light layer mask changed"); }
-            let geometry = if handler == GEOMETRY_DRAW
-                && (selector >> 8) as u8 == 0
-                && skip::is_structure_item(mem, item).ok_or(unread)? {
-                Some(Item { part: skip::structure_part(mem, item).ok_or(unread)?, shader, layers: mask })
-            } else { None };
-            let entry = SortedItem { slot, handler_item: item, geometry, implementation: word(slot, 4).ok_or(unread)? as u8 };
+            word(item, 4).filter(|&p| p != 0).ok_or(unread)?;
+            if word(item, 16).ok_or(unread)? & (1 << layer) == 0 { return Err("sorted light layer mask changed"); }
+            let entry = SortedItem { slot, handler_item: item, sorted };
             check(&entry)?;
             entries.push(entry);
         }
@@ -166,6 +150,7 @@ mod tests {
             let slot = base + i as u32 * ITEM_SIZE;
             m.w(slot, id);
             m.w(slot+4, 2);
+            m.w(slot+8, 1);
             m.w(slot+16, if i==1 { target+256 } else { target });
             let item = table + id*ITEM_SIZE;
             m.w(item+4, 123);

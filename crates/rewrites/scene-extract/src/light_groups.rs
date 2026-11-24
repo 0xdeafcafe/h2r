@@ -73,6 +73,17 @@ pub struct Sorted {
     pub vertex_class: u16,
 }
 
+impl Sorted {
+    /// The used fields of the private 24-byte entry after the layer sort.
+    pub fn read(mem: &dyn GuestRead, slot: u32) -> R<Self> {
+        Ok(Self {
+            index: half(mem, slot)?,
+            implementation: byte(mem, at(slot, 4)?)?,
+            vertex_class: half(mem, at(slot, 8)?)?,
+        })
+    }
+}
+
 /// Why a sorted entry is not in the scene: the guest's handler still
 /// draws it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -215,12 +226,7 @@ pub fn entry(mem: &dyn GuestRead, items: u32, sorted: Sorted) -> R<(LightEntry, 
 /// dispatches. The sorted slot supplies the implementation and vertex
 /// class the handler actually received. The third result is the guest
 /// index address for this full-part emission, before D3D rebases indices.
-pub fn dispatched_entry(mem: &dyn GuestRead, slot: u32, item: u32) -> R<(LightEntry, Vec<Row>, u32)> {
-    let sorted = Sorted {
-        index: half(mem, slot)?,
-        implementation: byte(mem, at(slot, 4)?)?,
-        vertex_class: half(mem, at(slot, 8)?)?,
-    };
+pub fn dispatched_entry(mem: &dyn GuestRead, item: u32, sorted: Sorted) -> R<(LightEntry, Vec<Row>, u32)> {
     let (entry, rows, data) = entry_at(mem, item, sorted)?;
     let indices = ptr(mem, data, 0x24)?;
     let address = index(indices, entry.stream.first_index, 2)?;
@@ -698,7 +704,8 @@ mod tests {
         m.w(slot + 4, 0xaabb_cc03);
         m.w(slot + 8, 0xface_0101);
         m.w(DATA + 0x24, 0x0068_0000);
-        let (draw, rows, address) = dispatched_entry(&m, slot, item).unwrap();
+        let sorted_slot = Sorted::read(&m, slot).unwrap();
+        let (draw, rows, address) = dispatched_entry(&m, item, sorted_slot).unwrap();
         assert_eq!(address, 0x0068_0000 + 16 * 2);
         assert_eq!(draw.owner, LayerOwner::Object(InstanceKey(handle)));
         assert_eq!((draw.binding.selector, draw.binding.variant), (1, 2));
@@ -709,14 +716,14 @@ mod tests {
             vertex_class: 0x101,
         }).unwrap());
         m.w(DATA + 0x24, 0);
-        assert_eq!(dispatched_entry(&m, slot, item), Err(Cause::Section));
+        assert_eq!(dispatched_entry(&m, item, sorted_slot), Err(Cause::Section));
 
         m.w(RENDER_RECORDS + 3 * RENDER_RECORD_SIZE, 1 << 11);
-        assert_eq!(dispatched_entry(&m, slot, item), Err(Cause::State));
+        assert_eq!(dispatched_entry(&m, item, sorted_slot), Err(Cause::State));
         m.w(item + 4, 0x1234);
-        assert_eq!(dispatched_entry(&m, slot, item), Err(Cause::Callback));
+        assert_eq!(dispatched_entry(&m, item, sorted_slot), Err(Cause::Callback));
         m.0.remove(&(slot + 8));
-        assert_eq!(dispatched_entry(&m, slot, item), Err(Cause::Memory));
+        assert_eq!(Sorted::read(&m, slot), Err(Cause::Memory));
     }
 
     #[test]
