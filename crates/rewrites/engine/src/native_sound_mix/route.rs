@@ -72,7 +72,8 @@ pub(super) fn dispatch(cx: &mut Cx<'_>, pc: u32) -> Result<Step> {
                 c.eax = frame::slot(c, g, 0x30)?;
                 frame::push(c, g, c.eax)?;
                 frame::push(c, g, c.ebp)?;
-                frame::push(c, g, g.u32(VOLUME_FLOOR)?)?;
+                let floor = g.u32(VOLUME_FLOOR)?;
+                frame::push(c, g, floor)?;
                 c.ecx = byte(c.ecx, 1);
                 call(0x12aff0, 0x21ff87)
             } else {
