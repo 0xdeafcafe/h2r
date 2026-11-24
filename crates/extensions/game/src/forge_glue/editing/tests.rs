@@ -756,3 +756,26 @@ mod ground {
         installed::uninstall();
     }
 }
+
+/// The Overlays page opens, a choice on it turns an overlay off, and the
+/// markers and the status follow; the overlay is tool state, never an op.
+#[test]
+fn the_overlays_page_turns_overlays_off() {
+    use forge::tool::Overlay;
+    let mut e = editor();
+    e.tool.monitor = true;
+    let head = e.session.head();
+    e.command(1, Command::Overlays).unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Settings));
+    assert!(e.overlay(Overlay::Markers));
+    assert_eq!(e.status()["overlays"]["markers"], true);
+    e.choose(2, Choice::Set(Prop::Overlay(Overlay::Markers), 1)).unwrap();
+    assert!(!e.overlay(Overlay::Markers));
+    assert!(e.marker_entries().is_empty());
+    assert_eq!(e.status()["overlays"]["markers"], false);
+    assert_eq!(e.status()["overlays"]["gizmo"], true);
+    assert!(e.choose(3, Choice::Set(Prop::Overlay(Overlay::Gizmo), 2)).is_err());
+    e.choose(4, Choice::Set(Prop::Overlay(Overlay::Markers), 0)).unwrap();
+    assert!(e.overlay(Overlay::Markers));
+    assert_eq!(e.session.head(), head, "no op was made");
+}

@@ -1,6 +1,6 @@
 # Forge editing: the monitor's controls, tools and properties
 
-Status: Partly built. The Halo 3 button table, flying with thrust and fine movement, pick up and drop, manipulating a held object, movement and rotation snap, world or local axes, Coordinates with typing and nudging, hold to delete, undo and redo, the Tools picker with the Objects and Links tools, the object menu, a Properties page with Heading and the spawn, goal and item rows, and Tool settings with Movement snap, Rotation snap and Axes exist. Overlays, the browser, groups, prefabs and lights are design.
+Status: Partly built. The Halo 3 button table, flying with thrust and fine movement, pick up and drop, manipulating a held object, movement and rotation snap, world or local axes, Coordinates with typing and nudging, hold to delete, undo and redo, the Tools picker with the Objects and Links tools, the object menu, a Properties page with Heading and the spawn, goal and item rows, Tool settings with Movement snap, Rotation snap and Axes, and the Overlays page with the Markers, Other monitors and Axes overlays exist. The nav overlay (with F9), the browser, groups, prefabs and lights are design.
 Code: `crates/extensions/forge/src/tool.rs` (`Tool`, `Action`, `Input`, `Command`), `crates/extensions/forge/src/session.rs` (`Session`), `crates/extensions/game/src/forge_controls.rs` and `forge_controls/bindings.rs` (pad, keyboard and agent input; the bindings table), `crates/extensions/game/src/forge_screens/sheet.rs` (the menus' tables), `crates/extensions/game/src/forge_glue/editing.rs` (the host). Tests: `crates/extensions/forge/src/tool_tests.rs`, `link_tests.rs`, `props_tests.rs`, `tests.rs`; `forge_controls.rs`, `bindings.rs`, `forge_screens/tests.rs` and `forge_glue/editing/tests.rs` in `crates/extensions/game/src`.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
@@ -80,6 +80,7 @@ Black and White buttons.
 | Cancel a hold or a started link; back | B | Escape |
 | Tools | D-pad Right | T |
 | Tool settings | D-pad Down | G |
+| Overlays | Back | H |
 | Undo; redo | D-pad Left; hold for redo | Cmd+Z; Shift+Cmd+Z |
 | Forge menu | Start | Escape with nothing held |
 
@@ -89,8 +90,6 @@ Black and White buttons.
 - In the Links tool the same buttons mean the same things: A starts a
   link and makes it, X opens the Link question of the thing aimed at,
   hold Y removes its latest link, B cancels a started link.
-- **Overlays** (Back, H) joins the table with the first overlay, the
-  nav overlay of F9.
 - Start, and Escape with nothing to cancel, are the game's: they open
   its GAME MENU with the Forge rows in it. The table's Start row does
   nothing of the session's (`Does::Game`).
@@ -98,8 +97,9 @@ Black and White buttons.
   the pad and the keys go to the game's UI (`forge_controls::State`,
   `screen`).
 - Thrust triples flying while held; manipulating, it does not apply.
-- On the Controls page, up and down, and undo and redo, share a row each
-  (`bindings::PAIRS`), so the page fits the in-game list's sixteen lines.
+- On the Controls page, up and down, and Tool settings and Overlays, share
+  a row each (`bindings::PAIRS`), so the page fits the in-game list's
+  sixteen lines.
 - `forge.input` takes each action by the name `Action::named` gives it
   ([agent-api.md](../runtime/agent-api.md), "Local Forge session").
 
@@ -120,6 +120,25 @@ the tool in use.
 | Nav | the nav overlay and its problems | F9 |
 
 A tool that is not built is absent from the picker.
+
+## Overlays
+
+An overlay is a drawing the monitor adds over the world. Back (H) opens
+the Overlays page: a row for each overlay in `sheet::OVERLAYS`, showing
+On or Off, A opening a picker on the two. Every overlay starts On.
+Overlays are tool state, as the settings are: never in the document, the
+log or the sim (`forge::tool::Overlay`, `Tool::overlays`).
+
+| Overlay | Draws | Off |
+|---|---|---|
+| Markers | the game type markers: a spawn, flag, hill, teleporter, item spawner and ground label each (`forge_glue::markers_world`) | `Editor::marker_entries` is empty |
+| Other monitors | a ring at each other seat's monitor (`Editor::monitor_markers`) | no rings; the seats' bodies stay |
+| Axes | the axes and outline at the held or aimed object (`forge_glue::gizmo`) | no gizmo |
+
+The nav overlay (sectors, links by kind, problems; [forge-features.md](forge-features.md),
+"Nav mesh") is a row of this page when F9 builds it. `forge.status`
+carries `overlays`, a map of each overlay's name to whether it is on;
+`forge.input` takes `overlays` to open the page.
 
 ## Precision
 

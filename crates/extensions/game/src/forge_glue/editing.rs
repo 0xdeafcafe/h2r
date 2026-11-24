@@ -6,7 +6,7 @@ use super::{GENERATION, admitted, controls};
 use agent::forge::ground as ground_api;
 use agent::forge::local::{self as local_api, ForgeEdit, ForgeWorld, Guard, ProposalReply};
 use agent::sim::calls;
-use forge::tool::{Axes, Command, Extent, Tool};
+use forge::tool::{Axes, Command, Extent, Overlay, Tool};
 use forge::{BlockKind, Linkable, OpId, PaletteItem, Session, Thing, ThingKind};
 use forge_doc::{ActiveLink, Endpoint, Entry, Link as DocLink, LogHead, Op, Sha256};
 use serde_json::{Value, json};
@@ -163,6 +163,11 @@ impl Editor {
         }
     }
 
+    /// Whether an overlay is on.
+    pub fn overlay(&self, overlay: Overlay) -> bool {
+        self.tool.overlays.on(overlay)
+    }
+
     pub fn monitor(&self) -> bool {
         self.tool.monitor
     }
@@ -280,6 +285,8 @@ impl Editor {
             "tool":if self.tool.links { "links" } else { "objects" }, "fine":controls::fine(),
             "rotation_snap":ANGLE_STEPS[self.rotation_step], "movement_snap":sheet::MOVE_STEPS[self.movement_step],
             "axes":self.tool.axes.name(),
+            "overlays":Value::Object(Overlay::ALL.iter()
+                .map(|o| (o.name().to_string(), Value::Bool(self.tool.overlays.on(*o)))).collect()),
             "ui_up":self.ui_up, "dirty":self.dirty(),
             "aimed_link":self.tool.aimed_link.map(linkable_json), "link_from":self.tool.link_from.map(linkable_json),
             "teleporters":self.session.teleporters().iter().map(|t| json!({
@@ -358,7 +365,7 @@ impl Editor {
     /// ([`super::markers_world::entries`]). None with the monitor off.
     pub fn marker_entries(&self) -> Vec<super::markers_world::Entry> {
         use super::markers_world::{Facts, entries};
-        if !self.tool.monitor {
+        if !self.tool.monitor || !self.overlay(Overlay::Markers) {
             return Vec::new();
         }
         let placed = self.session.ground_counts().iter().sum::<usize>() > 0;
@@ -843,6 +850,7 @@ impl Editor {
             }
             Tools => screens::request(Kind::Tools)?,
             Settings => screens::request(Kind::Settings)?,
+            Overlays => screens::open(sheet::overlays(self.tool.overlays))?,
             Menu => return Err("The Forge menu is GAME MENU: press Start.".into()),
             BuildGround => return self.start_ground(tick, false, None),
             TestWaves => return self.start_ground(tick, true, None),
@@ -1023,6 +1031,12 @@ impl Editor {
                 } else {
                     Axes::World
                 });
+            }
+            Choice::Set(Prop::Overlay(overlay), i) => {
+                if i > 1 {
+                    return Err("No such value.".into());
+                }
+                self.tool.overlays.set(overlay, i == 0);
             }
             Choice::Set(Prop::Heading, i) => {
                 let yaw = HEADINGS.get(i).ok_or("No such heading.")?.to_radians();

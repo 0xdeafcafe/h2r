@@ -351,6 +351,7 @@ camera and tool take no input (`forge_screens::ui_up`, published to
 | Properties | X on the thing aimed at or held | a list page on the in-game Controller Settings host; rows from a table by kind | U4 |
 | Tools | D-pad Right | `kit.picker.game` over the tools that are built | U4 |
 | Tool settings | D-pad Down; a row of Forge options | a list page on the same host, a row per setting | U4, rows in P1 |
+| Overlays | Back | a list page on the same host as Tool settings, a row per overlay | |
 | Link | X in the Links tool | a large dialog with a body and two rows | U4 |
 | Questions | delete with links, overwrite, leave unsaved | the same dialog with Yes and No | U4 |
 | Forge menu | Start | the game's GAME MENU with rows added | U4 |

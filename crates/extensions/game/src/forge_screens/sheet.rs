@@ -158,6 +158,8 @@ pub enum Prop {
     MovementSnap,
     /// World or Local axes.
     Axes,
+    /// An overlay, On (value 0) or Off (value 1).
+    Overlay(forge::tool::Overlay),
     /// Open the six-coordinate editor.
     Coordinates,
     /// A spawn or goal's team.
@@ -822,6 +824,57 @@ pub fn settings(rotation_snap: usize, movement_snap: usize, local_axes: bool) ->
         title: "TOOL SETTINGS".into(),
         body: String::new(),
         rows,
+        focus: 0,
+    }
+}
+
+/// An overlay of the Overlays page: its name and what it draws.
+pub struct OverlayDef {
+    pub overlay: forge::tool::Overlay,
+    pub label: &'static str,
+    pub description: &'static str,
+}
+
+/// The overlays, in order (docs/game/forge-editing.md "Overlays"). An
+/// overlay that is not built is absent.
+pub const OVERLAYS: &[OverlayDef] = &[
+    OverlayDef {
+        overlay: forge::tool::Overlay::Markers,
+        label: "Markers",
+        description: "A marker at each spawn, flag, hill, teleporter and item spawner.",
+    },
+    OverlayDef {
+        overlay: forge::tool::Overlay::Monitors,
+        label: "Other monitors",
+        description: "A ring at each other player's monitor.",
+    },
+    OverlayDef {
+        overlay: forge::tool::Overlay::Gizmo,
+        label: "Axes",
+        description: "The axes and outline at the held or aimed object.",
+    },
+];
+
+/// The Overlays page: a row for each of [`OVERLAYS`], showing On or Off;
+/// A opens the picker on the two. `on` is [`forge::tool::Overlays`].
+pub fn overlays(on: forge::tool::Overlays) -> Sheet {
+    let values = vec!["On".to_string(), "Off".to_string()];
+    Sheet {
+        kind: Kind::Settings,
+        title: "OVERLAYS".into(),
+        body: String::new(),
+        rows: OVERLAYS
+            .iter()
+            .map(|d| {
+                text_value_row(
+                    d.label,
+                    d.description,
+                    Prop::Overlay(d.overlay),
+                    &values,
+                    usize::from(!on.on(d.overlay)),
+                )
+            })
+            .collect(),
         focus: 0,
     }
 }

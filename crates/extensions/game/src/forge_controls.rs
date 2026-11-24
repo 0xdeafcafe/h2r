@@ -638,6 +638,7 @@ mod tests {
         for (button, action) in [
             (HostButton::DpadRight, Action::Tools),
             (HostButton::DpadDown, Action::Settings),
+            (HostButton::Back, Action::Overlays),
         ] {
             pad.buttons.set(button, true);
             assert_eq!(step(&mut gate, &mut bridge, pad, at(3000)), Some(action));

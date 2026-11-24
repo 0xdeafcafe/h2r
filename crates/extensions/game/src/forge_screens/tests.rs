@@ -567,3 +567,30 @@ fn the_forge_options_build_the_ground_and_test_waves() {
     assert!(rows.contains(&("Test waves", &Act::Choose(Choice::TestWaves))));
     assert!(ForgeScreen::new(Kind::Options).show(s).is_ok());
 }
+
+/// The Overlays page has a row for each overlay of the table, showing On
+/// or Off, and its picker sends the overlay with the value's index.
+#[test]
+fn the_overlays_page_has_a_row_for_each_overlay() {
+    use forge::tool::{Overlay, Overlays};
+    let mut on = Overlays::default();
+    on.set(Overlay::Monitors, false);
+    let page = sheet::overlays(on);
+    assert_eq!(page.title, "OVERLAYS");
+    assert_eq!(page.rows.len(), sheet::OVERLAYS.len());
+    assert_eq!(sheet::OVERLAYS.len(), Overlay::ALL.len());
+    let values: Vec<_> = page.rows.iter().map(|r| r.value.as_deref()).collect();
+    assert_eq!(values, [Some("On"), Some("Off"), Some("On")]);
+    let Act::Pick(p) = &page.rows[1].act else {
+        panic!("a value row opens a picker");
+    };
+    assert_eq!(p.values, ["On", "Off"]);
+    assert_eq!(p.current, 1);
+    assert_eq!(
+        p.choices,
+        [
+            Choice::Set(Prop::Overlay(Overlay::Monitors), 0),
+            Choice::Set(Prop::Overlay(Overlay::Monitors), 1)
+        ]
+    );
+}

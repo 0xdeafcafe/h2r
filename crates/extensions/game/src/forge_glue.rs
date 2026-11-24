@@ -104,6 +104,9 @@ pub fn gizmo() -> Option<gizmo::Axes> {
         let driver = current()?;
         let driver = driver.lock().unwrap_or_else(|e| e.into_inner());
         let editor = driver.editor.as_ref()?;
+        if !editor.overlay(forge::tool::Overlay::Gizmo) {
+            return None;
+        }
         let (frame, extent) = editor.ghost()?;
         (frame, extent, editor.local_axes())
     };
@@ -297,7 +300,11 @@ impl Driver {
             e.tick(tick, bsp, crate::forge_screens::ui_up(m), game);
             let now = tick as f32 / 30.;
             crate::forge_readout::publish(e.readout_scene(game));
-            self.markers = e.monitor_markers(now);
+            self.markers = if e.overlay(forge::tool::Overlay::Monitors) {
+                e.monitor_markers(now)
+            } else {
+                Vec::new()
+            };
             // The things are rebuilt a few times a second; the aimed and
             // held things move the selection every tick.
             if self
