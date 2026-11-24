@@ -78,11 +78,13 @@ impl DisplayProjection {
         let VertexProcessing::Program { microcode, .. } = &shader.vertex else {
             return None;
         };
-        let crate::clip_space::epilogue::Position::Rows(row) = microcode.clip_position() else {
-            return None;
+        use crate::clip_space::epilogue::Position;
+        let row = match microcode.clip_position() {
+            Position::Rows(row) | Position::FarPlaneRows(row) => row,
+            Position::Fixed | Position::Unknown => return None,
         };
         let row = usize::from(row);
-        // The shader computes all four clip coordinates with this matrix.
+        // The shader projects X, Y and W with this matrix.
         // Post quads and orthographic menus keep their own mappings.
         if let Some((source, r, result)) = &self.last
             && *r == row
