@@ -190,7 +190,6 @@ pub fn status_progress(ui: &Ui, app: &App, x: f32, y: f32, width: f32, line_heig
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::app::Action;
     use crate::headless::Headless;
 

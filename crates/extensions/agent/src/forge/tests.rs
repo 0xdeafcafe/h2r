@@ -1988,7 +1988,7 @@ mod ground {
         }
         fn ground(&self) -> Result<Json, String> {
             Ok(crate::forge::ground::reply(
-                &self.session()?,
+                &*self.session()?,
                 crate::forge::ground::Facts {
                     available: self.builds.is_some(),
                     ..Default::default()
@@ -2146,9 +2146,9 @@ mod ground {
     #[test]
     fn a_build_that_fails_or_has_no_builder_is_refused_by_name() {
         let h = Harness::new();
-        let mut game = game(1);
+        let mut g = game(1);
         local::install(&h.agent, host(Some(true), 1));
-        let failed = ask(&h, &mut game, method::GROUND_BUILD, Json::Null);
+        let failed = ask(&h, &mut g, method::GROUND_BUILD, Json::Null);
         assert_eq!(failed["error"]["data"]["code"], "forge_refused");
         assert!(
             failed["error"]["message"]
@@ -2157,7 +2157,7 @@ mod ground {
                 .contains("No room"),
             "{failed}"
         );
-        let ground = h.ok(&mut game, method::GROUND, Json::Null);
+        let ground = h.ok(&mut g, method::GROUND, Json::Null);
         assert_eq!(
             ground["state"], "not_built",
             "a failed build changes nothing"

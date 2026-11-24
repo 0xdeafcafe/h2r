@@ -568,7 +568,7 @@ fn a_graph_nothing_uses_answers_its_own_channels() {
     );
     assert_eq!(r["model"], Value::Null);
     assert!(r["png"].is_null() || r["png"].is_string());
-    let notes = r["notes"].as_array().unwrap().join(" ");
+    let notes = r["notes"].as_array().unwrap().iter().filter_map(|n| n.as_str()).collect::<Vec<_>>().join(" ");
     assert!(
         notes.contains("no model of this map uses this graph"),
         "{notes}"

@@ -923,10 +923,12 @@ fn completion_after_quick_offers_options_then_settings() {
 
     // `type` is followed by every game type, `uses` by the retail ones,
     // and each by nothing after that.
-    let types = labels(&complete("rules \"T\" 1\ntype \n", p(1, 5)));
+    let types = complete("rules \"T\" 1\ntype \n", p(1, 5));
+    let types = labels(&types);
     assert_eq!(types.len(), rules_types().len());
     assert!(types.contains(&"party") && types.contains(&"koth"), "{types:?}");
-    let uses = labels(&complete("rules \"T\" 1\ntype party\nuses \n", p(2, 5)));
+    let uses = complete("rules \"T\" 1\ntype party\nuses \n", p(2, 5));
+    let uses = labels(&uses);
     assert_eq!(uses, ["slayer", "ctf", "assault", "oddball", "koth", "juggernaut", "territories"]);
     assert!(complete("rules \"T\" 1\ntype slayer\nuses slayer \n", p(2, 12)).is_empty());
 }

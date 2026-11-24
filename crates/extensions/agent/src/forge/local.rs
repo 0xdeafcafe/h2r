@@ -480,7 +480,7 @@ pub trait LocalApi: Send + Sync + 'static {
     /// default reads the session and says nothing the game alone knows.
     fn ground(&self) -> Result<Value, String> {
         Ok(super::ground::reply(
-            &self.session()?,
+            &*self.session()?,
             super::ground::Facts::default(),
         ))
     }

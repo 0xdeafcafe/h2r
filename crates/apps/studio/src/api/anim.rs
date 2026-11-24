@@ -244,7 +244,8 @@ impl Anim {
             None => (Value::Null, 0, 0, 0),
         };
         answer.notes = notes;
-        Ok(answer_json(&answer, picture))
+        let (png, w, h, covered) = picture;
+        Ok(answer_json(&answer, (&png, w, h, covered)))
     }
 
     /// The posed model drawn to `out`: the picture's size and how many

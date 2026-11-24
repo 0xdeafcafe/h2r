@@ -456,6 +456,7 @@ pub fn render_posed(
 fn models_of<'a>(pieces: impl IntoIterator<Item = &'a Piece>) -> NativeModels {
     NativeModels {
         models: pieces
+            .into_iter()
             .map(|p| (p.model.object, Arc::new(p.model.clone())))
             .collect(),
         errors: Vec::new(),

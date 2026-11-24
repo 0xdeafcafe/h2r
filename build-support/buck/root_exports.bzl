@@ -122,6 +122,13 @@ def root_exports():
         visibility = ["PUBLIC"],
     )
     crate_files(
+        name = "content",
+        srcs = [
+            "content/README.md",
+        ],
+        visibility = ["PUBLIC"],
+    )
+    crate_files(
         name = "deploy",
         srcs = [
             "deploy/host/entrypoint.sh",

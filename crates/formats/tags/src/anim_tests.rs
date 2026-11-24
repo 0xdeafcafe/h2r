@@ -1159,7 +1159,7 @@ fn the_engines_overlay_rule_adds_by_weight() {
     assert_eq!(p.nodes[0].translation, [1.0, 0.0, 0.0]);
     assert!(close(p.nodes[0].scale, 1.5));
     // A channel the overlay leaves out stays.
-    let sparse = Pose {
+    let mut sparse = Pose {
         nodes: vec![NodeTransform {
             translation: [2.0, 0.0, 0.0],
             has_translation: true,
