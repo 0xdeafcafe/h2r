@@ -457,8 +457,8 @@ pub(crate) fn meter_fill<R: Read + Seek>(
     shader.contains("meter").then(|| st.input(w.inputs()[0]).0)
 }
 
-/// The colour text widgets are drawn in: a stand-in (how the engine gets
-/// a text widget's colour from its shader is not read).
+/// The colour the preview draws text widgets in: a stand-in (the engine's
+/// is its shader's, [`Answers::shader_colour`]).
 pub const TEXT_COLOUR: [u8; 4] = [140, 200, 255, 255];
 
 /// Fallback text metrics without the disc's fonts: per character and line.
@@ -495,6 +495,12 @@ pub trait Answers {
     }
     /// A text widget's colour (RGBA).
     fn colour(&self, _hud: usize, _w: &Widget) -> Option<[u8; 4]> {
+        None
+    }
+    /// The colour the text widget's bound shader gives a fully covered
+    /// glyph, from the capture of its state at the draw (RGBA): what the
+    /// engine shading draws text in, in place of a stand-in.
+    fn shader_colour(&self, _hud: usize, _w: &Widget) -> Option<[u8; 4]> {
         None
     }
     /// A bitmap widget's turn about its centre, radians clockwise.

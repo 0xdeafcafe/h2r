@@ -5,7 +5,7 @@
 //! planned by [`crate::overlay`]) with named programs for the fixed
 //! combiners and the blur, over no guest state at all.
 mod hud_shader;
-pub use hud_shader::hud_shader_supported;
+pub use hud_shader::{glyph_colour, hud_shader_supported};
 use hud_shader::{HudPipeline, HudPipelineKey};
 
 use std::borrow::Cow;
