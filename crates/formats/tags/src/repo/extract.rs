@@ -203,6 +203,9 @@ pub struct MapSource<'s, R> {
     /// Which cache this map is to the others (`Local` for a level).
     own_file: ResourceFile,
     kept: Vec<([u8; 32], Vec<u8>)>,
+    /// Every resource read from this map's own file: (offset, length,
+    /// hash), for its extent table ([`store_skeleton`]).
+    local_places: Vec<(u64, u64, [u8; 32])>,
     /// Arrays an edit replaced in the bytes of a tag it grew, as (address,
     /// byte length) ([`MapSource::add_replaced`]).
     replaced: Vec<(u32, u32)>,
@@ -246,6 +249,7 @@ impl<'s, R: Read + Seek> MapSource<'s, R> {
             keep_raw: false,
             own_file,
             kept: Vec::new(),
+            local_places: Vec::new(),
             replaced: Vec::new(),
         })
     }
@@ -747,6 +751,12 @@ impl<'a, 's, R: Read + Seek> Walker<'a, 's, R> {
             }
         };
         self.src.raws.insert(hash, (p.file, p.offset, len));
+        let own = self.src.own_file != ResourceFile::Local && p.file == self.src.own_file;
+        if p.file == ResourceFile::Local || own {
+            self.src
+                .local_places
+                .push((p.offset.into(), len.into(), hash));
+        }
         // A shared cache's own resources are where every other map points
         // at them: the same tag reads the same from either.
         let file = match p.file {
@@ -1105,6 +1115,71 @@ fn store_one<R: Read + Seek>(
     Ok(Ok((tag.key, variant)))
 }
 
+/// Write the skeleton and extent table of `src` (the map `stem`, whose
+/// file's SHA-256 is `file`) after its tags are stored ([`store_map`]):
+/// the header, the BSP regions, the string tables and the tag index with
+/// the metadata are the skeleton; each raw resource read from the map's
+/// own file and present in `raw/` is an extent; every other range is
+/// stored in `raw/` as an extent of its own ([`super::skeleton::partition`]).
+pub fn store_skeleton<R: Read + Seek>(
+    repo: &mut super::TagRepo,
+    src: &mut MapSource<'_, R>,
+    stem: &str,
+    file: &str,
+) -> Result<super::skeleton::SkeletonReport> {
+    // Resources a refused tag read before it was refused are stored too,
+    // so every place read can be an extent.
+    for (hash, bytes) in src.take_raw() {
+        let rr = RawRes {
+            origin: Origin::Local,
+            len: bytes.len() as u32,
+            hash,
+        };
+        if !repo.has_raw(&rr) {
+            repo.put_raw(&bytes)?;
+        }
+    }
+    let map = &mut src.map.map;
+    let h = map.header().clone();
+    let len = map.storage_length();
+    let meta = map.metadata_space();
+    let mut structural: Vec<(u64, u64)> = vec![(0, 0x800)];
+    for t in &src.tags {
+        if let Some(l) = t.location
+            && Some(l.space) != meta
+        {
+            structural.push((l.space.file_offset, l.space.size.into()));
+        }
+    }
+    structural.push((
+        h.index_offset.into(),
+        u64::from(h.index_size) + u64::from(map.metadata_size()),
+    ));
+    for t in [h.strings, h.tag_names] {
+        structural.push((t.index_offset.into(), u64::from(t.count) * 4));
+        structural.push((t.data_offset.into(), t.data_size.into()));
+    }
+    let mut named: Vec<(u64, u64, String)> = Vec::new();
+    for &(offset, l, hash) in &src.local_places {
+        let rr = RawRes {
+            origin: Origin::Local,
+            len: l as u32,
+            hash,
+        };
+        if repo.has_raw(&rr) {
+            named.push((offset, l, super::hex(&hash)));
+        }
+    }
+    if h.low_detail_size > 0
+        && let Some(low) = repo.manifest(stem)?.low_detail
+    {
+        named.push((h.low_detail_offset.into(), h.low_detail_size.into(), low));
+    }
+    let parts = super::skeleton::partition(len, &structural, &named);
+    let mut read = |o: u64, l: u64| -> Result<Vec<u8>> { Ok(map.read_storage_range(o, l)?) };
+    repo.put_skeleton(stem, file, len, &parts, &mut read)
+}
+
 /// The extractor's version. Change it when what the extractor makes of the
 /// same map and schema changes other than through a group's layout (the
 /// walker, raw lengths, aliases): every map is extracted again.
@@ -1160,6 +1235,10 @@ pub enum Why {
     Forced,
     /// These groups' layout hashes moved.
     Layouts,
+    /// Extracted, but with no skeleton or extent table
+    /// ([`super::skeleton`]): taken whole so the store can give the map
+    /// back.
+    Skeleton,
 }
 
 /// One map's work.
@@ -1238,6 +1317,10 @@ pub fn plan(
         };
         if m.file != file {
             maps.push(whole(Why::FileChanged));
+            continue;
+        }
+        if !repo.has_skeleton(&stem) {
+            maps.push(whole(Why::Skeleton));
             continue;
         }
         if force {
@@ -1359,7 +1442,16 @@ pub fn update<R: Read + Seek>(
             .extract_record()?
             .and_then(|r| r.maps.get(&work.map).cloned());
         let report = match &work.groups {
-            None => store_map(repo, &mut src, &work.map, verify)?,
+            None => {
+                let mut r = store_map(repo, &mut src, &work.map, verify)?;
+                r.skeleton = Some(store_skeleton(repo, &mut src, &work.map, &work.file)?);
+                // The map is recorded only once the store gives it back
+                // exactly (not when raw resources are only counted).
+                if repo.count_raw.is_none() {
+                    repo.check_reassembly(&work.map, &work.file)?;
+                }
+                r
+            }
             Some(g) => store_groups(repo, &mut src, &work.map, g, verify)?,
         };
         let rec = map_record(

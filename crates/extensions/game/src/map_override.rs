@@ -288,6 +288,7 @@ pub fn mount<R: vfs::Rewrite + 'static>(
     if maps.is_none()
         && cfg.server_maps.is_none()
         && cfg.sim_store.is_none()
+        && cfg.store_maps.is_none()
         && campaign_maps.is_empty()
     {
         return match fonts {
@@ -303,15 +304,32 @@ pub fn mount<R: vfs::Rewrite + 'static>(
     // verified server copy still wins where one is set, and everything
     // they do not serve comes from the store before the disc
     // (crates/runtime/vfs/src/sim_store.rs).
-    match cfg.sim_store.clone() {
-        Some(dir) => over_disc(
+    // Store maps (`store-maps`, docs/engine/asset-store.md) replace the
+    // disc's map files under everything else: the disc's are never read
+    // (crates/runtime/vfs/src/store_map.rs).
+    match (cfg.store_maps.clone(), cfg.sim_store.clone()) {
+        (Some(root), Some(dir)) => over_disc(
+            cfg,
+            vfs::SimStoreBackend::new(vfs::StoreMapBackend::new(dvd, root), dir),
+            fonts,
+            maps,
+            campaign_maps,
+        ),
+        (Some(root), None) => over_disc(
+            cfg,
+            vfs::StoreMapBackend::new(dvd, root),
+            fonts,
+            maps,
+            campaign_maps,
+        ),
+        (None, Some(dir)) => over_disc(
             cfg,
             vfs::SimStoreBackend::new(dvd, dir),
             fonts,
             maps,
             campaign_maps,
         ),
-        None => over_disc(cfg, dvd, fonts, maps, campaign_maps),
+        (None, None) => over_disc(cfg, dvd, fonts, maps, campaign_maps),
     }
 }
 

@@ -287,6 +287,7 @@ person reading a process environment can tell what set them.
 | `H2_SIM_BATCH_ID`, `H2_SIM_BATCH_LOCKS` | `h2 sim batch` tells each child its batch id and the lock files its slots hold (`crates/apps/cli/src/sim_cmd.rs`). |
 | `H2_SIM_REPORT` | Path the sim's report is written to when a run finishes (`crates/live/sim-bench/src/lib.rs`). |
 | `H2_SIM_STORE`, `H2_SIM_STORE_RECORD` | A directory of verified map bytes served instead of the disc, and a file that records the bytes a run's guest read to build one (`crates/runtime/vfs/src/sim_store.rs`, `h2 sim store`). |
+| `store-maps` (`H2_FEATURES`) | Serves the disc's `maps\*.map` from the tag store at `<data>/tags` (each map's skeleton and extent table) and never the disc's files; a map the store lacks is a named error ([asset-store.md](../engine/asset-store.md), `crates/runtime/vfs/src/store_map.rs`). Off until slice AS2 is accepted. |
 | `H2_SERVER_MAP_DIR` | Where a light host reads server-side map overrides (`crates/apps/boot/src/lib.rs`). |
 | `H2_SNAPSHOTS` | Snapshot store root; default `snapshots` in the cache directory (`crates/runtime/snapshot/src/store.rs`). |
 

@@ -666,6 +666,7 @@ impl App {
             Why::Versions => "versions",
             Why::Forced => "forced",
             Why::Layouts => "layouts",
+            Why::Skeleton => "skeleton",
         };
         let plan_of = |p: &Plan| {
             json!({

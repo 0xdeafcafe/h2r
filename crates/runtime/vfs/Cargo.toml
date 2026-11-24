@@ -12,6 +12,8 @@ thiserror.workspace = true
 content.workspace = true
 # `Config::for_title`: the app data directory.
 host-dirs.workspace = true
+# Maps served from the tag store (store_map.rs): its skeletons and extents.
+tags.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 # Anchored format operations and page size for disc mappings.

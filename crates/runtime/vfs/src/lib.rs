@@ -24,6 +24,7 @@ pub mod save_meta;
 pub mod sim_store;
 mod state;
 mod status;
+pub mod store_map;
 mod types;
 mod variants;
 mod write_behind;
@@ -47,6 +48,7 @@ pub use sim_store::SimStoreBackend;
 pub use path::{Namespace, validate_fatx_name, validate_fatx_path, wildcard_matches};
 pub use state::{MAX_CARRIED_BYTES, SavedFile, StateError, VfsState};
 pub use status::{Error, Result};
+pub use store_map::StoreMapBackend;
 pub use types::*;
 pub use variants::{ContentVariants, SandboxChoice, VariantFile, VariantFiles, VariantPair};
 
@@ -102,6 +104,11 @@ pub struct Config {
     /// directory's `<map>.h2store` files instead of the disc. Maps with no
     /// store come from the disc as usual.
     pub sim_store: Option<PathBuf>,
+    /// The tag store ([`store_map`], docs/engine/asset-store.md) whose maps
+    /// are served as `maps\<name>.map` in place of the disc's, which are
+    /// never read; a map the store lacks is a named error. `None` serves
+    /// the disc's maps.
+    pub store_maps: Option<PathBuf>,
     /// Seed directories for the cache volume N: ([`Vfs::seed_device`]).
     /// Each holds `disk/` (root files) and `metadata/` (their records, laid
     /// out as [`HostBackend`] stores them). Straight after the boot formats
@@ -128,6 +135,7 @@ impl Config {
             map_guest_reads: false,
             server_maps: None,
             sim_store: None,
+            store_maps: None,
             cache_seed: Vec::new(),
         }
     }

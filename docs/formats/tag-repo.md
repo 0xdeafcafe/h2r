@@ -5,7 +5,7 @@ from scratch. Proven offline on the owner's disc (below); the Halo 1
 converter assembles its levels from the repository
 (`crates/tools/h1campaign/src/scratch.rs`), and the builder's open points are in
 [map-builder.md](map-builder.md), "Not verified".
-Code: `crates/formats/tags/src/repo.rs`, `crates/formats/tags/src/schema/hash.rs` (layout hashes). Switch: none.
+Code: `crates/formats/tags/src/repo.rs`, `crates/formats/tags/src/repo/skeleton.rs` (skeletons and extent tables), `crates/formats/tags/src/schema/hash.rs` (layout hashes). Switch: none.
 Evidence labels are those of
 [map-format.md](map-format.md): **V** checked on the owner's disc, **Design**
 an implementation choice.
@@ -97,6 +97,8 @@ compare by content (`format::encode`, `format::decode`).
 <repo>/raw/<hh>/<sha256>         raw resource bytes, by hash
 <repo>/maps/<map>.txt            what a retail map held (manifest)
 <repo>/maps/<map>.header         its 0x800-byte header
+<repo>/maps/<map>.skel           its skeleton: the bytes that are not raw files, at their offsets (deflate)
+<repo>/maps/<map>.extents        its extent table: every other range as offset, length, raw hash
 <repo>/conflicts.txt             per key with variants, the maps that differ
 <repo>/extract.toml              the disc's identity and the versions it was extracted under
 ```
@@ -108,6 +110,19 @@ variant's file. A manifest lists the map's cache type, name, scenario,
 globals, low-detail region (by raw hash), index word `+0x14`, every tag in
 slot order with its variant (or `-`), and the tags that could not be
 extracted.
+
+**Skeletons and extent tables (Design).** Together they give the map
+file back byte for byte ([asset-store.md](../engine/asset-store.md),
+"The store"). `extract::store_skeleton` splits the file
+(`skeleton::partition`): the header, the BSP regions, the string tables
+and the tag index with the metadata are the skeleton; each raw resource
+a tag read from the map's own file (a shared cache's own resources
+included) is an extent naming its file in `raw/`; every range left
+(padding, bytes no layout reaches, storage past the declared size) is
+stored in `raw/` by hash as an extent of its own, in pieces of at most
+16 MiB. `skeleton::StoreFile` reads the map back from them (`Read`,
+`Seek`, `read_at`); a raw file that is missing is
+`Error::MissingRaw`, naming the hash and the range.
 
 **Variants (Design).** A key's main file is the content of the first map
 that holds it, in extraction order (`store::extraction_order`): the shared
@@ -171,6 +186,24 @@ are named by that cache and offset too, as every level names them, so a
 tag reads the same from the cache and from a level. `--verify` reads every stored file
 back and checks it decodes to the same tag.
 
+After a map's tags and manifest, the extractor writes its skeleton and
+extent table, reads the whole map back through them
+(`TagRepo::check_reassembly`) and compares the SHA-256 with the map
+file's; only then is the map recorded. A store whose raw resources are
+only counted (`count_raw`) skips the read-back.
+
+```sh
+h2 tags reassemble [--repo REPO] MAP --out FILE.map
+h2 tags reassemble [--repo REPO] --all [--compare disc/halo2.iso]
+```
+
+`reassemble` writes one map from the store, or reads every map the
+record names back and checks its SHA-256 against `extract.toml` and, with
+`--compare`, against the disc's own file, then prints the store's size
+by part (tag files, raw files, skeletons before and after compression,
+extents). It fails when a map differs, has no skeleton, or is on the
+disc and not in the store. `REPO` defaults to `<data>/tags`.
+
 ## Versions (`extract.toml`, `--update`)
 
 The tree is a cache of the disc under one build's knowledge of the
@@ -205,6 +238,7 @@ SHA-256) and this build:
 | no record, or another `extractor` or `format` | empty the tree (tag files, manifests, group and string tables; raw resources by hash stay), then every map whole |
 | a map with no record or no manifest (new, or a run stopped inside it) | that map whole |
 | a map whose file hash changed | that map whole |
+| a map with no skeleton or extent table (`Why::Skeleton`: extracted before they existed) | that map whole |
 | a map whose groups' layout hashes moved | those groups' tags only (`extract::store_groups`); the manifest keeps its other entries |
 | nothing moved | nothing: no map is opened and no file written |
 
@@ -291,8 +325,17 @@ invented maps: unchanged input plans nothing and writes nothing; a run
 stopped at a map redoes that map only, and a changed map file is taken
 whole alone; a moved layout hash takes that group's tags only, in every
 map; settling makes the first map's content the main file with every map
-reading what it read. The disc test extracts through the same plan and
-checks that planning again (`--update`) finds nothing to do.
+reading what it read. Skeletons: a file split into skeleton, named and
+unnamed parts tiles it (merged structural ranges, a resource inside the
+skeleton or overlapping an earlier one left unnamed, long ranges split);
+skeletons and extent tables round-trip and parts that leave a gap or
+overlap are refused; an invented map with two BSP regions, overlapping
+resources and unnamed ranges reads back equal at every border; a missing
+or short raw file is an error naming its hash; extraction writes each
+map's skeleton (bytes past the declared size included) and the plan
+takes a map lacking one whole again. The disc test extracts through the
+same plan, checks that planning again (`--update`) finds nothing to do,
+and checks every map reassembles to the disc's SHA-256.
 
 **Extraction and rebuild, V** (2026-11-17, lockout and `01a_tutorial`
 into one repository; every stored file read back and decoded equal):

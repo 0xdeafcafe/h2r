@@ -7258,6 +7258,7 @@ dependencies = [
 name = "tags"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "map",
  "sha2 0.10.9",
  "thiserror 2.0.21",
@@ -7991,6 +7992,7 @@ dependencies = [
  "libc",
  "memmap2",
  "rustix 1.1.6",
+ "tags",
  "thiserror 2.0.21",
  "xiso",
 ]
