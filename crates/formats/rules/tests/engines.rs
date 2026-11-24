@@ -636,6 +636,7 @@ fn superbounce_scores_bounces_only_by_their_chain() {
 
 #[test]
 fn a_round_starts_with_the_declared_types_line_even_with_no_handler() {
+    use rules::fake::RoundLine;
     use rules::types::{StartLine, TABLE};
     for row in TABLE {
         let src = format!("rules \"Test variant\" 1\ntype {}\nuses slayer\n", row.name);
@@ -649,7 +650,10 @@ fn a_round_starts_with_the_declared_types_line_even_with_no_handler() {
         }
         match row.start {
             StartLine::None => assert!(game.start_lines.is_empty(), "{}", row.name),
-            _ => assert_eq!(game.start_lines, [row.ty; 2], "{}", row.name),
+            StartLine::Retail(kind) => {
+                assert_eq!(game.start_lines, [RoundLine::Event { kind, index: 0 }; 2], "{}", row.name);
+            }
+            StartLine::Ours => assert_eq!(game.start_lines, [RoundLine::Clip(row.ty); 2], "{}", row.name),
         }
     }
 }

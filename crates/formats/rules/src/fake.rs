@@ -53,8 +53,8 @@ pub struct FakeGame {
     pub reads: Vec<&'static str>,
     /// Messages shown, in call order (each is in [`FakeGame::calls`] too).
     pub messages: Vec<FakeMessage>,
-    /// The game type announced at each audible round start, in order.
-    pub start_lines: Vec<crate::types::Type>,
+    /// The retail event or original clip posted at each audible round start.
+    pub start_lines: Vec<RoundLine>,
     /// Each team's spawn rule, as `spawn_areas` and `spawn_near` set it:
     /// the starting locations the engine's spawns of that team may use.
     pub spawns: BTreeMap<u8, FakeSpawns>,
@@ -62,6 +62,13 @@ pub struct FakeGame {
     /// A team with none spawns in its players' own.
     pub bodies: BTreeMap<u8, crate::bodies::Body>,
     pub script_error: Option<ScriptError>,
+}
+
+/// The two ways a type announces itself on the host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoundLine {
+    Event { kind: u8, index: u8 },
+    Clip(crate::types::Type),
 }
 
 /// A team's spawn rule in the fake game.
@@ -357,7 +364,12 @@ impl FakeGame {
 
 impl Game for FakeGame {
     fn start_line(&mut self, ty: crate::types::Type) {
-        self.start_lines.push(ty);
+        use crate::types::StartLine;
+        match ty.row().start {
+            StartLine::Retail(kind) => self.start_lines.push(RoundLine::Event { kind, index: 0 }),
+            StartLine::Ours => self.start_lines.push(RoundLine::Clip(ty)),
+            StartLine::None => {}
+        }
     }
 
     fn players(&self) -> Vec<u8> {
