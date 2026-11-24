@@ -184,6 +184,17 @@ fn centre(
     lighting: Lighting,
     camera: &Camera,
 ) -> ([u8; 4], CullStats) {
+    centre_of(device, queue, &mut NativeWorld::new(device, queue, load, lighting), camera)
+}
+
+/// [`centre`] of a world already uploaded (and perhaps repainted).
+fn centre_of(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    world: &mut NativeWorld,
+    camera: &Camera,
+) -> ([u8; 4], CullStats) {
+    let lighting = world.lighting();
     let size = wgpu::Extent3d {
         width: 64,
         height: 64,
@@ -209,8 +220,6 @@ fn centre(
         crate::render::DEPTH_FORMAT,
         wgpu::TextureUsages::RENDER_ATTACHMENT,
     );
-    let mut world = NativeWorld::new(device, queue, load, lighting);
-    assert_eq!(world.lighting(), lighting);
     let stats = world.render(
         device,
         queue,
@@ -1238,4 +1247,64 @@ fn posed_nodes_compose_the_animation_over_the_defaults() {
     };
     let e = posed_nodes(&skeleton, &short, &NodeMatrix::IDENTITY).unwrap_err();
     assert!(e.contains("node count"), "{e}");
+}
+
+/// A box chain halves each level to the nearest average, an odd edge
+/// repeating its last column, and refuses bytes of another size.
+#[test]
+fn a_box_chain_averages_two_by_two_blocks() {
+    // 3 by 2: the second column of the next level repeats column 2.
+    let rgba: Vec<u8> = [[0u8, 0, 0, 255], [100, 0, 0, 255], [40, 8, 0, 255]]
+        .into_iter()
+        .chain([[200, 0, 0, 255], [100, 4, 0, 255], [80, 8, 0, 255]])
+        .flatten()
+        .collect();
+    let image = box_chain(3, 2, &rgba, 2).unwrap();
+    assert_eq!((image.width, image.height, image.mips.len()), (3, 2, 2));
+    // level 1 is 1 by 1: columns 0 and 1 of both rows.
+    assert_eq!(image.mips[0], vec![100, 1, 0, 255]);
+    assert_eq!(image.mips[1], vec![100, 1, 0, 255]);
+    assert!(box_chain(3, 2, &rgba[1..], 1).is_none());
+    assert!(box_chain(0, 2, &[], 1).is_none());
+}
+
+/// A map's base bitmap is repainted in the world drawn from it: the
+/// invented textured BSP read from a map names its base bitmap, a repaint
+/// of the same size changes the centre pixel to the new colour, a repaint
+/// of another size changes nothing, and Lightmap only keeps its white.
+/// Skipped without a wgpu adapter.
+#[test]
+fn a_repainted_base_map_changes_the_drawn_world() {
+    use crate::fixture::TEX_BASE_RGBA;
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let (mut map, mut files) = textured();
+    let load = NativeLoad::read(&mut map, &mut files, 0).unwrap();
+    let bitmap = load.base_bitmaps[&0];
+    let camera = Camera {
+        target: [2.0, 2.0, 0.0],
+        yaw: 0.0,
+        pitch: 1.3,
+        distance: 3.0,
+        ..Camera::default()
+    };
+    let mut world = NativeWorld::new(&device, &queue, &load, Lighting::Flat);
+    assert!(world.draws_bitmap(bitmap));
+    assert!(!world.draws_bitmap(TagId(0x77)));
+    let (before, _) = centre_of(&device, &queue, &mut world, &camera);
+    let blue: Vec<u8> = [10u8, 20, 240, 255].repeat(16);
+    assert_eq!(world.repaint_base(&queue, bitmap, 4, 4, &blue), 1);
+    let (after, _) = centre_of(&device, &queue, &mut world, &camera);
+    assert_ne!(before, after, "the texture was written");
+    assert!(after[2] > 180 && after[0] < 80, "blue: {after:?} (was {before:?}, base {TEX_BASE_RGBA:?})");
+    // Another size is refused whole.
+    assert_eq!(world.repaint_base(&queue, bitmap, 2, 2, &blue[..16]), 0);
+    let (again, _) = centre_of(&device, &queue, &mut world, &camera);
+    assert_eq!(after, again);
+    // A bitmap no material took writes nothing.
+    assert_eq!(world.repaint_base(&queue, TagId(0x77), 4, 4, &blue), 0);
+    // Lightmap only draws white whatever the bitmap.
+    let flat = NativeWorld::new(&device, &queue, &load, Lighting::LightmapOnly);
+    assert_eq!(flat.repaint_base(&queue, bitmap, 4, 4, &blue), 0);
 }

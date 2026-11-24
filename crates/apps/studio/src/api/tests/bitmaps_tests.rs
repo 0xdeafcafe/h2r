@@ -843,3 +843,47 @@ fn an_added_sequence_names_the_added_image_and_reads_back() {
     call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "bitmaps"}));
     assert_eq!(save_as(&mut api, &mut app, &t, "clean.map"), src);
 }
+
+/// The viewport follows the Textures tool (docs/editor/realtime-edits.md,
+/// R15): filling the floor bitmap, the base map of the level's one
+/// material, changes `view.snapshot` of the flat level to the new colour,
+/// and undoing the fill brings the saved colour back. Skipped without a
+/// GPU.
+#[test]
+fn the_snapshot_follows_a_painted_base_map() {
+    let t = Temp::new("bitmaps-viewport");
+    let (mut api, mut app) = bitmaps(&t);
+    call(&mut api, &mut app, m::VIEW_LIGHTING, json!({"mode": "flat"}));
+    let shot = |api: &mut Api, app: &mut App, name: &str| -> Option<Vec<u8>> {
+        let out = t.path(name);
+        let params = json!({
+            "out": out, "size": [64, 64],
+            "camera": {"target": [2, 2, 0], "distance": 6, "yaw": 0, "pitch": 80}
+        });
+        match api.call(app, m::VIEW_SNAPSHOT, params) {
+            Err(e) if e.code == code::NO_GPU => None,
+            Ok(_) => Some(png_pixels(&out)),
+            Err(e) => panic!("view.snapshot: {e}"),
+        }
+    };
+    let Some(before) = shot(&mut api, &mut app, "before.png") else {
+        return;
+    };
+    call(
+        &mut api,
+        &mut app,
+        m::BITMAP_FILL,
+        json!({"bitmap": "floor", "rect": {"x": 0, "y": 0, "w": 4, "h": 4}, "color": "#1428f0"}),
+    );
+    let blue = shot(&mut api, &mut app, "blue.png").unwrap();
+    assert_ne!(before, blue, "the painted floor draws");
+    let centre = (32 * 64 + 32) * 4;
+    assert!(
+        blue[centre + 2] > 150 && blue[centre] < 80,
+        "blue floor: {:?}",
+        &blue[centre..centre + 4]
+    );
+    call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "bitmaps"}));
+    let undone = shot(&mut api, &mut app, "undone.png").unwrap();
+    assert_eq!(before, undone, "undo restores the saved floor");
+}

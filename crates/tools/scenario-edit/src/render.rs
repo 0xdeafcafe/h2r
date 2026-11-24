@@ -1390,6 +1390,22 @@ impl Viewport {
         done
     }
 
+    /// Redraw bitmap `bitmap`'s image 0 (`width` by `height`, `rgba`) as
+    /// the base map of every native world's material that took it: the
+    /// Textures tool's painted pixels in the level
+    /// ([`crate::native_view::NativeWorld::repaint_base`]). Returns how
+    /// many textures were written.
+    pub fn set_native_base_map(
+        &mut self,
+        queue: &wgpu::Queue,
+        bitmap: map::TagId,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+    ) -> usize {
+        self.native.iter().map(|w| w.repaint_base(queue, bitmap, width, height, rgba)).sum()
+    }
+
     /// Whether the level draws through the native renderer.
     pub fn has_native(&self) -> bool {
         !self.native.is_empty()

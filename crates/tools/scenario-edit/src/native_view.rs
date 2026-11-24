@@ -91,6 +91,39 @@ impl Lighting {
     }
 }
 
+/// `rgba` (`width` by `height`) with `mips` further levels, each a box
+/// filter of the one before (rounded to nearest, an odd edge repeating
+/// its last row or column); `None` when `rgba` is not that size.
+pub fn box_chain(width: u32, height: u32, rgba: &[u8], mips: usize) -> Option<Image> {
+    if width == 0 || height == 0 || rgba.len() != width as usize * height as usize * 4 {
+        return None;
+    }
+    let mut levels: Vec<Vec<u8>> = Vec::with_capacity(mips);
+    let (mut w, mut h) = (width as usize, height as usize);
+    for _ in 0..mips {
+        let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
+        let prev: &[u8] = levels.last().map_or(rgba, Vec::as_slice);
+        let mut next = Vec::with_capacity(nw * nh * 4);
+        for y in 0..nh {
+            for x in 0..nw {
+                let xs = [(x * 2).min(w - 1), (x * 2 + 1).min(w - 1)];
+                let ys = [(y * 2).min(h - 1), (y * 2 + 1).min(h - 1)];
+                for c in 0..4 {
+                    let sum: u32 = ys
+                        .iter()
+                        .flat_map(|&yy| xs.iter().map(move |&xx| (yy, xx)))
+                        .map(|(yy, xx)| u32::from(prev[(yy * w + xx) * 4 + c]))
+                        .sum();
+                    next.push(((sum + 2) / 4) as u8);
+                }
+            }
+        }
+        levels.push(next);
+        (w, h) = (nw, nh);
+    }
+    Some(Image { width, height, rgba: rgba.to_vec(), mips: levels, blocks: None })
+}
+
 /// `image` with its colour (not alpha) times `num / den`, every level.
 /// Its BC blocks are dropped: they no longer match the pixels.
 fn scaled(image: &Image, num: u16, den: u16) -> Image {
@@ -176,6 +209,10 @@ pub struct NativeLoad {
     pub bsp: TagId,
     world: World,
     base: HashMap<u16, Image>,
+    /// The bitmap each material's base map came from
+    /// ([`NativeLoad::read`]; none for a load built from images), so the
+    /// viewport follows a painted bitmap ([`NativeWorld::repaint_base`]).
+    base_bitmaps: HashMap<u16, TagId>,
     pages: HashMap<LightmapKey, Image>,
     stats: NativeStats,
     /// Why the lightmap did not read, when it did not.
@@ -226,14 +263,16 @@ impl NativeLoad {
     ) -> Result<Self, String> {
         let loaded = load::load_world(map, &mut Files(files), index).map_err(|e| e.to_string())?;
         let mut base = HashMap::new();
+        let mut base_bitmaps = HashMap::new();
         for m in loaded.world.materials() {
-            let image = loaded
+            let bitmap = loaded
                 .shaders
                 .get(usize::from(m))
-                .and_then(|&shader| load::base_map(map, shader))
-                .and_then(|bitmap| load::decode_first(map, files, bitmap));
-            if let Some(image) = image {
+                .and_then(|&shader| load::base_map(map, shader));
+            let image = bitmap.and_then(|bitmap| load::decode_first(map, files, bitmap));
+            if let (Some(bitmap), Some(image)) = (bitmap, image) {
                 base.insert(m, image);
+                base_bitmaps.insert(m, bitmap);
             }
         }
         let bitmap = loaded
@@ -265,6 +304,7 @@ impl NativeLoad {
             loaded.lightmap_bitmap.is_none(),
         );
         let mut out = Self::new(loaded.bsp, loaded.world, base, pages);
+        out.base_bitmaps = base_bitmaps;
         out.layers = Some(Arc::new(layers));
         out.stats.failed_sections = loaded.failed_sections;
         out.lightmap_error = loaded.lightmap_error;
@@ -296,6 +336,7 @@ impl NativeLoad {
             bsp,
             world,
             base,
+            base_bitmaps: HashMap::new(),
             pages,
             stats,
             lightmap_error: None,
@@ -568,6 +609,9 @@ pub struct NativeWorld {
     base: Option<DrawnLayer>,
     /// The uploaded layers (the Game mode only): what each draws.
     layers: Vec<DrawnLayer>,
+    /// The materials whose base map came from each bitmap, with the level
+    /// count of the image uploaded for each ([`NativeWorld::repaint_base`]).
+    base_of: HashMap<TagId, Vec<(u16, usize)>>,
 }
 
 /// The key the base look's set is held under in the `GpuWorld` (the
@@ -760,6 +804,13 @@ impl NativeWorld {
                 });
             }
         }
+        let mut base_of: HashMap<TagId, Vec<(u16, usize)>> = HashMap::new();
+        for (&m, &bitmap) in &load.base_bitmaps {
+            if let Some(image) = load.base.get(&m) {
+                base_of.entry(bitmap).or_default().push((m, image.mips.len()));
+            }
+        }
+        base_of.values_mut().for_each(|v| v.sort_unstable());
         Self {
             bsp: load.bsp,
             gpu,
@@ -767,7 +818,40 @@ impl NativeWorld {
             pool: Default::default(),
             base,
             layers,
+            base_of,
         }
+    }
+
+    /// Whether some material's base map came from `bitmap`.
+    pub fn draws_bitmap(&self, bitmap: TagId) -> bool {
+        self.base_of.contains_key(&bitmap)
+    }
+
+    /// Redraw `bitmap`'s image 0 (`width` by `height`, `rgba` rows) as the
+    /// base map of every material that took it, through the same Lighting
+    /// mode's transform the upload used and with a box-filtered chain of
+    /// the level count the upload had: the viewport follows a painted
+    /// bitmap (docs/editor/realtime-edits.md, R15). Returns how many
+    /// textures were written; an image of another size is refused by the
+    /// GPU side and writes none. The mode that draws white keeps it.
+    pub fn repaint_base(
+        &self,
+        queue: &wgpu::Queue,
+        bitmap: TagId,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+    ) -> usize {
+        if self.lighting == Lighting::LightmapOnly {
+            return 0;
+        }
+        let mut written = 0;
+        for &(material, mips) in self.base_of.get(&bitmap).into_iter().flatten() {
+            let Some(image) = box_chain(width, height, rgba, mips) else { continue };
+            let image = self.lighting.base(&image);
+            written += self.gpu.rewrite_base_map(queue, material, &image).unwrap_or(0);
+        }
+        written
     }
 
     /// The BSP this world draws.
