@@ -21,7 +21,7 @@ const ROOM_SCALE: u32 = 0x45e008;
 const OCCLUSION_LF_RATIO: u32 = 0x45dc20;
 // Instruction operand locations in the owner's image.
 const GAIN_FLOOR: u32 = 0x221237;
-const ROOM_FLOOR: u32 = 0x22135c;
+const ROOM_FLOOR: u32 = 0x221357;
 const CURVE_MIN: u32 = 0x2212d8;
 
 const INTEGER_CONVERSION: u32 = 0x322b0c;
