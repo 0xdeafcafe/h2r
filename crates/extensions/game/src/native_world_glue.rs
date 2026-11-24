@@ -392,7 +392,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             };
             let gpu = guard.as_mut()?;
             configure_world(gpu, depth, cull, &stencil);
-            let selection = gpu.select_parts(&selected, &admission_camera)?;
+            let mut selection = gpu.select_parts(&selected, &admission_camera)?;
+            // Animated materials take their registers at the render clock;
+            // one whose clock does not read leaves the view to D3D.
+            gpu.animate_selection(&mut selection, native_render::layer_pass::render_time(&ReadMemory(mem))).ok()?;
             gpu.prewarm_world(&device, color, depth, &selection).then(|| Arc::new(selection))?
         };
         let pass = || Box::new(WorldPass {
@@ -1658,6 +1661,9 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
             refused.entry("no shader".into()).or_default().push(m);
             continue;
         };
+        // An animated pass compiles at clock 0 and keeps its animation,
+        // sampled at the render clock each frame (`GpuWorld::animate_selection`).
+        let properties = native_render::layer_pass::instance_properties(&lib, shader);
         let pass = if no_lightmap_group {
             let selection = tags::material::PassSelection { lod: 0, layer: look::LIGHTMAP_LAYER, pass: 0,
                 implementation: look::UNLIT_BSP_IMPLEMENTATION };
@@ -1666,14 +1672,16 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
             let inputs = lib.shader(shader).map(|s| tags::material::EngineInputs::for_shader(&s)).map_err(|e| format!("material: {e}"));
             inputs.and_then(|inputs| {
                 lib.selected_implementation(shader, selection, Some(&inputs), None).map_err(|e| format!("material: {e}"))
-                    .and_then(|pass| look::unlit_bsp_pass(&pass, &inputs, normalization).map_err(|r| format!("layer 3: {r:?}")))
+                    .and_then(|pass| {
+                        look::unlit_bsp_pass_sampled(&pass, &inputs, normalization, &properties).map_err(|r| format!("layer 3: {r:?}"))
+                    })
             })
         } else {
             lib.material(shader, None).map_err(|e| format!("material: {e}"))
-                .and_then(|mat| look::layer3_pass(&mat).map_err(|r| format!("layer 3: {r:?}")))
+                .and_then(|mat| look::layer3_pass_sampled(&mat, &properties).map_err(|r| format!("layer 3: {r:?}")))
         };
         let compiled = pass
-            .and_then(|pass| {
+            .and_then(|(pass, animation)| {
                 let code = look::world_program(map, lib.metadata(), pass.look.vertex_shader).ok_or("no world-space vertex program")?;
                 let mut dims = [None; 4];
                 for (slot, stage) in dims.iter_mut().zip(pass.look.textures) {
@@ -1688,6 +1696,7 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
                     };
                 }
                 let mut p = program::compile_section(&pass, &code, dims)?;
+                p.animation = animation;
                 if placed.contains(&m) {
                     // Its placements: the pass with the rigid
                     // classification, or they stay on the D3D path.

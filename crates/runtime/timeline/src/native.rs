@@ -587,7 +587,39 @@ const UI_COLUMNS: [&str; Ui::OverlayHudRefusedPass as usize + 1] = [
     "overlay_hud_refused_pass",
 ];
 const UI_OFFSET: usize = SCENE_LIST_START + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len();
-pub(crate) const COLUMNS: usize = UI_OFFSET + UI_COLUMNS.len();
+const ANIMATION_OFFSET: usize = UI_OFFSET + UI_COLUMNS.len();
+const ANIMATION_COLUMNS: [&str; ShaderAnimation::Layer3Refused as usize + 1] = [
+    "layers_drawn",
+    "layers_refused",
+    "objects_drawn",
+    "objects_refused",
+    "layer3_drawn",
+    "layer3_refused",
+];
+pub(crate) const COLUMNS: usize = ANIMATION_OFFSET + ANIMATION_COLUMNS.len();
+
+/// Material passes with animated constants (`shad +0x3c`, sampled at the
+/// render clock, docs/formats/shader-instances.md "Animated constants"),
+/// by the native path that planned them with their sampled registers or
+/// refused them: the structure's layer planner (`layers`), the object
+/// passes of layer 3 and the world layers (`objects`), and the world's
+/// layer 3 (`layer3`, per selected material).
+#[derive(Clone, Copy, Debug)]
+#[repr(usize)]
+pub enum ShaderAnimation {
+    LayersDrawn,
+    LayersRefused,
+    ObjectsDrawn,
+    ObjectsRefused,
+    Layer3Drawn,
+    Layer3Refused,
+}
+
+impl ShaderAnimation {
+    pub fn count(self, n: u64) {
+        phase::count_index(phase::Counter::ALL.len() + ANIMATION_OFFSET + self as usize, n);
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 #[repr(usize)]
@@ -738,6 +770,7 @@ pub(crate) fn labels() -> &'static [String] {
             }
         }
         out.extend(UI_COLUMNS.map(|name| format!("native_ui_{name}")));
+        out.extend(ANIMATION_COLUMNS.map(|name| format!("native_shader_animation_{name}")));
         out
     })
 }
@@ -899,9 +932,19 @@ mod tests {
         let frame = lists + SceneList::LightFrame as usize * SCENE_LIST_RESULTS.len();
         assert_eq!(columns[frame].1, "native_scene_lists_light_frame_native");
         assert_eq!(columns[ui].1, "native_ui_items");
+        let animation = phase::Counter::ALL.len() + ANIMATION_OFFSET;
+        assert_eq!(
+            columns[animation - 1].1,
+            "native_ui_overlay_hud_refused_pass"
+        );
+        assert_eq!(columns[animation].1, "native_shader_animation_layers_drawn");
+        assert_eq!(
+            columns[animation + ShaderAnimation::ObjectsRefused as usize].1,
+            "native_shader_animation_objects_refused"
+        );
         assert_eq!(
             columns[phase::Counter::ALL.len() + COLUMNS - 1].1,
-            "native_ui_overlay_hud_refused_pass"
+            "native_shader_animation_layer3_refused"
         );
         assert_eq!(columns[ui + Ui::OverlayRefusedTexture as usize].1, "native_ui_overlay_refused_texture");
         assert_eq!(columns[ui + Ui::OverlayModelViews as usize].1, "native_ui_overlay_model_views");

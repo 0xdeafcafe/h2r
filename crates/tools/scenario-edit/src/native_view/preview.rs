@@ -949,8 +949,11 @@ impl MaterialSurface {
             if layer.constants.is_empty() {
                 continue;
             }
-            let sampled =
-                layers_load::plan_without_game(&layers.view, &[preview.shader], layer.layer, time);
+            let sampled = if layer.layer == layers_load::LAYER_3 {
+                layers_load::plan_layer3(&layers.layer3, time)
+            } else {
+                layers_load::plan_without_game(&layers.view, &[preview.shader], layer.layer, time)
+            };
             if layer.constants != sampled.constants {
                 layer.constants = sampled.constants;
                 changed = true;

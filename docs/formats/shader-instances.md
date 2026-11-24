@@ -299,12 +299,30 @@ header's float range. For RGB, the same nibble selects how the raw value
 indexes the header's packed colour stops. Vertex RGB is in units of
 1/255. See the [instruction trace and texture-transform mode table](../graphics/notes/2026-11-24-shader-constant-animation.md).
 
-The native structure layer planner samples the selected passes at the render
-clock after resolving their instance and engine constants. Studio uses the
-same planner with its preview clock. A texture transform may use any slot
-fields supplied by this draw. A required inherited field, an animated
-bitmap frame or pipeline state, an unavailable wave table, or a curve
-requiring an object callback leaves the affected draw with its refusal.
+The native renderer has one sampler for these writes
+(`native_render::layer_pass::sample_constants`, kept per compiled pass as
+`PassAnimation`). Each path compiles a pass from its registers at clock 0
+and samples it again at the render clock (`0x004858a0`):
+
+- the structure layer planner (layers 1, 5, 7, 8, 17 and 20) after
+  resolving the pass's instance and engine constants;
+- the object passes of layer 3 and the world layers
+  (`object_program::animated_blocks`), before the object's lighting goes
+  in, so a lighting binding wins a lane an animation also writes;
+- the world's layer 3 (`GpuWorld::animate_selection`), per selected
+  material each frame. A view whose clock does not read stays on the D3D
+  path.
+
+Studio uses the same sampler with its preview clock, for the planned
+layers and for layer 3 (`layers_load::plan_layer3`). A texture transform
+may use any slot fields supplied by this draw. A required inherited
+field, an animated bitmap frame or pipeline state, an unavailable wave
+table, or a curve requiring an object callback leaves the affected draw
+with its refusal. On an object a ranged curve refuses too: its range
+input is the lighting record's callback. The
+`native_shader_animation_*` counters
+([native-renderer.md](../graphics/native-renderer.md#frame-counters))
+count the passes each path samples and refuses.
 
 ## Element budgets and aliasing
 

@@ -723,8 +723,9 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   (`program::CAMERA_GIVEN`), an input the game-free run state does not
   give, a palettized stage bitmap (no stage palettes), a missing
   animation input or its own fog is refused, and `view.stats` counts it by
-  cause. The BSP samples animated pixel and vertex constants at time zero.
-  The Shader tab takes its sample at the preview clock. The other modes draw the base look alone.
+  cause. The BSP and its layer 3 (`layers_load::plan_layer3`) sample
+  animated pixel and vertex constants at time zero. The Shader tab takes
+  its sample at the preview clock. The other modes draw the base look alone.
   Clicking skips hidden placement categories and hidden structure.
 - **Gameplay layers.** Spawn points have a team-coloured pawn and an
   arrow pointing along the spawn facing. Netgame flags have a team tint

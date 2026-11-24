@@ -24,7 +24,8 @@ use crate::light_gpu::{StaticLightTexture, uniforms_layout};
 use crate::look::Stage;
 use crate::object_lighting::ShaderValues;
 use crate::object_program::{
-    IMPLEMENTATIONS, ObjectInputs, ObjectPass, Row, object_layer3, object_pass, object_pixel_uniforms, object_vertex_uniforms,
+    IMPLEMENTATIONS, ObjectInputs, ObjectPass, Row, animated_blocks, object_layer3, object_pass, object_pixel_uniforms,
+    object_vertex_uniforms,
 };
 use crate::object_program::{LIGHTMAP_STREAM, object_layer_pass, object_layer_passes, texaccum_dimensions};
 use crate::object_streams::{Attribute, Element, SLOT, StreamData, StreamElement, StreamFormats, declaration, gather, registers};
@@ -1080,9 +1081,13 @@ impl LitObjects {
 
     /// [`Self::plan`] for a first-person item: the topology and subparts
     /// its record draws ([`ItemDraw::flags`], [`ItemDraw::subparts`]), as
-    /// the scene's parts draw theirs ([`plan_item_part`]).
-    pub fn plan_item(&self, index: u32, frame: &ObjectFrame, item: &ItemDraw, entry: &EntryStates) -> Result<PlannedDraw, String> {
-        self.plan_inputs(index, item_inputs(frame, item)?, &item.key, &item.rows, entry, false)
+    /// the scene's parts draw theirs ([`plan_item_part`]), an animated
+    /// pass sampled at `time` (the render clock).
+    pub fn plan_item(
+        &self, index: u32, frame: &ObjectFrame, item: &ItemDraw, entry: &EntryStates, time: Option<f64>,
+    ) -> Result<PlannedDraw, String> {
+        let inputs = PartInputs { time, ..item_inputs(frame, item)? };
+        self.plan_inputs(index, inputs, &item.key, &item.rows, entry, false)
     }
 
     pub fn plan_scene(&self, index: u32, frame: &ObjectFrame, key: &ItemKey, rows: &[Row], entry: &EntryStates) -> Result<PlannedDraw, String> {
@@ -1091,9 +1096,11 @@ impl LitObjects {
 
     /// [`Self::plan_scene`] for a part of a view of the scene: the
     /// instance's lighting and defaults, the part's key and its rows, all
-    /// as extraction copied them.
+    /// as extraction copied them, an animated pass sampled at `time` (the
+    /// render clock).
     pub fn plan_part_of(
         &self, index: u32, scene: &FrameScene, instance: &Instance, part: &PartDraw, entry: &EntryStates,
+        time: Option<f64>,
     ) -> Result<PlannedDraw, String> {
         let inputs = PartInputs {
             instance: instance.key,
@@ -1101,6 +1108,7 @@ impl LitObjects {
             defaults: instance.defaults,
             subparts: part.subparts,
             strip: Some(part.flags.contains(PartFlags::STRIP)),
+            time,
         };
         self.plan_inputs(index, inputs, &part.key, scene.rows_of(part), entry, true)
     }
@@ -1605,7 +1613,8 @@ pub fn plan_layer_part<'a>(
                 None => format!("layer {layer} pass {n} has no native implementation {implementation}"),
             })?;
         let compiled = pass_of(program).ok_or("its program is missing")?;
-        let mut vertex = object_vertex_uniforms(&compiled.program.vertex, &compiled.implementation, &inputs, rows, p.decompression)?;
+        let (vertex_base, pixel_base) = animated_blocks(compiled, pass.inputs.time)?;
+        let mut vertex = object_vertex_uniforms(&vertex_base, &compiled.implementation, &inputs, rows, p.decompression)?;
         if let Some(prt) = &item.prt {
             let input = compiled.prt.as_ref().ok_or("its PRT variant has no PRT stream")?;
             let first = usize::from(frame_scene::PRT_FIRST_CONSTANT);
@@ -1615,7 +1624,7 @@ pub fn plan_layer_part<'a>(
             let end = (first + prt.constants.len()).min(vertex.constants.len());
             vertex.constants[first..end].copy_from_slice(&prt.constants[..end - first]);
         }
-        let pixel = object_pixel_uniforms(&compiled.program.pixel, &compiled.implementation, &inputs)?;
+        let pixel = object_pixel_uniforms(&pixel_base, &compiled.implementation, &inputs)?;
         let alpha_test = compiled.program.state.as_ref().ok_or("its pass has no state")?.alpha_test;
         let mut state = object_state::resolve_layer(&compiled.implementation.render_states, entry, alpha_test)?;
         if item.flags.contains(PartFlags::STENCIL_MARK) && !pass.stencil_off {
@@ -1658,6 +1667,9 @@ struct PartInputs<'a> {
     /// (`frame_scene::PartFlags::STRIP`); `None`, in the part's own
     /// topology.
     strip: Option<bool>,
+    /// The render clock an animated pass samples its constants at
+    /// ([`animated_blocks`]); `None` refuses one.
+    time: Option<f64>,
 }
 
 impl<'a> PartInputs<'a> {
@@ -1668,6 +1680,7 @@ impl<'a> PartInputs<'a> {
             defaults: frame.defaults,
             subparts: None,
             strip: None,
+            time: None,
         }
     }
 }
@@ -1722,8 +1735,9 @@ fn plan_indexed_part<'a>(
     let ranges = part_ranges(&p.indices, p.subparts.as_ref(), p.listed.as_ref(), frame.strip, frame.subparts)?;
     let defaults = frame.defaults.ok_or("the inputs' defaults do not read")?;
     let inputs = ObjectInputs { lighting: frame.lighting, defaults: &defaults, shader: p.shader };
-    let vertex = object_vertex_uniforms(&pass.program.vertex, &pass.implementation, &inputs, rows, p.decompression)?;
-    let pixel = object_pixel_uniforms(&pass.program.pixel, &pass.implementation, &inputs)?;
+    let (vertex_base, pixel_base) = animated_blocks(pass, frame.time)?;
+    let vertex = object_vertex_uniforms(&vertex_base, &pass.implementation, &inputs, rows, p.decompression)?;
+    let pixel = object_pixel_uniforms(&pixel_base, &pass.implementation, &inputs)?;
     let compiled = pass.program.state.as_ref().ok_or("its pass has no state")?.alpha_test;
     let resolve = if scene { object_state::resolve_scene } else { object_state::resolve };
     let mut cached = inherited.map(|s| s.lock().unwrap_or_else(|e| e.into_inner()));
@@ -1918,10 +1932,13 @@ pub fn lit_listed(indices: &[u16], part: &tags::geometry::Part) -> Option<Vec<[u
     Some(tags::geometry::list_triangles(indices.get(part.index_range())?))
 }
 
-/// A material the lit build takes: resolved, and its shader values.
+/// A material the lit build takes: resolved, its shader values, and its
+/// instance's animated properties (`shad +0x3c`, what its passes'
+/// animated constants read; [`crate::layer_pass::instance_properties`]).
 pub struct LitMaterial {
     pub material: tags::material::Material,
     pub shader: ShaderValues,
+    pub properties: Vec<tags::shader::AnimatedProperty>,
 }
 
 /// What [`lit_model`] built: the input to upload, the materials taken,
@@ -2061,7 +2078,7 @@ pub fn lit_model(
                     }
                     let (microcode, semantics) = vertex(vs, s.geometry, s.influences).map_err(|e| format!("section {}: {e}", s.index))?;
                     let decl = declaration(&semantics, &streams);
-                    let compiled = object_pass(pass.pass, imp, &microcode, registers(&decl), input_fetch(&decl), engine.lightmap.is_some())
+                    let compiled = object_pass(pass.pass, imp, &lit.properties, &microcode, registers(&decl), input_fetch(&decl), engine.lightmap.is_some())
                         .map_err(|e| format!("section {} implementation {n}: {e}", s.index))?;
                     let key = (s.index, decl);
                     let buffer = match buffers.get(&key) {
@@ -2194,7 +2211,7 @@ pub fn lit_model(
                     }
                     let index_list = |s: u16| lists[&s].0.clone();
                     let compiled = compile_layer_sections(
-                        None, pass.pass, imp, &secs, formats, engine, copies_view, &mut *vertex, &mut *image, &mut buffers,
+                        None, pass.pass, imp, &lit.properties, &secs, formats, engine, copies_view, &mut *vertex, &mut *image, &mut buffers,
                         &mut out.input.buffers, &index_list,
                     );
                     match compiled {
@@ -2213,7 +2230,7 @@ pub fn lit_model(
                     if layer == PRT_LAYER {
                         let compiled = formats.elements(PRT_STREAM).and_then(|prt| {
                             compile_layer_sections(
-                                Some(prt.as_slice()), pass.pass, imp, &secs, formats, engine, false, &mut *vertex, &mut *image,
+                                Some(prt.as_slice()), pass.pass, imp, &lit.properties, &secs, formats, engine, false, &mut *vertex, &mut *image,
                                 &mut buffers, &mut out.input.buffers, &index_list,
                             )
                         });
@@ -2295,6 +2312,7 @@ fn compile_layer_sections(
     prt: Option<&[StreamElement]>,
     pass: map::TagId,
     imp: &tags::material::ResolvedImplementation,
+    properties: &[tags::shader::AnimatedProperty],
     secs: &[&LitSection<'_>],
     formats: &StreamFormats,
     engine: &EngineStages,
@@ -2327,7 +2345,7 @@ fn compile_layer_sections(
             all.push(p.to_vec());
         }
         let full = declaration(&semantics, &all);
-        let mut compiled = object_layer_pass(pass, imp, &microcode, registers(&full), input_fetch(&full))
+        let mut compiled = object_layer_pass(pass, imp, properties, &microcode, registers(&full), input_fetch(&full))
             .map_err(|e| format!("section {}: {e}", s.index))?;
         if prt.is_some() {
             compiled.prt = Some(PrtInput {
@@ -2452,7 +2470,7 @@ mod tests {
         // shader does not sample has no texture to bind.
         imp.pixel_shader = shaders::PixelShaderDef { texture_modes: 1 << 15, ..Default::default() }.to_bytes();
         let mut materials = HashMap::new();
-        materials.insert(0, LitMaterial { material: material(vec![imp]), shader: ShaderValues::default() });
+        materials.insert(0, LitMaterial { material: material(vec![imp]), shader: ShaderValues::default(), properties: Vec::new() });
         // v1 reads semantic 7: the lightmap coordinates the draw adds.
         let mut vertex = |_: map::TagId, _: u16, _: u8| Ok::<_, String>((rigid_program(), vec![0u16, 7, 2]));
         let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
@@ -2507,7 +2525,7 @@ mod tests {
         });
         imp.pixel_shader = shaders::PixelShaderDef { texture_modes: 1 << 10, ..Default::default() }.to_bytes();
         let mut materials = HashMap::new();
-        materials.insert(0, LitMaterial { material: material(vec![imp]), shader: ShaderValues::default() });
+        materials.insert(0, LitMaterial { material: material(vec![imp]), shader: ShaderValues::default(), properties: Vec::new() });
         let mut vertex = |_: map::TagId, _: u16, _: u8| Ok::<_, String>((rigid_program(), vec![0u16, 3, 2]));
         let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
         let without = lit_model(
@@ -2603,7 +2621,7 @@ mod tests {
             imp.input_reads.scalars |= 1 << 2;
             imp
         };
-        let lit_material = |imps| LitMaterial { material: material(imps), shader: ShaderValues::default() };
+        let lit_material = |imps| LitMaterial { material: material(imps), shader: ShaderValues::default(), properties: Vec::new() };
         let mut materials = HashMap::new();
         materials.insert(0, lit_material(vec![opaque(0), opaque(1)]));
         materials.insert(1, lit_material(vec![timed(0)]));
@@ -2700,7 +2718,7 @@ mod tests {
             state(RenderStateType::ZWriteEnable, 0),
             state(RenderStateType::ZFunc, gfx::state::CompareFunc::Equal.xbox_value()),
         ];
-        object_pass(map::TagId(0xe000_0001), &imp, &rigid_program(), crate::program::INPUT_MASK, [shaders::vsh::InputFetch::Float; 16], true)
+        object_pass(map::TagId(0xe000_0001), &imp, &[], &rigid_program(), crate::program::INPUT_MASK, [shaders::vsh::InputFetch::Float; 16], true)
             .unwrap_or_else(|e| panic!("{e}"))
     }
 
@@ -3024,7 +3042,7 @@ mod tests {
             ],
         };
         let mut materials = HashMap::new();
-        materials.insert(0, LitMaterial { material, shader: ShaderValues::default() });
+        materials.insert(0, LitMaterial { material, shader: ShaderValues::default(), properties: Vec::new() });
         let mut vertex = |_: map::TagId, _: u16, _: u8| Ok::<_, String>((rigid_program(), vec![0u16, 3, 2]));
         let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
         let build = lit_model(&[section], &materials, &formats(), &EngineStages::default(), &mut vertex, &mut image);
@@ -3072,7 +3090,7 @@ mod tests {
         let mut opaque = lit();
         opaque.render_states = vec![state(RenderStateType::AlphaBlendEnable, 0), state(RenderStateType::ZWriteEnable, 1)];
         let mut materials = HashMap::new();
-        materials.insert(0, LitMaterial { material: material(vec![opaque]), shader: ShaderValues::default() });
+        materials.insert(0, LitMaterial { material: material(vec![opaque]), shader: ShaderValues::default(), properties: Vec::new() });
         let mut vertex = |_: map::TagId, _: u16, _: u8| Ok::<_, String>((rigid_program(), vec![0u16, 3, 2]));
         let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
         let engine = EngineStages { view: true, ..EngineStages::default() };
@@ -3096,7 +3114,7 @@ mod tests {
                 ResolvedLayer { lod: 0, layer: 7, passes: vec![pass(vec![camo])] },
             ],
         };
-        let overrides = HashMap::from([(OVERRIDE_MATERIAL, LitMaterial { material: camouflage, shader: ShaderValues::default() })]);
+        let overrides = HashMap::from([(OVERRIDE_MATERIAL, LitMaterial { material: camouflage, shader: ShaderValues::default(), properties: Vec::new() })]);
         let sections = override_sections(std::slice::from_ref(&section));
         assert!(sections[0].parts.iter().all(|(_, m, _)| *m == OVERRIDE_MATERIAL));
         let built = lit_model(&sections, &overrides, &formats(), &engine, &mut vertex, &mut image);
@@ -3185,7 +3203,7 @@ mod tests {
             ],
         };
         let mut materials = HashMap::new();
-        materials.insert(0, LitMaterial { material, shader: ShaderValues::default() });
+        materials.insert(0, LitMaterial { material, shader: ShaderValues::default(), properties: Vec::new() });
         let mut vertex = |_: map::TagId, _: u16, _: u8| Ok::<_, String>((rigid_program(), vec![0u16, 3, 2]));
         let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
         let build = lit_model(std::slice::from_ref(&section), &materials, &prt_formats(), &EngineStages::default(), &mut vertex, &mut image);
@@ -3212,7 +3230,7 @@ mod tests {
     fn a_prt_item_draws_its_passes_prt_variant_with_its_constants() {
         use crate::object_program::tests::rigid_program;
         use frame_scene::{InstanceKey, LayerInputs, PrtStream};
-        let plain = object_layer_pass(map::TagId(0xe000_0001), &additive(0), &rigid_program(), crate::program::INPUT_MASK, [shaders::vsh::InputFetch::Float; 16])
+        let plain = object_layer_pass(map::TagId(0xe000_0001), &additive(0), &[], &rigid_program(), crate::program::INPUT_MASK, [shaders::vsh::InputFetch::Float; 16])
             .unwrap_or_else(|e| panic!("{e}"));
         let mut with_prt = plain.clone();
         with_prt.prt = Some(PrtInput {
@@ -3286,7 +3304,7 @@ mod tests {
         use crate::object_program::tests::rigid_program;
         use frame_scene::{InstanceKey, LayerInputs, LayerObjectRefusal};
         let compile = |index| {
-            object_layer_pass(map::TagId(0xe000_0001), &additive(index), &rigid_program(), crate::program::INPUT_MASK, [shaders::vsh::InputFetch::Float; 16])
+            object_layer_pass(map::TagId(0xe000_0001), &additive(index), &[], &rigid_program(), crate::program::INPUT_MASK, [shaders::vsh::InputFetch::Float; 16])
                 .unwrap_or_else(|e| panic!("{e}"))
         };
         let passes = [compile(0), compile(1)];
