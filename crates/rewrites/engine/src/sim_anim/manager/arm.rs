@@ -175,3 +175,109 @@ impl Prediction {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use runtime::guest::Permissions;
+
+    // Synthetic graph view just after its graph-element callback: the
+    // guest saves its argument and return PC, then enters the resource
+    // lookup with the callback's answer still in ESI.
+    const ENTRY: u32 = 0x1ddb40;
+    const SELECTOR: u32 = 0x1ddb60;
+    const RESOURCE: u32 = 0x1dd7c0;
+    const RETURN_TO: u32 = 0x1ddb6a;
+    const STACK: u32 = 0x10800;
+
+    fn fixture() -> (Guest, CpuAbi) {
+        let mut ram = Guest::new();
+        ram.map(0x10000, 0x1000, 0, Permissions::RW).unwrap();
+        ram.map(0x20000, 0x1000, 0, Permissions::RW).unwrap();
+        ram.map_zeroed(ENTRY, lookup(ENTRY).unwrap().end - ENTRY, Permissions::RX)
+            .unwrap();
+        let cpu = CpuAbi {
+            eip: SELECTOR,
+            esp: STACK,
+            eax: 0x123456,
+            ebx: 0xabcdef01,
+            ebp: 0x35,
+            ..CpuAbi::default()
+        };
+        (ram, cpu)
+    }
+
+    #[test]
+    fn callback_frame_is_predicted_without_touching_live_state() {
+        let (mut ram, before) = fixture();
+        let p = plan(lookup(ENTRY).unwrap(), &before, &mut ram, SELECTOR).unwrap();
+        assert_eq!(ram.u32(STACK - 8).unwrap(), 0);
+        assert_eq!(ram.u32(STACK - 4).unwrap(), 0);
+
+        let after = CpuAbi {
+            eip: RESOURCE,
+            esp: STACK - 8,
+            ecx: before.ebp,
+            esi: before.eax,
+            ..before
+        };
+        let transfer = TransferAbi::call(RESOURCE, RETURN_TO);
+        // Write the original's frame through its second mapping.
+        ram.set_u32(STACK + 0x10000 - 4, before.ebx).unwrap();
+        ram.set_u32(STACK + 0x10000 - 8, RETURN_TO).unwrap();
+        assert_eq!(p.difference(&after, &ram, transfer), None);
+        let mut clobbered = after;
+        clobbered.xmm[5][4] = 1;
+        assert_eq!(
+            p.difference(&clobbered, &ram, transfer).unwrap().what,
+            "xmm5"
+        );
+        assert_eq!(
+            p.difference(&after, &ram, TransferAbi::jump(RESOURCE))
+                .unwrap()
+                .what,
+            "transfer"
+        );
+        ram.set_u8(STACK - 2, 0x76).unwrap();
+        let m = p.difference(&after, &ram, transfer).unwrap();
+        assert_eq!(
+            (m.pc, m.what.as_str(), m.plan.as_str(), m.guest.as_str()),
+            (SELECTOR, "physical RAM 0x000007fe", "0xcd", "0x76")
+        );
+    }
+
+    #[test]
+    fn fault_stop_and_yield_do_not_count_as_parity() {
+        let (mut ram, cpu) = fixture();
+        let counts = || {
+            stats()
+                .into_iter()
+                .find(|(entry, _)| *entry == ENTRY)
+                .map(|(_, s)| s)
+                .unwrap_or_default()
+        };
+        let initial = counts();
+        for transfer in [
+            TransferAbi::fault(9),
+            TransferAbi::stop(12),
+            TransferAbi::resume(SELECTOR),
+        ] {
+            predict(&cpu, &mut ram, SELECTOR)
+                .unwrap()
+                .compare(&cpu, &ram, transfer);
+        }
+        predict(&cpu, &mut ram, SELECTOR).unwrap().guest_error();
+        // The first push is mapped, the second falls off its mapping.
+        let short = CpuAbi {
+            esp: 0x10004,
+            ..cpu
+        };
+        assert!(predict(&short, &mut ram, SELECTOR).is_none());
+        assert_eq!(ram.u32(0x10000).unwrap(), 0);
+        let after = counts();
+        assert_eq!(after.interrupted, initial.interrupted + 4);
+        assert_eq!(after.declined, initial.declined + 1);
+        assert_eq!(after.matched, initial.matched);
+        assert_eq!(after.differed, initial.differed);
+    }
+}
