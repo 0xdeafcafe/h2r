@@ -48,6 +48,12 @@ pub enum ModelAction {
     Seal,
     Undo,
     Redo,
+    /// **Use for lower LODs** on a model section: point every lower level
+    /// of detail of each permutation that draws it at it (`on`), or leave
+    /// them as they were. One undo step, saved as patches of the
+    /// permutations' LOD indices
+    /// (`geometry_edit::GeometrySession::set_use_for_lower_lods`).
+    UseForLowerLods { target: Target, on: bool },
     /// Add a closed box solid inside `[lo, hi]` to structure `structure`'s
     /// level collision, onto the solids added before
     /// (`geometry_edit::level_collision::LevelEdit::add_box`). A paired
@@ -134,6 +140,18 @@ impl App {
                 self.info(msg);
                 Ok(())
             }
+            ModelAction::UseForLowerLods { target, on } => self
+                .modeling
+                .session
+                .set_use_for_lower_lods(target, on)
+                .map(|changed| {
+                    self.info(match (changed, on) {
+                        (true, true) => format!("{}: lower levels of detail use this section", target.id()),
+                        (true, false) => format!("{}: lower levels of detail as the file has them", target.id()),
+                        (false, _) => format!("{}: no change to the levels of detail", target.id()),
+                    })
+                })
+                .map_err(|e| e.to_string()),
             ModelAction::AddCollisionBox {
                 structure,
                 lo,
@@ -259,6 +277,13 @@ impl App {
                             }),
                         }
                     }
+                    c.grown.extend(p.grown.into_iter().map(|g| GeometryGrown {
+                        pair_space: g.pair_space,
+                        pair: g.pair,
+                        count: g.count,
+                        bytes: g.bytes,
+                        align: g.align,
+                    }));
                     c.raw_patches = p
                         .raw
                         .into_iter()

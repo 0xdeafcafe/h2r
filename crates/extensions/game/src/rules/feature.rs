@@ -556,14 +556,18 @@ pub fn network_roles(m: &dyn GuestMemory) -> Option<crate::actor_net::roles::Sta
 /// Nothing without the feature.
 pub fn bounces(
     m: &dyn GuestMemory,
+    bodies: &[crate::superbounce_chain::Body],
     physics: &[(u8, crate::superbounce_chain::Physics)],
     awards: &[crate::superbounce_chain::Award],
 ) {
-    if awards.is_empty() && physics.is_empty() {
-        return;
-    }
     if let Some(s) = SHARED.get() {
         let mut rt = s.lock();
+        // The reads `p.airborne` and `p.primed` are the chain's latest view
+        // of each biped, set on every step so none goes stale.
+        rt.bodies(bodies);
+        if awards.is_empty() && physics.is_empty() {
+            return;
+        }
         rt.physics(m, physics);
         rt.bounces(m, awards);
     }

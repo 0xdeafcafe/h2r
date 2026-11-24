@@ -138,7 +138,7 @@ entries and `firefight.director` are deleted.
 | a landing, with its speeds | `on touchdown(p, down, up)` (**built**, from the host while the mode runs) |
 | a landing the host judged a bounce, its strip and its launch | `on launch(p, spot, speed)` (**built**) |
 | the end of a run of bounces | `on grounded(p)` (**built**) |
-| whether the player was primed the tick before | `p.primed`, kept in a player variable each tick |
+| whether the player was primed the tick before | `p.primed` (**built** on the host, from the chain's view of the biped), kept in a player variable each tick |
 | whether the landing was on a strip | the scanner's strips as a built-in label (`label strip: zones = "sb_strip"`), a label source beside the netgame flags in `rules/census.rs`; `distance` |
 | chains and a fall out of the map | player variables, `on launch`, `on grounded`, `on bounced` (**built**: `superbounce.rules`) |
 | the priming pill, the next spot's navpoint | `hud_show`, `mark` |
@@ -152,7 +152,8 @@ counts and scores equal the Rust chain's on every tick of
 `superbounce_chain_tests.rs` (`superbounce_chain_twin.rs`). The sketch
 below is the step after it, which judges a landing in the script from
 `on touchdown`, `p.primed` and the strips as a label; it waits on the
-reads' host half and the `sb_strip` label source.
+`sb_strip` label source (the `airborne` and `primed` reads are the
+host's; `sees` and `crouching` are not).
 
 ```text
 rules "Superbounce" 1

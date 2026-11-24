@@ -588,6 +588,33 @@ fn the_game_reads_the_roster_the_statborg_and_the_record() {
     assert_eq!(calls, [Call::End], "a call through none does nothing");
 }
 
+#[test]
+fn the_game_answers_airborne_and_primed_from_the_chains_bodies() {
+    use crate::superbounce_chain::Body;
+    let (m, _) = guest([0; LEN], SLAYER);
+    let mut calls = Vec::new();
+    let bodies = [
+        Body { slot: 0, airborne: true, primed: false },
+        Body { slot: 1, airborne: false, primed: true },
+    ];
+    let mut g = GuestGame::new(&m, &mut calls).with_bodies(&bodies);
+    let read = |g: &mut GuestGame<'_>, name: &str, p: Option<u8>| {
+        g.read(&VmCall {
+            entry: caps::entry_named(name).unwrap(),
+            args: vec![Arg::Player(p)],
+        })
+    };
+    assert_eq!(read(&mut g, "airborne", Some(0)), 1);
+    assert_eq!(read(&mut g, "primed", Some(0)), 0);
+    assert_eq!(read(&mut g, "airborne", Some(1)), 0);
+    assert_eq!(read(&mut g, "primed", Some(1)), 1);
+    assert_eq!(read(&mut g, "primed", Some(5)), 0, "no body, no read");
+    assert_eq!(read(&mut g, "primed", None), 0, "through none reads false");
+    let mut calls = Vec::new();
+    let mut none = GuestGame::new(&m, &mut calls);
+    assert_eq!(read(&mut none, "primed", Some(1)), 0, "no step, no bodies");
+}
+
 // ---- scripts from the game-variant store and Live ----
 
 use crate::game_variants::GameScripts;

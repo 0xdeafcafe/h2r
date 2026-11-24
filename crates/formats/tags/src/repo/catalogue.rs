@@ -3,8 +3,8 @@
 //!
 //! ```text
 //! h2 asset catalogue 1
-//! normal <version of the normal forms>
-//! record <sha256 of extract.toml, or ->
+//! normal\t<version of the normal forms>
+//! record\t<sha256 of extract.toml, or ->
 //! map\t<stem>\t<sha256 of the manifest's text>
 //! asset\t<group>\t<path>\t<asset hash>\t<variant or ->\t<map,map,...>
 //! used\t<group>\t<path>\t<group>\t<path>\t<group>\t<path>...
@@ -104,7 +104,7 @@ impl Catalogue {
     /// [`Catalogue::parse`]'s text.
     pub fn to_text(&self) -> String {
         let mut s = format!(
-            "{MAGIC}\nnormal {}\nrecord {}\n",
+            "{MAGIC}\nnormal\t{}\nrecord\t{}\n",
             self.normal,
             self.record.as_deref().unwrap_or("-")
         );

@@ -1,5 +1,5 @@
-//! `frame-scene.layers`: the scene's world layers 1, 5, 7, 8, 20 and 17, the
-//! first person's layers 1, 7, 8 and 20, and the sorted transparent list's
+//! `frame-scene.layers`: the scene's world layers 1, 5, 7, 8, 20, 2 and 17, the
+//! first person's layers 1, 7, 8, 20 and 2, and the sorted transparent list's
 //! camouflage layers 18 and 19 and hologram layer 21, drawn from the scene's plan instead of the guest's
 //! draws under the layer call (docs/graphics/framescene.md, slice 4;
 //! docs/graphics/native-water-fog.md for 18, 19 and 21). On with the native renderer;
@@ -39,15 +39,16 @@ use hooks::{BuildError, Builder, Feature, Manifest};
 
 pub const ID: &str = "frame-scene.layers";
 
-/// The scene's layers taken: 1, 5, 7, 8 and 20 around layer 3, and the
-/// late layer 17 (`layer_pass::BLOOM_LAYER`).
-pub const LAYERS: [u32; 6] = [1, 5, 7, 8, 20, 17];
+/// The scene's layers taken: 1, 5, 7, 8 and 20 around layer 3, the
+/// overlay layer 2 after the dynamic lights (`layer_pass::OVERLAY_LAYER`)
+/// and the late layer 17 (`layer_pass::BLOOM_LAYER`).
+pub const LAYERS: [u32; 7] = [1, 5, 7, 8, 20, 2, 17];
 
 /// The first person's layers taken: `0x0003fdf0`'s calls besides layer
 /// 3, which `native_first_person` owns. It calls layers 1, 3, 8, 20 and
 /// 7, then layer 2 when `0x00044370` says so (`0x000400a6..0x00040284`);
 /// it has no layer 5.
-pub const FIRST_PERSON_LAYERS: [u32; 4] = [1, 7, 8, 20];
+pub const FIRST_PERSON_LAYERS: [u32; 5] = [1, 7, 8, 20, 2];
 
 /// The sorted transparent list's handlers' layers taken: the
 /// camouflage handler `0x00041cc0`'s 18 and 19 (19 drawn into render
@@ -262,7 +263,7 @@ pub struct NativeLayers;
 
 impl Feature for NativeLayers {
     fn manifest(&self) -> Manifest {
-        Manifest::new(ID, "World layers 1, 5, 7, 8, 20 and 17, the first person's 1, 7, 8 and 20 and the camouflage handler's 18 and 19 and the hologram's 21 drawn from the scene's plan")
+        Manifest::new(ID, "World layers 1, 5, 7, 8, 20, 2 and 17, the first person's 1, 7, 8, 20 and 2 and the camouflage handler's 18 and 19 and the hologram's 21 drawn from the scene's plan")
             .doc("docs/graphics/framescene.md")
     }
 
@@ -332,6 +333,19 @@ mod tests {
         assert_eq!(caller(17, 0x0002_c30b), Some(LayerCaller::Scene));
         assert_eq!(caller(17, 0x0002_c010), None, "another layer's return");
         assert_eq!(caller(16, 0x0002_c0e9), None, "the fog's late layer is native_fog's");
+    }
+
+    #[test]
+    fn the_stage_takes_the_scenes_and_the_first_persons_overlay_layer_2() {
+        assert_eq!(caller(2, 0x0002_c060), Some(LayerCaller::Scene), "after the dynamic lights");
+        assert_eq!(caller(2, 0x0004_0289), Some(LayerCaller::FirstPerson), "after the first person's layer 7");
+        assert_eq!(caller(2, 0x0002_bda8), None, "an alternate view's");
+        assert_eq!(caller(2, 0x0002_c30b), None, "layer 17's return");
+        count(2, "taken", 2);
+        count_for(LayerCaller::FirstPerson, 2, "refused_state", 1);
+        let c: BTreeMap<String, u64> = counters().into_iter().collect();
+        assert!(c["layer_plan_2_taken"] >= 2);
+        assert!(c["layer_plan_fp2_refused_state"] >= 1, "the first person's apart");
     }
 
     #[test]

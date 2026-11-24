@@ -59,38 +59,44 @@ props:
     prop: "respawn time"
     open: keyboard
   prop.7:
+    text: "Return time"
+    help: "How long the item may be away from its spot before it goes back."
+    on: [spawner]
+    prop: "return time"
+    open: keyboard
+  prop.8:
     text: "Game types..."
     help: "Which game types the item appears in."
     on: [spawner]
     prop: games
     open: forge.games
-  prop.8:
+  prop.9:
     text: "Label"
     help: "A name a game type script finds this by. Lowercase letters, digits, - _ and ."
     prop: label
     open: keyboard
-  prop.9:
+  prop.10:
     text: "Label number"
     help: "Tells things with one label apart. Empty takes the number off."
     prop: "label number"
     open: keyboard
-  prop.10:
+  prop.11:
     text: "Clear label"
     help: "Take the label off."
     prop: "clear label"
     open: act
-  prop.11:
+  prop.12:
     text: "Save as prefab"
     help: "Save this object, its group or the selection to place again."
     on: [object]
     prop: prefab
     open: keyboard
-  prop.12:
+  prop.13:
     text: "Reset orientation"
     help: "Pitch and roll to zero, and the yaw to the rotation snap."
     prop: "reset orientation"
     open: act
-  prop.13:
+  prop.14:
     text: "Duplicate"
     help: "Make a copy of this object and hold it."
     on: [object]

@@ -93,7 +93,7 @@ pub fn section(ui: &Ui, app: &mut App, st: &mut ModelingPanel, actions: &mut Vec
     }
     let info = &targets[st.picked.min(targets.len() - 1)];
     let (t, local) = (info.target, info.local);
-    if t.kind != TargetKind::ModeSection {
+    if matches!(t.kind, TargetKind::Cluster | TargetKind::InstanceDef) {
         collision_box(ui, app, st, t.tag, actions);
     }
     let g = &app.modeling.session;
@@ -110,6 +110,12 @@ pub fn section(ui: &Ui, app: &mut App, st: &mut ModelingPanel, actions: &mut Vec
     }
     if ui.button("Leave edit mode##modeling-close") {
         actions.push(Action::Model(ModelAction::Close(t)));
+    }
+    if t.kind == TargetKind::ModeSection {
+        let mut on = g.uses_for_lower_lods(t);
+        if ui.checkbox("Use for lower LODs##modeling-lower-lods", &mut on) {
+            actions.push(Action::Model(ModelAction::UseForLowerLods { target: t, on }));
+        }
     }
     let apply = |ops: Vec<MeshOp>| {
         Action::Model(ModelAction::Apply {

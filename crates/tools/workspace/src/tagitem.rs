@@ -282,11 +282,14 @@ pub fn apply(cx: &mut Cx<'_>, job: &Job<'_>) -> Result<(), Failure> {
             // patch's `was`: its normal form when the build has the base's
             // assets, else its own. (A record that does not encode is the
             // latter.)
-            let hash = tags::defs::encode(def, key.clone(), &rec, tags::repo::Region::Metadata)
+            let normal = tags::defs::encode(def, key.clone(), &rec, tags::repo::Region::Metadata)
                 .ok()
-                .and_then(|tag| cx.asset_hash_of(&tag).ok())
-                .unwrap_or_else(|| crate::tag_hash(cx.set, id).expect("the tag is in the map"));
+                .and_then(|tag| cx.asset_hash_of(&tag).ok());
             cx.write_block(id, &key, block)?;
+            // Its own hash is the tag as written, so it is read after.
+            let hash = normal.unwrap_or_else(|| {
+                crate::tag_hash(cx.set, id).expect("the tag is in the map")
+            });
             cx.note_replaced(&key, hash);
         }
         None => {

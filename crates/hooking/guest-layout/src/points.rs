@@ -374,6 +374,10 @@ points! { ALL;
     BASE_OBJECT_IMPORT @ 0x000b_cc20: [fn(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al ret 16], Hot; "docs/perf/sim-budget.md";
     /// The integer MOPP box query: setup, then the interpreter below.
     COLLISION_MOPP_BOX @ 0x0030_0150: [fn(vm: ecx, code: stack 0, aabb: stack 1, array: stack 2) ret 12], Hot; "docs/engine/collision-queries.md";
+    /// The general MOPP ray: setup, then the float interpreter below; the result goes through the collector.
+    COLLISION_MOPP_RAY @ 0x0030_1800: [fn(vm: ecx, collection: stack 0, code: stack 1, input: stack 2, parent: stack 3, collector: stack 4) ret 20], Hot; "docs/engine/collision-queries.md";
+    /// The instanced-geometry collection's child method, called once per accepted MOPP key.
+    COLLISION_INSTANCE_CHILD @ 0x0024_4bb0: [fn(collection: ecx, key: stack 0, buffer: stack 1) -> eax ret 8], Hot; "docs/engine/collision-queries.md";
     SIM_MOPP_BOX @ 0x002f_f8b0: [fn(query: ecx, state: stack 0, program: stack 1) ret 8], Hot; "docs/perf/sim-budget.md";
     SIM_MOPP_RAY @ 0x0030_09e0: [fn(query: ecx, state: stack 0, program: stack 1, segment: stack 2) ret 12], Hot; "docs/perf/sim-budget.md";
     OBJECT_TRANSFORM_COMPOSE @ 0x0014_2a60: [fn(parent: ecx, child: edx, out: stack 0) -> eax ret 4], Hot; "docs/perf/sim-budget.md";
@@ -993,6 +997,11 @@ points! { ALL;
     /// Screen convolution blur, also called by the colour pass. From
     /// 0x0002da96, stack arguments 0 and 1 are the steps and tap spread.
     SCREEN_CONVOLUTION_BLUR @ 0x0002_11a0: [fn(source: eax, steps: stack 0, spread: stack 1, growth: stack 2, dest: stack 3, other: stack 4, last: stack 5, combine: stack 6, arg7: stack 7, arg8: stack 8, arg9: stack 9) -> eax ret 40]; "docs/graphics/native-renderer.md";
+    /// The blur under a dialog: XMM0 the screen's transition fraction,
+    /// times `[0x0045de14]` as the steps of one call of
+    /// [`SCREEN_CONVOLUTION_BLUR`] (returning to `0x00235794`), then a
+    /// bare RET. Called from the window stack's render at `0x00235128`.
+    UI_MODAL_BLUR @ 0x0023_5756: [fn(fraction: xmm0) ret 0]; "docs/graphics/native-post-hud.md";
     /// A unit's integrated-light update, called at the end of its tick.
     UNIT_LIGHT_UPDATE @ 0x000c_50a0: [fn(unit: eax) ret 0]; "docs/halo1/hud.md";
     /// A shader template's pass set up (`0x00016610`, called by

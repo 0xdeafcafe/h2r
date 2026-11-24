@@ -23,6 +23,11 @@
 
 pub mod bitmaps;
 
+mod list;
+mod model;
+mod text;
+
+pub use scene_extract::ui::{Justify, UiText};
 use std::cell::RefCell;
 use std::collections::HashSet;
 
@@ -90,6 +95,12 @@ pub enum MenuRefusal {
     Pass,
 }
 
+impl From<Unread> for MenuRefusal {
+    fn from(why: Unread) -> Self {
+        MenuRefusal::Widget(why)
+    }
+}
+
 impl MenuRefusal {
     pub fn counter(self) -> Ui {
         match self {
@@ -129,6 +140,8 @@ pub struct Claim {
     pub root: u32,
     /// Per entry: the run it is in.
     pub run_of: Vec<Option<usize>>,
+    /// A guest draw ran after planning. Later runs need fresh widget state.
+    guest_drew: bool,
     pub runs: Vec<Run>,
     pub skipped: u32,
 }
@@ -209,27 +222,51 @@ pub fn screen_rect(mem: &dyn GuestMemory) -> Option<[i16; 4]> {
     Some([word(0)?, word(1)?, word(2)?, word(3)?])
 }
 
-/// One drawn entry's items: its widget read and listed alone, or why the
-/// game draws it. `view` is the list's user argument, the view a bitmap
-/// widget's draw places it in.
-fn part(mem: &dyn GuestRead, e: &ListEntry, view: u32) -> Result<Overlay, MenuRefusal> {
-    let mut widget = match walk::read_widget(mem, e.widget, e.depth) {
-        Ok(widget) => widget,
-        Err(Unread::Bitmap) => {
-            bitmaps::read(mem, e.widget, e.depth, view).map_err(MenuRefusal::Bitmap)?
+/// Read one sorted entry in the pixel order of its virtual draw.
+/// `viewport` is the list's user argument, the view a bitmap widget's draw
+/// places it in.
+fn entry_frame(mem: &dyn GuestRead, e: &ListEntry, viewport: u32) -> Result<UiFrame, MenuRefusal> {
+    use walk::draws;
+    let draw = walk::widget_draw(mem, e.widget)?;
+    let mut frame = UiFrame::default();
+    let widget = match draw {
+        draws::TEXT | draws::BUTTON => {
+            // The draw receives the caller's viewport independently of SCREEN_RECT.
+            if viewport == 0 || mem.read_u32(viewport) != Some(0)
+                || viewport.checked_add(4).and_then(|p| mem.read_u32(p))
+                    != Some((walk::CANVAS[0] << 16) | walk::CANVAS[1]) {
+                return Err(Unread::Text.into());
+            }
+            if draw == draws::BUTTON {
+                frame.draws.extend(list::button_art(mem, e.widget, viewport)?.map(UiDraw::Bitmap));
+            }
+            text::read_widget(mem, e.widget, e.depth, draw == draws::BUTTON)?
         }
-        Err(why) => return Err(MenuRefusal::Widget(why)),
+        draws::LIST => {
+            frame.draws.extend(list::arrows(mem, e.widget, viewport)?.into_iter().map(UiDraw::Bitmap));
+            return Ok(frame);
+        }
+        draws::MODEL => walk::read_widget_header(mem, e.widget, e.depth, model::read(mem, e.widget)?)?,
+        _ => match walk::read_widget(mem, e.widget, e.depth) {
+            Ok(widget) => widget,
+            Err(Unread::Bitmap) => {
+                bitmaps::read(mem, e.widget, e.depth, viewport).map_err(MenuRefusal::Bitmap)?
+            }
+            Err(why) => return Err(MenuRefusal::Widget(why)),
+        },
     };
-    // The bias the guest sorted by.
-    widget.bias = e.bias;
-    let frame = UiFrame {
-        draws: vec![UiDraw::Screen(UiScreen {
-            backdrop: None,
-            widgets: vec![widget],
-        })],
-    };
+    frame.draws.push(UiDraw::Screen(UiScreen {
+        backdrop: None,
+        widgets: vec![walk::UiWidget { bias: e.bias, ..widget }],
+    }));
+    Ok(frame)
+}
+
+/// List the whole entry atomically, including both art and label for buttons.
+fn part(mem: &dyn GuestRead, e: &ListEntry, viewport: u32, fonts: &dyn UiText) -> Result<Overlay, MenuRefusal> {
+    let frame = entry_frame(mem, e, viewport)?;
     let mut part = Overlay::new(walk::CANVAS);
-    if walk::draw_list(&frame, &NoText, &mut part)
+    if walk::draw_list(&frame, fonts, &mut part)
         .iter()
         .any(|l| l.note.is_some())
     {
@@ -242,6 +279,10 @@ fn part(mem: &dyn GuestRead, e: &ListEntry, view: u32) -> Result<Overlay, MenuRe
 /// of consecutive drawn entries, and each drawn entry the game keeps, with
 /// why. An entry outside the window is not drawn and ends no run.
 pub fn plan(mem: &dyn GuestRead, list: &UiList) -> (Claim, Vec<(u32, MenuRefusal)>) {
+    plan_with_text(mem, list, &NoText, &|_| false)
+}
+
+fn plan_with_text(mem: &dyn GuestRead, list: &UiList, fonts: &dyn UiText, custom: &dyn Fn(u32) -> bool) -> (Claim, Vec<(u32, MenuRefusal)>) {
     let mut runs: Vec<Run> = Vec::new();
     let mut refused = Vec::new();
     let mut open = false;
@@ -249,7 +290,12 @@ pub fn plan(mem: &dyn GuestRead, list: &UiList) -> (Claim, Vec<(u32, MenuRefusal
         if !walk::in_window(e.depth, list.window) {
             continue;
         }
-        let items = match part(mem, e, list.user) {
+        if custom(e.widget) {
+            refused.push((i as u32, MenuRefusal::Widget(Unread::Draw)));
+            open = false;
+            continue;
+        }
+        let items = match part(mem, e, list.user, fonts) {
             Ok(items) => items,
             Err(MenuRefusal::Widget(Unread::Shader)) => {
                 // A shader bitmap: the game draws it, and its quad is drawn
@@ -292,6 +338,7 @@ pub fn plan(mem: &dyn GuestRead, list: &UiList) -> (Claim, Vec<(u32, MenuRefusal
         frame: list.frame,
         root: list.root,
         run_of,
+        guest_drew: false,
         runs,
         skipped: 0,
     };
@@ -321,6 +368,7 @@ pub fn at_item(frame: u32, ordinal: u32) -> Item {
             return Item::Game;
         };
         let Some(Some(run)) = claim.run_of.get(ordinal as usize).copied() else {
+            claim.guest_drew = true;
             return Item::Game;
         };
         match claim.runs[run].placed {
@@ -332,18 +380,46 @@ pub fn at_item(frame: u32, ordinal: u32) -> Item {
             None if claim.runs[run].entries.first() == Some(&ordinal) => Item::Place(run),
             // A later entry of a run whose first was not drawn: the run is
             // not placed, and the game draws it.
-            None => Item::Game,
+            None => {
+                claim.guest_drew = true;
+                Item::Game
+            },
         }
     })
 }
 
 /// The items of run `run` of the claim at `frame`, to place.
-pub fn run_part(frame: u32, run: usize) -> Option<Overlay> {
-    CLAIMS.with(|c| {
+pub fn run_part(frame: u32, run: usize, mem: &dyn GuestMemory) -> Option<Overlay> {
+    let pending = CLAIMS.with(|c| {
         let claims = c.borrow();
         let claim = claims.iter().rev().find(|c| c.frame == frame)?;
-        Some(claim.runs.get(run)?.part.clone())
-    })
+        let run = claim.runs.get(run)?;
+        Some(if claim.guest_drew {
+            Err((claim.root, run.entries.clone()))
+        } else {
+            Ok(run.part.clone())
+        })
+    })?;
+    let (root, ordinals) = match pending {
+        Ok(part) => return Some(part),
+        Err(refresh) => refresh,
+    };
+    if screen_rect(mem) != Some(FULL_SCREEN) {
+        return None;
+    }
+    let list = at_list(mem, frame, root)?;
+    let host = super::host()?;
+    let fonts = host.ui_text(mem);
+    let mut refreshed = Overlay::new(walk::CANVAS);
+    for ordinal in ordinals {
+        let entry = list.entries.get(ordinal as usize)?;
+        if host.ui_custom_widget(mem, entry.widget) {
+            return None;
+        }
+        let items = part(&Ro(mem), entry, list.user, fonts.as_deref().unwrap_or(&NoText)).ok()?;
+        refreshed.append(&items).ok()?;
+    }
+    Some(refreshed)
 }
 
 /// Records whether run `run` of the claim at `frame` was placed; when it
@@ -356,6 +432,7 @@ pub fn placed(frame: u32, run: usize, placed: bool) {
         };
         if let Some(r) = claim.runs.get_mut(run) {
             r.placed = Some(placed);
+            claim.guest_drew |= !placed;
             if placed {
                 claim.skipped += 1;
             }
@@ -401,7 +478,10 @@ pub fn claim_list(mem: &dyn GuestMemory, list: &UiList) -> Result<Claim, MenuRef
     if refused(list.root) {
         return Err(MenuRefusal::Mismatched);
     }
-    let (claim, refused) = plan(&Ro(mem), list);
+    let host = super::host();
+    let fonts = host.as_ref().and_then(|host| host.ui_text(mem));
+    let custom = |widget| host.as_ref().is_some_and(|h| h.ui_custom_widget(mem, widget));
+    let (claim, refused) = plan_with_text(&Ro(mem), list, fonts.as_deref().unwrap_or(&NoText), &custom);
     for (_, why) in refused {
         why.counter().count();
     }
@@ -519,6 +599,15 @@ mod tests {
         );
         let (none, _) = plan(&mem, &list(0x8000, [5.0, 5.0, 0.0, 5.0, 5.0]));
         assert!(none.runs.is_empty(), "only the text is drawn");
+    }
+
+    #[test]
+    fn a_custom_picture_splits_the_run_even_when_its_guest_draw_has_no_pixels() {
+        let mut mem = widgets();
+        mem.w(0x1200, NONE_VTABLE);
+        let (claim, refused) = plan_with_text(&mem, &list(0x8000, [0.0; 5]), &NoText, &|w| w == 0x1200);
+        assert_eq!(refused, [(2, MenuRefusal::Widget(Unread::Draw))]);
+        assert_eq!(claim.run_of, [Some(0), Some(0), None, Some(1), Some(1)]);
     }
 
     /// Each run is placed at its first draw and its entries are left out;

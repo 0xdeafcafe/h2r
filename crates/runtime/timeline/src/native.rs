@@ -529,7 +529,7 @@ impl SceneList {
     }
 }
 
-const UI_COLUMNS: [&str; Ui::OverlayMenuRefusedPass as usize + 1] = [
+const UI_COLUMNS: [&str; Ui::OverlayModalBlurRefusedTargets as usize + 1] = [
     "items",
     "item_refused",
     "fallback_geometry",
@@ -601,6 +601,13 @@ const UI_COLUMNS: [&str; Ui::OverlayMenuRefusedPass as usize + 1] = [
     "overlay_menu_refused_unreadable",
     "overlay_menu_refused_unlisted",
     "overlay_menu_refused_pass",
+    "overlay_modal_blurs",
+    "overlay_modal_blur_replayed",
+    "overlay_modal_blur_refused_pass",
+    "overlay_modal_blur_refused_arguments",
+    "overlay_modal_blur_refused_steps",
+    "overlay_modal_blur_refused_combiner",
+    "overlay_modal_blur_refused_targets",
 ];
 const UI_OFFSET: usize = SCENE_LIST_START + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len();
 const ANIMATION_OFFSET: usize = UI_OFFSET + UI_COLUMNS.len();
@@ -744,6 +751,20 @@ pub enum Ui {
     OverlayMenuRefusedUnlisted,
     /// Lists or runs whose pass the host did not place.
     OverlayMenuRefusedPass,
+    /// The blur under a dialog (docs/graphics/native-post-hud.md, "The
+    /// blur under a dialog"): calls whose draws the overlay's blur
+    /// replaced; calls armed whose draws were given back (a draw off the
+    /// plan, a pass that did not record); calls the host did not arm.
+    OverlayModalBlurs,
+    OverlayModalBlurReplayed,
+    OverlayModalBlurRefusedPass,
+    /// Calls the game draws, by what did not read: a word not the one
+    /// `0x00235756` pushes, endless steps, a combiner the blur step does
+    /// not draw, a draw outside targets 0 and 1.
+    OverlayModalBlurRefusedArguments,
+    OverlayModalBlurRefusedSteps,
+    OverlayModalBlurRefusedCombiner,
+    OverlayModalBlurRefusedTargets,
 }
 
 impl Ui {

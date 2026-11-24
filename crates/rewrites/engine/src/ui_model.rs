@@ -27,14 +27,32 @@ const RANGE_LIMIT: usize = 2560;
 /// The guest callback returns without touching the camera, object flags or
 /// draw state in these two cases.
 pub fn is_idle(mem: &dyn GuestMemory, widget: u32) -> Option<bool> {
-    if mem.u32(USER_SELECTION).ok()? != MODEL_USER {
-        return Some(true);
+    Some(match selection(widget, |at| mem.u32(at).ok())? {
+        Selection::Inactive => true,
+        Selection::Names { objects, lights, .. } => objects <= 0 && lights <= 0,
+    })
+}
+
+/// The widget's name blocks before the guest resolves them against the
+/// current scenario. The inactive branch does not read the widget.
+pub enum Selection {
+    Inactive,
+    Names { definition: u32, objects: i32, lights: i32 },
+}
+
+pub fn selection(widget: u32, word: impl Fn(u32) -> Option<u32>) -> Option<Selection> {
+    if word(USER_SELECTION)? != MODEL_USER {
+        return Some(Selection::Inactive);
     }
-    let def = definition(mem, widget)?;
-    Some(
-        mem.i32(def.checked_add(PRIMARY_NAME_COUNT)?).ok()? <= 0
-            && mem.i32(def.checked_add(SECONDARY_NAME_COUNT)?).ok()? <= 0,
-    )
+    let definition = word(widget.checked_add(WIDGET_DEFINITION)?)?;
+    if definition == 0 {
+        return None;
+    }
+    Some(Selection::Names {
+        definition,
+        objects: word(definition.checked_add(PRIMARY_NAME_COUNT)?)? as i32,
+        lights: word(definition.checked_add(SECONDARY_NAME_COUNT)?)? as i32,
+    })
 }
 
 fn definition(mem: &dyn GuestMemory, widget: u32) -> Option<u32> {
