@@ -16,6 +16,14 @@ caches edge origins and deltas for short surface rings and tests them
 four at a time ([ring layout](sim-rewrite-collision.md#44-rings-and-the-inside-test)).
 The whole query's object-reference sphere pretest runs through the Rust
 sphere kernel at its guest call site ([sphere pretest](collision-queries.md#object-reference-sphere-pretest)).
+Phase 5 has landed its kernels and arms
+([sim-rewrite-havok.md](sim-rewrite-havok.md)): `impl.sim.native.physics`
+installs the world step, island collide and island integrate entries, the
+broadphase batch update, the two unconstrained-motion methods and the
+MOPP box query run as capture arms compared with the guest, and the Havok
+heap digest (`havok.digest`, the sim report's `havok.world` component)
+covers what the arena hash cannot. The per-function Havok and MOPP box
+switches are retired. The run ladder and the timing gate are open.
 The plan replaces the verdict in
 [feature-engine.md](feature-engine.md) ("Subsystem map and ranking", rows
 15-18) that objects, AI and physics "stay recompiled". The user asked on

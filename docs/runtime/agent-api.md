@@ -5676,7 +5676,7 @@ are checked: a port's `impl.` switch puts it in the plan, and
 `shadow.enable` is the only switch for the checks.
 
 Ports are named by switch (`sim.native_unit_pose`,
-`sim.native_havok_solver`), by group (`sim.native`, `sim.physics`) or
+`sim.native_spatial_visit`), by group (`sim.native`, `sim.physics`) or
 `all`.
 
 | Method | Access | What |

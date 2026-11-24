@@ -901,10 +901,11 @@ on the coordinator's integration pass.
 Order: S0, then S1 and S3's decoder in parallel, S2, S3, S4 and S5 in
 parallel, S6, S7. S2 before S3 because the instance trace calls the segment
 kernel. After S5 the per-function switches `native_point_to_leaf`,
-`native_geometry_test`, `native_bsp_segment`, `native_mopp_box`,
-`native_mopp_ray`, `native_spatial_visit` and `native_spatial_portal` are
+`native_geometry_test`, `native_bsp_segment`, `native_mopp_ray`,
+`native_spatial_visit` and `native_spatial_portal` are
 deleted; `native_collision_query` goes with S7. Their bodies stay as
-differential oracles.
+differential oracles. `native_mopp_box` retired with the physics switch
+instead: the integer MOPP box query moves with Havok.
 
 Lane ownership: new `crates/rewrites/sim-collision`, `crates/rewrites/engine/src/sim_collision`,
 `crates/rewrites/engine/tests/sim_collision_differential.rs`,

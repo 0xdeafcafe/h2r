@@ -84,11 +84,6 @@ pub(crate) const ENTRIES: &[(&points::Point, &str, Body)] = &[
         sim::collision::query,
     ),
     (
-        &points::SIM_MOPP_BOX,
-        "sim.native_mopp_box",
-        sim::mopp_query::box_query,
-    ),
-    (
         &points::SIM_MOPP_RAY,
         "sim.native_mopp_ray",
         sim::mopp_query::ray_query,
