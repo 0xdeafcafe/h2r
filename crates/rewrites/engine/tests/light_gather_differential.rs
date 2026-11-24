@@ -3527,6 +3527,8 @@ fn object_shadow_rows_match_the_lifted_original() {
 const SHADOW_CASTER_STUBS: Stubs = &[
     (SHADOW_ELIGIBLE, &[], 3, 12),
     (0x0003_d7c0, &[6, 7], 0, 0),    // chain visibility, also writes through EDI
+    (0x0003_2ac0, &[3, 6, 7], 0, 0), // switch from mask to creature
+    (0x0003_2ce0, &[0, 3, 6, 7], 1, 4), // draw creature, EAX object
     (0x0003_dc90, &[], 1, 4),         // lighting sample
     (0x0003_1f50, &[], 5, 20),        // extents
     (0x0003_0bf0, &[0], 0, 0),        // vector to normalize
@@ -3612,6 +3614,10 @@ enum MaskCase {
     AtThreshold,
     AboveThreshold,
     OutsideBounds,
+    EnterCreature,
+    DeclineCreature,
+    ContinueCreature,
+    InactiveCreature,
 }
 
 #[test]
@@ -3623,13 +3629,20 @@ fn object_shadow_caster_matches_the_lifted_original() {
                 NoClusters, NoCasters, NoReceivers, DeclineLayer, BothLayers,
                 FilterClearsReceiver, StencilSkipsDraw, Ineligible, AttachedDuringEligibility,
                 DisabledDuringEligibility, Hidden, NoSample, ZeroStrength, BelowThreshold,
-                AtThreshold, AboveThreshold, OutsideBounds,
+                AtThreshold, AboveThreshold, OutsideBounds, EnterCreature, DeclineCreature,
+                ContinueCreature, InactiveCreature,
             ] {
                 let mut r = Rng(seed ^ ((case as u64) << 32) ^ 0x2350);
                 let mut w = World::new(image, &mut r, 4);
                 let c = cpu(&mut r);
                 let esp = c.gpr[4];
                 shadow_caster_world(&mut w, &mut r, esp, case as u32);
+                let creature = matches!(case, EnterCreature | DeclineCreature | ContinueCreature | InactiveCreature);
+                if creature {
+                    let mask = matches!(case, EnterCreature | DeclineCreature);
+                    put8(&mut w.mem, SHADOW_LIST_MODE, u8::from(mask));
+                    put8(&mut w.mem, SHADOW_LIST_MODE + 1, if case == InactiveCreature { 0 } else { 0xb3 });
+                }
                 let threshold_case = matches!(case, BelowThreshold | AtThreshold | AboveThreshold);
                 if threshold_case {
                     putf(&mut w.mem, esp + 8, 1.0);
@@ -3651,12 +3664,24 @@ fn object_shadow_caster_matches_the_lifted_original() {
                                 } else if case == DisabledDuringEligibility {
                                     put8(m, SHADOWS_ON, 0);
                                 }
-                                put8(m, c.args[2], 0);
+                                let kind = if creature { r.u32() as u8 | 1 } else { 0 };
+                                put8(m, c.args[2], kind);
                                 eax = (eax & !0xff) | u32::from(case != Ineligible);
                             }
                             0x0003_d7c0 => {
                                 put8(m, c.regs[1], r.u32() as u8);
                                 eax = (eax & !0xff) | u32::from(case != Hidden);
+                            }
+                            0x0003_2ac0 => {
+                                assert_eq!(m.bytes[SHADOW_LIST_MODE as usize], 1);
+                                eax = (eax & !0xff) | u32::from(case == EnterCreature);
+                            }
+                            0x0003_2ce0 => {
+                                let mode = SHADOW_LIST_MODE as usize;
+                                let active = if case == EnterCreature { 1 } else { 0xb3 };
+                                assert_eq!(&m.bytes[mode..mode + 2], &[0, active]);
+                                // The low byte of the final answer is reloaded after the draw.
+                                put8(m, esp - 0xb50 + 0x13, 0x91);
                             }
                             0x0003_dc90 => {
                                 eax = if case == NoSample { 0 } else { SHADOW_LIGHTING + 0x1c };
@@ -3710,6 +3735,17 @@ fn object_shadow_caster_matches_the_lifted_original() {
                     },
                     &label,
                 );
+                if creature {
+                    let sites: &[u32] = match case {
+                        EnterCreature => &[0x0003_2394, 0x0003_23d5, 0x0003_2a3c, 0x0003_2a5a],
+                        DeclineCreature => &[0x0003_2394, 0x0003_23d5, 0x0003_2a3c],
+                        ContinueCreature => &[0x0003_2394, 0x0003_23d5, 0x0003_2a98],
+                        InactiveCreature => &[0x0003_2394, 0x0003_23d5],
+                        _ => unreachable!(),
+                    };
+                    assert_eq!(calls.iter().map(|c| c.site).collect::<Vec<_>>(), sites, "{label}");
+                    continue;
+                }
                 // The original and the body must stop at the same predicate even
                 // when it changes a gate that was satisfied during preflight.
                 let stopped_at = match case {
