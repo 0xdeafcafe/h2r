@@ -178,14 +178,50 @@ pub fn tree(ui: &Ui, app: &App, st: &mut TagsUi, fonts: &Fonts, actions: &mut Ve
     if !browse {
         st.scenario.update(app);
     }
+    // The filter and the arrangement sit at the top and cover every section
+    // under them; each section is a folding header in the panel's one scroll.
+    if ui.radio_button_bool("Groups", st.arrange == Arrange::Group) {
+        st.arrange = Arrange::Group;
+    }
+    ui.same_line();
+    if ui.radio_button_bool("Paths", st.arrange == Arrange::Path) {
+        st.arrange = Arrange::Path;
+    }
+    ui.set_next_item_width(-1.0);
+    ui.input_text("##tag-filter", &mut st.filter)
+        .hint(format!("{} words of group:name", icon::SEARCH))
+        .build();
+    let filter = st.filter.to_ascii_lowercase();
+    let hits = tag_tree::search(view.doc.tags(), &filter);
+    let refilter = st.opened_for.as_deref() != Some(filter.as_str());
+    st.opened_for = Some(filter.clone());
+    let narrowed = refilter && !filter.is_empty();
+    let filtering = !filter.is_empty();
+
     let model = st
         .scenario
         .model
         .as_ref()
         .filter(|_| scenario.is_some())
         .map(|(_, tree)| tree);
-    if let Some(tree) = model {
-        scenario_rows(ui, &view, tree, &mut st.scenario.opened, actions);
+    if let Some(tree) = model
+        && let Some(_open) = ui
+            .tree_node_config("##scenario-tags")
+            .label("Scenario")
+            .default_open(true)
+            .span_avail_width(true)
+            .push()
+    {
+        if filtering {
+            let inside: Vec<usize> = hits
+                .iter()
+                .copied()
+                .filter(|i| !tree.unreachable.contains(i))
+                .collect();
+            tag_rows(ui, &view, &inside, ListNames::GroupAndPath, actions);
+        } else {
+            scenario_rows(ui, &view, tree, &mut st.scenario.opened, actions);
+        }
     }
     if let Some(_all) = ui
         .tree_node_config("##all-tags")
@@ -194,9 +230,17 @@ pub fn tree(ui: &Ui, app: &App, st: &mut TagsUi, fonts: &Fonts, actions: &mut Ve
         .span_avail_width(true)
         .push()
     {
-        all_tags(ui, &view, st, fonts, actions);
+        match st.arrange {
+            Arrange::Group => by_group(ui, &view, &hits, narrowed, fonts, actions),
+            Arrange::Path => {
+                let root = tag_tree::by_path(view.doc.tags(), &hits);
+                let f = ui.push_font(fonts.bold);
+                ui.text(format!("{} tags", root.count));
+                f.pop();
+                folder(ui, &view, &root, "", narrowed, actions);
+            }
+        }
     }
-    // `all_tags` borrows the whole state; look the model up again after it.
     let model = st
         .scenario
         .model
@@ -218,49 +262,17 @@ pub fn tree(ui: &Ui, app: &App, st: &mut TagsUi, fonts: &Fonts, actions: &mut Ve
             if tree.incomplete {
                 ui.text_disabled("Reachability is unknown for tags outside the walk.");
             } else {
-                tag_rows(
-                    ui,
-                    &view,
-                    &tree.unreachable,
-                    ListNames::GroupAndPath,
-                    actions,
-                );
+                let shown: Vec<usize> = if filtering {
+                    tree.unreachable
+                        .iter()
+                        .copied()
+                        .filter(|i| hits.contains(i))
+                        .collect()
+                } else {
+                    tree.unreachable.clone()
+                };
+                tag_rows(ui, &view, &shown, ListNames::GroupAndPath, actions);
             }
-        }
-    }
-}
-
-fn all_tags(
-    ui: &Ui,
-    view: &RowView<'_>,
-    st: &mut TagsUi,
-    fonts: &Fonts,
-    actions: &mut Vec<Action>,
-) {
-    if ui.radio_button_bool("Groups", st.arrange == Arrange::Group) {
-        st.arrange = Arrange::Group;
-    }
-    ui.same_line();
-    if ui.radio_button_bool("Paths", st.arrange == Arrange::Path) {
-        st.arrange = Arrange::Path;
-    }
-    ui.set_next_item_width(-1.0);
-    ui.input_text("##tag-filter", &mut st.filter)
-        .hint(format!("{} words of group:name", icon::SEARCH))
-        .build();
-    let filter = st.filter.to_ascii_lowercase();
-    let hits = tag_tree::search(view.doc.tags(), &filter);
-    let refilter = st.opened_for.as_deref() != Some(filter.as_str());
-    st.opened_for = Some(filter.clone());
-    let narrowed = refilter && !filter.is_empty();
-    match st.arrange {
-        Arrange::Group => by_group(ui, view, &hits, narrowed, fonts, actions),
-        Arrange::Path => {
-            let root = tag_tree::by_path(view.doc.tags(), &hits);
-            let f = ui.push_font(fonts.bold);
-            ui.text(format!("{} tags", root.count));
-            f.pop();
-            folder(ui, view, &root, "", narrowed, actions);
         }
     }
 }

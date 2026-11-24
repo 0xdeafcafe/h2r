@@ -445,3 +445,23 @@ fn a_unit_decides_whether_a_float_shows_as_an_angle() {
     // A unit does not take a bounds name away.
     assert_eq!(hint(0x24), Hint::Bounds);
 }
+
+#[test]
+fn a_shader_bitmap_slot_applies_on_the_next_frame() {
+    // Every field of a postprocess bitmap entry is read at each draw
+    // (docs/graphics/hot-iteration.md, "What shows when"); the colour and
+    // vector entries carry their own word.
+    let r = Registry::builtin();
+    let l = r.group(FourCC(*b"shad")).unwrap();
+    let Kind::Block(post) = &l.field_at(0x20).unwrap().kind else {
+        panic!("postprocess is a block")
+    };
+    let Kind::Block(bitmaps) = &post.field_at(0x4).unwrap().kind else {
+        panic!("bitmaps is a block")
+    };
+    for at in [0x0, 0x4, 0x8] {
+        assert_eq!(bitmaps.field_at(at).unwrap().applies, Some("frame"), "{at:#x}");
+    }
+    // The parameter block is never read by the draw path: no timing.
+    assert_eq!(l.field_at(0xc).unwrap().applies, None);
+}

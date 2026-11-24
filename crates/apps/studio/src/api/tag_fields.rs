@@ -666,6 +666,7 @@ impl Provider for TagFields {
             RESET,
             ELEMENTS,
             FIND,
+            super::tag_names::NAMES,
             USES,
             block_def(
                 m::TAG_BLOCK_ADD,
@@ -695,6 +696,7 @@ impl Provider for TagFields {
             m::TAG_RESET => return Some(reset(app, &p)),
             m::TAG_ELEMENTS => return Some(elements(app, &p)),
             m::TAG_FIND => return Some(find(app, &p)),
+            m::TAG_NAMES => return Some(super::tag_names::names(app, &p)),
             m::TAG_CHAIN => return Some(chain(app, &p)),
             m::TAG_USES => return Some(uses(app, &p)),
             _ => {}

@@ -27,8 +27,8 @@ group shad 0x54 align 4
     0x0 datum template groups=stem -- E 0x00016bde path; V equals the root template (shader.rs:381)
     0x4 block bitmaps 0xc align 4 -- bitmap parameters, E 0x00016f60 (shader.rs:307). The Halo 1 converter patches +0 of these (h1convert/src/textures.rs:494)
       0x0 datum bitmap groups=bitm applies=frame doc="Selects the texture bound to this bitmap slot." -- E 0x00016f60; null selects the rasterizer default ([0x485a80]+0x64) (shader.rs:310)
-      0x4 i32 image -- E 0x00016f60 to the slot frame; 0x0001b0a0 wraps it by the bitmap's image count (shader.rs:312); V 0 in all but 5 elements
-      0x8 f32 lod_offset doc="Adds a bias to the draw's mip selection." -- E 0x0001b15c adds it to the draw's LOD term before mip selection (shader.rs:315)
+      0x4 i32 image applies=frame -- E 0x00016f60 to the slot frame; 0x0001b0a0 wraps it by the bitmap's image count (shader.rs:312); V 0 in all but 5 elements
+      0x8 f32 lod_offset applies=frame doc="Adds a bias to the draw's mip selection." -- E 0x0001b15c adds it to the draw's LOD term before mip selection (shader.rs:315)
     0xc block colors 0x4 align 4 -- E 0x00017170 (shader.rs:384)
       0x0 u32 color applies=frame -- packed ARGB; E 0x0001717b merges it into PSConstant0/1 or the final-combiner constants per the template binding
     0x14 block vectors 0x10 align 4 -- E 0x00017000 (shader.rs:386)
