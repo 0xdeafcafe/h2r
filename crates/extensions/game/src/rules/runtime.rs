@@ -191,6 +191,7 @@ pub const ACTIONS: &[u16] = &[
     // fed from it every tick (`super::world::hud`), so no call is made at
     // the boundary.
     id::HUD_VALUE,
+    id::HUD_VALUE_FOR,
     id::HUD_FILL,
     id::HUD_STYLE,
     id::HUD_TEXT,

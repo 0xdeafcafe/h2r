@@ -155,7 +155,7 @@ works") carries both, with two more record tags:
 | `Cue` (8) (**Code**, `crates/live/actor-net/src/wire.rs`) | a cue for that peer's players, in three consecutive packets as `Line` is (**Code**, `crates/live/actor-net/src/budget.rs`) | cue tick (u32), sequence (u8), kind (u8), length (u8), at most 24 payload bytes |
 
 The `Show` record is not built (it needs `crates/live/actor-net`); the
-state it would carry is built (`rules::show::State`, at most 227 bytes), and
+state it would carry is built (`rules::show::State`, at most 244 bytes), and
 every machine that runs the VM draws it. Nor is the 64-bit hash of the
 peer's filtered state the `Digest` gains, whose mismatch asks for a
 `Key`. The host filters the state per peer, so a team's waypoint is not
@@ -592,7 +592,8 @@ editors fold it (`ide::fold`).
 
 The state a widget keeps is its value, fill (0 to 255 for 0 to 1), style,
 text (an index into the blob's strings) and audience, set by the calls
-below; a waypoint keeps the object it marks. `rules::show::view` makes
+below; a waypoint keeps the object it marks; one widget keeps a value
+for each roster slot (`hud_value_for`). `rules::show::view` makes
 what one viewer sees of it, a pure function of the state, the blob and
 the viewer's slot and team, and nothing in it reads the game. The state
 is part of `RulesExt` (`show`), so a checkpoint, a film's keyframe and the
@@ -604,9 +605,10 @@ widget or waypoint the script does not declare stops the script
 |---|---|---|---|---|
 | `message(to, "…{n}")` | exist | the notification insert (`hud_kit::NOTIFY`, E `0x24cbee`), per local user (**Code**, `crates/extensions/game/src/rules/world/show.rs`); the timed centred text (`0x24cc73`) is not used | named | a `Cue` (**Code**) |
 | `hud_text(w, "…")`, `hud_value(w, n)`, `hud_fill(w, f)`, `hud_style(w, style)`, `hud_show(w, on)` | `hud_text`, `hud_value`, `hud_fill`, `hud_style`, `hud_show` | the VM's show state; `hud_kit::Handle::publish` draws it (**Code**, `crates/extensions/game/src/rules/world/hud.rs`). The text is a literal: message holes and an audience (`to`) are not built | named | `Show` (not built) |
+| `hud_value_for(w, p, n)` | `hud_value_for` | the widget's value for the player in roster slot `p` (0 to 255), kept in the state's per-viewer table (`rules::show::PerViewer`: the widget's number and 16 bytes). `rules::show::view` gives each viewer the entry of its own slot in place of the widget's `value`; the fill, style and text stay shared. One widget at a time reads per viewer, and a second is a script error (`ErrorKind::Hud`); a `none` player sets nothing | named | `Show` (not built) |
 | `side_of(p)`, `slot_of(p)` | `side_of`, `slot_of` | the roster: the team's index in a game with teams, 16 and the slot in one without; the slot | named | none: a read |
 | `countdown(w, t)` | `hud_countdown` | the state holds the end tick; each machine counts its own ticks | not built | `Show` |
-| `mark(wp, at)`, `unmark(wp)` | `mark`, `unmark` | a zone's middle through `Handle::navpoint_at`, one navpoint a HUD; the text is the distance from the user's unit. A thing that moves has no mark until the entity read (W3). `mark(wp, at, to)` and the text form are not built | named | `Show` (not built) |
+| `mark(wp, at)`, `unmark(wp)` | `mark`, `unmark` | the object's place through `Handle::navpoint_at`, one navpoint a HUD; the text is the distance from the user's unit. The place is a zone's middle, else the unit of the player who carries the objective (the objective registry, `objectives::carrier`), else the object's origin (`Object::POSITION`, through `engine::view::objects::get`): `hud::place`. A mark is the same for every viewer, and the navpoint is the first local user's, as the kit's navpoints are shared. `mark(wp, at, to)` and the text form are not built | named | `Show` (not built) |
 | `medal(p, "…")`: a line with a medal glyph, counted in the film and on Live | `medal` | the notification queue, as the superbounce medals (hud-kit.md "The medals"); `GAME_MEDAL` (`0x1970a0`) takes only the game's own medal rows | traced | a `Cue` |
 
 Scoreboard labels and the post-game report's columns stay the carrier's
@@ -631,10 +633,10 @@ HUD's contract with the script:
 | HUD | Widget (slot) | Reads |
 |---|---|---|
 | `koth` | `koth.hill`; `koth.time`; `koth.banner`; waypoint `koth.mark` | style 0 open, 1 held by the side in the value, 2 contested; the seconds in the value; the banner's text; the navpoint over a zone, with the distance |
-| `territories` | `ter.owned`; `ter.banner`; waypoint `ter.mark` | the count in the value and the total in the style (every side's: one state serves every viewer); the banner's text; a navpoint over a zone |
-| `oddball` | `odd.holder`; `odd.time`; `odd.banner` | style 0 loose, 1 carried, the value 16 and the carrier's slot (`slot_of`), worded with the player's name; the seconds in the value; the banner's text. The ball moves, so it has no mark |
-| `ctf` | `ctf.flag0`, `ctf.flag1`; `ctf.banner` | each team's flag: style 0 at home, 1 carried (the value 16 and the carrier's slot), 2 dropped; the viewer's team's is "your flag". No mark |
-| `assault` | `asl.bomb0`, `asl.bomb1`; `asl.banner` | each team's bomb as a flag, and style 3 armed with the seconds to detonation in the value; the viewer's team's is shown |
+| `territories` | `ter.owned`; `ter.banner`; waypoint `ter.mark` | the count in the value and the total in the style (the viewer's own, by `hud_value_for`: the territories its side holds, a team's in a game with teams and the player's own without); the banner's text; a navpoint over a zone |
+| `oddball` | `odd.holder`; `odd.time`; `odd.banner` | style 0 loose, 1 carried, the value 16 and the carrier's slot (`slot_of`), worded with the player's name; the seconds in the value; the banner's text; the navpoint (`odd.mark`) over the ball a player holds, else the first one lying, with the distance |
+| `ctf` | `ctf.flag0`, `ctf.flag1`; `ctf.banner` | each team's flag: style 0 at home, 1 carried (the value 16 and the carrier's slot), 2 dropped; the viewer's team's is "your flag"; the navpoint (`ctf.mark`) over the first flag away from its spawn |
+| `assault` | `asl.bomb0`, `asl.bomb1`; `asl.banner` | each team's bomb as a flag, and style 3 armed with the seconds to detonation in the value; the viewer's team's is shown; the navpoint (`asl.mark`) over the first bomb away from its spawn |
 
 A banner is timed by the kit from the moment its text changes
 (`BANNER_TICKS`), so a script shows it for two ticks and hides it. The

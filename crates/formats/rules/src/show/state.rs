@@ -11,7 +11,7 @@
 
 use super::{Audience, EVERYONE, player};
 use crate::ir::{Ir, MAX_WAYPOINTS as DECLARED_WAYPOINTS, MAX_WIDGETS as DECLARED_WIDGETS, WidgetKind};
-use crate::ty::fixed;
+use crate::ty::{MAX_PLAYERS, fixed};
 
 /// HUD widgets the state holds: the script's declarations.
 pub const MAX_WIDGETS: usize = DECLARED_WIDGETS;
@@ -61,12 +61,26 @@ pub struct Waypoint {
     pub audience: Audience,
 }
 
+/// The values one widget reads per viewer (`hud_value_for`): a count that
+/// is each player's own, as the Territories HUD's held count is. A viewer
+/// reads the entry of its roster slot; the widget's own `value` is not
+/// shown. One widget at a time keeps one, so the state stays inside the
+/// `Show` record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PerViewer {
+    /// The widget's number.
+    pub widget: u8,
+    /// The value for each roster slot, 0 until set, at most 255.
+    pub values: [u8; MAX_PLAYERS],
+}
+
 /// The whole show state: a table of widgets and one of waypoints, by the
-/// script's declaration numbers.
+/// script's declaration numbers, and the widget that reads per viewer.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct State {
     pub widgets: [Option<Widget>; MAX_WIDGETS],
     pub waypoints: [Option<Waypoint>; MAX_WAYPOINTS],
+    pub per_viewer: Option<PerViewer>,
 }
 
 /// Why bytes are not a show state.
@@ -91,11 +105,33 @@ impl std::error::Error for StateError {}
 const SHOWN: u8 = 1;
 const HAS_TEXT: u8 = 2;
 const FLAGS: u8 = SHOWN | HAS_TEXT;
+/// The per-viewer byte of the encoding when no widget reads per viewer.
+const NO_PER_VIEWER: u8 = 0xff;
 
 impl State {
     /// Whether no widget and no waypoint is set.
     pub fn is_empty(&self) -> bool {
-        self.widgets.iter().all(Option::is_none) && self.waypoints.iter().all(Option::is_none)
+        self.widgets.iter().all(Option::is_none)
+            && self.waypoints.iter().all(Option::is_none)
+            && self.per_viewer.is_none()
+    }
+
+    /// Sets what the player in roster `slot` reads at `widget`: the
+    /// widget's value becomes per viewer. Another widget that already reads
+    /// per viewer, a widget or a slot past the tables is refused (`false`).
+    pub fn set_for(&mut self, widget: usize, slot: usize, value: i32) -> bool {
+        if widget >= MAX_WIDGETS || slot >= MAX_PLAYERS {
+            return false;
+        }
+        let table = self.per_viewer.get_or_insert(PerViewer {
+            widget: widget as u8,
+            values: [0; MAX_PLAYERS],
+        });
+        if usize::from(table.widget) != widget {
+            return false;
+        }
+        table.values[slot] = value.clamp(0, i32::from(u8::MAX)) as u8;
+        self.widget(widget).is_some()
     }
 
     /// The widget `index`, made if it is not yet there. `None` for a
@@ -114,12 +150,17 @@ impl State {
         for w in self.waypoints.iter_mut().skip(waypoints) {
             *w = None;
         }
+        if self.per_viewer.is_some_and(|p| usize::from(p.widget) >= widgets) {
+            self.per_viewer = None;
+        }
     }
 
     /// The canonical bytes: a mask of the widgets set, a mask of the
     /// waypoints set, then each widget (flags, value, fill, style, the text
-    /// when it has one, audience) and each waypoint (object, audience).
-    /// At most 11 bytes a widget and 6 a waypoint: 227 in all.
+    /// when it has one, audience), each waypoint (object, audience) and the
+    /// per-viewer table (its widget's number, `0xff` for none, then 16
+    /// values when there is one). At most 11 bytes a widget, 6 a waypoint
+    /// and 17 for the table: 244 in all.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         let mut widget_mask = 0u16;
@@ -145,6 +186,13 @@ impl State {
         for w in self.waypoints.iter().flatten() {
             out.extend(w.at.to_le_bytes());
             out.extend(w.audience.to_le_bytes());
+        }
+        match &self.per_viewer {
+            Some(p) => {
+                out.push(p.widget);
+                out.extend(p.values);
+            }
+            None => out.push(NO_PER_VIEWER),
         }
         out
     }
@@ -186,6 +234,14 @@ impl State {
                 audience: r.u16()?,
             });
         }
+        state.per_viewer = match r.u8()? {
+            NO_PER_VIEWER => None,
+            widget if usize::from(widget) < MAX_WIDGETS && widget_mask >> widget & 1 != 0 => Some(PerViewer {
+                widget,
+                values: r.take()?,
+            }),
+            _ => return Err(StateError::Malformed),
+        };
         if !r.0.is_empty() {
             return Err(StateError::Trailing);
         }
@@ -295,7 +351,7 @@ pub fn view(state: &State, ir: &Ir, viewer: Viewer) -> View {
     };
     let string = |i: u16| ir.strings.get(usize::from(i)).cloned();
     let mut out = View::default();
-    for (def, set) in ir.widgets.iter().zip(&state.widgets) {
+    for (i, (def, set)) in ir.widgets.iter().zip(&state.widgets).enumerate() {
         let Some(w) = set.filter(|w| w.audience & me != 0) else {
             continue;
         };
@@ -307,7 +363,12 @@ pub fn view(state: &State, ir: &Ir, viewer: Viewer) -> View {
             slot,
             kind: def.kind,
             shown: w.shown,
-            value: w.value,
+            value: match &state.per_viewer {
+                Some(p) if usize::from(p.widget) == i => {
+                    viewer.slot.map_or(0, |s| i32::from(p.values[usize::from(s) % MAX_PLAYERS]))
+                }
+                _ => w.value,
+            },
             fill: w.fill,
             style: w.style,
             text: w.text.and_then(string),
@@ -352,6 +413,10 @@ mod tests {
                 audience: 1 << i,
             });
         }
+        s.per_viewer = Some(PerViewer {
+            widget: 3,
+            values: std::array::from_fn(|i| 255 - i as u8),
+        });
         s
     }
 
@@ -362,7 +427,7 @@ mod tests {
         assert!(bytes.len() <= MAX_BYTES, "{} bytes", bytes.len());
         assert_eq!(State::decode(&bytes), Ok(s));
         assert_eq!(State::decode(&State::default().encode()), Ok(State::default()));
-        assert_eq!(State::default().encode().len(), 3);
+        assert_eq!(State::default().encode().len(), 4);
     }
 
     #[test]
@@ -377,6 +442,35 @@ mod tests {
         assert_eq!(State::decode(&bad), Err(StateError::Malformed));
         // A mask that names waypoints the bytes do not hold.
         assert_eq!(State::decode(&[0, 0, 0xff, 0, 0]), Err(StateError::Truncated));
+        // A per-viewer table for a widget the state does not hold, or past
+        // the tables.
+        assert_eq!(State::decode(&[0, 0, 0, 3]), Err(StateError::Malformed));
+        assert_eq!(State::decode(&[0, 0, 0, 16]), Err(StateError::Malformed));
+    }
+
+    #[test]
+    fn a_per_viewer_widget_reads_each_viewers_own_value() {
+        let ir = ir();
+        let mut s = State::default();
+        *s.widget(0).unwrap() = Widget { shown: true, value: 9, style: 3, ..Widget::default() };
+        assert!(s.set_for(0, 2, 4));
+        assert!(s.set_for(0, 5, 1000));
+        // A second widget cannot read per viewer, nor a slot past the roster.
+        assert!(!s.set_for(1, 2, 4));
+        assert!(!s.set_for(0, MAX_PLAYERS, 4));
+        let read = |slot| view(&s, &ir, Viewer { slot: Some(slot), team: None }).at("koth.hill").map(|w| w.value);
+        assert_eq!(read(2), Some(4));
+        assert_eq!(read(5), Some(255));
+        assert_eq!(read(0), Some(0));
+        // The widget's other fields are shared, and the bytes carry the table.
+        let v = view(&s, &ir, Viewer { slot: Some(2), team: None });
+        assert_eq!(v.at("koth.hill").map(|w| (w.style, w.shown)), Some((3, true)));
+        let held = State::decode(&s.encode()).unwrap();
+        assert_eq!(held, s);
+        assert_eq!(view(&held, &ir, Viewer { slot: Some(2), team: None }), v);
+        // A script that drops the widget drops its table.
+        s.truncate(0, 0);
+        assert!(s.is_empty());
     }
 
     #[test]

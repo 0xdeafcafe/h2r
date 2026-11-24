@@ -18,16 +18,18 @@
 rules "Oddball" 1
 type oddball
 requires objects.delete
-requires hud.widgets
+requires hud.widgets, hud.waypoints
 
 label oddball_spawn: objects
 
 // The HUD (docs/game/game-types-without-carriers.md, "The display"): the
 // ball's holder, the seconds that player has held it and a banner for a
-// pickup or a drop. The ball moves, so it has no mark.
+// pickup or a drop. The mark follows the ball that is held, or the first
+// one lying: over its carrier, or where it lies.
 hud holder_row: text at odd.holder
 hud held_row: text at odd.time
 hud ball_row: banner at odd.banner
+waypoint ball_mark at odd.mark
 
 // Retail's init takes at most three type-4 spawns (0x2bc2e0).
 const most_balls = 3
@@ -115,6 +117,7 @@ on tick {
     // The first ball's holder is the one the HUD names.
     let lead_ball = first(objectives o where not o.gone and o.carrier != none)
     if let ball = lead_ball {
+        mark(ball_mark, ball)
         if let who = ball.carrier {
             hud_style(holder_row, 1)
             hud_value(holder_row, 16 + slot_of(who))
@@ -126,6 +129,7 @@ on tick {
             hud_show(held_row, true)
         }
     } else {
+        if let loose = first(objectives o) { mark(ball_mark, loose) } else { unmark(ball_mark) }
         hud_style(holder_row, 0)
         holder = -1
         held_for = 0t

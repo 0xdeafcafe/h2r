@@ -200,7 +200,9 @@ A script whose options do not fit is refused.
   and the runtime draws them for each local user after every tick
   (`rules::world::hud`). A distributed client that runs no script has no
   state to draw until the `Show` record is built, and the waypoint of a
-  thing that moves waits for the entity read. . The base HUD is fed (`rules::base_hud`): on a record on the
+  thing that moves waits for the entity read. The navpoint of a flag, bomb
+  or ball is over its carrier or where it lies, and the Territories count
+  is each viewer's own. The base HUD is fed (`rules::base_hud`): on a record on the
   script index, each tick, each local player's score (the team's in a team
   game) under the script's `points` label with the record's score limit,
   and the round clock when the record has a time limit; any other game

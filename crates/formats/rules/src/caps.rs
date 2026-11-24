@@ -341,6 +341,7 @@ pub mod id {
     pub const TAG_FIXED: u16 = 113;
     pub const SQUAD_FIGHTING: u16 = 114;
     pub const SQUAD_STRENGTH: u16 = 115;
+    pub const HUD_VALUE_FOR: u16 = 116;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -616,6 +617,11 @@ pub const ENTRIES: &[Entry] = &[
     // not traced, so a host refuses a script that reads either by name.
     read(id::SQUAD_FIGHTING, "squad_fighting", &[Squad], Bool, Untraced),
     read(id::SQUAD_STRENGTH, "squad_strength", &[Squad], Fixed, Untraced),
+    // A widget's value for one player to read (`hud_value_for(w, p, n)`:
+    // `n` clamped to 0..255), for a count that is each player's own, as
+    // the Territories HUD's held count is. One widget at a time reads per
+    // viewer; the show state keeps the table (`show::PerViewer`).
+    act(id::HUD_VALUE_FOR, "hud_value_for", &[Int, Player, Int], Some("hud.widgets"), Now, Named),
 ];
 
 /// The word `message(to, text)` takes for everyone.
