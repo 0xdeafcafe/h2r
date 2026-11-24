@@ -193,6 +193,11 @@ impl Session {
     pub fn document(&self) -> &ForgeDoc {
         &self.doc
     }
+    /// The ID of the newest operation applied: the copy a Duplicate made.
+    pub fn last_op_id(&self) -> OpId {
+        OpId(self.last_id)
+    }
+
     pub fn log(&self) -> &[Entry] {
         &self.log
     }
@@ -354,7 +359,7 @@ impl Session {
         let tag = thing
             .fields
             .iter()
-            .find(|(name, _)| name == "palette index")
+            .find(|(name, _)| *name == "palette index")
             .and_then(|(_, value)| match value {
                 Value::Tag(Some(tag)) => Some(tag.clone()),
                 _ => None,

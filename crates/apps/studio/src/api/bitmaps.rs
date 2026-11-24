@@ -676,7 +676,7 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
             let tag = bitmap(app, p)?;
             let from = p.opt_usize("from")?;
             let (width, height) = size_of(p)?;
-            let format = auto_or_format(app, tag, image, p.opt_str("format")?, width, height)?;
+            let format = auto_or_format(app, tag, from.unwrap_or(0), p.opt_str("format")?, width, height)?;
             run(
                 app,
                 BitmapAction::AddImage {

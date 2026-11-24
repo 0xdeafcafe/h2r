@@ -535,6 +535,7 @@ fn hud_lines(vm: &Vm, g: &FakeGame) -> Vec<HudLine> {
             shown: w.shown,
             value: w.value,
             text: w.text.clone(),
+            at: None,
         });
     }
     for w in &seen.waypoints {

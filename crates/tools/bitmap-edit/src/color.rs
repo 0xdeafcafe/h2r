@@ -123,7 +123,7 @@ impl<'de> Deserialize<'de> for Channels {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = String::deserialize(d)?;
         Channels::parse(&s).ok_or_else(|| {
-            D::Error::invalid_value(serde::de::Unexpected::Str(&s), &"letters of rgba")
+            <D::Error as serde::de::Error>::invalid_value(serde::de::Unexpected::Str(&s), &"letters of rgba")
         })
     }
 }

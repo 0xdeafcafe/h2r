@@ -190,6 +190,7 @@ impl BrowserUi {
                 self.root = Root::Packages;
                 self.package = Some(package);
             }
+            Ok(assets::AssetId::Voice(_)) => self.root = Root::Tags,
             Err(_) => self.selected = None,
         }
     }

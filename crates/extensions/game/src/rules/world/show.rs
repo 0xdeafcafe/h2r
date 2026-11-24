@@ -248,7 +248,7 @@ pub async fn receive(cx: &Cx, shows: &[Vec<u8>]) {
             eprintln!("rules: show state dropped: {why}");
         }
     }
-    publish(cx).await;
+    publish_show(cx).await;
 }
 
 /// Checks one record against the running script's blob and holds it: the
@@ -292,7 +292,7 @@ fn checked(ir: &Ir, bytes: &[u8]) -> Result<State, String> {
 /// copy of the map, which is the one the host's script ran over
 /// (`super::walls::client`). With nothing held, the HUDs a script fed
 /// are hidden.
-async fn publish(cx: &Cx) {
+async fn publish_show(cx: &Cx) {
     let Some(bytes) = held_bytes() else {
         return;
     };
@@ -761,7 +761,7 @@ mod tests {
     /// "The show channel on a client").
     #[test]
     fn a_show_state_is_checked_against_the_blob_it_names() {
-        let (ir, _) = ::rules::compile(
+        let ir = ::rules::compile(
             "rules \"C\" 1\ntype slayer\nrequires hud.widgets\n\
              hud row: text at koth.hill\nwaypoint spot at ctf.mark\n",
         )

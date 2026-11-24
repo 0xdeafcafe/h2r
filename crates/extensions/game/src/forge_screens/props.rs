@@ -144,7 +144,7 @@ fn row(p: &PropDoc, thing: &Thing, heading: f32, extras: &Extras) -> Option<Shee
         // which is an object until slice P2, and a placed thing, not the
         // ghost of one being placed.
         ("act", "duplicate") if thing.kind == ThingKind::Object => {
-            let placed = thing.fields.iter().any(|(name, _)| name == "palette index");
+            let placed = thing.fields.iter().any(|(name, _)| *name == "palette index");
             placed.then(|| {
                 SheetRow::new(&p.text, Act::Choose(Choice::Duplicate(thing.id))).describe(help)
             })

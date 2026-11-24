@@ -27,7 +27,7 @@ pub struct Host {
     show: Option<Vec<u8>>,
     /// The show state the last packet that carried one had, so a state the
     /// budget dropped is offered again the next tick.
-    last_show: Option<Vec<u8>>,
+    last_show: std::sync::Mutex<Option<Vec<u8>>>,
     controls: Vec<(u32, [f32; 3], Control)>,
     /// The head of the host log the running mode writes, for the digest;
     /// all zeros when no mode keeps one.
@@ -194,9 +194,10 @@ impl Host {
         // dropped (the five a second) is offered again the next tick, and
         // a script that stopped retracts the last state with an empty
         // record.
-        if self.show.is_some() && (with_key || self.show != self.last_show) {
+        let last_show = self.last_show.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if self.show.is_some() && (with_key || self.show != last_show) {
             offers.push(Record::Show(self.show.clone().unwrap_or_default()));
-        } else if self.show.is_none() && self.last_show.is_some() {
+        } else if self.show.is_none() && last_show.is_some() {
             offers.push(Record::Show(Vec::new()));
         }
         offers.extend_from_slice(&self.lines);
@@ -233,7 +234,7 @@ impl Host {
             .as_ref()
             .is_some_and(|packet| packet.records.iter().any(|r| matches!(r, Record::Show(_))))
         {
-            self.last_show = self.show.clone();
+            *self.last_show.lock().unwrap_or_else(|e| e.into_inner()) = self.show.clone();
         }
         Ok(packet)
     }

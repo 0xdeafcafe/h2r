@@ -92,7 +92,7 @@ fn palette_to_properties_to_confirmed_engine_handle() {
     assert_eq!(work.len(), 1);
     let (ticket, call) = work.into_iter().next().unwrap();
     assert!(
-        matches!(call, calls::Call::Forge { steps, .. } if steps == [
+        matches!(&call, calls::Call::Forge { steps, .. } if *steps == [
             calls::ForgeStep::Make { tag: 42, frame },
         ])
     );
@@ -112,7 +112,7 @@ fn palette_to_properties_to_confirmed_engine_handle() {
     e.command(10, Command::Delete { id }).unwrap();
     let (ticket, call) = calls::lock(&e.calls).drain().pop().unwrap();
     assert!(
-        matches!(call, calls::Call::Forge { steps, .. } if steps == [
+        matches!(&call, calls::Call::Forge { steps, .. } if *steps == [
             calls::ForgeStep::Delete { target: live },
         ])
     );
@@ -139,7 +139,7 @@ fn palette_to_properties_to_confirmed_engine_handle() {
     e.command(14, Command::Undo).unwrap();
     let (ticket, call) = calls::lock(&e.calls).drain().pop().unwrap();
     assert!(
-        matches!(call, calls::Call::Forge { steps, .. } if steps == [
+        matches!(&call, calls::Call::Forge { steps, .. } if *steps == [
             calls::ForgeStep::Make { tag: 42, frame },
         ])
     );
@@ -1239,7 +1239,7 @@ fn reset_orientation_and_duplicate_on_the_properties_page() {
         rotation: [45f32.to_radians(), 0., 0.],
     };
     assert!(
-        matches!(call, calls::Call::Forge { steps, .. } if steps == [
+        matches!(&call, calls::Call::Forge { steps, .. } if *steps == [
             calls::ForgeStep::Move {
                 target: calls::ForgeTarget::Live(agent_proto::ObjectId {
                     kind: agent_proto::Kind::Crate,
@@ -1262,7 +1262,7 @@ fn reset_orientation_and_duplicate_on_the_properties_page() {
         rotation: [0.; 3],
     };
     assert!(
-        matches!(call, calls::Call::Forge { steps, .. } if steps == [
+        matches!(&call, calls::Call::Forge { steps, .. } if *steps == [
             calls::ForgeStep::Make { tag: 42, frame: copy },
         ]),
         "{call:?}"

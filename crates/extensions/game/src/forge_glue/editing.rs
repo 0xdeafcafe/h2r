@@ -966,11 +966,10 @@ impl Editor {
                         self.tool.applied(&command);
                         // Duplicate: the copy is the log's last op, and the
                         // monitor holds it at once where the add put it.
-                        if let Command::Duplicate { frame, .. } = &command
-                            && let Some(entry) = self.session.log().last()
-                        {
-                            let id = forge::Endpoint::Added(entry.id);
-                            self.tool.take_up(&self.session, id, Some(entry.id), *frame);
+                        if let Command::Duplicate { frame, .. } = &command {
+                            let op = self.session.last_op_id();
+                            let id = forge::Endpoint::Added(op);
+                            self.tool.take_up(&self.session, id, Some(op), *frame);
                         }
                         if let Command::Goal { goal, .. } = command
                             && self.tool.show == Show::ThisGameType
