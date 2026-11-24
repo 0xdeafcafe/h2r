@@ -1401,7 +1401,7 @@ mod tests {
                         | "scene_passes"
                         | "object_shadow"
                         | "object_shadows"
-                    | "water_teardown"
+                        | "water_teardown"
                         | "sky"
                         | "scene_clear"
                         | "target_select"
@@ -1415,6 +1415,7 @@ mod tests {
                         | "loading"
                         | "dynamic_lights"
                         | "light_passes"
+                        | "frame_tail"
                 ) {
                     Status::Partial
                 } else {

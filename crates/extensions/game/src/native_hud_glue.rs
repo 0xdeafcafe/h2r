@@ -53,7 +53,7 @@ impl ScopeStack {
         match self.active(owner).filter(|scope| scope.eligible)?.kind {
             UiScope::Hud | UiScope::Layers | UiScope::Widget => Some(ScreenDraw::Widget),
             UiScope::Loading => Some(ScreenDraw::Loading),
-            UiScope::Model | UiScope::Overlay => None,
+            UiScope::Model | UiScope::Overlay | UiScope::FrameTail => None,
         }
     }
 
