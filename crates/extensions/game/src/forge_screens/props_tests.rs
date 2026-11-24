@@ -152,6 +152,43 @@ fn rows_show_what_the_thing_holds_and_send_their_index() {
 }
 
 #[test]
+fn a_spawner_with_an_abandon_limit_has_the_return_time_row_after_respawn_time() {
+    let spawner = thing(
+        BlockKind::NetgameEquipment,
+        ThingKind::ItemSpawner,
+        &[("respawn time", 30), ("abandon limit", 120)],
+    );
+    assert_eq!(
+        labels(&spawner),
+        [
+            "Coordinates...",
+            "Heading",
+            "Respawn time",
+            "Return time",
+            "Reset orientation"
+        ]
+    );
+    let rows = rows(&doc(), &spawner, 0.0);
+    let Act::Type(t) = &rows[3].act else {
+        panic!("the keyboard")
+    };
+    assert_eq!(
+        (t.field, t.initial.as_str()),
+        (NumberField::ReturnTime, "120")
+    );
+    assert_eq!(rows[3].value.as_deref(), Some("120"));
+    // A thing whose block has no abandon limit shows no row.
+    assert!(
+        !labels(&thing(
+            BlockKind::NetgameEquipment,
+            ThingKind::ItemSpawner,
+            &[("respawn time", 30)]
+        ))
+        .contains(&"Return time".to_string())
+    );
+}
+
+#[test]
 fn every_row_of_the_shipped_doc_binds() {
     // Each kind's every row of the doc is made: none is dropped for a
     // property the binder cannot bind.
@@ -198,6 +235,7 @@ fn every_row_of_the_shipped_doc_binds() {
                 ThingKind::ItemSpawner,
                 &[
                     ("respawn time", 0),
+                    ("abandon limit", 0),
                     ("game type 1", 2),
                     ("game type 2", 2),
                     ("game type 3", 2),

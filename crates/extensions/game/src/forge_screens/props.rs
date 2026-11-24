@@ -95,6 +95,22 @@ fn row(p: &PropDoc, thing: &Thing, heading: f32, extras: &Extras) -> Option<Shee
                 .describe(help),
             )
         }
+        ("keyboard", "return time") => {
+            // Absent where the block has no abandon limit.
+            forge::props::prop("return time")?.read(thing)?;
+            let value = int_of(thing, "abandon limit").to_string();
+            Some(
+                SheetRow::new(
+                    &p.text,
+                    Act::Type(TypeSpec {
+                        field: NumberField::ReturnTime,
+                        initial: value.clone(),
+                    }),
+                )
+                .value(&value)
+                .describe(help),
+            )
+        }
         ("forge.games", "games") => {
             let set = forge::props::games(thing)?;
             Some(

@@ -1843,16 +1843,20 @@ impl Editor {
                 sheet::NumberField::RenameVariant | sheet::NumberField::DuplicateVariant => {
                     return Err("That map variant is gone.".into());
                 }
-                sheet::NumberField::RespawnTime => {
+                sheet::NumberField::RespawnTime | sheet::NumberField::ReturnTime => {
                     let value = text
                         .parse::<i64>()
                         .map_err(|_| "Type a whole number.".to_string())?;
                     let id = self.tool.aimed_thing.ok_or("Aim at an item entry.")?;
+                    let name = match field {
+                        sheet::NumberField::ReturnTime => "abandon limit",
+                        _ => "respawn time",
+                    };
                     return self.command(
                         tick,
                         Command::SetField {
                             id,
-                            name: "respawn time",
+                            name,
                             value: forge_doc::Value::Int(value),
                         },
                     );
