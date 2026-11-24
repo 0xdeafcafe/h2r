@@ -1039,29 +1039,10 @@ mod tests {
     }
 
     #[test]
-    fn glow_downsamples_the_resolved_view_and_composites_it_back() {
+    fn glow_frame_copy_samples_the_same_scene_at_full_and_three_quarter_raster() {
         use psh::bits::{CHAN_ALPHA, REG_T0, final_efg, inputs};
         let Ok(ctx) = gfx::GfxContext::headless() else { return };
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        let view_size = (9, 6);
-        let view = gfx::OffscreenTarget::new(&ctx.device, view_size, format);
-        let small = gfx::OffscreenTarget::new(&ctx.device, (2, 2), format);
-        let source = ctx.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("opaque framebuffer sample"),
-            size: view.texture.size(),
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        ctx.queue.write_texture(
-            source.as_image_copy(), &[64, 128, 192, 255].repeat((view_size.0 * view_size.1) as usize),
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * view_size.0), rows_per_image: Some(view_size.1) },
-            source.size(),
-        );
-        let sample = source.create_view(&Default::default());
         let copy = words(&PixelShaderDef {
             texture_modes: 1,
             final_inputs_abcd: inputs(0, 0, 0, REG_T0),
@@ -1069,10 +1050,10 @@ mod tests {
             ..Default::default()
         });
         let plan = Plan {
-            window: [0.0, 0.0, 4.0, 4.0],
+            window: [0.0, 0.0, 16.0, 12.0],
             signs: [0.0; 2],
-            view: (4, 4),
-            down: (2, 2),
+            view: (16, 12),
+            down: (4, 3),
             other: (2, 2),
             draws: [
                 (Surface::Down, Surface::View),
@@ -1082,23 +1063,65 @@ mod tests {
                 taps: 1, spread: 0.0, blend: None,
             }).to_vec(),
         };
-        let arena = gfx::ring::UploadPool::default().begin();
-        let mut encoder = ctx.device.create_command_encoder(&Default::default());
-        let mut glow = GpuGlow::new();
-        let target = GlowTarget {
-            device: &ctx.device, queue: &ctx.queue, uploads: &arena,
-            color: PostSurface { view: view.target().color, guest_size: plan.view }, entry_sources: [None; 4],
-            intermediates: [Some(PostSurface { view: small.target().color, guest_size: plan.down }), None],
-        };
-        assert_eq!(glow.encode(target, &mut encoder, &plan), Err(Refused::Source(Surface::View)));
-        glow.encode(GlowTarget {
-            device: &ctx.device, queue: &ctx.queue, uploads: &arena,
-            color: PostSurface { view: view.target().color, guest_size: plan.view }, entry_sources: [Some(&sample), None, None, None],
-            intermediates: [Some(PostSurface { view: small.target().color, guest_size: plan.down }), None],
-        }, &mut encoder, &plan).unwrap();
-        arena.flush(&ctx.queue);
-        ctx.queue.submit([encoder.finish()]);
-        assert_eq!(view.read_pixels(&ctx), [64, 128, 192, 255].repeat((view_size.0 * view_size.1) as usize));
+        for view_size in [(64, 36), (48, 27)] {
+            let view = gfx::OffscreenTarget::new(&ctx.device, view_size, format);
+            let small = gfx::OffscreenTarget::new(&ctx.device, plan.down, format);
+            let source = ctx.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("opaque framebuffer sample"),
+                size: view.texture.size(),
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            // Every cell has a distinct source colour at the same UV on both grids.
+            let source_pixels: Vec<u8> = (0..view_size.1).flat_map(|y| (0..view_size.0).flat_map(move |x| {
+                let col = x * 4 / view_size.0;
+                let row = y * 3 / view_size.1;
+                [48 * col as u8, 80 * row as u8, 192, 255]
+            })).collect();
+            ctx.queue.write_texture(
+                source.as_image_copy(), &source_pixels,
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * view_size.0), rows_per_image: Some(view_size.1) },
+                source.size(),
+            );
+            let sample = source.create_view(&Default::default());
+            let arena = gfx::ring::UploadPool::default().begin();
+            let mut encoder = ctx.device.create_command_encoder(&Default::default());
+            let mut glow = GpuGlow::new();
+            let target = GlowTarget {
+                device: &ctx.device, queue: &ctx.queue, uploads: &arena,
+                color: PostSurface { view: view.target().color, guest_size: plan.view }, entry_sources: [None; 4],
+                intermediates: [Some(PostSurface { view: small.target().color, guest_size: plan.down }), None],
+            };
+            assert_eq!(glow.encode(target, &mut encoder, &plan), Err(Refused::Source(Surface::View)));
+            glow.encode(GlowTarget {
+                device: &ctx.device, queue: &ctx.queue, uploads: &arena,
+                color: PostSurface { view: view.target().color, guest_size: plan.view }, entry_sources: [Some(&sample), None, None, None],
+                intermediates: [Some(PostSurface { view: small.target().color, guest_size: plan.down }), None],
+            }, &mut encoder, &plan).unwrap();
+            arena.flush(&ctx.queue);
+            ctx.queue.submit([encoder.finish()]);
+            // The convolution must see the same cells at either render scale.
+            let expected: Vec<u8> = (0..3).flat_map(|row| (0..4).flat_map(move |col| {
+                [48 * col, 80 * row, 192, 255]
+            })).collect();
+            assert_eq!(small.read_pixels(&ctx), expected);
+            // The composite linearly filters those four columns and three rows
+            // back across the whole raster. Check every pixel, including both edges.
+            for (i, pixel) in view.read_pixels(&ctx).chunks_exact(4).enumerate() {
+                let x = i as u32 % view_size.0;
+                let y = i as u32 / view_size.0;
+                let u = (x as f32 + 0.5) / view_size.0 as f32;
+                let v = (y as f32 + 0.5) / view_size.1 as f32;
+                let r = (48.0 * (u * 4.0 - 0.5).clamp(0.0, 3.0)).round() as u8;
+                let g = (80.0 * (v * 3.0 - 0.5).clamp(0.0, 2.0)).round() as u8;
+                assert!(pixel[0].abs_diff(r) <= 1 && pixel[1].abs_diff(g) <= 1, "{view_size:?} at ({x}, {y}): {pixel:?}");
+                assert_eq!(pixel[2..], [192, 255]);
+            }
+        }
     }
 
     /// The prepared quads ([`GpuGlow::prepare`]) recorded into a frame's
