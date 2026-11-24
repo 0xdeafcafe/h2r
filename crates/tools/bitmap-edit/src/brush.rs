@@ -1,4 +1,6 @@
-//! The brush and the eraser: a round stamp, repeated along a stroke.
+//! The brush and the eraser: a round stamp, repeated along a stroke. A
+//! clone stamp is the same stamp reading its colour from another place
+//! of a layer ([`stamp_with`]).
 
 use serde::{Deserialize, Serialize};
 
@@ -91,6 +93,19 @@ impl Brush {
 /// One stamp centred at (`cx`, `cy`) (pixel centres are at `x + 0.5`).
 /// Returns the pixels it may have changed, clipped to the canvas.
 pub fn stamp(canvas: &mut Canvas, brush: &Brush, cx: f32, cy: f32) -> Rect {
+    stamp_with(canvas, brush, cx, cy, &|_, _| brush.color)
+}
+
+/// One stamp whose colour at each pixel is `colour_at`'s (a clone stamp
+/// reads the pixel under another place of a layer); as [`stamp`]
+/// otherwise. The blend takes it as the brush's colour.
+pub fn stamp_with(
+    canvas: &mut Canvas,
+    brush: &Brush,
+    cx: f32,
+    cy: f32,
+    colour_at: &dyn Fn(u32, u32) -> [u8; 4],
+) -> Rect {
     let r = brush.size * 0.5 + 1.0;
     let x0 = (cx - r).floor().max(0.0) as u32;
     let y0 = (cy - r).floor().max(0.0) as u32;
@@ -108,7 +123,7 @@ pub fn stamp(canvas: &mut Canvas, brush: &Brush, cx: f32, cy: f32) -> Rect {
                 continue;
             }
             let old = canvas.pixel(x, y);
-            let new = blend(old, brush.color, a, brush.erase, brush.channels);
+            let new = blend(old, colour_at(x, y), a, brush.erase, brush.channels);
             if new != old {
                 canvas.set_pixel(x, y, new);
             }
@@ -134,10 +149,23 @@ impl Stroke {
     /// stamps every [`Brush::step`] along the line. Returns what the
     /// stamps touched.
     pub fn to(&mut self, canvas: &mut Canvas, brush: &Brush, x: f32, y: f32) -> Rect {
+        self.to_with(canvas, brush, x, y, &|_, _| brush.color)
+    }
+
+    /// As [`Stroke::to`], each stamp's colour at a pixel being
+    /// `colour_at`'s there ([`stamp_with`]).
+    pub fn to_with(
+        &mut self,
+        canvas: &mut Canvas,
+        brush: &Brush,
+        x: f32,
+        y: f32,
+        colour_at: &dyn Fn(u32, u32) -> [u8; 4],
+    ) -> Rect {
         let Some((lx, ly)) = self.last else {
             self.last = Some((x, y));
             self.walked = 0.0;
-            return stamp(canvas, brush, x, y);
+            return stamp_with(canvas, brush, x, y, colour_at);
         };
         let (dx, dy) = (x - lx, y - ly);
         let len = (dx * dx + dy * dy).sqrt();
@@ -147,7 +175,13 @@ impl Stroke {
             let mut at = step - self.walked;
             while at <= len {
                 let t = at / len;
-                dirty = dirty.union(stamp(canvas, brush, lx + dx * t, ly + dy * t));
+                dirty = dirty.union(stamp_with(
+                    canvas,
+                    brush,
+                    lx + dx * t,
+                    ly + dy * t,
+                    colour_at,
+                ));
                 at += step;
             }
             // `at` is the next stamp's distance along this segment.

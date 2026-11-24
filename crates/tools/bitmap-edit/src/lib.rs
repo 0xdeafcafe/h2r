@@ -12,10 +12,16 @@
 //! - A **bitmap** holds a layer per image face or depth slice at mip 0
 //!   ([`LayerId`]), each beside the canvas it was opened with, so what
 //!   has been edited is the tiles that differ.
-//! - **Edits** are [`BitmapOp`] values (paint, fill, adjust, import), one
-//!   undo step each, all or nothing. A drag is [`Bitmap::begin_stroke`],
-//!   [`Bitmap::stroke_to`] and [`Bitmap::end_stroke`]: many touched
+//! - **Edits** are [`BitmapOp`] values (paint, clone, fill, adjust,
+//!   import, channel copy and the turns), one undo step each, all or
+//!   nothing. A drag is [`Bitmap::begin_stroke`],
+//!   [`Bitmap::stroke_to`] and [`Bitmap::end_stroke`] (or
+//!   [`Bitmap::begin_clone`] for a clone stroke): many touched
 //!   rectangles, one undo step.
+//! - **Clone** reads the layer as it was when the stroke began, at the
+//!   offset from the source point to the stroke's first stamp.
+//! - **Turns** ([`Turn`]) move the pixels of a rectangle by a flip or a
+//!   quarter turn without resampling; a quarter turn needs a square.
 //! - **Dirty rectangles.** Every edit, undo and redo adds the pixels it
 //!   touched to a per-layer log ([`Bitmap::take_dirty`]) and reports them
 //!   as [`Applied`] with the tiles they overlap. The live preview uploads
@@ -34,10 +40,11 @@ mod fill;
 mod png_io;
 mod rect;
 mod resample;
+mod transform;
 
 pub use adjust::{Adjust, apply as apply_adjust};
 pub use bitmap::{Applied, Bitmap, BitmapOp, Dirty, Layer, LayerId, UNDO_LIMIT, paint_canvas};
-pub use brush::{Brush, Stroke, paint, stamp};
+pub use brush::{Brush, Stroke, paint, stamp, stamp_with};
 pub use canvas::{Canvas, MAX_SIZE, TILE, check_size};
 pub use color::{Channels, blend, replace, to_linear, to_srgb};
 pub use error::Error;
@@ -45,3 +52,4 @@ pub use fill::{fill_rect, flood};
 pub use png_io::{decode_png, encode_png};
 pub use rect::Rect;
 pub use resample::resample;
+pub use transform::{Channel, Turn, copy_channel, turn};

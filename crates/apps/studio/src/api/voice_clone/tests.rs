@@ -712,3 +712,26 @@ fn a_failing_model_fails_its_rows_and_the_done_ones_are_saved_together() {
     assert_eq!(r["counts"]["failed"], 2, "{r}");
     assert!(r["rows"][1]["why"].as_str().unwrap().contains("out of memory"));
 }
+
+#[test]
+fn the_window_will_not_say_a_line_with_no_output_name_and_no_game_line() {
+    use crate::app::voice_batch::Batch;
+    let mut b = Batch::default();
+    b.default_character = "cortana".into();
+    let bare = b.add("Hold on, Chief.", None, "");
+    let named = b.add("Wake up.", None, "cortana-wake");
+    let aimed = b.add("Bounce.", None, "");
+    let none = b.add("", None, "x");
+    b.rows[2].tag = Some(r"sound\dialog\combat\cortana\bounce".into());
+    let why = |b: &Batch, id| b.blocked(b.row(id).unwrap());
+    assert!(why(&b, bare).unwrap().contains("output name"), "{:?}", why(&b, bare));
+    assert!(why(&b, bare).unwrap().contains("game line"));
+    assert_eq!(why(&b, named), None);
+    // A game line to replace is as good as a name.
+    assert_eq!(why(&b, aimed), None);
+    // A problem of the line's own comes first.
+    assert_eq!(why(&b, none).as_deref(), Some("no text"));
+    // The API's own queue does not ask for a name: bare queues with
+    // named and aimed, and only the row with no text fails.
+    assert_eq!(b.queue(None), 3);
+}

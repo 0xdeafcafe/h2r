@@ -47,12 +47,25 @@ impl GlyphAtlas for NoGlyphs {
     }
 }
 
+/// A glyph's texels in a page: its rectangle, in texels from the page's
+/// top left.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GlyphRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// The renderer's glyph atlas: one square page per engine font, each glyph
 /// rasterised into it once (white, its coverage in alpha, what
 /// `Combiner::TextureAlpha` samples), packed in shelves left to right and
 /// top to bottom with a texel of space around it. Pages only grow: a glyph
 /// keeps its place, so a list planned before a glyph was added still
-/// draws. [`GlyphPages::page`]'s version says when a page's texels changed.
+/// draws. [`GlyphPages::page`]'s version says when a page's texels changed
+/// and [`GlyphPages::added_since`] names the glyphs that changed it, so
+/// the residency writes each once. Whoever fills the pages decodes a glyph
+/// only when [`GlyphPages::has`] says it is not in one.
 #[derive(Clone, Debug)]
 pub struct GlyphPages {
     size: u32,
@@ -68,6 +81,9 @@ struct GlyphPage {
     y: u32,
     height: u32,
     version: u64,
+    /// Each glyph with texels, in the order added: the version it made
+    /// and its rectangle. A glyph without texels is in none.
+    added: Vec<(u64, GlyphRect)>,
 }
 
 impl GlyphPages {
@@ -101,6 +117,7 @@ impl GlyphPages {
             y: 0,
             height: 0,
             version: 0,
+            added: Vec::new(),
         });
         if page.glyphs.contains_key(&index) {
             return true;
@@ -137,6 +154,7 @@ impl GlyphPages {
         );
         page.x += pw;
         page.height = page.height.max(ph);
+        page.added.push((page.version, GlyphRect { x: x0, y: y0, width: w, height: h }));
         page.version += 1;
         true
     }
@@ -145,6 +163,16 @@ impl GlyphPages {
     /// many glyphs changed it).
     pub fn page(&self, font: u16) -> Option<(u32, &[u8], u64)> {
         self.pages.get(&font).map(|p| (self.size, p.rgba.as_slice(), p.version))
+    }
+
+    /// The glyphs font `font`'s page gained after `version`, in the order
+    /// added: what a copy of the page as of `version` lacks. Each is the
+    /// version it made and its rectangle in the page, whose side and RGBA
+    /// texels come first. `None` when the font has no page.
+    pub fn added_since(&self, font: u16, version: u64) -> Option<(u32, &[u8], &[(u64, GlyphRect)])> {
+        let page = self.pages.get(&font)?;
+        let first = page.added.partition_point(|(made, _)| *made <= version);
+        Some((self.size, page.rgba.as_slice(), &page.added[first..]))
     }
 
     /// The fonts with a page, in order.
@@ -176,9 +204,10 @@ pub struct OverlayImage {
 
 /// What an overlay's textures are made from on the host: the bitmap
 /// images its quads name, by (bitmap datum, image index), and the glyph
-/// pages its text runs sample. `ui_gpu::OverlayResidency` uploads them.
-/// A datum names another bitmap on another map: a new `generation` (one
-/// per map) makes the residency drop what it holds.
+/// pages its text runs sample. `ui_gpu::OverlayResidency` uploads them,
+/// each image and each glyph once. A datum names another bitmap on
+/// another map: a new `generation` (one per map) makes the residency drop
+/// what it holds.
 #[derive(Clone, Debug, Default)]
 pub struct OverlayAssets {
     pub generation: u64,
@@ -193,6 +222,7 @@ pub struct PlanVertex {
     pub position: [f32; 2],
     pub uv: [f32; 2],
     pub color: [f32; 4],
+    pub extra_uv: [[f32; 2]; 3],
 }
 
 /// A scissor in the renderer's target pixels.
@@ -205,8 +235,15 @@ pub struct Scissor {
 }
 
 /// One draw: a run of consecutive items with one material and clip.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct OverlayBatch {
+    pub shader_stages: [Option<frame_scene::OverlayTexture>; 4],
+    /// Stages that reconstruct magnified glyph coverage at this target size.
+    pub glyph_cache: u8,
+    pub alpha_test: Option<(u32, u8)>,
+    pub alpha_kill: u8,
+    pub color_write: u32,
+    pub shader_words: Option<Box<[u32]>>,
     pub material: OverlayMaterial,
     pub clip: ClipRect,
     pub scissor: Scissor,
@@ -230,7 +267,7 @@ pub struct OverlayStats {
     pub model_views: u32,
     /// Draws recorded (one per batch the GPU took).
     pub batches: u32,
-    /// Items whose material is a tag shader: not translated yet.
+    /// Items whose tag shader has no supported definition.
     pub refused_material: u32,
     /// Items whose clip does not reach the renderer's target.
     pub refused_clip: u32,
@@ -309,7 +346,9 @@ impl OverlayPlan {
                 plan.stats.refused_model_view += 1;
                 continue;
             }
-            if matches!(item.material.program, Program::Shader { .. }) {
+            if matches!(item.material.program, Program::Shader { .. })
+                && !item.shader_words.as_ref().is_some_and(|words| words.len() == 60)
+            {
                 plan.stats.refused_material += 1;
                 continue;
             }
@@ -335,10 +374,12 @@ impl OverlayPlan {
             match item.kind {
                 OverlayKind::Quad | OverlayKind::Fill => {
                     let corners = overlay.vertices_of(item);
-                    plan.vertices.extend(corners.iter().map(|v| PlanVertex {
-                        position: to_clip(v.position, guest),
-                        uv: v.uv,
-                        color: v.color,
+                    plan.vertices.extend(corners.iter().enumerate().map(|(n, v)| {
+                        let [uv, t1, t2, t3] = item.stage_uv.as_ref().map_or([v.uv; 4], |uv| uv[n]);
+                        PlanVertex {
+                            position: to_clip(v.position, guest), uv, color: v.color,
+                            extra_uv: [t1, t2, t3],
+                        }
                     }));
                     plan.indices.extend(QUAD_INDICES.map(|i| base + i));
                 }
@@ -362,6 +403,7 @@ impl OverlayPlan {
                             position: to_clip([x, y], guest),
                             uv: [u, v],
                             color: item.color,
+                            extra_uv: [[0.0; 2]; 3],
                         };
                         plan.vertices.extend([
                             corner(x0, y0, u0, v0),
@@ -376,8 +418,13 @@ impl OverlayPlan {
             }
             let count = plan.indices.len() as u32 - start;
             let after_blur = plan.blurs.last().is_some_and(|b| b.before as usize == plan.batches.len());
+            let magnified = target[0] > guest[0] || target[1] > guest[1];
+            let glyph_cache = if magnified { item.glyph_cache & 15 } else { 0 };
             let joins = !after_blur && plan.batches.last().is_some_and(|b| {
-                b.material == item.material && b.clip == item.clip && b.first_index + b.index_count == start
+                b.material == item.material && b.color_write == item.color_write && b.glyph_cache == glyph_cache
+                    && b.alpha_test == item.alpha_test && b.alpha_kill == item.alpha_kill
+                    && b.shader_stages == item.shader_stages
+                    && b.shader_words == item.shader_words && b.clip == item.clip && b.first_index + b.index_count == start
             });
             if let Some(b) = plan.batches.last_mut().filter(|_| joins) {
                 b.index_count += count;
@@ -385,6 +432,12 @@ impl OverlayPlan {
             } else {
                 plan.batches.push(OverlayBatch {
                     material: item.material,
+                    shader_stages: item.shader_stages,
+                    shader_words: item.shader_words.clone(),
+                    color_write: item.color_write,
+                    glyph_cache,
+                    alpha_test: item.alpha_test,
+                    alpha_kill: item.alpha_kill,
                     clip: item.clip,
                     scissor,
                     first_index: start,
@@ -449,6 +502,27 @@ mod tests {
         assert_eq!(p.vertices.len(), 16);
         assert_eq!(p.stats.batches, 0, "the GPU counts what it records");
         assert_eq!(p.stats.drawn(), 4);
+    }
+
+    #[test]
+    fn distinct_shader_constants_split_widget_batches() {
+        let mut overlay = Overlay::new([640, 480]);
+        let material = OverlayMaterial { program: Program::Shader { tag: 17 }, ..sprite(5) };
+        for (i, fill) in [0.2, 0.2, 0.7].into_iter().enumerate() {
+            let n = overlay.push_quad(material, all(), quad(i as f32)).unwrap();
+            let item = &mut overlay.items[n as usize];
+            item.hud_input[0] = fill;
+            item.glyph_cache = 2;
+            let mut words = [0; 60];
+            words[10] = (fill * 255.0) as u32;
+            item.shader_words = Some(words.into());
+        }
+        let plan = OverlayPlan::new(&overlay, [640, 480], &NoGlyphs);
+        assert_eq!(plan.batches.iter().map(|b| b.items).collect::<Vec<_>>(), [2, 1]);
+        assert_eq!(plan.stats.refused_material, 0);
+        assert_eq!(plan.batches[0].glyph_cache, 0);
+        let magnified = OverlayPlan::new(&overlay, [720, 480], &NoGlyphs);
+        assert_eq!(magnified.batches[0].glyph_cache, 2);
     }
 
     #[test]
@@ -530,6 +604,33 @@ mod tests {
         o.push_text_run(OverlayMaterial::text(6), all(), [1.0; 4], &g).unwrap();
         let p = OverlayPlan::new(&o, [640, 480], &pages);
         assert_eq!(p.vertices[2].uv, [4.0 / 16.0, 3.0 / 16.0]);
+    }
+
+    /// A page names the glyphs added after a version, each where its
+    /// texels are: what the residency writes to a copy of that version.
+    /// A glyph already in, an empty one and one that does not fit make no
+    /// version and are in none.
+    #[test]
+    fn a_page_names_the_glyphs_added_since_a_version() {
+        let first = GlyphRect { x: 1, y: 1, width: 3, height: 2 };
+        let second = GlyphRect { x: 1, y: 5, width: 10, height: 4 };
+        let mut pages = GlyphPages::new(16);
+        assert_eq!(pages.added_since(6, 0), None, "no page yet");
+        assert!(pages.insert(6, 40, 3, 2, &[10, 20, 30, 40, 50, 60]));
+        assert!(pages.insert(6, 44, 0, 5, &[]), "an empty glyph has no texels");
+        let (side, rgba, added) = pages.added_since(6, 0).unwrap();
+        assert_eq!((side, added), (16, &[(1u64, first)][..]));
+        let (x, y) = (first.x as usize, first.y as usize);
+        assert_eq!(rgba[(y * 16 + x) * 4..(y * 16 + x) * 4 + 4], [255, 255, 255, 10], "the glyph's texels");
+        assert!(pages.insert(6, 41, 10, 4, &[255; 40]));
+        assert!(pages.insert(6, 41, 10, 4, &[0; 40]), "already in");
+        assert!(!pages.insert(6, 42, 4, 12, &[1; 48]), "no room");
+        assert_eq!(pages.added_since(6, 0).unwrap().2, &[(1, first), (2, second)]);
+        assert_eq!(pages.added_since(6, 1).unwrap().2, &[(2, second)]);
+        assert_eq!(pages.added_since(6, 2).unwrap().2, &[] as &[(u64, GlyphRect)], "nothing after the last version");
+        assert!(pages.insert(8, 1, 1, 1, &[7]), "another font, its own page");
+        assert_eq!(pages.added_since(8, 0).unwrap().2, &[(1, GlyphRect { x: 1, y: 1, width: 1, height: 1 })]);
+        assert_eq!(pages.added_since(7, 0), None, "no page");
     }
 
     #[test]

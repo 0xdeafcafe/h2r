@@ -241,6 +241,13 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"asset":"tag:weap:objects\\weapons\\rifle","package":"kit-test"}"#,
     ),
     def(
+        m::ASSET_LINKS,
+        "What an asset uses, what uses it and which editors open it, read each time (docs/editor/studio-flow.md, \"Links\"). A tag: the tags it references (role = the target's kind: Model, Animations, Sounds, HUD, Projectile, Bitmaps, ...; `via` is `node <n> +<offset>` in its file), the voice that says it when it is a dialogue sound, and in used_by the tags that reference it and the packages that add or edit it. A `rules` or `variant` item: the other kind of its script key. Any other item: the tag it adds or edits, and its package. A package: its items and `requires`, and the packages that require it. `editors` lists each editor with `why_not` when it cannot open. `problems` names what could not be read (a tag file that does not decode, a missing tree)",
+        r#"{"asset":"string (tag:<group>:<path>, package:<id> or item:<package>:<n>)"}"#,
+        r#"{"asset":"string","uses":"[{asset,role,via}]","used_by":"[{asset,role,via}]","editors":"[{id,label,why_not}]","problems":"[string]"}"#,
+        r#"{"asset":"package:kit-test"}"#,
+    ),
+    def(
         m::PACKAGE_LIST,
         "The package set in load order, then the packages that are off: id, name, PackageId, origin (baked or local), dir, on or off and why, always_on, item counts by kind, scopes, whether it is the edit target and whether it is editable; the set's problems, its content hash and the edit target",
         "{}",

@@ -10,7 +10,7 @@ use rules::scenario::{self, Scenario, ScenarioBody, ScenarioEvent, ScenarioPlaye
 use rules::ty::fixed;
 use rules::verify::unhostable;
 use rules::vm::{Arg, ErrorKind, Fired, Input, MAX_SIGHT_PAIRS, RulesExt, SIGHT_KEEP};
-use rules::{Event, Vm, build, compile};
+use rules::{Event, Vm, build, builtin, compile};
 
 const EYE: u32 = 0x4001_0000;
 const TARGET: u32 = 0x4001_0001;
@@ -178,8 +178,9 @@ fn touchdown_is_an_event_with_a_player_and_two_speeds() {
         compile("rules \"T\" 1\ntype slayer\non touchdown(p, down, up) { score(down, 1) }\n")
             .is_err()
     );
-    // Without a handler the event is no handler.
-    let (ir, _) = build("rules \"T\" 1\ntype slayer\n").unwrap();
+    // Without a handler the event is no handler: the built-in Slayer script
+    // has none (a script with no handler at all does not compile).
+    let (ir, _) = build(builtin::SLAYER).unwrap();
     let mut vm = Vm::new(ir, 0, 0).unwrap();
     let mut g = FakeGame::with_players(1);
     vm.begin_tick(0);

@@ -1,7 +1,7 @@
 # Studio's flow: one way from any asset to its editors and to what it touches
 
-Status: Partly built. The ways to Voices (slice FL0) are built: Go to anything lists every editor and the Voices window, and a sound's editor starts a Voices line that replaces it. One undo (slice FL8) is built: every editor's Undo and Redo buttons run `Action::UndoDoc` on their document, and the mouth curve, Modeling, Textures and Animation steps are steps of their tab. The rest is design.
-Code: `crates/apps/studio/src/app/commands.rs` (`palette`), `app/voices.rs` (`Show`, `App::voices_line_for`), `ui/sound.rs` (**New line in Voices**), `ui/announcer.rs` (`window`); `app/shell.rs` (`Stack`, `undo_redo_doc`, `doc_can`), `app/tag_doc.rs` (`next_step`), `app/sound_mouth.rs`, `app/textures.rs`, `app/anim/document.rs`, `ui/modeling.rs`, `ui/textures.rs`, `ui/anim/edit.rs`, `ui/inspector.rs`, `ui/scripts.rs`, `crates/tools/anim-edit/src/lib.rs` (`AnimDoc::share_steps`). Tests: `app/tests.rs` (`go_to_anything_opens_the_voices_window_and_every_editor`, `a_sound_starts_one_voices_row_that_replaces_it`); `app/shell_tests.rs` (`a_mouth_redraw_and_a_field_edit_undo_in_the_order_made`, `a_sound_and_the_map_keep_two_stacks`, `every_undo_button_runs_undo_doc`), `api/tests/bitmaps_tests.rs` (`a_bitmaps_tab_undoes_its_own_steps_and_the_map_keeps_its_own`), `api/anim/read_tests.rs` (`a_graphs_tab_undoes_its_documents_steps_in_the_order_made`), `app/script_edit_tests.rs` (`the_tools_compile_action_reports_in_the_tab_and_undoes`).
+Status: Partly built. The ways to Voices (slice FL0) are built: Go to anything lists every editor and the Voices window, and a sound's editor starts a Voices line that replaces it. The link table and `asset.links` (slice FL1) are built. Go to anything searches the same rows the Browser lists (slice FL3): every tag of the tree, the set's packages and their items, with no map open. One undo (slice FL8) is built: every editor's Undo and Redo buttons run `Action::UndoDoc` on their document, and the mouth curve, Modeling, Textures and Animation steps are steps of their tab. The rest is design.
+Code: `crates/apps/studio/src/app/links.rs` (`links`, `role_of`), `api/assets.rs` (`links`), `app/commands.rs` (`palette`, `palette_assets`), `app/voices.rs` (`Show`, `App::voices_line_for`), `ui/palette.rs`, `ui/sound.rs` (**New line in Voices**), `ui/announcer.rs` (`window`), `api/ui_screens.rs` (`ui.palette`); `app/shell.rs` (`Stack`, `undo_redo_doc`, `doc_can`), `app/tag_doc.rs` (`next_step`), `app/sound_mouth.rs`, `app/textures.rs`, `app/anim/document.rs`, `ui/modeling.rs`, `ui/textures.rs`, `ui/anim/edit.rs`, `ui/inspector.rs`, `ui/scripts.rs`, `crates/tools/anim-edit/src/lib.rs` (`AnimDoc::share_steps`). Tests: `api/tests/links_tests.rs`, `app/tests.rs` (`go_to_anything_opens_the_voices_window_and_every_editor`, `go_to_anything_finds_a_tag_a_package_an_item_and_a_command_with_no_map_open`, `go_to_anything_opens_a_tree_tag_by_opening_its_map_first`, `a_sound_starts_one_voices_row_that_replaces_it`); `app/shell_tests.rs` (`a_mouth_redraw_and_a_field_edit_undo_in_the_order_made`, `a_sound_and_the_map_keep_two_stacks`, `every_undo_button_runs_undo_doc`), `api/tests/bitmaps_tests.rs` (`a_bitmaps_tab_undoes_its_own_steps_and_the_map_keeps_its_own`), `api/anim/read_tests.rs` (`a_graphs_tab_undoes_its_documents_steps_in_the_order_made`), `app/script_edit_tests.rs` (`the_tools_compile_action_reports_in_the_tab_and_undoes`).
 Switch: none.
 
 Studio's editors were built one at a time, and each brought its own way
@@ -104,20 +104,24 @@ answer over the API, and the header's two menus and the inspector's
 HUD, Projectile, Script, Voice, Package); `via` is the field path or the
 manifest key the link was read from.
 
-| From | Uses | Read from |
+| From | Lists | Read from |
 |---|---|---|
-| any tag | the tags it references, grouped by role | `tag_api` references; the role is the kind of the target (`app::assets::kind_of`) |
-| any tag | the packages that edit or add it | the edit lines and items of the set (`asset.list`'s badge data) |
-| a variant | its script | the record's script prefix (`rules_edit::find_script`) |
-| a script | the variants made from it, the HUDs and maps it names | the package's items; the script's `requires` |
-| a dialogue sound | the voice that says it | the character whose rules pick its path (`voice::dataset::CHARACTERS`) |
-| a voice | the lines made in it, and the sound each replaces | the batch's rows and the `sound` items of the edit target |
-| a package | its items; the packages it `requires` | the manifest |
-| a screen or a HUD | its bitmaps and strings | the tag's references, or the YAML's names |
+| any tag | **uses**: the tags it references, grouped by role | the tag's file in the tree; `via` is `node <n> +<offset>`; the role is the kind of the target (`app::links::role_of`) |
+| any tag | **used by**: the tags that reference it | a scan of every tag file of the tree |
+| any tag | **used by**: the packages that edit or add it (`via` is `edits` or `adds`) | the edit lines and items of the set (`app::assets::overlay`) |
+| a `variant` item | **uses**: the `rules` item of its script | the files' stem up to the first `.`, the key the script registry gives both |
+| a `rules` item | **used by**: the `variant` items of its script | the same key |
+| a dialogue sound | **uses**: the voice that says it (`voice:<character>`) | the character whose rules pick its path (`voice::dataset::CHARACTERS`) |
+| an `edits`, `tag`, `bitmap`, `sound` or `model` item | **uses**: the tags it edits or adds; **used by**: its package | the item's source and tag |
+| a package | **uses**: its items and the packages it `requires`; **used by**: the packages that require it | the manifest |
 
-**Used by** is the same table read backwards: `tag.uses` for tags (the
-reverse index the tag document keeps), and a scan of the set's manifests
-for items. A link menu lists at most 20 rows per role and ends with
+Not built yet: a voice's lines (needs the voice document, FL5), a
+variant `.h2variant` record's script prefix, and the bitmaps and strings
+of a screen or HUD. A file that does not decode is named in `problems`
+and the rest of the answer stands.
+
+**Used by** is the same table read backwards, from a scan of the tree's
+tags and of the set's manifests. A link menu lists at most 20 rows per role and ends with
 **Show all in the Browser**, which sets the Browser's search to the
 query that lists them.
 
@@ -227,8 +231,9 @@ the variant and brings the Game panel forward; a save reloads it.
 
 ## Interfaces
 
-- `asset.links {asset}`: the link table above. New, in
-  `crates/apps/studio/src/api/assets.rs`.
+- `asset.links {asset}` (built): the link table above, in
+  `crates/apps/studio/src/api/assets.rs`; it also answers `problems`,
+  the files it could not read.
 - `asset.list` gains the kinds `Game types`, `Playlists` and `Voices` and
   rows for `voice:<character>`.
 - `shell.open {asset}` takes `item:` and `voice:` ids.
@@ -250,9 +255,9 @@ nothing unbuilt and run together.
 | # | Slice | Size | Needs | Files | Accepted when |
 |---|---|---|---|---|---|
 | FL0 (built) | **Ways to Voices**: the editors and Voices in Go to anything; **New line in Voices** on a sound | S | nothing | `app/commands.rs`, `app/voices.rs`, `app.rs`, `ui/sound.rs`, `ui/announcer.rs` | `go_to_anything_opens_the_voices_window_and_every_editor`; `a_sound_starts_one_voices_row_that_replaces_it` |
-| FL1 | **The link table**: `app/links.rs`, `asset.links`; tag references by role, packages of a tag, variant and script, sound and voice, package and items | M | nothing | `app/links.rs` (new), `api/assets.rs`, `api/tests/links_tests.rs` (new) | on an invented map and package: a weapon lists its model under Model and its sound under Sounds; the model lists the weapon under Used by; a variant lists its script and the script the variant; a tag an edit line touches lists the package; a sound under an invented character's path lists that voice |
+| FL1 (built) | **The link table**: `app/links.rs`, `asset.links`; tag references by role, packages of a tag, variant and script, sound and voice, package and items | M | nothing | `app/links.rs` (new), `api/assets.rs`, `api/tests/links_tests.rs` (new) | on an invented map and package: a weapon lists its model under Model and its sound under Sounds; the model lists the weapon under Used by; a variant lists its script and the script the variant; a tag an edit line touches lists the package; a sound under an invented character's path lists that voice |
 | FL2 | **The document header**: the strip on every surface, with the trail, the origin, the edit target, **Links** and **Open with** drawn from FL1 | M | FL1 | `ui/doc_header.rs` (new), `ui.rs`, `ui/tags.rs`, `ui/variants.rs`, `ui/playlists.rs`, `ui/ui_screens.rs`, `ui/hud.rs`, `ui/textures.rs`, `headless.rs` | each kind's document draws the header at 1000 by 420 with no stray child window; the header's text for an invented weapon names its package and its roles; following a link and going Back returns the first tab with its selection |
-| FL3 | **Go to anything over everything**: the rows of `asset.list` for every root, packages and items, and every menu command | S | nothing | `app/commands.rs`, `ui/palette.rs`, `api/ui_screens.rs`, `app/tests.rs` | with no map open, a query finds a tag of an invented tree, a package, an item and a command, each under its kind; running each opens its document |
+| FL3 (built) | **Go to anything over everything**: the rows of `asset.list` for every root, packages and items, and every menu command | S | nothing | `app/commands.rs`, `ui/palette.rs`, `api/ui_screens.rs`, `app/tests.rs` | with no map open, a query finds a tag of an invented tree, a package, an item and a command, each under its kind; running each opens its document |
 | FL4 | **Items open**: item rows open the editor of what they build; the **Game types** and **Playlists** kinds; scripts, variants and playlists as tabs with `item:` ids; **View > Editors** removed | M | FL2 | `app/assets.rs`, `ui/browser.rs`, `app/shell.rs`, `app/rules_edit.rs`, `ui.rs`, `api/shell.rs` | a double-click on an invented package's `rules`, `variant`, `sound` and `edits` items opens the script editor, the variant's settings, the sound editor and the edited tag; `shell.open {asset: "item:..."}` leaves the same tabs |
 | FL5 | **Voices as documents**: `Doc::Voice`, the **Voices** kind, the voice document (Setup, Lines), the sound document's Lines pane with the two waveforms; the floating window and **View > Voices** removed | M | FL2, FL4 | `ui/announcer.rs` split into `ui/voices/{setup,lines}.rs`, `ui/sound.rs`, `app/shell.rs`, `app/assets.rs`, `app/voice_batch.rs`, `api/voice_clone.rs` | with the fake sidecar: the Voices kind lists every character with its dataset state; a line said from an invented sound's Lines pane is a row whose target is that sound and whose levels draw under the original's; a voice with no dataset opens on Setup |
 | FL6 | **One check**: `check.run {asset}`, **Check** in the header with the count, the editors' lists drawn from Problems | M | FL2 | `app/problems.rs`, `ui/problems.rs`, `api/checks.rs`, `ui/hud.rs`, `ui/ui_screens.rs`, `ui/game_script.rs` | a finding on an invented HUD shows once, in Problems and in the HUD document, with the same text; the header's count for an asset equals `problems.list` filtered to it; a script error is a Problems row that opens its line |
@@ -288,6 +293,13 @@ nothing unbuilt and run together.
 - Go to anything lists the editors and Voices, and running the entry
   asks for the window: **Test**
   `go_to_anything_opens_the_voices_window_and_every_editor`.
+- With no map open, one query finds a tag of an invented tree, a
+  package, an item and a command, each under its kind; the tag's and the
+  command's entries open their documents (a package's and an item's
+  carry the `OpenAsset` that FL4 and FL10 teach to open theirs): **Test**
+  `go_to_anything_finds_a_tag_a_package_an_item_and_a_command_with_no_map_open`.
+- A tag of the tree opens by opening the map that holds it first:
+  **Test** `go_to_anything_opens_a_tree_tag_by_opening_its_map_first`.
 - A sound's **New line in Voices** makes one row per sound and asks for
   the batch: **Test** `a_sound_starts_one_voices_row_that_replaces_it`.
 - One undo: a field edit and a mouth redraw on one invented sound undo in

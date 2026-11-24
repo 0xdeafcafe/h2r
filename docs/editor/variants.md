@@ -258,9 +258,13 @@ file, so it carries no signature.
   eight in order, and Export then writes a version-2 file
   (`VariantEditor::export_current_with`, `Action::ExportVariantWith`);
   with none ticked it writes the version-1 text it always did. A record
-  that names its engine's built-in script carries it in the file
-  (`portable::builtin_attach`); a record that names another is refused by
-  name, as its blob is not at hand. `variant.maps` lists the same choices and `variant.export`
+  that names a built-in script carries it in the file
+  (`portable::builtin_attach`): its engine's built-in, or for a record on
+  the script index, which has no engine to name one by (a new Slayer
+  variant's, as Slayer's built-in rides that index), whichever of
+  `rules::builtin::ALL` has the hash prefix the record names. A record
+  that names another script is refused by name, as its blob is not at
+  hand. `variant.maps` lists the same choices and `variant.export`
   takes `maps` (variant ids). In the game, `Store::set_maps` writes a
   kept game variant's suggestions into its own file
   (`game_variants::suggest` lists the choices); a Live variant is

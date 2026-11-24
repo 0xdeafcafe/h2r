@@ -97,6 +97,15 @@ background jobs, one at a time (`app::voices::Voices::start`);
 `voice.dataset.status` and the Voices window show their stage, progress
 and last log lines.
 
+`f5-tts-mlx` 0.2.6 draws its noise as `mx.random.normal((channels, dur))`
+with `dur` an element of a float32 `mx.array` of durations, which current
+MLX refuses as a shape (`TypeError: normal(): incompatible function
+arguments ... Invoked with types: tuple`). The script's
+`whole_number_shapes` wraps `mx.random.normal` so every shape is made of
+Python ints; `say` and `train` call it. The sidecar's tests are
+`crates/apps/studio/sidecar/test_voice_clone.py` (a fake `mlx.core`; run
+`python3 -I` on the file).
+
 ### The models
 
 | Backend | What | Runs on | Clone | Fine-tune | Licence |
@@ -174,6 +183,15 @@ asks the model again instead of the cache. **Keep all done lines**
 **Replace**), and puts a row with a tag into the edit target package as a
 `sound` item, as `voice.commit` does. The picker for the tag lists the
 open map's dialogue sounds; a tag names a sound, not one permutation.
+
+The window adds two rules the API does not have. A row needs an output
+name or a game line it replaces (`Batch::blocked`): until it has one, its
+**Say** and **Say all** are off and the row says why. The tag picker is
+labelled "Replaces: <tag>", or "Replaces: nothing (saved as a new clip)"
+when it has none. A row's failure is shown as a sentence
+(`voice::readable`): a known library failure says what to do, a Python
+traceback is cut to its last line, and the whole text stays in the API's
+`why` and in `sidecar.log`.
 
 ## Rules and limits
 

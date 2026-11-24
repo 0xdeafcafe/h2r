@@ -65,11 +65,20 @@ fn copy(app: &mut App, p: &P) -> Reply {
     })
 }
 
+fn links(app: &mut App, p: &P) -> Reply {
+    let id = asset(p)?;
+    let set = assets::read_set(&app.data_root());
+    let l = crate::app::links::links(&app.tags_root(), &set, &id)
+        .map_err(|e| err(code::REFUSED, e))?;
+    Ok(l.json(p.str("asset")?))
+}
+
 pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
     match method {
         m::ASSET_LIST => list(app, p),
         m::ASSET_THUMB => thumb(app, p),
         m::ASSET_COPY => copy(app, p),
+        m::ASSET_LINKS => links(app, p),
         _ => Err(err(code::METHOD_NOT_FOUND, format!("no method {method}"))),
     }
 }

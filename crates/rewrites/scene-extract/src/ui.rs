@@ -9,15 +9,20 @@
 //! the solid rectangles of `0x00052ce7` (menu fade rectangles, cinematic
 //! bars, split-screen dividers), the loading draw's bitmaps
 //! (`0x000289e0`) and the screens `0x00147af1` draws. A screen's widgets
-//! are drawn in the order the guest's sort `0x002353a5` gives them
-//! ([`sort_widgets`]); a dialog's screen first fills the target with the
-//! backdrop colour and blurs it (`0x0023029a`, docs/formats/ui.md, "Draw
-//! order").
+//! are drawn in the order the guest's list `0x002353a5` gives them: a
+//! post-order walk of the shown widgets ([`collect`]), sorted by the C
+//! runtime's `qsort` (`0x00321460`, [`crt_qsort`]) with the comparator
+//! `0x002356d8` ([`compare`]), drawn when their depth is inside the
+//! window ([`in_window`]). A dialog's screen first fills the target with
+//! the backdrop colour and blurs it (`0x0023029a`, docs/formats/ui.md,
+//! "What a screen, pane and widget are").
 //!
-//! Nothing here reads the guest: the values a frame holds (colours,
-//! blends, the blur's steps and tap) are read from the running image by
-//! whoever fills it, never committed.
+//! The values a frame holds (colours, blends, the blur's steps and tap)
+//! are read from the running image by whoever fills it, never committed.
+//! [`read_widget`] reads one widget's header and, by the draw its vtable
+//! names, what it draws, or why that is not read yet ([`Unread`]).
 
+use crate::GuestRead;
 use frame_scene::{
     ClipRect, Combiner, Overlay, OverlayBlend, OverlayBlur, OverlayError, OverlayGlyph,
     OverlayMaterial, OverlayModelView, OverlayTexture, OverlayVertex, Program, Sampler,
@@ -113,7 +118,8 @@ pub struct UiBackdrop {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UiScreen {
     pub backdrop: Option<UiBackdrop>,
-    /// In any order: [`draw_list`] sorts them.
+    /// In the order the guest collects them ([`collect`]): [`draw_list`]
+    /// sorts them as the guest does, ties included.
     pub widgets: Vec<UiWidget>,
 }
 
@@ -179,31 +185,327 @@ pub struct Listed {
     pub note: Option<String>,
 }
 
-/// Whether `a` sorts before `b` in the guest's comparator `0x002356d8`:
-/// depth ascending, values within 0.001 tying, then render depth bias,
-/// then widget type.
-pub fn sorts_before(a: &UiWidget, b: &UiWidget) -> bool {
-    if (a.depth - b.depth).abs() > 0.001 {
-        return a.depth < b.depth;
-    }
-    (a.bias, a.kind) < (b.bias, b.kind)
+/// What the guest's comparator reads of a list entry: the depth and the
+/// bias the entry holds (`0x0023566a` copies them from `+0x60` and
+/// `+0x6a`) and the widget's type at `+4`, signed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SortKey {
+    pub depth: f32,
+    pub bias: i16,
+    pub kind: i32,
 }
 
-/// The widgets' indices in draw order: a stable insertion by
-/// [`sorts_before`], at most 256 (`0x002353a5` collects up to 256).
-/// The guest's sort algorithm is not traced; with depths that tie
-/// pairwise but not across a chain the order of such a chain is this
-/// one's.
-pub fn sort_widgets(widgets: &[UiWidget]) -> Vec<usize> {
-    let mut order: Vec<usize> = Vec::with_capacity(widgets.len().min(256));
-    for i in 0..widgets.len().min(256) {
-        let at = order
-            .iter()
-            .rposition(|&j| !sorts_before(&widgets[i], &widgets[j]))
-            .map_or(0, |p| p + 1);
-        order.insert(at, i);
+impl SortKey {
+    pub fn of(w: &UiWidget) -> SortKey {
+        SortKey {
+            depth: w.depth,
+            bias: w.bias,
+            kind: w.kind as i32,
+        }
     }
-    order
+}
+
+/// Depths whose difference is at most this tie (`[0x0045dc70]`, 0.001).
+pub const DEPTH_TIE: f32 = 0.001;
+
+/// The guest's comparator `0x002356d8`, as `qsort` takes it (negative:
+/// `a` first). Depths more than [`DEPTH_TIE`] apart sort the deeper
+/// first; tied depths sort by bias, smaller first, then by type, larger
+/// first. A NaN depth compares equal to everything.
+pub fn compare(a: &SortKey, b: &SortKey) -> i32 {
+    use std::cmp::Ordering::{Equal, Greater, Less};
+    let d = a.depth - b.depth;
+    let apart = if d >= 0.0 { d } else { 0.0 - d };
+    // `comiss eps, |d|; jb`: an unordered difference is not a tie.
+    if apart <= DEPTH_TIE {
+        return match (a.bias.cmp(&b.bias), a.kind.cmp(&b.kind)) {
+            (Greater, _) => 1,
+            (Less, _) => -1,
+            (Equal, Less) => 1,
+            (Equal, Equal) => 0,
+            (Equal, Greater) => -1,
+        };
+    }
+    if b.depth > a.depth {
+        1
+    } else if a.depth > b.depth {
+        -1
+    } else {
+        0
+    }
+}
+
+/// The C runtime's `qsort` (`0x00321460`: the median-of-three quicksort
+/// with an explicit stack, partitions of at most 8 left to a selection
+/// sort that moves the largest to the end): the same comparisons and
+/// swaps, so the same order where `cmp` ties. Not stable.
+pub fn crt_qsort<T>(v: &mut [T], cmp: &dyn Fn(&T, &T) -> i32) {
+    const CUTOFF: usize = 8;
+    if v.len() < 2 {
+        return;
+    }
+    let mut stack: Vec<(usize, usize)> = Vec::new();
+    let (mut lo, mut hi) = (0usize, v.len() - 1);
+    loop {
+        let size = hi - lo + 1;
+        if size <= CUTOFF {
+            short_sort(v, lo, hi, cmp);
+        } else {
+            let mut mid = lo + size / 2;
+            if cmp(&v[lo], &v[mid]) > 0 {
+                v.swap(lo, mid);
+            }
+            if cmp(&v[lo], &v[hi]) > 0 {
+                v.swap(lo, hi);
+            }
+            if cmp(&v[mid], &v[hi]) > 0 {
+                v.swap(mid, hi);
+            }
+            let mut loguy = lo;
+            // Signed: the guest's pointer can step one entry below `lo`.
+            let mut higuy = hi as isize;
+            loop {
+                if mid > loguy {
+                    loop {
+                        loguy += 1;
+                        if !(loguy < mid && cmp(&v[loguy], &v[mid]) <= 0) {
+                            break;
+                        }
+                    }
+                }
+                if mid <= loguy {
+                    loop {
+                        loguy += 1;
+                        if !(loguy <= hi && cmp(&v[loguy], &v[mid]) <= 0) {
+                            break;
+                        }
+                    }
+                }
+                loop {
+                    higuy -= 1;
+                    if !(higuy > mid as isize && cmp(&v[higuy as usize], &v[mid]) > 0) {
+                        break;
+                    }
+                }
+                if higuy < loguy as isize {
+                    break;
+                }
+                v.swap(loguy, higuy as usize);
+                if mid as isize == higuy {
+                    mid = loguy;
+                }
+            }
+            higuy += 1;
+            if (mid as isize) < higuy {
+                loop {
+                    higuy -= 1;
+                    if !(higuy > mid as isize && cmp(&v[higuy as usize], &v[mid]) == 0) {
+                        break;
+                    }
+                }
+            }
+            if mid as isize >= higuy {
+                loop {
+                    higuy -= 1;
+                    if !(higuy > lo as isize && cmp(&v[higuy as usize], &v[mid]) == 0) {
+                        break;
+                    }
+                }
+            }
+            if higuy - lo as isize >= hi as isize - loguy as isize {
+                if (lo as isize) < higuy {
+                    stack.push((lo, higuy as usize));
+                }
+                if loguy < hi {
+                    lo = loguy;
+                    continue;
+                }
+            } else {
+                if loguy < hi {
+                    stack.push((loguy, hi));
+                }
+                if (lo as isize) < higuy {
+                    hi = higuy as usize;
+                    continue;
+                }
+            }
+        }
+        match stack.pop() {
+            Some((l, h)) => (lo, hi) = (l, h),
+            None => return,
+        }
+    }
+}
+
+/// `qsort`'s selection sort over `lo..=hi`: the last largest (greater by
+/// `cmp` than the largest so far) swapped to the end, the end moved in.
+fn short_sort<T>(v: &mut [T], lo: usize, mut hi: usize, cmp: &dyn Fn(&T, &T) -> i32) {
+    while hi > lo {
+        let mut max = lo;
+        for p in lo + 1..=hi {
+            if cmp(&v[p], &v[max]) > 0 {
+                max = p;
+            }
+        }
+        v.swap(max, hi);
+        hi -= 1;
+    }
+}
+
+/// The most widgets one list holds (`0x0023566a` stops adding at 256).
+pub const MAX_LISTED: usize = 256;
+
+/// The widgets' indices in draw order: the first [`MAX_LISTED`], given
+/// in the order the guest collects them ([`collect`]), sorted as the
+/// guest sorts its list.
+pub fn sort_widgets(widgets: &[UiWidget]) -> Vec<usize> {
+    let mut order: Vec<(usize, SortKey)> = widgets
+        .iter()
+        .take(MAX_LISTED)
+        .map(SortKey::of)
+        .enumerate()
+        .collect();
+    crt_qsort(&mut order, &|a: &(usize, SortKey), b: &(usize, SortKey)| {
+        compare(&a.1, &b.1)
+    });
+    order.into_iter().map(|(i, _)| i).collect()
+}
+
+/// One widget of a screen's tree as the collector walks it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UiNode {
+    /// Its vtable's `+0x40` answer: a hidden widget is skipped with its
+    /// children.
+    pub shown: bool,
+    /// `+0x14`.
+    pub first_child: Option<usize>,
+    /// `+0x18`.
+    pub next_sibling: Option<usize>,
+}
+
+/// The guest's list before the sort (`0x0023566a` from the root): each
+/// shown widget after its shown children, the children in sibling
+/// order; at most [`MAX_LISTED`], the children walked even when it is
+/// full. A sibling chain that comes back to a widget walked stops there.
+pub fn collect(nodes: &[UiNode], root: usize) -> Vec<usize> {
+    fn visit(nodes: &[UiNode], at: usize, seen: &mut [bool], out: &mut Vec<usize>) {
+        let Some(node) = nodes.get(at) else { return };
+        if std::mem::replace(&mut seen[at], true) || !node.shown {
+            return;
+        }
+        let mut child = node.first_child;
+        while let Some(c) = child.filter(|&c| !seen.get(c).copied().unwrap_or(true)) {
+            visit(nodes, c, seen, out);
+            child = nodes[c].next_sibling;
+        }
+        if out.len() < MAX_LISTED {
+            out.push(at);
+        }
+    }
+    let mut seen = vec![false; nodes.len()];
+    let mut out = Vec::new();
+    visit(nodes, root, &mut seen, &mut out);
+    out
+}
+
+/// Whether a listed widget at `depth` is drawn: inside `[near, far]`, the
+/// window `0x002353a5` takes from `0x0054d5ac` and `0x0054d5b4` less
+/// `0x0054d5b0` (`comiss`: a NaN depth is not).
+pub fn in_window(depth: f32, [near, far]: [f32; 2]) -> bool {
+    depth >= near && far >= depth
+}
+
+/// The widget draws a vtable's `+0x10` slot names (Code, `h2 disasm`).
+pub mod draws {
+    /// `ret 4`: the base widget's, and the screen's, list item's, page
+    /// selector's and table's (vtables `0x00458788`, `0x00458840`,
+    /// `0x00459f10`, `0x0045b570`, `0x0045ad18`).
+    pub const NONE: u32 = 0x0033_3105;
+    /// The bitmap widget's (`0x0045ad60`): a meter (`0x002b07e2`) or its
+    /// bitmap (`0x002b0565`) through the screen quads, tinted by `+0x28`
+    /// to `+0x30` and the alpha, each times 255 and rounded by `fistp`.
+    pub const BITMAP: u32 = 0x002b_0540;
+    /// The shader bitmap's (`0x0045adf0`): the HUD shader quad.
+    pub const SHADER_BITMAP: u32 = 0x002b_11c9;
+    /// The text widget's (`0x0045a5e0`): its colour times the text
+    /// interface's (the `+0x3c` slot), written into the interface for
+    /// the interface's draw.
+    pub const TEXT: u32 = 0x0025_38f5;
+    /// The model scene's (`0x0045ada8`).
+    pub const MODEL: u32 = 0x002b_0baa;
+    /// The list's (`0x0045a030`) and the button's (`0x0045a628`).
+    pub const LIST: u32 = 0x0024_bda2;
+    pub const BUTTON: u32 = 0x0025_3ea8;
+}
+
+/// The widget header (`0x0022e27b`, docs/formats/ui.md).
+mod header {
+    pub const KIND: u32 = 0x04;
+    pub const RECT: u32 = 0x20;
+    pub const OFFSET: u32 = 0x58;
+    pub const ALPHA: u32 = 0x64;
+    /// The `i16` at `+0x6a`, the high half of the word at `+0x68`.
+    pub const BIAS_WORD: u32 = 0x68;
+    pub const DRAW_SLOT: u32 = 0x10;
+}
+
+/// Why [`read_widget`] does not list a widget: its draw is not read into
+/// a [`UiContent`] yet, or its header did not read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unread {
+    /// A bitmap widget: its tint's rounding, the bitmap's frame
+    /// (`0x002b0b19`), the scrolling (`0x00235f31`) and meter paths.
+    Bitmap,
+    /// A shader bitmap: tag shaders do not translate.
+    Shader,
+    /// A text widget: the string, its font and the interface's colour.
+    Text,
+    /// A model scene: no stage draws a model view.
+    Model,
+    /// Another draw (a list's, a button's, a screen's own): not read.
+    Draw,
+    /// The widget, its vtable or its header did not read.
+    Unreadable,
+}
+
+/// The widget at `widget` as a list entry holds it (`depth` is the
+/// entry's): its header and what its draw makes. A widget whose draw is
+/// the base's `ret 4` is a container with no pixels ([`UiContent::None`]).
+pub fn read_widget(mem: &dyn GuestRead, widget: u32, depth: f32) -> Result<UiWidget, Unread> {
+    let word = |offset: u32| {
+        widget
+            .checked_add(offset)
+            .and_then(|a| mem.read_u32(a))
+            .ok_or(Unread::Unreadable)
+    };
+    let vtable = word(0)?;
+    let draw = vtable
+        .checked_add(header::DRAW_SLOT)
+        .and_then(|a| mem.read_u32(a))
+        .ok_or(Unread::Unreadable)?;
+    let content = match draw {
+        draws::NONE => UiContent::None,
+        draws::BITMAP => return Err(Unread::Bitmap),
+        draws::SHADER_BITMAP => return Err(Unread::Shader),
+        draws::TEXT => return Err(Unread::Text),
+        draws::MODEL => return Err(Unread::Model),
+        _ => return Err(Unread::Draw),
+    };
+    let halves = |w: u32| [w as u16 as i16, (w >> 16) as u16 as i16];
+    let [top, left] = halves(word(header::RECT)?);
+    let [bottom, right] = halves(word(header::RECT + 4)?);
+    Ok(UiWidget {
+        kind: word(header::KIND)?,
+        depth,
+        bias: halves(word(header::BIAS_WORD)?)[1],
+        rect: [top, left, bottom, right],
+        offset: [
+            f32::from_bits(word(header::OFFSET)?),
+            f32::from_bits(word(header::OFFSET + 4)?),
+        ],
+        alpha: f32::from_bits(word(header::ALPHA)?),
+        content,
+    })
 }
 
 /// A widget's rectangle in guest pixels, `[x0, y0, x1, y1]`, moved by its
@@ -466,7 +768,7 @@ mod tests {
     }
 
     #[test]
-    fn widgets_sort_by_depth_then_bias_then_type() {
+    fn widgets_sort_deepest_first_then_by_bias_then_by_type_descending() {
         let widgets = [
             w(8, 0.5, 0),
             w(6, 0.1, 0),
@@ -475,17 +777,155 @@ mod tests {
             w(9, 0.1005, -1),
             w(6, -1.0, 9),
         ];
-        // Depths 0.1 and 0.1005 tie; among them bias -1 first, then bias 0
-        // by type (6 before 8), then bias 2.
-        assert_eq!(sort_widgets(&widgets), [5, 4, 1, 2, 3, 0]);
+        // 0.5 first; depths 0.1 and 0.1005 tie: bias -1 first, then bias
+        // 0 by type, 8 before 6, then bias 2; -1.0 last.
+        assert_eq!(sort_widgets(&widgets), [0, 4, 2, 1, 3, 5]);
         let same = [w(6, 0.0, 0), w(6, 0.0, 0), w(6, 0.0, 0)];
         assert_eq!(
             sort_widgets(&same),
-            [0, 1, 2],
-            "equal widgets keep their order"
+            [1, 2, 0],
+            "qsort's selection sort moves equal widgets"
         );
         let many: Vec<_> = (0..300).map(|i| w(6, i as f32, 0)).collect();
-        assert_eq!(sort_widgets(&many).len(), 256);
+        let order = sort_widgets(&many);
+        assert_eq!(order.len(), 256);
+        assert_eq!((order[0], order[255]), (255, 0));
+    }
+
+    #[test]
+    fn the_comparator_is_the_guests() {
+        let k = |depth, bias, kind| SortKey { depth, bias, kind };
+        assert_eq!(compare(&k(1.0, 0, 6), &k(0.0, 0, 6)), -1, "deeper first");
+        assert_eq!(compare(&k(0.0, 0, 6), &k(1.0, 0, 6)), 1);
+        assert_eq!(
+            compare(&k(0.0, 0, 6), &k(0.001, 5, 6)),
+            -1,
+            "0.001 apart ties"
+        );
+        assert_eq!(
+            compare(&k(0.0, 1, 6), &k(0.0, 0, 6)),
+            1,
+            "larger bias after"
+        );
+        assert_eq!(
+            compare(&k(0.0, 0, 9), &k(0.0, 0, 6)),
+            -1,
+            "larger type first"
+        );
+        assert_eq!(
+            compare(&k(0.0, 0, -1), &k(0.0, 0, 6)),
+            1,
+            "the type is signed"
+        );
+        assert_eq!(compare(&k(0.0, 0, 6), &k(0.0, 0, 6)), 0);
+        assert_eq!(
+            compare(&k(f32::NAN, 0, 6), &k(0.0, 0, 9)),
+            0,
+            "NaN is equal"
+        );
+    }
+
+    /// Past 8 entries the partitioning runs: equal entries land where the
+    /// guest's `qsort` puts them, which a stable sort would not.
+    #[test]
+    fn a_long_list_is_partitioned_as_the_guest_does() {
+        let mut keys = vec![(0.0, 0, 6); 12];
+        keys[5] = (1.0, 0, 8);
+        keys[7] = (2.0, 0, 6);
+        keys[9] = (0.0, -1, 6);
+        keys[11] = (1.0, 0, 8);
+        let widgets: Vec<_> = keys.iter().map(|&(d, b, k)| w(k, d, b)).collect();
+        assert_eq!(
+            sort_widgets(&widgets),
+            [7, 11, 5, 9, 2, 6, 1, 8, 4, 3, 10, 0]
+        );
+        let mut falling: Vec<u32> = (0..10).collect();
+        crt_qsort(&mut falling, &|a: &u32, b: &u32| (*b as i32) - (*a as i32));
+        assert_eq!(falling, [9, 8, 7, 6, 5, 4, 3, 2, 1, 0]);
+    }
+
+    /// Children before their parent, siblings in order, a hidden widget
+    /// with its children left out, a sibling chain that comes back walked
+    /// once.
+    #[test]
+    fn the_list_is_collected_after_the_children() {
+        let n = |shown, first_child, next_sibling| UiNode {
+            shown,
+            first_child,
+            next_sibling,
+        };
+        let nodes = [
+            n(true, Some(1), None),     // 0: the screen
+            n(true, Some(3), Some(2)),  // 1: a list
+            n(false, Some(4), Some(5)), // 2: hidden, with a child
+            n(true, None, None),        // 3: an item of 1
+            n(true, None, None),        // 4: the hidden one's
+            n(true, None, Some(1)),     // 5: back to 1
+        ];
+        assert_eq!(collect(&nodes, 0), [3, 1, 5, 0]);
+        let wide: Vec<_> = (0..300)
+            .map(|i| {
+                n(
+                    true,
+                    (i == 0).then_some(1),
+                    (i > 0 && i < 299).then_some(i + 1),
+                )
+            })
+            .collect();
+        let listed = collect(&wide, 0);
+        assert_eq!(listed.len(), 256);
+        assert!(!listed.contains(&0), "the root, past 256, is not listed");
+    }
+
+    #[test]
+    fn only_depths_inside_the_window_draw() {
+        assert!(in_window(0.0, [-1.0, 1.0]));
+        assert!(in_window(1.0, [-1.0, 1.0]) && in_window(-1.0, [-1.0, 1.0]));
+        assert!(!in_window(1.5, [-1.0, 1.0]));
+        assert!(!in_window(f32::NAN, [-1.0, 1.0]));
+    }
+
+    /// A container's header reads into a widget with no content; any
+    /// other draw is named.
+    #[test]
+    fn a_widget_reads_its_header_and_its_draw() {
+        use crate::testing::Mem;
+        let (widget, vtable) = (0x1000, 0x2000);
+        let mut mem = Mem::default();
+        mem.w(widget, vtable);
+        mem.w(widget + 4, 10);
+        mem.w(widget + 0x20, ((-320i16 as u16 as u32) << 16) | 240);
+        mem.w(widget + 0x24, (320 << 16) | (-240i16 as u16 as u32));
+        mem.f(widget + 0x58, 2.0);
+        mem.f(widget + 0x5c, -3.0);
+        mem.f(widget + 0x64, 0.5);
+        mem.w(widget + 0x68, (-2i16 as u16 as u32) << 16);
+        mem.w(vtable + 0x10, draws::NONE);
+        let read = read_widget(&mem, widget, 0.25).unwrap();
+        assert_eq!(
+            read,
+            UiWidget {
+                kind: 10,
+                depth: 0.25,
+                bias: -2,
+                rect: [240, -320, -240, 320],
+                offset: [2.0, -3.0],
+                alpha: 0.5,
+                content: UiContent::None,
+            }
+        );
+        for (draw, why) in [
+            (draws::BITMAP, Unread::Bitmap),
+            (draws::SHADER_BITMAP, Unread::Shader),
+            (draws::TEXT, Unread::Text),
+            (draws::MODEL, Unread::Model),
+            (draws::LIST, Unread::Draw),
+            (0x0030_0000, Unread::Draw),
+        ] {
+            mem.w(vtable + 0x10, draw);
+            assert_eq!(read_widget(&mem, widget, 0.0), Err(why));
+        }
+        assert_eq!(read_widget(&mem, 0x9000, 0.0), Err(Unread::Unreadable));
     }
 
     #[test]
@@ -568,13 +1008,13 @@ mod tests {
         use OverlayKind::*;
         assert_eq!(
             kinds,
-            [Fill, Fill, Quad, Fill, Blur, Quad, ModelView, TextRun, Quad]
+            [Fill, Fill, Quad, Fill, Blur, Quad, TextRun, ModelView, Quad]
         );
         let widgets: Vec<_> = listed.iter().filter_map(|l| l.widget).collect();
         assert_eq!(
             widgets,
-            [4, 2, 3, 0, 1],
-            "panel, list, picture, title, meter"
+            [1, 0, 3, 2, 4],
+            "deepest first: meter, title, picture, list, panel"
         );
         let list_row = listed.iter().find(|l| l.widget == Some(2)).unwrap();
         assert_eq!(
@@ -588,7 +1028,7 @@ mod tests {
             "the backdrop's alpha times its fraction"
         );
         assert_eq!(o.blur_of(&o.items[4]).unwrap().spreads, [1.0, 0.875]);
-        let text = &o.items[7];
+        let text = &o.items[6];
         assert_eq!(text.color, [1.0, 1.0, 0.5, 0.5], "the widget's alpha");
         assert_eq!(
             text.clip,
@@ -601,11 +1041,11 @@ mod tests {
         );
         assert_eq!(o.glyphs_of(text)[1].index, u32::from(b'K'));
         assert_eq!(
-            o.items[8].material.program,
+            o.items[5].material.program,
             Program::Shader { tag: 0xe200_0005 }
         );
         assert_eq!(
-            o.items[6].clip,
+            o.items[7].clip,
             ClipRect {
                 x: 310,
                 y: 230,
@@ -640,12 +1080,17 @@ mod tests {
         let mut o = Overlay::default();
         let listed = draw_list(&frame, &Cells, &mut o);
         assert!(o.is_empty());
-        assert!(listed[0].note.as_deref().unwrap().contains("font 2"));
+        // Deeper first: the off-canvas widget at depth 0.1 lists before
+        // the text at 0.0.
         assert!(
-            listed[1].note.as_deref().unwrap().contains("Clip"),
+            listed[0].note.as_deref().unwrap().contains("Clip"),
             "a viewport off the canvas"
         );
+        assert!(listed[1].note.as_deref().unwrap().contains("font 2"));
         let none = draw_list(&frame, &NoText, &mut o);
-        assert!(none[0].item.is_none() && none[0].note.is_some());
+        assert!(
+            none[1].item.is_none() && none[1].note.is_some(),
+            "no fonts at all refuses the text too"
+        );
     }
 }

@@ -126,8 +126,8 @@ tabs in the centre.
   **Pending**, **Game** and **Log** are the built panels, and so is
   **Playtest** (`ui/playtest.rs`), the result of the last playtest run
   ([playtest.md](playtest.md#the-layers-and-the-panel)).
-- **Go to anything** (`ui/palette.rs`) searches every tag, package and
-  command.
+- **Go to anything** (`ui/palette.rs`) searches every tag, package,
+  item and command (`asset.list`'s rows), with no map open.
 
 ### The browser
 

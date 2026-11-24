@@ -18,11 +18,19 @@
 //! record draws is the build's (`0x0004cbf0`, [`record_implementation`]);
 //! its vertex streams are the game's declaration
 //! ([`crate::object_streams`]).
+//!
+//! A pass with animated constants (`shad +0x3c`) compiles from its
+//! registers at clock 0 and keeps its animation ([`ObjectPass::animation`]):
+//! each draw samples it at the render clock through the structure
+//! planner's sampler ([`crate::layer_pass::PassAnimation`]) before the
+//! object's lighting goes in ([`animated_blocks`]).
 
 use shaders::psh::PixelUniforms;
 use shaders::vsh::{self, VertexUniforms};
 use tags::material::{Origin, ResolvedImplementation, VectorTarget, pack_engine_colour};
+use tags::shader::AnimatedProperty;
 
+use crate::layer_pass::PassAnimation;
 use crate::look::{PassLook, Refusal, implementation_look};
 use crate::object_lighting::{
     Defaults, LIGHTING_SCALARS, LIGHTING_VECTORS, Lighting, ShaderValues, scalar_input,
@@ -142,7 +150,12 @@ pub struct ObjectPass {
     /// The object program supplies D3D's default final combiner using
     /// the fog and specular uniforms.
     pub default_final: bool,
+    /// The implementation as compiled: its animated constants at clock 0,
+    /// its animated targets cleared.
     pub implementation: ResolvedImplementation,
+    /// The pass's animated constants, sampled per draw
+    /// ([`animated_blocks`]); `None` when it animates nothing.
+    pub animation: Option<PassAnimation>,
     /// The stages that sample the vector normalization cube (empty in
     /// `program.stages`; the host binds the cube).
     pub normalization: [bool; 4],
@@ -167,16 +180,19 @@ pub struct ObjectPass {
 /// Compiles `imp` of `pass` with `microcode` for a vertex buffer
 /// supplying `provided` (bit `n`: `v<n>`), or says why not. `lightmap`:
 /// whether a stage may sample the lightmap (the host binds what an
-/// object's draw binds there, [`OBJECT_LIGHTMAP`]).
+/// object's draw binds there, [`OBJECT_LIGHTMAP`]). `properties`: the
+/// shader instance's animated properties, which `imp`'s animated targets
+/// read ([`ObjectPass::animation`]).
 pub fn object_pass(
     pass: map::TagId,
     imp: &ResolvedImplementation,
+    properties: &[AnimatedProperty],
     microcode: &[u8],
     provided: u16,
     fetch: [shaders::vsh::InputFetch; 16],
     lightmap: bool,
 ) -> Result<ObjectPass, String> {
-    object_pass_with(pass, imp, microcode, provided, fetch, lightmap, false)
+    object_pass_with(pass, imp, properties, microcode, provided, fetch, lightmap, false)
 }
 
 /// The passes of an object material's world layer `layer` (first level
@@ -203,22 +219,28 @@ pub fn object_layer_passes(
 pub fn object_layer_pass(
     pass: map::TagId,
     imp: &ResolvedImplementation,
+    properties: &[AnimatedProperty],
     microcode: &[u8],
     provided: u16,
     fetch: [shaders::vsh::InputFetch; 16],
 ) -> Result<ObjectPass, String> {
-    object_pass_with(pass, imp, microcode, provided, fetch, false, true)
+    object_pass_with(pass, imp, properties, microcode, provided, fetch, false, true)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn object_pass_with(
     pass: map::TagId,
     imp: &ResolvedImplementation,
+    properties: &[AnimatedProperty],
     microcode: &[u8],
     provided: u16,
     fetch: [shaders::vsh::InputFetch; 16],
     lightmap: bool,
     blends: bool,
 ) -> Result<ObjectPass, String> {
+    let (baseline, animation) = PassAnimation::baseline(imp, properties, true, 0)
+        .map_err(|r| format!("animated constants: {}: {r:?}", r.name()))?;
+    let imp = &baseline;
     let state = object_pass_state_with(imp, blends)?;
     let (
         look,
@@ -269,7 +291,8 @@ fn object_pass_with(
     Ok(ObjectPass {
         program,
         default_final,
-        implementation: imp.clone(),
+        implementation: baseline.clone(),
+        animation,
         normalization,
         texaccum,
         view,
@@ -277,6 +300,33 @@ fn object_pass_with(
         options,
         prt: None,
     })
+}
+
+/// The blocks an object's draw of `pass` starts from: the compiled
+/// pass's, or for an animated pass its registers sampled at `time` (the
+/// render clock) over them ([`PassAnimation::sample`]), counted in
+/// `native_shader_animation_objects_*`. The object's lighting and rows go
+/// in after ([`object_vertex_uniforms`], [`object_pixel_uniforms`]), so a
+/// lighting binding wins a lane an animation also writes. An error names
+/// the sampler's refusal; the item keeps its D3D draw.
+pub fn animated_blocks(
+    pass: &ObjectPass,
+    time: Option<f64>,
+) -> Result<(std::borrow::Cow<'_, VertexUniforms>, PixelUniforms), String> {
+    use timeline::native::ShaderAnimation;
+    let Some(animation) = &pass.animation else {
+        return Ok((std::borrow::Cow::Borrowed(&pass.program.vertex), pass.program.pixel));
+    };
+    match animation.sample(time) {
+        Ok(at) => {
+            ShaderAnimation::ObjectsDrawn.count(1);
+            Ok((std::borrow::Cow::Owned(at.vertex(&pass.program.vertex)), at.pixel(&pass.program.pixel)))
+        }
+        Err(r) => {
+            ShaderAnimation::ObjectsRefused.count(1);
+            Err(format!("animated constants: {}: {r:?}", r.name()))
+        }
+    }
 }
 
 /// Why objects' parts with `material` stay on D3D, or `None` when an
@@ -517,6 +567,7 @@ pub fn compile_object_stages(
         state: None,
         inherits_cull: false,
         rigid: None,
+        animation: None,
     })
 }
 
@@ -902,6 +953,7 @@ pub(crate) mod tests {
         let pass = object_layer_pass(
             map::TagId(0xe000_0001),
             &imp,
+            &[],
             &rigid_program(),
             WORLD,
             fetch,
@@ -1239,6 +1291,7 @@ pub(crate) mod tests {
         let p = object_pass(
             map::TagId(0xe000_0001),
             &equal,
+            &[],
             &rigid_program(),
             WORLD,
             fetch,
@@ -1270,6 +1323,7 @@ pub(crate) mod tests {
         let p = object_pass(
             map::TagId(0xe000_0001),
             &own,
+            &[],
             &rigid_program(),
             WORLD,
             fetch,
@@ -1363,9 +1417,9 @@ pub(crate) mod tests {
         ];
         let fetch = [shaders::vsh::InputFetch::Float; 16];
         let pass = map::TagId(0xe000_0001);
-        let e = object_pass(pass, &imp, &rigid_program(), WORLD, fetch, true).unwrap_err();
+        let e = object_pass(pass, &imp, &[], &rigid_program(), WORLD, fetch, true).unwrap_err();
         assert!(e.contains("blends"), "layer 3's refuse it: {e}");
-        let p = object_layer_pass(pass, &imp, &rigid_program(), WORLD, fetch).unwrap();
+        let p = object_layer_pass(pass, &imp, &[], &rigid_program(), WORLD, fetch).unwrap();
         assert!(
             p.program.state.as_ref().unwrap().blend.is_some(),
             "the pipeline's blend"
@@ -1381,7 +1435,7 @@ pub(crate) mod tests {
             ..Default::default()
         }
         .to_bytes();
-        let e = object_layer_pass(pass, &imp, &rigid_program(), WORLD, fetch).unwrap_err();
+        let e = object_layer_pass(pass, &imp, &[], &rigid_program(), WORLD, fetch).unwrap_err();
         assert!(e.contains("only in layer 3"), "{e}");
     }
 
@@ -1423,4 +1477,43 @@ pub(crate) mod tests {
         );
         assert_eq!(object_layer_passes(&material, 1).unwrap_err(), "no layer 1");
     }
+
+    /// An object pass whose constants animate compiles from its clock-0
+    /// registers, and each draw samples them at its clock.
+    #[test]
+    fn an_animated_object_pass_compiles_and_samples_its_constants_per_draw() {
+        use gfx::state::RenderStateType as R;
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let slot = |t: R| {
+            (0..=255u8)
+                .find(|&s| R::from_guest_index(&table, u32::from(s)) == Some(t))
+                .unwrap()
+        };
+        let (mut target, props) = crate::layer_pass::tests::animated_z();
+        target.binding.target = 0x55; // c[23].z
+        let mut imp = lit();
+        imp.render_states = [(R::ColorWriteEnable, 0x0101_0101), (R::AlphaBlendEnable, 0), (R::ZWriteEnable, 1)]
+            .iter()
+            .map(|&(t, value)| tags::shader::RenderStateValue { state: slot(t), value })
+            .collect();
+        let still = object_pass(map::TagId(0xe000_0001), &imp, &[], &rigid_program(), WORLD, [shaders::vsh::InputFetch::Float; 16], true)
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(still.animation.is_none());
+        let (vertex, _) = animated_blocks(&still, None).unwrap();
+        assert_eq!(*vertex, still.program.vertex, "nothing animates: the compiled block, no clock needed");
+
+        imp.animated = vec![target];
+        let fetch = [shaders::vsh::InputFetch::Float; 16];
+        let e = object_pass(map::TagId(0xe000_0001), &imp, &[], &rigid_program(), WORLD, fetch, true).unwrap_err();
+        assert!(e.contains("animated constants: property"), "{e}");
+        let p = object_pass(map::TagId(0xe000_0001), &imp, &props, &rigid_program(), WORLD, fetch, true)
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(p.implementation.animated.is_empty() && p.animation.is_some());
+        let (vertex, _) = animated_blocks(&p, Some(11.0)).unwrap();
+        assert_eq!(vertex.constants[23][2], 1.5, "11 s over 4 s: 0.75 of 0..2");
+        assert_eq!(p.program.vertex.constants[23][2], 0.0, "the compiled block holds clock 0");
+        let e = animated_blocks(&p, None).unwrap_err();
+        assert!(e.contains("time"), "no clock: the item keeps its D3D draw: {e}");
+    }
+
 }

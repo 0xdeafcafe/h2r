@@ -631,9 +631,16 @@ shape. The outliner lists the map's bitmaps (an edited one marked `*`);
 click one and the centre is its canvas, the inspector the image's
 format and budget.
 
-- **Painting.** Brush, eraser, line, fill, eyedropper, clone, selection
-  and the colour adjustments paint at mip 0; every edit is one undo
-  step on the Textures document (Cmd+Z). With a game paired and **Edit**
+- **Painting.** Brush, eraser, clone, fill, eyedropper, selection and
+  the colour adjustments (invert, levels, hue, saturation and value,
+  **Copy channel**, flip and the quarter turns) work at mip 0; every
+  edit is one undo step on the Textures document (Cmd+Z). Keys: B brush,
+  E eraser, S clone, G fill, I eyedropper, `[` and `]` size, X swap
+  colours; Shift+click draws a line from the last point, and the middle
+  button pans. With **Clone**, the first click sets the source (a cross;
+  Alt+click moves it) and a drag copies from it. Fill, adjust, copy and
+  turn take the whole image or the rectangle dragged with **Select**.
+  With a game paired and **Edit**
   on, a stroke shows in the game as you paint (above). **PNG** imports
   a picture into the image and exports one; **Generate...** makes a
   picture from a prompt ([Generating an image](#generating-an-image)).

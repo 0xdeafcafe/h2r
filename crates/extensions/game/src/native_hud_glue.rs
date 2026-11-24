@@ -11,7 +11,7 @@ use d3d::backend::{ExternalAttachments, ExternalDraws, ExternalPassRequest, Inde
 use d3d::{DrawAdmission, DrawSnapshot, ExternalPass, ExternalPlan, ExternalWrites};
 use engine::memory::GuestMemory;
 use render_bridge::native_hud::{
-    Host, HudBitmaps, HudClaim, HudRefusal, HudVertices, OUTLINE_PUSH_BYTES, OutlineVertices, UiScope,
+    Host, HudTagQuad, HudVertices, OUTLINE_PUSH_BYTES, OutlineVertices, UiScope,
 };
 use gfx::vertex::PrimitiveType;
 use native_render::ui_gpu::{Refusal, UiGpu};
@@ -275,8 +275,36 @@ fn inline_space(mem: &dyn GuestMemory, layout: d3d::layout::GuestLayout, bytes: 
 }
 
 impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
+    fn draw_tag_quad(&self, mem: &mut dyn GuestMemory, at: &HudTagQuad, vertices: &HudVertices) -> bool {
+        self.permits_draw() && crate::hud_overlay::draw_tag_quad(&self.device, mem, at, vertices)
+    }
+
     fn draw_quad(&self, mem: &mut dyn GuestMemory, vertices: &HudVertices) -> bool {
         self.fan(mem, vertices, None)
+    }
+
+    fn draw_text_quad(&self, mem: &mut dyn GuestMemory, shader: u32, vertices: &HudVertices) -> bool {
+        if !self.permits_draw() {
+            return false;
+        }
+        let Some(layout) = self.device.lock().ok().map(|device| device.config().layout) else {
+            return false;
+        };
+        if !inline_space(mem, layout, SCREEN_FAN_PUSH_BYTES, false) {
+            return false;
+        }
+        let cache = || -> Option<_> {
+            let bitmap = mem.u32(d3d::glyph::GLYPH_CACHE_BITMAP).ok()?;
+            let texture = mem.u32(bitmap.checked_add(d3d::glyph::BITMAP_TEXTURE)?).ok()?;
+            if texture == 0 {
+                return None;
+            }
+            let hud_input = render_bridge::native_hud::hud_overlay::inputs(mem)?;
+            Some(HudTagQuad {
+                bitmap: texture, image: 0, shader, hud_input,
+            })
+        };
+        cache().is_some_and(|at| crate::hud_overlay::draw_text_quad(&self.device, mem, &at, vertices))
     }
 
     fn screen_fan(&self, mem: &mut dyn GuestMemory, vertices: &HudVertices) -> bool {
@@ -374,16 +402,13 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
         self.permits_draw() && crate::skulls_model::gpu::replace_widget(&self.device, mem, widget)
     }
 
-    fn hud_bitmaps(&self, mem: &mut dyn GuestMemory, at: &HudBitmaps) -> Option<Result<u32, HudRefusal>> {
-        // The HUD scope's order must hold for a pass placed in it.
-        if !self.permits_draw() {
-            return Some(Err(HudRefusal::Pass));
-        }
-        Some(crate::hud_overlay::claim(&self.device, mem, at))
+    fn ui_overlay(&self, _mem: &mut dyn GuestMemory) -> Option<bool> {
+        // The UI scope's order must hold for a pass placed in it.
+        Some(self.permits_draw())
     }
 
-    fn hud_mismatch(&self, claim: &HudClaim) {
-        crate::hud_overlay::mismatch(claim.nhdt);
+    fn ui_pass(&self, mem: &mut dyn GuestMemory, part: &frame_scene::Overlay) -> bool {
+        self.permits_draw() && crate::hud_overlay::place_menu(&self.device, mem, part)
     }
 
     fn enter_ui(&self, mem: &mut dyn GuestMemory, kind: UiScope, stack: u32, eligible: bool) {
