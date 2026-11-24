@@ -5,7 +5,7 @@
 use content::Sha256;
 use live_hle::game_variants::LiveVariant;
 pub use variants::portable::{
-    Author, Bundle, EXTENSION, FORMAT, MAX_IR, ScriptPart, VERSION, base64_decode, base64_encode,
+    Author, Bundle, EXTENSION, FORMAT, MAX_IR, MapSuggestion, ScriptPart, VERSION, base64_decode, base64_encode,
 };
 
 /// The full hash a bundle's script carries.
@@ -51,6 +51,7 @@ pub fn from_live(v: &LiveVariant, ir: Option<&[u8]>) -> Result<Bundle, String> {
         engine: v.engine,
         record_hex: hex(record.bytes()),
         script,
+        maps: Vec::new(),
     };
     if let Some((_, ir)) = b.integrity().map_err(|e| e.to_string())?.script {
         b.game_type = ir.header.game_type.row().label.into();

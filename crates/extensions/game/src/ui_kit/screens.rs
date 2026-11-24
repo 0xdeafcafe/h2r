@@ -466,6 +466,8 @@ pub fn lobby_pick_sample(name: &str) -> Option<crate::ui_kit::picker::Pick> {
                 name: name.into(),
                 sentence: None,
                 detail: detail.into(),
+                id: None,
+                suggested_for: None,
             };
             Some(crate::lobby_mode::map_variant_pick(
                 Ok(vec![
@@ -479,6 +481,8 @@ pub fn lobby_pick_sample(name: &str) -> Option<crate::ui_kit::picker::Pick> {
                                 .sentence("Old Keep", "court"),
                         ),
                         detail: String::new(),
+                        id: None,
+                        suggested_for: None,
                     },
                 ]),
                 Some("lockout-towers"),

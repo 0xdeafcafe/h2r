@@ -555,8 +555,12 @@ names it, and the format 2 `MapId`.
   not read at any named point).
 - **A game variant only suggests.** Picking a game variant never
   changes the lobby's map or map variant. When the lobby's map has a
-  suggested variant on this machine, the Map Variant picker opens on
-  it and its description says which game variant it was made for. What
+  suggested variant on this machine (`map_variant::suggest`: the
+  suggestion's base is the installed map's hash and its `variant` the
+  saved document's id), the Map Variant picker opens on it, with Original
+  still first and the rest by name, and its line ends "Made for
+  <game variant>."; a held pick wins, and a suggested variant that fails
+  the store's checks is not opened on. What
   a game variant *requires* of a map is its script's labels, which the
   start gate enforces.
 
