@@ -254,6 +254,14 @@ pub fn upload_fog(
     set
 }
 
+/// Fog and water require stencil to be off. Its comparison and operations
+/// can be uninitialized while the enable word is zero.
+pub(crate) fn stencil_disabled(read: impl FnOnce(u32) -> Option<u32>) -> bool {
+    let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+    table.canonical_to_guest(gfx::state::RenderStateType::StencilEnable.index())
+        .and_then(read) == Some(0)
+}
+
 /// The device's fog words at the layer-16 call, by [`FOG_WORD_SLOTS`]
 /// (`None` a slot that does not read).
 pub fn device_fog_words<B: d3d::backend::Backend>(d: &d3d::Device<B>, mem: &dyn GuestMemory) -> [Option<u32>; 7] {
@@ -290,7 +298,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             return None;
         }
         let read = ReadMemory(mem);
-        if !d.stencil_state(&read).is_some_and(|s| !s.enable) {
+        if !stencil_disabled(|slot| d.render_state(&read, slot)) {
             render_bridge::native_layers::count(FOG_LATE_LAYER.into(), "refused_stencil_view", 1);
             return None;
         }
@@ -588,6 +596,15 @@ static NO_VIEW: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn late_layers_only_need_the_stencil_enable_word() {
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let slot = table.canonical_to_guest(gfx::state::RenderStateType::StencilEnable.index()).unwrap();
+        assert!(stencil_disabled(|s| (s == slot).then_some(0)));
+        assert!(!stencil_disabled(|_| None));
+        assert!(!stencil_disabled(|_| Some(1)));
+    }
 
     #[test]
     fn the_fog_words_overlay_the_device() {

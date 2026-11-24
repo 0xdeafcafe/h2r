@@ -299,6 +299,12 @@ depth writes to the live state check. They take render and
 sampler bindings driven by the shader instance's scalar input. The model
 loader retains the effective state writes for the device-state checks.
 
+Structure, scene layer-3 objects, decorators, water and fog can issue a
+pass with all colour writes masked even when its blend enable or factors
+are inherited. Depth writes and alpha testing still use the pass state.
+Layers 6 and 16 check the stencil enable word at issue. When stencil is
+off, unread comparison or operation words leave those layers eligible.
+
 Layer 5 accepts a PRT declaration with the compiled registers and compatible
 fetches. A three-component packed byte, short or normalized short can feed
 a four-component input by supplying the encoded one in W. A shader that

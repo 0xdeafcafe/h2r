@@ -198,7 +198,17 @@ fn resolve_states(
             Err(format!("{t:?} is inherited and the device's does not read or decode"))
         }
     };
+    // Layer 3 may inherit its colour mask. With all channels disabled its
+    // blend cannot affect any attachment, regardless of the blend factors.
+    let masked = scene && !blends && known.contains(&R::ColorWriteEnable)
+        && gfx::translate::color_writes(rs.color_write).is_empty();
+    if masked {
+        rs.blend_enable = false;
+    }
     for t in REQUIRED {
+        if masked && t == R::AlphaBlendEnable {
+            continue;
+        }
         need(t)?;
     }
     if rs.blend_enable {
@@ -283,6 +293,17 @@ fn resolve_states(
 mod tests {
     use super::*;
     use gfx::state::{CullMode, FrontFace};
+
+    #[test]
+    fn a_scene_object_can_mask_colour_with_unread_blend_enable() {
+        let mut device = entry();
+        device.0.retain(|(t, _)| *t != R::AlphaBlendEnable);
+        let masked = own(&[(R::ColorWriteEnable, 0)]);
+        let state = resolve_scene(&masked, &device, None).unwrap();
+        assert!(state.depth_write && state.color_writes.is_empty());
+        assert_eq!(state.blend, None);
+        assert!(resolve_scene(&[], &device, None).is_err());
+    }
 
     fn slot(t: R) -> u8 {
         let table = RenderStateTable::for_build(HALO2_BUILD);

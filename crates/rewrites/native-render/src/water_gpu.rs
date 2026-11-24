@@ -532,8 +532,8 @@ impl WaterSet {
 
 /// The layer-6 passes of `material` with the per-view supplied engine
 /// stages kept: [`supplied_layer_passes`] at [`WATER_LAYER`].
-pub fn water_passes(material: &tags::material::Material) -> Result<Vec<FogPass>, crate::fog_gpu::FogRefusal> {
-    supplied_layer_passes(material, WATER_LAYER)
+pub fn water_passes(material: &tags::material::Material, rasterizer: Option<map::TagId>) -> Result<Vec<FogPass>, crate::fog_gpu::FogRefusal> {
+    supplied_layer_passes(material, WATER_LAYER, rasterizer)
 }
 
 #[cfg(test)]

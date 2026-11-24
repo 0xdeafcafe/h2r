@@ -21,7 +21,7 @@ use crate::object_program_gpu::input_fetch;
 use crate::object_streams::{
     Attribute, Element, SLOT, StreamData, StreamElement, declaration, gather, registers,
 };
-use crate::pass_state::{PassState, pass_state};
+use crate::pass_state::{PassState, geometry_pass_state};
 use crate::program::{
     PassParts, VIEW_CONSTANTS, ViewInputs, constants_read, frame_pixel, frame_vertex,
     translate_pass_with_pixel, world_parity,
@@ -140,7 +140,7 @@ pub fn decorator_look(
     // sets the page to -1, `0x0004e277`): [`stage_images`].
     let mut look = look::implementation_look(p.pass, imp).map_err(|r| format!("{r:?}"))?;
     look.stage_states = applied.stage_states;
-    let state = pass_state(&applied.render_states).map_err(|r| format!("render states: {r:?}"))?;
+    let state = geometry_pass_state(&applied.render_states).map_err(|r| format!("render states: {r:?}"))?;
     let (microcode, semantics) =
         program(look.vertex_shader).ok_or("the vrtx has no classification-1 program")?;
     // A state the restore list writes back is left at the restore's
