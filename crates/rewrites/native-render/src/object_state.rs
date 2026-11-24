@@ -5,7 +5,8 @@
 //! render-state array at the layer-3 call ([`EntryStates`]). A field the
 //! draw depends on that neither gives (the slot does not read, or holds a
 //! value outside its enum) refuses the draw, as does a state the native
-//! pass does not reproduce: blending, a depth bias, a fill mode other than solid,
+//! pass does not reproduce: destination-dependent blending in layer 3, a
+//! depth bias, a fill mode other than solid,
 //! Z-buffering set by the implementation (the programs write w; the
 //! device's own mode, `SET_CONTROL0`, the host checks), or an alpha test
 //! other than the one the program was compiled with. Nothing is taken
@@ -103,8 +104,7 @@ pub struct DrawState {
     pub color_writes: wgpu::ColorWrites,
     pub w_clamp: bool,
     pub alpha_test: Option<(wgpu::CompareFunction, u8)>,
-    /// Its blend, only for a world layer's draw ([`resolve_layer`]):
-    /// layer 3's object draws refuse blending.
+    /// The draw's blend. Layer 3 requires an opaque result.
     pub blend: Option<wgpu::BlendState>,
     /// The blend constant the packet sets, as `gfx::translate::blend_constant`
     /// derives it (each channel's `f64` bits); zero without a blend.
@@ -152,8 +152,8 @@ pub fn resolve(own: &[RenderStateValue], entry: &EntryStates, compiled: Option<(
     resolve_states(own, entry, compiled, false, false)
 }
 
-/// The third-person scene path supplies the fog uniforms and handles a
-/// zero-reference stencil test. First-person callers use `resolve`.
+/// The third-person scene path supplies fog uniforms and the packet's
+/// stencil reference. First-person callers use `resolve`.
 pub fn resolve_scene(own: &[RenderStateValue], entry: &EntryStates, compiled: Option<(wgpu::CompareFunction, u8)>) -> Result<DrawState, String> {
     resolve_states(own, entry, compiled, true, false)
 }
@@ -202,13 +202,19 @@ fn resolve_states(
         need(t)?;
     }
     if rs.blend_enable {
-        if !blends {
-            return Err("it blends (ALPHABLENDENABLE)".into());
-        }
         need(R::SrcBlend)?;
         need(R::DestBlend)?;
         need(R::BlendOp)?;
-        need(R::BlendColor)?;
+        if !blends && (rs.blend_op != gfx::state::BlendOp::Add
+            || gfx::translate::blend_state(&rs) != Some(wgpu::BlendState::REPLACE))
+        {
+            return Err("it blends (ALPHABLENDENABLE)".into());
+        }
+        if !blends {
+            rs.blend_enable = false;
+        } else {
+            need(R::BlendColor)?;
+        }
     }
     if rs.fog_enable && !scene {
         return Err("fog is on (FOGENABLE)".into());
@@ -221,10 +227,6 @@ fn resolve_states(
             R::StencilFail, R::StencilZFail, R::StencilPass]
         {
             need(field)?;
-        }
-        // The external bundle encoder uses the render pass's default ref.
-        if rs.stencil.reference != 0 {
-            return Err("the stencil reference is nonzero".into());
         }
     }
     if rs.solid_offset_enable {
@@ -409,7 +411,9 @@ mod tests {
         assert!(resolve(&[], &with(R::StencilEnable, 1), None).unwrap_err().contains("stencil"));
         assert!(resolve(&[], &with(R::FogEnable, 1), None).is_err());
         assert!(resolve_scene(&[], &with(R::FogEnable, 1), None).is_ok());
-        assert!(resolve(&[], &with(R::AlphaBlendEnable, 1), None).unwrap_err().contains("blends"));
+        assert_eq!(resolve(&[], &with(R::AlphaBlendEnable, 1), None).unwrap().blend, None);
+        let nonzero = own(&[(R::StencilEnable, 1), (R::StencilRef, 17)]);
+        assert_eq!(resolve_scene(&nonzero, &entry(), None).unwrap().stencil.reference, 17);
         assert!(resolve(&own(&[(R::ZEnable, DepthBufferMode::Z.xbox_value())]), &entry(), None).unwrap_err().contains("Z-buffered"));
         assert!(resolve(&[], &with(R::ZEnable, DepthBufferMode::Z.xbox_value()), None).is_ok(), "inherited: the device's mode, checked by the host");
         let off = resolve(&[], &with(R::ZEnable, DepthBufferMode::Disabled.xbox_value()), None).unwrap();

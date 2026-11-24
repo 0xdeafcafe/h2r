@@ -96,7 +96,7 @@ pub fn object_layer3(
 
 /// The pipeline state of an object pass's implementation, or why not:
 /// its render states as [`crate::look::layer3_pass`] takes a world pass's
-/// (no engine-driven render or stage states, no blending); where it does
+/// (state bindings resolved, layer 3 opaque); where it does
 /// not set the cull mode it culls nothing, unless the pass is given the
 /// device's cull, which it inherits ([`sets_cull`],
 /// `MaterialProgram::inherits_cull`; the pass resolves every field it
@@ -120,9 +120,9 @@ fn object_pass_state_with(
     if !imp.engine_stage_states.is_empty() {
         return Err("engine-driven stage states".into());
     }
-    let mut state = crate::pass_state::pass_state_with_fog(&imp.render_states, true)
+    let mut state = crate::pass_state::object_program_state(&imp.render_states)
         .map_err(|e| format!("{e:?}"))?;
-    if state.blend.is_some() && !blends {
+    if !blends && state.blend.is_some_and(|b| b != wgpu::BlendState::REPLACE) {
         return Err("the pass blends".into());
     }
     if !sets_cull(imp) {
@@ -1393,6 +1393,15 @@ pub(crate) mod tests {
             e,
             "vertex program reads c[a0.x + 18], outside the node rows"
         );
+    }
+
+    #[test]
+    fn object_templates_can_leave_blend_and_depth_writes_to_the_device() {
+        let mut imp = lit();
+        imp.render_states.clear();
+        assert!(object_pass_state(&imp).is_ok());
+        assert!(crate::pass_state::pass_state(&imp.render_states).is_err());
+        assert!(crate::object_state::resolve(&imp.render_states, &Default::default(), None).is_err());
     }
 
     #[test]

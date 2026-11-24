@@ -48,11 +48,16 @@ pub enum StateRefusal {
 
 /// The pipeline state of an implementation with `states` applied on entry.
 pub fn pass_state(states: &[RenderStateValue]) -> Result<PassState, StateRefusal> {
-    pass_state_with_fog(states, false)
+    decode_states(states, false)
 }
 
-/// Objects carry the fog unit in their program uniforms.
-pub(crate) fn pass_state_with_fog(states: &[RenderStateValue], fog: bool) -> Result<PassState, StateRefusal> {
+/// An object program compiles its alpha test at load. At issue the object
+/// planner resolves its blend, depth and stencil from the live device.
+pub(crate) fn object_program_state(states: &[RenderStateValue]) -> Result<PassState, StateRefusal> {
+    decode_states(states, true)
+}
+
+fn decode_states(states: &[RenderStateValue], live_object_state: bool) -> Result<PassState, StateRefusal> {
     let table = RenderStateTable::for_build(HALO2_BUILD);
     let mut rs = RenderState::default();
     let mut set = Vec::with_capacity(states.len());
@@ -65,25 +70,25 @@ pub(crate) fn pass_state_with_fog(states: &[RenderStateValue], fog: bool) -> Res
         }
     }
     let has = |t: RenderStateType| set.contains(&t);
-    if !has(RenderStateType::AlphaBlendEnable) {
+    if !live_object_state && !has(RenderStateType::AlphaBlendEnable) {
         return Err(StateRefusal::Unset("ALPHABLENDENABLE"));
     }
-    if rs.blend_enable && !has(RenderStateType::SrcBlend) {
+    if !live_object_state && rs.blend_enable && !has(RenderStateType::SrcBlend) {
         return Err(StateRefusal::Unset("SRCBLEND"));
     }
-    if rs.blend_enable && !has(RenderStateType::DestBlend) {
+    if !live_object_state && rs.blend_enable && !has(RenderStateType::DestBlend) {
         return Err(StateRefusal::Unset("DESTBLEND"));
     }
     // A pass that turns the depth buffer off (`ZENABLE` 0, the screen
     // effects') neither tests nor writes it, whatever ZWRITEENABLE holds.
     let depth_off = has(RenderStateType::ZEnable) && rs.depth_mode == DepthBufferMode::Disabled;
-    if !has(RenderStateType::ZWriteEnable) && !depth_off {
+    if !live_object_state && !has(RenderStateType::ZWriteEnable) && !depth_off {
         return Err(StateRefusal::Unset("ZWRITEENABLE"));
     }
-    if rs.fog_enable && !fog {
+    if rs.fog_enable && !live_object_state {
         return Err(StateRefusal::Fog);
     }
-    if rs.stencil.enable {
+    if rs.stencil.enable && !live_object_state {
         return Err(StateRefusal::Stencil);
     }
     if rs.solid_offset_enable && (rs.depth_bias != 0.0 || rs.depth_bias_slope_scale != 0.0) {
