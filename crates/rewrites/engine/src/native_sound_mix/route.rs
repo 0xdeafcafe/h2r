@@ -7,7 +7,8 @@ use crate::sim_physics::{byte, logic};
 use runtime::{CpuAbi, Guest};
 
 const SOUND_DRIVER: u32 = 0x51ebe4;
-const VOLUME_FLOOR: u32 = 0x44a0b4;
+// The lower clamp argument pushed by the dynamic submix volume call.
+const VOLUME_FLOOR_OPERAND: u32 = 0x21ff7c;
 const GAIN_SCALE: u32 = 0x45e008;
 const BUFFER_PROPERTIES: u32 = 0x37b7e3;
 const BUFFER_VOLUME: u32 = 0x37b66f;
@@ -72,7 +73,7 @@ pub(super) fn dispatch(cx: &mut Cx<'_>, pc: u32) -> Result<Step> {
                 c.eax = frame::slot(c, g, 0x30)?;
                 frame::push(c, g, c.eax)?;
                 frame::push(c, g, c.ebp)?;
-                let floor = g.u32(VOLUME_FLOOR)?;
+                let floor = g.u32(VOLUME_FLOOR_OPERAND)?;
                 frame::push(c, g, floor)?;
                 c.ecx = byte(c.ecx, 1);
                 call(0x12aff0, 0x21ff87)
