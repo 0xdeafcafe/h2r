@@ -1,7 +1,9 @@
 //! Compatibility is a guest contract. Host UI, codecs, dependency versions and
 //! snapshot serializers have their own versioning and do not identify a match.
 use super::{Mode, Session};
-use agent_proto::theater::{Compatibility, CompatibilityState, FilmContract, InstalledImage};
+use agent_proto::theater::{
+    Compatibility, CompatibilityState, FilmContract, InstalledImage, MonitorLookSource,
+};
 use anyhow::{Result, ensure};
 use engine::points::{self, Loc, Sig};
 use film::image::{GuestImage, ImageMatch};
@@ -188,8 +190,23 @@ impl Installation {
             reasons,
             film,
             installed,
+            monitor_looks: Vec::new(),
         }
     }
+}
+
+/// Note the recorded monitor looks this machine cannot draw
+/// (`monitor_look_source`). They do not make the film unavailable: the
+/// simulation is whole and the seat draws the marker in the look's colours.
+pub fn note_monitor_looks(report: &mut Compatibility, unseen: &[forge::look::film::Unseen]) {
+    report.monitor_looks = unseen
+        .iter()
+        .map(|u| MonitorLookSource {
+            seat: u.seat,
+            map: u.map.clone(),
+            reason: u.reason.clone(),
+        })
+        .collect();
 }
 
 fn location(loc: Loc) -> [u8; 2] {
@@ -488,6 +505,22 @@ mod tests {
         assert_eq!(report.state, Unavailable);
         assert_eq!(report.installed[1].state, Unavailable);
         assert_eq!(report.reasons, ["Install the original map."]);
+
+        // A look this machine cannot draw is listed beside the state, not
+        // a reason against it.
+        let mut report = installation.check(&film, MAC, || Ok(()));
+        let state = report.state;
+        note_monitor_looks(
+            &mut report,
+            &[forge::look::film::Unseen {
+                seat: 2,
+                map: "invented_map".into(),
+                reason: forge::look::film::REASON.into(),
+            }],
+        );
+        assert_eq!(report.state, state);
+        assert_eq!(report.monitor_looks[0].seat, 2);
+        assert_eq!(report.monitor_looks[0].reason, "monitor_look_source");
 
         installation.xbe = film::xbe_digest(b"different synthetic XBE");
         let report = installation.check(&film, MAC, || panic!("unavailable at the header"));

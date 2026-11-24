@@ -581,7 +581,7 @@ Existing methods keep their parameters.
 | `theater.screenshot` | `{scale?: 1..4, path?}` | `{path, width, height, tick}` |
 | `theater.clip.mark` | `{in?: tick, out?: tick, clear?: true}` | the marks |
 | `theater.clip.export` | `{from, to, fps: 30 \| 60, format: "png" \| "mp4", path?}` | `{job}`; `theater.clip.status {job}` gives `{frames_done, frames_total, path, error, finished}` |
-| `theater.compat` | `{id}` | `{state, reasons: [text], film: {xbe, contract, hooks, abi}, installed: [{stamp, state}]}` |
+| `theater.compat` | `{id}` | `{state, reasons: [text], film: {xbe, contract, hooks, abi}, installed: [{stamp, state}], monitor_looks?: [{seat, map, reason}]}`; `monitor_looks` lists recorded Forge monitor looks this machine cannot draw (`monitor_look_source`) and does not change `state` |
 | `theater.share` | `{id, visibility, clip?}` | `{film, url}` after the upload |
 | `theater.open` | `{url}` | the film page's `ui.screen`, or a refusal naming the field |
 

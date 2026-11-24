@@ -385,7 +385,7 @@ sparse scene checkpoints in `CIDX`.
 | 4 | Hash | Eight little-endian bytes for the post-tick gameplay digest. The reader checks it after the matching tick completes. |
 | 5 | Marker | UTF-8 chapter name. The recording marks its start and the first active map. |
 | 6 | Clock | One ULEB for the current guest match tick, or empty while unavailable. The index mirrors clock discontinuities for clip lookup. |
-| 7 | Forge entry | A shared Forge session's stream: one-byte subtype, then the message. Subtype 0 is the welcome that opens the session (`forge::net::Welcome`), subtype 1 one stream item (`forge::net::Stamped`), at the tick the machine applied it. Watermarks are not recorded. The record is private: `film::privacy` never makes it public. |
+| 7 | Forge entry | A shared Forge session's stream: one-byte subtype, then the message. Subtype 0 is the welcome that opens the session (`forge::net::Welcome`), subtype 1 one stream item (`forge::net::Stamped`), at the tick the machine applied it. Watermarks are not recorded. Subtype 2 is a seat's monitor look (JSON) and subtype 3 its monitor pose (27 bytes, with its tick); both repeat at each seek checkpoint ([forge-monitor-appearance.md](forge-monitor-appearance.md), "Theater"). The record is private: `film::privacy` never makes it public. |
 | 8 | Firefight entry | One entry of the Firefight host log, its canonical JSON (`host_log::Entry::canonical_bytes`), at the tick the machine applied it; the mode state rides in its `ModeState` entries. Playback hands a tick's records to the replica before the tick ([firefight.md](firefight.md#theater)). The record is private: `film::privacy` never makes it public. |
 
 For tag 1, start each chunk with 16 empty seats. A state begins with a flags

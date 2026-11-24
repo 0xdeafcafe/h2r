@@ -149,6 +149,13 @@ impl Capture {
             let (checkpoint, dropped) = self.presentation.baseline_observed()?;
             self.count_drops("frame", u64::from(dropped));
             out.push(RecordData::pose(checkpoint));
+            // The monitor looks and poses repeat at each checkpoint, as tag
+            // 3's baselines do, so a seek needs no history.
+            out.extend(
+                crate::forge_glue::net::film_checkpoint()
+                    .into_iter()
+                    .map(RecordData::forge_payload),
+            );
         }
         // The shared Forge session's welcome and the items it applied.
         out.extend(
