@@ -439,6 +439,8 @@ impl AgentGlue {
             Err(e) => anyhow::bail!("agent-frames: {e}"),
         }
         agent::sim::hashes::install(&agent, &agent::sim::hashes::HASHES);
+        // theater.start_point.capture and .load: slice 15's experiments.
+        crate::theater::start_point_agent::install(&agent);
         match xapi {
             Some(x) => {
                 let mut x = x.lock().unwrap_or_else(|e| e.into_inner());

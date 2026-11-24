@@ -202,7 +202,14 @@ pub fn hash_sim_buffered(guest: &Guest, region: SimRegion, bytes: &mut Vec<u8>) 
     }
     bytes.resize(len as usize, 0);
     guest.read_bytes(base, bytes, 1).ok()?;
-    Some(fold_ext(hash_bytes(u64::from(len), bytes), sim_ext::digest()))
+    Some(hash_arena(bytes, sim_ext::digest()))
+}
+
+/// The hash of an arena's bytes with the extension records' digest folded
+/// in: what [`hash_sim`] returns for the same bytes and records, so a
+/// caller holding the bytes (a start point, a fake guest) can compare.
+pub fn hash_arena(bytes: &[u8], ext_digest: Option<u64>) -> u64 {
+    fold_ext(hash_bytes(bytes.len() as u64, bytes), ext_digest)
 }
 
 /// [`hash_sim_buffered`], plus one hash per `block` bytes (the last block
@@ -793,6 +800,22 @@ mod tests {
             [(Kind::Present, 0), (Kind::Present, 1), (Kind::Present, 2)]
         );
         assert_eq!(t.records[0].game_tick, None);
+    }
+
+    #[test]
+    fn hash_arena_is_the_hash_sim_of_the_same_bytes() {
+        let g = guest_with(&[(0x10000, 0x4000)]);
+        let fixed = SimRegion::Fixed {
+            base: 0x11000,
+            len: 0x2000,
+        };
+        let mut bytes = vec![0u8; 0x2000];
+        g.read_bytes(0x11000, &mut bytes, 1).unwrap();
+        assert_eq!(
+            hash_sim(&g, fixed),
+            Some(hash_arena(&bytes, sim_ext::digest()))
+        );
+        assert_ne!(hash_arena(&bytes, None), hash_arena(&bytes, Some(1)));
     }
 
     #[test]
