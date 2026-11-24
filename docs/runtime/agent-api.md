@@ -96,6 +96,7 @@ connection to hold `session.claim`.
 | `audio.play` | act | [`audio.play`](#audioplay) |
 | `recording.play` | act | [`recording.play`](#recordingplay) |
 | `hs.threads`, `hs.globals`, `hs.player_actions` | read | [HaloScript state](#haloscript-state) |
+| `hs.eval` | read | [`hs.eval`](#hseval) |
 | `input.pad`, `release`, `record`, `replay`, `stop` | act | [`input`](#input-act-like-a-player) |
 | `input.state`, `input.host` | read | [`input`](#input-act-like-a-player) |
 | `input.route`, `input.route.stop` | act | [Routes](#routes) |
@@ -3186,12 +3187,48 @@ its backing state is unreadable or uninitialized.
   Each row has `name`, `type`, `type_index` and `value.bits`; scalar types
   also have `boolean`, `real` or signed `number`. Scenario declarations
   start after the interpreter's external-global cells.
+- `hs.eval` is below.
 - `hs.player_actions` returns three unsigned masks from local player
   control. `latched` records inputs seen since the script's last
   action-test reset; `capture` identifies inputs claimed by script tests;
   `until_release` retains suppression through button-up after a reset. Bit
   0 of each mask denotes the mapped action/reload button. The state is
   shared by local controls, so the method takes no player index.
+
+### `hs.eval`
+
+`hs.eval {expression, type?}` compiles one HaloScript expression against
+the loaded map's scripts and answers its value (`crates/extensions/agent/src/hs_eval.rs`).
+It runs at the tick boundary the request is served at, over a snapshot:
+the scenario's tables (`hs::Scenario::read_memory`), the builtin table
+from the running image (`hs::Catalog::from_memory`, named by the map's own
+calls) and the live cell of each scenario global. The text is wrapped in
+a static script of a copy of the tables (`hs::compile`) and run on
+`hs::vm`, the native evaluator ([hs_vm.md](../engine/hs_vm.md)); nothing
+is written back to the game, so a `set` of a global changes the snapshot
+only. Control flow, arithmetic, comparison and reads of the map's globals
+run. A builtin that needs the game's objects, AI or sound is refused by
+name until the guest-backed engine exists, and an expression that sleeps
+is refused: the answer comes at one boundary.
+
+- **`type`** names the result's type (`real`, `short`, `boolean`, ...).
+  Without it the expression's own is used where it is fixed: a call of a
+  builtin or script that returns a plain value, or a bare global's name.
+  A `begin`, an `if` or a literal needs it.
+- **Result.** `{type, type_index, value, bits}`: `value` is a boolean, a
+  number, the string's text, or the raw bits of a handle or index, and
+  `null` for void.
+- **Errors.** Problems in the text are `INVALID_PARAMS` with the compiler's
+  sentence and `data.problems: [{line, column, code, text}]`, counted in the
+  expression (a `(` it never closes is named at its own place). An unknown
+  `type` is `INVALID_PARAMS`. The evaluator's refusal (an engine builtin,
+  a sleeping expression, a thread that faults) and unreadable or
+  uninitialized scripts and globals are `UNAVAILABLE`.
+
+```sh
+h2 agent hs.eval '{"expression":"my_global"}'
+h2 agent hs.eval '{"expression":"(begin (set counter 3) counter)","type":"short"}'
+```
 
 ## `input`: act like a player
 

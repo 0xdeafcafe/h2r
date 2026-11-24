@@ -130,6 +130,23 @@ impl Scenario {
         Ok((loc.address, header))
     }
 
+    /// Read the tables of the scenario whose payload starts at guest
+    /// address `base`, in a running game: `read` gives `len` bytes at a
+    /// guest address. The descriptors and limits are [`Self::read`]'s; the
+    /// references are not resolved against a map's tag index.
+    pub fn read_memory(
+        base: u32,
+        read: &dyn Fn(u32, usize) -> Result<Vec<u8>>,
+    ) -> Result<Self> {
+        let header = read(base, HS_HEADER_SIZE as usize)?;
+        let [nodes, strings, scripts, globals, references] = tables(&header, |field, stride| {
+            let (address, len) = table_span(&header, field, stride)?;
+            let bytes = if len == 0 { Vec::new() } else { read(address, len as usize)? };
+            Ok(bytes)
+        })?;
+        Self::decode_tables(&nodes, strings, &scripts, &globals, &references)
+    }
+
     /// Decode a complete scnr payload, with its guest virtual base. Every
     /// nonempty table must be within that payload, not just somewhere in a map.
     pub fn decode(bytes: &[u8], base: u32) -> Result<Self> {

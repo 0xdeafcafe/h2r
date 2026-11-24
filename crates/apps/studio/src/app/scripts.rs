@@ -133,6 +133,9 @@ pub struct ScriptsTool {
     pub compile: Option<super::script_edit::Outcome>,
     /// Compiles and undos run, so the tab can tell its own has finished.
     pub compiles: u64,
+    /// The last expression sent to the paired game (`hs.eval`) and what
+    /// it answered, as one line, or why it did not.
+    pub evaluated: Option<(String, Result<String, String>)>,
 }
 
 /// A Scripts tool command.
@@ -157,6 +160,9 @@ pub enum ScriptAction {
     /// Play the recording `name` on `player`'s unit in the paired game
     /// and keep the path it takes (`recording.play`).
     PlayRecording { name: String, player: u16 },
+    /// Evaluate an expression in the paired game (`hs.eval`); `ty` names
+    /// the result's type where the expression's own is not fixed.
+    Eval { expression: String, ty: Option<String> },
 }
 
 impl Loaded {
@@ -579,6 +585,19 @@ impl super::App {
                     Ok(_) => self.info(format!("recording {name}: playing on player {player}")),
                     Err(e) => self.error(format!("recording {name} not played: {}", e.message)),
                 }
+            }
+            ScriptAction::Eval { expression, ty } => {
+                let answer = crate::api::scripts::eval_on(self, &expression, ty.as_deref());
+                let line = match answer {
+                    Ok(v) if v["ok"] == true => Ok(format!(
+                        "{} {}",
+                        v["type"].as_str().unwrap_or("?"),
+                        if v["value"].is_null() { "void".to_owned() } else { v["value"].to_string() }
+                    )),
+                    Ok(v) => Err(v["error"].as_str().unwrap_or("not evaluated").to_owned()),
+                    Err(e) => Err(e.message),
+                };
+                self.scripts.evaluated = Some((expression, line));
             }
             ScriptAction::OpenInEditor(only) => {
                 if let Err(why) = self.open_scripts_in_editor(None, only, true) {

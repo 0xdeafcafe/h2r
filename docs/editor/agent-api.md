@@ -381,6 +381,15 @@ Notes on some:
   do not already use do not resolve (`name.unresolved`).
   `script.undo {redo?}` takes back (or redoes) the last applied compile:
   `{changed, free_nodes, depth}`.
+  `script.eval {expression, type?}` sends an expression to the paired
+  game's `hs.eval` ([runtime/agent-api.md](../runtime/agent-api.md#hseval))
+  and returns `{ok: true, type, type_index, value, bits}`. Problems in the
+  text are an answer, as in `script.compile`: `{ok: false, errors: [{line,
+  column, code, text}], error}`, counted in the expression; so is the
+  evaluator's refusal, `{ok: false, error}`. `REFUSED` without a paired
+  game, with the game paused (the call answers on its next tick) or with a
+  game that does not list `hs.eval`. The Scripts tab's expression box sends
+  the same call.
 - **Variants of a script.** `doc.open {variant: {script: <starter>}}` (a
   `rules.get` starter's name, or `open` for the script in the script
   window) opens a new, unsaved variant of it: the record

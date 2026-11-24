@@ -301,6 +301,7 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         | m::SCRIPT_EXTERNAL
         | m::SCRIPT_COMPILE
         | m::SCRIPT_UNDO
+        | m::SCRIPT_EVAL
         | m::RECORDING_LIST
         | m::RECORDING_READ
         | m::RECORDING_PLAY
@@ -1301,6 +1302,7 @@ fn every_method_in_methods_has_a_test() {
                         | m::GAME_MODE
                         | m::PACKAGE_PLAY
                         | m::RECORDING_PLAY
+                        | m::SCRIPT_EVAL
                         // No sim runner is wired to Studio's own API.
                         | m::PLAYTEST_RUN
                 ) && e.code == code::REFUSED => {}
