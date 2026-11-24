@@ -162,11 +162,12 @@ impl Cache {
         if let Some(existing) = self.by_streams.get(&key).and_then(find) {
             return Some(&self.by_streams[&key][existing].packed);
         }
-        let sources: Vec<_> = sources.iter().map(|s| VertexStream { data: &s.data, stride: s.stride }).collect();
-        let packed = transparent_streams::pack(original, &sources, key.vertices)?;
-        if packed.bytes.len() > BUDGET {
-            return None;
+        let mut views = [VertexStream { data: &[], stride: 0 }; 16];
+        let views = views.get_mut(..sources.len())?;
+        for (view, source) in views.iter_mut().zip(sources) {
+            *view = VertexStream { data: &source.data, stride: source.stride };
         }
+        let packed = transparent_streams::pack(original, views, key.vertices, BUDGET)?;
         let size = packed.bytes.len();
         if size + self.bytes > BUDGET {
             self.by_streams.clear();

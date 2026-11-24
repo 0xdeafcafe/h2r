@@ -564,6 +564,10 @@ impl ScreenGpu {
     /// The pipeline for colour format `color`: strips, the pass's blend
     /// and colour writes, no depth.
     fn pipeline(&mut self, device: &wgpu::Device, key: RasterPipeline) -> &wgpu::RenderPipeline {
+        const SCREEN_PIPELINES: usize = 128;
+        if self.pipelines.len() == SCREEN_PIPELINES && !self.pipelines.contains_key(&key) {
+            self.pipelines.clear();
+        }
         let (module, layout) = (&self.module, &self.layout);
         self.pipelines.entry(key).or_insert_with(|| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -828,6 +832,8 @@ impl ScreenSet {
     /// Forgets every pass (a new map's effects).
     pub fn clear(&mut self) {
         self.passes.clear();
+        self.copies = [None, None];
+        self.quads = glow::QuadDrawer::new();
     }
 
     /// The call against its live destination and source views, prepared

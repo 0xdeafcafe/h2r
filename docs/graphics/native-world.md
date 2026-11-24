@@ -764,6 +764,12 @@ contents in submission order. The menu's unlightmapped implementation
 uses its own declaration and program. A part can draw without a lighting
 vector when its selected implementation has its required inputs.
 
+The ordered indexed cache in `world_layers_gpu.rs` holds up to 4,096
+resident section windows and charges their CPU geometry and GPU buffers
+against a 128 MiB budget. A periodic frame sweep releases inactive
+windows, and a BSP change clears the section cache. A draw that exceeds
+the residency budget uses the transient upload path.
+
 ### Native BSP scene walk
 
 The walk goes off with the rest of the native renderer.

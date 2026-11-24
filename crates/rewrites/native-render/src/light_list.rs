@@ -61,47 +61,71 @@ pub fn sorted(mem: &dyn GuestRead, list: u32, layer: u32, esp: u32, esi: u32) ->
 
 /// The same ABI when the layer-loop port pushed its authenticated continuation token.
 pub fn sorted_at(mem: &dyn GuestRead, list: u32, layer: u32, esp: u32, esi: u32, caller: u32) -> Result<SortedLayer, &'static str> {
-    let unread = "unreadable sorted light list";
-    let word = |p: u32, n: u32| mem.read_u32(p.checked_add(n)?);
-    if word(esp, 0) != Some(caller) || word(esp, 28) != Some(esi)
-        || word(esp, 16) != Some(layer) || !matches!(layer, 12 | 13) {
-        return Err("outside the sorted light geometry call");
+    SortedCall { list, layer, esp, esi, caller }.read(mem, |_| Ok(()))
+}
+
+/// The current handler's sorted list, before the host walks its entries.
+pub struct SortedCall {
+    pub list: u32,
+    pub layer: u32,
+    pub esp: u32,
+    pub esi: u32,
+    pub caller: u32,
+}
+
+impl SortedCall {
+    /// Check residency as each entry is decoded so a refused entry can
+    /// leave the rest of the list unread. No guest state is written.
+    pub fn read(
+        &self,
+        mem: &dyn GuestRead,
+        mut check: impl FnMut(&SortedItem) -> Result<(), &'static str>,
+    ) -> Result<SortedLayer, &'static str> {
+        let Self { list, layer, esp, esi, caller } = *self;
+        let unread = "unreadable sorted light list";
+        let word = |p: u32, n: u32| mem.read_u32(p.checked_add(n)?);
+        if word(esp, 0) != Some(caller) || word(esp, 28) != Some(esi)
+            || word(esp, 16) != Some(layer) || !matches!(layer, 12 | 13) {
+            return Err("outside the sorted light geometry call");
+        }
+        let counter = esp.checked_add(40).ok_or(unread)?;
+        let base = counter.checked_add(4).ok_or(unread)?;
+        let before = esi.checked_sub(base).ok_or(unread)?;
+        let remaining = word(counter, 0).ok_or(unread)?;
+        let count = (before / ITEM_SIZE).checked_add(remaining).ok_or(unread)?;
+        if before % ITEM_SIZE != 0 || remaining == 0 || count > 2560 { return Err("invalid sorted light count"); }
+        let first = word(list, 12).ok_or(unread)?;
+        let end = word(list, 4).ok_or(unread)?;
+        let table = word(list, 20).filter(|&p| p != 0).ok_or(unread)?;
+        if first > end || end > word(list, 0).ok_or(unread)? { return Err("invalid gathered light bounds"); }
+        let mut entries = Vec::new();
+        for n in 0..count {
+            let slot = base.checked_add(n * ITEM_SIZE).ok_or(unread)?;
+            let target = word(slot, 16).filter(|&p| p != 0).ok_or(unread)?;
+            if word(target, 0x100).ok_or(unread)? == u32::MAX { continue; }
+            if slot < esi { return Err("a preceding sorted light handler already ran"); }
+            let index = word(slot, 0).ok_or(unread)? & 0xffff;
+            if !(first..end).contains(&index) { return Err("sorted entry outside the gathered interval"); }
+            let item = index.checked_mul(ITEM_SIZE).and_then(|n| table.checked_add(n)).ok_or(unread)?;
+            item.checked_add(ITEM_SIZE - 1).ok_or(unread)?;
+            let handler = word(item, 4).filter(|&p| p != 0).ok_or(unread)?;
+            let shader = word(item, 8).ok_or(unread)?;
+            word(item, 12).ok_or(unread)?;
+            let selector = word(item, 20).ok_or(unread)?;
+            let mask = 1 << layer;
+            if word(item, 16).ok_or(unread)? & mask == 0 { return Err("sorted light layer mask changed"); }
+            let geometry = if handler == GEOMETRY_DRAW
+                && (selector >> 8) as u8 == 0
+                && skip::is_structure_item(mem, item).ok_or(unread)? {
+                Some(Item { part: skip::structure_part(mem, item).ok_or(unread)?, shader, layers: mask })
+            } else { None };
+            let entry = SortedItem { slot, handler_item: item, geometry, implementation: word(slot, 4).ok_or(unread)? as u8 };
+            check(&entry)?;
+            entries.push(entry);
+        }
+        if entries.first().map(|e| e.slot) != Some(esi) { return Err("current sorted light entry was excluded"); }
+        Ok(SortedLayer { entries, first_slot: esi, remaining, counter })
     }
-    let counter = esp.checked_add(40).ok_or(unread)?;
-    let base = counter.checked_add(4).ok_or(unread)?;
-    let before = esi.checked_sub(base).ok_or(unread)?;
-    let remaining = word(counter, 0).ok_or(unread)?;
-    let count = (before / ITEM_SIZE).checked_add(remaining).ok_or(unread)?;
-    if before % ITEM_SIZE != 0 || remaining == 0 || count > 2560 { return Err("invalid sorted light count"); }
-    let first = word(list, 12).ok_or(unread)?;
-    let end = word(list, 4).ok_or(unread)?;
-    let table = word(list, 20).filter(|&p| p != 0).ok_or(unread)?;
-    if first > end || end > word(list, 0).ok_or(unread)? { return Err("invalid gathered light bounds"); }
-    let mut entries = Vec::new();
-    for n in 0..count {
-        let slot = base.checked_add(n * ITEM_SIZE).ok_or(unread)?;
-        let target = word(slot, 16).filter(|&p| p != 0).ok_or(unread)?;
-        if word(target, 0x100).ok_or(unread)? == u32::MAX { continue; }
-        if slot < esi { return Err("a preceding sorted light handler already ran"); }
-        let index = word(slot, 0).ok_or(unread)? & 0xffff;
-        if !(first..end).contains(&index) { return Err("sorted entry outside the gathered interval"); }
-        let item = index.checked_mul(ITEM_SIZE).and_then(|n| table.checked_add(n)).ok_or(unread)?;
-        item.checked_add(ITEM_SIZE - 1).ok_or(unread)?;
-        let handler = word(item, 4).filter(|&p| p != 0).ok_or(unread)?;
-        let shader = word(item, 8).ok_or(unread)?;
-        word(item, 12).ok_or(unread)?;
-        let selector = word(item, 20).ok_or(unread)?;
-        let mask = 1 << layer;
-        if word(item, 16).ok_or(unread)? & mask == 0 { return Err("sorted light layer mask changed"); }
-        let geometry = if handler == GEOMETRY_DRAW
-            && (selector >> 8) as u8 == 0
-            && skip::is_structure_item(mem, item).ok_or(unread)? {
-            Some(Item { part: skip::structure_part(mem, item).ok_or(unread)?, shader, layers: mask })
-        } else { None };
-        entries.push(SortedItem { slot, handler_item: item, geometry, implementation: word(slot, 4).ok_or(unread)? as u8 });
-    }
-    if entries.first().map(|e| e.slot) != Some(esi) { return Err("current sorted light entry was excluded"); }
-    Ok(SortedLayer { entries, first_slot: esi, remaining, counter })
 }
 
 #[cfg(test)]
@@ -136,5 +160,15 @@ mod tests {
         assert_eq!(sorted.cursor_after(4), None);
         m.0.remove(&(base+3*ITEM_SIZE+16));
         assert!(super::sorted(&m, list, 12, esp, base).is_err());
+
+        let call = SortedCall { list, layer: 12, esp, esi: base, caller: HANDLER_RETURN };
+        let mut checked = 0;
+        let result = call.read(&m, |entry| {
+            checked += 1;
+            assert_eq!(entry.slot, base);
+            Err("no resident geometry")
+        });
+        assert_eq!(result.unwrap_err(), "no resident geometry");
+        assert_eq!(checked, 1, "the unreadable suffix is never inspected");
     }
 }

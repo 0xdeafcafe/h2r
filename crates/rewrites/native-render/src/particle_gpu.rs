@@ -19,7 +19,9 @@
 //! A view of a frame-buffer copy or depth alias is new every frame, so a
 //! group of one never outlives the frames that drew with it.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::sync::Arc;
 
 use gfx::compile::{Pending, PendingPipeline};
@@ -58,7 +60,7 @@ pub struct TextureBinding {
 #[derive(Clone, Debug)]
 pub struct ShaderSnapshot {
     /// Read from the user's executable/map at runtime, never embedded.
-    pub microcode: Vec<u8>,
+    pub microcode: d3d::shader::Microcode,
     pub pixel: psh::PixelShaderDef,
     pub pixel_options: psh::PixelOptions,
     pub flat_shading: bool,
@@ -69,7 +71,7 @@ pub struct ShaderSnapshot {
 /// This is the native declaration: sixteen FLOAT4 registers. The adapter
 /// must compare source fetch against this expansion before admission.
 #[derive(Clone, Debug)]
-pub struct ImmediateDrawSnapshot {
+pub struct ImmediateDrawSnapshot<'a> {
     pub identity: DrawIdentity,
     pub target: TargetKey,
     pub shader: ShaderSnapshot,
@@ -78,12 +80,12 @@ pub struct ImmediateDrawSnapshot {
     pub vertex_uniforms: vsh::VertexUniforms,
     pub pixel_uniforms: psh::PixelUniforms,
     pub textures: [Option<TextureBinding>; 4],
-    pub vertices: Vec<Vertex>,
+    pub vertices: Cow<'a, [Vertex]>,
     /// Generated contrail/effect streams retain raw FLOAT/BGRA fetch.
     /// When present, vertices may be empty; the raw stream owns the count.
-    pub raw_vertices: Option<RawVertices>,
+    pub raw_vertices: Option<Cow<'a, RawVertices>>,
     /// Triangle list or strip in original order; no material sorting.
-    pub indices: Vec<u32>,
+    pub indices: Cow<'a, [u32]>,
     pub primitive: wgpu::PrimitiveState,
     pub depth: wgpu::DepthStencilState,
     pub blend: Option<wgpu::BlendState>,
@@ -100,7 +102,7 @@ pub struct ImmediateDrawSnapshot {
 #[derive(Clone, Debug)]
 pub struct RawVertices {
     kind: crate::effect_geometry::Kind,
-    bytes: Vec<u8>,
+    bytes: Arc<[u8]>,
     stride: u64,
     attributes: Vec<wgpu::VertexAttribute>,
     provided: u16,
@@ -108,11 +110,12 @@ pub struct RawVertices {
 impl RawVertices {
     pub fn new(
         kind: crate::effect_geometry::Kind,
-        bytes: Vec<u8>,
+        bytes: impl Into<Arc<[u8]>>,
         mut attributes: Vec<wgpu::VertexAttribute>,
     ) -> Result<Self, Refused> {
         use crate::effect_geometry::Kind;
         use wgpu::VertexFormat as F;
+        let bytes = bytes.into();
         let (stride, formats): (u64, &[(u64, F)]) = match kind {
             Kind::Contrail => (
                 24,
@@ -174,10 +177,10 @@ pub enum Refused {
     Effect(&'static str),
     State,
     Texture(usize),
-    Shader(String),
+    Shader(Arc<str>),
 }
 
-impl ImmediateDrawSnapshot {
+impl ImmediateDrawSnapshot<'_> {
     /// Checks independent of a GPU. Unknown attachment/depth state, partial
     /// triangles, texture generations and mismatched clip modes fail closed.
     pub fn validate(&self) -> Result<(), Refused> {
@@ -202,7 +205,7 @@ impl ImmediateDrawSnapshot {
         }
         let vertex_count = self
             .raw_vertices
-            .as_ref()
+            .as_deref()
             .map_or(self.vertices.len(), RawVertices::vertex_count);
         let strip = self.primitive.topology == wgpu::PrimitiveTopology::TriangleStrip;
         let lines = self.primitive.topology == wgpu::PrimitiveTopology::LineList;
@@ -256,7 +259,7 @@ impl ImmediateDrawSnapshot {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct ShaderKey {
-    microcode: Vec<u8>,
+    microcode: d3d::shader::Microcode,
     pixel: psh::PixelShaderDef,
     options: psh::PixelOptions,
     flat: bool,
@@ -265,6 +268,7 @@ struct ShaderKey {
 }
 
 struct Program {
+    id: u64,
     module: wgpu::ShaderModule,
     layout: wgpu::PipelineLayout,
     /// The renderer's one uniforms layout (dynamic offsets), shared by every
@@ -286,8 +290,17 @@ static GROUP_BYTES: mem_watch::Counter =
 
 type GroupKey = (
     wgpu::BindGroupLayout,
-    Vec<(u32, wgpu::TextureView, wgpu::Sampler)>,
+    [Option<(wgpu::TextureView, wgpu::Sampler)>; 4],
 );
+
+#[derive(PartialEq, Eq, Hash)]
+struct RenderPipelineKey {
+    program: u64,
+    primitive: wgpu::PrimitiveState,
+    depth: wgpu::DepthStencilState,
+    color: wgpu::ColorTargetState,
+    raw: Option<(u64, [Option<wgpu::VertexAttribute>; 3])>,
+}
 
 /// A pipeline made once: the pipeline itself for the self-contained pass,
 /// and the same pipeline with its description for packets.
@@ -308,14 +321,60 @@ pub struct Created {
     pub samplers: u64,
 }
 
+// Bound the number of translated shader variants and GPU states retained
+// across maps. Encoded work owns handles and survives a cache reset.
+const PROGRAM_CAPACITY: usize = 256;
+const PIPELINE_CAPACITY: usize = 1024;
+const SAMPLER_CAPACITY: usize = 128;
+
+struct Cache<K, V, const CAPACITY: usize>(HashMap<K, V>);
+
+impl<K: Eq + Hash, V, const CAPACITY: usize> Cache<K, V, CAPACITY> {
+    fn new() -> Self {
+        Self(HashMap::new())
+    }
+
+    fn get(&self, key: &K) -> Option<&V> {
+        self.0.get(key)
+    }
+
+    /// Insert after a lookup miss. Restart the cache when it fills.
+    fn insert_miss(&mut self, key: K, value: V) {
+        if self.0.len() == CAPACITY {
+            self.0.clear();
+        }
+        self.0.insert(key, value);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn particle_cache_limits_survive_variant_churn() {
+    fn check<const CAPACITY: usize>() {
+        let mut cache = Cache::<usize, Arc<usize>, CAPACITY>::new();
+        let in_flight = Arc::new(0);
+        cache.insert_miss(0, Arc::clone(&in_flight));
+        for key in 1..CAPACITY * 3 {
+            cache.insert_miss(key, Arc::new(key));
+            assert!(cache.0.len() <= CAPACITY);
+            assert_eq!(**cache.get(&key).unwrap(), key);
+        }
+        assert!(cache.get(&0).is_none());
+        assert_eq!(Arc::strong_count(&in_flight), 1);
+    }
+
+    check::<PROGRAM_CAPACITY>();
+    check::<PIPELINE_CAPACITY>();
+    check::<SAMPLER_CAPACITY>();
+}
+
 /// The native translated programs and pipelines, scoped to one host device.
-/// Drop/recreate on map generation changes to release obsolete programs.
 pub struct ParticleRenderer {
     device: u64,
-    programs: HashMap<ShaderKey, Result<Arc<Program>, Refused>>,
-    pipelines: HashMap<(ShaderKey, String), Cached>,
+    programs: Cache<ShaderKey, Result<Arc<Program>, Refused>, PROGRAM_CAPACITY>,
+    pipelines: Cache<RenderPipelineKey, Cached, PIPELINE_CAPACITY>,
     uniforms: Option<wgpu::BindGroupLayout>,
-    samplers: HashMap<gfx::translate::SamplerKey, wgpu::Sampler>,
+    samplers: Cache<gfx::translate::SamplerKey, wgpu::Sampler, SAMPLER_CAPACITY>,
     groups: TextureGroups<GroupKey>,
     created: Created,
 }
@@ -324,10 +383,10 @@ impl ParticleRenderer {
     pub fn new(device: u64) -> Self {
         Self {
             device,
-            programs: HashMap::new(),
-            pipelines: HashMap::new(),
+            programs: Cache::new(),
+            pipelines: Cache::new(),
             uniforms: None,
-            samplers: HashMap::new(),
+            samplers: Cache::new(),
             groups: TextureGroups::new(&GROUP_BYTES),
             created: Created::default(),
         }
@@ -352,14 +411,13 @@ impl ParticleRenderer {
     /// The sampler for `key`, made once: a texture binding built from it
     /// keeps the same identity across frames, so its group stays cached.
     pub fn sampler(&mut self, device: &wgpu::Device, key: &gfx::translate::SamplerKey) -> wgpu::Sampler {
-        let created = &mut self.created;
-        self.samplers
-            .entry(*key)
-            .or_insert_with(|| {
-                created.samplers += 1;
-                device.create_sampler(&key.descriptor())
-            })
-            .clone()
+        if let Some(sampler) = self.samplers.get(key) {
+            return sampler.clone();
+        }
+        let sampler = device.create_sampler(&key.descriptor());
+        self.created.samplers += 1;
+        self.samplers.insert_miss(*key, sampler.clone());
+        sampler
     }
 
     /// Validates, then finds or makes the program and pipeline, and checks
@@ -367,7 +425,7 @@ impl ParticleRenderer {
     fn resolve(
         &mut self,
         device: &wgpu::Device,
-        s: &ImmediateDrawSnapshot,
+        s: &ImmediateDrawSnapshot<'_>,
     ) -> Result<(Arc<Program>, Cached), Refused> {
         s.validate()?;
         if self.device != s.identity.device {
@@ -393,19 +451,17 @@ impl ParticleRenderer {
             input_fetch: s.shader.input_fetch,
             provided: s.raw_vertices.as_ref().map_or(u16::MAX, |r| r.provided),
         };
-        let uniforms = self
-            .uniforms
-            .get_or_insert_with(|| crate::light_gpu::uniforms_layout(device))
-            .clone();
-        let created = &mut self.created;
-        let program = self
-            .programs
-            .entry(key.clone())
-            .or_insert_with(|| {
-                created.programs += 1;
-                compile(device, &key, &uniforms).map(Arc::new)
-            })
-            .clone()?;
+        let program = if let Some(program) = self.programs.get(&key) {
+            program.clone()?
+        } else {
+            let uniforms = self
+                .uniforms
+                .get_or_insert_with(|| crate::light_gpu::uniforms_layout(device));
+            self.created.programs += 1;
+            let program = compile(device, &key, uniforms, self.created.programs).map(Arc::new);
+            self.programs.insert_miss(key, program.clone());
+            program?
+        };
         // Check every sampled level before pipeline/groups/uploads. A missing
         // stage cannot turn into a skipped range in the recording loop.
         for (n, dim) in program.sampled.iter().enumerate() {
@@ -416,18 +472,19 @@ impl ParticleRenderer {
                 }
             }
         }
-        let pipeline_key = (
-            key,
-            format!(
-                "{:?}/{:?}/{:?}/{:?}/{:?}/{:?}",
-                s.target.color_format,
-                s.primitive,
-                s.depth,
-                s.blend,
-                s.color_writes,
-                s.raw_vertices.as_ref().map(|r| (r.stride, &r.attributes))
-            ),
-        );
+        let pipeline_key = RenderPipelineKey {
+            program: program.id,
+            primitive: s.primitive,
+            depth: s.depth.clone(),
+            color: wgpu::ColorTargetState {
+                format: s.target.color_format,
+                blend: s.blend,
+                write_mask: s.color_writes,
+            },
+            raw: s.raw_vertices.as_ref().map(|r| {
+                (r.stride, std::array::from_fn(|n| r.attributes.get(n).copied()))
+            }),
+        };
         if let Some(cached) = self.pipelines.get(&pipeline_key) {
             return Ok((program, cached.clone()));
         }
@@ -447,11 +504,7 @@ impl ParticleRenderer {
                 })
                 .collect()
         };
-        let color_target = wgpu::ColorTargetState {
-            format: s.target.color_format,
-            blend: s.blend,
-            write_mask: s.color_writes,
-        };
+        let color_target = pipeline_key.color.clone();
         let pipeline = gfx::program::validated_resource(device, || {
             gfx::churn::create_render_pipeline(
                 device,
@@ -499,23 +552,19 @@ impl ParticleRenderer {
             pending: Pending::ready(Some(pipeline.clone())),
             pipeline,
         };
-        self.pipelines.insert(pipeline_key, cached.clone());
+        self.pipelines.insert_miss(pipeline_key, cached.clone());
         Ok((program, cached))
     }
 
     /// The group of `s`'s textures for `program`, made once per distinct
     /// views and samplers and kept while draws use it.
-    fn texture_group(&mut self, device: &wgpu::Device, program: &Program, s: &ImmediateDrawSnapshot) -> wgpu::BindGroup {
-        let bound: Vec<(u32, wgpu::TextureView, wgpu::Sampler)> = program
-            .sampled
-            .iter()
-            .enumerate()
-            .filter(|(_, dim)| dim.is_some())
-            .map(|(n, _)| {
+    fn texture_group(&mut self, device: &wgpu::Device, program: &Program, s: &ImmediateDrawSnapshot<'_>) -> wgpu::BindGroup {
+        let bound = std::array::from_fn(|n| {
+            program.sampled[n].map(|_| {
                 let t = s.textures[n].as_ref().expect("validated before any recording");
-                (n as u32, t.view.clone(), t.sampler.clone())
+                (t.view.clone(), t.sampler.clone())
             })
-            .collect();
+        });
         let key = (program.textures.clone(), bound);
         if let Some(group) = self.groups.get(&key) {
             gfx::churn::native_cache(true);
@@ -523,7 +572,9 @@ impl ParticleRenderer {
         }
         gfx::churn::native_cache(false);
         let mut entries = Vec::new();
-        for (n, view, sampler) in &key.1 {
+        for (n, binding) in key.1.iter().enumerate() {
+            let Some((view, sampler)) = binding else { continue };
+            let n = n as u32;
             entries.push(wgpu::BindGroupEntry {
                 binding: 2 * n,
                 resource: wgpu::BindingResource::TextureView(view),
@@ -542,12 +593,11 @@ impl ParticleRenderer {
             },
         );
         self.created.texture_groups += 1;
-        let textures: Vec<_> = key
+        let textures = key
             .1
-            .iter()
-            .map(|(_, view, _)| view.texture().clone())
-            .collect();
-        self.groups.insert(key, group.clone(), textures);
+            .each_ref()
+            .map(|binding| binding.as_ref().map(|(view, _)| view.texture().clone()));
+        self.groups.insert(key, group.clone(), textures.into_iter().flatten());
         group
     }
 
@@ -564,7 +614,7 @@ impl ParticleRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         uploads: &gfx::ring::SubmissionUploads,
-        s: &ImmediateDrawSnapshot,
+        s: &ImmediateDrawSnapshot<'_>,
     ) -> Result<(RecordedDraw, bool), Refused> {
         let reference = u8::try_from(s.stencil_reference).map_err(|_| Refused::State)?;
         let (program, cached) = self.resolve(device, s)?;
@@ -585,7 +635,7 @@ impl ParticleRenderer {
         let vertex_bytes: &[u8] = s
             .raw_vertices
             .as_ref()
-            .map_or_else(|| bytemuck::cast_slice(&s.vertices), |r| r.bytes.as_slice());
+            .map_or_else(|| bytemuck::cast_slice(&s.vertices), |r| r.bytes.as_ref());
         let index_bytes: &[u8] = bytemuck::cast_slice(&s.indices);
         let (vertices, vertex_at) = uploads.stage(device, queue, vertex_bytes);
         let (indices, index_at) = uploads.stage(device, queue, index_bytes);
@@ -619,7 +669,7 @@ impl ParticleRenderer {
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
-        s: &ImmediateDrawSnapshot,
+        s: &ImmediateDrawSnapshot<'_>,
     ) -> Result<PreparedDraw, Refused> {
         let (program, cached) = self.resolve(device, s)?;
         let buffer = |label, bytes: &[u8], usage| {
@@ -664,7 +714,7 @@ impl ParticleRenderer {
                 "particle dynamic vertices",
                 s.raw_vertices
                     .as_ref()
-                    .map_or_else(|| bytemuck::cast_slice(&s.vertices), |r| r.bytes.as_slice()),
+                    .map_or_else(|| bytemuck::cast_slice(&s.vertices), |r| r.bytes.as_ref()),
                 wgpu::BufferUsages::VERTEX,
             ),
             indices: buffer(
@@ -684,9 +734,14 @@ fn compile(
     device: &wgpu::Device,
     key: &ShaderKey,
     uniforms: &wgpu::BindGroupLayout,
+    id: u64,
 ) -> Result<Program, Refused> {
-    let program = vsh::Program::parse(&key.microcode)
-        .map_err(|e| Refused::Shader(format!("vertex: {e:?}")))?;
+    let count = key.microcode.len() / 4;
+    if !key.microcode.len().is_multiple_of(4) || !(1..=vsh::MAX_INSTRUCTIONS).contains(&count) {
+        return Err(Refused::Shader("invalid particle vertex program length".into()));
+    }
+    let program = vsh::Program::from_words(vsh::ProgramKind::Normal, &key.microcode)
+        .map_err(|e| Refused::Shader(format!("vertex: {e:?}").into()))?;
     if program.writes_constants() {
         return Err(Refused::Shader("vertex program writes constants".into()));
     }
@@ -698,17 +753,17 @@ fn compile(
             input_fetch: key.input_fetch,
         },
     )
-    .map_err(|e| Refused::Shader(format!("vertex: {e:?}")))?;
+    .map_err(|e| Refused::Shader(format!("vertex: {e:?}").into()))?;
     let pixel = psh::translate(&key.pixel, &key.options);
     if !pixel.warnings.is_empty() {
-        return Err(Refused::Shader(pixel.warnings.join("; ")));
+        return Err(Refused::Shader(pixel.warnings.join("; ").into()));
     }
     // Shadow bindings need depth/comparison layouts. No silent float view.
     if key.options.shadow.iter().any(Option::is_some) {
         return Err(Refused::State);
     }
-    let wgsl = shaders::link(&vertex, &pixel).map_err(|e| Refused::Shader(e.to_string()))?;
-    shaders::validate(&wgsl).map_err(|e| Refused::Shader(e.to_string()))?;
+    let wgsl = shaders::link(&vertex, &pixel).map_err(|e| Refused::Shader(e.to_string().into()))?;
+    shaders::validate(&wgsl).map_err(|e| Refused::Shader(e.to_string().into()))?;
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("native particles"),
         source: wgpu::ShaderSource::Wgsl(wgsl.into()),
@@ -750,6 +805,7 @@ fn compile(
         immediate_size: 0,
     });
     Ok(Program {
+        id,
         module,
         layout,
         uniforms: uniforms.clone(),

@@ -27,6 +27,7 @@
 /// Largest size a ring grows to by doubling when it fills (a single larger
 /// push still gets a buffer of its own size).
 const MAX_GROWTH: u64 = 64 << 20;
+const IDLE_SUBMISSIONS: usize = 4;
 
 /// A growable upload buffer for one usage (vertex/index, or uniforms).
 pub struct UploadRing {
@@ -258,7 +259,10 @@ impl Drop for SubmissionStorage {
         ring.next_run = 0;
         ring.upload.staged.clear();
         ring.upload.reset();
-        self.pool.0.lock().unwrap_or_else(|e| e.into_inner()).push(ring);
+        let mut idle = self.pool.0.lock().unwrap_or_else(|e| e.into_inner());
+        if idle.len() < IDLE_SUBMISSIONS {
+            idle.push(ring);
+        }
     }
 }
 
@@ -523,6 +527,23 @@ impl EncoderUploads<'_> {
 mod tests {
     use super::*;
     use crate::{GfxContext, program::ProgramBindings};
+
+    #[test]
+    fn upload_pool_keeps_only_a_fixed_number_of_returned_arenas() {
+        let Ok(ctx) = GfxContext::headless() else { return };
+        let pool = UploadPool::default();
+        let submissions: Vec<_> = (0..IDLE_SUBMISSIONS * 3).map(|_| {
+            let uploads = pool.begin();
+            uploads.stage(&ctx.device, &ctx.queue, &[1, 2, 3, 4]);
+            uploads
+        }).collect();
+        assert!(pool.0.lock().unwrap().is_empty());
+        drop(submissions);
+        assert_eq!(pool.0.lock().unwrap().len(), IDLE_SUBMISSIONS);
+        let uploads = pool.begin();
+        uploads.stage(&ctx.device, &ctx.queue, &[5, 6, 7, 8]);
+        assert_eq!(pool.0.lock().unwrap().len(), IDLE_SUBMISSIONS - 1);
+    }
 
     #[test]
     fn resident_constant_patches_are_batched_and_cancelled_slots_refill() {

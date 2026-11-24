@@ -117,8 +117,10 @@ Explicit assumptions and limits:
 - Attachment/stage views are held by the handoff for the reservation, on
   the render thread when it is queued. Native identities use the host device plus a unique call
   epoch and copy, rather than guessing a map or attachment generation.
-  Prepared draws never survive that reservation. Pipeline caches contain
-  no guest resource handles and are keyed by their shader/state contents.
+  Prepared draws never survive that reservation. Each admission caches
+  resources for one host device. Shader and raster state determine the
+  pipeline keys, and the caches restart on a miss at 256 programs, 1,024
+  pipelines or 128 samplers.
   Texture groups are keyed by the views they bind and last only while
   draws use them (`native_render::texture_groups`): each pass carries the
   frame it was admitted in, and a group no draw used for
@@ -215,7 +217,7 @@ is unchanged; each owned leaf executes at its original position.
 | MGS2 `0x0004f010` | Producer `0x00042850`; reached by effect parts, object attachments and lights. Evaluated volume elements feed shared billboard helper `0x0004f7e0`, admitted per leaf. |
 | tdtl `0x000508d0` | Producer `0x000429a0`; reached by attachments/lights. Curve/state updates precede `0x0004f7e0`; they remain guest-owned. |
 | Geometry `0x00041020` | Producer `0x00041040`; the transparents stage owns this handler and its `0x0004cbf0`/`0x0004d0b0` callbacks. No particles-stage hook is installed here. |
-| Layered geometry `0x00041cc0` / `0x000423c0` | Producers `0x000420a0` / `0x00042760`. Multiple geometry calls and target/layer changes: `OtherLaneLayeredGeometry`. These observations never suppress a body. A single effect reservation does not establish ownership of their complete layered sequence. |
+| Layered geometry `0x00041cc0` / `0x000423c0` | Producers `0x000420a0` / `0x00042760`. These guest-owned handlers make multiple geometry calls and change targets and layers. |
 | Material callbacks `0x00244610` / `0x002be650` | Generic producer `0x00041490`, material callback `0x000d4bc0`, geometry callbacks `0x00244470` / `0x002be5d0`. Both reach `0x0019f680`: admits its completed triangle strip, preserving ring/outline construction, material evaluation and degenerates. |
 | Other callbacks queued by `0x00041490` | Handler pointer comes from stack +0x18 at entry; data-driven registration through `0x000d4d85` may supply others. `UnownedMaterialCallback` for a handler outside the two researched wrappers. No guessed semantic type or ownership. |
 | Wrapper `0x00048e40` | Producer `0x00047870`; sole statically found caller `0x001160b3` supplies callback `0x0024dc50`, a no-op return: `NoGeometryCallback`. The wrapper's material changes still run. A different runtime callback gives `UnownedMaterialCallback`. |
@@ -230,10 +232,10 @@ restores its render state afterwards. Other callers give `UnownedCaller`.
 
 Lens flares use a separate queue: `0x0002dba0` → `0x000209b0`, populated
 from sky, object attachments, lights and effect parts. Pass `0x0002dd30`
-invokes callback `0x0002e540` through `0x00020bb0` with query work enabled;
-its END at `0x0002e9b6` is explicitly `VisibilityQuery`. The queue helper
-brackets this callback with z-pass query packets and retains its readback
-lifecycle. Reflection pass `0x0002df00` invokes `0x0002e9e0` without those
+invokes callback `0x0002e540` through `0x00020bb0` with query work enabled.
+The guest owns its END at `0x0002e9b6`. The queue helper brackets this
+callback with z-pass query packets and retains its readback lifecycle.
+Reflection pass `0x0002df00` invokes `0x0002e9e0` without those
 queries. Its visible billboards go to the native flare stage through the shared
 leaf at `0x000480a0` when the saved caller is `0x0002f24c`. Neither queue
 nor visibility-history logic is replaced. The central handoff also rejects
@@ -285,7 +287,7 @@ guest-issued leaves are queued behind the render thread the same way.
 ## Rules and limits
 
 - Coverage comes from the `particles` stage counters in `H2_FRAME_STATS` (suppressed, and positive reference and display ranges in view bucket `other`). Resource and range refusals are named counters, not receipts.
-- The feature test `crates/rewrites/render-bridge/tests/native_particles.rs` requires twenty-one render-safe observer points and none on `0x00174420`.
+- The feature test `crates/rewrites/render-bridge/tests/native_particles.rs` requires render-safe leaf hooks and verifies that the particle update, visibility query and layered handlers have no particle hooks.
 - `crates/rewrites/native-render/tests/particles_gpu.rs` draws a canonical particle and a packed ribbon strip into one submission with invented microcode and checks colour readback and refusal of a changed attachment identity. It skips without a GPU adapter. Pure tests cover dynamic register assignment, colour channel order, z/w reset, NaN and signed zero, missing memory, alias and overflow refusal, clip and depth mismatch and malformed geometry; `effect_immediate::` tests cover winding, caller allowlisting, defaults and point and odd-line refusals.
 
 ## Not verified

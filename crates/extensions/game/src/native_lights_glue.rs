@@ -7,7 +7,7 @@ pub(crate) mod typed;
 pub mod walk;
 
 use crate::native_gels_glue::{Binding, Checkpoint, Outputs};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, btree_map::Entry};
 use std::ops::Range;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -20,7 +20,7 @@ use native_render::light_gpu::{
     LayeredImage, LightDraw, LightGpu, LightSet, LightTarget, ModelGeometry, StaticLightTexture,
     TextureDim,
 };
-use native_render::light_list::{SortedItem, SortedLayer};
+use native_render::light_list::SortedItem;
 use native_render::light_look::{
     DIFFUSE_LAYER, LightInputs, LightProgram, LightStage, SPECULAR_LAYER,
 };
@@ -86,7 +86,7 @@ pub enum Keep {
     MaterialPending,
     /// A pass it needs is refused (`light_look`, `compile_light`, the
     /// material), with why.
-    Refused(String),
+    Refused(Arc<str>),
     /// A texture a pass samples did not load: which.
     Unloaded(&'static str),
     Unsupported(&'static str),
@@ -111,6 +111,7 @@ impl std::fmt::Display for Keep {
 
 /// Lights considered between summaries.
 pub const SUMMARY_EVERY: u64 = 1800;
+const REFUSAL_DETAIL_LIMIT: usize = 32;
 
 /// The host's answers so far: lights asked, lights planned, and the lights
 /// kept on D3D by reason.
@@ -120,6 +121,8 @@ pub struct Tally {
     pub planned: u64,
     pub shader_gels: u64,
     pub kept: BTreeMap<Keep, u64>,
+    refusal_details: usize,
+    other_refusals: u64,
 }
 
 impl Tally {
@@ -144,12 +147,23 @@ impl Tally {
     /// Counts a reason a light keeps (some of) its D3D passes; the line to
     /// say the first time.
     pub fn count_kept(&mut self, k: Keep) -> Vec<String> {
-        let n = self.kept.entry(k.clone()).or_insert(0);
-        *n += 1;
-        if *n == 1 {
-            vec![format!("native-lights: a light keeps its D3D passes: {k}")]
-        } else {
-            Vec::new()
+        match self.kept.entry(k) {
+            Entry::Occupied(mut entry) => {
+                *entry.get_mut() += 1;
+                Vec::new()
+            }
+            Entry::Vacant(entry) => {
+                if matches!(entry.key(), Keep::Refused(_)) {
+                    if self.refusal_details >= REFUSAL_DETAIL_LIMIT {
+                        self.other_refusals += 1;
+                        return Vec::new();
+                    }
+                    self.refusal_details += 1;
+                }
+                let line = format!("native-lights: a light keeps its D3D passes: {}", entry.key());
+                entry.insert(1);
+                vec![line]
+            }
         }
     }
 
@@ -157,7 +171,10 @@ impl Tally {
     pub fn summary(&self) -> String {
         let mut kept: Vec<_> = self.kept.iter().collect();
         kept.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
-        let kept: Vec<String> = kept.iter().map(|(k, n)| format!("{n} {k}")).collect();
+        let mut kept: Vec<String> = kept.iter().map(|(k, n)| format!("{n} {k}")).collect();
+        if self.other_refusals != 0 {
+            kept.push(format!("{} other shader refusals", self.other_refusals));
+        }
         format!(
             "native-lights: host planned {} of {} lights; kept on D3D: {}",
             self.planned,
@@ -209,47 +226,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             ))
     }
 
-    fn prepare_light(
-        &self,
-        d: &d3d::Device<B>,
-        mem: &dyn GuestMemory,
-        light: &Light,
-        sorted: &SortedLayer,
-        binding: Option<Binding>,
-    ) -> Result<(PreparedLight, usize), Keep> {
-        let ready = self.ready(mem)?;
-        let world = ready.lights.get().ok_or(Keep::NoWorld)?;
-        let parts = select_parts(&world.clusters, &sorted.entries)?;
-        let consumed = parts.len();
-        Ok((
-            self.prepare_parts(d, mem, ready, light, parts, binding)?,
-            consumed,
-        ))
-    }
-
     fn ready(&self, mem: &dyn GuestMemory) -> Result<Arc<Ready>, Keep> {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         Ok(Arc::clone(current_ready(&state, mem).ok_or(Keep::NoWorld)?))
     }
 
-    /// The light's draws of `parts` (layer, implementation, world part,
-    /// in draw order) with the device state they take at this point.
-    fn prepare_parts(
-        &self,
-        d: &d3d::Device<B>,
-        mem: &dyn GuestMemory,
-        ready: Arc<Ready>,
-        light: &Light,
-        parts: Vec<(usize, usize, WorldDraw)>,
-        binding: Option<Binding>,
-    ) -> Result<PreparedLight, Keep> {
-        let constants = constants(light)?;
-        let world = ready.lights.get().ok_or(Keep::NoWorld)?;
-        let draws = world.resolve_parts(&constants, parts, binding.is_some())?;
-        self.prepare_planned(d, mem, ready, constants, draws, binding, false, None)
-    }
-
-    /// [`Self::prepare_parts`] for draws already resolved.
+    /// Give the resolved draws the device state they take at this point.
     fn prepare_planned(
         &self,
         d: &d3d::Device<B>,
@@ -371,7 +353,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         group: &render_bridge::native_lights::SceneGroup,
         c: &LightConstants,
     ) -> Result<Vec<Planned>, Keep> {
-        use native_render::light_scene::{Refusal, plan_entries};
+        use native_render::light_scene::Resident;
         let world = ready.lights.get().ok_or(Keep::NoWorld)?;
         let objects = group.entries.iter().any(|e| structure_key(e).is_none());
         let model_lights = if objects {
@@ -395,17 +377,27 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             clusters: &world.clusters,
             models: model_lights.as_deref().map(|m| &m.models),
         };
-        plan_entries(&group.entries, &|e| group.rows_of(e), &held).map_err(|r| match r {
-            Refusal::Remainder(_) => Keep::Unsupported("scene group has a remainder"),
-            Refusal::Stream => Keep::Unsupported("scene group entry has no native light stream"),
-            Refusal::Pose => Keep::Unsupported("scene group entry has no pose"),
-        })?;
+        let entries = group.entries.iter().enumerate().map(|(i, entry)| {
+            (entry, group.rows.get(i).map_or(&[][..], Vec::as_slice))
+        });
+        // The actual draws below use this order and material layout.
+        // Validate the geometry without building a second, unused draw plan.
+        for (entry, rows) in entries.clone() {
+            if held.part(entry).is_none() {
+                return Err(Keep::Unsupported(
+                    "scene group entry has no native light stream",
+                ));
+            }
+            if matches!(entry.pose, frame_scene::LightPose::Rows(_)) && rows.is_empty() {
+                return Err(Keep::Unsupported("scene group entry has no pose"));
+            }
+        }
         let layer = usize::from(group.group.layer);
         // Runs of structure entries resolve together, as the sorted
         // list's do; each object entry is a draw of its own (its rows).
         let mut draws: Vec<Planned> = Vec::new();
         let mut run: Vec<(usize, usize, WorldDraw)> = Vec::new();
-        for e in &group.entries {
+        for (e, rows) in entries {
             let imp = usize::from(e.binding.implementation);
             if let Some(k) = structure_key(e) {
                 let (_, draw) = world.clusters.get(&k).ok_or(Keep::Unsupported(
@@ -415,12 +407,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 continue;
             }
             if !run.is_empty() {
-                draws.extend(world.resolve_parts(c, std::mem::take(&mut run), false)?);
+                draws.extend(world.resolve_parts(c, run.drain(..), false)?);
             }
             let lights = model_lights
                 .as_ref()
                 .ok_or(Keep::Unsupported("the map's model light parts are loading"))?;
-            draws.push(world.resolve_model(c, lights, layer, e, group.rows_of(e))?);
+            draws.push(world.resolve_model(c, lights, layer, e, rows)?);
         }
         if !run.is_empty() {
             draws.extend(world.resolve_parts(c, run, false)?);
@@ -826,7 +818,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         }
     }
 
-    fn reserve(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch<'_>) -> Result<(), Keep> {
+    fn reserve(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch) -> Result<(), Keep> {
         let Dispatch {
             light,
             serial,
@@ -835,6 +827,16 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             view_target,
             sorted,
         } = dispatch;
+        let constants = constants(&light)?;
+        let ready = self.ready(mem)?;
+        let world = ready.lights.get().ok_or(Keep::NoWorld)?;
+        let mut parts = Vec::new();
+        let sorted = sorted
+            .read(&ReadMemory(mem), |entry| {
+                parts.push(select_part(&world.clusters, entry)?);
+                Ok(())
+            })
+            .map_err(Keep::Unsupported)?;
         let mut d = self
             .device
             .lock()
@@ -848,8 +850,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         if d.bound_target() != view_target {
             return Err(Keep::Unsupported("light view target changed"));
         }
-        let binding = self.gel_binding(mem, serial, shader_gel, &constants(&light)?)?;
-        let (plan, count) = self.prepare_light(&d, mem, &light, sorted, binding)?;
+        let binding = self.gel_binding(mem, serial, shader_gel, &constants)?;
+        let draws = world.resolve_parts(&constants, parts, binding.is_some())?;
+        let plan = self.prepare_planned(&d, mem, ready, constants, draws, binding, false, None)?;
         let c = &plan.constants;
         // The layer is one the light's steps draw, and every planned draw
         // is the layer's.
@@ -880,7 +883,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         if !current_ready(&state, mem).is_some_and(|current| Arc::ptr_eq(current, &plan.ready)) {
             return Err(Keep::Unsupported("world changed during light preparation"));
         }
-        let layer = LightLayer::new(view_target, plan, &sorted.entries[..count]).ok_or(
+        let layer = LightLayer::new(view_target, plan, &sorted.entries).ok_or(
             Keep::Unsupported("light ranges differ from its sorted entries"),
         )?;
         *self.admission.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(layer);
@@ -890,7 +893,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
-    fn submit(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch<'_>) -> bool {
+    fn submit(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch) -> bool {
         self.refresh_edits(&*mem);
         let shader_gel = dispatch.shader_gel.is_some();
         let result = self.reserve(mem, dispatch);
@@ -1152,32 +1155,23 @@ fn constants(light: &Light) -> Result<LightConstants, Keep> {
 
 type ClusterParts = HashMap<(Owner, u8), (TagId, WorldDraw)>;
 
-/// Only a prefix can precede the untouched D3D suffix. A later native
-/// match must never move ahead of a fallback draw (even the same shader).
-fn select_parts(
+/// The resolved path requires a resident cluster part at every sorted slot.
+fn select_part(
     clusters: &ClusterParts,
-    items: &[SortedItem],
-) -> Result<Vec<(usize, usize, WorldDraw)>, Keep> {
-    let mut selected = Vec::new();
-    for entry in items {
-        let part = entry
-            .geometry
-            .ok_or("gathered model or unsupported geometry handler")
-            .and_then(|item| match clusters.get(&item.part) {
-                Some((shader, d)) if shader.0 == item.shader => Ok((
-                    item.layers.trailing_zeros() as usize,
-                    usize::from(entry.implementation),
-                    *d,
-                )),
-                Some(_) => Err("gathered shader datum differs from the cluster material"),
-                None => Err("gathered part has no native cluster draw"),
-            });
-        match part {
-            Ok(p) => selected.push(p),
-            Err(why) => return Err(Keep::Unsupported(why)),
-        }
+    entry: &SortedItem,
+) -> Result<(usize, usize, WorldDraw), &'static str> {
+    let item = entry
+        .geometry
+        .ok_or("gathered model or unsupported geometry handler")?;
+    match clusters.get(&item.part) {
+        Some((shader, d)) if shader.0 == item.shader => Ok((
+            item.layers.trailing_zeros() as usize,
+            usize::from(entry.implementation),
+            *d,
+        )),
+        Some(_) => Err("gathered shader datum differs from the cluster material"),
+        None => Err("gathered part has no native cluster draw"),
     }
-    Ok(selected)
 }
 
 #[derive(Default)]
@@ -1635,7 +1629,7 @@ impl LightsWorld {
     fn resolve_parts(
         &self,
         c: &native_render::lights::LightConstants,
-        parts: Vec<(usize, usize, WorldDraw)>,
+        parts: impl IntoIterator<Item = (usize, usize, WorldDraw)>,
         produced_gel: bool,
     ) -> Result<Vec<Planned>, Keep> {
         // Resolved without the colours, which each light's uniforms take
@@ -2850,7 +2844,10 @@ mod tests {
             entry(4, b, 1),
         ];
         assert_eq!(
-            select_parts(&clusters, &items).unwrap(),
+            items
+                .iter()
+                .map(|item| select_part(&clusters, item).unwrap())
+                .collect::<Vec<_>>(),
             [
                 (DIFFUSE_LAYER, 2, b),
                 (DIFFUSE_LAYER, 3, b),
@@ -2860,13 +2857,13 @@ mod tests {
         );
         items[2].geometry.as_mut().unwrap().shader ^= 1 << 24;
         assert_eq!(
-            select_parts(&clusters, &items).unwrap_err(),
-            Keep::Unsupported("gathered shader datum differs from the cluster material")
+            select_part(&clusters, &items[2]).unwrap_err(),
+            "gathered shader datum differs from the cluster material"
         );
         items[2].geometry.as_mut().unwrap().shader ^= 1 << 24;
         items[0].geometry = None;
         assert!(
-            select_parts(&clusters, &items).is_err(),
+            select_part(&clusters, &items[0]).is_err(),
             "a gathered model keeps the whole light on D3D"
         );
     }
@@ -2933,6 +2930,24 @@ mod tests {
         assert_eq!(
             Tally::default().summary(),
             "native-lights: host planned 0 of 0 lights; kept on D3D: none"
+        );
+    }
+
+    #[test]
+    fn the_tally_bounds_unique_shader_diagnostics_without_losing_counts() {
+        let mut tally = Tally::default();
+        for i in 0..4 * REFUSAL_DETAIL_LIMIT {
+            tally.count(Err(Keep::Refused(format!("shader {i}").into())));
+        }
+        assert_eq!(tally.kept.len(), REFUSAL_DETAIL_LIMIT);
+        assert_eq!(tally.other_refusals, (3 * REFUSAL_DETAIL_LIMIT) as u64);
+        assert!(tally.count(Err(Keep::Refused("shader 0".into()))).is_empty());
+        assert_eq!(tally.kept[&Keep::Refused("shader 0".into())], 2);
+        assert_eq!(tally.count(Err(Keep::NoMaterial)).len(), 1);
+        assert!(tally.summary().contains("other shader refusals"));
+        assert_eq!(
+            tally.kept.values().sum::<u64>() + tally.other_refusals,
+            tally.asked
         );
     }
 

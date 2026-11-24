@@ -68,6 +68,25 @@ impl NativeDrawMaterial {
         caps: Capabilities,
         fetch: FetchMode,
     ) -> Result<Self, String> {
+        Self::resolve_inputs(draw, present, caps, || input_fetch(draw, fetch))
+    }
+
+    /// Resolve the shader using the layout plan that records its vertex buffers.
+    pub fn resolve_with_plan(
+        draw: &ResolvedDraw,
+        present: [bool; 4],
+        caps: Capabilities,
+        plan: &RepackPlan,
+    ) -> Result<Self, String> {
+        Self::resolve_inputs(draw, present, caps, || plan_input_fetch(plan))
+    }
+
+    fn resolve_inputs(
+        draw: &ResolvedDraw,
+        present: [bool; 4],
+        caps: Capabilities,
+        input_fetch: impl FnOnce() -> [InputFetch; 16],
+    ) -> Result<Self, String> {
         let sampled = crate::device::sampled_stages(&draw.shader, &draw.raw, &draw.state);
         if (0..4).any(|n| sampled[n] && (!present[n] || draw.texture_info[n].is_none())) {
             return Err("a sampled stage has no resolved texture view".into());
@@ -78,7 +97,7 @@ impl NativeDrawMaterial {
             signs,
             border,
             ..
-        } = program_key(&TABLE, caps, draw, present, fetch)?;
+        } = program_key_with_fetch(&TABLE, caps, draw, present, input_fetch)?;
         if !matches!(key.vertex, VertexSource::Microcode(_)) {
             return Err("requires a vertex program".into());
         }

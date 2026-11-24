@@ -52,6 +52,11 @@ Each triangle list or strip goes through the existing indexed pass with the reso
 
 The ordered draw path batches uniforms in the renderer's upload arena and reuses texture and sampler groups keyed by the live views and samplers. The packed vertex buffer can stay on the GPU across views. No transparent draw allocates its own pair of uniform buffers and group.
 
+The ordered indexed path shares one repack plan between shader translation
+and buffer preparation. It keeps up to 256 layout and stride combinations
+per cache. The fallback adapter checks the packed byte count before
+allocating an interleaved buffer.
+
 ## Rules and limits
 
 Guest handler and state-resolution costs still apply. A refusal leaves the original D3D draw in place.

@@ -214,7 +214,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let mut planned: Vec<Planned> = Vec::new();
         let mut pending = false;
         for part in wanted {
-            match world.resolve_parts(c, vec![part], false) {
+            match world.resolve_parts(c, [part], false) {
                 Ok(done) => {
                     for next in done {
                         match planned.last_mut() {
