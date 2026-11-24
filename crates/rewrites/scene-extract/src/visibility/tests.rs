@@ -175,6 +175,29 @@ fn a_deliberate_mismatch_names_the_object_the_guest_listed() {
 }
 
 #[test]
+fn a_side_portal_and_its_object_enter_the_wider_view_together() {
+    let mut m = scene();
+    object(&mut m, 2, [10.0, -9.0, 0.0]);
+    let mut camera = camera_at([0.0, 7.0, 0.0], [1.0, 0.0, 0.0]);
+    // The nearest portal edge is six units sideways at a depth of four.
+    // At a vertical FOV of 90 degrees its tangent lies between 4:3 and 16:9.
+    let mut cache = GraphCache::default();
+    let mut visible = |m: &Mem, aspect: f32| {
+        camera.projection_xy = Some([1.0 / aspect, 1.0, 0.0, 0.0]);
+        compute(m, &camera, &mut cache, 1).unwrap()
+    };
+    let narrow = visible(&m, 4.0 / 3.0);
+    assert_eq!(narrow.clusters, [0]);
+    assert!(!narrow.objects.contains(&0x0001_0002));
+    let wide = visible(&m, 16.0 / 9.0);
+    assert_eq!(wide.clusters, [0, 1]);
+    assert!(wide.objects.contains(&0x0001_0002));
+    assert!(!wide.objects.contains(&0x0001_0003));
+    m.w(OPEN, 0);
+    assert_eq!(visible(&m, 16.0 / 9.0).clusters, [0]);
+}
+
+#[test]
 fn a_shut_portal_hides_the_room_behind_it_and_its_objects() {
     let mut m = scene();
     m.w(OPEN, 0);

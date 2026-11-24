@@ -60,7 +60,7 @@ pub use overlay::{
     OverlayTexture, OverlayVertex, Program, Sampler,
 };
 pub use scene::{
-    AuxDepth, Cut, FrameScene, Instance, InstanceKey, NearbyCaster, PartDraw, PartFlags, Row,
+    AuxDepth, Cut, DisplayVisibility, FrameScene, Instance, InstanceKey, NearbyCaster, PartDraw, PartFlags, Row,
     SceneId, Stamp, Subparts, View, ViewCounts, ViewKey, ViewKind, VisibilitySource, WorldState,
 };
 pub use summary::summary_hash;

@@ -115,6 +115,7 @@ struct Step {
     shadow_open: bool,
     /// The structure's portal graph for the Rust visibility, decoded once.
     visibility: scene_extract::visibility::GraphCache,
+    display_visibility_factor: Option<f32>,
 }
 
 static STEP: Mutex<Option<Step>> = Mutex::new(None);
@@ -243,6 +244,14 @@ fn with_step<R>(f: impl FnOnce(&mut Step) -> R) -> R {
     f(step.get_or_insert_with(Step::default))
 }
 
+/// Set at view entry, using the same horizontal correction as the display
+/// projection. Only a wider display needs supplemental geometry.
+pub fn set_display_visibility_factor(factor: f32) {
+    with_step(|step| {
+        step.display_visibility_factor = (factor > 0.0 && factor < 1.0).then_some(factor);
+    });
+}
+
 fn tick(m: &Ro<'_>) -> u32 {
     m.read_u32(points::GAME_TIME.base)
         .and_then(|t| m.read_u32(t.checked_add(GAME_TIME_TICK)?))
@@ -358,6 +367,25 @@ fn open_kind_at_layer(mem: &dyn GuestMemory, kind: ViewKind, layer_hook: bool) -
                     if kind == ViewKind::Game && let Some(gather) = extract::cluster_gather(&m) {
                         let lens = view_record_arm(&m, &camera, key);
                         let gather = visibility_arm(&m, &lens, key, &mut step.visibility, gather);
+                        if let Some(factor) = step.display_visibility_factor
+                            && gather.mode == 0
+                            && gather.source == frame_scene::VisibilitySource::Rust
+                        {
+                            let display = native_render::camera::display_camera(lens, factor);
+                            if let Ok(mut visible) = scene_extract::visibility::compute(
+                                &m, &display, &mut step.visibility, crate::native_map_work::generation(),
+                            ) {
+                                // Both lists in a Rust-owned gather are sorted. Keep
+                                // the reference pass's geometry in its original order.
+                                visible.clusters.retain(|id| gather.visible.binary_search(id).is_err());
+                                visible.objects.retain(|id| gather.objects.binary_search(id).is_err());
+                                if !visible.clusters.is_empty() || !visible.objects.is_empty() {
+                                    step.builder.set_display_visibility(frame_scene::DisplayVisibility {
+                                        clusters: visible.clusters, objects: visible.objects,
+                                    })?;
+                                }
+                            }
+                        }
                         step.builder.set_cluster_gather(gather)?;
                     }
                     Ok(())

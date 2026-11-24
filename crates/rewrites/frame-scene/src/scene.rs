@@ -116,6 +116,14 @@ pub struct AuxDepth {
     pub rest_clip: [f32; 2],
 }
 
+/// Geometry admitted by the display lens outside the retail view. These
+/// IDs belong to this BSP and this frame's object table.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct DisplayVisibility {
+    pub clusters: Vec<u16>,
+    pub objects: Vec<u32>,
+}
+
 /// One game view.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct View {
@@ -125,6 +133,7 @@ pub struct View {
     /// respawns and the distance backstop).
     pub cut: bool,
     pub camera: Camera,
+    pub display_visibility: Option<DisplayVisibility>,
     /// Into [`FrameScene::clusters`].
     pub clusters: Range<u32>,
     /// Into [`FrameScene::instances`], in the guest's order.
