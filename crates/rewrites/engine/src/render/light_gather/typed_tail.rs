@@ -41,6 +41,8 @@ pub struct Tail {
     pub surfaces: [u32; 2],
     pub viewport: [u32; 6],
     pub clip: [u32; 2],
+    /// The NV method passed to SetRenderState_Simple by mode zero.
+    pub clip_header: u32,
     /// `0x00014bc0` returns the final D3D SetViewport result.
     pub eax: u32,
     writes: Writes,
@@ -142,6 +144,7 @@ pub fn plan_layers(m: &dyn GuestMemory, draws: u32) -> Option<Tail> {
     }
     let (surfaces, viewport) = view(m)?;
     let clip = [m.u32(DEPTH_RANGE).ok()?, m.u32(DEPTH_RANGE + 4).ok()?];
+    let clip_header = m.u32(0x0001_56f6).ok()?;
     let mut writes = Writes::new();
     if draws != 0 {
         layer_writes(m, &mut writes)?;
@@ -153,7 +156,7 @@ pub fn plan_layers(m: &dyn GuestMemory, draws: u32) -> Option<Tail> {
     writes.byte(global::PASSES, 0);
     writes.word(global::PASS_FLAGS, 0);
     mapped(m, &writes)?;
-    Some(Tail { surfaces, viewport, clip, eax: 0, writes })
+    Some(Tail { surfaces, viewport, clip, clip_header, eax: 0, writes })
 }
 
 /// In the dynamic entry the last reached layer leaves its draw bit in
@@ -188,8 +191,9 @@ mod tests {
     const SCALAR: u32 = 0x41a3_0000;
 
     fn fixture() -> FlatMemory {
-        let mut m = FlatMemory::new(0x0040_0000, 0x12_0000);
+        let mut m = FlatMemory::new(0x0001_0000, 0x51_0000);
         for (at, value) in [
+            (0x0001_56f6, 0x0012_3456),
             (VIEW_COLOUR, COLOUR),
             (VIEW_DEPTH, DEPTH),
             (SURFACE_CACHE, COLOUR),
@@ -240,6 +244,7 @@ mod tests {
         assert_eq!(tail.viewport, [45, 20, 130, 80, 0, 1.0f32.to_bits()]);
         assert_eq!(tail.clip, [0x1111_2222, 0x3333_4444]);
         assert_eq!(tail.eax, 0);
+        assert_eq!(tail.clip_header, 0x0012_3456);
         tail.write(&mut m).unwrap();
         assert_eq!(m.u32(DRAW_STATE + 0x24).unwrap(), 0);
         assert_eq!(m.u32(DRAW_STATE + 0x20).unwrap(), 0);
