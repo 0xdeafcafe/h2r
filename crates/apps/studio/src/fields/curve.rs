@@ -2,9 +2,11 @@
 //! (docs/editor/rich-editors.md, "Curves"): the row's small plot of the
 //! curve, and the dialog that shows it large with the type's handles.
 //! Both read and write the function blob through `TagDoc` alone: every
-//! write is a byte write of the same length at the data's start (a type
-//! change would alter the length and is refused), so undo, save and
-//! `tag.fields` see it as an ordinary edit.
+//! write is a byte write of the same length at the data's start, except
+//! a type change, which rebuilds the blob at the new type's length with
+//! its defaults (`Function::with_kind`) and resizes the data
+//! (`TagAction::ResizeData`); either way it is one undo step, and save
+//! and `tag.fields` see it as an ordinary edit.
 //!
 //! The plot is `Function::evaluate` itself (the engine's evaluator,
 //! ported), sampled over the input's `[0, 1]`; the agent API's
@@ -25,10 +27,14 @@ use crate::theme;
 /// Why a function of a type the engine does not evaluate (6, 8, unknown)
 /// is shown only.
 pub const EVALUATED_AS_ZERO: &str = "The game evaluates this type as 0.";
-/// Why a type change is not written: it alters the blob's length, and
-/// data that changes length is another slice (rich-editors.md, F2).
-pub const TYPE_CHANGE: &str =
-    "Changing the curve's type changes its length, which is not written yet.";
+/// Why a change to `kind` is not written: the game evaluates it as 0 (or
+/// has no layout for it), so there is nothing to rebuild the blob as.
+pub fn change_to_unevaluated(kind: FunctionType) -> String {
+    format!(
+        "The game evaluates the {} type as 0, so a curve is not changed to it.",
+        kind.word()
+    )
+}
 /// The second half of a wave's engine-tables sentence.
 const ENGINE_WAVE: &str = "needs the engine's tables; it evaluates as 0 without them";
 /// The plot's samples, in the row and in the dialog.
@@ -196,6 +202,10 @@ pub struct Open {
     pub address: u32,
     /// The field, for the undo step's label.
     pub field: Field,
+    /// The struct the field is in (its address and layout), for a type
+    /// change's resize.
+    element: u32,
+    layout: Arc<Layout>,
     /// The row's label, the dialog's title.
     pub title: String,
     /// The range-input slider's place (what the dialog is showing).
@@ -217,11 +227,13 @@ enum Pick {
 }
 
 impl Open {
-    fn new(tag: TagId, address: u32, field: &Field, title: &str) -> Self {
+    fn new(tag: TagId, address: u32, field: &Field, layout: &Arc<Layout>, title: &str) -> Self {
         Self {
             tag,
             address,
             field: field.clone(),
+            element: address - field.offset,
+            layout: layout.clone(),
             title: title.to_owned(),
             blend: 0.5,
             pick: None,
@@ -244,7 +256,7 @@ pub(super) fn row(cx: &mut Cx<'_, '_>, at: u32, layout: &Arc<Layout>, r: &Row, f
     cx.hover(at, layout, r);
     ui.same_line();
     if ui.small_button("Edit curve...##curve") {
-        cx.st.curve = Some(Open::new(cx.tag, r.address, r.field, &r.label));
+        cx.st.curve = Some(Open::new(cx.tag, r.address, r.field, layout, &r.label));
     }
     cx.tail(r);
     if !f.kind.is_evaluated() {
@@ -410,6 +422,22 @@ fn editor(ui: &Ui, doc: &TagDoc, open: &mut Open, actions: &mut Vec<Action>) -> 
     ui.separator();
     done |= ui.button("Close##curve");
     done
+}
+
+/// A type change: the blob rebuilt at the new type's length, written as
+/// one undo step through `TagDoc::resize_data` (in place when it is no
+/// longer than the data's room, else grown; growth off is refused by
+/// name and shown as the error).
+fn retype(actions: &mut Vec<Action>, open: &Open, f: &Function) {
+    actions.push(Action::Tag(TagAction::ResizeData {
+        tag: open.tag,
+        element: open.element,
+        layout: open.layout.clone(),
+        field: open.field.offset,
+        bytes: f.to_bytes(),
+        label: open.field.name.clone(),
+    }));
+    actions.push(Action::Tag(TagAction::Seal));
 }
 
 /// One write of the new function bytes at the data's start, merged by
@@ -704,8 +732,8 @@ fn selector(
     drop(off);
 }
 
-/// A choice list the dialog opened: the type (a change is refused), or
-/// set `set`'s wave or shape (a header byte, written in place). Returns
+/// A choice list the dialog opened: the type (a pick rebuilds the blob
+/// at the new type's length), or set `set`'s wave or shape (a header byte, written in place). Returns
 /// true when the dialog closes.
 fn choices(
     ui: &Ui,
@@ -730,8 +758,12 @@ fn choices(
                     .build()
                 {
                     open.pick = None;
+                    open.problem = None;
                     if t != f.kind {
-                        open.problem = Some(TYPE_CHANGE.into());
+                        match f.with_kind(t) {
+                            Ok(next) => retype(actions, open, &next),
+                            Err(_) => open.problem = Some(change_to_unevaluated(t)),
+                        }
                     }
                 }
             }

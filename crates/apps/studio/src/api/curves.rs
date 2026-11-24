@@ -3,9 +3,12 @@
 //! `function.sample`, over a `view=function` data field's blob, written
 //! through the Tags tool's own command (`Action::Tag` with
 //! `App::perform`), so the window's curve editor and the API are one
-//! path: the same undo step and the same saved patch. Every write keeps
-//! the blob's length (a type change is refused; rich-editors.md's F2
-//! writes it). docs/editor/rich-editors.md, docs/editor/agent-api.md.
+//! path: the same undo step and the same saved patch. A write that
+//! keeps the type is a same-length byte write; a type change rebuilds
+//! the blob at the new type's length with its defaults
+//! (`Function::with_kind`) and goes through `TagDoc::resize_data`
+//! (rich-editors.md's F2). docs/editor/rich-editors.md,
+//! docs/editor/agent-api.md.
 
 use map::TagId;
 use serde_json::{Map, Value, json};
@@ -35,8 +38,8 @@ const READ: MethodDef = def(
 );
 const SET: MethodDef = def(
     m::FUNCTION_SET,
-    "Edit a function curve, same length: `ranged` turns the second set on or off, `range` sets the output range, and `sets` holds one or two set objects whose keys present are written (the shape or wave byte rides in the set, as the dialog's picker rows write it). One undo step. Refused as the Curves section says: a type change (the length would change), a type the game evaluates as 0, a read-only tag, a data reference that is not a function blob",
-    r#"{"tag":"string|integer","path":"string (a tag.set path)","type?":"string (the same type; a change is refused)","ranged?":"boolean","range?":"[number, number]","sets?":"[set objects]"}"#,
+    "Edit a function curve: `type` changes the type (the blob is rebuilt at the new type's length with its defaults, a transition from 0 to 1, a periodic cosine, a line of slope 1 and so on, keeping the flags, the output range and the header's other bytes; one of the editable types, not 6, 8 or an unknown one), `ranged` turns the second set on or off, `range` sets the output range, and `sets` holds one or two set objects whose keys present are written (the shape or wave byte rides in the set, as the dialog's picker rows write it). One undo step. Refused as the Curves section says: a change to a type the game evaluates as 0, a type the game evaluates as 0, a read-only tag, a data reference that is not a function blob",
+    r#"{"tag":"string|integer","path":"string (a tag.set path)","type?":"string (identity, constant, transition, periodic, linear, linear_key, spline, spline_2 or exponent)","ranged?":"boolean","range?":"[number, number]","sets?":"[set objects]"}"#,
     READ_RESULT,
     r#"{"tag":"weap","path":"curve","sets":[{"from":0.2,"to":0.8,"shape":2}],"ranged":true,"range":[0,1]}"#,
 );
@@ -66,6 +69,11 @@ struct Curve {
     tag: TagId,
     /// The field's name, for the undo step's label.
     name: String,
+    /// The field's struct (its address and layout) and offset, for a
+    /// resize.
+    element: u32,
+    layout: std::sync::Arc<tags::registry::Layout>,
+    field: u32,
     /// The blob's length and start.
     length: u32,
     start: u32,
@@ -77,7 +85,7 @@ fn curve_field(app: &mut App, p: &P) -> Result<Curve, agent_proto::RpcError> {
     let tag = tag_fields::resolve(app, p)?;
     let path = p.str("path")?;
     let doc = app.shown_tags();
-    let (at, _, f) = tag_api::resolve(doc, tag, path)
+    let (element, layout, f) = tag_api::resolve(doc, tag, path)
         .map_err(|e| err(code::INVALID_PARAMS, format!("{path}: {e}")))?;
     if f.kind != Kind::Data || f.view != Some(FieldView::Function) {
         return Err(err(
@@ -85,11 +93,14 @@ fn curve_field(app: &mut App, p: &P) -> Result<Curve, agent_proto::RpcError> {
             format!("{path} is not a function curve field"),
         ));
     }
-    let (length, start, function) = curve::function(doc, tag, at + f.offset)
+    let (length, start, function) = curve::function(doc, tag, element + f.offset)
         .map_err(|e| err(code::REFUSED, format!("{path}: {e}")))?;
     Ok(Curve {
         tag,
         name: f.name,
+        element,
+        layout,
+        field: f.offset,
         length,
         start,
         function,
@@ -203,7 +214,9 @@ fn set(app: &mut App, p: &P) -> Reply {
             )
         })?;
         if kind != f.kind {
-            return Err(err(code::REFUSED, curve::TYPE_CHANGE));
+            f = f
+                .with_kind(kind)
+                .map_err(|_| err(code::REFUSED, curve::change_to_unevaluated(kind)))?;
         }
     }
     if let Some(v) = p.get("ranged") {
@@ -237,22 +250,25 @@ fn set(app: &mut App, p: &P) -> Reply {
         }
     }
     let bytes = f.to_bytes();
-    if bytes.len() != c.length as usize {
-        return Err(err(
-            code::REFUSED,
-            "the edit would change the curve's length",
-        ));
-    }
-    tag_fields::perform(
-        app,
+    let action = if bytes.len() == c.length as usize {
         TagAction::Write(TagWrite {
             tag: c.tag,
             address: c.start,
             bytes,
             label: c.name,
             merge: None,
-        }),
-    )?;
+        })
+    } else {
+        TagAction::ResizeData {
+            tag: c.tag,
+            element: c.element,
+            layout: c.layout.clone(),
+            field: c.field,
+            bytes,
+            label: c.name,
+        }
+    };
+    tag_fields::perform(app, action)?;
     let c = curve_field(app, p)?;
     Ok(read_json(app, c.tag, c.length, &c.function))
 }

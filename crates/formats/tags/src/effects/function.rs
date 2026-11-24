@@ -20,6 +20,8 @@ use std::sync::OnceLock;
 pub const HEADER_LEN: usize = 0x14;
 /// Upper bound accepted for a blob of an unknown (unevaluated) type.
 pub const MAX_UNKNOWN_LEN: usize = 1 << 16;
+/// The wave a new periodic set names (cosine, one of the procedural ones).
+const DEFAULT_WAVE: u8 = 2;
 
 /// Function type, header byte 0 (**E**: the jump table has eleven entries).
 /// Names are **S** vocabulary; behaviour is **E**.
@@ -420,6 +422,89 @@ impl Function {
         Ok(())
     }
 
+    /// This function given another type: the header's flags, range and
+    /// unread bytes kept, the payload rebuilt at the new type's length
+    /// ([`FunctionType::blob_len`]) with each set at a plain default that
+    /// draws a visible curve: a transition from 0 to 1 by the linear
+    /// shape, a periodic cosine of one cycle between 0 and 1, a line
+    /// through the origin of slope 1, a linear key ramping from 0 to 1,
+    /// a cubic that is `t`, an exponent that is `x`, a constant of 0.
+    /// The sub-type bytes are the type's own defaults (the shape or wave
+    /// each set names), 0 for a type that uses none. Refused for a type
+    /// the engine does not evaluate (6, 8, unknown): it has no editable
+    /// layout.
+    pub fn with_kind(&self, kind: FunctionType) -> Result<Self> {
+        if !kind.is_evaluated() {
+            return Err(Error::Invalid("the game does not evaluate that type"));
+        }
+        let len = kind
+            .blob_len()
+            .ok_or(Error::Invalid("an unknown function type has no layout"))?;
+        let mut f = Self {
+            kind,
+            flags: self.flags,
+            sub_types: match kind {
+                FunctionType::Periodic => [DEFAULT_WAVE; 2],
+                _ => [0; 2],
+            },
+            range: self.range,
+            unknown_0c: self.unknown_0c,
+            payload: vec![0; len - HEADER_LEN],
+        };
+        let default = match kind {
+            FunctionType::Transition => Set::Transition { from: 0.0, to: 1.0 },
+            FunctionType::Periodic => Set::Periodic {
+                frequency: 1.0,
+                phase: 0.0,
+                minimum: 0.0,
+                maximum: 1.0,
+            },
+            FunctionType::Linear => Set::Linear {
+                slope: 1.0,
+                intercept: 0.0,
+            },
+            FunctionType::LinearKey => {
+                let off = Key {
+                    value: 0.0,
+                    position: 0.0,
+                    inverse_span: 0.0,
+                };
+                Set::LinearKey {
+                    base: 0.0,
+                    keys: [
+                        Key {
+                            value: 1.0,
+                            position: 0.0,
+                            inverse_span: 1.0,
+                        },
+                        off,
+                        off,
+                    ],
+                }
+            }
+            FunctionType::Spline | FunctionType::Spline2 => Set::Spline {
+                points: [
+                    [0.0, 0.0],
+                    [1.0 / 3.0, 1.0 / 3.0],
+                    [2.0 / 3.0, 2.0 / 3.0],
+                    [1.0, 1.0],
+                ],
+                coefficients: [0.0, 0.0, 1.0, 0.0],
+            },
+            FunctionType::Exponent => Set::Exponent {
+                minimum: 0.0,
+                maximum: 1.0,
+                power: 1.0,
+            },
+            FunctionType::Constant => Set::Words(vec![0.0]),
+            _ => Set::Identity,
+        };
+        for i in 0..2 {
+            f.write_set(i, &default)?;
+        }
+        Ok(f)
+    }
+
     /// Word `i` of the payload as a float (0.0 if out of range, which the
     /// size check makes impossible for known types).
     fn w(&self, i: usize) -> f32 {
@@ -811,6 +896,44 @@ mod tests {
     }
     fn ev(bytes: &[u8], x: f32, r: f32) -> f32 {
         Function::parse(bytes).unwrap().evaluate(x, r)
+    }
+
+    /// A type change rebuilds the payload at the new length, keeps the
+    /// header's flags, range and unread bytes, round-trips, and its
+    /// defaults are visible curves; types without an evaluator are refused.
+    #[test]
+    fn with_kind_rebuilds_at_the_new_length() {
+        let mut from = blob(2, 1, [3, 1], [0.25, 0.75], &[0.0; 8]);
+        from[0xc..0x14].copy_from_slice(&[9; 8]);
+        let from = Function::parse(&from).unwrap();
+        for byte in [0u8, 1, 2, 3, 4, 5, 7, 9, 10] {
+            let kind = FunctionType::from_byte(byte);
+            let f = from.with_kind(kind).unwrap();
+            let bytes = f.to_bytes();
+            assert_eq!(bytes.len(), kind.blob_len().unwrap(), "type {byte}");
+            assert_eq!(Function::parse(&bytes).unwrap(), f, "type {byte}");
+            assert_eq!((f.flags, f.range, f.unknown_0c), (1, [0.25, 0.75], [9; 8]));
+        }
+        // The defaults draw: a ramp from 0 to 1 for the types that can,
+        // a cosine for the periodic.
+        for byte in [2u8, 4, 5, 7, 9, 10] {
+            let f = from.with_kind(FunctionType::from_byte(byte)).unwrap();
+            for r in [0.0, 1.0] {
+                for x in [0.0f32, 0.5, 1.0] {
+                    assert!((f.evaluate(x, r) - x).abs() < 3e-3, "type {byte} at {x}");
+                }
+            }
+        }
+        let p = from.with_kind(FunctionType::Periodic).unwrap();
+        assert_eq!(p.sub_types, [2, 2]);
+        assert!(p.set_values(1).is_some());
+        for kind in [
+            FunctionType::MultiLinearKey,
+            FunctionType::MultiSpline,
+            FunctionType::Unknown(0x42),
+        ] {
+            assert!(from.with_kind(kind).is_err());
+        }
     }
 
     /// Ranged functions blend in the second set, not set 0 again. Each case
