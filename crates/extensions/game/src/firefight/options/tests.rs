@@ -353,6 +353,7 @@ fn the_choices_reach_the_definition_and_the_difficulty() {
         o,
         Options {
             enabled: true,
+            map: None,
             wave_set: 2,
             teams: None,
             difficulty: Difficulty::Legendary,
@@ -452,7 +453,7 @@ fn the_wave_set_row_offers_the_maps_set_first_on_its_map() {
     let l = list(&s);
     let mut state = named(&l, "focus-0");
     assert_eq!(
-        run(&l, &mut state, &[Down, Right]),
+        run(&l, &mut state, [Down, Right]),
         vec![
             ListEffect::Focus(1),
             stepped("firefight: right on row 1: firefight.waveset -> Holdout")

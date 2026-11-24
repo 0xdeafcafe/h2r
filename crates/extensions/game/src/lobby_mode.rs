@@ -757,6 +757,7 @@ fn load_state(bytes: &[u8]) -> Result<(), String> {
         mode,
         forge_map: name,
         map_variant: None,
+        kit_map: None,
     });
     crate::map_variant::forget();
     TEXTS.rewrite_all();
