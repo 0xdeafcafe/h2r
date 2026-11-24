@@ -504,10 +504,7 @@ pub fn inspector(
                 ui.text_colored(theme::OK, format!("{} every check passes", icon::CHECK));
             }
             for (i, f) in shot.findings.iter().enumerate() {
-                ui.text_colored(theme::ERROR, icon::ALERT);
-                ui.same_line();
-                ui.text_wrapped(&f.text);
-                if ui.is_item_hovered() {
+                if super::problems::finding_line(ui, crate::api::checks::Severity::Error, &f.text) {
                     st.hot = Some(i);
                 }
             }

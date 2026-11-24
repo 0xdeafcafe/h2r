@@ -2124,6 +2124,7 @@ mod tests {
             asset: None,
             tool: None,
             field: None,
+            at: None,
         };
         let hud = Problem {
             tool: Some(crate::ToolKind::Hud),

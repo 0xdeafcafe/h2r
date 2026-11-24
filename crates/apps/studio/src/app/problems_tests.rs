@@ -137,3 +137,47 @@ fn packages_report_item_findings_and_load_errors_and_open_in_the_browser() {
     app.dispatch(Action::OpenProblem(index_of(&app, "package")));
     assert_eq!(app.problems.reveal.as_deref(), Some("item:bad:0"));
 }
+
+#[test]
+fn the_open_script_lists_its_diagnostics_and_a_row_opens_its_line() {
+    let t = Temp::new("problems-script");
+    let mut app = app(&t.0);
+    app.set_data_root(t.0.join("data"));
+    // Nothing is listed while no script is open.
+    app.refresh_problems_over(Some("check"), &[]);
+    assert_eq!(app.problems.of(Some("check")).count(), 0);
+    app.rules.set_text("this is not a script {{{ ((".into());
+    app.rules.opened = true;
+    app.refresh_problems_over(Some("check"), &[]);
+    let expected = super::rules_edit::problems(&app.rules.text, &app.rules.analysis.diagnostics);
+    assert!(!expected.is_empty());
+    let rows: Vec<_> = app.problems.of(Some("check")).filter(|p| p.area == "scripts").collect();
+    assert_eq!(rows.len(), expected.len());
+    assert!(rows.iter().all(|p| p.at.is_some() && p.tool == Some(ToolKind::Variants)));
+    // The header of the script reads the same rows.
+    assert_eq!(app.doc_problem_count(Doc::Rules), expected.len());
+    // Opening one shows the script editor with the cursor on the finding.
+    let index = app.problems.rows.iter().position(|p| p.area == "scripts").unwrap();
+    let (line, col) = app.problems.rows[index].at.unwrap();
+    app.dispatch(Action::OpenProblem(index));
+    assert_eq!(app.tool, ToolKind::Variants);
+    let row = expected.iter().find(|r| r.line == line && r.col == col).unwrap();
+    assert_eq!(app.rules.want_cursor, Some(row.at));
+}
+
+#[test]
+fn a_documents_count_is_the_list_narrowed_to_its_asset() {
+    let t = Temp::new("problems-count");
+    let mut app = app(&t.0);
+    app.set_data_root(t.0.join("data"));
+    for source in ["check", "ui", "hud"] {
+        app.refresh_problems_over(Some(source), INVENTED);
+    }
+    let asset = format!("tag:{KIT}");
+    let rows = app.asset_problems(&asset);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].message, "count is nonsense (tag.set path count)");
+    assert_eq!(app.doc_problem_count(Doc::Tag(kit_id())), rows.len());
+    // The slash form names the same asset.
+    assert_eq!(app.asset_problems(&asset.replace('\\', "/")).len(), 1);
+}

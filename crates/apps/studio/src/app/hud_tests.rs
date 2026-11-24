@@ -149,3 +149,24 @@ fn field_panel_writes_are_hud_edits() {
     app.dispatch(write(at + 0x1000, vec![1]));
     assert!(!app.tool_dirty(ToolKind::Hud));
 }
+
+/// A finding on the HUD shown is one row of Problems and the same text the
+/// HUD's own list draws; the header's count is the rows of the HUD tool.
+#[test]
+fn a_hud_finding_is_one_problems_row_with_the_huds_text() {
+    use crate::api::checks::{CHECKS, ContentCheck};
+    use crate::app::Doc;
+    let (_t, _, mut app) = open("problems");
+    let run = CHECKS.iter().find(|c| c.name == "hud.check").unwrap().run;
+    let only_hud = [ContentCheck { area: "hud", name: "hud.check", run }];
+    app.refresh_problems_over(Some("hud"), &only_hud);
+    let texts: Vec<String> = app.hud.shot().unwrap().findings.iter().map(|f| f.text.clone()).collect();
+    assert!(!texts.is_empty());
+    let rows: Vec<String> = app.problems.of(Some("hud")).map(|p| p.message.clone()).collect();
+    let mut sorted = texts.clone();
+    sorted.sort();
+    let mut got = rows.clone();
+    got.sort();
+    assert_eq!(got, sorted);
+    assert_eq!(app.doc_problem_count(Doc::Hud), texts.len());
+}
