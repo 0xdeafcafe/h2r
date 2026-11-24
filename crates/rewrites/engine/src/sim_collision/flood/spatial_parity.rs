@@ -178,9 +178,15 @@ pub fn dispatch(
 ) -> Result<Option<TransferAbi>, GuestFault> {
     world.observe_environment(entry, c.mxcsr, c.x87.control);
     let key = (thread, entry as usize);
-    let trapped = g.has_trap();
+    let gate = if !crate::sim_native::supported(c) {
+        Some(Bail::Env)
+    } else if g.has_trap() {
+        Some(Bail::Trap)
+    } else {
+        None
+    };
     if entry == Entry::ClusterFlood {
-        let recursive = if trapped {
+        let recursive = if gate.is_some() {
             OPEN.with_borrow(|calls| {
                 calls
                     .get(&key)
@@ -195,8 +201,8 @@ pub fn dispatch(
     }
     // A new top-level entry also replaces a call abandoned by a guest fault.
     OPEN.with_borrow_mut(|calls| calls.remove(&key));
-    let prediction = if trapped {
-        Err(Bail::Trap)
+    let prediction = if let Some(why) = gate {
+        Err(why)
     } else {
         match entry {
             Entry::ClusterFlood => match plan_flood(c, g, world) {
