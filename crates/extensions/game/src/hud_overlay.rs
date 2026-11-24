@@ -190,14 +190,10 @@ fn loaded(mem: &dyn GuestMemory) -> Option<(Arc<Mutex<Loaded>>, Arc<Mutex<Overla
     Some((loaded?, assets))
 }
 
-/// The map's overlay assets, shared by the HUD's and the menus' passes
-/// (one generation a map, so the resident textures are not replaced
-/// between them); `None` with no map loaded.
-pub fn assets(mem: &dyn GuestMemory) -> Option<Arc<Mutex<OverlayAssets>>> {
-    slot(mem).map(|(_, assets)| assets)
-}
-
-/// The slot for the loaded map: its HUDs, once loaded, and its assets.
+/// The slot for the loaded map: its HUDs, once loaded, and its overlay
+/// assets, shared by the HUD's and the menus' passes (one generation a
+/// map, so the resident textures are not replaced between them); `None`
+/// with no map loaded.
 fn slot(mem: &dyn GuestMemory) -> Option<(Option<Arc<Mutex<Loaded>>>, Arc<Mutex<OverlayAssets>>)> {
     let name = crate::health::loaded_map_name(mem).ok().filter(|n| !n.is_empty())?;
     let generation = render_bridge::native_map_work::generation();
@@ -348,13 +344,23 @@ pub fn place<B: d3d::Backend + Send + 'static>(
 
 /// A run of menu widgets (`render_bridge::native_hud::ui_overlay`), drawn
 /// from the overlay at this point in the frame with the map's assets:
-/// whether it was placed.
+/// whether it was placed. The bitmap images its quads name are decoded
+/// first, from the map read for its HUDs; while that loads, or when an
+/// image does not decode, the run is not placed and the game draws it.
 pub fn place_menu<B: d3d::Backend + Send + 'static>(
     device: &d3d::abi::SharedDevice<B>,
     mem: &mut dyn GuestMemory,
     part: &Overlay,
 ) -> bool {
-    let Some(assets) = assets(mem) else { return false };
+    let Some((loaded, assets)) = slot(mem) else { return false };
+    let bitmaps = part.items.iter().any(|i| matches!(i.material.texture, OverlayTexture::Bitmap { .. }));
+    if bitmaps {
+        let Some(loaded) = loaded else { return false };
+        let mut l = loaded.lock().unwrap_or_else(|e| e.into_inner());
+        if decode_images(&mut l, part, &mut assets.lock().unwrap_or_else(|e| e.into_inner())).is_err() {
+            return false;
+        }
+    }
     place(device, mem, Arc::new(part.clone()), assets)
 }
 

@@ -1481,9 +1481,12 @@ The menus' (`menu_*`) are the widget draws claimed at their sorted list
 (`menu_claimed`), those left out (`menu_skipped`), the passes placed for
 runs with items (`menu_passes`), lists whose left-out draws did not match
 (`menu_mismatch`), lists the game draws whole (`menu_refused_frame`,
-`_mismatched`), drawn widgets the game keeps by the draw not read
-(`menu_refused_bitmap`, `_shader`, `_text`, `_model`, `_draw`,
-`_unreadable`, `_unlisted`), and lists or runs whose pass was not placed
+`_mismatched`), drawn bitmap widgets the game keeps (a meter,
+`menu_refused_bitmap_meter`; a scrolling bitmap, `_bitmap_scroll`; any
+other state the overlay does not draw as the game does, `_bitmap_state`),
+other drawn widgets the game keeps by the draw not read
+(`menu_refused_shader`, `_text`, `_model`, `_draw`, `_unreadable`,
+`_unlisted`), and lists or runs whose pass was not placed
 (`menu_refused_pass`;
 [native-post-hud.md](../graphics/native-post-hud.md#the-menus-on-the-overlay)).
 The object-shadow list, row gather and caster each count calls to their own

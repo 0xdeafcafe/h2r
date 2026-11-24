@@ -421,21 +421,91 @@ claimed ones counts `menu_mismatch` and its screen is the game's until
 the next map. A list drawn inside another's draw has its own frame and
 closes inside out.
 
-What `read_widget` lists today is the containers: a widget whose draw is
-the base's `ret 4` (`0x00333105`: the screen's, list item's, page
-selector's and table's) has no pixels. Every other draw is the game's,
-counted by what is not read (`render.stats`, `native_ui_overlay_menu_*`):
+What the overlay lists today is the containers and the plain bitmap
+widgets. A widget whose draw is the base's `ret 4` (`0x00333105`: the
+screen's, list item's, page selector's and table's) has no pixels. A
+bitmap widget's draw is read by `ui_overlay::bitmaps` ([Bitmap
+widgets](#bitmap-widgets)). Every other draw is the game's, counted by
+what is not read (`render.stats`, `native_ui_overlay_menu_*`):
 
 | Reason | Draw | What reading it needs |
 |---|---|---|
-| `bitmap` | `0x002b0540` | the meter path `0x002b07e2`; for the bitmap path `0x002b0565`, the tint (`+0x28` to `+0x30` and the alpha, each times 255 and rounded by `fistp` to ARGB), the parent's offset (`0x002363d4`), the bitmap's frame (`0x002b0b19`), the rectangle (`0x0022ea81`), and the quad (`0x00235e5e`, or `0x00235f31` when the definition scrolls) as an overlay material |
-| `shader` | `0x002b11c9` | the HUD shader quad's translation ([The HUD on the overlay](#the-hud-on-the-overlay)) |
+| `bitmap_meter` | `0x002b07e2` | the meter's own quads |
+| `bitmap_scroll` | `0x00235f31` | the scrolling quad's coordinates from the widget's `+0x7c` state |
+| `bitmap_state` | `0x002b0565` | a draw the overlay does not make as the game does: the debug labels on, an image set from elsewhere, an image not resident, a stage constant not white, the quads turned off |
+| `shader` | `0x002b11c9` | the tag shader the quad `0x0022a664` draws with (called from `0x002b12ae`): its combiner and constants are set by the shader draw `0x0001bbf0` at the quad, not held in memory at the sorted list |
 | `text` | `0x002538f5` | the string as the interface holds it, its font and justification, and the colour product the draw writes into the interface (its `+0x3c` slot) for the interface's own draw; then the glyph pages (`native_render::overlay::GlyphPages`) |
 | `model` | `0x002b0baa` | a stage that draws a `ModelView` |
 | `draw` | a list's `0x0024bda2`, a button's `0x00253ea8`, a screen's own | those draws read |
 
 The fade, the bars and the loading screen are drawn by the producers
-above and are not on the overlay.
+above and are not on the overlay. Reading them into a `UiFrame` needs,
+per draw (Code, `h2 disasm`):
+
+- The fade `0x00040890`: its mode `[0x00485870]` (0 draws nothing)
+  picks one of six cases through the table at `0x00040dc0`; each writes
+  its own blend factors and combiner words, with the colour at
+  `0x00485874` packed (`0x00131e50`) into combiner constants. Each case
+  is a fill of its own blend and combiner.
+- The bars (`0x00052ce7`, in `0x00052040`): a record with no image
+  writes no combiner (`0x00052857` skips to the upload), so the PSDEF at
+  `0x00484f68` is the one the last record with an image wrote. The bar's
+  colour is that combiner over the vertex colour.
+- The loading screen `0x000289e0`: its background, sweep and spinner
+  bitmaps by the state the producers read
+  ([Native UI](#native-ui)).
+
+##### Bitmap widgets
+
+The bitmap widget's draw `0x002b0540` (Code, `h2 disasm`) draws nothing
+without a definition (`+0x70`), and a meter (`0x002b0a68`: the
+definition's flags bit 2) through `0x002b07e2`. Otherwise `0x002b0565`:
+
+1. The view's offset (`0x002363d4`) from the draw's argument, the
+   view's rectangle (top, left, bottom, right): 20 in a half-width view,
+   left or right by its side, and 16 in a half-height one, up or down.
+   With the debug labels on (`[0x0054d59f]`) a label follows the quad. A
+   definition with no bitmap (`+0x1c` -1) draws no quad.
+2. The tint: the alpha at `+0x64` and the colour at `+0x28` to `+0x30`,
+   each times `[0x0045dc38]` and rounded by `fistp` (nearest, ties to
+   even), packed ARGB by shifting left 8 and or-ing the next, with no
+   masks, so a channel past 255 runs into the one above it.
+3. The image (`0x002b0b19`): the pointer at `+0x8c` when set, else the
+   bitmap tag's image at `+0x88` when in range (the tag's count at
+   `+0x44`, its images from `+0x48`, `0x74` bytes each), the first
+   otherwise.
+4. The rectangle (`0x0022ea81`): the header's, plus the animated
+   offset's X and Y, both corners projected at the offset's Z
+   (`0x0023618e`, `0x002360c3`): the depth plus the camera's distance
+   `[0x0054d5b0]` (1 when under `[0x0045dbdc]` in magnitude), kept at
+   least 1 when not below `[0x0045dbd8]` and at most `[0x0045dbcc]`
+   when below; X times one over the depth over the distance, plus half
+   the view's width; half the view's height less Y times that. Then the
+   view's offset is added (Y negated).
+5. A definition that scrolls (`+0x10` or `+0x14` not 0) draws through
+   `0x00235f31`. Otherwise `0x00235e5e`: coordinates from 0 to the image's
+   size over that size (at least 1), at most 1, in texels for a linear
+   image. `0x0023675a` makes the four corners (the far ones as the near
+   plus the extent) and a screen-quad record of the image (clamped,
+   linear filtering), with blend mode 1 when the definition's `+0x08` is
+   1, else 0. It draws through `0x00052040` when the image is resident
+   (`0x00012360`: its `+0x70` past `[0x004e6488]` and its texture set).
+
+For a record of one image and no colour pointers, `0x00052040` writes a
+two-stage combiner: stage 0 multiplies the image by its first constant,
+stage 1 multiplies that by the vertex colour, and the final combiner
+outputs it. The constant is the colour `[0x00468710]` points at with
+alpha 1. When that colour is white, the combiner is `Combiner::Texture`.
+The begin's screen transform with its half pixel puts a guest pixel
+coordinate on the overlay's pixel edge of the same number.
+`ui_overlay::bitmaps::read` reads all of this at the sorted list into a
+`UiContent::Bitmap` (the quad's rectangle and colour as the draw makes
+them), or refuses the widget: a meter, a scrolling bitmap, or any state
+above it does not draw as the game does. The image is named by its tag
+datum and index (`OverlayTexture::Bitmap`), and the menu's pass decodes
+it from the map before it is placed (`game::hud_overlay::place_menu`).
+While the map's HUDs load, or when the image does not decode, the run is
+not placed and the game draws it.
 
 ### Post admission
 
