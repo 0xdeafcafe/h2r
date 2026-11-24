@@ -404,7 +404,15 @@ impl Sync {
             let _lock = lock(&dir)?;
             let mut job = read(&dir)?;
             apply_local_change(&intent, &dir, &mut job)?;
-            if !pending(&job) || (job.upload.is_none() && !job.removed && machine_tape(&job.source) == Ok(true)) {
+            if !pending(&job) {
+                continue;
+            }
+            if job.remote.is_none() && job.upload.is_none() && machine_tape(&job.source) == Ok(true) {
+                // Retire the upload intent while the tape still identifies itself.
+                // After normal Recent pruning, its path may no longer exist.
+                job.removed = true;
+                job.pin = None;
+                save(&dir, &job)?;
                 continue;
             }
             if !job.done
