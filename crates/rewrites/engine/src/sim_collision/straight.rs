@@ -39,13 +39,13 @@ pub(super) fn commit(
             } else {
                 fraction
             };
-            let count = g.u16(sp + 4)?;
-            let mask = g.u32(sp + 8)?;
-            let start = g.u32(sp + 12)?;
-            let delta = g.u32(sp + 16)?;
+            let count = g.u16(sp.wrapping_add(4))?;
+            let mask = g.u32(sp.wrapping_add(8))?;
+            let start = g.u32(sp.wrapping_add(12))?;
+            let delta = g.u32(sp.wrapping_add(16))?;
             let context = sp - ctx::SIZE;
             let frame = context - WRAPPER_ARGUMENTS_AND_RETURN;
-            g.set_u32(sp + 4, t1)?;
+            g.set_u32(sp.wrapping_add(4), t1)?;
             g.set_u32(context + ctx::FLAGS, c.ecx)?;
             g.set_u32(context + ctx::BSP, c.edx)?;
             g.set_u16(context + ctx::BREAKABLE_COUNT, count)?;
@@ -57,9 +57,9 @@ pub(super) fn commit(
             // The leaf tail replaces t1 entirely and only the low byte of
             // the starting node. The other argument slots may survive.
             g.set_u32(frame, WRAPPER_AFTER_WALK)?;
-            g.set_u32(frame + 4, context)?;
-            g.set_u32(frame + 8, 0)?;
-            g.set_u32(frame + 12, 0)?;
+            g.set_u32(frame.wrapping_add(4), context)?;
+            g.set_u32(frame.wrapping_add(8), 0)?;
+            g.set_u32(frame.wrapping_add(12), 0)?;
             g.set_u32(plan.record + record::FRACTION, fraction)?;
             g.set_u32(plan.record + record::COUNT, 0)?;
             (frame, context, c.ecx)
@@ -72,7 +72,7 @@ pub(super) fn commit(
     g.set_u32(frame - 4, flags)?;
     g.set_u8(frame - 8, 0)?;
     if let Some(last) = walk.last {
-        g.set_u32(frame + 4, last.distance)?;
+        g.set_u32(frame.wrapping_add(4), last.distance)?;
         for (reg, value) in [0, last.delta, last.end, last.start]
             .into_iter()
             .enumerate()
@@ -80,8 +80,8 @@ pub(super) fn commit(
             c.xmm[reg] = u128::from(value).to_le_bytes();
         }
     }
-    g.set_u8(frame + 8, kind)?;
-    g.set_u32(frame + 16, leaf)?;
+    g.set_u8(frame.wrapping_add(8), kind)?;
+    g.set_u32(frame.wrapping_add(16), leaf)?;
     g.set_u32(context + ctx::PREV_LEAF, leaf)?;
     g.set_u8(context + ctx::PREV_KIND, kind)?;
     c.edx = flags & 1;
