@@ -61,6 +61,8 @@ pub struct FakeGame {
     pub reads: Vec<&'static str>,
     /// Messages shown, in call order (each is in [`FakeGame::calls`] too).
     pub messages: Vec<FakeMessage>,
+    /// Sounds played, in call order (each is in [`FakeGame::calls`] too).
+    pub sounds: Vec<FakeSound>,
     /// The retail event or original clip posted at each audible round start.
     pub start_lines: Vec<RoundLine>,
     /// What a point is called on the scoreboard and in the post-game, as
@@ -77,6 +79,16 @@ pub struct FakeGame {
     /// shown (`vm::RulesExt::shown`).
     pub shown: Vec<(u32, Option<u8>)>,
     pub script_error: Option<ScriptError>,
+}
+
+/// A sound the script played: the sound's tag path and its audience as a
+/// mask of player slots (`sound_to`: the player's bit; `sound_to_team`: the
+/// bits of the team's seated players; `sound_to_all`: every slot). A call
+/// through `none` plays nothing and is not logged here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FakeSound {
+    pub path: String,
+    pub audience: crate::show::Audience,
 }
 
 /// The two ways a type announces itself on the host.
@@ -524,6 +536,28 @@ impl Game for FakeGame {
             self.messages.extend(message);
             return;
         }
+        if matches!(call.entry.id, id::SOUND_TO | id::SOUND_TO_TEAM | id::SOUND_TO_ALL) {
+            if let Some(Arg::Tag(Some(path))) = call.args.first() {
+                let audience = match (call.entry.id, call.args.get(1)) {
+                    (id::SOUND_TO, Some(Arg::Player(Some(p)))) => Some(crate::show::player(*p)),
+                    (id::SOUND_TO_TEAM, Some(Arg::Team(Some(t)))) => Some(
+                        self.players
+                            .iter()
+                            .filter(|(_, q)| q.team == *t)
+                            .fold(0, |mask, (&slot, _)| mask | crate::show::player(slot)),
+                    ),
+                    (id::SOUND_TO_ALL, _) => Some(crate::show::EVERYONE),
+                    _ => None,
+                };
+                if let Some(audience) = audience {
+                    self.sounds.push(FakeSound {
+                        path: path.clone(),
+                        audience,
+                    });
+                }
+            }
+            return;
+        }
         if call.entry.id == id::REGISTER_OBJECTIVE
             && let Some(Arg::Object(Some(o))) = call.args.first()
         {
@@ -844,5 +878,58 @@ mod tests {
             g.begin_tick(t);
         }
         assert_eq!(g.round_time_left, 0);
+    }
+
+    #[test]
+    fn a_sound_to_reaches_only_its_audience() {
+        let mut g = FakeGame::with_players(4);
+        g.players.get_mut(&1).unwrap().team = 1;
+        g.players.get_mut(&3).unwrap().team = 1;
+        let call = |entry: u16, args: Vec<Arg>| Call {
+            entry: crate::caps::entry(entry, crate::caps::API_VERSION).unwrap(),
+            args,
+        };
+        let tag = || Arg::Tag(Some("sound/stinger".into()));
+        g.act(&call(id::SOUND_TO, vec![tag(), Arg::Player(Some(2))]));
+        g.act(&call(id::SOUND_TO_TEAM, vec![tag(), Arg::Team(Some(1))]));
+        g.act(&call(id::SOUND_TO_TEAM, vec![tag(), Arg::Team(Some(5))]));
+        g.act(&call(id::SOUND_TO_ALL, vec![tag()]));
+        // A call through `none` plays nothing.
+        g.act(&call(id::SOUND_TO, vec![tag(), Arg::Player(None)]));
+        g.act(&call(id::SOUND_TO, vec![Arg::Tag(None), Arg::Player(Some(0))]));
+        let heard: Vec<_> = g.sounds.iter().map(|s| s.audience).collect();
+        assert_eq!(
+            heard,
+            [
+                crate::show::player(2),
+                crate::show::player(1) | crate::show::player(3),
+                0,
+                crate::show::EVERYONE,
+            ]
+        );
+        assert!(g.sounds.iter().all(|s| s.path == "sound/stinger"));
+        assert_eq!(g.calls_to("sound_to").len(), 3);
+    }
+
+    #[test]
+    fn a_script_plays_a_sound_at_the_boundary() {
+        let src = "rules \"Stinger\" 1\ntype slayer\nrequires audio.play\n\
+                   on kill(victim, killer) { sound_to_all(\"sound/stinger\") }\n";
+        let (ir, _) = crate::build(src).unwrap();
+        assert_eq!(ir.tags[0].group, crate::ir::TagGroup::Sound);
+        let mut vm = crate::vm::Vm::new(ir, 0, 0).unwrap();
+        let mut g = FakeGame::with_players(2);
+        vm.begin_tick(1);
+        vm.fire(&mut g, Input::Kill { victim: 0, killer: Some(1) });
+        assert!(g.sounds.is_empty(), "a queued call is made at the next boundary");
+        vm.begin_tick(2);
+        vm.flush_queue(&mut g);
+        assert_eq!(
+            g.sounds,
+            [FakeSound {
+                path: "sound/stinger".into(),
+                audience: crate::show::EVERYONE,
+            }]
+        );
     }
 }

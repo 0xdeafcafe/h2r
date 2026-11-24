@@ -1651,7 +1651,7 @@ impl<'s> Cx<'s> {
                 self.err("null.var", pos, format!("none is not a {n}; a {n} that may be none is {n}?"));
                 return None;
             }
-            (ExprKind::Str(s), Type::H(Handle::Tag | Handle::Weapon, _)) => {
+            (ExprKind::Str(s), Type::H(Handle::Tag | Handle::Weapon | Handle::Sound, _)) => {
                 if s.is_empty() || s.len() > ir::MAX_TAG_BYTES {
                     self.err("limit", pos, "a tag path is 1 to 256 bytes");
                     return None;
@@ -2501,6 +2501,13 @@ impl<'s> Cx<'s> {
                 };
                 self.err("tag.group", e.pos, format!("{who} takes a weapon, and {x} is a tag. {hint}"));
             }
+            (Type::H(Handle::Tag | Handle::Weapon, _), Type::H(Handle::Sound, _)) => {
+                let hint = match &e.kind {
+                    ExprKind::Field(..) => "Declare the column as sound.",
+                    _ => "Name a sound's tag path, or declare it as sound.",
+                };
+                self.err("tag.group", e.pos, format!("{who} takes a sound, and {x} is not one. {hint}"));
+            }
             (Type::Set(g), Type::Set(w)) => {
                 self.err("label.kind", e.pos, format!("{x} is {}, and {who} takes {}.", g.words(), w.words()));
             }
@@ -2564,7 +2571,7 @@ impl<'s> Cx<'s> {
                 }
             },
             ExprKind::Str(s) => match want {
-                Some(Type::H(h @ (Handle::Tag | Handle::Weapon), _)) => {
+                Some(Type::H(h @ (Handle::Tag | Handle::Weapon | Handle::Sound), _)) => {
                     if s.is_empty() || s.len() > ir::MAX_TAG_BYTES {
                         self.err("limit", pos, "a tag path is 1 to 256 bytes");
                         return None;

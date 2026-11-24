@@ -68,6 +68,51 @@ pub struct Message {
     pub values: Vec<HoleValue>,
 }
 
+/// A sound cue: a sound of the blob's tag table, played at each unit of the
+/// audience's players (`sound_to`, `sound_to_team`, `sound_to_all`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SoundCue {
+    pub audience: Audience,
+    /// The sound, an index into the blob's tag table; its entry must be of
+    /// the sound group ([`SoundCue::check`]).
+    pub sound: u16,
+}
+
+/// The bytes a sound cue encodes to.
+pub const SOUND_BYTES: usize = 4;
+
+impl SoundCue {
+    /// The payload: the sound, then the audience.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(SOUND_BYTES);
+        out.extend(self.sound.to_le_bytes());
+        out.extend(self.audience.to_le_bytes());
+        out
+    }
+
+    /// Reads a payload: exactly the sound and the audience. The sound is
+    /// checked against the blob's tag table by [`SoundCue::check`], which
+    /// the receiver makes with the table in hand.
+    pub fn decode(bytes: &[u8]) -> Result<SoundCue, CueError> {
+        let mut r = Reader(bytes);
+        let sound = r.u16()?;
+        let audience = r.u16()?;
+        if !r.0.is_empty() {
+            return Err(CueError::TrailingBytes);
+        }
+        Ok(SoundCue { audience, sound })
+    }
+
+    /// Whether the sound is an entry of `tags` of the sound group: a cue
+    /// names only a sound the verified blob holds.
+    pub fn check(&self, tags: &[crate::ir::TagDef]) -> Result<(), CueError> {
+        match tags.get(usize::from(self.sound)) {
+            Some(t) if t.group == crate::ir::TagGroup::Sound => Ok(()),
+            _ => Err(CueError::BadSound(self.sound)),
+        }
+    }
+}
+
 /// A one-shot show event. The host names custom round-start audio by script type.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Cue {
@@ -80,6 +125,7 @@ pub enum Cue {
     /// empty, so a machine that joins late has it within a few seconds; an
     /// empty list takes every wall off.
     Walls(Vec<(u32, Option<u8>)>),
+    Sound(SoundCue),
 }
 
 /// The kind byte of a message cue in the `Cue` record's payload.
@@ -98,6 +144,7 @@ pub const MAX_WALLS: usize = crate::vm::MAX_SHOWN_AREAS;
 pub const WALLS_REPEAT: u32 = 90;
 /// A wall's team on the wire when it is neutral.
 const NEUTRAL: u16 = 0xf;
+pub const SOUND: u8 = 3;
 
 impl Cue {
     /// The kind byte of the `Cue` record's payload.
@@ -106,6 +153,7 @@ impl Cue {
             Cue::Message(_) => MESSAGE,
             Cue::StartClip(_) => START_CLIP,
             Cue::Walls(_) => WALLS,
+            Cue::Sound(_) => SOUND,
         }
     }
 
@@ -113,6 +161,7 @@ impl Cue {
     pub fn encode(&self) -> Result<Vec<u8>, CueError> {
         match self {
             Cue::Message(message) => message.encode(),
+            Cue::Sound(sound) => Ok(sound.encode()),
             Cue::StartClip(ty) if ty.row().start == StartLine::Ours => Ok(vec![ty.code()]),
             Cue::StartClip(ty) => Err(CueError::NoStartClip(ty.code())),
             Cue::Walls(walls) => encode_walls(walls),
@@ -128,6 +177,7 @@ impl Cue {
         }
         match kind {
             MESSAGE => Message::decode(bytes, strings).map(Cue::Message),
+            SOUND => SoundCue::decode(bytes).map(Cue::Sound),
             START_CLIP => match bytes {
                 [code] => Type::from_code(*code)
                     .filter(|ty| ty.row().start == StartLine::Ours)
@@ -228,6 +278,8 @@ pub enum CueError {
     TooManyWalls(usize),
     /// A zone twice in one walls cue.
     DuplicateWall(u32),
+    /// A sound that is no sound-group entry of the blob's tag table.
+    BadSound(u16),
 }
 
 impl std::fmt::Display for CueError {
@@ -662,5 +714,62 @@ mod tests {
             line(&strings, &strings[3], &message.values, &name),
             "attack"
         );
+    }
+
+    fn tags() -> Vec<crate::ir::TagDef> {
+        use crate::ir::{TagDef, TagGroup};
+        vec![
+            TagDef::any("objects/x"),
+            TagDef {
+                path: "sound/stinger".into(),
+                group: TagGroup::Sound,
+            },
+        ]
+    }
+
+    #[test]
+    fn a_sound_cue_round_trips_and_names_only_a_sound_of_the_blob() {
+        let cue = Cue::Sound(SoundCue {
+            audience: player(1) | player(14),
+            sound: 1,
+        });
+        let bytes = cue.encode().unwrap();
+        assert_eq!(bytes.len(), SOUND_BYTES);
+        assert_eq!(Cue::decode(cue.kind(), &bytes, &[]), Ok(cue.clone()));
+        let Cue::Sound(sound) = cue else { unreachable!() };
+        assert_eq!(sound.check(&tags()), Ok(()));
+        // An index outside the table, and an entry of another group.
+        assert_eq!(SoundCue { sound: 2, ..sound }.check(&tags()), Err(CueError::BadSound(2)));
+        assert_eq!(SoundCue { sound: 0, ..sound }.check(&tags()), Err(CueError::BadSound(0)));
+        // Short and long payloads.
+        assert_eq!(Cue::decode(SOUND, &bytes[..3], &[]), Err(CueError::Truncated));
+        let mut long = bytes.clone();
+        long.push(0);
+        assert_eq!(Cue::decode(SOUND, &long, &[]), Err(CueError::TrailingBytes));
+    }
+
+    /// The codec on arbitrary bytes: decoding never panics, and what
+    /// decodes encodes back to the bytes it came from. A fixed seed makes
+    /// the run the same each time.
+    #[test]
+    fn the_codec_survives_arbitrary_bytes() {
+        let strings = strings();
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        for _ in 0..4000 {
+            let len = (next() % (MAX_CUE_BYTES as u64 + 4)) as usize;
+            let bytes: Vec<u8> = (0..len).map(|_| next() as u8).collect();
+            for kind in [MESSAGE, START_CLIP, SOUND, (next() % 256) as u8] {
+                if let Ok(cue) = Cue::decode(kind, &bytes, &strings) {
+                    assert_eq!(cue.kind(), kind);
+                    assert_eq!(cue.encode().as_deref(), Ok(bytes.as_slice()));
+                }
+            }
+        }
     }
 }

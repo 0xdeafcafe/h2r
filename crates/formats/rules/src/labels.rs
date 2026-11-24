@@ -8,7 +8,7 @@
 //! workbench call the same check. See `docs/game/rules-start-gate.md`, "The
 //! check", and `docs/game/rules-language-types.md`, "The start gate".
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -93,6 +93,8 @@ impl ObjectType {
         match group {
             TagGroup::Any => true,
             TagGroup::Weapon => self == ObjectType::Weapon,
+            // A sound is no object: the census holds sounds apart.
+            TagGroup::Sound => false,
         }
     }
 }
@@ -117,6 +119,11 @@ pub struct Census {
     pub labels: BTreeMap<String, Vec<Member>>,
     #[serde(default)]
     pub tags: BTreeMap<String, ObjectType>,
+    /// The paths of the sounds (`snd!`) the map holds, or none when the
+    /// census does not read them (the running game holds no tag paths): a
+    /// sound a script plays is then not checked here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sounds: Option<BTreeSet<String>>,
 }
 
 /// The text a ground label reads when the map places none of its own: a
@@ -159,6 +166,8 @@ pub enum ProblemKind {
     Team { label: u16, team: u8 },
     /// A tag the map holds of another type than the tag table's group.
     TagGroup { tag: u16, found: ObjectType },
+    /// A sound the script plays that the map does not hold.
+    Sound { tag: u16 },
 }
 
 /// One problem and its text.
@@ -179,6 +188,17 @@ pub fn check(ir: &Ir, census: &Census, teams: &[u8]) -> Vec<Problem> {
         label(name, i as u16, def, census, teams, &mut out);
     }
     for (i, t) in ir.tags.iter().enumerate() {
+        if t.group == TagGroup::Sound {
+            if let Some(sounds) = &census.sounds
+                && !sounds.contains(&t.path)
+            {
+                out.push(Problem {
+                    kind: ProblemKind::Sound { tag: i as u16 },
+                    text: format!("the sound \"{}\" is not on this map; {name} plays it", t.path),
+                });
+            }
+            continue;
+        }
         if let Some(&found) = census.tags.get(&t.path)
             && !found.is(t.group)
         {
@@ -340,6 +360,7 @@ fn group_a(group: TagGroup) -> &'static str {
     match group {
         TagGroup::Any => "an object",
         TagGroup::Weapon => "a weapon",
+        TagGroup::Sound => "a sound",
     }
 }
 
@@ -618,6 +639,33 @@ mod tests {
         census.tags.insert(path, ObjectType::Vehicle);
         assert_eq!(check(&any, &census, TEAMS), vec![]);
         assert_eq!(check(&ir, &minimal(&ir, TEAMS), TEAMS), vec![]);
+    }
+
+    #[test]
+    fn a_sound_the_map_lacks_blocks_by_its_path() {
+        let mut ir = siege();
+        ir.tags.push(crate::ir::TagDef {
+            path: "sound/stinger".into(),
+            group: TagGroup::Sound,
+        });
+        let at = (ir.tags.len() - 1) as u16;
+        let mut census = minimal(&ir, TEAMS);
+        // A census that does not read sounds checks none.
+        assert_eq!(check(&ir, &census, TEAMS), vec![]);
+        census.sounds = Some(BTreeSet::new());
+        let name = ir.header.name.clone();
+        assert_eq!(
+            check(&ir, &census, TEAMS),
+            vec![Problem {
+                kind: ProblemKind::Sound { tag: at },
+                text: format!("the sound \"sound/stinger\" is not on this map; {name} plays it"),
+            }]
+        );
+        census.sounds = Some(BTreeSet::from(["sound/stinger".to_string()]));
+        assert_eq!(check(&ir, &census, TEAMS), vec![]);
+        // A sound is checked against the sounds, never the object tags.
+        census.tags.insert("sound/stinger".into(), ObjectType::Vehicle);
+        assert_eq!(check(&ir, &census, TEAMS), vec![]);
     }
 
     #[test]

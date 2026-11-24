@@ -465,6 +465,7 @@ pub(crate) fn register_core_film(
         features,
         i.live.clone(),
         features_off || film.as_ref().is_some_and(|f| f.plays_back()),
+        i.vfs.clone(),
     )
     .context("installing rules scripts")?;
     for effect in [

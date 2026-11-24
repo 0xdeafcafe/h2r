@@ -19,6 +19,8 @@ pub enum Handle {
     Tag,
     /// A tag path that must be a weapon.
     Weapon,
+    /// A tag path that must be a sound's (`snd!`).
+    Sound,
 }
 
 impl Handle {
@@ -30,6 +32,7 @@ impl Handle {
             Handle::Zone => "zone",
             Handle::Tag => "tag",
             Handle::Weapon => "weapon",
+            Handle::Sound => "sound",
         }
     }
 
@@ -39,14 +42,14 @@ impl Handle {
             Handle::Player => Ty::Player,
             Handle::Team => Ty::Team,
             Handle::Object | Handle::Zone => Ty::Object,
-            Handle::Tag | Handle::Weapon => Ty::Tag,
+            Handle::Tag | Handle::Weapon | Handle::Sound => Ty::Tag,
         }
     }
 
     /// Whether a value of `self` is a value of `to`: the same handle, a
     /// zone as an object, or a weapon as a tag.
     pub fn fits(self, to: Handle) -> bool {
-        self == to || matches!((self, to), (Handle::Zone, Handle::Object) | (Handle::Weapon, Handle::Tag))
+        self == to || matches!((self, to), (Handle::Zone, Handle::Object) | (Handle::Weapon | Handle::Sound, Handle::Tag))
     }
 
     /// `a`, `an` and the name: "a zone", "an object".
@@ -136,6 +139,7 @@ impl Type {
     pub const ZONE: Type = Type::H(Handle::Zone, false);
     pub const TAG: Type = Type::H(Handle::Tag, false);
     pub const WEAPON: Type = Type::H(Handle::Weapon, false);
+    pub const SOUND: Type = Type::H(Handle::Sound, false);
 
     /// The IR type; a set has none (its argument is a `Label` constant).
     pub fn erase(self) -> Option<Ty> {
@@ -233,7 +237,7 @@ impl Type {
 
     /// The type a word names, with `?` for `optional`: `int`, `fixed`,
     /// `time`, `bool`, `player`, `team`, `object`, `zone`, `squad`, `class`
-    /// (`Class`), `tag`, `weapon`, `text`, the set words `objects`,
+    /// (`Class`), `tag`, `weapon`, `sound`, `text`, the set words `objects`,
     /// `zones` and `spawns`, or a declared enum. `timer` is a variable's
     /// type, not a value's, and is the caller's to read. `None` for an
     /// unknown word or a `?` on a type with no `none`.
@@ -251,6 +255,7 @@ impl Type {
             "Class" | "class" => Type::Class,
             "tag" => Type::TAG,
             "weapon" => Type::WEAPON,
+            "sound" => Type::SOUND,
             "text" => Type::Text,
             "objects" => Type::Set(SetKind::Objects),
             "zones" => Type::Set(SetKind::Zones),

@@ -84,7 +84,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// Queues the cue for the channel with its tick's next sequence number.
-fn push(tick: u32, cue: Cue) {
+pub(super) fn push(tick: u32, cue: Cue) {
     let mut c = lock(&CHANNEL);
     if c.tick != Some(tick) {
         c.tick = Some(tick);
@@ -204,6 +204,20 @@ fn audience_of(roster: &[Roster], to: &To) -> Audience {
     }
 }
 
+/// The audience of `to` over the game's roster ([`audience_of`]).
+pub(super) fn audience(m: &dyn GuestMemory, to: &To) -> Audience {
+    audience_of(&roster(m), to)
+}
+
+/// The slots of this machine's local players.
+pub(super) fn local_slots(m: &dyn GuestMemory) -> Vec<u8> {
+    roster(m)
+        .into_iter()
+        .filter(|p| p.user.is_some())
+        .map(|p| p.slot)
+        .collect()
+}
+
 /// The name a player hole shows: the roster slot's name, or `player N`
 /// when the slot is not seated.
 fn named(roster: &[Roster]) -> impl Fn(u8) -> String + '_ {
@@ -317,10 +331,10 @@ pub fn publish(m: &dyn GuestMemory, ir: &Ir, tick: u32, messages: Vec<Outgoing>)
     }
 }
 
-/// The running script's declared type and message strings, from the variant record's blob:
+/// The running script's declared type, message strings and tag table, from the variant record's blob:
 /// compiled in or in the game-variant store (a `Viewer` has the blob from
 /// the lobby fetch). Cached by the record's hash prefix.
-fn script_context(m: &dyn GuestMemory) -> Option<(Type, Vec<String>)> {
+fn script_context(m: &dyn GuestMemory) -> Option<(Type, Vec<String>, Vec<::rules::ir::TagDef>)> {
     let block = super::super::guest::block(m).ok().flatten()?;
     let script = variants::ext::Ext::in_effect(&block).script;
     // A kit director can run under an ordinary Slayer record. The
@@ -331,35 +345,37 @@ fn script_context(m: &dyn GuestMemory) -> Option<(Type, Vec<String>)> {
             crate::firefight::hud::Mode::decode(&blob).is_ok()
         });
     if script.mode == variants::ext::Mode::Firefight || kit_director {
-        return Some((Type::Firefight, Vec::new()));
+        return Some((Type::Firefight, Vec::new(), Vec::new()));
     }
     if script.mode != variants::ext::Mode::Rules {
         return None;
     }
-    static CACHE: Mutex<Option<([u8; 8], Type, Vec<String>)>> = Mutex::new(None);
+    type Cached = ([u8; 8], Type, Vec<String>, Vec<::rules::ir::TagDef>);
+    static CACHE: Mutex<Option<Cached>> = Mutex::new(None);
     {
         let cache = lock(&CACHE);
-        if let Some((prefix, ty, strings)) = &*cache
+        if let Some((prefix, ty, strings, tags)) = &*cache
             && *prefix == script.prefix
         {
-            return Some((*ty, strings.clone()));
+            return Some((*ty, strings.clone(), tags.clone()));
         }
     }
     let blob = super::super::feature::local_blob(script.prefix)?;
     let (ir, _) = ::rules::verify::load(&blob).ok()?;
     let ty = ir.header.game_type;
     let strings = ir.strings;
-    *lock(&CACHE) = Some((script.prefix, ty, strings.clone()));
-    Some((ty, strings))
+    let tags = ir.tags;
+    *lock(&CACHE) = Some((script.prefix, ty, strings.clone(), tags.clone()));
+    Some((ty, strings, tags))
 }
 
 /// The cues a client received this tick: each decoded against the running
 /// script's blob, checked, and shown to the local users in its audience.
 /// A cue that fails any check is dropped whole and logged
 /// (docs/game/rules-world-limits.md, "The show channel on a client").
-pub fn present(cx: &Cx, cues: &[ReceivedCue]) {
+pub async fn present(cx: &Cx, cues: &[ReceivedCue]) {
     for cue in cues {
-        if let Err(why) = present_one(cx, cue) {
+        if let Err(why) = present_one(cx, cue).await {
             eprintln!(
                 "rules: show cue at tick {} sequence {} dropped: {why}",
                 cue.tick, cue.sequence
@@ -394,11 +410,11 @@ fn present_walls(cx: &Cx, cue: &ReceivedCue) -> Result<(), String> {
     Ok(())
 }
 
-fn present_one(cx: &Cx, cue: &ReceivedCue) -> Result<(), String> {
+async fn present_one(cx: &Cx, cue: &ReceivedCue) -> Result<(), String> {
     if cue.kind == show::WALLS {
         return present_walls(cx, cue);
     }
-    let (ty, strings) = cx
+    let (ty, strings, tags) = cx
         .read(script_context)
         .ok_or_else(|| "the running script's blob is not on this machine".to_string())?;
     let message = match Cue::decode(cue.kind, &cue.bytes, &strings).map_err(|e| e.to_string())? {
@@ -407,6 +423,15 @@ fn present_one(cx: &Cx, cue: &ReceivedCue) -> Result<(), String> {
             return Ok(());
         }
         Cue::StartClip(_) => return Err("start clip is for another game type".into()),
+        // A sound of the blob's tag table, played at this machine's local
+        // players in its audience (`super::audio`).
+        Cue::Sound(sound) => {
+            sound.check(&tags).map_err(|e| e.to_string())?;
+            let path = &tags[usize::from(sound.sound)].path;
+            return super::audio::play(cx, sound.audience, path)
+                .await
+                .map_err(|e| e.to_string());
+        }
         Cue::Message(message) => message,
         Cue::Walls(_) => return Err("a walls cue is read before the blob".into()),
     };

@@ -347,7 +347,7 @@ impl Client {
         let cues = std::mem::take(&mut self.pending_cues);
         #[cfg(feature = "rules")]
         if !cues.is_empty() {
-            crate::rules::world::show::present(cx, &cues);
+            crate::rules::world::show::present(cx, &cues).await;
         }
         #[cfg(not(feature = "rules"))]
         drop(cues);

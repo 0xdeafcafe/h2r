@@ -397,6 +397,20 @@ on spawn(p) {
     assert_eq!(groups, [("objects/a", TagGroup::Any), ("objects/b", TagGroup::Weapon)]);
 }
 
+#[test]
+fn a_sound_is_a_tag_of_the_sound_group() {
+    let src = script(
+        "audio.play",
+        "on tick { sound_to_all(\"sound/a\") }\non init { sound_to_all(\"sound/b\") }\n",
+    );
+    let ir = compile(&src).unwrap();
+    assert!(ir.tags.iter().all(|t| t.group == TagGroup::Sound));
+    // The capability is needed.
+    error(&script("", "on tick { sound_to_all(\"sound/a\") }\n"), "cap.missing");
+    // A sound entry names its audience by type.
+    error(&script("audio.play", "on tick { sound_to(\"sound/a\", team 0) }\n"), "type.mismatch");
+}
+
 // ---- time ----
 
 #[test]

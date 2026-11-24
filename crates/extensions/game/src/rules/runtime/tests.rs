@@ -17,6 +17,8 @@ use crate::rules::feature::Shared;
 mod hosted;
 /// The start gate and the label reads.
 mod gate;
+/// Sounds on the host.
+mod audio;
 /// Zones, the roster's events and loadouts.
 mod world;
 /// A script game on the script index and its engine object.
