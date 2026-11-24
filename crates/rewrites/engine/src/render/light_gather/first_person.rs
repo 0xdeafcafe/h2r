@@ -35,6 +35,13 @@
 //! slot pointer are written where the guest keeps them ([`slot`]): the
 //! layer-draw hook reads them from the frame.
 //!
+//! With typed passes (L8), the guest runs `0x000404b0` itself and
+//! [`final_slot`] reads its frame at its own constants call. Only the
+//! loop's last slot is taken: the bridge then commits the slot and
+//! returns from the whole function as its loop exit would, with EAX from
+//! [`FinalSlot::ret`] and the caller's saved registers ([`Saved`]). No
+//! guest code resumes inside the skipped slot.
+//!
 //! [`run_records`] is `0x000402b0`: both lists zeroed, the slot's records
 //! copied to the record tail at `[0x004c0b7c]` and the count set past
 //! them, then each record that passes the mode's filter appended as
@@ -567,6 +574,108 @@ async fn layer(
         passes::named(cx, e, FRAME, block.end, request).await?;
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------
+// L8: the final slot typed inside the guest's own body.
+
+/// The constants' four argument words, pushed at `0x00040565`..`0x00040571`.
+pub const CONSTANTS_ARGS: u32 = 0x10;
+
+/// The entry `ESP` of the invocation whose call to `0x0004a1e0` returns
+/// to [`site::CONSTANTS`], from `ESP` at the callee's entry: the return
+/// word, the four arguments and the frame.
+pub fn entry_esp_at_constants(callee_esp: u32) -> u32 {
+    callee_esp
+        .wrapping_add(4)
+        .wrapping_add(CONSTANTS_ARGS)
+        .wrapping_add(FRAME)
+}
+
+/// The registers at the callee's entry when the guest's own body makes
+/// its constants call (`0x0004057e`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AtConstants {
+    pub esp: u32,
+    pub eax: u32,
+    pub ecx: u32,
+    pub edx: u32,
+    pub ebx: u32,
+    pub esi: u32,
+    pub edi: u32,
+}
+
+/// The guest's last slot at its constants call, and how the whole
+/// function returns when that slot's passes and tail are committed
+/// elsewhere.
+///
+/// The loop's exit after the view target stores only both pass words
+/// (zeroed) and its two locals (the index and the slot pointer). The
+/// typed tail's journal already zeroes both pass words
+/// (`typed_tail::plan_layers`). The locals lie below [`Self::exit_esp`]
+/// once `ret 4` has run, so nothing reads them and the return leaves
+/// them as they are. No write follows the commit.
+#[derive(Clone, Debug)]
+pub struct FinalSlot {
+    /// The constants call as the L6 body makes it.
+    pub call: Call,
+    /// `ret 4` with AL 1 over the slot pointer past the last slot.
+    pub ret: Ret,
+    /// `ESP` after that `ret 4`: past the return word and the mode.
+    pub exit_esp: u32,
+}
+
+/// Reads the guest's frame at its own constants call and accepts only
+/// the loop's last slot. ESI must be the light's record, EBX its
+/// definition's data and EDI its datum, as [`regs`] makes them; EAX, ECX,
+/// EDX and the four pushed words must be the call the L6 body makes.
+/// Earlier slots are refused: resuming the guest's loop after a skipped
+/// slot would need registers that this hook does not reconstruct.
+pub fn final_slot(m: &dyn GuestMemory, plan: &Plan, r: &AtConstants) -> Result<FinalSlot> {
+    if m.u32(r.esp)? != site::CONSTANTS || entry_esp_at_constants(r.esp) != plan.entry_esp {
+        return Err(Refusal::Layout);
+    }
+    let index = m.u32(plan.at(slot::INDEX))?;
+    let entry = m.u32(plan.at(slot::ENTRY))?;
+    if index >= SLOTS as u32 || entry != slot_base(index).wrapping_add(SLOT_LIGHT) {
+        return Err(Refusal::Layout);
+    }
+    let l = Light::read(m, entry)?;
+    let volume_at = plan.at(slot::VOLUME);
+    let args = r.esp.wrapping_add(4);
+    let (weight, scale) = (m.u32(WEIGHT_WORD)?, m.u32(SCALE_WORD)?);
+    if r.esi != l.record
+        || r.ebx != l.data
+        || r.edi != l.datum
+        || r.eax != l.record.wrapping_add(0x84)
+        || r.ecx != volume_at
+        || r.edx != l.datum
+        || m.u32(args)? != l.data
+        || m.u32(args.wrapping_add(4))? != scale
+        || m.u32(args.wrapping_add(8))? != 0
+        || m.u32(args.wrapping_add(12))? != weight
+    {
+        return Err(Refusal::Layout);
+    }
+    // 0x00040823 onward: the loop re-reads the count after this slot.
+    // A typed slot makes no guest call, so the count it reads is this one.
+    let next = index.wrapping_add(1);
+    if (next as i32) < m.i32(FIRST_PERSON_COUNT)? {
+        return Err(Refusal::Unsupported);
+    }
+    let past = entry.wrapping_add(FIRST_PERSON_SLOT);
+    Ok(FinalSlot {
+        call: Call {
+            frame: r.eax,
+            context: volume_at,
+            light: l.datum,
+            definition: l.data,
+            shadow: 0,
+            weight,
+        },
+        ret: Ret::new((past & !0xff) | 1, 4),
+        exit_esp: plan.entry_esp.wrapping_add(8),
+    })
 }
 
 // ---------------------------------------------------------------------

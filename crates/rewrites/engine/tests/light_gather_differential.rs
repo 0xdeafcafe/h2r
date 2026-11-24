@@ -4128,6 +4128,81 @@ fn typed_light_tail_matches_the_lifted_layer_wrappers() {
 }
 
 
+/// The mask can retain layer 13 even when the current light never reaches
+/// it. The guest then leaves layer 12's draw bit in the argument byte.
+#[test]
+fn typed_tail_uses_the_last_reached_layer_for_the_returned_draw_byte() {
+    use engine::light_passes::flag;
+    use engine::render::light_gather::typed_tail::plan_dynamic;
+
+    if !with_image(|image, mut lifted| {
+        for seed in seeds() {
+            let mut rng = Rng(seed);
+            for flags in [0, flag::CONTEXT_ZERO, flag::SPECULAR] {
+                let mut c = cpu(&mut rng);
+                let esp = c.gpr[4];
+                let mut original = image.clone();
+                typed_tail_world(&mut original, &mut rng, &mut c);
+                put16(&mut original, PASS_CONTEXT, u16::from(flags & flag::CONTEXT_ZERO == 0));
+                let threshold = word(&original, engine::light_passes::constant::SPECULAR);
+                for i in 0..3 {
+                    put(&mut original, PASS_COLOUR_B + 4 * i, threshold);
+                }
+                if flags & flag::SPECULAR != 0 {
+                    putf(&mut original, PASS_COLOUR_B + 8, f32::INFINITY);
+                }
+                let upper = rng.u32() & !0xff;
+                let mut typed = Ram(original.clone());
+                let plan = passes::plan(&typed, esp, c.gpr[0], c.gpr[1], FPU).unwrap();
+                for diffuse in [true, false] {
+                    let draws = u32::from(diffuse) << 12;
+                    for mem in [&mut original, &mut typed.0] {
+                        put(mem, PASS_LIGHT_MASK, draws | (1 << 13));
+                        put(mem, esp + 0xc, upper);
+                    }
+                    // Enter with real saved registers and let the guest build
+                    // the constants call frame. Only the list producer is stubbed.
+                    let mut native = c.clone();
+                    native.eip = passes_entry();
+                    let mut gathers = 0;
+                    lifted.run(&mut native, &mut typed.0, &[passes::call::CONSTANTS], |pc, cpu, m| {
+                        if pc != passes::call::ITEMS {
+                            return false;
+                        }
+                        gathers += 1;
+                        cpu.eip = word(m, cpu.gpr[4]);
+                        cpu.gpr[4] += 4;
+                        cpu.gpr[0] = 0;
+                        cpu.gpr[2] = 0;
+                        true
+                    }).unwrap();
+                    assert_eq!(gathers, 1);
+                    let call = passes::ConstantsCall::read(&typed, native.gpr[4]).unwrap().unwrap();
+                    assert!(call.matches(&typed, &plan, [native.gpr[0], native.gpr[1], native.gpr[2]]).unwrap());
+                    let tail = plan_dynamic(&typed, &plan, flags, draws).unwrap();
+                    tail.write(&mut typed).unwrap();
+                    native.gpr[0] = tail.eax;
+                    native.gpr[3] = 0;
+                    native.gpr[4] = call.view_target_esp();
+                    native.eip = passes::site::VIEW_TARGET;
+                    lifted.run(&mut native, &mut typed.0, &[HARNESS_EXIT], |_, _, _| false).unwrap();
+                    assert_eq!(native.gpr[4], esp + 0x14);
+                    for reg in [3, 5, 6, 7] {
+                        assert_eq!(native.gpr[reg], c.gpr[reg], "callee-save register {reg}");
+                    }
+                    let (calls, eax) = lifted_typed_tail(&mut lifted, &mut original, &c, |_, _| {});
+                    assert_eq!(eax, native.gpr[0]);
+                    assert_eq!(calls.iter().filter(|c| c.target == 0x0003_bab0).count(), usize::from(diffuse));
+                    assert_eq!(word(&original, esp + 0xc), upper | u32::from(diffuse));
+                    compare(&format!("seed {seed}, flags {flags}, diffuse {diffuse}"), &original, &typed.0, esp);
+                }
+            }
+        }
+    }) {
+        eprintln!("SKIPPED typed_tail_uses_the_last_reached_layer_for_the_returned_draw_byte: no XBE (set H2_XBE)");
+    }
+}
+
 /// An opacity group uses the view depth but switches to target 1's embedded
 /// colour surface. Exercise both device bind leaves, with the game wrappers
 /// lifted all the way through the final restoration. At the device boundary
@@ -4225,5 +4300,91 @@ fn opacity_light_keeps_the_lifted_target_switches() {
         }
     }) {
         eprintln!("SKIPPED opacity_light_keeps_the_lifted_target_switches: no XBE (set H2_XBE)");
+    }
+}
+
+// ---------------------------------------------------------------------
+// L8: the first-person loop's last slot, typed inside the guest's body.
+
+/// Compare the return predicted at the constants call with the real loop
+/// exit. Stop at the final view-target return to isolate the memory this
+/// exit changes from the writes made by the layer and device callees.
+#[test]
+fn first_person_final_slot_returns_as_the_lifted_loop_exit() {
+    if !with_image(|image, mut lifted| {
+        for seed in seeds() {
+            let mut rng = Rng(seed);
+            for count in [1, 2, 8] {
+                let mut world = World::new(image, &mut rng, 8);
+                let mut cpu = cpu(&mut rng);
+                let esp = cpu.gpr[4];
+                fp_world(&mut world, &mut rng, esp);
+                let mut m = world.mem;
+                put(&mut m, esp, HARNESS_EXIT);
+                put(&mut m, FIRST_PERSON_COUNT, count);
+                for i in 0..count {
+                    put16(&mut m, FIRST_PERSON_TABLE + 0x408 * i + 0x404, 1);
+                }
+                let plan = first_person::plan(&Ram(m.clone()), esp, FPU).unwrap();
+                let saved = cpu.gpr;
+                let mut slot_index = 0;
+                let mut final_slot = None;
+                let mut tail = None;
+                let mut calls = 0;
+                cpu.eip = first_person_entry();
+                lifted.run(&mut cpu, &mut m, &[HARNESS_EXIT], |pc, cpu, m| {
+                    if pc == first_person::site::VIEW_TARGET && final_slot.is_some() {
+                        tail = Some(m.clone());
+                    }
+                    let Some((regs, args, pop)) = stub_in(FP_STUBS, pc) else {
+                        return false;
+                    };
+                    let sp = cpu.gpr[4];
+                    let site = word(m, sp);
+                    if pc == first_person::call::CONSTANTS {
+                        let at = first_person::AtConstants {
+                            esp: sp, eax: cpu.gpr[0], ecx: cpu.gpr[1], edx: cpu.gpr[2],
+                            ebx: cpu.gpr[3], esi: cpu.gpr[6], edi: cpu.gpr[7],
+                        };
+                        let result = first_person::final_slot(&Ram(m.clone()), &plan, &at);
+                        if slot_index + 1 == count {
+                            final_slot = Some(result.unwrap());
+                        } else {
+                            assert_eq!(result.unwrap_err(), gather::Refusal::Unsupported);
+                        }
+                        slot_index += 1;
+                    }
+                    let call = Callout {
+                        target: pc, site,
+                        regs: regs.iter().map(|&i| cpu.gpr[i]).collect(),
+                        args: (0..args).map(|i| word(m, sp + 4 + 4 * i)).collect(),
+                    };
+                    let (eax, edx) = fp_effect(seed, calls, &call, m, plan.draw_byte());
+                    if pc == first_person::call::RECORDS {
+                        put(m, FIRST_PERSON_COUNT, count);
+                    }
+                    calls += 1;
+                    cpu.gpr[0] = eax;
+                    cpu.gpr[2] = edx;
+                    cpu.gpr[4] = sp + 4 + pop;
+                    cpu.eip = site;
+                    true
+                }).unwrap();
+                let label = format!("first-person exit seed {seed}, {count} slots");
+                assert_eq!(slot_index, count, "{label}");
+                let slot = final_slot.unwrap();
+                assert_eq!(slot.ret.eax, cpu.gpr[0], "{label}: EAX");
+                assert_eq!(slot.exit_esp, cpu.gpr[4], "{label}: ESP");
+                for reg in [3, 5, 6, 7] {
+                    assert_eq!(saved[reg], cpu.gpr[reg], "{label}: saved register {reg}");
+                }
+                let mut tail = tail.unwrap();
+                put8(&mut tail, FP_PASSES, 0);
+                put(&mut tail, PASS_FLAGS, 0);
+                compare(&label, &m, &tail, esp);
+            }
+        }
+    }) {
+        eprintln!("SKIPPED first_person_final_slot_returns_as_the_lifted_loop_exit: no XBE (set H2_XBE)");
     }
 }

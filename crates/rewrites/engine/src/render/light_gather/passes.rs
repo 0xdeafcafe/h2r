@@ -55,7 +55,7 @@ pub mod call {
     /// The light's constants: EAX the frame block, ECX the context, EDX
     /// the light datum; stack (definition, the image's word, shadow,
     /// weight), `ret 0x10`.
-    pub const CONSTANTS: u32 = 0x0004_a1e0;
+    pub const CONSTANTS: u32 = points::LIGHT_CONSTANTS.base;
     /// The shadow projection: ECX the context, EBX the frame block; stack
     /// (definition), `ret 4`.
     pub const SHADOW_SETUP: u32 = 0x0004_8ee0;
@@ -93,6 +93,68 @@ pub mod site {
     pub const SCISSORS: u32 = 0x0003_14f0;
     pub const DEPTH_RANGE: u32 = 0x0003_14f7;
     pub const VIEW_TARGET: u32 = 0x0003_1508;
+}
+
+/// The constants' argument words, pushed at `0x000311b3`..`0x000311be`.
+pub const CONSTANTS_ARGS: u32 = 0x10;
+
+/// The whole guest body's call to the constants, as the callee
+/// (`points::LIGHT_CONSTANTS`) sees it at its entry: the return word is
+/// [`site::CONSTANTS`], so the call is this body's own and not one a Rust
+/// body makes (whose return slot holds a continuation token). A hook on
+/// the item lists' return site `site::ITEMS` would never run: a return to
+/// a call continuation resumes generated code without applying entry
+/// overrides (docs/lifter/LIFTER.md, section 2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConstantsCall {
+    /// The entry `ESP` of the invocation that made the call.
+    pub entry_esp: u32,
+    /// The four pushed words: the definition, the image's word, the
+    /// shadow argument and the weight.
+    pub args: [u32; 4],
+}
+
+impl ConstantsCall {
+    /// `None` when the return word at `esp` is not this body's.
+    pub fn read(m: &dyn GuestMemory, esp: u32) -> Result<Option<Self>, MemFault> {
+        if m.u32(esp)? != site::CONSTANTS {
+            return Ok(None);
+        }
+        let arg = |n: u32| m.u32(esp.wrapping_add(4 + 4 * n));
+        Ok(Some(Self {
+            entry_esp: esp.wrapping_add(4 + CONSTANTS_ARGS + FRAME),
+            args: [arg(0)?, arg(1)?, arg(2)?, arg(3)?],
+        }))
+    }
+
+    /// Whether the call is the one the body makes from `plan`'s entry:
+    /// the registers (EAX the frame block, ECX the context, EDX the light)
+    /// and the four pushed words, the shadow and weight copied from the
+    /// argument slots as the guest pushes them.
+    pub fn matches(
+        &self,
+        m: &dyn GuestMemory,
+        plan: &Plan,
+        regs: [u32; 3],
+    ) -> Result<bool, MemFault> {
+        Ok(self.entry_esp == plan.entry_esp
+            && regs == [plan.position, plan.context, plan.light]
+            && self.args
+                == [
+                    plan.data,
+                    m.u32(CONSTANTS_WORD)?,
+                    m.u32(plan.shadow_at())?,
+                    m.u32(plan.entry_esp.wrapping_add(0x10))?,
+                ])
+    }
+
+    /// `ESP` at [`site::VIEW_TARGET`]: on the saved registers ([`FRAME`]),
+    /// as after the view target's `ret 8`. Resuming there runs the
+    /// guest's own epilogue, which restores those registers and returns
+    /// with `ret 0x10`.
+    pub fn view_target_esp(&self) -> u32 {
+        self.entry_esp.wrapping_sub(FRAME)
+    }
 }
 
 /// One of layers 11 to 14's blocks, by the guest's return sites.
@@ -554,6 +616,50 @@ mod tests {
         assert!(site::ADDITIONAL_CASTERS < TARGET_1.target);
         assert!(TARGET_1.end < DIFFUSE.target && DIFFUSE.end < SPECULAR.target);
         assert!(SPECULAR.end < site::STENCIL_ENABLE);
+    }
+
+    #[test]
+    fn the_bodys_own_constants_call_names_its_invocation() {
+        use crate::testing::FakeGuest;
+        let entry_esp = 0x0002_0000;
+        let plan = Plan {
+            entry_esp,
+            fpu: Fpu {
+                mxcsr: 0x1f80,
+                x87_control: 0x027f,
+            },
+            definition: 0xe100_0003,
+            context: 0x0003_0000,
+            data: 0x0004_0000,
+            light: 0xe200_0005,
+            position: 0x0005_0000,
+        };
+        let mut m = FakeGuest::new();
+        m.put_u32(CONSTANTS_WORD, 0x4480_0000)
+            .put_u32(entry_esp + 0x0c, 0x0000_0101)
+            .put_u32(entry_esp + 0x10, 0x3f80_0000);
+        let esp = entry_esp - FRAME - CONSTANTS_ARGS - 4;
+        m.put_u32(esp, site::CONSTANTS)
+            .put_u32(esp + 4, plan.data)
+            .put_u32(esp + 8, 0x4480_0000)
+            .put_u32(esp + 0xc, 0x0000_0101)
+            .put_u32(esp + 0x10, 0x3f80_0000);
+        let call = ConstantsCall::read(&m, esp).unwrap().unwrap();
+        assert_eq!(call.entry_esp, entry_esp);
+        assert_eq!(call.view_target_esp(), entry_esp - FRAME);
+        let regs = [plan.position, plan.context, plan.light];
+        assert!(call.matches(&m, &plan, regs).unwrap());
+        // EAX is the frame block, not the light.
+        assert!(!call.matches(&m, &plan, [plan.light, plan.context, plan.light]).unwrap());
+        // Another invocation's frame.
+        let other = Plan { entry_esp: entry_esp + 0x40, ..plan.clone() };
+        assert!(!call.matches(&m, &other, regs).unwrap());
+        // A changed pushed weight.
+        m.put_u32(esp + 0x10, 0);
+        assert!(!call.matches(&m, &plan, regs).unwrap());
+        // A Rust body's call: its return slot holds a token.
+        m.put_u32(esp, 0xdead_0000);
+        assert_eq!(ConstantsCall::read(&m, esp).unwrap(), None);
     }
 
     #[test]

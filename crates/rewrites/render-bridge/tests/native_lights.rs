@@ -71,6 +71,7 @@ fn its_chains_run_on_the_render_thread() {
         "FIRST_PERSON_LIGHTS",
         "FIRST_PERSON_LIGHT_RECORDS",
         "RENDER_LIGHT_PASSES",
+        "LIGHT_CONSTANTS",
         "RENDER_DYNAMIC_LIGHTS",
         "SCENE_ITEMS",
         "LAYER_DRAW",

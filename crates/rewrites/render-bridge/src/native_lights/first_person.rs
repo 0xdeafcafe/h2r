@@ -1,30 +1,79 @@
 //! The first-person lights at `FIRST_PERSON_LIGHTS` (`0x000404b0`) and
 //! each slot's record replay at `FIRST_PERSON_LIGHT_RECORDS`
-//! (`0x000402b0`; docs/graphics/native-light-gather.md, slice L6): the
-//! bodies of `engine::render::light_gather::first_person` make the
-//! guest's steps in its order, every callee a guest call, so the layer
-//! draws and the walk's builds that tell the first-person layers apart by
-//! their caller read the guest's site through `passes::caller`, and the
-//! light goes into the first person's view at its first layer draw as
-//! under the guest (`native_lights::first_person_layer`). A plan that
-//! refuses runs the guest function whole.
+//! (`0x000402b0`; docs/graphics/native-light-gather.md, slices L6 and L8).
+//!
+//! With the light walk on, the entry checks its plan and runs the guest
+//! function whole. When a renderer can take typed passes and the float
+//! state allows them, the entry keeps the plan, its return address and
+//! the caller's saved registers. The guest's own call to
+//! `LIGHT_CONSTANTS` (return word `site::CONSTANTS`) then offers the
+//! loop's last slot to the typed graph (`first_person::final_slot`). A
+//! commit returns from the whole function as its loop exit would; any
+//! refusal, and every earlier slot, leaves that call and the rest of the
+//! body to the guest untouched. No guest code resumes inside a skipped
+//! slot.
+//!
+//! With the walk off, L6 runs the body in Rust: every callee a guest
+//! call naming the guest's return site through `passes::caller`, so the
+//! layer draws and the walk's builds that tell the first-person layers
+//! apart by their caller see the guest's site, and the light goes into
+//! the first person's view at its first layer draw
+//! (`native_lights::first_person_layer`). A plan that refuses runs the
+//! guest function whole.
 
-use engine::entry::EntryError;
+use std::cell::Cell;
+use std::sync::Arc;
+
 use engine::light_constants::{Call, Fpu};
 use engine::memory::GuestMemory;
 use engine::points;
-use engine::render::light_gather::first_person::{self, SlotRecords};
+use engine::render::light_gather::first_person::{self, AtConstants, SlotRecords};
 use engine::render::light_gather::items::Made;
 use engine::render::light_gather::{Refusal, typed, typed_tail};
 use frame_scene::GroupSite;
-use hooks::{Builder, Cx, EntryFuture};
+use hooks::{Builder, Cx, EntryFuture, Flow};
 use native_render::light_graph;
 use native_render::light_passes::{self, Steps};
+use runtime::TransferAbi;
 use timeline::native::{SceneList, SceneListResult};
 
 use super::frame::{original, refused};
 use super::{Ro, SceneGroup};
-use crate::native_map_work::Stage;
+use crate::native_map_work::{Stage, bsp_generation};
+
+/// EBX, EBP, ESI and EDI as the guest's caller handed them to
+/// `0x000404b0`. Its epilogue restores these four.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Saved {
+    ebx: u32,
+    ebp: u32,
+    esi: u32,
+    edi: u32,
+}
+
+/// The invocation that runs the whole guest body with typed passes
+/// offered: its plan, the return address it was called with, the
+/// caller's saved registers, and the map generation it began in (a load
+/// or a restored snapshot moves it on).
+struct Pending {
+    plan: first_person::Plan,
+    ret: u32,
+    saved: Saved,
+    generation: u64,
+}
+
+thread_local! {
+    /// Set only by the entry that runs the guest body, cleared by every
+    /// entry and by [`forget`], and kept across the loop's earlier slots
+    /// until the last slot's constants call takes it. The thread that runs
+    /// the guest owns it; another thread never sees it.
+    static PENDING: Cell<Option<Pending>> = const { Cell::new(None) };
+}
+
+/// Drops the kept invocation (`native_lights::forget_runs`).
+pub(super) fn forget() {
+    PENDING.take();
+}
 
 pub(super) fn install(b: &mut Builder) {
     let walk = super::walk::on(b.switches());
@@ -33,19 +82,22 @@ pub(super) fn install(b: &mut Builder) {
             &points::FIRST_PERSON_LIGHTS,
             "native_lights_first_person",
             move |cpu, ctx, addr| {
+                // Any earlier invocation has returned.
+                forget();
                 if addr != points::FIRST_PERSON_LIGHTS.base || Stage::Lights.standing_down() {
                     return original(cpu, ctx, addr);
                 }
-                let typed_fpu =
-                    super::typed::fpu_ready(cpu.x87.tag, cpu.x87.status, cpu.x87.control);
                 let fpu = Fpu {
                     mxcsr: cpu.mxcsr,
                     x87_control: cpu.x87.control,
                 };
-                let plan = {
-                    let runtime = std::sync::Arc::clone(ctx.runtime());
+                let (plan, ret) = {
+                    let runtime = Arc::clone(ctx.runtime());
                     let mem = runtime.memory();
-                    first_person::plan(&*mem, cpu.esp, fpu)
+                    (
+                        first_person::plan(&*mem, cpu.esp, fpu),
+                        GuestMemory::u32(&*mem, cpu.esp),
+                    )
                 };
                 let plan = match plan {
                     Ok(plan) => plan,
@@ -54,14 +106,38 @@ pub(super) fn install(b: &mut Builder) {
                         return original(cpu, ctx, addr);
                     }
                 };
+                if walk {
+                    // The guest body whole. Typed slots only when a
+                    // renderer takes them under this float state.
+                    let typed_fpu =
+                        super::typed::fpu_ready(cpu.x87.tag, cpu.x87.status, cpu.x87.control);
+                    if typed_fpu && super::typed::host_ready() {
+                        if let Ok(ret) = ret {
+                            let saved = Saved {
+                                ebx: cpu.ebx,
+                                ebp: cpu.ebp,
+                                esi: cpu.esi,
+                                edi: cpu.edi,
+                            };
+                            PENDING.set(Some(Pending {
+                                plan,
+                                ret,
+                                saved,
+                                generation: bsp_generation(),
+                            }));
+                        } else {
+                            refused(SceneList::TypedFirstPerson, Refusal::Memory);
+                        }
+                    } else {
+                        refused(SceneList::TypedFirstPerson, Refusal::Unsupported);
+                    }
+                    return original(cpu, ctx, addr);
+                }
                 hooks::entry::start_render(cpu, ctx, addr, move |cx: Cx| -> EntryFuture {
                     Box::pin(async move {
-                        let (ret, _) = first_person::run_with(&cx, plan, &mut |mem, p, call| {
-                            if !walk || !typed_fpu || Stage::Lights.standing_down() {
-                                refused(SceneList::TypedFirstPerson, Refusal::Unsupported);
-                                return Ok(None);
-                            }
-                            try_passes(mem, p, call)
+                        let (ret, _) = first_person::run_with(&cx, plan, &mut |_, _, _| {
+                            refused(SceneList::TypedFirstPerson, Refusal::Unsupported);
+                            Ok(None)
                         })
                         .await?;
                         SceneList::FirstPersonLights.count(SceneListResult::Native);
@@ -69,6 +145,13 @@ pub(super) fn install(b: &mut Builder) {
                     })
                 })
             },
+        )
+        .context_only();
+    b.raw()
+        .before(
+            &points::LIGHT_CONSTANTS,
+            "native_lights_typed_first_person",
+            |c| Ok(at_constants(c).map_or(Flow::Continue, Flow::Return)),
         )
         .context_only();
     b.raw()
@@ -106,6 +189,103 @@ pub(super) fn install(b: &mut Builder) {
             },
         )
         .context_only();
+}
+
+/// `LIGHT_CONSTANTS` entered. Acts only on the guest's own call from the
+/// first-person loop (return word `site::CONSTANTS`) of the invocation
+/// the entry kept; any other caller, including the L6 body's calls (whose
+/// return word is a continuation token), passes through. `None` leaves
+/// every register and word as the guest left them, and the constants
+/// run.
+fn at_constants(c: &mut hooks::Call<'_>) -> Option<TransferAbi> {
+    let pending = PENDING.take()?;
+    let rt = Arc::clone(c.ctx.runtime());
+    let own_call = pending.generation == bsp_generation()
+        && first_person::entry_esp_at_constants(c.cpu.esp) == pending.plan.entry_esp
+        && GuestMemory::u32(&*rt.memory(), c.cpu.esp).ok() == Some(first_person::site::CONSTANTS);
+    if !own_call {
+        // Not this invocation's call (or a map since): an earlier slot's
+        // call still finds the plan; a stale one is dropped.
+        if pending.generation == bsp_generation() {
+            PENDING.set(Some(pending));
+        }
+        return None;
+    }
+    let out = final_slot(c, &rt, &pending);
+    if out.is_none() {
+        // The guest makes this slot; a later one may still be the last.
+        PENDING.set(Some(pending));
+    }
+    out
+}
+
+/// The kept invocation's constants call: commit the loop's last slot and
+/// return from `0x000404b0`, or `None` with nothing written.
+fn final_slot(
+    c: &mut hooks::Call<'_>,
+    rt: &Arc<runtime::Runtime>,
+    pending: &Pending,
+) -> Option<TransferAbi> {
+    let stage = SceneList::TypedFirstPerson;
+    let p = &pending.plan;
+    if Stage::Lights.standing_down() {
+        refused(stage, Refusal::Unsupported);
+        return None;
+    }
+    // The graph and the light frame run under the entry's float modes,
+    // which the guest's constants call would also see.
+    let cpu = &*c.cpu;
+    if (cpu.mxcsr ^ p.fpu.mxcsr) & !0x3f != 0
+        || cpu.x87.control != p.fpu.x87_control
+        || !super::typed::fpu_ready(cpu.x87.tag, cpu.x87.status, cpu.x87.control)
+    {
+        refused(stage, Refusal::Layout);
+        return None;
+    }
+    let at = AtConstants {
+        esp: cpu.esp,
+        eax: cpu.eax,
+        ecx: cpu.ecx,
+        edx: cpu.edx,
+        ebx: cpu.ebx,
+        esi: cpu.esi,
+        edi: cpu.edi,
+    };
+    let slot = {
+        let mut mem = rt.memory();
+        // Preflight: the entry's return word is still the one it was
+        // called with, and the frame is the last slot's call.
+        if GuestMemory::u32(&*mem, p.entry_esp).ok() != Some(pending.ret) {
+            refused(stage, Refusal::Layout);
+            return None;
+        }
+        let slot = match first_person::final_slot(&*mem, p, &at) {
+            Ok(slot) => slot,
+            Err(why) => {
+                // An earlier slot, or a frame the plan does not describe.
+                refused(stage, why);
+                return None;
+            }
+        };
+        if let Err(why) = try_passes(&mut *mem, p, &slot.call) {
+            refused(stage, why);
+            return None;
+        }
+        stage.count(SceneListResult::Native);
+        slot
+    };
+    // Return from 0x000404b0 to the captured return address, as its loop
+    // exit and epilogue would: EAX the exit's, the caller's saved
+    // registers, ESP past the return word and the mode. No guest memory
+    // is touched after the commit.
+    let saved = pending.saved;
+    c.cpu.eax = slot.ret.eax;
+    c.cpu.ebx = saved.ebx;
+    c.cpu.ebp = saved.ebp;
+    c.cpu.esi = saved.esi;
+    c.cpu.edi = saved.edi;
+    c.cpu.esp = slot.exit_esp;
+    Some(TransferAbi::ret(pending.ret))
 }
 
 struct Slot {
@@ -165,14 +345,8 @@ fn try_passes(
     mem: &mut dyn GuestMemory,
     plan: &first_person::Plan,
     call: &Call,
-) -> Result<Option<first_person::SlotPasses>, EntryError> {
-    let slot = match Slot::read(mem, call, plan.fpu) {
-        Ok(slot) => slot,
-        Err(why) => {
-            refused(SceneList::TypedFirstPerson, why);
-            return Ok(None);
-        }
-    };
+) -> Result<(), Refusal> {
+    let slot = Slot::read(mem, call, plan.fpu)?;
     let graph = light_graph::Pass::Light {
         site: GroupSite::FirstPerson,
         steps: slot.steps.as_slice(),
@@ -192,8 +366,7 @@ fn try_passes(
             u8::from(slot.steps.as_slice().last().is_some_and(|step| step.draws)),
         )),
     ) {
-        refused(SceneList::TypedFirstPerson, Refusal::Unsupported);
-        return Ok(None);
+        return Err(Refusal::Unsupported);
     }
 
     let drawn = slot.steps.drawn();
@@ -213,15 +386,7 @@ fn try_passes(
             crate::scene_step::typed_light_groups(slot.groups);
         }
     }
-    SceneList::TypedFirstPerson.count(SceneListResult::Native);
-    Ok(Some(first_person::SlotPasses {
-        flags: slot.globals.flags,
-        reached: slot
-            .steps
-            .iter()
-            .fold(0, |mask, step| mask | 1 << step.layer),
-        drawn,
-    }))
+    Ok(())
 }
 
 /// One count per record that passed the filter: native for a record

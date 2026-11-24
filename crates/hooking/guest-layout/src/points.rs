@@ -935,6 +935,14 @@ points! { ALL;
     /// slot's records, copied after the main view's records. EDX the slot,
     /// stack `(mode)`, `ret 4`; its only caller is `FIRST_PERSON_LIGHTS`.
     FIRST_PERSON_LIGHT_RECORDS @ 0x0004_02b0: [fn(slot: edx, mode: stack 0) ret 4]; "docs/graphics/native-light-gather.md";
+    /// `0x0004a1e0`: one light's constants (`engine::light_constants`).
+    /// EAX the frame block, ECX the volume, EDX the light datum, stack
+    /// `(definition, unused, shadow, weight)`, `ret 0x10`.
+    /// `RENDER_LIGHT_PASSES` calls it from `0x000311c3` and
+    /// `FIRST_PERSON_LIGHTS` from `0x0004057e`. The typed light passes put
+    /// `before` hooks on it, each acting only when the return word is its
+    /// own caller's site, so several features share the point.
+    LIGHT_CONSTANTS @ 0x0004_a1e0: [fn(frame: eax, context: ecx, light: edx, definition: stack 0, unused: stack 1, shadow: stack 2, weight: stack 3) ret 16]; "docs/graphics/native-light-gather.md";
     /// `render_screen_effects`: the view's post passes, the last call of
     /// `render_scene_passes` (`0x0002c322`, after layer 17 and
     /// `0x00020770`): the colour pass over the view's target (`0x000214f0`,

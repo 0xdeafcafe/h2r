@@ -285,6 +285,8 @@ pub fn new_view() {
 /// not the memory they were read from. Takes no device lock (unlike
 /// [`new_view`], which asks the host for the next view's target).
 pub fn forget_runs() {
+    passes::forget();
+    first_person::forget();
     handoff::forget();
     CANDIDATE.take();
     VIEW_TARGET.set(None);

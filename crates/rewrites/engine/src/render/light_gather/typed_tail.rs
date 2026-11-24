@@ -42,7 +42,7 @@ pub struct Tail {
     pub viewport: [u32; 6],
     pub clip: [u32; 2],
     /// The NV method passed to SetRenderState_Simple by mode zero.
-    pub clip_header: u32,
+    pub clip_header: Option<u32>,
     /// `0x00014bc0` returns the final D3D SetViewport result.
     pub eax: u32,
     writes: Writes,
@@ -144,11 +144,13 @@ pub fn plan_layers(m: &dyn GuestMemory, draws: u32) -> Option<Tail> {
     }
     let (surfaces, viewport) = view(m)?;
     let clip = [m.u32(DEPTH_RANGE).ok()?, m.u32(DEPTH_RANGE + 4).ok()?];
-    let clip_header = m.u32(0x0001_56f6).ok()?;
     let mut writes = Writes::new();
-    if draws != 0 {
+    let clip_header = if draws != 0 {
         layer_writes(m, &mut writes)?;
-    }
+        Some(m.u32(0x0001_56f6).ok()?)
+    } else {
+        None
+    };
     writes.word(LAYER, 0);
     writes.half(STENCIL_MODE, 0);
     writes.byte(LIGHT_ACTIVE, 0);
@@ -244,7 +246,7 @@ mod tests {
         assert_eq!(tail.viewport, [45, 20, 130, 80, 0, 1.0f32.to_bits()]);
         assert_eq!(tail.clip, [0x1111_2222, 0x3333_4444]);
         assert_eq!(tail.eax, 0);
-        assert_eq!(tail.clip_header, 0x0012_3456);
+        assert_eq!(tail.clip_header, Some(0x0012_3456));
         tail.write(&mut m).unwrap();
         assert_eq!(m.u32(DRAW_STATE + 0x24).unwrap(), 0);
         assert_eq!(m.u32(DRAW_STATE + 0x20).unwrap(), 0);
@@ -262,7 +264,9 @@ mod tests {
     fn an_empty_layer_leaves_the_draw_cache_and_current_target_alone() {
         let mut m = fixture();
         m.set_u32(DRAW_STATE + 0x24, u32::MAX).unwrap();
-        plan_dynamic(&m, &passes(), 0, 0).unwrap().write(&mut m).unwrap();
+        let tail = plan_dynamic(&m, &passes(), 0, 0).unwrap();
+        assert_eq!(tail.clip_header, None);
+        tail.write(&mut m).unwrap();
         assert_eq!(m.u32(DRAW_STATE + 0x24).unwrap(), u32::MAX);
         assert_eq!(m.u32(LAYER + 4).unwrap(), 0x1111_1111);
         assert_eq!(m.u32(LAYER + 8).unwrap(), 0x2222_2222);

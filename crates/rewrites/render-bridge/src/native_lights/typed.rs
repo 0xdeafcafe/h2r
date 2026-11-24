@@ -1,14 +1,13 @@
 //! Whole-pass admission after the current invocation supplies its item lists.
-//! A refusal leaves L5 at its next instruction. Only the committed pass puts
-//! groups in the scene or replaces guest constants and tail state.
+//! Refusal leaves the guest at its constants call with the gathered lists.
+//! Only the committed pass puts groups in the scene or replaces guest
+//! constants and tail state.
 
-use engine::entry::{EntryError, Ret};
 use engine::light_constants as lc;
 use engine::memory::{GuestMemory, MemFault};
 use engine::render::light_gather::{Refusal, Writes, passes, typed, typed_tail};
 use frame_scene::{GroupSite, LightConstants, SceneLight};
 use native_render::{light_graph::Pass, light_passes};
-use timeline::native::{SceneList, SceneListResult};
 
 use super::{
     CANDIDATE, HOST, Ro, SceneGroup, TypedPasses, VIEW_TARGET, constants_of, typed_groups,
@@ -36,6 +35,12 @@ impl GuestMemory for Mirror<'_> {
         self.writes.array(addr, data.to_vec());
         Ok(())
     }
+}
+
+/// Whether a renderer is attached to take a typed pass. Without one every
+/// plan below would be read and then thrown away.
+pub(super) fn host_ready() -> bool {
+    HOST.lock().unwrap_or_else(|e| e.into_inner()).is_some()
 }
 
 pub(super) fn submit(
@@ -132,6 +137,13 @@ fn plan(mem: &dyn GuestMemory, p: &passes::Plan) -> Result<Dynamic, Refusal> {
         constants_of(mem, &globals.light, globals.flags, p.data).ok_or(Refusal::Memory)?;
     let inputs = light_passes::read(&Ro(mem), globals.flags, constants.definition_flags)
         .ok_or(Refusal::Memory)?;
+    // The same-target tail only covers direct view draws. Additional
+    // casters produce their own list suffixes between the base layers, and
+    // a shadow target needs its own pass. Refuse before the scene match,
+    // the candidate check and the tail and group plans.
+    if inputs.additional_casters || globals.shadow.is_some() {
+        return Err(Refusal::Unsupported);
+    }
     let steps = light_passes::steps(&inputs);
     let scene_light = SceneLight {
         handle: call.light,
@@ -162,11 +174,6 @@ fn plan(mem: &dyn GuestMemory, p: &passes::Plan) -> Result<Dynamic, Refusal> {
     }
     let tail = typed_tail::plan_dynamic(mem, p, globals.flags, steps.drawn())
         .ok_or(Refusal::Unsupported)?;
-    // The same-target tail only covers direct view draws. Additional
-    // casters produce their own list suffixes between the base layers.
-    if inputs.additional_casters || globals.shadow.is_some() {
-        return Err(Refusal::Unsupported);
-    }
     let groups = typed_groups::plan(
         mem,
         GroupSite::Light,
@@ -188,15 +195,8 @@ fn plan(mem: &dyn GuestMemory, p: &passes::Plan) -> Result<Dynamic, Refusal> {
 pub(super) fn dynamic(
     mem: &mut dyn GuestMemory,
     p: &passes::Plan,
-) -> Result<Option<(Ret, passes::LightPasses)>, EntryError> {
-    let stage = SceneList::TypedLightPasses;
-    let pass = match plan(mem, p) {
-        Ok(pass) => pass,
-        Err(why) => {
-            super::frame::refused(stage, why);
-            return Ok(None);
-        }
-    };
+) -> Result<u32, Refusal> {
+    let pass = plan(mem, p)?;
     let graph = Pass::Light {
         site: GroupSite::Light,
         steps: pass.steps.as_slice(),
@@ -206,20 +206,9 @@ pub(super) fn dynamic(
         projection: None,
     };
     if !submit(mem, graph, &pass.groups, &pass.globals, &pass.tail, None) {
-        super::frame::refused(stage, Refusal::Unsupported);
-        return Ok(None);
+        return Err(Refusal::Unsupported);
     }
     crate::scene_step::typed_light_groups(pass.groups);
     CANDIDATE.take();
-    stage.count(SceneListResult::Native);
-    Ok(Some((
-        Ret::new(pass.tail.eax, 0x10),
-        passes::LightPasses {
-            shadow: pass.globals.light.shadow != 0,
-            flags: pass.globals.flags,
-            reached: pass.steps.iter().fold(0, |mask, s| mask | (1 << s.layer)),
-            drawn: pass.steps.drawn(),
-            additional_casters: false,
-        },
-    )))
+    Ok(pass.tail.eax)
 }
