@@ -1,6 +1,7 @@
 //! Raw writes against synthetic guest memory and an in-memory file view:
-//! a structure BSP with two clusters (one paged in, one not) and a bitmap
-//! with one image. No game data.
+//! a structure BSP with two clusters (one paged in, one not), a bitmap
+//! with one image, and a sound whose permutation has two sample chunks in
+//! the map's sound gestalt. No game data.
 
 use super::*;
 use runtime::guest::Permissions;
@@ -387,6 +388,157 @@ fn a_new_map_drops_the_overlay_and_the_raw_journal() {
 fn fnv1a64_matches_the_reference_values() {
     assert_eq!(fnv1a64(b""), 0xcbf2_9ce4_8422_2325);
     assert_eq!(fnv1a64(b"a"), 0xaf63_dc4c_8601_ec8c);
+}
+
+const SND: u32 = 0xe333_0003;
+const UGH: u32 = 0xe444_0004;
+const SND_AT: u32 = META + 0x5000;
+const UGH_AT: u32 = META + 0x6000;
+const RANGES_AT: u32 = META + 0x6100;
+const PERMS_AT: u32 = META + 0x6200;
+const CHUNKS_AT: u32 = META + 0x6300;
+/// The sound's two chunks: one loaded (local, handle 5), one not (shared).
+const CHUNK0: u32 = 0x300;
+const CHUNK1: u32 = 0x80;
+const CHUNK_LEN: u32 = 0x20;
+
+/// Chunk `i` of the gestalt's block: the sound's chunk 0 is element 1.
+fn chunk_record(i: u32) -> u32 {
+    CHUNKS_AT + i * 12
+}
+
+/// [`level`] with a `snd!` and the map's `ugh!`. The sound's one pitch
+/// range is the gestalt's range 1, its one permutation the gestalt's
+/// permutation 1, whose chunks are the gestalt's chunks 1 and 2; element 0
+/// of each block belongs to another sound.
+fn sound_level() -> Guest {
+    let mut g = level();
+    g.set_u32(HEADER + index::HEADER_COUNT, 5).unwrap();
+    entry(&mut g, 3, b"snd!", SND, SND_AT, 0x14);
+    entry(&mut g, 4, b"ugh!", UGH, UGH_AT, 0x58);
+    g.set_u16(SND_AT + 0x8, 1).unwrap();
+    g.set_u8(SND_AT + 0xa, 1).unwrap();
+    for (block, count, at) in [(4, 2, RANGES_AT), (5, 2, PERMS_AT), (8, 3, CHUNKS_AT)] {
+        g.set_u32(UGH_AT + block * 8, count).unwrap();
+        g.set_u32(UGH_AT + block * 8 + 4, at).unwrap();
+    }
+    g.set_u16(RANGES_AT + 12 + 8, 1).unwrap();
+    g.set_u16(RANGES_AT + 12 + 10, 1).unwrap();
+    g.set_u16(PERMS_AT + 16 + 12, 1).unwrap();
+    g.set_u16(PERMS_AT + 16 + 14, 2).unwrap();
+    // Chunk 1: local, bit 31 of its size set, loaded under handle 5.
+    g.set_u32(chunk_record(1), CHUNK0).unwrap();
+    g.set_u32(chunk_record(1) + 4, 0x8000_0000 | CHUNK_LEN).unwrap();
+    g.set_u32(chunk_record(1) + 8, 5).unwrap();
+    // Chunk 2: shared, not loaded.
+    g.set_u32(chunk_record(2), 0x8000_0000 | CHUNK1).unwrap();
+    g.set_u32(chunk_record(2) + 4, CHUNK_LEN).unwrap();
+    g.set_u32(chunk_record(2) + 8, u32::MAX).unwrap();
+    g
+}
+
+fn sound_editor(fake: &Fake) -> (Editor, Arc<Mutex<Vec<Refresh>>>) {
+    let pushed = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&pushed);
+    let mut ed = Editor::new().with_raw(
+        Box::new(fake.clone()),
+        Box::new(move |r| sink.lock().unwrap().push(r)),
+    );
+    ed.at_epoch(&sound_level(), 1, 1).unwrap();
+    (ed, pushed)
+}
+
+fn samples(range: u32, permutation: u32, chunk: u32) -> Value {
+    json!({"sound": {"tag": format!("{SND:#010x}"), "range": range,
+        "permutation": permutation, "chunk": chunk}})
+}
+
+#[test]
+fn a_sound_chunk_write_takes_the_overlay_alone() {
+    let mut g = sound_level();
+    let fake = files();
+    let (mut ed, pushed) = sound_editor(&fake);
+    let before = snapshot(&g);
+    let old: Vec<u8> = (CHUNK0 + 4..CHUNK0 + 8).map(byte).collect();
+    let reply = ed
+        .batch_with(&mut g, &[], &write(samples(0, 0, 0), 4, &[1, 2, 3, 4], Some(Was::Bytes(old))), None)
+        .unwrap();
+    assert_eq!(reply["raw"][0]["resident"], false, "{reply}");
+    assert_eq!(reply["raw"][0]["refresh"], Value::Null, "{reply}");
+    assert_eq!(reply["raw"][0]["owner"], samples(0, 0, 0), "{reply}");
+    assert_eq!(fake.0.lock().unwrap().view(ResourceFile::Local, u64::from(CHUNK0) + 4, 4), [1, 2, 3, 4]);
+    // The second chunk lives in shared.map.
+    ed.batch_with(&mut g, &[], &write(samples(0, 0, 1), 0, &[9], None), None).unwrap();
+    assert_eq!(fake.0.lock().unwrap().view(ResourceFile::Shared, u64::from(CHUNK1), 1), [9]);
+    assert_eq!(snapshot(&g), before, "no guest byte moved: the samples have no resident copy");
+    assert!(pushed.lock().unwrap().is_empty(), "sounds queue no native refresh");
+    assert_eq!(ed.overlay()["owners"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn a_sound_chunk_is_bounded_by_its_masked_size_and_its_runs() {
+    let mut g = sound_level();
+    let fake = files();
+    let (mut ed, _) = sound_editor(&fake);
+    // Bit 31 of the size is a flag: the block is CHUNK_LEN bytes.
+    let e = ed.batch_with(&mut g, &[], &write(samples(0, 0, 0), CHUNK_LEN - 1, &[1, 2], None), None).unwrap_err();
+    assert!(matches!(e, BatchError::Field(Error { kind: ErrorKind::Invalid, .. })), "{e:?}");
+    // Past the sound's one range, its permutation's two chunks.
+    for owner in [samples(1, 0, 0), samples(0, 1, 0), samples(0, 0, 2)] {
+        let e = ed.batch_with(&mut g, &[], &write(owner, 0, &[1], None), None).unwrap_err();
+        assert!(matches!(e, BatchError::Field(Error { kind: ErrorKind::Invalid, .. })), "{e:?}");
+    }
+    // A bitmap is not a sound.
+    let wrong = json!({"sound": {"tag": format!("{BITM:#010x}"), "range": 0, "permutation": 0, "chunk": 0}});
+    let e = ed.batch_with(&mut g, &[], &write(wrong, 0, &[1], None), None).unwrap_err();
+    assert!(matches!(e, BatchError::Field(_)), "{e:?}");
+    assert!(fake.0.lock().unwrap().overlay.is_empty());
+}
+
+#[test]
+fn a_map_without_a_gestalt_refuses_sound_owners() {
+    let mut g = sound_level();
+    g.set_u32(HEADER + index::HEADER_COUNT, 4).unwrap();
+    let fake = files();
+    let (mut ed, _) = sound_editor(&fake);
+    let e = ed.batch_with(&mut g, &[], &write(samples(0, 0, 0), 0, &[1], None), None).unwrap_err();
+    let BatchError::Field(e) = e else { panic!("not a field error: {e:?}") };
+    assert!(e.message.contains("ugh!"), "{e:?}");
+}
+
+#[test]
+fn a_sound_eviction_clears_the_cache_handle_and_revert_clears_it_again() {
+    let mut g = sound_level();
+    let fake = files();
+    let (mut ed, pushed) = sound_editor(&fake);
+    let batch = RawBatch {
+        raw: vec![RawWrite { owner: samples(0, 0, 0), offset: 0, bytes: vec![7; 4], was: None }],
+        evict: vec![samples(0, 0, 0)],
+        ..RawBatch::default()
+    };
+    let reply = ed.batch_with(&mut g, &[], &batch, None).unwrap();
+    assert_eq!(reply["evicted"][0]["sound"]["chunk"], 0, "{reply}");
+    assert_eq!(g.u32(chunk_record(1) + 8).unwrap(), u32::MAX);
+    assert_eq!(g.u32(chunk_record(1)).unwrap(), CHUNK0, "the pointer stays");
+    assert_eq!(g.u32(chunk_record(2) + 8).unwrap(), u32::MAX);
+    assert!(pushed.lock().unwrap().is_empty());
+    // The guest plays the sound again and loads the chunk under a new handle.
+    g.set_u32(chunk_record(1) + 8, 9).unwrap();
+    let r = ed.revert(&mut g, None).unwrap();
+    assert_eq!(r["reverted"].as_array().unwrap().len(), 2, "{r}");
+    assert_eq!(g.u32(chunk_record(1) + 8).unwrap(), u32::MAX, "evicted again to load the old samples");
+    assert!(fake.0.lock().unwrap().overlay.is_empty());
+}
+
+#[test]
+fn pixels_cannot_be_evicted() {
+    let mut g = sound_level();
+    let fake = files();
+    let (mut ed, _) = sound_editor(&fake);
+    let pixels = json!({"pixels": {"tag": format!("{BITM:#010x}"), "image": 0, "lod": 0}});
+    let batch = RawBatch { evict: vec![pixels], ..RawBatch::default() };
+    let e = ed.batch_with(&mut g, &[], &batch, None).unwrap_err();
+    assert!(matches!(e, BatchError::Field(Error { kind: ErrorKind::Invalid, .. })), "{e:?}");
 }
 
 fn hex(b: &[u8]) -> String {
