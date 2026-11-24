@@ -39,7 +39,7 @@ gates the player chain after):
   is only the edge blend over them). Layers 18 and 19 (111 and 30
   passes) are the active-camouflage materials', layer 21 (6) the
   hologram's; their items are object render records, stage 2's.
-- **Scene-copy and reflection inputs.** A template pass binds its stages from the instance bitmaps or the engine textures (`ResolvedImplementation::textures`); the engine-texture table (`0x00019530`, the jump table at `0x00019b68`) names every render target a pass can sample: 5 the view's bound target (a scene copy), 2 and 3 target 1 (the texaccum), 6 target 3, 13 target 9 (the shadow map), 8 target 10. Engine textures 14 and 15 bind the rasterizer data's bitmap at `+0x14` (`0x000197dd`, `0x000197fb`: `[[0x00485a80]+0x14]` through `0x000143c0`), 14 its image 0 and 15 its image 1 (14 clears `ecx`, the image argument; 15 leaves the 1 loaded at `0x00019538`); the fog load resolves it from the globals tag (`fog_gpu::Selection::rasterizer`, `look::rasterizer_image`) and samples it as an ordinary bitmap stage. A pass sampling a target the native side has no copy of stays on the D3D path. The fog pass draws before layer 6 and touches no target but the bound one. The water edge blend reads the alpha of the bound target (the teardown clears it after), so its native pass runs inside the wrapper's window, before `0x0003c3c0`'s clear; the pass is issued at the next D3D entry, and the teardown's clear is an entry.
+- **Scene-copy and reflection inputs.** A template pass binds its stages from the instance bitmaps or the engine textures (`ResolvedImplementation::textures`); the engine-texture table (`0x00019530`, the jump table at `0x00019b68`) names every render target a pass can sample: 5 the view's bound target (a scene copy), 2 and 3 target 1 (the texaccum), 6 target 3, 13 target 9 (the shadow map), 8 target 10. Engine textures 14 and 15 bind the rasterizer data's bitmap at `+0x14` (`0x000197dd`, `0x000197fb`: `[[0x00485a80]+0x14]` through `0x000143c0`), 14 its image 0 and 15 its image 1 (14 clears `ecx`, the image argument; 15 leaves the 1 loaded at `0x00019538`); the fog and water loaders resolve it from the globals tag (`fog_gpu::Selection::rasterizer`, `look::rasterizer_image`) and sample it as an ordinary bitmap stage. A pass sampling a target the native side has no copy of stays on the D3D path. The fog pass draws before layer 6 and touches no target but the bound one. The water edge blend reads the alpha of the bound target (the teardown clears it after), so its native pass runs inside the wrapper's window, before `0x0003c3c0`'s clear; the pass is issued at the next D3D entry, and the teardown's clear is an entry.
 
 ### Planar fog
 
@@ -67,7 +67,7 @@ the cached pipelines with their own uniforms and sampled textures.
   not the fog register: the pass supplies it. The pipeline state must
   be the implementation's own (`pass_state`'s rule but its `Fog`
   refusal, the fog words taken out of the decode): a pass that leaves
-  blend or depth to the previous draw stays on the D3D path. `CULLMODE`
+  blend to the previous draw while writing colour, or inherits depth writes while depth is enabled, stays on the D3D path. `CULLMODE`
   is the exception, below.
 - **The implementation** (`fog::layer_implementation`, Code `0x0004cbf0`).
   Layer 16's passes carry four implementations. The geometry build has
@@ -185,7 +185,7 @@ the cached pipelines with their own uniforms and sampled textures.
   surface at `+0x88` and a clear byte at `+0x95`. The reservation
   refuses if a required copy has an unresolved sample, a sample that
   aliases an attachment, an unfilterable sample, or an unsuitable
-  source for the scene copy. Any other
+  source for the scene copy. Rasterizer stages 14 and 15 sample images 0 and 1 of the globals bitmap. Any other
   engine id — run-time chosen, the light's, a rasterizer bitmap, a
   cleared stage — refuses the material at the load
   (`FogRefusal::Unsupplied`).

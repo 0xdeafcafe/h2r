@@ -13,7 +13,7 @@ use tags::material::{EngineInputs, Material, Origin, Register, ResolvedImplement
 use tags::shader::{Metadata, PSDEF_SIZE, StageStates};
 
 use crate::engine_states::{EngineStateRefusal, apply_static};
-use crate::pass_state::{PassState, StateRefusal, pass_state};
+use crate::pass_state::{PassState, StateRefusal, geometry_pass_state};
 
 /// The layer the native world draws.
 pub const LIGHTMAP_LAYER: usize = 3;
@@ -221,7 +221,7 @@ pub const UNLIT_BSP_IMPLEMENTATION: usize = 3;
 fn world_pass(mut look: PassLook, imp: &ResolvedImplementation, inputs: &EngineInputs) -> Result<WorldPass, Refusal> {
     let applied = apply_static(imp, inputs).map_err(Refusal::EngineStates)?;
     look.stage_states = applied.stage_states;
-    let mut state = pass_state(&applied.render_states).map_err(Refusal::State)?;
+    let mut state = geometry_pass_state(&applied.render_states).map_err(Refusal::State)?;
     if state.blend.is_some() {
         // The world issues opaque parts together. A replacement blend is
         // independent of the destination only when the operation is known.

@@ -296,8 +296,8 @@ pub fn layer_passes_selected(material: &Material, layer: usize, selection: Selec
 /// the render targets (`crate::screen_look::engine_texture`'s `Target`s),
 /// what the water edge blend binds. An id nothing supplies refuses the
 /// material ([`FogRefusal::Unsupplied`]).
-pub fn supplied_layer_passes(material: &Material, layer: usize) -> Result<Vec<FogPass>, FogRefusal> {
-    passes_of(material, layer, true, Selection::default(), None)
+pub fn supplied_layer_passes(material: &Material, layer: usize, rasterizer: Option<map::TagId>) -> Result<Vec<FogPass>, FogRefusal> {
+    passes_of(material, layer, true, Selection { rasterizer, ..Selection::default() }, None)
 }
 
 /// Compiles the same pass shape the layer planner samples at draw time.
@@ -407,7 +407,7 @@ fn passes_of(
         // ([`FogWords`]). The rest of the pipeline state must be the
         // implementation's own (a pass that leaves blend or depth to the
         // previous draw stays on the D3D path, as the transparents').
-        let mut state = state_without_fog(&states).map_err(|refusal| FogRefusal::State { pass: n, refusal })?;
+        let mut state = state_without_fog(&states, matches!(layer.layer, 1 | 3 | 5 | 6 | 7 | 8 | 16 | 20)).map_err(|refusal| FogRefusal::State { pass: n, refusal })?;
         if !sets_cull(&states) {
             if !selection.layer_cull {
                 return Err(FogRefusal::InheritsCull { pass: n });
@@ -424,13 +424,13 @@ fn passes_of(
 /// [`pass_state`] over the implementation's states without the words that
 /// set the fog (they are [`FogWords`]'s, not the pipeline's): the same
 /// decode with the `Fog` refusal not taken.
-fn state_without_fog(states: &[RenderStateValue]) -> Result<PassState, StateRefusal> {
+fn state_without_fog(states: &[RenderStateValue], geometry: bool) -> Result<PassState, StateRefusal> {
     let without: Vec<RenderStateValue> = states
         .iter()
         .copied()
         .filter(|s| !FOG_WORD_SLOTS.contains(&u32::from(s.state)))
         .collect();
-    pass_state(&without)
+    if geometry { crate::pass_state::geometry_pass_state(&without) } else { pass_state(&without) }
 }
 
 /// Whether `states` set `CULLMODE` (build 5849's slots).
@@ -1432,6 +1432,21 @@ mod selection_tests {
     }
 
     const FRONT: Option<wgpu::Face> = Some(wgpu::Face::Front);
+
+    #[test]
+    fn water_binds_both_images_of_the_supplied_rasterizer_bitmap() {
+        use tags::material::{StageTexture, TextureSource};
+        let mut pass = imp(0, &[state(CULL_MODE, CW)]);
+        for (slot, id) in [14, 15].into_iter().enumerate() {
+            pass.textures[slot] = Some(StageTexture { source: TextureSource::Engine(id), size: None, stage_size: None });
+        }
+        let water = material(6, vec![vec![pass]]);
+        let bitmap = TagId(42);
+        let passes = crate::water_gpu::water_passes(&water, Some(bitmap)).unwrap();
+        assert_eq!(passes[0].look.textures[0], Stage::Bitmap { bitmap, image: 0 });
+        assert_eq!(passes[0].look.textures[1], Stage::Bitmap { bitmap, image: 1 });
+        assert!(crate::water_gpu::water_passes(&water, None).is_err());
+    }
 
     #[test]
     fn a_pass_with_four_implementations_draws_the_one_selected() {

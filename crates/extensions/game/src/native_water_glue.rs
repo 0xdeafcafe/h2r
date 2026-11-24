@@ -83,13 +83,18 @@ pub fn load<R: std::io::Read + std::io::Seek>(
     let materials: Vec<u16> = world.transparents.iter().map(|t| t.material).collect::<BTreeSet<_>>().into_iter().collect();
     if !materials.is_empty() {
         if let Ok(mut lib) = tags::material::ShaderLibrary::read(map) {
+            let rasterizer = map.tags().iter().find(|tag| tag.group.0 == *b"matg")
+                .and_then(|tag| tag.location)
+                .and_then(|loc| crate::native_lights_glue::matg_rasterizer_bitmap(
+                    lib.metadata(), loc.address, crate::native_lights_glue::RASTERIZER_DATUM_14,
+                ));
             let mut refused: HashMap<String, usize> = HashMap::new();
             for &m in &materials {
                 let Some(&shader) = shaders.get(usize::from(m)) else { continue };
                 let compiled = lib
                     .material(shader, None)
                     .map_err(|e| format!("material: {e}"))
-                    .and_then(|mat| water_gpu::water_passes(&mat).map_err(|r| r.describe()))
+                    .and_then(|mat| water_gpu::water_passes(&mat, rasterizer).map_err(|r| r.describe()))
                     .and_then(|ps| {
                         ps.iter()
                             .map(|p| {
@@ -245,7 +250,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             return None;
         }
         let read = ReadMemory(mem);
-        if !d.stencil_state(&read).is_some_and(|s| !s.enable) {
+        if !crate::native_fog_glue::stencil_disabled(|slot| d.render_state(&read, slot)) {
             render_bridge::native_layers::count(WATER_LATE_LAYER.into(), "refused_stencil_view", 1);
             return None;
         }
