@@ -443,6 +443,7 @@ pub struct ScreenProgram {
     pub signed: [[bool; 4]; 4],
     pub vertex: VertexUniforms,
     pub pixel: PixelUniforms,
+    pub combiner_inputs: CombinerInputs,
     /// `v<n>` the program reads (within [`STRIP_INPUTS`]).
     pub inputs: u16,
     /// What the call puts in ([`ScreenConstants::apply`]).
@@ -458,23 +459,40 @@ pub fn stage_dim(stage: ScreenStage) -> Option<TextureDim> {
     }
 }
 
-/// Whether the pixel side reads the vertex colours or fog (a general or
-/// final combiner input `v0`, `v1`, fog or the final `v1 + r0`), or
-/// leaves its final combiner to D3D (built from the fog and specular
-/// states the pass inherits).
+/// Inputs that can make inherited fog or vertex-colour raster state observable.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CombinerInputs {
+    pub colours: bool,
+    pub fog: bool,
+}
+
+impl CombinerInputs {
+    pub fn read(def: &shaders::PixelShaderDef) -> Self {
+        use shaders::psh::Reg;
+        let c = def.decode();
+        let Some(f) = c.final_combiner else {
+            // D3D synthesizes the final combiner from live fog and specular state.
+            return Self { colours: true, fog: true };
+        };
+        let mut result = Self::default();
+        for input in c.stages
+            .iter()
+            .flat_map(|s| s.rgb.inputs.iter().chain(&s.alpha.inputs))
+            .chain(&[f.a, f.b, f.c, f.d, f.e, f.f, f.g])
+        {
+            result.colours |= matches!(input.reg, Reg::V0 | Reg::V1 | Reg::V1R0Sum);
+            result.fog |= input.reg == Reg::Fog;
+        }
+        result
+    }
+}
+
+/// Whether omitted vertex attributes can affect the pixel shader.
 pub fn reads_vertex_colours(pixel_shader: &[u8; PSDEF_SIZE]) -> Result<bool, String> {
-    use shaders::psh::Reg;
     let def = shaders::PixelShaderDef::from_bytes(pixel_shader)
         .map_err(|e| format!("pixel shader: {e:?}"))?;
-    let c = def.decode();
-    let Some(f) = c.final_combiner else {
-        return Ok(true);
-    };
-    Ok(c.stages
-        .iter()
-        .flat_map(|s| s.rgb.inputs.iter().chain(&s.alpha.inputs))
-        .chain(&[f.a, f.b, f.c, f.d, f.e, f.f, f.g])
-        .any(|i| matches!(i.reg, Reg::V0 | Reg::V1 | Reg::Fog | Reg::V1R0Sum)))
+    let inputs = CombinerInputs::read(&def);
+    Ok(inputs.colours || inputs.fog)
 }
 
 /// Translates `look` with its vertex program `microcode` over the strips'
@@ -519,6 +537,7 @@ pub fn compile_screen(look: &ScreenLook, microcode: &[u8]) -> Result<ScreenProgr
         signed: t.signed,
         vertex: t.vertex,
         pixel: t.pixel,
+        combiner_inputs: CombinerInputs::read(&t.def),
         inputs: t.inputs,
         constants: look.constants.clone(),
         state: look.state,

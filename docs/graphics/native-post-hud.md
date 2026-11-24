@@ -672,6 +672,14 @@ uses D3D for that call.
 | Layer 17 | `frame-scene.layers` ([framescene.md](framescene.md), slice 4): its structure and object items from the scene's plan, as layers 1, 5, 7, 8 and 20 (`layer_pass::BLOOM_LAYER`). |
 | `0x0002df00`, `0x0002dd30` | Carried: the D3D draws, or an owned frame's replay of them with its own counts. The fade, UI and HUD are the native UI, above. |
 
+Post admission uses the packet's decoded raster state. Inherited fog,
+flat shading and two-sided lighting can be omitted when both the planned
+and live combiners are independent of their inputs. A combiner with an
+implicit final stage can depend on inherited fog and specular state.
+Rejected state words in unused texture stages and fixed-function texture
+operations do not affect a programmable post draw. A live depth or
+stencil operation requires the original depth attachment.
+
 ### The post hooks
 
 `feature::native_post`: The glow draws after

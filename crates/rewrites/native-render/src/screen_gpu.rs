@@ -1168,6 +1168,7 @@ mod tests {
             signed: [[false; 4]; 4],
             vertex: VertexUniforms::default(),
             pixel: PixelUniforms::default(),
+            combiner_inputs: Default::default(),
             inputs: 0x1f,
             constants: Default::default(),
             state: PassState {
