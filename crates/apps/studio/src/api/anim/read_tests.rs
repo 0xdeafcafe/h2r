@@ -91,7 +91,7 @@ fn animation(
     h1::Animation {
         name: name.into(),
         kind,
-        frame_count: arm.len() as i16,
+        frame_count: arm.len() as u16,
         frame_info_type: 0,
         frame_info: vec![],
         node_list_checksum: 1,
