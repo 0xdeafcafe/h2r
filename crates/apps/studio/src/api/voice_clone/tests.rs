@@ -731,6 +731,7 @@ fn the_window_will_not_say_a_line_with_no_output_name_and_no_game_line() {
     assert_eq!(why(&b, aimed), None);
     // A problem of the line's own comes first.
     assert_eq!(why(&b, none).as_deref(), Some("no text"));
-    // The API's own queue does not ask for a name.
-    assert_eq!(b.queue(None), 2);
+    // The API's own queue does not ask for a name: bare queues with
+    // named and aimed, and only the row with no text fails.
+    assert_eq!(b.queue(None), 3);
 }
