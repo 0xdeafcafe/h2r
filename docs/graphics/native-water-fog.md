@@ -41,6 +41,12 @@ gates the player chain after):
   hologram's; their items are object render records, stage 2's.
 - **Scene-copy and reflection inputs.** A template pass binds its stages from the instance bitmaps or the engine textures (`ResolvedImplementation::textures`); the engine-texture table (`0x00019530`, the jump table at `0x00019b68`) names every render target a pass can sample: 5 the view's bound target (a scene copy), 2 and 3 target 1 (the texaccum), 6 target 3, 13 target 9 (the shadow map), 8 target 10. Engine textures 14 and 15 bind the rasterizer data's bitmap at `+0x14` (`0x000197dd`, `0x000197fb`: `[[0x00485a80]+0x14]` through `0x000143c0`), 14 its image 0 and 15 its image 1 (14 clears `ecx`, the image argument; 15 leaves the 1 loaded at `0x00019538`); the fog and water loaders resolve it from the globals tag (`fog_gpu::Selection::rasterizer`, `look::rasterizer_image`) and sample it as an ordinary bitmap stage. A pass sampling a target the native side has no copy of stays on the D3D path. The fog pass draws before layer 6 and touches no target but the bound one. The water edge blend reads the alpha of the bound target (the teardown clears it after), so its native pass runs inside the wrapper's window, before `0x0003c3c0`'s clear; the pass is issued at the next D3D entry, and the teardown's clear is an entry.
 
+Native water and fog draws use the active player's physical viewport
+as their scissor. The water scene copy covers its entire colour attachment
+so a shader can address the copy with the same coordinates as the source.
+The packet path and the direct encoder use the same viewport edges at
+fractional raster scales.
+
 ### Planar fog
 
 `feature::native_fog` and

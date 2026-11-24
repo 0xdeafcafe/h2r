@@ -126,8 +126,10 @@ reads only AL: non-zero with view kind 1 re-runs the same index.
   The subsequent test of byte `+5` at `[0x00510c50]` can change the
   vertical tangent or frustum extents independently of this width factor.
   The caller may also supply off-centre extents. The exact-mode guest gather
-  uses this retail lens. Single-copy play adjusts the horizontal bounds of
-  the main view frustum at `VIEW_FRUSTUM_RECT`. The per-object setup can advance gameplay RNG,
+  uses this retail lens. Single-copy play fits the displayed camera at
+  `VIEW_PROJECTION_TERMS` before the builder derives the matrix, CPU
+  pixel scales and frustum bounds. Portal traversal and the geometry
+  projected through each window use the same horizontal extents. The per-object setup can advance gameplay RNG,
   so a wider host projection can expose regions for which the guest
   supplied no object records. See [high resolution](high-resolution.md#determinism).
 - The projection `0x004b9e14` (built by `0x0002fd90`): world-to-view 4x3
