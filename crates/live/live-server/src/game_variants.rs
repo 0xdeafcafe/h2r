@@ -286,12 +286,10 @@ pub fn quick_views(ir: &rules::Ir) -> Vec<QuickView> {
         .collect()
 }
 
-/// Who scores the game, as the view names it: `script` or `carrier`.
+/// Who scores the game, as the view names it: `carrier` when the script
+/// `uses` an engine's scoring, else `script`.
 pub fn scoring_word(ir: &rules::Ir) -> &'static str {
-    match ir.header.scoring {
-        rules::ir::Scoring::Script => "script",
-        rules::ir::Scoring::Carrier => "carrier",
-    }
+    if ir.header.uses.is_some() { "carrier" } else { "script" }
 }
 
 /// Option values from a request's JSON, by name. A value is a number, a
@@ -943,7 +941,7 @@ mod tests {
         assert_eq!(eligible(&plain), ["custom", "hopper", "ranked"]);
         let slayer = portable::port(&fists(), None, None, PortScript::Builtin).unwrap();
         assert_eq!(eligible(&slayer), ["custom", "hopper", "ranked"]);
-        let builder = "rules \"Builder\" 1\ncarrier slayer\nrequires forge.move\n\non kill(victim, killer) { if killer != none { score(killer, 1) } }\n";
+        let builder = "rules \"Builder\" 1\ntype slayer\nrequires forge.move\n\non kill(victim, killer) { if killer != none { score(killer, 1) } }\n";
         let forge = portable::port(&fists(), None, None, PortScript::Source(builder.into())).unwrap();
         assert_eq!(eligible(&forge), ["custom", "hopper"]);
     }

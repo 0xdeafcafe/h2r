@@ -1140,7 +1140,7 @@ async fn get_builtin(State(live): Shared, headers: HeaderMap) -> ApiResult<Respo
         items.push(json!({
             "name": ir.as_ref().map_or(*key, |ir| ir.header.name.as_str()),
             "key": key,
-            "engine": ir.as_ref().map(|ir| ir.header.carrier),
+            "engine": ir.as_ref().map(|ir| ir.header.engine()),
             "source": source,
             "hash": ir.as_ref().map(|ir| ir.id().to_string()),
             "example": true,

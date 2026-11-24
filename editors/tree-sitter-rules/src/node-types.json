@@ -602,22 +602,6 @@
     }
   },
   {
-    "type": "carrier_declaration",
-    "named": true,
-    "fields": {
-      "name": {
-        "multiple": false,
-        "required": true,
-        "types": [
-          {
-            "type": "identifier",
-            "named": true
-          }
-        ]
-      }
-    }
-  },
-  {
     "type": "const_declaration",
     "named": true,
     "fields": {
@@ -2051,22 +2035,6 @@
     }
   },
   {
-    "type": "list_declaration",
-    "named": true,
-    "fields": {
-      "name": {
-        "multiple": false,
-        "required": true,
-        "types": [
-          {
-            "type": "identifier",
-            "named": true
-          }
-        ]
-      }
-    }
-  },
-  {
     "type": "match_arm",
     "named": true,
     "fields": {
@@ -2571,6 +2539,22 @@
     }
   },
   {
+    "type": "points_declaration",
+    "named": true,
+    "fields": {
+      "text": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "string",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "quick_declaration",
     "named": true,
     "fields": {
@@ -2796,22 +2780,6 @@
         "types": [
           {
             "type": "capability",
-            "named": true
-          }
-        ]
-      }
-    }
-  },
-  {
-    "type": "scoring_declaration",
-    "named": true,
-    "fields": {
-      "name": {
-        "multiple": false,
-        "required": true,
-        "types": [
-          {
-            "type": "identifier",
             "named": true
           }
         ]
@@ -3061,10 +3029,6 @@
           "named": true
         },
         {
-          "type": "carrier_declaration",
-          "named": true
-        },
-        {
           "type": "const_declaration",
           "named": true
         },
@@ -3089,10 +3053,6 @@
           "named": true
         },
         {
-          "type": "list_declaration",
-          "named": true
-        },
-        {
           "type": "option_declaration",
           "named": true
         },
@@ -3101,15 +3061,15 @@
           "named": true
         },
         {
+          "type": "points_declaration",
+          "named": true
+        },
+        {
           "type": "quick_declaration",
           "named": true
         },
         {
           "type": "requires_declaration",
-          "named": true
-        },
-        {
-          "type": "scoring_declaration",
           "named": true
         },
         {
@@ -3122,6 +3082,14 @@
         },
         {
           "type": "teams_declaration",
+          "named": true
+        },
+        {
+          "type": "type_declaration",
+          "named": true
+        },
+        {
+          "type": "uses_declaration",
           "named": true
         },
         {
@@ -3472,6 +3440,22 @@
     }
   },
   {
+    "type": "type_declaration",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "unary_expression",
     "named": true,
     "fields": {
@@ -3568,6 +3552,22 @@
           {
             "type": "not",
             "named": false
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "uses_declaration",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
           }
         ]
       }
@@ -3816,10 +3816,6 @@
     "named": false
   },
   {
-    "type": "carrier",
-    "named": false
-  },
-  {
     "type": "comment",
     "named": true,
     "extra": true
@@ -3901,10 +3897,6 @@
     "named": false
   },
   {
-    "type": "list",
-    "named": false
-  },
-  {
     "type": "match",
     "named": false
   },
@@ -3961,6 +3953,10 @@
     "named": false
   },
   {
+    "type": "points",
+    "named": false
+  },
+  {
     "type": "quick",
     "named": false
   },
@@ -3970,10 +3966,6 @@
   },
   {
     "type": "rules",
-    "named": false
-  },
-  {
-    "type": "scoring",
     "named": false
   },
   {
@@ -4007,6 +3999,14 @@
   {
     "type": "true",
     "named": true
+  },
+  {
+    "type": "type",
+    "named": false
+  },
+  {
+    "type": "uses",
+    "named": false
   },
   {
     "type": "var",
