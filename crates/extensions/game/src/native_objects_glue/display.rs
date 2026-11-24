@@ -132,7 +132,7 @@ pub(super) fn plan_lod<B: d3d::Backend>(
                         record: 0, shader, section: section.section, part,
                         implementation: section.implementation,
                     };
-                    let mut draw = lit.plan_scene(model, &frame, &key, &section.rows, &entry).ok()?;
+                    let mut draw = lit.plan_scene(model, &frame, &key, &section.rows, &entry.states).ok()?;
                     if draw.texaccum != reference[start].1.texaccum {
                         return None;
                     }

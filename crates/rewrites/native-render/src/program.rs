@@ -4246,6 +4246,7 @@ mod tests {
             state: world_pass(plain_look()).state,
             look: plain_look(),
             fog: Default::default(),
+            planar: None,
         };
         pass.look.textures[0] = Stage::Bitmap { bitmap: map::TagId(9), image: 0 };
         let mut def = PixelShaderDef {
