@@ -7,6 +7,7 @@ pub mod ground;
 mod link;
 pub mod marker;
 pub mod markers_world;
+pub mod nav;
 pub mod net;
 
 use std::path::{Path, PathBuf};
@@ -554,6 +555,18 @@ impl LocalApi for Backend {
             return Err(driver.reason.clone());
         };
         e.ground_build(if_stale)
+    }
+
+    fn nav(&self) -> Result<Value, String> {
+        self.read(Editor::nav_json)
+    }
+
+    fn nav_generate(&self) -> Result<local::NavReply, String> {
+        let mut driver = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(e) = driver.editor.as_mut() else {
+            return Err(driver.reason.clone());
+        };
+        e.nav_generate()
     }
 
     fn document(&self) -> Result<ForgeDoc, String> {

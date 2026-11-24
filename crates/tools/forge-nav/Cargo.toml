@@ -1,0 +1,24 @@
+[package]
+name = "forge-nav"
+description = "Generate nav for a Forge map: the bots' nav mesh over the structure BSP with the map's solid objects merged in, the teleporters linked, and its problems (docs/game/forge-design.md, F9)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.h2]
+doc = ["game/forge-nav.md"]
+status = "in progress"
+
+[dependencies]
+# The nav mesh and the generator the bots use (bots::cache::build).
+bots = { path = "../../live/bots" }
+# A solid object's collision is compiled and merged into the level's.
+collision-build = { path = "../collision-build" }
+map.workspace = true
+# Reading a built map's placements, flags and object collision.
+scenario-edit = { path = "../scenario-edit" }
+tags.workspace = true
+
+[lints]
+workspace = true

@@ -20,6 +20,8 @@ pub mod forge_maps;
 #[cfg(feature = "test-maps")]
 pub mod ground_builder;
 #[cfg(feature = "test-maps")]
+pub mod nav_builder;
+#[cfg(feature = "test-maps")]
 pub mod test_maps_recipes;
 
 use std::collections::BTreeMap;
@@ -1300,6 +1302,9 @@ fn run_configured(
         forge_glue::ground::install(Box::new(ground_builder::AppGround::disc(
             opts.disc.clone(),
         )));
+        // Generate nav: the bots' nav over the same build (nav_builder.rs).
+        #[cfg(feature = "test-maps")]
+        forge_glue::nav::install(Box::new(nav_builder::AppNav::disc(opts.disc.clone())));
         // The lobby's map variant builds the same way (forge_maps.rs).
         game::map_variant::install(Box::new(forge_maps::DiscMaps::new(
             opts.disc.clone(),

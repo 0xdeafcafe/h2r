@@ -173,6 +173,7 @@ Two consumers, two meshes.
 
 The overlay draws sectors, links by kind, and problems: a spawn off the
 mesh, an island no link reaches, an objective a team cannot path to.
+What of this is built, and how, is [forge-nav.md](forge-nav.md).
 Dynamic things (doors, movers, switched barriers) have no timed edges;
 a bot recovers by replanning, as on the retail maps with moving parts.
 

@@ -403,8 +403,9 @@ camera and tool take no input (`forge_screens::ui_up`, published to
   tool settings.") and Controls ("Every Forge control, with its
   button."), `sheet::OPTIONS`, each with its help and each opening
   above it so B comes back; Monitor
-  look... joins when it is built, **Build AI ground** and **Test waves**
-  ([forge-map-variants.md](forge-map-variants.md), "AI ground"; they act
+  look... joins when it is built, **Build AI ground**, **Test waves** and **Generate nav**
+  ([forge-map-variants.md](forge-map-variants.md), "AI ground";
+  [forge-nav.md](forge-nav.md); they act
   and close the page), and the rows later slices bring:
   Placed objects, Map limits (P4), Players (F5), Map settings and
   Publish (F14). The object menu's last row is **AI and objectives**,

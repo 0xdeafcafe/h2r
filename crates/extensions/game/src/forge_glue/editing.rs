@@ -4,6 +4,7 @@
 //! sheets and acts on their choices.
 use super::{GENERATION, admitted, controls};
 use agent::forge::ground as ground_api;
+use agent::forge::nav as nav_api;
 use agent::forge::local::{self as local_api, ForgeEdit, ForgeWorld, Guard, ProposalReply};
 use agent::sim::calls;
 use forge::camera::Camera;
@@ -55,10 +56,15 @@ enum FileResult {
     Loaded(Pending),
     /// The ground build's copy of the session, and whether it built.
     Ground(Box<(Session, bool)>),
+    /// The nav generation's copy of the session.
+    Nav(Box<Session>),
 }
 
 /// Where a ground build's answer goes when an agent asked for it.
 type GroundAnswer = mpsc::Sender<Result<Value, String>>;
+
+/// Where a nav generation's answer goes when an agent asked for it.
+type NavAnswer = mpsc::Sender<Result<Value, String>>;
 
 #[derive(Clone, Copy)]
 enum CoordinateTarget {
@@ -128,6 +134,10 @@ pub(super) struct Editor {
     ground_building: bool,
     /// The agent that asked for the running build, to answer when it ends.
     ground_answer: Option<GroundAnswer>,
+    /// The file job is a nav generation (`forge_glue::nav`).
+    nav_generating: bool,
+    /// The agent that asked for the running generation.
+    nav_answer: Option<NavAnswer>,
 }
 
 impl Editor {
@@ -171,6 +181,8 @@ impl Editor {
             now: 0,
             ground_building: false,
             ground_answer: None,
+            nav_generating: false,
+            nav_answer: None,
         }
     }
 
@@ -334,6 +346,7 @@ impl Editor {
             "budget":{"used":self.session.objects().len(),"limit":self.session.budget()},
             "palette":self.session.palette().len(), "palette_refused":self.refused,
             "ground":ground_api::status(&self.session, self.ground_facts()),
+            "nav":nav_api::status(&self.session, self.nav_facts()),
             "parked":controls::parked().map(|unit| format!("{unit:#010x}")),
             "pending_call":self.pending.is_some(), "pending_file":self.file_job.is_some(), "file":self.filename,
             "notice":self.notice.as_ref().map(|(text,_)|text)
@@ -397,14 +410,68 @@ impl Editor {
         Ok(rx)
     }
 
+    /// What the game knows of the nav besides the session (`forge.nav`).
+    fn nav_facts(&self) -> nav_api::Facts {
+        nav_api::Facts {
+            available: super::nav::available(),
+            generating: self.nav_generating,
+        }
+    }
+
+    /// `forge.nav`'s reply.
+    pub fn nav_json(&self) -> Value {
+        nav_api::reply(&self.session, self.nav_facts())
+    }
+
+    /// **Generate nav**: generate on a worker over a copy of the session,
+    /// which the editor takes back when the worker is done. Edits wait
+    /// meanwhile. `answer` is told how it ended.
+    fn start_nav(&mut self, tick: u32, answer: Option<NavAnswer>) -> Result<(), String> {
+        if self.is_shared() {
+            return Err("Nav is generated in a local session.".into());
+        }
+        if self.busy() {
+            return Err("A Forge edit is waiting for the game.".into());
+        }
+        if !super::nav::available() {
+            return Err(super::nav::NO_GENERATOR.into());
+        }
+        let session = self.session.clone();
+        self.file(move || {
+            let mut copy = Session::clone(&session);
+            super::nav::run(&mut copy)?;
+            Ok(FileResult::Nav(Box::new(copy)))
+        })?;
+        self.nav_generating = true;
+        self.nav_answer = answer;
+        self.notice = Some(("Generating nav...".into(), tick));
+        Ok(())
+    }
+
+    /// `forge.nav {generate: true}`: start a generation and answer when it
+    /// has ended.
+    pub fn nav_generate(&mut self) -> Result<mpsc::Receiver<Result<Value, String>>, String> {
+        let (tx, rx) = mpsc::channel();
+        self.start_nav(self.now, Some(tx))?;
+        Ok(rx)
+    }
+
     /// The game type markers of the session: a marker for each spawn,
     /// flag, hill, teleporter, item spawner and ground label, and each
     /// problem the last ground build found
-    /// ([`super::markers_world::entries`]). None with the monitor off.
+    /// ([`super::markers_world::entries`]), then with the Nav overlay on
+    /// each problem the last **Generate nav** found
+    /// ([`super::markers_world::nav_problems`]). None with the monitor off.
     pub fn marker_entries(&self) -> Vec<super::markers_world::Entry> {
-        use super::markers_world::{Facts, entries, with_area};
+        use super::markers_world::{Facts, entries, nav_problems, with_area};
+        let nav = match self.session.nav_report() {
+            Some(report) if self.tool.monitor && self.overlay(Overlay::Nav) => {
+                nav_problems(&report.problems)
+            }
+            _ => Vec::new(),
+        };
         if !self.tool.monitor || !self.overlay(Overlay::Markers) {
-            return Vec::new();
+            return nav;
         }
         let placed = self.session.ground_counts().iter().sum::<usize>() > 0;
         let mut ground = placed
@@ -441,6 +508,7 @@ impl Editor {
             entry.marker.kind = with_area(entry.marker.kind.clone(), draft.area.clone());
             entry.draft_path = matches!(draft.area.shape, game_markers::Shape::Path(_));
         }
+        entries.extend(nav);
         entries
     }
 
@@ -916,9 +984,25 @@ impl Editor {
                     let _ = answer.send(Ok(reply));
                 }
             }
+            Ok(FileResult::Nav(done)) => {
+                // No edit runs while a file job does: the copy is the
+                // session as it was, with the generation recorded.
+                self.session = Arc::new(*done);
+                self.nav_generating = false;
+                let text = super::nav::notice(self.session.nav_report());
+                self.notice = Some((text, tick));
+                if let Some(answer) = self.nav_answer.take() {
+                    let _ = answer.send(Ok(self.nav_json()));
+                }
+            }
             Err(reason) => {
                 if std::mem::take(&mut self.ground_building)
                     && let Some(answer) = self.ground_answer.take()
+                {
+                    let _ = answer.send(Err(reason.clone()));
+                }
+                if std::mem::take(&mut self.nav_generating)
+                    && let Some(answer) = self.nav_answer.take()
                 {
                     let _ = answer.send(Err(reason.clone()));
                 }
@@ -1189,6 +1273,7 @@ impl Editor {
             }
             Choice::BuildGround => return self.command(tick, Command::BuildGround),
             Choice::TestWaves => return self.command(tick, Command::TestWaves),
+            Choice::GenerateNav => return self.start_nav(tick, None),
             Choice::Tool(t) => self.tool.set_links(t == ToolKind::Links),
             Choice::Set(Prop::RotationSnap, i) => {
                 let step = *ANGLE_STEPS.get(i).ok_or("No such rotation snap.")?;

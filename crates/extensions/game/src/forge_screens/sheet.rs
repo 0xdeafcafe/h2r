@@ -277,6 +277,8 @@ pub enum Choice {
     BuildGround,
     /// **Test waves**: build the ground when it is not current.
     TestWaves,
+    /// **Generate nav**: the bots' nav with the placed objects in.
+    GenerateNav,
     /// The placed objects browser: fly the monitor to an added object and
     /// look at it.
     FlyTo(forge::OpId),
@@ -965,6 +967,11 @@ pub const OVERLAYS: &[OverlayDef] = &[
         label: "Axes",
         description: "The axes and outline at the held or aimed object.",
     },
+    OverlayDef {
+        overlay: forge::tool::Overlay::Nav,
+        label: "Nav problems",
+        description: "A mark at each problem the last Generate nav found.",
+    },
 ];
 
 /// The Overlays page: a row for each of [`OVERLAYS`], showing On or Off;
@@ -1002,7 +1009,8 @@ pub struct OptionDef {
 
 /// Forge options, in order (docs/game/forge-firefight-ui.md "The screens").
 /// Monitor look joins when it is built; Map limits in P4 (Placed objects is
-/// [`placed_row`], after these), Generate nav in F9, Players in F5, Map settings and Publish in F14.
+/// [`placed_row`], after these, then Build AI ground, Test waves and
+/// Generate nav), Players in F5, Map settings and Publish in F14.
 pub const OPTIONS: &[OptionDef] = &[
     OptionDef {
         label: "Tool settings...",
@@ -1106,6 +1114,8 @@ pub fn options_with(placed: &[Placed]) -> Sheet {
                     .describe("Build the nav mesh and zones for the placed labels now."),
                 SheetRow::new("Test waves", Act::Choose(Choice::TestWaves))
                     .describe("Build the AI ground if it is stale, then test."),
+                SheetRow::new("Generate nav", Act::Choose(Choice::GenerateNav))
+                    .describe("Build the bots' nav with the placed objects in."),
             ])
             .collect(),
         focus: 0,

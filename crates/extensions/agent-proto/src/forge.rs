@@ -20,6 +20,7 @@ pub mod method {
     pub const THINGS: &str = "forge.things";
     pub const GROUND: &str = "forge.ground";
     pub const GROUND_BUILD: &str = "forge.ground.build";
+    pub const NAV: &str = "forge.nav";
 }
 
 /// The kinds of thing `forge.things` names, as its `kind` filter and each
@@ -132,6 +133,19 @@ pub struct GroundBuildParams {
 /// How many game ticks `forge.ground.build` waits for its answer: a build
 /// reads the base map and builds the ground over it.
 pub const GROUND_WAIT_TICKS: u64 = 3600;
+
+/// `forge.nav`: the nav's state, counts, problems and overlay; with
+/// `generate`, **Generate nav** first.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NavParams {
+    #[serde(default)]
+    pub generate: bool,
+}
+
+/// How many game ticks `forge.nav {generate: true}` waits for its answer:
+/// a generation builds the play form and the bots' mesh over it.
+pub const NAV_WAIT_TICKS: u64 = 3600;
 
 /// One monitor input. Directions are normalized axes in camera space.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]

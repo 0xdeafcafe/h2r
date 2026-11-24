@@ -23,8 +23,8 @@ pub use forge_doc::{BlockKind, Endpoint, OpId, TagKey, Value};
 pub use forge_doc::{GroundLabel, GroundRecipe};
 pub use links::{Linkable, Teleporter};
 pub use session::{
-    Goal, GroundBuilder, GroundProblem, GroundReceipt, GroundReport, GroundState, Outgoing,
-    PlacedMarker,
+    Goal, GroundBuilder, GroundProblem, GroundReceipt, GroundReport, GroundState, NavBuilder,
+    NavLine, NavProblem, NavReport, NavState, Outgoing, PlacedMarker,
     SHARED_PROPOSE, SHARED_REDO, Session, SessionAdmit, flag_label,
 };
 pub use things::{BaseRow, BaseRows, LEFT_OUT_SENTENCE, Thing, ThingKind};
@@ -120,6 +120,9 @@ mod base_tests;
 
 #[cfg(test)]
 mod ground_tests;
+
+#[cfg(test)]
+mod nav_tests;
 
 #[cfg(test)]
 mod budget_tests;

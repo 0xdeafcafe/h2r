@@ -1,6 +1,6 @@
 # Forge editing: the monitor's controls, tools and properties
 
-Status: Partly built. The Halo 3 button table, flying with thrust and fine movement, pick up and drop, manipulating a held object, movement and rotation snap, world or local axes, Coordinates with typing and nudging, hold to delete, undo and redo, the Tools picker with the Objects and Links tools, the object menu, a Properties page with Heading and the spawn, goal and item rows, Tool settings with Movement snap, Rotation snap and Axes, the Overlays page with the Markers, Other monitors and Axes overlays, and the placed objects browser exist. The nav overlay (with F9), groups, prefabs and lights are design.
+Status: Partly built. The Halo 3 button table, flying with thrust and fine movement, pick up and drop, manipulating a held object, movement and rotation snap, world or local axes, Coordinates with typing and nudging, hold to delete, undo and redo, the Tools picker with the Objects and Links tools, the object menu, a Properties page with Heading and the spawn, goal and item rows, Tool settings with Movement snap, Rotation snap and Axes, the Overlays page with the Markers, Other monitors, Axes and Nav problems overlays, **Generate nav**, and the placed objects browser exist. The Nav tool, the nav's sectors drawn in the game, groups, prefabs and lights are design.
 Code: `crates/extensions/forge/src/tool.rs` (`Tool`, `Action`, `Input`, `Command`), `crates/extensions/forge/src/session.rs` (`Session`), `crates/extensions/game/src/forge_controls.rs` and `forge_controls/bindings.rs` (pad, keyboard and agent input; the bindings table), `crates/extensions/game/src/forge_screens/sheet.rs` (the menus' tables), `crates/extensions/game/src/forge_glue/editing.rs` (the host). Tests: `crates/extensions/forge/src/tool_tests.rs`, `link_tests.rs`, `props_tests.rs`, `tests.rs`; `forge_controls.rs`, `bindings.rs`, `forge_screens/tests.rs` and `forge_glue/editing/tests.rs` in `crates/extensions/game/src`.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
@@ -134,9 +134,10 @@ log or the sim (`forge::tool::Overlay`, `Tool::overlays`).
 | Markers | the game type markers: a spawn, flag, hill, teleporter, item spawner and ground label each (`forge_glue::markers_world`) | `Editor::marker_entries` is empty |
 | Other monitors | a ring at each other seat's monitor (`Editor::monitor_markers`) | no rings; the seats' bodies stay |
 | Axes | the axes and outline at the held or aimed object (`forge_glue::gizmo`) | no gizmo |
+| Nav problems | a mark at each problem the last **Generate nav** found (`markers_world::nav_problems`, [forge-nav.md](forge-nav.md)) | no marks |
 
-The nav overlay (sectors, links by kind, problems; [forge-features.md](forge-features.md),
-"Nav mesh") is a row of this page when F9 builds it. `forge.status`
+The sectors and links of the nav are in `forge.nav`'s `overlay`; the
+game does not draw them. `forge.status`
 carries `overlays`, a map of each overlay's name to whether it is on;
 `forge.input` takes `overlays` to open the page.
 

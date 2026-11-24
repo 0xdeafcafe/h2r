@@ -326,6 +326,35 @@ pub fn entries(f: &Facts<'_>) -> Vec<Entry> {
     out
 }
 
+/// The markers of the last **Generate nav**'s problems
+/// (docs/game/forge-nav.md, "The overlay"), in the problem tone: a start
+/// off the mesh as a spawn, a teleporter end as that end, a solid left out
+/// as a cover mark. Each is named `nav:` and its subject.
+pub fn nav_problems(problems: &[forge::NavProblem]) -> Vec<Entry> {
+    problems
+        .iter()
+        .map(|p| {
+            let kind = match p.kind.as_str() {
+                "start_off_mesh" => Kind::Spawn,
+                "teleporter_off_mesh" if p.what.ends_with("receiver") => Kind::TeleporterReceiver,
+                "teleporter_off_mesh" => Kind::TeleporterSender,
+                _ => Kind::Cover,
+            };
+            entry(
+                None,
+                format!("nav:{}", p.what),
+                kind,
+                None,
+                None,
+                p.position,
+                0.0,
+                Tone::Problem,
+                false,
+            )
+        })
+        .collect()
+}
+
 // ---- what the session publishes ----
 
 #[derive(Clone, Default)]

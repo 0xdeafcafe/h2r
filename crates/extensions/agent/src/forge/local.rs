@@ -6,7 +6,8 @@ use std::sync::{Arc, mpsc};
 use ::forge::look::{Refusal, monitors::Who};
 use ::forge::{BlockKind, Frame, PaletteItem, Session, World};
 use agent_proto::forge::{
-    GROUND_WAIT_TICKS, GroundBuildParams, THING_KINDS, ThingsParams, method, refusal,
+    GROUND_WAIT_TICKS, GroundBuildParams, NAV_WAIT_TICKS, NavParams, THING_KINDS, ThingsParams,
+    method, refusal,
 };
 use agent_proto::{Boundary, Kind, ObjectId, RpcError, code};
 use engine::GuestMemory;
@@ -468,6 +469,9 @@ pub type ProposalReply = mpsc::Receiver<Result<Entry, String>>;
 /// the build did not happen.
 pub type GroundReply = mpsc::Receiver<Result<Value, String>>;
 
+/// A generation's answer: `forge.nav`'s reply, or why it did not happen.
+pub type NavReply = mpsc::Receiver<Result<Value, String>>;
+
 pub trait LocalApi: Send + Sync + 'static {
     /// The profile and seat colour the monitor look methods speak for: the
     /// signed-in profile of local slot 0, from guest memory when there is
@@ -500,6 +504,20 @@ pub trait LocalApi: Send + Sync + 'static {
     /// `if_stale` **Test waves**) and answer when it has finished.
     fn ground_build(&self, _if_stale: bool) -> Result<GroundReply, String> {
         Err(super::ground::NO_BUILDER.into())
+    }
+    /// `forge.nav`: the nav's state, the last generation's counts,
+    /// problems and overlay. The default reads the session and says
+    /// nothing the game alone knows.
+    fn nav(&self) -> Result<Value, String> {
+        Ok(super::nav::reply(
+            &*self.session()?,
+            super::nav::Facts::default(),
+        ))
+    }
+    /// `forge.nav {generate: true}`: **Generate nav**, answering when it
+    /// has finished.
+    fn nav_generate(&self) -> Result<NavReply, String> {
+        Err(super::nav::NO_GENERATOR.into())
     }
     /// How many game ticks `forge.propose` waits for its answer. A shared
     /// session's goes to the host and back, and waits for the tick the
@@ -666,6 +684,34 @@ pub fn install(agent: &Agent, backend: impl LocalApi) {
     agent.add_game_method(method::GROUND, Access::Read, move |v, _| {
         empty(v)?;
         host.ground().map_err(super::unavailable)
+    });
+    let host = backend.clone();
+    agent.add_game_method(method::NAV, Access::Act, move |v, ctx| {
+        let p: NavParams = if v.is_null() {
+            NavParams::default()
+        } else {
+            serde_json::from_value(v).map_err(|e| super::invalid(e.to_string()))?
+        };
+        if !p.generate {
+            return host.nav().map_err(super::unavailable);
+        }
+        if ctx.at.boundary != Boundary::Tick || ctx.at.mode.as_deref() != Some("multiplayer") {
+            return Err(super::unavailable(
+                "nav generation requires a local multiplayer tick",
+            ));
+        }
+        let reply = host.nav_generate().map_err(refused)?;
+        ctx.defer(
+            NAV_WAIT_TICKS,
+            Box::new(move |_| match reply.try_recv() {
+                Ok(result) => Some(result.map_err(refused)),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Some(Err(super::unavailable("the Forge session ended")))
+                }
+            }),
+        );
+        Ok(Value::Null)
     });
     let host = backend.clone();
     agent.add_game_method(method::GROUND_BUILD, Access::Act, move |v, ctx| {

@@ -498,8 +498,9 @@ fn every_forge_option_has_its_help() {
     let [top, left, bottom, right] = SETTINGS_HELP_TEXT.rect;
     let (width, height) = (i32::from(right - left), i32::from(top - bottom));
     let page = sheet::options();
-    // The options, then Placed objects, Build AI ground and Test waves.
-    assert_eq!(page.rows.len(), sheet::OPTIONS.len() + 3);
+    // The options, then Placed objects, Build AI ground, Test waves and
+    // Generate nav.
+    assert_eq!(page.rows.len(), sheet::OPTIONS.len() + 4);
     for r in &page.rows {
         let help = r.description.as_deref().unwrap_or_default();
         assert!(!help.trim().is_empty(), "{}: no help", r.label);
@@ -578,6 +579,7 @@ fn the_forge_options_build_the_ground_and_test_waves() {
     let rows: Vec<(&str, &Act)> = s.rows.iter().map(|r| (r.label.as_str(), &r.act)).collect();
     assert!(rows.contains(&("Build AI ground", &Act::Choose(Choice::BuildGround))));
     assert!(rows.contains(&("Test waves", &Act::Choose(Choice::TestWaves))));
+    assert!(rows.contains(&("Generate nav", &Act::Choose(Choice::GenerateNav))));
     assert!(ForgeScreen::new(Kind::Options).show(s).is_ok());
 }
 
