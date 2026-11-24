@@ -6,6 +6,9 @@ use runtime::{CpuAbi, Guest, TransferAbi, abi};
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
+/// Manager and graph entries whose generated guest segments supply the result.
+pub const ENTRIES: [u32; 6] = [0x1c66a0, 0x1c6f60, 0x1cd590, 0x1daea0, 0x1dd9d0, 0x1ddb40];
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Mismatch {
     /// The entry or return selector at which the segment began.
@@ -108,7 +111,8 @@ impl Prediction {
         });
     }
 
-    fn difference(&self, cpu: &CpuAbi, ram: &Guest, transfer: TransferAbi) -> Option<Mismatch> {
+    /// Compare a completed guest boundary without updating live-run counters.
+    pub fn difference(&self, cpu: &CpuAbi, ram: &Guest, transfer: TransferAbi) -> Option<Mismatch> {
         // Only build diagnostics on a mismatch, outside the statistics lock.
         macro_rules! check {
             ($name:expr, $want:expr, $got:expr) => {

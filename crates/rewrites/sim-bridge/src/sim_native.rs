@@ -273,9 +273,10 @@ static ANIM_BODIES: std::sync::LazyLock<Vec<AnimBody>> = std::sync::LazyLock::ne
     POSE_BODIES.into_iter().chain(manager::bodies().map(|body| AnimBody {
         point: points::by_base(body.entry).unwrap_or(&body.point),
         sites: body.sites,
-        run: match body.entry {
-            0x1c66a0 | 0x1c6f60 | 0x1cd590 | 0x1daea0 | 0x1dd9d0 | 0x1ddb40 => AnimRun::ManagerArm,
-            _ => AnimRun::Manager,
+        run: if manager::arm::ENTRIES.contains(&body.entry) {
+            AnimRun::ManagerArm
+        } else {
+            AnimRun::Manager
         },
     })).collect()
 });
