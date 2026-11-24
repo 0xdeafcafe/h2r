@@ -108,9 +108,18 @@ same reads, in the same order.
    shader, argument, mask, pass, detail level and draw callback. On equality
    the Rust keys drive the draw and instance reads, with the matching guest
    slots retained for masking. A difference or unavailable input keeps the
-   view on item extraction. Both guest producers still run for comparison
+   view on item extraction. The placement producer still runs for comparison
    and cache requests. See `layout/decorators/cells.rs` and
    `layout/decorators/placements.rs`.
+
+   At the grid producer entry, Rust records the input words read by its
+   traversal. On return it compares the count and every output slot to
+   the guest. A subsequent call with the same stack location, BSP,
+   camera, MXCSR and input words publishes the Rust cells directly and
+   reproduces the compared call's volatile registers and flags. The proof
+   covers one grid per BSP generation. Reaching the 256-cell limit
+   leaves the call with the guest, which continues visiting the tree
+   after its output is full.
 
 6. **The plan** (`native_render::decorators::plan`). The draws whose
    material (set, shader, the two item bytes, layer) the stage has; each
@@ -214,6 +223,8 @@ same reads, in the same order.
   the guest because skipping them would change a render state the device
   holds) and `scene_decorator_views_declined` (views the
   host left to the D3D path) ([agent-api.md](../runtime/agent-api.md)).
+- `scene_decorator_grid_compared`, `_differ` and `_native` count original
+  grid calls checked, mismatches and calls replaced.
 - `scene_decorator_placements_equal` and `_differ` count view comparisons.
   `_no_windows`, `_unread`, `_nonresident` and `_virtual_shader` count
   fallbacks before the list comparison.

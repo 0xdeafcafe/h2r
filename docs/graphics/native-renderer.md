@@ -269,6 +269,22 @@ for resource accounting. Legacy enqueues have no suppression promise.
    Compare each placement, its order and its instance data at the draw
    boundary. Keep the guest path for any input the Rust builder declines.
 
+Every stage reads the scene's own projection for the frame (the view's
+camera and render scale), never a constant lens: the display copy's tangent
+bounds widen around the same lens centre as the retail copy. Visibility
+tests run at a widened FOV and render scale 0.75
+(`scene-extract/src/visibility/tests.rs`).
+
+Steps 1 and 4 have Rust producers that replace the guest's after an
+identical compare: the portal walk, regions and windows, sphere and PVS
+rows, and the decorator grid (`render-bridge/src/native_decorators/grid.rs`).
+For step 3, `View::display_transparents` carries the sorted display queue:
+the shared reference slots plus layer-15 cluster parts
+(`native_world/section.rs`, `native_scene_lists/transparents/display.rs`).
+`order_exact` is false when equal keys or a plane cycle make the merged order
+depend on the wide gather's insertion order; the queue is not drawn then.
+The native water draw does not yet consume the queue.
+
 ## Scene list builders
 
 The scene lists go off with the rest of the native renderer. This stage publishes the engine's original
@@ -308,10 +324,11 @@ Setup stages writes across the entire object tree. A refusal restarts at
 the original entry with the incoming registers and memory. New resource
 I/O, synchronous waits, request reprioritization, resource relocation,
 live light-probe work, animated pose evaluation, and auxiliary model
-materials use that path. Portal traversal and dynamic light frustum
-setup (`0x000c1d90`) supply the inputs to the Rust gathers. The main
-view's traversal and object set also run in Rust beside the guest's and
-are compared with them ([native-visibility.md](native-visibility.md)).
+materials use that path. The Rust single-frustum portal walk, sphere gather and PVS gather supply
+regions after comparison with the original producers. Each hook checks
+its inputs and preserves the guest path for an unverified call. Dynamic
+light frustum setup at `0x000c1d90` supplies the light lenses.
+[Visibility in Rust](native-visibility.md).
 Effect producers decide when effects are ready to queue.
 
 Frame stats record `native_scene_lists_<stage>_native`, `_fallback` and

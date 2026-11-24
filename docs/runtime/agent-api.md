@@ -2038,7 +2038,9 @@ h2 agent render.parity '{"arm": true}'
   did not read), `scene_decorator_draws`, `scene_decorator_instances`,
   `scene_decorator_remainder`, and the decorator placement source by view
   (`scene_decorator_placements_equal`, `_differ`, `_no_windows`, `_unread`,
-  `_nonresident`, `_virtual_shader`). The decorator stage reports
+  `_nonresident`, `_virtual_shader`). The grid producer reports
+  `scene_decorator_grid_compared`, `_differ` and `_native`.
+  The decorator stage reports
   `scene_decorator_views`, `scene_decorator_views_native`,
   `scene_decorator_items_skipped`, `scene_decorator_draws_unready`,
   `scene_decorator_draws_state` and `scene_decorator_views_declined`
