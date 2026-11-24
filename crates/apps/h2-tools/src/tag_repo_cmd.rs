@@ -1,12 +1,14 @@
-//! `h2 tags extract`, `h2 tags build` and `h2 tags reassemble`: the loose
-//! tag repository (docs/formats/tag-repo.md) and the maps it gives back
-//! (docs/engine/asset-store.md).
+//! `h2 tags extract`, `h2 tags build`, `h2 tags reassemble` and `h2 tags
+//! catalogue`: the loose tag repository (docs/formats/tag-repo.md), the
+//! maps it gives back and the assets it holds (docs/engine/asset-store.md).
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use map::{Map, ResourceFile};
+use map::{FourCC, Map, ResourceFile};
+use tags::repo::catalogue::{self, Variants};
 use tags::repo::extract::MapWork;
 use tags::repo::store::{EXTRACT_FILE, PutReport};
 use tags::repo::{EXTRACT_VERSION, Layouts, MapSource, SharedFiles, TagRepo, compare, update};
@@ -37,7 +39,13 @@ const USAGE: &str = "usage:
       REPO/extract.toml and, with --compare, against the disc's own file;
       then the store's size by part. Fails when a map differs, has no
       skeleton, or (with --compare) a disc map is not in REPO.
-      REPO defaults to <data>/tags";
+  h2 tags catalogue [--repo REPO] [--force]
+      REPO's asset catalogue (assets.idx): built from the manifests and
+      written when missing or stale (--force: always), then one line per
+      group that has variants: the keys, the files and the variant
+      readings as the store keeps them, and the assets by asset hash
+      after the normal forms (docs/engine/asset-store.md, 'Normal forms')
+  REPO defaults to <data>/tags";
 
 type DiscMap = Map<BufReader<File>>;
 
@@ -45,7 +53,7 @@ type DiscMap = Map<BufReader<File>>;
 pub(crate) fn handles(args: &[String]) -> bool {
     matches!(
         args.first().map(String::as_str),
-        Some("extract" | "build" | "reassemble")
+        Some("extract" | "build" | "reassemble" | "catalogue")
     )
 }
 
@@ -54,6 +62,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<()> {
         Some("extract") => extract(&args[1..]),
         Some("build") => build(&args[1..]),
         Some("reassemble") => reassemble(&args[1..]),
+        Some("catalogue") => catalogue_cmd(&args[1..]),
         _ => bail!("{USAGE}"),
     }
 }
@@ -841,5 +850,104 @@ fn reassemble(args: &[String]) -> Result<()> {
         );
     }
     println!("every map reassembles to its SHA-256");
+    Ok(())
+}
+
+/// `h2 tags catalogue`: the store's asset catalogue
+/// (docs/engine/asset-store.md, "The catalogue"), built and written when
+/// it is missing or stale, then the variants by group as the store keeps
+/// the files and as the catalogue holds the assets.
+fn catalogue_cmd(args: &[String]) -> Result<()> {
+    let mut repo_dir = None;
+    let mut force = false;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--repo" => {
+                repo_dir = Some(PathBuf::from(
+                    it.next().context("--repo needs a directory")?,
+                ))
+            }
+            "--force" => force = true,
+            "-h" | "--help" => {
+                println!("{USAGE}");
+                return Ok(());
+            }
+            a if a.starts_with('-') => bail!("unknown option {a}\n{USAGE}"),
+            a => bail!("catalogue takes no map name ({a})\n{USAGE}"),
+        }
+    }
+    let repo_dir = repo_dir.unwrap_or_else(|| content::store::default_data_root().join("tags"));
+    TagRepo::open(&repo_dir)?;
+    let schema = Schema::builtin();
+    let current =
+        catalogue::read(&repo_dir)?.is_some_and(|c| c.is_current(&repo_dir).unwrap_or(false));
+    let started = std::time::Instant::now();
+    let (c, report) = catalogue::build(&repo_dir, schema)?;
+    let wrote = force || !current;
+    if wrote {
+        catalogue::write(&repo_dir, &c)?;
+    }
+    let keys = c.assets.iter().map(|a| &a.key).dedup().count();
+    let (before, after) = report.totals();
+    println!(
+        "{}: {} maps, {keys} keys, {} assets, {} keys with more than one content (as files: {} keys with variants); {} tags not hashed; assets.idx {}; {:.1?}",
+        repo_dir.display(),
+        c.maps.len(),
+        after.contents,
+        after.split,
+        before.split,
+        report.problems.len(),
+        if wrote {
+            "written"
+        } else {
+            "current, not rewritten"
+        },
+        started.elapsed()
+    );
+    println!(
+        "{:<8} {:>7} {:>7} {:>7} {:>8}  |  {:>7} {:>7} {:>8}",
+        "group", "keys", "files", "var", "var read", "assets", "split", "other"
+    );
+    let row = |name: &str, b: &Variants, a: &Variants| {
+        println!(
+            "{name:<8} {:>7} {:>7} {:>7} {:>8}  |  {:>7} {:>7} {:>8}",
+            b.keys, b.contents, b.split, b.others, a.contents, a.split, a.others
+        );
+    };
+    let mut groups: Vec<&FourCC> = report
+        .before
+        .keys()
+        .chain(report.after.keys())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    groups.sort_by(|a, b| {
+        let others = |g: &&FourCC| report.before.get(*g).map_or(0, |v| v.others);
+        others(b).cmp(&others(a)).then_with(|| a.cmp(b))
+    });
+    let none = Variants::default();
+    for g in &groups {
+        let (b, a) = (
+            report.before.get(g).unwrap_or(&none),
+            report.after.get(g).unwrap_or(&none),
+        );
+        if b.split + a.split > 0 {
+            row(&tags::defs::fourcc_text(*g), b, a);
+        }
+    }
+    println!(
+        "files: a key's contents as tag files; var: keys with more than one file; \
+         var read: readings of another file than the first map's; assets: contents by \
+         asset hash; split: keys with more than one asset; other: readings of another \
+         asset than the first map's"
+    );
+    row("all", &before, &after);
+    for p in report.problems.iter().take(20) {
+        println!("  not hashed: {p}");
+    }
+    if report.problems.len() > 20 {
+        println!("  ... and {} more not hashed", report.problems.len() - 20);
+    }
     Ok(())
 }
