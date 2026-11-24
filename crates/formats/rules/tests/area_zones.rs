@@ -95,7 +95,6 @@ fn hills() -> Scenario {
     };
     Scenario {
         players: vec![seat(0, 100)],
-        variant: [("king_moving_hill".to_string(), 1)].into_iter().collect(),
         map: Some(vec![hill(0, HILL), hill(1, HILL + 1)]),
         ..Scenario::default()
     }
@@ -108,8 +107,13 @@ fn hills() -> Scenario {
 fn koth_shows_the_hill_in_play_and_one_area_at_a_time_as_it_moves() {
     let ir = rules::build(builtin::KING).unwrap().0;
     let mut game = game_of(&ir, &hills()).unwrap();
-    game.carrier = ir.header.engine();
-    let mut vm = Vm::new(ir, 0, 0).unwrap();
+    game.carrier = rules::SCRIPT_INDEX;
+    // The hill moves every second: the script's own option, as the record's
+    // type area is zero on the script index.
+    let options = ir
+        .pack_options(&[("move_time".to_string(), rules::ir::OptionValue::Int(1))])
+        .unwrap();
+    let mut vm = Vm::new(ir, options, 0).unwrap();
     let mut seen = Vec::new();
     for t in 0..200 {
         step(&mut vm, &mut game, t, true, &[]);

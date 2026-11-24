@@ -966,8 +966,8 @@ fn a_carrier_scored_slayer_script_runs_the_builtin_slayer_under_its_record() {
 fn a_carrier_whose_builtin_this_host_cannot_run_is_refused_by_name() {
     use crate::rules::scoring;
     let store = Local::default();
-    // King of the Hill's built-in answers on round_start and reads
-    // variant.king_moving_hill, neither of which this host does yet.
+    // King of the Hill's built-in answers on round_start, which this host
+    // does not do yet.
     let (s, m, _, line, id) = carried(&store, ::rules::builtin::SUN_KING, 4);
     assert!(line.starts_with("rules: refused"), "{line}");
     let state = s.lock().state();
