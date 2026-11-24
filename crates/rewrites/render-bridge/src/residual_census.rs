@@ -343,13 +343,13 @@ pub const REGISTRY: &[Row] = &[
     Row {
         name: "hud",
         entry: 0x0019_17eb,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "overlay",
     },
     Row {
         name: "ui",
         entry: 0x0014_7af1,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "overlay",
     },
     Row {
@@ -1403,6 +1403,8 @@ mod tests {
                         | "screen_effects"
                         | "colour_pass"
                         | "screen_effect"
+                        | "hud"
+                        | "ui"
                         | "fade"
                         | "dynamic_lights"
                         | "light_passes"

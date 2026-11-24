@@ -74,6 +74,8 @@ pub enum ScreenDraw {
     Bar,
     /// The loading screen's background, sweep or spinner (`0x000289e0`).
     Loading,
+    /// A HUD or UI widget fan captured from the device's bound stages.
+    Widget,
 }
 
 impl ScreenDraw {
@@ -84,6 +86,7 @@ impl ScreenDraw {
             ScreenDraw::Fade => Ui::OverlayFadeQuads,
             ScreenDraw::Bar => Ui::OverlayBarQuads,
             ScreenDraw::Loading => Ui::OverlayLoadingQuads,
+            ScreenDraw::Widget => Ui::OverlayWidgetQuads,
         }
     }
 }
@@ -831,6 +834,16 @@ mod tests {
         assert_eq!(Source::Screen(ScreenDraw::Fade).texture(&[None; 4], None), Some(OverlayTexture::None));
         assert_eq!(screen.shader(), (0, [0.0; 4]));
         assert_eq!(Source::Tag(&at).shader(), (0xe000_0001, [0.5; 4]));
+    }
+
+    #[test]
+    fn widget_fans_use_the_sampled_stage_even_without_a_tag() {
+        let widget = Source::Screen(ScreenDraw::Widget);
+        let stages = [Some(OverlayTexture::Bound { header: 0x10 }), None,
+            Some(OverlayTexture::Bound { header: 0x30 }), None];
+        assert_eq!(widget.texture(&stages, Some(2)), stages[2]);
+        assert_eq!(widget.texture(&stages, Some(1)), None);
+        assert_eq!(widget.texture(&stages, None), Some(OverlayTexture::None));
     }
 
     /// An invented font: a blank record every unit maps to, with a glyph

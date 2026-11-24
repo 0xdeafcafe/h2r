@@ -49,6 +49,11 @@ impl ScopeStack {
         self.active(owner).is_none_or(|scope| scope.eligible)
     }
 
+    fn widget_overlay(&self, owner: u64) -> bool {
+        self.active(owner).is_some_and(|scope| scope.eligible
+            && matches!(scope.kind, UiScope::Hud | UiScope::Layers | UiScope::Widget))
+    }
+
     fn position(&self, scope: Scope) -> Option<usize> {
         self.0.iter().rposition(|s| {
             (s.owner, s.kind, s.stack) == (scope.owner, scope.kind, scope.stack)
@@ -298,7 +303,9 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
     }
 
     fn draw_quad(&self, mem: &mut dyn GuestMemory, vertices: &HudVertices) -> bool {
-        self.fan(mem, vertices, None)
+        (SCOPES.with(|s| s.borrow().widget_overlay(self.admission.owner))
+            && self.screen_overlay(mem, ScreenDraw::Widget, vertices))
+            || self.fan(mem, vertices, None)
     }
 
     fn draw_text_quad(&self, mem: &mut dyn GuestMemory, shader: u32, vertices: &HudVertices) -> bool {
@@ -326,6 +333,16 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
     }
 
     fn screen_fan(&self, mem: &mut dyn GuestMemory, vertices: &HudVertices) -> bool {
+        if SCOPES.with(|s| s.borrow().widget_overlay(self.admission.owner)) {
+            let layout = self.device.lock().ok().map(|device| device.config().layout);
+            if layout.is_some_and(|layout| inline_space(mem, layout, SCREEN_FAN_PUSH_BYTES, false))
+                && crate::hud_overlay::draw_screen(&self.device, mem, ScreenDraw::Widget, |d, m, a| {
+                    d.try_native_pushed_draw(m, PrimitiveType::TriangleFan, vertices, a)
+                })
+            {
+                return true;
+            }
+        }
         self.fan(mem, vertices, Some(SCREEN_FAN_PUSH_BYTES))
     }
 
@@ -538,6 +555,24 @@ mod tests {
         assert!(scopes.permits(1));
         scopes.0.truncate(scopes.position(next_widget).unwrap());
         assert_eq!(scopes.active(1), Some(layers));
+    }
+
+    #[test]
+    fn widget_overlay_tracks_the_innermost_eligible_producer() {
+        let mut scopes = ScopeStack::default();
+        let hud = Scope { owner: 1, kind: UiScope::Hud, stack: 0x9000, frame: 1, eligible: true };
+        assert!(!scopes.widget_overlay(1));
+        scopes.enter(hud);
+        assert!(scopes.widget_overlay(1));
+        assert!(!scopes.widget_overlay(2));
+        for (kind, expected) in [(UiScope::Layers, true), (UiScope::Widget, true),
+            (UiScope::Model, false), (UiScope::Overlay, false), (UiScope::Loading, false)] {
+            scopes.enter(Scope { kind, stack: 0x8000, ..hud });
+            assert_eq!(scopes.widget_overlay(1), expected);
+        }
+        scopes.enter(Scope { eligible: false, ..hud });
+        scopes.enter(Scope { kind: UiScope::Widget, stack: 0x8000, ..hud });
+        assert!(!scopes.widget_overlay(1));
     }
 
     #[test]
