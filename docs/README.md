@@ -243,6 +243,7 @@ Halo 1 (Xbox) running in the Halo 2 engine: its data read from your own `halo1.i
 - [script-builtins.md](halo1/script-builtins.md): Halo 1 unit, object and miscellaneous script builtins: retail equivalents and the hooks on converted campaign maps (`boot::h1_script_builtins`)
 - [shared-map.md](halo1/shared-map.md): design for a shared Halo 1 cache and the Halo 1 sandbox on every map: the sandbox built once and added to a map as a layer, its raw in an appendix to `shared.map`'s offset space (not built)
 - Notes: [shared-map.md](halo1/notes/shared-map.md) (what the converted maps repeat, and the room in the shared caches)
+- Notes: [sky.md](halo1/notes/sky.md) (a10's grey slab under the space sky)
 
 Reading and converting Halo 1 data:
 
