@@ -55,8 +55,11 @@ fn setup(g: &mut Guest, c: &mut Cpu, seed: u32) {
         g.set_u32(TRACK_RNG + 4, 0xadd0).unwrap();
     }
 
-    g.set_u8(SOUND_TAG + 1, if seed >= 37 { 1 << 5 } else { 0 })
-        .unwrap();
+    g.set_u8(
+        SOUND_TAG + 1,
+        if (37..=41).contains(&seed) { 1 << 5 } else { 0 },
+    )
+    .unwrap();
     g.set_u8(SOUND_TAG + 0xa, 3).unwrap();
     for (i, lo, hi) in [(0, 5, 20), (1, 25, 33), (2, 30, 64)] {
         g.set_u16(RANGES + i * 12 + 2, i as u16).unwrap();
