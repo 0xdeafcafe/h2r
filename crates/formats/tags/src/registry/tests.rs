@@ -334,6 +334,21 @@ group test 0x4c title="Test thing" applies=frame
   0x48 u32 plain
 "#;
 
+/// An invented group with a view on a colour and a function.
+const VIEW_ATTRS: &str = "group test 0x14\n\
+  0x0 f32[3] tint view=hdr_rgb\n\
+  0xc data curve align 4 view=function\n";
+
+#[test]
+fn a_definitions_view_reaches_its_registry_field() {
+    let mut defs = Defs::default();
+    defs.parse_into("views", VIEW_ATTRS).unwrap();
+    let r = Registry::build(&Schema::default(), &defs);
+    let l = r.group(FourCC(*b"test")).unwrap();
+    assert_eq!(l.field_at(0).unwrap().view, Some(FieldView::HdrRgb));
+    assert_eq!(l.field_at(0xc).unwrap().view, Some(FieldView::Function));
+}
+
 fn attr_layout() -> Arc<Layout> {
     let mut defs = Defs::default();
     defs.parse_into("attrs", ATTRS).unwrap();

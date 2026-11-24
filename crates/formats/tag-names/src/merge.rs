@@ -723,6 +723,7 @@ fn gap(start: u32, end: u32) -> Row {
         label: None,
         unit: None,
         axes: Vec::new(),
+        view: None,
     }
 }
 

@@ -491,6 +491,7 @@ fn tag_fields_describe_root_and_nested_registry_fields() {
     assert_eq!(respawn["label"], "Respawn time");
     assert_eq!(respawn["type"], "Whole number");
     assert_eq!(respawn["path"], "respawn_time");
+    assert!(respawn["view"].is_null(), "a field with no view= word");
     assert_eq!(respawn["named"], true);
     assert_eq!(respawn["edited"], false);
     assert!(respawn["file_value"].is_null());
@@ -700,6 +701,14 @@ fn tag_elements_are_titled_and_an_element_opens_alone() {
     // Open alone, as the panel's button does.
     let alone = call(&mut api, &mut app, m::TAG_VIEW, json!({"tag": weap, "path": "parts[1]"}));
     assert_eq!(alone["path"], "parts[1]");
+    // No tag view is registered for a weapon: Fields is its only tab, and
+    // another tab is refused by name.
+    assert_eq!(alone["tabs"], json!([{"id": "fields", "label": "Fields"}]));
+    assert_eq!(alone["tab"], "fields");
+    assert_eq!(
+        code_of(api.call(&mut app, m::TAG_VIEW, json!({"tab": "sound"}))),
+        code::REFUSED
+    );
     assert_eq!(alone["breadcrumbs"], json!(["weap: objects\\test\\blaster", "Parts 1"]));
     let paths: Vec<&str> = alone["rows"]
         .as_array()

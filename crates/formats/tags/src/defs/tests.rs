@@ -542,3 +542,60 @@ fn raw_bytes_fill_typed_fields_and_read_back() {
     let mut bare = Record::new(vec![("x".into(), Val::Int(0))]);
     assert!(bare.set("x", Val::Bytes(vec![0; 4])).is_err());
 }
+
+/// An invented group with one `view=` word of each kind.
+const VIEWS: &str = "group test 0x3c\n\
+  0x0 f32[3] tint view=rgb\n\
+  0xc f32[4] glow view=argb\n\
+  0x1c u32 edge view=rgb8\n\
+  0x20 u32 paint view=argb8\n\
+  0x24 u32 fill view=xrgb8\n\
+  0x28 f32[3] light view=hdr_rgb\n\
+  0x34 data curve align 4 view=function\n";
+
+#[test]
+fn every_view_word_parses_prints_back_and_reaches_the_field() {
+    let mut d = Defs::default();
+    d.parse_into("views", VIEWS).unwrap();
+    let g = d.group(FourCC(*b"test")).unwrap();
+    let views: Vec<_> = g.fields.iter().map(|f| f.view).collect();
+    assert_eq!(
+        views,
+        FieldView::ALL.map(Some).to_vec(),
+        "one word of each kind, in the list's order"
+    );
+    for v in FieldView::ALL {
+        assert_eq!(FieldView::from_word(v.word()), Some(v));
+    }
+    assert_eq!(FieldView::from_word("rgba"), None);
+    assert!(FieldView::Rgb.is_colour() && !FieldView::Function.is_colour());
+    let text = text_of(&d, FourCC(*b"test"));
+    assert!(text.contains("view=hdr_rgb") && text.contains("view=function"));
+    let mut again = Defs::default();
+    again.parse_into("again", &text).unwrap();
+    assert_eq!(again, d);
+    assert_eq!(text_of(&again, FourCC(*b"test")), text);
+}
+
+#[test]
+fn an_unknown_view_word_or_a_wrong_type_fails_with_the_line() {
+    let cases: &[(&str, u32, &str)] = &[
+        ("0x0 f32[3] a view=purple", 0xc, "unknown view=purple"),
+        ("0x0 f32[3] a view=", 0xc, "unknown view="),
+        ("0x0 f32[3] a view=argb", 0xc, "f32[4]"),
+        ("0x0 f32[4] a view=rgb", 0x10, "f32[3]"),
+        ("0x0 f32 a view=rgb", 4, "f32[3]"),
+        ("0x0 u16 a view=rgb8", 2, "4-byte integer"),
+        ("0x0 u32 a view=function", 4, "data reference"),
+        ("0x0 data a align 4 view=rgb", 8, "does not fit"),
+        ("0x0 enum8 a values=x|y view=rgb8", 1, "does not fit"),
+    ];
+    for (line, size, why) in cases {
+        let text = format!("group test {size:#x}\n  {line}\n");
+        let error = Defs::default()
+            .parse_into("invented", &text)
+            .expect_err(line);
+        assert!(error.why.contains(why), "{line}: {error}");
+        assert_eq!(error.line, 2, "{line}");
+    }
+}

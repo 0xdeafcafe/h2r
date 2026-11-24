@@ -597,6 +597,18 @@ pub fn fields(
         }
     }
     ui.separator();
+    // A group with tag views has a tab bar: Fields, then its views.
+    let shown = fields::rich::tab(t.group, &st.panel.settings.tab);
+    if let Some(chosen) = fields::rich::tab_bar(ui, t.group, shown) {
+        let mut settings = st.panel.settings.clone();
+        settings.tab = chosen.to_owned();
+        st.panel.set_settings(settings);
+    }
+    if let Some(view) = fields::rich::tag_view(t.group, shown) {
+        (view.draw)(ui, app, id, actions);
+        st.panel.store(app);
+        return;
+    }
     let scene = if app.browsing().is_none() {
         app.session.scenario()
     } else {

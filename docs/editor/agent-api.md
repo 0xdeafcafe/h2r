@@ -387,7 +387,9 @@ Notes on some:
   - `label` (the name in words), `named`, `type` (the type in words:
     `Whole number`, `Decimal number`, `Angle`, `Colour`, `Range`,
     `Choice`, `Switches`, `Name`, `Tag reference`, `List`, `Bytes`,
-    `Internal value`, `Unnamed value`, `Padding`) and `unit` (or null);
+    `Internal value`, `Unnamed value`, `Padding`), `unit` (or null) and
+    `view` (the definition's `view=` word, such as `rgb` or `function`,
+    else null; [rich-editors.md](rich-editors.md));
   - `editable`, and `read_only`, the reason as a sentence when not;
   - `edited` (the value differs from the loaded file) and `file_value`
     (the file's value when edited, else null);
@@ -431,8 +433,12 @@ Notes on some:
   value is shown (`decimal`, `whole_number`, `hex`, or null for the
   guess from its bits), kept for that field of every tag of the group
   and saved with the layout. With no params it only reads. The result
-  is `{tag, path, breadcrumbs, field, search, changed, unnamed, rows,
-  unnamed_hidden, header}`: `path` is the element shown (by field
+  is `{tag, tabs, tab, path, breadcrumbs, field, search, changed,
+  unnamed, rows, unnamed_hidden, header}`: `tabs` is `[{id, label}]`,
+  **Fields** first then the tag views of its group
+  (`fields::rich::TAG_VIEWS`), and `tab` the one shown; the `tab` param
+  shows one (`fields`, or a view of the group), refused by name when the
+  group has none; `path` is the element shown (by field
   names, empty for the root), `breadcrumbs` its crumbs as drawn
   (`weap: objects\test\blaster`, then `Parts 1 scope` per list step),
   `rows` the element's `tag.fields` rows the panel shows — with a

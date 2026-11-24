@@ -774,6 +774,7 @@ impl Row<'_> {
             "named": f.named,
             "type": self.type_words,
             "unit": self.unit,
+            "view": super::rich::view_json(f),
             "editable": self.read_only.is_none(),
             "read_only": self.read_only,
             "edited": self.edited,
