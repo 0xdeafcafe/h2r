@@ -5281,6 +5281,8 @@ H2_AGENT=/tmp/sim.sock h2 agent match.stop
 
 The game agent lists these host methods in `session.methods`
 (`crates/extensions/agent-proto/src/theater.rs`, `crates/extensions/game/src/theater/controls.rs`).
+From a signed-in local multiplayer lobby, `python3 scripts/theater-e2e.py` starts and ends a game, opens its Recent film from Game Setup, exercises both cameras and the transport, and closes the player. Pass the map’s display name if it differs from the recorded map filename.
+
 In an ordinary CLI-hosted game, `theater.play` with a library ID starts an
 isolated playback process; subsequent transport requests through that
 game agent go to its player. During startup the caller can retry after a
@@ -5289,6 +5291,7 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 
 | Method | Parameters | Result |
 |---|---|---|
+| `theater.exit` | `{}` on the library agent | Closes the active playback window. Wait for `theater.state` to return `active:false` on the original game. |
 | `theater.list` | `{}` on the library agent | Local films, newest first, as an array of `{id, map, variant, started_ms, length_ticks, saved}`. Pass the ID to `theater.play`. |
 | `theater.open` | `{"url":"h2recomp://theater/<film>?server=<encoded-origin>"}` | Opens the film detail page in the signed-in game and returns its `ui.screen`. Watch starts playback when pressed. Optional `clip`, `t`, `seat` and `camera` select the initial view. |
 | `theater.share` | `{"id":"film-id","visibility":"link"}`, optional `clip` is a clip ID or two tick bounds | Returns `{film,url}` after publication. Visibility accepts `private`, `link` or `public`. A participant shares the existing host film by link. |

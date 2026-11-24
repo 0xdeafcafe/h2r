@@ -389,7 +389,7 @@ pub fn library_methods(
             other => unavailable(other.to_string()),
         })
     });
-    for name in api::METHODS.into_iter().filter(|&name| !matches!(name, api::MEASUREMENTS | api::VERIFY | api::STATUS)) {
+    for name in api::METHODS.into_iter().chain([api::EXIT]).filter(|&name| !matches!(name, api::MEASUREMENTS | api::VERIFY | api::STATUS)) {
         let player = player.clone();
         let launch = launch.clone();
         let jobs = jobs.clone();
@@ -486,7 +486,12 @@ pub fn library_methods(
                 client
                     .set_timeout(Some(std::time::Duration::from_secs(timeout)))
                     .map_err(|e| unavailable(e.to_string()))?;
-                client.call(name, p).map_err(|e| match e {
+                let method = if name == api::EXIT {
+                    agent_proto::host_quit::method::QUIT
+                } else {
+                    name
+                };
+                client.call(method, p).map_err(|e| match e {
                     agent_proto::CallError::Rpc(e) => e,
                     other => unavailable(other.to_string()),
                 })
