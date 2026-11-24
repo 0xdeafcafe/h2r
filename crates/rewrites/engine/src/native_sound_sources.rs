@@ -9,6 +9,7 @@ use guest_layout::sound::{LoopingSound, SoundChannel, SoundInstance};
 use runtime::{CpuAbi, Guest, GuestFault};
 use sim_sound::sources::{FadeWindow, release_loop_ref, uses_specialized_channel};
 
+mod instances;
 mod listeners;
 
 const DOC: &str = "docs/engine/sim-rewrite.md";
@@ -41,6 +42,8 @@ pub static RELEASE_LOOP: Point = Point::new(
 );
 
 pub const BODIES: &[Body] = &[
+    instances::SOURCE_WALK,
+    instances::CHANNEL_ASSIGNMENT,
     Body {
         point: &CHANNEL_STREAMS,
         sites: &[0x1290e8],
