@@ -47,9 +47,18 @@ pub fn rotate_seat(
     let [x, y, z] = forward;
     let dot = mul(add(add(mul(y, qy), mul(z, qz)), mul(qx, x)), two);
     let forward = [
-        add(add(mul(sub(mul(z, qy), mul(y, qz)), w), mul(qx, dot)), mul(k, x)),
-        add(add(mul(sub(mul(qz, x), mul(z, qx)), w), mul(qy, dot)), mul(y, k)),
-        add(add(mul(sub(mul(y, qx), mul(qy, x)), w), mul(qz, dot)), mul(z, k)),
+        add(
+            add(mul(sub(mul(z, qy), mul(y, qz)), w), mul(qx, dot)),
+            mul(k, x),
+        ),
+        add(
+            add(mul(sub(mul(qz, x), mul(z, qx)), w), mul(qy, dot)),
+            mul(y, k),
+        ),
+        add(
+            add(mul(sub(mul(y, qx), mul(qy, x)), w), mul(qz, dot)),
+            mul(z, k),
+        ),
     ];
 
     let [x, y, z] = up;
@@ -57,14 +66,26 @@ pub fn rotate_seat(
     let x_qy = mul(x, qy);
     let z_k = mul(z, k);
     let up = [
-        add(add(mul(sub(mul(z, qy), mul(y, qz)), w), mul(dot, qx)), mul(x, k)),
-        add(add(mul(sub(mul(x, qz), mul(z, qx)), w), mul(qy, dot)), mul(y, k)),
+        add(
+            add(mul(sub(mul(z, qy), mul(y, qz)), w), mul(dot, qx)),
+            mul(x, k),
+        ),
+        add(
+            add(mul(sub(mul(x, qz), mul(z, qx)), w), mul(qy, dot)),
+            mul(y, k),
+        ),
         add(add(mul(sub(mul(y, qx), x_qy), w), mul(qz, dot)), z_k),
     ];
 
     SeatRotation {
-        forward, up, vector_scale: k, cross_scale: w, up_dot: dot,
-        up_x_times_qy: x_qy, up_z_scaled: z_k, mxcsr: mxcsr.get(),
+        forward,
+        up,
+        vector_scale: k,
+        cross_scale: w,
+        up_dot: dot,
+        up_x_times_qy: x_qy,
+        up_z_scaled: z_k,
+        mxcsr: mxcsr.get(),
     }
 }
 
@@ -79,7 +100,9 @@ mod tests {
             bits([1., -0.5, 0.25]),
             bits([0., 0., 1.]),
             [0., 0., 1., 0.].map(f32::to_bits),
-            1f32.to_bits(), 2f32.to_bits(), 0x1f80,
+            1f32.to_bits(),
+            2f32.to_bits(),
+            0x1f80,
         );
         assert_eq!(r.forward, bits([-1., 0.5, 0.25]));
         assert_eq!(r.up.map(f32::from_bits), [0., 0., 1.]);
