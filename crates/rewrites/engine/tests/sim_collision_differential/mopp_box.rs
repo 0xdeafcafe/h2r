@@ -274,6 +274,11 @@ fn every_disc_mopp_box_matches_the_guest() {
     const GUEST_EVERY: u32 = 10;
     assert!(common::xbe_path().is_some(), "set H2_XBE to run the disc sweep");
     with_oracle("collision MOPP box disc sweep", |oracle, image| {
+        // Input bytes live below the sparse overlay, so cloning the guest for
+        // a comparison copies only the handful of words each case writes.
+        let mut fixture = image.to_vec();
+        fixture[VM as usize..VM as usize + 0x40].fill(0xab);
+        fixture[DATA as usize..DATA as usize + 0x4000].fill(0xcd);
         let mut programs = [0u32; 4];
         let mut compared = [0u64; 4];
         let mut guest_runs = [0u64; 4];
@@ -319,10 +324,8 @@ fn every_disc_mopp_box_matches_the_guest() {
                     Err(why) => bails[why as usize] += 1,
                 }
                 if i.is_multiple_of(GUEST_EVERY) {
-                    let mut m = fresh(image);
+                    let mut m = fresh(&fixture);
                     m.tag = Some((view.address(), view.bytes(), TableVersion::fresh()));
-                    m.store(VM, &[0xab; 0x40]);
-                    m.store(DATA, &vec![0xcd; 0x4000]);
                     put_aabb(&mut m, &b);
                     m.word(ARRAY + layout::mopp_box::DATA, DATA);
                     m.word(ARRAY + layout::mopp_box::SIZE, 0);

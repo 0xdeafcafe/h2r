@@ -12,6 +12,10 @@ fn every_disc_bsp_segment_matches_the_guest() {
         "set H2_XBE to run the disc sweep"
     );
     with_oracle("collision BSP segment sweep", |oracle, image| {
+        let mut fixture = image.to_vec();
+        fixture[RECORD as usize..(RECORD + layout::record::SIZE) as usize].fill(0xcd);
+        fixture[CONTEXT as usize..(CONTEXT + ctx::SIZE) as usize].fill(0x5a);
+        fixture[(STACK - layout::VECTOR_DEAD_BELOW) as usize..STACK as usize].fill(0xc5);
         let mut compared = [[0u64; 2]; 2];
         let mut exact = [[0u64; 2]; 2];
         for_each_tag(&[SBSP, COLL], |label, group, view, root| {
@@ -31,10 +35,8 @@ fn every_disc_bsp_segment_matches_the_guest() {
                     OBJECT_POINTS
                 };
                 let world = CollisionWorld::new(&EPOCH);
-                let mut ram = fresh(image);
+                let mut ram = fresh(&fixture);
                 ram.tag = Some((view.address(), view.bytes(), TableVersion::fresh()));
-                // A nonzero byte in the unused tail makes a spurious record clear visible.
-                ram.word(RECORD + layout::record::OVERFLOW, 0xdead_beef);
                 let mut rng = Rng(u64::from(bsp) << 1 | 1);
                 let mut bails = [[0u64; sim_collision::BAILS]; 2];
                 let mut straight = [0u64; 2];
