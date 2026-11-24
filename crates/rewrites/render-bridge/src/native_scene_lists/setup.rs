@@ -165,7 +165,7 @@ fn lod_bytes(
     Ok((byte(visible)?, byte(detail)?))
 }
 
-fn section_flags(m: &dyn GuestMemory, vis: u32, tags: u32, flags: u16) -> Result<u32> {
+pub(super) fn section_flags(m: &dyn GuestMemory, vis: u32, tags: u32, flags: u16) -> Result<u32> {
     let flags = u32::from(flags);
     let mut section = ((((flags >> 2) & 0x2c00) | (flags & 0x4000)) >> 9) | ((flags & 0x200) << 5);
     if m.u8(at(vis, VIS_FLAGS)?)? & 0x80 != 0 {

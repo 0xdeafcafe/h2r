@@ -315,12 +315,13 @@ pub fn view(mem: &dyn GuestMemory) -> Option<Camera> {
 
 /// Additions from the base layer of this same view. A late-layer hook may
 /// run without a new base view, so check its camera and view index.
-pub(crate) fn late_display_visibility(mem: &dyn GuestMemory) -> Option<Arc<frame_scene::DisplayVisibility>> {
+pub(crate) fn late_display_visibility(mem: &dyn GuestMemory, layer: u8) -> Option<Arc<frame_scene::DisplayVisibility>> {
     with_step(|step| {
         let view = step.builder.view()?;
         let extra = view.display_visibility.as_ref()?;
         (view.key.kind == ViewKind::Game && u32::from(view.key.view) == mem.u32(VIEW_INDEX).ok()?
-            && view.camera == extract::camera(&Ro(mem))?).then(|| Arc::clone(extra))
+            && !extra.whole_clusters.is_empty() && view.camera == extract::camera(&Ro(mem))?
+            && scene_extract::late::layer_items(&Ro(mem), layer)? == 0).then(|| Arc::clone(extra))
     })
 }
 
@@ -1192,8 +1193,14 @@ fn display_additions(
     ).ok()?;
     let placements = windows.as_ref().and_then(|w| cache.display_placements(mem, retail, w)).unwrap_or_default();
     visible.retain_display_additions(baseline, gather);
+    let whole_clusters = windows.as_ref().map_or_else(Vec::new, |windows| {
+        visible.clusters.iter().copied().filter(|&id| {
+            crate::native_scene_lists::late_cluster_bounds(mem.0, id)
+                .is_some_and(|bounds| windows.contains_cluster(id, bounds))
+        }).collect()
+    });
     (!visible.clusters.is_empty() || !visible.objects.is_empty() || !placements.is_empty()).then_some(frame_scene::DisplayVisibility {
-        clusters: visible.clusters, objects: visible.objects, placements,
+        whole_clusters, clusters: visible.clusters, objects: visible.objects, placements,
     })
 }
 

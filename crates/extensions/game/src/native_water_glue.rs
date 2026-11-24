@@ -306,15 +306,16 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             })
         };
         if !display_clusters.is_empty() {
-            let selected = water_cluster_parts(display_clusters, water.parts.iter().map(|&(part, _)| part));
-            if !selected.is_empty() {
+            let selected = crate::native_fog_glue::display_late_part(mem, display_clusters, &water.part_set,
+                WATER_LATE_LAYER, |_, _| true);
+            if let Some(selected) = selected {
                 let target = d.external_ready(&ReadMemory(mem), false).ok()?;
                 if d.projection_factor_for_target(target.surface_size) < 1.0 {
                     ready.with_pipeline_target(&d, mem, |gpu, device, color, depth| {
                         gpu.prewarm_water(device, color, depth).then_some(())
                     })?;
-                    let plan = plan(selected.len());
-                    let display = pass(selected, crate::native_fog_glue::late_fogs(&materials), true);
+                    let plan = plan(1);
+                    let display = pass(vec![selected], crate::native_fog_glue::late_fogs(&materials), true);
                     let _ = d.draw_display_stage(&mut crate::native_lights_glue::DeviceMemory(mem), plan, display);
                 }
             }
@@ -354,14 +355,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         render_bridge::scene_step::late_drawn(late.key, WATER_LATE_LAYER);
         Some(cleared)
     }
-}
-
-/// The portal gather stores its display additions in sorted cluster order.
-fn water_cluster_parts(clusters: &[u16], parts: impl Iterator<Item = (Owner, u8)>) -> Vec<(Owner, u8)> {
-    parts.filter(|(owner, _)| match owner {
-        Owner::Cluster(id) => u16::try_from(*id).is_ok_and(|id| clusters.binary_search(&id).is_ok()),
-        Owner::Instance(_) => false,
-    }).collect()
 }
 
 /// The water's layer, as the scene names it.
@@ -576,14 +569,6 @@ mod tests {
     use d3d::{ExternalPass, TargetCopy, backend::SampledLevel};
     use engine::memory::FlatMemory;
     use wgpu::{TextureFormat, TextureUsages};
-
-    #[test]
-    fn layer_six_adds_water_parts_from_the_display_only_cluster_in_part_order() {
-        let side = Owner::Cluster(7);
-        let parts = [(Owner::Cluster(2), 0), (side, 3), (Owner::Instance(7), 0), (side, 1)];
-        assert_eq!(water_cluster_parts(&[7], parts.into_iter()), [(side, 3), (side, 1)]);
-        assert!(water_cluster_parts(&[], parts.into_iter()).is_empty());
-    }
 
     #[test]
     fn target_header_uses_the_embedded_texture_of_a_live_target() {

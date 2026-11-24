@@ -28,6 +28,32 @@ const TAGS: u32 = engine::tags::TAG_ENTRIES_GLOBAL;
 const FRAME: u32 = 0x004b_a034;
 const OBJECTS: u32 = engine::render_loop::occlusion::guest::OBJECTS;
 
+/// Geometry gather and record inputs for a whole cluster reached only by
+/// the presentation lens. Restricted lists and secondary clipping planes
+/// require their per-window records.
+pub(crate) fn late_cluster_bounds(m: &dyn GuestMemory, id: u16) -> Option<[f32; 6]> {
+    let vis = objects::MAIN_VIS;
+    if m.u32(vis + objects::VIS_FLAGS).ok()? & 0x2a1 != 0 { return None; }
+    let bsp = ptr(m, objects::ACTIVE_BSP).ok()?;
+    if u32::from(id) >= m.u32(bsp.checked_add(0x9c)?).ok()? { return None; }
+    let sections = ptr(m, bsp.checked_add(0xa0)?).ok()?;
+    let section = sections.checked_add(u32::from(id) * 0xb0)?;
+    if m.u16(section.checked_add(0x24)?).ok()? == 0 { return None; }
+    let mut bounds = [0.0; 6];
+    for (i, v) in bounds.iter_mut().enumerate() {
+        *v = m.f32(section.checked_add(0x54 + 4 * i as u32)?).ok()?;
+    }
+    Some(bounds)
+}
+
+/// The ordinary main-cluster gather (0x13457b) and record writer's flags.
+/// The caller admits only whole portal windows without a secondary plane.
+pub fn display_cluster_fog_flags(m: &dyn GuestMemory, id: u16) -> Option<u32> {
+    let sky = objects::cluster_uses_sky(m, u32::from(id)).ok()?;
+    let flags = 0xf000 | (u16::from(sky) << 10);
+    setup::section_flags(m, objects::MAIN_VIS, ptr(m, TAGS).ok()?, flags).ok()
+}
+
 pub struct NativeSceneLists;
 
 fn enabled(switches: &Switches) -> bool {

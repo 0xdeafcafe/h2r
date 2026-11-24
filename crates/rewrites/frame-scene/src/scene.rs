@@ -120,6 +120,9 @@ pub struct AuxDepth {
 /// IDs belong to this BSP and this frame's object table.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct DisplayVisibility {
+    /// Clusters wholly enclosed by one display portal window. Every subpart
+    /// of these sections is in that window.
+    pub whole_clusters: Vec<u16>,
     pub placements: Vec<u16>,
     pub clusters: Vec<u16>,
     pub objects: Vec<u32>,

@@ -147,8 +147,8 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         None => return,
     }
     // The widened portal flood can reach water even when the retail list is empty.
-    let display = crate::scene_step::late_display_visibility(&*m.0);
-    let clusters = display.as_ref().map_or(&[][..], |extra| extra.clusters.as_slice());
+    let display = crate::scene_step::late_display_visibility(&*m.0, WATER_LAYER as u8);
+    let clusters = display.as_ref().map_or(&[][..], |extra| extra.whole_clusters.as_slice());
     if clusters.is_empty() && skip::has_structure_items(&m, WATER_LAYER) != Some(true) {
         crate::scene_step::late_kept(&*m.0, WATER_LAYER as u8, true);
         return;
