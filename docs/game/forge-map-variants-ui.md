@@ -91,6 +91,7 @@ nudge and nothing else.
 | Object | Object... | a picker of its group's palette | the palette entry | M6 |
 | Object | Game types... | the Game types dialog | the `games` property | G1 |
 | Any thing | Label, Label number, Clear label | the keyboard on the text, the keyboard on the number, and an act; `forge.properties` rows `label`, `label number` and `clear label` (`open: keyboard` and `open: act`) | the label ([rules-engine.md](rules-engine.md#forge-labels)) | built; a picker of a script's declared labels is design |
+| Group member in a local session | Pivot | a picker: Centre, First member | replaces the group op in one undo step | built (P5) |
 | Object the session placed | Save as prefab | the keyboard on the prefab's name; the row `prefab` | `<data>/forge/prefabs/<name>.h2prefab` ([forge-editing.md](forge-editing.md), "Selection, groups and prefabs") | built |
 | Item spawner | Item... | the object menu's item groups, as a picker | `item` | M6 |
 | Item spawner | Respawn time | a picker: Map default, then seconds | `respawn time` | M6 |

@@ -765,6 +765,7 @@ fn the_properties_page_has_selection_and_group_rows() {
         selected,
         selection,
         group,
+        pivot_editable: true,
     };
     let labels = |f: &sheet::GroupFacts| -> Vec<String> {
         sheet::group_rows(f).into_iter().map(|r| r.label).collect()
@@ -778,11 +779,11 @@ fn the_properties_page_has_selection_and_group_rows() {
     let rows = sheet::group_rows(&facts(
         false,
         0,
-        Some((forge_doc::OpId(2), "Roof".into(), false)),
+        Some(group_info(2, "Roof", 2, false)),
     ));
     assert_eq!(
         rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
-        ["Group", "Lock group", "Ungroup"]
+        ["Group", "Lock group", "Pivot", "Ungroup"]
     );
     assert_eq!(rows[0].value.as_deref(), Some("Roof"));
     assert_eq!(
@@ -790,13 +791,13 @@ fn the_properties_page_has_selection_and_group_rows() {
         Act::Choose(Choice::LockGroup(forge_doc::OpId(2), true))
     );
     assert_eq!(
-        rows[2].act,
+        rows[3].act,
         Act::Choose(Choice::Ungroup(forge_doc::OpId(2)))
     );
     let locked = sheet::group_rows(&facts(
         false,
         0,
-        Some((forge_doc::OpId(2), "Roof".into(), true)),
+        Some(group_info(2, "Roof", 2, true)),
     ));
     assert_eq!(locked[1].label, "Unlock group");
     assert_eq!(
@@ -809,6 +810,39 @@ fn the_properties_page_has_selection_and_group_rows() {
                 .as_deref()
                 .is_some_and(|d| !d.trim().is_empty())
         );
+    }
+}
+
+#[test]
+fn the_pivot_picker_opens_on_the_current_value_and_names_the_group() {
+    let mut group = group_info(2, "Roof", 2, false);
+    for (first, value) in [(false, "Centre"), (true, "First member")] {
+        group.pivot_first = first;
+        let mut facts = sheet::GroupFacts {
+            thing: group.members[0],
+            selected: false,
+            selection: 0,
+            group: Some(group.clone()),
+            pivot_editable: true,
+        };
+        let rows = sheet::group_rows(&facts);
+        let row = rows.iter().find(|r| r.label == "Pivot").unwrap();
+        assert_eq!(row.value.as_deref(), Some(value));
+        let Act::Pick(pick) = &row.act else {
+            panic!("the pivot opens a picker");
+        };
+        assert_eq!(pick.values, ["Centre", "First member"]);
+        assert_eq!(pick.values[pick.current], value);
+        assert_eq!(
+            pick.choices,
+            [
+                Choice::SetGroupPivot(group.id, false),
+                Choice::SetGroupPivot(group.id, true)
+            ]
+        );
+        assert!(pick.closes);
+        facts.pivot_editable = false;
+        assert!(sheet::group_rows(&facts).iter().all(|r| r.label != "Pivot"));
     }
 }
 

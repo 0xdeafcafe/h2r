@@ -237,6 +237,8 @@ impl Extent {
 pub enum Action {
     Toggle,
     Accept,
+    /// Toggle selection of an aimed, ungrouped thing with empty hands.
+    Select,
     Back,
     Delete,
     Palette,
@@ -266,6 +268,7 @@ impl Action {
         Some(match name {
             "toggle" => Self::Toggle,
             "accept" => Self::Accept,
+            "select" => Self::Select,
             "back" => Self::Back,
             "delete" => Self::Delete,
             "palette" => Self::Palette,
@@ -361,6 +364,10 @@ pub enum Command {
     LockGroup {
         group: OpId,
         locked: bool,
+    },
+    SetGroupPivot {
+        group: OpId,
+        pivot_first: bool,
     },
     /// Give a thing a label, or clear it ([`crate::Session::set_label`]).
     SetLabel {
@@ -795,15 +802,15 @@ impl Tool {
             return Ok(None);
         }
         let previewing = self.placing.is_some() || self.held_thing.is_some();
-        // A thing that is gone (undone, deleted, loaded over) leaves the
-        // selection.
-        self.selection.retain(|id| session.thing(*id).is_some());
+        // Things leave the selection when they disappear or join a group.
+        let groups = session.groups();
+        self.selection
+            .retain(|id| session.thing(*id).is_some() && !groups.iter().any(|g| g.has(*id)));
         // A locked group's things are not aimed at.
-        let locked: Vec<Endpoint> = session
-            .groups()
-            .into_iter()
+        let locked: Vec<Endpoint> = groups
+            .iter()
             .filter(|g| g.locked)
-            .flat_map(|g| g.members)
+            .flat_map(|g| g.members.iter().copied())
             .collect();
         let extent = self.extent(session).unwrap_or_default();
         let mut hit = None;
@@ -894,6 +901,14 @@ impl Tool {
                     Some(id) => C::Delete { id },
                     None => C::Remove { id },
                 })
+            }
+            Some(A::Select) if !previewing => {
+                if let Some((thing, _)) = &hit
+                    && !groups.iter().any(|g| g.has(thing.id))
+                {
+                    self.toggle_selected(thing.id);
+                }
+                None
             }
             Some(A::Accept) => {
                 if let (Some(item), Some(frame)) = (self.placing, self.ghost) {
