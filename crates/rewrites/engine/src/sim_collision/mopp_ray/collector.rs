@@ -141,7 +141,7 @@ enum Resume {
 }
 
 /// The native collector-path candidate. A caller drives each returned guest
-/// call exactly once and supplies its EAX on resumption. A decline after a
+/// call exactly once and supplies the returned CPU on resumption. A decline after a
 /// callback must discard the *entire isolated trial*, including callback
 /// side effects. The differential runs this on its own copy of memory.
 /// Live I stays observed until it has a safe mid-walk continuation.
@@ -193,6 +193,8 @@ impl CollectorCast {
         let target = m.u32(table.wrapping_add(slot)).map_err(|_| Bail::Fault)?;
         Ok(GuestCall::new(target)
             .ecx(this)
+            .edx(table)
+            .edi(t.key)
             .reserve(self.entry_sp - t.sp))
     }
 
@@ -200,7 +202,7 @@ impl CollectorCast {
         let collection = self.vm_word(g, l::COLLECTION)?;
         let call = self.method(g, collection, l::COLLECTION_CHILD, t)?;
         self.resume = Resume::Child(t);
-        Ok(call.args([t.key, t.sp + 0xa0]))
+        Ok(call.eax(collection).args([t.key, t.sp + 0xa0]))
     }
 
     /// The first call ignores EAX. Thereafter EAX is the register returned
@@ -237,7 +239,7 @@ impl CollectorCast {
                         .map_err(|_| Bail::Fault)?;
                 }
                 self.resume = Resume::Ray;
-                return Ok(Some(call.args([
+                return Ok(Some(call.eax(eax).esi(self.vm).args([
                     self.vm.wrapping_add(VM_INPUT),
                     body,
                     collector,
@@ -277,7 +279,7 @@ impl CollectorCast {
             let collection = self.vm_word(g, l::COLLECTION)?;
             let call = self.method(g, filter, 0, terminal)?;
             self.resume = Resume::Filter(terminal);
-            return Ok(Some(call.args([
+            return Ok(Some(call.eax(sp + 0x3b).esi(collection).args([
                 sp + 0x3b,
                 self.vm.wrapping_add(VM_INPUT),
                 collection,

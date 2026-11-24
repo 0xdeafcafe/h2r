@@ -266,7 +266,7 @@ fn run_callbacks(
     c: &CpuAbi,
     m: &mut Ram<'_>,
     world: &CollisionWorld,
-    mut trace: Option<&mut Vec<Callback>>,
+    mut trace: Option<&mut Vec<(Callback, CpuAbi)>>,
     change_inputs: bool,
 ) -> Run {
     let mut cpu = ir_cpu(c);
@@ -292,7 +292,7 @@ fn run_callbacks(
             let call = Callback::new(pc, cpu.gpr[1], sp, args, m);
             let eax = call.answer(m, &mut out.keys, change_inputs);
             if let Some(t) = &mut trace {
-                t.push(call);
+                t.push((call, lifted::cpu::from_interp(&cpu)));
             }
             pc = ret(&mut cpu, m, argc * 4, eax);
             continue;
@@ -608,12 +608,18 @@ fn native_collector_callbacks_match_the_guest() {
             );
             let mut cast = arm::CollectorCast::begin(&cpu, &mut native, &world).unwrap();
             let (mut returned, mut keys) = (cpu, Vec::new());
-            for want in trace {
+            for (want, regs) in trace {
                 let call = cast
                     .next(&mut native, &returned)
                     .unwrap()
                     .expect("missing guest callback");
                 let sp = call.esp(cpu.esp);
+                assert_eq!(call.eax, Some(regs.eax), "callback EAX");
+                assert_eq!(call.edx, Some(regs.edx), "callback vtable");
+                assert_eq!(call.edi, Some(regs.edi), "callback key");
+                if let Some(esi) = call.esi {
+                    assert_eq!(esi, regs.esi, "callback context");
+                }
                 let got = Callback::new(call.target, call.ecx.unwrap(), sp, call.args, &native);
                 assert_eq!(want, got, "callback in case {n}");
                 if got.target == FAKE_FILTER && !accepted(got.args[3]) {
