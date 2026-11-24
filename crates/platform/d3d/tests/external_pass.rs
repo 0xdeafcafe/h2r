@@ -439,6 +439,36 @@ fn refusal_of_the_display_discards_even_the_recorded_reference_clear() {
 }
 
 #[test]
+fn a_display_supplement_draws_only_to_the_wide_attachment() {
+    struct Supplement(Counting);
+    impl ExternalPass for Supplement {
+        fn display_only(&self) -> bool { true }
+        fn replays_scene(&self) -> bool { true }
+        fn writes(&self) -> d3d::ExternalWrites { self.0.writes() }
+        fn record_ranges(&mut self, target: ExternalTarget<'_>) -> usize {
+            self.0.record_ranges(target)
+        }
+    }
+    let Some(reference) = backend() else { return };
+    let display = GfxBackend::new(reference.ctx.clone());
+    let (mut device, mut mem) = create(
+        d3d::ScaledBackend::with_single_copy(reference, display, 2, false).unwrap(),
+        UploadPolicy::Always,
+    );
+    let back = device.back_buffer().unwrap();
+    device.clear(&mut mem, 0, 0, 0xf0, 0xff00ff00, 1., 0).unwrap();
+    let seen = Arc::default();
+    let pass = Supplement(Counting { seen: Arc::clone(&seen), display_ranges: 1 });
+    assert!(device.begin_external_boundary(&mut mem).unwrap());
+    assert!(device.draw_display_stage(&mut mem, plan(1), Box::new(pass)).unwrap());
+    assert_eq!(*seen.lock().unwrap(), [d3d::TargetCopy::Display]);
+    let reference = device.backend.reference_mut().read_color(back.reference).unwrap().0;
+    let display = device.backend.view_mut().read_color(back.view.unwrap()).unwrap().0;
+    assert_eq!(&reference[..4], &[0, 255, 0, 255]);
+    assert_eq!(display[1], 0, "the supplemental red clear reached the display");
+}
+
+#[test]
 fn cancel_keeps_pixels_and_commit_preserves_the_deferred_display() {
     let Some(b) = backend() else { return };
     let (mut d, mut m) = create_copy_swap(b, UploadPolicy::Always);
