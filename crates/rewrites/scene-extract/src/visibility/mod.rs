@@ -31,6 +31,7 @@ mod light_frusta;
 pub mod objects;
 pub mod parity;
 mod placements;
+pub mod portal_walk;
 pub mod portal_clip;
 pub mod pvs;
 mod read;
