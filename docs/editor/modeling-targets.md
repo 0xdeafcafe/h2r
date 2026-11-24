@@ -309,8 +309,8 @@ only (above). Rewriting bucket streams is deferred.
   the affected planes and AABB. The face layout and all block counts
   stay fixed. A shape referenced by a MOPP requires a rebuild. The
   editor reports that rigid-body bounds and mass properties may be
-  stale and preserves those fields. The tag document holds the patches
-  as one map undo step.
+  stale and preserves those fields. The patches save with the map and
+  form one step in the tag document's undo history.
 
 ## Evidence
 
