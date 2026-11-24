@@ -234,7 +234,7 @@ edit to a layer tag is kept once, not per map.
 
 ### Halo 1 maps in their own format
 
-With a Halo 1 source open, its maps are in the Maps list, read-only
+With a Halo 1 source open, its maps open from the Browser, read-only
 today. Clicking a Halo 1 placement shows its Halo 1 tag chain: the
 object tag, its model, collision, physics and animation tags, its
 weapon, projectile, effect and damage tags, its shaders and bitmaps, as

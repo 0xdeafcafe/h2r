@@ -30,7 +30,8 @@ before its slice starts.
 | The window: tool tabs (Map, Variants, Playlists, UI, HUD), a dock layout per tool, Go to anything, the game link bar | built | `ui/bar.rs`, `ui/layout.rs`, `ui/palette.rs`, `app::ToolKind` |
 | One command layer for the window and the API | built | `App::dispatch`, `App::perform` (`app.rs`), `api/mod.rs` |
 | Document tabs: a tab per open document, each with its own undo stack; a tag's editor from its group; `shell.tabs`, `shell.open`, `shell.focus`, `shell.close` (SH1) | built | `app/shell.rs`, `ui/doc_tabs.rs`, `api/shell.rs`, `TagDoc::undo_tag` |
-| The browser's rows: the Tags root by path with variants over `TagRepo`, the Packages and Live roots, Kind, Map, search, badges, `asset.list`, `asset.thumb` (a package's PNG bitmap item), `asset.copy` (SH2) | built, no panel | `app/assets.rs`, `api/assets.rs` |
+| The browser's rows: the Tags root by path with variants over `TagRepo`, the Packages and Live roots, Kind, Map, search, badges, `asset.list`, `asset.thumb` (a package's PNG bitmap item), `asset.copy` (SH2) | built | `app/assets.rs`, `api/assets.rs` |
+| The browser panel: the three roots, the Kind and Map pickers, the search box, rows with badges and variant lines, open by double-click, **Copy into package** (SH2) | built | `ui/browser.rs`, `Action::OpenAsset`, `Action::CopyAsset` |
 | The kind registry: which editor and preview a tag group gets | built | `app/kinds.rs`, `tag.kinds` |
 | The field panel and its row model | built | `fields.rs`, `fields/row.rs` |
 | Pairing, the live mirror, `pair.preview`, `pair.audio` | built | `play/`, `api/preview.rs`, `api/pair.rs` |
@@ -146,15 +147,32 @@ first; a package opens to its items and source files, and holds what is
 not a tag: `.rules` scripts, variants, playlists, recipes. **Live**
 lists packages the server offers.
 
-A row shows a thumbnail (a bitmap's image, a model through
-`model.render`, a sound's waveform, a screen through `ui.render`), the
-name, and a badge: **edited by <package>** or **new in <package>**.
+The panel (`ui/browser.rs`) is the `asset.list` rows drawn: the root
+buttons, the Kind and Map pickers, the search box, then one line per tag
+by path with its group, a `[n variants]` mark and its badge (**edited by
+<package>** or **new in <package>**). A tag whose maps differ is followed
+by one line per variant naming its maps. The list is read again when a
+filter changes, on the refresh button and when the first-start page
+comes or goes. Beside the root buttons are **Open...** and **Folder...**,
+which choose the source the maps are read from; while no map is open the
+viewport shows the source's map grid (`ui/map_list.rs`), which also
+opens a map. A package's row opens to its items on a double-click, and
+**All packages** goes back.
 
-Double-click opens a document. Right-click offers **Open**, **Open as
-fields**, **Copy into <edit target>** (a new tag `like:` this one, which
-holds no disc bytes), **Show edits**, **Where used**. Dragging a source
-file (PNG, WAV, glTF, YAML, `.rules`) onto a package runs the importer
-for its type.
+Double-click on a tag, or **Open** in its right-click menu, runs
+`Action::OpenAsset`: it opens the map that holds the tag (the open map
+when it holds it, else the first that does; a Halo 1 map shows
+read-only), then the tag as a tab in the editor its group gets
+(`app::assets`, `App::open_asset`; a scenario tag is the map's own tab).
+A variant line opens the tag on that variant's first map. **Copy into
+package...** lists the local packages and runs `Action::CopyAsset`,
+which calls `App::asset_copy`, the call `asset.copy` makes: a new tag
+`like:` this one, which holds no disc bytes.
+
+Thumbnails, **Open as fields**, **Show edits**, **Where used**, folders
+in the tree and dragging a source file onto a package are not built: the
+rows carry the data (`asset.thumb`) and the menu gains the entries as
+their slices land.
 
 A loose `.map` (a community mod) opened from **File > Open** is stored
 as an import layer (W9) and its tags join the tree under its name.
@@ -262,9 +280,11 @@ document id.
   (`ui/layout.rs`): the editor comes from the tag's kind.
 - Opening a map as the unit of work: the tree holds every map's tags
   at once.
-- The Maps list and its cards (`ui/map_list.rs`, `app/map_cards.rs`),
-  the Tags tab's tree as a separate list, the per-tool list panels: the
-  browser.
+- The Maps list (its window, the Map Pack group and the package rows)
+  is gone: the browser. The map grid and its cards (`ui/map_list.rs`,
+  `app/map_cards.rs`), the Tags tab's tree as a separate list and the
+  per-tool list panels go with the slices that give their documents a
+  place in the browser.
 - **Save as package...**, the package form of `doc.save`, **Save as...**
   for a `.map`, `active.toml`: the edit target and **Export map...**.
 - The floating Sound, Voices, Image and Map Pack windows: panes of the
@@ -896,7 +916,7 @@ Rows are in build order.
 | W3 | **First start and the tree in Studio** (built; tag-workspace; it needs W1 only here) | M | nothing | as there |
 | PK1 | **Manifest and set** (built): `content::package::{Manifest, PackageId, Lock, Set}`, validation, the canonical id, `requires`, `after`, `set.toml`, the order | M | nothing | golden ids on invented hashes; unknown keys, a cycle and a missing `requires` are refused by name; display fields and credit do not move the id; the order is stable |
 | PK2 | **Builders and the build** (built): `crates/tools/workspace` with the registry, `Layered`, `build` on a `TagSet`, conflicts, the cache key, the `tag`, `edits` and `bitmap` builders, `h2 package check` and `build` | M | PK1 | on an invented map: two packages build in order; the same tag path twice stops naming both; a stale `was` stops with its line; `onto` output differs from its base only in changed tags |
-| SH2 | **The browser** (built: the rows and `asset.*`, `app/assets.rs`; the browser panel and the removal of the Maps list, the Tags tab list and the per-tool lists stand): the Tags root over `TagRepo` by path with variants, the Packages and Live roots, `asset.list`, `asset.thumb`, `asset.copy`, Kind, Map, search, badges; the Maps list, Tags tab list and per-tool lists removed | M | SH1, PK1, W3 | an invented tree of two maps and one package lists one row for a shared tag and two variants for one that differs; the Map picker gives one scenario's closure; each word of a query must match; a tag an edit line touches carries the package's badge; **Copy into** writes a `tag` item with no bytes of the source |
+| SH2 | **The browser** (built: the rows and `asset.*`, `app/assets.rs`, the panel `ui/browser.rs` and the removal of the Maps list; the Tags tab list and the per-tool lists stay until their documents are kinds of the browser): the Tags root over `TagRepo` by path with variants, the Packages and Live roots, `asset.list`, `asset.thumb`, `asset.copy`, Kind, Map, search, badges; the Maps list removed | M | SH1, PK1, W3 | an invented tree of two maps and one package lists one row for a shared tag and two variants for one that differs; the Map picker gives one scenario's closure; each word of a query must match; a tag an edit line touches carries the package's badge; **Copy into** writes a `tag` item with no bytes of the source; the panel lists the tree's rows and a double-click on a scenario row opens the map's editor |
 | PK3 | **The game's side** (built): `PackageRewrite` as the one rewrite, the baked set, `<data>/packages`, features, the cache, the game's `packages.list` | M | PK2 | the rewrite's bytes equal `workspace::build`'s; a second read is a cache hit; a package off in `set.toml` or with its feature off adds nothing; a map that holds the content is left alone |
 | PK11 | **HUDs as data**: the `hud` builder, HUD kit YAML for the superbounce and Firefight HUDs; `hud-kit-core/src/huds/*.rs` deleted | M | PK3 | each YAML compiles to the records its Rust definition compiled to (`hud-kit-core/src/tests.rs`' fixtures) |
 | PK4 | **Pogo as a package** (built): `content/pogo/`, the `model` and `sound` builders, the weapon as a `tag` item; `PogoRewrite` deleted | M | PK3 | on `pogo_kit::fixture`'s map the package builds the tags `pogo_kit::inject::add_pogo` built, compared group by group |

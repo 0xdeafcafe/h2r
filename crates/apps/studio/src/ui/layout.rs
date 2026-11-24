@@ -23,7 +23,7 @@ impl ToolWindows {
 }
 
 pub(super) struct Keys {
-    pub maps: WindowKey,
+    pub browser: WindowKey,
     pub tags: WindowKey,
     pub scripts: WindowKey,
     pub outliner: WindowKey,
@@ -49,7 +49,7 @@ fn key(id: &str, icon: &str, title: &str) -> WindowKey {
 impl Keys {
     pub fn new() -> Self {
         Self {
-            maps: key("maps", icon::MAP, "Maps"),
+            browser: key("browser", icon::TREE, "Browser"),
             tags: key("tags", icon::BOX, "Tags"),
             scripts: key("scripts", icon::FILE, "Scripts"),
             outliner: key("outliner", icon::TREE, "Scene"),
@@ -102,7 +102,7 @@ impl Keys {
                 DockSplit::Left,
                 0.22,
                 DockLayout::tabs(
-                    [&self.outliner, &self.tags, &self.scripts, &self.maps]
+                    [&self.outliner, &self.tags, &self.scripts, &self.browser]
                         .into_iter()
                         .chain(tools.map(|tool| &tool.list)),
                 ),
@@ -136,12 +136,12 @@ impl Keys {
             &self.log,
             &self.game,
         ];
-        if saved_dock(&window_name(&self.maps)).is_none() {
+        if saved_dock(&window_name(&self.browser)).is_none() {
             retire_tools_leaf(anchors);
         }
         seed(
             &self.outliner,
-            [&self.maps, &self.tags, &self.scripts]
+            [&self.browser, &self.tags, &self.scripts]
                 .into_iter()
                 .chain(tools.map(|t| &t.list)),
         );

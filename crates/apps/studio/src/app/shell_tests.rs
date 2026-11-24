@@ -239,3 +239,30 @@ fn a_tags_editor_comes_from_its_group() {
         assert_eq!(tool(g), ToolKind::Tags, "{}", String::from_utf8_lossy(g));
     }
 }
+
+/// The browser's open (`Action::OpenAsset`): a tag of the open map opens
+/// as a tab in its editor, and a tag the map lacks is an error in the
+/// log, not a tab.
+#[test]
+fn opening_an_asset_opens_its_tag_of_the_open_map() {
+    let t = Temp::new("open-asset");
+    let mut app = app(&t.0);
+    let (group, name) = {
+        let tag = app.tags.tag(kit_id()).unwrap();
+        (tags::defs::fourcc_text(tag.group), tag.name.clone())
+    };
+    app.dispatch(Action::OpenAsset {
+        asset: format!("tag:{group}:{name}"),
+        map: None,
+    });
+    assert_eq!(app.front_doc(), Some(Doc::Tag(kit_id())));
+    let tabs = app.tabs().len();
+    let before = app.log().len();
+    app.dispatch(Action::OpenAsset {
+        asset: "tag:weap:objects\\nothing".into(),
+        map: None,
+    });
+    assert_eq!(app.tabs().len(), tabs);
+    assert!(app.log().len() > before);
+    assert!(app.status().is_some_and(|s| s.text().contains("not in the open map")));
+}

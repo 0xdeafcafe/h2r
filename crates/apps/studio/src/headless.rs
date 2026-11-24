@@ -591,7 +591,7 @@ mod tests {
         let mut app = App::new();
         app.set_data_root(source.0.join("data"));
         let workspaces = [
-            (ToolKind::Scenario, ["maps", "viewport", "inspector"]),
+            (ToolKind::Scenario, ["browser", "viewport", "inspector"]),
             (ToolKind::Tags, ["tags", "viewport", "inspector"]),
             (ToolKind::Scripts, ["scripts", "viewport", "inspector"]),
             (ToolKind::Variants, ["variants-list", "variants-settings", "variants-inspector"]),
@@ -811,7 +811,7 @@ mod tests {
         app.dispatch(Action::OpenSource(map));
         // The ids of `theme::panel_body` and `theme::bounded_list` callers
         // (and the empty card).
-        const ALLOWED: [&str; 10] = [
+        const ALLOWED: [&str; 11] = [
             "##outliner-body",
             // The script editor's text scrolls on its own, as an editor does.
             "##rules-body",
@@ -823,6 +823,7 @@ mod tests {
             "##palette-results",
             "##empty-card",
             "##bsp-bytes",
+            "##browser-rows",
         ];
         let check = |h: &Headless, what: &str| {
             for window in &h.scene.windows {
@@ -1629,85 +1630,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The Maps list's Map Pack group through its widgets: with nothing
-    /// installed it says how to install it; with an (invented) install it
-    /// lists the map by its record's name with the picture beside it, and
-    /// a click opens it in the scenario tool. The window is tall enough
-    /// for the Maps tab to show the group unscrolled: Dear ImGui names a
-    /// clipped row to nobody, so the probe would not find it. Skipped
-    /// without a wgpu adapter.
-    #[test]
-    fn the_map_pack_group_lists_and_opens_a_pack_map() {
-        use crate::app::map_pack::content_root;
-        use crate::script::{Button, Step};
-        use crate::ui::map_list::{Group, Shown};
-        let _turn = ONE_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
-        let mut h = match Headless::new([1280.0, 1600.0], 1.0) {
-            Ok(h) => h,
-            Err(e) => {
-                eprintln!("skipping: {e}");
-                return;
-            }
-        };
-        let dir = std::env::temp_dir().join(format!("h2-editor-mp-ui-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut app = App::new();
-        app.set_data_root(dir.join("data"));
-        h.frames(&mut app, 3).unwrap();
-        assert_eq!(h.studio.map_list.shown(Group::MapPack), Some(&Shown::Hint));
-
-        let pack = content_root(&dir.join("data")).join("4d53006400000101");
-        std::fs::create_dir_all(&pack).unwrap();
-        std::fs::write(pack.join("ridge.map"), fixture::fixture()).unwrap();
-        let e = content::map_list::Entry {
-            scenario: "scenarios\\multi\\ridge\\ridge".into(),
-            map_id: 1001,
-            names: std::array::from_fn(|_| "Ridge".to_owned()),
-            descriptions: std::array::from_fn(|_| String::new()),
-            sort: 100,
-            flags: 0,
-            teams: [8; 16],
-            preview: [0x20u8, 0x80, 0xe0, 0xbf].repeat(content::map_list::PREVIEW_LEN / 4),
-        };
-        std::fs::write(pack.join("patch.lvl"), e.to_v2().unwrap()).unwrap();
-        app.refresh_packages();
-        h.frames(&mut app, 3).unwrap();
-        assert_eq!(
-            h.studio.map_list.shown(Group::MapPack),
-            Some(&Shown::Maps(vec![("Ridge".into(), true)]))
-        );
-        let (rgba, _) = h.capture(&mut app, 2).unwrap();
-        // The picture (R 0xe0, G 0x80, B 0x20 at the record's alpha 0xbf,
-        // so blended a quarter with the dark panel) fills the thumbnail.
-        let orange = rgba
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .filter(|p| (150..215).contains(&p[0]) && (80..135).contains(&p[1]) && p[2] < 70)
-            .count();
-        assert!(orange >= 100, "the thumbnail is drawn: {orange} pixels");
-        h.step(&mut app, &Step::Click("Ridge##pack-ridge".into(), Button::Left))
-            .unwrap();
-        h.frames(&mut app, 2).unwrap();
-        assert_eq!(app.opened_pack_map(), Some("ridge"));
-        assert!(app.session.is_open());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The Maps list names and pictures every group through its widgets
-    /// (`app::map_cards_tests`' invented files): a folder of maps with a
-    /// main menu lists its campaign level and multiplayer map by the
-    /// menu's names, each with its picture beside it, and the shared cache
-    /// and the menu itself by file name with none; a package with an image
-    /// of its own shows it; the Map Pack, not installed, its hint. A click
-    /// on a named map opens it. The window is tall enough for the Maps
-    /// tab to show every group unscrolled. Skipped without a wgpu
+    /// The map grid, shown while no map is open, names and pictures a
+    /// folder's maps through its widgets (`app::map_cards_tests`' invented
+    /// files): a click on a named map opens it. Skipped without a wgpu
     /// adapter.
     #[test]
-    fn the_maps_list_names_and_pictures_every_group() {
+    fn the_map_grid_opens_a_named_map() {
         use crate::app::map_cards_tests::{Temp, maps_folder, package_with_picture};
         use crate::script::{Button, Step};
-        use crate::ui::map_list::{Group, Shown};
         let _turn = ONE_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
         let mut h = match Headless::new([1280.0, 1600.0], 1.0) {
             Ok(h) => h,
@@ -1724,25 +1654,6 @@ mod tests {
         app.dispatch(Action::OpenSource(maps));
         app.wait_cards();
         h.frames(&mut app, 3).unwrap();
-        let rows = |v: &[(&str, bool)]| {
-            Some(Shown::Maps(
-                v.iter().map(|(l, p)| (l.to_string(), *p)).collect(),
-            ))
-        };
-        assert_eq!(
-            h.studio.map_list.shown(Group::Halo2).cloned(),
-            rows(&[("Yard", true), ("The Pier", true)])
-        );
-        assert_eq!(
-            h.studio.map_list.shown(Group::SharedAndMenu).cloned(),
-            rows(&[("mainmenu", false), ("shared", false)])
-        );
-        assert_eq!(
-            h.studio.map_list.shown(Group::Packages).cloned(),
-            rows(&[("Yard Edit", true)])
-        );
-        assert_eq!(h.studio.map_list.shown(Group::MapPack), Some(&Shown::Hint));
-        assert_eq!(h.studio.map_list.shown(Group::Halo1), None);
         h.step(
             &mut app,
             &Step::Click("##map-grid>The Pier##map-02_pier".into(), Button::Left),
@@ -1931,5 +1842,171 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An invented tags tree for the browser: the maps `example` (the
+    /// fixture's own name) and `other` share a rifle and each hold their
+    /// own bitmap named `objects\\pixels` (a variant of it), and a local
+    /// package `pogo` edits the rifle. Placeholder bytes: the browser
+    /// never decodes them.
+    fn browser_tree(data: &std::path::Path) -> std::path::PathBuf {
+        use map::FourCC;
+        use tags::repo::store::Manifest;
+        use tags::repo::{TagKey, TagRepo};
+        let mut repo = TagRepo::create(&data.join("tags")).unwrap();
+        let key = |g: &[u8; 4], p: &str| TagKey::new(FourCC(*g), p);
+        let place = |repo: &TagRepo, k: &TagKey, v: Option<&str>| {
+            let p = repo.path_of(k, v);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"placeholder").unwrap();
+        };
+        let rifle = key(b"weap", "objects\\weapons\\rifle");
+        let pixels = key(b"bitm", "objects\\pixels");
+        let (se, so) = (key(b"scnr", "scenarios\\example"), key(b"scnr", "scenarios\\other"));
+        for k in [&rifle, &pixels, &se, &so] {
+            place(&repo, k, None);
+        }
+        place(&repo, &pixels, Some("v2"));
+        for (map, scenario, variant) in [("example", &se, None), ("other", &so, Some("v2"))] {
+            repo.put_manifest(
+                &Manifest {
+                    map: map.to_owned(),
+                    name: map.to_owned(),
+                    scenario: Some(scenario.clone()),
+                    tags: vec![
+                        (rifle.clone(), None),
+                        (pixels.clone(), variant.map(str::to_owned)),
+                        (scenario.clone(), None),
+                    ],
+                    ..Default::default()
+                },
+                b"header",
+            )
+            .unwrap();
+        }
+        let pkg = data.join("packages/pogo");
+        std::fs::create_dir_all(pkg.join("edits")).unwrap();
+        std::fs::write(
+            pkg.join("package.toml"),
+            "[package]\nformat = 1\nid = \"pogo\"\nname = \"Pogo\"\n\n[[item]]\nkind = \"edits\"\nsource = \"edits/pogo.yaml\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            pkg.join("edits/pogo.yaml"),
+            "- tag: 'weap:objects\\weapons\\rifle'\n  set:\n    - {path: x, value: 1}\n",
+        )
+        .unwrap();
+        pkg
+    }
+
+    fn shown(h: &Headless) -> Vec<String> {
+        let mut v = h.studio.browser.shown.clone();
+        v.sort();
+        v
+    }
+
+    /// The browser lists the invented tree's rows (one for a shared tag,
+    /// one with its variants for a tag the maps hold differently), the
+    /// Kind picker and the search narrow them, a double-click on a map's
+    /// scenario row opens the map's editor, and the Packages root lists
+    /// the set. Skipped without a wgpu adapter.
+    #[test]
+    fn the_browser_lists_the_tree_and_a_double_click_opens_its_editor() {
+        use crate::app::Doc;
+        use crate::script::{Button, Step};
+        let Some((_turn, mut h)) = headless() else { return };
+        let t = crate::app::map_cards_tests::Temp::new("browser-panel");
+        let data = t.0.join("data");
+        browser_tree(&data);
+        let map = t.0.join("example.map");
+        std::fs::write(&map, fixture::fixture()).unwrap();
+        let mut app = App::new();
+        app.set_data_root(data);
+        app.dispatch(Action::OpenSource(map));
+        app.dispatch(Action::CloseDoc(Doc::Map));
+        assert_eq!(app.front_doc(), None);
+        h.frames(&mut app, 4).unwrap();
+        h.scene.find("win:###browser").unwrap();
+        assert_eq!(
+            shown(&h),
+            [
+                "tag:bitm:objects\\pixels",
+                "tag:scnr:scenarios\\example",
+                "tag:scnr:scenarios\\other",
+                "tag:weap:objects\\weapons\\rifle",
+            ]
+        );
+        // The variants of the differing bitmap are lines under its row.
+        h.scene.find("##browser-tag:bitm:objects\\pixels-v-1").unwrap();
+        // The rifle's package edit is its badge.
+        h.scene.find("[edited by pogo]").unwrap();
+
+        // The Kind picker and the search narrow the list.
+        h.studio.browser.kind = Some("Maps".into());
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(
+            shown(&h),
+            ["tag:scnr:scenarios\\example", "tag:scnr:scenarios\\other"]
+        );
+        h.studio.browser.kind = None;
+        h.step(&mut app, &Step::Click("##browser-search".into(), Button::Left))
+            .unwrap();
+        h.step(&mut app, &Step::Type("weapons rifle".into())).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(shown(&h), ["tag:weap:objects\\weapons\\rifle"]);
+        h.studio.browser.query.clear();
+
+        // The Packages root lists the set.
+        h.step(&mut app, &Step::Click("##browser-root-1".into(), Button::Left))
+            .unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert!(h.studio.browser.shown.contains(&"package:pogo".to_owned()));
+        h.step(&mut app, &Step::Click("##browser-root-0".into(), Button::Left))
+            .unwrap();
+        h.studio.browser.kind = Some("Maps".into());
+        h.frames(&mut app, 2).unwrap();
+
+
+        // A double-click on the map's scenario opens the map's editor.
+        h.step(
+            &mut app,
+            &Step::Click("##browser-tag:scnr:scenarios\\example".into(), Button::Double),
+        )
+        .unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(app.loaded_map(), Some("example"));
+        assert_eq!(app.front_doc(), Some(Doc::Map));
+        assert_eq!(app.tool, crate::ToolKind::Scenario);
+    }
+
+    /// Copy into package, from the browser's context menu, is
+    /// [`Action::CopyAsset`]: the same call as `asset.copy`, a `tag` item
+    /// that holds none of the source's bytes.
+    #[test]
+    fn the_browsers_copy_into_package_writes_a_like_item() {
+        let t = crate::app::map_cards_tests::Temp::new("browser-copy");
+        let data = t.0.join("data");
+        let pkg = browser_tree(&data);
+        let mut app = App::new();
+        app.set_data_root(data);
+        app.dispatch(Action::CopyAsset {
+            asset: "tag:weap:objects\\weapons\\rifle".into(),
+            package: "pogo".into(),
+        });
+        let like = pkg.join("tags/objects/weapons/rifle_copy.weap.yaml");
+        assert_eq!(
+            std::fs::read_to_string(like).unwrap(),
+            "like: 'weap:objects\\weapons\\rifle'\n"
+        );
+        let manifest = std::fs::read_to_string(pkg.join("package.toml")).unwrap();
+        assert!(manifest.contains("rifle_copy"), "{manifest}");
+        // A tag the tree lacks is a refusal in the log, not a file.
+        let before = app.log().len();
+        app.dispatch(Action::CopyAsset {
+            asset: "tag:weap:objects\\nothing".into(),
+            package: "pogo".into(),
+        });
+        assert!(app.log().len() > before);
+        assert!(!pkg.join("tags/objects/nothing_copy.weap.yaml").exists());
     }
 }
