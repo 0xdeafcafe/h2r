@@ -327,7 +327,8 @@ impl VariantRecord {
             );
         }
         let engine = self.i32_at(ENGINE);
-        if !matches!(engine, 1..=4 | 7..=9) {
+        let script = engine == ::rules::SCRIPT_INDEX as i32;
+        if !matches!(engine, 1..=4 | 7..=9) && !script {
             bad(ENGINE, format!("engine {engine} is not a playable type"));
         }
         if self.flags() & !0x7fff != 0 {
@@ -432,6 +433,13 @@ impl VariantRecord {
                 i16_in(0xf2, 1, 0x7fff, &mut bad);
                 i16_in(0xf4, 1, 0x7fff, &mut bad);
             }
+            _ if script => {
+                // The script index (`variants::record::check`): a type area of
+                // zero, the common rules as every engine's.
+                if self.raw[TYPE_AREA..0x10c].iter().any(|&b| b != 0) {
+                    bad(TYPE_AREA, "a script game's type area must be zero".into());
+                }
+            }
             _ => {}
         }
         out
@@ -474,6 +482,27 @@ mod tests {
         let mut t = VariantRecord::stock(GameType::Territories, "T");
         t.put_i16(TYPE_AREA, 0);
         assert_eq!(t.problems()[0].0, TYPE_AREA);
+    }
+
+    /// The script index passes as `variants::record::check` says: common
+    /// rules, a zero type area. Race (5) stays refused.
+    #[test]
+    fn the_script_index_passes_with_a_zero_type_area() {
+        let mut v = VariantRecord::stock(GameType::Slayer, "S");
+        v.put_i32(ENGINE, ::rules::SCRIPT_INDEX as i32);
+        let at: Vec<usize> = v.problems().into_iter().map(|(at, _)| at).collect();
+        assert_eq!(at, vec![TYPE_AREA], "Slayer's stock type area is not zero");
+        v.put_u32(TYPE_AREA, 0);
+        assert_eq!(v.problems(), vec![]);
+        let check = variants::record::check(
+            &variants::GameVariant::from_bytes(v.bytes()).unwrap(),
+        );
+        assert!(check.is_empty(), "{check:?}");
+        v.put_i32(ROUNDS, 7);
+        assert_eq!(v.problems()[0].0, ROUNDS);
+        v.put_i32(ROUNDS, 0);
+        v.put_i32(ENGINE, 5);
+        assert_eq!(v.problems()[0].0, ENGINE);
     }
 
     #[test]
