@@ -831,7 +831,7 @@ impl Play {
         for e in events {
             self.on_event(app, e);
         }
-        if let Some(stream) = &app.pairing.mirror {
+        if let Some(stream) = app.pairing.mirror.clone() {
             let previous_epoch = app.pairing.shown.as_ref().map(|sample| sample.epoch);
             app.pairing.display.refresh(
                 stream.snapshot().as_deref(),

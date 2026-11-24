@@ -634,6 +634,7 @@ impl Editor {
                 rebuild: self.session.pending_rebuild() as u32,
                 changing,
                 teach: None,
+                marks: Default::default(),
             },
             notice: self.notice.clone(),
             points: self.monitor_points_of(now, self.overlays()),

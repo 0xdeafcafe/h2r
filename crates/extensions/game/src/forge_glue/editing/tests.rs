@@ -434,7 +434,7 @@ fn an_own_thing_aimed_at_is_named_opened_and_removed() {
     update(&mut e, None);
     let rifle = Endpoint::base(BlockKind::Weapons, 0);
     assert_eq!(e.tool.aimed_thing.map(Endpoint::identity), Some(rifle));
-    assert_eq!(e.monitor_hud().view.target, "battle rifle");
+    assert_eq!(e.monitor_hud(0.0).view.target, "battle rifle");
     assert_eq!(e.status()["aimed"], Value::Null, "not an added object");
     assert_eq!(e.status()["aimed_thing"]["base"]["block"], "weapons");
     let cmd = update(&mut e, Some(forge::tool::Action::Properties)).unwrap();
@@ -451,7 +451,7 @@ fn an_own_thing_aimed_at_is_named_opened_and_removed() {
         pitch: 0.,
     });
     update(&mut e, None);
-    assert_eq!(e.monitor_hud().view.target, "Starting point");
+    assert_eq!(e.monitor_hud(0.0).view.target, "Starting point");
     // Delete on the rifle is its removal: one inert row at the next tick.
     e.tool.camera = Some(forge::camera::Camera {
         position: [-5., 0., 0.],

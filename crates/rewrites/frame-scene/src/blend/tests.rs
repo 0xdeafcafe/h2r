@@ -97,7 +97,7 @@ fn the_plan_is_alpha_over_the_publish_gap_with_one_tick_of_delay() {
     let (mut a, mut b) = world(node([0.0; 3], 0.0), node([1.0; 3], 0.0));
     a.stamp.published = Some(base);
     b.stamp.published = Some(base + Duration::from_millis(33));
-    let at = |ms| plan(&a, &b, base + Duration::from_millis(33 + ms));
+    let at = |ms: u64| plan(&a, &b, base + Duration::from_millis(33 + ms));
     assert_eq!(at(0), Plan::Blend(0.0));
     let Plan::Blend(half) = at(16) else { panic!() };
     assert!((half - 16.0 / 33.0).abs() < 1e-3);
