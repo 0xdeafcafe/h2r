@@ -836,7 +836,7 @@ setting a script reads as `variant.<name>` keeps that name), a label, a
 kind, where it is stored (a record `SettingId`, the carrier's own score
 setting for `score_limit`, CTF's and Assault's paired settings for the
 `ctf_` names, or a field of the `hx` block for `gravity`, `damage`,
-`shield`, `health` and `unlimited_grenades`) and the carriers it applies
+`shield`, `health`, `speed` and `unlimited_grenades`) and the carriers it applies
 to. Rows are appended, never reordered, since a blob names a setting by
 its index. The kinds:
 
@@ -1409,7 +1409,7 @@ Actions:
 | `respawn(p)` | `PLAYER_SPAWN` `0x14f2e0` | named | core |
 | `set_gravity(g)`: the match's gravity, `g` a `fixed` | `variant_ext` hooks (`crates/extensions/game/src/variant_ext.rs`); the host runtime does not make the call yet | named | `game.traits` |
 | traits for the match: damage, shield, health | `variant_ext` hooks, as gravity | named | `game.traits` |
-| traits per player; movement speed | answer `ENGINE_TRAIT_QUERY` `0x24dda0` (vtable `+0x8c`; every engine's own `+0x8c` falls back to it); speed has no reader found (game-options.md "Not built") | named point | `player.traits` |
+| traits per player; movement speed | traits answer `ENGINE_TRAIT_QUERY` `0x24dda0` (vtable `+0x8c`; every engine's own `+0x8c` falls back to it); the match's speed is `variant_ext::Speed` on the speed step `0x15c000` (player `+0x19c`), per player none yet (game-options.md "Movement speed") | named point | `player.traits` |
 | `set_team(p, t)` | no entry known; the field is player `+0xc0` | untraced | `player.team` |
 | `set_loadout(p, primary, secondary)`: the multiplayer list's weapons, by tag path | `STARTING_WEAPON_PICK` `0x19eda0` for the tag, then the starting profile's give (`0xb7930`, `0xb7b40`, `unit_add_weapon` `0xcd0c0`; `rules/world/loadout.rs`) | named | `player.weapons` |
 | `create(tag, at)`, `delete(o)` | `OBJECT_DELETE` `0xb8540`; creation as Forge's ([forge.md](forge.md)) | named; traced | `objects.create`, `objects.delete` |

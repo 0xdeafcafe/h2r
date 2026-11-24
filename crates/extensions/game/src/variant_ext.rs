@@ -220,6 +220,16 @@ impl Decision {
         }
     }
 
+    /// The movement-speed factor when this machine scales it (not 100%):
+    /// host, guest with its host's block, or alone. A guest scales too: it
+    /// predicts its own movement.
+    pub fn speed(&self) -> Option<f32> {
+        match self {
+            Decision::Apply { ext, .. } if ext.speed != 100 => Some(ext.speed_scale()),
+            _ => None,
+        }
+    }
+
     /// The line the log prints when the decision changes.
     pub fn line(&self) -> String {
         match self {
@@ -498,6 +508,95 @@ impl hooks::Feature for Vitality {
         // The scales are read from guest memory at each step; only the
         // shield step's factor waits on the host between its hooks.
         b.snapshot(hooks::SnapshotPolicy::forbid_while(vitality_live));
+        Ok(())
+    }
+}
+
+// ---- movement speed ----
+
+/// A player's movement multiplier (`+0x19c`, an `f32`): the engine's
+/// per-player speed step ramps it toward the engine's target (1.0, a
+/// carrier's or the Juggernaut's), and the player's replicated state
+/// carries it into the unit's movement.
+pub const PLAYER_SPEED: u32 = 0x19c;
+
+/// Multiplies every live player's movement multiplier by `f`; how many it
+/// changed. A value that isn't finite is left alone.
+pub fn scale_player_speeds(m: &mut dyn GuestMemory, f: f32) -> Result<usize, MemFault> {
+    let Some(array) = engine::view::players::array(m)? else {
+        return Ok(0);
+    };
+    let at: Vec<u32> = array.live(m, 16)?.into_iter().map(|(_, p)| p.addr).collect();
+    let mut n = 0;
+    for a in at {
+        let v = m.f32(a.wrapping_add(PLAYER_SPEED))?;
+        if v.is_finite() {
+            m.set_f32(a.wrapping_add(PLAYER_SPEED), v * f)?;
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
+/// The factor applied before the speed step, put back after it.
+static SPEED_SCALED: Mutex<Option<f32>> = Mutex::new(None);
+
+/// Why `variant-speed` can't be snapshotted now: the speed step has the
+/// players' multipliers divided and its after hook has not put them back.
+pub fn speed_live() -> Option<String> {
+    speed_live_of(*SPEED_SCALED.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+fn speed_live_of(scaled: Option<f32>) -> Option<String> {
+    scaled.map(|f| format!("the speed step has the players' multipliers divided by {f}"))
+}
+
+/// The feature id (`features.variant-speed` switches it).
+pub const SPEED_FEATURE: &str = "variant-speed";
+
+/// The variant's movement speed for every player: the engine's own
+/// per-player speed step runs on the multipliers unscaled (so its target,
+/// ramp and clamp are the game's), and what it leaves is scaled before
+/// anything else reads it (docs/game/game-options.md, "Movement speed").
+pub struct Speed;
+
+impl hooks::Feature for Speed {
+    fn manifest(&self) -> Manifest {
+        Manifest::new(SPEED_FEATURE, "Game variant movement speed")
+            .doc("docs/game/game-options.md")
+    }
+    fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        use hooks::points::ENGINE_PLAYER_SPEEDS;
+        b.raw()
+            .before(&ENGINE_PLAYER_SPEEDS, "take the speed scale off the players", |c| {
+                *SPEED_SCALED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                let rt = Arc::clone(c.ctx.runtime());
+                let mut mem = rt.memory();
+                let Some(f) = in_game(&*mem).speed() else {
+                    return Ok(Flow::Continue);
+                };
+                let m: &mut dyn GuestMemory = &mut *mem;
+                if scale_player_speeds(m, 1.0 / f).is_ok() {
+                    *SPEED_SCALED.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+                }
+                Ok(Flow::Continue)
+            });
+        b.raw()
+            .after(&ENGINE_PLAYER_SPEEDS, "put the speed scale on the players", |c| {
+                let Some(f) = SPEED_SCALED
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                else {
+                    return Ok(());
+                };
+                let rt = Arc::clone(c.ctx.runtime());
+                let mut mem = rt.memory();
+                let m: &mut dyn GuestMemory = &mut *mem;
+                let _ = scale_player_speeds(m, f);
+                Ok(())
+            });
+        b.snapshot(hooks::SnapshotPolicy::forbid_while(speed_live));
         Ok(())
     }
 }
@@ -805,6 +904,45 @@ mod tests {
         // The body takes damage over health of it.
         let body = scale_amount(m, REC, body_factor(&e)).unwrap();
         assert!((body - 26.0 / 3.0 * 0.75).abs() < 1e-5);
+    }
+
+    #[test]
+    fn movement_speed_scales_the_players_multipliers_and_back() {
+        use engine::datum::layout as dl;
+        const H: u32 = 0x0060_0000;
+        const D: u32 = 0x0060_1000;
+        let mut e = Ext::default();
+        assert_eq!(decide(e, None, false).speed(), None);
+        e.speed = 150;
+        e.gravity = 50;
+        assert_eq!(decide(e, None, false).speed(), Some(1.5));
+        let guest = session(3, false);
+        assert_eq!(decide(e, Some((&guest, 2)), true).speed(), Some(1.5));
+        assert_eq!(decide(e, Some((&guest, 2)), false).speed(), None);
+
+        let mut g = engine::testing::FakeGuest::new();
+        g.map(H, 0x1000).map(D, 0x1000);
+        g.put_u32(engine::points::PLAYERS.base, H)
+            .put_u32(H + dl::ELEMENT_SIZE, 0x21c)
+            .put_u32(H + dl::HIGH_WATER, 3)
+            .put_u32(H + dl::DATA, D);
+        g.put_u16(D, 0xe001).put_f32(D + PLAYER_SPEED, 1.0);
+        // Slot 1 is free; slot 2 has a carrier's 1.25.
+        g.put_u16(D + 2 * 0x21c, 0xe003)
+            .put_f32(D + 2 * 0x21c + PLAYER_SPEED, 1.25);
+        let m: &mut dyn GuestMemory = &mut g;
+        assert_eq!(scale_player_speeds(m, 1.0 / 1.5).unwrap(), 2);
+        assert!((m.f32(D + PLAYER_SPEED).unwrap() - 1.0 / 1.5).abs() < 1e-6);
+        assert_eq!(m.f32(D + 0x21c + PLAYER_SPEED).unwrap(), 0.0, "a free slot");
+        // The engine's step runs here; then the scale goes back on.
+        assert_eq!(scale_player_speeds(m, 1.5).unwrap(), 2);
+        assert!((m.f32(D + PLAYER_SPEED).unwrap() - 1.0).abs() < 1e-6);
+        assert!((m.f32(D + 2 * 0x21c + PLAYER_SPEED).unwrap() - 1.25).abs() < 1e-6);
+        // Not a number: left alone.
+        m.set_f32(D + PLAYER_SPEED, f32::NAN).unwrap();
+        assert_eq!(scale_player_speeds(m, 2.0).unwrap(), 1);
+        assert_eq!(speed_live_of(None), None);
+        assert!(speed_live_of(Some(1.5)).unwrap().contains("1.5"));
     }
 
     #[test]

@@ -73,7 +73,7 @@ number; the table grows by appending names.
 
 **Where a setting is stored.** A row is either a record setting (a
 `variants::record::SettingId` per engine) or a field of the `hx` block
-(`variants::ext::Ext`): `gravity`, `damage`, `shield`, `health` and
+(`variants::ext::Ext`): `gravity`, `damage`, `shield`, `health`, `speed` and
 `unlimited_grenades`, the extras the game applies
 ([game-options.md](game-options.md#showing-them)). `team_count` is the
 record's setting 93. The block's `superbounce` flag has no row: a script
@@ -190,7 +190,7 @@ quick time_limit, bounce_points, suicide_costs
 **The full editor** shows everything, marked or not. The record settings
 are on the game's own pages (Change Rules, then Edit, which copies a
 built-in first). The `hx` extras the table has rows for (gravity, damage,
-shield, health, unlimited grenades) are the table's rows, so More
+shield, health, speed, unlimited grenades) are the table's rows, so More
 Options edits them as a script's `settings` block names them, and the
 extras no row stores are not offered. The extras and the script's options
 are on More Options (`variant_page.rs`): after its fixed rows, one row per `option`

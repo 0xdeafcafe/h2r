@@ -89,6 +89,7 @@ pub enum ExtField {
     Damage,
     Shield,
     Health,
+    Speed,
     UnlimitedGrenades,
 }
 
@@ -709,6 +710,15 @@ pub const TABLE: &[Row] = &[
         "Second Heavy Vehicle",
         choice(4, HEAVY_VEHICLES),
         setting(80),
+        ALL,
+    ),
+    // The block's movement speed, appended after the rows a blob already
+    // names by index.
+    row(
+        "speed",
+        "Movement Speed",
+        percent(),
+        Store::Ext(ExtField::Speed),
         ALL,
     ),
 ];

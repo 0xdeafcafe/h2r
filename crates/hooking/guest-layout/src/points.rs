@@ -666,6 +666,13 @@ points! { ALL;
     /// then the engine's shared steps (`0x15c000` and on). No engine
     /// object, nothing.
     ENGINE_UPDATE @ 0x0015_c150: [fn() ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// The per-player movement-speed step (`0x15c000`, called from
+    /// `ENGINE_UPDATE` and from `0x162060`): for each player it asks the
+    /// engine's slot `+0x4c` for a target multiplier, then ramps the
+    /// player's `+0x19c` toward it (up by a fixed step a tick, snapping
+    /// down, never below 0 or above the target). `+0x19c` is what the
+    /// player's replicated state carries into the unit's movement.
+    ENGINE_PLAYER_SPEEDS @ 0x0015_c000: [fn() ret 0], Optional; "docs/game/game-options.md";
     /// Slayer's kill callback, vtable `0x45c6d8` slot `+0x78`, which
     /// `PLAYER_KILLED` calls last (`0x15d6a4`): thiscall with the engine
     /// object, then that routine's attacker, victim and flag, and a kill

@@ -1,8 +1,8 @@
 # Game options the game doesn't allow
 
-Status: Partly built. Sections 1 to 3 are built: the record's limits, our added choices, the extension block with its Live transport, and the "More Options" page. Movement speed, team size, weapons outside the globals list in the game's editor, and the lobby texts are not built; section 4 (names with any character) is a design.
+Status: Partly built. Sections 1 to 3 are built: the record's limits, our added choices, the extension block with its Live transport, the "More Options" page and movement speed. Team size, weapons outside the globals list in the game's editor, and the lobby texts are not built; section 4 (names with any character) is a design.
 Code: `crates/formats/variants` (`ext`, `extra`, `record`, `schema`), `crates/extensions/game/src/variant_options.rs`, `variant_ext.rs`, `variant_page.rs`, `community_variants.rs`. Tests: listed under "Tests".
-Switch: `features.variant-more-options-row`, `features.variant-more-options`, `variant-vitality`, `variant-ext-live` (feature ids), listed in [switches.md](../runtime/switches.md).
+Switch: `features.variant-more-options-row`, `features.variant-more-options`, `variant-vitality`, `variant-speed`, `variant-ext-live` (feature ids), listed in [switches.md](../runtime/switches.md).
 
 The goals:
 
@@ -276,11 +276,11 @@ The table lists each option, whether the record can store it, and how it is offe
 | Suicide and betrayal penalties beyond retail's | storable to 0x7fff s | offer more steps |
 | Damage multipliers beyond on/off | needs the extension (built) | the record has two booleans (flag bits 12, 13), read through the trait query, engine vtable slot `+0x8c` (`ENGINE_TRAIT_QUERY` `0x24dda0`, trait 2 extra damage, 3 resistance; Slayer's slot, and where each other engine's own query, Juggernaut's `0x1926c0` among them, falls back). Ours scales the amount of each damage instance on a player instead ("Damage, shield and health" below) |
 | Shield and health multipliers | needs the extension (built) | shields are a 0..2 choice (`+0x88`); ours scales the amount the shield and body steps take |
-| Player speed for everyone | needs the extension (not built) | only Juggernaut and ball carrier speed exist (i16 0..2); the movement scale is not traced |
+| Player speed for everyone | needs the extension (built) | only Juggernaut and ball carrier speed exist (i16 0..2); ours scales the player's movement multiplier the engine's speed step keeps ("Movement speed" below) |
 | Unlimited grenades | needs the extension (built) | only a starting on/off bit; the host keeps every player's unit at four or more of each type each tick (the unit's counts at `+0x23e`, as the Unlimited Grenades skull) |
 | Mixed vehicle sets | mostly offered; some storable | each slot (light, second light, heavy, flying, two turrets) is its own byte, so mixes exist today; values in range but not offered (75: 2; 76, 77: 4; 79: 2, 3; 81, 82: 2, 3; 83: 18) and setting 80 (no row, `+0xd0` 0..4) are not traced and are not offered until they are; a vehicle outside the sets needs the extension and a placement hook |
 | Team count | storable (setting 93, `+0xb4` 0..8; built) | the retail editor has no row for it; a row on our "More Options" page and in Studio. Traced: the team set builder `0x157790` reads `[G+0x1f0]`, takes 0 as 8, caps it at the map's teams (`[[0x4e9ae8]+4]`, a mask) and adds the lowest unused teams to the players' until there are that many; the mask goes to `[[0x4e9ae8]+6]` |
-| Team size | needs the extension (not built) | nothing in the record; the lobby would have to enforce it |
+| Team size | needs the extension (not built) | nothing in the record; each console's profile picks its own player's team (configuration `+0x7c`) and no lobby code that limits a team's size is traced ("Not built") |
 | More than 16 players | impossible | the engine's player limit |
 
 ## 3. The extension
@@ -431,7 +431,7 @@ guests"):
   with the list hooks the pregame dialog's "Halo 1 Options" row uses
   ([multiplayer.md](../halo1/multiplayer.md) "Halo 1 options",
   [ui-screens.md](ui-screens.md)). A opens the shared value picker for
-  gravity, the team count and the damage, shield and health scales.
+  gravity, the team count and the damage, shield, health and speed scales.
   Unlimited Grenades is a toggle. The page reads and writes the record
   being edited (`boot::variant_page` under "The variant editor's page list").
 - **Studio** (`crates/apps/studio/src/ui/variants.rs`): a "More options
@@ -439,8 +439,8 @@ guests"):
   `VariantEditor::set_row` (undoable; a drag on one row is one step):
   each extra is the settings-table row a script's `settings` block names
   ([rules-variants.md](rules-variants.md#the-settings-block)), and the
-  record names its script (mode 2). It shows only what the game applies (gravity, damage, shield and health,
-  unlimited grenades, team count); a block the
+  record names its script (mode 2). It shows only what the game applies (gravity, damage, shield, health and
+  speed, unlimited grenades, team count); a block the
   game would ignore shows a warning and an `Issue::Ext`. `issues()` also
   has our own rule (respawn 0 with cycling).
 - **Unlimited grenades**: flag bit 1. After each tick a
@@ -472,6 +472,33 @@ guests"):
   "More Options" (gravity's steps, 10% to 400%) and Studio sliders. What
   else reads `+0x1c` after the steps (`0xd82e0`, called between them, and
   the damage report) sees the scaled amount; not traced further.
+- **Movement speed** (traced statically). The engine's per-player speed
+  step `0x15c000` (`ENGINE_PLAYER_SPEEDS`; called from `ENGINE_UPDATE` at
+  `0x15c2eb` and from `0x162060`) asks the engine's vtable slot `+0x4c`
+  for a target multiplier (Slayer's, King of the Hill's and Territories'
+  `0x24dd50` return 1.0; Oddball's `0x2bc3d0` and CTF's and Assault's
+  `0x240e30` return 0.75, 1.0 or 1.25 from the speed setting `G+0x234`
+  (record `+0xf8`, setting 96) for their carrier; Juggernaut's own
+  `0x1924c0` is not read),
+  then ramps player `+0x19c` toward it: up by 0.15 over the tick rate a
+  tick, straight down to the target when above it, never below 0. Player
+  `+0x19c` is read only there and by the player's state export `0x24de80`
+  (record `+0x14`, default 1.0), which is what carries it to the unit's
+  movement and to guests. Our feature `variant-speed` (`variant_ext::Speed`)
+  divides every live player's `+0x19c` by the variant's factor before the
+  step and multiplies it back after, so the game's target, ramp and clamp
+  run on unscaled values and everything that reads `+0x19c` later sees the
+  scaled one (a carrier's 1.25 at 150% is 1.875). It applies wherever
+  `Decision::speed` says: alone, the host and a guest with its host's
+  block (a guest predicts its own movement), never System Link. Players
+  reach the factor over a few seconds from the first tick, as the engine's
+  own ramp does. Row 6 of "More Options", a Studio slider and the
+  settings-table row `speed` (`ExtField::Speed`, so a script's `settings`
+  block and `.h2variant` files carry it). The movement code itself
+  (`0xe3700`, the biped update) is not read: that the unit uses the
+  exported multiplier rests on the Juggernaut working through the same
+  path in retail; measure a unit's speed on a running game before
+  trusting the last digit.
 - **Team count**: a retail field (setting 93, `+0xb4`)
   with no retail row. Row 2 of "More Options" ("Team Count: Map
   Default", then 2 to 8; 1 is storable but not offered and shows as 2)
@@ -535,18 +562,18 @@ directly. `Rows::live_text` writes pending changes before the row redraws,
 so the editor saves them with the record. Gravity (row 0) offers 10, 25,
 50, 75, Normal, 125, 150, 200, 300 and 400%. A value Studio sets between
 steps shows as the nearest. Selecting Normal writes all zeros when the
-other options are at their defaults. Rows 1 to 5 are Unlimited Grenades,
-Team Count and the damage, shield and health scales
+other options are at their defaults. Rows 1 to 6 are Unlimited Grenades,
+Team Count and the damage, shield, health and speed scales
 (`variant_page::GRENADES_ROW`, `TEAMS_ROW`, `Scale`). The "variant page"
 string family supplies the labels and descriptions.
 
 **A script's options.** A record whose block names a rules script (mode 2
-and the hash prefix) gets one row per option of that script after the six
+and the hash prefix) gets one row per option of that script after the seven
 fixed rows, in the script's declaration order, at most
 `variant_page::MAX_OPTION_ROWS` (32). The page finds the script from the
 prefix as the lobby does: a compiled-in script, else the game-variant
 store's (`variant_page::script_options`). A record that names no script,
-or a script this machine lacks, has the six rows only.
+or a script this machine lacks, has the seven rows only.
 
 | Option type | Row | A or Left and Right |
 |---|---|---|
@@ -598,6 +625,9 @@ and nothing to change.
   poll), the `Transport` feature on `GAME_ACTIVATE`, `Decision`,
   `Vitality`. `skulls_custom`'s tick applies Low Gravity times the
   variant's gravity through `gravity_step`.
+- Movement speed: `variant_ext::{Speed, Decision::speed, scale_player_speeds}`,
+  `points::ENGINE_PLAYER_SPEEDS`, `Ext::speed_scale`, `ExtField::Speed`
+  (`rules::settings`), `variant_page::Scale::Speed`.
 - Unlimited grenades: `variant_ext::Decision::unlimited_grenades`,
   `skulls_custom::{player_units, top_grenades, variant_grenades}`.
   Team count: `variants::record::{TEAM_COUNT, TEAM_COUNTS}`. Damage, shield
@@ -609,9 +639,6 @@ and nothing to change.
 
 ### Not built
 
-- **Movement speed.** The Juggernaut's speed (`G+0x234`, record `+0xf8`,
-  setting 96) has no reader a linear search finds; the likely route is the
-  unit's movement code, not the variant.
 - **Damage through the engine's trait query** (`ENGINE_TRAIT_QUERY`
   `0x24dda0`, engine vtable slot `+0x8c`,
   [notes](../engine/notes/2026-11-21-engine-vtables.md)): its callers
@@ -624,7 +651,18 @@ and nothing to change.
   `ret 0xc`). Primary or secondary is told by the return address
   (`0x19f056`/`0x19f063` primary, `0x19f042`/`0x19f07b` secondary;
   `0x19ee18` is its own random retry).
-- **Team size**: lobby enforcement is not traced.
+- **Team size**: lobby enforcement is not traced. What is: each console
+  builds its own player's requested configuration with the team at `+0x7c`
+  from its profile (`0x18fd94`), and `0x14be90` (player index on the
+  stack, the configuration in EAX; callers `0x8552b`, `0x14c279`,
+  `0x152445`) copies it to player `+0xd4`, checks it through `0x14bc80`
+  (which sets -1 for a team outside the game's mask) and applies it. A
+  limit would clamp `+0x7c` there, counting the players already on each
+  team, but every machine applies configurations in its own order, so a
+  clamp on one machine can differ from another's and desync the teams;
+  the host's choice would have to reach the guests first. No such path is
+  traced, so the block's `+0x11e` is stored, shown and sent and nothing
+  applies it.
 - **Lobby texts** for older guests and for System Link (log lines only).
 
 ## 4. Names with any character

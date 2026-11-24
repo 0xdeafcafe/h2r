@@ -178,6 +178,11 @@ impl Ext {
         f32::from(self.gravity) / 100.0
     }
 
+    /// Movement speed as a factor of the game's (1.0 for 100%).
+    pub fn speed_scale(&self) -> f32 {
+        f32::from(self.speed) / 100.0
+    }
+
     /// The block's bytes. The default is all zero, so a variant without
     /// extras stays byte for byte a retail record.
     pub fn encode(&self) -> [u8; LEN] {

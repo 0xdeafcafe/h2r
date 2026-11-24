@@ -458,6 +458,16 @@ fn more_options(ui: &Ui, v: &GameVariant) -> Option<Action> {
             i32::from(now.health),
             (plo, phi),
         ),
+        (
+            "speed",
+            "Movement speed (%)",
+            "##ext-speed",
+            "How fast every player moves, as a percent of the game's. A \
+             carrier's or the Juggernaut's own speed is scaled too. Applied \
+             by the host and its guests on Live (not on System Link).",
+            i32::from(now.speed),
+            (plo, phi),
+        ),
     ] {
         ui.table_next_row();
         ui.table_next_column();
