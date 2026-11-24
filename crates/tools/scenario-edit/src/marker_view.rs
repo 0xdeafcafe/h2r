@@ -125,12 +125,27 @@ pub fn placed(
     modelled: impl Fn(&Marker) -> bool,
     volumes: Option<&Volumes>,
 ) -> Vec<Placed> {
+    placed_with(markers, gameplay, item, modelled, volumes, |_| None)
+}
+
+/// [`placed`] with the areas the document gives netgame flags: a hill,
+/// territory or site flag with an area is one marker at the flag with that
+/// area, and is no corner of a hull.
+pub fn placed_with(
+    markers: &[Marker],
+    gameplay: impl Fn(&Marker) -> Gameplay,
+    item: impl Fn(&Marker) -> Item,
+    modelled: impl Fn(&Marker) -> bool,
+    volumes: Option<&Volumes>,
+    area_of: impl Fn(&Marker) -> Option<Area>,
+) -> Vec<Placed> {
     let data: Vec<Gameplay> = markers.iter().map(&gameplay).collect();
     let id_of = |m: &Marker| format!("{}[{}]", block_name(m.block), m.index);
     let mut groups = BTreeMap::<(i64, i64), Vec<usize>>::new();
     for (i, m) in markers.iter().enumerate() {
         if let (BlockKind::NetgameFlags, Some(t @ 11..=18), Some(id)) =
             (m.block, data[i].flag_type, data[i].identifier)
+            && area_of(m).is_none()
         {
             groups.entry((t, id)).or_default().push(i);
         }
@@ -173,6 +188,28 @@ pub fn placed(
             }),
             BlockKind::NetgameFlags => {
                 let key = d.flag_type.zip(d.identifier);
+                if let Some(area) = area_of(m)
+                    && let Some(kind) = d.flag_type.and_then(flag_kind)
+                    && kind.area().is_some()
+                {
+                    let kind = match kind {
+                        Kind::Hill(_) => Kind::Hill(area),
+                        Kind::Territory(_) => Kind::Territory(area),
+                        other => other,
+                    };
+                    out.push(Placed {
+                        id: id_of(m),
+                        layer: LayerId::Flags,
+                        marker: game_markers::Marker::new(kind, team(d.team)),
+                        place: place_of(m),
+                        members: vec![(m.block, m.index)],
+                        volume: None,
+                        area_from: None,
+                        label: d.label(),
+                        number: d.identifier,
+                    });
+                    continue;
+                }
                 if let Some(k) = key
                     && let Some((centre, area)) = hulls.get(&k)
                 {
@@ -469,6 +506,36 @@ mod tests {
             assert_eq!(lone.area_from, Some("default"));
             assert!(matches!(&lone.marker.kind, Kind::Hill(a) if *a == Area::default()));
         }
+    }
+
+    /// A flag with an area is one hill at the flag with that area, and
+    /// is no corner of a hull; its neighbours' corners still pair up.
+    #[test]
+    fn a_flag_with_an_area_is_one_hill_at_the_flag() {
+        let flags = [
+            flag(0, [10.0, 0.0, 0.0]),
+            flag(1, [20.0, 0.0, 0.0]),
+            flag(2, [24.0, 0.0, 0.0]),
+        ];
+        let l = Area::radius(5.0);
+        let out = placed_with(
+            &flags,
+            |_| Gameplay {
+                flag_type: Some(11),
+                identifier: Some(0),
+                ..Gameplay::default()
+            },
+            |_| Item::Weapon,
+            |_| false,
+            None,
+            |m| (m.index == 0).then(|| l.clone()),
+        );
+        // The shaped flag, then the two lone corners (no hull of two).
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].place.at, [10.0, 0.0, 0.0]);
+        assert_eq!(out[0].area_from, None);
+        assert!(matches!(&out[0].marker.kind, Kind::Hill(a) if *a == l));
+        assert!(out[1..].iter().all(|p| p.area_from == Some("default")));
     }
 
     /// The invented volumes draw a box a layer each kind they are, at

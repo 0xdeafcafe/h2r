@@ -17,10 +17,12 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+mod area;
 mod collision;
 mod multi;
 mod nav;
 mod volume_edit;
+pub use area::AreaFrom;
 pub use multi::FieldEdit;
 pub use volume_edit::NEW_VOLUME_SIZE;
 

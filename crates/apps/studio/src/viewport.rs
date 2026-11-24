@@ -6,6 +6,7 @@
 //! game-editor camera of [`crate::camera`], an ImGuizmo move, rotate or
 //! scale gizmo on the selection with grid and angle snapping, and placing
 //! a new entry where the cursor meets the level.
+pub(crate) mod area;
 pub(crate) mod mirror;
 pub(crate) mod nav;
 
@@ -156,6 +157,8 @@ pub struct ViewportView {
     /// block there (a copy of the entry, when given).
     pub placing: Option<(BlockKind, Option<usize>)>,
     hovered: bool,
+    /// The handles on the selected flag's area.
+    area: area::AreaHandles,
     /// Where the last frame showed the image: origin and size in points.
     shown: Option<[f32; 4]>,
 }
@@ -190,6 +193,7 @@ impl ViewportView {
             panning: false,
             placing: None,
             hovered: false,
+            area: Default::default(),
             shown: None,
         }
     }
@@ -340,6 +344,9 @@ impl ViewportView {
         let aspect = size[0] / size[1].max(1.0);
 
         let (over_gizmo, using_gizmo) = self.gizmo(ui, app, origin, size, aspect, &live.linked);
+        // The area's handles, on the selected netgame flag.
+        let (over_area, using_area) = self.area.run(ui, app, origin, size, aspect);
+        let (over_gizmo, using_gizmo) = (over_gizmo || over_area, using_gizmo || using_area);
 
         let io = ui.io();
         let alt = io.key_alt();
@@ -760,7 +767,14 @@ pub(crate) fn upload_placements(
             })
     };
     let volumes = session.volumes();
-    let placed = marker_view::placed(&shown, gameplay, item, modelled, volumes);
+    let placed = marker_view::placed_with(
+        &shown,
+        gameplay,
+        item,
+        modelled,
+        volumes,
+        |m| session.marker_area(m),
+    );
     let handled: BTreeSet<(BlockKind, usize)> =
         placed.iter().flat_map(|p| p.members.iter().copied()).collect();
     let markers: Vec<_> = shown

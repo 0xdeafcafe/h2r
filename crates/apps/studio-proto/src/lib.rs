@@ -258,6 +258,8 @@ pub mod method {
     // Game type markers (docs/game/gametype-markers.md, "Agent API").
     pub const MARKERS_LIST: &str = "markers.list";
     pub const MARKERS_RENDER: &str = "markers.render";
+    pub const MARKERS_AREA_SET: &str = "markers.area.set";
+    pub const MARKERS_AREA_CONVERT: &str = "markers.area.convert";
     pub const GEOMETRY_LIST: &str = "geometry.list";
     pub const GEOMETRY_OPEN: &str = "geometry.open";
     pub const GEOMETRY_CLOSE: &str = "geometry.close";

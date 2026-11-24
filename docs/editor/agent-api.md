@@ -295,7 +295,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `scenario` | `blocks`, `list {block}`, `get`, `set {block, index, field, value}`, `add {block, like, position}`, `move {block, index, position, ypr}`, `delete`, `duplicate`, `select` |
 | `volume` | `list {kind?}` (short form `volumes [kind]`), `select {index?, focus?}`, `set {index, origin?, center?, forward?, up?, size?}`, `add {kill?, center?, origin?, forward?, up?, size?}`, `remove {kind?, index}` |
 | `collision` | `surfaces {class?, bsp?, offset?, limit?}`, `at {origin, dir}` or `at {point, within?}` (with `select?`), `select {index?, focus?}`, `objects {block?, index?}` |
-| `markers` | `list {kind?, layer?}`, `render {kind?, team?, area?, view?, size?, out?}`: the game type markers of the open map, and the marker shapes drawn on a grid ([Game type markers](#game-type-markers)) |
+| `markers` | `list {kind?, layer?}`, `render {kind?, team?, area?, view?, size?, out?}`, `area.set {id, area}`, `area.convert {id}`: the game type markers of the open map, their areas, and the marker shapes drawn on a grid ([Game type markers](#game-type-markers)) |
 | `nav` | `status`, `back`, `forward`, `go` (the inspector's history); `pathfinding {bsp?, offset?, limit?}`, `bots {wait?, polys?, links?, spots?, offset?, limit?}`, `pick {origin, dir}` or `pick {point, within?}` (with `layer?`, `shown?`, `select?`) or `pick {kind, index, focus?}` (the Navigation layers) |
 | `playtest` | `static {wait?}`: the open map's static checks and each built-in game type's readiness ([playtest.md](playtest.md#static-checks)); `run {preset?, game_types?, seeds?, minutes?, bots?}`, `status {run?}`, `result {run?, game_type?, measure?}`, `cancel {run?}`: headless bot matches on the open map and their measures ([playtest.md](playtest.md#what-a-run-is)) |
 | `variant` | `list`, `get` (with `script`), `set {setting \| option, value}`, `rename`, `copy`, `export`, `import`, `delete` |
@@ -1652,7 +1652,7 @@ which fit each aspect asked is.
 `text_spills` (`hud_edit::checks`).
 
 **`check.run {what?, target?}`** (`api/checks.rs`) runs every check of
-`CHECKS` (or one area's: `models`, `sounds`, `ui`, `hud`) and answers
+`CHECKS` (or one area's: `models`, `sounds`, `ui`, `hud`, `markers`) and answers
 `{findings, counts, ran, skipped}`. A finding is `{area, code,
 severity, message, target, path?}`, worst first; `counts` has `error`,
 `warning`, `note`, `total` and `by_area`; `ran` names each check with
@@ -1667,6 +1667,7 @@ thing; a check it does not fit is skipped. The checks:
 | `ui` | `ui.check` | every state of our screens, or `target` (`screen` or `screen/state`) |
 | `hud` | `hud.check` | the HUD the HUD tool shows, at its state (`hud.<code>`); skipped with no map open there |
 | `hud` | `hud.kit` | every kit HUD (or `target`) in every state and screen mode over the kit's synthetic map, as `h2 hud sheet --synthetic` checks them (`hud_kit::check::all`): `hud.kit.<check>` errors, and a note for each check the synthetic map cannot run |
+| `markers` | `markers.check` | the open map's markers (`api/markers_check.rs`): `markers.area.invalid` (error), `markers.hill.corners_and_area` (error), `markers.area.no_floor` and `markers.area.overlap` (warnings, the second naming the pair); no map is no findings |
 
 A check is a row of `CHECKS`: `ContentCheck { area, name, run }`,
 `run` being `fn(&mut App, Option<&str>) -> Result<Vec<Finding>,
@@ -2005,6 +2006,17 @@ hill), item spawners and trigger volumes, all from the shared
   background, and each of `kinds` has its `cell`, its `center` in pixels
   and its mesh's `lines`, `triangles` and `bounds`, so a picture is read
   against the list. `NO_GPU` where there is no adapter.
+- `markers.area.set {id, area}`: sets the area of the netgame flag `id`
+  (`netgame_flags[3]`) from `{radius, below?, above?}` or `{path: [[x,
+  y], ...], below?, above?}` in plain numbers, or clears it with `null`
+  (a missing `area` is `INVALID_PARAMS`). One undo step. Answers `{id,
+  area}` as stored. `Area::validate`'s sentence is `REFUSED` and leaves
+  the document as it was.
+- `markers.area.convert {id}`: a retail hill's corner flag `id` becomes
+  one flag with `Area::of_corners`' path, the other corners removed, in
+  one undo step. Answers `{id, area, position}` of the kept flag; a flag
+  that is not a hill's corner, or a hull `Area::validate` refuses, is
+  `REFUSED`.
 
 `view.layers` shows the markers' layers (`spawn_points`, `flags`,
 `netgame_items`, the volume layers) and `view.snapshot` draws them.

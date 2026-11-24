@@ -79,7 +79,7 @@ pub struct ContentCheck {
 }
 
 /// The areas `what` may name, besides `all`.
-pub const AREAS: [&str; 4] = ["models", "sounds", "ui", "hud"];
+pub const AREAS: [&str; 5] = ["models", "sounds", "ui", "hud", "markers"];
 
 /// Every content check, in the order they run. One row each.
 pub const CHECKS: &[ContentCheck] = &[
@@ -108,6 +108,11 @@ pub const CHECKS: &[ContentCheck] = &[
         name: "hud.kit",
         run: super::ui_check::hud_kit_check,
     },
+    ContentCheck {
+        area: "markers",
+        name: "markers.check",
+        run: super::markers_check::check,
+    },
 ];
 
 /// The provider.
@@ -116,8 +121,8 @@ pub struct Checks;
 
 const RUN: MethodDef = def(
     m::CHECK_RUN,
-    "Run every registered content check (or one area's: models, sounds, ui, hud) over the open map and document and our own content, in one list: each finding's area, code, severity (error, warning, note), message, target and file. `target` narrows each check to one thing (an object tag, a clip id or prefix, a snd! tag, a screen, a HUD). A check that cannot run says why under `skipped`",
-    r#"{"what?":"all|models|sounds|ui|hud","target?":"string"}"#,
+    "Run every registered content check (or one area's: models, sounds, ui, hud, markers) over the open map and document and our own content, in one list: each finding's area, code, severity (error, warning, note), message, target and file. `target` narrows each check to one thing (an object tag, a clip id or prefix, a snd! tag, a screen, a HUD). A check that cannot run says why under `skipped`",
+    r#"{"what?":"all|models|sounds|ui|hud|markers","target?":"string"}"#,
     r#"{"findings":"[{area,code,severity,message,target,path?}]","counts":"{error,warning,note,total,by_area:{area:integer}}","ran":"[{area,check,findings}]","skipped":"[{area,check?,why}]"}"#,
     r#"{"what":"ui","target":"$SCREEN"}"#,
 );

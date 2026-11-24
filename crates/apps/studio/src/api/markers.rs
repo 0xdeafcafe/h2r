@@ -40,6 +40,22 @@ const METHODS: &[MethodDef] = &[
         example: r#"{"kind":"spawn","out":"$OUT/markers.png","size":[64,48]}"#,
         planned: None,
     },
+    MethodDef {
+        name: m::MARKERS_AREA_SET,
+        summary: "Set or clear the area of a netgame flag (a hill, territory or site flag): one undo step. `id` is the flag as markers.list names it (netgame_flags[3]); `area` is {radius, below?, above?} or {path: [[x,y],...], below?, above?} in plain numbers (a path's points are offsets from the flag), or null to clear. Answers the area as stored (floats in hex, as the document writes it) or null. Refused with Area::validate's sentence, and for a flag that is a corner of a hill with corners",
+        params: r#"{"id":"string","area":"object|null"}"#,
+        result: r#"{"id":"string","area":"object|null"}"#,
+        example: r#"{"id":"netgame_flags[0]","area":{"radius":4}}"#,
+        planned: None,
+    },
+    MethodDef {
+        name: m::MARKERS_AREA_CONVERT,
+        summary: "Convert a retail hill's corner flags (three or more of one hill type and identifier) to one flag at the hull's centre with that hull as its path area, in one undo step. `id` is any corner. Answers the converted flag and its area",
+        params: r#"{"id":"string"}"#,
+        result: r#"{"id":"string","area":"object","position":"[x,y,z]"}"#,
+        example: r#"{"id":"netgame_flags[0]"}"#,
+        planned: None,
+    },
 ];
 
 impl Provider for Markers {
@@ -52,6 +68,8 @@ impl Provider for Markers {
         match method {
             m::MARKERS_LIST => Some(list(app, &p)),
             m::MARKERS_RENDER => Some(self.render(&p)),
+            m::MARKERS_AREA_SET => Some(area_set(app, &p)),
+            m::MARKERS_AREA_CONVERT => Some(area_convert(app, &p)),
             _ => None,
         }
     }
@@ -67,6 +85,70 @@ fn area_json(a: &Area) -> Value {
             "points": points.iter().map(|p| [hex(p[0]), hex(p[1])]).collect::<Vec<_>>(),
             "below": hex(a.below), "above": hex(a.above)}}),
     }
+}
+
+/// A flag's index from an id as markers.list names it.
+fn flag_index(app: &App, id: &str) -> Result<usize, agent_proto::RpcError> {
+    let scenario = super::scenario::open(app)?;
+    let bad = || {
+        err(
+            code::INVALID_PARAMS,
+            format!("id: a netgame flag as markers.list names it (netgame_flags[3]), not {id:?}"),
+        )
+    };
+    let n = id
+        .strip_prefix("netgame_flags[")
+        .and_then(|r| r.strip_suffix(']'))
+        .and_then(|n| n.parse::<usize>().ok())
+        .ok_or_else(bad)?;
+    if n >= scenario.block(scenario_edit::BlockKind::NetgameFlags).len() {
+        return Err(err(
+            code::INVALID_PARAMS,
+            format!("id: the map has no {id}"),
+        ));
+    }
+    Ok(n)
+}
+
+fn refused(e: scenario_edit::Error) -> agent_proto::RpcError {
+    match e {
+        scenario_edit::Error::Declined(why) => err(code::REFUSED, why),
+        other => err(code::FAILED, other.to_string()),
+    }
+}
+
+/// `markers.area.set`.
+fn area_set(app: &mut App, p: &P) -> Reply {
+    let id = p.str("id")?;
+    let index = flag_index(app, id)?;
+    // `null` clears; a missing `area` is an error, not a clear.
+    let area = match p.0.get("area") {
+        None => return Err(err(code::INVALID_PARAMS, "area is required (an object, or null to clear)")),
+        Some(Value::Null) => None,
+        Some(v) => Some(area_param(v)?),
+    };
+    app.session.set_area(index, area, None).map_err(refused)?;
+    Ok(json!({
+        "id": id,
+        "area": app.session.flag_area(index).map(area_json),
+    }))
+}
+
+/// `markers.area.convert`.
+fn area_convert(app: &mut App, p: &P) -> Reply {
+    let index = flag_index(app, p.str("id")?)?;
+    let kept = app.session.convert_hill(index).map_err(refused)?;
+    let position = app
+        .session
+        .markers()
+        .iter()
+        .find(|m| m.block == scenario_edit::BlockKind::NetgameFlags && m.index == kept)
+        .map(|m| m.position);
+    Ok(json!({
+        "id": format!("netgame_flags[{kept}]"),
+        "area": app.session.flag_area(kept).map(area_json),
+        "position": position,
+    }))
 }
 
 fn bounds_json(b: Option<([f32; 3], [f32; 3])>) -> Value {
@@ -94,21 +176,7 @@ fn list(app: &App, p: &P) -> Reply {
             format!("layer: one of {}, not {l:?}", names.join(", ")),
         ));
     }
-    let session = &app.session;
-    let markers = session.markers();
-    let placed = marker_view::placed(
-        markers,
-        |m| Gameplay::of(Some(scenario), m),
-        |m| {
-            scenario
-                .object_tag(m.block, m.index)
-                .map_or(game_markers::Item::Equipment, |r| {
-                    marker_view::item_of_group(r.group.0)
-                })
-        },
-        |_| false,
-        session.volumes(),
-    );
+    let placed = placed_now(app, scenario);
     let palette = Palette::default();
     let mut counts = serde_json::Map::new();
     let rows: Vec<Value> = placed
@@ -123,6 +191,26 @@ fn list(app: &App, p: &P) -> Reply {
         })
         .collect();
     Ok(json!({"markers": rows, "counts": counts}))
+}
+
+/// Every marker of the open map as the viewport draws it: the document's
+/// areas included.
+pub(super) fn placed_now(app: &App, scenario: &scenario_edit::Scenario) -> Vec<Placed> {
+    let session = &app.session;
+    marker_view::placed_with(
+        session.markers(),
+        |m| Gameplay::of(Some(scenario), m),
+        |m| {
+            scenario
+                .object_tag(m.block, m.index)
+                .map_or(game_markers::Item::Equipment, |r| {
+                    marker_view::item_of_group(r.group.0)
+                })
+        },
+        |_| false,
+        session.volumes(),
+        |m| session.marker_area(m),
+    )
 }
 
 fn row(x: &Placed, mesh: &Mesh) -> Value {

@@ -190,6 +190,17 @@ pub enum Action {
         value: scenario_edit::Value,
         merge: Option<u64>,
     },
+    /// Set or clear the area of a netgame flag
+    /// (docs/game/gametype-markers.md, "Studio"). Edits with the same
+    /// merge key in a row are one undo step (a handle's drag).
+    SetArea {
+        index: usize,
+        area: Option<scenario_edit::marker_view::game_markers::Area>,
+        merge: Option<u64>,
+    },
+    /// Convert the retail hill a corner flag belongs to into one flag with
+    /// an area, as one undo step.
+    ConvertHill(usize),
     /// Edit a field of every selected placement (the inspector), one undo
     /// step; edits with the same merge key in a row stay one.
     EditSelection {
@@ -1144,6 +1155,8 @@ impl App {
                     self.error(e.to_string());
                 }
             }
+            Action::SetArea { index, area, merge } => self.set_area(index, area, merge),
+            Action::ConvertHill(index) => self.convert_hill(index),
             Action::SealEdit => self.session.seal(),
             Action::GestureSet { position, ypr } => {
                 if let Err(e) = self.session.gesture_set(position, ypr) {

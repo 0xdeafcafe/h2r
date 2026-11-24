@@ -442,6 +442,11 @@ pub struct Scenario {
     /// The Textures tool's writes, in the same shape. See
     /// [`Self::set_bitmap_changes`].
     bitmap: GeometryChanges,
+    /// The area of each netgame flag that has one, by placement, so a
+    /// swap-removal or an append moves nothing
+    /// (docs/game/gametype-markers.md, "In the document"). Edited through
+    /// [`Self::set_area`]; an entry whose flag is gone waits for its undo.
+    areas: std::collections::BTreeMap<PlacementId, game_markers::Area>,
 }
 
 pub(crate) fn u32_at(b: &[u8], o: usize) -> u32 {
@@ -657,6 +662,70 @@ impl Scenario {
             tag_strings: Vec::new(),
             geometry: GeometryChanges::default(),
             bitmap: GeometryChanges::default(),
+            areas: std::collections::BTreeMap::new(),
+        })
+    }
+
+    /// The area of netgame flag `index`, if it has one.
+    pub fn area(&self, index: usize) -> Option<&game_markers::Area> {
+        let id = self.block(BlockKind::NetgameFlags).placement_id(index)?;
+        self.areas.get(&id)
+    }
+
+    /// Every netgame flag's stored area, by flag index.
+    pub fn flag_areas(&self) -> Vec<(usize, &game_markers::Area)> {
+        (0..self.block(BlockKind::NetgameFlags).len())
+            .filter_map(|i| Some((i, self.area(i)?)))
+            .collect()
+    }
+
+    /// Whether flag `index` is one of three or more corners of one hill:
+    /// the same hill type and identifier (docs/game/gametype-markers.md,
+    /// "A hill is one flag or its corners").
+    pub fn is_hill_corner(&self, index: usize) -> bool {
+        let flags = BlockKind::NetgameFlags;
+        let key = |i: usize| {
+            let ty = self.get(flags, i, "type").ok()?.as_int()?;
+            let id = self.get(flags, i, "identifier").ok()?.as_int()?;
+            (11..=18).contains(&ty).then_some((ty, id))
+        };
+        let Some(mine) = key(index) else {
+            return false;
+        };
+        (0..self.block(flags).len()).filter(|&i| key(i) == Some(mine)).count() >= 3
+    }
+
+    /// Sets or clears (`None`) netgame flag `index`'s area, and returns
+    /// the one it replaced. Refused, with `Area::validate`'s sentence, for
+    /// an area the tools may not store, and for one on a hill's corner.
+    pub fn set_area(
+        &mut self,
+        index: usize,
+        area: Option<game_markers::Area>,
+    ) -> Result<Option<game_markers::Area>> {
+        if let Some(a) = &area {
+            a.validate().map_err(|e| Error::Declined(e.to_string()))?;
+            if self.is_hill_corner(index) {
+                return Err(Error::Declined("a hill with corners takes no area".into()));
+            }
+        }
+        self.write_area(index, area)
+    }
+
+    /// [`Self::set_area`] without the checks, for an undo.
+    pub(crate) fn write_area(
+        &mut self,
+        index: usize,
+        area: Option<game_markers::Area>,
+    ) -> Result<Option<game_markers::Area>> {
+        let flags = BlockKind::NetgameFlags;
+        let id = self
+            .block(flags)
+            .placement_id(index)
+            .ok_or(Error::NoEntry(flags, index))?;
+        Ok(match area {
+            Some(a) => self.areas.insert(id, a),
+            None => self.areas.remove(&id),
         })
     }
 

@@ -112,6 +112,134 @@ fn a_hills_corners_list_as_one_hill() {
     assert_eq!(hill["number"], 1);
 }
 
+/// Makes the map's flag 0 a hill flag of hill 1 and, with `corners`, two
+/// more beside it.
+fn make_hill(api: &mut Api, app: &mut App, corners: bool) {
+    for (field, value) in [("type", 11), ("identifier", 1)] {
+        call(api, app, m::SCENARIO_SET, json!({
+            "block": "netgame_flags", "index": 0, "field": field, "value": value
+        }));
+    }
+    if corners {
+        for at in [[10, 0, 1], [10, 6, 1]] {
+            call(api, app, m::SCENARIO_ADD, json!({
+                "block": "netgame_flags", "like": 0, "position": at
+            }));
+        }
+    }
+}
+
+#[test]
+fn markers_area_set_stores_clears_and_refuses_by_name() {
+    let t = Temp::new("markers-area-set");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    open_map(&mut api, &mut app, &t, "area.map", fixture::fixture_at_end());
+    make_hill(&mut api, &mut app, false);
+    let set = |api: &mut Api, app: &mut App, p: Value| api.call(app, m::MARKERS_AREA_SET, p);
+    let r = set(&mut api, &mut app, json!({"id": "netgame_flags[0]", "area": {"radius": 4}})).unwrap();
+    assert_eq!(
+        r["area"],
+        json!({"radius": {"radius": "40800000", "below": "3f000000", "above": "3fc00000"}})
+    );
+    // The list reports it as stored, not derived, and draws it.
+    let hills = call(&mut api, &mut app, m::MARKERS_LIST, json!({"kind": "hill"}));
+    let hill = &hills["markers"][0];
+    assert_eq!(hill["area"], r["area"]);
+    assert_eq!(hill["area_from"], Value::Null);
+    // A path is stored too, and one undo step brings the radius back.
+    let path = json!({"path": [[-2, -2], [2, -2], [0, 2]], "below": 1, "above": 3});
+    let r = set(&mut api, &mut app, json!({"id": "netgame_flags[0]", "area": path})).unwrap();
+    assert_eq!(r["area"]["path"]["points"].as_array().unwrap().len(), 3);
+    assert!(app.session.undo());
+    assert_eq!(app.session.flag_area(0).unwrap().above, 1.5);
+    // Clearing gives the derived default back.
+    let r = set(&mut api, &mut app, json!({"id": "netgame_flags[0]", "area": null})).unwrap();
+    assert_eq!(r["area"], Value::Null);
+    let hills = call(&mut api, &mut app, m::MARKERS_LIST, json!({"kind": "hill"}));
+    assert_eq!(hills["markers"][0]["area_from"], "default");
+    // Refusals: the sentence of `Area::validate`, a bad id, no area.
+    let e = set(&mut api, &mut app, json!({"id": "netgame_flags[0]", "area": {"radius": 100}})).unwrap_err();
+    assert_eq!(e.code, code::INVALID_PARAMS);
+    assert!(e.message.contains("radius"), "{}", e.message);
+    for id in ["netgame_flags[9]", "starting_locations[0]", "hill"] {
+        let e = set(&mut api, &mut app, json!({"id": id, "area": null})).unwrap_err();
+        assert_eq!(e.code, code::INVALID_PARAMS, "{id}");
+    }
+    let e = set(&mut api, &mut app, json!({"id": "netgame_flags[0]"})).unwrap_err();
+    assert_eq!(e.code, code::INVALID_PARAMS);
+}
+
+#[test]
+fn a_hills_corner_takes_no_area_and_converting_gives_one_flag_with_the_hull() {
+    let t = Temp::new("markers-area-convert");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    open_map(&mut api, &mut app, &t, "convert.map", fixture::fixture_at_end());
+    make_hill(&mut api, &mut app, true);
+    let e = api
+        .call(&mut app, m::MARKERS_AREA_SET, json!({"id": "netgame_flags[1]", "area": {"radius": 4}}))
+        .unwrap_err();
+    assert_eq!(e.code, code::REFUSED);
+    assert_eq!(e.message, "a hill with corners takes no area");
+    let r = call(&mut api, &mut app, m::MARKERS_AREA_CONVERT, json!({"id": "netgame_flags[2]"}));
+    assert_eq!(r["id"], "netgame_flags[0]");
+    assert!(r["area"]["path"]["points"].as_array().unwrap().len() >= 3, "{r}");
+    let flags = call(&mut api, &mut app, m::SCENARIO_LIST, json!({"block": "netgame_flags"}));
+    assert_eq!(flags.as_array().unwrap().len(), 1);
+    let hills = call(&mut api, &mut app, m::MARKERS_LIST, json!({"kind": "hill"}));
+    let rows = hills["markers"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["members"], json!(["netgame_flags[0]"]));
+    assert_eq!(rows[0]["area_from"], Value::Null);
+    // Nothing is left to convert; one undo step brings the corners back.
+    let e = api
+        .call(&mut app, m::MARKERS_AREA_CONVERT, json!({"id": "netgame_flags[0]"}))
+        .unwrap_err();
+    assert_eq!(e.code, code::REFUSED);
+    assert!(app.session.undo());
+    let hills = call(&mut api, &mut app, m::MARKERS_LIST, json!({"kind": "hill"}));
+    assert_eq!(hills["markers"][0]["area_from"], "corners");
+}
+
+/// `check.run`'s markers area names an overlapping pair of territories,
+/// and not two that stand apart.
+#[test]
+fn the_markers_check_names_an_overlapping_pair() {
+    let t = Temp::new("markers-check");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    open_map(&mut api, &mut app, &t, "check.map", fixture::fixture_at_end());
+    call(&mut api, &mut app, m::SCENARIO_SET, json!({
+        "block": "netgame_flags", "index": 0, "field": "type", "value": 10
+    }));
+    let at = call(&mut api, &mut app, m::SCENARIO_GET, json!({"block": "netgame_flags", "index": 0}));
+    let p = at["fields"]["position"].as_array().unwrap().clone();
+    let near = json!([p[0].as_f64().unwrap() + 1.5, p[1], p[2]]);
+    call(&mut api, &mut app, m::SCENARIO_ADD, json!({
+        "block": "netgame_flags", "like": 0, "position": near
+    }));
+    let overlap = |app: &mut App, api: &mut Api| -> Vec<Value> {
+        let r = call(api, app, m::CHECK_RUN, json!({"what": "markers"}));
+        assert_eq!(r["skipped"], json!([]), "{r}");
+        r["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|f| f["code"] == "markers.area.overlap")
+            .cloned()
+            .collect()
+    };
+    let found = overlap(&mut app, &mut api);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0]["area"], "markers");
+    assert_eq!(found[0]["target"], "netgame_flags[0] and netgame_flags[1]");
+    // A radius that no longer reaches the neighbour ends the finding.
+    call(&mut api, &mut app, m::MARKERS_AREA_SET, json!({"id": "netgame_flags[0]", "area": {"radius": 0.5}}));
+    call(&mut api, &mut app, m::MARKERS_AREA_SET, json!({"id": "netgame_flags[1]", "area": {"radius": 0.5}}));
+    assert!(overlap(&mut app, &mut api).is_empty());
+}
+
 /// `markers.render` refuses what it cannot draw before it asks for a GPU.
 #[test]
 fn markers_render_refuses_by_name() {
