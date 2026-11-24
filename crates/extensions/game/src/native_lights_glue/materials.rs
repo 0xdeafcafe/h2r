@@ -18,6 +18,7 @@ use tags::material::{EngineInputs, ShaderLibrary};
 use super::{Compiled, Keep, LitMaterial, models::ModelLights};
 
 const CAPACITY: usize = 512;
+const QUEUE_DEPTH: usize = 64;
 const LOADING: Keep = Keep::MaterialPending;
 
 type Images = HashMap<(usize, TagId, u32), Image>;
@@ -32,6 +33,15 @@ struct Shared {
     /// Edited stage images by (stage, bitmap, image), which a pass built
     /// later takes over the load's.
     edited: Mutex<Images>,
+}
+
+fn remember_gpu<T>(built: &mut Vec<(bool, Weak<T>)>, model: bool, gpu: &Arc<T>) {
+    // A retired variant can leave a dead weak entry without an image edit
+    // ever occurring. Keep all live edit targets, including in-flight draws.
+    if built.len() >= CAPACITY + QUEUE_DEPTH {
+        built.retain(|(_, gpu)| gpu.strong_count() != 0);
+    }
+    built.push((model, Arc::downgrade(gpu)));
 }
 
 #[derive(Clone)]
@@ -115,8 +125,6 @@ impl Variants {
         retired
     }
 }
-
-const QUEUE_DEPTH: usize = 64;
 
 struct Queue {
     // The worker retains the table until the last sender closes, so dropping
@@ -400,7 +408,7 @@ impl Worker {
         let material = self
             .lib
             .material(key.shader, Some(resolved_inputs))
-            .map_err(|error| Keep::Refused(format!("material: {error}")))?;
+            .map_err(|error| Keep::Refused(format!("material: {error}").into()))?;
         let look = if key.layer == native_render::shadow_look::CASTER_LAYER {
             native_render::shadow_look::shadow_look(&material, key.implementation)
         } else if matches!(
@@ -415,7 +423,7 @@ impl Worker {
             LightRefusal::NoLayer => {
                 Keep::Unsupported("built light entry has no native material pass")
             }
-            reason => Keep::Refused(format!("{reason:?}")),
+            reason => Keep::Refused(format!("{reason:?}").into()),
         })?;
         let (program, buffer) = match (key.model, model) {
             (Some((model, section, class)), Some(lights)) => {
@@ -482,7 +490,7 @@ impl Worker {
             }
             _ => return Err(Keep::Unsupported("light geometry unavailable")),
         };
-        let program = Arc::new(program.map_err(Keep::Refused)?);
+        let program = Arc::new(program.map_err(|why| Keep::Refused(why.into()))?);
         // A model load may have used different stage palettes from the BSP.
         // Keep their expanded images in distinct GPU entries.
         let id = (model.is_some(), light_gpu_key(&program));
@@ -522,11 +530,11 @@ impl Worker {
                 if self.uploaded.len() >= CAPACITY {
                     self.uploaded.retain(|_, (_, gpu)| gpu.strong_count() != 0);
                 }
-                self.shared
-                    .built
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push((model.is_some(), Arc::downgrade(&gpu)));
+                remember_gpu(
+                    &mut self.shared.built.lock().unwrap_or_else(|e| e.into_inner()),
+                    model.is_some(),
+                    &gpu,
+                );
                 self.uploaded
                     .insert(id, (Arc::downgrade(&program), Arc::downgrade(&gpu)));
                 gpu
@@ -542,6 +550,23 @@ impl Worker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retired_light_variants_do_not_accumulate_live_edit_targets() {
+        let held = Arc::new(0);
+        let mut built = Vec::new();
+        remember_gpu(&mut built, false, &held);
+        for i in 1..=4 * (CAPACITY + QUEUE_DEPTH) {
+            let gpu = Arc::new(i);
+            remember_gpu(&mut built, i % 2 != 0, &gpu);
+            assert!(built.len() <= CAPACITY + QUEUE_DEPTH);
+        }
+        assert_eq!(
+            built.iter().filter(|(_, gpu)| gpu.strong_count() != 0).count(),
+            1
+        );
+        assert_eq!(*built[0].1.upgrade().unwrap(), 0);
+    }
 
     #[test]
     fn a_cold_material_keeps_the_guest_draw_and_a_full_queue_retries() {

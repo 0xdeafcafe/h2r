@@ -4,7 +4,7 @@
 use super::*;
 
 pub struct ResolvedProgram {
-    pub words: Vec<u32>,
+    pub words: crate::shader::Microcode,
     pub pixel: PixelShaderDef,
     pub pixel_options: PixelOptions,
     pub vertex_options: VertexOptions,
@@ -30,7 +30,7 @@ pub fn resolve(
     let VertexSource::Microcode(words) = &key.vertex else {
         return Err("native effects require a programmable vertex shader".into());
     };
-    let words = words.to_vec();
+    let words = words.clone();
     let render = &draw.state.render;
     let (c0, c1) = def.embedded_constants();
     let scale: crate::scaled::RenderScale = scale.into();

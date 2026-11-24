@@ -41,7 +41,7 @@ use engine::memory::GuestMemory;
 use engine::points;
 use engine::render::light;
 use native_render::camera::GuestRead;
-use native_render::light_list::{self, SortedLayer};
+use native_render::light_list::{self, SortedCall};
 use native_render::light_passes;
 use native_render::lights::{Light, LightConstants};
 use native_render::skip;
@@ -93,14 +93,14 @@ pub fn first_person_site(layer: u32, ret: u32) -> bool {
 /// The layers the resolved-draw path admits: diffuse and specular.
 pub const RESOLVED_LAYERS: u32 = 1 << 12 | 1 << 13;
 
-pub struct Dispatch<'a> {
+pub struct Dispatch {
     pub light: Light,
     pub serial: u64,
     /// The layer being drawn, 12 or 13.
     pub layer: u32,
     pub shader_gel: Option<(u32, u32)>,
     pub view_target: [u32; 8],
-    pub sorted: &'a SortedLayer,
+    pub sorted: SortedCall,
 }
 
 /// A gathered group as the scene holds it (`frame_scene::LightGroup`),
@@ -170,7 +170,7 @@ pub trait Host: Send + Sync {
     /// Plan a sorted prefix of one layer. The handlers still emit their
     /// D3D packets so each native draw can fall back in the same queue
     /// slot. A light asks once per layer it draws.
-    fn submit(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch<'_>) -> bool;
+    fn submit(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch) -> bool;
     fn clear_admission(&self);
     /// Before the guest constants or gel quad for this invocation.
     fn checkpoint_gel(&self, serial: u64);
@@ -696,20 +696,23 @@ fn geometry(
         refused("light view target unavailable");
         return None;
     };
-    let accepted = match light_list::sorted_at(&Ro(mem), LIGHT_LIST, layer, esp, esi, caller) {
-        Ok(sorted) => host.submit(
-            mem,
-            Dispatch {
-                light,
-                serial,
+    let accepted = host.submit(
+        mem,
+        Dispatch {
+            light,
+            serial,
+            layer,
+            shader_gel,
+            view_target,
+            sorted: SortedCall {
+                list: LIGHT_LIST,
                 layer,
-                shader_gel,
-                view_target,
-                sorted: &sorted,
+                esp,
+                esi,
+                caller,
             },
-        ),
-        Err(why) => refused(why),
-    };
+        },
+    );
     accepted.then_some(())
 }
 
@@ -1001,7 +1004,7 @@ mod tests {
     struct Stub(bool);
 
     impl Host for Stub {
-        fn submit(&self, _: &mut dyn GuestMemory, _: Dispatch<'_>) -> bool {
+        fn submit(&self, _: &mut dyn GuestMemory, _: Dispatch) -> bool {
             false
         }
         fn clear_admission(&self) {}

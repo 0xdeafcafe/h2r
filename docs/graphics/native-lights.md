@@ -477,8 +477,10 @@ The host takes each of layers 12 and 13 a light's steps draw, shadowed or not, w
   every implementation of its layer-12 and 13 passes, the light
   textures, the gels of the map's `ligh` tags, and the cluster parts
   keyed by owner and part. At the hook,
-  `native_render::light_list::sorted` checks the built dispatches,
-  including handler, material variant and layer. The host resolves
+  `native_render::light_list::SortedCall` checks the built dispatches,
+  including handler, material variant and layer. The resolved-draw host
+  checks cluster residency while reading each dispatch and stops at the
+  first refusal, before draining the device. It resolves
   each requested layer against the full shader datum and the material's
   inputs. Missing streams, textures, stale stage palettes, unsupplied
   constants or unsupported device state refuse the light before submission.
@@ -505,7 +507,9 @@ The host takes each of layers 12 and 13 a light's steps draw, shadowed or not, w
     transparent unread. At run time each refusal reason prints on its
     first occurrence.
     The host reports admissions, splits, lights sampling shader gels, reference and scaled passes and
-    actual synchronous worker round trips. Frame and agent captures include
+    actual synchronous worker round trips. Up to 32 distinct shader
+    refusal details are retained, with subsequent details counted together.
+    Frame and agent captures include
     `native_lights_worker_round_trips`, `native_lights_reference_passes`
     and `native_lights_display_passes`. Every 1800 host decisions it
     also prints counts by reason.
