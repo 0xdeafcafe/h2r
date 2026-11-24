@@ -236,6 +236,26 @@ impl App {
         Ok(self.anim.insert(doc))
     }
 
+    /// Every session document made from scratch, any map: its id, name,
+    /// kind and the map it was made on (`None` for the open map's own).
+    /// The sources a retarget can start from.
+    pub fn anim_all_docs(&self) -> Vec<(u64, String, &'static str, Option<String>)> {
+        self.anim
+            .docs
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.retail_index.is_none())
+            .map(|(i, d)| {
+                (
+                    i as u64 + 1,
+                    d.summary.name.clone(),
+                    d.summary.kind,
+                    d.graph.map.clone(),
+                )
+            })
+            .collect()
+    }
+
     /// Pose a document on the graph's model. An overlay document applies
     /// its deltas over the rest pose when no base animation is selected.
     pub fn anim_doc_pose(

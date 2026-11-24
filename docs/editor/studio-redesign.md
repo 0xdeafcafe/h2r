@@ -856,7 +856,11 @@ per source node with both names, then `unmatched_source`,
 without opening a document. Rest transforms come from the graph's model
 (`to_model`, `from_model` pick one when several use the graph) and are
 kept per graph, so a document can be retargeted from a map the Tags tool
-no longer shows. The Animation window has no retarget dialog yet.
+no longer shows. In the Animation window, **Retarget from...** lists the
+session's base documents (with their map) and the graph's own clips, and
+makes a document on the shown graph from the one picked, with the name
+field's name and the picked model's rest pose (`ui/anim.rs`,
+`retarget_picker`).
 
 **Import (AN5, built as `anim.import`).** `anim_edit::read_gltf`
 (`crates/tools/anim-edit/src/gltf.rs`) reads one animation of a `.gltf`
