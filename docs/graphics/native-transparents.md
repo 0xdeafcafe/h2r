@@ -42,7 +42,7 @@ Other handlers in the list (effects, particles, contrails, decals) keep their D3
 
 The standard handler runs its layer-15 material builds, bindings and restores. The sorted ordinal must resolve to its live entry, and the emitter and handler frames must identify that entry's draw. The full-part branch supplies its range in registers. The three subrange call sites supply the topology, index count and pointer on the stack after state setup.
 
-Each triangle list or strip goes through the existing indexed pass with the resolved shaders, fog, blend and depth state and the current attachments. Admission preserves the order of the individual ranges and intervening handlers. A refused range runs its original indexed call, which can still use the immutable vertex binding adapter.
+Each triangle list or strip goes through the existing indexed pass with the resolved shaders, fog, blend and depth state and the current attachments. The resolved packet supplies the live inputs even when the item’s object lighting owner is unavailable. A triangle list keeps trailing indices in its snapshot and rasterizes complete triangles. Admission preserves the order of the individual ranges and intervening handlers. A refused range runs its original indexed call, which can still use the immutable vertex binding adapter.
 
 ### Vertex bindings
 

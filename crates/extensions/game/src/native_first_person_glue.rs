@@ -76,17 +76,8 @@ pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
-    fn native(&self, mem: &mut dyn GuestMemory) -> Option<Arc<NativeSet>> {
+    fn native(&self, mem: &mut dyn GuestMemory, prepare_draw: bool) -> Option<Arc<NativeSet>> {
         *self.entry.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        if !self
-            .device
-            .lock()
-            .ok()?
-            .begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem))
-            .ok()?
-        {
-            return None;
-        }
         let mut map_name = [0; 32];
         let name = crate::health::read_map_name(mem, &mut map_name).ok()?;
         if name.is_empty() {
@@ -99,7 +90,15 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 .as_ref()
                 .is_some_and(|s| s.name == name.as_ref() && s.map_generation == map_generation)
         };
-        if !current(&self.state.lock().unwrap_or_else(|e| e.into_inner())) {
+        let cold = !current(&self.state.lock().unwrap_or_else(|e| e.into_inner()));
+        if (prepare_draw || cold)
+            && !self.device.lock().ok()?
+                .begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem))
+                .ok()?
+        {
+            return None;
+        }
+        if cold {
             let _dispatch = timeline::setup::dispatch();
             let (palettes, formats) = {
                 let device = self.device.lock().ok()?;
@@ -145,6 +144,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             (Arc::clone(&state.set), Arc::clone(&state.models))
         };
         self.refresh_edits(&models);
+        if !prepare_draw {
+            return Some(set);
+        }
         let used = models
             .palettes
             .lock()

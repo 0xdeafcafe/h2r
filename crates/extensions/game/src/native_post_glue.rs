@@ -844,24 +844,16 @@ impl d3d::SwallowPass for ScreenPass {
                 }
                 let mut live = strip_raster(original.draw, program.state.alpha_test)
                     .map_err(|why| format!("screen effect {:#010x}: {why}", self.call.egor.0))?;
-                let mut view_opaque = None;
                 for (stage, source) in reads.iter().enumerate() {
                     if let Some(index) = source {
                         let is_view = *index == 0;
                         check_bound_source(original, stage, screen_slot(*index), slots, is_view)?;
                         if is_view {
-                            let opaque = original.draw.texture_info[stage]
+                            live.opaque_view[stage] = original.draw.texture_info[stage]
                                 .is_some_and(|info| info.format == gfx::D3DFormat::LinX8R8G8B8);
-                            if view_opaque
-                                .replace(opaque)
-                                .is_some_and(|first| first != opaque)
-                            {
-                                return Err("screen stages use different alpha interpretations of the framebuffer".into());
-                            }
                         }
                     }
                 }
-                live.opaque_view = view_opaque.unwrap_or(false);
                 if pass_raster.replace(live).is_some_and(|first| first != live) {
                     return Err("screen strip raster state changed within the pass".into());
                 }
@@ -988,13 +980,24 @@ fn matches_strip(draw: &d3d::ResolvedDraw, strip: &[StripVertex]) -> bool {
         })
 }
 
+// A colour-only recording can omit a bound depth attachment if all fragments
+// pass and neither depth nor stencil can be changed.
+fn post_needs_depth(state: &gfx::RenderState, bound: bool) -> bool {
+    use gfx::state::{CompareFunc, DepthBufferMode, StencilOp};
+    let stencil = &state.stencil;
+    bound && ((state.depth_mode != DepthBufferMode::Disabled
+        && (state.depth_write || state.depth_func != CompareFunc::Always))
+        || (stencil.enable && (stencil.func != CompareFunc::Always
+            || (stencil.write_mask != 0 && stencil.pass != StencilOp::Keep))))
+}
+
 /// The template supplies shader code. Colour state can be inherited from
 /// the previous draw or applied by the template wrapper outside that code.
 fn strip_raster(
     draw: &d3d::ResolvedDraw,
     alpha: Option<(wgpu::CompareFunction, u8)>,
 ) -> Result<StripRaster, &'static str> {
-    use gfx::state::{CompareFunc, DepthBufferMode, FillMode, ShadeMode};
+    use gfx::state::{CompareFunc, FillMode, ShadeMode};
     let state = &draw.state.render;
     let live_alpha =
         (state.alpha_test_enable && state.alpha_func != CompareFunc::Always).then(|| {
@@ -1006,8 +1009,7 @@ fn strip_raster(
     if live_alpha != alpha {
         return Err("the live alpha test differs from the compiled screen program");
     }
-    if state.depth_mode != DepthBufferMode::Disabled
-        || state.stencil.enable
+    if post_needs_depth(state, draw.target.depth_format.is_some())
         || state.fog_enable
         || state.fill_mode != FillMode::Solid
         || state.back_fill_mode != FillMode::Solid
@@ -1033,7 +1035,7 @@ fn strip_raster(
         front_face: primitive.front_face,
         cull: primitive.cull_mode,
         depth_clamp: state.depth_clamp,
-        opaque_view: false,
+        opaque_view: [false; 4],
         clip: (!clip.is_whole(draw.target.width, draw.target.height)).then_some([
             clip.x,
             clip.y,
@@ -1090,6 +1092,7 @@ pub const QUAD: (PrimitiveType, usize) = (PrimitiveType::TriangleFan, 4);
 
 /// The native glow, recorded against the call's view and blur levels.
 struct GlowPass {
+    colours: OnceLock<Vec<glow::QuadColour>>,
     plan: Plan,
     gpu: Arc<Mutex<GpuGlow>>,
 }
@@ -1138,7 +1141,7 @@ impl GlowPass {
     fn prepare(&self, t: PostCopy<'_>) -> Option<glow::GlowCommands> {
         let view = slot(t.slots, 0)?;
         let intermediates = [1, 2].map(|i| slot(t.slots, i).map(glow::PostSurface::from));
-        let result = self.gpu.lock().unwrap_or_else(|e| e.into_inner()).prepare(
+        let result = self.gpu.lock().unwrap_or_else(|e| e.into_inner()).prepare_colours(
             GlowTarget {
                 device: t.device,
                 queue: t.queue,
@@ -1148,6 +1151,7 @@ impl GlowPass {
                 intermediates,
             },
             &self.plan,
+            Some(self.colours.get()?),
         );
         result
             .map_err(|error| log_rejection(|| format!("glow on live target: {error:?}")))
@@ -1165,14 +1169,20 @@ impl d3d::SwallowPass for GlowPass {
         originals: &[d3d::SwallowOriginal<'_>],
         slots: &[Option<d3d::SwallowTarget>],
     ) -> Result<(), String> {
+        if originals.len() != self.plan.draws.len() {
+            return Err("glow quad count differs from plan".into());
+        }
+        let mut colours = Vec::with_capacity(originals.len());
         for (i, (original, want)) in originals.iter().zip(&self.plan.draws).enumerate() {
-            let blend = want.blend.map(Blend::state);
-            if !matches_colour_state(original.draw, blend, wgpu::ColorWrites::ALL, None) {
-                return Err(format!(
-                    "glow into {:?}: live quad colour state differs",
-                    want.dest
-                ));
+            let raster = strip_raster(original.draw, None)?;
+            if raster.cull.is_some() || raster.clip.is_some() {
+                return Err(format!("glow into {:?}: quad requires culling or clipping", want.dest));
             }
+            colours.push(glow::QuadColour {
+                blend: raster.blend,
+                constant: raster.blend_constant,
+                writes: raster.writes,
+            });
             for stage in 0..4 {
                 if original.sampled[stage] {
                     let source = want.stages[stage];
@@ -1186,7 +1196,7 @@ impl d3d::SwallowPass for GlowPass {
                 }
             }
         }
-        Ok(())
+        self.colours.set(colours).map_err(|_| "glow colours already captured".to_owned())
     }
 }
 
@@ -1301,6 +1311,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         };
         let targets = targets(&plan);
         let pass: Box<dyn d3d::SwallowPass> = Box::new(GlowPass {
+            colours: OnceLock::new(),
             plan,
             gpu: Arc::clone(&self.gpu),
         });
@@ -2845,6 +2856,25 @@ mod tests {
     }
 
     #[test]
+    fn colour_only_quads_keep_effective_depth_and_stencil_operations() {
+        use gfx::state::{CompareFunc, StencilOp};
+        let mut state = gfx::RenderState::default();
+        assert!(!post_needs_depth(&state, false));
+        assert!(post_needs_depth(&state, true));
+        state.depth_write = false;
+        assert!(post_needs_depth(&state, true));
+        state.depth_func = CompareFunc::Always;
+        state.stencil.enable = true;
+        assert!(!post_needs_depth(&state, true));
+        state.stencil.pass = StencilOp::Replace;
+        assert!(post_needs_depth(&state, true));
+        state.stencil.write_mask = 0;
+        assert!(!post_needs_depth(&state, true));
+        state.stencil.func = CompareFunc::Equal;
+        assert!(post_needs_depth(&state, true));
+    }
+
+    #[test]
     fn every_pass_is_colour_only() {
         use d3d::ExternalPass;
         let plan = Plan {
@@ -2856,6 +2886,7 @@ mod tests {
             draws: vec![],
         };
         let glow = GlowPass {
+            colours: OnceLock::new(),
             plan: plan.clone(),
             gpu: Arc::new(Mutex::new(GpuGlow::new())),
         };

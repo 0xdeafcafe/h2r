@@ -85,10 +85,9 @@ fn walk_stage(mem: &dyn GuestRead, esp: u32) -> Option<Stage> {
     let layer = word(0x78)?;
     match word(0x68)? {
         TRANSPARENT_DRAW_CALLER if layer == 15 => {
-            indexed_entry(mem, esp)?;
             let frame_data = SCOPE.with(|slot| {
                 let scope = slot.take();
-                let data = scope.handler.map(|h| h.data);
+                let data = scope.live_handler(mem, esp).map(|h| h.data);
                 slot.set(scope);
                 data
             })?;
@@ -128,9 +127,19 @@ fn subpart_range(mem: &dyn GuestRead, esp: u32) -> Option<IndexRange> {
     })
 }
 
+impl IndexRange {
+    fn has_indices_for(&self, stage: Stage) -> bool {
+        // Both indexed backends consume the full list and rasterize its
+        // complete triangles. Preserve the tail in the device snapshot.
+        self.indices != 0 && self.count >= 3
+            && (matches!(stage, Stage::Transparents | Stage::FirstPerson) || !matches!(self.topology, IndexTopology::List)
+                || self.count % 3 == 0)
+    }
+}
+
 fn walk_range(mem: &mut dyn GuestMemory, stage: Stage, range: IndexRange) -> bool {
     stage.count(Metric::WalkExamined, 1);
-    if range.count < 3 || range.indices == 0 || (matches!(range.topology, IndexTopology::List) && range.count % 3 != 0) {
+    if !range.has_indices_for(stage) {
         stage.count(Metric::WalkRefusedInputs, 1);
         return false;
     }
@@ -200,7 +209,9 @@ struct Scene {
 struct Handler {
     frame: Frame,
     data: u32,
-    entry: Entry,
+    entry: Option<Entry>,
+    shader: u32,
+    part_argument: u32,
 }
 
 #[derive(Default)]
@@ -239,25 +250,40 @@ impl Scope {
             return None;
         }
         let data = mem.read_u32(esp.checked_add(4)?)?;
-        let entry = transparent::read_entry(mem, data)?;
-        Some(Handler { frame, data, entry })
+        if mem.read_u32(data.checked_sub(4)?)? != transparent::GEOMETRY_HANDLER {
+            return None;
+        }
+        Some(Handler {
+            frame, data, entry: transparent::read_entry(mem, data),
+            shader: mem.read_u32(data)?,
+            part_argument: mem.read_u32(data.checked_add(4)?)?,
+        })
     }
 
     /// Returns the exact sorted part only while its call frame survives.
     /// The dispatch reuses the frame for the next handler and always writes
     /// that handler's own entry pointer to its argument slot.
-    pub fn indexed_entry(&self, mem: &dyn GuestRead, esp: u32) -> Option<(MapGeneration, Entry)> {
+    fn live_handler(&self, mem: &dyn GuestRead, esp: u32) -> Option<Handler> {
         let scene = self.scene?;
         let handler = self.handler?;
         if !scene.frame?.contains(mem, handler.frame.esp)
             || !handler.frame.contains(mem, esp)
             || mem.read_u32(handler.frame.esp.checked_add(4)?) != Some(handler.data)
+            || mem.read_u32(handler.data.checked_sub(4)?) != Some(transparent::GEOMETRY_HANDLER)
+            || mem.read_u32(handler.data) != Some(handler.shader)
+            || mem.read_u32(handler.data.checked_add(4)?) != Some(handler.part_argument)
             || MapGeneration::read(mem) != Some(scene.map)
         {
             return None;
         }
+        Some(handler)
+    }
+
+    pub fn indexed_entry(&self, mem: &dyn GuestRead, esp: u32) -> Option<(MapGeneration, Entry)> {
+        let handler = self.live_handler(mem, esp)?;
+        let entry = handler.entry?;
         let live = transparent::read_entry(mem, handler.data)?;
-        (live == handler.entry).then_some((scene.map, live))
+        (live == entry).then_some((self.scene?.map, live))
     }
 }
 
@@ -347,8 +373,7 @@ impl Feature for NativeTransparents {
                 let can_resume = rt.read_dispatch(|dispatch| dispatch.has_resume(resume));
                 let mut mem = rt.memory();
                 let read = ReadMemory(&*mem);
-                let Some(stage @ (Stage::Transparents | Stage::Fog | Stage::Water)) =
-                    walk_stage(&read, emitter_esp)
+                let Some(stage) = walk_stage(&read, emitter_esp)
                 else {
                     return Ok(Flow::Continue);
                 };
@@ -433,6 +458,19 @@ mod walk_tests {
     use native_render::skip::CURRENT_LIST;
 
     #[test]
+    fn transparent_lists_keep_the_partial_final_triangle_in_the_snapshot() {
+        let mut range = IndexRange { indices: 0x4000, count: 2, topology: IndexTopology::List };
+        assert!(!range.has_indices_for(Stage::Transparents));
+        for count in [3, 4, 5, 6] {
+            range.count = count;
+            assert!(range.has_indices_for(Stage::Transparents));
+            assert!(range.has_indices_for(Stage::FirstPerson));
+        }
+        range.indices = 0;
+        assert!(!range.has_indices_for(Stage::Transparents));
+    }
+
+    #[test]
     fn subpart_walk_requires_the_live_sorted_layer_15_handler() {
         let mut mem = FlatMemory::new(0x0040_0000, 0x0021_0000);
         let scene = 0x005f_1000;
@@ -456,17 +494,30 @@ mod walk_tests {
         ] {
             mem.set_u32(addr, value).unwrap();
         }
-        let read = ReadMemory(&mem);
         let frame = stack + 12;
+        let read = ReadMemory(&mem);
         let mut scope = Scope::default();
         scope.begin_view(&read, scene);
         scope.begin_entry(&read, handler);
-        SCOPE.set(scope);
         WALK_DATA.set(Some(data));
+        SCOPE.set(scope);
+        assert_eq!(walk_stage(&read, frame), Some(Stage::Transparents));
+
+        // No lighting owner for this object. The emitter still supplies the
+        // exact sorted range and the device resolves its streams and shader.
+        mem.set_u32(native_render::skip::RENDER_RECORDS + 4, 7).unwrap();
+        let read = ReadMemory(&mem);
+        let mut scope = SCOPE.take();
+        scope.begin_entry(&read, handler);
+        assert!(scope.indexed_entry(&read, frame).is_none());
+        SCOPE.set(scope);
         assert_eq!(walk_stage(&read, frame), Some(Stage::Transparents));
         WALK_DATA.set(Some(data + ENTRY_BYTES));
         assert_eq!(walk_stage(&read, frame), None);
         WALK_DATA.set(Some(data));
+        mem.set_u32(data + 4, 3).unwrap();
+        assert_eq!(walk_stage(&ReadMemory(&mem), frame), None);
+        mem.set_u32(data + 4, 0).unwrap();
         mem.set_u32(frame + 0x78, 7).unwrap();
         assert_eq!(walk_stage(&ReadMemory(&mem), frame), None);
         WALK_DATA.set(None);
@@ -536,12 +587,22 @@ mod walk_tests {
         let (stack, list) = (0x005a_0000, 0x004a_0000);
         mem.set_u32(stack + 0x18, GEOMETRY_EMITTER_CALLER).unwrap();
         mem.set_u32(stack + 0x68, LAYER_DRAW_CALLER).unwrap();
-        mem.set_u32(stack + 0x78, 7).unwrap();
-        mem.set_u32(stack + LAYER_DRAW_FRAME, 0x0004_0271).unwrap();
+
         mem.set_u32(CURRENT_LIST, list).unwrap();
         mem.set_u32(list + 0x14, crate::native_first_person::FIRST_PERSON_ITEMS).unwrap();
         let classify = |mem: &FlatMemory| walk_stage(&ReadMemory(mem), stack);
-        assert_eq!(classify(&mem), Some(Stage::FirstPerson));
+        let args = stack - 12;
+        for (layer, caller) in [(1, 0x0004_00ab), (2, 0x0004_0289), (3, 0x0004_0136),
+                                (8, 0x0004_01a7), (20, 0x0004_020b), (7, 0x0004_0271)] {
+            mem.set_u32(stack + 0x78, layer).unwrap();
+            mem.set_u32(stack + LAYER_DRAW_FRAME, caller).unwrap();
+            mem.set_u32(args, 5).unwrap();
+            mem.set_u32(args + 4, 5).unwrap();
+            mem.set_u32(args + 8, 0x0058_0000).unwrap();
+            let stage = classify(&mem).unwrap();
+            assert_eq!(stage, Stage::FirstPerson);
+            assert!(subpart_range(&ReadMemory(&mem), args).unwrap().has_indices_for(stage));
+        }
         mem.set_u32(list + 0x14, 0x0050_0000).unwrap();
         assert_eq!(classify(&mem), None);
         mem.set_u32(list + 0x14, crate::native_first_person::FIRST_PERSON_ITEMS).unwrap();

@@ -326,7 +326,7 @@ pub enum ScreenRefused {
 
 /// Checks the sampled stages and the optional framebuffer's copy usage.
 /// The draw-order check resolves which surface a convolution result names.
-pub fn check(color: Option<&wgpu::TextureView>, program: &ScreenProgram) -> Result<(), ScreenRefused> {
+fn check(program: &ScreenProgram, reads: [Option<u32>; 4], color_usage: Option<wgpu::TextureUsages>) -> Result<(), ScreenRefused> {
     for (n, d) in program.dims.iter().enumerate() {
         if d.is_none() {
             continue;
@@ -336,13 +336,13 @@ pub fn check(color: Option<&wgpu::TextureView>, program: &ScreenProgram) -> Resu
             ScreenStage::Bitmap { .. } => {}
             ScreenStage::Engine(id) => match bound(id) {
                 None => return Err(ScreenRefused::EngineTexture(id)),
-                Some(Bound::View) if color.is_none() => return Err(ScreenRefused::Attachment(0)),
-                Some(Bound::View | Bound::Result(_)) => {
-                    if color.is_some_and(|view| !view.texture().usage().contains(wgpu::TextureUsages::COPY_SRC)) {
+                Some(_) if reads[n] == Some(0) => {
+                    let usage = color_usage.ok_or(ScreenRefused::Attachment(0))?;
+                    if !usage.contains(wgpu::TextureUsages::COPY_SRC) {
                         return Err(ScreenRefused::ColourNotCopyable);
                     }
                 }
-                Some(Bound::Target1) => {}
+                Some(_) => {}
             },
         }
     }
@@ -652,7 +652,7 @@ pub struct StripRaster {
     pub cull: Option<wgpu::Face>,
     pub depth_clamp: bool,
     /// X8 aliases read alpha as one, independently of stored alpha.
-    pub opaque_view: bool,
+    pub opaque_view: [bool; 4],
     /// The effective scissor in guest target pixels.
     pub clip: Option<[u32; 4]>,
 }
@@ -700,7 +700,7 @@ impl From<crate::pass_state::PassState> for StripRaster {
             front_face: s.primitive.front_face,
             cull: s.primitive.cull_mode,
             depth_clamp: s.primitive.unclipped_depth,
-            opaque_view: false,
+            opaque_view: [false; 4],
             clip: None,
         }
     }
@@ -800,11 +800,22 @@ impl AlphaClear {
     }
 }
 
+/// Which framebuffer snapshots the sampled stages need, in RGBA and X8 order.
+fn view_snapshots(reads: [Option<u32>; 4], opaque: [bool; 4]) -> [bool; 2] {
+    let mut needed = [false; 2];
+    for (source, opaque) in reads.into_iter().zip(opaque) {
+        if source == Some(0) {
+            needed[usize::from(opaque)] = true;
+        }
+    }
+    needed
+}
+
 /// Compiled screen passes and the per-pass feedback copy.
 #[derive(Default)]
 pub struct ScreenSet {
     passes: HashMap<ScreenKey, Result<ScreenGpu, ScreenRefused>>,
-    copy: Option<Kept>,
+    copies: [Option<Kept>; 2],
     quads: glow::QuadDrawer,
     opaque: AlphaClear,
 }
@@ -865,8 +876,9 @@ impl ScreenSet {
             }
             let (index, guest) = dest_of(d.dest);
             let dest = attachment(index, guest)?;
-            check(color.map(|c| c.view), d.program)?;
-            for source in drawn.reads(d.program, d.dest)?.into_iter().flatten() {
+            let reads = drawn.reads(d.program, d.dest)?;
+            check(d.program, reads, color.map(|c| c.view.texture().usage()))?;
+            for source in reads.into_iter().flatten() {
                 let source_view = sample(source)?;
                 if source != 0 && dest.texture() == source_view.texture() {
                     return Err(ScreenRefused::Source(source));
@@ -926,30 +938,32 @@ impl ScreenSet {
         for d in draws {
             let Some(Ok(g)) = self.passes.get(&d.key) else { return Err(ScreenRefused::NoProgram) };
             let reads = drawn.reads(d.program, d.dest)?;
-            let copy = if reads.contains(&Some(0)) {
+            let mut snapshots = [None, None];
+            for (i, needed) in view_snapshots(reads, d.raster.opaque_view).into_iter().enumerate() {
+                if !needed {
+                    continue;
+                }
                 let texture = color.ok_or(ScreenRefused::Attachment(0))?.view.texture();
                 let full = wgpu::Extent3d { width: texture.width(), height: texture.height(), depth_or_array_layers: 1 };
                 let usage = wgpu::TextureUsages::TEXTURE_BINDING
                     | wgpu::TextureUsages::COPY_DST
                     | wgpu::TextureUsages::RENDER_ATTACHMENT;
-                let (extent, _, copy, view) = keep(&mut self.copy, device, full, texture.format(), usage, "native screen view copy");
+                let (extent, _, copy, view) = keep(&mut self.copies[i], device, full, texture.format(), usage, "native screen view copy");
                 commands.steps.push(Step::Copy { source: texture.clone(), dest: copy.clone(), extent: *extent });
-                if d.raster.opaque_view {
+                if i == 1 {
                     let pipeline = self.opaque.pipeline(device, copy.format());
                     commands.steps.push(Step::Opaque { pipeline, view: view.clone() });
                 }
-                Some(view.clone())
-            } else {
-                None
-            };
+                snapshots[i] = Some(view.clone());
+            }
             let (index, dest_guest) = dest_of(d.dest);
             let dest_view = attachment(index, dest_guest)?;
             let dest_texture = dest_view.texture();
             let dest_size = (dest_texture.width(), dest_texture.height());
             let color_format = dest_texture.format();
             drawn.drew(d.dest)?;
-            let engine = reads.map(|r| match r {
-                Some(0) => copy.clone(),
+            let engine = std::array::from_fn(|n| match reads[n] {
+                Some(0) => snapshots[usize::from(d.raster.opaque_view[n])].clone(),
                 Some(t) => view_of(t).cloned(),
                 None => None,
             });
@@ -1189,6 +1203,24 @@ mod tests {
         assert_eq!(s[1].texcoords[3], [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(std::mem::size_of::<StripVertex>(), 80);
         assert_eq!(STRIP_ATTRIBUTES.map(|a| (a.shader_location, a.offset)), [(0, 0), (1, 16), (2, 32), (3, 48), (4, 64)]);
+    }
+
+    #[test]
+    fn screen_stages_can_read_both_alpha_interpretations_of_the_view() {
+        let reads = [Some(0), Some(1), None, Some(0)];
+        assert_eq!(view_snapshots(reads, [false, true, true, true]), [true, true]);
+        assert_eq!(view_snapshots(reads, [false, true, true, false]), [true, false]);
+        assert_eq!(view_snapshots(reads, [true; 4]), [false, true]);
+        assert_eq!(view_snapshots([Some(1); 4], [true; 4]), [false, false]);
+    }
+
+    #[test]
+    fn convolution_result_only_requires_a_copyable_view_when_it_names_the_view() {
+        let result = program([ScreenStage::Engine(24), E, E, E]);
+        let usage = Some(wgpu::TextureUsages::RENDER_ATTACHMENT);
+        assert_eq!(check(&result, [Some(0x19), None, None, None], usage), Ok(()));
+        assert_eq!(check(&result, [Some(0), None, None, None], usage), Err(ScreenRefused::ColourNotCopyable));
+        assert_eq!(check(&result, [Some(0), None, None, None], None), Err(ScreenRefused::Attachment(0)));
     }
 
     #[test]
@@ -1437,7 +1469,7 @@ mod tests {
         };
         let frame = QuadFrame { window: [0.0, 0.0, 8.0, 8.0], signs: [-0.5, 0.5], combiner };
         let mut opaque: StripRaster = back.state.into();
-        opaque.opaque_view = true;
+        opaque.opaque_view = [true; 4];
         let tail = [ScreenConvolution {
             size: (4, 4),
             draws: vec![ConvolutionDraw { source: 0, dest: 0x19, spread: 0.0, grid: None }],

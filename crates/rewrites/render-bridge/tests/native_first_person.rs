@@ -67,7 +67,7 @@ struct Stub {
 }
 
 impl Host for Stub {
-    fn native(&self, _mem: &mut dyn GuestMemory) -> Option<Arc<NativeSet>> {
+    fn native(&self, _mem: &mut dyn GuestMemory, _prepare_draw: bool) -> Option<Arc<NativeSet>> {
         Some(Arc::new(self.set.lock().unwrap().clone()))
     }
 
@@ -236,6 +236,21 @@ fn first_person_plans_items_and_restores_exactly_the_unplanned_ones() {
     assert_eq!(masks(&m), all, "no host");
 
     let stub = Arc::new(Stub::default());
+    native_first_person::set_host(stub.clone());
+    for layer in [1, 2, 7, 8, 20] {
+        // B appears only in this layer. Two layer-3 items still require
+        // the guest sort. A non-geometry neighbour cannot block discovery.
+        m.set_u32(ITEMS + 2 * 0x18 + 0x10, 1 << layer).unwrap();
+        m.set_u32(ITEMS + 3 * 0x18, 0).unwrap();
+        let before = masks(&m);
+        native_first_person::observe_layer(&mut m, FIRST_PERSON_LAYER3_RETURN);
+        assert_eq!(*stub.wanted.lock().unwrap(), [DEF_A, DEF_B]);
+        stub.wanted.lock().unwrap().clear();
+        assert!(stub.offered.lock().unwrap().is_empty());
+        assert_eq!(masks(&m), before);
+    }
+    m.set_u32(ITEMS + 2 * 0x18 + 0x10, 0b1010).unwrap();
+    m.set_u32(ITEMS + 3 * 0x18, GEOMETRY_BUILD).unwrap();
     {
         let mut set = stub.set.lock().unwrap();
         set.definitions.insert(DEF_A as u16, 2);
@@ -243,8 +258,6 @@ fn first_person_plans_items_and_restores_exactly_the_unplanned_ones() {
         set.parts
             .extend([native_part(DEF_A, 0, 0x10), native_part(DEF_B, 0, 0x10)]);
     }
-    native_first_person::set_host(stub.clone());
-
     native_first_person::before_layer(&mut m, SCENE_LAYER3_RETURN);
     assert_eq!(masks(&m), all, "the base layer-3 caller is not owned");
     native_first_person::before_layer(&mut m, FIRST_PERSON_LAYER3_RETURN);

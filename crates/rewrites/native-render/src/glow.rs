@@ -431,7 +431,7 @@ struct Compiled {
     uniforms_layout: wgpu::BindGroupLayout,
     layout: wgpu::PipelineLayout,
     textures_layout: wgpu::BindGroupLayout,
-    pipelines: HashMap<(wgpu::TextureFormat, Option<Blend>), wgpu::RenderPipeline>,
+    pipelines: HashMap<(wgpu::TextureFormat, Option<wgpu::BlendState>, wgpu::ColorWrites), wgpu::RenderPipeline>,
 }
 
 /// One attachment of a post pass. Fixed-size blur levels may have a
@@ -459,6 +459,24 @@ pub struct GlowTarget<'a> {
     /// Resolved inputs of the downsample, including any XRGB alpha fixup.
     pub entry_sources: [Option<&'a wgpu::TextureView>; 4],
     pub intermediates: [Option<PostSurface<'a>>; 2],
+}
+
+/// Colour output of a resolved glow draw.
+#[derive(Clone, Copy, Debug)]
+pub struct QuadColour {
+    pub blend: Option<wgpu::BlendState>,
+    pub constant: wgpu::Color,
+    pub writes: wgpu::ColorWrites,
+}
+
+impl From<Option<Blend>> for QuadColour {
+    fn from(blend: Option<Blend>) -> Self {
+        Self {
+            blend: blend.map(Blend::state),
+            constant: wgpu::Color::TRANSPARENT,
+            writes: wgpu::ColorWrites::ALL,
+        }
+    }
 }
 
 /// Quads drawn through combiner blocks: each block translated once by its
@@ -517,7 +535,7 @@ impl QuadDrawer {
         blend: Option<Blend>,
         stages: [Option<&wgpu::TextureView>; 4],
     ) -> Result<Option<QuadCommand>, &'static str> {
-        self.prepare((device, queue, uploads), program, bytemuck::bytes_of(quad), None, (dest, format, blend), stages)
+        self.prepare((device, queue, uploads), program, bytemuck::bytes_of(quad), None, (dest, format, blend.into()), stages)
     }
 
     /// A grid's `strips` (`screen_gpu::StripVertex`, each a triangle
@@ -537,7 +555,7 @@ impl QuadDrawer {
         blend: Option<Blend>,
         stages: [Option<&wgpu::TextureView>; 4],
     ) -> Result<Option<QuadCommand>, &'static str> {
-        self.prepare((device, queue, uploads), program, bytemuck::bytes_of(frame), Some(strips), (dest, format, blend), stages)
+        self.prepare((device, queue, uploads), program, bytemuck::bytes_of(frame), Some(strips), (dest, format, blend.into()), stages)
     }
 
     fn prepare(
@@ -546,13 +564,13 @@ impl QuadDrawer {
         program: &Program,
         vertex_uniform: &[u8],
         strips: Option<&[Vec<StripVertex>]>,
-        (dest, format, blend): (&wgpu::TextureView, wgpu::TextureFormat, Option<Blend>),
+        (dest, format, colour): (&wgpu::TextureView, wgpu::TextureFormat, QuadColour),
         stages: [Option<&wgpu::TextureView>; 4],
     ) -> Result<Option<QuadCommand>, &'static str> {
         let sampler = self.sampler.get_or_insert_with(|| device.create_sampler(&sampler_descriptor())).clone();
         let c = self.compiled.entry(program.wgsl.clone()).or_insert_with(|| compile(device, program));
         let (module, layout) = (&c.module, &c.layout);
-        let pipeline = c.pipelines.entry((format, blend)).or_insert_with(|| {
+        let pipeline = c.pipelines.entry((format, colour.blend, colour.writes)).or_insert_with(|| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("native glow"),
                 layout: Some(layout),
@@ -575,8 +593,8 @@ impl QuadDrawer {
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
-                        blend: blend.map(Blend::state),
-                        write_mask: wgpu::ColorWrites::ALL,
+                        blend: colour.blend,
+                        write_mask: colour.writes,
                     })],
                 }),
                 multiview_mask: None,
@@ -620,6 +638,7 @@ impl QuadDrawer {
             }
         };
         Ok(Some(QuadCommand {
+            blend_constant: colour.constant,
             dest: dest.clone(),
             pipeline,
             uniforms: run.group.clone(),
@@ -637,6 +656,7 @@ impl QuadDrawer {
 /// time.
 #[derive(Clone)]
 pub struct QuadCommand {
+    blend_constant: wgpu::Color,
     dest: wgpu::TextureView,
     pipeline: wgpu::RenderPipeline,
     uniforms: wgpu::BindGroup,
@@ -667,6 +687,7 @@ impl QuadCommand {
             multiview_mask: None,
         });
         pass.set_pipeline(&self.pipeline);
+        pass.set_blend_constant(self.blend_constant);
         pass.set_bind_group(0, &self.uniforms, &self.offsets);
         pass.set_bind_group(1, &self.textures, &[]);
         if let Some((buffer, offset, size)) = &self.vertices {
@@ -704,6 +725,7 @@ pub struct GpuGlow {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refused {
     ViewSize((u32, u32), (u32, u32)),
+    ColourCount,
     Attachment(Surface),
     Source(Surface),
     Program(String),
@@ -742,6 +764,14 @@ impl GpuGlow {
     /// format and existing pixels come from that view. Refused before
     /// anything is recorded.
     pub fn prepare(&mut self, t: GlowTarget<'_>, plan: &Plan) -> Result<GlowCommands, Refused> {
+        self.prepare_colours(t, plan, None)
+    }
+
+    /// Prepare the plan with the colour state captured from each matched quad.
+    pub fn prepare_colours(&mut self, t: GlowTarget<'_>, plan: &Plan, colours: Option<&[QuadColour]>) -> Result<GlowCommands, Refused> {
+        if colours.is_some_and(|states| states.len() != plan.draws.len()) {
+            return Err(Refused::ColourCount);
+        }
         if t.color.guest_size != plan.view {
             return Err(Refused::ViewSize(t.color.guest_size, plan.view));
         }
@@ -784,9 +814,13 @@ impl GpuGlow {
             prepared.push((dest, program, stages));
         }
         let mut quads = Vec::with_capacity(prepared.len());
-        for (draw, (dest, program, stages)) in plan.draws.iter().zip(prepared) {
+        for (index, (draw, (dest, program, stages))) in plan.draws.iter().zip(prepared).enumerate() {
             let format = dest.texture().format();
-            let quad = self.quads.quad(t.device, t.queue, t.uploads, &program, &plan.quad(draw), dest, format, draw.blend, stages);
+            let colour = colours.map_or_else(|| draw.blend.into(), |states| states[index]);
+            let quad = self.quads.prepare(
+                (t.device, t.queue, t.uploads), &program, bytemuck::bytes_of(&plan.quad(draw)),
+                None, (dest, format, colour), stages,
+            );
             quads.extend(quad.map_err(|_| Refused::Uniforms)?);
         }
         Ok(GlowCommands { quads })
@@ -1104,7 +1138,7 @@ mod tests {
         );
         let read = |t: &wgpu::Texture| gfx::readback::read_texture(&ctx, t, wgpu::TextureAspect::All, 4, (t.width(), t.height()));
         let pixels: Vec<u8> = (0..64u8).flat_map(|i| [i * 4, 255 - i * 3, i * 2 + 7, 255]).collect();
-        let run = |prepared: bool| {
+        let run = |prepared: bool, masked: bool| {
             let attachment = wgpu::TextureUsages::RENDER_ATTACHMENT;
             let (view, down, other) = (texture((8, 8), attachment), texture((4, 4), attachment), texture((4, 4), attachment));
             fill(&view, &pixels);
@@ -1124,7 +1158,11 @@ mod tests {
             let mut glow = GpuGlow::new();
             let mut encoder = ctx.device.create_command_encoder(&Default::default());
             if prepared {
-                let commands = glow.prepare(target, &plan).unwrap();
+                let mut colours: Vec<_> = plan.draws.iter().map(|draw| QuadColour::from(draw.blend)).collect();
+                if masked {
+                    colours[2].writes = wgpu::ColorWrites::RED;
+                }
+                let commands = glow.prepare_colours(target, &plan, Some(&colours)).unwrap();
                 assert_eq!(commands.passes(), 3);
                 let mut scratch = ctx.device.create_command_encoder(&Default::default());
                 commands.record(&mut scratch);
@@ -1137,7 +1175,14 @@ mod tests {
             ctx.queue.submit([encoder.finish()]);
             (read(&view), read(&down), read(&other))
         };
-        let (own, prepared) = (run(false), run(true));
+        let (own, prepared) = (run(false, false), run(true, false));
+        let masked = run(true, true);
+        for ((actual, full), original) in masked.0.chunks_exact(4)
+            .zip(prepared.0.chunks_exact(4)).zip(pixels.chunks_exact(4))
+        {
+            assert_eq!(actual[0], full[0]);
+            assert_eq!(actual[1..], original[1..]);
+        }
         assert_eq!(own, prepared);
         assert_ne!(&own.0[..4], &pixels[..4], "the composite drew over the view");
     }
