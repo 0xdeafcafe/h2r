@@ -14,6 +14,7 @@ use crate::app::{Action, PlaylistEdit, Selection};
 
 mod anim_save_tests;
 mod bitmaps_tests;
+mod game_tests;
 mod playtest_tests;
 mod image_gen_tests;
 mod markers_tests;
@@ -1280,6 +1281,8 @@ fn every_method_in_methods_has_a_test() {
                         | m::PAIR_PREVIEW
                         | m::PAIR_AUDIO
                         | m::PAIR_RESULT
+                        // No game, so no picture to save.
+                        | m::GAME_SNAPSHOT
                         | m::PACKAGE_PLAY
                         | m::RECORDING_PLAY
                         // No sim runner is wired to Studio's own API.

@@ -275,6 +275,8 @@ pub struct Bridge {
     pub leaving: bool,
     /// One socket and its exact tick samples for the current pairing.
     pub mirror: Option<Arc<super::stream::Stream>>,
+    /// The paired game's picture for the Game panel (`play::picture`).
+    pub picture: Option<super::picture::Picture>,
     /// The sample shown this editor frame, shared by the viewport and API.
     pub shown: Option<live_mirror::Sample>,
     /// The path a played recording's unit takes, from the streamed samples.
@@ -324,6 +326,7 @@ impl Default for Bridge {
             journal: Vec::new(),
             leaving: false,
             mirror: None,
+            picture: None,
             shown: None,
             path: Default::default(),
             display: Default::default(),
@@ -381,6 +384,7 @@ impl Bridge {
         self.set_player_scope(Err("waiting for the editor to pair in Edit mode"));
         self.move_context = None;
         self.mirror = None;
+        self.picture = None;
         self.shown = None;
         self.display.clear();
         self.counters = None;

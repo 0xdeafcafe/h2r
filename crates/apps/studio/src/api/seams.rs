@@ -134,6 +134,8 @@ pub fn register(api: &mut Api) {
     // pair.*: the window's pairing with a running game (play::pair).
     api.register(Box::new(super::pair::Pair));
     api.register(Box::new(super::mirror::Mirror));
+    // game.*: the Game panel's picture of the paired game (play::picture).
+    api.register(Box::new(super::game::Game));
     // pair.preview, pair.audio, pair.result: content shown in the paired
     // game and read back (api::preview).
     api.register(Box::new(super::preview::Preview::default()));
