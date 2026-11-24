@@ -1462,9 +1462,15 @@ No params. `interp` is `d3d::interp::InterpStats` with every field
 drew at their own matrices, `held_draws_palette` when their node
 registers are not their pair's), read from its `Debug` text so fields added there
 appear with no change here. `counters.line` is the frame-stats window's
-summary. `counters` also reports the per-frame means for `shadow_walk_layers`
-and each `native_scene_lists_*` stage. The `_native` and `_fallback` fields
-include zeroes. A refusal reason appears when its window count is positive.
+summary. `counters` also reports the per-frame means for `shadow_walk_layers`,
+each `native_scene_lists_*` stage and the overlay stage's
+`native_ui_overlay_*` counters. The `_native` and `_fallback` fields and
+every overlay counter include zeroes. Another refusal reason appears when
+its window count is positive. The overlay's counters are its items by kind
+(`items`, `quads`, `text_runs`, `fills`, `glyphs`), the draws recorded
+(`batches`) and the items dropped, by reason (`refused_material`,
+`refused_clip`, `refused_glyph`, `refused_texture`;
+[retire-d3d.md](../graphics/retire-d3d.md#what-replaces-each-subsystem)).
 The object-shadow list, row gather and caster each count calls to their own
 entry ([native-light-gather.md](../graphics/native-light-gather.md), L7).
 Each source is `null` where that piece is not running.

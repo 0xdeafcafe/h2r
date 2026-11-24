@@ -3233,6 +3233,7 @@ dependencies = [
  "anyhow",
  "assets",
  "font",
+ "frame-scene",
  "h1-assets",
  "h1map",
  "hud-edit",

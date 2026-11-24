@@ -44,6 +44,12 @@ the game, **D** assumed here.
     `Sprite::cropped`), as a hook would give them; `sprite_at` is where
     a widget's sprite is in its bitmap. The HUD kit's
     preview draws its widgets that way ([hud-kit.md](../game/hud-kit.md)).
+  - `overlay`: the same walk as ordered overlay items
+    (`frame_scene::overlay`), for the native renderer's overlay stage
+    ([retire-d3d.md](../graphics/retire-d3d.md#what-replaces-each-subsystem)):
+    `draw_list` adds a quad over each bitmap widget's image and a text run
+    of each text widget's glyphs (`Fonts::layout`), and says why a widget
+    has none.
   - `checks`: the findings.
   - `session`: `HudSession`: the open map, edits by field key, by offset
     (`move_to`) or by address and bytes (`write`, for the field panel),

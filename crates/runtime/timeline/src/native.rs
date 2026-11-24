@@ -527,7 +527,7 @@ impl SceneList {
     }
 }
 
-const UI_COLUMNS: [&str; Ui::OutlineReservation as usize + 1] = [
+const UI_COLUMNS: [&str; Ui::OverlayRefusedTexture as usize + 1] = [
     "items",
     "item_refused",
     "fallback_geometry",
@@ -558,6 +558,16 @@ const UI_COLUMNS: [&str; Ui::OutlineReservation as usize + 1] = [
     "outline_fallback_entry",
     "outline_fallback_inputs",
     "outline_fallback_reservation",
+    "overlay_items",
+    "overlay_quads",
+    "overlay_text_runs",
+    "overlay_fills",
+    "overlay_glyphs",
+    "overlay_batches",
+    "overlay_refused_material",
+    "overlay_refused_clip",
+    "overlay_refused_glyph",
+    "overlay_refused_texture",
 ];
 const UI_OFFSET: usize = SCENE_LIST_START + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len();
 pub(crate) const COLUMNS: usize = UI_OFFSET + UI_COLUMNS.len();
@@ -595,11 +605,30 @@ pub enum Ui {
     OutlineEntry,
     OutlineInputs,
     OutlineReservation,
+    /// The overlay stage (docs/graphics/retire-d3d.md, slice R6): items in
+    /// the scene's list by kind, and its glyphs.
+    OverlayItems,
+    OverlayQuads,
+    OverlayTextRuns,
+    OverlayFills,
+    OverlayGlyphs,
+    /// Draws `native_render::ui_gpu::OverlayGpu` recorded.
+    OverlayBatches,
+    /// Items dropped, by reason (`native_render::overlay::OverlayStats`):
+    /// there is no guest draw behind them.
+    OverlayRefusedMaterial,
+    OverlayRefusedClip,
+    OverlayRefusedGlyph,
+    OverlayRefusedTexture,
 }
 
 impl Ui {
     pub fn count(self) {
-        phase::count_index(phase::Counter::ALL.len() + UI_OFFSET + self as usize, 1);
+        self.count_n(1);
+    }
+
+    pub fn count_n(self, n: u64) {
+        phase::count_index(phase::Counter::ALL.len() + UI_OFFSET + self as usize, n);
     }
 }
 
@@ -822,8 +851,14 @@ mod tests {
         assert_eq!(columns[ui].1, "native_ui_items");
         assert_eq!(
             columns[phase::Counter::ALL.len() + COLUMNS - 1].1,
+            "native_ui_overlay_refused_texture"
+        );
+        assert_eq!(
+            columns[ui + Ui::OutlineReservation as usize].1,
             "native_ui_outline_fallback_reservation"
         );
+        assert_eq!(columns[ui + Ui::OverlayItems as usize].1, "native_ui_overlay_items");
+        assert_eq!(columns[ui + Ui::OverlayBatches as usize].1, "native_ui_overlay_batches");
         let walk = phase::Counter::ALL.len() + STAGE_COLUMNS;
         assert_eq!(
             columns[walk + ObjectWalk::Native as usize].1,

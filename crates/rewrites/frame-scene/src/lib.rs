@@ -18,6 +18,7 @@ pub mod light_group;
 pub mod mailbox;
 pub mod node;
 pub mod object;
+pub mod overlay;
 pub mod scene;
 pub mod summary;
 
@@ -51,6 +52,10 @@ pub use light_group::{
 };
 pub use node::{NODE_MATRIX_SIZE, NodeMatrix};
 pub use object::{Defaults, ItemKey, LIGHTING_BYTES, LIGHTING_WORDS, Lighting, ObjectFrame, Owner};
+pub use overlay::{
+    ClipRect, Combiner, Overlay, OverlayBlend, OverlayCounts, OverlayError, OverlayGlyph,
+    OverlayItem, OverlayKind, OverlayMaterial, OverlayTexture, OverlayVertex, Program, Sampler,
+};
 pub use scene::{
     AuxDepth, Cut, FrameScene, Instance, InstanceKey, NearbyCaster, PartDraw, PartFlags, Row,
     SceneId, Stamp, Subparts, View, ViewCounts, ViewKey, ViewKind, WorldState,

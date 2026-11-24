@@ -91,6 +91,7 @@ pub mod object_program_gpu;
 #[cfg(feature = "gpu")]
 pub mod object_state;
 pub mod object_streams;
+pub mod overlay;
 #[cfg(feature = "gpu")]
 pub mod particle_gpu;
 pub mod particles;
