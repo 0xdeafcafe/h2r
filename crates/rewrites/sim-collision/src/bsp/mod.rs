@@ -28,7 +28,7 @@ pub mod point;
 mod ring;
 pub mod segment;
 mod store;
-pub use store::Column;
+pub use crate::store::Column;
 
 /// A child word with this bit set is a leaf (`0xffff_ffff`: none, solid).
 pub const LEAF: u32 = 0x0080_0000;

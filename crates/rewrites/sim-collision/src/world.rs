@@ -461,7 +461,7 @@ impl CollisionWorld {
             }
             inner.generation
         };
-        let structure = Structure::decode(g, table).ok()?;
+        let structure = Structure::decode(g, table, self.store.as_deref()).ok()?;
         let cluster = structure.leaf_cluster(leaf)?;
         let mut inner = self.lock();
         if self.epoch.get() != epoch
@@ -579,8 +579,13 @@ impl CollisionWorld {
     pub fn keep_topology(
         &self,
         version: Option<TableVersion>,
-        topology: Topology,
+        mut topology: Topology,
     ) -> Arc<Topology> {
+        if version.is_some() && topology.footprint() as u64 <= self.budget
+            && let Some(directory) = &self.store
+        {
+            topology.share_columns(directory);
+        }
         let topology = Arc::new(topology);
         let epoch = self.epoch.get();
         let mut inner = self.lock();

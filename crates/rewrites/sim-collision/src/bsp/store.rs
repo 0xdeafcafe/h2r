@@ -2,14 +2,13 @@
 //! generation belong to the caller. Only guest indices and decoded values
 //! cross a process boundary.
 use super::{Bsp, Consts, HEADER_WORDS, Leaf, Node, Node2d, Ref, RingEdge, Surface, block, ring};
-use crate::store::atomic_write;
-use bytemuck::Pod;
+use crate::store::{Column, atomic_write};
 use memmap2::{Mmap, MmapOptions};
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,
     io,
-    ops::{Deref, Range},
+    ops::Range,
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
 };
@@ -19,52 +18,6 @@ pub(super) const MIN_BYTES: u64 = 64 << 10;
 const MAGIC: &[u8; 8] = b"H2BSP001";
 const HEADER: usize = 96;
 const ALIGN: usize = 32;
-
-/// A decoded array backed by a private allocation or a checked read-only file range.
-#[derive(Debug)]
-pub struct Column<T: Pod>(Backing<T>);
-
-#[derive(Debug)]
-enum Backing<T: Pod> {
-    Owned(Vec<T>),
-    Mapped(Arc<Mmap>, Range<usize>),
-}
-
-impl<T: Pod> From<Vec<T>> for Column<T> {
-    fn from(value: Vec<T>) -> Self {
-        Self(Backing::Owned(value))
-    }
-}
-
-impl<T: Pod> FromIterator<T> for Column<T> {
-    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-        Vec::from_iter(iter).into()
-    }
-}
-
-impl<T: Pod> Deref for Column<T> {
-    type Target = [T];
-    fn deref(&self) -> &[T] {
-        match &self.0 {
-            Backing::Owned(values) => values,
-            Backing::Mapped(file, span) => bytemuck::cast_slice(&file[span.clone()]),
-        }
-    }
-}
-
-impl<T: Pod> Column<T> {
-    fn mapped(map: &Arc<Mmap>, span: Range<usize>) -> Option<Self> {
-        bytemuck::try_cast_slice::<u8, T>(map.get(span.clone())?).ok()?;
-        Some(Self(Backing::Mapped(map.clone(), span)))
-    }
-
-    pub(super) fn capacity(&self) -> usize {
-        match &self.0 {
-            Backing::Owned(values) => values.capacity(),
-            Backing::Mapped(_, range) => range.len() / size_of::<T>(),
-        }
-    }
-}
 
 struct Layout {
     primary: [Range<usize>; 7],
@@ -312,8 +265,8 @@ mod tests {
         let lazy = read(&moved, None, room);
         let original = read(&first, Some(&dir), room);
         let shared = read(&moved, Some(&dir), room);
-        assert!(matches!(original.nodes.0, Backing::Mapped(..)));
-        assert!(matches!(shared.nodes.0, Backing::Mapped(..)));
+        assert!(original.nodes.is_mapped());
+        assert!(shared.nodes.is_mapped());
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
         assert_ne!(original.plane_addr(0), shared.plane_addr(0));
         assert_ne!(original.source_hash(), shared.source_hash());
