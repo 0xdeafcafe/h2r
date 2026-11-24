@@ -75,6 +75,7 @@ pub use backend::{
 };
 pub use device::{
     Device, DeviceConfig, DrawScope, ExternalRefusal, GuestRange, PreparedExternal, SceneReservation,
+    ExternalStep, ExternalTargets, PreparedSequence,
     PresentParameters, Stats, Swallow, SwallowCall, SwallowOriginal, SwallowPass, SwallowRefusal,
     SwallowTarget, WritebackCause, WritebackCauses,
 };

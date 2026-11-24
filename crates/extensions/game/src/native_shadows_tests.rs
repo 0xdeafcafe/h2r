@@ -19,6 +19,9 @@ use shaders::{
     },
 };
 
+#[path = "native_shadows_tests/typed_light.rs"]
+mod typed_light;
+
 const MAP: u32 = 0x1000;
 fn receiver() -> ResolvedDraw {
     let vs = program(&[
@@ -278,12 +281,21 @@ fn mixed_native_shadow_unshadowed_and_refused_d3d_lights_match_all_d3d() {
     let lit = make_source([1.0, 0.0, 0.0, 1.0]);
     let gel = make_source([0.0, 0.0, 0.0, 128.0 / 255.0]);
     let dark = make_source([0.0; 4]);
+    let green = make_source([0.0, 1.0, 0.0, 1.0]);
     let map = SampledMap {
         kind: MapKind::Depth,
         size: (1, 1),
         view: lit.texture.create_view(&Default::default()),
     };
-    let render = |backend: &mut GfxBackend, native: bool, snapshot: bool| {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Mode {
+        Original,
+        Typed,
+        MissingSpecular,
+    }
+    let render = |backend: &mut GfxBackend, mode: Mode, snapshot: bool| {
+        let native = mode != Mode::Original;
+        let mut guest_draws = Vec::new();
         let before = backend.batch_stats().render_passes;
         let color = backend
             .create_surface(D3DFormat::A8R8G8B8, 16, 16, false)
@@ -328,7 +340,29 @@ fn mixed_native_shadow_unshadowed_and_refused_d3d_lights_match_all_d3d() {
                 assert!(captured.is_some());
                 assert_eq!(backend.batch_stats().submits, submits);
             }
-            let mut draw = receiver();
+            if i == 2 {
+                let guest_before = backend.batch_stats().draws;
+                let admitted = native && typed_light::issue(
+                    backend, &surfaces, request, mode == Mode::MissingSpecular,
+                );
+                assert_eq!(admitted, mode == Mode::Typed);
+                assert_eq!(backend.batch_stats().draws, guest_before, "typed pass issued a D3D draw");
+                if !admitted {
+                    for (layer, source) in [(12, &green), (13, &dark)] {
+                        let original = typed_light::original(layer);
+                        let outcome = backend
+                            .draw(color, Some(depth), &original, [Some(source), None, None, None])
+                            .unwrap();
+                        assert_eq!(outcome, d3d::DrawOutcome::Drawn);
+                        guest_draws.push(layer);
+                    }
+                }
+            }
+            let mut draw = if i == 2 {
+                typed_light::colour_draw()
+            } else {
+                receiver()
+            };
             draw.clip = Some(d3d::PixelRect {
                 // The D3D gel overwrites the second native receiver.
                 x: [0, 4, 4, 8, 12][i],
@@ -336,19 +370,13 @@ fn mixed_native_shadow_unshadowed_and_refused_d3d_lights_match_all_d3d() {
                 width: 4,
                 height: 16,
             });
-            if i == 2 {
-                // The intervening unshadowed light reads an ordinary colour texture.
-                draw.texture_info[0].as_mut().unwrap().format = D3DFormat::LinA8R8G8B8;
-                let modes = texture_modes([TEX_PROJECT2D, 0, 0, 0]);
-                Arc::make_mut(&mut draw.raw).render[136] = modes;
-                Arc::make_mut(draw.shader.pixel_shader.as_mut().unwrap())[54] = modes;
-            } else if native {
+            if i != 2 && native {
                 let output = Arc::new(Mutex::new((i != 3).then(|| map.clone())));
                 let pass = Range {
                     gpu: gpu.clone(),
                     draw: Arc::new(draw.clone()),
                     map: Some((output, MapKind::Depth, MAP)),
-                        };
+                };
                 let commands = backend
                     .prepare_external(
                         surfaces.clone(),
@@ -383,16 +411,23 @@ fn mixed_native_shadow_unshadowed_and_refused_d3d_lights_match_all_d3d() {
                     .unwrap(),
                 d3d::DrawOutcome::Drawn
             );
+            guest_draws.push(i as u8);
         }
+        let expected_guest: &[u8] = match mode {
+            Mode::Original => &[0, 1, 12, 13, 2, 3, 4],
+            Mode::Typed => &[2, 3],
+            Mode::MissingSpecular => &[12, 13, 2, 3],
+        };
+        assert_eq!(guest_draws.as_slice(), expected_guest);
         backend.flush().unwrap();
-        // The clear, receivers, intervening D3D gel and refused receiver
-        // share a pass. A snapshot of those pixels is a real ordering boundary.
+        // Both light layers and the guest draws share one render pass. The
+        // snapshot separates the first three lights from the refused receiver.
         assert_eq!(backend.batch_stats().render_passes - before, 1 + u64::from(snapshot));
         if let Some(captured) = captured {
             let pixels = gfx::readback::read_texture(
                 &ctx, &captured.texture, wgpu::TextureAspect::All, 4, (16, 16),
             );
-            for (x, alpha) in [(1, 255), (5, 128), (9, 64), (13, 64)] {
+            for (x, alpha) in [(0, 255), (1, 0), (5, 128), (9, 64), (13, 64)] {
                 assert_eq!(pixels[(16 + x) * 4 + 3], alpha);
             }
         }
@@ -401,11 +436,20 @@ fn mixed_native_shadow_unshadowed_and_refused_d3d_lights_match_all_d3d() {
     backend.set_merge_passes(true);
     backend.set_merge_masks(true);
     backend.set_defer_side_passes(true);
-    let expected = render(&mut backend, false, false);
-    let actual = render(&mut backend, true, false);
+    let expected = render(&mut backend, Mode::Original, false);
+    let actual = render(&mut backend, Mode::Typed, false);
     assert_eq!(actual, expected);
-    assert_eq!(render(&mut backend, true, true), expected);
-    for (x, alpha) in [(1, 255), (5, 128), (9, 0), (13, 255)] {
+    assert_eq!(render(&mut backend, Mode::Typed, true), expected);
+    assert_eq!(render(&mut backend, Mode::MissingSpecular, true), expected);
+    // Diffuse covers exactly the typed light's scissor. Specular overwrites
+    // its alpha, then the D3D gel overwrites the overlapping right half.
+    for y in 0..16 {
+        for x in 0..16 {
+            let green = if (1..7).contains(&x) && (1..3).contains(&y) { 255 } else { 0 };
+            assert_eq!(actual[(y * 16 + x) * 4 + 1], green, "green at ({x}, {y})");
+        }
+    }
+    for (x, alpha) in [(0, 255), (1, 0), (5, 128), (9, 0), (13, 255)] {
         assert_eq!(actual[(16 + x) * 4 + 3], alpha);
     }
 }

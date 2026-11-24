@@ -402,7 +402,7 @@ impl std::fmt::Display for WorldMaterials {
 }
 
 const SCENE_LIST_START: usize = WORLD_SECTION_BASE + WORLD_SECTION_COLUMNS.len();
-const SCENE_LISTS: [&str; 25] = [
+const SCENE_LISTS: [&str; 28] = [
     "view_objects",
     "light_objects",
     "object_order",
@@ -428,6 +428,9 @@ const SCENE_LISTS: [&str; 25] = [
     "object_shadow_list",
     "object_shadow_rows",
     "object_shadow_caster",
+    "light_additional_casters",
+    "typed_light_passes",
+    "typed_first_person",
 ];
 const SCENE_LIST_RESULTS: [&str; 11] = [
     "native",
@@ -489,6 +492,11 @@ pub enum SceneList {
     ObjectShadowList,
     ObjectShadowRows,
     ObjectShadowCaster,
+    LightAdditionalCasters,
+    /// One whole dynamic pass after its item lists are made (slice L8).
+    TypedLightPasses,
+    /// One first-person slot after its records are replayed.
+    TypedFirstPerson,
 }
 
 #[derive(Clone, Copy)]
@@ -792,9 +800,12 @@ mod tests {
         assert_eq!(ui, lists + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len());
         assert_eq!(
             columns[ui - 1].1,
-            "native_scene_lists_object_shadow_caster_mismatch"
+            "native_scene_lists_typed_first_person_mismatch"
         );
         for (stage, label) in [
+            (SceneList::LightAdditionalCasters, "native_scene_lists_light_additional_casters_native"),
+            (SceneList::TypedLightPasses, "native_scene_lists_typed_light_passes_native"),
+            (SceneList::TypedFirstPerson, "native_scene_lists_typed_first_person_native"),
             (SceneList::ObjectShadowList, "native_scene_lists_object_shadow_list_native"),
             (SceneList::ObjectShadowRows, "native_scene_lists_object_shadow_rows_native"),
             (SceneList::ObjectShadowCaster, "native_scene_lists_object_shadow_caster_native"),

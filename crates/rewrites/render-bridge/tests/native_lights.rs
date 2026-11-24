@@ -59,13 +59,19 @@ fn its_chains_run_on_the_render_thread() {
     for body in ["object_shadow_list", "object_shadow_rows", "object_shadow_caster"] {
         assert!(text.contains(&format!("implement native-lights:native_lights_{body}")), "{text}");
     }
+    assert!(
+        text.contains("implement native-lights:native_lights_additional_casters"),
+        "{text}"
+    );
     for point in [
+        "ADDITIONAL_SHADOW_CASTERS",
         "OBJECT_SHADOW_LIST",
         "GATHER_OBJECT_SHADOWS",
         "OBJECT_SHADOW",
         "FIRST_PERSON_LIGHTS",
         "FIRST_PERSON_LIGHT_RECORDS",
         "RENDER_LIGHT_PASSES",
+        "LIGHT_CONSTANTS",
         "RENDER_DYNAMIC_LIGHTS",
         "SCENE_ITEMS",
         "LAYER_DRAW",

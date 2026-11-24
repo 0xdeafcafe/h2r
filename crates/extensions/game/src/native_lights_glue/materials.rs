@@ -148,7 +148,7 @@ impl Resolver {
     /// count or format changed keeps its pixels, and its pass says so.
     /// Passes of model parts hold the model load's images: they are
     /// rebuilt by a reload of the models, not here.
-    pub(super) fn refresh_images(&self, queue: &wgpu::Queue, decoded: &Images) {
+    pub(super) fn refresh_images(&self, device: &wgpu::Device, queue: &wgpu::Queue, decoded: &Images) {
         self.shared
             .edited
             .lock()
@@ -166,7 +166,7 @@ impl Resolver {
             let (false, Some(gpu)) = (*model, gpu.upgrade()) else {
                 continue;
             };
-            let gpu = gpu.lock().unwrap_or_else(|e| e.into_inner());
+            let mut gpu = gpu.lock().unwrap_or_else(|e| e.into_inner());
             for &(bitmap, image) in &images {
                 let held = gpu.held(bitmap, image);
                 if held.is_empty() {
@@ -177,7 +177,7 @@ impl Resolver {
                     .filter(|((_, b, i), _)| (*b, *i) == (bitmap, image))
                     .map(|(&(stage, ..), pixels)| (stage, pixels.clone()))
                     .collect();
-                if let Err(why) = native_render::gpu::rewrite_held(queue, &held, &by_stage) {
+                if let Err(why) = gpu.edit_image(device, queue, bitmap, image, &by_stage) {
                     eprintln!(
                         "native-lights: bitmap {:#010x} image {image} keeps its pixels in a light pass until the map reloads ({why:?})",
                         bitmap.0

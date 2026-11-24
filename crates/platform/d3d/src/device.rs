@@ -92,6 +92,8 @@ mod projection;
 pub use projection::widen_projection_rows;
 mod display;
 mod fragments;
+mod external_sequence;
+pub use external_sequence::{ExternalStep, ExternalTargets, PreparedSequence};
 mod mirror;
 mod native_residual;
 mod opaque_vertices;
@@ -2421,18 +2423,29 @@ impl<B: Backend> Device<B> {
         pass: &mut dyn crate::ExternalPass,
         held: Option<&[Option<B::Surface>]>,
     ) -> Result<ExternalBinding<B::Surface>, ExternalRefusal> {
-        let request = self.external_ready(mem, pass.colour_only())?;
+        self.bind_external_at(mem, self.external_targets(), plan, pass, held)
+    }
+
+    fn bind_external_at(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        targets: ExternalTargets,
+        plan: &crate::ExternalPlan,
+        pass: &mut dyn crate::ExternalPass,
+        held: Option<&[Option<B::Surface>]>,
+    ) -> Result<ExternalBinding<B::Surface>, ExternalRefusal> {
+        let request = self.external_ready_at(mem, targets, pass.colour_only())?;
         let writes = pass.writes();
         if (pass.colour_only() && writes.depth_stencil) || plan.ranges == 0 {
             return Err(ExternalRefusal::Targets);
         }
         let color = self
-            .surface_for(mem, "external colour", self.render_target, false)
+            .surface_for(mem, "external colour", targets.color, false)
             .map_err(|_| ExternalRefusal::Targets)?;
         let depth = if pass.colour_only() {
             color
         } else {
-            self.surface_for(mem, "external depth", self.depth_stencil, true)
+            self.surface_for(mem, "external depth", targets.depth, true)
                 .map_err(|_| ExternalRefusal::NoDepth)?
         };
         let mut sampled = Vec::new();
@@ -2446,7 +2459,7 @@ impl<B: Backend> Device<B> {
         }
         let mut colors = Vec::new();
         if writes.color {
-            colors.push((self.render_target, color));
+            colors.push((targets.color, color));
         }
         let mut slots = Vec::with_capacity(plan.slots.len());
         let mut slot_sizes = Vec::with_capacity(plan.slots.len());
@@ -3414,22 +3427,32 @@ impl<B: Backend> Device<B> {
         mem: &dyn GuestMemory,
         colour_only: bool,
     ) -> Result<crate::backend::ExternalPassRequest, ExternalRefusal> {
+        self.external_ready_at(mem, self.external_targets(), colour_only)
+    }
+
+    /// The same attachment and Z-scale checks for an explicitly addressed
+    /// stage. Resolving a graph step does not change the guest's bound view.
+    pub fn external_ready_at(
+        &self,
+        mem: &dyn GuestMemory,
+        targets: ExternalTargets,
+        colour_only: bool,
+    ) -> Result<crate::ExternalPassRequest, ExternalRefusal> {
         if !self.backend.supports_external_pass() {
             return Err(ExternalRefusal::Unsupported);
         }
-        if self.render_target == 0 {
+        if targets.color == 0 {
             return Err(ExternalRefusal::NoColour);
         }
-        if !colour_only && self.depth_stencil == 0 {
+        if !colour_only && targets.depth == 0 {
             return Err(ExternalRefusal::NoDepth);
         }
         let d = self
-            .header_desc(mem, self.render_target)
+            .header_desc(mem, targets.color)
             .map_err(|_| ExternalRefusal::Header)?;
         let z_scale = self.guest_z_scale(mem).ok_or(ExternalRefusal::Header)?;
-        let v = self.viewport;
         Ok(crate::backend::ExternalPassRequest {
-            rect: (v.x, v.y, v.width, v.height),
+            rect: targets.rect,
             surface_size: (d.width, d.height),
             display_projection_factor: self.projection_factor_for_target((d.width, d.height)),
             z_scale,
@@ -3445,28 +3468,7 @@ impl<B: Backend> Device<B> {
         &self,
         mem: &dyn GuestMemory,
     ) -> Option<(wgpu::Device, wgpu::TextureFormat, wgpu::TextureFormat)> {
-        if self.render_target == 0 || self.depth_stencil == 0 {
-            return None;
-        }
-        let (device, _) = self.backend.upload_device()?;
-        let color = if self.render_target == self.back_header
-            || self.frame_headers.contains(&self.render_target)
-        {
-            D3DFormat::from_raw(self.params?.back_buffer_format)?
-        } else {
-            self.header_desc(mem, self.render_target).ok()?.format
-        };
-        let depth = if self.depth_stencil == self.depth_header {
-            D3DFormat::from_raw(self.params?.auto_depth_stencil_format)?
-        } else {
-            self.header_desc(mem, self.depth_stencil).ok()?.format
-        };
-        let caps = gfx::translate::Capabilities::from_features(device.features());
-        Some((
-            device,
-            gfx::surface::color_surface_format(color)?,
-            gfx::surface::depth_surface_format(depth, caps)?,
-        ))
+        self.external_pipeline_target_at(mem, self.external_targets(), false)
     }
 
     /// Formats for a colour-only native pass and the backend's scratch depth.
@@ -3475,22 +3477,38 @@ impl<B: Backend> Device<B> {
         &self,
         mem: &dyn GuestMemory,
     ) -> Option<(wgpu::Device, wgpu::TextureFormat, wgpu::TextureFormat)> {
-        if self.render_target == 0 {
+        self.external_pipeline_target_at(mem, self.external_targets(), true)
+    }
+
+    /// Pipeline formats for an individual graph step before any target is written.
+    #[cfg(feature = "gpu")]
+    pub fn external_pipeline_target_at(
+        &self,
+        mem: &dyn GuestMemory,
+        targets: ExternalTargets,
+        colour_only: bool,
+    ) -> Option<(wgpu::Device, wgpu::TextureFormat, wgpu::TextureFormat)> {
+        if targets.color == 0 || (!colour_only && targets.depth == 0) {
             return None;
         }
         let (device, _) = self.backend.upload_device()?;
-        let color = if self.render_target == self.back_header
-            || self.frame_headers.contains(&self.render_target)
-        {
+        let color = if targets.color == self.back_header || self.frame_headers.contains(&targets.color) {
             D3DFormat::from_raw(self.params?.back_buffer_format)?
         } else {
-            self.header_desc(mem, self.render_target).ok()?.format
+            self.header_desc(mem, targets.color).ok()?.format
         };
-        Some((
-            device,
-            gfx::surface::color_surface_format(color)?,
-            wgpu::TextureFormat::Depth32Float,
-        ))
+        let depth = if colour_only {
+            wgpu::TextureFormat::Depth32Float
+        } else {
+            let format = if targets.depth == self.depth_header {
+                D3DFormat::from_raw(self.params?.auto_depth_stencil_format)?
+            } else {
+                self.header_desc(mem, targets.depth).ok()?.format
+            };
+            let caps = gfx::translate::Capabilities::from_features(device.features());
+            gfx::surface::depth_surface_format(format, caps)?
+        };
+        Some((device, gfx::surface::color_surface_format(color)?, depth))
     }
 
     /// The device's depth full scale (`+0x948`), the D24 one when it is

@@ -1,6 +1,6 @@
 //! `engine::render::light_gather` against the original, lifted and run on
 //! the IR interpreter from the same seeded 64 MB state
-//! (docs/graphics/native-light-gather.md, slices L1 to L7).
+//! (docs/graphics/native-light-gather.md, slices L1 to L8).
 //!
 //! **The leaves (L1).** Each root runs lifted with its whole tree (no
 //! stub) to its return; the port runs on a copy and its writes are
@@ -38,6 +38,9 @@
 //! **Object shadows (L7).** See [`object_shadow_list_matches_the_lifted_original`]
 //! [`object_shadow_rows_match_the_lifted_original`] and
 //! [`object_shadow_caster_matches_the_lifted_original`].
+//!
+//! **Typed passes (L8).** See [`screen_bounds_match_the_lifted_original`] and
+//! [`typed_light_tail_matches_the_lifted_layer_wrappers`].
 //!
 //! Needs the user's XBE (`H2_XBE`, or `disc/default.xbe`), pinned by hash;
 //! skips without it. Nothing is copied from it: thresholds and constants
@@ -3811,5 +3814,577 @@ fn object_shadow_caster_refuses_before_writing() {
             assert_eq!(object_shadows::caster::plan(&ram, esp, fpu).err(), Some(why), "seed {seed}, {case}");
             assert!(m.bytes == ram.0.bytes, "seed {seed}, {case}: refusal modified memory");
         }
+    }
+}
+
+/// Includes the CRT inverse sine and both x87 tangent calculations in the
+/// lifted tree. EDI points to seeded words so the offscreen early return
+/// must leave the caller's entire output intact.
+#[test]
+fn screen_bounds_match_the_lifted_original() {
+    use engine::function_eval::constant::NO_REPORT;
+    use engine::light_constants::{BoundsQuery, SCREEN_BOUNDS, screen_bounds};
+
+    let found = with_image(|image, mut lifted| {
+        let centre = SCRATCH;
+        let view = centre + 0x40;
+        let out = view + 0x40;
+        for seed in seeds() {
+            let mut rng = Rng(seed);
+            for n in 0..72 {
+                let mut original = image.clone();
+                let mut c = cpu(&mut rng);
+                let shape = if n < 48 { n % 8 } else { 7 };
+                let mode = n / 8 % 6;
+                let (coords, radius): ([f32; 3], f32) = match shape {
+                    0 => ([0.0, 0.0, 4.0], 1.0),    // behind the view
+                    1 => ([0.0; 3], 4.0),           // eye inside the sphere
+                    2 => ([6.0, -6.0, 0.25], 1.0), // angular clamps
+                    3 => ([0.0, 0.0, -1.0], -1.0),  // asin(-1)
+                    4 => ([-0.0, 1.0, -5.0], -0.0),
+                    5 => ([f32::NAN, 0.0, -5.0], 0.75),
+                    // The SSE depth square underflows before the x87 sqrt.
+                    6 => ([0.0, 0.0, -f32::MIN_POSITIVE], -f32::MIN_POSITIVE),
+                    _ => (
+                        [rng.float(-4.0, 4.0), rng.float(-4.0, 4.0), rng.float(-9.0, -1.0)],
+                        rng.float(0.1, 2.0),
+                    ),
+                };
+                // Exercise both the domain-error refusal and the CRT mode
+                // that suppresses reporting and returns the indefinite.
+                let reporting = mode % 2 == 0;
+                put(&mut original, NO_REPORT, u32::from(!reporting));
+                for (i, v) in coords.into_iter().enumerate() {
+                    putf(&mut original, centre + 4 * i as u32, v);
+                }
+                let random_view = shape == 7;
+                let scale = if random_view { rng.float(0.25, 2.5) } else { 1.0 };
+                putf(&mut original, view + 4, scale);
+                for i in 0..12 {
+                    let v = if random_view {
+                        rng.float(-1.0, 1.0)
+                    } else if [0, 4, 8].contains(&i) {
+                        1.0
+                    } else {
+                        0.0
+                    };
+                    putf(&mut original, view + 8 + i * 4, v);
+                }
+                for i in 0..6 {
+                    put(&mut original, out + i * 4, rng.u32());
+                }
+                let fpu = Fpu {
+                    mxcsr: if shape == 6 {
+                        0x1f80
+                    } else {
+                        [0x1f80, 0x3f80, 0x5f80, 0x7f80, 0x9f80, 0x1f80][mode]
+                    },
+                    x87_control: [0x027f, 0x037f, 0x007f][mode % 3],
+                };
+                let query = BoundsQuery { centre, view, word: radius.to_bits() };
+                let mut port = Ram(original.clone());
+                let result = screen_bounds(&port, query, fpu);
+                if reporting && matches!(shape, 5 | 6) {
+                    assert_eq!(result, Err(engine::light_constants::Error::Data));
+                    continue;
+                }
+                let label = format!("screen bounds seed {seed} case {n}");
+                let bounds = result.unwrap_or_else(|e| panic!("{label}: {e:?}"));
+                if let Some(words) = bounds {
+                    for (i, v) in words.into_iter().enumerate() {
+                        put(&mut port.0, out + 4 * i as u32, v);
+                    }
+                }
+                c.gpr[0] = centre;
+                c.gpr[1] = view;
+                c.gpr[7] = out;
+                c.mxcsr = fpu.mxcsr;
+                c.x87.control = fpu.x87_control;
+                if n % 2 != 0 {
+                    c.x87.status |= x87::abi::H2_FP_PE;
+                }
+                let esp = c.gpr[4];
+                lifted
+                    .call(&mut c, &mut original, SCREEN_BOUNDS, esp, &[query.word])
+                    .unwrap_or_else(|e| panic!("{label}: {e}"));
+                assert_eq!(c.gpr[0] as u8, u8::from(bounds.is_some()), "{label}: AL");
+                assert_eq!(c.gpr[4], esp, "{label}: ret 4");
+                compare(&label, &original, &port.0, esp);
+            }
+        }
+    });
+    if !found {
+        eprintln!("SKIPPED screen_bounds_match_the_lifted_original: no XBE (set H2_XBE)");
+    }
+}
+
+#[test]
+fn empty_additional_casters_match_the_lifted_original() {
+    use engine::render::light_gather::passes::{additional, call};
+
+    let found = with_image(|image, mut lifted| {
+        let handles = VIS_LISTS + 0x100;
+        let flags = VIS_LISTS + 0x200;
+        for seed in seeds() {
+            let mut rng = Rng(seed);
+            for count in [-1, 0, 1, 6, 16] {
+                let mut m = image.clone();
+                let mut c = cpu(&mut rng);
+                let sp = c.gpr[4];
+                let cursor = rng.u32();
+                put(&mut m, 0x004b_a134, count as u32);
+                put(&mut m, 0x004c_19ac, cursor);
+                put(&mut m, 0x004c_0b80, LIGHT_VIS);
+                put(&mut m, LIGHT_VIS + 0x14, VIS_LISTS);
+                put(&mut m, VIS_LISTS, 8);
+                put16(&mut m, VIS_LISTS + 4, 4);
+                put(&mut m, VIS_LISTS + 8, flags);
+                put(&mut m, VIS_LISTS + 0xc, handles);
+                let matching = rng.u32();
+                for i in 0..8 {
+                    // Two live copies of the matching handle. Only its
+                    // second row and the slots after the count are marked.
+                    let handle = if i < 2 { matching } else { matching ^ i };
+                    put(&mut m, handles + 4 * i, handle);
+                    let bits = rng.u32() as u16 & !0x1000;
+                    put16(&mut m, flags + 2 * i, bits | if i == 1 || i >= 4 { 0x1000 } else { 0 });
+                }
+                for i in 0..count.max(0) as u32 {
+                    let handle = if i % 3 == 0 { matching } else { matching ^ (4 + i) };
+                    put(&mut m, 0x004b_a074 + 12 * i, handle);
+                }
+                let mut port = Ram(m.clone());
+                let plan = additional::empty(&port).unwrap();
+                plan.write(&mut port).unwrap();
+                lifted.call(&mut c, &mut m, call::ADDITIONAL_CASTERS, sp, &[]).unwrap();
+                assert_eq!(c.gpr[0], plan.eax(), "seed {seed}, count {count}");
+                assert_eq!(c.gpr[4], sp);
+                compare(&format!("empty additional casters seed {seed} count {count}"), &m, &port.0, sp);
+            }
+        }
+    });
+    if !found {
+        eprintln!("SKIPPED empty_additional_casters_match_the_lifted_original: no XBE (set H2_XBE)");
+    }
+}
+
+// The game's layers, their shader reset and the final target/viewport wrapper
+// run lifted. The already-admitted layer build returns zero, as the native
+// whole-group hook does. Device calls are the HLE boundary; the device's own
+// tail tests compare its push buffer and the next draw.
+const TYPED_TAIL_STUBS: Stubs = &[
+    (passes::call::ITEMS, &[], 0, 0),
+    (passes::call::CONSTANTS, &[], 4, 16),
+    (0x0003_bab0, &[], 4, 16),        // whole sorted group
+    (0x003f_7b30, &[3], 1, 4),        // SetRenderTargetSameSize: EBX = depth
+    (0x003f_7870, &[], 2, 8),         // SetRenderTarget
+    (0x003f_8100, &[], 1, 4),         // SetViewport
+    (0x003f_5cf0, &[1, 2], 0, 0),     // SetRenderState_Simple
+    (0x003f_5b20, &[], 1, 4),         // SampleAlpha
+    (passes::call::STENCIL_ENABLE, &[], 1, 4),
+    (passes::call::SCISSORS, &[], 3, 12),
+    (0x003f_6190, &[0], 0, 0),        // viewport fragment's output put
+];
+
+const TAIL_WINDOW: u32 = 0x0048_5648;
+const TAIL_CACHE: u32 = 0x0048_5b48;
+const TAIL_IMPLEMENTATION: u32 = 0x034c_0000;
+const TAIL_STATE: u32 = 0x034d_0000;
+const TAIL_RESTORE: u32 = 0x034e_0000;
+
+fn typed_tail_world(m: &mut FlatMemory, r: &mut Rng, c: &mut Cpu) {
+    let esp = c.gpr[4];
+    (c.gpr[0], c.gpr[1]) = pass_world(m, r, esp);
+    // Nonzero definition kind keeps the colour written by the constants.
+    // A kind-zero context and a bright colour B reach layers 11, 14, 12, 13.
+    put(m, PASS_DATA, 0);
+    put16(m, PASS_DATA + 4, 1);
+    put16(m, PASS_CONTEXT, 0);
+    let above = word(m, 0x0045_dc7c) + 1;
+    put(m, PASS_COLOUR_B, above);
+    put(m, OVERRIDE, 0);
+    put(m, esp, HARNESS_EXIT);
+    put(m, esp + 0xc, r.u32() & !0xff);
+    put(m, PASS_VIEW_TARGET, 0);
+    let colour = 0x034b_0000;
+    let depth = 0x034b_0100;
+    for (a, v) in [(0x0050_935c, colour), (0x0050_9364, depth),
+                   (0x0051_f3f4, colour), (0x0051_f3f8, depth)] {
+        put(m, a, v);
+    }
+    put16(m, 0x0048_5602, 0);
+    put8(m, 0x0048_5607, 0);
+    for (i, v) in [5, 17, 85, 181].into_iter().enumerate() {
+        put16(m, TAIL_WINDOW + i as u32 * 2, v);
+    }
+    // In this stubbed-device comparison the depth-range wrapper writes
+    // already-current clip/flags/put; it still calls its fragment.
+    put(m, FP_DEVICE_POINTER, FP_DEVICE);
+    put(m, FP_DEVICE, 0x034b_1000);
+    put(m, FP_DEVICE + 4, 0x034b_2000);
+    put(m, FP_DEVICE + 0x1c18, r.u32() | 2);
+    for i in [0, 4] {
+        let value = r.u32();
+        put(m, FP_RANGE + i, value);
+        put(m, FP_DEVICE + 0x1c10 + i, value);
+    }
+    let unit = word(m, 0x0045_dbc0);
+    put(m, 0x004b_8494, unit);
+    fill(m, r, TAIL_CACHE, 0x1400);
+    put(m, TAIL_CACHE + 0x24, TAIL_IMPLEMENTATION);
+    put(m, TAIL_CACHE + 0x20, TAIL_STATE);
+    put(m, TAIL_STATE + 0x14, TAIL_RESTORE);
+    put16(m, TAIL_IMPLEMENTATION + 0x11c, 3); // zero count, nonzero first
+    fill(m, r, FP_LAYER_WORDS, 12);
+    put(m, 0x0046_7010, r.u32());
+    put(m, FP_TARGETS, r.u32());
+    put(m, FP_STENCIL_STATE, r.u32());
+    put(m, 0x004b_8348, r.u32());
+    put(m, 0x004b_8474, r.u32());
+    put(m, 0x0040_75e4, r.u32());
+}
+
+/// Run the full root with the same device contract each time. Check every
+/// viewport's six arguments while its pointer still addresses live stack.
+fn lifted_typed_tail(
+    lifted: &mut Lifted<'_>,
+    m: &mut FlatMemory,
+    c: &Cpu,
+    mut observe: impl FnMut(&Callout, &FlatMemory),
+) -> (Vec<Callout>, u32) {
+    let esp = c.gpr[4];
+    let (calls, eax, after) = original_stubbed(
+        lifted, m, &mut c.clone(), passes_entry(), esp, TYPED_TAIL_STUBS, true,
+        |_, call, m| {
+            observe(call, m);
+            match call.target {
+                0x003f_8100 => {
+                    let p = call.args[0];
+                    let viewport: [u32; 6] = std::array::from_fn(|i| word(m, p + 4 * i as u32));
+                    assert_eq!(viewport, [17, 5, 164, 80, 0, 1.0f32.to_bits()]);
+                    (0, 0)
+                }
+                0x003f_6190 => (call.regs[0], 0),
+                _ => (0, 0),
+            }
+        },
+    ).expect("lifted diffuse/specular light tail");
+    assert_eq!(after, esp + 0x14);
+    (calls, eax)
+}
+
+#[test]
+fn typed_light_tail_matches_the_lifted_layer_wrappers() {
+    use engine::render::light_gather::typed_tail::plan_dynamic;
+
+    if !with_image(|image, mut lifted| {
+        for seed in seeds() {
+            let mut r = Rng(seed);
+            let mut c = cpu(&mut r);
+            let esp = c.gpr[4];
+            let mut original = image.clone();
+            typed_tail_world(&mut original, &mut r, &mut c);
+            let mut typed = Ram(original.clone());
+            let pass = passes::plan(&typed, esp, c.gpr[0], c.gpr[1], FPU).unwrap();
+            let flags = engine::light_passes::flag::CONTEXT_ZERO | engine::light_passes::flag::SPECULAR;
+            for draws in [0, 1 << 12 | 1 << 13, 1 << 12, 1 << 13] {
+                put(&mut original, PASS_LIGHT_MASK, draws);
+                put(&mut typed.0, PASS_LIGHT_MASK, draws);
+                let tail = plan_dynamic(&typed, &pass, flags, draws).unwrap();
+                tail.write(&mut typed).unwrap();
+                let (calls, eax) = lifted_typed_tail(&mut lifted, &mut original, &c, |_, _| {});
+                assert_eq!(eax, tail.eax);
+                let count = |target| calls.iter().filter(|c| c.target == target).count();
+                assert_eq!(count(0x0003_bab0), draws.count_ones() as usize);
+                assert_eq!(count(0x003f_8100), draws.count_ones() as usize + 1);
+                compare(&format!("typed tail seed {seed} mask {draws:#x}"), &original, &typed.0, esp);
+            }
+
+            // A nonempty previous restore stays on the original. Execute
+            // the following light on both states: it must actually apply
+            // the restored state and observe identical cache and memory.
+            let slot = 0x60u32;
+            let value = r.u32();
+            for mem in [&mut original, &mut typed.0] {
+                put(mem, PASS_LIGHT_MASK, 1 << 12);
+                put(mem, TAIL_CACHE + 0x24, TAIL_IMPLEMENTATION);
+                put(mem, TAIL_CACHE + 0x20, TAIL_STATE);
+                put16(mem, TAIL_IMPLEMENTATION + 0x11c, 1 << 9);
+                put8(mem, TAIL_RESTORE, slot as u8);
+                put(mem, TAIL_RESTORE + 1, value);
+                put(mem, 0x0040_7498 + 4 * slot, !value);
+            }
+            assert!(plan_dynamic(&typed, &pass, flags, 1 << 12).is_none());
+            let (a, ra) = lifted_typed_tail(&mut lifted, &mut original, &c, |_, _| {});
+            let (b, rb) = lifted_typed_tail(&mut lifted, &mut typed.0, &c, |_, _| {});
+            assert_transcripts("the following light", &a, &b);
+            assert_eq!(ra, rb);
+            assert_eq!(word(&typed.0, 0x0040_7498 + 4 * slot), value);
+            compare("the following light", &original, &typed.0, esp);
+        }
+    }) {
+        eprintln!("SKIPPED typed_light_tail_matches_the_lifted_layer_wrappers: no XBE (set H2_XBE)");
+    }
+}
+
+
+/// The mask can retain layer 13 even when the current light never reaches
+/// it. The guest then leaves layer 12's draw bit in the argument byte.
+#[test]
+fn typed_tail_uses_the_last_reached_layer_for_the_returned_draw_byte() {
+    use engine::light_passes::flag;
+    use engine::render::light_gather::typed_tail::plan_dynamic;
+
+    if !with_image(|image, mut lifted| {
+        for seed in seeds() {
+            let mut rng = Rng(seed);
+            for flags in [0, flag::CONTEXT_ZERO, flag::SPECULAR] {
+                let mut c = cpu(&mut rng);
+                let esp = c.gpr[4];
+                let mut original = image.clone();
+                typed_tail_world(&mut original, &mut rng, &mut c);
+                put16(&mut original, PASS_CONTEXT, u16::from(flags & flag::CONTEXT_ZERO == 0));
+                let threshold = word(&original, engine::light_passes::constant::SPECULAR);
+                for i in 0..3 {
+                    put(&mut original, PASS_COLOUR_B + 4 * i, threshold);
+                }
+                if flags & flag::SPECULAR != 0 {
+                    putf(&mut original, PASS_COLOUR_B + 8, f32::INFINITY);
+                }
+                let upper = rng.u32() & !0xff;
+                let mut typed = Ram(original.clone());
+                let plan = passes::plan(&typed, esp, c.gpr[0], c.gpr[1], FPU).unwrap();
+                for diffuse in [true, false] {
+                    let draws = u32::from(diffuse) << 12;
+                    for mem in [&mut original, &mut typed.0] {
+                        put(mem, PASS_LIGHT_MASK, draws | (1 << 13));
+                        put(mem, esp + 0xc, upper);
+                    }
+                    // Enter with real saved registers and let the guest build
+                    // the constants call frame. Only the list producer is stubbed.
+                    let mut native = c.clone();
+                    native.eip = passes_entry();
+                    let mut gathers = 0;
+                    lifted.run(&mut native, &mut typed.0, &[passes::call::CONSTANTS], |pc, cpu, m| {
+                        if pc != passes::call::ITEMS {
+                            return false;
+                        }
+                        gathers += 1;
+                        cpu.eip = word(m, cpu.gpr[4]);
+                        cpu.gpr[4] += 4;
+                        cpu.gpr[0] = 0;
+                        cpu.gpr[2] = 0;
+                        true
+                    }).unwrap();
+                    assert_eq!(gathers, 1);
+                    let call = passes::ConstantsCall::read(&typed, native.gpr[4]).unwrap().unwrap();
+                    assert!(call.matches(&typed, &plan, [native.gpr[0], native.gpr[1], native.gpr[2]]).unwrap());
+                    let tail = plan_dynamic(&typed, &plan, flags, draws).unwrap();
+                    tail.write(&mut typed).unwrap();
+                    native.gpr[0] = tail.eax;
+                    native.gpr[3] = 0;
+                    native.gpr[4] = call.view_target_esp();
+                    native.eip = passes::site::VIEW_TARGET;
+                    lifted.run(&mut native, &mut typed.0, &[HARNESS_EXIT], |_, _, _| false).unwrap();
+                    assert_eq!(native.gpr[4], esp + 0x14);
+                    for reg in [3, 5, 6, 7] {
+                        assert_eq!(native.gpr[reg], c.gpr[reg], "callee-save register {reg}");
+                    }
+                    let (calls, eax) = lifted_typed_tail(&mut lifted, &mut original, &c, |_, _| {});
+                    assert_eq!(eax, native.gpr[0]);
+                    assert_eq!(calls.iter().filter(|c| c.target == 0x0003_bab0).count(), usize::from(diffuse));
+                    assert_eq!(word(&original, esp + 0xc), upper | u32::from(diffuse));
+                    compare(&format!("seed {seed}, flags {flags}, diffuse {diffuse}"), &original, &typed.0, esp);
+                }
+            }
+        }
+    }) {
+        eprintln!("SKIPPED typed_tail_uses_the_last_reached_layer_for_the_returned_draw_byte: no XBE (set H2_XBE)");
+    }
+}
+
+/// An opacity group uses the view depth but switches to target 1's embedded
+/// colour surface. Exercise both device bind leaves, with the game wrappers
+/// lifted all the way through the final restoration. At the device boundary
+/// the same shader reset and pass tail as diffuse survive, plus the cache
+/// flag from the rebind. A following view light sees a cache hit.
+#[test]
+fn opacity_light_keeps_the_lifted_target_switches() {
+    use engine::light_passes::flag;
+    use engine::render::light_gather::typed_tail::plan_dynamic;
+    use engine::shadow_constants::global::{TARGETS, TARGET_STRIDE};
+
+    if !with_image(|image, mut lifted| {
+        for seed in seeds() {
+            let mut rng = Rng(seed);
+            for same_size in [true, false] {
+                let mut c = cpu(&mut rng);
+                let esp = c.gpr[4];
+                let mut original = image.clone();
+                typed_tail_world(&mut original, &mut rng, &mut c);
+                let view = word(&original, 0x0050_935c);
+                let depth = word(&original, 0x0050_9364);
+                let descriptor = TARGETS + TARGET_STRIDE;
+                let opacity = descriptor + 0x18;
+                put(&mut original, descriptor + 0x88, 0x034b_0800);
+                put8(&mut original, descriptor + 0x95, 0);
+                put(&mut original, descriptor + 0x78, 1);
+                for off in [0, 0xc, 0x10] {
+                    let header = rng.u32();
+                    put(&mut original, view + off, header);
+                    let matches = same_size || off != 0x10;
+                    put(&mut original, opacity + off, if matches { header } else { !header });
+                }
+                put8(&mut original, 0x0051_f3fc, 0x7b);
+                let flags = flag::CONTEXT_ZERO | flag::SPECULAR;
+                let draws = (1 << 14) | (1 << 12) | if same_size { 0 } else { 1 << 13 };
+                put(&mut original, PASS_LIGHT_MASK, draws);
+                let mut expected = Ram(original.clone());
+                let pass = passes::plan(&expected, esp, c.gpr[0], c.gpr[1], FPU).unwrap();
+                assert!(plan_dynamic(&expected, &pass, flags, draws).is_none());
+
+                // The lifted 14 and 12 wrappers both take the ordinary
+                // shader reset/end. Their target switches are observable
+                // separately at the D3D boundary.
+                let tail = plan_dynamic(&expected, &pass, flags, draws & !(1 << 14)).unwrap();
+                tail.write(&mut expected).unwrap();
+                put8(&mut expected.0, 0x0051_f3fc, 1);
+
+                let mut binds = Vec::new();
+                let mut viewports = Vec::new();
+                let mut layers = Vec::new();
+                let (_, eax) = lifted_typed_tail(&mut lifted, &mut original, &c, |call, m| {
+                    match call.target {
+                        0x003f_7b30 => {
+                            assert!(same_size);
+                            assert_eq!(call.site, 0x0001_cd68);
+                            assert_eq!(call.regs, [depth]);
+                            binds.push(call.args[0]);
+                        }
+                        0x003f_7870 => {
+                            assert!(!same_size);
+                            assert_eq!(call.site, 0x0001_cd71);
+                            assert_eq!(call.args[1], depth);
+                            binds.push(call.args[0]);
+                        }
+                        0x003f_8100 => {
+                            assert_eq!(word(m, 0x0051_f3f8), depth);
+                            viewports.push((word(m, 0x0051_f3f4), word(m, 0x0051_f3fc) as u8));
+                        }
+                        0x0003_bab0 => layers.push(word(m, FP_LAYER_WORDS)),
+                        _ => {}
+                    }
+                });
+                assert_eq!(binds, [opacity, view]);
+                let mut expected_layers = vec![14, 12];
+                if draws & (1 << 13) != 0 {
+                    expected_layers.push(13);
+                }
+                assert_eq!(layers, expected_layers);
+                let mut expected_viewports = vec![(view, 1); layers.len() + 1];
+                expected_viewports[0] = (opacity, 0);
+                assert_eq!(viewports, expected_viewports);
+                assert_eq!(eax, tail.eax);
+                compare("opacity target restoration", &original, &expected.0, esp);
+
+                for m in [&mut original, &mut expected.0] {
+                    put(m, PASS_LIGHT_MASK, 1 << 12);
+                }
+                let next = plan_dynamic(&expected, &pass, flags, 1 << 12).unwrap();
+                next.write(&mut expected).unwrap();
+                let (calls, eax) = lifted_typed_tail(&mut lifted, &mut original, &c, |_, _| {});
+                assert!(calls.iter().all(|c| !matches!(c.target, 0x003f_7b30 | 0x003f_7870)));
+                assert_eq!(eax, next.eax);
+                compare("view light after opacity", &original, &expected.0, esp);
+            }
+        }
+    }) {
+        eprintln!("SKIPPED opacity_light_keeps_the_lifted_target_switches: no XBE (set H2_XBE)");
+    }
+}
+
+// ---------------------------------------------------------------------
+// L8: the first-person loop's last slot, typed inside the guest's body.
+
+/// Compare the return predicted at the constants call with the real loop
+/// exit. Stop at the final view-target return to isolate the memory this
+/// exit changes from the writes made by the layer and device callees.
+#[test]
+fn first_person_final_slot_returns_as_the_lifted_loop_exit() {
+    if !with_image(|image, mut lifted| {
+        for seed in seeds() {
+            let mut rng = Rng(seed);
+            for count in [1, 2, 8] {
+                let mut world = World::new(image, &mut rng, 8);
+                let mut cpu = cpu(&mut rng);
+                let esp = cpu.gpr[4];
+                fp_world(&mut world, &mut rng, esp);
+                let mut m = world.mem;
+                put(&mut m, esp, HARNESS_EXIT);
+                put(&mut m, FIRST_PERSON_COUNT, count);
+                for i in 0..count {
+                    put16(&mut m, FIRST_PERSON_TABLE + 0x408 * i + 0x404, 1);
+                }
+                let plan = first_person::plan(&Ram(m.clone()), esp, FPU).unwrap();
+                let saved = cpu.gpr;
+                let mut slot_index = 0;
+                let mut final_slot = None;
+                let mut tail = None;
+                let mut calls = 0;
+                cpu.eip = first_person_entry();
+                lifted.run(&mut cpu, &mut m, &[HARNESS_EXIT], |pc, cpu, m| {
+                    if pc == first_person::site::VIEW_TARGET && final_slot.is_some() {
+                        tail = Some(m.clone());
+                    }
+                    let Some((regs, args, pop)) = stub_in(FP_STUBS, pc) else {
+                        return false;
+                    };
+                    let sp = cpu.gpr[4];
+                    let site = word(m, sp);
+                    if pc == first_person::call::CONSTANTS {
+                        let at = first_person::AtConstants {
+                            esp: sp, eax: cpu.gpr[0], ecx: cpu.gpr[1], edx: cpu.gpr[2],
+                            ebx: cpu.gpr[3], esi: cpu.gpr[6], edi: cpu.gpr[7],
+                        };
+                        let result = first_person::final_slot(&Ram(m.clone()), &plan, &at);
+                        if slot_index + 1 == count {
+                            final_slot = Some(result.unwrap());
+                        } else {
+                            assert_eq!(result.unwrap_err(), gather::Refusal::Unsupported);
+                        }
+                        slot_index += 1;
+                    }
+                    let call = Callout {
+                        target: pc, site,
+                        regs: regs.iter().map(|&i| cpu.gpr[i]).collect(),
+                        args: (0..args).map(|i| word(m, sp + 4 + 4 * i)).collect(),
+                    };
+                    let (eax, edx) = fp_effect(seed, calls, &call, m, plan.draw_byte());
+                    if pc == first_person::call::RECORDS {
+                        put(m, FIRST_PERSON_COUNT, count);
+                    }
+                    calls += 1;
+                    cpu.gpr[0] = eax;
+                    cpu.gpr[2] = edx;
+                    cpu.gpr[4] = sp + 4 + pop;
+                    cpu.eip = site;
+                    true
+                }).unwrap();
+                let label = format!("first-person exit seed {seed}, {count} slots");
+                assert_eq!(slot_index, count, "{label}");
+                let slot = final_slot.unwrap();
+                assert_eq!(slot.ret.eax, cpu.gpr[0], "{label}: EAX");
+                assert_eq!(slot.exit_esp, cpu.gpr[4], "{label}: ESP");
+                for reg in [3, 5, 6, 7] {
+                    assert_eq!(saved[reg], cpu.gpr[reg], "{label}: saved register {reg}");
+                }
+                let mut tail = tail.unwrap();
+                put8(&mut tail, FP_PASSES, 0);
+                put(&mut tail, PASS_FLAGS, 0);
+                compare(&label, &m, &tail, esp);
+            }
+        }
+    }) {
+        eprintln!("SKIPPED first_person_final_slot_returns_as_the_lifted_loop_exit: no XBE (set H2_XBE)");
     }
 }

@@ -104,7 +104,7 @@ The shared sorted point is `LIGHT_GEOMETRY_DRAW` at `0x0004d0b0`; its seven stac
 
 ## Rules and limits
 
-Range admission requires the original sorted entry, matching shader and part, a proven target and pipeline, and every texture and scissor range. A missing freeze or resource, a changed owner or projection, a pending guest callback or an incomplete external recording leaves the draw with D3D. Scaled and E3 display copies and interpolated replay use the original renderer. The mixed GPU fixture runs a shadowed receiver, an unshadowed D3D draw and a receiver refused for a missing map on one target and compares every pixel with three original D3D draws.
+Range admission requires the original sorted entry, matching shader and part, a proven target and pipeline, and every texture and scissor range. A missing freeze or resource, a changed owner or projection, a pending guest callback or an incomplete external recording leaves the draw with D3D. Scaled and E3 display copies and interpolated replay use the original renderer. The mixed GPU fixture runs a shadowed receiver, guest draws and a typed diffuse/specular light on one target. It compares the pixels against seven original D3D draws. A missing shadow map keeps its receiver on D3D. Missing specular indices return both layers of the typed light to their guest slots.
 
 ## Not verified
 

@@ -2006,6 +2006,24 @@ where
         self.inner.prepare_external(surfaces, request, tex, plan, copy, pass)
     }
 
+    fn can_commit_carried(&self) -> bool {
+        self.rate() == Rate::Off && self.inner.can_commit_carried()
+    }
+
+    fn prepare_carried_stage(
+        &mut self, stage: &crate::SceneStage<Self::Surface>,
+    ) -> Result<Option<Vec<crate::ExternalRecording>>, String> {
+        if !self.can_commit_carried() { return Ok(None); }
+        self.inner.prepare_carried_stage(stage)
+    }
+
+    fn commit_carried_stage(
+        &mut self, stage: crate::SceneStage<Self::Surface>, copies: Vec<crate::ExternalRecording>,
+    ) {
+        self.unpinned = true;
+        self.inner.commit_carried_stage(stage, copies);
+    }
+
     fn commit_external(&mut self, recording: crate::ExternalRecording) {
         self.external_work = true;
         self.inner.commit_external(recording);

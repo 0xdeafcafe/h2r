@@ -218,7 +218,7 @@ impl StaticLightTexture {
 /// The engine's light textures for the map (texture ids 1 and 9, from the
 /// globals' rasterizer bitmaps); a pass sampling one that is missing is
 /// not drawn.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct LightTextures {
     pub normalization: Option<wgpu::TextureView>,
     pub attenuation: Option<wgpu::TextureView>,
@@ -233,18 +233,22 @@ pub(crate) fn view_dimension(d: TextureDim) -> wgpu::TextureViewDimension {
 }
 
 /// One compiled light pass on the GPU.
+#[derive(Clone)]
 pub struct LightGpu {
+    /// Snapshot shared by retained scene draws until a bitmap edit.
+    retained: Option<Arc<Mutex<LightGpu>>>,
+    shared_views: bool,
     pub program: Arc<LightProgram>,
     archive: crate::pipelines::Pipelines,
     textures_layout: wgpu::BindGroupLayout,
     samplers: [wgpu::Sampler; 4],
     stage_views: [Option<wgpu::TextureView>; 4],
-    static_groups: HashMap<Option<u32>, Option<wgpu::BindGroup>>,
+    static_groups: HashMap<Option<u32>, (Option<wgpu::TextureView>, Option<wgpu::BindGroup>)>,
     /// By the gel target's view: both target copies' kept hot, a resized
     /// target evicting the oldest.
     gel_target_groups: Vec<(wgpu::TextureView, Option<wgpu::BindGroup>)>,
     /// By a frozen shadow-map view and static gel datum.
-    shadow_groups: Vec<((wgpu::TextureView, Option<u32>), Option<wgpu::BindGroup>)>,
+    shadow_groups: Vec<((wgpu::TextureView, Option<wgpu::TextureView>), Option<wgpu::BindGroup>)>,
     /// By target formats, cull and vertex layout (`None` the world's
     /// [`WorldVertex`], else a [`ModelLayout::id`]).
     pipelines: HashMap<PipelineFor, (Arc<PipelineKey>, Arc<PendingPipeline>)>,
@@ -305,6 +309,51 @@ pub fn model_vertex(
 const LIGHT_PROGRAM: ShaderId = ShaderId(u32::MAX - 5);
 
 impl LightGpu {
+    pub fn retain(&mut self) -> Arc<Mutex<Self>> {
+        if let Some(snapshot) = &self.retained {
+            return Arc::clone(snapshot);
+        }
+        self.shared_views = true;
+        let snapshot = Arc::new(Mutex::new(self.clone()));
+        self.retained = Some(Arc::clone(&snapshot));
+        snapshot
+    }
+
+    /// Keep a scene's selected texture views alive across an editor image
+    /// change. All stages must validate before any view or cache changes.
+    pub fn edit_image(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        bitmap: map::TagId,
+        image: u32,
+        decoded: &HashMap<usize, Image>,
+    ) -> Result<(), crate::gpu::ImageRefusal> {
+        let held = self.held(bitmap, image);
+        if held.is_empty() {
+            return Ok(());
+        }
+        if !self.shared_views {
+            return crate::gpu::rewrite_held(queue, &held, decoded).map(|_| ());
+        }
+        let mut stages = Vec::new();
+        for (original, n, signed) in held {
+            let mut pixels = decoded.get(&n).ok_or(crate::gpu::ImageRefusal::NotDecoded)?.clone();
+            bias_signed(&mut pixels, signed);
+            crate::gpu::check_rewrite(&original, &pixels)?;
+            stages.push((n, pixels));
+        }
+        for (n, pixels) in stages {
+            self.stage_views[n] = Some(texture(device, queue, &pixels, "edited light stage"));
+        }
+        // Other stages can still share their old views with earlier snapshots.
+        self.static_groups.clear();
+        self.gel_target_groups.clear();
+        self.shadow_groups.clear();
+        self.retained = None;
+        Ok(())
+    }
+
     /// The textures this pass's stages sample as image `image` of
     /// `bitmap`, with the stage and its signed channels, each once: what a
     /// live edit rewrites ([`crate::gpu::rewrite_held`]).
@@ -391,6 +440,8 @@ impl LightGpu {
         let archive =
             crate::pipelines::Pipelines::new(device, &program.wgsl, shader, "native light pass");
         Some(Self {
+            retained: None,
+            shared_views: false,
             program,
             archive,
             textures_layout,
@@ -640,6 +691,8 @@ fn apply_gel_scale(pixel: &mut PixelUniforms, stages: &[LightStage; 4], scale: O
 /// The world's light passes on the GPU: the engine's light textures, the
 /// gels by datum, and the uniform layout shared with its material worker.
 pub struct LightSet {
+    /// Retained draws must be repeatable even while another scene records.
+    retained: bool,
     pub textures: LightTextures,
     uniforms_layout: wgpu::BindGroupLayout,
     gels: HashMap<u32, wgpu::TextureView>,
@@ -676,6 +729,7 @@ impl LightSet {
         attenuation: Option<&StaticLightTexture>,
     ) -> Self {
         Self {
+            retained: false,
             textures: LightTextures {
                 normalization: normalization.map(|i| i.view(device, queue)),
                 attenuation: attenuation.map(|i| i.view(device, queue)),
@@ -690,11 +744,22 @@ impl LightSet {
         &self.uniforms_layout
     }
 
-    /// Rewrites gel `datum`'s texture in place with `image` as the
-    /// upload made it. `Ok(0)` when the set has no such gel; a changed
-    /// size, level count or format refuses.
+    /// The layouts and texture views of this light at admission. A private
+    /// recording supplies its own targets and uniform upload arena.
+    pub fn retain(&self, gel: Option<u32>) -> Self {
+        Self {
+            retained: true,
+            textures: self.textures.clone(),
+            uniforms_layout: self.uniforms_layout.clone(),
+            gels: gel.into_iter().filter_map(|g| self.gels.get(&g).map(|v| (g, v.clone()))).collect(),
+        }
+    }
+
+    /// Publish a new gel view for future lights. A retained light samples the
+    /// previous view, including when both lights refer to the same datum.
     pub fn rewrite_gel(
-        &self,
+        &mut self,
+        device: &wgpu::Device,
         queue: &wgpu::Queue,
         datum: u32,
         image: &Image,
@@ -702,7 +767,8 @@ impl LightSet {
         let Some(view) = self.gels.get(&datum) else {
             return Ok(0);
         };
-        crate::gpu::rewrite_texture(queue, view.texture(), image)?;
+        crate::gpu::check_rewrite(view.texture(), image)?;
+        self.upload_gel(device, queue, datum, image);
         Ok(1)
     }
 
@@ -721,7 +787,7 @@ impl LightSet {
     /// taking the run's resident uniform slot. `None` when any draw cannot
     /// be issued.
     fn prepare<'a>(
-        &mut self,
+        &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         color: wgpu::TextureFormat,
@@ -747,15 +813,16 @@ impl LightSet {
                 None
             };
             let mut resident = true;
-            let mut pass = d.gpu.try_lock().ok()?;
+            let mut pass = if self.retained { d.gpu.lock().ok()? } else { d.gpu.try_lock().ok()? };
             let model = d.model.as_ref().map(|m| m.layout);
             resident &= pass
                 .pipelines
                 .contains_key(&(color, depth, d.cull, model.map(|m| m.id)));
             let pipeline = pass.pipeline(device, color, depth, d.cull, model).clone();
             pipeline.1.previous_frame()?.as_ref()?;
+            let gel_view = static_gel.and_then(|g| self.gels.get(&g));
             let textures = if let Some(map) = d.shadow_map {
-                let key = (map.view.clone(), static_gel);
+                let key = (map.view.clone(), gel_view.cloned());
                 if let Some((_, group)) = pass
                     .shadow_groups
                     .iter()
@@ -788,7 +855,8 @@ impl LightSet {
                     pass.gel_target_groups.push((view.clone(), group.clone()));
                     group?
                 }
-            } else if let Some(group) = pass.static_groups.get(&static_gel) {
+            } else if let Some((_, group)) = pass.static_groups.get(&static_gel)
+                .filter(|(cached, _)| cached.as_ref() == gel_view) {
                 group.clone()?
             } else {
                 resident = false;
@@ -797,7 +865,7 @@ impl LightSet {
                     None => None,
                 };
                 let group = pass.textures(device, &self.textures, gel, None);
-                pass.static_groups.insert(static_gel, group.clone());
+                pass.static_groups.insert(static_gel, (gel_view.cloned(), group.clone()));
                 group?
             };
             ready.push(Prepared {
@@ -832,7 +900,7 @@ impl LightSet {
     /// made once; the uniforms take the submission's resident slot.
     /// Refuses the whole run when any draw cannot be issued exactly.
     pub fn draws(
-        &mut self,
+        &self,
         target: &LightTarget<'_>,
         vertices: &wgpu::Buffer,
         indices: &wgpu::Buffer,
@@ -968,6 +1036,37 @@ mod tests {
         assert_eq!(u.constants[31], [1.0; 4], "the light frame stays");
         let too_many = vec![[0.0; 4]; 3 * MAX_PALETTE + 1];
         assert!(model_vertex(base, &too_many, decompression).is_none());
+    }
+
+    #[test]
+    fn retained_lights_keep_their_stage_texels_and_static_gel_after_an_edit() {
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let mut set = LightSet::new(&ctx.device, &ctx.queue, None, None);
+        let bitmap = map::TagId(23);
+        let before = [9, 19, 29, 255];
+        let after = [31, 41, 51, 255];
+        let mut program = additive_program([0.; 4], wgpu::Color::BLACK);
+        program.dims[0] = Some(TextureDim::D2);
+        program.stages[0] = LightStage::Bitmap { bitmap, image: 0 };
+        let image = Image::solid(before);
+        let mut gpu = LightGpu::new(&ctx.device, &ctx.queue, Arc::new(program),
+            set.uniforms_layout(), &mut |_, _| Some(image.clone())).unwrap();
+        set.upload_gel(&ctx.device, &ctx.queue, bitmap.0, &image);
+        let retained_set = set.retain(Some(bitmap.0));
+        let retained = gpu.retain();
+        assert!(Arc::ptr_eq(&retained, &gpu.retain()));
+        let changed = Image::solid(after);
+        gpu.edit_image(&ctx.device, &ctx.queue, bitmap, 0, &HashMap::from([(0, changed.clone())])).unwrap();
+        set.rewrite_gel(&ctx.device, &ctx.queue, bitmap.0, &changed).unwrap();
+        let new = gpu.retain();
+        assert!(!Arc::ptr_eq(&retained, &new));
+        let pixels = |v: &wgpu::TextureView| {
+            gfx::readback::read_texture(&ctx, v.texture(), wgpu::TextureAspect::All, 4, (1, 1))
+        };
+        assert_eq!(pixels(retained.lock().unwrap().stage_views[0].as_ref().unwrap()), before);
+        assert_eq!(pixels(new.lock().unwrap().stage_views[0].as_ref().unwrap()), after);
+        assert_eq!(pixels(&retained_set.gels[&bitmap.0]), before);
+        assert_eq!(pixels(&set.gels[&bitmap.0]), after);
     }
 
     // The map worker uploads materials and admission consumes completed

@@ -4,21 +4,15 @@
 //!
 //! `render_light_passes` (`0x00031170`) calls `0x0004a1e0` once per light,
 //! before its layer passes. The call fills a block of globals the light
-//! templates' engine inputs and the scissor read: the light's colours and
-//! falloff words, its frame (origin, axes and projection rows, from
-//! `0x000497a0`), the colour scale mode, its screen rectangle and bounding
-//! sphere, and the shadow byte. It ends by calling `0x0003a550`, which sets
-//! the scissor from the rectangle through D3D.
+//! templates read: the colours and falloff, frame, colour scale mode,
+//! projected screen rectangle, bounding sphere and shadow byte. Its last
+//! call, `0x0003a550`, marks shader inputs dirty, uploads the frame and
+//! draws a shader gel when the definition has one. The device scissor
+//! is inherited at that call.
 //!
-//! [`light_globals`] computes that block without writing anything:
-//! [`LightGlobals::write`] stores it the way the original does. Two pieces
-//! are not ported:
-//!
-//! - `0x001650a0`, the sphere's screen bounds (`ret 4`): the caller answers
-//!   it ([`BoundsQuery`]); `None` is the original's `AL = 0`.
-//! - `0x0003a550`, the scissor: the original calls it last, with no
-//!   arguments; whoever stores the block calls it (or sets the scissor
-//!   itself) afterwards.
+//! [`light_globals`] accepts an answer for the sphere projection, and
+//! [`projected_light_globals`] computes the answer with [`screen_bounds`].
+//! [`LightGlobals::write`] publishes the returned block.
 //!
 //! The arithmetic is the original's, instruction for instruction: SSE
 //! scalar operations through [`simd`] under the caller's MXCSR, and the x87
@@ -35,9 +29,12 @@
 
 use crate::memory::{GuestMemory, MemFault};
 
+mod screen_bounds;
+pub use screen_bounds::screen_bounds;
+
 /// `0x0004a1e0`: EAX the light's frame block, ECX the light volume, EDX
 /// the light datum (or -1), stack `(definition, unused, shadow, weight)`.
-pub const SET_LIGHT: u32 = 0x0004_a1e0;
+pub const SET_LIGHT: u32 = crate::points::LIGHT_CONSTANTS.base;
 pub const SET_LIGHT_CLEANUP: u32 = 0x10;
 /// `0x000497a0`: the light's frame and colour scale (EAX the frame block
 /// out, ECX the context, eight stack arguments).
@@ -48,8 +45,8 @@ pub const LIGHT_FRAME_CLEANUP: u32 = 0x20;
 /// on screen.
 pub const SCREEN_BOUNDS: u32 = 0x0016_50a0;
 pub const SCREEN_BOUNDS_CLEANUP: u32 = 4;
-/// `0x0003a550`: the scissor from the rectangle; no arguments.
-pub const SCISSOR: u32 = 0x0003_a550;
+/// `0x0003a550`: dirty inputs, upload the light frame and draw the shader gel.
+pub const UPLOAD_LIGHT_FRAME: u32 = 0x0003_a550;
 
 /// The globals the call reads and writes.
 pub mod global {
@@ -185,6 +182,8 @@ pub enum Error {
     /// Tag data the port cannot read as the original does (a function
     /// blob that does not parse, tables of the wrong size).
     Data,
+    /// A typed shadow would have to unbind a live guest texture.
+    BoundTexture,
 }
 
 impl From<MemFault> for Error {
@@ -273,7 +272,7 @@ impl LightGlobals {
         })
     }
 
-    /// Stores the block as the original does (everything but the scissor).
+    /// Stores the block before the shader input update and frame upload.
     pub fn write(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
         use global::*;
         fn words(m: &mut dyn GuestMemory, at: u32, w: &[u32]) -> Result<(), MemFault> {
@@ -486,7 +485,7 @@ fn sway(m: &dyn GuestMemory, control: u16, a: u32, b: u32) -> Result<(u32, u32),
 }
 
 fn vec3(m: &dyn GuestMemory, at: u32) -> Result<[u32; 3], MemFault> {
-    Ok([m.u32(at)?, m.u32(at + 4)?, m.u32(at + 8)?])
+    Ok([m.u32(at)?, m.u32(at.wrapping_add(4))?, m.u32(at.wrapping_add(8))?])
 }
 
 /// `0x000497a0`'s results.
@@ -759,6 +758,26 @@ pub fn light_globals(
     fpu: Fpu,
     bounds: &mut dyn FnMut(BoundsQuery) -> Option<[u32; 6]>,
 ) -> Result<LightGlobals, Error> {
+    compute_globals(m, call, fpu, |query| Ok(bounds(query)))
+}
+
+/// Compute the light block with the sphere projection used by the guest.
+/// A projection error refuses the setup. An offscreen sphere takes the
+/// original's whole-viewport fallback.
+pub fn projected_light_globals(
+    m: &dyn GuestMemory,
+    call: &Call,
+    fpu: Fpu,
+) -> Result<LightGlobals, Error> {
+    compute_globals(m, call, fpu, |query| screen_bounds(m, query, fpu))
+}
+
+fn compute_globals(
+    m: &dyn GuestMemory,
+    call: &Call,
+    fpu: Fpu,
+    mut bounds: impl FnMut(BoundsQuery) -> Result<Option<[u32; 6]>, Error>,
+) -> Result<LightGlobals, Error> {
     use constant::*;
     let mut f = Sse { mxcsr: fpu.mxcsr };
     let eax = call.frame;
@@ -769,6 +788,12 @@ pub fn light_globals(
         (call.light & 0xffff).wrapping_mul(0x110).wrapping_add(base)
     };
     let view = m.u32(global::VIEW)?;
+    // The guest pointers name contiguous blocks. An end that would wrap
+    // cannot describe one, even when the low guest page is mapped.
+    for (base, last) in [(eax, 0x87), (call.context, 0x67), (call.definition, 0x8f),
+                         (record, 0x55), (view, 0xb3)] {
+        base.checked_add(last).ok_or(Error::Data)?;
+    }
     let driver = if record != 0 && m.u16(record + 0x54)? != 0xffff {
         m.u32(record + 0x4c)?
     } else {
@@ -839,7 +864,7 @@ pub fn light_globals(
             view: view + 4,
             word: m.u32(record + 0x34)?,
         };
-        let rect = match bounds(q) {
+        let rect = match bounds(q)? {
             None => fallback(&mut f)?,
             Some(r) => match project(m, &mut f, view, r, [x0, x1, y0, y1])? {
                 Some(rect) => rect,

@@ -35,6 +35,13 @@
 //! slot pointer are written where the guest keeps them ([`slot`]): the
 //! layer-draw hook reads them from the frame.
 //!
+//! With typed passes (L8), the guest runs `0x000404b0` itself and
+//! [`final_slot`] reads its frame at its own constants call. Only the
+//! loop's last slot is taken: the bridge then commits the slot and
+//! returns from the whole function as its loop exit would, with EAX from
+//! [`FinalSlot::ret`] and the caller's saved registers ([`Saved`]). No
+//! guest code resumes inside the skipped slot.
+//!
 //! [`run_records`] is `0x000402b0`: both lists zeroed, the slot's records
 //! copied to the record tail at `[0x004c0b7c]` and the count set past
 //! them, then each record that passes the mode's filter appended as
@@ -52,7 +59,7 @@ use super::items::{self, LIST, LISTS, Made};
 use super::passes::{self, Layer};
 use super::{Refusal, Result, visible, volume};
 use crate::entry::{Cx, EntryError, GuestCall, Ret};
-use crate::light_constants::Fpu;
+use crate::light_constants::{Call, Fpu};
 use crate::light_passes::{flag, global as lp};
 use crate::memory::{GuestMemory, MemFault};
 
@@ -189,6 +196,11 @@ impl Plan {
     fn at(&self, offset: u32) -> u32 {
         self.entry_esp.wrapping_sub(offset)
     }
+
+    /// The layer draw byte in the guest frame, committed with the typed slot.
+    pub fn draw_byte(&self) -> u32 {
+        self.at(slot::DRAWS)
+    }
 }
 
 /// A slot's light as the loop reads it (`0x000404eb`..`0x00040517`): no
@@ -296,10 +308,34 @@ fn regs(target: u32, l: &Light, ebx: u32) -> GuestCall {
     GuestCall::new(target).esi(l.record).edi(l.datum).ebx(ebx)
 }
 
+/// Layer results from an admitted first-person graph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SlotPasses {
+    pub flags: u32,
+    pub reached: u32,
+    pub drawn: u32,
+}
+
+/// Called after replaying this slot's records and before its first device
+/// call. `None` leaves the complete passes and tail to this body. `Some`
+/// means the graph, its guest globals and its device tail all committed.
+pub type OnPasses<'a> = dyn FnMut(&mut dyn GuestMemory, &Plan, &Call) -> Result<Option<SlotPasses>, EntryError>
+    + Send
+    + 'a;
+
 /// Makes the call. Returns as `0x000404b0` does (`ret 4`, AL 1 over the
 /// slot pointer past the last slot, or over the count when it is not
 /// above zero) with what it did.
 pub async fn run(cx: &Cx, plan: Plan) -> Result<(Ret, FirstPersonLights), EntryError> {
+    run_with(cx, plan, &mut |_, _, _| Ok(None)).await
+}
+
+/// Offer each slot's prepared lists and call to the graph in draw order.
+pub async fn run_with(
+    cx: &Cx,
+    plan: Plan,
+    on_passes: &mut OnPasses<'_>,
+) -> Result<(Ret, FirstPersonLights), EntryError> {
     let p = &plan;
     cx.write(|m| m.set_u32(p.at(slot::INDEX), 0))?;
     let n = cx.read(|m| m.i32(FIRST_PERSON_COUNT))?;
@@ -315,7 +351,8 @@ pub async fn run(cx: &Cx, plan: Plan) -> Result<(Ret, FirstPersonLights), EntryE
     cx.write(|m| m.set_u32(p.at(slot::ENTRY), entry))?;
     loop {
         if cx.read(|m| m.u16(entry.wrapping_add(4)))? as i16 > 0 {
-            out.lights.push(light(cx, p, index, entry).await?);
+            out.lights
+                .push(light(cx, p, index, entry, on_passes).await?);
         }
         index = index.wrapping_add(1);
         entry = entry.wrapping_add(FIRST_PERSON_SLOT);
@@ -331,7 +368,13 @@ pub async fn run(cx: &Cx, plan: Plan) -> Result<(Ret, FirstPersonLights), EntryE
 }
 
 /// Steps 1 to 6 for the slot `index`, its light datum at `entry`.
-async fn light(cx: &Cx, p: &Plan, index: u32, entry: u32) -> Result<FirstPersonLight, EntryError> {
+async fn light(
+    cx: &Cx,
+    p: &Plan,
+    index: u32,
+    entry: u32,
+    on_passes: &mut OnPasses<'_>,
+) -> Result<FirstPersonLight, EntryError> {
     let e = p.entry_esp;
     let l = cx.read(|m| Light::read(m, entry))?;
     let volume_at = p.at(slot::VOLUME);
@@ -364,8 +407,26 @@ async fn light(cx: &Cx, p: &Plan, index: u32, entry: u32) -> Result<FirstPersonL
     // 3: the constants, shadow 0 and weight one.
     let (weight, scale) =
         cx.read(|m| -> Result<_, MemFault> { Ok((m.u32(WEIGHT_WORD)?, m.u32(SCALE_WORD)?)) })?;
+    let constants = Call {
+        frame: l.record.wrapping_add(0x84),
+        context: volume_at,
+        light: l.datum,
+        definition: l.data,
+        shadow: 0,
+        weight,
+    };
+    if let Some(accepted) = cx.write(|m| on_passes(m, p, &constants))? {
+        return Ok(FirstPersonLight {
+            index,
+            light: l.datum,
+            volume: volume_by,
+            flags: accepted.flags,
+            reached: accepted.reached,
+            drawn: accepted.drawn,
+        });
+    }
     let request = regs(call::CONSTANTS, &l, l.data)
-        .eax(l.record.wrapping_add(0x84))
+        .eax(constants.frame)
         .ecx(volume_at)
         .edx(l.datum)
         .args([l.data, scale, 0, weight]);
@@ -469,7 +530,7 @@ async fn layer(
     out: &mut FirstPersonLight,
 ) -> Result<(), EntryError> {
     let e = p.entry_esp;
-    let draws_at = p.at(slot::DRAWS);
+    let draws_at = p.draw_byte();
     out.reached |= 1 << block.layer;
     let draws = cx.write(|m| -> Result<u8, MemFault> {
         let b = ((m.u32(LIGHT_MASK)? >> block.layer) & 1) as u8;
@@ -513,6 +574,108 @@ async fn layer(
         passes::named(cx, e, FRAME, block.end, request).await?;
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------
+// L8: the final slot typed inside the guest's own body.
+
+/// The constants' four argument words, pushed at `0x00040565`..`0x00040571`.
+pub const CONSTANTS_ARGS: u32 = 0x10;
+
+/// The entry `ESP` of the invocation whose call to `0x0004a1e0` returns
+/// to [`site::CONSTANTS`], from `ESP` at the callee's entry: the return
+/// word, the four arguments and the frame.
+pub fn entry_esp_at_constants(callee_esp: u32) -> u32 {
+    callee_esp
+        .wrapping_add(4)
+        .wrapping_add(CONSTANTS_ARGS)
+        .wrapping_add(FRAME)
+}
+
+/// The registers at the callee's entry when the guest's own body makes
+/// its constants call (`0x0004057e`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AtConstants {
+    pub esp: u32,
+    pub eax: u32,
+    pub ecx: u32,
+    pub edx: u32,
+    pub ebx: u32,
+    pub esi: u32,
+    pub edi: u32,
+}
+
+/// The guest's last slot at its constants call, and how the whole
+/// function returns when that slot's passes and tail are committed
+/// elsewhere.
+///
+/// The loop's exit after the view target stores only both pass words
+/// (zeroed) and its two locals (the index and the slot pointer). The
+/// typed tail's journal already zeroes both pass words
+/// (`typed_tail::plan_layers`). The locals lie below [`Self::exit_esp`]
+/// once `ret 4` has run, so nothing reads them and the return leaves
+/// them as they are. No write follows the commit.
+#[derive(Clone, Debug)]
+pub struct FinalSlot {
+    /// The constants call as the L6 body makes it.
+    pub call: Call,
+    /// `ret 4` with AL 1 over the slot pointer past the last slot.
+    pub ret: Ret,
+    /// `ESP` after that `ret 4`: past the return word and the mode.
+    pub exit_esp: u32,
+}
+
+/// Reads the guest's frame at its own constants call and accepts only
+/// the loop's last slot. ESI must be the light's record, EBX its
+/// definition's data and EDI its datum, as [`regs`] makes them; EAX, ECX,
+/// EDX and the four pushed words must be the call the L6 body makes.
+/// Earlier slots are refused: resuming the guest's loop after a skipped
+/// slot would need registers that this hook does not reconstruct.
+pub fn final_slot(m: &dyn GuestMemory, plan: &Plan, r: &AtConstants) -> Result<FinalSlot> {
+    if m.u32(r.esp)? != site::CONSTANTS || entry_esp_at_constants(r.esp) != plan.entry_esp {
+        return Err(Refusal::Layout);
+    }
+    let index = m.u32(plan.at(slot::INDEX))?;
+    let entry = m.u32(plan.at(slot::ENTRY))?;
+    if index >= SLOTS as u32 || entry != slot_base(index).wrapping_add(SLOT_LIGHT) {
+        return Err(Refusal::Layout);
+    }
+    let l = Light::read(m, entry)?;
+    let volume_at = plan.at(slot::VOLUME);
+    let args = r.esp.wrapping_add(4);
+    let (weight, scale) = (m.u32(WEIGHT_WORD)?, m.u32(SCALE_WORD)?);
+    if r.esi != l.record
+        || r.ebx != l.data
+        || r.edi != l.datum
+        || r.eax != l.record.wrapping_add(0x84)
+        || r.ecx != volume_at
+        || r.edx != l.datum
+        || m.u32(args)? != l.data
+        || m.u32(args.wrapping_add(4))? != scale
+        || m.u32(args.wrapping_add(8))? != 0
+        || m.u32(args.wrapping_add(12))? != weight
+    {
+        return Err(Refusal::Layout);
+    }
+    // 0x00040823 onward: the loop re-reads the count after this slot.
+    // A typed slot makes no guest call, so the count it reads is this one.
+    let next = index.wrapping_add(1);
+    if (next as i32) < m.i32(FIRST_PERSON_COUNT)? {
+        return Err(Refusal::Unsupported);
+    }
+    let past = entry.wrapping_add(FIRST_PERSON_SLOT);
+    Ok(FinalSlot {
+        call: Call {
+            frame: r.eax,
+            context: volume_at,
+            light: l.datum,
+            definition: l.data,
+            shadow: 0,
+            weight,
+        },
+        ret: Ret::new((past & !0xff) | 1, 4),
+        exit_esp: plan.entry_esp.wrapping_add(8),
+    })
 }
 
 // ---------------------------------------------------------------------

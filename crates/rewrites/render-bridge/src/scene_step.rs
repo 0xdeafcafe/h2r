@@ -400,13 +400,56 @@ pub fn light(mem: &dyn GuestMemory, light: SceneLight, steps: &[LightStep]) {
     });
 }
 
+/// The scene hand-off and the just-built lists must describe the same
+/// invocation before its typed groups can replace any handlers.
+pub(crate) fn current_light_matches(light: &SceneLight, steps: &[LightStep]) -> bool {
+    with_step(|step| {
+        let Some((scene, view)) = step.builder.open() else {
+            return false;
+        };
+        let Some(at) = view.lights.clone().next_back() else {
+            return false;
+        };
+        let current = &scene.lights[at as usize];
+        step.light_open
+            && current.guest_selected
+            && current.handle == light.handle
+            && current.definition == light.definition
+            && current.guest_weight.map(f32::to_bits) == light.guest_weight.map(f32::to_bits)
+            && current.flags == light.flags
+            && current.definition_flags == light.definition_flags
+            && current.additional_casters == light.additional_casters
+            && scene.steps_of(current) == steps
+    })
+}
+
+/// Append groups only after the host has reserved the entire invocation.
+/// The builder assigns this view's indices and remaps every object's pose.
+pub(crate) fn typed_light_groups(groups: Vec<crate::native_lights::SceneGroup>) {
+    with_step(|step| {
+        if !step.light_open {
+            return;
+        }
+        for group in groups {
+            let entries: Vec<_> = group.entries.into_iter().zip(group.rows).collect();
+            if step.builder.push_light_group(group.group, &entries).is_err() {
+                REFUSED.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+            LIGHT_GROUPS.fetch_add(1, Ordering::Relaxed);
+            LIGHT_GROUPS_WHOLE.fetch_add(1, Ordering::Relaxed);
+            LIGHT_ENTRIES.fetch_add(entries.len() as u64, Ordering::Relaxed);
+        }
+    });
+}
+
 /// A first-person light (`0x000404b0`) begins: it goes into the first
 /// person's view (opened when none is for the current guest view and
 /// camera) with its steps, and its groups follow
 /// ([`light_group`]). Its object shadows and candidates are not read.
-pub fn first_person_light(mem: &dyn GuestMemory, light: SceneLight, steps: &[LightStep]) {
+pub fn first_person_light(mem: &dyn GuestMemory, light: SceneLight, steps: &[LightStep]) -> bool {
     if open_kind(mem, ViewKind::FirstPerson).is_none() {
-        return;
+        return false;
     }
     with_step(|step| {
         step.shadow_open = false;
@@ -414,7 +457,8 @@ pub fn first_person_light(mem: &dyn GuestMemory, light: SceneLight, steps: &[Lig
         if !step.light_open {
             REFUSED.fetch_add(1, Ordering::Relaxed);
         }
-    });
+        step.light_open
+    })
 }
 
 /// The main view's light pass is over (at the decal mode that follows

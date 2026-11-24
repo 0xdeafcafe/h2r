@@ -687,6 +687,10 @@ runs the game.
 | L8 | Casters outside the view: extraction of instances near it | A caster behind the camera shadows the ground in view | sim-thread frame step, rise under 0.1 ms |
 | L9 | Tuning against "Target look" on captures at pstencil-history.md's footage times; then the D3D-path row's code goes with `scaled.rs` (FrameScene slice 10) | A table in the notes: each target item, met or not, with the capture's tick | The laptop A/B below, three pairs |
 
+E3 L8 extends the set of caster instances. The light-gather sequence uses
+L8 for submitting typed passes for lights the guest has already gathered
+([native-light-gather.md](native-light-gather.md#l8-the-passes-typed-l)).
+
 Split screen and 120 fps are checked in L6 and L7 with the caps shared.
 
 **Measurements.** Numbers come from the lab laptop

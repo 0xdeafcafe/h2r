@@ -926,6 +926,47 @@ mod passes_body {
     }
 
     #[test]
+    fn whole_pass_admission_uses_this_gather_and_refusal_continues_at_constants() {
+        for accept in [false, true] {
+            let g = guest(0, 1 << 14, 0);
+            let plan = passes::plan(&g, E, DEFINITION, CONTEXT, FPU).unwrap();
+            let body = move |cx: Cx| -> EntryFuture {
+                let plan = plan.clone();
+                Box::pin(async move {
+                    let (ret, _) = passes::run_with(&cx, plan, |m, _| {
+                        // ITEMS replaced the previous light's mask, but the pass
+                        // has not changed its argument or installed any flags yet.
+                        assert_eq!(m.u32(LIGHT_MASK)?, 1 << 12);
+                        assert_eq!(m.u32(E + 0xc)?, 0xab00);
+                        assert_eq!(m.u32(PASS_FLAGS)?, 0x55);
+                        Ok(accept.then(|| (Ret::new(7, 16), LightPasses::default())))
+                    }).await?;
+                    Ok(ret)
+                })
+            };
+            let mut calls = Vec::new();
+            let regs = Regs { esp: E, ..Regs::default() };
+            let run = testing::run(&body, g, regs, |call, mem| {
+                calls.push(call.target);
+                if call.target == call::ITEMS {
+                    mem.set_u32(LIGHT_MASK, 1 << 12).unwrap();
+                }
+                Regs::default()
+            });
+            if accept {
+                assert_eq!(run.result, Ok(Ret::new(7, 16)));
+                assert_eq!(calls, [call::ITEMS]);
+            } else {
+                assert_eq!(run.result, Ok(Ret::new(0, 16)));
+                assert_eq!(calls[..2], [call::ITEMS, call::CONSTANTS]);
+                assert_eq!(calls.iter().filter(|&&target| target == call::ITEMS).count(), 1);
+                assert_eq!(calls.iter().filter(|&&target| target == call::LAYER_DRAW).count(), 1);
+                assert_eq!(calls.last(), Some(&call::TARGET));
+            }
+        }
+    }
+
+    #[test]
     fn a_shadowed_lights_passes_call_the_guest_in_its_order() {
         let ran = run_passes(guest(1, 1 << 11 | 1 << 12, 1 << 10));
         assert_eq!(ran.run.result, Ok(Ret::new(0x77, 0x10)));
@@ -1185,6 +1226,94 @@ mod first_person_body {
             sites,
             frames,
         }
+    }
+
+    #[test]
+    fn a_typed_slot_uses_its_replayed_lists_and_a_refused_slot_continues_at_constants() {
+        let mut g = guest(0);
+        g.put_u32(frame::FIRST_PERSON_COUNT, 2);
+        let second = TABLE + frame::FIRST_PERSON_SLOT;
+        g.put_u32(second + 0x400, LIGHT).put_u16(second + 0x404, 1);
+        let plan = first_person::plan(&g, E, FPU).unwrap();
+        let f = move |cx: Cx| -> EntryFuture {
+            let plan = plan.clone();
+            Box::pin(async move {
+                let mut seen = 0;
+                let (ret, lights) = first_person::run_with(&cx, plan, &mut |m, plan, call| {
+                    let index = m.u32(plan.entry_esp - first_person::slot::INDEX)?;
+                    assert_eq!(index, seen);
+                    assert_eq!(call.light, LIGHT);
+                    assert_eq!(call.frame, record(2) + 0x84);
+                    assert_eq!(call.context, E - first_person::slot::VOLUME);
+                    assert_eq!(call.definition, DATA);
+                    assert_eq!(call.shadow, 0);
+                    assert_eq!(call.weight, WEIGHT);
+                    let mask = m.u32(LIGHT_MASK)?;
+                    assert_eq!(mask, 1 << (12 + index));
+                    seen += 1;
+                    if index != 0 {
+                        return Ok(None);
+                    }
+                    // The accepted packet transaction owns the slot's last draw byte.
+                    m.set_u8(plan.draw_byte(), 1)?;
+                    Ok(Some(first_person::SlotPasses {
+                        flags: 0,
+                        reached: (1 << 11) | (1 << 14) | (1 << 12),
+                        drawn: mask,
+                    }))
+                })
+                .await?;
+                assert_eq!(seen, 2);
+                assert_eq!(lights.lights.len(), 2);
+                assert_eq!(lights.lights[0].drawn, 1 << 12);
+                Ok(ret)
+            })
+        };
+        let mut replayed = 0;
+        let run = testing::run(
+            &f,
+            g,
+            Regs {
+                esp: E,
+                ..Default::default()
+            },
+            |c, m| {
+                if c.target == call::RECORDS {
+                    m.set_u32(LIGHT_MASK, 1 << (12 + replayed)).unwrap();
+                    replayed += 1;
+                }
+                if c.target == call::LIGHT_VOLUME && replayed == 1 {
+                    assert_eq!(m.u8(E - first_person::slot::DRAWS).unwrap(), 1);
+                }
+                Regs::default()
+            },
+        );
+        assert!(run.result.is_ok());
+        let calls: Vec<_> = run.calls.iter().map(|c| c.target).collect();
+        assert_eq!(
+            &calls[..5],
+            &[
+                call::LIGHT_VOLUME,
+                call::RECORDS,
+                call::LIGHT_VOLUME,
+                call::RECORDS,
+                call::CONSTANTS
+            ]
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|&&target| target == call::CONSTANTS)
+                .count(),
+            1
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|&&target| target == call::PUSH_STATE)
+                .count(),
+            1
+        );
     }
 
     #[test]

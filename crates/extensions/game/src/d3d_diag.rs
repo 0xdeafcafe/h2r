@@ -971,6 +971,22 @@ impl<B: Backend> Backend for DiagBackend<B> {
         result
     }
 
+    fn can_commit_carried(&self) -> bool {
+        self.inner.can_commit_carried()
+    }
+
+    fn prepare_carried_stage(
+        &mut self, stage: &d3d::SceneStage<Self::Surface>,
+    ) -> Result<Option<Vec<d3d::ExternalRecording>>, String> {
+        self.inner.prepare_carried_stage(stage)
+    }
+
+    fn commit_carried_stage(
+        &mut self, stage: d3d::SceneStage<Self::Surface>, copies: Vec<d3d::ExternalRecording>,
+    ) {
+        self.inner.commit_carried_stage(stage, copies);
+    }
+
     fn reusable_external_attachments(&self) -> bool {
         self.inner.reusable_external_attachments()
     }

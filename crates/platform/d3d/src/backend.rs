@@ -1648,6 +1648,30 @@ pub trait Backend: Send {
         Ok(None)
     }
 
+    /// A light can replace the guest's pass at this queue boundary. Also
+    /// checked for an empty light, which has no stage to record.
+    fn can_commit_carried(&self) -> bool { true }
+
+    /// Seal every physical copy of a typed stage without issuing commands.
+    /// The caller holds these recordings until the *whole* light and its
+    /// device tail have been admitted. A scene sink also keeps the typed
+    /// inputs on commit, for fresh recording on the replay's attachments.
+    fn prepare_carried_stage(
+        &mut self, stage: &SceneStage<Self::Surface>,
+    ) -> Result<Option<Vec<ExternalRecording>>, String> {
+        self.prepare_external(stage.surfaces.clone(), stage.request, [None; 4], &stage.plan,
+            TargetCopy::Reference, std::sync::Arc::clone(&stage.pass))
+    }
+
+    /// Issue the sealed stage at this position in the command stream.
+    /// A frame owner consumes either these recordings or the matching
+    /// replay stage on its own attachments.
+    fn commit_carried_stage(
+        &mut self, _stage: SceneStage<Self::Surface>, copies: Vec<ExternalRecording>,
+    ) {
+        for copy in copies { self.commit_external(copy); }
+    }
+
     /// Try to enqueue an independently resolved draw with its exact fallback.
     /// True guarantees the same Drawn outcome and attachment writes for either route.
     fn queue_external_draw(

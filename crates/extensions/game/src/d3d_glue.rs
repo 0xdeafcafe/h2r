@@ -1493,6 +1493,22 @@ impl d3d::backend::Backend for Headless {
         self.0.prepare_external(surfaces, request, textures, plan, copy, pass)
     }
 
+    fn can_commit_carried(&self) -> bool {
+        self.0.can_commit_carried()
+    }
+
+    fn prepare_carried_stage(
+        &mut self, stage: &d3d::SceneStage<Self::Surface>,
+    ) -> Result<Option<Vec<d3d::ExternalRecording>>, String> {
+        self.0.prepare_carried_stage(stage)
+    }
+
+    fn commit_carried_stage(
+        &mut self, stage: d3d::SceneStage<Self::Surface>, copies: Vec<d3d::ExternalRecording>,
+    ) {
+        self.0.commit_carried_stage(stage, copies);
+    }
+
     fn queue_external_draw(
         &mut self, candidate: d3d::backend::QueuedExternalDraw<Self::Surface>,
         textures: [Option<&Self::Texture>; 4],

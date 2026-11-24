@@ -15,12 +15,15 @@
 //! (`GroupSite::FirstPerson`), and its layers 12 and 13 whose groups the
 //! scene holds whole are drawn from it alone ([`FIRST_PERSON_LAYERS`]).
 //! On with the native renderer (`impl.render.native`, on by default).
+mod additional;
 mod first_person;
 mod frame;
 mod handoff;
 mod items;
 mod object_shadows;
 mod passes;
+mod typed;
+mod typed_groups;
 pub mod walk;
 
 pub use handoff::Source;
@@ -139,7 +142,28 @@ pub struct ShadowAlone<'a> {
     pub light: Option<LightConstants>,
 }
 
+/// A single invocation's ordered passes and the corresponding whole groups.
+/// Both the target and view belong to this frame.
+pub struct TypedPasses<'a> {
+    pub graph: native_render::light_graph::Pass<'a>,
+    /// Guest-visible stores journaled together with the device tail.
+    pub writes: &'a engine::render::light_gather::Writes,
+    /// The programmable depth range restored after this invocation.
+    pub clip: [u32; 2],
+    /// The image's simple render-state method for a changed clip mode.
+    pub clip_header: Option<u32>,
+    pub groups: &'a [SceneGroup],
+    pub view_target: [u32; 8],
+    pub view: u32,
+}
+
 pub trait Host: Send + Sync {
+    /// Reserve the entire sequence on every copy before issuing any of it.
+    /// A refusal leaves the caller at the start of its ordinary passes.
+    fn draw_typed(&self, _mem: &mut dyn GuestMemory, _batch: &TypedPasses<'_>) -> bool {
+        false
+    }
+
     /// Plan a sorted prefix of one layer. The handlers still emit their
     /// D3D packets so each native draw can fall back in the same queue
     /// slot. A light asks once per layer it draws.
@@ -261,6 +285,8 @@ pub fn new_view() {
 /// not the memory they were read from. Takes no device lock (unlike
 /// [`new_view`], which asks the host for the next view's target).
 pub fn forget_runs() {
+    passes::forget();
+    first_person::forget();
     handoff::forget();
     CANDIDATE.take();
     VIEW_TARGET.set(None);
@@ -328,9 +354,8 @@ impl Entry {
 /// to `0x0004a1e0` (`engine::light_constants`), then its flag code
 /// (`engine::light_passes::pass_flags`). Reads guest memory, writes none.
 /// `None` when a read faults or the arithmetic would raise an unmasked
-/// exception. The sphere's screen bounds (`0x001650a0`) are not asked:
-/// they set the scissor in the original body, before our geometry
-/// dispatch. S: the item lists `0x00040e90` (the passes' first call)
+/// exception. The per-layer candidate needs only the frame and flags.
+/// Whole-pass admission also computes the sphere's six projected words. S: the item lists `0x00040e90` (the passes' first call)
 /// leave what `0x0004a1e0` reads alone, but for the casters' layer 10,
 /// which `source`'s shadow word carries.
 pub fn source_constants(
@@ -760,6 +785,7 @@ impl Feature for NativeLights {
         frame::install(b);
         items::install(b);
         passes::install(b);
+        additional::install(b);
         first_person::install(b);
         object_shadows::install(b);
         b.raw()

@@ -1,7 +1,7 @@
 # Native light gather and passes
 
-Status: Partly built. L1–L7 implement the visible list and history, light volumes, frame and per-light passes, record and item walks, scene hand-off, first-person lights and object-shadow list, rows and mask casters. L8 and L9 are design. L7 differential, live parity and timing results are unverified.
-Code: `crates/rewrites/engine/src/render/light_gather.rs` and `light_gather/` (including `object_shadows.rs`, `object_shadows/rows.rs` and `object_shadows/caster.rs`), `crates/rewrites/engine/src/render_loop/world_walk.rs` (the record walks), `crates/rewrites/render-bridge/src/native_lights/` (`frame.rs`, `items.rs`, `passes.rs`, `first_person.rs` and `object_shadows.rs` install the bodies, `handoff.rs` supplies the scene lights), `crates/rewrites/render-bridge/src/native_scene_lists/lights.rs` (fallback leaves). Tests: `crates/rewrites/engine/tests/light_gather_differential.rs`, `light_gather.rs`, the unit tests in `world_walk.rs`, `object_shadows/` and `native_lights/handoff.rs`, `crates/rewrites/render-bridge/tests/native_lights.rs`.
+Status: Partly built. L1–L7 implement the visible list and history, light volumes, frame and per-light passes, record and item walks, scene hand-off, first-person lights and object-shadow list, rows and mask casters. L8 admits complete, same-target diffuse and specular passes for dynamic lights and the final first-person slot. Shadow targets, filters and shader gels still use the existing layer bodies. L9 and the live parity and timing gates remain open.
+Code: `crates/rewrites/engine/src/render/light_gather.rs` and `light_gather/` (including `object_shadows.rs`, `object_shadows/rows.rs`, `object_shadows/caster.rs`, `typed.rs` and `typed_tail.rs`), `crates/rewrites/engine/src/render_loop/world_walk.rs` (the record walks), `crates/rewrites/render-bridge/src/native_lights/` (`frame.rs`, `items.rs`, `passes.rs`, `first_person.rs` and `object_shadows.rs` install the bodies, `handoff.rs` supplies the scene lights, `typed.rs` and `typed_groups.rs` admit whole passes), `crates/rewrites/native-render/src/light_graph.rs`, `crates/extensions/game/src/native_lights_glue/typed.rs`, `crates/platform/d3d/src/device/external_sequence.rs`, `crates/rewrites/render-bridge/src/native_scene_lists/lights.rs` (fallback leaves). Tests: `crates/rewrites/engine/tests/light_gather_differential.rs`, `light_gather.rs`, the unit tests in `world_walk.rs`, `object_shadows/` and `native_lights/handoff.rs`, `crates/rewrites/render-bridge/tests/native_lights.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md). No slice adds a switch.
 
 Slice R3 of [retire-d3d.md](retire-d3d.md): the guest's light front-end
@@ -21,9 +21,10 @@ and offsets are research points. No game data.
 
 ### The three entries and their phases (Design)
 
-Each install uses `implement` and plans synchronously. On admission,
-`hooks::entry::start_render` drives the body. A refused entry invokes
-its original function with the entry registers and stack intact. A light has two phases:
+The entry hooks preflight guest state synchronously. Rust gather bodies
+run through `hooks::entry::start_render`. The L8 hooks offer typed
+passes at the guest call to `LIGHT_CONSTANTS` after gathering.
+A refused entry runs its original function with the entry registers and stack intact. A light has two phases:
 
 - **Gather.** Which lights, their weights, the pose, the volume, the
   shadow decision, the light's visibility, its render records and its
@@ -204,8 +205,9 @@ are `[0x004c0b7c, 0x004c0b78)` and each light reuses that tail.
 3. **Constants.** `0x0004a1e0`
    (`engine::light_constants::light_globals`), which also asks
    `0x001650a0` for the sphere's screen bounds and runs `0x0003a550`:
-   the constant upload, the scissor, and the gel shader's draw into
-   target 13.
+   the shader-input dirty masks, the constant upload and the gel
+   shader's draw into target 13. The layer's target setter installs the
+   viewport and resets the device scissor.
 4. **Flags.** `engine::light_passes::pass_flags`: `[0x004ba014]`,
    `[0x004ba018]`, colour B zeroed in place.
 5. **Layers**, as `scene_extract::layout::light_passes::steps` gives
@@ -304,8 +306,8 @@ visibility, lists, constants, projection, layer 10, the filter
 |---|---|---|---|
 | `RENDER_DYNAMIC_LIGHTS` | `0x00031c80` | `light_gather::frame::run` | the guest function, with the leaf seams of `native_scene_lists` |
 | `SCENE_ITEMS` | `0x00040e90` | `light_gather::items::run` in a light's kind, installed by `render_bridge::native_lights::items` | the guest function: the main view's kind, a refused plan |
-| `RENDER_LIGHT_PASSES` | `0x00031170` | `light_gather::passes::run`, called by the frame body and installed at the point for the fallback loop | the guest function |
-| `FIRST_PERSON_LIGHTS` | `0x000404b0` | `light_gather::first_person::run`, installed by `render_bridge::native_lights::first_person` | the guest function: a refused plan |
+| `RENDER_LIGHT_PASSES` | `0x00031170` | `light_gather::passes::run` with the walk off, called by the frame body, or the guest loop offering typed passes at `LIGHT_CONSTANTS` with the walk on | the guest function |
+| `FIRST_PERSON_LIGHTS` | `0x000404b0` | the guest loop with typed admission at its final slot’s constants call, or `light_gather::first_person::run` with the walk off | the guest function |
 | `FIRST_PERSON_LIGHT_RECORDS` | `0x000402b0` | `light_gather::first_person::run_records`, called by the first-person body and installed at the point | the guest function: a refused plan |
 | `OBJECT_SHADOW_LIST` | `0x000335e0` | `light_gather::object_shadows::run` | the guest function |
 | `GATHER_OBJECT_SHADOWS` | `0x00033400` | `light_gather::object_shadows::rows::run` | the guest function |
@@ -375,7 +377,14 @@ item body declined, or no item lists' call took the hand-off:
 memory once its lists are made: `_compared` per light, `_mismatch` per
 difference. `render.stats.counters` reports per-frame means for the stage columns.
 Each L7 stage counts one `_native` per completed body or one `_fallback`
-plus its reason per refused plan. `render.scene` reports the filter and
+plus its reason per refused plan. L8 counts one
+`native_scene_lists_typed_light_passes_native` per committed dynamic
+sequence and `native_scene_lists_typed_first_person_native` per
+committed final first-person slot. The `_fallback` and reason columns
+count refused typed offers. On the layer route,
+`native_scene_lists_light_additional_casters_native` counts an empty
+additional-caster loop and its `_fallback` counts a loop left to the
+guest. `render.scene` reports the filter and
 layer draws ([agent-api.md](../runtime/agent-api.md)). The producers of
 `render.residual` are `dynamic_lights`, `light_passes`,
 `object_shadows`, `object_shadow` and `first_person`
@@ -774,27 +783,71 @@ The hand-off and the passes body are built.
 
 ### L8: the passes typed (L)
 
-- **Build.** A light whose every step's group is whole and whose
-  passes the stages hold runs no guest call in its passes: the
-  constants from `light_globals` with the screen bounds from a port of
-  `0x001650a0`, the scissor as the frame graph's rectangle, the
-  projection from `shadow_globals`, the targets' begin, clear and end
-  as graph nodes, the gel from the scene
-  ([native-gels.md](native-gels.md)), and the additional casters as
-  groups of their site. The globals are still written
-  (`LightGlobals::write`) for the handlers of other lights. The same
-  for a first-person light and an object shadow.
-- **Tests.** Differential root `0x001650a0`. A graph test per site
-  that a typed light issues the steps' draws in the passes' order with
-  no device call. The mixed GPU fixture of native-shadows.md extended
-  with a typed light beside a guest one.
-- **Live check.** `render.residual`: `light_passes` and `object_shadow`
-  at zero entries on the gate corpus; `render.parity` at 1x and 4x on
-  lit interiors.
-- **Refusal.** While any light can refuse, a refused light runs L5's
-  body. The slice ends when the gate corpus has none; from then a light
-  the stage cannot draw is a named drop (`scene_dropped_lights`,
-  retire-d3d.md, "Rules and limits").
+This slice belongs to the light-gather sequence. Extracting off-camera
+casters and measuring their effect on the simulation thread belong to
+the independent L8 in [e3-lighting.md](e3-lighting.md).
+
+- **Admission.** A dynamic light offers its passes after `0x00040e90`
+  builds its lists. A first-person slot offers them after `0x000402b0`
+  replays its records. The bridge reads the current list intervals,
+  sorts each drawn layer and checks its streams, material bindings and
+  pose rows. A dynamic group must belong to the current scene light.
+  The guest calls the constants function with its own frame and freshly
+  gathered lists. The bridge offers the typed sequence at that call.
+  A refusal lets the constants and every following layer run in place.
+- **Dynamic entry.** The bridge checks the return address, registers and
+  four arguments at `LIGHT_CONSTANTS` against the invocation that built
+  the lists. The current map, float controls and view-target continuation
+  must still match. A committed light resumes at `0x00031508` with its
+  target result in EAX and its saved registers on the stack. The guest
+  epilogue restores the registers and returns to the caller.
+- **First-person entry.** Earlier slots run in the guest loop. At a slot’s
+  constants call the bridge checks the live slot index, record, definition,
+  posed volume and arguments. Only the final slot can complete the function
+  directly using its saved caller registers and return address.
+- **View draws.** The host admits unshadowed lights whose drawn layers
+  are 12 and 13, or either layer alone, or neither. The view-target
+  surfaces and the unscaled viewport must match, and each shader-cache
+  reset must be reproducible. All materials, streams, poses and GPU
+  copies must be ready. The host records all ranges in pass order, then
+  commits the light globals, device constants, guest cache words and
+  final viewport together. A refusal at the last group leaves both
+  groups to their existing layer handlers. A retained frame keeps one
+  repeatable light stage at its original slot. The display worker and
+  private renderer record against their own attachments using the mesh,
+  pose rows and textures held for that light. An armed guest-reference
+  capture keeps its original draws.
+- **Bounds and clip.** `engine::light_constants::screen_bounds` ports
+  `0x001650a0` with the caller's SSE and x87 modes. The globals keep all
+  six words. At layers 12 and 13, the target setter installs the view's
+  viewport. That viewport supplies the draw clip.
+- **Shadow and gel passes.** The graph checks the ordered steps for a
+  dynamic light, each additional-caster suffix, a first-person light and
+  an object-shadow mask with its filter. The view-target host refuses
+  layers 10, 11 and 14, shader-driven gels, and passes that require a
+  target change. Even when the dimensions match, target 1 has a distinct
+  colour-surface header. Layer 14 binds that surface and restores the
+  view's actual colour and depth surfaces afterward. An additional-caster
+  loop whose visibility rows select no caster restores its cursor in Rust.
+  A selected caster still needs its own record walk, projection and suffix.
+  An object mask still builds its model items after constants and projection, then generates,
+  filters and applies the mask through L7. Shader gels retain their
+  target-13 producer and its shader and device state changes.
+- **Tests.** The seeded XBE differentials cover sphere bounds, empty
+  additional-caster loops and the layer and target state a following
+  guest light reads, including the draw byte when layer 13 is masked in
+  but the current light only reaches layer 12. The opacity differential
+  checks both forms of the target-1 bind and the following view restore.
+  The first-person exit differential checks earlier-slot refusals and the
+  final slot’s return registers, stack and surviving memory.
+  Graph tests check each site's draw order and late refusal. The mixed GPU fixture compares
+  a diffuse/specular pair beside guest draws against all-D3D pixels,
+  including a late specular refusal.
+- **Gate.** Check the per-site native and fallback counts above and
+  compare lit interiors with `render.parity` at 1x and 4x. The gate for
+  retiring the guest producers is zero `light_passes` and `object_shadow`
+  entries across the corpus in `render.residual`. L9 depends on the
+  remaining shadow and gel paths and this gate.
 
 ### L9: the gate (S)
 
@@ -874,7 +927,7 @@ and the attachment walk `0x00041c80`.
 ## Not verified
 
 - Every step table against a running game: the differentials of L1 to
-  L7 are the first check.
+  L8 are the first check.
 - Whether any guest code between two frames reads the first-person
   table or a light's records.
 - The time the three entries cost with the bodies in place, per slice

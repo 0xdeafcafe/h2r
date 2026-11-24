@@ -732,6 +732,40 @@ impl<B: Backend> Backend for SceneSink<B> {
         if self.replaying() { return Ok(None); }
         self.inner.prepare_external(surfaces, request, textures.map(|t| t.map(|t| &t.inner)), plan, copy, pass)
     }
+    fn can_commit_carried(&self) -> bool {
+        self.inner.can_commit_carried()
+            && (self.replay.is_none() || (self.at().is_some() && !(self.guest_reference)()))
+    }
+    fn prepare_carried_stage(
+        &mut self, stage: &SceneStage<Self::Surface>,
+    ) -> Result<Option<Vec<ExternalRecording>>, String> {
+        if !self.can_commit_carried() { return Ok(None); }
+        {
+            let pass = stage.pass.lock().map_err(|_| "poisoned carried stage")?;
+            if !self.inner.accepts_scene_pass(&**pass) || (self.replay.is_some() && !pass.replays_scene()) {
+                return Ok(None);
+            }
+        }
+        if let Some(replay) = &self.replay {
+            // All stages are prepared before the first is committed. Leave
+            // space to name every live surface in the committed sequence.
+            let s = &stage.surfaces;
+            let known = [s.color, s.depth].into_iter().chain(s.sampled.iter().copied())
+                .chain(s.slots.iter().flatten().copied())
+                .all(|surface| self.surfaces.iter().any(|&(id, _)| id == surface));
+            if !known || replay.frame.aux.len() + self.surfaces.len() > usize::from(u16::MAX) + 1 {
+                return Ok(None);
+            }
+        }
+        self.inner.prepare_carried_stage(stage)
+    }
+    fn commit_carried_stage(
+        &mut self, stage: SceneStage<Self::Surface>, copies: Vec<ExternalRecording>,
+    ) {
+        let retained = self.replay_stage(&stage);
+        self.inner.commit_carried_stage(stage, copies);
+        if let Some((at, op)) = retained { self.replay_op(at, op); }
+    }
     // A one-shot replacement cannot draw again into a private target.
     // Declining before commit leaves its original packet in this slot.
     fn queue_external_draw(&mut self, candidate: QueuedExternalDraw<Self::Surface>, textures: [Option<&Self::Texture>; 4]) -> bool {
