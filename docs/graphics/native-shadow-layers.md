@@ -118,7 +118,9 @@ pixel side through `shaders::psh`, and its state block.
   material selects it; unselected, it compiles from its template like
   the rest).
 - **Layer 14** compiles as a receiver without shadow inputs, into the
-  view's target with depth writes.
+  colour surface of target 1 with the view's shared depth surface. Its
+  geometry carries no shadow projection, so `shadow_look` keeps a shader
+  that reads `c[40..48]` on the guest path.
 - **Geometry.** Structure entries draw from the world's parts
   (`native_lights_glue`'s `Held`). Model entries draw from the per-map
   model parts the light passes build (`native_render::light_models`);
