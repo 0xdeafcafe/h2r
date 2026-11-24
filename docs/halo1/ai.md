@@ -24,11 +24,10 @@ Evidence labels, as in [map-format.md](map-format.md):
 No game data is in the crate, its tests or this page. The unit tests build
 invented data; the disc tests read the discs at run time.
 
-```
-cargo test -p h1ai                                         # invented data
-H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso \
-  cargo test -p h1ai --release --test disc -- --ignored --nocapture
-```
+Tests: unit tests on invented data run with `cargo xtask test -p h1campaign`;
+the disc tests are the ignored ones in `crates/tools/h1campaign/tests/`
+(`ai/disc.rs`, `ai/convert.rs`, `scripts/`), run with `H1_ISO=disc/halo1.iso`
+and `H2_DISC=disc/halo2.iso` set.
 
 ## Halo 1: the scenario's AI blocks
 
@@ -116,21 +115,19 @@ those bindings with the decoded v8 scenario for every location. The source
 script tables also contain 4,695 literal AI operands: 2,041 encounters,
 235 platoons and 2,419 squads. Each names an existing source row.
 
-#### Coordinator verification
+The ignored disc tests that check this section:
 
-Run from the conversion worktree with `H1_ISO` and `H2_DISC` set to the
-absolute paths of the two retail Xbox discs.
-
-```sh
-cargo test -p h1ai -p h1models -p h1convert -p h1campaign -p h1scripts -p engine --lib
-cargo test -p h1ai --test convert
-cargo test --release -p h1models --lib retail_overlay_defaults_round_trip_on_all_23_maps -- --ignored
-cargo test --release -p h1ai --test disc retail_spawn_bindings_keep_every_actor_weapon_and_command -- --ignored
-cargo test --release -p h1objects --test it sandbox_disc::halo2_sandbox_places_a_vehicle_without_a_counterpart -- --ignored
-cargo test --release -p h1scripts --test disc encounter_controls_emit_live_evaluators_and_native_orders -- --ignored
-cargo test --release -p h1scripts --test conversations_disc every_campaign_conversation_compiles_with_its_source_sounds -- --ignored
-cargo test --release -p h1campaign --test disc both_sandboxes_rebuild_every_retail_map -- --ignored
-```
+- `retail_spawn_bindings_keep_every_actor_weapon_and_command`
+  (`tests/ai/disc.rs`);
+- `retail_overlay_defaults_round_trip_on_all_23_maps`
+  (`h1-assets`, `models/tests.rs`);
+- `halo2_sandbox_places_a_vehicle_without_a_counterpart` (`h1objects`,
+  `tests/sandbox_disc.rs`);
+- `encounter_controls_emit_live_evaluators_and_native_orders`
+  (`tests/scripts/disc.rs`);
+- `every_campaign_conversation_compiles_with_its_source_sounds`
+  (`tests/scripts/conversations_disc.rs`);
+- `both_sandboxes_rebuild_every_retail_map` (`tests/disc/no_fallback.rs`).
 
 ### `actr` and `actv`
 
@@ -146,7 +143,7 @@ carrier form, 12 monitor, 13 sentinel, 14 none, 15 mounted weapon.
 
 The rest of `actv` is tuning a faithful conversion would carry into a
 `char` instead of picking a retail one. Fields with a Halo 2 home (names S;
-offsets not yet read):
+offsets not read):
 
 | Halo 1 `actv` | Halo 2 `char` block |
 |---|---|
@@ -299,7 +296,7 @@ Area set types: 0 on 7865 entries, 1 on 2457, 2 on 1280. Order styles: `-1`
 
 ## The conversion
 
-`h1ai::convert::convert(&H1Ai, &Options) -> Plan` makes the Halo 2 data as
+`h1campaign::ai::convert::convert(&H1Ai, &Options) -> Plan` makes the Halo 2 data as
 the decoder's own types; `Plan::blocks(resolve)` writes them as
 `map::build` blocks, resolving each character path to a datum in the map
 being built; `ScenarioBlocks::apply(&mut scnr_root)` puts them on the
@@ -334,8 +331,8 @@ for marines and crew, none otherwise.
 
 ### Conversations
 
-**Built.** `h1ai::conversations` reads retail participants and all six sound
-references on every line. `h1scripts` builds the worker and state into the
+**Built.** `h1campaign::ai::conversations` reads retail participants and all six sound
+references on every line. `h1campaign::scripts` builds the worker and state into the
 scenario's regular Halo 2 script tables. `h1campaign` installs the referenced
 Halo 1 sounds with the other script sounds and resolves their datums.
 
@@ -376,8 +373,7 @@ rules before the first spawn attempt (Halo 1 `0x0013e563`, Halo 2
 `0x00201520` and `0x00203780`). The voice and leader flag follow the salted
 unit datum through squad migration and cast changes. The script map-init
 hook moves early births into scenario globals, which carry the profiles
-in checkpoints. Rebuild converted maps to install the spawn metadata and
-checkpoint globals.
+in checkpoints.
 
 **Built.** Flag `0x20` runs the cast toward the focus player using the
 source distance at `+0x28` (Halo 1 `0x0014476c`). Line flags `0x10` and
@@ -413,7 +409,7 @@ global types and uses salted object, actor and sound handles.
 ### Command scripts
 
 **Built.** The ten Halo 1 campaign scenarios contain 552 command lists.
-`h1scripts::compile::commands` appends a kind-5 definition for each, in
+`h1campaign::scripts::compile::commands` appends a kind-5 definition for each, in
 list order after the authored scripts. A list may have the same display
 name as another list. The generated name `h1_cmd_<index>` keeps their
 references distinct. Halo 1 checks the resolved BSP at list offset
@@ -664,7 +660,7 @@ Automatic stimuli without a verified route remain conversion errors
 #### Cinematic bindings (x50 and c40)
 
 **Built.** Use the command list index from the containing H1 scenario.
-`h1ai::h1::command_script_name(i)` returns `h1_cmd_<i>` with the
+`h1campaign::ai::h1::command_script_name(i)` returns `h1_cmd_<i>` with the
 zero-based index in decimal. For example, source list 7 in a level with
 40 authored scripts becomes `h1_cmd_7`, H2 script index 47. Resolve the
 index independently for each level. Duplicate display names are legal.
@@ -673,7 +669,7 @@ index independently for each level. Duplicate display names are legal.
 |---|---|
 | Converted H1 script | `ai_command_list(ai, list)` runs the generated script on the group. `ai_command_list_by_unit(unit, list)` resolves the unit with `object_get_ai`. Both emit `cs_run_command_script`. |
 | Generated H2 cinematic code | Pass the actor and a type-21 `ai_command_script` literal to `cs_run_command_script`. Its data is the generated definition's index. Its token is the generated name. The none value is `0xffffffff`. |
-| Scenario starting location | Set `h1ai::convert::Options::first_command_script` to the number of authored scripts. Conversion binds `placement_script` to the generated name and `placement_script_index` to the first script plus the source list index. A location without a list keeps index `-1`. |
+| Scenario starting location | Set `h1campaign::ai::convert::Options::first_command_script` to the number of authored scripts. Conversion binds `placement_script` to the generated name and `placement_script_index` to the first script plus the source list index. A location without a list keeps index `-1`. |
 | Advance and poll | The H1 advance calls deliver one stimulus per addressed actor. Status of an object list is the highest member status: 0 inactive, 1 recently finished, 2 waiting for advance, 3 running. |
 
 #### Command execution
@@ -739,7 +735,7 @@ test checks the table against the disc).
 
 A converted level needs each chosen tag in its map; no single retail map
 holds them all. `h1campaign::donor` copies the ones the base (05a) lacks
-from a donor, whole tree and sounds (`h1sounds::transplant`): hunter
+from a donor, whole tree and sounds (`h1_assets::sounds::transplant`): hunter
 from 03a, flood combat elite, infection, carrier and the monitor from
 04b, flood combat human from 06a, and the special-ops elite and grunt
 from 04b.
@@ -817,7 +813,7 @@ map load. Smaller maps restore the retail squad capacity. The converter uses the
 
 The ignored disc tests cover the a30/a10 sector readback, every campaign's
 scripted squad references, and the a10/c40 character-to-animation resource
-chain. Gameplay and map-size verification are pending integration.
+chain. Gameplay and map size are not verified by them.
 
 ### a30 ground encounters
 
@@ -843,6 +839,57 @@ the authored start to the landing zone would miss that transfer.
 The ignored `a30_converts_onto_its_base_and_reads_back` test checks the
 emitted map's sector references, cluster masks, connectivity and starting
 weapons against the characters' inherited firing profiles.
+
+## Involuntary speech and body damage
+
+**Built.** Halo 1's active Flood revival passes involuntary speech type 5 at
+`0x4508c` after the revival timer expires with positive body vitality.
+That type selects `udlg+0xb80` at `0x46c84`. Halo 2's reanimation
+path checks for a depleted parent at `0x28fedc` and calls `0xcaf00`
+through `0x1e0dc0` to clear depletion and restore the unit. Converted
+units with that authored slot queue it on this transition.
+
+**Built.** The Xbox retail dialogue scheduler never selects slots `0xa90` (partial
+sighting), `0xaa0` (nothing there), or `0xb60` (uncover exclamation).
+They appear in neither the primary or reply tables nor the hard-coded
+involuntary selectors, and no entry in the fallback table selects them.
+The converted bank preserves the original sounds and indices for explicit
+source-slot lookup.
+
+**Built.** The airborne scream at `udlg+0xb0` is separate from damage
+on landing. The Halo 1 biped update at `0x49280` checks more than one
+second airborne, then checks for ground within six units and estimates
+vertical speed on impact. The vehicle rider branch at `0x4b580`
+requires more than four seconds in an eligible seat, more than one
+second airborne, and no floor below or in the projected path. Both
+source branches gate probes at half-second intervals and suppress them
+during custom animation. The biped branch also respects the converted
+command list's falling-damage exemption. The boot hook uses Halo 2's
+biped and vehicle airborne counters, the animation manager predicate at
+`0x11b930`, and the BSP ray at `0x1697c0`. It queues the original
+scream in the speaker's speech cache.
+
+The Xbox retail XBE has a scheduler row for stimulus 46 at
+`0x1ef9f8` that also selects `0xb0`. That row is dormant in this
+executable. The scheduler at `0x145f30` has 43 direct call sites. Only
+the command-list update and the combat-aftermath update pass a
+preselected event ID. The
+command-list update at `0x16c66c` forwards the event at actor `+0xfc`;
+the action switch at `0x16ba93` only writes events 38, 39, 41, 42, 44
+or the no-event sentinel to that field. The aftermath switch feeding
+`0x16d20e` only supplies events 48 through 56. The retail
+`ai_debug_vocalize` evaluator at `0xec990` returns void without
+dispatching an event. Explicit source-slot requests still resolve
+`0xb0` through the unit's converted voice bank.
+
+**Built.** Halo 1's collision damage accumulates applied body damage in
+a byte for each collision region at `0x9512f`. It destroys that region
+after crossing the source `coll +0x28` threshold. The live unit
+notification at `0x3dd10` selects `0xd0` or `0xe0` by collision
+region flag `0x200`. The converted `hlmt` carries these source
+thresholds and flags. The Halo 2 body-damage callback reads the hit
+region that `0xd7e1d` writes and the applied normalized damage that
+`0xd8e5e` writes. Its region history is per salted object handle.
 
 ## Spawning
 
@@ -895,52 +942,3 @@ out in `0xfe618`.
 - Vehicle actor variants (`warthog gunner`, `banshee` pilots) become plain
   characters; Halo 2 puts them in vehicles through the starting location's
   vehicle and seat fields, which need the vehicle palette.
-
-**Built.** Halo 1's active Flood revival passes involuntary speech type 5 at
-`0x4508c` after the revival timer expires with positive body vitality.
-That type selects `udlg+0xb80` at `0x46c84`. Halo 2's reanimation
-path checks for a depleted parent at `0x28fedc` and calls `0xcaf00`
-through `0x1e0dc0` to clear depletion and restore the unit. Converted
-units with that authored slot queue it on this transition.
-
-**Built.** The Xbox retail dialogue scheduler never selects slots `0xa90` (partial
-sighting), `0xaa0` (nothing there), or `0xb60` (uncover exclamation).
-They appear in neither the primary or reply tables nor the hard-coded
-involuntary selectors, and no entry in the fallback table selects them.
-The converted bank preserves the original sounds and indices for explicit
-source-slot lookup.
-
-**Built.** The airborne scream at `udlg+0xb0` is separate from damage
-on landing. The Halo 1 biped update at `0x49280` checks more than one
-second airborne, then checks for ground within six units and estimates
-vertical speed on impact. The vehicle rider branch at `0x4b580`
-requires more than four seconds in an eligible seat, more than one
-second airborne, and no floor below or in the projected path. Both
-source branches gate probes at half-second intervals and suppress them
-during custom animation. The biped branch also respects the converted
-command list's falling-damage exemption. The boot hook uses Halo 2's
-biped and vehicle airborne counters, the animation manager predicate at
-`0x11b930`, and the BSP ray at `0x1697c0`. It queues the original
-scream in the speaker's speech cache.
-
-The Xbox retail XBE has a scheduler row for stimulus 46 at
-`0x1ef9f8` that also selects `0xb0`. That row is dormant in this
-executable. The scheduler at `0x145f30` has 43 direct call sites. Only
-the command-list update and the combat-aftermath update pass a
-preselected event ID. The
-command-list update at `0x16c66c` forwards the event at actor `+0xfc`;
-the action switch at `0x16ba93` only writes events 38, 39, 41, 42, 44
-or the no-event sentinel to that field. The aftermath switch feeding
-`0x16d20e` only supplies events 48 through 56. The retail
-`ai_debug_vocalize` evaluator at `0xec990` returns void without
-dispatching an event. Explicit source-slot requests still resolve
-`0xb0` through the unit's converted voice bank.
-
-**Built.** Halo 1's collision damage accumulates applied body damage in
-a byte for each collision region at `0x9512f`. It destroys that region
-after crossing the source `coll +0x28` threshold. The live unit
-notification at `0x3dd10` selects `0xd0` or `0xe0` by collision
-region flag `0x200`. The converted `hlmt` carries these source
-thresholds and flags. The Halo 2 body-damage callback reads the hit
-region that `0xd7e1d` writes and the applied normalized damage that
-`0xd8e5e` writes. Its region history is per salted object handle.
