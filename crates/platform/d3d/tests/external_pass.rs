@@ -1018,3 +1018,95 @@ fn single_copy_commits_world_and_objects_once_at_display_size() {
     let stats = d.backend.with_inner(|b| b.stats()).unwrap();
     assert_eq!((stats.reference_draws, stats.display_draws), (0, 2));
 }
+
+#[test]
+fn a_later_incomplete_display_step_discards_the_whole_light() {
+    let Some(reference) = backend() else { return };
+    let ctx = &reference.ctx;
+    let display = GfxBackend::new(GfxContext {
+        instance: ctx.instance.clone(), adapter: ctx.adapter.clone(), device: ctx.device.clone(),
+        queue: ctx.queue.clone(), caps: ctx.caps,
+    });
+    let scaled = d3d::ScaledBackend::with_single_copy(reference, display, 2, false).unwrap();
+    let (mut d, mut m) = create(scaled, UploadPolicy::Always);
+    d.clear(&mut m, 0, 0, 0xf0, 0xff00ff00, 1., 0).unwrap();
+    assert!(d.begin_external_boundary(&mut m).unwrap());
+    let seen = Arc::default();
+    let targets = d.external_targets();
+    let steps = [1, 0].map(|display_ranges| d3d::ExternalStep {
+        targets, plan: plan(1),
+        pass: Box::new(Counting { seen: Arc::clone(&seen), display_ranges }),
+    });
+    assert!(d.prepare_external_sequence(&mut m, Vec::from(steps)).unwrap().is_none());
+    assert_eq!(*seen.lock().unwrap(), [d3d::TargetCopy::Reference, d3d::TargetCopy::Display,
+        d3d::TargetCopy::Reference, d3d::TargetCopy::Display]);
+    assert_eq!(d.external_targets(), targets);
+    let back = d.back_buffer().unwrap();
+    let reference = d.backend.reference_mut().read_color(back.reference).unwrap().0;
+    let display = d.backend.view_mut().read_color(back.view.unwrap()).unwrap().0;
+    for pixels in [reference, display] { assert_eq!(&pixels[..4], &[0, 255, 0, 255]); }
+    assert_eq!(d.stats().external_passes, 0);
+}
+
+#[test]
+fn a_light_step_reads_the_preceding_step_on_another_target_without_rebinding() {
+    struct Mask;
+    impl ExternalPass for Mask {
+        fn colour_only(&self) -> bool { true }
+        fn writes(&self) -> d3d::ExternalWrites {
+            d3d::ExternalWrites { color: true, depth_stencil: false }
+        }
+        fn record_ranges(&mut self, t: ExternalTarget<'_>) -> usize {
+            Probe(Arc::default()).encode(t);
+            1
+        }
+    }
+
+    struct Receiver;
+    impl ExternalPass for Receiver {
+        fn colour_only(&self) -> bool { true }
+        fn writes(&self) -> d3d::ExternalWrites {
+            d3d::ExternalWrites { color: true, depth_stencil: false }
+        }
+        fn record_ranges(&mut self, t: ExternalTarget<'_>) -> usize {
+            let Some(mask) = t.slots.first().and_then(Option::as_ref) else { return 0; };
+            t.encoder.copy_texture_to_texture(
+                mask.sample.texture().as_image_copy(), t.color.texture().as_image_copy(),
+                wgpu::Extent3d { width: 16, height: 16, depth_or_array_layers: 1 },
+            );
+            1
+        }
+    }
+
+    let Some(backend) = backend() else { return };
+    let (mut d, mut m) = create(backend, UploadPolicy::Always);
+    set_states(&mut d, &mut m);
+    quad_vb(&mut m, 0., 0., W as f32, H as f32, 0xffff_ffff);
+    bind_quad(&mut d, &mut m);
+    d.clear(&mut m, 0, 0, 0xf0, 0xff00ff00, 1., 0).unwrap();
+    let header = MISC + 0x7800;
+    d3d::resource::SurfaceHeader::linear(gfx::D3DFormat::LinA8R8G8B8, 16, 16, 64, 0x0021_0000)
+        .write(&mut m, header).unwrap();
+    assert!(d.begin_external_boundary(&mut m).unwrap());
+    let target = d.external_targets();
+    let bound = d.bound_target();
+    let mut sample = plan(1);
+    sample.slots = vec![Some(d3d::ExternalSlot { header, written: false })];
+    let held = d.prepare_external_sequence(&mut m, vec![
+        d3d::ExternalStep {
+            targets: d3d::ExternalTargets { color: header, depth: 0, rect: (0, 0, 16, 16) },
+            plan: plan(1), pass: Box::new(Mask),
+        },
+        d3d::ExternalStep { targets: target, plan: sample, pass: Box::new(Receiver) },
+    ]).unwrap().unwrap();
+    assert!(held.commit_light(&mut m, [0, 1f32.to_bits()], &[0; 36], None, 0, None, []).unwrap());
+    assert_eq!(d.bound_target(), bound);
+    let back = d.back_buffer().unwrap();
+    let (pixels, order) = d.backend.read_color(back).unwrap();
+    let red = match order {
+        gfx::encode::HostPixelOrder::Bgra8 => [0, 0, 255, 255],
+        gfx::encode::HostPixelOrder::Rgba8 => [255, 0, 0, 255],
+    };
+    assert_eq!(&pixels[..4], &red, "the receiver reads this generation");
+    assert_eq!(&pixels[16 * 4..17 * 4], &[0, 255, 0, 255], "outside the receiver");
+}

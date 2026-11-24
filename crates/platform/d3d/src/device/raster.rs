@@ -1197,14 +1197,18 @@ impl<B: Backend> Device<B> {
     }
 
     pub(super) fn mark_depth_written(&mut self) {
-        if self.depth_stencil != 0 {
-            if let Some(t) = self.rtt.get_mut(&self.depth_stencil) {
+        self.mark_depth_header_written(self.depth_stencil);
+    }
+
+    pub(super) fn mark_depth_header_written(&mut self, header: u32) {
+        if header != 0 {
+            if let Some(t) = self.rtt.get_mut(&header) {
                 self.rtt_epoch += u64::from(!t.dirty);
                 t.dirty = true;
-                self.depth_level_tex.remove(&self.depth_stencil);
-                self.mirror_supersede(self.depth_stencil);
+                self.depth_level_tex.remove(&header);
+                self.mirror_supersede(header);
             }
-            if self.depth_stencil == self.depth_header {
+            if header == self.depth_header {
                 self.depth_generation += 1;
                 self.depth_color_newer = false;
             }
