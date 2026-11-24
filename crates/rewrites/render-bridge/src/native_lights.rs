@@ -306,6 +306,29 @@ fn leave_layer() -> Option<u32> {
     })
 }
 
+/// The dynamic light at an indexed emission from its diffuse or specular
+/// layer. The sorted reservation may already have consumed the layer bit.
+pub struct IndexedLight {
+    pub targets: [u32; 2],
+    pub serial: u64,
+    pub shader_gel: Option<(u32, u32)>,
+}
+
+pub fn indexed_light(layer: u32, caller: u32, list: u32) -> Option<IndexedLight> {
+    if !matches!(layer, 12 | 13) || list != LIGHT_LIST || !SPLIT_LAYERS.contains(&(layer, caller)) {
+        return None;
+    }
+    CANDIDATE.with_borrow(|candidate| {
+        let current = candidate.as_ref().filter(|c| !c.first_person)?;
+        let [color, depth, ..] = VIEW_TARGET.get()?;
+        Some(IndexedLight {
+            targets: [color, depth],
+            serial: current.serial,
+            shader_gel: current.shader_gel,
+        })
+    })
+}
+
 pub fn new_view() {
     handoff::new_view();
     finish_candidate();
@@ -960,6 +983,30 @@ mod tests {
 
     fn layers() -> Option<(u32, Option<u32>)> {
         CANDIDATE.with_borrow(|c| c.as_ref().map(|c| (c.layers, c.inside)))
+    }
+
+    #[test]
+    fn indexed_light_is_scoped_to_the_dynamic_layers_after_reservation() {
+        CANDIDATE.set(Some(candidate(RESOLVED_LAYERS)));
+        VIEW_TARGET.set(Some([10, 20, 0, 0, 0, 0, 0, 0]));
+        enter_layer(&drawing(12, LIGHT_LIST), DIFFUSE_RETURN);
+        assert_eq!(leave_layer(), Some(12));
+        let light = indexed_light(12, DIFFUSE_RETURN, LIGHT_LIST).unwrap();
+        assert_eq!(light.targets, [10, 20]);
+        assert_eq!(light.serial, 1);
+        for (layer, caller, list) in [
+            (13, DIFFUSE_RETURN, LIGHT_LIST),
+            (14, TARGET_1_RETURN, LIGHT_LIST),
+            (12, DIFFUSE_RETURN, 0),
+            (12, FIRST_PERSON_LAYERS[2].1, LIGHT_LIST),
+        ] {
+            assert!(indexed_light(layer, caller, list).is_none());
+        }
+        CANDIDATE.set(Some(Candidate { first_person: true, ..candidate(RESOLVED_LAYERS) }));
+        assert!(indexed_light(12, DIFFUSE_RETURN, LIGHT_LIST).is_none());
+        CANDIDATE.take();
+        VIEW_TARGET.take();
+        assert!(indexed_light(12, DIFFUSE_RETURN, LIGHT_LIST).is_none());
     }
 
     #[test]

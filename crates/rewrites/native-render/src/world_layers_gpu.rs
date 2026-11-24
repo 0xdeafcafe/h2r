@@ -404,6 +404,14 @@ impl SkyRows {
     }
 }
 
+/// A texture backed by an independently pinned colour surface. Both
+/// identities must name the same GPU texture on every target copy.
+#[derive(Clone, Copy)]
+struct SurfaceTexture {
+    header: u32,
+    size: (u32, u32),
+}
+
 /// One indexed range recorded at its original attachments.
 pub struct IndexedPass {
     sky: Option<SkyRows>,
@@ -416,8 +424,7 @@ pub struct IndexedPass {
     // records the candidate after a later swap.
     extracted_frame: u64,
     fetch: FetchMode,
-    texaccum: Option<Texaccum>,
-    texaccum_stages: [bool; 4],
+    pinned: Option<SurfaceTexture>,
     section: Option<((u64, u32), SectionKey)>,
 }
 
@@ -522,11 +529,14 @@ impl IndexedPass {
             frame,
             extracted_frame: timeline::frames(),
             section,
-            texaccum,
-            texaccum_stages: draw
-                .textures
-                .map(|header| texaccum.is_some_and(|t| header == Some(t.texture))),
+            pinned: texaccum.map(|t| SurfaceTexture { header: t.texture, size: t.size }),
         })
+    }
+
+    /// Require the first external slot's surface to back the sampled
+    /// stage. Used by generated lights whose target 13 is per invocation.
+    pub fn pin_sampled_surface(&mut self, header: u32, size: (u32, u32)) {
+        self.pinned = Some(SurfaceTexture { header, size });
     }
 
     fn prepare(
@@ -598,6 +608,7 @@ impl IndexedPass {
             cache.resolve_shader(&target.device, draw, present, &repack, caps)?
         };
         let dims = shader.dims;
+        let mut consumed_surface = false;
         for (n, dim) in dims.iter().enumerate() {
             let Some(dim) = dim else { continue };
             let view = target.stages[n].as_ref()?;
@@ -613,14 +624,14 @@ impl IndexedPass {
             {
                 return None;
             }
-            if self.texaccum_stages[n] {
-                let accum = self.texaccum?;
+            if let Some(pinned) = self.pinned.filter(|p| draw.textures[n] == Some(p.header)) {
+                consumed_surface = true;
                 let info = draw.texture_info[n]?;
                 let sampled = target.sampled.first()?.as_ref()?;
                 let source = target.slots.first()?.as_ref()?;
-                if (info.width, info.height) != accum.size
+                if (info.width, info.height) != pinned.size
                     || info.format.layout() != gfx::format::Layout::Linear
-                    || source.guest_size != accum.size
+                    || source.guest_size != pinned.size
                     || source.size != sampled.size
                     || source.sample.texture() != sampled.view.texture()
                     || source.sample.texture() != view.texture()
@@ -629,15 +640,8 @@ impl IndexedPass {
                 }
             }
         }
-        // A header that was bound but unreferenced does not establish
-        // that this is a combined material's texture accumulation pass.
-        if self.texaccum.is_some()
-            && !self
-                .texaccum_stages
-                .iter()
-                .zip(dims)
-                .any(|(&accum, dim)| accum && dim.is_some())
-        {
+        // A bound but unsampled header cannot prove a surface dependency.
+        if self.pinned.is_some() && !consumed_surface {
             return None;
         }
         // An unresolved native variant leaves this exact indexed range on D3D.
@@ -799,7 +803,7 @@ impl ExternalPass for IndexedPass {
         // Section caches and texture-stage bindings are outside this case.
         // Sky material groups match the replay's actual stage views and
         // formats. The immutable per-view palette is owned by this pass.
-        self.sky.is_some() || (self.section.is_none() && self.texaccum.is_none()
+        self.sky.is_some() || (self.section.is_none() && self.pinned.is_none()
             && self.draw.texture_info.iter().all(Option::is_none))
     }
 
@@ -837,14 +841,13 @@ impl ExternalPass for IndexedPass {
             frame: self.frame,
             extracted_frame: self.extracted_frame,
             fetch: self.fetch,
-            texaccum: self.texaccum,
-            texaccum_stages: self.texaccum_stages,
+            pinned: self.pinned,
             section: self.section,
         }))
     }
 
     fn sampled(&self) -> Vec<u32> {
-        self.texaccum.iter().map(|target| target.texture).collect()
+        self.pinned.iter().map(|target| target.header).collect()
     }
 
     fn writes(&self) -> ExternalWrites {

@@ -1,6 +1,7 @@
 //! Native light draws over sorted guest geometry. Each target copy prepares
 //! immutable draw resources alongside the exact resolved fallback.
 mod host;
+mod indexed;
 mod materials;
 pub mod models;
 mod residency;
@@ -62,7 +63,7 @@ struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
     state: State,
     gels: Arc<Outputs>,
-    checkpoint: Mutex<Option<(u64, Checkpoint)>>,
+    checkpoint: Arc<Mutex<Option<(u64, Checkpoint)>>>,
     /// What preparation returned, by reason ([`Tally`]).
     tally: Mutex<Tally>,
     order: Mutex<RunOrder>,
@@ -1440,14 +1441,19 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(
         return;
     }
     let admission = Arc::new(LightAdmission::default());
+    let checkpoint = Arc::new(Mutex::default());
     if let Ok(mut device) = device.lock() {
         device.add_draw_admission(admission.clone());
+        device.add_draw_admission(Arc::new(indexed::Admission::new(
+            Arc::clone(&gels),
+            Arc::clone(&checkpoint),
+        )));
     }
     render_bridge::native_lights::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         state,
         gels,
-        checkpoint: Mutex::default(),
+        checkpoint,
         tally: Mutex::new(Tally::default()),
         order: Mutex::default(),
         admission,
