@@ -351,6 +351,8 @@ pub mod method {
     pub const BITMAP_SPRITE_ADD: &str = "bitmap.sprite.add";
     pub const BITMAP_SPRITE_SET: &str = "bitmap.sprite.set";
     pub const BITMAP_SPRITE_REMOVE: &str = "bitmap.sprite.remove";
+    pub const BITMAP_CHANNEL_COPY: &str = "bitmap.channel_copy";
+    pub const BITMAP_TURN: &str = "bitmap.turn";
 
     // Image generation (docs/editor/agent-api.md, "Generating images").
     pub const IMAGE_GENERATE: &str = "image.generate";

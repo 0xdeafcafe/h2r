@@ -2395,11 +2395,24 @@ the window and the API stay one path.
   saying a save writes the whole tag again and `movable` null or why the
   bitmap cannot gain an image;
   `bitmap.pixels {bitmap, image?, rect}` the RGBA of a rectangle (at most
-  65,536 pixels); `bitmap.paint`, `bitmap.fill` and `bitmap.adjust`
-  (invert, levels, hsv) and `bitmap.import` (a PNG, resampled to the
-  rectangle) are `Action::Bitmap`, one undo step each; `bitmap.export
+  65,536 pixels); `bitmap.paint`, `bitmap.fill`, `bitmap.adjust`
+  (invert, levels, hsv), `bitmap.channel_copy`, `bitmap.turn` and
+  `bitmap.import` (a PNG, resampled to the rectangle) are
+  `Action::Bitmap`, one undo step each; `bitmap.export
   {bitmap, image?, mip?, out}` writes a PNG and is refused inside a Git
-  checkout. A bitmap is named by hex tag id, path, `\key` path tail or a
+  checkout. `bitmap.paint {bitmap, image?, points, color, size, ...}`
+  stamps at every point and at most `spacing` apart between them, so two
+  points are a line; with `source` ([x, y]) it is a clone stroke, each
+  stamp the pixels at the offset from `source` to the first point, read
+  from the layer `from` (`{image?, face?, slice?}`; the layer painted
+  without it) as it was when the stroke began, and `color` is not
+  needed. `bitmap.channel_copy {bitmap, image?, from, to, rect?}` writes
+  a channel (`r`, `g`, `b`, `a`, `luma`) into the channels `to` (letters
+  of rgba); `bitmap.turn {bitmap, image?, by, rect?}` is
+  `flip_horizontal`, `flip_vertical`, `quarter`, `half` or
+  `three_quarters` of the rectangle, in place (a quarter turn needs a
+  square). An edit that changes no pixel is no undo step. A bitmap is
+  named by hex tag id, path, `\key` path tail or a
   unique substring. `bitmap.reshape {bitmap, image?, width?, height?,
   format?}` and `bitmap.image.resize {bitmap, image?, size? | width?,
   height?, format?}` ask for a new size and/or format (`dxt1`,
