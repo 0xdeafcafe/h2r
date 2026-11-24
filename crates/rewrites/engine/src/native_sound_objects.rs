@@ -2,6 +2,8 @@
 //! loop player can change records or relocate pools. Live descriptors and
 //! handles cross those callbacks in the original frame.
 
+mod descriptor;
+
 use crate::points::{Flag, Loc, Point, Sig};
 use crate::sim_objects::{Body, Cx, Next, Result, frame, sse};
 use crate::sim_physics::{ARITH, arithmetic, byte, logic, status};
@@ -39,7 +41,8 @@ pub const BODIES: &[Body] = &[Body {
         0x18ab09, 0x18ab50],
     run: step,
 }, Body { point: &LISTENER_IN_RANGE, sites: &[], run: listener_in_range },
-   Body { point: &SCENARIO_FADE, sites: &[], run: scenario_fade }];
+   Body { point: &SCENARIO_FADE, sites: &[], run: scenario_fade },
+   Body { point: &descriptor::POINT, sites: descriptor::SITES, run: descriptor::build }];
 
 fn at(base: u32, off: u32) -> u32 { base.wrapping_add(off) }
 fn call(target: u32, site: u32) -> Result<Next> { Ok(Next::Call { target, site }) }
