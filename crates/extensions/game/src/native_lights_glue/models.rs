@@ -14,12 +14,10 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use map::TagId;
 use native_render::gpu::Image;
-use native_render::light_look::{DIFFUSE_LAYER, SPECULAR_LAYER};
 use native_render::light_models::{LightModels, ModelSection, SectionPart, light_model};
 use native_render::look;
 use native_render::object_nodes::{Compression, decompression_rows};
 use native_render::object_streams::{StreamData, StreamFormats};
-use native_render::shadow_look::{CASTER_LAYER, OPACITY_LAYER, RECEIVER_LAYER};
 use render_bridge::native_map_work;
 use tags::material::{EngineInputs, ShaderLibrary, TextureSource};
 use tags::model::RenderModelGeometry;
@@ -164,10 +162,7 @@ fn lit_passes(lib: &mut ShaderLibrary, shader: TagId) -> (Vec<TagId>, Vec<(usize
     for imp in material
         .layers
         .iter()
-        .filter(|l| {
-            matches!(l.layer, DIFFUSE_LAYER | SPECULAR_LAYER)
-                || (l.lod == 0 && matches!(l.layer, CASTER_LAYER | RECEIVER_LAYER | OPACITY_LAYER))
-        })
+        .filter(|l| super::light_layer(l.lod, l.layer))
         .flat_map(|l| &l.passes)
         .flat_map(|p| &p.implementations)
     {
