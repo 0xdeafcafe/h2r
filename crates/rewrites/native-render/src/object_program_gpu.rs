@@ -2372,9 +2372,6 @@ pub fn lit_model(
         }
         for layer in OBJECT_LAYERS {
             let Ok(passes) = object_layer_passes(&lit.material, layer) else { continue };
-            // A copy of the view is made only for the sorted handlers'
-            // layers (`native_layers_glue`'s encoded pass).
-            let copies_view = engine.view && OVERRIDE_LAYERS.contains(&layer);
             let mut per: Vec<Vec<LitLayerPass>> = secs.iter().map(|_| vec![LitLayerPass::default(); passes.len()]).collect();
             let mut drawn = false;
             for (k, pass) in passes.iter().enumerate() {
@@ -2398,7 +2395,7 @@ pub fn lit_model(
                     let imp = resolved.as_ref();
                     let index_list = |s: u16| lists[&s].0.clone();
                     let compiled = compile_layer_sections(
-                        None, pass.pass, imp, &lit.properties, &secs, formats, engine, copies_view, &mut *vertex, &mut *image, &mut buffers,
+                        None, pass.pass, imp, &lit.properties, &secs, formats, engine, layer, &mut *vertex, &mut *image, &mut buffers,
                         &mut out.input.buffers, &index_list,
                     );
                     match compiled {
@@ -2418,7 +2415,7 @@ pub fn lit_model(
                     if layer == PRT_LAYER {
                         let compiled = formats.elements(PRT_STREAM).and_then(|prt| {
                             compile_layer_sections(
-                                Some(prt.as_slice()), pass.pass, imp, &lit.properties, &secs, formats, engine, false, &mut *vertex, &mut *image,
+                                Some(prt.as_slice()), pass.pass, imp, &lit.properties, &secs, formats, engine, layer, &mut *vertex, &mut *image,
                                 &mut buffers, &mut out.input.buffers, &index_list,
                             )
                         });
@@ -2484,7 +2481,7 @@ fn material_parts<'s, 'a>(
 /// declaration made once over `buffers` (its indices the section's list,
 /// `index_list`), with its stages' images; the first failure, as the
 /// reason the implementation is left out. A stage sampling the view's own
-/// target compiles only with `copies_view` (bound per encode,
+/// target compiles only for a sorted layer that copies it (bound per encode,
 /// [`LitObjects::view_copy`]).
 ///
 /// With `prt` (layer 5, the PRT stream's format), the declaration has the
@@ -2504,7 +2501,7 @@ fn compile_layer_sections(
     secs: &[&LitSection<'_>],
     formats: &StreamFormats,
     engine: &EngineStages,
-    copies_view: bool,
+    layer: u8,
     vertex: &mut VertexSource<'_>,
     image: &mut StageSource<'_>,
     buffers: &mut HashMap<(u16, Vec<Element>), usize>,
@@ -2535,6 +2532,9 @@ fn compile_layer_sections(
         let full = declaration(&semantics, &all);
         let mut compiled = object_layer_pass(pass, imp, properties, &microcode, registers(&full), input_fetch(&full))
             .map_err(|e| format!("section {}: {e}", s.index))?;
+        if compiled.inherits_c18 && !matches!(layer, 1 | crate::layer_pass::BLOOM_LAYER) {
+            return Err(format!("section {}: layer {layer} does not capture inherited c[18]", s.index));
+        }
         if prt.is_some() {
             compiled.prt = Some(PrtInput {
                 semantics: semantics.clone(),
@@ -2579,7 +2579,7 @@ fn compile_layer_sections(
                 continue;
             }
             if compiled.view[k] {
-                if !copies_view {
+                if !engine.view || !OVERRIDE_LAYERS.contains(&layer) {
                     return Err(format!("stage {k} samples the view's own target, which the host copies only for the sorted handlers' layers"));
                 }
                 continue;

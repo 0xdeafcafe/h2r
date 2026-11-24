@@ -1031,7 +1031,7 @@ fn load_objects(
                 palette.resolve(definition, palette::Definition::Failed);
                 refused += 1;
                 if refused == 1 || hooks::native_verbose() {
-                    eprintln!("native-objects: {name}: definition {:#010x} left to D3D ({why})", definition.0);
+                    eprintln!("native-objects: {name}: definition {:#010x} failed to preload ({why})", definition.0);
                 }
             }
         }
@@ -1060,7 +1060,7 @@ fn load_objects(
         cover.assets.finish(true);
     }
     palette.refresh();
-    eprintln!("native-objects: {name}: {loaded} definitions ready, {refused} left to D3D");
+    eprintln!("native-objects: {name}: {loaded} definitions indexed, {refused} failed to preload");
 }
 
 /// Each definition's model for E3's sun tiles
@@ -1187,7 +1187,7 @@ fn override_materials(o: &mut Opened) -> Vec<HashMap<u16, LitMaterial>> {
         if m.layers.is_empty() { continue; }
         match lit_material(o, m) {
             Ok(lit) => found.push(HashMap::from([(OVERRIDE_MATERIAL, lit)])),
-            Err(why) => eprintln!("native-objects: shader {:#010x}'s camouflage passes stay on D3D: {why}", id.0),
+            Err(why) => eprintln!("native-objects: shader {:#010x}'s camouflage passes failed to preload: {why}", id.0),
         }
     }
     if hooks::native_verbose() {
@@ -1197,13 +1197,13 @@ fn override_materials(o: &mut Opened) -> Vec<HashMap<u16, LitMaterial>> {
 }
 
 /// Logs, once per shader and layer, why an override shader's passes
-/// ([`override_materials`]) did not compile: its records keep their D3D
-/// draws there.
+/// ([`override_materials`]) could not be preloaded. The indexed emitter
+/// can submit the bound range when its handler runs.
 fn log_override_refusal(shader: u32, layer: u8, why: &str) {
     static SEEN: Mutex<Option<HashSet<(u32, u8)>>> = Mutex::new(None);
     let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
     if seen.get_or_insert_with(HashSet::new).insert((shader, layer)) {
-        eprintln!("native-objects: shader {shader:#010x}'s layer {layer} stays on D3D: {why} (each shader and layer logged once)");
+        eprintln!("native-objects: shader {shader:#010x}'s layer {layer} failed to preload: {why} (each shader and layer logged once)");
     }
 }
 
