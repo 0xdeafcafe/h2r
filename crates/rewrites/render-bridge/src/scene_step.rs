@@ -135,6 +135,8 @@ static LAYERS: AtomicU64 = AtomicU64::new(0);
 static LAYER_ITEMS: AtomicU64 = AtomicU64::new(0);
 static LAYER_REMAINDER: AtomicU64 = AtomicU64::new(0);
 static LAYER_UNREAD: AtomicU64 = AtomicU64::new(0);
+static DECORATOR_PLACEMENTS: [AtomicU64; scene_extract::decorators::PlacementSource::ALL.len()] =
+    [const { AtomicU64::new(0) }; scene_extract::decorators::PlacementSource::ALL.len()];
 static DECORATOR_DRAWS: AtomicU64 = AtomicU64::new(0);
 static DECORATOR_INSTANCES: AtomicU64 = AtomicU64::new(0);
 static DECORATOR_REMAINDER: AtomicU64 = AtomicU64::new(0);
@@ -479,8 +481,9 @@ pub(crate) fn objects(mem: &dyn GuestMemory, kind: ViewKind, entries: &[Entry]) 
 fn decorators(mem: &dyn GuestMemory) {
     let m = Ro(mem);
     with_step(|step| {
-        match scene_extract::decorators::extract(&m, LIGHTMAP_LAYER as u8, &mut step.builder) {
-            Ok(Some(got)) => {
+        match scene_extract::decorators::extract_with_windows(&m, LIGHTMAP_LAYER as u8, step.decorator_windows.as_ref(), &mut step.builder) {
+            Ok(Some((got, source))) => {
+                DECORATOR_PLACEMENTS[source as usize].fetch_add(1, Ordering::Relaxed);
                 DECORATOR_DRAWS.fetch_add(u64::from(got.draws), Ordering::Relaxed);
                 DECORATOR_INSTANCES.fetch_add(u64::from(got.instances), Ordering::Relaxed);
                 DECORATOR_REMAINDER.fetch_add(u64::from(got.remainder), Ordering::Relaxed);
@@ -1590,6 +1593,9 @@ pub fn counters() -> Vec<(&'static str, u64)> {
             .into_iter()
             .zip(VISIBILITY_DECLINED.iter().map(|c| c.load(Ordering::Relaxed))),
     )
+    .chain(scene_extract::decorators::PlacementSource::ALL.map(|source| {
+        (source.counter(), DECORATOR_PLACEMENTS[source as usize].load(Ordering::Relaxed))
+    }))
     .chain(light_visibility_counters())
     .chain(crate::native_lights::slot_visibility::counters())
     .chain(

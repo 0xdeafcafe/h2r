@@ -9,7 +9,8 @@
 
 use frame_scene::{BuildError, SceneBuilder};
 
-use crate::layout::decorators::{Constants, DECORATOR_BUILD, read};
+use crate::layout::decorators::{Constants, DECORATOR_BUILD, DECORATOR_DRAW, ModelItem, Refusal, model_items, read, read_placement};
+use crate::visibility::frusta::WindowFrusta;
 use crate::layout::skip::{CURRENT_LAYER, CURRENT_LIST, Cleared, ITEM_SIZE, MAX_ITEMS};
 use crate::{GuestRead, GuestWrite};
 
@@ -23,53 +24,153 @@ pub struct Decorators {
     pub remainder: u32,
 }
 
-/// The current list's model decorator items in `layer`, in the list's
-/// order, into the open view. `Ok(None)`, nothing written, when the list
-/// or the draw's constants do not read.
+/// Result of comparing the placement producer with the live list on this view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlacementSource {
+    Rust,
+    Different,
+    NoWindows,
+    Unread,
+    NotResident,
+    VirtualShader,
+}
+
+impl PlacementSource {
+    pub const ALL: [Self; 6] = [Self::Rust, Self::Different, Self::NoWindows, Self::Unread, Self::NotResident, Self::VirtualShader];
+
+    pub const fn counter(self) -> &'static str {
+        match self {
+            Self::Rust => "scene_decorator_placements_equal",
+            Self::Different => "scene_decorator_placements_differ",
+            Self::NoWindows => "scene_decorator_placements_no_windows",
+            Self::Unread => "scene_decorator_placements_unread",
+            Self::NotResident => "scene_decorator_placements_nonresident",
+            Self::VirtualShader => "scene_decorator_placements_virtual_shader",
+        }
+    }
+}
+
+impl From<Refusal> for PlacementSource {
+    fn from(reason: Refusal) -> Self {
+        match reason {
+            Refusal::Unread => Self::Unread,
+            Refusal::NotResident => Self::NotResident,
+            Refusal::Virtual => Self::VirtualShader,
+        }
+    }
+}
+
+struct List {
+    first: u32,
+    count: u32,
+    items: u32,
+}
+
+impl List {
+    fn read(mem: &dyn GuestRead) -> Option<Self> {
+        let list = mem.read_u32(CURRENT_LIST).filter(|&l| l != 0)?;
+        let first = mem.read_u32(list.checked_add(0xc)?)?;
+        let count = mem.read_u32(list.checked_add(4)?)?;
+        let items = mem.read_u32(list.checked_add(0x14)?)?;
+        if first > count || count - first > MAX_ITEMS {
+            return None;
+        }
+        items.checked_add(count.checked_mul(ITEM_SIZE)?)?;
+        Some(Self { first, count, items })
+    }
+
+    /// The slot is needed only for masking the guest draw. Keys and order
+    /// come from the Rust producer; compare the whole layer before taking it.
+    fn matched_slots(&self, mem: &dyn GuestRead, layer: u8, candidates: &[ModelItem]) -> Result<Vec<u32>, PlacementSource> {
+        let mut slots = Vec::with_capacity(candidates.len());
+        for slot in self.first..self.count {
+            let item = self.items + ITEM_SIZE * slot;
+            if mem.read_u32(item).ok_or(PlacementSource::Unread)? != DECORATOR_BUILD {
+                continue;
+            }
+            let mask = mem.read_u32(item + 0x10).ok_or(PlacementSource::Unread)?;
+            if mask & (1 << layer) == 0 {
+                continue;
+            }
+            if !candidates.get(slots.len()).is_some_and(|key| key.matches(mem, item)) {
+                return Err(PlacementSource::Different);
+            }
+            slots.push(slot);
+        }
+        if slots.len() != candidates.len() {
+            return Err(PlacementSource::Different);
+        }
+        Ok(slots)
+    }
+}
+
+type DrawResult = Result<Option<(frame_scene::DecoratorDraw, Vec<frame_scene::DecoratorInstance>)>, Refusal>;
+
+fn publish(builder: &mut SceneBuilder, out: &mut Decorators, result: DrawResult) -> Result<(), BuildError> {
+    match result {
+        Ok(Some((draw, instances))) => {
+            builder.push_decorator(draw, &instances)?;
+            out.draws += 1;
+            out.instances += instances.len() as u32;
+        }
+        Ok(None) => {}
+        Err(_) => out.remainder += 1,
+    }
+    Ok(())
+}
+
+/// Extract using the guest list when the caller has no R4 windows.
 pub fn extract(mem: &dyn GuestRead, layer: u8, builder: &mut SceneBuilder) -> Result<Option<Decorators>, BuildError> {
+    Ok(extract_with_windows(mem, layer, None, builder)?.map(|(out, _)| out))
+}
+
+/// Produce the layer's model placements from the visible cells and the
+/// reference portal windows. Compare shader, pass, detail level, mask,
+/// callback, packed argument and order. An unmatched view retains the guest list.
+pub fn extract_with_windows(
+    mem: &dyn GuestRead, layer: u8, windows: Option<&WindowFrusta>, builder: &mut SceneBuilder,
+) -> Result<Option<(Decorators, PlacementSource)>, BuildError> {
     if layer >= 32 {
         return Ok(None);
     }
-    let Some(list) = mem.read_u32(CURRENT_LIST).filter(|&l| l != 0) else {
+    let (Some(list), Some(k)) = (List::read(mem), Constants::read(mem)) else {
         return Ok(None);
     };
-    let (Some(count), Some(first), Some(items)) =
-        (mem.read_u32(list.wrapping_add(4)), mem.read_u32(list.wrapping_add(0xc)), mem.read_u32(list.wrapping_add(0x14)))
-    else {
-        return Ok(None);
-    };
-    let Some(k) = Constants::read(mem) else {
-        return Ok(None);
-    };
-    let bit = 1u32 << layer;
+    let selected = (|| {
+        let windows = windows.ok_or(PlacementSource::NoWindows)?;
+        let camera = builder.view().ok_or(PlacementSource::Unread)?.camera;
+        let candidates = model_items(mem, &k, camera.position, windows, layer)?;
+        let slots = list.matched_slots(mem, layer, &candidates)?;
+        Ok(candidates.into_iter().zip(slots))
+    })();
     let mut out = Decorators::default();
-    for slot in first..count.min(first.saturating_add(MAX_ITEMS)) {
-        let Some(item) = ITEM_SIZE.checked_mul(slot).and_then(|o| items.checked_add(o)) else {
-            break;
-        };
-        if mem.read_u32(item) != Some(DECORATOR_BUILD) {
-            continue;
-        }
-        match mem.read_u32(item.wrapping_add(0x10)) {
-            Some(mask) if mask & bit == 0 => continue,
-            Some(_) => {}
-            None => {
-                out.remainder += 1;
-                continue;
+    let source = match selected {
+        Ok(entries) => {
+            for (key, slot) in entries {
+                publish(builder, &mut out, read_placement(mem, &k, slot, layer, key.shader, key.argument, key.pass, key.variant))?;
             }
+            PlacementSource::Rust
         }
-        match read(mem, &k, item, slot, layer) {
-            Ok(Some((draw, instances))) => {
-                out.draws += 1;
-                out.instances += instances.len() as u32;
-                builder.push_decorator(draw, &instances)?;
+        Err(source) => {
+            for slot in list.first..list.count {
+                let item = list.items + ITEM_SIZE * slot;
+                if mem.read_u32(item) != Some(DECORATOR_BUILD) {
+                    continue;
+                }
+                match mem.read_u32(item + 0x10) {
+                    Some(mask) if mask & (1 << layer) == 0 => continue,
+                    Some(_) if mem.read_u32(item + 4) == Some(DECORATOR_DRAW) => {
+                        publish(builder, &mut out, read(mem, &k, item, slot, layer))?;
+                    }
+                    Some(_) => out.remainder += 1,
+                    None => out.remainder += 1,
+                }
             }
-            Ok(None) => {}
-            Err(_) => out.remainder += 1,
+            source
         }
-    }
+    };
     builder.add_decorator_remainder(out.remainder)?;
-    Ok(Some(out))
+    Ok(Some((out, source)))
 }
 
 /// Clears `layer`'s bit on the current list's items at `slots` (a
@@ -99,7 +200,7 @@ pub fn clear_slots(mem: &mut dyn GuestWrite, layer: u32, slots: &[u32]) -> Optio
         }
         let item = items.checked_add(ITEM_SIZE.checked_mul(slot)?)?;
         let mask = mem.read_u32(item.checked_add(0x10)?)?;
-        if mem.read_u32(item)? != DECORATOR_BUILD || mask & bit == 0 {
+        if mem.read_u32(item)? != DECORATOR_BUILD || mem.read_u32(item + 4)? != DECORATOR_DRAW || mask & bit == 0 {
             return None;
         }
         masks.push((item, mask));
@@ -285,6 +386,91 @@ mod tests {
         let mut b = SceneBuilder::default();
         view(&mut b, &m);
         assert_eq!(extract(&m, 3, &mut b).unwrap(), None, "no list, nothing written");
+    }
+
+    /// The first grid cell is empty. The second holds one model group in
+    /// BSP cluster 7. The sphere meets its portal window and range limit.
+    fn placement_inputs(m: &mut Mem) -> WindowFrusta {
+        use crate::visibility::frusta::Frustum;
+        let cells = 0x0068_0000;
+        let shader_refs = 0x0068_1000;
+        m.w(0x004b_a024, 1 << 8);
+        m.w(0x0050_9438, 2);
+        m.w(VISIBLE_CLUSTERS, 0);
+        m.w(VISIBLE_CLUSTERS + 0x10, 1);
+        m.w(BLOCK + 0x20, 2);
+        m.w(BLOCK + 0x24, cells);
+        m.w(cells + 0x10, 0);
+        m.w(cells + 0x18 + 0x10, 1 << 16);
+        m.w(cells + 0x18 + 0x14, 2);
+        m.w(BLOCK + BLOCK_PLACEMENTS - 4, 3);
+        m.w(BLOCK + BLOCK_GEOMETRY - 4, 1);
+        m.w(SCENARIO_DATA + SCENARIO_PALETTE - 4, 2);
+        m.w(SET + SET_CLASSES - 4, 1);
+        m.w(CLASSES + 4, 0);
+        m.w(CLASSES + CLASS_PERMUTATIONS - 4, 2);
+        m.w(PERMUTATIONS + 4, 0);
+        m.w(PERMUTATIONS + 8, 1 << 8);
+        m.w(SET, 1);
+        m.w(SET + 4, shader_refs);
+        m.w(shader_refs + 4, 0xe500_0002);
+        m.w(PLACEMENTS + 2 * PLACEMENT_SIZE + 4, 7);
+        m.w(PLACEMENTS + 2 * PLACEMENT_SIZE + 0x14, 0);
+        m.f(0x0045_e4d0, 0.5);
+        m.f(0x0052_5980 + 4, 500.0);
+        m.f(0x0004_1925, 8.0);
+        m.f(0x0048_5b28, 1.0);
+        m.w(0x004b_a018, 0);
+        let pp = 0x0066_0300;
+        let lods = 0x0066_0400;
+        m.w(pp, 4);
+        for lod in 0..3 {
+            m.f(lods + LOD_SIZE * lod + 6, 10.0);
+        }
+        m.w(lods + LOD_SIZE * 3 + 2, 1 << 3);
+        WindowFrusta(vec![(7, Frustum { bounds: [-500.0, 500.0, -500.0, 500.0, -500.0, 500.0], planes: [[0.0; 4]; 6] })])
+    }
+
+    #[test]
+    fn model_placement_uses_the_cell_group_window_and_shader_level() {
+        let mut m = Mem::default();
+        camera_record(&mut m, RENDER_CAMERA);
+        world(&mut m);
+        let windows = placement_inputs(&mut m);
+        let mut b = SceneBuilder::default();
+        view(&mut b, &m);
+        let got = extract_with_windows(&m, 3, Some(&windows), &mut b).unwrap().unwrap();
+        assert_eq!(got, (Decorators { draws: 1, instances: 2, remainder: 0 }, PlacementSource::Rust));
+        let scene = b.seal(Stamp::default()).unwrap();
+        let draw = &scene.decorators_of(&scene.views[0])[0];
+        assert_eq!((draw.slot, draw.argument, draw.variant), (1, 1 << 30 | 2 << 8 | 1, 3));
+        assert_eq!(scene.decorator_instances_of(draw)[1].position(), [103.0, 200.0, 300.0]);
+
+        for windows in [WindowFrusta::default(), windows.clone()] {
+            // A sphere beyond the LOD limit or without a reachable window
+            // is culled even though the guest fixture still lists it.
+            m.f(0x0052_5980 + 4, 1.0);
+            let mut b = SceneBuilder::default();
+            view(&mut b, &m);
+            let (out, source) = extract_with_windows(&m, 3, Some(&windows), &mut b).unwrap().unwrap();
+            assert_eq!((source, out.draws), (PlacementSource::Different, 1));
+        }
+    }
+
+    #[test]
+    fn a_duplicate_guest_slot_or_different_callback_rejects_the_whole_placement_list() {
+        let mut m = Mem::default();
+        camera_record(&mut m, RENDER_CAMERA);
+        world(&mut m);
+        let windows = placement_inputs(&mut m);
+        for (mask, draw, draws) in [(1 << 3, DECORATOR_DRAW, 2), (1 << 15, DECORATOR_DRAW + 4, 0)] {
+            m.w(ITEMS + 2 * ITEM_SIZE + 0x10, mask);
+            m.w(ITEMS + ITEM_SIZE + 4, draw);
+            let mut b = SceneBuilder::default();
+            view(&mut b, &m);
+            let (out, source) = extract_with_windows(&m, 3, Some(&windows), &mut b).unwrap().unwrap();
+            assert_eq!((source, out.draws), (PlacementSource::Different, draws));
+        }
     }
 
     const CACHE: u32 = 0x0065_0000;

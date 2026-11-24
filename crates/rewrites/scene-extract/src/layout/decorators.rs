@@ -40,6 +40,9 @@ use frame_scene::Row;
 
 use crate::GuestRead;
 
+mod placements;
+pub(crate) use placements::{model_items, ModelItem};
+
 /// The model decorators' build and draw (an item's `+0` and `+4`).
 pub const DECORATOR_BUILD: u32 = 0x0004_de20;
 pub const DECORATOR_DRAW: u32 = 0x0004_e260;
@@ -434,13 +437,7 @@ pub struct Implementation {
     pub vertex_shader: u32,
 }
 
-/// The build's implementation lookup for `shader` (the item's `+8`) at
-/// detail level `lod` (the item's byte `+0x15`), layer `layer` and pass
-/// `pass` (byte `+0x14`): implementation 0 of the pass the template lists
-/// there. `Ok(None)` when the build declines: its `vrtx` has no program
-/// for [`DECORATOR_CLASSIFICATION`] (`0x0004cbb0`), so the guest draws
-/// nothing for the item.
-pub fn implementation(mem: &dyn GuestRead, shader: u32, lod: u8, layer: u8, pass: u8) -> Result<Option<Implementation>, Refusal> {
+fn template_postprocess(mem: &dyn GuestRead, shader: u32) -> Result<u32, Refusal> {
     let table = word(mem, TAG_TABLE, 0)?;
     // `movsx`: the shader's index is signed, as the build reads it.
     let entry = element(table, i32::from(shader as u16 as i16), 0x10);
@@ -450,7 +447,17 @@ pub fn implementation(mem: &dyn GuestRead, shader: u32, lod: u8, layer: u8, pass
     let shader_def = word(mem, entry, 8)?;
     let template = word(mem, word(mem, shader_def, SHADER_TEMPLATE)?, 0)?;
     let template_def = definition(mem, template).ok_or(Refusal::Unread)?;
-    let pp = word(mem, template_def, TEMPLATE_POSTPROCESS)?;
+    word(mem, template_def, TEMPLATE_POSTPROCESS)
+}
+
+/// The build's implementation lookup for `shader` (the item's `+8`) at
+/// detail level `lod` (the item's byte `+0x15`), layer `layer` and pass
+/// `pass` (byte `+0x14`): implementation 0 of the pass the template lists
+/// there. `Ok(None)` when the build declines: its `vrtx` has no program
+/// for [`DECORATOR_CLASSIFICATION`] (`0x0004cbb0`), so the guest draws
+/// nothing for the item.
+pub fn implementation(mem: &dyn GuestRead, shader: u32, lod: u8, layer: u8, pass: u8) -> Result<Option<Implementation>, Refusal> {
+    let pp = template_postprocess(mem, shader)?;
     let lods = word(mem, pp, POSTPROCESS_LODS)?;
     let first_layer = u32::from(half(mem, lods, LOD_SIZE * u32::from(lod))?) & INDEX_MASK;
     let layers = word(mem, pp, POSTPROCESS_LAYERS)?;
@@ -620,6 +627,17 @@ pub fn read(
     let argument = word(mem, item, 0xc)?;
     let flags = word(mem, item, 0x14)?;
     let (pass, variant) = (flags as u8, (flags >> 8) as u8);
+    read_placement(mem, k, slot, layer, shader, argument, pass, variant)
+}
+
+/// Both list sources address the same placement and instance block. These
+/// inputs determine all draw data once the producer's keys compare equal.
+pub(crate) fn read_placement(
+    mem: &dyn GuestRead, k: &Constants, slot: u32, layer: u8, shader: u32, argument: u32, pass: u8, variant: u8,
+) -> Result<Option<(DecoratorDraw, Vec<DecoratorInstance>)>, Refusal> {
+    if layer == 1 {
+        return Ok(None);
+    }
     let (placement, set, def, geometry) = placement_blocks(mem, argument)?;
     if !resident(mem, geometry)? || !resident(mem, def.wrapping_add(SET_GEOMETRY))? {
         return Err(Refusal::NotResident);
