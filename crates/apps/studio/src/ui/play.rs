@@ -298,6 +298,20 @@ impl PlayUi {
                 let header = self.picture_header(&view);
                 self.game_view.draw(ui, app, &header, gpu);
             }
+            if let Some(report) = &app.preview.report {
+                theme::section(ui, "Preview");
+                let state = report["state"].as_str().unwrap_or("running");
+                let what = report["what"].as_str().unwrap_or("Preview");
+                ui.text(format!("{what} · {state}"));
+                if let Some(why) = report["why"].as_str() {
+                    ui.text_wrapped(why);
+                }
+                if let Some(warnings) = report["warnings"].as_array() {
+                    for warning in warnings.iter().filter_map(serde_json::Value::as_str) {
+                        ui.text_wrapped(warning);
+                    }
+                }
+            }
             theme::section(ui, "Session");
             self.session(ui, app, &view);
             theme::section(ui, "Player");

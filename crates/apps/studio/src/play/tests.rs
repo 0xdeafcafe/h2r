@@ -18,6 +18,36 @@ use super::testing::fake::{Game, PLAYER_AT, SCNR, UNIT, VEHICLE, until};
 use super::*;
 use crate::app::{Action, App};
 
+#[test]
+fn in_game_reloads_the_script_on_studios_paired_game() {
+    use crate::api::Api;
+    use crate::app::{Doc, rules_edit::ReloadState};
+
+    let (_temp, game, mut app, mut play) = paired("preview-rules", "example", SessionKind::Local);
+    let endpoint = Endpoint::Unix(game.path.clone());
+    play.child_endpoint = Some(endpoint.clone());
+    let mut link = play.link_view(&app);
+    link.own = Some(OwnGame {
+        level: "example".into(),
+        socket: endpoint.to_string(),
+        editor: true,
+        running: true,
+    });
+    app.pairing.link = Some(link.into());
+    app.rules.new_blank();
+    app.dispatch(Action::OpenDoc(Doc::Rules));
+    app.dispatch(Action::PreviewInGame(Some(Doc::Rules)));
+    Api::new().run_preview_asks(&mut app);
+
+    until(&mut play, &mut app, "script preview reply", |_, app| {
+        matches!(app.rules.reload, ReloadState::Done(_))
+    });
+    let (params, _) = crate::app::rules_edit::reload_params(&app.rules.text, app.rules.mode).unwrap();
+    assert_eq!(game.calls(agent_proto::rules::method::RELOAD), [params]);
+    assert_eq!(app.pairing.panel, pair::PanelMode::Own);
+    assert!(app.preview.focus_game);
+}
+
 /// The editor with the invented map open as `example`.
 pub(super) fn editor(t: &Temp) -> App {
     let mut app = App::new();

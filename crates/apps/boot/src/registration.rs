@@ -359,7 +359,12 @@ pub(crate) fn register_core_film(
     // A campaign level in place of the main menu (`h2 play --level`,
     // H2_LEVEL) and the level-loaded mark H2_PERF_FROM=level waits on
     // (docs/runtime/level-boot.md).
-    level_boot::install(rt, features, i.level, i.perf_level).context("installing the level boot")?;
+    let mut level = i.level;
+    let preview_script = level
+        .as_mut()
+        .and_then(|level| level.variant.as_mut())
+        .and_then(|variant| variant.script.take());
+    level_boot::install(rt, features, level, i.perf_level).context("installing the level boot")?;
     // Campaign skulls kept per profile: a pickup is remembered and a
     // campaign start turns on the profile's chosen skulls (docs/game/skulls.md).
     // Headless runs (no settings store) leave skulls as retail. Hooks on
@@ -387,6 +392,13 @@ pub(crate) fn register_core_film(
         },
     )
     .context("installing the game-variant store")?;
+    if let Some(blob) = preview_script {
+        crate::game_variants::store()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .add_script(blob)
+            .map_err(anyhow::Error::msg)?;
+    }
     if let Some(hle) = i.live.clone() {
         features
             .add(&crate::live_hopper::MapPackRotation(hle))

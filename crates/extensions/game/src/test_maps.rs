@@ -311,6 +311,7 @@ fn request(name: &str, listed: &Listed) -> Request {
         map: listed.id,
         difficulty: level_boot::Difficulty::default(),
         kind: Kind::Multiplayer,
+        variant: None,
     }
 }
 

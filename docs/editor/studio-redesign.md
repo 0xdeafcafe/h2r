@@ -223,12 +223,12 @@ Every document's preview has one target switch, the three views of
 kind's own renderer), **My game** (a game Studio started) and
 **Attached** (a game someone else started). The link pill, pairing and
 Pending are the built ones ([live-mirror.md](live-mirror.md)). The
-**Game** panel shows the game's frames once
-[game-view.md](game-view.md)'s panel is built. **Preview in game**
-(Cmd/Ctrl+Enter, in the **Preview** menu) runs `pair.preview` for the
-front document's kind; the job is `pair.result`'s, and a refusal goes to
-the log. [agent-api.md](agent-api.md), "The preview switch", has the
-kinds.
+[Game panel](game-view.md) shows the game's frames and the preview
+result. **In game** (Cmd/Ctrl+Enter) in the header and **Preview** menu
+runs the document form of `pair.preview`. On a variant it starts
+Studio's own game with the open record. On a script it reloads into
+Studio's own game, starting it if needed. The
+[agent API](agent-api.md#the-preview-switch) lists the paired kinds.
 
 ### The editor follows the tag
 
@@ -268,8 +268,8 @@ them and go when another document is in front; nothing else moves.
 **Scripts.** A `.rules` file opens in the built script editor
 (`app/rules_edit.rs`, `ui/game_script.rs`: completion, rename, the
 formatter, problems), with its options as a form, its check and
-simulation reports (`rules::workbench`) and **Reload into game**
-(`rules.reload`). The same file is edited in VS Code or Zed through the
+simulation reports (`rules::workbench`) and the header's **In game**
+(`rules.reload` on Studio's own game). The same file is edited in VS Code or Zed through the
 extensions ([rules-editors.md](rules-editors.md)); **Open in editor**
 (`app/external.rs`) goes there and Studio follows the file on disk.
 
@@ -1213,7 +1213,7 @@ Rows are in build order.
 | PK6 (built: `app/package_doc.rs`, `api/packages.rs`) | **The package document and `package.*`**: list, read, new, set, items, target, enable, order, check, build, play, over the always-on rule `content::package::Set` keeps | M | PK2, SH1 | every method's example runs; a `set.toml` or a call that turns `core` off is refused by name; a reorder that breaks `requires` is refused; `package.check` names a cache map, a bundle and a dataset folder put in an invented package |
 | PK7 (built: `app/edit_target.rs`, `app/edit_lines.rs`; the game's and Live's readers of `active.toml` stand) | **Edits go to the edit target**: the journal as edit lines, the first-edit picker, **Export map...**; the package form and `active.toml` deleted | M | PK6 | a field set in the window and by `tag.set` write the same line; undo across a save removes it; with no target the API answers `NO_TARGET` |
 | SH3 | **Problems** (built: `app/problems.rs`, `ui/problems.rs`, `problems.list`): one panel and `problems.list` over `check.run`, `ui.check`, `hud.check`, `package.check` and build errors, each row opening its asset | S | SH1 | findings from two invented sources list together; opening a row focuses the document and the field |
-| SH4 | **The preview switch** (built: `app/preview_switch.rs`, `ui/preview_switch.rs`, `api/preview.rs`; the Problems rows for a finished preview wait for the Game panel): `preview.target`, **Preview in game** by kind over `pair.preview` | S | SH1 | on the fake game each kind sends the calls its `what` lists; a paused game refuses with the built message |
+| SH4 | **The preview switch** (built: `app/preview_switch.rs`, `ui/preview_switch.rs`, `api/preview.rs`; the Game panel shows the preview state and warnings): `preview.target`, **Preview in game** by kind over `pair.preview` | S | SH1 | on the fake game each kind sends the calls its `what` lists; a paused game refuses with the built message |
 | GT0 to GT7, GE0 to GE5, GM1 to GM4 | **Game types without carriers**, no retail engine object, and maps for scripted games ([game-types-without-carriers.md](../game/game-types-without-carriers.md)) | S to L | GT6 needs PK11; GM2 needs PK9 | as there |
 | PK8 (built: the items, `Registry`, `community_variants`' list from the set and the fragment's parse and tests; the default hopper in `live-proto` still builds its lineup in Rust) | **Rules, variants and playlists as items**: `content/core/` and `content/modes/`; the registry from the set; `community_variants` and the default hopper read it | M | PK3 | `crates/formats/rules/tests/modes.rs` pass with scripts from the set; a package off removes its list entries; the hopper built from fragments equals `hopper/defaults.rs`'s |
 | PK9 (built) | **Whole maps** (`workspace::prepare`, `stage_kit::fresh::StageFresh`, `workspace::scenario_edits`, boot's `packages::prepare_maps`): `map` and `map-patch` items to map packages at prepare; the stage and the test-map recipes as packages | M | PK2 | an invented `fresh` and an invented `onto` item build; the `MapId` of a `map-patch` item equals the id of the map package the importer writes for the same patch |

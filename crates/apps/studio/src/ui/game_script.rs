@@ -232,10 +232,6 @@ fn toolbar(ui: &Ui, app: &mut App, dialogs: bool) {
         ui.tooltip_text("Rename the name at the cursor and every use of it (F2).");
     }
     ui.same_line();
-    if ui.button("Reload") {
-        reload(app);
-    }
-    ui.same_line();
     ui.set_next_item_width(110.0);
     if let Some(_combo) = ui.begin_combo("##rules-mode", mode_label(app.rules.mode)) {
         for mode in [ReloadMode::Auto, ReloadMode::InPlace, ReloadMode::Restart] {
@@ -263,9 +259,6 @@ fn toolbar(ui: &Ui, app: &mut App, dialogs: bool) {
     if app.rules.typing && ui.is_window_focused_with_flags(FocusedFlags::CHILD_WINDOWS) && cmd {
         if ui.is_key_pressed(Key::S) && !io.key_shift() {
             app.dispatch(crate::app::Action::SaveRules);
-        }
-        if ui.is_key_pressed(Key::R) {
-            reload(app);
         }
     }
 }
@@ -851,17 +844,13 @@ fn doc_blocks(ui: &Ui, fonts: &Fonts, blocks: &[HoverBlock], width: f32) {
     }
 }
 
-/// Under the text: the signature, the problems, the check report and the
-/// reload.
+/// Under the text: the signature, the problems and the check report.
 fn below(ui: &Ui, app: &mut App) {
     if let Some(sig) = app.rules.typing.then(|| app.rules.signature()).flatten() {
         ui.text_colored(theme::DIM, sig);
     }
     problems(ui, &mut app.rules);
     report(ui, &app.rules);
-    if let Some((tone, line)) = app.rules.reload_line() {
-        ui.text_colored(theme::reload_colour(tone), line);
-    }
 }
 
 /// Every error and warning, errors first: a click puts the cursor on it,

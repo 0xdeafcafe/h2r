@@ -104,11 +104,18 @@ pub(super) fn draw(ui: &Ui, app: &App, actions: &mut Vec<Action>, browser: &mut 
     } else { ui.text(app.doc_title(doc)); }
     ui.text(target_text(app.edit_target(), app.doc_dirty(doc)));
     ui.same_line();
-    if ui.button("Preview") { ui.open_popup("##doc-preview"); }
-    if let Some(_popup) = ui.begin_popup("##doc-preview") { super::preview_switch::menu(ui, app, actions); }
+    let target = app.preview_target(doc).label();
+    if ui.button(format!("Preview: {target}")) { ui.open_popup("##doc-preview"); }
+    if let Some(_popup) = ui.begin_popup("##doc-preview") {
+        super::preview_switch::targets(ui, app, Some(doc), actions);
+    }
     ui.same_line();
-    let plan = app.game_preview(doc);
-    if button(ui, "In game", plan.is_ok(), "This document cannot preview in game") { actions.push(Action::PreviewInGame(Some(doc))); }
+    let ready = super::preview_switch::in_game(app, Some(doc));
+    let disabled = ui.begin_disabled_with_cond(ready.is_err());
+    let clicked = ui.button("In game");
+    drop(disabled);
+    super::preview_switch::explain(ui, &ready);
+    if clicked && let Ok(action) = ready { actions.push(action); }
     if ui.button(check_label(app.doc_problem_count(doc))) { actions.push(Action::RefreshProblems(None)); }
     ui.same_line();
     let (undo, redo) = app.doc_can(doc);

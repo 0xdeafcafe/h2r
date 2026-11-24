@@ -1393,7 +1393,7 @@ shows (docs/editor/studio-redesign.md, "Preview and the paired game";
 kind's own renderer, the default), `game` (a game Studio started) or
 `attached` (a game someone else started). A game target needs a paired
 game of that kind, else it is `REFUSED` with the reason. The answer is
-`{doc, target, targets: [{id, label, available, why?}], game, why?}`.
+`{doc, target, targets: [{id, label, available, why?}], game, why?, in_game: {available, why?}}`.
 `game` is the `pair.preview` params the document's kind takes, or null
 with `why`:
 
@@ -1404,18 +1404,31 @@ with `why`:
 | a `wgit` or `wgtz` tag, or the screen in the UI Screens tool | `{what: "ui", target: <screen name>}` |
 | a `nhdt` tag, or the HUD tool's document | `{what: "hud"}` |
 | a `snd!` tag | `{what: "sound", target: <tag name>}` |
-| any other tag (`lsnd` and `ugh!` too), the map, a variant or a playlist file | null, with why |
+| any other tag (`lsnd` and `ugh!` too), the map, a script, a variant or a playlist file | null, with why |
 
-The **Preview** menu holds the three targets and **Preview in game**
-(Cmd/Ctrl+Enter). The click is `Action::PreviewInGame`: it runs
-`pair.preview` with the front document's `game` params, so the job is the
-one `pair.result` reads, and a refusal (a paused game, no pairing, a kind
-with no preview) goes to the log with the message the API gives. The
-target menu is `Action::SetPreviewTarget`, the command `preview.target`
-runs. Through the API, call `pair.preview` with `game`.
+The header and **Preview** menu both hold the three targets and **In
+game** (Cmd/Ctrl+Enter). `pair.preview {doc?}` runs that action on a tab
+from `shell.tabs`, or the front tab without `doc`. The document form
+takes only `doc`; use the explicit `{what, ...}` form to customize a
+paired preview. `preview.target` gives its paired params in `game` and
+the availability of **In game** in `in_game`.
+
+- A paired preview answers with its job id. The Game panel shows the
+  state and any refusal or warning from `pair.result`.
+- A variant queues the same own-game launch as `game.start`, on the open
+  multiplayer map with the variant's unsaved record. A named rules
+  script travels with the record when Studio has its IR.
+- A script compiles the open buffer and queues `rules.reload` on Studio's
+  own game. If needed, Studio starts an own game on the open multiplayer
+  map with a record for the script's carrier. The reload waits for the
+  own game's gameplay phase and uses the editor's reload mode.
+
+The variant and script forms answer `{requested: true}`. The Game
+panel, `game.status` and `rules.get` show the launch or reload outcome.
 
 ```sh
 h2 studio preview.target '{"target":"attached"}'
+h2 studio pair.preview '{}'
 ```
 
 The tests are `api/preview/tests.rs`' `switch` module, on the invented
