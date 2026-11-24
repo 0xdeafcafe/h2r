@@ -669,3 +669,6 @@ mod frame_graph;
 
 #[path = "world_layers_gpu/sun_tiles.rs"]
 mod sun_tiles;
+
+#[path = "world_layers_gpu/cone_shadows.rs"]
+mod cone_shadows;

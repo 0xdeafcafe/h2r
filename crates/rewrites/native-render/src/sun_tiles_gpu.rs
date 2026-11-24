@@ -151,9 +151,9 @@ fn fs_receive(i: Recv) -> Term {
 /// A mesh in world space: positions and per-vertex normals.
 #[derive(Clone)]
 pub struct SunMesh {
-    vertices: wgpu::Buffer,
-    indices: wgpu::Buffer,
-    count: u32,
+    pub(crate) vertices: wgpu::Buffer,
+    pub(crate) indices: wgpu::Buffer,
+    pub(crate) count: u32,
 }
 
 impl SunMesh {
@@ -284,13 +284,13 @@ const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
     },
 ];
 
-const VERTEX_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
+pub(crate) const VERTEX_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
     array_stride: 24,
     step_mode: wgpu::VertexStepMode::Vertex,
     attributes: &VERTEX_ATTRIBUTES,
 };
 
-fn depth_state(
+pub(crate) fn depth_state(
     format: wgpu::TextureFormat,
     write: bool,
     compare: wgpu::CompareFunction,
