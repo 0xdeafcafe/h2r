@@ -227,6 +227,12 @@ pub enum Request {
     Stop,
     /// `game.start`: the own game, in editor mode, on the open map.
     StartOwn,
+    StartOwnVariant(String),
+    PreviewRules {
+        params: Value,
+        hash: String,
+        carrier: Option<String>,
+    },
     /// `game.mode`: the panel and the mirror follow this game.
     Follow(PanelMode),
     Edit(bool),
@@ -253,8 +259,11 @@ impl Request {
                 Some("a playtest is already in progress")
             }
             Self::Play | Self::PlayAnswer(..) if !link.can_play => Some("open a map first"),
-            Self::StartOwn if !link.can_play => {
+            Self::StartOwn | Self::StartOwnVariant(_) if !link.can_play => {
                 Some("open a map first, and wait for the game link and any playtest to finish")
+            }
+            Self::PreviewRules { .. } if link.own.is_none() && !link.can_play => {
+                Self::StartOwn.refusal(link)
             }
             Self::Stop if !link.can_stop => Some("the editor has no game of its own to stop"),
             Self::Edit(_) if !link.state.can_edit() => Some("pair with a game first"),

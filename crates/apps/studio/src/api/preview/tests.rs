@@ -629,13 +629,19 @@ mod switch {
         assert_eq!((r["what"].as_str(), r["state"].as_str()), (Some("weapon"), Some("done")), "{r}");
         assert_eq!(game.calls("sim.give"), [json!({"player": "player.0", "weapon": name})]);
 
-        // The HUD tool's document.
-        let id = click(&mut api, &mut app, Some(Doc::Hud)).expect("a job started");
+        // The HUD tool's plan is also the explicit paired form.
+        let plan = app.game_preview(Doc::Hud).unwrap().params();
+        let id = api.call(&mut app, m::PAIR_PREVIEW, plan).unwrap()["id"].as_u64().unwrap();
         let r = finish(&mut api, &mut app, id);
         assert_eq!(r["what"], "hud");
         assert!(!game.calls("cheat.list").is_empty());
 
         // The screens tool's document: the menu is read, not opened.
+        app.ui_screens.pick = Some(crate::app::Pick::Native {
+            screen: "invented_menu".into(),
+            state: "default".into(),
+        });
+        app.dispatch(Action::OpenDoc(Doc::Ui));
         let id = click(&mut api, &mut app, Some(Doc::Ui)).expect("a job started");
         let r = finish(&mut api, &mut app, id);
         assert_eq!(r["what"], "ui");
@@ -647,6 +653,76 @@ mod switch {
         let r = finish(&mut api, &mut app, id);
         assert_eq!(r["what"], "object");
         assert_eq!(game.calls("sim.spawn").len(), 1);
+    }
+
+    #[test]
+    fn document_preview_starts_the_own_game_with_the_unsaved_variant() {
+        use crate::play::pair::Request;
+
+        let game = Game::start("variant");
+        let t = Temp::new("pv-variant");
+        let mut app = app_with_tags(&game, &t);
+        let mut link = crate::play::Play::new().link_view(&app);
+        link.can_play = true;
+        app.pairing.link = Some(link.into());
+        app.rules.new_blank();
+        app.dispatch(Action::NewVariantFromScript(app.rules.text.clone()));
+        app.dispatch(Action::SetVariantName("Invented preview".into()));
+        app.dispatch(Action::OpenDoc(Doc::Variant));
+        let mut api = Api::new();
+
+        // The header and menu both send PreviewInGame through the same
+        // document request as the API.
+        assert_eq!(click(&mut api, &mut app, Some(Doc::Variant)), None);
+        let [Request::StartOwnVariant(from_button)] = app.pairing.requests.as_slice() else {
+            panic!("expected a variant start, got {:?}", app.pairing.requests);
+        };
+        let bundle = variants::portable::read(from_button).unwrap();
+        let actual = bundle.variant().unwrap();
+        let expected = app.variants.as_ref().unwrap().current().unwrap();
+        assert_eq!(actual.bytes(), expected.bytes());
+        assert_eq!(actual.name(), "Invented preview");
+        assert!(bundle.ir().unwrap().is_some());
+        let header_request = app.pairing.requests.pop().unwrap();
+        assert!(app.preview.focus_game);
+        app.preview.focus_game = false;
+
+        assert_eq!(
+            api.call(&mut app, m::PAIR_PREVIEW, json!({})).unwrap(),
+            json!({"requested": true}),
+        );
+        assert_eq!(app.pairing.requests, [header_request]);
+        assert!(app.preview.focus_game);
+        assert!(game.calls("sim.give").is_empty());
+    }
+
+    #[test]
+    fn a_script_without_an_own_game_queues_a_carrier_and_a_reload() {
+        use crate::play::pair::Request;
+
+        let t = Temp::new("pv-script");
+        let mut app = tabbed::app(&t.0);
+        let mut link = crate::play::Play::new().link_view(&app);
+        link.can_play = true;
+        app.pairing.link = Some(link.into());
+        app.pairing.published = Some(json!({"state": "off"}));
+        app.rules.new_blank();
+        app.dispatch(Action::OpenDoc(Doc::Rules));
+        let mut api = Api::new();
+
+        assert_eq!(click(&mut api, &mut app, None), None);
+        let [Request::PreviewRules { params, hash, carrier: Some(carrier) }] =
+            app.pairing.requests.as_slice()
+        else {
+            panic!("expected a script start, got {:?}", app.pairing.requests);
+        };
+        let (ir, _) = rules::build(&app.rules.text).unwrap();
+        let (record, problems) = variants::portable::import(carrier).unwrap();
+        assert!(problems.is_empty());
+        assert_eq!(record, variants::portable::settings_record(&ir).unwrap());
+        assert_eq!(hash, &ir.id().to_string());
+        assert_eq!(params["ir_b64"], variants::portable::base64_encode(&ir.encode()));
+        assert!(app.preview.focus_game);
     }
 
     #[test]

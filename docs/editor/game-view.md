@@ -69,7 +69,7 @@ sealed scene at a tick, not whatever was last presented.
 | Menus | the in-game pause menu is suppressed: `editor::NoStart`, a pad gate added after the debug menu's, clears Start on every pad (the window's Escape and `input.pad` too), so the guest never sees it; Start goes to Studio |
 | Code | the fast tier ([cranelift-tier.md](../lifter/cranelift-tier.md)), or clang's module when it is current. It never builds one |
 
-`play::launch::Launch::editor` adds `--editor`; `game.start` sets it, and so does F5 (`Play::launch_copy` is `start_own`). The map is the open project's last
+`play::launch::Launch::editor` adds `--editor`; `game.start` sets it, and so does F5 (`Play::launch_copy` is `start_own`). The header's **In game** on a variant uses the same launch with its current record. On a script it reloads the own game, starting it if needed. The map is the open project's last
 build ([tag-workspace.md](tag-workspace.md), "Projects"): a package by its
 id, or a play copy for a disc level, as Play does now.
 

@@ -1109,27 +1109,22 @@ impl Api {
         true
     }
 
-    /// Runs the **Preview in game** ask the window's button left, as the
-    /// `pair.preview` call it stands for: the job is `pair.result`'s, and
-    /// a refusal (paused game, no pairing) goes to the log.
+    /// Runs the window's preview action through the document form of
+    /// `pair.preview` and keeps its result visible in the Game panel.
     pub fn run_preview_asks(&mut self, app: &mut App) {
-        let Some(doc) = app.preview.ask.take() else {
-            return;
-        };
-        let params = match app.game_preview(doc) {
-            Ok(g) => g.params(),
-            Err(why) => return app.error(why),
-        };
-        match self.call(app, m::PAIR_PREVIEW, params) {
-            Ok(v) => {
-                app.preview.last_job = v["id"].as_u64();
-                app.info(format!(
-                    "previewing {} in the game (pair.result {})",
-                    app.doc_title(doc),
-                    v["id"]
-                ));
+        if let Some(doc) = app.preview.ask.take() {
+            let id = app.doc_id(doc);
+            if let Err(e) = self.call(app, m::PAIR_PREVIEW, json!({"doc": id})) {
+                app.error(e.message);
             }
-            Err(e) => app.error(e.message),
+        }
+        if let Some(id) = app.preview.last_job
+            && app.preview.report.as_ref().is_some_and(|r| matches!(r["state"].as_str(), Some("sending" | "running")))
+        {
+            match self.call(app, m::PAIR_RESULT, json!({"id": id})) {
+                Ok(report) => app.preview.report = Some(report),
+                Err(e) => app.preview.report = Some(json!({"state": "failed", "why": e.message})),
+            }
         }
     }
 

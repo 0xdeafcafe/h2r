@@ -220,6 +220,7 @@ mod tests {
             map: 3,
             difficulty: Difficulty::default(),
             kind: Kind::Multiplayer,
+            variant: None,
         }
     }
 
@@ -231,6 +232,7 @@ mod tests {
             map: 3,
             difficulty: d,
             kind: Kind::Campaign,
+            variant: None,
         }
     }
 

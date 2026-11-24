@@ -187,6 +187,7 @@ impl Studio {
         }
         self.menu_bar(ui, app, &mut actions);
         // Asked for by the frame before (once its tabs exist).
+        self.focus_game |= std::mem::take(&mut app.preview.focus_game);
         let focus_game = self.focus_game;
         bar::draw(ui, app, &mut self.play, &self.fonts, &mut actions);
         let reset = self.dockspace(ui);
