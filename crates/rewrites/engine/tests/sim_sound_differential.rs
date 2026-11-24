@@ -149,6 +149,11 @@ fn compare(image: &Image, code: &mut lifted::Original, body: &'static Body, case
                 return;
             }
             abi::CALL | abi::JUMP => {
+                if engine::sim_sound::generated_sites(root).contains(&a.resume_pc) {
+                    // This call hands its frame back to the image. Its return
+                    // address, every live stack byte and register matched above.
+                    return;
+                }
                 answer(code, case, &mut reference, &mut reference_ram);
                 answer(code, case, &mut native, &mut native_ram);
                 if a.kind == abi::JUMP {
@@ -166,8 +171,25 @@ fn compare(image: &Image, code: &mut lifted::Original, body: &'static Body, case
 #[path = "sim_sound_differential/core.rs"]
 mod core_cases;
 
+#[path = "sim_sound_differential/extra.rs"]
+mod extra;
+#[path = "sim_sound_differential/impulse.rs"]
+mod impulse;
+#[path = "sim_sound_differential/listener.rs"]
+mod listener;
+#[path = "sim_sound_differential/loops.rs"]
+mod loops;
+#[path = "sim_sound_differential/sources.rs"]
+mod sources;
+
 fn cases(entry: u32) -> Vec<Case> {
-    core_cases::cases(entry)
+    let mut result = core_cases::cases(entry);
+    result.extend(extra::cases(entry));
+    result.extend(impulse::cases(entry));
+    result.extend(listener::cases(entry));
+    result.extend(loops::cases(entry));
+    result.extend(sources::cases(entry));
+    result
 }
 
 #[test]
