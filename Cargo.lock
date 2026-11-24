@@ -8887,6 +8887,7 @@ dependencies = [
  "serde_yaml_ng",
  "tags",
  "thiserror 2.0.21",
+ "toml",
  "vfs",
 ]
 

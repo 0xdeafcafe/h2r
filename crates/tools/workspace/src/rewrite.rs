@@ -93,6 +93,9 @@ pub struct PackageRewrite {
     by_class: bool,
     /// The map names items name, lower case.
     names: HashSet<String>,
+    /// The maps the set's `map` items build: they hold the items they
+    /// took ([`crate::without_taken`]).
+    built: HashSet<String>,
     served: Served,
     /// The maps already named on stderr.
     named: HashSet<String>,
@@ -114,11 +117,13 @@ impl PackageRewrite {
                 Maps::Names(n) => names.extend(n.iter().map(|n| n.to_ascii_lowercase())),
             }
         }
+        let built = crate::maps::built_names(&packages).into_iter().collect();
         Self {
             packages,
             cache: None,
             by_class,
             names,
+            built,
             served: Served::default(),
             named: HashSet::new(),
             observer: None,
@@ -202,7 +207,15 @@ impl PackageRewrite {
         let target = Target { name: &name, scope };
         let mut applied = Vec::new();
         let mut held = Vec::new();
-        for p in &self.packages {
+        // A map a `map` item built holds the items it took.
+        let cut;
+        let packages = if self.built.contains(&name) {
+            cut = crate::maps::without_taken(&self.packages, &name);
+            &cut
+        } else {
+            &self.packages
+        };
+        for p in packages {
             let items: Vec<_> = p
                 .package
                 .manifest

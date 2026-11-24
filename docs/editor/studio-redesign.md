@@ -374,8 +374,8 @@ maps = "multiplayer"
 | `rules` | `.rules` | a compiled script in the rules registry | sim |
 | `variant` | `.h2variant` or a script name | a built-in list entry | sim |
 | `playlist` | a hopper fragment: playlists and entries by map name or `MapId` | rows of the default hopper | Live |
-| `map` | `map.toml`: `mode` (`fresh`, `onto`), `base`, `scenario`, the items it takes, and `ground` when it has AI | a map package under `<data>/maps/`, built at prepare, or when first picked if it has `ground` | sim |
-| `map-patch` | a PPF, IPS or BPS file with the base's name and SHA-256 | a map package with that layer | sim |
+| `map` | `map.toml`: `mode` (`fresh`, `onto`), `base`, the new map's `name`, `scenario` and `kits` (`fresh`), and `ground` when it has AI; the items it takes are those whose `maps` names it | a derived map package under `<data>/maps/`, built at prepare, or when first picked if it has `ground` (built: `workspace::prepare`) | sim |
+| `map-patch` | a PPF, IPS or BPS file, and in `inputs` one TOML file with the base's `map` name and `sha256` | a map package with that layer, the one `h2 live maps import` writes for the patch (built) | sim |
 | `convert` | a recipe: a converter name and its settings; the input is the user's own disc | map packages and campaign files | sim |
 | `data` | a file a named game feature reads (the Pogo's pose set) | handed to the feature at boot | per feature |
 | `kit` | a named code builder's settings (`campaign-cards`, `glyphs`); first-party packages only | what that builder adds | per builder |
@@ -427,7 +427,8 @@ packages, in order, to a map's `map::build::TagSet` for one `Target` (the
 map's name and class). An item runs when its `maps` takes the target;
 its builder comes from the closed registry (`workspace::registry`: `tag`,
 `edits`, `bitmap`, `model`, `sound`, `data`, `hud`, `screens`,
-`screen-edits`; the other kinds stop the build with "no builder"). The
+`screen-edits`, `map`, `map-patch`; the other kinds stop the build with "no builder"). The `map` and
+`map-patch` builders change no map: they build map packages at prepare (below). The
 base is what is built onto: the result differs from it only in the tags
 the items add or change, and a tag a decomposed map keeps pinned is laid
 out anew (through `Unpin`, `MapUnpin` for a map file) only when an item
@@ -487,6 +488,29 @@ changes it. After an error the set is partly changed and is dropped.
   and has no cone.
 - **`data`**: any file; no tag is added (a feature reads it, or another
   item's builder does).
+- **`map`** and **`map-patch`** (`workspace/src/maps.rs`) change no map.
+  `workspace::prepare(maps, packages, bases, fresh)` builds them to map
+  packages in `<data>/maps/`. A `map` item's `map.toml` names `mode`,
+  `base` (a disc map, read through `BaseMaps`), `name` (the new map, which
+  is not the base), and for `fresh` a `scenario` and `kits` that a `Fresh`
+  builder turns into a whole map (the kits live above `workspace`; none
+  given stops the item with a named error). `onto` starts from the base
+  as it is and needs at least one taken item. The items the map takes are
+  every item that changes a map and lists the map's name in `maps`; they
+  are applied through `build_map`, so the map is what the game would
+  serve from the same items. The output is a derived package (the whole
+  map as its one layer, `[list] base` the base) written to `<name>/`.
+  A `map-patch` item's source is the patch as given and its one `inputs`
+  file holds the base's `map` and `sha256` (and optionally `title`,
+  `author`, `description`, `dir`); the output is `Manifest::retail` over
+  that base with the patch as the one layer, so its `MapId` is the one
+  `h2 live maps import` gives the same patch. It reads no disc. A `map`
+  item with a `ground` file is left for when the map is first picked.
+  Each directory a build writes holds `built-from.toml`; a rebuild
+  replaces only a directory that holds it for the same item, and writes
+  nothing when the package is already there. `PackageRewrite` serves a
+  map a `map` item built without the items it took
+  (`workspace::without_taken`), which are in its bytes already.
 
 `was` is the SHA-256 of the tag as the build first found it
 (`workspace::tag_hash`: group, bytes and fixups, references by name, raw
@@ -991,7 +1015,7 @@ Rows are in build order.
 | SH4 | **The preview switch** (built: `app/preview_switch.rs`, `ui/preview_switch.rs`, `api/preview.rs`; the Problems rows for a finished preview wait for the Game panel): `preview.target`, **Preview in game** by kind over `pair.preview` | S | SH1 | on the fake game each kind sends the calls its `what` lists; a paused game refuses with the built message |
 | GT0 to GT7, GE0 to GE5, GM1 to GM4 | **Game types without carriers**, no retail engine object, and maps for scripted games ([game-types-without-carriers.md](../game/game-types-without-carriers.md)) | S to L | GT6 needs PK11; GM2 needs PK9 | as there |
 | PK8 | **Rules, variants and playlists as items**: `content/core/` and `content/modes/`; the registry from the set; `community_variants` and the default hopper read it | M | PK3 | `crates/formats/rules/tests/modes.rs` pass with scripts from the set; a package off removes its list entries; the hopper built from fragments equals `hopper/defaults.rs`'s |
-| PK9 | **Whole maps**: `map` and `map-patch` items to map packages at prepare; the stage and the test-map recipes as packages | M | PK2 | an invented `fresh` and an invented `onto` item build; the `MapId` of a `map-patch` item equals the id of the map package the importer writes for the same patch |
+| PK9 | **Whole maps** (built: `workspace::prepare`; the stage's and the test maps' `Fresh` and recipe adapters are not): `map` and `map-patch` items to map packages at prepare; the stage and the test-map recipes as packages | M | PK2 | an invented `fresh` and an invented `onto` item build; the `MapId` of a `map-patch` item equals the id of the map package the importer writes for the same patch |
 | PK10 | **Conversions**: `convert` items, `h2 package prepare`, stamps; `content/halo1/` and `content/map-pack/` over the existing converters | M | PK9 | with an invented converter: no disc leaves the package off with its reason; a stale stamp reruns one map; an interrupted run resumes |
 | PK12 | **Kits**: `kit: campaign-cards`, `glyphs`; Firefight's director and wave sets as `rules` items of `modes`; `firefight_kit::build_package`'s boot and host-bundle callers go (GM1 of game-types-without-carriers builds ground on demand); boot's chain is `PackageRewrite` alone | M | PK9 | per kit, the map through the package equals the one its own caller made; `boot/src/lib.rs` builds no other rewrite |
 | PK13 | **Live, server**: `/v1/packages`, the signed manifest and lock, the upload checks, credit, the model flag, both homes | M | PK1 | the parity suite: a bad signature, a lock hash that does not match, a retail hash and a model item without the flag are each refused; an admin's credit outranks the manifest's |

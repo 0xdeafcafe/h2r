@@ -19,6 +19,8 @@
 //! - [`cache_key`]: the key of a build's output.
 //! - [`Layered`]: tag sources in order, first hit wins.
 //! - [`check_package`], [`check_set`]: what `h2 package check` reports.
+//! - [`prepare`]: `map` and `map-patch` items built to map packages under
+//!   `<data>/maps/` ([`maps`](crate::maps) module docs).
 //! - [`build_map`]: [`build`] on a map file's bytes, laid out again.
 //! - [`GameSet`]: the game's packages, baked then `<data>/packages/`, under
 //!   `set.toml` and the game's features; [`PackageRewrite`] serves each map
@@ -38,6 +40,7 @@ mod hud;
 pub mod import;
 mod layer;
 mod load;
+mod maps;
 mod model;
 mod onto;
 mod rewrite;
@@ -48,6 +51,8 @@ mod unpin;
 
 #[cfg(test)]
 mod import_tests;
+#[cfg(test)]
+mod maps_tests;
 #[cfg(test)]
 mod pogo_tests;
 #[cfg(test)]
@@ -71,6 +76,11 @@ pub use layer::Layered;
 pub use load::{
     Finding, LoadError, MAX_FILE_BYTES, added_tag, check_package, check_set, forbidden_files,
     lock_findings, read_lock,
+};
+pub use maps::{
+    BUILT_FILE, BaseMaps, Deferred, Failed, Fresh, FreshJob, MapPackage, MapSpec, Mode, MapsBuilt,
+    NoFresh, PatchBase, Prepared, Wrote, build_maps, built_names, prepare, restrict, without_taken,
+    write as write_map_package,
 };
 pub use onto::{build_map, scope_of, scope_of_bytes};
 pub use rewrite::{Observer, PackageRewrite, Rebuilt, Served, ServedMap, stem_of};

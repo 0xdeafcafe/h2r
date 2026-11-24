@@ -405,6 +405,8 @@ fn a_kind_with_no_builder_stops_by_name() {
             Kind::Hud,
             Kind::Screens,
             Kind::ScreenEdits,
+            Kind::Map,
+            Kind::MapPatch,
         ]
     );
 }

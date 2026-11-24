@@ -56,6 +56,7 @@ workspace_library(
         "//third-party/rust:serde_json",
         "//third-party/rust:serde_yaml_ng",
         "//third-party/rust:thiserror",
+        "//third-party/rust:toml",
     ],
 )
 
@@ -85,5 +86,6 @@ workspace_test(
         "//third-party/rust:serde_json",
         "//third-party/rust:serde_yaml_ng",
         "//third-party/rust:thiserror",
+        "//third-party/rust:toml",
     ],
 )

@@ -22,6 +22,8 @@ tags.workspace = true
 anim-edit.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# A `map` item's `map.toml` and a `map-patch` item's base file.
+toml.workspace = true
 # The `tag` and `edits` item files.
 serde_yaml_ng.workspace = true
 # The `bitmap` builder's input.
