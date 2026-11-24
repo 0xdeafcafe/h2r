@@ -31,7 +31,7 @@ use native_render::look;
 use native_render::program::InheritedCull;
 use native_render::program::ViewInputs;
 use native_render::shadow_look::{CASTER_LAYER, OPACITY_LAYER, RECEIVER_LAYER};
-use native_render::world::{Owner, World, WorldDraw};
+use native_render::world::{ModelRows, Owner, World, WorldDraw};
 use render_bridge::native_lights::{Alone, Dispatch, Host, ShadowAlone};
 use tags::material::{EngineInputs, Material, ShaderLibrary, TextureSource};
 
@@ -1481,6 +1481,8 @@ pub struct Planned {
     pub compiled: Arc<Compiled>,
     /// Ranges of the world's indices, or of the model section's.
     pub ranges: Vec<Range<u32>>,
+    /// Rows uploaded by the structure handler for a rigid placement.
+    placement: Option<ModelRows>,
     /// A model's part: what it draws over.
     model: Option<ModelDraw>,
 }
@@ -1546,6 +1548,7 @@ pub struct LightsWorld {
     resolver: materials::Resolver,
     materials: HashMap<u16, LitMaterial>,
     clusters: ClusterParts,
+    placements: HashMap<u32, ModelRows>,
     /// Stage images by (stage, bitmap, image) since palettes are per stage.
     images: Arc<HashMap<(usize, TagId, u32), Image>>,
     palettized: HashSet<(usize, TagId, u32)>,
@@ -1557,6 +1560,14 @@ pub struct LightsWorld {
 }
 
 impl LightsWorld {
+    fn placement(&self, owner: Owner) -> Result<Option<ModelRows>, Keep> {
+        match owner {
+            Owner::Cluster(_) => Ok(None),
+            Owner::Instance(id) => self.placements.get(&id).copied().map(Some)
+                .ok_or(Keep::Unsupported("light placement rows unavailable")),
+        }
+    }
+
     /// Whether the lights draw world material `material`'s passes: a
     /// live shader edit of it reloads the world (docs/editor/realtime-edits.md,
     /// "The native refresh").
@@ -1761,7 +1772,9 @@ impl LightsWorld {
                 .ok_or(Keep::Unsupported("invalid shadow index range"))?;
             let range = draw.first_index..end;
             let lit = self.materials.get(&m).ok_or(Keep::NoMaterial)?;
-            let resolved = match self.resolver.world_shadow(lit, imp) {
+            let placement = self.placement(draw.owner)?;
+            let class = u32::from(residency::classification(draw.owner));
+            let resolved = match self.resolver.world_shadow(lit, imp, class) {
                 Err(Keep::MaterialPending) => {
                     pending = true;
                     continue;
@@ -1776,6 +1789,7 @@ impl LightsWorld {
             }
             self.binds(&compiled.program, None, false, &self.images)?;
             if let Some(previous) = out.last_mut()
+                && previous.placement.is_none() && placement.is_none()
                 && previous.material == m
                 && Arc::ptr_eq(&previous.compiled, &compiled)
             {
@@ -1788,6 +1802,7 @@ impl LightsWorld {
                 layer: CASTER_LAYER,
                 implementation: imp,
                 ranges: vec![range],
+                placement,
                 model: None,
             });
         }
@@ -1841,6 +1856,7 @@ impl LightsWorld {
             implementation: usize::from(entry.binding.implementation),
             compiled,
             ranges: vec![part.indices.clone()],
+            placement: None,
             model: Some(ModelDraw {
                 lights: Arc::clone(lights),
                 model: entry.model,
@@ -1867,7 +1883,9 @@ impl LightsWorld {
                 .ok_or(Keep::Unsupported("invalid receiver index range"))?;
             let range = draw.first_index..end;
             let lit = self.materials.get(&m).ok_or(Keep::NoMaterial)?;
-            let resolved = match self.resolver.world_receiver(lit, layer, imp) {
+            let placement = self.placement(draw.owner)?;
+            let class = u32::from(residency::classification(draw.owner));
+            let resolved = match self.resolver.world_receiver(lit, layer, imp, class) {
                 Err(Keep::MaterialPending) => {
                     pending = true;
                     continue;
@@ -1882,6 +1900,7 @@ impl LightsWorld {
             }
             self.binds(&compiled.program, None, false, &self.images)?;
             if let Some(previous) = out.last_mut()
+                && previous.placement.is_none() && placement.is_none()
                 && previous.material == m
                 && Arc::ptr_eq(&previous.compiled, &compiled)
             {
@@ -1894,6 +1913,7 @@ impl LightsWorld {
                 layer,
                 implementation: imp,
                 ranges: vec![range],
+                placement,
                 model: None,
             });
         }
@@ -1947,6 +1967,7 @@ impl LightsWorld {
             implementation: usize::from(entry.binding.implementation),
             compiled,
             ranges: vec![part.indices.clone()],
+            placement: None,
             model: Some(ModelDraw {
                 lights: Arc::clone(lights),
                 model: entry.model,
@@ -2058,10 +2079,15 @@ pub fn load<R: std::io::Read + std::io::Seek>(
             .flat_map(|p| &p.implementations)
         {
             if let Some(vs) = imp.vertex_shader
-                && !microcode.contains_key(&vs)
-                && let Some(code) = look::world_program(map, lib.metadata(), vs)
+                && let Some(address) = map.tag(vs).ok().and_then(|t| t.location).map(|l| l.address)
             {
-                microcode.insert(vs, code);
+                for class in [look::WORLD_CLASSIFICATION, look::RIGID_CLASSIFICATION] {
+                    if !microcode.contains_key(&(vs, class))
+                        && let Some(code) = look::vertex_program(lib.metadata(), address, class)
+                    {
+                        microcode.insert((vs, class), code);
+                    }
+                }
             }
             for (stage, t) in imp.textures.iter().enumerate().take(4) {
                 let Some(TextureSource::Bitmap { bitmap, image, .. }) = t.map(|t| t.source) else {
@@ -2094,6 +2120,7 @@ pub fn load<R: std::io::Read + std::io::Seek>(
         resolver: materials::Resolver::new(lib, microcode),
         materials,
         clusters,
+        placements: world.placements.iter().copied().collect(),
         images: Arc::new(images),
         palettized,
         palettes: palettes.clone(),
@@ -2205,6 +2232,7 @@ impl PreparedLight {
             gel_scale: self.binding.map(Binding::tex_scale),
             shadow_map: self.shadow_map.as_ref(),
             ranges: &p.ranges,
+            placement: p.placement.as_ref(),
             model: None,
         }
     }

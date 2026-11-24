@@ -3,8 +3,16 @@
 
 use super::{ClusterParts, LitMaterial};
 use map::TagId;
-use native_render::world::{World, WorldDraw};
+use native_render::look::{RIGID_CLASSIFICATION, WORLD_CLASSIFICATION};
+use native_render::world::{Owner, World, WorldDraw};
 use std::collections::HashMap;
+
+pub(super) fn classification(owner: Owner) -> u16 {
+    match owner {
+        Owner::Cluster(_) => WORLD_CLASSIFICATION as u16,
+        Owner::Instance(_) => RIGID_CLASSIFICATION as u16,
+    }
+}
 
 pub(super) fn structure_parts(
     world: &World,
