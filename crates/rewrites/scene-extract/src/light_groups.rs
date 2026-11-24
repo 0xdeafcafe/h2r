@@ -28,11 +28,11 @@
 //!   definitions at `+0x13c`, `0xc8` each, data at `+0x50`). The data's
 //!   `+4` parts (`0x48` each: `+2` flags, bit 3 a triangle list; `+6` the
 //!   first index; `+8` the index count), `+8` subparts, `+0x20` the
-//!   indices.
+//!   index count and `+0x24` the pointer to their u16 stream.
 //! - What the handler does beyond binding the material and drawing the
 //!   part, which the scene does not carry, and so is the entry's
 //!   remainder ([`Cause`]): the auxiliary state toggle, state around one
-//!   part (`+0x1a`), visible subparts, the shader's `+0x16` bit 0, a
+//!   part (`+0x1a`), subparts selecting less than one full draw, the shader's `+0x16` bit 0, a
 //!   material animation (the shader's `+0x24` block `+0x3c`), and a
 //!   template callback (the shader's `stem` `+0x44`, `+0x50`).
 //! - The shadow projection block [`SHADOW_PROJECTION`] (`0x00048ee0`'s
@@ -308,7 +308,7 @@ fn entry_at(mem: &dyn GuestRead, item: u32, sorted: Sorted) -> R<(LightEntry, Ve
         if bitmap != 0 {
             let spans = crate::layout::world_ranges::emissions(mem, data, part, flags, bitmap, strip)
                 .map_err(|_| Cause::Subparts)?;
-            if spans.as_slice() != [first_index..first_index + index_count] {
+            if !matches!(spans.as_slice(), [span] if span.start == first_index && span.end == first_index + index_count) {
                 return Err(Cause::Subparts);
             }
         }

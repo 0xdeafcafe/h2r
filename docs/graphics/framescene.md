@@ -1224,14 +1224,10 @@ to the guest's draws (**Code**):
   The world keeps the draws of materials it does not translate and of
   parts that lack an input of their program ([native-world.md](native-world.md)),
   and the object walk the parts it refuses (`walk_unsupported`).
-- **The light passes and the shadow layers.** Models and rigid
-  placements keep their D3D handlers ([native-lights.md](native-lights.md),
-  "What a native light draws"), every layer keeps its handlers with the
-  additional casters' pair, and the gathered walk's GPU path takes a
-  group's live streams, pose, constants and bindings from the first
-  geometry handler, which the guest runs. The scene carries what that
-  handler supplies (built): at each layer build, the sorted entries the
-  walk builds (`render_bridge::native_lights::walk`) go into a group of
+- **The light passes and the shadow layers.** The gathered walk can draw
+  from a complete scene group or use the first guest geometry handler's
+  live streams, pose, constants and bindings. At each layer build, the
+  sorted entries from `render_bridge::native_lights::walk` go into a group of
   the light (`scene_extract::light_groups::push`,
   `frame_scene::LightGroup`, `LightEntry`; `FrameScene::groups_of`),
   each entry with its stream (section, part, vertex class, index range,
@@ -1248,10 +1244,12 @@ to the guest's draws (**Code**):
   ([e3-lighting.md](e3-lighting.md), "Sun shadows from objects"). The
   summary hash
   (`frame_scene::summary_hash`) covers the groups, their entries and the
-  object shadows. What the handler does
-  beyond binding and drawing (the auxiliary state toggle, state around
-  one part, visible subparts, a shader flag, a material animation, a
-  template callback) leaves the entry to the guest by named cause.
+  object shadows. For a visibility-masked part, the emitter's selected
+  index spans must form a single draw of the entire part. Contiguous
+  list spans can join, while separate strips require separate draws.
+  A partial or split span, an auxiliary state toggle, state around one
+  part, a shader flag, material animation or a template callback leaves
+  the entry to the guest by named cause.
   `native_render::light_scene::plan` turns a whole group into native
   draws from the scene alone, sorted order and duplicates kept,
   adjacent list ranges joined. A light's layer 12 or 13 whose group is
