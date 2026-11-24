@@ -746,7 +746,16 @@ Notes on some:
   `curve: null` for an unvoiced permutation (the sound has no extra
   info, its descriptor index is negative, or the mouth entry is
   zero-length). The window's Sound window draws the same curve under
-  the waveform and calls the same `App::sound_*` methods. The
+  the waveform and calls the same `App::sound_*` methods. `sound.face`
+  is the face preview: the weight the curve gives `at_ms` into a
+  permutation (the byte of that 30 Hz tick over 255, 0 past the end;
+  the playhead by default while that permutation plays), or a `weight`
+  given in place of the sound, and with `on` (an object, a biped) the
+  object posed with its graph's `talk` overlay at that weight over its
+  `idle`, answered as `anim.pose` answers and drawn to a PNG outside
+  Git. `overlay` names another of the graph's animations in place of
+  `talk`; a graph with no `talk` at `combat:any:any` or `any:any:any`
+  is `REFUSED` by name. The
   executable comes from the source: the disc's `default.xbe`, or the one
   beside a loose map or folder (`H2_XBE` names another).
 - **Placements.** `scenario.set` takes a number, `[x, y, z]`, or for a tag

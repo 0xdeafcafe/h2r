@@ -152,6 +152,8 @@ pub mod method {
     pub const SOUND_STOP: &str = "sound.stop";
     pub const SOUND_MOUTH: &str = "sound.mouth";
     pub const SOUND_MEASURE: &str = "sound.measure";
+    // The face preview: a model's talk overlay by a mouth curve (api/anim.rs).
+    pub const SOUND_FACE: &str = "sound.face";
     // Waveform edits and permutations of a package sound (api/sound_edit.rs).
     pub const SOUND_EDIT: &str = "sound.edit";
     pub const SOUND_RENDER: &str = "sound.render";

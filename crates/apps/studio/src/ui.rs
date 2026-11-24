@@ -265,7 +265,7 @@ impl Studio {
         }
         // The seam for sound audition until the tag view tabs exist
         // (docs/editor/rich-editors.md, "One seam for every rich view").
-        sound::window(ui, app, &mut self.sound);
+        sound::window(ui, app, gpu, &mut self.sound);
         // The same seam for model poses (that page's slice M1).
         anim::window(ui, app, gpu, &mut self.anim);
         announcer::window(ui, app, &mut self.announcer);
