@@ -4,7 +4,7 @@
 
 use crate::datum::layout::DATA;
 use crate::points::{self, Point};
-use crate::sim_objects::{Body, Cx, Next, Result, frame};
+use crate::sim_objects::{Body, Cx, Next, Result, frame, sse};
 use crate::sim_physics::{ARITH, arithmetic, logic};
 use crate::sound::{LoopingSound, LoopingTrack, SoundInstance};
 use runtime::{Guest, GuestFault};
@@ -31,7 +31,19 @@ pub static LINK_INSTANCE: Point = Point::new(
     DOC,
 );
 
+pub static TRACK_FADE_IN: Point = Point::new(
+    "SOUND_TRACK_FADE_IN",
+    0x21be20,
+    crate::point_sig!(fn(head: ebx, mode: stack 0, seconds: stack 1) ret 8),
+    DOC,
+);
+
 pub const BODIES: &[Body] = &[
+    Body {
+        point: &TRACK_FADE_IN,
+        sites: &[0x21be9c],
+        run: fade_in,
+    },
     Body {
         point: &FIND_INSTANCE,
         sites: &[],
@@ -183,4 +195,78 @@ fn link(cx: &mut Cx<'_>, _: u32) -> Result<Next> {
     }
     c.edi = frame::pop(c, g)?;
     Ok(Next::Ret { pop: 0 })
+}
+
+/// Start an upward ramp on every active instance in a track. A voice whose
+/// ramp is already running must sample its present gain first. That callback
+/// can edit the ring, so the next link is fetched only after it returns.
+fn fade_in(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
+    let (c, g) = (&mut *cx.cpu, &mut *cx.g);
+    let mut finish_ramp = pc == 0x21be9c;
+    if finish_ramp {
+        c.ecx = frame::slot(c, g, 0x14)?;
+        g.set_u32(c.esi.wrapping_add(0xb0), c.eax)?;
+    } else {
+        c.esp = arithmetic(c, c.esp, 12, true);
+        if c.ebx == EMPTY {
+            c.esp = arithmetic(c, c.esp, 12, false);
+            return Ok(Next::Ret { pop: 8 });
+        }
+        frame::push(c, g, c.ebp)?;
+        c.ebp = g.u32(points::SOUND_INSTANCES.base)?;
+        frame::push(c, g, c.edi)?;
+        c.edi = c.ebx;
+        c.ecx = 0;
+        frame::push(c, g, c.esi)?;
+    }
+    let ring = TrackRing::new(c.ebx);
+    loop {
+        if finish_ramp {
+            sse::load(c, 0, frame::slot(c, g, 0x20)?);
+            c.eax = (c.eax & 0xffff0000) | u32::from(g.u16(c.esp.wrapping_add(0x1c))?);
+            let clock = sse::ss(c, sse::Ss::Mul, 0, g.u32(0x45dccc)?);
+            c.edx = sse::cvttss2si(c, clock);
+            g.set_u16(c.esi.wrapping_add(0xae), c.eax as u16)?;
+            g.set_u32(c.esi.wrapping_add(0xb4), EMPTY)?;
+            g.set_u32(c.esi.wrapping_add(0xb8), c.edx)?;
+            let flags = c.esi.wrapping_add(4);
+            g.set_u8(flags, g.u8(flags)? | 0x80)?;
+            finish_ramp = false;
+        }
+        if (c.ecx as i32) > 0 && c.edi != EMPTY {
+            let records = g.u32(c.ebp.wrapping_add(DATA))?;
+            c.eax = instance(records, c.edi).wrapping_add(0x5c);
+            let next = g.u32(c.eax.wrapping_add(0x10))?;
+            c.edi = ring.following(next).unwrap_or(EMPTY);
+        }
+        c.ecx = c.ecx.wrapping_add(1);
+        frame::set_slot(c, g, 0x14, c.ecx)?;
+        if c.edi == EMPTY {
+            break;
+        }
+        c.eax = g.u32(c.ebp.wrapping_add(DATA))?;
+        c.edx = (c.edi & 0xffff) * SoundInstance::SIZE;
+        c.esi = c.eax.wrapping_add(c.edx);
+        if g.u8(c.esi.wrapping_add(2))? != 2 {
+            continue;
+        }
+        let pending = g.u8(c.esi.wrapping_add(4))? >> 7;
+        c.edx = (c.edx & !0xff) | u32::from(pending);
+        if pending != 0 {
+            logic(c, 1, 0x80);
+            c.eax = c.edi;
+            return Ok(Next::Call {
+                target: 0x12a810,
+                site: 0x21be9c,
+            });
+        }
+        // Read the default ramp gain operand from the owner's image.
+        g.set_u32(c.esi.wrapping_add(0xb0), g.u32(0x21beae)?)?;
+        finish_ramp = true;
+    }
+    c.esi = frame::pop(c, g)?;
+    c.edi = frame::pop(c, g)?;
+    c.ebp = frame::pop(c, g)?;
+    c.esp = arithmetic(c, c.esp, 12, false);
+    Ok(Next::Ret { pop: 8 })
 }
