@@ -14,7 +14,7 @@ use sim_collision::{
 };
 use std::cell::Cell;
 
-pub(super) struct Guard<'a, M> {
+pub(in super::super) struct Guard<'a, M> {
     base: &'a mut M,
     protected: Vec<(u32, u32)>,
     alias: Cell<bool>,
@@ -33,13 +33,27 @@ impl<'a, M: CollisionMemory> Guard<'a, M> {
             0x40
         };
         let depth = 0x454 + inner + layout::VECTOR_DEAD_BELOW;
-        let protected = base.frame_spans(sp.saturating_sub(depth), sp)?;
+        Self::with_frame(
+            base,
+            sp.saturating_sub(depth),
+            sp,
+            &[(sp, 28), (out, RECORD_SIZE as u32)],
+        )
+    }
+
+    pub(in super::super) fn with_frame(
+        base: &'a mut M,
+        lo: u32,
+        hi: u32,
+        regions: &[(u32, u32)],
+    ) -> Result<Self, Bail> {
+        let protected = base.frame_spans(lo, hi)?;
         let mut guard = Self {
             base,
             protected,
             alias: Cell::new(false),
         };
-        for (at, len) in [(sp, 28), (out, RECORD_SIZE as u32)] {
+        for &(at, len) in regions {
             guard.separate(at, len)?;
             let p = guard.base.physical_range(at, len).ok_or(Bail::Alias)?;
             guard.protected.push((p, len));
@@ -47,7 +61,7 @@ impl<'a, M: CollisionMemory> Guard<'a, M> {
         Ok(guard)
     }
 
-    pub(super) fn separate(&self, at: u32, len: u32) -> Result<(), Bail> {
+    pub(in super::super) fn separate(&self, at: u32, len: u32) -> Result<(), Bail> {
         if len == 0 {
             return Ok(());
         }
@@ -62,7 +76,7 @@ impl<'a, M: CollisionMemory> Guard<'a, M> {
         Ok(())
     }
 
-    pub(super) fn alias(&self) -> bool {
+    pub(in super::super) fn alias(&self) -> bool {
         self.alias.get()
     }
 }

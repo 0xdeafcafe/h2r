@@ -1,4 +1,7 @@
 //! Instanced-geometry traces for one structure cluster (entry E).
+mod parity;
+pub use parity::ReturnPrediction;
+
 use super::{
     CollisionMemory, Outputs, Read, consts, finish, layout, layout::mopp_ray as ray_layout,
 };
@@ -47,7 +50,7 @@ pub fn empty_cluster(
         Ok((saved_bp, frame, output.target, structure, cluster, count))
     })();
     if matches!(&plan, Ok((_, _, _, _, _, count)) if (*count as i32) > 0) {
-        // The positive path is compared separately at its owning query.
+        // A passive observer compares this call when its guest frame returns.
         return Ok(None);
     }
     world.record(Entry::InstanceTrace, &plan);
@@ -258,6 +261,20 @@ pub fn predict_with_marks(
     epoch: u32,
     already_marked: &[u32],
 ) -> Result<Prediction, Bail> {
+    predict(c, g, world, q, epoch, already_marked, |g, key| {
+        Ok(Read(g, (0, 0)).u32(MARK_BASE + 4 * key)? == epoch)
+    })
+}
+
+fn predict<G: CollisionMemory>(
+    c: &CpuAbi,
+    g: &mut G,
+    world: &CollisionWorld,
+    q: Query,
+    epoch: u32,
+    already_marked: &[u32],
+    marked: impl Fn(&G, u32) -> Result<bool, Bail>,
+) -> Result<Prediction, Bail> {
     let m = Read(&*g, (0, 0));
     let structure = m.u32(layout::ACTIVE_STRUCTURE)?;
     let cluster = record(
@@ -325,7 +342,7 @@ pub fn predict_with_marks(
             return Err(Bail::Data);
         }
         let mark = MARK_BASE + key * 4;
-        if !seen.insert(key) || Read(&*g, (0, 0)).u32(mark)? == epoch {
+        if !seen.insert(key) || marked(g, key)? {
             continue;
         }
         prediction.marks.push((mark, epoch));

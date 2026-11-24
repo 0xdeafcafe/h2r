@@ -193,11 +193,34 @@ fn populated_instance_cluster_against_the_lifted_callbacks() {
                         Err(sim_collision::Bail::Data)
                     ));
                 }
+                let observation = instance::ReturnPrediction::gather(&c, &mut m, &world).unwrap();
                 let plan = instance::predict_with_marks(&c, &mut m, &world, q, EPOCH, &[]).unwrap();
                 assert_eq!(m.overlay, entry, "predictor wrote memory");
                 let mut guest = m.clone();
                 let mut cpu = ir_cpu(&c);
                 oracle.run(&mut cpu, &mut guest, c.eip);
+                let returned = lifted::cpu::from_interp(&cpu);
+                assert_eq!(
+                    observation.compare(&returned, &guest),
+                    Ok(None),
+                    "{case} {scale}"
+                );
+                if case == "hit" && scale == 1.0 {
+                    for (label, at) in [
+                        ("result+", RECORD + 0x26), // padding
+                        (
+                            "instance marks+",
+                            instance::MARK_BASE + 4 * (instance::MARK_SLOTS - 1),
+                        ),
+                        ("code refcount", CODE + 0x24),
+                        ("FS:[0]", c.fs_base),
+                    ] {
+                        let mut changed = guest.clone();
+                        changed.store(at, &[guest.get(at) ^ 0x80]);
+                        let mismatch = observation.compare(&returned, &changed).unwrap().unwrap();
+                        assert!(mismatch.starts_with(label), "{label}: {mismatch}");
+                    }
+                }
                 let hit = case == "hit" || case == "first hit";
                 assert_eq!(cpu.gpr[0] as u8, u8::from(hit), "{case} {scale} lifted");
                 assert_eq!(plan.hit.is_some(), hit, "{case} {scale} native");
