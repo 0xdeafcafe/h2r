@@ -3,6 +3,7 @@
 //! session access.
 #![forbid(unsafe_code)]
 
+mod budget;
 pub mod camera;
 mod files;
 mod links;
@@ -14,6 +15,7 @@ mod session;
 mod things;
 pub mod tool;
 
+pub use budget::{Binds, Budget, noun};
 pub use files::{load_saved, saved_names};
 pub use forge_doc::{BlockKind, Endpoint, OpId, TagKey, Value};
 pub use forge_doc::{GroundLabel, GroundRecipe};
@@ -115,6 +117,9 @@ mod base_tests;
 
 #[cfg(test)]
 mod ground_tests;
+
+#[cfg(test)]
+mod budget_tests;
 
 #[cfg(test)]
 mod props_tests;
