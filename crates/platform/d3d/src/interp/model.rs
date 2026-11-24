@@ -215,6 +215,16 @@ impl FrameModel {
     /// projection: a light's or a texture's matrix, packed parameters).
     /// Draws whose position does not come from one block's rows do not vote.
     pub fn build(draws: &[&ResolvedDraw], positions: &[Position]) -> FrameModel {
+        Self::build_for_display(draws, positions, |_| true)
+    }
+
+    /// Auxiliary depth writers use the display camera but do not vote for
+    /// it or pair with the colour pass of the same mesh.
+    pub(super) fn build_for_display(
+        draws: &[&ResolvedDraw],
+        positions: &[Position],
+        on_display: impl Fn(usize) -> bool,
+    ) -> FrameModel {
         // Perspective blocks per distinct constant block.
         let mut found: HashMap<*const [[f32; 4]; CONSTANTS], std::rc::Rc<Vec<Candidate>>> =
             HashMap::new();
@@ -235,6 +245,9 @@ impl FrameModel {
         // their position from.
         let mut counts: HashMap<(ViewKey, [u32; 16]), (usize, usize)> = HashMap::new();
         for (i, (d, cands)) in draws.iter().zip(&per_draw).enumerate() {
+            if !on_display(i) {
+                continue;
+            }
             let Some(&Position::Rows(reg)) = positions.get(i) else {
                 continue;
             };
@@ -273,7 +286,7 @@ impl FrameModel {
                 let view = ViewKey::of(d);
                 let cam = cameras.iter().find(|c| c.view == view);
                 let position = positions.get(i).copied().unwrap_or(Position::Unknown);
-                classify(d, cands, cam, view, position)
+                classify(d, cands, cam, view, position, on_display(i))
             })
             .collect();
         FrameModel {
@@ -375,6 +388,7 @@ fn classify(
     cam: Option<&ViewCamera>,
     view: ViewKey,
     position: Position,
+    on_display: bool,
 ) -> DrawModel {
     let mut blocks = Vec::new();
     let mut uses_camera = false;
@@ -482,7 +496,7 @@ fn classify(
     DrawModel {
         view,
         position,
-        sig: signature(d, view),
+        sig: signature(d, view, on_display),
         blocks,
         anchor,
     }
@@ -513,8 +527,9 @@ fn node_at(c: &[[f32; 4]; CONSTANTS], r: usize) -> Option<Similarity> {
     (max_diff(&s.to_mat4(), &m) <= 1e-5 * max_abs(&m)).then_some(s)
 }
 
-fn signature(d: &ResolvedDraw, view: ViewKey) -> u64 {
+fn signature(d: &ResolvedDraw, view: ViewKey, on_display: bool) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
+    on_display.hash(&mut h);
     view.hash(&mut h);
     match &d.shader.vertex {
         VertexProcessing::FixedFunction { fvf } => (0u8, *fvf as u64).hash(&mut h),

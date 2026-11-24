@@ -1460,6 +1460,12 @@ registers are not their pair's), read from its `Debug` text so fields added ther
 appear with no change here; `counters` is the frame-stats
 window's line. Each is `null` where that piece is not running.
 
+`interp.shared_depth_ops` counts auxiliary-colour draws and clears retained
+at guest Swap for later depth/stencil tests on the displayed target. Compare
+its increase with `blended_frames` and `replays` over the same interval.
+In a `render.frame` capture, the corresponding passes have different colour
+targets and the same depth attachment.
+
 `display_frame` gives the identity, lighting and backend counter deltas
 when the worker's latest presentation used the native graph. An
 original presentation clears it. The frame recorder can stay unarmed

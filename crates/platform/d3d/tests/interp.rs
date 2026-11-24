@@ -1449,6 +1449,88 @@ fn a_render_target_a_frame_samples_is_kept_as_it_was_drawn() {
 }
 
 #[test]
+fn replay_keeps_the_worlds_shared_depth_prepass_at_60_and_120_hz() {
+    use gfx::state::{CompareFunc, DepthBufferMode};
+
+    for fps in [60, 120] {
+        let mut r = rig(fps);
+        // Drive the live slot schedule with the fake clock. Do not let the
+        // speed of the test machine cap the requested rate.
+        r.b = r.b.with_capture_slots(|| 0);
+        let aux = r.b.create_surface(D3DFormat::A8R8G8B8, 640, 480, false).unwrap();
+        let shadow = r.b.create_surface(D3DFormat::D24S8, 640, 480, true).unwrap();
+        r.b.inner_mut().sample_depth = true;
+        let clear = Clear { depth: Some(1.0), stencil: Some(0), ..Clear::NONE };
+        let mut texture_id = 0;
+        for tick in 1..=2 {
+            r.at(tick * F);
+            let world = world_block(&camera(tick as f64, 0.0));
+            let mut prepass = draw(world, 30, false);
+            prepass.state.render.depth_mode = DepthBufferMode::Z;
+            prepass.state.render.depth_write = true;
+
+            // A shadow uses the same auxiliary colour but its own depth.
+            // Later draws need the resulting texture, not the shadow pass.
+            r.b.draw(aux, Some(shadow), &prepass, [None; 4]).unwrap();
+            let texture = r.b.depth_level_texture(shadow).unwrap().unwrap();
+            texture_id = *texture;
+
+            r.b.clear(r.color, None, Clear { color: Some([0.; 4]), ..Clear::NONE }).unwrap();
+            r.b.clear(aux, Some(r.depth), clear).unwrap();
+            prepass.vertex_count = 33;
+            r.b.draw(aux, Some(r.depth), &prepass, [Some(&texture), None, None, None]).unwrap();
+
+            for mesh in [36, 39] {
+                let mut lit = draw(world, mesh, false);
+                lit.state.render.depth_mode = DepthBufferMode::Z;
+                lit.state.render.depth_func = CompareFunc::Equal;
+                lit.state.render.depth_write = false;
+                r.b.draw(r.color, Some(r.depth), &lit, [None, None, None, Some(&texture)]).unwrap();
+            }
+            r.b.present(r.color, 4).unwrap();
+        }
+
+        assert_eq!(r.b.stats().lock().unwrap().shared_depth_ops, 4);
+        let slots = u64::from(fps / 30);
+        for slot in 1..slots {
+            let before = r.calls();
+            r.b.idle_at(2 * F + F * slot / slots);
+            let shows = r.presents_since(before);
+            assert_eq!(shows.len(), 1, "{fps} Hz, slot {slot}");
+            let shown = shows[0].0;
+            assert_ne!(shown, r.color);
+            let calls = &r.b.inner().calls[before..];
+            let mut shared_clear = None;
+            let mut meshes = Vec::new();
+            let expected = camera(1.0 + slot as f64 / slots as f64, 0.0);
+            for call in calls {
+                match call {
+                    Recorded::Clear { color, clear: value } if *value == clear => {
+                        assert_ne!(*color, aux, "a replay must leave the guest's target alone");
+                        assert_ne!(*color, shown, "the colour targets must stay distinct");
+                        shared_clear = Some(*color);
+                    }
+                    Recorded::Draw { color, draw, textures } => {
+                        meshes.push(draw.vertex_count);
+                        if draw.vertex_count == 33 {
+                            assert_eq!(shared_clear, Some(*color), "clear before the prepass");
+                            assert_eq!(textures, &[Some(texture_id), None, None, None]);
+                        } else {
+                            assert_eq!(*color, shown);
+                            assert_eq!(textures, &[None, None, None, Some(texture_id)]);
+                        }
+                        assert!(close(&mat(draw, CAM, Layout::Rows), &expected));
+                        assert_eq!(draw.shader.constants[110], block()[110]);
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!(meshes, [33, 36, 39], "shared prepass then its depth-equal readers");
+        }
+    }
+}
+
+#[test]
 fn a_shadow_map_the_world_samples_does_not_hold_the_frame() {
     // The texture a depth level is sampled through is the level's texels
     // as of the call (the backend makes it, once each time the level is
