@@ -332,6 +332,12 @@ pub enum Command {
         name: &'static str,
         value: Value,
     },
+    /// Duplicate the object `id` names at `frame` and hold the copy
+    /// (Properties' **Duplicate** row, `Session::duplicate`).
+    Duplicate {
+        id: Endpoint,
+        frame: Frame,
+    },
     Remove {
         id: Endpoint,
     },
@@ -613,6 +619,37 @@ impl Tool {
                 ghost.rotation[0] = radians;
             }
         }
+    }
+
+    /// Reset orientation (Properties): pitch and roll to zero and the yaw
+    /// to `radians`, which the caller rounds to the rotation snap. What is
+    /// placed or held turns to it at once; an aimed thing is sent as a
+    /// move, as a heading is.
+    pub fn set_orientation(&mut self, radians: f32) {
+        if radians.is_finite() && (self.placing.is_some() || self.held_thing.is_some()) {
+            self.initial_rotation = [radians, 0., 0.];
+            self.rotation = [0.; 3];
+            if let Some(ghost) = &mut self.ghost {
+                ghost.rotation = [radians, 0., 0.];
+            }
+        }
+    }
+
+    /// Carry `id` from `frame`: the state a pickup sets, so Duplicate's
+    /// copy is held at once where the add put it. `object` is the added
+    /// object's id, none for a thing of the map's own.
+    pub fn take_up(&mut self, session: &Session, id: Endpoint, object: Option<OpId>, frame: Frame) {
+        let thing = session.thing(id);
+        self.cancel();
+        self.held_thing = Some(id);
+        self.held = object;
+        self.distance = thing
+            .map(|t| self.thing_extent(session, &t).hold())
+            .unwrap_or(4.0);
+        self.offset = [0.; 3];
+        self.initial_rotation = frame.rotation;
+        self.initial_position = frame.position;
+        self.ghost = Some(frame);
     }
 
     /// The carried frame in the basis in force: movement snap is on the

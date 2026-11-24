@@ -135,6 +135,20 @@ fn row(p: &PropDoc, thing: &Thing, heading: f32, extras: &Extras) -> Option<Shee
             extras.label.as_ref()?;
             Some(SheetRow::new(&p.text, Act::Choose(Choice::ClearLabel(thing.id))).describe(help))
         }
+        // Any thing with a rotation, or a facing to round: the block's turn
+        // field, which the session writes as one set.
+        ("act", "reset orientation") => forge::props::prop("rotation")
+            .and_then(|d| d.field(thing.block))
+            .map(|_| SheetRow::new(&p.text, Act::Choose(Choice::ResetOrientation)).describe(help)),
+        // A copy of an object, held at once: a kind the session can add,
+        // which is an object until slice P2, and a placed thing, not the
+        // ghost of one being placed.
+        ("act", "duplicate") if thing.kind == ThingKind::Object => {
+            let placed = thing.fields.iter().any(|(name, _)| name == "palette index");
+            placed.then(|| {
+                SheetRow::new(&p.text, Act::Choose(Choice::Duplicate(thing.id))).describe(help)
+            })
+        }
         ("keyboard", "prefab") if extras.savable > 0 => {
             let value = if extras.savable == 1 {
                 "1 object".to_string()

@@ -319,6 +319,59 @@ impl Session {
         Ok(id)
     }
 
+    /// Duplicate an object (docs/game/forge-map-variants-ui.md, "The
+    /// Properties page"): one `Placement::Add` with the source's fields —
+    /// the palette tag it places, at `frame` — and the copy's op id. The
+    /// fields a placement cannot carry yet (its flags and scale) wait for
+    /// their rows. A kind the session cannot add — the kit's, until slice
+    /// P2 — is refused by its sentence, and a full block by the budget's.
+    pub fn duplicate(
+        &mut self,
+        world: &mut impl World,
+        tick: u32,
+        id: Endpoint,
+        frame: Frame,
+    ) -> Result<OpId, String> {
+        self.restore(world)?;
+        let thing = self.thing(id).ok_or(NO_THING)?;
+        if thing.kind != ThingKind::Object {
+            return Err(format!(
+                "Duplicating a {} needs a kit session.",
+                thing.kind.name()
+            ));
+        }
+        if let Some(budget) = self.budget_for(thing.block)
+            && budget.left == 0
+        {
+            return Err(budget.full());
+        }
+        let tag = thing
+            .fields
+            .iter()
+            .find(|(name, _)| name == "palette index")
+            .and_then(|(_, value)| match value {
+                Value::Tag(Some(tag)) => Some(tag.clone()),
+                _ => None,
+            })
+            .ok_or("This object names no palette tag.")?;
+        let fields = vec![
+            FieldWrite {
+                field: "palette index".into(),
+                value: Value::Tag(Some(tag)),
+            },
+            vector("position", frame.position)?,
+            vector("rotation", frame.rotation)?,
+        ];
+        let ops = self.ops(vec![Edit::Placement(Placement::Add {
+            block: thing.block,
+            like: None,
+            fields,
+        })])?;
+        let new = ops[0].id;
+        self.edit(world, tick, ops, None)?;
+        Ok(new)
+    }
+
     pub fn move_object(
         &mut self,
         world: &mut impl World,

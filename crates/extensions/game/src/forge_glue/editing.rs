@@ -964,6 +964,14 @@ impl Editor {
                     After::Shared(items) => self.shared_applied(&items),
                     After::Tool(command) => {
                         self.tool.applied(&command);
+                        // Duplicate: the copy is the log's last op, and the
+                        // monitor holds it at once where the add put it.
+                        if let Command::Duplicate { frame, .. } = &command
+                            && let Some(entry) = self.session.log().last()
+                        {
+                            let id = forge::Endpoint::Added(entry.id);
+                            self.tool.take_up(&self.session, id, Some(entry.id), *frame);
+                        }
                         if let Command::Goal { goal, .. } = command
                             && self.tool.show == Show::ThisGameType
                             && !goal.in_game(self.tool.game)
@@ -1572,6 +1580,40 @@ impl Editor {
             Choice::ClearLabel(id) => {
                 return self.command(tick, Command::SetLabel { id, label: None });
             }
+            Choice::ResetOrientation => {
+                let id = self
+                    .tool
+                    .held_thing
+                    .or(self.tool.aimed_thing)
+                    .ok_or("Aim at a thing of the map.")?;
+                let (_, _, mut frame) = self.target().ok_or("The thing is gone.")?;
+                // Pitch and roll to zero; the yaw rounds to the rotation
+                // snap, as the tool's own turning does.
+                let step = sheet::ANGLE_STEPS.get(self.rotation_step).copied().unwrap_or(0.);
+                let yaw = frame.rotation[0].to_degrees();
+                let yaw = if step > 0. { (yaw / step).round() * step } else { yaw };
+                let yaw = yaw.to_radians();
+                if self.tool.placing.is_some() || self.tool.held_thing.is_some() {
+                    self.tool.set_orientation(yaw);
+                } else {
+                    frame.rotation = [yaw, 0., 0.];
+                    let cmd = match self.tool.aimed {
+                        Some(id) => Command::Move { id, frame },
+                        None => Command::MoveThing { id, frame },
+                    };
+                    return self.command(tick, cmd);
+                }
+            }
+            Choice::Duplicate(id) => {
+                // The copy is made in front of the monitor, as a prefab is
+                // placed, and held at once.
+                let eye = self.tool.camera.ok_or("The monitor has no view.")?;
+                let frame = forge::Frame {
+                    position: eye.point(MARKER_REACH),
+                    rotation: [eye.yaw, 0., 0.],
+                };
+                return self.command(tick, Command::Duplicate { id, frame });
+            }
             Choice::PlacePrefab(i) => {
                 let prefab = self.prefabs.get(i).ok_or("That prefab is gone.")?;
                 self.session.prefab_fits(prefab)?;
@@ -1991,6 +2033,7 @@ fn run(s: &mut Session, w: &mut ForgeWorld, tick: u32, cmd: Command) -> Result<(
         MoveThing { id, frame } => s.move_thing(w, tick, id, frame),
         HoldThing { id, frame } => s.hold(w, tick, id, frame),
         SetField { id, name, value } => s.set_field(w, tick, id, name, value),
+        Duplicate { id, frame } => s.duplicate(w, tick, id, frame).map(|_| ()),
         Remove { id } => s.remove(w, tick, id),
         Link { from, to } => s.link(w, tick, from, to).map(|_| ()),
         Unlink { link } => s.unlink(w, tick, link),

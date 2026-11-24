@@ -52,7 +52,13 @@ pub(super) fn sample_thing(block: forge::BlockKind, kind: forge::ThingKind) -> f
                 ("identifier", forge::Value::Int(0)),
             ]
         } else {
-            Vec::new()
+            vec![(
+                "palette index",
+                forge::Value::Tag(Some(forge::TagKey {
+                    group: "scen".into(),
+                    path: r"fixture\beacon".into(),
+                })),
+            )]
         },
         changed: false,
     }
