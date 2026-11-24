@@ -75,6 +75,15 @@ array geometry. Scope ownership to the current producer and match the complete
 state. Returning `None` leaves the draw available to the next admission. A
 failed preparation of a claimed draw falls through to the original D3D draw.
 
+The decal callback at `0x00044040` owns list order, duplicate stamps,
+bitmap selection and attribute defaults. Each array draw enters
+`crates/extensions/game/src/native_decals_glue.rs` once through
+`DrawAdmission`. An admitted packet uses the live depth comparison and
+write state, the resolved W clip and polygon offset, and the live sampler's
+border addressing. Reference and display copies select their
+own vertex constants, UI transform and scissors. A refusal draws the
+same ordered packet through D3D.
+
 For a helper that emits one quad, call
 `Device::begin_draw_scope(mem, Arc<dyn DrawAdmission>) -> Result<Option<DrawScope>, D3dError>`
 on entry. Keep the handle across the guest call. At return,
@@ -318,7 +327,6 @@ The walks are on whenever the native renderer is. The effects walk shares the pa
 | --- | --- |
 | Transparents | At `0x00041020` the saved sorted-loop ordinal resolves through the live u16 order array. The data pointer must match the handler argument. At `0x0004dad0` the standard emitter has a contiguous range in EDI/ESI. The subrange branches at `0x0004db40`, `0x0004dbdc` and `0x0004dc3a` supply topology, count and indices on the stack. The resolved indexed draw also covers an object whose lighting owner is unavailable. The hook checks the live handler, shader and part arguments. Each admitted range skips one indexed call and resumes at its return address. A refusal runs that call in sorted order. |
 | First person | At the layer-3 call returning to `0x00040136` the model pass can suppress the sole in-layer item before its build. Mixed lists keep the guest sort and request uploads for their record models across layers 1, 2, 3, 7, 8 and 20. A part can use a compiled pass when a sibling material fails. At `0x0004dad0`, the ordinary sorted draw stack and the first-person list supply both full parts and sorted subranges in layers 1, 2, 3, 7, 8 and 20. |
-| Decals | At `0x00044161` ESI names one record in the callback's linked list. Read its live allocation and quad count, and submit the array through native decal admission. A committed draw resumes at the generated entry `0x00044195`. A refusal continues through the guest draw. The guest has already marked duplicates and selected the bitmap and attribute defaults. |
 | Particles | At `0x0023ed5c` the guest allocator has succeeded and the emitter inputs are still live. Replace the one quad and skip its attribute writes and geometry publication in the guest. Restore EBP and return with the original stack cleanup. |
 | Effects | The four-vertex copy callback's source is available at `0x0004b252`. Read it directly and skip the copy and publication. For contrails, read the completed callback output at `0x0004b28c` and skip publication. Both use the live inline declaration, then return `-1` with the original stack cleanup. |
 | UI and HUD | The sorted widget dispatch, HUD and loading callbacks delimit ownership. The HUD, UI and loading census rows are partial. The overlay takes supported widget fans and inline screen quads with their bound textures. Shared quads inside the loading callback count as loading draws. Refused draws follow the ordered UI packet or guest path. |

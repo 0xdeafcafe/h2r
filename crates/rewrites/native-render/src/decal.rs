@@ -5,7 +5,7 @@
 /// signed normalised vector (`NORMPACKED3`, semantic 3).
 pub const VERTEX_SIZE: usize = 16;
 
-/// A dynamic decal pass mode. Modes 0..5 are W-buffered; mode 6 is not.
+/// The guest's dynamic decal pass mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum Mode {
@@ -36,11 +36,6 @@ impl Mode {
 
     pub fn index(self) -> i16 {
         self as i16
-    }
-
-    /// Whether this mode's wrapper selects W depth.
-    pub fn w_buffered(self) -> bool {
-        self != Self::Opaque
     }
 }
 
@@ -88,21 +83,6 @@ mod tests {
     #[test]
     fn quad_list_expansion_matches_d3d() {
         assert_eq!(quad_indices(2), [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7]);
-    }
-
-    #[test]
-    fn only_mode_six_is_not_w_buffered() {
-        for mode in [
-            Mode::Alpha0,
-            Mode::Alpha1,
-            Mode::Multiply,
-            Mode::Darken,
-            Mode::Maximum,
-            Mode::Alpha5,
-        ] {
-            assert!(mode.w_buffered());
-        }
-        assert!(!Mode::Opaque.w_buffered());
     }
 
     #[test]

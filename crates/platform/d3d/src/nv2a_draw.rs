@@ -247,22 +247,7 @@ pub(super) fn samplers(
     border: [u8; 4],
     caps: Capabilities,
 ) -> [SamplerKey; 4] {
-    std::array::from_fn(|n| {
-        let mut k = SamplerKey::from_stage(&draw.state.stages[n], caps);
-        if border[n] != 0 {
-            // The shader supplies the border; the sampler clamps.
-            for (axis, mode) in [&mut k.address_u, &mut k.address_v, &mut k.address_w]
-                .into_iter()
-                .enumerate()
-            {
-                if border[n] >> axis & 1 != 0 {
-                    *mode = wgpu::AddressMode::ClampToEdge;
-                }
-            }
-            k.border = None;
-        }
-        k
-    })
+    std::array::from_fn(|n| sampler_key(&draw.state.stages[n], caps, border[n]))
 }
 
 #[cfg(test)]

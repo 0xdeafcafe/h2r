@@ -10,10 +10,6 @@ const RENDERER: &str = "docs/graphics/native-renderer.md";
 const PARTICLES: &str = "docs/graphics/native-particles.md";
 const DECALS: &str = "docs/graphics/native-decals-research.md";
 
-// The per-record duplicate marker, bitmap and default registers have
-// already been set. ESI still names the record about to build a draw.
-pub const DECAL_ITEM_GEOMETRY: Point = Point::new("DECAL_ITEM_GEOMETRY", 0x0004_4161, Sig::Site, DECALS);
-pub const DECAL_ITEM_NEXT: u32 = 0x0004_4195;
 pub const DECAL_RENDER_END: Point = Point::new("DECAL_RENDER_END", 0x0004_41aa, Sig::Site, DECALS);
 
 // The contiguous-range branch of the standard geometry emitter, after
@@ -109,8 +105,6 @@ pub fn instruction_entries() -> impl Iterator<Item = u32> {
         &FLARE_COMPOSITE,
     ];
     [
-        DECAL_ITEM_GEOMETRY.base,
-        DECAL_ITEM_NEXT,
         DECAL_RENDER_END.base,
         GEOMETRY_RANGE_READY.base,
         SCENE_TRANSPARENTS_END.base,
@@ -174,6 +168,6 @@ mod tests {
             assert!(seen.insert(address), "duplicate entry {address:#010x}");
         }
         assert!(seen.contains(&super::EFFECT_QUAD_READY.base));
-        assert!(seen.contains(&super::DECAL_ITEM_NEXT));
+        assert!(seen.contains(&super::DECAL_RENDER_END.base));
     }
 }

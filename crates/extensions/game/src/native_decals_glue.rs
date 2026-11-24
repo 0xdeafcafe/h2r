@@ -14,8 +14,8 @@ use d3d::shader::VertexProcessing;
 use gfx::vertex::{PrimitiveType, StreamLayout, VertexDataType, VertexRegister};
 use native_render::decal::{Mode, VERTEX_SIZE, Vertex, decode_packed};
 use native_render::decal_gpu::{
-    ClipRect, DecalCache, DecalClip, DecalGpu, DecalTarget, PacketTarget, Prepared, ShaderSnapshot,
-    StageExtras,
+    ClipRect, DecalCache, DecalClip, DecalGpu, DecalTarget, PacketTarget, Prepared, ReferenceCopy,
+    ShaderSnapshot, StageExtras,
 };
 use shaders::vsh::VertexUniforms;
 use timeline::native::Stage;
@@ -29,8 +29,7 @@ struct Glue {
     caches: Caches,
 }
 
-/// Registers the admission with the device. No callback suppression or custom
-/// geometry/texture loader is installed.
+/// Register on the guest's ordered draw, which also owns its fallback.
 pub fn install<B: d3d::backend::Backend + Send + 'static>(
     device: &d3d::abi::SharedDevice<B>,
 ) {
@@ -38,31 +37,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(
         return;
     }
     let Ok(mut d) = device.lock() else { return };
-    let admission = Arc::new(Glue::default());
-    d.add_draw_admission(admission.clone());
-    render_bridge::native_decals::set_walk_host(Arc::new(Walk {
-        device: device.clone(),
-        admission,
-    }));
-}
-
-struct Walk<B: d3d::Backend> {
-    device: d3d::abi::SharedDevice<B>,
-    admission: Arc<Glue>,
-}
-
-impl<B: d3d::Backend + Send + 'static> render_bridge::native_decals::WalkHost for Walk<B> {
-    fn draw(&self, mem: &mut dyn engine::memory::GuestMemory, start: u32, count: u32) -> bool {
-        self.device.lock().is_ok_and(|mut device| {
-            device.try_native_array_draw(
-                &mut crate::native_lights_glue::DeviceMemory(mem),
-                PrimitiveType::QuadList,
-                start,
-                count,
-                self.admission.as_ref(),
-            ).ok() == Some(true)
-        })
-    }
+    d.add_draw_admission(Arc::new(Glue::default()));
 }
 
 fn clip(r: d3d::PixelRect) -> ClipRect {
@@ -122,11 +97,6 @@ fn decal_vertices(
 
 fn prepare(mode: Mode, snapshot: &DrawSnapshot<'_>) -> Result<Prepared, &'static str> {
     let d = snapshot.draw;
-    // This producer freezes one uniform block for both attachment copies.
-    // The ordinary D3D draw owns a pair with different lenses or UI layout.
-    if d.retail_constants.is_some() || d.ui_fit.is_some() {
-        return Err("attachment copies need distinct vertex constants");
-    }
     if d.primitive != PrimitiveType::QuadList
         || d.indices.is_some()
         || d.vertex_count == 0
@@ -166,12 +136,9 @@ fn prepare(mode: Mode, snapshot: &DrawSnapshot<'_>) -> Result<Prepared, &'static
         bump_env_lscale: e.bump_env_lscale,
         bump_env_loffset: e.bump_env_loffset,
     });
-    native_render::decal_gpu::check_state(mode, &d.state.render, &d.state.stages, &extras)?;
+    native_render::decal_gpu::check_state(mode, &d.state.render, &extras)?;
     if d.raw.render[83] != 0 || d.raw.render[141] != 0 {
         return Err("lighting/stipple");
-    }
-    if d.raw.render[d3d::state::slot::ZBIAS as usize] != 0 {
-        return Err("ZBIAS");
     }
     if d.texture_info[0]
         .is_some_and(|info| info.kind != gfx::texture::TextureKind::D2 || info.format.is_depth())
@@ -194,8 +161,12 @@ fn prepare(mode: Mode, snapshot: &DrawSnapshot<'_>) -> Result<Prepared, &'static
             defaults: d.shader.vertex_defaults,
             surface: [d.target.width as f32, d.target.height as f32],
             z_max: gfx::renderer::d3dz_max(d.target.depth_format),
+            ui_transform: d
+                .ui_fit
+                .map_or(d3d::backend::UiFit::IDENTITY.transform, |fit| fit.transform),
             ..Default::default()
         },
+        w_buffered: d3d::hw::w_buffered(d),
         integer_depth: !matches!(
             d.target.depth_format,
             Some(
@@ -207,17 +178,25 @@ fn prepare(mode: Mode, snapshot: &DrawSnapshot<'_>) -> Result<Prepared, &'static
         ),
         tex_scale,
     };
-    native_render::decal_gpu::check_program(mode, &shader)?;
     let clips = if d.clip_rects.is_empty() {
-        d.clip.into_iter().map(clip).collect()
+        d.clip.as_slice()
     } else {
-        d.clip_rects.iter().copied().map(clip).collect()
+        &d.clip_rects
     };
+    let reference = (d.retail_constants.is_some() || d.ui_fit.is_some()).then(|| ReferenceCopy {
+        constants: d
+            .retail_constants
+            .as_ref()
+            .map_or(&d.shader.constants, |(constants, _)| constants)
+            .clone(),
+        clips: clips.iter().copied().map(clip).collect(),
+    });
     Ok(Prepared {
         mode,
         vertices,
         shader,
-        clips,
+        clips: clips.iter().map(|&r| clip(d.display_rect(r))).collect(),
+        reference,
     })
 }
 
@@ -236,17 +215,17 @@ impl DrawAdmission for Glue {
             Err(why @ ("vertex declaration" | "vertex streams")) => {
                 let d = snapshot.draw;
                 let strides: Vec<_> = d.streams.iter().map(|s| s.stride).collect();
-                render_bridge::native_decals::note_refusal(format!(
+                render_bridge::native_decals::note_admission_refusal(format!(
                     "{why}: {:?}, bound strides {strides:?}", d.layout
                 ));
                 return None;
             }
             Err(why) => {
-                render_bridge::native_decals::note_refusal(why);
+                render_bridge::native_decals::note_admission_refusal(why);
                 return None;
             }
         };
-        render_bridge::native_decals::note_admitted();
+        render_bridge::native_decals::note_candidate();
         Some((
             ExternalPlan {
                 stage: Stage::Decals,
@@ -256,6 +235,7 @@ impl DrawAdmission for Glue {
             },
             Box::new(DecalPass {
                 prepared,
+                draw: Arc::new(snapshot.draw.clone()),
                 clip: None,
                 gpu: None,
                 caches: self.caches.clone(),
@@ -267,6 +247,7 @@ impl DrawAdmission for Glue {
 
 struct DecalPass {
     prepared: Prepared,
+    draw: Arc<d3d::ResolvedDraw>,
     clip: Option<d3d::DepthClip>,
     gpu: Option<DecalGpu>,
     caches: Caches,
@@ -288,10 +269,14 @@ impl DecalPass {
 }
 
 impl d3d::ExternalPass for DecalPass {
+    fn resolved_fallback(&self) -> Option<Arc<d3d::ResolvedDraw>> {
+        Some(Arc::clone(&self.draw))
+    }
+
     fn writes(&self) -> ExternalWrites {
         ExternalWrites {
             color: true,
-            depth_stencil: self.prepared.mode.w_buffered(),
+            depth_stencil: self.draw.writes_depth_stencil(),
         }
     }
 
@@ -336,6 +321,7 @@ impl d3d::ExternalPass for DecalPass {
             size: t.size,
             z_scale: request.z_scale,
             stage0,
+            copy: t.copy,
         };
         let mut caches = self.caches.lock().unwrap_or_else(|e| e.into_inner());
         let cache = caches.entry(t.device.clone()).or_default();
@@ -379,6 +365,7 @@ impl d3d::ExternalPass for DecalPass {
             guest_size: t.guest_size,
             size: t.size,
             stages: t.stages,
+            copy: t.copy,
         };
         usize::from(
             self.gpu
