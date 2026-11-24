@@ -307,6 +307,33 @@ impl Built {
 }
 
 pub(super) fn build(mem: &dyn GuestMemory, list: u32, layer: u32, buffer: u32) -> Result<Built> {
+    build_for(mem, list, layer, Output::Guest { buffer })
+}
+
+/// Plan the same entries before the layer begins. Every field used by
+/// the sort and by `Built::sorted` is assigned by a successful entry,
+/// so the typed walk needs neither stack storage nor its previous bytes.
+pub(super) fn sorted_for_pass(
+    mem: &dyn GuestMemory,
+    list: u32,
+    layer: u32,
+    flags: u32,
+    definition_flags: u32,
+) -> Result<Vec<scene_extract::light_groups::Sorted>> {
+    let pass = Output::Typed {
+        flags,
+        definition_flags,
+    };
+    Ok(build_for(mem, list, layer, pass)?.sorted())
+}
+
+#[derive(Clone, Copy)]
+enum Output {
+    Guest { buffer: u32 },
+    Typed { flags: u32, definition_flags: u32 },
+}
+
+fn build_for(mem: &dyn GuestMemory, list: u32, layer: u32, output: Output) -> Result<Built> {
     let m = Reader(mem);
     let first = m.word(list, 12)?;
     let end = m.word(list, 4)?;
@@ -324,12 +351,21 @@ pub(super) fn build(mem: &dyn GuestMemory, list: u32, layer: u32, buffer: u32) -
     if first != end {
         let table = m.ptr(TAG_ENTRIES_GLOBAL, 0)?;
         let items = m.ptr(list, 20)?;
-        let flags = m.word(lp::global::PASS_FLAGS, 0)?;
-        // Only the receiver and diffuse choosers read this flag.
-        let def_flags = if matches!(layer, 11 | 12) {
-            m.word(m.ptr(lp::global::DEFINITION, 0)?, 0)?
-        } else {
-            0
+        let (flags, def_flags) = match output {
+            Output::Typed {
+                flags,
+                definition_flags,
+            } => (flags, definition_flags),
+            Output::Guest { .. } => {
+                let flags = m.word(lp::global::PASS_FLAGS, 0)?;
+                // Only the receiver and diffuse choosers read this flag.
+                let def_flags = if matches!(layer, 11 | 12) {
+                    m.word(m.ptr(lp::global::DEFINITION, 0)?, 0)?
+                } else {
+                    0
+                };
+                (flags, def_flags)
+            }
         };
         let build = Build {
             m,
@@ -345,8 +381,10 @@ pub(super) fn build(mem: &dyn GuestMemory, list: u32, layer: u32, buffer: u32) -
             }
             if count == slots.len() {
                 let mut slot = [0; 24];
-                mem.read(index(buffer, count as u32, 24)?, &mut slot)
-                    .map_err(|_| Refusal::Memory)?;
+                if let Output::Guest { buffer } = output {
+                    mem.read(index(buffer, count as u32, 24)?, &mut slot)
+                        .map_err(|_| Refusal::Memory)?;
+                }
                 slots.push(slot);
             }
             if build.entry(at, n, &mut slots[count])? {
@@ -923,6 +961,130 @@ mod tests {
             assert_eq!(m.u8(at + 4).unwrap(), 1);
             assert_eq!(m.u32(at + 12).unwrap(), 0x5555_5555);
         }
+    }
+
+    #[test]
+    fn typed_groups_use_this_calls_flags_and_all_its_sorted_entries() {
+        use crate::native_lights::typed_groups;
+        use frame_scene::{GroupSite, LightStep, LightTarget};
+
+        let mut m = fixture(12);
+        let list = shadows::RECEIVERS;
+        let steps = [LightStep {
+            layer: 12,
+            target: LightTarget::View,
+            stencil: Some(0),
+            draws: true,
+        }];
+        let collect = |m: &FlatMemory, site| typed_groups::plan(m, site, &steps, 0, 32, None);
+        // The preceding light left a suffix and a different flag word.
+        assert!(collect(&m, GroupSite::Light).is_none());
+        m.set_u32(list + 12, 0).unwrap();
+        m.set_u32(lp::global::DEFINITION, u32::MAX).unwrap();
+        for site in [GroupSite::Light, GroupSite::FirstPerson] {
+            let groups = collect(&m, site).unwrap();
+            assert_eq!(groups.len(), 1);
+            let g = &groups[0];
+            assert_eq!((g.group.site, g.group.entries.clone()), (site, 0..3));
+            assert_eq!(
+                g.entries.iter().map(|e| e.slot).collect::<Vec<_>>(),
+                [2, 3, 1]
+            );
+            assert!(g.entries.iter().all(|e| e.binding.implementation == 4));
+            assert!(g.rows.iter().all(Vec::is_empty));
+        }
+        // The last entry has a callback the typed group cannot express.
+        m.set_u32(ITEMS + 3 * 24, 0x8400).unwrap();
+        assert!(collect(&m, GroupSite::Light).is_none());
+        assert_eq!(m.u32(lp::global::DEFINITION).unwrap(), u32::MAX);
+        assert_eq!(m.bytes(BUFFER, 72).unwrap(), [0x55; 72]);
+    }
+
+    #[test]
+    fn typed_casters_predict_the_draw_target_and_restore_before_receivers() {
+        use crate::native_lights::typed_groups;
+        use engine::shadow_constants::global::{TARGET_STRIDE, TARGETS};
+        use frame_scene::{GroupSite, LightStep, LightTarget};
+
+        let mut m = fixture(10);
+        m.set_u32(shadows::CASTERS + 12, 0).unwrap();
+        m.set_u32(shadows::RECEIVERS + 8, 1 << 11).unwrap();
+        // A receiver with an empty sorted group still has begin state.
+        for (at, value) in [
+            (0x0048_58b8, 2),
+            (0x0048_58b4, u32::MAX), // preceding pass's target
+            (0x004b_8464, 9),        // preceding pass's raster
+            (0x004b_846c, 17),       // inherited compare in 10
+            (0x0045_e46c, 7),
+            (0x0045_dc0c, 11),
+            (0x0004_96f1, 19), // receiver compare operand
+            (0x0004_9705, 31), // receiver clip operand
+        ] {
+            m.set_u32(at, value).unwrap();
+        }
+        m.set_u8(0x0047_fe84, 1).unwrap();
+        for target in [2, 9, 10] {
+            m.set_u32(TARGETS + target * TARGET_STRIDE + 0x80, 10 + target)
+                .unwrap();
+            m.set_u32(TARGETS + target * TARGET_STRIDE + 0x84, 20 + target)
+                .unwrap();
+        }
+        let steps = [
+            LightStep {
+                layer: 10,
+                target: LightTarget::ShadowMap,
+                stencil: None,
+                draws: true,
+            },
+            LightStep {
+                layer: 11,
+                target: LightTarget::View,
+                stencil: Some(0),
+                draws: true,
+            },
+        ];
+        let projection = Some([[13; 4]; frame_scene::PROJECTION_ROWS]);
+        for (site, flags, target) in [
+            (GroupSite::ObjectShadow, 0x14, 10),
+            (GroupSite::Light, 0x4, 9),
+            (GroupSite::AdditionalCasters, 0x4, 9),
+        ] {
+            let groups = typed_groups::plan(&m, site, &steps, flags, 0, projection).unwrap();
+            assert_eq!(groups.len(), 2);
+            assert_eq!(groups[0].group.projection, projection);
+            let casting = groups[0].group.pass.unwrap();
+            assert_eq!(casting.flags, flags);
+            assert_eq!(
+                (casting.target, casting.size),
+                (target, [10 + target, 20 + target])
+            );
+            assert_eq!(
+                (
+                    casting.offset_enable,
+                    casting.raster,
+                    casting.shadow_function
+                ),
+                (1, 2, 17)
+            );
+            let apply = groups[1].group.pass.unwrap();
+            assert_eq!((apply.target, apply.size), (2, [12, 22]));
+            assert_eq!(
+                (apply.offset_enable, apply.raster, apply.shadow_function),
+                (0, 0, 19)
+            );
+            assert_eq!(
+                (
+                    apply.offset_constant,
+                    apply.offset_slope,
+                    apply.clip_control
+                ),
+                (7, 11, 31)
+            );
+            assert_eq!(m.u32(0x0048_58b4).unwrap(), u32::MAX);
+        }
+        // A caller naming a draw which the live list did not select.
+        m.set_u32(shadows::RECEIVERS + 8, 0).unwrap();
+        assert!(typed_groups::plan(&m, GroupSite::Light, &steps, 4, 0, projection).is_none());
     }
 
     #[test]
