@@ -668,6 +668,13 @@ mod retained_admission {
     }
 
     #[test]
+    fn sorted_water_retains_the_resolved_packet() {
+        let o = capture(false, |admission, _, _| admission.plan.stage = Stage::Water);
+        assert_eq!(o.external.unwrap().plan.stage, Stage::Water);
+        assert_eq!((o.issued, o.replay_draws), (1, 1));
+    }
+
+    #[test]
     fn the_sky_strip_keeps_its_stencil_write_on_replay() {
         let o = capture(false, |admission, draw, _| {
             admission.plan.stage = Stage::Sky;

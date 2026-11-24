@@ -26,7 +26,7 @@ impl Stage {
             Self::World => "native-world",
             Self::Lights => "native-lights",
             Self::Fog => "native-fog",
-            Self::Water => "native-water",
+            Self::Water => "native-water layer-6 edge blend",
             Self::Objects => "native-objects",
         }
     }

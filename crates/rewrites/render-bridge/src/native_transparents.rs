@@ -3,7 +3,8 @@
 //! The two stack frames identify the entry while the indexed call is live.
 //! Push-buffer work and other kinds of handlers keep their ordinary path.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -46,6 +47,7 @@ pub struct IndexRange {
 }
 
 pub trait WalkHost: Send + Sync {
+    fn sorted_pools(&self, _mem: &dyn GuestMemory) -> Option<Arc<BTreeSet<u32>>> { None }
     fn retire_bsp(&self) {}
 
     fn draw(&self, mem: &mut dyn GuestMemory, stage: Stage, range: IndexRange) -> bool;
@@ -81,6 +83,7 @@ fn sorted_data(mem: &dyn GuestMemory, ordinal: u32) -> Option<u32> {
 }
 
 thread_local! {
+    static POOLS: RefCell<Option<Arc<BTreeSet<u32>>>> = const { RefCell::new(None) };
     static WALK_DATA: Cell<Option<u32>> = const { Cell::new(None) };
 }
 
@@ -92,13 +95,9 @@ fn walk_stage(mem: &dyn GuestRead, esp: u32) -> Option<Stage> {
     let layer = word(0x78)?;
     match word(0x68)? {
         TRANSPARENT_DRAW_CALLER if layer == 15 => {
-            let frame_data = SCOPE.with(|slot| {
-                let scope = slot.take();
-                let data = scope.live_handler(mem, esp).map(|h| h.data);
-                slot.set(scope);
-                data
-            })?;
-            (WALK_DATA.get() == Some(frame_data)).then_some(Stage::Transparents)
+            // Pools use the resolved D3D issue below, so a replay can keep
+            // the admission beside the exact packet and its texture inputs.
+            (!sorted_pool(mem, esp)?).then_some(Stage::Transparents)
         }
         LAYER_DRAW_CALLER => {
             use native_render::world_layers::{Site, layer_site};
@@ -121,6 +120,34 @@ fn walk_stage(mem: &dyn GuestRead, esp: u32) -> Option<Stage> {
         }
         _ => None,
     }
+}
+
+fn sorted_pool(mem: &dyn GuestRead, esp: u32) -> Option<bool> {
+    let scope = SCOPE.take();
+    let handler = scope.live_handler(mem, esp);
+    SCOPE.set(scope);
+    let handler = handler?;
+    if WALK_DATA.get() != Some(handler.data) { return None; }
+    Some(POOLS.with_borrow(|p| p.as_ref().is_some_and(|p| p.contains(&handler.shader))))
+}
+
+/// The pool's resolved indexed call, with its three arguments still on the stack.
+pub fn pool_issue(mem: &dyn GuestRead, esp: u32) -> Option<(u32, u32)> {
+    WALK_DATA.get()?;
+    let ret = mem.read_u32(esp)?;
+    if ret != GEOMETRY_RANGE_TAIL && !SUBPART_DRAWS.iter().any(|&(_, end)| end == ret) {
+        return None;
+    }
+    let frame = esp.checked_add(16)?;
+    if mem.read_u32(frame.checked_add(0x18)?)? != GEOMETRY_EMITTER_CALLER
+        || mem.read_u32(frame.checked_add(0x68)?)? != TRANSPARENT_DRAW_CALLER
+        || mem.read_u32(frame.checked_add(0x78)?)? != 15
+        || !sorted_pool(mem, frame)?
+    {
+        return None;
+    }
+    Some((mem.read_u32(engine::render_loop::occlusion::guest::VIEW_INDEX)?,
+        mem.read_u32(esp.checked_add(8)?)?))
 }
 
 fn subpart_range(mem: &dyn GuestRead, esp: u32) -> Option<IndexRange> {
@@ -432,6 +459,8 @@ impl Feature for NativeTransparents {
             .observe_before(&points::SCENE_TRANSPARENTS, "native_transparents_view", |c| {
                 WALK_DATA.set(None);
                 let mem = c.guest();
+                let host = WALK.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                POOLS.replace(host.and_then(|h| h.sorted_pools(&*mem)));
                 let mut scope = Scope::default();
                 scope.begin_view(&ReadMemory(&*mem), c.cpu.esp);
                 SCOPE.with(|slot| slot.set(scope));
@@ -440,6 +469,7 @@ impl Feature for NativeTransparents {
         b.raw()
             .observe_before(&SCENE_TRANSPARENTS_END, "native_transparents_end", |_| {
                 WALK_DATA.set(None);
+                POOLS.replace(None);
                 SCOPE.with(|slot| slot.set(Scope::default()));
             })
             .context_only();
@@ -511,6 +541,16 @@ mod walk_tests {
         WALK_DATA.set(Some(data));
         SCOPE.set(scope);
         assert_eq!(walk_stage(&read, frame), Some(Stage::Transparents));
+
+        POOLS.replace(Some(Arc::new([0].into())));
+        assert_eq!(walk_stage(&read, frame), None);
+        let issue = frame - 16;
+        mem.set_u32(issue, GEOMETRY_RANGE_TAIL).unwrap();
+        mem.set_u32(issue + 8, 7).unwrap();
+        assert_eq!(pool_issue(&ReadMemory(&mem), issue), Some((0, 7)));
+        mem.set_u32(issue, 0x1234).unwrap();
+        assert_eq!(pool_issue(&ReadMemory(&mem), issue), None);
+        POOLS.replace(None);
 
         // No lighting owner for this object. The emitter still supplies the
         // exact sorted range and the device resolves its streams and shader.

@@ -56,7 +56,7 @@ stage gate follows it. There are no per-stage switches.
 | Stage 3: transparents | [native-transparents.md](native-transparents.md) | `native-render`: `transparent`, `transparent_streams`. `feature`: `native_transparents` | Indexed submission of the guest's sorted geometry |
 | Particles, decals, effects | [native-particles.md](native-particles.md), [native-decals-research.md](native-decals-research.md) | `native-render`: `particles`, `particle_gpu`, `decal`, `decal_gpu`, `effect_geometry`, `effect_immediate`, `glow`. `feature`: `native_particles`, `native_decals`, `native_effects` | Quad, decal and contrail submission |
 | Stage 4: lights and shadows | [native-lights.md](native-lights.md), [native-shadows.md](native-shadows.md), [native-shadow-layers.md](native-shadow-layers.md), [native-gels.md](native-gels.md) | `native-render`: `lights`, `light_gpu`, `light_list`, `light_look`, `light_scene`, `shadows`, `shadow_gpu`, `shadow_look`, `shadow_scene`, `shadow_filter_gpu`, `gels`, `gels_gpu`. `feature`: `native_lights`, `native_shadows`, `native_gels` | The per-light passes, shadow maps and shader gels |
-| Stage 4b: water, fog and camouflage | [native-water-fog.md](native-water-fog.md) | `native-render`: `fog`, `fog_gpu`, `water_gpu`, `object_program_gpu`. `feature`: `native_fog`, `native_water`, `native_layers` | Layer 16 fog, layer 6 water edge blend on clusters and rigid placements, sorted late geometry ranges, the indexed water composite, layers 18 and 19 camouflage and layer 21 hologram |
+| Stage 4b: water, fog and camouflage | [native-water-fog.md](native-water-fog.md) | `native-render`: `fog`, `fog_gpu`, `water_gpu`, `object_program_gpu`. `feature`: `native_fog`, `native_water`, `native_layers` | Layer 16 fog, sorted layer-15 pool surfaces, layer 6 water edge blend on clusters and rigid placements, sorted late geometry ranges, the indexed water composite, layers 18 and 19 camouflage and layer 21 hologram |
 | Stage 5: post and HUD | [native-post-hud.md](native-post-hud.md) | `native-render`: `post`, `screen_gpu`, `screen_look`, `flares`, `hud`, `ui_gpu`. `render-bridge`: `native_post`, `native_flares`, `native_hud` | Screen effects, bloom, lens-flare colour fans, the HUD and UI quads |
 | Scene list builders | this page | `feature`: `native_scene_lists` | The engine's visibility gathers, object setup and render records |
 
@@ -316,10 +316,12 @@ needs a matching A/B. See [render-loop.md](render-loop.md).
 
 The world stands down when its BSP loads yield no drawable native parts.
 The lights stand down when the native world is disabled or its BSPs yield
-no native lit parts. Fog and water stand down when their translated passes
-yield no drawable parts. This applies to whole-list replacement. Indexed fog ranges still
-use the live shader and geometry after the guest handler sets them up. Planar
-world passes sample the current view’s combiner colour and fade weights. A BSP-backed stage stays eligible while any BSP
+no native lit parts. Fog and the layer-6 water edge blend stand down when their
+translated passes yield no drawable parts. This applies to whole-list
+replacement. Indexed fog ranges and sorted layer-15 pools stay eligible at
+their indexed draws, using the live shader and geometry after the guest
+handler sets them up. Planar world passes sample the current view’s combiner
+colour and fade weights. A BSP-backed stage stays eligible while any BSP
 has work or has yet to be checked.
 
 Objects stand down only when the map's tag index contains no object

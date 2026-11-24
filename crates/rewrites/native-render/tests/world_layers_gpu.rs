@@ -677,6 +677,34 @@ mod flares;
 mod cone_shadows;
 
 #[test]
+fn sorted_pool_translates_the_resolved_ripple_and_scene_stages() {
+    let mut draw = triangle(2.0, [1.0; 4], 0, true);
+    let def = PixelShaderDef {
+        texture_modes: texture_modes([TEX_PROJECT2D, TEX_BUMPENVMAP, TEX_BUMPENVMAP, TEX_BUMPENVMAP]),
+        final_inputs_abcd: inputs(REG_T3, REG_T1, REG_T2, 0),
+        final_inputs_efg: final_efg(0, 0, REG_T0 | CHAN_ALPHA, 0),
+        ..Default::default()
+    };
+    let bytes = def.to_bytes();
+    let words: [u32; 60] = std::array::from_fn(|i| u32::from_le_bytes(bytes[i*4..i*4+4].try_into().unwrap()));
+    draw.shader.pixel_shader = Some(Arc::new(words));
+    draw.shader.combiner_state = Arc::new(words[..57].try_into().unwrap());
+    let raw = Arc::make_mut(&mut draw.raw);
+    raw.render[..57].copy_from_slice(&words[..57]);
+    raw.render[136] = words[54];
+    draw.texture_info = [draw.texture_info[0]; 4];
+    draw.textures = [draw.textures[0]; 4];
+    draw.extras[2].bump_env_mat = [0.25, -0.1, 0.5, 0.2];
+    let pass = IndexedPass::for_pool(&draw, Arc::new(Cache::default()), 1).unwrap();
+    assert!(pass.replays_scene());
+    assert_eq!(pass.resolved_fallback().unwrap().as_ref(), &draw);
+    let program = d3d::nv2a::NativeDrawMaterial::resolve(&draw, [true; 4],
+        gfx::translate::Capabilities::ALL, gfx::repack::FetchMode::Cpu).unwrap();
+    assert_eq!(program.key.translate().unwrap().dims, [Some(wgpu::TextureViewDimension::D2); 4]);
+    assert_eq!(program.uniforms(&draw, 1u32).1.bump_mat[2], draw.extras[2].bump_env_mat);
+}
+
+#[test]
 fn sky_strip_draws_the_current_views_palette_and_writes_the_stencil_mark() {
     use native_render::object_state::{structure_stencil, STENCIL_MARK_REFERENCE};
     use native_render::program::MODEL_ROWS;

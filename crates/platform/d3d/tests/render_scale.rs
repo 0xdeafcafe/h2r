@@ -1207,8 +1207,16 @@ fn render_diagnostics_read_display_allocations_on_the_worker() {
 
 #[test]
 fn fractional_feedback_preserves_patterned_guest_cells_and_snapshot_lifetime() {
+    patterned_feedback((149, 101));
+}
+
+#[test]
+fn water_frame_sample_includes_the_rightmost_presented_column_at_sixteen_by_nine() {
+    patterned_feedback((192, 108));
+}
+
+fn patterned_feedback(output: (u32, u32)) {
     let Some(ctx) = context() else { return };
-    let output = (149, 101);
     let grid = d3d::scaled::RenderScale::between((W, H), output).unwrap();
     let mut backend = ScaledBackend::with_resolution(
         GfxBackend::new(share(&ctx)), GfxBackend::new(share(&ctx)), grid, true,

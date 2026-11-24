@@ -33,6 +33,8 @@ use crate::native_world_glue::{ReadMemory, Ready, StageDecoder, StageImages, Sta
 /// The water of one loaded world: what compiled, the parts the native
 /// pass draws, and the engine-texture supplies it needs per view.
 pub struct WaterData {
+    /// Shader datums whose pool surface draws from the sorted layer-15 list.
+    pub pools: Arc<BTreeSet<u32>>,
     /// Each material's resolved layer-6 passes (with the engine stages
     /// kept) and their compiled programs, in draw order.
     pub passes: HashMap<u16, Vec<native_render::fog_gpu::FogPass>>,
@@ -81,6 +83,7 @@ pub fn load<R: std::io::Read + std::io::Seek>(
     let mut words: HashMap<u16, FogWords> = HashMap::new();
     let mut parts: Vec<((Owner, u8), (u32, u32, Option<LightmapKey>, u16))> = Vec::new();
     let materials: Vec<u16> = world.transparents.iter().map(|t| t.material).collect::<BTreeSet<_>>().into_iter().collect();
+    let mut pools = BTreeSet::new();
     if !materials.is_empty() {
         if let Ok(mut lib) = tags::material::ShaderLibrary::read(map) {
             let rasterizer = map.tags().iter().find(|tag| tag.group.0 == *b"matg")
@@ -89,11 +92,34 @@ pub fn load<R: std::io::Read + std::io::Seek>(
                     lib.metadata(), loc.address, crate::native_lights_glue::RASTERIZER_DATUM_14,
                 ));
             let mut refused: HashMap<String, usize> = HashMap::new();
+            let mut edge_materials = 0;
             for &m in &materials {
-                let Some(&shader) = shaders.get(usize::from(m)) else { continue };
-                let compiled = lib
-                    .material(shader, None)
-                    .map_err(|e| format!("material: {e}"))
+                let Some(&shader) = shaders.get(usize::from(m)) else {
+                    *refused.entry("missing BSP material shader".into()).or_default() += 1;
+                    continue;
+                };
+                // The sorted handler reads the stem from the compiled instance.
+                // Its live pass supplies animated images and constants at issue.
+                let routes = lib.shader(shader).and_then(|instance| {
+                    let id = instance.compiled()?.template;
+                    let name = map.tag(id).ok().and_then(|t| t.name.as_deref());
+                    let template = lib.template(id)?.compiled()?;
+                    Ok((water_gpu::sorted_pool(name, template),
+                        template.layer_passes(0, WATER_LAYER).is_some_and(|p| !p.is_empty())))
+                });
+                let edge = match routes {
+                    Ok((sorted, edge)) => {
+                        if sorted { pools.insert(shader.0); }
+                        edge
+                    }
+                    Err(e) => {
+                        *refused.entry(format!("template lookup: {e}")).or_default() += 1;
+                        continue;
+                    }
+                };
+                if !edge { continue; }
+                edge_materials += 1;
+                let compiled = lib.material(shader, None).map_err(|e| format!("material: {e}"))
                     .and_then(|mat| water_gpu::water_passes(&mat, rasterizer).map_err(|r| r.describe()))
                     .and_then(|ps| {
                         ps.iter()
@@ -164,11 +190,13 @@ pub fn load<R: std::io::Read + std::io::Seek>(
             let mut why: Vec<_> = refused.into_iter().collect();
             why.sort();
             eprintln!(
-                "native-water: {} of {} water materials' layer-6 passes translate, {} parts native ({unlit} without their lightmap page); on the D3D path: {why:?}",
+                "native-water: {} of {edge_materials} layer-6 edge materials translate, {} edge parts eligible ({unlit} without lightmap); {} sorted pool shaders use live layer 15; refusals: {why:?}",
                 programs.len(),
-                materials.len(),
                 parts.len(),
+                pools.len(),
             );
+        } else {
+            eprintln!("native-water: shader library unreadable for {} transparent materials", materials.len());
         }
     }
     let mut targets: Vec<u32> = passes
@@ -189,6 +217,7 @@ pub fn load<R: std::io::Read + std::io::Seek>(
         .filter_map(|&(k, (_, _, _, m))| Some((k, shaders.get(usize::from(m))?.0 as u16)))
         .collect();
     WaterData {
+        pools: Arc::new(pools),
         passes,
         programs,
         words,

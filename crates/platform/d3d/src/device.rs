@@ -6341,7 +6341,7 @@ impl<B: Backend> Device<B> {
             };
             let pass = Arc::new(std::sync::Mutex::new(pass));
             // These passes can record again on replay's attachments.
-            if matches!(plan.stage, timeline::native::Stage::Flares | timeline::native::Stage::Sky)
+            if matches!(plan.stage, timeline::native::Stage::Flares | timeline::native::Stage::Sky | timeline::native::Stage::Water)
                 && let Some(packet) = &fallback
             {
                 retained = Some(crate::backend::RetainedAdmission {

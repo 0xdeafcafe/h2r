@@ -1,4 +1,4 @@
-//! Admission of the typed sky model strip and residual layer-2 packets.
+//! Admission of sorted pool surfaces, sky strips and residual layer-2 packets.
 
 use native_render::world_layers_gpu::IndexedPass;
 use render_bridge::native_sky;
@@ -23,11 +23,24 @@ impl d3d::DrawAdmission for ResidualDraws {
     ) -> Option<(d3d::ExternalPlan, Box<dyn d3d::ExternalPass>)> {
         use native_render::world_layers::{Owner, Site};
 
-        let call = crate::native_world_layers_glue::indexed_draw()?;
         let draw = snapshot.draw;
         if draw.entry != "D3DDevice_DrawIndexedVertices" {
             return None;
         }
+        if let Some((view, count)) = crate::native_world_layers_glue::pool_issue() {
+            let stage = timeline::native::Stage::Water;
+            if draw.indices.as_deref().is_none_or(|i| i.len() != count as usize) {
+                render_bridge::native_layers::count(15, "pool_refused_index_count", 1);
+                return None;
+            }
+            let frame = crate::d3d_diag::presents() + 1;
+            let Some(pass) = IndexedPass::for_pool(draw, self.geometry.get(), frame) else {
+                render_bridge::native_layers::count(15, "pool_refused_geometry", 1);
+                return None;
+            };
+            return Some((d3d::ExternalPlan { stage, view, ranges: 1, slots: vec![] }, Box::new(pass)));
+        }
+        let call = crate::native_world_layers_glue::indexed_draw()?;
         let (stage, pass) = match (call.layer.site, call.layer.number) {
             (Site::Sky, 15) => {
                 let item = crate::native_world_layers_glue::take_sky()?;

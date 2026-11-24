@@ -17,9 +17,9 @@
 //! anything else refuses the material, and the census names what a
 //! level binds.
 //!
-//! The geometry is the water surfaces themselves, the kind-4 transparent
-//! parts ([`crate::world::World::transparents`]): one item draws them in
-//! layer 15 and again in layer 6, and only layer 6 is taken here.
+//! Pool surfaces use the sorted layer-15 geometry handler. [`sorted_pool`]
+//! identifies them at BSP load for the resolved indexed pass. This GPU
+//! set holds only materials with a separate layer-6 edge pass.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, hash_map::Entry};
 
@@ -530,8 +530,14 @@ impl WaterSet {
     }
 }
 
-/// The layer-6 passes of `material` with the per-view supplied engine
-/// stages kept: [`supplied_layer_passes`] at [`WATER_LAYER`].
+/// Pool surfaces use LOD 0's sorted range in the compiled template.
+pub fn sorted_pool(template: Option<&str>, material: &tags::shader::TemplatePostprocess) -> bool {
+    template.is_some_and(|name| name.rsplit('\\').next().is_some_and(|leaf|
+        leaf.eq_ignore_ascii_case("water_pool") || leaf.eq_ignore_ascii_case("water_pool_static")))
+        && material.layer_passes(0, 15).is_some_and(|passes| !passes.is_empty())
+}
+
+/// Edge-blend passes and their per-view engine texture supplies.
 pub fn water_passes(material: &tags::material::Material, rasterizer: Option<map::TagId>) -> Result<Vec<FogPass>, crate::fog_gpu::FogRefusal> {
     supplied_layer_passes(material, WATER_LAYER, rasterizer)
 }
@@ -542,6 +548,27 @@ mod tests {
     use crate::fog_gpu::tests::{fogs, parts, pass, render, selected, view, world, SIZE};
     use crate::gpu::GpuWorld;
     use wgpu::TextureFormat as F;
+
+    #[test]
+    fn pool_uses_the_first_lods_sorted_range() {
+        use tags::shader::{IndexRange, TemplateLod, TemplatePass, TemplatePostprocess, TagRef};
+        let mut template = TemplatePostprocess {
+            lods: vec![TemplateLod { layers: IndexRange { start: 1, count: 16 },
+                layer_mask: 1 << 15, unknown_6: 0 }],
+            layers: vec![IndexRange::default(); 17],
+            passes: vec![TemplatePass { pass: TagRef { group: map::FourCC(*b"spas"), id: map::TagId(3) },
+                implementations: IndexRange { start: 0, count: 1 } }],
+            implementations: vec![Default::default()],
+            bindings: vec![],
+        };
+        template.layers[16] = IndexRange { start: 0, count: 1 };
+        let pool = Some(r"shaders\shader_templates\water\water_pool");
+        assert!(sorted_pool(pool, &template));
+        assert!(!sorted_pool(Some("glass"), &template));
+        assert!(template.layer_passes(0, WATER_LAYER).is_none());
+        template.lods[0].layers.count = 15;
+        assert!(!sorted_pool(pool, &template));
+    }
 
     /// A water set over the synthetic scene: `samples_view` makes its
     /// stage 0 the view's own target (engine texture 5), else it samples
