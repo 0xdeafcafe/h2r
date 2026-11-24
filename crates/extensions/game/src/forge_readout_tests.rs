@@ -1,6 +1,7 @@
 use super::*;
 use forge::{BlockKind, Frame};
 use hud_kit_core::huds::forge_readout::Axes;
+use hud_kit_core::huds::superbounce_readout::{ARROW_DOWN, ARROW_UP};
 
 fn entry(
     block: BlockKind,
@@ -298,4 +299,22 @@ fn a_hill_corners_outline_is_its_corners_in_order_and_closed() {
         "one corner is no outline"
     );
     assert!(zone_of(&all[4], &all).is_empty(), "a flag is not a hill");
+}
+
+#[test]
+fn a_carried_things_hold_line_has_its_snap_axes_and_pickup() {
+    let h = hold([1.0, 2.0, 3.0], 0.85, Some(0.25), true, Some([0.0; 3]));
+    assert_eq!(
+        (h.height, h.snap, h.axes, h.from),
+        (0.85, Some(0.25), Axes::Local, Some([0.0; 3]))
+    );
+    assert_eq!(
+        fr::hold_text(&h),
+        format!("{} 0.85 m  Snap 0.25  Local axes", ARROW_UP)
+    );
+    let off = hold([0.0; 3], -0.5, None, false, None);
+    assert_eq!(
+        fr::hold_text(&off),
+        format!("{} 0.50 m  Snap off  World axes", ARROW_DOWN)
+    );
 }

@@ -55,6 +55,9 @@ enum CoordinateTarget {
     Existing(Endpoint),
 }
 
+/// How far under a carried thing the readout looks for the structure.
+const GROUND_REACH: f32 = 100.;
+
 pub(super) struct Editor {
     pub session: Arc<Session>,
     tags: Arc<[u32]>,
@@ -69,6 +72,9 @@ pub(super) struct Editor {
     selected: usize,
     rotation_step: usize,
     movement_step: usize,
+    /// The height of the carried thing above the structure under it, from
+    /// the last tick's downward ray: the readout's hold line.
+    hold_height: Option<f32>,
     local_axes: bool,
     /// The Coordinates target and its current frame, while its screen is up.
     coordinates: Option<(CoordinateTarget, forge::Frame)>,
@@ -114,6 +120,7 @@ impl Editor {
             selected: 0,
             rotation_step: 2,
             movement_step: 0,
+            hold_height: None,
             local_axes: false,
             coordinates: None,
             notice: None,
@@ -201,9 +208,27 @@ impl Editor {
             .and_then(|id| self.session.thing(id))
             .map(|goal| readout::zone_of(&goal, &things))
             .unwrap_or_default();
+        // The hold line needs the ground under the thing: with no structure
+        // within reach it is absent.
+        let hold = self
+            .tool
+            .held_thing
+            .zip(self.hold_height)
+            .zip(target.as_ref())
+            .map(|((_, height), aimed)| {
+                let snap = sheet::MOVE_STEPS[self.movement_step];
+                forge_readout_hold(
+                    aimed.at,
+                    height,
+                    (snap > 0.).then_some(snap),
+                    self.local_axes(),
+                    self.tool.picked_up_at(),
+                )
+            });
         readout::Scene {
             monitor: true,
             eye: camera.position,
+            hold,
             zone,
             target,
             things: things
@@ -547,6 +572,15 @@ impl Editor {
             if let Err(error) = result {
                 self.notice = Some((error, tick));
             }
+            self.hold_height = match (self.tool.held_thing, self.tool.ghost, walls) {
+                (Some(_), Some(ghost), Some(walls)) => {
+                    let [x, y, z] = ghost.position;
+                    walls
+                        .hit(ghost.position, [x, y, z - GROUND_REACH])
+                        .map(|(t, _)| t * GROUND_REACH)
+                }
+                _ => None,
+            };
             self.poll(tick);
         }
         self.publish();
@@ -1114,3 +1148,15 @@ fn label(item: &PaletteItem) -> String {
 
 #[cfg(test)]
 mod tests;
+
+/// The readout's hold line for a thing carried at `at`, `height` over the
+/// ground, picked up at `from`.
+fn forge_readout_hold(
+    at: [f32; 3],
+    height: f32,
+    snap: Option<f32>,
+    local: bool,
+    from: Option<[f32; 3]>,
+) -> crate::forge_readout::Hold {
+    crate::forge_readout::hold(at, height, snap, local, from)
+}

@@ -370,6 +370,11 @@ impl Default for Tool {
 }
 
 impl Tool {
+    /// Where the held thing was picked up: the readout's `from` mark.
+    pub fn picked_up_at(&self) -> Option<[f32; 3]> {
+        self.held_thing.map(|_| self.initial_position)
+    }
+
     /// A tool whose palette items have these bounding spheres, in palette
     /// order. An item without one carries [`Extent::default`].
     pub fn with_extents(extents: Arc<[Extent]>) -> Self {

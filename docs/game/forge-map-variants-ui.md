@@ -205,9 +205,10 @@ set each tick (`Handle::world_mark`).
   distance then identity, without the thing aimed at (`choose_near`).
   A held thing's `under` is on the ground its height below it, its
   `from` where it was picked up. The zone is the aimed hill corner's hill: the goals of type 11 to 18
-  sharing its identifier, in corner order, closed (`zone_of`). Not fed
-  yet, so absent: a hold (the ground's height needs a ray the tool does
-  not keep), a ring (no kind's radius is traced), a refusal's sentence
+  sharing its identifier, in corner order, closed (`zone_of`). The hold
+  line's height is a ray down from the carried thing to the structure
+  (`Editor::hold_height`), absent with none in reach. Not fed yet, so
+  absent: a ring (no kind's radius is traced), a refusal's sentence
   and the budget by kind (S6).
 - **A pool, not a mark a thing.** One layout means a fixed set of
   elements: twelve near marks and eight zone lines. The runtime gives
