@@ -294,6 +294,10 @@ pub mod method {
     pub const IMAGE_DISCARD: &str = "image.discard";
 
     // The Scripts tool (docs/editor/rich-editors.md, "Scripts").
+    // The Recordings tool (docs/editor/rich-editors.md, "Recordings").
+    pub const RECORDING_LIST: &str = "recording.list";
+    pub const RECORDING_READ: &str = "recording.read";
+
     pub const SCRIPT_LIST: &str = "script.list";
     pub const SCRIPT_SOURCE: &str = "script.source";
     pub const SCRIPT_FOLLOW: &str = "script.follow";

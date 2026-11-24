@@ -49,6 +49,7 @@ mod preview;
 mod playlists;
 mod playtest;
 mod scenario;
+mod recordings;
 mod scripts;
 pub mod seams;
 mod shell;

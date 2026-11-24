@@ -21,6 +21,7 @@ mod expression;
 pub mod fixture;
 pub mod h1_conversation;
 pub mod ide;
+pub mod recording;
 mod scenario;
 mod script_doc;
 mod source;
