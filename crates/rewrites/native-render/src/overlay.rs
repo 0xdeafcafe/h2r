@@ -47,12 +47,25 @@ impl GlyphAtlas for NoGlyphs {
     }
 }
 
+/// A glyph's texels in a page: its rectangle, in texels from the page's
+/// top left.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GlyphRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// The renderer's glyph atlas: one square page per engine font, each glyph
 /// rasterised into it once (white, its coverage in alpha, what
 /// `Combiner::TextureAlpha` samples), packed in shelves left to right and
 /// top to bottom with a texel of space around it. Pages only grow: a glyph
 /// keeps its place, so a list planned before a glyph was added still
-/// draws. [`GlyphPages::page`]'s version says when a page's texels changed.
+/// draws. [`GlyphPages::page`]'s version says when a page's texels changed
+/// and [`GlyphPages::added_since`] names the glyphs that changed it, so
+/// the residency writes each once. Whoever fills the pages decodes a glyph
+/// only when [`GlyphPages::has`] says it is not in one.
 #[derive(Clone, Debug)]
 pub struct GlyphPages {
     size: u32,
@@ -68,6 +81,9 @@ struct GlyphPage {
     y: u32,
     height: u32,
     version: u64,
+    /// Each glyph with texels, in the order added: the version it made
+    /// and its rectangle. A glyph without texels is in none.
+    added: Vec<(u64, GlyphRect)>,
 }
 
 impl GlyphPages {
@@ -101,6 +117,7 @@ impl GlyphPages {
             y: 0,
             height: 0,
             version: 0,
+            added: Vec::new(),
         });
         if page.glyphs.contains_key(&index) {
             return true;
@@ -137,6 +154,7 @@ impl GlyphPages {
         );
         page.x += pw;
         page.height = page.height.max(ph);
+        page.added.push((page.version, GlyphRect { x: x0, y: y0, width: w, height: h }));
         page.version += 1;
         true
     }
@@ -145,6 +163,16 @@ impl GlyphPages {
     /// many glyphs changed it).
     pub fn page(&self, font: u16) -> Option<(u32, &[u8], u64)> {
         self.pages.get(&font).map(|p| (self.size, p.rgba.as_slice(), p.version))
+    }
+
+    /// The glyphs font `font`'s page gained after `version`, in the order
+    /// added: what a copy of the page as of `version` lacks. Each is the
+    /// version it made and its rectangle in the page, whose side and RGBA
+    /// texels come first. `None` when the font has no page.
+    pub fn added_since(&self, font: u16, version: u64) -> Option<(u32, &[u8], &[(u64, GlyphRect)])> {
+        let page = self.pages.get(&font)?;
+        let first = page.added.partition_point(|(made, _)| *made <= version);
+        Some((self.size, page.rgba.as_slice(), &page.added[first..]))
     }
 
     /// The fonts with a page, in order.
@@ -176,9 +204,10 @@ pub struct OverlayImage {
 
 /// What an overlay's textures are made from on the host: the bitmap
 /// images its quads name, by (bitmap datum, image index), and the glyph
-/// pages its text runs sample. `ui_gpu::OverlayResidency` uploads them.
-/// A datum names another bitmap on another map: a new `generation` (one
-/// per map) makes the residency drop what it holds.
+/// pages its text runs sample. `ui_gpu::OverlayResidency` uploads them,
+/// each image and each glyph once. A datum names another bitmap on
+/// another map: a new `generation` (one per map) makes the residency drop
+/// what it holds.
 #[derive(Clone, Debug, Default)]
 pub struct OverlayAssets {
     pub generation: u64,
@@ -530,6 +559,33 @@ mod tests {
         o.push_text_run(OverlayMaterial::text(6), all(), [1.0; 4], &g).unwrap();
         let p = OverlayPlan::new(&o, [640, 480], &pages);
         assert_eq!(p.vertices[2].uv, [4.0 / 16.0, 3.0 / 16.0]);
+    }
+
+    /// A page names the glyphs added after a version, each where its
+    /// texels are: what the residency writes to a copy of that version.
+    /// A glyph already in, an empty one and one that does not fit make no
+    /// version and are in none.
+    #[test]
+    fn a_page_names_the_glyphs_added_since_a_version() {
+        let first = GlyphRect { x: 1, y: 1, width: 3, height: 2 };
+        let second = GlyphRect { x: 1, y: 5, width: 10, height: 4 };
+        let mut pages = GlyphPages::new(16);
+        assert_eq!(pages.added_since(6, 0), None, "no page yet");
+        assert!(pages.insert(6, 40, 3, 2, &[10, 20, 30, 40, 50, 60]));
+        assert!(pages.insert(6, 44, 0, 5, &[]), "an empty glyph has no texels");
+        let (side, rgba, added) = pages.added_since(6, 0).unwrap();
+        assert_eq!((side, added), (16, &[(1, first)]));
+        let (x, y) = (first.x as usize, first.y as usize);
+        assert_eq!(rgba[(y * 16 + x) * 4..(y * 16 + x) * 4 + 4], [255, 255, 255, 10], "the glyph's texels");
+        assert!(pages.insert(6, 41, 10, 4, &[255; 40]));
+        assert!(pages.insert(6, 41, 10, 4, &[0; 40]), "already in");
+        assert!(!pages.insert(6, 42, 4, 12, &[1; 48]), "no room");
+        assert_eq!(pages.added_since(6, 0).unwrap().2, &[(1, first), (2, second)]);
+        assert_eq!(pages.added_since(6, 1).unwrap().2, &[(2, second)]);
+        assert_eq!(pages.added_since(6, 2).unwrap().2, &[] as &[(u64, GlyphRect)], "nothing after the last version");
+        assert!(pages.insert(8, 1, 1, 1, &[7]), "another font, its own page");
+        assert_eq!(pages.added_since(8, 0).unwrap().2, &[(1, GlyphRect { x: 1, y: 1, width: 1, height: 1 })]);
+        assert_eq!(pages.added_since(7, 0), None, "no page");
     }
 
     #[test]
