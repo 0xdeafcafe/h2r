@@ -267,7 +267,8 @@ fn the_matchmaking_rows_round_trip_through_a_script_record() {
         assert_eq!(at(&v), i64::from(value), "{name}: its own bytes");
         // Nothing else changed but the name, the script reference and
         // the one setting (setting 12 starts on in the stock record).
-        let mut was = stock(ty);
+        let stock_type = if ty == GameType::Slayer { GameType::Script } else { ty };
+        let mut was = stock(stock_type);
         let id = SettingId(row.setting(engine).unwrap());
         was.set(id, value).unwrap();
         was.set_name("T").unwrap();
