@@ -270,6 +270,82 @@ fn a_light_frame_calls_the_gather_in_the_guests_order() {
     assert!(!gathered.shadow && gathered.source_vis);
 }
 
+/// What a frame did, in order: a light handed over, or a guest call.
+#[derive(Debug, PartialEq)]
+enum Event {
+    Handed(frame::Passes),
+    Call(u32),
+}
+
+#[test]
+fn each_light_is_handed_over_just_before_its_passes_with_their_call() {
+    let lit = Lit {
+        weight: 1.0,
+        flags: 0,
+        owner: None,
+    };
+    let g = world(&[lit, lit]);
+    let plan = frame::plan(&g, ENTRY_ESP, FPU).expect("the plan");
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let kept = Arc::clone(&events);
+    let f = move |cx: Cx| -> EntryFuture {
+        let plan = plan.clone();
+        let kept = Arc::clone(&kept);
+        Box::pin(async move {
+            let mut hand = |g: &frame::Gathered| kept.lock().unwrap().push(Event::Handed(g.passes));
+            let (ret, _) = frame::run_with(&cx, plan, &mut hand).await?;
+            Ok::<_, engine::entry::EntryError>(ret)
+        })
+    };
+    let stubbed = Arc::clone(&events);
+    let regs = Regs {
+        esp: ENTRY_ESP,
+        ..Regs::default()
+    };
+    let run = testing::run(&f, g, regs, |c: &GuestCall, _m: &mut dyn GuestMemory| {
+        stubbed.lock().unwrap().push(Event::Call(c.target));
+        match c.target {
+            call::SCENE_VISIBILITY => Regs {
+                eax: VIS,
+                ..Regs::default()
+            },
+            _ => Regs::default(),
+        }
+    });
+    assert_eq!(run.result, Ok(Ret::new(0, 0)));
+    let events = events.lock().unwrap();
+    let handed: Vec<frame::Passes> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Handed(p) => Some(*p),
+            Event::Call(_) => None,
+        })
+        .collect();
+    let calls: Vec<_> = run
+        .calls
+        .iter()
+        .filter(|c| c.target == call::LIGHT_PASSES)
+        .collect();
+    assert_eq!((handed.len(), calls.len()), (2, 2), "one per drawn light");
+    for (p, c) in handed.iter().zip(&calls) {
+        assert_eq!(c.eax, Some(p.definition), "EAX the ligh datum");
+        assert_eq!(c.ecx, Some(p.context), "ECX the posed volume");
+        assert_eq!(c.args, p.args(), "the four stack words");
+        assert_eq!(p.context, S + slot::VOLUME);
+        assert_eq!(p.position, record(p.light & 0xffff) + 0x84);
+        assert_eq!(p.weight, 1.0f32.to_bits());
+    }
+    for (i, e) in events.iter().enumerate() {
+        if matches!(e, Event::Handed(_)) {
+            assert_eq!(
+                events.get(i + 1),
+                Some(&Event::Call(call::LIGHT_PASSES)),
+                "no guest call between a hand-off and its passes"
+            );
+        }
+    }
+}
+
 #[test]
 fn the_ninth_light_takes_no_first_person_slot() {
     let lit = Lit {
