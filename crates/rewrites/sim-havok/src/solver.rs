@@ -474,3 +474,102 @@ pub fn export(rhs: u32, scale: u32, control: u16) -> u32 {
     let mode = Mode::from_cw(control);
     x87::mul(load(rhs), load(scale), mode).0.to_f32_bits(mode).0
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v4(lanes: [f32; 4]) -> Vector {
+        lanes.iter().map(|f| f.to_bits()).rev().fold(0, |p, w| p << 32 | u128::from(w))
+    }
+
+    fn lanes(v: Vector) -> [u32; 4] {
+        std::array::from_fn(|i| (v >> (32 * i)) as u32)
+    }
+
+    /// Two equal bodies against one contact row: the contact's velocity
+    /// error is 2, the right-hand side 4, the row's inverse 1/2.
+    fn stream(rhs: f32) -> Stream {
+        let body = Body {
+            linear: v4([0.0; 4]),
+            angular: v4([0.0; 4]),
+            inverse_mass: v4([0.5, 0.5, 0.5, 0.5]),
+            linear_sum: v4([0.0; 4]),
+            angular_sum: v4([0.0; 4]),
+        };
+        Stream {
+            bodies: vec![
+                Body { linear: v4([1.0, 0.0, 0.0, 0.0]), ..body },
+                Body { linear: v4([-1.0, 0.0, 0.0, 0.0]), ..body },
+            ],
+            rows: vec![Row {
+                normal: Some(v4([1.0, 0.0, 0.0, rhs])),
+                angular_a: v4([0.0, 0.0, 0.0, 0.5]),
+                angular_b: v4([0.0; 4]),
+                impulse: 0.0f32.to_bits(),
+            }],
+            commands: vec![Command {
+                constraint: Constraint::Single(Limit::Free),
+                first_row: 0,
+                bodies: [0, 1],
+                rhs_scale: 1.0f32.to_bits(),
+                velocity_scale: 1.0f32.to_bits(),
+            }],
+        }
+    }
+
+    #[test]
+    fn a_free_row_pushes_both_bodies_apart_and_corrects_the_rhs() {
+        let solved = stream(4.0)
+            .solve(1, 1.0f32.to_bits(), 0.0f32.to_bits(), 0x1f80, 0x027f)
+            .unwrap();
+        // The gain is (4 - 2) x 1/2 = 1; each body takes half of it
+        // along the normal, in opposite directions. The packed multiply
+        // also scales the normal's w (the right-hand side) into the
+        // velocities' and the angular accumulator's w lanes, as retail's
+        // does; the horizontal reduction never reads them.
+        assert_eq!(lanes(solved.bodies[0].linear), [1.5, 0.0, 0.0, 2.0].map(f32::to_bits));
+        assert_eq!(lanes(solved.bodies[1].linear), [-1.5, 0.0, 0.0, -2.0].map(f32::to_bits));
+        assert_eq!(lanes(solved.bodies[0].angular), [0.0, 0.0, 0.0, 0.25].map(f32::to_bits));
+        assert_eq!(lanes(solved.bodies[1].angular), [0.0; 4].map(f32::to_bits));
+        assert_eq!(solved.rows[0].impulse, 1.0f32.to_bits());
+        // One iteration: the sums snapshot the post-command velocities and
+        // the correction subtracts the new velocity error from the rhs.
+        assert_eq!(lanes(solved.bodies[0].linear_sum), lanes(solved.bodies[0].linear));
+        assert_eq!(solved.rows[0].rhs(), 1.0f32.to_bits());
+    }
+
+    #[test]
+    fn a_positive_row_below_the_error_applies_nothing() {
+        // The velocity error (2) already exceeds the right-hand side (1):
+        // the row is separating, and the impulse stays zero.
+        let solved = stream(1.0)
+            .solve(1, 1.0f32.to_bits(), 0.0f32.to_bits(), 0x1f80, 0x027f)
+            .unwrap();
+        assert_eq!(lanes(solved.bodies[0].linear), [1.0, 0.0, 0.0, 0.0].map(f32::to_bits));
+        assert_eq!(lanes(solved.bodies[1].linear), [-1.0, 0.0, 0.0, 0.0].map(f32::to_bits));
+        assert_eq!(solved.rows[0].impulse, 0.0f32.to_bits());
+    }
+
+    #[test]
+    fn non_finite_operands_decline_whole_stream() {
+        let mut s = stream(4.0);
+        s.bodies[0].inverse_mass = v4([f32::NAN, 0.5, 0.5, 0.5]);
+        assert!(s.solve(1, 1.0f32.to_bits(), 0.0f32.to_bits(), 0x1f80, 0x027f).is_none());
+        let mut s = stream(4.0);
+        s.rows[0].impulse = f32::INFINITY.to_bits();
+        assert!(s.solve(1, 1.0f32.to_bits(), 0.0f32.to_bits(), 0x1f80, 0x027f).is_none());
+        let mut s = stream(4.0);
+        s.commands[0].rhs_scale = f32::NAN.to_bits();
+        assert!(s.solve(1, 1.0f32.to_bits(), 0.0f32.to_bits(), 0x1f80, 0x027f).is_none());
+    }
+
+    #[test]
+    fn export_rounds_only_at_the_property_word() {
+        // One x87 multiply, extended, with the single binary32 store.
+        let mode = Mode::from_cw(0x027f);
+        let word = export(0.1f32.to_bits(), 0.7f32.to_bits(), 0x027f);
+        let extended = x87::mul(load(0.1f32.to_bits()), load(0.7f32.to_bits()), mode).0;
+        assert_eq!(word, extended.to_f32_bits(mode).0);
+    }
+}
