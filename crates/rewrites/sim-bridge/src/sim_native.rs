@@ -528,13 +528,14 @@ fn install_collision(b: &mut Builder) {
                     let thread = call.ctx.thread_id;
                     if entry == Entry::MoppRay {
                         let observation =
-                            mopp_ray::begin_observed(thread, call.cpu, &mut call.ctx.memory(), &WORLD);
+                            mopp_ray::begin_observed(thread, call.cpu, &mut *call.ctx.memory(), &WORLD);
                         call.ctx.observe_guest_return(call.cpu, pop, move |_, ctx| {
                             observation.finish(&*ctx.runtime().memory(), &WORLD);
                         });
-                    } else if let Some(pending) =
-                        query::observe(call.cpu, &mut call.ctx.memory(), &WORLD)
-                    {
+                    } else if let Some(pending) = {
+                        let mut mem = call.ctx.memory();
+                        query::observe(call.cpu, &mut *mem, &WORLD)
+                    } {
                         call.ctx.observe_guest_return(call.cpu, pop, move |c, ctx| {
                             pending.finish(c, &ctx.runtime().memory(), &WORLD);
                         });
