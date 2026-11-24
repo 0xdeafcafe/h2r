@@ -15,7 +15,9 @@ use crate::{
 mod ground;
 mod shared;
 
-pub use ground::{GroundBuilder, GroundProblem, GroundReport, GroundState, PlacedMarker};
+pub use ground::{
+    GroundBuilder, GroundProblem, GroundReceipt, GroundReport, GroundState, PlacedMarker,
+};
 pub use shared::{Outgoing, SHARED_PROPOSE, SHARED_REDO, SessionAdmit};
 
 #[derive(Clone, Debug)]

@@ -67,6 +67,7 @@ impl GroundBuilder for Kit {
             zones: 2,
             squads: 16,
             problems: vec![],
+            receipt: None,
         })
     }
 }
