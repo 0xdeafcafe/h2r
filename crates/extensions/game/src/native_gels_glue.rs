@@ -75,10 +75,11 @@ struct Loaded {
     generation: u64,
 }
 
+#[derive(Clone)]
 struct Pending {
     call: Call,
     name: String,
-    key: Key,
+    sequence: u64,
 }
 
 struct Glue<B: d3d::Backend + Send + 'static> {
@@ -103,7 +104,7 @@ impl<B: d3d::Backend + Send + 'static> Glue<B> {
     fn replace(
         &self,
         mem: &mut dyn GuestMemory,
-        pending: Pending,
+        pending: &Pending,
         target: Target,
     ) -> Result<(), &'static str> {
         let mut device = self.device.lock().map_err(|_| "device lock")?;
@@ -124,13 +125,19 @@ impl<B: d3d::Backend + Send + 'static> Glue<B> {
         self.admission_registered.call_once(|| {
             device.add_draw_admission(self.replacements.clone());
         });
-        self.replacements.arm(pending.key, target, view, generation);
+        let key = Key {
+            sequence: pending.sequence,
+            definition: pending.call.definition,
+            shader: pending.call.shader,
+            surface: target.surface,
+        };
+        self.replacements.arm(key, target, view, generation);
         *self
             .outputs
             .binding
             .lock()
             .map_err(|_| "gel binding lock")? = Some(Binding {
-            key: pending.key,
+            key,
             guest_size: target.size,
         });
         Ok(())
@@ -150,46 +157,56 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
             .unwrap_or_else(|e| e.into_inner())
             .take();
         let Some(call) = call else { return };
-        let Some(target) = Target::read(&Ro(mem)) else {
-            refuse("target 13 is unresolved or has mip levels");
-            return;
-        };
         let Ok(name) = crate::health::loaded_map_name(mem) else {
             return;
         };
         self.generation(&name);
-        let key = Key {
-            sequence: self.outputs.sequence.fetch_add(1, Ordering::AcqRel) + 1,
-            definition: call.definition,
-            shader: call.shader,
-            surface: target.surface,
-        };
-        *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending { call, name, key });
+        let sequence = self.outputs.sequence.fetch_add(1, Ordering::AcqRel) + 1;
+        *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending {
+            call,
+            name,
+            sequence,
+        });
     }
 
     fn quad(&self, mem: &mut dyn GuestMemory) {
+        self.replacements.cancel();
         let pending = self
             .pending
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .take();
+            .clone();
         let Some(pending) = pending else {
             return;
         };
-        let Some(target) = Target::read(&Ro(mem)) else {
-            refuse("target 13 is unresolved");
-            return;
-        };
-        if target.surface != pending.key.surface
-            || mem.u32(gels::DEFINITION).ok() != Some(pending.call.definition)
+        if mem.u32(gels::DEFINITION).ok() != Some(pending.call.definition)
             || mem.u32(pending.call.definition.wrapping_add(0xe0)).ok() != Some(pending.call.shader)
             || crate::health::loaded_map_name(mem).ok().as_ref() != Some(&pending.name)
         {
             refuse("gel invocation changed before its quad");
             return;
         }
-        if let Err(e) = self.replace(mem, pending, target) {
+        let Some(target) = Target::read(&Ro(mem)) else {
+            refuse("target 13 descriptor is unavailable or invalid at the quad");
+            return;
+        };
+        if let Err(e) = self.replace(mem, &pending, target) {
             refuse(e);
+        }
+    }
+
+    fn quad_end(&self, mem: &mut dyn GuestMemory) {
+        if !self.replacements.active() {
+            return;
+        }
+        // The last inline mip draw can still be queued when the helper
+        // returns. Drain it while this invocation owns the scope.
+        let drained = self.device.lock().ok().and_then(|mut device| {
+            device.begin_external_boundary(&mut DeviceMemory(mem)).ok()
+        });
+        self.replacements.cancel();
+        if drained != Some(true) {
+            refuse("gel quad exit could not drain its pending draw");
         }
     }
 }

@@ -1,10 +1,10 @@
 # Native shader gels
 
 Status: Built. Replaces supported gel quad packets through `DrawAdmission`; parity with D3D is not verified.
-Code: `crates/rewrites/render-bridge/src/native_gels.rs`, `crates/extensions/game/src/native_gels_glue.rs`, `native_gels_replace.rs`, `crates/rewrites/native-render/src/gels.rs`, `gels_gpu.rs`. Tests: `crates/rewrites/render-bridge/tests/native_gels.rs`, `crates/rewrites/native-render/tests/gels_gpu.rs`, `native_gels_replace::tests` and `native_gels_glue::tests` in `boot`.
+Code: `crates/rewrites/render-bridge/src/native_gels.rs`, `crates/extensions/game/src/native_gels_glue.rs`, `native_gels_replace.rs`, `crates/rewrites/native-render/src/gels.rs`, `gels_gpu.rs`. Tests: `crates/rewrites/render-bridge/tests/native_gels.rs`, `crates/rewrites/native-render/tests/gels_gpu.rs`, `gels::tests` in `native-render`, and `native_gels_replace::tests` and `native_gels_glue::tests` in `game`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
-A light's gel is a shader drawn into render target 13 before the light passes sample it as engine texture 10. The stage replaces that quad draw. The ordered handoff records the quad on both required target copies, then commits before it suppresses the original packet. Any preparation, resource, validation or range-count failure retains the original packet. Part of [native-renderer.md](native-renderer.md).
+A light's gel is a shader drawn into render target 13 before the light passes sample it as engine texture 10. The stage replaces its quad draws, one per mip level. The ordered handoff records each quad on both required target copies, then commits before it suppresses the original packet. Any preparation, resource, validation or range-count failure retains that packet. Part of [native-renderer.md](native-renderer.md).
 
 The device prints one `native-gels` production refusal summary per 100
 presents with activity, with counts by reason. The original D3D draw
@@ -39,14 +39,16 @@ remains in charge when production is refused.
 
 The feature hooks the template and quad helper, both context-only. It
 never hooks a D3D-owned entry. At the helper it drains preceding commands
-through `begin_external_boundary` and arms admission for exactly the next
-resolved draw. Any mismatch consumes the scope and retains D3D.
+through `begin_external_boundary` and arms admission for the helper's
+ordered mip draws. At exit it drains any queued last draw and clears the
+scope. An ownership mismatch clears the scope and retains D3D.
 
 `native_gels_replace` checks the bound surface, shape, declaration, four
 actual vertices, viewport/scissor, shader and all required resource views.
 Its `ExternalPlan` promises one gel range. `prepare_copy` validates every
 physical copy before recording. `record_ranges` returns one only after the
-complete native quad is recorded into **the real target-13 attachment**.
+complete native quad is recorded into **the real target-13 attachment**
+for that level.
 It declares colour writes and no depth/stencil writes, so the handoff
 maintains D3D surface coherency and aliases. No queue submission, queue
 write or update to a live texture escapes the isolated command encoder.
@@ -68,12 +70,16 @@ Linear texture coordinate scale uses guest dimensions. Signed textures
 use the D3D path's already biased views. Clip range/clamp, stipple, blend
 constant, bump uniforms and two-sided lighting come from that packet.
 
-Current admission requires a resident single-level target 13, a
-four-vertex non-indexed strip, complete float4 v0..v6 streams, full
-viewport/scissor, solid Gouraud shading and no depth/stencil/fog/alpha
-test. Depth textures, cube/volume stages, colour keying, border sampling,
-unknown inputs or missing copies are refused. Nothing partially records
-and suppresses a subset of the quad.
+At quad entry, `gels::Target::read` resolves target 13 when its presence
+word is set, its hiding byte is clear and its dimensions and level count
+are valid.
+Each level uses the embedded surface header that the guest resolver
+(`0x0001dcf0`) selects. Admission compares that header and the mip
+dimensions against each resolved draw. A packet needs a four-vertex
+non-indexed strip, complete float4 v0..v6 streams, full viewport/scissor,
+solid Gouraud shading and disabled depth, stencil, fog and alpha test.
+Depth textures, cube/volume stages, colour keying, border sampling,
+unknown inputs or missing copies retain the entire original packet.
 
 Immutable resident programs, texture groups and pipelines are cached by
 map generation, exact resident view identity, shader/state/sampler key and
@@ -84,7 +90,7 @@ GPU storage and recorded commands retain their resource references.
 
 ## Interfaces
 
-`boot::native_gels_glue::install(device) -> Arc<Outputs>` installs the
+`game::native_gels_glue::install(device) -> Arc<Outputs>` installs the
 host. Admission is registered once, lazily, only when the enabled feature
 first reaches replacement mode after its ordered boundary. Disabled
 calls do not add a gels admission or cause extra draw
@@ -108,14 +114,15 @@ snapshots/palette reads. The light graph retains that owner.
    `Some(binding.slot())`. Drain/prepare at the ordered light boundary,
    so pending producer commands are recorded before its consumer.
 5. In light recording use `binding.sample(&target, gel_slot)` as the gel
-   view for `LightGpu::textures`. Each copy gets its own live target-13
-   sample view; a missing slot refuses the light's whole transaction.
+   view for `LightGpu::textures`. Each copy samples target 13 at mip 0
+   through its own level-zero surface view. A missing slot refuses the
+   light's whole transaction.
 6. Generated target 13 is **linear**. For each sampled `LightStage::Gel`,
    use `binding.tex_scale()` in `PixelUniforms::tex_scale`: reciprocal
    **guest** width/height, not the scaled physical dimensions or static
    bitmap coordinate scale.
 
-This binding means “target 13 as the producer leaves it,” including D3D
+This binding means “target 13's base level as the producer leaves it,” including D3D
 fallback or later D3D gel packets. It does not claim a particular packet
 committed natively. The `gels` stage counters in `H2_FRAME_STATS` (suppressed and per-copy ranges) establish actual replacement. Lights use `binding_after`.
 
