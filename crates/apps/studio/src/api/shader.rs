@@ -25,9 +25,9 @@ const SLOT: &str = r#"{"kind":"bitmap|colour|vector","index":"integer","path":"s
 
 const READ: MethodDef = def(
     m::SHADER_READ,
-    "A shader instance (shad) as the Shader tab shows it, read with the document's edits: its template, the level of detail shown (0) and how many the template has, its bitmap, colour and vector slots (the compiled postprocess the engine binds; each with its tag.set path and `used_by`, where the template's binding puts it: a texture stage, a combiner constant, a vertex default or constant, per pass and implementation), its animated properties and what each drives, the passes per layer, `names_known` (false: the template's parameter names are not read, so slots are named by kind and index), why it is read-only, and what did not read",
-    r#"{"tag":"string|integer"}"#,
-    r#"{"tag":"string","template":"string","lod":"integer","lods":"integer","bitmaps":"[slot]","colours":"[slot]","vectors":"[slot]","animations":"[{index, input, period, function_bytes, drives:[string]}]","passes":"{layer: count}","used_by":"{bitmap|colour|vector: [[used_by]]}","names_known":"boolean","names":"string|null","read_only":"string|null","refusals":"[string]"}"#,
+    "A shader instance (shad) as the Shader tab shows it, read with the document's edits: its template, the level of detail shown (0) and how many the template has, its bitmap, colour and vector slots (the compiled postprocess the engine binds; each with its tag.set path and `used_by`, where the template's binding puts it: a texture stage, a combiner constant, a vertex default or constant, per pass and implementation), its animated properties (each with the `path` of its function curve, which `function.read`, `function.set` and `function.sample` take, what it drives and its value at `time` on the preview clock, or why it has none), the passes per layer, `names_known` (false: the template's parameter names are not read, so slots are named by kind and index), why it is read-only, and what did not read",
+    r#"{"tag":"string|integer","time?":"number (the preview clock in seconds, default 0)"}"#,
+    r#"{"tag":"string","template":"string","lod":"integer","lods":"integer","bitmaps":"[slot]","colours":"[slot]","vectors":"[slot]","time":"number","clock_length":"number (seconds the preview clock loops over)","animations":"[{index, input, period, function_bytes, path, drives:[string], kinds:[string], refusal:string|null, value:number|null, no_value:string|null}]","passes":"{layer: count}","used_by":"{bitmap|colour|vector: [[used_by]]}","names_known":"boolean","names":"string|null","read_only":"string|null","refusals":"[string]"}"#,
     r#"{"tag":"shad:levels\\test\\shaders\\floor"}"#,
 );
 const SET: MethodDef = def(
@@ -39,9 +39,9 @@ const SET: MethodDef = def(
 );
 const PREVIEW: MethodDef = def(
     m::SHADER_PREVIEW,
-    "Draw a shader alone through the native renderer, the viewport's Game mode with no game: on a sphere (the default), a flat square, or an object tag's model in its rest pose, read with the document's edits, written to a PNG outside Git. `passes_drawn` counts the passes drawn; each layer whose passes are left out is in `refusals` with its pass count and why (layer 1 until its stencil mode is checked, a program that does not compile, an animated constant, fog, a view constant the editor does not give); `base` says why the base look does not draw, which the layers draw over. With no renderer the counts still answer and `png` is null",
-    r#"{"tag":"string|integer","shape?":"sphere|quad|object","object?":"string|integer (the object tag, for shape object)","size?":"[w, h] (default [320, 240], each 16 to 2048)","out?":"string (a .png path outside Git)"}"#,
-    r#"{"png":"string|null","width":"integer","height":"integer","covered":"integer","shape":"string","passes_drawn":"integer","refusals":"[{layer, passes, why}]","base":"string|null","unresolved":"[string]","notes":"[string]"}"#,
+    "Draw a shader alone through the native renderer, the viewport's Game mode with no game: on a sphere (the default), a flat square, or an object tag's model in its rest pose, read with the document's edits, written to a PNG outside Git. `passes_drawn` counts the passes drawn; each layer whose passes are left out is in `refusals` with its pass count and why (layer 1 until its stencil mode is checked, a program that does not compile, an animated constant, fog, a view constant the editor does not give); `time` is the preview clock, at which the animated properties are evaluated and listed in `animation` (a pass that animates a constant is left out at every time and named in `refusals`, as the editor does not apply an animated constant); `base` says why the base look does not draw, which the layers draw over. With no renderer the counts still answer and `png` is null",
+    r#"{"tag":"string|integer","shape?":"sphere|quad|object","object?":"string|integer (the object tag, for shape object)","size?":"[w, h] (default [320, 240], each 16 to 2048)","time?":"number (the preview clock in seconds, default 0)","out?":"string (a .png path outside Git)"}"#,
+    r#"{"png":"string|null","width":"integer","height":"integer","covered":"integer","shape":"string","time":"number","animation":"[{index, value:number|null, no_value:string|null, drives:[string]}]","passes_drawn":"integer","refusals":"[{layer, passes, why}]","base":"string|null","unresolved":"[string]","notes":"[string]"}"#,
     r#"{"tag":"shad:levels\\test\\shaders\\floor","shape":"sphere","out":"$OUT/floor.png"}"#,
 );
 
@@ -100,7 +100,8 @@ pub(crate) fn slot_json(app: &App, tag: TagId, s: &Slot) -> Value {
     out
 }
 
-fn read_json(app: &App, r: &ShaderRead) -> Value {
+fn read_json(app: &App, r: &ShaderRead, time: f64) -> Value {
+    let values = r.values_at(time);
     let slots = |k: SlotKind| -> Vec<Value> {
         r.slots(k).iter().map(|s| slot_json(app, r.tag, s)).collect()
     };
@@ -119,12 +120,19 @@ fn read_json(app: &App, r: &ShaderRead) -> Value {
         "bitmaps": slots(SlotKind::Bitmap),
         "colours": slots(SlotKind::Colour),
         "vectors": slots(SlotKind::Vector),
-        "animations": r.animations.iter().map(|a| json!({
+        "time": time,
+        "clock_length": r.clock_length(),
+        "animations": r.animations.iter().zip(&values).map(|(a, v)| json!({
             "index": a.index,
             "input": a.input.map(|s| doc.string(s).map_or_else(|| json!(s), |t| json!(t))),
             "period": a.period,
             "function_bytes": a.function_bytes,
+            "path": a.path(),
             "drives": a.drives,
+            "kinds": a.kinds,
+            "refusal": a.refusal(),
+            "value": v.as_ref().ok(),
+            "no_value": v.as_ref().err(),
         })).collect::<Vec<_>>(),
         "passes": r.passes.iter().map(|(l, n)| (l.to_string(), json!(n))).collect::<serde_json::Map<_, _>>(),
         "used_by": {
@@ -141,8 +149,9 @@ fn read_json(app: &App, r: &ShaderRead) -> Value {
 
 fn read(app: &mut App, p: &P) -> Reply {
     let tag = tag_fields::resolve(app, p)?;
+    let time = clock(p)?;
     let r = app.shader_read(tag).map_err(failed)?;
-    Ok(read_json(app, &r))
+    Ok(read_json(app, &r, time))
 }
 
 /// The slot `shader.set` names.
@@ -186,6 +195,17 @@ fn set(app: &mut App, p: &P) -> Reply {
         .get(index)
         .ok_or_else(|| failed(format!("{} {index} did not read back", kind.id())))?;
     Ok(slot_json(app, tag, s))
+}
+
+/// The preview clock's time in seconds: `time`, default 0, finite and 0
+/// to 86400.
+fn clock(p: &P) -> Result<f64, agent_proto::RpcError> {
+    let t = p.opt_f32("time")?.unwrap_or(0.0);
+    if (0.0..=86_400.0).contains(&t) {
+        Ok(f64::from(t))
+    } else {
+        Err(err(code::INVALID_PARAMS, "time is 0 to 86400 seconds"))
+    }
 }
 
 /// The picture's size: `[w, h]`, each 16 to 2048.
@@ -257,6 +277,7 @@ impl Shader {
         let tag = tag_fields::resolve(app, p)?;
         let shape = shape_of(app, p)?;
         let size = size(p)?;
+        let time = clock(p)?;
         let read = app.shader_read(tag).map_err(failed)?;
         let out = match p.opt_str("out")? {
             Some(o) => PathBuf::from(o),
@@ -279,7 +300,7 @@ impl Shader {
         let (png, width, height, covered_px, passes) = match gpu {
             Ok(g) => {
                 let pic = app
-                    .shader_picture(&g.device, &g.queue, &read, shape, size)
+                    .shader_picture(&g.device, &g.queue, &read, shape, size, time)
                     .map_err(failed)?;
                 if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
                     std::fs::create_dir_all(dir)
@@ -298,7 +319,7 @@ impl Shader {
             }
             Err(e) => {
                 notes.push(format!("no renderer here: {e}"));
-                let preview = app.shader_preview(tag, shape).map_err(failed)?;
+                let preview = app.shader_preview(tag, shape, time).map_err(failed)?;
                 let draws = scenario_edit::native_view::preview::material_draws(&preview);
                 (Value::Null, 0, 0, 0, model::PreviewPasses::of(&read, &draws))
             }
@@ -309,6 +330,19 @@ impl Shader {
         answer["height"] = json!(height);
         answer["covered"] = json!(covered_px);
         answer["shape"] = json!(shape.id());
+        answer["time"] = json!(time);
+        answer["animation"] = json!(
+            read.animations
+                .iter()
+                .zip(read.values_at(time))
+                .map(|(a, v)| json!({
+                    "index": a.index,
+                    "value": v.as_ref().ok(),
+                    "no_value": v.as_ref().err(),
+                    "drives": a.drives,
+                }))
+                .collect::<Vec<_>>()
+        );
         answer["notes"] = json!(notes);
         Ok(answer)
     }

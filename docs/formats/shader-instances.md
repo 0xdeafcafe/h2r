@@ -350,9 +350,14 @@ that column's condition. [Shadow census](../graphics/notes/e3-lighting.md).
 
 ## Open items
 
-- **Animated values are not evaluated.** Targets and property references are
-  decoded. Evaluating them needs the mapping-function evaluator
-  (`0x0013b390`, `0x0013bc00`) and the object-function callback.
+- **Animated values are evaluated, not placed.** Targets and property
+  references are decoded, and a game-time property's value at a time is the
+  game's own (`native_render::layer_pass::property_value`, the evaluator
+  `0x0013b390`; `scenario_edit::native_view::animate`). Where an animated
+  pixel or vertex constant lands in a compiled program is not read (the
+  binding's `target`, `b1` and `b2` against `0x000176a0` and `0x00017960`), so
+  the editor's preview does not apply it. A property driven by an object
+  function needs the object-function callback.
 - **Engine texture sources** (`0x00019530`: 1, 3, 5, 8-10, 13-20, 24, 26 and
   27 occur) are reported by id. Which render target or global texture each
   id means is not mapped.

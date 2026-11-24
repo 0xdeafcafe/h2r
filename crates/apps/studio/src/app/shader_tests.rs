@@ -112,3 +112,74 @@ fn preview_passes_count_each_layers_passes() {
     assert_eq!(p.json()["passes_drawn"], 1);
     assert_eq!(p.json()["refusals"][0]["layer"], 1);
 }
+
+/// An invented time-driven cosine property of `period` seconds mapped
+/// onto `[2, 4]` (function type 3, wave 2, one cycle).
+fn cosine(period: f32) -> tags::shader::AnimatedProperty {
+    let mut function = vec![3, 0, 2, 0];
+    function.extend(2.0f32.to_le_bytes());
+    function.extend(4.0f32.to_le_bytes());
+    function.extend([0u8; 8]);
+    for w in [1.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0] {
+        function.extend(w.to_le_bytes());
+    }
+    tags::shader::AnimatedProperty {
+        input: 0,
+        input_a: 0,
+        input_b: period.to_bits(),
+        function,
+    }
+}
+
+fn animated(index: usize, kinds: &[&'static str]) -> Animated {
+    Animated {
+        index,
+        input: None,
+        period: Some(2.0),
+        function_bytes: 52,
+        drives: Vec::new(),
+        kinds: kinds.to_vec(),
+    }
+}
+
+/// S2: a property's curve is the field `function.read` and the curve
+/// editor take, and a property that drives a target the plan does not
+/// animate says so.
+#[test]
+fn an_animated_property_names_its_curve_and_what_the_plan_refuses() {
+    let a = animated(3, &["pixel constant", "vertex constant"]);
+    assert_eq!(a.path(), "postprocess[0].properties[3].function");
+    assert_eq!(a.refusal(), None);
+    let b = animated(0, &["pixel constant", "render state", "stage state"]);
+    assert_eq!(
+        b.refusal().as_deref(),
+        Some("it drives a render state and a stage state, which the layer plan refuses to animate")
+    );
+    assert!(animated(1, &["bitmap"]).refusal().unwrap().contains("a bitmap"));
+}
+
+/// S2: the read evaluates its properties at the preview clock, and the
+/// clock loops over the longest period.
+#[test]
+fn the_read_evaluates_its_properties_at_the_clock() {
+    let r = ShaderRead {
+        tag: TagId::NULL,
+        template: TagId::NULL,
+        lod: 0,
+        lods: 1,
+        bitmaps: Vec::new(),
+        colours: Vec::new(),
+        vectors: Vec::new(),
+        animations: vec![animated(0, &["pixel constant"])],
+        properties: vec![cosine(2.0)],
+        names_known: false,
+        passes: BTreeMap::new(),
+        read_only: None,
+        problems: Vec::new(),
+    };
+    assert_eq!(r.clock_length(), 2.0);
+    let start = r.values_at(0.0)[0].clone().unwrap();
+    let half = r.values_at(1.0)[0].clone().unwrap();
+    assert!((start - half).abs() > 1.0, "{start} at 0 s, {half} at 1 s");
+    assert!((start - r.values_at(2.0)[0].clone().unwrap()).abs() < 1e-3);
+}

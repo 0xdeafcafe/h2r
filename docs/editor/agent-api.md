@@ -484,24 +484,34 @@ Notes on some:
   A block's value is its element count. Scalar values follow
   `tag.read`. The rows use the open or browsed tag document and include
   its pending edits (`api/tag_fields.rs`).
-- **Shaders.** `shader.read {tag}` reads a `shad` as the Shader tab shows
+- **Shaders.** `shader.read {tag, time?}` reads a `shad` as the Shader tab shows
   it ([rich-editors.md](rich-editors.md), "Shaders"; `api/shader.rs`):
   the template, the level of detail shown (0) and how many there are, the
   bitmap, colour and vector slots of the compiled postprocess (each with
   its `tag.set` path, value, and `used_by`: the layer, pass,
   implementation and register or stage the template's binding puts it
-  in), the animated properties and what each drives, the passes per
-  layer, `names_known` (false until the template's parameter names are
+  in), the animated properties (each with the `path` of its function
+  curve, which `function.read`, `function.set` and `function.sample`
+  take, the kinds of target it drives, a `refusal` when it drives a
+  target the layer plan does not animate, and its `value` at `time` on
+  the preview clock or `no_value` and why: an object-driven property or
+  a period that is not positive has none), `time` and `clock_length`,
+  the passes per layer, `names_known` (false until the template's parameter names are
   read), `read_only` and the bindings that did not read (`refusals`).
   `shader.set {tag, slot: {kind, index}, value}` writes one slot: the
   `tag.set` at the slot's path with the same value, one undo step,
   refused as `tag.set` refuses; a slot past the shader's is
-  `INVALID_PARAMS`. `shader.preview {tag, shape?, object?, size?, out?}`
+  `INVALID_PARAMS`. `shader.preview {tag, shape?, object?, size?, time?, out?}`
   draws the shader alone on a sphere (the default), a flat square
   (`quad`) or an object tag's model, unlit, to a PNG outside Git; it
   answers `passes_drawn`, each left-out layer in `refusals` with its pass
   count and reason, `base` when the base look does not draw, and
-  `covered`. With no renderer `png` is null and the counts still answer.
+  `covered`. `time` (0 to 86400 seconds, default 0) is the preview
+  clock: the answer repeats it and lists each animated property's value
+  there in `animation`. A pass that animates a constant is left out at
+  every time and named in `refusals`: the plan draws the constants the
+  compiled programs hold. With no renderer `png` is null and the counts
+  still answer.
   `shader.code {tag, pass?, implementation?}` reads one pass's programs
   as text (`native_view::code`, the Shader tab's Code section): `pass`
   counts the passes across the layers of the first level of detail in
@@ -2208,10 +2218,11 @@ the window and the API stay one path.
   the colour picker's helpers (`fields/colour.rs`); a colour's `tag.set`
   is `app::tag_api::set_field` with `fields::colour::from_json`, a
   `TagAction::Write` of the field's own length, as the dialog writes.
-- **Shaders (rich editors S1).** `api/shader.rs` registers `Shader` for
+- **Shaders (rich editors S1, S2).** `api/shader.rs` registers `Shader` for
   `shader.read`, `shader.set`, `shader.preview` and `shader.code`, over
   `app/shader.rs` (the Shader tab's read, on the shown map with the
-  document's edits), `native_view::preview::material` and
+  document's edits), `native_view::preview::material_at` (the preview clock),
+  `native_view::animate` (the properties' values at a time) and
   `native_view::code::pass_code` (S4); `shader.set` is `tag.set` at the
   slot's path (`SlotKind::path`) through `tag_fields::perform`, one undo
   step.

@@ -269,7 +269,13 @@ enum Pick {
 }
 
 impl Open {
-    fn new(tag: TagId, address: u32, field: &Field, layout: &Arc<Layout>, title: &str) -> Self {
+    pub(super) fn new(
+        tag: TagId,
+        address: u32,
+        field: &Field,
+        layout: &Arc<Layout>,
+        title: &str,
+    ) -> Self {
         Self {
             tag,
             address,
@@ -303,6 +309,27 @@ pub(super) fn row(cx: &mut Cx<'_, '_>, at: u32, layout: &Arc<Layout>, r: &Row, f
     cx.tail(r);
     if !f.kind.is_evaluated() {
         ui.text_disabled(EVALUATED_AS_ZERO);
+    }
+}
+
+/// The small plot of `f` as the Shader tab's animation rows draw it (the
+/// row's size, the curve over the input's `[0, 1]`), with a marker at
+/// input `marker` (the preview clock's place in the cycle) when given.
+pub(super) fn animation_plot(ui: &Ui, f: &Function, marker: Option<f32>) {
+    let origin = ui.cursor_screen_pos();
+    ui.dummy(ROW_PLOT);
+    plot(ui, origin, ROW_PLOT, f, 0.0, ROW_COLUMNS);
+    if let Some(x) = marker.filter(|x| x.is_finite()) {
+        let at = Plot {
+            origin,
+            size: ROW_PLOT,
+            x: [0.0, 1.0],
+            y: [0.0, 1.0],
+        };
+        ui.get_window_draw_list()
+            .add_line(at.point(x, 0.0), at.point(x, 1.0), theme::WARN)
+            .thickness(1.0)
+            .build();
     }
 }
 
