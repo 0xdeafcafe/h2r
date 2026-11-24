@@ -1472,21 +1472,31 @@ fn real_map_pack_opens_beside_the_disc_and_saves_a_package() {
 }
 
 #[test]
-fn go_to_anything_opens_the_voices_window_and_every_editor() {
+fn go_to_anything_finds_every_voice_and_every_editor() {
     use commands::{Kind, palette};
 
     let t = Temp::new("palette-voices");
     let mut app = app_with(&t);
-    // Found by its name and by what it is for.
+    // A voice is found by its name and by what it is for, under its own
+    // kind, and the old window command is gone.
     for query in ["voices", "announcer", "character clone"] {
         let found = palette(&mut app, query);
-        assert_eq!(found.total(Kind::Command), 1, "{query}");
-        assert_eq!(found.entries[0].label, commands::VOICES_LABEL);
+        assert!(found.total(Kind::Voice) > 0, "{query}");
+        assert_eq!(found.total(Kind::Command), 0, "{query}");
     }
-    assert!(app.voices.show.is_none());
-    let entry = palette(&mut app, "voices").entries.remove(0);
+    let found = palette(&mut app, "cortana");
+    let entry = found
+        .entries
+        .iter()
+        .find(|e| e.kind == Kind::Voice)
+        .cloned()
+        .expect("a voice row for cortana");
+    assert!(matches!(&entry.action, Action::OpenAsset { asset, .. } if asset == "voice:cortana"));
+    // Running it opens the voice document, on Setup: no dataset is built.
     app.dispatch(entry.action);
-    assert_eq!(app.voices.show, Some(voices::Show::Window));
+    assert_eq!(app.front_doc(), Some(Doc::Voice));
+    assert_eq!(app.voices.doc.as_deref(), Some("cortana"));
+    assert_eq!(app.voices.pane, voices::Pane::Setup);
 
     // Each editor of View > Editors is a command.
     let editors = palette(&mut app, "open editor:");
@@ -1497,25 +1507,25 @@ fn go_to_anything_opens_the_voices_window_and_every_editor() {
 }
 
 #[test]
-fn a_sound_starts_one_voices_row_that_replaces_it() {
+fn a_sound_starts_one_line_row_that_targets_it() {
     let t = Temp::new("voices-line-for");
     let mut app = app_with(&t);
     let tag = r"sound\dialog\invented\line_one";
-    let id = app.voices_line_for(tag);
-    assert_eq!(app.voices.show, Some(voices::Show::Lines));
+    let id = app.sound_new_line(tag);
     assert_eq!(app.voices.batch.rows.len(), 1);
     assert_eq!(app.voices.batch.rows[0].tag.as_deref(), Some(tag));
+    assert_eq!(app.sound_lines(tag).len(), 1);
     // Asked again for the same sound: the same row, not a second one.
-    app.voices.show = None;
-    assert_eq!(app.voices_line_for(tag), id);
+    assert_eq!(app.sound_new_line(tag), id);
     assert_eq!(app.voices.batch.rows.len(), 1);
-    assert_eq!(app.voices.show, Some(voices::Show::Lines));
-    // A request for the window alone does not take the batch's place.
-    app.dispatch(Action::ShowVoices);
-    assert_eq!(app.voices.show, Some(voices::Show::Lines));
-    // Another sound is another row.
-    assert_ne!(app.voices_line_for(r"sound\dialog\invented\line_two"), id);
+    // Another sound is another row, and a sound's pane lists only its own.
+    let other = r"sound\dialog\invented\line_two";
+    assert_ne!(app.sound_new_line(other), id);
     assert_eq!(app.voices.batch.rows.len(), 2);
+    assert_eq!(app.sound_lines(tag).len(), 1);
+    assert_eq!(app.sound_lines(other).len(), 1);
+    // No window is asked for: a line is made in the sound's own document.
+    assert_eq!(app.front_doc(), None);
 }
 
 // ---------- Go to anything over every asset ----------

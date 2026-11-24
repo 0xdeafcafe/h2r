@@ -235,7 +235,7 @@ kinds.
 | an object (`weap`, `vehi`, `bipd`, `scen`, `eqip`, `proj`, `hlmt`) | the object editor: the model, variants, markers, the tuning sheet | the model preview | the Tags tool, `model.*` |
 | a model (`mode`, `coll`, `phmo`) | the model view and the Modeling tools | | the Modeling section |
 | an animation graph (`jmad`) | the animation editor | the Timeline | nothing (new) |
-| a sound (`snd!`, `lsnd`, `udlg`) | the sound editor | the Timeline | the Sound and Voices windows |
+| a sound (`snd!`, `lsnd`, `udlg`) | the sound editor | the Timeline | the Sound window and the voice document |
 | a bitmap (`bitm`) | the canvas: paint, import, export | | the Textures tool, image generation |
 | a shader (`shad`, `stem`, `spas`) | the Shader tab and its preview | | the field panel |
 | an effect (`effe`, `prt3` and their kin) | the effect editor | the Timeline; the paired game as preview | the field panel |

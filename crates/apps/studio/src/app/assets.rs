@@ -6,7 +6,10 @@
 //!
 //! An asset is named by an id: `tag:<group>:<path>` for a tag of the tree
 //! or one a package adds, `package:<id>` for a package, and
-//! `item:<package>:<n>` for the n-th item of a package's manifest.
+//! `item:<package>:<n>` for the n-th item of a package's manifest, and
+//! `voice:<id>` for a voice (a character of `voice::dataset::CHARACTERS`,
+//! or `announcer`), which the **Voices** kind lists
+//! ([`App::voice_asset_list`]).
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -44,6 +47,15 @@ const KINDS: &[(&str, &[&str])] = &[
     ("Strings", &["unic", "ustr", "str#"]),
 ];
 
+/// The kind of the voices (`voice:<id>` rows): not a tag group, so it is
+/// listed by [`App::voice_asset_list`] rather than from the tree.
+pub const VOICES_KIND: &str = "Voices";
+
+/// The Kind is the Voices kind.
+pub fn is_voices_kind(kind: Option<&str>) -> bool {
+    kind.is_some_and(|k| k.trim().eq_ignore_ascii_case(VOICES_KIND))
+}
+
 /// The kind a group belongs to.
 pub fn kind_of(group: &str) -> &'static str {
     if group.starts_with("rm") && group.len() == 4 {
@@ -57,7 +69,11 @@ pub fn kind_of(group: &str) -> &'static str {
 
 /// The Kind picker's choices.
 pub fn kind_names() -> Vec<&'static str> {
-    KINDS.iter().map(|(k, _)| *k).chain(["Other"]).collect()
+    KINDS
+        .iter()
+        .map(|(k, _)| *k)
+        .chain(["Other", VOICES_KIND])
+        .collect()
 }
 
 /// Which root a list reads.
@@ -96,13 +112,15 @@ pub enum AssetId {
     Tag(TagKey),
     Package(String),
     Item(String, usize),
+    /// A voice: a character id or `announcer`.
+    Voice(String),
 }
 
 impl AssetId {
     pub fn parse(s: &str) -> Result<Self, String> {
         let bad = || {
             format!(
-                "{s:?} is not an asset id (tag:<group>:<path>, package:<id> or item:<package>:<n>)"
+                "{s:?} is not an asset id (tag:<group>:<path>, package:<id>, item:<package>:<n> or voice:<id>)"
             )
         };
         let (kind, rest) = s.split_once(':').ok_or_else(bad)?;
@@ -116,6 +134,9 @@ impl AssetId {
                 Ok(Self::Tag(TagKey::new(group, path.replace('/', "\\"))))
             }
             "package" if !rest.is_empty() => Ok(Self::Package(rest.to_owned())),
+            "voice" if crate::voice::dataset::character(rest).is_some() || rest == super::voices::ANNOUNCER => {
+                Ok(Self::Voice(rest.to_owned()))
+            }
             "item" => {
                 let (p, n) = rest.rsplit_once(':').ok_or_else(bad)?;
                 Ok(Self::Item(p.to_owned(), n.parse().map_err(|_| bad())?))
@@ -678,13 +699,15 @@ impl App {
         }
     }
 
-    /// [`super::Action::OpenAsset`]: open the map that holds the tag (a
+    /// [`super::Action::OpenAsset`]: a voice opens its document
+    /// ([`App::open_voice`]); a tag opens the map that holds it (a
     /// Halo 1 map shows read-only, with no document), then the tag in the
     /// editor its group gets. A scenario tag is the map's own tab.
     pub(super) fn open_asset(&mut self, asset: &str, map: Option<&str>) {
         let key = match AssetId::parse(asset) {
             Ok(AssetId::Tag(key)) => key,
-            Ok(_) => return self.error(format!("{asset} is not a tag: only a tag opens in an editor")),
+            Ok(AssetId::Voice(id)) => return self.open_voice(&id),
+            Ok(_) => return self.error(format!("{asset} is not a tag or a voice: only those open in an editor yet")),
             Err(e) => return self.error(e),
         };
         if let Some(name) = map {

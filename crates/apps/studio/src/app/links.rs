@@ -12,6 +12,7 @@
 //! | a `rules` or `variant` item | (a variant) the `rules` items of its key | (a script) the `variant` items of its key |
 //! | any other item | the tag it adds or edits | its package |
 //! | a package | its items, the packages it `requires` | the packages that require it |
+//! | a voice | | the dialogue sounds its rules pick, and (from the batch) the lines it made |
 //!
 //! A `rules` item and a `variant` item of one script share the file stem
 //! the registry keys them by (`rules::builtin::package_sources`); that
@@ -149,7 +150,7 @@ fn refs_of(repo: &mut TagRepo, key: &TagKey) -> Result<Vec<(TagKey, String)>, St
 
 /// The voice that says a dialogue sound: the first character whose rules
 /// pick its path.
-fn voice_of(path: &str) -> Option<&'static str> {
+pub(crate) fn voice_of(path: &str) -> Option<&'static str> {
     if !is_dialogue(path) {
         return None;
     }
@@ -440,12 +441,45 @@ fn package_links(set: &GameSet, id: &str) -> Result<Links, String> {
     Ok(out)
 }
 
+/// A voice: the dialogue sounds of the tree whose paths its rules pick
+/// (used by: the sounds it says), and the voice document as its editor.
+/// The lines it made are the batch's, which the caller adds
+/// (`App::asset_links`).
+fn voice_links(tags_root: &Path, id: &str) -> Links {
+    let mut out = Links {
+        editors: vec![EditorRow {
+            id: "voices",
+            label: "Voice",
+            why_not: None,
+        }],
+        ..Links::default()
+    };
+    match TagRepo::open(tags_root) {
+        Ok(repo) => {
+            for key in repo.keys() {
+                if fourcc_text(key.group) == "snd!" && voice_of(&key.path) == Some(id) {
+                    out.used_by.push(Link {
+                        asset: tag_id(&key),
+                        role: "Sounds",
+                        via: "dialogue rules".to_owned(),
+                    });
+                }
+            }
+        }
+        // A voice is read from the data root; a missing tree only means
+        // there are no sounds to list.
+        Err(_) => {}
+    }
+    out
+}
+
 /// `asset.links`: the answer for `id`.
 pub fn links(tags_root: &Path, set: &GameSet, id: &AssetId) -> Result<Links, String> {
     let mut out = match id {
         AssetId::Tag(key) => tag_links(tags_root, set, key),
         AssetId::Item(package, n) => item_links(set, package, *n)?,
         AssetId::Package(p) => package_links(set, p)?,
+        AssetId::Voice(v) => voice_links(tags_root, v),
     };
     sort(&mut out.uses);
     sort(&mut out.used_by);
@@ -517,5 +551,33 @@ impl super::App {
                     .then(|| format!("package:{opened}"))
             }
         }
+    }
+
+    /// [`links`] for `id`, with what only the app knows: a voice's lines.
+    /// Each done row of the batch said by the voice that has a target
+    /// sound links to it (role Sounds, `via` the line's number), read from
+    /// the batch each time.
+    pub fn asset_links(&self, id: &AssetId) -> Result<Links, String> {
+        let set = super::assets::read_set(&self.data_root());
+        let mut out = links(&self.tags_root(), &set, id)?;
+        if let AssetId::Voice(voice) = id {
+            let batch = &self.voices.batch;
+            for (n, r) in batch.rows.iter().enumerate() {
+                if r.state != super::voice_batch::RowState::Done
+                    || batch.voice_of(r).as_deref() != Some(voice.as_str())
+                {
+                    continue;
+                }
+                if let Some(tag) = &r.tag {
+                    out.uses.push(Link {
+                        asset: format!("tag:snd!:{tag}"),
+                        role: "Sounds",
+                        via: format!("line {}", n + 1),
+                    });
+                }
+            }
+            sort(&mut out.uses);
+        }
+        Ok(out)
     }
 }

@@ -5,6 +5,10 @@
 //! (the set, and a package's items) and **Live**. **Kind** and **Map**
 //! narrow the Tags root, and every word of the search must match.
 //!
+//! The **Voices** kind lists each character and the announcer with its
+//! dataset state; a double-click opens the voice document
+//! ([`Action::OpenAsset`] on `voice:<id>`).
+//!
 //! A double-click on a tag opens it in the editor its group gets, on the
 //! map that holds it ([`Action::OpenAsset`]); right-click offers **Open**
 //! and **Copy into package**, the call `asset.copy` makes
@@ -105,7 +109,13 @@ fn load(app: &App, st: &BrowserUi) -> Listing {
         limit: LIMIT,
     };
     let mut out = Listing::default();
-    match assets::list(&app.tags_root(), &set, &q) {
+    // The Voices kind lists voices, read from the data root.
+    let listed = if tags && assets::is_voices_kind(q.kind.as_deref()) {
+        Ok(app.voice_asset_list(&q.text, q.limit))
+    } else {
+        assets::list(&app.tags_root(), &set, &q)
+    };
+    match listed {
         Ok(v) => {
             out.rows = v["rows"].as_array().cloned().unwrap_or_default();
             out.total = v["total"].as_u64().unwrap_or(0) as usize;
@@ -373,7 +383,7 @@ fn glyph(row: &Value) -> &'static str {
         "Package" => icon::PACKAGE,
         "Models" | "Objects" => icon::BOX,
         "Screens" | "HUDs" => icon::LAYERS,
-        "Sounds" => icon::SOUND,
+        "Sounds" | "Voices" => icon::SOUND,
         _ => icon::FILE,
     }
 }
@@ -428,6 +438,8 @@ fn row(
         if ui.is_mouse_double_clicked(MouseButton::Left) {
             if tag {
                 open(actions, asset, open_map(app, row));
+            } else if row["root"] == "voices" {
+                open(actions, asset, None);
             } else if row["root"] == "packages" && asset.starts_with("package:") {
                 st.package = row["id"].as_str().map(str::to_owned);
                 st.selected = None;
@@ -440,6 +452,10 @@ fn row(
                 open(actions, asset, open_map(app, row));
             }
             copy_menu(ui, list, asset, actions);
+        } else if row["root"] == "voices" {
+            if ui.menu_item(format!("{} Open", icon::SOUND)) {
+                open(actions, asset, None);
+            }
         } else if asset.starts_with("package:") && ui.menu_item("Open items") {
             st.package = row["id"].as_str().map(str::to_owned);
         }

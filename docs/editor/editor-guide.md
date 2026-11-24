@@ -211,10 +211,11 @@ Keyboard shortcuts (Cmd on macOS, Ctrl elsewhere):
 | Cmd+Shift+Z or Cmd+Y | Redo |
 | Cmd+Q | Quit |
 
-Use **Edit > Go to anything...** to search maps, tags, placements and
-menu commands from one box. Every editor of **View > Editors** is a
-command there (`Open editor: HUD`), and so is the Voices window (`Open:
-Voices`). Type any words from the name or detail line.
+Use **Edit > Go to anything...** to search maps, tags, voices, placements
+and menu commands from one box. Every editor of **View > Editors** is a
+command there (`Open editor: HUD`), and every voice is a row under
+**Voices** that opens its document. Type any words from the name or
+detail line.
 Use Up and Down to highlight a result, Enter to open or run it, and Esc
 to close the search.
 
@@ -1646,10 +1647,11 @@ the map like any other edit. What to know:
 
 ### Announcer lines
 
-**View > Voices** opens a window that makes announcer lines from text.
-**Go to anything** opens it too (type `voices` or `announcer`), and so
-does **New line in Voices** at the top of a sound's editor, which adds a
-line that replaces that sound to the character batch below.
+A voice is a document. The Browser's **Voices** kind lists the announcer
+and every game character, each with its minutes of speech and whether it
+is fine-tuned; double-click one, or find it in **Go to anything** (type
+`voices` or `announcer`), to open it. It has two panes, **Setup** and
+**Lines**. The announcer's **Lines** pane makes announcer lines from text.
 Type the line, give a clip id (such as `superbounce`) if it is for one,
 and press **Say it**. The voice says it, Studio trims the silence, brings
 it to the loudness of the retail announcer lines of the open map and plays
@@ -1672,17 +1674,25 @@ there. [announcer.md](announcer.md) has the rest.
 
 ### Lines in a game character's voice
 
-In the same window, pick **Game character (local clone)**. The window
-goes top to bottom: **1 Voice** (a picker with a search, each character
-showing its minutes of speech and whether it is fine-tuned, and the model),
-**2 Lines** (type or paste many lines, one per line, or import a text file;
-each row can have its own voice, an output name, and the game sound it
-replaces), **3 Say** (**Say all** says every row in turn; each row shows
+Open a character from the **Voices** kind. A voice with no dataset opens
+on **Setup**, one that can say lines on **Lines**. **Lines** goes top to
+bottom: **Lines** (type or paste many lines, one per line, or import a
+text file; each row has an output name and the game sound it replaces),
+**Say** (**Say all** says every row of this voice in turn; each row shows
 queued, running, done or why it failed, plays, and re-runs on its own),
-and **5 Use** (**Keep all done lines** copies them into the checkout or the
+and **Keep** (**Keep all done lines** copies them into the checkout or the
 edit target package in one step). Buttons that are off say why.
 
-The first time, open **Voice setup**: **Build dataset** reads that
+A line for one sound is also made from the sound itself. A dialogue
+sound's editor ends with a **Lines** pane: **New line** adds a line that
+replaces that sound, said by the voice its path maps to. Type what is
+said and press **Say**; the said line's waveform draws under the sound's
+own on the same time axis, with its loudness beside it, so the two are
+easy to compare. **Save** makes the line a `sound` item of the edit
+target. A voice that is not set up says so on the row, and **Open its
+Setup** opens the voice on **Setup**.
+
+The first time, open the voice's **Setup**: the model picker, then **Build dataset** reads that
 character's lines from your disc, cuts them into clean clips and pairs each
 with its subtitle; the lines with no subtitle are transcribed on your Mac.
 Studio also installs the voice model (a few GB, once); the window shows the
@@ -1742,7 +1752,7 @@ uses, `~/Library/Application Support/h2recomp/data`.
 | Scripts opened in VS Code or Zed | `<data>/scripts/<name>.rules` (a game type script with no file of its own); `<data>/scripts/<map>/<map>.hsc` and `h2hs.json` (a map's scripts) | Not directly: a game type script reloads into the paired game; a map's scripts are read back into the Scripts tab only. [Scripts in VS Code and Zed](#scripts-in-vs-code-and-zed) |
 | Exported tags (tag bundles) | Wherever you save the `.h2tag` (never inside a Git checkout); `<data>/tag-bundles/` when an agent gives no path | Not directly: import it in the Tags tool and save the map. |
 | Playlists | Wherever you save the `.dat` | Through your Live server (`h2 live hopper import`). |
-| Announcer lines | `<data>/announcer/` (`cache/`, `lines/`, `clips/`) | Not directly: copy one into `art/announcer/` of a checkout with the Voices window or `voice.commit`, then build. |
+| Announcer lines | `<data>/announcer/` (`cache/`, `lines/`, `clips/`) | Not directly: copy one into `art/announcer/` of a checkout from the announcer's **Lines** pane or `voice.commit`, then build. |
 | Character voices | `<data>/voices/<character>/` (`dataset/`, `manifest.jsonl`, `model/`, `cache/`, `lines/`, `clips/`); the model's install in Studio's caches (`voice-clone/`) | Not directly: they are built from your disc and stay on your Mac. A line with a clip id copies into a checkout like an announcer line. |
 | The window layout | `~/Library/Application Support/h2recomp/data/h2-editor.ini` | (The editor's own.) |
 

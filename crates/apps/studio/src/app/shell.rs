@@ -92,6 +92,9 @@ pub enum Doc {
     Hud,
     /// The game type script in the script editor (`app::rules_edit`).
     Rules,
+    /// The voice open in the voice document (`app::voices`): the id is
+    /// `Voices::doc`, the pane `Voices::pane`.
+    Voice,
     /// A tag of the open map, in the editor its group gets.
     Tag(TagId),
 }
@@ -165,13 +168,14 @@ impl From<ToolKind> for Surface {
 }
 
 /// The tools' documents, in the order their tabs are first given.
-pub const TOOL_DOCS: [Doc; 6] = [
+pub const TOOL_DOCS: [Doc; 7] = [
     Doc::Map,
     Doc::Variant,
     Doc::Playlists,
     Doc::Ui,
     Doc::Hud,
     Doc::Rules,
+    Doc::Voice,
 ];
 
 impl Doc {
@@ -185,6 +189,9 @@ impl Doc {
             Doc::Hud => ToolKind::Hud,
             // The script editor docks beside the variant's settings.
             Doc::Rules => ToolKind::Variants,
+            // The voice document draws over the field panel's surface,
+            // as the sound editor does (`ui::voices::window`).
+            Doc::Voice => ToolKind::Tags,
             Doc::Tag(_) => return None,
         })
     }
@@ -198,6 +205,7 @@ impl Doc {
             Doc::Ui => "ui",
             Doc::Hud => "hud",
             Doc::Rules => "rules",
+            Doc::Voice => "voice",
             Doc::Tag(_) => return None,
         })
     }
@@ -307,13 +315,15 @@ impl App {
     }
 
     /// A tab's id: a tool document's name (`map`, `variant`, `playlists`,
-    /// `ui`, `hud`), or a tag's `group:path` as `tag.*` takes it.
+    /// `ui`, `hud`), a voice's `voice:<id>`, or a tag's `group:path` as
+    /// `tag.*` takes it.
     pub fn doc_id(&self, doc: Doc) -> String {
         match doc {
             Doc::Tag(id) => match self.tags.tag(id) {
                 Some(t) => format!("{}:{}", tags::defs::fourcc_text(t.group), t.name),
                 None => format!("{:#010x}", id.0),
             },
+            Doc::Voice => format!("voice:{}", self.voices.doc.as_deref().unwrap_or_default()),
             other => other.tool_id().expect("a tool document").to_owned(),
         }
     }
@@ -353,6 +363,12 @@ impl App {
                 .as_ref()
                 .map_or_else(|| "HUD".to_owned(), |s| s.name.clone()),
             Doc::Rules => self.rules.title.clone(),
+            Doc::Voice => self
+                .voices
+                .doc
+                .as_deref()
+                .and_then(|id| self.voice_status(id))
+                .map_or_else(|| "voice".to_owned(), |v| v.name.to_owned()),
             Doc::Tag(id) => match self.tags.tag(id) {
                 Some(t) => format!(
                     "{}.{}",
@@ -370,6 +386,9 @@ impl App {
         match doc {
             Doc::Tag(id) => self.tool_dirty(ToolKind::Scenario) && self.tags.is_changed(id),
             Doc::Rules => self.rules.dirty(),
+            // Lines that are said and not kept are the batch's, not a
+            // document's edits: nothing to ask about on close.
+            Doc::Voice => false,
             Doc::Map => self.tool_dirty(ToolKind::Scenario) || self.tool_dirty(ToolKind::Textures),
             other => self.tool_dirty(other.holder().expect("a tool document")),
         }
@@ -402,6 +421,8 @@ impl App {
             Doc::Map => (self.session.can_undo(), self.session.can_redo()),
             // The text widget keeps the script's own undo.
             Doc::Rules => (false, false),
+            // A voice's lines are rows: Remove takes one away.
+            Doc::Voice => (false, false),
             Doc::Variant => self
                 .variants
                 .as_ref()
@@ -428,6 +449,7 @@ impl App {
             Doc::Ui => self.ui_screens.pick.is_some(),
             Doc::Hud => self.hud.session.is_some(),
             Doc::Rules => self.rules.opened,
+            Doc::Voice => self.voices.doc.is_some(),
             Doc::Tag(_) => false,
         }
     }
@@ -580,6 +602,8 @@ impl App {
             }
             // The tab goes; the text stays in the editor for the next open.
             Doc::Rules => self.rules.opened = false,
+            // The batch keeps its rows for the next open.
+            Doc::Voice => self.voices.doc = None,
             other => self.close_tool(other.holder().expect("a tool document")),
         }
         self.tabs.remove(doc);
@@ -688,6 +712,9 @@ impl App {
     pub(super) fn undo_redo_doc(&mut self, doc: Doc, undo: bool) {
         if doc == Doc::Rules {
             return self.info("the script editor keeps its own undo: use it in the text");
+        }
+        if doc == Doc::Voice {
+            return self.info("a voice's lines are rows: Remove takes one away");
         }
         let Doc::Tag(id) = doc else {
             // The map's scripts are the map document's while the Scripts

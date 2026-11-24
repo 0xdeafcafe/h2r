@@ -221,7 +221,7 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::ASSET_LIST,
-        "The browser's rows. root tags (the default): every tag of the tags tree by path, one row for a tag all its maps hold alike and `variants` (each with its maps) where they differ, plus the tags packages add (`new`, badge `new in <package>`); a tag an edit line touches has badge `edited by <package>`. root packages: the set (a package per row), or with `package` that package's items. root live: the server's offer (none is held offline). `kind` is Maps, Objects, Models, Animations, Bitmaps, Shaders, Effects, Sounds, Screens, HUDs, Strings, Other or a tag group; `map` keeps what that map holds; every word of `query` must match the path, group, kind or a package id",
+        "The browser's rows. root tags (the default): every tag of the tags tree by path, one row for a tag all its maps hold alike and `variants` (each with its maps) where they differ, plus the tags packages add (`new`, badge `new in <package>`); a tag an edit line touches has badge `edited by <package>`. root packages: the set (a package per row), or with `package` that package's items. root live: the server's offer (none is held offline). `kind` is Maps, Objects, Models, Animations, Bitmaps, Shaders, Effects, Sounds, Screens, HUDs, Strings, Other, a tag group, or Voices (a `voice:<id>` row for each character and the announcer, with `state` no dataset, dataset, fine-tuned or announcer, `minutes`, `pending_asr` and `tuned`); `map` keeps what that map holds; every word of `query` must match the path, group, kind or a package id",
         r#"{"root?":"tags|packages|live","package?":"string","kind?":"string","map?":"string","query?":"string","limit?":"integer"}"#,
         r#"{"root":"string","rows":"[{asset,root,kind,name,group?,path?,origin?,new?,badge?,packages?,maps?,variants?,...}]","total":"integer","limit":"integer","truncated":"boolean","maps":"[string]","kinds":"[string]","problems":"[string]"}"#,
         r#"{"kind":"Objects","query":"rifle"}"#,
@@ -242,8 +242,8 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::ASSET_LINKS,
-        "What an asset uses, what uses it and which editors open it, read each time (docs/editor/studio-flow.md, \"Links\"). A tag: the tags it references (role = the target's kind: Model, Animations, Sounds, HUD, Projectile, Bitmaps, ...; `via` is `node <n> +<offset>` in its file), the voice that says it when it is a dialogue sound, and in used_by the tags that reference it and the packages that add or edit it. A `rules` or `variant` item: the other kind of its script key. Any other item: the tag it adds or edits, and its package. A package: its items and `requires`, and the packages that require it. `editors` lists each editor with `why_not` when it cannot open. `problems` names what could not be read (a tag file that does not decode, a missing tree)",
-        r#"{"asset":"string (tag:<group>:<path>, package:<id> or item:<package>:<n>)"}"#,
+        "What an asset uses, what uses it and which editors open it, read each time (docs/editor/studio-flow.md, \"Links\"). A tag: the tags it references (role = the target's kind: Model, Animations, Sounds, HUD, Projectile, Bitmaps, ...; `via` is `node <n> +<offset>` in its file), the voice that says it when it is a dialogue sound, and in used_by the tags that reference it and the packages that add or edit it. A `rules` or `variant` item: the other kind of its script key. Any other item: the tag it adds or edits, and its package. A package: its items and `requires`, and the packages that require it. A voice: in used_by the dialogue sounds its rules pick, in uses the target sounds of the lines it made. `editors` lists each editor with `why_not` when it cannot open. `problems` names what could not be read (a tag file that does not decode, a missing tree)",
+        r#"{"asset":"string (tag:<group>:<path>, package:<id>, item:<package>:<n> or voice:<id>)"}"#,
         r#"{"asset":"string","uses":"[{asset,role,via}]","used_by":"[{asset,role,via}]","editors":"[{id,label,why_not}]","problems":"[string]"}"#,
         r#"{"asset":"package:kit-test"}"#,
     ),
@@ -431,8 +431,8 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::SHELL_OPEN,
-        "Open a tag of the open map as a tab, in the editor its group gets (the scenario tag is the map's own tab), and bring it to the front. With map, that map opens first (refused over unsaved edits unless discard); a map alone brings its tab forward",
-        r#"{"tag?":"string|integer (an id, group:path, path.group or a group with one tag)","map?":"string","discard?":"boolean"}"#,
+        "Open a tag of the open map as a tab, in the editor its group gets (the scenario tag is the map's own tab), and bring it to the front. With map, that map opens first (refused over unsaved edits unless discard); a map alone brings its tab forward. `asset` takes an asset id: `voice:<id>` opens the voice document (tab `voice:<id>`, on Setup while the voice has no dataset, else Lines), `tag:<group>:<path>` the tag as the Browser does",
+        r#"{"asset?":"string (voice:<id> or tag:<group>:<path>)","tag?":"string|integer (an id, group:path, path.group or a group with one tag)","map?":"string","discard?":"boolean"}"#,
         r#"{"tab":"{doc,kind,title,tool,dirty,can_undo,can_redo,front,...}","front":"string|null","log":"[string]"}"#,
         r#"{"tag":"itmc:objects\\test\\kit"}"#,
     ),
